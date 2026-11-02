@@ -7,6 +7,8 @@ Pure numpy, render-only, pyray-free. Sources in, bone matrices out:
       -> crossfade ramp per layer (nlerp source -> target)
       -> override layers selected per bone by the MASK table (a partition)
       -> additive layer (local delta against the clip's own reference frame)
+      -> posture (#164: a profile x the unit's amount as local offsets,
+         renderer/pose_posture.py; units at amount 0 untouched)
       -> FK as 4x4 products, one per depth level (never a per-bone loop)
       -> procedural modifiers, post-FK (#163: the aim-vs-travel twist,
          renderer/pose_modifiers.py)
@@ -114,6 +116,30 @@ class AimTravelSettings:
 
 
 @dataclass(frozen=True)
+class MeleeSettings:
+    """``[render.pose.melee]`` (#164): a hit of one of ``causes`` credited to
+    a unit whose role has the melee reaction makes THAT unit (the attacker)
+    play one of ``clips`` (in turn) as a one-shot on ``layers``; while it
+    plays, the posture parameters in ``suppress`` fade out by its weight
+    (an arm carried forward would lift a punching arm over the head)."""
+    clips: Tuple[str, ...]
+    layers: Tuple[str, ...]
+    causes: Tuple[str, ...]
+    suppress: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RoleSettings:
+    """``[render.pose.roles.<role>]`` (#164): the reactions a unit of the
+    role plays (of ``REACTIONS``) and its posture amount ``a`` in [0, 1]."""
+    reactions: Tuple[str, ...]
+    posture: float
+
+
+REACTIONS = ("fire", "hit", "melee")
+
+
+@dataclass(frozen=True)
 class PoseSettings:
     enabled: bool
     rate: float                                   # global playback rate
@@ -129,6 +155,12 @@ class PoseSettings:
     hit: Optional[HitSettings] = None
     aim_travel: Optional[AimTravelSettings] = None
     twists: Dict[str, TwistRule] = field(default_factory=dict)  # skeleton table -> twist
+    # #164: posture (pose_posture.PostureSettings / PostureRule per skeleton
+    # table), the melee one-shot and the per-role reactions + posture amount
+    posture: Optional[Any] = None
+    postures: Dict[str, Any] = field(default_factory=dict)
+    melee: Optional[MeleeSettings] = None
+    roles: Dict[str, RoleSettings] = field(default_factory=dict)
 
 
 def _as_dict(obj) -> Dict[str, Any]:
@@ -157,7 +189,9 @@ def _names(value, where: str) -> Tuple[str, ...]:
 
 _TOP_KEYS = ("enabled", "rate", "crossfade_s", "layers", "fallback_state",
              "event_queue", "skeletons", "states", "clips", "overlays", "fire",
-             "hit", "aim_travel")
+             "hit", "aim_travel", "posture", "melee", "roles")
+_MELEE_KEYS = ("clips", "layers", "causes", "suppress")
+_ROLE_KEYS = ("reactions", "posture")
 _CLIP_KEYS = ("loop", "rate", "root_motion", "additive_ref")
 _FIRE_KEYS = ("overlay", "aim_hold_s", "shot_clip", "shot_layer")
 _HIT_KEYS = ("clip", "masks", "causes", "ramp_in_s", "ramp_out_s", "weight_min",
@@ -248,14 +282,20 @@ def pose_settings(cfg) -> PoseSettings:
     skel_tables = d["skeletons"]
     if not isinstance(skel_tables, dict) or not skel_tables:
         raise PoseConfigError("[render.pose.skeletons] must hold at least one skeleton table")
+    from .pose_posture import PostureConfigError, parse_rule, parse_settings
     skeletons = []
     twists: Dict[str, TwistRule] = {}
+    postures: Dict[str, Any] = {}
     for sk_name, sk in skel_tables.items():
         where = f"[render.pose.skeletons.{sk_name}]"
-        if not isinstance(sk, dict) or set(sk) != {"masks", "twist"}:
-            raise PoseConfigError(f"{where} must hold exactly a 'masks' and a "
-                                  "'twist' table")
+        if not isinstance(sk, dict) or set(sk) != {"masks", "twist", "posture"}:
+            raise PoseConfigError(f"{where} must hold exactly a 'masks', a "
+                                  "'twist' and a 'posture' table")
         twists[sk_name] = _parse_twist(sk["twist"], f"{where} twist")
+        try:
+            postures[sk_name] = parse_rule(sk["posture"], f"{where} posture")
+        except PostureConfigError as exc:
+            raise PoseConfigError(str(exc)) from None
         masks = {}
         for m_name, rule in sk["masks"].items():
             mw = f"{where} masks.{m_name}"
@@ -374,12 +414,59 @@ def pose_settings(cfg) -> PoseSettings:
         twist_rate=np.radians(_number(a["twist_rate_deg_s"], f"{aw} twist_rate_deg_s",
                                       0.0, lo_open=True)))
 
+    try:
+        posture = parse_settings(d["posture"])
+    except PostureConfigError as exc:
+        raise PoseConfigError(str(exc)) from None
+
+    mw = "[render.pose.melee]"
+    m = _exact_table(d["melee"], _MELEE_KEYS, mw)
+    m_clips = _names(m["clips"], f"{mw} clips")
+    m_layers = _names(m["layers"], f"{mw} layers")
+    bad = [x for x in m_layers if x not in layers]
+    if bad:
+        raise PoseConfigError(f"{mw} layers {bad} are not layers {list(layers)}")
+    m_causes = m["causes"]
+    if not isinstance(m_causes, list) or not m_causes or \
+            not all(isinstance(c, str) and c for c in m_causes):
+        raise PoseConfigError(f"{mw} causes must be a non-empty list of cause names, "
+                              f"got {m_causes!r}")
+    from .pose_posture import PARAMS
+    sup = m["suppress"]
+    if not isinstance(sup, list) or not all(isinstance(p, str) for p in sup):
+        raise PoseConfigError(f"{mw} suppress must be a list of posture parameters, got {sup!r}")
+    bad = [p for p in sup if p not in PARAMS]
+    if bad:
+        raise PoseConfigError(f"{mw} suppress {bad} are not posture parameters {list(PARAMS)}")
+    melee = MeleeSettings(clips=m_clips, layers=m_layers, causes=tuple(m_causes),
+                          suppress=tuple(sup))
+
+    rw = "[render.pose.roles]"
+    roles_raw = d["roles"]
+    if not isinstance(roles_raw, dict) or not roles_raw:
+        raise PoseConfigError(f"{rw} must hold at least one role row")
+    roles: Dict[str, RoleSettings] = {}
+    for role, row in roles_raw.items():
+        r = _exact_table(row, _ROLE_KEYS, f"{rw} {role}")
+        rx = r["reactions"]
+        if not isinstance(rx, list) or not all(isinstance(x, str) for x in rx):
+            raise PoseConfigError(f"{rw} {role} reactions must be a list of {list(REACTIONS)}, "
+                                  f"got {rx!r}")
+        bad = [x for x in rx if x not in REACTIONS]
+        if bad:
+            raise PoseConfigError(f"{rw} {role} reactions {bad} are not reactions "
+                                  f"{list(REACTIONS)}")
+        roles[role] = RoleSettings(
+            reactions=tuple(rx),
+            posture=_number(r["posture"], f"{rw} {role} posture", 0.0, hi=1.0))
+
     return PoseSettings(enabled=d["enabled"], rate=float(d["rate"]),
                         crossfade_s=float(d["crossfade_s"]), layers=layers,
                         fallback_state=fallback, event_queue=d["event_queue"],
                         skeletons=tuple(skeletons), states=states, clips=clips,
                         overlays=overlays, fire=fire, hit=hit, aim_travel=aim_travel,
-                        twists=twists)
+                        twists=twists, posture=posture, postures=postures,
+                        melee=melee, roles=roles)
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +554,9 @@ class PoseState:
     __slots__ = ("look", "clip", "time", "prev_clip", "prev_time", "fade",
                  "add_clip", "add_time", "add_weight", "add_bones", "state",
                  "layer_rate", "twist", "travel", "back", "aim_left",
-                 "shot_pending", "flinch_t", "flinch_peak")
+                 "shot_pending", "flinch_t", "flinch_peak",
+                 "posture", "noise", "tau", "tempo", "melee_pending",
+                 "melee_next", "melee_w")
 
     def __init__(self, look: str, clips: np.ndarray) -> None:
         n = len(clips)
@@ -490,6 +579,17 @@ class PoseState:
         self.shot_pending = False
         self.flinch_t = -1.0
         self.flinch_peak = 0.0
+        # #164: posture amount a (0 = none: the pose is exactly as without
+        # posture), the unit's noise draws (pose_posture.UnitNoise), its
+        # wall clock for the noise, the tempo multiplier on looping clips,
+        # the melee one-shot (pending, which clip next, current weight)
+        self.posture = 0.0
+        self.noise = None
+        self.tau = 0.0
+        self.tempo = 1.0
+        self.melee_pending = False
+        self.melee_next = 0
+        self.melee_w = 0.0
 
 
 @dataclass
@@ -532,6 +632,9 @@ class LookRig:
     hit_clip: int = NO_CLIP
     hit_bones: Optional[np.ndarray] = None        # (J,) the flinch's bone weights
     twist_layer: int = 0                          # the layer the twist's lower bone is on
+    posture: Optional[Any] = None                 # pose_posture.ResolvedPosture (#164)
+    melee_clips: Optional[np.ndarray] = None      # (#164) clip ids, played in turn
+    melee_layers: Optional[np.ndarray] = None     # layer indices
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +708,19 @@ class PoseLayer:
             rig.hit_clip = self._clip_or_raise(bank, s.hit.clip, name,
                                                "[render.pose.hit] clip")
             rig.hit_bones = masks.weights[[masks.index(m) for m in s.hit.masks]].sum(0)
+        if s.melee is not None:
+            rig.melee_clips = np.array([self._clip_or_raise(bank, c, name, "[render.pose.melee] clips")
+                                        for c in s.melee.clips], dtype=np.int64)
+            rig.melee_layers = np.array([s.layers.index(l) for l in s.melee.layers],
+                                        dtype=np.int64)
+        rule = s.postures.get(sk_name)
+        if rule is not None:
+            from .pose_posture import PostureConfigError, resolve
+            try:
+                rig.posture = resolve(rule, bank.skeleton,
+                                      f"[render.pose.skeletons.{sk_name}] posture")
+            except PostureConfigError as exc:
+                raise PoseConfigError(str(exc)) from None
         for mod in self.modifiers:
             mod.prepare(rig)
         self._rigs[name] = rig
@@ -705,6 +821,59 @@ class PoseLayer:
         ps.flinch_peak = h.weight_min + (h.weight_max - h.weight_min) * x
         ps.flinch_t = 0.0
 
+    def melee(self, ps: PoseState) -> None:
+        """This unit's melee strike landed (#164): the next :meth:`drive`
+        plays the next melee clip from its start on the melee layers."""
+        if self.settings.melee is not None:
+            ps.melee_pending = True
+
+    def set_posture(self, ps: PoseState, uid: int, amount: float) -> None:
+        """The unit's posture amount ``a`` in [0, 1] this frame (#164; a
+        float so a gradual infection can feed it later). The first time a
+        unit's amount is above 0 it draws its noise from its own generator
+        (``(seed, uid)``) and, with ``desync_start``, its looping clips jump
+        to its own start time -- so a horde does not walk in step. A unit at
+        ``a = 0`` composes exactly as without posture."""
+        a = min(1.0, max(0.0, float(amount)))
+        p = self.settings.posture
+        rig = self._rigs[ps.look]
+        if p is None or rig.posture is None:
+            ps.posture = 0.0
+            return
+        if a > 0.0 and ps.noise is None:
+            from .pose_posture import unit_noise
+            ps.noise = unit_noise(p, uid, rig.posture.n_channels)
+            if p.desync_start:
+                bank = rig.bank
+                ps.time = np.where(bank.loop[ps.clip],
+                                   ps.noise.start * bank.duration[ps.clip], ps.time)
+        ps.posture = a
+
+    def _posture_params(self, ps: PoseState) -> np.ndarray:
+        """``(P,)``: the profile x amount x the unit's variation, the melee's
+        suppressed parameters faded by its weight."""
+        p = self.settings.posture
+        v = p.vector * ps.posture * ps.noise.scale
+        m = self.settings.melee
+        if m is not None and ps.melee_w > 0.0 and m.suppress:
+            from .pose_posture import PARAMS
+            idx = [PARAMS.index(x) for x in m.suppress]
+            v = v.copy()
+            v[idx] *= 1.0 - ps.melee_w
+        return v
+
+    def _tempo(self, ps: PoseState) -> float:
+        """The unit's looping-clip rate multiplier ``1 + a J n(tau)`` (1 at
+        ``a = 0``); ``J <= 1`` and ``|n| <= 1`` keep it >= 0."""
+        if ps.posture <= 0.0 or ps.noise is None:
+            return 1.0
+        from .pose_posture import PARAMS, smooth_noise
+        j = float(self._posture_params(ps)[PARAMS.index("tempo_jitter")])
+        if j <= 0.0:
+            return 1.0
+        n = float(smooth_noise(ps.noise.tempo_phase, ps.noise.tempo_hz, ps.tau))
+        return max(0.0, 1.0 + min(1.0, j) * n)
+
     def steer(self, ps: PoseState, travel: Optional[float], moving: bool,
               dt: float) -> None:
         """The aim-vs-travel input (#163): ``travel`` is the direction the
@@ -738,12 +907,34 @@ class PoseLayer:
             if ps.clip[sl] == rig.shot_clip and ps.aim_left > 0.0 and \
                     ps.time[sl] < rig.bank.duration[rig.shot_clip]:
                 want[sl] = rig.shot_clip                 # the shot plays out
+        mc = rig.melee_clips
+        if mc is not None:                                # #164: the melee one-shot
+            if ps.melee_pending:
+                clip = int(mc[ps.melee_next % len(mc)])
+                for ml in rig.melee_layers:
+                    self.restart_layer_clip(ps, int(ml), clip)
+                ps.melee_next += 1
+                ps.melee_pending = False
+            for ml in rig.melee_layers:
+                c = ps.clip[ml]
+                if np.isin(c, mc) and ps.time[ml] < rig.bank.duration[c]:
+                    want[ml] = c                          # the strike plays out
         for layer in range(len(want)):
             self.set_layer_clip(ps, layer, int(want[layer]))
         ps.state = state
+        ps.tempo = self._tempo(ps)
         self.advance(ps, dt)
+        ps.tau += max(dt, 0.0)
         ps.aim_left = max(0.0, ps.aim_left - max(dt, 0.0))
         self._flinch(ps, rig, dt)
+        if mc is not None:
+            ml = int(rig.melee_layers[0])
+            if np.isin(ps.clip[ml], mc):
+                ps.melee_w = float(ps.fade[ml])
+            elif ps.prev_clip[ml] >= 0 and np.isin(ps.prev_clip[ml], mc):
+                ps.melee_w = float(1.0 - ps.fade[ml])
+            else:
+                ps.melee_w = 0.0
 
     def _flinch(self, ps: PoseState, rig: LookRig, dt: float) -> None:
         """The flinch envelope, ``flinch_t`` wall seconds after the hit: a
@@ -780,12 +971,17 @@ class PoseLayer:
             return
         bank = self._rigs[ps.look].bank
         step = dt * self.settings.rate * ps.layer_rate
-        ps.time = _wrap(bank, ps.clip, ps.time + step * bank.rate[ps.clip])
+        if ps.tempo != 1.0:                       # #164: tempo jitter, looping clips only
+            ps.time = _wrap(bank, ps.clip, ps.time + step * bank.rate[ps.clip]
+                            * np.where(bank.loop[ps.clip], ps.tempo, 1.0))
+        else:
+            ps.time = _wrap(bank, ps.clip, ps.time + step * bank.rate[ps.clip])
         fading = ps.prev_clip >= 0
         if fading.any():
             pc = np.where(fading, ps.prev_clip, ps.clip)
+            pstep = step * (np.where(bank.loop[pc], ps.tempo, 1.0) if ps.tempo != 1.0 else 1.0)
             ps.prev_time = np.where(
-                fading, _wrap(bank, pc, ps.prev_time + step * bank.rate[pc]), 0.0)
+                fading, _wrap(bank, pc, ps.prev_time + pstep * bank.rate[pc]), 0.0)
             cf = self.settings.crossfade_s
             ps.fade = np.where(fading, np.minimum(1.0, ps.fade + (dt / cf if cf > 0 else 1.0)), 1.0)
             done = ps.fade >= 1.0
@@ -858,6 +1054,25 @@ class PoseLayer:
             lt = lt.copy()
             lr[an] = quat_mul(lr[an], quat_nlerp(ident, delta, w[..., None]))
             lt[an] = lt[an] + (at - rt) * w[..., None]
+        # posture (#164): profile x amount, post-clip, pre-FK; a = 0 rows untouched
+        if rig.posture is not None:
+            pn = np.flatnonzero(np.array([ps.posture for ps in states]) > 0.0)
+            if len(pn):
+                from .pose_posture import PARAMS, apply, smooth_noise
+                res = rig.posture
+                params = np.stack([self._posture_params(states[i]) for i in pn])
+                if res.n_channels:
+                    tw = params[:, PARAMS.index("twitch")]
+                    noise = smooth_noise(
+                        np.stack([states[i].noise.twitch_phase for i in pn]),
+                        np.stack([states[i].noise.twitch_hz for i in pn]),
+                        np.array([states[i].tau for i in pn])[:, None])
+                    tv = tw[:, None] * res.twitch_deg[None, :] * noise
+                else:
+                    tv = np.zeros((len(pn), 0))
+                lt = lt.copy()
+                lr = lr.copy()
+                lt[pn], lr[pn] = apply(res, lt[pn], lr[pn], params, tv)
         g = forward_kinematics(sk, lt, lr, ls)
         for mod in modifiers:
             mod.apply(rig, states, g)
@@ -972,6 +1187,7 @@ def global_trs(g: np.ndarray) -> np.ndarray:
 __all__ = [
     "PoseConfigError", "PoseSettings", "MaskRule", "MaskTable", "PoseState",
     "TwistRule", "FireSettings", "HitSettings", "AimTravelSettings",
+    "MeleeSettings", "RoleSettings", "REACTIONS",
     "PoseBatch", "PoseModifier", "LookRig", "PoseLayer", "pose_settings",
     "masks_for", "sample_bank", "forward_kinematics", "global_trs",
     "GLOBAL_TRS_WIDTH", "NO_CLIP",

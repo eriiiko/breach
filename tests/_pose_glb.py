@@ -145,6 +145,7 @@ def critter_settings(**over) -> dict:
                 "top": {"subtree": ["skull_x"]},
             },
             "twist": {"lower": "pelvis_x", "counter": ["back_x"], "shares": [1.0]},
+            "posture": critter_posture_rule(),
         }},
         "states": {"idle": {"hind": "rest", "front": "rest", "top": "rest"},
                    "walk": {"hind": "trot", "front": "trot", "top": "trot"}},
@@ -157,6 +158,35 @@ def critter_settings(**over) -> dict:
                 "weight_max": 0.75, "damage_full": 10},
         "aim_travel": {"theta_deg": 90.0, "hysteresis_deg": 10.0, "smooth_s": 0.1,
                        "twist_rate_deg_s": 360.0},
+        "posture": {
+            "profile": "prowl", "seed": 7, "tempo_hz": [0.3, 0.5], "twitch_hz": [2.0, 3.0],
+            "hz_spread": 0.2, "desync_start": True, "variation": {"spine_pitch": 0.1},
+            "profiles": {"prowl": {"spine_pitch": 40.0, "knee_bend": 0.1,
+                                   "shoulder_protraction": 0.5, "arm_forward": 20.0,
+                                   "arm_open": 0.5, "head_drop": 0.5,
+                                   "tempo_jitter": 0.3, "twitch": 0.5}},
+        },
+        "melee": {"clips": ["look"], "layers": ["front"], "causes": ["melee"],
+                  "suppress": ["arm_forward"]},
+        "roles": {"player": {"reactions": ["fire", "hit"], "posture": 0.0},
+                  "zombie": {"reactions": ["melee", "hit"], "posture": 1.0}},
     }
     pose.update(over)
     return {"render": {"pose": pose}}
+
+
+def critter_posture_rule() -> dict:
+    """The critter's posture mapping (its own bone names): its back pitches,
+    its skull drops and twitches, its pelvis drops (no leg chains)."""
+    def row(bones, axis, deg, space="model"):
+        return {"bones": bones, "axis": axis, "deg": deg, "space": space}
+    return {
+        "up": [0.0, 1.0, 0.0], "forward": [0.0, 0.0, 1.0],
+        "spine_pitch": [row(["back_x"], [1.0, 0.0, 0.0], 1.0)],
+        "shoulder_protraction": [],
+        "arm_forward": [row(["hindleg_l", "hindleg_r"], [1.0, 0.0, 0.0], -0.5)],
+        "arm_open": [],
+        "head_drop": [row(["skull_x"], [1.0, 0.0, 0.0], 30.0)],
+        "twitch": [row(["skull_x"], [0.0, 1.0, 0.0], 10.0, "local")],
+        "knee_bend": {"hips": "pelvis_x", "legs": []},
+    }

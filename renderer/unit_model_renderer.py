@@ -65,7 +65,7 @@ from .lit3d import LightFieldCtx, bind_smoke_cover_map, make_camera
 from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
 from .unit_looks import (BODY_LIGHT_UNIT, ROLES, LookAssigner, all_look_names,
-                         look_path, looks_table, unit_key, unit_shading)
+                         look_path, looks_table, role_of, unit_key, unit_shading)
 from .unit_shadow import (NO_SHADOW, ShadowCast, ShadowPainter, UnitLight,
                           read_unit_light, shadow_cast, smooth_shadow,
                           unit_shadow_settings)
@@ -296,6 +296,14 @@ class UnitModelRenderer:
             if unknown:
                 raise PoseConfigError(f"[render.pose.hit] causes {unknown} are not "
                                       f"damage causes {CAUSE_NAMES}")
+        if settings.melee is not None:          # #164
+            unknown = sorted(set(settings.melee.causes) - set(CAUSE_NAMES))
+            if unknown:
+                raise PoseConfigError(f"[render.pose.melee] causes {unknown} are not "
+                                      f"damage causes {CAUSE_NAMES}")
+        if set(settings.roles) != set(ROLES):
+            raise PoseConfigError(f"[render.pose.roles] must hold exactly the roles "
+                                  f"{list(ROLES)}, got {sorted(settings.roles)}")
         self._shot_event, self._hit_event = ShotFiredEvent, UnitHitEvent
         pose = PoseLayer(settings)
         skinner = skinner if skinner is not None else CpuInjectSkinner(rl)
@@ -322,29 +330,45 @@ class UnitModelRenderer:
         most frames see the previous frame's list again. An event object
         delivered by the previous call is therefore not queued twice (it is
         the same object; the previous batch is held, so its ids cannot be
-        reused by new events)."""
+        reused by new events).
+
+        #164: a hit of one of ``[render.pose.melee] causes`` is ALSO queued
+        on its ATTACKER (``attacker_id``), whose melee reaction plays it."""
         if self._pose is None:
             return
         now = self._last_clock if self._last_clock is not None else 0.0
         seen = self._delivered
         self._delivered = {id(ev): ev for ev in events}
+        melee = self._pose.settings.melee
         for ev in events:
             if seen.get(id(ev)) is ev:
                 continue
             uid = getattr(ev, "unit_id", None)
             if uid is not None:
                 self._pose.queue_event(int(uid), ev, now)
+            if melee is not None and isinstance(ev, self._hit_event) \
+                    and ev.source in melee.causes and ev.attacker_id >= 0 \
+                    and ev.attacker_id != uid:
+                self._pose.queue_event(int(ev.attacker_id), ev, now)
 
-    def _react(self, ps, uid: int) -> None:
+    def _react(self, ps, uid: int, role: str) -> None:
         """#163: act on the unit's queued events (oldest first): a round that
         left its barrel fires, a hit flinches (the layer filters the
-        cause). Other events are dropped."""
+        cause). #164: only the reactions the unit's ROLE plays
+        (``[render.pose.roles]``), and a melee hit this unit DEALT strikes.
+        Other events are dropped."""
+        allowed = self._pose.settings.roles[role].reactions
+        melee = self._pose.settings.melee
         for ev in self._pose.take_events(uid):
             if isinstance(ev, self._shot_event):
-                if ev.launch:
+                if ev.launch and "fire" in allowed:
                     self._pose.fire(ps)
             elif isinstance(ev, self._hit_event):
-                self._pose.hit(ps, ev.damage, ev.source)
+                if ev.unit_id == uid and "hit" in allowed:
+                    self._pose.hit(ps, ev.damage, ev.source)
+                if ev.attacker_id == uid and "melee" in allowed and melee is not None \
+                        and ev.source in melee.causes:
+                    self._pose.melee(ps)
 
     def _load_look(self, name: str, path: Path) -> Optional[_Look]:
         """Load one look; None (with one warning) if missing, unloadable or
@@ -742,7 +766,9 @@ class UnitModelRenderer:
             state = self.select_clip(u, moving)
             if st.pose is None or st.pose.look != look.name:
                 st.pose = self._pose.new_state(look.name, state)
-            self._react(st.pose, unit_key(u))
+            role = self._pose.settings.roles[role_of(u)]
+            self._pose.set_posture(st.pose, unit_key(u), role.posture)   # #164
+            self._react(st.pose, unit_key(u), role_of(u))
             self._pose.steer(st.pose, travel, moving, dt)
             self._pose.drive(st.pose, state, dt)
             groups.setdefault(look.name, []).append((i, st.pose))
