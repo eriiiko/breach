@@ -572,7 +572,9 @@ def sample_bank(bank: ClipBank, clips: np.ndarray, times: np.ndarray
     t = _wrap(bank, clips, np.asarray(times, dtype=np.float64))
     n = bank.n_keys[clips]
     f = t / bank.key_dt[clips]
-    k = np.clip(np.floor(f).astype(np.int64), 0, n - 1)
+    # +1e-6 key: a time ON a key (k * dt, which may divide to k - 1e-15)
+    # selects that key, so a STEP channel shows it rather than the previous
+    k = np.clip(np.floor(f + 1e-6).astype(np.int64), 0, n - 1)
     k1 = np.minimum(k + 1, n - 1)
     u = np.clip(f - k, 0.0, 1.0).astype(np.float32)
     g0 = bank.offset[clips] + k
