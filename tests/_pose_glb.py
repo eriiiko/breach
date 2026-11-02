@@ -138,14 +138,25 @@ def critter_settings(**over) -> dict:
         "enabled": True, "rate": 1.0, "crossfade_s": 0.2,
         "layers": ["hind", "front", "top"], "fallback_state": "idle",
         "event_queue": 4,
-        "skeletons": {"critter": {"masks": {
-            "hind": {"subtree": ["pelvis_x"], "minus": ["back_x"]},
-            "front": {"subtree": ["back_x"], "minus": ["skull_x"]},
-            "top": {"subtree": ["skull_x"]},
-        }}},
+        "skeletons": {"critter": {
+            "masks": {
+                "hind": {"subtree": ["pelvis_x"], "minus": ["back_x"]},
+                "front": {"subtree": ["back_x"], "minus": ["skull_x"]},
+                "top": {"subtree": ["skull_x"]},
+            },
+            "twist": {"lower": "pelvis_x", "counter": ["back_x"], "shares": [1.0]},
+        }},
         "states": {"idle": {"hind": "rest", "front": "rest", "top": "rest"},
                    "walk": {"hind": "trot", "front": "trot", "top": "trot"}},
-        "clips": {"trot": {"root_motion": "keep"}},
+        "clips": {"trot": {"root_motion": "keep"}, "look": {"loop": False}},
+        "overlays": {"aim": {"front": "rest", "top": "look"}},
+        "fire": {"overlay": "aim", "aim_hold_s": 0.5, "shot_clip": "look",
+                 "shot_layer": "front"},
+        "hit": {"clip": "look", "masks": ["front", "top"], "causes": ["bullet"],
+                "ramp_in_s": 0.05, "ramp_out_s": 0.1, "weight_min": 0.25,
+                "weight_max": 0.75, "damage_full": 10},
+        "aim_travel": {"theta_deg": 90.0, "hysteresis_deg": 10.0, "smooth_s": 0.1,
+                       "twist_rate_deg_s": 360.0},
     }
     pose.update(over)
     return {"render": {"pose": pose}}

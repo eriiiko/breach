@@ -2092,8 +2092,8 @@ rate = 0.51             # clip seconds per wall second. 0.51 = the speed every
 crossfade_s = 0.15      # a clip change ramps over this long (0 = snap, as before)
 layers = ["legs", "upper", "head"]   # override layers, each a mask below
 fallback_state = "idle" # the state whose clips stand in for a missing one
-event_queue = 16        # sim events kept per unit for the pose layer (stored
-                        # only in #162; the fire / hit slices read them)
+event_queue = 16        # sim events kept per unit between two frames for the
+                        # pose layer (the fire and hit reactions read them)
 
 # Body regions per skeleton: subtree = every bone under these, minus = without
 # every bone under those. Each skeleton's masks must cover every bone exactly
@@ -2104,14 +2104,69 @@ legs  = { subtree = ["root"], minus = ["DEF-spine.001"] }      # root, hips, leg
 upper = { subtree = ["DEF-spine.001"], minus = ["DEF-neck"] }  # spine, arms, hands
 head  = { subtree = ["DEF-neck"] }                             # neck, head
 
+# Aim vs travel (#163; [render.pose.aim_travel] below): `lower`'s subtree
+# (hips + legs) yaws toward the travel direction; the `counter` chain (the
+# spine, root-most first) turns the torso back to the facing, each bone by
+# its share of the angle (shares sum to 1). Bones of THIS skeleton: a
+# different skeleton names its own here.
+[render.pose.skeletons.quaternius_ual.twist]
+lower = "DEF-hips"
+counter = ["DEF-spine.001", "DEF-spine.002", "DEF-spine.003"]
+shares = [0.4, 0.3, 0.3]
+
 # State -> clip per layer. The renderer's state names (select_clip): today
-# idle and walk; fire and dead are dormant, as in CLIP_MAP. One clip on all
-# three layers = the whole body plays it, as before.
+# idle and walk; dead is dormant, as in CLIP_MAP (firing is the fire
+# reaction below, not a state). One clip on all three layers = the whole
+# body plays it, as before.
 [render.pose.states]
 idle = { legs = "Idle_Loop",    upper = "Idle_Loop",    head = "Idle_Loop" }
 walk = { legs = "Walk_Loop",    upper = "Walk_Loop",    head = "Walk_Loop" }
-fire = { legs = "Pistol_Shoot", upper = "Pistol_Shoot", head = "Pistol_Shoot" }
 dead = { legs = "Death01",      upper = "Death01",      head = "Death01" }
+
+# Overlays (#163): partial rows -- a clip for SOME layers, played over the
+# state's row on those layers while a reaction holds them.
+[render.pose.overlays]
+aim = { upper = "Pistol_Idle_Loop", head = "Pistol_Idle_Loop" }  # the pistol aim hold
+
+# Firing (#163): every round that LEAVES a unit's barrel (ShotFiredEvent,
+# launch = true) restarts `shot_clip` on `shot_layer` (a retriggered
+# one-shot recoil) and holds the `overlay` row on its layers until
+# `aim_hold_s` after the last shot, then crossfades back to the state's
+# clips. One clip set for every weapon until the weapon families (W13.4).
+[render.pose.fire]
+overlay = "aim"
+aim_hold_s = 1.0        # PLACEHOLDER (HUMAN-TEST): seconds the aim is held after a shot
+shot_clip = "Pistol_Shoot"
+shot_layer = "upper"
+
+# Hit flinch (#163): a UnitHitEvent of one of `causes` plays `clip` as an
+# ADDITIVE over `masks` (its delta against its own first key, never the bind
+# pose), ramped in and out, restarted by every hit. Weight =
+# weight_min + (weight_max - weight_min) * clamp(damage / damage_full, 0, 1);
+# both weights in [0, 1]. The event has no direction: chest only for now.
+[render.pose.hit]
+clip = "Hit_Chest"
+masks = ["upper", "head"]
+causes = ["bullet", "laser", "melee", "explosion"]   # not the per-tick heat / gas / status damage
+ramp_in_s = 0.03        # PLACEHOLDER (HUMAN-TEST)
+ramp_out_s = 0.12       # PLACEHOLDER (HUMAN-TEST)
+weight_min = 0.5        # PLACEHOLDER (HUMAN-TEST): a graze (a zombie takes 2.5 per round)
+weight_max = 1.0
+damage_full = 60        # PLACEHOLDER: a zombie's bite (60) flinches at weight_max
+
+# Aim vs travel (#163, design §4.5 correction 7): with the body facing its
+# aim, the legs yaw toward the travel direction up to theta_deg either side;
+# past theta_deg + hysteresis_deg they backpedal (the leg clip plays
+# backwards, the yaw reflected) until back under theta_deg - hysteresis_deg.
+# 90 deg = the legs never skate (a backpedal covers everything past a pure
+# strafe). The travel is a noisy position delta: low-passed over smooth_s;
+# the legs turn at most twist_rate_deg_s (a forward/back switch swings
+# them round instead of popping).
+[render.pose.aim_travel]
+theta_deg = 90.0        # PLACEHOLDER (HUMAN-TEST)
+hysteresis_deg = 10.0   # PLACEHOLDER (HUMAN-TEST)
+smooth_s = 0.15         # PLACEHOLDER (HUMAN-TEST)
+twist_rate_deg_s = 540.0  # PLACEHOLDER (HUMAN-TEST): a 180 deg swing in 1/3 s
 
 # Per-clip playback rows; a clip without a row loops at the global rate with
 # its root motion kept. loop, rate (x the global rate), root_motion ("keep" |
@@ -2120,6 +2175,8 @@ dead = { legs = "Death01",      upper = "Death01",      head = "Death01" }
 # against; 0 = its first key, never the bind pose).
 [render.pose.clips]
 Death01 = { loop = false }
+Pistol_Shoot = { loop = false, rate = 1.96 }   # one-shot; 1.96 x 0.51 = its authored speed (PLACEHOLDER)
+Hit_Chest = { loop = false, rate = 1.96 }      # one-shot; authored speed (PLACEHOLDER)
 Roll_RM = { root_motion = "strip" }
 Sword_Attack_RM = { root_motion = "strip" }
 

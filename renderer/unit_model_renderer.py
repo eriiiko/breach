@@ -205,6 +205,8 @@ class UnitModelRenderer:
         # [render.pose] enabled; None = the clip player as before.
         self._pose = None
         self._skinner = None
+        self._delivered: Dict[int, object] = {}   # the last event batch (#163)
+        self._shot_event = self._hit_event = None
 
     @property
     def model(self):
@@ -277,9 +279,20 @@ class UnitModelRenderer:
         to the CPU-inject skinner (tests pass their own)."""
         if not pose_layer_enabled(CFG):
             return
-        from .pose_layer import PoseLayer, pose_settings
+        from .pose_layer import PoseConfigError, PoseLayer, pose_settings
         from .pose_skinner import CpuInjectSkinner
-        pose = PoseLayer(pose_settings(CFG))
+        # #163: the events the reactions read (render-side import, as in
+        # GameRenderer.consume_events) and the hit causes checked against
+        # the sim's closed cause vocabulary
+        from simulation.events import CAUSE_NAMES, ShotFiredEvent, UnitHitEvent
+        settings = pose_settings(CFG)
+        if settings.hit is not None:
+            unknown = sorted(set(settings.hit.causes) - set(CAUSE_NAMES))
+            if unknown:
+                raise PoseConfigError(f"[render.pose.hit] causes {unknown} are not "
+                                      f"damage causes {CAUSE_NAMES}")
+        self._shot_event, self._hit_event = ShotFiredEvent, UnitHitEvent
+        pose = PoseLayer(settings)
         skinner = skinner if skinner is not None else CpuInjectSkinner(rl)
         for look in self._looks.values():
             rig = pose.add_look(look.name, look.path)
@@ -295,15 +308,38 @@ class UnitModelRenderer:
 
     def queue_events(self, events: Sequence) -> None:
         """#162: hand the frame's sim events to the pose layer, one queue per
-        unit (``event.unit_id``). Stored only -- nothing reads them yet (the
-        fire / hit slices will). A no-op with the pose layer off."""
+        unit (``event.unit_id``); the next draw acts on them (#163: a
+        launched shot -> the fire reaction, a hit -> the flinch). A no-op
+        with the pose layer off.
+
+        The game hands over ``sim.tick_events`` EVERY frame, and that list
+        is only cleared by the next sim step -- at 60 fps and 24 ticks/s
+        most frames see the previous frame's list again. An event object
+        delivered by the previous call is therefore not queued twice (it is
+        the same object; the previous batch is held, so its ids cannot be
+        reused by new events)."""
         if self._pose is None:
             return
         now = self._last_clock if self._last_clock is not None else 0.0
+        seen = self._delivered
+        self._delivered = {id(ev): ev for ev in events}
         for ev in events:
+            if seen.get(id(ev)) is ev:
+                continue
             uid = getattr(ev, "unit_id", None)
             if uid is not None:
                 self._pose.queue_event(int(uid), ev, now)
+
+    def _react(self, ps, uid: int) -> None:
+        """#163: act on the unit's queued events (oldest first): a round that
+        left its barrel fires, a hit flinches (the layer filters the
+        cause). Other events are dropped."""
+        for ev in self._pose.take_events(uid):
+            if isinstance(ev, self._shot_event):
+                if ev.launch:
+                    self._pose.fire(ps)
+            elif isinstance(ev, self._hit_event):
+                self._pose.hit(ps, ev.damage, ev.source)
 
     def _load_look(self, name: str, path: Path) -> Optional[_Look]:
         """Load one look; None (with one warning) if missing, unloadable or
@@ -689,20 +725,25 @@ class UnitModelRenderer:
                       clock: float) -> list:
         """#162: per unit (read-only): infer motion, pick the state, drive its
         PoseState; then ONE batched compose per look. Returns each unit's
-        global-TRS row, in ``alive`` order."""
+        global-TRS row, in ``alive`` order. #163: before driving, the unit's
+        queued events become reactions (fire, flinch) and its travel this
+        frame, relative to its facing, steers the aim-vs-travel twist."""
         groups: Dict[str, list] = {}
         for i, (u, name) in enumerate(zip(alive, names)):
             look = self._resolve[name]
             st = self._state_for(u)
+            travel = self._relative_travel(u, st)
             moving = self._infer_motion(u, st, clock)
             state = self.select_clip(u, moving)
             if st.pose is None or st.pose.look != look.name:
                 st.pose = self._pose.new_state(look.name, state)
+            self._react(st.pose, unit_key(u))
+            self._pose.steer(st.pose, travel, moving, dt)
             self._pose.drive(st.pose, state, dt)
             groups.setdefault(look.name, []).append((i, st.pose))
         rows = [None] * len(alive)
         for look_name, members in groups.items():
-            batch = self._pose.compose(look_name, [ps for _, ps in members])
+            batch = self._pose.compose(look_name, [ps for _, ps in members])   # + the layer's modifiers
             for j, (i, _) in enumerate(members):
                 rows[i] = batch.global_trs[j]
         return rows
@@ -715,6 +756,23 @@ class UnitModelRenderer:
             st = _UnitAnimState(last_x=float(u.x), last_y=float(u.y))
             self._anim[uid] = st
         return st
+
+    @staticmethod
+    def _relative_travel(u, st: _UnitAnimState) -> Optional[float]:
+        """#163: the direction the unit moved since the last draw RELATIVE to
+        its facing, as the model-space yaw the lower body would turn by
+        (radians, in (-pi, pi]); None below the motion threshold. Read
+        before ``_infer_motion`` moves the remembered position on. Facing
+        and travel share the sim's convention (0 = +x, counter-clockwise,
+        world y down), so the travel angle is ``atan2(-dy, dx)``."""
+        dx = float(u.x) - st.last_x
+        dy = float(u.y) - st.last_y
+        if abs(dx) + abs(dy) <= _MOVE_EPS_TILES:
+            return None
+        facing = float(getattr(u, "facing", math.pi / 2.0))
+        rel = math.atan2(-dy, dx) - facing
+        rel = (rel + math.pi) % (2.0 * math.pi) - math.pi
+        return _YAW_SIGN * rel
 
     @staticmethod
     def _infer_motion(u, st: _UnitAnimState, clock: float) -> bool:

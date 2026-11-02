@@ -62,6 +62,57 @@ class MaskRule:
 
 
 @dataclass(frozen=True)
+class TwistRule:
+    """The aim-vs-travel twist's bones on one skeleton (#163): ``lower``'s
+    subtree yaws toward travel; ``counter`` (a chain inside it, root-most
+    first) turns the torso back, each bone by its ``share`` of the twist
+    (the shares sum to 1, so the last bone's subtree keeps the facing)."""
+    lower: str
+    counter: Tuple[str, ...]
+    shares: Tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class FireSettings:
+    """``[render.pose.fire]`` (#163): a launch event plays ``shot_clip`` from
+    its start on ``shot_layer`` (retriggered by every launch) and holds the
+    ``overlay`` row on its layers until ``aim_hold_s`` after the last one."""
+    overlay: str
+    aim_hold_s: float
+    shot_clip: str
+    shot_layer: str
+
+
+@dataclass(frozen=True)
+class HitSettings:
+    """``[render.pose.hit]`` (#163): a hit of one of ``causes`` plays ``clip``
+    as an ADDITIVE over ``masks``, ramped in / out, its weight
+    ``weight_min + (weight_max - weight_min) * clamp(damage / damage_full)``."""
+    clip: str
+    masks: Tuple[str, ...]
+    causes: Tuple[str, ...]
+    ramp_in_s: float
+    ramp_out_s: float
+    weight_min: float
+    weight_max: float
+    damage_full: float
+
+
+@dataclass(frozen=True)
+class AimTravelSettings:
+    """``[render.pose.aim_travel]`` (#163, design §4.5 correction 7), angles
+    in radians: the legs yaw toward travel within ``+-theta``; past
+    ``theta + hysteresis`` they backpedal (clip rate negative, yaw
+    reflected) until back under ``theta - hysteresis``. The travel angle is
+    low-passed with time constant ``smooth_s``; the yaw moves at most
+    ``twist_rate`` per second."""
+    theta: float
+    hysteresis: float
+    smooth_s: float
+    twist_rate: float
+
+
+@dataclass(frozen=True)
 class PoseSettings:
     enabled: bool
     rate: float                                   # global playback rate
@@ -72,6 +123,11 @@ class PoseSettings:
     skeletons: Tuple[Tuple[str, Dict[str, MaskRule]], ...]
     states: Dict[str, Dict[str, str]]             # state -> layer -> clip name
     clips: Dict[str, ClipRow]                     # clip name -> playback row
+    overlays: Dict[str, Dict[str, str]] = field(default_factory=dict)  # name -> layer -> clip
+    fire: Optional[FireSettings] = None
+    hit: Optional[HitSettings] = None
+    aim_travel: Optional[AimTravelSettings] = None
+    twists: Dict[str, TwistRule] = field(default_factory=dict)  # skeleton table -> twist
 
 
 def _as_dict(obj) -> Dict[str, Any]:
@@ -99,8 +155,57 @@ def _names(value, where: str) -> Tuple[str, ...]:
 
 
 _TOP_KEYS = ("enabled", "rate", "crossfade_s", "layers", "fallback_state",
-             "event_queue", "skeletons", "states", "clips")
+             "event_queue", "skeletons", "states", "clips", "overlays", "fire",
+             "hit", "aim_travel")
 _CLIP_KEYS = ("loop", "rate", "root_motion", "additive_ref")
+_FIRE_KEYS = ("overlay", "aim_hold_s", "shot_clip", "shot_layer")
+_HIT_KEYS = ("clip", "masks", "causes", "ramp_in_s", "ramp_out_s", "weight_min",
+             "weight_max", "damage_full")
+_AIM_TRAVEL_KEYS = ("theta_deg", "hysteresis_deg", "smooth_s", "twist_rate_deg_s")
+_TWIST_KEYS = ("lower", "counter", "shares")
+
+
+def _exact_table(d, keys: Sequence[str], where: str) -> Dict[str, Any]:
+    """``d`` as a table holding exactly ``keys`` (missing / unknown named)."""
+    if not isinstance(d, dict):
+        raise PoseConfigError(f"{where} must be a table")
+    for key in keys:
+        if key not in d:
+            raise PoseConfigError(f"{where} is missing {key!r}")
+    unknown = sorted(set(d) - set(keys))
+    if unknown:
+        raise PoseConfigError(f"{where} has unknown keys {unknown}")
+    return d
+
+
+def _number(v, where: str, lo: float, lo_open: bool = False,
+            hi: Optional[float] = None) -> float:
+    ok = _num(v) and (v > lo if lo_open else v >= lo) and (hi is None or v <= hi)
+    if not ok:
+        rng = f"{'>' if lo_open else '>='} {lo}" + (f" and <= {hi}" if hi is not None else "")
+        raise PoseConfigError(f"{where} must be a number {rng}, got {v!r}")
+    return float(v)
+
+
+def _name(v, where: str) -> str:
+    if not isinstance(v, str) or not v:
+        raise PoseConfigError(f"{where} must be a non-empty string, got {v!r}")
+    return v
+
+
+def _parse_twist(raw, where: str) -> TwistRule:
+    t = _exact_table(raw, _TWIST_KEYS, where)
+    lower = _name(t["lower"], f"{where}.lower")
+    counter = _names(t["counter"], f"{where}.counter")
+    shares = t["shares"]
+    if not isinstance(shares, list) or len(shares) != len(counter) or \
+            not all(_num(s) and s > 0 for s in shares):
+        raise PoseConfigError(f"{where}.shares must be one number > 0 per counter "
+                              f"bone, got {shares!r}")
+    if abs(sum(shares) - 1.0) > 1e-6:
+        raise PoseConfigError(f"{where}.shares must sum to 1 (the torso ends on the "
+                              f"facing), got {sum(shares)!r}")
+    return TwistRule(lower=lower, counter=counter, shares=tuple(float(s) for s in shares))
 
 
 def pose_settings(cfg) -> PoseSettings:
@@ -143,10 +248,13 @@ def pose_settings(cfg) -> PoseSettings:
     if not isinstance(skel_tables, dict) or not skel_tables:
         raise PoseConfigError("[render.pose.skeletons] must hold at least one skeleton table")
     skeletons = []
+    twists: Dict[str, TwistRule] = {}
     for sk_name, sk in skel_tables.items():
         where = f"[render.pose.skeletons.{sk_name}]"
-        if not isinstance(sk, dict) or set(sk) != {"masks"}:
-            raise PoseConfigError(f"{where} must hold exactly a 'masks' table")
+        if not isinstance(sk, dict) or set(sk) != {"masks", "twist"}:
+            raise PoseConfigError(f"{where} must hold exactly a 'masks' and a "
+                                  "'twist' table")
+        twists[sk_name] = _parse_twist(sk["twist"], f"{where} twist")
         masks = {}
         for m_name, rule in sk["masks"].items():
             mw = f"{where} masks.{m_name}"
@@ -202,10 +310,75 @@ def pose_settings(cfg) -> PoseSettings:
             raise PoseConfigError(f"{where} additive_ref must be an int >= 0, got {ref!r}")
         clips[c_name] = ClipRow(loop=loop, rate=float(rate), root_motion=rm,
                                 additive_ref=ref)
+
+    # overlays: partial state rows (a subset of the layers), #163
+    ov_raw = d["overlays"]
+    if not isinstance(ov_raw, dict):
+        raise PoseConfigError("[render.pose.overlays] must be a table of rows")
+    overlays: Dict[str, Dict[str, str]] = {}
+    for ov_name, row in ov_raw.items():
+        where = f"[render.pose.overlays] {ov_name}"
+        if not isinstance(row, dict) or not row or set(row) - set(layers) or \
+                not all(isinstance(v, str) and v for v in row.values()):
+            raise PoseConfigError(f"{where} must name a clip for one or more of the "
+                                  f"layers {list(layers)}, got {row!r}")
+        overlays[ov_name] = dict(row)
+
+    f = _exact_table(d["fire"], _FIRE_KEYS, "[render.pose.fire]")
+    fire = FireSettings(
+        overlay=_name(f["overlay"], "[render.pose.fire] overlay"),
+        aim_hold_s=_number(f["aim_hold_s"], "[render.pose.fire] aim_hold_s", 0.0,
+                           lo_open=True),
+        shot_clip=_name(f["shot_clip"], "[render.pose.fire] shot_clip"),
+        shot_layer=_name(f["shot_layer"], "[render.pose.fire] shot_layer"))
+    if fire.overlay not in overlays:
+        raise PoseConfigError(f"[render.pose.fire] overlay {fire.overlay!r} is not "
+                              "a [render.pose.overlays] row")
+    if fire.shot_layer not in layers:
+        raise PoseConfigError(f"[render.pose.fire] shot_layer {fire.shot_layer!r} "
+                              f"is not one of the layers {list(layers)}")
+
+    h = _exact_table(d["hit"], _HIT_KEYS, "[render.pose.hit]")
+    hw = "[render.pose.hit]"
+    hit_masks = _names(h["masks"], f"{hw} masks")
+    for sk_name, masks in skeletons:
+        missing = [m for m in hit_masks if m not in masks]
+        if missing:
+            raise PoseConfigError(f"{hw} masks {missing} are not masks of "
+                                  f"[render.pose.skeletons.{sk_name}]")
+    causes = h["causes"]
+    if not isinstance(causes, list) or not all(isinstance(c, str) and c for c in causes):
+        raise PoseConfigError(f"{hw} causes must be a list of cause names, got {causes!r}")
+    w_min = _number(h["weight_min"], f"{hw} weight_min", 0.0, hi=1.0)
+    w_max = _number(h["weight_max"], f"{hw} weight_max", 0.0, hi=1.0)
+    if w_max < w_min:
+        raise PoseConfigError(f"{hw} weight_max ({w_max}) is below weight_min ({w_min})")
+    hit = HitSettings(
+        clip=_name(h["clip"], f"{hw} clip"), masks=hit_masks, causes=tuple(causes),
+        ramp_in_s=_number(h["ramp_in_s"], f"{hw} ramp_in_s", 0.0),
+        ramp_out_s=_number(h["ramp_out_s"], f"{hw} ramp_out_s", 0.0),
+        weight_min=w_min, weight_max=w_max,
+        damage_full=_number(h["damage_full"], f"{hw} damage_full", 0.0, lo_open=True))
+
+    a = _exact_table(d["aim_travel"], _AIM_TRAVEL_KEYS, "[render.pose.aim_travel]")
+    aw = "[render.pose.aim_travel]"
+    theta = _number(a["theta_deg"], f"{aw} theta_deg", 0.0, lo_open=True, hi=180.0)
+    hyst = _number(a["hysteresis_deg"], f"{aw} hysteresis_deg", 0.0)
+    if hyst >= theta or theta + hyst > 180.0:
+        raise PoseConfigError(f"{aw} hysteresis_deg must be below theta_deg and "
+                              f"theta_deg + hysteresis_deg <= 180, got {hyst!r}")
+    aim_travel = AimTravelSettings(
+        theta=np.radians(theta), hysteresis=np.radians(hyst),
+        smooth_s=_number(a["smooth_s"], f"{aw} smooth_s", 0.0),
+        twist_rate=np.radians(_number(a["twist_rate_deg_s"], f"{aw} twist_rate_deg_s",
+                                      0.0, lo_open=True)))
+
     return PoseSettings(enabled=d["enabled"], rate=float(d["rate"]),
                         crossfade_s=float(d["crossfade_s"]), layers=layers,
                         fallback_state=fallback, event_queue=d["event_queue"],
-                        skeletons=tuple(skeletons), states=states, clips=clips)
+                        skeletons=tuple(skeletons), states=states, clips=clips,
+                        overlays=overlays, fire=fire, hit=hit, aim_travel=aim_travel,
+                        twists=twists)
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +453,20 @@ class PoseState:
     """One unit's pose-layer state (renderer-side, keyed by unit id, NEVER on
     ``Unit``). Per override layer: current clip + time, the clip it is
     fading from + its time, and the fade weight (1 = settled). Times are clip
-    seconds. One optional additive (clip, time, weight, mask)."""
+    seconds. One optional additive (clip, time, weight, per-bone weights).
+
+    #163 adds the reactions and the aim-vs-travel twist: ``layer_rate``
+    (per layer, -1 = the clip plays backwards: a backpedal), ``twist`` (the
+    lower body's yaw about the model's vertical, radians, read by the twist
+    modifier), the low-passed travel direction relative to the facing
+    (``travel``, a unit vector) and the backpedal flag; the aim hold left
+    (``aim_left``, wall seconds), a pending shot retrigger, and the flinch
+    envelope (``flinch_t`` wall seconds since the hit, < 0 = none)."""
 
     __slots__ = ("look", "clip", "time", "prev_clip", "prev_time", "fade",
-                 "add_clip", "add_time", "add_weight", "add_mask", "state")
+                 "add_clip", "add_time", "add_weight", "add_bones", "state",
+                 "layer_rate", "twist", "travel", "back", "aim_left",
+                 "shot_pending", "flinch_t", "flinch_peak")
 
     def __init__(self, look: str, clips: np.ndarray) -> None:
         n = len(clips)
@@ -296,8 +479,16 @@ class PoseState:
         self.add_clip = NO_CLIP
         self.add_time = 0.0
         self.add_weight = 0.0
-        self.add_mask = NO_CLIP          # NO_CLIP = every bone
+        self.add_bones: Optional[np.ndarray] = None    # (J,) weights; None = every bone
         self.state: Optional[str] = None
+        self.layer_rate = np.ones(n)
+        self.twist = 0.0
+        self.travel = np.array([1.0, 0.0])
+        self.back = False
+        self.aim_left = 0.0
+        self.shot_pending = False
+        self.flinch_t = -1.0
+        self.flinch_peak = 0.0
 
 
 @dataclass
@@ -311,8 +502,12 @@ class PoseBatch:
 
 class PoseModifier(Protocol):
     """A procedural post-FK stage (look-at, aim-vs-travel twist, ...; §4.5
-    corrections 5 and 7). Edits the batch's global matrices IN PLACE and is
-    responsible for re-propagating any subtree it moves. None is built yet."""
+    corrections 5 and 7). ``prepare`` resolves its bones on a look once, at
+    load; ``apply`` edits the batch's global matrices IN PLACE and is
+    responsible for re-propagating any subtree it moves. Built: the
+    aim-vs-travel twist (``pose_modifiers.AimTravelTwist``, #163)."""
+
+    def prepare(self, rig: "LookRig") -> None: ...
 
     def apply(self, rig: "LookRig", states: Sequence[PoseState],
               globals_: np.ndarray) -> None: ...
@@ -321,7 +516,9 @@ class PoseModifier(Protocol):
 @dataclass
 class LookRig:
     """One look's pose data: its clip bank, masks and the state table
-    resolved to its own clip ids (``(L,)`` per state)."""
+    resolved to its own clip ids (``(L,)`` per state; an overlay row holds
+    ``NO_CLIP`` on the layers it leaves alone), and the #163 reactions'
+    clip ids and bone weights."""
     name: str
     bank: ClipBank
     masks: MaskTable
@@ -329,6 +526,11 @@ class LookRig:
     layer_masks: np.ndarray                       # (L,) mask index per layer
     owner_layer: np.ndarray                       # (J,) the layer driving each bone
     state_clips: Dict[str, np.ndarray] = field(default_factory=dict)
+    overlay_clips: Dict[str, np.ndarray] = field(default_factory=dict)
+    shot_clip: int = NO_CLIP
+    hit_clip: int = NO_CLIP
+    hit_bones: Optional[np.ndarray] = None        # (J,) the flinch's bone weights
+    twist_layer: int = 0                          # the layer the twist's lower bone is on
 
 
 # ---------------------------------------------------------------------------
@@ -341,11 +543,15 @@ class PoseLayer:
     (stored only in #162; read by later slices)."""
 
     def __init__(self, settings: PoseSettings) -> None:
+        from .pose_modifiers import AimTravelTwist
         self.settings = settings
         self._rigs: Dict[str, LookRig] = {}
         self._events: Dict[int, Deque] = {}
         self._event_time: Dict[int, float] = {}
         self.warnings: List[str] = []
+        # the post-FK modifiers, in compose order (#163: the twist)
+        self.modifiers: Tuple[PoseModifier, ...] = (
+            (AimTravelTwist(settings.twists),) if settings.twists else ())
 
     # --- looks ---------------------------------------------------------
     def add_look(self, name: str, glb_path=None, bank: Optional[ClipBank] = None) -> LookRig:
@@ -382,8 +588,31 @@ class PoseLayer:
                     clip = fb[layer]
                 ids.append(bank.index(clip))
             rig.state_clips[st_name] = np.array(ids, dtype=np.int64)
+        # #163 reactions: their clips are not optional (a look that lacks
+        # one cannot play what the config asks of it), so a missing one raises
+        for ov_name, row in s.overlays.items():
+            ids = np.full(len(s.layers), NO_CLIP, dtype=np.int64)
+            for layer, clip in row.items():
+                ids[s.layers.index(layer)] = self._clip_or_raise(
+                    bank, clip, name, f"overlay {ov_name!r}")
+            rig.overlay_clips[ov_name] = ids
+        if s.fire is not None:
+            rig.shot_clip = self._clip_or_raise(bank, s.fire.shot_clip, name,
+                                                "[render.pose.fire] shot_clip")
+        if s.hit is not None:
+            rig.hit_clip = self._clip_or_raise(bank, s.hit.clip, name,
+                                               "[render.pose.hit] clip")
+            rig.hit_bones = masks.weights[[masks.index(m) for m in s.hit.masks]].sum(0)
+        for mod in self.modifiers:
+            mod.prepare(rig)
         self._rigs[name] = rig
         return rig
+
+    @staticmethod
+    def _clip_or_raise(bank: ClipBank, clip: str, look: str, what: str) -> int:
+        if not bank.has(clip):
+            raise PoseConfigError(f"{look}: {what} clip {clip!r} is not in the look")
+        return bank.index(clip)
 
     def rig(self, name: str) -> LookRig:
         return self._rigs[name]
@@ -422,9 +651,21 @@ class PoseLayer:
         ps.clip[layer] = clip
         ps.time[layer] = 0.0
 
+    def restart_layer_clip(self, ps: PoseState, layer: int, clip: int) -> None:
+        """Play ``clip`` on ``layer`` FROM ITS START even when it is already
+        playing (a retriggered one-shot, #163): crossfades from the pose the
+        layer shows now to the clip's first key."""
+        if self.settings.crossfade_s > 0.0:
+            ps.prev_clip[layer] = ps.clip[layer]
+            ps.prev_time[layer] = ps.time[layer]
+            ps.fade[layer] = 0.0
+        ps.clip[layer] = clip
+        ps.time[layer] = 0.0
+
     def set_additive(self, ps: PoseState, clip: Optional[str], weight: float = 1.0,
-                     mask: Optional[str] = None, time: float = 0.0) -> None:
-        """Set (or, with ``clip=None``, clear) the unit's additive layer."""
+                     mask=None, time: float = 0.0) -> None:
+        """Set (or, with ``clip=None``, clear) the unit's additive layer.
+        ``mask``: a mask name, a list of them, or None for every bone."""
         if clip is None:
             ps.add_clip = NO_CLIP
             return
@@ -432,26 +673,111 @@ class PoseLayer:
         ps.add_clip = rig.bank.index(clip)
         ps.add_time = float(time)
         ps.add_weight = float(weight)
-        ps.add_mask = NO_CLIP if mask is None else rig.masks.index(mask)
+        if mask is None:
+            ps.add_bones = None
+        else:
+            names = [mask] if isinstance(mask, str) else list(mask)
+            ps.add_bones = rig.masks.weights[[rig.masks.index(m) for m in names]].sum(0)
+
+    # --- reactions (#163) ----------------------------------------------
+    def fire(self, ps: PoseState) -> None:
+        """A round left this unit's barrel: retrigger the shot one-shot and
+        (re)start the aim hold. Takes effect in the next :meth:`drive`."""
+        f = self.settings.fire
+        if f is None:
+            return
+        ps.aim_left = f.aim_hold_s
+        ps.shot_pending = True
+
+    def hit(self, ps: PoseState, damage: float, cause: Optional[str] = None) -> None:
+        """This unit was hit: (re)start the flinch additive at a weight that
+        rises with ``damage``, clamped to ``[weight_min, weight_max]``. A
+        cause outside ``[render.pose.hit] causes`` does nothing (a burn's
+        per-tick damage must not make the unit twitch). A retrigger restarts
+        the clip: a second jolt (the clip's first key is its own additive
+        reference, so the restart lands on the un-flinched pose)."""
+        h = self.settings.hit
+        if h is None or (cause is not None and cause not in h.causes):
+            return
+        x = min(1.0, max(0.0, float(damage) / h.damage_full))
+        ps.flinch_peak = h.weight_min + (h.weight_max - h.weight_min) * x
+        ps.flinch_t = 0.0
+
+    def steer(self, ps: PoseState, travel: Optional[float], moving: bool,
+              dt: float) -> None:
+        """The aim-vs-travel input (#163): ``travel`` is the direction the
+        unit moved this frame RELATIVE to its facing, as a yaw about the
+        model's vertical (radians), or None when it did not move measurably.
+        Low-pass, backpedal switch and the twist's slew: see
+        :func:`pose_modifiers.steer`."""
+        if self.settings.aim_travel is None or not self.modifiers:
+            return
+        from .pose_modifiers import steer
+        steer(ps, self.settings.aim_travel, self._rigs[ps.look].twist_layer,
+              travel, moving, dt)
 
     def drive(self, ps: PoseState, state: str, dt: float) -> None:
-        """Per frame: play ``state``'s clips (from the table) on every layer,
-        then advance the clocks by ``dt`` wall seconds."""
-        if state != ps.state:
-            ids = self._state_ids(self._rigs[ps.look], state)
-            for layer in range(len(ids)):
-                self.set_layer_clip(ps, layer, int(ids[layer]))
-            ps.state = state
+        """Per frame: pick each layer's clip -- ``state``'s row of the table,
+        under the fire overlay while the aim hold lasts, under the shot
+        one-shot while it plays -- (crossfading every change), advance the
+        clocks by ``dt`` wall seconds, then the aim hold and the flinch."""
+        rig = self._rigs[ps.look]
+        s = self.settings
+        want = self._state_ids(rig, state).copy()
+        f = s.fire
+        if f is not None:
+            if ps.aim_left > 0.0:
+                ov = rig.overlay_clips[f.overlay]
+                want = np.where(ov >= 0, ov, want)
+            sl = s.layers.index(f.shot_layer)
+            if ps.shot_pending:
+                self.restart_layer_clip(ps, sl, rig.shot_clip)
+                ps.shot_pending = False
+            if ps.clip[sl] == rig.shot_clip and ps.aim_left > 0.0 and \
+                    ps.time[sl] < rig.bank.duration[rig.shot_clip]:
+                want[sl] = rig.shot_clip                 # the shot plays out
+        for layer in range(len(want)):
+            self.set_layer_clip(ps, layer, int(want[layer]))
+        ps.state = state
         self.advance(ps, dt)
+        ps.aim_left = max(0.0, ps.aim_left - max(dt, 0.0))
+        self._flinch(ps, rig, dt)
+
+    def _flinch(self, ps: PoseState, rig: LookRig, dt: float) -> None:
+        """The flinch envelope, ``flinch_t`` wall seconds after the hit: a
+        ramp from 0 up to ``flinch_peak`` over ``ramp_in_s``,
+        times a ramp down to 0 over the clip's last ``ramp_out_s`` -- 0 at
+        its end, where the additive is dropped (the pose is exactly the
+        un-flinched one again)."""
+        h = self.settings.hit
+        if h is None or ps.flinch_t < 0.0:
+            return
+        ps.flinch_t += max(dt, 0.0)
+        c = rig.hit_clip
+        speed = self.settings.rate * rig.bank.rate[c]
+        wall_dur = rig.bank.duration[c] / speed
+        tau = ps.flinch_t
+        if tau >= wall_dur:
+            ps.flinch_t = -1.0
+            ps.add_clip = NO_CLIP
+            ps.add_weight = 0.0
+            return
+        up = 1.0 if h.ramp_in_s <= 0.0 else min(1.0, tau / h.ramp_in_s)
+        down = 1.0 if h.ramp_out_s <= 0.0 else min(1.0, (wall_dur - tau) / h.ramp_out_s)
+        ps.add_clip = c
+        ps.add_bones = rig.hit_bones
+        ps.add_time = tau * speed
+        ps.add_weight = ps.flinch_peak * up * down
 
     def advance(self, ps: PoseState, dt: float) -> None:
-        """Advance every clock by ``dt`` x the global rate x the clip's rate;
-        loops wrap, one-shots hold their last key; ramps move by
-        ``dt / crossfade_s`` and a settled fade drops its source."""
+        """Advance every clock by ``dt`` x the global rate x the clip's rate
+        x the layer's rate (negative = backwards, #163); loops wrap,
+        one-shots hold their end key; ramps move by ``dt / crossfade_s`` and
+        a settled fade drops its source."""
         if dt <= 0.0:
             return
         bank = self._rigs[ps.look].bank
-        step = dt * self.settings.rate
+        step = dt * self.settings.rate * ps.layer_rate
         ps.time = _wrap(bank, ps.clip, ps.time + step * bank.rate[ps.clip])
         fading = ps.prev_clip >= 0
         if fading.any():
@@ -464,14 +790,18 @@ class PoseLayer:
             ps.prev_clip = np.where(done, NO_CLIP, ps.prev_clip)
         if ps.add_clip >= 0:
             ac = np.array([ps.add_clip])
-            ps.add_time = float(_wrap(bank, ac, np.array([ps.add_time + step * bank.rate[ac[0]]]))[0])
+            a_step = dt * self.settings.rate * bank.rate[ac[0]]
+            ps.add_time = float(_wrap(bank, ac, np.array([ps.add_time + a_step]))[0])
 
     # --- compose ---------------------------------------------------------
     def compose(self, look: str, states: Sequence[PoseState],
-                modifiers: Sequence[PoseModifier] = ()) -> PoseBatch:
+                modifiers: Optional[Sequence[PoseModifier]] = None) -> PoseBatch:
         """Compose every state of ONE look in one batch. Compose order is
         fixed: override layers (with their crossfades), selected per bone by
-        the mask partition -> additive -> FK -> modifiers -> skin."""
+        the mask partition -> additive -> FK -> modifiers -> skin.
+        ``modifiers`` None = the layer's own (:attr:`modifiers`)."""
+        if modifiers is None:
+            modifiers = self.modifiers
         rig = self._rigs[look]
         bank = rig.bank
         sk = bank.skeleton
@@ -515,8 +845,9 @@ class PoseLayer:
             at, ar, _ = sample_bank(bank, ac, np.array([states[i].add_time for i in an]))
             ref = bank.offset[ac] + bank.additive_ref[ac]
             rt, rr = bank.t[ref], bank.r[ref]
-            amask = np.array([states[i].add_mask for i in an])
-            mw = np.where(amask[:, None] >= 0, rig.masks.weights[np.maximum(amask, 0)], 1.0)
+            ones = np.ones(J, dtype=np.float32)
+            mw = np.stack([ones if states[i].add_bones is None else states[i].add_bones
+                           for i in an])
             w = (np.array([states[i].add_weight for i in an])[:, None] * mw).astype(np.float32)
             delta = quat_mul(quat_conj(rr), ar)
             ident = np.zeros_like(delta)
@@ -542,6 +873,16 @@ class PoseLayer:
 
     def events(self, uid: int) -> Tuple:
         return tuple(self._events.get(uid, ()))
+
+    def take_events(self, uid: int) -> Tuple:
+        """The unit's queued events, oldest first, and empty its queue (each
+        event is acted on once, #163)."""
+        q = self._events.get(uid)
+        if not q:
+            return ()
+        out = tuple(q)
+        q.clear()
+        return out
 
     def prune_events(self, live: Mapping, now: float, stale_s: float) -> None:
         """Drop the queue of a unit the renderer no longer keeps state for,

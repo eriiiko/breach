@@ -549,7 +549,7 @@ def test_the_pure_pose_modules_name_no_bone():
     for look in SHIPPED:
         doc, _ = read_glb(look_path(look))
         names |= {doc["nodes"][j]["name"] for j in doc["skins"][0]["joints"]}
-    for mod in ("pose_clips.py", "pose_layer.py"):
+    for mod in ("pose_clips.py", "pose_layer.py", "pose_modifiers.py"):
         src = (ROOT / "renderer" / mod).read_text(encoding="utf-8")
         literals = set(re.findall(r"""["']([^"'\n]+)["']""", src))
         assert not (literals & names), (mod, sorted(literals & names))
