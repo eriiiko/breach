@@ -482,5 +482,36 @@ their nearest weighted neighbour's; a holster near the A-pose hand gets hand wei
 stretches — weights need a body-part rule for such props.
 
 **Answers to the spike questions so far:** 6 (cost) — above; 7 (retarget onto 53 bones)
-— moot, D1 is SOMA; 8 (licence) — §8, generated clips may ship. 1–5 wait for the beast
-prompts.
+— moot, D1 is SOMA; 8 (licence) — §8, generated clips may ship.
+
+### 12.1 The beast prompts (2026-11-03, 3 samples each, Kimodo-SOMA-RP-v1.2)
+
+Prompts as in the spike workflow §4. Numbers from `clip_metrics.py` (local-models
+`motion/`): spine lean = hips→chest angle from vertical, averaged over the first and the
+last third of the clip (does a posture hold?). Clips and GIFs on the work desktop in
+`C:\Users\steen\motion\clips\beast_v1\`; the best ones also played on the male worker
+(SOMA-bound, as the zombie would be).
+
+| id | travel (m) | lean first / last (°) | hips min–max (m) | verdict |
+|---|---|---|---|---|
+| C0 walk (control) | 4.3–6.7 | 4–7 / 3–11 | 0.90–1.00 | works |
+| B1 hunched claw walk, text only | 3.8–6.4 | 24–25 / 23 (2 of 3); 4 / 6 (1 of 3) | 0.69–0.96 | **partly**: 2 of 3 hunch and hold it, hands ~0.3 m forward; 1 of 3 walks upright |
+| B2 = B1 + full-body keyframe ×3 | 5.0 (the path) | 30–35 / 30–36 (3 of 3) | 0.70–0.86 | **yes**: every sample holds the hunch for the whole 5 s |
+| B3 sprint like an animal | 3.9–7.8 | 43–48 / 43–49 | 0.42–0.56 | **yes, as a crawl**: fast on hands and knees (head ~0.6 m), not a four-legged gallop |
+| B4 coil, lunge, swipe | 0.04–1.15 | 3–9 / 5–19 | 0.70–1.18 | **partly**: one sample lunges with a swipe; two barely move |
+| B5 sway, twitch | ~0 | 3–14 | 0.96–1.00 | **weak**: standing with small head motion; the twitch is barely there |
+| B6 knocked down | 1.2–1.4 | 10–20 / 88–101 | 0.11–0.95 | **yes**: falls and lies flat in all 3 |
+| B7 get up | 0.2–0.5 | 58–69 / 7–14 | 0.06–1.01 | **yes**: from lying to standing in all 3 |
+| B8 heavy bag on one shoulder | 4.0–6.1 | 5–12 | 0.94–1.01 | **yes, plausibly**: one hand held at the shoulder while walking (no bag object exists, the hand pose carries it) |
+
+**The spike's questions:**
+1. Text alone gives the hunched, arms-forward posture — **partly** (2 of 3).
+2. A full-body keyframe holds it through a walk — **yes** (3 of 3, 30–36° the whole clip).
+   This is the reliable route for the zombie gait: author the pose once, keyframe it.
+3. Animal-like locomotion — **partly**: a fast crawl on hands and knees exists; a true
+   four-legged run did not appear.
+4. Attack / idle / fall / rise — fall and rise **usable**; the lunge **sometimes**; the
+   twitchy idle **weak** (a candidate for the posture layer's `twitch` additive, §5.2,
+   rather than a clip).
+5. Heavy carried object — **usable as a gait** (hand at the shoulder); the bag itself is a
+   prop on a bone.
