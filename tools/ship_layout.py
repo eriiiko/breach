@@ -240,10 +240,15 @@ FREIGHTER = Skeleton(
     name="freighter",
     hub_department="engineering",
     edges={
-        "slab-passageway": "door",
-        "passageway-lobby": "door",
-        "lobby-section": "door",       # to the aft-most MAIN section
-        "section-section": "door",     # consecutive main sections
+        # #134 (the lead's content call 2026-11-06, Erik may veto): the
+        # SPINE BREATHES -- its four edges are `vented_door` (a door with a
+        # grille in each jamb), so slab, passageway, lobby and main sections
+        # are one volume of air. Revert: "door" on these four lines. The
+        # department edges below stay `door`: a department is its own air.
+        "slab-passageway": "vented_door",
+        "passageway-lobby": "vented_door",
+        "lobby-section": "vented_door",    # to the aft-most MAIN section
+        "section-section": "vented_door",  # consecutive main sections
         "main-block": "bulkhead",      # the last main section to the block
         "lobby-hub": "airlock",        # a = lobby: the vestibule in the lobby
         "entry": "door",               # passageway to a wing department's stub
