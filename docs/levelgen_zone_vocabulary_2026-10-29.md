@@ -178,6 +178,73 @@ patch (see the run log of the lead skill for what it should mean).
   doors, which stage 2 does not yet emit. Every damper in a recipe below is
   marked "#49".
 
+### 0.6 The air-volume rule and the design flow (2026-11-06, #124 / #151)
+
+Erik's ruling (2026-11-06): the ventilation is REALISTIC -- "suck air in
+toilets and deposit in bedrooms" -- and (his reading of #151) the generator
+only ever places a vent where its duct's air can come back. This section
+replaces the sealed-room rule of §0.4 on the recipe path. Design by the
+level-design lead; every number is a PLACEHOLDER Erik tunes.
+
+**Measured before the change** (medium freighter seed 28, idle, 60 s; the
+probe is the bench of the gate below). Under the sealed-room rule the heads
+carried a supply and a return and STILL fell to 0.25 atm within 10 s: its
+return takes one vent's share of air, but its supply is one of five on the
+duct and gets a fifth of what the duct collects. The quarters fell 9 % and
+the cargo hold rose 2 % through the duct link. "Both roles in a sealed room"
+does not balance a room; only equal flow in and out of each body of air does.
+
+**1. The air graph.** `EdgeKind` gains the column `air`: the opening passes
+gas from tick 0 and nothing in play closes it. True for `open`, `grille`,
+`vented_door`; false for every other kind (a `door` is gas-tight, an
+`entity_door` can be shut, a window or a breakable wall must break first).
+An AIR VOLUME is a connected component of rooms over `air` edges
+(`ShipGraph.air_volume_of()`, the twin of `compartment_of()`). An edge added
+later can only merge volumes, so a department that satisfies the rule alone
+satisfies it in any ship.
+
+**2. The rule.** For every duct, every air volume the duct has a vent in
+carries at least one SUPPLY and at least one RETURN on that duct. A sealed
+room is the one-room case, so the old rule is the special case. ONE function
+states it; the recipe door, the grammar's invariant and `ShipGraph.check`
+call that function. v1's string shorthand stays exempt (`ship_demo`, #151,
+its own re-baseline).
+
+**3. The design flow.** The recipe path stops writing the studio rate
+(`Q_CIRC`, hundreds of air changes an hour). `[levelgen.vents] ach` is the
+air changes per hour a ventilated room gets (PLACEHOLDER 10; the playground's
+hand-tuned loops are of that order). For a duct D and an air volume V it has
+vents in: the served rooms are V's rooms with a vent on D, and
+`F = ach / 3600 x (their floor area in tiles)` tile-volumes of air per
+second. D's supplies in V share F in proportion to their rooms' areas; D's
+returns in V share the same F the same way. So in every volume a duct's
+supply equals its return. The runtime hands the supplies what the returns
+collected, in proportion to the supplies' rates, so each volume gets back
+exactly what it gave, however many volumes the duct serves (the duct link).
+Rates are written as exact multiples of the runtime's rate quantum, and the
+two sums of a volume are the same integer.
+
+**4. ACCEPTED GAP: no pressure feedback.** The vent runtime has none (its
+makeup controller is vent patch 3, not built). A duct in one air volume
+cannot move net air whatever happens. A duct across two volumes (the duct
+link) exchanges air between them while one of its apertures is blocked,
+flooded or open to vacuum. Not closed here.
+
+**5. The recipes (content; Erik vetoes).** Crew quarters, B.1 amended: the
+heads joins the stub by a `vented_door` and carries a RETURN only; the bunk
+rooms and the mess carry a SUPPLY; the stub carries nothing. Air enters in
+the bedrooms and the mess, crosses the corridor and leaves through the
+heads, which therefore sits a little below the corridor's pressure. The
+quarters filter passes teargas, so teargas thrown into the heads still comes
+out over the sleepers. The galley keeps its own duct (supply + return in the
+room, #49's shut-off). Medbay (theatre supply, ward return, one volume),
+cargo, armory and engineering already satisfy the rule and do not change.
+
+**6. The gate** (a property test on a generated ship, idle): no air volume's
+gas amount drifts; no room without a heat source leaves a narrow band around
+its starting pressure; teargas put in the heads is found in the bunk rooms
+and not in a room off the duct.
+
 ---
 
 ## Part A — the unlimited list
