@@ -607,6 +607,24 @@ note = "#114: marine Bravo, omni lamp NORTH-EAST of his footprint (diagonal, one
 # --- #31: the blast comparison levels, whole map (first shot at tick 48) -----
 
 [[shot]]
+name = "blast_quad_t52"
+level = "blast_quad"
+frames = 52
+light_gain = "game"
+
+[[shot]]
+name = "blast_quad_t60"
+level = "blast_quad"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_quad_t112"
+level = "blast_quad"
+frames = 112
+light_gain = "game"
+
+[[shot]]
 name = "blast_div_t52"
 level = "blast_div"
 frames = 52

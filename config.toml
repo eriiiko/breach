@@ -3436,6 +3436,54 @@ expansion_m3 = 40.0
 expansion_radius = 3.0
 expansion_ticks = 2
 
+# The disc and tick comparison on the source, blast_quad (#31): the same blast as
+# div_40 in all four rooms. Heat is the quad_* weights scaled to div_40, so each
+# delivers the same total; six quad_src_slow charges add up to one div_40.
+[payloads.quad_src_tile]
+radius = 1
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 478.0
+heat_radius = 1.0
+expansion_m3 = 40.0
+expansion_radius = 1.0
+expansion_ticks = 2
+
+[payloads.quad_src_r5]
+radius = 5
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 18.4
+heat_radius = 5.0
+expansion_m3 = 40.0
+expansion_radius = 5.0
+expansion_ticks = 2
+
+[payloads.quad_src_slow]
+radius = 3
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.0307
+heat_amount = 8.5
+heat_radius = 3.0
+expansion_m3 = 6.67
+expansion_radius = 3.0
+expansion_ticks = 1
+
 # --- #31 explosion-studio rows (levels/explosion_studio, fired by its
 # timed_charge entities). ALL PROVISIONAL — Erik edits them at the "explosion
 # + air" session. studio_small|medium|large are frag_heat at 1x / 2x / 4x its
