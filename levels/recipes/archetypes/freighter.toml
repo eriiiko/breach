@@ -43,7 +43,7 @@ count = { medium = [0, 0], large = [1, 1] }
 [[apply]]
 phase = 1
 department = "armory"
-count = { medium = [0, 0], large = [1, 1] }
+count = { medium = [0, 0], large = [1, 1] }   # always on large: three wing departments deal as 2 + 1 and one department cannot fill a 41-49 row
 
 # garden_dome and pool_hall: NOT in v1 -- their water stamps are unbuilt; the loader would refuse them
 
@@ -76,7 +76,7 @@ count = { medium = [0, 1], large = [0, 1] }
 phase = 2
 cycle = "pocket"
 on = "department-room"
-count = { medium = [0, 0], large = [0, 2] }
+count = { medium = [0, 0], large = [0, 2] }     # none on medium: a 20-long department holds one end-zone corner room, the secret annex's
 
 # ---- phase 3: terminalise -- no entries by choice: fixtures are department data, the secret draw is the budget ----
 
@@ -90,9 +90,9 @@ count = { medium = [0, 1], large = [0, 2] }
 # ---- validation profile (L2's third component; L8): metric gates from a closed registry; run after layout ----
 [validation]
 bot_walkable = true             # A* between the two slabs with airlock outer doors CLOSED
-spawn_distance = { medium = [60, 160], large = [110, 280] }   # walk-graph tiles between slab centres, after embed
+spawn_distance = { medium = [60, 160], large = [110, 280] }   # the bots' A* steps between the slab centres, after embed (measured 84-131 / 142-231)
 cells = [2, 3]                  # pressure cells per ship
-rooms = { medium = [20, 48], large = [40, 96] }              # rooms per ship (L6's target count)
+rooms = { medium = [20, 48], large = [40, 96] }              # rooms per ship, both wings (measured 26-40 / 50-82)
 
 # ---- difficulty profiles: each key names its operator ----
 [profiles.easy]

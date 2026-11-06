@@ -68,9 +68,13 @@ the end zone past its parent's hull-end wall (the corner slot beside the end
 room; the parent is the last room of an outer column), an end room's behind
 child beside it in a free corner slot or stacked behind it against the
 hull. A retreat loop's second stub is a second strip with the end room
-spanning both (two-stub). Slack is steel, never more than :data:`VOID_MAX`
-tiles thick: behind a shallower side room, at a column's far end, beside a
-slot room, between two departments of a row.
+spanning both (two-stub). Every side room is exactly its column's depth, the
+end room reaches the department's edges, a stub with no column on a side
+stands against the edge. Slack is steel in FOUR places only, each at most
+:data:`VOID_MAX` tiles and none adjacent to another: between two departments
+of a row, at a column's far end (none under a corner child), past a slot
+room toward the hull, between two stubs with no column between them -- so
+two floors are never more than a wall and VOID_MAX apart.
 
 EVERY DRAW IS CONDITIONED (layout doc §13 A4): the feasible sets are
 enumerated exactly (integers, closed form per department configuration) and
@@ -320,7 +324,8 @@ class Dept:
 class Zone:
     """What stands on one side of a stub: a COLUMN of side rooms (in order
     from the passageway; a room with a behind child last) or, with no rooms,
-    a steel pad. ``slot``: what takes the end-zone corner past an OUTER
+    nothing (between two stubs: their wall). ``slot``: what takes the
+    end-zone corner past an OUTER
     column -- ``"corner"`` (the last room's behind child), ``"end"`` (the end
     room's behind child, beside it) or nothing (the end room reaches over
     it)."""

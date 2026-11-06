@@ -102,7 +102,7 @@ from simulation.entities.door import (  # noqa: E402
 )
 from simulation.materials import (  # noqa: E402
     MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_HULL,
-    MAT_STEEL, MAT_WOOD,
+    MAT_KINDLING, MAT_STEEL, MAT_WOOD,
 )
 
 TILE_SIZE_M = 0.333          # the reference tile (the playground's scale)
@@ -2287,6 +2287,7 @@ PALETTE = {
     MAT_WOOD:      (120, 84, 46),
     MAT_FURNITURE: (96, 71, 41),
     MAT_DOOR_CLOSED: (170, 110, 50),
+    MAT_KINDLING:  (142, 62, 36),    # a recipe's fuel class (no v1 ship has it)
 }
 AIR_ALT = (30, 32, 38)
 ROOM_TINT = {0: (30, 40, 62), 1: (62, 34, 34), ZOMBIE_TEAM: (34, 56, 36)}

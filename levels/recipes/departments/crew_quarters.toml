@@ -18,13 +18,13 @@ id = "stub"
 shape = "corridor"              # room | corridor | vestibule
 required = true
 width = "wide"
-size = { across = [6, 8], along = [10, 40] }   # corridors: (across, along); the layout stage rotates. Depth-elastic (layout §13 A6): along + the mess's h + 1 spans a 24-deep medium row to a 47-deep large one
+size = { across = [6, 8], along = [10, 40] }   # corridors: (across, along); the layout stage rotates. Depth-elastic (layout §13 A6): along + the mess's h + 1 spans a 20-deep medium row to a 61-deep one
 vent = { duct = "quarters", roles = ["return"] }
 
 [[room]]
 id = "bunk"
 shape = "room"
-count = [2, 4]                  # instances; a required room has count [1, 1]. Up to 7 so the bunks, heads and laundry fill both sides of a 34-long stub (§13 A6)
+count = [2, 4]                  # instances; a required room has count [1, 1]. At most 4: a medium wing has 54 tiles of depth for both rows; a large row fills with fewer, longer rooms (h up to 16)
 size = { w = [6, 12], h = [6, 16] }           # rooms: (x, y) extents in tiles
 fuel = "furniture"              # a fuel class (§3.4)
 light = "dim"
@@ -40,7 +40,7 @@ vent = { duct = "quarters", roles = ["return", "supply"] }   # a sealed box carr
 [[room]]
 id = "mess"
 required = true
-attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side")
+attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side"); it spans the department (and both stubs of a retreat loop), hence w up to 30
 size = { w = [9, 30], h = [9, 20] }
 fuel = "furniture"
 

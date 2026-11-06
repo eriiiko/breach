@@ -80,6 +80,40 @@ def test_recipe_ships_pass_the_gates_and_the_validation_profile(arch, plans):
         assert plan.name == f"ship_freighter_{key[1]}_s{key[2]}_{key[0]}"
 
 
+def test_the_archetypes_gates_refuse_by_name(arch, plans):
+    """PROPERTY (``[validation]``, archetype doc §1; layout doc §2): the
+    recipe path's acceptance names each gate that fails -- a room count, a
+    cell count or a spawn distance outside the archetype's range -- and
+    ALWAYS refuses a ship whose two slabs are joined only through an airlock
+    (no bot cycles one, #142): with the lobbies' doors into the main cell
+    walled up the only way left is engineering's airlocks, which stage 2's
+    own spawn-to-spawn A* still walks (it counts an outer door as passable)
+    and the layout's gate does not. BREAKS IF a registry gate is dropped or
+    misnamed, or the bot-walkable A* opens outer doors as validate's does."""
+    from dataclasses import replace
+    from simulation.materials import MAT_STEEL
+    plan = plans[("medium", "standard", 0)]
+    q, g, emb = plan.quotient, plan.graph, plan.embedding
+    tight = replace(arch, validation={
+        "rooms": {plan.size: (1, 2)}, "cells": (9, 9),
+        "spawn_distance": {plan.size: (1, 2)}})
+    reasons = L.acceptance(tight, q, g, emb)
+    for gate in ("rooms", "cells", "spawn_distance"):
+        assert any(r.startswith(gate + ":") for r in reasons), reasons
+    tm = emb.tilemap.copy()
+    for e in g.edges:
+        roles = {g.rooms[e.a].tags.get("role"), g.rooms[e.b].tags.get("role")}
+        if roles == {L.LOBBY, L.SECTION}:
+            for (y, x) in G._opening_tiles(g, e):
+                tm[y, x] = MAT_STEEL
+    walled = replace(emb, tilemap=tm)
+    assert [r for r in L.acceptance(arch, q, g, walled)
+            if r.startswith("bot_walkable:")]
+    assert not L.bot_path(walled) and L.bot_path(emb)
+    stage2 = G.validate(tm, emb.spawn_rooms, mirrored=True, graph=g)
+    assert "reach: no A* path team 0 -> 1" not in stage2
+
+
 def test_a_recipe_ship_is_a_function_of_its_two_streams(arch, plans):
     """PROPERTY (archetype doc §2, determinism): the plan is reproduced
     exactly from the two documented streams -- the quotient graph from

@@ -20,21 +20,21 @@ id = "stub"
 shape = "corridor"
 required = true
 width = "wide"
-size = { across = [6, 8], along = [8, 40] }   # from 8 so cargo still packs in a medium row 4 shallower under the flank pair's hull strip (layout doc §13 A3)
+size = { across = [6, 8], along = [8, 40] }   # from 8: a one- or two-bay hold is 18 deep, what a medium wing leaves beside deep quarters
 
 [[room]]
 id = "main_hold"                # the largest room in the wing
 required = true
 attach = "end"                  # at the stub's far end, against the hull
 hull_door = true                # the closed cargo door to space: the department's depressurisation valve (D7)
-size = { w = [10, 30], h = [9, 24] }
+size = { w = [10, 30], h = [9, 24] }   # spans the department (the largest room in the wing); a deep hold fills a large row behind few bays
 fuel = "furniture"              # container rows: the cover geometry
 light = "dim"                   # low, pooled
 vent = { duct = "cargo", roles = ["supply", "return"] }   # the hold compartment's supply + return
 
 [[room]]
 id = "bay"
-count = [1, 4]                  # up to 8 so the bays (+ hazmat) fill both sides of a 34-long stub
+count = [1, 4]                  # at most 4: a medium wing has 54 tiles of depth for both rows (two rooms per side per 13)
 size = { w = [6, 12], h = [6, 18] }
 fuel = "furniture"
 light = "dim"

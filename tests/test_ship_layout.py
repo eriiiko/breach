@@ -122,7 +122,7 @@ DEPTS = {
                               kid=L.Kid("e.k", (6, 20), (6, 12)))),
     "promoted": L.Dept("d", (L.Stub("s", (6, 8), (10, 40)),),
                        L.End("e", (6, 30), (9, 16)),
-                       (L.Side("r0", w=(6, 10), h=(12, 40)),
+                       (L.Side("r0", w=(6, 10), h=(6, 16)),
                         L.Side("r1", **SIDE)), promoted=True),
 }
 
@@ -536,6 +536,37 @@ def test_a_flank_pair_is_a_hull_strip_over_a_row_that_can_take_it(ships):
                                for i in d.rooms), key
 
 
+def test_the_hull_strip_never_takes_a_hull_door_row():
+    """PROPERTY (layout doc §13 A3, §3): on a hand-built problem the hull
+    strip runs over the first row, A then B, WITHOUT a hull-door end room --
+    row B when the hull-door department is in row A, row A when it is in row
+    B -- and a wing whose two rows both hold one has no skeleton draw at
+    all (the layout's feasibility refuses it, and the loader's demand test
+    names the strip). BREAKS IF the strip is laid over a room whose door
+    must be cut into the hull (stage 2 would refuse the graph)."""
+    stub = (L.Stub("s", (6, 8), (8, 40)),)
+    sides = tuple(L.Side(f"r{i}", **SIDE) for i in range(2))
+    door = L.Dept("hold", stub, L.End("e", (9, 30), (9, 16), hull_door=True),
+                  sides)
+    plain = L.Dept("plain", stub, L.End("e", (9, 30), (9, 16)), sides)
+    band = L.Band(mains=("m0",), block=(("hub", "hub", (6, 22), (13, 24)),),
+                  target="hub", door="m0")
+
+    def prob(a, b):
+        return L.Problem(size="medium", rows=((a,), (b,)), strip=True,
+                         band=band, passageway=(6, 8), lobby=(9, 11))
+    for rows, want in (((door, plain), "B"), ((plain, door), "A"),
+                       ((plain, plain), "A")):
+        opts = L.skeleton_options(prob(*rows))
+        assert opts and {t[6] for t in opts} == {want}, (want, opts[:2])
+    both = prob(door, door)
+    assert L.skeleton_options(both) == ()
+    assert "hull strip has no row" in L._demand(both)
+    assert L.skeleton_options(L.Problem(
+        size="medium", rows=((door,), (door,)), strip=False, band=band,
+        passageway=(6, 8), lobby=(9, 11)))
+
+
 def test_an_airlock_bypass_shares_the_airlocks_wall(ships):
     """PROPERTY (layout doc §4.3): with a bypass the lobby and the hub carry
     two openings on their one shared wall, the airlock (its vestibule in the
@@ -623,6 +654,54 @@ def test_a_promoted_department_is_entered_through_its_stub(ships):
                 if wall[0] == "v":
                     ys = {y for y, _x in G._opening_tiles(g, f)}
                     assert not ys & used, (key, f)
+
+
+def test_behind_rooms_and_spawn_exits_stand_where_the_graph_says(ships):
+    """PROPERTY (behind / pocket / secret annex / exits; layout doc §4.5,
+    §7): a room ``behind`` a SIDE room stands past that room's hull-end wall
+    (in the end zone, farther from the passageway), one ``behind`` the END
+    room stands beside it or between it and the hull; either way it shares a
+    wall with its parent and is one of the department's own rooms in its
+    row; a pocket on a stub is a side room touching that stub; and a
+    declared spawn exit is a wall between the slab and a side room of the
+    FIRST department of its row. BREAKS IF a behind room is hung on another
+    room than its parent, an exit is cut to a room that is not at the slab
+    end, or a pocket is laid out as anything but a packed room."""
+    seen = set()
+    for key, (q, lay) in ships.items():
+        g = lay.graph
+
+        def rm(qid):
+            return g.rooms[lay.ids[qid][0]]
+        pw = rm(L.PASSAGEWAY)
+        for r in q.rooms:
+            if r.side != "wing" or r.dept is None:
+                continue
+            me = rm(r.id)
+            if r.attach == "behind":
+                par, p = q.room(r.parent), rm(r.parent)
+                orient = G.shared_wall(p, me)[0]
+                far = (lambda a: pw.y - (a.y + a.h)) if me.y < pw.y \
+                    else (lambda a: a.y - (pw.y + pw.h))
+                if par.attach == "side":
+                    assert orient == "h" and far(me) > far(p), (key, r.id)
+                    seen.add("corner")
+                else:
+                    assert par.attach == "end"
+                    assert far(me) >= far(p), (key, r.id)
+                    seen.add("beside" if orient == "v" else "stacked")
+            elif r.role == L.POCKET:
+                assert r.attach == "side"
+                assert G.shared_wall(rm(r.parent), me)[0] == "v"
+                seen.add("pocket on a stub")
+        for e in q.exit_edges[1:]:
+            room = q.room(e.b)
+            d = next(d for d in q.departments if e.b in d.rooms)
+            assert e.a == L.SLAB and d.position == 0 and room.attach == "side"
+            assert G.shared_wall(rm(L.SLAB), rm(e.b))[0] == "v"
+            seen.add("exit")
+    assert seen == {"corner", "beside", "stacked", "pocket on a stub",
+                    "exit"}, seen
 
 
 # ---------------------------------------------------------------------------
