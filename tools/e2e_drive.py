@@ -18,6 +18,17 @@ Flags (this tool's own):
     --shot PATH@F     save the frame-F picture to PATH (.png; repeatable),
                       read back just before that frame's end_drawing
     --level NAME      the level (passed through to main.py)
+    --profile         time the loop and print a report after the run: frame ms
+                      and fps, sim steps per frame, the sim's pace, and the
+                      wall-clock cost of Simulation.step, the GameRenderer
+                      frame stages and the match observers' per-tick work
+                      (tools/frame_profile.py, imported only with this flag;
+                      without it nothing here changes). #143
+    --profile-skip K  leave the first K frames out of the numbers (default 40)
+    --glfinish        glFinish after each render stage, so a stage's time
+                      includes its GPU work
+    --profile-inner "module:Class.method;..."
+                      extra timers listed under the stages ("  > Class.method")
 Every other argument passes through to main.py unchanged (--cuda,
 --control NAME, --debug, --res N, ...); ``--windowed`` is always added (a fixed
 1280x720 hidden window, never the monitor-sized borderless one).
@@ -50,6 +61,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_FRAMES = 120
+
+# the profiler's own flags (tools/frame_profile.py); any of them loads it
+_PROFILE_FLAGS = ("--profile", "--profile-skip", "--glfinish", "--profile-inner")
 
 
 def parse_args(argv):
@@ -93,7 +107,13 @@ def parse_args(argv):
 
 def main(argv=None) -> int:
     faulthandler.enable()
-    frames, presses, shots, passthrough = parse_args(list(sys.argv[1:] if argv is None else argv))
+    argv = list(sys.argv[1:] if argv is None else argv)
+    profile_opts = None
+    if any(a in _PROFILE_FLAGS for a in argv):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import frame_profile
+        profile_opts, argv = frame_profile.split_profile_args(argv)
+    frames, presses, shots, passthrough = parse_args(argv)
 
     os.chdir(ROOT)
     import pyray as rl
@@ -110,12 +130,24 @@ def main(argv=None) -> int:
                                  f"KeyboardKey name without KEY_, e.g. M, F11)")
             scripted.setdefault(at, set()).add(code)
 
+    prof = None
+    if profile_opts is not None:
+        # the timers import the game's modules, so main.py's own path setup
+        # (and its --cuda hand-off) has to be done first
+        frame_profile.prepare_imports(ROOT, passthrough)
+        prof = frame_profile.FrameProfiler(
+            skip=profile_opts["skip"], glfinish=profile_opts["glfinish"],
+            inner=profile_opts["inner"], passthrough=passthrough)
+        prof.install(rl)
+
     frame = [0]
     orig_close = rl.window_should_close
     orig_pressed = rl.is_key_pressed
 
     def _should_close():
         frame[0] += 1
+        if prof is not None:
+            prof.on_frame(frame[0])
         if frame[0] % 20 == 0:
             print(f"[e2e_drive] frame {frame[0]}", flush=True)
         return frame[0] > frames or orig_close()
@@ -161,6 +193,9 @@ def main(argv=None) -> int:
         traceback.print_exc()
         print(f"[e2e_drive] FAIL: exception at frame {frame[0]}", flush=True)
         return 1
+    finally:
+        if prof is not None:
+            print(prof.report(), flush=True)
     if frame[0] <= frames:
         print(f"[e2e_drive] FAIL: main.py returned at frame {frame[0]} "
               f"(< {frames}) without an exception", flush=True)
