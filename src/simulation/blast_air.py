@@ -125,7 +125,7 @@ def blast_base_soot_g(payload) -> float:
     [blast_air] min_soot_yield (Erik, 2026-11-06: a little smoke always, as the
     stand-in for the charge's fuel and what lets the fireball radiate its heat
     away; clean gas does not radiate), all of it times [blast_air] smoke_scale,
-    the game's look (Erik chose 0.5 by eye on levels/blast_smoke, 2026-11-06).
+    the game's look (Erik chose 0.25 by eye, 2026-11-06).
     No soot_yield row is touched: those stay the cited physics."""
     floor = float(CFG.blast_air.min_soot_yield)
     return float(CFG.blast_air.smoke_scale) * max(

@@ -3174,7 +3174,7 @@ o2_full = 0.19           # at or above this the air counts as normal
 starved_smoke = 3.0      # extra smoke at o2_low: 3.0 = four times the soot
 detonation_share = 0.4   # heat with no air to burn in (Comp B: 5.02 of ~11.7 MJ/kg)
 min_soot_yield = 0.02    # the smoke a charge always leaves, g/g: the fireball cools by it
-smoke_scale = 0.5        # the game's look, on top of the cited soot_yield rows: Erik chose 0.5 by eye (levels/blast_smoke, 2026-11-06), 0.25 the next step down
+smoke_scale = 0.25       # the game's look, on top of the cited soot_yield rows: Erik's choice by eye on the one-tile blast (levels/blast_quad, 2026-11-06)
 
 # ---------------------------------------------------------------------------
 # [explosives.*] -- what a charge is MADE of (#12 smoke x light, handle 3,
@@ -3452,7 +3452,7 @@ heat_amount = 478.0
 heat_radius = 1.0
 expansion_m3 = 40.0
 expansion_radius = 1.0
-expansion_ticks = 2
+expansion_ticks = 1
 
 [payloads.quad_src_r5]
 radius = 5

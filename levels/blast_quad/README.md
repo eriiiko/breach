@@ -5,7 +5,7 @@ and then every 3 s. Each has the same total heat, smoke and expansion.
 
 | Room | Row | Delivery |
 |---|---|---|
-| NW | `quad_src_tile` | one tile, two ticks |
+| NW | `quad_src_tile` | one tile, one tick: the standard blast (Erik, 2026-11-06) |
 | NE | `div_40` | disc of radius 3 (1 m), two ticks |
 | SW | `quad_src_r5` | disc of radius 5 (1.67 m), two ticks |
 | SE | `quad_src_slow` | radius 3 over 6 ticks (six charges one tick apart) |

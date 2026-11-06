@@ -2,7 +2,7 @@ r"""tools/gen_blast_quad.py -- generates levels/blast_quad/, the #31 side-by-sid
 blast comparison: four rooms, one candidate delivery each, all firing together
 every PERIOD_S seconds on the sim clock.
 
-  * NW room -- quad_src_tile  one tile, two ticks
+  * NW room -- quad_src_tile  one tile, one tick, the standard blast (Erik, 2026-11-06)
   * NE room -- div_40         a disc of radius 3, two ticks
   * SW room -- quad_src_r5    a disc of radius 5, two ticks
   * SE room -- quad_src_slow  radius 3, spread over SLOW_TICKS ticks: SLOW_TICKS
@@ -73,10 +73,10 @@ SETS = {
         ("SOURCE 40 + PUFF", "div_40_puff", 1),
     )),
     "blast_smoke": ("Blast Smoke", (
-        ("SMOKE 7 G", "div_40", 1),
-        ("SMOKE 3.5 G", "div_40_s50", 1),
-        ("SMOKE 1.8 G", "div_40_s25", 1),
-        ("SMOKE 0.7 G", "div_40_s10", 1),
+        ("SMOKE 3.5 G", "div_40", 1),
+        ("SMOKE 1.8 G", "div_40_s50", 1),
+        ("SMOKE 0.9 G", "div_40_s25", 1),
+        ("SMOKE 0.4 G", "div_40_s10", 1),
     )),
 }
 SLOTS = ((X0 + 1, Y0 + 1, "w"), (X_MID + 1, Y0 + 1, "e"),
