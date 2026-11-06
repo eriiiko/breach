@@ -27,13 +27,16 @@ import math
 
 from config import CFG
 from simulation.gamemap import MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED
+from simulation.materials import MAT_GRILLE
 
 # Materials the blast's structural wall damage applies to (A6 critique B1:
 # MAT_DOOR_CLOSED joins, or closed entity doors are blast-proof and the
 # breach charge no-ops on them). Steel/glass/furniture being excluded is a
 # PRE-EXISTING wart of this tuple — flagged for arc close, deliberately NOT
-# changed here (a6 doors design §1).
-_BLAST_WALL_MATERIALS = (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED)
+# changed here (a6 doors design §1). #134: the GRILLE joins -- a blast opens
+# a grating (it is a gas tile, so `destroy_wall` books its N as for a crate).
+_BLAST_WALL_MATERIALS = (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED,
+                         MAT_GRILLE)
 from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff,
 )

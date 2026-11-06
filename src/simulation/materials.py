@@ -52,12 +52,20 @@ MAT_KINDLING = 8
 # vegetation.md §4.1, Erik's ruling 2026-09-07 §6.1.2): the prop entity's
 # ONE material row — "fully walkable, no wind/vision/movement interaction,
 # flammable, fuel ~= 2x furniture". APPENDED (ids are positional and
-# contiguous — this must always be the LAST id, or every level
-# re-materializes). Id 9 is an ordinary id: it was also level format v2's
+# contiguous — a new row takes the next id after the last, never an
+# insertion, or every level re-materializes; #134's grille is id 10). Id 9 is an ordinary id: it was also level format v2's
 # SPACE tilemap code, until format v3 (#27, 2026-10-29) moved SPACE outside
 # the id range (``level_loader.SPACE_CODE`` = -1). Ids are rows, unbounded
 # up to the int8 material plane's 127 (``level_loader.MATERIAL_ID_MAX``).
 MAT_FOLIAGE = 9
+# #134 (levelgen, 2026-11-06; the level-design lead on Erik's hand-off "the
+# vent material: blocks walking but does not block air"): a steel GRATING.
+# mobility 0 (no unit enters it) but permeability 1.0 and the GAS thermal
+# regime, so gas, smoke, pressure and gas energy cross it exactly as they
+# cross an air tile; a low light extinction (it is bars). APPENDED: ids are
+# positional and contiguous, so a new row always takes the next id and no
+# existing level re-materializes. See [materials.grille] in config.toml.
+MAT_GRILLE = 10
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.
 # Listed in id order; ``MaterialTable`` validates contiguity.
@@ -72,6 +80,7 @@ MATERIAL_NAMES = {
     MAT_DOOR_CLOSED: "door_closed",
     MAT_KINDLING: "kindling",
     MAT_FOLIAGE: "foliage",
+    MAT_GRILLE: "grille",
 }
 
 # Scalar columns: name -> numpy dtype. ``light_atten`` is handled separately
