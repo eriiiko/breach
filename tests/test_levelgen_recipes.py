@@ -1,6 +1,7 @@
 """Properties of the recipe library loader and the resolver
-(``tools/levelgen_recipes.py``, #136;
-docs/levelgen_cycle_types_and_recipes_2026-10-31.md revision 2).
+(``tools/levelgen_recipes.py``, #136, #152;
+docs/levelgen_cycle_types_and_recipes_2026-10-31.md format revision 2.1, the
+layout doc's §13 and the archetype doc's §7.1).
 
 Each test names the property it protects and the change that must break it.
 Nothing here pins how many recipes, rooms or presets exist: the library is
@@ -30,6 +31,12 @@ from config import CFG  # noqa: E402
 
 SEEDS = range(50)
 CQ = "departments/crew_quarters.toml"
+ENG = "departments/engineering.toml"
+MED = "departments/medbay.toml"
+CARGO = "departments/cargo_hold.toml"
+# The layout doc's row depths (§6, §13 A6): a medium row is 24-27 deep, a
+# large one 44-47.
+MEDIUM_ROW_MIN, LARGE_ROW_MAX = 24, 47
 
 
 def _rng(seed: int):
@@ -56,23 +63,49 @@ def _copy(tmp_path: Path, rel: str | None = None, old: str | None = None,
 
 def test_the_shipped_recipes_load():
     """PROPERTY: every shipped recipe passes its door -- the six cycle types
-    of §1.3, crew quarters (§3.1) and the fixtures (§3.3) -- and the crew
-    quarters' entry, ducts and fixtures resolve to things that exist.
-    BREAKS IF a shipped file drifts from the door (a new key, a renamed
-    preset, a config row removed) or the door stops reading a field."""
+    of §1.3 (the flank pair and the retreat loop as ONE-leg `second_leg`
+    types, rev 2.1), every department and the fixtures (§3.3) -- and in each
+    department the entry is required and attaches to nothing, every other
+    room attaches to something (§3.2), every declared duct is used and every
+    fixture exists. BREAKS IF a shipped file drifts from the door (a new key,
+    a renamed preset, a config row removed) or the door stops reading a
+    field."""
     lib = R.load_recipes()
     assert {"retreat_loop", "flank_pair", "airlock_bypass",
             "maintenance_ring", "duct_link", "pocket"} <= set(lib.cycles)
+    for name in ("flank_pair", "retreat_loop"):
+        cyc = lib.cycles[name]
+        assert cyc.move == R.SECOND_LEG and len(cyc.legs) == 1
     assert "crew_quarters" in lib.departments
-    assert "galley" in lib.fixtures
-    cq = lib.departments["crew_quarters"]
-    assert cq.room(cq.entry).required
-    assert {v.duct for r in cq.rooms for v in r.vents} == \
-        {d.name for d in cq.ducts}
-    for r in cq.rooms:
-        if r.fixture:
-            assert r.fixture in lib.fixtures
+    for name, dept in lib.departments.items():
+        entry = dept.room(dept.entry)
+        assert entry.required and entry.attach is None, name
+        assert all(r.attach for r in dept.rooms if r.id != dept.entry), name
+        assert {v.duct for r in dept.rooms for v in r.vents} == \
+            {d.name for d in dept.ducts}, name
+        for r in dept.rooms:
+            if r.fixture:
+                assert r.fixture in lib.fixtures, (name, r.id)
     assert lib.cycles["maintenance_ring"].rooms[0] % 2 == 0
+
+
+def test_wing_departments_are_depth_elastic():
+    """PROPERTY (layout doc §13 A6): every shipped wing department with an
+    end room spans the row depths -- stub ``along`` + end room ``h`` + 1
+    reaches a medium row's 24 at its minima and a large row's 47 at its
+    maxima. BREAKS IF a department's ranges are narrowed so it can no longer
+    pack in a medium row or fill a large one (the layout patch retunes them
+    against its own packing twin, which then replaces this bound)."""
+    lib = R.load_recipes()
+    wings = [d for d in lib.departments.values() if d.placement == "wing"]
+    assert wings
+    for dept in wings:
+        ends = [r for r in dept.rooms if r.attach == "end"]
+        if not ends:
+            continue
+        stub, end = dept.room(dept.entry), ends[0]
+        assert stub.size.b[0] + end.size.b[0] + 1 <= MEDIUM_ROW_MIN, dept.name
+        assert stub.size.b[1] + end.size.b[1] + 1 >= LARGE_ROW_MAX, dept.name
 
 
 def test_the_loader_imports_nothing_heavy():
@@ -116,14 +149,14 @@ REFUSALS = [
     ("width_class", CQ, 'width = "wide"', 'width = "medium"',
      "room[0].width", "not one of"),
     ("narrow_is_one_room", "cycles/flank_pair.toml",
-     'rooms = [1, 1]\nwidth = "narrow"', 'rooms = [1, 2]\nwidth = "narrow"',
-     "leg[1].width", "exactly one room"),
+     "rooms = [1, 1]                  # inclusive", "rooms = [1, 2]  #",
+     "leg[0].width", "exactly one room"),
     ("sealed_room_lone_role", CQ,
      'roles = ["return", "supply"] }   # a sealed box',
      'roles = ["return"] }   # a sealed box', "room 'heads'.vent", "sealed"),
-    ("count_low", CQ, "count = [2, 3]", "count = [0, 3]", "room[1].count",
+    ("count_low", CQ, "count = [2, 7]", "count = [0, 7]", "room[1].count",
      "out of range"),
-    ("count_reversed", CQ, "count = [2, 3]", "count = [3, 2]",
+    ("count_reversed", CQ, "count = [2, 7]", "count = [7, 2]",
      "room[1].count", "out of range"),
     ("p_high", CQ, "p = 0.7", "p = 1.5", "room[4].p", "probability"),
     ("multiplicity_twice", CQ, "p = 0.3", "p = 0.3\nrequired = true",
@@ -137,7 +170,7 @@ REFUSALS = [
     ("unknown_fixture", CQ, 'fixture = "galley"', 'fixture = "kitchen"',
      "room[4].fixture", "no fixture"),
     ("face_move_unused", "cycles/retreat_loop.toml",
-     'move = "edge_to_cycle"', 'move = "face"', "cycle.move",
+     'move = "second_leg"', 'move = "face"', "cycle.move",
      "unused in v1"),
     ("ring_is_even", "cycles/maintenance_ring.toml", "rooms = [4, 8]",
      "rooms = [4, 7]", "cycle.rooms", "EVEN"),
@@ -152,17 +185,54 @@ REFUSALS = [
     ("contact_triangle", CQ, '[[duct]]\nname = "quarters"',
      '[[edge]]\na = "bunk"\nb = "mess"\nkind = "open"\n\n[[duct]]\n'
      'name = "quarters"', "edge", "3-cycle of contacts"),
-    ("feasibility", CQ, "count = [2, 3]", "count = [2, 6]",
+    ("feasibility", CQ, "count = [2, 7]", "count = [2, 12]",
      "room 'stub'", "contact demand"),
     ("narrow_never_with_fuel", CQ,
-     'width = "wide"\nsize = { across = [6, 8], along = [20, 24] }',
+     'width = "wide"\nsize = { across = [6, 8], along = [14, 34] }',
      'width = "narrow"\nfuel = "furniture"\n'
-     'size = { across = [3, 3], along = [20, 24] }', "room[0].fuel",
+     'size = { across = [3, 3], along = [14, 34] }', "room[0].fuel",
      "never carries fuel"),
     ("unknown_wish", CQ, 'wish_near = ["medbay"]', 'wish_near = ["spa"]',
      "department.wish_near[0]", "no department"),
     ("entry_must_exist", CQ, 'entry = "stub"', 'entry = "lobby"',
      "department.entry", "no room"),
+    # second_leg (rev 2.1): one walkable leg of one room
+    ("second_leg_one_room", "cycles/retreat_loop.toml",
+     'rooms = [1, 1]\nwidth = "wide"', 'rooms = [1, 2]\nwidth = "wide"',
+     ": leg:", "exactly ONE"),
+    # attach / exit / hull_door (§3.2; layout §4, §13 A2; archetype §7.1)
+    ("second_end", CQ, "p = 0.3", 'p = 0.3\nattach = "end"',
+     "room 'laundry'.attach", "at most one"),
+    ("fore_in_a_wing", CQ, "p = 0.3", 'p = 0.3\nattach = "fore"',
+     "room 'laundry'.attach", "axis"),
+    ("end_in_an_axis", ENG, 'attach = "aft"', 'attach = "end"',
+     "room 'fuel_bunker'.attach", "wing department"),
+    ("second_aft", ENG, '[[edge]]\na = "engine_room"',
+     '[[room]]\nid = "pump_room"\nrequired = true\nattach = "aft"\n'
+     'size = { w = [12, 22], h = [6, 10] }\n\n[[edge]]\na = "engine_room"\n'
+     'b = "pump_room"\nkind = "door"\n\n[[edge]]\na = "engine_room"',
+     "room 'pump_room'.attach", "at most one"),
+    ("behind_unknown_parent", CQ, 'attach = "behind:mess"',
+     'attach = "behind:pantry"', "room 'galley'.attach", "parent"),
+    ("behind_a_counted_room", CQ, 'attach = "behind:mess"',
+     'attach = "behind:bunk"', "room 'galley'.attach", "counted"),
+    ("count_off_a_side_room", CQ, "p = 0.7", "count = [1, 2]",
+     "room 'galley'.count", "side room"),
+    ("exit_twice", CQ, "p = 0.3", "p = 0.3\nexit = true",
+     "room 'laundry'.exit", "at most one"),
+    ("exit_off_a_side_room", CARGO, "hull_door = true",
+     "hull_door = true\nexit = true", "room 'main_hold'.exit", "side room"),
+    ("hull_door_off_the_end", CQ, "p = 0.3", "p = 0.3\nhull_door = true",
+     "room 'laundry'.hull_door", "end"),
+    ("edge_not_to_its_anchor", CQ, 'a = "stub"\nb = "laundry"',
+     'a = "heads"\nb = "laundry"', "edge[4]", "only its stub"),
+    ("wing_entry_is_a_corridor", MED,
+     'shape = "corridor"\nrequired = true\nwidth = "wide"\n'
+     'size = { across = [6, 8], along = [14, 34] }',
+     'required = true\nsize = { w = [6, 8], h = [14, 34] }',
+     "room 'stub'.shape", "corridor"),
+    ("secret_behind_the_exit", CQ, 'host = "bunk"', 'host = "heads"',
+     "secret.host", "exit room"),
 ]
 
 
@@ -178,8 +248,16 @@ def test_the_door_refuses_by_file_and_field(tmp_path, rel, old, new, where,
     multiplicity, an unknown or wrong-phase cycle type, an unknown fixture,
     the unused face move, the even ring, a gas-blind non-walk leg, the #49
     wait, L5 on crosses_cell, a contact triangle, the §3.1 feasibility bound,
-    fuel in a narrow corridor, an unknown wish, a missing entry. BREAKS IF a
-    rule is dropped, or a refusal stops naming where it came from."""
+    fuel in a narrow corridor, an unknown wish, a missing entry, a
+    `second_leg` type with other than one one-room leg, and every attach /
+    exit / hull_door rule the layout's primitives need (one end, one fore,
+    one aft; fore / aft only on an axis department and side / end / behind
+    only on a wing one; a behind parent that exists, is uncounted and is not
+    itself behind; counts on side rooms only; one exit, on a side room, never
+    the secret's host; a hull door only on the end room; a declared edge only
+    between a room and what it attaches to; a wing entry that is a
+    corridor). BREAKS IF a rule is dropped, or a refusal stops naming where
+    it came from."""
     root = _copy(tmp_path, rel, old, new)
     with pytest.raises(R.RecipeError) as ei:
         R.load_recipes(root)
@@ -241,48 +319,115 @@ def test_resolved_tags_are_the_presets_values(lib):
         for k, v in rr.tags.items():
             assert G.ROOM_TAGS[k][1](v), (rid, k, v)
     assert rd.ducts == {d.name: {"filter": d.filter} for d in cq.ducts}
+    # A recipe flag resolves to gen_ship's own value, a department preset to
+    # every room: the cargo hold's door to space is HULL_DOOR_DEFAULT, every
+    # engineering room starts [temps.hot_engineering] warm.
+    for name, dept in lib.departments.items():
+        rd = R.resolve_department(dept, lib.fixtures, _rng(0),
+                                  cell=None if dept.cell == "main" else 1)
+        for r in dept.rooms:
+            tags = rd.rooms[r.id].tags
+            assert (tags.get("hull_door") == G.HULL_DOOR_DEFAULT) \
+                == r.hull_door, (name, r.id)
+            if dept.physics.temp != R.AMBIENT:
+                assert tags["temp"] == getattr(
+                    CFG.temps, dept.physics.temp).above_ambient
 
 
-def test_a_key_without_its_mechanism_is_pending_never_dropped(lib):
+def test_a_key_without_its_mechanism_is_pending_never_dropped(tmp_path):
     """PROPERTY (§3.2 last paragraph): a recipe key whose stage-2 mechanism
-    is not built (here the galley's kindling: the fuel tag has no material
-    yet, §5.2) is kept as PENDING with the extension it waits for, and
-    ``stamp_tags`` refuses it by name; rooms with nothing pending stamp.
-    BREAKS IF the resolver silently drops the key, writes it as today's
-    60/40 furniture, or lets stage 2 stamp a room with a pending key."""
+    is not built (here a disabled heat source: the heat_source tag has no
+    `enabled` yet, §5.2) is kept as PENDING with the resolved value and the
+    extension it waits for, and ``stamp_tags`` refuses it by name; rooms
+    with nothing pending stamp. BREAKS IF the resolver silently drops the
+    key, writes it as an enabled heat source, or lets stage 2 stamp a room
+    with a pending key."""
+    root = _copy(tmp_path, "fixtures.toml",
+                 "heat_source_enabled = true      # Erik",
+                 "heat_source_enabled = false     # Erik")
+    lib = R.load_recipes(root)
     rd = R.resolve_department(lib.departments["crew_quarters"],
                               lib.fixtures, _rng(0))
     galley = rd.rooms["galley"]
-    assert "fuel" not in galley.tags
-    value, ext = galley.pending["fuel"]
-    assert value["mix"] == vars(CFG.levelgen.fuel.kindling.mix)
+    assert "heat_source" not in galley.tags
+    value, ext = galley.pending["heat_source"]
+    assert value["enabled"] is False
+    assert value["max_temp"] == CFG.heat_sources.stove.max_temp
     assert "§5.2" in ext
-    with pytest.raises(R.PendingMechanism, match=r"'galley'.*'fuel'"):
+    with pytest.raises(R.PendingMechanism,
+                       match=r"'galley'.*'heat_source'"):
         galley.stamp_tags()
     assert rd.rooms["heads"].stamp_tags() == rd.rooms["heads"].tags
 
 
+def test_fuel_classes_and_vent_lists_resolve_to_gen_ships_forms(lib,
+                                                               tmp_path):
+    """PROPERTY (#133's stage-2 extensions, landed): a fuel class resolves to
+    gen_ship's tag -- the int form exactly when its mix is gen_ship's v1 mix
+    (so nothing v1 stamped moves), else ``{"clusters", "mix"}`` with the
+    class's mix, which ``fuel_spec`` reads -- and a room on several ducts
+    resolves to the LIST form of ``vent``, which ``vent_specs`` reads; neither
+    is pending. BREAKS IF the resolver marks either pending again, writes the
+    int form for another mix, or emits a shape gen_ship's readers refuse."""
+    for dept in lib.departments.values():
+        rd = R.resolve_department(dept, lib.fixtures, _rng(3),
+                                  cell=None if dept.cell == "main" else 1)
+        for r in dept.rooms:
+            rr = rd.rooms[r.id]
+            assert "fuel" not in rr.pending and "vent" not in rr.pending
+            cls = r.fuel or (lib.fixtures[r.fixture].fuel if r.fixture
+                             else None)
+            if cls is None:
+                assert "fuel" not in rr.tags
+                continue
+            mix = vars(getattr(CFG.levelgen.fuel, cls).mix)
+            tag = rr.tags["fuel"]
+            if mix == G.FUEL_MIX_V1:
+                assert isinstance(tag, int)
+            else:
+                assert tag["mix"] == mix
+            names = list(G._table().names)
+            assert {names[m] for m, _f in G.fuel_spec(tag)[1]} == set(mix)
+    root = _copy(tmp_path, CQ,
+                 'vent = { duct = "quarters", roles = ["return", "supply"] }',
+                 'vent = [{ duct = "quarters", roles = ["return", "supply"] '
+                 '}, { duct = "galley", roles = ["supply", "return"] }]')
+    two = R.load_recipes(root)
+    rd = R.resolve_department(two.departments["crew_quarters"], two.fixtures,
+                              _rng(0))
+    heads = rd.rooms["heads"]
+    assert isinstance(heads.tags["vent"], list) and not heads.pending
+    assert [d for d, _r, _s in G.vent_specs(heads.tags["vent"])] == \
+        ["quarters", "galley"]
+
+
 def test_the_resolved_department_passes_the_ship_graph_schema(lib):
-    """PROPERTY: over 50 seeds, one instance of every resolved crew-quarters
-    room, joined by the recipe's edges (the entry's door to a stand-in
-    spine room), builds a gen_ship ShipGraph -- tags, the sealed-room rule
-    per duct, ducts in one cell, L5 -- with the resolver's ducts. BREAKS IF
-    the resolver writes a tag stage 2 would refuse or the loader's
-    sealed-room rule drifts from ShipGraph's."""
-    cq = lib.departments["crew_quarters"]
-    for seed in SEEDS:
-        rd = R.resolve_department(cq, lib.fixtures, _rng(seed))
-        ids = [r.id for r in cq.rooms]
-        rooms = [G.Room(i, 2 + 10 * i, 2, 6, 6, "room",
-                        {k: v for k, v in rd.rooms[rid].tags.items()})
-                 for i, rid in enumerate(ids)]
-        spine = len(rooms)
-        rooms.append(G.Room(spine, 0, 20, 6, 6, "room", {"cell": 0}))
-        edges = [G.Edge(ids.index(e.a), ids.index(e.b), e.kind)
-                 for e in cq.edges]
-        edges.append(G.Edge(spine, ids.index(cq.entry), "door"))
-        G.ShipGraph(width=200, height=40, hull=(0, 0, 199, 39), rooms=rooms,
-                    edges=edges, mirror_x=False, ducts=dict(rd.ducts))
+    """PROPERTY: for EVERY shipped department, over 50 seeds, one instance
+    of every resolved room, joined by the recipe's edges (the entry's door
+    to a stand-in spine room in the department's cell), builds a gen_ship
+    ShipGraph -- tags (fuel classes, vent lists, hull doors included), the
+    sealed-room rule per duct, ducts in one cell, L5 -- with the resolver's
+    ducts. BREAKS IF the resolver writes a tag stage 2 would refuse or the
+    loader's sealed-room rule drifts from ShipGraph's."""
+    for dept in lib.departments.values():
+        cell = R.MAIN_CELL if dept.cell == "main" else 1
+        for seed in SEEDS:
+            rd = R.resolve_department(dept, lib.fixtures, _rng(seed),
+                                      cell=None if dept.cell == "main"
+                                      else cell)
+            ids = [r.id for r in dept.rooms]
+            # each room's top wall on the hull, so a hull_door has its site
+            rooms = [G.Room(i, 2 + 10 * i, 1, 6, 6, "room",
+                            {k: v for k, v in rd.rooms[rid].tags.items()})
+                     for i, rid in enumerate(ids)]
+            spine = len(rooms)
+            rooms.append(G.Room(spine, 0, 20, 6, 6, "room", {"cell": cell}))
+            edges = [G.Edge(ids.index(e.a), ids.index(e.b), e.kind)
+                     for e in dept.edges]
+            edges.append(G.Edge(spine, ids.index(dept.entry), "door"))
+            G.ShipGraph(width=200, height=40, hull=(0, 0, 199, 39),
+                        rooms=rooms, edges=edges, mirror_x=False,
+                        ducts=dict(rd.ducts))
 
 
 def test_resolution_is_deterministic_and_tracks_the_presets(lib, monkeypatch):

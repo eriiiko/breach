@@ -3447,6 +3447,12 @@ radius = 1                            # PLACEHOLDER: the hob and its neighbours
 max_temp = 320.0                      # PLACEHOLDER. The galley is a FUSE (Erik's ruling, §4): ABOVE kindling's ignition_temp (280), so every rolled galley lights itself; the loader refuses a value at or below it
 death_payload = ""                    # PLACEHOLDER: a stove that goes up is a later ruling
 
+[heat_sources.engine]                 # the engine room's engine (fixture `engine`, engineering's hub; archetype doc §7.1)
+heat_per_s = 5.0                      # PLACEHOLDER (tests/test_heat_source.py's engine runs 5.0)
+radius = 2                            # PLACEHOLDER: the engine block and the deck around it
+max_temp = 150.0                      # PLACEHOLDER. BELOW kindling's ignition_temp (280): the engine is NOT a fuse -- it warms the engine room but cannot light the fuel bunker next door by itself; a blast that kills it can (death_payload)
+death_payload = "engine_death"        # B.2: the engine goes up and lights the room (CLAUDE.md "Starting a fire")
+
 # [hazards.*]: a fixture's stored hazard -- one heat-triggered timed_charge
 # (gen_ship's `hazard` room tag): payload (a [payloads.*] row), trigger_temp
 # (game degrees above ambient at its tile, > 0), fuse_s (seconds >= 0).
@@ -3460,11 +3466,16 @@ payload = "magazine_cookoff"
 trigger_temp = 200.0                  # PLACEHOLDER
 fuse_s = 4.0                          # PLACEHOLDER
 
+[hazards.hazmat_release]              # B.4's hazmat bay (fixture `hazmat`): the solvent store ruptures
+payload = "hazmat_release"
+trigger_temp = 120.0                  # PLACEHOLDER
+fuse_s = 1.0                          # PLACEHOLDER
+
 # [temps.*]: a department's `[physics] temp` preset -- its rooms' floor AIR
 # starts `above_ambient` game degrees warm (gen_ship's `temp` room tag ->
 # temp_init.npy). Never sub-ambient (the parked cold-rooms ruling). "ambient"
-# needs no row. No shipped recipe names one yet.
-[temps.hot_engineering]               # B.2's hot engine room, for the axis-department session
+# needs no row.
+[temps.hot_engineering]               # B.2's hot engine room (levels/recipes/departments/engineering.toml)
 above_ambient = 40.0                  # PLACEHOLDER
 
 # [levelgen.lights.*]: a room's lamp by name (gen_ship's `light` tag,
@@ -3484,9 +3495,10 @@ level = 2.0                           # PLACEHOLDER
 
 # [levelgen.fuel.*]: a fuel class -- the [materials.*] rows its clusters are
 # drawn from (a mix of fractions summing to 1) and how many clusters a room
-# gets (an inclusive range). `furniture` is exactly what gen_ship stamps today
-# (its 60/40 furniture/wood draw); any other mix waits for the `fuel` tag's
-# material extension (§5.2) and is refused at stamp time, named.
+# gets (an inclusive range). `furniture` is exactly gen_ship v1's 60/40
+# furniture/wood draw (FUEL_MIX_V1) and resolves to the int `fuel` tag; any
+# other mix resolves to the {clusters, mix} form (#133 `86629b2`), every
+# material a flammable [materials.*] row.
 [levelgen.fuel.furniture]
 clusters = [1, 2]                     # gen_ship v1's draw
 mix = { furniture = 0.6, wood = 0.4 } # gen_ship._place_fuel's draw

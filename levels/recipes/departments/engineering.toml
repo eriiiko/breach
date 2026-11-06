@@ -1,0 +1,42 @@
+# Department (scale 3): ENGINEERING -- vocabulary B.2, cut to v1 by the
+# archetype doc §7.1 (2026-11-06): the engine room (the hub) and the fuel
+# bunker aft of it. Left out until a second axis room fits a medium band
+# (layout doc §13 A2): the workshop, the switchboard, the pump room, and the
+# still (a secret off the workshop). Every value names a preset or a config
+# row; sizes and counts are PLACEHOLDERS the layout patch tunes against its
+# failure-rate gate.
+[department]
+name = "engineering"
+placement = "axis"              # one, on the mirror line: its rooms are band sections (layout doc §13 A2)
+cell = "own"                    # its own pressure cell, entered only through the lobbies' airlock pairs (L5)
+entry = "engine_room"           # an axis department's entry is its hub
+toward = "axis"
+
+[[room]]
+id = "engine_room"              # the hub: a band section. Narrow (6-10) when the maintenance ring takes the band's sides (layout doc §4.4)
+required = true
+size = { w = [6, 22], h = [13, 24] }   # h >= 13: the hub section the airlock bypass needs (layout doc §4.3)
+fixture = "engine"              # the engine: a heat source on from tick 0, capped below kindling's ignition (no fuse)
+light = "harsh"
+vent = { duct = "engine", roles = ["supply", "return"] }   # a sealed box (doors and airlocks only) carries both
+
+[[room]]
+id = "fuel_bunker"              # the biggest fire load on the ship; NO fuel in the engine room itself (the galley FUSE rule is per room)
+required = true
+attach = "aft"                  # the section directly aft of the hub (engines are aft)
+size = { w = [12, 22], h = [6, 10] }   # a band section spans the band's width
+fuel = "kindling"
+light = "dark"                  # sealed, no vent: its air is its fuel's
+
+[[edge]]
+a = "engine_room"
+b = "fuel_bunker"
+kind = "door"                   # gas-tight: the bunker is a sealed box
+
+[[duct]]
+name = "engine"
+filter = "derelict"             # its own duct, separate from accommodation (D2)
+
+[physics]
+temp = "hot_engineering"        # every room of the department starts warm (temp_init.npy)
+pressure = "ambient"

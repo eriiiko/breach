@@ -1,0 +1,66 @@
+# Department (scale 3): ARMORY -- vocabulary B.5, cut to v1 by the archetype
+# doc §7.1 (2026-11-06): the stub, the armory at its end, the magazine behind
+# it (sealed, a door, the cook-off), an optional firing range (a long side
+# room on an open arch). Left out: the explosives bunker (a behind of a
+# behind), the locked door (#135). No secret (B.5: 0). Every value names a
+# preset or a config row; sizes and counts are PLACEHOLDERS the layout patch
+# tunes against its failure-rate gate (layout doc §13 A6).
+[department]
+name = "armory"
+placement = "wing"
+cell = "main"                   # the hard profile promotes it to its own cell (archetype doc §4)
+entry = "stub"
+toward = "spawn"
+
+[[room]]
+id = "stub"
+shape = "corridor"
+required = true
+width = "wide"
+size = { across = [6, 8], along = [14, 34] }   # allows across >= 7: the airlock entry the hard profile's promotion draws (archetype doc §1.1, layout doc §4)
+
+[[room]]
+id = "armory"
+required = true
+attach = "end"
+size = { w = [10, 14], h = [9, 13] }
+fuel = "furniture"              # racks and lockers: a light load
+light = "harsh"                 # bright
+vent = { duct = "armory", roles = ["supply", "return"] }   # the armory + range compartment
+
+[[room]]
+id = "magazine"
+required = true
+attach = "behind:armory"        # split off the armory's far side
+size = { w = [6, 8], h = [6, 8] }
+fixture = "magazine"            # a heat-triggered cook-off
+light = "lit"                   # sealed (a door), no vent
+
+[[room]]
+id = "range"                    # the firing range: a long sightline, nowhere to hide
+p = 0.4
+size = { w = [6, 8], h = [12, 34] }   # LONG along the stub: up to a whole side of a 34-long stub
+light = "harsh"
+
+[[edge]]
+a = "stub"
+b = "armory"
+kind = "open"                   # stub, armory and range breathe as one compartment
+
+[[edge]]
+a = "armory"
+b = "magazine"
+kind = "door"                   # gas-tight: a sealed box
+
+[[edge]]
+a = "stub"
+b = "range"
+kind = "open"
+
+[[duct]]
+name = "armory"
+filter = "derelict"
+
+[physics]
+temp = "ambient"
+pressure = "ambient"
