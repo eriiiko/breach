@@ -118,15 +118,24 @@ hand-off "invent the vent material": blocks walking, does not block air).**
 A new material row `[materials.grille]` -- a steel grating: mobility 0
 (no unit enters or paths through it), permeability 1.0 and the GAS thermal
 regime (gas, smoke, pressure and gas energy cross it exactly as they cross
-an air tile), a low light extinction (it is bars; you see through it, so
-LOS and the bullet march pass it, `cover_exposure` 1.0 as `foliage`), not
+an air tile), a low light extinction (lamp light leaks through it), not
 flammable, never bursts, hp so a blast opens it. Every value a PLACEHOLDER
-(Erik tunes). Two new rows of the table above:
+(Erik tunes). **SIGHT (Erik's ruling, 2026-11-06, the same day, before the
+merge): the grille is NOT see-through.** The row says `blocks_sight = true`
+(a new OPTIONAL material column; omitted, a material blocks sight iff it is
+sealed to gas, the rule line of sight always had), `GameMap.sight_block` =
+`solid` or that word, and `has_los` reads it: no unit sees, targets or is
+ordered to fire through a grille. What travels with the air still passes
+(`has_los(physical=True)`, the flame jet's cone). **BULLETS are undecided**
+(Erik: "another question" -- he plans a penetration property for every
+material, its own session): a round already in flight passes a grille today
+(the march stops on `solid`; `cover_exposure` 1.0 as `foliage`). Two new
+rows of the table above:
 
 | Edge type | Stamps | Gas | Walk | Sight | Compartment boundary? | Cell crossing? | L9 | Status |
 |---|---|---|---|---|---|---|---|---|
-| **grille** (the window's twin: an air-only opening) | `MAT_GRILLE` over the window's width (`GLASS_W`) in the shared wall | passes always | NO (mobility 0) | yes | yes -- a grille tile is STRUCTURE for walking and for `compartments()` | never (`CELL_CROSSING_KINDS` excludes it) | must-share-wall | NEW 2026-11-06 |
-| **vented door** (a door that breathes) | the legacy door's opening and width (`MAT_DOOR`, `DOOR_W`) + `MAT_GRILLE` in the ONE wall tile on each side of the opening (its jambs); steel beyond | passes always, through the jambs | yes, through the door tiles | through the jambs | yes, exactly as `door` | never | must-share-wall | NEW 2026-11-06 |
+| **grille** (the window's twin: an air-only opening) | `MAT_GRILLE` over the window's width (`GLASS_W`) in the shared wall | passes always | NO (mobility 0) | NO (`blocks_sight`) | yes -- a grille tile is STRUCTURE for walking and for `compartments()` | never (`CELL_CROSSING_KINDS` excludes it) | must-share-wall | NEW 2026-11-06 |
+| **vented door** (a door that breathes) | the legacy door's opening and width (`MAT_DOOR`, `DOOR_W`) + `MAT_GRILLE` in the ONE wall tile on each side of the opening (its jambs); steel beyond | passes always, through the jambs | yes, through the door tiles | no, exactly as `door` | yes, exactly as `door` | never | must-share-wall | NEW 2026-11-06 |
 
 Neither sits in a hull wall (an edge joins two rooms; a hull is no room's
 shared wall), and neither is a secret path. `vented_door` is a walk kind
