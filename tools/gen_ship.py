@@ -31,7 +31,8 @@ entity_door = an A6 ``door`` entity in the opening; airlock = the L5 recipe,
 a vestibule carved on room ``a``'s side with two doors and levels/airlock_demo's
 controller and wiring; locked is accepted by the schema and refused here
 until #135), per-room tags from :data:`ROOM_TAGS`,
-fuel clusters (furniture / wood) against the walls of tagged rooms clear of
+fuel clusters (furniture / wood, or the tag's material mix) against the
+walls of tagged rooms clear of
 doors (placed in one room of a mirror pair and reflected into its twin),
 the ducts (one per duct name the ``vent`` tags use, a filter each) and their
 vents on inner walls of their tagged rooms, one heat-triggered
@@ -41,7 +42,8 @@ hazmat store; vocabulary E.2 row 1), one ``heat_source`` per
 on the one floor-site rule, the ``temp``-tagged rooms' floor air seeded hot
 in ``temp_init.npy`` (hot engineering; E.2 row 4), a ``hull_door``-tagged
 room's A6 door entity cut into its hull wall, CLOSED (the cargo hold's valve
-to space, B.4; E.2 row 5), one static lamp per room
+to space, B.4; E.2 row 5), one static lamp per room (or one per
+``lamp_span`` of its long side)
 (render light only), the spawn rooms from the tags. It reads only the graph (and one seeded generator for the clusters).
 
 GATES (:func:`validate`), before anything is written: airtight
@@ -118,6 +120,18 @@ FILTER = "hepa_basic"        # a [filters.*] row (config.toml)
 TIME_LIMIT_S = 300.0
 LAMP_RGB = (1.0, 0.84, 0.67)  # the explosion studio's warm static lamp
 LAMP_INTENSITY = 1.2
+LAMP_RANGE = 16.0            # tiles
+# Lamps per length (layout doc §11): a room tagged ``lamp_span = s`` gets
+# ceil(long side / s) lamps along its long axis, the long side cut into that
+# many EQUAL spans, one lamp centred on each (so a room's lamps are symmetric
+# about its centre and a mirror twin's are the reflection). LAMP_SPAN is the
+# value the layout stage will set; untagged rooms keep the one centred lamp.
+LAMP_SPAN = 12
+LAMP_SPAN_MIN = 6
+# The int form of the ``fuel`` tag: v1's furniture / wood 60/40 draw, as a
+# mix (:func:`fuel_spec`; one ``rng.random()`` per cluster, the walk in name
+# order, so the int form keeps v1's exact draws).
+FUEL_MIX_V1 = {"furniture": 0.6, "wood": 0.4}
 
 # Entity doors (A6). The bots (control_bots) never USE a door and a closed
 # entity door stamps MAT_DOOR_CLOSED (mobility 0), which no unit crosses --
@@ -275,8 +289,16 @@ EDGE_KINDS = {
                             pending="#135 (terminals: a locked door is an "
                                     "entity door + a terminal)"),
 }
-# Kinds that may cross a cell boundary (L5): everything else is refused.
-CELL_CROSSING_KINDS = ("airlock", "bulkhead")
+# Kinds that may cross a cell boundary (L5 as amended, Erik 2026-10-31: the
+# breakable wall is the third, a deliberate weak point): everything else is
+# refused.
+CELL_CROSSING_KINDS = ("airlock", "bulkhead", "breakable")
+# The ONE multi-edge a room pair may carry: the AIRLOCK BYPASS (cycle-types
+# doc §1.3, layout doc §4.3) -- an airlock and a breakable on the same shared
+# wall, each with an explicit ``at``, the outer door's two wall mounts and a
+# clearance tile each side of the breakable kept steel (:meth:`ShipGraph.
+# _check_bypass`). Any other pair carrying two edges is refused.
+BYPASS_KINDS = ("airlock", "breakable")
 
 
 def _is_int(v) -> bool:
@@ -303,9 +325,18 @@ MAIN_DUCT = "main"
 
 def _check_vent(v) -> bool:
     """v1's shorthand ``"supply"`` / ``"return"``, or ``{"duct": name,
-    "roles": [...]}`` with 1-2 distinct roles and a plain id-safe name."""
-    if v in VENT_ROLES:
-        return True
+    "roles": [...]}`` with 1-2 distinct roles and a plain id-safe name, or a
+    non-empty LIST of such dicts on distinct ducts (a room on several ducts:
+    its department's and a duct link's, cycle-types doc §1.3)."""
+    if isinstance(v, (list, tuple)):
+        return (len(v) >= 1 and all(_check_vent_dict(d) for d in v)
+                and len({d["duct"] for d in v}) == len(v))
+    if isinstance(v, str):
+        return v in VENT_ROLES
+    return _check_vent_dict(v)
+
+
+def _check_vent_dict(v) -> bool:
     if not (isinstance(v, dict) and set(v) == {"duct", "roles"}):
         return False
     name, roles = v["duct"], v["roles"]
@@ -338,13 +369,102 @@ def _check_heat_source(v) -> bool:
 
 
 def vent_spec(tag):
-    """A ``vent`` tag as ``(duct, roles, shorthand)``: roles in
+    """A single-duct ``vent`` tag as ``(duct, roles, shorthand)``: roles in
     :data:`VENT_ROLES` order; ``shorthand`` True for v1's string form (on
-    the ``main`` duct, keeping v1's vent ids)."""
+    the ``main`` duct, keeping v1's vent ids). A LIST tag has one such
+    triple per duct: :func:`vent_specs`."""
+    if isinstance(tag, (list, tuple)):
+        raise GraphSchemaError(
+            f"vent tag {tag!r} is a list (a room on several ducts): read it "
+            f"with vent_specs()")
     if isinstance(tag, str):
         return MAIN_DUCT, (tag,), True
     return tag["duct"], tuple(r for r in VENT_ROLES if r in tag["roles"]), \
         False
+
+
+def vent_specs(tag) -> tuple:
+    """Every form of a ``vent`` tag as a tuple of :func:`vent_spec` triples,
+    one per duct the room is on (one for the shorthand and the single
+    dict), in the tag's order."""
+    if isinstance(tag, (list, tuple)):
+        return tuple(vent_spec(d) for d in tag)
+    return (vent_spec(tag),)
+
+
+def _check_fuel(v) -> bool:
+    """``int >= 0`` (v1: clusters of :data:`FUEL_MIX_V1`) or ``{"clusters":
+    int >= 0, "mix": {material name: fraction > 0, ...}}`` with the
+    fractions summing to 1. The shape only: the names are resolved against
+    the material table (and a non-fuel material refused by name) in
+    :meth:`ShipGraph.check`."""
+    if _is_int(v):
+        return v >= 0
+    if not (isinstance(v, dict) and set(v) == {"clusters", "mix"}):
+        return False
+    n, mix = v["clusters"], v["mix"]
+    return (_is_int(n) and n >= 0 and isinstance(mix, dict) and len(mix) >= 1
+            and all(isinstance(k, str) and _is_num(f) and f > 0
+                    for k, f in mix.items())
+            and abs(sum(float(f) for f in mix.values()) - 1.0) <= 1e-9)
+
+
+def fuel_materials() -> tuple:
+    """THE fuel / contents set: the material ids a fuel class may stamp,
+    read off the material table -- the ``flammable`` rows (furniture, wood,
+    kindling, foliage today). What a fuel cluster is made of is a room's
+    CONTENTS, never its structure: :func:`compartments` labels through it,
+    :func:`_floor_site` keeps clear of it, :func:`embed` counts it. A
+    structural row (hull, steel, glass, the doors) is not flammable, so a mix
+    naming one is refused."""
+    global _FUEL_MATS
+    if _FUEL_MATS is None:
+        tbl = _table()
+        _FUEL_MATS = tuple(i for i, f in enumerate(tbl.flammable) if f)
+    return _FUEL_MATS
+
+
+_FUEL_MATS = None
+
+
+def fuel_spec(tag) -> tuple:
+    """A ``fuel`` tag as ``(clusters, ((material id, fraction), ...))``, the
+    mix in material-NAME order (so the int form, :data:`FUEL_MIX_V1`, walks
+    furniture then wood, v1's draw). Refuses an unknown name or a material
+    outside :func:`fuel_materials`, naming it."""
+    if _is_int(tag):
+        n, mix = int(tag), FUEL_MIX_V1
+    else:
+        n, mix = int(tag["clusters"]), tag["mix"]
+    names = list(_table().names)
+    fuel = fuel_materials()
+    out = []
+    for name in sorted(mix):
+        if name not in names:
+            raise GraphSchemaError(
+                f"fuel mix material {name!r} has no [materials.{name}] row "
+                f"(known: {names})")
+        mid = names.index(name)
+        if mid not in fuel:
+            raise GraphSchemaError(
+                f"fuel mix material {name!r} is structure, not fuel (its "
+                f"[materials.{name}] row is not flammable): a fuel class "
+                f"stamps a room's contents only "
+                f"({[names[i] for i in fuel]})")
+        out.append((mid, float(mix[name])))
+    return n, tuple(out)
+
+
+def _draw_fuel_material(rng, mix) -> int:
+    """One ``rng.random()`` walked over the mix's cumulative fractions (the
+    last entry takes the rounding remainder)."""
+    r = rng.random()
+    acc = 0.0
+    for mid, f in mix[:-1]:
+        acc += f
+        if r < acc:
+            return mid
+    return mix[-1][0]
 
 
 def _check_hull_door(v) -> bool:
@@ -364,18 +484,27 @@ def hull_door_spec(tag) -> tuple:
 
 # THE per-room tag schema (all keys optional): key -> (what it is, check).
 # A department writes these; stage 2 reads ``spawn_team``, ``zombie``,
-# ``fuel``, ``vent``, ``hazard``, ``heat_source``, ``temp``, ``hull_door`` and ``light``, and carries ``dept``, ``role``,
+# ``fuel``, ``vent``, ``hazard``, ``heat_source``, ``temp``, ``hull_door``,
+# ``light`` and ``lamp_span``, and carries ``dept``, ``role``,
 # ``cell`` and ``secret`` into ``Embedding.room_tags`` for the vent builder
 # and the grammar. Generator-side data: none of them is a level field.
 ROOM_TAGS = {
     "spawn_team": ("int: the team seated here (a spawn room)", _is_int),
     "zombie":     ("bool: the zombies' spawn room",
                    lambda v: isinstance(v, bool)),
-    "fuel":       ("int >= 0: fuel clusters against the walls",
-                   lambda v: _is_int(v) and v >= 0),
+    "fuel":       ("int >= 0 (fuel clusters against the walls, v1's "
+                   'furniture / wood 60/40) or {"clusters": int >= 0, "mix": '
+                   "{[materials.*] name: fraction > 0, ...} summing to 1} (a "
+                   "fuel class)", _check_fuel),
     "vent":       ('"supply" | "return" (a vent on the main duct) or '
                    '{"duct": name, "roles": ["supply"] | ["return"] | '
-                   '["supply", "return"]}', _check_vent),
+                   '["supply", "return"]} or a list of such dicts on '
+                   "distinct ducts", _check_vent),
+    "lamp_span":  (f"int >= {LAMP_SPAN_MIN}: lamps per length -- "
+                   "ceil(long side / lamp_span) lamps along the room's long "
+                   "axis, one centred on each equal span (absent: one "
+                   "centred lamp)",
+                   lambda v: _is_int(v) and v >= LAMP_SPAN_MIN),
     "dept":       ("str: the department this room belongs to",
                    lambda v: isinstance(v, str)),
     "role":       ("str: the room's role in its department",
@@ -495,7 +624,13 @@ class ShipGraph:
                     f"room {rm.id}: a secret room cannot be a spawn room")
             if "hull_door" in rm.tags:
                 self._check_hull_door(rm)
+            if "fuel" in rm.tags:
+                try:
+                    fuel_spec(rm.tags["fuel"])
+                except GraphSchemaError as err:
+                    raise GraphSchemaError(f"room {rm.id}: {err}") from None
         n = len(self.rooms)
+        pairs: dict = {}
         for e in self.edges:
             if e.kind not in EDGE_KINDS:
                 raise GraphSchemaError(
@@ -504,7 +639,56 @@ class ShipGraph:
             if not (0 <= e.a < n and 0 <= e.b < n) or e.a == e.b:
                 raise GraphSchemaError(
                     f"edge {e.a}-{e.b}: not two distinct rooms of {n}")
+            pairs.setdefault((min(e.a, e.b), max(e.a, e.b)), []).append(e)
+        for (a, b), es in sorted(pairs.items()):
+            if len(es) == 1:
+                continue
+            if sorted(e.kind for e in es) != sorted(BYPASS_KINDS):
+                raise GraphSchemaError(
+                    f"rooms {a}-{b} carry {len(es)} edges "
+                    f"({[e.kind for e in es]}): a room pair carries one edge, "
+                    f"bar the airlock bypass (exactly one airlock + one "
+                    f"breakable on the shared wall)")
+            self._check_bypass(es)
         self._check_ducts_and_cells()
+
+    def _check_bypass(self, es: list) -> None:
+        """The AIRLOCK BYPASS (layout doc §4.3): the airlock's and the
+        breakable's openings on the one shared wall, both ``at`` explicit;
+        the outer door keeps a steel wall-mount tile each side (its transfer
+        pump and side probe mount there) and the breakable a steel clearance
+        tile each side, all inside the shared run -- so the two openings
+        never overlap and the run is at least ``1 + AIRLOCK_W + 1 + 1 +
+        DOOR_W + 1`` long. Refused by name (the geometry is the graph's)."""
+        al = next(e for e in es if e.kind == "airlock")
+        br = next(e for e in es if e.kind == "breakable")
+        tag = f"airlock bypass {al.a}-{al.b}"
+        if al.at is None or br.at is None:
+            raise GraphSchemaError(
+                f"{tag}: the airlock's and the breakable's `at` must both be "
+                f"set (got {al.at!r}, {br.at!r}) -- two openings on one wall "
+                f"cannot both be centred")
+        wall = shared_wall(self.rooms[al.a], self.rooms[al.b])
+        if wall is None:
+            raise GraphSchemaError(f"{tag}: the rooms share no wall")
+        _o, _line, lo, hi = wall
+        na, nb = al.spec.width, br.spec.width
+        span_a = (al.at - 1, al.at + na)          # the outer door + its mounts
+        span_b = (br.at - 1, br.at + nb)          # the breakable + clearance
+        for what, (s0, s1) in (("the airlock's outer door with its two wall "
+                                "mounts", span_a),
+                               ("the breakable with its two clearance tiles",
+                                span_b)):
+            if s0 < lo or s1 > hi:
+                raise GraphSchemaError(
+                    f"{tag}: {what} ({s0}..{s1}) leaves the shared wall "
+                    f"{lo}..{hi}")
+        if not (span_a[1] < span_b[0] or span_b[1] < span_a[0]):
+            raise GraphSchemaError(
+                f"{tag}: the outer door's mounts {span_a[0]}..{span_a[1]} and "
+                f"the breakable's clearance {span_b[0]}..{span_b[1]} overlap "
+                f"-- the wall between the two openings must hold a mount "
+                f"tile AND a clearance tile")
 
     def _check_hull_door(self, rm: Room) -> None:
         """A ``hull_door`` tag: refuse ``state = "open"`` (v1: the breach
@@ -528,15 +712,17 @@ class ShipGraph:
           without one share an implicit cell): a duct never crosses a cell
           boundary;
         - a SEALED room (every edge it has bounds a compartment) carrying a
-          ``vent`` tag carries BOTH roles (the vents have no pressure
-          feedback: a lone supply pumps it up, a lone return drains it).
-          v1's string shorthand is exempt: v1's ``--vents`` pair is exactly
-          such a lone supply / lone return (critique finding 2), and
-          levels/ship_demo is pinned byte-identical;
-        - a ``vent_only`` edge joins two rooms ON ONE DUCT (the air path is
-          the duct; nothing is cut in the wall);
-        - an edge whose rooms lie in different cells is an airlock or a
-          bulkhead, never a plain door (L5)."""
+          ``vent`` tag carries BOTH roles on EACH duct it is on (the vents
+          have no pressure feedback: a lone supply pumps it up, a lone
+          return drains it). v1's string shorthand is exempt: v1's
+          ``--vents`` pair is exactly such a lone supply / lone return
+          (critique finding 2), and levels/ship_demo is pinned
+          byte-identical;
+        - a ``vent_only`` edge joins two rooms that share a duct (the air
+          path is the duct; nothing is cut in the wall);
+        - an edge whose rooms lie in different cells is an airlock, a
+          bulkhead or a breakable wall, never a plain door (L5 as
+          amended)."""
         from config import CFG
         filters = getattr(CFG, "filters", None)
         for name, ann in self.ducts.items():
@@ -550,12 +736,13 @@ class ShipGraph:
                 raise GraphSchemaError(
                     f"duct {name!r}: filter {fname!r} has no [filters."
                     f"{fname}] row in config.toml")
-        specs = {rm.id: vent_spec(rm.tags["vent"]) for rm in self.rooms
+        specs = {rm.id: vent_specs(rm.tags["vent"]) for rm in self.rooms
                  if "vent" in rm.tags}
         cells: dict = {}
-        for rid, (duct, _roles, _sh) in specs.items():
-            cells.setdefault(duct, {}).setdefault(
-                self.rooms[rid].tags.get("cell"), []).append(rid)
+        for rid, triples in specs.items():
+            for (duct, _roles, _sh) in triples:
+                cells.setdefault(duct, {}).setdefault(
+                    self.rooms[rid].tags.get("cell"), []).append(rid)
         for duct, by_cell in sorted(cells.items()):
             if len(by_cell) > 1:
                 desc = ", ".join(f"cell {c}: rooms {ids}" for c, ids in
@@ -563,33 +750,36 @@ class ShipGraph:
                 raise GraphSchemaError(
                     f"duct {duct!r} spans {len(by_cell)} cells ({desc}): a "
                     f"duct never crosses a cell boundary (vocabulary §0.5)")
-        for rid, (duct, roles, shorthand) in sorted(specs.items()):
-            if shorthand or len(roles) == 2:
-                continue
-            mine = [e for e in self.edges if rid in (e.a, e.b)]
-            if all(e.spec.bounds for e in mine):
-                raise GraphSchemaError(
-                    f"room {rid} is sealed (every edge bounds a compartment) "
-                    f"and carries only a {roles[0]!r} vent on duct {duct!r}: "
-                    f"a sealed room carries both a supply and a return or "
-                    f"neither (vocabulary §0.4 / §0.5)")
+        for rid, triples in sorted(specs.items()):
+            for (duct, roles, shorthand) in triples:
+                if shorthand or len(roles) == 2:
+                    continue
+                mine = [e for e in self.edges if rid in (e.a, e.b)]
+                if all(e.spec.bounds for e in mine):
+                    raise GraphSchemaError(
+                        f"room {rid} is sealed (every edge bounds a "
+                        f"compartment) and carries only a {roles[0]!r} vent "
+                        f"on duct {duct!r}: a sealed room carries both a "
+                        f"supply and a return or neither, on each of its "
+                        f"ducts (vocabulary §0.4 / §0.5)")
         for e in self.edges:
             if e.kind == "vent_only":
-                da = specs.get(e.a, (None,))[0]
-                db = specs.get(e.b, (None,))[0]
-                if da is None or da != db:
+                da = [t[0] for t in specs.get(e.a, ())]
+                db = [t[0] for t in specs.get(e.b, ())]
+                if not set(da) & set(db):
                     raise GraphSchemaError(
                         f"edge {e.a}-{e.b} (vent_only): rooms {e.a} and "
-                        f"{e.b} are not on one duct (room {e.a}: {da!r}, "
-                        f"room {e.b}: {db!r}) -- a vent_only edge's air "
-                        f"path IS the duct")
+                        f"{e.b} are not on one duct (room {e.a}: {da or None}"
+                        f", room {e.b}: {db or None}) -- a vent_only edge's "
+                        f"air path IS the duct")
             ca = self.rooms[e.a].tags.get("cell")
             cb = self.rooms[e.b].tags.get("cell")
             if ca != cb and e.kind not in CELL_CROSSING_KINDS:
                 raise GraphSchemaError(
                     f"edge {e.a}-{e.b}: kind {e.kind!r} crosses cells {ca} "
                     f"-> {cb}; an edge crossing a cell boundary is an "
-                    f"airlock or a bulkhead, never a plain door (L5)")
+                    f"airlock, a bulkhead or a breakable wall, never a "
+                    f"plain door (L5)")
 
     def compartment_of(self) -> list:
         """Room id -> compartment index: rooms joined by an edge that does
@@ -1152,7 +1342,7 @@ class Embedding:
     tilemap: np.ndarray               # (h, w) int32 v3 codes
     spawn_rooms: list                 # list[SpawnRoom]: team 0, team 1, zombies
     entities: list                    # ducts + vents, doors, hazard charges, heat sources
-    lights: list                      # one ceiling lamp per room (LightEntry)
+    lights: list                      # ceiling lamps, room by room (LightEntry)
     doors: int
     windows: int
     fuel_tiles: int
@@ -1173,16 +1363,18 @@ def _reflect(box, w):
 
 
 def _place_fuel(rng, tm, room: Room, graph: ShipGraph, door) -> None:
-    """``room.tags['fuel']`` clusters against its walls, clear of the
-    passages in ``door`` (the opening tiles of every ``keep_clear`` edge);
-    in a mirrored graph placed once per pair (an axis room: its left half)
-    and reflected into the twin."""
+    """``room.tags['fuel']`` clusters against its walls, each one material
+    drawn from the tag's mix (:func:`fuel_spec`; the int form is v1's 60/40
+    furniture / wood), clear of the passages in ``door`` (the opening tiles
+    of every ``keep_clear`` edge); in a mirrored graph placed once per pair
+    (an axis room: its left half) and reflected into the twin."""
     W = graph.width
     x0, y0, x1, y1 = room.box
     if graph.mirror_x and room.mirror == room.id:
         x1 = min(x1, W // 2 - 1)
-    for _ in range(int(room.tags.get("fuel", 0))):
-        mat = MAT_FURNITURE if rng.random() < 0.6 else MAT_WOOD
+    n, mix = fuel_spec(room.tags.get("fuel", 0))
+    for _ in range(n):
+        mat = _draw_fuel_material(rng, mix)
         for _try in range(8):
             cw, ch = int(rng.integers(2, 4)), int(rng.integers(1, 3))
             if rng.random() < 0.5:
@@ -1260,8 +1452,7 @@ def _floor_site(tm, room: Room, axis2: int, passage, reserved):
         for x in range(x0, x1 + 1):
             if tm[y, x] != MAT_AIR:
                 continue
-            if np.isin(tm[y - 1:y + 2, x - 1:x + 2],
-                       (MAT_FURNITURE, MAT_WOOD)).any():
+            if np.isin(tm[y - 1:y + 2, x - 1:x + 2], fuel_materials()).any():
                 continue
             if passage[max(0, y - c):y + c + 1, max(0, x - c):x + c + 1].any():
                 continue
@@ -1331,14 +1522,15 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
     duct's wall vents, one per (room, role): supply rooms first, then by
     room id. Ducts in name order. A vent's id is ``vent_<duct>_<room>_<role>``;
     v1's string shorthand keeps v1's ``vent_<role>`` (so v1 ships write the
-    same file), and a collision of those is refused by name. A room with
-    both roles gets two sites, the second clear of the first."""
+    same file), and a collision of those is refused by name. A room on
+    several ducts (a list tag) gets a site per (duct, role); every site is
+    clear of every earlier one, whatever its duct."""
     tagged = {}
     for rm in graph.rooms:
         if "vent" in rm.tags:
-            duct, roles, shorthand = vent_spec(rm.tags["vent"])
-            for role in roles:
-                tagged.setdefault(duct, []).append((role, rm, shorthand))
+            for duct, roles, shorthand in vent_specs(rm.tags["vent"]):
+                for role in roles:
+                    tagged.setdefault(duct, []).append((role, rm, shorthand))
     if not tagged:
         return []
     taken = (np.zeros(tm.shape, dtype=bool) if reserved is None
@@ -1597,16 +1789,8 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         z = next(rm for rm in graph.rooms if rm.tags.get("zombie"))
         rooms.append(SpawnRoom(team=ZOMBIE_TEAM, x=z.x, y=z.y, w=z.w, h=z.h,
                                max_per_team=graph.zombies))
-    fuel = int(np.isin(tm, (MAT_FURNITURE, MAT_WOOD)).sum())
-    lights = []
-    for rm in graph.rooms:
-        rgb, level = LAMP_RGB, LAMP_INTENSITY
-        if "light" in rm.tags:
-            rgb = tuple(float(c) for c in rm.tags["light"][0])
-            level = float(rm.tags["light"][1])
-        lights.append(LightEntry(x=rm.x + rm.w / 2.0, y=rm.y + rm.h / 2.0,
-                                 color=rgb, intensity=level, range=16.0,
-                                 kind="static"))
+    fuel = int(np.isin(tm, fuel_materials()).sum())
+    lights = [lamp for rm in graph.rooms for lamp in _room_lamps(rm)]
     comp = graph.compartment_of()
     room_tags = {rm.id: {"compartment": comp[rm.id],
                          **{k: rm.tags[k] for k in ANNOTATION_TAGS
@@ -1617,6 +1801,32 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                      fuel_tiles=fuel, room_tags=room_tags,
                      edges_by_kind=by_kind, wires=wires,
                      temp_init=_build_temp_init(tm, graph))
+
+
+def _room_lamps(rm: Room) -> list:
+    """A room's static lamps (render light only), in its ``light`` colour
+    and level (else LAMP_RGB / LAMP_INTENSITY): ONE at its centre, or --
+    with a ``lamp_span`` tag -- ``ceil(long side / lamp_span)`` along its
+    long axis (x on a square room), the long side cut into that many equal
+    spans with a lamp at each span's centre, the short axis centred. The
+    positions are symmetric about the room's centre, so a mirror twin's
+    lamps are the reflection of its twin's."""
+    rgb, level = LAMP_RGB, LAMP_INTENSITY
+    if "light" in rm.tags:
+        rgb = tuple(float(c) for c in rm.tags["light"][0])
+        level = float(rm.tags["light"][1])
+    if "lamp_span" not in rm.tags:
+        spots = [(rm.x + rm.w / 2.0, rm.y + rm.h / 2.0)]
+    elif rm.w >= rm.h:
+        n = -(-rm.w // int(rm.tags["lamp_span"]))
+        spots = [(rm.x + (k + 0.5) * rm.w / n, rm.y + rm.h / 2.0)
+                 for k in range(n)]
+    else:
+        n = -(-rm.h // int(rm.tags["lamp_span"]))
+        spots = [(rm.x + rm.w / 2.0, rm.y + (k + 0.5) * rm.h / n)
+                 for k in range(n)]
+    return [LightEntry(x=x, y=y, color=rgb, intensity=level,
+                       range=LAMP_RANGE, kind="static") for (x, y) in spots]
 
 
 def _build_temp_init(tm, graph: ShipGraph):
@@ -1710,9 +1920,10 @@ def compartments(tm: np.ndarray, graph: ShipGraph | None = None):
     while an ``open`` edge's air gap joins its rooms as the table says. An
     entity door's span is structure even while it stands open (it can
     close), and so is an airlock's inner door: each vestibule is its own
-    compartment."""
+    compartment. Contents = air + :func:`fuel_materials` (whatever a fuel
+    class may stamp: a kindling cluster never splits its room)."""
     from scipy import ndimage
-    contents = np.isin(tm, (MAT_AIR, MAT_FURNITURE, MAT_WOOD))
+    contents = np.isin(tm, (MAT_AIR,) + fuel_materials())
     if graph is not None:
         for e in graph.edges:
             if e.spec.bounds and e.spec.pending is None:
