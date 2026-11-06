@@ -367,6 +367,42 @@ Each is a statement to veto, none is settled:
 - The validation ranges in §1 are first guesses to tune on the failure-rate
   gate.
 
+### 7.1 Build-session amendments (2026-11-06, the lead)
+
+From the layout doc §13 (read it first; it holds where the two disagree):
+
+- `lobby = { x = [9, 11] }` (A1: the engineering airlocks' vestibules stand
+  in the lobbies), not 8-10.
+- `G_MAX` = 16, and the executor ends with the layout's minima feasibility
+  on the whole graph; infeasible is a `GrammarReject` (A5).
+- `secrets = { budget = 1, size = [6, 8] }`: the annex is one room, both
+  sides drawn in `size`, attached `behind` its host by the department's
+  secret edge kind. (The annex's size was "the archetype's" and never
+  written down.)
+- The skeleton's GRAPH side (its quotient rooms with their roles, its axiom
+  edges, the band's section chain, what each `on` class may anchor to) is
+  declared in `tools/ship_layout.py` and imported by the grammar; the
+  geometry is added to the same module by the layout patch. One module is
+  the skeleton's home.
+
+**The v1 cut of each department** (content from the vocabulary doc Part B,
+trimmed to what the layout's primitives and the built mechanisms can stamp
+today; every trim is Erik's to veto and each names what brings the room
+back):
+
+| Department | In v1 | Left out, and what it waits for |
+|---|---|---|
+| `crew_quarters` (wing, main) | as shipped (recipe doc §3.1) | -- |
+| `engineering` (axis, own) | engine room (the hub: the `engine` heat source, hot, harsh light, its own duct with supply + return) · fuel bunker aft of it (sealed, a door, kindling, dark, no vent) | workshop, switchboard, pump room: a second axis room does not fit a medium band (layout §13 A2); the still (a secret off the workshop) |
+| `cargo_hold` (wing, main, `toward = "axis"`) | stub · main hold at the stub's end, against the hull, with the closed cargo door to space (`hull_door`) · side bays, open arches onto the stub · hazmat bay (optional, sealed, the `hazmat` fixture) · secret annex behind a bay | cold storage (the sub-ambient physics session); livestock pens (props, a straw row); bays opening onto the hold rather than the stub (a side room touches only its stub) |
+| `medbay` (wing, main; large only) | stub · ward at the stub's end · operating theatre and scrub room (open arches: one clean compartment with the stub and ward) · pharmacy (sealed, the `o2_store` fixture) · morgue (sealed, dim) · secret annex behind the morgue | isolation room (a room-level cell); the locked pharmacy door (#135); the cold morgue (physics session) |
+| `armory` (wing, main; large only; `own` on hard) | stub · armory at the stub's end · magazine behind it (sealed, a door, the `magazine` fixture) · firing range (optional, a long side room, an open arch) | explosives bunker (a `behind` of a `behind`); the locked door (#135) |
+
+New recipe key this needs: `room.hull_door = true` (the resolver writes
+gen_ship's `HULL_DOOR_DEFAULT`; geometry, not physics). New preset rows, all
+PLACEHOLDER: `[heat_sources.engine]`, `[hazards.hazmat_release]`, the
+`hazmat` fixture.
+
 ## 8. Costs
 
 | Piece | Where |

@@ -419,6 +419,87 @@ splits. No set iteration; the mirror is a reflection.
   skeleton takes a LIST of hull rectangles from day one so a notched hull
   later means more rows, not a rewrite.
 
+## 13. Build-session amendments (2026-11-06, the lead, before any layout code)
+
+Revision 2 was never re-critiqued. The lead re-ran its arithmetic against
+`gen_ship`'s constants before briefing the implementation and found two
+blockers and four gaps. Each amendment below REPLACES the named text; where
+this section and §2-§12 disagree, this section holds. They are
+computational-method calls (the lead's); the two with a feel consequence are
+marked for Erik.
+
+**A1. The engineering airlocks carve their vestibules on the LOBBY's side
+(replaces §2 "vestibule carved on ENGINEERING's side", §4.3, §4.4).**
+`_airlock` takes `VESTIBULE_D + 1` = 6 tiles of room `a` from the shared wall
+and needs 3 more in front of the inner door. Two mirrored airlocks carved
+into one hub from both sides need a hub `6 + 3 + 6` = 15 wide: a medium band
+of 12-14 cannot hold them (the carves collide at 12, and at 14 the gap
+between the inner doors is 2, less than a footprint). With a ring it is
+worse: the airlock lands on a ring side room 6 deep, which can never hold a
+9-deep carve. So the edge is `(a = lobby, b = engine room or ring side
+room)`: the vestibule stands in the lobby against the band wall, its inner
+door facing the wing. Consequences: the lobby's x range is **9-11** (9 =
+`VESTIBULE_D + 1 + FORMATION_FOOTPRINT`; the archetype draft's 8-10 is
+amended); the band needs no width for it, so medium keeps `wm` 12-14; the
+ring's side rooms stay 6 deep. The airlock's `at` is placed as far aft along
+the shared run as its mounts allow, so the lobby floor aft of the vestibule
+is as small as possible; what remains there is a dead nook, 3-5 wide, and is
+legal (it is the airlock's approach, not a corridor). *Feel, for Erik: each
+lobby has an airlock box standing in its aft corner.*
+
+**A2. Axis departments: the block, and rooms beyond the hub (fills a gap in
+§5).** An axis department's rooms are band sections. Its `entry` is the hub.
+Further rooms carry `attach = "fore"` or `attach = "aft"`, at most one of
+each in v1 (the loader refuses a second by name): a section directly fore or
+aft of the hub, joined to it by its declared edge as a centred, even-width
+opening. The department's sections form one BLOCK, placed at the band's aft
+end (engines are aft). Band order, fore to aft: the main-cell sections, then
+the block. Consecutive sections of one cell are joined by a centred `door`
+(an axiom edge the skeleton declares); the boundary between the last main
+section and the block is a `bulkhead`. When the ring is applied, the block
+is the ring's rectangle plus the fore / aft rooms beyond the ring's fore /
+aft rooms, and the application rewrites `hub-X` to `r_fore-X` / `r_aft-X`
+(as it rewrites the lobby edge). The `band.sections` count includes the
+block's sections. v1's engineering is hub + one aft room (the fuel bunker);
+a fore room does not fit a medium band beside the pinned main section and
+the hub (8 + 1 + 13 + 1 + 8 > the 24-26 tiles aft of the centre pin), so it
+is not in the v1 recipe.
+
+**A3. The hull strip picks its row (replaces §4.2 "along row A's hull
+wall").** The flank pair's narrow leg runs along the hull of row A or of row
+B: the first, in that order, whose departments still pack at their minima
+with the row 4 shallower. On a medium ship the quarters need the full 24 of
+depth, so the strip runs over the cargo row. Neither fits: `_Reject`.
+
+**A4. Skeleton draws are conditioned on the departments (extends §6, §11).**
+The slab's jitter, the lobby's x, `wm`, the insets and the passageway's
+`across` and y are drawn from the sub-range the departments' minimum demands
+leave feasible, wherever that bound is closed-form (it is for all six); the
+attempt is rejected only when a feasible sub-range is empty. Without this a
+medium ship rerolls most attempts: two-sided crew quarters need a row of 20,
+which only `wm` 12 + slab 8 + lobby 9 gives. The draw ORDER of §11 is
+unchanged; only the ranges narrow. Medium skeletons therefore vary little in
+x; their variety is the departments, the cycles, the exits and the band.
+
+**A5. The grammar asks the layout before it returns (extends the archetype
+doc §2).** After the last phase the executor calls the layout's minima
+feasibility on the whole quotient graph (the loader twin of §4, the same
+arithmetic, per size); an infeasible graph is a `GrammarReject`, which costs
+one cheap grammar attempt instead of `MAX_ATTEMPTS` layout attempts.
+`G_MAX` becomes 16.
+
+**A6. Recipes are authored depth-elastic (extends §3 rule 4, §9).** A row is
+24-27 deep on medium and 44-47 on large, so a wing department's ranges must
+span that: stub `along` + end room `h` + 1 covering 24 at the bottom and 47
+at the top, with enough side rooms (`count` ranges) to fill a 34-long stub.
+Hull-side steel stays bounded by `VOID_MAX` like every other void; a
+department that cannot reach the hull on a size is refused for that size by
+the loader twin, not padded with a thick hull. The shipped department files'
+size and count ranges are tuned by the layout patch against the
+failure-rate gate (they are placeholders, like the presets), each change a
+dated line in the recipe doc. *Feel, for Erik: on a large ship a department
+is a long side street, up to ten rooms off one stub.*
+
 ## Systems
 
 **(a) Existing canonical systems this design uses**: Level generators
