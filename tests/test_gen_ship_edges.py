@@ -207,14 +207,35 @@ def _generated_levels():
 @pytest.mark.parametrize("folder, argv", _generated_levels())
 def test_shipped_generated_levels_regenerate_byte_identical(folder, argv,
                                                             tmp_path):
-    """PROPERTY: every shipped gen_ship level regenerates BYTE-IDENTICAL
-    from the command its own header names: a stage-2 or gate change that
-    leaves v1's door/window graphs alone moves no level. BREAKS IF a change
-    alters what v1 stamps, draws, rejects or writes (then the level is
-    regenerated and the change named, never silently)."""
+    """PROPERTY: every shipped gen_ship level regenerates IDENTICALLY from
+    the command its own header names -- the GENERATOR is deterministic: a
+    stage-2 or gate change that leaves v1's door/window graphs alone moves no
+    level. Every file is compared byte for byte, except a ``.png``, which is
+    compared by its DECODED raster (size, mode, pixel bytes): the PNG
+    encoder's compressed bytes differ across Pillow / zlib versions with the
+    pixels equal (#172), and the encoder's version is not the generator's
+    determinism. Every committed file is checked and every difference named,
+    not only the first. BREAKS IF a change alters what v1 stamps, draws,
+    rejects or writes -- a tile, an entity, a header line or a pixel (then
+    the level is regenerated and the change named, never silently)."""
+    from PIL import Image
+
+    def _raster(p: Path):
+        with Image.open(p) as im:
+            return im.size, im.mode, im.tobytes()
+
     out = tmp_path / folder.name
     assert G.main(argv + ["--out", str(out)]) == 0
     committed = sorted(p.name for p in folder.iterdir() if p.is_file())
     assert set(G.DATA_FILES) <= set(committed)
+    differ = []
     for name in committed:
-        assert (out / name).read_bytes() == (folder / name).read_bytes(), name
+        new, old = out / name, folder / name
+        if not new.is_file():
+            differ.append(f"{name} (not regenerated)")
+        elif name.lower().endswith(".png"):
+            if _raster(new) != _raster(old):
+                differ.append(f"{name} (decoded raster)")
+        elif new.read_bytes() != old.read_bytes():
+            differ.append(f"{name} (bytes)")
+    assert differ == [], differ
