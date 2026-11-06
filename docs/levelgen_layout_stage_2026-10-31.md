@@ -500,6 +500,16 @@ failure-rate gate (they are placeholders, like the presets), each change a
 dated line in the recipe doc. *Feel, for Erik: on a large ship a department
 is a long side street, up to ten rooms off one stub.*
 
+**A7. Row assignment is the GRAMMAR's (2026-11-06, the lead; replaces §6's
+"then moved by first-fit").** Wing departments in gradient order (`toward =
+"spawn"` first, `"axis"` last, ties in file order) are dealt to rows
+alternately starting with row A; each wing department instance carries
+`(row, position)` in the quotient graph, `position` counting from the slab
+end. There is no first-fit move: a row that cannot pack is infeasible and
+the layout rejects it. This makes "first in its row" a graph fact, so the
+grammar declares the spawn-exit edges (`slab - <exit room of a row's first
+department>`, §7) itself. Built in `tools/ship_grammar.py` (`_rows`).
+
 ## Systems
 
 **(a) Existing canonical systems this design uses**: Level generators
