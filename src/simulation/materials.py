@@ -52,12 +52,20 @@ MAT_KINDLING = 8
 # vegetation.md §4.1, Erik's ruling 2026-09-07 §6.1.2): the prop entity's
 # ONE material row — "fully walkable, no wind/vision/movement interaction,
 # flammable, fuel ~= 2x furniture". APPENDED (ids are positional and
-# contiguous — this must always be the LAST id, or every level
-# re-materializes). Id 9 is an ordinary id: it was also level format v2's
+# contiguous — a new row takes the next id after the last, never an
+# insertion, or every level re-materializes; #134's grille is id 10). Id 9 is an ordinary id: it was also level format v2's
 # SPACE tilemap code, until format v3 (#27, 2026-10-29) moved SPACE outside
 # the id range (``level_loader.SPACE_CODE`` = -1). Ids are rows, unbounded
 # up to the int8 material plane's 127 (``level_loader.MATERIAL_ID_MAX``).
 MAT_FOLIAGE = 9
+# #134 (levelgen, 2026-11-06; the level-design lead on Erik's hand-off "the
+# vent material: blocks walking but does not block air"): a steel GRATING.
+# mobility 0 (no unit enters it) but permeability 1.0 and the GAS thermal
+# regime, so gas, smoke, pressure and gas energy cross it exactly as they
+# cross an air tile; a low light extinction (it is bars). APPENDED: ids are
+# positional and contiguous, so a new row always takes the next id and no
+# existing level re-materializes. See [materials.grille] in config.toml.
+MAT_GRILLE = 10
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.
 # Listed in id order; ``MaterialTable`` validates contiguity.
@@ -72,6 +80,7 @@ MATERIAL_NAMES = {
     MAT_DOOR_CLOSED: "door_closed",
     MAT_KINDLING: "kindling",
     MAT_FOLIAGE: "foliage",
+    MAT_GRILLE: "grille",
 }
 
 # Scalar columns: name -> numpy dtype. ``light_atten`` is handled separately
@@ -1160,6 +1169,26 @@ class MaterialTable:
             perm.append(float(val) if val is not None
                         else (0.0 if occludes_per_id[idx] else 1.0))
         self.permeability = np.array(perm, dtype=np.float32)
+
+        # blocks_sight: does this material stop a line of SIGHT (#134, Erik's
+        # ruling 2026-11-06: the grille passes air but is not see-through).
+        # OPTIONAL column -- omitted, it is derived: a material blocks sight
+        # iff it is sealed to gas (permeability == 0), which is what line of
+        # sight read before the column existed, so no existing row changes. A
+        # row sets it to decouple sight from flow. Consumed by
+        # ``GameMap.sight_screen`` (``has_los``); what a BULLET or a jet does
+        # is not this column (the march and ``has_los(physical=True)`` read
+        # ``solid``).
+        sight = []
+        for idx, (row, name) in enumerate(zip(rows, self.names)):
+            val = self._get_field_opt(row, "blocks_sight")
+            if val is not None and not isinstance(val, bool):
+                raise ValueError(
+                    f"materials.{name}.blocks_sight must be true or false; "
+                    f"got {val!r}")
+            sight.append(bool(val) if val is not None
+                         else bool(perm[idx] <= 0.0))
+        self.blocks_sight = np.array(sight, dtype=bool)
 
         # burst_threshold: max pressure DIFFERENTIAL a wall tile can hold across
         # its opposing sides before it fails (over-pressure relief valve, ch.04

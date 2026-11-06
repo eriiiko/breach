@@ -141,20 +141,27 @@ def test_a_duct_spanning_two_cells_is_refused_by_name():
                          "vent": {"duct": "spine", "roles": BOTH}}})
 
 
-def test_a_sealed_room_with_a_lone_vent_role_is_refused():
-    """PROPERTY: a room whose every edge bounds a compartment (a sealed
-    box) carrying only a supply is refused by name (no pressure feedback:
-    it would be pumped up until a membrane bursts); the same room joined by
-    an ``open`` edge (its air returns through the doorway) is accepted.
-    BREAKS IF the sealed-room rule is dropped, or applied to a room that
-    breathes through an open edge."""
+def test_an_air_volume_with_a_lone_vent_role_is_refused():
+    """PROPERTY (the air-volume vent rule, vocabulary §0.6, which replaced
+    the sealed-room rule): an annex behind a plain door is its own air
+    volume, so carrying only a supply on a duct there is refused by name
+    (the duct, the volume's rooms, the role it lacks) -- no pressure
+    feedback, it would be pumped up -- while the same lone supply is
+    accepted when an ``open`` edge or a ``vented_door`` puts it in one
+    volume with a room carrying that duct's return; and the generated plan
+    passes the gates. BREAKS IF the rule is dropped, stops reading the air
+    column (a vented door counted as sealed, or a plain door as air), or
+    checks a room instead of its volume."""
     lone = {"vent": {"duct": "q", "roles": ["supply"]}}
     ret = {"vent": {"duct": "q", "roles": ["return"]}}
-    with pytest.raises(G.GraphSchemaError, match=r"room 3 is sealed"):
+    with pytest.raises(G.GraphSchemaError,
+                       match=r"duct 'q': the air volume of rooms \[3\].*"
+                             r"no 'return'"):
         _graph("door", tags={3: lone, 1: {"vent": {"duct": "q",
                                                     "roles": BOTH}}})
-    _emb, reasons = _run(_graph("open", tags={3: lone, 1: ret}))
-    assert reasons == []
+    for kind in ("open", "vented_door"):
+        _emb, reasons = _run(_graph(kind, tags={3: lone, 1: ret}))
+        assert reasons == [], kind
 
 
 # ---------------------------------------------------------------------------

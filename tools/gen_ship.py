@@ -101,8 +101,8 @@ from simulation.entities.door import (  # noqa: E402
     quantize_span_tiles, tiles_per_m,
 )
 from simulation.materials import (  # noqa: E402
-    MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_HULL,
-    MAT_STEEL, MAT_WOOD,
+    MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_GRILLE,
+    MAT_HULL, MAT_KINDLING, MAT_STEEL, MAT_WOOD,
 )
 
 TILE_SIZE_M = 0.333          # the reference tile (the playground's scale)
@@ -128,6 +128,21 @@ LAMP_RANGE = 16.0            # tiles
 # value the layout stage will set; untagged rooms keep the one centred lamp.
 LAMP_SPAN = 12
 LAMP_SPAN_MIN = 6
+# THE LAMP LIGHT BUDGET (#136, found by the first large recipe ship, which
+# main.py refused at frame 3): a frame's cone emitters may carry at most
+# LIGHT_CONE_BUDGET = 2^44 counts per channel = 128 light units at L°'s
+# currency (renderer/frame_lights.py, the sweep's door), of which the muzzle
+# flashes may take MUZZLE_FLASH_MAX_TOTAL = 64 and the cursor lamp /
+# flashlights / jets need the rest. So the lamps of a ship whose rooms carry
+# ``lamp_span`` are held at <= LAMP_LIGHT_BUDGET light units per channel
+# (:func:`_ship_lamps`): first fewer lamps per room (a wider span, ending at
+# one lamp per room), then -- only if one lamp per room is still too much --
+# every lamp dimmed by one common factor. tests/test_levelspec.py holds this
+# number against frame_lights' constants (gen_ship stays pyray-free).
+CONE_LIGHT_UNITS = 128.0      # == frame_lights.LIGHT_CONE_BUDGET / 2^L_FINE_BITS
+MUZZLE_FLASH_LIGHT = 64.0     # == frame_lights.MUZZLE_FLASH_MAX_TOTAL
+LAMP_RESERVE = 16.0           # the cursor lamp + a squad's flashlights + slack
+LAMP_LIGHT_BUDGET = CONE_LIGHT_UNITS - MUZZLE_FLASH_LIGHT - LAMP_RESERVE
 # The int form of the ``fuel`` tag: v1's furniture / wood 60/40 draw, as a
 # mix (:func:`fuel_spec`; one ``rng.random()`` per cluster, the walk in name
 # order, so the int form keeps v1's exact draws).
@@ -247,7 +262,22 @@ class EdgeKind:
     what stage 2 emits besides tiles (``"door"``: one A6 door entity in the
     opening; ``"airlock"``: the L5 recipe, :func:`_airlock`); ``pending``:
     None when stage 2 stamps it, else what will (the schema accepts the
-    kind, :func:`embed` refuses it naming that)."""
+    kind, :func:`embed` refuses it naming that); ``jambs``: the material
+    stamped in the ONE wall tile on each side of the opening (None: they stay
+    steel; ``vented_door``'s grilles, #134), always inside the shared run;
+    ``air``: the opening passes gas from tick 0 and nothing in play closes
+    it (``open``, ``grille``, ``vented_door``), so its two rooms are ONE AIR
+    VOLUME (:func:`air_volumes`, vocabulary §0.6) -- an entity door can be
+    shut, a window or a breakable wall must break first, a door is
+    gas-tight.
+
+    WALK, AIR and STRUCTURE are three questions (vocabulary §0.4, the dated
+    note of 2026-11-06). A grille tile (``grille``'s opening, a
+    ``vented_door``'s jambs) is STRUCTURE for walking and for the
+    compartment count :func:`validate` gates, exactly like the steel it
+    replaces -- :func:`compartments` never sees it as a gap, and a
+    ``vented_door`` bounds a compartment exactly as ``door`` does -- while to
+    the AIR it is open (permeability 1.0): the two rooms are one volume."""
     stamps: int | None
     width: int
     bounds: bool
@@ -256,6 +286,8 @@ class EdgeKind:
     l9: str
     pending: str | None = None
     entity: str | None = None
+    jambs: int | None = None
+    air: bool = False
 
 
 _DOOR_STAMP = {"open": MAT_AIR, "closed": MAT_DOOR_CLOSED}
@@ -271,7 +303,7 @@ EDGE_KINDS = {
     "entity_door": EdgeKind(_DOOR_STAMP[ENTITY_DOOR_INITIAL], DOOR_W, True,
                             False, True, L9_MUST_SHARE_WALL, entity="door"),
     "open":        EdgeKind(MAT_AIR, DOOR_W, False, False, True,
-                            L9_MUST_SHARE_WALL),
+                            L9_MUST_SHARE_WALL, air=True),
     "window":      EdgeKind(MAT_GLASS, GLASS_W, True, False, False,
                             L9_MUST_SHARE_WALL),
     "bulkhead":    EdgeKind(None, 0, True, False, False,
@@ -288,10 +320,23 @@ EDGE_KINDS = {
                             L9_MUST_SHARE_WALL,
                             pending="#135 (terminals: a locked door is an "
                                     "entity door + a terminal)"),
+    # #134 (2026-11-06, vocabulary §0.4 addition): the GRILLE kinds -- air
+    # passes, walking does not. `grille` is the window's twin (its width, a
+    # steel grating instead of glass): an air-only opening, nobody walks
+    # through, not a secret path. `vented_door` is the legacy door with a
+    # grille in each jamb: the door's opening and width (so no layout
+    # arithmetic moves), door tiles in the opening, the one wall tile on
+    # each side grille. Both bound a compartment (a grille is structure for
+    # walking and for the count); neither is a CELL_CROSSING_KINDS row.
+    "grille":      EdgeKind(MAT_GRILLE, GLASS_W, True, False, False,
+                            L9_MUST_SHARE_WALL, air=True),
+    "vented_door": EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL, jambs=MAT_GRILLE, air=True),
 }
 # Kinds that may cross a cell boundary (L5 as amended, Erik 2026-10-31: the
 # breakable wall is the third, a deliberate weak point): everything else is
-# refused.
+# refused -- the grille kinds included (an air opening across a pressure
+# cell would make the two cells one).
 CELL_CROSSING_KINDS = ("airlock", "bulkhead", "breakable")
 # The ONE multi-edge a room pair may carry: the AIRLOCK BYPASS (cycle-types
 # doc §1.3, layout doc §4.3) -- an airlock and a breakable on the same shared
@@ -390,6 +435,100 @@ def vent_specs(tag) -> tuple:
     if isinstance(tag, (list, tuple)):
         return tuple(vent_spec(d) for d in tag)
     return (vent_spec(tag),)
+
+
+def _id_key(rid):
+    """Room ids sort numerically (a ShipGraph's ints) or by name (a recipe's
+    and the grammar's strings)."""
+    return (isinstance(rid, str), rid)
+
+
+def air_volumes(rooms, edges) -> dict:
+    """Room id -> AIR VOLUME index (vocabulary §0.6 item 1): rooms joined by
+    an edge whose :data:`EDGE_KINDS` row says ``air`` (``open``, ``grille``,
+    ``vented_door``) are one body of air. ``rooms``: every room id, in
+    order; ``edges``: ``(a, b, kind)``. Indices run 0..k-1 in the order of
+    each volume's first room. An edge added later can only MERGE volumes."""
+    rooms = list(rooms)
+    parent = {r: r for r in rooms}
+
+    def find(r):
+        while parent[r] != r:
+            parent[r] = parent[parent[r]]
+            r = parent[r]
+        return r
+    for a, b, kind in edges:
+        if EDGE_KINDS[kind].air and a in parent and b in parent:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+    idx, out = {}, {}
+    for r in rooms:
+        out[r] = idx.setdefault(find(r), len(idx))
+    return out
+
+
+@dataclass(frozen=True)
+class VentAirViolation:
+    """One breach of :func:`vent_air_rule`: on ``duct``, the air volume of
+    ``rooms`` has ``have`` vents (in ``have_rooms``) and no ``missing`` one.
+    ``str()`` is the refusal message every call site raises."""
+    duct: str
+    rooms: tuple
+    have: str
+    have_rooms: tuple
+    missing: str
+
+    def __str__(self) -> str:
+        return (f"duct {self.duct!r}: the air volume of rooms "
+                f"{list(self.rooms)} has {self.have!r} vents (rooms "
+                f"{list(self.have_rooms)}) and no {self.missing!r} vent on "
+                f"that duct -- every air volume a duct has a vent in carries "
+                f"a supply AND a return on it (no pressure feedback: a lone "
+                f"supply pumps the volume up, a lone return drains it; "
+                f"vocabulary §0.6)")
+
+
+def vent_air_rule(vents: dict, edges) -> list:
+    """THE AIR-VOLUME VENT RULE (vocabulary §0.6 item 2; it replaced the
+    sealed-room rule of §0.4): for every duct, every air volume the duct has
+    a vent in carries at least one SUPPLY and at least one RETURN on that
+    duct -- the vents have no pressure feedback, so a volume a duct only
+    feeds is pumped up and one it only drains is emptied. A sealed room is
+    the one-room volume, so the old rule is the special case. ONE function:
+    :meth:`ShipGraph.check`, the recipe door (``levelgen_recipes``) and the
+    grammar's ``air_volume`` invariant (``ship_grammar``) all call it.
+
+    ``vents``: EVERY room id (in order) -> its :func:`vent_specs` triples
+    (``()`` for a room without a vent); ``edges``: ``(a, b, kind)``. v1's
+    string shorthand is EXEMPT (v1's ``--vents`` pair is a lone supply and a
+    lone return in two rooms; levels/ship_demo is pinned byte-identical,
+    #151). Returns one :class:`VentAirViolation` per (duct, volume) that
+    lacks a role, in (duct, volume) order; ``[]`` when the rule holds."""
+    vol = air_volumes(vents, edges)
+    members: dict = {}
+    for rid, v in vol.items():
+        members.setdefault(v, []).append(rid)
+    by: dict = {}
+    for rid, triples in vents.items():
+        for duct, roles, shorthand in triples:
+            if shorthand:
+                continue
+            slot = by.setdefault((duct, vol[rid]),
+                                 {r: [] for r in VENT_ROLES})
+            for role in roles:
+                slot[role].append(rid)
+    out = []
+    for (duct, v), slot in sorted(by.items(), key=lambda kv: kv[0]):
+        for role in VENT_ROLES:
+            if slot[role]:
+                continue
+            have = next(r for r in VENT_ROLES if slot[r])
+            out.append(VentAirViolation(
+                duct=duct, rooms=tuple(sorted(members[v], key=_id_key)),
+                have=have, have_rooms=tuple(sorted(slot[have], key=_id_key)),
+                missing=role))
+    return out
 
 
 def _check_fuel(v) -> bool:
@@ -711,13 +850,12 @@ class ShipGraph:
         - a duct's rooms lie in ONE pressure cell (``cell`` tag; rooms
           without one share an implicit cell): a duct never crosses a cell
           boundary;
-        - a SEALED room (every edge it has bounds a compartment) carrying a
-          ``vent`` tag carries BOTH roles on EACH duct it is on (the vents
-          have no pressure feedback: a lone supply pumps it up, a lone
-          return drains it). v1's string shorthand is exempt: v1's
-          ``--vents`` pair is exactly such a lone supply / lone return
-          (critique finding 2), and levels/ship_demo is pinned
-          byte-identical;
+        - THE AIR-VOLUME RULE (:func:`vent_air_rule`, vocabulary §0.6):
+          every air volume (:meth:`air_volume_of`) a duct has a vent in
+          carries a supply AND a return on that duct. v1's string shorthand
+          is exempt: v1's ``--vents`` pair is exactly a lone supply / lone
+          return (critique finding 2), and levels/ship_demo is pinned
+          byte-identical (#151);
         - a ``vent_only`` edge joins two rooms that share a duct (the air
           path is the duct; nothing is cut in the wall);
         - an edge whose rooms lie in different cells is an airlock, a
@@ -750,18 +888,10 @@ class ShipGraph:
                 raise GraphSchemaError(
                     f"duct {duct!r} spans {len(by_cell)} cells ({desc}): a "
                     f"duct never crosses a cell boundary (vocabulary §0.5)")
-        for rid, triples in sorted(specs.items()):
-            for (duct, roles, shorthand) in triples:
-                if shorthand or len(roles) == 2:
-                    continue
-                mine = [e for e in self.edges if rid in (e.a, e.b)]
-                if all(e.spec.bounds for e in mine):
-                    raise GraphSchemaError(
-                        f"room {rid} is sealed (every edge bounds a "
-                        f"compartment) and carries only a {roles[0]!r} vent "
-                        f"on duct {duct!r}: a sealed room carries both a "
-                        f"supply and a return or neither, on each of its "
-                        f"ducts (vocabulary §0.4 / §0.5)")
+        bad = vent_air_rule({rm.id: specs.get(rm.id, ()) for rm in self.rooms},
+                            [(e.a, e.b, e.kind) for e in self.edges])
+        if bad:
+            raise GraphSchemaError(str(bad[0]))
         for e in self.edges:
             if e.kind == "vent_only":
                 da = [t[0] for t in specs.get(e.a, ())]
@@ -794,6 +924,16 @@ class ShipGraph:
             out.append(idx.setdefault(uf.find(i), len(idx)))
         return out
 
+    def air_volume_of(self) -> list:
+        """Room id -> AIR VOLUME index (:func:`air_volumes`; vocabulary §0.6
+        item 1), the twin of :meth:`compartment_of`: rooms joined by an
+        ``air`` edge (``open``, ``grille``, ``vented_door``) are one volume;
+        indices run 0..k-1 in the order of each volume's lowest room id. A
+        ``vented_door`` bounds a compartment but not a volume."""
+        vol = air_volumes(range(len(self.rooms)),
+                          [(e.a, e.b, e.kind) for e in self.edges])
+        return [vol[i] for i in range(len(self.rooms))]
+
 
 def shared_wall(a: Room, b: Room):
     """The 1-tile wall two rooms share: ``("v", col, y_lo, y_hi)`` or
@@ -814,23 +954,51 @@ def shared_wall(a: Room, b: Room):
     return None
 
 
-def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
-    """The (y, x) tiles an edge opens in its shared wall (none for a kind
-    that cuts nothing; the rooms must still share a wall: every kind in the
-    table is ``must-share-wall``)."""
+def _opening_span(graph: ShipGraph, e: Edge):
+    """``(orient, line, at, n, lo, hi)`` of an edge's opening in its shared
+    wall (``at`` None for a kind that cuts nothing; the rooms must still
+    share a wall: every kind in the table is ``must-share-wall``)."""
     wall = shared_wall(graph.rooms[e.a], graph.rooms[e.b])
     if wall is None:
         raise _Reject(f"edge {e.a}-{e.b}: the rooms share no wall")
     orient, line, lo, hi = wall
     n = e.spec.width
     if e.spec.stamps is None:
-        return []
+        return orient, line, None, n, lo, hi
     at = lo + (hi - lo + 1 - n) // 2 if e.at is None else e.at
     if at < lo or at + n - 1 > hi:
         raise _Reject(f"edge {e.a}-{e.b}: opening {at}+{n} leaves {lo}..{hi}")
+    return orient, line, at, n, lo, hi
+
+
+def _wall_tiles(orient: str, line: int, ts) -> list:
     if orient == "v":
-        return [(y, line) for y in range(at, at + n)]
-    return [(line, x) for x in range(at, at + n)]
+        return [(t, line) for t in ts]
+    return [(line, t) for t in ts]
+
+
+def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
+    """The (y, x) tiles an edge opens in its shared wall (none for a kind
+    that cuts nothing). A ``vented_door``'s jambs are NOT opening tiles
+    (:func:`_jamb_tiles`)."""
+    orient, line, at, n, _lo, _hi = _opening_span(graph, e)
+    if at is None:
+        return []
+    return _wall_tiles(orient, line, range(at, at + n))
+
+
+def _jamb_tiles(graph: ShipGraph, e: Edge) -> list:
+    """The two wall tiles flanking an edge's opening whose kind stamps
+    ``jambs`` (none otherwise), refused when one would leave the shared run
+    -- a jamb past the run's end is a corner, whose far side may be a third
+    room's air."""
+    if e.spec.jambs is None:
+        return []
+    orient, line, at, n, lo, hi = _opening_span(graph, e)
+    if at - 1 < lo or at + n > hi:
+        raise _Reject(f"edge {e.a}-{e.b} ({e.kind}): a jamb ({at - 1} or "
+                      f"{at + n}) leaves the shared wall {lo}..{hi}")
+    return _wall_tiles(orient, line, (at - 1, at + n))
 
 
 def _hull_runs(graph: ShipGraph, rm: Room) -> list:
@@ -1420,7 +1588,7 @@ def _vent_site(tm, room: Room, axis2: int, reserved=None):
         if tm[y + dy, x + dx] != MAT_AIR:
             continue
         if np.isin(tm[y - 1:y + 2, x - 1:x + 2],
-                   (MAT_DOOR, MAT_GLASS, MAT_DOOR_CLOSED)).any():
+                   (MAT_DOOR, MAT_GLASS, MAT_DOOR_CLOSED, MAT_GRILLE)).any():
             continue
         if reserved is not None and (reserved[y - 1:y + 2, x - 1:x + 2].any()
                                      or reserved[y + dy, x + dx]):
@@ -1516,7 +1684,118 @@ def _build_heat_sources(tm, graph: ShipGraph, passage, reserved) -> list:
     return ents
 
 
-def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
+# THE DESIGN FLOW's rate quantum (vocabulary §0.6 item 3): a vent's
+# ``q_circ`` is in TILE-VOLUMES OF AMBIENT AIR PER SECOND -- vent_system.
+# build_vents quantizes ``q_circ / (C * T_amb)`` (== q_circ: the P1
+# calibration C * T_amb == 1) through ``quantize_bulk_scalar`` into raw
+# Q16.16 bulk N per second, and a tile's whole bulk N at 1 atm ambient is
+# exactly 1.0 (13763 + 51773 == 65536 raw). So one raw unit per second is
+# the runtime's rate quantum, and every designed rate is ``raw / RATE_ONE``
+# with ``raw`` an int: exact in a float, written exactly (repr) and
+# quantized back to ``raw`` at load.
+RATE_ONE = 1 << 16
+
+
+def vent_ach() -> float:
+    """``[levelgen.vents] ach`` -- the air changes per hour a ventilated
+    room gets on the recipe path (PLACEHOLDER, Erik tunes). THE door of the
+    design flow's one dial: refuses a missing table or key and a value that
+    is not a positive number, naming the key."""
+    from config import CFG
+    tbl = getattr(getattr(CFG, "levelgen", None), "vents", None)
+    ach = getattr(tbl, "ach", None)
+    if ach is None:
+        raise ValueError(
+            "config.toml has no [levelgen.vents] ach: the recipe path's vent "
+            "design flow (vocabulary §0.6 item 3) has no fallback rate")
+    if not _is_num(ach) or not float(ach) > 0:
+        raise ValueError(
+            f"[levelgen.vents] ach = {ach!r} is not a positive number (air "
+            f"changes per hour of a ventilated room)")
+    return float(ach)
+
+
+def _apportion(total: int, groups: list) -> dict:
+    """``total`` (int) shared over ``groups`` -- ``(key, weight, members)``,
+    ``members`` the room ids that must get EQUAL shares (a mirror pair) --
+    in proportion to ``weight`` (the group's summed area) by largest
+    remainder in exact integers: room id -> int, summing to ``total``. Each
+    group's share is a multiple of its member count; ties go to the lowest
+    key. The caller makes ``total`` reachable (even when every group is a
+    pair)."""
+    wsum = sum(w for _k, w, _m in groups)
+    alloc = {k: (total * w // wsum) // len(m) * len(m) for k, w, m in groups}
+    rem = total - sum(alloc.values())
+    while rem > 0:
+        fits = [(k, w, m) for k, w, m in groups if len(m) <= rem]
+        if not fits:
+            raise ValueError(f"cannot apportion {total} over {groups}")
+        k, _w, m = max(fits, key=lambda g: (total * g[1] - alloc[g[0]] * wsum,
+                                            [-x for x in sorted(g[2])]))
+        alloc[k] += len(m)
+        rem -= len(m)
+    return {rid: alloc[k] // len(m) for k, _w, m in groups for rid in m}
+
+
+def vent_rates(graph: ShipGraph, ach: float) -> dict:
+    """THE DESIGN FLOW (vocabulary §0.6 item 3): ``(room id, duct, role) ->
+    raw rate`` (int, raw Q16.16 bulk N per second, :data:`RATE_ONE` = one
+    tile-volume of ambient air per second) for every NON-shorthand vent.
+
+    Per duct D and air volume V (:meth:`ShipGraph.air_volume_of`) it has
+    vents in: the served rooms are V's rooms with a vent on D, and ``F =
+    ach / 3600 x (their floor area in tiles)`` tile-volumes per second,
+    rounded to the quantum. D's supplies in V share F in proportion to their
+    rooms' areas; D's returns in V share the SAME integer F the same way --
+    so in every volume a duct's supply equals its return, exactly, and the
+    runtime (which hands the supplies what the returns collected, in
+    proportion to their rates) gives each volume back what it gave. Mirror
+    twins get equal rates: twins on mirrored ducts solve mirrored problems
+    (room ids keep their order under the mirror); twins on ONE duct in ONE
+    volume share as a pair (F made even when every share is a pair). v1's
+    shorthand is not here (it keeps :data:`Q_CIRC`)."""
+    vol = graph.air_volume_of()
+    by: dict = {}
+    for rm in graph.rooms:
+        if "vent" not in rm.tags:
+            continue
+        for duct, roles, shorthand in vent_specs(rm.tags["vent"]):
+            if shorthand:
+                continue
+            slot = by.setdefault((duct, vol[rm.id]),
+                                 {r: [] for r in VENT_ROLES})
+            for role in roles:
+                slot[role].append(rm.id)
+    per_tile = ach / 3600.0 * RATE_ONE
+    out = {}
+    for (duct, _v), slot in sorted(by.items(), key=lambda kv: kv[0]):
+        served = sorted(set(slot["supply"]) | set(slot["return"]))
+        area = {rid: graph.rooms[rid].w * graph.rooms[rid].h
+                for rid in served}
+        side_groups = {}
+        for role in VENT_ROLES:
+            groups, seen = [], set()
+            for rid in sorted(slot[role]):
+                if rid in seen:
+                    continue
+                tw = graph.rooms[rid].mirror if graph.mirror_x else None
+                pair = (tw is not None and tw != rid and tw in slot[role])
+                m = (rid, tw) if pair else (rid,)
+                seen.update(m)
+                groups.append((rid, sum(area[x] for x in m), m))
+            side_groups[role] = groups
+        total = max(1, round(per_tile * sum(area.values())))
+        if any(all(len(m) == 2 for _k, _w, m in g)
+               for g in side_groups.values()) and total % 2:
+            total += 1
+        for role in VENT_ROLES:
+            for rid, raw in _apportion(total, side_groups[role]).items():
+                out[(rid, duct, role)] = raw
+    return out
+
+
+def _build_vents(tm, graph: ShipGraph, reserved=None,
+                 ach: float | None = None) -> list:
     """One duct entity per duct name the rooms' ``vent`` tags use (id
     ``duct_<name>``, its filter :meth:`ShipGraph.duct_filter`), then that
     duct's wall vents, one per (room, role): supply rooms first, then by
@@ -1524,7 +1803,10 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
     v1's string shorthand keeps v1's ``vent_<role>`` (so v1 ships write the
     same file), and a collision of those is refused by name. A room on
     several ducts (a list tag) gets a site per (duct, role); every site is
-    clear of every earlier one, whatever its duct."""
+    clear of every earlier one, whatever its duct.
+
+    A vent's ``q_circ`` is the DESIGN FLOW's (:func:`vent_rates` at ``ach``,
+    default :func:`vent_ach`); v1's shorthand keeps :data:`Q_CIRC`."""
     tagged = {}
     for rm in graph.rooms:
         if "vent" in rm.tags:
@@ -1533,6 +1815,9 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
                     tagged.setdefault(duct, []).append((role, rm, shorthand))
     if not tagged:
         return []
+    designed = any(not sh for ts in tagged.values() for _r, _rm, sh in ts)
+    rates = (vent_rates(graph, vent_ach() if ach is None else ach)
+             if designed else {})
     taken = (np.zeros(tm.shape, dtype=bool) if reserved is None
              else reserved.copy())
     ents, ids = [], set()
@@ -1561,7 +1846,8 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
                 id=vid, class_name="vent", ordinal=len(ents),
                 fields={"x": int(x), "y": int(y), "mount": "wall",
                         "facing": facing, "role": role, "duct": did,
-                        "q_circ": Q_CIRC},
+                        "q_circ": (Q_CIRC if shorthand else
+                                   rates[(rm.id, duct, role)] / RATE_ONE)},
                 authored_keys=_VENT_KEYS))
     return ents
 
@@ -1749,6 +2035,11 @@ def embed(graph: ShipGraph, rng) -> Embedding:
             tm[y, x] = spec.stamps
             passage[y, x] |= spec.keep_clear
             reserved[y, x] |= spec.entity is not None
+        for (y, x) in _jamb_tiles(graph, e):
+            if tm[y, x] != MAT_STEEL:
+                raise _Reject(f"edge {e.a}-{e.b} ({e.kind}): its jamb at "
+                              f"({x},{y}) is not steel ({int(tm[y, x])})")
+            tm[y, x] = spec.jambs
         by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
     modes = {}
     for i, al in _airlocks(graph):
@@ -1762,7 +2053,8 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         _cut_hull_door(tm, rm, tiles, beyond, state)
         for (y, x) in tiles:
             passage[y, x] = reserved[y, x] = True
-    doors, windows = by_kind.get("door", 0), by_kind.get("window", 0)
+    doors = by_kind.get("door", 0) + by_kind.get("vented_door", 0)
+    windows = by_kind.get("window", 0)
     for rm in graph.rooms:
         if rm.tags.get("fuel") and (rm.mirror is None or rm.mirror >= rm.id
                                     or not graph.mirror_x):
@@ -1790,7 +2082,7 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         rooms.append(SpawnRoom(team=ZOMBIE_TEAM, x=z.x, y=z.y, w=z.w, h=z.h,
                                max_per_team=graph.zombies))
     fuel = int(np.isin(tm, fuel_materials()).sum())
-    lights = [lamp for rm in graph.rooms for lamp in _room_lamps(rm)]
+    lights = _ship_lamps(graph)
     comp = graph.compartment_of()
     room_tags = {rm.id: {"compartment": comp[rm.id],
                          **{k: rm.tags[k] for k in ANNOTATION_TAGS
@@ -1803,26 +2095,67 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                      temp_init=_build_temp_init(tm, graph))
 
 
-def _room_lamps(rm: Room) -> list:
+def _lamp_light(lamps) -> float:
+    """The most light, in light units, the lamps carry on any one channel
+    (``intensity x colour`` summed, the cone door's quantity)."""
+    return max((sum(l.intensity * l.color[c] for l in lamps)
+                for c in range(3)), default=0.0)
+
+
+def _ship_lamps(graph: ShipGraph) -> list:
+    """Every room's lamps (:func:`_room_lamps`), held within
+    :data:`LAMP_LIGHT_BUDGET` when any room carries ``lamp_span`` (the
+    recipe path; a graph without it -- v1 -- is returned untouched): the
+    spans are widened together (each room's span at least ``s``, ``s``
+    growing by one tile) until the lamps fit, and if one lamp per room still
+    does not, every lamp is dimmed by the one factor that fits. Pure
+    arithmetic on the graph, no draw; a span floor is the same for twins, so
+    the mirror holds."""
+    lamps = [l for rm in graph.rooms for l in _room_lamps(rm)]
+    spanned = [rm for rm in graph.rooms if "lamp_span" in rm.tags]
+    if not spanned or _lamp_light(lamps) <= LAMP_LIGHT_BUDGET:
+        return lamps
+    longest = max(max(rm.w, rm.h) for rm in spanned)
+    floor = min(int(rm.tags["lamp_span"]) for rm in spanned)
+    while _lamp_light(lamps) > LAMP_LIGHT_BUDGET and floor <= longest:
+        floor += 1
+        lamps = [l for rm in graph.rooms for l in _room_lamps(rm, floor)]
+    total = _lamp_light(lamps)
+    if total > LAMP_LIGHT_BUDGET:
+        k = LAMP_LIGHT_BUDGET / total
+        lamps = [LightEntry(x=l.x, y=l.y, color=l.color,
+                            intensity=l.intensity * k, range=l.range,
+                            kind=l.kind) for l in lamps]
+    return lamps
+
+
+def _room_lamps(rm: Room, span_floor: int = 0) -> list:
     """A room's static lamps (render light only), in its ``light`` colour
     and level (else LAMP_RGB / LAMP_INTENSITY): ONE at its centre, or --
     with a ``lamp_span`` tag -- ``ceil(long side / lamp_span)`` along its
     long axis (x on a square room), the long side cut into that many equal
     spans with a lamp at each span's centre, the short axis centred. The
     positions are symmetric about the room's centre, so a mirror twin's
-    lamps are the reflection of its twin's."""
+    lamps are the reflection of its twin's. A ``light`` tag of level 0 (the
+    ``dark`` preset: the fuel bunker) is a room with NO lamp -- the level
+    format refuses a zero-intensity ``[[light]]``. ``span_floor``: the
+    budget's widened span (:func:`_ship_lamps`); a tagged room uses
+    ``max(lamp_span, span_floor)``."""
     rgb, level = LAMP_RGB, LAMP_INTENSITY
     if "light" in rm.tags:
         rgb = tuple(float(c) for c in rm.tags["light"][0])
         level = float(rm.tags["light"][1])
+        if level <= 0.0:
+            return []
+    span = max(int(rm.tags.get("lamp_span", 0)), int(span_floor))
     if "lamp_span" not in rm.tags:
         spots = [(rm.x + rm.w / 2.0, rm.y + rm.h / 2.0)]
     elif rm.w >= rm.h:
-        n = -(-rm.w // int(rm.tags["lamp_span"]))
+        n = -(-rm.w // span)
         spots = [(rm.x + (k + 0.5) * rm.w / n, rm.y + rm.h / 2.0)
                  for k in range(n)]
     else:
-        n = -(-rm.h // int(rm.tags["lamp_span"]))
+        n = -(-rm.h // span)
         spots = [(rm.x + rm.w / 2.0, rm.y + (k + 0.5) * rm.h / n)
                  for k in range(n)]
     return [LightEntry(x=x, y=y, color=rgb, intensity=level,
@@ -1912,7 +2245,8 @@ def _masks(tm: np.ndarray):
 
 def compartments(tm: np.ndarray, graph: ShipGraph | None = None):
     """``(labels, n)`` of the ship's compartments: the regions bounded by
-    the structure (hull, steel, doors, glass) -- fuel is a room's contents,
+    the structure (hull, steel, doors, glass, grilles -- a grille passes air
+    but is structure here, #134) -- fuel is a room's contents,
     so a pocket of air behind a crate belongs to its room. With ``graph``
     the STRUCTURE MASK also takes the graph's edge kinds: the opening tiles
     of every edge that bounds a compartment are structure whatever they are
@@ -2023,6 +2357,38 @@ def _excused_secrets(clab, covered: set, graph: ShipGraph) -> set:
     return excused
 
 
+def centred_spawn_box(room: SpawnRoom) -> SpawnRoom:
+    """The RECIPE path's spawn room (#136 LevelSpec patch): the least box
+    that seats ``room.max_per_team`` under ``formation`` across the room's
+    whole SHORT side, centred along its long side. ``formation`` fills its
+    grid row-major from the room's first row, so in a whole 8-wide slab
+    (or a tall band section) the squad stood at the fore end; in the box it
+    stands in the middle. The box keeps the room's parity along the long
+    side, so its :func:`_centre` (the A* endpoint of :func:`validate` and the
+    bot path) is the room's own, and a mirrored pair of rooms gives a
+    mirrored pair of boxes. A room no longer than the box is returned as
+    is."""
+    vertical = room.h >= room.w
+    short, long_ = (room.w, room.h) if vertical else (room.h, room.w)
+    per_row = (short + FORMATION_GAP) // FORMATION_PITCH
+    if per_row < 1:
+        return room
+    need = -(-room.max_per_team // per_row)
+    side = need * FORMATION_PITCH - FORMATION_GAP
+    if (long_ - side) % 2:
+        side += 1                       # same parity: the centre is unmoved
+    if side >= long_:
+        return room
+    off = (long_ - side) // 2
+    if vertical:
+        return SpawnRoom(team=room.team, x=room.x, y=room.y + off, w=room.w,
+                         h=side, max_per_team=room.max_per_team,
+                         placement=room.placement)
+    return SpawnRoom(team=room.team, x=room.x + off, y=room.y, w=side,
+                     h=room.h, max_per_team=room.max_per_team,
+                     placement=room.placement)
+
+
 def _centre(room: SpawnRoom) -> tuple[int, int]:
     """The footprint top-left nearest the room's centre."""
     fp = FORMATION_FOOTPRINT
@@ -2114,17 +2480,28 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
 
 @dataclass
 class ShipPlan:
-    """A generated ship, validated, not yet written."""
+    """A generated ship, validated, not yet written. A RECIPE ship (family
+    B: ``generate(recipe=...)``) also carries the archetype's name, the
+    profile, the grammar attempt ``g`` (``attempt`` is then the layout
+    attempt ``a`` of that graph), the recipe hash, the quotient graph it was
+    laid out from and the layout's quotient-id -> room-ids map."""
     seed: int
     size: str
     attempt: int                      # the sub-seed that passed (0 = first)
     graph: ShipGraph                  # stage 1
     embedding: Embedding              # stage 2
     rejected: list = field(default_factory=list)   # (attempt, reasons)
+    recipe: str | None = None         # the archetype (None: plan_graph's v1)
+    profile: str | None = None
+    g: int = 0                        # the grammar attempt that passed
+    recipe_hash: str | None = None
+    quotient: object | None = None    # ship_grammar.QuotientGraph
+    room_ids: dict = field(default_factory=dict)   # quotient id -> (id, twin)
+    zombies_base: int | None = None   # the request, before the profile's scale
 
     @property
     def name(self) -> str:
-        return default_name(self.seed, self.size)
+        return default_name(self.seed, self.size, self.recipe, self.profile)
 
     @property
     def tilemap(self) -> np.ndarray:
@@ -2154,15 +2531,31 @@ class ShipPlan:
                          objective="eliminate")
 
 
-def default_name(seed: int, size: str) -> str:
-    return f"ship_s{seed}_{size}"
+def default_name(seed: int, size: str, recipe: str | None = None,
+                 profile: str | None = None) -> str:
+    """``ship_s<seed>_<size>``; a recipe ship (archetype doc §5.1)
+    ``ship_<archetype>_<profile>_s<seed>_<size>``."""
+    if recipe is None:
+        return f"ship_s{seed}_{size}"
+    return f"ship_{recipe}_{profile}_s{seed}_{size}"
 
 
 def generate(seed: int, size: str = "medium", *, max_per_team: int = 6,
-             zombies: int = 4, vents: bool = False) -> ShipPlan:
+             zombies: int = 4, vents: bool = False, recipe=None,
+             profile: str = "standard") -> ShipPlan:
     """A validated ship for ``seed`` (pure: no files). Tries sub-seeds
     ``attempt = 0, 1, ...``: stage 1, stage 2, the gates; the first plan
-    that passes is returned."""
+    that passes is returned.
+
+    ``recipe`` (an archetype name under ``levels/recipes/archetypes`` or a
+    loaded ``ship_grammar.Archetype``) switches stage 1 to FAMILY B
+    (:func:`_generate_recipe`): the grammar, then the layout stage, then the
+    same :func:`embed` and :func:`validate`; ``profile`` is the archetype's
+    difficulty profile. Without it nothing below changes: v1's
+    :func:`plan_graph`, its streams and its output."""
+    if recipe is not None:
+        return _generate_recipe(seed, size, recipe, profile, max_per_team,
+                                zombies, vents)
     check_request(size, max_per_team, zombies)
     rejected = []
     for attempt in range(MAX_ATTEMPTS):
@@ -2184,6 +2577,151 @@ def generate(seed: int, size: str = "medium", *, max_per_team: int = 6,
                        f"in {MAX_ATTEMPTS} attempts; last: {rejected[-1][1]}")
 
 
+def _generate_recipe(seed: int, size: str, recipe, profile: str,
+                     max_per_team: int, zombies: int, vents: bool
+                     ) -> ShipPlan:
+    """THE RECIPE PATH (family B; archetype doc §2): two attempt loops and
+    two rng streams. Grammar attempt ``g`` (``ship_grammar.plan_quotient``,
+    every draw from ``SeedSequence([seed, 0, g])``) gives a quotient graph
+    the layout's arithmetic accepts; then up to ``MAX_ATTEMPTS`` layout
+    attempts ``a``, each drawing the layout (``ship_layout.layout``) AND
+    stage 2 (:func:`embed`) from ``SeedSequence([seed, 1, g, a])``, through
+    :func:`validate` and the archetype's own gates
+    (``ship_layout.acceptance``). A graph no attempt realises hands over to
+    grammar attempt ``g + 1``; when the grammar's ``G_MAX`` attempts are
+    spent: :class:`ShipGenError`. The plan records ``(g, a)``; ``rejected``
+    holds ``((g, a), reasons)`` per layout attempt that failed."""
+    import ship_grammar
+    import ship_layout
+    if vents:
+        raise ShipGenError("vents = True is v1's single HEPA pair; a recipe "
+                           "ship's ducts are its departments'")
+    arch = (recipe if isinstance(recipe, ship_grammar.Archetype)
+            else ship_grammar.load_archetype(recipe))
+    ship_layout.check_request(arch, size, profile, max_per_team, zombies)
+    rejected, g = [], 0
+    while True:
+        try:
+            q = ship_grammar.plan_quotient(arch, size, profile, int(seed),
+                                           max_per_team=max_per_team,
+                                           zombies=zombies, g0=g)
+        except ship_grammar.GrammarExhausted as e:
+            last = rejected[-1][1] if rejected else [str(e)]
+            raise ShipGenError(
+                f"archetype {arch.name!r} profile {profile!r} seed {seed} "
+                f"size {size!r}: no plan passed the gates in "
+                f"{ship_grammar.G_MAX} grammar x {MAX_ATTEMPTS} layout "
+                f"attempts; last: {last}") from None
+        for a in range(MAX_ATTEMPTS):
+            rng = np.random.Generator(np.random.PCG64(
+                np.random.SeedSequence([int(seed), 1, q.g, a])))
+            try:
+                lay = ship_layout.layout(q, rng)
+                emb = embed(lay.graph, rng)
+                emb.spawn_rooms = [centred_spawn_box(r)
+                                   for r in emb.spawn_rooms]
+            except _Reject as e:
+                rejected.append(((q.g, a), [str(e)]))
+                continue
+            reasons = validate(emb.tilemap, emb.spawn_rooms, mirrored=True,
+                               graph=lay.graph)
+            if not reasons:
+                reasons = ship_layout.acceptance(arch, q, lay.graph, emb)
+            if not reasons:
+                return ShipPlan(
+                    seed=int(seed), size=size, attempt=a, graph=lay.graph,
+                    embedding=emb, rejected=rejected, recipe=arch.name,
+                    profile=profile, g=q.g, recipe_hash=q.recipe_hash,
+                    quotient=q, room_ids=lay.ids, zombies_base=zombies)
+            rejected.append(((q.g, a), reasons))
+        g = q.g + 1
+
+
+# ===========================================================================
+# LevelSpec: the [levelgen] record, and a ship from it (archetype doc §5.1)
+# ===========================================================================
+
+class StaleRecipeError(ShipGenError):
+    """A ``[levelgen]`` record whose ``recipe_hash`` is not the current
+    library's: the recipe was retuned since, so the ship cannot be
+    reproduced from it."""
+
+
+def generator_version() -> str:
+    """``git describe --always --dirty`` of this checkout (#126's recording
+    header ``build``, the one helper: ``match_replay.build_id``), or
+    ``"unknown"`` when git is not at hand."""
+    from match_replay import build_id
+    return build_id() or "unknown"
+
+
+def levelgen_record(plan: ShipPlan, version: str | None = None):
+    """A RECIPE ship's ``[levelgen]`` record (``level_loader.LevelgenRecord``):
+    its LevelSpec -- every input of :func:`generate` plus the recipe hash and
+    ``version`` (default :func:`generator_version`) -- and the factors it
+    realised. ``spawn_distance`` is ``ship_layout.bot_path``'s step count,
+    the metric the ``[validation]`` gate measures; ``cells`` and ``rooms`` are
+    the gate's counts too. ValueError for a v1 plan (no LevelSpec: v1 writes
+    no record)."""
+    import ship_grammar
+    import ship_layout
+    from level_loader import LevelgenRecord
+    if plan.recipe is None:
+        raise ValueError("a v1 ship (no recipe) has no LevelSpec")
+    q = plan.quotient
+    arch = ship_grammar.load_archetype(plan.recipe)
+    applied = {}
+    for c in q.cycles:
+        applied[c.type] = applied.get(c.type, 0) + 1
+    types = dict.fromkeys(e.cycle for e in arch.applies if e.cycle)
+    cycles = {t: applied.get(t, 0) for t in list(types) + sorted(
+        set(applied) - set(types))}
+    path = ship_layout.bot_path(plan.embedding)
+    return LevelgenRecord(
+        archetype=plan.recipe, recipe_hash=plan.recipe_hash,
+        generator_version=version or generator_version(), size=plan.size,
+        profile=plan.profile, max_per_team=plan.max_per_team,
+        zombies_base=plan.zombies_base, level_seed=plan.seed, g=plan.g,
+        a=plan.attempt, departments=tuple(d.name for d in q.departments),
+        cycles=cycles,
+        cells=len({rm.tags.get("cell") for rm in plan.graph.rooms}),
+        secrets=len(q.secrets), spawn_exits=q.exits, zombies=plan.zombies,
+        rooms=len(plan.graph.rooms), spawn_distance=max(0, len(path) - 1))
+
+
+def generate_from_spec(spec, *, allow_stale: bool = False) -> ShipPlan:
+    """THE SHIP OF A LEVELSPEC (archetype doc §5.1: a ship is a pure function
+    of it). ``spec``: a ``level_loader.LevelgenRecord``, or a level folder
+    whose level.toml carries one. Refuses (:class:`StaleRecipeError`) a
+    record whose ``recipe_hash`` is not the current library's, unless
+    ``allow_stale``: the recipe was retuned, the ship it names is gone. The
+    record's ``generator_version`` is not checked (a different build may
+    still give the same ship; compare the regenerated record to know)."""
+    import ship_grammar
+    from level_loader import LevelgenRecord, _parse_levelgen
+    if not isinstance(spec, LevelgenRecord):
+        import tomllib
+        toml_path = Path(spec) / "level.toml"
+        with open(toml_path, "rb") as f:
+            spec_ = _parse_levelgen(tomllib.load(f), toml_path)
+        if spec_ is None:
+            raise ShipGenError(f"{toml_path}: no [levelgen] table (a v1 or "
+                               f"hand-made level has no LevelSpec)")
+        spec = spec_
+    arch = ship_grammar.load_archetype(spec.archetype)
+    now = ship_grammar.recipe_hash(arch, spec.profile)
+    if now != spec.recipe_hash and not allow_stale:
+        raise StaleRecipeError(
+            f"[levelgen].recipe_hash {spec.recipe_hash[:12]}... is not the "
+            f"current {spec.archetype!r} / {spec.profile!r} recipe's "
+            f"({now[:12]}...): the recipe was retuned since this ship was "
+            f"generated, so it cannot be reproduced (allow_stale / "
+            f"--allow-stale generates today's ship from the same inputs)")
+    return generate(spec.level_seed, spec.size,
+                    max_per_team=spec.max_per_team, zombies=spec.zombies_base,
+                    recipe=arch, profile=spec.profile)
+
+
 # ===========================================================================
 # Writing
 # ===========================================================================
@@ -2198,6 +2736,9 @@ PALETTE = {
     MAT_WOOD:      (120, 84, 46),
     MAT_FURNITURE: (96, 71, 41),
     MAT_DOOR_CLOSED: (170, 110, 50),
+    MAT_KINDLING:  (142, 62, 36),    # a recipe's fuel class (no v1 ship has it)
+    MAT_GRILLE:    (70, 150, 120),   # #134: a grating -- teal, apart from steel
+                                     # and glass (no v1 ship has it)
 }
 AIR_ALT = (30, 32, 38)
 ROOM_TINT = {0: (30, 40, 62), 1: (62, 34, 34), ZOMBIE_TEAM: (34, 56, 36)}
@@ -2246,25 +2787,51 @@ DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml")
 OPTIONAL_DATA_FILES = (level_lib.TEMP_INIT_FILENAME,)
 
 
-def write(plan: ShipPlan, out_dir) -> Path:
+def write(plan: ShipPlan, out_dir, *, version: str | None = None) -> Path:
     """Write ``plan`` as a level folder through ``level_lib``; returns the
-    folder. Regenerates the data files (anything else there stays)."""
+    folder. Regenerates the data files (anything else there stays). A recipe
+    ship also gets its ``[levelgen]`` record (:func:`levelgen_record`;
+    ``version`` overrides the git-described generator version); a v1 ship
+    writes none."""
     out_dir = Path(out_dir)
+    record = (levelgen_record(plan, version) if plan.recipe is not None
+              else None)
     for name in DATA_FILES + OPTIONAL_DATA_FILES:
         p = out_dir / name
         if p.exists():
             p.unlink()
     out_dir.mkdir(parents=True, exist_ok=True)
     h, w = plan.tilemap.shape
-    comments = (
-        f"SHIP {plan.name} -- GENERATED by tools/gen_ship.py (#120, levelgen",
-        f"v1) through level_lib: seed {plan.seed}, size {plan.size} "
-        f"({w}x{h}), sub-seed attempt {plan.attempt}.",
-        "Regenerate rather than hand-edit:",
-        f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
-        f"{plan.seed} --size {plan.size} --max-per-team {plan.max_per_team} "
-        f"--zombies {plan.zombies}" + (" --vents" if any(
-            e.class_name == "duct" for e in plan.entities) else ""),
+    if plan.recipe is None:
+        head = (
+            f"SHIP {plan.name} -- GENERATED by tools/gen_ship.py (#120, "
+            f"levelgen",
+            f"v1) through level_lib: seed {plan.seed}, size {plan.size} "
+            f"({w}x{h}), sub-seed attempt {plan.attempt}.",
+            "Regenerate rather than hand-edit:",
+            f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
+            f"{plan.seed} --size {plan.size} --max-per-team "
+            f"{plan.max_per_team} "
+            f"--zombies {plan.zombies}" + (" --vents" if any(
+                e.class_name == "duct" for e in plan.entities) else ""),
+        )
+    else:
+        zb = plan.zombies if plan.zombies_base is None else plan.zombies_base
+        head = (
+            f"SHIP {plan.name} -- GENERATED by tools/gen_ship.py (#136, "
+            f"family B)",
+            f"through level_lib: archetype {plan.recipe}, profile "
+            f"{plan.profile}, seed {plan.seed}, size {plan.size} ({w}x{h}),",
+            f"grammar attempt {plan.g}, layout attempt {plan.attempt}, "
+            f"recipe hash {plan.recipe_hash}.",
+            "Regenerate rather than hand-edit (or --from-level <this folder>,",
+            "which reads [levelgen] below):",
+            f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
+            f"{plan.seed} --size {plan.size} --recipe {plan.recipe} "
+            f"--profile {plan.profile} --max-per-team {plan.max_per_team} "
+            f"--zombies {zb}",
+        )
+    comments = head + (
         "",
         f"v{LEVEL_FORMAT_VERSION} codes ARE canon material ids "
         "(src/simulation/materials.py):",
@@ -2288,6 +2855,9 @@ def write(plan: ShipPlan, out_dir) -> Path:
     if plan.embedding.wires:
         wires = plan.embedding.wires
         blocks["wire"] = lambda nl: level_lib.format_wire_lines(wires, nl)
+    if record is not None:
+        blocks["levelgen"] = lambda nl: level_lib.format_levelgen_lines(
+            record, nl)
     level_lib.write_managed_blocks(toml_path, blocks, write_bak=False)
     level_lib.write_match(out_dir, plan.match_spec())
     if plan.embedding.temp_init is not None:
@@ -2299,7 +2869,15 @@ def write(plan: ShipPlan, out_dir) -> Path:
 def _parse_args(argv):
     ap = argparse.ArgumentParser(
         prog="gen_ship", description="Generate a seeded v1 ship level.")
-    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--seed", type=int, default=None,
+                    help="the level seed (required unless --from-level)")
+    ap.add_argument("--from-level", default=None, metavar="FOLDER",
+                    help="regenerate a recipe ship from the [levelgen] record "
+                         "in FOLDER/level.toml (its LevelSpec); every other "
+                         "generator option is then refused")
+    ap.add_argument("--allow-stale", action="store_true",
+                    help="with --from-level: generate even when the record's "
+                         "recipe_hash is not the current library's")
     ap.add_argument("--out", default=None,
                     help="level folder (default levels/ship_s<seed>_<size>)")
     ap.add_argument("--size", choices=sorted(SIZES), default="medium")
@@ -2307,19 +2885,46 @@ def _parse_args(argv):
     ap.add_argument("--zombies", type=int, default=4)
     ap.add_argument("--vents", action="store_true",
                     help="place one HEPA duct with a supply + return vent")
-    return ap.parse_args(argv)
+    ap.add_argument("--recipe", default=None,
+                    help="an archetype recipe (levels/recipes/archetypes): "
+                         "family B's grammar + layout instead of v1's split")
+    ap.add_argument("--profile", default="standard",
+                    help="the archetype's difficulty profile (with --recipe)")
+    a = ap.parse_args(argv)
+    if a.from_level is None and a.seed is None:
+        ap.error("--seed is required (or --from-level FOLDER)")
+    if a.from_level is not None:
+        given = [f for f, v, d in (
+            ("--seed", a.seed, None), ("--size", a.size, "medium"),
+            ("--max-per-team", a.max_per_team, 6),
+            ("--zombies", a.zombies, 4), ("--vents", a.vents, False),
+            ("--recipe", a.recipe, None), ("--profile", a.profile,
+                                           "standard")) if v != d]
+        if given:
+            ap.error(f"--from-level takes its inputs from the record; "
+                     f"refusing {given}")
+    elif a.allow_stale:
+        ap.error("--allow-stale goes with --from-level")
+    return a
 
 
 def main(argv=None) -> int:
     a = _parse_args(sys.argv[1:] if argv is None else argv)
-    plan = generate(a.seed, a.size, max_per_team=a.max_per_team,
-                    zombies=a.zombies, vents=a.vents)
+    if a.from_level is not None:
+        plan = generate_from_spec(Path(a.from_level),
+                                  allow_stale=a.allow_stale)
+    else:
+        plan = generate(a.seed, a.size, max_per_team=a.max_per_team,
+                        zombies=a.zombies, vents=a.vents, recipe=a.recipe,
+                        profile=a.profile)
     out = Path(a.out) if a.out else ROOT / "levels" / plan.name
     write(plan, out)
     h, w = plan.tilemap.shape
     e = plan.embedding
     vents = any(x.class_name == "duct" for x in plan.entities)
-    print(f"wrote {out}  ({w}x{h} @ {TILE_SIZE_M} m, attempt {plan.attempt}, "
+    print(f"wrote {out}  ({w}x{h} @ {TILE_SIZE_M} m, "
+          + (f"grammar attempt {plan.g}, " if plan.recipe else "")
+          + f"attempt {plan.attempt}, "
           f"{len(plan.graph.rooms)} rooms, {e.doors} doors, {e.windows} "
           f"windows, {e.fuel_tiles} fuel tiles, "
           f"vents {'yes' if vents else 'no'})")

@@ -815,3 +815,101 @@ Deviations and amendments (dated 2026-11-06, as built):
 - Engineering names no wishes (an axis department sits on the axis).
 - Secret weights are relative within the archetype's draw: quarters 1
   (B.1's 0.1), cargo 1 (B.4's 0.1), medbay 1.5 (B.3's 0.15).
+
+## As built (2026-11-06, branch `136-ship-layout`): the ranges, tuned against the layout
+
+The layout stage exists (`tools/ship_layout.py`; the layout doc's "As built"
+section has the geometry). Every size and count range below was a
+placeholder; each line is one number moved, with the arithmetic that moved
+it. No room, department, edge or cycle entry was added or removed, and no
+recipe carries a physics number. Measured accept rates are in the layout
+doc.
+
+Why the ranges are WIDE now: the hull fixes a department's rectangle (its
+row's depth, an x-extent that must sum to the row's length), the rooms must
+fill it with steel voids of at most 3 tiles, and one recipe serves a medium
+row (18-37 deep, 13-20 long) and a large one (41-49 long, about 45 deep). A
+column of `n` side rooms fills a stub of length `L` only when `n * h_hi +
+(n - 1) + 3 >= L`; the end room spans the department's x-extent; a behind
+room in the end zone is within 3 tiles of its depth.
+
+- 2026-11-06 `crew_quarters` stub `along` [14, 34] -> **[10, 40]**: a medium
+  row under the hull strip is 20-27 deep, a large one up to 47 (40 + 1 + the
+  mess's 9..20 covers 20..61).
+- 2026-11-06 `crew_quarters` bunk `count` [2, 7] -> **[2, 4]**: a medium row
+  holds two side rooms per side of the stub per 13 tiles of depth; with 7
+  bunks the quarters alone needed 37 of the wing's 54 (measured on medium
+  easy: 75 % of grammar draws packed at bunks [2, 5] / bays [1, 6], 94 % at
+  [2, 4] / [1, 4]). Large rows fill with 3-6 side rooms because of the next
+  line.
+- 2026-11-06 `crew_quarters` bunk, heads, laundry `w` [6, 8] / [6, 6] ->
+  **[6, 12]**, `h` [6, 8] -> **[6, 16]**: `w` 12 lets a ONE-column department
+  be 8 + 1 + 12 = 21 long, so it can share a row length with a two-column
+  neighbour (>= 20) -- at 10 a one-bay cargo hold (<= 19) and a two-sided
+  quarters (>= 20) had no common row and 9 % of medium draws died on it; `h`
+  16 lets two rooms fill a 30-long column (2 * 16 + 1 + 3 = 36).
+- 2026-11-06 `crew_quarters` mess `w` [9, 12] -> **[9, 30]**, `h` [9, 12] ->
+  **[9, 20]**: the end room spans the department (20-30 tiles) and both stubs
+  of a retreat loop (>= 13); `h` 20 with a 40-long stub reaches the deepest
+  row.
+- 2026-11-06 `crew_quarters` galley `w` [6, 9] -> **[6, 16]**, `h` [6, 9] ->
+  **[6, 16]**: stacked behind the mess it is as wide as the mess (13 on a
+  20-long medium department with a secret annex in the corner); beside the
+  mess it is within 3 tiles of the mess's depth.
+- 2026-11-06 `cargo_hold` stub `along` [8, 34] -> **[8, 40]**; main hold `w`
+  [10, 16] -> **[10, 30]**, `h` [9, 14] -> **[9, 24]** (the largest room in
+  the wing; a deep hold is how a one-bay cargo department fills a large
+  row); bay `count` [1, 8] -> **[1, 4]** (the medium depth budget, as the
+  bunks), bay `w` [6, 10] -> **[6, 12]**, `h` [6, 10] -> **[6, 18]**; hazmat
+  bay `w` [6, 8] -> **[6, 12]**, `h` [6, 8] -> **[6, 16]**.
+- 2026-11-06 `medbay` stub `along` [14, 34] -> **[10, 40]**; ward `w` [10,
+  14] -> **[10, 30]**, `h` [9, 12] -> **[9, 20]**; theatre, scrub, pharmacy,
+  morgue `w` [6, 8..10] -> **[6, 12]**, `h` [6, 10] -> **[6, 18]**. Theatre
+  `count` [1, 3] unchanged.
+- 2026-11-06 `armory` stub `along` [14, 34] -> **[10, 40]**; armory `w` [10,
+  14] -> **[6, 30]**, `h` [9, 13] -> **[9, 20]**; magazine `w` [6, 8] ->
+  **[6, 20]**, `h` [6, 8] -> **[6, 16]**; range `w` [6, 8] -> **[6, 12]**,
+  `h` [12, 34] -> **[12, 40]**. The armory's `w` starts at 6 because an
+  armory WITHOUT its range has no side room: the department is then its stub
+  (6-8 wide), the armory across the stub's end and the magazine stacked
+  behind it, each exactly as wide as the stub -- with `w` from 10 that
+  department could not exist.
+- `armory` range `p` 0.4: UNCHANGED (a probability, not a range). A
+  range-less armory is a 6-8 wide department, so the department beside it
+  in a large row (41-49) must be 30-34 long; that draw exists (a stub of 8,
+  two columns of 10-12), and the grammar refuses the rest (~2 % of large
+  easy draws).
+- 2026-11-06 `freighter` armory `count.large` [0, 1] -> **[1, 1]**. Flagged
+  for Erik (the archetype doc's "half the time an armory"): three wing
+  departments are dealt two rows as 2 + 1, and a lone department cannot fill
+  a large row -- its x-extent is at most 8 + 2 * (12 + 1) = 34 against a row
+  of 41-49. A large freighter therefore always has four wing departments.
+- 2026-11-06 `freighter` pocket `count.medium` [0, 1] -> **[0, 0]** (and so
+  not shifted by `hard`): a pocket is one more side room or one more room in
+  an end-zone corner; a medium department is 20 long, which holds ONE corner
+  room beside a 9-wide end room (6 + 1 + 9 + 1 + 6 = 23 > 20), and the secret
+  annex is already one. With pockets, 5 % of hard medium draws packed.
+- 2026-11-06 `freighter` `secrets.size` [6, 8] -> **[6, 16]**: an annex in a
+  corner is within 3 tiles of the end zone's depth, which is 16 when the
+  galley is stacked behind the mess (9 + 1 + 6).
+- 2026-11-06 `freighter` `[validation]` (measured over 100 seeds per size x
+  profile, the layout doc's table): `rooms` medium [14, 30] -> **[20, 48]**,
+  large [28, 60] -> **[40, 96]** (rooms per SHIP, both wings); `spawn_distance`
+  medium [40, 120] -> **[60, 160]**, large [80, 220] -> **[110, 280]** (the
+  bots' A* steps between the slab centres). `cells`, `bot_walkable`
+  unchanged.
+- 2026-11-06 the pocket's own size (`ship_layout.POCKET_SIZE`, code, not a
+  recipe): 6-8 square -> **w 6-12, h 6-16**, for the same reasons as the
+  side rooms and the annex.
+- 2026-11-06 **the feasibility bound IS the layout's now**:
+  `levelgen_recipes._check_feasible` calls
+  `ship_layout.department_feasibility` (the department at its MINIMA must
+  pack; imported lazily, never copied); the §3.1 perimeter sum is gone, and
+  with it the refusal of `count = [2, 12]` (a maximum: the archetype door's
+  warning now, `Archetype.warnings`).
+- 2026-11-06 (#124, vocabulary §0.6 item 5) `crew_quarters`: the heads joins the stub by a
+  **`vented_door`** and carries the quarters' only **return**; the mess gains a **supply**
+  (the bunks keep theirs); the stub's vent is gone. The sealed-room rule this
+  document cites (§3.1, §3.2, §5.2) is replaced by the air-volume vent rule
+  (`gen_ship.vent_air_rule`), and the duct link's "each room carries both" now
+  balances per air volume by the design flow (`gen_ship.vent_rates`).

@@ -129,8 +129,8 @@ REFUSALS = [
     # (id, file, old, new, the field named, the reason named)
     ("unknown_field", CQ, 'toward = "spawn"', 'toward = "spawn"\ncolour = 1',
      "[department]", "unknown field"),
-    ("physics_number", CQ, 'size = { w = [9, 12], h = [9, 12] }\nfuel = '
-     '"furniture"', 'size = { w = [9, 12], h = [9, 12] }\nfuel = 3',
+    ("physics_number", CQ, 'size = { w = [9, 30], h = [9, 20] }\nfuel = '
+     '"furniture"', 'size = { w = [9, 30], h = [9, 20] }\nfuel = 3',
      "room[3].fuel", "physics number"),
     ("missing_filter_row", CQ, 'name = "galley"\nfilter = "derelict"',
      'name = "galley"\nfilter = "nosuch"', "duct[1].filter",
@@ -151,12 +151,14 @@ REFUSALS = [
     ("narrow_is_one_room", "cycles/flank_pair.toml",
      "rooms = [1, 1]                  # inclusive", "rooms = [1, 2]  #",
      "leg[0].width", "exactly one room"),
-    ("sealed_room_lone_role", CQ,
-     'roles = ["return", "supply"] }   # a sealed box',
-     'roles = ["return"] }   # a sealed box', "room 'heads'.vent", "sealed"),
-    ("count_low", CQ, "count = [2, 7]", "count = [0, 7]", "room[1].count",
+    # the air-volume vent rule (vocabulary §0.6): behind a plain door the
+    # heads is a volume of its own, so the bunks' and the mess's supplies
+    # lose their return (and the heads' return its supply)
+    ("air_volume_lone_role", CQ, 'kind = "vented_door"', 'kind = "door"',
+     "room 'bunk'.vent", "air volume of rooms.*no 'return'"),
+    ("count_low", CQ, "count = [2, 4]", "count = [0, 4]", "room[1].count",
      "out of range"),
-    ("count_reversed", CQ, "count = [2, 7]", "count = [7, 2]",
+    ("count_reversed", CQ, "count = [2, 4]", "count = [4, 2]",
      "room[1].count", "out of range"),
     ("p_high", CQ, "p = 0.7", "p = 1.5", "room[4].p", "probability"),
     ("multiplicity_twice", CQ, "p = 0.3", "p = 0.3\nrequired = true",
@@ -185,12 +187,13 @@ REFUSALS = [
     ("contact_triangle", CQ, '[[duct]]\nname = "quarters"',
      '[[edge]]\na = "bunk"\nb = "mess"\nkind = "open"\n\n[[duct]]\n'
      'name = "quarters"', "edge", "3-cycle of contacts"),
-    ("feasibility", CQ, "count = [2, 7]", "count = [2, 12]",
-     "room 'stub'", "contact demand"),
+    # the layout's loader twin: at its MINIMA the department cannot pack
+    ("feasibility", CQ, "count = [2, 4]", "count = [12, 12]",
+     "department", "cannot be laid out.*side rooms at minimum count"),
     ("narrow_never_with_fuel", CQ,
-     'width = "wide"\nsize = { across = [6, 8], along = [14, 34] }',
+     'width = "wide"\nsize = { across = [6, 8], along = [10, 40] }',
      'width = "narrow"\nfuel = "furniture"\n'
-     'size = { across = [3, 3], along = [14, 34] }', "room[0].fuel",
+     'size = { across = [3, 3], along = [10, 40] }', "room[0].fuel",
      "never carries fuel"),
     ("unknown_wish", CQ, 'wish_near = ["medbay"]', 'wish_near = ["spa"]',
      "department.wish_near[0]", "no department"),
@@ -228,8 +231,8 @@ REFUSALS = [
      'a = "heads"\nb = "laundry"', "edge[4]", "only its stub"),
     ("wing_entry_is_a_corridor", MED,
      'shape = "corridor"\nrequired = true\nwidth = "wide"\n'
-     'size = { across = [6, 8], along = [14, 34] }',
-     'required = true\nsize = { w = [6, 8], h = [14, 34] }',
+     'size = { across = [6, 8], along = [10, 40] }',
+     'required = true\nsize = { w = [6, 8], h = [10, 40] }',
      "room 'stub'.shape", "corridor"),
     ("secret_behind_the_exit", CQ, 'host = "bunk"', 'host = "heads"',
      "secret.host", "exit room"),
@@ -244,10 +247,12 @@ def test_the_door_refuses_by_file_and_field(tmp_path, rel, old, new, where,
     the refusal names the FILE and the FIELD (and why) -- for an unknown
     field, a physics number where a preset name belongs, a config row /
     preset config.toml lacks, an edge kind outside EDGE_KINDS, a width class,
-    the narrow one-room rule, the sealed-room vent rule, count / p ranges and
+    the narrow one-room rule, the air-volume vent rule, count / p ranges and
     multiplicity, an unknown or wrong-phase cycle type, an unknown fixture,
     the unused face move, the even ring, a gas-blind non-walk leg, the #49
-    wait, L5 on crosses_cell, a contact triangle, the §3.1 feasibility bound,
+    wait, L5 on crosses_cell, a contact triangle, the layout's packing twin
+    at the recipe's minima (a department whose minimum rooms cannot be dealt
+    along its stub is refused, naming the layout's reason),
     fuel in a narrow corridor, an unknown wish, a missing entry, a
     `second_leg` type with other than one one-room leg, and every attach /
     exit / hull_door rule the layout's primitives need (one end, one fore,
@@ -389,9 +394,9 @@ def test_fuel_classes_and_vent_lists_resolve_to_gen_ships_forms(lib,
             names = list(G._table().names)
             assert {names[m] for m, _f in G.fuel_spec(tag)[1]} == set(mix)
     root = _copy(tmp_path, CQ,
-                 'vent = { duct = "quarters", roles = ["return", "supply"] }',
-                 'vent = [{ duct = "quarters", roles = ["return", "supply"] '
-                 '}, { duct = "galley", roles = ["supply", "return"] }]')
+                 'vent = { duct = "quarters", roles = ["return"] }   # the',
+                 'vent = [{ duct = "quarters", roles = ["return"] '
+                 '}, { duct = "galley", roles = ["supply", "return"] }]   #')
     two = R.load_recipes(root)
     rd = R.resolve_department(two.departments["crew_quarters"], two.fixtures,
                               _rng(0))

@@ -10,7 +10,8 @@ writeback for ``level.toml``.
 Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]``,
 ``[water]``, ``[[entity]]`` (A3), ``[[wire]]`` (B1) and — since Arc C9 —
 ``[art.bare]``/``[art.align]``/``[bake]`` (the baker's writeback, ported off
-its original bespoke line-targeted regex upsert); the writer is
+its original bespoke line-targeted regex upsert), ``[[spawn_room]]`` (#119)
+and ``[levelgen]`` (#136, a generated level's LevelSpec); the writer is
 family-generic. On save every existing table of a replaced
 family is removed and the new block is written at the position of the first
 one (or appended at EOF); every byte OUTSIDE the managed tables — comments,
@@ -101,6 +102,10 @@ MANAGED_FAMILIES = {
     # The `spawn` header regex needs `]]` right after the name, so it never
     # matches `[[spawn_room]]` (and vice versa).
     "spawn_room": ManagedFamily("spawn_room", array=True),
+    # #136: a generated level's LevelSpec + realised factors, one table
+    # (gen_ship's recipe path only). Its inline `cycles` table keeps the
+    # family one header long, so the span rule above holds.
+    "levelgen": ManagedFamily("levelgen", array=False),
 }
 
 
@@ -158,6 +163,41 @@ def format_spawn_room_lines(rooms, nl: str = "\n") -> list:
         for k, v in row.items():
             lines.append(f"{k} = {_fmt_value(v)}{nl}")
     return lines
+
+
+_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def format_levelgen_lines(record, nl: str = "\n") -> list:
+    """The managed ``[levelgen]`` table (#136, archetype doc §5.1): a
+    ``level_loader.LevelgenRecord`` (or its ``as_dict()``), every key in
+    ``LEVELGEN_KEYS`` order, ``cycles`` as an inline table. The record goes
+    through the loader's own door (``level_loader.parse_levelgen``) first, so
+    the writer never writes a table its loader refuses."""
+    d = record.as_dict() if hasattr(record, "as_dict") else dict(record)
+    rec = level_loader.parse_levelgen(d, "[levelgen] (writer)")
+    lines = [f"[levelgen]{nl}"]
+    for k, v in rec.as_dict().items():
+        if isinstance(v, dict):
+            items = ", ".join(
+                f"{n if _BARE_KEY_RE.fullmatch(n) else _fmt_value(n)} = "
+                f"{_fmt_value(c)}" for n, c in v.items())
+            text = "{ " + items + " }" if items else "{}"
+        else:
+            text = _fmt_value(list(v) if isinstance(v, tuple) else v)
+        lines.append(f"{k} = {text}{nl}")
+    return lines
+
+
+def write_levelgen(toml_path, record, write_bak: bool = False):
+    """Rewrite the ``[levelgen]`` table as ONE managed block (#136); ``None``
+    removes it. The :func:`write_managed_blocks` contract (every other byte
+    preserved). Returns the .bak path, or None."""
+    return write_managed_blocks(
+        toml_path,
+        {"levelgen": lambda nl: ([] if record is None
+                                 else format_levelgen_lines(record, nl))},
+        write_bak=write_bak)
 
 
 def format_light_lines(lights, nl: str = "\n") -> list:

@@ -217,12 +217,22 @@ def test_shipped_generated_levels_regenerate_byte_identical(folder, argv,
     determinism. Every committed file is checked and every difference named,
     not only the first. BREAKS IF a change alters what v1 stamps, draws,
     rejects or writes -- a tile, an entity, a header line or a pixel (then
-    the level is regenerated and the change named, never silently)."""
+    the level is regenerated and the change named, never silently). A
+    recipe ship's ``[levelgen] generator_version`` line is the one line left
+    out (#136): it records the BUILD that wrote the file, which a later
+    commit regenerating the same ship legitimately changes."""
     from PIL import Image
 
     def _raster(p: Path):
         with Image.open(p) as im:
             return im.size, im.mode, im.tobytes()
+
+    def _bytes(p: Path):
+        data = p.read_bytes()
+        if p.name != "level.toml":
+            return data
+        return b"".join(ln for ln in data.splitlines(keepends=True)
+                        if not ln.startswith(b"generator_version = "))
 
     out = tmp_path / folder.name
     assert G.main(argv + ["--out", str(out)]) == 0
@@ -236,6 +246,6 @@ def test_shipped_generated_levels_regenerate_byte_identical(folder, argv,
         elif name.lower().endswith(".png"):
             if _raster(new) != _raster(old):
                 differ.append(f"{name} (decoded raster)")
-        elif new.read_bytes() != old.read_bytes():
+        elif _bytes(new) != _bytes(old):
             differ.append(f"{name} (bytes)")
     assert differ == [], differ

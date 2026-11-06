@@ -2160,9 +2160,15 @@ class GameRenderer:
                     mat = "vacuum"
                 else:
                     mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
-                blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
-                tag = "BLOCKED" if blocked else "walkable"
-                text = f"tile ({cx}, {cy}) | {mat} | {tag}"
+                # Walking and air are separate axes (#134: a grille is
+                # mobility 0 but open to gas; a legacy door the reverse), so
+                # the label reads walkability from MOBILITY (is_passable, the
+                # A* / movement predicate) and flow from `solid`.
+                walk = bool(gmap.is_passable(cy, cx)
+                            and not gmap.is_vacuum[cy, cx])
+                tag = "walkable" if walk else "BLOCKED"
+                flow = "sealed" if gmap.solid[cy, cx] else "air"
+                text = f"tile ({cx}, {cy}) | {mat} | {tag} | {flow}"
                 # hover_readout wants (tx, ty) in the same order this HUD
                 # already computes cursor coords in.
                 readout = pack_hover_readout(

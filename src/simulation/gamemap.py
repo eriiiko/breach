@@ -1691,6 +1691,13 @@ class GameMap:
         # unchanged; it replaces the retired ``is_wall`` flag as the
         # physics/light/smoke/vision boundary source. Always boolean-typed.
         self.solid = self.permeability <= 0.0
+        # Sight screen (#134): the tiles that stop a line of SIGHT although
+        # they are OPEN to gas -- a material whose row says ``blocks_sight``
+        # (the grille: air passes, sight does not). ``has_los`` stops on
+        # ``solid`` OR this, so ``solid`` stays the one truth for a wall and
+        # this plane only ever ADDS to it. A derived cache, never digested;
+        # all False on a map with no such material.
+        self.sight_screen = tbl.blocks_sight[m] & ~self.solid
 
         # Atmosphere: interior air + (on ambient maps) the reservoir ring seed
         # to the ambient fill; 0.0 at solid tiles and vacuum. On space maps the
@@ -1879,6 +1886,9 @@ class GameMap:
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
         # Solid mask follows permeability (sealed iff permeability == 0).
         self.solid[fy, fx] = bool(self.permeability[fy, fx] <= 0.0)
+        # The sight screen follows the same tile (open to gas, closed to sight).
+        self.sight_screen[fy, fx] = bool(tbl.blocks_sight[mat_id]
+                                         and not self.solid[fy, fx])
         # sky-exchange (§1.1): any structural edit can change reachability (this
         # tile's solidness, and — via destroy_wall's joins-ambient twin, which
         # runs AFTER this seam — the ring). Mark the sky mask dirty; it rebuilds
@@ -2332,9 +2342,18 @@ class GameMap:
                     best = w_i
         return best
 
-    def has_los(self, fy1, fx1, fy2, fx2):
-        """Bresenham line-of-sight check. Stops on ``solid``."""
+    def has_los(self, fy1, fx1, fy2, fx2, physical=False):
+        """Bresenham line check between two tiles.
+
+        By default it is a line of SIGHT and stops on a ``solid`` tile or on
+        the ``sight_screen`` (a material open to gas whose row says
+        ``blocks_sight`` -- the grille). ``physical=True`` asks instead
+        whether something that travels with the air gets through (a flame
+        jet's cone): it stops on ``solid`` only. The two agree on every map
+        without such a material."""
         h, w = self._h, self._w
+        solid = self.solid
+        screen = None if physical else self.sight_screen
         dx = abs(fx2 - fx1)
         dy = abs(fy2 - fy1)
         sx = 1 if fx1 < fx2 else -1
@@ -2344,7 +2363,8 @@ class GameMap:
         while True:
             if x == fx2 and y == fy2:
                 return True
-            if 0 <= y < h and 0 <= x < w and self.solid[y, x]:
+            if 0 <= y < h and 0 <= x < w and (
+                    solid[y, x] or (screen is not None and screen[y, x])):
                 return False
             e2 = 2 * err
             if e2 > -dy:

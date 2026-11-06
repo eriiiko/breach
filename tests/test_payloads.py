@@ -403,7 +403,11 @@ def test_c4_det_slot_detonation_with_demolition_numbers():
     hits = [e for e in sim.tick_events if isinstance(e, UnitHitEvent)
             and e.source == "explosion"]
     assert len(hits) == 1 and hits[0].damage == 37.0
-    assert m.current_hp == hp_before - 37.0
+    # #31: the row carries heat now (strength 12, 120 MJ), so the same tick
+    # also lands a credited heat hit. The packet stays exactly 37; every HP
+    # lost is on an event.
+    assert m.current_hp == hp_before - sum(
+        e.damage for e in sim.tick_events if isinstance(e, UnitHitEvent))
     ex = _explosions(sim.tick_events)
     assert len(ex) == 1 and ex[0].kind == "door_explosive" and ex[0].radius == 8
 

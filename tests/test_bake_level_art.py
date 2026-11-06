@@ -47,7 +47,7 @@ import level_loader  # noqa: E402
 from level_loader import SPACE_CODE, materials_from_tilemap  # noqa: E402
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
                                   MAT_FURNITURE, MAT_GLASS, MAT_HULL,
-                                  MAT_WOOD)
+                                  MAT_WOOD, MATERIAL_NAMES)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W,  # noqa: E402
                             DEFAULT_PX_PER_TILE, DEFAULT_TILESET,
@@ -353,9 +353,11 @@ def test_region_rect_is_clipped_to_the_grid(ts16):
 
 def test_unknown_tilemap_code_is_a_hard_error(ts16):
     m = _blank(3)
-    m[1, 1] = 10                # not a v2 code (7 became door_closed in A6;
-                                 # 8 became kindling in P-F4a)
-    with pytest.raises(ValueError, match="unknown code 10"):
+    bad = max(MATERIAL_NAMES) + 1  # the next free id: not a material (7 became
+                                   # door_closed in A6, 8 kindling in P-F4a,
+                                   # 10 the grille in #134 -- hence no literal)
+    m[1, 1] = bad
+    with pytest.raises(ValueError, match=f"unknown code {bad}"):
         bake_region(m, ts16, (0, 0, 3, 3), px_per_tile=TEST_PX, seed=0)
 
 

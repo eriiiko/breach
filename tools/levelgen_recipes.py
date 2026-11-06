@@ -20,14 +20,16 @@ is THE DOOR: it refuses, naming the file and the field, an unknown field, a
 physics NUMBER where a preset NAME belongs (a recipe never carries one:
 Erik tunes physics in config.toml), a named preset / config row config.toml
 lacks, an edge kind not in ``gen_ship.EDGE_KINDS``, a width class not in
-{wide, narrow}, a vent role set a sealed room cannot carry (vocabulary
-§0.4, per duct), a room ``count`` / ``p`` out of range, a ``[[cycle]]`` naming
-an unknown cycle type, a ``fixture`` not in fixtures.toml, a 3-cycle of
+{wide, narrow}, an air volume a duct only feeds or only drains (the
+air-volume vent rule, vocabulary §0.6, ``gen_ship.vent_air_rule``), a
+room ``count`` / ``p`` out of range, a ``[[cycle]]`` naming an unknown
+cycle type, a ``fixture`` not in fixtures.toml, a 3-cycle of
 contacts (§1.5), a ``second_leg`` type with other than one one-room walk leg,
 an ``attach`` / ``exit`` / ``hull_door`` the layout's primitives cannot place
 (§3.2; layout doc §4, §13 A2), a declared edge that is not a room's contact
 with what it attaches to, a department whose contact demand cannot fit its
-hub (§3.1 feasibility, the weaker check until the layout's twin exists), a
+entry at its minima (the LAYOUT's own packing arithmetic,
+``ship_layout.department_feasibility``: layout doc §4 "Loader twin"), a
 stove that could not light its own kindling (the galley FUSE ruling, §4) --
 all at load, before any ship is planned.
 
@@ -89,10 +91,14 @@ MAIN_CELL = 0                  # §3.4: main = 0, each own department the next i
 TOWARD = ("spawn", "axis")
 WATER = ("full", "pool")
 VENT_ROLES = ("supply", "return")
-# How each gas-passing kind passes gas (a walk = false leg must use one).
-GAS_PASSING = {"vent_only": "through a duct",
-               "breakable": "once the wall is broken",
-               "window": "once the glass bursts"}
+# How each gas-passing kind passes gas (a walk = false leg must use one): the
+# kinds that pass it only through a duct or once something breaks, plus
+# (:func:`_gas_passing`) every kind gen_ship.EDGE_KINDS marks ``air`` (passes
+# always, vocabulary §0.6) that nobody walks through (``keep_clear`` False:
+# the grille, #134).
+GAS_PASSING_LATER = {"vent_only": "through a duct",
+                     "breakable": "once the wall is broken",
+                     "window": "once the glass bursts"}
 AMBIENT = "ambient"
 PHASES = (1, 2, 3, 4)
 DEPT_CYCLE_PHASE = 1           # a department's own [[cycle]] rows: phase 1 (§3.2)
@@ -393,6 +399,16 @@ def _edge_kinds():
     return EDGE_KINDS
 
 
+def _gas_passing() -> dict:
+    """Kind -> how it passes gas, for a walk = false leg:
+    :data:`GAS_PASSING_LATER` plus the ``air`` kinds nobody walks through."""
+    out = dict(GAS_PASSING_LATER)
+    out.update({k: "always (its EDGE_KINDS air column)"
+                for k, spec in _edge_kinds().items()
+                if spec.air and not spec.keep_clear})
+    return out
+
+
 def _edge_kind(path, where: str, v) -> str:
     kinds = _edge_kinds()
     v = _str(path, where, v)
@@ -661,9 +677,10 @@ def _leg(path, w: str, lg, crosses: bool) -> Leg:
                                        "(rooms = [1, 1]), entered from its "
                                        "long sides (§1.2)")
     if not walk:
-        bad = [k for k in edges if k not in GAS_PASSING]
+        passing = _gas_passing()
+        bad = [k for k in edges if k not in passing]
         if bad:
-            how = ", ".join(f"{k} ({v})" for k, v in GAS_PASSING.items())
+            how = ", ".join(f"{k} ({v})" for k, v in passing.items())
             raise _err(path, f"{w}.edges", f"a walk = false leg uses a kind "
                                            f"that can pass gas -- {how} -- "
                                            f"not {bad}")
@@ -1124,11 +1141,9 @@ def contact_triangle(edges) -> tuple | None:
 
 def _check_structure(path, dept: Department, fixtures: dict) -> None:
     """Whole-recipe rules: every room but the entry has an edge; no 3-cycle
-    of contacts; a fixture's ``edges_out`` holds; the sealed-room vent rule
-    per duct (a room every edge of which bounds a compartment -- the entry
-    counts its door to the ship, the secret host its secret edge -- carries
-    both roles on each of its ducts, or none); the §3.1 feasibility bound."""
-    kinds = _edge_kinds()
+    of contacts; a fixture's ``edges_out`` holds; the air-volume vent rule
+    (:func:`_check_air_volumes`, vocabulary §0.6); the layout's packing twin
+    (:func:`_check_feasible`)."""
     tri = contact_triangle((e.a, e.b) for e in dept.edges)
     if tri:
         raise _err(path, "edge", f"rooms {list(tri)} form a 3-cycle of "
@@ -1172,46 +1187,65 @@ def _check_structure(path, dept: Department, fixtures: dict) -> None:
         if not mine:
             raise _err(path, f"room {r.id!r}", "has no edge: nothing reaches "
                                                "it")
-        if all(kinds[k].bounds for k in mine):
-            for v in r.vents:
-                if len(v.roles) == 1:
-                    raise _err(path, f"room {r.id!r}.vent",
-                               f"the room is sealed (every edge, {mine}, "
-                               f"bounds a compartment) and carries only a "
-                               f"{v.roles[0]!r} vent on duct {v.duct!r}: a "
-                               f"sealed room carries both a supply and a "
-                               f"return on each duct, or neither "
-                               f"(vocabulary §0.4)")
+    _check_air_volumes(path, dept)
     _check_feasible(path, dept)
 
 
-def _check_feasible(path, dept: Department) -> None:
-    """§3.1: every edge is a contact, so each neighbour (at its MAXIMUM
-    count) needs a run of the room's perimeter of at least its least floor
-    side plus a wall; the sum may not exceed the room's MAXIMUM perimeter,
-    less one entry run for the department's entry.
+def _check_air_volumes(path, dept: Department) -> None:
+    """THE AIR-VOLUME VENT RULE at the door (vocabulary §0.6 item 2;
+    ``gen_ship.vent_air_rule``, the one statement): every air volume of the
+    department (its rooms over ``air`` edges; the entry's door to the ship
+    and the secret edge pass no air; a counted room is one node, every
+    instance joined as the recipe joins it) that a duct has a vent in
+    carries a supply and a return on it. Checked with the optional rooms
+    (``p``) present AND at every pattern of absence (a ``behind`` room goes
+    with its parent, as the grammar expands it) -- an absent room takes its
+    vents and edges with it and may split a volume. A move that only ADDS
+    edges keeps the verdict; one that REWRITES them (the retreat loop moves
+    side rooms onto its second stub) can split a volume, which the grammar's
+    ``air_volume`` invariant refuses. Refused naming a room that carries the
+    lone role."""
+    from itertools import product
 
-    THE WEAKER CHECK (#152): a necessary condition only. It stays until the
-    layout stage exists; then the loader runs the layout's own packing twin
-    at the recipe's minima instead (layout doc §4 "Loader twin": two-bin
-    side packing, the end room against the row depth, the behind depths)."""
-    for r in dept.rooms:
-        demand, parts = 0, []
-        for e in dept.edges:
-            if r.id not in (e.a, e.b):
-                continue
-            n = dept.room(e.b if e.a == r.id else e.a)
-            need = n.max_count * (n.size.min_side + 1)
-            demand += need
-            parts.append(f"{n.id} {n.max_count}x{n.size.min_side + 1}")
-        cap = r.size.max_perimeter - (ENTRY_RUN if r.id == dept.entry else 0)
-        if demand > cap:
-            raise _err(path, f"room {r.id!r}",
-                       f"contact demand {demand} tiles ({', '.join(parts)}) "
-                       f"exceeds its maximum perimeter {cap}"
-                       + (f" (less its {ENTRY_RUN}-tile entry)"
-                          if r.id == dept.entry else "")
-                       + " -- no layout can give every edge a wall (§3.1)")
+    from gen_ship import vent_air_rule
+    optional = [r.id for r in dept.rooms if r.p is not None]
+    for absent in product((False, True), repeat=len(optional)):
+        gone = {rid for rid, a in zip(optional, absent) if a}
+        for r in dept.rooms:                       # dept order: parents first
+            if r.parent in gone:
+                gone.add(r.id)
+        here = [r for r in dept.rooms if r.id not in gone]
+        bad = vent_air_rule(
+            {r.id: tuple((v.duct, v.roles, False) for v in r.vents)
+             for r in here},
+            [(e.a, e.b, e.kind) for e in dept.edges
+             if e.a not in gone and e.b not in gone])
+        if bad:
+            without = (f" (with the optional {sorted(gone)} absent)" if gone
+                       else "")
+            raise _err(path, f"room {bad[0].have_rooms[0]!r}.vent",
+                       f"{bad[0]}{without}")
+
+
+def _check_feasible(path, dept: Department) -> None:
+    """THE LAYOUT'S LOADER TWIN (layout doc §4): the department at its
+    MINIMA (required rooms, every ``count`` at its low end) must pack under
+    the layout stage's own arithmetic -- the side rooms dealt to the stub's
+    columns inside the stub's ``along``, the end room across the stub, the
+    behind rooms in the end zone, and the whole no longer and no deeper than
+    the largest size preset's row (an axis department: its block in a
+    band). ONE implementation, the layout's
+    (``ship_layout.department_feasibility``, imported here, lazily: the
+    loader stays import-light); it replaced the §3.1 perimeter sum
+    (2026-11-06), which was necessary only. Whether the department packs on
+    a given size beside its neighbours is the ARCHETYPE loader's check, per
+    (size, profile)."""
+    import ship_layout
+    why = ship_layout.department_feasibility(dept)
+    if why:
+        raise _err(path, "department",
+                   f"{dept.name!r} cannot be laid out: {why} (layout doc §4, "
+                   f"the loader twin)")
 
 
 # ===========================================================================

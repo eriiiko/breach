@@ -70,8 +70,12 @@ def _spec(*, teams=(IDLE, IDLE), zombies=0, seed=1, time_limit_s=60.0):
 
 class _TriggerControl(ControlSource):
     """Test controller: every living unit of its team aims at the nearest
-    living enemy and holds the trigger — the fire cone draws from sim.rng,
-    so the match seed matters."""
+    living enemy's footprint EDGE and holds the trigger — the fire cone
+    draws from sim.rng and straddles the edge, so which rounds hit depends
+    on the draws and the match seed matters. (Aimed at the centre, every
+    k5 round lands at this range whatever the draw; until #169 the seed
+    still showed because rounds flew on through a body killed earlier in
+    the tick -- now they stop on it.)"""
 
     def __init__(self, team):
         self.team = team
@@ -84,7 +88,10 @@ class _TriggerControl(ControlSource):
                 continue
             t = min(foes, key=lambda f: ((f.x - u.x) ** 2 + (f.y - u.y) ** 2,
                                          f.id))
-            dx, dy, _ = quantize_stick_direction(t.x - u.x, t.y - u.y, 0.0)
+            # Anchor to anchor is centre to centre; -1.5 tiles in y aims at
+            # the foe's top edge.
+            dx, dy, _ = quantize_stick_direction(t.x - u.x,
+                                                 t.y - u.y - 1.5, 0.0)
             sim.set_aim(u.id, dx, dy)
             sim.set_trigger(u.id, True)
 

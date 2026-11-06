@@ -47,8 +47,8 @@ from level_loader import (LEVEL_FORMAT_VERSION, SPACE_CODE, SpawnEntry,  # noqa:
                           materials_from_tilemap)
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
                                   MAT_FOLIAGE, MAT_FURNITURE, MAT_GLASS,
-                                  MAT_HULL, MAT_KINDLING, MAT_STEEL, MAT_WOOD,
-                                  MATERIAL_NAMES)
+                                  MAT_GRILLE, MAT_HULL, MAT_KINDLING,
+                                  MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (bake_full, bake_region,  # noqa: E402
                             load_tileset)
@@ -401,8 +401,11 @@ def test_wall_family_codes_from_manifest(ts16):
     # §4.2 F6) has no curated recipe either and joins the same fallback; the
     # dev-tileset's "wall" placeholder for it is cosmetic only (a prop's
     # actual look comes from renderer/static_props.py, never this tileset).
+    # The grille (#134 -- a grating in a wall line, no curated recipe) joins
+    # the same fallback: to the editor's room / corridor / door-run geometry
+    # it IS "a wall stands here", which is what it is for walking.
     assert wall_family_codes(ts16) == (
-        WALL_CODES | {MAT_DOOR_CLOSED, MAT_KINDLING, MAT_FOLIAGE})
+        WALL_CODES | {MAT_DOOR_CLOSED, MAT_KINDLING, MAT_FOLIAGE, MAT_GRILLE})
 
 
 # ---------------------------------------------------------------------------

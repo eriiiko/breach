@@ -2133,6 +2133,11 @@ amp = 0.25
 #   permeability  OPTIONAL gas/smoke flow coefficient (0 sealed, 1 open air,
 #                 partial = porous). Omitted -> derived: sealed where the
 #                 material occludes light, open otherwise (legacy solid set).
+#   blocks_sight  OPTIONAL true/false: does the material stop a line of SIGHT
+#                 (GameMap.sight_screen, has_los). Omitted -> derived: it blocks
+#                 sight iff it is sealed to gas (permeability == 0), the rule
+#                 line of sight had before the column existed. What a bullet
+#                 does is NOT this column (#134).
 #   cover_exposure  exposure-vs-cover probability (mechanics/03 §3, 06 §5; W2).
 #                 1.0 = no concealment (a shot entering a unit footprint from
 #                 this tile never rolls); < 1.0 = soft cover: the shot connects
@@ -2494,8 +2499,8 @@ cover_exposure = 0.55  # copied from furniture
 
 # Props & vegetation arc #60 P3 (docs/architecture/graphics/props_and_
 # vegetation.md §4.1/§6.1.2, Erik's ruling 2026-09-07): the prop entity's
-# ONE material row. APPENDED — must stay the LAST material id (ids are
-# positional/contiguous; MaterialTable asserts it, and
+# ONE material row. APPENDED (ids are positional/contiguous: a new row takes
+# the next id, as #134's grille did; MaterialTable asserts it, and
 # tests/test_prop_entity.py pins MAT_FOLIAGE's actual id).
 #
 # Spec: fully walkable (no movement/wind/vision interaction beyond
@@ -2542,8 +2547,49 @@ blast_resist = 0.0
 burst_threshold = 0.0  # not a wall — no over-pressure relief relevance
 cover_exposure = 1.0   # no vision interaction -> no concealment, never a roll
 
-# =============================================================================
-# Weapons framework (mechanics/03 §4) — three data tables loaded by
+# #134 (levelgen, 2026-11-06; the level-design lead on Erik's hand-off: "the
+# vent material: blocks walking but does not block air"): a steel GRATING --
+# air you cannot walk through. APPENDED as id 10 (MAT_GRILLE), so no existing
+# id moves. Stamped by gen_ship's `grille` and `vented_door` edge kinds.
+# EVERY VALUE IS A PLACEHOLDER -- Erik tunes them.
+#
+# The physics is chosen so a grille tile is, to the gas, EXACTLY an air tile:
+# permeability 1.0 (not solid -> the EOS face flux, smoke transport and the
+# pressure field run through it), and the GAS THERMAL REGIME (thermal_mass =
+# 0, heat_atten = 0, air's conductivity / density / c_v), so it sits on the
+# gas-energy accountable set like air and the energy closure identity needs
+# no new term. A permeable THERMAL SOLID (the furniture shape) would NOT do:
+# a thermal-solid cell carries no energy face and is outside the accountable
+# set, so heat would not cross it with the gas. ACCEPTED GAP: the bars' own
+# steel has no heat capacity in the model (it neither soaks nor stores heat).
+[materials.grille]
+hp = 80                # PLACEHOLDER: a blast opens it (physics.py's blast-wall
+                       # set); bullets pass it (not solid), so they never chew it
+flammable = false
+mobility = 0           # THE POINT: no unit enters or paths through it
+permeability = 1.0     # explicit (the derived default would be 0: it occludes
+                       # light a little) -- gas/smoke flow exactly as in air
+blocks_sight = true    # Erik's ruling 2026-11-06: NOT see-through. No unit sees,
+                       # targets or is ordered to fire through it. (Bullets are
+                       # "another question", undecided: a round already in
+                       # flight still passes it, see cover_exposure below.)
+light_atten = [0.15, 0.15, 0.15]   # PLACEHOLDER: lamp light leaks through it. A
+                       # gas-regime row may attenuate light (light is not
+                       # booked into any temperature; the materials door's
+                       # light rule has no thermal_mass clause)
+heat_atten = 0.0       # MUST be 0 in the gas regime (an absorbing gas-regime
+                       # row is refused at the door: an uncounted sink)
+conductivity = 0.0257  # == air's, so a grille|air face is an air|air face
+density = 1.2047       # == air's (the gas-regime row's real rho*c_v; see air)
+specific_heat = 717.6  # == air's
+thermal_mass = 0       # the GAS-THERMAL-REGIME declaration (as air)
+ignition_temp = 0.0
+wave_absorb = 0.0      # == air's: no extra EOS damping (and clear of the
+                       # forbidden (0, 0.02) band, see air)
+blast_resist = 0.0     # no consumer
+burst_threshold = 0.0  # n/a: it holds no pressure difference, it never bursts
+cover_exposure = 1.0   # the `foliage` precedent (permeable, never a roll): a
+                       # round passes between the bars -- UNDECIDED (Erik) (mechanics/03 §4) — three data tables loaded by
 # simulation.weapons: [weapons.*] the delivery instrument, [ammo.*] the round,
 # [payloads.*] what happens at the destination. W1 re-home: the old
 # [weapons.rifle]/[weapons.grenade]/[weapons.door_explosive] sections live on
@@ -3687,6 +3733,16 @@ fuse_s = 1.0                          # PLACEHOLDER
 # needs no row.
 [temps.hot_engineering]               # B.2's hot engine room (levels/recipes/departments/engineering.toml)
 above_ambient = 40.0                  # PLACEHOLDER
+
+# [levelgen.vents]: the recipe path's vent DESIGN FLOW (vocabulary §0.6 item
+# 3; gen_ship.vent_rates, read through gen_ship.vent_ach, which refuses a
+# missing or non-positive value). Per duct and air volume it serves, the
+# served rooms' floor area x ach / 3600 tile-volumes of ambient air per
+# second go in through the duct's supplies and out through its returns, each
+# side shared by room area, the two sums the same integer. v1's `--vents`
+# shorthand keeps the studio rate (gen_ship.Q_CIRC = 16).
+[levelgen.vents]
+ach = 10.0                            # PLACEHOLDER (Erik tunes): air changes per hour of a ventilated room
 
 # [levelgen.lights.*]: a room's lamp by name (gen_ship's `light` tag,
 # ((r, g, b), level)); render light only. `lit` is gen_ship's default lamp.
