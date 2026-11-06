@@ -353,6 +353,19 @@ class Draft:
         self.band: tuple = ()
         self.n_app = 0
 
+    @classmethod
+    def of(cls, q: "QuotientGraph") -> "Draft":
+        """A returned graph as a Draft again (to re-check its invariants)."""
+        d = cls()
+        d.rooms = {r.id: r for r in q.rooms}
+        d.edges = list(q.edges)
+        d.ducts = dict(q.ducts)
+        d.depts = list(q.departments)
+        d.cycles = list(q.cycles)
+        d.band = q.band
+        d.n_app = max(x.prov[1] for x in q.rooms + q.edges)
+        return d
+
     def copy(self) -> "Draft":
         out = Draft()
         out.rooms = dict(self.rooms)
