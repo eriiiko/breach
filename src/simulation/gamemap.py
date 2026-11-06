@@ -1682,6 +1682,11 @@ class GameMap:
         # unchanged; it replaces the retired ``is_wall`` flag as the
         # physics/light/smoke/vision boundary source. Always boolean-typed.
         self.solid = self.permeability <= 0.0
+        # Sight mask (#134): what stops a line of SIGHT -- every solid tile,
+        # plus any material whose row says ``blocks_sight`` (the grille: air
+        # passes, sight does not). A derived cache like ``solid``, never
+        # digested; equal to ``solid`` on a map with no such material.
+        self.sight_block = self.solid | tbl.blocks_sight[m]
 
         # Atmosphere: interior air + (on ambient maps) the reservoir ring seed
         # to the ambient fill; 0.0 at solid tiles and vacuum. On space maps the
@@ -1870,6 +1875,9 @@ class GameMap:
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
         # Solid mask follows permeability (sealed iff permeability == 0).
         self.solid[fy, fx] = bool(self.permeability[fy, fx] <= 0.0)
+        # The sight mask follows the same tile (solid, or the row's own word).
+        self.sight_block[fy, fx] = bool(self.solid[fy, fx]
+                                        or tbl.blocks_sight[mat_id])
         # sky-exchange (§1.1): any structural edit can change reachability (this
         # tile's solidness, and — via destroy_wall's joins-ambient twin, which
         # runs AFTER this seam — the ring). Mark the sky mask dirty; it rebuilds
@@ -2323,9 +2331,16 @@ class GameMap:
                     best = w_i
         return best
 
-    def has_los(self, fy1, fx1, fy2, fx2):
-        """Bresenham line-of-sight check. Stops on ``solid``."""
+    def has_los(self, fy1, fx1, fy2, fx2, physical=False):
+        """Bresenham line check between two tiles.
+
+        By default it is a line of SIGHT and stops on ``sight_block`` (a solid
+        tile, or a material whose row says ``blocks_sight`` -- the grille).
+        ``physical=True`` asks instead whether something that travels with the
+        air gets through (a flame jet's cone): it stops on ``solid`` only.
+        The two agree on every map without a ``blocks_sight`` material."""
         h, w = self._h, self._w
+        block = self.solid if physical else self.sight_block
         dx = abs(fx2 - fx1)
         dy = abs(fy2 - fy1)
         sx = 1 if fx1 < fx2 else -1
@@ -2335,7 +2350,7 @@ class GameMap:
         while True:
             if x == fx2 and y == fy2:
                 return True
-            if 0 <= y < h and 0 <= x < w and self.solid[y, x]:
+            if 0 <= y < h and 0 <= x < w and block[y, x]:
                 return False
             e2 = 2 * err
             if e2 > -dy:

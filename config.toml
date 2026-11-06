@@ -2133,6 +2133,11 @@ amp = 0.25
 #   permeability  OPTIONAL gas/smoke flow coefficient (0 sealed, 1 open air,
 #                 partial = porous). Omitted -> derived: sealed where the
 #                 material occludes light, open otherwise (legacy solid set).
+#   blocks_sight  OPTIONAL true/false: does the material stop a line of SIGHT
+#                 (GameMap.sight_block, has_los). Omitted -> derived: it blocks
+#                 sight iff it is sealed to gas (permeability == 0), the rule
+#                 line of sight had before the column existed. What a bullet
+#                 does is NOT this column (#134).
 #   cover_exposure  exposure-vs-cover probability (mechanics/03 §3, 06 §5; W2).
 #                 1.0 = no concealment (a shot entering a unit footprint from
 #                 this tile never rolls); < 1.0 = soft cover: the shot connects
@@ -2564,7 +2569,11 @@ flammable = false
 mobility = 0           # THE POINT: no unit enters or paths through it
 permeability = 1.0     # explicit (the derived default would be 0: it occludes
                        # light a little) -- gas/smoke flow exactly as in air
-light_atten = [0.15, 0.15, 0.15]   # PLACEHOLDER: bars -- mostly see-through. A
+blocks_sight = true    # Erik's ruling 2026-11-06: NOT see-through. No unit sees,
+                       # targets or is ordered to fire through it. (Bullets are
+                       # "another question", undecided: a round already in
+                       # flight still passes it, see cover_exposure below.)
+light_atten = [0.15, 0.15, 0.15]   # PLACEHOLDER: lamp light leaks through it. A
                        # gas-regime row may attenuate light (light is not
                        # booked into any temperature; the materials door's
                        # light rule has no thermal_mass clause)
@@ -2579,8 +2588,8 @@ wave_absorb = 0.0      # == air's: no extra EOS damping (and clear of the
                        # forbidden (0, 0.02) band, see air)
 blast_resist = 0.0     # no consumer
 burst_threshold = 0.0  # n/a: it holds no pressure difference, it never bursts
-cover_exposure = 1.0   # the `foliage` precedent (permeable, see-through, never
-                       # a roll): a round passes between the bars (mechanics/03 §4) — three data tables loaded by
+cover_exposure = 1.0   # the `foliage` precedent (permeable, never a roll): a
+                       # round passes between the bars -- UNDECIDED (Erik) (mechanics/03 §4) — three data tables loaded by
 # simulation.weapons: [weapons.*] the delivery instrument, [ammo.*] the round,
 # [payloads.*] what happens at the destination. W1 re-home: the old
 # [weapons.rifle]/[weapons.grenade]/[weapons.door_explosive] sections live on

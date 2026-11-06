@@ -279,3 +279,74 @@ def test_a_unit_can_neither_stand_on_nor_path_through_a_grille(tmp_path):
                     breach_physics=bp, enable_recorder=False).gmap
     assert route(gv)
     assert not gv.solid[2, WALL_X] and gv.solid[4, WALL_X]
+
+
+# ---------------------------------------------------------------------------
+# Sight (Erik's ruling 2026-11-06: the grille is NOT see-through)
+# ---------------------------------------------------------------------------
+
+def test_a_grille_stops_a_line_of_sight_but_not_what_travels_with_the_air(
+        tmp_path):
+    """PROPERTY: across a grille opening no line of SIGHT is clear (the map's
+    ``has_los`` and the one sight oracle ``vision.ray_clear`` both say no),
+    exactly as across steel, while the PHYSICAL line (``physical=True``, what
+    a flame jet's cone asks) is clear, exactly as across an air opening --
+    and a spray cone aimed through the grille reaches tiles of the far room.
+    BREAKS IF the grille row loses ``blocks_sight``, if ``has_los`` goes back
+    to reading ``solid`` for sight, or if the jet starts reading the sight
+    mask (flames would stop at a grating that passes air)."""
+    from simulation import vision
+    from simulation.combat import spray_cone_tiles
+    y = OPENING[0]
+    ax, bx = WALL_X - 4, WALL_X + 4
+    sims = {m: _sim(tmp_path / MATERIAL_NAMES[m], m, pressurise=False)
+            for m in (MAT_GRILLE, MAT_STEEL, MAT_AIR)}
+    sight = {m: s.gmap.has_los(y, ax, y, bx) for m, s in sims.items()}
+    oracle = {m: vision.ray_clear(s, y, ax, y, bx) for m, s in sims.items()}
+    phys = {m: s.gmap.has_los(y, ax, y, bx, physical=True)
+            for m, s in sims.items()}
+    assert sight == {MAT_GRILLE: False, MAT_STEEL: False, MAT_AIR: True}
+    assert oracle == sight
+    assert phys == {MAT_GRILLE: True, MAT_STEEL: False, MAT_AIR: True}
+
+    def far_side(m):
+        return any(x > WALL_X for (_y, x, _d) in spray_cone_tiles(
+            sims[m].gmap, y, ax, bx, y, 10, 20.0))
+
+    assert far_side(MAT_GRILLE) and far_side(MAT_AIR)
+    assert not far_side(MAT_STEEL)
+
+
+def test_sight_is_sealed_to_gas_unless_a_row_says_otherwise(tmp_path):
+    """PROPERTY: a material row that does not declare ``blocks_sight`` blocks
+    sight iff it is sealed to gas (permeability == 0) -- the rule line of
+    sight had before the column existed, so no such row's behaviour moved --
+    and on a loaded map the sight mask is the solid mask plus exactly the
+    tiles of declaring rows, and follows a tile when it changes.
+    BREAKS IF the derived default changes (glass, doors or crates would
+    change who sees whom), or the sight mask is not patched with its tile."""
+    tbl = MaterialTable.from_config()
+    declared = {name for name in tbl.names
+                if getattr(getattr(CFG.materials, name), "blocks_sight",
+                           None) is not None}
+    assert "grille" in declared
+    for i, name in enumerate(tbl.names):
+        if name not in declared:
+            assert bool(tbl.blocks_sight[i]) == bool(tbl.permeability[i] <= 0)
+    assert tbl.blocks_sight[MAT_GRILLE] and tbl.permeability[MAT_GRILLE] > 0
+
+    g = _sim(tmp_path, MAT_GRILLE, pressurise=False).gmap
+    is_declared = np.isin(g.material, [i for i, n in enumerate(tbl.names)
+                                       if n in declared])
+    assert np.array_equal(g.sight_block & ~is_declared, g.solid & ~is_declared)
+    y = OPENING[0]
+    assert g.sight_block[y, WALL_X] and not g.solid[y, WALL_X]
+    g.destroy_wall(y, WALL_X)               # the grating is blown out
+    assert not g.sight_block[y, WALL_X]
+    assert g.has_los(y, WALL_X - 4, y, WALL_X + 4)
+    # ... and the other way: a tile that BECOMES a grille (through the one
+    # tile-change seam) blocks sight from that moment, still open to the gas.
+    g.material[y, WALL_X] = MAT_GRILLE
+    g.on_tile_changed(y, WALL_X)
+    assert g.sight_block[y, WALL_X] and not g.solid[y, WALL_X]
+    assert not g.has_los(y, WALL_X - 4, y, WALL_X + 4)

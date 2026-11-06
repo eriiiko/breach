@@ -1170,6 +1170,26 @@ class MaterialTable:
                         else (0.0 if occludes_per_id[idx] else 1.0))
         self.permeability = np.array(perm, dtype=np.float32)
 
+        # blocks_sight: does this material stop a line of SIGHT (#134, Erik's
+        # ruling 2026-11-06: the grille passes air but is not see-through).
+        # OPTIONAL column -- omitted, it is derived: a material blocks sight
+        # iff it is sealed to gas (permeability == 0), which is what line of
+        # sight read before the column existed, so no existing row changes. A
+        # row sets it to decouple sight from flow. Consumed by
+        # ``GameMap.sight_block`` (``has_los``); what a BULLET or a jet does
+        # is not this column (the march and ``has_los(physical=True)`` read
+        # ``solid``).
+        sight = []
+        for idx, (row, name) in enumerate(zip(rows, self.names)):
+            val = self._get_field_opt(row, "blocks_sight")
+            if val is not None and not isinstance(val, bool):
+                raise ValueError(
+                    f"materials.{name}.blocks_sight must be true or false; "
+                    f"got {val!r}")
+            sight.append(bool(val) if val is not None
+                         else bool(perm[idx] <= 0.0))
+        self.blocks_sight = np.array(sight, dtype=bool)
+
         # burst_threshold: max pressure DIFFERENTIAL a wall tile can hold across
         # its opposing sides before it fails (over-pressure relief valve, ch.04
         # §5). OPTIONAL column — a material that omits it defaults to 0.0, which
