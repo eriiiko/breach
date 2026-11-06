@@ -301,6 +301,56 @@ def test_the_spawn_box_keeps_its_rooms_centre_on_hand_built_rooms():
                     assert abs((2 * box.y + box.h) - (2 * room.y + h)) <= 2
 
 
+# ---------------------------------------------------------------------------
+# The lamps fit the frame's light door (found by the first large ship)
+# ---------------------------------------------------------------------------
+
+def test_the_lamp_budget_is_the_light_doors_own_arithmetic():
+    """PROPERTY: gen_ship's lamp budget is derived from the renderer's
+    light door, not a free number: the cone budget in light units (2^44 at
+    L°'s currency) less the muzzle flashes' own cap less a reserve that
+    covers the cursor lamp. BREAKS IF either renderer constant moves without
+    gen_ship following (a ship then trips ``cone_rows`` mid-firefight)."""
+    bp = pytest.importorskip("breach_physics")
+    from renderer import frame_lights as fl
+    units = fl.LIGHT_CONE_BUDGET / float(1 << int(bp.L_FINE_BITS))
+    assert G.CONE_LIGHT_UNITS == units
+    assert G.MUZZLE_FLASH_LIGHT == fl.MUZZLE_FLASH_MAX_TOTAL
+    cursor = fl.CURSOR_INTENSITY * max(fl.CURSOR_COLOR)
+    assert G.LAMP_LIGHT_BUDGET + G.MUZZLE_FLASH_LIGHT + cursor <= units
+
+
+@pytest.mark.parametrize("seed, size", [(1, "medium"), (2, "large")])
+def test_a_recipe_ships_lamps_survive_a_full_volley(seed, size):
+    """PROPERTY: a recipe ship's lamps, plus a full volley of muzzle flashes
+    (their cap) plus the cursor lamp, pass the frame's light door
+    (``frame_lights.cone_rows``) -- the door main.py refused the first large
+    freighter at, on frame 3, with its lamps alone; every lit room keeps at
+    least one lamp; the lamps are mirrored. BREAKS IF the lamp budget is
+    dropped, the budget pass empties a room, or it breaks the mirror."""
+    bp = pytest.importorskip("breach_physics")
+    from renderer import frame_lights as fl
+    plan = G.generate(seed, size, recipe="freighter", profile="standard",
+                      zombies=4)
+    lamps = plan.embedding.lights
+    assert G._lamp_light(lamps) <= G.LAMP_LIGHT_BUDGET + 1e-9
+    h, w = plan.tilemap.shape
+    extra = [fl.cursor_lamp_spec((w / 2.0, h / 2.0))]
+    extra += fl.transient_specs([{"x": w / 2.0, "y": h / 2.0,
+                                  "intensity": fl.MUZZLE_FLASH_MAX_TOTAL,
+                                  "color": (1.0, 1.0, 1.0)}])
+    specs = fl.frame_light_specs(lamps, total_tick=0,
+                                 sim_time_per_tick=1.0 / 60, extra=extra)
+    fl.cone_rows(specs.specs, w, h, int(bp.L_FINE_BITS))      # no refusal
+    for rm in plan.graph.rooms:
+        lit = "light" not in rm.tags or rm.tags["light"][1] > 0
+        inside = [l for l in lamps if rm.x <= l.x < rm.x + rm.w
+                  and rm.y <= l.y < rm.y + rm.h]
+        assert bool(inside) == lit, rm.id
+    spots = {(round(l.x, 6), round(l.y, 6), l.intensity) for l in lamps}
+    assert spots == {(round(w - x, 6), y, i) for (x, y, i) in spots}
+
+
 def test_v1_spawn_rooms_are_their_whole_rooms():
     """PROPERTY: the spawn box is the RECIPE path's; v1 still writes each
     spawn room as its whole graph room (ship_demo's spawn rooms do not move;

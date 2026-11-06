@@ -128,6 +128,21 @@ LAMP_RANGE = 16.0            # tiles
 # value the layout stage will set; untagged rooms keep the one centred lamp.
 LAMP_SPAN = 12
 LAMP_SPAN_MIN = 6
+# THE LAMP LIGHT BUDGET (#136, found by the first large recipe ship, which
+# main.py refused at frame 3): a frame's cone emitters may carry at most
+# LIGHT_CONE_BUDGET = 2^44 counts per channel = 128 light units at L°'s
+# currency (renderer/frame_lights.py, the sweep's door), of which the muzzle
+# flashes may take MUZZLE_FLASH_MAX_TOTAL = 64 and the cursor lamp /
+# flashlights / jets need the rest. So the lamps of a ship whose rooms carry
+# ``lamp_span`` are held at <= LAMP_LIGHT_BUDGET light units per channel
+# (:func:`_ship_lamps`): first fewer lamps per room (a wider span, ending at
+# one lamp per room), then -- only if one lamp per room is still too much --
+# every lamp dimmed by one common factor. tests/test_levelspec.py holds this
+# number against frame_lights' constants (gen_ship stays pyray-free).
+CONE_LIGHT_UNITS = 128.0      # == frame_lights.LIGHT_CONE_BUDGET / 2^L_FINE_BITS
+MUZZLE_FLASH_LIGHT = 64.0     # == frame_lights.MUZZLE_FLASH_MAX_TOTAL
+LAMP_RESERVE = 16.0           # the cursor lamp + a squad's flashlights + slack
+LAMP_LIGHT_BUDGET = CONE_LIGHT_UNITS - MUZZLE_FLASH_LIGHT - LAMP_RESERVE
 # The int form of the ``fuel`` tag: v1's furniture / wood 60/40 draw, as a
 # mix (:func:`fuel_spec`; one ``rng.random()`` per cluster, the walk in name
 # order, so the int form keeps v1's exact draws).
@@ -1790,7 +1805,7 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         rooms.append(SpawnRoom(team=ZOMBIE_TEAM, x=z.x, y=z.y, w=z.w, h=z.h,
                                max_per_team=graph.zombies))
     fuel = int(np.isin(tm, fuel_materials()).sum())
-    lights = [lamp for rm in graph.rooms for lamp in _room_lamps(rm)]
+    lights = _ship_lamps(graph)
     comp = graph.compartment_of()
     room_tags = {rm.id: {"compartment": comp[rm.id],
                          **{k: rm.tags[k] for k in ANNOTATION_TAGS
@@ -1803,7 +1818,41 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                      temp_init=_build_temp_init(tm, graph))
 
 
-def _room_lamps(rm: Room) -> list:
+def _lamp_light(lamps) -> float:
+    """The most light, in light units, the lamps carry on any one channel
+    (``intensity x colour`` summed, the cone door's quantity)."""
+    return max((sum(l.intensity * l.color[c] for l in lamps)
+                for c in range(3)), default=0.0)
+
+
+def _ship_lamps(graph: ShipGraph) -> list:
+    """Every room's lamps (:func:`_room_lamps`), held within
+    :data:`LAMP_LIGHT_BUDGET` when any room carries ``lamp_span`` (the
+    recipe path; a graph without it -- v1 -- is returned untouched): the
+    spans are widened together (each room's span at least ``s``, ``s``
+    growing by one tile) until the lamps fit, and if one lamp per room still
+    does not, every lamp is dimmed by the one factor that fits. Pure
+    arithmetic on the graph, no draw; a span floor is the same for twins, so
+    the mirror holds."""
+    lamps = [l for rm in graph.rooms for l in _room_lamps(rm)]
+    spanned = [rm for rm in graph.rooms if "lamp_span" in rm.tags]
+    if not spanned or _lamp_light(lamps) <= LAMP_LIGHT_BUDGET:
+        return lamps
+    longest = max(max(rm.w, rm.h) for rm in spanned)
+    floor = min(int(rm.tags["lamp_span"]) for rm in spanned)
+    while _lamp_light(lamps) > LAMP_LIGHT_BUDGET and floor <= longest:
+        floor += 1
+        lamps = [l for rm in graph.rooms for l in _room_lamps(rm, floor)]
+    total = _lamp_light(lamps)
+    if total > LAMP_LIGHT_BUDGET:
+        k = LAMP_LIGHT_BUDGET / total
+        lamps = [LightEntry(x=l.x, y=l.y, color=l.color,
+                            intensity=l.intensity * k, range=l.range,
+                            kind=l.kind) for l in lamps]
+    return lamps
+
+
+def _room_lamps(rm: Room, span_floor: int = 0) -> list:
     """A room's static lamps (render light only), in its ``light`` colour
     and level (else LAMP_RGB / LAMP_INTENSITY): ONE at its centre, or --
     with a ``lamp_span`` tag -- ``ceil(long side / lamp_span)`` along its
@@ -1812,21 +1861,24 @@ def _room_lamps(rm: Room) -> list:
     positions are symmetric about the room's centre, so a mirror twin's
     lamps are the reflection of its twin's. A ``light`` tag of level 0 (the
     ``dark`` preset: the fuel bunker) is a room with NO lamp -- the level
-    format refuses a zero-intensity ``[[light]]``."""
+    format refuses a zero-intensity ``[[light]]``. ``span_floor``: the
+    budget's widened span (:func:`_ship_lamps`); a tagged room uses
+    ``max(lamp_span, span_floor)``."""
     rgb, level = LAMP_RGB, LAMP_INTENSITY
     if "light" in rm.tags:
         rgb = tuple(float(c) for c in rm.tags["light"][0])
         level = float(rm.tags["light"][1])
         if level <= 0.0:
             return []
+    span = max(int(rm.tags.get("lamp_span", 0)), int(span_floor))
     if "lamp_span" not in rm.tags:
         spots = [(rm.x + rm.w / 2.0, rm.y + rm.h / 2.0)]
     elif rm.w >= rm.h:
-        n = -(-rm.w // int(rm.tags["lamp_span"]))
+        n = -(-rm.w // span)
         spots = [(rm.x + (k + 0.5) * rm.w / n, rm.y + rm.h / 2.0)
                  for k in range(n)]
     else:
-        n = -(-rm.h // int(rm.tags["lamp_span"]))
+        n = -(-rm.h // span)
         spots = [(rm.x + rm.w / 2.0, rm.y + (k + 0.5) * rm.h / n)
                  for k in range(n)]
     return [LightEntry(x=x, y=y, color=rgb, intensity=level,
