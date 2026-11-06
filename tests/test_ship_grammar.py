@@ -99,6 +99,43 @@ def test_the_freighter_loads_with_its_amendments(arch):
                     assert (elo, ehi) == (0, 0), (size, prof, e.rule)
 
 
+def test_the_profiles_apply_their_named_operators(arch):
+    """PROPERTY (archetype doc §1.1, §4): ``cycles_shift`` moves BOTH ends of
+    every phase-2 / phase-4 cycle range the file allows on a size (floored
+    at 0; an uncapped class by exactly the shift, a capped one never above
+    its cap) and leaves the departments' counts alone; ``secrets`` replaces
+    the budget; ``zombies_scale`` rounds half up and keeps at least one
+    zombie. BREAKS IF an operator is ignored, applied to the wrong entries,
+    or the rounding changes."""
+    skel = L.SKELETONS[arch.skeleton]
+    hub = arch.library.departments[arch.hub_department]
+    for size in arch.sizes:
+        for prof, p in arch.profiles.items():
+            got = arch.ranges[(size, prof)]
+            for e in arch.applies:
+                lo, hi = e.count[size]
+                if e.department or hi == 0:
+                    assert got[e.index] == (lo, hi)
+                    continue
+                cls = skel.anchor(e.on, hub.entry)
+                want_hi = max(0, hi + p.cycles_shift)
+                if cls.cap == "slack":
+                    assert got[e.index] == (max(0, lo + p.cycles_shift),
+                                            want_hi), (size, prof, e.rule)
+                else:
+                    assert got[e.index][1] == min(want_hi, S._cap(arch, cls,
+                                                                  size))
+            assert arch.secrets(prof) == (arch.secret_budget
+                                          if p.secrets is None else p.secrets)
+            for base in range(0, 9):
+                z, exact = arch.scaled_zombies(prof, base), \
+                    base * p.zombies_scale
+                assert (z == 0) == (base == 0)
+                if base:
+                    assert z >= 1 and (z == 1 or -0.5 < z - exact <= 0.5)
+    assert any(p.cycles_shift for p in arch.profiles.values())
+
+
 ROWS = [
     ('name = "freighter"', 'name = "tanker"', r"archetype\.name"),
     ('zombies = "axis_section"', 'zombies = "axis_section"\nfoo = 1',
@@ -279,6 +316,16 @@ def test_every_graph_keeps_every_invariant(ships):
                 (key, dn, own)
         for e in q.edges:
             assert e.a in ids and e.b in ids and e.kind in G.EDGE_KINDS, key
+        # what the layout's `behind` primitive can realise (layout doc §3,
+        # §7): one behind child per parent, a side or end room, never the
+        # exit room (its far side is the slab) nor a hull-door room
+        behind = [r for r in q.rooms if r.attach == "behind"]
+        parents = [r.parent for r in behind]
+        assert len(parents) == len(set(parents)), key
+        for p in parents:
+            par = q.room(p)
+            assert par.attach in ("side", "end") and not par.exit \
+                and "hull_door" not in par.tags, (key, p)
         types = {c.type for c in q.cycles}
         assert not {"maintenance_ring", "airlock_bypass"} <= types, key
         if q.size == "medium":
@@ -361,6 +408,14 @@ def test_the_skeleton_rows_cells_and_exits(arch, ships):
             assert room.exit and any(room.dept == d.name
                                      and room.instance == d.instance
                                      for d in firsts.values())
+        # the draw is capped at what the ship realises, never below it
+        avail = 1 + sum(any(r.exit and r.dept == d.name
+                            and r.instance == d.instance
+                            and r.cell == R.MAIN_CELL for r in q.rooms)
+                        for d in firsts.values())
+        (drew,) = [int(c.split()[1]) for _p, rule, c, _o in q.log
+                   if rule == "exits"]
+        assert q.exits == min(drew, avail), (size, prof, seed)
         cells = arch.cells(prof)
         for d in q.departments:
             assert d.cell == cells[d.name]
