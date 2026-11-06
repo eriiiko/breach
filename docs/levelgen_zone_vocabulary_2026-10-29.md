@@ -113,6 +113,45 @@ its weakest membrane bursts, and with a return only it is drained. Therefore
 through the doorway" is legal only across an open-doorway edge, and that edge
 needs the compartment gate change.
 
+**Addition 2026-11-06 -- the GRILLE (#134; the level-design lead, on Erik's
+hand-off "invent the vent material": blocks walking, does not block air).**
+A new material row `[materials.grille]` -- a steel grating: mobility 0
+(no unit enters or paths through it), permeability 1.0 and the GAS thermal
+regime (gas, smoke, pressure and gas energy cross it exactly as they cross
+an air tile), a low light extinction (it is bars; you see through it, so
+LOS and the bullet march pass it, `cover_exposure` 1.0 as `foliage`), not
+flammable, never bursts, hp so a blast opens it. Every value a PLACEHOLDER
+(Erik tunes). Two new rows of the table above:
+
+| Edge type | Stamps | Gas | Walk | Sight | Compartment boundary? | Cell crossing? | L9 | Status |
+|---|---|---|---|---|---|---|---|---|
+| **grille** (the window's twin: an air-only opening) | `MAT_GRILLE` over the window's width (`GLASS_W`) in the shared wall | passes always | NO (mobility 0) | yes | yes -- a grille tile is STRUCTURE for walking and for `compartments()` | never (`CELL_CROSSING_KINDS` excludes it) | must-share-wall | NEW 2026-11-06 |
+| **vented door** (a door that breathes) | the legacy door's opening and width (`MAT_DOOR`, `DOOR_W`) + `MAT_GRILLE` in the ONE wall tile on each side of the opening (its jambs); steel beyond | passes always, through the jambs | yes, through the door tiles | through the jambs | yes, exactly as `door` | never | must-share-wall | NEW 2026-11-06 |
+
+Neither sits in a hull wall (an edge joins two rooms; a hull is no room's
+shared wall), and neither is a secret path. `vented_door` is a walk kind
+wherever `door` is (`ship_grammar.WALK_KINDS`); `grille` never is, so a room
+reached only through grilles is unreachable and refused by the reachability
+invariant / gate. Swapping a `door` for a `vented_door` changes no layout
+arithmetic (every shared wall is already at least opening + 2, so the two
+jamb tiles always exist inside it), no compartment count and no reachability
+verdict.
+
+**The three graphs (dated note, 2026-11-06).** The cycle-types doc already
+names a WALK graph and an AIR graph; the compartment count `validate` gates
+is a third, STRUCTURAL graph (rooms joined by an edge that does not bound).
+Until today the air graph and the walk graph differed only through ducts
+(`vent_only`) and things that must break first (window, breakable): a plain
+wall opening was either both (open) or neither for air (door). The grille and
+the vented door are the FIRST kinds where the two differ on a plain wall
+opening: `grille` is air-only, `vented_door` is walk + air while still
+bounding a compartment. So "compartment" stays a walking / structure notion;
+"one volume of air" is now its own question, answered by flooding the
+loaded level's permeable tiles, never by the compartment count. The
+sealed-room vent rule (above) still reads `bounds`, i.e. it treats a room
+that breathes through a grille as sealed -- deliberately unchanged in this
+patch (see the run log of the lead skill for what it should mean).
+
 ### 0.5 Ducts and cells (critique findings 8, 9)
 
 - **A duct never crosses a cell boundary.** Several ducts per cell are fine
