@@ -1176,7 +1176,7 @@ class MaterialTable:
         # iff it is sealed to gas (permeability == 0), which is what line of
         # sight read before the column existed, so no existing row changes. A
         # row sets it to decouple sight from flow. Consumed by
-        # ``GameMap.sight_block`` (``has_los``); what a BULLET or a jet does
+        # ``GameMap.sight_screen`` (``has_los``); what a BULLET or a jet does
         # is not this column (the march and ``has_los(physical=True)`` read
         # ``solid``).
         sight = []

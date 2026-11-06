@@ -2134,7 +2134,7 @@ amp = 0.25
 #                 partial = porous). Omitted -> derived: sealed where the
 #                 material occludes light, open otherwise (legacy solid set).
 #   blocks_sight  OPTIONAL true/false: does the material stop a line of SIGHT
-#                 (GameMap.sight_block, has_los). Omitted -> derived: it blocks
+#                 (GameMap.sight_screen, has_los). Omitted -> derived: it blocks
 #                 sight iff it is sealed to gas (permeability == 0), the rule
 #                 line of sight had before the column existed. What a bullet
 #                 does is NOT this column (#134).

@@ -293,8 +293,8 @@ def test_a_grille_stops_a_line_of_sight_but_not_what_travels_with_the_air(
     a flame jet's cone asks) is clear, exactly as across an air opening --
     and a spray cone aimed through the grille reaches tiles of the far room.
     BREAKS IF the grille row loses ``blocks_sight``, if ``has_los`` goes back
-    to reading ``solid`` for sight, or if the jet starts reading the sight
-    mask (flames would stop at a grating that passes air)."""
+    to reading only ``solid`` for sight, or if the jet starts reading the
+    sight screen (flames would stop at a grating that passes air)."""
     from simulation import vision
     from simulation.combat import spray_cone_tiles
     y = OPENING[0]
@@ -321,10 +321,11 @@ def test_sight_is_sealed_to_gas_unless_a_row_says_otherwise(tmp_path):
     """PROPERTY: a material row that does not declare ``blocks_sight`` blocks
     sight iff it is sealed to gas (permeability == 0) -- the rule line of
     sight had before the column existed, so no such row's behaviour moved --
-    and on a loaded map the sight mask is the solid mask plus exactly the
-    tiles of declaring rows, and follows a tile when it changes.
+    and on a loaded map the sight screen holds exactly the gas-open tiles of
+    declaring rows, never a solid tile (``solid`` stays the one truth for a
+    wall), and follows a tile when it changes.
     BREAKS IF the derived default changes (glass, doors or crates would
-    change who sees whom), or the sight mask is not patched with its tile."""
+    change who sees whom), or the screen is not patched with its tile."""
     tbl = MaterialTable.from_config()
     declared = {name for name in tbl.names
                 if getattr(getattr(CFG.materials, name), "blocks_sight",
@@ -338,15 +339,16 @@ def test_sight_is_sealed_to_gas_unless_a_row_says_otherwise(tmp_path):
     g = _sim(tmp_path, MAT_GRILLE, pressurise=False).gmap
     is_declared = np.isin(g.material, [i for i, n in enumerate(tbl.names)
                                        if n in declared])
-    assert np.array_equal(g.sight_block & ~is_declared, g.solid & ~is_declared)
+    assert not (g.sight_screen & ~is_declared).any()
+    assert not (g.sight_screen & g.solid).any()
     y = OPENING[0]
-    assert g.sight_block[y, WALL_X] and not g.solid[y, WALL_X]
+    assert g.sight_screen[y, WALL_X] and not g.solid[y, WALL_X]
     g.destroy_wall(y, WALL_X)               # the grating is blown out
-    assert not g.sight_block[y, WALL_X]
+    assert not g.sight_screen[y, WALL_X]
     assert g.has_los(y, WALL_X - 4, y, WALL_X + 4)
     # ... and the other way: a tile that BECOMES a grille (through the one
     # tile-change seam) blocks sight from that moment, still open to the gas.
     g.material[y, WALL_X] = MAT_GRILLE
     g.on_tile_changed(y, WALL_X)
-    assert g.sight_block[y, WALL_X] and not g.solid[y, WALL_X]
+    assert g.sight_screen[y, WALL_X] and not g.solid[y, WALL_X]
     assert not g.has_los(y, WALL_X - 4, y, WALL_X + 4)

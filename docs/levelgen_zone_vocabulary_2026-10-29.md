@@ -123,8 +123,9 @@ flammable, never bursts, hp so a blast opens it. Every value a PLACEHOLDER
 (Erik tunes). **SIGHT (Erik's ruling, 2026-11-06, the same day, before the
 merge): the grille is NOT see-through.** The row says `blocks_sight = true`
 (a new OPTIONAL material column; omitted, a material blocks sight iff it is
-sealed to gas, the rule line of sight always had), `GameMap.sight_block` =
-`solid` or that word, and `has_los` reads it: no unit sees, targets or is
+sealed to gas, the rule line of sight always had), `GameMap.sight_screen`
+holds the gas-open tiles of such a row, and `has_los` stops on `solid` or
+the screen: no unit sees, targets or is
 ordered to fire through a grille. What travels with the air still passes
 (`has_los(physical=True)`, the flame jet's cone). **BULLETS are undecided**
 (Erik: "another question" -- he plans a penetration property for every
