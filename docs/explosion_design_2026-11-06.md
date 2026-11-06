@@ -43,22 +43,46 @@ A payload row gains `strength` (float >= 0, 0 = no generic blast). A row with
     heat_mj_per_strength      = 10.0
     grenade_kg                = 0.184
 
-- **Expansion**: `40 * strength` m3 in one tick, flat over the tiles reached from the
-  charge within `max(1, sqrt(strength))` tiles.
+- **Expansion**: `40 * strength` m3 in one tick, flat over the tiles reached within
+  `r_s = max(1, floor(sqrt(strength)))` tiles. Integer steps, so strength 1 up to just
+  under 4 stays on one tile: a 1 % change of strength never moves S 5-fold.
 - **Heat**: `10 * strength` MJ in one tick over the tiles reached within
-  `2 * sqrt(max(strength, 1))` tiles, with the shipped LINEAR falloff, normalised so
-  the total is fixed however many tiles the walk reached. Then the existing air read
-  scales it.
-- **Smoke**: `explosive_kg = strength * grenade_kg`, so smoke = that mass x
-  `soot_yield` (or the `min_soot_yield` floor) x `smoke_scale`, over the heat's tiles,
-  the air read scaling it per tile. A row no longer authors `explosive_kg` when it has
-  `strength`; the row door refuses both.
-- **Reach** is the walk `blast_expansion.reach_tiles`: 4-neighbour along open floor, so
-  a wall stops it and a door gap does not. Fixed total means a blast in a corridor is
+  `r_h = 2 * r_s` tiles, with the shipped LINEAR falloff, normalised so the ENQUEUED
+  total is fixed however many tiles the walk reached. Then the air read scales it. One
+  derived constant at the door converts MJ to `heat` units (c_v, tile volume,
+  `n_floor`), never a literal. The temperature rail still binds: an ambient tile holds
+  3.85 MJ, so a blast in a one-tile-wide corridor LANDS less than it asks for (about
+  8.8 of 10 MJ at strength 1). That is physics and stays.
+- **Smoke**: `explosive_kg = strength * grenade_kg`, derived BEFORE the existing kg
+  check, so smoke = that mass x `soot_yield` (or the `min_soot_yield` floor) x
+  `smoke_scale`, over the heat's tiles, the air read scaling it per tile. The noise is
+  kept, so the total is fixed in expectation, not per blast. A row no longer authors
+  `explosive_kg` when it has `strength`; the row door refuses both, and requires
+  `explosive` and `emit_blast_smoke`.
+- **Reach** is the walk `blast_expansion.reach_tiles`: 4-neighbour along open floor,
+  on the solve's own mask (never solid, vacuum or the ambient ring), so a wall stops it
+  and a door gap does not, and no share of S is silently lost. The radii are integer
+  r2 fixed at the door, so walk and credit agree. The tile list is sorted row-major
+  before any edit. The air read (`read_blast_air`) and the heat claim (`TickCredit`)
+  take this same tile list, not a disc. Fixed total means a blast in a corridor is
   hotter and shoves harder than the same blast in the open.
+- **A charge centred on a solid tile** (a round stops ON the wall; a door charge on a
+  door) walks after `apply_explosion`, so a tile the blast opened is open. If the centre
+  is still solid, the walk seeds from the APPROACH side: the tile the round came from,
+  or the planter's side for a placed charge, and distance is measured from the centre.
+  With no known side (a timed charge authored onto a wall) it seeds from every open
+  4-neighbour in sorted order. CLAUDE'S CALL, Erik may veto at the HUMAN-TEST.
+- **Ignition** is not derived. A strength row carries no fire-starting heat (strength
+  12 peaks near 77 heat units a tile; wood needs 2400). A row that should light things
+  keeps the existing `ignite_radius` / `ignite_intensity`: `ignite_ring` carries
+  IGNITE_HEAT, outside the fixed total and through walls, as today. `engine_death` and
+  `magazine_cookoff` keep it. `frag_standard` does NOT: a grenade that lands on a crate
+  no longer lights it, which today's only does on the exact fuel tile. CLAUDE'S CALL,
+  surfaced to Erik at the HUMAN-TEST.
 - `radius`, `unit_damage`, `wall_damage` stay the row's direct damage, with today's
   disc and falloff. `pressure`, `heat_amount`, `heat_radius`, `expansion_*` must be
-  absent on a strength row; the door refuses them by name.
+  ABSENT on a strength row; the door tests key presence, not value, and refuses them
+  by name (`frag_standard`'s explicit `pressure = 0.0` is deleted).
 - Rows without `strength` behave exactly as today (`frag_hot_mass`, `frag_heat`, the
   gas and plasma rows). Nothing is removed.
 
@@ -69,8 +93,8 @@ Rows converted, all PLACEHOLDER:
 | `frag_standard` | 1.0 | radius 2, unit 60, wall 200 unchanged |
 | `breach_focus` | 0.1 | C4. Wall 500 and radius 3 unchanged, `unit_damage` 0: the planter is unhurt by the row itself |
 | `demolition_c4` | 12.0 | radius 8, unit 150, wall 800 unchanged |
-| `magazine_cookoff` | 8.0 | radius 7, unit 120, wall 400 unchanged |
-| `engine_death` | 3.0 | must still carry at least IGNITE_HEAT to 2 tiles ("Starting a fire") |
+| `magazine_cookoff` | 8.0 | radius 7, unit 120, wall 400 unchanged; `ignite_radius` added |
+| `engine_death` | 3.0 | `ignite_radius` carries IGNITE_HEAT to 2 tiles ("Starting a fire") |
 
 Left alone: `frag_heat`, `frag_hot_mass`, the `studio_*` rows (a tuning level), plasma
 splashes, gas grenades, `quad_*` and `div_*` test rows.
@@ -80,27 +104,42 @@ splashes, gas grenades, `quad_*` and `div_*` test rows.
 1. **Source on the GPU.** `div_source` reaches `cuda_eos_step` and `cuda_eos_resident`
    (`K_div_u`), integer for integer, GPU == CPU at tol 0. An `(N, h, w)`-born launch
    per RL-batch habits. Uploaded only on a tick with a source.
-2. **Source state.** `gmap.expansions` holds state across a tick boundary when a
-   detonation lands after the solve. It joins the digest, with the spec version bump
-   and golden regeneration in one commit. A source is integer on entry: quantized once,
-   and refused at the door if `S` would pass int32 at the row's reach.
-3. **Fixed-total deposits.** Through FieldEdit, never inline. Heat and smoke share one
-   reach. Same RNG draw order discipline as `add_explosion_smoke`.
-4. **Python tick cost.** The walk runs at detonation only, never per tick.
-5. **Direct-damage reach** is not touched.
+2. **Source state.** A detonation after the solve leaves its source for the next
+   tick, paired with its queued heat and smoke. The pending source becomes a dense
+   `(h, w)` int32 plane in DIGEST_FIELDS and SIM_FIELDS, zeroed on consumption, with the
+   spec version bump and golden regeneration in one commit. The `EditQueue` itself is
+   not digested, so a slot-9e blast's pending heat and smoke stay invisible to a
+   snapshot, as every queued edit does today.
+3. **Source range.** S depends on the walk, which is level geometry, so no row door
+   can bound it, and strength 12 in a one-tile pocket crashes or wraps the prototype.
+   Sources accumulate in int64 at detonation and saturate at a named `S_MAX`, counted.
+   The subtraction from `div_u` widens and clamps identically in all three twins.
+4. **Fixed-total deposits.** Through FieldEdit TILE edits, never inline, enqueued
+   row-major. Heat and smoke share one reach. Same RNG draw order discipline as
+   `add_explosion_smoke`.
+5. **Python tick cost.** The walk runs at detonation only, never per tick.
+6. **Direct-damage reach** is not touched.
+7. **Clients.** `tools/lighting_demo.py` copies a `PayloadDef` (`copy.copy` plus
+   overrides), never rebuilds it column by column, or look shots lose the blast.
+   `tools/wind_load_probe.py` stops printing stale columns.
 
 ## 4. Verification (properties)
 
 - No gas added; energy closure exact through a blast (exists).
-- A wall stops heat, smoke and source; a gap passes them (extend the existing test).
-- The total heat and smoke are the same in a room and a corridor.
-- Strength scales: double strength doubles the delivered heat and smoke, and wind grows.
+- A wall stops heat, smoke, source and the air read; a gap passes them.
+- A charge on a wall tile delivers on the approach side and not behind the wall.
+- The ENQUEUED heat total is the same in a room and a corridor (within n/2 LSB, before
+  noise and rail); smoke's mean over seeds likewise.
+- Strength scales: double strength doubles the enqueued heat and smoke, and wind at a
+  fixed range beyond the rail (8 tiles) grows. Peak wind does not: it rails near 78 m/s.
+- A source past `S_MAX` in a one-tile pocket saturates, counted, and never wraps.
 - GPU == CPU at tol 0 on a blast tick, per-call and resident (`cuda_*_check` convention).
 - A digest covers a pending source: a snapshot taken between detonation and solve differs.
 - Determinism: replay of a match with grenades clears every checkpoint.
 - The row door refuses a strength row carrying `pressure` or `heat_amount`.
-- `engine_death` still lights a room; a breach charge still breaches a door, and the
-  planter at the shipped placement distance loses no HP.
+- `engine_death` still lights a room, through its `ignite_ring` (the tests that held
+  it to `heat_amount` are re-pinned to the ring); a breach charge still breaches a door,
+  and the planter at the shipped placement distance loses no HP.
 - Pre-existing tests that pin today's behaviour on purpose are re-pinned once, with a
   written rationale: `test_zombie_control` ship_demo digests, `test_payloads`
   `frag_and_breach`, and any other. Anything else failing is reported, never bent.
@@ -110,7 +149,7 @@ splashes, gas grenades, `quad_*` and `div_*` test rows.
 | Patch | Content | Mode | Gate |
 |---|---|---|---|
 | A | The rule, the door, fixed-total walk, converted rows, digest, re-pins, CLAUDE.md rows | Opus agent | suite + the properties above |
-| B | GPU source, per-call and resident | same agent | CUDA lockstep at tol 0 |
+| B | GPU source, per-call and resident. Merges with A, never apart: until B the CUDA paths drop the source | same agent | CUDA lockstep at tol 0 |
 | C | `levels/blast_final`: the real rows in four rooms; bot-match before and after over seeds 1-8 | same agent | HUMAN-TEST: Erik watches and OKs |
 
 ACCEPTED GAP: heat on a wall tile. A blast no longer deposits directly on solids; walls
@@ -121,7 +160,16 @@ the blast's impulse until matches say otherwise.
 
 ACCEPTED GAP: knockdown, HP and every strength value are placeholders.
 
-## 6. Systems
+## 6. Critique
+
+| Lens | Verdict | Outcome |
+|---|---|---|
+| Determinism and engine correctness (Opus, on v1) | 2 blockers, 5 majors, 5 minors; verified against the code, none rejected | v2: solid centre, ignition, `S_MAX`, integer reach steps, walk-based air read, row-door rules, digest plane, clients |
+
+Sound by that review: both GPU consumers of `div_u` are named and complete, the mg RHS
+is safe, tick order keeps a late source paired with its edits, closure holds.
+
+## 7. Systems
 
 **Existing, must be used:** Payload executor (the one entry), FieldEdit (the only field
 write), Gas energy seam and closure identity, Interior drag neighbour stages in EOS,
