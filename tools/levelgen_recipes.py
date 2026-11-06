@@ -1,6 +1,7 @@
 r"""tools/levelgen_recipes.py -- the RECIPE LIBRARY loader and the RESOLVER
-(#136; family B of the levelgen grammar,
-docs/levelgen_cycle_types_and_recipes_2026-10-31.md, revision 2).
+(#136, #152; family B of the levelgen grammar,
+docs/levelgen_cycle_types_and_recipes_2026-10-31.md, format revision 2.1 with
+the layout doc's §13 and the archetype doc's §7.1 amendments).
 
 A ship's pieces are DATA under ``levels/recipes/``:
 
@@ -22,19 +23,23 @@ lacks, an edge kind not in ``gen_ship.EDGE_KINDS``, a width class not in
 {wide, narrow}, a vent role set a sealed room cannot carry (vocabulary
 §0.4, per duct), a room ``count`` / ``p`` out of range, a ``[[cycle]]`` naming
 an unknown cycle type, a ``fixture`` not in fixtures.toml, a 3-cycle of
-contacts (§1.5), a department whose contact demand cannot fit its hub
-(§3.1 feasibility), a stove that could not light its own kindling (the
-galley FUSE ruling, §4) -- all at load, before any ship is planned.
+contacts (§1.5), a ``second_leg`` type with other than one one-room walk leg,
+an ``attach`` / ``exit`` / ``hull_door`` the layout's primitives cannot place
+(§3.2; layout doc §4, §13 A2), a declared edge that is not a room's contact
+with what it attaches to, a department whose contact demand cannot fit its
+hub (§3.1 feasibility, the weaker check until the layout's twin exists), a
+stove that could not light its own kindling (the galley FUSE ruling, §4) --
+all at load, before any ship is planned.
 
 THE RESOLVER (``resolve_room``, ``resolve_department``; §3.4) is the ONE door
 from recipe names to gen_ship's ``ROOM_TAGS`` values, reading the preset
 tables (``[levelgen.lights.*]``, ``[levelgen.fuel.*]``, ``[temps.*]``,
 ``[pressures.*]``, ``[heat_sources.*]``, ``[hazards.*]``). Every tag it writes
-passes gen_ship's own ``ROOM_TAGS`` check. A key whose stage-2 mechanism is
-not built yet (§5.2: a kindling fuel class, a vent list, a disabled heat
-source, a pressure preset, water) is ACCEPTED and kept as a PENDING entry
-naming the missing extension -- never dropped; ``ResolvedRoom.stamp_tags``
-refuses it by name.
+passes gen_ship's own ``ROOM_TAGS`` check (and ``fuel_spec`` / ``vent_specs``
+for the two tags with several forms). A key whose stage-2 mechanism is not
+built yet (§5.2: a disabled heat source, a pressure preset, water) is
+ACCEPTED and kept as a PENDING entry naming the missing extension -- never
+dropped; ``ResolvedRoom.stamp_tags`` refuses it by name.
 
 Not here: expanding a department into room INSTANCES (the grammar's phase 1,
 §5.3) and placing them (the layout stage 1.5, §5.1, undesigned) -- both are
@@ -57,7 +62,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES_DIR = ROOT / "levels" / "recipes"
 
-MOVES = ("subdivide", "edge_to_cycle", "leaf", "ring", "parallel", "duct")
+MOVES = ("subdivide", "edge_to_cycle", "leaf", "ring", "parallel", "duct",
+         "second_leg")
+# second_leg (archetype doc §3, recipe doc §0.1): a path A-C-B exists, the
+# move adds A-D-B with D ONE new room -- so its file carries exactly one
+# walkable [[leg]] of exactly one room; the existing path is the other leg.
+SECOND_LEG = "second_leg"
 UNUSED_MOVES = {"face": "L4 move 4 is unused in v1: the grammar keeps no "
                         "combinatorial embedding and the `ring` move covers "
                         "the one wanted case (§0.1)"}
@@ -65,6 +75,16 @@ WIDTH_CLASSES = ("wide", "narrow")
 SHAPES = ("room", "corridor", "vestibule")
 PLACEMENTS = ("wing", "axis")
 CELL_MODES = ("main", "own")
+# room.attach (recipe doc §3.2, layout doc §4 and §13 A2): where the layout's
+# primitives put a room relative to its department's entry. A WING
+# department's entry is its stub corridor: `side` (the default) packs a room
+# along it, `end` puts one at its far end, `behind:<room>` splits one off a
+# side / end room's far side. An AXIS department's entry is its hub section:
+# `fore` / `aft` is the section directly fore / aft of it, one of each.
+ATTACH_WING = ("side", "end")
+ATTACH_AXIS = ("fore", "aft")
+BEHIND = "behind:"
+DEFAULT_ATTACH = "side"
 MAIN_CELL = 0                  # §3.4: main = 0, each own department the next int
 TOWARD = ("spawn", "axis")
 WATER = ("full", "pool")
@@ -86,13 +106,8 @@ ENTRY_RUN = MIN_WIDE           # §3.1: the hub's perimeter less its entry
 # which are not written yet); any other wish must name a library department.
 BLESSED_DEPARTMENTS = ("crew_quarters", "engineering", "medbay", "cargo_hold",
                        "armory", "garden_dome", "pool_hall", "doorless_room")
-# gen_ship._place_fuel's draw today (60/40 furniture / wood): the one fuel
-# mix the ``fuel = n`` tag can express until the material extension (§5.2).
-TODAYS_FUEL_MIX = {"furniture": 0.6, "wood": 0.4}
-
-# The §5.2 stage-2 extensions a pending key waits for.
-EXT_FUEL = "the fuel tag's material / class extension (§5.2)"
-EXT_VENT_LIST = "the vent tag as a list of {duct, roles} (§5.2)"
+# The §5.2 stage-2 extensions a pending key waits for (the fuel class and the
+# vent list landed 2026-11-06, #133 `86629b2`: the resolver writes them).
 EXT_HEAT_ENABLED = "the heat_source tag's optional `enabled` (§5.2)"
 EXT_PRESSURE = "a per-room pressure composed into air_init.npy (§5.2)"
 EXT_WATER = "a per-room water stamp into water_init.npy (§5.2)"
@@ -174,12 +189,24 @@ class RecipeRoom:
     fixture: str | None = None
     fuel: str | None = None
     light: str | None = None
-    vents: tuple = ()              # RoomVent per duct (a list is §5.2)
+    vents: tuple = ()              # RoomVent per duct (one or several)
     water: str | None = None
+    # The EFFECTIVE attach (§3.2; ATTACH_WING / ATTACH_AXIS / "behind:<id>"),
+    # None on the department's entry. Set by the department door.
+    attach: str | None = None
+    exit: bool = False             # may carry a spawn exit (layout doc §7)
+    hull_door: bool = False        # gen_ship's hull_door tag (archetype §7.1)
 
     @property
     def max_count(self) -> int:
         return self.count[1] if self.count else 1
+
+    @property
+    def parent(self) -> str | None:
+        """A ``behind`` room's parent id, else None."""
+        if self.attach and self.attach.startswith(BEHIND):
+            return self.attach[len(BEHIND):]
+        return None
 
 
 @dataclass(frozen=True)
@@ -237,6 +264,14 @@ class Department:
             if r.id == rid:
                 return r
         raise KeyError(rid)
+
+    def anchor(self, rid: str) -> str | None:
+        """The room ``rid`` is laid out against: its ``behind`` parent, else
+        the entry (the stub, or the hub); None for the entry itself."""
+        r = self.room(rid)
+        if r.attach is None:
+            return None
+        return r.parent or self.entry
 
 
 @dataclass(frozen=True)
@@ -592,6 +627,12 @@ def load_cycle(path) -> Cycle:
                                            "no [[leg]]")
     elif not legs:
         raise _err(path, "file", f"a {move!r} type has at least one [[leg]]")
+    if move == SECOND_LEG and not (len(legs) == 1 and legs[0].walk
+                                   and legs[0].rooms == (1, 1)):
+        raise _err(path, "leg", f"a {SECOND_LEG!r} type carries exactly ONE "
+                                f"walkable [[leg]] of rooms = [1, 1] (it adds "
+                                f"A-D-B beside an existing path A-C-B, which "
+                                f"is the other leg; archetype doc §3)")
     return Cycle(name=name, move=move, phase=tuple(phase),
                  tactic=_str(path, "cycle.tactic", c["tactic"]),
                  rooms=ring_rooms, crosses_cell=crosses, legs=tuple(legs),
@@ -701,7 +742,8 @@ def load_fixtures(path) -> dict:
 _DEPT_KEYS = ("name", "placement", "cell", "entry", "toward", "wish_near",
               "wish_far")
 _ROOM_KEYS = ("id", "shape", "required", "count", "p", "width", "size",
-              "fixture", "fuel", "light", "vent", "water")
+              "fixture", "fuel", "light", "vent", "water", "attach", "exit",
+              "hull_door")
 _EDGE_KEYS = ("a", "b", "kind")
 _DUCT_KEYS = ("name", "filter")
 _DCYCLE_KEYS = ("type", "a", "b")
@@ -848,10 +890,12 @@ def load_department(path, *, root=None, fixtures: dict | None = None,
         raise _err(path, "department.entry", f"room {entry!r} is not "
                                              f"required (the entry always "
                                              f"exists)")
+    placement = _one_of(path, "department.placement", d["placement"],
+                        PLACEMENTS)
+    rooms = _resolve_attach(path, rooms, placement, entry)
     dept = Department(
         name=name,
-        placement=_one_of(path, "department.placement", d["placement"],
-                          PLACEMENTS),
+        placement=placement,
         cell=_one_of(path, "department.cell", d["cell"], CELL_MODES),
         entry=entry,
         toward=_one_of(path, "department.toward", d["toward"], TOWARD),
@@ -953,12 +997,113 @@ def _room(path, w: str, t, fixtures: dict, duct_names: set) -> RecipeRoom:
                                                f"{dn!r} twice")
             vents.append(RoomVent(duct=dn, roles=_vent_roles(
                 path, f"{vw}.roles", v["roles"])))
+    attach = None
+    if "attach" in t:
+        attach = _str(path, f"{w}.attach", t["attach"])
+        if attach.startswith(BEHIND):
+            _ident(path, f"{w}.attach", attach[len(BEHIND):])
+        elif attach not in ATTACH_WING + ATTACH_AXIS:
+            raise _err(path, f"{w}.attach", f"{attach!r} is not one of "
+                                            f"{list(ATTACH_WING + ATTACH_AXIS)}"
+                                            f" or 'behind:<room id>'")
+    flags = {}
+    for k in ("exit", "hull_door"):
+        if k in t and t[k] is not True:
+            raise _err(path, f"{w}.{k}", f"is only ever true (absent = "
+                                         f"false); got {t[k]!r}")
+        flags[k] = k in t
     return RecipeRoom(
         id=rid, size=size, shape=shape, required=required, count=count, p=p,
         width=width, fixture=fixture, fuel=fuel, light=light,
         vents=tuple(vents),
         water=(_one_of(path, f"{w}.water", t["water"], WATER)
-               if "water" in t else None))
+               if "water" in t else None),
+        attach=attach, **flags)
+
+
+def _resolve_attach(path, rooms: list, placement: str, entry: str) -> tuple:
+    """The rooms with their EFFECTIVE ``attach`` (§3.2; layout doc §4, §13
+    A2), refusing by name: an attach on the entry; a wing entry that is not
+    a corridor (the stub is a strip); ``fore`` / ``aft`` outside an axis
+    department and ``side`` / ``end`` / ``behind`` outside a wing one; an
+    axis room beyond the hub without ``fore`` / ``aft``; a second ``end``,
+    ``fore`` or ``aft``; a ``behind`` parent that is unknown, itself, the
+    entry, a behind room or counted; a ``count`` off a side room (an end,
+    behind, fore or aft room is ONE place); ``exit`` twice or off a side
+    room; ``hull_door`` off a wing ``end`` room (the room that reaches the
+    hull)."""
+    from dataclasses import replace
+    by_id = {r.id: r for r in rooms}
+    out, seen, exits = [], {}, []
+    for r in rooms:
+        w = f"room {r.id!r}.attach"
+        a = r.attach
+        if r.id == entry:
+            if a is not None:
+                raise _err(path, w, f"the entry {r.id!r} attaches to the "
+                                    f"ship, not to its own department")
+            if placement == "wing" and r.shape != "corridor":
+                raise _err(path, f"room {r.id!r}.shape",
+                           f"a wing department's entry is its stub, a "
+                           f"corridor strip the layout packs rooms along "
+                           f"(layout doc §4); {r.id!r} is a {r.shape}")
+        elif placement == "wing":
+            a = a or DEFAULT_ATTACH
+            if a in ATTACH_AXIS:
+                raise _err(path, w, f"{a!r} is legal only in a "
+                                    f"placement = \"axis\" department (a "
+                                    f"section fore / aft of the hub)")
+        else:
+            if a is None or a not in ATTACH_AXIS:
+                raise _err(path, w, f"{a!r}: an axis department's room "
+                                    f"beyond its hub is a section attach = "
+                                    f"\"fore\" or \"aft\" (layout doc §13 "
+                                    f"A2); side / end / behind are legal "
+                                    f"only in a wing department")
+        if a in ("end",) + ATTACH_AXIS:
+            if a in seen:
+                raise _err(path, w, f"a second attach = {a!r} (rooms "
+                                    f"{seen[a]!r} and {r.id!r}): at most one")
+            seen[a] = r.id
+        if a and a.startswith(BEHIND):
+            p = a[len(BEHIND):]
+            par = by_id.get(p)
+            if par is None or p == r.id or p == entry:
+                raise _err(path, w, f"behind {p!r}: the parent is a side or "
+                                    f"end room of this department "
+                                    f"({sorted(set(by_id) - {entry, r.id})})")
+            if par.attach and par.attach.startswith(BEHIND):
+                raise _err(path, w, f"behind {p!r}, itself a behind room: a "
+                                    f"behind of a behind is not a v1 "
+                                    f"primitive (layout doc §3)")
+            if par.max_count != 1:
+                raise _err(path, w, f"behind {p!r}, a counted room: a behind "
+                                    f"room splits ONE parent's slab")
+        if r.count is not None and a != DEFAULT_ATTACH:
+            raise _err(path, f"room {r.id!r}.count",
+                       f"a counted room is a side room (attach {a!r} is one "
+                       f"place)")
+        if r.exit:
+            exits.append(r.id)
+            if a != DEFAULT_ATTACH:
+                raise _err(path, f"room {r.id!r}.exit",
+                           f"exit is a side room's (attach {a!r}): the "
+                           f"packer pins it at the slab end (layout doc §7)")
+            if len(exits) > 1:
+                raise _err(path, f"room {r.id!r}.exit",
+                           f"a second exit room ({exits}): at most one")
+        if r.hull_door and not (placement == "wing" and a == "end"):
+            raise _err(path, f"room {r.id!r}.hull_door",
+                       f"a hull door is the wing department's attach = "
+                       f"\"end\" room's (the room that reaches the hull); "
+                       f"{r.id!r} is attach {a!r}")
+        out.append(replace(r, attach=a))
+    for r in out:
+        if r.exit and any(x.parent == r.id for x in out):
+            raise _err(path, f"room {r.id!r}.exit",
+                       "an exit room's far side is the slab: no room may "
+                       "attach behind it")
+    return tuple(out)
 
 
 def contact_triangle(edges) -> tuple | None:
@@ -989,6 +1134,26 @@ def _check_structure(path, dept: Department, fixtures: dict) -> None:
         raise _err(path, "edge", f"rooms {list(tri)} form a 3-cycle of "
                                  f"contacts (§1.5: no triangle in the contact "
                                  f"graph, whatever the edge kinds)")
+    for i, e in enumerate(dept.edges):
+        if dept.anchor(e.a) != e.b and dept.anchor(e.b) != e.a:
+            raise _err(path, f"edge[{i}]",
+                       f"rooms {e.a!r} and {e.b!r}: a declared edge is a "
+                       f"contact the layout makes by construction, so it "
+                       f"joins a room to what it attaches to -- a side, end, "
+                       f"fore or aft room to the entry {dept.entry!r}, a "
+                       f"behind room to its parent (a side room touches "
+                       f"only its stub; layout doc §4)")
+    if dept.secret:
+        host = dept.room(dept.secret.host)
+        if dept.placement != "wing" or host.attach not in ATTACH_WING:
+            raise _err(path, "secret.host",
+                       f"{host.id!r} is attach {host.attach!r}: the annex "
+                       f"goes behind its host, a wing department's side or "
+                       f"end room (archetype doc §7.1)")
+        if host.exit:
+            raise _err(path, "secret.host",
+                       f"{host.id!r} is the exit room, whose far side is the "
+                       f"slab: the annex cannot go behind it")
     for r in dept.rooms:
         mine = [e.kind for e in dept.edges if r.id in (e.a, e.b)]
         fx = fixtures.get(r.fixture) if r.fixture else None
@@ -1024,7 +1189,12 @@ def _check_feasible(path, dept: Department) -> None:
     """§3.1: every edge is a contact, so each neighbour (at its MAXIMUM
     count) needs a run of the room's perimeter of at least its least floor
     side plus a wall; the sum may not exceed the room's MAXIMUM perimeter,
-    less one entry run for the department's entry."""
+    less one entry run for the department's entry.
+
+    THE WEAKER CHECK (#152): a necessary condition only. It stays until the
+    layout stage exists; then the loader runs the layout's own packing twin
+    at the recipe's minima instead (layout doc §4 "Loader twin": two-bin
+    side packing, the end room against the row depth, the behind depths)."""
     for r in dept.rooms:
         demand, parts = 0, []
         for e in dept.edges:
@@ -1135,7 +1305,8 @@ def resolve_room(dept: Department, room_id: str, fixtures: dict, rng, *,
     class's cluster count); ``cell``: the number the grammar gave an ``own``
     department (``main`` is :data:`MAIN_CELL`). The duct names are the
     recipe's: renaming per wing instance is the grammar's."""
-    from gen_ship import ROOM_TAGS
+    from gen_ship import (FUEL_MIX_V1, HULL_DOOR_DEFAULT, ROOM_TAGS,
+                          GraphSchemaError, fuel_spec, vent_specs)
     path = dept.path
     room = dept.room(room_id)
     w = f"room {room_id!r}"
@@ -1157,16 +1328,15 @@ def resolve_room(dept: Department, room_id: str, fixtures: dict, rng, *,
         fp = fuel_preset(eff["fuel"], path=path, where=f"{w}.fuel")
         lo, hi = fp["clusters"]
         n = int(rng.integers(lo, hi + 1))
-        if fp["mix"] == TODAYS_FUEL_MIX:
-            tags["fuel"] = n
-        else:
-            pending["fuel"] = ({"clusters": n, "mix": fp["mix"]}, EXT_FUEL)
+        # v1's mix keeps the int form, so every class gen_ship already
+        # stamped resolves to exactly the tag it always did.
+        tags["fuel"] = (n if fp["mix"] == FUEL_MIX_V1
+                        else {"clusters": n, "mix": dict(fp["mix"])})
     if room.vents:
         vt = [{"duct": v.duct, "roles": list(v.roles)} for v in room.vents]
-        if len(vt) == 1:
-            tags["vent"] = vt[0]
-        else:
-            pending["vent"] = (vt, EXT_VENT_LIST)
+        tags["vent"] = vt[0] if len(vt) == 1 else vt
+    if room.hull_door:
+        tags["hull_door"] = dict(HULL_DOOR_DEFAULT)
     if "heat_source" in eff:
         hs = heat_source_preset(eff["heat_source"], path=path,
                                 where=f"{w}.heat_source")
@@ -1193,6 +1363,14 @@ def resolve_room(dept: Department, room_id: str, fixtures: dict, rng, *,
         if not ok(v):
             raise _err(path, w, f"resolved tag {k!r} = {v!r} is not {what} "
                                 f"(gen_ship.ROOM_TAGS)")
+    try:                       # stage 2's own readers of the two tag forms
+        if "fuel" in tags:
+            fuel_spec(tags["fuel"])
+        if "vent" in tags:
+            vent_specs(tags["vent"])
+    except GraphSchemaError as e:
+        raise _err(path, w, f"resolved tag refused by gen_ship: {e}") \
+            from None
     return ResolvedRoom(id=room.id, tags=tags, pending=pending)
 
 

@@ -1,0 +1,99 @@
+# Department (scale 3): MEDBAY -- vocabulary B.3, cut to v1 by the archetype
+# doc §7.1 (2026-11-06): the stub, the ward at its end, the operating
+# theatre and scrub room (open arches: one clean compartment with the stub and
+# the ward), the pharmacy (sealed, the O2 store), the morgue (sealed, dim), a
+# secret annex behind the morgue. Left out: the isolation room (a room-level
+# cell the resolver cannot number), the locked pharmacy door (#135), the cold
+# morgue (the physics session). Every value names a preset or a config row;
+# sizes and counts are PLACEHOLDERS the layout patch tunes against its
+# failure-rate gate (layout doc §13 A6).
+[department]
+name = "medbay"
+placement = "wing"
+cell = "main"
+entry = "stub"
+toward = "spawn"
+wish_near = ["crew_quarters"]
+wish_far = ["engineering"]
+
+[[room]]
+id = "stub"
+shape = "corridor"
+required = true
+width = "wide"
+size = { across = [6, 8], along = [14, 34] }
+
+[[room]]
+id = "ward"
+required = true
+attach = "end"
+size = { w = [10, 14], h = [9, 12] }
+fuel = "furniture"              # beds and cabinets: a light load
+light = "lit"
+vent = { duct = "medbay", roles = ["return"] }   # the clean compartment's return
+
+[[room]]
+id = "theatre"                  # the operating theatre
+count = [1, 3]                  # up to 3 so the side rooms fill both sides of a 34-long stub
+size = { w = [6, 10], h = [6, 10] }
+light = "harsh"                 # bright white
+vent = { duct = "medbay", roles = ["supply"] }   # the clean compartment's supply
+
+[[room]]
+id = "scrub"
+p = 0.5
+size = { w = [6, 8], h = [6, 10] }
+light = "lit"
+
+[[room]]
+id = "pharmacy"
+required = true
+exit = true                     # may carry a spawn exit when the medbay is first in its row (layout doc §7)
+size = { w = [6, 8], h = [6, 10] }
+fixture = "o2_store"            # the O2 store: a heat-triggered pure-O2 dump -- a fire next door roars
+light = "lit"                   # sealed (doors), no vent
+
+[[room]]
+id = "morgue"
+required = true
+size = { w = [6, 8], h = [6, 10] }
+light = "dim"
+vent = { duct = "medbay", roles = ["supply", "return"] }   # a sealed box carries both
+
+[[edge]]
+a = "stub"
+b = "ward"
+kind = "open"
+
+[[edge]]
+a = "stub"
+b = "theatre"
+kind = "open"
+
+[[edge]]
+a = "stub"
+b = "scrub"
+kind = "open"
+
+[[edge]]
+a = "stub"
+b = "pharmacy"
+kind = "door"                   # a locked door once #135 lands
+
+[[edge]]
+a = "stub"
+b = "morgue"
+kind = "door"
+
+[[duct]]
+name = "medbay"
+filter = "hepa_basic"           # clean air: catches the smoke, passes every gas
+
+[secret]
+kind = "breakable"
+host = "morgue"                 # the experimentation ward behind the morgue
+weight = 1.5                    # B.3's 0.15 against the quarters' 0.1
+
+[physics]
+temp = "ambient"
+pressure = "ambient"
