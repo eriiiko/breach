@@ -153,6 +153,8 @@ WATER_H_CAP     = 0.25   # m deep-water cap: c^2 = g*min(depth, h_cap) (W6a)
 WATER_K_AMP     = 0.5    # ripple amplitude clamp |ripple| <= k_amp*depth (W6a)
 WATER_K_SPLASH  = 2.0    # wave_p -> ripple_v splash gain (W6a; pure feel dial)
 
+
+from simulation.blast_expansion import take_source_plane
 
 class PhysicsRunner:
     """Wraps the C++ atmosphere / smoke / fire solvers for one game session."""
@@ -189,6 +191,7 @@ class PhysicsRunner:
         # binds and step() calls below act on the engine's solvers. The per-tick
         # orchestration moves INTO engine.step() in S4.
         self.engine = bp.PhysicsEngine()
+        self._div_source_on = False
 
         # AtmosphereSolver: wave + IMEX diffusion. Same params as legacy
         # _init_solvers; main.py's shim was missing max_source_per_step.
@@ -882,6 +885,11 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
+        # #31 PROTOTYPE: this tick's blast expansion source (CPU path only).
+        _plane = take_source_plane(gmap)
+        if _plane is not None or self._div_source_on:
+            self.engine.eos.set_div_source(_plane)
+            self._div_source_on = _plane is not None
         # S8a Path B: the GPU-resident tick (opt-in, default OFF). Same tick,
         # same arithmetic — the water substep loop + the smoke trace loop run
         # resident on persistent device buffers (killing the substep-/plane-

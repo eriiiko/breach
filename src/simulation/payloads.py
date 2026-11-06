@@ -42,7 +42,9 @@ untouched.
 """
 from __future__ import annotations
 
-from simulation.blast_air import ONE as _BLAST_ONE, read_blast_air
+from simulation.blast_air import (ONE as _BLAST_ONE, blast_base_soot_g,
+                                  read_blast_air)
+from simulation.blast_expansion import start_expansion
 from simulation.damage import CREDIT_HEAT, tick_credit
 from simulation.events import NO_ATTACKER, ExplosionEvent
 from simulation.exchange import apply_blast_damage
@@ -376,9 +378,11 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         air = read_blast_air(gmap, fy, fx,
                              max(payload.radius,
                                  getattr(payload, "heat_radius", 0.0)))
+    if getattr(payload, "expansion_m3", 0.0) > 0.0:
+        start_expansion(gmap, fy, fx, payload)
     if payload.emit_blast_smoke:
         peak = blast_smoke_peak(gmap, fy, fx, payload.radius,
-                                getattr(payload, "blast_soot_g", 0.0))
+                                blast_base_soot_g(payload))
         if peak > 0.0:
             add_explosion_smoke(gmap, queue, fy, fx, payload.radius,
                                 amount=peak,

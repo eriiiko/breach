@@ -326,6 +326,8 @@ class GameMap:
         # blast covered it (entities have no hp path in the damage system).
         # Plain Python list: never digested, never recorded, never a field.
         self.blast_log = []
+        # #31 PROTOTYPE: active expansion sources (blast_expansion.py). Never digested.
+        self.expansions = []
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere

@@ -59,10 +59,11 @@ def test_a_blast_deposits_exactly_its_charges_soot():
     """PROPERTY: with the per-tile noise off, a blast on open floor puts the
     charge's soot mass into the smoke field -- the deposited smoke units equal
     smoke_units_of_soot(explosive_kg x 1000 x soot_yield) to within the field's
-    quantisation -- and a charge with no soot (C4) puts none.
+    quantisation -- and a charge with no soot of its own (C4) still leaves the
+    [blast_air] min_soot_yield floor (Erik, 2026-11-06: a little smoke always).
 
     BREAKS IF: the executor goes back to a fixed disc amount, budgets smoke onto
-    walls, or a soot-free charge makes smoke.
+    walls, or the floor stops applying.
     """
     soot_g = 0.184 * 1000.0 * float(CFG.explosives.comp_b.soot_yield)
     frag = PayloadDef("t_frag", radius=4, emit_blast_smoke=True,
@@ -72,7 +73,9 @@ def test_a_blast_deposits_exactly_its_charges_soot():
     old_noise = getattr(CFG.physics, "explosion_smoke_noise", 0.85)
     CFG.physics.explosion_smoke_noise = 0.0
     try:
-        for p, want in ((frag, smoke_units_of_soot(soot_g)), (c4, 0.0)):
+        c4_soot_g = 0.567 * 1000.0 * float(CFG.blast_air.min_soot_yield)
+        for p, want in ((frag, smoke_units_of_soot(soot_g)),
+                        (c4, smoke_units_of_soot(c4_soot_g))):
             g, q = _room(), EditQueue()
             before = int(g.gas[SMOKE].astype(np.int64).sum())
             execute_payload(g, q, [], 12, 12, p, np.random.default_rng(1))

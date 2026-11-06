@@ -254,8 +254,12 @@ class PayloadDef:
                  emit_blast_smoke=False, heat_amount=0.0, heat_radius=0.0,
                  explosive="", explosive_kg=0.0, blast_soot_g=0.0,
                  bulk_gas="", bulk_amount=0.0, bulk_radius=0.0, bulk_temp=0.0,
-                 bulk_amount_q=0, bulk_temp_q=0):
+                 bulk_amount_q=0, bulk_temp_q=0,
+                 expansion_m3=0.0, expansion_radius=0.0, expansion_ticks=1):
         self.name = name
+        self.expansion_m3 = expansion_m3        # #31 prototype: air pushed out
+        self.expansion_radius = expansion_radius
+        self.expansion_ticks = expansion_ticks
         self.radius = radius                    # blast radius (tiles)
         self.pressure = pressure                # wave source magnitude
         self.wall_damage = wall_damage
@@ -670,6 +674,9 @@ class PayloadTable:
                 explosive=explosive,
                 explosive_kg=explosive_kg,
                 blast_soot_g=blast_soot_g,
+                expansion_m3=col("expansion_m3", 0.0),
+                expansion_radius=col("expansion_radius", 0.0),
+                expansion_ticks=col("expansion_ticks", 1),
                 **bulk,
             )
         self.names = list(self.by_name)

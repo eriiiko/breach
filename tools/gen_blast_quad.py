@@ -38,7 +38,6 @@ from level_loader import SPACE_CODE, LightEntry  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 
 LEVEL_NAME = "blast_quad"
-DEFAULT_OUT_DIR = ROOT / "levels" / LEVEL_NAME
 
 BAND = 6                 # open sky outside the hull (tiles)
 ROOM_W, ROOM_H = 30, 24  # interior, 10 x 8 m at 0.333 m tiles
@@ -57,25 +56,35 @@ FIRST_S = 2.0
 PERIOD_S = 3.0
 SLOW_TICKS = 6
 
-ROOMS = (                      # label, room x0, y0, gap side
-    ("1 TILE",  X0 + 1, Y0 + 1, "w"),
-    ("DISC R3",  X_MID + 1, Y0 + 1, "e"),
-    ("DISC R5",  X0 + 1, Y_MID + 1, "w"),
-    (f"R3 OVER {SLOW_TICKS} TICKS", X_MID + 1, Y_MID + 1, "e"),
-)
+# The rooms, in order NW, NE, SW, SE: (label, payload row, charges one tick apart).
+# A second set of rows is a second level through the same layout.
+SETS = {
+    "blast_quad": ("Blast Quad", (
+        ("1 TILE", "quad_tile", 1),
+        ("DISC R3", "quad_r3", 1),
+        ("DISC R5", "quad_r5", 1),
+        (f"R3 OVER {SLOW_TICKS} TICKS", "quad_slow", SLOW_TICKS),
+    )),
+    "blast_div": ("Blast Div", (
+        ("HOT MASS", "quad_r3", 1),
+        ("SOURCE 40 M3", "div_40", 1),
+        ("SOURCE 80 M3", "div_80", 1),
+        ("SOURCE 40 + PUFF", "div_40_puff", 1),
+    )),
+}
+SLOTS = ((X0 + 1, Y0 + 1, "w"), (X_MID + 1, Y0 + 1, "e"),
+         (X0 + 1, Y_MID + 1, "w"), (X_MID + 1, Y_MID + 1, "e"))
+ROOMS = tuple((label, *slot) for (label, _, _), slot
+              in zip(SETS["blast_quad"][1], SLOTS))
 
 
 def centre(room):
     return room[1] + ROOM_W // 2, room[2] + ROOM_H // 2
 
 
-CHARGES = (
-    ("quad_tile", *centre(ROOMS[0]), "quad_tile", FIRST_S),
-    ("quad_r3", *centre(ROOMS[1]), "quad_r3", FIRST_S),
-    ("quad_r5", *centre(ROOMS[2]), "quad_r5", FIRST_S),
-    *((f"quad_slow_{k}", *centre(ROOMS[3]), "quad_slow", FIRST_S + k / TPS)
-      for k in range(SLOW_TICKS)),
-)
+def charges_for(rows):
+    return tuple((f"{row}_{i}_{k}", *centre(ROOMS[i]), row, FIRST_S + k / TPS)
+                 for i, (_label, row, n) in enumerate(rows) for k in range(n))
 
 
 def build_tilemap() -> np.ndarray:
@@ -102,7 +111,7 @@ AIR_ALT = (30, 32, 38)
 CHARGE_RGB = (170, 40, 30)
 
 
-def build_diffuse(tm: np.ndarray) -> Image.Image:
+def build_diffuse(tm: np.ndarray, rows, charges) -> Image.Image:
     img = np.zeros((H * PX, W * PX, 3), dtype=np.uint8)
     for ty in range(H):
         for tx in range(W):
@@ -111,7 +120,7 @@ def build_diffuse(tm: np.ndarray) -> Image.Image:
             if code == MAT_AIR and (tx + ty) % 2:
                 c = AIR_ALT
             img[ty * PX:(ty + 1) * PX, tx * PX:(tx + 1) * PX] = c
-    for (_id, x, y, _p, _t) in CHARGES:
+    for (_id, x, y, _p, _t) in charges:
         q = PX // 4
         img[y * PX + q:(y + 1) * PX - q, x * PX + q:(x + 1) * PX - q] = CHARGE_RGB
     pil = Image.fromarray(img)
@@ -120,7 +129,7 @@ def build_diffuse(tm: np.ndarray) -> Image.Image:
         font = ImageFont.load_default(size=22)
     except TypeError:            # older PIL: fixed-size default font
         font = ImageFont.load_default()
-    for (label, rx, ry, _side) in ROOMS:
+    for (label, _row, _n), (rx, ry, _side) in zip(rows, SLOTS):
         draw.text(((rx + ROOM_W // 2) * PX, (ry + 3) * PX), label,
                   fill=(190, 196, 204), font=font, anchor="mm")
     return pil
@@ -136,8 +145,9 @@ HEADER_COMMENTS = (
 )
 
 
-def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
-    out_dir = Path(out_dir)
+def main(level: str = LEVEL_NAME) -> None:
+    title, rows = SETS[level]
+    out_dir = ROOT / "levels" / level
     for name in ("level.toml", "tilemap.csv", "diffuse.png"):
         p = out_dir / name
         if p.exists():
@@ -145,14 +155,15 @@ def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     toml_path = level_lib.write_level_header(
-        out_dir, name="Blast Quad", tile_size_m=TILE_SIZE_M,
+        out_dir, name=title, tile_size_m=TILE_SIZE_M,
         comment_lines=HEADER_COMMENTS)
     level_lib.write_boundary_field(toml_path, "ambient")
     tm = build_tilemap()
     level_lib.write_tilemap_csv(out_dir, tm, csv_bak=False)
-    build_diffuse(tm).save(out_dir / "diffuse.png")
+    charge_rows = charges_for(rows)
+    build_diffuse(tm, rows, charge_rows).save(out_dir / "diffuse.png")
     lights = build_lights()
-    charges = build_charges(CHARGES, PERIOD_S)
+    charges = build_charges(charge_rows, PERIOD_S)
     level_lib.write_managed_blocks(
         toml_path,
         {"light": lambda nl: level_lib.format_light_lines(lights, nl),
@@ -162,3 +173,4 @@ def main(out_dir: Path = DEFAULT_OUT_DIR) -> None:
 
 if __name__ == "__main__":
     main()
+    main("blast_div")

@@ -3173,6 +3173,7 @@ o2_low = 0.10            # O2 mole fraction at or below which nothing burns
 o2_full = 0.19           # at or above this the air counts as normal
 starved_smoke = 3.0      # extra smoke at o2_low: 3.0 = four times the soot
 detonation_share = 0.4   # heat with no air to burn in (Comp B: 5.02 of ~11.7 MJ/kg)
+min_soot_yield = 0.02    # the smoke a charge always leaves, g/g: the fireball cools by it
 
 # ---------------------------------------------------------------------------
 # [explosives.*] -- what a charge is MADE of (#12 smoke x light, handle 3,
@@ -3339,6 +3340,55 @@ explosive = "comp_b"
 explosive_kg = 0.0307
 heat_amount = 267.0
 heat_radius = 3.0
+
+# --- #31 divergence-source PROTOTYPE rows (levels/blast_div). expansion_m3 is the
+# air a blast pushes out, over expansion_ticks, from the open tiles within
+# expansion_radius. heat_amount pairs it (about 0.355 MJ per m3) so the gas does
+# not spring back. No mass unless `pressure` adds a puff. ALL PROVISIONAL.
+[payloads.div_40]
+radius = 3
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 51.0
+heat_radius = 3.0
+expansion_m3 = 40.0
+expansion_radius = 3.0
+expansion_ticks = 2
+
+[payloads.div_80]
+radius = 3
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 102.0
+heat_radius = 3.0
+expansion_m3 = 80.0
+expansion_radius = 3.0
+expansion_ticks = 2
+
+[payloads.div_40_puff]
+radius = 3
+pressure = 2.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 51.0
+heat_radius = 3.0
+expansion_m3 = 40.0
+expansion_radius = 3.0
+expansion_ticks = 2
 
 # --- #31 explosion-studio rows (levels/explosion_studio, fired by its
 # timed_charge entities). ALL PROVISIONAL — Erik edits them at the "explosion

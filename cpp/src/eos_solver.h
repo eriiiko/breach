@@ -138,6 +138,10 @@ inline bool eos_thermal_occludes(const bool* thermal_solid, const bool* solid,
 
 class EOSSolver {
 public:
+    // #31 PROTOTYPE: per-cell divergence source, Q16 1/s; empty = off. CPU path
+    // only, written through set_div_source in bindings.cpp.
+    std::vector<int32_t> div_source;
+
     // ---- PINNED / config constants (design §8/§9, decisions log) ----------
     // c_max == c_amb: the AMBIENT sound speed dial (Erik: 300 m/s). v2.2:
     // K = c_amb²/γ is derived from this each tick; the true local sound
