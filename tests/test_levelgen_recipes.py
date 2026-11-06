@@ -151,9 +151,11 @@ REFUSALS = [
     ("narrow_is_one_room", "cycles/flank_pair.toml",
      "rooms = [1, 1]                  # inclusive", "rooms = [1, 2]  #",
      "leg[0].width", "exactly one room"),
-    ("sealed_room_lone_role", CQ,
-     'roles = ["return", "supply"] }   # a sealed box',
-     'roles = ["return"] }   # a sealed box', "room 'heads'.vent", "sealed"),
+    # the air-volume vent rule (vocabulary §0.6): behind a plain door the
+    # heads is a volume of its own, so the bunks' and the mess's supplies
+    # lose their return (and the heads' return its supply)
+    ("air_volume_lone_role", CQ, 'kind = "vented_door"', 'kind = "door"',
+     "room 'bunk'.vent", "air volume of rooms.*no 'return'"),
     ("count_low", CQ, "count = [2, 4]", "count = [0, 4]", "room[1].count",
      "out of range"),
     ("count_reversed", CQ, "count = [2, 4]", "count = [4, 2]",
@@ -245,7 +247,7 @@ def test_the_door_refuses_by_file_and_field(tmp_path, rel, old, new, where,
     the refusal names the FILE and the FIELD (and why) -- for an unknown
     field, a physics number where a preset name belongs, a config row /
     preset config.toml lacks, an edge kind outside EDGE_KINDS, a width class,
-    the narrow one-room rule, the sealed-room vent rule, count / p ranges and
+    the narrow one-room rule, the air-volume vent rule, count / p ranges and
     multiplicity, an unknown or wrong-phase cycle type, an unknown fixture,
     the unused face move, the even ring, a gas-blind non-walk leg, the #49
     wait, L5 on crosses_cell, a contact triangle, the layout's packing twin
@@ -392,9 +394,9 @@ def test_fuel_classes_and_vent_lists_resolve_to_gen_ships_forms(lib,
             names = list(G._table().names)
             assert {names[m] for m, _f in G.fuel_spec(tag)[1]} == set(mix)
     root = _copy(tmp_path, CQ,
-                 'vent = { duct = "quarters", roles = ["return", "supply"] }',
-                 'vent = [{ duct = "quarters", roles = ["return", "supply"] '
-                 '}, { duct = "galley", roles = ["supply", "return"] }]')
+                 'vent = { duct = "quarters", roles = ["return"] }   # the',
+                 'vent = [{ duct = "quarters", roles = ["return"] '
+                 '}, { duct = "galley", roles = ["supply", "return"] }]   #')
     two = R.load_recipes(root)
     rd = R.resolve_department(two.departments["crew_quarters"], two.fixtures,
                               _rng(0))

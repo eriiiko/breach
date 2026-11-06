@@ -307,14 +307,16 @@ def test_a_room_on_two_ducts_gets_a_site_per_duct_and_role():
 
 
 def test_the_vent_rules_hold_per_duct_of_a_list():
-    """PROPERTY: on a list tag the sealed-room rule runs PER DUCT (a sealed
-    room with a lone role on its second duct is refused naming that duct,
-    though its first duct carries both) and so does 'a duct never crosses a
-    cell' (a list duct shared with a room of another cell is refused naming
-    the duct); two entries on one duct are refused by the schema. BREAKS IF
-    either rule checks only a list's first entry."""
+    """PROPERTY: on a list tag the air-volume vent rule (vocabulary §0.6)
+    runs PER DUCT (a room in its own air volume with a lone role on its
+    second duct is refused naming that duct, the volume and the missing
+    role, though its first duct carries both) and so does 'a duct never
+    crosses a cell' (a list duct shared with a room of another cell is
+    refused naming the duct); two entries on one duct are refused by the
+    schema. BREAKS IF either rule checks only a list's first entry."""
     with pytest.raises(G.GraphSchemaError,
-                       match=r"room 1 is sealed.*duct 'link'"):
+                       match=r"duct 'link': the air volume of rooms \[1\].*"
+                             r"no 'return'"):
         _vent_graph([{"duct": "dept", "roles": BOTH},
                      {"duct": "link", "roles": ["supply"]}],
                     vent3={"duct": "link", "roles": BOTH})
