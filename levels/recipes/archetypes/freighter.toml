@@ -14,7 +14,7 @@ lobby = { x = [9, 11] }                # the wing lobby's x-extent (§7.1 / layo
 band = { sections = [3, 5] }           # INTERSECTED with the preset's own range (medium: 3-4); includes engineering's block
 spawn = { exits = [1, 3] }      # drawn uniformly in phase 2; capped at what the skeleton can realise
 zombies = "axis_section"        # the horde's room: the aft-most main-cell band section (the one the lobbies face)
-secrets = { budget = 1, size = [6, 8] }   # units per ship (a wing secret is a mirrored pair after reflection); the annex's w and h
+secrets = { budget = 1, size = [6, 16] }   # units per ship (a wing secret is a mirrored pair after reflection); the annex's w and h
 allow_cross_cell_leak = false   # L5's leak-path clause; true is REFUSED until the damper (#49) exists
 
 [cells]
@@ -43,7 +43,7 @@ count = { medium = [0, 0], large = [1, 1] }
 [[apply]]
 phase = 1
 department = "armory"
-count = { medium = [0, 0], large = [0, 1] }
+count = { medium = [0, 0], large = [1, 1] }   # always on large: three wing departments deal as 2 + 1 and one department cannot fill a 41-49 row
 
 # garden_dome and pool_hall: NOT in v1 -- their water stamps are unbuilt; the loader would refuse them
 
@@ -76,7 +76,7 @@ count = { medium = [0, 1], large = [0, 1] }
 phase = 2
 cycle = "pocket"
 on = "department-room"
-count = { medium = [0, 1], large = [0, 2] }
+count = { medium = [0, 0], large = [0, 2] }     # none on medium: a 20-long department holds one end-zone corner room, the secret annex's
 
 # ---- phase 3: terminalise -- no entries by choice: fixtures are department data, the secret draw is the budget ----
 
@@ -90,9 +90,9 @@ count = { medium = [0, 1], large = [0, 2] }
 # ---- validation profile (L2's third component; L8): metric gates from a closed registry; run after layout ----
 [validation]
 bot_walkable = true             # A* between the two slabs with airlock outer doors CLOSED
-spawn_distance = { medium = [40, 120], large = [80, 220] }   # walk-graph tiles between slab centres, after embed
+spawn_distance = { medium = [60, 160], large = [110, 280] }   # the bots' A* steps between the slab centres, after embed (measured 84-137 / 142-237 over 100 seeds x 3 profiles)
 cells = [2, 3]                  # pressure cells per ship
-rooms = { medium = [14, 30], large = [28, 60] }              # rooms per ship (L6's target count)
+rooms = { medium = [20, 48], large = [40, 96] }              # rooms per ship, both wings (measured 25-41 / 46-81)
 
 # ---- difficulty profiles: each key names its operator ----
 [profiles.easy]

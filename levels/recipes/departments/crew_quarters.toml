@@ -18,14 +18,14 @@ id = "stub"
 shape = "corridor"              # room | corridor | vestibule
 required = true
 width = "wide"
-size = { across = [6, 8], along = [14, 34] }   # corridors: (across, along); the layout stage rotates. Depth-elastic (layout §13 A6): along + the mess's h + 1 spans a 24-deep medium row to a 47-deep large one
+size = { across = [6, 8], along = [10, 40] }   # corridors: (across, along); the layout stage rotates. Depth-elastic (layout §13 A6): along + the mess's h + 1 spans a 20-deep medium row to a 61-deep one
 vent = { duct = "quarters", roles = ["return"] }
 
 [[room]]
 id = "bunk"
 shape = "room"
-count = [2, 7]                  # instances; a required room has count [1, 1]. Up to 7 so the bunks, heads and laundry fill both sides of a 34-long stub (§13 A6)
-size = { w = [6, 8], h = [6, 8] }             # rooms: (x, y) extents in tiles
+count = [2, 4]                  # instances; a required room has count [1, 1]. At most 4: a medium wing has 54 tiles of depth for both rows; a large row fills with fewer, longer rooms (h up to 16)
+size = { w = [6, 12], h = [6, 16] }           # rooms: (x, y) extents in tiles
 fuel = "furniture"              # a fuel class (§3.4)
 light = "dim"
 vent = { duct = "quarters", roles = ["supply"] }
@@ -34,20 +34,20 @@ vent = { duct = "quarters", roles = ["supply"] }
 id = "heads"
 required = true
 exit = true                     # [layout rev 2] may carry a spawn exit when this department is first in its row
-size = { w = [6, 6], h = [6, 8] }
+size = { w = [6, 12], h = [6, 16] }
 vent = { duct = "quarters", roles = ["return", "supply"] }   # a sealed box carries both
 
 [[room]]
 id = "mess"
 required = true
-attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side")
-size = { w = [9, 12], h = [9, 12] }
+attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side"); it spans the department (and both stubs of a retreat loop), hence w up to 30
+size = { w = [9, 30], h = [9, 20] }
 fuel = "furniture"
 
 [[room]]
 id = "galley"                   # the kitchen
 p = 0.7                         # optional room, probability of presence
-size = { w = [6, 9], h = [6, 9] }
+size = { w = [6, 16], h = [6, 16] }
 fixture = "galley"              # §3.3: a stove on from tick 0 (Erik's ruling), kindling
 attach = "behind:mess"          # [layout rev 2] split off the mess's far side
 vent = { duct = "galley", roles = ["supply", "return"] }
@@ -55,7 +55,7 @@ vent = { duct = "galley", roles = ["supply", "return"] }
 [[room]]
 id = "laundry"
 p = 0.3
-size = { w = [6, 6], h = [6, 8] }
+size = { w = [6, 12], h = [6, 16] }
 
 [[edge]]
 a = "stub"

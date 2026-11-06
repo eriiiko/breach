@@ -151,7 +151,7 @@ ROWS = [
      r"archetype\.spawn\.exits"),
     ('zombies = "axis_section"', 'zombies = "lobby"', r"archetype\.zombies"),
     ('budget = 1,', 'budget = -1,', r"archetype\.secrets\.budget"),
-    ('size = [6, 8] }', 'size = [4, 8] }', r"archetype\.secrets\.size"),
+    ('size = [6, 16] }', 'size = [4, 16] }', r"archetype\.secrets\.size"),
     ('allow_cross_cell_leak = false', 'allow_cross_cell_leak = true',
      r"allow_cross_cell_leak.*#49"),
     ('promote = []', 'promote = ["engineering"]',
@@ -171,11 +171,11 @@ ROWS = [
     ('on = "slab-lobby"', 'on = "slab-galley"', r"apply\[4\]\.on"),
     ('on = "slab-lobby"', 'on = "department-room"',
      r"apply\[4\]\.on.*'leaf'"),
-    ('department = "armory"\ncount = { medium = [0, 0], large = [0, 1] }',
-     'department = "armory"\ncount = { large = [0, 1] }',
+    ('department = "armory"\ncount = { medium = [0, 0], large = [1, 1] }',
+     'department = "armory"\ncount = { large = [1, 1] }',
      r"apply\[2\]\.count\.medium.*required"),
-    ('on = "department-room"\ncount = { medium = [0, 1], large = [0, 2] }',
-     'on = "department-room"\ncount = { medium = [0, 1], large = [2, 1] }',
+    ('on = "department-room"\ncount = { medium = [0, 0], large = [0, 2] }',
+     'on = "department-room"\ncount = { medium = [0, 0], large = [2, 1] }',
      r"apply\[7\]\.count\.large"),
     ('on = "engineering.engine_room"\ncount = { medium = [0, 0], ',
      'on = "engineering.engine_room"\ncount = { medium = [0, 1], ',
@@ -185,8 +185,8 @@ ROWS = [
      r"size 'medium'.*wing department"),
     ('cells = [2, 3]', 'cells = [2, 3]\nwalls = 1',
      r"\[validation\].*unknown field"),
-    ('rooms = { medium = [14, 30], large = [28, 60] }',
-     'rooms = { medium = [14, 30] }', r"validation\.rooms.*required"),
+    ('rooms = { medium = [20, 48], large = [40, 96] }',
+     'rooms = { medium = [20, 48] }', r"validation\.rooms.*required"),
     ('zombies_scale = 1.5', 'zombies_mult = 1.5',
      r"profiles\.hard.*unknown field"),
     ('zombies_scale = 0.5', 'zombies_scale = 0', r"profiles\.easy\.zombies"),
@@ -211,8 +211,8 @@ def test_the_door_refuses_a_malformed_archetype(tmp_path, old, new, where):
 @pytest.mark.parametrize("rel, old, new, where", [
     # a promoted stub that cannot take the airlock entry (>= 7)
     ("departments/armory.toml",
-     "size = { across = [6, 8], along = [14, 34] }",
-     "size = { across = [6, 6], along = [14, 34] }",
+     "size = { across = [6, 8], along = [10, 40] }",
+     "size = { across = [6, 6], along = [10, 40] }",
      r"profiles\.hard\.promote\[0\].*across"),
     # the closure walk: a disabled heat source is a pending mechanism
     ("fixtures.toml", "heat_source_enabled = true      # Erik",
@@ -509,7 +509,8 @@ def test_the_ring_and_the_bypass_exclude_each_other_by_name(ships):
     assert hits
 
 
-def test_two_instances_of_a_department_never_share_a_duct(tmp_path):
+def test_two_instances_of_a_department_never_share_a_duct(tmp_path,
+                                                          monkeypatch):
     """PROPERTY (the lead's decision 5): a department drawn twice in a wing
     gets its ducts twice, each instance's rooms on its own qualified duct
     names. BREAKS IF duct names lose their instance qualifier (two
@@ -519,6 +520,9 @@ def test_two_instances_of_a_department_never_share_a_duct(tmp_path):
                  'large = [1, 1] }',
                  'department = "cargo_hold"\ncount = { medium = [1, 1], '
                  'large = [2, 2] }')
+    # the property is the grammar's: whether five departments pack (and a
+    # hull strip finds a row beside two cargo holds) is the layout's
+    monkeypatch.setattr(L, "layout_feasibility", lambda size, **kw: None)
     q = S.plan_quotient(S.load_archetype(path), "large", "standard", 3)
     by_inst: dict = {}
     for r in q.rooms:
@@ -662,7 +666,7 @@ def test_recipe_hash_tracks_content_not_comments(tmp_path, monkeypatch):
                   "zombies_scale = 0.4")
     assert h(other) == ref and h(other, "easy") != h(base, "easy")
     assert h(_copy(tmp_path / "dept", "departments/cargo_hold.toml",
-                   "count = [1, 8]", "count = [1, 7]")) != ref
+                   "count = [1, 4]", "count = [1, 3]")) != ref
     monkeypatch.setattr(CFG.levelgen.lights.dim, "level",
                         CFG.levelgen.lights.dim.level + 0.25)
     assert h(base) != ref

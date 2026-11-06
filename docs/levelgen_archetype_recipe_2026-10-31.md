@@ -559,3 +559,43 @@ the docs' guarantees):
 Measured: 100 seeds x (medium, large) x (easy, standard, hard), zombies 4:
 every seed returns a graph at `g = 0` (no layout feasibility yet: the
 grammar alone never rejects the freighter); ~12 ms per graph.
+
+## As built (2026-11-06, branch `136-ship-layout`): the layout patch's part
+
+- **§2's loops are `gen_ship._generate_recipe`** (`generate(seed, size,
+  recipe=, profile=)`): grammar attempt `g` on `SeedSequence([seed, 0, g])`,
+  layout + `embed` on `SeedSequence([seed, 1, g, a])`, `MAX_ATTEMPTS` layout
+  attempts per graph, then `g + 1`; `ShipPlan` records `g`, `attempt` (= `a`),
+  `recipe`, `profile`, `recipe_hash`, the quotient graph and the layout's id
+  map; the folder name is §5.1's `ship_{archetype}_{profile}_s{seed}_{size}`.
+- **§6 as built.** Item 1 (the minima): `ship_layout.layout_feasibility(size,
+  archetype=, profile=)` is a DEMAND test -- each row's least x-extents
+  inside the longest row, the two rows' least depths inside the wing (less a
+  mandatory hull strip, which needs a row without a hull-door room), the
+  band's least heights -- over departments at minimum count with their
+  required rooms, the mandatory retreat loops (any choice of departments),
+  the ring and the bypass. It is deliberately NOT the exact packing: at
+  minimum counts a large row cannot be FILLED (two bunks do not line a
+  30-long stub), which is the grammar's draw to fix, not the recipe's
+  fault. Pockets, secrets and duct links are not in it (slack-bounded;
+  the per-graph check has them). Item 2 (the maxima):
+  `ship_layout.maxima_warning`, kept in `Archetype.warnings[(size,
+  profile)]` -- the freighter warns on medium for all three profiles (rows
+  need 30 + 30 of 54), not on large. Items 3-4 unchanged (the grammar
+  patch's).
+- **The per-graph check (A5) is EXACT**: `layout_feasibility(size, graph=)`
+  is None exactly when the layout has a skeleton draw that packs the graph,
+  so a layout attempt never fails on packing; what the grammar loop pays for
+  an unpackable draw is one attempt (~12 ms).
+- **`[validation]`**: `ship_layout.acceptance` runs after `validate`:
+  `bot_walkable` ALWAYS (the layout's own gate, whatever the file says),
+  `spawn_distance`, `cells`, `rooms` when the file names them. Tuned ranges:
+  the recipe doc's as-built section.
+- **§4 zombies**: `ship_layout.check_request` refuses before any draw (size
+  and profile allowed, the slab seats the team, the zombie section seats the
+  SCALED horde); the scaled count is `ShipGraph.zombies`, so it is the
+  zombie `[[spawn_room]]`'s `max_per_team` and `match.toml`'s `zombies`.
+- **Not built here** (unchanged from §8): LevelSpec / the `[levelgen]`
+  managed family, banks, `mutate` and the per-department layout streams.
+- Tuned counts (dated lines in the recipe doc): armory `large` [1, 1],
+  pocket `medium` [0, 0], `secrets.size` [6, 16], the `[validation]` ranges.

@@ -27,7 +27,8 @@ contacts (§1.5), a ``second_leg`` type with other than one one-room walk leg,
 an ``attach`` / ``exit`` / ``hull_door`` the layout's primitives cannot place
 (§3.2; layout doc §4, §13 A2), a declared edge that is not a room's contact
 with what it attaches to, a department whose contact demand cannot fit its
-hub (§3.1 feasibility, the weaker check until the layout's twin exists), a
+entry at its minima (the LAYOUT's own packing arithmetic,
+``ship_layout.department_feasibility``: layout doc §4 "Loader twin"), a
 stove that could not light its own kindling (the galley FUSE ruling, §4) --
 all at load, before any ship is planned.
 
@@ -1127,7 +1128,8 @@ def _check_structure(path, dept: Department, fixtures: dict) -> None:
     of contacts; a fixture's ``edges_out`` holds; the sealed-room vent rule
     per duct (a room every edge of which bounds a compartment -- the entry
     counts its door to the ship, the secret host its secret edge -- carries
-    both roles on each of its ducts, or none); the §3.1 feasibility bound."""
+    both roles on each of its ducts, or none); the layout's packing twin
+    (:func:`_check_feasible`)."""
     kinds = _edge_kinds()
     tri = contact_triangle((e.a, e.b) for e in dept.edges)
     if tri:
@@ -1186,32 +1188,24 @@ def _check_structure(path, dept: Department, fixtures: dict) -> None:
 
 
 def _check_feasible(path, dept: Department) -> None:
-    """§3.1: every edge is a contact, so each neighbour (at its MAXIMUM
-    count) needs a run of the room's perimeter of at least its least floor
-    side plus a wall; the sum may not exceed the room's MAXIMUM perimeter,
-    less one entry run for the department's entry.
-
-    THE WEAKER CHECK (#152): a necessary condition only. It stays until the
-    layout stage exists; then the loader runs the layout's own packing twin
-    at the recipe's minima instead (layout doc §4 "Loader twin": two-bin
-    side packing, the end room against the row depth, the behind depths)."""
-    for r in dept.rooms:
-        demand, parts = 0, []
-        for e in dept.edges:
-            if r.id not in (e.a, e.b):
-                continue
-            n = dept.room(e.b if e.a == r.id else e.a)
-            need = n.max_count * (n.size.min_side + 1)
-            demand += need
-            parts.append(f"{n.id} {n.max_count}x{n.size.min_side + 1}")
-        cap = r.size.max_perimeter - (ENTRY_RUN if r.id == dept.entry else 0)
-        if demand > cap:
-            raise _err(path, f"room {r.id!r}",
-                       f"contact demand {demand} tiles ({', '.join(parts)}) "
-                       f"exceeds its maximum perimeter {cap}"
-                       + (f" (less its {ENTRY_RUN}-tile entry)"
-                          if r.id == dept.entry else "")
-                       + " -- no layout can give every edge a wall (§3.1)")
+    """THE LAYOUT'S LOADER TWIN (layout doc §4): the department at its
+    MINIMA (required rooms, every ``count`` at its low end) must pack under
+    the layout stage's own arithmetic -- the side rooms dealt to the stub's
+    columns inside the stub's ``along``, the end room across the stub, the
+    behind rooms in the end zone, and the whole no longer and no deeper than
+    the largest size preset's row (an axis department: its block in a
+    band). ONE implementation, the layout's
+    (``ship_layout.department_feasibility``, imported here, lazily: the
+    loader stays import-light); it replaced the §3.1 perimeter sum
+    (2026-11-06), which was necessary only. Whether the department packs on
+    a given size beside its neighbours is the ARCHETYPE loader's check, per
+    (size, profile)."""
+    import ship_layout
+    why = ship_layout.department_feasibility(dept)
+    if why:
+        raise _err(path, "department",
+                   f"{dept.name!r} cannot be laid out: {why} (layout doc §4, "
+                   f"the loader twin)")
 
 
 # ===========================================================================
