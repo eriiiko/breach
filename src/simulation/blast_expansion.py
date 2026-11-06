@@ -57,7 +57,6 @@ class BlastSettings:
     expansion_m3_per_strength: float
     heat_mj_per_strength: float
     grenade_kg: float
-    ignite_margin: float
 
 
 def blast_settings(rows=None) -> BlastSettings:
@@ -67,7 +66,7 @@ def blast_settings(rows=None) -> BlastSettings:
         raise ValueError("config.toml has no [blast] table")
     vals = {}
     for key in ("expansion_m3_per_strength", "heat_mj_per_strength",
-                "grenade_kg", "ignite_margin"):
+                "grenade_kg"):
         v = rows.get(key) if isinstance(rows, dict) else getattr(rows, key, None)
         if v is None:
             raise ValueError(f"[blast] {key} is missing")

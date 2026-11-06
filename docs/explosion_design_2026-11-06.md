@@ -73,20 +73,14 @@ A payload row gains `strength` (float >= 0, 0 = no generic blast). A row with
   or the planter's side for a placed charge, and distance is measured from the centre.
   With no known side (a timed charge authored onto a wall) it seeds from every open
   4-neighbour in sorted order. CLAUDE'S CALL, Erik may veto at the HUMAN-TEST.
-- **Ignition keeps today's behaviour, by a new rule.** The blast's own heat cannot
-  light fuel: for strength >= 1 the peak deposit is about 77 heat units a tile whatever
-  the strength, because total and reach-squared both scale with strength, and fuel one
-  tile off stays below `ignition_temp` (measured: frag 164, `engine_death` 151,
-  `magazine_cookoff` 192 game degrees against 280). Today a frag lights a crate from
-  one tile off. So a strength row keeps `ignite_radius`, with this meaning: every FUEL
-  tile the walk reaches within it receives the heat that takes THAT tile to its own
-  `ignition_temp` with a fixed margin, derived from the material table (capacity x
-  `ignition_temp`), never a literal and never the stale `IGNITE_HEAT`. It lands on the
-  fuel only, not on gas, stops at walls, and sits outside the fixed total. Then
-  `apply_temperature_ignition` lights it ("Starting a fire": delivered heat, never a
-  `fire` write). A strength row refuses `ignite_intensity`. `ignite_ring` itself is
-  unchanged for rows without `strength`. CLAUDE'S CALL, surfaced to Erik at the
-  HUMAN-TEST: one number per row turns a blast's fire-starting off.
+- **No fire-starting rule (Erik's ruling, 2026-11-06).** A fire starts only when a
+  material reaches its own ignition temperature through the engine's ordinary heat.
+  This is a core principle of Breach: situations fall out of the physics. The blast's
+  fixed-total heat lands on every walked tile, passable fuel tiles included, and
+  `apply_temperature_ignition` lights whatever reaches its `ignition_temp`. Nothing
+  raises, biases or special-cases heat on fuel, and a strength row refuses
+  `ignite_radius` and `ignite_intensity`. `ignite_ring` is unchanged for rows without
+  `strength`. If a row no longer lights a room, that is the accepted result.
 - `radius`, `unit_damage`, `wall_damage` stay the row's direct damage, with today's
   disc and falloff; the door requires `radius > 0`, or the row would skip `blast_log`. `pressure`, `heat_amount`, `heat_radius`, `expansion_*` must be
   ABSENT on a strength row; the door tests key presence, not value, and refuses them
@@ -98,11 +92,11 @@ Rows converted, all PLACEHOLDER:
 
 | Row | strength | Note |
 |---|---|---|
-| `frag_standard` | 1.0 | radius 2, unit 60, wall 200 unchanged; `ignite_radius = 2` |
+| `frag_standard` | 1.0 | radius 2, unit 60, wall 200 unchanged |
 | `breach_focus` | 0.1 | C4. Wall 500 and radius 3 unchanged, `unit_damage` 0: the planter is unhurt by the row itself. Its smoke falls to about 0.09 g, effectively none: accepted, and the "door charge keeps its smoke" comments are reworded |
 | `demolition_c4` | 12.0 | radius 8, unit 150, wall 800 unchanged |
-| `magazine_cookoff` | 8.0 | radius 7, unit 120, wall 400 unchanged; `ignite_radius = 4` |
-| `engine_death` | 3.0 | radius 3, unit 80, wall 300 unchanged; `ignite_radius = 3` |
+| `magazine_cookoff` | 8.0 | radius 7, unit 120, wall 400 unchanged |
+| `engine_death` | 3.0 | radius 3, unit 80, wall 300 unchanged |
 
 Left alone: `frag_heat`, `frag_hot_mass`, the `studio_*` rows (a tuning level), plasma
 splashes, gas grenades, `quad_*` and `div_*` test rows.
@@ -148,15 +142,16 @@ splashes, gas grenades, `quad_*` and `div_*` test rows.
 - A digest covers a pending source: a snapshot taken between detonation and solve differs.
 - Determinism: replay of a match with grenades clears every checkpoint.
 - The row door refuses a strength row carrying `pressure` or `heat_amount`.
-- A frag one tile from a crate, `engine_death` two tiles off and `magazine_cookoff`
-  three tiles off each light fuel; fuel behind a wall does not; `ignite_radius` absent
-  lights nothing.
+- A fuel tile the blast's ordinary heat takes to its `ignition_temp` catches, and one
+  that stays below does not. Nothing writes `fire`, and nothing adds heat beyond the
+  fixed total, with fuel in the walk or without it.
 - A breach charge still breaches a door, and the planter at the shipped placement
   distance loses no HP and is not knocked down.
 - Pre-existing tests that pin today's behaviour on purpose are re-pinned once, with a
   written rationale: `test_zombie_control` ship_demo digests, `test_payloads`
   `frag_and_breach` (:102, :187), `test_weapons_tables` (:108, :110), and
-  `test_heat_source` (:272, :433, to the new ignition; its `_blast` fixture gets its own
+  `test_heat_source` (:272, :433, to what the engine now does, no fire required of
+  `engine_death`; its `_blast` fixture gets its own
   heat-free row, because `breach_focus` now carries heat). Anything else failing is
   reported, never bent.
 
@@ -184,7 +179,10 @@ ACCEPTED GAP: knockdown, HP and every strength value are placeholders.
 | Systems reuse and gameplay regression (Opus, on v1) | 1 blocker, 3 majors (all three already in v2), 7 minors; verified, none rejected | v3: ignition rule by material, one tile-list region and deposit, digest only when present, the fuller re-pin list, stale text |
 
 Corrected by the second review: v2 said a frag lights only the exact fuel tile. It
-lights a crate one tile off, so ignition is preserved, not dropped.
+lit a crate one tile off, so v3 added a derived ignition rule to preserve that.
+
+Overruled by Erik, 2026-11-06: that critic's ignition fix is removed. No blast
+fire-starting rule; fires fall out of the physics (section 2).
 
 Sound by that review: both GPU consumers of `div_u` are named and complete, the mg RHS
 is safe, tick order keeps a late source paired with its edits, closure holds.
@@ -196,7 +194,7 @@ write), Gas energy seam and closure identity, Interior drag neighbour stages in 
 Fixed-point kits, Q16 boundary modules, Config, Field digest + GOLDEN_AGGREGATE, CUDA
 harness, RL-batch habits, Starting a fire, Credited cause (`deposit_heat`'s claim must
 survive, on the walk's tiles), Look shots, E2E driver, `blast_log` seam, `PayloadTable`
-(the row door), Material table (the ignition heat), Wind load on a body, Timed charge,
+(the row door), Wind load on a body, Timed charge,
 Heat source, benches `tools/wind_load_probe.py` and `tests/_blast_bench.py`.
 
 **Stale text to update at implementation:** CLAUDE.md Heat source row; the
@@ -207,7 +205,7 @@ the IGNITE_HEAT comment; `.claude/skills/fire-smoke-tuning/SKILL.md`.
 
 - *Generic explosion*: a payload row with `strength` is the one explosion: expansion,
   heat and smoke derive from `[blast]`, read by a refusing settings door; the row keeps
-  its explosive name, its direct damage and its `ignite_radius`. A new explosive is a
+  its explosive name and its direct damage. A new explosive is a
   row of those, never a new blast shape.
 - *Divergence source*: `EOSSolver.div_source`, written only by the blast expansion
   module: THE way to make air move outward with no mass. It conserves N and E exactly;

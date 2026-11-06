@@ -29,7 +29,6 @@ from simulation import Simulation, gas_fixed  # noqa: E402
 from simulation.blast_expansion import (S_MAX_Q, heat_units_per_mj,  # noqa: E402
                                         open_mask, reach_tiles, take_source_plane)
 from simulation.damage import CREDIT_HEAT, tick_credit  # noqa: E402
-from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gases import INERT_N2, O2, SMOKE, smoke_units_of_soot  # noqa: E402
 from simulation.materials import (MAT_AIR, MAT_DOOR_CLOSED,  # noqa: E402
                                   MAT_FURNITURE, MAT_HULL)
@@ -504,7 +503,8 @@ def test_a_replay_of_a_match_with_grenades_clears_every_checkpoint():
 
 @pytest.mark.parametrize("key,value", [
     ("pressure", 0.0), ("heat_amount", 0.0), ("heat_radius", 0.0),
-    ("explosive_kg", 0.1), ("ignite_intensity", 0.0), ("expansion_m3", 0.0),
+    ("explosive_kg", 0.1), ("ignite_radius", 0.0), ("ignite_intensity", 0.0),
+    ("expansion_m3", 0.0),
     ("expansion_radius", 0.0), ("expansion_ticks", 1)])
 def test_the_door_refuses_what_a_strength_row_may_not_author(key, value):
     """PROPERTY: the door refuses by the KEY's presence, by name, even at a value
@@ -547,7 +547,7 @@ def test_the_blast_door_refuses_a_missing_key():
     from simulation.blast_expansion import blast_settings
     with pytest.raises(ValueError, match="grenade_kg"):
         blast_settings({"expansion_m3_per_strength": 1.0,
-                        "heat_mj_per_strength": 1.0, "ignite_margin": 1.0})
+                        "heat_mj_per_strength": 1.0})
 
 
 def test_every_shipped_generic_row_derives_its_charge():
@@ -562,86 +562,44 @@ def test_every_shipped_generic_row_derives_its_charge():
                for r in rows)
 
 
-# --- ignition ---------------------------------------------------------------
+# --- fire ------------------------------------------------------------------
 
-def _fuel_room(fuel_at, wall=None):
+def test_fuel_catches_only_when_ordinary_heat_takes_it_to_its_ignition_temp():
+    """PROPERTY (Erik's ruling, 2026-11-06: no fire-starting rule, situations fall
+    out of the physics): a fuel tile the blast's ordinary heat takes to its
+    `ignition_temp` catches, one that stays below does not, the executor writes
+    no `fire`, and fuel in the walk adds no heat beyond the fixed total.
+
+    BREAKS IF: anything raises, biases or special-cases heat on fuel, or a strength
+    row starts writing `fire`. If a retune moves both tiles to one side the scenario
+    is moot: move the tiles, the property stands.
+    """
+    near, far = (15, 15), (15, 16)
     tm = _room()
-    if wall is not None:
-        tm[:, wall] = MAT_HULL
-    tm[fuel_at] = MAT_FURNITURE
-    return tm
-
-
-def _burns(s, ticks=6):
-    for _ in range(ticks):
-        _step(s)
-    return int(s.gmap.fire.astype(np.int64).sum())
-
-
-@pytest.mark.parametrize("name,off", [("frag_standard", 1),
-                                      ("engine_death", 2),
-                                      ("magazine_cookoff", 3)])
-def test_a_blast_lights_fuel_within_its_ignite_radius(name, off):
-    """PROPERTY: a row with `ignite_radius` lights fuel it reaches, in air, through
-    delivered heat: the temperature crosses and `apply_temperature_ignition` does
-    the lighting.
-
-    BREAKS IF: the ignition heat is sized off a stale constant, or lands on gas.
-    """
-    row = _shipped(name)
-    assert row.ignite_r2 > off * off, "the row's reach moved (see the design)"
-    s = _sim(_fuel_room((15, 15 + off)))
-    _step(s)
-    _fire(s, 15, 15, row)
-    assert int(s.gmap.fire[15, 15 + off]) == 0, "a fire was written, not lit"
-    assert _burns(s) > 0
-
-
-def test_fuel_behind_a_wall_does_not_light():
-    """PROPERTY: ignition stops at walls: the fuel tile is inside the radius but
-    no walk reaches it.
-
-    BREAKS IF: the ignition takes a disc.
-    """
-    row = _row(1.0, ignite_radius=4.0)
-    s = _sim(_fuel_room((15, 17), wall=16))
-    _step(s)
-    _fire(s, 15, 15, row)
-    assert _burns(s) == 0
-
-
-def test_no_ignite_radius_lights_nothing():
-    """PROPERTY: with the key absent a blast's own heat does not light fuel one
-    tile off, so one number per row turns its fire-starting off.
-
-    BREAKS IF: the blast's heat is enough on its own, and the ruling's reason for
-    the rule is gone (surface it to Erik, do not bend this test).
-    """
-    row = _row(1.0)
-    s = _sim(_fuel_room((15, 16)))
-    _step(s)
-    _fire(s, 15, 15, row)
-    assert _burns(s) == 0
-
-
-def test_the_ignition_heat_comes_from_the_tile_material():
-    """PROPERTY: the heat is the tile's own capacity times what it lacks, so two
-    fuels of different capacity both land at the same temperature margin.
-
-    BREAKS IF: one heat is used for every fuel.
-    """
-    from simulation.materials import MAT_WOOD  # noqa: F401
-    from simulation.payloads import heat_fuel
-    s = _sim(_fuel_room((15, 16)))
+    tm[near] = tm[far] = MAT_FURNITURE
+    s = _sim(tm)
     g = s.gmap
-    q = EditQueue()
-    heat_fuel(g, q, [(15, 15), (15, 16)])
-    q.flush(g, s.rng)
-    assert int(g.heat[15, 15]) == 0, "the ignition heat landed on gas"
-    tbl = g.materials
-    lands_at = (float(g.heat[15, 16]) / 65536.0
-                / float(tbl.thermal_mass[MAT_FURNITURE]))
-    assert lands_at > float(tbl.ignition_temp[MAT_FURNITURE])
+    _step(s)
+    _fire(s, 15, 15, _row(1.0))
+    _flushed(s)
+    bare = _sim(_room())
+    _step(bare)
+    _fire(bare, 15, 15, _row(1.0))
+    _flushed(bare)
+    assert not g.fire.any(), "the executor wrote fire"
+    n = int(np.count_nonzero(g.heat))
+    assert abs(_heat_total(g) - _heat_total(bare.gmap)) <= n, \
+        "fuel in the walk changed the blast's total"
+
+    peak = {near: 0, far: 0}
+    for _ in range(6):
+        _step(s)
+        for yx in peak:
+            peak[yx] = max(peak[yx], int(g.temperature[yx]))
+    ignition = int(g.materials.ignition_temp_q16[MAT_FURNITURE])
+    assert peak[near] >= ignition > peak[far], "the scenario is moot (see above)"
+    assert int(g.fire[near]) > 0
+    assert int(g.fire[far]) == 0
 
 
 # --- the breach charge ------------------------------------------------------

@@ -3191,7 +3191,6 @@ smoke_scale = 0.25       # the game's look, on top of the cited soot_yield rows:
 expansion_m3_per_strength = 40.0   # a real marine knocked down to 2.5 m at strength 1
 heat_mj_per_strength = 10.0        # about 54 / 63 / 84 / 89 / 94 HP left at 1 / 1.5 / 2 / 2.5 / 3 m
 grenade_kg = 0.184                 # the M67's 6.5 oz of Composition B: strength 1
-ignite_margin = 55.0               # degrees past a fuel's own ignition_temp that ignite_radius delivers (src/debug_keys.py's decisive igniter: survival is marginal within +25)
 
 # ---------------------------------------------------------------------------
 # [explosives.*] -- what a charge is MADE of (#12 smoke x light, handle 3,
@@ -3237,12 +3236,11 @@ soot_yield = 0.0
 # the blast's textured cloud on it.
 #
 # `strength` makes a row THE GENERIC EXPLOSION (#31, [blast] above): the row keeps
-# its direct damage (radius, wall_damage, unit_damage), its explosive and its
-# ignite_radius, and the door refuses pressure, heat_amount, heat_radius,
-# explosive_kg, expansion_* and ignite_intensity on it. ignite_radius means: every
-# fuel tile reached within it gets the heat that takes that tile past its own
-# ignition_temp, stopped by walls and on top of the blast's fixed total. No key,
-# no fire. Every strength value below is a PLACEHOLDER.
+# its direct damage (radius, wall_damage, unit_damage) and its explosive, and the
+# door refuses pressure, heat_amount, heat_radius, explosive_kg, expansion_*,
+# ignite_radius and ignite_intensity on it. No fire-starting rule (Erik's ruling,
+# 2026-11-06): a fuel tile catches only if the blast's ordinary heat takes it to its
+# own ignition_temp. Every strength value below is a PLACEHOLDER.
 [payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
 strength = 1.0                        # PLACEHOLDER: the unit of [blast]
 radius = 2                            # was blast_radius (5 until 2026-10-03)
@@ -3251,7 +3249,6 @@ unit_damage = 60
 gas_species = ""
 gas_amount = 0.0
 gas_radius = 0
-ignite_radius = 2                     # lights a crate one tile off, as the pre-#31 row's heat did
 clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
 emit_blast_smoke = true               # LIVE: the executor's blast-smoke gate (W3)
 explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
@@ -3618,7 +3615,6 @@ strength = 8.0                        # PLACEHOLDER
 radius = 7                            # PLACEHOLDER (studio_large 6, demolition_c4 8)
 wall_damage = 400                     # PLACEHOLDER (studio_large 200, demolition_c4 800)
 unit_damage = 120                     # PLACEHOLDER (studio_large 60, demolition_c4 150)
-ignite_radius = 4                     # PLACEHOLDER: lights the magazine's neighbours
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "comp_b"  # shell fills (the M67's Composition B), PLACEHOLDER
@@ -3630,17 +3626,14 @@ gas_radius = 4                        # PLACEHOLDER
 
 # --- Heat-source deaths (levelgen vocabulary E.2 row 3, #133) ---------------
 # Executed once by a [[entity]] heat_source (heat_source_system) when a blast
-# takes its hp to 0 -- the engine that goes up and starts the engine-room
-# fire. The fire is started by DELIVERING HEAT (CLAUDE.md "Starting a fire"):
-# a generic explosion's ignite_radius takes every fuel tile it reaches past that
-# tile's own ignition_temp, and apply_temperature_ignition lights it. EVERY VALUE
-# IS A PLACEHOLDER FOR ERIK TO TUNE (the engineering session).
-[payloads.engine_death]               # B.2: the engine goes up -- a mid blast + the heat that lights the room
+# takes its hp to 0 -- the engine that goes up. A generic explosion: whether a fire
+# follows is the physics' answer (CLAUDE.md "Starting a fire"). EVERY VALUE IS A
+# PLACEHOLDER FOR ERIK TO TUNE (the engineering session).
+[payloads.engine_death]               # B.2: the engine goes up -- a mid blast
 strength = 3.0                        # PLACEHOLDER
 radius = 3                            # PLACEHOLDER (breach_focus 3, studio_medium 5)
 wall_damage = 300                     # PLACEHOLDER (breach_focus 500, studio_* 200)
 unit_damage = 80                      # PLACEHOLDER (frag 60, demolition_c4 150)
-ignite_radius = 3                     # PLACEHOLDER: lights the room out to two tiles off the engine
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "comp_b"  # PLACEHOLDER: what an engine's stored energy goes up as
@@ -3667,8 +3660,8 @@ death_payload = ""                    # PLACEHOLDER: a stove that goes up is a l
 [heat_sources.engine]                 # the engine room's engine (fixture `engine`, engineering's hub; archetype doc §7.1)
 heat_per_s = 5.0                      # PLACEHOLDER (tests/test_heat_source.py's engine runs 5.0)
 radius = 2                            # PLACEHOLDER: the engine block and the deck around it
-max_temp = 150.0                      # PLACEHOLDER. BELOW kindling's ignition_temp (280): the engine is NOT a fuse -- it warms the engine room but cannot light the fuel bunker next door by itself; a blast that kills it can (death_payload)
-death_payload = "engine_death"        # B.2: the engine goes up and lights the room (CLAUDE.md "Starting a fire")
+max_temp = 150.0                      # PLACEHOLDER. BELOW kindling's ignition_temp (280): the engine is NOT a fuse -- it warms the engine room but cannot light the fuel bunker next door by itself
+death_payload = "engine_death"        # B.2: the engine goes up (a fire follows only if its heat reaches fuel, CLAUDE.md "Starting a fire")
 
 # [hazards.*]: a fixture's stored hazard -- one heat-triggered timed_charge
 # (gen_ship's `hazard` room tag): payload (a [payloads.*] row), trigger_temp

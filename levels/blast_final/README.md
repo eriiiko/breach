@@ -6,14 +6,17 @@ watched it.
 
 | Room | Row | Strength | What to watch |
 |---|---|---|---|
-| NW | `frag_standard` | 1 | The grenade. Three crates one tile off catch (`ignite_radius = 2`). |
+| NW | `frag_standard` | 1 | The grenade, three crates one tile off. They catch only if its ordinary heat takes them to `ignition_temp`. |
 | NE | `breach_focus` | 0.1 | The door charge on a wooden wall across the room. The first shot opens the wall; later shots land on open floor. It leaves almost no smoke, on purpose. |
-| SW | `magazine_cookoff` | 8 | Crates three tiles off catch (`ignite_radius = 4`). |
-| SE | `demolition_c4` | 12 | The biggest row, no `ignite_radius`, no crates. Its one-tile-of-soot floor is the only smoke (C4 has no soot of its own). |
+| SW | `magazine_cookoff` | 8 | Crates three tiles off, the same question. |
+| SE | `demolition_c4` | 12 | The biggest row, no crates. The soot floor is its only smoke (C4 has no soot of its own). |
 
 Each room has a 1.33 m gap to open sky in its outer wall, as in `levels/blast_quad`,
 so pressure bleeds off between shots. The NE wall has no gap on its west half until
 the charge opens it.
+
+There is no fire-starting rule (Erik's ruling, 2026-11-06): the fuel stays in the
+rooms so you can see what the physics does with it.
 
 The values are placeholders. Strength, expansion and heat per strength live in
 `config.toml` (`[blast]` and the `[payloads.*]` rows); knockdown and HP are for the

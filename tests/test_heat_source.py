@@ -233,7 +233,7 @@ def test_closure_identity_holds_with_a_source_heating_gas_and_fuel():
 
 def test_closure_identity_holds_across_a_source_dying():
     """Property: a running source blown up mid-run (the heat-free blast,
-    then its ``engine_death`` blast and heat executed from slot 9e) keeps
+    then its ``engine_death`` blast executed from slot 9e) keeps
     the closure identity exact on every tick. FUEL-FREE ROOM on purpose:
     a blast with ``pressure > 0`` next to a thermal solid breaks the
     identity by a constant on its own, with no heat source anywhere
@@ -267,34 +267,33 @@ def _engine_room(death_payload):
     assert int(sim.gmap.fire.astype(np.int64).sum()) == 0, \
         "the running engine lit the room by itself (the scenario is moot)"
     _blast(sim)
-    first = None
+    deaths = 0
     for i in range(3 * TPS):
         _step(sim)
-        if first is None and int(sim.gmap.fire.astype(np.int64).sum()) > 0:
-            first = i
-    return sim, first
+        deaths += sum(isinstance(e, ExplosionEvent) and e.kind == EVENT_KIND
+                      for e in sim.tick_events)
+    return sim, deaths
 
 
-def test_a_destroyed_engine_starts_the_fire_its_death_payload_carries():
+def test_a_destroyed_engine_runs_its_death_payload_once():
     """Property: a heat-free blast on an engine (hp 200 < its 500 wall
     damage) kills it -- ``alive`` 0, ``hp`` 0, no more deposits -- and
     its ``engine_death`` row executes once (one ExplosionEvent of the
-    heat_source kind), whose heat lights the furniture beside it through
-    ``apply_temperature_ignition`` within a second; the twin without a death
-    payload dies too but no fire follows. Breaks if the blast log is not
-    appended or not drained, if hp is not read in the wall law, if the death
-    payload is skipped or executed twice, or if engine_death's ignite_radius
-    stops reaching fuel 2 tiles away (re-pinned at #31: the heat is the
-    strength row's own, per fuel tile, not a deposit sized for the room)."""
-    sim, first = _engine_room("engine_death")
+    heat_source kind); the twin without a death payload dies too and executes
+    nothing. Breaks if the blast log is not appended or not drained, if hp is
+    not read in the wall law, or if the death payload is skipped or executed
+    twice. RE-PINNED at #31 (Erik's ruling, 2026-11-06: no fire-starting rule):
+    this test used to require a fire on the furniture 2 tiles off. engine_death
+    is a generic explosion now and its ordinary heat does not reach that far
+    (measured: it lights a crate at 0 and 1 tile, 53 degrees at 2), which is the
+    accepted result, so no fire is required of it and none is forbidden."""
+    sim, deaths = _engine_room("engine_death")
     rt = sim._heat_sources[0]
     assert not rt.alive and rt.hp_q16 == 0 and not rt.enabled
-    assert first is not None and first < TPS, \
-        f"no fire within a second of the engine's death (first={first})"
-    assert any(int(sim.gmap.fire[yx]) > 0 for yx in FURN_AT)
-    quiet, quiet_first = _engine_room("")
+    assert deaths == 1
+    quiet, quiet_deaths = _engine_room("")
     assert not quiet._heat_sources[0].alive
-    assert quiet_first is None, "a death without a payload lit a fire"
+    assert quiet_deaths == 0
 
 
 def test_the_death_payload_executes_exactly_once():
@@ -438,17 +437,14 @@ def test_level_lib_round_trips_a_source(tmp_path):
     assert len(sim._heat_sources) == 1
 
 
-def test_the_engine_death_row_reaches_fuel_two_tiles_out():
-    """Property: the placeholder ``engine_death`` row carries a blast and an
-    ``ignite_radius`` reaching every tile within 2 of the engine, so the death
-    satisfies the Starting-a-fire rule (re-pinned at #31: the row no longer
-    authors heat; ignition is the strength row's own rule, heat_fuel, and the
-    tests in test_explosion.py light real fuel with it). Breaks if a retune
-    takes the reach below the room it must light."""
+def test_the_engine_death_row_is_a_generic_explosion():
+    """Property: the placeholder ``engine_death`` row is a blast with wall damage,
+    a strength row, so it carries heat and its direct damage. RE-PINNED at #31:
+    no fire reach is required (Erik's ruling, 2026-11-06). Breaks if the row stops
+    being a blast."""
     from simulation.weapons import rebuild_tables
     p = rebuild_tables(tile_size_m=1.0).payloads.by_name["engine_death"]
     assert p.radius > 0 and p.wall_damage > 0 and p.strength > 0
-    assert p.ignite_r2 > 2 * 2
 
 
 # ---------------------------------------------------------------------------

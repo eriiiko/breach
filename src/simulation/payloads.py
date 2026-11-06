@@ -50,14 +50,14 @@ import math
 
 from simulation.blast_air import (ONE as _BLAST_ONE, blast_base_soot_g,
                                   disc_tiles, read_blast_air)
-from simulation.blast_expansion import (blast_settings, heat_units_per_mj,
-                                        open_mask, reach_tiles, start_expansion,
+from simulation.blast_expansion import (heat_units_per_mj, open_mask,
+                                        reach_tiles, start_expansion,
                                         start_source)
 from simulation.damage import CREDIT_HEAT, tick_credit
 from simulation.events import NO_ATTACKER, ExplosionEvent
 from simulation.exchange import apply_blast_damage
-from simulation.field_edit import (FieldEdit, EditMode, Falloff, HEAT_SCALE,
-                                   Region, _iter_region)
+from simulation.field_edit import (FieldEdit, EditMode, Falloff, Region,
+                                   _iter_region)
 from simulation.gases import smoke_units_of_soot
 from simulation.physics import (_SRC_EXPLOSION_SMOKE, add_explosion_smoke,
                                 apply_explosion)
@@ -125,8 +125,9 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius,
 
 
 # THE HEAT AN IGNITER DELIVERS (fire session #12, 2026-09-12, issue #65), for a
-# row WITHOUT strength (a strength row derives its own, per tile, from the
-# material table: :func:`heat_fuel`).
+# row WITHOUT strength. A strength row has no igniter: Erik's ruling (2026-11-06)
+# is that a fire starts only when a material reaches its own ignition temperature
+# through the engine's ordinary heat.
 #
 # Sized when every shipped flammable carried `thermal_mass = 8`, so `ΔT = heat/8`:
 # wood's ignition point 300 plus the dev key's decisive-igniter margin of 55
@@ -320,34 +321,6 @@ def deposit_over_tiles(queue, field, tiles, weights, total, noise=0.0,
         source_id=source_id))
 
 
-def heat_fuel(gmap, queue, tiles, owner_id=NO_ATTACKER):
-    """A strength row's ignition (#31, design section 2): every FUEL tile in
-    ``tiles`` receives the heat that takes THAT tile to its own ``ignition_temp``
-    plus [blast] ``ignite_margin`` degrees: the material's own capacity times the
-    degrees it lacks. It lands on the fuel, not on gas, and sits outside the
-    blast's fixed total; then ``apply_temperature_ignition`` lights it (CLAUDE.md
-    "Starting a fire": delivered heat, never a ``fire`` write). A blast's own
-    heat cannot do this: for strength >= 1 its peak per tile is the same whatever
-    the strength, and it leaves fuel one tile off below ignition."""
-    tbl = gmap.materials
-    margin = blast_settings().ignite_margin
-    coords = []
-    for y, x in tiles:
-        if not (gmap.flammable[y, x] and gmap.thermal_solid[y, x]):
-            continue
-        m = int(gmap.material[y, x])
-        want = float(tbl.ignition_temp[m]) + margin
-        lack = want - float(gmap.temperature[y, x]) / HEAT_SCALE
-        if lack > 0.0:
-            coords.append((y, x, lack * float(tbl.thermal_mass[m])))
-    if not coords:
-        return
-    _claim_tiles(gmap, CREDIT_HEAT, [(y, x) for y, x, _ in coords], owner_id)
-    queue.enqueue(FieldEdit(
-        field="heat", region=Region.TILES, coords=tuple(coords), amount=1.0,
-        mode=EditMode.ADD, source_id=_SRC_PAYLOAD_IGNITE))
-
-
 def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
     """The peak density of the blast-smoke disc that deposits ``soot_g`` grams
     of soot (#12 handle 3, 2026-10-04): the disc keeps its shape -- LINEAR
@@ -396,8 +369,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
 
     Effect order (fixed — the first three are the shipped detonation triple,
     verbatim call order and argument values; see the module docstring; on a
-    ``strength`` row steps 3 and 5 land on the blast's WALKED tiles, the air read
-    and the source run between 2 and 3, and step 5 is :func:`heat_fuel`):
+    ``strength`` row step 3 and the heat land on the blast's WALKED tiles, the air
+    read and the source run between 2 and 3, and there is no ignite ring: fuel
+    catches only if the blast's ordinary heat takes it to its ignition_temp):
 
     1. ``apply_explosion``     — when ``radius > 0`` (structural wall damage
        immediate; wave/atmosphere/smoke-clear/ignite edits enqueued;
@@ -494,9 +468,6 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     if getattr(payload, "bulk_gas", ""):
         inject_bulk_gas(gmap, fy, fx, payload)
     if generic:
-        if payload.ignite_r2 > 0:
-            heat_fuel(gmap, queue, reach_tiles(mask, fy, fx, payload.ignite_r2,
-                                               approach), owner_id=owner_id)
         _claim_tiles(gmap, CREDIT_HEAT, heat_tiles, owner_id)
         deposit_over_tiles(queue, "heat", heat_tiles, heat_weights,
                            payload.heat_mj * heat_units_per_mj(gmap)
@@ -518,5 +489,5 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
 
 __all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",
            "inject_bulk_gas", "bulk_gas_tiles", "blast_smoke_peak",
-           "deposit_over_tiles", "heat_fuel", "linear_weights",
+           "deposit_over_tiles", "linear_weights",
            "BULK_GAS_BOOKS", "BULK_GAS_RAIL_BOOKS"]

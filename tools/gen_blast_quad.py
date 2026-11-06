@@ -109,7 +109,7 @@ def charges_for(rows):
 def final_features(tm: np.ndarray) -> None:
     """blast_final's furniture and wood, all relative to each room's charge."""
     (nw, ne, sw, _se) = (centre(r) for r in ROOMS)
-    tm[nw[1] - 1:nw[1] + 2, nw[0] + 1] = MAT_FURNITURE     # crates one tile off
+    tm[nw[1] - 1:nw[1] + 2, nw[0] + 1] = MAT_FURNITURE      # crates one tile off
     tm[ROOMS[1][2]:ROOMS[1][2] + ROOM_H, ne[0]] = MAT_WOOD  # the charge's wall
     tm[sw[1] - 1:sw[1] + 2, sw[0] + 3] = MAT_FURNITURE      # crates three tiles off
     tm[sw[1] + 3, sw[0] - 1:sw[0] + 2] = MAT_FURNITURE

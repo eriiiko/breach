@@ -255,7 +255,7 @@ class PayloadDef:
                  bulk_gas="", bulk_amount=0.0, bulk_radius=0.0, bulk_temp=0.0,
                  bulk_amount_q=0, bulk_temp_q=0,
                  expansion_m3=0.0, expansion_radius=0.0, expansion_ticks=1,
-                 strength=0.0, heat_mj=0.0, source_r2=0, heat_r2=0, ignite_r2=0):
+                 strength=0.0, heat_mj=0.0, source_r2=0, heat_r2=0):
         self.name = name
         # #31: a row with ``strength > 0`` IS a generic explosion. The door
         # derives what the strength means from [blast]: ``expansion_m3``, the
@@ -266,7 +266,6 @@ class PayloadDef:
         self.heat_mj = heat_mj
         self.source_r2 = source_r2
         self.heat_r2 = heat_r2
-        self.ignite_r2 = ignite_r2
         # A comparison row's source (levels/blast_quad, blast_div): the air it
         # pushes out, along open floor within expansion_radius, over the ticks.
         self.expansion_m3 = expansion_m3
@@ -560,7 +559,7 @@ class AmmoTable:
 # so a row cannot say two things about one blast (#31, design section 2).
 _STRENGTH_REFUSES = ("pressure", "heat_amount", "heat_radius", "expansion_m3",
                      "expansion_radius", "expansion_ticks", "explosive_kg",
-                     "ignite_intensity")
+                     "ignite_radius", "ignite_intensity")
 
 
 def _strength_columns(name, row, col, emit_blast_smoke, explosive, blast_cfg):
@@ -590,15 +589,13 @@ def _strength_columns(name, row, col, emit_blast_smoke, explosive, blast_cfg):
             f"and the blast log both need the disc")
     b = blast_settings(blast_cfg)
     r_s = source_steps(strength)
-    ignite_radius = float(col("ignite_radius", 0.0))
     return dict(
         strength=strength,
         expansion_m3=b.expansion_m3_per_strength * strength,
         heat_mj=b.heat_mj_per_strength * strength,
         explosive_kg=b.grenade_kg * strength,
         source_r2=r_s * r_s,
-        heat_r2=4 * r_s * r_s,
-        ignite_r2=int(math.ceil(ignite_radius * ignite_radius)))
+        heat_r2=4 * r_s * r_s)
 
 
 def _bulk_gas_columns(name, col, gas_species, bulk_gases, trace_gases):
