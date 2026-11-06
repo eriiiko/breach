@@ -93,7 +93,8 @@ VENT_ROLES = ("supply", "return")
 # How each gas-passing kind passes gas (a walk = false leg must use one).
 GAS_PASSING = {"vent_only": "through a duct",
                "breakable": "once the wall is broken",
-               "window": "once the glass bursts"}
+               "window": "once the glass bursts",
+               "grille": "always, through the grating (#134)"}
 AMBIENT = "ambient"
 PHASES = (1, 2, 3, 4)
 DEPT_CYCLE_PHASE = 1           # a department's own [[cycle]] rows: phase 1 (§3.2)

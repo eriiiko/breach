@@ -101,8 +101,8 @@ from simulation.entities.door import (  # noqa: E402
     quantize_span_tiles, tiles_per_m,
 )
 from simulation.materials import (  # noqa: E402
-    MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_HULL,
-    MAT_KINDLING, MAT_STEEL, MAT_WOOD,
+    MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_GRILLE,
+    MAT_HULL, MAT_KINDLING, MAT_STEEL, MAT_WOOD,
 )
 
 TILE_SIZE_M = 0.333          # the reference tile (the playground's scale)
@@ -262,7 +262,17 @@ class EdgeKind:
     what stage 2 emits besides tiles (``"door"``: one A6 door entity in the
     opening; ``"airlock"``: the L5 recipe, :func:`_airlock`); ``pending``:
     None when stage 2 stamps it, else what will (the schema accepts the
-    kind, :func:`embed` refuses it naming that)."""
+    kind, :func:`embed` refuses it naming that); ``jambs``: the material
+    stamped in the ONE wall tile on each side of the opening (None: they stay
+    steel; ``vented_door``'s grilles, #134), always inside the shared run.
+
+    WALK, AIR and STRUCTURE are three questions (vocabulary §0.4, the dated
+    note of 2026-11-06). A grille tile (``grille``'s opening, a
+    ``vented_door``'s jambs) is STRUCTURE for walking and for the
+    compartment count :func:`validate` gates, exactly like the steel it
+    replaces -- :func:`compartments` never sees it as a gap, and a
+    ``vented_door`` bounds a compartment exactly as ``door`` does -- while to
+    the AIR it is open (permeability 1.0): the two rooms are one volume."""
     stamps: int | None
     width: int
     bounds: bool
@@ -271,6 +281,7 @@ class EdgeKind:
     l9: str
     pending: str | None = None
     entity: str | None = None
+    jambs: int | None = None
 
 
 _DOOR_STAMP = {"open": MAT_AIR, "closed": MAT_DOOR_CLOSED}
@@ -303,10 +314,23 @@ EDGE_KINDS = {
                             L9_MUST_SHARE_WALL,
                             pending="#135 (terminals: a locked door is an "
                                     "entity door + a terminal)"),
+    # #134 (2026-11-06, vocabulary §0.4 addition): the GRILLE kinds -- air
+    # passes, walking does not. `grille` is the window's twin (its width, a
+    # steel grating instead of glass): an air-only opening, nobody walks
+    # through, not a secret path. `vented_door` is the legacy door with a
+    # grille in each jamb: the door's opening and width (so no layout
+    # arithmetic moves), door tiles in the opening, the one wall tile on
+    # each side grille. Both bound a compartment (a grille is structure for
+    # walking and for the count); neither is a CELL_CROSSING_KINDS row.
+    "grille":      EdgeKind(MAT_GRILLE, GLASS_W, True, False, False,
+                            L9_MUST_SHARE_WALL),
+    "vented_door": EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL, jambs=MAT_GRILLE),
 }
 # Kinds that may cross a cell boundary (L5 as amended, Erik 2026-10-31: the
 # breakable wall is the third, a deliberate weak point): everything else is
-# refused.
+# refused -- the grille kinds included (an air opening across a pressure
+# cell would make the two cells one).
 CELL_CROSSING_KINDS = ("airlock", "bulkhead", "breakable")
 # The ONE multi-edge a room pair may carry: the AIRLOCK BYPASS (cycle-types
 # doc §1.3, layout doc §4.3) -- an airlock and a breakable on the same shared
@@ -829,23 +853,51 @@ def shared_wall(a: Room, b: Room):
     return None
 
 
-def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
-    """The (y, x) tiles an edge opens in its shared wall (none for a kind
-    that cuts nothing; the rooms must still share a wall: every kind in the
-    table is ``must-share-wall``)."""
+def _opening_span(graph: ShipGraph, e: Edge):
+    """``(orient, line, at, n, lo, hi)`` of an edge's opening in its shared
+    wall (``at`` None for a kind that cuts nothing; the rooms must still
+    share a wall: every kind in the table is ``must-share-wall``)."""
     wall = shared_wall(graph.rooms[e.a], graph.rooms[e.b])
     if wall is None:
         raise _Reject(f"edge {e.a}-{e.b}: the rooms share no wall")
     orient, line, lo, hi = wall
     n = e.spec.width
     if e.spec.stamps is None:
-        return []
+        return orient, line, None, n, lo, hi
     at = lo + (hi - lo + 1 - n) // 2 if e.at is None else e.at
     if at < lo or at + n - 1 > hi:
         raise _Reject(f"edge {e.a}-{e.b}: opening {at}+{n} leaves {lo}..{hi}")
+    return orient, line, at, n, lo, hi
+
+
+def _wall_tiles(orient: str, line: int, ts) -> list:
     if orient == "v":
-        return [(y, line) for y in range(at, at + n)]
-    return [(line, x) for x in range(at, at + n)]
+        return [(t, line) for t in ts]
+    return [(line, t) for t in ts]
+
+
+def _opening_tiles(graph: ShipGraph, e: Edge) -> list:
+    """The (y, x) tiles an edge opens in its shared wall (none for a kind
+    that cuts nothing). A ``vented_door``'s jambs are NOT opening tiles
+    (:func:`_jamb_tiles`)."""
+    orient, line, at, n, _lo, _hi = _opening_span(graph, e)
+    if at is None:
+        return []
+    return _wall_tiles(orient, line, range(at, at + n))
+
+
+def _jamb_tiles(graph: ShipGraph, e: Edge) -> list:
+    """The two wall tiles flanking an edge's opening whose kind stamps
+    ``jambs`` (none otherwise), refused when one would leave the shared run
+    -- a jamb past the run's end is a corner, whose far side may be a third
+    room's air."""
+    if e.spec.jambs is None:
+        return []
+    orient, line, at, n, lo, hi = _opening_span(graph, e)
+    if at - 1 < lo or at + n > hi:
+        raise _Reject(f"edge {e.a}-{e.b} ({e.kind}): a jamb ({at - 1} or "
+                      f"{at + n}) leaves the shared wall {lo}..{hi}")
+    return _wall_tiles(orient, line, (at - 1, at + n))
 
 
 def _hull_runs(graph: ShipGraph, rm: Room) -> list:
@@ -1435,7 +1487,7 @@ def _vent_site(tm, room: Room, axis2: int, reserved=None):
         if tm[y + dy, x + dx] != MAT_AIR:
             continue
         if np.isin(tm[y - 1:y + 2, x - 1:x + 2],
-                   (MAT_DOOR, MAT_GLASS, MAT_DOOR_CLOSED)).any():
+                   (MAT_DOOR, MAT_GLASS, MAT_DOOR_CLOSED, MAT_GRILLE)).any():
             continue
         if reserved is not None and (reserved[y - 1:y + 2, x - 1:x + 2].any()
                                      or reserved[y + dy, x + dx]):
@@ -1764,6 +1816,11 @@ def embed(graph: ShipGraph, rng) -> Embedding:
             tm[y, x] = spec.stamps
             passage[y, x] |= spec.keep_clear
             reserved[y, x] |= spec.entity is not None
+        for (y, x) in _jamb_tiles(graph, e):
+            if tm[y, x] != MAT_STEEL:
+                raise _Reject(f"edge {e.a}-{e.b} ({e.kind}): its jamb at "
+                              f"({x},{y}) is not steel ({int(tm[y, x])})")
+            tm[y, x] = spec.jambs
         by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
     modes = {}
     for i, al in _airlocks(graph):
@@ -1777,7 +1834,8 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         _cut_hull_door(tm, rm, tiles, beyond, state)
         for (y, x) in tiles:
             passage[y, x] = reserved[y, x] = True
-    doors, windows = by_kind.get("door", 0), by_kind.get("window", 0)
+    doors = by_kind.get("door", 0) + by_kind.get("vented_door", 0)
+    windows = by_kind.get("window", 0)
     for rm in graph.rooms:
         if rm.tags.get("fuel") and (rm.mirror is None or rm.mirror >= rm.id
                                     or not graph.mirror_x):
@@ -1968,7 +2026,8 @@ def _masks(tm: np.ndarray):
 
 def compartments(tm: np.ndarray, graph: ShipGraph | None = None):
     """``(labels, n)`` of the ship's compartments: the regions bounded by
-    the structure (hull, steel, doors, glass) -- fuel is a room's contents,
+    the structure (hull, steel, doors, glass, grilles -- a grille passes air
+    but is structure here, #134) -- fuel is a room's contents,
     so a pocket of air behind a crate belongs to its room. With ``graph``
     the STRUCTURE MASK also takes the graph's edge kinds: the opening tiles
     of every edge that bounds a compartment are structure whatever they are
@@ -2459,6 +2518,8 @@ PALETTE = {
     MAT_FURNITURE: (96, 71, 41),
     MAT_DOOR_CLOSED: (170, 110, 50),
     MAT_KINDLING:  (142, 62, 36),    # a recipe's fuel class (no v1 ship has it)
+    MAT_GRILLE:    (70, 150, 120),   # #134: a grating -- teal, apart from steel
+                                     # and glass (no v1 ship has it)
 }
 AIR_ALT = (30, 32, 38)
 ROOM_TINT = {0: (30, 40, 62), 1: (62, 34, 34), ZOMBIE_TEAM: (34, 56, 36)}
