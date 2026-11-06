@@ -669,6 +669,14 @@ void eos_step_cuda(
             div_u[i] = dux + duy;
         }
     }
+    // #31: the blast's divergence source, EOSSolver::step's own lines.
+    if ((int)solver.div_source.size() == n) {
+        for (int i = 0; i < n; ++i) {
+            if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;
+            div_u[i] = fixedpoint::sat_add_q16_i64(div_u[i],
+                                                   -(int64_t)solver.div_source[i]);
+        }
+    }
 
     // step 2's Dalton sum (post-substep N — the same n_total scratch reused,
     // exactly like the CPU's member cache). P-T0 (design §2.6): n_total ≡

@@ -165,6 +165,14 @@ KickScalarFolds kick_scalar_folds(
     // SAME double expression eos_solver.cpp's step() uses.
     float t_amb_k);
 
+// #31: the blast's divergence source comes off div(u*), LAUNCH ONLY, on DEVICE
+// pointers, (N, h, w)-shaped (RL-batch habits; N == 1 today). The caller launches
+// it only on a tick with a source. d_is_ambient nullable (space).
+void div_source_launch_resident(
+    int32_t* d_div_u, const int32_t* d_div_source,
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    int N, int h, int w);
+
 // The step-4 kick, LAUNCH ONLY, on DEVICE pointers (the CPU pass boundary),
 // no malloc, no transfer, no memset, no sync, no digest. d_ntot is the
 // post-substep Dalton N_total plane; d_absorb_q the host-hoisted §2.5 absorb
