@@ -589,12 +589,14 @@ def _vent(*roles) -> dict:
      lambda d: S.leaf(d, "b", S.QRoom(id="c", tags=_vent("supply")), "door",
                       P),
      lambda d: S.leaf(d, "b", S.QRoom(id="c", tags=_vent("supply")),
-                      "vented_door", P), 4),
+                      "vented_door", P), 1),
 ])
 def test_each_invariant_refuses_by_name(name, bad, good, phase):
     """PROPERTY (recipe doc §1.5, §5.3): an application that breaks an
     invariant is refused NAMING it, from the first phase that invariant
-    runs in (contact rules from phase 1, reachability from 3, the air rules
+    runs in (contact rules and the air-volume rule from phase 1 -- a move
+    that re-parents rooms, the retreat loop, can split a department's air,
+    so each application is checked --, reachability from 3, a duct's cell
     in 4) and not before; the same move applied legally passes. BREAKS IF an
     invariant is dropped, renamed, or run in the wrong phase."""
     d = bad(_small())

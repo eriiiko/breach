@@ -702,7 +702,7 @@ INVARIANTS = {
     "cell_crossing": (inv_cell_crossing, 1),
     "reachable": (inv_reachable, 3),
     "duct_in_cell": (inv_duct_in_cell, 4),
-    "air_volume": (inv_air_volume, 4),
+    "air_volume": (inv_air_volume, 1),
 }
 
 

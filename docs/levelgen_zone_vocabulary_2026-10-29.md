@@ -200,8 +200,9 @@ gas from tick 0 and nothing in play closes it. True for `open`, `grille`,
 `entity_door` can be shut, a window or a breakable wall must break first).
 An AIR VOLUME is a connected component of rooms over `air` edges
 (`ShipGraph.air_volume_of()`, the twin of `compartment_of()`). An edge added
-later can only merge volumes, so a department that satisfies the rule alone
-satisfies it in any ship.
+later can only merge volumes; a move that RE-PARENTS rooms can split one
+(the retreat loop: see "As built" (b)), so the grammar checks the rule on
+every application, not once at the end.
 
 **2. The rule.** For every duct, every air volume the duct has a vent in
 carries at least one SUPPLY and at least one RETURN on that duct. A sealed
@@ -278,14 +279,17 @@ satisfies the rule alone satisfies it in any ship" (item 1) is NOT true of
 the RETREAT LOOP: its second stub takes every other side room off the
 entry, and its two legs are drawn from `door | open`, so a stub2 behind a
 door with only supplies (bunks, theatres), or a stub2 open to the spine,
-splits the department's air. The grammar's `air_volume` invariant (phase 4)
-refuses those attempts: 48 of the 600 requests of the generation sweep
-(seeds 0-99 x medium, large x easy, standard, hard; 41 large-hard, 7
-large-standard) now take a later grammar attempt, and 2 (medium-hard 28,
-66) a different layout attempt (the heads needs one vent site, not two);
-all 600 still generate, the other 550 keep their rooms exactly. Not
-redesigned here: the retreat loop's leg kinds, or running the invariant
-from the phase the loop is applied in, are the lead's call.
+splits the department's air. So the grammar's `air_volume` invariant runs
+from PHASE 1, on every application (the lead's call, the same day): a
+retreat loop whose draw splits the air is refused by name and logged, and
+the entry draws its next candidate, exactly as for any other invariant. Run
+only at phase 4 (the first cut) it threw away whole grammar attempts. With
+it, all 600 requests of the generation sweep (seeds 0-99 x medium, large x
+easy, standard, hard) generate; 542 keep their rooms exactly; 56 large ships
+(48 hard, 8 standard) carry their retreat loop on another department or
+with another draw of its legs, and 2 (medium-hard 28, 66) take a different
+layout attempt (the heads needs one vent site, not two). Large ships carry a
+retreat loop as often as before (standard 51 of 100, hard 100 of 100).
 (c) The recipe door checks a department at every pattern of its optional
 rooms' absence (a `behind` room going with its parent), since an absent room
 can split a volume too.
