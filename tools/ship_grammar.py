@@ -80,8 +80,10 @@ VALIDATION_GATES = {"bot_walkable": "bool", "spawn_distance": "sized",
                     "cells": "range", "rooms": "sized"}
 # The walk graph (recipe doc §1.1): kinds a unit passes; an airlock counts as
 # walkable (in sequence). A `secret` room is reached through a secret-path
-# kind (gen_ship.EDGE_KINDS[k].secret_path) instead.
-WALK_KINDS = ("door", "open", "entity_door", "airlock")
+# kind (gen_ship.EDGE_KINDS[k].secret_path) instead. A `vented_door` is a
+# door (a grille in each jamb, #134); a `grille` is NEVER a walk kind -- it
+# passes air only, so a room reached only through grilles is unreachable.
+WALK_KINDS = ("door", "open", "entity_door", "airlock", "vented_door")
 EXT_DEPT_CYCLES = ("a department's own [[cycle]] rows (recipe doc §3.2): the "
                    "grammar does not apply them in v1 (no shipped department "
                    "has one)")

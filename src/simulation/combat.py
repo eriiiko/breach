@@ -1335,7 +1335,7 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
                 continue                               # behind the shooter
             if dot_q * dot_q < dist_sq * c_sq:
                 continue                               # outside the cone
-            if not gmap.has_los(ay, ax, y, x):
+            if not gmap.has_los(ay, ax, y, x, physical=True):
                 continue                               # occluded — no pour
             yield y, x, max(1, math.isqrt(dist_sq))
 

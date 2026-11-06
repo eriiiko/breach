@@ -381,11 +381,17 @@ def test_the_skeleton_rows_cells_and_exits(arch, ships):
         block = _block(q)
         assert q.band == tuple(mains + block) and mains and block
         kinds = {frozenset((e.a, e.b)): e.kind for e in q.edges}
+        # The band's walk edges are the SKELETON's declared kinds (#134 made
+        # them `vented_door`, a vetoable content call: read the table, not a
+        # literal) and they are walk kinds; the block's is a bulkhead.
+        sk = L.FREIGHTER.edges
         for x, y in zip(mains, mains[1:]):
-            assert kinds[frozenset((x, y))] == "door"
+            assert kinds[frozenset((x, y))] == sk["section-section"]
+        assert sk["section-section"] in S.WALK_KINDS
         assert kinds[frozenset((mains[-1], block[0]))] == "bulkhead"
         assert q.zombie_room == mains[-1]
-        assert kinds[frozenset((L.LOBBY, mains[-1]))] == "door"
+        assert kinds[frozenset((L.LOBBY, mains[-1]))] == sk["lobby-section"]
+        assert sk["lobby-section"] in S.WALK_KINDS
         assert bool(q.room(q.zombie_room).tags.get("zombie")) == \
             (q.zombies > 0)
         hub_cell = q.room(block[0]).cell

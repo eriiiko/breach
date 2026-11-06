@@ -698,6 +698,17 @@ tile` 1); none was a packing or contact failure, none a `[validation]`
 range. Grammar attempts refused by `layout_feasibility` are the `g` column
 (about 12 ms each).
 
+**As built 2026-11-06 (#134, branch `134-grille`): the spine breathes.**
+The freighter skeleton's four spine edges (`slab-passageway`,
+`passageway-lobby`, `lobby-section`, `section-section`) are `vented_door` --
+a door with a grille in each jamb (vocabulary §0.4, the 2026-11-06
+addition) -- the lead's content call, Erik may veto (revert: `"door"` on
+those four lines of `ship_layout.FREIGHTER.edges`). Department entries,
+the flank strip's doors and everything inside departments stay `door`. The
+vented door is a door to the layout: over 100 seeds x 2 sizes x 3 profiles
+the vented and the plain spine give the same grammar and layout attempts
+and the same rooms, 600 of 600, no plan lost.
+
 **What is left.** LevelSpec and the `[levelgen]` table in level.toml, banks,
 `mutate` and per-department layout streams (archetype doc §5, §8); a
 second skeleton; the slab's formation placement; the first shipped recipe
