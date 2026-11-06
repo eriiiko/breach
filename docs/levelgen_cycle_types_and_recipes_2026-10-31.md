@@ -554,15 +554,17 @@ and its own issue; nothing in this document is buildable without it.
 
 | Extension | Why |
 |---|---|
-| `vent` tag becomes a list of `{duct, roles}`; `_build_vents` places a site per (room, duct, role); sealed-room rule per duct | duct link across departments (§1.3) |
-| `fuel` tag gains a class / material; `compartments()` derives "contents" from the material table (mobility > 0: furniture, wood, kindling) instead of its literal `(MAT_AIR, MAT_FURNITURE, MAT_WOOD)` | kindling today would SPLIT its room and fail the compartment gate (critique 10) |
+| `vent` tag becomes a list of `{duct, roles}`; `_build_vents` places a site per (room, duct, role); sealed-room rule per duct | duct link across departments (§1.3). **DONE 2026-11-06 `86629b2`**: `gen_ship.vent_specs`, `_build_vents`, `ShipGraph._check_ducts_and_cells` (a list on distinct ducts; both rules per duct; a `vent_only` edge needs one shared duct) |
+| `fuel` tag gains a class / material; `compartments()` derives "contents" from the material table (mobility > 0: furniture, wood, kindling) instead of its literal `(MAT_AIR, MAT_FURNITURE, MAT_WOOD)` | kindling today would SPLIT its room and fail the compartment gate (critique 10). **DONE 2026-11-06 `86629b2`**: `fuel = {clusters, mix}` (`gen_ship.fuel_spec`; the int form is `FUEL_MIX_V1`, v1's draws), `gen_ship.fuel_materials()` read at all three sites -- as built: the FLAMMABLE rows, not `mobility > 0` (see below) |
 | `heat_source` tag gains optional `enabled` | the galley fixture |
-| `CELL_CROSSING_KINDS` gains `breakable` | L5 as amended |
+| `CELL_CROSSING_KINDS` gains `breakable` | L5 as amended. **DONE 2026-11-06 `86629b2`**: `CELL_CROSSING_KINDS` + `breakable`; the airlock bypass (airlock + breakable on one wall) is the one multi-edge a pair may carry, layout §4.3's arithmetic refused by name in `ShipGraph._check_bypass` |
 | a per-room `water` stamp into `water_init.npy` | the aquarium, the pool (the layer exists, the stamp does not) |
 | a per-room `pressure` composed into `air_init.npy` (ambient elsewhere) | the `pressure` preset (the file exists, gen_ship never writes it) |
 | the resolver + the preset tables `[levelgen.lights.*]`, `[levelgen.fuel.*]`, `[temps.*]`, `[pressures.*]`, `[heat_sources.*]`, `[hazards.*]` | §3.4 |
 | a `rate` class on a vent role (later, not v1) | a one-sided duct link |
 | a per-room GAS MIX initial field (NEW mechanism: a per-species level field through the loader door and the energy seam) | an O2-rich pharmacy; Erik's ruling first |
+
+As built (2026-11-06, branch `133-stage2-family-b`): the row's "mobility > 0: furniture, wood, kindling" contradicts the material table -- wood has mobility 0, and the doors (structure) have mobility 1000 -- so the contents set is read off the `flammable` column instead (furniture, wood, kindling, foliage), which is exactly what a fuel class may stamp and excludes every structural row; a mix naming a non-flammable row is refused by name.
 
 ### 5.3 Phase table (critique 14)
 
