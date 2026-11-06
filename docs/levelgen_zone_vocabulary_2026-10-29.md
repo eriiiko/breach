@@ -245,6 +245,51 @@ gas amount drifts; no room without a heat source leaves a narrow band around
 its starting pressure; teargas put in the heads is found in the bunk rooms
 and not in a room off the duct.
 
+**As built (2026-11-06, branch `124-vent-air-rule`).** Items 1-6 as written:
+`EdgeKind.air`, `ShipGraph.air_volume_of`, the rule as ONE function
+(`gen_ship.vent_air_rule`, called by `ShipGraph.check`, the recipe door and
+the grammar invariant, renamed `air_volume`), the design flow
+(`gen_ship.vent_rates`, `[levelgen.vents] ach = 10` through the door
+`gen_ship.vent_ach`, folded into the recipe hash), the crew quarters of item
+5, the gate (`tests/test_gen_ship_vents_air.py`). The unit was verified: the
+runtime quantizes `q_circ / (C x T_amb)` with `C x T_amb == 1.0`, and a
+tile's bulk N at 1 atm is exactly 65536 raw, so `q_circ = 1.0` IS one
+tile-volume of ambient air per second and the quantum is one raw unit per
+second. MEASURED after (60 s idle, tile regions = the loaded level's
+gas-connected air): every region holding a vent keeps its bulk N EXACTLY
+(drift 0 at whole seconds) on medium seed 28 and large seed 7, against
+heads -72 %, morgue -35 %, cargo +10 %, medbay +9 % before; every vented room
+without a heat source stays within 1 % of its start on seed 28 (the heads
+0.997 atm at 60 s, 0.993 at 300 s, was 0.24). Teargas thrown into the heads
+is in every bunk after 1 s at ach 10 and in no room the heads' air cannot
+reach. Three things differ from the design or were found:
+(a) THE CAUSE OF THE DUCT-LINK DRIFT (item 4's question): extraction clamped
+by the aperture's content. At `Q_CIRC` each return asks 0.67 tile-volumes per
+tick of ONE tile, which transport refills only partly, so the returns got
+50-70 % of their ask and unequally (seed 28's link: the bunk's return 662,
+the cargo stub's 608 tile-volumes in 60 s), while the duct hands the total
+back in proportion to RATE -- the bunk's volume lost 27 tile-volumes to the
+cargo's. No aperture is ever guarded or covered (fuel is placed before the
+vents and a site needs air in front; hazards and heat sources are entities,
+kept out of the vents' 3x3), so no site-selection change was needed. At the
+designed rates (0.004-0.07 tile-volumes per tick) nothing clamps.
+(b) "An edge added later can only merge volumes, so a department that
+satisfies the rule alone satisfies it in any ship" (item 1) is NOT true of
+the RETREAT LOOP: its second stub takes every other side room off the
+entry, and its two legs are drawn from `door | open`, so a stub2 behind a
+door with only supplies (bunks, theatres), or a stub2 open to the spine,
+splits the department's air. The grammar's `air_volume` invariant (phase 4)
+refuses those attempts: 48 of the 600 requests of the generation sweep
+(seeds 0-99 x medium, large x easy, standard, hard; 41 large-hard, 7
+large-standard) now take a later grammar attempt, and 2 (medium-hard 28,
+66) a different layout attempt (the heads needs one vent site, not two);
+all 600 still generate, the other 550 keep their rooms exactly. Not
+redesigned here: the retreat loop's leg kinds, or running the invariant
+from the phase the loop is applied in, are the lead's call.
+(c) The recipe door checks a department at every pattern of its optional
+rooms' absence (a `behind` room going with its parent), since an absent room
+can split a volume too.
+
 ---
 
 ## Part A — the unlimited list
@@ -343,6 +388,9 @@ first.
   SUPPLY; the stub carries the compartment's RETURN. So the heads' air is
   recirculated into the bunks: teargas thrown into the heads comes out over
   the sleepers. Galley, when present: its own small duct with a shut-off [#49].
+  *(Amended by §0.6, 2026-11-06: the heads joins the stub by a vented door and
+  carries the quarters' only RETURN; the bunks and the mess carry SUPPLY; the
+  stub carries nothing.)*
 - **Physics:** ambient air; fuel = bunks and lockers (furniture clusters as
   gen_ship stamps today); galley = a heat-source entity [Part E] + kindling;
   lights one lamp per room, dim in bunks (per-room light annotation, Part E).

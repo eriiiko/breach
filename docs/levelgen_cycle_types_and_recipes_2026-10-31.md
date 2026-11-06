@@ -907,3 +907,9 @@ room in the end zone is within 3 tiles of its depth.
   pack; imported lazily, never copied); the §3.1 perimeter sum is gone, and
   with it the refusal of `count = [2, 12]` (a maximum: the archetype door's
   warning now, `Archetype.warnings`).
+- 2026-11-06 (#124, vocabulary §0.6 item 5) `crew_quarters`: the heads joins the stub by a
+  **`vented_door`** and carries the quarters' only **return**; the mess gains a **supply**
+  (the bunks keep theirs); the stub's vent is gone. The sealed-room rule this
+  document cites (§3.1, §3.2, §5.2) is replaced by the air-volume vent rule
+  (`gen_ship.vent_air_rule`), and the duct link's "each room carries both" now
+  balances per air volume by the design flow (`gen_ship.vent_rates`).
