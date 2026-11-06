@@ -120,10 +120,21 @@ _PRE_122_SHIP_DEMO = dict(
     # without that key reproduces c69925fa... exactly; outcome, ticks,
     # field_digest and the per-tick unit stream are unchanged.
     # (was c69925fa68e8ba10fbb724eaedbcb53d56058f3b4efaf91a2601d1366be0f170)
-    tick_digest="ce979185366be487732e587a851ab6e3"
-                "589d0b0ea8671ab06ef7c5f41ba25c37",
-    unit_stream="b55cc54e4e12bd7002a70cecd01d1377"
-                "03964eb73fa63c15da59f0b415cedb4e")
+    # #169 re-pin (2026-11-06, simultaneous shot resolution): outcome, team,
+    # ticks and field_digest UNCHANGED. SOLE CAUSE, verified by a per-tick
+    # trace against main 0ef8966b: ticks 0-685 identical; from tick 686 the
+    # rounds of a killing k5 burst stop on the body they killed this tick
+    # (they used to fly on into the unit behind it) -- tick 686's 5th round
+    # lands on unit 2's corpse instead of unit 1, so unit 1 dies on tick 690
+    # one round later and the rest of that burst lands on its corpse.
+    # Regenerate: <breach py> -m pytest tests/test_zombie_control.py -k
+    # pre_122_ship_demo -vv (the diff prints both values).
+    # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
+    #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
+    tick_digest="d017f087185330c123d5bc81ccc06b6b"
+                "b7077d28105f3c884404ec834bada3ac",
+    unit_stream="9abe08854b5ea8bebc02cdfb3f4f56c5"
+                "804f165f9f9364248183dab833dd36cc")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):

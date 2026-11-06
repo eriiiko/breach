@@ -71,6 +71,9 @@ from simulation.combat import (
     process_shooting, process_sprays,
     Projectile,
 )
+# Simultaneous resolution of an attack slot (#169): phase A records, phase B
+# (``resolve``) applies. Bare name: the lockstep test rebinds it.
+from simulation.simultaneous import SimultaneousEffects
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -1587,6 +1590,12 @@ class Simulation:
         # synced, digest-hashed, in emission order.
         tick_statuses(self.units, events=self.tick_events)
 
+        # 4's phase-B record (#169): every attack of slot 4 -- shots, strikes,
+        # beams and 4b's spray deposits -- is decided against the slot-start
+        # state and recorded here; ``resolve()`` after 4b applies them in the
+        # walk's order, so no unit's attack this tick depends on its id.
+        attack_effects = SimultaneousEffects()
+
         # 3 + 4. Unit simulation. A ruleset that owns these slots
         # (OnePhaseWEGO — ``drives_units``) replaces BOTH with one call: its
         # compiled timeline decides movement and shooting together, because
@@ -1607,7 +1616,7 @@ class Simulation:
             process_shooting(self.gmap, self.units, self.tick,
                              self.shots, self.real_time, self.rng,
                              events=self.tick_events, bullets=self.bullets,
-                             queue=self.edit_queue)
+                             queue=self.edit_queue, effects=attack_effects)
 
         # 4b. SPRAY deposits (mechanics/03 §5, W4) — the shooting slot's
         # second half: every active spray burst enqueues its aimed heat/gas
@@ -1618,7 +1627,9 @@ class Simulation:
         # W6: tick_events rides along for the RENDER-ONLY SprayJetEvent
         # (the flame-jet visual) — not digest-hashed, pure synced-state fn.
         process_sprays(self.gmap, self.units, self.edit_queue,
-                       events=self.tick_events)
+                       events=self.tick_events, effects=attack_effects)
+        # 4c. Phase B of the attack slot (#169): apply what 4 and 4b recorded.
+        attack_effects.resolve()
 
         # 5. Zombie AI — its ONE driver: the conductor, or a match's zombie
         # controller through the ZOMBIE intent (#122, :meth:`drive_zombies`).
@@ -1934,14 +1945,19 @@ class Simulation:
         # inside advance() (same rng, fixed spawn order). Survivors stay.
         # W3: the edit queue rides along — an in-flight payload round (the
         # GL-6 40 mm) detonates at its stop through the payload executor.
+        # #169: two rounds landing on one tick land TOGETHER — every round
+        # marches against the slot-start state and records its hit / chew /
+        # detonation; resolve() applies them in list (spawn) order.
         if self.bullets:
             survivors = []
+            landing = SimultaneousEffects()
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
                              self.real_time, self.rng,
                              events=self.tick_events,
-                             queue=self.edit_queue):
+                             queue=self.edit_queue, effects=landing):
                     survivors.append(b)
+            landing.resolve()
             self.bullets = survivors
 
     def _update_player_movement(self) -> None:

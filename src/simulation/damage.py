@@ -321,9 +321,16 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     raises ``ValueError`` BEFORE the unit is touched.
 
     Callers gate on ``unit.alive`` before applying, exactly as the shipped
-    sites do. Returns the applied (post-quantize) delta.
+    sites do -- an attack slot gates at its START (#169,
+    :mod:`simulation.simultaneous`), so a packet can land on a unit an
+    earlier packet of the same slot killed. A unit DIES ONCE: step 5 runs
+    only on the alive -> dead transition, so the packet that takes hp to
+    zero is the kill and a later packet on the corpse emits its UnitHit but
+    no second UnitKilled (and never re-marks the conversion flag). Returns
+    the applied (post-quantize) delta.
     """
     source = cause_value(source)                  # the door: refuse first
+    was_alive = bool(getattr(unit, "alive", True))
     attacker = attacker_value(getattr(packet, "attacker_id", NO_ATTACKER))
     amount = mitigate(packet.amount, packet.dtype, mitigation_for(unit),
                       ap=packet.ap)
@@ -351,7 +358,7 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         uid = getattr(unit, "id", -1)
         events.append(UnitHitEvent(unit_id=uid, damage=dmg, source=source,
                                    attacker_id=attacker))
-    if unit.current_hp <= 0:
+    if was_alive and unit.current_hp <= 0:
         unit.alive = False
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True

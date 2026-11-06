@@ -66,7 +66,11 @@ from simulation import unit_fixed
 # simulation.combat.execute_payload (the apply_environmental_damage pattern).
 from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401
 from simulation.payloads import execute_payload
-from simulation.status import apply_status, composed_flags
+from simulation.status import apply_status, composed_flags  # noqa: F401
+from simulation.materials import MAT_AIR
+# Simultaneous resolution (#169): an attack slot decides against its start
+# state and applies its effects together (phase A / phase B).
+from simulation.simultaneous import SimultaneousEffects, effects_or_immediate
 # The two shipped coupling responses live in simulation.exchange now
 # (mechanics/05 coupling table, P1). Re-imported for compatibility — legacy
 # imports (`from simulation.combat import apply_environmental_damage, ...`)
@@ -175,9 +179,13 @@ def chew_wall(gmap, iy, ix, wall_damage):
     config damage quantizes to an exact count), then ``destroy_wall`` at
     <= 0 (which handles solid walls AND non-solid destructibles like
     furniture — see its W2 note). ``wall_damage <= 0`` is a no-op so
-    chew-less rounds cost nothing.
+    chew-less rounds cost nothing, and so is a tile already gone (air):
+    two rounds of one attack slot can both stop on a wall that stood at the
+    slot's start (#169), and the one applied second finds it destroyed.
     """
     if wall_damage <= 0:
+        return
+    if gmap.material[iy, ix] == MAT_AIR:
         return
     gmap.wall_hp[iy, ix] -= wall_fixed.quantize_scalar(float(wall_damage))
     if gmap.wall_hp[iy, ix] <= 0:
@@ -248,7 +256,7 @@ class BulletInFlight:
         self.march_facing_defense = False
 
     def advance(self, gmap, units, shots, real_time, rng, events=None,
-                queue=None, cover=None, facing_defense=False):
+                queue=None, cover=None, facing_defense=False, effects=None):
         """March one tick's budget. Returns True while still in flight.
 
         PHYSICAL COVER (onephase_wego design §7). ``cover`` is the sim's
@@ -285,7 +293,15 @@ class BulletInFlight:
         cover absorption / max range or grid exit) through
         :func:`simulation.payloads.execute_payload`. Payload rounds apply
         NO direct-hit packet — the blast does the work.
+
+        #169: ``effects`` is the attack slot's
+        :class:`~simulation.simultaneous.SimultaneousEffects` -- the march
+        DECIDES here (its stop, its target, its rolls, against the slot-start
+        state) and RECORDS what it does (packet, wall / crate chew,
+        detonation) for the slot's phase B. ``None`` applies at once (the
+        pre-#169 behaviour, for direct callers).
         """
+        fx = effects_or_immediate(effects)
         # A round carries the rules it was fired under, so continuing flight on
         # a later tick behaves like the tick it launched on.
         if cover is None:
@@ -316,7 +332,7 @@ class BulletInFlight:
             if 0 <= iy < h and 0 <= ix < w:
                 if gmap.solid[iy, ix]:
                     # W2: missed shots chew walls — the apply_explosion path.
-                    chew_wall(gmap, iy, ix, self.ammo.wall_damage)
+                    fx.world(chew_wall, gmap, iy, ix, self.ammo.wall_damage)
                     stopped = True
                     break
             else:
@@ -330,7 +346,7 @@ class BulletInFlight:
             if cover:
                 hit_cover = cover_at(cover, self.rx, self.ry)
                 if hit_cover is not None:
-                    hit_cover.chew(self.ammo.wall_damage)
+                    fx.world(hit_cover.chew, self.ammo.wall_damage)
                     self.rx, self.ry = px, py     # stop AT its face
                     stopped = True
                     break
@@ -363,8 +379,8 @@ class BulletInFlight:
                                                                   rng)):
                         # Absorbed by the cover tile: it eats the round's wall
                         # damage, the tracer ends there, no unit packet.
-                        chew_wall(gmap, self.prev_iy, self.prev_ix,
-                                  self.ammo.wall_damage)
+                        fx.world(chew_wall, gmap, self.prev_iy, self.prev_ix,
+                                 self.ammo.wall_damage)
                         self.rx, self.ry = px, py
                         hit_unit = None
                         stopped = True
@@ -414,12 +430,12 @@ class BulletInFlight:
             # Packet through the pipeline (mechanics/06 §2) — dtype/ap off the
             # ammo row (the k5's kinetic/0 reproduces the shipped packet
             # exactly); bullet deaths never convert.
-            apply_packet(hit_unit,
-                         DamagePacket(amount=actual_dmg,
-                                      dtype=self.ammo.dtype_id,
-                                      attacker_id=self.shooter_id,
-                                      ap=self.ammo.ap),
-                         events, source="bullet")
+            fx.hit(hit_unit,
+                   DamagePacket(amount=actual_dmg,
+                                dtype=self.ammo.dtype_id,
+                                attacker_id=self.shooter_id,
+                                ap=self.ammo.ap),
+                   events, source="bullet")
 
         if n_steps > 0:   # a budget-starved tick (<1 tile) has nothing to draw
             shots.append(Shot(seg_x, seg_y, self.rx, self.ry, real_time))
@@ -461,9 +477,9 @@ class BulletInFlight:
             det_y, det_x = int(self.ry), int(self.rx)
             if not (0 <= det_y < h and 0 <= det_x < w):
                 det_y, det_x = self.prev_iy, self.prev_ix
-            execute_payload(gmap, queue, units, det_y, det_x, self.payload,
-                            rng, events=events, kind="shell",
-                            owner_id=self.shooter_id)
+            fx.world(execute_payload, gmap, queue, units, det_y, det_x,
+                     self.payload, rng, events=events, kind="shell",
+                     owner_id=self.shooter_id)
 
         return still_flying
 
@@ -701,7 +717,7 @@ def mag_spend(u, weapon, tick):
 # Shooting (fire orders + auto-fire) — W2: per-unit weapon, archetype dispatch
 # ---------------------------------------------------------------------------
 def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
-                     bullets=None, queue=None):
+                     bullets=None, queue=None, effects=None):
     """Run one tick of shooting for every player unit with a fire order
     (or auto-fire during Move & Attack).
 
@@ -729,10 +745,22 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
     / :class:`UnitHitEvent` / :class:`UnitKilledEvent` are appended for the
     renderer to consume. ``queue`` (W3) is the sim's :class:`EditQueue` —
     payload rounds (the GL-6 40 mm) deposit their detonation through it.
+
+    SIMULTANEOUS (#169, :mod:`simulation.simultaneous`): the walk below is
+    PHASE A -- every shooter's eligibility and every shot's geometry are
+    decided against the slot-start state, because each effect (packet,
+    status, facing, chew, detonation) is RECORDED on ``effects`` instead of
+    applied; phase B (``effects.resolve()``) applies them in walk order. So
+    a unit killed or stunned this tick by a lower id still fires this tick,
+    and two units can kill each other. ``effects=None`` = this call owns
+    the slot and resolves before returning; the conductor passes its own so
+    :func:`process_sprays` decides in the same phase A, then resolves.
     """
     tpp = CFG.clock.ticks_per_phase
     phase = tick // tpp
     tables = weapon_tables()
+    own_slot = effects is None
+    fx = SimultaneousEffects() if own_slot else effects
 
     for u in units:
         if u.is_zombie or not u.alive:
@@ -768,14 +796,15 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             # read and the digest is byte-identical (the P3 dormancy rule).
             if getattr(u, "live_trigger", False):
                 _directional_fire(gmap, units, u, tick, shots, real_time, rng,
-                                  events, bullets, weapon, flags, queue)
+                                  events, bullets, weapon, flags, queue,
+                                  effects=fx)
                 continue
             # Move & Attack: auto-fire at nearest visible enemy (snap cone).
             for o in u.orders:
                 if o.order_type == ORDER_MOVE_ATTACK and o.phase == phase:
                     auto_fire(gmap, units, u, tick, shots, real_time, rng,
                               events=events, bullets=bullets, weapon=weapon,
-                              queue=queue)
+                              queue=queue, effects=fx)
                     break
             continue
 
@@ -813,7 +842,7 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         # retries next tick while the order stands.
         if weapon.archetype == "melee":
             if melee_strike(units, u, target_fx, target_fy, rng, events,
-                            weapon):
+                            weapon, effects=fx):
                 mag_spend(u, weapon, tick)
                 u.last_fire_tick = tick
             continue
@@ -843,40 +872,46 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             # shooting slot. Handled here rather than in _dispatch_trigger
             # because the burst captures the ORDER (interruption consumes
             # it). Spread is meaningless on a cone weapon — no draw, ever.
-            start_spray_burst(u, weapon, fire_order, tick)
+            start_spray_burst(u, weapon, fire_order, tick, effects=fx)
         else:
             _dispatch_trigger(gmap, units, u, uc_fx, uc_fy,
                               target_fx, target_fy, tick, shots, real_time,
-                              rng, events, bullets, weapon, spread, queue)
+                              rng, events, bullets, weapon, spread, queue,
+                              effects=fx)
         mag_spend(u, weapon, tick)
         u.last_fire_tick = tick
+
+    if own_slot:
+        fx.resolve()                     # phase B
 
 
 def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
                       real_time, rng, events, bullets, weapon, spread_deg,
                       queue=None, aim_angle=None, cover=None,
-                      facing_defense=False):
+                      facing_defense=False, effects=None):
     """Route one trigger pull to its delivery archetype (mechanics/03 §1).
     The archetype set is CLOSED; only the ranged marchers dispatch here.
     ``aim_angle`` (free_aim_shooting_design §4a) is forwarded to the resolver:
     None = tile-derived bearing (WEGO), provided = free-aim march bearing.
     ``cover`` / ``facing_defense`` are the OnePhaseWEGO march rules (§7/§9);
-    both default to the shipped behaviour."""
+    both default to the shipped behaviour. ``effects`` (#169) is the
+    attack slot's phase-B record (``None`` = apply at once)."""
     if weapon.archetype == "hitscan":
         fire_beam(gmap, units, u, fx1, fy1, fx2, fy2,
                   tick, shots, real_time, rng, events=events,
                   weapon=weapon, spread_deg=spread_deg, aim_angle=aim_angle,
-                  cover=cover)
+                  cover=cover, effects=effects)
     else:  # "projectile" — the default marcher (validated set, mechanics/03)
         fire_burst(gmap, units, u, fx1, fy1, fx2, fy2,
                    tick, shots, real_time, rng, events=events,
                    weapon=weapon, spread_deg=spread_deg, bullets=bullets,
                    queue=queue, aim_angle=aim_angle, cover=cover,
-                   facing_defense=facing_defense)
+                   facing_defense=facing_defense, effects=effects)
 
 
 def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
-                      events, bullets, weapon, flags, queue=None):
+                      events, bullets, weapon, flags, queue=None,
+                      effects=None):
     """Free-aim directional fire for a possessed unit holding TRIGGER
     (free_aim_shooting_design §4b) — the parallel to the targeted block in
     :func:`process_shooting`, but it BYPASSES the range+LOS pre-gate: a
@@ -921,7 +956,8 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
         # Origin only; the tile target is unused when aim_angle is provided.
         _dispatch_trigger(gmap, units, u, uc_fx, uc_fy, uc_fx, uc_fy,
                           tick, shots, real_time, rng, events, bullets,
-                          weapon, spread, queue, aim_angle=aim_angle)
+                          weapon, spread, queue, aim_angle=aim_angle,
+                          effects=effects)
     else:
         return   # lobbed / placed: not a trigger ray (design §4c) — no-op
     mag_spend(u, weapon, tick)
@@ -929,7 +965,7 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
 
 
 def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
-              bullets=None, weapon=None, queue=None):
+              bullets=None, weapon=None, queue=None, effects=None):
     """Find the nearest visible enemy within weapon range and fire — SNAP
     cone (``spread_snap_deg``): Move & Attack is fire-on-the-move
     (mechanics/03 §3 mode rule).
@@ -980,7 +1016,8 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
                           best_enemy.center_tile_x(),
                           best_enemy.center_tile_y(),
                           tick, shots, real_time, rng, events, bullets,
-                          weapon, weapon.spread_snap_deg, queue)
+                          weapon, weapon.spread_snap_deg, queue,
+                          effects=effects)
         mag_spend(u, weapon, tick)
         u.last_fire_tick = tick
 
@@ -988,7 +1025,8 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
                weapon=None, ammo=None, spread_deg=None, bullets=None,
-               queue=None, aim_angle=None, cover=None, facing_defense=False):
+               queue=None, aim_angle=None, cover=None, facing_defense=False,
+               effects=None):
     """Fire a burst of PROJECTILE rounds from (fx1, fy1) toward (fx2, fy2).
 
     Lifted from ``game.py:_fire_burst``; W2 generalizes the march to the
@@ -1039,7 +1077,8 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         # convention (y up: the dy negation, unit.face_towards). Facing is
         # already-synced state derived from synced inputs; the digest surface
         # is unchanged.
-        shooter.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+        effects_or_immediate(effects).face(
+            shooter, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
     else:
         base_angle = float(aim_angle)
 
@@ -1059,7 +1098,8 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         b.march_facing_defense = facing_defense
         still_flying = b.advance(gmap, units, shots, real_time, rng,
                                  events=events, queue=queue, cover=cover,
-                                 facing_defense=facing_defense)
+                                 facing_defense=facing_defense,
+                                 effects=effects)
         if still_flying and bullets is not None:
             bullets.append(b)
 
@@ -1077,7 +1117,8 @@ BEAM_MIN_ENERGY_Q16 = unit_fixed.quantize_scalar(0.01)
 
 def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
               tick, shots, real_time, rng, events=None, *,
-              weapon, ammo=None, spread_deg=None, aim_angle=None, cover=None):
+              weapon, ammo=None, spread_deg=None, aim_angle=None, cover=None,
+              effects=None):
     """Fire a HITSCAN beam from (fx1, fy1) toward (fx2, fy2) — physically
     instant: the full-range march happens in the firing tick (photons don't
     persist; mechanics/03 §2).
@@ -1115,7 +1156,13 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
       :class:`LaserFiredEvent` carrying the segment + kind for the distinct
       beam draw. Glow-as-light-source is DEFERRED to the explosion-light
       pass (mechanics/03 §8).
+
+    #169: the march decides against the slot-start state and records its
+    packets, its chew and the shooter's facing on ``effects`` (``None`` =
+    apply at once): a skewered unit another shot kills this tick still takes
+    the beam, and the beam stops on a wall another shot destroys this tick.
     """
+    fx = effects_or_immediate(effects)
     tables = weapon_tables()
     if ammo is None:
         ammo = tables.ammo_for_weapon(weapon)
@@ -1129,7 +1176,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     if aim_angle is None:
         base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
         # Facing = aim bearing at fire, before spread (the fire_burst rule).
-        shooter.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+        fx.face(shooter, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
     else:
         base_angle = float(aim_angle)
     shooter_id = getattr(shooter, "id", -1)
@@ -1177,7 +1224,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
 
             # 2. Interact: first solid stops the beam (and takes the bite).
             if gmap.solid[iy, ix]:
-                chew_wall(gmap, iy, ix, ammo.wall_damage)
+                fx.world(chew_wall, gmap, iy, ix, ammo.wall_damage)
                 break
 
             # 2b. PHYSICAL COVER (onephase_wego design §7): a beam is stopped
@@ -1189,7 +1236,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
             if cover:
                 hit_cover = cover_at(cover, rx, ry)
                 if hit_cover is not None:
-                    hit_cover.chew(ammo.wall_damage)
+                    fx.world(hit_cover.chew, ammo.wall_damage)
                     break
 
             # 3. Skewer: every living unit whose footprint holds this tile
@@ -1204,7 +1251,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                     skewered.append(e)
                     amount = (energy_q + (one >> 1)) >> unit_fixed.FP_SHIFT
                     if amount > 0:
-                        apply_packet(
+                        fx.hit(
                             e,
                             DamagePacket(amount=amount, dtype=ammo.dtype_id,
                                          attacker_id=shooter_id, ap=ammo.ap),
@@ -1341,7 +1388,7 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
 
 
 def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
-                       target_fx, target_fy, aim_angle=None):
+                       target_fx, target_fy, aim_angle=None, effects=None):
     """Enqueue ONE tick of a spray burst's cone deposits (mechanics/03 §5).
 
     Per member tile (fixed row-major order from :func:`spray_cone_tiles`),
@@ -1368,8 +1415,12 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
     so a unit the jet's own deposit hurts THIS tick is credited to the
     sprayer; a fire the jet lit, or the cloud left after it, is the
     environment's (the accepted gap — no per-tile provenance).
+
+    #169: the cone (its member tiles, occluded by the walls standing at the
+    attack slot's start) is decided here; the enqueue + claims are recorded
+    on ``effects`` and run at its turn in phase B (``None`` = at once), so
+    the slot's world writes keep one order.
     """
-    credit = tick_credit(gmap)
     owner = getattr(shooter, "id", -1)
     heat = float(ammo.heat_deposit)
     gas_amount = float(ammo.gas_amount)
@@ -1377,10 +1428,21 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
     if ammo.gas_species:
         gas_id = int(gmap.gases.name_to_id[ammo.gas_species])
     own = set(shooter.occupied_tiles())
-    for y, x, div in spray_cone_tiles(
-            gmap, shooter.center_tile_y(), shooter.center_tile_x(),
-            target_fx, target_fy, weapon.range_tiles,
-            weapon.cone_half_angle_degrees, exclude=own, aim_angle=aim_angle):
+    cells = list(spray_cone_tiles(
+        gmap, shooter.center_tile_y(), shooter.center_tile_x(),
+        target_fx, target_fy, weapon.range_tiles,
+        weapon.cone_half_angle_degrees, exclude=own, aim_angle=aim_angle))
+    effects_or_immediate(effects).world(
+        _enqueue_spray_cells, gmap, queue, owner, heat, gas_id, gas_amount,
+        cells)
+
+
+def _enqueue_spray_cells(gmap, queue, owner, heat, gas_id, gas_amount, cells):
+    """The world write of one spray tick: per member ``(y, x, div)`` in the
+    cone's row-major order, the heat and / or gas FieldEdit and its
+    TickCredit claim (:func:`deposit_spray_cone`'s body)."""
+    credit = tick_credit(gmap)
+    for y, x, div in cells:
         if heat > 0.0:
             queue.enqueue(FieldEdit(
                 field="heat", region=Region.TILE, coords=(y, x),
@@ -1398,7 +1460,7 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
             ))
 
 
-def start_spray_burst(u, weapon, fire_order, tick):
+def start_spray_burst(u, weapon, fire_order, tick, effects=None):
     """Arm a spray burst on ``u`` (the trigger side of the SPRAY archetype).
 
     Called from :func:`process_shooting` once every gate has passed
@@ -1414,9 +1476,9 @@ def start_spray_burst(u, weapon, fire_order, tick):
     u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
     u.spray_order = fire_order
     u.spray_aim_angle = None   # tile-derived cone bearing (the WEGO path)
-    u.facing = unit_fixed.atan2_rad(
+    effects_or_immediate(effects).face(u, unit_fixed.atan2_rad(
         -(float(fire_order.target_fy) - u.center_tile_y()),
-        float(fire_order.target_fx) - u.center_tile_x())
+        float(fire_order.target_fx) - u.center_tile_x()))
 
 
 def start_spray_burst_directional(u, weapon, tick, aim_angle):
@@ -1436,7 +1498,7 @@ def start_spray_burst_directional(u, weapon, tick, aim_angle):
                       u.center_tile_y() + unit_fixed.sin_rad(aim_angle) * r)
 
 
-def process_sprays(gmap, units, queue, events=None):
+def process_sprays(gmap, units, queue, events=None, effects=None):
     """One tick of every active spray burst — the W4 deposit pass, invoked
     from the conductor in the SHOOTING SLOT (directly after
     :func:`process_shooting`; call line only in simulation.py).
@@ -1467,8 +1529,18 @@ def process_sprays(gmap, units, queue, events=None):
     Draws NO randomness (the queue's noise machinery is unused — spray
     edits carry ``noise = 0``), so a spray-free trajectory is bit-identical
     to pre-W4 (the dormancy gate).
+
+    SIMULTANEOUS (#169): this is the second half of the shooting slot's
+    phase A. The conductor passes the slot's ``effects`` (the one
+    :func:`process_shooting` recorded on), so a burst's alive / ``can_act``
+    check reads the slot-start state -- a sprayer another shooter kills or
+    stuns this tick still deposits this tick, and stops on the next -- and
+    the deposits are recorded after the shots, in the order they ran
+    before. ``effects=None`` = this call resolves its own before returning.
     """
     tables = weapon_tables()
+    own_slot = effects is None
+    fx = SimultaneousEffects() if own_slot else effects
     for u in units:
         ticks_left = getattr(u, "spray_ticks_left", 0)
         if ticks_left <= 0:
@@ -1495,7 +1567,8 @@ def process_sprays(gmap, units, queue, events=None):
         # Free-aim bursts carry an exact facing bearing (design §4c); WEGO
         # bursts leave it None -> the tile-derived bearing, byte-identical.
         aim = getattr(u, "spray_aim_angle", None)
-        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty, aim_angle=aim)
+        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty, aim_angle=aim,
+                           effects=fx)
         if events is not None:
             # W6: the jet visual — one event per DEPOSITING tick (an
             # interrupted / dead / finished burst emits nothing). "flame"
@@ -1514,6 +1587,8 @@ def process_sprays(gmap, units, queue, events=None):
             u.spray_order = None
             u.spray_target = None
             u.spray_aim_angle = None
+    if own_slot:
+        fx.resolve()                     # phase B
 
 
 # ---------------------------------------------------------------------------
@@ -1571,7 +1646,8 @@ def melee_adjacent(attacker, target):
     return False
 
 
-def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
+def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon,
+                 effects=None):
     """Resolve one melee trigger pull (mechanics/03 §5, W5). Returns True if
     a strike CONNECTED (the caller then charges the rof cadence); False = a
     whiff — no target at the order tile / not adjacent — which costs
@@ -1602,7 +1678,13 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
        ``status_ticks`` (magnitude 0 — pure CC; the packet already carried
        the damage). Applied AFTER the packet so "the baton stuns where it
        connects" and a killing blow stuns no corpse.
+
+    #169: target, adjacency and the crit roll are decided here against the
+    slot-start state; the facing snap, the packet and the status are
+    RECORDED on ``effects`` in that order (``None`` = apply at once), so a
+    striker another attack kills or stuns this tick still lands its strike.
     """
+    fx = effects_or_immediate(effects)
     tx, ty = int(target_fx), int(target_fy)
     target = None
     for e in units:
@@ -1621,7 +1703,7 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
     # Facing = strike bearing (kit trig, unit y-up convention — the
     # fire_burst rule); the strike angle itself stays in SCREEN convention
     # for the arc classifier (the march-angle contract of arc_multiplier).
-    attacker.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    fx.face(attacker, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
     angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
 
     amount = int(weapon.melee_damage)
@@ -1631,15 +1713,16 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
         if attack_resolver.roll_crit(crit_chance, mult, rng):
             amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
 
-    apply_packet(target,
-                 DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
-                              attacker_id=getattr(attacker, "id", -1)),
-                 events, source="melee")
+    fx.hit(target,
+           DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
+                        attacker_id=getattr(attacker, "id", -1)),
+           events, source="melee")
 
-    if weapon.status_kind_id is not None and target.alive:
-        apply_status(target, weapon.status_kind_id, magnitude=0,
-                     duration_ticks=weapon.status_ticks,
-                     source_id=getattr(attacker, "id", -1))
+    if weapon.status_kind_id is not None:
+        # Applied at its turn only if the target is still alive then.
+        fx.status(target, weapon.status_kind_id, magnitude=0,
+                  duration_ticks=weapon.status_ticks,
+                  source_id=getattr(attacker, "id", -1))
     return True
 
 
