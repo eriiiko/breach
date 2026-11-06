@@ -186,6 +186,7 @@ def astar(
     best_g = {start_state: 0}
     came_from = {start_state: -1}
 
+    best_get = best_g.get
     heappush = heapq.heappush
     heappop = heapq.heappop
     node_limit = NODE_LIMIT
@@ -239,7 +240,7 @@ def astar(
                 new_g = g + _COST_STRAIGHT
                 nstate = q * 2 + flag
 
-            if new_g < best_g.get(nstate, _BIG):
+            if new_g < best_get(nstate, _BIG):
                 best_g[nstate] = new_g
                 came_from[nstate] = state
                 a = adx[px + dx]
