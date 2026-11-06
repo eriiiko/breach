@@ -599,3 +599,107 @@ grammar alone never rejects the freighter); ~12 ms per graph.
   managed family, banks, `mutate` and the per-department layout streams.
 - Tuned counts (dated lines in the recipe doc): armory `large` [1, 1],
   pocket `medium` [0, 0], `secrets.size` [6, 16], the `[validation]` ranges.
+
+## As built (2026-11-06, branch `136-levelspec`): LevelSpec
+
+**What the record holds.** level.toml's `[levelgen]` table (a managed
+family of `level_lib`, `format_levelgen_lines` / `write_levelgen`; read by
+`level_loader.parse_levelgen` into `LevelData.levelgen`, a
+`LevelgenRecord`), one table, keys in this order:
+
+- the LevelSpec (§5.1, every input of `gen_ship.generate`): `archetype`,
+  `recipe_hash` (64 hex), `generator_version`, `size`, `profile`,
+  `max_per_team`, `zombies_base`, `level_seed`;
+- the realised factors: `g`, `a`; `departments` (the department instances
+  in quotient order, the axis department first); `cycles` (an INLINE table,
+  cycle type -> applications, every type the archetype's `[[apply]]` names,
+  0 included); `cells` (pressure cells, the `[validation]` count);
+  `secrets`; `spawn_exits`; `zombies` (after the profile's scaling, =
+  match.toml's); `rooms` (the ship's, both wings, the `[validation]` count);
+  `spawn_distance` (`ship_layout.bot_path`'s steps between the two spawn
+  rooms, the `[validation]` metric, re-used, not re-measured).
+
+Example (`ship_freighter_standard_s1_medium`):
+
+```toml
+[levelgen]
+archetype = "freighter"
+recipe_hash = "190ea8da976c48b3f87a336571c0a5a6f50d8a0c41be023b32abcfb458ace44d"
+generator_version = "beatrice-b1g-422-g08e3b441-dirty"
+size = "medium"
+profile = "standard"
+max_per_team = 6
+zombies_base = 4
+level_seed = 1
+g = 0
+a = 0
+departments = ["engineering", "crew_quarters", "cargo_hold"]
+cycles = { retreat_loop = 0, flank_pair = 1, maintenance_ring = 0, airlock_bypass = 0, pocket = 0, duct_link = 1 }
+cells = 2
+secrets = 1
+spawn_exits = 1
+zombies = 4
+rooms = 36
+spawn_distance = 107
+```
+
+The door refuses an unknown key, a missing input or realised factor and a
+mistyped value, each by name; the writer runs the same door before it
+touches disk. A level without the table loads with `levelgen = None`
+(every hand-made level, and v1's ships, which write none: `ship_demo` does
+not move by a byte). `gen_ship.generate_from_spec(record | folder,
+allow_stale=False)` / `gen_ship.py --from-level FOLDER [--allow-stale]` is
+the ship of a record; it refuses (`StaleRecipeError`) a `recipe_hash` that
+is not the current library's.
+
+**The spawn box** (the layout patch's open item). A recipe ship's
+`[[spawn_room]]` rows are `gen_ship.centred_spawn_box` of the slab (and of
+the zombie section): the least `formation` box for `max_per_team` across
+the host's short side, centred along its long side, the long side's parity
+kept so `_centre` -- validate's and `bot_path`'s A* endpoint -- is the
+host's own. So the spawn distances, the gates' verdicts and every recipe
+ship's tiles are unchanged; only the rows written move. No new `placement`
+value: the box route needed nothing the loader does not already check.
+
+Deviations (dated 2026-11-06, as built):
+
+- `departments`, `cycles`, `secrets` and `spawn_exits` count the QUOTIENT
+  (the recipe's own units: a wing department is one instance, its mirror
+  twin is not counted again); `cells`, `rooms` and `spawn_distance` count
+  the whole ship, as the gates do. §5.1 did not say which.
+- Every key is REQUIRED, the realised factors too (§5.1 names them as written
+  "together with" the spec); `generate_from_spec` reads only the inputs.
+- `generator_version` is `git describe --always --dirty` at WRITE time
+  through `match_replay.build_id` (#126's helper, reused), `"unknown"`
+  without git. It is informational: `generate_from_spec` does not compare
+  it, and `test_gen_ship_edges`' regenerate gate leaves that one line out (a
+  later build legitimately rewrites it).
+- The level.toml header's regenerate comment names `--from-level` beside
+  the explicit command.
+- **The lamp budget** (not in the design; found by picking the first ships):
+  `main.py` refused the first large freighter on frame 3 --
+  `frame_lights.cone_rows`: its 161 lamps summed past the cone door (2^44
+  counts = 128 light units per channel), and the muzzle flashes may take 64
+  of those, so every recipe ship, medium too (56-79 light units of lamps),
+  would have tripped it in a full volley. Stage 2 now holds a ship with
+  `lamp_span` rooms at `gen_ship.LAMP_LIGHT_BUDGET` = 128 - 64 - 16 = 48
+  (`_ship_lamps`): the spans widen together down to one lamp per room, then
+  every lamp is dimmed by one common factor if that is still too much.
+  Measured over seeds 1-20: medium ships keep 39-49 lamps (40-47 light
+  units, no dimming); large ones end at one lamp per room (51-73 lamps),
+  dimmed to 48 (a factor ~0.6). Tiles, draws and gates are untouched; v1
+  ships (no `lamp_span`) are not touched. How dark that reads is Erik's.
+
+**The first two ships** (Erik's HUMAN-TEST; NOT committed: a generated
+level ships only after he has played it): `ship_freighter_standard_s28_medium`
+(g, a = 0, 0; 35 rooms; a flank pair, the airlock bypass, a duct link, one
+secret, 2 spawn exits) and `ship_freighter_standard_s7_large` (0, 0; 73
+rooms; all five departments, a retreat loop, a flank pair, the maintenance
+ring, 2 pockets, 2 duct links, one secret). Headless bot matches (`bots`
+both sides, the written match.toml's default): win team 1 at tick 1174
+(medium) and 1335 (large). The bots walk slab -> flank strip / passageway
+-> lobby and meet at the band; no bot entered a wing department or
+engineering (#142: an airlock's outer door is closed to them).
+
+Still not built: banks (§5.3), `mutate` and the per-department layout
+streams (§5.4), the #126 recording header's `recipe_hash`.
