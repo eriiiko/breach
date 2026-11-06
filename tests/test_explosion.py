@@ -158,8 +158,8 @@ def test_a_wall_stops_every_delivery_and_a_gap_passes_them():
     _flushed(s)
     behind = (slice(None), slice(16, None))
     assert source[behind].sum() == 0 and g.heat[behind].sum() == 0
-    assert g.gas[SMOKE][behind].sum() == 0
-    assert source.sum() > 0 and g.heat.sum() > 0 and g.gas[SMOKE].sum() > 0
+    assert g.gas[SMOKE][behind].astype(np.int64).sum() == 0
+    assert source.sum() > 0 and g.heat.sum() > 0 and _smoke_total(g) > 0
 
     tm = _divided()
     tm[15, 15] = MAT_AIR
@@ -169,7 +169,7 @@ def test_a_wall_stops_every_delivery_and_a_gap_passes_them():
     source = g.div_source.copy()
     _flushed(s)
     assert source[behind].sum() > 0 and g.heat[behind].sum() > 0
-    assert g.gas[SMOKE][behind].sum() > 0
+    assert g.gas[SMOKE][behind].astype(np.int64).sum() > 0
 
 
 def test_a_charge_on_a_wall_delivers_on_its_approach_side():
