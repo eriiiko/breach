@@ -3176,6 +3176,23 @@ detonation_share = 0.4   # heat with no air to burn in (Comp B: 5.02 of ~11.7 MJ
 min_soot_yield = 0.02    # the smoke a charge always leaves, g/g: the fireball cools by it
 smoke_scale = 0.25       # the game's look, on top of the cited soot_yield rows: Erik's choice by eye on the one-tile blast (levels/blast_quad, 2026-11-06)
 
+# [blast] -- what one unit of a [payloads.*] row's `strength` means, the generic
+# explosion (#31, docs/explosion_design_2026-11-06.md section 2; a frag = 1.0). Read
+# by the door in src/simulation/blast_expansion.py, which refuses a missing key. A
+# strength row authors no pressure, heat_* or explosive_kg: all three follow from
+# these. ALL PLACEHOLDERS, Erik tunes them from watched matches.
+#   expansion: expansion_m3_per_strength * strength m3 of air pushed out in one tick,
+#     flat over the tiles reached within r_s = max(1, floor(sqrt(strength))).
+#   heat: heat_mj_per_strength * strength MJ in one tick over the tiles reached within
+#     2 * r_s, linear falloff, a fixed total; an ambient tile holds 3.85 MJ at the
+#     temperature rail, so a blast in a corridor lands less than it asks for.
+#   smoke: strength * grenade_kg of its `explosive`, over the heat's tiles.
+[blast]
+expansion_m3_per_strength = 40.0   # a real marine knocked down to 2.5 m at strength 1
+heat_mj_per_strength = 10.0        # about 54 / 63 / 84 / 89 / 94 HP left at 1 / 1.5 / 2 / 2.5 / 3 m
+grenade_kg = 0.184                 # the M67's 6.5 oz of Composition B: strength 1
+ignite_margin = 55.0               # degrees past a fuel's own ignition_temp that ignite_radius delivers (src/debug_keys.py's decisive igniter: survival is marginal within +25)
+
 # ---------------------------------------------------------------------------
 # [explosives.*] -- what a charge is MADE of (#12 smoke x light, handle 3,
 # 2026-10-04). A blast's smoke is the soot its explosive leaves: a payload row
@@ -3217,31 +3234,33 @@ soot_yield = 0.0
 # keeps that clear INSIDE apply_explosion, so the column is data-of-record,
 # wired live when FieldEdit takes over the explosion internals.
 # emit_blast_smoke is LIVE: the payload executor (simulation.payloads) gates
-# add_explosion_smoke (the noisy textured cloud) on it. BOTH must be true on
-# frag_standard AND breach_focus or the door charge silently loses its smoke.
+# the blast's textured cloud on it.
+#
+# `strength` makes a row THE GENERIC EXPLOSION (#31, [blast] above): the row keeps
+# its direct damage (radius, wall_damage, unit_damage), its explosive and its
+# ignite_radius, and the door refuses pressure, heat_amount, heat_radius,
+# explosive_kg, expansion_* and ignite_intensity on it. ignite_radius means: every
+# fuel tile reached within it gets the heat that takes that tile past its own
+# ignition_temp, stopped by walls and on top of the blast's fixed total. No key,
+# no fire. Every strength value below is a PLACEHOLDER.
 [payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
+strength = 1.0                        # PLACEHOLDER: the unit of [blast]
 radius = 2                            # was blast_radius (5 until 2026-10-03)
-pressure = 0.0
 wall_damage = 200
 unit_damage = 60
 gas_species = ""
 gas_amount = 0.0
 gas_radius = 0
-ignite_radius = 0.0
-ignite_intensity = 0.0
+ignite_radius = 2                     # lights a crate one tile off, as the pre-#31 row's heat did
 clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
-emit_blast_smoke = true               # LIVE: the executor's add_explosion_smoke gate (W3)
+emit_blast_smoke = true               # LIVE: the executor's blast-smoke gate (W3)
 explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
-explosive_kg = 0.184  # the M67 hand grenade: 6.5 oz (184 g) of Composition B (the 40 mm shares the row)
-heat_amount = 3200.0                  # PROVISIONAL — see note below
-heat_radius = 1.5
 
 # --- #79 proxy rows: ignition now rides delivered heat, not a bare fire=max
 # edit (apply_explosion's heatless ignite block is DELETED; see CLAUDE.md
 # "Starting a fire" and physics.py::apply_explosion). These sit beside
-# frag_standard as a heat-only and a mass+heat variant. (frag_standard was the
-# mass-only control until Erik retuned it on 2026-10-03: the cold mass-only
-# blast is out of the picture; frag_heat is the ignition grenade.)
+# frag_standard as a heat-only and a mass+heat variant, without `strength`: they
+# behave as they always did (#31).
 #
 # heat_amount / heat_radius here are PROVISIONAL PLACEHOLDERS (Erik, #79):
 # 3200.0 follows the same plasma-splash derivation above (centre jump 400,
@@ -3541,15 +3560,14 @@ explosive_kg = 0.567  # one M112 demolition block (1.25 lb of C4)
 heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
 heat_radius = 4.0                     # PROVISIONAL
 
-[payloads.breach_focus]               # the shipped door charge, byte-for-byte
+[payloads.breach_focus]               # the door charge
+strength = 0.1                        # PLACEHOLDER: a shaped cutting charge; about 0.09 g of smoke, effectively none (accepted, #31)
 radius = 3
-pressure = 5.0
 wall_damage = 500
-unit_damage = 60
+unit_damage = 0                       # PLACEHOLDER: the planter is unhurt by the row itself (#31)
 clear_smoke = true                    # data-of-record (see frag_standard)
-emit_blast_smoke = true               # LIVE: the door charge keeps its smoke (W1 finding)
+emit_blast_smoke = true               # LIVE: the strength door requires it
 explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
-explosive_kg = 0.25   # a door breaching charge, PROVISIONAL
 
 # --- W3 payload rows (mechanics/03 §6) — STANDARD VALUES for Erik's tuning --
 # Gas payloads put gas IN THE AIR (a deterministic radial deposit into the
@@ -3583,30 +3601,27 @@ heat_radius = 0.5                     # heat-only way, CLAUDE.md "Starting a fir
                                       # a squad 8 tiles away within a second (measured 2026-10-22)
 
 [payloads.demolition_c4]              # "bigger bombs" (mechanics/03 §5): C4 satchel warhead
+strength = 12.0                       # PLACEHOLDER
 radius = 8
-pressure = 25.0
 wall_damage = 800
 unit_damage = 150
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
-explosive_kg = 2.27   # four M112 blocks (5 lb), PROVISIONAL
 
 # --- Department hazards (levelgen vocabulary B.4 / B.5, #133) ---------------
 # Fired by a heat-triggered [[entity]] timed_charge (trigger = "heat"): the
 # stored hazard goes off when its own tile reaches trigger_temp. EVERY VALUE
 # BELOW IS A PLACEHOLDER FOR ERIK TO TUNE (the armory / cargo sessions).
-[payloads.magazine_cookoff]           # B.5: the magazine cooks off -- studio_large's shape (comp_b + heat), bigger
+[payloads.magazine_cookoff]           # B.5: the magazine cooks off -- a generic explosion, bigger
+strength = 8.0                        # PLACEHOLDER
 radius = 7                            # PLACEHOLDER (studio_large 6, demolition_c4 8)
-pressure = 15.0                       # PLACEHOLDER (studio_large 10, demolition_c4 25)
 wall_damage = 400                     # PLACEHOLDER (studio_large 200, demolition_c4 800)
 unit_damage = 120                     # PLACEHOLDER (studio_large 60, demolition_c4 150)
+ignite_radius = 4                     # PLACEHOLDER: lights the magazine's neighbours
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "comp_b"  # shell fills (the M67's Composition B), PLACEHOLDER
-explosive_kg = 1.5    # PLACEHOLDER: a few crates' worth of fills
-heat_amount = 16000.0                 # PLACEHOLDER: burning propellant (studio_large 12800)
-heat_radius = 6.0                     # PLACEHOLDER
 
 [payloads.hazmat_release]             # B.4: the solvent store ruptures -- poison_cloud's shape on fuel_gas
 gas_species = "fuel_gas"              # the flammable trace row: it finds a flame later
@@ -3617,22 +3632,18 @@ gas_radius = 4                        # PLACEHOLDER
 # Executed once by a [[entity]] heat_source (heat_source_system) when a blast
 # takes its hp to 0 -- the engine that goes up and starts the engine-room
 # fire. The fire is started by DELIVERING HEAT (CLAUDE.md "Starting a fire"):
-# heat_amount over heat_radius 3 with the deposit's LINEAR falloff puts at
-# least IGNITE_HEAT (2840, payloads.py) on every tile within 2 of the engine
-# (8520 * (1 - 2/3) = 2840), and apply_temperature_ignition lights the fuel
-# it brings past ignition_temp. EVERY VALUE IS A PLACEHOLDER FOR ERIK TO TUNE
-# (the engineering session).
+# a generic explosion's ignite_radius takes every fuel tile it reaches past that
+# tile's own ignition_temp, and apply_temperature_ignition lights it. EVERY VALUE
+# IS A PLACEHOLDER FOR ERIK TO TUNE (the engineering session).
 [payloads.engine_death]               # B.2: the engine goes up -- a mid blast + the heat that lights the room
+strength = 3.0                        # PLACEHOLDER
 radius = 3                            # PLACEHOLDER (breach_focus 3, studio_medium 5)
-pressure = 5.0                        # PLACEHOLDER (breach_focus 5)
 wall_damage = 300                     # PLACEHOLDER (breach_focus 500, studio_* 200)
 unit_damage = 80                      # PLACEHOLDER (frag 60, demolition_c4 150)
+ignite_radius = 3                     # PLACEHOLDER: lights the room out to two tiles off the engine
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "comp_b"  # PLACEHOLDER: what an engine's stored energy goes up as
-explosive_kg = 0.5    # PLACEHOLDER
-heat_amount = 8520.0                  # PLACEHOLDER: 3 * IGNITE_HEAT -> >= IGNITE_HEAT out to 2 tiles
-heat_radius = 3.0                     # PLACEHOLDER
 
 # --- Levelgen presets (#136, docs/levelgen_cycle_types_and_recipes_2026-10-31.md §3.4) ---
 # A recipe NEVER carries a physics number (§3): a department or a fixture

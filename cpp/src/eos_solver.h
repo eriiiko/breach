@@ -138,8 +138,10 @@ inline bool eos_thermal_occludes(const bool* thermal_solid, const bool* solid,
 
 class EOSSolver {
 public:
-    // #31 PROTOTYPE: per-cell divergence source, Q16 1/s; empty = off. CPU path
-    // only, written through set_div_source in bindings.cpp.
+    // #31: the blast's divergence source (Feldman 2003), per cell, Q16 1/s, bound
+    // for one tick by PhysicsRunner through set_div_source; empty = off, and the
+    // step is bit-identical. Every path reads it here: step(), the per-call CUDA
+    // host mid-stage, and the resident launch.
     std::vector<int32_t> div_source;
 
     // ---- PINNED / config constants (design §8/§9, decisions log) ----------

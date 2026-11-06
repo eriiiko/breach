@@ -18,7 +18,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from level_loader import LevelData  # noqa: E402
 from simulation import atmosphere_fixed  # noqa: E402
-from simulation.blast_air import ONE, read_blast_air  # noqa: E402
+from simulation.blast_air import ONE, disc_tiles, read_blast_air  # noqa: E402
 from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import INERT_N2, O2, SMOKE  # noqa: E402
@@ -47,6 +47,10 @@ def _thin_o2(g, frac, mask=None):
     g.gas[INERT_N2][mask] = (bulk - new_o2)[mask]
 
 
+def _read(g):
+    return read_blast_air(g, disc_tiles(g, CH[0], CH[1], R))
+
+
 def _soot_after(g, seed=7):
     row = PayloadDef("t", radius=R, emit_blast_smoke=True, explosive="comp_b",
                      explosive_kg=0.184, blast_soot_g=14.0)
@@ -64,7 +68,7 @@ def test_normal_air_changes_nothing():
     BREAKS IF: the ramps stop landing exactly on 1 at ambient, which would move
     every digest with a grenade in it.
     """
-    read = read_blast_air(_map(), CH[0], CH[1], R)
+    read = _read(_map())
     assert read.smoke_scale_q16 is None
     assert read.heat_scale_q16 == ONE
 
@@ -79,7 +83,7 @@ def test_o2_poor_air_leaves_more_smoke_and_less_heat():
     for frac in (0.21, 0.15, 0.05):
         g = _map()
         _thin_o2(g, frac)
-        heats.append(read_blast_air(g, CH[0], CH[1], R).heat_scale_q16)
+        heats.append(_read(g).heat_scale_q16)
         totals.append(int(_soot_after(g).sum()))
     assert totals[0] < totals[1] < totals[2]
     assert heats[0] > heats[1] > heats[2]
@@ -110,7 +114,7 @@ def test_hot_thin_air_at_ambient_pressure_is_normal_air():
     g = _map()
     g.gas[O2] //= 8
     g.gas[INERT_N2] //= 8
-    read = read_blast_air(g, CH[0], CH[1], R)
+    read = _read(g)
     assert read.smoke_scale_q16 is None and read.heat_scale_q16 == ONE
 
 
@@ -130,12 +134,28 @@ def test_smoke_follows_the_air_tile_by_tile():
 
 
 def test_a_blast_in_walls_reads_no_air():
-    """PROPERTY: solid tiles are never read as air: a disc with no open tile
-    returns the neutral read.
+    """PROPERTY: solid tiles are never read as air: a disc with no open tile, like
+    a walk with no tile, returns the neutral read.
 
-    BREAKS IF: the mask drops `solid`, so a wall's zero gas reads as vacuum.
+    BREAKS IF: the disc drops `solid`, so a wall's zero gas reads as vacuum, or an
+    empty list divides by zero.
     """
     g = _map()
     g.solid[...] = True
-    read = read_blast_air(g, CH[0], CH[1], R)
+    read = _read(g)
+    assert read.smoke_scale_q16 is None and read.heat_scale_q16 == ONE
+
+
+def test_the_read_takes_the_tiles_it_is_given():
+    """PROPERTY: the read is over the tile list, so air the walk did not reach
+    changes nothing: O2-poor air on tiles off the list moves no factor.
+
+    BREAKS IF: the read goes back to a disc of its own.
+    """
+    g = _map()
+    off_list = np.zeros(g.solid.shape, dtype=bool)
+    off_list[:, CH[1] + 1:] = True
+    _thin_o2(g, 0.05, off_list & ~g.solid)
+    tiles = [(CH[0], CH[1]), (CH[0], CH[1] - 1)]
+    read = read_blast_air(g, tiles)
     assert read.smoke_scale_q16 is None and read.heat_scale_q16 == ONE

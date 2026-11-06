@@ -46,6 +46,7 @@ from simulation.heat_source_system import (EVENT_KIND,  # noqa: E402
 from simulation.materials import (MAT_AIR, MAT_FURNITURE, MAT_HULL,  # noqa: E402
                                   MAT_WOOD)
 from simulation.payloads import execute_payload  # noqa: E402
+from simulation.weapons import PayloadDef  # noqa: E402
 
 TPS = int(CFG.clock.ticks_per_second)
 SRC_AT = (7, 7)             # (y, x)
@@ -87,11 +88,17 @@ def _t(sim, yx=SRC_AT):
     return int(sim.gmap.temperature[yx])
 
 
-def _blast(sim, row="breach_focus", at=SRC_AT):
-    """A HEAT-FREE blast (breach_focus carries no heat) through THE
-    executor, so any fire that follows is the death payload's."""
+# A row the tests own (tests/_test_charge.py's reason): since #31 breach_focus
+# carries heat, so the fixture has its own HEAT-FREE blast, breach_focus's disc.
+HEAT_FREE = PayloadDef("t_heat_free", radius=3, wall_damage=500)
+
+
+def _blast(sim, row=None, at=SRC_AT):
+    """A HEAT-FREE blast (unless a row is named) through THE executor, so any
+    fire that follows is the death payload's."""
     execute_payload(sim.gmap, sim.edit_queue, sim.units, at[0], at[1],
-                    sim.weapons_tables.payloads.by_name[row], sim.rng,
+                    HEAT_FREE if row is None
+                    else sim.weapons_tables.payloads.by_name[row], sim.rng,
                     events=sim.tick_events)
 
 
@@ -269,15 +276,16 @@ def _engine_room(death_payload):
 
 
 def test_a_destroyed_engine_starts_the_fire_its_death_payload_carries():
-    """Property: a heat-free blast on an engine (hp 200 < breach_focus's 500
-    wall damage) kills it -- ``alive`` 0, ``hp`` 0, no more deposits -- and
+    """Property: a heat-free blast on an engine (hp 200 < its 500 wall
+    damage) kills it -- ``alive`` 0, ``hp`` 0, no more deposits -- and
     its ``engine_death`` row executes once (one ExplosionEvent of the
     heat_source kind), whose heat lights the furniture beside it through
     ``apply_temperature_ignition`` within a second; the twin without a death
     payload dies too but no fire follows. Breaks if the blast log is not
     appended or not drained, if hp is not read in the wall law, if the death
-    payload is skipped or executed twice, or if engine_death stops carrying
-    enough heat to light fuel 2 tiles away."""
+    payload is skipped or executed twice, or if engine_death's ignite_radius
+    stops reaching fuel 2 tiles away (re-pinned at #31: the heat is the
+    strength row's own, per fuel tile, not a deposit sized for the room)."""
     sim, first = _engine_room("engine_death")
     rt = sim._heat_sources[0]
     assert not rt.alive and rt.hp_q16 == 0 and not rt.enabled
@@ -310,7 +318,7 @@ def test_a_blast_beyond_reach_or_too_weak_leaves_the_source_alive():
     sim = _sim([_source(hp=400)], furniture=False)
     rt = sim._heat_sources[0]
     hp0 = rt.hp_q16
-    _blast(sim, at=(SRC_AT[0], SRC_AT[1] + 5))     # breach_focus radius 3
+    _blast(sim, at=(SRC_AT[0], SRC_AT[1] + 5))     # HEAT_FREE radius 3
     _step(sim)
     assert rt.alive and rt.hp_q16 == hp0
     _blast(sim, row="frag_standard", at=(SRC_AT[0], SRC_AT[1] + 1))
@@ -430,16 +438,17 @@ def test_level_lib_round_trips_a_source(tmp_path):
     assert len(sim._heat_sources) == 1
 
 
-def test_the_engine_death_row_reaches_ignite_heat_two_tiles_out():
-    """Property: the placeholder ``engine_death`` row carries a blast and at
-    least IGNITE_HEAT on every tile within 2 of the engine (the deposit's
-    LINEAR falloff), so the death satisfies the Starting-a-fire rule. Breaks
-    if a retune drops the heat below the igniter's floor."""
-    from simulation.payloads import IGNITE_HEAT
+def test_the_engine_death_row_reaches_fuel_two_tiles_out():
+    """Property: the placeholder ``engine_death`` row carries a blast and an
+    ``ignite_radius`` reaching every tile within 2 of the engine, so the death
+    satisfies the Starting-a-fire rule (re-pinned at #31: the row no longer
+    authors heat; ignition is the strength row's own rule, heat_fuel, and the
+    tests in test_explosion.py light real fuel with it). Breaks if a retune
+    takes the reach below the room it must light."""
     from simulation.weapons import rebuild_tables
     p = rebuild_tables(tile_size_m=1.0).payloads.by_name["engine_death"]
-    assert p.radius > 0 and p.wall_damage > 0
-    assert p.heat_amount * (1.0 - 2.0 / p.heat_radius) >= IGNITE_HEAT
+    assert p.radius > 0 and p.wall_damage > 0 and p.strength > 0
+    assert p.ignite_r2 > 2 * 2
 
 
 # ---------------------------------------------------------------------------

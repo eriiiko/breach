@@ -106,6 +106,9 @@ SIM_FIELDS = (
     # the int64 conserved-energy field — synced state now (mirror-derived
     # this patch; the stored writer-fed truth from P-G1a on).
     "gas_energy",
+    # #31: the blast's pending divergence source (tests/field_digest.py
+    # DIGEST_SECTIONS hashes it while non-zero).
+    "div_source",
 )
 
 

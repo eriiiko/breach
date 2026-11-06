@@ -139,6 +139,7 @@ class Region(IntEnum):
     DISC = 1      # coords = (r, c, radius)               — a filled disc
     BEAM = 2      # coords = (r0, c0, r1, c1, width)      — a thick line (laser)
     RECT = 3      # coords = (r0, c0, r1, c1)             — an axis-aligned box
+    TILES = 4     # coords = ((r, c, weight), ...)        — explicit tiles + weights, row-major (#31)
 
 
 class Falloff(IntEnum):
@@ -162,7 +163,7 @@ class FieldEdit:
     """
     field: str                                   # "smoke" / "atmosphere" / "wave_source" / "fire" / "heat" / ...
     region: Region
-    coords: Tuple                                # TILE:(r,c) · DISC:(r,c,rad) · BEAM:(r0,c0,r1,c1,w) · RECT:(r0,c0,r1,c1)
+    coords: Tuple                                # TILE:(r,c) · DISC:(r,c,rad) · BEAM:(r0,c0,r1,c1,w) · RECT:(r0,c0,r1,c1) · TILES:((r,c,weight),...)
     amount: float
     mode: EditMode = EditMode.ADD
     falloff: Falloff = Falloff.FLAT
@@ -372,6 +373,17 @@ def _iter_region(region: Region, coords: Tuple, falloff: Falloff, shape):
                 if dist <= width:
                     # LINEAR fades across the half-width; FLAT is uniform.
                     yield r, c, _falloff_weight(falloff, dist, max(width, 1.0))
+        return
+
+    if region == Region.TILES:
+        # A walked set of tiles (#31): the caller's list IS the region and its
+        # weights ARE the falloff (`falloff` is not read). Row-major is the
+        # caller's contract, as it is every other region's: the noise RNG draw
+        # sequence follows this order.
+        for r, c, weight in coords:
+            r, c = int(r), int(c)
+            if 0 <= r < h and 0 <= c < w:
+                yield r, c, float(weight)
         return
 
     raise ValueError(f"FieldEdit: unknown region {region!r}")  # pragma: no cover

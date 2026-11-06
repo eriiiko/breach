@@ -3,7 +3,7 @@
 What is locked here:
 
   - BYTE-IDENTITY REPLICA (the load-bearing behaviour-preservation proof):
-    executing ``frag_standard`` / ``breach_focus`` through
+    executing a row WITHOUT ``strength`` through
     :func:`execute_payload` reproduces the pre-W3 inline detonation triple
     (apply_explosion -> apply_blast_damage -> add_explosion_smoke ->
     ExplosionEvent) BIT-FOR-BIT — every field array, every unit hp, the
@@ -41,6 +41,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.blast_air import blast_base_soot_g  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, fire_fixed, wall_fixed  # noqa: E402
@@ -59,7 +60,7 @@ from simulation.payloads import (blast_smoke_peak, emit_gas,  # noqa: E402
                                  execute_payload, ignite_ring)
 from simulation.physics import add_explosion_smoke, apply_explosion  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
-from simulation.weapons import get_tables  # noqa: E402
+from simulation.weapons import PayloadTable, get_tables  # noqa: E402
 
 SEED = 20260705
 
@@ -104,9 +105,10 @@ def _prew3_site_replica(gmap, queue, units, fy, fx, payload, rng, events=None,
     apply_blast_damage(units, fx, fy, radius, payload.unit_damage,
                        events=events)
     # RESTATED at #12 handle 3 (2026-10-04): the disc's peak is no longer the
-    # fixed 0.8 but the charge's physical soot (blast_smoke_peak); a charge
-    # with no soot (C4) deposits none and draws no noise.
-    peak = blast_smoke_peak(gmap, fy, fx, radius, payload.blast_soot_g)
+    # fixed 0.8 but the charge's physical soot (blast_smoke_peak). RESTATED at
+    # #31: the soot is blast_base_soot_g, [blast_air]'s floor and look dial on
+    # it. The air read is 1 in this room, so it adds no scale to replicate.
+    peak = blast_smoke_peak(gmap, fy, fx, radius, blast_base_soot_g(payload))
     if peak > 0.0:
         add_explosion_smoke(gmap, queue, fy, fx, radius, amount=peak)
     if events is not None:
@@ -131,18 +133,28 @@ def _twin(edits=()):
     return gmap, queue, [m, z], rng, []
 
 
-def test_frag_and_breach_byte_identical_to_prew3_triple():
-    """THE REPLICA GATE: for both shipped payload rows the executor's world
-    is indistinguishable from the pre-W3 inline site — fields, hp, events,
-    and the generator end-state (the smoke noise draws at flush)."""
-    tables = get_tables()
+def test_a_row_without_strength_is_byte_identical_to_prew3_triple():
+    """THE REPLICA GATE, re-pinned at #31: `frag_standard` and `breach_focus` are
+    generic explosions now (tests/test_explosion.py), so the gate moved to what it
+    protects, the executor's path for a row WITHOUT `strength`. Property: its world
+    is indistinguishable from the pre-W3 inline site — fields, hp, events, and the
+    generator end-state (the smoke noise draws at flush). Breaks if the generic
+    path takes over a legacy row or the legacy sequence is reordered. The two rows
+    are the test's own, the two old rows' shapes, so no retune moves them."""
+    table = PayloadTable({
+        "open_frag": dict(radius=2, pressure=0.0, wall_damage=200, unit_damage=60,
+                          emit_blast_smoke=True, explosive="comp_b",
+                          explosive_kg=0.184),
+        "door_charge": dict(radius=3, pressure=5.0, wall_damage=500,
+                            unit_damage=60, emit_blast_smoke=True,
+                            explosive="c4", explosive_kg=0.25)})
     cases = [
-        ("frag_standard", "grenade", 10, 11, ()),          # open-floor frag
-        ("breach_focus", "door_explosive", 9, 12,
+        ("open_frag", "grenade", 10, 11, ()),               # open-floor frag
+        ("door_charge", "door_explosive", 9, 12,
          ((9, 12, 2),)),                                    # charge ON a wood wall
     ]
     for payload_name, kind, fy, fx, edits in cases:
-        payload = tables.payloads.by_name[payload_name]
+        payload = table.by_name[payload_name]
 
         g_a, q_a, units_a, rng_a, ev_a = _twin(edits)
         _prew3_site_replica(g_a, q_a, units_a, fy, fx, payload, rng_a,
@@ -184,8 +196,9 @@ def test_hand_and_40mm_rounds_share_the_same_payload_row_objects():
 def test_c4_and_gl6_rows_load_with_their_standard_values():
     t = get_tables()
     c4 = t.payload_for_ammo("demo_c4")
-    assert (c4.radius, c4.pressure, c4.wall_damage, c4.unit_damage) == \
-        (8, 25.0, 800, 150)
+    # #31: a generic explosion keeps its direct damage; its pressure is gone.
+    assert (c4.radius, c4.wall_damage, c4.unit_damage) == (8, 800, 150)
+    assert c4.strength > 0
     assert c4.clear_smoke is True and c4.emit_blast_smoke is True
     gl6 = t.weapons.by_name["gl6_revolver"]
     assert gl6.archetype == "projectile" and gl6.ammo_family == "40mm"

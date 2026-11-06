@@ -930,14 +930,15 @@ void EOSSolver::step(
             div_u_[i] = dux + duy;
         }
     }
-    // #31 PROTOTYPE, the blast's divergence source (Feldman 2003): the solve
-    // aims for div(u) = S on these cells, so S comes off the right-hand side's
-    // div(u*). Empty = off, and the step is bit-identical. A wall or ring cell
-    // keeps its 0.
+    // #31, the blast's divergence source (Feldman 2003): the solve aims for
+    // div(u) = S on these cells, so S comes off the right-hand side's div(u*).
+    // Widened and clamped (`sat_add_q16_i64`, the same call on all three twins:
+    // here, cuda_eos_step.cu's host mid-stage, K_div_source's device twin).
+    // Empty = off, and the step is bit-identical. A wall or ring cell keeps 0.
     if ((int)div_source.size() == n) {
         for (int i = 0; i < n; ++i) {
             if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;
-            div_u_[i] -= div_source[i];
+            div_u_[i] = sat_add_q16_i64(div_u_[i], -(int64_t)div_source[i]);
         }
     }
 

@@ -1,7 +1,9 @@
-"""The blast expansion source (#31 prototype, src/simulation/blast_expansion.py +
-EOSSolver.div_source): a blast tells the pressure solve the air around it is
-expanding, and the solve finds the wind. Each test names the property it protects
-and the change that must break it. No test reads a row's value; those are Erik's.
+"""The blast expansion source (#31, src/simulation/blast_expansion.py +
+EOSSolver.div_source), on a comparison row (expansion_* columns): a blast tells
+the pressure solve the air around it is expanding, and the solve finds the wind.
+tests/test_explosion.py holds the generic explosion built on it. Each test names
+the property it protects and the change that must break it. No test reads a row's
+value; those are Erik's.
 """
 from __future__ import annotations
 
@@ -119,6 +121,6 @@ def test_a_wall_stops_the_source_and_a_gap_does_not():
     """
     solid = np.zeros((11, 11), dtype=bool)
     solid[:, 6] = True
-    assert not any(x > 6 for _, x in reach_tiles(solid, 5, 4, 5.0))
+    assert not any(x > 6 for _, x in reach_tiles(~solid, 5, 4, 25))
     solid[5, 6] = False
-    assert any(x > 6 for _, x in reach_tiles(solid, 5, 4, 5.0))
+    assert any(x > 6 for _, x in reach_tiles(~solid, 5, 4, 25))

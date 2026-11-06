@@ -326,7 +326,14 @@ class GameMap:
         # blast covered it (entities have no hp path in the damage system).
         # Plain Python list: never digested, never recorded, never a field.
         self.blast_log = []
-        # #31 PROTOTYPE: active expansion sources (blast_expansion.py). Never digested.
+        # #31: the blast's pending divergence source, Q16 1/s, owned by
+        # blast_expansion.py and consumed at the head of the physics step.
+        # Synced state (tests/field_digest.py hashes it while non-zero). The
+        # counters are plain ints, and `expansions` is the comparison rows'
+        # later ticks; none of the three is digested.
+        self.div_source = np.zeros((h, w), dtype=np.int32)
+        self.div_source_sat_hits = 0
+        self.div_source_cut_q = 0
         self.expansions = []
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared

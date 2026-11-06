@@ -8,8 +8,8 @@ deposit path (:func:`simulation.payloads.deposit_heat` -- a ``heat``
 FieldEdit the temperature solver converts and books in its own group, never
 a ``temperature[...] =``). When an explosion's disc takes its ``hp`` to 0 it
 dies and executes its ``death_payload`` row once through THE payload
-executor -- the engine that delivers IGNITE_HEAT when it goes (CLAUDE.md
-"Starting a fire": the payload row carries the heat).
+executor -- the engine that lights the room when it goes (CLAUDE.md
+"Starting a fire": the payload row's ``ignite_radius`` delivers the heat).
 
 This module is the SCHEMA only and stays IMPORT-LIGHT (stdlib, the entity
 design §3b rule, CI-tested by tests/test_entities_import_light.py). The

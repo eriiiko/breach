@@ -1,7 +1,10 @@
 """THE blast's read of the air it goes off in (#31, Erik 2026-11-06).
 
-A charge reads each open tile of its disc once, at detonation, and the air
-decides what the blast leaves behind. Air there is taken as two numbers:
+A charge reads each open tile it reached once, at detonation, after its wall
+damage and before its field edits land, and the air decides what the blast leaves
+behind. A strength row reads the tiles its walk reached (blast_expansion.
+reach_tiles), so air behind a wall is not its air; any other charge reads its disc
+(``disc_tiles``). Air there is taken as two numbers:
 
   g  the O2 law's pressure factor (o2_pressure_factor.h, the same two edges,
      [physics.fire] p_ext_atm / p_full_atm): 0 at or below p_ext, 1 at or above
@@ -87,36 +90,43 @@ def _ramp_q(x, lo, hi):
     return np.minimum(r, ONE)
 
 
-def read_blast_air(gmap, fy, fx, radius, settings=None) -> AirRead:
-    """Read the open tiles of the disc around (fy, fx)."""
-    s = blast_air_settings() if settings is None else settings
-    from simulation.gases import INERT_N2, O2
+def disc_tiles(gmap, fy, fx, radius):
+    """The open tiles of the disc around (fy, fx): what a charge without
+    ``strength`` reads."""
     h, w = gmap.solid.shape
     r = int(np.ceil(max(float(radius), 1.0)))
     y0, y1 = max(fy - r, 0), min(fy + r + 1, h)
     x0, x1 = max(fx - r, 0), min(fx + r + 1, w)
     yy, xx = np.ogrid[y0:y1, x0:x1]
     disc = (yy - fy) ** 2 + (xx - fx) ** 2 <= r * r
-    open_ = disc & ~gmap.solid[y0:y1, x0:x1]
-    if not open_.any():
-        return AirRead(None, ONE)
+    ys, xs = np.nonzero(disc & ~gmap.solid[y0:y1, x0:x1])
+    return list(zip((ys + y0).tolist(), (xs + x0).tolist()))
 
-    o2 = gmap.gas[O2, y0:y1, x0:x1].astype(np.int64)
-    bulk = o2 + gmap.gas[INERT_N2, y0:y1, x0:x1].astype(np.int64)
+
+def read_blast_air(gmap, tiles, settings=None) -> AirRead:
+    """Read ``tiles``, (y, x) pairs: the same list the blast delivers on."""
+    s = blast_air_settings() if settings is None else settings
+    from simulation.gases import INERT_N2, O2
+    if not tiles:
+        return AirRead(None, ONE)
+    ys, xs = np.array(tiles, dtype=np.intp).T
+
+    o2 = gmap.gas[O2][ys, xs].astype(np.int64)
+    bulk = o2 + gmap.gas[INERT_N2][ys, xs].astype(np.int64)
     x_q = np.where(bulk > 0, (o2 * ONE) // np.maximum(bulk, 1), 0)
-    p_q = gmap.atmosphere[y0:y1, x0:x1].astype(np.int64)
+    p_q = gmap.atmosphere[ys, xs].astype(np.int64)
 
     b_q = _ramp_q(x_q, s.o2_low_q, s.o2_full_q)
     g_q = _ramp_q(p_q, s.p_ext_q, s.p_full_q)
     smoke_q = (g_q * (ONE + ((s.starved_smoke_q * (ONE - b_q)) >> 16))) >> 16
     burn_q = (g_q * b_q) >> 16
 
-    mean_burn = int(burn_q[open_].sum()) // int(open_.sum())
+    mean_burn = int(burn_q.sum()) // len(tiles)
     heat_q = s.detonation_share_q + (((ONE - s.detonation_share_q) * mean_burn) >> 16)
-    if (smoke_q[open_] == ONE).all():
+    if (smoke_q == ONE).all():
         return AirRead(None, heat_q)
-    plane = np.full((h, w), ONE, dtype=np.int64)
-    plane[y0:y1, x0:x1][open_] = smoke_q[open_]
+    plane = np.full(gmap.solid.shape, ONE, dtype=np.int64)
+    plane[ys, xs] = smoke_q
     return AirRead(plane, heat_q)
 
 
@@ -133,4 +143,5 @@ def blast_base_soot_g(payload) -> float:
         float(getattr(payload, "explosive_kg", 0.0)) * 1000.0 * floor)
 
 
-__all__ = ["AirRead", "blast_base_soot_g", "BlastAirSettings", "blast_air_settings", "read_blast_air"]
+__all__ = ["AirRead", "blast_base_soot_g", "BlastAirSettings", "blast_air_settings",
+           "disc_tiles", "read_blast_air"]

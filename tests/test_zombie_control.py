@@ -111,19 +111,28 @@ _PRE_122_SHIP_DEMO = dict(
     #  2ce0a50ae9e16d06a898; tick 4d32170a7a7ff465ba410f935c8912ae594999c903
     #  169aa66582ae2e7bcb2ab8; units a5ddf313af731dd1b7e983e68ebe448dffbe59a9
     #  fcf238eadcf262576c97f47a)
-    outcome="win", team=1, ticks=706,
-    field_digest="b38c2d29ffeb91d3ea5fb772fa24d597"
-                 "86a53bc1c90004f7321bffbf442d3ca4",
+    # #31 re-pin (2026-11-06, the standard explosion, design section 4): this
+    # match throws frags, and `frag_standard` is a generic explosion now: a
+    # divergence source in place of no pressure, 10 MJ over its walked tiles in
+    # place of a 3200-unit disc, smoke over the same tiles at [blast_air]
+    # smoke_scale. A wanted change of the whole match, so all four values move.
+    # (was win 1 at 706; field b38c2d29ffeb91d3ea5fb772fa24d59786a53bc1c90004f7
+    #  321bffbf442d3ca4; tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab0
+    #  6ef7c5f41ba25c37; units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15
+    #  da59f0b415cedb4e)
+    outcome="win", team=1, ticks=722,
+    field_digest="b6ab1595011cfe96ff4297f12b2d7c2e"
+                 "062a43e58bd7e9fe09b7bdf71c740824",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
     # without that key reproduces c69925fa... exactly; outcome, ticks,
     # field_digest and the per-tick unit stream are unchanged.
     # (was c69925fa68e8ba10fbb724eaedbcb53d56058f3b4efaf91a2601d1366be0f170)
-    tick_digest="ce979185366be487732e587a851ab6e3"
-                "589d0b0ea8671ab06ef7c5f41ba25c37",
-    unit_stream="b55cc54e4e12bd7002a70cecd01d1377"
-                "03964eb73fa63c15da59f0b415cedb4e")
+    tick_digest="0cf70f76a218a95c41ab2ec58393c0e2"
+                "d9e9ff1e7ff2f84fccc2f8fe1e0907b1",
+    unit_stream="7a1e80818f1f126781220bfd6f81502a"
+                "a0a4fc74159f0debb87e2c62ad6b70fc")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -141,9 +150,9 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
 
 def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
-    the conductor-driven law plays it (re-pinned at #140: win team 1 at tick
-    706) with the same tick_digest. Breaks like the box test, on the real
-    level."""
+    the conductor-driven law plays it (re-pinned at #140, then at #31: win
+    team 1 at tick 722) with the same tick_digest. Breaks like the box test, on
+    the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
     o = run_match(level, on_tick=stream)

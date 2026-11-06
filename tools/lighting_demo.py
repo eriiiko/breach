@@ -115,6 +115,7 @@ Headless flags (no human at the keyboard):
 """
 from __future__ import annotations
 
+import copy
 import sys
 import time
 import tomllib
@@ -141,7 +142,6 @@ from simulation import Simulation
 from simulation import atmosphere_fixed
 from simulation.unit import Unit
 from simulation.payloads import execute_payload
-from simulation.weapons import PayloadDef
 from simulation.gases import STEAM, SMOKE
 from level_lights import LightSpec, monotonic_total_tick, partition_lights
 from renderer import frame_lights
@@ -214,7 +214,6 @@ DEFAULTS = {
     "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
-    "blast_pressure": 10.0,
     "wall_damage": 200.0,
     "unit_damage": 60.0,
     "fuse_seconds": 0.0,
@@ -299,7 +298,6 @@ def _state_to_toml_section(name: str, s: dict) -> str:
     lines.append(f"pressure_scale = {s['pressure_scale']:.4f}")
     lines.append(
         f"grenade = {{ blast_radius = {int(s['blast_radius'])}, "
-        f"pressure = {s['blast_pressure']:.2f}, "
         f"wall_damage = {int(s['wall_damage'])}, "
         f"unit_damage = {int(s['unit_damage'])}, "
         f"fuse_seconds = {s['fuse_seconds']:.2f}, "
@@ -389,7 +387,6 @@ def _toml_dict_to_state(d: dict) -> dict:
     if "grenade" in d:
         g = d["grenade"]
         s["blast_radius"] = float(g.get("blast_radius", s["blast_radius"]))
-        s["blast_pressure"] = float(g.get("pressure", s["blast_pressure"]))
         s["wall_damage"] = float(g.get("wall_damage", s["wall_damage"]))
         s["unit_damage"] = float(g.get("unit_damage", s["unit_damage"]))
         s["fuse_seconds"] = float(g.get("fuse_seconds", s["fuse_seconds"]))
@@ -831,25 +828,16 @@ def demo_payload(sim, state):
     The numbers come FROM the table (`[payloads.frag_standard]` — the sliders
     are initialised from it at startup, see main()), so nothing here invents a
     blast; the overrides exist because this is Erik's blast-tuning instrument
-    and radius/pressure/wall-damage are exactly what he drags. Every other
-    column (gas, ignite, heat, the two smoke booleans) is passed through
-    untouched, so a future column added to the row reaches the demo for free.
+    and radius and wall damage are what he drags. The row is COPIED, so every
+    other column, the strength and all a door derived from it included, reaches
+    the demo for free (rebuilt by hand it would lose the blast, #31).
     """
-    base = sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO)
-    return PayloadDef(
-        name=f"{base.name}@demo",
-        radius=int(max(1, state.get("blast_radius"))),
-        pressure=float(state.get("blast_pressure")),
-        wall_damage=int(state.get("wall_damage")),
-        unit_damage=int(state.get("unit_damage")),
-        gas_species=base.gas_species, gas_amount=base.gas_amount,
-        gas_radius=base.gas_radius,
-        ignite_radius=base.ignite_radius,
-        ignite_intensity=base.ignite_intensity,
-        clear_smoke=base.clear_smoke,
-        emit_blast_smoke=base.emit_blast_smoke,
-        heat_amount=base.heat_amount, heat_radius=base.heat_radius,
-    )
+    row = copy.copy(sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO))
+    row.name = f"{row.name}@demo"
+    row.radius = int(max(1, state.get("blast_radius")))
+    row.wall_damage = int(state.get("wall_damage"))
+    row.unit_damage = int(state.get("unit_damage"))
+    return row
 
 
 def detonate(sim, renderer, state, tile) -> bool:
@@ -1819,13 +1807,12 @@ def main() -> None:
     # "grenade" was quietly NOT the game's grenade.
     _frag = sim.weapons_tables.payload_for_ammo(DEMO_GRENADE_AMMO)
     state.set("blast_radius", float(_frag.radius))
-    state.set("blast_pressure", float(_frag.pressure))
     state.set("wall_damage", float(_frag.wall_damage))
     state.set("unit_damage", float(_frag.unit_damage))
     print(f"[lighting_demo] detonation: payload {_frag.name!r} "
           f"(ammo {DEMO_GRENADE_AMMO!r}) via simulation.payloads."
           f"execute_payload -- radius={_frag.radius} "
-          f"pressure={_frag.pressure} wall={_frag.wall_damage} "
+          f"strength={_frag.strength} wall={_frag.wall_damage} "
           f"unit={_frag.unit_damage}")
     # smoke_emission mirror REMOVED at P-S1 — [physics.fire] no longer
     # carries the key (a stale config now loud-errors at load instead).
@@ -2480,7 +2467,6 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     # -- §4.6 Grenade tuning (overrides on [payloads.frag_standard]) --
     y = _section_header("Grenade [R=arm, click=det]", x, y)
     y = _slider(state, "blast_radius", "Radius", 1.0, 15.0, x, y)
-    y = _slider(state, "blast_pressure", "Pressure", 1.0, 30.0, x, y)
     y = _slider(state, "wall_damage", "Wall dmg", 0.0, 1000.0, x, y)
     # unit_damage IS applied as of P4r — the executor runs apply_blast_damage
     # (the wave_p blast coupling row) like every other detonation site.

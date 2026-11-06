@@ -34,9 +34,10 @@ from simulation.payloads import execute_payload
 class PlantedCharge:
     """One charge sitting on a tile, waiting for its moment."""
 
-    __slots__ = ("x", "y", "det_tick", "ammo_name", "owner_id", "live")
+    __slots__ = ("x", "y", "det_tick", "ammo_name", "owner_id", "live",
+                 "approach")
 
-    def __init__(self, x, y, ammo_name, owner_id, det_tick=None):
+    def __init__(self, x, y, ammo_name, owner_id, det_tick=None, approach=None):
         self.x = int(x)
         self.y = int(y)
         self.ammo_name = str(ammo_name)
@@ -45,6 +46,9 @@ class PlantedCharge:
         #: for a Detonate order.
         self.det_tick = None if det_tick is None else int(det_tick)
         self.live = True
+        #: The tile the planter stood on (#31): the side a charge on a tile
+        #: that holds delivers on.
+        self.approach = approach
 
     def due(self, tick: int) -> bool:
         return self.live and self.det_tick is not None and tick >= self.det_tick
@@ -66,7 +70,8 @@ def plant(sim, unit, order) -> PlantedCharge:
         order.target_fx, order.target_fy,
         getattr(order, "ammo_name", None) or "demo_breach",
         getattr(unit, "id", -1),
-        det_tick=getattr(order, "det_tick", None))
+        det_tick=getattr(order, "det_tick", None),
+        approach=(unit.center_tile_y(), unit.center_tile_x()))
     sim.planted_charges.append(charge)
     return charge
 
@@ -79,7 +84,8 @@ def fire(sim, charge) -> None:
     payload = sim.weapons_tables.payload_for_ammo(charge.ammo_name)
     execute_payload(sim.gmap, sim.edit_queue, sim.units, charge.y, charge.x,
                     payload, sim.rng, events=sim.tick_events,
-                    kind="door_explosive", owner_id=charge.owner_id)
+                    kind="door_explosive", owner_id=charge.owner_id,
+                    approach=charge.approach)
 
 
 def detonate_owned(sim, unit) -> int:

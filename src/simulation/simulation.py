@@ -1927,7 +1927,8 @@ class Simulation:
                     execute_payload(
                         self.gmap, self.edit_queue, self.units, fy, fx,
                         payload, self.rng, events=self.tick_events,
-                        kind="grenade", owner_id=proj.owner_id)
+                        kind="grenade", owner_id=proj.owner_id,
+                        approach=(int(proj.start_fy), int(proj.start_fx)))
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve

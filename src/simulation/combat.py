@@ -463,7 +463,8 @@ class BulletInFlight:
                 det_y, det_x = self.prev_iy, self.prev_ix
             execute_payload(gmap, queue, units, det_y, det_x, self.payload,
                             rng, events=events, kind="shell",
-                            owner_id=self.shooter_id)
+                            owner_id=self.shooter_id,
+                            approach=(self.prev_iy, self.prev_ix))
 
         return still_flying
 
@@ -1674,4 +1675,6 @@ def process_door_explosives(gmap, queue, units, slot, rng, events=None):
                     getattr(o, "ammo_name", None) or "demo_breach")
                 execute_payload(gmap, queue, units, fy, fx, payload, rng,
                                 events=events, kind="door_explosive",
-                                owner_id=getattr(u, "id", -1))
+                                owner_id=getattr(u, "id", -1),
+                                approach=(u.center_tile_y(),
+                                          u.center_tile_x()))

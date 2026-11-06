@@ -245,8 +245,7 @@ class PayloadDef:
     v1 keeps that clear INSIDE ``apply_explosion``, so the column is
     data-of-record, wired live when FieldEdit takes over the explosion
     internals; ``emit_blast_smoke`` is LIVE and gates the
-    ``add_explosion_smoke`` textured cloud. Both must be true on
-    ``frag_standard`` AND ``breach_focus``."""
+    blast's textured cloud, and a ``strength`` row must carry it."""
 
     def __init__(self, name, radius=0, pressure=0.0, wall_damage=0,
                  unit_damage=0, gas_species="", gas_amount=0.0, gas_radius=0,
@@ -255,9 +254,22 @@ class PayloadDef:
                  explosive="", explosive_kg=0.0, blast_soot_g=0.0,
                  bulk_gas="", bulk_amount=0.0, bulk_radius=0.0, bulk_temp=0.0,
                  bulk_amount_q=0, bulk_temp_q=0,
-                 expansion_m3=0.0, expansion_radius=0.0, expansion_ticks=1):
+                 expansion_m3=0.0, expansion_radius=0.0, expansion_ticks=1,
+                 strength=0.0, heat_mj=0.0, source_r2=0, heat_r2=0, ignite_r2=0):
         self.name = name
-        self.expansion_m3 = expansion_m3        # #31 prototype: air pushed out
+        # #31: a row with ``strength > 0`` IS a generic explosion. The door
+        # derives what the strength means from [blast]: ``expansion_m3``, the
+        # air it pushes out in one tick; ``heat_mj``, its heat; ``explosive_kg``,
+        # its charge. The ``*_r2`` are the squared radii its walks stop at
+        # (blast_expansion.reach_tiles), integers, so walk and credit agree.
+        self.strength = strength
+        self.heat_mj = heat_mj
+        self.source_r2 = source_r2
+        self.heat_r2 = heat_r2
+        self.ignite_r2 = ignite_r2
+        # A comparison row's source (levels/blast_quad, blast_div): the air it
+        # pushes out, along open floor within expansion_radius, over the ticks.
+        self.expansion_m3 = expansion_m3
         self.expansion_radius = expansion_radius
         self.expansion_ticks = expansion_ticks
         self.radius = radius                    # blast radius (tiles)
@@ -544,6 +556,51 @@ class AmmoTable:
         self.names = list(self.by_name)
 
 
+# What a strength row may not author: the door derives or forbids each of these,
+# so a row cannot say two things about one blast (#31, design section 2).
+_STRENGTH_REFUSES = ("pressure", "heat_amount", "heat_radius", "expansion_m3",
+                     "expansion_radius", "expansion_ticks", "explosive_kg",
+                     "ignite_intensity")
+
+
+def _strength_columns(name, row, col, emit_blast_smoke, explosive, blast_cfg):
+    """The ``[payloads.*] strength`` door (#31): refuse what a generic explosion
+    may not carry, by the KEY's presence (``col`` cannot tell an authored 0.0
+    from an absent column), and derive everything else from ``[blast]``. Returns
+    the PayloadDef keyword arguments, or {} for a row with no strength."""
+    import math
+    from simulation.blast_expansion import blast_settings, source_steps
+    strength = float(col("strength", 0.0))
+    if not math.isfinite(strength) or strength < 0.0:
+        raise ValueError(f"payloads.{name}.strength {strength!r} must be >= 0")
+    if strength == 0.0:
+        return {}
+    for key in _STRENGTH_REFUSES:
+        if (key in row) if isinstance(row, dict) else hasattr(row, key):
+            raise ValueError(
+                f"payloads.{name} has strength and {key}: a strength row's "
+                f"blast is derived from [blast], never authored")
+    if not (explosive and emit_blast_smoke):
+        raise ValueError(
+            f"payloads.{name} has strength but needs explosive and "
+            f"emit_blast_smoke = true: a blast leaves its charge's soot")
+    if not col("radius", 0) > 0:
+        raise ValueError(
+            f"payloads.{name} has strength but radius <= 0: its direct damage "
+            f"and the blast log both need the disc")
+    b = blast_settings(blast_cfg)
+    r_s = source_steps(strength)
+    ignite_radius = float(col("ignite_radius", 0.0))
+    return dict(
+        strength=strength,
+        expansion_m3=b.expansion_m3_per_strength * strength,
+        heat_mj=b.heat_mj_per_strength * strength,
+        explosive_kg=b.grenade_kg * strength,
+        source_r2=r_s * r_s,
+        heat_r2=4 * r_s * r_s,
+        ignite_r2=int(math.ceil(ignite_radius * ignite_radius)))
+
+
 def _bulk_gas_columns(name, col, gas_species, bulk_gases, trace_gases):
     """The ``[payloads.*]`` bulk-gas door (#133 E.2): read and validate the
     ``bulk_gas`` / ``bulk_amount`` / ``bulk_radius`` / ``bulk_temp`` columns
@@ -606,7 +663,7 @@ class PayloadTable:
     (simulation.gases.GAS_NAMES — the ``gmap.gas`` slice vocabulary) so a
     typo'd species is loud at startup, not at the first detonation."""
 
-    def __init__(self, payloads_cfg, explosives_cfg=None):
+    def __init__(self, payloads_cfg, explosives_cfg=None, blast_cfg=None):
         # Lazy import (module constants only, mirrors AmmoTable's unit_fixed).
         from simulation.gases import GAS_NAMES, N_GASES, N_TRACE_GASES
         valid_gases = set(GAS_NAMES.values())
@@ -641,7 +698,12 @@ class PayloadTable:
                                      trace_gases)
             emit_blast_smoke = bool(col("emit_blast_smoke", False))
             explosive = str(col("explosive", ""))
-            explosive_kg = float(col("explosive_kg", 0.0))
+            # A strength row's charge is derived, so it is known before the
+            # blast-smoke check below reads it.
+            blast = _strength_columns(name, row, col, emit_blast_smoke,
+                                      explosive, blast_cfg)
+            explosive_kg = blast.pop("explosive_kg",
+                                     float(col("explosive_kg", 0.0)))
             if emit_blast_smoke:
                 # The blast's smoke is the charge's soot: a row that makes
                 # blast smoke must say what it is made of and how much.
@@ -674,9 +736,11 @@ class PayloadTable:
                 explosive=explosive,
                 explosive_kg=explosive_kg,
                 blast_soot_g=blast_soot_g,
-                expansion_m3=col("expansion_m3", 0.0),
+                expansion_m3=blast.pop("expansion_m3",
+                                       col("expansion_m3", 0.0)),
                 expansion_radius=col("expansion_radius", 0.0),
                 expansion_ticks=col("expansion_ticks", 1),
+                **blast,
                 **bulk,
             )
         self.names = list(self.by_name)

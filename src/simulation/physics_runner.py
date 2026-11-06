@@ -26,6 +26,7 @@ import numpy as np
 import temperature_scale        # P-K2: canonical game-T -> Kelvin map accessor
 from config import CFG
 from simulation import atmosphere_fixed   # #7: the pressure field's Q16 door (atm)
+from simulation.blast_expansion import take_source_plane   # #31: the blast's source
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
@@ -153,8 +154,6 @@ WATER_H_CAP     = 0.25   # m deep-water cap: c^2 = g*min(depth, h_cap) (W6a)
 WATER_K_AMP     = 0.5    # ripple amplitude clamp |ripple| <= k_amp*depth (W6a)
 WATER_K_SPLASH  = 2.0    # wave_p -> ripple_v splash gain (W6a; pure feel dial)
 
-
-from simulation.blast_expansion import take_source_plane
 
 class PhysicsRunner:
     """Wraps the C++ atmosphere / smoke / fire solvers for one game session."""
@@ -885,11 +884,13 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
-        # #31 PROTOTYPE: this tick's blast expansion source (CPU path only).
-        _plane = take_source_plane(gmap)
-        if _plane is not None or self._div_source_on:
-            self.engine.eos.set_div_source(_plane)
-            self._div_source_on = _plane is not None
+        # #31: this tick's blast source, bound on a tick with one, cleared on
+        # the tick after. Every EOS path (CPU, per-call, resident) reads it off
+        # the solver.
+        div_source = take_source_plane(gmap)
+        if div_source is not None or self._div_source_on:
+            self.engine.eos.set_div_source(div_source)
+            self._div_source_on = div_source is not None
         # S8a Path B: the GPU-resident tick (opt-in, default OFF). Same tick,
         # same arithmetic — the water substep loop + the smoke trace loop run
         # resident on persistent device buffers (killing the substep-/plane-

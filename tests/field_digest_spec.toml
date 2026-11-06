@@ -86,6 +86,16 @@ excluded_float_fields = [
     "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb",
 ]
 
+# #31 (ADDITIVE, the A4 precedent below): DIGEST_SECTIONS, field planes hashed by
+# field_digest only while non-zero, after `fields`, each behind its own preamble.
+# An all-zero or absent plane hashes nothing, so every digest without a pending
+# blast is byte-identical to spec v7 with no section, NO golden regenerates for
+# it, and `version` stays. A format change bumps the section's own preamble.
+[[sections]]
+name     = "div_source"
+dtype    = "int32"
+preamble = "DIV_SOURCE_SECT_V1"
+
 # A4 (ADDITIVE — docs/a4_digest_impl_note_2026-07-18.md): the __entity__ /
 # __signals__ sections fold into tick_digest ONLY when a snapshot's presence
 # carrier says n_entities > 0, so entity-free digests are byte-identical to

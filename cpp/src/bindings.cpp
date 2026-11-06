@@ -3058,7 +3058,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  auto a = plane.cast<py::array_t<int32_t, py::array::c_style | py::array::forcecast>>();
                  s.div_source.assign(a.data(), a.data() + a.size());
              },
-             "#31 prototype: the (h,w) int32 Q16 1/s divergence source, or None.")
+             "#31: this tick's (h,w) int32 Q16 1/s divergence source, or None.")
         .def_readonly("e_retire_sum",          &EOSSolver::e_retire_sum)
         .def_readonly("rad_clip_hits",         &EOSSolver::rad_clip_hits)
         .def_readonly("p_face_floor_hits",     &EOSSolver::p_face_floor_hits)
