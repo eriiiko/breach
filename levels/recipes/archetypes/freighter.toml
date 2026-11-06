@@ -90,9 +90,9 @@ count = { medium = [0, 1], large = [0, 2] }
 # ---- validation profile (L2's third component; L8): metric gates from a closed registry; run after layout ----
 [validation]
 bot_walkable = true             # A* between the two slabs with airlock outer doors CLOSED
-spawn_distance = { medium = [60, 160], large = [110, 280] }   # the bots' A* steps between the slab centres, after embed (measured 84-131 / 142-231)
+spawn_distance = { medium = [60, 160], large = [110, 280] }   # the bots' A* steps between the slab centres, after embed (measured 84-137 / 142-237 over 100 seeds x 3 profiles)
 cells = [2, 3]                  # pressure cells per ship
-rooms = { medium = [20, 48], large = [40, 96] }              # rooms per ship, both wings (measured 26-40 / 50-82)
+rooms = { medium = [20, 48], large = [40, 96] }              # rooms per ship, both wings (measured 25-41 / 46-81)
 
 # ---- difficulty profiles: each key names its operator ----
 [profiles.easy]
