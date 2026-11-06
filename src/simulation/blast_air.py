@@ -124,10 +124,13 @@ def blast_base_soot_g(payload) -> float:
     """The soot a charge always leaves: its explosive's own, never below
     [blast_air] min_soot_yield (Erik, 2026-11-06: a little smoke always, as the
     stand-in for the charge's fuel and what lets the fireball radiate its heat
-    away; clean gas does not radiate). No soot_yield row is touched."""
+    away; clean gas does not radiate), all of it times [blast_air] smoke_scale,
+    the game's look (Erik chose 0.5 by eye on levels/blast_smoke, 2026-11-06).
+    No soot_yield row is touched: those stay the cited physics."""
     floor = float(CFG.blast_air.min_soot_yield)
-    return max(float(getattr(payload, "blast_soot_g", 0.0)),
-               float(getattr(payload, "explosive_kg", 0.0)) * 1000.0 * floor)
+    return float(CFG.blast_air.smoke_scale) * max(
+        float(getattr(payload, "blast_soot_g", 0.0)),
+        float(getattr(payload, "explosive_kg", 0.0)) * 1000.0 * floor)
 
 
 __all__ = ["AirRead", "blast_base_soot_g", "BlastAirSettings", "blast_air_settings", "read_blast_air"]

@@ -1,14 +1,16 @@
 # Blast smoke
 
 The #31 smoke amount, side by side. All four rooms fire `div_40`, the same blast,
-at 2 s and then every 3 s. Only the soot changes, through `explosive_kg`.
+at 2 s and then every 3 s. Only the soot changes, through `explosive_kg`. The NW
+room is the chosen amount: `[blast_air] smoke_scale = 0.5` (Erik, 2026-11-06).
+The other rooms show what turning it down would look like.
 
 | Room | Row | Soot |
 |---|---|---|
-| NW | `div_40` | 100 %, today's Comp B grenade, 14 g |
-| NE | `div_40_s50` | 50 % |
-| SW | `div_40_s25` | 25 % |
-| SE | `div_40_s10` | 10 % |
+| NW | `div_40` | 7 g, a grenade today |
+| NE | `div_40_s50` | 3.5 g |
+| SW | `div_40_s25` | 1.8 g |
+| SE | `div_40_s10` | 0.7 g |
 
 ## Launch
 

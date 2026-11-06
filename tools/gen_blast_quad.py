@@ -73,10 +73,10 @@ SETS = {
         ("SOURCE 40 + PUFF", "div_40_puff", 1),
     )),
     "blast_smoke": ("Blast Smoke", (
-        ("SMOKE 100%", "div_40", 1),
-        ("SMOKE 50%", "div_40_s50", 1),
-        ("SMOKE 25%", "div_40_s25", 1),
-        ("SMOKE 10%", "div_40_s10", 1),
+        ("SMOKE 7 G", "div_40", 1),
+        ("SMOKE 3.5 G", "div_40_s50", 1),
+        ("SMOKE 1.8 G", "div_40_s25", 1),
+        ("SMOKE 0.7 G", "div_40_s10", 1),
     )),
 }
 SLOTS = ((X0 + 1, Y0 + 1, "w"), (X_MID + 1, Y0 + 1, "e"),
