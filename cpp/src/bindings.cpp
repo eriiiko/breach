@@ -3052,6 +3052,13 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_wall_work_probe_sum", &EOSSolver::e_wall_work_probe_sum)
         .def_readonly("e_energy_floor_sum",    &EOSSolver::e_energy_floor_sum)
         .def_readonly("e_rail_sum",            &EOSSolver::e_rail_sum)
+        .def("set_div_source",
+             [](EOSSolver& s, py::object plane) {
+                 if (plane.is_none()) { s.div_source.clear(); return; }
+                 auto a = plane.cast<py::array_t<int32_t, py::array::c_style | py::array::forcecast>>();
+                 s.div_source.assign(a.data(), a.data() + a.size());
+             },
+             "#31: this tick's (h,w) int32 Q16 1/s divergence source, or None.")
         .def_readonly("e_retire_sum",          &EOSSolver::e_retire_sum)
         .def_readonly("rad_clip_hits",         &EOSSolver::rad_clip_hits)
         .def_readonly("p_face_floor_hits",     &EOSSolver::p_face_floor_hits)

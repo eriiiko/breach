@@ -26,6 +26,7 @@ import numpy as np
 import temperature_scale        # P-K2: canonical game-T -> Kelvin map accessor
 from config import CFG
 from simulation import atmosphere_fixed   # #7: the pressure field's Q16 door (atm)
+from simulation.blast_expansion import take_source_plane   # #31: the blast's source
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
@@ -189,6 +190,7 @@ class PhysicsRunner:
         # binds and step() calls below act on the engine's solvers. The per-tick
         # orchestration moves INTO engine.step() in S4.
         self.engine = bp.PhysicsEngine()
+        self._div_source_on = False
 
         # AtmosphereSolver: wave + IMEX diffusion. Same params as legacy
         # _init_solvers; main.py's shim was missing max_source_per_step.
@@ -882,6 +884,13 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
+        # #31: this tick's blast source, bound on a tick with one, cleared on
+        # the tick after. Every EOS path (CPU, per-call, resident) reads it off
+        # the solver.
+        div_source = take_source_plane(gmap)
+        if div_source is not None or self._div_source_on:
+            self.engine.eos.set_div_source(div_source)
+            self._div_source_on = div_source is not None
         # S8a Path B: the GPU-resident tick (opt-in, default OFF). Same tick,
         # same arithmetic — the water substep loop + the smoke trace loop run
         # resident on persistent device buffers (killing the substep-/plane-

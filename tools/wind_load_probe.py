@@ -223,9 +223,8 @@ def scene_grenade(dists=range(2, 13), n_ticks=40):
         execute_payload(sim.gmap, sim.edit_queue, sim.units, cy, cx, frag,
                         sim.rng)
     print()
-    _ring(f"shipped frag_standard: radius {frag.radius}, pressure "
-          f"{frag.pressure}, heat {frag.heat_amount}", 0.333, shipped,
-          dists, n_ticks)
+    _ring(f"shipped frag_standard: strength {frag.strength}, radius "
+          f"{frag.radius}", 0.333, shipped, dists, n_ticks)
 
 
 def scene_fire(seconds=60, from_s=10):

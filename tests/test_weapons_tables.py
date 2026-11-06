@@ -101,20 +101,22 @@ def test_grenade_frag_ammo_resolves_to_a_payload_row():
     assert t.payload_for_ammo("grenade_frag") is frag
 
 
-def test_breach_focus_equals_the_old_door_explosive():
+def test_breach_focus_keeps_the_old_door_explosive_reach():
+    """Re-pinned at #31: the door charge is a generic explosion, so its pressure
+    is gone and it is a strength row; its reach and wall damage are the old
+    charge's, and `unit_damage` is 0 so the row does not hurt its planter."""
     t = get_tables()
     breach = t.payloads.by_name["breach_focus"]
     assert breach.radius == 3
-    assert breach.pressure == 5.0
+    assert breach.strength > 0
     assert breach.wall_damage == 500
-    assert breach.unit_damage == 60
+    assert breach.unit_damage == 0
     # "rest zero/empty" — the unlisted columns default.
     assert breach.gas_species == "" and breach.gas_amount == 0.0
     assert breach.gas_radius == 0
     assert breach.ignite_radius == 0.0 and breach.ignite_intensity == 0.0
     # W3 smoke boolean split (the W1 finding of record): the door charge
-    # carries BOTH booleans true, or it silently loses its smoke the day the
-    # executor takes over (mechanics/03 §8 — this was the whole warning).
+    # carries BOTH booleans true; the strength door now requires the second.
     assert breach.clear_smoke is True
     assert breach.emit_blast_smoke is True
     assert t.payload_for_ammo("demo_breach") is breach

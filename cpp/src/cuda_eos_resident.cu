@@ -134,6 +134,20 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
     }
 }
 
+// #31: the blast's divergence source comes off div(u*), EOSSolver::step's own
+// lines. Launched only on a tick with a source; K_div_u above stays as it was.
+__global__ void K_div_source(int32_t* __restrict__ div_u,
+                             const int32_t* __restrict__ div_source,
+                             const bool* __restrict__ solid,
+                             const bool* __restrict__ is_vacuum,
+                             const bool* __restrict__ is_ambient, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
+        div_u[i] = fixedpoint::sat_add_q16_i64(div_u[i], -(int64_t)div_source[i]);
+    }
+}
+
 // Step 2's Dalton sum (post-substep N) — per cell, gi ASCENDING (the CPU's
 // per-cell add sequence). uint32 accumulation = defined wrap, byte-identical
 // to the hosts' int32 wrap for all inputs (design §3.2.6e). P-T0 (design
@@ -570,6 +584,9 @@ struct EOSResidentScratch {
     // mid-stage + kick
     int32_t *div_u = nullptr, *ntot = nullptr, *pstar = nullptr,
             *absorb_q = nullptr;
+    // #31: the blast's source, uploaded on a tick that has one (a per-tick
+    // INPUT, the cap2 precedent; every other tick never touches it).
+    int32_t* div_source = nullptr;
     // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane, uploaded fresh
     // every tick (the coeffE/coeffS/absorb_q precedent — a per-tick INPUT,
     // not scratch that survives across ticks).
@@ -604,14 +621,14 @@ struct EOSResidentScratch {
     void free_all() {
         auto f = [](void* p) { if (p) cudaFree(p); };
         f(svx); f(svy); f(st); f(cmask); f(coeffE); f(coeffS);
-        f(dq_e); f(dq_s); f(scale); f(div_u); f(ntot); f(pstar);
+        f(dq_e); f(dq_s); f(scale); f(div_u); f(ntot); f(pstar); f(div_source);
         f(absorb_q); f(cap2); f(cons_flag); f(rail); f(cnt);
         f(e); f(nbulk); f(dqsum_e); f(dqsum_s); f(ecnt);
         f(e0); f(pcur); f(s_plane); f(flux_cnt);
         f(spre); f(tcnt);
         spre = nullptr; tcnt = nullptr;
         svx = svy = st = coeffE = coeffS = dq_e = dq_s = scale = nullptr;
-        div_u = ntot = pstar = absorb_q = nullptr;
+        div_u = ntot = pstar = absorb_q = div_source = nullptr;
         cap2 = nullptr;
         cmask = nullptr;
         cons_flag = nullptr; rail = nullptr; cnt = nullptr;
@@ -644,6 +661,7 @@ struct EOSResidentScratch {
         a32(&dq_s, n, "res malloc dq_s");
         a32(&scale, n, "res malloc scale");
         a32(&div_u, n, "res malloc div_u");
+        a32(&div_source, n, "res malloc div_source");
         a32(&ntot, n, "res malloc ntot");
         a32(&pstar, n, "res malloc pstar");
         a32(&absorb_q, n, "res malloc absorb_q");
@@ -697,6 +715,17 @@ struct EOSResidentScratch {
 EOSResidentScratch g_eos_res;
 
 }  // namespace
+
+void div_source_launch_resident(
+        int32_t* d_div_u, const int32_t* d_div_source,
+        const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+        int N, int h, int w) {
+    const int n = N * h * w;
+    const int block = 256;
+    K_div_source<<<(n + block - 1) / block, block>>>(
+        d_div_u, d_div_source, d_solid, d_is_vacuum, d_is_ambient, n);
+    cuda_check(cudaGetLastError(), "K_div_source");
+}
 
 long long eos_resident_calls() { return g_eos_resident_calls; }
 
@@ -878,6 +907,13 @@ void eos_step_resident(
     K_div_u<<<grid, block>>>(S.div_u, d_wind_x, d_wind_y, d_solid,
                              d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w);
     cuda_check(cudaGetLastError(), "K_div_u");
+    if ((int)solver.div_source.size() == n) {
+        cuda_check(cudaMemcpy(S.div_source, solver.div_source.data(),
+                              (size_t)n * 4, cudaMemcpyHostToDevice),
+                   "H2D div_source");
+        div_source_launch_resident(S.div_u, S.div_source, d_solid, d_is_vacuum,
+                                   d_is_ambient, 1, h, w);
+    }
     {
         // trace_mass_scale arg RETIRED (P-T0, design §2.6).
         K_ntot<<<grid, block>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n);

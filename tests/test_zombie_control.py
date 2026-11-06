@@ -111,9 +111,28 @@ _PRE_122_SHIP_DEMO = dict(
     #  2ce0a50ae9e16d06a898; tick 4d32170a7a7ff465ba410f935c8912ae594999c903
     #  169aa66582ae2e7bcb2ab8; units a5ddf313af731dd1b7e983e68ebe448dffbe59a9
     #  fcf238eadcf262576c97f47a)
-    outcome="win", team=1, ticks=706,
-    field_digest="b38c2d29ffeb91d3ea5fb772fa24d597"
-                 "86a53bc1c90004f7321bffbf442d3ca4",
+    # #31 re-pin (2026-11-06, the standard explosion, design section 4): this
+    # match throws frags, and `frag_standard` is a generic explosion now: a
+    # divergence source in place of no pressure, 10 MJ over its walked tiles in
+    # place of a 3200-unit disc, smoke over the same tiles at [blast_air]
+    # smoke_scale. A wanted change of the whole match, so all four values move.
+    # (was win 1 at 706; field b38c2d29ffeb91d3ea5fb772fa24d59786a53bc1c90004f7
+    #  321bffbf442d3ca4; tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab0
+    #  6ef7c5f41ba25c37; units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15
+    #  da59f0b415cedb4e)
+    outcome="win", team=1, ticks=722,
+    # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
+    # match alone; together outcome, team and ticks stay win 1 at 722 and the
+    # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
+    # tip 4b31915 against the merged tree: unit states and events identical
+    # through tick 717; on tick 718 a killing burst's next round lands on the
+    # corpse of unit 7 instead of flying on into unit 0 (the #169 rule, in the
+    # frag-shaped match #31 made), and units 4 and 7 trade shots in the slot.
+    # (was field b6ab1595011cfe96ff4297f12b2d7c2e062a43e58bd7e9fe09b7bdf71c740824;
+    #  tick d017f087185330c123d5bc81ccc06b6bb7077d28105f3c884404ec834bada3ac,
+    #  units 9abe08854b5ea8bebc02cdfb3f4f56c5804f165f9f9364248183dab833dd36cc)
+    field_digest="da05242a99122428c903ad8a96e9373a"
+                 "0e12006c03abdbec1e849f4aca7dc4b0",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -131,10 +150,10 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="d017f087185330c123d5bc81ccc06b6b"
-                "b7077d28105f3c884404ec834bada3ac",
-    unit_stream="9abe08854b5ea8bebc02cdfb3f4f56c5"
-                "804f165f9f9364248183dab833dd36cc")
+    tick_digest="f35ed2beadb77141ccea20d944a70a66"
+                "e93c70818ae4c44bbf6ba1edc01024b3",
+    unit_stream="4408c8740425593b0d47d35e7d0658c4"
+                "efbd62caed87f5fd69a9e8f894ac02dd")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -152,9 +171,9 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
 
 def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
-    the conductor-driven law plays it (re-pinned at #140: win team 1 at tick
-    706) with the same tick_digest. Breaks like the box test, on the real
-    level."""
+    the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169: win
+    team 1 at tick 722) with the same tick_digest. Breaks like the box test, on
+    the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
     o = run_match(level, on_tick=stream)

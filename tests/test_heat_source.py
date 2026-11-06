@@ -46,6 +46,7 @@ from simulation.heat_source_system import (EVENT_KIND,  # noqa: E402
 from simulation.materials import (MAT_AIR, MAT_FURNITURE, MAT_HULL,  # noqa: E402
                                   MAT_WOOD)
 from simulation.payloads import execute_payload  # noqa: E402
+from simulation.weapons import PayloadDef  # noqa: E402
 
 TPS = int(CFG.clock.ticks_per_second)
 SRC_AT = (7, 7)             # (y, x)
@@ -87,11 +88,17 @@ def _t(sim, yx=SRC_AT):
     return int(sim.gmap.temperature[yx])
 
 
-def _blast(sim, row="breach_focus", at=SRC_AT):
-    """A HEAT-FREE blast (breach_focus carries no heat) through THE
-    executor, so any fire that follows is the death payload's."""
+# A row the tests own (tests/_test_charge.py's reason): since #31 breach_focus
+# carries heat, so the fixture has its own HEAT-FREE blast, breach_focus's disc.
+HEAT_FREE = PayloadDef("t_heat_free", radius=3, wall_damage=500)
+
+
+def _blast(sim, row=None, at=SRC_AT):
+    """A HEAT-FREE blast (unless a row is named) through THE executor, so any
+    fire that follows is the death payload's."""
     execute_payload(sim.gmap, sim.edit_queue, sim.units, at[0], at[1],
-                    sim.weapons_tables.payloads.by_name[row], sim.rng,
+                    HEAT_FREE if row is None
+                    else sim.weapons_tables.payloads.by_name[row], sim.rng,
                     events=sim.tick_events)
 
 
@@ -226,7 +233,7 @@ def test_closure_identity_holds_with_a_source_heating_gas_and_fuel():
 
 def test_closure_identity_holds_across_a_source_dying():
     """Property: a running source blown up mid-run (the heat-free blast,
-    then its ``engine_death`` blast and heat executed from slot 9e) keeps
+    then its ``engine_death`` blast executed from slot 9e) keeps
     the closure identity exact on every tick. FUEL-FREE ROOM on purpose:
     a blast with ``pressure > 0`` next to a thermal solid breaks the
     identity by a constant on its own, with no heat source anywhere
@@ -260,33 +267,33 @@ def _engine_room(death_payload):
     assert int(sim.gmap.fire.astype(np.int64).sum()) == 0, \
         "the running engine lit the room by itself (the scenario is moot)"
     _blast(sim)
-    first = None
+    deaths = 0
     for i in range(3 * TPS):
         _step(sim)
-        if first is None and int(sim.gmap.fire.astype(np.int64).sum()) > 0:
-            first = i
-    return sim, first
+        deaths += sum(isinstance(e, ExplosionEvent) and e.kind == EVENT_KIND
+                      for e in sim.tick_events)
+    return sim, deaths
 
 
-def test_a_destroyed_engine_starts_the_fire_its_death_payload_carries():
-    """Property: a heat-free blast on an engine (hp 200 < breach_focus's 500
-    wall damage) kills it -- ``alive`` 0, ``hp`` 0, no more deposits -- and
+def test_a_destroyed_engine_runs_its_death_payload_once():
+    """Property: a heat-free blast on an engine (hp 200 < its 500 wall
+    damage) kills it -- ``alive`` 0, ``hp`` 0, no more deposits -- and
     its ``engine_death`` row executes once (one ExplosionEvent of the
-    heat_source kind), whose heat lights the furniture beside it through
-    ``apply_temperature_ignition`` within a second; the twin without a death
-    payload dies too but no fire follows. Breaks if the blast log is not
-    appended or not drained, if hp is not read in the wall law, if the death
-    payload is skipped or executed twice, or if engine_death stops carrying
-    enough heat to light fuel 2 tiles away."""
-    sim, first = _engine_room("engine_death")
+    heat_source kind); the twin without a death payload dies too and executes
+    nothing. Breaks if the blast log is not appended or not drained, if hp is
+    not read in the wall law, or if the death payload is skipped or executed
+    twice. RE-PINNED at #31 (Erik's ruling, 2026-11-06: no fire-starting rule):
+    this test used to require a fire on the furniture 2 tiles off. engine_death
+    is a generic explosion now and its ordinary heat does not reach that far
+    (measured: it lights a crate at 0 and 1 tile, 53 degrees at 2), which is the
+    accepted result, so no fire is required of it and none is forbidden."""
+    sim, deaths = _engine_room("engine_death")
     rt = sim._heat_sources[0]
     assert not rt.alive and rt.hp_q16 == 0 and not rt.enabled
-    assert first is not None and first < TPS, \
-        f"no fire within a second of the engine's death (first={first})"
-    assert any(int(sim.gmap.fire[yx]) > 0 for yx in FURN_AT)
-    quiet, quiet_first = _engine_room("")
+    assert deaths == 1
+    quiet, quiet_deaths = _engine_room("")
     assert not quiet._heat_sources[0].alive
-    assert quiet_first is None, "a death without a payload lit a fire"
+    assert quiet_deaths == 0
 
 
 def test_the_death_payload_executes_exactly_once():
@@ -310,7 +317,7 @@ def test_a_blast_beyond_reach_or_too_weak_leaves_the_source_alive():
     sim = _sim([_source(hp=400)], furniture=False)
     rt = sim._heat_sources[0]
     hp0 = rt.hp_q16
-    _blast(sim, at=(SRC_AT[0], SRC_AT[1] + 5))     # breach_focus radius 3
+    _blast(sim, at=(SRC_AT[0], SRC_AT[1] + 5))     # HEAT_FREE radius 3
     _step(sim)
     assert rt.alive and rt.hp_q16 == hp0
     _blast(sim, row="frag_standard", at=(SRC_AT[0], SRC_AT[1] + 1))
@@ -430,16 +437,14 @@ def test_level_lib_round_trips_a_source(tmp_path):
     assert len(sim._heat_sources) == 1
 
 
-def test_the_engine_death_row_reaches_ignite_heat_two_tiles_out():
-    """Property: the placeholder ``engine_death`` row carries a blast and at
-    least IGNITE_HEAT on every tile within 2 of the engine (the deposit's
-    LINEAR falloff), so the death satisfies the Starting-a-fire rule. Breaks
-    if a retune drops the heat below the igniter's floor."""
-    from simulation.payloads import IGNITE_HEAT
+def test_the_engine_death_row_is_a_generic_explosion():
+    """Property: the placeholder ``engine_death`` row is a blast with wall damage,
+    a strength row, so it carries heat and its direct damage. RE-PINNED at #31:
+    no fire reach is required (Erik's ruling, 2026-11-06). Breaks if the row stops
+    being a blast."""
     from simulation.weapons import rebuild_tables
     p = rebuild_tables(tile_size_m=1.0).payloads.by_name["engine_death"]
-    assert p.radius > 0 and p.wall_damage > 0
-    assert p.heat_amount * (1.0 - 2.0 / p.heat_radius) >= IGNITE_HEAT
+    assert p.radius > 0 and p.wall_damage > 0 and p.strength > 0
 
 
 # ---------------------------------------------------------------------------

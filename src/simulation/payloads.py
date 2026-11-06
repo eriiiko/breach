@@ -5,8 +5,7 @@ fuse-out, placed-charge det slot, a 40 mm round's stop tile). This module is
 the ONE place a payload row becomes world effects; every delivery archetype
 calls :func:`execute_payload` instead of hand-sequencing physics calls.
 
-The executor generalizes the shipped explosion triple **behaviour-
-preservingly**: for the explosion part it sequences EXACTLY the calls the
+For a row without ``strength`` the executor sequences EXACTLY the calls the
 grenade fuse-out and door-charge sites shipped —
 
     apply_explosion(...)      when radius > 0        (walls + wave + clear + ignite)
@@ -14,16 +13,20 @@ grenade fuse-out and door-charge sites shipped —
     add_explosion_smoke(...)  when emit_blast_smoke  (the noisy render cloud)
     ExplosionEvent(...)       always                 (the renderer's cue)
 
-— same argument values, same call order, same event, so ``frag_standard`` and
-``breach_focus`` detonations are byte-identical to the pre-W3 inline sites
-(proven by the replica gate in tests/test_payloads.py: fields + events + RNG
-end-state). The smoke boolean SPLIT is the W1 finding of record
-(mechanics/03 §8): ``clear_smoke`` documents the inner-radius smoke clearing
-that v1 keeps INSIDE ``apply_explosion`` (data-of-record — it becomes the
-live gate when FieldEdit takes over the explosion internals), while
-``emit_blast_smoke`` is live TODAY and gates the textured cloud. Both must be
-true on ``frag_standard`` AND ``breach_focus`` or the door charge silently
-loses its smoke.
+— same argument values, same call order, same event (proven by the replica gate
+in tests/test_payloads.py: fields + events + RNG end-state). The smoke boolean
+SPLIT is the W1 finding of record (mechanics/03 §8): ``clear_smoke`` documents
+the inner-radius smoke clearing that v1 keeps INSIDE ``apply_explosion``
+(data-of-record — it becomes the live gate when FieldEdit takes over the
+explosion internals), while ``emit_blast_smoke`` is live TODAY and gates the
+textured cloud.
+
+A row with ``strength`` is THE GENERIC EXPLOSION (#31,
+docs/explosion_design_2026-11-06.md section 2): it keeps its wall and unit damage
+and the disc they use, and everything else derives from the one number and
+[blast]. Expansion, heat and smoke are fixed totals landed over tiles WALKED along
+open floor (:mod:`simulation.blast_expansion`), after the wall damage, so a wall
+stops them, a gap passes them and a corridor concentrates them.
 
 Then the NEW W3 effects:
 
@@ -33,7 +36,8 @@ Then the NEW W3 effects:
 
 Determinism (engine/14): the executor DRAWS NO RANDOMNESS. The explosion
 smoke's per-tile noise is drawn at the EditQueue flush (the single RNG
-consumer, unchanged from pre-W3); the gas deposit is deliberately noise-free
+consumer, unchanged from pre-W3), in the tile list's row-major order on a strength
+row; the gas deposit is deliberately noise-free
 (a flat deterministic radial falloff — texture can come later as a dial);
 the ignite ring is a pure MAX deposit. ``rng`` stays in the signature for
 symmetry with the detonation sites (process_door_explosives already carries
@@ -42,12 +46,21 @@ untouched.
 """
 from __future__ import annotations
 
+import math
+
+from simulation.blast_air import (ONE as _BLAST_ONE, blast_base_soot_g,
+                                  disc_tiles, read_blast_air)
+from simulation.blast_expansion import (heat_units_per_mj, open_mask,
+                                        reach_tiles, start_expansion,
+                                        start_source)
 from simulation.damage import CREDIT_HEAT, tick_credit
 from simulation.events import NO_ATTACKER, ExplosionEvent
 from simulation.exchange import apply_blast_damage
-from simulation.field_edit import (FieldEdit, EditMode, Region, Falloff,
+from simulation.field_edit import (FieldEdit, EditMode, Falloff, Region,
                                    _iter_region)
-from simulation.physics import apply_explosion, add_explosion_smoke
+from simulation.gases import smoke_units_of_soot
+from simulation.physics import (_SRC_EXPLOSION_SMOKE, add_explosion_smoke,
+                                apply_explosion)
 
 # source_id namespace for payload-issued edits (engine/13 stable-sort key).
 # physics.py owns 1 (_SRC_EXPLOSION) and 2 (_SRC_EXPLOSION_SMOKE); the W3
@@ -59,18 +72,22 @@ _SRC_PAYLOAD_IGNITE = 4
 _SRC_PAYLOAD_HEAT = 7
 
 
-def _claim_disc(gmap, channel, fy, fx, radius, owner_id):
-    """#123: claim a deposit disc's tiles for ``owner_id`` this tick
-    (damage.TickCredit) — the same DISC membership the edit's flush walks.
-    No-op for the environment (-1)."""
+def _claim_tiles(gmap, channel, tiles, owner_id):
+    """#123: claim a deposit's tiles for ``owner_id`` this tick
+    (damage.TickCredit). No-op for the environment (-1)."""
     if owner_id is None or int(owner_id) < 0:
         return
-    tick_credit(gmap).claim(
-        channel,
-        ((r, c) for r, c, _ in _iter_region(
-            Region.DISC, (fy, fx, float(radius)), Falloff.FLAT,
-            gmap.material.shape)),
-        owner_id)
+    tick_credit(gmap).claim(channel, tiles, owner_id)
+
+
+def _claim_disc(gmap, channel, fy, fx, radius, owner_id):
+    """#123: :func:`_claim_tiles` on a deposit disc — the same DISC membership
+    the edit's flush walks."""
+    _claim_tiles(gmap, channel,
+                 ((r, c) for r, c, _ in _iter_region(
+                     Region.DISC, (fy, fx, float(radius)), Falloff.FLAT,
+                     gmap.material.shape)),
+                 owner_id)
 
 
 def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius,
@@ -107,21 +124,21 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius,
     ))
 
 
-# THE HEAT AN IGNITER DELIVERS (fire session #12, 2026-09-12, issue #65).
+# THE HEAT AN IGNITER DELIVERS (fire session #12, 2026-09-12, issue #65), for a
+# row WITHOUT strength. A strength row has no igniter: Erik's ruling (2026-11-06)
+# is that a fire starts only when a material reaches its own ignition temperature
+# through the engine's ordinary heat.
 #
-# Sized so a flammable tile reaches its own ignition point FROM AMBIENT. Every
-# shipped flammable (wood, furniture, kindling, foliage, doors) carries
-# `thermal_mass = 8`, so `heat_inv_shift` is 3 and the temperature solver
-# converts `ΔT = heat >> 3`, i.e. heat/8. Wood has the highest ignition point at
-# 300, and the dev key's decisive-igniter margin is 55 (src/debug_keys.py:
-# DEBUG_IGNITE_MARGIN — measured: survival is marginal within ~+25 of ignition
-# and reliable above it). So:
+# Sized when every shipped flammable carried `thermal_mass = 8`, so `ΔT = heat/8`:
+# wood's ignition point 300 plus the dev key's decisive-igniter margin of 55
+# (src/debug_keys.py: DEBUG_IGNITE_MARGIN — measured: survival is marginal within
+# ~+25 of ignition and reliable above it) gives
 #
 #     (300 + 55) * 2**3 = 2840
 #
-# Independent cross-check: the flamethrower's own tuned `heat_deposit` is 2400
-# == 300 * 2**3, i.e. exactly "enough to light wood from ambient", arrived at
-# from the other direction entirely (config.toml [ammo.fuel_standard]).
+# STALE since the thin-material rows: furniture's thermal mass is 1/4 now, so this
+# heat takes a crate far past any ignition point (smoke_screen's comment in
+# config.toml has the incident). Left as it stands for ignite_ring's rows.
 IGNITE_HEAT = 2840.0
 
 
@@ -275,6 +292,35 @@ def inject_bulk_gas(gmap, fy, fx, payload):
     return len(tiles)
 
 
+def linear_weights(tiles, fy, fx, r2):
+    """The shipped LINEAR falloff over a walked tile list: ``1 - dist/radius`` from
+    the blast's centre. Row-major, as ``tiles`` is. Strictly positive: the walk
+    stays inside ``r2``, and a seed touches the centre of a radius of at least 2
+    (``heat_r2`` is ``4 * r_s**2``)."""
+    radius = math.sqrt(r2)
+    return [1.0 - math.sqrt((y - fy) ** 2 + (x - fx) ** 2) / radius
+            for y, x in tiles]
+
+
+def deposit_over_tiles(queue, field, tiles, weights, total, noise=0.0,
+                       scale=None, source_id=0, channel=None):
+    """THE fixed-total deposit (#31): land ``total`` on a walked tile list, each
+    tile its share of ``weights``, however many tiles the walk reached. One
+    FieldEdit on one tile-list region; the flush quantizes once per tile, so the
+    total holds to n/2 LSB. With ``noise`` the per-tile multiplier is drawn at the
+    flush, as every noisy deposit's is, so the total holds in expectation. No-op
+    for no tiles or no total."""
+    if total <= 0.0 or not tiles:
+        return
+    norm = float(sum(weights))
+    queue.enqueue(FieldEdit(
+        field=field, region=Region.TILES,
+        coords=tuple((y, x, w / norm) for (y, x), w in zip(tiles, weights)),
+        amount=float(total) / (1.0 - 0.5 * noise),
+        mode=EditMode.ADD, noise=noise, scale=scale, channel=channel,
+        source_id=source_id))
+
+
 def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
     """The peak density of the blast-smoke disc that deposits ``soot_g`` grams
     of soot (#12 handle 3, 2026-10-04): the disc keeps its shape -- LINEAR
@@ -308,13 +354,24 @@ def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
     return smoke_units_of_soot(soot_g) / (wsum * (1.0 - 0.5 * noise))
 
 
+def _blast_noise() -> float:
+    """The smoke's per-tile noise, the one [physics] dial add_explosion_smoke
+    reads, in [0, 1]."""
+    from config import CFG
+    return min(1.0, max(0.0, float(getattr(CFG.physics, "explosion_smoke_noise",
+                                           0.85))))
+
+
 def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
-                    kind="explosion", owner_id=NO_ATTACKER):
+                    kind="explosion", owner_id=NO_ATTACKER, approach=None):
     """Execute one ``[payloads.*]`` row at tile (fy, fx) — the single owner
     of the payload → world-effects sequence (mechanics/03 §4, W3).
 
     Effect order (fixed — the first three are the shipped detonation triple,
-    verbatim call order and argument values; see the module docstring):
+    verbatim call order and argument values; see the module docstring; on a
+    ``strength`` row step 3 and the heat land on the blast's WALKED tiles, the air
+    read and the source run between 2 and 3, and there is no ignite ring: fuel
+    catches only if the blast's ordinary heat takes it to its ignition_temp):
 
     1. ``apply_explosion``     — when ``radius > 0`` (structural wall damage
        immediate; wave/atmosphere/smoke-clear/ignite edits enqueued;
@@ -344,6 +401,11 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     ``rng`` is the sim generator — carried for signature symmetry with the
     detonation sites; the executor itself never draws (module docstring).
 
+    ``approach`` (#31) names the side a charge came from, read only when its
+    tile is still solid after its wall damage: the tile a round came from, or
+    the planter's or thrower's tile (:func:`blast_expansion.walk_seeds`). None
+    for a charge with no side (a timed charge, a heat source).
+
     ``owner_id`` (#123) is the unit the detonation is credited to — the
     grenade's thrower, the payload round's firer, the charge's planter; -1
     for nobody (a timed charge, a tool). It credits the blast directly and
@@ -368,22 +430,57 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         apply_blast_damage(units, fx, fy, payload.radius,
                            payload.unit_damage, events=events,
                            attacker_id=owner_id)
-    if payload.emit_blast_smoke:
+    # A charge reads the air it goes off in (#31): smoke per tile, heat for the
+    # whole blast. Read here, after its wall damage and before any of this
+    # payload's edits land. A strength row's walks run at this same point, so a
+    # tile the blast opened is open.
+    generic = getattr(payload, "strength", 0.0) > 0.0
+    air = None
+    if generic:
+        mask = open_mask(gmap)
+        heat_tiles = reach_tiles(mask, fy, fx, payload.heat_r2, approach)
+        heat_weights = linear_weights(heat_tiles, fy, fx, payload.heat_r2)
+        air = read_blast_air(gmap, heat_tiles)
+        start_source(gmap, reach_tiles(mask, fy, fx, payload.source_r2, approach),
+                     payload.expansion_m3)
+    elif getattr(payload, "explosive", ""):
+        air = read_blast_air(gmap, disc_tiles(
+            gmap, fy, fx, max(payload.radius,
+                              getattr(payload, "heat_radius", 0.0))))
+    if not generic and getattr(payload, "expansion_m3", 0.0) > 0.0:
+        start_expansion(gmap, fy, fx, payload)
+    if generic:
+        noise = _blast_noise()
+        deposit_over_tiles(queue, "smoke", heat_tiles, heat_weights,
+                           smoke_units_of_soot(blast_base_soot_g(payload)),
+                           noise=noise, scale=air.smoke_scale_q16,
+                           source_id=_SRC_EXPLOSION_SMOKE)
+    elif payload.emit_blast_smoke:
         peak = blast_smoke_peak(gmap, fy, fx, payload.radius,
-                                getattr(payload, "blast_soot_g", 0.0))
+                                blast_base_soot_g(payload))
         if peak > 0.0:
             add_explosion_smoke(gmap, queue, fy, fx, payload.radius,
-                                amount=peak)
+                                amount=peak,
+                                scale=(air.smoke_scale_q16 if air else None))
     if payload.gas_species:
         emit_gas(gmap, queue, fy, fx, payload.gas_species,
                  payload.gas_amount, payload.gas_radius, owner_id=owner_id)
     if getattr(payload, "bulk_gas", ""):
         inject_bulk_gas(gmap, fy, fx, payload)
-    if payload.ignite_radius > 0:
+    if generic:
+        _claim_tiles(gmap, CREDIT_HEAT, heat_tiles, owner_id)
+        deposit_over_tiles(queue, "heat", heat_tiles, heat_weights,
+                           payload.heat_mj * heat_units_per_mj(gmap)
+                           * (air.heat_scale_q16 / _BLAST_ONE),
+                           source_id=_SRC_PAYLOAD_HEAT)
+    elif payload.ignite_radius > 0:
         ignite_ring(gmap, queue, fy, fx, payload.ignite_radius,
                     payload.ignite_intensity, owner_id=owner_id)
     if getattr(payload, "heat_amount", 0.0) > 0:
-        deposit_heat(gmap, queue, fy, fx, payload.heat_amount,
+        heat = payload.heat_amount
+        if air is not None:
+            heat = heat * (air.heat_scale_q16 / _BLAST_ONE)
+        deposit_heat(gmap, queue, fy, fx, heat,
                      payload.heat_radius, owner_id=owner_id)
     if events is not None:
         events.append(ExplosionEvent(pos=(fx, fy), radius=payload.radius,
@@ -392,4 +489,5 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
 
 __all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",
            "inject_bulk_gas", "bulk_gas_tiles", "blast_smoke_peak",
+           "deposit_over_tiles", "linear_weights",
            "BULK_GAS_BOOKS", "BULK_GAS_RAIL_BOOKS"]

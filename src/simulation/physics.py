@@ -146,7 +146,8 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                                 ))
 
 
-def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8):
+def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8,
+                        scale=None):
     """Enqueue a noisy smoke disc into ``gmap.smoke`` (engine/13 ADD edit).
 
     Behaviour-preserving migration of the legacy inline deposit onto the
@@ -171,7 +172,8 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8):
     so the look is config-tunable; callers (e.g. the demo dial) may override it.
 
     The smoke policy supplies the skip-mask (``solid``) and the floor-0
-    TRACE_CLAMP, so a deposited tile gets exactly ``smoke + base*mult`` (no
+    TRACE_CLAMP, so a deposited tile gets exactly ``smoke + base*mult`` (times
+    ``scale`` when given, the blast's air read, #31) (no
     ceiling since smoke transport v2 D1 -- the old ``min(1, ...)`` cut smoke
     already on the tile) and a solid tile is skipped (and draws no RNG — the per-tile draw order matches the
     legacy nested-loop order, keeping the deposit bit-identical for a fixed seed).
@@ -183,5 +185,6 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8):
     queue.enqueue(FieldEdit(
         field="smoke", region=Region.DISC, coords=(fy, fx, float(radius)),
         amount=float(amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
-        noise=noise, source_id=_SRC_EXPLOSION_SMOKE,   # policy TRACE_CLAMP (D1)
+        noise=noise, scale=scale,
+        source_id=_SRC_EXPLOSION_SMOKE,   # policy TRACE_CLAMP (D1)
     ))
