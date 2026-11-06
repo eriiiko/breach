@@ -3524,6 +3524,16 @@ fuse_s = 1.0                          # PLACEHOLDER
 [temps.hot_engineering]               # B.2's hot engine room (levels/recipes/departments/engineering.toml)
 above_ambient = 40.0                  # PLACEHOLDER
 
+# [levelgen.vents]: the recipe path's vent DESIGN FLOW (vocabulary §0.6 item
+# 3; gen_ship.vent_rates, read through gen_ship.vent_ach, which refuses a
+# missing or non-positive value). Per duct and air volume it serves, the
+# served rooms' floor area x ach / 3600 tile-volumes of ambient air per
+# second go in through the duct's supplies and out through its returns, each
+# side shared by room area, the two sums the same integer. v1's `--vents`
+# shorthand keeps the studio rate (gen_ship.Q_CIRC = 16).
+[levelgen.vents]
+ach = 10.0                            # PLACEHOLDER (Erik tunes): air changes per hour of a ventilated room
+
 # [levelgen.lights.*]: a room's lamp by name (gen_ship's `light` tag,
 # ((r, g, b), level)); render light only. `lit` is gen_ship's default lamp.
 [levelgen.lights.lit]

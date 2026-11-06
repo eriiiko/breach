@@ -8,5 +8,5 @@ phase = [4]
 tactic = "A grenade in one room comes out of the grille in the other, and some of it comes back."
 
 [[duct]]
-roles = ["supply", "return"]    # each room carries both (the sealed-room rule); one shared plenum
+roles = ["supply", "return"]    # each room carries both: its air volume's supply AND return (the air-volume rule, vocabulary §0.6), balanced by the design flow; one shared plenum
 filter = "derelict"             # a [filters.*] row by name

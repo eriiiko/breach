@@ -649,20 +649,14 @@ def inv_duct_in_cell(d: Draft) -> None:
                                 f"crosses a cell")
 
 
-def inv_sealed_room(d: Draft) -> None:
-    """A room every edge of which bounds a compartment carries both a supply
-    and a return on each of its ducts, or none (vocabulary §0.4)."""
-    for r in d.rooms.values():
-        for duct_name, roles, _sh in _vents(r):
-            if len(roles) == 2:
-                continue
-            mine = d.edges_of(r.id)
-            if all(G.EDGE_KINDS[e.kind].bounds for e in mine):
-                raise InvariantViolation(
-                    "sealed_room", f"room {r.id!r} is sealed (edges "
-                                   f"{[e.kind for e in mine]}) and carries "
-                                   f"only a {roles[0]!r} vent on duct "
-                                   f"{duct_name!r}")
+def inv_air_volume(d: Draft) -> None:
+    """THE AIR-VOLUME VENT RULE (vocabulary §0.6; it replaced the sealed-room
+    rule): every air volume a duct has a vent in carries a supply and a
+    return on that duct -- ``gen_ship.vent_air_rule``, the one statement."""
+    bad = G.vent_air_rule({rid: _vents(r) for rid, r in d.rooms.items()},
+                          [(e.a, e.b, e.kind) for e in d.edges])
+    if bad:
+        raise InvariantViolation("air_volume", str(bad[0]))
 
 
 def inv_reachable(d: Draft) -> None:
@@ -708,7 +702,7 @@ INVARIANTS = {
     "cell_crossing": (inv_cell_crossing, 1),
     "reachable": (inv_reachable, 3),
     "duct_in_cell": (inv_duct_in_cell, 4),
-    "sealed_room": (inv_sealed_room, 4),
+    "air_volume": (inv_air_volume, 1),
 }
 
 
@@ -1282,8 +1276,9 @@ def recipe_hash(archetype: Archetype, profile: str,
     [profiles] table, plus ``profile``'s table, plus the parsed files of
     every department and cycle it names and the fixtures those departments
     use, plus every preset value they resolve (lights, fuel classes, temps,
-    pressures, heat sources, hazards, filters). A comment edit does not move
-    it; retuning another profile does not move this one's."""
+    pressures, heat sources, hazards, filters) and, when any duct exists,
+    ``[levelgen.vents] ach`` (the vents' design flow). A comment edit does
+    not move it; retuning another profile does not move this one's."""
     lib = library or archetype.library
     raw = R._read(Path(archetype.path))
     prof = raw.get("profiles", {})
@@ -1330,6 +1325,10 @@ def recipe_hash(archetype: Archetype, profile: str,
             for x in c.ducts:
                 presets[f"filters.{x.filter}"] = _plain(
                     R._table(f"filters.{x.filter}"))
+    if any(k.startswith("filters.") for k in presets):
+        # the vent design flow's dial (vocabulary §0.6 item 3): a ship's
+        # vent rates are a function of it, so a retune makes the record stale
+        presets["levelgen.vents.ach"] = G.vent_ach()
     body.update(departments=depts, cycles=cycles, fixtures=fixtures,
                 presets=presets)
     blob = json.dumps(_plain(body), sort_keys=True, separators=(",", ":"),

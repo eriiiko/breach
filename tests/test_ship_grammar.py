@@ -288,7 +288,7 @@ def test_a_rejected_attempt_moves_to_the_next_stream(arch, monkeypatch):
 def test_every_graph_keeps_every_invariant(ships):
     """PROPERTY: every returned graph satisfies all of the recipe doc's §1.5
     invariants (one edge per pair bar the bypass, no triangle, L5 crossings,
-    reachability, duct-in-cell, the sealed-room rule), every edge joins
+    reachability, duct-in-cell, the air-volume vent rule), every edge joins
     rooms of the graph, every room's tags pass gen_ship's ROOM_TAGS (and its
     fuel / vent readers), every vent's duct is declared and a duct's rooms
     are ONE department instance unless it is a duct link; the ring and the
@@ -583,16 +583,20 @@ def _vent(*roles) -> dict:
      lambda d: S.leaf(d, "b", S.QRoom(id="c", tags=_vent("supply",
                                                          "return")),
                       "door", P), 4),
-    ("sealed_room",
+    # the air-volume vent rule (vocabulary §0.6): c's lone supply behind a
+    # door is a volume of its own; through an air edge it shares b's return
+    ("air_volume",
      lambda d: S.leaf(d, "b", S.QRoom(id="c", tags=_vent("supply")), "door",
                       P),
-     lambda d: S.leaf(d, "b", S.QRoom(id="c", tags=_vent("supply")), "open",
-                      P), 4),
+     lambda d: S.leaf(d, "b", S.QRoom(id="c", tags=_vent("supply")),
+                      "vented_door", P), 1),
 ])
 def test_each_invariant_refuses_by_name(name, bad, good, phase):
     """PROPERTY (recipe doc §1.5, §5.3): an application that breaks an
     invariant is refused NAMING it, from the first phase that invariant
-    runs in (contact rules from phase 1, reachability from 3, the air rules
+    runs in (contact rules and the air-volume rule from phase 1 -- a move
+    that re-parents rooms, the retreat loop, can split a department's air,
+    so each application is checked --, reachability from 3, a duct's cell
     in 4) and not before; the same move applied legally passes. BREAKS IF an
     invariant is dropped, renamed, or run in the wrong phase."""
     d = bad(_small())

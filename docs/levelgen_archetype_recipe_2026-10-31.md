@@ -703,3 +703,10 @@ engineering (#142: an airlock's outer door is closed to them).
 
 Still not built: banks (§5.3), `mutate` and the per-department layout
 streams (§5.4), the #126 recording header's `recipe_hash`.
+
+**Amended 2026-11-06 (#124, vocabulary doc §0.6):** the air-volume vent rule
+(it replaced the sealed-room rule) runs from PHASE 1 on every application,
+not in phase 4 as §2 and the grammar's as-built say: the retreat loop
+re-parents side rooms and can split a department's air, and that
+application is refused, not the whole attempt. `duct_in_cell` stays in
+phase 4.

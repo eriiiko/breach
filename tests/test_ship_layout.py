@@ -11,6 +11,7 @@ draws over seeds x both sizes x every profile.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -733,8 +734,10 @@ def test_feasibility_is_exact_on_drawn_graphs(arch, monkeypatch):
                 else:
                     assert any(w in why for w in (
                         "row A", "row B", "rows A", "the band")), why
-                    assert "crew_quarters" in why or "band" in why \
-                        or "department" in why, why
+                    named = re.findall(r"'([a-z_0-9]+)#\d+'", why)
+                    depts = {r.dept for r in q.rooms if r.dept}
+                    assert "band" in why or "department" in why \
+                        or (named and set(named) <= depts), why
                     with pytest.raises(G._Reject):
                         L.layout(q, _rng(seed, 1, 0, 0))
     assert seen == {True, False}

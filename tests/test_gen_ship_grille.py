@@ -225,7 +225,10 @@ def test_the_freighters_spine_edges_are_vented_doors_mirrored(freighter):
              and e.kind in S.WALK_KINDS]
     assert spine and all(e.kind == "vented_door" for e in spine), \
         [(e.a, e.b, e.kind) for e in spine]
-    assert _check_stamps(tm, g) == len(spine)
+    # every vented door is checked, the spine's among them (a department
+    # may carry its own: the crew quarters' heads, vocabulary §0.6)
+    assert _check_stamps(tm, g) == sum(e.kind == "vented_door"
+                                       for e in g.edges) >= len(spine)
     assert np.array_equal(tm, tm[:, ::-1])
     for e in g.edges:
         ta, tb = g.rooms[e.a].tags, g.rooms[e.b].tags

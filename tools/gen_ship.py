@@ -264,7 +264,12 @@ class EdgeKind:
     None when stage 2 stamps it, else what will (the schema accepts the
     kind, :func:`embed` refuses it naming that); ``jambs``: the material
     stamped in the ONE wall tile on each side of the opening (None: they stay
-    steel; ``vented_door``'s grilles, #134), always inside the shared run.
+    steel; ``vented_door``'s grilles, #134), always inside the shared run;
+    ``air``: the opening passes gas from tick 0 and nothing in play closes
+    it (``open``, ``grille``, ``vented_door``), so its two rooms are ONE AIR
+    VOLUME (:func:`air_volumes`, vocabulary §0.6) -- an entity door can be
+    shut, a window or a breakable wall must break first, a door is
+    gas-tight.
 
     WALK, AIR and STRUCTURE are three questions (vocabulary §0.4, the dated
     note of 2026-11-06). A grille tile (``grille``'s opening, a
@@ -282,6 +287,7 @@ class EdgeKind:
     pending: str | None = None
     entity: str | None = None
     jambs: int | None = None
+    air: bool = False
 
 
 _DOOR_STAMP = {"open": MAT_AIR, "closed": MAT_DOOR_CLOSED}
@@ -297,7 +303,7 @@ EDGE_KINDS = {
     "entity_door": EdgeKind(_DOOR_STAMP[ENTITY_DOOR_INITIAL], DOOR_W, True,
                             False, True, L9_MUST_SHARE_WALL, entity="door"),
     "open":        EdgeKind(MAT_AIR, DOOR_W, False, False, True,
-                            L9_MUST_SHARE_WALL),
+                            L9_MUST_SHARE_WALL, air=True),
     "window":      EdgeKind(MAT_GLASS, GLASS_W, True, False, False,
                             L9_MUST_SHARE_WALL),
     "bulkhead":    EdgeKind(None, 0, True, False, False,
@@ -323,9 +329,9 @@ EDGE_KINDS = {
     # each side grille. Both bound a compartment (a grille is structure for
     # walking and for the count); neither is a CELL_CROSSING_KINDS row.
     "grille":      EdgeKind(MAT_GRILLE, GLASS_W, True, False, False,
-                            L9_MUST_SHARE_WALL),
+                            L9_MUST_SHARE_WALL, air=True),
     "vented_door": EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
-                            L9_MUST_SHARE_WALL, jambs=MAT_GRILLE),
+                            L9_MUST_SHARE_WALL, jambs=MAT_GRILLE, air=True),
 }
 # Kinds that may cross a cell boundary (L5 as amended, Erik 2026-10-31: the
 # breakable wall is the third, a deliberate weak point): everything else is
@@ -429,6 +435,100 @@ def vent_specs(tag) -> tuple:
     if isinstance(tag, (list, tuple)):
         return tuple(vent_spec(d) for d in tag)
     return (vent_spec(tag),)
+
+
+def _id_key(rid):
+    """Room ids sort numerically (a ShipGraph's ints) or by name (a recipe's
+    and the grammar's strings)."""
+    return (isinstance(rid, str), rid)
+
+
+def air_volumes(rooms, edges) -> dict:
+    """Room id -> AIR VOLUME index (vocabulary §0.6 item 1): rooms joined by
+    an edge whose :data:`EDGE_KINDS` row says ``air`` (``open``, ``grille``,
+    ``vented_door``) are one body of air. ``rooms``: every room id, in
+    order; ``edges``: ``(a, b, kind)``. Indices run 0..k-1 in the order of
+    each volume's first room. An edge added later can only MERGE volumes."""
+    rooms = list(rooms)
+    parent = {r: r for r in rooms}
+
+    def find(r):
+        while parent[r] != r:
+            parent[r] = parent[parent[r]]
+            r = parent[r]
+        return r
+    for a, b, kind in edges:
+        if EDGE_KINDS[kind].air and a in parent and b in parent:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+    idx, out = {}, {}
+    for r in rooms:
+        out[r] = idx.setdefault(find(r), len(idx))
+    return out
+
+
+@dataclass(frozen=True)
+class VentAirViolation:
+    """One breach of :func:`vent_air_rule`: on ``duct``, the air volume of
+    ``rooms`` has ``have`` vents (in ``have_rooms``) and no ``missing`` one.
+    ``str()`` is the refusal message every call site raises."""
+    duct: str
+    rooms: tuple
+    have: str
+    have_rooms: tuple
+    missing: str
+
+    def __str__(self) -> str:
+        return (f"duct {self.duct!r}: the air volume of rooms "
+                f"{list(self.rooms)} has {self.have!r} vents (rooms "
+                f"{list(self.have_rooms)}) and no {self.missing!r} vent on "
+                f"that duct -- every air volume a duct has a vent in carries "
+                f"a supply AND a return on it (no pressure feedback: a lone "
+                f"supply pumps the volume up, a lone return drains it; "
+                f"vocabulary §0.6)")
+
+
+def vent_air_rule(vents: dict, edges) -> list:
+    """THE AIR-VOLUME VENT RULE (vocabulary §0.6 item 2; it replaced the
+    sealed-room rule of §0.4): for every duct, every air volume the duct has
+    a vent in carries at least one SUPPLY and at least one RETURN on that
+    duct -- the vents have no pressure feedback, so a volume a duct only
+    feeds is pumped up and one it only drains is emptied. A sealed room is
+    the one-room volume, so the old rule is the special case. ONE function:
+    :meth:`ShipGraph.check`, the recipe door (``levelgen_recipes``) and the
+    grammar's ``air_volume`` invariant (``ship_grammar``) all call it.
+
+    ``vents``: EVERY room id (in order) -> its :func:`vent_specs` triples
+    (``()`` for a room without a vent); ``edges``: ``(a, b, kind)``. v1's
+    string shorthand is EXEMPT (v1's ``--vents`` pair is a lone supply and a
+    lone return in two rooms; levels/ship_demo is pinned byte-identical,
+    #151). Returns one :class:`VentAirViolation` per (duct, volume) that
+    lacks a role, in (duct, volume) order; ``[]`` when the rule holds."""
+    vol = air_volumes(vents, edges)
+    members: dict = {}
+    for rid, v in vol.items():
+        members.setdefault(v, []).append(rid)
+    by: dict = {}
+    for rid, triples in vents.items():
+        for duct, roles, shorthand in triples:
+            if shorthand:
+                continue
+            slot = by.setdefault((duct, vol[rid]),
+                                 {r: [] for r in VENT_ROLES})
+            for role in roles:
+                slot[role].append(rid)
+    out = []
+    for (duct, v), slot in sorted(by.items(), key=lambda kv: kv[0]):
+        for role in VENT_ROLES:
+            if slot[role]:
+                continue
+            have = next(r for r in VENT_ROLES if slot[r])
+            out.append(VentAirViolation(
+                duct=duct, rooms=tuple(sorted(members[v], key=_id_key)),
+                have=have, have_rooms=tuple(sorted(slot[have], key=_id_key)),
+                missing=role))
+    return out
 
 
 def _check_fuel(v) -> bool:
@@ -750,13 +850,12 @@ class ShipGraph:
         - a duct's rooms lie in ONE pressure cell (``cell`` tag; rooms
           without one share an implicit cell): a duct never crosses a cell
           boundary;
-        - a SEALED room (every edge it has bounds a compartment) carrying a
-          ``vent`` tag carries BOTH roles on EACH duct it is on (the vents
-          have no pressure feedback: a lone supply pumps it up, a lone
-          return drains it). v1's string shorthand is exempt: v1's
-          ``--vents`` pair is exactly such a lone supply / lone return
-          (critique finding 2), and levels/ship_demo is pinned
-          byte-identical;
+        - THE AIR-VOLUME RULE (:func:`vent_air_rule`, vocabulary §0.6):
+          every air volume (:meth:`air_volume_of`) a duct has a vent in
+          carries a supply AND a return on that duct. v1's string shorthand
+          is exempt: v1's ``--vents`` pair is exactly a lone supply / lone
+          return (critique finding 2), and levels/ship_demo is pinned
+          byte-identical (#151);
         - a ``vent_only`` edge joins two rooms that share a duct (the air
           path is the duct; nothing is cut in the wall);
         - an edge whose rooms lie in different cells is an airlock, a
@@ -789,18 +888,10 @@ class ShipGraph:
                 raise GraphSchemaError(
                     f"duct {duct!r} spans {len(by_cell)} cells ({desc}): a "
                     f"duct never crosses a cell boundary (vocabulary §0.5)")
-        for rid, triples in sorted(specs.items()):
-            for (duct, roles, shorthand) in triples:
-                if shorthand or len(roles) == 2:
-                    continue
-                mine = [e for e in self.edges if rid in (e.a, e.b)]
-                if all(e.spec.bounds for e in mine):
-                    raise GraphSchemaError(
-                        f"room {rid} is sealed (every edge bounds a "
-                        f"compartment) and carries only a {roles[0]!r} vent "
-                        f"on duct {duct!r}: a sealed room carries both a "
-                        f"supply and a return or neither, on each of its "
-                        f"ducts (vocabulary §0.4 / §0.5)")
+        bad = vent_air_rule({rm.id: specs.get(rm.id, ()) for rm in self.rooms},
+                            [(e.a, e.b, e.kind) for e in self.edges])
+        if bad:
+            raise GraphSchemaError(str(bad[0]))
         for e in self.edges:
             if e.kind == "vent_only":
                 da = [t[0] for t in specs.get(e.a, ())]
@@ -832,6 +923,16 @@ class ShipGraph:
         for i in range(len(self.rooms)):
             out.append(idx.setdefault(uf.find(i), len(idx)))
         return out
+
+    def air_volume_of(self) -> list:
+        """Room id -> AIR VOLUME index (:func:`air_volumes`; vocabulary §0.6
+        item 1), the twin of :meth:`compartment_of`: rooms joined by an
+        ``air`` edge (``open``, ``grille``, ``vented_door``) are one volume;
+        indices run 0..k-1 in the order of each volume's lowest room id. A
+        ``vented_door`` bounds a compartment but not a volume."""
+        vol = air_volumes(range(len(self.rooms)),
+                          [(e.a, e.b, e.kind) for e in self.edges])
+        return [vol[i] for i in range(len(self.rooms))]
 
 
 def shared_wall(a: Room, b: Room):
@@ -1583,7 +1684,118 @@ def _build_heat_sources(tm, graph: ShipGraph, passage, reserved) -> list:
     return ents
 
 
-def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
+# THE DESIGN FLOW's rate quantum (vocabulary §0.6 item 3): a vent's
+# ``q_circ`` is in TILE-VOLUMES OF AMBIENT AIR PER SECOND -- vent_system.
+# build_vents quantizes ``q_circ / (C * T_amb)`` (== q_circ: the P1
+# calibration C * T_amb == 1) through ``quantize_bulk_scalar`` into raw
+# Q16.16 bulk N per second, and a tile's whole bulk N at 1 atm ambient is
+# exactly 1.0 (13763 + 51773 == 65536 raw). So one raw unit per second is
+# the runtime's rate quantum, and every designed rate is ``raw / RATE_ONE``
+# with ``raw`` an int: exact in a float, written exactly (repr) and
+# quantized back to ``raw`` at load.
+RATE_ONE = 1 << 16
+
+
+def vent_ach() -> float:
+    """``[levelgen.vents] ach`` -- the air changes per hour a ventilated
+    room gets on the recipe path (PLACEHOLDER, Erik tunes). THE door of the
+    design flow's one dial: refuses a missing table or key and a value that
+    is not a positive number, naming the key."""
+    from config import CFG
+    tbl = getattr(getattr(CFG, "levelgen", None), "vents", None)
+    ach = getattr(tbl, "ach", None)
+    if ach is None:
+        raise ValueError(
+            "config.toml has no [levelgen.vents] ach: the recipe path's vent "
+            "design flow (vocabulary §0.6 item 3) has no fallback rate")
+    if not _is_num(ach) or not float(ach) > 0:
+        raise ValueError(
+            f"[levelgen.vents] ach = {ach!r} is not a positive number (air "
+            f"changes per hour of a ventilated room)")
+    return float(ach)
+
+
+def _apportion(total: int, groups: list) -> dict:
+    """``total`` (int) shared over ``groups`` -- ``(key, weight, members)``,
+    ``members`` the room ids that must get EQUAL shares (a mirror pair) --
+    in proportion to ``weight`` (the group's summed area) by largest
+    remainder in exact integers: room id -> int, summing to ``total``. Each
+    group's share is a multiple of its member count; ties go to the lowest
+    key. The caller makes ``total`` reachable (even when every group is a
+    pair)."""
+    wsum = sum(w for _k, w, _m in groups)
+    alloc = {k: (total * w // wsum) // len(m) * len(m) for k, w, m in groups}
+    rem = total - sum(alloc.values())
+    while rem > 0:
+        fits = [(k, w, m) for k, w, m in groups if len(m) <= rem]
+        if not fits:
+            raise ValueError(f"cannot apportion {total} over {groups}")
+        k, _w, m = max(fits, key=lambda g: (total * g[1] - alloc[g[0]] * wsum,
+                                            [-x for x in sorted(g[2])]))
+        alloc[k] += len(m)
+        rem -= len(m)
+    return {rid: alloc[k] // len(m) for k, _w, m in groups for rid in m}
+
+
+def vent_rates(graph: ShipGraph, ach: float) -> dict:
+    """THE DESIGN FLOW (vocabulary §0.6 item 3): ``(room id, duct, role) ->
+    raw rate`` (int, raw Q16.16 bulk N per second, :data:`RATE_ONE` = one
+    tile-volume of ambient air per second) for every NON-shorthand vent.
+
+    Per duct D and air volume V (:meth:`ShipGraph.air_volume_of`) it has
+    vents in: the served rooms are V's rooms with a vent on D, and ``F =
+    ach / 3600 x (their floor area in tiles)`` tile-volumes per second,
+    rounded to the quantum. D's supplies in V share F in proportion to their
+    rooms' areas; D's returns in V share the SAME integer F the same way --
+    so in every volume a duct's supply equals its return, exactly, and the
+    runtime (which hands the supplies what the returns collected, in
+    proportion to their rates) gives each volume back what it gave. Mirror
+    twins get equal rates: twins on mirrored ducts solve mirrored problems
+    (room ids keep their order under the mirror); twins on ONE duct in ONE
+    volume share as a pair (F made even when every share is a pair). v1's
+    shorthand is not here (it keeps :data:`Q_CIRC`)."""
+    vol = graph.air_volume_of()
+    by: dict = {}
+    for rm in graph.rooms:
+        if "vent" not in rm.tags:
+            continue
+        for duct, roles, shorthand in vent_specs(rm.tags["vent"]):
+            if shorthand:
+                continue
+            slot = by.setdefault((duct, vol[rm.id]),
+                                 {r: [] for r in VENT_ROLES})
+            for role in roles:
+                slot[role].append(rm.id)
+    per_tile = ach / 3600.0 * RATE_ONE
+    out = {}
+    for (duct, _v), slot in sorted(by.items(), key=lambda kv: kv[0]):
+        served = sorted(set(slot["supply"]) | set(slot["return"]))
+        area = {rid: graph.rooms[rid].w * graph.rooms[rid].h
+                for rid in served}
+        side_groups = {}
+        for role in VENT_ROLES:
+            groups, seen = [], set()
+            for rid in sorted(slot[role]):
+                if rid in seen:
+                    continue
+                tw = graph.rooms[rid].mirror if graph.mirror_x else None
+                pair = (tw is not None and tw != rid and tw in slot[role])
+                m = (rid, tw) if pair else (rid,)
+                seen.update(m)
+                groups.append((rid, sum(area[x] for x in m), m))
+            side_groups[role] = groups
+        total = max(1, round(per_tile * sum(area.values())))
+        if any(all(len(m) == 2 for _k, _w, m in g)
+               for g in side_groups.values()) and total % 2:
+            total += 1
+        for role in VENT_ROLES:
+            for rid, raw in _apportion(total, side_groups[role]).items():
+                out[(rid, duct, role)] = raw
+    return out
+
+
+def _build_vents(tm, graph: ShipGraph, reserved=None,
+                 ach: float | None = None) -> list:
     """One duct entity per duct name the rooms' ``vent`` tags use (id
     ``duct_<name>``, its filter :meth:`ShipGraph.duct_filter`), then that
     duct's wall vents, one per (room, role): supply rooms first, then by
@@ -1591,7 +1803,10 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
     v1's string shorthand keeps v1's ``vent_<role>`` (so v1 ships write the
     same file), and a collision of those is refused by name. A room on
     several ducts (a list tag) gets a site per (duct, role); every site is
-    clear of every earlier one, whatever its duct."""
+    clear of every earlier one, whatever its duct.
+
+    A vent's ``q_circ`` is the DESIGN FLOW's (:func:`vent_rates` at ``ach``,
+    default :func:`vent_ach`); v1's shorthand keeps :data:`Q_CIRC`."""
     tagged = {}
     for rm in graph.rooms:
         if "vent" in rm.tags:
@@ -1600,6 +1815,9 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
                     tagged.setdefault(duct, []).append((role, rm, shorthand))
     if not tagged:
         return []
+    designed = any(not sh for ts in tagged.values() for _r, _rm, sh in ts)
+    rates = (vent_rates(graph, vent_ach() if ach is None else ach)
+             if designed else {})
     taken = (np.zeros(tm.shape, dtype=bool) if reserved is None
              else reserved.copy())
     ents, ids = [], set()
@@ -1628,7 +1846,8 @@ def _build_vents(tm, graph: ShipGraph, reserved=None) -> list:
                 id=vid, class_name="vent", ordinal=len(ents),
                 fields={"x": int(x), "y": int(y), "mount": "wall",
                         "facing": facing, "role": role, "duct": did,
-                        "q_circ": Q_CIRC},
+                        "q_circ": (Q_CIRC if shorthand else
+                                   rates[(rm.id, duct, role)] / RATE_ONE)},
                 authored_keys=_VENT_KEYS))
     return ents
 
