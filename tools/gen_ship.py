@@ -1810,11 +1810,15 @@ def _room_lamps(rm: Room) -> list:
     long axis (x on a square room), the long side cut into that many equal
     spans with a lamp at each span's centre, the short axis centred. The
     positions are symmetric about the room's centre, so a mirror twin's
-    lamps are the reflection of its twin's."""
+    lamps are the reflection of its twin's. A ``light`` tag of level 0 (the
+    ``dark`` preset: the fuel bunker) is a room with NO lamp -- the level
+    format refuses a zero-intensity ``[[light]]``."""
     rgb, level = LAMP_RGB, LAMP_INTENSITY
     if "light" in rm.tags:
         rgb = tuple(float(c) for c in rm.tags["light"][0])
         level = float(rm.tags["light"][1])
+        if level <= 0.0:
+            return []
     if "lamp_span" not in rm.tags:
         spots = [(rm.x + rm.w / 2.0, rm.y + rm.h / 2.0)]
     elif rm.w >= rm.h:
@@ -2114,17 +2118,28 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
 
 @dataclass
 class ShipPlan:
-    """A generated ship, validated, not yet written."""
+    """A generated ship, validated, not yet written. A RECIPE ship (family
+    B: ``generate(recipe=...)``) also carries the archetype's name, the
+    profile, the grammar attempt ``g`` (``attempt`` is then the layout
+    attempt ``a`` of that graph), the recipe hash, the quotient graph it was
+    laid out from and the layout's quotient-id -> room-ids map."""
     seed: int
     size: str
     attempt: int                      # the sub-seed that passed (0 = first)
     graph: ShipGraph                  # stage 1
     embedding: Embedding              # stage 2
     rejected: list = field(default_factory=list)   # (attempt, reasons)
+    recipe: str | None = None         # the archetype (None: plan_graph's v1)
+    profile: str | None = None
+    g: int = 0                        # the grammar attempt that passed
+    recipe_hash: str | None = None
+    quotient: object | None = None    # ship_grammar.QuotientGraph
+    room_ids: dict = field(default_factory=dict)   # quotient id -> (id, twin)
+    zombies_base: int | None = None   # the request, before the profile's scale
 
     @property
     def name(self) -> str:
-        return default_name(self.seed, self.size)
+        return default_name(self.seed, self.size, self.recipe, self.profile)
 
     @property
     def tilemap(self) -> np.ndarray:
@@ -2154,15 +2169,31 @@ class ShipPlan:
                          objective="eliminate")
 
 
-def default_name(seed: int, size: str) -> str:
-    return f"ship_s{seed}_{size}"
+def default_name(seed: int, size: str, recipe: str | None = None,
+                 profile: str | None = None) -> str:
+    """``ship_s<seed>_<size>``; a recipe ship (archetype doc §5.1)
+    ``ship_<archetype>_<profile>_s<seed>_<size>``."""
+    if recipe is None:
+        return f"ship_s{seed}_{size}"
+    return f"ship_{recipe}_{profile}_s{seed}_{size}"
 
 
 def generate(seed: int, size: str = "medium", *, max_per_team: int = 6,
-             zombies: int = 4, vents: bool = False) -> ShipPlan:
+             zombies: int = 4, vents: bool = False, recipe=None,
+             profile: str = "standard") -> ShipPlan:
     """A validated ship for ``seed`` (pure: no files). Tries sub-seeds
     ``attempt = 0, 1, ...``: stage 1, stage 2, the gates; the first plan
-    that passes is returned."""
+    that passes is returned.
+
+    ``recipe`` (an archetype name under ``levels/recipes/archetypes`` or a
+    loaded ``ship_grammar.Archetype``) switches stage 1 to FAMILY B
+    (:func:`_generate_recipe`): the grammar, then the layout stage, then the
+    same :func:`embed` and :func:`validate`; ``profile`` is the archetype's
+    difficulty profile. Without it nothing below changes: v1's
+    :func:`plan_graph`, its streams and its output."""
+    if recipe is not None:
+        return _generate_recipe(seed, size, recipe, profile, max_per_team,
+                                zombies, vents)
     check_request(size, max_per_team, zombies)
     rejected = []
     for attempt in range(MAX_ATTEMPTS):
@@ -2182,6 +2213,64 @@ def generate(seed: int, size: str = "medium", *, max_per_team: int = 6,
         rejected.append((attempt, reasons))
     raise ShipGenError(f"seed {seed} size {size!r}: no plan passed the gates "
                        f"in {MAX_ATTEMPTS} attempts; last: {rejected[-1][1]}")
+
+
+def _generate_recipe(seed: int, size: str, recipe, profile: str,
+                     max_per_team: int, zombies: int, vents: bool
+                     ) -> ShipPlan:
+    """THE RECIPE PATH (family B; archetype doc §2): two attempt loops and
+    two rng streams. Grammar attempt ``g`` (``ship_grammar.plan_quotient``,
+    every draw from ``SeedSequence([seed, 0, g])``) gives a quotient graph
+    the layout's arithmetic accepts; then up to ``MAX_ATTEMPTS`` layout
+    attempts ``a``, each drawing the layout (``ship_layout.layout``) AND
+    stage 2 (:func:`embed`) from ``SeedSequence([seed, 1, g, a])``, through
+    :func:`validate` and the archetype's own gates
+    (``ship_layout.acceptance``). A graph no attempt realises hands over to
+    grammar attempt ``g + 1``; when the grammar's ``G_MAX`` attempts are
+    spent: :class:`ShipGenError`. The plan records ``(g, a)``; ``rejected``
+    holds ``((g, a), reasons)`` per layout attempt that failed."""
+    import ship_grammar
+    import ship_layout
+    if vents:
+        raise ShipGenError("vents = True is v1's single HEPA pair; a recipe "
+                           "ship's ducts are its departments'")
+    arch = (recipe if isinstance(recipe, ship_grammar.Archetype)
+            else ship_grammar.load_archetype(recipe))
+    ship_layout.check_request(arch, size, profile, max_per_team, zombies)
+    rejected, g = [], 0
+    while True:
+        try:
+            q = ship_grammar.plan_quotient(arch, size, profile, int(seed),
+                                           max_per_team=max_per_team,
+                                           zombies=zombies, g0=g)
+        except ship_grammar.GrammarExhausted as e:
+            last = rejected[-1][1] if rejected else [str(e)]
+            raise ShipGenError(
+                f"archetype {arch.name!r} profile {profile!r} seed {seed} "
+                f"size {size!r}: no plan passed the gates in "
+                f"{ship_grammar.G_MAX} grammar x {MAX_ATTEMPTS} layout "
+                f"attempts; last: {last}") from None
+        for a in range(MAX_ATTEMPTS):
+            rng = np.random.Generator(np.random.PCG64(
+                np.random.SeedSequence([int(seed), 1, q.g, a])))
+            try:
+                lay = ship_layout.layout(q, rng)
+                emb = embed(lay.graph, rng)
+            except _Reject as e:
+                rejected.append(((q.g, a), [str(e)]))
+                continue
+            reasons = validate(emb.tilemap, emb.spawn_rooms, mirrored=True,
+                               graph=lay.graph)
+            if not reasons:
+                reasons = ship_layout.acceptance(arch, q, lay.graph, emb)
+            if not reasons:
+                return ShipPlan(
+                    seed=int(seed), size=size, attempt=a, graph=lay.graph,
+                    embedding=emb, rejected=rejected, recipe=arch.name,
+                    profile=profile, g=q.g, recipe_hash=q.recipe_hash,
+                    quotient=q, room_ids=lay.ids, zombies_base=zombies)
+            rejected.append(((q.g, a), reasons))
+        g = q.g + 1
 
 
 # ===========================================================================
@@ -2256,15 +2345,35 @@ def write(plan: ShipPlan, out_dir) -> Path:
             p.unlink()
     out_dir.mkdir(parents=True, exist_ok=True)
     h, w = plan.tilemap.shape
-    comments = (
-        f"SHIP {plan.name} -- GENERATED by tools/gen_ship.py (#120, levelgen",
-        f"v1) through level_lib: seed {plan.seed}, size {plan.size} "
-        f"({w}x{h}), sub-seed attempt {plan.attempt}.",
-        "Regenerate rather than hand-edit:",
-        f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
-        f"{plan.seed} --size {plan.size} --max-per-team {plan.max_per_team} "
-        f"--zombies {plan.zombies}" + (" --vents" if any(
-            e.class_name == "duct" for e in plan.entities) else ""),
+    if plan.recipe is None:
+        head = (
+            f"SHIP {plan.name} -- GENERATED by tools/gen_ship.py (#120, "
+            f"levelgen",
+            f"v1) through level_lib: seed {plan.seed}, size {plan.size} "
+            f"({w}x{h}), sub-seed attempt {plan.attempt}.",
+            "Regenerate rather than hand-edit:",
+            f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
+            f"{plan.seed} --size {plan.size} --max-per-team "
+            f"{plan.max_per_team} "
+            f"--zombies {plan.zombies}" + (" --vents" if any(
+                e.class_name == "duct" for e in plan.entities) else ""),
+        )
+    else:
+        zb = plan.zombies if plan.zombies_base is None else plan.zombies_base
+        head = (
+            f"SHIP {plan.name} -- GENERATED by tools/gen_ship.py (#136, "
+            f"family B)",
+            f"through level_lib: archetype {plan.recipe}, profile "
+            f"{plan.profile}, seed {plan.seed}, size {plan.size} ({w}x{h}),",
+            f"grammar attempt {plan.g}, layout attempt {plan.attempt}, "
+            f"recipe hash {plan.recipe_hash}.",
+            "Regenerate rather than hand-edit:",
+            f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
+            f"{plan.seed} --size {plan.size} --recipe {plan.recipe} "
+            f"--profile {plan.profile} --max-per-team {plan.max_per_team} "
+            f"--zombies {zb}",
+        )
+    comments = head + (
         "",
         f"v{LEVEL_FORMAT_VERSION} codes ARE canon material ids "
         "(src/simulation/materials.py):",
@@ -2307,19 +2416,27 @@ def _parse_args(argv):
     ap.add_argument("--zombies", type=int, default=4)
     ap.add_argument("--vents", action="store_true",
                     help="place one HEPA duct with a supply + return vent")
+    ap.add_argument("--recipe", default=None,
+                    help="an archetype recipe (levels/recipes/archetypes): "
+                         "family B's grammar + layout instead of v1's split")
+    ap.add_argument("--profile", default="standard",
+                    help="the archetype's difficulty profile (with --recipe)")
     return ap.parse_args(argv)
 
 
 def main(argv=None) -> int:
     a = _parse_args(sys.argv[1:] if argv is None else argv)
     plan = generate(a.seed, a.size, max_per_team=a.max_per_team,
-                    zombies=a.zombies, vents=a.vents)
+                    zombies=a.zombies, vents=a.vents, recipe=a.recipe,
+                    profile=a.profile)
     out = Path(a.out) if a.out else ROOT / "levels" / plan.name
     write(plan, out)
     h, w = plan.tilemap.shape
     e = plan.embedding
     vents = any(x.class_name == "duct" for x in plan.entities)
-    print(f"wrote {out}  ({w}x{h} @ {TILE_SIZE_M} m, attempt {plan.attempt}, "
+    print(f"wrote {out}  ({w}x{h} @ {TILE_SIZE_M} m, "
+          + (f"grammar attempt {plan.g}, " if plan.recipe else "")
+          + f"attempt {plan.attempt}, "
           f"{len(plan.graph.rooms)} rooms, {e.doors} doors, {e.windows} "
           f"windows, {e.fuel_tiles} fuel tiles, "
           f"vents {'yes' if vents else 'no'})")

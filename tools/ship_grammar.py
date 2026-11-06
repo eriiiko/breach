@@ -34,8 +34,11 @@ profiles with named operators and a validation profile. This module is
 
 The grammar never places a rectangle. Layout feasibility (layout doc §13 A5,
 archetype doc §6 items 1-2) is ONE call site, ``ship_layout.
-layout_feasibility``, which the layout patch fills in; until then only the
-graph-side, closed-form conditions are checked here.
+layout_feasibility``: asked with the whole quotient graph at the end of every
+attempt (exact: a graph it accepts packs; a refusal is a ``GrammarReject``),
+and by the door per (size, profile) with the archetype at its minima (the
+demand test; a refusal names the size, the profile and what overflows), with
+``ship_layout.maxima_warning`` kept in ``Archetype.warnings``.
 
 Home: ``tools/`` beside ``gen_ship.py`` and ``levelgen_recipes.py`` (a
 stage-1 input of the offline generator); the skeleton's graph side is
@@ -784,6 +787,10 @@ class Archetype:
     sections: dict
     path: str
     library: R.RecipeLibrary = field(compare=False, repr=False, default=None)
+    # {(size, profile): why}: the layout's arithmetic at the recipe's MAXIMA
+    # does not fit that size -- the grammar will reroll draws near the top
+    # of its ranges there (archetype doc §6 item 2: a warning, not a refusal)
+    warnings: dict = field(compare=False, repr=False, default_factory=dict)
 
     def promoted(self, profile: str) -> tuple:
         p = self.profiles[profile].promote
@@ -998,6 +1005,9 @@ def load_archetype(name_or_path, *, library: R.RecipeLibrary | None = None
             if why:
                 raise _err(path, f"size {size!r}, profile {pn!r}",
                            f"the layout cannot pack it: {why}")
+            warn = L.maxima_warning(size, arch, pn)
+            if warn:
+                arch.warnings[(size, pn)] = warn
     return arch
 
 
