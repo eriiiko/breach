@@ -1162,6 +1162,11 @@ class LevelData:
     # (only the headless runner reads them, at base resolution).
     spawn_rooms: list = field(default_factory=list)  # list[SpawnRoom]
     match: Optional[MatchSpec] = None
+    # ---- [levelgen] (#136, archetype doc §5.1) ---------------------------
+    # A generated level's LevelSpec + realised factors (LevelgenRecord), or
+    # None (every hand-made level and v1 ship). Provenance only: nothing in
+    # the game reads it.
+    levelgen: Optional["LevelgenRecord"] = None
 
     @property
     def height(self) -> int:
@@ -1355,6 +1360,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     # ---- [[spawn_room]] + match.toml (#119 P2) ----------------------------
     spawn_rooms = _parse_spawn_rooms(raw, toml_path, tilemap, version)
     match = _parse_match_file(base, spawn_rooms)
+    levelgen = _parse_levelgen(raw, toml_path)
 
     # ---- [[light]] entities (engine/15 §2.2, P4) -------------------------
     lights_raw = raw.get("light", [])
@@ -1435,6 +1441,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         ambient=ambient,
         spawn_rooms=spawn_rooms,
         match=match,
+        levelgen=levelgen,
     )
 
 
@@ -1462,6 +1469,130 @@ def _parse_spawn_rooms(raw: dict, toml_path, tilemap: np.ndarray,
                 raise ValueError(f"{where}: placement cell ({cx},{cy}) is "
                                  f"not open interior floor")
     return rooms
+
+
+# ---------------------------------------------------------------------------
+# [levelgen] -- the generated level's LevelSpec + realised factors (#136)
+# ---------------------------------------------------------------------------
+
+#: The LevelSpec (archetype doc §5.1): every input of the generator. A
+#: recipe ship is a pure function of these (``gen_ship.generate_from_spec``).
+LEVELGEN_INPUT_KEYS = ("archetype", "recipe_hash", "generator_version", "size",
+                       "profile", "max_per_team", "zombies_base", "level_seed")
+#: What the generator REALISED from them (archetype doc §5.1): the attempts
+#: ``(g, a)``, then the ship's factors. ``departments``, ``cycles``,
+#: ``secrets`` and ``spawn_exits`` count the QUOTIENT (one wing + the axis
+#: band: the recipe's own units); ``cells``, ``rooms`` and
+#: ``spawn_distance`` the whole ship, as the ``[validation]`` gates do.
+LEVELGEN_REALISED_KEYS = ("g", "a", "departments", "cycles", "cells",
+                          "secrets", "spawn_exits", "zombies", "rooms",
+                          "spawn_distance")
+LEVELGEN_KEYS = LEVELGEN_INPUT_KEYS + LEVELGEN_REALISED_KEYS
+_HEX64_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class LevelgenRecord:
+    """level.toml's ``[levelgen]`` table (#136, archetype doc §5.1): a
+    GENERATED level's LevelSpec (``LEVELGEN_INPUT_KEYS``) and its realised
+    factors (``LEVELGEN_REALISED_KEYS``). Written by ``level_lib`` (the one
+    writer) only on gen_ship's recipe path; a level without the table has
+    ``LevelData.levelgen = None``. Read by nothing in the game: it is the
+    level's provenance (regenerate, banks, RL factor analysis).
+
+    ``departments``: the department instances, quotient order (gradient
+    order; the axis department first). ``cycles``: cycle type -> its
+    applications, for every cycle type the archetype names (0 included).
+    ``generator_version``: ``git describe --always --dirty`` at write time,
+    or ``"unknown"``."""
+    archetype: str
+    recipe_hash: str
+    generator_version: str
+    size: str
+    profile: str
+    max_per_team: int
+    zombies_base: int
+    level_seed: int
+    g: int
+    a: int
+    departments: tuple
+    cycles: dict
+    cells: int
+    secrets: int
+    spawn_exits: int
+    zombies: int
+    rooms: int
+    spawn_distance: int
+
+    def as_dict(self) -> dict:
+        """Key -> value in file order (``LEVELGEN_KEYS``)."""
+        return {k: getattr(self, k) for k in LEVELGEN_KEYS}
+
+
+def parse_levelgen(tbl, where: str) -> LevelgenRecord:
+    """THE ``[levelgen]`` door: a raw table -> a :class:`LevelgenRecord`, or
+    ValueError naming the key: an unknown key, a missing one (every input and
+    every realised factor is written), a mistyped value. ``level_lib``'s
+    writer passes every record through here before it touches disk."""
+    if not isinstance(tbl, dict):
+        raise ValueError(f"[levelgen] in {where} must be a table")
+    unknown = sorted(set(tbl) - set(LEVELGEN_KEYS))
+    if unknown:
+        raise ValueError(f"[levelgen] in {where}: unknown key(s) {unknown} "
+                         f"(it carries {list(LEVELGEN_KEYS)})")
+    for k in LEVELGEN_KEYS:
+        if k not in tbl:
+            kind = "input" if k in LEVELGEN_INPUT_KEYS else "realised factor"
+            raise ValueError(f"[levelgen] in {where}: missing {kind} '{k}'")
+
+    def text(k):
+        v = tbl[k]
+        if not isinstance(v, str) or not v:
+            raise ValueError(f"[levelgen].{k} in {where} must be a non-empty "
+                             f"string (got {v!r})")
+        return v
+
+    def count(k, v=None, label=None):
+        v = tbl[k] if v is None else v
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(f"[levelgen].{label or k} in {where} must be an "
+                             f"integer >= 0 (got {v!r})")
+        return int(v)
+
+    rh = text("recipe_hash")
+    if not _HEX64_RE.fullmatch(rh):
+        raise ValueError(f"[levelgen].recipe_hash in {where} must be 64 "
+                         f"lowercase hex digits (a sha256; got {rh!r})")
+    if count("max_per_team") < 1:
+        raise ValueError(f"[levelgen].max_per_team in {where} must be >= 1")
+    depts = tbl["departments"]
+    if (not isinstance(depts, (list, tuple)) or not depts
+            or not all(isinstance(d, str) and d for d in depts)):
+        raise ValueError(f"[levelgen].departments in {where} must be a "
+                         f"non-empty list of department names (got {depts!r})")
+    cyc = tbl["cycles"]
+    if not isinstance(cyc, dict):
+        raise ValueError(f"[levelgen].cycles in {where} must be a table of "
+                         f"cycle type = applications (got {cyc!r})")
+    cycles = {str(k): count("cycles", v, f"cycles.{k}")
+              for k, v in cyc.items()}
+    return LevelgenRecord(
+        archetype=text("archetype"), recipe_hash=rh,
+        generator_version=text("generator_version"), size=text("size"),
+        profile=text("profile"), max_per_team=count("max_per_team"),
+        zombies_base=count("zombies_base"), level_seed=count("level_seed"),
+        g=count("g"), a=count("a"), departments=tuple(depts), cycles=cycles,
+        cells=count("cells"), secrets=count("secrets"),
+        spawn_exits=count("spawn_exits"), zombies=count("zombies"),
+        rooms=count("rooms"), spawn_distance=count("spawn_distance"))
+
+
+def _parse_levelgen(raw: dict, toml_path) -> Optional[LevelgenRecord]:
+    """``[levelgen]`` -> a record, or None when the level has none (every
+    hand-made level, and gen_ship's v1 ships)."""
+    if "levelgen" not in raw:
+        return None
+    return parse_levelgen(raw["levelgen"], str(toml_path))
 
 
 def _parse_match_file(base: Path, spawn_rooms: list):
