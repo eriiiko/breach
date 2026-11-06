@@ -432,8 +432,9 @@ area failure does. Revision 1's ranges (stub `along` down to 12, count up to
 | `[[cycle]]` (optional) | `{ type, a, b }`: a cycle type applied INSIDE the department between two of its rooms, in phase 1 (critique 1, reading b) | type exists, `a`/`b` room ids exist, the type's phases include 1 |
 | `room.id`, `shape`, `required` / `count` / `p` | identity, shape hint, multiplicity | exactly one of `required`, `count`, `p` |
 | `room.width` | `wide` / `narrow`, corridors only | `narrow` only on a corridor, never with `fuel` |
-| `room.attach` *[layout rev 2]* | `side` (default: packed along the stub) / `end` (the stub's far end, at most one) / `behind:<room>` (split off that room's far side) | at most one `end`; the behind parent exists; the loader runs the layout's packing at the recipe's minima |
+| `room.attach` *[layout rev 2]* | `side` (default: packed along the stub) / `end` (the stub's far end, at most one) / `behind:<room>` (split off that room's far side); *[layout §13 A2, 2026-11-06]* in an AXIS department (whose entry is its hub) `fore` / `aft`, a section directly fore / aft of the hub | at most one `end`; the behind parent exists; the loader runs the layout's packing at the recipe's minima; `side` / `end` / `behind` only in a wing department, `fore` / `aft` only in an axis one, at most one of each |
 | `room.exit` *[layout rev 2]* | `true` on at most one side room: it may carry a spawn exit when the department is first in its row | at most one; a side room |
+| `room.hull_door` *[archetype §7.1, 2026-11-06]* | `true`: the room's closed door to space (the resolver writes gen_ship's `HULL_DOOR_DEFAULT`; geometry, not physics) | only on a wing department's `attach = "end"` room, the one that reaches the hull |
 | `room.size` | rooms `{ w, h }` (x, y extents); corridors `{ across, along }` (the layout stage rotates) | each min >= 6 for a room; a corridor's `across` within its width class |
 | `room.fixture` | a fixture (§3.3) | fixture exists |
 | `room.fuel` | a fuel class (§3.4) | class exists |
@@ -491,7 +492,7 @@ placeholders for Erik to tune:
 | Recipe key | Preset table | Resolves to (`ROOM_TAGS` today) |
 |---|---|---|
 | `light` | `[levelgen.lights.*]` (`dim`, `lit`, `dark`, `harsh`: rgb + level) | `light = ((r, g, b), level)` |
-| `fuel` | `[levelgen.fuel.*]` (a material mix + a cluster count range; `furniture` = today's 60/40 furniture/wood, `kindling` = kindling) | `fuel = n` today; the tag gains a `material` or class (§5.2) |
+| `fuel` | `[levelgen.fuel.*]` (a material mix + a cluster count range; `furniture` = today's 60/40 furniture/wood, `kindling` = kindling) | `fuel = n` for v1's mix, else `fuel = {clusters, mix}` (§5.2, landed; written since 2026-11-06) |
 | `temp` | `[temps.*]` (degrees above ambient) | `temp = float > 0` |
 | `pressure` | `[pressures.*]` (atm) | a per-room value gen_ship composes into `air_init.npy` (§5.2) |
 | `heat_source` | `[heat_sources.*]` (the four keys) + `enabled` | the `heat_source` tag; it gains `enabled` (§5.2) |
@@ -554,13 +555,13 @@ and its own issue; nothing in this document is buildable without it.
 
 | Extension | Why |
 |---|---|
-| `vent` tag becomes a list of `{duct, roles}`; `_build_vents` places a site per (room, duct, role); sealed-room rule per duct | duct link across departments (§1.3). **DONE 2026-11-06 `86629b2`**: `gen_ship.vent_specs`, `_build_vents`, `ShipGraph._check_ducts_and_cells` (a list on distinct ducts; both rules per duct; a `vent_only` edge needs one shared duct) |
-| `fuel` tag gains a class / material; `compartments()` derives "contents" from the material table (mobility > 0: furniture, wood, kindling) instead of its literal `(MAT_AIR, MAT_FURNITURE, MAT_WOOD)` | kindling today would SPLIT its room and fail the compartment gate (critique 10). **DONE 2026-11-06 `86629b2`**: `fuel = {clusters, mix}` (`gen_ship.fuel_spec`; the int form is `FUEL_MIX_V1`, v1's draws), `gen_ship.fuel_materials()` read at all three sites -- as built: the FLAMMABLE rows, not `mobility > 0` (see below) |
+| `vent` tag becomes a list of `{duct, roles}`; `_build_vents` places a site per (room, duct, role); sealed-room rule per duct | duct link across departments (§1.3). **DONE 2026-11-06 `86629b2`**: `gen_ship.vent_specs`, `_build_vents`, `ShipGraph._check_ducts_and_cells` (a list on distinct ducts; both rules per duct; a `vent_only` edge needs one shared duct). The resolver writes the list form since 2026-11-06 (#152): no longer pending |
+| `fuel` tag gains a class / material; `compartments()` derives "contents" from the material table (mobility > 0: furniture, wood, kindling) instead of its literal `(MAT_AIR, MAT_FURNITURE, MAT_WOOD)` | kindling today would SPLIT its room and fail the compartment gate (critique 10). **DONE 2026-11-06 `86629b2`**: `fuel = {clusters, mix}` (`gen_ship.fuel_spec`; the int form is `FUEL_MIX_V1`, v1's draws), `gen_ship.fuel_materials()` read at all three sites -- as built: the FLAMMABLE rows, not `mobility > 0` (see below). The resolver writes a class as `{clusters, mix}` (v1's mix as the int) since 2026-11-06 (#152): the galley's kindling is no longer pending |
 | `heat_source` tag gains optional `enabled` | the galley fixture |
 | `CELL_CROSSING_KINDS` gains `breakable` | L5 as amended. **DONE 2026-11-06 `86629b2`**: `CELL_CROSSING_KINDS` + `breakable`; the airlock bypass (airlock + breakable on one wall) is the one multi-edge a pair may carry, layout §4.3's arithmetic refused by name in `ShipGraph._check_bypass` |
 | a per-room `water` stamp into `water_init.npy` | the aquarium, the pool (the layer exists, the stamp does not) |
 | a per-room `pressure` composed into `air_init.npy` (ambient elsewhere) | the `pressure` preset (the file exists, gen_ship never writes it) |
-| the resolver + the preset tables `[levelgen.lights.*]`, `[levelgen.fuel.*]`, `[temps.*]`, `[pressures.*]`, `[heat_sources.*]`, `[hazards.*]` | §3.4 |
+| the resolver + the preset tables `[levelgen.lights.*]`, `[levelgen.fuel.*]`, `[temps.*]`, `[pressures.*]`, `[heat_sources.*]`, `[hazards.*]` | §3.4. **DONE** (#136 `tools/levelgen_recipes.py`; format 2.1 #152, 2026-11-06). Still pending in it: a disabled heat source, a pressure preset, water -- the three rows of this table not yet built |
 | a `rate` class on a vent role (later, not v1) | a one-sided duct link |
 | a per-room GAS MIX initial field (NEW mechanism: a per-species level field through the loader door and the energy seam) | an O2-rich pharmacy; Erik's ruling first |
 
@@ -709,3 +710,108 @@ Deviations and amendments (dated 2026-10-31, as built):
 Not touched (§5): the archetype recipe, the layout stage (§5.1), every §5.2
 stage-2 extension, the phase-1 expansion into room instances, dead-end
 contents (#135), nested departments.
+
+## As built (2026-11-06, branch `152-recipe-format-2.1`): format 2.1 and the v1 departments
+
+Built against format revision 2.1, the layout doc's §13 (A2, A3, A6) and the
+archetype doc's §7.1 (#152): `tools/levelgen_recipes.py`, the recipe files,
+two preset rows, `tests/test_levelgen_recipes.py`. `gen_ship` untouched,
+`ship_demo` identical.
+
+- **`second_leg`** is the seventh row of `MOVES`. Its file carries exactly
+  ONE walkable `[[leg]]` with `rooms = [1, 1]` (refused otherwise, by name):
+  `flank_pair.toml` (one `narrow`, `dim` room, `door`) and
+  `retreat_loop.toml` (one `wide` room, `door` / `open`).
+- **`attach`**: `side` (default) / `end` / `behind:<room>` in a `wing`
+  department, `fore` / `aft` in an `axis` one (whose `entry` is its hub);
+  at most one `end`, one `fore`, one `aft`. **`exit = true`** on at most one
+  side room. **`hull_door = true`** only on a wing department's `end` room;
+  the resolver writes gen_ship's `HULL_DOOR_DEFAULT` as the `hull_door` tag.
+  `exit` and `hull_door` take only `true` (absent = false), like `required`.
+  `RecipeRoom.attach` is the EFFECTIVE value (None on the entry);
+  `Department.anchor(room)` is what a room is laid out against.
+- **The resolver follows #133's stage-2 extensions**: a fuel class resolves
+  to `{"clusters": n, "mix": {...}}`, except a class whose mix is exactly
+  `gen_ship.FUEL_MIX_V1`, which keeps the int form (so `furniture` resolves
+  as before); a room on several ducts resolves to the list form of `vent`.
+  Each tag passes `ROOM_TAGS` and, for these two, `fuel_spec` /
+  `vent_specs`. `EXT_FUEL`, `EXT_VENT_LIST` and the local
+  `TODAYS_FUEL_MIX` are gone. Still pending: a disabled heat source, a
+  pressure preset, water. Every shipped room now resolves with nothing
+  pending (the galley's kindling included).
+- **Four departments** (`levels/recipes/departments/`), the §7.1 "In v1"
+  column, content from vocabulary B.2-B.5; every size and count a
+  PLACEHOLDER for the layout patch to tune against its failure-rate gate:
+  - `engineering` (axis, `own`, `toward = "axis"`): `engine_room` (entry,
+    the hub; w 6-22, h 13-24 -- 6 admits the ring's 6-10 hub, 13 the
+    bypass's hub height; fixture `engine`, `harsh`, duct `engine` supply +
+    return) · `fuel_bunker` (`attach = "aft"`, door, w 12-22, h 6-10,
+    `kindling`, `dark`, no vent). `[physics] temp = "hot_engineering"`.
+  - `cargo_hold` (wing, main, `toward = "axis"`): `stub` (along 8-34) ·
+    `main_hold` (`end`, `hull_door`, w 10-16, h 9-14, `furniture`, `dim`,
+    duct `cargo` supply + return; `open` to the stub) · `bay` (count 1-8,
+    6-10 square, `open`, `furniture`, `dim`) · `hazmat_bay` (p 0.3, door,
+    fixture `hazmat`, sealed, no vent). Secret behind a bay, weight 1.
+  - `medbay` (wing, main, `toward = "spawn"`): `stub` (along 14-34) ·
+    `ward` (`end`, w 10-14, h 9-12, `open`, return) · `theatre` (count 1-3,
+    `open`, `harsh`, supply) · `scrub` (p 0.5, `open`) · `pharmacy`
+    (door, fixture `o2_store`, sealed, no vent, `exit`) · `morgue` (door,
+    `dim`, sealed, supply + return). Duct `medbay`, filter `hepa_basic`.
+    Secret behind the morgue, weight 1.5.
+  - `armory` (wing, main, `toward = "spawn"`): `stub` (along 14-34) ·
+    `armory` (`end`, w 10-14, h 9-13, `open`, `furniture`, `harsh`, duct
+    `armory` supply + return) · `magazine` (`behind:armory`, door, fixture
+    `magazine`, sealed, no vent) · `range` (p 0.4, `open`, w 6-8, h 12-34:
+    long along the stub). No secret (B.5).
+  - `crew_quarters`: §3.1 rev 2.1, with stub `along` 14-34 (was 14-24) and
+    bunk `count` 2-7 (was 2-3).
+- **Ranges and why** (layout §13 A6): a wing stub runs 14-34 and its end
+  room's `h` starts at 9, so stub + end + 1 is 24 at the minima (a medium
+  row) and >= 47 at the maxima (a large row); side rooms 6-10 along, up to
+  9 side rooms in the quarters and cargo and 6 in the medbay, so both sides
+  of a 34-long stub can fill. Cargo's stub starts at 8, so cargo packs at 18 deep, under
+  the flank pair's hull strip in a 24-deep row (A3). The armory has one
+  long optional side room and fills a large row only one-sided -- the
+  layout's narrow-rectangle case. All pass the loader's perimeter bound
+  (stub cap 2·(8 + 34) − 6 = 78; demand at most 73, the quarters and
+  cargo).
+- **Presets** (config.toml, PLACEHOLDER): `[heat_sources.engine]`
+  (heat_per_s 5, radius 2, `max_temp` 150 BELOW kindling's 280 -- the engine
+  is not a fuse and cannot light the bunker next door by itself; its
+  `death_payload = "engine_death"` can) and `[hazards.hazmat_release]`
+  (payload `hazmat_release`, trigger 120, fuse 1 s). Fixtures `engine`
+  and `hazmat`.
+
+Deviations and amendments (dated 2026-11-06, as built):
+
+- **A declared edge joins a room to what it attaches to** (the stub or hub
+  for side / end / fore / aft rooms, the parent for a behind room), refused
+  otherwise by name: the layout's primitives make exactly those contacts
+  (layout §4 step 5; archetype §7.1 "a side room touches only its stub").
+  §3.2 did not state it; it is the simplest reading that keeps §3.2's
+  "every edge is a contact" true by construction.
+- A wing department's entry must be a `corridor` (the stub is a strip,
+  layout §4) and carries no `attach`; a `count` is legal only on a side
+  room (an end, behind, fore or aft room is one place); a behind parent is
+  uncounted, not the entry, not itself behind (a behind of a behind is
+  not a v1 primitive); an exit room is never a behind parent nor the
+  secret's host (its far side is the slab), and the secret's host is a
+  wing side or end room (the annex goes behind it, archetype §7.1).
+- **The feasibility bound is unchanged**: the rev-2 perimeter sum, now
+  documented as the WEAKER check (necessary only). The layout's loader twin
+  (two-bin side packing, the end room against the row depth, the behind
+  depths, an `own` stub's `across >= 7`) arrives with `ship_layout.py`.
+- Cargo: `stub`-`main_hold` is `open` (B.4 had the hold's door to the
+  spine; with the stub as the entry, the department's door to the ship is
+  the entry's, and the hull door vents the whole hold compartment, D7).
+  No `exit` room (a medium row B's third exit is then unavailable when
+  cargo leads it; the layout patch may add one).
+- Medbay: the theatre is counted (1-3) so the side rooms can fill a 34-long
+  stub; the morgue takes supply + return (B.3: "or none"); the pharmacy is
+  the `exit` room.
+- Armory: `stub`-`armory` is `open` so the armory and the range (on the
+  stub) are B.5's one compartment; the stub's `across` stays 6-8 (it
+  ALLOWS the 7 a hard-profile promotion draws, archetype §1.1).
+- Engineering names no wishes (an axis department sits on the axis).
+- Secret weights are relative within the archetype's draw: quarters 1
+  (B.1's 0.1), cargo 1 (B.4's 0.1), medbay 1.5 (B.3's 0.15).
