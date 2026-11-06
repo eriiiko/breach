@@ -3165,6 +3165,15 @@ speed_tiles_per_tick = 1.25
 wall_damage = 0
 payload = "incendiary_splash"
 
+# [blast_air] -- how the air a charge goes off in changes what it leaves behind
+# (#31, src/simulation/blast_air.py). ALL PLACEHOLDERS, Erik tunes them. Pressure
+# uses [physics.fire] p_ext_atm / p_full_atm, the O2 law's own edges.
+[blast_air]
+o2_low = 0.10            # O2 mole fraction at or below which nothing burns
+o2_full = 0.19           # at or above this the air counts as normal
+starved_smoke = 3.0      # extra smoke at o2_low: 3.0 = four times the soot
+detonation_share = 0.4   # heat with no air to burn in (Comp B: 5.02 of ~11.7 MJ/kg)
+
 # ---------------------------------------------------------------------------
 # [explosives.*] -- what a charge is MADE of (#12 smoke x light, handle 3,
 # 2026-10-04). A blast's smoke is the soot its explosive leaves: a payload row

@@ -42,6 +42,7 @@ untouched.
 """
 from __future__ import annotations
 
+from simulation.blast_air import ONE as _BLAST_ONE, read_blast_air
 from simulation.damage import CREDIT_HEAT, tick_credit
 from simulation.events import NO_ATTACKER, ExplosionEvent
 from simulation.exchange import apply_blast_damage
@@ -368,12 +369,20 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         apply_blast_damage(units, fx, fy, payload.radius,
                            payload.unit_damage, events=events,
                            attacker_id=owner_id)
+    # A charge reads the air it goes off in (#31): smoke per tile, heat for the
+    # whole blast. Read here, before any of this payload's edits land.
+    air = None
+    if getattr(payload, "explosive", ""):
+        air = read_blast_air(gmap, fy, fx,
+                             max(payload.radius,
+                                 getattr(payload, "heat_radius", 0.0)))
     if payload.emit_blast_smoke:
         peak = blast_smoke_peak(gmap, fy, fx, payload.radius,
                                 getattr(payload, "blast_soot_g", 0.0))
         if peak > 0.0:
             add_explosion_smoke(gmap, queue, fy, fx, payload.radius,
-                                amount=peak)
+                                amount=peak,
+                                scale=(air.smoke_scale_q16 if air else None))
     if payload.gas_species:
         emit_gas(gmap, queue, fy, fx, payload.gas_species,
                  payload.gas_amount, payload.gas_radius, owner_id=owner_id)
@@ -383,7 +392,10 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         ignite_ring(gmap, queue, fy, fx, payload.ignite_radius,
                     payload.ignite_intensity, owner_id=owner_id)
     if getattr(payload, "heat_amount", 0.0) > 0:
-        deposit_heat(gmap, queue, fy, fx, payload.heat_amount,
+        heat = payload.heat_amount
+        if air is not None:
+            heat = heat * (air.heat_scale_q16 / _BLAST_ONE)
+        deposit_heat(gmap, queue, fy, fx, heat,
                      payload.heat_radius, owner_id=owner_id)
     if events is not None:
         events.append(ExplosionEvent(pos=(fx, fy), radius=payload.radius,

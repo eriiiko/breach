@@ -48,9 +48,9 @@ multi-gas array — simulation.payloads.emit_gas is the consumer.)
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from enum import IntEnum
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
@@ -147,6 +147,8 @@ class Falloff(IntEnum):
     LINEAR = 1    # weight = 1 - dist/radius  (== today's explosion falloff)
 
 
+_Q16_ONE = gas_fixed.quantize_q16_scalar(1.0)   # the blast air read's scale plane (#31)
+
 # ---------------------------------------------------------------------------
 # FieldEdit — a frozen description of one edit. Pure data, no state.
 # ---------------------------------------------------------------------------
@@ -167,6 +169,7 @@ class FieldEdit:
     channel: Optional[int] = None                # None = scalar field; 0/1/2 = R/G/B of an (h,w,3) field
     clamp: Optional[Tuple[float, float]] = None  # post-combine clamp; None = use the field policy default
     noise: float = 0.0                           # >0 = per-tile multiplier in [1-noise, 1], drawn from sim.rng
+    scale: Any = dc_field(default=None, compare=False)  # optional (h, w) Q16 per-tile factor (the blast's air read, #31)
     source_id: int = 0                           # bookkeeping + stable-sort grouping (one emitter = one id)
 
 
@@ -660,6 +663,8 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             mult = 1.0
 
         contribution = edit.amount * weight * mult
+        if edit.scale is not None:
+            contribution *= int(edit.scale[r, c]) / _Q16_ONE
 
         if is_heat:
             arr[r, c] = _combine_heat(arr[r, c], contribution, edit.mode)
