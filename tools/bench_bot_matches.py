@@ -29,6 +29,11 @@ exactly one cause bucket and one attacker bucket, so the two tables of a
 victim group have the same total. Measurement only: it reads the sim, never
 writes.
 
+BLASTS (#31, ``--blast-stats``): per match, the explosions, the most tiles
+burning at once, the ticks with any fire, and each marine KNOCKED DOWN within
+``BLAST_WINDOW_TICKS`` of an explosion with its distance from that blast's centre,
+to set beside the bots' ``[bots] danger_radius``.
+
 TIMING (#125, ``--timing``): the wall time of every tick, split into the
 controllers' share (every ``handle_frame`` of the tick plus the runner's
 ``is_terminal`` check: the bots' A* and vision, the horde's law) and
@@ -69,7 +74,8 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
 
 import level_loader  # noqa: E402
 from simulation.events import (  # noqa: E402
-    NO_ATTACKER, ShotFiredEvent, UnitKilledEvent)
+    NO_ATTACKER, ExplosionEvent, ShotFiredEvent, UnitKilledEvent)
+from simulation.status import KNOCKED_DOWN  # noqa: E402
 
 
 INDIRECT_CAUSES = ("explosion", "heat", "poison_gas")
@@ -139,6 +145,45 @@ class DeathLog:
             if u.alive and not u.is_zombie:
                 self._marine_team[u.id] = u.team
         self._prev = now
+
+
+BLAST_WINDOW_TICKS = 24
+
+
+class BlastLog:
+    """``on_tick`` watcher (#31): explosions, fire, and marines knocked down
+    right after one, with the distance. Reads only."""
+
+    def __init__(self):
+        self.blasts = 0
+        self.fire_peak = 0
+        self.fire_ticks = 0
+        self.knock_d = []
+        self._recent = []        # (tick, fx, fy)
+        self._down = set()
+
+    def __call__(self, sim):
+        import numpy as np
+        for ev in sim.tick_events:
+            if isinstance(ev, ExplosionEvent):
+                self.blasts += 1
+                self._recent.append((sim.tick, ev.pos[0], ev.pos[1]))
+        self._recent = [r for r in self._recent
+                        if sim.tick - r[0] <= BLAST_WINDOW_TICKS]
+        burning = int(np.count_nonzero(sim.gmap.fire))
+        self.fire_peak = max(self.fire_peak, burning)
+        self.fire_ticks += burning > 0
+        down = set()
+        for u in sim.units:
+            if u.alive and not u.is_zombie and any(
+                    st.kind == KNOCKED_DOWN for st in u.statuses):
+                down.add(u.id)
+                if u.id not in self._down and self._recent:
+                    self.knock_d.append(min(
+                        float(np.hypot(u.center_tile_x() - fx,
+                                       u.center_tile_y() - fy))
+                        for _t, fx, fy in self._recent))
+        self._down = down
 
 
 class TickTimer:
@@ -235,6 +280,8 @@ def main(argv=None) -> int:
     ap.add_argument("--level", required=True)
     ap.add_argument("--seeds", default="1-10", help="'1-10' or '1,4,7'")
     ap.add_argument("--levels-dir", default="levels")
+    ap.add_argument("--blast-stats", action="store_true",
+                    help="explosions, fire and knockdowns after a blast (#31)")
     ap.add_argument("--timing", action="store_true",
                     help="per-tick wall time, controllers vs sim.step (#125)")
     ap.add_argument("--controller", default="bots",
@@ -277,18 +324,26 @@ def main(argv=None) -> int:
     ticks, walls = [], []
     marine, zombie = Counter(), Counter()
     marine_by, zombie_by = Counter(), Counter()
+    blasts = []
     for seed in [s for s in _seeds(args.seeds) for _ in range(args.repeat)]:
         log = DeathLog()
-        timer = TickTimer(log) if args.timing else None
+        blast = BlastLog()
+        watch = log
+        if args.blast_stats:
+            def watch(sim, _log=log, _blast=blast):
+                _log(sim)
+                _blast(sim)
+        timer = TickTimer(watch) if args.timing else None
         t0 = time.perf_counter()
         o = run_match(level, spec, seed=seed,
-                      on_tick=log if timer is None else timer)
+                      on_tick=watch if timer is None else timer)
         wall = time.perf_counter() - t0
         r = o.result
         key = f"team {r.team} wins" if r.outcome == "win" else "draw"
         outcomes[key] += 1
         ticks.append(r.ticks)
         walls.append(wall)
+        blasts.append(blast)
         marine.update(log.marine)
         zombie.update(log.zombie)
         marine_by.update(log.marine_by)
@@ -318,6 +373,14 @@ def main(argv=None) -> int:
     print(f"zombie deaths by cause: {dict(zombie)}")
     print(f"marine deaths by attacker team: {dict(marine_by)}")
     print(f"zombie deaths by attacker team: {dict(zombie_by)}")
+    if args.blast_stats:
+        knocks = sorted(d for b in blasts for d in b.knock_d)
+        print(f"blasts per match: {[b.blasts for b in blasts]}")
+        print(f"peak burning tiles: {[b.fire_peak for b in blasts]}, ticks "
+              f"with fire: {[b.fire_ticks for b in blasts]}")
+        print(f"marines knocked down within {BLAST_WINDOW_TICKS} ticks of a "
+              f"blast: {len(knocks)}, distances (tiles): "
+              f"{[round(d, 1) for d in knocks]}")
     print(f"wall per match: mean {sum(walls) / n:.1f} s, max {max(walls):.1f} s")
     return 0
 

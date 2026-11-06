@@ -665,3 +665,30 @@ name = "blast_smoke_t112"
 level = "blast_smoke"
 frames = 112
 light_gain = "game"
+
+[[shot]]
+name = "blast_final_t52"
+level = "blast_final"
+frames = 52
+light_gain = "game"
+note = "the real rows, tick 4 of the first volley: frag, breach on wood, magazine, C4."
+
+[[shot]]
+name = "blast_final_t60"
+level = "blast_final"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_final_t84"
+level = "blast_final"
+frames = 84
+light_gain = "game"
+note = "does the fuel burn: NW crates one tile off, SW crates three tiles off."
+
+[[shot]]
+name = "blast_final_t168"
+level = "blast_final"
+frames = 168
+light_gain = "game"
+note = "5 s after the volley: the hanging smoke and the fires, before the second one at tick 240."

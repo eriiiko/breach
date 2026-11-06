@@ -1,6 +1,8 @@
 r"""tools/gen_blast_quad.py -- generates levels/blast_quad/, the #31 side-by-side
 blast comparison: four rooms, one candidate delivery each, all firing together
-every PERIOD_S seconds on the sim clock.
+every PERIOD_S seconds on the sim clock. The same layout gives the other levels
+of the SETS table; levels/blast_final is the real rows, with a wooden partition
+and fuel in the rooms (FEATURES).
 
   * NW room -- quad_src_tile  one tile, one tick, the standard blast (Erik, 2026-11-06)
   * NE room -- div_40         a disc of radius 3, two ticks
@@ -35,7 +37,8 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools"):
 import level_lib  # noqa: E402
 from gen_explosion_studio import CODE_LEGEND, build_charges  # noqa: E402
 from level_loader import SPACE_CODE, LightEntry  # noqa: E402
-from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
+from simulation.materials import (MAT_AIR, MAT_FURNITURE, MAT_HULL,  # noqa: E402
+                                  MAT_WOOD)
 
 LEVEL_NAME = "blast_quad"
 
@@ -78,7 +81,16 @@ SETS = {
         ("SMOKE 0.9 G", "div_40_s25", 1),
         ("SMOKE 0.4 G", "div_40_s10", 1),
     )),
+    "blast_final": ("Blast Final", (
+        ("FRAG", "frag_standard", 1),
+        ("BREACH ON WOOD", "breach_focus", 1),
+        ("MAGAZINE", "magazine_cookoff", 1),
+        ("C4", "demolition_c4", 1),
+    )),
 }
+# The seconds between a set's volleys, where the default is too short to see one
+# volley's fire and smoke before the next.
+PERIODS = {"blast_final": 8.0}
 SLOTS = ((X0 + 1, Y0 + 1, "w"), (X_MID + 1, Y0 + 1, "e"),
          (X0 + 1, Y_MID + 1, "w"), (X_MID + 1, Y_MID + 1, "e"))
 ROOMS = tuple((label, *slot) for (label, _, _), slot
@@ -94,7 +106,19 @@ def charges_for(rows):
                  for i, (_label, row, n) in enumerate(rows) for k in range(n))
 
 
-def build_tilemap() -> np.ndarray:
+def final_features(tm: np.ndarray) -> None:
+    """blast_final's furniture and wood, all relative to each room's charge."""
+    (nw, ne, sw, _se) = (centre(r) for r in ROOMS)
+    tm[nw[1] - 1:nw[1] + 2, nw[0] + 1] = MAT_FURNITURE     # crates one tile off
+    tm[ROOMS[1][2]:ROOMS[1][2] + ROOM_H, ne[0]] = MAT_WOOD  # the charge's wall
+    tm[sw[1] - 1:sw[1] + 2, sw[0] + 3] = MAT_FURNITURE      # crates three tiles off
+    tm[sw[1] + 3, sw[0] - 1:sw[0] + 2] = MAT_FURNITURE
+
+
+FEATURES = {"blast_final": final_features}
+
+
+def build_tilemap(level: str = LEVEL_NAME) -> np.ndarray:
     tm = np.full((H, W), SPACE_CODE, dtype=np.int32)
     tm[Y0:Y1 + 1, X0:X1 + 1] = MAT_HULL
     for (_label, rx, ry, side) in ROOMS:
@@ -102,6 +126,8 @@ def build_tilemap() -> np.ndarray:
         mid = ry + ROOM_H // 2
         col = X0 if side == "w" else X1
         tm[mid - GAP // 2:mid + GAP // 2, col] = MAT_AIR
+    if level in FEATURES:
+        FEATURES[level](tm)
     return tm
 
 
@@ -113,7 +139,8 @@ def build_lights() -> list:
 
 
 PALETTE = {SPACE_CODE: (58, 70, 88), MAT_AIR: (232, 234, 238),
-           MAT_HULL: (96, 102, 116)}
+           MAT_HULL: (96, 102, 116), MAT_WOOD: (150, 104, 62),
+           MAT_FURNITURE: (120, 78, 44)}
 AIR_ALT = (214, 216, 222)
 CHARGE_RGB = (170, 40, 30)
 
@@ -165,12 +192,12 @@ def main(level: str = LEVEL_NAME) -> None:
         out_dir, name=title, tile_size_m=TILE_SIZE_M,
         comment_lines=HEADER_COMMENTS)
     level_lib.write_boundary_field(toml_path, "ambient")
-    tm = build_tilemap()
+    tm = build_tilemap(level)
     level_lib.write_tilemap_csv(out_dir, tm, csv_bak=False)
     charge_rows = charges_for(rows)
     build_diffuse(tm, rows, charge_rows).save(out_dir / "diffuse.png")
     lights = build_lights()
-    charges = build_charges(charge_rows, PERIOD_S)
+    charges = build_charges(charge_rows, PERIODS.get(level, PERIOD_S))
     level_lib.write_managed_blocks(
         toml_path,
         {"light": lambda nl: level_lib.format_light_lines(lights, nl),
@@ -182,3 +209,4 @@ if __name__ == "__main__":
     main()
     main("blast_div")
     main("blast_smoke")
+    main("blast_final")
