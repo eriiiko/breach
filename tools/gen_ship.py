@@ -128,6 +128,21 @@ LAMP_RANGE = 16.0            # tiles
 # value the layout stage will set; untagged rooms keep the one centred lamp.
 LAMP_SPAN = 12
 LAMP_SPAN_MIN = 6
+# THE LAMP LIGHT BUDGET (#136, found by the first large recipe ship, which
+# main.py refused at frame 3): a frame's cone emitters may carry at most
+# LIGHT_CONE_BUDGET = 2^44 counts per channel = 128 light units at L°'s
+# currency (renderer/frame_lights.py, the sweep's door), of which the muzzle
+# flashes may take MUZZLE_FLASH_MAX_TOTAL = 64 and the cursor lamp /
+# flashlights / jets need the rest. So the lamps of a ship whose rooms carry
+# ``lamp_span`` are held at <= LAMP_LIGHT_BUDGET light units per channel
+# (:func:`_ship_lamps`): first fewer lamps per room (a wider span, ending at
+# one lamp per room), then -- only if one lamp per room is still too much --
+# every lamp dimmed by one common factor. tests/test_levelspec.py holds this
+# number against frame_lights' constants (gen_ship stays pyray-free).
+CONE_LIGHT_UNITS = 128.0      # == frame_lights.LIGHT_CONE_BUDGET / 2^L_FINE_BITS
+MUZZLE_FLASH_LIGHT = 64.0     # == frame_lights.MUZZLE_FLASH_MAX_TOTAL
+LAMP_RESERVE = 16.0           # the cursor lamp + a squad's flashlights + slack
+LAMP_LIGHT_BUDGET = CONE_LIGHT_UNITS - MUZZLE_FLASH_LIGHT - LAMP_RESERVE
 # The int form of the ``fuel`` tag: v1's furniture / wood 60/40 draw, as a
 # mix (:func:`fuel_spec`; one ``rng.random()`` per cluster, the walk in name
 # order, so the int form keeps v1's exact draws).
@@ -1790,7 +1805,7 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         rooms.append(SpawnRoom(team=ZOMBIE_TEAM, x=z.x, y=z.y, w=z.w, h=z.h,
                                max_per_team=graph.zombies))
     fuel = int(np.isin(tm, fuel_materials()).sum())
-    lights = [lamp for rm in graph.rooms for lamp in _room_lamps(rm)]
+    lights = _ship_lamps(graph)
     comp = graph.compartment_of()
     room_tags = {rm.id: {"compartment": comp[rm.id],
                          **{k: rm.tags[k] for k in ANNOTATION_TAGS
@@ -1803,7 +1818,41 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                      temp_init=_build_temp_init(tm, graph))
 
 
-def _room_lamps(rm: Room) -> list:
+def _lamp_light(lamps) -> float:
+    """The most light, in light units, the lamps carry on any one channel
+    (``intensity x colour`` summed, the cone door's quantity)."""
+    return max((sum(l.intensity * l.color[c] for l in lamps)
+                for c in range(3)), default=0.0)
+
+
+def _ship_lamps(graph: ShipGraph) -> list:
+    """Every room's lamps (:func:`_room_lamps`), held within
+    :data:`LAMP_LIGHT_BUDGET` when any room carries ``lamp_span`` (the
+    recipe path; a graph without it -- v1 -- is returned untouched): the
+    spans are widened together (each room's span at least ``s``, ``s``
+    growing by one tile) until the lamps fit, and if one lamp per room still
+    does not, every lamp is dimmed by the one factor that fits. Pure
+    arithmetic on the graph, no draw; a span floor is the same for twins, so
+    the mirror holds."""
+    lamps = [l for rm in graph.rooms for l in _room_lamps(rm)]
+    spanned = [rm for rm in graph.rooms if "lamp_span" in rm.tags]
+    if not spanned or _lamp_light(lamps) <= LAMP_LIGHT_BUDGET:
+        return lamps
+    longest = max(max(rm.w, rm.h) for rm in spanned)
+    floor = min(int(rm.tags["lamp_span"]) for rm in spanned)
+    while _lamp_light(lamps) > LAMP_LIGHT_BUDGET and floor <= longest:
+        floor += 1
+        lamps = [l for rm in graph.rooms for l in _room_lamps(rm, floor)]
+    total = _lamp_light(lamps)
+    if total > LAMP_LIGHT_BUDGET:
+        k = LAMP_LIGHT_BUDGET / total
+        lamps = [LightEntry(x=l.x, y=l.y, color=l.color,
+                            intensity=l.intensity * k, range=l.range,
+                            kind=l.kind) for l in lamps]
+    return lamps
+
+
+def _room_lamps(rm: Room, span_floor: int = 0) -> list:
     """A room's static lamps (render light only), in its ``light`` colour
     and level (else LAMP_RGB / LAMP_INTENSITY): ONE at its centre, or --
     with a ``lamp_span`` tag -- ``ceil(long side / lamp_span)`` along its
@@ -1812,21 +1861,24 @@ def _room_lamps(rm: Room) -> list:
     positions are symmetric about the room's centre, so a mirror twin's
     lamps are the reflection of its twin's. A ``light`` tag of level 0 (the
     ``dark`` preset: the fuel bunker) is a room with NO lamp -- the level
-    format refuses a zero-intensity ``[[light]]``."""
+    format refuses a zero-intensity ``[[light]]``. ``span_floor``: the
+    budget's widened span (:func:`_ship_lamps`); a tagged room uses
+    ``max(lamp_span, span_floor)``."""
     rgb, level = LAMP_RGB, LAMP_INTENSITY
     if "light" in rm.tags:
         rgb = tuple(float(c) for c in rm.tags["light"][0])
         level = float(rm.tags["light"][1])
         if level <= 0.0:
             return []
+    span = max(int(rm.tags.get("lamp_span", 0)), int(span_floor))
     if "lamp_span" not in rm.tags:
         spots = [(rm.x + rm.w / 2.0, rm.y + rm.h / 2.0)]
     elif rm.w >= rm.h:
-        n = -(-rm.w // int(rm.tags["lamp_span"]))
+        n = -(-rm.w // span)
         spots = [(rm.x + (k + 0.5) * rm.w / n, rm.y + rm.h / 2.0)
                  for k in range(n)]
     else:
-        n = -(-rm.h // int(rm.tags["lamp_span"]))
+        n = -(-rm.h // span)
         spots = [(rm.x + rm.w / 2.0, rm.y + (k + 0.5) * rm.h / n)
                  for k in range(n)]
     return [LightEntry(x=x, y=y, color=rgb, intensity=level,
@@ -2025,6 +2077,38 @@ def _excused_secrets(clab, covered: set, graph: ShipGraph) -> set:
                     excused.add(lab[dst])
                     grew = True
     return excused
+
+
+def centred_spawn_box(room: SpawnRoom) -> SpawnRoom:
+    """The RECIPE path's spawn room (#136 LevelSpec patch): the least box
+    that seats ``room.max_per_team`` under ``formation`` across the room's
+    whole SHORT side, centred along its long side. ``formation`` fills its
+    grid row-major from the room's first row, so in a whole 8-wide slab
+    (or a tall band section) the squad stood at the fore end; in the box it
+    stands in the middle. The box keeps the room's parity along the long
+    side, so its :func:`_centre` (the A* endpoint of :func:`validate` and the
+    bot path) is the room's own, and a mirrored pair of rooms gives a
+    mirrored pair of boxes. A room no longer than the box is returned as
+    is."""
+    vertical = room.h >= room.w
+    short, long_ = (room.w, room.h) if vertical else (room.h, room.w)
+    per_row = (short + FORMATION_GAP) // FORMATION_PITCH
+    if per_row < 1:
+        return room
+    need = -(-room.max_per_team // per_row)
+    side = need * FORMATION_PITCH - FORMATION_GAP
+    if (long_ - side) % 2:
+        side += 1                       # same parity: the centre is unmoved
+    if side >= long_:
+        return room
+    off = (long_ - side) // 2
+    if vertical:
+        return SpawnRoom(team=room.team, x=room.x, y=room.y + off, w=room.w,
+                         h=side, max_per_team=room.max_per_team,
+                         placement=room.placement)
+    return SpawnRoom(team=room.team, x=room.x + off, y=room.y, w=side,
+                     h=room.h, max_per_team=room.max_per_team,
+                     placement=room.placement)
 
 
 def _centre(room: SpawnRoom) -> tuple[int, int]:
@@ -2256,6 +2340,8 @@ def _generate_recipe(seed: int, size: str, recipe, profile: str,
             try:
                 lay = ship_layout.layout(q, rng)
                 emb = embed(lay.graph, rng)
+                emb.spawn_rooms = [centred_spawn_box(r)
+                                   for r in emb.spawn_rooms]
             except _Reject as e:
                 rejected.append(((q.g, a), [str(e)]))
                 continue
@@ -2271,6 +2357,91 @@ def _generate_recipe(seed: int, size: str, recipe, profile: str,
                     quotient=q, room_ids=lay.ids, zombies_base=zombies)
             rejected.append(((q.g, a), reasons))
         g = q.g + 1
+
+
+# ===========================================================================
+# LevelSpec: the [levelgen] record, and a ship from it (archetype doc §5.1)
+# ===========================================================================
+
+class StaleRecipeError(ShipGenError):
+    """A ``[levelgen]`` record whose ``recipe_hash`` is not the current
+    library's: the recipe was retuned since, so the ship cannot be
+    reproduced from it."""
+
+
+def generator_version() -> str:
+    """``git describe --always --dirty`` of this checkout (#126's recording
+    header ``build``, the one helper: ``match_replay.build_id``), or
+    ``"unknown"`` when git is not at hand."""
+    from match_replay import build_id
+    return build_id() or "unknown"
+
+
+def levelgen_record(plan: ShipPlan, version: str | None = None):
+    """A RECIPE ship's ``[levelgen]`` record (``level_loader.LevelgenRecord``):
+    its LevelSpec -- every input of :func:`generate` plus the recipe hash and
+    ``version`` (default :func:`generator_version`) -- and the factors it
+    realised. ``spawn_distance`` is ``ship_layout.bot_path``'s step count,
+    the metric the ``[validation]`` gate measures; ``cells`` and ``rooms`` are
+    the gate's counts too. ValueError for a v1 plan (no LevelSpec: v1 writes
+    no record)."""
+    import ship_grammar
+    import ship_layout
+    from level_loader import LevelgenRecord
+    if plan.recipe is None:
+        raise ValueError("a v1 ship (no recipe) has no LevelSpec")
+    q = plan.quotient
+    arch = ship_grammar.load_archetype(plan.recipe)
+    applied = {}
+    for c in q.cycles:
+        applied[c.type] = applied.get(c.type, 0) + 1
+    types = dict.fromkeys(e.cycle for e in arch.applies if e.cycle)
+    cycles = {t: applied.get(t, 0) for t in list(types) + sorted(
+        set(applied) - set(types))}
+    path = ship_layout.bot_path(plan.embedding)
+    return LevelgenRecord(
+        archetype=plan.recipe, recipe_hash=plan.recipe_hash,
+        generator_version=version or generator_version(), size=plan.size,
+        profile=plan.profile, max_per_team=plan.max_per_team,
+        zombies_base=plan.zombies_base, level_seed=plan.seed, g=plan.g,
+        a=plan.attempt, departments=tuple(d.name for d in q.departments),
+        cycles=cycles,
+        cells=len({rm.tags.get("cell") for rm in plan.graph.rooms}),
+        secrets=len(q.secrets), spawn_exits=q.exits, zombies=plan.zombies,
+        rooms=len(plan.graph.rooms), spawn_distance=max(0, len(path) - 1))
+
+
+def generate_from_spec(spec, *, allow_stale: bool = False) -> ShipPlan:
+    """THE SHIP OF A LEVELSPEC (archetype doc §5.1: a ship is a pure function
+    of it). ``spec``: a ``level_loader.LevelgenRecord``, or a level folder
+    whose level.toml carries one. Refuses (:class:`StaleRecipeError`) a
+    record whose ``recipe_hash`` is not the current library's, unless
+    ``allow_stale``: the recipe was retuned, the ship it names is gone. The
+    record's ``generator_version`` is not checked (a different build may
+    still give the same ship; compare the regenerated record to know)."""
+    import ship_grammar
+    from level_loader import LevelgenRecord, _parse_levelgen
+    if not isinstance(spec, LevelgenRecord):
+        import tomllib
+        toml_path = Path(spec) / "level.toml"
+        with open(toml_path, "rb") as f:
+            spec_ = _parse_levelgen(tomllib.load(f), toml_path)
+        if spec_ is None:
+            raise ShipGenError(f"{toml_path}: no [levelgen] table (a v1 or "
+                               f"hand-made level has no LevelSpec)")
+        spec = spec_
+    arch = ship_grammar.load_archetype(spec.archetype)
+    now = ship_grammar.recipe_hash(arch, spec.profile)
+    if now != spec.recipe_hash and not allow_stale:
+        raise StaleRecipeError(
+            f"[levelgen].recipe_hash {spec.recipe_hash[:12]}... is not the "
+            f"current {spec.archetype!r} / {spec.profile!r} recipe's "
+            f"({now[:12]}...): the recipe was retuned since this ship was "
+            f"generated, so it cannot be reproduced (allow_stale / "
+            f"--allow-stale generates today's ship from the same inputs)")
+    return generate(spec.level_seed, spec.size,
+                    max_per_team=spec.max_per_team, zombies=spec.zombies_base,
+                    recipe=arch, profile=spec.profile)
 
 
 # ===========================================================================
@@ -2336,10 +2507,15 @@ DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml")
 OPTIONAL_DATA_FILES = (level_lib.TEMP_INIT_FILENAME,)
 
 
-def write(plan: ShipPlan, out_dir) -> Path:
+def write(plan: ShipPlan, out_dir, *, version: str | None = None) -> Path:
     """Write ``plan`` as a level folder through ``level_lib``; returns the
-    folder. Regenerates the data files (anything else there stays)."""
+    folder. Regenerates the data files (anything else there stays). A recipe
+    ship also gets its ``[levelgen]`` record (:func:`levelgen_record`;
+    ``version`` overrides the git-described generator version); a v1 ship
+    writes none."""
     out_dir = Path(out_dir)
+    record = (levelgen_record(plan, version) if plan.recipe is not None
+              else None)
     for name in DATA_FILES + OPTIONAL_DATA_FILES:
         p = out_dir / name
         if p.exists():
@@ -2368,7 +2544,8 @@ def write(plan: ShipPlan, out_dir) -> Path:
             f"{plan.profile}, seed {plan.seed}, size {plan.size} ({w}x{h}),",
             f"grammar attempt {plan.g}, layout attempt {plan.attempt}, "
             f"recipe hash {plan.recipe_hash}.",
-            "Regenerate rather than hand-edit:",
+            "Regenerate rather than hand-edit (or --from-level <this folder>,",
+            "which reads [levelgen] below):",
             f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
             f"{plan.seed} --size {plan.size} --recipe {plan.recipe} "
             f"--profile {plan.profile} --max-per-team {plan.max_per_team} "
@@ -2398,6 +2575,9 @@ def write(plan: ShipPlan, out_dir) -> Path:
     if plan.embedding.wires:
         wires = plan.embedding.wires
         blocks["wire"] = lambda nl: level_lib.format_wire_lines(wires, nl)
+    if record is not None:
+        blocks["levelgen"] = lambda nl: level_lib.format_levelgen_lines(
+            record, nl)
     level_lib.write_managed_blocks(toml_path, blocks, write_bak=False)
     level_lib.write_match(out_dir, plan.match_spec())
     if plan.embedding.temp_init is not None:
@@ -2409,7 +2589,15 @@ def write(plan: ShipPlan, out_dir) -> Path:
 def _parse_args(argv):
     ap = argparse.ArgumentParser(
         prog="gen_ship", description="Generate a seeded v1 ship level.")
-    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--seed", type=int, default=None,
+                    help="the level seed (required unless --from-level)")
+    ap.add_argument("--from-level", default=None, metavar="FOLDER",
+                    help="regenerate a recipe ship from the [levelgen] record "
+                         "in FOLDER/level.toml (its LevelSpec); every other "
+                         "generator option is then refused")
+    ap.add_argument("--allow-stale", action="store_true",
+                    help="with --from-level: generate even when the record's "
+                         "recipe_hash is not the current library's")
     ap.add_argument("--out", default=None,
                     help="level folder (default levels/ship_s<seed>_<size>)")
     ap.add_argument("--size", choices=sorted(SIZES), default="medium")
@@ -2422,14 +2610,33 @@ def _parse_args(argv):
                          "family B's grammar + layout instead of v1's split")
     ap.add_argument("--profile", default="standard",
                     help="the archetype's difficulty profile (with --recipe)")
-    return ap.parse_args(argv)
+    a = ap.parse_args(argv)
+    if a.from_level is None and a.seed is None:
+        ap.error("--seed is required (or --from-level FOLDER)")
+    if a.from_level is not None:
+        given = [f for f, v, d in (
+            ("--seed", a.seed, None), ("--size", a.size, "medium"),
+            ("--max-per-team", a.max_per_team, 6),
+            ("--zombies", a.zombies, 4), ("--vents", a.vents, False),
+            ("--recipe", a.recipe, None), ("--profile", a.profile,
+                                           "standard")) if v != d]
+        if given:
+            ap.error(f"--from-level takes its inputs from the record; "
+                     f"refusing {given}")
+    elif a.allow_stale:
+        ap.error("--allow-stale goes with --from-level")
+    return a
 
 
 def main(argv=None) -> int:
     a = _parse_args(sys.argv[1:] if argv is None else argv)
-    plan = generate(a.seed, a.size, max_per_team=a.max_per_team,
-                    zombies=a.zombies, vents=a.vents, recipe=a.recipe,
-                    profile=a.profile)
+    if a.from_level is not None:
+        plan = generate_from_spec(Path(a.from_level),
+                                  allow_stale=a.allow_stale)
+    else:
+        plan = generate(a.seed, a.size, max_per_team=a.max_per_team,
+                        zombies=a.zombies, vents=a.vents, recipe=a.recipe,
+                        profile=a.profile)
     out = Path(a.out) if a.out else ROOT / "levels" / plan.name
     write(plan, out)
     h, w = plan.tilemap.shape
