@@ -242,7 +242,7 @@ explicitly and non-overlapping: the airlock centred on the hub's y-range,
 the breakable toward the slab-side end. The lobby spans the wing height
 (>= 24 on medium), so the demand is on the HUB SECTION's height (§5).
 Until `CELL_CROSSING_KINDS` gains `breakable` (recipe doc §5.2) the row
-cannot be stamped; it is a prerequisite patch.
+cannot be stamped; it is a prerequisite patch. *(DONE 2026-11-06 `86629b2`: the pair builds; an overlap or a missing mount / clearance tile is a `GraphSchemaError`.)*
 
 ### 4.4 Maintenance ring (ring on the engine room)
 
@@ -390,8 +390,8 @@ fits a medium row (recipe doc §3.1; revision 1's `[20, 24]` could not).
 | repair pass | same module | ~80 lines |
 | the recipe path's `check_request` (skeleton arithmetic, zombie capacity) and the loader's feasibility twin (§4) | `ship_layout.py`, called by the loader | ~100 lines (a coupling: the loader imports the layout's arithmetic, never a copy) |
 | `generate(recipe=)`: grammar (own stream) -> resolver -> layout -> `embed` -> `validate`; `ShipPlan` carries the recipe hash; schema errors on the recipe path are bugs, site misses are `_Reject` | `tools/gen_ship.py` | small; `ship_demo` byte-identical gate |
-| prerequisites from other patches | `CELL_CROSSING_KINDS` + `breakable` (recipe doc §5.2); the grammar executor (archetype doc §7); the recipe loader + resolver (the implementing chat) | |
-| stage-2 extension: lamps per length (one lamp per 12 tiles of a room's long side, centred on each span) | `embed`'s lights | small; a feel item (§10) |
+| prerequisites from other patches | `CELL_CROSSING_KINDS` + `breakable` (recipe doc §5.2; DONE 2026-11-06 `86629b2`, with §4.3's bypass arithmetic in `ShipGraph._check_bypass`); the grammar executor (archetype doc §7); the recipe loader + resolver (the implementing chat) | |
+| stage-2 extension: lamps per length (one lamp per 12 tiles of a room's long side, centred on each span) | `embed`'s lights | small; a feel item (§10). **DONE 2026-11-06 `86629b2`**: the opt-in room tag `lamp_span` (`gen_ship._room_lamps`, `LAMP_SPAN = 12`; nothing sets it yet) -- as built: `ceil(long / span)` EQUAL spans rather than 12-tile chunks plus a remainder, so a room's lamps are symmetric about its centre and a twin's are the reflection |
 
 **Determinism (critique 14).** Two streams: the GRAMMAR draws once from
 `SeedSequence([seed, 0])` (so the resolved graph is the (recipe hash, seed)
