@@ -3278,6 +3278,59 @@ explosive_kg = 0.184  # the frag proxy: one M67 fill
 heat_amount = 3200.0                  # PROVISIONAL — see note above
 heat_radius = 5.0                     # PROVISIONAL — see note above
 
+# --- #31 blast comparison rows (levels/blast_quad, tools/gen_blast_quad.py).
+# ALL PROVISIONAL. Every row delivers the same totals: mass 94 (`pressure` x the
+# disc's weight: 1.0 at radius 1, 9.38 at 3, 26.05 at 5) and heat 15000
+# (`heat_amount` x the same weight). quad_slow is 1/6 of quad_r3, fired by six
+# charges one tick apart. No unit or wall damage: these rows compare the air.
+[payloads.quad_tile]
+radius = 1
+pressure = 94.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 15000.0
+heat_radius = 1.0
+
+[payloads.quad_r3]
+radius = 3
+pressure = 10.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 1600.0
+heat_radius = 3.0
+
+[payloads.quad_r5]
+radius = 5
+pressure = 3.6
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.184
+heat_amount = 576.0
+heat_radius = 5.0
+
+[payloads.quad_slow]
+radius = 3
+pressure = 1.67
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.0307
+heat_amount = 267.0
+heat_radius = 3.0
+
 # --- #31 explosion-studio rows (levels/explosion_studio, fired by its
 # timed_charge entities). ALL PROVISIONAL — Erik edits them at the "explosion
 # + air" session. studio_small|medium|large are frag_heat at 1x / 2x / 4x its
