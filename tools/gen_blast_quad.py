@@ -55,6 +55,7 @@ TPS = 24
 FIRST_S = 2.0
 PERIOD_S = 3.0
 SLOW_TICKS = 6
+LAMP_INTENSITY = 1.6     # 36 lamps, inside the frame's cone door (64 light units)
 
 # The rooms, in order NW, NE, SW, SE: (label, payload row, charges one tick apart).
 # A second set of rows is a second level through the same layout.
@@ -70,6 +71,12 @@ SETS = {
         ("SOURCE 40 M3", "div_40", 1),
         ("SOURCE 80 M3", "div_80", 1),
         ("SOURCE 40 + PUFF", "div_40_puff", 1),
+    )),
+    "blast_smoke": ("Blast Smoke", (
+        ("SMOKE 100%", "div_40", 1),
+        ("SMOKE 50%", "div_40_s50", 1),
+        ("SMOKE 25%", "div_40_s25", 1),
+        ("SMOKE 10%", "div_40_s10", 1),
     )),
 }
 SLOTS = ((X0 + 1, Y0 + 1, "w"), (X_MID + 1, Y0 + 1, "e"),
@@ -99,15 +106,15 @@ def build_tilemap() -> np.ndarray:
 
 
 def build_lights() -> list:
-    return [LightEntry(x=r[1] + ROOM_W / 2 + (6.0 if r[3] == "w" else -6.0),
-                       y=r[2] + ROOM_H / 2, color=(1.0, 0.84, 0.67),
-                       intensity=5.0, range=16.0, kind="static")
-            for r in ROOMS]
+    return [LightEntry(x=r[1] + ROOM_W * fx, y=r[2] + ROOM_H * fy,
+                       color=(1.0, 0.92, 0.82), intensity=LAMP_INTENSITY,
+                       range=16.0, kind="static")
+            for r in ROOMS for fy in (1 / 6, 0.5, 5 / 6) for fx in (1 / 6, 0.5, 5 / 6)]
 
 
-PALETTE = {SPACE_CODE: (58, 70, 88), MAT_AIR: (34, 36, 42),
+PALETTE = {SPACE_CODE: (58, 70, 88), MAT_AIR: (232, 234, 238),
            MAT_HULL: (96, 102, 116)}
-AIR_ALT = (30, 32, 38)
+AIR_ALT = (214, 216, 222)
 CHARGE_RGB = (170, 40, 30)
 
 
@@ -131,7 +138,7 @@ def build_diffuse(tm: np.ndarray, rows, charges) -> Image.Image:
         font = ImageFont.load_default()
     for (label, _row, _n), (rx, ry, _side) in zip(rows, SLOTS):
         draw.text(((rx + ROOM_W // 2) * PX, (ry + 3) * PX), label,
-                  fill=(190, 196, 204), font=font, anchor="mm")
+                  fill=(24, 26, 30), font=font, anchor="mm")
     return pil
 
 
@@ -174,3 +181,4 @@ def main(level: str = LEVEL_NAME) -> None:
 if __name__ == "__main__":
     main()
     main("blast_div")
+    main("blast_smoke")

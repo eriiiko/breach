@@ -3390,6 +3390,51 @@ expansion_m3 = 40.0
 expansion_radius = 3.0
 expansion_ticks = 2
 
+[payloads.div_40_s50]
+radius = 3
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.092
+heat_amount = 51.0
+heat_radius = 3.0
+expansion_m3 = 40.0
+expansion_radius = 3.0
+expansion_ticks = 2
+
+[payloads.div_40_s25]
+radius = 3
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.046
+heat_amount = 51.0
+heat_radius = 3.0
+expansion_m3 = 40.0
+expansion_radius = 3.0
+expansion_ticks = 2
+
+[payloads.div_40_s10]
+radius = 3
+pressure = 0.0
+wall_damage = 0
+unit_damage = 0
+clear_smoke = true
+emit_blast_smoke = true
+explosive = "comp_b"
+explosive_kg = 0.0184
+heat_amount = 51.0
+heat_radius = 3.0
+expansion_m3 = 40.0
+expansion_radius = 3.0
+expansion_ticks = 2
+
 # --- #31 explosion-studio rows (levels/explosion_studio, fired by its
 # timed_charge entities). ALL PROVISIONAL — Erik edits them at the "explosion
 # + air" session. studio_small|medium|large are frag_heat at 1x / 2x / 4x its

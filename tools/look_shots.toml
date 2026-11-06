@@ -603,3 +603,47 @@ beacon = false
 flashlight = { pos = [17.5, 40.5], intensity = 2.5, spread = 6.283 }
 light_gain = "game"
 note = "#114: marine Bravo, omni lamp NORTH-EAST of his footprint (diagonal, one tile gap on both axes)."
+
+# --- #31: the blast comparison levels, whole map (first shot at tick 48) -----
+
+[[shot]]
+name = "blast_div_t52"
+level = "blast_div"
+frames = 52
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t60"
+level = "blast_div"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t84"
+level = "blast_div"
+frames = 84
+light_gain = "game"
+
+[[shot]]
+name = "blast_div_t112"
+level = "blast_div"
+frames = 112
+light_gain = "game"
+
+[[shot]]
+name = "blast_smoke_t60"
+level = "blast_smoke"
+frames = 60
+light_gain = "game"
+
+[[shot]]
+name = "blast_smoke_t84"
+level = "blast_smoke"
+frames = 84
+light_gain = "game"
+
+[[shot]]
+name = "blast_smoke_t112"
+level = "blast_smoke"
+frames = 112
+light_gain = "game"
