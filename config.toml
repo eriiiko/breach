@@ -2001,6 +2001,11 @@ density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
 # true height relative to him (renderer/unit_model_renderer.py).
 player = ["space_marine"]
 zombie = ["worker_male", "worker_female"]
+# Try the SOMA-skeleton worker (#179; pose layer [render.pose.skeletons.soma]):
+# swap this line in for the one above (any look of any skeleton can sit in
+# either list), or see every unit as him without editing anything:
+#   python art/characters/charkit/preview_in_game.py --root . --model assets/models/soma_worker_male/soma_worker_male.glb -- --level playground
+# zombie = ["soma_worker_male", "worker_male", "worker_female"]
 
 [render.unit_shading]
 # The 3D units' edge glow (renderer/marine_shader.py rim term). Read every

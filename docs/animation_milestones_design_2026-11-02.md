@@ -636,3 +636,84 @@ last third of the clip (does a posture hold?). Clips and GIFs on the work deskto
    rather than a clip).
 5. Heavy carried object — **usable as a gait** (hand at the shoulder); the bag itself is a
    prop on a bone.
+
+## 13. As built — the pose layer plays SOMA (#179, 2026-11-07)
+
+Branch `179-soma-pose`. The pose layer now plays `assets/models/soma_worker_male`
+(30-joint SOMA, 12 Kimodo clips) beside the Quaternius looks, in one run, as data. The
+Quaternius looks compose bit for bit as before (a scripted 240-frame run, 4 units, every
+shipped look: max |diff| 0.0 against the pre-#179 code; held by
+`tests/test_pose_soma.py::test_the_quaternius_looks_ignore_every_other_skeletons_table`).
+
+**What was built.** A `[render.pose.skeletons.<s>]` table may carry its own playback
+(absent = the global tables): `clip_names` (the canonical names the shared tables use —
+the Quaternius pack's — to the skeleton's own; `""` = no such clip: a state falls back, the
+reaction needing it does nothing), `rate` (replaces the global 0.51), `clips` (per-clip
+rows keyed by the skeleton's own names, replacing `[render.pose.clips]`) and `roles`
+(per-role `posture` + `states` rows). The look's skeleton table is now picked from the
+file's skeleton BEFORE the bake, so its own clip rows shape the bake. `[render.pose.skeletons.soma]`:
+masks (legs = Hips − Spine1, upper = Spine1 − Neck1, head = Neck1), twist (Hips; Spine1,
+Spine2, Chest at 0.4/0.3/0.3), the posture maps, the clip names, the rates, a zombie role.
+Tool `tools/pose_lineup.py` (top + side stills of named scenes through the real skinner).
+
+**Deviations from the brief.**
+- The per-skeleton keys are OPTIONAL (absent = the global key), not required: requiring
+  them would have meant moving the global `rate` and `[render.pose.clips]` into the
+  Quaternius table and rewriting the tests that pin them. Unknown keys are still refused,
+  every value is type-checked, a `clip_names` key no table uses is refused, a mapped name
+  the file lacks is refused at load.
+- The per-role override lives in the SKELETON table (`roles.zombie`), not in the global
+  `[render.pose.roles]`: only SOMA has the hunch clip and its posture amount must differ
+  per skeleton (0.0 on SOMA, 1.0 on Quaternius), so both are per skeleton.
+- `arm_open` has no SOMA bones (`arm_open = []`): the hands are rigid; mapping it to a
+  wrist bend read as nothing a claw could be. The neck thrust (50°) is shared 25/25 by
+  Neck1 and Neck2.
+- The posture signs carried over unchanged: model-space rows mean the same motion on any
+  rig facing +z, +y up, +x its left, and SOMA's A-pose rest is within a few degrees of the
+  Quaternius workers' (both rigs have +y along the bone). Checked by FK (each parameter
+  moves the head / hands / hips the same way on both rigs, > 2 cm, tested) and by the
+  lineup renders.
+- The SOMA melee reaction is OFF (`Punch_Jab = ""`, `Punch_Cross = ""`): no strike clip.
+
+**Measured.**
+- Clip stride speeds (stance-foot backward speed, from the clip): Walk 1.344 (left) /
+  1.303 (right) m/s, Rifle_Aim_Walk 1.27, Zombie_Hunch_Walk 1.014, Run 3.2–3.6 — the
+  work PC's figures confirmed. Every looping clip ends on its first key (< 1.2e-7).
+- Unit speed on screen: marine (`marine_attack`, 18 ticks/tile at 24 tps) 1.333 tiles/s,
+  zombie (14 ticks/tile) 1.714 tiles/s. The renderer draws the space marine (1.885 model m)
+  6 tiles tall, so one drawn tile = 0.3142 model m: 0.419 m/s marine, 0.539 m/s zombie
+  (in SIM metres, at 0.333 m tiles: 0.444 and 0.571 — the drawn figure is the one feet
+  are seen against). Rates (skeleton rate 1.0 × clip row): Walk 0.312, Rifle_Aim_Walk
+  0.330 (the overlay's arm swing at the legs' tempo), Zombie_Hunch_Walk 0.531. Held
+  within 5 % by `test_a_soma_walk_strides_at_the_units_drawn_speed`. Consequence: the
+  shipped marine walks slowly (0.42 m/s), so the walk loop plays in 7.0 s of wall time —
+  slow, long steps; a faster `move_speed`/cadence would bring the steps to life.
+- Rifle_Shoot is a HELD AIM, not a recoil: over its 3.97 s no bone moves more than 3.5°
+  from its first key (the "lowers and raises the gun mid-clip" seen on the work PC is not
+  in the joint rotations). As the shot one-shot it restarts on its own first key, so a
+  shot is invisible on SOMA beyond the aim pose; the 4 s length needs no trim (the aim
+  hold, 1 s, ends it). A recoil clip is a generation job.
+- Hit_Chest as the flinch additive (delta against its own first key — itself the guarded
+  stance — so its guarded end cancels): peak 49° at clip 1.03 s; its last 0.2 s still
+  holds ~15° (the left hand), dropped over `ramp_out_s` 0.12 s at ≤ 2.45°/frame (60 fps),
+  against the Quaternius flinch's own 6.5°/frame ramp-out — no pop worse than today's.
+  Clip rate 1.5 (PLACEHOLDER): the flinch lasts 2.0 s wall, peak at 0.7 s.
+- raylib 5.5 INTERPOLATES the Kimodo clips when it bakes its 17 ms frames (the composed
+  pose at frame f's own time skins to 1.7e-6 of raylib's), while it shows the floor key of
+  the Quaternius pack; the GL check accepts either (`tests/gl_pose_inject_check.py`,
+  `EXTRA_LOOKS`).
+- Cost (pose layer drive + compose, this desktop): SOMA 0.55 ms at 1 unit, 1.75 ms at 20;
+  Quaternius worker 0.69 / 3.44 ms (53 bones vs 30; same 6818 vertices).
+
+**What the renders show** (`tools/pose_lineup.py`): idle, walk, the aim walk (empty hands
+held at chest height forward — reads as a guard without a rifle prop), mid-flinch (doubled
+forward, head down), fall (lying flat, moved by its travel), get-up, the hunch walk at
+posture 0 (crouched, one arm reaching) and at posture 1 (the stalk profile on top: much
+deeper, the head thrust low — too much on a clip that already hunches; 0.0 stays the
+default, Erik's call). The SOMA idle stands ~21° shoulder-turned, as the Quaternius idle
+does (18°).
+
+**Registered, unused:** Run (no run state), Hit_Back / Hit_Left / Hit_Right (the hit event
+has no direction), Get_Up (knockdown is #149). `dead` = Fall, dormant (dead units are not
+drawn). A SOMA zombie at posture 0 has no desync / tempo jitter (both ride the posture
+noise, drawn only above 0), so a SOMA horde walks in step.
