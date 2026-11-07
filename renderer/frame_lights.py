@@ -69,6 +69,11 @@ EMITTER_INPUTS = {
     "transient":  ("render", "the renderer's W6 effect queue (sim events, aged and "
                              "faded on the wall clock) -- the jets, the plasma bolts "
                              "and (#33) the bullets' muzzle flashes"),
+    "blast_flash": ("render", "sim event (the ExplosionEvent's row flash columns, "
+                              "G4 P5), render envelope on the sim clock: "
+                              "flash * exp(-age / flash_decay_s), age = "
+                              "(tick - tick0) / tps, at the blast walk's seed "
+                              "cells (blast_flash_lights)"),
     "fire":       ("sim",    "temperature -- the sweep's own thermal emission "
                              "a_c * L°[T], never a row; its LIGHT (never its heat) "
                              "is scaled per burning tile by the render-state "
@@ -142,14 +147,18 @@ def transient_specs(transients) -> list:
                       kind="transient", source="render") for t in transients]
 
 
-#: The most light (in light units, per channel) all muzzle flashes of one frame
-#: may carry together: HALF the sweep's cone budget. LIGHT_CONE_BUDGET = 2^44 at
+#: The most light (in light units, per channel) all TRANSIENT flashes of one
+#: frame -- the muzzle flashes (#33) and the blast flashes (G4 P5) TOGETHER --
+#: may carry: HALF the sweep's cone budget. LIGHT_CONE_BUDGET = 2^44 at
 #: L_FINE_BITS = 37 counts per light unit = 128 light units IN ONE ORDINATE, and
 #: a flash is omni, 1/16 of it in each (#173): 64 x 16. So a battle far beyond
-#: any shipped match (85 full flashes at once) dims its flashes instead of
-#: tripping the sweep's door, and the other half is left to the lamps,
-#: flashlights and jets.
-MUZZLE_FLASH_MAX_TOTAL = 1024.0
+#: any shipped match (85 full muzzle flashes at once, or a flashbang beside a
+#: firefight) dims its flashes instead of tripping the sweep's door, and the
+#: other half is left to the lamps, flashlights and jets (gen_ship's lamp budget
+#: is derived from this number). ONE group cap (design §6 B1, renamed from
+#: MUZZLE_FLASH_MAX_TOTAL, value kept): :func:`cap_transient_group` scales the
+#: muzzle flashes down first, the blast flashes last.
+TRANSIENT_MAX_TOTAL = 1024.0
 
 
 @dataclass(frozen=True)
@@ -201,8 +210,9 @@ def muzzle_flash_lights(effects, flash: MuzzleFlash, footprint_of) -> list:
     and the frame's cone budget scales with the shooters, not the bullets).
     ``footprint_of(unit_id)`` gives the shooter's footprint in tiles. A flash
     lives no longer than its tracer effect (the queue drops it at its life).
-    A volley whose flashes would together pass :data:`MUZZLE_FLASH_MAX_TOTAL`
-    is scaled down as a whole to it."""
+    A volley whose flashes would together pass :data:`TRANSIENT_MAX_TOTAL`
+    is scaled down as a whole to it (alone; beside blast flashes the group
+    cap :func:`cap_transient_group` dims them further)."""
     if flash.intensity <= 0.0:
         return []
     best = {}
@@ -225,11 +235,107 @@ def muzzle_flash_lights(effects, flash: MuzzleFlash, footprint_of) -> list:
         out.append({"x": lx + 0.5, "y": ly + 0.5, "max_range": 0,
                     "intensity": flash.intensity * alpha, "color": flash.color})
     total = sum(d["intensity"] for d in out) * max(flash.color)
-    if total > MUZZLE_FLASH_MAX_TOTAL:
-        k = MUZZLE_FLASH_MAX_TOTAL / total
+    if total > TRANSIENT_MAX_TOTAL:
+        k = TRANSIENT_MAX_TOTAL / total
         for d in out:
             d["intensity"] *= k
     return out
+
+
+#: A blast flash below this share of its peak is dropped (design §3.5): at
+#: exp(-age / decay) that is ln(100) = 4.6 e-folds after the detonation.
+BLAST_FLASH_CUTOFF = 0.01
+
+
+def blast_flash_cells(mask, fy: int, fx: int, approach=None) -> list:
+    """Where a blast's flash leaves from (design §3.5 + §6 N5): the blast walk's
+    own seeds (``blast_expansion.walk_seeds``, the cells the sparks are born
+    at) and, when the centre is open (its one seed), its open 4-neighbours
+    too, so an omni flash is a small disc of up to five cells, not one cell's
+    star. A centre still solid (a charge on a wall) keeps the seed rule's
+    answer alone: the approach side, else every open 4-neighbour -- never a
+    cell inside the wall. ``mask`` is ``blast_expansion.open_mask`` of the
+    map. Sorted (y, x) tiles."""
+    from simulation.blast_expansion import walk_seeds
+    mask = np.asarray(mask, bool)
+    fy, fx = int(fy), int(fx)
+    seeds = walk_seeds(mask, fy, fx, approach)
+    cells = set(seeds)
+    h, w = mask.shape
+    if seeds == [(fy, fx)]:
+        for y, x in ((fy - 1, fx), (fy + 1, fx), (fy, fx - 1), (fy, fx + 1)):
+            if 0 <= y < h and 0 <= x < w and mask[y, x]:
+                cells.add((y, x))
+    return sorted(cells)
+
+
+def blast_flash_lights(effects, sim_t_of, open_mask) -> list:
+    """The blast flashes implied by the renderer's live ``"blast"`` effects
+    (G4 P5, #75; design §3.5 as amended by §6 B1, S1, N2, N5), as
+    transient-light dicts (x, y, max_range, intensity, color -- the
+    :func:`transient_specs` input). PURE: effects in, dicts out.
+
+    A blast effect whose row carries ``flash > 0`` lights
+    ``flash * exp(-age / flash_decay_s)`` light units -- the full ``flash`` at
+    age 0, dropped below :data:`BLAST_FLASH_CUTOFF` of it -- split equally
+    over :func:`blast_flash_cells` at their tile centres (+0.5), each an omni
+    lamp in ``flash_color``. ``sim_t_of(effect)`` is the effect's age in SIM
+    seconds, ``(tick - tick0 + alpha) / tps`` from the caller (S1: paused it
+    holds, a look shot reproduces). ``open_mask`` is the map's
+    ``blast_expansion.open_mask`` or a zero-argument callable returning it,
+    asked only when a flash is live. Not capped here: the group cap with the
+    muzzle flashes is :func:`cap_transient_group`."""
+    out = []
+    mask = None
+    for fx in effects:
+        if fx.get("kind") != "blast":
+            continue
+        peak = float(fx.get("flash", 0.0))
+        if not peak > 0.0:
+            continue
+        decay = float(fx.get("flash_decay_s", 0.3))
+        age = max(float(sim_t_of(fx)), 0.0)
+        k = math.exp(-age / decay) if decay > 0.0 else 0.0
+        if k < BLAST_FLASH_CUTOFF:
+            continue
+        if mask is None:
+            mask = open_mask() if callable(open_mask) else open_mask
+        px, py = fx["pos"]
+        cells = blast_flash_cells(mask, int(py), int(px), fx.get("approach"))
+        if not cells:
+            continue
+        each = peak * k / len(cells)
+        color = tuple(float(c) for c in fx.get("flash_color", (1.0, 1.0, 1.0)))
+        for (y, x) in cells:
+            out.append({"x": x + 0.5, "y": y + 0.5, "max_range": 0,
+                        "intensity": each, "color": color})
+    return out
+
+
+def _transient_total(lights) -> float:
+    """The light a set of transient dicts carries in its brightest channel
+    (the muzzle flash cap's measure)."""
+    return sum(float(d["intensity"]) * max(d["color"]) for d in lights)
+
+
+def cap_transient_group(muzzle, blast) -> list:
+    """THE ONE TRANSIENT CAP (design §6 B1): the muzzle flashes and the blast
+    flashes of one frame together carry at most :data:`TRANSIENT_MAX_TOTAL`
+    light units in their brightest channel. The muzzle flashes give way first
+    (scaled down as a group, to zero if the blasts alone fill the cap), the
+    blast flashes last (scaled to the cap only when they alone pass it).
+    Returns ``muzzle + blast`` (new dicts where scaled; never drops a light)."""
+    t_b = _transient_total(blast)
+    t_m = _transient_total(muzzle)
+    k_b = 1.0 if t_b <= TRANSIENT_MAX_TOTAL else TRANSIENT_MAX_TOTAL / t_b
+    room = max(TRANSIENT_MAX_TOTAL - t_b * k_b, 0.0)
+    k_m = 1.0 if t_m <= room else (room / t_m if t_m > 0.0 else 0.0)
+
+    def _scaled(ds, k):
+        if k == 1.0:
+            return list(ds)
+        return [{**d, "intensity": float(d["intensity"]) * k} for d in ds]
+    return _scaled(muzzle, k_m) + _scaled(blast, k_b)
 
 
 @dataclass
@@ -377,7 +483,11 @@ __all__ = [
     "MuzzleFlash",
     "muzzle_flash_settings",
     "muzzle_flash_lights",
-    "MUZZLE_FLASH_MAX_TOTAL",
+    "TRANSIENT_MAX_TOTAL",
+    "BLAST_FLASH_CUTOFF",
+    "blast_flash_cells",
+    "blast_flash_lights",
+    "cap_transient_group",
     "spec_cone_row",
     "cone_rows",
     "LIGHT_EMIT_MULT_MAX",

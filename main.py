@@ -666,6 +666,8 @@ def main():
     # once (frame_lights.frame_light_specs). The render-sourced lights (the
     # onephase flashlights at their lens, WEGO's cursor lamp, the W6 transient
     # emitters) are the caller's tail, exactly as before P6b.
+    from simulation.blast_expansion import open_mask as _blast_open_mask
+
     def _footprint_of(uid):
         u = sim.get_unit(uid)
         return int(getattr(u, "footprint", 3)) if u is not None else 3
@@ -689,10 +691,13 @@ def main():
             if cursor is not None:
                 extra.append(cursor)
         # W6 transient emitters: flame/miasma jets + plasma bolts + (#33) the
-        # bullets' muzzle flashes, from the renderer's own live effect queue —
-        # render-side only.
+        # bullets' muzzle flashes + (G4 P5) the blasts' row flashes, aged on
+        # the sim clock at this tick, from the renderer's own live effect
+        # queue — render-side only.
         extra += frame_lights.transient_specs(
-            renderer.transient_light_specs(_footprint_of))
+            renderer.transient_light_specs(
+                _footprint_of, sim_tick=total,
+                open_mask=lambda: _blast_open_mask(sim.gmap)))
         return frame_lights.frame_light_specs(
             beacons_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
             extra=extra)

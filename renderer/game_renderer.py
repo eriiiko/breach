@@ -14,6 +14,7 @@ State flow:
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
@@ -460,6 +461,9 @@ class GameRenderer:
         # The sim tick of the last upload_state: a "blast" effect consumed
         # without an explicit tick is stamped with it (G4, #75).
         self._last_sim_tick: int = 0
+        # Graphics G4 P5: the blast flashes on/off (a look shot's `hide =
+        # ["flash"]`; no key). Off = no blast flash light at all.
+        self.blast_flash_on: bool = True
 
         # ray-engine-v2 P6b/P6c: THE LIGHT is the radiation sweep's light
         # channels, read through the one accessor (simulation.light_field) and
@@ -1711,7 +1715,26 @@ class GameRenderer:
         return self.fire_flicker.rows(fx.pack, fx.clock.t_noise,
                                       fx.settings.dials, grid_w, grid_h)
 
-    def transient_light_specs(self, footprint_of=None) -> list:
+    def blast_flash_light_specs(self, sim_tick: int, open_mask) -> list:
+        """Graphics G4 P5 (#75): the live blast flashes as transient-light
+        dicts (``frame_lights.blast_flash_lights``, the pure part), aged on the
+        SIM clock ``(sim_tick - tick0) / tps`` (design §6 S1: the light is
+        assembled once per sim tick, so there is no sub-tick alpha; paused, the
+        same tick relit holds the same flash). ``open_mask`` is the map's
+        ``blast_expansion.open_mask`` or a callable returning it (asked only
+        while a flash lives). Uncapped: :meth:`transient_light_specs` caps it
+        with the muzzle flashes; lighting_demo calls this directly."""
+        if not self.blast_flash_on:
+            return []
+        from . import frame_lights as _fl
+        tick, dt = int(sim_tick), float(self._sim_dt)
+        return _fl.blast_flash_lights(
+            self._effects,
+            lambda fx: (tick - int(fx.get("tick0", tick))) * dt,
+            open_mask)
+
+    def transient_light_specs(self, footprint_of=None, sim_tick=None,
+                              open_mask=None) -> list:
         """Light sources implied by the LIVE jet/glow effects (W6) — the
         'transient light emitter' half of the spray/plasma visuals.
 
@@ -1731,6 +1754,13 @@ class GameRenderer:
         part, with ``[render.muzzle_flash]`` read here every call so F5 retunes
         it). ``footprint_of(unit_id)`` gives a shooter's footprint in tiles;
         None = no muzzle flashes (a caller without the sim).
+
+        G4 P5: a detonation's FLASH rides it too -- the blast effects' row
+        flashes (:meth:`blast_flash_light_specs`) at ``sim_tick`` (the
+        monotonic tick the light is assembled for) over ``open_mask`` (the
+        map's open mask, or a callable); None for either = no blast flashes.
+        The muzzle and blast flashes share ONE cap
+        (``frame_lights.cap_transient_group``: the muzzle flashes dim first).
         """
         import math as _m
         specs = []
@@ -1767,10 +1797,13 @@ class GameRenderer:
                     "intensity": 1.2 * alpha,
                     "color": (1.0, 0.65, 0.35),
                 })
-        if footprint_of is not None:
-            from . import frame_lights as _fl
-            specs += _fl.muzzle_flash_lights(
-                self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
+        from . import frame_lights as _fl
+        muzzle = (_fl.muzzle_flash_lights(
+            self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
+            if footprint_of is not None else [])
+        blast = (self.blast_flash_light_specs(sim_tick, open_mask)
+                 if sim_tick is not None and open_mask is not None else [])
+        specs += _fl.cap_transient_group(muzzle, blast)
         return specs
 
     def consume_events(self, events: Sequence,
@@ -1848,21 +1881,30 @@ class GameRenderer:
                 })
             elif isinstance(ev, ExplosionEvent):
                 # G4 (#75): the explosion look's cue. The legacy ring is
-                # deleted; nothing draws this yet (the shock front, sparks,
-                # debris and flash read it, P2-P5). `life` outlasts the
-                # longest flash; the look ages on the sim clock from tick0.
+                # deleted; the shock front, sparks, debris and flash read it
+                # (P2-P5). The look ages on the sim clock from tick0; the
+                # effect lives `life` wall seconds AND until `sim_until` (the
+                # tick its flash falls below 1 %: a paused or slowed game keeps
+                # it, a long flashbang is never cut at the wall-clock life).
+                flash = float(getattr(ev, "flash", 0.0))
+                decay = float(getattr(ev, "flash_decay_s", 0.3))
+                sim_until = tick0
+                if flash > 0.0 and decay > 0.0:
+                    sim_until = tick0 + 1 + int(math.ceil(
+                        math.log(100.0) * decay / self._sim_dt))
                 self._effects.append({
                     "kind": "blast",
                     "pos": ev.pos,
                     "radius": ev.radius,
                     "kind_name": ev.kind,
                     "strength": float(getattr(ev, "strength", 0.0)),
-                    "flash": float(getattr(ev, "flash", 0.0)),
-                    "flash_decay_s": float(getattr(ev, "flash_decay_s", 0.3)),
+                    "flash": flash,
+                    "flash_decay_s": decay,
                     "flash_color": tuple(getattr(ev, "flash_color",
                                                  (1.0, 1.0, 1.0))),
                     "approach": getattr(ev, "approach", None),
                     "tick0": tick0,
+                    "sim_until": sim_until,
                     # not aged on the frame it is born (see _advance_effects)
                     "fresh": True,
                     "t": 0.0,
@@ -1888,7 +1930,12 @@ class GameRenderer:
             if fx.pop("fresh", False):
                 continue
             fx["t"] += dt
-        self._effects = [fx for fx in self._effects if fx["t"] < fx["life"]]
+        # a "blast" effect also lives on the SIM clock until its flash is out
+        # (G4 P5: `sim_until`, the last tick it lights anything)
+        tick = self._last_sim_tick
+        self._effects = [fx for fx in self._effects
+                         if fx["t"] < fx["life"]
+                         or fx.get("sim_until", -1) >= tick]
 
     def _draw_grid_world(self) -> None:
         wpt = self.world.world_px_per_tile

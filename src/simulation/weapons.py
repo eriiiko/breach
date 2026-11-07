@@ -255,8 +255,17 @@ class PayloadDef:
                  bulk_gas="", bulk_amount=0.0, bulk_radius=0.0, bulk_temp=0.0,
                  bulk_amount_q=0, bulk_temp_q=0,
                  expansion_m3=0.0, expansion_radius=0.0, expansion_ticks=1,
-                 strength=0.0, heat_mj=0.0, source_r2=0, heat_r2=0):
+                 strength=0.0, heat_mj=0.0, source_r2=0, heat_r2=0,
+                 flash=0.0, flash_decay_s=0.3, flash_color=(1.0, 1.0, 1.0)):
         self.name = name
+        # G4 P5 (#75): the detonation's FLASH, a render-only row property
+        # (docs/explosion_look_design_2026-11-07.md §3.5): ``flash`` light units
+        # at peak (0 = none), fading as exp(-age / flash_decay_s) on the sim
+        # clock, ``flash_color`` RGB in [0, 1]. Carried on the ExplosionEvent;
+        # renderer/frame_lights.blast_flash_lights lights it. Never a sim field.
+        self.flash = float(flash)
+        self.flash_decay_s = float(flash_decay_s)
+        self.flash_color = tuple(float(c) for c in flash_color)
         # #31: a row with ``strength > 0`` IS a generic explosion. The door
         # derives what the strength means from [blast]: ``expansion_m3``, the
         # air it pushes out in one tick; ``heat_mj``, its heat; ``explosive_kg``,
@@ -598,6 +607,46 @@ def _strength_columns(name, row, col, emit_blast_smoke, explosive, blast_cfg):
         heat_r2=4 * r_s * r_s)
 
 
+# The flash columns (G4 P5, #75): any other ``flash_*`` key is a typo, refused.
+_FLASH_COLUMNS = ("flash", "flash_decay_s", "flash_color")
+
+
+def _flash_columns(name, row, col):
+    """The ``[payloads.*]`` flash door (G4 P5, #75; design §3.5 + §6 S9): read
+    and validate ``flash`` (light units at peak, >= 0, default 0 = none),
+    ``flash_decay_s`` (the e-fold, seconds, > 0 when there is a flash; default
+    0.3) and ``flash_color`` (three numbers in [0, 1], default white). Refuses
+    any key starting ``flash`` that is not one of the three, so a misspelt
+    column is loud at load instead of a silent default. Returns the PayloadDef
+    keyword arguments. Render-only: nothing in the sim reads them."""
+    import math
+    keys = row.keys() if isinstance(row, dict) else vars(row).keys()
+    bad = sorted(k for k in keys
+                 if str(k).startswith("flash") and k not in _FLASH_COLUMNS)
+    if bad:
+        raise ValueError(f"payloads.{name} has unknown flash column(s) {bad}: "
+                         f"the flash columns are {list(_FLASH_COLUMNS)}")
+    flash = float(col("flash", 0.0))
+    decay = float(col("flash_decay_s", 0.3))
+    color = col("flash_color", (1.0, 1.0, 1.0))
+    if not (math.isfinite(flash) and flash >= 0.0):
+        raise ValueError(f"payloads.{name}.flash {flash!r} must be >= 0 "
+                         f"(light units at peak; 0 = no flash)")
+    if flash > 0.0 and not (math.isfinite(decay) and decay > 0.0):
+        raise ValueError(f"payloads.{name}.flash_decay_s {decay!r} must be > 0 "
+                         f"for a row with a flash (the e-fold, seconds)")
+    try:
+        color = tuple(float(c) for c in color)
+    except TypeError:
+        raise ValueError(f"payloads.{name}.flash_color {color!r} must be three "
+                         f"numbers in [0, 1]") from None
+    if len(color) != 3 or not all(math.isfinite(c) and 0.0 <= c <= 1.0
+                                  for c in color):
+        raise ValueError(f"payloads.{name}.flash_color {color!r} must be three "
+                         f"numbers in [0, 1]")
+    return dict(flash=flash, flash_decay_s=decay, flash_color=color)
+
+
 def _bulk_gas_columns(name, col, gas_species, bulk_gases, trace_gases):
     """The ``[payloads.*]`` bulk-gas door (#133 E.2): read and validate the
     ``bulk_gas`` / ``bulk_amount`` / ``bulk_radius`` / ``bulk_temp`` columns
@@ -693,6 +742,7 @@ class PayloadTable:
                     f"known gas (engine/05 §6.2): {sorted(valid_gases)}")
             bulk = _bulk_gas_columns(name, col, gas_species, bulk_gases,
                                      trace_gases)
+            flash = _flash_columns(name, row, col)
             emit_blast_smoke = bool(col("emit_blast_smoke", False))
             explosive = str(col("explosive", ""))
             # A strength row's charge is derived, so it is known before the
@@ -739,6 +789,7 @@ class PayloadTable:
                 expansion_ticks=col("expansion_ticks", 1),
                 **blast,
                 **bulk,
+                **flash,
             )
         self.names = list(self.by_name)
 

@@ -135,8 +135,9 @@ LAMP_SHAPE_MARGIN = 1         # a shape's clear tiles to its room's wall or span
 # main.py refused at frame 3): a frame's cone emitters may put at most
 # LIGHT_CONE_BUDGET = 2^44 counts per channel = 128 light units at L°'s
 # currency into ONE ordinate (the sweep's door, #173), and an omni lamp or
-# flash puts 1/16 of itself in each. In one ordinate the muzzle flashes take
-# MUZZLE_FLASH_MAX_TOTAL / 16 = 64, and LAMP_RESERVE is held for the beams
+# flash puts 1/16 of itself in each. In one ordinate the transient flashes (muzzle
+# + blast, one shared cap, G4 P5) take
+# TRANSIENT_MAX_TOTAL / 16 = 64, and LAMP_RESERVE is held for the beams
 # (flashlights, jets: all of a beam can land in one). So the lamps of a ship whose rooms carry
 # ``lamp_span`` are held at <= LAMP_LIGHT_BUDGET light units per channel
 # (:func:`_ship_lamps`): first fewer lamps per room (a wider span, ending at
@@ -145,9 +146,9 @@ LAMP_SHAPE_MARGIN = 1         # a shape's clear tiles to its room's wall or span
 # number against frame_lights' constants (gen_ship stays pyray-free).
 CONE_LIGHT_UNITS = 128.0      # == frame_lights.LIGHT_CONE_BUDGET / 2^L_FINE_BITS
 OMNI_SHARE = 16               # the sweep's ordinates: an omni lamp's 1/n
-MUZZLE_FLASH_LIGHT = 1024.0   # == frame_lights.MUZZLE_FLASH_MAX_TOTAL (all omni)
+TRANSIENT_LIGHT = 1024.0      # == frame_lights.TRANSIENT_MAX_TOTAL (muzzle + blast flashes, all omni)
 LAMP_RESERVE = 16.0           # one ordinate: the beams (a squad's flashlights) + slack
-LAMP_LIGHT_BUDGET = (CONE_LIGHT_UNITS - MUZZLE_FLASH_LIGHT / OMNI_SHARE
+LAMP_LIGHT_BUDGET = (CONE_LIGHT_UNITS - TRANSIENT_LIGHT / OMNI_SHARE
                      - LAMP_RESERVE) * OMNI_SHARE
 # The int form of the ``fuel`` tag: v1's furniture / wood 60/40 draw, as a
 # mix (:func:`fuel_spec`; one ``rng.random()`` per cluster, the walk in name

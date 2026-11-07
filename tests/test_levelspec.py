@@ -317,9 +317,9 @@ def test_the_lamp_budget_is_the_light_doors_own_arithmetic():
     from renderer import frame_lights as fl
     units = fl.LIGHT_CONE_BUDGET / float(1 << int(bp.L_FINE_BITS))
     assert G.CONE_LIGHT_UNITS == units
-    assert G.MUZZLE_FLASH_LIGHT == fl.MUZZLE_FLASH_MAX_TOTAL
+    assert G.TRANSIENT_LIGHT == fl.TRANSIENT_MAX_TOTAL
     cursor = fl.CURSOR_INTENSITY * max(fl.CURSOR_COLOR)
-    assert (G.LAMP_LIGHT_BUDGET + G.MUZZLE_FLASH_LIGHT) / G.OMNI_SHARE + cursor <= units
+    assert (G.LAMP_LIGHT_BUDGET + G.TRANSIENT_LIGHT) / G.OMNI_SHARE + cursor <= units
 
 
 @pytest.mark.parametrize("seed, size", [(1, "medium"), (2, "large")])
@@ -339,7 +339,7 @@ def test_a_recipe_ships_lamps_survive_a_full_volley(seed, size):
     h, w = plan.tilemap.shape
     extra = [fl.cursor_lamp_spec((w / 2.0, h / 2.0))]
     extra += fl.transient_specs([{"x": w / 2.0, "y": h / 2.0,
-                                  "intensity": fl.MUZZLE_FLASH_MAX_TOTAL,
+                                  "intensity": fl.TRANSIENT_MAX_TOTAL,
                                   "color": (1.0, 1.0, 1.0)}])
     specs = fl.frame_light_specs(lamps, total_tick=0,
                                  sim_time_per_tick=1.0 / 60, extra=extra)

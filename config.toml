@@ -2179,7 +2179,7 @@ intensity = 12.0        # peak, in light units (a flashlight is 2.5, but aimed:
                         # round the muzzle and catches the shooter's armour
                         # without whiting out the floor; 24 lit half the room.
                         # Four marines firing together at 12 = 48 light units,
-                        # far inside the volley cap (1024, MUZZLE_FLASH_MAX_TOTAL).
+                        # far inside the volley cap (1024, TRANSIENT_MAX_TOTAL).
 duration_s = 0.1        # fades linearly to dark in this long (wall clock):
                         # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
                         # tracer it rides lives 0.18 s, so longer is cut there
@@ -3742,6 +3742,17 @@ soot_yield = 0.0
 # ignite_radius and ignite_intensity on it. No fire-starting rule (Erik's ruling,
 # 2026-11-06): a fuel tile catches only if the blast's ordinary heat takes it to its
 # own ignition_temp. Every strength value below is a PLACEHOLDER.
+#
+# THE FLASH (G4 P5, #75; docs/explosion_look_design_2026-11-07.md §3.5): a
+# render-only row property, never a sim field. `flash` = light units at peak
+# (0 = none, the default), `flash_decay_s` = its e-fold on the sim clock (default
+# 0.3), `flash_color` = RGB in [0, 1] (default white). Lit by
+# renderer/frame_lights.blast_flash_lights from the ExplosionEvent at the blast
+# walk's seed cells, as omni transients sharing ONE cap with the muzzle flashes
+# (TRANSIENT_MAX_TOTAL = 1024: a flash above it is dimmed to it). Any other
+# `flash_*` key is refused. Erik's ruling: no flash as a principle -- a hot row's
+# room light is its soot's own emission; the flash is a per-row TOP-UP. Every
+# flash value is a PLACEHOLDER.
 [payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
 strength = 1.0                        # PLACEHOLDER: the unit of [blast]
 radius = 2                            # was blast_radius (5 until 2026-10-03)
@@ -3753,6 +3764,8 @@ gas_radius = 0
 clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
 emit_blast_smoke = true               # LIVE: the executor's blast-smoke gate (W3)
 explosive = "comp_b"  # #12 handle 3: what the charge is made of ([explosives.*])
+flash = 60.0                          # PLACEHOLDER (G4 P5): light units at peak, a top-up on the soot's own light
+flash_decay_s = 0.3                   # PLACEHOLDER
 
 # --- #79 proxy rows: ignition now rides delivered heat, not a bare fire=max
 # edit (apply_explosion's heatless ignite block is DELETED; see CLAUDE.md
@@ -4046,6 +4059,11 @@ explosive_kg = 0.736  # 4x frag
 heat_amount = 12800.0                 # PROVISIONAL — 4x frag_heat
 heat_radius = 6.0                     # PROVISIONAL
 
+[payloads.studio_smoke]               # G4 P5 studio (levels/flashbang_studio): a cold standing soot column -- no blast,
+gas_species = "smoke"                 # no heat -- so the flash's shadow behind it is seen. PROVISIONAL (a look studio's
+gas_amount = 4.0                      # prop, not a weapon): trace density at the centre, linear to 0 at gas_radius
+gas_radius = 3
+
 [payloads.studio_hull]
 radius = 4
 pressure = 0.0
@@ -4066,6 +4084,8 @@ unit_damage = 0                       # PLACEHOLDER: the planter is unhurt by th
 clear_smoke = true                    # data-of-record (see frag_standard)
 emit_blast_smoke = true               # LIVE: the strength door requires it
 explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
+flash = 60.0                          # PLACEHOLDER (G4 P5): a cutting charge has almost no soot to light the room
+flash_decay_s = 0.3                   # PLACEHOLDER
 
 # --- W3 payload rows (mechanics/03 §6) — STANDARD VALUES for Erik's tuning --
 # Gas payloads put gas IN THE AIR (a deterministic radial deposit into the
@@ -4106,6 +4126,13 @@ unit_damage = 150
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*])
+flash = 0.0                           # PLACEHOLDER (G4 P5): its hot soot lights the room (Erik: no flash as a principle)
+
+[payloads.flashbang]                  # G4 P5 (#75): a flash and nothing else -- no strength, no radius, no heat, no gas
+flash = 800.0                         # PLACEHOLDER: light units at peak, under the transient cap (1024; critique B1)
+flash_decay_s = 1.5                   # PLACEHOLDER
+flash_color = [1.0, 1.0, 1.0]
+emit_blast_smoke = false              # a flash alone; its blinding of units is gameplay, not here
 
 # --- Department hazards (levelgen vocabulary B.4 / B.5, #133) ---------------
 # Fired by a heat-triggered [[entity]] timed_charge (trigger = "heat"): the
@@ -4119,6 +4146,7 @@ unit_damage = 120                     # PLACEHOLDER (studio_large 60, demolition
 clear_smoke = true
 emit_blast_smoke = true
 explosive = "comp_b"  # shell fills (the M67's Composition B), PLACEHOLDER
+flash = 0.0                           # PLACEHOLDER (G4 P5): its soot lights the room
 
 [payloads.hazmat_release]             # B.4: the solvent store ruptures -- poison_cloud's shape on fuel_gas
 gas_species = "fuel_gas"              # the flammable trace row: it finds a flame later
