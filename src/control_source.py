@@ -17,6 +17,8 @@ P2 (2026-07-22, pure seam + rename, NO behavior change): only
 identical behavior, selected by the default ``--control wego``.
 ``GamepadDirect`` (one possessed unit, per-tick MOVE_DIR/AIM/TRIGGER
 intents) and ``AgentPolicy`` (the RL path) are P3 — not built here.
+(``AgentPolicy`` exists since #29 P1a as the match controller ``policy``,
+``control_policy.py``: a trainer's action rows through the intent facade.)
 """
 from __future__ import annotations
 
@@ -173,6 +175,16 @@ def _zombies(team: int) -> "ControlSource":
     return ZombieControl(team)
 
 
+def _policy(team: int) -> "ControlSource":
+    """The ``policy`` controller (#29 P1a, ``control_policy.AgentPolicy`` --
+    the ML entry point this module reserved): issues a trainer's action rows
+    through the intent facade, one row per roster slot. Built by code only
+    (the batched environment, ``src/rl_env.py``): a match file cannot name it
+    (registered with ``nameable=False``), since nothing would hand it rows."""
+    from control_policy import AgentPolicy
+    return AgentPolicy(team)
+
+
 def _replay(team, recording=None) -> "ControlSource":
     """The replay controller (#126, ``match_replay.ReplayControl``): feeds a
     recorded match's intents back. Built only from a recording, by
@@ -191,10 +203,12 @@ _MATCH_CONTROLLERS: dict = {
     "bots": _bots,
     "zombies": _zombies,
     "replay": _replay,
+    "policy": _policy,
 }
 #: Registered controllers a match.toml may NOT name (they need more than a
-#: team to be built): the match door reads :func:`match_file_controllers`.
-_NOT_NAMEABLE: set = {"replay"}
+#: team to be built, or something only code hands them): the match door reads
+#: :func:`match_file_controllers`.
+_NOT_NAMEABLE: set = {"replay", "policy"}
 
 
 def register_controller(name: str, factory, *, nameable: bool = True) -> None:
@@ -262,8 +276,8 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
 
 # Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
 # point (AgentPolicy) is driven differently — it has no per-frame poll loop —
-# so it is not expected to route through this same factory; see the design doc
-# §3b.
+# so it does not route through this factory: it is the match controller
+# "policy" above (#29 P1a), built by the batched environment.
 _KNOWN_CONTROLS = ("wego", "gamepad", "onephase", "match")
 
 
