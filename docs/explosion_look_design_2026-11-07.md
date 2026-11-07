@@ -494,3 +494,149 @@ subprocess).
   debris stage timed with `GL_TIME_ELAPSED`, on vs off alternated):
   **0.012 ms** (budget 0.1; world RT 3600x3024). CPU 1.4 ms on a frame with
   512 chips (the per-tile density read in each substep).
+
+### P5, the flash (2026-11-07)
+
+- **Row columns** `flash` (light units at peak, default 0), `flash_decay_s`
+  (the e-fold, default 0.3) and `flash_color` (default white) on
+  `[payloads.*]`, read by `weapons._flash_columns`, the payload door: it
+  refuses `flash < 0`, `flash_decay_s <= 0` on a row with a flash, a colour
+  that is not three numbers in [0, 1], and (S9) any key starting `flash` that
+  is not one of the three. The strength door refuses by an explicit list, so
+  the columns pass it unchanged. `execute_payload` puts them on the
+  `ExplosionEvent`, which it already emitted for every row, so a flash-only
+  row needs no new path: it is the event and nothing else.
+- **Rows** (PLACEHOLDERS, Erik's): `frag_standard` 60, `breach_focus` 60,
+  `magazine_cookoff` 0 and `demolition_c4` 0 (their soot lights the room;
+  Erik's no-flash-as-a-principle ruling), all at decay 0.3 s;
+  `[payloads.flashbang]` 800 (B1: under the cap), decay 1.5 s, white, no
+  strength, no radius, no heat, no gas, `emit_blast_smoke = false`.
+  `[payloads.studio_smoke]` (new, for the studio): a cold soot deposit
+  through `emit_gas` (`gas_amount` 4, `gas_radius` 3), no blast, no heat.
+- **`frame_lights.blast_flash_lights(effects, sim_t_of, open_mask)`**, pure,
+  beside `muzzle_flash_lights`: per live `"blast"` effect with a flash,
+  `flash · exp(−age / decay)` light units, full at age 0, dropped under
+  `BLAST_FLASH_CUTOFF` (1 %), split equally over `blast_flash_cells` at tile
+  centres (+0.5, N2), omni, in `flash_color`. The age is the caller's sim
+  clock: `GameRenderer.blast_flash_light_specs(sim_tick, open_mask)` uses
+  `(tick − tick0) / tps` (S1). The light is assembled once per sim tick, so
+  there is no sub-tick alpha; a paused relight is the same tick, so the flash
+  holds. **Source cells (N5), Claude's reading of a conflict in the brief**:
+  `walk_seeds` returns ONE cell (the centre) whenever the centre is open, so
+  "the seeds" alone would be §3.5's one-cell star; `blast_flash_cells` is the
+  walk's seeds plus, when the centre is open, its open 4-neighbours (§3.5's
+  "centre + open 4-neighbours", N5's "up to 5"); a centre still solid keeps the
+  seed rule alone (the approach side, else every open 4-neighbour), so a charge
+  on a wall never lights inside it.
+- **ONE transient cap (B1)**: `MUZZLE_FLASH_MAX_TOTAL` is renamed
+  `TRANSIENT_MAX_TOTAL`, 1024 kept; `cap_transient_group(muzzle, blast)` holds
+  the two together under it, the muzzle flashes scaled down first (to zero if
+  the blasts alone fill it), the blast flashes last (to the cap only when they
+  alone pass it); no light is dropped from the list. `muzzle_flash_lights`
+  still caps itself alone. gen_ship's `MUZZLE_FLASH_LIGHT` became
+  `TRANSIENT_LIGHT` (value and lamp budget unchanged), `test_levelspec`
+  follows. `EMITTER_INPUTS` gains `"blast_flash"`.
+- **Wiring**: `GameRenderer.transient_light_specs(footprint_of, sim_tick=,
+  open_mask=)` adds the blast flashes and applies the group cap; main.py's
+  assembly passes the tick it assembles for and `open_mask(sim.gmap)` (lazy).
+  `tools/lighting_demo.py::demo_light_rows(..., renderer=, gmap=)` does the
+  same in the interactive / `--shots` loop (the perf passes keep their
+  lamps-only rows). Look-shot hide layer `flash` (`GameRenderer.blast_flash_on`).
+- **The effect's life**: a `"blast"` effect also lives on the sim clock until
+  `sim_until` (`tick0 + 1 + ceil(ln 100 · decay · tps)`), so a 1.5 s
+  flashbang is never cut by the 3 s wall-clock `life` in slow motion or a
+  pause (`_advance_effects` keeps an effect while either holds).
+- **Studio**: `levels/flashbang_studio` (`tools/gen_flashbang_studio.py`,
+  through `level_lib`; README): two sealed 30×24 rooms on a space band, a
+  `flashbang` timed charge at each centre at 2 s (tick 48, blast_final's
+  volley, so the `t50`/`t52` frames align), period 8 s, 9 lamps per room at
+  0.4; the east room has the `studio_smoke` column 4 tiles east of its charge,
+  laid at 0.5 s.
+- **Measurement (c)** (§3.6, B3): `tools/blast_light_probe.py --flash`
+  (the table: `flash_measurement.md` beside this doc). Two runs of
+  blast_final fed the flashes as the game does, one with `flash = 0` on
+  copied PayloadDefs (the timed charges re-pointed: they resolve their row
+  at load). Light units, `LightView.scalar`; r3 / r6 = the mean over the open
+  compass tiles 3 / 6 from the charge (a single direction read a soot lobe
+  and said x1.0 where the room was x3.5); x = with / without:
+
+  | row (flash) | tick | r3 with / none | x | r6 x | room with / none | x |
+  |---|---|---|---|---|---|---|
+  | frag (60) | +1 | 0.202 / 0.038 | 5.35 | 2.34 | 0.188 / 0.053 | 3.55 |
+  | frag | +2 | 9.80 / 9.29 | 1.06 | 1.06 | 1.93 / 1.74 | 1.11 |
+  | frag | +4 | 2.28 / 2.02 | 1.13 | 1.12 | 0.69 / 0.56 | 1.23 |
+  | frag | +8 | 0.41 / 0.21 | 1.93 | 1.49 | 0.18 / 0.09 | 1.93 |
+  | frag | +12 | 0.24 / 0.10 | 2.45 | 1.52 | 0.12 / 0.07 | 1.87 |
+  | breach (60) | +1 | 2.65 / 0.046 | 57.2 | 32.1 | 0.90 / 0.040 | 22.6 |
+  | breach | +4 | 1.99 / 0.052 | 38.4 | 22.3 | 0.67 / 0.041 | 16.3 |
+  | breach | +12 | 0.73 / 0.053 | 13.6 | 8.1 | 0.26 / 0.041 | 6.2 |
+  | magazine, C4 (0) | all | identical | 1.00 | 1.00 | identical | 1.00 |
+
+  **Judged**: the frag's 60 is neither invisible nor swamping, but it is a
+  one-tick flash: at +1 its soot does not glow yet and the flash is the
+  room's light (x3.5), at +2..+4 the hot soot's own light is ten times it
+  (x1.06-1.23), and from +5 it is a tail that keeps the room at about twice
+  the dimming soot. Right in kind; whether one frame of it reads at the
+  screen is Erik's. The breach's 60 is its whole light (x23 at +1, x6 at
+  +12): a cutting charge has no soot, so its flash is the only sign of it
+  in the room, as intended; it may be too long (decay 0.3 s) for a cut.
+- **What the shots show** (`p5/`, tag `a39342a`; numbers from a diff against
+  the same shots with `hide = ["flash"]`): `blast_final_t50_frag` (tick +1):
+  the room is visibly brighter all round (mean 168 → 188 of 255, 59 % of
+  pixels changed by more than 8), a white disc west of the crate, the hull
+  wall lit; the sparks' star is lost in it. `blast_final_t52_frag` (+3): the
+  fireball's own glow dominates; the flash changes 5 % of pixels (the floor
+  round the soot a little warmer). `blast_final_t52_c4`: the
+  no-flash shot to within one 8-bit level (flash 0; the C4 whites out its
+  room by itself).
+  `flashbang_t50` / `_t52` / `_t60`: the clean room is white wall to wall at
+  every one of the three ticks (800 light units against the room's 9 lamps
+  of 0.4, ~220 times them: the tone-map is saturated, so the 1.5 s decay is
+  not visible until well after +12); the east room shows the soot column
+  lit on its flash side and a sharp shadow wedge behind it, the floor in the
+  wedge at the lamps' level. The shadow reads; the burn-out is the dial.
+- **Cost**: CPU, `blast_flash_lights` + the cap with four live blasts on
+  blast_final: 0.046 ms per sim tick (one `open_mask`, four `walk_seeds`).
+  The sweep with 10 extra omni cone rows (two flashes × 5 cells): `relight`
+  2.97 ms vs 2.94 ms without on CPU (40 runs × 3, within run-to-run noise):
+  a cone row is a per-cell injection into a traversal the sweep makes
+  anyway. No GPU cost of its own (no new pass, no new texture).
+- **Tests** (`tests/test_blast_flash.py`, 20):
+  - full on its first tick, exp decay (constant ratio): breaks on a ramped,
+    frame-delayed or linear envelope, or the decay read as a duration;
+  - gone under 1 % and present just above: breaks if the cut-off moves or
+    inverts;
+  - only blasts with a flash light, the mask not asked otherwise: breaks if
+    the default lights, or other kinds leak in;
+  - ages on the caller's sim clock, a repeated tick gives the same light:
+    breaks on a private wall clock (S1);
+  - an open centre lights itself + its open 4-neighbours at +0.5, split
+    equally, a wall neighbour skipped: breaks on a one-cell star, corner
+    positions (N2) or a wall cell emitting;
+  - a charge on a wall lights the walk's seeds only: breaks if the flash
+    rolls its own seed rule or lights the solid centre (N5);
+  - the group cap dims the muzzles first, the blast kept whole, every shooter
+    kept: breaks on per-kind caps (B1) or the wrong order;
+  - a blast alone over the cap is dimmed to it, the muzzles to zero, the
+    blasts' shares kept: breaks if a flash can pass the cap;
+  - the payload door refuses a bad flash, decay, colour and an unknown
+    `flash*` key (8 cases): breaks if a typo falls back silently (S9);
+  - the columns default to no flash and pass the strength door: breaks if the
+    default lights every blast, or the strength door refuses them;
+  - a flash-only row is one event, no FieldEdit, no blast log, the same field
+    digest as a twin sim for three ticks: breaks if a flash reaches a sim
+    field;
+  - the frag's event carries its row's flash columns: breaks if
+    `execute_payload` drops them;
+  - a recipe ship's lamps + 200 muzzle flashes + a flashbang at 3x the cap +
+    the cursor lamp, through the cap and `cone_rows`, stay inside
+    `LIGHT_CONE_BUDGET` in every ordinate by the sweep's own
+    `cone_emission` (N7): breaks if the blasts get a cap of their own on top
+    of the muzzles', or gen_ship's budget stops leaving the transient share.
+- **Outside this patch, one line each**: the flash first lights the tick
+  AFTER the detonating step (the event is consumed after the step that
+  executed the payload), so a frag's flash always meets its soot already
+  laid -- a flash in the detonating tick itself would need the sim to hand
+  the light inside its own step (#81 territory); the perf passes
+  (`--perf`, `--spark-perf`, ...) assemble lamps only; a thrown flashbang
+  and its blinding of units are the weapons session's.
