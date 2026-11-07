@@ -273,9 +273,12 @@ void RadiationSweep::cone_emission(const int64_t* rgb, int64_t center_q, int64_t
         }
         tot = spread_q;
     }
+    // both >= 0: the floor. Equal overlaps share their divisions: a roof-light
+    // shape is many omni rows, once per sweep at the door and once at the build.
     for (int m = 0; m < n_ordinates; ++m)
         for (int c = 0; c < 3; ++c)
-            out[m * 3 + c] = (rgb[c] * ov[m]) / tot;   // both >= 0: the floor
+            out[m * 3 + c] = (m > 0 && ov[m] == ov[m - 1])
+                ? out[(m - 1) * 3 + c] : (rgb[c] * ov[m]) / tot;
 }
 
 void RadiationSweep::build_cone_injection(const int64_t* cones, int n_cones, int n_ordinates,
