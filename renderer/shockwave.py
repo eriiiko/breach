@@ -46,7 +46,9 @@ pixel at tile position p (world px / px_per_tile, y down):
     blast's tile centre (``pos`` + 0.5, N2), ``r_i = speed * age_i``.
   * ``g(x) = exp(-(x / w)^2)`` on ``|x| < 2 w``, exactly 0 outside (N4),
     ``w = width_tiles``: sharper than a tile, evaluated per pixel.
-  * ``A_i = amp_tiles * sqrt(strength_i) * px_per_tile * zoom_fade``;
+  * ``A_i = amp_tiles * strength_i ** strength_power * px_per_tile *
+    zoom_fade`` (``strength_power`` 0.5 = sqrt; Erik's dial for how much a
+    big charge out-rings a grenade);
     ``A_max`` the same with the strongest live ring's strength (N4).
   * A pixel outside the live rings' band box (+1 tile) is exactly zero, and
     with no live ring ``u_shock_n == 0`` and the shader returns before any
@@ -83,6 +85,7 @@ class ShockwaveSettings:
     speed_tiles_s: float     # the front's speed, tiles per second
     width_tiles: float       # the band's e-fold half-width w (support 2 w)
     amp_tiles: float         # the peak offset at strength 1, tiles
+    strength_power: float    # amp x strength^power: 0.5 = sqrt, 0 = every blast alike
     life_s: float            # a ring dies at this age
     max_rings: int           # live rings (1..4), the oldest dropped
     zoom_zero: float         # screen px per tile at and below which it is off
@@ -134,6 +137,8 @@ def settings_from_config(cfg) -> ShockwaveSettings:
             raise ValueError(f"[render.shockwave] {name} must be > 0")
     if s.amp_tiles < 0.0:
         raise ValueError("[render.shockwave] amp_tiles must be >= 0")
+    if not 0.0 <= s.strength_power <= 1.0:
+        raise ValueError("[render.shockwave] strength_power must be in [0, 1]")
     if s.zoom_full <= s.zoom_zero:
         raise ValueError("[render.shockwave] zoom_full must exceed zoom_zero")
     return s
@@ -314,7 +319,8 @@ class RingSet:
         fade = zoom_fade(zoom_px_per_tile, s.zoom_zero, s.zoom_full)
         out = []
         for rg in self.rings:
-            amp = s.amp_tiles * math.sqrt(rg.strength) * px_per_tile * fade
+            amp = (s.amp_tiles * rg.strength ** s.strength_power
+                   * px_per_tile * fade)
             out.append((rg.plane, rg.cx, rg.cy, s.speed_tiles_s * self.age(rg),
                         amp))
         return out

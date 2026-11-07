@@ -33,7 +33,8 @@ PPT = 48.0                       # world px per tile
 
 def _settings(**kw) -> S.ShockwaveSettings:
     base = dict(enabled=True, speed_tiles_s=40.0, width_tiles=1.0,
-                amp_tiles=0.25, life_s=0.5, max_rings=4, zoom_zero=14.0,
+                amp_tiles=0.25, strength_power=0.5, life_s=0.5, max_rings=4,
+                zoom_zero=14.0,
                 zoom_full=32.0)
     base.update(kw)
     return S.ShockwaveSettings(**base)
@@ -220,7 +221,8 @@ def test_the_band_box_never_cuts_a_nonzero_offset():
 
 def _cfg(**kw):
     base = dict(enabled=True, speed_tiles_s=40.0, width_tiles=1.0,
-                amp_tiles=0.25, life_s=0.5, max_rings=4, zoom_zero=14.0,
+                amp_tiles=0.25, strength_power=0.5, life_s=0.5, max_rings=4,
+                zoom_zero=14.0,
                 zoom_full=32.0)
     base.update(kw)
     return SimpleNamespace(render=SimpleNamespace(
@@ -280,17 +282,19 @@ def test_no_live_ring_means_the_term_is_inactive():
     assert not off.active(PPT)
 
 
-def test_the_amplitude_scales_with_sqrt_strength_and_fades_with_zoom():
-    """Property: a ring's amplitude is ``amp_tiles * sqrt(strength) *
-    px_per_tile * zoom_fade`` (0 zoomed out). Breaks if strength enters
-    linearly or the zoom fade is lost."""
-    rs = S.RingSet(_settings())
-    rs.start((10, 10), 4.0, 0, _room())
-    rs.set_clock(1, 0.0, False, 24.0)
-    (_, _, _, _, amp), = rs.twin_rings(PPT, 64.0)
-    assert amp == pytest.approx(0.25 * 2.0 * PPT)
-    (_, _, _, _, amp), = rs.twin_rings(PPT, 10.0)
-    assert amp == 0.0
+def test_the_amplitude_follows_strength_to_the_dialled_power_and_fades_with_zoom():
+    """Property: a ring's amplitude is ``amp_tiles * strength ** strength_power
+    * px_per_tile * zoom_fade`` (0 zoomed out): at 0.5 the sqrt, at 0 every
+    blast alike. Breaks if strength enters linearly, the power dial is
+    ignored, or the zoom fade is lost."""
+    for power, factor in ((0.5, 2.0), (0.0, 1.0), (0.25, 4.0 ** 0.25)):
+        rs = S.RingSet(_settings(strength_power=power))
+        rs.start((10, 10), 4.0, 0, _room())
+        rs.set_clock(1, 0.0, False, 24.0)
+        (_, _, _, _, amp), = rs.twin_rings(PPT, 64.0)
+        assert amp == pytest.approx(0.25 * factor * PPT)
+        (_, _, _, _, amp), = rs.twin_rings(PPT, 10.0)
+        assert amp == 0.0
 
 
 def test_the_resolve_carries_the_shock_term_in_the_one_block():

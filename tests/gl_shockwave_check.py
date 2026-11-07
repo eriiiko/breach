@@ -68,7 +68,8 @@ def check(name):
 def _settings(**kw):
     from renderer.shockwave import ShockwaveSettings
     base = dict(enabled=True, speed_tiles_s=40.0, width_tiles=1.0,
-                amp_tiles=0.4, life_s=0.5, max_rings=4, zoom_zero=0.0,
+                amp_tiles=0.4, strength_power=0.5, life_s=0.5, max_rings=4,
+                zoom_zero=0.0,
                 zoom_full=1e-3)
     base.update(kw)
     return ShockwaveSettings(**base)

@@ -3,8 +3,8 @@
 Design: ``docs/g3_fire_design_2026-10-23.md`` §6.1, §8 ("Particles"), §10(b)
 ("Particle primitive"), §13.3 (the VFX clock).
 
-WHAT IT IS. The one particle system of the renderer (embers now; sparks,
-debris later -- consumers EXTEND it, never build a second one). Three parts:
+WHAT IT IS. The one particle system of the renderer (embers, sparks; debris
+next -- consumers EXTEND it, never build a second one). Three parts:
 
   * :class:`Particles` -- the state: structure-of-arrays numpy, CAPPED
     (``cap``), every particle with an age, a lifetime, a birth temperature
@@ -35,6 +35,20 @@ outward kick. They run on the VFX CLOCK (``SimClock.t_noise``: sim time +
 alpha, plus the idle counter while paused when ``idle_when_paused``), so they
 move exactly when the flame moves, and a look shot (one tick per frame, seed
 fixed) is reproducible. ``[render.embers]`` holds every dial (Ctrl+R live).
+
+THE SPARKS (the second consumer, :class:`SparkSystem`; graphics G4 P3,
+``docs/explosion_look_design_2026-11-07.md`` §3.4). Thrown by a detonation:
+each new ``"blast"`` effect of the renderer's queue is consumed once
+(``"sparks_seen"``) and spawns ``rate * sqrt(strength)`` sparks on the CPU at
+the centres of the blast walk's seeds (``blast_expansion.walk_seeds``, handed
+in by the renderer: the centre when open, else beside it), uniform in
+direction, radially fast, at ``t_born_k``, from a generator seeded by the
+blast's ``(tick0, pos)``. From then on they are particles like the embers:
+the same :func:`integrate` (drag toward the frame's tamed wind x tps plus the
+same curl-noise field; Newton cooling; dead in a wall), the same
+:func:`pack_sprites` and the same :class:`ParticleDraw` -- the two systems'
+sprites concatenated into ONE draw per stage. ``[render.sparks]`` holds
+every dial, behind a refusing door.
 
 NOT HERE: the renderer's ``_effects`` queue (tracers, explosion rings, hit
 splats) is LEGACY DISPLAY-SPACE EFFECTS, drawn after the resolve -- it is not
@@ -517,6 +531,238 @@ class EmberSystem:
 
 
 # ---------------------------------------------------------------------------
+# The sparks (the second consumer) -- [render.sparks]
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SparkSettings:
+    """Every ``[render.sparks]`` dial (graphics G4 P3; design
+    ``docs/explosion_look_design_2026-11-07.md`` §3.4 + §6). The config is
+    the live value and every key is required
+    (:func:`spark_settings_from_config` refuses). ``drag``, ``curl``,
+    ``cool_s``, ``size_tiles``, ``min_screen_px``, ``streak_s`` and
+    ``brightness`` mean what the embers' do: they are the names
+    :func:`integrate` and :func:`pack_sprites` read."""
+    enabled: bool
+    rate: float              # sparks per detonation at strength 1 (x sqrt(strength))
+    v0_tiles_s: float        # radial birth speed, tiles/s
+    v_spread: float          # the speed is v0 * (1 +- v_spread * U(-1, 1))
+    t_born_k: float          # birth temperature, K (they only cool)
+    cool_s: float            # e-fold of (T - T_amb), Newton
+    life_s: float            # mean lifetime, s (VFX clock)
+    life_jitter: float       # each lives life_s * (1 +- life_jitter * U(-1, 1))
+    drag: float              # 1/s: how fast the air catches them
+    curl: float              # tiles/s of curl-noise drift (the embers' field)
+    size_tiles: float        # sprite radius, tiles
+    min_screen_px: float     # zoomed out, the radius floor in SCREEN px
+    streak_s: float          # motion stretch: the trail is |v| x this long
+    brightness: float        # x the ramp's Le(T)
+    cap: int                 # never more alive at once
+    seed: int                # mixed with each blast's (tick0, pos)
+
+
+_SPARK_KINDS = {f.name: f.type for f in fields(SparkSettings)}
+
+
+def spark_config_keys() -> Tuple[str, ...]:
+    """Every key ``[render.sparks]`` must carry."""
+    return tuple(_SPARK_KINDS)
+
+
+def spark_settings_from_config(cfg) -> SparkSettings:
+    """``[render.sparks]`` -> settings, read every frame. A REFUSING door
+    (the shock front's): a missing section, a missing key or a mistyped
+    value raises ValueError naming it -- a dial that fell back to a default
+    would hide a typo while tuning."""
+    sec = getattr(getattr(cfg, "render", None), "sparks", None)
+    if sec is None:
+        raise ValueError("config.toml has no [render.sparks] section")
+    vals = {}
+    for name, kind in _SPARK_KINDS.items():
+        if not hasattr(sec, name):
+            raise ValueError(f"[render.sparks] is missing {name!r}")
+        v = getattr(sec, name)
+        if kind in ("bool", bool):
+            ok = isinstance(v, bool)
+        elif kind in ("int", int):
+            ok = isinstance(v, int) and not isinstance(v, bool)
+        else:
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+            v = float(v) if ok else v
+        if not ok:
+            raise ValueError(f"[render.sparks] {name} has the wrong type: "
+                             f"{v!r}")
+        vals[name] = v
+    s = SparkSettings(**vals)
+    for name in ("life_s", "cool_s", "size_tiles"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"[render.sparks] {name} must be > 0")
+    for name in ("rate", "v0_tiles_s", "drag", "brightness", "streak_s",
+                 "min_screen_px", "curl"):
+        if getattr(s, name) < 0.0:
+            raise ValueError(f"[render.sparks] {name} must be >= 0")
+    for name in ("v_spread", "life_jitter"):
+        if not 0.0 <= getattr(s, name) < 1.0:
+            raise ValueError(f"[render.sparks] {name} must be in [0, 1)")
+    if s.cap < 0:
+        raise ValueError("[render.sparks] cap must be >= 0")
+    return s
+
+
+def spark_count(strength: float, rate: float) -> int:
+    """How many sparks a detonation of row ``strength`` throws:
+    ``round(rate * sqrt(strength))`` (design §3.4) -- 0 for a row without a
+    strength."""
+    return int(round(max(float(rate), 0.0)
+                     * math.sqrt(max(float(strength), 0.0))))
+
+
+def spark_rng(seed: int, tick0: int, pos) -> np.random.Generator:
+    """THE spark spawn's RNG: seeded from the dial's ``seed``, the blast's
+    ``tick0`` and its tile -- so the same effect spawns the same sparks
+    (a look shot reproduces) and two blasts never share a stream."""
+    key = [int(seed) & 0xFFFFFFFF, int(tick0) & 0xFFFFFFFF,
+           int(pos[0]) & 0xFFFFFFFF, int(pos[1]) & 0xFFFFFFFF]
+    return np.random.default_rng(key)
+
+
+def spark_spawns(n: int, seeds, settings: SparkSettings,
+                 rng: np.random.Generator) -> dict:
+    """``n`` sparks of one detonation: born at the CENTRES (+0.5, N2) of the
+    blast walk's ``seeds`` ((y, x) tiles, ``blast_expansion.walk_seeds``:
+    the centre when it is open, else beside it -- never inside a wall), one
+    seed each uniformly, a uniform direction, radial speed ``v0 * (1 +-
+    v_spread * u)``, at ``t_born_k``, living ``life_s * (1 +- life_jitter *
+    u)``. Returns arrays x, y, vx, vy, t0, life (tiles, tiles/s, K, s)."""
+    seeds = list(seeds or ())
+    if n <= 0 or not seeds:
+        return {k: np.zeros(0) for k in _SPAWN_KEYS}
+    # every uniform in ONE draw (rows: seed, angle, speed, life) -- the
+    # order the seeded stream is consumed in
+    u = rng.random((4, int(n)))
+    sy = np.array([s_[0] for s_ in seeds], np.float64)
+    sx = np.array([s_[1] for s_ in seeds], np.float64)
+    idx = np.minimum((u[0] * len(seeds)).astype(np.int64), len(seeds) - 1)
+    ang = 2.0 * np.pi * u[1]
+    speed = settings.v0_tiles_s * (1.0 + settings.v_spread
+                                   * (2.0 * u[2] - 1.0))
+    life = settings.life_s * (1.0 + settings.life_jitter
+                              * (2.0 * u[3] - 1.0))
+    return dict(x=sx[idx] + 0.5, y=sy[idx] + 0.5,
+                vx=np.cos(ang) * speed, vy=np.sin(ang) * speed,
+                t0=np.full(int(n), float(settings.t_born_k)), life=life)
+
+
+SPARK_MAX_HOP = 0.5   # tiles: one integration substep never moves a spark further
+
+
+class SparkSystem:
+    """The sparks' CPU side (graphics G4 P3, the particle primitive's
+    SECOND consumer): per frame, :meth:`update` consumes every new
+    ``"blast"`` effect of the renderer's queue ONCE (marking it
+    ``"sparks_seen"``; never another consumer's flag), spawns its
+    ``rate * sqrt(strength)`` sparks at the blast walk's seeds, and steps
+    the alive ones through THE motion law (:func:`integrate`: drag toward
+    the frame's one tamed wind x tps plus the curl noise; Newton cooling in
+    closed form; dead past their lifetime, below the glow floor, off the map
+    or inside a solid / vacuum tile) on the VFX clock. Pure numpy (no GL, no
+    sim import: the walk's seeds come in through ``seeds_fn``)."""
+
+    def __init__(self, settings: SparkSettings, *, t_amb_k: float,
+                 glow_min_k: float):
+        self.settings = settings
+        self.t_amb_k = float(t_amb_k)
+        self.glow_min_k = float(glow_min_k)
+        self.p = Particles(settings.cap)
+        # a look shot's `hide = ["sparks"]` (tools; never a key): None = the
+        # config's `enabled`
+        self.enabled_override: Optional[bool] = None
+        self._t_prev: Optional[float] = None
+        self.spawned_last_frame = 0
+        self.last_update_ms = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.enabled_override if self.enabled_override is not None
+                    else self.settings.enabled)
+
+    def refresh_settings(self, settings: SparkSettings) -> None:
+        if settings.cap != self.p.cap:
+            self.p.set_cap(settings.cap)
+        self.settings = settings
+        if not self.enabled:
+            self.p.clear()
+
+    def consume(self, effects, seeds_fn: Callable, sim_tick: int) -> dict:
+        """Mark every new ``"blast"`` effect ``"sparks_seen"`` and return the
+        sparks it spawns (concatenated; none while disabled). ``seeds_fn(fy,
+        fx, approach)`` is the blast walk's seed rule over the map's open
+        mask, asked only for a blast that throws a spark."""
+        s = self.settings
+        out = []
+        for fx in effects:
+            if fx.get("kind") != "blast" or fx.get("sparks_seen"):
+                continue
+            fx["sparks_seen"] = True
+            if not self.enabled:
+                continue
+            n = spark_count(fx.get("strength", 0.0), s.rate)
+            if n == 0:
+                continue
+            pos = fx["pos"]
+            seeds = seeds_fn(int(pos[1]), int(pos[0]), fx.get("approach"))
+            rng = spark_rng(s.seed, fx.get("tick0", sim_tick), pos)
+            out.append(spark_spawns(n, seeds, s, rng))
+        if not out:
+            return {k: np.zeros(0) for k in _SPAWN_KEYS}
+        return {k: np.concatenate([o[k] for o in out]) for k in _SPAWN_KEYS}
+
+    def update(self, *, t: float, effects, seeds_fn: Callable,
+               sim_tick: int, wind_fn: Callable, tps: float,
+               blocked: Optional[np.ndarray], modes) -> None:
+        """One frame at VFX noise time ``t`` (monotone): integrate the alive
+        sparks over the elapsed VFX time (in substeps of at most
+        :data:`SPARK_MAX_HOP` tiles, so a fast spark never steps over a
+        wall), then add the new blasts' sparks, born at ``t`` with age 0.
+        ``modes`` is the embers' curl-noise field (one air, one drift)."""
+        t0w = time.perf_counter()
+        self.spawned_last_frame = 0
+        dt = 0.0 if self._t_prev is None else max(float(t) - self._t_prev, 0.0)
+        self._t_prev = float(t)
+        dt = min(dt, MAX_STEP_S)
+        s = self.settings
+        if not self.enabled:
+            self.consume(effects, seeds_fn, sim_tick)     # seen, never thrown
+            self.last_update_ms = (time.perf_counter() - t0w) * 1000.0
+            return
+        if dt > 0.0 and self.p.n:
+            def air(iy, ix):
+                # index first, convert the few rows (never the map)
+                return np.asarray(wind_fn())[iy, ix].astype(
+                    np.float64) * float(tps)
+
+            v = float(np.max(np.hypot(self.p.vx, self.p.vy)))
+            k = max(1, int(math.ceil(v * dt / SPARK_MAX_HOP)))
+            h = dt / k
+            for i in range(k):
+                if self.p.n == 0:
+                    break
+                integrate(self.p, h, float(t) - dt + (i + 1) * h, air_fn=air,
+                          blocked=blocked, settings=s, t_amb_k=self.t_amb_k,
+                          glow_min_k=self.glow_min_k, modes=modes)
+        new = self.consume(effects, seeds_fn, sim_tick)
+        if new["x"].size:
+            room = max(self.p.cap - self.p.n, 0)
+            if new["x"].size > room:              # a fair subset, not the first
+                rng = np.random.default_rng([int(s.seed) & 0xFFFFFFFF,
+                                             int(sim_tick) & 0xFFFFFFFF])
+                keep = np.sort(rng.permutation(new["x"].size)[:room])
+                new = {k_: v_[keep] for k_, v_ in new.items()}
+            self.spawned_last_frame = self.p.add(**new)
+        self.last_update_ms = (time.perf_counter() - t0w) * 1000.0
+
+
+# ---------------------------------------------------------------------------
 # The GL face
 # ---------------------------------------------------------------------------
 
@@ -662,4 +908,7 @@ __all__ = [
     "source_tiles", "ember_spawns",
     "integrate", "pack_sprites", "EmberSystem", "ParticleDraw",
     "sprite_shader_sources", "FADE_FROM", "SPRITE_STAGES",
+    "SparkSettings", "spark_settings_from_config", "spark_config_keys",
+    "spark_count", "spark_rng", "spark_spawns", "SparkSystem",
+    "SPARK_MAX_HOP",
 ]
