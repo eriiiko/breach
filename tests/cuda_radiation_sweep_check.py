@@ -886,11 +886,21 @@ def _run_live(tag, n_ticks, gpu_on, gpu_off, cold_sky=False, fields=None,
         gpu_off()
         s_cpu.set_paused(False)
         s_cpu.step()
-        c0 = int(bp.radiation_sweep_cuda_calls())
+        # #29 P4a: on the resident tick the sweep is the resident driver (its
+        # own counter), on the per-call path the twin's; the resident tick
+        # keeps its Fleck plane on the device, so it is copied into the
+        # engine ON DEMAND here (never per tick in the game) before the
+        # comparison reads it.
+        c0 = (int(bp.radiation_sweep_cuda_calls())
+              + int(bp.resident_stage_counters()["sweep"]))
         gpu_on()
         s_gpu.set_paused(False)
         s_gpu.step()
-        act["calls"] += int(bp.radiation_sweep_cuda_calls()) - c0
+        act["calls"] += (int(bp.radiation_sweep_cuda_calls())
+                         + int(bp.resident_stage_counters()["sweep"])) - c0
+        if s_gpu.gmap.residency_on():
+            h, w = s_gpu.gmap.solid.shape
+            s_gpu.physics_runner.engine.sync_resident_fleck_plane(h, w)
         gpu_off()
         g = s_cpu.gmap
         act["rn"] += int(np.any(g.rad_net_sweep != 0))

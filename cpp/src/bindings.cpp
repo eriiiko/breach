@@ -33,6 +33,7 @@ const char* breach_build_id();
 #include "cuda_eos_resident.h" // S8a Path A: resident EOS telemetry + build parity
 #include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
 #include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin + backend flag
+#include "cuda_resident_tick.h"    // #29 P4a: the resident tick's drivers (stage counters)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -59,6 +60,37 @@ static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T, Flags>& 
     return {a.data(0, 0),
             static_cast<int>(a.shape(0)),
             static_cast<int>(a.shape(1))};
+}
+
+// #29 P4a: the resident tick's device fields from GameMap.device_ptrs() (a
+// dict name -> int address; an absent name is 0, the drivers' "not given").
+static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
+                                           int n_gases, int acc_depth) {
+    ResidentFields f;
+    f.h = h; f.w = w; f.n_gases = n_gases; f.acc_depth = acc_depth;
+    auto get = [&](const char* name) -> std::uintptr_t {
+        return dev.contains(name) ? dev[name].cast<std::uintptr_t>() : 0;
+    };
+    f.atmosphere = get("atmosphere"); f.wave_p = get("wave_p");
+    f.wind_x = get("wind_x"); f.wind_y = get("wind_y");
+    f.temperature = get("temperature"); f.heat = get("heat");
+    f.fire = get("fire"); f.wall_hp = get("wall_hp");
+    f.water_depth = get("water_depth"); f.gas = get("gas");
+    f.gas_energy = get("gas_energy"); f.dem_acc = get("dem_acc");
+    f.rad_net_sweep = get("rad_net_sweep"); f.rad_flux_sweep = get("rad_flux_sweep");
+    f.rad_amb_sweep = get("rad_amb_sweep"); f.rad_fluence = get("rad_fluence");
+    f.light_q = get("light_q"); f.light_flux_q = get("light_flux_q");
+    f.light_glow = get("light_glow");
+    f.solid = get("solid"); f.is_vacuum = get("is_vacuum");
+    f.is_ambient = get("is_ambient"); f.flammable = get("flammable");
+    f.thermal_solid = get("thermal_solid"); f.heat_inv_shift = get("heat_inv_shift");
+    f.face_shift = get("face_shift"); f.dyn_permeability = get("dyn_permeability");
+    f.heat_atten_q = get("heat_atten_q"); f.dyn_heat_atten_q = get("dyn_heat_atten_q");
+    f.light_atten_q = get("light_atten_q"); f.dyn_light_atten_q = get("dyn_light_atten_q");
+    f.fuel_recip = get("fuel_recip"); f.fire_T_ext_plane = get("fire_T_ext_plane");
+    f.fuel_per_o2_plane = get("fuel_per_o2_plane"); f.material = get("material");
+    f.water_before = get("water_before");
+    return f;
 }
 
 // Helper: extract raw pointer + (h, w) from a 3D (h, w, 3) numpy array.
@@ -430,6 +462,35 @@ PYBIND11_MODULE(breach_physics, m) {
     // TEST-ONLY device-MG-build parity probe (gate PART 1c).
     m.def("eos_resident_calls", &breach_cuda::eos_resident_calls,
           "S8a Path A: how many ticks ran the fully resident EOS chain.");
+    // #29 P4a: the resident tick's per-stage counters (the gates' "the stage
+    // ran on the device" evidence; cuda_resident_tick.h has the slot map).
+    m.def("resident_stage_counters", []() {
+              long long c[breach_cuda::RESIDENT_STAGE_COUNTERS] = {0};
+              breach_cuda::resident_stage_counters(c);
+              py::dict d;
+              const char* names[breach_cuda::RESIDENT_STAGE_COUNTERS] = {
+                  "water_tail", "water_tail_active", "combustion", "fire",
+                  "fire_gate_open", "sweep", "sweep_light", "temperature",
+                  "books_downloads", "water_tail_boil", "water_tail_evac"};
+              for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
+                  d[names[k]] = c[k];
+              return d;
+          },
+          "#29 P4a: how many times each resident tail stage ran (and did "
+          "work) in this process.");
+    m.def("resident_ignition_probe",
+          [](py::array_t<int8_t, py::array::c_style | py::array::forcecast> material,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> table) {
+              py::array_t<int32_t> out(material.size());
+              breach_cuda::resident_ignition_probe(
+                  material.data(), (int)material.size(), table.data(),
+                  (int)table.size(), out.mutable_data());
+              out.resize(std::vector<py::ssize_t>(material.shape(),
+                                                  material.shape() + material.ndim()));
+              return out;
+          },
+          py::arg("material"), py::arg("table"),
+          "#29 P4a TEST-ONLY: the resident ignition-plane gather on host arrays.");
 
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
@@ -3909,6 +3970,10 @@ PYBIND11_MODULE(breach_physics, m) {
         // §2.4), bound ONCE by PhysicsRunner from [light] transport. Default
         // RadiationSweep.STEP; heat's own transport is not exposed here -- it
         // stays TRANSPORT_SHEAR, a run_sweep_ literal.
+        // #29 P4a: the headless flag (physics_engine.h): the W6a ripple is
+        // skipped on every path. Set by the headless runners only.
+        .def_readwrite("headless", &PhysicsEngine::headless,
+                       "#29 P4a: skip the render-only W6a ripple (headless runs).")
         .def_readwrite("light_transport", &PhysicsEngine::light_transport,
             "P6d: the light group's transport at the one sweep invocation "
             "(run_sweep_, both step_tail and relight(), both backends) -- "
@@ -4541,6 +4606,135 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("sim_time"), py::arg("d_gas"), py::arg("d_solid"),
            py::arg("d_is_vacuum"), py::arg("d_is_ambient"),
            py::arg("d_dyn_permeability"))
+        // --- #29 P4a: the brackets gone -------------------------------------
+        // The resident tick's remaining stages on the device (physics_engine.h,
+        // cuda_resident_tick.h). `dev` is GameMap.device_ptrs() plus the
+        // runner's `water_before`; the scalars and tables are the host path's.
+        .def("step_water_tail_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                int steam_idx, float sim_time,
+                double ceiling_h, double flood_eps, double ratio_cap,
+                double boil_rate, double boil_p_thresh, double steam_yield,
+                bool ambient, int32_t t_amb_raw) {
+            auto gc = gas_conservative.unchecked<1>();
+            ResidentFields f = resident_fields_from(dev, h, w, (int)gc.shape(0), 0);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_raw; a.ambient = ambient;
+            a.gas_conservative = gc.data(0); a.steam_idx = steam_idx;
+            a.ceiling_h = ceiling_h; a.flood_eps = flood_eps; a.ratio_cap = ratio_cap;
+            a.boil_rate = boil_rate; a.boil_p_thresh = boil_p_thresh;
+            a.steam_yield = steam_yield;
+            self.step_water_tail_resident(f, a);
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("steam_idx"), py::arg("sim_time"), py::arg("ceiling_h"),
+           py::arg("flood_eps"), py::arg("ratio_cap"), py::arg("boil_rate"),
+           py::arg("boil_p_thresh"), py::arg("steam_yield"), py::arg("ambient"),
+           py::arg("t_amb_raw"))
+        .def("run_combustion_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, int n_gases, int acc_depth,
+                int o2_idx, int inert_n2_idx, int black_smoke_idx, int draw_r,
+                float sim_time, py::array_t<int32_t> ignition_table,
+                bool ambient, int32_t t_amb_q) {
+            auto it = ignition_table.unchecked<1>();
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, acc_depth);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_q; a.ambient = ambient;
+            a.o2_idx = o2_idx; a.inert_n2_idx = inert_n2_idx;
+            a.black_smoke_idx = black_smoke_idx; a.draw_r = draw_r;
+            a.ignition_table = it.data(0); a.n_materials = (int)it.shape(0);
+            self.run_combustion_resident(f, a);
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+           py::arg("acc_depth"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
+           py::arg("black_smoke_idx"), py::arg("draw_r"), py::arg("sim_time"),
+           py::arg("ignition_table"), py::arg("ambient"), py::arg("t_amb_q"))
+        .def("upload_light_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, int n_gases,
+                py::array_t<int32_t> gas_light_absorb_q16,
+                py::array_t<int32_t> gas_light_glow_q16,
+                py::object light_cones, py::object light_sky,
+                py::object light_emit_mult) {
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0);
+            ResidentTickArgs a;
+            auto la = gas_light_absorb_q16.unchecked<2>();
+            auto lg = gas_light_glow_q16.unchecked<2>();
+            a.gas_light_absorb_q16 = la.data(0, 0);
+            a.gas_light_glow_q16 = lg.data(0, 0);
+            py::array_t<int64_t, py::array::c_style | py::array::forcecast> cones_arr,
+                sky_arr, em_arr;
+            if (!light_cones.is_none()) {
+                cones_arr = light_cones.cast<py::array_t<int64_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.light_cones = cones_arr.data();
+                a.n_light_cones = (int)(cones_arr.ndim() == 2 ? cones_arr.shape(0) : 0);
+            }
+            if (!light_sky.is_none()) {
+                sky_arr = light_sky.cast<py::array_t<int64_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.light_sky = sky_arr.data();
+            }
+            if (!light_emit_mult.is_none()) {
+                em_arr = light_emit_mult.cast<py::array_t<int64_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.light_emit_mult = em_arr.data();
+                a.n_light_emit_mult = (int)(em_arr.ndim() == 2 ? em_arr.shape(0) : 0);
+            }
+            self.upload_light_resident(f, a);
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+           py::arg("gas_light_absorb_q16"), py::arg("gas_light_glow_q16"),
+           py::arg("light_cones") = py::none(), py::arg("light_sky") = py::none(),
+           py::arg("light_emit_mult") = py::none())
+        .def("step_tail_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                int o2_idx, float sim_time, bool ambient, int32_t t_amb_q,
+                int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+                py::array_t<int32_t> gas_heat_absorb_q16,
+                py::array_t<int32_t> gas_light_absorb_q16,
+                py::array_t<int32_t> gas_light_glow_q16) {
+            auto gc = gas_conservative.unchecked<1>();
+            auto ha = gas_heat_absorb_q16.unchecked<1>();
+            auto la = gas_light_absorb_q16.unchecked<2>();
+            auto lg = gas_light_glow_q16.unchecked<2>();
+            const int n_gases = (int)gc.shape(0);
+            if (ha.shape(0) != n_gases || la.shape(0) != n_gases || lg.shape(0) != n_gases)
+                throw std::invalid_argument(
+                    "step_tail_resident: the gas tables must all be (n_gases, ...)");
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_q; a.ambient = ambient;
+            a.gas_conservative = gc.data(0); a.o2_idx = o2_idx;
+            a.k_leak_q = k_leak_q; a.rad_amb_vacuum_q = rad_amb_vacuum_q;
+            a.gas_heat_absorb_q16 = ha.data(0);
+            a.gas_light_absorb_q16 = la.data(0, 0);
+            a.gas_light_glow_q16 = lg.data(0, 0);
+            return self.step_tail_resident(f, a);
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("o2_idx"), py::arg("sim_time"), py::arg("ambient"),
+           py::arg("t_amb_q"), py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q"),
+           py::arg("gas_heat_absorb_q16"), py::arg("gas_light_absorb_q16"),
+           py::arg("gas_light_glow_q16"))
+        .def("sync_resident_fleck_plane", &PhysicsEngine::sync_resident_fleck_plane,
+             py::arg("h"), py::arg("w"),
+             "#29 P4a: copy the last resident sweep's Fleck plane into "
+             "engine.radiation (on demand; never per tick).")
+        .def("step_ripple", [](const PhysicsEngine& self,
+                py::array_t<float> ripple, py::array_t<float> ripple_v,
+                py::array_t<int32_t> water_depth, py::array_t<int32_t> atmosphere,
+                py::array_t<int32_t> p_prev, py::array_t<bool> solid,
+                float sim_time) {
+            auto [r, h, w] = get_2d(ripple);
+            auto [rv, h2, w2] = get_2d(ripple_v);
+            auto [wd, h3, w3] = get_2d_const(water_depth);
+            auto [atm, h4, w4] = get_2d_const(atmosphere);
+            auto [pp, h5, w5] = get_2d_const(p_prev);
+            auto [sol, h6, w6] = get_2d_const(solid);
+            (void)h2; (void)w2; (void)h3; (void)w3; (void)h4; (void)w4;
+            (void)h5; (void)w5; (void)h6; (void)w6;
+            self.step_ripple(r, rv, wd, atm, pp, sol, h, w, sim_time);
+        }, py::arg("ripple"), py::arg("ripple_v"), py::arg("water_depth"),
+           py::arg("atmosphere"), py::arg("p_prev"), py::arg("solid"),
+           py::arg("sim_time"),
+           "#29 P4a: the W6a ripple (the guard + WaterSolver.step_ripple), "
+           "step_tail's step 1 as its own entry.")
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

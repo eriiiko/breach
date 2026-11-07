@@ -137,11 +137,15 @@ def _run(tag, n_ticks, gpu_on, gpu_off, fields=None) -> None:
         gpu_off()
         s_cpu.set_paused(False)
         s_cpu.step()
-        c0 = int(bp.radiation_sweep_cuda_calls())
+        # #29 P4a: on the resident tick the sweep is the resident driver (its
+        # own counter, light-carrying calls), on the per-call path the twin's.
+        c0 = (int(bp.radiation_sweep_cuda_calls())
+              + int(bp.resident_stage_counters()["sweep_light"]))
         gpu_on()
         s_gpu.set_paused(False)
         s_gpu.step()
-        calls += int(bp.radiation_sweep_cuda_calls()) - c0
+        calls += (int(bp.radiation_sweep_cuda_calls())
+                  + int(bp.resident_stage_counters()["sweep_light"])) - c0
         gpu_off()
         lit += int(np.any(s_cpu.gmap.light_q != 0))
         if _compare(tag, t, s_cpu, s_gpu, fields) >= 4:

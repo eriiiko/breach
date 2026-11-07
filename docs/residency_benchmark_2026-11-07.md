@@ -700,3 +700,82 @@ tick, kernel launches, copies by direction (count, bytes, time), `cudaMalloc` / 
 explicit device syncs and the top kernels, from the `nsys stats --format csv` tables the script
 writes. Its table replaces the code estimate in §1 "The bus per tick". The capture runs 15 s of
 sim, so it sits mostly in the P3 regime above; read its kernel times with that in mind.
+
+## P4a: the brackets gone (2026-11-07)
+
+**What moved.** The resident tick's remaining host stages run on the device (#29 P4a, branch
+`29-p4a-resident-brackets`): the water tail (W5 + W3 + the seal), combustion (P2's
+`combustion_launch_resident`), fire (its P1 early exit a per-env device gate), the radiation
+sweep (`radiation_sweep_launch_resident`) and temperature (the new `temperature_launch_resident`),
+through the drivers in `cpp/src/cuda_resident_tick.cu`, on persistent scratch, with the static
+tables uploaded only when their host value changes. Slot 7 is now ONE `GameMap.from_host` at
+entry, the device chain, ONE `GameMap.to_host` at exit, and the host ripple (skipped headless).
+The EOS stage's gas- and permeability-dependent pre-stage pieces (the Dalton + K|grad P|dt/N scan
+and the coeffE / coeffS cache) run on the device too, so a device water tail before it needs no
+mirror refresh.
+
+**Method.** As §1 / P2: `tools/bench_bot_matches.py --level ship_demo --seeds 1 --timing
+--sim-seconds 15 --cuda --cuda-build cpp/build_cuda --resident --profile`, one fresh process per
+line (15 s of sim, so both runs sit in the driver's boosted P2 window -- see "the second-run
+slowdown"), the same length before and after. Before = main `b560ea38` (this worktree's build at
+the branch point); after = the branch head's build. A second plain after-run reproduced the step
+mean to 0.01 ms. A `--profile-sync` after-run gives the attribution. The digest is the same on
+both (`59719adc8953`, the 15 s match), and the full-length pinned match on `--cuda --resident`
+reproduces the CPU pin of `tests/test_zombie_control.py` (win team 1 at tick 722, field
+`da05242a…`, tick `f35ed2be…`).
+
+**Per stage, ms per tick, mean / p95 (plain):**
+
+| stage | before (main `b560ea38`) | after (P4a) |
+|---|---|---|
+| total (step + controllers) | 12.80 / 13.62 | 9.26 / 9.96 |
+| step | 10.968 / 11.670 | 7.473 / 7.744 |
+| 7 physics | 9.006 / 9.607 | 5.626 / 5.811 |
+| &nbsp;&nbsp;7 H2D `GameMap.from_host` | 0.241 / 0.299 | 0.294 / 0.354 |
+| &nbsp;&nbsp;7 EOS `run_substeps_resident` | 3.521 / 3.621 | 3.683 / 3.765 |
+| &nbsp;&nbsp;7 trace tail (resident) | 0.111 / 0.123 | 0.105 / 0.118 |
+| &nbsp;&nbsp;7 combustion | 2.035 / 2.329 (per-call GPU twin) | 0.029 / 0.035 (resident, launches only) |
+| &nbsp;&nbsp;7 sky exchange (host) | 0.001 / 0.002 | — (a host decision only; no work on a space map) |
+| &nbsp;&nbsp;7 `step_tail` (ripple + fire + temp + sweep, per-call twins) | 2.649 / 2.754 | — |
+| &nbsp;&nbsp;7 tail (resident: fire + sweep + temp + the books D2H) | — | 0.811 / 0.833 |
+| &nbsp;&nbsp;7 D2H `GameMap.to_host` | 0.326 / 0.381 | 0.585 / 0.648 |
+| &nbsp;&nbsp;rest of 7 (host pre-physics) | 0.123 / 0.156 | 0.119 / 0.146 |
+| real-time x | 3.26 | 4.50 |
+
+- **Slot 7 fell 3.38 ms (−38 %), the step 3.50 ms (−32 %).** Combustion's per-call twin (2.0 ms,
+  P2's measured cost) is gone, and the per-call fire / temperature / sweep twins' allocations and
+  transfers with it: the tail costs 0.81 ms where `step_tail` cost 2.65. The estimate in the brief
+  was "roughly −1.4 ms" against the host combustion; against the per-call GPU twin that `--cuda`
+  ran since P2 it is −2.0 ms for combustion alone.
+- **Attributed** (`--profile-sync`, after): H2D 0.599 (the pageable `.set()` returns before its
+  copy lands, as §1 found), EOS 3.425, trace tail 0.108, combustion 0.084, tail 0.780 (of it the
+  books D2H's wait), D2H 0.585. The device work of combustion + fire + sweep + temperature is
+  under 0.9 ms a tick on the medium ship.
+- The EOS stage grew ~0.16 ms (3.52 → 3.68 plain): the device pre-stage scan adds one 8-byte D2H
+  (a sync) before the substep loop; its host scan and the two coefficient-plane uploads are gone.
+- The D2H grew 0.26 ms: the exit download now carries `dem_acc` (328 KiB -- 12 claimant slots of
+  int32 per cell, the largest plane on the bus), `fire`, `wall_hp`, `heat` and `rad_flux_sweep`,
+  which the host stages used to write on the mirror.
+
+**The bus per tick, after (measured, Python-visible, `tests/cuda_resident_bus_check.py`):**
+
+| | calls | fields | bytes |
+|---|---|---|---|
+| entry `GameMap.from_host` | 1 | 17 (atmosphere, wind_x / y, temperature, gas, gas_energy, heat, fire, wall_hp, solid, is_vacuum, is_ambient, thermal_solid, flammable, material, dyn_permeability, dyn_heat_atten_q) | 533.2 KiB |
+| between them | **0** | | |
+| exit `GameMap.to_host` | 1 | 12 (atmosphere, wave_p, wind_x / y, temperature, gas, gas_energy, heat, fire, wall_hp, dem_acc, rad_flux_sweep) | 847.7 KiB |
+
+Before: 11 H2D fields (410.2 KiB) and 7 D2H fields (382.8 KiB) visible to Python, plus, inside
+the per-call twins, ~42 H2D / ~23 D2H copies (~1.9 MiB, the §1 estimate) and ~21 + ~22
+`cudaMalloc` / `cudaFree` pairs a tick (temperature, sweep, fire, combustion). After, inside C++:
+the EOS's per-tick `absorb_q` / `cap2` / `cons_flag` uploads (its `coeffE` / `coeffS` uploads are
+gone), the 8-byte n_sub scan result, the EOS and trace-tail counter blocks, and ONE ~1 KiB books
+arena (every tail stage's counters + the head of the destroyed-wall list); zero `cudaMalloc` in
+steady state. Conditional, not on this match: the water planes (+ the W3-sealed
+`dyn_permeability`) on a tick the water stage runs, the three render-only sweep planes when not
+headless, the light planes and the light inputs while light is requested, the table-derived static
+planes when `GameMap._tile_serial` moved, and the sky bracket's `gas` pair on an ambient map with
+the sky exchange live.
+
+**Not measured:** the P3-regime (long-run) numbers -- both runs are 15 s fresh processes; the
+large ship; a wet or ambient match. The Nsight capture is still pending.
