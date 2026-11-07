@@ -396,7 +396,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         same tick).
     6. ``ExplosionEvent(pos=(fx, fy), radius=radius, kind=kind)`` — always
        (the detonation happened whatever the payload mix; the renderer
-       ignores unknown kinds by design).
+       ignores unknown kinds by design). It also carries the row's
+       ``strength`` and this call's ``approach`` for the explosion look (G4,
+       #75); render-only, outside the digest.
 
     ``rng`` is the sim generator — carried for signature symmetry with the
     detonation sites; the executor itself never draws (module docstring).
@@ -483,8 +485,11 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         deposit_heat(gmap, queue, fy, fx, heat,
                      payload.heat_radius, owner_id=owner_id)
     if events is not None:
-        events.append(ExplosionEvent(pos=(fx, fy), radius=payload.radius,
-                                     kind=kind))
+        events.append(ExplosionEvent(
+            pos=(fx, fy), radius=payload.radius, kind=kind,
+            strength=float(getattr(payload, "strength", 0.0) or 0.0),
+            approach=None if approach is None
+            else (int(approach[0]), int(approach[1]))))
 
 
 __all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",

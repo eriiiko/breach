@@ -810,6 +810,14 @@ def main():
                         sim.set_light(True, lit_rows, light_sky, lit_flicker)
                     control_source.on_tick(sim)
                     sim.step()
+                    # Every step's events, before the next step clears them
+                    # (G4 #75, critique S3: a detonation in an earlier step of
+                    # a slow frame was lost), stamped on the clock the
+                    # renderer's upload_state reads.
+                    renderer.consume_events(
+                        sim.tick_events,
+                        sim_tick=monotonic_total_tick(
+                            sim.turn_number, ticks_per_round, sim.tick))
                     if follow is not None:
                         follow.observe(sim.tick_events, sim_time_per_tick)
                     stepped = True
@@ -888,10 +896,10 @@ def main():
             renderer.blit_world_to_screen()
             renderer.draw_debug_hud(sim.gmap)
 
-            # Pull tick events into the renderer's effect queue, then age
-            # the queue. tick_events is cleared by the next sim.step(),
-            # so we MUST consume here every frame.
-            renderer.consume_events(sim.tick_events)
+            # Age the effect queue once per frame. Tick events were pulled
+            # into it after every sim step above (tick_events is cleared by
+            # the next sim.step(); consuming here, once, lost all but the last
+            # step's and re-consumed the same events every paused frame).
             renderer._advance_effects(dt)
 
             selected = sim.get_unit(control_source.selected_unit_id) \

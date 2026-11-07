@@ -629,3 +629,23 @@ def test_a_breach_charge_breaches_a_door_and_spares_its_planter():
         _step(s)
         down = down or any(st.kind == KNOCKED_DOWN for st in u.statuses)
     assert u.current_hp == hp0 and not down
+
+
+def test_the_explosion_event_carries_the_rows_strength_and_approach():
+    """G4 #75 (design §3.2, §6 B2): the detonation's render cue carries the row's
+    `strength` and the `approach` execute_payload received (the look's seed rule),
+    and its original fields unchanged; the flash columns stay at their no-flash
+    defaults until the row columns exist (P5). BREAKS IF: execute_payload stops
+    filling either field, or fills strength from anything but the row."""
+    row = _row(1.5)
+    s = _sim(_room())
+    ev = []
+    _fire(s, 15, 15, row, events=ev, kind="grenade", approach=(15, 14))
+    (e,) = [x for x in ev if type(x).__name__ == "ExplosionEvent"]
+    assert e.strength == row.strength
+    assert e.approach == (15, 14)
+    assert (e.pos, e.radius, e.kind) == ((15, 15), row.radius, "grenade")
+    assert e.flash == 0.0
+    ev2 = []
+    _fire(_sim(_room()), 15, 15, row, events=ev2)
+    assert [x for x in ev2 if type(x).__name__ == "ExplosionEvent"][0].approach is None

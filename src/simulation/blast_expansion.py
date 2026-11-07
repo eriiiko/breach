@@ -112,25 +112,42 @@ def walk_seeds(mask, fy, fx, approach=None):
     return [min(near, key=lambda t: (t[0] - ay) ** 2 + (t[1] - ax) ** 2)]
 
 
+def _walk(mask, fy, fx, r2, approach=None):
+    """The one breadth-first walk behind :func:`reach_tiles` and
+    :func:`reach_depth`: ``{(y, x): hops}``, the seeds at 0, each 4-neighbour
+    step one more, along ``mask`` and under ``r2`` from (fy, fx). Pure integer."""
+    h, w = mask.shape
+    seeds = walk_seeds(mask, fy, fx, approach)
+    depth = {t: 0 for t in seeds}
+    todo = deque(seeds)
+    while todo:
+        y, x = todo.popleft()
+        d = depth[(y, x)] + 1
+        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if not (0 <= ny < h and 0 <= nx < w) or (ny, nx) in depth:
+                continue
+            if not mask[ny, nx] or (ny - fy) ** 2 + (nx - fx) ** 2 >= r2:
+                continue
+            depth[(ny, nx)] = d
+            todo.append((ny, nx))
+    return depth
+
+
 def reach_tiles(mask, fy, fx, r2, approach=None):
     """THE walk: the open tiles with squared distance from (fy, fx) under ``r2``,
     walking 4-neighbour along ``mask``, row-major. A wall stops it; a door gap
     does not. A seed is always in the result, whatever its distance: a charge
     on a wall still delivers beside it."""
-    h, w = mask.shape
-    seeds = walk_seeds(mask, fy, fx, approach)
-    seen = set(seeds)
-    todo = deque(seeds)
-    while todo:
-        y, x = todo.popleft()
-        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
-            if not (0 <= ny < h and 0 <= nx < w) or (ny, nx) in seen:
-                continue
-            if not mask[ny, nx] or (ny - fy) ** 2 + (nx - fx) ** 2 >= r2:
-                continue
-            seen.add((ny, nx))
-            todo.append((ny, nx))
-    return sorted(seen)
+    return sorted(_walk(mask, fy, fx, r2, approach))
+
+
+def reach_depth(mask, fy, fx, r2, approach=None):
+    """THE walk with its hop count (G4, #75): ``{(y, x): depth}`` over exactly
+    :func:`reach_tiles`' tiles, the seeds at depth 0 and each 4-neighbour step
+    one more, so a tile reached through a door gap is as far as the way round.
+    Read by the renderer's shock front (the geodesic distance it rides); it
+    changes nothing in the sim."""
+    return _walk(mask, fy, fx, r2, approach)
 
 
 def tile_volume_m3(gmap) -> float:
@@ -207,6 +224,7 @@ def take_source_plane(gmap):
 
 
 __all__ = ["BlastSettings", "S_MAX", "S_MAX_Q", "add_source", "blast_settings",
-           "heat_units_per_mj", "open_mask", "reach_tiles", "source_steps",
+           "heat_units_per_mj", "open_mask", "reach_depth", "reach_tiles",
+           "source_steps",
            "start_expansion", "start_source", "take_source_plane",
            "tile_volume_m3", "walk_seeds"]
