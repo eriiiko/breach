@@ -21,6 +21,10 @@ missing key or a mistyped value (:func:`load_run`)::
     levels_dir = "..."            # OPTIONAL: the levels root (absolute, or
                                   # relative to the run file; default the
                                   # repo's levels/)
+    out_dir = "..."               # OPTIONAL: the run's output directory
+                                  # (absolute, or relative to the run file;
+                                  # refused INSIDE the checkout): the run
+                                  # manifest goes there
     [obs]
     channels = ["pressure", "smoke", "temperature", "solid", "material",
                 "units_own", "units_enemy", "units_zombie"]
@@ -79,12 +83,31 @@ mask):
   tick_digest)`` taken at the ``[replay] checkpoint_every_ticks`` cadence,
   at tick 0 and at an episode's last tick -- the recording's checkpoints, so
   the equality gates can compare them with ``run_match``.
+
+SNAPSHOTS AND THE RUN MANIFEST (#29 P1b, residency design §6). A training run
+on a snapshot calls :func:`require_snapshot` (``BatchedEnv(...,
+snapshot=tag)`` does): an ANNOTATED tag whose commit is HEAD, a tree clean
+INCLUDING untracked files under ``src/``, ``levels/``, ``config.toml`` and
+``cpp/``, ``simulation`` and ``breach_physics`` imported from this checkout's
+own ``src/`` and ``cpp/build*/``, the module's build-time ``build_id()``
+equal to HEAD, and the run file's sha256 recorded; the ``device`` backend
+also needs an empty twin debt ledger (``tools/twin_debt.py``). Each check is
+its own function taking the repo path. The farm needs no ledger and trains
+at any tag. With ``[run] out_dir`` the env writes :data:`RUN_MANIFEST`
+there (:func:`write_run_manifest`: commit, tag, build id, run and bank
+sha256, python / numpy / torch / CuPy / CUDA runtime and driver versions,
+the GPU, the host) and a later env on the same ``out_dir`` -- a resume --
+refuses any change of it (:func:`check_run_manifest`, naming the field).
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import multiprocessing as mp
 import os
+import platform
+import socket
+import subprocess
 import sys
 import time
 import tomllib
@@ -179,6 +202,7 @@ class RunConfig:
     reward: tuple               # ((counter, weight), ...) in COUNTER_NAMES order
     sha256: str = ""
     path: str = ""
+    out_dir: str = ""           # [run] out_dir, resolved; "" = none
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -196,7 +220,8 @@ class RunConfig:
 
 
 _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
-             "levels": True, "policy": True, "levels_dir": False}
+             "levels": True, "policy": True, "levels_dir": False,
+             "out_dir": False}
 _OBS_KEYS = {"channels": True, "crop_radius": True, "vector": True}
 
 
@@ -284,6 +309,21 @@ def parse_run(raw: dict, where: str = "run file",
         levels_dir = str(p.resolve())
     else:
         levels_dir = str(DEFAULT_LEVELS_DIR)
+    out_dir = ""
+    if "out_dir" in run:
+        od = run["out_dir"]
+        if not isinstance(od, str) or not od:
+            raise ValueError(f"{where}: [run] out_dir must be a path "
+                             f"string, got {od!r}")
+        p = Path(od)
+        if not p.is_absolute():
+            p = (base_dir or Path.cwd()) / p
+        p = p.resolve()
+        if p == ROOT.resolve() or ROOT.resolve() in p.parents:
+            raise ValueError(f"{where}: [run] out_dir {str(p)!r} lies inside "
+                             f"the checkout {str(ROOT)!r}: run outputs go "
+                             f"outside it (a snapshot's tree stays clean)")
+        out_dir = str(p)
     channels = _names_key(obs, "obs", "channels", where)
     try:
         channels = resolve_crop_channels(channels)
@@ -310,7 +350,7 @@ def parse_run(raw: dict, where: str = "run file",
     return RunConfig(seed=seed, n_envs=n_envs, decimation=decimation,
                      levels=levels, policy=pol, levels_dir=levels_dir,
                      channels=channels, crop_radius=crop_radius,
-                     vector=vector, reward=reward)
+                     vector=vector, reward=reward, out_dir=out_dir)
 
 
 def load_run(path) -> RunConfig:
@@ -663,9 +703,13 @@ def _worker_main(conn, task: dict) -> None:
                                "result": out["result"]}
                 conn.send(("ok", info))
             elif cmd == "probe":
+                import simulation
+                bid = getattr(bp, "build_id", None)
                 conn.send(("ok", {
                     "pid": os.getpid(),
                     "breach_physics": str(Path(bp.__file__).resolve()),
+                    "simulation": str(Path(simulation.__file__).resolve()),
+                    "build_id": bid() if bid is not None else None,
                     "env": {k: os.environ.get(k) for k in WORKER_ENV},
                     "modules": sorted(m for m in sys.modules
                                       if m.split(".")[0] in
@@ -683,6 +727,323 @@ def _worker_main(conn, task: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Snapshots (#29 P1b, residency design §6)
+# ---------------------------------------------------------------------------
+#: The backends require_snapshot knows ("device" refuses until P8b exists).
+SNAPSHOT_BACKENDS = ("cpu_farm", "device")
+#: Where an UNTRACKED file makes a snapshot dirty (anywhere else -- art,
+#: notes -- it may stay). A modified tracked file is dirty anywhere.
+SNAPSHOT_PATHS = ("src/", "levels/", "config.toml", "cpp/")
+#: The run manifest's file name inside ``[run] out_dir``.
+RUN_MANIFEST = "run_manifest.json"
+RUN_MANIFEST_FORMAT = 1
+#: Recorded, never compared on a resume: a resumed Berzelius job lands on
+#: another node of the same image (its GPU and driver fields are compared).
+RUN_MANIFEST_INFORMATIONAL = ("hostname",)
+
+
+class SnapshotRefused(RuntimeError):
+    """A :func:`require_snapshot` check failed; the message names it."""
+
+
+class RunManifestChanged(RuntimeError):
+    """A resume found the run manifest changed; the message names the
+    field(s)."""
+
+
+def _git(repo, *args, strip=True) -> tuple:
+    """``(returncode, stdout)`` of ``git -C repo <args>`` (stripped unless
+    ``strip`` is False: porcelain status lines start with a space)."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return 1, str(e)
+    if r.returncode != 0:
+        return r.returncode, ""
+    return 0, r.stdout.strip() if strip else r.stdout
+
+
+def _refuse(check: str, msg: str):
+    raise SnapshotRefused(f"require_snapshot: {check}: {msg}")
+
+
+def _head(repo) -> str:
+    rc, sha = _git(repo, "rev-parse", "HEAD")
+    if rc != 0 or not sha:
+        _refuse("head", f"{repo} is not a git checkout with a HEAD")
+    return sha
+
+
+def check_annotated_tag(repo, tag: str) -> str:
+    """The tag's commit SHA; refuses unless ``refs/tags/<tag>`` exists and
+    is ANNOTATED (``git cat-file -t`` says ``tag``; a lightweight tag points
+    straight at a commit and records no tagger)."""
+    rc, kind = _git(repo, "cat-file", "-t", f"refs/tags/{tag}")
+    if rc != 0:
+        _refuse("annotated tag", f"no tag {tag!r} in {repo}")
+    if kind != "tag":
+        _refuse("annotated tag", f"tag {tag!r} is lightweight (git cat-file "
+                f"-t says {kind!r}); a training snapshot is an annotated tag "
+                f"(git tag -a)")
+    rc, sha = _git(repo, "rev-parse", f"refs/tags/{tag}^{{}}")
+    if rc != 0 or not sha:
+        _refuse("annotated tag", f"tag {tag!r} does not peel to a commit")
+    return sha
+
+
+def check_head_at_tag(repo, tag: str) -> str:
+    """HEAD's SHA; refuses unless it equals ``git rev-parse <tag>^{}``."""
+    head = _head(repo)
+    rc, sha = _git(repo, "rev-parse", f"refs/tags/{tag}^{{}}")
+    if head != sha:
+        _refuse("head at tag", f"HEAD is {head}, tag {tag!r} is {sha}: "
+                f"check the tag out detached in its own folder")
+    return head
+
+
+def check_clean_tree(repo) -> None:
+    """Refuses a modified tracked file anywhere, or an untracked file under
+    :data:`SNAPSHOT_PATHS` (ignored files are not untracked: the build dirs
+    and ``__pycache__`` stay out of it)."""
+    rc, out = _git(repo, "status", "--porcelain", "-z",
+                   "--untracked-files=all", strip=False)
+    if rc != 0:
+        _refuse("clean tree", f"git status failed in {repo}")
+    entries = out.split("\0")
+    bad, i = [], 0
+    while i < len(entries):
+        e = entries[i]
+        i += 1
+        if not e:
+            continue
+        xy, path = e[:2], e[3:]
+        if xy[0] in "RC":            # a rename / copy: its source follows
+            i += 1
+        if xy == "??":
+            if any(path == p or path.startswith(p) for p in SNAPSHOT_PATHS):
+                bad.append(f"untracked {path}")
+        else:
+            bad.append(f"modified {path} ({xy.strip()})")
+    if bad:
+        shown = "; ".join(bad[:8]) + ("; ..." if len(bad) > 8 else "")
+        _refuse("clean tree", f"{len(bad)} change(s) in {repo}: {shown}")
+
+
+def _under(path, root) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def check_module_paths(repo, simulation_file, bp_file) -> None:
+    """Refuses unless ``simulation`` was imported from ``<repo>/src/`` and
+    ``breach_physics`` from a ``<repo>/cpp/build*/`` directory -- this
+    checkout's own code and build, never another worktree's."""
+    repo = Path(repo)
+    if not simulation_file or not _under(simulation_file, repo / "src"):
+        _refuse("module paths", f"simulation was imported from "
+                f"{simulation_file!r}, not {repo / 'src'}")
+    ok = False
+    if bp_file and _under(bp_file, repo / "cpp"):
+        rel = Path(bp_file).resolve().relative_to((repo / "cpp").resolve())
+        ok = len(rel.parts) > 1 and rel.parts[0].startswith("build")
+    if not ok:
+        _refuse("module paths", f"breach_physics was imported from "
+                f"{bp_file!r}, not a {repo / 'cpp'}/build*/ directory")
+
+
+def check_build_id(repo, build_id) -> None:
+    """Refuses unless the module's build-time ``build_id()`` is HEAD's SHA
+    (a module built from another commit, or from a dirty tree, is not this
+    snapshot's)."""
+    head = _head(repo)
+    if not build_id:
+        _refuse("build id", "breach_physics has no build_id() (built before "
+                "#29 P1b): rebuild it in this checkout")
+    if build_id != head:
+        why = ("from a dirty tree" if build_id.startswith(head)
+               else f"from {build_id}")
+        _refuse("build id", f"breach_physics was built {why}, HEAD is "
+                f"{head}: rebuild it in this checkout")
+
+
+def check_run_recorded(repo, run) -> str:
+    """The run file's sha256; refuses a run without one (a RunConfig built
+    in memory) or whose file lies inside the checkout."""
+    cfg = run if isinstance(run, RunConfig) else load_run(run)
+    if not cfg.sha256 or not cfg.path:
+        _refuse("run file", "the run file's sha256 is not recorded (a "
+                "RunConfig built in memory has none: load the run from its "
+                "file)")
+    if _under(cfg.path, repo):
+        _refuse("run file", f"the run file {cfg.path} lies inside the "
+                f"checkout {repo} (it lives outside the snapshot tree)")
+    return cfg.sha256
+
+
+def _twin_debt_module():
+    import importlib.util
+    path = ROOT / "tools" / "twin_debt.py"
+    spec = importlib.util.spec_from_file_location("_breach_twin_debt", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_twin_debt(repo) -> None:
+    """Refuses while ``tools/twin_debt.py`` reports debt for any twin."""
+    rows = _twin_debt_module().debt(repo)
+    if rows:
+        _refuse("twin debt", "the device backend needs an empty ledger; in "
+                "debt: " + "; ".join(f"{n} ({r})" for n, r in rows))
+
+
+def module_probe() -> dict:
+    """``simulation`` / ``breach_physics`` as imported in THIS process: their
+    files and the module's build id (the default probe)."""
+    import breach_physics as bp
+    import simulation
+    bid = getattr(bp, "build_id", None)
+    return {"simulation_file": simulation.__file__, "bp_file": bp.__file__,
+            "build_id": bid() if bid is not None else None}
+
+
+def require_snapshot(tag: str, backend: str, run, *, repo=None,
+                     probe: dict | None = None) -> dict:
+    """THE training door (residency design §6): refuses
+    (:class:`SnapshotRefused`, naming the failed check) unless ``tag`` is an
+    annotated tag, HEAD is its commit, the tree is clean (untracked files
+    included under :data:`SNAPSHOT_PATHS`), ``simulation`` and
+    ``breach_physics`` come from this checkout, the module's build id is
+    HEAD and ``run`` (a run file path or a :class:`RunConfig` loaded from
+    one) has its sha256 recorded. ``backend="device"`` also needs an empty
+    twin debt ledger, then refuses: no device backend exists yet (P8b).
+
+    ``repo`` defaults to this checkout; ``probe`` (``simulation_file``,
+    ``bp_file``, ``build_id``) to :func:`module_probe` -- the farm passes its
+    workers'. Returns ``{tag, commit, build_id, run_sha256, backend}``."""
+    if backend not in SNAPSHOT_BACKENDS:
+        _refuse("backend", f"{backend!r} is not a backend (known: "
+                f"{list(SNAPSHOT_BACKENDS)})")
+    repo = Path(repo) if repo is not None else ROOT
+    probe = module_probe() if probe is None else probe
+    commit = check_annotated_tag(repo, tag)
+    check_head_at_tag(repo, tag)
+    check_clean_tree(repo)
+    check_module_paths(repo, probe.get("simulation_file"),
+                       probe.get("bp_file"))
+    check_build_id(repo, probe.get("build_id"))
+    run_sha = check_run_recorded(repo, run)
+    if backend == "device":
+        check_twin_debt(repo)
+        _refuse("backend", "no device backend yet (P5..P9; P8b makes it)")
+    return {"tag": tag, "commit": commit, "build_id": probe.get("build_id"),
+            "run_sha256": run_sha, "backend": backend}
+
+
+# ---------------------------------------------------------------------------
+# The run manifest (#29 P1b, residency design §6)
+# ---------------------------------------------------------------------------
+def _dist(*names):
+    """``name==version`` of the first installed distribution, read from its
+    metadata -- never imported."""
+    from importlib import metadata
+    for n in names:
+        try:
+            return f"{n}=={metadata.version(n)}"
+        except metadata.PackageNotFoundError:
+            continue
+    return None
+
+
+def _nvidia_smi():
+    """``(gpu names, driver version)`` from ``nvidia-smi`` (a subprocess: no
+    CUDA context in this process), or ``(None, None)``."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version",
+                            "--format=csv,noheader"], capture_output=True,
+                           text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    rows = [ln.split(",") for ln in r.stdout.splitlines() if "," in ln]
+    if r.returncode != 0 or not rows:
+        return None, None
+    return ("; ".join(x[0].strip() for x in rows), rows[0][1].strip())
+
+
+def environment_versions() -> dict:
+    """The run's environment, read WITHOUT importing torch or CuPy (a farm
+    process never creates a CUDA context): python and numpy, torch and CuPy
+    from their distribution metadata, the CUDA runtime torch was built
+    against (its ``+cuNNN`` local version), the GPU(s) and driver from
+    ``nvidia-smi``, the host name."""
+    torch = _dist("torch")
+    cuda_rt = None
+    if torch and "+cu" in torch:
+        tag = torch.rsplit("+cu", 1)[1]
+        if tag.isdigit() and len(tag) >= 3:
+            cuda_rt = f"{int(tag[:-1])}.{tag[-1]}"
+    gpu, driver = _nvidia_smi()
+    return {"python": platform.python_version(), "numpy": np.__version__,
+            "torch": torch,
+            "cupy": _dist("cupy-cuda12x", "cupy-cuda11x", "cupy"),
+            "cuda_runtime": cuda_rt, "cuda_driver": driver, "gpu": gpu,
+            "hostname": socket.gethostname()}
+
+
+def run_manifest_record(*, run_sha256: str, build_id, backend: str,
+                        tag: str | None = None, bank_sha256=None,
+                        repo=None) -> dict:
+    """The manifest's content: format, backend, the snapshot tag (None off a
+    snapshot) and the commit run (HEAD; the tag's commit on a snapshot), the
+    module's build id, the run file's and the bank's sha256 (the bank is
+    P8a's: None until then), and :func:`environment_versions`."""
+    repo = Path(repo) if repo is not None else ROOT
+    rc, commit = _git(repo, "rev-parse", "HEAD")
+    rec = {"format": RUN_MANIFEST_FORMAT, "backend": backend, "tag": tag,
+           "commit": commit if rc == 0 and commit else None,
+           "build_id": build_id, "run_sha256": run_sha256,
+           "bank_sha256": bank_sha256}
+    rec.update(environment_versions())
+    return rec
+
+
+def write_run_manifest(path, **kw) -> dict:
+    """Write :func:`run_manifest_record` (``kw``) as JSON at ``path``
+    (parents created); returns the record."""
+    rec = run_manifest_record(**kw)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return rec
+
+
+def check_run_manifest(path, **kw) -> dict:
+    """A resume's door: the manifest at ``path`` against the record ``kw``
+    describes now; :class:`RunManifestChanged` naming every changed field
+    (all but :data:`RUN_MANIFEST_INFORMATIONAL`). Returns the stored
+    record."""
+    path = Path(path)
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise RunManifestChanged(f"{path}: not a run manifest ({e})") from None
+    new = run_manifest_record(**kw)
+    changed = [f"{k}: {old.get(k)!r} -> {new.get(k)!r}"
+               for k in sorted(set(old) | set(new))
+               if k not in RUN_MANIFEST_INFORMATIONAL
+               and old.get(k) != new.get(k)]
+    if changed:
+        raise RunManifestChanged(f"{path}: the run changed since it was "
+                                 f"written -- " + "; ".join(changed))
+    return old
+
+
+# ---------------------------------------------------------------------------
 # The driver
 # ---------------------------------------------------------------------------
 class BatchedEnv:
@@ -693,10 +1054,16 @@ class BatchedEnv:
     ``"cpu_farm"`` in P1a. ``n_workers`` (default ``min(n_envs,
     os.cpu_count() - 1)``) processes share the envs in contiguous blocks --
     a machine property, not the run's: results do not depend on it. Each
-    worker starts with :data:`WORKER_ENV` (one BLAS thread)."""
+    worker starts with :data:`WORKER_ENV` (one BLAS thread).
+
+    ``snapshot`` (a tag name): :func:`require_snapshot` over the modules the
+    WORKERS imported, refusing before the first reset. With ``[run]
+    out_dir`` the env writes the run manifest there, or -- when one is there
+    already, a resume -- refuses any change of it (:func:`check_run_manifest`).
+    """
 
     def __init__(self, run, backend: str = "cpu_farm", *,
-                 n_workers: int | None = None):
+                 n_workers: int | None = None, snapshot: str | None = None):
         if backend not in BACKENDS:
             raise ValueError(f"backend {backend!r} is not built (P1a builds "
                              f"{list(BACKENDS)}; the 'device' backend is "
@@ -752,6 +1119,23 @@ class BatchedEnv:
                 self._conns.append(parent)
             for c in self._conns:
                 self._recv(c)
+            self.snapshot = None
+            self.manifest_path = None
+            if snapshot is not None or self.run.out_dir:
+                probe = self._module_probe()
+                if snapshot is not None:
+                    self.snapshot = require_snapshot(
+                        snapshot, backend, self.run, probe=probe)
+                if self.run.out_dir:
+                    kw = dict(run_sha256=self.run.sha256,
+                              build_id=probe["build_id"], backend=backend,
+                              tag=snapshot)
+                    path = Path(self.run.out_dir) / RUN_MANIFEST
+                    if path.exists():
+                        check_run_manifest(path, **kw)
+                    else:
+                        write_run_manifest(path, **kw)
+                    self.manifest_path = str(path)
         except BaseException:
             self.close()
             raise
@@ -785,10 +1169,22 @@ class BatchedEnv:
         return info
 
     def probe(self) -> list:
-        """Each worker's pid, the breach_physics file it loaded and any
-        renderer / CUDA module it imported (a gate reads it)."""
+        """Each worker's pid, the breach_physics and simulation files it
+        loaded, the module's build id and any renderer / CUDA module it
+        imported (a gate reads it)."""
         return [self._broadcast({w: ("probe", None)})
                 for w in range(self.n_workers)]
+
+    def _module_probe(self) -> dict:
+        """The workers' ``simulation`` / ``breach_physics`` files and build
+        id as :func:`require_snapshot`'s probe; every worker must agree."""
+        seen = {(p["simulation"], p["breach_physics"], p["build_id"])
+                for p in self.probe()}
+        if len(seen) != 1:
+            raise RuntimeError(f"farm workers loaded different modules: "
+                               f"{sorted(seen)}")
+        sim, bp_file, bid = seen.pop()
+        return {"simulation_file": sim, "bp_file": bp_file, "build_id": bid}
 
     def _obs(self, prefix="") -> dict:
         a = self._a
@@ -911,4 +1307,10 @@ __all__ = [
     "BatchedEnv", "EnvRunner", "RunConfig", "Layout", "load_run",
     "parse_run", "make_layout", "load_levels", "episode_draw",
     "COUNTER_NAMES", "VECTOR_FIELDS", "BACKENDS", "EPISODE_SALT",
+    "require_snapshot", "SnapshotRefused", "check_annotated_tag",
+    "check_head_at_tag", "check_clean_tree", "check_module_paths",
+    "check_build_id", "check_run_recorded", "check_twin_debt",
+    "module_probe", "write_run_manifest", "check_run_manifest",
+    "run_manifest_record", "environment_versions", "RunManifestChanged",
+    "RUN_MANIFEST", "SNAPSHOT_PATHS", "SNAPSHOT_BACKENDS",
 ]

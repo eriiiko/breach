@@ -26,6 +26,11 @@ prototypes/raylib_cpp/build/
 *.exe
 *.obj
 
+# Class-P stamp (#29 P1b): written by tools/cuda_green.py on a green CUDA
+# suite run in THIS checkout, read by tests/test_class_p_level.py -- local
+# proof about HEAD, never committed
+.cuda_green
+
 # X-ARCH per-machine digest recordings (CUDA arc) — machine-specific artifacts
 tests/digest_*.txt
 
