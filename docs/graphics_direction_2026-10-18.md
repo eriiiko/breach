@@ -327,6 +327,12 @@ modulated by sub-tile coverage (§2.2) already makes beams *textured*; a
 screen-space radial march from each lamp through `C` (classic "sunrays")
 can come later if the tile-resolution shafts still look blocky.
 
+**As built (2026-11-07, #64):** not the two-state formula above. Erik's version:
+one Curves map on the light (`renderer/light_curve.py`), so light below a
+threshold stays continuous and light above it goes to fully lit, with a live
+on-screen editor. Off by default until he picks a look. The formula's grey dark
+state survives as `dark_saturation`, without its brightness.
+
 ---
 
 ## 6. Pipeline — one HDR world RT, one tone-map
