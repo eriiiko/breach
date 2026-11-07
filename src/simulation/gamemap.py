@@ -253,6 +253,12 @@ class GameMap:
         # `solid`; `fuel_per_o2_plane` is a static projection patched in place
         # by on_tile_changed and rides the topology-serial upload.
         "material", "fuel_per_o2_plane",
+        # #29 P4b: the stamp kernel's static baselines (the host stamp resets
+        # to them): table-derived, patched in place by on_tile_changed, so
+        # they ride the `_tile_serial` upload beside `heat_atten_q`. With
+        # them the device rebuilds the five stamp outputs itself and the
+        # per-tick upload carries the unit rows instead of the planes.
+        "permeability", "wave_absorb",
     )
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 
@@ -815,6 +821,10 @@ class GameMap:
         # fuel_recip, fire_T_ext_plane, fuel_per_o2_plane, heat_atten_q,
         # light_atten_q) only when it moved since their last upload.
         self._tile_serial = 0
+        # #29 P4b: the rows the last C++ stamp flattened the living units into
+        # (+ the topology serial it stamped under), handed to the resident
+        # tick's device stamp ONCE by take_stamp_rows.
+        self._stamp_pending = None
 
         # Populate material + vacuum from the level's CSV (vocabulary is
         # format-version dependent — v1 generator codes vs v2 canon ids).
@@ -2070,7 +2080,42 @@ class GameMap:
         if self._physics_engine is not None and self.use_cpp_stamp:
             self._stamp_units_cpp(units)
         else:
+            self._stamp_pending = None        # the reference path builds no rows
             self._stamp_units_python(units)
+
+    def take_stamp_rows(self):
+        """#29 P4b: the stamp rows for the resident tick's DEVICE stamp, or None.
+
+        The last C++ :meth:`stamp_units` flattened the living units into one
+        row per in-bounds footprint tile; this hands them over packed for the
+        device kernel (``cuda_stamp.cu``) as an ``(R, 9)`` int32 matrix
+        ``[env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2]`` -- the
+        floats as their IEEE bit patterns, so the device reads exactly the
+        values the oracle compared -- and CLEARS them (a stamp's rows are
+        consumed by one tick). None means "upload the host planes instead",
+        which is what the CPU physics saw: there was no C++ stamp since the
+        last take (the Python reference path, or a tick that never stamped), or
+        a tile changed between the stamp and now (slot 6b's payload walls), so
+        the device's static baselines are no longer the ones the oracle reset
+        to and a device stamp would differ from it.
+        """
+        p = self._stamp_pending
+        self._stamp_pending = None
+        if p is None:
+            return None
+        ys, xs, perm, wabsorb, heat_q, light_q, serial = p
+        if serial != self._tile_serial:
+            return None
+        n = int(ys.shape[0])
+        rows = np.empty((n, 9), dtype=np.int32)
+        rows[:, 0] = 0                                  # env 0 (N = 1 today)
+        rows[:, 1] = ys
+        rows[:, 2] = xs
+        rows[:, 3] = perm.view(np.int32)
+        rows[:, 4] = wabsorb.view(np.int32)
+        rows[:, 5] = heat_q
+        rows[:, 6:9] = light_q
+        return rows
 
     def _stamp_units_cpp(self, units):
         """C++ path: flatten living units' footprints, call the engine, then run
@@ -2145,6 +2190,9 @@ class GameMap:
             self.heat_atten_q, self.dyn_heat_atten_q, heat_q_a,
             self.light_atten_q, self.dyn_light_atten_q, light_q_rows_a,
         )
+        # #29 P4b: keep the rows for the device stamp (take_stamp_rows).
+        self._stamp_pending = (ys_a, xs_a, perm_a, wabsorb_a, heat_q_a,
+                               light_q_rows_a, self._tile_serial)
 
         # Atmosphere refill (Python-only, UNCHANGED — gamemap.py contract §c).
         # `freed` = walls that became free this tick (wall destroyed). Units are

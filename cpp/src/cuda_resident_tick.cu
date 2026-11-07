@@ -113,6 +113,7 @@ struct ResidentTickState {
     DevBuf l_outflow, l_emit, l_d, l_g, cone_index, cone_inj, emit_mult, sky;
     DevBuf tsnap, alloc, dep, e_slot, e_dep, perm_q, ign_plane;
     DevBuf wt_flag, wt_frac, wt_list;
+    DevBuf stamp_rows, stamp_winner;   // #29 P4b
     // the books arena + its pinned host mirror
     DevBuf arena;
     unsigned char* arena_h = nullptr;
@@ -274,6 +275,40 @@ void resident_water_tail(const PhysicsEngine& eng, const ResidentFields& f,
     S.water_steam_idx = steam_idx;
     S.water_n_gases = f.n_gases;
     ++g_counts[0];
+}
+
+// ---------------------------------------------------------------------------
+// #29 P4b: the stamp (slot 6's five planes)
+// ---------------------------------------------------------------------------
+void resident_stamp(const PhysicsEngine& eng, const ResidentFields& f,
+                    const int32_t* rows, int n_rows) {
+    (void)eng;
+    ResidentTickState& S = g_rt;
+    S.key(f.h, f.w);
+    const int n = f.h * f.w;
+    if (n <= 0) return;
+    if (n_rows < 0 || (n_rows > 0 && rows == nullptr))
+        throw std::invalid_argument("resident_stamp: bad rows");
+    if (!f.permeability || !f.wave_absorb || !f.heat_atten_q || !f.light_atten_q ||
+        !f.obstacles || !f.dyn_permeability || !f.dyn_wave_absorb ||
+        !f.dyn_heat_atten_q || !f.dyn_light_atten_q)
+        throw std::invalid_argument("resident_stamp: a stamp plane is not resident");
+    int32_t* d_rows = nullptr;
+    if (n_rows > 0) {
+        d_rows = S.stamp_rows.get<int32_t>((size_t)n_rows * STAMP_ROW_COLS);
+        cuda_check(cudaMemcpy(d_rows, rows,
+                              (size_t)n_rows * STAMP_ROW_COLS * sizeof(int32_t),
+                              cudaMemcpyHostToDevice), "H2D stamp rows");
+    }
+    stamp_launch_resident(
+        1, f.h, f.w, n_rows,
+        P<const float>(f.permeability), P<const float>(f.wave_absorb),
+        P<const int32_t>(f.heat_atten_q), P<const int32_t>(f.light_atten_q),
+        P<bool>(f.obstacles), P<float>(f.dyn_permeability),
+        P<float>(f.dyn_wave_absorb), P<int32_t>(f.dyn_heat_atten_q),
+        P<int32_t>(f.dyn_light_atten_q), d_rows,
+        S.stamp_winner.get<int32_t>((size_t)n));
+    ++g_counts[11];
 }
 
 // ---------------------------------------------------------------------------

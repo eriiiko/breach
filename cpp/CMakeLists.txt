@@ -110,6 +110,7 @@ if(BREACH_CUDA)
         src/cuda_eos_resident.cu   # S8a Path A: fully device-resident EOS tick + device MG build
         src/cuda_combustion.cu     # EOS P6.9b two-gather combustion (closes P6)
         src/cuda_water_tail.cu     # #29 P4a: the W5/W3 water tail on the device
+        src/cuda_stamp.cu          # #29 P4b: the stamp kernel (slot 6's five planes)
         src/cuda_resident_tick.cu  # #29 P4a: the resident tick's drivers (the brackets gone)
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags

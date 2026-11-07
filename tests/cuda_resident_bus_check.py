@@ -21,9 +21,21 @@ count and bytes):
   * the device stages all ran (each tick's sequence carries the EOS stage,
     the trace tail, combustion and the tail).
 
+#29 P4b adds the stamp: the five stamp planes (obstacles, dyn_permeability,
+dyn_wave_absorb, dyn_heat_atten_q, dyn_light_atten_q) are built on the device
+from the host stamp's rows (``"  7 stamp (resident)"``, a stage inside the
+window), so on every tick the stamp stage ran the entry ``from_host`` carries
+NONE of them (and on a tick it did not run -- a topology change between the
+stamp and the tick, rare -- the entry carries the planes the device did not
+build). The stamp ran on most ticks (the match's walls do not change most
+ticks).
+
 It prints the two remaining calls with their fields and bytes per tick.
 
-BREAKS IF a resident stage regains a host bracket (a ``to_host`` / ``from_host``
+BREAKS IF the entry upload carries a stamp plane on a tick the device stamp
+ran (the device stamp quietly became an upload again), the device stamp stops
+running (the stage is missing on most ticks), a resident stage regains a host
+bracket (a ``to_host`` / ``from_host``
 pair around it), the entry or exit split into several calls, or a stage is
 moved outside the upload / download window. (Copies made inside the C++
 drivers -- the EOS's 8-byte n_sub scan result and its counter blocks, the
@@ -44,7 +56,11 @@ sys.path.insert(0, os.path.join(_ROOT, "tools"))
 
 H2D = "  7 H2D GameMap.from_host"
 D2H = "  7 D2H GameMap.to_host"
+STAMP_STAGE = "  7 stamp (resident)"
+STAMP_PLANES = ("obstacles", "dyn_permeability", "dyn_wave_absorb",
+                "dyn_heat_atten_q", "dyn_light_atten_q")
 DEVICE_STAGES = (
+    STAMP_STAGE,
     "  7 water substeps (resident)",
     "  7 water tail (resident)",
     "  7 EOS run_substeps_resident",
@@ -84,6 +100,7 @@ def main() -> int:
         physics_runner.set_residency(False)
 
     fails = []
+    stamp_ticks = fallback_ticks = 0
     entry = {}
     exit_ = {}
     for t, seq in enumerate(prof.seq):
@@ -105,8 +122,24 @@ def main() -> int:
                          f"(the resident chain did not run)")
         entry[tick] = seq[ups[0]][2:]
         exit_[tick] = seq[downs[0]][2:]
+        # #29 P4b: the device stamp's planes are not on the bus.
+        names = set(seq[ups[0]][4])
+        carried = sorted(names & set(STAMP_PLANES))
+        if STAMP_STAGE in labels:
+            stamp_ticks += 1
+            if carried:
+                fails.append(f"tick {tick}: the device stamp ran AND the entry "
+                             f"upload carried {carried}")
+        else:
+            fallback_ticks += 1
+            if not {"dyn_permeability", "dyn_heat_atten_q"} <= names:
+                fails.append(f"tick {tick}: no device stamp and the entry did "
+                             f"not upload the host's stamp planes")
     if len(prof.seq) != N_TICKS - prof.skip:
         fails.append(f"{len(prof.seq)} measured ticks of {N_TICKS - prof.skip}")
+    if stamp_ticks * 2 <= len(prof.seq):
+        fails.append(f"the device stamp ran on only {stamp_ticks} of "
+                     f"{len(prof.seq)} ticks")
     for f in fails[:10]:
         print(f"  FAIL: {f}")
     if entry:
@@ -121,6 +154,8 @@ def main() -> int:
         print(f"    exit   GameMap.to_host:   1 call/tick, {fx:.1f} fields, "
               f"{bx / 1024:.1f} KiB/tick")
         print(f"    between them: 0 GameMap transfers on every tick")
+        print(f"    device stamp on {stamp_ticks} ticks (no stamp plane uploaded), "
+              f"host planes uploaded on {fallback_ticks}")
         s = prof.summary()
         for key, v in s["bus"].items():
             print(f"      {key:34s} {v['calls']:.2f} calls/tick "

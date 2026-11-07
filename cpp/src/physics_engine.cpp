@@ -950,6 +950,17 @@ void PhysicsEngine::upload_light_resident(const ResidentFields& f,
 #endif
 }
 
+void PhysicsEngine::stamp_units_resident(const ResidentFields& f,
+                                         const int32_t* rows, int n_rows) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_stamp(*this, f, rows, n_rows);
+#else
+    (void)f; (void)rows; (void)n_rows;
+    throw std::runtime_error(
+        "stamp_units_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
 std::vector<std::pair<int, int>> PhysicsEngine::step_tail_resident(
         const ResidentFields& f, const ResidentTickArgs& a) const {
 #ifdef BREACH_HAS_CUDA

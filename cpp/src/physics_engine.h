@@ -45,7 +45,10 @@ struct ResidentFields {
         dyn_permeability = 0, heat_atten_q = 0, dyn_heat_atten_q = 0,
         light_atten_q = 0, dyn_light_atten_q = 0,
         fuel_recip = 0, fire_T_ext_plane = 0, fuel_per_o2_plane = 0,
-        material = 0, water_before = 0;
+        material = 0, water_before = 0,
+        // #29 P4b: the stamp kernel's static inputs and its two outputs no
+        // other device stage reads (the other three are named above).
+        permeability = 0, wave_absorb = 0, obstacles = 0, dyn_wave_absorb = 0;
     int h = 0, w = 0, n_gases = 0;
     int acc_depth = 0;   // dem_acc's declared depth (max_claimants)
 };
@@ -632,6 +635,14 @@ public:
                                  const ResidentTickArgs& a) const;
     void upload_light_resident(const ResidentFields& f,
                                const ResidentTickArgs& a) const;
+    // #29 P4b: slot 6's stamp on the device -- the five stamp outputs
+    // (obstacles, dyn_permeability, dyn_wave_absorb, dyn_heat_atten_q,
+    // dyn_light_atten_q) rebuilt from `rows`, an (n_rows, 9) int32 matrix
+    // [env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2] the host's
+    // stamp built (cuda_resident.h STAMP_ROW_COLS). Called after the tick's
+    // entry upload (the static planes are current), before the water stage.
+    void stamp_units_resident(const ResidentFields& f, const int32_t* rows,
+                              int n_rows) const;
     std::vector<std::pair<int, int>> step_tail_resident(
         const ResidentFields& f, const ResidentTickArgs& a) const;
     // The last resident sweep's Fleck plane into this->radiation, ON DEMAND
