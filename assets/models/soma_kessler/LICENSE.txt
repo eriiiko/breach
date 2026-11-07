@@ -1,0 +1,25 @@
+Breach -- Kessler on the SOMA skeleton (game file for the pose layer)
+=====================================================================
+
+FILES
+  soma_kessler.glb   one skinned mesh (albedo + normal embedded, gloss in the albedo's alpha),
+                     the 30-joint SOMA skeleton, 15 animation clips. Body only: the carbine and
+                     any other prop attach to a bone in the pose layer.
+
+MESH AND TEXTURES
+  Kessler's game mesh from branch 33-kessler (art/characters/kessler/, see its LICENSE and
+  PROVENANCE.md): an AI image-to-3D model Erik Steen generated in Krea. Commercial-use terms
+  follow his Krea plan -- TO BE CONFIRMED by Erik before any release.
+
+SKELETON AND ANIMATIONS
+  Generated with NVIDIA Kimodo (model Kimodo-SOMA-RP-v1.2, https://github.com/nv-tlabs/kimodo) on the
+  SOMA skeleton, under the NVIDIA Open Model License; see
+  docs/animation_milestones_design_2026-11-02.md section 8. Weights come from Kimodo's skinned SOMA
+  body. Built by local-models: blender/retarget_soma.py, tools/pack_clips.py, tools/soma30.py.
+
+CLIP SOURCES (clip list, sample)
+  Idle agent_idle s1 / Walk rifle_carry_walk s0 / Run agent_run s1 / Rifle_Aim_Walk rifle_aim_walk s1 (v3) /
+  Rifle_Aim_Right rifle_aim_strafe_right s0 / Rifle_Aim_Left the same clip mirrored /
+  Rifle_Aim_Back rifle_aim_back s1 / Rifle_Shoot rifle_shoot_steady s2 / Hit_Chest hit_chest_front s0 /
+  Hit_Back hit_back s0 / Hit_Left hit_left s0 / Hit_Right hit_right s0 / Fall B6_knocked_down s0 /
+  Get_Up B7_get_up s0 / Zombie_Hunch_Walk B2_hunched_walk_keyframed s1
