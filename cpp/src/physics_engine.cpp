@@ -798,30 +798,44 @@ void PhysicsEngine::run_substeps(
                this->eos.trace_decay_sum_.data());
 }
 
-// ---- S8a Path A: the fully device-resident EOS stage ----------------------
-// Contract in the header; the heavy lifting is breach_cuda::eos_step_resident
-// (cuda_eos_resident.cu). Compiled on every build; throws where the device
-// path is unavailable so a mis-wired caller fails loudly instead of silently
+// ---- #29 P5: the batched resident tick (physics_engine.h; cuda_resident_tick.h)
+// Each entry forwards to its device driver with the batch's engines ({this}
+// when none are given: N = 1, the played game) — the routing only; every law
+// is the families' launch cores'. Declared on every build; the bodies throw
+// on a non-CUDA build so a mis-wired caller fails loudly instead of silently
 // running a different arithmetic path.
-void PhysicsEngine::run_substeps_resident(
-        int32_t* p_prev,
-        const int32_t* atmosphere,
-        const int32_t* wind_x, const int32_t* wind_y,
-        const int32_t* temperature,
-        const bool* solid, const bool* is_vacuum,
-        const float* dyn_permeability, const float* dyn_wave_absorb,
-        const int32_t* gas, int n_gases, const bool* gas_conservative,
-        int h, int w, float sim_time,
-        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
-        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
-        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_dyn_permeability,
-        std::uintptr_t d_is_ambient,
-        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
-        const bool* thermal_solid, std::uintptr_t d_thermal_solid,
-        std::uintptr_t d_gas_energy) {
+namespace {
+PhysicsEngine::ResidentEngineList batch_of(const PhysicsEngine* self,
+                                           const PhysicsEngine::ResidentEngineList& engs,
+                                           int n_env, const char* who) {
+    if (engs.empty()) {
+        if (n_env != 1)
+            throw std::invalid_argument(std::string(who) +
+                                        ": a batch (n_env > 1) needs its engines");
+        return PhysicsEngine::ResidentEngineList{self};
+    }
+    if (engs[0] != self)
+        throw std::invalid_argument(std::string(who) +
+                                    ": the batch's first engine must be this engine");
+    return engs;
+}
+}  // namespace
+
+void PhysicsEngine::step_water_resident(const ResidentFields& f,
+                                        const ResidentTickArgs& a,
+                                        const ResidentEngineList& engs) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_water(batch_of(this, engs, f.n_env, "step_water_resident"), f, a);
+#else
+    (void)f; (void)a; (void)engs;
+    throw std::runtime_error(
+        "step_water_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
+int PhysicsEngine::run_substeps_resident(const ResidentFields& f,
+                                         const ResidentTickArgs& a,
+                                         const ResidentEngineList& engs) const {
 #ifdef BREACH_HAS_CUDA
     if (!breach_cuda::eos_step_backend_is_cuda()) {
         throw std::runtime_error(
@@ -829,108 +843,36 @@ void PhysicsEngine::run_substeps_resident(
             "(sl_advection, bulk_flux, mg_solve, kick_compression) — there is "
             "no CPU fallback for a device-pointer call.");
     }
-    breach_cuda::eos_step_resident(
-        this->eos,
-        atmosphere, p_prev, wind_x, wind_y, temperature,
-        gas, gas_conservative, n_gases,
-        solid, is_vacuum, dyn_permeability, dyn_wave_absorb,
-        h, w, sim_time,
-        is_ambient, n_amb, p_amb,
-        thermal_solid,   // THERMAL-MASS AXIS: the mirror (host predicate)
-        reinterpret_cast<int32_t*>(d_atmosphere),
-        reinterpret_cast<int32_t*>(d_wave_p),
-        reinterpret_cast<int32_t*>(d_wind_x),
-        reinterpret_cast<int32_t*>(d_wind_y),
-        reinterpret_cast<int32_t*>(d_temperature),
-        reinterpret_cast<int32_t*>(d_gas_base),
-        reinterpret_cast<const bool*>(d_solid),
-        reinterpret_cast<const bool*>(d_is_vacuum),
-        reinterpret_cast<const float*>(d_dyn_permeability),
-        reinterpret_cast<const bool*>(d_is_ambient),
-        reinterpret_cast<const int32_t*>(d_sponge_sigma),
-        reinterpret_cast<const int32_t*>(d_sponge_udamp),
-        // THERMAL-MASS AXIS: the DEVICE mask the SL/compression kernels read.
-        reinterpret_cast<const bool*>(d_thermal_solid),
-        // arc #54 §2.2 (P-G2): the conserved gas energy field's device buffer.
-        reinterpret_cast<int64_t*>(d_gas_energy));
+    return breach_cuda::resident_eos(batch_of(this, engs, f.n_env, "run_substeps_resident"),
+                                     f, a);
 #else
-    (void)p_prev; (void)atmosphere; (void)wind_x; (void)wind_y;
-    (void)temperature; (void)solid; (void)is_vacuum; (void)dyn_permeability;
-    (void)dyn_wave_absorb; (void)gas; (void)n_gases; (void)gas_conservative;
-    (void)h; (void)w; (void)sim_time; (void)is_ambient; (void)n_amb;
-    (void)p_amb; (void)d_atmosphere; (void)d_wave_p; (void)d_wind_x;
-    (void)d_wind_y; (void)d_temperature; (void)d_gas_base; (void)d_solid;
-    (void)d_is_vacuum; (void)d_dyn_permeability; (void)d_is_ambient;
-    (void)d_sponge_sigma; (void)d_sponge_udamp;
-    (void)thermal_solid; (void)d_thermal_solid; (void)d_gas_energy;
+    (void)f; (void)a; (void)engs;
     throw std::runtime_error(
         "run_substeps_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
 }
 
-// ---- Smoke transport v2 (#12, P2b): the resident trace tail -----------------
-// Contract in the header. The device work is breach_cuda::trace_tail_resident
-// (cuda_bulk_transport.cu, the (N, h, w) launch core at N = 1); this method
-// owns only the books' sizing and routing, so the CPU tail (run_substeps) and
-// this one book into the SAME EOSSolver members.
-void PhysicsEngine::run_trace_tail_resident(
-        int n_gases, const bool* gas_conservative,
-        const float* gas_diffusion, const float* gas_decay,
-        int h, int w, float sim_time,
-        std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_is_ambient,
-        std::uintptr_t d_dyn_permeability) {
+void PhysicsEngine::run_trace_tail_resident(const ResidentFields& f,
+                                            const ResidentTickArgs& a,
+                                            const ResidentEngineList& engs) const {
 #ifdef BREACH_HAS_CUDA
-    // The resident EOS's shared pre-stage reset + sized the books this tick;
-    // ensure_trace_books only sizes them for a caller that did not.
-    this->eos.ensure_trace_books(n_gases);
-    breach_cuda::trace_tail_resident(
-        reinterpret_cast<int32_t*>(d_gas_base),
-        reinterpret_cast<const bool*>(d_solid),
-        reinterpret_cast<const bool*>(d_is_vacuum),
-        reinterpret_cast<const bool*>(d_is_ambient),
-        reinterpret_cast<const float*>(d_dyn_permeability),
-        h, w, n_gases, gas_conservative, gas_diffusion, gas_decay, sim_time,
-        this->eos.boundary_flux_.data(),
-        this->eos.trace_sink_sum_.data(),
-        this->eos.trace_decay_sum_.data());
+    breach_cuda::resident_trace_tail(
+        batch_of(this, engs, f.n_env, "run_trace_tail_resident"), f, a);
 #else
-    (void)n_gases; (void)gas_conservative; (void)gas_diffusion; (void)gas_decay;
-    (void)h; (void)w; (void)sim_time; (void)d_gas_base; (void)d_solid;
-    (void)d_is_vacuum; (void)d_is_ambient; (void)d_dyn_permeability;
+    (void)f; (void)a; (void)engs;
     throw std::runtime_error(
         "run_trace_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
 }
 
-// ---- #29 P4a: the brackets gone (physics_engine.h; cuda_resident_tick.h) ----
-// Each entry forwards to its device driver with this engine (whose dials the
-// drivers read and whose books they fold) — the routing only; every law is
-// the families' launch cores'.
-void PhysicsEngine::step_water_tail_resident(const ResidentFields& f,
-                                             const ResidentTickArgs& a) const {
-#ifdef BREACH_HAS_CUDA
-    breach_cuda::resident_water_tail(*this, f, a.gas_conservative, a.steam_idx,
-                                     a.sim_time, a.ceiling_h, a.flood_eps,
-                                     a.ratio_cap, a.boil_rate, a.boil_p_thresh,
-                                     a.steam_yield, a.ambient, a.t_amb_q);
-#else
-    (void)f; (void)a;
-    throw std::runtime_error(
-        "step_water_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
-#endif
-}
-
 void PhysicsEngine::run_combustion_resident(const ResidentFields& f,
-                                            const ResidentTickArgs& a) const {
+                                            const ResidentTickArgs& a,
+                                            const ResidentEngineList& engs) const {
 #ifdef BREACH_HAS_CUDA
-    breach_cuda::resident_combustion(*this, f, a.o2_idx, a.inert_n2_idx,
-                                     a.black_smoke_idx, a.draw_r, a.sim_time,
-                                     a.ignition_table, a.n_materials, a.ambient,
-                                     a.t_amb_q);
+    breach_cuda::resident_combustion(
+        batch_of(this, engs, f.n_env, "run_combustion_resident"), f, a);
 #else
-    (void)f; (void)a;
+    (void)f; (void)a; (void)engs;
     throw std::runtime_error(
         "run_combustion_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
@@ -939,10 +881,7 @@ void PhysicsEngine::run_combustion_resident(const ResidentFields& f,
 void PhysicsEngine::upload_light_resident(const ResidentFields& f,
                                           const ResidentTickArgs& a) const {
 #ifdef BREACH_HAS_CUDA
-    breach_cuda::resident_upload_light(*this, f, a.gas_light_absorb_q16,
-                                       a.gas_light_glow_q16, a.light_cones,
-                                       a.n_light_cones, a.light_sky,
-                                       a.light_emit_mult, a.n_light_emit_mult);
+    breach_cuda::resident_upload_light(*this, f, a);
 #else
     (void)f; (void)a;
     throw std::runtime_error(
@@ -951,27 +890,26 @@ void PhysicsEngine::upload_light_resident(const ResidentFields& f,
 }
 
 void PhysicsEngine::stamp_units_resident(const ResidentFields& f,
-                                         const int32_t* rows, int n_rows) const {
+                                         const int32_t* rows, int n_rows,
+                                         const ResidentEngineList& engs) const {
 #ifdef BREACH_HAS_CUDA
-    breach_cuda::resident_stamp(*this, f, rows, n_rows);
+    breach_cuda::resident_stamp(batch_of(this, engs, f.n_env, "stamp_units_resident"),
+                                f, rows, n_rows);
 #else
-    (void)f; (void)rows; (void)n_rows;
+    (void)f; (void)rows; (void)n_rows; (void)engs;
     throw std::runtime_error(
         "stamp_units_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
 }
 
-std::vector<std::pair<int, int>> PhysicsEngine::step_tail_resident(
-        const ResidentFields& f, const ResidentTickArgs& a) const {
+std::vector<std::vector<std::pair<int, int>>> PhysicsEngine::step_tail_resident(
+        const ResidentFields& f, const ResidentTickArgs& a,
+        const ResidentEngineList& engs) const {
 #ifdef BREACH_HAS_CUDA
-    return breach_cuda::resident_tail(*this, f, a.gas_conservative, a.o2_idx,
-                                      a.sim_time, a.ambient, a.t_amb_q,
-                                      a.k_leak_q, a.rad_amb_vacuum_q,
-                                      a.gas_heat_absorb_q16,
-                                      a.gas_light_absorb_q16,
-                                      a.gas_light_glow_q16);
+    return breach_cuda::resident_tail(batch_of(this, engs, f.n_env, "step_tail_resident"),
+                                      f, a);
 #else
-    (void)f; (void)a;
+    (void)f; (void)a; (void)engs;
     throw std::runtime_error(
         "step_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif

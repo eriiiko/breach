@@ -48,8 +48,15 @@ struct ResidentFields {
         material = 0, water_before = 0,
         // #29 P4b: the stamp kernel's static inputs and its two outputs no
         // other device stage reads (the other three are named above).
-        permeability = 0, wave_absorb = 0, obstacles = 0, dyn_wave_absorb = 0;
+        permeability = 0, wave_absorb = 0, obstacles = 0, dyn_wave_absorb = 0,
+        // #29 P5: the water substeps' planes and the ambient sponge statics
+        // (the EOS stage), so every slot-7 stage reads one struct.
+        flow_vx = 0, flow_vy = 0, floor_height = 0,
+        sponge_sigma = 0, sponge_udamp = 0;
     int h = 0, w = 0, n_gases = 0;
+    // #29 P5: the batch's env count — every address above is the batch's
+    // (N, ...) buffer (env 0's, the envs contiguous). 1 = the played game.
+    int n_env = 1;
     int acc_depth = 0;   // dem_acc's declared depth (max_claimants)
 };
 
@@ -80,6 +87,17 @@ struct ResidentTickArgs {
     const int64_t* light_sky = nullptr;
     const int64_t* light_emit_mult = nullptr;
     int n_light_emit_mult = 0;
+    // #29 P5: the water substeps (the host path's step_water arguments) and
+    // the per-env live mask ((N,) uint8; nullptr = every env).
+    int water_n_sub = 0;
+    float water_wdt = 0.0f, tilt_x = 0.0f, tilt_y = 0.0f;
+    const uint8_t* water_active = nullptr;
+    // #29 P5: the EOS stage (the ring's per-gas reservoir and P_amb, ambient
+    // maps only) and the trace tail's per-gas columns.
+    const int32_t* n_amb = nullptr;
+    int32_t p_amb = 0;
+    const float* gas_diffusion = nullptr;   // (n_gases,)
+    const float* gas_decay = nullptr;       // (n_gases,)
 };
 
 class PhysicsEngine {
@@ -555,96 +573,44 @@ public:
         // path -> byte-identical to before this patch.
         const bool* thermal_solid = nullptr);
 
-    // --- S8a Path A: the fully device-resident EOS stage -----------------
-    // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.1.) The resident sibling of
-    // run_substeps' EOS dispatch: host mirrors feed the shared pre-stage (all
-    // reductions — tick-entry state) + telemetry; the device pointers are the
-    // persistent CuPy resident fields (uintptr_t so this header stays
-    // CUDA-free; 0 == nullptr for the ambient statics). The trace planes ride
-    // stages 3b/3c inside it (smoke transport v2); the once-per-tick trace TAIL
-    // is run_trace_tail_resident below, which the runner calls next. Declared on every
-    // build; the body THROWS on a non-CUDA build, and on a CUDA build throws
-    // unless eos_step_backend_is_cuda() (no CPU fallback for device
-    // pointers). Bit-identity gate: tests/cuda_s8a_check.py PART 1a/1b/1c.
-    void run_substeps_resident(
-        int32_t* p_prev,
-        const int32_t* atmosphere,
-        const int32_t* wind_x, const int32_t* wind_y,
-        const int32_t* temperature,
-        const bool* solid, const bool* is_vacuum,
-        const float* dyn_permeability, const float* dyn_wave_absorb,
-        const int32_t* gas, int n_gases, const bool* gas_conservative,
-        int h, int w, float sim_time,
-        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
-        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
-        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_dyn_permeability,
-        std::uintptr_t d_is_ambient,
-        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
-        // THERMAL-MASS AXIS, P-EOS: the mask on the MIRROR (for the shared host
-        // occlusion predicate — all pre-stage reductions read the mirror) plus
-        // its DEVICE copy (what the SL/compression kernels read). 0/nullptr ->
-        // the legacy path. The device copy MUST ride the per-tick from_host
-        // upload: unlike the sponge grids this mask is not static.
-        const bool* thermal_solid = nullptr,
-        std::uintptr_t d_thermal_solid = 0,
-        // arc #54 §2.2 (P-G2): the conserved gas energy field's PERSISTENT
-        // device buffer (GameMap's resident `gas_energy`, (h,w) int64). No
-        // host-mirror parameter is needed here — nothing in the resident
-        // pre-stage reduces over it (unlike thermal_solid's cap2 fold); the
-        // caller's from_host/to_host round-trips the mirror around this call.
-        std::uintptr_t d_gas_energy = 0);
-
-    // --- Smoke transport v2 (#12, design §5 "Resident", P2b): the resident
-    // path's once-per-tick TRACE TAIL. The device twin of the tail
-    // run_substeps runs on the host after the EOS dispatch (stranded zeroing
-    // -> Jacobi diffusion -> ceil decay, trace_tail in bulk_transport.h), on
-    // the persistent device fields, booked into the SAME EOSSolver books the
-    // CPU tail writes (vent -> boundary_flux_'s trace slots, sink, decay;
-    // ADDED to what run_substeps_resident's stages 3b/3c stored this tick).
-    // The runner calls it right after run_substeps_resident (where the
-    // deleted trace_smoke_resident stood). Declared on every build; the body
-    // THROWS on a non-CUDA build. Gate: tests/cuda_trace_smoke_check.py
-    // (V6-resident).
-    void run_trace_tail_resident(
-        int n_gases, const bool* gas_conservative,
-        const float* gas_diffusion, const float* gas_decay,
-        int h, int w, float sim_time,
-        std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_is_ambient,          // 0 on a space map
-        std::uintptr_t d_dyn_permeability);
-
-    // --- #29 P4a: THE BRACKETS GONE — the rest of slot 7 on the device -------
-    // The resident tick's remaining host stages, as device drivers on the
-    // persistent fields (cuda_resident_tick.h has the whole contract): the
-    // water tail before the EOS stage, combustion after the trace tail, and
-    // the tail (the bulk sum, fire, the sweep, temperature) last, with zero
-    // plane transfers between them; step_tail_resident ends with the ONE books
-    // D2H, folds every book into the member the host path writes, and returns
-    // the burn-through list (row-major). upload_light_resident hands the light
-    // inputs over at the tick's entry (only while light_requested). The host
-    // path (step_water / CombustionSolver.step / step_tail) and the per-call
-    // twins are untouched. Declared on every build; the bodies throw on a
-    // non-CUDA build. Gate: tests/cuda_s8a_check.py.
-    void step_water_tail_resident(const ResidentFields& f,
-                                  const ResidentTickArgs& a) const;
-    void run_combustion_resident(const ResidentFields& f,
-                                 const ResidentTickArgs& a) const;
+    // --- #29 P5: THE BATCHED RESIDENT TICK (cuda_resident_tick.h has the whole
+    // contract; docs/residency_batching_design_2026-11-07.md §4.2) ------------
+    // Slot 7 of N homogeneous envs on their (N, h, w) device buffers (f.n_env
+    // = N, the addresses env 0's), in the CPU tick's order: the water stage
+    // (substeps + W5 / W3, masked per env), the EOS stage (the device pre-stage,
+    // both masked substep loops to the batch's max n_sub, MG per env, kick,
+    // store, energy flux; returns max(n_sub), the one counted per-tick host
+    // read), the trace tail, combustion, [the sky bracket, ambient N = 1 only:
+    // the runner's], then the tail (bulk sum, fire, the sweep, temperature),
+    // which ends with the ONE books D2H and folds env e's books into engs[e],
+    // returning each env's burn-through list (row-major). `engs` is the batch's
+    // N engines (this engine == engs[0], the config); empty = {this} (N = 1,
+    // the played `--cuda --resident` game — the same code path). The light
+    // inputs (upload_light_resident) are N = 1 only (render state, until #81).
+    // Declared on every build; the bodies throw on a non-CUDA build. Gates:
+    // tests/cuda_s8a_check.py (N = 1 == CPU, tol 0) and
+    // tests/cuda_batch_invariance_check.py (env i of N == env i alone).
+    using ResidentEngineList = std::vector<const PhysicsEngine*>;
+    void step_water_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                             const ResidentEngineList& engs = {}) const;
+    int run_substeps_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                              const ResidentEngineList& engs = {}) const;
+    void run_trace_tail_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                                 const ResidentEngineList& engs = {}) const;
+    void run_combustion_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                                 const ResidentEngineList& engs = {}) const;
     void upload_light_resident(const ResidentFields& f,
                                const ResidentTickArgs& a) const;
     // #29 P4b: slot 6's stamp on the device -- the five stamp outputs
     // (obstacles, dyn_permeability, dyn_wave_absorb, dyn_heat_atten_q,
     // dyn_light_atten_q) rebuilt from `rows`, an (n_rows, 9) int32 matrix
-    // [env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2] the host's
-    // stamp built (cuda_resident.h STAMP_ROW_COLS). Called after the tick's
-    // entry upload (the static planes are current), before the water stage.
+    // [env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2] the hosts'
+    // stamps built (cuda_resident.h STAMP_ROW_COLS; env = the batch index).
     void stamp_units_resident(const ResidentFields& f, const int32_t* rows,
-                              int n_rows) const;
-    std::vector<std::pair<int, int>> step_tail_resident(
-        const ResidentFields& f, const ResidentTickArgs& a) const;
+                              int n_rows, const ResidentEngineList& engs = {}) const;
+    std::vector<std::vector<std::pair<int, int>>> step_tail_resident(
+        const ResidentFields& f, const ResidentTickArgs& a,
+        const ResidentEngineList& engs = {}) const;
     // The last resident sweep's Fleck plane into this->radiation, ON DEMAND
     // (gates and tools; the resident tick never downloads it per tick).
     void sync_resident_fleck_plane(int h, int w) const;

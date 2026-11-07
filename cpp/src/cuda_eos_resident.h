@@ -29,6 +29,7 @@
 // Plain C++ declaration header (no CUDA types) so physics_engine.cpp and
 // bindings.cpp can include it; cuda_eos_resident.cu provides the
 // definitions. Compiled only when BREACH_CUDA.
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -44,48 +45,78 @@ namespace breach_cuda {
 // when off — dormancy BY BRANCH, byte-identical space path. The caller
 // guarantees the mirror is current at entry (the design §2 invariant) and
 // that the device copies of every input were uploaded from that mirror.
-void eos_step_resident(
+// #29 P5: the EOS stage's per-env books, (N, slots) unsigned long long blocks
+// in the resident tick's arena (cuda_resident_tick.cu), laid out so ONE memset
+// [zero_begin, zero_begin + zero_bytes) zeroes them all each tick; folded into
+// each env's EOSSolver by the tick's one books D2H (resident_tail).
+constexpr int EOS_BOOK_GAS_MAX = 16;                    // gas planes a batch may carry
+constexpr int EOS_ECNT_SLOTS   = 6;                     // the P-E1 energy counters
+constexpr int EOS_TCNT_SLOTS   = 4 * EOS_BOOK_GAS_MAX;  // trace vent | wipe | clip | neg
+// The pre-stage's per-env slots (int64 in unsigned long long).
+constexpr int EOS_PRE_MAX_DU    = 0;   // max K·|∇P|·dt/N̂ (Q16 raw)
+constexpr int EOS_PRE_T_MAX_ABS = 1;   // max T_abs over open cells (0 = none above ambient)
+constexpr int EOS_PRE_MAX_RAD   = 2;   // max |u|² (Q32.32)
+constexpr int EOS_PRE_N_SUB     = 3;   // the env's substep count
+constexpr int EOS_PRE_C_LOCAL   = 4;   // the env's c_LOCAL (Q16)
+constexpr int EOS_PRE_FAIL      = 5;   // 1: the env selected a refused fold-table row
+constexpr int EOS_PRE_SLOTS     = 8;
+struct EosBooksDev {
+    unsigned long long* kick = nullptr;      // (N, KICK_CNT_SLOTS)
+    unsigned long long* flux = nullptr;      // (N, FLUX_CNT_SLOTS)
+    unsigned long long* ecnt = nullptr;      // (N, EOS_ECNT_SLOTS)
+    unsigned long long* rail = nullptr;      // (N, EOS_BOOK_GAS_MAX), by cons index
+    unsigned long long* tcnt = nullptr;      // (N, EOS_TCNT_SLOTS), by trace position
+    unsigned long long* pre = nullptr;       // (N, EOS_PRE_SLOTS)
+    unsigned long long* nsub_max = nullptr;  // (1,) the batch's max n_sub
+    void* zero_begin = nullptr;              // the contiguous span the tick zeroes
+    size_t zero_bytes = 0;
+};
+
+// THE RESIDENT EOS STAGE over an (N, h, w) batch (S8a Path A; #29 P5 — design
+// §4.2): every plane is the batch's (N, h, w) device buffer (env 0's address,
+// the envs contiguous; gas (N, n_gases, h, w)); the pre-stage runs on the
+// DEVICE (per-env reductions, the per-env fold into a FOLD-TABLE row, cap2 /
+// absorb / coeffE / coeffS built from the resident planes); both substep loops
+// run to the batch's max n_sub with per-env masks; the books land per env in
+// `books` (no D2H here: the tick's one books D2H folds them). One counted 8-byte
+// D2H of max(n_sub) per tick (P9 replaces it with a WHILE node). `solver` is the
+// batch's config (a batch is homogeneous); `div_source_host` holds N entries,
+// each an env's (h, w) blast-source plane or nullptr. An ambient map runs only
+// at N = 1 (the sky bracket is the host's: ACCEPTED GAP). Returns max(n_sub).
+int eos_step_resident(
     const EOSSolver& solver,
-    // host mirror (pre-stage + telemetry)
-    const int32_t* atmosphere,
-    int32_t* p_prev,
-    const int32_t* wind_x, const int32_t* wind_y,
-    const int32_t* temperature,
-    const int32_t* gas, const bool* gas_conservative, int n_gases,
-    const bool* solid, const bool* is_vacuum,
-    const float* dyn_permeability, const float* dyn_wave_absorb,
-    int h, int w, float dt,
-    const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-    // THERMAL-MASS AXIS, P-EOS: the per-medium THERMAL mask on the MIRROR (the
-    // host reads it for the shared eos_thermal_occludes predicate — the same
-    // place every other pre-stage reduction reads tick-entry state).
-    const bool* thermal_solid,
-    // device (persistent resident fields + static ambient grids)
+    int N, int h, int w, float dt,
+    const bool* gas_conservative, int n_gases,
+    const int32_t* n_amb, int32_t p_amb, bool ambient_mode,
+    const int32_t* const* div_source_host,
     int32_t* d_atmosphere, int32_t* d_wave_p,
     int32_t* d_wind_x, int32_t* d_wind_y,
     int32_t* d_temperature, int32_t* d_gas_base,
     const bool* d_solid, const bool* d_is_vacuum,
-    const float* d_dyn_permeability,
+    const float* d_dyn_permeability, const float* d_dyn_wave_absorb,
     const bool* d_is_ambient,
     const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp,
-    // THERMAL-MASS AXIS, P-EOS: the DEVICE copy of the mask (GameMap's resident
-    // `thermal_solid` buffer). 0/nullptr -> the legacy path, where `d_ts` falls
-    // back to `d_solid` and nothing is allocated. IMPORTANT (the caveat P2
-    // recorded at the resident seam): this mask is NOT static — on_tile_changed
-    // patches it when a crate burns out — so now that DEVICE kernels read it,
-    // the caller MUST include it in the per-tick from_host upload beside
-    // solid/is_vacuum/is_ambient. physics_runner._step_resident does.
-    const bool* d_thermal_solid = nullptr,
-    // arc #54 §2.2 (P-G2): the conserved gas energy field's PERSISTENT device
-    // buffer (GameMap's resident `gas_energy` buffer, (h,w) int64 — RL-batch
-    // habits row: device shape (N,h,w), N=1). 0/nullptr is not a supported
-    // legacy path here (unlike thermal_solid) — the resident tick always
-    // carries gas_energy now that D1 is live; physics_runner._step_resident
-    // uploads/downloads it every tick beside temperature.
-    int64_t* d_gas_energy = nullptr);
+    const bool* d_thermal_solid,
+    int64_t* d_gas_energy,
+    const EosBooksDev& books);
 
-// Telemetry: how many ticks ran the resident EOS chain (the gate's
-// vacuousness guard — proves the bracket is gone, not silently per-call).
+// #29 P5: how many max(n_sub) reads the resident EOS made in this process (the
+// counted per-tick sync; the capture test names it as the one exception).
+long long eos_nsub_reads();
+
+// TEST-ONLY (#29 P5, design §5.1's first check): the device pre-stage vs the
+// host pre-stage at N = 1 on the same tick-entry planes (n_sub, c_LOCAL,
+// dt_s_q, cap2, absorb_q, coeffE / coeffS, p_prev); returns the mismatch count
+// (0 == bit-identical), the details in *report.
+long long eos_prestage_parity(
+    const EOSSolver& solver,
+    const int32_t* atmosphere, const int32_t* wind_x, const int32_t* wind_y,
+    const int32_t* temperature, const int32_t* gas,
+    const bool* gas_conservative, int n_gases,
+    const bool* solid, const bool* is_vacuum, const bool* thermal_solid,
+    const float* dyn_permeability, const float* dyn_wave_absorb,
+    int h, int w, float dt, std::string* report);
+
 long long eos_resident_calls();
 
 // TEST-ONLY (gate PART 1c, design §7): run the HOST mg_build_levels and the

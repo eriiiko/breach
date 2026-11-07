@@ -65,9 +65,10 @@ static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T, Flags>& 
 // #29 P4a: the resident tick's device fields from GameMap.device_ptrs() (a
 // dict name -> int address; an absent name is 0, the drivers' "not given").
 static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
-                                           int n_gases, int acc_depth) {
+                                           int n_gases, int acc_depth, int n_env = 1) {
     ResidentFields f;
     f.h = h; f.w = w; f.n_gases = n_gases; f.acc_depth = acc_depth;
+    f.n_env = n_env;   // #29 P5: the batch (the addresses are env 0's)
     auto get = [&](const char* name) -> std::uintptr_t {
         return dev.contains(name) ? dev[name].cast<std::uintptr_t>() : 0;
     };
@@ -92,7 +93,19 @@ static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
     f.water_before = get("water_before");
     f.permeability = get("permeability"); f.wave_absorb = get("wave_absorb");
     f.obstacles = get("obstacles"); f.dyn_wave_absorb = get("dyn_wave_absorb");
+    f.flow_vx = get("flow_vx"); f.flow_vy = get("flow_vy");
+    f.floor_height = get("floor_height");
+    f.sponge_sigma = get("sponge_sigma"); f.sponge_udamp = get("sponge_udamp");
     return f;
+}
+
+// #29 P5: the batch's engines from Python (None -> empty: the engine method
+// itself is the batch of one).
+static PhysicsEngine::ResidentEngineList resident_engines_from(const py::object& engines) {
+    PhysicsEngine::ResidentEngineList out;
+    if (engines.is_none()) return out;
+    for (py::handle h : engines) out.push_back(h.cast<PhysicsEngine*>());
+    return out;
 }
 
 // Helper: extract raw pointer + (h, w) from a 3D (h, w, 3) numpy array.
@@ -474,7 +487,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   "water_tail", "water_tail_active", "combustion", "fire",
                   "fire_gate_open", "sweep", "sweep_light", "temperature",
                   "books_downloads", "water_tail_boil", "water_tail_evac",
-                  "stamp"};
+                  "stamp", "eos", "trace_tail"};
               for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
                   d[names[k]] = c[k];
               return d;
@@ -494,6 +507,65 @@ PYBIND11_MODULE(breach_physics, m) {
           },
           py::arg("material"), py::arg("table"),
           "#29 P4a TEST-ONLY: the resident ignition-plane gather on host arrays.");
+
+    // #29 P5: the batched engine's probes. The counted max(n_sub) reads; the
+    // tick stream's address (CuPy's ExternalStream, a bench's events); the
+    // TEST-ONLY device-vs-host pre-stage parity (design §5.1's first check);
+    // the TEST-ONLY capture-mode probe (begin / end / abort).
+    m.def("eos_nsub_reads", &breach_cuda::eos_nsub_reads,
+          "#29 P5: how many max(n_sub) reads the resident EOS made (one per tick).");
+    m.def("tick_stream_ptr", []() {
+              return reinterpret_cast<std::uintptr_t>(breach_cuda::tick_stream_handle());
+          },
+          "#29 P5: the address of THE tick stream (cudaStream_t) every resident "
+          "launch core runs on.");
+    m.def("eos_prestage_parity",
+          [](const EOSSolver& solver,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> atmosphere,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> wind_x,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> wind_y,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> temperature,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> gas,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> gas_conservative,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> solid,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> is_vacuum,
+             py::array_t<bool, py::array::c_style | py::array::forcecast> thermal_solid,
+             py::array_t<float, py::array::c_style | py::array::forcecast> dyn_permeability,
+             py::array_t<float, py::array::c_style | py::array::forcecast> dyn_wave_absorb,
+             float dt) {
+              if (atmosphere.ndim() != 2 || gas.ndim() != 3)
+                  throw std::invalid_argument("eos_prestage_parity: planes (h, w), gas (g, h, w)");
+              const int h = (int)atmosphere.shape(0), w = (int)atmosphere.shape(1);
+              std::string report;
+              const long long bad = breach_cuda::eos_prestage_parity(
+                  solver, atmosphere.data(), wind_x.data(), wind_y.data(),
+                  temperature.data(), gas.data(), gas_conservative.data(),
+                  (int)gas.shape(0), solid.data(), is_vacuum.data(),
+                  thermal_solid.data(), dyn_permeability.data(),
+                  dyn_wave_absorb.data(), h, w, dt, &report);
+              return py::make_tuple(bad, report);
+          },
+          py::arg("solver"), py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
+          py::arg("temperature"), py::arg("gas"), py::arg("gas_conservative"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("thermal_solid"),
+          py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"), py::arg("dt"),
+          "#29 P5 TEST-ONLY: the device pre-stage vs the host pre-stage at N = 1 "
+          "-- returns (mismatch count, report); 0 == bit-identical.");
+    m.def("resident_capture_begin", &breach_cuda::resident_capture_begin,
+          "#29 P5 TEST-ONLY: begin capturing the tick stream (global mode).");
+    m.def("resident_capture_end", []() {
+              const breach_cuda::CaptureSummary c = breach_cuda::resident_capture_end();
+              py::dict d;
+              d["segments"] = c.segments;
+              d["nodes"] = c.nodes;
+              py::list pts;
+              for (const auto& p : c.sync_points) pts.append(p);
+              d["sync_points"] = pts;
+              return d;
+          },
+          "#29 P5 TEST-ONLY: end the capture; returns {segments, nodes, sync_points}.");
+    m.def("resident_capture_abort", &breach_cuda::resident_capture_abort,
+          "#29 P5 TEST-ONLY: end a capture a failed tick left open.");
 
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
@@ -4470,128 +4542,74 @@ PYBIND11_MODULE(breach_physics, m) {
            // every existing direct caller keeps its exact meaning; the live
            // runner always passes GameMap.thermal_solid.
            py::arg("thermal_solid") = py::none())
-        // --- S8a Path A: the fully device-resident EOS stage ----------------
-        // Host mirrors feed the shared pre-stage (all reductions consume
-        // tick-entry state == the authoritative mirror) + telemetry; device
-        // pointers are CuPy .data.ptr uintptr_t (0 == nullptr for the ambient
-        // statics). Bound on every build — the method throws without CUDA.
-        .def("run_substeps_resident", [](PhysicsEngine& self,
-                                py::array_t<int32_t> p_prev,
-                                py::array_t<int32_t> atmosphere,
-                                py::array_t<int32_t> wind_x,
-                                py::array_t<int32_t> wind_y,
-                                py::array_t<int32_t> temperature,
-                                py::array_t<bool>  solid,
-                                py::array_t<bool>  is_vacuum,
-                                py::array_t<float> dyn_permeability,
-                                py::array_t<float> dyn_wave_absorb,
-                                py::array_t<int32_t> gas,
-                                py::array_t<bool> gas_conservative,
-                                float sim_time,
-                                py::object is_ambient,
-                                py::object n_amb,
-                                int32_t p_amb,
-                                std::uintptr_t d_atmosphere,
-                                std::uintptr_t d_wave_p,
-                                std::uintptr_t d_wind_x,
-                                std::uintptr_t d_wind_y,
-                                std::uintptr_t d_temperature,
-                                std::uintptr_t d_gas,
-                                std::uintptr_t d_solid,
-                                std::uintptr_t d_is_vacuum,
-                                std::uintptr_t d_dyn_permeability,
-                                std::uintptr_t d_is_ambient,
-                                std::uintptr_t d_sponge_sigma,
-                                std::uintptr_t d_sponge_udamp,
-                                // THERMAL-MASS AXIS, P-EOS: the mirror + the
-                                // device copy of the per-medium THERMAL mask.
-                                py::object thermal_solid,
-                                std::uintptr_t d_thermal_solid,
-                                std::uintptr_t d_gas_energy) {
-            auto [pp, h, w]    = get_2d(p_prev);
-            auto [atm, h4, w4] = get_2d_const(atmosphere);
-            auto [wx, h5, w5]  = get_2d_const(wind_x);
-            auto [wy, h6, w6]  = get_2d_const(wind_y);
-            auto [temp, h6b, w6b] = get_2d_const(temperature);
-            auto [sol, h8, w8] = get_2d_const(solid);
-            auto [vac, h9, w9] = get_2d_const(is_vacuum);
-            auto [perm, h10, w10] = get_2d_const(dyn_permeability);
-            auto [wabs, h11, w11] = get_2d_const(dyn_wave_absorb);
-            auto gv = gas.unchecked<3>();
-            const int32_t* gas_ptr = gv.data(0, 0, 0);
-            const int n_gases = static_cast<int>(gv.shape(0));
+        // --- #29 P5: THE BATCHED RESIDENT TICK ------------------------------
+        // Slot 7 of an (N, h, w) batch on the persistent device fields
+        // (physics_engine.h, cuda_resident_tick.h). `dev` is the batch's
+        // device_ptrs() (env 0's addresses — the envs contiguous) plus the
+        // runner's `water_before`; `n_env` the batch size; `engines` the N
+        // envs' engines (this engine first; None = this alone, N = 1 — the
+        // played game). The scalars and tables are the host path's. Bound on
+        // every build — the methods throw without CUDA.
+        .def("step_water_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                int steam_idx, float sim_time,
+                double ceiling_h, double flood_eps, double ratio_cap,
+                double boil_rate, double boil_p_thresh, double steam_yield,
+                bool ambient, int32_t t_amb_raw, int n_sub, float wdt,
+                float tilt_x, float tilt_y, py::object active, int n_env,
+                py::object engines) {
             auto gc = gas_conservative.unchecked<1>();
-            const bool* gcons = gc.data(0);
-            const bool* amb = nullptr;
-            py::array_t<bool> amb_arr;
-            if (!is_ambient.is_none()) {
-                amb_arr = is_ambient.cast<py::array_t<bool>>();
-                auto aa = amb_arr.unchecked<2>();
-                amb = aa.data(0, 0);
+            ResidentFields f = resident_fields_from(dev, h, w, (int)gc.shape(0), 0, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.t_amb_q = t_amb_raw; a.ambient = ambient;
+            a.gas_conservative = gc.data(0); a.steam_idx = steam_idx;
+            a.ceiling_h = ceiling_h; a.flood_eps = flood_eps; a.ratio_cap = ratio_cap;
+            a.boil_rate = boil_rate; a.boil_p_thresh = boil_p_thresh;
+            a.steam_yield = steam_yield;
+            a.water_n_sub = n_sub; a.water_wdt = wdt; a.tilt_x = tilt_x; a.tilt_y = tilt_y;
+            py::array_t<uint8_t, py::array::c_style | py::array::forcecast> act;
+            if (!active.is_none()) {
+                act = active.cast<py::array_t<uint8_t,
+                    py::array::c_style | py::array::forcecast>>();
+                if (act.size() != n_env)
+                    throw std::invalid_argument("step_water_resident: active must be (n_env,)");
+                a.water_active = act.data();
             }
-            const int32_t* namb = nullptr;
-            py::array_t<int32_t> namb_arr;
+            self.step_water_resident(f, a, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("steam_idx"), py::arg("sim_time"), py::arg("ceiling_h"),
+           py::arg("flood_eps"), py::arg("ratio_cap"), py::arg("boil_rate"),
+           py::arg("boil_p_thresh"), py::arg("steam_yield"), py::arg("ambient"),
+           py::arg("t_amb_raw"), py::arg("n_sub"), py::arg("wdt"),
+           py::arg("tilt_x"), py::arg("tilt_y"), py::arg("active") = py::none(),
+           py::arg("n_env") = 1, py::arg("engines") = py::none())
+        .def("run_substeps_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                float sim_time, bool ambient, py::object n_amb, int32_t p_amb,
+                int n_env, py::object engines) {
+            auto gc = gas_conservative.unchecked<1>();
+            ResidentFields f = resident_fields_from(dev, h, w, (int)gc.shape(0), 0, n_env);
+            ResidentTickArgs a;
+            a.sim_time = sim_time; a.ambient = ambient; a.gas_conservative = gc.data(0);
+            py::array_t<int32_t, py::array::c_style | py::array::forcecast> namb_arr;
             if (!n_amb.is_none()) {
-                namb_arr = n_amb.cast<py::array_t<int32_t>>();
-                auto na = namb_arr.unchecked<1>();
-                namb = na.data(0);
+                namb_arr = n_amb.cast<py::array_t<int32_t,
+                    py::array::c_style | py::array::forcecast>>();
+                a.n_amb = namb_arr.data();
             }
-            // THERMAL-MASS AXIS, P-EOS: nullable mirror extraction (BC idiom).
-            const bool* tsol = nullptr;
-            py::array_t<bool> tsol_arr;
-            if (!thermal_solid.is_none()) {
-                tsol_arr = thermal_solid.cast<py::array_t<bool>>();
-                auto ta = tsol_arr.unchecked<2>();
-                tsol = ta.data(0, 0);
-            }
-            self.run_substeps_resident(
-                pp, atm, wx, wy, temp,
-                sol, vac, perm, wabs,
-                gas_ptr, n_gases, gcons,
-                h, w, sim_time,
-                amb, namb, p_amb,
-                d_atmosphere, d_wave_p, d_wind_x, d_wind_y,
-                d_temperature, d_gas, d_solid, d_is_vacuum,
-                d_dyn_permeability, d_is_ambient,
-                d_sponge_sigma, d_sponge_udamp,
-                tsol, d_thermal_solid, d_gas_energy);
-        }, py::arg("p_prev"), py::arg("atmosphere"),
-           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
-           py::arg("solid"), py::arg("is_vacuum"),
-           py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
-           py::arg("gas"), py::arg("gas_conservative"),
-           py::arg("sim_time"),
-           py::arg("is_ambient") = py::none(),
-           py::arg("n_amb") = py::none(),
-           py::arg("p_amb") = 0,
-           py::arg("d_atmosphere") = 0, py::arg("d_wave_p") = 0,
-           py::arg("d_wind_x") = 0, py::arg("d_wind_y") = 0,
-           py::arg("d_temperature") = 0, py::arg("d_gas") = 0,
-           py::arg("d_solid") = 0, py::arg("d_is_vacuum") = 0,
-           py::arg("d_dyn_permeability") = 0,
-           py::arg("d_is_ambient") = 0,
-           py::arg("d_sponge_sigma") = 0, py::arg("d_sponge_udamp") = 0,
-           // THERMAL-MASS AXIS, P-EOS: default None/0 -> the pre-patch path.
-           py::arg("thermal_solid") = py::none(),
-           py::arg("d_thermal_solid") = 0,
-           // arc #54 §2.2 (P-G2): the conserved gas energy field's device ptr.
-           py::arg("d_gas_energy") = 0)
-        // Smoke transport v2 (#12, P2b): the resident trace TAIL (stranded
-        // zeroing -> Jacobi diffusion -> ceil decay) on the persistent device
-        // gas planes, booked into this engine's EOSSolver books exactly as the
-        // CPU tail in run_substeps books them. Host (n_gases,) columns +
-        // CuPy .data.ptr device pointers. Bound on every build — throws
-        // without CUDA.
-        .def("run_trace_tail_resident", [](PhysicsEngine& self,
-                                py::array_t<bool> gas_conservative,
-                                py::array_t<float> gas_diffusion,
-                                py::array_t<float> gas_decay,
-                                int h, int w, float sim_time,
-                                std::uintptr_t d_gas,
-                                std::uintptr_t d_solid,
-                                std::uintptr_t d_is_vacuum,
-                                std::uintptr_t d_is_ambient,
-                                std::uintptr_t d_dyn_permeability) {
+            a.p_amb = p_amb;
+            if (ambient && a.n_amb == nullptr)
+                throw std::invalid_argument("run_substeps_resident: ambient needs n_amb");
+            return self.run_substeps_resident(f, a, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
+           py::arg("sim_time"), py::arg("ambient") = false,
+           py::arg("n_amb") = py::none(), py::arg("p_amb") = 0,
+           py::arg("n_env") = 1, py::arg("engines") = py::none(),
+           "#29 P5: the EOS stage over the batch; returns max(n_sub).")
+        .def("run_trace_tail_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
+                py::array_t<float> gas_diffusion, py::array_t<float> gas_decay,
+                float sim_time, bool ambient, int n_env, py::object engines) {
             auto gc = gas_conservative.unchecked<1>();
             auto gd = gas_diffusion.unchecked<1>();
             auto gdc = gas_decay.unchecked<1>();
@@ -4600,69 +4618,50 @@ PYBIND11_MODULE(breach_physics, m) {
                 throw std::invalid_argument(
                     "run_trace_tail_resident: gas_conservative / gas_diffusion / "
                     "gas_decay must all be (n_gases,)");
-            self.run_trace_tail_resident(
-                n_gases, gc.data(0), gd.data(0), gdc.data(0),
-                h, w, sim_time, d_gas, d_solid, d_is_vacuum,
-                d_is_ambient, d_dyn_permeability);
-        }, py::arg("gas_conservative"), py::arg("gas_diffusion"),
-           py::arg("gas_decay"), py::arg("h"), py::arg("w"),
-           py::arg("sim_time"), py::arg("d_gas"), py::arg("d_solid"),
-           py::arg("d_is_vacuum"), py::arg("d_is_ambient"),
-           py::arg("d_dyn_permeability"))
-        // --- #29 P4a: the brackets gone -------------------------------------
-        // The resident tick's remaining stages on the device (physics_engine.h,
-        // cuda_resident_tick.h). `dev` is GameMap.device_ptrs() plus the
-        // runner's `water_before`; the scalars and tables are the host path's.
-        .def("step_water_tail_resident", [](const PhysicsEngine& self,
-                py::dict dev, int h, int w, py::array_t<bool> gas_conservative,
-                int steam_idx, float sim_time,
-                double ceiling_h, double flood_eps, double ratio_cap,
-                double boil_rate, double boil_p_thresh, double steam_yield,
-                bool ambient, int32_t t_amb_raw) {
-            auto gc = gas_conservative.unchecked<1>();
-            ResidentFields f = resident_fields_from(dev, h, w, (int)gc.shape(0), 0);
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0, n_env);
             ResidentTickArgs a;
-            a.sim_time = sim_time; a.t_amb_q = t_amb_raw; a.ambient = ambient;
-            a.gas_conservative = gc.data(0); a.steam_idx = steam_idx;
-            a.ceiling_h = ceiling_h; a.flood_eps = flood_eps; a.ratio_cap = ratio_cap;
-            a.boil_rate = boil_rate; a.boil_p_thresh = boil_p_thresh;
-            a.steam_yield = steam_yield;
-            self.step_water_tail_resident(f, a);
+            a.sim_time = sim_time; a.ambient = ambient; a.gas_conservative = gc.data(0);
+            a.gas_diffusion = gd.data(0); a.gas_decay = gdc.data(0);
+            self.run_trace_tail_resident(f, a, resident_engines_from(engines));
         }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
-           py::arg("steam_idx"), py::arg("sim_time"), py::arg("ceiling_h"),
-           py::arg("flood_eps"), py::arg("ratio_cap"), py::arg("boil_rate"),
-           py::arg("boil_p_thresh"), py::arg("steam_yield"), py::arg("ambient"),
-           py::arg("t_amb_raw"))
+           py::arg("gas_diffusion"), py::arg("gas_decay"), py::arg("sim_time"),
+           py::arg("ambient") = false, py::arg("n_env") = 1,
+           py::arg("engines") = py::none())
         .def("run_combustion_resident", [](const PhysicsEngine& self,
                 py::dict dev, int h, int w, int n_gases, int acc_depth,
                 int o2_idx, int inert_n2_idx, int black_smoke_idx, int draw_r,
                 float sim_time, py::array_t<int32_t> ignition_table,
-                bool ambient, int32_t t_amb_q) {
+                bool ambient, int32_t t_amb_q, int n_env, py::object engines) {
             auto it = ignition_table.unchecked<1>();
-            ResidentFields f = resident_fields_from(dev, h, w, n_gases, acc_depth);
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, acc_depth, n_env);
             ResidentTickArgs a;
             a.sim_time = sim_time; a.t_amb_q = t_amb_q; a.ambient = ambient;
             a.o2_idx = o2_idx; a.inert_n2_idx = inert_n2_idx;
             a.black_smoke_idx = black_smoke_idx; a.draw_r = draw_r;
             a.ignition_table = it.data(0); a.n_materials = (int)it.shape(0);
-            self.run_combustion_resident(f, a);
+            self.run_combustion_resident(f, a, resident_engines_from(engines));
         }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
            py::arg("acc_depth"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("draw_r"), py::arg("sim_time"),
-           py::arg("ignition_table"), py::arg("ambient"), py::arg("t_amb_q"))
+           py::arg("ignition_table"), py::arg("ambient"), py::arg("t_amb_q"),
+           py::arg("n_env") = 1, py::arg("engines") = py::none())
         // --- #29 P4b: slot 6's stamp on the device --------------------------
         .def("stamp_units_resident", [](const PhysicsEngine& self,
                 py::dict dev, int h, int w,
-                py::array_t<int32_t, py::array::c_style | py::array::forcecast> rows) {
+                py::array_t<int32_t, py::array::c_style | py::array::forcecast> rows,
+                int n_env, py::object engines) {
             if (rows.ndim() != 2 || rows.shape(1) != 9)   // breach_cuda::STAMP_ROW_COLS
                 throw std::invalid_argument(
                     "stamp_units_resident: rows must be (n, 9) int32 "
                     "[env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2]");
-            ResidentFields f = resident_fields_from(dev, h, w, 0, 0);
-            self.stamp_units_resident(f, rows.data(), (int)rows.shape(0));
+            ResidentFields f = resident_fields_from(dev, h, w, 0, 0, n_env);
+            self.stamp_units_resident(f, rows.data(), (int)rows.shape(0),
+                                      resident_engines_from(engines));
         }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("rows"),
+           py::arg("n_env") = 1, py::arg("engines") = py::none(),
            "#29 P4b: the five stamp outputs on the resident planes from the "
-           "host stamp's rows (cuda_stamp.cu).")
+           "host stamps' rows (cuda_stamp.cu); #29 P5: every env's rows, the "
+           "env column the batch index.")
         .def("upload_light_resident", [](const PhysicsEngine& self,
                 py::dict dev, int h, int w, int n_gases,
                 py::array_t<int32_t> gas_light_absorb_q16,
@@ -4705,7 +4704,8 @@ PYBIND11_MODULE(breach_physics, m) {
                 int32_t k_leak_q, int64_t rad_amb_vacuum_q,
                 py::array_t<int32_t> gas_heat_absorb_q16,
                 py::array_t<int32_t> gas_light_absorb_q16,
-                py::array_t<int32_t> gas_light_glow_q16) {
+                py::array_t<int32_t> gas_light_glow_q16,
+                int n_env, py::object engines) {
             auto gc = gas_conservative.unchecked<1>();
             auto ha = gas_heat_absorb_q16.unchecked<1>();
             auto la = gas_light_absorb_q16.unchecked<2>();
@@ -4714,7 +4714,7 @@ PYBIND11_MODULE(breach_physics, m) {
             if (ha.shape(0) != n_gases || la.shape(0) != n_gases || lg.shape(0) != n_gases)
                 throw std::invalid_argument(
                     "step_tail_resident: the gas tables must all be (n_gases, ...)");
-            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0);
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0, n_env);
             ResidentTickArgs a;
             a.sim_time = sim_time; a.t_amb_q = t_amb_q; a.ambient = ambient;
             a.gas_conservative = gc.data(0); a.o2_idx = o2_idx;
@@ -4722,12 +4722,15 @@ PYBIND11_MODULE(breach_physics, m) {
             a.gas_heat_absorb_q16 = ha.data(0);
             a.gas_light_absorb_q16 = la.data(0, 0);
             a.gas_light_glow_q16 = lg.data(0, 0);
-            return self.step_tail_resident(f, a);
+            return self.step_tail_resident(f, a, resident_engines_from(engines));
         }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
            py::arg("o2_idx"), py::arg("sim_time"), py::arg("ambient"),
            py::arg("t_amb_q"), py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q"),
            py::arg("gas_heat_absorb_q16"), py::arg("gas_light_absorb_q16"),
-           py::arg("gas_light_glow_q16"))
+           py::arg("gas_light_glow_q16"), py::arg("n_env") = 1,
+           py::arg("engines") = py::none(),
+           "#29 P5: the tail + the ONE books D2H; returns each env's "
+           "burn-through list (a list of N lists, row-major).")
         .def("sync_resident_fleck_plane", &PhysicsEngine::sync_resident_fleck_plane,
              py::arg("h"), py::arg("w"),
              "#29 P4a: copy the last resident sweep's Fleck plane into "

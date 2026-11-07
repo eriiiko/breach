@@ -111,7 +111,20 @@ struct EOSHostPrestage {
     int32_t cfl_dx_q  = 0;   // quantize(CFL_ADV · dx)
     int32_t dt_q      = 0;   // quantize(dt)
     double  dt_d      = 0.0; // dt in double (the dt/n_sub split)
+    // #29 P5: the c_LOCAL / cap² scan's own scalars, kept so the DEVICE
+    // pre-stage (cuda_eos_resident.cu) runs the identical per-cell fold.
+    int32_t c_amb_q    = 0;  // quantize(c_max)
+    int64_t c_amb2_q32 = 0;  // c_amb_q² (Q32.32)
+    int64_t u_max2_q32 = 0;  // u_max_q² (Q32.32)
+    int64_t ratio_umax = 0;  // (u_max/c_amb)²·2^16 + 1 — the cap's saturation ratio
 };
+
+// #29 P5: the pre-stage's SCALAR folds alone (no plane read, no book reset,
+// no p_prev copy) — the part eos_host_prestage computes before its scans,
+// factored (pure code motion) so the batched device pre-stage folds the same
+// constants once per config. Throws the D-3 release-live guard as before.
+EOSHostPrestage eos_prestage_scalars(const EOSSolver& solver, float dt,
+                                     const bool* gas_conservative, int n_gases);
 
 EOSHostPrestage eos_host_prestage(
     const EOSSolver& solver,

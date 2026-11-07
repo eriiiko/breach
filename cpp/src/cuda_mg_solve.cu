@@ -54,6 +54,7 @@
 // ============================================================================
 #include "cuda_mg_solve.h"
 #include "cuda_fixedpoint_device.cuh"  // mul128_shr_signed (shared device kit)
+#include "cuda_batch.cuh"               // #29 P5: the (N, h, w) launch shape
 
 #include <cuda_runtime.h>
 
@@ -118,6 +119,22 @@ struct MGTailArgs {
     int n_levels;
     int nu1, nu2, coarsest_sweeps;
 };
+
+// #29 P5: the level as THIS block's env sees it — every array of a level is
+// (N, lh, lw), so the env's slice starts blockIdx.y·lh·lw in. N = 1: + 0.
+__device__ __forceinline__ MGLevelDev env_lvl(const MGLevelDev& L) {
+    const size_t s = (size_t)L.h * (size_t)L.w;
+    MGLevelDev E = L;
+    E.excl  = bptr(L.excl, s);
+    E.m     = bptr(L.m, s);
+    E.gE    = bptr(L.gE, s);
+    E.gS    = bptr(L.gS, s);
+    E.recip = bptr(L.recip, s);
+    E.b     = bptr(L.b, s);
+    E.P     = bptr(L.P, s);
+    E.res   = bptr(L.res, s);
+    return E;
+}
 
 // ============================================================================
 // Per-cell bodies — VERBATIM device transcriptions of mg_run_solve_cpu's
@@ -218,7 +235,8 @@ __device__ __forceinline__ void mg_prolong_cell(const MGLevelDev& F,
 // the CPU's pass boundary).
 // ============================================================================
 
-__global__ void mg_smooth_color(MGLevelDev L, int color) {
+__global__ void mg_smooth_color(MGLevelDev L0, int color) {
+    const MGLevelDev L = env_lvl(L0);
     const int n = L.h * L.w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -229,7 +247,8 @@ __global__ void mg_smooth_color(MGLevelDev L, int color) {
     }
 }
 
-__global__ void mg_residual(MGLevelDev L) {
+__global__ void mg_residual(MGLevelDev L0) {
+    const MGLevelDev L = env_lvl(L0);
     const int n = L.h * L.w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -239,7 +258,8 @@ __global__ void mg_residual(MGLevelDev L) {
     }
 }
 
-__global__ void mg_restrict(MGLevelDev F, MGLevelDev Cl) {
+__global__ void mg_restrict(MGLevelDev F0, MGLevelDev C0) {
+    const MGLevelDev F = env_lvl(F0), Cl = env_lvl(C0);
     const int cn = Cl.h * Cl.w;
     for (int A = blockIdx.x * blockDim.x + threadIdx.x; A < cn;
          A += gridDim.x * blockDim.x) {
@@ -249,7 +269,8 @@ __global__ void mg_restrict(MGLevelDev F, MGLevelDev Cl) {
     }
 }
 
-__global__ void mg_prolong(MGLevelDev F, MGLevelDev Cl) {
+__global__ void mg_prolong(MGLevelDev F0, MGLevelDev C0) {
+    const MGLevelDev F = env_lvl(F0), Cl = env_lvl(C0);
     const int fn = F.h * F.w;
     for (int fi = blockIdx.x * blockDim.x + threadIdx.x; fi < fn;
          fi += gridDim.x * blockDim.x) {
@@ -259,7 +280,8 @@ __global__ void mg_prolong(MGLevelDev F, MGLevelDev Cl) {
     }
 }
 
-__global__ void mg_zero_excl(MGLevelDev L) {
+__global__ void mg_zero_excl(MGLevelDev L0) {
+    const MGLevelDev L = env_lvl(L0);
     const int n = L.h * L.w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -297,8 +319,8 @@ __device__ __forceinline__ void tail_smooth(const MGLevelDev& L, int sweeps) {
 __global__ void mg_fused_tail(MGTailArgs a) {
     // down-leg: smooth(nu1) -> residual -> restrict, levels ts..n_levels-2
     for (int lv = a.ts; lv < a.n_levels - 1; ++lv) {
-        const MGLevelDev& L = a.L[lv];
-        const MGLevelDev& C = a.L[lv + 1];
+        const MGLevelDev L = env_lvl(a.L[lv]);
+        const MGLevelDev C = env_lvl(a.L[lv + 1]);
         tail_smooth(L, a.nu1);
         const int n = L.h * L.w;
         for (int i = threadIdx.x; i < n; i += blockDim.x) {
@@ -316,11 +338,11 @@ __global__ void mg_fused_tail(MGTailArgs a) {
         __syncthreads();       // coarse (P, b) complete before its smooth
     }
     // coarsest sweep block
-    tail_smooth(a.L[a.n_levels - 1], a.coarsest_sweeps);
+    tail_smooth(env_lvl(a.L[a.n_levels - 1]), a.coarsest_sweeps);
     // up-leg: prolong <- coarser, then smooth(nu2), levels n_levels-2..ts
     for (int lv = a.n_levels - 2; lv >= a.ts; --lv) {
-        const MGLevelDev& L = a.L[lv];
-        const MGLevelDev& C = a.L[lv + 1];
+        const MGLevelDev L = env_lvl(a.L[lv]);
+        const MGLevelDev C = env_lvl(a.L[lv + 1]);
         const int fn = L.h * L.w;
         for (int fi = threadIdx.x; fi < fn; fi += blockDim.x) {
             const int fy = fi / L.w;
@@ -341,10 +363,14 @@ __global__ void mg_fused_tail(MGTailArgs a) {
 void run_schedule(const MGLevelDev* dev, int n_levels,
                   bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
                   int mg_coarsest_sweeps, int flat_S,
-                  int* launches_actual, int* launches_naive) {
+                  int* launches_actual, int* launches_naive, int n_env = 1) {
+    // #29 P5: every launch covers the batch's N envs (blockIdx.y = env); the
+    // fused tail is ONE BLOCK PER ENV; the fixed cycle count keeps the envs
+    // in lockstep. All on the tick stream.
     const int n0 = dev[0].h * dev[0].w;
     const int block = 256;
-    auto grid_for = [&](int n) { return (n + block - 1) / block; };
+    cudaStream_t st = tstream();
+    auto grid_for = [&](int n) { return bgrid(n, n_env, block); };
     int launches = 0;
     auto launch_check = [&](const char* what) {
         cuda_check(cudaGetLastError(), what);
@@ -354,10 +380,10 @@ void run_schedule(const MGLevelDev* dev, int n_levels,
     // smooth via per-color launches (fine levels + the flat path).
     auto smooth_launches = [&](int lv, int sweeps) {
         const MGLevelDev& L = dev[lv];
-        const int g = grid_for(L.h * L.w);
+        const dim3 g = grid_for(L.h * L.w);
         for (int it = 0; it < sweeps; ++it) {
             for (int color = 0; color < 2; ++color) {
-                mg_smooth_color<<<g, block>>>(L, color);
+                mg_smooth_color<<<g, block, 0, st>>>(L, color);
                 launch_check("smooth launch");
             }
         }
@@ -382,9 +408,9 @@ void run_schedule(const MGLevelDev* dev, int n_levels,
                 (ts < n_levels - 1) ? ts : (n_levels - 1);
             for (int lv = 0; lv < host_down_end; ++lv) {
                 smooth_launches(lv, mg_nu1);
-                mg_residual<<<grid_for(dev[lv].h * dev[lv].w), block>>>(dev[lv]);
+                mg_residual<<<grid_for(dev[lv].h * dev[lv].w), block, 0, st>>>(dev[lv]);
                 launch_check("residual launch");
-                mg_restrict<<<grid_for(dev[lv + 1].h * dev[lv + 1].w), block>>>(
+                mg_restrict<<<grid_for(dev[lv + 1].h * dev[lv + 1].w), block, 0, st>>>(
                     dev[lv], dev[lv + 1]);
                 launch_check("restrict launch");
             }
@@ -396,13 +422,13 @@ void run_schedule(const MGLevelDev* dev, int n_levels,
                 a.nu1 = mg_nu1;
                 a.nu2 = mg_nu2;
                 a.coarsest_sweeps = mg_coarsest_sweeps;
-                mg_fused_tail<<<1, tail_block>>>(a);
+                mg_fused_tail<<<dim3(1, (unsigned)n_env), tail_block, 0, st>>>(a);
                 launch_check("fused tail launch");
             } else {
                 smooth_launches(n_levels - 1, mg_coarsest_sweeps);
             }
             for (int lv = host_down_end - 1; lv >= 0; --lv) {
-                mg_prolong<<<grid_for(dev[lv].h * dev[lv].w), block>>>(
+                mg_prolong<<<grid_for(dev[lv].h * dev[lv].w), block, 0, st>>>(
                     dev[lv], dev[lv + 1]);
                 launch_check("prolong launch");
                 smooth_launches(lv, mg_nu2);
@@ -412,7 +438,7 @@ void run_schedule(const MGLevelDev* dev, int n_levels,
         smooth_launches(0, flat_S);   // flat A/B reference path
     }
 
-    mg_zero_excl<<<grid_for(n0), block>>>(dev[0]);
+    mg_zero_excl<<<grid_for(n0), block, 0, st>>>(dev[0]);
     launch_check("zero-excl launch");
 
     // Naive launch count: the SAME schedule with one kernel per color
@@ -441,7 +467,7 @@ void run_schedule(const MGLevelDev* dev, int n_levels,
 void eos_mg_vcycle_resident(
         const MGLevelDevPtrs* levels, int n_levels,
         bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
-        int mg_coarsest_sweeps, int flat_S) {
+        int mg_coarsest_sweeps, int flat_S, int n_env) {
     if (n_levels <= 0 || n_levels > MG_MAX_LEVELS) {
         throw std::runtime_error("eos_mg_vcycle_resident: bad n_levels");
     }
@@ -456,7 +482,7 @@ void eos_mg_vcycle_resident(
         D.recip = S.recip; D.b = S.b; D.P = S.P; D.res = S.res;
     }
     run_schedule(dev, n_levels, use_multigrid, mg_cycles, mg_nu1, mg_nu2,
-                 mg_coarsest_sweeps, flat_S, nullptr, nullptr);
+                 mg_coarsest_sweeps, flat_S, nullptr, nullptr, n_env);
 }
 
 // ============================================================================

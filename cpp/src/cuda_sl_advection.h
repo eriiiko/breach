@@ -28,6 +28,8 @@
 
 namespace breach_cuda {
 
+struct EnvSub;   // #29 P5 (cuda_resident_tick.h)
+
 // The FULL substep-loop advection chain for one tick on the GPU — IN-PLACE on
 // wind_x/wind_y/temperature (h, w). Mirrors eos_sl_advect_reference
 // (eos_solver.cpp) exactly: cmask build, then n_sub x [snapshot -> fused
@@ -97,7 +99,12 @@ void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
                        const bool* d_solid, const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w);
+                       int32_t dt_s_q, int h, int w,
+                       // #29 P5: the batch (every plane (N, h, w)); `es` the
+                       // per-env fold-table rows (nullptr: unbatched, the
+                       // scalar dt_s_q) and `s` this substep's index — an env
+                       // whose n_sub <= s does nothing.
+                       int n_env = 1, const EnvSub* es = nullptr, int s = 0);
 
 // Backend selection (P6.2 gate wiring, the surviving-backend idiom). EOS
 // P6.5: now CONSUMED by the engine dispatch — PhysicsEngine::run_substeps

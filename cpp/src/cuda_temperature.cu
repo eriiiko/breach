@@ -63,6 +63,7 @@
 
 #include <sstream>
 #include <stdexcept>
+#include "cuda_batch.cuh"   // #29 P5: the tick stream
 
 namespace breach_cuda {
 
@@ -703,19 +704,19 @@ int temperature_launch_resident(
     int launches = 0;
 
     // K0: the counter block (energy slots, rail counts, solid books), zeroed.
-    temp_prep<<<(slots + block - 1) / block, block>>>(d_cnt, slots);
+    temp_prep<<<(slots + block - 1) / block, block, 0, tstream()>>>(d_cnt, slots);
     cuda_check(cudaGetLastError(), "prep launch");
     ++launches;
 
     // P-E2a: the capacity planes, built ONCE ahead of every pass (frozen
     // inputs only) — the exact device twin of the CPU's pre-pass loop.
-    temp_cap_build<<<grid, block>>>(d_cap_used, d_cap_real, d_ts, d_heat_inv_shift,
+    temp_cap_build<<<grid, block, 0, tstream()>>>(d_cap_used, d_cap_real, d_ts, d_heat_inv_shift,
                                     d_n_src, sc.n_floor_q, sc.c_v_q, total);
     cuda_check(cudaGetLastError(), "cap_build launch");
     ++launches;
 
     // Pass 0a: zero gas-T at open vacuum cells (unconditional, in-place).
-    temp_zero_vacuum<<<grid, block>>>(d_temperature, d_ts, d_is_vacuum, n, n_env,
+    temp_zero_vacuum<<<grid, block, 0, tstream()>>>(d_temperature, d_ts, d_is_vacuum, n, n_env,
                                       d_is_ambient, d_cap_real, d_cnt,
                                       d_gas_energy);
     cuda_check(cudaGetLastError(), "zero_vacuum launch");
@@ -724,7 +725,7 @@ int temperature_launch_resident(
     // (Pass 0b — gas-T SL advection — RETIRED at P-E1; see the file header.)
 
     // Pass 1: unified convert (in-place; the rail counts, the energy slots).
-    temp_convert_unified<<<grid, block>>>(d_temperature, d_heat, d_heat_inv_shift,
+    temp_convert_unified<<<grid, block, 0, tstream()>>>(d_temperature, d_heat, d_heat_inv_shift,
                                           d_ts, d_is_vacuum, d_solid, d_is_ambient,
                                           d_n_src, d_rad_net,
                                           d_rad_fluence, d_e_table, sc.rad_fine_bits,
@@ -736,7 +737,7 @@ int temperature_launch_resident(
 
     // Pass 2: conduct (temperature -> temp_new), then copy back (the CPU swap)
     // -- a stream-ordered device-to-device copy, no host involvement.
-    temp_conduct<<<grid, block>>>(d_temperature, d_temp_new, d_face_shift,
+    temp_conduct<<<grid, block, 0, tstream()>>>(d_temperature, d_temp_new, d_face_shift,
                                   d_cap_used, d_cap_real, d_solid, d_ts,
                                   d_is_vacuum, d_is_ambient,
                                   d_gas_energy ? d_de_gas : nullptr, d_n_src,
@@ -745,11 +746,11 @@ int temperature_launch_resident(
     ++launches;
     cuda_check(cudaMemcpyAsync(d_temperature, d_temp_new,
                                (size_t)total * sizeof(int32_t),
-                               cudaMemcpyDeviceToDevice, 0), "D2D swap");
+                               cudaMemcpyDeviceToDevice, tstream()), "D2D swap");
     // arc #54 P-G1b: apply Pass 2's parked gas-side face sums NOW, once the
     // whole frozen-field gather + swap is finished (the CPU's "NOW apply").
     if (d_gas_energy) {
-        temp_apply_gas_cond<<<grid, block>>>(d_gas_energy, d_temperature, d_de_gas,
+        temp_apply_gas_cond<<<grid, block, 0, tstream()>>>(d_gas_energy, d_temperature, d_de_gas,
                                              d_n_src, d_t_amb_q, n, n_env);
         cuda_check(cudaGetLastError(), "apply_gas_cond launch");
         ++launches;
@@ -759,7 +760,7 @@ int temperature_launch_resident(
     // P-G5: the solid-books snapshot, on the final temperature (resident only:
     // the per-call wrapper keeps its host loop after its D2H).
     if (solid_books) {
-        temp_solid_books<<<grid, block>>>(d_temperature, d_ts, d_heat_inv_shift,
+        temp_solid_books<<<grid, block, 0, tstream()>>>(d_temperature, d_ts, d_heat_inv_shift,
                                           sc.n_floor_q, sc.c_v_q, d_cnt, n, n_env);
         cuda_check(cudaGetLastError(), "solid_books launch");
         ++launches;

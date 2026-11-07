@@ -894,6 +894,16 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
+        self._physics_head(gmap, sim_time)
+        if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
+            return self._step_resident(gmap, sim_time, tick=tick)
+        return self._step_host(gmap, sim_time, tick=tick)
+
+    def _physics_head(self, gmap, sim_time):
+        """#29 P5: the head of :meth:`step` every path runs before slot 7's
+        solvers (pure code motion, so a batch runs it per env): the blast
+        source's bind, the trace dt check, the per-tick saturation books'
+        reset, the topology seams' solid-books sink."""
         # #31: this tick's blast source, bound on a tick with one, cleared on
         # the tick after. Every EOS path (CPU, per-call, resident) reads it off
         # the solver.
@@ -921,8 +931,9 @@ class PhysicsRunner:
         # e_solid_seam_sum term + its snapshot. Every tick, both paths: the
         # map can be rebuilt (F5) under a living runner.
         gmap._solid_books_sink = self.engine.temperature.book_solid_seam
-        if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
-            return self._step_resident(gmap, sim_time, tick=tick)
+
+    def _step_host(self, gmap, sim_time, tick=0):
+        """The CPU / per-call tick (everything in :meth:`step` after the head)."""
 
         # T6 (issue #12): the K2 fire-heat cast (cast_fire_heat) that used to
         # run here, FIRST, before the atmosphere/smoke loop and the
@@ -1395,184 +1406,99 @@ class PhysicsRunner:
         return False
 
     def _step_resident(self, gmap, sim_time, tick=0):
-        """One GPU-resident tick (S8a Path A/B + #29 P4a, the brackets gone).
+        """One GPU-resident tick (S8a Path A/B + #29 P4a + P5).
 
-        Bit-identical to the CPU/per-call tick, and slot 7 is now ONE batched
-        upload at entry, a device chain with ZERO plane transfers between its
-        stages, and ONE batched download at exit
-        (docs/residency_batching_design_2026-11-07.md §4.2 / §9 P4a):
+        #29 P5: THE BATCH OF ONE. Slot 7 runs through the SAME batched driver
+        a :class:`simulation.resident_batch.ResidentBatch` steps N envs with
+        (:func:`run_resident_batch`), at N = 1 -- one code path, never a second
+        N = 1 copy (docs/residency_batching_design_2026-11-07.md §4.2). Bit-
+        identical to the CPU/per-call tick:
 
-        1. host pre-physics (the water pre-step and its dormancy decision,
-           lazy binds, ambient args) on the mirror;
-        2. THE ENTRY UPLOAD: ``from_host(_resident_entry_names)`` -- every
-           field host code may have written since the last download that a
-           device stage reads -- and, while light is requested, the light
-           inputs (cones / sky / emit_mult, render state set before the tick);
-        3. the device chain, in the CPU tick's order: water substeps + the
-           W5/W3 tail -> the EOS stage (its host pre-stage reads only
-           tick-entry wind / temperature / masks; the gas- and
-           permeability-dependent scan runs on the device) -> the trace tail
-           -> combustion -> [the sky exchange, ambient maps only: a host
-           bracket, ACCEPTED GAP] -> the tail (bulk sum, fire, the radiation
-           sweep, temperature), which ends with the ONE small books D2H
-           (every stage's counters, the destroyed-wall list's head);
-        4. THE EXIT DOWNLOAD: ``to_host(_resident_exit_names)`` -- the synced
-           set the host gameplay slots and the digest read;
+        1. host pre-physics per env (the water pre-step and its dormancy
+           decision, lazy binds, the stamp rows) on the mirror;
+        2. THE ENTRY UPLOAD per env: ``from_host(_resident_entry_names)`` and,
+           while light is requested (N = 1 only), the light inputs;
+        3. the device chain over the batch, in the CPU tick's order: the stamp
+           -> water substeps + the W5/W3 tail (masked per env) -> the EOS stage
+           (the DEVICE pre-stage; both substep loops to the batch's max n_sub,
+           per-env masks; ONE counted max(n_sub) read) -> the trace tail ->
+           combustion -> [the sky exchange, ambient maps only: a host bracket,
+           ACCEPTED GAP] -> the tail (bulk sum, fire, the radiation sweep,
+           temperature), which ends with the ONE books D2H (every stage, every
+           env) folded into each env's engine;
+        4. THE EXIT DOWNLOAD per env: ``to_host(_resident_exit_names)``;
         5. the render-only W6a ripple on the mirror (skipped when headless).
 
-        The numpy fields stay the authoritative mirror between ticks (the
-        Q4 baseline): every host slot reads and writes them as before.
         RULE (Path A, kept): a DEFAULTED to_host() / from_host() is forbidden
         inside the tick -- every transfer names its fields.
         """
         if not gmap.residency_on():
             gmap.enable_residency()
             gmap._res_tile_serial = gmap._tile_serial   # enable copied them all
+        return run_resident_batch([self], [gmap], sim_time)[0]
 
-        # -- 1. host pre-physics (on the mirror) ---------------------------------
+    # ------------------------------------------------------------------
+    # #29 P5: the three per-env halves of the resident tick (the batch driver,
+    # run_resident_batch, calls them around the one device chain)
+    # ------------------------------------------------------------------
+    def _resident_prepare(self, gmap, sim_time):
+        """Host pre-physics for ONE env (on its mirror): lazy binds, the
+        ambient args, the water pre-step and dormancy, the stamp rows. Returns
+        the env's tick context (a dict)."""
         self.eos.dx = float(gmap.tile_size_m)
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
             self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
             self._black_smoke_idx = int(gmap.gases.name_to_id["smoke"])
         amb = self._ambient_args(gmap)
-        ambient = amb[0] is not None
         water_dormant = self._water_pre_resident(gmap)
-        light = bool(self.engine.light_requested)
-        headless = bool(self.engine.headless)
-        h, w = gmap._h, gmap._w
-        n_gases = int(gmap.gas.shape[0])
-        t_amb = self._eos_t_amb_raw()
-        dev = gmap.device_ptrs()
         if not water_dormant:
-            if (self._d_water_before is None
+            view = getattr(self, "_batch_water_before", None)
+            if view is not None:
+                # A batch owns the (N, h, w) `before` plane; this env's slice is
+                # re-seeded in place whenever the host twin was re-made.
+                if self._d_water_before is None:
+                    view.set(self._water_depth_before)
+                    self._d_water_before = view
+            elif (self._d_water_before is None
                     or self._d_water_before.shape != self._water_depth_before.shape):
                 import cupy as cp
                 self._d_water_before = cp.ascontiguousarray(
                     cp.asarray(self._water_depth_before))
-            dev["water_before"] = int(self._d_water_before.data.ptr)
+        return {
+            "amb": amb,
+            "ambient": amb[0] is not None,
+            "water_dormant": water_dormant,
+            "light": bool(self.engine.light_requested),
+            "headless": bool(self.engine.headless),
+            "t_amb": self._eos_t_amb_raw(),
+            "stamp_rows": gmap.take_stamp_rows(),
+        }
 
-        # -- 2. THE ENTRY UPLOAD (one batched from_host) -------------------------
-        # #29 P4b: the five stamp planes are produced on the device from the
-        # host stamp's rows (one small H2D) and leave the upload; a tick the
-        # rows cannot serve (take_stamp_rows: None) uploads the host's planes.
-        stamp_rows = gmap.take_stamp_rows()
+    def _resident_upload(self, gmap, ctx, upload_stamp):
+        """THE ENTRY UPLOAD for ONE env (into its slice of the batch)."""
         gmap.from_host(self._resident_entry_names(
-            gmap, water_dormant, light, stamp_rows is None))
-        if light:
-            self.engine.upload_light_resident(
-                dev, h, w, n_gases,
-                gmap.gases.light_absorb_q16, gmap.gases.light_glow_q16,
-                light_cones=self.light_cones, light_sky=self.light_sky,
-                light_emit_mult=self.light_emit_mult)
-        if stamp_rows is not None:
-            self.engine.stamp_units_resident(dev, h, w, stamp_rows)
-            self.stamp_device_ticks += 1
-        else:
-            self.stamp_upload_ticks += 1
+            gmap, ctx["water_dormant"], ctx["light"], upload_stamp))
 
-        # -- 3. THE DEVICE CHAIN -------------------------------------------------
-        # 3a. water: the substep loop, then the W5/W3 tail (#29 P4a) on device.
-        if not water_dormant:
-            n_sub = int(self.engine.water_substep_count(sim_time))
-            wdt = sim_time / n_sub   # pybind casts to float32 == step_water's wdt
-            self.bp.water_substeps_resident(
-                dev["water_depth"], dev["flow_vx"], dev["flow_vy"],
-                dev["floor_height"], dev["atmosphere"], dev["solid"],
-                h, w, n_sub, wdt, gmap.tilt_x, gmap.tilt_y,
-                self.water.g, self.water.damping, self.water.dx,
-                self.water.k_p, self.water.v_max, self.water.depth_eps)
-            self.engine.step_water_tail_resident(
-                dev, h, w, gmap.gases.conservative, self._steam_idx, sim_time,
-                self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
-                self.water_boil_rate, self.water_boil_p_thresh,
-                self.water_steam_yield, ambient, t_amb)
-
-        # 3b. the EOS stage (S8a Path A). Its host pre-stage reads the mirror's
-        # tick-entry wind / temperature / masks / dyn_wave_absorb (current:
-        # no device stage above writes them); the Dalton + K|grad P|dt/N scan
-        # and the face coefficients read the DEVICE gas / dyn_permeability the
-        # water tail may just have written (#29 P4a, cuda_eos_resident.cu).
-        self.engine.run_substeps_resident(
-            gmap.wave_p, gmap.atmosphere,
-            gmap.wind_x, gmap.wind_y, gmap.temperature,
-            gmap.solid, gmap.is_vacuum,
-            gmap.dyn_permeability, gmap.dyn_wave_absorb,
-            gmap.gas, gmap.gases.conservative,
-            sim_time,
-            is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2],
-            d_atmosphere=dev["atmosphere"], d_wave_p=dev["wave_p"],
-            d_wind_x=dev["wind_x"], d_wind_y=dev["wind_y"],
-            d_temperature=dev["temperature"], d_gas=dev["gas"],
-            d_solid=dev["solid"], d_is_vacuum=dev["is_vacuum"],
-            d_dyn_permeability=dev["dyn_permeability"],
-            d_is_ambient=dev["is_ambient"] if ambient else 0,
-            d_sponge_sigma=dev["sponge_sigma"] if amb[3] is not None else 0,
-            d_sponge_udamp=dev["sponge_udamp"] if amb[4] is not None else 0,
-            thermal_solid=gmap.thermal_solid,
-            d_thermal_solid=dev["thermal_solid"],
-            d_gas_energy=dev["gas_energy"],
-        )
-
-        # 3c. the once-per-tick TRACE TAIL (smoke transport v2, #12 P2b).
-        self.engine.run_trace_tail_resident(
-            gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
-            h, w, sim_time,
-            d_gas=dev["gas"], d_solid=dev["solid"],
-            d_is_vacuum=dev["is_vacuum"],
-            d_is_ambient=dev["is_ambient"] if ambient else 0,
-            d_dyn_permeability=dev["dyn_permeability"],
-        )
-
-        # 3d. COMBUSTION on the device (#29 P4a; the CPU twin since #71). The
-        # per-tile ignition threshold is gathered on the device from
-        # `material` and the per-material column (narrowed to int32 exactly
-        # as the host path narrows its gathered plane).
-        self.engine.run_combustion_resident(
-            dev, h, w, n_gases, int(gmap.dem_acc.shape[0]),
-            self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
-            self._draw_r, sim_time,
-            np.ascontiguousarray(gmap.materials.ignition_temp_q16.astype(np.int32)),
-            ambient, t_amb)
-
-        # 3e. THE SKY EXCHANGE -- ambient maps only, outside the training path
-        # (ACCEPTED GAP, design §4.2): when it has work this tick, its one host
-        # bracket (gas down, the host pass on the mirror, gas up). Dormant
-        # (space maps, sky_tau_s == 0, a sealed box): nothing crosses the bus.
-        sky = self._sky_exchange_plan(gmap, sim_time)
-        if sky is not None:
-            gmap.to_host(["gas"])
-            self._sky_exchange_apply(gmap, sky)
-            gmap.from_host(["gas"])
-
-        # 3f. THE TAIL (step_tail's order: the bulk sum, fire, the radiation
-        # sweep, temperature) on the device; the ONE books D2H; destroyed.
-        destroyed = self.engine.step_tail_resident(
-            dev, h, w, gmap.gases.conservative, self._o2_idx, sim_time,
-            ambient, t_amb, int(self.k_leak_q), int(self.rad_amb_vacuum_q),
-            gmap.gases.heat_absorb_q16, gmap.gases.light_absorb_q16,
-            gmap.gases.light_glow_q16)
-
-        # -- 4. THE EXIT DOWNLOAD (one batched to_host) --------------------------
-        gmap.to_host(self._resident_exit_names(water_dormant, light, headless))
+    def _resident_finish(self, gmap, ctx):
+        """THE EXIT DOWNLOAD for ONE env, then its host-side tail."""
+        water_dormant = ctx["water_dormant"]
+        headless = ctx["headless"]
+        gmap.to_host(self._resident_exit_names(water_dormant, ctx["light"], headless))
         if not water_dormant:
             # The host twin of the device `before` plane: the tail ended with
             # before := water_depth, and nothing after it in slot 7 writes
             # water_depth -- so the copy is the just-downloaded mirror.
             self._water_depth_before[:] = gmap.water_depth
-
-        # -- 5. the W6a ripple (render-only) on the mirror -----------------------
+        # -- the W6a ripple (render-only) on the mirror ----------------------------
         if not headless:
             self.engine.step_ripple(gmap.ripple, gmap.ripple_v, gmap.water_depth,
                                     gmap.atmosphere, gmap.wave_p, gmap.solid,
-                                    sim_time)
-
+                                    float(ctx["sim_time"]))
         # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE
         # (see PhysicsRunner.step's matching note).
-
         if self.engine.light_requested:
             self.light_serial += 1          # P6b: a new light field for the renderer
-        return destroyed
 
     # #29 P4a: THE ENTRY SET -- what host code may write between one resident
     # tick's exit download and the next tick's entry that a device stage
@@ -1596,7 +1522,9 @@ class PhysicsRunner:
     # rows (cuda_stamp.cu); `obstacles` and `dyn_wave_absorb` are read by no
     # device stage (the EOS pre-stage reads the host mirror's wave absorb) and
     # were never uploaded.
-    _RESIDENT_ENTRY_STAMP = ("dyn_permeability", "dyn_heat_atten_q")
+    # #29 P5: + dyn_wave_absorb -- the DEVICE pre-stage builds the absorb plane
+    # from it (it was the host mirror's read before P5).
+    _RESIDENT_ENTRY_STAMP = ("dyn_permeability", "dyn_heat_atten_q", "dyn_wave_absorb")
     # The table-derived static planes: patched only through on_tile_changed /
     # _update_caches (GameMap._tile_serial), so uploaded when that moved.
     _RESIDENT_ENTRY_STATIC = (
@@ -1980,3 +1908,138 @@ class PhysicsRunner:
     # method's dormancy guard - see physics_engine.h). Nothing called the
     # Python one; tests/test_water_ripple.py:304 already records that the old
     # monkeypatch no longer intercepts it.)
+
+
+# ----------------------------------------------------------------------------
+# #29 P5: THE BATCHED RESIDENT TICK (docs/residency_batching_design_2026-11-07.md
+# §4.2) -- slot 7 of N envs in ONE device chain. The played `--cuda --resident`
+# game is its N = 1 case (PhysicsRunner._step_resident); a ResidentBatch
+# (simulation/resident_batch.py) is its N > 1 case. One code path.
+# ----------------------------------------------------------------------------
+def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
+    """Slot 7 of ``len(runners)`` envs on their batched device buffers.
+
+    ``gmaps[e]``'s resident fields must be env e's slice of (N, ...) device
+    buffers laid out contiguously (env 0's address is the batch's base) -- a
+    lone map's own buffers at N = 1, a :class:`ResidentBatch`'s at N > 1.
+    The batch is HOMOGENEOUS (one grid, one gas table, one config, one tilt);
+    N > 1 refuses an ambient map (the sky bracket is the host's, ACCEPTED GAP)
+    and requested light (render state until #81). Every env's host slots
+    around slot 7 are the caller's. ``water_before_base``: the device address
+    of the batch's (N, h, w) ``before`` plane (None at N = 1: the runner's
+    own). Returns each env's burn-through list (row-major)."""
+    n_env = len(runners)
+    if n_env < 1 or len(gmaps) != n_env:
+        raise ValueError("run_resident_batch: one map per runner, at least one")
+    r0, g0 = runners[0], gmaps[0]
+    ctxs = []
+    for r, g in zip(runners, gmaps):
+        c = r._resident_prepare(g, sim_time)
+        c["sim_time"] = sim_time
+        ctxs.append(c)
+    if n_env > 1:
+        for e, (c, g) in enumerate(zip(ctxs, gmaps)):
+            if c["ambient"]:
+                raise ValueError(f"run_resident_batch: env {e} is an ambient map -- "
+                                 "a batch is space maps (ACCEPTED GAP, design §4.2)")
+            if c["light"]:
+                raise ValueError("run_resident_batch: light is refused in a batch "
+                                 "(render state, until #81)")
+            if (g._h, g._w) != (g0._h, g0._w) or g.gas.shape != g0.gas.shape:
+                raise ValueError(f"run_resident_batch: env {e}'s grid differs "
+                                 "(a batch is homogeneous)")
+            if (g.tilt_x, g.tilt_y) != (g0.tilt_x, g0.tilt_y):
+                raise ValueError(f"run_resident_batch: env {e}'s tilt differs "
+                                 "(a batch is homogeneous)")
+    # The device stamp serves the tick only when EVERY env's rows do (else every
+    # env uploads its host planes: the oracle's, bit-identical by P4b's gate).
+    device_stamp = all(c["stamp_rows"] is not None for c in ctxs)
+    for r, g, c in zip(runners, gmaps, ctxs):
+        r._resident_upload(g, c, not device_stamp)
+
+    h, w = g0._h, g0._w
+    n_gases = int(g0.gas.shape[0])
+    amb = ctxs[0]["amb"]
+    ambient = ctxs[0]["ambient"]
+    t_amb = ctxs[0]["t_amb"]
+    dev = dict(g0.device_ptrs())   # env 0's addresses == the batch's base
+    if amb[3] is None:
+        dev["sponge_sigma"] = 0
+    if amb[4] is None:
+        dev["sponge_udamp"] = 0
+    engines = [r.engine for r in runners] if n_env > 1 else None
+    e0 = r0.engine
+    cons = g0.gases.conservative
+
+    if ctxs[0]["light"]:
+        e0.upload_light_resident(
+            dev, h, w, n_gases,
+            g0.gases.light_absorb_q16, g0.gases.light_glow_q16,
+            light_cones=r0.light_cones, light_sky=r0.light_sky,
+            light_emit_mult=r0.light_emit_mult)
+    if device_stamp:
+        rows = []
+        for e, c in enumerate(ctxs):
+            rr = c["stamp_rows"]
+            if e and len(rr):
+                rr = rr.copy()
+                rr[:, 0] = e
+            rows.append(rr)
+        rows = rows[0] if n_env == 1 else np.ascontiguousarray(np.concatenate(rows))
+        e0.stamp_units_resident(dev, h, w, rows, n_env=n_env, engines=engines)
+        for r in runners:
+            r.stamp_device_ticks += 1
+    else:
+        for r in runners:
+            r.stamp_upload_ticks += 1
+
+    # 3a. water: the substep loop, then the W5/W3 tail, masked per env.
+    active = [not c["water_dormant"] for c in ctxs]
+    if any(active):
+        if water_before_base is None:
+            water_before_base = int(r0._d_water_before.data.ptr)
+        dev["water_before"] = int(water_before_base)
+        rw = runners[active.index(True)]
+        n_sub = int(e0.water_substep_count(sim_time))
+        wdt = sim_time / n_sub   # pybind casts to float32 == step_water's wdt
+        e0.step_water_resident(
+            dev, h, w, cons, rw._steam_idx, sim_time,
+            rw.water_ceiling_h, rw.water_flood_eps, rw.water_ratio_cap,
+            rw.water_boil_rate, rw.water_boil_p_thresh, rw.water_steam_yield,
+            ambient, t_amb, n_sub, wdt, g0.tilt_x, g0.tilt_y,
+            active=None if all(active) else np.asarray(active, dtype=np.uint8),
+            n_env=n_env, engines=engines)
+
+    # 3b. the EOS stage (the device pre-stage, the masked substep loops).
+    e0.run_substeps_resident(dev, h, w, cons, sim_time, ambient,
+                             n_amb=amb[1], p_amb=int(amb[2]),
+                             n_env=n_env, engines=engines)
+    # 3c. the once-per-tick TRACE TAIL (smoke transport v2, #12 P2b).
+    e0.run_trace_tail_resident(dev, h, w, cons, g0.gases.diffusion, g0.gases.decay,
+                               sim_time, ambient, n_env=n_env, engines=engines)
+    # 3d. COMBUSTION (#29 P4a; the CPU twin since #71).
+    e0.run_combustion_resident(
+        dev, h, w, n_gases, int(g0.dem_acc.shape[0]),
+        r0._o2_idx, r0._inert_n2_idx, r0._black_smoke_idx,
+        r0._draw_r, sim_time,
+        np.ascontiguousarray(g0.materials.ignition_temp_q16.astype(np.int32)),
+        ambient, t_amb, n_env=n_env, engines=engines)
+    # 3e. THE SKY EXCHANGE -- ambient maps only (N = 1), outside the training
+    # path (ACCEPTED GAP, design §4.2): its one host bracket when it has work.
+    if ambient:
+        sky = r0._sky_exchange_plan(g0, sim_time)
+        if sky is not None:
+            g0.to_host(["gas"])
+            r0._sky_exchange_apply(g0, sky)
+            g0.from_host(["gas"])
+    # 3f. THE TAIL (bulk sum, fire, the sweep, temperature) + the ONE books D2H.
+    destroyed = e0.step_tail_resident(
+        dev, h, w, cons, r0._o2_idx, sim_time,
+        ambient, t_amb, int(r0.k_leak_q), int(r0.rad_amb_vacuum_q),
+        g0.gases.heat_absorb_q16, g0.gases.light_absorb_q16,
+        g0.gases.light_glow_q16, n_env=n_env, engines=engines)
+
+    # 4-5. THE EXIT DOWNLOAD per env, then its host-side tail.
+    for r, g, c in zip(runners, gmaps, ctxs):
+        r._resident_finish(g, c)
+    return [list(d) for d in destroyed]

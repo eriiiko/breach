@@ -945,19 +945,22 @@ def _bench_trace_tail(H, W, reps=100):
     eos = runner.engine.eos
 
     def tail():
+        # #29 P5: the batched tick's driver (its books fold at the tick's tail,
+        # which this isolated bench does not run).
         runner.engine.run_trace_tail_resident(
-            g.gases.conservative, g.gases.diffusion, g.gases.decay,
-            H, W, dt, d_gas=dev["gas"], d_solid=dev["solid"],
-            d_is_vacuum=dev["is_vacuum"], d_is_ambient=0,
-            d_dyn_permeability=dev["dyn_permeability"])
+            dev, H, W, g.gases.conservative, g.gases.diffusion, g.gases.decay,
+            dt, False)
 
     def roundtrip():
         g.to_host(["gas"])
         g.from_host(["gas"])
 
-    tail(); roundtrip(); cp.cuda.Stream.null.synchronize()   # warm-up
-    if int(sum(eos.trace_decay_sum())) <= 0:
-        raise AssertionError("trace-tail bench is vacuous: the tail decayed nothing")
+    before = g.gas.copy()
+    tail(); cp.cuda.Stream.null.synchronize()
+    g.to_host(["gas"])
+    if np.array_equal(before[trace_ids], g.gas[trace_ids]):
+        raise AssertionError("trace-tail bench is vacuous: the tail moved no trace plane")
+    roundtrip(); cp.cuda.Stream.null.synchronize()   # warm-up
 
     def timeit(fn):
         best = float("inf")
@@ -1023,20 +1026,15 @@ def _bench_eos_stage(H, W, reps=60):
             # step and the once-per-tick recovery all read/write its device
             # buffer now, so an omitted d_gas_energy is a null device pointer
             # the resident bulk-flux D2D e_pre snapshot then faults on.
+            # #29 P5: + dyn_wave_absorb / thermal_solid (the DEVICE pre-stage
+            # reads them); the stage's books fold at the tick's tail.
             g.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
                          "gas", "solid", "is_vacuum", "is_ambient",
-                         "dyn_permeability", "gas_energy"])
+                         "dyn_permeability", "dyn_wave_absorb", "thermal_solid",
+                         "gas_energy"])
             runner.engine.run_substeps_resident(
-                g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
-                g.solid, g.is_vacuum, g.dyn_permeability, g.dyn_wave_absorb,
-                g.gas, g.gases.conservative, dt,
-                is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2],
-                d_atmosphere=dev["atmosphere"], d_wave_p=dev["wave_p"],
-                d_wind_x=dev["wind_x"], d_wind_y=dev["wind_y"],
-                d_temperature=dev["temperature"], d_gas=dev["gas"],
-                d_solid=dev["solid"], d_is_vacuum=dev["is_vacuum"],
-                d_dyn_permeability=dev["dyn_permeability"],
-                d_gas_energy=dev["gas_energy"])
+                dev, H, W, g.gases.conservative, dt, amb[0] is not None,
+                n_amb=amb[1], p_amb=int(amb[2]))
             g.to_host(["atmosphere", "wave_p", "wind_x", "wind_y",
                        "temperature", "gas", "gas_energy"])
         return fn
