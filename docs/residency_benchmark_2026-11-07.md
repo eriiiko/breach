@@ -493,3 +493,149 @@ the CPU sweep at every N.
 - **Multi-process CPU throughput** (8 cores, several matches at once).
 - **The window, the light sweep and the renderer:** headless runs request no light.
 - **CUDA graphs (#24) and the launch overhead they would remove.**
+
+## P1a: the farm measured (2026-11-07)
+
+The design's §9.1 protocol, run on the `cpu_farm` backend P1a built (`src/rl_env.py`), with its
+random-action driver `tools/rl_smoke.py`. This is the yardstick every later farm or device reading
+is compared with: same driver, same run files, same decimations.
+
+### Method
+
+- **Machine:** the Home Desktop above (Ryzen 7 3700X, 8 cores / 16 threads, 16 GB). Nothing else
+  ran during the measurement (17:14 to 17:50).
+- **Code:** branch `29-p1a-batched-env` at `85f4cc57`, its own CPU build (`cpp/build_cpu_home.bat`
+  -> `cpp/build/Release`). Farm workers load only that build and start with one BLAS thread
+  (`rl_env.WORKER_ENV`; see "Memory" below).
+- **The farm:** `BatchedEnv` with N worker processes (spawn), ONE env per worker, plus the driver
+  process (the trainer stub: it draws the random action rows, `control_policy.random_action_rows`,
+  seed 0). Every marine team on the `policy` controller, the horde on `zombies`.
+- **Placeholder rows ON:** an observation of all 11 crop planes (the 7 frozen channels,
+  `material`, `units_own` / `units_enemy` / `units_zombie`) at `crop_radius = 8` (17 x 17 tiles) for
+  every row, the 6 vector fields, 8 reward weights, the per-unit counters, and the checkpoint
+  digests every 60 ticks.
+- **The random rows (placeholder domain):** per decimation step each unit draws a uniform
+  direction for move, aim and throw; the move is cleared with p = 0.25, the trigger held with
+  p = 0.5, throw and use issued with p = 0.05 each; fuse uniform in [0.5, 3] s, reach in [0, 16]
+  tiles (the sim clamps it).
+- **Levels:** the small ship `tools/gen_ship.py --seed 1 --size small --vents --out
+  <scratch>/levels/ship_s1_small` (60 x 40, outside `levels/`) and `levels/ship_demo` (medium,
+  100 x 70); both 4 v 4 + 4 zombies.
+- **Configurations:** decimation 1 and 4; 7 and 8 workers (plus 1, for scale); each in a fresh
+  process, serially; every env runs until it has finished at least 3 episodes through the in-step
+  reset; the first 20 steps are warm-up and not timed (worker start, imports, first match).
+- **Read:** env-ticks/s = ticks simulated by all envs / wall time of the timed window, the
+  driver's action generation included; step ms = `BatchedEnv.step` wall time per call (one
+  decimation step for all envs); memory per worker at the end (psutil: the working set, its peak,
+  the private bytes).
+
+Commands (one per configuration; `measure.sh` loops them):
+
+```
+C:/Users/steen/anaconda3/envs/data/python.exe tools/rl_smoke.py <scratch>/run_<level>_d<D>_n<N>.toml \
+    --workers <N> --episodes 3 --seed 0 --warmup-steps 20
+```
+
+The run files (`run_small_*` add `levels_dir = "<scratch>/levels"` and name `ship_s1_small`;
+`n_envs` and `decimation` vary):
+
+```toml
+# #29 P1a farm measurement (design 9.1): placeholder obs + reward rows ON.
+[run]
+seed = 2026
+n_envs = 8
+decimation = 4
+levels = ["ship_demo"]
+policy = "policy"
+
+[obs]
+channels = ["pressure", "smoke", "water_depth", "temperature", "fire", "o2", "solid", "material", "units_own", "units_enemy", "units_zombie"]
+crop_radius = 8
+vector = ["hp", "team", "alive", "facing", "x", "y"]
+
+[reward]
+kills = 1.0
+team_kills = -1.0
+damage_dealt = 0.01
+damage_taken = -0.01
+deaths_bullet = -1.0
+deaths_explosion = -1.0
+deaths_melee = -1.0
+deaths_heat = -1.0
+```
+
+### Small ship (60 x 40)
+
+| decimation | workers | env-ticks/s | per env | step ms p50 / p95 / max | RSS / peak / private MB per worker | timed ticks | episodes per env |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | 176.1 | 176.1 | 5.7 / 7.3 / 17.3 | 44 / 45 / 32 | 2 552 | 3 |
+| 1 | 7 | **754.6** | 107.8 | 8.4 / 11.7 / 20.3 | 45 / 46 / 32 | 38 129 | 3 to 14 |
+| 1 | 8 | 726.7 | 90.8 | 10.7 / 12.5 / 21.9 | 45 / 46 / 32 | 43 480 | 3 to 14 |
+| 4 | 1 | 214.2 | 214.2 | 14.1 / 26.7 / 34.9 | 44 / 45 / 32 | 7 362 | 3 |
+| 4 | 7 | 873.8 | 124.8 | 31.2 / 37.1 / 48.1 | 45 / 46 / 32 | 92 704 | 3 to 18 |
+| 4 | 8 | **951.2** | 118.9 | 33.7 / 40.7 / 48.6 | 45 / 46 / 32 | 60 383 | 3 to 18 |
+
+### Medium ship (ship_demo, 100 x 70)
+
+| decimation | workers | env-ticks/s | per env | step ms p50 / p95 / max | RSS / peak / private MB per worker | timed ticks | episodes per env |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | 52.6 | 52.6 | 18.9 / 20.1 / 33.6 | 46 / 51 / 34 | 14 439 | 3 |
+| 1 | 7 | **277.7** | 39.7 | 24.1 / 30.9 / 48.9 | 49 / 50 / 37 | 87 500 | 3 to 26 |
+| 1 | 8 | 277.1 | 34.6 | 28.5 / 33.5 / 50.1 | 49 / 51 / 36 | 116 088 | 3 to 8 |
+| 4 | 1 | 78.3 | 78.3 | 35.6 / 80.3 / 87.8 | 46 / 51 / 34 | 7 384 | 3 |
+| 4 | 7 | 318.0 | 45.4 | 88.0 / 100.4 / 117.5 | 48 / 50 / 36 | 53 473 | 3 to 12 |
+| 4 | 8 | **336.5** | 42.1 | 94.4 / 107.7 / 125.7 | 49 / 51 / 37 | 172 094 | 3 to 13 |
+
+The two single-worker rows at decimation 4 timed only ~7 400 ticks (three short episodes); read
+them as ±15 %.
+
+### Where one env's step goes (in-process, the same `EnvRunner` a worker runs, 3 000 ticks)
+
+| level, decimation | ticks/s | match tick (controllers + `step`) | observation | checkpoint digests | counters, reset, rows |
+|---|---|---|---|---|---|
+| small, 1 | 175.8 | 5.23 ms (91.9 %) | 0.22 ms (3.8 %) | 0.05 ms (0.8 %) | 0.19 ms (3.3 %) |
+| small, 4 | 210.4 | 4.60 ms (96.8 %) | 0.05 ms (1.1 %) | 0.04 ms (0.9 %) | 0.05 ms (1.1 %) |
+| medium, 1 | 51.1 | 19.03 ms (97.2 %) | 0.28 ms (1.4 %) | 0.08 ms (0.4 %) | 0.20 ms (1.0 %) |
+| medium, 4 | 56.4 | 17.51 ms (98.8 %) | 0.07 ms (0.4 %) | 0.08 ms (0.5 %) | 0.06 ms (0.3 %) |
+
+(ms per simulated tick. The farm's own work is 1 to 8 % of a step; the rest is the game.)
+
+### Reading
+
+- **The yardstick:** the 8-core farm runs **755 to 951 env-ticks/s on the small ship** and
+  **278 to 337 on the medium ship** with the placeholder observation and reward on. Decimation 4
+  is the better case on both (and the design's planning decimation, §2.4).
+- **Against the design's §2.3 estimate** (1 000 to 1 450 for the small-ship match, "P1 MEASURES
+  it"): the farm reaches 0.75 to 0.95 of the low end. The estimate assumed 7 to 8 workers at an
+  all-core factor of 0.9 and SMT 1.0 to 1.3, i.e. 6.3 to 9.4 single-core equivalents; measured, 7
+  workers give **4.3** (small, d1) and **5.3** (medium, d1) single-core equivalents, 8 workers
+  **4.4** (small, d4) and about **4.3** (medium, d4, against the short single-worker row). So
+  per-core efficiency under load is 0.54 to 0.75, not 0.9; with this, the §2.4 farm rows for this
+  PC stretch accordingly, and the device-to-farm ratio here (§2.3, 1.4 to 3.4x) rises by the same
+  factor (1.05 to 1.3x).
+- **The 8th worker:** at decimation 1 it buys nothing (small 755 -> 727, medium 278 -> 277): the
+  driver steps every tick, and 8 workers plus the driver oversubscribe the 8 physical cores. At
+  decimation 4 the driver is idle 3 ticks in 4 and the 8th worker adds 6 to 9 %. On a Berzelius
+  slot (16 cores) the same rule applies: N_workers = cores - 1 at decimation 1.
+- **Decimation 4 is faster per tick for two reasons:** the farm's per-step work (observation,
+  driver, IPC) is paid once per 4 ticks, and the random rows throw and toggle doors 4x less often
+  per tick, which makes the ticks themselves cheaper (small 5.23 -> 4.60 ms in-process). The
+  second is a property of the random driver, not of the farm; a trained policy's tick cost is its
+  own.
+- **Step-time tails are the game's:** p95 / p50 is 1.1 to 1.4 at 7 to 8 workers. The step waits
+  for the slowest worker, and a worker's tick cost follows its match (blasts, fires, many shots).
+- **Memory:** a farm worker holds ~45 to 50 MB working set and ~32 to 37 MB private bytes. Before
+  `WORKER_ENV`, OpenBLAS committed a buffer per hardware thread in every worker: ~1.9 GB of private
+  bytes each on this 16-thread machine (8 workers ~ the machine's 16 GB of commit), resident
+  ~45 MB. Measured on the first pass of this protocol and fixed before the numbers above (digests
+  unchanged; G-a and G-b re-run).
+- **Episodes:** random rows end most episodes in 100 to 200 ticks (team-kills and grenades in the
+  spawn rooms), with the odd 7 200-tick draw at the time limit; so the measurement spends a few
+  percent of its steps on resets, which cost ~25 ms each (a fresh `MatchSession`).
+
+### Not measured
+
+- 14 / 16 workers on a node (Berzelius); the protocol row is ready (`--workers 14` / `16`).
+- A real trainer in the driver process: the stub only draws random rows; a policy forward pass
+  shares the driver's core (at decimation 1 that core is already the limit).
+- The large ship.

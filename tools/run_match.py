@@ -1,14 +1,17 @@
 """tools/run_match.py -- THE headless match runner (#119 P2, rl-ready §7).
 
 Runs one match to its result with no window: the level and its match.toml
-(``level_loader.load`` -> ``LevelData.match``), a ``Simulation`` seeded with
-the match seed under :class:`~simulation.ruleset.MatchRules`, the units
-spawned from the config into the level's spawn rooms
-(``Simulation.spawn_match``), then ``step()`` until terminal, each team's
+(``level_loader.load`` -> ``LevelData.match``), stepped through
+:class:`~simulation.match_session.MatchSession` (#29 P1a) -- THE steppable
+match: a ``Simulation`` seeded with the match seed under
+:class:`~simulation.ruleset.MatchRules`, the units spawned from the config
+into the level's spawn rooms (``Simulation.spawn_match``), each team's
 registered controller (``control_source.create_match_controllers``, the
-horde's included) called once per tick with ``renderer=None``. No light is requested, no recorder allocated,
-nothing imports the renderer. Tests and benches call :func:`run_match`;
-never a second match loop.
+horde's included) called once per tick with ``renderer=None``, then
+``step()`` -- until terminal. :func:`run_match` is the session's caller (the
+batched environment's farm workers are the other). No light is requested,
+no recorder allocated, nothing imports the renderer. Tests and benches call
+:func:`run_match`; never a second match loop.
 
     C:/Users/steen/anaconda3/python.exe tools/run_match.py --level playground
     C:/Users/steen/anaconda3/python.exe tools/run_match.py --level playground \\
@@ -56,11 +59,9 @@ import breach_physics as bp  # noqa: E402
 
 import level_loader  # noqa: E402
 import match_replay  # noqa: E402
-from config import CFG  # noqa: E402
-from control_source import create_match_controllers  # noqa: E402
-from simulation import Simulation  # noqa: E402
-from simulation.match import living_slots, outcome_lines  # noqa: E402
-from simulation.ruleset import MatchResult, MatchRules  # noqa: E402
+from simulation.match import outcome_lines  # noqa: E402
+from simulation.match_session import MatchSession  # noqa: E402
+from simulation.ruleset import MatchResult  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -101,53 +102,28 @@ def run_match(level, spec=None, *, seed: int | None = None,
     ``level`` must be the recorded one, else ``ReplayRefused``), driven by the
     ``replay`` controller, every checkpoint verified (``ReplayDivergence`` on
     the first that differs, or when the match ends at another tick)."""
-    if replay is not None:
-        match_replay.check_header(replay, match_replay.level_id(level),
-                                  seed=seed, spec=spec)
-        spec, seed = replay.spec, replay.seed
-    spec = level.match if spec is None else spec
-    if spec is None:
-        raise ValueError(f"level {level.name!r} has no match.toml")
-    seed = spec.seed if seed is None else int(seed)
     out = print if out is None else out
-    rules = MatchRules.from_spec(spec)
-    sim = Simulation(level, seed=seed, breach_physics=bp,
-                     enable_recorder=False, ruleset=rules)
-    sim.set_paused(False)
-    sim.spawn_match(spec)
-    controllers = create_match_controllers(sim, spec, recording=replay)
-    recorder = None
+    session = MatchSession(level, spec, seed=seed, replay=replay,
+                           breach_physics=bp)
     if record:
-        every = (match_replay.replay_settings(CFG)
-                 if checkpoint_every_ticks is None else checkpoint_every_ticks)
-        recorder = match_replay.MatchRecorder(
-            match_replay.level_id(level), spec, seed,
-            checkpoint_every_ticks=every,
-            build=match_replay.build_id())
-        recorder.start(sim)
-    while not rules.is_terminal(sim):
-        for c in controllers:
-            c.handle_frame(sim, None)
-        sim.step()
-        if recorder is not None:
-            recorder.after_step(sim)
+        session.record(checkpoint_every_ticks)
+    sim = session.sim
+    while not session.is_terminal():
+        session.tick()
         if on_tick is not None:
             on_tick(sim)
         if report_every and sim.tick % report_every == 0:
-            living, converted = living_slots(sim, spec)
+            living, converted = session.living()
             out(f"tick {sim.tick}: living {living} converted {converted}")
-    result = rules.result(sim)
-    recording = recorder.finish(sim, result) if recorder is not None else None
-    verified = 0
-    if replay is not None:
-        controllers[0].finish(sim)
-        verified = controllers[0].checkpoints_verified
-    living, converted = living_slots(sim, spec)
-    fd, td = match_replay.match_digests(sim)
-    return MatchOutcome(result=result, seed=seed, living=living,
+    result = session.result()
+    recording = session.finish()
+    living, converted = session.living()
+    fd, td = session.digests()
+    return MatchOutcome(result=result, seed=session.seed, living=living,
                         converted_alive=converted,
                         field_digest=fd, tick_digest=td,
-                        recording=recording, checkpoints_verified=verified)
+                        recording=recording,
+                        checkpoints_verified=session.checkpoints_verified)
 
 
 def _parse_args(argv):
