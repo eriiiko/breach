@@ -195,15 +195,21 @@ def _build_scenario(H, W):
 _EDIT_TICK = 12
 
 
-def _one_tick(runner, g, dt, tick_idx):
+def _one_tick(runner, g, dt, tick_idx, late_edit=None):
     """One full engine tick, mirroring Simulation.step's physics slice: the
     scripted structural edit (combat), the pre-physics unit stamp, the physics
-    step, burn-through wall destruction, and the end-of-tick heat clear."""
+    step, burn-through wall destruction, and the end-of-tick heat clear.
+    ``late_edit`` (y, x): a wall destroyed AFTER the stamp and before the
+    physics step -- slot 6b's payload walls (#29 P4b: the device stamp's
+    baselines would be newer than the oracle's, so the host withholds the
+    stamp rows and the tick uploads the host's planes instead)."""
     if tick_idx == _EDIT_TICK:
         # A scripted structural edit — a wall breached by "combat" this tick, on
         # the mirror, between ticks (picked up by next tick's batched H2D).
         g.destroy_wall(6, 6)
     g.stamp_units([])
+    if late_edit is not None:
+        g.destroy_wall(*late_edit)
     destroyed = runner.step(g, dt)
     for (yy, xx) in destroyed:
         g.destroy_wall(yy, xx)
@@ -592,7 +598,8 @@ def _blast_tick(runner, g, dt, tick_idx):
     if tick_idx == 6:
         add_source(g, [(y, x) for y in range(45, 51) for x in range(47, 50)],
                    gas_fixed.quantize_q16_scalar(2.0))
-    _one_tick(runner, g, dt, tick_idx)
+    _one_tick(runner, g, dt, tick_idx,
+              late_edit=(46, 50) if tick_idx == 20 else None)
 
 
 def part1a_bit_identity() -> bool:
@@ -609,6 +616,13 @@ def part1a_bit_identity() -> bool:
     if int(r_g.combustion.e_comb_heat_sum) <= 0:
         ok = False
         print("  1a: the resident combustion never burned (vacuous)")
+    # #29 P4b: tick 20 destroys a wall AFTER the stamp: that tick's rows are
+    # withheld and the host's planes uploaded (the path must have run, and
+    # been tol 0 -- the leg above compared it), every other tick is the device's.
+    if r_g.stamp_upload_ticks < 1 or r_g.stamp_device_ticks < 30:
+        ok = False
+        print(f"  1a: stamp path split device {r_g.stamp_device_ticks} / "
+              f"upload {r_g.stamp_upload_ticks}: the withheld-rows path did not run")
     return ok
 
 

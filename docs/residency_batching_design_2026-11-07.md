@@ -663,7 +663,7 @@ in a fresh worktree skips every CUDA gate and would never place one.
 |---|---|---|---|---|
 | P3a the unit schema (+ `__slots__`, capacities, the digest redefinition) | one definition of a unit's synced state | digest re-pin with rationale; property test "every attribute is a schema row or REFERENCE_ONLY" | none | four drifting definitions; a new attribute never reaches the device |
 | P3b Philox at the match draw sites + the refusing `sim.rng` stand-in | per-env keyed draws | goldens regenerated; the kit's KAT + layout tests | none | no device draws can match the reference's stream |
-| P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | HUMAN-TEST on main: Erik plays a match | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
+| P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | none: Erik blessed Q16 without a play test (§12.1, 2026-11-07), so the HUMAN-TEST is waived | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
 | P3d the distance field (both paths, C++ reference) | per-unit A* has no device shape | goldens; ship_demo seeds 1–8 before / after; the A* and zombies rows amended | HUMAN-TEST on main | the horde stays on the host: no device backend |
 | P3e the match path to integer (the table below) | no float in the ported slots; exact device ports | goldens; A/B of hit rates and blast outcomes in real units over many seeds | HUMAN-TEST on main (shot and blast feel) | an IEEE-double transcription per site (op order pinned, `--fmad=false`), gated by lockstep: doable, fragile |
 
@@ -725,7 +725,7 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | P5 | batch the physics: `(N, h, w)` on every core, the fold table, per-env MG, per-env `n_sub` + both masked loops, the device pre-stage, per-env books, one stream, the capture test; the profiler's applier-ms row reserved | N = 1 == resident; batch invariance; pre-stage N = 1 check | Opus | no |
 | P10 | Linux build + container + the suite on Linux; `cuda_harness.py`'s Windows-only paths ported | digests equal to Windows | Sonnet | no |
 | **G1** | the §3 scene (no units, entities on) device vs farm, per slot, on a node | the gate factor (§3) | | Erik reads it |
-| P3a, P3c, P3e | the schema, Q16 positions, the integer match path (§7), one branch each, on main | per row | P3a Sonnet; P3c, P3e Opus | P3c, P3e |
+| P3a, P3c, P3e | the schema, Q16 positions, the integer match path (§7), one branch each, on main | per row | P3a Sonnet; P3c, P3e Opus | P3e only (P3c's waived, §12.1) |
 | P3b, P3d | Philox (+ FieldEdit's noise on every path), the distance field; P3b before P4c and P7a, P3d before P7d | per row | P3b Sonnet; P3d Opus | P3d |
 | P4c | the device edit queue (Class P; after P3b and P3e: integer policies, Philox noise, the phased key) | one tol-0 scene per policy row + the cross-tick overlap scene | Opus | no |
 | P6 | the device unit store + schema's device side, the Unit ↔ store bridge, slots 1 / 1b / 2b / 3 / 9 / 9b / 9c–9d / 10 as kernels, the per-env serial applier (block form) with the topology seam as device functions, the event ring, the entity export for the digest | live lockstep; the topology scene gates | Opus | no |
@@ -787,25 +787,30 @@ live lockstep. Training runs on a `train/*` tag only.
 - ACCEPTED GAP: a scenario whose envs detonate every tick runs the serial
   applier hard; no v1 scenario does, and it is measured.
 
-## 12. Rulings needed from Erik (scoped)
+## 12. Rulings from Erik (2026-11-07)
 
-1. **Positions.** A: Q16 `x_q` / `y_q` on the reference path (recommended:
-   the iron rule, integer digests; readers unchanged through float
-   properties; one HUMAN-TEST). B: float64 columns on the device under
-   `--fmad=false`, a standing exception. P3c waits on this.
-2. **The planned training scale** (runs x decisions), which sets the gate
-   factor (§3) and whether the device route is pushed past G2. The working
-   factor is 3x the farm per slot.
-3. **Bots in training.** Options: the farm only (bots at farm speed); a
-   hybrid batch (host bots on the slot's cores beside device envs); a later
-   device bot on per-goal fields. v1 training on the device backend is
-   self-play or against the horde.
-4. **A cheaper training physics preset.** Recommendation: no, by the
-   snapshot principle; the curriculum uses the small map instead.
-5. **A full-map observation** (the team shape): an agent-era ruling; v1
-   ships the per-unit crop only.
-6. **Whether the played `--resident` game ever runs Class T** (the device
-   unit store). Recommendation: no; it keeps Python gameplay over device
+Recorded as given; the numbering is the question's.
+
+1. **Positions: A, Q16 -- RULED.** `x_q` / `y_q` on the reference path, the
+   iron rule, integer digests, readers unchanged through float properties.
+   Erik blessed it without a play test, so P3c's HUMAN-TEST is waived (§7's
+   feel cell and §9's P3c cell say so); option B (float64 columns on the
+   device) is not taken.
+2. **The planned training scale:** not set. Erik leaves it to the G readings;
+   the working factor (3x the farm per slot, §3) stands.
+3. **Bots in training: wanted.** Rule-based bots bootstrap early training,
+   pure RL comes later (Erik will survey bootstrapping methods himself). How
+   they run beside device envs -- the farm, a hybrid batch (host bots on the
+   slot's cores), or a later device bot on per-goal fields -- is decided at
+   G2 with numbers. v1 training on the device backend is self-play or
+   against the horde.
+4. **A cheaper training physics preset: no, not now.** Port first (the
+   snapshot principle holds; the curriculum uses the small map). A lower
+   resolution is held in reserve only if the G readings fall short.
+5. **Observation: both shapes.** The per-unit crop AND a reveal-all full-map
+   option, both offered by the observation door (P8b).
+6. **Class T in the played `--resident` game: no.** Claude's recommendation;
+   Erik had no objection. The played game keeps Python gameplay over device
    physics.
 
 ## 13. Systems

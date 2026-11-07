@@ -114,6 +114,8 @@ struct ResidentTickState {
     DevBuf tsnap, alloc, dep, e_slot, e_dep, perm_q, ign_plane;
     DevBuf wt_flag, wt_frac, wt_list;
     DevBuf stamp_rows, stamp_winner;   // #29 P4b
+    int32_t* stamp_rows_h = nullptr;   // its pinned staging copy (async H2D)
+    size_t stamp_rows_h_bytes = 0;
     // the books arena + its pinned host mirror
     DevBuf arena;
     unsigned char* arena_h = nullptr;
@@ -295,10 +297,23 @@ void resident_stamp(const PhysicsEngine& eng, const ResidentFields& f,
         throw std::invalid_argument("resident_stamp: a stamp plane is not resident");
     int32_t* d_rows = nullptr;
     if (n_rows > 0) {
+        const size_t bytes = (size_t)n_rows * STAMP_ROW_COLS * sizeof(int32_t);
         d_rows = S.stamp_rows.get<int32_t>((size_t)n_rows * STAMP_ROW_COLS);
-        cuda_check(cudaMemcpy(d_rows, rows,
-                              (size_t)n_rows * STAMP_ROW_COLS * sizeof(int32_t),
-                              cudaMemcpyHostToDevice), "H2D stamp rows");
+        // Staged through PINNED memory so the copy is asynchronous: the host
+        // does not stall here on the entry upload still in flight (a pageable
+        // cudaMemcpy would wait for it). The staging buffer is rewritten at
+        // the NEXT tick's entry, after this tick's books D2H (a blocking
+        // copy at the tail of the stream) has completed the copy.
+        if (S.stamp_rows_h_bytes < bytes) {
+            if (S.stamp_rows_h) cudaFreeHost(S.stamp_rows_h);
+            S.stamp_rows_h = nullptr;
+            cuda_check(cudaMallocHost((void**)&S.stamp_rows_h, bytes),
+                       "malloc pinned stamp rows");
+            S.stamp_rows_h_bytes = bytes;
+        }
+        std::memcpy(S.stamp_rows_h, rows, bytes);
+        cuda_check(cudaMemcpyAsync(d_rows, S.stamp_rows_h, bytes,
+                                   cudaMemcpyHostToDevice, 0), "H2D stamp rows");
     }
     stamp_launch_resident(
         1, f.h, f.w, n_rows,
