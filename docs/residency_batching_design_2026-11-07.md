@@ -1,8 +1,8 @@
-# GPU residency + batching — design (v2, 2026-11-07)
+# GPU residency + batching — design (v3, 2026-11-07)
 
 Issue #29 (the umbrella; #77, #24, #25 and #71 ride it). Lead: Claude under
-Erik's mandate of 2026-11-07. **v2 after the four-lens critique round** (§14;
-v1 is in git at `d6c0957`). Inputs, in reading order:
+Erik's mandate of 2026-11-07. **v3 after the four-lens critique round and the
+v2 re-check** (§14; v1 is in git at `d6c0957`, v2 at `fae5955`). Inputs, in reading order:
 `docs/residency_where_we_stand_2026-11-07.md` (the tick today),
 `docs/residency_benchmark_2026-11-07.md` (the numbers),
 `docs/research/batched_gpu_sims_litsearch_2026-11-07.md` (the literature),
@@ -185,10 +185,16 @@ allocated. The decisive readings are on a Berzelius node (so the Linux patch
 P10 lands before them); the PC reading is a proxy whose transfer is stated
 (the A100's 1.9x / 3.5 to 4.5x / 0.8x by part).
 
-- **G1, after P5** (physics batched, gameplay still on the host): physics-only
-  device against physics-only farm, scaled by the farm's physics share
-  (~0.8 on small). Continue to P3 and the flip only if it projects at or
-  above the gate factor.
+- **G1, after P5** (physics batched, gameplay still on the host): the SAME
+  scene on both sides — NO units, the ship's entities ON (vents, ducts,
+  doors, charges, heat sources), the small and the medium ship — device
+  against farm; the device side's host 9e cost reported as its own line
+  (it still runs on the host per env at G1, ~0.06 ms per env-tick plus the
+  bus), the farm scaled by its physics share (~0.8 on small), and the
+  device side charged an allowance for the gameplay launches and applier
+  stages it does not yet have (one sweep's cost, as the benchmark did).
+  Continue to P3 and the flip only if it projects at or above the gate
+  factor.
 - **G2, after P8** (equal game, the device backend complete): the real
   ratio. P9 runs only if G2 is below the gate AND the Nsight capture names a
   bounded kernel.
@@ -289,45 +295,67 @@ and leaves nothing in debt.
 ### 4.3 Authority: the device runs the tick
 
 Every slot of `Simulation.step` has a device form; the host does nothing
-per tick.
+per tick. The device tick keeps the reference's ORDER slot by slot; where
+the reference is serial, the device form is serial (the applier); where the
+reference decides against the start-of-slot state (#169's two-phase laws:
+4 / 4b → 4c, slot 2's rounds, slot 5's bites), phase A is wide and the
+applier applies. The per-slot sequence (from the re-check's iteration-order
+table, `docs/residency_batching_critique_5_v2_recheck_2026-11-07.md`):
 
-| slot | device form | patch |
-|---|---|---|
-| 1 events, 1b intents | the event ring's tick head (§4.5); the action buffer consumed | P6 |
-| 2 projectiles and grenades in flight | one thread per round; fuse-outs recorded as effects | P7 |
-| 2b statuses | one thread per unit row | P6 |
-| 3 movement | one thread per unit row (the integer law, §7) | P6 |
-| 4 / 4b shooting, sprays: phase A | one block per env (line of sight, the march) over its shooters, effects recorded | P7 |
-| 4c resolve | the per-env serial applier | P7 |
-| 5 zombie AI | the distance field (one block per (env, field), §4.9) + one thread per zombie; bites recorded, applied by the serial applier in walk order | P7 |
-| 6 stamp_units | one kernel over unit rows (the five planes) | P4 |
-| 6b FieldEdit flush | the device edit queue applied by the serial applier (§4.8) | P4 |
-| 7 physics | the batched cores (§4.2) | P4, P5 |
-| 9 burn-through, 9b over-pressure walls | the wall law per cell; topology effects recorded, applied by the serial applier | P6 |
-| 9c heat damage, 9c2 wind, 9c3 gas rows, 9d ignition | one thread per unit row / per cell | P6 |
-| 9e entities | per class as SoA rows: vents / ducts / pumps (the ledger as a serial stage per duct), heat sources (deaths recorded), doors (toggles recorded), timed charges (triggers recorded), sensors + the signal bus (generic, from the registry) | P6b |
-| 10 tick end | the MatchRules law as a `done` kernel; the ring sealed | P6 |
+| slot | reference order | device sequence | patch |
+|---|---|---|---|
+| 1 events, 1b intents | units in id order; a throw appends a projectile; USE toggles `want_open` | the ring's tick head; the action buffer consumed in id order (throws get a spawn ordinal) | P6 |
+| 2 grenades | projectile-list order, each detonation IMMEDIATE and seen by the next | applier(grenades), serial, before the rounds | P7b / P7c |
+| 2 rounds | bullet-list order; phase A marches against the post-grenade state; resolve in record order | wide(rounds phase A) → applier(rounds) | P7b |
+| 2b statuses | id order; DoT on the own unit; events in id order | one thread per unit row; the ring appended in id order | P6 |
+| 3 movement | id order; walls only | one thread per unit row (the integer law, §7) | P6 |
+| 4 / 4b shooting, sprays: phase A | id order; sprays after shooting; own-row writes immediate | one block per env over its shooters (line of sight, the march), effects recorded; sprayers after shooters | P7a |
+| 4c resolve | `SimultaneousEffects` record order: shooters by id x records, then sprayers; hit / status / face / world (`chew_wall`, `cover.chew`, `execute_payload`, spray) | the applier in record order | P7a |
+| 5 zombie AI | passes 1–2 order-free; pass 3 in id order; ties to the lower id; bites immediate but decisions read stale prey | the distance field (§4.9) + one thread per zombie; bites recorded, applied by the applier in id order | P7d |
+| 6 stamp_units | MAX stamps; per-tile refill (exact integer division) | one kernel over unit rows (the five planes) | P4b |
+| 6b FieldEdit flush | stable sort `(field, source_id, region, seq)`, `seq` spanning the previous tick's 9e; tiles in region order; noise in that order | the device edit queue applied by the applier (§4.8) | P4c |
+| 7 physics | | the batched cores (§4.2) | P4a, P5 |
+| 9 burn-through | row-major; `destroy_wall` serial | the wall law per cell → applier(topology) | P6 |
+| 9b over-pressure walls | after 9; stable sort by −spread, ties row-major, cap 16 | a per-env top-16 selection → applier(topology) | P6 |
+| 9c heat damage, 9c2 wind, 9c3 gas rows, 9d ignition | id order; teargas loop then poison loop; events in id order | one thread per unit row / per cell; the ring in id order | P6 |
+| 9e entities | emit / sensors / logic (ordinal) → pumps → vents (duct ordinal; returns then supplies) → doors (ordinal; span row-major) → charges → heat sources (read `blast_log`, including this tick's) → swap | ONE serial applier stage per env in that order (vents are not parallel per duct: two actuators may share a tile) | P6b |
+| 10 tick end | heat / rad / TickCredit clears; `convert_marines_to_zombies` every tick in id order; MatchRules | the clears; conversion in id order; the `done` kernel; the ring sealed | P6 |
 
-**The per-env serial applier** is THE pattern for every order-dependent law
-(lenses 1, 2 and 4 converge on it): one thread per env executes that env's
-recorded effects in the reference's order, each effect a DEVICE FUNCTION
-with the same book writes into the per-env book channels: `apply_packet`,
-a status, a facing snap, `chew_wall`, `destroy_wall`, `seal_tiles` /
-`unseal_tiles`, `on_tile_changed`, the wall law, `execute_payload` (the
-reach walk as a per-env scratch BFS by that thread; its deposits as edit
-records; the blast's unit damage on the store; the `blast_log` row; the
-TickCredit claim; the `div_source` write; the `expansions` row; the
-ExplosionEvent into the ring), a spray deposit, a bite, a door toggle, the
-edit application. Effect counts per tick are tens, so one thread per env is
-cheap and exactly batch-invariant. Phase A stays wide. There is NO host
-rare-event path: a blast, a chew, a door cycle and a burn-through all stay
-on the device, in slot order, and "zero host work per tick" holds on every
-tick.
+**The per-env serial applier** is THE device form of every order-dependent
+law (lenses 1, 2, 4 and the re-check converge on it). It runs as ONE BLOCK
+per env: thread 0 walks that env's recorded effects in the reference's
+order and does the scalar, order-dependent work; an effect's disjoint tile
+set (a deposit over a walked set, the reach walk's frontier, a disc's
+tiles) fans out over the block's threads with a barrier between effects,
+so order is kept and a C4's ~2 000 edit records do not run on one lane.
+Each effect is a DEVICE FUNCTION with the same book writes into the per-env
+book channels: `apply_packet`, a status, a facing snap, `chew_wall`,
+`cover.chew`, `destroy_wall`, `seal_tiles` / `unseal_tiles`,
+`on_tile_changed` (its `render_dirty` / sky-mask side is host-only and
+dropped on the device), the wall law, `execute_payload` (the reach walk;
+its deposits as edit records; the blast's unit damage on the store; the
+`blast_log` row; the TickCredit claim; the `div_source` write and its
+saturation counters; the `expansions` row; the ExplosionEvent into the
+ring), a spray deposit, a bite, a door toggle with the door's per-tile hp
+list, the edit application. Phase A stays wide. There is NO host rare-event
+path: a blast, a chew, a door cycle and a burn-through all stay on the
+device, in slot order, and "zero host work per tick" holds on every tick.
 
-The host keeps: reset's decision of which envs reset (the mask, from the
-`done` kernel at checkpoint cadence or every step as the trainer prefers),
-the bank, logging, the recorder export (§4.5). The sky exchange (ambient
-maps only) is outside the device backend.
+**Cost bound (stated, measured by the profiler's applier-ms row):** a frag
+(radius 2) is ~160 tile operations; a `demolition_c4` (radius 8) ~2 000 to
+2 500 edit records; the vent ledger ~0.3 to 1 ms per env per tick if
+serial. A batch tick waits for its slowest env. The block form above is
+what keeps a C4 tick under an agreed share (10 %) of the batch tick; if the
+measured share exceeds it, the walk and the deposits move to one block per
+blast. `apply_explosion`'s disc stays serial on thread 0.
+
+The host keeps: the bank, logging, the recorder export (§4.5). Reset
+happens inside `step` by mask (§4.1); the host reads `terminated` only at
+checkpoint cadence. A terminal tick inside a decimation step ends that
+env's step at the terminal tick (the remaining ticks of the step are not
+run for it); the ring is kept PER TICK so a checkpoint inside a decimation
+step is well-defined. The sky exchange (ambient maps only) is outside the
+device backend.
 
 ### 4.4 The device unit store and the unit schema
 
@@ -355,9 +383,11 @@ valid / alive / life_state, x_q, y_q, facing_q, footprint id, hp (Q16),
 species / loadout / env-profile ids, weapon id, has_grenade, has_explosive,
 last_fire_tick, magazine state, reload_done_tick, spray state, zombie
 activated / awakened / descent cursor / accumulator, last_melee_tick,
-killed_by_zombie, cadence, move accumulators, the intent latches, the
-status block, the exposure state, `recent_attackers` (capped),
-`_possessed_ids` (capped).
+killed_by_zombie, cadence, move accumulators, the intent state (`set_trigger`
+HOLDS a live trigger, it is not a latch; both backends apply the same
+decimation semantics), the status block, the exposure state,
+`_possessed_ids` (capped). `recent_attackers` is unread on the match path
+and is `REFERENCE_ONLY`.
 
 **The Unit ↔ store bridge** (schema-driven, both directions, at tick
 boundaries) is a named system: during P6 to P7 the device backend runs with
@@ -382,13 +412,17 @@ recorder export and the tile inspector only.
   per-unit VECTOR `(N, U, V)` of schema columns; channels and r from the run
   file; stored fp16 (or uint8 for masks); Q16 → float inside the kernel. No
   global map in v1 (§12.5).
-- **The event ring** `(N, E_max, fields)`: every UnitHit / UnitKilled /
-  ExplosionEvent appended in the reference's EMISSION ORDER (slot order;
-  within a slot the reference's iteration order: id order in 2b / 9c / 9c3,
-  the applier's order in 4c / 5, walk order elsewhere), with
-  `_event_record`'s fields as integers (damage in Q16). Overflow is a
-  counted per-env failure flag. The ring is the source of BOTH the digest's
-  event list and the reward counters (lens 2 B2).
+- **The event ring** `(N, E_max, fields)`, kept per tick: every UnitHit /
+  UnitKilled / ExplosionEvent appended in the reference's EMISSION ORDER
+  (the §4.3 table), with `_event_record`'s fields as integers — damage and
+  hp are already on the Q16 grid (`quantize_hp_delta`), so the integer
+  record is lossless and no P3e change; the ExplosionEvent's float
+  `strength` gets an integer field. The digest's view of the ring filters to
+  `_SYNCED_EVENT_TYPES` exactly as today (ExplosionEvent is not among them).
+  Overflow is a counted per-env failure flag; so is overflow of every other
+  per-env queue (edit records, per-shooter effects, `blast_log`, rounds,
+  projectiles), each with a schema capacity. The ring is the source of BOTH
+  the digest's event list and the reward counters (lens 2 B2).
 - **Rewards and terminals**: `(N, U, E)` per-unit counters derived from the
   ring (the E axis from `events.Cause`: hits dealt / taken, kills, deaths by
   cause, team-kills) plus exposure ticks from the coupling rows; the run
@@ -408,10 +442,13 @@ rows of LevelSpec + output digest; train / test-iid / test-ood / probe)
 COMPILED by `tools/build_level_bank.py`: each row runs
 `gen_ship.generate_from_spec` → `level_loader.load` → `Simulation` →
 `spawn_match(LevelData.match)`, and the post-load TICK-0 STATE (every synced
-plane, the store, the entity rows, the books, the MatchSpec) is snapshotted
-into the device bank file and digest-verified against `run_match`'s tick-0
-checkpoint. Nothing is re-derived at reset: `reset(mask)` copies the
-template's state into each masked env and sets its Philox key; the bank
+plane, the store, the entity rows and signals, the books, the MatchSpec) is
+snapshotted into the device bank file and digest-verified against
+`run_match`'s tick-0 checkpoint. Nothing is re-derived at reset:
+`reset(mask)` copies the template's state into each masked env, CLEARS
+every pending per-env queue (edit records left by 9e, `div_source`,
+`expansions`, `blast_log`, rounds, projectiles, the possessed set, the
+ring) and sets its Philox key; the bank
 records the sha256 of every input it read and the tag's SHA. Level
 generation never runs mid-training; held-out sizes are separate banks (one
 shape per batch). The bank's build refuses a level whose entity classes,
@@ -425,26 +462,35 @@ chapter 17 §3's layout): key = the env's episode seed, counter = (tick,
 draw_index, stream_salt, unit_or_site_id), one salt per (slot, site) in ONE
 enum, `draw_index` local to the site, an in-flight round carrying its spawn
 ordinal. The draw sites a match runs: the shot cone, exposure and crit rolls
-(including melee), the beam cone, the FieldEdit noise (keyed (edit key,
-tile)); charges, timed charges and heat sources never draw. The CPU
-reference makes the SAME draws through the Python twin; `spawn_match`
-installs a refusing stand-in for `sim.rng` on the match path, so a new
-`rng.uniform` raises in the ordinary suite (lens 4 M5). `sim.rng` stays for
-WEGO's timeline and the ruleset's legacy draws. A golden re-baseline (§7).
+(including melee), the beam cone; charges, timed charges and heat sources
+never draw. The CPU reference makes the SAME draws through the Python twin;
+`spawn_match` installs a refusing stand-in for `sim.rng` on the match path,
+so a new `rng.uniform` raises in the ordinary suite (lens 4 M5). **The
+FieldEdit noise draws Philox on EVERY path** (keyed (episode seed, tick,
+edit key, tile)), not only in a match: the flush is Class P (the played
+`--resident` game runs the device queue), the played game cannot ship
+PCG64's state to the device, and PCG64 is never ported (re-check B2); this
+is one re-baseline of every noisy blast in the played game (P3b), with no
+feel change. `sim.rng` stays for WEGO's timeline and the ruleset's legacy
+draws only. Golden re-baselines (§7).
 
 ### 4.8 The device edit queue
 
 `EditQueue.flush` is relocated: records `(env, key, field ordinal, region,
 coords, value, mode, policy)` go into a pinned buffer, the key a composite
-`(slot, walk row or effect index, k)` that reproduces the reference's
-enqueue order (no device atomic counter), the field ordinal table keeping
-the string fields' lexicographic order; the per-env serial applier applies
-them with the same per-field policies and combine functions as device
-functions, booking into the per-env seam channels. FieldEdit goes INTEGER
-at the enqueue door (§7): the dequantize → double → requantize bridges and
-the `amount · weight · mult` product become integer arithmetic, so the
-device port is exact by construction. Semantics otherwise unchanged; the
-host never reads a field to apply an edit.
+`(enqueue phase, slot, walk row or effect index, k)` with phase 0 = the
+PREVIOUS tick's 9e (timed charges, heat sources), so the reference's
+cross-tick `seq` order is reproduced (re-check M3; an overlap scene gates
+it), no device atomic counter; the field ordinal table keeps the string
+fields' lexicographic order; the per-env applier applies them in that order
+with the same per-field policies and combine functions as device functions,
+booking into the per-env seam channels. FieldEdit goes INTEGER at the
+enqueue door (§7 P3e): the dequantize → double → requantize bridges, the
+`amount · weight · mult` product, `linear_weights` and the DISC weights
+become integer arithmetic, so the device port is exact by construction; the
+noise is Philox (§4.7). P4c therefore follows P3b and P3e's FieldEdit item
+(§9). Semantics otherwise unchanged; the host never reads a field to apply
+an edit.
 
 ### 4.9 Pathing: the distance field
 
@@ -522,11 +568,24 @@ is concerned. Targets come from P2's Nsight capture.
    burning-scene gate at tol 0, validated by breaking it.
 9. **The digest.** The unit hash (`UNIT_DIGEST_KEY`, folded by `tick_digest`,
    no version of its own) is redefined from the schema in P3a: WEGO `ap` /
-   `n_orders` leave it, positions and hp hash as Q16 integers, events as the
-   ring's integer records; a deliberate re-pin of every tick-digest
-   checkpoint with written rationale, `GOLDEN_AGGREGATE` checked unmoved.
-   ONE digest function (Python) over a D2H of the store and the ring at
-   checkpoint cadence; never a device digest. Obs tensors are not digested.
+   `n_orders` leave it, hp hashes as a Q16 integer, events as the ring's
+   integer records; positions keep `round(v·1e9)` until P3c makes them Q16.
+   Each P3 commit is its own deliberate re-pin (five re-pins: a, b, c, d, e)
+   with written rationale; `GOLDEN_AGGREGATE` MOVES at P3a and P3e (the
+   golden scenario has a unit, and `trajectory_digest` folds the unit hash;
+   `_xarch_perfield_digest`'s unit-subfield reader changes with the record)
+   while its per-field lines stay unmoved — re-baselined, not "checked
+   unmoved". ONE digest function (Python) over a D2H of the planes, the
+   store, the ring, the entity rows and the signals at checkpoint cadence
+   (the device's entity SoA exports through `serialize.py`'s encoding, so
+   the `__entity__` and `__signals__` sections hash as today); never a
+   device digest. Obs tensors are not digested.
+10. **Books.** The closure identity is checked per env at checkpoint
+   cadence over the WINDOW since the previous checkpoint (the books
+   accumulate; Σ `gas_energy` is read at both ends); every cumulative
+   channel carries an int64 range argument in the manifest (or a counted
+   wrap). `n_destruction_seed_sum`'s device form is the destroyed tile's own
+   bulk delta.
 
 ## 6. Snapshots, the two classes of device code, twin debt
 
@@ -557,30 +616,46 @@ versions and the GPU; a resumed run refuses on a change.
 --exact-match` for the tag check); `bp.build_id()` is the module's
 provenance only. The FARM trains at any tag and needs no ledger.
 
-**Class P and Class T.**
+**Class P and Class T — every device artefact has a class.**
 
-| class | what | discipline |
+| artefact | class | why |
 |---|---|---|
-| **P** (the played game runs it under `--cuda` / `--resident`) | the physics cores, the trace tail, the sweep, combustion / temperature / fire, the device edit queue, the stamp kernel, the batched engine at N = 1 | kept level PER PATCH on main, as today (reference → C++ → CUDA in the same change, bit-identity gates in the suite); never in debt, never xfailed; the cost is today's ratio of CUDA to C++ commits |
-| **T** (only training runs it) | the unit store and its slots, device entities, combat, the horde field, reset and the bank, the obs / reward / ring kernels, the table upload | carries DEBT under the ledger; brought level in catch-up patches |
+| the physics cores (water, EOS, MG, kick, trace tail, sweep, combustion, temperature, fire), the fold table, the stream, the per-env books' physics channels, the batched engine at N = 1 | P | the played `--cuda` / `--resident` game runs them |
+| the device edit queue + the applier's EDIT APPLICATION + the FieldEdit policies and combines + the gas-energy seam functions they call; the stamp kernel; the table upload of materials and gases | P | the played `--resident` game flushes through them from P4c |
+| the applier's topology, payload, combat, bite, door and entity functions; the unit store, the schema's device side and the bridge; the horde field; the reset kernel and the bank; the ring; the obs / reward / `done` kernels; the table upload of weapons, ammo, loadouts, species, statuses, payloads, `[exchange]`, `[zombie]`, `[movement]` | T | only training runs them |
+| a seam function called from both classes | P | a change to it moves the P twin in the same patch AND creates T debt for the T callers |
+
+| class | discipline |
+|---|---|
+| **P** | kept level PER PATCH on main (reference → C++ → CUDA in the same change, bit-identity gates); never in debt. ENFORCED, not assumed (re-check B1): the twin manifest lists Class-P twins too (`class = "P"`); a green run of the CUDA suite writes an untracked stamp `.cuda_green` holding HEAD's SHA; an ordinary-suite test that never skips (`tests/test_class_p_level.py`) fails when the branch's diff from its merge-base touches a Class-P reference path and the stamp does not match HEAD ("build `cpp/build_cuda` and run the CUDA suite before merging"); the git-workflow merge step refuses on the same condition. A change to FieldEdit, `stamp_units`, the seam or a resident driver IS Class P and needs a CUDA build in that worktree. The cost is today's ratio of CUDA to C++ commits, now visible. |
+| **T** | carries DEBT under the ledger; brought level in catch-up patches; refused at the training doors while in debt |
 
 The played `--resident` game keeps Python gameplay over device physics;
 whether it ever runs Class T is a ruling for Erik (§12.6).
 
-**Twin debt is computed, never remembered.** A twin manifest
-(`tests/twin_manifest.toml`) maps each Class-T twin to the reference paths
-it mirrors and the commit it was last level at (`level_at`);
-`tools/twin_debt.py` lists every twin whose reference paths changed in
-`git diff level_at..HEAD`. `tests/test_twin_debt.py` asserts the manifest
-covers every Class-T twin and that each listed `level_at` is an ancestor of
-HEAD (format and reachability in pytest; issue state in the tool). The
-training-side doors (`build_level_bank`, the run file, `require_snapshot`)
-refuse a feature without a twin or with non-empty debt. A **catch-up patch**
-re-ports the drifted twin from the reference, its oracle the live lockstep
-on the run's own bank with the coverage counters non-zero for the feature,
-and moves `level_at`. Scattered `xfail` marks are NOT the mechanism (lens 4
-B1): a gameplay patch in a fresh worktree skips every CUDA gate and would
-never place one.
+**Twin debt is computed, never remembered.** The twin manifest
+(`tests/twin_manifest.toml`) maps each twin to the reference FILE SET it
+mirrors and the commit it was last level at (`level_at`). The file sets are
+GENERATED, not hand-listed (re-check M6): `tools/twin_manifest_gen.py` runs
+the live-lockstep corpus on the reference under a coverage tracer and
+records, per slot, the files executed, so transitive helpers (`unit_fixed`,
+`movement.default_speed`, `has_los`, `find_burst_walls`, `species.py`,
+`weapons.py`'s normalisation, `blast_expansion`, `blast_air`, `events`,
+`factions`) are in the set of every twin whose slot runs them; a scan test
+asserts every module under `src/simulation/` reachable from the match path
+is in some twin's set or listed `NOT_TWINNED` with a reason.
+`tools/twin_debt.py` lists every twin whose set changed in
+`git diff level_at..HEAD`; `tests/test_twin_debt.py` asserts the manifest
+covers every twin (enumerated from the manifest itself, so no build is
+needed) and that each `level_at` is an ancestor of HEAD. The training-side
+doors (`build_level_bank`, the run file, `require_snapshot`) refuse a
+feature without a twin or with non-empty debt. A **catch-up patch** re-ports
+the drifted twin from the reference, its oracle the live lockstep on the
+run's own bank with the coverage counters non-zero for the feature, and
+moves `level_at`. Live lockstep runs the reference (the CUDA build's CPU
+path) and the device in ONE `data` subprocess (the CUDA harness pattern).
+Scattered `xfail` marks are NOT the mechanism (lens 4 B1): a gameplay patch
+in a fresh worktree skips every CUDA gate and would never place one.
 
 ## 7. Reference-side changes (each a deliberate re-baseline of the played game, BEHIND G1)
 
@@ -590,10 +665,30 @@ never place one.
 | P3b Philox at the match draw sites + the refusing `sim.rng` stand-in | per-env keyed draws | goldens regenerated; the kit's KAT + layout tests | none | no device draws can match the reference's stream |
 | P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | HUMAN-TEST on main: Erik plays a match | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
 | P3d the distance field (both paths, C++ reference) | per-unit A* has no device shape | goldens; ship_demo seeds 1–8 before / after; the A* and zombies rows amended | HUMAN-TEST on main | the horde stays on the host: no device backend |
-| P3e the match path to integer: the shot cone, exposure / crit / melee rolls, mitigation and hp, `int(dmg · mult)`, the `sqrt` gates, `_neighbor_mean`'s division, FieldEdit's bridges, the fuse as ticks | no float in the ported slots; exact device ports | goldens; A/B of hit rates in real units over many seeds | HUMAN-TEST on main (shot feel) | an IEEE-double transcription per site (op order pinned, `--fmad=false`), gated by lockstep: doable, fragile |
+| P3e the match path to integer (the table below) | no float in the ported slots; exact device ports | goldens; A/B of hit rates and blast outcomes in real units over many seeds | HUMAN-TEST on main (shot and blast feel) | an IEEE-double transcription per site (op order pinned, `--fmad=false`), gated by lockstep: doable, fragile |
 
-Order as listed; each merged to main on green with its re-baseline
-rationale written; none before G1 says the device route continues.
+P3e's site table (re-check M4; each row decided integer unless marked, and
+named with the applier function or kernel it lands in):
+
+| site | today | decision | lands in |
+|---|---|---|---|
+| the shot cone (`combat.py` ~1058–1095: `math.radians`, `rng.uniform`, float rx / ry) | float64 | integer: `philox angle_q16`, a Q16 line march through `unit_fixed` | phase A (4) |
+| exposure / crit / melee rolls (`attack_resolver.py` 80, 138; `combat.py` 1714) | float compares | `uniform_q16` compares | phase A (4), bites (5) |
+| mitigation and hp (`damage.py` 11–22, 82–90, 260; `unit.py` 216) | float then a Q16 snap | Q16 throughout | `apply_packet` |
+| `int(dmg · bullet_damage_multiplier)` (`combat.py` 406) | float product | `mul_q16` | phase A (4) |
+| `math.sqrt` range gates (`combat.py` 855, 1009; `ai_zombie.py` 77, 93, 123) | float | squared-distance integer compares | phase A (4), zombies (5) |
+| `_neighbor_mean`'s true division (`gamemap.py` 2130, 2389) | float | integer floor division | stamp refill (6), `destroy_wall` |
+| FieldEdit's bridges, `amount · weight · mult`, `linear_weights`, the DISC weights, `_iter_region`'s falloff | float64 | integer | the edit application (6b) |
+| `apply_explosion`'s sqrt falloff, wall decrement, `wave_source` amounts; `apply_blast_damage`'s sqrt and `int(max_damage · falloff)` | float | integer (`sqrt_q16`, `mul_q16`) | `execute_payload` |
+| the payload heat product; spray amounts; grenade flight | float | integer | `execute_payload`, spray deposit, slot 2 |
+| 9c's heat chain (`exchange.py` 384–401), 9c3's poison dose (`:709`) | float | integer | the coupling-row kernels (9c, 9c3) |
+| the grenade fuse (`fuse_seconds`) | float seconds | integer ticks at the door; `INTENT_KINDS` amended | 1b |
+
+Order: P3a, P3c and P3e before P6 (P6 needs the schema, Q16 positions and
+the integer hp / mitigation); P3b before P7a (the shot cone's draws) and
+before P4c (the noise); P3d before P7d. Each merged to main on green with
+its re-baseline rationale written; none before G1 says the device route
+continues.
 
 ## 8. Linux, the container, Berzelius
 
@@ -627,12 +722,13 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | P2 | #71 (the combustion twin onto the #54 seam); the CUDA second-run slowdown measured; an elevated Nsight capture of the resident tick (Erik runs the command once; the agent reads it) | burning scene tol 0, validated by breaking it; the capture's kernel / memcpy / bytes table in the benchmark doc | Opus | no (one human step: the capture) |
 | P4a | resident drivers for combustion / temperature / fire / the sweep + the water tail, inside the resident tick; `headless` ripple | `cuda_s8a_check` extended, tol 0; zero plane transfers inside slot 7 | Sonnet | no |
 | P4b | the stamp_units kernel (five planes) | tol 0 | Sonnet | no |
-| P4c | the device edit queue (Class P; integer policies after P3e — until then an exact IEEE port of the bridges, gated per policy row) | one tol-0 scene per policy row | Opus | no |
-| P5 | batch the physics: `(N, h, w)` on every core, the fold table, per-env MG, per-env `n_sub` + both masked loops, the device pre-stage, per-env books, one stream, the capture test | N = 1 == resident; batch invariance; pre-stage N = 1 check | Opus | no |
-| P10 | Linux build + container + the suite on Linux | digests equal to Windows | Sonnet | no |
-| **G1** | physics-only device vs physics-only farm, per slot, on a node | the gate factor (§3) | | Erik reads it |
-| P3a–e | the reference-side changes (§7), one branch each, on main | per row | P3a, P3b Sonnet; P3c, P3d, P3e Opus | P3c, P3d, P3e |
-| P6 | the device unit store + schema, the Unit ↔ store bridge, slots 1 / 1b / 2b / 3 / 6 / 9 / 9b / 9c–9d / 10 as kernels, the per-env serial applier with the topology seam as device functions, the event ring | live lockstep; the topology scene gates | Opus | no |
+| P5 | batch the physics: `(N, h, w)` on every core, the fold table, per-env MG, per-env `n_sub` + both masked loops, the device pre-stage, per-env books, one stream, the capture test; the profiler's applier-ms row reserved | N = 1 == resident; batch invariance; pre-stage N = 1 check | Opus | no |
+| P10 | Linux build + container + the suite on Linux; `cuda_harness.py`'s Windows-only paths ported | digests equal to Windows | Sonnet | no |
+| **G1** | the §3 scene (no units, entities on) device vs farm, per slot, on a node | the gate factor (§3) | | Erik reads it |
+| P3a, P3c, P3e | the schema, Q16 positions, the integer match path (§7), one branch each, on main | per row | P3a Sonnet; P3c, P3e Opus | P3c, P3e |
+| P3b, P3d | Philox (+ FieldEdit's noise on every path), the distance field; P3b before P4c and P7a, P3d before P7d | per row | P3b Sonnet; P3d Opus | P3d |
+| P4c | the device edit queue (Class P; after P3b and P3e: integer policies, Philox noise, the phased key) | one tol-0 scene per policy row + the cross-tick overlap scene | Opus | no |
+| P6 | the device unit store + schema's device side, the Unit ↔ store bridge, slots 1 / 1b / 2b / 3 / 9 / 9b / 9c–9d / 10 as kernels, the per-env serial applier (block form) with the topology seam as device functions, the event ring, the entity export for the digest | live lockstep; the topology scene gates | Opus | no |
 | P6b | entities on the device per class with per-class scenes (airlock_demo, a heat-source + heat-trigger studio, a vent studio); the #25 gather as the accessor's device backing | live lockstep per scene | Opus | no |
 | P7a | shooting + sprays phase A / B on the device | live lockstep | Opus | no |
 | P7b | projectiles and grenades in flight; fuse-outs | live lockstep | Opus | no |
@@ -791,8 +887,11 @@ swarm branch, chapter 17 §3).
     only draws; one salt enum.
 13. **Training snapshot + `require_snapshot` + the run manifest**: tag SHA,
     clean tree incl. untracked, own build, own module, matching bank.
-14. **Class P / Class T + the twin manifest + `tools/twin_debt.py`**:
-    computed debt; refusing training doors; catch-up by re-port.
+14. **Class P / Class T + the twin manifest + `tools/twin_debt.py` +
+    `tools/twin_manifest_gen.py` + `.cuda_green` + `test_class_p_level`**:
+    every device artefact has a class; computed debt from coverage-generated
+    file sets; Class P enforced by the stamp test and the merge step;
+    refusing training doors; catch-up by re-port.
 15. **Training-episode record + export**: how a device episode becomes a
     `Recording`.
 16. **Build id at build time** (`bp.build_id()`).
@@ -836,5 +935,25 @@ fold itself stays DEFERRED by ruling, so the chapters are listed as owed):**
 | throughput honesty: the numbers, the yardstick, the stop condition, what P9 can and cannot buy | **SOUND WITH FIXES** (critique `94c2d0a`, `docs/residency_batching_critique_3_throughput_2026-11-07.md`): the table arithmetic re-derives | **B1** the stop condition read on the wrong slot with no anchor in training need; **B2** read after the cost it should avoid. **Majors** M1 the 196 is physics-only (game-vs-game ~155); M2 the A100 range irreproducible (14 000 dropped the allowance); M3 the route table underived, the roofline missing; M4 "pays only after the flip AND kernel work" not established; M5 no farm measurement protocol; M6 the 8 GB card with rollout buffers | B1/B2 → §3 the three readings G1 / G2 / G3 per Berzelius slot, P10 early, P3 behind G1, Erik rules the scale (§12.2); M1–M3 → §2.3 corrected, §2.4 the anchor, §3 derived; M4 → §2.3 movers; M5 → §9.1; M6 → §4.10 |
 | game-dev continuity: snapshots, twin debt, the rules of §10, what a gameplay change costs after the port | **SOUND WITH FIXES** (critique `3a1d1d5`, `docs/residency_batching_critique_4_continuity_2026-11-07.md`) | **B1** twin debt cannot be detected where gameplay is written (CUDA gates skip without a build; the corpus never exercises what changes next; stored corpora stale; #71 the precedent); **B2** device code not split into what the played game runs and what only training runs. **Majors** M1 P1–P3 merge to main as they pass, no long arc branch; M2 provenance holes; M3 the training-episode record and the integer fuse; M4 behaviour costs ignored, the device table upload; M5 three CPU-side rules; M6 the schema reuses the entity kinds, absence-transparent, `__slots__`; M7 `x_q` / `y_q` + float properties; M8 the training checkout in the git workflow | B1 → §6 the computed ledger, refusing doors, live lockstep, coverage counters; B2 → §6 Class P / Class T, §12.6; M1 → §9; M2 → §6; M3 → §4.5; M4 → §4.11 + §10; M5 → §10; M6 → §4.4; M7 → §4.4 + §7; M8 → §6 |
 
-**v2 re-check (one critic, the determinism lens, on §4.3 the applier, §4.5
-the ring, §6 the two classes and the ledger):** pending.
+**v2 re-check** (critique `3a2f821`, `docs/residency_batching_critique_5_v2_recheck_2026-11-07.md`):
+**SOUND WITH FIXES** — the applier, the ring and the P / T split are the
+right shapes; nothing forces another route. B1 Class P had nothing
+enforcing it → §6 the manifest lists Class P, the `.cuda_green` stamp, the
+never-skipping `test_class_p_level`, the merge-step refusal. B2 P4c could
+not pass before Philox and integer FieldEdit → §4.7 FieldEdit noise is
+Philox on every path (PCG64 never ported), §9 P4c after P3b / P3e. M1 the
+aggregate moves at P3a and P3e → §5.9 re-baselined. M2 slot 2 and 9e are
+serial → §4.3 the per-slot sequence table. M3 the cross-tick key → §4.8 the
+enqueue phase. M4 the float inventory → §7 P3e's site table. M5 the P / T
+boundary per artefact → §6 the artefact table. M6 path lists are remembered
+lists → §6 coverage-generated sets + the scan test. M7 G1's scene → §3.
+M8 the oracle needs the entity export → §5.9. M9 the applier's work bound →
+§4.3 block form, the 10 % share, the applier-ms row. Minors folded (slot
+10's conversion and clears; trigger holds; ExplosionEvent's integer
+strength and the digest filter; damage already Q16; five re-pins; 9b's
+top-16; 9e serial; the write set; int64 ranges; the closure window;
+`n_destruction_seed_sum`; reset clears queues; queue capacities; the
+in-step terminal rule; P6 dedupe; P10's harness paths; one subprocess for
+lockstep; `recent_attackers` REFERENCE_ONLY; P3 ordering by need; the
+manifest enumerates twins without a build; the ring per tick). **The
+design is built from v3; no further critique round.**
