@@ -471,13 +471,26 @@ PYBIND11_MODULE(breach_physics, m) {
               const char* names[breach_cuda::RESIDENT_STAGE_COUNTERS] = {
                   "water_tail", "water_tail_active", "combustion", "fire",
                   "fire_gate_open", "sweep", "sweep_light", "temperature",
-                  "books_downloads"};
+                  "books_downloads", "water_tail_boil", "water_tail_evac"};
               for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
                   d[names[k]] = c[k];
               return d;
           },
           "#29 P4a: how many times each resident tail stage ran (and did "
           "work) in this process.");
+    m.def("resident_ignition_probe",
+          [](py::array_t<int8_t, py::array::c_style | py::array::forcecast> material,
+             py::array_t<int32_t, py::array::c_style | py::array::forcecast> table) {
+              py::array_t<int32_t> out(material.size());
+              breach_cuda::resident_ignition_probe(
+                  material.data(), (int)material.size(), table.data(),
+                  (int)table.size(), out.mutable_data());
+              out.resize(std::vector<py::ssize_t>(material.shape(),
+                                                  material.shape() + material.ndim()));
+              return out;
+          },
+          py::arg("material"), py::arg("table"),
+          "#29 P4a TEST-ONLY: the resident ignition-plane gather on host arrays.");
 
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
@@ -4699,6 +4712,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("t_amb_q"), py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q"),
            py::arg("gas_heat_absorb_q16"), py::arg("gas_light_absorb_q16"),
            py::arg("gas_light_glow_q16"))
+        .def("sync_resident_fleck_plane", &PhysicsEngine::sync_resident_fleck_plane,
+             py::arg("h"), py::arg("w"),
+             "#29 P4a: copy the last resident sweep's Fleck plane into "
+             "engine.radiation (on demand; never per tick).")
         .def("step_ripple", [](const PhysicsEngine& self,
                 py::array_t<float> ripple, py::array_t<float> ripple_v,
                 py::array_t<int32_t> water_depth, py::array_t<int32_t> atmosphere,

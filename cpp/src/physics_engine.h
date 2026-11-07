@@ -634,6 +634,9 @@ public:
                                const ResidentTickArgs& a) const;
     std::vector<std::pair<int, int>> step_tail_resident(
         const ResidentFields& f, const ResidentTickArgs& a) const;
+    // The last resident sweep's Fleck plane into this->radiation, ON DEMAND
+    // (gates and tools; the resident tick never downloads it per tick).
+    void sync_resident_fleck_plane(int h, int w) const;
 
     // --- #29 P4a: the W6a ripple, step_tail's step 1 as its own entry -------
     // The dormancy guard (skip unless water_depth or ripple is non-zero

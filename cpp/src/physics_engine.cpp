@@ -966,6 +966,16 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail_resident(
 #endif
 }
 
+void PhysicsEngine::sync_resident_fleck_plane(int h, int w) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_sync_fleck_plane(*this, h, w);
+#else
+    (void)h; (void)w;
+    throw std::runtime_error(
+        "sync_resident_fleck_plane requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
 // (The "dead code retained for reference during the P3 review window" banner
 // that stood here was DELETED — audit Patch A / A9, 2026-08-04. It described
 // the pre-P3 IMEX substep loop, a function that no longer exists; P3 merged

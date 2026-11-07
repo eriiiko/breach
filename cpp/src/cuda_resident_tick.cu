@@ -206,6 +206,37 @@ void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]) {
     for (int k = 0; k < RESIDENT_STAGE_COUNTERS; ++k) out[k] = g_counts[k];
 }
 
+void resident_sync_fleck_plane(const PhysicsEngine& eng, int h, int w) {
+    ResidentTickState& S = g_rt;
+    const size_t n = (size_t)h * (size_t)w;
+    if (S.h != h || S.w != w || S.f_q24.p == nullptr || S.f_q24.bytes < n * 4) {
+        throw std::logic_error(
+            "resident_sync_fleck_plane: no resident sweep has run on this grid");
+    }
+    int32_t* f = eng.radiation.fleck_plane_for_twin(h, w, 16);
+    cuda_check(cudaMemcpy(f, S.f_q24.p, n * sizeof(int32_t), cudaMemcpyDeviceToHost),
+               "D2H fleck plane");
+}
+
+void resident_ignition_probe(const int8_t* material, int n,
+                             const int32_t* table, int n_mat, int32_t* out) {
+    if (n <= 0) return;
+    int8_t* d_m = nullptr;
+    int32_t* d_t = nullptr;
+    int32_t* d_o = nullptr;
+    cuda_check(cudaMalloc(&d_m, (size_t)n), "probe malloc material");
+    cuda_check(cudaMalloc(&d_t, (size_t)(n_mat > 0 ? n_mat : 1) * 4), "probe malloc table");
+    cuda_check(cudaMalloc(&d_o, (size_t)n * 4), "probe malloc out");
+    cuda_check(cudaMemcpy(d_m, material, (size_t)n, cudaMemcpyHostToDevice), "probe H2D");
+    if (n_mat > 0)
+        cuda_check(cudaMemcpy(d_t, table, (size_t)n_mat * 4, cudaMemcpyHostToDevice),
+                   "probe H2D table");
+    rt_ignition<<<(n + 255) / 256, 256>>>(d_o, d_m, d_t, n_mat, n);
+    cuda_check(cudaGetLastError(), "probe launch");
+    cuda_check(cudaMemcpy(out, d_o, (size_t)n * 4, cudaMemcpyDeviceToHost), "probe D2H");
+    cudaFree(d_m); cudaFree(d_t); cudaFree(d_o);
+}
+
 // ---------------------------------------------------------------------------
 // W5 + W3 + the seal + the copy
 // ---------------------------------------------------------------------------
@@ -607,6 +638,8 @@ std::vector<std::pair<int, int>> resident_tail(
             eng.eos.trace_neg_hits_[g] += b(OFF_WT, WT_NEG + g);
         }
         if (b(OFF_WT, WT_N_BOIL) > 0 || b(OFF_WT, WT_N_EVAC) > 0) ++g_counts[1];
+        if (b(OFF_WT, WT_N_BOIL) > 0) ++g_counts[9];
+        if (b(OFF_WT, WT_N_EVAC) > 0) ++g_counts[10];
         S.water_ran = false;
     }
     // ---- combustion's books (the binding's fold, the CPU step's +=) ------

@@ -92,9 +92,26 @@ std::vector<std::pair<int, int>> resident_tail(
 // [0] water tail calls, [1] water-tail ticks that boiled or evacuated a cell,
 // [2] combustion calls, [3] fire calls, [4] fire ticks whose gate opened,
 // [5] sweep calls, [6] sweep calls with light, [7] temperature calls,
-// [8] books downloads. A gate that sees these move knows the device ran the
-// stage (a silently host "device run" would make a bit-identity gate vacuous).
-constexpr int RESIDENT_STAGE_COUNTERS = 9;
+// [8] books downloads, [9] water-tail ticks that boiled a cell (W5), [10]
+// water-tail ticks that evacuated a cell (W3). A gate that sees these move
+// knows the device ran the stage (a silently host "device run" would make a
+// bit-identity gate vacuous).
+constexpr int RESIDENT_STAGE_COUNTERS = 11;
 void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]);
+
+// The sweep's Fleck plane ON DEMAND: the per-call twin copies it into the
+// engine's RadiationSweep every call (its observable state, the
+// fleck_plane_for_twin idiom); the resident tick keeps it on the device (it
+// feeds nothing on the host), and this copies the LAST resident sweep's plane
+// into the engine when a gate or a tool asks — never per tick.
+void resident_sync_fleck_plane(const PhysicsEngine& eng, int h, int w);
+
+// TEST-ONLY (the gate's PART 1g): the resident combustion's ignition-plane
+// gather (rt_ignition, the kernel the tick launches) on host arrays — so the
+// law `ignition_temp_q16[material].astype(int32)`, numpy's negative-index
+// wrap included, is held to numpy directly. Allocates and copies: never on
+// the hot path.
+void resident_ignition_probe(const int8_t* material, int n,
+                             const int32_t* table, int n_mat, int32_t* out);
 
 }  // namespace breach_cuda

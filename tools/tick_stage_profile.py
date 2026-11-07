@@ -101,6 +101,15 @@ PHYSICS_WRAPS = (
     ("simulation.physics_runner", "PhysicsRunner._run_combustion", "  7 combustion (host)", True),
     ("simulation.physics_runner", "PhysicsRunner._run_sky_exchange", "  7 sky exchange (host)", False),
     ("bp", "PhysicsEngine.step_tail", "  7 step_tail (ripple+fire+temp+sweep)", True),
+    # #29 P4a: the resident tick's device stages (the brackets gone): the
+    # entry-phase light upload, the water tail, combustion, the tail (fire +
+    # sweep + temperature, ending with the books D2H), the sky bracket's host
+    # pass on ambient maps, and the host ripple after the exit download.
+    ("bp", "PhysicsEngine.upload_light_resident", "  7 light inputs (resident)", True),
+    ("bp", "PhysicsEngine.step_water_tail_resident", "  7 water tail (resident)", True),
+    ("bp", "PhysicsEngine.run_combustion_resident", "  7 combustion (resident)", True),
+    ("bp", "PhysicsEngine.step_tail_resident", "  7 tail (resident: fire+sweep+temp+books)", True),
+    ("bp", "PhysicsEngine.step_ripple", "  7 ripple (host)", False),
 )
 
 BUS_LABELS = {"GameMap.from_host": "H2D", "GameMap.to_host": "D2H"}
@@ -150,9 +159,14 @@ class TickStageProfiler:
         self.records = []         # per measured tick: {label: seconds}
         self.calls = []           # per measured tick: {label: calls}
         self.bus = []             # per measured tick: {(dir, field): [calls, bytes]}
+        # #29 P4a: per measured tick, the slot-7 stage calls IN CALL ORDER, a
+        # bus call as (label, dir, n_fields, bytes), a stage as (label, None,
+        # 0, 0) -- the bus gate reads where the transfers sit in the chain.
+        self.seq = []
         self._cur = defaultdict(float)
         self._cur_calls = defaultdict(int)
         self._cur_bus = defaultdict(lambda: [0, 0])
+        self._cur_seq = []
         self._capturing = False
 
     # -- install -----------------------------------------------------------
@@ -190,14 +204,15 @@ class TickStageProfiler:
             except AttributeError:
                 continue          # a stage this build does not have
             self._patch(cont, attr, label, device=(dev and device),
-                        bus=BUS_LABELS.get(qual))
+                        bus=BUS_LABELS.get(qual), phys=True)
 
     def uninstall(self):
         for cont, attr, orig in reversed(self._orig):
             setattr(cont, attr, orig)
         self._orig.clear()
 
-    def _patch(self, cont, attr, label, device=False, tick=False, bus=None):
+    def _patch(self, cont, attr, label, device=False, tick=False, bus=None,
+               phys=False):
         orig = getattr(cont, attr)
         prof = self
 
@@ -213,10 +228,15 @@ class TickStageProfiler:
                 if names is None:
                     names = (gm._RESIDENT_FIELD_NAMES if bus == "H2D"
                              else gm._RESIDENT_SYNCED)
+                nbytes = 0
                 for n in names:
                     rec = prof._cur_bus[(bus, n)]
                     rec[0] += 1
                     rec[1] += int(getattr(gm, n).nbytes)
+                    nbytes += int(getattr(gm, n).nbytes)
+                prof._cur_seq.append((label, bus, len(names), nbytes))
+            elif phys:
+                prof._cur_seq.append((label, None, 0, 0))
             t0 = time.perf_counter()
             try:
                 return orig(*a, **k)
@@ -241,6 +261,7 @@ class TickStageProfiler:
         self._cur = defaultdict(float)
         self._cur_calls = defaultdict(int)
         self._cur_bus = defaultdict(lambda: [0, 0])
+        self._cur_seq = []
         if self.nvtx and self._runtime is not None:
             if self.tick == self.skip + 1 and not self._captured:
                 self._runtime.profilerStart()
@@ -259,6 +280,7 @@ class TickStageProfiler:
             self.records.append(dict(self._cur))
             self.calls.append(dict(self._cur_calls))
             self.bus.append({k: list(v) for k, v in self._cur_bus.items()})
+            self.seq.append(list(self._cur_seq))
 
     # -- the report ----------------------------------------------------------
     def summary(self) -> dict:

@@ -91,8 +91,9 @@ def _run(label, residency, calls):
         s8._residency(residency); s8._set_backends(True)
         _tick(gpu, t, rows)
         s8._residency(False); s8._set_backends(False)
-        bad += s8._compare_tick(t, cpu[1], gpu[1], cpu[0].engine.eos,
-                                gpu[0].engine.eos, False)
+        # #29 P4a: every GameMap array and every book (cuda_s8a_check's
+        # comparison since the resident tail moved to the device).
+        bad += s8._compare_all(label, t, cpu[1], gpu[1], cpu[0], gpu[0])
         if bad >= 8:
             print(f"  {label}: aborting after 8 divergences")
             break
