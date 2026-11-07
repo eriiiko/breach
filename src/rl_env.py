@@ -833,7 +833,10 @@ class BatchedEnv:
         info = self._info_arrays()
         info["ticks"] = a["ticks"].copy()
         info["ended"] = ended
-        info["final_obs"] = self._obs("final_")
+        final = self._obs("final_")
+        for v in final.values():        # only the envs that ended carry one
+            v[~ended] = 0
+        info["final_obs"] = final
         info["result"] = [got[e]["result"] for e in range(n)]
         info["counters"] = a["counters"].copy()
         info["checkpoints"] = [got[e]["checkpoints"] for e in range(n)]
