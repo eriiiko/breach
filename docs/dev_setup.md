@@ -25,12 +25,15 @@ specs and tool installs live in the ClaudeSync `environment.md`.
 
 | Machine | `<breach-py>` | Build scripts (`cpp\`) |
 |---|---|---|
-| Home Desktop (`DESKTOP-0E98HUV`) | `C:/Users/steen/anaconda3/python.exe` — anaconda **base**, 3.11. This machine has **no `data` env** | CPU `build_cpu_home.bat`; CUDA `build_cuda.bat` |
-| Work Desktop | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU: Step 6; CUDA `build_cuda.bat` (its paths are this machine's) |
+| Home Desktop (`DESKTOP-0E98HUV`) | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU `build_cpu_home.bat`; CUDA `build_cuda.bat` |
+| Work Desktop | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU: Step 6; CUDA `build_cuda.bat` |
 | Lenovo laptop (`ERIK_LENOVO`) | `C:/Users/steen/miniconda3/envs/data/python.exe` — the miniconda `data` env, 3.12 | CPU `build_cpu_data.bat`; CUDA `build_cuda_lenovo.bat` |
 
+Every machine runs breach on its `data` env. Scripts' usage lines that still name
+`anaconda3/python.exe` predate that: read `<breach-py>`.
+
 The CUDA `.pyd` is importable only by the interpreter its build script pins — `<cuda-py>` below:
-`C:/Users/steen/anaconda3/python.exe` (base, 3.11) on both desktops, `<breach-py>` on the Lenovo.
+`<breach-py>` on every machine.
 `tests/cuda_harness.py` runs it in a subprocess under that interpreter; `BREACH_CUDA_PYTHON`
 overrides it.
 

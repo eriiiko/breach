@@ -11,8 +11,8 @@ Two jobs:
 
 2. **Run GPU checks in an ISOLATED subprocess.** A single Python process can
    import ``breach_physics`` only once, and the rest of the suite imports the CPU
-   build. So a GPU test must run in its own interpreter (the anaconda 3.11 that
-   matches the cp311 ``.pyd``) with sys.path pointed at ``cpp/build_cuda`` — never
+   build. So a GPU test must run in its own interpreter (the `data` env that
+   matches the cp312 ``.pyd``) with sys.path pointed at ``cpp/build_cuda`` — never
    importing the CUDA module into the pytest process itself. ``run_cuda_script``
    does exactly that; the X-ARCH digest runner reuses the same pattern.
 """
@@ -26,15 +26,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CUDA_BUILD_DIR = ROOT / "cpp" / "build_cuda"
 # The interpreter that owns the .pyd — it MUST match the .pyd's cpXXX ABI. The
-# default is the Work Desktop's anaconda 3.11 (cp311); override with the env var
+# default is the desktops' anaconda `data` env (cp312); override with the env var
 # BREACH_CUDA_PYTHON on any machine whose CUDA build was produced by a different
-# interpreter (e.g. the Lenovo/Ada, where the `data` miniconda env is cp312). The
-# X-ARCH digest runner reuses this same interpreter.
+# interpreter. The X-ARCH digest runner reuses this same interpreter.
 # P6.2: when the anaconda default does not exist on this machine (the Lenovo has
 # only miniconda), fall back to the Lenovo `data` env (cp312 — matches its
 # build_cuda_lenovo.bat build) so the now-ACTIVE per-kernel gates run without a
 # per-shell env var. BREACH_CUDA_PYTHON still overrides everything.
-_CUDA_PYTHON_DEFAULT = r"C:\Users\steen\anaconda3\python.exe"
+_CUDA_PYTHON_DEFAULT = r"C:\Users\steen\anaconda3\envs\data\python.exe"
 if not Path(_CUDA_PYTHON_DEFAULT).exists():
     _CUDA_PYTHON_DEFAULT = r"C:\Users\steen\miniconda3\envs\data\python.exe"
 CUDA_PYTHON = Path(os.environ.get("BREACH_CUDA_PYTHON", _CUDA_PYTHON_DEFAULT))
@@ -103,7 +102,7 @@ def _bootstrap() -> str:
 
 
 def run_cuda_script(body: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
-    """Run ``body`` in a fresh anaconda-3.11 interpreter with the CUDA build
+    """Run ``body`` in a fresh `data` interpreter with the CUDA build
     importable. Returns the CompletedProcess (caller asserts on returncode/stdout)."""
     script = _bootstrap() + body
     return subprocess.run(
