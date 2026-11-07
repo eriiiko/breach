@@ -31,7 +31,7 @@
 #                              "game" = [render.lighting] master_gain
 #   hide = ["heat", ...]       switch layers off to isolate the rest
 #                              (heat / smoke / water / flame; G3 F3;
-#                              embers / shimmer; G3 F4a)
+#                              embers / shimmer; G3 F4a; shock; G4 P2)
 #   fire_debug = N             open the flame VFX debug view N (G3 F2:
 #                              1 sources, 2 flame R, 3 T_vfx, 4 u, 5 p)
 #
@@ -665,6 +665,49 @@ name = "blast_smoke_t112"
 level = "blast_smoke"
 frames = 112
 light_gain = "game"
+
+[[shot]]
+name = "blast_final_t50"
+level = "blast_final"
+frames = 50
+light_gain = "game"
+note = "tick +2: the shock ring mid-room on the frag and the C4"
+
+[[shot]]
+name = "blast_final_t50_frag"
+level = "blast_final"
+frames = 50
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +2: the frag's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t50_c4"
+level = "blast_final"
+frames = 50
+center = [53.5, 44.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +2: the C4's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t52_frag"
+level = "blast_final"
+frames = 52
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +4: the frag's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
+
+[[shot]]
+name = "blast_final_t52_c4"
+level = "blast_final"
+frames = 52
+center = [53.5, 44.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P2 close-up, tick +4: the C4's shock ring at a zoom where [render.shockwave] is at full strength (the fit-the-map shots sit near 14 px/tile, under zoom_zero)"
 
 [[shot]]
 name = "blast_final_t52"

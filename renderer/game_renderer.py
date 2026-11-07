@@ -319,6 +319,14 @@ class GameRenderer:
         self._ember_sprites = None       # this frame's pack (both stages)
         self.shimmer = _shimmer.HeatShimmer(
             cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
+        # Graphics G4 P2 -- the SHOCK FRONT (renderer/shockwave.py), the
+        # distortion block's second term: a ring per detonation ("blast"
+        # effect), riding the canonical Blast reach walk so walls clip it, on
+        # the sim clock. [render.shockwave] is re-read every frame (F5);
+        # `enabled` there is its only switch.
+        from . import shockwave as _shockwave
+        self.shockwave = _shockwave.Shockwave(
+            cfg.grid_h, cfg.grid_w, _shockwave.settings_from_config(CFG))
         # Graphics G3 F4b -- the fire's ROOM-LIGHT FLICKER
         # (renderer/fire_flicker.py; design 6.3, RULED D): a per-tick,
         # per-burning-tile multiplier on the sweep's thermal LIGHT emission,
@@ -692,6 +700,16 @@ class GameRenderer:
                 t_noise=self.fire_vfx.clock.t_noise,
                 zoom_px_per_tile=self.camera.zoom_px_per_tile,
                 sim_tick=int(sim_tick), paused=bool(paused))
+        # ... and the shock front: a ring for each new "blast" effect (its
+        # distance plane from the canonical walk over the open mask), aged on
+        # the sim clock (tick + alpha) / tps, held while paused.
+        from . import shockwave as _shockwave
+        self.shockwave.refresh_settings(_shockwave.settings_from_config(CFG))
+        from simulation.blast_expansion import open_mask as _open_mask
+        self.shockwave.update(
+            effects=self._effects, mask_fn=lambda: _open_mask(gmap),
+            sim_tick=int(sim_tick), alpha=alpha, paused=bool(paused),
+            tps=tps, zoom_px_per_tile=self.camera.zoom_px_per_tile)
 
         # Pressure colormap: refresh the per-tile texture from the current
         # atmosphere + wave_p fields. Skipped when toggled off to save the
@@ -960,9 +978,10 @@ class GameRenderer:
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
         # (G3 F4a: with the heat SHIMMER, the first term of the resolve's
-        # distortion block -- never a second pass over the scene.)
+        # distortion block, and G4 P2's SHOCK FRONT, its second -- never a
+        # second pass over the scene.)
         self.world.resolve(encode_srgb=self.lighting.srgb_decode,
-                           shimmer=self.shimmer)
+                           shimmer=self.shimmer, shock=self.shockwave)
 
         # ============ DISPLAY: authored sRGB colours (RGBA8) ============
         # 6. Debug / legacy colormaps. Their colours are display values (a
@@ -2291,6 +2310,7 @@ class GameRenderer:
         self.fire_vfx.unload()
         self.ember_draw.unload()
         self.shimmer.unload()
+        self.shockwave.unload()
         self.temperature_overlay.unload()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)

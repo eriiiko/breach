@@ -16,8 +16,8 @@
 //
 // THE DISTORTION BLOCK (graphics G3 F4a, design §6.2, §10(b)): every
 // screen-space distortion of the world is a TERM of distortion_px() below --
-// heat shimmer now (renderer/heat_shimmer.py, its spec), the G4 shockwave
-// next -- never a second pass over the scene. The block shifts WHERE this
+// heat shimmer (renderer/heat_shimmer.py, its spec) and the G4 shock front
+// (renderer/shockwave.py, its spec) -- never a second pass over the scene. The block shifts WHERE this
 // pass reads the scene RT, so nothing reads the target it writes, the HUD /
 // UI (drawn after the resolve) are never distorted, and the tone-map below
 // stays the one tone-map. Where the summed offset is exactly zero the read
@@ -60,6 +60,15 @@ uniform vec4  u_shimmer_ph;       // phase0, phase1, w0 (layer 0's weight), boil
 uniform vec4  u_shimmer_off;      // per-layer grain offsets (noise uv)
 uniform vec4  u_shimmer_boil;     // per-layer boil directions (unit)
 uniform vec4  u_shimmer_box;      // the hot tiles' bbox + 1 tile (x0, y0, x1, y1)
+// shock front (renderer/shockwave.py Shockwave.uniforms)
+uniform int   u_shock_n;          // live rings; 0 = the term is off (no fetch)
+uniform sampler2D u_shock_plane;  // per tile, bilinear, CLAMP: channel k = ring
+                                  // slot k's walk distance (tiles; unreached 1e4)
+uniform vec2  u_shock_tiles;      // the map in tiles (w, h)
+uniform vec4  u_shock_par;        // band w (tiles), A_max px, px/tile, -
+uniform vec4  u_shock_ring[4];    // per slot: centre x, y (tiles), r (tiles),
+                                  // A px (zoom-faded; 0 = empty slot)
+uniform vec4  u_shock_box;        // the bands' tile box + 1 (x0, y0, x1, y1)
 
 out vec4 finalColor;
 
@@ -106,11 +115,40 @@ vec2 shimmer_term(vec2 wpos) {
     return ln > u_shimmer_a.x ? d * (u_shimmer_a.x / ln) : d;
 }
 
+// SHOCK FRONT: a ring per detonation riding the blast's walk. Offset in world
+// px (x east, y south) = clamp( sum_k g(d_k(p) - r_k) unit(p - c_k) A_k,
+// A_max ), g(x) = exp(-(x/w)^2) on |x| < 2w else 0, d_k the slot's walk
+// distance read bilinearly -- a wall's unreached tiles read far outside the
+// band, so walls clip the ring.
+vec2 shock_term(vec2 wpos) {
+    if (u_shock_n == 0) return vec2(0.0);
+    vec2 tile = wpos / u_shock_par.z;
+    if (any(lessThan(tile, u_shock_box.xy))
+        || any(greaterThanEqual(tile, u_shock_box.zw))) return vec2(0.0);
+    vec4 dg = texture(u_shock_plane, tile / u_shock_tiles);
+    float w = u_shock_par.x;
+    vec2 d = vec2(0.0);
+    for (int k = 0; k < 4; ++k) {
+        vec4 rg = u_shock_ring[k];
+        if (rg.w <= 0.0) continue;
+        float x = dg[k] - rg.z;
+        if (abs(x) >= 2.0 * w) continue;
+        vec2 v = tile - rg.xy;
+        float ln = length(v);
+        if (ln <= 1e-6) continue;
+        float q = x / w;
+        d += (exp(-q * q) * rg.w / ln) * v;
+    }
+    float ld = length(d);
+    return ld > u_shock_par.y ? d * (u_shock_par.y / ld) : d;
+}
+
 // THE DISTORTION BLOCK: the sum of every screen-space distortion term, in
 // world px. A new distortion is one more line here, never a second pass.
 vec2 distortion_px(vec2 wpos) {
     vec2 d = vec2(0.0);
     d += shimmer_term(wpos);
+    d += shock_term(wpos);
     return d;
 }
 

@@ -104,7 +104,8 @@ class WorldComposite:
         rl.clear_background(rl.Color(*clear_color))
         self._stage = "scene"
 
-    def resolve(self, encode_srgb: bool = True, shimmer=None) -> None:
+    def resolve(self, encode_srgb: bool = True, shimmer=None,
+                shock=None) -> None:
         """The ONE tone-map: scene RT -> [distortion block] -> ACES ->
         gamma encode -> dither -> display RT, which is left BOUND for the
         display-referred layers.
@@ -118,7 +119,11 @@ class WorldComposite:
         shader's DISTORTION BLOCK (``world_resolve.fs`` ``distortion_px``):
         every screen-space distortion is a term there, read while the
         resolve samples the scene RT -- never a second pass. None (or
-        inactive) = the term is off and the read is the plain point fetch."""
+        inactive) = the term is off and the read is the plain point fetch.
+
+        ``shock`` (graphics G4 P2) = the frame's
+        :class:`renderer.shockwave.Shockwave`, the block's second term (the
+        blast's shock front); None or no live ring = off, the same way."""
         if self._stage != "scene":
             raise RuntimeError("WorldComposite.resolve() outside begin()")
         rl.end_texture_mode()
@@ -134,34 +139,47 @@ class WorldComposite:
         # premultiplied resolve output (alpha included).
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.resolve_shader)
-        bound = self._set_distortion(shimmer)
+        bound = self._set_distortion(shimmer, shock)
         rl.draw_texture_rec(
             self.scene_rt.texture,
             rl.Rectangle(0, 0, float(self.world_px_w), -float(self.world_px_h)),
             rl.Vector2(0, 0), rl.WHITE)
         rl.end_shader_mode()                 # flushes: drawn now
-        if bound is not None:
-            bound.unbind()
+        for term in bound:
+            term.unbind()
         rl.end_blend_mode()
         self._stage = "display"
 
-    def _set_distortion(self, shimmer):
+    def _set_distortion(self, shimmer, shock=None):
         """Set the distortion block's uniforms (only those that changed)
-        and bind its samplers; returns what to unbind after the draw."""
+        and bind its samplers; returns the terms to unbind after the draw."""
         from .heat_shimmer import HeatShimmer, SAMPLER_UNITS
+        from . import shockwave as _shock
         if not self._dloc:
             self._dloc = {u: rl.get_shader_location(self.resolve_shader, u)
-                          for u in HeatShimmer.UNIFORMS}
-            for name, unit in SAMPLER_UNITS.items():
+                          for u in HeatShimmer.UNIFORMS
+                          + _shock.Shockwave.UNIFORMS}
+            for name, unit in {**SAMPLER_UNITS,
+                               **_shock.SAMPLER_UNITS}.items():
                 self._dset(name, (int(unit),))
+        bound = []
         on = shimmer is not None and shimmer.active(self.world_px_per_tile)
         if not on:
             self._dset("u_shimmer_on", (0,))
-            return None
-        for name, v in shimmer.uniforms(self.world_px_per_tile).items():
-            self._dset(name, v)
-        shimmer.bind()
-        return shimmer
+        else:
+            for name, v in shimmer.uniforms(self.world_px_per_tile).items():
+                self._dset(name, v)
+            shimmer.bind()
+            bound.append(shimmer)
+        on = shock is not None and shock.active(self.world_px_per_tile)
+        if not on:
+            self._dset("u_shock_n", (0,))
+        else:
+            for name, v in shock.uniforms(self.world_px_per_tile).items():
+                self._dset(name, v)
+            shock.bind()
+            bound.append(shock)
+        return bound
 
     def _dset(self, name: str, v: tuple) -> None:
         loc = self._dloc.get(name, -1)
