@@ -1548,6 +1548,7 @@ def layout(q, rng) -> Layout:
         x, y, w, h = rects[r.id]
         tags = dict(r.tags)
         tags["lamp_span"] = G.LAMP_SPAN
+        tags["lamp_shape"] = "auto"
         rooms.append(G.Room(id=len(rooms), x=x, y=y, w=w, h=h, kind=r.kind,
                             tags=tags))
         ids[r.id] = (rooms[-1].id, rooms[-1].id)
