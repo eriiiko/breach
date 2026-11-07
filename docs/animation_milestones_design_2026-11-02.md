@@ -233,6 +233,126 @@ not an animation one**, and is parked for Erik.
 Mechanical sampling / skinner swaps that are pixel-identical to the previous path may
 auto-merge on green when pre-authorized.
 
+### 4.5 Review of §4.1 (Opus, 2026-11-02, lens: architecture + feasibility)
+
+One independent reviewer, read-only, with probes against the real binding (raylib / pyray
+**5.5.0.4** on the home desktop, the three shipped looks). Probe scripts (not in the
+repo): `…\scratchpad\pose_review\p1–p8`. **Verdict: GO, with changes.** The changes are
+folded into this section and into #162–#164; this section is the spec #162 is built to.
+
+**How our composed pose reaches the skinned mesh (the key unknown — answered).**
+
+| Option | Result (measured) | Use |
+|---|---|---|
+| **(a)** write our pose into a scratch `ModelAnimation` (`frameCount=1`, `bones` = the look's anim `bones`, `framePoses` = our `Transform[J]`), then `update_model_animation(model, scratch, 0)` | exact (injecting raylib's own frame pose gave max \|dv\| = 0.0), 0.107 ms/unit (= today), ~20 lines. `framePoses` must hold **model-space (global) TRS**, not local. The field is `framePoses` on 5.5 and `keyframePoses` on the 6.x bindings (#80) | **slice 1 (CPU)** behind a binding adapter |
+| (b) own numpy skinning + `update_mesh_buffer` | works, 1.07 ms/unit (10× slower) | no |
+| (c) GPU skinning: write `mesh.boneMatrices`, skinning vertex shader | works on 5.5 (the module docstring saying no GPU helper exists is **wrong** for 5.5); 0.8 µs/unit to write the matrices, 20 units incl. draws 0.20 ms vs 2.59 ms CPU. Needs `MARINE_VS` and `SHADOW_VS` to skin; a look is all-CPU or all-GPU; **the marine byte-identity test breaks by construction** | **W13.2**, with a deliberate re-baseline |
+
+**Seam:** the pose module outputs, per unit, global TRS `(J,10)` and skin matrices
+`(J,4,4)`. A `Skinner` has `prepare(look)` and `apply(look, pose_row)`, called just before
+`draw_model_ex`. `CpuInjectSkinner` = option (a); a later `GpuSkinner` writes
+`mesh.boneMatrices` (the shadow draw then follows automatically).
+
+**Corrections to §4.1:**
+1. **Time base — the biggest feel risk.** raylib 5.5 bakes clips on a 17 ms grid;
+   `_draw_one` advances `_ANIM_FPS = 30` grid frames/s, so **every clip plays at ≈0.51×
+   speed** (Walk_Loop's 1.33 s cycle takes 2.6 s). A correct sub-frame sampler at 1×
+   doubles every speed. **Playback `rate` is data; its default reproduces today's 0.51.**
+   *Amended by the #162 implementer (verified against raylib's loader):* the reviewer's
+   "snaps to the floor key, no interpolation" holds only for some bones. raylib 5.5 stores
+   ONE interpolation type per bone (overwritten by that bone's last channel) and applies it
+   to all three channels, so bones whose last channel is STEP hold the floor key while the
+   others are slerped. Of the 44 non-stripped clips, 19 are all-step (incl. Walk_Loop) and 25
+   mixed (incl. Idle_Loop). The pose layer samples each channel by its own interpolant, so
+   mixed clips will look smoother than today's player even at rate 0.51 — a HUMAN-TEST item.
+2. **Batching is mandatory.** Per-unit numpy costs 0.5–1.9 ms/unit (fails at 20 units);
+   batched over all units with matrix FK by depth level: 1.7 ms at 20 units, 7.4 ms at 100.
+   One `compose` per `draw_units` call, grouped by look (`draw_units` runs twice per frame:
+   marines, then zombies). Clips are baked once per look at load into dense `(K,J,3/4)`
+   arrays with hemisphere-continuous quaternions. FK as 4×4 matmuls per depth level (12
+   levels here), never a per-bone Python loop. 100 units at 60 fps needs GPU skinning
+   **and** the batched pose, and probably numba / C++ later (numba is not a declared
+   dependency).
+3. **Additive reference.** `delta = inv(ref) · clip` in local space, **ref = the clip's own
+   reference frame (frame 0), never the bind rest** (rest would add the clip's whole
+   stance); translation `T_base + (T_clip − T_ref)`. Fixed compose order: base → overrides
+   in order → additives → procedural modifiers (post-FK) → skin.
+4. **Own glb reader** (json + numpy, ≈80 lines); do not reverse-engineer raylib's stepped
+   `framePoses`. Today's data is clean (T/R/S tracks, scale all 1, STEP channels constant,
+   only `DEF-hips` and `root` have animated translation, inverse binds agree with the node
+   rest, root has a −90° X rest rotation) but the reader **refuses CUBICSPLINE, matrix
+   nodes and multiple skins by name**, so a SOMA skeleton later fails loudly.
+5. **Masks and parent chains.** Local-space blending inherits correctly. But hips sit in
+   `legs`, so the torso inherits the walk's hip yaw/roll and the aim wobbles → an optional
+   per-mask "model-space blend" for the first upper bone. A head **look-at** needs the
+   parent's global pose: a post-FK modifier that re-propagates its subtree (interface
+   defined now, built later).
+6. **Root motion.** `Roll_RM` moves the root 5.1 m, `Sword_Attack_RM` 1.5 m: a per-clip
+   `root_motion = "strip"` (zero the root's horizontal translation at bake), or the body
+   leaves its sim position.
+7. **Aim vs travel (#163).** No strafe/backpedal clips exist; masks alone make the marine
+   skate sideways. Needs a procedural modifier: the lower body yaws toward travel within
+   ±θ, the spine counter-twists to `facing`, beyond θ the clip runs at a negative rate.
+8. **Per-look data.** The three looks share joint names/order but have different rests and
+   per-look converted clips: clip banks and inverse binds are per look, batches group by
+   look.
+9. **Off path byte-identical** = a property, not a pixel diff: with the setting off the
+   pose module is never constructed and `update_model_animation` receives the look's own
+   anim and an int frame.
+
+**Finding in another system (recorded, not fixed here):** raylib 5.5's CPU skinner
+transforms *normals* by the full bone matrix including translation; measured normals are
+0.25–1.96 long and up to 75° off, 6,268 of 7,029 vertices off by > 5°. Today's marine
+lighting (and its tuned gloss / wrap / light_height dials) is therefore shaded with wrong
+normals on 5.5. Option (a) keeps today's shading; the GPU skinner (W13.2) fixes it, so
+the units will *look different* then — a HUMAN-TEST item. Filed as its own issue.
+
+**Minimal design for #162 (the spec):**
+- `renderer/pose_clips.py` — pure, pyray-free glb reader: `Skeleton` (names, parents,
+  depth levels, rest locals, bind inverse) and a per-look `ClipBank` (baked T/R arrays,
+  rate, loop flag, root_motion, additive reference frame).
+- `renderer/pose_layer.py` — pure numpy: `MaskTable`, per-unit `PoseState` (per layer: clip,
+  time, weight, ramp target), batched `compose(states) -> (global_trs (N,J,10), skin
+  (N,J,4,4))`.
+- `renderer/pose_skinner.py` — pyray side: `CpuInjectSkinner`, one scratch `ModelAnimation`
+  per look with its cffi owners kept alive, behind a 5.x / 6.x field adapter beside
+  `anim_frame_count`.
+- Data in config.toml: `[render.pose]` `enabled = false`, `rate` (default 0.51),
+  `crossfade_s`; masks per skeleton as subtree/minus rules over bone names (`legs`, `upper`,
+  `head`), validated at load (unknown names refused, partition checked); a state table
+  replicating `CLIP_MAP` plus per-clip rows (rate, loop, root_motion).
+- Per frame: `consume_events` queues each unit's events → `draw_units` updates state
+  (motion inference as today, table lookup, ramps by `dt`) → one batched `compose` per look
+  group → per unit `skinner.apply`, then projected shadow, blob shadow, `draw_model_ex`
+  unchanged. Per-unit state lives in `_UnitAnimState`, pruned with the existing `_prune`.
+
+**Tests, as properties** (each docstring names the property and the change that breaks
+it): (1) sampler fidelity — our global pose at a key time equals raylib's `framePoses` at a
+frame that snaps to that key, ≤ 1e-5, for every shipped look and clip (breaks on bone
+order, parent chain, quaternion convention, time base); (2) continuity across key
+boundaries and loop seams (breaks on an off-by-one, a missing hemisphere fix, integer-frame
+sampling); (3) masks resolve, partition the bones, refuse unknown names (breaks on a
+hard-coded or typo'd list); (4) layer independence — changing the upper clip leaves legs
+and head locals and legs globals unchanged; (5) inheritance — the legs clip's hips move an
+upper bone's global (breaks on global-space compose); (6) crossfade — weight 0 = source,
+1 = target, angle to target monotone non-increasing; (7) additive identity — at its
+reference frame or weight 0 the pose is unchanged; (8) root-motion strip — a stripped
+clip's root horizontal global translation is constant; (9) skeleton-agnostic — a synthetic
+5-bone glb with its own masks composes, and the two pure modules contain no bone-name
+literal; (10) render-only — compose takes read-only attributes, a frozen unit stub raises
+on any write; (11) off path as in correction 9; (12) `gl_pose_inject_check.py` + a `test_*`
+wrapper (hidden window, subprocess): injecting raylib's frame-k global pose reproduces
+`update_model_animation(anim, k)`'s `animVertices` bit for bit, on each machine's binding.
+Proof beyond tests: `tools/e2e_drive.py --shot` and a look shot, then HUMAN-TEST.
+
+**Ranked risks:** the 5.x / 6.x binding split breaks injection on the other PCs (this
+split already crashed the game once, #80 — mitigation: the adapter, our own reader, test
+12 on every machine); the speed/smoothness change is certain (mitigation: `rate` data,
+default 0.51, HUMAN-TEST); unbatched numpy blows the frame budget; #163 skating without
+the aim-vs-travel modifier; normals change at W13.2; a wrong additive reference; 100 units
+at 60 fps needs more than the CPU path; #164 posture offsets bend knees without foot IK
+(mostly hidden top-down) and the melee clip plays late, on the hit event.
+
 ## 5. Milestone 14 — Zombie motion
 
 ### 5.1 Reference first (before any clip is made)
@@ -423,7 +543,8 @@ only decides *when* a finished animation is triggered):
 - **Wind load seam** (`exchange.wind_scale_q16`, `GameMap.footprint_wind_load`) and the
   **tamed wind** (render side): wind-response animation reads these, never the planes.
 - **Lit-3D seam / one tone-map / projected unit shadow**: the skinned pose feeds all
-  three; a new skinner must keep the marine byte-identity gate (`test_lit3d_extraction`).
+  three; the CPU-inject skinner keeps the marine byte-identity gate (`test_lit3d_extraction`),
+  the GPU skinner (W13.2) re-baselines it deliberately, once, with written rationale (§4.5).
 - **E2E driver** (`tools/e2e_drive.py`) and **look shots**: the proof harnesses; no new
   screenshot harness.
 

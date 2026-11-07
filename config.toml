@@ -2075,6 +2075,222 @@ min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
                           # all sides, 1 = one beam): balanced light casts
                           # nothing, so the direction never flickers
 
+[render.pose]
+# THE pose layer (M13, #162; renderer/pose_layer.py; design
+# docs/animation_milestones_design_2026-11-02.md §4.5): the 3D units' bone
+# pose composed by us -- clips sampled between keys, legs / upper body / head
+# as independent layers over bone masks, crossfades, an additive layer --
+# instead of raylib's integer-frame clip player. Render-only, never on Unit,
+# no digest. Read once when the renderer loads (restart to change). Every key
+# is required; a missing, unknown or mistyped one raises, naming it.
+enabled = false         # false = the clip player exactly as before (the pose
+                        # modules are never built). HUMAN-TEST before true.
+rate = 0.51             # clip seconds per wall second. 0.51 = the speed every
+                        # clip has always played at: raylib 5.5 bakes clips on
+                        # a 17 ms grid and the player stepped 30 grid frames/s
+                        # (30 x 0.017). 1.0 = the clips' authored speed.
+crossfade_s = 0.15      # a clip change ramps over this long (0 = snap, as before)
+layers = ["legs", "upper", "head"]   # override layers, each a mask below
+fallback_state = "idle" # the state whose clips stand in for a missing one
+event_queue = 16        # sim events kept per unit between two frames for the
+                        # pose layer (the fire and hit reactions read them)
+
+# Body regions per skeleton: subtree = every bone under these, minus = without
+# every bone under those. Each skeleton's masks must cover every bone exactly
+# once; the first table whose bones all exist in a look's skeleton is used.
+# A different skeleton is a new table here, never code.
+[render.pose.skeletons.quaternius_ual.masks]   # Universal Animation Library rig
+legs  = { subtree = ["root"], minus = ["DEF-spine.001"] }      # root, hips, legs
+upper = { subtree = ["DEF-spine.001"], minus = ["DEF-neck"] }  # spine, arms, hands
+head  = { subtree = ["DEF-neck"] }                             # neck, head
+
+# Aim vs travel (#163; [render.pose.aim_travel] below): `lower`'s subtree
+# (hips + legs) yaws toward the travel direction; the `counter` chain (the
+# spine, root-most first) turns the torso back to the facing, each bone by
+# its share of the angle (shares sum to 1). Bones of THIS skeleton: a
+# different skeleton names its own here.
+[render.pose.skeletons.quaternius_ual.twist]
+lower = "DEF-hips"
+counter = ["DEF-spine.001", "DEF-spine.002", "DEF-spine.003"]
+shares = [0.4, 0.3, 0.3]
+
+# Posture (#164, renderer/pose_posture.py; the profile rows are in
+# [render.pose.posture] below): which bones each posture parameter turns, about
+# which axis, by how many DEGREES PER UNIT of the parameter (spine_pitch and
+# arm_forward are in degrees, so their rows are per degree; the others are
+# 0..1 amounts). space = "model": the axis in the model at rest (glTF: +y up,
+# +z forward, +x the body's left), turned with the bone's parent; "local":
+# in the bone's own frame. Rows on one bone add. Bones of THIS skeleton: a
+# different skeleton maps its own here.
+[render.pose.skeletons.quaternius_ual.posture]
+up = [0.0, 1.0, 0.0]
+forward = [0.0, 0.0, 1.0]
+spine_pitch = [         # per degree of lean, shared down the spine (sums to 1)
+  { bones = ["DEF-spine.001"], axis = [1.0, 0.0, 0.0], deg = 0.35, space = "model" },
+  { bones = ["DEF-spine.002"], axis = [1.0, 0.0, 0.0], deg = 0.35, space = "model" },
+  { bones = ["DEF-spine.003"], axis = [1.0, 0.0, 0.0], deg = 0.30, space = "model" },
+]
+shoulder_protraction = [   # shoulders rolled forward and a little up
+  { bones = ["DEF-shoulder.L"], axis = [0.0, 1.0, 0.0], deg = -25.0, space = "model" },
+  { bones = ["DEF-shoulder.R"], axis = [0.0, 1.0, 0.0], deg = 25.0, space = "model" },
+  { bones = ["DEF-shoulder.L"], axis = [0.0, 0.0, 1.0], deg = 12.0, space = "model" },
+  { bones = ["DEF-shoulder.R"], axis = [0.0, 0.0, 1.0], deg = -12.0, space = "model" },
+]
+arm_forward = [         # per degree: the upper arm forward, the elbow a part more, the wrist drooping
+  { bones = ["DEF-upper_arm.L", "DEF-upper_arm.R"], axis = [1.0, 0.0, 0.0], deg = -1.0, space = "model" },
+  { bones = ["DEF-forearm.L", "DEF-forearm.R"], axis = [1.0, 0.0, 0.0], deg = -0.4, space = "model" },
+  { bones = ["DEF-hand.L", "DEF-hand.R"], axis = [1.0, 0.0, 0.0], deg = 0.3, space = "model" },
+  { bones = ["DEF-upper_arm.L"], axis = [0.0, 1.0, 0.0], deg = -0.2, space = "model" },   # hands in toward the line ahead
+  { bones = ["DEF-upper_arm.R"], axis = [0.0, 1.0, 0.0], deg = 0.2, space = "model" },
+]
+arm_open = [            # the clips' fists (~77 deg per joint) opened into claws
+  { bones = ["DEF-f_index.01.L", "DEF-f_index.02.L", "DEF-f_index.03.L"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_middle.01.L", "DEF-f_middle.02.L", "DEF-f_middle.03.L"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_ring.01.L", "DEF-f_ring.02.L", "DEF-f_ring.03.L"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_pinky.01.L", "DEF-f_pinky.02.L", "DEF-f_pinky.03.L"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_index.01.R", "DEF-f_index.02.R", "DEF-f_index.03.R"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_middle.01.R", "DEF-f_middle.02.R", "DEF-f_middle.03.R"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_ring.01.R", "DEF-f_ring.02.R", "DEF-f_ring.03.R"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_pinky.01.R", "DEF-f_pinky.02.R", "DEF-f_pinky.03.R"], axis = [1.0, 0.0, 0.0], deg = -55.0, space = "local" },
+  { bones = ["DEF-f_index.01.L", "DEF-f_index.01.R"], axis = [0.0, 0.0, 1.0], deg = 15.0, space = "local" },
+  { bones = ["DEF-f_pinky.01.L", "DEF-f_pinky.01.R"], axis = [0.0, 0.0, 1.0], deg = -15.0, space = "local" },
+]
+head_drop = [           # the neck thrust forward and down, the head tipped back up (eyes ahead)
+  { bones = ["DEF-neck"], axis = [1.0, 0.0, 0.0], deg = 50.0, space = "model" },
+  { bones = ["DEF-head"], axis = [1.0, 0.0, 0.0], deg = -80.0, space = "model" },
+]
+twitch = [              # amplitude per unit of twitch; each bone x row its own noise
+  { bones = ["DEF-shoulder.L", "DEF-shoulder.R"], axis = [0.0, 0.0, 1.0], deg = 20.0, space = "model" },
+  { bones = ["DEF-head"], axis = [0.0, 1.0, 0.0], deg = 25.0, space = "model" },
+  { bones = ["DEF-head"], axis = [1.0, 0.0, 0.0], deg = 15.0, space = "model" },
+  { bones = ["DEF-f_index.01.L", "DEF-f_middle.01.L", "DEF-f_ring.01.L", "DEF-f_pinky.01.L"], axis = [1.0, 0.0, 0.0], deg = 30.0, space = "local" },
+  { bones = ["DEF-f_index.01.R", "DEF-f_middle.01.R", "DEF-f_ring.01.R", "DEF-f_pinky.01.R"], axis = [1.0, 0.0, 0.0], deg = 30.0, space = "local" },
+]
+# knee_bend: `hips` drops by knee_bend x the leg length and each [thigh, shin,
+# foot] folds so its hip-to-ankle line keeps its direction (no IK)
+[render.pose.skeletons.quaternius_ual.posture.knee_bend]
+hips = "DEF-hips"
+legs = [["DEF-thigh.L", "DEF-shin.L", "DEF-foot.L"],
+        ["DEF-thigh.R", "DEF-shin.R", "DEF-foot.R"]]
+
+# State -> clip per layer. The renderer's state names (select_clip): today
+# idle and walk; dead is dormant, as in CLIP_MAP (firing is the fire
+# reaction below, not a state). One clip on all three layers = the whole
+# body plays it, as before.
+[render.pose.states]
+idle = { legs = "Idle_Loop",    upper = "Idle_Loop",    head = "Idle_Loop" }
+walk = { legs = "Walk_Loop",    upper = "Walk_Loop",    head = "Walk_Loop" }
+dead = { legs = "Death01",      upper = "Death01",      head = "Death01" }
+
+# Overlays (#163): partial rows -- a clip for SOME layers, played over the
+# state's row on those layers while a reaction holds them.
+[render.pose.overlays]
+aim = { upper = "Pistol_Idle_Loop", head = "Pistol_Idle_Loop" }  # the pistol aim hold
+
+# Firing (#163): every round that LEAVES a unit's barrel (ShotFiredEvent,
+# launch = true) restarts `shot_clip` on `shot_layer` (a retriggered
+# one-shot recoil) and holds the `overlay` row on its layers until
+# `aim_hold_s` after the last shot, then crossfades back to the state's
+# clips. One clip set for every weapon until the weapon families (W13.4).
+[render.pose.fire]
+overlay = "aim"
+aim_hold_s = 1.0        # PLACEHOLDER (HUMAN-TEST): seconds the aim is held after a shot
+shot_clip = "Pistol_Shoot"
+shot_layer = "upper"
+
+# Hit flinch (#163): a UnitHitEvent of one of `causes` plays `clip` as an
+# ADDITIVE over `masks` (its delta against its own first key, never the bind
+# pose), ramped in and out, restarted by every hit. Weight =
+# weight_min + (weight_max - weight_min) * clamp(damage / damage_full, 0, 1);
+# both weights in [0, 1]. The event has no direction: chest only for now.
+[render.pose.hit]
+clip = "Hit_Chest"
+masks = ["upper", "head"]
+causes = ["bullet", "laser", "melee", "explosion"]   # not the per-tick heat / gas / status damage
+ramp_in_s = 0.03        # PLACEHOLDER (HUMAN-TEST)
+ramp_out_s = 0.12       # PLACEHOLDER (HUMAN-TEST)
+weight_min = 0.5        # PLACEHOLDER (HUMAN-TEST): a graze (a zombie takes 2.5 per round)
+weight_max = 1.0
+damage_full = 60        # PLACEHOLDER: a zombie's bite (60) flinches at weight_max
+
+# Aim vs travel (#163, design §4.5 correction 7): with the body facing its
+# aim, the legs yaw toward the travel direction up to theta_deg either side;
+# past theta_deg + hysteresis_deg they backpedal (the leg clip plays
+# backwards, the yaw reflected) until back under theta_deg - hysteresis_deg.
+# 90 deg = the legs never skate (a backpedal covers everything past a pure
+# strafe). The travel is a noisy position delta: low-passed over smooth_s;
+# the legs turn at most twist_rate_deg_s (a forward/back switch swings
+# them round instead of popping).
+[render.pose.aim_travel]
+theta_deg = 90.0        # PLACEHOLDER (HUMAN-TEST)
+hysteresis_deg = 10.0   # PLACEHOLDER (HUMAN-TEST)
+smooth_s = 0.15         # PLACEHOLDER (HUMAN-TEST)
+twist_rate_deg_s = 540.0  # PLACEHOLDER (HUMAN-TEST): a 180 deg swing in 1/3 s
+
+# Posture (#164, experiment E4; docs/zombie_motion_brief_2026-11-02.md §3):
+# a profile row is the brief's parameters; a unit's amount a in [0, 1] (its
+# role's `posture` below) scales `profile` continuously -- a = 0 is the human,
+# exactly the pose without posture. The bones each parameter moves are the
+# skeleton's [render.pose.skeletons.*.posture] table. tempo_jitter: looping
+# clips play at 1 + a * tempo_jitter * n(t) (n a mean of sines at tempo_hz,
+# |n| <= 1, mean 0); twitch: each twitch bone turns by a * twitch * deg * n_c(t)
+# (twitch_hz). Every unit draws its own phases, frequencies (+- hz_spread) and
+# variation (each listed parameter x (1 +- fraction)) from a generator seeded
+# by (seed, unit id) -- render-only, never the sim's RNG; desync_start = its
+# loops start at its own random time, so a horde does not walk in step.
+[render.pose.posture]
+profile = "stalk"
+seed = 164
+tempo_hz = [0.21, 0.37, 0.59]
+twitch_hz = [1.3, 2.9, 4.7]
+hz_spread = 0.25
+desync_start = true
+variation = { spine_pitch = 0.15, arm_forward = 0.2, head_drop = 0.2, tempo_jitter = 0.25 }
+
+# The brief's "stalk" column (first guesses, PLACEHOLDERS for the HUMAN-TEST):
+# spine and arm in degrees; knee_bend the hip drop as a fraction of the leg.
+[render.pose.posture.profiles.stalk]
+spine_pitch = 30.0
+knee_bend = 0.15
+shoulder_protraction = 0.6
+arm_forward = 55.0
+arm_open = 0.7
+head_drop = 0.5
+tempo_jitter = 0.4
+twitch = 0.3
+
+# Melee (#164): a hit of one of `causes` credited to a unit whose role has the
+# melee reaction makes the ATTACKER play `clips` in turn as a one-shot on
+# `layers` (under its posture). It plays when the hit lands: the sim has no
+# swing-started event. While it plays the `suppress`ed posture parameters fade
+# out (the arm carried forward would lift a punch over the head).
+[render.pose.melee]
+clips = ["Punch_Jab", "Punch_Cross"]
+layers = ["upper"]
+causes = ["melee"]
+suppress = ["arm_forward", "arm_open"]
+
+# Roles (#164; renderer/unit_looks.py ROLES, the role from is_zombie): the
+# reactions a unit of the role plays (fire = the aim hold + recoil on its own
+# shots, hit = the flinch, melee = the strike above) and its posture amount.
+[render.pose.roles]
+player = { reactions = ["fire", "hit"], posture = 0.0 }
+zombie = { reactions = ["melee", "hit"], posture = 1.0 }
+
+# Per-clip playback rows; a clip without a row loops at the global rate with
+# its root motion kept. loop, rate (x the global rate), root_motion ("keep" |
+# "strip": the root's horizontal travel removed, so the body stays on its sim
+# position), additive_ref (the key an additive use of the clip is measured
+# against; 0 = its first key, never the bind pose).
+[render.pose.clips]
+Death01 = { loop = false }
+Pistol_Shoot = { loop = false, rate = 1.96 }   # one-shot; 1.96 x 0.51 = its authored speed (PLACEHOLDER)
+Hit_Chest = { loop = false, rate = 1.96 }      # one-shot; authored speed (PLACEHOLDER)
+Punch_Jab = { loop = false, rate = 1.96 }      # the melee strike (#164); authored speed (PLACEHOLDER)
+Punch_Cross = { loop = false, rate = 1.96 }
+Roll_RM = { root_motion = "strip" }
+Sword_Attack_RM = { root_motion = "strip" }
+
 [render.speckle]
 mode = "soot"              # "off" | "noise" | "soot"  (A/B in studio)
 amp = 0.25
