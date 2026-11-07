@@ -711,4 +711,30 @@ int water_tail_launch_resident(
     uint8_t* d_flag, int32_t* d_frac, int32_t* d_list,
     unsigned long long* d_cnt);
 
+// ---- the stamp kernel (cuda_stamp.cu) — #29 P4b ----------------------------
+// Slot 6's FIELD REBUILD on the device: the five stamp outputs from the living
+// units' footprint rows. The device twin of PhysicsEngine::stamp_units
+// (physics_engine.cpp — THE oracle). Born (N, h, w), N = 1 today; launch
+// only — no malloc, no transfer, no sync.
+//
+//   d_permeability, d_wave_absorb : (N, h, w) float   static baselines (read)
+//   d_heat_atten_q                : (N, h, w) int32   static Q16 (read)
+//   d_light_atten_q               : (N, h, w, 3) int32 static Q16 (read)
+//   d_obstacles                   : (N, h, w) bool    (written)
+//   d_dyn_perm, d_dyn_wabs        : (N, h, w) float   (written)
+//   d_dyn_heat                    : (N, h, w) int32   (written)
+//   d_dyn_light                   : (N, h, w, 3) int32 (written)
+//   d_rows   : (n_rows, STAMP_ROW_COLS) int32, in the host's stamp order:
+//              [env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2]
+//   d_winner : (N, h, w) int32 scratch (the last row to touch each cell)
+// Returns the launch count.
+constexpr int STAMP_ROW_COLS = 9;
+int stamp_launch_resident(
+    int n_env, int h, int w, int n_rows,
+    const float* d_permeability, const float* d_wave_absorb,
+    const int32_t* d_heat_atten_q, const int32_t* d_light_atten_q,
+    bool* d_obstacles, float* d_dyn_perm, float* d_dyn_wabs,
+    int32_t* d_dyn_heat, int32_t* d_dyn_light,
+    const int32_t* d_rows, int32_t* d_winner);
+
 }  // namespace breach_cuda

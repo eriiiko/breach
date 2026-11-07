@@ -90,6 +90,8 @@ static ResidentFields resident_fields_from(const py::dict& dev, int h, int w,
     f.fuel_recip = get("fuel_recip"); f.fire_T_ext_plane = get("fire_T_ext_plane");
     f.fuel_per_o2_plane = get("fuel_per_o2_plane"); f.material = get("material");
     f.water_before = get("water_before");
+    f.permeability = get("permeability"); f.wave_absorb = get("wave_absorb");
+    f.obstacles = get("obstacles"); f.dyn_wave_absorb = get("dyn_wave_absorb");
     return f;
 }
 
@@ -471,7 +473,8 @@ PYBIND11_MODULE(breach_physics, m) {
               const char* names[breach_cuda::RESIDENT_STAGE_COUNTERS] = {
                   "water_tail", "water_tail_active", "combustion", "fire",
                   "fire_gate_open", "sweep", "sweep_light", "temperature",
-                  "books_downloads", "water_tail_boil", "water_tail_evac"};
+                  "books_downloads", "water_tail_boil", "water_tail_evac",
+                  "stamp"};
               for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
                   d[names[k]] = c[k];
               return d;
@@ -4647,6 +4650,19 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("acc_depth"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("draw_r"), py::arg("sim_time"),
            py::arg("ignition_table"), py::arg("ambient"), py::arg("t_amb_q"))
+        // --- #29 P4b: slot 6's stamp on the device --------------------------
+        .def("stamp_units_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w,
+                py::array_t<int32_t, py::array::c_style | py::array::forcecast> rows) {
+            if (rows.ndim() != 2 || rows.shape(1) != 9)   // breach_cuda::STAMP_ROW_COLS
+                throw std::invalid_argument(
+                    "stamp_units_resident: rows must be (n, 9) int32 "
+                    "[env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2]");
+            ResidentFields f = resident_fields_from(dev, h, w, 0, 0);
+            self.stamp_units_resident(f, rows.data(), (int)rows.shape(0));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("rows"),
+           "#29 P4b: the five stamp outputs on the resident planes from the "
+           "host stamp's rows (cuda_stamp.cu).")
         .def("upload_light_resident", [](const PhysicsEngine& self,
                 py::dict dev, int h, int w, int n_gases,
                 py::array_t<int32_t> gas_light_absorb_q16,

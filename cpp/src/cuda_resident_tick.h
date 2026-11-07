@@ -78,6 +78,15 @@ void resident_upload_light(const PhysicsEngine& eng, const ResidentFields& f,
                            const int64_t* light_sky,
                            const int64_t* light_emit_mult, int n_light_emit_mult);
 
+// #29 P4b: slot 6's five stamp outputs on the resident planes (f.permeability,
+// f.wave_absorb, f.heat_atten_q, f.light_atten_q in; f.obstacles,
+// f.dyn_permeability, f.dyn_wave_absorb, f.dyn_heat_atten_q,
+// f.dyn_light_atten_q out) from the host's stamp rows -- one small H2D of the
+// rows (n_rows x STAMP_ROW_COLS int32), the launch core, no sync. Called at
+// the tick's entry, after the entry upload and before the water stage.
+void resident_stamp(const PhysicsEngine& eng, const ResidentFields& f,
+                    const int32_t* rows, int n_rows);
+
 // The bulk sum, fire, the sweep and temperature; then the ONE books D2H and
 // the folds; returns the destroyed walls (row-major).
 std::vector<std::pair<int, int>> resident_tail(
@@ -93,10 +102,11 @@ std::vector<std::pair<int, int>> resident_tail(
 // [2] combustion calls, [3] fire calls, [4] fire ticks whose gate opened,
 // [5] sweep calls, [6] sweep calls with light, [7] temperature calls,
 // [8] books downloads, [9] water-tail ticks that boiled a cell (W5), [10]
-// water-tail ticks that evacuated a cell (W3). A gate that sees these move
+// water-tail ticks that evacuated a cell (W3), [11] stamp ticks (#29 P4b: the
+// device stamp ran -- the five planes were NOT uploaded). A gate that sees these move
 // knows the device ran the stage (a silently host "device run" would make a
 // bit-identity gate vacuous).
-constexpr int RESIDENT_STAGE_COUNTERS = 11;
+constexpr int RESIDENT_STAGE_COUNTERS = 12;
 void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]);
 
 // The sweep's Fleck plane ON DEMAND: the per-call twin copies it into the

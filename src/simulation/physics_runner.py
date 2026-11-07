@@ -796,6 +796,11 @@ class PhysicsRunner:
         # whenever that is (re)seeded, kept equal to it after every active
         # tick (the exit download), so neither side ever re-uploads it.
         self._d_water_before = None
+        # #29 P4b: telemetry for the gates -- resident ticks whose five stamp
+        # planes the DEVICE built from the host's rows, and ticks that
+        # uploaded the host's planes instead (no rows, see take_stamp_rows).
+        self.stamp_device_ticks = 0
+        self.stamp_upload_ticks = 0
         # W5 steam gas index: which gmap.gas slice the flash-boil puff lands
         # in. Resolved BY NAME from the gas table ONCE, on the first
         # _step_water call (never hardcode the slice index) — the same lazy
@@ -1448,13 +1453,23 @@ class PhysicsRunner:
             dev["water_before"] = int(self._d_water_before.data.ptr)
 
         # -- 2. THE ENTRY UPLOAD (one batched from_host) -------------------------
-        gmap.from_host(self._resident_entry_names(gmap, water_dormant, light))
+        # #29 P4b: the five stamp planes are produced on the device from the
+        # host stamp's rows (one small H2D) and leave the upload; a tick the
+        # rows cannot serve (take_stamp_rows: None) uploads the host's planes.
+        stamp_rows = gmap.take_stamp_rows()
+        gmap.from_host(self._resident_entry_names(
+            gmap, water_dormant, light, stamp_rows is None))
         if light:
             self.engine.upload_light_resident(
                 dev, h, w, n_gases,
                 gmap.gases.light_absorb_q16, gmap.gases.light_glow_q16,
                 light_cones=self.light_cones, light_sky=self.light_sky,
                 light_emit_mult=self.light_emit_mult)
+        if stamp_rows is not None:
+            self.engine.stamp_units_resident(dev, h, w, stamp_rows)
+            self.stamp_device_ticks += 1
+        else:
+            self.stamp_upload_ticks += 1
 
         # -- 3. THE DEVICE CHAIN -------------------------------------------------
         # 3a. water: the substep loop, then the W5/W3 tail (#29 P4a) on device.
@@ -1573,13 +1588,22 @@ class PhysicsRunner:
         "heat", "fire", "wall_hp",
         "solid", "is_vacuum", "is_ambient", "thermal_solid", "flammable",
         "material",
-        "dyn_permeability", "dyn_heat_atten_q",
     )
+    # #29 P4b: the stamp outputs the entry upload carries ONLY on a tick the
+    # device stamp did not serve (no rows: the Python reference stamp, a tick
+    # that never stamped, or a topology change between the stamp and the
+    # tick). The device stamp rebuilds all five on the device from the host's
+    # rows (cuda_stamp.cu); `obstacles` and `dyn_wave_absorb` are read by no
+    # device stage (the EOS pre-stage reads the host mirror's wave absorb) and
+    # were never uploaded.
+    _RESIDENT_ENTRY_STAMP = ("dyn_permeability", "dyn_heat_atten_q")
     # The table-derived static planes: patched only through on_tile_changed /
     # _update_caches (GameMap._tile_serial), so uploaded when that moved.
     _RESIDENT_ENTRY_STATIC = (
         "heat_inv_shift", "face_shift", "fuel_recip", "fire_T_ext_plane",
         "fuel_per_o2_plane", "heat_atten_q",
+        # #29 P4b: the device stamp's static baselines
+        "permeability", "wave_absorb",
     )
     # THE EXIT SET -- the synced set the host gameplay slots and the digest
     # read after the tick: every digested field the device writes, `heat`
@@ -1596,10 +1620,13 @@ class PhysicsRunner:
     )
     _RESIDENT_EXIT_RENDER = ("rad_net_sweep", "rad_amb_sweep", "rad_fluence")
 
-    def _resident_entry_names(self, gmap, water_dormant, light):
+    def _resident_entry_names(self, gmap, water_dormant, light,
+                              upload_stamp=False):
         names = list(self._RESIDENT_ENTRY_ALWAYS)
-        if light:
-            names.append("dyn_light_atten_q")
+        if upload_stamp:
+            names.extend(self._RESIDENT_ENTRY_STAMP)
+            if light:
+                names.append("dyn_light_atten_q")
         if getattr(gmap, "_res_tile_serial", None) != gmap._tile_serial:
             names.extend(self._RESIDENT_ENTRY_STATIC)
             names.append("light_atten_q")

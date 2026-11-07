@@ -106,6 +106,8 @@ PHYSICS_WRAPS = (
     # sweep + temperature, ending with the books D2H), the sky bracket's host
     # pass on ambient maps, and the host ripple after the exit download.
     ("bp", "PhysicsEngine.upload_light_resident", "  7 light inputs (resident)", True),
+    # #29 P4b: slot 6's stamp on the device (the five planes from the host's rows).
+    ("bp", "PhysicsEngine.stamp_units_resident", "  7 stamp (resident)", True),
     ("bp", "PhysicsEngine.step_water_tail_resident", "  7 water tail (resident)", True),
     ("bp", "PhysicsEngine.run_combustion_resident", "  7 combustion (resident)", True),
     ("bp", "PhysicsEngine.step_tail_resident", "  7 tail (resident: fire+sweep+temp+books)", True),
@@ -234,9 +236,12 @@ class TickStageProfiler:
                     rec[0] += 1
                     rec[1] += int(getattr(gm, n).nbytes)
                     nbytes += int(getattr(gm, n).nbytes)
-                prof._cur_seq.append((label, bus, len(names), nbytes))
+                # #29 P4b: the field NAMES ride along (a fifth element), so a
+                # gate can say which planes a tick's upload carried.
+                prof._cur_seq.append((label, bus, len(names), nbytes,
+                                      tuple(names)))
             elif phys:
-                prof._cur_seq.append((label, None, 0, 0))
+                prof._cur_seq.append((label, None, 0, 0, ()))
             t0 = time.perf_counter()
             try:
                 return orig(*a, **k)

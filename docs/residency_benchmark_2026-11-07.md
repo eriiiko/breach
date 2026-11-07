@@ -693,7 +693,7 @@ the launch body; P4a wires it to the persistent fields and removes the differenc
 
 ## P2: the resident tick under Nsight (2026-11-07)
 
-Nsight capture pending (Erik runs C:\tmp\breach_nsys_capture.ps1 elevated; then
+Nsight capture pending when this section was written (since taken and READ: see "P2 follow-up: the Nsight capture, read" below; Erik runs C:\tmp\breach_nsys_capture.ps1 elevated; then
 `tools/nsys_report.py C:/tmp/breach_resident_medium_stats`). The reader is in place
 (`tools/nsys_report.py`, tested on hand-made tables, `tests/test_nsys_report.py`): per captured
 tick, kernel launches, copies by direction (count, bytes, time), `cudaMalloc` / `cudaFree`,
@@ -778,4 +778,101 @@ planes when `GameMap._tile_serial` moved, and the sky bracket's `gas` pair on an
 the sky exchange live.
 
 **Not measured:** the P3-regime (long-run) numbers -- both runs are 15 s fresh processes; the
-large ship; a wet or ambient match. The Nsight capture is still pending.
+large ship; a wet or ambient match. The Nsight capture was still pending (read since: "P2 follow-up" below).
+
+## P2 follow-up: the Nsight capture, read (2026-11-07, with P4b)
+
+Erik's capture (`C:\tmp\breach_resident_medium.nsys-rep`, taken after P4a merged: `bench_bot_matches
+--level ship_demo` medium, `--cuda --resident --nvtx`, 90 captured ticks, 15 s of sim so the P2 boosted
+window), read with `tools/nsys_report.py C:/tmp/breach_resident_medium_stats --top 20` (the tool ran on
+the file as it stands; no fix needed). Per captured tick (window total / 90):
+
+| quantity | per tick |
+|---|---|
+| kernel launches (GPU side) | 537.9 |
+| kernel time (GPU) | 2090 us |
+| `cudaLaunchKernel` API time | 3.0 ms (537.9 calls, mean 5.6 us) |
+| H2D copies | 18.7 x 560 KB (86 us GPU) |
+| D2H copies | 16.9 x 773 KB (130 us GPU) |
+| D2D copies | 67.1 x 2104 KB (75 us GPU) |
+| memsets | 34.0 x 1604 KB (38 us GPU) |
+| copy / memset API calls (all four) | 136.7 (2.28 ms of host API time) |
+| explicit device syncs | 12.4 (0.63 ms; `cudaDeviceSynchronize` mean 345 us) |
+| `cudaMalloc` / `cudaFree` | 0 / 0 (the zero-malloc steady state holds) |
+
+Top kernels by GPU time (share of the 2.09 ms): `mg_fused_tail` 565 us (27.0 %, 7.2 launches),
+`mg_smooth_color` 296 us (14.2 %, **114.9 launches**), `rs_wavefront` (the radiation sweep) 285 us (13.6 %,
+88 launches), `trace_apply` 228 us (10.9 %, 35.8 launches), `bulk_e_apply_v2` 66 us (3.2 %),
+`energy_flux_pass_b` 58 us (2.8 %), `trace_wipe` 53 us (2.5 %, 35.8 launches), `energy_flux_pass_a` 45 us (2.2 %),
+`mg_residual` 36 us, `bulk_e_recover_v2` 34 us, `bulk_nb_accum` 33 us (28.6 launches), `bulk_flux_dq` 32 us.
+Host NVTX wall (the capture's own overhead inflates it ~40 % over an unprofiled run: `step` 11.0 ms against
+7.9 ms in section "P4a"): `7 physics` 8.41 ms, of it EOS 4.86, tail 1.03, D2H 0.81, H2D 0.65,
+combustion 0.35, trace tail 0.16; `6 stamp_units` 0.53 (host C++), `9b` 0.41.
+
+**Reading.**
+1. **The resident tick is launch- and sync-bound, not kernel-bound.** The GPU does 2.09 ms of kernel work in a
+   step that takes ~8 ms of host time (11 ms under capture): ~20 % busy at N = 1. Its 538 launches cost 3.0 ms of
+   launch API time alone (more than the kernels they start), the 137 copy / memset API calls another 2.3 ms, the
+   12 explicit syncs 0.6 ms; a mean kernel is 3.9 us of GPU time.
+2. **The pressure solve is ~45 % of the GPU time and most of the launches** (`mg_fused_tail` + `mg_smooth_color`
+   + residual / restrict / prolong): the smoother alone is 115 launches a tick. The sweep is 13.6 % in 88 launches,
+   the trace planes 13.4 % in 72 launches (a launch per plane per substep).
+3. **Copies are launch-count, not bandwidth:** the 101 D2D + memset calls a tick move 3.7 MB at ~1 us of GPU time
+   each but cost ~1 us-class host API time each; the H2D / D2H pair is 560 / 773 KB a tick at ~100 us of GPU time
+   each.
+4. **What P5 and P9 should target.** P5 (N envs in one launch) is the direct fix for point 1: the launch, sync and
+   copy-call overhead is per tick, not per env, so it amortizes across N and the kernel time is what is left (the
+   2.09 ms here is the N = 1 floor of useful work). P9 attacks the per-tick fixed cost itself: fuse or graph the
+   multigrid smoother's 115 launches and the per-plane trace launches (72), take the 12 syncs and the ~100
+   scratch D2D / memset calls out of the substep loop (device-side scratch zeroing inside kernels), and move the
+   `dem_acc` plane (328 KB D2H a tick, read by nothing but the digest) off the per-tick bus. Both are measurable
+   against this table: launches per tick, API ms per tick, syncs per tick.
+5. **Caveat:** 15 s captures sit in the driver's boosted P2 window (the P2 finding): the kernel times here are
+   the optimistic end of a long run's.
+
+## P4b: the stamp kernel (2026-11-07)
+
+**What moved.** Slot 6's five stamp planes (`obstacles`, `dyn_permeability`, `dyn_wave_absorb`,
+`dyn_heat_atten_q`, `dyn_light_atten_q`) are built on the device in the resident tick, by
+`stamp_launch_resident` (`cpp/src/cuda_stamp.cu`, N-shaped, 3 launches: reset + the MAX stamps + the
+last-row-wins permeability write), from a per-tick upload of the unit rows the host stamp already flattened
+(`GameMap.take_stamp_rows`: one `(R, 9)` int32 matrix, 108 rows = 3.8 KiB a tick on this match, staged through
+pinned memory so the copy is asynchronous). The CPU stamp stays THE oracle and still runs (gameplay reads its
+planes); the device planes are a second copy built from the same rows, so the entry `from_host` no longer carries
+`dyn_permeability` / `dyn_heat_atten_q` (and not `dyn_light_atten_q` while light is requested). The per-tile refill
+(`_neighbor_mean`'s float division, atmosphere) stays on the host: its output rides the atmosphere upload that
+slot 6b's FieldEdits keep anyway, and a device refill would run after that flush rather than before it.
+
+**Method.** As P4a: `tools/bench_bot_matches.py --level ship_demo --seeds 1 --timing --sim-seconds 15 --cuda
+--cuda-build cpp/build_cuda --resident --profile` (plus a `--profile-sync` run), one fresh process per line, the
+same length before and after, two plain runs each. Before = this worktree's build at main `c833fb89`; after = the
+branch head's. The digest is `59719adc8953` on all six runs.
+
+| stage, ms per tick, mean (plain, run 1 / run 2) | before (`c833fb89`) | after (P4b) |
+|---|---|---|
+| total (step + controllers) | 9.78 / 9.89 | 9.70 / 9.73 |
+| step | 7.926 / 8.057 | 7.863 / 7.890 |
+| 6 stamp_units (host C++, the oracle) | 0.504 / 0.497 | 0.505 / 0.505 |
+| 7 physics | 6.036 / 6.202 | 5.967 / 6.005 |
+| &nbsp;&nbsp;7 H2D `GameMap.from_host` | 0.298 / 0.291 | 0.276 / 0.286 |
+| &nbsp;&nbsp;7 stamp (resident) | -- | 0.047 / 0.050 |
+| &nbsp;&nbsp;7 EOS `run_substeps_resident` | 3.983 / 4.135 | 3.915 / 3.930 |
+| &nbsp;&nbsp;7 tail (resident) | 0.843 / 0.874 | 0.832 / 0.834 |
+| &nbsp;&nbsp;7 D2H `GameMap.to_host` | 0.629 / 0.623 | 0.612 / 0.615 |
+| real-time x | 4.26 / 4.21 | 4.30 / 4.28 |
+
+Attributed (`--profile-sync`): the stamp stage 0.118 ms (3 launches + the rows copy); H2D 0.722 -> 0.588; EOS
+3.747 -> 3.596.
+
+**Bus per tick:** entry `from_host` 15 fields, **478.5 KiB** (was 17 fields, 533.2 KiB: the two 27.3 KiB stamp
+planes left) plus the 3.8 KiB of rows inside C++; exit `to_host` unchanged, 12 fields, 847.7 KiB. The device stamp
+ran on 360 / 360 ticks of the match (0 fallbacks).
+
+**Reading.** A small win, as predicted: the step is ~0.1 ms (1.3 %) faster and real time 4.23x -> 4.29x, within
+two runs' spread but in the same direction on every pair. The two planes are 10 % of the entry bytes and ~20 us of
+PCIe time; the host stamp (0.5 ms) is untouched because it is still the oracle and gameplay still reads its
+planes. A first version copied the rows with a pageable `cudaMemcpy` and the stamp stage cost 0.31 ms of host time
+-- it waited for the entry upload still in flight (the wait moved out of the EOS stage, 3.98 -> 3.65, for no net
+gain); the pinned asynchronous copy brought the stage to 0.05 ms. The patch's value is architectural: the device
+no longer needs the host's stamp planes, which is the shape P5 (N envs) and the later patches that drop the host
+mirror need.

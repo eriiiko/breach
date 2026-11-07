@@ -20,6 +20,16 @@ docs/cuda_s8a_path_a_impl_2026-07-21.md §7). Parts:
     1f ship_demo, the real match (bots + horde, headless), 120 ticks
   The per-part notes below predate P4a where they say "bracketed".
 
+  #29 P4b (the stamp kernel): every leg ALSO checks the five stamp planes the
+  device now builds (obstacles, dyn_permeability, dyn_wave_absorb,
+  dyn_heat_atten_q, dyn_light_atten_q) against the CPU world's, tol 0, EVERY
+  tick: the resident world's device planes are POISONED before the tick, so a
+  plane the device stamp did not write cannot equal the CPU's (the entry
+  upload no longer carries them), and the resident "stamp" counter must
+  advance on (nearly) every tick -- a tick whose rows the host withheld
+  (a topology change between the stamp and the tick) uploads the host's planes
+  instead and is checked on the planes it did upload.
+
   PART 1a — BIT-IDENTITY, SPACE MAP: a >=30-tick FULL-ENGINE A/B on a seeded
   scenario with detonations / water / fire / a scripted structural edit, driven
   through the REAL per-tick path (PhysicsRunner.step) on two independently
@@ -185,15 +195,21 @@ def _build_scenario(H, W):
 _EDIT_TICK = 12
 
 
-def _one_tick(runner, g, dt, tick_idx):
+def _one_tick(runner, g, dt, tick_idx, late_edit=None):
     """One full engine tick, mirroring Simulation.step's physics slice: the
     scripted structural edit (combat), the pre-physics unit stamp, the physics
-    step, burn-through wall destruction, and the end-of-tick heat clear."""
+    step, burn-through wall destruction, and the end-of-tick heat clear.
+    ``late_edit`` (y, x): a wall destroyed AFTER the stamp and before the
+    physics step -- slot 6b's payload walls (#29 P4b: the device stamp's
+    baselines would be newer than the oracle's, so the host withholds the
+    stamp rows and the tick uploads the host's planes instead)."""
     if tick_idx == _EDIT_TICK:
         # A scripted structural edit — a wall breached by "combat" this tick, on
         # the mirror, between ticks (picked up by next tick's batched H2D).
         g.destroy_wall(6, 6)
     g.stamp_units([])
+    if late_edit is not None:
+        g.destroy_wall(*late_edit)
     destroyed = runner.step(g, dt)
     for (yy, xx) in destroyed:
         g.destroy_wall(yy, xx)
@@ -433,6 +449,39 @@ def _counters() -> dict:
     return dict(bp.resident_stage_counters())
 
 
+# #29 P4b: the five stamp planes and what poisons them (a value no stamp
+# writes: the kernel must overwrite it or the tick's compare fails).
+_STAMP_PLANES = ("obstacles", "dyn_permeability", "dyn_wave_absorb",
+                 "dyn_heat_atten_q", "dyn_light_atten_q")
+_STAMP_UPLOADED = ("dyn_permeability", "dyn_heat_atten_q")   # the fallback's
+_STAMP_POISON = {"obstacles": True, "dyn_permeability": 7.0,
+                 "dyn_wave_absorb": 7.0, "dyn_heat_atten_q": -12345,
+                 "dyn_light_atten_q": -12345}
+
+
+def _poison_stamp_planes(g_gpu) -> None:
+    if not g_gpu.residency_on():
+        return
+    for name in _STAMP_PLANES:
+        g_gpu._dev[name].fill(_STAMP_POISON[name])
+
+
+def _stamp_plane_check(label, t, g_cpu, g_gpu, stamped) -> int:
+    """The device's five stamp planes vs the CPU world's host planes, tol 0
+    (a tick the device stamp did not serve uploaded two of them: those)."""
+    if not g_gpu.residency_on():
+        return 0
+    bad = 0
+    for name in (_STAMP_PLANES if stamped else _STAMP_UPLOADED):
+        dev = g_gpu._dev[name].get()
+        if not np.array_equal(dev, getattr(g_cpu, name)):
+            bad += 1
+            print(f"  {label} tick {t}: the DEVICE {name} differs from the CPU "
+                  f"stamp's ({int(np.count_nonzero(dev != getattr(g_cpu, name)))} "
+                  f"cells; device stamp ran: {stamped})")
+    return bad
+
+
 def _run_leg(label, world_cpu, world_gpu, n_ticks, step_fn, evidence,
              headless_render=False, post_tick=None):
     """THE P4a A/B driver. ``world_*`` = (gmap, runner) of two identically
@@ -460,8 +509,12 @@ def _run_leg(label, world_cpu, world_gpu, n_ticks, step_fn, evidence,
             _residency(False); _set_backends(False)
             step_fn(world_cpu, t)
             _residency(True); _set_backends(True)
+            _poison_stamp_planes(g_g)
+            stamp0 = _counters()["stamp"]
             step_fn(world_gpu, t)
+            stamped = _counters()["stamp"] > stamp0
             _residency(False); _set_backends(False)
+            bad += _stamp_plane_check(label, t, g_c, g_g, stamped)
             if headless_render:
                 g_g.to_host(["rad_net_sweep", "rad_amb_sweep", "rad_fluence"])
             res_c = _closure_residual(led_c, _ledger(g_c, r_c))
@@ -499,6 +552,8 @@ def _run_leg(label, world_cpu, world_gpu, n_ticks, step_fn, evidence,
     if percall_comb:
         ok = False
         print(f"  {label}: the PER-CALL combustion twin ran {percall_comb} times")
+    evidence = dict(evidence)
+    evidence.setdefault("stamp", int(0.8 * n_ticks))   # P4b: the device stamp is the norm
     for k, need in evidence.items():
         if delta.get(k, 0) < need:
             ok = False
@@ -543,7 +598,8 @@ def _blast_tick(runner, g, dt, tick_idx):
     if tick_idx == 6:
         add_source(g, [(y, x) for y in range(45, 51) for x in range(47, 50)],
                    gas_fixed.quantize_q16_scalar(2.0))
-    _one_tick(runner, g, dt, tick_idx)
+    _one_tick(runner, g, dt, tick_idx,
+              late_edit=(46, 50) if tick_idx == 20 else None)
 
 
 def part1a_bit_identity() -> bool:
@@ -560,6 +616,13 @@ def part1a_bit_identity() -> bool:
     if int(r_g.combustion.e_comb_heat_sum) <= 0:
         ok = False
         print("  1a: the resident combustion never burned (vacuous)")
+    # #29 P4b: tick 20 destroys a wall AFTER the stamp: that tick's rows are
+    # withheld and the host's planes uploaded (the path must have run, and
+    # been tol 0 -- the leg above compared it), every other tick is the device's.
+    if r_g.stamp_upload_ticks < 1 or r_g.stamp_device_ticks < 30:
+        ok = False
+        print(f"  1a: stamp path split device {r_g.stamp_device_ticks} / "
+              f"upload {r_g.stamp_upload_ticks}: the withheld-rows path did not run")
     return ok
 
 
