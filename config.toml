@@ -1872,8 +1872,8 @@ seed = 2718                 # the flow map's per-cycle offsets and boil directio
 # surface (floor, units, props; renderer/light_curve.py). x = the light reaching
 # a pixel, y = the light it takes instead, both sqrt-encoded over `range`.
 # Render-only. Not on it: smoke and water, which read the plain light field.
-enabled = false             # false = the plain light, bit for bit
-points = [[0.000, 0.000], [1.000, 1.000]]   # [x, y], x increasing; two points at
+enabled = true              # false = the plain light, bit for bit
+points = [[0.020, 0.035], [0.062, 0.172], [0.152, 0.379], [0.211, 0.406], [0.590, 0.852], [0.801, 0.957]]   # [x, y], x increasing; two points at
                             # neighbouring x are a hard step. Erik's threshold
                             # idea to start from (continuous below, fully lit
                             # above): [[0, 0], [0.5, 0.5], [0.52, 0.95], [1, 1]]

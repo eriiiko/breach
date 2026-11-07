@@ -117,14 +117,15 @@ def test_the_settings_door_refuses_a_mistyped_dial(over):
         light_curve_settings(_section(**over))
 
 
-def test_the_shipped_table_is_off_and_passes_the_door():
-    """PROPERTY: the shipped game runs the plain light until Erik turns the
-    curve on. BREAKS IF: the table goes on by default before its HUMAN-TEST."""
+def test_the_shipped_table_passes_the_door_with_the_editor_closed():
+    """PROPERTY: the shipped curve is one the door takes, and the shipped game
+    opens no tuning panel. BREAKS IF: a tuning session lands ``panel = true``
+    (Save leaves that line to the hand) or a hand edit breaks the table."""
     with open(ROOT / "config.toml", "rb") as f:
         table = tomllib.load(f)["render"]["light_curve"]
     cfg = SimpleNamespace(render=SimpleNamespace(
         light_curve=SimpleNamespace(**table)))
-    assert light_curve_settings(cfg).enabled is False
+    assert light_curve_settings(cfg).panel is False
 
 
 def test_save_rewrites_only_its_three_lines(tmp_path):
