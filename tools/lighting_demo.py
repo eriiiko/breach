@@ -116,6 +116,11 @@ Headless flags (no human at the keyboard):
                      volley of sparks held at its birth state minus the same
                      frame without them, alternated frame by frame over N
                      (600) frames (run it with --level blast_final).
+    --debris-perf [N] graphics G4 P4: the DEBRIS' GPU ms -- the particle
+                     draw's premultiplied "debris" stage with the level's
+                     volley of chips held 12 ticks after birth minus the same
+                     frame without them, alternated over N (600) frames (run
+                     it with --level blast_final).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
                      tools/look_shots.toml (all, or the comma-separated
                      subset) to scratchpad/look/<name>_<git-sha>.png, one
@@ -1323,6 +1328,107 @@ def _run_spark_perf(renderer, sim, lights_in, light_sky,
     print("OK -- spark perf pass complete (--spark-perf)")
 
 
+def _parse_debris_perf() -> Optional[int]:
+    """``--debris-perf [N]`` -- measure N frames (default 600)."""
+    if "--debris-perf" not in sys.argv:
+        return None
+    v = _argv_value("--debris-perf")
+    try:
+        return max(2, int(v)) if v and not v.startswith("--") else 600
+    except ValueError:
+        return 600
+
+
+def _run_debris_perf(renderer, sim, lights_in, light_sky,
+                     sim_time_per_tick: float, ticks_per_round: int,
+                     frames: int) -> None:
+    """Graphics G4 P4: the debris' GPU cost on the level's own volley, the
+    sparks' method. The sim runs (lit) until the volley's chips exist and
+    then 12 ticks more (they have flown out and landed), then FREEZES (no
+    more upload_state: the chips are held); each measured frame times the
+    debris stage on the GPU, alternating the chips on (the held state) and
+    off (cleared) -- cost = on - off."""
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    grid_h, grid_w = sim.gmap.solid.shape
+    ds = renderer.debris
+    held = None
+    after = None
+    for _ in range(int(20 * CFG.clock.ticks_per_second)):
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total,
+                                            sim_time_per_tick, grid_w,
+                                            grid_h), light_sky)
+        if sim.is_paused():
+            sim.set_paused(False)
+        sim.step()
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        renderer.consume_events(sim.tick_events, sim_tick=total)
+        renderer.upload_state(sim.gmap, sim_tick=total,
+                              light_serial=sim.light_serial, alpha=0.0,
+                              paused=False)
+        if ds.p.n and after is None:
+            after = 12
+        if after is not None:
+            after -= 1
+            if after <= 0:
+                held = ds.p.d.copy()
+                break
+    if held is None:
+        print("[debris perf] no chip in 20 s on this level -- run it with "
+              "--level blast_final")
+        return
+    draw_fn = renderer._draw_debris
+    timer = GLTimer()
+    cur = {"gpu": 0.0}
+
+    def timed(*a, **kw):
+        timer.begin()
+        n = draw_fn(*a, **kw)
+        timer.end()
+        cur["gpu"] += timer.result_ms()
+        return n
+
+    renderer._draw_debris = timed
+    rows = []
+    try:
+        for i in range(PERF_WARMUP_FRAMES + frames):
+            on = (i % 2) == 0
+            ds.p.d = held.copy() if on else held[:0].copy()
+            cur["gpu"] = 0.0
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            if i >= PERF_WARMUP_FRAMES:
+                rows.append((float(on), cur["gpu"],
+                             float(renderer.ember_draw
+                                   .debris_sprites_last_frame)))
+    finally:
+        renderer._draw_debris = draw_fn
+    a = np.asarray(rows, np.float64)
+    on, off = a[a[:, 0] == 1], a[a[:, 0] == 0]
+
+    def stat(x):
+        return f"mean {x.mean():6.3f}  p95 {np.percentile(x, 95):6.3f}"
+
+    print(f"[debris perf] {held.shape[0]} chips held 12 ticks after birth, "
+          f"{on[:, 2].mean():.0f} drawn; {len(a)} frames "
+          f"(+{PERF_WARMUP_FRAMES} warm-up)")
+    print(f"[debris perf] DEBRIS STAGE GPU ms: chips on {stat(on[:, 1])} ; "
+          f"off {stat(off[:, 1])} ; DEBRIS GPU = on - off = "
+          f"{on[:, 1].mean() - off[:, 1].mean():6.3f} ms (world RT "
+          f"{renderer.world.world_px_w}x{renderer.world.world_px_h})")
+    print(f"[debris perf] CPU update ms (the last frame) "
+          f"{ds.last_update_ms:6.3f}")
+    print("OK -- debris perf pass complete (--debris-perf)")
+
+
 def _run_shock_perf(renderer, sim, lights_in, light_sky,
                     sim_time_per_tick: float, ticks_per_round: int,
                     frames: int) -> None:
@@ -1812,6 +1918,16 @@ def main() -> None:
             renderer.shutdown()
         return
 
+    debris_perf_frames = _parse_debris_perf()
+    if debris_perf_frames is not None:
+        try:
+            _run_debris_perf(renderer, sim, lights_in, light_sky,
+                             sim_time_per_tick, ticks_per_round,
+                             debris_perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
     shock_perf_frames = _parse_shock_perf()
     if shock_perf_frames is not None:
         try:
@@ -1939,6 +2055,9 @@ def main() -> None:
         # graphics G4 P3: the sparks
         if "sparks" in look_shot.hide:
             renderer.sparks.enabled_override = False
+        # graphics G4 P4: the debris
+        if "debris" in look_shot.hide:
+            renderer.debris.enabled_override = False
         # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
         if look_shot.fire_debug:
             renderer.fire_vfx.debug_override = look_shot.fire_debug
