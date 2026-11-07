@@ -13,6 +13,11 @@
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
+
+// #29 P1b: the build id, defined in the GENERATED TU <build dir>/generated/
+// build_id.cpp that cpp/gen_build_id.cmake writes at BUILD time (git HEAD's
+// SHA, "-dirty" appended for a modified tracked file, "unknown" without git).
+const char* breach_build_id();
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
@@ -351,6 +356,15 @@ static int rad_currency_arg(const char* who, const py::object& e_table_obj,
 
 PYBIND11_MODULE(breach_physics, m) {
     m.doc() = "Breach physics engine -- C++ accelerated simulation";
+
+    // #29 P1b (residency design §6): the compiled module's provenance -- the
+    // commit it was BUILT from, generated at build time so an incremental
+    // build cannot go stale. rl_env.require_snapshot and tools/cuda_green.py
+    // compare it with HEAD; match_replay.build_id() stays THE describe helper.
+    m.def("build_id", []() { return std::string(breach_build_id()); },
+          "git HEAD's SHA this module was built from (+ '-dirty' when a "
+          "tracked file differed; 'unknown' without git). Generated at build "
+          "time (cpp/gen_build_id.cmake).");
 
     // CUDA-S0: advertise whether this .pyd was built with the GPU backend, and
     // expose the hello-world map kernel + device info. HAS_CUDA lets the

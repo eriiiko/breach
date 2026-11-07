@@ -119,7 +119,31 @@ if(BREACH_CUDA)
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
 endif()
 
+# The build id (#29 P1b, residency design §6 / §13 b.16): ONE generated TU,
+# `generated/build_id.cpp` in this build dir, defining breach_build_id() =
+# git HEAD's SHA (+ "-dirty" for a modified tracked file), exposed as
+# `breach_physics.build_id()` -- the compiled module's provenance, read by
+# rl_env.require_snapshot and tools/cuda_green.py (match_replay.build_id()
+# stays THE git-describe helper). Generated at BUILD time, never at configure:
+# the target below always runs (cmake -P cpp/gen_build_id.cmake) and rewrites
+# the TU only when its text changes, so an incremental build can never carry
+# a stale id and an unchanged commit recompiles nothing. Not a sim TU (one
+# string, no arithmetic): it keeps the global flags, off the /fp:strict list.
+find_package(Git QUIET)
+set(BREACH_BUILD_ID_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_id.cpp")
+add_custom_target(breach_build_id ALL
+    COMMAND "${CMAKE_COMMAND}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DREPO_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "-DOUT=${BREACH_BUILD_ID_CPP}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/gen_build_id.cmake"
+    BYPRODUCTS "${BREACH_BUILD_ID_CPP}"
+    COMMENT "breach build id (git HEAD at build time)"
+    VERBATIM)
+list(APPEND BREACH_SOURCES "${BREACH_BUILD_ID_CPP}")
+
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
+add_dependencies(breach_physics breach_build_id)
 
 if(BREACH_CUDA)
     set_target_properties(breach_physics PROPERTIES
