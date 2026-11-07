@@ -257,6 +257,11 @@ class GameRenderer:
         # them). [render.gas_relief] is re-read every frame (Ctrl+R live);
         # enabled = false falls back to the B2 erosion look above.
         self.gas_relief = GasReliefPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # Graphics G5: the light curve editor, None unless
+        # [render.light_curve] panel is on.
+        self.curve_panel = None
+        self._curve_hist = None
+        self._curve_hist_age = 0.0
         # G2: the smoke cast shadow's inputs this frame (_smoke_cast_inputs)
         self._smoke_cast = (None, (1.0, 1.0), (0.0, 0.0, 0.0, 0.0),
                             (0.0, 0.0, 0.0, 0.0))
@@ -835,6 +840,9 @@ class GameRenderer:
         if self._pending_tile_patches:
             self._apply_tile_patches()
 
+        # Graphics G5: this frame's light curve, for the floor and the 3D pass.
+        self.lighting.set_light_curve(self._frame_light_curve())
+
         # 0. Graphics G2: the relief's CAST PRODUCT (occlusion + height per
         # texel, both species layers), rendered into its own target BEFORE the
         # scene RT is bound; the floor, the 3D units and props (the smoke's
@@ -1308,6 +1316,7 @@ class GameRenderer:
                 smoke_grid=self._smoke_cast[1],
                 smoke_cast=self._smoke_cast[2],
                 smoke_cast2=self._smoke_cast[3],
+                curve=self.lighting.curve_uniforms,
             )
             rl.begin_mode_3d(self._world_cam3d)
             try:
@@ -2091,8 +2100,65 @@ class GameRenderer:
             self.camera.set_zoom(self.camera.zoom_px_per_tile + zoom_step * 0.4)
         # Mouse wheel zoom
         wheel = rl.get_mouse_wheel_move()
-        if wheel != 0:
+        if wheel != 0 and not self.pointer_captured():
             self.camera.set_zoom(self.camera.zoom_px_per_tile + wheel * zoom_step)
+
+    # ---- the light curve and its editor (graphics G5, #64) ---------------
+
+    def _frame_light_curve(self):
+        """This frame's curve: the panel's edit while it is open, else the
+        config's. ``panel = true`` + Ctrl+R opens it; a reload that changed
+        the table starts the edit again from the file."""
+        from renderer.light_curve import light_curve_settings
+        from ui.light_curve_panel import CurvePanel
+        curve = light_curve_settings(CFG)
+        if not curve.panel:
+            self.curve_panel = None
+            return curve
+        if self.curve_panel is None or self.curve_panel.base != curve:
+            self.curve_panel = CurvePanel(curve)
+        return self.curve_panel.curve
+
+    def pointer_captured(self) -> bool:
+        """The mouse is on the light curve panel: the game ignores its clicks
+        and its wheel."""
+        panel = self.curve_panel
+        if panel is None:
+            return False
+        from ui.light_curve_panel import panel_layout
+        return panel.captures(panel_layout(rl.get_screen_width()),
+                              rl.get_mouse_x(), rl.get_mouse_y())
+
+    def update_light_curve_panel(self, dt: float) -> None:
+        """The panel's frame: mouse in, histogram refreshed, drawn. Called
+        after the HUD. No panel, no cost."""
+        panel = self.curve_panel
+        if panel is None:
+            return
+        from renderer.light_curve import light_histogram, write_settings
+        from ui.draw import draw_light_curve_panel
+        from ui.light_curve_panel import panel_layout
+        layout = panel_layout(rl.get_screen_width())
+        mx, my = rl.get_mouse_x(), rl.get_mouse_y()
+        left = rl.MouseButton.MOUSE_BUTTON_LEFT
+        if rl.is_mouse_button_pressed(left):
+            if panel.press(layout, mx, my) == "save":
+                write_settings(CFG._path, panel.curve)
+                panel.mark_saved()
+        elif rl.is_mouse_button_down(left):
+            panel.move(layout, mx, my)
+        else:
+            panel.release()
+        if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_RIGHT):
+            panel.right_press(layout, mx, my)
+        self._curve_hist_age += dt
+        if self._curve_hist is None or self._curve_hist_age >= 0.25:
+            self._curve_hist_age = 0.0
+            light = (np.asarray(self.lighting.packed_a[..., :3],
+                                dtype=np.float32)
+                     * self.lighting.light_gain)
+            self._curve_hist = light_histogram(light, panel.curve.range)
+        draw_light_curve_panel(panel, layout, self._curve_hist)
 
     def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> bool:
         """WASD / arrows pan (Shift x3). Returns True when the player panned

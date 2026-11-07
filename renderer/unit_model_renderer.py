@@ -47,7 +47,8 @@ import pyray as rl
 
 from config import CFG
 
-from .lit3d import LightFieldCtx, bind_smoke_cover_map, make_camera
+from .lit3d import (LightFieldCtx, bind_smoke_cover_map, make_camera,
+                    set_light_curve_uniforms)
 from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
                             load_marine_shader)
 from .unit_looks import (BODY_LIGHT_UNIT, ROLES, LookAssigner, all_look_names,
@@ -560,6 +561,7 @@ class UnitModelRenderer:
                     mats.append(mat)
             # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
             bind_smoke_cover_map(self._shader, mats, light_ctx)
+            set_light_curve_uniforms(self._shader, light_ctx.curve)
             self._marine_shader.set_frame_uniforms(
                 light_ctx.ambient, light_ctx.light_gain,
                 light_ctx.world_px_w, light_ctx.world_px_h,

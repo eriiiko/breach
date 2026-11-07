@@ -80,6 +80,32 @@ float smokeShadow(vec2 world_uv, vec2 to_light, float z_tiles) {
     return (1.0 - u_smoke_cast.x * shC) * (1.0 - u_smoke_cast.y * shF);
 }
 
+uniform float u_curve_lut[256];  // the curve, y at 256 even x
+uniform vec4  u_curve;           // (on, range, dark saturation, dark knee)
+
+float lightCurveLum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+float lightCurveGain(vec3 light) {
+    if (u_curve.x < 0.5) return 1.0;
+    float L = lightCurveLum(max(light, vec3(0.0)));
+    if (L <= 1e-6) return 1.0;
+    float u = pow(min(L / u_curve.y, 1.0), 1.0 / 2.2) * 255.0;
+    int i = min(int(u), 254);
+    float y = mix(u_curve_lut[i], u_curve_lut[i + 1], u - float(i));
+    return pow(y, 2.2) * u_curve.y * max(L / u_curve.y, 1.0) / L;
+}
+
+// The art's colour in the dark: grey toward u_curve.z where the curved light
+// is below the knee (1 = off). The prototype's dark state (#64) without its
+// brightness, which is the curve's.
+vec3 lightCurveAlbedo(vec3 albedo, vec3 curved_light) {
+    if (u_curve.x < 0.5 || u_curve.z >= 1.0) return albedo;
+    float y = pow(min(lightCurveLum(max(curved_light, vec3(0.0))) / u_curve.y,
+                      1.0), 1.0 / 2.2);
+    float sat = mix(u_curve.z, 1.0, smoothstep(0.0, u_curve.w, y));
+    return mix(vec3(lightCurveLum(albedo)), albedo, sat);
+}
+
 
 // Tangent-free TBN from screen-space derivatives of world-pos + UV (Schüler,
 // "Followup: Normal Mapping Without Precomputed Tangents", thetenthplanet.de).
@@ -168,6 +194,11 @@ void main() {
     // ring of equal lamps lights every side alike and the top most.
     float ndotl_iso = max(0.0, (N.y * u_light_z / sqrt(1.0 + u_light_z * u_light_z)
                                 + u_wrap) / (1.0 + u_wrap));
+    // G5: one curve factor on the body's whole light, so its two parts keep
+    // their share (lit3d's block; off = exactly 1).
+    float curve_k = lightCurveGain(light_dir_rgb + light_iso_rgb);
+    light_dir_rgb *= curve_k;
+    light_iso_rgb *= curve_k;
     vec3 light_rgb = light_dir_rgb + light_iso_rgb;   // all of it, x exposure
 
     vec4 albedo_gloss = texture(texture0, fragTexCoord);
@@ -175,6 +206,7 @@ void main() {
     float gloss = albedo_gloss.a;  // #33: the bake's gloss mask (0 matte .. 1 glossiest)
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;                                  // draw colour
+    albedo = lightCurveAlbedo(albedo, light_rgb);
 
     vec3 lit = albedo * (u_ambient + light_dir_rgb * ndotl
                          + light_iso_rgb * ndotl_iso);

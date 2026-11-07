@@ -107,11 +107,46 @@ float smokeShadow(vec2 world_uv, vec2 to_light, float z_tiles) {
 }
 """
 
+# Graphics G5 (#64): the light curve, THE one copy every lit surface runs (the
+# floor, spliced in at lighting.fs's marker; the marine and props through
+# _COMMON_GLSL). Spec and twin: renderer/light_curve.py (``curve_gain``).
+# ``lightCurveGain`` is the factor on a pixel's light, in exposure units,
+# before albedo and N.L; u_curve.x 0 returns exactly 1 and the light is
+# untouched. A uniform array, not a texture: 3D consumers have no free
+# material slot, and the map is 256 floats.
+_LIGHT_CURVE_GLSL = """
+uniform float u_curve_lut[256];  // the curve, y at 256 even x
+uniform vec4  u_curve;           // (on, range, dark saturation, dark knee)
+
+float lightCurveLum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+float lightCurveGain(vec3 light) {
+    if (u_curve.x < 0.5) return 1.0;
+    float L = lightCurveLum(max(light, vec3(0.0)));
+    if (L <= 1e-6) return 1.0;
+    float u = pow(min(L / u_curve.y, 1.0), 1.0 / 2.2) * 255.0;
+    int i = min(int(u), 254);
+    float y = mix(u_curve_lut[i], u_curve_lut[i + 1], u - float(i));
+    return pow(y, 2.2) * u_curve.y * max(L / u_curve.y, 1.0) / L;
+}
+
+// The art's colour in the dark: grey toward u_curve.z where the curved light
+// is below the knee (1 = off). The prototype's dark state (#64) without its
+// brightness, which is the curve's.
+vec3 lightCurveAlbedo(vec3 albedo, vec3 curved_light) {
+    if (u_curve.x < 0.5 || u_curve.z >= 1.0) return albedo;
+    float y = pow(min(lightCurveLum(max(curved_light, vec3(0.0))) / u_curve.y,
+                      1.0), 1.0 / 2.2);
+    float sat = mix(u_curve.z, 1.0, smoothstep(0.0, u_curve.w, y));
+    return mix(vec3(lightCurveLum(albedo)), albedo, sat);
+}
+"""
+
 _COMMON_GLSL = """
 // Cheap sRGB -> linear (gamma 2.2), matching shaders/lighting.fs. Output stays
 // linear HDR: WorldComposite.resolve() tone-maps and encodes, once.
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-""" + _SMOKE_SHADOW_GLSL
+""" + _SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL
 
 
 # The light-field SAMPLE + unpack block, shared verbatim by every 3D consumer's
@@ -173,6 +208,25 @@ class LightFieldCtx:
     smoke_grid: tuple = (1.0, 1.0)
     smoke_cast: tuple = (0.0, 0.0, 0.0, 0.0)
     smoke_cast2: tuple = (0.0, 0.0, 0.0, 0.0)
+    # Graphics G5: the light curve's uniforms (LightingPass.curve_uniforms);
+    # None = off.
+    curve: object = None
+
+
+def set_light_curve_uniforms(shader, curve) -> None:
+    """Push :data:`_LIGHT_CURVE_GLSL`'s uniforms to ``shader``. ``curve`` is
+    ``(lut, vec4)``: a cffi ``float[256]`` and the four floats, or None for
+    off. A location of -1 (compiled out) is skipped."""
+    vec = (0.0, 1.0, 1.0, 1.0) if curve is None else curve[1]
+    loc = rl.get_shader_location(shader, "u_curve")
+    if loc >= 0:
+        rl.set_shader_value(shader, loc, rl.ffi.new("float[4]", list(vec)),
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4)
+    loc = rl.get_shader_location(shader, "u_curve_lut")
+    if loc >= 0 and curve is not None:
+        rl.set_shader_value_v(shader, loc, curve[0],
+                              rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT,
+                              256)
 
 
 def set_smoke_shadow_uniforms(shader, grid, cast, cast2) -> None:
@@ -246,4 +300,5 @@ def make_camera(world_px_w: int, world_px_h: int) -> rl.Camera3D:
 
 __all__ = ["LightFieldCtx", "make_camera", "_COMMON_GLSL",
            "_FIELD_SAMPLE_GLSL", "_SMOKE_SHADOW_GLSL", "_CAM_HEIGHT",
-           "set_smoke_shadow_uniforms", "bind_smoke_cover_map"]
+           "set_smoke_shadow_uniforms", "bind_smoke_cover_map",
+           "_LIGHT_CURVE_GLSL", "set_light_curve_uniforms"]
