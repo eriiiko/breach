@@ -169,6 +169,82 @@ __global__ void K_ntot(int32_t* __restrict__ ntot,
     }
 }
 
+// ---- #29 P4a: the pre-stage's two water-dependent pieces, on the DEVICE ----
+// The resident tick now runs the water tail on the device BEFORE the EOS, and
+// the tail writes `gas` (W5's steam, W3's evacuation) and `dyn_permeability`
+// (W3's seal). The two pre-stage products that read them move here, onto the
+// device planes, transcribed from eos_host_prestage line for line:
+//
+// K_max_du — step()'s K·|∇P|·dt/N̂ grad-scan: per open cell the solid-mirror
+// central gradient of p_prev (== atmosphere, the step-0 copy), its larger
+// component's magnitude, times Kdt over the floored Dalton N (K_ntot's plane
+// from the tick-entry gas). The host keeps the MAX; every du is >= 0 (Kdt >=
+// 0, |∇P| >= 0, the reciprocal > 0), so an unsigned atomicMax from 0 is the
+// same order-free integer max. mul128_shr_signed / reciprocal_q16_dev are the
+// proven twins of the host's mul128_shr_host / reciprocal_q16.
+__global__ void K_max_du(unsigned long long* __restrict__ out,
+                         const int32_t* __restrict__ p_prev,
+                         const int32_t* __restrict__ ntot,
+                         const bool* __restrict__ solid,
+                         int32_t inv_2dx_q, int64_t kdt_raw, int32_t n_floor_q,
+                         int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (solid[i]) continue;
+        const int y = i / w, x = i % w;
+        const int il = mirror_idx_dev_r(i, y, x - 1, h, w, solid);
+        const int ir = mirror_idx_dev_r(i, y, x + 1, h, w, solid);
+        const int iu = mirror_idx_dev_r(i, y - 1, x, h, w, solid);
+        const int id = mirror_idx_dev_r(i, y + 1, x, h, w, solid);
+        const int64_t gx = mul128_shr_signed((int64_t)(p_prev[ir] - p_prev[il]),
+                                             (int64_t)inv_2dx_q, 16);
+        const int64_t gy = mul128_shr_signed((int64_t)(p_prev[id] - p_prev[iu]),
+                                             (int64_t)inv_2dx_q, 16);
+        const int64_t agx = gx < 0 ? -gx : gx;
+        const int64_t agy = gy < 0 ? -gy : gy;
+        const int64_t gmag = agx > agy ? agx : agy;
+        if (gmag == 0) continue;
+        q16 nhat = ntot[i];
+        if (nhat < n_floor_q) nhat = n_floor_q;
+        const q16 inv_n = reciprocal_q16_dev(nhat);
+        const int64_t t1 = mul128_shr_signed(kdt_raw, gmag, 16);
+        const int64_t du = mul128_shr_signed(t1, (int64_t)inv_n, 16);
+        if (du > 0) atomicMax(out, (unsigned long long)du);
+    }
+}
+
+// K_coeffs — step()'s donor-cell face-coefficient cache (eos_host_prestage's
+// coeffE / coeffS), every cell written (0 where the host left the assign's
+// 0): an open east / south face between two non-solid cells carries
+// mul_q16(quantize((double)min(perm_i, perm_j)), dt_s_q) when that min is
+// positive. std::min(a, b) is (b < a) ? b : a, spelled as such.
+__global__ void K_coeffs(int32_t* __restrict__ coeffE, int32_t* __restrict__ coeffS,
+                         const bool* __restrict__ solid,
+                         const float* __restrict__ perm,
+                         int32_t dts_q, int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        int32_t cE = 0, cS = 0;
+        if (!solid[i]) {
+            const int y = i / w, x = i % w;
+            if (x < w - 1 && !solid[i + 1]) {
+                const float a = perm[i], b = perm[i + 1];
+                const float ff = (b < a) ? b : a;
+                if (ff > 0.0f) cE = mul_q16(quantize((double)ff), dts_q);
+            }
+            if (y < h - 1 && !solid[i + w]) {
+                const float a = perm[i], b = perm[i + w];
+                const float ff = (b < a) ? b : a;
+                if (ff > 0.0f) cS = mul_q16(quantize((double)ff), dts_q);
+            }
+        }
+        coeffE[i] = cE;
+        coeffS[i] = cS;
+    }
+}
+
 // Step 2's p* = C·N_total·T_abs (EOS floor at 0); the debug_pstar_from_prev
 // MEASUREMENT-ONLY branch reads p_prev (the post-copy bytes, like the CPU).
 __global__ void K_pstar(int32_t* __restrict__ pstar,
@@ -592,6 +668,7 @@ struct EOSResidentScratch {
     // not scratch that survives across ticks).
     int64_t* cap2 = nullptr;
     bool* cons_flag = nullptr;                 // (n_gases,) device flags
+    unsigned long long* max_du = nullptr;      // #29 P4a: the grad-scan's max
     unsigned long long* rail = nullptr;        // (n_cons,)
     unsigned long long* cnt = nullptr;         // (KICK_CNT_SLOTS,)
     // arc #54 P-G2: K3's per-tick scratch (design §2.4/§2.5) — the increment-
@@ -622,7 +699,8 @@ struct EOSResidentScratch {
         auto f = [](void* p) { if (p) cudaFree(p); };
         f(svx); f(svy); f(st); f(cmask); f(coeffE); f(coeffS);
         f(dq_e); f(dq_s); f(scale); f(div_u); f(ntot); f(pstar); f(div_source);
-        f(absorb_q); f(cap2); f(cons_flag); f(rail); f(cnt);
+        f(absorb_q); f(cap2); f(cons_flag); f(rail); f(cnt); f(max_du);
+        max_du = nullptr;
         f(e); f(nbulk); f(dqsum_e); f(dqsum_s); f(ecnt);
         f(e0); f(pcur); f(s_plane); f(flux_cnt);
         f(spre); f(tcnt);
@@ -672,6 +750,7 @@ struct EOSResidentScratch {
         // bracket sums + rad_clip_hits + e_ts_ke_sum, design §2.3).
         cuda_check(cudaMalloc(&cnt, (size_t)KICK_CNT_SLOTS * 8), "res malloc cnt");
         cuda_check(cudaMalloc(&flux_cnt, (size_t)FLUX_CNT_SLOTS * 8), "res malloc flux_cnt");
+        cuda_check(cudaMalloc(&max_du, 8), "res malloc max_du");   // #29 P4a
         // P-E1 scratch (int64), same unconditional-allocation idiom.
         auto a64 = [&](int64_t** p, size_t cnt_, const char* what) {
             cuda_check(cudaMalloc(p, cnt_ * 8), what);
@@ -771,12 +850,21 @@ void eos_step_resident(
     const bool* d_ts = use_tsol ? d_thermal_solid : d_solid;
 
     // ---- HOST PRE-STAGE on the authoritative mirror (the SHARED verbatim
-    //      transcription; all reductions — design §0). Writes the mirror
-    //      p_prev, boundary_flux_, dbg_last_n_sub / dbg_last_c_local_q. ----
-    const EOSHostPrestage pre = eos_host_prestage(
+    //      transcription — design §0). Writes the mirror p_prev,
+    //      boundary_flux_, dbg_last_c_local_q. #29 P4a: host_scans = false —
+    //      the Dalton + K·|∇P|·dt/N̂ scan (-> n_sub, dbg_last_n_sub) and the
+    //      donor-cell coeffE/coeffS cache read `gas` / `dyn_permeability`,
+    //      which the resident water tail writes on the DEVICE first, so they
+    //      run below on the device planes (K_ntot + K_max_du, K_coeffs) and
+    //      feed the SAME eos_prestage_finish. Everything left on the host
+    //      reads tick-entry wind / temperature / masks, current on the
+    //      mirror (no device stage before the EOS writes them).
+    (void)gas; (void)dyn_permeability;
+    EOSHostPrestage pre = eos_host_prestage(
         solver, atmosphere, p_prev, wind_x, wind_y, temperature,
         gas, gas_conservative, n_gases, solid, is_vacuum,
-        dyn_permeability, h, w, dt, ambient_mode, thermal_solid);
+        dyn_permeability, h, w, dt, ambient_mode, thermal_solid,
+        /*host_scans=*/false);
 
     // ---- host fold helpers (ONE transcription each — design §3.2.3) -------
     // arc #54 P-G2: K2 (the old step-4c compression-work kernel) is DELETED,
@@ -809,10 +897,8 @@ void eos_step_resident(
     const size_t nb8 = (size_t)n * 8;
 
     // ---- per-tick hoisted-plane H2D (per-tick INPUTS, not mid-tick traffic)
-    cuda_check(cudaMemcpy(S.coeffE, pre.coeffE.data(), nb,
-                          cudaMemcpyHostToDevice), "H2D coeffE");
-    cuda_check(cudaMemcpy(S.coeffS, pre.coeffS.data(), nb,
-                          cudaMemcpyHostToDevice), "H2D coeffS");
+    // (#29 P4a: coeffE / coeffS are no longer uploaded — K_coeffs builds them
+    // on the device from the resident dyn_permeability, below.)
     cuda_check(cudaMemcpy(S.absorb_q, absorb_q.data(), nb,
                           cudaMemcpyHostToDevice), "H2D absorb_q");
     // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane, ONE ~56 KB H2D
@@ -853,6 +939,29 @@ void eos_step_resident(
     //      just wrote to the mirror wave_p). ------------------------------
     cuda_check(cudaMemcpy(d_wave_p, d_atmosphere, nb,
                           cudaMemcpyDeviceToDevice), "D2D p_prev");
+
+    // ---- #29 P4a: the pre-stage's scan and coefficient cache, on DEVICE --
+    // The Dalton N of the TICK-ENTRY gas (K_ntot — the same kernel the mid
+    // stage reruns on the post-substep gas, which overwrites S.ntot below),
+    // the grad-scan's max into one u64, ONE 8-byte D2H, the host n_sub fold
+    // (eos_prestage_finish, the host path's own), then coeffE / coeffS at the
+    // folded dt_s_q.
+    {
+        const int blk = 256, grd = (n + blk - 1) / blk;
+        K_ntot<<<grd, blk>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n);
+        cuda_check(cudaGetLastError(), "K_ntot (pre-stage)");
+        cuda_check(cudaMemsetAsync(S.max_du, 0, 8, 0), "memset max_du");
+        K_max_du<<<grd, blk>>>(S.max_du, d_wave_p, S.ntot, d_solid,
+                               pre.inv_2dx_q, pre.kdt_raw, pre.n_floor_q, h, w);
+        cuda_check(cudaGetLastError(), "K_max_du");
+        unsigned long long max_du_h = 0;
+        cuda_check(cudaMemcpy(&max_du_h, S.max_du, 8, cudaMemcpyDeviceToHost),
+                   "D2H max_du");
+        eos_prestage_finish(solver, pre, (int64_t)max_du_h);
+        K_coeffs<<<grd, blk>>>(S.coeffE, S.coeffS, d_solid, d_dyn_permeability,
+                               pre.dt_s_q, h, w);
+        cuda_check(cudaGetLastError(), "K_coeffs");
+    }
 
     // ---- K0: cmask ONCE per tick (the proven P6.2 device build). ---------
     sl_cmask_build_device(d_solid, d_is_vacuum, d_dyn_permeability, S.cmask,

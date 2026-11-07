@@ -29,6 +29,56 @@
 #include "emissive_table.h"   // ray-engine-v2: THE E° table, one owner
 #include "radiation_sweep.h"  // ray-engine-v2: the radiation sweep (LIVE since T5b)
 
+// ---- #29 P4a: THE RESIDENT TICK'S DEVICE FIELDS -----------------------------
+// The raw device addresses of GameMap's resident CuPy buffers (uintptr_t so
+// this header stays CUDA-free; 0 == absent), as the resident drivers read
+// them (cuda_resident_tick.h). Built by the binding from GameMap.device_ptrs()
+// (+ the runner's device `before` plane), with the grid and the two depths.
+struct ResidentFields {
+    std::uintptr_t atmosphere = 0, wave_p = 0, wind_x = 0, wind_y = 0,
+        temperature = 0, heat = 0, fire = 0, wall_hp = 0, water_depth = 0,
+        gas = 0, gas_energy = 0, dem_acc = 0,
+        rad_net_sweep = 0, rad_flux_sweep = 0, rad_amb_sweep = 0, rad_fluence = 0,
+        light_q = 0, light_flux_q = 0, light_glow = 0,
+        solid = 0, is_vacuum = 0, is_ambient = 0, flammable = 0,
+        thermal_solid = 0, heat_inv_shift = 0, face_shift = 0,
+        dyn_permeability = 0, heat_atten_q = 0, dyn_heat_atten_q = 0,
+        light_atten_q = 0, dyn_light_atten_q = 0,
+        fuel_recip = 0, fire_T_ext_plane = 0, fuel_per_o2_plane = 0,
+        material = 0, water_before = 0;
+    int h = 0, w = 0, n_gases = 0;
+    int acc_depth = 0;   // dem_acc's declared depth (max_claimants)
+};
+
+// The host scalars and tables the resident drivers read — the SAME values the
+// host path hands step_water_tail / CombustionSolver.step / step_tail.
+struct ResidentTickArgs {
+    float sim_time = 0.0f;
+    int32_t t_amb_q = 0;                    // T_AMB_K raw (the seam's offset)
+    bool ambient = false;                   // an ambient map (the ring is live)
+    const bool* gas_conservative = nullptr; // (n_gases,)
+    // the water tail
+    int steam_idx = 0;
+    double ceiling_h = 0.0, flood_eps = 0.0, ratio_cap = 1.0;
+    double boil_rate = 0.0, boil_p_thresh = 0.0, steam_yield = 0.0;
+    // combustion
+    int o2_idx = 0, inert_n2_idx = 0, black_smoke_idx = 0, draw_r = 1;
+    const int32_t* ignition_table = nullptr;   // (n_materials,) int32
+    int n_materials = 0;
+    // the tail (fire, the sweep, temperature)
+    int32_t k_leak_q = 0;
+    int64_t rad_amb_vacuum_q = -1;
+    const int32_t* gas_heat_absorb_q16 = nullptr;    // (n_gases,)
+    const int32_t* gas_light_absorb_q16 = nullptr;   // (n_gases, 3)
+    const int32_t* gas_light_glow_q16 = nullptr;     // (n_gases, 3)
+    // the light inputs (read only while light is requested)
+    const int64_t* light_cones = nullptr;
+    int n_light_cones = 0;
+    const int64_t* light_sky = nullptr;
+    const int64_t* light_emit_mult = nullptr;
+    int n_light_emit_mult = 0;
+};
+
 class PhysicsEngine {
 public:
     // AtmosphereSolver is RETAINED on the engine (its wave_substep/
@@ -75,6 +125,13 @@ public:
     // a literal at run_sweep_'s two RadiationSweep::run / radiation_sweep_
     // step call sites; that choice is not this patch's to make configurable.
     int                light_transport = RadiationSweep::TRANSPORT_STEP;
+    // #29 P4a: HEADLESS — set by the headless runners (tools/run_match.py's
+    // MatchSession, rl_env), never by main.py. The W6a ripple is render-only
+    // (ripple / ripple_v feed nothing back and are outside the digest), so a
+    // headless engine skips it on every path: step_tail does not call
+    // step_ripple, and the resident tick neither runs it nor downloads
+    // water_depth for it. Default false: every windowed run is unmoved.
+    bool               headless = false;
 
     // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
     // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
@@ -556,6 +613,39 @@ public:
         std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
         std::uintptr_t d_is_ambient,          // 0 on a space map
         std::uintptr_t d_dyn_permeability);
+
+    // --- #29 P4a: THE BRACKETS GONE — the rest of slot 7 on the device -------
+    // The resident tick's remaining host stages, as device drivers on the
+    // persistent fields (cuda_resident_tick.h has the whole contract): the
+    // water tail before the EOS stage, combustion after the trace tail, and
+    // the tail (the bulk sum, fire, the sweep, temperature) last, with zero
+    // plane transfers between them; step_tail_resident ends with the ONE books
+    // D2H, folds every book into the member the host path writes, and returns
+    // the burn-through list (row-major). upload_light_resident hands the light
+    // inputs over at the tick's entry (only while light_requested). The host
+    // path (step_water / CombustionSolver.step / step_tail) and the per-call
+    // twins are untouched. Declared on every build; the bodies throw on a
+    // non-CUDA build. Gate: tests/cuda_s8a_check.py.
+    void step_water_tail_resident(const ResidentFields& f,
+                                  const ResidentTickArgs& a) const;
+    void run_combustion_resident(const ResidentFields& f,
+                                 const ResidentTickArgs& a) const;
+    void upload_light_resident(const ResidentFields& f,
+                               const ResidentTickArgs& a) const;
+    std::vector<std::pair<int, int>> step_tail_resident(
+        const ResidentFields& f, const ResidentTickArgs& a) const;
+
+    // --- #29 P4a: the W6a ripple, step_tail's step 1 as its own entry -------
+    // The dormancy guard (skip unless water_depth or ripple is non-zero
+    // anywhere) and the WaterSolver::step_ripple call, moved VERBATIM out of
+    // step_tail, which now calls this unless `headless`. The resident tick
+    // calls it on the host mirror after its exit download (ripple is
+    // render-only: nothing in the tick reads it, so its place after the fire
+    // and temperature passes changes no other field).
+    void step_ripple(float* ripple, float* ripple_v,
+                     const int32_t* water_depth, const int32_t* atmosphere,
+                     const int32_t* p_prev, const bool* solid,
+                     int h, int w, float sim_time) const;
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part

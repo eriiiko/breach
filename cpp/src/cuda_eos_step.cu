@@ -134,7 +134,8 @@ EOSHostPrestage eos_host_prestage(
         const float* dyn_permeability,
         int h, int w, float dt,
         bool ambient_mode,
-        const bool* thermal_solid) {
+        const bool* thermal_solid,
+        bool host_scans) {
     EOSHostPrestage pre;
     const int n = h * w;
     // THERMAL-MASS AXIS: the same nullptr -> `solid` fallback step()'s `ts`
@@ -243,6 +244,23 @@ EOSHostPrestage eos_host_prestage(
         if (rad > max_rad) max_rad = rad;
     }
     const q16 max_u = sqrt_q16(max_rad);
+    // #29 P4a: the scalars the n_sub fold reads, and everything the caller
+    // needs whichever side scans (the conservative list, the per-tick folds).
+    pre.max_u     = max_u;
+    pre.kdt_raw   = Kdt_raw;
+    pre.n_floor_q = n_floor_q;
+    pre.u_max_q   = u_max_q;
+    pre.c_local_q = c_local_q;
+    pre.cfl_dx_q  = quantize((double)solver.CFL_ADV * dx_d);
+    pre.dt_q      = dt_q;
+    pre.dt_d      = dt_d;
+    for (int gi = 0; gi < n_gases; ++gi)
+        if (gas_conservative[gi]) pre.cons.push_back(gi);
+    pre.t_amb_q   = t_amb_q;
+    pre.s_eos_q   = s_eos_q;
+    pre.c_q       = c_q;
+    pre.inv_2dx_q = inv_2dx_q;
+    if (!host_scans) return pre;   // the resident path scans the device gas
     // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
     {
@@ -278,29 +296,15 @@ EOSHostPrestage eos_host_prestage(
             if (du > max_du_raw) max_du_raw = du;
         }
     }
-    int64_t u_est_raw = (int64_t)max_u + max_du_raw + 1;   // +1 count eps
-    // D7 (VELOCITY-CLAMP, P-V1): the clip widens to max(c_LOCAL, U_MAX) —
-    // verbatim the CPU twin's fold (eos_solver.cpp) — stored |u| may now
-    // reach U_MAX on hot cells even though c_LOCAL is folded from entry-T.
-    const int64_t u_est_cap = ((int64_t)c_local_q > (int64_t)u_max_q)
-        ? (int64_t)c_local_q : (int64_t)u_max_q;
-    if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
-    const q16 cfl_dx_q = quantize((double)solver.CFL_ADV * dx_d);
-    const int64_t numer_wide = mul128_shr_host((int64_t)dt_q, u_est_raw, 16);
-    int n_sub = std::max(1, ceil_div(
-        (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), cfl_dx_q));
-    if (n_sub > solver.N_SUB_MAX) n_sub = solver.N_SUB_MAX;
-    solver.dbg_last_n_sub = n_sub;
-    const double dt_s_d = dt_d / (double)n_sub;
-    // dt_s_q: the CPU re-quantizes the SAME double each substep — one fold
-    // here is the identical value (the proven P6.2 host fold).
-    const q16 dt_s_q = quantize(dt_s_d);
+    // #29 P4a: the fold moved VERBATIM into eos_prestage_finish (below).
+    eos_prestage_finish(solver, pre, max_du_raw);
 
     // ---- donor-cell face-coefficient cache (step()'s hoist, verbatim) ----
     pre.coeffE.assign(n, 0);
     pre.coeffS.assign(n, 0);
     {
-        const q16 dts_q_c = quantize(dt_s_d);
+        // == quantize(dt_d / n_sub), the fold's own dt_s_q (one expression).
+        const q16 dts_q_c = pre.dt_s_q;
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
@@ -318,19 +322,32 @@ EOSHostPrestage eos_host_prestage(
         }
     }
 
-    // Conservative-plane index list (the CPU's gi order preserved; the
-    // planes are independent — disjoint N, read-only wind/coeffs).
-    for (int gi = 0; gi < n_gases; ++gi)
-        if (gas_conservative[gi]) pre.cons.push_back(gi);
-
-    pre.t_amb_q   = t_amb_q;
-    pre.s_eos_q   = s_eos_q;
-    pre.c_q       = c_q;
-    pre.inv_2dx_q = inv_2dx_q;
-    pre.c_local_q = c_local_q;
-    pre.n_sub     = n_sub;
-    pre.dt_s_q    = dt_s_q;
+    // (The conservative-plane index list and the per-tick scalars were filled
+    // above, before the host scan, for both callers.)
     return pre;
+}
+
+// #29 P4a: the n_sub fold (step()'s, verbatim — moved out of the pre-stage so
+// the host scan and the resident device scan feed ONE transcription).
+void eos_prestage_finish(const EOSSolver& solver, EOSHostPrestage& pre,
+                         int64_t max_du_raw) {
+    int64_t u_est_raw = (int64_t)pre.max_u + max_du_raw + 1;   // +1 count eps
+    // D7 (VELOCITY-CLAMP, P-V1): the clip widens to max(c_LOCAL, U_MAX) —
+    // verbatim the CPU twin's fold (eos_solver.cpp) — stored |u| may now
+    // reach U_MAX on hot cells even though c_LOCAL is folded from entry-T.
+    const int64_t u_est_cap = ((int64_t)pre.c_local_q > (int64_t)pre.u_max_q)
+        ? (int64_t)pre.c_local_q : (int64_t)pre.u_max_q;
+    if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
+    const int64_t numer_wide = mul128_shr_host((int64_t)pre.dt_q, u_est_raw, 16);
+    int n_sub = std::max(1, ceil_div(
+        (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), pre.cfl_dx_q));
+    if (n_sub > solver.N_SUB_MAX) n_sub = solver.N_SUB_MAX;
+    solver.dbg_last_n_sub = n_sub;
+    const double dt_s_d = pre.dt_d / (double)n_sub;
+    // dt_s_q: the CPU re-quantizes the SAME double each substep — one fold
+    // here is the identical value (the proven P6.2 host fold).
+    pre.n_sub  = n_sub;
+    pre.dt_s_q = quantize(dt_s_d);
 }
 
 long long eos_step_cuda_calls() { return g_eos_step_cuda_calls; }

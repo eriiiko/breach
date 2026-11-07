@@ -19,6 +19,7 @@
 #include "cuda_eos_resident.h"  // S8a Path A: fully device-resident EOS tick
 #include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin
 #include "cuda_resident.h"      // smoke transport v2 P2b: trace_tail_resident
+#include "cuda_resident_tick.h" // #29 P4a: the resident tick's drivers
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 (their
 // CPU solvers were replaced by the EOS solve in P3; nothing here called them).
 #endif
@@ -113,33 +114,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     using namespace fixedpoint;
 
     // --- 1. W6a ripple (PhysicsRunner._step_ripple) ----------------------
-    // Reproduce the Python dormancy guard EXACTLY: skip step_ripple unless
-    // there is water now OR leftover ripple anywhere. `np.ndarray.any()` is
-    // "any element != 0" — for the float ripple state the equivalent is a
-    // scan for any non-zero element (NaN also counts as non-zero, matching
-    // numpy's any() truthiness). Ripple is zero wherever depth is zero by
-    // construction, so on a dry ship both scans are cheap and the whole tail
-    // stays bit-identical to before the water system existed.
-    bool water_any = false;
-    bool ripple_any = false;
+    // #29 P4a: the guard + call moved VERBATIM into step_ripple (below), so
+    // the resident tick runs the same body on the host mirror; a HEADLESS
+    // engine skips it (render-only, outside the digest — physics_engine.h).
     const int n = h * w;
-    for (int i = 0; i < n; ++i) {
-        if (water_depth[i] != 0) { water_any = true; break; }   // S1: Q16.16 int
-    }
-    if (!water_any) {
-        for (int i = 0; i < n; ++i) {
-            if (ripple[i] != 0.0f) { ripple_any = true; break; }
-        }
-    }
-    if (water_any || ripple_any) {
-        // step_ripple writes only ripple / ripple_v; water_depth / atmosphere /
-        // p_prev / solid are read-only (the locked canon rule). EOS refactor
-        // P3 (design §6 "ripple splash"): the splash source is the per-tick
-        // pressure TRANSIENT |P - P_prev|, not the retired wave_p anomaly —
-        // pass the integer atmosphere (P) and p_prev (P_prev) directly, no
-        // float bridge (water_solver.cpp dequantizes |.| internally).
-        this->water.step_ripple(ripple, ripple_v, water_depth, atmosphere, p_prev,
-                                solid, h, w, sim_time);
+    if (!this->headless) {
+        this->step_ripple(ripple, ripple_v, water_depth, atmosphere, p_prev,
+                          solid, h, w, sim_time);
     }
 
     // --- 2. Fire feedback step (PhysicsRunner: self.fire.step) ------------
@@ -492,6 +473,39 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     }
 
     return destroyed;
+}
+
+// #29 P4a: the W6a ripple, step_tail's step 1 moved verbatim (header).
+void PhysicsEngine::step_ripple(
+        float* ripple, float* ripple_v, const int32_t* water_depth, const int32_t* atmosphere, const int32_t* p_prev, const bool* solid, int h, int w, float sim_time) const {
+    // Reproduce the Python dormancy guard EXACTLY: skip step_ripple unless
+    // there is water now OR leftover ripple anywhere. `np.ndarray.any()` is
+    // "any element != 0" — for the float ripple state the equivalent is a
+    // scan for any non-zero element (NaN also counts as non-zero, matching
+    // numpy's any() truthiness). Ripple is zero wherever depth is zero by
+    // construction, so on a dry ship both scans are cheap and the whole tail
+    // stays bit-identical to before the water system existed.
+    bool water_any = false;
+    bool ripple_any = false;
+    const int n = h * w;
+    for (int i = 0; i < n; ++i) {
+        if (water_depth[i] != 0) { water_any = true; break; }   // S1: Q16.16 int
+    }
+    if (!water_any) {
+        for (int i = 0; i < n; ++i) {
+            if (ripple[i] != 0.0f) { ripple_any = true; break; }
+        }
+    }
+    if (water_any || ripple_any) {
+        // step_ripple writes only ripple / ripple_v; water_depth / atmosphere /
+        // p_prev / solid are read-only (the locked canon rule). EOS refactor
+        // P3 (design §6 "ripple splash"): the splash source is the per-tick
+        // pressure TRANSIENT |P - P_prev|, not the retired wave_p anomaly —
+        // pass the integer atmosphere (P) and p_prev (P_prev) directly, no
+        // conversion here (water_solver.cpp dequantizes |.| internally).
+        this->water.step_ripple(ripple, ripple_v, water_depth, atmosphere, p_prev,
+                                solid, h, w, sim_time);
+    }
 }
 
 // P6b: THE ONE SWEEP INVOCATION -- step 2b's body until P6b, moved verbatim
@@ -887,6 +901,68 @@ void PhysicsEngine::run_trace_tail_resident(
     (void)d_is_vacuum; (void)d_is_ambient; (void)d_dyn_permeability;
     throw std::runtime_error(
         "run_trace_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
+// ---- #29 P4a: the brackets gone (physics_engine.h; cuda_resident_tick.h) ----
+// Each entry forwards to its device driver with this engine (whose dials the
+// drivers read and whose books they fold) — the routing only; every law is
+// the families' launch cores'.
+void PhysicsEngine::step_water_tail_resident(const ResidentFields& f,
+                                             const ResidentTickArgs& a) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_water_tail(*this, f, a.gas_conservative, a.steam_idx,
+                                     a.sim_time, a.ceiling_h, a.flood_eps,
+                                     a.ratio_cap, a.boil_rate, a.boil_p_thresh,
+                                     a.steam_yield, a.ambient, a.t_amb_q);
+#else
+    (void)f; (void)a;
+    throw std::runtime_error(
+        "step_water_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
+void PhysicsEngine::run_combustion_resident(const ResidentFields& f,
+                                            const ResidentTickArgs& a) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_combustion(*this, f, a.o2_idx, a.inert_n2_idx,
+                                     a.black_smoke_idx, a.draw_r, a.sim_time,
+                                     a.ignition_table, a.n_materials, a.ambient,
+                                     a.t_amb_q);
+#else
+    (void)f; (void)a;
+    throw std::runtime_error(
+        "run_combustion_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
+void PhysicsEngine::upload_light_resident(const ResidentFields& f,
+                                          const ResidentTickArgs& a) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_upload_light(*this, f, a.gas_light_absorb_q16,
+                                       a.gas_light_glow_q16, a.light_cones,
+                                       a.n_light_cones, a.light_sky,
+                                       a.light_emit_mult, a.n_light_emit_mult);
+#else
+    (void)f; (void)a;
+    throw std::runtime_error(
+        "upload_light_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
+std::vector<std::pair<int, int>> PhysicsEngine::step_tail_resident(
+        const ResidentFields& f, const ResidentTickArgs& a) const {
+#ifdef BREACH_HAS_CUDA
+    return breach_cuda::resident_tail(*this, f, a.gas_conservative, a.o2_idx,
+                                      a.sim_time, a.ambient, a.t_amb_q,
+                                      a.k_leak_q, a.rad_amb_vacuum_q,
+                                      a.gas_heat_absorb_q16,
+                                      a.gas_light_absorb_q16,
+                                      a.gas_light_glow_q16);
+#else
+    (void)f; (void)a;
+    throw std::runtime_error(
+        "step_tail_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
 }
 

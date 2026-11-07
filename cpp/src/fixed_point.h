@@ -544,8 +544,12 @@ FP_HD inline int32_t trace_add_sat(int32_t s, int64_t add, int64_t* clip,
 // cannot be represented is SEEN, never wrapped. The double -> int64 conversion
 // is range-checked (an out-of-range double -> int is UB): a value at or beyond
 // int64 saturates to the int64 limit. A NaN amount has no meaning and lands as
-// 0. Host only (the one float in this block).
-inline int64_t quantize_trace(double v) {
+// 0. The one float in this block. FP_HD since #29 P4a: the device water tail
+// (cuda_water_tail.cu) prices the W5 steam puff through THIS function, not a
+// copy -- one exact power-of-two multiply, one add, one truncating cast, the
+// same IEEE double operations on the host's /fp:strict and the device's
+// --fmad=false (a contracted v*2^k + 0.5 rounds the same: the product is exact).
+FP_HD inline int64_t quantize_trace(double v) {
     const double scaled = v * (double)((int64_t)1 << TRACE_SHIFT);
     if (!(scaled == scaled)) return 0;                       // NaN
     const double r = (scaled >= 0.0) ? (scaled + 0.5) : (scaled - 0.5);

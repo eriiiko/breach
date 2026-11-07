@@ -31,6 +31,8 @@
 // NOTE: this header is being populated family-by-family across STEP B commits.
 // Only the cores listed below are wired; the rest land in subsequent WIP checkpoints.
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 class EOSSolver;
 
@@ -508,6 +510,205 @@ int combustion_launch_resident(
     const CombustionScalars& sc,
     int32_t* d_tsnap, int32_t* d_alloc, int32_t* d_dep,
     int64_t* d_e_slot, int64_t* d_e_dep,
+    unsigned long long* d_cnt);
+
+// ---- temperature (cuda_temperature.cu) — #29 P4a ----------------------------
+// The LAUNCH CORE of TemperatureSolver::step's GPU twin (temperature_solver.cpp
+// — THE oracle): the capacity planes, Pass 0a (the vacuum / ring wipe), Pass 1
+// (the radiation fold, solid and gas, with the maximum-principle clamp, then
+// the heat deposit), Pass 2 (conduction, gather into d_temp_new, the swap as a
+// stream-ordered D2D copy, the parked gas-side face sums applied), and — when
+// `solid_books` — the solid-books snapshot on the final temperature. Born
+// (N, h, w) with N = 1 today: launch only, no malloc / transfer / sync; the
+// core zeroes its own counter block (its first kernel). The per-call
+// temperature_step allocates, uploads, calls this, downloads; the resident
+// tick (cuda_resident_tick.cu) calls it on the persistent device fields.
+//
+// The counter block, per env, TEMP_CNT_SLOTS unsigned long long (signed books
+// two's complement through the unsigned atomics): slots 0..16 are the C_*
+// energy slots of cuda_temperature.h's energy_counters_out in that pinned
+// order, then the T_MAX_PHYS rail count, the Pass-1 LOW rail count and the
+// solid-books snapshot (Σ cap_real·T over thermal solids; written only with
+// `solid_books`).
+constexpr int TEMP_CNT_ENERGY      = 17;   // == TEMPERATURE_ENERGY_SLOTS (asserted)
+constexpr int TEMP_CNT_HITS        = 17;
+constexpr int TEMP_CNT_LOW_HITS    = 18;
+constexpr int TEMP_CNT_SOLID_BOOKS = 19;
+constexpr int TEMP_CNT_SLOTS       = 20;
+
+// The dials every env shares, baked on the host with the CPU step's own
+// quantize / make_recip lines (temperature_bake_scalars; refuses a
+// rad_fine_bits outside [0, E_FINE_BITS], #78).
+struct TemperatureScalars {
+    int32_t c_v_q = 0;
+    int64_t recip_cv = 0;
+    int32_t n_floor_q = 0;
+    int32_t t_max_phys_q = 0;
+    int     no_face = 0;
+    int     rad_fine_bits = 0;
+};
+TemperatureScalars temperature_bake_scalars(float c_v, float n_floor_heat,
+                                            float t_max_phys, int no_face,
+                                            int rad_fine_bits);
+
+//   d_temperature   : (N, h, w) int32, in/out
+//   d_temp_new      : (N, h, w) int32 scratch (Pass 2's gather target)
+//   d_heat, d_heat_inv_shift : (N, h, w) int32;  d_face_shift (N, h, w, 4)
+//   d_solid, d_ts, d_is_vacuum : (N, h, w) bool (d_ts = the thermal medium
+//                     mask, or d_solid for the documented fallback)
+//   d_is_ambient    : (N, h, w) bool, NULLABLE (space)
+//   d_n_src         : (N, h, w) int32 — the bulk N (or the atmosphere proxy)
+//   d_rad_net       : (N, h, w) int64, NULLABLE (no radiation fold)
+//   d_rad_fluence + d_e_table : the clamp's pair, both or neither (NULLABLE)
+//   d_gas_energy    : (N, h, w) int64, in/out, NULLABLE (the pre-#54 T-form);
+//                     with it d_de_gas (N, h, w) int64 scratch is required
+//   d_t_amb_q       : (N,) int32 per-env scalar (read with gas_energy)
+//   d_cap_used, d_cap_real : (N, h, w) int64 scratch
+//   d_cnt           : (N, TEMP_CNT_SLOTS) unsigned long long, OVERWRITTEN
+// Returns the launch count.
+int temperature_launch_resident(
+    int n_env, int h, int w,
+    int32_t* d_temperature, int32_t* d_temp_new,
+    const int32_t* d_heat, const int32_t* d_heat_inv_shift,
+    const int32_t* d_face_shift,
+    const bool* d_solid, const bool* d_ts, const bool* d_is_vacuum,
+    const bool* d_is_ambient,
+    const int32_t* d_n_src, const int64_t* d_rad_net,
+    const int64_t* d_rad_fluence, const int64_t* d_e_table,
+    int64_t* d_gas_energy, int64_t* d_de_gas, const int32_t* d_t_amb_q,
+    int64_t* d_cap_used, int64_t* d_cap_real,
+    const TemperatureScalars& sc,
+    unsigned long long* d_cnt, bool solid_books);
+
+// ---- fire (cuda_fire.cu) — #29 P4a -----------------------------------------
+// The LAUNCH CORE of FireSimulation::step's GPU twin (fire_simulation.cpp —
+// THE oracle): P2 the signed logistic, P5 the wall burn-through with the
+// destroyed collection, P6 the final clamp. Born (N, h, w) with N = 1 today.
+// The CPU's P1 early exit (max(fire) < quantize(0.001) -> nothing happens)
+// is, with `d_gate`, a per-env device gate: the core reduces max(fire) from 0
+// into d_gate[env] and every later kernel skips a gated-off env, so its
+// fields stay exactly as the CPU's early return leaves them (RL-batch habits:
+// a per-env mask, never host gating). The per-call fire_step keeps its host
+// exit and passes d_gate = nullptr.
+//
+// The destroyed walls come out per env as a counter d_counter[env] and the
+// packed in-env linear indices d_destroyed_idx[env * h*w + k] in atomic
+// ARRIVAL order; fire_destroyed_row_major sorts them into the CPU's row-major
+// list (order is load-bearing: GameMap.destroy_wall is order-dependent).
+struct FireScalars {
+    int32_t max_fire_thresh_q = 0;
+    int32_t k_grow_q = 0, k_die_q = 0, k_wind_fan_q = 0, k_wind_strip_q = 0;
+    int32_t fire_T_ext_q = 0, I_min_q = 0, wall_damage_q = 0, INV_C = 0;
+    int32_t temp_is_identity = 0;      // bool
+    int64_t recip_temp_scale = 0, recip_fuel_ref = 0, recip_T_span = 0;
+    int32_t x_ext_q = 0;
+    int64_t recip_x_span = 0;
+    int32_t x_degenerate = 0;          // bool
+    int32_t o2f_cap_q = 0, hotf_cap_q = 0, X_N_FLOOR = 0;
+    int32_t p_ext_q = 0, p_full_q = 0, p_inv_span_q = 0;   // o2_pressure::Factor
+};
+FireScalars fire_bake_scalars(
+    float k_grow, float k_die, float fire_T_ext, float fire_T_span,
+    float fuel_ref, float o2_frac_ext, float I_min,
+    float k_wind_fan, float k_wind_strip, float wall_damage,
+    float temp_scale, float I_cap_per_avail,
+    float o2_frac_amb, float o2f_cap, float hotf_cap,
+    int32_t p_ext_q, int32_t p_full_q);
+// The per-env step constant (one quantize of the env's tick length).
+int32_t fire_dt_q(float dt);
+//   d_fire, d_wall_hp : (N, h, w) int32, in/out
+//   d_atmosphere    : (N, h, w) int32, NULLABLE (the #7 factor's input)
+//   d_gas, n_gases, o2_idx : the O2 plane is plane o2_idx of the env's
+//                     (n_gases, h, w) block
+//   d_n_total       : (N, h, w) int32 (the bulk N, the mole fraction's denominator)
+//   d_temperature, d_wind_x, d_wind_y : (N, h, w) int32
+//   d_is_wall, d_is_vacuum, d_flammable : (N, h, w) bool
+//   d_fuel_recip (int64), d_fire_T_ext_plane (int32) : (N, h, w), NULLABLE
+//   d_dt_q          : (N,) int32 per-env scalar
+//   d_gate          : (N,) int32, NULLABLE (no device early exit)
+//   d_counter       : (N,) int;  d_destroyed_idx : (N, h, w) int
+// Returns the launch count.
+int fire_launch_resident(
+    int n_env, int h, int w,
+    int32_t* d_fire, const int32_t* d_atmosphere,
+    const int32_t* d_gas, int n_gases, int o2_idx,
+    const int32_t* d_n_total, int32_t* d_wall_hp, const int32_t* d_temperature,
+    const int32_t* d_wind_x, const int32_t* d_wind_y,
+    const bool* d_is_wall, const bool* d_is_vacuum, const bool* d_flammable,
+    const int64_t* d_fuel_recip, const int32_t* d_fire_T_ext_plane,
+    const int32_t* d_dt_q, const FireScalars& sc,
+    int32_t* d_gate, int* d_counter, int* d_destroyed_idx);
+// Packed in-env linear indices (arrival order) -> the row-major (y, x) list.
+std::vector<std::pair<int, int>> fire_destroyed_row_major(std::vector<int> idx, int w);
+
+// ---- the water tail (cuda_water_tail.cu) — #29 P4a --------------------------
+// The device twin of PhysicsEngine::step_water_tail (physics_engine.cpp — THE
+// oracle): W5 the flash-boil vacuum sink (a pressure-keyed water -> steam
+// puff, per cell), W3 the occupancy-transition EVACUATION (a flooding cell
+// sheds (1 - 1/ratio) of every gas plane into its open neighbours, its bulk
+// share carrying the donor's T_abs through the energy seam) with the flooded
+// dyn_permeability seal, and the final before := water_depth copy. Born
+// (N, h, w) with N = 1 today; launch only.
+//
+// W3 is SERIAL on the CPU (row-major, each cell reading neighbours an earlier
+// cell already sealed or filled), and the device keeps that order: a per-cell
+// kernel computes each cell's ratio, seal flag and evacuation fraction (pure
+// functions of before / water_depth / solid); ONE BLOCK PER ENV compacts the
+// evacuating candidates in row-major order and its thread 0 walks them
+// serially -- the CPU loop restricted to the cells that can move gas, the
+// seals of earlier cells read from the flags (a cell is sealed in its own
+// iteration before it evacuates); a last per-cell kernel applies the seals
+// and the copy. Float bridges (the dequantized depths, the f32 ratio, the
+// double fractions) are the CPU's, operation for operation, under the TU's
+// --fmad=false and the IEEE division and square-root flags.
+//
+// Books, per env, WT_CNT_SLOTS unsigned long long, OVERWRITTEN (zeroed by the
+// core): the evacuation's export (e_water_evac_export_sum, the CPU's per-call
+// value), the steam puff's trace mint, the trace clip and negative-hit books
+// per gas plane (W5's steam slot and W3's trace receivers), and two activity
+// counts (cells that boiled, cells that evacuated) for the gates.
+constexpr int WATER_TAIL_GAS_MAX = 16;
+constexpr int WT_EXPORT  = 0;
+constexpr int WT_MINT    = 1;
+constexpr int WT_N_BOIL  = 2;
+constexpr int WT_N_EVAC  = 3;
+constexpr int WT_CLIP    = 4;                               // + gas index
+constexpr int WT_NEG     = WT_CLIP + WATER_TAIL_GAS_MAX;    // + gas index
+constexpr int WT_CNT_SLOTS = WT_NEG + WATER_TAIL_GAS_MAX;
+
+// The tail's scalars, folded on the host with the CPU tail's own casts.
+struct WaterTailScalars {
+    int32_t boil_p_thresh_q = 0;
+    int32_t boil_amount_q = 0;
+    float   steam_yield_f = 0.0f;
+    float   ceiling_h_f = 0.0f, flood_eps_f = 0.0f, clip_lo_f = 0.0f, clip_hi_f = 0.0f;
+};
+WaterTailScalars water_tail_bake_scalars(
+    float sim_time, double ceiling_h, double flood_eps, double ratio_cap,
+    double boil_rate, double boil_p_thresh, double steam_yield);
+
+//   d_water_depth, d_before : (N, h, w) int32, in/out
+//   d_atmosphere    : (N, h, w) int32 (the boil gate; read only)
+//   d_solid         : (N, h, w) bool
+//   d_gas           : (N, n_gases, h, w) int32, in/out
+//   d_perm          : (N, h, w) float dyn_permeability, in/out (the seal)
+//   d_gas_energy    : (N, h, w) int64, NULLABLE (the pre-#54 path)
+//   d_cons          : (n_gases,) bool gas_conservative, NULLABLE (with energy:
+//                     required; without: every plane takes the plain add)
+//   d_thermal_solid, d_is_vacuum, d_is_ambient : (N, h, w) bool, NULLABLE
+//   d_t_amb_raw     : (N,) int32 per-env scalar
+//   d_flag (uint8), d_frac, d_list (int32) : (N, h, w) scratch
+//   d_cnt           : (N, WT_CNT_SLOTS) unsigned long long
+// Throws std::invalid_argument on n_gases outside [1, WATER_TAIL_GAS_MAX] or
+// a steam_idx outside the block. Returns the launch count.
+int water_tail_launch_resident(
+    int n_env, int h, int w, int n_gases, int steam_idx,
+    int32_t* d_water_depth, const int32_t* d_atmosphere, const bool* d_solid,
+    int32_t* d_gas, int32_t* d_before, float* d_perm,
+    int64_t* d_gas_energy, const bool* d_cons,
+    const bool* d_thermal_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    const int32_t* d_t_amb_raw, const WaterTailScalars& sc,
+    uint8_t* d_flag, int32_t* d_frac, int32_t* d_list,
     unsigned long long* d_cnt);
 
 }  // namespace breach_cuda
