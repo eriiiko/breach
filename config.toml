@@ -2083,8 +2083,10 @@ min_directionality = 0.2  # |net flux| / irradiance (0 = light evenly from
 # instead of raylib's integer-frame clip player. Render-only, never on Unit,
 # no digest. Read once when the renderer loads (restart to change). Every key
 # is required; a missing, unknown or mistyped one raises, naming it.
-enabled = false         # false = the clip player exactly as before (the pose
-                        # modules are never built). HUMAN-TEST before true.
+enabled = true          # false = the clip player exactly as before (the pose
+                        # modules are never built). ON since 2026-11-07 (Erik)
+                        # so it is seen and judged; NOT yet played (#165) --
+                        # a feel complaint goes to #165, false is the revert.
 rate = 0.51             # clip seconds per wall second. 0.51 = the speed every
                         # clip has always played at: raylib 5.5 bakes clips on
                         # a 17 ms grid and the player stepped 30 grid frames/s

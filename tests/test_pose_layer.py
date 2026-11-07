@@ -628,13 +628,16 @@ def test_settings_refuse_missing_unknown_and_mistyped_keys(edit, needle):
         pose_settings(_broken(edit))
 
 
-def test_shipped_config_is_valid_and_leaves_the_layer_off():
+def test_shipped_config_is_valid():
     """PROPERTY (constraint 2 of #162): the shipped ``[render.pose]`` table
-    parses, and the layer is OFF -- turning it on is Erik's HUMAN-TEST call.
+    parses through its refusing door and ``enabled`` is a real bool. The flag's
+    VALUE is Erik's call and is not pinned (it shipped off, was switched on
+    2026-11-07; the off path is exercised by the tests that build it off).
 
-    BREAKS IF: the default is flipped on, or the shipped table stops parsing.
+    BREAKS IF: the shipped table stops parsing, or ``enabled`` stops being a
+    bool.
     """
-    assert SETTINGS.enabled is False
+    assert isinstance(SETTINGS.enabled, bool)
     assert set(SETTINGS.states) >= {"idle", "walk"}
 
 
