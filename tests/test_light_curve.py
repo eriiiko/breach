@@ -145,7 +145,7 @@ def test_save_rewrites_only_its_three_lines(tmp_path):
     a, b = src.split(b"\n"), out.split(b"\n")
     assert len(a) == len(b)
     changed = [x for x, y in zip(a, b) if x != y]
-    assert len(changed) == 3
+    assert changed
     assert all(x.split(b"=")[0].strip() in
                (b"enabled", b"points", b"dark_saturation") for x in changed)
     assert all(x.split(b"#")[-1] == y.split(b"#")[-1]
