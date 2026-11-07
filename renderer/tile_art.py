@@ -142,6 +142,12 @@ class TileArtSeam:
         :class:`TilePatch` per tile, read from the tile's state NOW. The first
         call snapshots ``gmap.material`` as the load-time material."""
         is_ambient = getattr(gmap, "is_ambient", None)
+        # A hole is EXPOSED vacuum / sky: flagged AND open. A sealed hull tile
+        # keeps its flag while solid (engine/04 §2.3: that is what lets a
+        # re-opened patch rejoin space), so a flag alone is not a hole --
+        # read as one, a hull door closed after a decompression was drawn as
+        # space (#150).
+        solid = np.asarray(gmap.solid, dtype=bool)
         if self.base_material is None:
             base = np.array(gmap.material, dtype=np.int16, copy=True)
             # A load-time vacuum / sky tile is AIR in `material` but its art
@@ -149,6 +155,7 @@ class TileArtSeam:
             hole = np.asarray(gmap.is_vacuum, dtype=bool).copy()
             if is_ambient is not None:
                 hole |= np.asarray(is_ambient, dtype=bool)
+            hole &= ~solid
             base[hole] = -1
             self.base_material = base
         tiles = gmap.drain_render_dirty()
@@ -156,8 +163,9 @@ class TileArtSeam:
             return []
         out = []
         for fy, fx in tiles:
-            vac = bool(gmap.is_vacuum[fy, fx]) or (
+            vac = (bool(gmap.is_vacuum[fy, fx]) or (
                 is_ambient is not None and bool(is_ambient[fy, fx]))
+            ) and not bool(solid[fy, fx])
             donor = find_donor(self.base_material, (fy, fx),
                                int(gmap.material[fy, fx]), self.radius)
             out.append(TilePatch(tile=(fy, fx), vacuum=vac, donor=donor))
