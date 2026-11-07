@@ -138,6 +138,7 @@ class TickStageProfiler:
         self.nvtx = bool(nvtx)
         self.nvtx_ticks = int(nvtx_ticks)
         self._orig = []           # (container, attr, original)
+        self._captured = False    # the nvtx window opens once per process
         self._sync_fn = None
         self._nvtx_mod = None
         self._runtime = None
@@ -241,9 +242,10 @@ class TickStageProfiler:
         self._cur_calls = defaultdict(int)
         self._cur_bus = defaultdict(lambda: [0, 0])
         if self.nvtx and self._runtime is not None:
-            if self.tick == self.skip + 1:
+            if self.tick == self.skip + 1 and not self._captured:
                 self._runtime.profilerStart()
                 self._capturing = True
+                self._captured = True
             if self._capturing:
                 self._nvtx_mod.RangePush(f"tick {self.tick}")
 

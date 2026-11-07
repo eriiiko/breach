@@ -28,6 +28,10 @@ Modes:
                      the truth), then ``--ticks`` more with a device sync
                      after each device stage (the attribution,
                      ``tools/tick_stage_profile.py``); prints SCALING_JSON
+    --run --nvtx     the same under ``nsys profile --capture-range=
+                     cudaProfilerApi``: NVTX ranges per stage, the capture
+                     window over the plain ticks only (read it with
+                     ``tools/nsys_stage_bus.py``)
     --sweep          for every backend and N: make the level if missing, then
                      ``--run`` it in a FRESH subprocess (a second CUDA run in
                      one process is slower, #125); collects the JSON lines
@@ -136,7 +140,7 @@ def _device_used():
 
 
 def run_one(level_name: str, levels_dir, backend: str, build: Path,
-            warmup: int, ticks: int) -> dict:
+            warmup: int, ticks: int, nvtx: bool = False) -> dict:
     """One (level, backend) in this process. Returns the SCALING_JSON dict."""
     from bench_bot_matches import import_build, setup_cuda
     if backend == "cpu":
@@ -152,7 +156,8 @@ def run_one(level_name: str, levels_dir, backend: str, build: Path,
     device = backend != "cpu"
     lvl = level_loader.load(level_name, str(levels_dir))
     used0 = _device_used() if device else None
-    prof = TickStageProfiler(skip=warmup, sync=False)
+    prof = TickStageProfiler(skip=warmup, sync=False, nvtx=nvtx and device,
+                             nvtx_ticks=ticks)
     prof.install(bp, device=device)
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False,
                      ruleset=ContinuousRealtime())
@@ -311,6 +316,10 @@ def main(argv=None) -> int:
     ap.add_argument("--ns", default="1,2,4,8,16,32,64")
     ap.add_argument("--backends", default="cpu,cuda,resident")
     ap.add_argument("--out", default=None, help="with --sweep: results JSON")
+    ap.add_argument("--nvtx", action="store_true",
+                    help="with --run on the GPU: NVTX ranges + a "
+                         "cudaProfilerStart/Stop window over the plain ticks "
+                         "(for nsys --capture-range=cudaProfilerApi)")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if sum(bool(x) for x in (args.make is not None, args.run, args.sweep)) != 1:
         ap.error("exactly one of --make N / --run / --sweep")
@@ -321,7 +330,7 @@ def main(argv=None) -> int:
         if args.level is None:
             ap.error("--run needs --level")
         r = run_one(args.level, args.levels_dir, args.backend,
-                    Path(args.build), args.warmup, args.ticks)
+                    Path(args.build), args.warmup, args.ticks, nvtx=args.nvtx)
         print("SCALING_JSON " + json.dumps(r), flush=True)
         return 0
     return sweep(args)
