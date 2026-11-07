@@ -61,7 +61,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from control_source import ControlSource, quantize_stick_direction
+from control_source import ControlSource
 from match_replay import INTENT_KINDS
 from simulation.intents import FP_ONE, dequantize
 
@@ -310,23 +310,25 @@ RANDOM_DOMAIN = dict(p_clear=0.25, p_trigger=0.5, p_latch=0.05,
 
 
 def _unit_vectors(rng, n: int) -> np.ndarray:
-    out = np.zeros((n, 2), dtype=np.int64)
-    for i in range(n):
-        while True:
-            ax, ay = rng.uniform(-1.0, 1.0, size=2)
-            dx, dy, _ = quantize_stick_direction(float(ax), float(ay),
-                                                 deadzone=1e-6)
-            if dx or dy:
-                out[i] = (dx, dy)
-                break
-    return out
+    """``n`` uniform random directions as Q16.16 unit vectors (int64
+    ``(n, 2)``): a uniform point of the square, normalised (``sqrt``, IEEE
+    correctly rounded) and rounded half away from zero -- the arithmetic of
+    ``quantize_stick_direction``, vectorised; a zero draw becomes +x."""
+    v = rng.uniform(-1.0, 1.0, size=(n, 2))
+    norm = np.sqrt(v[:, 0] * v[:, 0] + v[:, 1] * v[:, 1])
+    zero = norm == 0.0
+    norm[zero] = 1.0
+    u = v / norm[:, None]
+    u[zero] = (1.0, 0.0)
+    q = np.sign(u) * np.floor(np.abs(u) * FP_ONE + 0.5)
+    return q.astype(np.int64)
 
 
 def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
     """``n`` uniformly random action rows ``(n, A)`` int32 from ``rng`` (a
     seeded ``numpy.random.Generator``) over :data:`RANDOM_DOMAIN` (or
-    ``domain``). The control layer's floats enter only through
-    ``quantize_stick_direction`` (the one float -> Q16.16 seam)."""
+    ``domain``). The rows are what a trainer hands over: integers (the
+    directions rounded as ``quantize_stick_direction`` rounds)."""
     d = dict(RANDOM_DOMAIN if domain is None else domain)
     schema = action_schema()
     rows = np.zeros((n, len(schema)), dtype=np.int64)
