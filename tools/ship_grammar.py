@@ -1329,6 +1329,8 @@ def recipe_hash(archetype: Archetype, profile: str,
         # the vent design flow's dial (vocabulary §0.6 item 3): a ship's
         # vent rates are a function of it, so a retune makes the record stale
         presets["levelgen.vents.ach"] = G.vent_ach()
+    # the roof lights' shapes (#177): every recipe ship draws from them
+    presets["levelgen.lamp_shapes"] = _plain(R._table("levelgen.lamp_shapes"))
     body.update(departments=depts, cycles=cycles, fixtures=fixtures,
                 presets=presets)
     blob = json.dumps(_plain(body), sort_keys=True, separators=(",", ":"),

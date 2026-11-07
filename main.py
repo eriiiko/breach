@@ -694,13 +694,28 @@ def main():
         extra += frame_lights.transient_specs(
             renderer.transient_light_specs(_footprint_of))
         return frame_lights.frame_light_specs(
-            lights_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
+            beacons_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
             extra=extra)
+
+    # A static lamp never changes, and a roof-light shape is many of them
+    # (#177: 1560 on a large ship, 11 ms a tick through Python): their rows
+    # are built once.
+    statics_in = [e for e in lights_in if e.kind != "beacon"]
+    beacons_in = [e for e in lights_in if e.kind == "beacon"]
+    static_rows = []
 
     def cone_rows_now():
         grid_h, grid_w = sim.gmap.solid.shape
-        return frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
-                                      light_fine_bits)
+        if not static_rows:
+            static_rows.append(frame_lights.cone_rows(
+                frame_lights.frame_light_specs(
+                    statics_in, total_tick=0,
+                    sim_time_per_tick=sim_time_per_tick).specs,
+                grid_w, grid_h, light_fine_bits))
+        return np.ascontiguousarray(np.vstack([
+            static_rows[0],
+            frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
+                                   light_fine_bits)]))
 
     # Graphics G3 F4b: THE FIRE'S ROOM LIGHT -- the renderer's per-burning-
     # tile multiplier on the sweep's thermal light emission (the fire's light

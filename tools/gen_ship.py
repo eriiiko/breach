@@ -74,7 +74,9 @@ Run:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -128,6 +130,7 @@ LAMP_RANGE = 16.0            # tiles
 # value the layout stage will set; untagged rooms keep the one centred lamp.
 LAMP_SPAN = 12
 LAMP_SPAN_MIN = 6
+LAMP_SHAPE_MARGIN = 1         # a shape's clear tiles to its room's wall or span's end
 # THE LAMP LIGHT BUDGET (#136, found by the first large recipe ship, which
 # main.py refused at frame 3): a frame's cone emitters may put at most
 # LIGHT_CONE_BUDGET = 2^44 counts per channel = 128 light units at L°'s
@@ -647,6 +650,10 @@ ROOM_TAGS = {
                    "axis, one centred on each equal span (absent: one "
                    "centred lamp)",
                    lambda v: _is_int(v) and v >= LAMP_SPAN_MIN),
+    "lamp_shape": ('"auto" (a shape drawn from what fits) or a '
+                   "[levelgen.lamp_shapes.*] name: each of the room's lamps "
+                   "is that shape of tiles, sharing the lamp's light",
+                   lambda v: isinstance(v, str)),
     "dept":       ("str: the department this room belongs to",
                    lambda v: isinstance(v, str)),
     "role":       ("str: the room's role in its department",
@@ -2098,6 +2105,39 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                      temp_init=_build_temp_init(tm, graph))
 
 
+def lamp_shapes() -> dict:
+    """``[levelgen.lamp_shapes.*]`` (#177): name -> a mask (a bool array, row
+    0 first, its long side along x) or a strip ``(width, fill)``. THE door of
+    the shape library: refuses a missing table, a row with neither or both, an
+    empty or uneven mask, and a mask that does not mirror onto itself
+    both ways (a twin room's lamp is its reflection), naming the row."""
+    from config import CFG
+    tbl = getattr(getattr(CFG, "levelgen", None), "lamp_shapes", None)
+    if tbl is None:
+        raise ValueError("config.toml has no [levelgen.lamp_shapes]: the "
+                         "recipe path's roof lights have no shapes")
+    out = {}
+    for name, row in sorted(vars(tbl).items()):
+        where = f"[levelgen.lamp_shapes.{name}]"
+        mask, width, fill = (getattr(row, k, None) for k in ("mask", "width", "fill"))
+        if (mask is None) == (width is None and fill is None):
+            raise ValueError(f"{where} needs a mask, or width + fill, never both")
+        if mask is None:
+            if not (_is_int(width) and width >= 1 and _is_num(fill) and 0 < fill <= 1):
+                raise ValueError(f"{where}: width must be an int >= 1 and fill in (0, 1]")
+            out[name] = (int(width), float(fill))
+            continue
+        if not (mask and all(isinstance(r, str) and len(r) == len(mask[0]) for r in mask)):
+            raise ValueError(f"{where}: mask must be rows of one length")
+        if set("".join(mask)) - {"*", " "} or "*" not in "".join(mask):
+            raise ValueError(f"{where}: a mask is '*' (lamp) and ' ', with a lamp")
+        a = np.array([[c == "*" for c in r] for r in mask])
+        if not (np.array_equal(a, a[::-1, :]) and np.array_equal(a, a[:, ::-1])):
+            raise ValueError(f"{where}: a mask must mirror onto itself both ways")
+        out[name] = a
+    return out
+
+
 def _lamp_light(lamps) -> float:
     """The most light, in light units, the lamps carry on any one channel
     (``intensity x colour`` summed, the cone door's quantity)."""
@@ -2114,7 +2154,9 @@ def _ship_lamps(graph: ShipGraph) -> list:
     does not, every lamp is dimmed by the one factor that fits. Pure
     arithmetic on the graph, no draw; a span floor is the same for twins, so
     the mirror holds."""
-    lamps = [l for rm in graph.rooms for l in _room_lamps(rm)]
+    shapes = (lamp_shapes() if any("lamp_shape" in rm.tags for rm in graph.rooms)
+              else {})
+    lamps = [l for rm in graph.rooms for l in _shaped_lamps(graph, rm, shapes)]
     spanned = [rm for rm in graph.rooms if "lamp_span" in rm.tags]
     if not spanned or _lamp_light(lamps) <= LAMP_LIGHT_BUDGET:
         return lamps
@@ -2122,7 +2164,8 @@ def _ship_lamps(graph: ShipGraph) -> list:
     floor = min(int(rm.tags["lamp_span"]) for rm in spanned)
     while _lamp_light(lamps) > LAMP_LIGHT_BUDGET and floor <= longest:
         floor += 1
-        lamps = [l for rm in graph.rooms for l in _room_lamps(rm, floor)]
+        lamps = [l for rm in graph.rooms
+                 for l in _shaped_lamps(graph, rm, shapes, floor)]
     total = _lamp_light(lamps)
     if total > LAMP_LIGHT_BUDGET:
         k = LAMP_LIGHT_BUDGET / total
@@ -2163,6 +2206,85 @@ def _room_lamps(rm: Room, span_floor: int = 0) -> list:
                  for k in range(n)]
     return [LightEntry(x=x, y=y, color=rgb, intensity=level,
                        range=LAMP_RANGE, kind="static") for (x, y) in spots]
+
+
+def _shape_mask(rm: Room, n_lamps: int, shapes: dict):
+    """The mask of ``rm``'s lamps (:func:`lamp_shapes`), oriented along the
+    room's long axis, or None when no shape fits. ``auto`` takes one of the
+    shapes that fit, by a hash of the room's rectangle: no draw, so the
+    shapes move nothing else in a ship. A strip fills ``fill`` of its span
+    and is for long rooms only (long side >= 2 x short)."""
+    tall = rm.h > rm.w
+    long_side, short = (rm.h, rm.w) if tall else (rm.w, rm.h)
+    span = long_side / n_lamps
+    want = rm.tags["lamp_shape"]
+    fits = []
+    for name in sorted(shapes):
+        s = shapes[name]
+        if isinstance(s, tuple):
+            n = int(s[1] * span)
+            a = np.ones((s[0], n), dtype=bool)
+            auto_ok = long_side >= 2 * short
+        else:
+            a, auto_ok = s, True
+        if (a.size and a.shape[0] + 2 * LAMP_SHAPE_MARGIN <= short
+                and a.shape[1] + 2 * LAMP_SHAPE_MARGIN <= span
+                and (name == want or (want == "auto" and auto_ok))):
+            fits.append(a)
+    if not fits:
+        return None
+    key = zlib.crc32(f"{rm.x},{rm.y},{rm.w},{rm.h}".encode())
+    a = fits[key % len(fits)]
+    return a.T if tall else a
+
+
+def _on_parity(a, centre2: float, axis: int):
+    """``a`` with its middle line doubled along ``axis`` when its width and
+    a centre at half-integer ``centre2 / 2`` disagree in parity, so the mask
+    lands exactly centred; the mask's symmetry survives the insertion."""
+    n = a.shape[axis]
+    if abs(centre2 - round(centre2)) > 1e-9 or (round(centre2) - n) % 2 == 0:
+        return a
+    return np.insert(a, n // 2, a.take((n - 1) // 2, axis=axis), axis=axis)
+
+
+def _shape_tiles(mask, x: float, y: float) -> list:
+    """The tile centres of ``mask`` centred on (x, y)."""
+    m = _on_parity(_on_parity(mask, 2 * x, 1), 2 * y, 0)
+    x0 = math.floor(x - m.shape[1] / 2 + 0.5)
+    y0 = math.floor(y - m.shape[0] / 2 + 0.5)
+    return [(x0 + int(j) + 0.5, y0 + int(i) + 0.5) for i, j in zip(*np.nonzero(m))]
+
+
+def _shaped_lamps(graph: ShipGraph, rm: Room, shapes: dict, span_floor: int = 0) -> list:
+    """``rm``'s lamps as roof-light SHAPES (#177): a room with a
+    ``lamp_shape`` tag has each lamp of :func:`_room_lamps` spread over the
+    tiles of one shape, which share its light (so a shape softens a lamp and
+    spends nothing more). A mirror twin takes the REFLECTION of its lower-id
+    twin's tiles, an axis room its left half's. A room no shape fits, or one
+    without the tag, keeps its lamps."""
+    lamps = _room_lamps(rm, span_floor)
+    if not lamps or "lamp_shape" not in rm.tags:
+        return lamps
+    W, twin = graph.width, rm.mirror if graph.mirror_x else None
+    src = graph.rooms[twin] if twin is not None and twin < rm.id else rm
+    mask = _shape_mask(src, len(lamps), shapes)
+    if mask is None:
+        return lamps
+    spots = [(l.x, l.y) for l in lamps]
+    if src is not rm:                                  # the twin's own spots
+        spots = [(W - x, y) for (x, y) in spots]
+    if twin == rm.id:
+        spots = [(x, y) for (x, y) in spots if x <= W / 2.0]
+    tiles = [t for (x, y) in spots for t in _shape_tiles(mask, x, y)]
+    if twin == rm.id:
+        tiles += [(W - x, y) for (x, y) in tiles if x < W / 2.0
+                  and (W - x, y) not in tiles]
+    if src is not rm:
+        tiles = [(W - x, y) for (x, y) in tiles]
+    level = lamps[0].intensity * len(lamps) / len(tiles)
+    return [LightEntry(x=x, y=y, color=lamps[0].color, intensity=level,
+                       range=LAMP_RANGE, kind="static") for (x, y) in tiles]
 
 
 def _build_temp_init(tm, graph: ShipGraph):
