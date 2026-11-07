@@ -2049,7 +2049,7 @@ intensity = 12.0        # peak, in light units (a flashlight is 2.5, but aimed:
                         # round the muzzle and catches the shooter's armour
                         # without whiting out the floor; 24 lit half the room.
                         # Four marines firing together at 12 = 48 light units,
-                        # inside the volley cap (64, MUZZLE_FLASH_MAX_TOTAL).
+                        # far inside the volley cap (1024, MUZZLE_FLASH_MAX_TOTAL).
 duration_s = 0.1        # fades linearly to dark in this long (wall clock):
                         # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
                         # tracer it rides lives 0.18 s, so longer is cut there
@@ -3748,16 +3748,16 @@ ach = 10.0                            # PLACEHOLDER (Erik tunes): air changes pe
 # ((r, g, b), level)); render light only. `lit` is gen_ship's default lamp.
 [levelgen.lights.lit]
 rgb = [1.0, 0.84, 0.67]               # == gen_ship.LAMP_RGB
-level = 1.2                           # == gen_ship.LAMP_INTENSITY
+level = 2.4                           # PLACEHOLDER: v1's LAMP_INTENSITY doubled (Erik, #173)
 [levelgen.lights.dim]
 rgb = [1.0, 0.78, 0.55]               # PLACEHOLDER: warmer
-level = 0.5                           # PLACEHOLDER
+level = 1.0                           # PLACEHOLDER
 [levelgen.lights.dark]
 rgb = [1.0, 0.84, 0.67]
 level = 0.0                           # no lamp light at all
 [levelgen.lights.harsh]
 rgb = [0.85, 0.92, 1.0]               # PLACEHOLDER: cold white
-level = 2.0                           # PLACEHOLDER
+level = 4.0                           # PLACEHOLDER
 
 # [levelgen.fuel.*]: a fuel class -- the [materials.*] rows its clusters are
 # drawn from (a mix of fractions summing to 1) and how many clusters a room

@@ -379,7 +379,7 @@ void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordi
         throw std::invalid_argument(
             "RadiationSweep: n_cones > 0 needs the cone rows (P6b)");
     }
-    int64_t tot[3] = {0, 0, 0};
+    int64_t tot[16 * 3] = {0};
     for (int r = 0; r < light.n_cones; ++r) {
         const int64_t* row = light.cones + (size_t)r * CONE_ROW_WIDTH;
         if (row[0] < 0 || row[0] >= h || row[1] < 0 || row[1] >= w) {
@@ -395,19 +395,20 @@ void RadiationSweep::validate_light_group(const LightChannels& light, int n_ordi
                 "RadiationSweep: a cone's center outside [0, CONE_TURN) or spread "
                 "outside [0, CONE_TURN] (P6b cone door)");
         }
-        for (int c = 0; c < 3; ++c) {
-            // each rgb <= the budget is checked before the add, so the running
-            // sum stays below 2^45 and cannot wrap
-            if (row[2 + c] > LIGHT_CONE_BUDGET) {
+        if (row[2] > LIGHT_CONE_ROW_MAX || row[3] > LIGHT_CONE_ROW_MAX ||
+            row[4] > LIGHT_CONE_ROW_MAX) {
+            throw std::invalid_argument(
+                "RadiationSweep: a cone's rgb above LIGHT_CONE_ROW_MAX (2^48, #173)");
+        }
+        int64_t e[16 * 3];
+        cone_emission(row + 2, row[5], row[6], n_ordinates, e);
+        for (int k = 0; k < n_ordinates * 3; ++k) {
+            // each share <= the budget is checked before the add, so the
+            // running sum stays below 2^45 and cannot wrap
+            if (e[k] > LIGHT_CONE_BUDGET || (tot[k] += e[k]) > LIGHT_CONE_BUDGET) {
                 throw std::invalid_argument(
-                    "RadiationSweep: the cones' summed rgb exceeds LIGHT_CONE_BUDGET "
-                    "(2^44 per channel -- the int64 argument, P6b cone door)");
-            }
-            tot[c] += row[2 + c];
-            if (tot[c] > LIGHT_CONE_BUDGET) {
-                throw std::invalid_argument(
-                    "RadiationSweep: the cones' summed rgb exceeds LIGHT_CONE_BUDGET "
-                    "(2^44 per channel -- the int64 argument, P6b cone door)");
+                    "RadiationSweep: the cones' summed emission in one ordinate exceeds "
+                    "LIGHT_CONE_BUDGET (2^44 per channel -- the int64 argument, #173)");
             }
         }
     }
