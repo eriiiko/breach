@@ -791,6 +791,11 @@ class PhysicsRunner:
         # tick — so FieldEdit dumps (flushed before physics) and source holds
         # are each counted EXACTLY ONCE by the W3 displacement accounting.
         self._water_depth_before = None
+        # #29 P4a: its DEVICE twin on the resident path (a CuPy plane the
+        # device water tail reads and rewrites); (re)made from the host copy
+        # whenever that is (re)seeded, kept equal to it after every active
+        # tick (the exit download), so neither side ever re-uploads it.
+        self._d_water_before = None
         # W5 steam gas index: which gmap.gas slice the flash-boil puff lands
         # in. Resolved BY NAME from the gas table ONCE, on the first
         # _step_water call (never hardcode the slice index) — the same lazy
@@ -1318,31 +1323,48 @@ class PhysicsRunner:
         maps, ring-free maps, and any level with ``sky_tau_s == 0`` (dormant):
         every such case returns before touching ``gmap.gas``.
         """
+        plan = self._sky_exchange_plan(gmap, sim_time)
+        if plan is not None:
+            self._sky_exchange_apply(gmap, plan)
+
+    def _sky_exchange_plan(self, gmap, sim_time):
+        """#29 P4a: the sky exchange's host-side decision, split out of
+        :meth:`_run_sky_exchange` (pure code motion) so the resident tick can
+        tell, BEFORE moving the gas planes, whether the pass has work: None
+        when it is dormant (space map, ring-free map, ``sky_tau_s == 0``, a
+        zero ``lambda``, a sealed box), else ``(mask, o2_frac_q, lambda_q)``.
+        Reads masks and the level's ambient config only (never ``gas``)."""
         amb = getattr(gmap, "_ambient", None)
         if amb is None or not gmap.is_ambient.any():
-            return                                  # space / ring-free → dormant
+            return None                             # space / ring-free → dormant
         tau = float(getattr(amb, "sky_tau_s", 0.0))
         if tau <= 0.0:
-            return                                  # unblessed level → dormant
+            return None                             # unblessed level → dormant
         # λ = quantize(dt_tick / sky_tau_s), hoisted once per tick host-side (like
         # recip_P_span). sim_time IS the tick dt. Same Q16 quantize (round-to-
         # nearest) the ring N-split uses. λ == 0 (τ ≫ one tick and tiny dt) → no-op.
         from simulation import gas_fixed
         lambda_q = int(gas_fixed.quantize_q16_scalar(float(sim_time) / tau))   # a Q16 fraction
         if lambda_q == 0:
-            return
+            return None
         # FIXED tick-order rebuild point (Erik's determinism caveat): the mask is
         # rebuilt here, after combustion, before the pass — never opportunistically.
         mask = gmap.ensure_sky_mask()
         if not mask.any():
-            return                                  # sealed box (ring but no interior sky)
+            return None                             # sealed box (ring but no interior sky)
+        return (mask, int(amb.o2_frac_q), lambda_q)
+
+    def _sky_exchange_apply(self, gmap, plan):
+        """#29 P4a: the sky exchange's pass on the mirror's ``gas`` (the body
+        of :meth:`_run_sky_exchange` after its decision, unchanged)."""
+        mask, o2_frac_q, lambda_q = plan
         n_gases = gmap.gas.shape[0]
         if self._sky_flux is None or self._sky_flux.shape[0] != n_gases:
             self._sky_flux = np.zeros(n_gases, dtype=np.int64)
         self._sky_flux.fill(0)                       # per-tick rail (design §1.3)
         self.bp.sky_exchange_step(
             gmap.gas, self._o2_idx, self._inert_n2_idx, mask,
-            int(amb.o2_frac_q), lambda_q, self._sky_flux)
+            o2_frac_q, lambda_q, self._sky_flux)
 
     # ------------------------------------------------------------------
     # S8a Path B — the GPU-resident tick
@@ -1355,6 +1377,7 @@ class PhysicsRunner:
         if (self._water_depth_before is None
                 or self._water_depth_before.shape != gmap.water_depth.shape):
             self._water_depth_before = gmap.water_depth.copy()
+            self._d_water_before = None   # #29 P4a: re-made from this seed
             self.water.dx = float(gmap.tile_size_m)
             self._steam_idx = int(gmap.gases.name_to_id["steam"])
         before = self._water_depth_before
@@ -1367,52 +1390,75 @@ class PhysicsRunner:
         return False
 
     def _step_resident(self, gmap, sim_time, tick=0):
-        """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
-        Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
-        whole EOS STAGE (advection substeps, on-device MG build + solve,
-        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md; the trace
-        planes ride its substeps, smoke transport v2), and the once-per-tick
-        TRACE TAIL all run resident on persistent device buffers — the
-        Path-B EOS bracket is GONE (spec §3.3's zero mid-tick transfers, for
-        real). Combustion + the tail stay BRACKETED on the mirror (S8c).
-        The numpy fields are the authoritative mirror throughout — every EOS
-        input is current on the mirror at the step-4 upload (the design §2
-        invariant), and the step-6 batched D2H lands the EOS/trace outputs
-        back on it for the brackets + combat/recorder/render (Q4 baseline).
+        """One GPU-resident tick (S8a Path A/B + #29 P4a, the brackets gone).
+
+        Bit-identical to the CPU/per-call tick, and slot 7 is now ONE batched
+        upload at entry, a device chain with ZERO plane transfers between its
+        stages, and ONE batched download at exit
+        (docs/residency_batching_design_2026-11-07.md §4.2 / §9 P4a):
+
+        1. host pre-physics (the water pre-step and its dormancy decision,
+           lazy binds, ambient args) on the mirror;
+        2. THE ENTRY UPLOAD: ``from_host(_resident_entry_names)`` -- every
+           field host code may have written since the last download that a
+           device stage reads -- and, while light is requested, the light
+           inputs (cones / sky / emit_mult, render state set before the tick);
+        3. the device chain, in the CPU tick's order: water substeps + the
+           W5/W3 tail -> the EOS stage (its host pre-stage reads only
+           tick-entry wind / temperature / masks; the gas- and
+           permeability-dependent scan runs on the device) -> the trace tail
+           -> combustion -> [the sky exchange, ambient maps only: a host
+           bracket, ACCEPTED GAP] -> the tail (bulk sum, fire, the radiation
+           sweep, temperature), which ends with the ONE small books D2H
+           (every stage's counters, the destroyed-wall list's head);
+        4. THE EXIT DOWNLOAD: ``to_host(_resident_exit_names)`` -- the synced
+           set the host gameplay slots and the digest read;
+        5. the render-only W6a ripple on the mirror (skipped when headless).
+
+        The numpy fields stay the authoritative mirror between ticks (the
+        Q4 baseline): every host slot reads and writes them as before.
+        RULE (Path A, kept): a DEFAULTED to_host() / from_host() is forbidden
+        inside the tick -- every transfer names its fields.
         """
         if not gmap.residency_on():
             gmap.enable_residency()
+            gmap._res_tile_serial = gmap._tile_serial   # enable copied them all
 
-        # -- 1. host pre-physics (on the mirror): water pre-step, lazy binds,
-        #       ambient args (identical to the normal step) ---------------------
-        # T6 (issue #12): the fire heat cast (cast_fire_heat) this list used to
-        # open with is deleted — see the normal step's matching note.
+        # -- 1. host pre-physics (on the mirror) ---------------------------------
         self.eos.dx = float(gmap.tile_size_m)
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
             self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
             self._black_smoke_idx = int(gmap.gases.name_to_id["smoke"])
         amb = self._ambient_args(gmap)
+        ambient = amb[0] is not None
         water_dormant = self._water_pre_resident(gmap)
-
-        # -- 2. device handles. Rung-1 uploads ONLY what the resident loops READ
-        #       (targeted H2D, just-in-time) — the bracketed stages (EOS,
-        #       combustion, tail) read the numpy MIRROR directly, so the full
-        #       synced set need not ride to the device this rung. `from_host()`'s
-        #       DEFAULT is still the full §5b always-upload set (incl.
-        #       dyn_wave_absorb / obstacles) — that is the
-        #       contract Path-A inherits when it makes the brackets resident; Rung 2
-        #       must NOT narrow those masks (body-shielding depends on them). --------
-        dev = gmap.device_ptrs()
+        light = bool(self.engine.light_requested)
+        headless = bool(self.engine.headless)
         h, w = gmap._h, gmap._w
-
-        # -- 3. WATER: substep loop RESIDENT, then the W5/W3 host tail (bracket) --
+        n_gases = int(gmap.gas.shape[0])
+        t_amb = self._eos_t_amb_raw()
+        dev = gmap.device_ptrs()
         if not water_dormant:
-            # H2D only the water inputs the launch core reads. floor_height is
-            # static (terrain — uploaded once by enable_residency), so it is not
-            # re-sent each tick; solid IS (structural edits change it).
-            gmap.from_host(["water_depth", "flow_vx", "flow_vy",
-                            "atmosphere", "solid"])
+            if (self._d_water_before is None
+                    or self._d_water_before.shape != self._water_depth_before.shape):
+                import cupy as cp
+                self._d_water_before = cp.ascontiguousarray(
+                    cp.asarray(self._water_depth_before))
+            dev["water_before"] = int(self._d_water_before.data.ptr)
+
+        # -- 2. THE ENTRY UPLOAD (one batched from_host) -------------------------
+        gmap.from_host(self._resident_entry_names(gmap, water_dormant, light))
+        if light:
+            self.engine.upload_light_resident(
+                dev, h, w, n_gases,
+                gmap.gases.light_absorb_q16, gmap.gases.light_glow_q16,
+                light_cones=self.light_cones, light_sky=self.light_sky,
+                light_emit_mult=self.light_emit_mult)
+
+        # -- 3. THE DEVICE CHAIN -------------------------------------------------
+        # 3a. water: the substep loop, then the W5/W3 tail (#29 P4a) on device.
+        if not water_dormant:
             n_sub = int(self.engine.water_substep_count(sim_time))
             wdt = sim_time / n_sub   # pybind casts to float32 == step_water's wdt
             self.bp.water_substeps_resident(
@@ -1421,58 +1467,17 @@ class PhysicsRunner:
                 h, w, n_sub, wdt, gmap.tilt_x, gmap.tilt_y,
                 self.water.g, self.water.damping, self.water.dx,
                 self.water.k_p, self.water.v_max, self.water.depth_eps)
-            gmap.to_host(["water_depth", "flow_vx", "flow_vy"])
-            self.engine.step_water_tail(
-                gmap.water_depth, gmap.atmosphere, gmap.solid,
-                gmap.gas, self._water_depth_before, gmap.dyn_permeability,
-                self._steam_idx, sim_time,
+            self.engine.step_water_tail_resident(
+                dev, h, w, gmap.gases.conservative, self._steam_idx, sim_time,
                 self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
                 self.water_boil_rate, self.water_boil_p_thresh,
-                self.water_steam_yield,
-                # arc #54 §2.7 (the W3 evacuation row) -- the SAME six args
-                # the non-resident `_step_water` passes; see there for why.
-                gas_energy=gmap.gas_energy,
-                gas_conservative=gmap.gases.conservative,
-                thermal_solid=gmap.thermal_solid,
-                is_vacuum=gmap.is_vacuum,
-                is_ambient=amb[0],
-                t_amb_raw=self._eos_t_amb_raw())
+                self.water_steam_yield, ambient, t_amb)
 
-        # -- 4. EOS stage FULLY RESIDENT (S8a Path A — the bracket is GONE) ------
-        # Pre-upload the EOS input set from the authoritative mirror (replaces
-        # Path B's post-EOS re-upload + the per-call path's internal H2D). NOTE
-        # (design §2): wave_p is NOT uploaded — on device it is written (the
-        # step-0 p_prev := atmosphere D2D) before any read; dyn_wave_absorb is
-        # NOT uploaded — no device kernel reads it (the kick consumes the
-        # host-hoisted absorb_q plane, computed FROM the mirror inside
-        # run_substeps_resident — that host hoist is where body-shielding
-        # lives). is_ambient IS in the list: it is NOT static — destroy_wall's
-        # joins-ambient twin mutates it on a ring-adjacent breach (gamemap
-        # breach_mask), exactly like is_vacuum on a space map (the PART-1b
-        # gate leg caught the stale device copy). MIRROR-CURRENCY INVARIANT:
-        # every field in this list is current on the mirror here (water tail,
-        # FieldEdits, stamp_units, combat edits all write the mirror; nothing
-        # writes it between this upload and the resident call below).
-        # THERMAL-MASS AXIS, P-EOS: `thermal_solid` JOINS this per-tick upload.
-        # It was a static one-shot upload while only host code read it (P2's
-        # recorded caveat); now DEVICE kernels read it (the resident SL advection
-        # + compression work), and it is NOT static — `on_tile_changed` patches it
-        # whenever a tile's material changes (a crate burning out) — so a
-        # one-shot device copy would go stale exactly like is_ambient's did.
-        # gas-energy conservation arc #54, design §5 (P-G0): `gas_energy`
-        # joins the upload/D2H pair beside `temperature` so the resident
-        # path's device mirror round-trips it every tick, even though no
-        # kernel reads/writes it yet (no consumer this patch) — the field
-        # is refreshed on the HOST mirror at tick end (below) and re-
-        # uploaded here next tick, exactly like every other host-refreshed
-        # field in this list.
-        gmap.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
-                        "gas", "solid", "is_vacuum", "is_ambient",
-                        "dyn_permeability", "thermal_solid", "gas_energy"])
-        # The host pre-stage (all EOS reductions — they consume tick-entry
-        # state) runs on the mirror inside; the device chain (substep loop,
-        # div_u/N/p*, the on-device MG build, vcycle, kick, store) runs with
-        # ZERO mid-tick plane transfers. Gate: tests/cuda_s8a_check.py.
+        # 3b. the EOS stage (S8a Path A). Its host pre-stage reads the mirror's
+        # tick-entry wind / temperature / masks / dyn_wave_absorb (current:
+        # no device stage above writes them); the Dalton + K|grad P|dt/N scan
+        # and the face coefficients read the DEVICE gas / dyn_permeability the
+        # water tail may just have written (#29 P4a, cuda_eos_resident.cu).
         self.engine.run_substeps_resident(
             gmap.wave_p, gmap.atmosphere,
             gmap.wind_x, gmap.wind_y, gmap.temperature,
@@ -1486,129 +1491,147 @@ class PhysicsRunner:
             d_temperature=dev["temperature"], d_gas=dev["gas"],
             d_solid=dev["solid"], d_is_vacuum=dev["is_vacuum"],
             d_dyn_permeability=dev["dyn_permeability"],
-            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_is_ambient=dev["is_ambient"] if ambient else 0,
             d_sponge_sigma=dev["sponge_sigma"] if amb[3] is not None else 0,
             d_sponge_udamp=dev["sponge_udamp"] if amb[4] is not None else 0,
-            # THERMAL-MASS AXIS, P-EOS: the MIRROR (the host occlusion predicate,
-            # like every other pre-stage reduction) + the DEVICE copy the SL and
-            # compression kernels read. Uploaded fresh above.
             thermal_solid=gmap.thermal_solid,
             d_thermal_solid=dev["thermal_solid"],
-            # gas-energy conservation arc #54, design §5 (P-G2): the conserved
-            # field's device buffer now has a real consumer (K1's KE brackets,
-            # K3's face-flux step, the once-per-tick recovery) -- upload/D2H
-            # were already wired in P-G0 beside `temperature`.
             d_gas_energy=dev["gas_energy"],
         )
 
-        # -- 5. The TRACE TAIL, RESIDENT (smoke transport v2, #12 P2b) ------------
-        # The trace planes already rode the bulk face flux inside the resident
-        # EOS substeps (stages 3b/3c); what remains once per tick is the tail --
-        # stranded zeroing, Jacobi diffusion, nearest decay (#88) -- the device twin of
-        # the tail run_substeps runs on the host, booked into the SAME EOSSolver
-        # books. NO from_host: the device gas is fresher than the mirror (the
-        # resident EOS just wrote it), and the masks/perm rode up in step 4.
+        # 3c. the once-per-tick TRACE TAIL (smoke transport v2, #12 P2b).
         self.engine.run_trace_tail_resident(
             gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
             h, w, sim_time,
             d_gas=dev["gas"], d_solid=dev["solid"],
             d_is_vacuum=dev["is_vacuum"],
-            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_is_ambient=dev["is_ambient"] if ambient else 0,
             d_dyn_permeability=dev["dyn_permeability"],
         )
 
-        # -- 6. The once-per-tick synced-set D2H (the locked Q4 decision): the
-        # EOS/trace outputs land on the mirror; combustion + the tail brackets
-        # read it exactly as today. RULE (design §2): a DEFAULTED to_host() is
-        # forbidden in the resident tick — the device heat/fire/wall_hp (and
-        # water fields on dormant ticks) are stale-by-design and would clobber
-        # the authoritative mirror.
-        gmap.to_host(["atmosphere", "wave_p", "wind_x", "wind_y",
-                      "temperature", "gas", "gas_energy"])
+        # 3d. COMBUSTION on the device (#29 P4a; the CPU twin since #71). The
+        # per-tile ignition threshold is gathered on the device from
+        # `material` and the per-material column (narrowed to int32 exactly
+        # as the host path narrows its gathered plane).
+        self.engine.run_combustion_resident(
+            dev, h, w, n_gases, int(gmap.dem_acc.shape[0]),
+            self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+            self._draw_r, sim_time,
+            np.ascontiguousarray(gmap.materials.ignition_temp_q16.astype(np.int32)),
+            ambient, t_amb)
 
-        # -- 7. COMBUSTION bracket (mirror) --------------------------------------
-        self._run_combustion(gmap, sim_time)
+        # 3e. THE SKY EXCHANGE -- ambient maps only, outside the training path
+        # (ACCEPTED GAP, design §4.2): when it has work this tick, its one host
+        # bracket (gas down, the host pass on the mirror, gas up). Dormant
+        # (space maps, sky_tau_s == 0, a sealed box): nothing crosses the bus.
+        sky = self._sky_exchange_plan(gmap, sim_time)
+        if sky is not None:
+            gmap.to_host(["gas"])
+            self._sky_exchange_apply(gmap, sky)
+            gmap.from_host(["gas"])
 
-        # -- 7b. SKY EXCHANGE bracket (mirror) — rides the combustion host bracket
-        # (design finding: no device kernel; the gas planes are on the mirror here,
-        # combustion just mutated them, next tick's step-4 from_host re-uploads).
-        self._run_sky_exchange(gmap, sim_time)
+        # 3f. THE TAIL (step_tail's order: the bulk sum, fire, the radiation
+        # sweep, temperature) on the device; the ONE books D2H; destroyed.
+        destroyed = self.engine.step_tail_resident(
+            dev, h, w, gmap.gases.conservative, self._o2_idx, sim_time,
+            ambient, t_amb, int(self.k_leak_q), int(self.rad_amb_vacuum_q),
+            gmap.gases.heat_absorb_q16, gmap.gases.light_absorb_q16,
+            gmap.gases.light_glow_q16)
 
-        # -- 8. TAIL bracket: ripple (host) + fire + temperature (mirror) --------
-        destroyed = self.engine.step_tail(
-            gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
-            gmap.solid,
-            gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
-            gmap.temperature, gmap.wind_x, gmap.wind_y,
-            gmap.is_vacuum, gmap.flammable,
-            gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
-            gmap.thermal_solid,          # thermal-mass axis (host mirror)
-            # T5b step 7 / R1: gmap.cool_shift was passed here.
-            gmap.fuel_recip,             # fuel-fraction axis (host mirror)
-            gmap.fire_T_ext_plane,       # per-material T_ext (host mirror)
-            gmap.gas, gmap.gases.conservative, self._o2_idx,
-            sim_time,
-            # Ray-engine-v2: the sweep (LIVE since T5b) rides the SAME
-            # host-mirror bracket (design §8.2: no host-side tick logic — the
-            # sweep is inside step_tail); its planes are resident-allocated
-            # but no device kernel touches them until P4.
-            heat_atten_q=gmap.heat_atten_q,
-            dyn_heat_atten_q=gmap.dyn_heat_atten_q,
-            rad_net_sweep=gmap.rad_net_sweep,
-            rad_flux_sweep=gmap.rad_flux_sweep,
-            rad_amb_sweep=gmap.rad_amb_sweep,
-            rad_fluence=gmap.rad_fluence,
-            gas_heat_absorb_q16=gmap.gases.heat_absorb_q16,   # P5a; live smoke since P5c
-            # P6a: the light channels' planes, on the SAME host-mirror bracket;
-            # read only while the engine's light is requested (default off).
-            light_atten_q=gmap.light_atten_q,
-            dyn_light_atten_q=gmap.dyn_light_atten_q,
-            light_q=gmap.light_q,
-            light_flux_q=gmap.light_flux_q,
-            light_glow=gmap.light_glow,
-            gas_light_absorb_q16=gmap.gases.light_absorb_q16,
-            gas_light_glow_q16=gmap.gases.light_glow_q16,
-            # P6b: the cone emitters and the sky (set_light_cones /
-            # set_light_sky; None = none / the dark ring), read only while
-            # light is requested.
-            light_cones=self.light_cones, light_sky=self.light_sky,
-            # G3 F4b: the fire's light flicker (set_light_emit_mult; None =
-            # none), read only while light is requested -- light only, no heat.
-            light_emit_mult=self.light_emit_mult,
-            k_leak_q=self.k_leak_q,
-            rad_amb_vacuum_q=self.rad_amb_vacuum_q,   # thermal v2 R3
-            is_ambient=amb[0],
-            # T6 (issue #12): the fire-plane cast that used to fill `rad_net`
-            # at step 1 is deleted; nothing fills it on this path either. Kept
-            # as a dead argument for the same reason the normal step keeps it
-            # (see PhysicsRunner.step's matching note / physics_engine.h).
-            rad_net=gmap.rad_net,
-            # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
-            # CONSERVED energy field. With it supplied, the temperature pass's
-            # Pass-1 deposit and Pass-2 conduction land on an accountable gas
-            # cell's `gas_energy` (and refresh its mirror) instead of taking
-            # the endpoint divide into `temperature`. The solids side is
-            # untouched -- a thermal solid's T is its own truth (D2).
-            gas_energy=gmap.gas_energy,
-            t_amb_q=self._eos_t_amb_raw(),
-        )
-        # The mirror is now authoritative for every synced field (each stage wrote
-        # it; the two resident loops' outputs were D2H'd to it). No final batched
-        # D2H is needed — consumers read the mirror unchanged (the Q4 baseline);
-        # the device set is re-uploaded whole next tick (from_host).
+        # -- 4. THE EXIT DOWNLOAD (one batched to_host) --------------------------
+        gmap.to_host(self._resident_exit_names(water_dormant, light, headless))
+        if not water_dormant:
+            # The host twin of the device `before` plane: the tail ended with
+            # before := water_depth, and nothing after it in slot 7 writes
+            # water_depth -- so the copy is the just-downloaded mirror.
+            self._water_depth_before[:] = gmap.water_depth
 
-        # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE.
-        # D1 is live -- `gas_energy` is the cross-tick truth, written by the
-        # EOS energy pass, by the thermal solver's gas side, by combustion and
-        # by the GameMap seams. Re-deriving it from the (N, T) mirror here
-        # would DESTROY state every tick (design §2.6: `N*floordiv(E,N) <= E`
-        # drains up to N-1 raw counts per cell, and any sub-count energy a seam
-        # wrote would vanish unbooked). `refresh_gas_energy` survives as the
-        # level-load initialiser only.
+        # -- 5. the W6a ripple (render-only) on the mirror -----------------------
+        if not headless:
+            self.engine.step_ripple(gmap.ripple, gmap.ripple_v, gmap.water_depth,
+                                    gmap.atmosphere, gmap.wave_p, gmap.solid,
+                                    sim_time)
+
+        # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE
+        # (see PhysicsRunner.step's matching note).
 
         if self.engine.light_requested:
             self.light_serial += 1          # P6b: a new light field for the renderer
         return destroyed
+
+    # #29 P4a: THE ENTRY SET -- what host code may write between one resident
+    # tick's exit download and the next tick's entry that a device stage
+    # reads (writers: FieldEdits -- gas, gas_energy (+ its temperature
+    # mirror), atmosphere, fire, heat, water_depth; stamp_units -- the stamp
+    # outputs; destroy_wall / seal / unseal -- material, the masks, wall_hp,
+    # gas, gas_energy, temperature, atmosphere, wind; the pumps and vents --
+    # gas, gas_energy, temperature; temperature ignition and the dev key --
+    # fire, flammable; the end-of-tick clear -- heat). Body shielding rides
+    # it: the stamp outputs are uploaded EVERY tick (units move every tick).
+    _RESIDENT_ENTRY_ALWAYS = (
+        "atmosphere", "wind_x", "wind_y", "temperature", "gas", "gas_energy",
+        "heat", "fire", "wall_hp",
+        "solid", "is_vacuum", "is_ambient", "thermal_solid", "flammable",
+        "material",
+        "dyn_permeability", "dyn_heat_atten_q",
+    )
+    # The table-derived static planes: patched only through on_tile_changed /
+    # _update_caches (GameMap._tile_serial), so uploaded when that moved.
+    _RESIDENT_ENTRY_STATIC = (
+        "heat_inv_shift", "face_shift", "fuel_recip", "fire_T_ext_plane",
+        "fuel_per_o2_plane", "heat_atten_q",
+    )
+    # THE EXIT SET -- the synced set the host gameplay slots and the digest
+    # read after the tick: every digested field the device writes, `heat`
+    # (9c reads it before the end-of-tick clear), `rad_flux_sweep` (the unit
+    # heat-damage sensor, exchange.py). NOT here, by decision: the three
+    # other sweep planes (render / tools only: the tile inspector,
+    # bench_clamp_shave, fire_tuning_lab) come down only when not headless;
+    # the light planes only while light is requested; the water planes and
+    # the W3-sealed dyn_permeability only on a tick the water stage ran;
+    # ripple / ripple_v are host-computed (step 5).
+    _RESIDENT_EXIT_ALWAYS = (
+        "atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "gas",
+        "gas_energy", "heat", "fire", "wall_hp", "dem_acc", "rad_flux_sweep",
+    )
+    _RESIDENT_EXIT_RENDER = ("rad_net_sweep", "rad_amb_sweep", "rad_fluence")
+
+    def _resident_entry_names(self, gmap, water_dormant, light):
+        names = list(self._RESIDENT_ENTRY_ALWAYS)
+        if light:
+            names.append("dyn_light_atten_q")
+        if getattr(gmap, "_res_tile_serial", None) != gmap._tile_serial:
+            names.extend(self._RESIDENT_ENTRY_STATIC)
+            names.append("light_atten_q")
+            gmap._res_tile_serial = gmap._tile_serial
+        if not water_dormant:
+            names.extend(("water_depth", "flow_vx", "flow_vy"))
+        return names
+
+    def _resident_exit_names(self, water_dormant, light, headless):
+        names = list(self._RESIDENT_EXIT_ALWAYS)
+        if not headless:
+            names.extend(self._RESIDENT_EXIT_RENDER)
+        if light:
+            names.extend(("light_q", "light_flux_q", "light_glow"))
+        if not water_dormant:
+            names.extend(("water_depth", "flow_vx", "flow_vy", "dyn_permeability"))
+        return names
+
+    # ------------------------------------------------------------------
+    # #29 P4a: HEADLESS (the render-only ripple skipped on every path)
+    # ------------------------------------------------------------------
+    @property
+    def headless(self) -> bool:
+        """True on a headless run (``MatchSession``, so ``tools/run_match.py``
+        and ``rl_env``; never ``main.py``): the W6a ripple -- render-only,
+        outside the digest -- is skipped on every path (``PhysicsEngine.
+        headless``), and the resident tick downloads no render-only plane."""
+        return bool(self.engine.headless)
+
+    @headless.setter
+    def headless(self, on: bool) -> None:
+        self.engine.headless = bool(on)
 
     # ------------------------------------------------------------------
     # ray-engine-v2 P6b: THE LIGHT INPUTS and RELIGHT

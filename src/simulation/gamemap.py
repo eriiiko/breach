@@ -151,6 +151,12 @@ class GameMap:
         # requested -- so the resident tick's explicit to_host lists never name
         # them either.
         "light_q", "light_flux_q", "light_glow",
+        # #29 P4a: combustion's error-feedback DEMAND ACCUMULATOR (synced,
+        # digested, IN/OUT): the resident tick's combustion core runs on the
+        # device copy now. No host code writes it after GameMap.__init__, so
+        # it is uploaded once (enable_residency) and comes down at every
+        # resident tick's exit for the digest.
+        "dem_acc",
     )
     _RESIDENT_MASKS = (
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
@@ -236,6 +242,15 @@ class GameMap:
         # _step_resident's explicit per-tick lists; a defaulted from_host()
         # re-uploading them is harmless.
         "sponge_sigma", "sponge_udamp",
+        # #29 P4a: the two planes the resident combustion core reads that were
+        # host-only: `material` (int8; the device gathers the per-tile
+        # ignition threshold from it and a per-material table -- the host path
+        # rebuilds that plane in numpy every tick) and the per-tile fuel
+        # exchange rate `fuel_per_o2_plane` (R14). `material` is patched by
+        # destroy_wall / seal / unseal and rides the per-tick upload beside
+        # `solid`; `fuel_per_o2_plane` is a static projection patched in place
+        # by on_tile_changed and rides the topology-serial upload.
+        "material", "fuel_per_o2_plane",
     )
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 
@@ -791,6 +806,13 @@ class GameMap:
         # move — copies + a boolean compare + per-cell min/max, no float math).
         self._physics_engine = None
         self.use_cpp_stamp = True
+        # #29 P4a: THE TILE SERIAL -- a plain host counter (never digested,
+        # the render_dirty idiom) bumped by every rebuild or patch of the
+        # table-derived static planes (_update_caches, on_tile_changed). The
+        # resident tick re-uploads those planes (heat_inv_shift, face_shift,
+        # fuel_recip, fire_T_ext_plane, fuel_per_o2_plane, heat_atten_q,
+        # light_atten_q) only when it moved since their last upload.
+        self._tile_serial = 0
 
         # Populate material + vacuum from the level's CSV (vocabulary is
         # format-version dependent — v1 generator codes vs v2 canon ids).
@@ -1575,6 +1597,7 @@ class GameMap:
         """
         m = self.material
         tbl = self.materials
+        self._tile_serial = self.__dict__.get("_tile_serial", 0) + 1   # #29 P4a
 
         # Static per-channel light attenuation: table column projected onto the
         # grid (ch.03 march input). C-contiguous f32 so it crosses to C++ as a
@@ -1816,6 +1839,7 @@ class GameMap:
         """
         if not (0 <= fy < self._h and 0 <= fx < self._w):
             return
+        self._tile_serial += 1   # #29 P4a: the static planes changed (above)
         # arc #54 P-G1b (design §2.7, last structural row): THE MEMBERSHIP
         # SNAPSHOT. `material` has already been reassigned by the caller, but
         # the `solid` / `thermal_solid` caches this predicate reads are patched

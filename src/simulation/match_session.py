@@ -17,7 +17,8 @@ the result; the batched environment's farm workers (``src/rl_env.py``) drive
 it with the ``policy`` controller's action rows. Never a second loop body.
 
 Headless: no window, no light requested, no field recorder, nothing imports
-the renderer. The digests (``match_digests``) come from the determinism
+the renderer, and the physics runner is ``headless`` (#29 P4a: the
+render-only ripple is skipped). The digests (``match_digests``) come from the determinism
 gates' snapshot in ``tests/`` -- the caller puts that directory on
 ``sys.path`` (``tools/run_match.py`` and the farm workers do).
 """
@@ -60,6 +61,12 @@ class MatchSession:
         self.rules = MatchRules.from_spec(spec)
         self.sim = Simulation(level, seed=seed, breach_physics=breach_physics,
                               enable_recorder=False, ruleset=self.rules)
+        # #29 P4a: a session is headless (no window ever draws it), so the
+        # engine skips the render-only W6a ripple and the resident tick
+        # downloads no render-only plane (PhysicsRunner.headless). Outside the
+        # digest by construction: ripple / ripple_v are float, excluded.
+        if self.sim.physics_runner is not None:
+            self.sim.physics_runner.headless = True
         self.sim.set_paused(False)
         self.sim.spawn_match(spec)
         self.controllers = create_match_controllers(self.sim, spec,
