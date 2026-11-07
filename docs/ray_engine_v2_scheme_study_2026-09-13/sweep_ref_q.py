@@ -1541,16 +1541,22 @@ def validate_planes(a, d, k, amb=None, table=E):
 # the books on ring_in, which P6a already booked for exactly this.
 #
 # THE DOOR (validate_cones / validate_sky): every cone inside the grid, rgb >= 0,
-# center in [0, TURN), spread in [0, TURN]; per channel the SUM over all cones
-# at most LIGHT_CONE_BUDGET; each sky value in [0, LIGHT_SKY_MAX]. Those two
-# bounds are the int64 argument: a stream is at most the sky plus every
-# injection plus the largest thermal outflow (Kirchhoff keeps a thermal cell's
-# outflow a convex combination of its stream and its source, P6a G18(g)), so it
-# stays below 2^44.3, every plain product below 2^61, and rgb * overlap below
-# 2^60 -- gate 19 (f) measures it over-driven.
+# center in [0, TURN), spread in [0, TURN], each rgb at most LIGHT_CONE_ROW_MAX;
+# per channel and PER ORDINATE the sum of every cone's emission at most
+# LIGHT_CONE_BUDGET (#173: a stream lives in one ordinate, so a lamp is charged
+# what it puts in each, an omni lamp 1/n of its rgb); each sky value in
+# [0, LIGHT_SKY_MAX]. Those bounds are the int64 argument: a stream is at most
+# the sky plus its ordinate's injections plus the largest thermal outflow
+# (Kirchhoff keeps a thermal cell's outflow a convex combination of its stream
+# and its source, P6a G18(g)), so it stays below 2^44.3, every plain product
+# below 2^61, and rgb * overlap below 2^62 -- gate 19 (f) measures it
+# over-driven. The grid-wide cone total is at most n * the budget, 2^48.
 # --------------------------------------------------------------------------- #
 CONE_TURN = ONE                     # one full turn, in Q16 turns
-LIGHT_CONE_BUDGET = 1 << 44         # sum over ALL cones of one channel's rgb
+LIGHT_CONE_BUDGET = 1 << 44         # one ordinate's emission summed over ALL cones,
+                                    # per channel
+LIGHT_CONE_ROW_MAX = 1 << 48        # one cone's rgb: the projection's product
+                                    # (an omni row at the budget in each of 16 bins)
 LIGHT_SKY_MAX = 1 << 40             # one ordinate's sky, per channel (the table
                                     # top's per-ordinate share at S16)
 
@@ -1591,24 +1597,29 @@ def cone_emission(rgb, center_q: int, spread_q: int, n_ord: int = 16):
             for m in range(n_ord)]
 
 
-def validate_cones(cones, h: int, w: int):
+def validate_cones(cones, h: int, w: int, n_ord: int = 16):
     """The cone door, as raises (radiation_sweep.cpp mirrors it)."""
-    tot = [0] * L_CHANNELS
+    tot = [[0] * L_CHANNELS for _ in range(n_ord)]
     for i, row in enumerate(cones):
         y, x, rgb, cq, sq = row
         if not (0 <= y < h and 0 <= x < w):
             raise ValueError(f"cone {i} at ({y},{x}) is outside the {h}x{w} grid")
         if len(rgb) != L_CHANNELS or any(v < 0 for v in rgb):
             raise ValueError(f"cone {i}: rgb must be 3 non-negative counts")
+        if any(v > LIGHT_CONE_ROW_MAX for v in rgb):
+            raise ValueError(f"cone {i}: an rgb above {LIGHT_CONE_ROW_MAX}")
         if not (0 <= cq < CONE_TURN):
             raise ValueError(f"cone {i}: center {cq} outside [0, {CONE_TURN})")
         if not (0 <= sq <= CONE_TURN):
             raise ValueError(f"cone {i}: spread {sq} outside [0, {CONE_TURN}]")
-        for c in range(L_CHANNELS):
-            tot[c] += rgb[c]
-    if any(t > LIGHT_CONE_BUDGET for t in tot):
-        raise ValueError(f"the cones' summed rgb {tot} exceeds the budget "
-                         f"{LIGHT_CONE_BUDGET} (the int64 argument)")
+        e = cone_emission(rgb, cq, sq, n_ord)
+        for m in range(n_ord):
+            for c in range(L_CHANNELS):
+                tot[m][c] += e[m][c]
+    peak = max((max(row) for row in tot), default=0)
+    if peak > LIGHT_CONE_BUDGET:
+        raise ValueError(f"the cones' summed emission in one ordinate, {peak}, "
+                         f"exceeds the budget {LIGHT_CONE_BUDGET} (the int64 argument)")
 
 
 def validate_sky(sky, n_ord: int):
@@ -1905,7 +1916,7 @@ def sweep_q(a, d, k, T, *, n_ord: int = 16, transport: str = "shear",
         # P6b: the cone emitters, projected and summed per cell, and the sky.
         cones = light.cones or []
         if validate:
-            validate_cones(cones, h, w)
+            validate_cones(cones, h, w, n_ord)
         l_inj = cone_injection(cones, n_ord)
         l_sky = light.sky
         if l_sky is not None and validate:

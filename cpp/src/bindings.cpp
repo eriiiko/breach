@@ -2633,11 +2633,11 @@ PYBIND11_MODULE(breach_physics, m) {
                      throw py::value_error("cone_emission: n_ordinates must be 16 or 12");
                  if (center_q < 0 || center_q >= CONE_TURN || spread_q < 0 ||
                      spread_q > CONE_TURN || rgb[0] < 0 || rgb[1] < 0 || rgb[2] < 0 ||
-                     rgb[0] > LIGHT_CONE_BUDGET || rgb[1] > LIGHT_CONE_BUDGET ||
-                     rgb[2] > LIGHT_CONE_BUDGET)
+                     rgb[0] > LIGHT_CONE_ROW_MAX || rgb[1] > LIGHT_CONE_ROW_MAX ||
+                     rgb[2] > LIGHT_CONE_ROW_MAX)
                      throw py::value_error("cone_emission: outside the cone door "
                                            "(center in [0, 65536), spread in [0, 65536], "
-                                           "0 <= rgb <= 2^44)");
+                                           "0 <= rgb <= 2^48)");
                  py::array_t<int64_t> out({(py::ssize_t)n_ordinates, (py::ssize_t)3});
                  RadiationSweep::cone_emission(rgb.data(), center_q, spread_q, n_ordinates,
                                                out.mutable_data());
@@ -2651,6 +2651,8 @@ PYBIND11_MODULE(breach_physics, m) {
              [](py::object) { return CONE_TURN; })
         .def_property_readonly_static("LIGHT_CONE_BUDGET",
              [](py::object) { return LIGHT_CONE_BUDGET; })
+        .def_property_readonly_static("LIGHT_CONE_ROW_MAX",
+             [](py::object) { return LIGHT_CONE_ROW_MAX; })
         .def_property_readonly_static("LIGHT_SKY_MAX",
              [](py::object) { return LIGHT_SKY_MAX; })
         // G3 F4b: the emission-multiplier door's bound (Q16, 2·ONE)

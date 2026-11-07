@@ -79,7 +79,8 @@ EMITTER_INPUTS = {
 
 CONE_TURN = 65536            # one turn in Q16 turns == RadiationSweep.CONE_TURN
 OMNI_EPS = 0.01              # spread >= 2*pi - eps is omni (the old march's cone test, kept)
-LIGHT_CONE_BUDGET = 1 << 44  # == RadiationSweep.LIGHT_CONE_BUDGET (the sweep's door)
+LIGHT_CONE_BUDGET = 1 << 44  # == RadiationSweep.LIGHT_CONE_BUDGET (the sweep's door:
+#   per channel, what ALL cones put in ONE ordinate; an omni lamp is charged 1/16, #173)
 LIGHT_SKY_MAX = 1 << 40      # == RadiationSweep.LIGHT_SKY_MAX
 LIGHT_EMIT_MULT_MAX = 16 << 16  # == RadiationSweep.LIGHT_EMIT_MULT_MAX (16 ONE, Q16: the fire's
 #   light gain x its flicker; the int64 headroom argument is radiation_sweep.h's)
@@ -142,11 +143,13 @@ def transient_specs(transients) -> list:
 
 
 #: The most light (in light units, per channel) all muzzle flashes of one frame
-#: may carry together: HALF the sweep's cone budget (LIGHT_CONE_BUDGET = 2^44 at
-#: L_FINE_BITS = 37 counts per light unit = 128 light units), so a big volley
-#: dims its flashes instead of tripping ``cone_rows``' refusal and leaves the
-#: other half to the lamps, flashlights and jets.
-MUZZLE_FLASH_MAX_TOTAL = 64.0
+#: may carry together: HALF the sweep's cone budget. LIGHT_CONE_BUDGET = 2^44 at
+#: L_FINE_BITS = 37 counts per light unit = 128 light units IN ONE ORDINATE, and
+#: a flash is omni, 1/16 of it in each (#173): 64 x 16. So a battle far beyond
+#: any shipped match (85 full flashes at once) dims its flashes instead of
+#: tripping the sweep's door, and the other half is left to the lamps,
+#: flashlights and jets.
+MUZZLE_FLASH_MAX_TOTAL = 1024.0
 
 
 @dataclass(frozen=True)
@@ -278,19 +281,15 @@ def spec_cone_row(spec: LightSpec, grid_w: int, grid_h: int, fine_bits: int):
 def cone_rows(specs: Sequence, grid_w: int, grid_h: int, fine_bits: int) -> np.ndarray:
     """THE OUTPUT ROW: every spec as a cone-emitter row, (n, 7) int64, for
     ``Simulation.set_light`` (the engine reads it once per tick). Off-grid
-    specs are skipped (the ``partition_lights`` rule). Refuses a frame whose
-    summed rgb passes the cone budget (the sweep's int64 argument) here, by
-    name, rather than let the sweep throw mid-tick."""
+    specs are skipped (the ``partition_lights`` rule). The cone budget is the
+    sweep's own door, one place (#173): what it charges is each cone's
+    projection per ordinate, and that projection has ONE implementation."""
     rows = []
     for s in specs:
         r = spec_cone_row(s, grid_w, grid_h, fine_bits)
         if r is not None:
             rows.append(r)
     a = np.asarray(rows, dtype=np.int64).reshape(len(rows), 7)
-    if len(rows) and np.any(a[:, 2:5].sum(axis=0) > LIGHT_CONE_BUDGET):
-        raise ValueError(f"frame lights: the cones' summed rgb {a[:, 2:5].sum(axis=0)} "
-                         f"passes LIGHT_CONE_BUDGET ({LIGHT_CONE_BUDGET}) -- "
-                         f"{len(rows)} lights this frame")
     return np.ascontiguousarray(a)
 
 

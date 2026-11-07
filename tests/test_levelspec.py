@@ -16,6 +16,7 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -307,25 +308,26 @@ def test_the_spawn_box_keeps_its_rooms_centre_on_hand_built_rooms():
 
 def test_the_lamp_budget_is_the_light_doors_own_arithmetic():
     """PROPERTY: gen_ship's lamp budget is derived from the renderer's
-    light door, not a free number: the cone budget in light units (2^44 at
-    L°'s currency) less the muzzle flashes' own cap less a reserve that
-    covers the cursor lamp. BREAKS IF either renderer constant moves without
-    gen_ship following (a ship then trips ``cone_rows`` mid-firefight)."""
+    light door, not a free number: in one ordinate, the cone budget in light
+    units (2^44 at L°'s currency) less the muzzle flashes' own cap less a
+    reserve that covers the cursor lamp, an omni light charged 1/16. BREAKS IF
+    either renderer constant moves without gen_ship following (a ship then
+    trips the sweep's door mid-firefight)."""
     bp = pytest.importorskip("breach_physics")
     from renderer import frame_lights as fl
     units = fl.LIGHT_CONE_BUDGET / float(1 << int(bp.L_FINE_BITS))
     assert G.CONE_LIGHT_UNITS == units
     assert G.MUZZLE_FLASH_LIGHT == fl.MUZZLE_FLASH_MAX_TOTAL
     cursor = fl.CURSOR_INTENSITY * max(fl.CURSOR_COLOR)
-    assert G.LAMP_LIGHT_BUDGET + G.MUZZLE_FLASH_LIGHT + cursor <= units
+    assert (G.LAMP_LIGHT_BUDGET + G.MUZZLE_FLASH_LIGHT) / G.OMNI_SHARE + cursor <= units
 
 
 @pytest.mark.parametrize("seed, size", [(1, "medium"), (2, "large")])
 def test_a_recipe_ships_lamps_survive_a_full_volley(seed, size):
     """PROPERTY: a recipe ship's lamps, plus a full volley of muzzle flashes
     (their cap) plus the cursor lamp, pass the frame's light door
-    (``frame_lights.cone_rows``) -- the door main.py refused the first large
-    freighter at, on frame 3, with its lamps alone; every lit room keeps at
+    (the sweep's budget in one ordinate) -- the door main.py refused the first
+    large freighter at, on frame 3, with its lamps alone; every lit room keeps at
     least one lamp; the lamps are mirrored. BREAKS IF the lamp budget is
     dropped, the budget pass empties a room, or it breaks the mirror."""
     bp = pytest.importorskip("breach_physics")
@@ -341,7 +343,10 @@ def test_a_recipe_ships_lamps_survive_a_full_volley(seed, size):
                                   "color": (1.0, 1.0, 1.0)}])
     specs = fl.frame_light_specs(lamps, total_tick=0,
                                  sim_time_per_tick=1.0 / 60, extra=extra)
-    fl.cone_rows(specs.specs, w, h, int(bp.L_FINE_BITS))      # no refusal
+    rows = fl.cone_rows(specs.specs, w, h, int(bp.L_FINE_BITS))
+    per_ordinate = sum(np.asarray(bp.RadiationSweep.cone_emission(
+        r[2:5].tolist(), int(r[5]), int(r[6]))) for r in rows)
+    assert per_ordinate.max() <= fl.LIGHT_CONE_BUDGET
     for rm in plan.graph.rooms:
         lit = "light" not in rm.tags or rm.tags["light"][1] > 0
         inside = [l for l in lamps if rm.x <= l.x < rm.x + rm.w
