@@ -104,6 +104,13 @@ Headless flags (no human at the keyboard):
                      full strength). fire_smoke_studio lights itself;
                      elsewhere add --perf-ignite "X,Y;X,Y" (the heat-only
                      [payloads.studio_ignite] at each tile).
+    --shock-perf [N]  graphics G4 P2: the SHOCK FRONT's GPU ms -- the resolve
+                     with the ring term on minus off (GL_TIME_ELAPSED,
+                     alternated frame by frame, forced to full strength at
+                     any zoom) over N (600) frames, on the current --level's
+                     own volley (run it with --level blast_final: the level's
+                     timed charges fire, their rings are held live and their
+                     age swept over the ring's whole life).
     --shots [A,B]   graphics G0 P3: render the named LOOK SHOTS of
                      tools/look_shots.toml (all, or the comma-separated
                      subset) to scratchpad/look/<name>_<git-sha>.png, one
@@ -1202,6 +1209,116 @@ def _parse_fire_vfx_perf() -> Optional[int]:
         return 600
 
 
+def _parse_shock_perf() -> Optional[int]:
+    """``--shock-perf [N]`` -- measure N frames (default 600)."""
+    if "--shock-perf" not in sys.argv:
+        return None
+    v = _argv_value("--shock-perf")
+    try:
+        return max(2, int(v)) if v and not v.startswith("--") else 600
+    except ValueError:
+        return 600
+
+
+def _run_shock_perf(renderer, sim, lights_in, light_sky,
+                    sim_time_per_tick: float, ticks_per_round: int,
+                    frames: int) -> None:
+    """Graphics G4 P2: the shock front's GPU cost on the level's own volley
+    (design §3.3: budget 0.2 ms on blast_final). The sim runs (lit) until its
+    detonations' rings are live, then FREEZES; each measured frame re-uploads
+    with the ring clock set to one of the ring's life ticks (all of them in
+    turn, so every radius is measured) and times the resolve on the GPU,
+    alternating the term on and off (the G3 F4a shimmer method: cost = on -
+    off). The term is forced to full strength at any zoom and the dials
+    restored after."""
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    grid_h, grid_w = sim.gmap.solid.shape
+    sw = renderer.shockwave
+    sc = CFG.render.shockwave
+    saved = (sc.zoom_zero, sc.zoom_full)
+    sc.zoom_zero, sc.zoom_full = 0.0, 1e-3
+    tick0 = None
+    try:
+        for _ in range(int(20 * CFG.clock.ticks_per_second)):
+            total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                         sim.tick)
+            sim.set_light(True, demo_light_rows(lights_in, total,
+                                                sim_time_per_tick, grid_w,
+                                                grid_h), light_sky)
+            if sim.is_paused():              # _step_keep_running, inline:
+                sim.set_paused(False)        # the step's events are read
+            sim.step()                       # right after it (S3)
+            total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                         sim.tick)
+            renderer.consume_events(sim.tick_events, sim_tick=total)
+            renderer.upload_state(sim.gmap, sim_tick=total,
+                                  light_serial=sim.light_serial, alpha=0.0,
+                                  paused=False)
+            if sw.set.rings:
+                tick0 = max(rg.tick0 for rg in sw.set.rings)
+                break
+        if tick0 is None:
+            print("[shock perf] no detonation in 20 s on this level -- run it "
+                  "with --level blast_final")
+            return
+        n_rings = len(sw.set.rings)
+        life_ticks = max(1, int(sc.life_s * CFG.clock.ticks_per_second))
+        res_fn = renderer.world.resolve
+        timer = GLTimer()
+        cur = {"on": True, "gpu": 0.0}
+
+        def timed_resolve(*a, **kw):
+            if not cur["on"]:
+                kw["shock"] = None
+            timer.begin()
+            out = res_fn(*a, **kw)
+            timer.end()
+            cur["gpu"] = timer.result_ms()
+            return out
+
+        renderer.world.resolve = timed_resolve
+        rows = []
+        for i in range(PERF_WARMUP_FRAMES + frames):
+            k = (i // 2) % life_ticks
+            cur["on"] = (i % 2) == 0
+            renderer.upload_state(sim.gmap, sim_tick=tick0 + k,
+                                  light_serial=sim.light_serial, alpha=0.0,
+                                  paused=False)
+            active = sw.active(renderer.world.world_px_per_tile)
+            box = sw.uniforms(renderer.world.world_px_per_tile)["u_shock_box"]
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            if i >= PERF_WARMUP_FRAMES:
+                rows.append((float(cur["on"]), cur["gpu"], float(active),
+                             (box[2] - box[0]) * (box[3] - box[1]),
+                             sw.last_update_ms))
+        renderer.world.resolve = res_fn
+    finally:
+        sc.zoom_zero, sc.zoom_full = saved
+    a = np.asarray(rows, np.float64)
+    on, off = a[a[:, 0] == 1], a[a[:, 0] == 0]
+
+    def stat(x):
+        return f"mean {x.mean():6.3f}  p95 {np.percentile(x, 95):6.3f}"
+
+    print(f"[shock perf] {n_rings} live rings (tick0 {tick0}), ages swept over "
+          f"{life_ticks} ticks; {len(a)} frames (+{PERF_WARMUP_FRAMES} warm-up)"
+          f"; term active in {100 * on[:, 2].mean():.0f} % of its frames; "
+          f"band box mean {on[:, 3].mean():.0f} tiles^2")
+    print(f"[shock perf] RESOLVE GPU ms: shock on {stat(on[:, 1])} ; off "
+          f"{stat(off[:, 1])} ; SHOCK GPU = on - off = "
+          f"{on[:, 1].mean() - off[:, 1].mean():6.3f} ms (world RT "
+          f"{renderer.world.world_px_w}x{renderer.world.world_px_h})")
+    print(f"[shock perf] CPU update ms {stat(a[:, 4])}")
+    print("OK -- shock perf pass complete (--shock-perf)")
+
+
 def _parse_perf_ignite() -> list:
     """``--perf-ignite "X,Y;X,Y"`` -- tiles lit before the warm-up with the
     canonical heat-only igniter ``[payloads.studio_ignite]`` (CLAUDE.md
@@ -1582,6 +1699,16 @@ def main() -> None:
             renderer.shutdown()
         return
 
+    shock_perf_frames = _parse_shock_perf()
+    if shock_perf_frames is not None:
+        try:
+            _run_shock_perf(renderer, sim, lights_in, light_sky,
+                            sim_time_per_tick, ticks_per_round,
+                            shock_perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
     # FINAL keybindings (B2 P5, design §8 human-test readiness) — the FULL
     # map, also drawn on the panel (see the on-screen block in _draw_panel).
     # Printed here since the tall panel can scroll the on-screen help off the
@@ -1693,6 +1820,9 @@ def main() -> None:
             renderer.embers.enabled_override = False
         if "shimmer" in look_shot.hide:
             renderer.shimmer.enabled_override = False
+        # graphics G4 P2: the shock front
+        if "shock" in look_shot.hide:
+            renderer.shockwave.enabled_override = False
         # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
         if look_shot.fire_debug:
             renderer.fire_vfx.debug_override = look_shot.fire_debug

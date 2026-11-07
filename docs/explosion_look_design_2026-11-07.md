@@ -318,3 +318,32 @@ subprocess).
   never a third blend path.
 - *Legacy effects queue*: the `"explosion"` kind no longer exists; a new
   explosion visual is one of the three above.
+
+## 8. As built: P2, the shock front (2026-11-07)
+
+- `renderer/shockwave.py` + `shaders/world_resolve.fs::shock_term`, one line
+  in `distortion_px`; `WorldComposite.resolve(shock=)`; `[render.shockwave]`
+  (the §3.3 dials, `max_rings` 4 per B2), a refusing door.
+- **The distance plane is the straight line plus the walk's detour**, not the
+  raw hop count: `reach_depth`'s hops are an L1 metric, whose equal-depth
+  lines are diamonds, so a ring on raw hops would be a square turned 45°.
+  `d = hypot(tile − centre) + (depth − L1 to the nearest seed)`: exactly the
+  straight line where the walk went straight (a round ring in a room), longer
+  by the way round behind a wall. Membership is still the walk's alone.
+  Claude's call; Erik judges at the HUMAN-TEST.
+- The ring is born on the tick after the detonating step (`tick0` = the
+  monotonic tick `consume_events` is stamped with), so `blast_final_t50` is
+  ring age 1 tick (r ≈ 1.7 tiles), not 2.
+- **Zoom**: the fit-the-map shots sit at ~16.8 screen px per tile, just above
+  `zoom_zero` 14, so the ring is faded to ~6 % there and not visible; four
+  close-up rows (`blast_final_t50_frag/_c4`, `_t52_frag/_c4`, zoom 40) show
+  it. Whether a coherent travelling ring needs the shimmer's zoom fade at all
+  is Erik's question.
+- **The C4's ring is hidden** at every tick it lives: by the heat layer, which
+  is display-space and drawn AFTER the resolve (G0's named exception), so it
+  covers the ring and is not itself distorted. The frag's ring shows on the
+  floor at +4 (max 13/255 against the same shot without the ring: subtle on
+  blast_final's low-contrast floor at `amp_tiles` 0.25).
+- GPU: `lighting_demo --level blast_final --shock-perf 600`, the volley's 4
+  rings held live and their ages swept: resolve 0.469 ms on vs 0.344 ms off,
+  **0.125 ms** for the term (world RT 3600×3024; budget 0.2 ms).

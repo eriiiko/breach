@@ -1867,6 +1867,28 @@ zoom_zero = 14.0            # screen px per tile at and below which it is off
 zoom_full = 32.0            # ... full strength from here up
 seed = 2718                 # the flow map's per-cycle offsets and boil directions
 
+[render.shockwave]
+# Graphics G4 P2 -- the SHOCK FRONT, the second term of the resolve's
+# DISTORTION BLOCK (renderer/shockwave.py, shaders/world_resolve.fs
+# shock_term; docs/explosion_look_design_2026-11-07.md §3.3 + §6): a
+# detonation sends a refractive ring across its room -- a thin band where the
+# floor is pushed outward, never a second pass, the HUD never distorted. The
+# ring rides the blast's own walk (blast_expansion.reach_depth), so a wall
+# clips it and a door gap lets it through late. Scripted from the event, on
+# the sim clock: the pressure planes have no travelling front to show (the
+# projection equalises a room in one tick, measured 2026-11-07). Re-read
+# every frame (F5); every key is required (a refusing door).
+enabled = true
+speed_tiles_s = 40.0        # the front's speed: a 10-tile room in a quarter second
+width_tiles = 1.0           # the band's half-width w, tiles: g = exp(-(x/w)^2),
+                            # exactly 0 beyond 2 w
+amp_tiles = 0.25            # the peak offset at strength 1, tiles (x sqrt(strength))
+life_s = 0.5                # a ring dies at this age (sim clock)
+max_rings = 4               # live rings at once (1..4: one RGBA texture), the
+                            # oldest dropped
+zoom_zero = 14.0            # screen px per tile at and below which it is off
+zoom_full = 32.0            # ... full strength from here up (the shimmer's)
+
 [render.light_curve]
 # Graphics G5 (#64): a Photoshop-style Curves map on the light, on every lit
 # surface (floor, units, props; renderer/light_curve.py). x = the light reaching
