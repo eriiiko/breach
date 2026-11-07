@@ -187,7 +187,9 @@ class WEGOPlanningInput(ControlSource):
                                           + (1 if wheel > 0 else -1)) % 3)
 
         # ---- Mouse clicks (planning-only) ----
-        if sim.is_paused() and rl.is_mouse_button_pressed(
+        if renderer.pointer_captured():
+            pass
+        elif sim.is_paused() and rl.is_mouse_button_pressed(
                 rl.MouseButton.MOUSE_BUTTON_LEFT):
             self._handle_left_click(sim, renderer)
         elif sim.is_paused() and rl.is_mouse_button_pressed(

@@ -130,6 +130,7 @@ from .gas_detail import WIND_V_REF
 # taming ceiling, 0.08, before the wind moved to the honest m/s scale).
 SWAY_WIND_REF = 0.08
 from .lit3d import (_COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx,
+                    set_light_curve_uniforms,
                     bind_smoke_cover_map, make_camera)
 from .propgen import GENERATORS
 
@@ -362,12 +363,17 @@ void main() {
     if (u_srgb_decode == 1) albedo = srgb_to_linear(albedo);  // else double-dark
     albedo *= colDiffuse.rgb;
 
-    vec3 lit = albedo * (u_ambient + incoming_rgb * u_light_gain * ndotl);
+    // G5: the light curve (lit3d's block; off = exactly 1).
+    vec3 light_rgb = incoming_rgb * u_light_gain;
+    light_rgb *= lightCurveGain(light_rgb);
+    albedo = lightCurveAlbedo(albedo, light_rgb);
+
+    vec3 lit = albedo * (u_ambient + light_rgb * ndotl);
 
     // Rim tinted by the LOCAL light, so a prop is never brighter than the room
     // it stands in (dark room -> faint ambient rim only).
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
-    lit += u_rim_strength * rim * (u_ambient + incoming_rgb * u_light_gain);
+    lit += u_rim_strength * rim * (u_ambient + light_rgb);
 
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
@@ -703,6 +709,7 @@ class StaticPropRenderer:
                                     float(ctx.ambient[2])]),
             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
         self._set_f("u_light_gain", ctx.light_gain)
+        set_light_curve_uniforms(self._shader, ctx.curve)
         rl.set_shader_value(
             self._shader, self._locs["u_world_px"],
             rl.ffi.new("float[2]", [float(ctx.world_px_w),
