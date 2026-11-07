@@ -1922,7 +1922,7 @@ enabled = true
 speed_tiles_s = 40.0        # the front's speed: a 10-tile room in a quarter second
 width_tiles = 1.0           # the band's half-width w, tiles: g = exp(-(x/w)^2),
                             # exactly 0 beyond 2 w
-amp_tiles = 0.6             # the peak offset at strength 1, tiles (x sqrt(strength)); 0.25 read as nothing on the lit floor (P2's shots)
+amp_tiles = 0.4             # the peak offset at strength 1, tiles (x sqrt(strength)); 0.25 read as nothing on the lit floor (P2's shots), 0.6 'a little too pronounced' (Erik, P3)
 life_s = 0.5                # a ring dies at this age (sim clock)
 max_rings = 4               # live rings at once (1..4: one RGBA texture), the
                             # oldest dropped
