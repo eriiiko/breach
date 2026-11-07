@@ -735,3 +735,21 @@ level = "blast_final"
 frames = 168
 light_gain = "game"
 note = "5 s after the volley: the hanging smoke and the fires, before the second one at tick 240."
+
+[[shot]]
+name = "blast_final_t60_frag"
+level = "blast_final"
+frames = 60
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P4 close-up, tick +12: the frag's debris landed on the floor"
+
+[[shot]]
+name = "blast_final_t84_frag"
+level = "blast_final"
+frames = 84
+center = [22.5, 19.5]
+zoom = 40.0
+light_gain = "game"
+note = "G4 P4 close-up, tick +36: the frag's debris lying, beginning to fade"

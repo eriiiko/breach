@@ -408,3 +408,89 @@ subprocess).
   two stages timed with `GL_TIME_ELAPSED`, sparks on vs off alternated):
   **0.051 ms** (0.053 on, 0.001 off; world RT 3600x3024). CPU: 0.44 ms on the
   spawn frame (four walks + 457 births).
+
+### P4, the debris (2026-11-07)
+
+- `renderer/particles.py::DebrisSystem` (+ `DebrisSettings`,
+  `debris_settings_from_config`, `debris_count`, `debris_keys`,
+  `debris_spawns`, `integrate_debris`, `debris_weight`, `pack_debris`),
+  `[render.debris]` behind a refusing door (the sparks'), owned by
+  `GameRenderer` beside the sparks and stepped in `upload_state` right after
+  them; `look_shots.HIDEABLE_LAYERS` gains `debris` (`enabled_override`, set
+  only by a shot's `hide`; no key). The particle primitive's THIRD consumer:
+  `Particles` is extended additively (`add(temp=)`: a chip's `t0` column is
+  its hashed rotation, `temp` its hashed size; every other caller is
+  unchanged), `integrate` and `pack_sprites` are untouched, the ember and
+  spark packs byte-identical (`tests/test_debris.py`, `test_particles.py`,
+  `test_sparks.py`).
+- **Consumption and births** as the sparks': each `"blast"` effect read once
+  (`debris_seen`), `rate · strength` chips (linear, §3.4; the volley throws
+  25 + 2 + 200 + 300, over `cap` 512, so a fair subset) at the walk's seed
+  centres, the RNG `default_rng([seed, tick0, x, y])` (the sparks' key rule,
+  the debris' own seed), the rotation and size from THE fire's hash
+  (`fire_vfx_ref._hash01`, the vectorised twin of `fire_vfx._hash01`, bit for
+  bit).
+- **The motion law is Erik's, ruled at the screen (2026-11-07)**, which
+  amends §3.4's "strong drag" and S5's "drag toward REST": in his words, a
+  chip's motion is (1) drag toward the local air's motion, scaled by the
+  tile's gas density, so in vacuum the air term is zero; plus (2) a ground
+  friction term, density-independent, that brings a sliding chip to rest,
+  so a draught never moves a chip lying on the floor but the blast's outflow
+  carries it; (3) a chip in vacuum slides until a wall stops it -- it stops
+  at the wall rather than dying: a chip is a thing on the floor.
+  `integrate_debris`: `v += (air − v)(1 − e^{−drag·ρ·dt})` with `air` the
+  frame's ONE tamed wind × tps and `ρ` the tile's bulk N over the ambient
+  (`static_props.gas_frac_at_tiles`, the many-tile form of the prop sway's
+  `sample_gas_frac`: the same accessor `GameMap.gas_bulk_n_at`, the same
+  `ambient_seed()[0]`, asked once per distinct tile), clamped to [0, 2] (the
+  props' `density_max`); then `|v| −= friction·dt`, never below 0; a step
+  into a blocked tile (solid | vacuum, the embers' mask) or off the map
+  restores the last position with velocity 0, alive. Substepped to half a
+  tile (`DEBRIS_MAX_HOP`) on max(chip speed, air speed). A lying chip moves
+  only in air faster than `friction / (drag·ρ)`. The sparks keep their law
+  (giving them the density factor is a one-line follow-up, not done here).
+- **Dials, Claude's starting values, set from the shots**: `drag` 2.5 /s and
+  `friction_tiles_s2` 15, i.e. a threshold of 6 tiles/s. Measured on
+  blast_final (headless, `tame_wind` × 24 over the frag's room): p90 7.0,
+  max 12.1 tiles/s at +4; p90 3.5-4.7, max 5-6 at +8..+12; p90 < 3.3 from
+  +16. At the brief's suggestion (drag 1.5, friction 6: threshold 4) and at
+  1.0 / 8, the shots showed the frag's outermost chip still moving between
+  +12 and +36 (max radius 4.6 → 6.8 tiles: the fast chips were still in
+  flight at +12 and the settling air kept nudging them); at 2.5 / 15 it is
+  3.7 → 4.1 and the median 2.2 → 2.1: lying. In still air the fastest chip
+  (12.8 tiles/s) stops in ~0.46 s about 2.4 tiles out; in vacuum it slides
+  `v²/2f`, ~2.1 tiles for a v0 chip. `size_tiles` is the half-width (0.08:
+  ~3.8 world px); `fade_s` 0.8; `albedo` [0.08, 0.07, 0.06], `alpha` 0.9.
+- **The draw**: `ParticleDraw.draw_debris`, the `"debris"` stage, its own
+  program (`shaders/particle_debris.vs/.fs`) and data texture: a rotated
+  quad per chip from `gl_VertexID` (the sprite's corner order and winding),
+  a one-pixel antialiased edge, colour `albedo × (ambient + exposure ×
+  light)` with the light read through the lit-3D block spliced in
+  (`lit3d._COMMON_GLSL` + `_FIELD_SAMPLE_GLSL`: `light_tex_a/b`, the smoke
+  cast shadow, the light curve; the context is the one
+  `GameRenderer._light_field_ctx()` the 3D units and props now share),
+  written premultiplied `(lit·a, a)` under `(ONE, ONE_MINUS_SRC_ALPHA)` on
+  RGB and alpha. Drawn in `compose_world` after the floor smoke group and
+  before the flame (3b), so the flame, the embers / sparks, the units and
+  the ceiling soot are over it, and the heat layer (display space, after the
+  resolve) over all of it.
+- **What the shots show** (`p4/`; five brief rows + two new close-ups,
+  `blast_final_t60_frag` / `_t84_frag`; numbers from a diff against the same
+  shots with `hide = ["debris"]`): at +2 and +4 the frag's chips are
+  invisible (0 and 0 changed pixels: inside the flame and the display-space
+  heat layer, the sparks' finding); the full +4 shows only the breach's
+  chips beside the wood (22 px). At +12 the frag's chips lie 0.6-3.7 tiles
+  out (p10-max, 23 visible) all round the crate, the ones in the fireball's
+  light lit orange; at +36 0.6-4.1 tiles, 19 visible, fading. In the frag
+  close-ups a chip on the smoke-shadowed half of the floor reads 22-25
+  (8-bit) against 89-124 on the lit half; chip / floor 0.36-0.86 (p10-p90)
+  at +36. Whole map at +36: 233 chips visible, the magazine's scatter in the
+  dark beside its soot, the C4's seen through its heat layer as orange
+  flecks (the heat layer is added over them on screen). None is inside a
+  wall (by construction: births at open seeds, a blocked step is undone;
+  gated). The count, the throw and the albedo are Erik's.
+- GPU: `lighting_demo --level blast_final --debris-perf 600` (new, the
+  sparks' method: the volley's 512 chips held 12 ticks after birth, the
+  debris stage timed with `GL_TIME_ELAPSED`, on vs off alternated):
+  **0.012 ms** (budget 0.1; world RT 3600x3024). CPU 1.4 ms on a frame with
+  512 chips (the per-tile density read in each substep).

@@ -1902,12 +1902,14 @@ rate = 25.0                 # chips at strength 1 (the frag); x strength:
                             # breach (0.1) ~3, magazine (8) 200, C4 (12) 300
 v0_tiles_s = 8.0            # radial birth speed, tiles/s
 v_spread = 0.6              # each is born at v0 x (1 +- this x U(-1, 1)): 3.2..12.8
-drag = 1.5                  # 1/s at 1 atm: how fast the air catches a chip (x the
+drag = 2.5                  # 1/s at 1 atm: how fast the air catches a chip (x the
                             # tile's density; 0 in vacuum)
-friction_tiles_s2 = 6.0     # ground friction, tiles/s^2: a lying chip moves only
-                            # in air faster than friction / drag = 4 tiles/s; an
-                            # 8 tiles/s chip stops in ~0.7 s, ~2.4 tiles out in
-                            # still air (in vacuum it slides ~5 tiles)
+friction_tiles_s2 = 15.0    # ground friction, tiles/s^2: a lying chip moves only in
+                            # air faster than friction / drag = 6 tiles/s (a blast's
+                            # outflow: blast_final's frag room reads 7-12 at +4,
+                            # 2-4 once it settles); in still air the fastest chip
+                            # (12.8) stops in ~0.46 s ~2.4 tiles out, an 8 tiles/s
+                            # one in ~0.34 s at ~1.2 (in vacuum: v^2 / 2f, ~2.1)
 life_s = 3.0                # mean life, s (VFX clock)
 life_jitter = 0.3           # each lives life_s x (1 +- this x U(-1, 1)): 2.1..3.9 s
 size_tiles = 0.08           # a chip's half-width (a tile is 48 world px: ~3.8 px)
