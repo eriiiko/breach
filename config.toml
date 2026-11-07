@@ -1870,7 +1870,7 @@ seed = 2718                 # the flow map's per-cycle offsets and boil directio
 [render.light_curve]
 # Graphics G5 (#64): a Photoshop-style Curves map on the light, on every lit
 # surface (floor, units, props; renderer/light_curve.py). x = the light reaching
-# a pixel, y = the light it takes instead, both gamma-encoded over `range`.
+# a pixel, y = the light it takes instead, both sqrt-encoded over `range`.
 # Render-only. Not on it: smoke and water, which read the plain light field.
 enabled = false             # false = the plain light, bit for bit
 points = [[0.000, 0.000], [1.000, 1.000]]   # [x, y], x increasing; two points at

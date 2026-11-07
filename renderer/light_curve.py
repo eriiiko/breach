@@ -10,8 +10,9 @@ applied BEFORE albedo and N.L, so the art and its normal relief survive.
 Render-only: nothing here reaches the sim, a digest or a golden. With
 ``enabled = false`` the shader leaves the light untouched, bit for bit.
 
-The axes are gamma-encoded (``x = (L / range) ** (1 / CURVE_GAMMA)``), as an
-image editor's are, so the dim end -- where this look lives -- gets the room.
+The axes are square-root encoded (``x = sqrt(L / range)``), as an image editor's
+are gamma-encoded, so the dim end -- where this look lives -- gets the room. It
+only indexes the curve; the pixel stays linear HDR for the one tone-map.
 A curve is control points in that square, interpolated by a monotone cubic
 (Fritsch & Carlson 1980, "Monotone Piecewise Cubic Interpolation", SIAM J.
 Numer. Anal. 17(2)): unlike a plain spline it cannot overshoot a steep step,
@@ -31,7 +32,7 @@ import numpy as np
 
 LUT_SIZE = 256          # the shader's uniform float array; a step in the
                         # curve is one entry wide, 1/255 of the x axis
-CURVE_GAMMA = 2.2       # the axes' encoding
+CURVE_GAMMA = 2.0       # the axes' encoding: x = sqrt(L / range)
 LUMA = (0.2126, 0.7152, 0.0722)     # Rec.709
 MIN_POINT_GAP = 1.0 / (LUT_SIZE - 1)    # two points this close are a step
 CORNER_RATIO = 4.0      # slopes this unequal at a point make it a corner: the
