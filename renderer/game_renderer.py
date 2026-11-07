@@ -432,6 +432,9 @@ class GameRenderer:
         # by consume_events, advanced by _advance_effects, drawn by
         # _draw_effects_world.
         self._effects: list = []
+        # The sim tick of the last upload_state: a "blast" effect consumed
+        # without an explicit tick is stamped with it (G4, #75).
+        self._last_sim_tick: int = 0
 
         # ray-engine-v2 P6b/P6c: THE LIGHT is the radiation sweep's light
         # channels, read through the one accessor (simulation.light_field) and
@@ -509,6 +512,7 @@ class GameRenderer:
         ``[render.fire_vfx] idle_when_paused``). Both are pure reads of the
         caller's loop state: no sim state, no determinism."""
         t_start = time.perf_counter()
+        self._last_sim_tick = int(sim_tick)
 
         # #9: THE topology -> render seam. Drain the tiles every topology
         # writer marked (GameMap.on_tile_changed) into patches, read from the
@@ -1491,20 +1495,6 @@ class GameRenderer:
                                 3.0, outer)
                 rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
                                 1.0, core)
-            elif kind == "explosion":
-                pos = fx["pos"]
-                radius = fx["radius"]
-                cx = tile_to_world_px(pos[0] + 0.5, wpt)
-                cy = tile_to_world_px(pos[1] + 0.5, wpt)
-                # Expanding ring then fading flash.
-                grow = 1.0 - alpha_norm    # 0 -> 1 as effect ages
-                r_wpx = (0.3 + grow * radius) * wpt
-                ring = rl.Color(255, 200, 100, int(220 * alpha_norm))
-                rl.draw_circle_lines(int(cx), int(cy), r_wpx, ring)
-                # Inner flash on first frames.
-                if alpha_norm > 0.6:
-                    flash = rl.Color(255, 255, 220, int(180 * (alpha_norm - 0.6) / 0.4))
-                    rl.draw_circle(int(cx), int(cy), 0.5 * radius * wpt, flash)
             elif kind == "hit":
                 pos = fx["pos"]
                 cx = tile_to_world_px(pos[0] + 0.5, wpt)
@@ -1649,7 +1639,8 @@ class GameRenderer:
                 self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
         return specs
 
-    def consume_events(self, events: Sequence) -> None:
+    def consume_events(self, events: Sequence,
+                       sim_tick: Optional[int] = None) -> None:
         """Read simulation tick events, spawn matching visual effects.
 
         Called once per frame after compose_world (or before — order
@@ -1661,7 +1652,15 @@ class GameRenderer:
         :class:`ExplosionEvent`, :class:`UnitHitEvent`. Unknown event
         types are ignored — additive design lets the sim emit new
         events without breaking older renderers.
+
+        ``sim_tick`` is the tick the events arrived on, on the SAME clock the
+        caller hands ``upload_state`` (main.py: the monotonic total tick); an
+        :class:`ExplosionEvent` becomes a ``"blast"`` effect stamped with it
+        (``tick0``), so the explosion look ages on the sim clock (G4 design
+        §6 S1). None stamps the last ``upload_state`` tick. Call it after
+        EVERY sim step: ``Simulation.step`` clears ``tick_events``.
         """
+        tick0 = self._last_sim_tick if sim_tick is None else int(sim_tick)
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
@@ -1714,12 +1713,26 @@ class GameRenderer:
                     "life": 0.12,
                 })
             elif isinstance(ev, ExplosionEvent):
+                # G4 (#75): the explosion look's cue. The legacy ring is
+                # deleted; nothing draws this yet (the shock front, sparks,
+                # debris and flash read it, P2-P5). `life` outlasts the
+                # longest flash; the look ages on the sim clock from tick0.
                 self._effects.append({
-                    "kind": "explosion",
+                    "kind": "blast",
                     "pos": ev.pos,
                     "radius": ev.radius,
+                    "kind_name": ev.kind,
+                    "strength": float(getattr(ev, "strength", 0.0)),
+                    "flash": float(getattr(ev, "flash", 0.0)),
+                    "flash_decay_s": float(getattr(ev, "flash_decay_s", 0.3)),
+                    "flash_color": tuple(getattr(ev, "flash_color",
+                                                 (1.0, 1.0, 1.0))),
+                    "approach": getattr(ev, "approach", None),
+                    "tick0": tick0,
+                    # not aged on the frame it is born (see _advance_effects)
+                    "fresh": True,
                     "t": 0.0,
-                    "life": 0.6,
+                    "life": 3.0,
                 })
             elif isinstance(ev, UnitHitEvent):
                 # We don't know the unit's position from the event alone —

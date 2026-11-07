@@ -415,3 +415,20 @@ def test_c4_det_slot_detonation_with_demolition_numbers():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_an_explosion_event_built_the_old_way_keeps_its_fields_and_repr():
+    """G4 #75 (design §6 N3): the event's look fields (strength, flash,
+    flash_decay_s, flash_color, approach) DEFAULT to what a row without strength
+    or flash fills, so a three-argument construction equals one that names those
+    defaults, repr included (the replica gate above compares reprs), and the
+    original fields read as before. BREAKS IF: a new field loses its default, or
+    a default stops being the no-strength / no-flash value."""
+    old = ExplosionEvent(pos=(3, 4), radius=2, kind="grenade")
+    full = ExplosionEvent(pos=(3, 4), radius=2, kind="grenade", strength=0.0,
+                          flash=0.0, flash_decay_s=0.3,
+                          flash_color=(1.0, 1.0, 1.0), approach=None)
+    assert old == full and repr(old) == repr(full)
+    assert (old.pos, old.radius, old.kind) == ((3, 4), 2, "grenade")
+    assert old.strength == 0.0 and old.flash == 0.0 and old.approach is None
+    assert isinstance(old.flash_color, tuple)

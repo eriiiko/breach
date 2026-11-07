@@ -167,6 +167,16 @@ class ExplosionEvent:
     pos: tuple                      # (fx, fy)
     radius: int
     kind: str                       # "grenade" | "door_explosive"
+    # G4 (#75): what the explosion look reads. Render-only, outside the digest
+    # (field_ab_harness hashes only UnitHit/UnitKilled). Defaults are what a row
+    # without strength or flash fills, so a three-argument construction and its
+    # repr hold.
+    strength: float = 0.0           # the row's [payloads.*] strength, 0 = none
+    flash: float = 0.0              # light units at peak (row column, P5)
+    flash_decay_s: float = 0.3      # e-fold of the flash (row column, P5)
+    flash_color: tuple = (1.0, 1.0, 1.0)
+    approach: object = None         # (y, x) the charge came from, as
+                                    # execute_payload received it, or None
 
 
 @dataclass

@@ -2040,6 +2040,9 @@ def main() -> None:
                     lit_rows = _light_rows_now(mouse_f)
                     sim.set_light(True, lit_rows, light_sky, _flicker_now())
                     sim.step()
+                    renderer.consume_events(
+                        sim.tick_events, sim_tick=monotonic_total_tick(
+                            sim.turn_number, ticks_per_round, sim.tick))
                     stepped = True
                 else:
                     tick_accum += dt
@@ -2048,6 +2051,9 @@ def main() -> None:
                         lit_rows = _light_rows_now(mouse_f)
                         sim.set_light(True, lit_rows, light_sky, _flicker_now())
                         sim.step()
+                        renderer.consume_events(
+                            sim.tick_events, sim_tick=monotonic_total_tick(
+                                sim.turn_number, ticks_per_round, sim.tick))
                         stepped = True
                         tick_accum -= sim_dt
                         steps += 1
@@ -2202,7 +2208,7 @@ def main() -> None:
                                   light_serial=sim.light_serial,
                                   alpha=0.0 if auto else tick_accum / sim_dt,
                                   paused=bool(state.paused))
-            renderer.consume_events(sim.tick_events)
+            # tick events were consumed after every sim step above (G4 #75)
             renderer._advance_effects(dt)
 
             # Pressure overlay is now owned by the renderer (shared with
