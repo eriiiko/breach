@@ -58,7 +58,7 @@ TPS = 24
 FIRST_S = 2.0
 PERIOD_S = 3.0
 SLOW_TICKS = 6
-LAMP_INTENSITY = 1.6     # 36 lamps, inside the frame's cone door (64 light units)
+LAMP_INTENSITY = 0.8     # 36 lamps; was 1.6 until 2026-11-07, when Erik judged the studio far brighter than a generated ship (G4 P3): halve, play, halve again until it reads
 
 # The rooms, in order NW, NE, SW, SE: (label, payload row, charges one tick apart).
 # A second set of rows is a second level through the same layout.
