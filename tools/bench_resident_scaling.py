@@ -32,6 +32,11 @@ Modes:
                      cudaProfilerApi``: NVTX ranges per stage, the capture
                      window over the plain ticks only (read it with
                      ``tools/nsys_stage_bus.py``)
+    --batch-run      #29 P5: N independent envs of ``--level`` (seeds 1..N, no
+                     units, entities on) in ONE ``ResidentBatch`` -- the
+                     batched resident engine, every env its own grid: the
+                     whole tick, the slot-7 call and the host slots per env
+    --batch-sweep    ``--batch-run`` for every N in ``--ns``, fresh processes
     --sweep          for every backend and N: make the level if missing, then
                      ``--run`` it in a FRESH subprocess (a second CUDA run in
                      one process is slower, #125); collects the JSON lines
@@ -298,6 +303,112 @@ def sweep(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# #29 P5: THE BATCHED RESIDENT ENGINE (simulation/resident_batch.py) -- N
+# independent copies of one level stepped as ONE batch (not stacked in one
+# grid): every env its own (h, w) grid, its own multigrid, sweep and n_sub.
+# The scene G1 measures (design §3): NO units, the level's entities ON (vents,
+# ducts, doors, charges, heat sources), ContinuousRealtime.
+# ---------------------------------------------------------------------------
+def run_batch(level_name: str, levels_dir, n: int, build: Path,
+              warmup: int, ticks: int) -> dict:
+    """``n`` envs of ``level_name`` (seeds 1..n) in one ResidentBatch, in THIS
+    process. Times the whole batched tick, the slot-7 call (the device chain
+    plus every env's entry / exit transfers: ``run_resident_batch``) and the
+    rest (every env's host slots, 1..6b and 9..10). Returns BATCH_JSON."""
+    from bench_bot_matches import setup_cuda
+    setup_cuda(build, True)
+    import breach_physics as bp
+    import level_loader
+    import numpy as np
+    from simulation import Simulation
+    from simulation import physics_runner as pr
+    from simulation.resident_batch import ResidentBatch
+    from simulation.ruleset import ContinuousRealtime
+    lvl = level_loader.load(level_name, str(levels_dir))
+    used0 = _device_used()
+    sims = []
+    for e in range(n):
+        s = Simulation(lvl, seed=1 + e, breach_physics=bp, enable_recorder=False,
+                       ruleset=ContinuousRealtime())
+        s.physics_runner.headless = True
+        s.set_paused(False)
+        sims.append(s)
+    batch = ResidentBatch(sims)
+    slot7 = []
+    real = pr.run_resident_batch
+
+    def timed(*a, **k):
+        t0 = time.perf_counter()
+        try:
+            return real(*a, **k)
+        finally:
+            slot7.append(time.perf_counter() - t0)
+    pr.run_resident_batch = timed
+    nsub0 = int(bp.eos_nsub_reads())
+    totals = []
+    try:
+        for i in range(warmup + ticks):
+            t0 = time.perf_counter()
+            batch.step()
+            if i >= warmup:
+                totals.append(time.perf_counter() - t0)
+    finally:
+        pr.run_resident_batch = real
+    used1 = _device_used()
+    tot = np.asarray(totals) * 1e3
+    s7 = np.asarray(slot7[warmup:]) * 1e3
+    host = tot - s7
+    h, w = sims[0].gmap.material.shape
+    cells = int(h * w)
+    mean = float(tot.mean())
+    return {"level": level_name, "n": n, "h": int(h), "w": int(w), "cells": cells,
+            "warmup": warmup, "ticks": ticks,
+            "tick_ms": {"mean": mean, "p50": float(np.median(tot)),
+                        "p95": float(np.percentile(tot, 95))},
+            "slot7_ms": float(s7.mean()),
+            "host_ms_per_env": float(host.mean() / n),
+            "env_ticks_per_s": float(n * 1e3 / mean),
+            "slot7_ns_per_cell": float(s7.mean() * 1e6 / (n * cells)),
+            "tick_ns_per_cell": float(mean * 1e6 / (n * cells)),
+            "nsub_reads": int(bp.eos_nsub_reads()) - nsub0,
+            "n_sub_last": [int(s.physics_runner.eos.dbg_last_n_sub) for s in sims[:8]],
+            "device_used_before": used0, "device_used_after": used1,
+            "entities": int(sum(1 for _ in getattr(sims[0], "entities", []) or []))}
+
+
+def batch_sweep(args) -> int:
+    ns = [int(x) for x in args.ns.split(",")]
+    results = []
+    out = Path(args.out) if args.out else None
+    for n in ns:
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--batch-run",
+               "--level", args.level, "--levels-dir", str(args.levels_dir),
+               "--n", str(n), "--build", str(args.build),
+               "--warmup", str(args.warmup), "--ticks", str(args.ticks)]
+        t0 = time.perf_counter()
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        wall = time.perf_counter() - t0
+        line = next((ln for ln in p.stdout.splitlines()
+                     if ln.startswith("BATCH_JSON ")), None)
+        if p.returncode != 0 or line is None:
+            print(f"[batch] N={n} FAILED (exit {p.returncode}):\n{p.stdout[-2000:]}\n"
+                  f"{p.stderr[-3000:]}", flush=True)
+            results.append({"n": n, "failed": True})
+            continue
+        r = json.loads(line[len("BATCH_JSON "):])
+        r["process_wall_s"] = wall
+        results.append(r)
+        print(f"[batch] {args.level} N={n:3d}: {r['tick_ms']['mean']:8.2f} ms/tick "
+              f"(slot 7 {r['slot7_ms']:7.2f}, host {r['host_ms_per_env']:.3f} ms/env) "
+              f"{r['env_ticks_per_s']:8.0f} env-ticks/s, slot 7 "
+              f"{r['slot7_ns_per_cell']:6.1f} ns/cell, n_sub {r['n_sub_last']}  "
+              f"({wall:.0f} s)", flush=True)
+        if out is not None:
+            out.write_text(json.dumps(results, indent=1), encoding="utf-8")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="bench_resident_scaling")
     ap.add_argument("--levels-dir", required=True)
@@ -309,6 +420,13 @@ def main(argv=None) -> int:
     ap.add_argument("--make", type=int, default=None, metavar="N")
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--sweep", action="store_true")
+    ap.add_argument("--batch-run", action="store_true",
+                    help="#29 P5: N envs of --level in ONE ResidentBatch, this "
+                         "process; prints BATCH_JSON")
+    ap.add_argument("--batch-sweep", action="store_true",
+                    help="#29 P5: --batch-run for every N in --ns, each in a "
+                         "fresh subprocess")
+    ap.add_argument("--n", type=int, default=1, help="with --batch-run")
     ap.add_argument("--level", default=None, help="with --run")
     ap.add_argument("--backend", default="resident", choices=BACKENDS)
     ap.add_argument("--warmup", type=int, default=2)
@@ -321,8 +439,19 @@ def main(argv=None) -> int:
                          "cudaProfilerStart/Stop window over the plain ticks "
                          "(for nsys --capture-range=cudaProfilerApi)")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
-    if sum(bool(x) for x in (args.make is not None, args.run, args.sweep)) != 1:
-        ap.error("exactly one of --make N / --run / --sweep")
+    if sum(bool(x) for x in (args.make is not None, args.run, args.sweep,
+                                args.batch_run, args.batch_sweep)) != 1:
+        ap.error("exactly one of --make N / --run / --sweep / --batch-run / "
+                 "--batch-sweep")
+    if args.batch_run or args.batch_sweep:
+        if args.level is None:
+            ap.error("--batch-run / --batch-sweep need --level")
+        if args.batch_sweep:
+            return batch_sweep(args)
+        r = run_batch(args.level, args.levels_dir, args.n, Path(args.build),
+                      args.warmup, args.ticks)
+        print("BATCH_JSON " + json.dumps(r), flush=True)
+        return 0
     if args.make is not None:
         print(f"wrote {make_stacked(args.src, args.levels_dir, args.make)}")
         return 0

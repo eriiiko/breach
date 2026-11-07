@@ -80,6 +80,7 @@
 #include <algorithm>   // std::max_element (the host P1 early-exit reduction)
 #include <sstream>
 #include <stdexcept>
+#include "cuda_batch.cuh"   // #29 P5: the tick stream
 
 using namespace fixedpoint;
 
@@ -486,19 +487,19 @@ int fire_launch_resident(
     int launches = 0;
 
     // K0: the destroyed counters (and the gate, when one rides), zeroed.
-    fire_prep<<<(n_env + block - 1) / block, block>>>(d_counter, d_gate, n_env);
+    fire_prep<<<(n_env + block - 1) / block, block, 0, tstream()>>>(d_counter, d_gate, n_env);
     cuda_check(cudaGetLastError(), "prep launch");
     ++launches;
     // P1 as a device gate: the per-env max(fire), atomicMax from 0.
     if (d_gate != nullptr) {
-        fire_gate_max<<<grid, block>>>(d_fire, d_gate, n, n_env);
+        fire_gate_max<<<grid, block, 0, tstream()>>>(d_fire, d_gate, n, n_env);
         cuda_check(cudaGetLastError(), "gate launch");
         ++launches;
     }
 
     // P2 logistic feedback (in-place on fire; O2 gate reads the O2 plane's
     // neighbour mean; reads wall_hp/temp/wind/masks).
-    fire_logistic<<<grid, block>>>(
+    fire_logistic<<<grid, block, 0, tstream()>>>(
         d_fire, d_atmosphere, d_gas, n_gases, o2_idx, d_n_total, d_wall_hp,
         d_temperature, d_wind_x, d_wind_y, d_is_wall, d_is_vacuum,
         d_flammable, d_fuel_recip, d_fire_T_ext_plane, h, w, n_env,
@@ -515,7 +516,7 @@ int fire_launch_resident(
 
     // P5 wall burn-through (in-place on wall_hp; zeroes fire on destroyed
     // AFTER P2 read it; collects the destroyed indices per env).
-    fire_burn<<<grid, block>>>(d_fire, d_wall_hp, d_temperature, d_fire_T_ext_plane,
+    fire_burn<<<grid, block, 0, tstream()>>>(d_fire, d_wall_hp, d_temperature, d_fire_T_ext_plane,
                                d_is_wall, d_flammable, d_counter, d_destroyed_idx,
                                sc.wall_damage_q, d_dt_q, d_gate, sc.max_fire_thresh_q,
                                sc.fire_T_ext_q, sc.recip_T_span, sc.hotf_cap_q,
@@ -525,7 +526,7 @@ int fire_launch_resident(
     ++launches;
 
     // P6 final clamp (in-place on fire).
-    fire_clamp<<<grid, block>>>(d_fire, n, n_env, d_gate, sc.max_fire_thresh_q);
+    fire_clamp<<<grid, block, 0, tstream()>>>(d_fire, n, n_env, d_gate, sc.max_fire_thresh_q);
     cuda_check(cudaGetLastError(), "clamp launch");
     ++launches;
     return launches;

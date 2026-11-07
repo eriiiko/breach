@@ -114,7 +114,10 @@ struct MGLevelDevPtrs {
 void eos_mg_vcycle_resident(
     const MGLevelDevPtrs* levels, int n_levels,
     bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
-    int mg_coarsest_sweeps, int flat_S);
+    int mg_coarsest_sweeps, int flat_S,
+    // #29 P5: the batch's env count — every level array is (N, lh, lw), every
+    // fine-level launch covers the N envs, the fused tail is one block per env.
+    int n_env = 1);
 
 // Backend selection (the P6.1/P6.2 surviving-backend idiom). NOTE: no engine
 // dispatch site consumes this yet — EOS orchestration dispatch is P6.5 ("the

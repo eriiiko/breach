@@ -30,6 +30,7 @@
 //
 // NOTE: this header is being populated family-by-family across STEP B commits.
 // Only the cores listed below are wired; the rest land in subsequent WIP checkpoints.
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -37,6 +38,8 @@
 class EOSSolver;
 
 namespace breach_cuda {
+
+struct EnvSub;   // #29 P5 (cuda_resident_tick.h)
 
 // ---- water (cuda_water.cu) --------------------------------------------------
 // One water substep, LAUNCH ONLY, in place on d_depth/d_vx/d_vy. Mirrors
@@ -52,7 +55,10 @@ void water_launch_resident(
     int32_t* d_surface, int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
     int64_t* d_fx, int64_t* d_fy,
     int h, int w, float dt, float tilt_x, float tilt_y,
-    float g, float damping, float dx, float k_p, float v_max, float depth_eps);
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps,
+    // #29 P5: the batch (planes (N, h, w)) and the per-env active mask (N,)
+    // uint8 — nullptr: every env runs; 0: that env does nothing.
+    int n_env = 1, const uint8_t* d_active = nullptr);
 
 // The whole water SUBSTEP LOOP, device-resident (S8a Path B FLOOR item 2). Runs
 // water_launch_resident `n_sub` times back-to-back on the SAME persistent device
@@ -67,7 +73,8 @@ void water_substeps_resident(
     int32_t* d_depth, int32_t* d_vx, int32_t* d_vy,
     const int32_t* d_floor, const int32_t* d_atm, const bool* d_solid,
     int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
-    float g, float damping, float dx, float k_p, float v_max, float depth_eps);
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps,
+    int n_env = 1, const uint8_t* d_active = nullptr);
 
 // ---- the trace tail (cuda_bulk_transport.cu) — smoke transport v2 P2b ------
 // (cuda_smoke.cu — smoke_launch_resident / trace_smoke_resident, the resident
@@ -107,22 +114,8 @@ int trace_tail_launch_resident(
     int32_t* d_s0,
     unsigned long long* d_cnt);
 
-// The N == 1 driver PhysicsEngine::run_trace_tail_resident calls, with the
-// CPU tail's contract (trace_tail in bulk_transport.h): the per-gas host
-// folds through the SAME out-of-line functions the CPU tail calls
-// (trace_diffusion_dd_q, trace_decay::frac_q), one small H2D of the fold table,
-// the launch core on C++-owned persistent scratch keyed (N, h, w, n_gases),
-// ONE sync, ONE small D2H of the book block, ADDED into vent / sink / decay
-// ((n_gases,) host int64 books, ACCUMULATED — vent is boundary_flux_'s trace
-// slots). Throws std::invalid_argument if a fold breaks 4·dd_q <= ONE.
-void trace_tail_resident(
-    int32_t* d_gas_base,
-    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
-    const float* d_perm,
-    int h, int w, int n_gases,
-    const bool* gas_conservative, const float* gas_diffusion,
-    const float* gas_decay, float dt,
-    int64_t* vent, int64_t* sink, int64_t* decay);
+// (#29 P5: the N == 1 driver trace_tail_resident is DELETED — the batched
+// tick's resident_trace_tail (cuda_resident_tick.h) is the one driver.)
 
 // ---- kick + energy flux (cuda_kick_compression.cu) — S8a Path A ------------
 // The per-tick scalar folds the kick kernel (K1) consumes, factored to ONE
@@ -199,7 +192,10 @@ void kick_compression_launch_resident(
     // (ts cells carry no gas_energy — design §2.3 F5). The P2 device-fallback
     // idiom applies — the caller passes `d_thermal_solid ? d_thermal_solid :
     // d_solid`, so the legacy path allocates and copies nothing.
-    const bool* d_ts = nullptr);
+    const bool* d_ts = nullptr,
+    // #29 P5: the batch -- every plane (N, h, w), the counters (N, cstride)
+    // (0 = KICK_CNT_SLOTS). The kick runs once per tick on every env.
+    int n_env = 1, size_t cstride = 0);
 
 // ---- the face-flux energy step (cuda_kick_compression.cu K3) — P-G2 -------
 // Replaces the retired step-4c compression work (design §2.4/§2.5, Kwatra
@@ -238,7 +234,13 @@ void energy_flux_launch_resident(
     const bool* d_is_ambient,
     const EnergyFluxScalarFolds& folds,
     int64_t* d_e0, int32_t* d_pcur, int32_t* d_s_plane,
-    unsigned long long* d_cnt, int h, int w);
+    unsigned long long* d_cnt, int h, int w,
+    // #29 P5: the batch -- planes (N, h, w), counters (N, cstride) (0 =
+    // FLUX_CNT_SLOTS); `es` the per-env fold-table rows (nullptr: unbatched,
+    // the folds' own scalars and n_sub) and `n_cycles` the batch's max n_sub --
+    // an env sits out every sub-cycle past its own n_sub.
+    int n_env = 1, size_t cstride = 0, const EnvSub* es = nullptr,
+    int n_cycles = 0);
 
 // ---- the radiation sweep (cuda_radiation_sweep.cu) — ray-engine-v2 P4 -------
 // The sweep's LAUNCH CORE, born (N, h, w) with N = 1 today (RL-batch habits,
@@ -709,7 +711,10 @@ int water_tail_launch_resident(
     const bool* d_thermal_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
     const int32_t* d_t_amb_raw, const WaterTailScalars& sc,
     uint8_t* d_flag, int32_t* d_frac, int32_t* d_list,
-    unsigned long long* d_cnt);
+    unsigned long long* d_cnt,
+    // #29 P5: the per-env active mask (N,) uint8 — nullptr: every env runs;
+    // 0: that env's fields and books are untouched (its book block is zeroed).
+    const uint8_t* d_active = nullptr);
 
 // ---- the stamp kernel (cuda_stamp.cu) — #29 P4b ----------------------------
 // Slot 6's FIELD REBUILD on the device: the five stamp outputs from the living

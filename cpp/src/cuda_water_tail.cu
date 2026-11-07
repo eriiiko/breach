@@ -48,6 +48,7 @@
 // quantize, mul_q16, floordiv_q, quantize_trace, trace_add_sat.
 // ============================================================================
 #include "cuda_resident.h"
+#include "cuda_batch.cuh"   // #29 P5: the tick stream, the per-env mask
 #include "fixed_point.h"
 
 #include <cuda_runtime.h>
@@ -100,10 +101,11 @@ __global__ void wt_boil(int32_t* __restrict__ water_depth,
                         int32_t* __restrict__ gas, int n_gases, int steam_idx,
                         WaterTailScalars sc,
                         unsigned long long* __restrict__ cnt_all,
-                        int n, int n_env) {
+                        int n, int n_env, const uint8_t* __restrict__ active) {
     const int total = n_env * n;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < total;
          i += gridDim.x * blockDim.x) {
+        if (active && !active[i / n]) continue;   // #29 P5: a dormant env does nothing
         if (!(atmosphere[i] < sc.boil_p_thresh_q && water_depth[i] > 0)) continue;
         const int env = i / n;
         const int li = i - env * n;
@@ -164,8 +166,10 @@ wt_evac(int h, int w, int n_gases,
         const int32_t* __restrict__ d_t_amb_raw,
         const uint8_t* __restrict__ flag, const int32_t* __restrict__ frac,
         int32_t* __restrict__ list,
-        unsigned long long* __restrict__ cnt_all) {
+        unsigned long long* __restrict__ cnt_all,
+        const uint8_t* __restrict__ active) {
     const int env = blockIdx.x;
+    if (active && !active[env]) return;   // #29 P5: block-uniform, before any barrier
     const int n = h * w;
     const int base = env * n;
     const int tid = threadIdx.x;
@@ -272,9 +276,11 @@ wt_evac(int h, int w, int n_gases,
 // ---- W3c: the seals and the copy, per cell. --------------------------------
 __global__ void wt_finish(const int32_t* __restrict__ water_depth,
                           int32_t* __restrict__ before, float* __restrict__ perm,
-                          const uint8_t* __restrict__ flag, int total) {
+                          const uint8_t* __restrict__ flag, int total,
+                          int n, const uint8_t* __restrict__ active) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < total;
          i += gridDim.x * blockDim.x) {
+        if (active && !active[i / n]) continue;
         if (flag[i] & F_SEAL) perm[i] = 0.0f;    // flooded -> seal
         before[i] = water_depth[i];              // the copyto (integer)
     }
@@ -306,7 +312,7 @@ int water_tail_launch_resident(
         const bool* d_thermal_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
         const int32_t* d_t_amb_raw, const WaterTailScalars& sc,
         uint8_t* d_flag, int32_t* d_frac, int32_t* d_list,
-        unsigned long long* d_cnt) {
+        unsigned long long* d_cnt, const uint8_t* d_active) {
     const int n = h * w;
     if (n_env <= 0 || n <= 0) return 0;
     if (n_gases < 1 || n_gases > WATER_TAIL_GAS_MAX) {
@@ -321,19 +327,21 @@ int water_tail_launch_resident(
     const int block = 256;
     const int grid = (total + block - 1) / block;
     const int slots = n_env * WT_CNT_SLOTS;
-    wt_prep<<<(slots + block - 1) / block, block>>>(d_cnt, slots);
+    cudaStream_t st = tstream();
+    wt_prep<<<(slots + block - 1) / block, block, 0, st>>>(d_cnt, slots);
     cuda_check(cudaGetLastError(), "prep launch");
-    wt_boil<<<grid, block>>>(d_water_depth, d_atmosphere, d_gas, n_gases, steam_idx,
-                             sc, d_cnt, n, n_env);
+    wt_boil<<<grid, block, 0, st>>>(d_water_depth, d_atmosphere, d_gas, n_gases, steam_idx,
+                             sc, d_cnt, n, n_env, d_active);
     cuda_check(cudaGetLastError(), "boil launch");
-    wt_flags<<<grid, block>>>(d_water_depth, d_before, d_solid, sc, d_flag, d_frac, total);
+    wt_flags<<<grid, block, 0, st>>>(d_water_depth, d_before, d_solid, sc, d_flag, d_frac, total);
     cuda_check(cudaGetLastError(), "flags launch");
-    wt_evac<<<n_env, EVAC_BLOCK>>>(h, w, n_gases, d_gas, d_perm, d_solid,
+    wt_evac<<<n_env, EVAC_BLOCK, 0, st>>>(h, w, n_gases, d_gas, d_perm, d_solid,
                                    d_gas_energy, d_cons, d_thermal_solid,
                                    d_is_vacuum, d_is_ambient, d_t_amb_raw,
-                                   d_flag, d_frac, d_list, d_cnt);
+                                   d_flag, d_frac, d_list, d_cnt, d_active);
     cuda_check(cudaGetLastError(), "evac launch");
-    wt_finish<<<grid, block>>>(d_water_depth, d_before, d_perm, d_flag, total);
+    wt_finish<<<grid, block, 0, st>>>(d_water_depth, d_before, d_perm, d_flag, total,
+                                      n, d_active);
     cuda_check(cudaGetLastError(), "finish launch");
     return 5;
 }

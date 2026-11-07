@@ -52,6 +52,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "cuda_batch.cuh"   // #29 P5: the tick stream
 
 using namespace fixedpoint;
 
@@ -940,7 +941,7 @@ int combustion_launch_resident(
                             + block - 1) / block;
 
     // K0: the snapshot + the scratch / book zeroing (the explicit freeze).
-    combustion_prep<<<pgrid, block>>>(d_temperature, d_tsnap, d_alloc, d_dep,
+    combustion_prep<<<pgrid, block, 0, tstream()>>>(d_temperature, d_tsnap, d_alloc, d_dep,
                                       e_slot, e_dep, d_cnt, n_env, n, n_slots);
     cuda_check(cudaGetLastError(), "prep launch");
 
@@ -966,7 +967,7 @@ int combustion_launch_resident(
     // form is not taken (it would trade registers for global traffic).
     // R = 3 (~17% occupancy) is the documented cost of the sweep's upper point.
     #define PO2B_LAUNCH(RVAL)                                                  \
-        combustion_pass_a<RVAL><<<grid, block>>>(                              \
+        combustion_pass_a<RVAL><<<grid, block, 0, tstream()>>>(                              \
             n_env, h, w, n_gases, o2_idx, inert_n2_idx, acc_depth,             \
             d_gas, d_tsnap, d_temperature, d_wall_hp, d_fire,                  \
             d_flammable, d_solid, d_is_vacuum, d_thermal_solid, d_is_ambient,  \
@@ -974,7 +975,7 @@ int combustion_launch_resident(
             d_fire_T_ext_plane, d_atmosphere, d_gas_energy, e_slot,            \
             d_burn_cap_q, d_t_amb_q, sc, d_cnt);                               \
         cuda_check(cudaGetLastError(), "pass_a launch");                       \
-        combustion_pass_b<RVAL><<<grid, block>>>(                              \
+        combustion_pass_b<RVAL><<<grid, block, 0, tstream()>>>(                              \
             n_env, h, w, d_wall_hp, d_flammable, d_solid, d_is_vacuum,         \
             d_alloc, d_dep, e_slot, e_dep, d_fuel_per_o2_plane, sc, d_cnt);    \
         cuda_check(cudaGetLastError(), "pass_b launch")
@@ -993,7 +994,7 @@ int combustion_launch_resident(
     // K3: Pass C — the re-sited deposit (separate launch = grid barrier: d_dep
     // / e_dep fully written by K2 before any thread gathers them, and every K1
     // O2 debit and donor-energy debit is settled before Pass C reads them).
-    combustion_pass_c<<<grid, block>>>(
+    combustion_pass_c<<<grid, block, 0, tstream()>>>(
         n_env, h, w, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
         d_gas, d_temperature, d_solid, d_is_vacuum, d_thermal_solid,
         d_heat_inv_shift, d_is_ambient, d_dep, e_dep, d_gas_energy,

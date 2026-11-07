@@ -44,6 +44,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include "cuda_batch.cuh"   // #29 P5: the tick stream
 
 namespace breach_cuda {
 
@@ -143,7 +144,7 @@ int stamp_launch_resident(
     const int block = 256;
     int launches = 0;
     int grid = (total + block - 1) / block;
-    stamp_reset<<<grid, block>>>(d_obstacles, d_dyn_perm, d_dyn_wabs, d_dyn_heat,
+    stamp_reset<<<grid, block, 0, tstream()>>>(d_obstacles, d_dyn_perm, d_dyn_wabs, d_dyn_heat,
                                  d_dyn_light, d_winner, d_permeability,
                                  d_wave_absorb, d_heat_atten_q, d_light_atten_q,
                                  total);
@@ -151,10 +152,10 @@ int stamp_launch_resident(
     ++launches;
     if (n_rows > 0) {
         grid = (n_rows + block - 1) / block;
-        stamp_rows_max<<<grid, block>>>(d_dyn_wabs, d_dyn_heat, d_dyn_light,
+        stamp_rows_max<<<grid, block, 0, tstream()>>>(d_dyn_wabs, d_dyn_heat, d_dyn_light,
                                         d_winner, d_rows, n_rows, n_env, h, w);
         cuda_check(cudaGetLastError(), "rows max launch");
-        stamp_perm_write<<<grid, block>>>(d_dyn_perm, d_winner, d_permeability,
+        stamp_perm_write<<<grid, block, 0, tstream()>>>(d_dyn_perm, d_winner, d_permeability,
                                           d_rows, n_rows, n_env, h, w);
         cuda_check(cudaGetLastError(), "perm write launch");
         launches += 2;

@@ -876,3 +876,96 @@ planes. A first version copied the rows with a pageable `cudaMemcpy` and the sta
 gain); the pinned asynchronous copy brought the stage to 0.05 ms. The patch's value is architectural: the device
 no longer needs the host's stamp planes, which is the shape P5 (N envs) and the later patches that drop the host
 mirror need.
+
+## P5: the batched physics (2026-11-08)
+
+**What moved.** Every slot-7 launch core runs over an `(N, h, w)` batch of homogeneous envs (`blockIdx.y` = the
+env, pointers rebased per env, the kernel bodies unchanged): the water substeps and tail, the EOS substep chain, the
+multigrid build and V-cycle (the fused coarse tail one block per env), kick, store, energy flux, joining the trace
+tail, combustion, fire, the sweep, temperature and the stamp. The EOS pre-stage moved to the device (per-env
+reductions; one thread per env folds n_sub and picks its row of a fold table built once per config; cap2 / absorb /
+coeffE / coeffS built on the device). Both substep loops run to the batch's max n_sub with per-env masks. Every book
+lands per env in one arena, read back in ONE D2H at the tail. One blocking tick stream. Host syncs per tick: the
+8-byte max(n_sub) read and the books read (was: the 8-byte max_du read, five EOS book D2Hs with a device sync, the
+trace tail's sync + D2H, the books D2H). The driver for N > 1 is `simulation/resident_batch.py`
+(`ResidentBatch`); the played tick is the same driver at N = 1.
+
+**N = 1, the medium bots match (ship_demo, seed 1).** Method as P4b: `tools/bench_bot_matches.py --level ship_demo
+--seeds 1 --timing --sim-seconds 15 --cuda --cuda-build cpp/build_cuda --resident --profile`, one fresh process per
+line, two plain runs each, interleaved before / after. Before = main `a3812a43` (a detached checkout with its own
+CUDA build); after = the P5 branch. The digest is `59719adc8953` on all four runs.
+
+| stage, ms per tick, mean (plain, run 1 / run 2) | before (`a3812a43`) | after (P5) |
+|---|---|---|
+| total (step + controllers) | 9.69 / 9.76 | 9.02 / 9.18 |
+| step | 7.896 / 7.935 | 7.226 / 7.380 |
+| 7 physics | 6.058 / 6.102 | 5.379 / 5.540 |
+| &nbsp;&nbsp;7 H2D `GameMap.from_host` | 0.260 / 0.276 | 0.263 / 0.264 |
+| &nbsp;&nbsp;7 EOS `run_substeps_resident` | 3.994 / 4.021 | 1.805 / 1.865 |
+| &nbsp;&nbsp;7 trace tail (resident) | 0.115 / 0.116 | 0.031 / 0.031 |
+| &nbsp;&nbsp;7 tail (resident, ends with the books D2H) | 0.838 / 0.856 | 2.436 / 2.516 |
+| &nbsp;&nbsp;7 D2H `GameMap.to_host` | 0.611 / 0.620 | 0.589 / 0.610 |
+| &nbsp;&nbsp;7 applier (P6, reserved) | -- | 0.000 / 0.000 |
+| real-time x | 4.30 / 4.27 | 4.62 / 4.54 |
+
+**Reading (N = 1).** Faster, not slower: the step is 0.6 ms (7.5 %) shorter and real time 4.28x -> 4.58x. The
+EOS stage no longer blocks the host (its five book D2Hs and the device sync are gone, its only wait is the 8-byte
+max(n_sub)), the trace tail no longer syncs, the per-tick H2D of cap2 and the absorb plane is gone, so the host
+waits once, at the tail's books read -- which is why the tail's line grew by what the EOS line lost. The bus is
+unchanged (478.5 KiB in, 847.7 KiB out).
+
+**The batched physics, N envs.** `tools/bench_resident_scaling.py --batch-sweep --level <L> --levels-dir
+<scratch>/levels --ns 1,2,8,16,32,64 --warmup 5 --ticks 60`, one fresh process per N: N envs of the level (seeds
+1..N), `Simulation` under `ContinuousRealtime`, NO units, the level's entities ON (vents, ducts, doors), headless,
+in one `ResidentBatch`. Small = `ship_s1_small` (60 x 40, 2 400 cells, `tools/gen_ship.py --seed 1 --size small
+--vents`), medium = `ship_demo` (100 x 70, 7 000 cells). Every env ran n_sub = 8 (the cap) on these levels. "tick"
+is one batched tick of all N envs; "slot 7" is the `run_resident_batch` call (the device chain PLUS every env's
+entry / exit transfers); "host" is everything else per env (slots 1..6b and 9..10). The device-chain line is a
+second, attributed run (`p5_split.py`-style timers on the same calls, 30 ticks): slot 7 minus the per-env
+`from_host` / `to_host` and the host pre-physics.
+
+| small (2 400 cells) | N = 1 | 2 | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|
+| batched tick, ms | 4.84 | 6.55 | 15.64 | 28.72 | 54.61 | 107.56 |
+| env-ticks / s (whole tick) | 207 | 306 | 512 | 557 | 586 | 595 |
+| slot 7, ns per cell per tick | 1 833 | 1 186 | 647 | 578 | 541 | 521 |
+| host per env (slots 1..6b, 9..10), ms | 0.442 | 0.426 | 0.402 | 0.407 | 0.408 | 0.429 |
+| per-env bus (from_host + to_host), ms (attributed) | 0.71 | -- | 0.84 | 0.92 | -- | 0.97 |
+| device chain per env, ms (attributed) | 3.68 | -- | 0.69 | 0.44 | -- | 0.25 |
+| device chain, ns per cell per tick | 1 533 | -- | 288 | 183 | -- | 104 |
+
+| medium (7 000 cells) | N = 1 | 2 | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|
+| batched tick, ms | 5.80 | 7.62 | 20.36 | 38.01 | 74.13 | 143.78 |
+| env-ticks / s (whole tick) | 172 | 262 | 393 | 421 | 432 | 445 |
+| slot 7, ns per cell per tick | 747 | 464 | 282 | 261 | 250 | 242 |
+| host per env (slots 1..6b, 9..10), ms | 0.575 | 0.566 | 0.572 | 0.552 | 0.570 | 0.550 |
+| per-env bus (from_host + to_host), ms (attributed) | 0.86 | -- | 1.05 | -- | -- | 1.12 |
+| device chain per env, ms (attributed) | 4.34 | -- | 0.98 | -- | -- | 0.54 |
+| device chain, ns per cell per tick | 620 | -- | 140 | -- | -- | 77 |
+
+Memory (`cudaMemGetInfo` used, after minus before the sims were built): small 6 / 22 / 166 MiB at N = 1 / 8 / 64
+(~2.5 MiB per env), medium 10 / 62 / 456 MiB (~7 MiB per env); N = 64 medium uses 1.5 GiB of the 8 GB card in
+total -- N is bounded here by time, not memory.
+
+**Reading (N envs).** The device chain amortises as designed: from 4.3 ms per env at N = 1 to 0.54 ms (medium) /
+0.25 ms (small) at N = 64 -- 77 / 104 ns per cell per tick, i.e. ~1 850 (medium) / ~4 000 (small) env-ticks/s of
+device physics alone, the launch- and sync-bound regime of P4b's Nsight read paid once per batch instead of once
+per env. The whole batched tick saturates near 600 (small) / 450 (medium) env-ticks/s because the per-env host
+work stays per env: the gameplay slots (0.4-0.6 ms) and, larger, the per-env pageable CuPy transfers of the entry /
+exit sets (~0.9-1.1 ms per env: ~27 `set` / `get` calls of 7-336 KiB each). At P5 that bus is the honest price of
+host gameplay in the loop -- it is exactly what G1 must weigh (design §3: "the device side's host 9e cost reported
+as its own line ... plus the bus"); it leaves with the authority flip (P6+), when the host stops reading the
+fields every tick. Against P1a's farm (8 workers: ~755 small / ~278 medium env-ticks/s with units and controllers
+on, a different scene), the batch's whole-tick numbers are not the G1 reading -- G1 runs the same scene on both
+sides on a node; this section is its input.
+
+**Gates.** `cuda_s8a_check` (N = 1 == CPU, every leg, tol 0), `cuda_prestage_parity_check` (device pre-stage ==
+host, every n_sub 1..8; validated by dropping the cap2 thermal-solid rule: 32 cells caught -- a first break,
+dropping the fold's `+ 1` count epsilon, was NOT caught: no scene put ceil_div on a boundary, so the gate cannot
+see that change), `cuda_batch_invariance_check` (env i of N == alone, N in {1, 2, 8, 64}, n_sub 8 vs 1 on the same
+tick on 30/30 ticks; validated twice: an ignored `sl_advect3` mask was caught at N = 8 and on the ship leg -- not at
+N = 2, where the masked env was windless --, an un-rebased `K_pstar` temperature was caught at N = 2),
+`cuda_tick_capture_check` (3 segments / ~690-720 graph nodes per tick, host syncs exactly `max_n_sub`, `books`;
+validated by launching `K_store_atm` on the default stream: "operation would make the legacy stream depend on a
+capturing blocking stream").

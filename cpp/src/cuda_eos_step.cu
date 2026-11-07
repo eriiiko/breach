@@ -163,55 +163,25 @@ EOSHostPrestage eos_host_prestage(
         solver.dbg_T_pre_advect = temperature[solver.dbg_probe_idx];
 
     // ---- per-tick scalar constants (step()'s folds, verbatim) ------------
-    const q16 n_floor_q = quantize((double)solver.N_FLOOR_SOLVER);
-    // FLOORED AT 1 COUNT — the CPU twin's A7 fix, verbatim (eos_solver.cpp:278).
-    // Divisor of the c_LOCAL ratio at :165 and, via pre.t_amb_q (:258), the
-    // resident path's too. Must stay bit-identical to the CPU fold.
-    const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
-    // P-E1: the recovery T_MIN clamp fold — the SAME `quantize((double)T_MIN)`
-    // expression step() performs, hoisted here so BOTH GPU dispatch paths read
-    // one transcription (design §2.1.5).
-    pre.t_min_q = quantize((double)solver.T_MIN);
-    // s_eos_q: fold of S_EOS, verbatim CPU twin (eos_solver.cpp:290). At the
-    // frozen identity (65536) the t_abs product below has zero low bits, so
-    // the SAR is exact truncation — see eos_solver.cpp's comment for the
-    // off-identity T<0 flooring convention.
-    const q16 s_eos_q   = quantize((double)solver.S_EOS);
-    // D-3 RELEASE-LIVE GUARD (design §4, docs/tabs_compression_work_design_
-    // 2026-08-20.md): the byte-identical companion to EOSSolver::step's own
-    // guard (eos_solver.cpp, beside its s_eos_q fold) — step 4c's t_abs =
-    // T + t_amb_q form is honest only while S_EOS == 1 AND
-    // T_MIN > -T_AMB_K; assert() is dead in Release, so this is a plain,
-    // always-compiled, once-per-tick check on this dispatch path too.
-    if (s_eos_q != FP_ONE || pre.t_min_q <= -(int64_t)t_amb_q) {
-        throw std::runtime_error(
-            "T_abs compression work requires S_EOS==1 and T_MIN > -T_AMB_K; "
-            "see docs/tabs_compression_work_design_2026-08-20.md D-3");
+    // #29 P5: folded by eos_prestage_scalars (pure code motion — the device
+    // pre-stage reads the SAME struct).
+    {
+        const EOSHostPrestage sc = eos_prestage_scalars(solver, dt,
+                                                        gas_conservative, n_gases);
+        pre = sc;
     }
-    const q16 c_q       = quantize((double)solver.C);
-    // VELOCITY-CLAMP (P-V1, D2v2/v2.4): u_max_q fold — the CPU twin's rail
-    // (eos_solver.cpp:384), missing here pre-P-V1 (the kick never needed it
-    // on this backend until the per-cell cap plane).
-    const q16 u_max_q   = quantize((double)solver.U_MAX);
-    const double gamma_d = (double)solver.adiabatic_index;
-    const double dt_d    = (double)dt;
-    const q16 dt_q       = quantize(dt_d);
-    const double dx_d    = std::max((double)solver.dx, 1e-6);
-    const q16 inv_2dx_q  = quantize(1.0 / (2.0 * dx_d));
-    const double K_d = (double)solver.c_max * (double)solver.c_max / gamma_d;
-    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
-    const int64_t Kdt_raw = mul128_shr_host(K_raw, (int64_t)dt_q, 16);
+    const q16 t_amb_q   = pre.t_amb_q;
+    const q16 s_eos_q   = pre.s_eos_q;
+    const q16 c_amb_q   = pre.c_amb_q;
+    const int64_t c_amb2_q32 = pre.c_amb2_q32;   // Q32.32
+    const int64_t u_max2_q32 = pre.u_max2_q32;   // Q32.32
+    const int64_t ratio_umax = pre.ratio_umax;
 
     // ---- c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB) (step()'s scan, verbatim) --
-    const q16 c_amb_q = quantize((double)solver.c_max);
     // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² fold, SAME scan, SAME
     // tick-entry T basis as c_LOCAL — the eos_solver.cpp scan's TWIN
-    // transcription (design's "TWO transcription sites, no third").
-    const int64_t c_amb2_q32 = (int64_t)c_amb_q * (int64_t)c_amb_q;   // Q32.32
-    const int64_t u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;   // Q32.32
-    const double ru = (double)u_max_q / (double)c_amb_q;
-    const int64_t ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
-
+    // transcription (design's "TWO transcription sites, no third"; #29 P5's
+    // device pre-stage, K_pre_scan, is this loop's device twin).
     pre.cap2.assign(n, 0);
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
@@ -244,22 +214,13 @@ EOSHostPrestage eos_host_prestage(
         if (rad > max_rad) max_rad = rad;
     }
     const q16 max_u = sqrt_q16(max_rad);
-    // #29 P4a: the scalars the n_sub fold reads, and everything the caller
-    // needs whichever side scans (the conservative list, the per-tick folds).
+    // #29 P4a: the scalars the n_sub fold reads (the per-tick folds and the
+    // conservative list came from eos_prestage_scalars above).
     pre.max_u     = max_u;
-    pre.kdt_raw   = Kdt_raw;
-    pre.n_floor_q = n_floor_q;
-    pre.u_max_q   = u_max_q;
     pre.c_local_q = c_local_q;
-    pre.cfl_dx_q  = quantize((double)solver.CFL_ADV * dx_d);
-    pre.dt_q      = dt_q;
-    pre.dt_d      = dt_d;
-    for (int gi = 0; gi < n_gases; ++gi)
-        if (gas_conservative[gi]) pre.cons.push_back(gi);
-    pre.t_amb_q   = t_amb_q;
-    pre.s_eos_q   = s_eos_q;
-    pre.c_q       = c_q;
-    pre.inv_2dx_q = inv_2dx_q;
+    const q16 n_floor_q  = pre.n_floor_q;
+    const q16 inv_2dx_q  = pre.inv_2dx_q;
+    const int64_t Kdt_raw = pre.kdt_raw;
     if (!host_scans) return pre;   // the resident path scans the device gas
     // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
@@ -324,6 +285,62 @@ EOSHostPrestage eos_host_prestage(
 
     // (The conservative-plane index list and the per-tick scalars were filled
     // above, before the host scan, for both callers.)
+    return pre;
+}
+
+// #29 P5: the scalar folds alone (header). Moved VERBATIM out of
+// eos_host_prestage's head; every expression and its order kept.
+EOSHostPrestage eos_prestage_scalars(const EOSSolver& solver, float dt,
+                                     const bool* gas_conservative, int n_gases) {
+    EOSHostPrestage pre;
+    const q16 n_floor_q = quantize((double)solver.N_FLOOR_SOLVER);
+    // FLOORED AT 1 COUNT — the CPU twin's A7 fix, verbatim (eos_solver.cpp:278).
+    // Divisor of the c_LOCAL ratio and, via pre.t_amb_q, the resident path's
+    // too. Must stay bit-identical to the CPU fold.
+    const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
+    // P-E1: the recovery T_MIN clamp fold — the SAME `quantize((double)T_MIN)`
+    // expression step() performs (design §2.1.5).
+    pre.t_min_q = quantize((double)solver.T_MIN);
+    // s_eos_q: fold of S_EOS, verbatim CPU twin (eos_solver.cpp:290).
+    const q16 s_eos_q   = quantize((double)solver.S_EOS);
+    // D-3 RELEASE-LIVE GUARD (docs/tabs_compression_work_design_2026-08-20.md
+    // §4): step 4c's t_abs = T + t_amb_q form is honest only while S_EOS == 1
+    // AND T_MIN > -T_AMB_K; a plain, always-compiled, once-per-tick check.
+    if (s_eos_q != FP_ONE || pre.t_min_q <= -(int64_t)t_amb_q) {
+        throw std::runtime_error(
+            "T_abs compression work requires S_EOS==1 and T_MIN > -T_AMB_K; "
+            "see docs/tabs_compression_work_design_2026-08-20.md D-3");
+    }
+    const q16 c_q       = quantize((double)solver.C);
+    // VELOCITY-CLAMP (P-V1, D2v2/v2.4): u_max_q fold — the CPU twin's rail.
+    const q16 u_max_q   = quantize((double)solver.U_MAX);
+    const double gamma_d = (double)solver.adiabatic_index;
+    const double dt_d    = (double)dt;
+    const q16 dt_q       = quantize(dt_d);
+    const double dx_d    = std::max((double)solver.dx, 1e-6);
+    const q16 inv_2dx_q  = quantize(1.0 / (2.0 * dx_d));
+    const double K_d = (double)solver.c_max * (double)solver.c_max / gamma_d;
+    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
+    const int64_t Kdt_raw = mul128_shr_host(K_raw, (int64_t)dt_q, 16);
+    // The c_LOCAL / cap² scan's scalars (VELOCITY-CLAMP P-V1, D2v2).
+    const q16 c_amb_q = quantize((double)solver.c_max);
+    pre.c_amb_q    = c_amb_q;
+    pre.c_amb2_q32 = (int64_t)c_amb_q * (int64_t)c_amb_q;   // Q32.32
+    pre.u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;   // Q32.32
+    const double ru = (double)u_max_q / (double)c_amb_q;
+    pre.ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
+    pre.kdt_raw   = Kdt_raw;
+    pre.n_floor_q = n_floor_q;
+    pre.u_max_q   = u_max_q;
+    pre.cfl_dx_q  = quantize((double)solver.CFL_ADV * dx_d);
+    pre.dt_q      = dt_q;
+    pre.dt_d      = dt_d;
+    for (int gi = 0; gi < n_gases; ++gi)
+        if (gas_conservative[gi]) pre.cons.push_back(gi);
+    pre.t_amb_q   = t_amb_q;
+    pre.s_eos_q   = s_eos_q;
+    pre.c_q       = c_q;
+    pre.inv_2dx_q = inv_2dx_q;
     return pre;
 }
 

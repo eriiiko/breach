@@ -1547,8 +1547,17 @@ class Simulation:
           9. Process burn-through walls (fire destroyed)
          10. Increment tick + auto-pause check
         """
-        if self.paused:
+        if not self._step_pre_physics():
             return
+        self._step_post_physics(self._step_physics())
+
+    # #29 P5: the tick in three parts (pure code motion), so a ResidentBatch
+    # (simulation/resident_batch.py) runs every env's host slots around ONE
+    # batched slot 7. step() is the three in order; nothing else calls them.
+    def _step_pre_physics(self) -> bool:
+        """Slots 1 .. 6b. False (and nothing done) while paused."""
+        if self.paused:
+            return False
 
         # 1. Fresh event buffer.
         self.tick_events.clear()
@@ -1647,7 +1656,10 @@ class Simulation:
         # tick both land before smoke advection). This is the single RNG consumer
         # for noise>0 edits, drawing from the seeded sim.rng in sorted order.
         self.edit_queue.flush(self.gmap, self.rng)
+        return True
 
+    def _step_physics(self):
+        """Slot 7: the physics step; returns the burn-through walls."""
         # 7. Physics.
         sim_time_per_tick = 1.0 / float(self._tps)
         destroyed = []
@@ -1660,7 +1672,11 @@ class Simulation:
             # lockstep-safe (never a wall-clock or call-count counter).
             destroyed = self.physics_runner.step(
                 self.gmap, sim_time_per_tick, tick=self.tick)
+        return destroyed
 
+    def _step_post_physics(self, destroyed) -> None:
+        """Slots 9 .. 10, given slot 7's burn-through walls."""
+        sim_time_per_tick = 1.0 / float(self._tps)
         # 9. Process fire burn-through walls. A6: the door-event split keys
         # on BOTH door materials — legacy painted MAT_DOOR and the entity
         # door's MAT_DOOR_CLOSED (a6 doors design §1).

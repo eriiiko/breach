@@ -23,6 +23,7 @@
 #include "eos_solver.h"    // eos_thermal_occludes (the ONE shared predicate)
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, narrow, FP_ONE, FP_SHIFT
 #include "cuda_fixedpoint_device.cuh"  // reciprocal_q16_dev (shared device kit)
+#include "cuda_batch.cuh"               // #29 P5: the (N, h, w) launch shape
 
 #include <cuda_runtime.h>
 
@@ -212,8 +213,16 @@ __global__ void sl_advect3(int32_t* __restrict__ wind_x,
                            const int32_t* __restrict__ src_t,
                            const bool* __restrict__ solid,
                            const uint8_t* __restrict__ cmask,
-                           int32_t dt_s_q, int h, int w) {
+                           int32_t dt_s_q, int h, int w,
+                           const EnvSub* __restrict__ es, int s) {
+    // #29 P5: (N, h, w) — this block's env; a masked env does nothing; the
+    // substep dt is the env's fold-table row (es) or the scalar (unbatched).
+    if (sub_off(es, s)) return;
+    if (es) dt_s_q = es[benv()].dt_s_q;
     const int n = h * w;
+    wind_x = bptr(wind_x, n); wind_y = bptr(wind_y, n);
+    src_vx = bptr(src_vx, n); src_vy = bptr(src_vy, n); src_t = bptr(src_t, n);
+    solid = bptr(solid, n); cmask = bptr(cmask, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
@@ -319,7 +328,7 @@ uint64_t eos_sl_advect(
         cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
         cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
         sl_advect3<<<grid, block>>>(d_wx, d_wy, d_svx, d_svy, d_st,
-                                    d_sol, d_cmask, dt_s_q, h, w);
+                                    d_sol, d_cmask, dt_s_q, h, w, nullptr, 0);
         cuda_check(cudaGetLastError(), "advect launch");
     }
 
@@ -357,9 +366,11 @@ uint64_t eos_sl_advect(
 void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
                            const float* d_perm, uint8_t* d_cmask, int n,
                            const bool* d_is_ambient) {
+    // #29 P5: a per-cell kernel with no neighbour read — the caller passes
+    // n = N·h·w and the flat launch covers the whole batch.
     const int block = 256;
     const int grid = (n + block - 1) / block;
-    sl_cmask_build<<<grid, block>>>(d_solid, d_vacuum, d_perm, d_cmask, n,
+    sl_cmask_build<<<grid, block, 0, tstream()>>>(d_solid, d_vacuum, d_perm, d_cmask, n,
                                     d_is_ambient);
     cuda_check(cudaGetLastError(), "cmask launch (P6.5 chained)");
 }
@@ -368,13 +379,13 @@ void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
                        const bool* d_solid, const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w) {
+                       int32_t dt_s_q, int h, int w,
+                       int n_env, const EnvSub* es, int s) {
     const int n = h * w;
     const int block = 256;
-    const int grid = (n + block - 1) / block;
-    sl_advect3<<<grid, block>>>(d_wind_x, d_wind_y,
+    sl_advect3<<<bgrid(n, n_env, block), block, 0, tstream()>>>(d_wind_x, d_wind_y,
                                 d_src_vx, d_src_vy, d_src_t,
-                                d_solid, d_cmask, dt_s_q, h, w);
+                                d_solid, d_cmask, dt_s_q, h, w, es, s);
     cuda_check(cudaGetLastError(), "advect launch (P6.5 chained)");
 }
 

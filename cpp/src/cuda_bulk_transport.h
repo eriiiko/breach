@@ -40,6 +40,7 @@
 // Plain C++ declaration header (no CUDA types) so the .cpp TUs can include
 // it; cuda_bulk_transport.cu provides the definitions. Compiled only when
 // BREACH_CUDA.
+#include <cstddef>
 #include <cstdint>
 
 namespace breach_cuda {
@@ -86,6 +87,23 @@ void bulk_flux_transport(
     int h, int w,
     float dt);
 
+// #29 P5: the batch the device launchers run over (design §4.2): every plane
+// (N, h, w), the gas planes the env's (n_gases, h, w) block (stride gs), the
+// books per env (cstride: the energy counters, rstride: the rail, tstride:
+// the trace books), `es` the per-env fold-table rows and `sub` this
+// substep's index (an env whose n_sub <= sub does nothing). The default is
+// the unbatched launch (N = 1, no mask), byte for byte the pre-P5 path.
+struct EnvSub;
+struct BulkBatch {
+    int n_env = 1;
+    size_t gs = 0;          // gas-plane env stride; 0 = h·w (one plane per env)
+    size_t cstride = 0;     // energy-counter env stride
+    size_t rstride = 0;     // rail env stride
+    size_t tstride = 0;     // trace-book env stride
+    const EnvSub* es = nullptr;
+    int sub = 0;
+};
+
 // ---- EOS P6.5: device-pointer launcher for the chained eos.step dispatch ---
 // One full B1..B5 chain for ONE conservative plane on caller-owned DEVICE
 // buffers (the P6.5 orchestrator keeps u/T/gas device-resident across the
@@ -117,7 +135,8 @@ void bulk_flux_plane_device(
     int h, int w,
     const bool* d_is_ambient = nullptr, int32_t n_amb = 0,
     unsigned long long* d_rail = nullptr,
-    int64_t* d_dqsum_e = nullptr, int64_t* d_dqsum_s = nullptr);
+    int64_t* d_dqsum_e = nullptr, int64_t* d_dqsum_s = nullptr,
+    const BulkBatch& bb = BulkBatch{});
 
 // ===========================================================================
 // P-E1 — energy-conservative thermal transport, DEVICE twin (energy-books
@@ -186,7 +205,8 @@ void bulk_flux_energy_transport_device(
     unsigned long long* d_tvent = nullptr,
     unsigned long long* d_twipe = nullptr,
     unsigned long long* d_tclip = nullptr,
-    unsigned long long* d_tneg = nullptr);
+    unsigned long long* d_tneg = nullptr,
+    const BulkBatch& bb = BulkBatch{});
 
 // Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
 // dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU
