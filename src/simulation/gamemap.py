@@ -2442,7 +2442,6 @@ class GameMap:
         # S2c: atmosphere is int32 Q16.16 — dequantize to REAL pressure here so
         # the spread (hi-lo) compares against the real-unit burst_threshold `t`.
         from simulation import atmosphere_fixed as _atm_fx
-        atm = _atm_fx.dequantize(self.atmosphere)
         solid = self.solid
         is_vacuum = self.is_vacuum
         # BC (boundary_conditions_spec_2026-07-19 §1, audit (c)): an ambient-side
@@ -2456,48 +2455,52 @@ class GameMap:
                       if self._ambient is not None else 0.0)
         thresh = self.materials.burst_threshold
 
-        failing = []  # (differential, fy, fx)
-        ys, xs = np.where(solid)
-        for fy, fx in zip(ys.tolist(), xs.tolist()):
-            mat_id = int(self.material[fy, fx])
-            t = float(thresh[mat_id])
-            if t <= 0.0:
-                continue  # n/a material (e.g. air) never bursts
-            lo = None
-            hi = None
-            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                ny, nx = fy + dy, fx + dx
-                if not (0 <= ny < h and 0 <= nx < w):
-                    continue
-                # A solid neighbour is not a side — it's more wall; skipping
-                # it (rather than counting 0) is what makes the spread a true
-                # differential: equal pressure on both open sides -> 0, and a
-                # tile with fewer than two open/vacuum sides can never burst.
-                if solid[ny, nx]:
-                    continue
-                # An exposed-vacuum breach is a real side holding no air; an
-                # ambient breach is a real side holding the effective pin P_amb.
-                if is_vacuum[ny, nx]:
-                    p = 0.0
-                elif is_ambient[ny, nx]:
-                    p = p_amb_real
-                else:
-                    p = float(atm[ny, nx])
-                lo = p if lo is None or p < lo else lo
-                hi = p if hi is None or p > hi else hi
-            if lo is None:
-                continue
-            spread = hi - lo
-            if spread > t:
-                failing.append((spread, fy, fx))
-
-        if not failing:
+        # Vectorised (#143: the per-tile Python loop was 2 ms every tick) with
+        # the loop's exact arithmetic: float64 pressures from the same
+        # dequantize, float64 thresholds widened from the float32 column,
+        # min / max / subtract / compare in float64, and a STABLE descending
+        # sort over the row-major scan -- so the list (ties included) is the
+        # loop's, bit for bit (tests/test_burst_walls_parity.py).
+        ys, xs = np.nonzero(solid)            # row-major scan order
+        if ys.size == 0:
             return []
-        # Worst differentials first; apply the per-tick cap.
-        failing.sort(key=lambda r: r[0], reverse=True)
+        t = thresh[self.material[ys, xs]].astype(np.float64)
+        live = t > 0.0                        # n/a material (e.g. air) never bursts
+        ys, xs, t = ys[live], xs[live], t[live]
+        if ys.size == 0:
+            return []
+        lo = np.full(ys.shape, np.inf)
+        hi = np.full(ys.shape, -np.inf)
+        has_side = np.zeros(ys.shape, dtype=bool)
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = ys + dy, xs + dx
+            in_bounds = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+            ny = np.clip(ny, 0, h - 1)
+            nx = np.clip(nx, 0, w - 1)
+            # A solid neighbour is not a side — it's more wall; skipping
+            # it (rather than counting 0) is what makes the spread a true
+            # differential: equal pressure on both open sides -> 0, and a
+            # tile with fewer than two open/vacuum sides can never burst.
+            side = in_bounds & ~solid[ny, nx]
+            # An exposed-vacuum breach is a real side holding no air; an
+            # ambient breach is a real side holding the effective pin P_amb.
+            p = np.where(
+                is_vacuum[ny, nx], 0.0,
+                np.where(is_ambient[ny, nx], p_amb_real,
+                         _atm_fx.dequantize(self.atmosphere[ny, nx])))
+            lo = np.where(side, np.minimum(lo, p), lo)
+            hi = np.where(side, np.maximum(hi, p), hi)
+            has_side |= side
+        spread = hi - lo
+        burst = np.flatnonzero(has_side & (spread > t))
+        if burst.size == 0:
+            return []
+        # Worst differentials first (ties keep the scan order); apply the
+        # per-tick cap.
+        burst = burst[np.argsort(-spread[burst], kind="stable")]
         if max_pops is not None:
-            failing = failing[:max_pops]
-        return [(fy, fx) for _, fy, fx in failing]
+            burst = burst[:max_pops]
+        return list(zip(ys[burst].tolist(), xs[burst].tolist()))
 
     # ------------------------------------------------------------------
     # Mutators (used by explosions, fire wall burn-through)

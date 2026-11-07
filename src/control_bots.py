@@ -412,9 +412,8 @@ class BotTeam(ControlSource):
         h, w = sim.gmap.material.shape
         start = (u.tile_x, u.tile_y)
 
-        def blocked(x, y, _g=grid):
-            return not _g[y, x]
-        return astar(start[0], start[1], goal[0], goal[1], blocked, w, h)
+        return astar(start[0], start[1], goal[0], goal[1], None, w, h,
+                     passable=grid)
 
     def _passable_grid(self, sim, fp):
         """``grid[y, x]`` == ``gmap.is_passable_block(y, x, fp)`` for every
