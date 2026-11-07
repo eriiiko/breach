@@ -1231,7 +1231,17 @@ PYBIND11_MODULE(breach_physics, m) {
              int32_t p_ext_q, int32_t p_full_q,
              // #88 P2: the EOSSolver whose per-gas trace books the soot mint
              // writes (the CPU CombustionSolver.step's `eos=` twin). OPTIONAL.
-             py::object eos) -> py::tuple {
+             py::object eos,
+             // #71 (residency arc #29 P2): THE GAS ENERGY SEAM — the CPU
+             // step's gas_energy / is_ambient / t_amb_q, same meaning, same
+             // None defaults (None == the pre-#54 T-form deposit).
+             py::object gas_energy, py::object is_ambient, int32_t t_amb_q,
+             // #71: the CombustionSolver whose members RECEIVE this call's
+             // books (heat_floor_hits, t_max_phys_hits, e_deposit_drop_sum and
+             // every e_comb_* channel, ADDED as the CPU step adds them), so the
+             // closure identity reads one set of counters whichever backend
+             // ran. OPTIONAL; the returned tuple is unchanged either way.
+             py::object combustion) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -1303,8 +1313,25 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto av = atm_arr.unchecked<2>();
                   atm_ptr = av.data(0, 0);
               }
+              // #71: the conserved field + the ring mask (the CPU binding's
+              // nullable idiom, verbatim).
+              int64_t* gen_ptr = nullptr;
+              py::array_t<int64_t> gen_arr;
+              if (!gas_energy.is_none()) {
+                  gen_arr = gas_energy.cast<py::array_t<int64_t>>();
+                  auto ga = gen_arr.mutable_unchecked<2>();
+                  gen_ptr = ga.mutable_data(0, 0);
+              }
+              const bool* amb_ptr = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient.is_none()) {
+                  amb_arr = is_ambient.cast<py::array_t<bool>>();
+                  auto aa = amb_arr.unchecked<2>();
+                  amb_ptr = aa.data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               int64_t e_deposit_drop_sum = 0;   // P-E2b
+              int64_t e_books[breach_cuda::COMB_E_BOOKS] = {};   // #71
               int64_t* t_mint = nullptr; int64_t* t_clip = nullptr; int64_t* t_neg = nullptr;
               if (!eos.is_none() && black_smoke_idx >= 0 && black_smoke_idx < n_gases) {
                   const EOSSolver& es = eos.cast<const EOSSolver&>();
@@ -1324,7 +1351,25 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants,
                   fire_T_ext, fire_T_span, hotf_cap, tep, fpo,
-                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg);
+                  atm_ptr, p_ext_q, p_full_q, t_mint, t_clip, t_neg,
+                  gen_ptr, amb_ptr, t_amb_q, e_books);
+              if (!combustion.is_none()) {
+                  // The CPU step's own `+=` into its mutable members, in the
+                  // order of breach_cuda::combustion_step's e_books.
+                  const CombustionSolver& cs = combustion.cast<const CombustionSolver&>();
+                  cs.heat_floor_hits    += heat_floor_hits;
+                  cs.t_max_phys_hits    += t_max_phys_hits;
+                  cs.e_deposit_drop_sum += e_deposit_drop_sum;
+                  cs.e_comb_draw_sum       += e_books[0];
+                  cs.e_comb_mint_sum       += e_books[1];
+                  cs.e_comb_deliver_sum    += e_books[2];
+                  cs.e_soot_shed_sum       += e_books[3];
+                  cs.e_ts_products_sum     += e_books[4];
+                  cs.e_comb_export_sum     += e_books[5];
+                  cs.e_comb_heat_sum       += e_books[6];
+                  cs.e_comb_rail_sum       += e_books[7];
+                  cs.e_comb_solid_heat_sum += e_books[8];
+              }
               return py::make_tuple(heat_floor_hits, t_max_phys_hits,
                                     e_deposit_drop_sum);
           },
@@ -1360,6 +1405,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("p_ext_q") = 0,
           py::arg("p_full_q") = 0,
           py::arg("eos") = py::none(),   // #88 P2: the soot mint's trace books
+          py::arg("gas_energy") = py::none(),   // #71: arc #54 (None = pre-#54)
+          py::arg("is_ambient") = py::none(),   // #71: the accountable set's ring
+          py::arg("t_amb_q") = 0,               // #71: T_AMB_K raw
+          py::arg("combustion") = py::none(),   // #71: the solver booked into
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "

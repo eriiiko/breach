@@ -1158,8 +1158,10 @@ class PhysicsRunner:
         ignition_temp_q16 = gmap.materials.ignition_temp_q16[gmap.material].astype(
             np.int32)
         if self._combustion_on_cuda():
-            # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
-            # CombustionSolver.step — tests/cuda_combustion_check.py). `fire` is
+            # EOS P6.9b GPU dispatch (bit-identical to the CPU
+            # CombustionSolver.step on a burning scene since #71 --
+            # tests/cuda_combustion_burn_check.py; isolated edge cases:
+            # tests/cuda_combustion_check.py). `fire` is
             # READ again (continuous-O2 law, docs/continuous_o2_law_design_2026-
             # 07-24.md §2.3): the per-claimant intensity factor I_k in the O2
             # demand. o2_frac_ext/full are the SAME law the fire logistic uses.
@@ -1211,6 +1213,16 @@ class PhysicsRunner:
                 p_full_q=self.combustion.p_full_q,
                 # #88 P2: the soot mint books into the EOS's trace books.
                 eos=self.eos,
+                # #71 (residency arc #29 P2): the gas energy seam -- the SAME
+                # field, ring mask and T_AMB the CPU branch below hands over --
+                # and the solver whose e_comb_* / rail counters receive this
+                # call's books, so the closure identity reads one set of
+                # counters whichever backend ran. Gate:
+                # tests/cuda_combustion_burn_check.py.
+                gas_energy=gmap.gas_energy,
+                is_ambient=gmap.is_ambient,
+                t_amb_q=self._eos_t_amb_raw(),
+                combustion=self.combustion,
             )
         else:
             self.combustion.step(
