@@ -14,3 +14,9 @@
 # by cmd.exe, which wants CRLF. Widening this is Erik's call, not a side effect.
 *.csv  text eol=lf
 *.toml text eol=lf
+# The vendored Philox kit (#29 P1a/P3b) carries a SHA-256 of its own body in
+# its header and tests/test_philox32.py re-hashes the checked-out bytes; a CRLF
+# checkout fails that drift check on arrival (seen 2026-11-07, P1b).
+src/simulation/philox32.py  text eol=lf
+cpp/src/philox32.h          text eol=lf
+tests/data/*.txt            text eol=lf
