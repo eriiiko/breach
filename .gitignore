@@ -77,3 +77,7 @@ levels/_editor_scratch/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Prop packs (assets/models/props/<pack>/, each with its license file): large binaries
+# moved between machines by disk, never committed (#175, Erik 2026-11-07)
+assets/models/props/
