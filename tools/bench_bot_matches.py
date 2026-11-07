@@ -286,7 +286,8 @@ def import_build(build_dir: Path):
 def setup_cuda(build_dir: Path, resident: bool) -> None:
     """Import ``breach_physics`` from the CUDA build in ``build_dir`` (before
     anything imports the CPU build) and turn every live backend on -- the
-    same list and checks as ``tools/run_on_cuda.py``."""
+    same list and checks as ``tools/run_on_cuda.py`` (combustion included since
+    #71 / residency arc #29 P2)."""
     from cuda_harness import cuda_dll_dir
     from run_on_cuda import enable_all_backends
     if cuda_dll_dir() is None:

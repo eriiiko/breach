@@ -639,3 +639,64 @@ them as ±15 %.
 - A real trainer in the driver process: the stub only draws random rows; a policy forward pass
   shares the driver's core (at decimation 1 that core is already the limit).
 - The large ship.
+
+## P2: the CUDA second-run slowdown, found (2026-11-07)
+
+**Cause: the NVIDIA driver's power policy, not our process.** On this box (RTX 3070, Windows,
+driver 13030) a CUDA context runs at **P2, 1830 MHz SM / 6801 MHz memory for its first ~7 s of
+load**; then, the GPU being ~30-40 % utilized by the per-call and resident mix, the driver holds it
+at **P3, ~1150-1320 MHz SM / 5001 MHz memory**, with dips to P5 (~1100 / 810 MHz). The step lands at
+the start of the second match of a `--repeat` run, which is why it looked like a second-run effect.
+Every GPU-touching stage slows (kernels at the lower clocks, transfers and syncs with them); the
+CPU-only stages (movement, `stamp_units`, 9b) do not move.
+
+**Ruled out, measured** (`ship_demo`, seed 1, bots, `--sim-seconds 20`, resident, every backend
+incl. combustion):
+
+| check | result |
+|---|---|
+| fresh processes back to back (3 x 1 match) | step 10.91 / 10.90 / 10.85 ms, GPU 41 °C, 1830 MHz each time: not thermal |
+| the previous match's `GameMap` after the next starts (weakref + `gc.get_objects`) | 0 alive: nothing retained |
+| device memory used (`cudaMemGetInfo`) / CuPy pool, after each match | 1083.4 MiB / 2.0 MiB, flat: no device leak |
+| freeing the CuPy pool between matches (`free_all_blocks`) | no effect |
+| a fixed 196 KB H2D / D2H in a tight loop, and the second map's own `gas` mirror | 41-43 / 67-70 µs in every run (the driver re-boosts under a tight loop) |
+| the C++ persistent scratch (`g_eos_res` etc.) | keyed (h, w), allocated once; the same dims every match |
+| one long match in one process (720 ticks) | no ramp before its blasts: tick count alone does not trigger it |
+| **15 s idle between matches, same process** | **the GPU falls to P8, then comes back at P5 -> P3, never P2**: the second and third match stay slow (16.5 / 16.3 ms) |
+| GPU clock sampled every 0.5 s across 3 matches (`nvidia-smi -lms 500`) | P2 1830 / 6801 for ~7 s, then P3 ~1200 / 5001 for the rest of the process |
+
+**The trend over 5 repeats** (`tools/bench_bot_matches.py --level ship_demo --seeds 1 --timing
+--sim-seconds 20 --repeat 5 --cuda --resident --profile`), step mean per match:
+**10.85, 12.68, 13.18, 13.22, 13.95 ms** (+17 % at match 2, +29 % at match 5). The growth is the
+P3 clock dithering (1155-1320 MHz) and its P5 dips, not an accumulation: device memory, the pool
+and the object count stay flat, and the per-stage growth from match 2 on is in the GPU stages only
+(EOS 3.51 -> 5.82 ms, combustion 2.02 -> 2.53, step_tail 2.60 -> 2.73, D2H 0.32 -> 0.45).
+
+**What it means.**
+- A training process lives in the P3 regime: plan this mix at **~13-15 ms per medium tick, not
+  10.9**. Every short fresh-process benchmark in this doc (§1, §2) measured the boosted window and
+  is optimistic by 15-30 % for a long run on this box. A GPU benchmark that claims a steady state
+  warms up for more than 10 s in-process first, or samples `nvidia-smi` beside it.
+- Nothing in our code to fix. The lever is the driver: NVIDIA Control Panel -> Manage 3D settings
+  -> Program settings -> `python.exe` -> Power management mode = **Prefer maximum performance**
+  (Erik's call; not tried here), or `nvidia-smi -lgc` (administrator, not tried). A batched resident
+  engine (P5 on) keeps the GPU busy enough that the light-load heuristic should not engage; the
+  device farm's measurement should still sample the clocks. A data-center GPU on Linux
+  (Berzelius) runs its application clocks under load; its farm run samples them too.
+- Determinism is unaffected (every run above: digest `1af8c952fa72`).
+
+**A cost P2 adds, measured:** with the combustion twin enabled (`tools/run_on_cuda.py`, so
+`--cuda` and `--resident`), slot 7's combustion costs **2.0 ms per medium tick on the per-call GPU
+twin against 0.6 ms on the host** (fresh process, P2 clocks; the twin allocates ~22 device buffers,
+uploads ~15 and downloads ~8 per call). The resident core `combustion_launch_resident` is already
+the launch body; P4a wires it to the persistent fields and removes the difference.
+
+## P2: the resident tick under Nsight (2026-11-07)
+
+Nsight capture pending (Erik runs C:\tmp\breach_nsys_capture.ps1 elevated; then
+`tools/nsys_report.py C:/tmp/breach_resident_medium_stats`). The reader is in place
+(`tools/nsys_report.py`, tested on hand-made tables, `tests/test_nsys_report.py`): per captured
+tick, kernel launches, copies by direction (count, bytes, time), `cudaMalloc` / `cudaFree`,
+explicit device syncs and the top kernels, from the `nsys stats --format csv` tables the script
+writes. Its table replaces the code estimate in §1 "The bus per tick". The capture runs 15 s of
+sim, so it sits mostly in the P3 regime above; read its kernel times with that in mind.

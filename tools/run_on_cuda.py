@@ -84,7 +84,8 @@ def setup_cuda_import() -> None:
 # The live-dispatched GPU backends. The first four are field solvers
 # (PhysicsEngine::step); the fifth — the radiation sweep (step 2b of
 # PhysicsEngine::step_tail, ray-engine-v2 P4) — is read per tick by step_tail
-# (bit-identical, tests/cuda_radiation_sweep_check.py).
+# (bit-identical, tests/cuda_radiation_sweep_check.py); the last is the
+# combustion pass (PhysicsRunner._run_combustion's CUDA branch, #71).
 # EOS P6.0: set_wave_backend / set_atmos_backend RETIRED (cuda_wave.cu /
 # cuda_atmosphere.cu deleted — their CPU solvers were replaced by the EOS solve
 # in P3; docs/eos_p6_gpu_alignment_review.md §1.11). NOTE the remaining kernels
@@ -105,6 +106,12 @@ _BACKEND_SETTERS = (
     "set_sl_advection_backend",      # EOS P6.2
     "set_mg_solve_backend",          # EOS P6.3
     "set_kick_compression_backend",  # EOS P6.4
+    # The combustion pass (cuda_combustion.cu). Left out until #71: the twin
+    # predated arc #54's gas energy seam and parted from CombustionSolver on
+    # every burning scene. Level since residency arc #29 P2 -- gate
+    # tests/cuda_combustion_burn_check.py (burning scenes through the real
+    # tick, only this backend flipped, every array and book at tol 0).
+    "set_combustion_backend",
 )
 
 
