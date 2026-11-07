@@ -179,9 +179,12 @@ DEFAULTS = {
     # Render exposure: light_rgb is a PHYSICAL field (the sweep's irradiance in
     # light units, `intensity` = total emitted power). This master dial maps
     # physical power -> display brightness: physics tunes power, exposure tunes
-    # look. (The demo's historical 10 vs the game's [render.lighting]
-    # master_gain 2.0 predates the sweep; reconcile in a tuning session.)
-    "light_gain": 10.0,
+    # look. THE GAME'S exposure, [render.lighting] master_gain, since
+    # 2026-11-07: the demo's historical 10 (pre-sweep) made Erik judge the
+    # blast studios' lamps ten times too bright (G4 P3). A look shot's
+    # `light_gain = "game"` reads the same value from the renderer.
+    "light_gain": float(getattr(getattr(CFG.render, "lighting", None),
+                                "master_gain", 1.0)),
     "normal_strength": 1.0,
     "use_normal": True,
     "srgb_decode": True,
