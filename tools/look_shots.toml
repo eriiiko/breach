@@ -753,3 +753,24 @@ center = [22.5, 19.5]
 zoom = 40.0
 light_gain = "game"
 note = "G4 P4 close-up, tick +36: the frag's debris lying, beginning to fade"
+
+[[shot]]
+name = "flashbang_t50"
+level = "flashbang_studio"
+frames = 50
+light_gain = "game"
+note = "G4 P5, tick +2 (flash age 1 tick, ~96 % of 800): the clean room's flash on the floor; the east room's soot column absorbs it and casts its shadow"
+
+[[shot]]
+name = "flashbang_t52"
+level = "flashbang_studio"
+frames = 52
+light_gain = "game"
+note = "G4 P5, tick +4 (~88 %): the same flash a little dimmer -- the e-fold is 1.5 s"
+
+[[shot]]
+name = "flashbang_t60"
+level = "flashbang_studio"
+frames = 60
+light_gain = "game"
+note = "G4 P5, tick +12 (~73 %): the flashbang still lights both rooms; the soot column's shadow is the comparison"

@@ -1028,14 +1028,19 @@ _WATER_POOL_CENTER_TILE = (33, 27)     # gen_fire_studio's POOL_X0..X1/Y0..Y1
 
 
 def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
-                    grid_w: int, grid_h: int, state=None, mouse_f=None):
+                    grid_w: int, grid_h: int, state=None, mouse_f=None,
+                    renderer=None, gmap=None):
     """THE STUDIO'S LIGHTS through THE ONE ASSEMBLY (renderer/frame_lights.py;
     ray-engine-v2 P6c port): the level's lamps and beacon -- a group dropped
     when its demo toggle (``state.lamps_on`` / ``state.beacon_on``) is off --
     plus the slider-driven mouse flashlight at ``mouse_f`` (a cursor-kind cone
     of ``flash_intensity`` and ``flash_angle_spread``, centred on +x like the
     old demo's), as the sweep's cone-emitter rows for ``Simulation.set_light``.
-    ``state=None`` is everything on and no flashlight (the --perf pass)."""
+    ``state=None`` is everything on and no flashlight (the --perf pass).
+    With ``renderer`` and ``gmap`` (graphics G4 P5) the live blast flashes ride
+    too -- ``GameRenderer.blast_flash_light_specs`` at ``total_tick`` over the
+    map's open mask, through the one transient cap -- so ``--shots`` sees the
+    flash exactly as the game assembles it."""
     lights = [e for e in lights_in if state is None
               or (state.beacon_on if e.kind == "beacon" else state.lamps_on)]
     extra = []
@@ -1045,6 +1050,11 @@ def demo_light_rows(lights_in, total_tick: int, sim_time_per_tick: float,
                                intensity=float(state.get("flash_intensity")),
                                angle_spread=float(state.get("flash_angle_spread")),
                                kind="cursor", source="render"))
+    if renderer is not None and gmap is not None:
+        from simulation.blast_expansion import open_mask as _open_mask
+        extra += frame_lights.transient_specs(frame_lights.cap_transient_group(
+            [], renderer.blast_flash_light_specs(
+                total_tick, lambda: _open_mask(gmap))))
     specs = frame_lights.frame_light_specs(
         lights, total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
         extra=extra).specs
@@ -2058,6 +2068,9 @@ def main() -> None:
         # graphics G4 P4: the debris
         if "debris" in look_shot.hide:
             renderer.debris.enabled_override = False
+        # ... and since G4 P5 the blast flashes (their light, not the event)
+        if "flash" in look_shot.hide:
+            renderer.blast_flash_on = False
         # graphics G3 F2: a shot may open a flame VFX debug view (F11's cycle)
         if look_shot.fire_debug:
             renderer.fire_vfx.debug_override = look_shot.fire_debug
@@ -2266,7 +2279,8 @@ def main() -> None:
     def _light_rows_now(mouse_f):
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
         return demo_light_rows(lights_in, total, sim_time_per_tick, grid_w,
-                               grid_h, state=state, mouse_f=mouse_f)
+                               grid_h, state=state, mouse_f=mouse_f,
+                               renderer=renderer, gmap=sim.gmap)
 
     # graphics G3 F4b: the fire's room-light rows -- its gain x its flicker
     # (main.py's rule: handed with the cone rows each tick; None = none)

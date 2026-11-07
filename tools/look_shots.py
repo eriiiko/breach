@@ -36,9 +36,9 @@ _NAME_RE = re.compile(r"^[a-z0-9_]+$")
 # toggles: show_temperature / show_smoke / show_water, and since graphics G3
 # F3 the flame, fire_vfx's "off" law; since F4a the embers and the heat
 # shimmer, their own on/off toggles; since G4 P2 the shock front, since P3
-# the sparks, since P4 the debris).
+# the sparks, since P4 the debris, since P5 the blast flashes' light).
 HIDEABLE_LAYERS = frozenset(("heat", "smoke", "water", "flame", "embers",
-                             "shimmer", "shock", "sparks", "debris"))
+                             "shimmer", "shock", "sparks", "debris", "flash"))
 # renderer/fire_vfx.py DEBUG_VIEWS: 1 sources, 2 flame R, 3 flame T_vfx,
 # 4 velocity u, 5 pressure p (kept literal: this module is pyray-free)
 FIRE_DEBUG_MAX = 5

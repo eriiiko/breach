@@ -16,6 +16,15 @@ after the detonation and at the tick before it (the lamps-only baseline):
       write on a sim that is then discarded -- never a game path), relit
       (``Simulation.relight``) and read.
 
+  (c) the flash (G4 P5, ``--flash``): two runs, each feeding the live blast
+      flashes to the sweep as the game does (``frame_lights.blast_flash_lights``
+      from the detonation events, aged on the sim clock, through the one
+      transient cap), one with the rows as shipped and one with ``flash = 0``
+      on copied PayloadDefs; every tick +1..+12, at 3 and 6 tiles from each
+      charge: the MEAN over the open tiles of the four compass points at that
+      distance (one direction alone can sit in a lobe of the noisy soot and
+      read the cloud, not the room), plus the room's mean.
+
 ``scalar`` is ``LightView.scalar`` (the brightest channel, light units); the
 RGB table is ``light_at``'s integer triple dequantized to light units. No units
 are spawned: a body on a probe tile would absorb there.
@@ -23,10 +32,12 @@ are spawned: a body on a probe tile would absorb there.
 Run:
     C:/Users/steen/anaconda3/envs/data/python.exe tools/blast_light_probe.py
     C:/Users/steen/anaconda3/envs/data/python.exe tools/blast_light_probe.py --out docs/explosion_look_design_2026-11-07/light_measurement.md
+    C:/Users/steen/anaconda3/envs/data/python.exe tools/blast_light_probe.py --flash --out docs/explosion_look_design_2026-11-07/flash_measurement.md
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from pathlib import Path
 
@@ -43,6 +54,7 @@ from level_lights import monotonic_total_tick, partition_lights  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from renderer import frame_lights  # noqa: E402
 from simulation import Simulation, light_field, optics_fixed  # noqa: E402
+from simulation.blast_expansion import open_mask  # noqa: E402
 from simulation.events import ExplosionEvent  # noqa: E402
 from simulation.gases import SMOKE  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
@@ -56,9 +68,11 @@ AFTER = (1, 2, 4, 8, 12)          # ticks after the detonation
 
 
 class Run:
-    """One deterministic run of the level with the lamps requested every tick."""
+    """One deterministic run of the level with the lamps requested every tick
+    (and, with ``flash``, the blast flashes the game would add: ``flash=False``
+    feeds them too but with ``flash = 0`` on copied PayloadDefs)."""
 
-    def __init__(self):
+    def __init__(self, flash=None):
         self.level = load_level(LEVEL)
         self.sim = Simulation(self.level, seed=42, breach_physics=bp,
                               enable_recorder=False, ruleset=ContinuousRealtime())
@@ -70,12 +84,32 @@ class Run:
         self.spt = 1.0 / float(CFG.clock.ticks_per_second)
         self.tpr = int(CFG.clock.ticks_per_round)
         self.detonated_at = None
+        self.flash = flash
+        self.effects = []
+        if flash is False:
+            tbl = self.sim.weapons_tables.payloads
+            by = {}
+            for k, pd in tbl.by_name.items():
+                c = copy.copy(pd)
+                c.flash = 0.0
+                by[k] = c
+            tbl.by_name = by
+            for c in self.sim._timed_charges:   # resolved at load: re-point
+                c.payload = by[c.payload.name]
 
     def rows(self):
         s = self.sim
         total = monotonic_total_tick(s.turn_number, self.tpr, s.tick)
+        extra = []
+        if self.flash is not None:
+            blast = frame_lights.blast_flash_lights(
+                self.effects, lambda fx: (total - fx["tick0"]) * self.spt,
+                lambda: open_mask(s.gmap))
+            extra = frame_lights.transient_specs(
+                frame_lights.cap_transient_group([], blast))
         specs = frame_lights.frame_light_specs(
-            self.lights_in, total_tick=total, sim_time_per_tick=self.spt).specs
+            self.lights_in, total_tick=total, sim_time_per_tick=self.spt,
+            extra=extra).specs
         return frame_lights.cone_rows(specs, self.level.width, self.level.height,
                                       int(bp.L_FINE_BITS))
 
@@ -85,6 +119,14 @@ class Run:
         if s.is_paused():
             s.set_paused(False)
         s.step()
+        total = monotonic_total_tick(s.turn_number, self.tpr, s.tick)
+        for e in s.tick_events:      # the renderer's "blast" effect, as consumed
+            if isinstance(e, ExplosionEvent):
+                self.effects.append({
+                    "kind": "blast", "pos": e.pos, "flash": e.flash,
+                    "flash_decay_s": e.flash_decay_s,
+                    "flash_color": tuple(e.flash_color),
+                    "approach": e.approach, "tick0": total})
         if self.detonated_at is None and any(
                 isinstance(e, ExplosionEvent) for e in s.tick_events):
             self.detonated_at = s.tick
@@ -111,10 +153,84 @@ def _fmt(v):
     return f"{v:.3f}"
 
 
+FLASH_DIST = (3, 6)               # (c): tiles from the charge, 4 compass points
+FLASH_AFTER = tuple(range(1, 13))
+ROOM_HALF = (15, 12)              # half the room (x, y) about its charge
+
+
+def read_flash(gmap):
+    """{(name, r): mean scalar over the open compass tiles at distance r} and
+    {(name, "room"): the room's mean scalar}, light units."""
+    sc = light_field.read_light(gmap).scalar
+    mask = open_mask(gmap)
+    out = {}
+    for name, x, y in CHARGES:
+        for r in FLASH_DIST:
+            pts = [(y + dy, x + dx) for dx, dy in ((r, 0), (-r, 0), (0, r), (0, -r))
+                   if mask[y + dy, x + dx]]
+            out[(name, r)] = float(np.mean([sc[p] for p in pts]))
+        hx, hy = ROOM_HALF
+        room = sc[y - hy:y + hy, x - hx:x + hx]
+        out[(name, "room")] = float(room[mask[y - hy:y + hy, x - hx:x + hx]].mean())
+    return out
+
+
+def flash_main(out) -> None:
+    """(c): the rows' starting flash vs flash = 0, ticks +1..+12."""
+    runs = {"ship": Run(flash=True), "dark": Run(flash=False)}
+    for r in runs.values():
+        while r.detonated_at is None:
+            r.step()
+    t0 = runs["ship"].detonated_at
+    assert runs["dark"].detonated_at == t0
+    vals = {}
+    for k in FLASH_AFTER:
+        for key, r in runs.items():
+            r.step_to(t0 + k)
+            vals[(key, k)] = read_flash(r.sim.gmap)
+    tbl = runs["ship"].sim.weapons_tables.payloads.by_name
+    lines = [f"# The blast flash at the units' tiles, {LEVEL} (G4 #75 P5, §3.6 (c))",
+             "", f"Generated by `tools/blast_light_probe.py --flash`; the volley "
+             f"detonates on tick {t0}. Light units (`LightView.scalar`, the "
+             "brightest channel): r3 / r6 = the mean over the open tiles of the "
+             "four compass points 3 / 6 tiles from the charge; room = the room's "
+             "mean over its open tiles. 'flash' = "
+             "the rows as shipped, the blast flashes fed to the sweep as the game "
+             "does; 'none' = the same run with flash = 0 on copied PayloadDefs. "
+             "x = flash / none.", ""]
+    for name, x, y in CHARGES:
+        pd = tbl[name]
+        lines += [f"## {name} at ({x}, {y}): flash {pd.flash:g}, decay "
+                  f"{pd.flash_decay_s:g} s", ""]
+        cols = FLASH_DIST + ("room",)
+        lines.append("| tick | " + " | ".join(
+            f"{'r%d' % c if c != 'room' else c} flash | none | x" for c in cols)
+            + " |")
+        lines.append("|" + "---|" * (1 + 3 * len(cols)))
+        for k in FLASH_AFTER:
+            cells = []
+            for c in cols:
+                a = vals[("ship", k)][(name, c)]
+                b = vals[("dark", k)][(name, c)]
+                cells += [_fmt(a), _fmt(b), f"{a / b:.2f}" if b > 0 else "-"]
+            lines.append(f"| +{k} | " + " | ".join(cells) + " |")
+        lines.append("")
+    text = "\n".join(lines) + "\n"
+    print(text)
+    if out:
+        Path(out).write_text(text, encoding="utf-8")
+        print(f"wrote {out}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", default=None, help="also write the tables here (.md)")
+    ap.add_argument("--flash", action="store_true",
+                    help="measure (c): the rows' flash vs flash = 0 (G4 P5)")
     a = ap.parse_args()
+    if a.flash:
+        flash_main(a.out)
+        return
 
     # (a): one run, lamps requested every tick, read after each tick.
     run_a = Run()
