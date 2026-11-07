@@ -766,13 +766,15 @@ class UnitModelRenderer:
             travel = self._relative_travel(u, st)
             moving = self._infer_motion(u, st, clock)
             state = self.select_clip(u, moving)
+            role = role_of(u)
             if st.pose is None or st.pose.look != look.name:
-                st.pose = self._pose.new_state(look.name, state)
-            role = self._pose.settings.roles[role_of(u)]
-            self._pose.set_posture(st.pose, unit_key(u), role.posture)   # #164
-            self._react(st.pose, unit_key(u), role_of(u))
+                st.pose = self._pose.new_state(look.name, state, role)
+            # #164 posture; #179: the look's skeleton may carry its own amount
+            self._pose.set_posture(st.pose, unit_key(u),
+                                   self._pose.role_posture(look.name, role))
+            self._react(st.pose, unit_key(u), role)
             self._pose.steer(st.pose, travel, moving, dt)
-            self._pose.drive(st.pose, state, dt)
+            self._pose.drive(st.pose, state, dt, role)   # #179: role state rows
             groups.setdefault(look.name, []).append((i, st.pose))
         rows = [None] * len(alive)
         for look_name, members in groups.items():

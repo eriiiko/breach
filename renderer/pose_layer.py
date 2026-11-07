@@ -42,7 +42,7 @@ import numpy as np
 
 from .pose_clips import (ROOT_MOTION_MODES, ClipBank, ClipRow, Skeleton,
                          build_clip_bank, mat3_to_quat, quat_conj, quat_mul,
-                         quat_nlerp, trs_matrices)
+                         quat_nlerp, read_glb, read_skeleton, trs_matrices)
 
 GLOBAL_TRS_WIDTH = 10          # translation 3, rotation 4 (xyzw), scale 3
 NO_CLIP = -1
@@ -138,6 +138,41 @@ class RoleSettings:
 
 REACTIONS = ("fire", "hit", "melee")
 
+# A ``clip_names`` value meaning "this skeleton has no such clip" (#179): a
+# state falls back as for any missing clip; an overlay leaves that layer
+# alone; the shot / flinch / strike that needs it does nothing on the look.
+ABSENT_CLIP = ""
+
+
+@dataclass(frozen=True)
+class SkeletonRole:
+    """``[render.pose.skeletons.<s>.roles.<role>]`` (#179): a role's carriage
+    on looks of ONE skeleton -- its posture amount there (replacing the
+    role's global ``posture``) and state rows that replace the global ones
+    for units of the role (e.g. a zombie walking the skeleton's own hunch
+    clip instead of the human walk + posture)."""
+    posture: float
+    states: Dict[str, Dict[str, str]]
+
+
+@dataclass(frozen=True)
+class SkeletonPlayback:
+    """How ONE skeleton's looks play the shared tables (#179):
+
+    * ``clip_names``: the canonical clip names the global tables use (the
+      Quaternius pack's) -> this skeleton's own clip names; a name that is
+      no key is looked up as it is. :data:`ABSENT_CLIP` = no such clip.
+    * ``rate``: clip seconds per wall second for this skeleton, replacing
+      the global ``rate`` (None = the global one).
+    * ``clips``: per-clip rows keyed by THIS skeleton's clip names,
+      replacing the global ``[render.pose.clips]`` (None = the global rows).
+    * ``roles``: per-role overrides on this skeleton (:class:`SkeletonRole`).
+    """
+    clip_names: Dict[str, str] = field(default_factory=dict)
+    rate: Optional[float] = None
+    clips: Optional[Dict[str, ClipRow]] = None
+    roles: Dict[str, SkeletonRole] = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class PoseSettings:
@@ -161,6 +196,9 @@ class PoseSettings:
     postures: Dict[str, Any] = field(default_factory=dict)
     melee: Optional[MeleeSettings] = None
     roles: Dict[str, RoleSettings] = field(default_factory=dict)
+    # #179: per-skeleton clip names, rate, clip rows and role overrides
+    # (a skeleton table without them plays the global ones)
+    playback: Dict[str, SkeletonPlayback] = field(default_factory=dict)
 
 
 def _as_dict(obj) -> Dict[str, Any]:
@@ -198,6 +236,95 @@ _HIT_KEYS = ("clip", "masks", "causes", "ramp_in_s", "ramp_out_s", "weight_min",
              "weight_max", "damage_full")
 _AIM_TRAVEL_KEYS = ("theta_deg", "hysteresis_deg", "smooth_s", "twist_rate_deg_s")
 _TWIST_KEYS = ("lower", "counter", "shares")
+_SKELETON_KEYS = ("masks", "twist", "posture")
+# #179: optional per-skeleton playback keys; absent = the global table
+_SKELETON_PLAYBACK_KEYS = ("clip_names", "rate", "clips", "roles")
+_SKELETON_ROLE_KEYS = ("posture", "states")
+
+
+def _parse_clip_rows(raw, where: str) -> Dict[str, ClipRow]:
+    """A table of per-clip playback rows (``[render.pose.clips]``, or a
+    skeleton's own ``clips``). A row's keys are optional (``ClipRow``'s
+    defaults); an unknown or mistyped one is refused, naming it."""
+    if not isinstance(raw, dict):
+        raise PoseConfigError(f"{where} must be a table of clip rows")
+    clips: Dict[str, ClipRow] = {}
+    for c_name, row in raw.items():
+        w = f"{where} {c_name}"
+        if not isinstance(row, dict):
+            raise PoseConfigError(f"{w} must be a table")
+        bad = sorted(set(row) - set(_CLIP_KEYS))
+        if bad:
+            raise PoseConfigError(f"{w} has unknown keys {bad}")
+        loop = row.get("loop", True)
+        rate = row.get("rate", 1.0)
+        rm = row.get("root_motion", ClipRow().root_motion)
+        ref = row.get("additive_ref", 0)
+        if not isinstance(loop, bool):
+            raise PoseConfigError(f"{w} loop must be a bool, got {loop!r}")
+        if not _num(rate) or not rate > 0:
+            raise PoseConfigError(f"{w} rate must be a number > 0, got {rate!r}")
+        if rm not in ROOT_MOTION_MODES:
+            raise PoseConfigError(f"{w} root_motion must be one of "
+                                  f"{ROOT_MOTION_MODES}, got {rm!r}")
+        if not isinstance(ref, int) or isinstance(ref, bool) or ref < 0:
+            raise PoseConfigError(f"{w} additive_ref must be an int >= 0, got {ref!r}")
+        clips[c_name] = ClipRow(loop=loop, rate=float(rate), root_motion=rm,
+                                additive_ref=ref)
+    return clips
+
+
+def _state_row(row, layers: Sequence[str], where: str) -> Dict[str, str]:
+    if not isinstance(row, dict) or set(row) != set(layers) or \
+            not all(isinstance(v, str) and v for v in row.values()):
+        raise PoseConfigError(f"{where} must name one clip for each layer "
+                              f"{list(layers)}, got {row!r}")
+    return dict(row)
+
+
+def _parse_playback(sk_name: str, sk: Dict[str, Any], layers: Sequence[str],
+                    canonical: Sequence[str], roles: Mapping[str, Any],
+                    states: Mapping[str, Any]) -> SkeletonPlayback:
+    """A skeleton table's optional playback keys (#179). ``canonical`` =
+    every clip name the global tables use: a ``clip_names`` key outside it
+    is refused (a typo would map nothing)."""
+    where = f"[render.pose.skeletons.{sk_name}]"
+    names_raw = sk.get("clip_names", {})
+    if not isinstance(names_raw, dict) or not all(
+            isinstance(v, str) for v in names_raw.values()):
+        raise PoseConfigError(f"{where} clip_names must be a table of canonical "
+                              f"name = this skeleton's clip name, got {names_raw!r}")
+    bad = sorted(set(names_raw) - set(canonical))
+    if bad:
+        raise PoseConfigError(f"{where} clip_names {bad} are not clip names any "
+                              f"[render.pose] table uses ({sorted(set(canonical))})")
+    rate = sk.get("rate")
+    if rate is not None:
+        rate = _number(rate, f"{where} rate", 0.0, lo_open=True)
+    clips = (_parse_clip_rows(sk["clips"], f"{where} clips")
+             if "clips" in sk else None)
+    roles_raw = sk.get("roles", {})
+    if not isinstance(roles_raw, dict):
+        raise PoseConfigError(f"{where} roles must be a table of role rows")
+    sroles: Dict[str, SkeletonRole] = {}
+    for role, row in roles_raw.items():
+        rw = f"{where} roles.{role}"
+        if role not in roles:
+            raise PoseConfigError(f"{rw}: {role!r} is not a [render.pose.roles] role "
+                                  f"{sorted(roles)}")
+        r = _exact_table(row, _SKELETON_ROLE_KEYS, rw)
+        st = r["states"]
+        if not isinstance(st, dict):
+            raise PoseConfigError(f"{rw} states must be a table of state rows")
+        for st_name in st:
+            if st_name not in states:
+                raise PoseConfigError(f"{rw} states.{st_name}: not a "
+                                      f"[render.pose.states] state {sorted(states)}")
+        sroles[role] = SkeletonRole(
+            posture=_number(r["posture"], f"{rw} posture", 0.0, hi=1.0),
+            states={n: _state_row(v, layers, f"{rw} states.{n}") for n, v in st.items()})
+    return SkeletonPlayback(clip_names=dict(names_raw), rate=rate, clips=clips,
+                            roles=sroles)
 
 
 def _exact_table(d, keys: Sequence[str], where: str) -> Dict[str, Any]:
@@ -288,9 +415,12 @@ def pose_settings(cfg) -> PoseSettings:
     postures: Dict[str, Any] = {}
     for sk_name, sk in skel_tables.items():
         where = f"[render.pose.skeletons.{sk_name}]"
-        if not isinstance(sk, dict) or set(sk) != {"masks", "twist", "posture"}:
-            raise PoseConfigError(f"{where} must hold exactly a 'masks', a "
-                                  "'twist' and a 'posture' table")
+        if not isinstance(sk, dict) or not set(_SKELETON_KEYS) <= set(sk) \
+                or set(sk) - set(_SKELETON_KEYS) - set(_SKELETON_PLAYBACK_KEYS):
+            raise PoseConfigError(f"{where} must hold a 'masks', a 'twist' and a "
+                                  "'posture' table, and optionally "
+                                  f"{list(_SKELETON_PLAYBACK_KEYS)}; got "
+                                  f"{sorted(sk) if isinstance(sk, dict) else sk!r}")
         twists[sk_name] = _parse_twist(sk["twist"], f"{where} twist")
         try:
             postures[sk_name] = parse_rule(sk["posture"], f"{where} posture")
@@ -315,42 +445,12 @@ def pose_settings(cfg) -> PoseSettings:
         raise PoseConfigError("[render.pose.states] must hold at least one state")
     states: Dict[str, Dict[str, str]] = {}
     for st_name, row in states_raw.items():
-        where = f"[render.pose.states] {st_name}"
-        if not isinstance(row, dict) or set(row) != set(layers) or \
-                not all(isinstance(v, str) and v for v in row.values()):
-            raise PoseConfigError(f"{where} must name one clip for each layer "
-                                  f"{list(layers)}, got {row!r}")
-        states[st_name] = dict(row)
+        states[st_name] = _state_row(row, layers, f"[render.pose.states] {st_name}")
     fallback = d["fallback_state"]
     if fallback not in states:
         raise PoseConfigError(f"[render.pose] fallback_state {fallback!r} is not a state")
 
-    clips_raw = d["clips"]
-    if not isinstance(clips_raw, dict):
-        raise PoseConfigError("[render.pose.clips] must be a table of clip rows")
-    clips: Dict[str, ClipRow] = {}
-    for c_name, row in clips_raw.items():
-        where = f"[render.pose.clips] {c_name}"
-        if not isinstance(row, dict):
-            raise PoseConfigError(f"{where} must be a table")
-        bad = sorted(set(row) - set(_CLIP_KEYS))
-        if bad:
-            raise PoseConfigError(f"{where} has unknown keys {bad}")
-        loop = row.get("loop", True)
-        rate = row.get("rate", 1.0)
-        rm = row.get("root_motion", ClipRow().root_motion)
-        ref = row.get("additive_ref", 0)
-        if not isinstance(loop, bool):
-            raise PoseConfigError(f"{where} loop must be a bool, got {loop!r}")
-        if not _num(rate) or not rate > 0:
-            raise PoseConfigError(f"{where} rate must be a number > 0, got {rate!r}")
-        if rm not in ROOT_MOTION_MODES:
-            raise PoseConfigError(f"{where} root_motion must be one of "
-                                  f"{ROOT_MOTION_MODES}, got {rm!r}")
-        if not isinstance(ref, int) or isinstance(ref, bool) or ref < 0:
-            raise PoseConfigError(f"{where} additive_ref must be an int >= 0, got {ref!r}")
-        clips[c_name] = ClipRow(loop=loop, rate=float(rate), root_motion=rm,
-                                additive_ref=ref)
+    clips = _parse_clip_rows(d["clips"], "[render.pose.clips]")
 
     # overlays: partial state rows (a subset of the layers), #163
     ov_raw = d["overlays"]
@@ -460,13 +560,20 @@ def pose_settings(cfg) -> PoseSettings:
             reactions=tuple(rx),
             posture=_number(r["posture"], f"{rw} {role} posture", 0.0, hi=1.0))
 
+    # #179: per-skeleton playback (clip names, rate, rows, role overrides)
+    canonical = sorted({c for row in states.values() for c in row.values()}
+                       | {c for row in overlays.values() for c in row.values()}
+                       | {fire.shot_clip, hit.clip} | set(melee.clips))
+    playback = {sk_name: _parse_playback(sk_name, sk, layers, canonical, roles, states)
+                for sk_name, sk in skel_tables.items()}
+
     return PoseSettings(enabled=d["enabled"], rate=float(d["rate"]),
                         crossfade_s=float(d["crossfade_s"]), layers=layers,
                         fallback_state=fallback, event_queue=d["event_queue"],
                         skeletons=tuple(skeletons), states=states, clips=clips,
                         overlays=overlays, fire=fire, hit=hit, aim_travel=aim_travel,
                         twists=twists, posture=posture, postures=postures,
-                        melee=melee, roles=roles)
+                        melee=melee, roles=roles, playback=playback)
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +623,14 @@ class MaskTable:
             raise PoseConfigError(f"{where}: bones in no mask: {none}")
         return cls(names=names, weights=weights,
                    owner=np.argmax(weights, axis=0).astype(np.int64))
+
+
+def _glb_skeleton(path) -> Skeleton:
+    """A look file's skeleton alone (load time: picks its skeleton table,
+    whose clip rows the bake then takes, #179)."""
+    from pathlib import Path
+    doc, binary = read_glb(path)
+    return read_skeleton(doc, binary, Path(path).name)
 
 
 def masks_for(skeleton: Skeleton, settings: PoseSettings) -> Tuple[str, MaskTable]:
@@ -635,6 +750,17 @@ class LookRig:
     posture: Optional[Any] = None                 # pose_posture.ResolvedPosture (#164)
     melee_clips: Optional[np.ndarray] = None      # (#164) clip ids, played in turn
     melee_layers: Optional[np.ndarray] = None     # layer indices
+    # #179: the skeleton's playback -- its rate (clip s per wall s), its
+    # canonical -> own clip names, and per-role state rows / posture amounts
+    rate: float = 1.0
+    clip_names: Dict[str, str] = field(default_factory=dict)
+    role_state_clips: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
+    role_posture: Dict[str, float] = field(default_factory=dict)
+
+    def clip_name(self, canonical: str) -> str:
+        """This look's own name for a clip the tables name (#179); a name
+        that is no ``clip_names`` key is its own."""
+        return self.clip_names.get(canonical, canonical)
 
 
 # ---------------------------------------------------------------------------
@@ -666,8 +792,23 @@ class PoseLayer:
         layer (recorded in ``warnings``); a fallback clip it lacks raises."""
         s = self.settings
         if bank is None:
-            bank = build_clip_bank(glb_path, s.clips)
-        sk_name, masks = masks_for(bank.skeleton, s)
+            # #179: the skeleton table first (its own clip rows shape the bake)
+            sk_name, masks = masks_for(_glb_skeleton(glb_path), s)
+            pb = s.playback.get(sk_name, SkeletonPlayback())
+            bank = build_clip_bank(glb_path, s.clips if pb.clips is None else pb.clips)
+        else:
+            sk_name, masks = masks_for(bank.skeleton, s)
+            pb = s.playback.get(sk_name, SkeletonPlayback())
+        names = pb.clip_names
+        for canonical, own in names.items():
+            if own != ABSENT_CLIP and not bank.has(own):
+                raise PoseConfigError(
+                    f"{name}: [render.pose.skeletons.{sk_name}] clip_names maps "
+                    f"{canonical!r} to {own!r}, which is not a clip of the look")
+
+        def own(clip: str) -> str:
+            return names.get(clip, clip)
+
         layer_masks = np.array([masks.index(l) for l in s.layers], dtype=np.int64)
         layer_of_mask = np.full(len(masks.names), -1, dtype=np.int64)
         layer_of_mask[layer_masks] = np.arange(len(s.layers))
@@ -677,8 +818,10 @@ class PoseLayer:
             raise PoseConfigError(f"{name}: masks {orphans} own bones but are no "
                                   f"layer of [render.pose] layers {list(s.layers)}")
         rig = LookRig(name=name, bank=bank, masks=masks, skeleton_table=sk_name,
-                      layer_masks=layer_masks, owner_layer=owner_layer)
-        fb = s.states[s.fallback_state]
+                      layer_masks=layer_masks, owner_layer=owner_layer,
+                      rate=s.rate if pb.rate is None else pb.rate,
+                      clip_names=dict(names))
+        fb = {layer: own(clip) for layer, clip in s.states[s.fallback_state].items()}
         for layer in s.layers:
             if not bank.has(fb[layer]):
                 raise PoseConfigError(f"{name}: fallback state {s.fallback_state!r} "
@@ -686,33 +829,53 @@ class PoseLayer:
         for st_name, row in s.states.items():
             ids = []
             for layer in s.layers:
-                clip = row[layer]
+                clip = own(row[layer])
                 if not bank.has(clip):
                     self.warnings.append(f"{name}: state {st_name!r} layer {layer!r} "
-                                         f"clip {clip!r} missing; plays {fb[layer]!r}")
+                                         f"clip {clip or row[layer]!r} missing; "
+                                         f"plays {fb[layer]!r}")
                     clip = fb[layer]
                 ids.append(bank.index(clip))
             rig.state_clips[st_name] = np.array(ids, dtype=np.int64)
+        # #179: the skeleton's own rows for a role (clips required: the
+        # skeleton table names them for its own looks)
+        for role, sr in pb.roles.items():
+            rig.role_posture[role] = sr.posture
+            rows = {}
+            for st_name, row in sr.states.items():
+                what = f"[render.pose.skeletons.{sk_name}] roles.{role} states.{st_name}"
+                for layer in s.layers:
+                    if own(row[layer]) == ABSENT_CLIP or not bank.has(own(row[layer])):
+                        raise PoseConfigError(f"{name}: {what} clip {row[layer]!r} "
+                                              "is not in the look")
+                rows[st_name] = np.array([bank.index(own(row[layer])) for layer in s.layers],
+                                         dtype=np.int64)
+            rig.role_state_clips[role] = rows
         # #163 reactions: their clips are not optional (a look that lacks
-        # one cannot play what the config asks of it), so a missing one raises
+        # one cannot play what the config asks of it), so a missing one
+        # raises -- unless the skeleton's clip_names says it has none
+        # (ABSENT_CLIP, #179): then that reaction does nothing on the look
         for ov_name, row in s.overlays.items():
             ids = np.full(len(s.layers), NO_CLIP, dtype=np.int64)
             for layer, clip in row.items():
                 ids[s.layers.index(layer)] = self._clip_or_raise(
-                    bank, clip, name, f"overlay {ov_name!r}")
+                    bank, own(clip), name, f"overlay {ov_name!r}")
             rig.overlay_clips[ov_name] = ids
         if s.fire is not None:
-            rig.shot_clip = self._clip_or_raise(bank, s.fire.shot_clip, name,
+            rig.shot_clip = self._clip_or_raise(bank, own(s.fire.shot_clip), name,
                                                 "[render.pose.fire] shot_clip")
         if s.hit is not None:
-            rig.hit_clip = self._clip_or_raise(bank, s.hit.clip, name,
+            rig.hit_clip = self._clip_or_raise(bank, own(s.hit.clip), name,
                                                "[render.pose.hit] clip")
             rig.hit_bones = masks.weights[[masks.index(m) for m in s.hit.masks]].sum(0)
         if s.melee is not None:
-            rig.melee_clips = np.array([self._clip_or_raise(bank, c, name, "[render.pose.melee] clips")
-                                        for c in s.melee.clips], dtype=np.int64)
-            rig.melee_layers = np.array([s.layers.index(l) for l in s.melee.layers],
-                                        dtype=np.int64)
+            ids = [self._clip_or_raise(bank, own(c), name, "[render.pose.melee] clips")
+                   for c in s.melee.clips]
+            ids = [c for c in ids if c != NO_CLIP]
+            if ids:
+                rig.melee_clips = np.array(ids, dtype=np.int64)
+                rig.melee_layers = np.array([s.layers.index(l) for l in s.melee.layers],
+                                            dtype=np.int64)
         rule = s.postures.get(sk_name)
         if rule is not None:
             from .pose_posture import PostureConfigError, resolve
@@ -728,6 +891,8 @@ class PoseLayer:
 
     @staticmethod
     def _clip_or_raise(bank: ClipBank, clip: str, look: str, what: str) -> int:
+        if clip == ABSENT_CLIP:                  # #179: the skeleton has none
+            return NO_CLIP
         if not bank.has(clip):
             raise PoseConfigError(f"{look}: {what} clip {clip!r} is not in the look")
         return bank.index(clip)
@@ -740,18 +905,32 @@ class PoseLayer:
         return tuple(self._rigs)
 
     # --- state driving ------------------------------------------------
-    def _state_ids(self, rig: LookRig, state: str) -> np.ndarray:
+    def _state_ids(self, rig: LookRig, state: str,
+                   role: Optional[str] = None) -> np.ndarray:
+        if role is not None:                      # #179: the skeleton's role rows
+            ids = rig.role_state_clips.get(role, {}).get(state)
+            if ids is not None:
+                return ids
         ids = rig.state_clips.get(state)
         if ids is None:
             ids = rig.state_clips[self.settings.fallback_state]
         return ids
 
-    def new_state(self, look: str, state: str) -> PoseState:
+    def new_state(self, look: str, state: str, role: Optional[str] = None) -> PoseState:
         """A unit's first state: its clips start at time 0, no crossfade."""
         rig = self._rigs[look]
-        ps = PoseState(look, self._state_ids(rig, state))
+        ps = PoseState(look, self._state_ids(rig, state, role))
         ps.state = state
         return ps
+
+    def role_posture(self, look: str, role: str) -> float:
+        """The posture amount of a unit of ``role`` drawn with ``look``: the
+        look's skeleton's own row when it has one (#179), else the role's
+        ``[render.pose.roles]`` posture."""
+        rig = self._rigs[look]
+        if role in rig.role_posture:
+            return rig.role_posture[role]
+        return self.settings.roles[role].posture
 
     def set_layer_clip(self, ps: PoseState, layer: int, clip: int) -> None:
         """Play ``clip`` on override layer ``layer``: a change starts a
@@ -788,7 +967,7 @@ class PoseLayer:
             ps.add_clip = NO_CLIP
             return
         rig = self._rigs[ps.look]
-        ps.add_clip = rig.bank.index(clip)
+        ps.add_clip = rig.bank.index(rig.clip_name(clip))
         ps.add_time = float(time)
         ps.add_weight = float(weight)
         if mask is None:
@@ -887,14 +1066,16 @@ class PoseLayer:
         steer(ps, self.settings.aim_travel, self._rigs[ps.look].twist_layer,
               travel, moving, dt)
 
-    def drive(self, ps: PoseState, state: str, dt: float) -> None:
-        """Per frame: pick each layer's clip -- ``state``'s row of the table,
+    def drive(self, ps: PoseState, state: str, dt: float,
+              role: Optional[str] = None) -> None:
+        """Per frame: pick each layer's clip -- ``state``'s row of the table
+        (the look's skeleton's own row for ``role`` when it has one, #179),
         under the fire overlay while the aim hold lasts, under the shot
         one-shot while it plays -- (crossfading every change), advance the
         clocks by ``dt`` wall seconds, then the aim hold and the flinch."""
         rig = self._rigs[ps.look]
         s = self.settings
-        want = self._state_ids(rig, state).copy()
+        want = self._state_ids(rig, state, role).copy()
         f = s.fire
         if f is not None:
             if ps.aim_left > 0.0:
@@ -902,7 +1083,8 @@ class PoseLayer:
                 want = np.where(ov >= 0, ov, want)
             sl = s.layers.index(f.shot_layer)
             if ps.shot_pending:
-                self.restart_layer_clip(ps, sl, rig.shot_clip)
+                if rig.shot_clip != NO_CLIP:
+                    self.restart_layer_clip(ps, sl, rig.shot_clip)
                 ps.shot_pending = False
             if ps.clip[sl] == rig.shot_clip and ps.aim_left > 0.0 and \
                     ps.time[sl] < rig.bank.duration[rig.shot_clip]:
@@ -945,9 +1127,12 @@ class PoseLayer:
         h = self.settings.hit
         if h is None or ps.flinch_t < 0.0:
             return
-        ps.flinch_t += max(dt, 0.0)
         c = rig.hit_clip
-        speed = self.settings.rate * rig.bank.rate[c]
+        if c == NO_CLIP:                       # #179: the look has no flinch clip
+            ps.flinch_t = -1.0
+            return
+        ps.flinch_t += max(dt, 0.0)
+        speed = rig.rate * rig.bank.rate[c]
         wall_dur = rig.bank.duration[c] / speed
         tau = ps.flinch_t
         if tau >= wall_dur:
@@ -969,8 +1154,9 @@ class PoseLayer:
         a settled fade drops its source."""
         if dt <= 0.0:
             return
-        bank = self._rigs[ps.look].bank
-        step = dt * self.settings.rate * ps.layer_rate
+        rig = self._rigs[ps.look]
+        bank = rig.bank
+        step = dt * rig.rate * ps.layer_rate
         if ps.tempo != 1.0:                       # #164: tempo jitter, looping clips only
             ps.time = _wrap(bank, ps.clip, ps.time + step * bank.rate[ps.clip]
                             * np.where(bank.loop[ps.clip], ps.tempo, 1.0))
@@ -988,7 +1174,7 @@ class PoseLayer:
             ps.prev_clip = np.where(done, NO_CLIP, ps.prev_clip)
         if ps.add_clip >= 0:
             ac = np.array([ps.add_clip])
-            a_step = dt * self.settings.rate * bank.rate[ac[0]]
+            a_step = dt * rig.rate * bank.rate[ac[0]]
             ps.add_time = float(_wrap(bank, ac, np.array([ps.add_time + a_step]))[0])
 
     # --- compose ---------------------------------------------------------
@@ -1187,7 +1373,8 @@ def global_trs(g: np.ndarray) -> np.ndarray:
 __all__ = [
     "PoseConfigError", "PoseSettings", "MaskRule", "MaskTable", "PoseState",
     "TwistRule", "FireSettings", "HitSettings", "AimTravelSettings",
-    "MeleeSettings", "RoleSettings", "REACTIONS",
+    "MeleeSettings", "RoleSettings", "REACTIONS", "SkeletonPlayback",
+    "SkeletonRole", "ABSENT_CLIP",
     "PoseBatch", "PoseModifier", "LookRig", "PoseLayer", "pose_settings",
     "masks_for", "sample_bank", "forward_kinematics", "global_trs",
     "GLOBAL_TRS_WIDTH", "NO_CLIP",
