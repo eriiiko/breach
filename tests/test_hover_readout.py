@@ -77,6 +77,7 @@ def _stub_gmap():
     return SimpleNamespace(
         material=np.zeros((H, W), dtype=np.int32),
         is_vacuum=np.zeros((H, W), dtype=bool),
+        solid=np.zeros((H, W), dtype=bool),
         temperature=np.zeros((H, W), dtype=np.int32),
         fire=np.zeros((H, W), dtype=np.int32),
         gas=np.zeros((N_GASES, H, W), dtype=np.int32),
@@ -397,6 +398,12 @@ def test_vacuum_tile_labelled_vacuum():
     g.is_vacuum[0, 0] = True
     r = pack_hover_readout(g, 0, 0, KELVIN_FN)
     assert r is not None and r.material == "vacuum"
+    # #150: a SEALED hull tile keeps the flag while solid and reads as its
+    # material, never as vacuum.
+    g.solid[0, 0] = True
+    g.material[0, 0] = 1
+    r = pack_hover_readout(g, 0, 0, KELVIN_FN)
+    assert r is not None and r.material != "vacuum"
 
 
 def test_cold_empty_tile_reads_zero():

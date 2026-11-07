@@ -129,8 +129,10 @@ class HoverReadout:
 
 
 def _material_name(gmap, ty: int, tx: int) -> str:
-    """Tile material label: vacuum (SPACE) overrides; else the material id."""
-    if bool(gmap.is_vacuum[ty, tx]):
+    """Tile material label: EXPOSED vacuum (SPACE) overrides; else the
+    material id. A sealed hull tile keeps ``is_vacuum`` while solid (engine/04
+    §2.3), and reads as its material (#150)."""
+    if bool(gmap.is_vacuum[ty, tx]) and not bool(gmap.solid[ty, tx]):
         return "vacuum"
     mid = int(gmap.material[ty, tx])
     return MATERIAL_NAMES.get(mid, f"mat{mid}")
