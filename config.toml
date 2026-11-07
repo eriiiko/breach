@@ -1858,10 +1858,10 @@ rate = 60.0                 # sparks at strength 1 (the frag); x sqrt(strength):
                             # C4 (12) ~208, magazine (8) ~170, breach (0.1) ~19
 v0_tiles_s = 12.0           # radial birth speed, tiles/s
 v_spread = 0.5              # each is born at v0 x (1 +- this x U(-1, 1)): 6..18 tiles/s
-t_born_k = 2600.0           # birth temperature, K: white-yellow on the ramp
-cool_s = 0.5                # e-fold of (T - T_amb): ~1140 K at 0.5 s, the glow
+t_born_k = 4000.0           # birth temperature, K: white-yellow on the ramp
+cool_s = 0.2                # e-fold of (T - T_amb): ~1140 K at 0.5 s, the glow
                             # floor (800 K) at ~0.75 s
-life_s = 0.5                # mean life, s (VFX clock)
+life_s = 0.6                # mean life, s (VFX clock)
 life_jitter = 0.5           # each lives life_s x (1 +- this x U(-1, 1)): 0.25..0.75 s
 drag = 1.0                  # 1/s: how fast the air catches them, the embers' (a
                             # 12 tiles/s spark travels ~4.7 tiles in 0.5 s; at 2.0
