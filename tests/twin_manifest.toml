@@ -158,6 +158,8 @@ device = [
     "cpp/src/cuda_kick_compression.cu",
     "cpp/src/cuda_bulk_transport.cu",
     "cpp/src/cuda_sl_advection.cu",
+    # #29 P5: the (N, h, w) launch shape every batched core includes
+    "cpp/src/cuda_batch.cuh",
 ]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call)"]
 level = true

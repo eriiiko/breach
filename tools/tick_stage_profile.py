@@ -49,6 +49,10 @@ from collections import defaultdict
 STEP_LABEL = "step"
 REST_STEP = "(rest of step)"
 SLOT7 = "7 physics"
+# #29 P5 (design §9 P5): THE APPLIER ROW, RESERVED -- the per-env serial
+# applier (§5 item 6) is P6's; the row is printed (empty) so every report from
+# P5 on carries it and P6 fills it without a format change.
+APPLIER_LABEL = "  7 applier (per-env serial, P6 -- reserved)"
 REST_7 = "  (rest of 7: host pre-physics)"
 
 # (module, qualified name, label): the callables each conductor slot invokes,
@@ -91,7 +95,6 @@ SLOT_WRAPS = (
 # "bp" is the imported breach_physics (the build the run uses).
 PHYSICS_WRAPS = (
     ("simulation.gamemap", "GameMap.from_host", "  7 H2D GameMap.from_host", True),
-    ("bp", "water_substeps_resident", "  7 water substeps (resident)", True),
     ("bp", "PhysicsEngine.step_water_tail", "  7 water tail (host)", True),
     ("simulation.physics_runner", "PhysicsRunner._step_water", "  7 water (cpu/per-call)", True),
     ("bp", "PhysicsEngine.run_substeps_resident", "  7 EOS run_substeps_resident", True),
@@ -108,7 +111,8 @@ PHYSICS_WRAPS = (
     ("bp", "PhysicsEngine.upload_light_resident", "  7 light inputs (resident)", True),
     # #29 P4b: slot 6's stamp on the device (the five planes from the host's rows).
     ("bp", "PhysicsEngine.stamp_units_resident", "  7 stamp (resident)", True),
-    ("bp", "PhysicsEngine.step_water_tail_resident", "  7 water tail (resident)", True),
+    # #29 P5: the water stage is one resident driver (substeps + W5/W3).
+    ("bp", "PhysicsEngine.step_water_resident", "  7 water (resident: substeps + W5/W3)", True),
     ("bp", "PhysicsEngine.run_combustion_resident", "  7 combustion (resident)", True),
     ("bp", "PhysicsEngine.step_tail_resident", "  7 tail (resident: fire+sweep+temp+books)", True),
     ("bp", "PhysicsEngine.step_ripple", "  7 ripple (host)", False),
@@ -323,6 +327,7 @@ class TickStageProfiler:
                     pxs = series(pl)
                     put(pl, pxs, pl)
                     p_sum = [a + b for a, b in zip(p_sum, pxs)]
+                put(APPLIER_LABEL, [0.0] * n)
                 put(REST_7, [a - b for a, b in zip(xs, p_sum)])
             else:
                 put(label, xs, label)
@@ -347,7 +352,7 @@ class TickStageProfiler:
                  f"{'stage':44s} {'mean ms':>8s} {'p95 ms':>8s} {'calls/tick':>10s}"]
         for label, st in s["stages"].items():
             if st["mean"] == 0.0 and st["p95"] == 0.0 and label not in (
-                    STEP_LABEL, SLOT7):
+                    STEP_LABEL, SLOT7, APPLIER_LABEL):
                 continue
             c = st.get("calls")
             lines.append(f"{label:44s} {st['mean']:8.3f} {st['p95']:8.3f} "
