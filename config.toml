@@ -4129,8 +4129,8 @@ explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*]
 flash = 0.0                           # PLACEHOLDER (G4 P5): its hot soot lights the room (Erik: no flash as a principle)
 
 [payloads.flashbang]                  # G4 P5 (#75): a flash and nothing else -- no strength, no radius, no heat, no gas
-flash = 800.0                         # PLACEHOLDER: light units at peak, under the transient cap (1024; critique B1)
-flash_decay_s = 1.5                   # PLACEHOLDER
+flash = 200.0                         # PLACEHOLDER: light units at peak, under the transient cap (1024; critique B1). 800 saturated the room for ~8 s (Erik, 2026-11-07)
+flash_decay_s = 0.1                   # PLACEHOLDER: Erik wants the flash VERY short -- the blinding is a unit debuff (gameplay), not the light
 flash_color = [1.0, 1.0, 1.0]
 emit_blast_smoke = false              # a flash alone; its blinding of units is gameplay, not here
 

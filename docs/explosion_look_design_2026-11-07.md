@@ -640,3 +640,16 @@ subprocess).
   the light inside its own step (#81 territory); the perf passes
   (`--perf`, `--spark-perf`, ...) assemble lamps only; a thrown flashbang
   and its blinding of units are the weapons session's.
+
+## 9. Arc close (2026-11-07)
+
+P5 merged on Erik's word at the screen ("I want the flash merged"), with his
+one ruling: the flashbang's flash is VERY short -- 800 units at 1.5 s kept the
+room saturated for about 8 s (ln(800 / lamps) x 1.5), so the row ships at 200
+units, 0.1 s; the blinding of units is a gameplay debuff for the weapons
+session, not the light. #94 closes with this arc: the measurement says the
+blast light IS there (the soot's own emission), the smoke was not hiding it,
+and the flash is a per-row top-up. Accepted gaps, Erik's rulings: the
+display-space heat layer stays (it hides the ring, sparks and chips for the
+first ticks of a hot blast; #95 revisits); debris die at `life_s` (persistent
+marks are #180). Next graphics session: G6 (tilt reconciliation, #90).
