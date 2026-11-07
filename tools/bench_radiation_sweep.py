@@ -27,9 +27,21 @@ adds §10's two unknowns, measured rather than assumed:
   * alloc      — one cudaMalloc + cudaFree of the per-call arena's size.
 Every GPU result is checked bit for bit against the CPU sweep first.
 
+--cuda --envs 1,2,...,128 (#29) times the BATCHED launch core: ``n_env``
+copies of one scene at ``--env-grid HxW`` (default 40x60, the seed-1 small
+ship's grid) in ``(N, h, w)`` CuPy buffers, per-env scalars as length-N device
+arrays, one ``cuda_radiation_sweep_resident`` call per tick (launch + sync).
+Env 0 and env N-1 are checked bit for bit against the CPU sweep of the one
+scene first. This is the sweep as a batched tick would run it -- the launch
+count stays 3 + max(h, w) whatever N -- unlike a stacked (N*h, w) grid, whose
+shear wavefront count grows with N*h. ``--build DIR`` imports breach_physics
+from DIR instead of ``cpp/build_cuda`` (a worktree without its own build).
+
 Run:
     C:/Users/steen/anaconda3/python.exe tools/bench_radiation_sweep.py [--iters N]
     C:/Users/steen/anaconda3/python.exe tools/bench_radiation_sweep.py --cuda [--iters N]
+    C:/Users/steen/anaconda3/envs/data/python.exe tools/bench_radiation_sweep.py --cuda \\
+        --envs 1,2,4,8,16,32,64,128 [--env-grid 40x60] [--smoke] [--build DIR]
 """
 from __future__ import annotations
 
@@ -47,10 +59,21 @@ ONE = 65536
 bp = None           # the breach_physics module, imported per mode in main()
 
 
-def _import_bp(cuda: bool):
+def _import_bp(cuda: bool, build=None):
     """The CPU build by default; with --cuda the CUDA build, through
-    tools/run_on_cuda.py's one path setup (never a second copy of it)."""
+    tools/run_on_cuda.py's one path setup (never a second copy of it);
+    ``build`` (a directory) imports that build instead, through
+    ``tools/bench_bot_matches.import_build``."""
     global bp
+    if build is not None:
+        for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "tools"):
+            if str(_p) not in sys.path:
+                sys.path.insert(0, str(_p))
+        from bench_bot_matches import import_build
+        bp = import_build(Path(build))
+        if cuda and not getattr(bp, "HAS_CUDA", False):
+            raise SystemExit("--cuda: the imported breach_physics is the CPU build")
+        return bp
     if cuda:
         sys.path.insert(0, str(ROOT / "tools"))
         from run_on_cuda import setup_cuda_import
@@ -293,6 +316,92 @@ def _cuda_rows(args, tbl, t_amb_q, rng):
                   f"{t_d2h * 1e3:7.2f} {t_alloc * 1e3:9.3f}")
 
 
+def _batched_rows(args, tbl, t_amb_q, rng):
+    """#29: the batched launch core over N copies of one scene, (N, h, w)."""
+    import cupy as cp
+    SLOTS = int(bp.RADIATION_SWEEP_CNT_SLOTS)
+    k_leak_q = 6554                     # [physics.radiation] k_leak = 0.10, Q16
+    h, w = (int(x) for x in args.env_grid.lower().split("x"))
+    transport = bp.RadiationSweep.SHEAR
+    T, a, d, his, ts = _scene(h, w, rng)
+    vac = np.zeros((h, w), dtype=bool)
+    cur = _currency()
+    gkw = {}
+    if args.smoke:
+        g_sm, hq_sm, nb_sm = _smoke_group(h, w, rng, ts, T)
+        gkw = dict(gas=g_sm, heat_absorb_q16=hq_sm, n_bulk=nb_sm,
+                   n_floor_q=cur[0], recip_cv=cur[1])
+    sweep = bp.RadiationSweep()
+    cpu = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+    amb = sweep.derive_ambient(vac, tbl, -1)
+    sweep.run(T, a, d, his, ts, tbl, amb, t_amb_q, k_leak_q, transport, 16,
+              *cpu, **gkw)
+    t_cpu = _best_of(lambda: sweep.run(T, a, d, his, ts, tbl, amb, t_amb_q,
+                                       k_leak_q, transport, 16, *cpu, **gkw),
+                     args.iters)
+    launches = int(bp.cuda_radiation_sweep_launch_count(transport, 16, h, w))
+    print(f"batched radiation sweep core, S16 shear, k_leak 0.10, one scene "
+          f"{h}x{w} x N envs, {args.iters} iterations per point; device: "
+          f"{bp.cuda_device_info()}" + ("; SMOKE fixture" if args.smoke else ""))
+    print(f"CPU sweep of one env: {t_cpu * 1e3:.3f} ms "
+          f"({t_cpu * 1e9 / (h * w * 16):.1f} ns per cell-update)")
+    print(f"{'N':>5} {'cells':>9} {'core ms':>9} {'ms/env':>8} "
+          f"{'ns/cell-upd':>12} {'launches':>9} {'dev MiB':>8}")
+    rows = []
+    for n in [int(x) for x in args.envs.split(",")]:
+        free0 = cp.cuda.runtime.memGetInfo()[0]
+
+        def tile(x):
+            return cp.asarray(np.ascontiguousarray(
+                np.broadcast_to(x, (n,) + x.shape)))
+        dv = {k: tile(v) for k, v in (("T", T), ("a", a), ("d", d),
+                                      ("his", his), ("ts", ts), ("vac", vac))}
+        d_etab = cp.asarray(np.asarray(tbl.table(), dtype=np.int64))
+        d_vl = cp.full((n,), -1, dtype=cp.int64)
+        d_kl = cp.full((n,), k_leak_q, dtype=cp.int32)
+        d_ta = cp.full((n,), t_amb_q, dtype=cp.int32)
+        d_out = cp.empty((n, 16, h, w), dtype=cp.int64)
+        scratch = [cp.empty((n, h, w), dtype=cp.int64) for _ in range(2)]
+        d_f = cp.empty((n, h, w), dtype=cp.int32)
+        eff = [cp.empty((n, h, w), dtype=cp.int32) for _ in range(2)]
+        d_rad = [cp.empty((n, h, w), dtype=cp.int64) for _ in range(4)]
+        d_cnt = cp.empty((n, SLOTS), dtype=cp.int64)
+        core_gas = (0, 0, 0, 0, 0, 0)
+        if args.smoke:
+            d_g = tile(g_sm[1:2])                      # (N, 1, h, w): active
+            d_hq = cp.asarray(hq_sm[1:2])
+            d_nb = tile(nb_sm)
+            core_gas = (d_g.data.ptr, 1, d_hq.data.ptr, d_nb.data.ptr,
+                        cur[0], cur[1])
+
+        def core_once():
+            bp.cuda_radiation_sweep_resident(
+                n, h, w, dv["T"].data.ptr, dv["a"].data.ptr, dv["d"].data.ptr,
+                dv["his"].data.ptr, dv["ts"].data.ptr, 0, dv["vac"].data.ptr,
+                d_etab.data.ptr, int(tbl.fine_bits),
+                d_vl.data.ptr, d_kl.data.ptr, d_ta.data.ptr,
+                *core_gas,
+                transport, 16, True, d_out.data.ptr, scratch[0].data.ptr,
+                scratch[1].data.ptr, d_f.data.ptr,
+                eff[0].data.ptr, eff[1].data.ptr,
+                *[p.data.ptr for p in d_rad], d_cnt.data.ptr)
+            cp.cuda.Device().synchronize()
+        core_once()
+        for env in sorted({0, n - 1}):
+            for c_, g_ in zip(cpu, d_rad):
+                assert np.array_equal(c_, g_[env].get()), \
+                    f"env {env} of {n} is not the CPU sweep of the scene"
+        t_core = _best_of(core_once, args.iters)
+        used = (free0 - cp.cuda.runtime.memGetInfo()[0]) / 2**20
+        cells = n * h * w
+        rows.append((n, cells, t_core))
+        print(f"{n:>5} {cells:>9} {t_core * 1e3:9.3f} {t_core * 1e3 / n:8.4f} "
+              f"{t_core * 1e9 / (cells * 16):12.3f} {launches:>9d} {used:8.0f}")
+        del dv, d_out, scratch, d_f, eff, d_rad, d_cnt
+        cp.get_default_memory_pool().free_all_blocks()
+    return rows
+
+
 def _playground_planes():
     """The PLAYGROUND's own planes, as the live step_tail hands them to the
     sweep: a wood tile heated to the 1263-game plateau and lit (CLAUDE.md
@@ -435,11 +544,22 @@ def main(argv=None):
                     help="P6a: the sweep with the light channels OFF vs ON, on the "
                          "playground's own planes and on 128x256 (with --cuda: the "
                          "per-call GPU path too)")
+    ap.add_argument("--envs", default=None,
+                    help="#29, with --cuda: the BATCHED launch core over N "
+                         "copies of one scene, e.g. 1,2,4,8,16,32,64,128")
+    ap.add_argument("--env-grid", default="40x60",
+                    help="with --envs: one env's grid, HxW")
+    ap.add_argument("--build", default=None,
+                    help="import breach_physics from this build dir")
     args = ap.parse_args(argv)
-    _import_bp(args.cuda)
+    if args.envs and not args.cuda:
+        ap.error("--envs goes with --cuda")
+    _import_bp(args.cuda, args.build)
     tbl, t_amb_q = _table()
     rng = np.random.default_rng(20260916)
-    if args.light:
+    if args.envs:
+        _batched_rows(args, tbl, t_amb_q, rng)
+    elif args.light:
         _light_rows(args, tbl, t_amb_q, rng)
     elif args.cuda:
         _cuda_rows(args, tbl, t_amb_q, rng)
