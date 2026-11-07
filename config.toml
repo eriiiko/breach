@@ -1919,8 +1919,8 @@ seed = 2718                 # the flow map's per-cycle offsets and boil directio
 # projection equalises a room in one tick, measured 2026-11-07). Re-read
 # every frame (F5); every key is required (a refusing door).
 enabled = true
-speed_tiles_s = 1.0        # the front's speed: a 10-tile room in a quarter second
-width_tiles = 1.0           # the band's half-width w, tiles: g = exp(-(x/w)^2),
+speed_tiles_s = 40.0        # the front's speed: a 10-tile room in a quarter second
+width_tiles = 0.5           # the band's half-width w, tiles: g = exp(-(x/w)^2),
                             # exactly 0 beyond 2 w
 amp_tiles = 0.4             # the peak offset at strength 1, tiles (x sqrt(strength)); 0.25 read as nothing on the lit floor (P2's shots), 0.6 'a little too pronounced' (Erik, P3)
 strength_power = 0.25       # amp x strength^power: 0.5 = sqrt (a C4 at 12 rings 3.5x a frag), 0 = every
