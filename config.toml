@@ -1919,16 +1919,18 @@ seed = 2718                 # the flow map's per-cycle offsets and boil directio
 # projection equalises a room in one tick, measured 2026-11-07). Re-read
 # every frame (F5); every key is required (a refusing door).
 enabled = true
-speed_tiles_s = 40.0        # the front's speed: a 10-tile room in a quarter second
+speed_tiles_s = 1.0        # the front's speed: a 10-tile room in a quarter second
 width_tiles = 1.0           # the band's half-width w, tiles: g = exp(-(x/w)^2),
                             # exactly 0 beyond 2 w
 amp_tiles = 0.4             # the peak offset at strength 1, tiles (x sqrt(strength)); 0.25 read as nothing on the lit floor (P2's shots), 0.6 'a little too pronounced' (Erik, P3)
+strength_power = 0.25       # amp x strength^power: 0.5 = sqrt (a C4 at 12 rings 3.5x a frag), 0 = every
+                            # blast alike; 0.25 = the C4 at 1.9x (Erik: 'C4 a little strong vs the grenade', P3)
 life_s = 0.5                # a ring dies at this age (sim clock)
 max_rings = 4               # live rings at once (1..4: one RGBA texture), the
                             # oldest dropped
-zoom_zero = 4.0             # screen px per tile at and below which it is off (the ring is a
+zoom_zero = 1.5             # screen px per tile at and below which it is off (the ring is a
                             # single travelling front, not the shimmer's sub-pixel swim: it stays on at the fit-the-map zoom)
-zoom_full = 8.0             # ... full strength from here up: a ring crossing things is not the shimmer's swim, so it stays at the fit-the-map zoom)
+zoom_full = 3.0             # ... full strength from here up: a ring crossing things is not the shimmer's swim, so it stays at the fit-the-map zoom)
 
 [render.light_curve]
 # Graphics G5 (#64): a Photoshop-style Curves map on the light, on every lit

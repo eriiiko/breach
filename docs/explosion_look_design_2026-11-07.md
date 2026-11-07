@@ -129,7 +129,8 @@ second pass.
   plain point fetch bit for bit.
 - **Dials** `[render.shockwave]`: `enabled`, `speed_tiles_s` (40: a frag
   ring crosses a 10-tile room in a quarter second), `width_tiles` (1.0),
-  `amp_tiles` (0.25 at strength 1, times sqrt(strength)), `life_s` (0.5),
+  `amp_tiles` (0.25 at strength 1, times strength^`strength_power`; 0.5 = sqrt,
+  Erik's dial for how far a big charge out-rings a grenade, 0.25 shipped), `life_s` (0.5),
   `max_rings` (6), `zoom_zero` / `zoom_full` (the shimmer's). Read every
   frame through a refusing door; F5 retunes live. A key is NOT added (switches
   are settings).
