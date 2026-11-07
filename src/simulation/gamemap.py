@@ -135,21 +135,19 @@ class GameMap:
         # four planes, int64 (the `gas_energy` precedent), LIVE since T5b.
         # Born through the residency path from day one (RL-batch habits §A
         # rule 3: no mirror-only fields) — a device buffer each at
-        # `enable_residency`, written on the HOST MIRROR by step 2b of the
-        # bracketed `step_tail` (no device kernel touches them until P4).
+        # `enable_residency`. #29 P4a: the resident tick's sweep WRITES them
+        # on the device (resident_tail); its exit download carries
+        # `rad_flux_sweep` every tick (the unit heat-damage sensor) and the
+        # other three only when the runner is not headless (render / tools).
         # They are per-tick planes OVERWRITTEN by the sweep's own start (P2a,
-        # design row 38 — not wiped by the conductor), so the resident tick's
-        # explicit `to_host` lists never name them (a defaulted `to_host()`
-        # would carry stale device zeros over the mirror, which the resident
-        # tick forbids anyway). NOTE: the old planes rad_net/rad_amb/rad_flux
+        # design row 38 — not wiped by the conductor). NOTE: the old planes rad_net/rad_amb/rad_flux
         # are NOT resident and, since T6 deleted the cast that wrote them,
         # carry nothing at all any more — see the field definitions above.
         "rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence",
         # Ray-engine-v2 P6a: the sweep's three LIGHT planes, born through the
-        # residency path the same way (no mirror-only fields) and written on the
-        # host mirror by the same bracketed step_tail -- only while light is
-        # requested -- so the resident tick's explicit to_host lists never name
-        # them either.
+        # residency path the same way (no mirror-only fields). #29 P4a: written
+        # on the device by the resident sweep -- only while light is requested
+        # -- and downloaded at the tick's exit only then.
         "light_q", "light_flux_q", "light_glow",
         # #29 P4a: combustion's error-feedback DEMAND ACCUMULATOR (synced,
         # digested, IN/OUT): the resident tick's combustion core runs on the
@@ -168,12 +166,15 @@ class GameMap:
         # patched IN PLACE by `on_tile_changed`, one upload at
         # `enable_residency`); `dyn_heat_atten_q` is the fourth `stamp_units`
         # output and rides the per-tick always-upload set beside the other
-        # stamp outputs. No device kernel reads either until P4.
+        # stamp outputs. #29 P4a: the resident sweep reads both on the device
+        # (`heat_atten_q` re-uploaded when `_tile_serial` moved).
         "heat_atten_q", "dyn_heat_atten_q",
         # Ray-engine-v2 P6a: their LIGHT twins (h, w, 3), on the same terms --
         # `light_atten_q` a static projection (reassigned by _update_caches,
         # patched in place by on_tile_changed), `dyn_light_atten_q` the fifth
-        # stamp_units output. The sweep reads both on the host mirror.
+        # stamp_units output. #29 P4a: the resident sweep reads both on the
+        # device while light is requested (`dyn_light_atten_q` in that tick's
+        # entry upload, `light_atten_q` when `_tile_serial` moved).
         "light_atten_q", "dyn_light_atten_q",
         # THERMAL-MASS AXIS, P2 (docs/thermal_mass_axis_design_2026-07-25.md +
         # build addendum §3): the per-medium THERMAL mask (`thermal_mass > 0`)
@@ -195,9 +196,9 @@ class GameMap:
         # `from_host` LIST in `physics_runner._step_resident` beside
         # `solid`/`is_vacuum`/`is_ambient`. Do not move it back to a one-shot
         # upload (that is the exact staleness bug the is_ambient note records).
-        # The resident temperature pass itself is still a host bracket
-        # (`step_tail` on the mirror), and the per-call CUDA temperature kernel
-        # does its own H2D from `GameMap.thermal_solid`.
+        # #29 P4a: the resident temperature pass, sweep, fire and combustion
+        # read it on the device too (the per-call CUDA kernels still do their
+        # own H2D from `GameMap.thermal_solid` on the --cuda-only path).
         "thermal_solid",
         # T5b step 7 / R1: "cool_shift" was a resident-synced plane here;
         # Pass 3 is deleted and the plane has no reader.
@@ -213,10 +214,12 @@ class GameMap:
         # `on_tile_changed` patches it whenever a tile's material changes (a
         # crate burning out is exactly that), so the moment a DEVICE kernel
         # reads the resident pointer it MUST join the per-tick `from_host` list
-        # in `physics_runner._step_resident`. No device kernel reads it today:
-        # the resident tick's fire pass is a host bracket (`step_tail` on the
-        # mirror) and the per-call CUDA fire kernel does its own H2D from
-        # `GameMap.fuel_recip`.
+        # in `physics_runner._step_resident`. #29 P4a: the resident fire core
+        # reads it now. It rides the upload of the table-derived static planes,
+        # made whenever `_tile_serial` moved -- on_tile_changed bumps it on
+        # every patch, and nothing else writes the plane after load (a writer
+        # that patched it without on_tile_changed would be invisible to the
+        # device: route it through on_tile_changed).
         "fuel_recip",
         # PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31): the per-tile
         # Q16.16 foot of the fire logistic's `hot` ramp
@@ -229,10 +232,9 @@ class GameMap:
         # SAME CAVEAT AS `fuel_recip`: NOT static — `on_tile_changed` patches it
         # whenever a tile's material changes — so the moment a DEVICE kernel
         # reads the resident pointer it MUST join the per-tick `from_host` list
-        # in `physics_runner._step_resident`. No device kernel reads it today:
-        # the resident tick's fire pass is a host bracket (`step_tail` on the
-        # mirror) and the per-call CUDA fire kernel does its own H2D from
-        # `GameMap.fire_T_ext_plane`.
+        # in `physics_runner._step_resident`. #29 P4a: the resident fire and
+        # combustion cores read it now; it rides the `_tile_serial` upload, as
+        # `fuel_recip` (above) does.
         "fire_T_ext_plane",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in
         # __init__, never recomputed — unlike is_ambient, which destroy_wall's

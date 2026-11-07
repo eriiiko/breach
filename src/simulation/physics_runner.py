@@ -897,11 +897,10 @@ class PhysicsRunner:
             self.engine.eos.set_div_source(div_source)
             self._div_source_on = div_source is not None
         # S8a Path B: the GPU-resident tick (opt-in, default OFF). Same tick,
-        # same arithmetic — the water substep loop + the smoke trace loop run
-        # resident on persistent device buffers (killing the substep-/plane-
-        # MULTIPLIED transfer tax); EOS + combustion + the tail are bracketed
-        # (one D2H/H2D each). With residency off this branch is never taken and
-        # CuPy is never imported.
+        # same arithmetic — since #29 P4a the WHOLE of slot 7 runs resident on
+        # persistent device buffers between one batched upload and one batched
+        # download (_step_resident). With residency off this branch is never
+        # taken and CuPy is never imported.
         # Smoke transport v2 (#12, design §2.2): the trace diffusion's
         # stability, re-checked on the integer at the dt this tick binds.
         self._check_trace_dt(gmap, sim_time)
@@ -1317,9 +1316,10 @@ class PhysicsRunner:
 
         Runs on the HOST mirror ONCE per tick, immediately AFTER combustion, in
         BOTH the normal :meth:`step` and the GPU-resident :meth:`_step_resident`
-        (combustion is itself a host bracket on the mirror in the resident tick,
-        so this rides that bracket — one host pass, so CPU==CUDA-resident is
-        bit-identical by construction). NO-OP (byte-identical to before) on space
+        (#29 P4a: combustion is on the device there, so on an ambient map with
+        work this tick the resident tick brackets THIS pass alone -- gas down,
+        the host pass, gas up -- the ACCEPTED GAP of the residency design §4.2;
+        one host pass either way, so CPU == CUDA-resident by construction). NO-OP (byte-identical to before) on space
         maps, ring-free maps, and any level with ``sky_tau_s == 0`` (dormant):
         every such case returns before touching ``gmap.gas``.
         """
