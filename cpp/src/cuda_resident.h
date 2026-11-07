@@ -384,4 +384,130 @@ int radiation_sweep_launch_resident(
     int64_t* d_cnt,
     const RadiationLightDev* light = nullptr);   // P6a: nullptr = heat only
 
+// ---- combustion (cuda_combustion.cu) — #71, residency arc #29 P2 -----------
+// The LAUNCH CORE of CombustionSolver::step (combustion.cpp — THE oracle):
+// the pass-entry snapshot + scratch zeroing, Pass A (air cells: the reverse
+// relaxation, the demand, the exact-integer split, the O2 debit, the donor's
+// energy leaving with its O2, the H_bed deposit), Pass B (sources: the fuel
+// payment, where the products and their energy land), Pass C (air cells: the
+// soot / N2 / heat deposit into `gas_energy` through the railed seam). Born
+// (N, h, w) with N = 1 today (RL-batch habits §A): launch only — no malloc, no
+// transfer, no sync; the core zeroes its own scratch and book block (its first
+// kernel). The per-call `combustion_step` (cuda_combustion.h) allocates,
+// uploads, calls this, downloads; P4a's resident driver calls it on the
+// persistent device fields.
+//
+// The scalars every env shares (config dials, baked on the host by
+// `combustion_bake_scalars` with the CPU solver's own quantize / make_recip
+// lines) travel by value; the per-env ones (`burn_cap_q` from the env's dt,
+// `t_amb_q`) are (N,) device arrays. An env whose burn_cap_q <= 0 burns nothing
+// (the CPU's early return, as a per-env mask).
+struct CombustionScalars {
+    int32_t o2_thresh_q = 0;
+    int32_t x_ext_q = 0;
+    int64_t recip_x_span = 0;
+    int32_t x_degenerate = 0;          // bool
+    int32_t x_n_floor = 0;
+    int32_t p_ext_q = 0;               // o2_pressure::Factor, field for field
+    int32_t p_full_q = 0;
+    int32_t p_inv_span_q = 0;
+    int32_t fire_T_ext_q = 0;
+    int64_t recip_T_span = 0;
+    int32_t hotf_cap_q = 0;
+    int32_t H_bed_m_q = 0;
+    int32_t H_bed_shift = 0;
+    int32_t fuel_per_o2_q = 0;
+    int32_t soot_yield_q = 0;
+    int32_t H_fuel_m_q = 0;
+    int32_t H_fuel_shift = 0;
+    int64_t recip_cv = 0;
+    int32_t n_floor_q = 0;
+    int32_t t_max_phys_q = 0;
+    int32_t w_hop_q[4] = {0, 0, 0, 0};  // combustion_draw::R_MAX + 1
+};
+
+// The host bake: every shared scalar, line for line the CPU step's own
+// (quantize / make_recip / o2_pressure::bake in double, then integers).
+CombustionScalars combustion_bake_scalars(
+    float o2_thresh_burn, float o2_frac_ext, float o2_frac_full,
+    float fire_T_ext, float fire_T_span, float hotf_cap,
+    float H_BED_M, int H_BED_SHIFT, float fuel_per_o2, float soot_yield,
+    float H_FUEL_M, int H_FUEL_SHIFT, float c_v, float n_floor_heat,
+    float T_MAX_PHYS, int32_t p_ext_q, int32_t p_full_q);
+
+// The draw geometry (combustion.h's `combustion_draw` tables) into the device's
+// __constant__ banks: a host->symbol transfer, so the CALLER's job, once per
+// process before the first launch (the per-call wrapper does it every call).
+void combustion_upload_tables();
+
+// The per-env book block, (N, COMB_CNT_SLOTS) unsigned long long, OVERWRITTEN
+// (zeroed by the core). Signed books ride two's complement (integer atomicAdd
+// is order-free modulo 2^64), read back as int64. Each slot is the
+// CombustionSolver member of the same name.
+constexpr int COMB_CNT_SLOTS = 15;
+enum : int {
+    COMB_HEAT_FLOOR_HITS  = 0,   // heat_floor_hits
+    COMB_T_MAX_PHYS_HITS  = 1,   // t_max_phys_hits (both deposit sites)
+    COMB_DEPOSIT_DROP     = 2,   // e_deposit_drop_sum
+    COMB_TRACE_MINT       = 3,   // the soot mint's books (#88 P2) ...
+    COMB_TRACE_CLIP       = 4,
+    COMB_TRACE_NEG        = 5,
+    COMB_E_DRAW           = 6,   // e_comb_draw_sum
+    COMB_E_MINT           = 7,   // e_comb_mint_sum
+    COMB_E_DELIVER        = 8,   // e_comb_deliver_sum
+    COMB_E_SOOT_SHED      = 9,   // e_soot_shed_sum
+    COMB_E_TS_PRODUCTS    = 10,  // e_ts_products_sum
+    COMB_E_EXPORT         = 11,  // e_comb_export_sum
+    COMB_E_HEAT           = 12,  // e_comb_heat_sum
+    COMB_E_RAIL           = 13,  // e_comb_rail_sum (signed)
+    COMB_E_SOLID_HEAT     = 14,  // e_comb_solid_heat_sum (signed)
+};
+
+//   d_gas           : (N, n_gases, h, w) int32 — only the o2 / inert_n2 /
+//                     black_smoke planes are read or written
+//   d_temperature, d_wall_hp : (N, h, w) int32, in/out
+//   d_gas_energy    : (N, h, w) int64, in/out, NULLABLE (null = the pre-#54
+//                     T-form deposit — the direct-binding path; then
+//                     d_e_slot / d_e_dep may be null too)
+//   d_fire, d_ignition_temp_q16 : (N, h, w) int32
+//   d_flammable, d_solid, d_is_vacuum : (N, h, w) bool
+//   d_is_ambient, d_thermal_solid : (N, h, w) bool, NULLABLE
+//   d_heat_inv_shift : (N, h, w) int32, NULLABLE (the object deposit needs it
+//                     AND d_thermal_solid)
+//   d_heat          : (N, h, w) int32, NULLABLE (the H_bed deposit)
+//   d_dem_acc       : (N, acc_depth, h, w) int32, NULLABLE (acc_depth >=
+//                     slot_count(draw_r), host-checked)
+//   d_perm_q        : (N, h, w) int32 Q16 — the permeability quantized once
+//                     (the CPU's pass-entry quantize), NULLABLE (= 1.0)
+//   d_fire_T_ext_plane, d_fuel_per_o2_plane, d_atmosphere : (N, h, w) int32,
+//                     NULLABLE (the scalar fallbacks / g == FP_ONE)
+//   d_burn_cap_q, d_t_amb_q : (N,) int32 per-env scalars
+//   d_tsnap         : (N, h, w) int32 scratch
+//   d_alloc         : (N, slot_count(draw_r), h, w) int32 scratch
+//   d_dep           : (N, 5, h, w) int32 scratch
+//   d_e_slot        : (N, slot_count(draw_r), h, w) int64 scratch (with energy)
+//   d_e_dep         : (N, 5, h, w) int64 scratch (with energy)
+//   d_cnt           : (N, COMB_CNT_SLOTS) unsigned long long, OVERWRITTEN
+// Throws std::invalid_argument on a draw_r outside [1, R_MAX] or an acc_depth
+// below slot_count(draw_r) (host control flow, before any launch). Returns the
+// launch count.
+int combustion_launch_resident(
+    int n_env, int h, int w, int n_gases,
+    int o2_idx, int inert_n2_idx, int black_smoke_idx, int draw_r,
+    int32_t* d_gas, int32_t* d_temperature, int32_t* d_wall_hp,
+    int64_t* d_gas_energy,
+    const int32_t* d_fire, const int32_t* d_ignition_temp_q16,
+    const bool* d_flammable, const bool* d_solid, const bool* d_is_vacuum,
+    const bool* d_is_ambient, const bool* d_thermal_solid,
+    const int32_t* d_heat_inv_shift,
+    int32_t* d_heat, int32_t* d_dem_acc, int acc_depth,
+    const int32_t* d_perm_q,
+    const int32_t* d_fire_T_ext_plane, const int32_t* d_fuel_per_o2_plane,
+    const int32_t* d_atmosphere,
+    const int32_t* d_burn_cap_q, const int32_t* d_t_amb_q,
+    const CombustionScalars& sc,
+    int32_t* d_tsnap, int32_t* d_alloc, int32_t* d_dep,
+    int64_t* d_e_slot, int64_t* d_e_dep,
+    unsigned long long* d_cnt);
+
 }  // namespace breach_cuda

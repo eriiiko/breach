@@ -40,6 +40,16 @@
 // device kit). The launch barriers give the Pass-A-before-Pass-B ordering the
 // CPU's loop order gives for free.
 //
+// #71 (residency arc #29 P2, 2026-11-07): the twin is back ON the arc #54 gas
+// energy seam — until then it took no `gas_energy`, so on a burning scene it
+// deposited the fire's heat into `temperature` while the CPU step landed it in
+// the conserved field (and refreshed the donor's mirror), 6 cells apart on
+// tick 0 and the whole field by tick 1. The launch body is now the
+// N-shaped `combustion_launch_resident` (cuda_resident.h); this wrapper
+// allocates, uploads, calls it and downloads. Live gate:
+// tests/cuda_combustion_burn_check.py (burning scenes through the real tick,
+// only the combustion backend flipped, every field and book at tol 0).
+//
 // The rail counters (heat_floor_hits / t_max_phys_hits) are now PER-CELL (design
 // §3) and are accumulated with device atomicAdd — a plain integer count is
 // order-free, so the total is bit-identical to the CPU regardless of thread
@@ -144,7 +154,25 @@ void combustion_step(
     // d_dep_drop -- [0] mint attempted, [1] saturation clip, [2] negative
     // hits -- all >= 0, zeroed per call.
     int64_t* trace_mint = nullptr, int64_t* trace_clip = nullptr,
-    int64_t* trace_neg = nullptr);
+    int64_t* trace_neg = nullptr,
+    // #71 (residency arc #29 P2): THE GAS ENERGY SEAM — the twin of the CPU
+    // step's `gas_energy` / `is_ambient` / `t_amb_q` (combustion.h carries the
+    // law: the donor's energy leaves with its O2, the products land on the
+    // flame through the railed seam, every channel booked). gas_energy is
+    // (h, w) int64, IN/OUT; nullptr keeps the pre-#54 T-form deposit (the
+    // direct-binding path, still bit-identical to the CPU step without it).
+    int64_t* gas_energy = nullptr,
+    const bool* is_ambient = nullptr,
+    int32_t t_amb_q = 0,
+    // The energy books, ADDED to (+=), nullable: COMB_E_BOOKS int64 in the
+    // order of the CombustionSolver members — e_comb_draw_sum,
+    // e_comb_mint_sum, e_comb_deliver_sum, e_soot_shed_sum, e_ts_products_sum,
+    // e_comb_export_sum, e_comb_heat_sum, e_comb_rail_sum,
+    // e_comb_solid_heat_sum.
+    int64_t* e_books = nullptr);
+
+// The length of `combustion_step`'s e_books array.
+constexpr int COMB_E_BOOKS = 9;
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

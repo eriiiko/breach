@@ -70,8 +70,10 @@ import breach_physics as bp
 
 FP_ONE = 65536
 
-# The GPU backends flipped on for the resident/per-call runs (run_on_cuda's set +
-# combustion). In the resident tick the water per-call flag is inert (that
+# The GPU backends flipped on for the resident/per-call runs (run_on_cuda's set,
+# combustion included since #71 / #29 P2 — the scenarios carry burning wood so
+# the combustion twin's pass actually runs). In the resident tick the water
+# per-call flag is inert (that
 # stages run resident), but the EOS/combustion/fire/temperature/radiation-sweep
 # brackets use their per-call GPU path — so a resident tick is a genuine all-GPU
 # tick. (ray-engine-v2 P4: set_radiation_backend replaces the vestigial
@@ -97,9 +99,32 @@ def _residency(on: bool) -> None:
 
 # Fields compared for bit-identity (ALL synced state, incl. the host-path float
 # ripple/ripple_v and the heat deposit). `gas` covers all N planes (bulk+trace).
+# #29 P2 (#71): + `gas_energy`, the conserved truth the combustion twin now
+# writes (the mirror alone would hide a sub-count energy divergence).
 _FIELDS = ("atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "heat",
            "fire", "wall_hp", "water_depth", "flow_vx", "flow_vy", "gas",
-           "ripple", "ripple_v")
+           "ripple", "ripple_v", "gas_energy")
+
+# #29 P2 (#71): the CombustionSolver's books, A/B'd per tick — the GPU twin
+# books into the runner's solver (cuda_combustion_step(combustion=)).
+_COMB_BOOKS = ("heat_floor_hits", "t_max_phys_hits", "e_deposit_drop_sum",
+               "e_comb_draw_sum", "e_comb_mint_sum", "e_comb_deliver_sum",
+               "e_soot_shed_sum", "e_ts_products_sum", "e_comb_export_sum",
+               "e_comb_heat_sum", "e_comb_rail_sum", "e_comb_solid_heat_sum")
+
+
+def _light_wood(g, cells):
+    """#29 P2 (#71): light wood tiles the CUDA-combustion way the playground
+    repro does — heated to the 1263-game plateau AND lit (CLAUDE.md "Starting
+    a fire": heat delivered, never `fire` alone). Without a flammable source
+    the combustion backend this gate turns on had no claimant and never ran
+    its pass (the air-cell fire seed below is not a fuel tile)."""
+    from simulation import fire_fixed
+    from simulation.materials import MAT_WOOD
+    for (y, x) in cells:
+        assert int(g.material[y, x]) == MAT_WOOD and bool(g.flammable[y, x])
+        g.temperature[y, x] = 1263 << 16
+        g.fire[y, x] = fire_fixed.quantize_scalar(0.8)
 
 
 def _build_scenario(H, W):
@@ -121,6 +146,7 @@ def _build_scenario(H, W):
     tm[2:H - 2, 2:W - 2] = 1
     tm[3:H - 3, 3:W - 3] = 4
     tm[H // 2 - 2:H // 2 + 2, W - 3] = 4     # breach the east hull to the vacuum band
+    tm[46:50, 50] = 2                        # a wood wall segment (#71: the fuel)
 
     level = LevelData(name="s8a_resident", version="1", path=Path("."),
                       tilemap=tm, tile_size_m=1.0 / 3.0, diffuse_path=Path("."))
@@ -141,6 +167,8 @@ def _build_scenario(H, W):
                  if not bool(g.gases.conservative[gi])]
     assert trace_ids, "scenario needs a trace plane"
     g.gas[trace_ids[0], 20:40, 20:40] += q(0.5)
+    # A BURNING wood segment (#71): the combustion twin's claimants.
+    _light_wood(g, [(47, 50), (48, 50)])
 
     runner = PhysicsRunner(bp)
     # Bind the engine so stamp_units takes the C++ (in-place) path, exactly as
@@ -207,12 +235,24 @@ def _compare_tick(t, g_cpu, g_gpu, eos_cpu, eos_gpu, ambient):
     # n_gases entries on both paths, every map, every tick.
     del ambient   # every map now carries comparable books
     for book in ("boundary_flux", "trace_wipe_sum", "trace_sink_sum",
-                 "trace_decay_sum"):
+                 "trace_decay_sum", "trace_mint_sum", "trace_clip_sum",
+                 "trace_neg_hits"):
         rc = list(getattr(eos_cpu, book)())
         rg = list(getattr(eos_gpu, book)())
         if rc != rg:
             bad += 1
             print(f"  tick {t}: {book} mismatch cpu={rc} gpu={rg}")
+    return bad
+
+
+def _compare_comb(t, comb_cpu, comb_gpu):
+    """#29 P2 (#71): the combustion books, CPU vs the GPU twin."""
+    bad = 0
+    for c in _COMB_BOOKS:
+        cc, cg = int(getattr(comb_cpu, c)), int(getattr(comb_gpu, c))
+        if cc != cg:
+            bad += 1
+            print(f"  tick {t}: combustion.{c} mismatch (cpu={cc} gpu={cg})")
     return bad
 
 
@@ -239,6 +279,7 @@ def _run_ab(label, build, n_ticks, tick_fn, ambient):
         tick_fn(runner_gpu, g_gpu, dt, t)
         _residency(False); _set_backends(False)
         bad += _compare_tick(t, g_cpu, g_gpu, eos_cpu, eos_gpu, ambient)
+        bad += _compare_comb(t, runner_cpu.combustion, runner_gpu.combustion)
         if bad >= 8:
             print("  aborting after 8 divergences")
             break
@@ -257,6 +298,14 @@ def _run_ab(label, build, n_ticks, tick_fn, ambient):
         return None
     if not (bool(g_gpu.residency_on()) and hasattr(g_gpu, "_dev")):
         print(f"  {label}: the GPU world never entered residency mode")
+        return None
+    # #29 P2 (#71): the combustion twin actually burned in the GPU world (its
+    # books move only through cuda_combustion_step there).
+    comb_g = runner_gpu.combustion
+    if int(comb_g.e_comb_heat_sum) <= 0 or int(comb_g.e_comb_draw_sum) <= 0:
+        print(f"  {label}: the GPU combustion twin never burned "
+              f"(e_comb_heat_sum={int(comb_g.e_comb_heat_sum)}, "
+              f"e_comb_draw_sum={int(comb_g.e_comb_draw_sum)}) — vacuous")
         return None
     return bad, runner_cpu, g_cpu
 
@@ -307,6 +356,8 @@ def _build_ambient_scenario():
     tm[0, :] = tm[-1, :] = tm[:, 0] = tm[:, -1] = 0   # SPACE ring border
     for c in range(28, 32):
         tm[1, c] = 1                                  # ring-adjacent hull stub
+    tm[1, 10:12] = 2       # #71: ring-adjacent wood (ring donors + ring sites)
+    tm[40:43, 30] = 2      # #71: an interior wood segment
     level = LevelData(name="s8a_patha_ambient", version="1", path=Path("."),
                       tilemap=tm, tile_size_m=1.0 / 3.0,
                       diffuse_path=Path("."), boundary="ambient")
@@ -322,6 +373,7 @@ def _build_ambient_scenario():
     g.gas[O2, 18:24, 18:24] += q(4.0)
     g.water_depth[H - 10:H - 6, 8:24] = water_fixed.quantize_scalar(0.4)
     g.fire[20:23, 40:43] = fire_fixed.quantize_scalar(0.8)
+    _light_wood(g, [(1, 10), (1, 11), (41, 30)])
 
     runner = PhysicsRunner(bp)
     g.bind_physics_engine(runner.engine)
