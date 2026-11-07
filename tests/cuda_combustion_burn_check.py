@@ -218,7 +218,7 @@ def _scene(rng: random.Random, h: int, w: int, t_amb_q: int, t_max_q: int,
     o2 = (n_tot * frac).astype(np.int64)
     gas[O2] = np.where(open_, o2, 0)
     gas[INERT_N2] = np.where(open_, n_tot - o2, 0)
-    gas[SMOKE] = np.where(open_, nr.integers(0, 1 << 22, (h, w)), 0)
+    gas[SMOKE] = np.where(open_, nr.integers(0, 1 << 22, (h, w)), 0)  # raw trace counts: scale-free (#88)
     # Temperatures (relative, Q16 game): thermal solids around their ignition
     # range, a few cells at the rail; gas cells from their stored energy.
     t_rel = nr.integers(-150 * FP_ONE, 1500 * FP_ONE, (h, w)).astype(np.int64)
