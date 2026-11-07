@@ -941,6 +941,7 @@ def main():
             if follow is not None:
                 _draw_replay_hud(control_source.hud_lines(
                     sim, cam=follow.hud_line(sim.units)), map_px_w)
+            renderer.update_light_curve_panel(dt)
             renderer.end_frame()
     finally:
         if follow is not None:
