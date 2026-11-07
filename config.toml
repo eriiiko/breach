@@ -2024,6 +2024,11 @@ density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
 # true height relative to him (renderer/unit_model_renderer.py).
 player = ["space_marine"]
 zombie = ["worker_male", "worker_female"]
+# Try the SOMA-skeleton worker (#179; pose layer [render.pose.skeletons.soma]):
+# swap this line in for the one above (any look of any skeleton can sit in
+# either list), or see every unit as him without editing anything:
+#   python art/characters/charkit/preview_in_game.py --root . --model assets/models/soma_worker_male/soma_worker_male.glb -- --level playground
+# zombie = ["soma_worker_male", "worker_male", "worker_female"]
 
 [render.unit_shading]
 # The 3D units' edge glow (renderer/marine_shader.py rim term). Read every
@@ -2215,6 +2220,113 @@ twitch = [              # amplitude per unit of twitch; each bone x row its own 
 hips = "DEF-hips"
 legs = [["DEF-thigh.L", "DEF-shin.L", "DEF-foot.L"],
         ["DEF-thigh.R", "DEF-shin.R", "DEF-foot.R"]]
+
+# SOMA (#179; design D1 + §12: the game's future humanoid skeleton): 30
+# joints, Hips the skin root, no fingers, Kimodo clips authored at true speed
+# (assets/models/soma_worker_male). Beside masks / twist / posture a skeleton
+# table MAY hold its own playback (absent = the global one, as quaternius_ual):
+#   clip_names  the canonical clip names the tables below use (the Quaternius
+#               pack's) -> this skeleton's own; "" = it has no such clip (a
+#               state falls back, the reaction needing it does nothing). Every
+#               mapped name must be a clip of the look (refused at load).
+#   rate        clip seconds per wall second, replacing [render.pose] rate
+#   clips       per-clip rows keyed by THIS skeleton's clip names, replacing
+#               [render.pose.clips] for its looks
+#   roles       per-role overrides: posture (replaces the role's amount on
+#               this skeleton) and states (rows replacing the global ones)
+[render.pose.skeletons.soma.masks]
+legs  = { subtree = ["Hips"], minus = ["Spine1"] }     # hips, legs
+upper = { subtree = ["Spine1"], minus = ["Neck1"] }    # spine, arms, hands
+head  = { subtree = ["Neck1"] }                        # necks, head, jaw, eyes
+
+[render.pose.skeletons.soma.twist]
+lower = "Hips"
+counter = ["Spine1", "Spine2", "Chest"]
+shares = [0.4, 0.3, 0.3]
+
+# Model-space rows mean the same motion on any rig facing +z with +y up and
+# +x its left (the axis is converted into each bone's parent frame at rest),
+# and SOMA's A-pose sits within a few degrees of the Quaternius workers' rest:
+# the signs below were carried over and then CHECKED on SOMA (FK numbers and
+# renders, #179 as-built in the design doc). No finger bones: arm_open has no
+# bones here (the hands are rigid).
+[render.pose.skeletons.soma.posture]
+up = [0.0, 1.0, 0.0]
+forward = [0.0, 0.0, 1.0]
+spine_pitch = [
+  { bones = ["Spine1"], axis = [1.0, 0.0, 0.0], deg = 0.35, space = "model" },
+  { bones = ["Spine2"], axis = [1.0, 0.0, 0.0], deg = 0.35, space = "model" },
+  { bones = ["Chest"], axis = [1.0, 0.0, 0.0], deg = 0.30, space = "model" },
+]
+shoulder_protraction = [
+  { bones = ["LeftShoulder"], axis = [0.0, 1.0, 0.0], deg = -25.0, space = "model" },
+  { bones = ["RightShoulder"], axis = [0.0, 1.0, 0.0], deg = 25.0, space = "model" },
+  { bones = ["LeftShoulder"], axis = [0.0, 0.0, 1.0], deg = 12.0, space = "model" },
+  { bones = ["RightShoulder"], axis = [0.0, 0.0, 1.0], deg = -12.0, space = "model" },
+]
+arm_forward = [
+  { bones = ["LeftArm", "RightArm"], axis = [1.0, 0.0, 0.0], deg = -1.0, space = "model" },
+  { bones = ["LeftForeArm", "RightForeArm"], axis = [1.0, 0.0, 0.0], deg = -0.4, space = "model" },
+  { bones = ["LeftHand", "RightHand"], axis = [1.0, 0.0, 0.0], deg = 0.3, space = "model" },
+  { bones = ["LeftArm"], axis = [0.0, 1.0, 0.0], deg = -0.2, space = "model" },
+  { bones = ["RightArm"], axis = [0.0, 1.0, 0.0], deg = 0.2, space = "model" },
+]
+arm_open = []
+head_drop = [           # the 50 deg neck thrust shared by SOMA's two neck bones
+  { bones = ["Neck1", "Neck2"], axis = [1.0, 0.0, 0.0], deg = 25.0, space = "model" },
+  { bones = ["Head"], axis = [1.0, 0.0, 0.0], deg = -80.0, space = "model" },
+]
+twitch = [
+  { bones = ["LeftShoulder", "RightShoulder"], axis = [0.0, 0.0, 1.0], deg = 20.0, space = "model" },
+  { bones = ["Head"], axis = [0.0, 1.0, 0.0], deg = 25.0, space = "model" },
+  { bones = ["Head"], axis = [1.0, 0.0, 0.0], deg = 15.0, space = "model" },
+]
+[render.pose.skeletons.soma.posture.knee_bend]
+hips = "Hips"
+legs = [["LeftLeg", "LeftShin", "LeftFoot"],
+        ["RightLeg", "RightShin", "RightFoot"]]
+
+[render.pose.skeletons.soma]
+rate = 1.0              # the Kimodo clips are authored at true speed
+
+[render.pose.skeletons.soma.clip_names]   # Hit_Chest is its own name
+Idle_Loop = "Idle"
+Walk_Loop = "Walk"
+Death01 = "Fall"
+Pistol_Idle_Loop = "Rifle_Aim_Walk"      # the aim overlay (hands empty: no rifle prop yet)
+Pistol_Shoot = "Rifle_Shoot"
+Punch_Jab = ""                           # no strike clip yet: a SOMA zombie's melee
+Punch_Cross = ""                         # reaction does nothing
+
+# A SOMA zombie walks Erik's generated hunch clip (Zombie_Hunch_Walk), so its
+# posture offsets default to OFF (0.0; the maps above stay, 1.0 = the stalk
+# profile ON TOP of the hunch -- a feel call, HUMAN-TEST). Its idle and its
+# reactions are the global ones.
+[render.pose.skeletons.soma.roles.zombie]
+posture = 0.0
+states.walk = { legs = "Zombie_Hunch_Walk", upper = "Zombie_Hunch_Walk", head = "Zombie_Hunch_Walk" }
+
+# The walk rates stop the feet skating: rate = the unit's DRAWN speed / the
+# clip's in-place stride speed (the stance foot's backward speed, measured
+# from the clip: Walk 1.34, Rifle_Aim_Walk 1.27, Zombie_Hunch_Walk 1.01 m/s).
+# Drawn speed: a unit moves 24 tps / speed_ticks_per_tile tiles per second
+# (a marine 24 / 18 = 1.333, a zombie 24 / 14 = 1.714 tiles/s), and the
+# renderer draws one tile as 1.885 / 6 = 0.3142 model metres (the space
+# marine's height = _SCALE_TILES_TALL 6 tiles): 0.419 m/s marine, 0.539 m/s
+# zombie. Retune with the sim's speeds (tests/test_pose_soma.py holds it).
+[render.pose.skeletons.soma.clips]
+Idle = {}
+Walk = { rate = 0.312 }                  # 0.419 / 1.344
+Run = {}                                 # registered, no run state yet
+Rifle_Aim_Walk = { rate = 0.330 }        # 0.419 / 1.27: the aim overlay (upper + head)
+Rifle_Shoot = { loop = false }           # the shot one-shot: a held aim, ~3 deg of sway
+Hit_Chest = { loop = false, rate = 1.5 } # the flinch additive (PLACEHOLDER, HUMAN-TEST)
+Hit_Back = { loop = false }              # registered: the hit event has no direction yet
+Hit_Left = { loop = false }
+Hit_Right = { loop = false }
+Fall = { loop = false }                  # dead (dormant: dead units are not drawn); keeps its travel
+Get_Up = { loop = false }                # registered: knockdown is #149; keeps its travel
+Zombie_Hunch_Walk = { rate = 0.531 }     # 0.539 / 1.014
 
 # State -> clip per layer. The renderer's state names (select_clip): today
 # idle and walk; dead is dormant, as in CLIP_MAP (firing is the fire

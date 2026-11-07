@@ -9,6 +9,8 @@ asserts on its last line (the ``gl_*_check.py`` convention). Prints one
 
 Each check names the PROPERTY it protects and the change that must break it:
 
+  (Every check runs over the shipped looks AND ``EXTRA_LOOKS`` -- the SOMA
+  look, #179 -- so both skeletons load and skin in one process.)
   inject_is_raylibs_own_frame -- on THIS machine's binding, writing raylib's
       own frame-k global pose into the skinner's scratch clip and skinning
       reproduces ``update_model_animation(model, clip, k)``'s animVertices
@@ -18,7 +20,9 @@ Each check names the PROPERTY it protects and the change that must break it:
       layout is wrong for the binding.
   composed_pose_skins_like_raylib -- the pose layer's own composed pose of a
       clip raylib samples on its keys (a frame whose bones all hold their
-      floor key on the 5.5 loader; frame 0 on any binding) skins to within
+      floor key on the 5.5 loader, or -- the SOMA clips, which 5.5
+      interpolates -- the pose at the frame's own time; frame 0 on any
+      binding) skins to within
       a millimetre-scale bound of raylib's own vertices for that frame.
       Breaks if the composed global pose and the mesh disagree (bone order,
       model vs local space, a wrong root).
@@ -46,6 +50,8 @@ for _p in (ROOT, ROOT / "src"):
 import pyray as rl  # noqa: E402
 
 RESULTS = []
+# #179: looks not in [render.unit_looks] that are checked too
+EXTRA_LOOKS = ("soma_worker_male",)
 
 
 def check(fn) -> None:
@@ -63,7 +69,10 @@ def _looks():
     from config import CFG
     from renderer.unit_looks import all_look_names, look_path, looks_table
     out = []
-    for name in all_look_names(looks_table(CFG)):
+    # the shipped looks + every look on another skeleton the pose layer
+    # carries a table for (#179: SOMA), so both rigs skin in ONE run
+    for name in all_look_names(looks_table(CFG)) + [n for n in EXTRA_LOOKS
+                                                     if n not in all_look_names(looks_table(CFG))]:
         path = str(look_path(name).resolve())
         model = rl.load_model(path)
         n = rl.ffi.new("int *", 0)
@@ -130,20 +139,27 @@ def composed_pose_skins_like_raylib():
         rig = pl.add_look(name, path)
         sk.prepare(name, model, anims[0], rig.bank.skeleton.names)
         bank = rig.bank
-        c = bank.index(walk)
-        a = anims[names[walk]]
+        own_walk = rig.clip_name(walk)           # #179: the skeleton's own name
+        c = bank.index(own_walk)
+        a = anims[names[own_walk]]
         frames = [0] + ([12, 37] if poses_f == "framePoses" else [])
         for f in frames:
             key = min(int(np.floor(f * 0.017 / bank.key_dt[c] + 1e-4)), bank.n_keys[c] - 1)
-            ps = pl.new_state(name, settings.fallback_state)
-            ps.clip[:] = c
-            ps.time[:] = key * bank.key_dt[c]
-            row = pl.compose(name, [ps]).global_trs[0]
             rl.update_model_animation(model, a, f)
             ref_v, _ = _verts(model)
-            sk.apply(name, model, row)
-            got_v, _ = _verts(model)
-            err = float(np.abs(ref_v - got_v).max())
+            # raylib 5.5 samples frame f at f x 17 ms: on the Quaternius pack
+            # it shows the floor key, on the Kimodo (SOMA) clips the
+            # interpolated pose at that time (measured, #179) -- the
+            # composed pose must match one of the two
+            errs = []
+            for t in (key * bank.key_dt[c], f * 0.017):
+                ps = pl.new_state(name, settings.fallback_state)
+                ps.clip[:] = c
+                ps.time[:] = t
+                sk.apply(name, model, pl.compose(name, [ps]).global_trs[0])
+                got_v, _ = _verts(model)
+                errs.append(float(np.abs(ref_v - got_v).max()))
+            err = min(errs)
             worst = max(worst, err)
             assert err < 1e-3, (name, f, err)
     return f"max |dv| {worst:.2e} (model units)"
