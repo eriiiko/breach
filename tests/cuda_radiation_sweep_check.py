@@ -933,24 +933,23 @@ def part9_live() -> None:
               lambda: only_radiation(True), lambda: only_radiation(False),
               cold_sky=True)
 
-    # The resident tick with every backend on EXCEPT combustion. On this scene
-    # the combustion twin (cuda_combustion.cu) is NOT bit-identical to
-    # CombustionSolver — 6 cells around the fire in temperature/gas_energy on
-    # tick 0, whether the sweep runs on the CPU or the GPU and whether the tick
-    # is resident or not (measured at P4; a finding in another system, recorded
-    # and not fixed here). Excluding it keeps this leg a statement about the
-    # sweep riding the resident tick's host bracket, which is what it is for.
+    # The resident tick with EVERY backend on. Until #71 (residency arc #29
+    # P2) combustion was excluded here: on this very scene the pre-#54
+    # combustion twin parted from CombustionSolver on tick 0 (6 cells of
+    # temperature / gas_energy around the fire). It is level now
+    # (tests/cuda_combustion_burn_check.py), so this leg rides the whole
+    # all-GPU resident tick.
     def all_gpu_resident(on):
         physics_runner.set_residency(bool(on))
         for name in _ALL_BACKENDS:
-            getattr(bp, name)(bool(on) and name != "set_combustion_backend")
+            getattr(bp, name)(bool(on))
 
     try:
         import cupy  # noqa: F401
     except Exception as exc:      # pragma: no cover — reported, never skipped
         _fail(f"9c: cupy unavailable ({exc}) — the resident leg cannot be gated")
         return
-    _run_live("9c resident tick, every backend but combustion", 15,
+    _run_live("9c resident tick, every backend", 15,
               lambda: all_gpu_resident(True), lambda: all_gpu_resident(False),
               fields=_RESIDENT_FIELDS)
     all_gpu_resident(False)

@@ -172,13 +172,15 @@ def part1_per_call() -> None:
 
 
 def part2_resident() -> None:
-    print("PART G2b — resident tick, every backend but combustion, transport=SHEAR")
+    print("PART G2b — resident tick, every backend, transport=SHEAR")
     from simulation import physics_runner
 
+    # Combustion was excluded until #71 (residency arc #29 P2) brought its
+    # twin onto the gas energy seam (tests/cuda_combustion_burn_check.py).
     def all_gpu_resident(on):
         physics_runner.set_residency(bool(on))
         for name in _ALL_BACKENDS:
-            getattr(bp, name)(bool(on) and name != "set_combustion_backend")
+            getattr(bp, name)(bool(on))
 
     try:
         import cupy  # noqa: F401
