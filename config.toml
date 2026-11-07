@@ -1879,6 +1879,46 @@ cap = 512                   # never more alive at once (blast_final's volley thr
                             # ~460; a fair subset beyond it)
 seed = 9157                 # mixed with each blast's tick and tile
 
+[render.debris]
+# Graphics G4 P4 -- DEBRIS, the third consumer of THE particle primitive
+# (renderer/particles.py DebrisSystem; docs/explosion_look_design_2026-11-07.md
+# §3.4, §8 P4). A detonation (the "blast" effect, read once) throws rate x
+# strength dark CHIPS from the tile centres of its walk's seeds (never from
+# inside a wall), radially, each with a hashed rotation and size (the fire's
+# hash). A chip is a thing on the floor (Erik's ruling at the screen,
+# 2026-11-07): it is dragged toward the frame's tamed wind x the tile's gas
+# DENSITY (bulk N over 1 atm, the prop sway's read: in vacuum the air does
+# nothing), and a ground friction brings it to rest -- so a draught never moves
+# a lying chip but the blast's outflow carries it. A chip that reaches a wall
+# STOPS there (it does not die), fades over its last fade_s and is gone at its
+# life. Drawn premultiplied (the particle draw's "debris" stage: a dark thing
+# darkens the floor), lit by the light field, after the floor smoke and under
+# the flame, the units and the ceiling soot. Seeded by the blast's tick and
+# tile, on the flame's VFX clock: a look shot reproduces. Re-read every frame
+# (F5); every key is required (a refusing door); `enabled` is its only switch.
+# Render-only.
+enabled = true
+rate = 25.0                 # chips at strength 1 (the frag); x strength:
+                            # breach (0.1) ~3, magazine (8) 200, C4 (12) 300
+v0_tiles_s = 8.0            # radial birth speed, tiles/s
+v_spread = 0.6              # each is born at v0 x (1 +- this x U(-1, 1)): 3.2..12.8
+drag = 1.5                  # 1/s at 1 atm: how fast the air catches a chip (x the
+                            # tile's density; 0 in vacuum)
+friction_tiles_s2 = 6.0     # ground friction, tiles/s^2: a lying chip moves only
+                            # in air faster than friction / drag = 4 tiles/s; an
+                            # 8 tiles/s chip stops in ~0.7 s, ~2.4 tiles out in
+                            # still air (in vacuum it slides ~5 tiles)
+life_s = 3.0                # mean life, s (VFX clock)
+life_jitter = 0.3           # each lives life_s x (1 +- this x U(-1, 1)): 2.1..3.9 s
+size_tiles = 0.08           # a chip's half-width (a tile is 48 world px: ~3.8 px)
+size_jitter = 0.5           # each is size_tiles x (1 +- this x hash)
+albedo = [0.08, 0.07, 0.06] # linear RGB: dark grey-brown under white light
+alpha = 0.9                 # opacity (premultiplied)
+fade_s = 0.8                # the opacity falls to 0 over the last fade_s of a life
+seed = 6271                 # mixed with each blast's tick and tile
+cap = 512                   # never more alive at once (blast_final's volley throws
+                            # ~530; a fair subset beyond it)
+
 [render.shimmer]
 # Graphics G3 F4a -- HEAT SHIMMER, the first term of the resolve's DISTORTION
 # BLOCK (renderer/heat_shimmer.py, shaders/world_resolve.fs distortion_px;

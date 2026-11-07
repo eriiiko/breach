@@ -326,6 +326,14 @@ class GameRenderer:
             _particles.spark_settings_from_config(CFG),
             t_amb_k=self._fire_scales.t_amb_k,
             glow_min_k=self._fire_scales.glow_min_k)
+        # Graphics G4 P4 -- DEBRIS, the particle primitive's third consumer:
+        # dark chips thrown by each "blast" effect from its walk's seeds,
+        # dragged by the tamed wind x the tile's gas density, stopped by
+        # ground friction and walls, drawn in the particle draw's
+        # premultiplied "debris" stage. [render.debris] is re-read every
+        # frame; `enabled` there is its only switch.
+        self.debris = _particles.DebrisSystem(
+            _particles.debris_settings_from_config(CFG))
         self.shimmer = _shimmer.HeatShimmer(
             cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
         # Graphics G4 P2 -- the SHOCK FRONT (renderer/shockwave.py), the
@@ -714,6 +722,40 @@ class GameRenderer:
                 wind_fn=frame_tamed_wind, tps=tps,
                 blocked=self._ember_blocked(gmap),
                 modes=self.embers.modes())
+        # Graphics G4 P4 -- the debris: each new "blast" effect is consumed
+        # once ("debris_seen"); the chips are born at the same walk's seeds,
+        # step on the same VFX clock, ride the same tamed wind scaled by the
+        # tile's gas density (the prop sway's read, static_props
+        # .gas_frac_at_tiles: 0 in vacuum) and stop at walls.
+        self.debris.refresh_settings(
+            _particles.debris_settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.debris.p.clear()            # no VFX clock
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["debris_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_d, walk_seeds as _walk_seeds_d)
+            from .static_props import gas_frac_at_tiles as _gas_frac
+            _dmask = []
+
+            def _debris_seeds(fy, fx, approach):
+                if not _dmask:
+                    _dmask.append(np.asarray(_open_mask_d(gmap), bool))
+                return _walk_seeds_d(_dmask[0], fy, fx, approach)
+
+            _n_amb = float(gmap.ambient_seed()[0])
+
+            def _debris_density(iy, ix):
+                return _gas_frac(gmap.gas_bulk_n_at, _n_amb, iy, ix)
+
+            self.debris.update(
+                t=self.fire_vfx.clock.t_noise, effects=self._effects,
+                seeds_fn=_debris_seeds, sim_tick=int(sim_tick),
+                wind_fn=frame_tamed_wind, tps=tps,
+                density_fn=_debris_density,
+                blocked=self._ember_blocked(gmap))
         # Graphics G3 F4b -- the room-light flicker's dials and the fire's
         # light gain (their rows are computed per sim tick by
         # fire_light_rows, not per frame).
@@ -967,6 +1009,11 @@ class GameRenderer:
             else:
                 self.gas_medium.draw(
                     0, 0, self.world.world_px_w, self.world.world_px_h)
+        # 3b. Graphics G4 P4 -- DEBRIS: the particle draw's premultiplied
+        # "debris" stage, chips lit by the light field (the props' read),
+        # lying on the floor: after the floor smoke group, under the flame,
+        # the units and the ceiling soot. No chip, no draw.
+        self._draw_debris(self._relief_view_rect())
         # 4. Graphics G3 F3 -- the FLAME (shaders/fire_glow.fs through
         # fire_vfx.draw_glow), in the linear scene as an emitter cover with
         # opacity tied to its emission (design §3.5, §13.4), UNDER the units
@@ -1293,6 +1340,23 @@ class GameRenderer:
             stage=stage, smoke_cover=self._smoke_cast[0],
             glow_through_ceil=glow_through_ceil)
 
+    def _draw_debris(self, view) -> int:
+        """Draw the debris chips (G4 P4) into the scene RT through the
+        particle draw's ``"debris"`` stage: premultiplied, lit by the light
+        field (``_light_field_ctx``), clipped to ``view``. Returns the draw
+        calls issued (0: no chip in view, or the debris off)."""
+        from .particles import pack_debris
+        ds = self.debris
+        if not ds.enabled or ds.p.n == 0:
+            self.ember_draw.debris_draws_last_frame = 0
+            self.ember_draw.debris_sprites_last_frame = 0
+            return 0
+        sprites = pack_debris(ds.p, view, self.world.world_px_per_tile,
+                              ds.settings)
+        return self.ember_draw.draw_debris(sprites,
+                                           light=self._light_field_ctx(),
+                                           albedo=ds.settings.albedo)
+
     def _relief_view_rect(self):
         """The camera's view in tiles, plus a margin, for the relief pass
         (graphics G1): its shader costs per world-RT pixel, so it draws only
@@ -1303,6 +1367,28 @@ class GameRenderer:
         m = 2.0
         return (cam.pos_tile_x - m, cam.pos_tile_y - m,
                 cam.pos_tile_x + vw + m, cam.pos_tile_y + vh + m)
+
+    def _light_field_ctx(self):
+        """THE ship's light field for a lit draw (``lit3d.LightFieldCtx``):
+        light_tex_a/b, world dims, ambient / exposure / normal-y sign, the
+        smoke cast product and the light curve -- single source of truth =
+        self.lighting. The 3D units and props (P1) and the debris stage
+        (G4 P4) take this one context."""
+        from renderer.lit3d import LightFieldCtx
+        return LightFieldCtx(
+            tex_a=self.lighting.light_tex_a,
+            tex_b=self.lighting.light_tex_b,
+            world_px_w=float(self.world.world_px_w),
+            world_px_h=float(self.world.world_px_h),
+            ambient=self.lighting.ambient,
+            light_gain=self.lighting.light_gain,
+            normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+            smoke_cover=self._smoke_cast[0],
+            smoke_grid=self._smoke_cast[1],
+            smoke_cast=self._smoke_cast[2],
+            smoke_cast2=self._smoke_cast[3],
+            curve=self.lighting.curve_uniforms,
+        )
 
     def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,
                              props: Sequence = ()) -> bool:
@@ -1369,21 +1455,7 @@ class GameRenderer:
             # the ship beside it. light_rgb_fn stays as the flat CPU
             # fallback for marines (shader off / not compiled). normal_y_sign
             # follows the ship's H-toggle.
-            from renderer.lit3d import LightFieldCtx
-            light_ctx = LightFieldCtx(
-                tex_a=self.lighting.light_tex_a,
-                tex_b=self.lighting.light_tex_b,
-                world_px_w=float(self.world.world_px_w),
-                world_px_h=float(self.world.world_px_h),
-                ambient=self.lighting.ambient,
-                light_gain=self.lighting.light_gain,
-                normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
-                smoke_cover=self._smoke_cast[0],
-                smoke_grid=self._smoke_cast[1],
-                smoke_cast=self._smoke_cast[2],
-                smoke_cast2=self._smoke_cast[3],
-                curve=self.lighting.curve_uniforms,
-            )
+            light_ctx = self._light_field_ctx()
             rl.begin_mode_3d(self._world_cam3d)
             try:
                 if draw_units_3d:

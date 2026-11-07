@@ -261,6 +261,26 @@ def apply_gas_density(wind_x: float, wind_z: float, frac: float,
     return (float(wind_x) * factor, float(wind_z) * factor)
 
 
+def gas_frac_at_tiles(gas_bulk_fn, n_ambient_q: float, iy, ix) -> np.ndarray:
+    """THE density read of :meth:`StaticPropRenderer.sample_gas_frac`, for
+    many tiles at once (graphics G4 P4: the debris' air term, Erik's ruling
+    2026-11-07): each tile's bulk gas N through the SAME single-tile
+    accessor (``GameMap.gas_bulk_n_at``, raw Q16.16) over the SAME ambient
+    reference (``GameMap.ambient_seed()[0]``) -- 0 in vacuum, 1 at ambient.
+    The accessor is asked once per DISTINCT tile (a blast's chips share a
+    few), never a full-grid dequantize. ``gas_bulk_fn`` None reads as
+    ambient, as the props' read does."""
+    iy = np.asarray(iy, dtype=np.int64)
+    ix = np.asarray(ix, dtype=np.int64)
+    if gas_bulk_fn is None or iy.size == 0:
+        return np.ones(iy.shape, np.float64)
+    pairs, inv = np.unique(np.stack([iy.ravel(), ix.ravel()], axis=1),
+                           axis=0, return_inverse=True)
+    vals = np.array([float(gas_bulk_fn(int(y), int(x))) for y, x in pairs],
+                    np.float64) / max(float(n_ambient_q), 1e-9)
+    return vals[np.asarray(inv).ravel()].reshape(iy.shape)
+
+
 PROP_VS = """#version 330
 // Static-prop vertex shader. No skinning; the ONE animation is P4's WIND SWAY,
 // a pure vertex displacement in MODEL space (so it rides the placement's yaw +
@@ -950,4 +970,4 @@ class StaticPropRenderer:
 
 __all__ = ["StaticPropRenderer", "PropPlacement", "SwaySettings",
            "build_model", "placements_from_entities", "apply_gas_density",
-           "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]
+           "gas_frac_at_tiles", "PROP_VS", "PROP_FS", "HEIGHT_BUCKET_M", "make_camera"]

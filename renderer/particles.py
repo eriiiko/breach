@@ -3,8 +3,8 @@
 Design: ``docs/g3_fire_design_2026-10-23.md`` §6.1, §8 ("Particles"), §10(b)
 ("Particle primitive"), §13.3 (the VFX clock).
 
-WHAT IT IS. The one particle system of the renderer (embers, sparks; debris
-next -- consumers EXTEND it, never build a second one). Three parts:
+WHAT IT IS. The one particle system of the renderer (embers, sparks, debris
+-- consumers EXTEND it, never build a second one). Three parts:
 
   * :class:`Particles` -- the state: structure-of-arrays numpy, CAPPED
     (``cap``), every particle with an age, a lifetime, a birth temperature
@@ -49,6 +49,23 @@ same curl-noise field; Newton cooling; dead in a wall), the same
 :func:`pack_sprites` and the same :class:`ParticleDraw` -- the two systems'
 sprites concatenated into ONE draw per stage. ``[render.sparks]`` holds
 every dial, behind a refusing door.
+
+THE DEBRIS (the third consumer, :class:`DebrisSystem`; graphics G4 P4,
+design §3.4, §6 S5 / N6, §8 P4). Each new ``"blast"`` effect is consumed once
+(``"debris_seen"``) and throws ``rate * strength`` dark CHIPS from the same
+walk seeds, radially, a hashed rotation and size each (THE fire's hash,
+``fire_vfx_ref._hash01``). They are things on the FLOOR, so they have their
+own twin stage, :func:`integrate_debris` (Erik's ruling at the screen,
+2026-11-07): drag toward the frame's tamed wind x tps SCALED BY THE TILE'S
+GAS DENSITY (bulk N over the ambient, the prop sway's read: in vacuum the air
+term is zero), then a density-independent GROUND FRICTION (a constant
+deceleration to rest: a draught never moves a lying chip, a blast's outflow
+carries it); a chip that would enter a wall STOPS at its last open position
+and lives on; it fades over its last ``fade_s`` and dies at its life. A dark
+chip cannot be drawn additively, so :class:`ParticleDraw` has a second
+stage, ``"debris"``: premultiplied alpha, lit by the light field through the
+lit-3D block (``lit3d._FIELD_SAMPLE_GLSL``), under the flame and the units.
+The ember / spark :func:`integrate` and :func:`pack_sprites` are untouched.
 
 NOT HERE: the renderer's ``_effects`` queue (tracers, explosion rings, hit
 splats) is LEGACY DISPLAY-SPACE EFFECTS, drawn after the resolve -- it is not
@@ -197,7 +214,10 @@ class Particles:
         new = np.zeros((k, len(_FIELDS)))
         for f in ("x", "y", "vx", "vy", "life", "t0"):
             new[:, _COL[f]] = np.asarray(arrs[f], dtype=np.float64)[:k]
-        new[:, TEMP] = new[:, T0]
+        # a chip (DebrisSystem) hands its own `temp` column (its hashed
+        # size); every glowing particle starts at its birth temperature
+        new[:, TEMP] = (np.asarray(arrs["temp"], dtype=np.float64)[:k]
+                        if "temp" in arrs else new[:, T0])
         self.d = np.concatenate([self.d, new])
         return k
 
@@ -763,6 +783,343 @@ class SparkSystem:
 
 
 # ---------------------------------------------------------------------------
+# The debris (the third consumer) -- [render.debris]
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DebrisSettings:
+    """Every ``[render.debris]`` dial (graphics G4 P4; design
+    ``docs/explosion_look_design_2026-11-07.md`` §3.4, §6 S5 / N6, §8 P4).
+    The config is the live value and every key is required
+    (:func:`debris_settings_from_config` refuses)."""
+    enabled: bool
+    rate: float              # chips per detonation at strength 1 (x strength)
+    v0_tiles_s: float        # radial birth speed, tiles/s
+    v_spread: float          # the speed is v0 * (1 +- v_spread * U(-1, 1))
+    drag: float              # 1/s at 1 atm: the air term's rate (x density)
+    friction_tiles_s2: float  # ground friction: a constant deceleration to rest
+    life_s: float            # mean lifetime, s (VFX clock)
+    life_jitter: float       # each lives life_s * (1 +- life_jitter * U(-1, 1))
+    size_tiles: float        # a chip's half-width, tiles
+    size_jitter: float       # each is size_tiles * (1 +- size_jitter * hash)
+    albedo: tuple            # linear RGB, the chip's colour under white light
+    alpha: float             # its opacity (premultiplied in the draw)
+    fade_s: float            # the opacity fades to 0 over the last fade_s
+    seed: int                # mixed with each blast's (tick0, pos)
+    cap: int                 # never more alive at once
+
+
+_DEBRIS_KINDS = {f.name: f.type for f in fields(DebrisSettings)}
+
+# The density factor's ceiling: an overpressured tile drags a chip at most
+# this many times as hard as one at 1 atm (the prop sway's shipped
+# ``density_max``; Erik's momentum-flux read, static_props.apply_gas_density).
+DEBRIS_DENSITY_MAX = 2.0
+DEBRIS_MAX_HOP = 0.5   # tiles: one integration substep never moves a chip further
+
+
+def debris_config_keys() -> Tuple[str, ...]:
+    """Every key ``[render.debris]`` must carry."""
+    return tuple(_DEBRIS_KINDS)
+
+
+def debris_settings_from_config(cfg) -> DebrisSettings:
+    """``[render.debris]`` -> settings, read every frame. A REFUSING door
+    (the sparks'): a missing section, a missing key or a mistyped value
+    raises ValueError naming it."""
+    sec = getattr(getattr(cfg, "render", None), "debris", None)
+    if sec is None:
+        raise ValueError("config.toml has no [render.debris] section")
+    vals = {}
+    for name, kind in _DEBRIS_KINDS.items():
+        if not hasattr(sec, name):
+            raise ValueError(f"[render.debris] is missing {name!r}")
+        v = getattr(sec, name)
+        if kind in ("bool", bool):
+            ok = isinstance(v, bool)
+        elif kind in ("int", int):
+            ok = isinstance(v, int) and not isinstance(v, bool)
+        elif kind in ("tuple", tuple):
+            ok = (isinstance(v, (list, tuple)) and len(v) == 3
+                  and all(isinstance(c, (int, float))
+                          and not isinstance(c, bool) for c in v))
+            v = tuple(float(c) for c in v) if ok else v
+        else:
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+            v = float(v) if ok else v
+        if not ok:
+            raise ValueError(f"[render.debris] {name} has the wrong type: "
+                             f"{v!r}")
+        vals[name] = v
+    s = DebrisSettings(**vals)
+    for name in ("life_s", "size_tiles", "fade_s"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"[render.debris] {name} must be > 0")
+    for name in ("rate", "v0_tiles_s", "drag", "friction_tiles_s2"):
+        if getattr(s, name) < 0.0:
+            raise ValueError(f"[render.debris] {name} must be >= 0")
+    for name in ("v_spread", "life_jitter", "size_jitter"):
+        if not 0.0 <= getattr(s, name) < 1.0:
+            raise ValueError(f"[render.debris] {name} must be in [0, 1)")
+    if not 0.0 <= s.alpha <= 1.0:
+        raise ValueError("[render.debris] alpha must be in [0, 1]")
+    if not all(0.0 <= c <= 1.0 for c in s.albedo):
+        raise ValueError("[render.debris] albedo must be in [0, 1]")
+    if s.cap < 0:
+        raise ValueError("[render.debris] cap must be >= 0")
+    return s
+
+
+def debris_count(strength: float, rate: float) -> int:
+    """How many chips a detonation of row ``strength`` throws:
+    ``round(rate * strength)`` (design §3.4: linear in strength) -- 0 for a
+    row without a strength."""
+    return int(round(max(float(rate), 0.0) * max(float(strength), 0.0)))
+
+
+_M64 = (1 << 64) - 1
+
+
+def debris_keys(n: int, tick0: int, pos) -> np.ndarray:
+    """The per-chip keys of THE fire's hash (``fire_vfx_ref._hash01``, the
+    vectorised twin of ``fire_vfx._hash01``): one blast's ``(tick0, x, y)``
+    folded into a base, plus the chip's index -- so a chip's rotation and
+    size are fixed for life and reproduce."""
+    base = (((int(tick0) & 0xFFFFFF) << 40) ^ ((int(pos[1]) & 0xFFFFF) << 20)
+            ^ (int(pos[0]) & 0xFFFFF))
+    with np.errstate(over="ignore"):
+        return (np.uint64((base * 4099) & _M64)
+                + np.arange(int(n), dtype=np.uint64))
+
+
+def debris_spawns(n: int, seeds, settings: DebrisSettings,
+                  rng: np.random.Generator, keys: np.ndarray) -> dict:
+    """``n`` chips of one detonation: born at the CENTRES (+0.5) of the blast
+    walk's ``seeds`` (never inside a wall), one seed each uniformly, a
+    uniform direction, radial speed ``v0 * (1 +- v_spread * u)``, living
+    ``life_s * (1 +- life_jitter * u)``. A chip carries no temperature: its
+    ``t0`` column holds its ROTATION (rad) and its ``temp`` column its SIZE
+    factor, both from THE fire's hash of ``keys`` (never the RNG, never a
+    second hash). Returns arrays x, y, vx, vy, t0, temp, life."""
+    seeds = list(seeds or ())
+    if n <= 0 or not seeds:
+        return {k: np.zeros(0) for k in _SPAWN_KEYS + ("temp",)}
+    # every uniform in ONE draw (rows: seed, angle, speed, life)
+    u = rng.random((4, int(n)))
+    sy = np.array([s_[0] for s_ in seeds], np.float64)
+    sx = np.array([s_[1] for s_ in seeds], np.float64)
+    idx = np.minimum((u[0] * len(seeds)).astype(np.int64), len(seeds) - 1)
+    ang = 2.0 * np.pi * u[1]
+    speed = settings.v0_tiles_s * (1.0 + settings.v_spread
+                                   * (2.0 * u[2] - 1.0))
+    life = settings.life_s * (1.0 + settings.life_jitter
+                              * (2.0 * u[3] - 1.0))
+    salt = int(settings.seed) * 2
+    rot = 2.0 * np.pi * ref._hash01(keys, salt + 1)
+    size = 1.0 + settings.size_jitter * (2.0 * ref._hash01(keys, salt + 2)
+                                         - 1.0)
+    return dict(x=sx[idx] + 0.5, y=sy[idx] + 0.5,
+                vx=np.cos(ang) * speed, vy=np.sin(ang) * speed,
+                t0=rot, temp=size, life=life)
+
+
+def integrate_debris(p: Particles, dt: float, *, air_fn: Callable,
+                     density_fn: Callable, blocked: np.ndarray,
+                     settings: DebrisSettings) -> None:
+    """THE chips' motion law (Erik's ruling at the screen, 2026-11-07), the
+    twin stage beside :func:`integrate`: advance every chip by ``dt`` s of
+    the VFX clock.
+
+    1. Drag toward the local air's motion (``air_fn(iy, ix)`` -> (N, 2)
+       tiles/s: the frame's ONE tamed wind x tps), at the rate ``drag x
+       rho``, ``rho`` = ``density_fn(iy, ix)`` (the tile's bulk gas N over
+       the ambient, the prop sway's read) clamped to [0,
+       :data:`DEBRIS_DENSITY_MAX`]: in vacuum the air term is ZERO.
+    2. Ground friction, independent of the air: the speed drops by
+       ``friction_tiles_s2 x dt`` toward zero (never reverses) -- so a
+       draught whose pull ``drag x rho x |air|`` is below the friction never
+       moves a lying chip, and a blast's outflow does.
+    3. Move; a chip that would enter a ``blocked`` tile (or leave the map)
+       STOPS at its last open position, velocity zero, alive (a chip is a
+       thing on the floor). A chip whose own tile has become blocked (a
+       sealed wall) dies.
+    4. Age; dead at its lifetime."""
+    if p.n == 0 or dt <= 0.0:
+        return
+    iy, ix, inside = _tiles_of(p.d[:, X:Y + 1], blocked.shape)
+    ok = inside & ~blocked[iy, ix]
+    if not ok.all():
+        p.keep(ok)
+        if p.n == 0:
+            return
+        iy, ix = iy[ok], ix[ok]
+    d = p.d
+    air = np.asarray(air_fn(iy, ix), dtype=np.float64)
+    rho = np.minimum(np.maximum(np.asarray(density_fn(iy, ix),
+                                           dtype=np.float64), 0.0),
+                     DEBRIS_DENSITY_MAX)
+    a = 1.0 - np.exp(-max(float(settings.drag), 0.0) * rho * dt)
+    v = d[:, VX:VY + 1]
+    v += (air - v) * a[:, None]
+    sp = np.hypot(v[:, 0], v[:, 1])
+    f = max(float(settings.friction_tiles_s2), 0.0) * dt
+    v *= np.where(sp > f, (sp - f) / np.maximum(sp, 1e-30), 0.0)[:, None]
+    old = d[:, X:Y + 1].copy()
+    d[:, X:Y + 1] += v * dt
+    d[:, AGE] += dt
+    iy2, ix2, inside2 = _tiles_of(d[:, X:Y + 1], blocked.shape)
+    hit = ~inside2 | blocked[iy2, ix2]
+    if hit.any():
+        d[hit, X:Y + 1] = old[hit]
+        d[hit, VX:VY + 1] = 0.0
+    alive = d[:, AGE] < d[:, LIFE]
+    if not alive.all():
+        p.keep(alive)
+
+
+def debris_weight(age, life, alpha: float, fade_s: float) -> np.ndarray:
+    """A chip's opacity: ``alpha`` until its last ``fade_s`` seconds, then
+    linearly to 0 at its life -- monotone non-increasing in age."""
+    rest = np.asarray(life, np.float64) - np.asarray(age, np.float64)
+    return float(alpha) * np.minimum(np.maximum(rest / max(float(fade_s),
+                                                           1e-9), 0.0), 1.0)
+
+
+def pack_debris(p: Particles, view, px_per_tile: float,
+                settings: DebrisSettings) -> np.ndarray:
+    """The chips in ``view`` ((x0, y0, x1, y1) tiles, None = all), one tile
+    of margin -> ``(2, k, 4)`` float32, the debris stage's data texture:
+    row 0 = (x, y world px, rotation rad, half-width px), row 1 = (opacity,
+    0, 0, 0). k = 0 draws nothing. The ember / spark :func:`pack_sprites` is
+    a separate function and untouched."""
+    d = p.d
+    if view is not None and p.n:
+        vx0, vy0, vx1, vy1 = view
+        x, y = d[:, X], d[:, Y]
+        d = d[(x >= vx0 - 1.0) & (x <= vx1 + 1.0)
+              & (y >= vy0 - 1.0) & (y <= vy1 + 1.0)]
+    k = int(d.shape[0])
+    out = np.zeros((2, k, 4), np.float32)
+    if k == 0:
+        return out
+    ppt = float(px_per_tile)
+    out[0, :, 0] = d[:, X] * ppt
+    out[0, :, 1] = d[:, Y] * ppt
+    out[0, :, 2] = d[:, T0]                                  # its rotation
+    out[0, :, 3] = settings.size_tiles * d[:, TEMP] * ppt    # x its size
+    out[1, :, 0] = debris_weight(d[:, AGE], d[:, LIFE], settings.alpha,
+                                 settings.fade_s)
+    return out
+
+
+class DebrisSystem:
+    """The chips' CPU side (graphics G4 P4, the particle primitive's THIRD
+    consumer): per frame, :meth:`update` consumes every new ``"blast"``
+    effect ONCE (``"debris_seen"``; never another consumer's flag), throws
+    its ``rate * strength`` chips at the blast walk's seeds, and steps the
+    alive ones through :func:`integrate_debris` on the VFX clock. Pure numpy
+    (no GL, no sim import: the seeds, the wind and the density come in as
+    callables)."""
+
+    def __init__(self, settings: DebrisSettings):
+        self.settings = settings
+        self.p = Particles(settings.cap)
+        # a look shot's `hide = ["debris"]` (tools; never a key): None = the
+        # config's `enabled`
+        self.enabled_override: Optional[bool] = None
+        self._t_prev: Optional[float] = None
+        self.spawned_last_frame = 0
+        self.last_update_ms = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.enabled_override if self.enabled_override is not None
+                    else self.settings.enabled)
+
+    def refresh_settings(self, settings: DebrisSettings) -> None:
+        if settings.cap != self.p.cap:
+            self.p.set_cap(settings.cap)
+        self.settings = settings
+        if not self.enabled:
+            self.p.clear()
+
+    def consume(self, effects, seeds_fn: Callable, sim_tick: int) -> dict:
+        """Mark every new ``"blast"`` effect ``"debris_seen"`` and return the
+        chips it throws (concatenated; none while disabled). ``seeds_fn(fy,
+        fx, approach)`` is the blast walk's seed rule over the open mask."""
+        s = self.settings
+        keys_all = _SPAWN_KEYS + ("temp",)
+        out = []
+        for fx in effects:
+            if fx.get("kind") != "blast" or fx.get("debris_seen"):
+                continue
+            fx["debris_seen"] = True
+            if not self.enabled:
+                continue
+            n = debris_count(fx.get("strength", 0.0), s.rate)
+            if n == 0:
+                continue
+            pos = fx["pos"]
+            tick0 = fx.get("tick0", sim_tick)
+            seeds = seeds_fn(int(pos[1]), int(pos[0]), fx.get("approach"))
+            # THE blast RNG key (seed, tick0, x, y), the sparks' rule, with
+            # the debris' own seed: two consumers never share a stream
+            rng = spark_rng(s.seed, tick0, pos)
+            out.append(debris_spawns(n, seeds, s, rng,
+                                     debris_keys(n, tick0, pos)))
+        if not out:
+            return {k: np.zeros(0) for k in keys_all}
+        return {k: np.concatenate([o[k] for o in out]) for k in keys_all}
+
+    def update(self, *, t: float, effects, seeds_fn: Callable,
+               sim_tick: int, wind_fn: Callable, tps: float,
+               density_fn: Callable, blocked: np.ndarray) -> None:
+        """One frame at VFX noise time ``t`` (monotone): step the alive
+        chips over the elapsed VFX time (substeps of at most
+        :data:`DEBRIS_MAX_HOP` tiles, so no chip steps over a wall), then
+        add the new blasts' chips, born at ``t`` with age 0. ``wind_fn``
+        returns the frame's ONE tamed wind (tiles per tick); ``density_fn(iy,
+        ix)`` the tiles' bulk N over the ambient."""
+        t0w = time.perf_counter()
+        self.spawned_last_frame = 0
+        dt = 0.0 if self._t_prev is None else max(float(t) - self._t_prev, 0.0)
+        self._t_prev = float(t)
+        dt = min(dt, MAX_STEP_S)
+        s = self.settings
+        if not self.enabled:
+            self.consume(effects, seeds_fn, sim_tick)     # seen, never thrown
+            self.last_update_ms = (time.perf_counter() - t0w) * 1000.0
+            return
+        if dt > 0.0 and self.p.n:
+            def air(iy, ix):
+                # index first, convert the few rows (never the map)
+                return np.asarray(wind_fn())[iy, ix].astype(
+                    np.float64) * float(tps)
+
+            iy, ix, _ = _tiles_of(self.p.d[:, X:Y + 1], blocked.shape)
+            a0 = air(iy, ix)
+            v = max(float(np.max(np.hypot(self.p.vx, self.p.vy))),
+                    float(np.max(np.hypot(a0[:, 0], a0[:, 1]))))
+            k = max(1, int(math.ceil(v * dt / DEBRIS_MAX_HOP)))
+            h = dt / k
+            for _ in range(k):
+                if self.p.n == 0:
+                    break
+                integrate_debris(self.p, h, air_fn=air, density_fn=density_fn,
+                                 blocked=blocked, settings=s)
+        new = self.consume(effects, seeds_fn, sim_tick)
+        if new["x"].size:
+            room = max(self.p.cap - self.p.n, 0)
+            if new["x"].size > room:              # a fair subset, not the first
+                rng = np.random.default_rng([int(s.seed) & 0xFFFFFFFF,
+                                             int(sim_tick) & 0xFFFFFFFF])
+                keep = np.sort(rng.permutation(new["x"].size)[:room])
+                new = {k_: v_[keep] for k_, v_ in new.items()}
+            self.spawned_last_frame = self.p.add(**new)
+        self.last_update_ms = (time.perf_counter() - t0w) * 1000.0
+
+
+# ---------------------------------------------------------------------------
 # The GL face
 # ---------------------------------------------------------------------------
 
@@ -787,10 +1144,38 @@ def sprite_shader_sources() -> Tuple[str, str]:
             fs.replace(_SMOKE_MARKER, _SMOKE_SHADOW_GLSL))
 
 
+# The DEBRIS stage (graphics G4 P4): THE way a DARK particle is drawn --
+# premultiplied alpha, never additive, never a third blend path. Its own
+# program (shaders/particle_debris.vs/.fs) and data texture, so it draws
+# before the flame without touching the sprites' upload.
+DEBRIS_STAGE = "debris"
+_COMMON_MARKER = "// <COMMON>"
+_FIELD_MARKER = "// <FIELD_SAMPLE>"
+_UNIT_LIGHT_A, _UNIT_LIGHT_B = 8, 9
+
+
+def debris_shader_sources() -> Tuple[str, str]:
+    """(vertex, fragment) source of the debris stage, the fragment COMPOSED
+    with the lit-3D block (``lit3d._COMMON_GLSL`` at ``// <COMMON>``,
+    ``lit3d._FIELD_SAMPLE_GLSL`` at ``// <FIELD_SAMPLE>``): a chip reads the
+    light field exactly as a prop does -- the one copy of that read."""
+    from .lit3d import _COMMON_GLSL, _FIELD_SAMPLE_GLSL
+    fs = (SHADERS_DIR / "particle_debris.fs").read_text(encoding="utf-8")
+    for marker in (_COMMON_MARKER, _FIELD_MARKER):
+        if marker not in fs:
+            raise ValueError(f"particle_debris.fs lacks '{marker}'")
+    fs = fs.replace(_COMMON_MARKER, _COMMON_GLSL).replace(
+        _FIELD_MARKER, _FIELD_SAMPLE_GLSL)
+    return ((SHADERS_DIR / "particle_debris.vs").read_text(encoding="utf-8"),
+            fs)
+
+
 class ParticleDraw:
     """Draws packed sprites (:func:`pack_sprites`) into the BOUND target --
     the scene RT, linear HDR -- additively, keeping the destination alpha,
-    in ONE direct-GL draw call."""
+    in ONE direct-GL draw call. Its second stage, ``"debris"``
+    (:meth:`draw_debris`, graphics G4 P4), draws packed chips
+    (:func:`pack_debris`) premultiplied, lit by the light field."""
 
     _UNIFORMS = ("u_parts", "u_lut", "u_world_px", "u_lut_k", "u_lut_n",
                  "u_stage", "u_glow_through_ceil", "u_smoke_cover")
@@ -811,6 +1196,13 @@ class ParticleDraw:
         self._alloc(cap)
         self.draws_last_frame = 0
         self.sprites_last_frame = 0
+        # the debris stage: compiled on its first chip
+        self._debris_shader = None
+        self._debris_loc = {}
+        self._debris_tex = None
+        self._debris_width = 0
+        self.debris_draws_last_frame = 0
+        self.debris_sprites_last_frame = 0
 
     def _alloc(self, cap: int) -> None:
         if self.tex is not None:
@@ -881,6 +1273,105 @@ class ParticleDraw:
         self.draws_last_frame += 1
         return 1
 
+    _DEBRIS_UNIFORMS = ("u_parts", "u_world_px", "texture1", "texture2",
+                        "u_light_z", "u_ambient", "u_light_gain", "u_albedo",
+                        "u_smoke_cover")
+
+    def draw_debris(self, sprites: np.ndarray, *, light,
+                    albedo: Tuple[float, float, float]) -> int:
+        """The ``"debris"`` stage: draw packed chips (:func:`pack_debris`,
+        (2, k, 4) float32) into the bound scene RT, PREMULTIPLIED (ONE,
+        ONE_MINUS_SRC_ALPHA on RGB and alpha: the scene RT's premultiplied
+        convention, a chip of opacity a darkens what is under it by 1 - a),
+        coloured ``albedo x (ambient + exposure x light)`` with the light
+        read from ``light`` (a ``lit3d.LightFieldCtx``: ``light_tex_a/b``,
+        the smoke's cast shadow, the light curve -- the props' read). One
+        direct-GL draw; 0 when there is no chip."""
+        k = int(sprites.shape[1])
+        self.debris_sprites_last_frame = k
+        self.debris_draws_last_frame = 0
+        if k == 0:
+            return 0
+        rl, gl = self._rl, self._gl
+        from . import lit3d
+        if self._debris_shader is None:
+            vs, fs = debris_shader_sources()
+            sh = rl.load_shader_from_memory(vs, fs)
+            if sh.id == 0 or sh.id == rl.rl_get_shader_id_default():
+                raise RuntimeError("debris shader failed to compile/link")
+            self._debris_shader = sh
+            self._debris_loc = {u: rl.get_shader_location(sh, u)
+                                for u in self._DEBRIS_UNIFORMS}
+        sh = self._debris_shader
+        if k > self._debris_width:
+            if self._debris_tex is not None:
+                rl.unload_texture(self._debris_tex)
+            self._debris_width = max(k, self.width)
+            self._debris_tex = self._core.create_dynamic_rgba32f_texture(
+                self._debris_width, 2)
+        a = np.ascontiguousarray(sprites, dtype=np.float32)
+        rl.update_texture_rec(self._debris_tex,
+                              rl.Rectangle(0.0, 0.0, float(k), 2.0),
+                              rl.ffi.cast("void *",
+                                          rl.ffi.from_buffer("float[]", a)))
+        # premultiplied alpha (ONE, ONE_MINUS_SRC_ALPHA) on RGB AND alpha --
+        # the scene's premultiplied convention (the floor smoke, the water);
+        # never additive: a dark chip must darken the floor
+        rl.rl_set_blend_factors_separate(rl.RL_ONE, rl.RL_ONE_MINUS_SRC_ALPHA,
+                                         rl.RL_ONE, rl.RL_ONE_MINUS_SRC_ALPHA,
+                                         rl.RL_FUNC_ADD, rl.RL_FUNC_ADD)
+        rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
+        U = rl.ShaderUniformDataType
+        loc = self._debris_loc
+
+        def put(name, vals, kind):
+            if loc.get(name, -1) >= 0:
+                rl.set_shader_value(sh, loc[name],
+                                    rl.ffi.new(f"float[{len(vals)}]",
+                                               [float(v) for v in vals]),
+                                    kind)
+
+        def put_i(name, v):
+            if loc.get(name, -1) >= 0:
+                rl.set_shader_value(sh, loc[name], rl.ffi.new("int *", int(v)),
+                                    U.SHADER_UNIFORM_INT)
+
+        put_i("u_parts", _UNIT_DATA)
+        put_i("texture1", _UNIT_LIGHT_A)
+        put_i("texture2", _UNIT_LIGHT_B)
+        put_i("u_smoke_cover", _UNIT_SMOKE)
+        put("u_world_px", (light.world_px_w, light.world_px_h),
+            U.SHADER_UNIFORM_VEC2)
+        put("u_light_z", (1.0,), U.SHADER_UNIFORM_FLOAT)
+        put("u_ambient", tuple(light.ambient)[:3], U.SHADER_UNIFORM_VEC3)
+        put("u_light_gain", (light.light_gain,), U.SHADER_UNIFORM_FLOAT)
+        put("u_albedo", tuple(albedo), U.SHADER_UNIFORM_VEC3)
+        cast = (light.smoke_cast if light.smoke_cover is not None
+                else (0.0, 0.0, 0.0, 0.0))
+        lit3d.set_smoke_shadow_uniforms(sh, light.smoke_grid, cast,
+                                        light.smoke_cast2)
+        lit3d.set_light_curve_uniforms(sh, light.curve)
+        gl.UseProgram(sh.id)
+        gl.BindVertexArray(gl.vao)
+        units = [(_UNIT_DATA, self._debris_tex.id),
+                 (_UNIT_LIGHT_A, light.tex_a.id),
+                 (_UNIT_LIGHT_B, light.tex_b.id)]
+        if light.smoke_cover is not None:
+            units.append((_UNIT_SMOKE, light.smoke_cover.id))
+        for unit, tid in units:
+            gl.ActiveTexture(_GL_TEXTURE0 + unit)
+            gl.BindTexture(_GL_TEXTURE_2D, int(tid))
+        gl.DrawArrays(_GL_TRIANGLES, 0, 6 * k)
+        for unit, _ in units:
+            gl.ActiveTexture(_GL_TEXTURE0 + unit)
+            gl.BindTexture(_GL_TEXTURE_2D, 0)
+        gl.ActiveTexture(_GL_TEXTURE0)
+        gl.BindVertexArray(0)
+        gl.UseProgram(0)
+        rl.end_blend_mode()
+        self.debris_draws_last_frame = 1
+        return 1
+
     def _set_i(self, name: str, v: int) -> None:
         loc = self._loc.get(name, -1)
         if loc >= 0 and self._cache.get(name) != (v,):
@@ -900,6 +1391,10 @@ class ParticleDraw:
     def unload(self) -> None:
         self._rl.unload_shader(self.shader)
         self._rl.unload_texture(self.tex)
+        if self._debris_shader is not None:
+            self._rl.unload_shader(self._debris_shader)
+        if self._debris_tex is not None:
+            self._rl.unload_texture(self._debris_tex)
 
 
 __all__ = [
@@ -911,4 +1406,8 @@ __all__ = [
     "SparkSettings", "spark_settings_from_config", "spark_config_keys",
     "spark_count", "spark_rng", "spark_spawns", "SparkSystem",
     "SPARK_MAX_HOP",
+    "DebrisSettings", "debris_settings_from_config", "debris_config_keys",
+    "debris_count", "debris_keys", "debris_spawns", "integrate_debris",
+    "debris_weight", "pack_debris", "DebrisSystem", "DEBRIS_MAX_HOP",
+    "DEBRIS_DENSITY_MAX", "DEBRIS_STAGE", "debris_shader_sources",
 ]
