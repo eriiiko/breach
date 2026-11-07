@@ -479,7 +479,7 @@ subprocess).
   shots with `hide = ["debris"]`): at +2 and +4 the frag's chips are
   invisible (0 and 0 changed pixels: inside the flame and the display-space
   heat layer, the sparks' finding); the full +4 shows only the breach's
-  chips beside the wood (22 px). At +12 the frag's chips lie 0.6-3.7 tiles
+  chips beside the wood (20 px). At +12 the frag's chips lie 0.6-3.7 tiles
   out (p10-max, 23 visible) all round the crate, the ones in the fireball's
   light lit orange; at +36 0.6-4.1 tiles, 19 visible, fading. In the frag
   close-ups a chip on the smoke-shadowed half of the floor reads 22-25
