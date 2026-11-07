@@ -1916,6 +1916,13 @@ class PhysicsRunner:
 # game is its N = 1 case (PhysicsRunner._step_resident); a ResidentBatch
 # (simulation/resident_batch.py) is its N > 1 case. One code path.
 # ----------------------------------------------------------------------------
+# TEST-ONLY (#29 P5, the capture-mode test): when set, an object whose
+# ``begin()`` / ``end()`` bracket the tick's DEVICE CHAIN (after the entry
+# uploads, before the exit downloads) -- tests/cuda_tick_capture_check.py
+# captures the chain in global mode through it. None in every real run.
+_TICK_CAPTURE = None
+
+
 def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
     """Slot 7 of ``len(runners)`` envs on their batched device buffers.
 
@@ -1971,6 +1978,8 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
     e0 = r0.engine
     cons = g0.gases.conservative
 
+    if _TICK_CAPTURE is not None:
+        _TICK_CAPTURE.begin()
     if ctxs[0]["light"]:
         e0.upload_light_resident(
             dev, h, w, n_gases,
@@ -2038,6 +2047,8 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
         ambient, t_amb, int(r0.k_leak_q), int(r0.rad_amb_vacuum_q),
         g0.gases.heat_absorb_q16, g0.gases.light_absorb_q16,
         g0.gases.light_glow_q16, n_env=n_env, engines=engines)
+    if _TICK_CAPTURE is not None:
+        _TICK_CAPTURE.end()
 
     # 4-5. THE EXIT DOWNLOAD per env, then its host-side tail.
     for r, g, c in zip(runners, gmaps, ctxs):

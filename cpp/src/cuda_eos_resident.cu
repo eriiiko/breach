@@ -1,16 +1,16 @@
 // ============================================================================
-// CUDA-S8a Path A Ã¢â‚¬â€ the fully device-resident EOS tick Ã¢â‚¬â€ see cuda_eos_resident.h
+// CUDA-S8a Path A — the fully device-resident EOS tick — see cuda_eos_resident.h
 // Design (BUILD AGAINST): docs/cuda_s8a_path_a_impl_2026-07-21.md (v2).
 //
-// STRUCTURE (mirrors eos_step_cuda stage-for-stage; Ã‚Â§-refs are the design's):
-//   host pre-stage        Ã¢â‚¬â€ the SHARED eos_host_prestage (Ã‚Â§3.2.2) on the
-//                           authoritative mirror (all reductions; Ã‚Â§0).
-//   device substep loop   Ã¢â‚¬â€ the SAME sl_advect3/bulk_flux launchers the
-//                           per-call path chains (Ã‚Â§3.2.6c), on the resident
+// STRUCTURE (mirrors eos_step_cuda stage-for-stage; §-refs are the design's):
+//   host pre-stage        — the SHARED eos_host_prestage (§3.2.2) on the
+//                           authoritative mirror (all reductions; §0).
+//   device substep loop   — the SAME sl_advect3/bulk_flux launchers the
+//                           per-call path chains (§3.2.6c), on the resident
 //                           fields + persistent scratch.
-//   device mid-stage      Ã¢â‚¬â€ K_div_u / K_ntot / K_pstar (Ã‚Â§3.2.6d-f): per-cell
+//   device mid-stage      — K_div_u / K_ntot / K_pstar (§3.2.6d-f): per-cell
 //                           verbatim transcriptions of the host mid-stage.
-//   device MG build       Ã¢â‚¬â€ the mg_build_levels port (Ã‚Â§4): per-cell and
+//   device MG build       — the mg_build_levels port (§4): per-cell and
 //                           per-coarse-cell SINGLE-WRITER gathers + per-cell
 //                           integer divides, level-sequential launches. THE
 //                           EVERY-CELL-WRITE RULE: the CPU assign(0)s every
@@ -18,12 +18,12 @@
 //                           hierarchy carries last tick's bytes, so every
 //                           kernel writes EVERY cell of EVERY output array
 //                           (else-branches write the assign's 0).
-//   device solve          Ã¢â‚¬â€ eos_mg_vcycle_resident (the SHARED schedule).
-//   device kick/compress  Ã¢â‚¬â€ kick_compression_launch_resident (SHARED core).
-//   device store          Ã¢â‚¬â€ K_store_atm (Ã‚Â§3.2.6j).
+//   device solve          — eos_mg_vcycle_resident (the SHARED schedule).
+//   device kick/compress  — kick_compression_launch_resident (SHARED core).
+//   device store          — K_store_atm (§3.2.6j).
 //
-// DETERMINISM (Ã‚Â§0/Ã‚Â§4): no parallel reductions anywhere (the two atomics Ã¢â‚¬â€
-// bulk rail, kick counters Ã¢â‚¬â€ are order-free integer sums, digest-proven
+// DETERMINISM (§0/§4): no parallel reductions anywhere (the two atomics —
+// bulk rail, kick counters — are order-free integer sums, digest-proven
 // per-call). Every kernel is a single-writer gather; every cross-kernel
 // dependency sits at a same-stream launch boundary == the CPU's pass/level
 // boundary. Integer divides truncate toward zero identically on MSVC and
@@ -31,13 +31,13 @@
 // double add after two exact steps (exact float->double, exact power-of-two
 // multiply); FMA contraction is harmless because the product is exact.
 // K_ntot accumulates int32 as uint32 (defined wrap == the hosts' observed
-// int32 wrap for all inputs Ã¢â‚¬â€ design Ã‚Â§3.2.6e; do NOT widen to int64).
+// int32 wrap for all inputs — design §3.2.6e; do NOT widen to int64).
 //
 // TELEMETRY: boundary_flux_ ASSIGNED and the five rail counters ACCUMULATED
 // exactly as eos_step_cuda does (smoke transport v2, P2b: boundary_flux_'s
 // TRACE slots + trace_wipe_sum_ assigned from the stage-3b/3c book block); d_rail/d_cnt are PERSISTENT and therefore
-// cudaMemset EVERY tick (Ã‚Â§3.2.5 Ã¢â‚¬â€ the per-call wrappers' memsets moved
-// here). Digests / dbg probes / host levels_ are stale on this path (Ã‚Â§3.3).
+// cudaMemset EVERY tick (§3.2.5 — the per-call wrappers' memsets moved
+// here). Digests / dbg probes / host levels_ are stale on this path (§3.3).
 // ============================================================================
 #include "cuda_eos_resident.h"
 #include "cuda_eos_step.h"         // eos_host_prestage (the shared pre-stage)
@@ -92,8 +92,8 @@ __device__ __forceinline__ int mirror_idx_dev_r(
 }
 
 // ---- face-form divergence face read (eos_solver.cpp face2_u, verbatim) -----
-// arc #54 P-G1d / D4: 2Ã‚Â·ÃƒÂ»_f, with ÃƒÂ» = 0 at a SOLID (or out-of-bounds) face and
-// ÃƒÂ» = (u_i + u_j)/2 on an open one; the Ã‚Â½ rides in `inv_2dx_q`. Derivation and
+// arc #54 P-G1d / D4: 2·û_f, with û = 0 at a SOLID (or out-of-bounds) face and
+// û = (u_i + u_j)/2 on an open one; the ½ rides in `inv_2dx_q`. Derivation and
 // the interior bit-identity argument: eos_solver.cpp's copy.
 __device__ __forceinline__ int64_t face2_u_dev_r(
         const int32_t* __restrict__ u, int self_i, int ny, int nx,
@@ -105,12 +105,12 @@ __device__ __forceinline__ int64_t face2_u_dev_r(
 }
 
 // ============================================================================
-// MID-STAGE kernels Ã¢â‚¬â€ verbatim device transcriptions of eos_step_cuda's host
+// MID-STAGE kernels — verbatim device transcriptions of eos_step_cuda's host
 // mid-stage (cuda_eos_step.cu "HOST MID-STAGE" block), one writer per cell.
 // ============================================================================
 
-// div(u*) Ã¢â‚¬â€ the central-difference divergence on the post-substep wind.
-// BC (audit (b)): the ring is a Dirichlet boundary Ã¢â‚¬â€ div(u*) = 0.
+// div(u*) — the central-difference divergence on the post-substep wind.
+// BC (audit (b)): the ring is a Dirichlet boundary — div(u*) = 0.
 __global__ void K_div_u(int32_t* __restrict__ div_u,
                         const int32_t* __restrict__ wind_x,
                         const int32_t* __restrict__ wind_y,
@@ -128,7 +128,7 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
         }
         const int y = i / w;
         const int x = i - y * w;
-        // arc #54 P-G1d (D4): FACE FORM, ÃƒÂ» = 0 at solid faces.
+        // arc #54 P-G1d (D4): FACE FORM, û = 0 at solid faces.
         const int64_t fw = face2_u_dev_r(wind_x, i, y, x - 1, h, w, solid);
         const int64_t fe = face2_u_dev_r(wind_x, i, y, x + 1, h, w, solid);
         const int64_t fn = face2_u_dev_r(wind_y, i, y - 1, x, h, w, solid);
@@ -153,10 +153,10 @@ __global__ void K_div_source(int32_t* __restrict__ div_u,
     }
 }
 
-// Step 2's Dalton sum (post-substep N) Ã¢â‚¬â€ per cell, gi ASCENDING (the CPU's
+// Step 2's Dalton sum (post-substep N) — per cell, gi ASCENDING (the CPU's
 // per-cell add sequence). uint32 accumulation = defined wrap, byte-identical
-// to the hosts' int32 wrap for all inputs (design Ã‚Â§3.2.6e). P-T0 (design
-// Ã‚Â§2.6): n_total Ã¢â€°Â¡ n_bulk Ã¢â‚¬â€ non-conservative (trace) planes are skipped
+// to the hosts' int32 wrap for all inputs (design §3.2.6e). P-T0 (design
+// §2.6): n_total ≡ n_bulk — non-conservative (trace) planes are skipped
 // outright, not weighted by a retired tms_q.
 __global__ void K_ntot(int32_t* __restrict__ ntot,
                        const int32_t* __restrict__ gas_base,
@@ -181,11 +181,11 @@ __global__ void K_ntot(int32_t* __restrict__ ntot,
 // (W3's seal). The two pre-stage products that read them move here, onto the
 // device planes, transcribed from eos_host_prestage line for line:
 //
-// K_max_du Ã¢â‚¬â€ step()'s KÃ‚Â·|Ã¢Ë†â€¡P|Ã‚Â·dt/NÃŒâ€š grad-scan: per open cell the solid-mirror
+// K_max_du — step()'s K·|∇P|·dt/N̂ grad-scan: per open cell the solid-mirror
 // central gradient of p_prev (== atmosphere, the step-0 copy), its larger
 // component's magnitude, times Kdt over the floored Dalton N (K_ntot's plane
 // from the tick-entry gas). The host keeps the MAX; every du is >= 0 (Kdt >=
-// 0, |Ã¢Ë†â€¡P| >= 0, the reciprocal > 0), so an unsigned atomicMax from 0 is the
+// 0, |∇P| >= 0, the reciprocal > 0), so an unsigned atomicMax from 0 is the
 // same order-free integer max. mul128_shr_signed / reciprocal_q16_dev are the
 // proven twins of the host's mul128_shr_host / reciprocal_q16.
 __global__ void K_max_du(unsigned long long* __restrict__ out,
@@ -222,7 +222,7 @@ __global__ void K_max_du(unsigned long long* __restrict__ out,
     }
 }
 
-// K_coeffs Ã¢â‚¬â€ step()'s donor-cell face-coefficient cache (eos_host_prestage's
+// K_coeffs — step()'s donor-cell face-coefficient cache (eos_host_prestage's
 // coeffE / coeffS), every cell written (0 where the host left the assign's
 // 0): an open east / south face between two non-solid cells carries
 // mul_q16(quantize((double)min(perm_i, perm_j)), dt_s_q) when that min is
@@ -257,7 +257,7 @@ __global__ void K_coeffs(int32_t* __restrict__ coeffE, int32_t* __restrict__ coe
     }
 }
 
-// Step 2's p* = CÃ‚Â·N_totalÃ‚Â·T_abs (EOS floor at 0); the debug_pstar_from_prev
+// Step 2's p* = C·N_total·T_abs (EOS floor at 0); the debug_pstar_from_prev
 // MEASUREMENT-ONLY branch reads p_prev (the post-copy bytes, like the CPU).
 __global__ void K_pstar(int32_t* __restrict__ pstar,
                         const int32_t* __restrict__ ntot,
@@ -290,8 +290,8 @@ __global__ void K_pstar(int32_t* __restrict__ pstar,
     }
 }
 
-// Step 5: P := P_new, materialized once. BC: the solve ran in P' = P Ã¢Ë†â€™ P_amb;
-// add P_amb back MASKED to !solid (solids stay 0 absolute Ã¢â‚¬â€ p_new is 0 there
+// Step 5: P := P_new, materialized once. BC: the solve ran in P' = P − P_amb;
+// add P_amb back MASKED to !solid (solids stay 0 absolute — p_new is 0 there
 // post-zero-excl either way; ring cells and every regular cell get the add).
 __global__ void K_store_atm(int32_t* __restrict__ atmosphere,
                             const int32_t* __restrict__ p_new,
@@ -312,17 +312,17 @@ __global__ void K_store_atm(int32_t* __restrict__ atmosphere,
 }
 
 // ============================================================================
-// MG BUILD kernels Ã¢â‚¬â€ the on-device mg_build_levels port (design Ã‚Â§4). Every
+// MG BUILD kernels — the on-device mg_build_levels port (design §4). Every
 // kernel body is a VERBATIM transcription of eos_solver.cpp:727-1012 with
 // mul128_shr -> mul128_shr_signed and reciprocal_q16 -> reciprocal_q16_dev.
 // EVERY output array cell is written unconditionally (the every-cell rule).
 // ============================================================================
 
 constexpr int64_t MG_M_CAP   = ((int64_t)1) << 38;   // level-0 mass cap
-constexpr int64_t MG_M_CAP_L = ((int64_t)1) << 44;   // coarse cap (sums grow Ãƒâ€”4/level)
+constexpr int64_t MG_M_CAP_L = ((int64_t)1) << 44;   // coarse cap (sums grow ×4/level)
 
-// Level-0 excl: the branch-priority chain (solidÃ¢â€ â€™2 beats vacuumÃ¢â€ â€™1 beats
-// ambientÃ¢â€ â€™1; else 0). Every cell written.
+// Level-0 excl: the branch-priority chain (solid→2 beats vacuum→1 beats
+// ambient→1; else 0). Every cell written.
 __global__ void K_L0_excl(uint8_t* __restrict__ excl,
                           const bool* __restrict__ solid,
                           const bool* __restrict__ is_vacuum,
@@ -335,12 +335,12 @@ __global__ void K_L0_excl(uint8_t* __restrict__ excl,
         uint8_t e = 0;
         if (solid[i]) e = 2;
         else if (is_vacuum[i]) e = 1;
-        else if (ambient_mode && is_ambient[i]) e = 1;   // BC ring Ã¢â€ â€™ Dirichlet
+        else if (ambient_mode && is_ambient[i]) e = 1;   // BC ring → Dirichlet
         excl[i] = e;
     }
 }
 
-// Level-0 m / b / P-warm-start (eos_solver.cpp:805-834, verbatim Ã¢â‚¬â€ incl. the
+// Level-0 m / b / P-warm-start (eos_solver.cpp:805-834, verbatim — incl. the
 // EXACT clamp sequence: aK floored to 1 BEFORE the divide, then m floored to
 // 1 and capped at M_CAP; the ambient rhs -= p_amb BEFORE the m-multiply; the
 // widen-then-narrow shifted warm start). excl!=0 cells write m=b=P=0 (the
@@ -367,25 +367,25 @@ __global__ void K_L0_mbP(int64_t* __restrict__ m,
         if (mm < 1) mm = 1;
         if (mm > MG_M_CAP) mm = MG_M_CAP;
         m[i] = mm;
-        // rhs_i = p* Ã¢Ë†â€™ (ÃŽÂ³Ã‚Â·p*)Ã‚Â·dtÃ‚Â·div(ÃƒÂ»*) (int64 raw); b = mÃ‚Â·rhs @F8.
+        // rhs_i = p* − (γ·p*)·dt·div(û*) (int64 raw); b = m·rhs @F8.
         const int64_t gp_dt = mul128_shr_signed(gp_raw, (int64_t)dt_q, 16);
         int64_t rhs_raw = (int64_t)pstar[i]
                               - mul128_shr_signed(gp_dt, (int64_t)div_u[i], 16);
-        // BC (spec Ã‚Â§1 "the shift trick"): subtract BEFORE the m multiply.
+        // BC (spec §1 "the shift trick"): subtract BEFORE the m multiply.
         if (ambient_mode) rhs_raw -= p_amb;
         b[i] = mul128_shr_signed(mm, rhs_raw, 8);
         // Warm start from the previous tick's solved P; BC: re-shift fresh
-        // into PÃ¢â‚¬Â²-space (widen-then-narrow Ã¢â‚¬â€ wrap-deterministic).
+        // into P′-space (widen-then-narrow — wrap-deterministic).
         P[i] = ambient_mode
             ? (int32_t)((int64_t)p_prev[i] - p_amb)
             : p_prev[i];
     }
 }
 
-// Level-0 face conductances g = perm/NÃŒâ€š (eos_solver.cpp:839-866, verbatim).
-// Each cell OWNS its E and S face Ã¢â‚¬â€ single writer; every cell written (0 at
-// guard-fail / the x=wÃ¢Ë†â€™1 / y=hÃ¢Ë†â€™1 boundary). THE GUARD IS excl != 2 ON BOTH
-// ENDPOINTS (NOT ==0): regularÃ¢â€ â€Dirichlet faces carry conductance Ã¢â‚¬â€ the
+// Level-0 face conductances g = perm/N̂ (eos_solver.cpp:839-866, verbatim).
+// Each cell OWNS its E and S face — single writer; every cell written (0 at
+// guard-fail / the x=w−1 / y=h−1 boundary). THE GUARD IS excl != 2 ON BOTH
+// ENDPOINTS (NOT ==0): regular↔Dirichlet faces carry conductance — the
 // Galerkin anchor depends on them. min(perm) uses std::min select semantics
 // ((b<a)?b:a); quantize((double)pf) is the FP_HD helper (exactness argument
 // in the file header); N_FLOOR applies HERE ONLY (never to m).
@@ -432,11 +432,11 @@ __global__ void K_L0_faces(int64_t* __restrict__ gE,
     }
 }
 
-// BC (spec Ã‚Â§3 rung 1, B3b): the ÃÆ’-SPONGE fold (eos_solver.cpp:877-886,
-// verbatim Ã¢â‚¬â€ incl. the REACHABLE M_CAP re-clamp). In-place add on the
-// already-fully-written m; launched only in ambient mode with a ÃÆ’ grid.
-// Runs AFTER K_L0_mbP (b used the un-ÃÆ’'d m) and BEFORE the coarse build +
-// recip (both fold ÃÆ’) Ã¢â‚¬â€ the CPU's exact placement.
+// BC (spec §3 rung 1, B3b): the σ-SPONGE fold (eos_solver.cpp:877-886,
+// verbatim — incl. the REACHABLE M_CAP re-clamp). In-place add on the
+// already-fully-written m; launched only in ambient mode with a σ grid.
+// Runs AFTER K_L0_mbP (b used the un-σ'd m) and BEFORE the coarse build +
+// recip (both fold σ) — the CPU's exact placement.
 __global__ void K_L0_sigma(int64_t* __restrict__ m,
                            const uint8_t* __restrict__ excl,
                            const int32_t* __restrict__ sigma, int n) {
@@ -453,13 +453,13 @@ __global__ void K_L0_sigma(int64_t* __restrict__ m,
 }
 
 // Coarse excl + mass (eos_solver.cpp:911-956, verbatim): the coarse
-// Dirichlet rule (all-vacuumÃ¢â€ â€™1, all-non-regularÃ¢â€ â€™2, any-regularÃ¢â€ â€™0), the mass
+// Dirichlet rule (all-vacuum→1, all-non-regular→2, any-regular→0), the mass
 // SUM over regular children, and the GALERKIN DIRICHLET ANCHOR (every fine
 // face from a regular child to a Dirichlet fine cell lands on the coarse
-// diagonal Ã¢â‚¬â€ the exact PÃ¡Âµâ‚¬AP term). Child loops in the CPU's dy,dxx order
-// with the fy/fx clipping; the anchor's out-of-block gE[fiÃ¢Ë†â€™1]/gS[fiÃ¢Ë†â€™fw]
+// diagonal — the exact PᵀAP term). Child loops in the CPU's dy,dxx order
+// with the fy/fx clipping; the anchor's out-of-block gE[fi−1]/gS[fi−fw]
 // reads are read-only fine-level data. Every coarse cell writes excl, m,
-// AND b=0 / P=0 (the CPU's assign Ã¢â‚¬â€ belt-and-braces: the vcycle's restrict
+// AND b=0 / P=0 (the CPU's assign — belt-and-braces: the vcycle's restrict
 // rewrites both before any read).
 __global__ void K_C_excl_m(uint8_t* __restrict__ c_excl,
                            int64_t* __restrict__ c_m,
@@ -521,8 +521,8 @@ __global__ void K_C_excl_m(uint8_t* __restrict__ c_excl,
 }
 
 // Coarse faces (eos_solver.cpp:957-988, verbatim): coarse face = SUM of the
-// (Ã¢â€°Â¤2) crossing fine faces whose BOTH endpoints are regular (== 0 Ã¢â‚¬â€ a
-// regularÃ¢â€ â€™Dirichlet crossing face is the anchor term, NOT inter-cell
+// (≤2) crossing fine faces whose BOTH endpoints are regular (== 0 — a
+// regular→Dirichlet crossing face is the anchor term, NOT inter-cell
 // coupling; note the guard DIFFERS from level 0's != 2). Every cell written.
 __global__ void K_C_faces(int64_t* __restrict__ c_gE,
                           int64_t* __restrict__ c_gS,
@@ -593,7 +593,7 @@ __global__ void K_recip(int64_t* __restrict__ recip,
 
 // ============================================================================
 // The device MG hierarchy + the build driver (shared by the resident tick
-// AND the test-only parity probe Ã¢â‚¬â€ one production code path).
+// AND the test-only parity probe — one production code path).
 // ============================================================================
 
 struct DevLevel {
@@ -605,7 +605,7 @@ struct DevLevel {
 };
 
 // Host-side replica of mg_build_levels' level-count loop (pure (h,w,config)
-// arithmetic Ã¢â‚¬â€ deterministic, no device data).
+// arithmetic — deterministic, no device data).
 int compute_n_levels(const EOSSolver& solver, int h, int w) {
     int n_levels = 1;
     int lh = h, lw = w;
@@ -619,10 +619,10 @@ int compute_n_levels(const EOSSolver& solver, int h, int w) {
     return n_levels;
 }
 
-// Launch the whole device build: level-0 (excl Ã¢â€ â€™ m/b/P Ã¢â€ â€™ faces Ã¢â€ â€™ ÃÆ’) then per
-// coarse level (excl+m Ã¢â€ â€™ faces) then recip on every level Ã¢â‚¬â€ the CPU's exact
-// stage order (ÃÆ’ after b, before coarse + recip). One stream; each launch
-// reads only buffers completed by earlier launches (design Ã‚Â§4, verified
+// Launch the whole device build: level-0 (excl → m/b/P → faces → σ) then per
+// coarse level (excl+m → faces) then recip on every level — the CPU's exact
+// stage order (σ after b, before coarse + recip). One stream; each launch
+// reads only buffers completed by earlier launches (design §4, verified
 // dependency-complete).
 void mg_build_device(const DevLevel* lv, int n_levels,
                      const int32_t* d_pstar, const int32_t* d_div_u,
@@ -676,12 +676,12 @@ void mg_build_device(const DevLevel* lv, int n_levels,
 }
 
 // ============================================================================
-// #29 P5: THE DEVICE PRE-STAGE (design Ã‚Â§4.2 "n_sub per env", Ã‚Â§5.1's first
-// check). The host pre-stage's three reductions Ã¢â‚¬â€ t_max_abs (c_LOCAL's T
-// scan), max_rad (max|u|Ã‚Â²) and max_du (the KÃ‚Â·|Ã¢Ë†â€¡P|Ã‚Â·dt/NÃŒâ€š scan, K_max_du above)
-// Ã¢â‚¬â€ become PER-ENV device reductions (integer maxima: atomicMax is order-free);
+// #29 P5: THE DEVICE PRE-STAGE (design §4.2 "n_sub per env", §5.1's first
+// check). The host pre-stage's three reductions — t_max_abs (c_LOCAL's T
+// scan), max_rad (max|u|²) and max_du (the K·|∇P|·dt/N̂ scan, K_max_du above)
+// — become PER-ENV device reductions (integer maxima: atomicMax is order-free);
 // the per-cell planes the host used to build and upload every tick (cap2, the
-// Ã‚Â§2.5 absorb plane; coeffE / coeffS since P4a) are built by device kernels
+// §2.5 absorb plane; coeffE / coeffS since P4a) are built by device kernels
 // from the resident planes; one thread per env folds its reductions into its
 // substep count (eos_prestage_finish's transcription) and picks its row of
 // the FOLD TABLE (built on the host once per config). The ONE host read is the
@@ -689,8 +689,8 @@ void mg_build_device(const DevLevel* lv, int n_levels,
 // replaces it with a WHILE graph node).
 // ============================================================================
 
-// The per-cell scan: capÃ‚Â² (eos_host_prestage's loop, verbatim), the env's
-// T_abs and |u|Ã‚Â² maxima, and the absorb plane (eos_step_resident's old host
+// The per-cell scan: cap² (eos_host_prestage's loop, verbatim), the env's
+// T_abs and |u|² maxima, and the absorb plane (eos_step_resident's old host
 // hoist, verbatim). Every cell of cap2 / absorb_q written.
 __global__ void K_pre_scan(int64_t* __restrict__ cap2, int32_t* __restrict__ absorb_q,
                            unsigned long long* __restrict__ pre,
@@ -770,8 +770,8 @@ __global__ void K_pre_fold(EnvSub* __restrict__ es, unsigned long long* __restri
 }
 
 // ============================================================================
-// Persistent scratch Ã¢â‚¬â€ C++-owned, keyed (N, h, w, n_levels, n_cons, n_gases)
-// (design Ã‚Â§3.2.5 + #29 P5's (N, h, w) key: n_levels in the key so a
+// Persistent scratch — C++-owned, keyed (N, h, w, n_levels, n_cons, n_gases)
+// (design §3.2.5 + #29 P5's (N, h, w) key: n_levels in the key so a
 // use_multigrid/mg_min_dim toggle re-keys). Allocated once, reused every tick;
 // zero cudaMalloc steady-state. Every plane is (N, h, w); the books live in the
 // resident tick's arena (EosBooksDev), not here.
@@ -784,8 +784,8 @@ struct EOSResidentScratch {
     uint8_t* cmask = nullptr;
     int32_t *coeffE = nullptr, *coeffS = nullptr;
     int32_t *dq_e = nullptr, *dq_s = nullptr, *scale = nullptr;
-    // P-E1 (design Ã‚Â§2.1.2): the transient energy plane, the n_bulk accumulator
-    // and the applied-dq face planes Ã¢â‚¬â€ int64, scratch only, never synced.
+    // P-E1 (design §2.1.2): the transient energy plane, the n_bulk accumulator
+    // and the applied-dq face planes — int64, scratch only, never synced.
     int64_t *e = nullptr, *nbulk = nullptr, *dqsum_e = nullptr, *dqsum_s = nullptr;
     // mid-stage + kick
     int32_t *div_u = nullptr, *ntot = nullptr, *pstar = nullptr,
@@ -794,12 +794,12 @@ struct EOSResidentScratch {
     // env without one gets zeros, which K_div_source subtracts as a no-op).
     int32_t* div_source = nullptr;
     int32_t* div_source_h = nullptr;   // its pinned staging copy
-    // VELOCITY-CLAMP (P-V1, D2v2): the per-cell capÃ‚Â² plane Ã¢â‚¬â€ #29 P5: BUILT ON
+    // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane — #29 P5: BUILT ON
     // THE DEVICE every tick by K_pre_scan (no longer an H2D).
     int64_t* cap2 = nullptr;
     bool* cons_flag = nullptr;                 // (n_gases,) device flags
     std::vector<uint8_t> cons_flag_c;          // what cons_flag holds (upload-if-changed)
-    // arc #54 P-G2: K3's per-tick scratch (design Ã‚Â§2.4/Ã‚Â§2.5).
+    // arc #54 P-G2: K3's per-tick scratch (design §2.4/§2.5).
     int64_t* e0 = nullptr;
     int32_t *pcur = nullptr, *s_plane = nullptr;
     // Smoke transport v2 (#12, P2b): the per-plane S_pre snapshot.
@@ -898,12 +898,12 @@ struct EOSResidentScratch {
 
 EOSResidentScratch g_eos_res;
 
-// THE FOLD TABLE (design Ã‚Â§4.2): one row per n_sub in [1, N_SUB_MAX] (row 0
-// unused) Ã¢â‚¬â€ dt_s_q = quantize(dt / n_sub), the energy flux's k_flux_q and
+// THE FOLD TABLE (design §4.2): one row per n_sub in [1, N_SUB_MAX] (row 0
+// unused) — dt_s_q = quantize(dt / n_sub), the energy flux's k_flux_q and
 // flux_pu_cap through energy_flux_scalar_folds (THE transcription). Built on
 // the host once per config (keyed by every input), range-checked at build: a
 // row whose k_flux_q is refused (the fold's own range guard) is kept with
-// k_flux_q = 0, and an env that selects it raises EOS_PRE_FAIL Ã¢â‚¬â€ the host
+// k_flux_q = 0, and an env that selects it raises EOS_PRE_FAIL — the host
 // throws the fold's own message at the books fold (the sweep's pattern).
 void ensure_fold_table(const EOSSolver& solver, float dt, EOSResidentScratch& S) {
     const int rows = solver.N_SUB_MAX + 1;
@@ -1011,7 +1011,7 @@ long long eos_resident_calls() { return g_eos_resident_calls; }
 long long eos_nsub_reads() { return g_eos_nsub_reads; }
 
 // ============================================================================
-// The resident EOS stage over the batch Ã¢â‚¬â€ see the header / the file banner for
+// The resident EOS stage over the batch — see the header / the file banner for
 // the stage map. #29 P5: (N, h, w) on every core, the device pre-stage, both
 // substep loops to the batch's max n_sub with per-env masks, the books per env
 // in the caller's arena (folded by the tick's one books D2H), one stream, no
@@ -1042,7 +1042,7 @@ int eos_step_resident(
     if (ambient_mode && N != 1) {
         throw std::invalid_argument(
             "eos_step_resident: an ambient map runs only unbatched (N = 1): the sky "
-            "exchange is a host bracket (ACCEPTED GAP, design Ã‚Â§4.2)");
+            "exchange is a host bracket (ACCEPTED GAP, design §4.2)");
     }
     ++g_eos_resident_calls;
     cudaStream_t stv = tstream();
@@ -1057,10 +1057,10 @@ int eos_step_resident(
     const KickScalarFolds kf = kick_scalar_folds(
         dt, solver.c_max, solver.dx, solver.adiabatic_index,
         solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.U_MAX,
-        // P-E3 (design Ã‚Â§2.8): interior drag + heat counterparty.
+        // P-E3 (design §2.8): interior drag + heat counterparty.
         // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2.
         solver.k_drag, solver.k_drag2,
-        // arc #54 Ã‚Â§2.1: T_AMB_K folds the derived k_ke constant.
+        // arc #54 §2.1: T_AMB_K folds the derived k_ke constant.
         solver.T_AMB_K);
     const EOSSolver::MGScalarFolds mf = solver.mg_scalar_folds(dt);
 
@@ -1071,14 +1071,14 @@ int eos_step_resident(
     upload_cons_flags(S, gas_conservative, n_gases);
     ensure_fold_table(solver, dt, S);
 
-    // ---- PER-TICK ZERO RULE (design Ã‚Â§3.2.5): the EOS books, every env, ONE
+    // ---- PER-TICK ZERO RULE (design §3.2.5): the EOS books, every env, ONE
     //      memset (the caller's arena lays them out contiguously). ---------
     cuda_check(cudaMemsetAsync(books.zero_begin, 0, books.zero_bytes, stv), "memset EOS books");
     const bool use_rail = ambient_mode && n_cons > 0;
 
-    // Smoke transport v2 (#12, design Ã‚Â§2.1/Ã‚Â§5, P2b): EVERY trace plane rides
-    // stages 3b/3c Ã¢â‚¬â€ the resident path skips none (no host scan, RL habits Ã‚Â§A;
-    // an all-zero plane prices phi = floordiv(dqÃ‚Â·0, N) = 0 and stays zero with
+    // Smoke transport v2 (#12, design §2.1/§5, P2b): EVERY trace plane rides
+    // stages 3b/3c — the resident path skips none (no host scan, RL habits §A;
+    // an all-zero plane prices phi = floordiv(dq·0, N) = 0 and stays zero with
     // zero counters, so this equals the CPU's skip-after-scan exactly).
     std::vector<int32_t*> trace_planes;
     for (int gi = 0; gi < n_gases; ++gi) {
@@ -1113,7 +1113,7 @@ int eos_step_resident(
         rail_ptrs[k] = use_rail ? books.rail + k : nullptr;
     }
 
-    // arc #54 Ã‚Â§2.7 row 1: the mirror-only ceiling the substep transport's
+    // arc #54 §2.7 row 1: the mirror-only ceiling the substep transport's
     // recovery clamps against.
     const q16 t_max_phys_q_local = quantize((double)solver.T_MAX_PHYS);
     const size_t nb = (size_t)N * n * 4;
@@ -1138,10 +1138,10 @@ int eos_step_resident(
         bb.tstride = (size_t)EOS_TCNT_SLOTS;
         bb.es = S.es;
         bb.sub = s;
-        // P-E1: the mass flux with the thermal energy riding it (design Ã‚Â§2.1).
+        // P-E1: the mass flux with the thermal energy riding it (design §2.1).
         bulk_flux_energy_transport_device(
             gas_planes.data(), n_cons, d_temperature,
-            d_gas_energy, pre.t_amb_q, t_max_phys_q_local,   // arc #54 Ã‚Â§2.2/Ã‚Â§2.7
+            d_gas_energy, pre.t_amb_q, t_max_phys_q_local,   // arc #54 §2.2/§2.7
             d_wind_x, d_wind_y,
             d_solid, d_is_vacuum, d_ts, S.coeffE, S.coeffS, pre.t_min_q, h, w,
             S.e, S.nbulk, S.dqsum_e, S.dqsum_s,
@@ -1181,7 +1181,7 @@ int eos_step_resident(
                                    d_is_ambient, N, h, w);
     }
     {
-        // trace_mass_scale arg RETIRED (P-T0, design Ã‚Â§2.6).
+        // trace_mass_scale arg RETIRED (P-T0, design §2.6).
         K_ntot<<<grid, block, 0, stv>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n);
         cuda_check(cudaGetLastError(), "K_ntot");
     }
@@ -1190,7 +1190,7 @@ int eos_step_resident(
                                      solver.debug_pstar_from_prev, n);
     cuda_check(cudaGetLastError(), "K_pstar");
 
-    // ---- DEVICE MG BUILD (design Ã‚Â§4) + the SHARED solve schedule, per env
+    // ---- DEVICE MG BUILD (design §4) + the SHARED solve schedule, per env
     //      on the (N, h, w) layout (#29 P5). --------------------------------
     mg_build_device(S.lv, n_levels, S.pstar, S.div_u, S.ntot, d_wave_p,
                     d_solid, d_is_vacuum, d_dyn_permeability,
@@ -1210,16 +1210,16 @@ int eos_step_resident(
                                solver.mg_coarsest_sweeps, solver.S, N);
     }
 
-    // ---- KICK (the SHARED launch core, K1 only Ã¢â‚¬â€ arc #54 P-G2: K2 deleted)
+    // ---- KICK (the SHARED launch core, K1 only — arc #54 P-G2: K2 deleted)
     //      on the zeroed L0.P (== the per-call p_new bytes, PRE un-shift)
     //      with the device post-substep Dalton. The KE brackets (design
-    //      Ã‚Â§2.3) land straight in the persistent `d_gas_energy`.
+    //      §2.3) land straight in the persistent `d_gas_energy`.
     kick_compression_launch_resident(
         d_wind_x, d_wind_y, d_gas_energy, S.lv[0].P, S.ntot, S.absorb_q,
-        d_solid, d_is_vacuum, kf, S.cap2,   // D2v2: the per-cell capÃ‚Â² plane
+        d_solid, d_is_vacuum, kf, S.cap2,   // D2v2: the per-cell cap² plane
         books.kick, h, w,
         d_is_ambient, d_sponge_udamp,
-        d_ts,   // arc #54 Ã‚Â§2.3 F5: the KE brackets export on thermal_solid
+        d_ts,   // arc #54 §2.3 F5: the KE brackets export on thermal_solid
         N, (size_t)KICK_CNT_SLOTS);
 
     // ---- step 5: P := P_new (+P_amb masked, ambient). --------------------
@@ -1227,9 +1227,9 @@ int eos_step_resident(
                                          (int64_t)p_amb, ambient_mode, n);
     cuda_check(cudaGetLastError(), "K_store_atm");
 
-    // ---- K3 + the once-per-tick RECOVERY (arc #54 design Ã‚Â§2.4/Ã‚Â§2.5/Ã‚Â§2.6) Ã¢â‚¬â€
+    // ---- K3 + the once-per-tick RECOVERY (arc #54 design §2.4/§2.5/§2.6) —
     //      MUST run after K_store_atm: it consumes the ABSOLUTE d_atmosphere
-    //      (the step-5 un-shift), never the shifted L0.P (design Ã‚Â§2.4 pin).
+    //      (the step-5 un-shift), never the shifted L0.P (design §2.4 pin).
     //      #29 P5: the sub-cycles to max(n_sub), each env's k_flux_q /
     //      flux_pu_cap from its fold-table row; the n_sub-free scalars of the
     //      folds from the table build (ensure_fold_table's ef_base).
@@ -1244,7 +1244,7 @@ int eos_step_resident(
 }
 
 // ============================================================================
-// TEST-ONLY: the build-parity probe (gate PART 1c) Ã¢â‚¬â€ host build vs the SAME
+// TEST-ONLY: the build-parity probe (gate PART 1c) — host build vs the SAME
 // production device-build path, byte-compared per level per array.
 // ============================================================================
 long long eos_mg_build_parity(
@@ -1323,7 +1323,7 @@ long long eos_mg_build_parity(
         }
         // Poison the hierarchy so a missing every-cell write CANNOT
         // accidentally match the host's zeros (the stale-bytes hazard the
-        // rule exists for Ã¢â‚¬â€ this makes the probe sensitive to it).
+        // rule exists for — this makes the probe sensitive to it).
         for (int l = 0; l < n_levels; ++l) {
             const size_t ln = (size_t)lv[l].h * lv[l].w;
             cuda_check(cudaMemset(lv[l].excl, 0xAB, ln), "poison");
@@ -1342,7 +1342,7 @@ long long eos_mg_build_parity(
         cuda_check(cudaDeviceSynchronize(), "parity sync");
 
         // Byte-compare every level's excl/m/gE/gS/recip/b/P (res is vcycle
-        // scratch Ã¢â‚¬â€ the build never writes it on either side).
+        // scratch — the build never writes it on either side).
         auto compare = [&](int l, const char* name, const void* dev_ptr,
                            const void* host_ptr, size_t bytes,
                            size_t elem_size) {
@@ -1383,9 +1383,9 @@ long long eos_mg_build_parity(
 }
 
 // ============================================================================
-// TEST-ONLY (#29 P5, design Ã‚Â§5.1's first check): the DEVICE pre-stage against
-// the HOST pre-stage at N = 1 on the same tick-entry planes Ã¢â‚¬â€ n_sub, c_LOCAL,
-// dt_s_q, the capÃ‚Â² plane, the absorb plane and coeffE / coeffS, compared
+// TEST-ONLY (#29 P5, design §5.1's first check): the DEVICE pre-stage against
+// the HOST pre-stage at N = 1 on the same tick-entry planes — n_sub, c_LOCAL,
+// dt_s_q, the cap² plane, the absorb plane and coeffE / coeffS, compared
 // exactly. Runs device_prestage (the tick's own code path) on a private
 // scratch; allocates and copies: never on the hot path.
 // ============================================================================
