@@ -30,6 +30,12 @@ field on a render-only event. Erik judges every piece at the screen
    units; muzzle flashes cap themselves at 1024.
 7. Erik is most interested in the shock front, the sparks and debris, and the
    ring deletion.
+8. **The scripted ring is the one piece Erik has not accepted on paper**
+   ("I'd like to see it before it's merged"): P2 is a HUMAN-TEST on that
+   question. If he does not like it, the fallback experiment is the
+   pressure field's own "flawed shockwave" (§2.2: a whole-room pulse from
+   |v| or P), tried as a second term before anything else is built on the
+   ring.
 
 ## 2. Before pictures and measurements
 
@@ -104,16 +110,23 @@ second pass.
   amplitude `A·sqrt(strength)` world px (zoom-faded as the shimmer is). A
   volley is several live rings; a ring dies when its band has left its bbox
   or at `life_s`. Cap `max_rings` live rings, oldest dropped.
-- **Per-tile offset texture, CPU side, once per frame.** Inside the live
-  rings' union bbox, a `(h, w, 2)` float texture holds the summed offset
-  VECTOR per tile: for each ring, on GAS tiles only (never solid, never
-  vacuum), `g(|p − c| − r) · unit(p − c)` with `g` a smooth bump of width
-  `w`. Walls clip the ring for free, so a corridor shows a front that
-  follows the corridor; two rings sum. The numpy twin
-  `ring_offset_tiles(...)` is THE spec; the GL side samples it bilinearly,
-  scales by `A·zoom_fade`, clamps |offset| ≤ amp, and a pixel whose four
-  nearest tile centres carry zero gets EXACTLY zero (the shimmer's §13.12
-  property, same bilinear tap). Outside the bbox no fetch at all.
+- **Resolution: the ring is PER PIXEL, the mask per tile.** (Erik asked
+  whether the shimmer is per tile: its strength is per tile, bilinear, its
+  noise per pixel.) The ring must be sharper than a tile, so it is evaluated
+  analytically in the shader: per live ring a uniform row `(cx, cy, r, w, A)`
+  (tiles, tiles, tiles, tiles, px; up to `max_rings` rows), the term
+  `Σ_rings g(|p − c| − r) · unit(p − c) · A` at the PIXEL's tile position
+  `p`, `g` a smooth bump of width `w`. The per-tile part is only a GAS MASK:
+  one `(h, w)` texture (1 on gas, 0 on solid / vacuum, the shimmer's masks),
+  sampled bilinearly at `p`, so walls clip the ring for free, a corridor
+  shows a front that follows the corridor, and a pixel whose four nearest
+  tile centres are not gas gets EXACTLY zero. The mask is static per level
+  (re-uploaded when `render_dirty` says a tile changed); nothing else is
+  packed per frame. The numpy twin `ring_offset_px(...)` (per-pixel formula
+  × bilinear mask) is THE spec. The summed offset is clamped to `A_max·zoom_fade`.
+  Outside the rings' union bbox no fetch and no arithmetic at all; without a
+  live ring the term is `vec2(0)` (`u_shock_n == 0`), so the resolve is the
+  plain point fetch bit for bit.
 - **Dials** `[render.shockwave]`: `enabled`, `speed_tiles_s` (40: a frag
   ring crosses a 10-tile room in a quarter second), `width_tiles` (1.0),
   `amp_tiles` (0.25 at strength 1, times sqrt(strength)), `life_s` (0.5),
@@ -201,9 +214,10 @@ back to Erik, otherwise #94 closes with this arc.
 
 ## 4. Verification (properties)
 
-- `tests/test_shockwave.py`: the twin's offset is zero outside the band and on
-  solid / vacuum tiles; a ring's offset points away from its centre; two
-  rings sum; a ring dies at `life_s`; `max_rings` holds; the door refuses a
+- `tests/test_shockwave.py`: the twin's offset is zero outside the band and
+  where the bilinear gas mask is zero; a ring's offset points away from its
+  centre; two rings sum; the ring is sharper than a tile (two pixels of one
+  tile on either side of the band differ); a ring dies at `life_s`; `max_rings` holds; the door refuses a
   missing / mistyped key. `tests/gl_shockwave_check.py` + wrapper: a pixel
   whose four nearest tiles are zero is bit-identical to the plain resolve
   (the shimmer's `shimmer_zero_where_cold` pattern).
@@ -262,8 +276,8 @@ subprocess).
 **New systems it creates**, draft rules for CLAUDE.md at implementation:
 - *Shock front*: `renderer/shockwave.py` + `shaders/world_resolve.fs::shock_term`
   — THE blast's screen-space ring: a term of the resolve's distortion block
-  from the detonation event, a per-tile offset VECTOR texture on gas tiles
-  (walls clip it), its spec the module's numpy twin; never from the pressure
+  from the detonation event, analytic per pixel times a bilinear per-tile gas
+  mask (walls clip it), its spec the module's numpy twin; never from the pressure
   or velocity planes (measured 2026-11-07: the projection has no travelling
   front), never a second pass.
 - *Blast flash*: `frame_lights.blast_flash_lights` + the `[payloads.*] flash`
