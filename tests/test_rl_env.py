@@ -408,10 +408,14 @@ def test_a_per_team_policy_list_must_match_the_level(tmp_path):
 
 def test_workers_load_the_cpu_build_and_no_renderer(tmp_path):
     """Property: every farm worker imported ``breach_physics`` from the CPU
-    build and no renderer, raylib or CUDA module, after reset and a step.
-    Breaks if a worker could create a CUDA context or pull in a window."""
+    build and no renderer, raylib or CUDA module, after reset and a step, and
+    runs with one BLAS thread (``WORKER_ENV``) while the driver's own
+    environment is left as it was. Breaks if a worker could create a CUDA
+    context or pull in a window, or commits a BLAS buffer per hardware
+    thread."""
     _box(tmp_path, "abox")
     p = _run_toml(tmp_path / "run.toml", levels_dir=tmp_path, **_OK)
+    before = {k: os.environ.get(k) for k in rl_env.WORKER_ENV}
     with rl_env.BatchedEnv(p, n_workers=2) as env:
         env.reset()
         env.step(_zero_actions(env))
@@ -421,6 +425,9 @@ def test_workers_load_the_cpu_build_and_no_renderer(tmp_path):
     for pr in probes:
         assert Path(pr["breach_physics"]).resolve().parent == cpu
         assert pr["modules"] == []
+        assert pr["env"] == rl_env.WORKER_ENV       # one BLAS thread each
+    for k in rl_env.WORKER_ENV:                     # the driver's restored
+        assert os.environ.get(k) == before.get(k)
 
 
 def test_counters_credit_the_row_of_the_tick_start_team(tmp_path):

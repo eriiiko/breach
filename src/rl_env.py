@@ -103,6 +103,14 @@ BACKENDS = ("cpu_farm",)
 #: The Philox stream salt of the episode draw ("EPIS"); P3b's salt enum
 #: takes it over.
 EPISODE_SALT = 0x45504953
+#: The environment every farm worker starts with: ONE BLAS / OpenMP thread.
+#: Nothing per tick contracts through BLAS (the no-BLAS rule), and OpenBLAS
+#: otherwise commits a buffer per hardware thread in every process: measured
+#: 2026-11-07, ~1.9 GB of private bytes per worker on the 16-thread Home
+#: Desktop (19 MB with one thread) -- 8 workers would commit the machine's
+#: RAM. Set before the worker starts (spawn re-imports numpy at once).
+WORKER_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
+              "MKL_NUM_THREADS": "1"}
 
 #: The per-unit vector fields a run file may name, each read off the Unit.
 VECTOR_FIELDS = {
@@ -658,6 +666,7 @@ def _worker_main(conn, task: dict) -> None:
                 conn.send(("ok", {
                     "pid": os.getpid(),
                     "breach_physics": str(Path(bp.__file__).resolve()),
+                    "env": {k: os.environ.get(k) for k in WORKER_ENV},
                     "modules": sorted(m for m in sys.modules
                                       if m.split(".")[0] in
                                       ("renderer", "pyray", "raylib", "cupy")
@@ -683,7 +692,8 @@ class BatchedEnv:
     rows (so its sha256 describes the run). ``backend`` must be
     ``"cpu_farm"`` in P1a. ``n_workers`` (default ``min(n_envs,
     os.cpu_count() - 1)``) processes share the envs in contiguous blocks --
-    a machine property, not the run's: results do not depend on it."""
+    a machine property, not the run's: results do not depend on it. Each
+    worker starts with :data:`WORKER_ENV` (one BLAS thread)."""
 
     def __init__(self, run, backend: str = "cpu_farm", *,
                  n_workers: int | None = None):
@@ -727,7 +737,16 @@ class BatchedEnv:
                         "weights": weights}
                 p = ctx.Process(target=_worker_main, args=(child, task),
                                 daemon=True, name=f"breach-farm-{w}")
-                p.start()
+                saved = {k: os.environ.get(k) for k in WORKER_ENV}
+                os.environ.update(WORKER_ENV)
+                try:
+                    p.start()
+                finally:
+                    for k, v in saved.items():
+                        if v is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = v
                 child.close()
                 self._procs.append(p)
                 self._conns.append(parent)

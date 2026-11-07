@@ -10,7 +10,8 @@ reset, then reports:
   the first ``--warmup-steps`` steps (the workers' start, imports and first
   episode setup excluded), the driver's own action generation INCLUDED;
 - step ms: p50 / p95 / max of ``BatchedEnv.step`` wall time in that window;
-- per worker: RSS and peak working set at the end (psutil), episodes ended;
+- per worker at the end (psutil): RSS (on Windows the working set), the
+  peak working set and the private bytes (the commit charge); episodes ended;
 - the run file's sha256 and every knob, so a later reading repeats it.
 
     C:/Users/steen/anaconda3/envs/data/python.exe tools/rl_smoke.py RUN.toml \\
@@ -69,7 +70,8 @@ def drive(env, *, episodes: int, seed: int, warmup_steps: int,
         import psutil
         for pid in env.worker_pids():
             mi = psutil.Process(pid).memory_info()
-            rss.append((pid, mi.rss, getattr(mi, "peak_wset", mi.rss)))
+            rss.append((pid, mi.rss, getattr(mi, "peak_wset", mi.rss),
+                        getattr(mi, "private", mi.rss)))
     except Exception as e:      # psutil missing or a worker gone
         out(f"(no RSS: {e})")
     return {
@@ -88,6 +90,7 @@ def report_lines(env, res: dict, args) -> list:
     r = env.run
     mb = [x[1] / 2 ** 20 for x in res["rss"]]
     pk = [x[2] / 2 ** 20 for x in res["rss"]]
+    pv = [x[3] / 2 ** 20 for x in res["rss"]]
     return [
         f"run: {r.path or '(in memory)'} sha256={env.run_sha256}",
         f"levels={list(r.levels)} n_envs={r.n_envs} "
@@ -106,7 +109,9 @@ def report_lines(env, res: dict, args) -> list:
         ("RSS per worker MB: "
          + " ".join(f"{m:.0f}" for m in mb)
          + (f" (mean {np.mean(mb):.0f}); peak "
-            + " ".join(f"{m:.0f}" for m in pk) if mb else "")),
+            + " ".join(f"{m:.0f}" for m in pk)
+            + "; private " + " ".join(f"{m:.0f}" for m in pv)
+            if mb else "")),
     ]
 
 
