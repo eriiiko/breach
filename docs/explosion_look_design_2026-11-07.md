@@ -245,11 +245,11 @@ back to Erik, otherwise #94 closes with this arc.
 
 | # | patch | gate | merge |
 |---|---|---|---|
-| P1 | event fields + ring deletion + the §3.6 measurement + before shots into the doc folder | tests; the measured table in the as-built | auto on green (nothing visible but the ring's absence; Erik sees it at P2) |
+| P1 | event fields (+ `approach`) + `reach_depth` + ring deletion + main.py consuming events every sim step + the §3.6 (a)/(b) measurement | tests; the measured table in the as-built | auto on green (nothing visible but the ring's absence; Erik sees it at P2) |
 | P2 | shock front (`shockwave.py`, the shader term, dials, GL check, `blast_final_t50` shot) | tests + GL check + shots | HUMAN-TEST |
 | P3 | sparks | tests + shots | HUMAN-TEST |
 | P4 | debris (the second blend mode) | tests + shots | HUMAN-TEST |
-| P5 | the flash: row columns + door, `flashbang` row + studio, `blast_flash_lights`, the caps, `flashbang_t50` shot | tests + shots | HUMAN-TEST |
+| P5 | the flash: row columns + door, `flashbang` row + studio, `blast_flash_lights`, the shared transient cap, the §3.6 (c) measurement, `flashbang_t50` shot | tests + shots | HUMAN-TEST |
 
 One implementation agent at a time, Opus, each in this worktree's branch;
 a critic on this doc before P1 (verdict to disk). P2–P5 are independent of
@@ -257,7 +257,33 @@ each other after P1; order as Erik wants to look.
 
 ## 6. Critique
 
-Pending (one critic pass, written to `docs/explosion_look_design_2026-11-07/critique.md`).
+One critic pass (Opus, against `60ef6a2`), verdict in
+`docs/explosion_look_design_2026-11-07/critique.md`: 3 blockers, 9 shoulds,
+5 nits. Resolved on paper here (v2); the sections above are read WITH this
+table, which wins where they disagree.
+
+| finding | resolution (v2) |
+|---|---|
+| B1 the caps: halving the muzzle cap re-derives gen_ship's lamp budget and can pass the per-ordinate door | **No cap moves.** Muzzle and blast flashes share ONE group cap, `TRANSIENT_MAX_TOTAL = 1024` (the constant `MUZZLE_FLASH_MAX_TOTAL` is renamed, its value kept, gen_ship's `MUZZLE_FLASH_LIGHT` and `test_levelspec` follow the rename only); within the group the muzzle flashes scale down first, the blast flashes last. A level's lamp budget stays what #173 made it. The flashbang's placeholder is 800 (under the cap, as every placeholder must be) |
+| B2 the ring shows through walls; the canonical Blast reach walk is ignored | **The ring rides the walk.** At detonation the ring takes the canonical `blast_expansion.reach_tiles` walk from its centre (the event carries `approach` for the seed rule, so a charge on a wall seeds beside it) extended, never copied, with a BFS depth output (`reach_depth`, the same module: hops along the open mask, 4-neighbour). Per live ring a per-tile plane of that geodesic distance `d_g` (tiles; unreached tiles hold a large value, never −1, so the bilinear read fades the front at a wall instead of inventing one); up to `max_rings = 4` planes packed as the RGBA channels of ONE texture. The shader evaluates `g(d_g(p) − r)` per pixel on the bilinear `d_g`, direction the straight line from the centre, so the front follows a corridor and never enters the room behind a wall. The per-level gas mask and its `render_dirty` read are dropped |
+| B3 the "smoke off" measurement is vacuous (a strength row always deposits smoke) | (b) is measured on a THROWAWAY sim after the fact: step to tick +k, zero the smoke trace plane in place (`gmap.gas[..., SMOKE] = 0`, a test fixture's write on a sim that is then discarded, no energy seam involved), `sim.relight()`, read `light_at`. (c) moves to P5 where `blast_flash_lights` exists. #94 closes only on a measurement that could have failed |
+| S1 pause: effects age by wall clock | The flash and the ring are on the SIM clock: age = `(tick − t0 + alpha) / tps` from `upload_state(alpha=, paused=)`, so paused holds and a look shot reproduces. Sparks and debris on the VFX clock like the embers (idle drift while paused, the ember's accepted behaviour) |
+| S2 look shots of a wall-clock flash do not reproduce | Resolved by S1 |
+| S3 detonations in an earlier sim step of a slow frame are lost (`tick_events` cleared per step, main.py runs up to 5 steps per frame) | Pre-existing, but every piece of this arc depends on the event, so P1 fixes it: main.py consumes events after EVERY sim step inside its step loop (a one-line move; lighting_demo checked for the same) |
+| S4 the gas mask bypasses the wall seam | Gone with B2 (the plane is per ring, built once at detonation from the walk) |
+| S5 debris: `integrate` kills cold particles, drags toward the wind, `pack_sprites` is ember-shaped | Debris has its own twin stage in the same module, `integrate_debris` (drag toward REST, no glow-floor kill, a settle time), and `pack_sprites` takes a kind column (ember / spark / chip); the ember path stays bit-identical (gated) |
+| S6 P1's (c) needs P5 | Moved (B3) |
+| S7 flashbang 1500 over the cap | 800 (B1) |
+| S8 the GL check proves only the zero case | `gl_shockwave_check.py` also renders ONE ring over a synthetic checker scene RT and compares the resolved image to the twin's CPU resample of the same checker, tolerance 1/255 per channel over the band, which also catches the y-flip sign |
+| S9 the payload door never refuses an unknown key | The door refuses any `flash_*` key that is not one of the three (by prefix) |
+| N1 `consume_events`, the `fresh` flag | Named right in the briefs; the `"blast"` effect carries `fresh` as tracers do |
+| N2 the +0.5 tile-centre offset | Ring centre, flash cells and spark births at tile centres (+0.5) |
+| N3 `test_payloads.py:174` compares event reprs | The new fields get defaults (`strength=0.0`, `flash=0.0`, `flash_decay_s=0.3`, `flash_color=(1.0, 1.0, 1.0)`, `approach=None`) so existing constructions and reprs hold |
+| N4 undefined ring terms | bbox = the walk's tiles' bbox + 1; `A_max` = `amp_tiles · sqrt(strength_max_live) · px_per_tile`; `g(x) = exp(−(x / w)²)` on support `|x| < 2w`, 0 outside |
+| N5 a blast centred on a wall | The walk's own seed rule (`approach`, else every open 4-neighbour) gives the ring its tiles, the flash its cells (the seeds, up to 5) and the sparks their birth tiles |
+| N6 the debris draw slot, exposure, shader splice | Drawn after the floor smoke group and BEFORE the flame (chips lie on the floor), linear HDR `albedo × incoming light` from `light_tex_a/b` through the lit3d block (`_FIELD_SAMPLE_GLSL`, the props' way), the one tone-map untouched |
+| N7 `cone_rows` enforces no budget | The flash budget test evaluates the sweep's own per-ordinate door (`RadiationSweep.cone_emission` sums ≤ `LIGHT_CONE_BUDGET`), not `cone_rows` |
+
 
 ## 7. Systems
 
