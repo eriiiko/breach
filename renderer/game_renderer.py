@@ -317,6 +317,15 @@ class GameRenderer:
             glow_min_k=self._fire_scales.glow_min_k)
         self.ember_draw = _particles.ParticleDraw(_es.cap)
         self._ember_sprites = None       # this frame's pack (both stages)
+        # Graphics G4 P3 -- SPARKS, the particle primitive's second consumer:
+        # thrown by each "blast" effect from its walk's seeds, riding the
+        # embers' law, drawn in the embers' draw (one sprite array per
+        # stage). [render.sparks] is re-read every frame; `enabled` there is
+        # its only switch.
+        self.sparks = _particles.SparkSystem(
+            _particles.spark_settings_from_config(CFG),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
         self.shimmer = _shimmer.HeatShimmer(
             cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
         # Graphics G4 P2 -- the SHOCK FRONT (renderer/shockwave.py), the
@@ -678,6 +687,33 @@ class GameRenderer:
                         if pack is not None else (0, 0)),
                 s0=d.s0, strip_frac=d.strip_frac, wind_fn=frame_tamed_wind,
                 tps=tps, blocked=self._ember_blocked(gmap))
+        # Graphics G4 P3 -- the sparks: each new "blast" effect is consumed
+        # once ("sparks_seen") and throws its sparks from the canonical walk's
+        # seeds over the open mask; they step on the same VFX clock, ride the
+        # same tamed wind and curl field, and die in the same walls.
+        self.sparks.refresh_settings(
+            _particles.spark_settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.sparks.p.clear()            # no VFX clock
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["sparks_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_s, walk_seeds as _walk_seeds)
+            _mask_cache = []
+
+            def _spark_seeds(fy, fx, approach):
+                if not _mask_cache:
+                    _mask_cache.append(np.asarray(_open_mask_s(gmap), bool))
+                return _walk_seeds(_mask_cache[0], fy, fx, approach)
+
+            self.sparks.update(
+                t=self.fire_vfx.clock.t_noise, effects=self._effects,
+                seeds_fn=_spark_seeds, sim_tick=int(sim_tick),
+                wind_fn=frame_tamed_wind, tps=tps,
+                blocked=self._ember_blocked(gmap),
+                modes=self.embers.modes())
         # Graphics G3 F4b -- the room-light flicker's dials and the fire's
         # light gain (their rows are computed per sim tick by
         # fire_light_rows, not per frame).
@@ -952,7 +988,7 @@ class GameRenderer:
         # 4b. Graphics G3 F4a -- EMBERS (THE particle primitive): additive
         # linear-HDR sparks over the flame, under the units, clipped to the
         # view; coloured only through the blackbody GPU LUT. No ember, no
-        # draw.
+        # draw. (G4 P3: the SPARKS ride the same draw, one sprite array.)
         self._draw_embers(view)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass --
         # ABOVE the flame.
@@ -1220,25 +1256,32 @@ class GameRenderer:
 
     def _draw_embers(self, view, stage: str = "scene",
                      glow_through_ceil: float = 1.0) -> int:
-        """Draw the embers into the scene RT (G3 F4a): ``stage`` "scene"
-        (after the flame, under the units and the soot) packs and draws;
-        "compensation" (after the ceiling soot) re-adds what the soot hid
-        beyond ``glow_through_ceil``, as the flame's compensation does.
-        Returns the draw calls issued (0: no ember in view, or embers
-        off)."""
+        """Draw THE particle primitive's sprites into the scene RT -- the
+        embers (G3 F4a) and the sparks (G4 P3), concatenated into ONE sprite
+        array and ONE draw per stage: ``stage`` "scene" (after the flame,
+        under the units and the soot) packs and draws; "compensation" (after
+        the ceiling soot) re-adds what the soot hid beyond
+        ``glow_through_ceil``, as the flame's compensation does. A frame
+        with no spark draws exactly the embers' array. Returns the draw
+        calls issued (0: no particle in view, or both off)."""
         from .particles import pack_sprites
         from .fire_vfx import LUT_SIZE
-        em = self.embers
         if stage == "scene":
             self._ember_sprites = None
-            if not em.enabled or em.p.n == 0:
+            zoom = (self.camera.zoom_px_per_tile
+                    / self.world.world_px_per_tile)
+            packs = []
+            for system in (self.embers, self.sparks):
+                if system.enabled and system.p.n:
+                    packs.append(pack_sprites(
+                        system.p, view, self.world.world_px_per_tile,
+                        system.settings, screen_px_per_world_px=zoom))
+            if not packs:
                 self.ember_draw.draws_last_frame = 0
                 self.ember_draw.sprites_last_frame = 0
                 return 0
-            self._ember_sprites = pack_sprites(
-                em.p, view, self.world.world_px_per_tile, em.settings,
-                screen_px_per_world_px=(self.camera.zoom_px_per_tile
-                                        / self.world.world_px_per_tile))
+            self._ember_sprites = (packs[0] if len(packs) == 1
+                                   else np.concatenate(packs, axis=1))
         sprites = self._ember_sprites
         if sprites is None:
             return 0

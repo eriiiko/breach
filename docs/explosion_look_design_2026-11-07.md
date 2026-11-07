@@ -319,7 +319,9 @@ subprocess).
 - *Legacy effects queue*: the `"explosion"` kind no longer exists; a new
   explosion visual is one of the three above.
 
-## 8. As built: P2, the shock front (2026-11-07)
+## 8. As built
+
+### P2, the shock front (2026-11-07)
 
 - `renderer/shockwave.py` + `shaders/world_resolve.fs::shock_term`, one line
   in `distortion_px`; `WorldComposite.resolve(shock=)`; `[render.shockwave]`
@@ -347,3 +349,61 @@ subprocess).
 - GPU: `lighting_demo --level blast_final --shock-perf 600`, the volley's 4
   rings held live and their ages swept: resolve 0.469 ms on vs 0.344 ms off,
   **0.125 ms** for the term (world RT 3600×3024; budget 0.2 ms).
+
+### P3, the sparks (2026-11-07)
+
+- `renderer/particles.py::SparkSystem` (+ `SparkSettings`,
+  `spark_settings_from_config`, `spark_count`, `spark_rng`, `spark_spawns`),
+  `[render.sparks]` behind a refusing door (the shock front's), owned by
+  `GameRenderer` beside the embers and stepped in `upload_state` right after
+  them. The particle primitive's second consumer: `Particles`, `integrate`,
+  `pack_sprites` and `ParticleDraw` are used unchanged; the ember path is
+  byte-identical (`tests/test_particles.py` untouched and green, plus
+  `tests/test_sparks.py`'s ember-only-frame assertion).
+- **Consumption**: each `"blast"` effect is read once, `sparks_seen`; while
+  the system is off (or the flame VFX, whose clock it runs on, is off) a
+  blast is marked seen and never thrown later.
+- **Births at the walk's seeds**: the renderer hands in
+  `walk_seeds(open_mask(gmap), fy, fx, approach)` as `seeds_fn` (so
+  `particles.py` stays sim-free, its render-only test unchanged); each spark
+  takes one seed's tile centre (+0.5), so a blast centred on a wall throws
+  from beside it. The RNG is `default_rng([seed, tick0, fx, fy])`: the same
+  effect throws the same sparks.
+- **No spark crosses a wall**: a spark at 18 tiles/s in a slow frame
+  (`MAX_STEP_S` 0.25 s) would step 4.5 tiles over a one-tile wall in one
+  `integrate` call, so `SparkSystem.update` substeps it to at most
+  `SPARK_MAX_HOP` = 0.5 tile per step (the ember call is untouched); the
+  wall test fails without the substeps.
+- **One draw**: `GameRenderer._draw_embers` packs both systems and
+  concatenates them into one sprite array, one `ParticleDraw.draw` per stage
+  (scene under the units, compensation after the ceiling soot); a frame with
+  no spark hands it the embers' own array. The curl field is the embers'
+  (`EmberSystem.modes()`: one air, one drift), so the sparks have no curl
+  wavelength / rate / modes dials of their own.
+- **Dials beyond the brief** (`drag`, `curl`, `size_tiles`,
+  `min_screen_px`, `streak_s`, `brightness`, `seed`: the names `integrate`
+  and `pack_sprites` read; `size_px` became the embers' `size_tiles`).
+  Claude's starting values, set from the shots: `drag` 1.0 (at 2.0 the
+  sparks stayed inside the fireball's white glow at every tick they lived),
+  `size_tiles` 0.06, `streak_s` 0.06, `brightness` 4 (a streak spreads its
+  light over its length, the shader's `r / (r + seg)`; at 1 they did not read
+  on the lit floor). `cap` 512: blast_final's volley throws 457 (frag 60,
+  breach 19, magazine 170, C4 208).
+- **What the shots show** (`p3/`, zoom 40 rows + `blast_final_t52`): at +2
+  the frag's sparks are a tight star at its centre; at +4 they are a fan
+  ~1.5 tiles out, visible only where the floor is dark (over the crate and
+  its soot): on the lit floor and inside the fireball's display-space heat
+  layer (G0's named exception, drawn after the resolve) they are covered. A
+  debug pass at +10 (not a committed row) shows them as yellow streaks 3-4
+  tiles out all round, none past a wall. The C4's and the magazine's are
+  hidden by the heat layer at every tick their sparks live (the shock
+  front's finding again). The breach on wood's 19 read as a crisp white
+  starburst at +4. The frag's 60 read as sparse but right for a grenade;
+  the count is Erik's.
+- `look_shots.HIDEABLE_LAYERS` gains `sparks` (`SparkSystem.enabled_override`,
+  set only by a shot's `hide`; no key).
+- GPU: `lighting_demo --level blast_final --spark-perf 600` (new, the shock
+  front's method: the volley's 457 sparks held at birth, the particle draw's
+  two stages timed with `GL_TIME_ELAPSED`, sparks on vs off alternated):
+  **0.051 ms** (0.053 on, 0.001 off; world RT 3600x3024). CPU: 0.44 ms on the
+  spawn frame (four walks + 457 births).

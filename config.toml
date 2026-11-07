@@ -1839,6 +1839,46 @@ brightness = 10.0           # x the ramp's Le(T): a spark is a point, far bright
                             # per pixel than the surface it came from
 seed = 4321                 # the spawn RNG and the drift's modes
 
+[render.sparks]
+# Graphics G4 P3 -- SPARKS, the second consumer of THE particle primitive
+# (renderer/particles.py SparkSystem; docs/explosion_look_design_2026-11-07.md
+# §3.4). A detonation (the "blast" effect, read once) throws rate x
+# sqrt(strength) sparks from the tile centres of its walk's seeds (the centre
+# when open, else beside it: never from inside a wall), in every direction,
+# fast and radial; the air catches them (the embers' drag toward the frame's
+# tamed wind + the same curl noise), they cool down the ONE blackbody ramp
+# (Newton, closed form: never re-heat) and die at their life, at the 800 K
+# glow floor, or on entering a wall / vacuum. Seeded by the blast's tick and
+# tile, on the flame's VFX clock: a look shot reproduces. Drawn with the
+# embers, in the same additive draw (under the units; the soot's
+# compensation after it). Re-read every frame (F5); every key is required
+# (a refusing door); `enabled` is its only switch. Render-only.
+enabled = true
+rate = 60.0                 # sparks at strength 1 (the frag); x sqrt(strength):
+                            # C4 (12) ~208, magazine (8) ~170, breach (0.1) ~19
+v0_tiles_s = 12.0           # radial birth speed, tiles/s
+v_spread = 0.5              # each is born at v0 x (1 +- this x U(-1, 1)): 6..18 tiles/s
+t_born_k = 2600.0           # birth temperature, K: white-yellow on the ramp
+cool_s = 0.5                # e-fold of (T - T_amb): ~1140 K at 0.5 s, the glow
+                            # floor (800 K) at ~0.75 s
+life_s = 0.5                # mean life, s (VFX clock)
+life_jitter = 0.5           # each lives life_s x (1 +- this x U(-1, 1)): 0.25..0.75 s
+drag = 1.0                  # 1/s: how fast the air catches them, the embers' (a
+                            # 12 tiles/s spark travels ~4.7 tiles in 0.5 s; at 2.0
+                            # they stayed inside the fireball's glow, P3's shots)
+curl = 1.0                  # tiles/s of curl-noise drift (the embers' field)
+size_tiles = 0.06           # sprite radius (a tile is 48 world px: ~2.9 px)
+min_screen_px = 1.0         # zoomed out, the radius never drops below this many
+                            # SCREEN px (the same light spread: no popping)
+streak_s = 0.06             # motion stretch: the trail is |v| x this long (a fresh
+                            # spark streaks ~0.7 tile)
+brightness = 4.0            # x the ramp's Le(T) (2600 K is ~16x an ember's 1250 K);
+                            # a streak spreads its light over its length (the
+                            # shader's r / (r + seg)), so a fast spark needs more
+cap = 512                   # never more alive at once (blast_final's volley throws
+                            # ~460; a fair subset beyond it)
+seed = 9157                 # mixed with each blast's tick and tile
+
 [render.shimmer]
 # Graphics G3 F4a -- HEAT SHIMMER, the first term of the resolve's DISTORTION
 # BLOCK (renderer/heat_shimmer.py, shaders/world_resolve.fs distortion_px;
