@@ -14,7 +14,7 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
 # keeps the image small; ML_STACK the skill's folder, ml_stack.py + .txt):
 #
 #   git clone --depth 1 --branch <tag> file://<breach checkout> /tmp/breach-src
-#   apptainer build \
+#   apptainer build --notest \
 #       --build-arg REPO=/tmp/breach-src \
 #       --build-arg COMMIT=<tag or sha> \
 #       --build-arg ML_STACK=<skills>/ml-stack \
@@ -25,7 +25,9 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
 # The image holds the code at COMMIT and its build: `breach_physics.build_id()`
 # is that commit (the repo is a real git checkout inside, so the build id and
 # rl_env.require_snapshot work as on a PC). No GPU is needed to BUILD (nvcc
-# compiles for 75 80 86 89 90, the CMakeLists default); `--nv` to run.
+# compiles for 75 80 86 89 90, the CMakeLists default); `--nv` to run. Build
+# with `--notest`: apptainer would run %test right after %post, without a GPU,
+# and the GPU gates would fail the build; `apptainer test --nv` runs them.
 # ===========================================================================
 
 %arguments
@@ -43,6 +45,8 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
     export BREACH_PYTHON=/opt/micromamba/envs/breach/bin/python
     export PATH=/opt/micromamba/envs/breach/bin:/usr/local/cuda/bin:$PATH
     export LC_ALL=C.UTF-8
+    # The image is read-only at run time: CuPy's kernel cache goes to tmp.
+    export CUPY_CACHE_DIR="${TMPDIR:-/tmp}/cupy-cache-$(id -u)"
 
 %post
     set -eu
