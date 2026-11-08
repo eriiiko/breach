@@ -49,7 +49,7 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -q
     apt-get install -y -q --no-install-recommends \
-        build-essential cmake ninja-build git pkg-config \
+        build-essential ninja-build git pkg-config \
         curl ca-certificates bzip2
     rm -rf /var/lib/apt/lists/*
 
@@ -63,6 +63,12 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
     # build time: ml_stack.py's GPU gates run in %test).
     export MAMBA_ROOT_PREFIX=/opt/micromamba
     bash /opt/breach/containers/breach_env.sh /opt/ml-stack --no-gpu
+
+    # CMake from pip into the env: jammy's 3.22 cannot set CUDA's C++20
+    # dialect (CMAKE_CUDA_STANDARD 20 needs a newer one; the PCs run 3.28 / 4.x).
+    /opt/micromamba/envs/breach/bin/python -m pip install -q \
+        --root-user-action=ignore "cmake>=3.28,<5"
+    export PATH=/opt/micromamba/envs/breach/bin:$PATH
 
     # Both modules, as on any Linux box.
     cd /opt/breach
