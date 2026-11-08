@@ -1,6 +1,8 @@
 # Breach — project instructions
 
-> **Last updated**: 2026-11-08 — #29 P5: the Batched resident engine row
+> **Last updated**: 2026-11-08 — #29 P10: Environment names
+> `cpp/build_linux.sh` and the container.
+> Before: 2026-11-08 — #29 P5: the Batched resident engine row
 > (slot 7 of N homogeneous envs in one device chain; it absorbs the RL-batch
 > habits row) and the Stamp kernel row's batch clause.
 > Before: 2026-11-07 — #29 P4b: the Stamp kernel row (slot 6's five
@@ -44,8 +46,10 @@ strategy. Every rule below serves that.
   `docs/dev_setup.md` names each one; bare `python` may be a different install
   and fails breach imports with a misleading ModuleNotFoundError.
 - **pytest: always `pytest tests -q`** — never bare `pytest` from repo root.
-- C++/CUDA: `cpp/` via CMake; per-machine build scripts `cpp/build_*.bat`
-  (which one where: `docs/dev_setup.md`). CPU build → `cpp/build/Release`;
+- C++/CUDA: `cpp/` via CMake; per-machine build scripts `cpp/build_*.bat`,
+  on Linux `cpp/build_linux.sh` (both modules; the container
+  `containers/breach.def` builds with it) (which one where:
+  `docs/dev_setup.md`). CPU build → `cpp/build/Release`;
   CUDA build → `cpp/build_cuda/`.
 - Do NOT add machine specs to this file — they belong in the dev-setup docs.
 

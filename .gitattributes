@@ -20,3 +20,9 @@
 src/simulation/philox32.py  text eol=lf
 cpp/src/philox32.h          text eol=lf
 tests/data/*.txt            text eol=lf
+
+# Linux shell scripts and the Apptainer definition (#29 P10) run under bash /
+# apptainer, which refuse a CR; LF in every checkout, a Windows one included
+# (WSL runs them straight off /mnt/c).
+*.sh                        text eol=lf
+containers/*.def            text eol=lf

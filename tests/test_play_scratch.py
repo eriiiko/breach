@@ -343,7 +343,9 @@ def test_parse_level_override_rejects_dotdot_escape(monkeypatch):
 def test_parse_level_override_rejects_absolute_path(monkeypatch):
     from main import _parse_level_override  # heavy import: test-local
     monkeypatch.setattr(sys, "argv",
-                        ["main.py", "--level", str(Path("C:/") / "evil")])
+                        # an absolute path on THIS platform ("C:/" is a
+                        # relative name on Linux, #29 P10)
+                        ["main.py", "--level", str(Path(ROOT.anchor) / "evil")])
     with pytest.raises(SystemExit):
         _parse_level_override()
 

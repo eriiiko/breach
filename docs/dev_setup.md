@@ -3,7 +3,7 @@
 *Everything needed to build and run Breach on a fresh Windows machine.*
 *Repeat these steps on each dev PC (Home Desktop, Work Desktop, Lenovo laptop).*
 
-*Last updated: 2026-09-23*
+*Last updated: 2026-11-08 (the Linux section, #29 P10)*
 
 ---
 
@@ -26,6 +26,7 @@ specs and tool installs live in the ClaudeSync `environment.md`.
 | Machine | `<breach-py>` | Build scripts (`cpp\`) |
 |---|---|---|
 | Home Desktop (`DESKTOP-0E98HUV`) | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU `build_cpu_home.bat`; CUDA `build_cuda.bat` |
+| Home Desktop, Linux: WSL2 distro `breach-ubuntu` | `/opt/micromamba/envs/breach/bin/python` — the micromamba `breach` env, 3.12 (section "Linux" below) | both: `build_linux.sh` |
 | Work Desktop | `C:/Users/steen/anaconda3/envs/data/python.exe` — the `data` env, 3.12 | CPU: Step 6; CUDA `build_cuda.bat` |
 | Lenovo laptop (`ERIK_LENOVO`) | `C:/Users/steen/miniconda3/envs/data/python.exe` — the miniconda `data` env, 3.12 | CPU `build_cpu_data.bat`; CUDA `build_cuda_lenovo.bat` |
 
@@ -134,6 +135,107 @@ Run the tests (scope to `tests/` — a bare `pytest` tries to collect the vendor
 Lighting / visual tuning tool: `<breach-py> tools/lighting_demo.py`
 
 ---
+
+## Linux (WSL2 on the Home Desktop; Berzelius through the container)
+
+Added 2026-11-08 (#29 P10). The same CMakeLists.txt builds both modules on gcc + nvcc, and the
+pinned match gives the Windows digests bit for bit on CPU, CUDA and CUDA resident
+(`tools/match_pin_check.py`). This machine's Linux breach env is the WSL2 distro
+**`breach-ubuntu`** (Ubuntu 24.04, gcc 13.3, cmake 3.28, ninja 1.11, CUDA toolkit 12.4.131 — the
+Windows build's version), its disk at `C:\wsl\breach-ubuntu`, the repo at `~/code/breach` (root's
+home, inside the Linux filesystem: never build on `/mnt/c`), Python
+`/opt/micromamba/envs/breach/bin/python`. Times are this machine's on 2026-11-08.
+
+**1. The distro, no prompts, no admin** (PowerShell; ~1 min):
+
+```powershell
+New-Item -ItemType Directory -Force C:\wsl\images
+Invoke-WebRequest https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz -OutFile C:\wsl\images\ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz
+# check it against SHA256SUMS in the same folder, then:
+wsl --import breach-ubuntu C:\wsl\breach-ubuntu C:\wsl\images\ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz --version 2
+wsl -d breach-ubuntu -- nvidia-smi        # the Windows driver's GPU, nothing installed
+```
+
+You work as root inside. Run long scripts as files (`wsl -d breach-ubuntu -- bash /mnt/c/.../x.sh`),
+and from Git Bash prefix `MSYS_NO_PATHCONV=1` or it rewrites `/mnt/c` paths.
+
+**2. DNS and IPv6** (required on this machine). WSL's generated resolver (the host's NAT DNS
+proxy) times out here, and IPv6 does not route, so apt stalls at `Temporary failure resolving`:
+
+```bash
+printf '[boot]\nsystemd=true\n\n[network]\ngenerateResolvConf = false\n' > /etc/wsl.conf
+rm -f /etc/resolv.conf; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\n' > /etc/apt/apt.conf.d/99force-ipv4
+# then from Windows: wsl --terminate breach-ubuntu
+```
+
+**3. Build tools and the CUDA toolkit** (apt 23 s; toolkit 103 s). The toolkit comes from NVIDIA's
+`wsl-ubuntu` repository and is the TOOLKIT ONLY: never install a Linux NVIDIA driver in WSL (the
+Windows driver provides `libcuda` under `/usr/lib/wsl/lib`). The `cuda-toolkit-12-4` metapackage
+does not install on 24.04 (its `nsight-systems-2023.4.4` needs `libtinfo5`, gone from noble), so
+take the compiler, the libraries and the command-line tools without Nsight:
+
+```bash
+apt-get update && apt-get install -y build-essential cmake ninja-build git pkg-config wget curl ca-certificates bzip2
+wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+dpkg -i cuda-keyring_1.1-1_all.deb && apt-get update
+apt-get install -y cuda-compiler-12-4 cuda-libraries-dev-12-4 cuda-command-line-tools-12-4
+/usr/local/cuda/bin/nvcc --version        # release 12.4, V12.4.131
+```
+
+**4. The Python env** (~3 min): `containers/breach_env.sh <ml-stack dir>` — the ONE recipe, also
+the container's: micromamba into `/opt/micromamba`, the env `breach` from conda-forge (Python
+3.12, numpy 2.5.3 and pybind11 3.0.2 as in Windows' `data`, pytest, pillow, matplotlib, psutil;
+raylib 5.5.0.4 from pip), then the ML stack through the ml-stack skill's `ml_stack.py apply` (ONE
+version set; the skill's folder is not reachable from WSL through the Google Drive link, so copy
+`ml_stack.py` + `ml_stack.txt` to a folder on `C:` first). On Linux, torch's wheel pins
+`cuda-toolkit==13.2.2`, which `ml_stack.txt` carries as Linux-marked pins.
+
+**5. The repo, in the Linux filesystem** (clone 86 s): from the main checkout (a worktree's `.git`
+file holds a Windows path git on Linux cannot follow):
+
+```bash
+git config --global --add safe.directory '*'
+git clone --single-branch --branch <branch> /mnt/c/Users/steen/projects/breach ~/code/breach
+```
+
+Code is written in a Windows worktree and committed there; the Linux clone only pulls
+(`git pull --ff-only origin <branch>`) to build and test.
+
+**6. Build** (fresh: CPU 26 s, CUDA 67 s for archs 75 80 86 89 90):
+
+```bash
+cd ~/code/breach && cpp/build_linux.sh [--fresh] [cpu|cuda]
+```
+
+The CPU module is built in `cpp/build` and copied to `cpp/build/Release` (the suite's
+`sys.path` target), the CUDA module in `cpp/build_cuda`; both carry `bp.build_id()` = HEAD. The CUDA
+`.so` finds `libcudart.so.12` through its RUNPATH; `tests/cuda_harness.py` runs the GPU checks
+under the suite's own interpreter on Linux (`BREACH_CUDA_PYTHON` overrides). The flags are the
+CMakeLists' determinism floor: every sim TU gets `-fno-fast-math -ffp-contract=off` after the
+global `-ffast-math`, every `.cu` `--fmad=false` and `-Xcompiler=-fno-fast-math,-ffp-contract=off`
+(check `cpp/build*/compile_commands.json`).
+
+**7. The suite and the digests** (the full suite 11.5 min, GL checks included: WSLg gives raylib a
+window, and `renderer/core.py::GLDirect` loads `libGL.so.1` on Linux; `.cuda_green` comes from
+`tools/cuda_green.py` as on Windows, and `tests/test_class_p_level.py` needs `main` in the clone:
+`git fetch origin main:main`):
+
+```bash
+export PATH=/usr/lib/wsl/lib:$PATH        # nvidia-smi for the ML stack's gates
+/opt/micromamba/envs/breach/bin/python -m pytest tests -q
+for b in cpu cuda resident; do /opt/micromamba/envs/breach/bin/python tools/match_pin_check.py --backend $b; done
+```
+
+**The container** (`containers/breach.def`, Apptainer; apptainer 1.5.5 from `ppa:apptainer/ppa`
+here): build and test commands are in the file's header. It is CUDA 12.4.1 devel on Ubuntu 22.04
+(gcc 11), runs `breach_env.sh` with `--no-gpu` (no device at build time), builds the repo at one
+commit with `build_linux.sh`, and `apptainer test --nv` plays the pinned match on all three
+backends. Built here on 2026-11-08: `apptainer build --notest` 512 s (a 12.3 GB `.sif`: the CUDA
+devel base, torch + CuPy, and 2.6 GB of tracked repo files), `apptainer test` 65 s, every digest
+equal to the pin (gcc 11 inside, gcc 13 in the distro, MSVC on Windows). Under WSL2 `--nv` alone
+gives the container no CUDA; bind the driver stubs (`APPTAINERENV_LD_LIBRARY_PATH=/usr/lib/wsl/lib`
+and `--bind /usr/lib/wsl:/usr/lib/wsl`), as the file's header says.
 
 ## Type checking and code intelligence (optional, recommended)
 

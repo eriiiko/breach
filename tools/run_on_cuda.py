@@ -35,7 +35,6 @@ EOS_P6_PENDING_KERNELS. This tool is unusable during that window.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -52,6 +51,7 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 from cuda_harness import cuda_dll_dir as _cuda_dll_dir  # noqa: E402
 from cuda_harness import cuda_pyd as _cuda_pyd  # noqa: E402
+from cuda_harness import register_cuda_runtime  # noqa: E402
 
 
 def setup_cuda_import() -> None:
@@ -66,15 +66,15 @@ def setup_cuda_import() -> None:
     pyd = _cuda_pyd()
     if pyd is None:
         raise SystemExit(
-            "CUDA build not found at cpp/build_cuda/breach_physics*.pyd.\n"
-            "Build it first:  cpp/build_cuda.bat\n"
+            "CUDA build not found at cpp/build_cuda/breach_physics*.pyd (.so).\n"
+            "Build it first:  cpp/build_cuda.bat (Linux: cpp/build_linux.sh cuda)\n"
             "(The CPU game still runs with:  python main.py)")
     dll = _cuda_dll_dir()
     if dll is None:
         raise SystemExit(
-            "CUDA runtime DLLs (cudart64_*.dll) not found. Set CUDA_PATH or "
-            "install the CUDA Toolkit v12.4.")
-    os.add_dll_directory(str(dll))
+            "CUDA runtime (cudart64_*.dll / libcudart.so*) not found. Set "
+            "CUDA_PATH or install the CUDA Toolkit v12.4.")
+    register_cuda_runtime(dll)
     # CUDA build first; then repo root + src so the game's own modules import.
     sys.path.insert(0, str(ROOT / "src"))
     sys.path.insert(0, str(ROOT))

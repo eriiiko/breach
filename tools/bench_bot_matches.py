@@ -268,13 +268,10 @@ def import_build(build_dir: Path):
     """Import ``breach_physics`` from ``build_dir`` (before anything imports
     the CPU build), registering the CUDA runtime DLL folder when there is
     one. Every backend is left as the module starts it: OFF."""
-    import os
-    from cuda_harness import cuda_dll_dir
-    if not list(Path(build_dir).glob("breach_physics*.pyd")):
+    from cuda_harness import MODULE_GLOB, register_cuda_runtime
+    if not list(Path(build_dir).glob(MODULE_GLOB)):
         raise SystemExit(f"no breach_physics build in {build_dir}")
-    dll = cuda_dll_dir()
-    if dll is not None:
-        os.add_dll_directory(str(dll))
+    register_cuda_runtime()
     sys.path.insert(0, str(build_dir))
     import breach_physics as bp
     if Path(bp.__file__).resolve().parent != Path(build_dir).resolve():
@@ -291,7 +288,8 @@ def setup_cuda(build_dir: Path, resident: bool) -> None:
     from cuda_harness import cuda_dll_dir
     from run_on_cuda import enable_all_backends
     if cuda_dll_dir() is None:
-        raise SystemExit("CUDA runtime DLLs (cudart64_*.dll) not found")
+        raise SystemExit("CUDA runtime (cudart64_*.dll / libcudart.so*) "
+                         "not found")
     bp = import_build(build_dir)
     enable_all_backends(bp)
     if resident:
