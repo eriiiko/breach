@@ -57,11 +57,13 @@ endif()
 
 # CUDA-S0: enable the CUDA language + toolkit only when requested.
 if(BREACH_CUDA)
-    enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
-    set(CMAKE_CUDA_STANDARD 20)            # signed-shift (SAR) portability floor
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    # The default arch list MUST be set before enable_language(CUDA): under
+    # CMP0104 enable_language itself defines CMAKE_CUDA_ARCHITECTURES (nvcc's
+    # own default, 52) when it is unset, so a check after it never fires --
+    # found by #29 P10, whose first Linux build came out sm_52 (the Windows
+    # scripts always pass a list, which hid it).
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND
+       NOT DEFINED ENV{CUDAARCHS})
         # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic,
         # 80 A100 and 90 Hopper (Berzelius, #29 P10 / design §8). One fatbin
         # runs on every machine. The Windows build_cuda*.bat scripts pass
@@ -69,6 +71,10 @@ if(BREACH_CUDA)
         # takes this default.
         set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
     endif()
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    set(CMAKE_CUDA_STANDARD 20)            # signed-shift (SAR) portability floor
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     message(STATUS "BREACH_CUDA=ON: archs ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
