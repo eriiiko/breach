@@ -292,15 +292,22 @@ class GLDirect:
     def __init__(self):
         import ctypes
         self.ctypes = ctypes
-        gl = ctypes.WinDLL("opengl32")
-        get = gl.wglGetProcAddress
+        if hasattr(ctypes, "WinDLL"):
+            gl = ctypes.WinDLL("opengl32")
+            get = gl.wglGetProcAddress
+            functype = ctypes.WINFUNCTYPE
+        else:
+            # Linux (#29 P10): GLFW's own libGL (GLX), glXGetProcAddressARB.
+            gl = ctypes.CDLL("libGL.so.1")
+            get = gl.glXGetProcAddressARB
+            functype = ctypes.CFUNCTYPE
         get.restype = ctypes.c_void_p
         get.argtypes = [ctypes.c_char_p]
 
         def fn(name, *argtypes, restype=None):
             addr = get(name.encode("ascii"))
             if addr:
-                return ctypes.WINFUNCTYPE(restype, *argtypes)(addr)
+                return functype(restype, *argtypes)(addr)
             f = getattr(gl, name, None)          # GL 1.1: exported directly
             if f is None:
                 raise RuntimeError(f"{name} unavailable (no GL context?)")
