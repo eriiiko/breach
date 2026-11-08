@@ -62,9 +62,12 @@ if(BREACH_CUDA)
     set(CMAKE_CUDA_STANDARD 20)            # signed-shift (SAR) portability floor
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic.
-        # One fatbin runs on all three machines.
-        set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
+        # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic,
+        # 80 A100 and 90 Hopper (Berzelius, #29 P10 / design §8). One fatbin
+        # runs on every machine. The Windows build_cuda*.bat scripts pass
+        # their own 75;86;89 (the PCs need nothing else); cpp/build_linux.sh
+        # takes this default.
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
     endif()
     message(STATUS "BREACH_CUDA=ON: archs ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
