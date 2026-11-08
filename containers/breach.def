@@ -20,6 +20,9 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
 #       --build-arg ML_STACK=<skills>/ml-stack \
 #       breach.sif containers/breach.def
 #   apptainer test --nv breach.sif         # the pinned match, three backends
+#   # under WSL2 --nv binds nothing usable; bind the WSL driver stubs instead:
+#   APPTAINERENV_LD_LIBRARY_PATH=/usr/lib/wsl/lib \
+#       apptainer test --nv --bind /usr/lib/wsl:/usr/lib/wsl breach.sif
 #   apptainer run  --nv breach.sif tools/run_match.py --level ship_demo
 #
 # The image holds the code at COMMIT and its build: `breach_physics.build_id()`

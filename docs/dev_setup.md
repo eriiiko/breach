@@ -216,7 +216,10 @@ CMakeLists' determinism floor: every sim TU gets `-fno-fast-math -ffp-contract=o
 global `-ffast-math`, every `.cu` `--fmad=false` and `-Xcompiler=-fno-fast-math,-ffp-contract=off`
 (check `cpp/build*/compile_commands.json`).
 
-**7. The suite and the digests:**
+**7. The suite and the digests** (the full suite 11.5 min, GL checks included: WSLg gives raylib a
+window, and `renderer/core.py::GLDirect` loads `libGL.so.1` on Linux; `.cuda_green` comes from
+`tools/cuda_green.py` as on Windows, and `tests/test_class_p_level.py` needs `main` in the clone:
+`git fetch origin main:main`):
 
 ```bash
 export PATH=/usr/lib/wsl/lib:$PATH        # nvidia-smi for the ML stack's gates
@@ -228,7 +231,11 @@ for b in cpu cuda resident; do /opt/micromamba/envs/breach/bin/python tools/matc
 here): build and test commands are in the file's header. It is CUDA 12.4.1 devel on Ubuntu 22.04
 (gcc 11), runs `breach_env.sh` with `--no-gpu` (no device at build time), builds the repo at one
 commit with `build_linux.sh`, and `apptainer test --nv` plays the pinned match on all three
-backends.
+backends. Built here on 2026-11-08: `apptainer build --notest` 512 s (a 12.3 GB `.sif`: the CUDA
+devel base, torch + CuPy, and 2.6 GB of tracked repo files), `apptainer test` 65 s, every digest
+equal to the pin (gcc 11 inside, gcc 13 in the distro, MSVC on Windows). Under WSL2 `--nv` alone
+gives the container no CUDA; bind the driver stubs (`APPTAINERENV_LD_LIBRARY_PATH=/usr/lib/wsl/lib`
+and `--bind /usr/lib/wsl:/usr/lib/wsl`), as the file's header says.
 
 ## Type checking and code intelligence (optional, recommended)
 
