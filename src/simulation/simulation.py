@@ -1061,7 +1061,7 @@ class Simulation:
             return                            # the magazine is full
         if u.spare_mags == 0:
             return                            # no spare magazine left
-        reload_begin(u, weapon, self.tick)
+        reload_begin(u, weapon, self.tick, events=self.tick_events)
 
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
