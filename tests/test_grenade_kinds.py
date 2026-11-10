@@ -643,14 +643,24 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: abf2bf2, tick 7330ebaf873f9b1310d1d275d090970d3eed2ab5b303287f8202b3
 #: e1fa41473a, units bad73d8e1bb486c18da8315506796c63ce9a11b69ebada33ab4
 #: a9972da696a76)
+#: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
+#: residency P3d: the horde descends an integer BFS field, no A*; see
+#: tests/test_zombie_control.py's pins for the law and its proof). This
+#: gate's dial is untouched; the horde under it walks the field now, so
+#: the match it pins is re-measured on this tree with the gate's own
+#: settings -- the law is the whole move.
+#: (was win 1 at 240; field
+#: ef81cd2f9f0b720adfefaea226f51f905829a20d09cdcf5bf11c6c25545c592b; tick
+#: 8c9f1e0df467a41c1fbfc44101be87d07a08fba40aaaaaa3065e05ab2a7c2839; units
+#: a004003626bb2325f48149a5a4ff2b41f8e809b4d22dd686db622bcfc0215235)
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
-    field_digest="ef81cd2f9f0b720adfefaea226f51f90"
-                 "5829a20d09cdcf5bf11c6c25545c592b",
-    tick_digest="8c9f1e0df467a41c1fbfc44101be87d0"
-                "7a08fba40aaaaaa3065e05ab2a7c2839",
-    unit_stream="a004003626bb2325f48149a5a4ff2b41"
-                "f8e809b4d22dd686db622bcfc0215235")
+    field_digest="b04c1ad46450b1f834b83f9bee13b0b3"
+                 "7ba9301c4d0d430ab1a6c45397602a58",
+    tick_digest="435352e97169d7af477efc406cea55d8"
+                "e0360556c6e830f189908468c92da09b",
+    unit_stream="a401c2ceb2db9cd87f25beaef33285e0"
+                "e42740e0c06b8f2ac964037b6ad6c2f4")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

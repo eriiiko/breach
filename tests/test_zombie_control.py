@@ -1,12 +1,23 @@
 """#122 -- the horde through the control seam (``control_zombies.ZombieControl``,
 match controller ``"zombies"``).
 
-Properties: the shipped zombie law is WRAPPED, not rewritten (a match plays
-bit for bit as before #122 -- the one golden-style pin below, deliberately);
-every zombie has one driver per tick; a bite's kill is credited to melee and
-the converted marine is then driven by the zombie controller; an idle zombie
-controller leaves the horde standing; the registry builds ``zombies``; the
-game path (no match) still runs the conductor's zombie slot.
+Properties: the controller drives the conductor's law unchanged (a match
+plays bit for bit as the conductor-driven law plays it -- the golden-style
+pins below, deliberately); every zombie has one driver per tick; a bite's
+kill is credited to melee and the converted marine is then driven by the
+zombie controller; an idle zombie controller leaves the horde standing; the
+registry builds ``zombies``; the game path (no match) still runs the
+conductor's zombie slot.
+
+#183 G9p REWROTE the law (the approved rewrite, residency P3d: the horde walks
+the integer distance field of ``simulation.horde``; Erik's ruling of
+2026-11-10). The pre-G9p "wrapped, never rewritten" property -- the controller
+reproduces the pre-#122 A* law bit for bit -- is superseded: there is no
+pre-#122 law left to reproduce. What survives is kept here: one driver per
+tick, the controller names every living zombie, a bite is credited ``melee``
+to the biter, the converted marine joins the controller's horde. The two
+pins are the field law's matches (re-pinned with the rationale beside them;
+their names are historical).
 
 Levels are written through ``level_lib`` (never a hand-written toml) and
 matches run through ``run_match`` (the one match loop).
@@ -84,14 +95,13 @@ class _UnitStream:
 
 
 # ---------------------------------------------------------------------------
-# (a) the shipped law, wrapped -- pinned against the pre-#122 runner
+# (a) the conductor's law through the controller -- the pinned matches
 # ---------------------------------------------------------------------------
 # Captured at the start of #122 (main 5ee2712, the conductor driving the
-# horde inside Simulation.step) with tools/run_match.py. This pin IS the
-# property "wrap, don't rewrite": the zombie controller must reproduce the
-# conductor's law tick for tick. A change of the zombie LAW (or of anything
-# else these matches touch) moves it -- then re-pin deliberately, with the
-# rationale, never to make the wrapping pass.
+# horde inside Simulation.step) with tools/run_match.py; the law itself was
+# rewritten at #183 G9p (the horde field) and re-pinned there. A change of
+# the zombie LAW (or of anything else these matches touch) moves these --
+# then re-pin deliberately, with the rationale, never to make a test pass.
 _PRE_122_BOX = dict(
     # #183 G1p-c re-pin (2026-11-10, speeds in m/s): the box is a 1 m tile,
     # so the zombies' cadence, the old [zombie] 14 ticks per tile (1.7 m/s
@@ -138,11 +148,28 @@ _PRE_122_BOX = dict(
     # law): UNCHANGED, the calm match -- no wind at any unit here is a force
     # the law answers (no frag, no vent), and the pre-G5p-b tree with #140's
     # wind law off gives the same values too.
+    # #183 G9p STAGE 1 re-pin (2026-11-11, the horde field law, residency
+    # P3d: each awake zombie descends one integer BFS field flooded from
+    # every living non-zombie over the footprint-passable mask, refreshed
+    # every [zombie] field_refresh_ticks = 2 and on a topology change; no
+    # A*; ties by the cell's parity order). A REWRITE: there is no "old =
+    # new with the input off" proof. What was proved instead (a scratch
+    # per-tick trace of the pre-G9p law, cb884493's ai_zombie.py, against
+    # this tree): outcome, team, ticks and every kill (tick, unit, cause)
+    # UNCHANGED (win 1 at 130; melee kills of units 1 and 0 on ticks 65 and
+    # 130); every activation tick UNCHANGED (zombies 4, 5, 6 on tick 1, the
+    # converted 1 on 65 and 0 on 130); the unit states identical through
+    # tick 39 -- on tick 40 zombie 6 steps south where A*'s 8-connected path
+    # held its row (the field is 4-connected). So field_digest and the unit
+    # stream move, from the routes alone.
+    # (was field a672c7249e18d0eebbb8e398b696bd9c3d34417445f66c3cab498ec7c
+    #  d783ab1; units f2ba375dd16868470f118df2bbbcab6c151ce28d4e2e108ab5f443
+    #  3360406497)
     outcome="win", team=1, ticks=130,
-    field_digest="a672c7249e18d0eebbb8e398b696bd9c"
-                 "3d34417445f66c3cab498ec7cd783ab1",
-    unit_stream="f2ba375dd16868470f118df2bbbcab6c"
-                "151ce28d4e2e108ab5f4433360406497")
+    field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
+                 "52642adfca545cbe51324cfad2e21631",
+    unit_stream="05bdbac7c76250b949ef35aef81fdd40"
+                "3bd89af88232eebe061bf753e47b1e3d")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -240,7 +267,26 @@ _PRE_122_SHIP_DEMO = dict(
     #  bd6175; tick e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c90
     #  99e53076; units 6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522
     #  385e7d1cfe)
-    outcome="win", team=0, ticks=266,
+    # #183 G9p STAGE 1 re-pin (2026-11-11, the horde field law; see the box
+    # pin above for the law). The WINNER CHANGES: win 1 at 264 (was win 0
+    # at 266); all three digests and the unit stream move. A REWRITE, so
+    # proved by what stays (a scratch per-tick trace of the pre-G9p law,
+    # cb884493's ai_zombie.py, against this tree): the unit states are
+    # identical through tick 194 and every spawned zombie's activation tick
+    # is UNCHANGED (8, 9, 10, 11 on tick 183, by sight and the chain); on
+    # tick 195 zombies 9 and 10 take their first different steps (9 east to
+    # x = 46 where A* held 45, 10 north to y = 18), the bots' rounds then
+    # land on other bodies, and the frag of ticks 218-221 kills units 1, 2
+    # and 8 as before but not 9; zombie 10 never bites unit 4 (the old law's
+    # one melee kill, tick 222), so nobody converts, unit 4 dies to a bullet
+    # on tick 227, units 5 and 6 to bullets on 244-245, and team 1's frag
+    # kills unit 0 on tick 264. Measured on the CPU, CUDA and resident
+    # backends alike (tools/match_pin_check.py).
+    # (was win 0 at 266; field 1879b8965a72968467a9cfdb721d92982ab641cf1a86
+    #  d5611fe02a733aa13cac; tick 3bd9fb40d7a71327c4e8b00217862c3c119d110d
+    #  23e98db53f0be02e74975d8c; units 3262ff82f251fe64443ab17c59be0ad6680f
+    #  30f6308e3e0ad34ff32c20631cd9)
+    outcome="win", team=1, ticks=264,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -265,7 +311,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="1879b8965a72968467a9cfdb721d92982ab641cf1a86d5611fe02a733aa13cac",
+    field_digest="d9c4c5cef6c04f9d80eaa2b368d88782a8fa28132f7cd39a8011c230b88cecde",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -377,15 +423,16 @@ _PRE_122_SHIP_DEMO = dict(
     #  791954eb90eb8df573; tick 2620c39692177c6fe900df314650de1bf9b932bd16
     #  67224e5145c9a73068992b; units badb4a7984486a23519cdbbc7b85b72b8b8fb2
     #  953e3a02811ec8b7083fb1c922)
-    tick_digest="3bd9fb40d7a71327c4e8b00217862c3c119d110d23e98db53f0be02e74975d8c",
-    unit_stream="3262ff82f251fe64443ab17c59be0ad6680f30f6308e3e0ad34ff32c20631cd9")
+    tick_digest="f6b702b5550299dcebfe2db8794a1e310b228648319b7c668b3a4c8ac1920f33",
+    unit_stream="d83ee4d35c56f376d47daec6179ac3c37dfef360cd149d7ef6d48c6efa3a9f3f")
 
 
-def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
+def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
     """Property: idle marines + 3 zombies under the "zombies" controller give
-    the pre-#122 result, final fields and per-tick unit stream. Breaks if
-    the controller changes the law's unit list, its order or its slot in the
-    tick, drives a zombie twice, or skips a tick."""
+    the pinned result, final fields and per-tick unit stream (the field
+    law's, G9p). Breaks if the controller changes the law's unit list, its
+    order or its slot in the tick, drives a zombie twice, or skips a tick --
+    or if the law changes (then re-pin with the rationale)."""
     stream = _UnitStream()
     o = run_match(_box(tmp_path, "box"), on_tick=stream)
     got = dict(outcome=o.result.outcome, team=o.result.team,
@@ -394,15 +441,14 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
     assert got == _PRE_122_BOX
 
 
-def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
+def test_the_controller_plays_the_pinned_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
     the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
     at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
     G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure, then at
-    G5p-a1's turning law, then at G5p-b's wind: win team 0 at tick 266)
-    with the same
-    tick_digest. Breaks like the box test, on
-    the real level."""
+    G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field:
+    win team 1 at tick 264) with the same tick_digest. Breaks like the box
+    test, on the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
     o = run_match(level, on_tick=stream)
