@@ -509,6 +509,21 @@ behaviour change; P3d is a HUMAN-TEST on main with a written spec; it amends
 the A* row AND the zombies "WRAPPED, never rewritten" row
 (`test_zombie_control.py` re-pinned). The bots keep A* on the host (§12.3).
 
+**Host half built in #183 G9p (2026-11-11).** The C++ reference flood
+(`cpp/src/horde_field.cpp`, `PhysicsEngine.horde_field`, a host call in both
+modules), the Python law on it (`src/simulation/horde.py`, `ai_zombie.py`),
+`[zombie] field_refresh_ticks = 2`, and the behaviours designed onto the field
+(wander, hearing, fear of fire, door bashing, the sprint;
+`docs/bots_zombies_speeds_design_2026-11-10.md` §3 as built). Deviation: the
+descent's tie order is per cell parity (vertical first on even x + y), not one
+fixed order, so a horde walks the staircase toward a diagonal goal instead of
+an L. What remains for P7d: the device kernel (one block per (env, field),
+the frontier loop in the block, int16 distances; host sentinel is
+0x7FFFFFFF), the masks (walkable, bashable doors, feared tiles) and the
+noise fields on the device, the per-zombie descent as one thread per zombie,
+and the bites through the applier; the field cache's refresh rule (drop on
+`tick % N == 0` or a topology change, flood on first need) is the contract.
+
 ### 4.10 Zero-copy export, streams, syncs
 
 Persistent CuPy buffers exported to torch through DLPack; the engine runs on
@@ -664,7 +679,7 @@ in a fresh worktree skips every CUDA gate and would never place one.
 | P3a the unit schema (+ `__slots__`, capacities, the digest redefinition) | one definition of a unit's synced state | digest re-pin with rationale; property test "every attribute is a schema row or REFERENCE_ONLY" | none | four drifting definitions; a new attribute never reaches the device |
 | P3b Philox at the match draw sites + the refusing `sim.rng` stand-in | per-env keyed draws | goldens regenerated; the kit's KAT + layout tests | none | no device draws can match the reference's stream |
 | P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | none: Erik blessed Q16 without a play test (§12.1, 2026-11-07), so the HUMAN-TEST is waived | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
-| P3d the distance field (both paths, C++ reference) | per-unit A* has no device shape | goldens; ship_demo seeds 1–8 before / after; the A* and zombies rows amended | HUMAN-TEST on main | the horde stays on the host: no device backend |
+| P3d the distance field (both paths, C++ reference) | per-unit A* has no device shape | goldens; ship_demo seeds 1–8 before / after; the A* and zombies rows amended | HUMAN-TEST on main | the horde stays on the host: no device backend  **Built in #183 G9p (host half; §4.9)** |
 | P3e the match path to integer (the table below) | no float in the ported slots; exact device ports | goldens; A/B of hit rates and blast outcomes in real units over many seeds | HUMAN-TEST on main (shot and blast feel) | an IEEE-double transcription per site (op order pinned, `--fmad=false`), gated by lockstep: doable, fragile |
 
 P3e's site table (re-check M4; each row decided integer unless marked, and

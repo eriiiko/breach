@@ -680,6 +680,8 @@ play test.
 | `last_melee_tick` (exists for zombies), `last_shove_tick` | G5p, G6p | int | −1 |
 | `flashlight_on` | G7p | bool | on |
 | `pending_reload`, `pending_shove`, `pending_melee` | G2p, G5p, G6p | latch bits | clear |
+| `zombie_noise_y`, `zombie_noise_x`, `zombie_noise_ticks` (a hearing zombie's target and the ticks it keeps chasing it) | G9p | int | -1, -1, 0 (hashed while ticks > 0) |
+| `zombie_anchor_y`, `zombie_anchor_x` (a dormant zombie's wander anchor) | G9p | int | -1 (hashed while set) |
 
 Magazine state is NOT in the unit digest today (`mag_gate`'s docstring says
 why). P3a's schema hashes it; until then the hashed hp / event stream
