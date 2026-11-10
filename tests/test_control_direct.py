@@ -188,7 +188,8 @@ class _FakeSim:
 
     def __getattr__(self, name):
         if name in ("set_move_dir", "clear_move_dir", "set_aim", "set_trigger",
-                    "throw_grenade_intent", "use_intent"):
+                    "throw_grenade_intent", "use_intent", "melee_intent",
+                    "shove_intent", "reload_intent"):
             return lambda *a, **k: self.calls.append((name, a, k))
         raise AttributeError(name)
 

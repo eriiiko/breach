@@ -27,6 +27,8 @@ Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
     Y (north)      -> RELOAD (discard the magazine, run the reload stall)
     B (east)       -> CYCLE the selected grenade kind (G3p; A throws it)
     RB             -> SHOVE the adjacent unit nearest the facing (G5p-a2)
+    R3 (right stick click), held -> MELEE: strike the adjacent enemy nearest
+                      the facing at the weapon's cadence (G6p)
 
 The actual controller FEEL is Erik's HUMAN-TEST — this module is not driven in
 the headless test suite (it needs a live pad). What the tests pin is the pure
@@ -162,9 +164,13 @@ class GamepadHalf:
         shove = shove_down and not self._prev_shove
         self._prev_shove = shove_down
 
+        # ---- R3 (right stick click), held -> MELEE (G6p) ----
+        melee = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_RIGHT_THUMB)
+
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
                            use=use, reload=reload, cycle_grenade=cycle,
-                           shove=shove)
+                           shove=shove, melee=melee)
 
 
 __all__ = ["GamepadHalf"]

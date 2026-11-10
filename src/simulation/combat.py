@@ -1856,13 +1856,28 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon,
         return False
     if not melee_adjacent(attacker, target):
         return False
+    melee_blow(attacker, target, rng, events, weapon, fx, snap_facing=True)
+    return True
 
+
+def melee_blow(attacker, target, rng, events, weapon, effects,
+               snap_facing=True):
+    """The strike itself, shared by the order path (:func:`melee_strike`,
+    which found its target by tile) and the melee verb
+    (:func:`process_melee_intents`, which found it by facing arc): the
+    steps 1-5 of :func:`melee_strike`'s docstring, recorded on ``effects``.
+    ``snap_facing`` False (the verb: the arc IS the aim, and the turning law
+    owns the facing) records no facing snap. A row with ``crit_chance`` > 0
+    draws from ``rng`` (the order path only: a loadout's melee row is
+    refused with a crit at the loadouts door)."""
+    fx = effects_or_immediate(effects)
     fx1, fy1 = attacker.center_tile_x(), attacker.center_tile_y()
     fx2, fy2 = target.center_tile_x(), target.center_tile_y()
     # Facing = strike bearing (kit trig, unit y-up convention — the
     # fire_burst rule); the strike angle itself stays in SCREEN convention
     # for the arc classifier (the march-angle contract of arc_multiplier).
-    fx.face(attacker, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
+    if snap_facing:
+        fx.face(attacker, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
 
     amount = int(weapon.melee_damage)
@@ -1882,7 +1897,90 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon,
         fx.status(target, weapon.status_kind_id, magnitude=0,
                   duration_ticks=weapon.status_ticks,
                   source_id=getattr(attacker, "id", -1))
-    return True
+
+
+def melee_arc_target(units, u, weapon):
+    """The unit ``u``'s melee verb strikes (gameplay pack G6p): among the
+    other LIVING units of a DIFFERENT team (a zombie's team is its own, so
+    zombies are enemies; a teammate never is) that are
+    :func:`melee_adjacent` to ``u`` and whose bearing from ``u``'s centre
+    lies within ``weapon.melee_arc_half_q`` of ``u``'s facing, the one
+    nearest that facing (smallest ``|wrap(bearing - facing)|``), ties to the
+    lower id. ``None`` when there is none. Integer only (``atan2_q16`` of
+    the Q16 centre offset against ``Unit.facing_q``,
+    ``turning.wrap_q16``), no random number; reads the slot-start state. A
+    target whose centre coincides with ``u``'s has no bearing: it counts as
+    dead ahead."""
+    from simulation import turning, unit_impulse
+    cx, cy = unit_impulse.centre_q(u)
+    best, best_key = None, None
+    for t in units:
+        if t is u or not t.alive or t.team == u.team:
+            continue
+        if not melee_adjacent(u, t):
+            continue
+        tx, ty = unit_impulse.centre_q(t)
+        dx, dy = tx - cx, ty - cy
+        off = 0 if (dx == 0 and dy == 0) else abs(turning.wrap_q16(
+            unit_fixed.atan2_q16(-dy, dx) - u.facing_q))
+        if off > weapon.melee_arc_half_q:
+            continue
+        key = (off, int(t.id))
+        if best_key is None or key < best_key:
+            best, best_key = t, key
+    return best
+
+
+def process_melee_intents(units, tick, tables, impulse_table, events=None,
+                          effects=None):
+    """THE MELEE VERB (gameplay pack G6p, ``Simulation.melee_intent``):
+    slot 4's phase A walk over the units' latched ``pending_melee``. Every
+    latch is CONSUMED here (a verb that finds nothing to do is not kept).
+    A unit strikes only if it is alive, not a zombie (whose bite is its own
+    law), has a melee row (``melee_id``), can act (composed ``can_act``),
+    is not winding up a throw, its row's cadence has run
+    (``rof_interval_ticks`` since ``last_blow_tick``), and
+    :func:`melee_arc_target` finds a target; a reload stall does not stop a
+    blow (the butt needs no magazine). The blow is :func:`melee_blow`'s
+    (a ``DamagePacket`` of the row's damage credited to the striker with the
+    ``melee`` cause, the row's delivery-site stun, no facing snap) plus a
+    ``push`` effect of the row's ``melee_push_ns`` along striker -> target;
+    all RECORDED on ``effects`` (decided against the slot-start state,
+    applied together at phase B), and a render-only ``MeleeEvent`` is
+    emitted. A whiff (nothing in arc) costs nothing: no cooldown. Integer,
+    no draw (the loadouts door refuses a row with a crit)."""
+    from simulation import unit_impulse
+    fx = effects_or_immediate(effects)
+    for u in units:
+        if not getattr(u, "pending_melee", False):
+            continue
+        u.pending_melee = False
+        if not u.alive or u.is_zombie or not u.melee_id:
+            continue
+        if not composed_flags(u).can_act or u.throw_release_tick >= 0:
+            continue
+        weapon = tables.weapons.by_name[u.melee_id]
+        if (u.last_blow_tick >= 0
+                and tick - u.last_blow_tick < weapon.rof_interval_ticks):
+            continue
+        target = melee_arc_target(units, u, weapon)
+        if target is None:
+            continue
+        u.last_blow_tick = int(tick)
+        melee_blow(u, target, None, events, weapon, fx, snap_facing=False)
+        j_q = impulse_table.melee_push_q.get(weapon.name, 0)
+        if j_q:
+            cx, cy = unit_impulse.centre_q(u)
+            tx, ty = unit_impulse.centre_q(target)
+            bearing = (unit_fixed.atan2_q16(-(ty - cy), tx - cx)
+                       if (tx != cx or ty != cy) else u.facing_q)
+            sx, sy = unit_fixed.cos_q16(bearing), -unit_fixed.sin_q16(bearing)
+            jx, jy = unit_impulse.along_q(j_q, sx, sy)
+            fx.push(impulse_table, target, jx, jy)
+        if events is not None:
+            from simulation.events import MeleeEvent
+            events.append(MeleeEvent(unit_id=int(u.id), target_id=int(target.id),
+                                     ticks=int(weapon.rof_interval_ticks)))
 
 
 # ---------------------------------------------------------------------------

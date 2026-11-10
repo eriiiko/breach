@@ -105,7 +105,8 @@ class WeaponDef:
                  cone_half_angle_degrees=0.0, burst_seconds=0.0,
                  melee_damage=0, melee_dtype="",
                  status_kind="", status_seconds=0.0,
-                 range_m=0.0, default_ammo="", throw_windup_seconds=0.0):
+                 range_m=0.0, default_ammo="", throw_windup_seconds=0.0,
+                 melee_push_ns=0.0, melee_arc_half_deg=60.0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -189,6 +190,14 @@ class WeaponDef:
         self.status_kind_id = None              # derived by WeaponTable (W5)
         self.status_seconds = status_seconds
         self.status_ticks = 0                   # derived by WeaponTable (W5)
+        # The melee VERB's two columns (gameplay pack G6p): the blow's push on
+        # the unit it hits in N s (through the unit impulse law, along the
+        # striker -> target line; 0 = no push) and the half-angle in degrees
+        # of the facing arc ``Simulation.melee_intent`` strikes within;
+        # ``melee_arc_half_q`` (Q16 radians) is derived by WeaponTable (once).
+        self.melee_push_ns = melee_push_ns
+        self.melee_arc_half_deg = melee_arc_half_deg
+        self.melee_arc_half_q = 0               # derived by WeaponTable (G6p)
 
     def __repr__(self):
         return (f"WeaponDef({self.name!r}, archetype={self.archetype!r}, "
@@ -479,7 +488,27 @@ class WeaponTable:
                 range_m=col("range_m", 0.0),
                 default_ammo=str(col("default_ammo", "")),
                 throw_windup_seconds=col("throw_windup_seconds", 0.0),
+                melee_push_ns=col("melee_push_ns", 0.0),
+                melee_arc_half_deg=col("melee_arc_half_deg", 60.0),
             )
+            # The melee verb's columns (G6p): the push a finite number >= 0,
+            # the arc in (0, 180] degrees; the arc quantized ONCE to Q16
+            # radians (the turning law's currency, wrap period 2*PI_Q16).
+            _p = w.melee_push_ns
+            if (isinstance(_p, bool) or not isinstance(_p, (int, float))
+                    or not _p >= 0.0 or _p == float("inf")):
+                raise ValueError(
+                    f"weapons.{name}.melee_push_ns {_p!r} must be a finite "
+                    f"number >= 0 (N s; 0 = no push)")
+            _a = w.melee_arc_half_deg
+            if (isinstance(_a, bool) or not isinstance(_a, (int, float))
+                    or not 0.0 < _a <= 180.0):
+                raise ValueError(
+                    f"weapons.{name}.melee_arc_half_deg {_a!r} must be a "
+                    f"number in (0, 180] (degrees)")
+            from simulation import unit_fixed as _uf
+            import math as _math
+            w.melee_arc_half_q = _uf.quantize_scalar(_math.radians(float(_a)))
             # The throw wind-up (G3p): seconds -> integer ticks, the
             # reload_ticks derivation (door 1); 0 stays 0 (no wind-up).
             _wu = w.throw_windup_seconds

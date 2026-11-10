@@ -2,9 +2,11 @@
 what it survives, as config rows.
 
     [loadouts.<name>]      weapon (a [weapons.*] id), grenades, explosives,
-                           optionally magazines (total carried, 0 = untracked)
-                           and kit_kg (the kit's mass, G5p-a2: the unit
-                           impulse law's mass is body + kit)
+                           optionally magazines (total carried, 0 = untracked),
+                           kit_kg (the kit's mass, G5p-a2: the unit
+                           impulse law's mass is body + kit) and melee (G6p:
+                           the ``[weapons.*]`` row of the melee archetype the
+                           melee verb strikes with; absent = no melee)
                            ``grenades`` is a table by hand-grenade ``[ammo.*]``
                            row name (``{ grenade_frag = 2, grenade_smoke = 1 }``,
                            G3p) or a bare int, which means that many frags
@@ -98,6 +100,9 @@ class LoadoutDef:
     #: What the kit weighs, kg (G5p-a2: the unit impulse law's mass is the
     #: body's plus this). 0 = nothing carried that counts.
     kit_kg: float = 0.0
+    #: The melee verb's weapon row (G6p; a ``[weapons.*]`` row of the melee
+    #: archetype with no crit). "" = no melee: the verb does nothing.
+    melee: str = ""
 
     @property
     def frags(self) -> int:
@@ -108,14 +113,18 @@ class LoadoutDef:
 
 _LOADOUT_COLUMNS = ("weapon", "grenades", "explosives")
 #: Optional columns (absent = the default named on :class:`LoadoutDef`).
-_LOADOUT_OPTIONAL = ("magazines", "kit_kg")
+_LOADOUT_OPTIONAL = ("magazines", "kit_kg", "melee")
 
 
 class LoadoutTable:
     """``[loadouts.*]`` rows keyed by name; every ``weapon`` must name a row
     of the weapon table (``weapon_names``)."""
 
-    def __init__(self, loadouts_cfg, weapon_names, grenade_rows=()):
+    def __init__(self, loadouts_cfg, weapon_names, grenade_rows=(),
+                 melee_rows=None):
+        # ``melee_rows``: {weapon row name: crit_chance} of the weapon
+        # table's melee-archetype rows (G6p); None = the caller has no table,
+        # so a row naming a melee is refused (it cannot be checked).
         weapon_names = set(weapon_names)
         grenade_rows = tuple(grenade_rows)
         self.by_name: dict[str, LoadoutDef] = {}
@@ -136,8 +145,23 @@ class LoadoutTable:
                 raise ValueError(
                     f"loadouts.{name}.weapon {weapon!r} names no [weapons.*] "
                     f"row (known: {sorted(weapon_names)})")
+            melee = cols.get("melee", "")
+            if "melee" in cols:
+                where = f"loadouts.{name}.melee"
+                if melee_rows is None:
+                    raise ValueError(f"{where}: no weapon table to check "
+                                     f"{melee!r} against")
+                if not isinstance(melee, str) or melee not in melee_rows:
+                    raise ValueError(
+                        f"{where} {melee!r} names no melee-archetype "
+                        f"[weapons.*] row (known: {sorted(melee_rows)})")
+                if melee_rows[melee] > 0:
+                    raise ValueError(
+                        f"{where} {melee!r} carries a crit_chance: the melee "
+                        f"verb draws no random number, so a loadout's melee "
+                        f"row must have crit_chance = 0")
             self.by_name[name] = LoadoutDef(
-                name=name, weapon=weapon,
+                name=name, weapon=weapon, melee=melee,
                 grenades=_grenade_counts(cols["grenades"],
                                          f"loadouts.{name}.grenades",
                                          grenade_rows),
@@ -210,8 +234,9 @@ class LoadoutTables:
     """The two tables plus the marine default, validated together."""
 
     def __init__(self, loadouts_cfg, profiles_cfg, weapon_names,
-                 default_loadout: str, grenade_rows=()):
-        self.loadouts = LoadoutTable(loadouts_cfg, weapon_names, grenade_rows)
+                 default_loadout: str, grenade_rows=(), melee_rows=None):
+        self.loadouts = LoadoutTable(loadouts_cfg, weapon_names, grenade_rows,
+                                     melee_rows)
         self.env_profiles = EnvProfileTable(profiles_cfg)
         if default_loadout not in self.loadouts.by_name:
             raise ValueError(
@@ -238,7 +263,10 @@ class LoadoutTables:
                    getattr(cfg, "env_profiles", None),
                    tables.weapons.by_name.keys(),
                    str(cfg.marine.loadout),
-                   grenade_rows=tables.hand_grenade_rows)
+                   grenade_rows=tables.hand_grenade_rows,
+                   melee_rows={n: float(w.crit_chance) for n, w in
+                               tables.weapons.by_name.items()
+                               if w.archetype == "melee"})
 
 
 _TABLES: LoadoutTables | None = None

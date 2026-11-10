@@ -69,7 +69,7 @@ from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition,
-    process_shooting, process_sprays,
+    process_shooting, process_sprays, process_melee_intents,
     Projectile,
     mag_settle, reload_begin,
 )
@@ -1122,6 +1122,31 @@ class Simulation:
         u.pending_shove = True
         self._possessed_ids.add(unit_id)
 
+    def melee_intent(self, unit_id: int) -> None:
+        """MELEE (gameplay pack G6p, ``docs/gameplay_pack_v1_design_
+        2026-11-10.md`` §3): latch a blow. Consumed (and cleared) at the next
+        slot 4 by ``combat.process_melee_intents``, in phase A against the
+        slot's start state: if the unit is a living marine with a melee row
+        (its loadout's ``melee``), can act, is not winding up a throw, its
+        row's cadence has run and an ENEMY (another team, zombies included,
+        never a teammate) is melee-adjacent within the row's facing arc
+        (``melee_arc_half_deg``), the one nearest the facing (ties to the
+        lower id) takes the row's blow -- a ``DamagePacket`` credited to the
+        striker with the ``melee`` cause, the row's short STUNNED and its
+        push along striker -> target through the unit impulse law, all
+        landing at the slot's phase B -- and a render-only ``MeleeEvent`` is
+        emitted. With no such target nothing happens and no cadence is
+        spent. A zombie does not use the verb (its bite is its own law).
+        Hand-written bots never call it yet (G8p); an RL agent and the human
+        do."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "melee_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_melee = True
+
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine
@@ -1877,6 +1902,15 @@ class Simulation:
                              events=self.tick_events, bullets=self.bullets,
                              queue=self.edit_queue, effects=attack_effects)
 
+        # 4a. The MELEE verb (gameplay pack G6p): the units' latched
+        # ``melee_intent`` blows, decided in the same phase A as the shots
+        # (against the slot-start state) and recorded on the same effects, so
+        # a blow and a shot of one tick land together at 4c. Under every
+        # ruleset (the latch is consumed even where slot 4 is the timeline's).
+        process_melee_intents(self.units, self.tick, self.weapons_tables,
+                              self.impulse_table, events=self.tick_events,
+                              effects=attack_effects)
+
         # 4b. SPRAY deposits (mechanics/03 §5, W4) — the shooting slot's
         # second half: every active spray burst enqueues its aimed heat/gas
         # cone into the edit queue (flushed at 6b with everything else, so
@@ -2404,6 +2438,7 @@ class Simulation:
             # last_fire_tick precedent), and a push does not survive the
             # round boundary's snap to the tile grid.
             u.last_shove_tick = -1
+            u.last_blow_tick = -1             # G6p: the melee cadence, same
             unit_impulse.clear(u)
             # W3 ammo economy: the round boundary tops everyone off (the
             # WEGO planning pause is a between-rounds breather — v1 rule,

@@ -335,6 +335,18 @@ class Unit:
         self.spare_mags = -1
         self.reload_done_tick = -1
 
+        # The MELEE verb (gameplay pack G6p, ``Simulation.melee_intent``):
+        # the loadout's melee weapon row ("" = none: the verb does nothing),
+        # the verb's latch (consumed in slot 4's phase A,
+        # ``combat.process_melee_intents``) and the tick of the last blow (the
+        # row's cadence; -1 = none yet; a zombie's bite keeps its own
+        # ``last_melee_tick``). Intent state: deliberately NOT in the synced
+        # digest (the shove's and the magazine's precedent); the blow itself
+        # is (hp, status, push, events).
+        self.melee_id = "" if _kit is None else str(_kit.melee)
+        self.pending_melee = False
+        self.last_blow_tick = -1
+
         # W4 SPRAY burst state (mechanics/03 §5): armed by
         # combat.start_spray_burst on a spray trigger; counted down by
         # combat.process_sprays (one cone-deposit tick per count).

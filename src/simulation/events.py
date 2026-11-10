@@ -167,6 +167,22 @@ class ShoveEvent:
 
 
 @dataclass
+class MeleeEvent:
+    """A unit STRUCK a blow (gameplay pack G6p, ``Simulation.melee_intent``
+    consumed in slot 4's phase A and a target found): ``unit_id`` struck
+    ``target_id``; the blow's packet, stun and push land at the slot's
+    phase B. ``ticks`` is the blow's cadence, the row's
+    ``rof_interval_ticks`` (what the swing animation spans). Render-only
+    (the animation session, #184), like :class:`ShoveEvent` and
+    :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the striker
+    target_id: int                  # the unit struck
+    ticks: int                      # the blow's cadence, in ticks
+
+
+@dataclass
 class StaggerEvent:
     """A unit's in-place SWAY overflowed this tick (G5p-a2,
     ``unit_impulse.integrate`` in slot 1a): a push beyond what it absorbs
@@ -339,6 +355,7 @@ __all__ = [
     "ShotFiredEvent",
     "ReloadEvent",
     "ShoveEvent",
+    "MeleeEvent",
     "StaggerEvent",
     "ThrowEvent",
     "LaserFiredEvent",
