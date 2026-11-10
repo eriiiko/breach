@@ -324,6 +324,69 @@ zombie's vitality and the three dials are set from it to hit 30–40 / ~20.
 strictly decreasing in the number of simultaneous shooters; `x` returns to 0
 without hits. The pins re-baseline at the shipped dials. **HUMAN-TEST.**
 
+**As built (2026-11-10).** `src/simulation/exposure.py` is the law:
+`Unit.exposure` a block of `N_DAMAGE_TYPES` Q16 ints; the raise
+`expose * (ONE - resist[T]) >> 16` capped at `x_max`; the decay
+`x -= max(1, x * d >> 16)` at a new slot 1c (before every attack of the tick),
+`d` the smallest Q16 fraction for which that step halves ONE within
+`half_life_seconds` (quantized to ticks; found by integer bisection over the
+law, no libm); the scale `dmg_q * (ONE + (k * x >> 16)) >> 16` applied in
+`damage.apply_packet` between the two halves of the existing Q2-lift snap, so
+the float mitigation path is untouched and the new arithmetic is integer
+(identity at 0; HEAL never scaled). `DamagePacket.expose` carries the round's
+`[ammo.*] expose` (both packet sites of a round: the projectile march and the
+beam). The start-of-slot rule is an `ExposureLanding` that
+`SimultaneousEffects.resolve` passes to every recorded hit and lands after its
+last effect: the raises and a death's zeroing wait for it, so every hit of the
+slot reads the slot-start level (a packet applied outside a slot raises at
+once). `[damage.exposure]` (`half_life_seconds`, `k_expose`, `x_max`) is a
+refusing door; `[env_profiles.*] expose_resist` and `[zombie] expose_resist`
+(the zombie STATE's, selected on `is_zombie`) take a scalar or a table by
+damage type in [0, 1]; `[ammo.*] expose` is refused negative. Zeroed at death
+and at conversion; hashed in the unit digest only while non-zero.
+DEVIATIONS: (a) `k_expose = 0` makes the law DORMANT -- nothing is raised, not
+only nothing scaled -- so the proof-of-cause pin holds with the digest key
+absent; (b) the decay dial is a half-life (more readable than a per-second
+fraction).
+
+The bench, `tools/bench_focus_fire.py` (n carbines at 12 tiles from one
+target, the volleys landing on one tick; single = one pull per second each;
+reloads as in the game), at the shipped dials -- `half_life_seconds` 0.125
+(3 ticks), `k_expose` 1.0, `x_max` 2.5, `expose` 0.035 per point of damage
+(carbine 0.35), zombie hp and `bullet_damage_multiplier` untouched:
+
+| target | mode | n = 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| zombie | continuous, rounds in all (seconds) | 34 (4.71) | 26 (1.04) | 24 (0.62) | 24 (0.46) |
+| zombie | single, rounds in all | 50 | 50 | 51 | 52 |
+| marine | continuous, rounds in all (seconds) | 8 (0.62) | 8 (0.29) | 9 (0.21) | 8 (0.12) |
+| marine | single, rounds in all | 10 | 10 | 12 | 12 |
+
+Without the law the zombie takes 50 rounds and the marine 10 in every row.
+THE TARGETS CANNOT ALL HOLD under this law (Erik's: one marine 30-40, single
+shots ~40, two together ~20): it is linear in hits, so a second shooter saves
+rounds only through the decay during the kill. With a half-life of a second
+the rounds in all hardly depend on the shooters (34 / 32 / 33 / 32, single
+48); the level must fade between one shooter's rounds (2 ticks apart) for two
+shooters' volleys to stack higher than one's, and then nothing is left a
+second later, so single shots are the no-law count. And a spawned zombie's 50
+rounds bound every count from above: two shooters at ~20 with one at ~35
+needs a no-law count near 140. The shipped set keeps the lone marine in the
+middle of its band and buys the most focus-fire saving with it; the curve's
+other points are beside the dials in `config.toml`. Single shots from several
+shooters gain nothing (their volleys read each other's raises only a second
+later). Marine-vs-marine is shortened 10 -> 8 rounds, not absurdly; the
+default profile keeps `expose_resist = 0`. FINDING: a SPAWNED zombie has the
+species' 100 hp (`Simulation.add_unit`); `[zombie] hp = 400` reaches only a
+CONVERTED marine, which even under the law takes about 136 rounds alone --
+more than a rifleman carries (90) -- and 98 from two.
+
+Pins: ship_demo seed 1 keeps its outcome, ticks and survivors (win 1 at 246,
+team 1 [1, 2, 3]); its three digests move (zombie 11, exposed from tick 198,
+dies to the fire at 233 instead of 236). With `k_expose = 0` it is the G3p pin
+exactly (`tests/test_exposure.py`); the G1p and G3p isolation gates are
+re-measured with exposure live.
+
 ### G5p. Unit impulse: shove and hit pushback — see §5 (OPEN)
 
 ### G6p. Melee
@@ -529,7 +592,7 @@ session run while G1p to G4p are built.
 | G1p | Opus | built 2026-11-10, awaiting the play test | yes | re-baselined (the turn-rate cap) |
 | G2p | Sonnet | ½ day | yes | re-baseline |
 | G3p | Sonnet | ½ day | yes | re-baselined (the wind-up) |
-| G4p | Opus (the bench, the tuning with Erik) | ½ day + tuning | yes | re-baseline |
+| G4p | Opus (the bench, the tuning with Erik) | built 2026-11-10, awaiting the play test | yes | re-baselined (the law) |
 | G5p | Opus | 1–2 days after its design | yes | re-baseline |
 | G6p | Sonnet | ½ day | yes | unchanged |
 | G7p | Sonnet | 2 h | no | unchanged |

@@ -1,12 +1,15 @@
-# The unit impulse law — design (draft 1, 2026-11-10)
+# The unit impulse law — design (draft 2, 2026-11-10)
 
 Patch **G5p** of the gameplay pack (#183; pack design
 `docs/gameplay_pack_v1_design_2026-11-10.md` §5). Research:
-`docs/research/impulse_on_a_person_2026-11-10.md` (called "the search"
-below) and `docs/research/wind_on_a_person_2026-10-31.md`.
+`docs/research/impulse_on_a_person_2026-11-10.md` ("the search"),
+`docs/research/rotation_litcheck_2026-11-10.md` ("the check"),
+`docs/research/wind_on_a_person_2026-10-31.md`.
 
-Status: DRAFT for the design session with Erik. **RULED** = his rulings of
-2026-11-10; everything else is Claude's proposal.
+**RULED** = Erik's rulings of 2026-11-10; the rest is Claude's design.
+Draft 2 replaces draft 1's §5 law after critique lens A (§12): the reaction
+delay no longer switches the footing off, an in-place sway absorbs sudden
+input, effort reads the demand, the turning law is an exact discrete one.
 
 ## 1. Rulings this is built on
 
@@ -18,173 +21,342 @@ Status: DRAFT for the design session with Erik. **RULED** = his rulings of
 - Units have angular inertia: for their own turning, and from outside
   forces.
 - The wind bands are restated as force over body weight.
+- A staggering unit can still shoot. Recoil goes through the law. The
+  shover feels no reaction in v1 (ACCEPTED GAP). A shove works on any team.
+  Impact damage and bouncing off walls are later. A zombie is a state: a
+  copy of the unit it infected, with a hold multiplier that ships at 1.
+  Two patches.
 
 ## 2. The idea in one paragraph
 
 Everything that pushes a unit hands it an IMPULSE (N·s) at a point on its
-body. Once per tick the unit sums what it received, turns the sum into a
-velocity change (impulse over mass) and a spin change (impulse × lever arm
-over moment of inertia), and then RESISTS with its feet and its body, up to
-a limit. What it can resist vanishes exactly, so nothing moves; how hard it
-had to resist slows its walking. What it cannot resist is left as a pushed
-velocity that moves it, and past a fall limit it goes down. Wind is the same
-thing: a force is an impulse every tick.
+body. Once per tick the unit sums what it received and turns the sum into a
+velocity change (over its mass) and a spin change (lever arm over its moment
+of inertia). Its feet resist up to a limit per tick. A sudden push is first
+absorbed IN PLACE, as sway, up to a small capacity; only what overflows the
+sway becomes a pushed velocity that moves the unit. How hard the feet are
+working slows the walk. Past a fall limit, or when the force is more than
+the feet can ever hold, the unit goes down. Wind is the same thing: a force
+is an impulse every tick.
 
 ## 3. State per unit (all integer)
 
 | state | meaning | zero nearly always |
 |---|---|---|
 | `imp_x`, `imp_y`, `imp_l` | impulses received since the last integration: linear (N·s) and angular (N·m·s) | yes |
-| `pvx`, `pvy` | pushed velocity, Q16 tiles per tick | yes |
-| `omega` | angular velocity, Q16 turns per tick | when not turning |
-| `facing_q` | facing, Q16 turns (today a float; P3c's kind of change) | no |
-| `effort` | low-passed fraction of the footing limit in use, Q16 in [0, ONE] | yes |
-| `react_ticks` | reaction delay after a sudden push | yes |
+| `swx`, `swy` | the in-place sway: velocity being absorbed without a step | yes |
+| `pvx`, `pvy` | pushed velocity (moves the unit) | yes |
+| `omega` | angular velocity | when not turning |
+| `facing_q` | facing, in the angle kit's own currency (`turning.py`: Q16 radians) | no |
+| `effort` | low-passed demand on the footing, Q16, 0 .. 2·ONE | yes |
+| `react_ticks` | reaction delay after an overflowing push | yes |
 
-Parameters, per species / env-profile / loadout row (reference marine; the
-search's picks unless marked):
+Parameters, per species / env-profile / loadout row (reference marine):
 
 | parameter | value | note |
 |---|---|---|
-| mass `m` | `Unit.mass` + `[loadouts.*] kit_kg` (80 + 20) | individual mass exists already |
-| drag area `cd_area` | 0.9 m² standing; 0.15 m² prone (PLACEHOLDER, unsourced) | wind note |
-| hold `k_hold` | 0.22 of body weight, standing | = today's wind fall edge |
-| slow start `k_slow` | 0.036 of body weight | = today's wind slow edge |
+| mass `m` | `Unit.mass` + `[loadouts.*] kit_kg` (80 + 20) | individual mass exists already; the door refuses m ≤ 0 |
+| drag area `cd_area` | 0.9 m² standing; 0.15 m² prone (an estimate) | wind note; the check found no prone measurement |
+| hold `k_hold` | 0.2248 of body weight, standing | chosen so the fall edge is exactly today's 245 Pa for the reference marine |
+| slow start `k_slow` | 0.036 of body weight | = today's wind slow edge (39 Pa) |
 | prone hold `mu_slide` | 0.4 of body weight | search §4, an assumption |
-| sudden-push limit `v_inplace` fwd / side / back | 0.25 / 0.20 / 0.15 m/s | search §1 |
+| in-place capacity `v_inplace` fwd / side / back | 0.25 / 0.20 / 0.15 m/s | search §1 |
 | fall limit `v_fall` fwd / side / back | 1.5 / 1.1 / 0.8 m/s, × `stability` | only fwd is measured |
 | reaction delay `t_react` | 0.30 s (7 ticks) | search §1 |
-| yaw inertia `I` | 3.0 kg·m² | body about 1.3 (NASA OCHMO-HB-004, scaled to 80 kg) + rifle, shooting grip, armour (estimates); `docs/research/rotation_litcheck_2026-11-10.md` |
-| own turning: top speed, acceleration | 360°/s (G1p's cap), 30 rad/s² | about 90 N·m, within trunk and footing torque (the check): 90° in 0.46 s, 180° in 0.73 s |
-| body radius for lever arms | 0.25 m | half a shoulder width |
-| `bullet_push_mult` | 1.0 (RULED) | the declared experiment dial |
+| recovery horizon `n_rec` | 24 ticks | what a unit can still walk off (lens A, B2) |
+| yaw inertia `I` | 3.0 kg·m² | the check; the door refuses I ≤ 0 |
+| own turning: top speed, acceleration | 360°/s, 30 rad/s² | the check: 90° in 0.46 s, 180° in 0.73 s |
+| body radius `r_body` | 0.25 m | every lever arm is clamped to it |
+| `bullet_push_mult`, `bullet_twist_mult` | 1.0, 1.0 (RULED: real momentum) | declared experiment dials |
+| zombie hold multiplier | 1.0 (RULED) | |
 
 "Forward" is a push along the unit's facing (from behind). The limit for any
 direction blends the three values by the cosine of the angle between the
-push and the facing, through the kit's `cos_q16`.
+push and the facing, through the kit's cos. The direction is judged each
+tick against the current facing (a unit that turns toward its shover braces
+worse backward: accepted, stated).
+
+The door refuses a configuration where one tick of hold (`cap`, below) is
+not smaller than the smallest `v_inplace` (at 24 Hz: 0.092 against 0.15).
 
 ## 4. The one entry
 
 `unit_impulse.add(unit, jx, jy, lever)` is THE way anything pushes a unit: it
-adds to `imp_x`, `imp_y` and (through the lever arm) `imp_l`. Sums of
+adds to `imp_x`, `imp_y` and (lever arm clamped to `r_body`) `imp_l`. Sums of
 integers commute, so the result never depends on the order or the ids of
-whoever pushed (rule 5 of the pack holds by arithmetic).
+whoever pushed.
 
 | input | impulse | lever arm |
 |---|---|---|
-| a round that hits | its momentum (mass × speed from the `[ammo.*]` row: new columns `bullet_g`, `muzzle_mps`) × `bullet_push_mult`, along its flight | the perpendicular distance from the unit's centre to the bullet's line, from the march's own geometry, clamped to the body radius: no random draw |
-| a shove (`shove_intent`) | `[weapons.shove] impulse` (PLACEHOLDER 100 N·s, later scaled by the shover's strength), along the shover's facing | the offset of the shover's centre line from the target's centre |
-| a melee strike | its row's `impulse` (small) | as the shove |
-| wind | `q · cd_area · dt` along the wind at the footprint's highest-q tile (the #140 read, plus its direction) | none in v1 (ACCEPTED GAP: wind does not turn a unit) |
-| blast | v1: the blast's own wind through the wind row, nothing else, so nothing is counted twice | none |
-| recoil (PROPOSED) | minus the fired round's momentum, on the shooter | none |
+| a round that hits | its momentum (`[ammo.*]` gains `bullet_g`, `muzzle_mps`) × `bullet_push_mult`, along its flight | the perpendicular distance from the unit's centre to the bullet's line, from the march's own geometry: no random draw |
+| a shove (`shove_intent`) | `[weapons.shove] impulse` (PLACEHOLDER 100 N·s; later scaled by strength), along the shover's facing, on the adjacent unit of any team nearest that facing | the offset of the shover's centre line from the target's centre |
+| a melee strike (G6p) | its row's `impulse` (small) | as the shove |
+| recoil (RULED) | minus the fired round's momentum, on the shooter | none |
+| wind (patch b) | `q · cd_area · dt` along the wind at the footprint's highest-q tile | none in v1 (ACCEPTED GAP: wind does not turn a unit) |
+| blast (patch b) | the blast's own wind through the wind row, nothing else, so nothing is counted twice | none |
+
+A hit is integrated in the NEXT tick's movement slot (a one-tick delay,
+stated).
 
 ## 5. The integration, once per tick (in the movement slot)
 
+`cap = k_hold · g · dt` is one tick of hold, a velocity (0.092 m/s; the same
+for every mass). Prone: `cap_prone = mu_slide · g · dt`.
+
+**Standing.**
+
 ```
 1. dv = (imp_x, imp_y) / m ;  dw = imp_l / I ;  clear the accumulators
-2. sudden push:  if |dv| >= v_inplace(direction):  react_ticks = t_react
-3. pv += dv ;  omega += dw
-4. resist (skipped while react_ticks > 0, which then counts down):
-       cap = k_hold · g · dt            (prone: mu_slide · g · dt)
-       used = min(|pv|, cap) ;  pv shrinks by `used` toward zero   (exact; clamps AT zero)
-5. effort += (used / cap − effort) >> 3                            (about 1/3 s)
-6. walking scale = ONE below k_slow / k_hold, then linear down to 0.5 at effort = ONE
-       (composed in `default_speed` beside the wind scale it replaces)
-7. fall:  |pv| >= v_fall(direction) · stability   OR   effort saturated (>= stability²)
-       -> KNOCKED_DOWN (the existing status)
-8. move by pv through the walking collision predicate; a blocked axis is zeroed
-9. turn:  the unit accelerates `omega` toward the speed that brings `facing_q`
-       to its aim without overshoot, by at most its own angular acceleration,
-       never above its top speed;  facing_q += omega
+2. demand = min(|dv| / cap, 2·ONE)
+   effort += (demand − effort) / 8, rounded AWAY from zero (so it reaches its input)
+3. sway:  sw += dv
+   if |sw| > v_inplace(direction of sw):
+        the overflow (sw − v_inplace·ŝw) moves into pv ;  sw keeps v_inplace·ŝw ;  react_ticks = t_react
+4. resist, with a budget of cap:
+        sw shrinks toward zero by min(|sw|, budget)        EVERY tick, reaction delay or not
+        margin = what is left of the budget
+        if react_ticks == 0:  pv shrinks by min(|pv|, margin)     else  react_ticks −= 1
+   (magnitude form: integer isqrt, components rounded toward zero, exactly zero when it is all used)
+5. walking scale from effort: ONE below k_slow/k_hold, linear down to 0.5 at ONE, clamped;
+   walking is suppressed while react_ticks > 0 (the unit is catching itself; it can still shoot)
+6. KNOCKED_DOWN if any of:
+        |pv + sw| >= v_fall(direction) · stability
+        effort >= stability²                               (the wind law's integer compare)
+        react_ticks == 0 and |pv| > n_rec · margin         (it cannot walk this off)
+7. move by pv ONLY (the sway never moves a unit), together with the walk, as ONE displacement
+   in substeps of at most half a tile per axis; stop at the first blocked substep;
+   zero only pv's component into the wall, and book it
+8. turn (§5.1)
 ```
 
-**Why soft wind can never move a unit.** A force below the hold adds less
-than `cap` per tick, and step 4 removes all of it, to exactly zero. That is
-a clamp, not a tuning: the old vibration and the 35-second slide cannot come
-back. A force above the hold leaves its excess, as ruled; `effort` saturates
-within about a third of a second and the unit goes down, where its smaller
-area and better hold stop it unless the wind is far stronger.
+**Prone (KNOCKED_DOWN).** No sway, no reaction delay: all input meets
+`cap_prone` at once and what is left moves the body. The knockdown is
+refreshed while the demand the unit WOULD have standing is at least
+`stability²`, or while `|pv| > 0`: nobody gets up into a gale or while
+sliding. The pushed velocity moves a unit whatever its statuses say about
+moving on its own.
 
-**Momentum is booked.** `m · Δpv = Σ impulses − resisted`, exactly, in
-integers, per unit per tick: a property test, in the spirit of the energy
-books.
+**Why soft input can never move a unit.** Only `pv` moves a unit, and `pv`
+is fed only by sway overflow. A steady force below the hold adds less than
+`cap` to the sway each tick and step 4 removes all of it, every tick, with
+no exception for the reaction delay. Any train of pushes whose per-tick
+`|dv|` stays within the in-place capacity and whose mean is below the hold
+leaves `pv` at exactly zero. This is a clamp, not a tuning, and it is the
+same whether five shooters fire on the same tick or on different ones.
 
-## 6. What it gives (reference marine 100 kg; zombie 80 kg, stability 0.9)
+**A force above the hold** overflows the sway within ticks, pushes by its
+excess (RULED), and floors the unit through condition 2 or 3 within ticks;
+prone, the body's smaller area and better hold stop it unless the wind is
+far stronger.
 
-| input | result |
-|---|---|
-| one carbine round | 0.04 m/s, resisted the same tick; a 0.7° nudge of the aim if it hits off-centre |
-| one shooter at 12 rounds/s | 43 N: just inside the slowed band (a zombie about 4 % slower) |
-| two / three shooters | 86 / 130 N: slowed about 20 % / 35 % |
-| five shooters | 216 N: at the hold; the target is pushed back and goes down |
-| shove from behind (100 N·s) | 1 m/s: stumbles about half a metre (1.5 tiles) over 0.75 s; off-centre it is also spun by tens of degrees |
-| shove from the front | 1 m/s against a 0.8 m/s limit: knocked down |
-| wind at today's slow / fall thresholds | identical bands for the reference marine; a heavier unit holds better, a lighter one worse |
-| blast wind | flung by the excess, down, slides; the knockdown and the fling are one law |
-| firing the carbine | the shooter's own recoil is 43 N: it walks about 1 % slower while firing (PROPOSED) |
+**Momentum is booked.** `m · Δ(pv + sw) = Σ impulses − resisted − wall`,
+exactly, in integers, per unit per tick.
+
+### 5.1 Turning (an exact discrete law)
+
+Per tick, in the facing's own integer currency, with `a` the unit's own
+angular acceleration per tick² and `w` its top speed per tick:
+
+```
+omega += dw                                   (outside spin; |omega| clamped below half a turn per tick)
+B(x)  = distance covered braking from speed x at a per tick, this tick included
+        = (n+1)·x − a·n(n+1)/2,  n = ceil(x / a) − 1
+s(e)  = the largest speed in [0, w] with B(speed) <= e        (try n = 0 .. ceil(w/a); exact integers)
+e     = wrap(target − facing)
+omega = clamp( sign(e)·s(|e|),  omega − a,  omega + a )
+facing += omega
+```
+
+It reaches a fixed target exactly, with no overshoot and no limit cycle
+(lens A, M3, gives the proof: once `|e| <= a` the next step equals `e`).
+The top speed bounds the unit's OWN torque only: an outside spin above it
+decays at `a` per tick. EVERY facing target goes through this law: the aim,
+the travel direction of a unit holding no aim, the zombie's walk, and the
+attack resolve's facing snap. Nothing writes the facing directly any more.
+G1p's bare cap is this law with unlimited acceleration.
+
+**What a hit does to the aim, stated honestly.** A carbine round at the
+body's edge is 0.3 rad/s, below what the unit's own torque cancels within
+the tick: the nudge is zero in the game and 0.09° in physics. Only a heavy
+round (.50: about 6°) or a shove (tens of degrees) twists an aim under real
+momentum. `bullet_twist_mult` (shipped 1.0) is the declared dial if a
+visible twist from small arms is wanted; that is Erik's to turn.
+
+## 6. What it gives
+
+Reference marine 100 kg (hold 220 N); zombie 80 kg (hold 176 N), stability
+0.9 (falls at effort 0.81). Carbine: 3.6 N·s per round, 12 rounds/s, 43 N.
+
+| input | on the marine | on the zombie |
+|---|---|---|
+| one carbine round | nothing | nothing |
+| one shooter | effort 0.20: 2 % slower | 0.25: about 5 % slower |
+| two shooters | 0.39: 13 % slower | 0.49: 19 % slower |
+| three shooters | 0.59: 25 % slower | 0.74: 34 % slower |
+| four shooters | 0.79: 37 % slower | 0.98: down |
+| five shooters | 0.98: half speed, at the edge of falling | down |
+| shove from behind (100 N·s) | 1.0 m/s: stumbles about 0.45 m over 18 ticks, cannot walk for 7; off-centre it is spun by tens of degrees | 1.25 m/s: stumbles farther |
+| shove from the front | over the 0.8 m/s backward limit: knocked down | down |
+| firing the carbine (recoil) | 2 % slower while firing | — |
+| a .50 hit | staggers about 0.1 m, twists the aim about 6° | staggers |
+| wind (patch b) | today's bands exactly | a lighter body is slowed and floored sooner |
+| blast wind (patch b) | flung by the excess, down, slides | same |
+
+In-phase and out-of-phase fire give the same result.
 
 ## 7. Two patches
 
-- **G5p-a**: the law, the entry, shove, hits, own-turning inertia (G1p's cap
-  becomes its top speed). Wind keeps its present row.
-- **G5p-b**: wind and blast move onto the law; the present wind row's scale
-  and knockdown retire into it; the CLAUDE.md wind row is rewritten. Its
-  gate includes #140's own reproduction (the 1.44 atm room must not move the
-  squad) and equal bands for the reference marine.
+- **G5p-a**: the law, the entry, shove, hits, recoil, the turning law with
+  every facing writer on it. Wind keeps its present row. In this patch the
+  wind's scale and the effort scale multiply and the two knockdowns do not
+  add (a known, temporary inconsistency).
+- **G5p-b**: wind and blast move onto the law. The wind row's scale member
+  and its knockdown are DELETED in the same commit that wind enters `add`
+  (or half a hold of wind would be counted twice): that is a gate. Its gates
+  also include #140's own reproduction (the 1.44 atm room must not move the
+  squad, with and without a teammate's shove in the doorway) and equal bands
+  for the reference marine.
 
 ## 8. Gates (properties)
 
-- Any sustained force below the hold: position and `pv` exactly unchanged,
-  for any duration.
-- The momentum identity of §5, every tick.
+- Any input train whose per-tick `|dv|` stays within the smallest
+  `v_inplace` and whose mean is at most the hold: position and `pv` exactly
+  unchanged, for any duration, any phasing, with or without an earlier
+  stagger. (A steady force is the special case.)
+- A steady force above the hold floors a unit of ANY stability within a
+  bounded number of ticks.
+- The same rounds delivered in phase and out of phase give the same position
+  and the same band.
+- The momentum identity of §5, every tick, wall term included.
 - Permuting the shooters' ids changes nothing.
-- Displacement is monotone decreasing in mass; a wall stops a pushed unit.
-- With no outside torque the facing reaches the aim exactly, without
-  overshoot, never faster than the top speed.
-- With every input switched off, all pins unchanged.
+- Displacement is monotone decreasing in mass; a pushed unit never ends
+  inside a wall and never crosses one, at any speed the law can produce.
+- A prone unit under sustained fire comes to rest; nobody stands up while
+  sliding or in an over-hold wind.
+- For a FIXED target and no outside torque the facing reaches it exactly,
+  never overshoots, never exceeds the top speed, and then stays; after an
+  outside spin it returns and settles exactly.
+- No code path writes a unit's facing except the turning law (a scan test,
+  like the footprint-samples one).
+- With every input switched off and unlimited turning acceleration, all
+  pins unchanged.
 
-## 9. Questions for Erik
+## 9. Left for Erik's play test (decided here as placeholders)
 
-1. Can a staggering unit (pushed, not down) still shoot? PROPOSED yes: its
-   aim is already disturbed by the spin and its walking is slowed.
-2. Recoil on the shooter through the same law: in or out? PROPOSED in.
-3. The shover feels no reaction in v1 (it is braced and expects it).
-   ACCEPTED GAP?
-4. A shove works on any team (push a teammate out of a line of fire).
-   PROPOSED yes.
-5. A unit pushed into a wall fast takes impact damage: later (the search
-   has the injury speeds), not in v1?
-6. Zombies: lower hold than a marine (they do not brace), on top of
-   stability 0.9? A number for the play test.
-7. Two patches as in §7, or one?
+- Walking is suppressed during the reaction delay (0.3 s) after a push that
+  overflows the sway. He ruled only that such a unit can shoot.
+- Small arms do not visibly twist an aim at real momentum
+  (`bullet_twist_mult` = 1.0).
+- The backward and sideways limits are modelled, not measured.
 
-**RULED (Erik, 2026-11-10), in the question's order:** 1 yes, a staggering
-unit can shoot. 2 yes, recoil goes through the law. 3 accepted gap: the
-shover feels no reaction in v1. 4 yes, a shove works on teammates. 5 later,
-together with bouncing off walls. 6 a zombie is a STATE: it inherits the
-stats of the unit it infected, and in v1 it is a plain copy; a zombie
-multiplier on the hold exists as a dial and ships at 1. 7 two patches.
+## 10. Not in v1
 
-## 10. Not verified
-
-The yaw inertia and the turning acceleration were checked on 2026-11-10
-(`docs/research/rotation_litcheck_2026-11-10.md`: 3.0 kg·m², 30 rad/s²; no
-maximal-turn measurement exists, so the 360°/s top speed stays a judgement;
-capping the acceleration by deck friction and a facing-dependent prone drag
-are left out of v1); the backward and sideways limits are modelled, not
-measured (the search says so); the prone drag area is a guess. All are
-play-test dials.
+The shover's reaction; wind turning a unit; impact damage and bouncing off
+walls; turning acceleration capped by deck friction; a prone body's drag
+depending on how it lies; units colliding with each other (a shoved unit
+passes through others, as walking units do today, #142).
 
 ## 11. Systems
 
-(a) Uses: Unit (`mass`, `stability`), Wind load on a body + the Footprint
-samples builder (the scale member), status rows (KNOCKED_DOWN), Simultaneous
-attacks (hits record their impulse at the resolve), the bullet march's
-geometry, Fixed-point kits (`cos_q16`, `atan2_q16`), the collision predicate
-walking uses, Config, Field digest.
+(a) Uses: Unit (`mass`, `stability`), Speed table and `default_speed` (the
+walking scale composes there), Turn-rate cap (`turning.py`: this law
+replaces its body and keeps its kit), Wind load on a body + the Footprint
+samples builder, status rows (KNOCKED_DOWN), Simultaneous attacks (hits and
+the facing snap record at the resolve), the bullet march's geometry,
+Fixed-point kits, the collision predicate walking uses, Loadouts, Weapons
+tables, Control seams (`shove_intent`: `INTENT_KINDS`, `VERB_RULES`, the
+tap, a format bump), Direct control (Space), Config, Field digest.
 
 (b) Creates: **Unit impulse** (`src/simulation/unit_impulse.py`): THE way
 anything pushes or turns a unit is `add(unit, jx, jy, lever)` and the one
 per-tick integration; never a position or facing write from a force; a new
-pusher is a caller, a new response is a term of the integration.
+pusher is a caller, a new response is a term of the integration. **Turning
+law** (`turning.py`): THE only writer of a unit's facing; a new reason to
+face somewhere is a target handed to it.
+
+## 12. Critique lenses
+
+| lens | critic | verdict on | result |
+|---|---|---|---|
+| A behaviour and failure modes | Opus, 2026-11-10 | draft 1 | BUILD AFTER THE LISTED CHANGES. 4 blockers: the reaction delay switched all footing off (a .50 hit plus a wind just under the hold slid a marine 23 m: #140 again); the saturated-effort knockdown could never fire at stability 1.0; in-phase and out-of-phase fire gave opposite results; a prone body could be flung without end. 10 majors, among them: the turning step as worded chattered ±1.3° forever; sub-hold bursts made a target creep; lever arms unclamped; fast pushes could tunnel; three other facing writers bypassed the inertia; several §6 numbers did not follow. **All adopted in draft 2** (§5, §5.1, §6, §8), with its corrected law. Its two modelling calls are §9's first two lines. Full text: `docs/research/impulse_critique_A_behaviour_2026-11-10.md` |
+| B determinism and integration | Opus, 2026-11-10 | draft 2 | BUILD AFTER THE LISTED CHANGES. 4 blockers: the momentum identity cannot be exact with a rounded division and a float mass; the movement slot never reaches zombies, knocked-down units or units holding no move; the turn placed after the move breaks the Speed table's "this tick's facing" rule and the bots' trigger predictor, and the non-aim facing writers have no stored target; the dormancy gate was false as written. 12 majors on currencies, rounding (Python floors, C truncates), a missing velocity bound, a fifth effect kind, where the effort scale lives, digest and recording rows. **All adopted: §13 makes its resolutions binding.** Full text: `docs/research/impulse_critique_B_integration_2026-11-10.md` |
+
+## 13. Build sheet (binding; from lens B)
+
+Lens B's resolutions and its "Implementer's sheet" are part of this spec.
+Where §3 to §8 above and that sheet disagree on representation, placement or
+order, THE SHEET WINS; the behaviour of the law (§5, §5.1) is unchanged. The
+decisions, in short:
+
+- **Currencies.** Velocities are Q16 tiles per tick, impulses Q16
+  gram·tiles per tick, angles Q16 radians (the kit's). Mass is integer
+  grams. Every real-unit dial is quantized ONCE in a per-map `ImpulseTable`
+  built beside `speed_table`. Division truncates toward zero through one
+  helper (`unit_fixed.div_trunc`, equal to C's `/`), and the REMAINDER of
+  `J / m` and `J·r / I` stays in the accumulator, so the momentum identity
+  closes exactly in int64. Magnitudes use one integer square root
+  (`unit_fixed.isqrt`, equal to the kit's `sqrt_q16`). A velocity bound
+  `V_MAX` clamps `pv`, booked as its own term of the identity; the door
+  bounds the substep and `s(e)` trip counts.
+- **Positions** stay float until the residency patch P3c, but every position
+  this law (and the walk beside it) writes lies on the Q16 grid, through one
+  Q16 move function shared by every path, so P3c is a change of storage
+  only.
+- **A new conductor slot 1a, "integrate + turn"**, before the intents: for
+  every living unit in id order, the integration's steps (accumulators with
+  remainder → demand and effort → sway and overflow → resist → the knockdown
+  checks → `omega += dw` → the turn). So every impulse is integrated exactly
+  one tick after it lands, whichever slot produced it.
+- **The displacement runs in slot 3** as ONE loop over every living unit: a
+  walker's walk and its `pv` as one displacement; every other unit with
+  `pv ≠ 0` (standing, prone, zombie, a legacy WEGO / onephase unit) moves by
+  `pv` alone. A zombie displaced this tick drops its path (its next step
+  snaps to the tile grid: an accepted gap until the horde field, G9p). WEGO
+  and onephase plans overwrite a push (accepted legacy gap).
+- **Facing.** `facing_q` (Q16 radians) is the synced representation, with
+  `facing` as a read-only float property for the renderer and the pose
+  layer. A persistent `facing_target_q` per unit; EVERY writer becomes
+  `turning.set_target` (the aim, the travel direction, the zombie walk, the
+  attack snap as a recorded effect, WEGO, onephase, spawn). Only
+  `turning.step`, called from slot 1a, writes `facing_q`.
+  `Simulation.facing_after_turn_q16` becomes the pure evaluation of exactly
+  that step, so the bots' trigger rule stays exact. The Speed table's
+  direction rule keeps reading the post-turn facing, and its "no aim held
+  means θ = 0" shortcut is deleted (a walker holding no aim no longer faces
+  its move instantly).
+- **`SimultaneousEffects` gains a fifth kind, `push`**, recorded right after
+  its `hit` and applied in record order; recoil records through it too; the
+  shove at 1b adds directly (sums commute).
+- **The effort scale** is a member of `FootprintSamples`
+  (`effort_scale_q16`, composed in `default_speed` with the same
+  skip-at-ONE guard as wind: wind first, then effort). **The walk ban**
+  during the reaction delay is one predicate, `unit_impulse.walk_allowed`,
+  read at the three walk sites.
+- **Dials for the gates:** `bullet_push_mult`, `bullet_twist_mult` and a
+  `recoil_mult` (all 1.0).
+- **Digest and recording:** the new state is hashed only when non-zero
+  (absence-transparent keys); `shove_intent` gets its `INTENT_KINDS` and
+  `VERB_RULES` rows, a `last_shove_tick` cooldown (`[weapons.shove]
+  cooldown_seconds`, PLACEHOLDER 1.0) and a format bump; impulse state is
+  zeroed at death and at conversion. A render-only `ShoveEvent` /
+  `StaggerEvent` for the animation session (#184).
+- **Which hits push:** every projectile and pellet that stops on a unit
+  pushes with its own row's momentum; beams do not; a payload round (the
+  40 mm) pushes with its body's momentum, its blast is the wind's business.
+- **Gates:** lens B's G1 to G15 replace §8's dormancy and in-phase gates
+  (G5: the final position is exactly equal when no overflow occurs; the
+  band is compared as mean effort over a period, not per tick).
+
+**Three implementer runs, each merged on green:**
+
+1. **G5p-a1, turning.** `facing_q` / `facing_target_q`, `turning.set_target`
+   / `step` / `predict` (§5.1), every facing writer routed, slot 1a holding
+   only the turn. First commit: the representation and the routing with
+   unlimited acceleration (`a ≥ 2w`), re-pinned on its own with the cause
+   proven; second: the shipped 30 rad/s², re-pinned. Gates G2, G3, G9, G10.
+2. **G5p-a2, the linear law.** The table, the accumulators, `add`, the rest
+   of slot 1a, the slot-3 displacement loop, `push`, hits, recoil, the shove
+   verb and its key (Space), the effort member, the walk ban, the events.
+   Gates G1, G4 to G8, G11 to G15.
+3. **G5p-b, wind and blast** onto the law (§7).
+

@@ -3459,6 +3459,7 @@ loudness = 0.7                        # a bigger roar than the Dragon-7's 0.6
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
 dtype = "kinetic"
+expose = 0.35                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 # 96 t/t @ 24 tps = 2304 tiles/s — authored >= range_tiles (90) so small-arms
 # fire resolves same-tick (mechanics/03 §2); corrected from the 12-tps draft's
@@ -3651,6 +3652,7 @@ gas_amount = 0.35
 family = "9mm"
 damage = 12                           # heavy slow slug — armory "12 KIN"
 dtype = "kinetic"
+expose = 0.42                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 speed_tiles_per_tick = 60.0           # armory 60 t/t = 1440 tiles/s @ 24 tps
 wall_damage = 1
@@ -3659,6 +3661,7 @@ wall_damage = 1
 family = "9mm"
 damage = 7                            # light FMJ — armory "7 KIN"; volume kills
 dtype = "kinetic"
+expose = 0.245                        # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 speed_tiles_per_tick = 60.0
 wall_damage = 1
@@ -3667,6 +3670,7 @@ wall_damage = 1
 family = "rifle_50"
 damage = 90                           # armory "90 KIN, AP 10" — one shot, one door
 dtype = "kinetic"
+expose = 3.15                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 10                               # armor pierce (mechanics/06 mitigation)
 speed_tiles_per_tick = 128.0          # fastest round in the game
 wall_damage = 8                       # chews cover fast — an AM rifle eats crates
@@ -3675,6 +3679,7 @@ wall_damage = 8                       # chews cover fast — an AM rifle eats cr
 family = "shell_12g"
 damage = 6                            # PER PELLET (x8 per trigger) — armory "6 KIN x8"
 dtype = "kinetic"
+expose = 0.21                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 speed_tiles_per_tick = 50.0
 wall_damage = 1                       # each pellet chips; a full face of 8 bites
@@ -4434,6 +4439,43 @@ ignite_intensity = 0.6
 clear_smoke = false
 emit_blast_smoke = false
 
+# =============================================================================
+# [damage.exposure] -- the FOCUS-FIRE law (gameplay pack v1 G4p, issue #181;
+# src/simulation/exposure.py). Every unit carries one decaying EXPOSURE level
+# per damage type; a hit by a round with an `expose` raises the level of the
+# round's type by `expose x (1 - the target's expose_resist)`, capped at x_max;
+# the level halves every `half_life_seconds` (quantized to whole ticks; an
+# exact integer step per tick); damage of that type is multiplied by
+# (1 + k_expose x level). Construction-bound (a new Simulation reads it).
+# `k_expose = 0` makes the law DORMANT (nothing is raised: damage and every
+# digest exactly as before G4p).
+#
+# ALL PLACEHOLDERS, tuned by Claude on tools/bench_focus_fire.py (2026-11-10,
+# Erik away; his targets: one marine ~30-40 rounds of continuous fire for a
+# zombie, single spaced shots ~40, two marines together ~20 in all). Shipped,
+# against a spawned zombie (100 hp, 2 per carbine round = 50 rounds without
+# the law): one marine 34 rounds, two 26 in all, three 24, four 24; single
+# spaced shots 50 (the level has decayed between pulls). Moved: only these
+# three dials and the rounds' `expose` (zombie hp and bullet_damage_multiplier
+# untouched). k_expose = 1 so the level reads as "extra damage": 1.0 = double.
+# WHY so short a half-life: the law is linear in hits, so a second shooter
+# saves rounds ONLY through the decay during the kill -- with a half-life of a
+# second or more, the rounds in all barely depend on how many shoot (bench,
+# 1 s and expose 0.06: 34 / 32 / 33 / 32, single 48). The level must fade between one shooter's rounds
+# (2 ticks apart) for two shooters' volleys to stack higher than one's, and
+# then nothing is left one second later: single shots are the no-law count.
+# The three targets cannot all hold under this law; this set keeps the lone
+# marine in the middle of its band and buys the most focus-fire saving with
+# it. Other points on the same curve (half-life / carbine expose -> rounds
+# for n = 1..4, at x_max 2.5): 0.125 / 0.45 -> 30 / 24 / 24 / 24; 0.083 / 0.5
+# -> 35 / 28 / 27 / 28 (uncapped 35 / 28 / 24 / 24). x_max 2.5 binds at four
+# shooters here (peak 2.5) and keeps a large squad's stack bounded; 2.0
+# makes three and four shooters worse than two (34 / 26 / 27 / 28).
+[damage.exposure]
+half_life_seconds = 0.125   # 3 ticks at 24 tps
+k_expose = 1.0
+x_max = 2.5
+
 [zombie]
 hp = 400
 # (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
@@ -4465,6 +4507,10 @@ fire_damage_multiplier = 4.0
 # Ctrl+R. The marine baseline (1.0) lives on EnvironmentProfile.stability.
 stability = 0.9
 attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
+# G4p (#181): the zombie state's resistance to EXPOSURE (the focus-fire law,
+# [damage.exposure]; selected on is_zombie like its mitigation): a scalar or a
+# table by damage type, in [0, 1]; 0 = a zombie is exposed like anyone else.
+expose_resist = 0.0
 
 [marine]
 hp = 100
@@ -4576,6 +4622,10 @@ front_arc_deg = 120.0
 behind_arc_deg = 90.0
 submersion = "drowns"
 environmental_damage_rate = 1.0
+# G4p (#181): how much of a hit's EXPOSURE (the focus-fire law, [damage.exposure])
+# the suit shrugs off -- a scalar for every damage type or a table by type name
+# ({ kinetic = 0.5 }), in [0, 1]: 0 = fully exposed (the baseline), 1 = immune.
+expose_resist = 0.0
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness

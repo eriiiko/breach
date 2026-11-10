@@ -532,6 +532,12 @@ def _reload_match(tmp_path, monkeypatch):
 
     monkeypatch.setitem(control_source._MATCH_CONTROLLERS, "g2p_reloader",
                         _Reloader)
+    # The focus-fire law dormant (#183 G4p, k_expose = 0): with it live the
+    # duel ends before anyone empties a magazine or reaches a choice reload,
+    # and this match is about reloads, not about how fast marines die.
+    from simulation import exposure
+    monkeypatch.setattr(exposure, "_SETTINGS", exposure.get_settings())
+    monkeypatch.setattr(CFG.damage.exposure, "k_expose", 0.0)
     t = tmr.MatchTeam(n=2, loadout="rifleman", env_profile="default",
                       controller="g2p_reloader")
     spec = replace(tmr.BOX_SPEC, teams=(t, t), zombies=0, time_limit_s=12.0)
