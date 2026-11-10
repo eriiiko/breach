@@ -465,7 +465,7 @@ session run while G1p to G4p are built.
 
 | patch | tier | size | HUMAN-TEST | pins |
 |---|---|---|---|---|
-| G1p | Opus (the camera spike decides `player_up`) | 1 day + spike | yes | unchanged |
+| G1p | Opus | built 2026-11-10, awaiting the play test | yes | re-baselined (the turn-rate cap) |
 | G2p | Sonnet | ½ day | yes | re-baseline |
 | G3p | Sonnet | ½ day | yes | unchanged |
 | G4p | Opus (the bench, the tuning with Erik) | ½ day + tuning | yes | re-baseline |
