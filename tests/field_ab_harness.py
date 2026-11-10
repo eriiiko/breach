@@ -247,7 +247,10 @@ def _unit_record(u):
     imp = [int(getattr(u, k, 0)) for k in ("imp_x", "imp_y", "imp_l")]
     if any(imp):
         rec["imp"] = imp
-    for key, names in (("sw", ("swx", "swy")), ("pv", ("pvx", "pvy"))):
+    # G5p-b: the wind's standing surplus on a prone body (written at 9c2,
+    # read by the next slot 1a's demand), absence-transparent like the rest.
+    for key, names in (("stand", ("stand_x", "stand_y")),
+                       ("sw", ("swx", "swy")), ("pv", ("pvx", "pvy"))):
         v = [int(getattr(u, k, 0)) for k in names]
         if any(v):
             rec[key] = v

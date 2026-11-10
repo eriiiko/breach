@@ -520,14 +520,31 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
 #: (was tick 6e408f1955d11e567974b29252a93ecb080cff000e6d38a7d9653476d095267a,
 #: units c792732fc27000f1adf5d04c223c598022016368c9dbd81c79ffba31bac3e5b5;
 #: the box is UNCHANGED: its idle marines never walk.)
+#: RE-MEASURED at #183 G5p-b (2026-11-10, the wind and the blast onto the
+#: unit impulse law: the dynamic pressure at each footprint is a force
+#: q * drag_area through unit_impulse.add_wind; #140's cadence scale and
+#: bespoke knockdown DELETED in the same commit).
+#: Every impulse input off is now the wind's too (wind_push_mult = 0,
+#: set by the gate), and #140's law is gone with it: the ship_demo run
+#: ends win 1 at 241 (was 246; outcome and team UNCHANGED), all three
+#: digests and the unit stream move; the box is UNCHANGED.
+#: SOLE CAUSE, verified on the same build: the pre-G5p-b tree (0b57fc6e)
+#: at unlimited acceleration with the push and recoil off AND #140's
+#: wind law off (1e15 / 2e15 Pa) gives exactly these values -- the
+#: law's removal is the whole move; nothing of the impulse law runs
+#: here.
+#: (was field 4a30c340a0982a80080a1d29f85cdc377bb579e9ff85c6f685699c86fe
+#: 725440, tick 9932ea99d2b3149ed58be5ddf07c91972b1b531087e4f66a196c2698
+#: 7a7cba2e, units 6d94773610af96c82da8ce023d69d496a97c8175d65d7c59b80219
+#: fea77a1f46)
 _RE_PIN_1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=246,
-    field_digest="4a30c340a0982a80080a1d29f85cdc37"
-                 "7bb579e9ff85c6f685699c86fe725440",
-    tick_digest="9932ea99d2b3149ed58be5ddf07c9197"
-                "2b1b531087e4f66a196c26987a7cba2e",
-    unit_stream="6d94773610af96c82da8ce023d69d496"
-                "a97c8175d65d7c59b80219fea77a1f46")
+    outcome="win", team=1, ticks=241,
+    field_digest="c198fe24ac6dd5b0201619a60476d4f8"
+                 "1ea00f5c5a2527b7146716a300759744",
+    tick_digest="f6545050e5ba3f41c54f7d0a8ea2dbed"
+                "9934dfa92606fd6ef2f6aa082f139002",
+    unit_stream="1d1573ec408624eccf25481d02bcec9a"
+                "c62ad03262b58aa06ece5682fca740a1")
 _RE_PIN_1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="a672c7249e18d0eebbb8e398b696bd9c"
@@ -540,7 +557,8 @@ def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
         monkeypatch, tmp_path):
     """G3 (permanent): with ``[marine] turn_accel_rad_per_s2`` at or above
     twice the top speed per tick (1000 rad/s^2 against 302) and every
-    impulse input off (G5p-a2: the push and recoil multipliers at 0), ship_demo
+    impulse input off (G5p-a2: the push and recoil multipliers at 0; G5p-b:
+    the wind's), ship_demo
     seed 1 and the box play exactly the matches of re-pin 1 -- so the shipped
     acceleration is the ONLY cause of re-pin 2, and the law changes nothing
     its dials do not control. Breaks if the braking law leaks into the
@@ -549,9 +567,11 @@ def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
     from run_match import run_match
     from test_zombie_control import _UnitStream, _box
     monkeypatch.setattr(CFG.marine, "turn_accel_rad_per_s2", 1000.0)
-    # G5p-a2 (critique B's G3: "and every input off"): no push, no recoil.
+    # G5p-a2 (critique B's G3: "and every input off"): no push, no recoil;
+    # G5p-b: and no wind.
     monkeypatch.setattr(CFG.impulse, "bullet_push_mult", 0.0)
     monkeypatch.setattr(CFG.impulse, "recoil_mult", 0.0)
+    monkeypatch.setattr(CFG.impulse, "wind_push_mult", 0.0)
     w = turning.turn_rate_q16(CFG)
     assert turn_accel_q16(CFG) >= 2 * w
     stream = _UnitStream()

@@ -4,8 +4,9 @@ sheet §13, from critique B).
 
 THE WAY ANYTHING PUSHES A UNIT. Everything that pushes a unit hands it an
 IMPULSE through :func:`add` -- a round that hits, the round's recoil on its
-shooter, a shove (and, from G5p-b, the wind and the blast) -- never a position
-or a velocity write. Once per tick, in conductor slot 1a, :func:`integrate_all`
+shooter, a shove, and (G5p-b) the wind, the blast's wind included
+(:func:`add_wind`, the ``wind | max`` coupling row at slot 9c2) -- never a
+position or a velocity write. Once per tick, in conductor slot 1a, :func:`integrate_all`
 turns what each living unit received into a velocity change over its mass and
 a spin change over its yaw inertia; its feet resist up to one tick of HOLD; a
 sudden push is first absorbed IN PLACE as a SWAY (which never moves the unit)
@@ -83,9 +84,10 @@ _REAL_KEYS = (
     "gravity_mps2", "k_hold", "k_slow", "mu_slide",
     "v_inplace_fwd_mps", "v_inplace_side_mps", "v_inplace_back_mps",
     "v_fall_fwd_mps", "v_fall_side_mps", "v_fall_back_mps",
-    "t_react_seconds", "yaw_inertia_kgm2", "r_body_m")
+    "t_react_seconds", "yaw_inertia_kgm2", "r_body_m",
+    "drag_area_m2", "drag_area_prone_m2")
 _MULT_KEYS = ("bullet_push_mult", "bullet_twist_mult", "recoil_mult",
-              "zombie_hold_mult")
+              "wind_push_mult", "zombie_hold_mult")
 _SHOVE_KEYS = ("impulse_ns", "cooldown_seconds", "cone_half_deg")
 
 
@@ -106,9 +108,12 @@ class ImpulseSettings:
     n_rec_ticks: int
     yaw_inertia_kgm2: float
     r_body_m: float
+    drag_area_m2: float
+    drag_area_prone_m2: float
     bullet_push_mult: float
     bullet_twist_mult: float
     recoil_mult: float
+    wind_push_mult: float
     zombie_hold_mult: float
     shove_impulse_ns: float
     shove_cooldown_seconds: float
@@ -206,6 +211,11 @@ class ImpulseTable:
     shove_q: int = 0              # the shove's impulse
     shove_cooldown_ticks: int = 0
     shove_cone_q: int = 0         # the shove's half-angle, Q16 radians
+    #: G5p-b: the wind's impulse per unit of wind load, standing and prone:
+    #: ``J_q = ((W >> 16) * wind_k_q) >> 16`` (:func:`wind_impulse_q`).
+    wind_k_q: int = 0
+    wind_k_prone_q: int = 0
+    rho_air: float = 0.0          # the [materials.air] density it was built at
     settings: ImpulseSettings | None = None
 
     def hold_q(self, u, prone: bool = False) -> int:
@@ -226,22 +236,48 @@ def _momentum_q(ns: float, mult: float, tile_m: float, tps: int) -> int:
     return _q(float(ns) * float(mult) * 1000.0 / (float(tile_m) * int(tps)))
 
 
+def _wind_k(rho: float, area_m2: float, mult: float, tile: float,
+            tps: int) -> int:
+    """The wind's impulse per unit of the pre-shifted wind load, Q16 (G5p-b).
+
+    ``W = (N / N_amb) v^2 2^32`` (``GameMap.footprint_wind``), so ``q =
+    rho W / 2^33`` Pa; the force ``q A`` held for one tick is ``q A / tps``
+    N s, which is ``q A 1000 2^16 / (tile tps^2)`` Q16 gram-tiles per tick
+    (:func:`_momentum_q`'s unit). With ``W' = W >> 16`` that is ``W' K``,
+    ``K = rho A mult 1000 / (2 tile tps^2)``, quantized ONCE here as
+    ``round(K 2^16)`` (2.83 -> 185 224 at 0.9 m2, 0.333 m tiles, 24 tps: a
+    relative grain of 5e-6)."""
+    k = float(rho) * float(area_m2) * float(mult) * 1000.0 \
+        / (2.0 * float(tile) * int(tps) * int(tps))
+    return int(math.floor(k * ONE + 0.5))
+
+
 def impulse_table(cfg, tile_size_m: float, tps: int | None = None,
-                  weapon_tables=None) -> ImpulseTable:
+                  weapon_tables=None, rho_air: float | None = None
+                  ) -> ImpulseTable:
     """The :class:`ImpulseTable` for a map of ``tile_size_m`` metres a tile
     at ``tps`` ticks a second (default ``[clock] ticks_per_second``), from
     the door :func:`impulse_settings` and the ammo rows' momentum
-    (``[ammo.*] bullet_g``, ``muzzle_mps``). Refuses (ValueError, naming
-    what) a dial that quantizes to 0 counts, a hold of one tick that is not
-    below the smallest in-place capacity (critique A, m3 -- compared on the
-    QUANTIZED values), an in-place capacity at or above a fall limit, and a
-    yaw inertia below one gram-tile^2."""
+    (``[ammo.*] bullet_g``, ``muzzle_mps``). ``rho_air`` is the map's
+    ``[materials.air]`` density (the materials table's row, the one owner;
+    None reads the config's row) -- the wind's dynamic pressure is priced
+    with it. Refuses (ValueError, naming what) a dial that quantizes to 0
+    counts, a hold of one tick that is not below the smallest in-place
+    capacity (critique A, m3 -- compared on the QUANTIZED values), an
+    in-place capacity at or above a fall limit, a yaw inertia below one
+    gram-tile^2 and an air density that is not > 0."""
     s = impulse_settings(cfg)
     tps = int(cfg.clock.ticks_per_second if tps is None else tps)
     tile = float(tile_size_m)
     if not tile > 0.0:
         raise ValueError(f"impulse table: tile_size_m must be > 0, got "
                          f"{tile_size_m!r}")
+    if rho_air is None:
+        rho_air = float(cfg.materials.air.density)
+    rho_air = float(rho_air)
+    if not (math.isfinite(rho_air) and rho_air > 0.0):
+        raise ValueError(f"impulse table: the [materials.air] density must "
+                         f"be > 0, got {rho_air!r}")
     v_unit = tile * tps                      # 1 tile/tick in m/s
 
     def vel(mps, key):
@@ -302,7 +338,23 @@ def impulse_table(cfg, tile_size_m: float, tps: int | None = None,
         shove_cooldown_ticks=max(1, int(math.floor(
             s.shove_cooldown_seconds * tps + 0.5))),
         shove_cone_q=_q(math.radians(s.shove_cone_half_deg)),
+        wind_k_q=_wind_k(rho_air, s.drag_area_m2, s.wind_push_mult, tile,
+                         tps),
+        wind_k_prone_q=_wind_k(rho_air, s.drag_area_prone_m2,
+                               s.wind_push_mult, tile, tps),
+        rho_air=rho_air,
         settings=s)
+
+
+def map_air_density(gmap) -> float | None:
+    """``gmap``'s ``[materials.air]`` density row (None for a map without a
+    materials table: the config's row is read instead)."""
+    mats = getattr(gmap, "materials", None)
+    dens = getattr(mats, "density", None)
+    if dens is None:
+        return None
+    from simulation.materials import MAT_AIR
+    return float(dens[MAT_AIR])
 
 
 def table_for(gmap) -> ImpulseTable:
@@ -312,7 +364,8 @@ def table_for(gmap) -> ImpulseTable:
     t = getattr(gmap, "_impulse_table", None)
     if t is None:
         from config import CFG
-        t = impulse_table(CFG, float(getattr(gmap, "tile_size_m", 1.0)))
+        t = impulse_table(CFG, float(getattr(gmap, "tile_size_m", 1.0)),
+                          rho_air=map_air_density(gmap))
         gmap._impulse_table = t
     return t
 
@@ -347,6 +400,7 @@ def init_state(u) -> None:
     """Every impulse state of ``u`` at rest (construction). Integers, a
     fixed width (pack §2 rule 3)."""
     u.imp_x = u.imp_y = u.imp_l = 0
+    u.stand_x = u.stand_y = 0
     u.swx = u.swy = 0
     u.pvx = u.pvy = 0
     u.effort = 0
@@ -362,6 +416,7 @@ def clear(u) -> None:
     §13): a revived corpse inherits no stale push. The facing and the turn
     are the turning law's (``turning.settle`` at conversion)."""
     u.imp_x = u.imp_y = u.imp_l = 0
+    u.stand_x = u.stand_y = 0
     u.swx = u.swy = 0
     u.pvx = u.pvy = 0
     u.effort = 0
@@ -373,7 +428,8 @@ def at_rest(u) -> bool:
     """No impulse state at all (the integration's fast path, and what the
     digest hashes as absent)."""
     return not (u.imp_x or u.imp_y or u.imp_l or u.swx or u.swy or u.pvx
-                or u.pvy or u.effort or u.react_ticks)
+                or u.pvy or u.effort or u.react_ticks
+                or getattr(u, "stand_x", 0) or getattr(u, "stand_y", 0))
 
 
 def books_identity(u):
@@ -442,6 +498,53 @@ def along_q(j_q: int, sx_q: int, sy_q: int):
     """An impulse of magnitude ``j_q`` along the Q16 unit vector ``s``,
     per axis, truncated toward zero."""
     return shr_trunc(j_q * int(sx_q)), shr_trunc(j_q * int(sy_q))
+
+
+# ---------------------------------------------------------------------------
+# The wind (G5p-b): a force is an impulse every tick
+# ---------------------------------------------------------------------------
+def wind_impulse_q(table: ImpulseTable, w: int, prone: bool = False) -> int:
+    """The magnitude of one tick of wind on a body, Q16 gram-tiles per tick:
+    the dynamic pressure of the wind load ``w`` (``GameMap.footprint_wind``'s
+    ``W``) times the body's drag area (standing, or ``prone``), held for one
+    tick -- ``((w >> 16) * k) >> 16`` with the table's ``wind_k_q`` /
+    ``wind_k_prone_q``. Non-negative, monotone in ``w``; 0 at ``w = 0``.
+    Python ints: in int64 the product holds to ``W`` of about 3e18 (q of
+    4e8 Pa)."""
+    k = table.wind_k_prone_q if prone else table.wind_k_q
+    w = int(w)
+    if w <= 0 or k == 0:
+        return 0
+    return ((w >> 16) * k) >> 16
+
+
+def add_wind(table: ImpulseTable, u, w: int, vx: int, vy: int,
+             prone: bool) -> bool:
+    """One tick of wind on the living unit ``u`` (the ``wind | max`` row,
+    Simulation.step 9c2): the impulse :func:`wind_impulse_q` of the wind
+    load ``w`` along the wind ``(vx, vy)`` of the tile that load was read on
+    (Q16 m/s, world axes, y down), through :func:`add` with no lever (wind
+    does not turn a unit in v1, design §10). A PRONE body takes its prone
+    area's impulse; the surplus of the standing area's over it is kept in
+    ``stand_x`` / ``stand_y`` -- never momentum, read once by the next
+    integration's demand -- so a prone unit is judged by the wind it WOULD
+    take standing (critique A, M7: nobody gets up into a gale). Returns
+    whether anything was added. Integer only; truncated toward zero, so a
+    mirrored wind pushes the mirrored way to the count."""
+    vx, vy = int(vx), int(vy)
+    n = isqrt(vx * vx + vy * vy)
+    if n == 0:
+        return False
+    j = wind_impulse_q(table, w, prone)
+    if prone:
+        js = wind_impulse_q(table, w, False)
+        if js != j:
+            u.stand_x += div_trunc(js * vx, n) - div_trunc(j * vx, n)
+            u.stand_y += div_trunc(js * vy, n) - div_trunc(j * vy, n)
+    if j == 0:
+        return False
+    add(table, u, div_trunc(j * vx, n), div_trunc(j * vy, n))
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -528,11 +631,19 @@ def integrate(table: ImpulseTable, u, events=None) -> int:
     b[CLAMP_Y] += dvy - cy
     dvx, dvy = cx, cy
     # 2. the demand on the STANDING hold (one denominator, prone or not) and
-    #    the effort's low-pass toward it, rounded away from zero.
+    #    the effort's low-pass toward it, rounded away from zero. A prone
+    #    body's demand is the one it WOULD have standing (G5p-b, critique A
+    #    M7): the wind's standing surplus joins dv here, never momentum.
     cap = table.hold_q(u)
+    ddx, ddy = dvx, dvy
+    sx_, sy_ = getattr(u, "stand_x", 0), getattr(u, "stand_y", 0)
+    if sx_ or sy_:
+        ddx += div_trunc(sx_, m)
+        ddy += div_trunc(sy_, m)
+        u.stand_x = u.stand_y = 0
     demand = 0
-    if dvx or dvy:
-        demand = div_trunc(isqrt(dvx * dvx + dvy * dvy) * ONE, cap)
+    if ddx or ddy:
+        demand = div_trunc(isqrt(ddx * ddx + ddy * ddy) * ONE, cap)
         if demand > EFFORT_MAX:
             demand = EFFORT_MAX
     u.effort += effort_step(demand - u.effort)
@@ -796,7 +907,8 @@ __all__ = [
     "V_MAX_Q", "SUBSTEP_Q", "EFFORT_MAX", "ImpulseSettings", "ImpulseTable",
     "impulse_settings", "impulse_table", "table_for", "kit_kg", "bind_mass",
     "init_state", "clear", "at_rest", "books_identity", "angular_q",
-    "lever_q", "add", "along_q", "stability_q16", "pending_dw", "integrate",
+    "lever_q", "add", "along_q", "wind_impulse_q", "add_wind",
+    "map_air_density", "stability_q16", "pending_dw", "integrate",
     "integrate_all", "effort_scale_q16", "walk_allowed", "move",
     "walk_step_q", "centre_q", "shove_target", "shove",
 ]

@@ -272,14 +272,35 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
 #: (was tick 6363856b30393dbcfef1c9801f03b3cfa423652cbd8f95f72f269ab59a394f36,
 #: units 02e8717ae42a475dd629ff355596da554f5771f91d258b8da83143e27af0dcb7)
+#: RE-MEASURED at #183 G5p-b (2026-11-10, the wind and the blast onto the
+#: unit impulse law: the dynamic pressure at each footprint is a force
+#: q * drag_area through unit_impulse.add_wind; #140's cadence scale and
+#: bespoke knockdown DELETED in the same commit).
+#: The instant-turn run's WINNER CHANGES: win 0 at 244 (was win 1 at
+#: 244); all three digests and the unit stream move.
+#: SOLE CAUSE, verified on the same build: the pre-G5p-b tree (0b57fc6e)
+#: with #140's wind law off (wind_q_slow_pa / wind_q_fall_pa = 1e15 /
+#: 2e15) and this tree with the wind's input off ([impulse]
+#: wind_push_mult = 0) give exactly the same values (win 0 at 244, 55a525f9 / 23b0bdfe / 1af4fccd) --
+#: replacing the law is the whole change.
+#: So the change of winner is #140's law leaving, not the force: with
+#: it off the frag of ticks 218-219 floors nobody (the old law floored
+#: units 1, 3, 6, 7, 10, 11 on q alone), units 6 and 7 die on ticks
+#: 219-220 instead of surviving to 244, and team 0 wins; the force then
+#: pushes 1, 3, 7, 10, 11 by up to 1.1 tiles without changing the
+#: winner or the end tick.
+#: (was win 1 at 244; field f479f16f80b1071550eda76c4630e5380f15c501f89e
+#: 9160c4966fed9b0634ad, tick 16cfecdec6e602d9b547f9d37019b63fd309764dc1
+#: cd282ef9665a5c597453c6, units 72b7eba882b7bcb97c382e525690666e83135343
+#: c8f045d042c93671b130fd1c)
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=244,
-    field_digest="f479f16f80b1071550eda76c4630e538"
-                 "0f15c501f89e9160c4966fed9b0634ad",
-    tick_digest="16cfecdec6e602d9b547f9d37019b63f"
-                "d309764dc1cd282ef9665a5c597453c6",
-    unit_stream="72b7eba882b7bcb97c382e525690666e"
-                "83135343c8f045d042c93671b130fd1c")
+    outcome="win", team=0, ticks=244,
+    field_digest="a669d9431e8ba01e9c13d8dc9397ac91"
+                 "100eeecc2f1e69d41c6821c6a8f39cae",
+    tick_digest="94c39cffdb18d4740053e7d643d91b2f"
+                "eb453f468834b781dd752d4ace8e2e5c",
+    unit_stream="13124e00feec4fe69d07512b624595d0"
+                "0f9bb797a649ae71d2dbe0a62a431cf0")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

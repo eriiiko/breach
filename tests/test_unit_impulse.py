@@ -610,9 +610,10 @@ def test_g13_a_unit_killed_with_pending_impulses_converts_with_none():
 def test_the_effort_scale_slows_the_walk_from_the_slow_edge_to_half():
     """Property 11 (§5 step 5): the walking scale is ONE up to an effort of
     k_slow / k_hold, half at an effort of ONE (the hold) and above, linear
-    and monotone between; ``default_speed`` composes it after the wind,
-    each skipped at ONE. Breaks if the scale law or its place in the
-    compose changes."""
+    and monotone between; ``default_speed`` composes it after the terrain,
+    skipped at ONE (G5p-b: it is the only scale member -- the wind's slowing
+    is the effort's). Breaks if the scale law or its place in the compose
+    changes."""
     from types import SimpleNamespace
     from simulation.movement import FootprintSamples, default_speed, half_up
     t = ui.impulse_table(CFG, TILE)
@@ -626,10 +627,9 @@ def test_the_effort_scale_slows_the_walk_from_the_slow_edge_to_half():
         if e >= ONE:
             assert scales[-1] == ONE // 2
     assert all(a >= b for a, b in zip(scales, scales[1:]))
-    s = FootprintSamples(mobility=[1000] * 9, wind_scale_q16=50000,
-                         effort_scale_q16=40000)
-    assert default_speed(s, 18) == half_up(half_up(18 * ONE, 50000) * ONE,
-                                           40000)
+    s = FootprintSamples(mobility=[1000] * 9, effort_scale_q16=40000)
+    assert default_speed(s, 18) == half_up(18 * ONE, 40000)
+    assert not hasattr(s, "wind_scale_q16")
     assert default_speed(FootprintSamples(mobility=[1000] * 9), 18) == 18
 
 
@@ -840,14 +840,29 @@ def test_the_shove_and_stagger_events_are_render_only():
 #: ship_demo seed 1 and the box at G5p-a2's re-pin 1 (the law built with
 #: every input at zero, the walk on the Q16 grid): what the pins held before
 #: the hits and the recoil went live (tests/test_zombie_control.py).
+#: RE-MEASURED at #183 G5p-b (2026-11-10, the wind and the blast onto the
+#: unit impulse law: the dynamic pressure at each footprint is a force
+#: q * drag_area through unit_impulse.add_wind; #140's cadence scale and
+#: bespoke knockdown DELETED in the same commit).
+#: Every input off is now the wind's too (the gate sets wind_push_mult
+#: = 0), and #140's law is gone: ship_demo ends win 0 at 266 (was 265),
+#: all three digests and the unit stream move; the box is UNCHANGED.
+#: SOLE CAUSE, verified on the same build: the pre-G5p-b tree (0b57fc6e)
+#: with the push and recoil off AND #140's wind law off (1e15 / 2e15 Pa)
+#: gives exactly these values -- with every input off the impulse law
+#: still moves nothing.
+#: (was field 65fd96904dfa3cc25edc0fc344027876be1b6c11b824c92c6b5930bb3c
+#: 9c3499, tick 2ca1d895b11749e6b16f281bdf976379e52077e1d29929284683648f
+#: 8369c6a4, units ec0dad03ce0b0ef6389589f50b24728dc074a5f81a9340549b44d8
+#: 6e3338fd35)
 _RE_PIN_1_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=265,
-    field_digest="65fd96904dfa3cc25edc0fc344027876"
-                 "be1b6c11b824c92c6b5930bb3c9c3499",
-    tick_digest="2ca1d895b11749e6b16f281bdf976379"
-                "e52077e1d29929284683648f8369c6a4",
-    unit_stream="ec0dad03ce0b0ef6389589f50b24728d"
-                "c074a5f81a9340549b44d86e3338fd35")
+    outcome="win", team=0, ticks=266,
+    field_digest="81ba6bb1a51769f09988db7dd5aeb0f0"
+                 "6e25e690dc15aade7f6adbe25dc65dc9",
+    tick_digest="52f184d32ae6fa3f1e6a0d28eaacdda9"
+                "215eba4d06f16358db023fdd91f349ef",
+    unit_stream="9c98dc5d7ab477d944d73452a9e2ca8d"
+                "ee2e9d4759cd102a967242319b65566f")
 _RE_PIN_1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="a672c7249e18d0eebbb8e398b696bd9c"
@@ -855,8 +870,8 @@ _RE_PIN_1_BOX = dict(
     unit_stream="f2ba375dd16868470f118df2bbbcab6c"
                 "151ce28d4e2e108ab5f4433360406497")
 
-_IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "swx", "swy", "pvx", "pvy",
-                  "effort", "react_ticks")
+_IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
+                  "swy", "pvx", "pvy", "effort", "react_ticks")
 
 
 class _AtRest:
@@ -877,7 +892,8 @@ class _AtRest:
 def test_g1_with_every_input_off_nothing_is_pushed_and_the_pins_are_re_pin_1s(
         monkeypatch, tmp_path):
     """G1 (replaces the dormancy gate, critique B B4): with
-    ``bullet_push_mult = recoil_mult = 0`` and no shove issued, every unit's
+    ``bullet_push_mult = recoil_mult = 0``, ``wind_push_mult = 0`` (G5p-b:
+    the wind and the blast's wind) and no shove issued, every unit's
     accumulators, sway, push, effort and reaction delay -- and so the
     impulse part of omega -- are EXACTLY zero on every tick of ship_demo seed
     1 and of the box, asserted per tick (non-vacuous: the bots fire and walk
@@ -889,6 +905,7 @@ def test_g1_with_every_input_off_nothing_is_pushed_and_the_pins_are_re_pin_1s(
     from test_zombie_control import _UnitStream, _box
     monkeypatch.setattr(CFG.impulse, "bullet_push_mult", 0.0)
     monkeypatch.setattr(CFG.impulse, "recoil_mult", 0.0)
+    monkeypatch.setattr(CFG.impulse, "wind_push_mult", 0.0)
     hook = _AtRest(_UnitStream())
     o = run_match(level_loader.load("ship_demo", str(ROOT / "levels")),
                   on_tick=hook)
@@ -905,7 +922,8 @@ def test_g1_with_every_input_off_nothing_is_pushed_and_the_pins_are_re_pin_1s(
 
 
 def test_g11_every_position_stays_on_the_q16_grid_in_the_pinned_match():
-    """G11: with the shipped dials (hits push, guns recoil), after every
+    """G11: with the shipped dials (hits push, guns recoil, the wind and
+    the frags' blast wind push), after every
     tick of ship_demo seed 1 every unit's x and y times 65536 are integers
     -- so P3c's integer positions are a change of storage only. Breaks if
     any position writer leaves the grid (a float walk step, a float push)."""

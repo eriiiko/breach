@@ -628,14 +628,29 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
 #: (was tick 8fb8dbe88af5bc83d618c0104ed68ee7835eabb433825b66289f90035f4b7d4b,
 #: units 2e1dde64fe02fe7f4dd3e7e22f6bf36dc641658f6064e9f1ba22634a55626fe2)
+#: RE-MEASURED at #183 G5p-b (2026-11-10, the wind and the blast onto the
+#: unit impulse law: the dynamic pressure at each footprint is a force
+#: q * drag_area through unit_impulse.add_wind; #140's cadence scale and
+#: bespoke knockdown DELETED in the same commit).
+#: The same wind-up-0 run. Outcome and ticks UNCHANGED (win 1 at 240);
+#: all three digests and the unit stream move.
+#: SOLE CAUSE, verified on the same build: the pre-G5p-b tree (0b57fc6e)
+#: with #140's wind law off (wind_q_slow_pa / wind_q_fall_pa = 1e15 /
+#: 2e15) and this tree with the wind's input off ([impulse]
+#: wind_push_mult = 0) give exactly the same values (win 1 at 240, c6e5bbe5 / 3bca21ab / 7a80c116) --
+#: replacing the law is the whole change.
+#: (was field 65597eedae3789674659a53d292031f1332b4c608d3bac91c240db109
+#: abf2bf2, tick 7330ebaf873f9b1310d1d275d090970d3eed2ab5b303287f8202b3
+#: e1fa41473a, units bad73d8e1bb486c18da8315506796c63ce9a11b69ebada33ab4
+#: a9972da696a76)
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
-    field_digest="65597eedae3789674659a53d292031f1"
-                 "332b4c608d3bac91c240db109abf2bf2",
-    tick_digest="7330ebaf873f9b1310d1d275d090970d"
-                "3eed2ab5b303287f8202b3e1fa41473a",
-    unit_stream="bad73d8e1bb486c18da8315506796c63"
-                "ce9a11b69ebada33ab4a9972da696a76")
+    field_digest="ef81cd2f9f0b720adfefaea226f51f90"
+                 "5829a20d09cdcf5bf11c6c25545c592b",
+    tick_digest="8c9f1e0df467a41c1fbfc44101be87d0"
+                "7a08fba40aaaaaa3065e05ab2a7c2839",
+    unit_stream="a004003626bb2325f48149a5a4ff2b41"
+                "f8e809b4d22dd686db622bcfc0215235")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

@@ -40,10 +40,12 @@ class EnvironmentProfile:
     temperature_max: float =  60.0
 
     # --- Stability (mechanics/06 §4, KNOCKED_DOWN) ---
-    # Knockdown susceptibility multiplier on the knockdown WIND SPEED: the
-    # wind knocks the unit down when its footprint's wind load reaches
-    # ``[exchange] wind_q_fall_pa * stability^2`` (the ``wind | max`` row,
-    # #140, mechanics/05 §1). 1.0 = human baseline; < 1 topples easier
+    # Knockdown susceptibility multiplier: the unit impulse law (G5p) floors
+    # the unit when its effort (the force on its feet over its hold)
+    # reaches ``stability^2`` or its pushed speed its fall limit times
+    # ``stability`` -- for a steady wind, a multiplier on the knockdown WIND
+    # SPEED (the ``wind | max`` row, mechanics/05 §1, a force on that law
+    # since G5p-b). 1.0 = human baseline; < 1 topples easier
     # (shamblers), > 1 resists toppling (a low four-legged robot). This is
     # the ONE non-physical knockdown knob (the resistance table mitigates
     # damage only — mechanics/06 §4 division
@@ -52,8 +54,8 @@ class EnvironmentProfile:
     # species.ZOMBIE_STABILITY, which sources its value from
     # ``[zombie] stability`` in config.toml, for the pattern). The 1.0 here
     # is the human BASELINE the threshold is calibrated against — tune the
-    # threshold (``[exchange] wind_q_fall_pa``) or the per-species
-    # overlays, not this anchor.
+    # hold (``[impulse] k_hold``) or the per-species overlays, not this
+    # anchor.
     stability: float = 1.0
 
     # --- Attack arcs (mechanics/06 §5 — the crit-vs-facing resolver, W2) ---

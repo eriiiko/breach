@@ -16,7 +16,8 @@ continuous path no longer reads those dials (they are WEGO's alone), so that
 property is gone; its successors are below: throttle 0 forward IS the table's
 walk and ONE its full speed (exactly the rounded rationals), monotone in the
 throttle and in cos theta, nobody sprints backwards or sideways, terrain and
-wind scale the new base exactly as they scaled the old one, and the door
+the speed scale (the effort's: the wind's since G5p-b) scale the new base
+exactly as they scaled the old one, and the door
 still clamps.
 """
 from __future__ import annotations
@@ -56,14 +57,15 @@ TABLE = speed_table(CFG, 0.333)
 CW, CF, SIDE, BACK = (TABLE.walk_cost_q, TABLE.full_cost_q, TABLE.side_q,
                       TABLE.back_q)
 
-#: Footprint samples spanning the terrain + wind reductions: open air,
+#: Footprint samples spanning the terrain + effort reductions (the wind slows
+#: through the effort since G5p-b): open air,
 #: furniture, a mixed footprint, a gale's half-speed scale, an odd scale.
 SAMPLES = [
     FootprintSamples(mobility=[1000] * 9),
     FootprintSamples(mobility=[400] * 9),
     FootprintSamples(mobility=[1000, 400, 700, 1000, 1000, 250, 1000, 900, 1]),
-    FootprintSamples(mobility=[1000] * 9, wind_scale_q16=SCALE_ONE // 2),
-    FootprintSamples(mobility=[600] * 9, wind_scale_q16=40961),
+    FootprintSamples(mobility=[1000] * 9, effort_scale_q16=SCALE_ONE // 2),
+    FootprintSamples(mobility=[600] * 9, effort_scale_q16=40961),
 ]
 
 #: Throttles: the ends, a 37-step sweep, a seeded random set.
@@ -99,7 +101,7 @@ def test_forward_throttle_zero_is_the_walk_and_one_the_full_speed():
 @pytest.mark.parametrize("s", SAMPLES)
 def test_the_speed_is_monotone_in_the_throttle(s, c):
     """Property: more throttle is never slower, at every angle to the facing
-    and on every terrain / wind cost. Breaks if the throttle term can go
+    and on every terrain / speed-scale cost. Breaks if the throttle term can go
     negative (full slower than walk) or the law rounds non-monotonically."""
     cw, cf = default_speed(s, CW), default_speed(s, CF)
     v = [_v(t, c, cw, cf) for t in THROTTLES]
@@ -136,15 +138,15 @@ def test_nobody_sprints_backward_or_sideways():
 
 
 @pytest.mark.parametrize("s", SAMPLES)
-def test_terrain_and_wind_scale_the_new_base_as_they_scaled_the_old(s):
-    """Property: terrain mobility and the wind scale reach the new law
+def test_terrain_and_the_speed_scale_the_new_base_as_they_scaled_the_old(s):
+    """Property: terrain mobility and the effort scale reach the new law
     through the SAME function the old cadence went through
     (``default_speed``, here at the Q16 cost currency): the reduced walk is
     exactly ``ONE / default_speed(samples, walk_cost_q)``, and the factor it
     applies to the base speed equals the factor the old integer cadence got
     (18 ticks per tile, the old walk dial) to within that integer
     reduction's own half-up rounding. Breaks if the new law re-derives the
-    terrain or wind reduction, drops one of them, or applies it twice."""
+    terrain or effort reduction, drops one of them, or applies it twice."""
     cw, cf = default_speed(s, CW), default_speed(s, CF)
     assert _v(0, FP_ONE, cw, cf) == FP_ONE / cw
     assert _v(THROTTLE_ONE, FP_ONE, cw, cf) == FP_ONE / cf
@@ -153,9 +155,9 @@ def test_terrain_and_wind_scale_the_new_base_as_they_scaled_the_old(s):
     old = 18
     old_factor = default_speed(plain, old) / default_speed(s, old)
     # The integer reduction rounds its cost by half a tick per stage (the
-    # mobility stage's error then scaled by the wind's 1/scale <= 2): 1.5.
+    # mobility stage's error then scaled by the effort's 1/scale <= 2): 1.5.
     assert abs(new_factor - old_factor) <= old_factor * 1.5 / default_speed(s, old)
-    exact = (sum(s.mobility) / (len(s.mobility) * 1000)) * (s.wind_scale_q16 / SCALE_ONE)
+    exact = (sum(s.mobility) / (len(s.mobility) * 1000)) * (s.effort_scale_q16 / SCALE_ONE)
     assert new_factor == pytest.approx(exact, rel=1e-5)
 
 

@@ -53,8 +53,13 @@ from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
 TPS = int(CFG.clock.ticks_per_second)
-Q_SLOW = float(getattr(CFG.exchange, "wind_q_slow_pa", 39.0))
-Q_FALL = float(getattr(CFG.exchange, "wind_q_fall_pa", 245.0))
+# The bands of the unit impulse law (G5p-b: the wind is a force on it) as q
+# for the 100 kg reference marine standing: slowed from k_slow of its weight,
+# floored at k_hold (stability 1.0) -- #140's 39 / 245 Pa.
+_IMP = CFG.impulse
+REF_MASS_KG = 100.0
+Q_SLOW = _IMP.k_slow * REF_MASS_KG * _IMP.gravity_mps2 / _IMP.drag_area_m2
+Q_FALL = _IMP.k_hold * REF_MASS_KG * _IMP.gravity_mps2 / _IMP.drag_area_m2
 
 
 def rho_ref(gmap) -> float:
@@ -133,9 +138,11 @@ def scene_doorway(vent_ticks=24 * 20):
         if t < 12 or t % 24 == 0:
             st = ",".join(str(s.kind) for s in u.statuses) or "-"
             print(f"  {t + 1:4d} {(t + 1) / TPS:6.2f} {q:10.1f} {q_of(g, wm):11.1f} "
-                  f"{v:12.2f} {int(g.atmosphere[27, 50]) / FP_ONE:12.3f}  {st}")
+                  f"{v:12.2f} {int(g.atmosphere[27, 50]) / FP_ONE:12.3f}  {st}"
+                  f"  at ({u.x:.3f}, {u.y:.3f})")
     _band_summary(qs, "doorway")
-    print(f"  marine position after the vent: ({u.x}, {u.y})")
+    print(f"  marine position after the vent: ({u.x}, {u.y}); moved "
+          f"{np.hypot(u.x - 37.0, u.y - 22.0) * g.tile_size_m:.2f} m")
 
 
 def scene_match(t_lo=550, t_hi=1450):
@@ -180,7 +187,7 @@ def _ring(label, tile_size_m, detonate, dists, n_ticks):
     from simulation.status import KNOCKED_DOWN
     print(f"grenade [{label}]: 48x48 room at {tile_size_m} m tiles, blast at "
           f"(24, 12), marine centre d tiles along +x, peak over {n_ticks} ticks")
-    print("   d   peak q_max[Pa]  peak q_mean[Pa]  peak |v|  tick  knocked (live law)")
+    print("   d   peak q_max[Pa]  peak q_mean[Pa]  peak |v|  tick  knocked (live law)  moved [m]")
     for d in dists:
         sim = Simulation(_blast_room(tile_size_m), seed=777, breach_physics=bp,
                          enable_recorder=False)
@@ -189,6 +196,7 @@ def _ring(label, tile_size_m, detonate, dists, n_ticks):
         sim.add_unit(u)
         peak = (0.0, 0.0, 0.0, 0)
         down = False
+        x0, y0 = u.x, u.y
         for t in range(n_ticks):
             if t == 1:
                 detonate(sim, cy, cx)
@@ -199,8 +207,9 @@ def _ring(label, tile_size_m, detonate, dists, n_ticks):
             if q > peak[0]:
                 peak = (q, q_of(sim.gmap, wm), v, t + 1)
             down = down or any(s.kind == KNOCKED_DOWN for s in u.statuses)
+        moved = float(np.hypot(u.x - x0, u.y - y0)) * tile_size_m
         print(f"  {d:2d} {peak[0]:15.1f} {peak[1]:16.1f} {peak[2]:9.2f} "
-              f"{peak[3]:5d}  {'yes' if down else 'no'}")
+              f"{peak[3]:5d}  {'yes' if down else 'no ':18s} {moved:6.2f}")
 
 
 def scene_grenade(dists=range(2, 13), n_ticks=40):
@@ -271,7 +280,8 @@ def main() -> None:
     for name in args.scenes:
         if name not in SCENES:
             ap.error(f"unknown scene {name!r}; choose from {list(SCENES)}")
-    print(f"q_slow {Q_SLOW:g} Pa, q_fall {Q_FALL:g} Pa (stability 1.0)")
+    print(f"q_slow {Q_SLOW:.1f} Pa, q_fall {Q_FALL:.1f} Pa (the impulse law's "
+          f"bands for a {REF_MASS_KG:g} kg marine standing, stability 1.0)")
     for name in args.scenes:
         SCENES[name]()
         print()

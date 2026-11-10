@@ -60,19 +60,22 @@ def test_the_generated_level_is_the_shipped_one(tmp_path):
         "committed diffuse.png pixels do not match the tool's output")
 
 
-def test_opening_the_sealed_door_knocks_the_doorway_marine_over_q_fall():
+def test_opening_the_sealed_door_floors_the_doorway_marine():
     """PROPERTY: the studio's sealed room holds its overpressure while its
     door is shut, and opening that door (the door latch the O key flips)
-    delivers a wind load q above ``wind_q_fall_pa`` at the marine spawned
-    in the doorway within 2 s.
+    puts a wind on the marine spawned in the doorway whose force exceeds
+    its hold (``unit_impulse.wind_impulse_q`` of the read against one tick
+    of hold: #140's q_fall for the reference marine) and floors it, within
+    2 s (G5p-b: the wind is a force on the unit impulse law).
 
     The doorway marine is the spawn whose footprint touches the door span;
     the sealed room is the door's high-pressure side, found from the field.
 
     BREAKS IF: the room leaks or its air_init seed is lost (the hold check),
     the door no longer opens from ``want_open``, the doorway spawn is moved
-    off the door, or the wind read (``GameMap.footprint_wind_load`` priced by
-    ``exchange.gmap_wind_settings``) stops seeing the vent.
+    off the door, the wind read (``GameMap.footprint_wind_load`` priced by
+    the impulse table) stops seeing the vent, or the law stops flooring a
+    unit in an over-hold wind.
     """
     lvl = load("wind_studio", levels_dir=str(ROOT / "levels"))
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False,
@@ -107,15 +110,20 @@ def test_opening_the_sealed_door_knocks_the_doorway_marine_over_q_fall():
     assert doorway, "no marine is spawned in the sealed room's doorway"
     marine = doorway[0]
 
-    settings = exchange.gmap_wind_settings(g)
+    from simulation import unit_impulse
+    from simulation.status import composed_flags
+    t = sim.impulse_table
     door.want_open = True
     tps = int(CFG.clock.ticks_per_second)
     peak = 0
+    floored = False
     for _ in range(2 * tps):
         sim.step()
         peak = max(peak, g.footprint_wind_load(marine.tile_y, marine.tile_x,
                                                marine.footprint))
-    q_peak = settings.rho_ref * peak / float(1 << 33)
-    assert peak > settings.w_fall, (
+        floored = floored or composed_flags(marine).is_prone
+    q_peak = exchange.wind_q_pa(g, peak)
+    assert unit_impulse.wind_impulse_q(t, peak) >         t.hold_q(marine) * marine.mass_g, (
         f"opening the door gave {marine.name} a peak q of {q_peak:.1f} Pa, "
-        f"not above wind_q_fall_pa = {settings.q_fall_pa} Pa")
+        f"under its hold")
+    assert floored, f"{marine.name} stood through a {q_peak:.0f} Pa gale"

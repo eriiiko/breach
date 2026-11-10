@@ -88,7 +88,7 @@ from simulation import exposure
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
     apply_blast_damage, apply_environmental_damage, apply_poison_dose,
-    apply_teargas_blind, apply_wind_knockdown,
+    apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, ThrowEvent, WallDestroyedEvent,
@@ -424,7 +424,8 @@ class Simulation:
         # refusing door, simulation/unit_impulse.py), and handed to the map
         # so the combat helpers that take only the map read the same table.
         self.impulse_table = unit_impulse.impulse_table(
-            CFG, self.gmap.tile_size_m)
+            CFG, self.gmap.tile_size_m,
+            rho_air=unit_impulse.map_air_density(self.gmap))
         self.gmap._impulse_table = self.impulse_table
 
         # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
@@ -1971,18 +1972,19 @@ class Simulation:
                 events=self.tick_events,
             )
 
-        # 9c2. Wind on units (#140; the `wind | max` row, mechanics/05 §1 --
-        # exchange.apply_wind_knockdown): the dynamic pressure q = 1/2 rho v^2
-        # at each living unit's footprint (GameMap.footprint_wind_load) lays
-        # it KNOCKED_DOWN at or above wind_q_fall_pa * stability^2 (prone,
-        # refresh-stacked get-up timer). It writes NO position; the slowed
-        # band below it is the cadence scale movement.footprint_samples
-        # hands every walker. WITHIN-TICK EXCHANGE ORDER (documented
-        # contract): heat damage (9c) FIRST, then wind -- a unit the heat row
-        # kills this tick is a corpse. A status applied here starts
-        # suppressing next tick (the step-2b P3 trigger-position semantics).
+        # 9c2. Wind on units (#140's read, the `wind | max` row, mechanics/05
+        # §1 -- exchange.apply_wind_force; G5p-b): the dynamic pressure
+        # q = 1/2 rho v^2 at each living unit's footprint
+        # (GameMap.footprint_wind) is a FORCE on the unit impulse law: one
+        # tick of impulse q * drag_area along the wind, through
+        # unit_impulse.add_wind, integrated in the next tick's slot 1a (whose
+        # outcomes -- slowed, pushed by the excess, knocked down -- are the
+        # wind's; a blast's wind included). It writes no position, status
+        # or speed. WITHIN-TICK EXCHANGE ORDER (documented contract): heat
+        # damage (9c) FIRST, then wind -- a unit the heat row kills this
+        # tick is a corpse.
         if self.physics_runner is not None:
-            apply_wind_knockdown(self.units, self.gmap)
+            apply_wind_force(self.units, self.gmap, self.impulse_table)
 
         # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
         # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
