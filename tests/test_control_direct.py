@@ -188,7 +188,8 @@ class _FakeSim:
 
     def __getattr__(self, name):
         if name in ("set_move_dir", "clear_move_dir", "set_aim", "set_trigger",
-                    "throw_grenade_intent", "use_intent"):
+                    "throw_grenade_intent", "use_intent", "melee_intent",
+                    "set_flashlight", "shove_intent", "reload_intent"):
             return lambda *a, **k: self.calls.append((name, a, k))
         raise AttributeError(name)
 
@@ -216,12 +217,14 @@ def test_a_frame_becomes_intents_through_the_one_emit_path():
         ("throw_grenade_intent", (1, 0, -FP_ONE, dc.grenade_fuse),
          {"reach_q": 5 * FP_ONE, "kind": 1}),
         ("use_intent", (1,), {}),
+        ("set_flashlight", (1, False), {}),   # G7p: the held light, every frame
     ]
     sim.calls.clear()
     dc._emit(sim, 1, DeviceFrame(move=None, aim=None, trigger=False,
                                  throw=None, use=False))
     assert sim.calls == [("clear_move_dir", (1,), {}),
-                         ("set_trigger", (1, False), {})]
+                         ("set_trigger", (1, False), {}),
+                         ("set_flashlight", (1, False), {})]
 
 
 def test_possession_moves_on_from_a_dead_or_turned_marine():

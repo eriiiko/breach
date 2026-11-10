@@ -707,6 +707,19 @@ def main():
             cursor = frame_lights.cursor_lamp_spec(renderer.mouse_to_tile_float())
             if cursor is not None:
                 extra.append(cursor)
+            # G7p: a unit's flashlight cone follows its synced bit
+            # (Unit.flashlight_on, Simulation.set_flashlight): direct control
+            # lights the possessed unit, a watched match every living marine
+            # -- the SAME assembly as onephase's (flashlight_specs), never a
+            # second one. Other control sources have no unit light.
+            extra += frame_lights.flashlight_specs(
+                ui.carried_flashlight_cones(
+                    sim,
+                    possessed_id=(control_source.selected_unit_id
+                                  if control_source.camera_mode is not None
+                                  else None),
+                    watching=follow is not None),
+                _footprint_of)
         # W6 transient emitters: flame/miasma jets + plasma bolts + (#33) the
         # bullets' muzzle flashes + (G4 P5) the blasts' row flashes, aged on
         # the sim clock at this tick, from the renderer's own live effect

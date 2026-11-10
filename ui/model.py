@@ -598,6 +598,13 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
     ``mode``. During PLANNING the flashlight aims toward the cursor, which is
     what makes it a planning affordance rather than decoration.
 
+    GAMEPLAY PACK G7p: a unit whose flashlight bit is OFF
+    (``Unit.flashlight_on``, ``Simulation.set_flashlight``) has no cone, in
+    every mode. Direct control asks for ``mode="selected"`` with the
+    possessed unit (its one light); a watched match asks for ``mode="all"``:
+    every living non-zombie unit of ANY team, ``team`` ignored (a zombie
+    carries no flashlight).
+
     **Render-only in v1.** These cones must not reach the sim: the moment
     lights affect gameplay (zombies drawn to light, vision limited to lit
     areas) they cross into a stealth system, which is a deliberate decision
@@ -608,7 +615,12 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
     half = float(CFG.onephase.vision_cone_half_deg)
     out = []
     for u in sim.units:
-        if u.team != team or not u.alive:
+        if not u.alive or not getattr(u, "flashlight_on", True):
+            continue
+        if mode == "all":
+            if u.is_zombie:
+                continue
+        elif u.team != team:
             continue
         # `selected_unit_id or -1` would be a bug here: unit id 0 is falsy.
         if mode == "selected" and (selected_unit_id is None
@@ -628,6 +640,24 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
             y=float(u.center_tile_y()), facing=facing, half_deg=half,
             range_tiles=25.0))
     return out
+
+
+def carried_flashlight_cones(sim, possessed_id=None, watching: bool = False,
+                             ) -> list:
+    """The flashlight cones of a game with no onephase planning (gameplay
+    pack G7p): DIRECT CONTROL lights its possessed unit only
+    (``possessed_id``, :func:`flashlight_cones` mode "selected"), a WATCHED
+    MATCH (``watching``: a replay or ``--control match``) every living marine
+    of any team (mode "all"), anything else nothing. Each follows the unit's
+    own bit (``Unit.flashlight_on``): a unit with its light off has no cone.
+    The SAME cones :func:`renderer.frame_lights.flashlight_specs` turns into
+    the one assembly's specs. Render-only, like :func:`flashlight_cones`."""
+    if possessed_id is not None:
+        return flashlight_cones(sim, mode="selected",
+                                selected_unit_id=possessed_id)
+    if watching:
+        return flashlight_cones(sim, mode="all")
+    return []
 
 
 # ---------------------------------------------------------------------------

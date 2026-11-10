@@ -130,9 +130,12 @@ def test_latch_kinds_go_out_on_the_first_tick_only():
 def test_clear_move_is_distinct_from_a_zero_vector():
     """Property: a row with the clear_move_dir flag issues clear_move_dir and
     never set_move_dir; an all-zero row issues set_move_dir(0, 0, 0); both
-    issue set_aim(0, 0) and set_trigger(False) and no latch. Breaks if the
-    flag is conflated with a zero vector (a stopped unit would hold a live
-    move intent, or a zero vector would release it)."""
+    issue set_aim(0, 0) and set_trigger(False) and no latch, and both hold
+    the flashlight ON (G7p: set_flashlight takes the OFF sense, so the
+    do-nothing row never darkens a unit). Breaks if the flag is conflated
+    with a zero vector (a stopped unit would hold a live move intent, or a
+    zero vector would release it), a latch is issued by a zero row, or a zero
+    row switches a light off."""
     for clear in (True, False):
         sim = _Sim({0: [_U(9, 0)]})
         pol = cp.AgentPolicy(0)
@@ -142,7 +145,8 @@ def test_clear_move_is_distinct_from_a_zero_vector():
         move = (("clear_move_dir", (9,)) if clear
                 else ("set_move_dir", (9, 0, 0, 0)))
         assert got == {move, ("set_aim", (9, 0, 0)),
-                       ("set_trigger", (9, False))}
+                       ("set_trigger", (9, False)),
+                       ("set_flashlight", (9, False))}
 
 
 def test_rows_drive_only_the_living_units_still_on_the_team():

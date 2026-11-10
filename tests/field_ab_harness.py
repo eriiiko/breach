@@ -254,6 +254,11 @@ def _unit_record(u):
         v = [int(getattr(u, k, 0)) for k in names]
         if any(v):
             rec[key] = v
+    # G7p: the flashlight bit (Simulation.set_flashlight), absence-
+    # transparent: ON is the default and hashes nothing, only a unit whose
+    # light is OFF records a key -- so no digest moves until a verb darkens one.
+    if not getattr(u, "flashlight_on", True):
+        rec["dark"] = True
     if getattr(u, "effort", 0):
         rec["effort"] = int(u.effort)
     if getattr(u, "react_ticks", 0):

@@ -1394,9 +1394,11 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # "LEFT_ALT" / "RIGHT_ALT", "UP" / "DOWN" / "LEFT" / "RIGHT", "F1".."F12", or a
 # mouse button "MOUSE_LEFT" / "MOUSE_RIGHT" / "MOUSE_MIDDLE". The aim is the
 # mouse (the marine faces the cursor). Shipped table: Erik's ruling,
-# 2026-11-10 (RDFG). melee / flashlight are BOUND BUT INERT until their
-# patches (G6p, G7p) add the verbs; reload is live (G2p), cycle_grenade (G3p),
-# shove (G5p-a2: push the adjacent unit nearest the facing).
+# 2026-11-10 (RDFG). melee (G6p: strike the adjacent enemy nearest the
+# facing; hold the button to keep striking at the weapon's cadence) and
+# flashlight (G7p: a TOGGLE of the possessed unit's light bit) are live now,
+# as are reload (G2p), cycle_grenade (G3p) and shove (G5p-a2: push the
+# adjacent unit nearest the facing).
 [controls.keys]
 move_forward = "R"
 move_back = "F"
@@ -3302,6 +3304,31 @@ status_seconds = 1.5
 mass_kg = 1.1
 loudness = 0.2                        # a crack of arc discharge (reserved)
 
+[weapons.rifle_butt]                  # melee -- the rifleman's own blow (gameplay pack G6p)
+archetype = "melee"
+ammo_family = "none"
+# THE melee VERB's row (Simulation.melee_intent, a loadout's `melee`): a blow
+# of the rifle's butt. ALL FIVE VALUES ARE PLACEHOLDERS (Erik tunes):
+# 20 KIN = five blows to drop a 100 hp zombie; 0.6 s between blows (14 ticks
+# @ 24 tps); STUNNED 0.4 s (10 ticks, shorter than the cadence, so it never
+# chain-stuns -- the baton's dial pair, see arc_baton); a 40 N s push on the
+# unit it hits (a shove is 100: a blow staggers a little, never floors);
+# strikes the adjacent enemy nearest the facing within 60 degrees of it.
+# crit_chance must be 0 for a loadout's melee (the verb draws no random
+# number; the door refuses a row with a crit).
+rof_interval_seconds = 0.6
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+melee_damage = 20
+melee_dtype = "kinetic"
+status_kind = "stunned"
+status_seconds = 0.4
+melee_push_ns = 40.0
+melee_arc_half_deg = 60.0
+mass_kg = 3.5
+loudness = 0.1
+
 # --- W6 ARMORY (mechanics/03 §6 — the full table as data; Erik's grand
 # tuning session is the balance pass). Every number below is a STANDARD
 # VALUE dial. Ranges are range_m (physical meters, the W6 convention);
@@ -4655,6 +4682,7 @@ grenades = { grenade_frag = 2, grenade_smoke = 1, grenade_flash = 1 }   # by han
 explosives = 2
 magazines = 3            # TOTAL carried, the one in the gun included (G2p: one loaded, two spare); 0 or absent = spares untracked, today's infinite auto-reload
 kit_kg = 20.0            # G5p-a2: what the kit weighs; the unit impulse law's mass is the body's (80 kg) plus this -- the 100 kg reference marine
+melee = "rifle_butt"     # G6p: a [weapons.*] row of the melee archetype, the blow of the melee verb (RMB / pad R3); absent = no melee, the verb does nothing
 
 # ---------------------------------------------------------------------------
 # Bot team (#121) — the rule-based match controller `bots`

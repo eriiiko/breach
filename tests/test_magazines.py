@@ -490,7 +490,9 @@ def test_the_direct_control_reload_action_is_live_and_emits_the_verb():
     sim = SimpleNamespace(
         reload_intent=lambda uid: calls.append(("reload_intent", uid)),
         clear_move_dir=lambda uid: calls.append(("clear", uid)),
-        set_trigger=lambda uid, held: calls.append(("trigger", uid, held)))
+        set_trigger=lambda uid, held: calls.append(("trigger", uid, held)),
+        # G7p: the scheme holds the flashlight bit every frame
+        set_flashlight=lambda uid, off: None)
     dc = cd.DirectControl(keys=cd.key_table(CFG))
     dc._emit(sim, 7, cd.DeviceFrame(move=None, aim=None, trigger=False,
                                     throw=None, use=False, reload=True))

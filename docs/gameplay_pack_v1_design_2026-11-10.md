@@ -409,6 +409,47 @@ law.
 **Gate:** no strike without adjacency or outside the arc; the cadence holds;
 the pins unchanged (no controller uses it until G8p). **HUMAN-TEST.**
 
+**As built (2026-11-10).** `Simulation.melee_intent(unit)` latches
+`Unit.pending_melee` (recorded through the tap, `INTENT_KINDS` row, `VERB_RULES`
+latch / flag); `combat.process_melee_intents` is slot 4a, called in the
+conductor after slot 4 (every ruleset: the latch is consumed even where slot 4
+is the timeline's) and before the sprays, on the SAME `attack_effects`, so a
+blow and a shot of one tick land together at 4c. `combat.melee_arc_target`
+picks the target (living, other team, zombies included, `melee_adjacent`,
+`|wrap(atan2_q16(-dy, dx) - facing_q)|` within the row's `melee_arc_half_q`,
+smallest first, ties to the lower id; a coincident centre counts as dead
+ahead); `combat.melee_blow` is the order path's strike factored out of
+`melee_strike` (hit, delivery-site stun, optional facing snap), so the verb
+and the old order share one damage path and the pushed `push` effect is the
+verb's own addition (`melee_push_ns` along the striker -> target bearing, no
+lever). `[loadouts.*] melee` names the row (door: refused by name when
+unknown, not of the melee archetype, or carrying `crit_chance` > 0, because a
+crit draws a number and the pack's law draws none). New weapon-row columns
+`melee_push_ns` (N s, default 0) and `melee_arc_half_deg` (default 60),
+quantized once (`melee_arc_half_q`; `ImpulseTable.melee_push_q`). Direct
+control: the right mouse button HELD sends `melee_intent` every frame (the
+row's cadence spaces the blows, so holding keeps striking), pad R3 likewise.
+PLACEHOLDERS (Erik tunes), all on `[weapons.rifle_butt]`: `melee_damage` 20
+KIN (a 100 hp zombie dies on the fifth blow), `rof_interval_seconds` 0.6
+(14 ticks), STUNNED 0.4 s (10 ticks, under the cadence so it never
+chain-stuns), `melee_push_ns` 40, arc half-angle 60 degrees. FORMAT_VERSION 6
+(one bump for G6p and G7p: nothing was released between them). DEVIATIONS from
+the draft: (a) the cadence is its own `Unit.last_blow_tick`, not
+`last_melee_tick`, which is the zombie bite's cooldown and not rewound at a
+round boundary (a converted marine would have carried its blow into the
+bite's cooldown); (b) the verb records no facing snap (the arc is the aim, and
+G5p's turning law owns the facing); (c) a reload stall does not stop a blow
+(a butt needs no magazine), a throw wind-up does. MEASURED (E2E, `e2e_drive
+--control direct`, hold RMB beside an idle enemy marine, 100 hp): blows at
+ticks 24, 38, 52, 66, 80 (14 apart), hp 80 / 60 / 40 / 20 / dead, each a
+`melee` hit credited to the striker. FINDING FOR ERIK: the adjacency predicate
+is tile-quantized (touching footprints, at most one tile = 0.33 m apart) and
+a 40 N s blow moves a 100 kg target about 0.2 tile, which can break contact
+when it stood at the band's edge, so a held button lands one blow and then
+needs the striker to step in again (the E2E needed two short steps); 25 N s
+still moves it at the edge, 15 N s is absorbed in place. The reach, not only
+the push, is the dial to look at in the play test.
+
 ### G7p. Flashlight on/off
 
 **Exists.** Flashlights are render state (the selected unit's, a mode key).
@@ -423,6 +464,32 @@ follows the bit.
 Erik is unsure this is worth it before #81; it is the cheapest patch of the
 pack and puts the column in the action space now, so the recommendation is
 to keep it. It can be dropped without touching anything else.
+
+**As built (2026-11-10).** `Unit.flashlight_on` (default True) and
+`Simulation.set_flashlight(unit_id, off)`, a hold verb recorded through the tap
+(`INTENT_KINDS` `("int", "bool")`, `VERB_RULES` hold / always). DEVIATION from
+the draft's `set_flashlight(unit, on)`: the argument is the OFF sense. The
+action row's column is the entry point's parameter, and a policy's ZERO row is
+the do-nothing stance (the reference-equality gate drives idle controllers
+against it); with an `on` argument a zero row would darken every unit and move
+every digest, so the column is `set_flashlight.off`. The bit is hashed in
+`field_ab_harness._unit_record` as `dark` only while off (absence-transparent),
+read by nothing in the sim. The assembly: `ui.model.flashlight_cones` skips a
+unit whose bit is off in every mode (so onephase honours it too) and gained
+`mode="all"` (every living non-zombie unit, any team); the one choice is
+`ui.model.carried_flashlight_cones(sim, possessed_id=, watching=)` -- direct
+control lights its possessed unit, a watched match (`--replay`, `--control
+match`) every living marine -- feeding the existing `flashlight_specs` ->
+`cone_rows` in main.py's `assemble_lights`; `EMITTER_INPUTS["flashlight"]`
+names the bit. Before this patch direct control and watched matches had NO
+unit flashlight (only WEGO's cursor lamp and onephase's team cones): the cone
+under direct control is new, and the cursor lamp is unchanged. Direct control:
+Q (pad D-pad up) TOGGLES; the control keeps `DirectControl.flashlight_off`
+(seeded from the possessed unit's own bit) and holds `set_flashlight` every
+frame. MEASURED (E2E, hidden window, Q pressed twice, pictures read): on, off
+(marine and the floor ahead dark), on again (the beam north of the marine
+back). Pins unchanged (`match_pin_check` equal to the pin on cpu, cuda and
+resident).
 
 ### G8p. Bot pass
 

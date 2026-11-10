@@ -211,6 +211,9 @@ class ImpulseTable:
     shove_q: int = 0              # the shove's impulse
     shove_cooldown_ticks: int = 0
     shove_cone_q: int = 0         # the shove's half-angle, Q16 radians
+    #: G6p: a melee row's blow push, ``[weapons.*] melee_push_ns`` as Q16
+    #: gram-tiles per tick, by weapon row name (rows with a push only).
+    melee_push_q: dict = field(default_factory=dict)
     #: G5p-b: the wind's impulse per unit of wind load, standing and prone:
     #: ``J_q = ((W >> 16) * wind_k_q) >> 16`` (:func:`wind_impulse_q`).
     wind_k_q: int = 0
@@ -325,6 +328,11 @@ def impulse_table(cfg, tile_size_m: float, tps: int | None = None,
         if ns > 0.0:
             push[name] = _momentum_q(ns, s.bullet_push_mult, tile, tps)
             recoil[name] = _momentum_q(ns, s.recoil_mult, tile, tps)
+    melee_push = {}
+    for name, w in weapon_tables.weapons.by_name.items():
+        ns = float(getattr(w, "melee_push_ns", 0.0))
+        if ns > 0.0:
+            melee_push[name] = _momentum_q(ns, 1.0, tile, tps)
     return ImpulseTable(
         tile_size_m=tile, tps=tps, cap_q=cap, cap_prone_q=cap_prone,
         zombie_hold_q16=_q(s.zombie_hold_mult),
@@ -334,6 +342,7 @@ def impulse_table(cfg, tile_size_m: float, tps: int | None = None,
         inertia_g=inertia, r_body_q=r_body,
         twist_q16=_q(s.bullet_twist_mult), getup_ticks=s.getup_ticks,
         ammo_push_q=push, ammo_recoil_q=recoil,
+        melee_push_q=melee_push,
         shove_q=_momentum_q(s.shove_impulse_ns, 1.0, tile, tps),
         shove_cooldown_ticks=max(1, int(math.floor(
             s.shove_cooldown_seconds * tps + 0.5))),
