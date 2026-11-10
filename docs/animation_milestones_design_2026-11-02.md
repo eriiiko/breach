@@ -717,3 +717,95 @@ does (18°).
 has no direction), Get_Up (knockdown is #149). `dead` = Fall, dormant (dead units are not
 drawn). A SOMA zombie at posture 0 has no desync / tempo jitter (both ride the posture
 noise, drawn only above 0), so a SOMA horde walks in step.
+
+## 14. As built — the new marine in play (#184, 2026-11-10)
+
+Branch `184-marine-in-play`. The player is drawn with `soma_space_marine` (SOMA, 15 Kimodo
+clips) holding the CQB carbine; render side only (no sim state, nothing digested moves). The
+Quaternius looks compose bit for bit as before (`tests/test_pose_soma.py::
+test_the_quaternius_looks_ignore_every_other_skeletons_table`, `tests/test_pose_locomotion.py::
+test_a_look_without_locomotion_steers_exactly_as_before`).
+
+**What was built.**
+- `renderer/pose_locomotion.py` + `[render.pose.skeletons.soma.locomotion]`: per role, gaits
+  (player walk / run / sprint; zombie one walk) and the walk's four direction sectors. Every
+  looping clip's stride speed, travel direction and gait phase are measured at load
+  (`measure_gait`: the planted feet's median speed along their mean direction; the phase from
+  the fundamental of the feet's height difference) -- the one measurement, which
+  `tests/test_pose_soma.py` checks against its own simpler one. A gait clip plays at the drawn
+  speed / its stride; the gait steps on the CLIPS' rates (`max_rate` x (1 +- hysteresis)); the
+  legs twist by the residual against the playing clip's own measured travel; one gait phase per
+  unit locks every gait clip on every layer (the crossfade source too), so a switch carries the
+  step over and the run's rifle-carry arms swing in step with its legs.
+- Drawn speed: the distance since the last position change over the wall time since it,
+  distance and time low-passed apart (one weight per sample), held across the frames between
+  sim ticks; stopped after `stop_after_s` without a change (the player 0.15 s; the zombie 0.9
+  s: a zombie hops one tile every ~14 ticks).
+- `[render.pose.skeletons.soma] states` (the skeleton's own rows), `hit_directions`, `sockets`;
+  `[render.pose.reload]` / `[render.pose.throw]` (clips blank); `twist.pivot`.
+- `renderer/held_props.py` + `[render.held_props]`: the carbine (`k5_carbine` -> `carbine`) on
+  the `right_hand` socket, through the units' lit shader and in the projected shadow.
+- Directional hits in the renderer's hand-off: the attacker's last drawn centre (a per-uid map
+  across the two `draw_units` calls), for an explosion the nearest blast centre of the frame's
+  `ExplosionEvent`s; the pose layer picks the row nearest.
+- Tools: `tools/pose_lineup.py` (`loco_*` / `hit_*` scenes, `--prop`, `--focus-socket`,
+  `--side-from`), `tools/e2e_drive.py --wheel`.
+
+**Decisions (Claude's, inside the brief).**
+- The forward walk is the AIMING walk (`Rifle_Aim_Walk` on every layer): the strafes and the
+  back walk only exist aiming, so the marine reads the same in every direction. The strafes and
+  the back walk take only their LEGS from their own clips; torso, arms and head play
+  `Rifle_Aim_Walk` (phase-locked), because `Rifle_Aim_Left`, `Rifle_Aim_Back` and `Rifle_Shoot`
+  hold the rifle LEFT-handed (right hand forward on the handguard: in the clips' middle keys
+  the right hand is 0.69-0.82 m forward, the left 0.41-0.50) and the carbine in the right palm
+  cannot follow them. Run and sprint play `Run` on the legs and the rifle-carry `Walk` on upper
+  and head (Run's own arms pump empty-handed).
+- The shot one-shot is OFF on SOMA (`Pistol_Shoot = ""`): `Rifle_Shoot` is left-handed and a
+  held aim with no recoil (§13); a shot holds the aim overlay. (A deliberate change: the SOMA
+  test that pinned a resolvable shot clip now accepts a declared-absent one.)
+- Sector choice by the config's centres (0 / 90 / 180 / -90, 10 deg hysteresis); the twist
+  aims at the clip's MEASURED travel, so a strafe that walks at 77 deg is turned 13 deg.
+- A unit running sideways (faster than the walk's `max_rate`) runs FORWARD with its legs
+  twisted up to `theta_deg` and backpedals past it (the two-sector rule), as the brief allowed.
+- The twist pivot is the unit's own vertical line on SOMA (`pivot = "origin"`): about the
+  swaying hips the planted foot slid 25 % of the walk speed at a 58 deg residual; about the
+  origin 5 % in every direction. The Quaternius table keeps `"bone"` (bit-identity).
+- Grip: the grip point is the top of the pistol grip (`attach_weapon.py`'s rule: (-0.1006,
+  -0.0749, 0) in the file's units); it sits at the palm (half way from the wrist to the middle
+  finger's end), the barrel toward the left palm, its top up, averaged over `Rifle_Aim_Walk`:
+  `offset_m = [0.0017, 0.096, -0.0327]`, `rotation_deg = [123.36, 49.24, 98.12]`. Gloss 0.12
+  (the roughness map's mean 0.45 through the game-ready mapping).
+- Reload / throw: the clip-time scaling is `TimedShot`; a wind-up at least as long as the
+  clip's own release time plays the clip slowed from its start, a shorter one starts it part
+  way at authored speed; 0 ticks (today's instant throw) plays the follow-through from the
+  release.
+
+**Measured (soma_space_marine; drawn m/s = sim m/s / 0.333 x 0.3142).**
+- Strides (model m/s of clip time): Walk 1.397, Run 2.601, Rifle_Aim_Walk 1.449,
+  Rifle_Aim_Left 1.066 (travel +77.0 deg), Rifle_Aim_Right 1.066 (-76.8), Rifle_Aim_Back 1.411
+  (-163.0), Zombie_Hunch_Walk 1.070. (soma_worker_male: Walk 1.338, Run 3.327,
+  Rifle_Aim_Walk 1.271, Zombie_Hunch_Walk 1.014.)
+- Rates today: walk 0.42 m/s drawn -> Rifle_Aim_Walk 0.29; full speed (the sprint cadence,
+  0.94) -> 0.65 forward, Rifle_Aim_Left 0.88 sideways (no run: the shipped sim never moves fast
+  enough). A SOMA zombie 0.54 -> 0.53 (the old literal was 0.531).
+- Rates at #183's speeds: walk 1.4 m/s (1.32 drawn) -> 0.91; full 4.5 (4.25) -> Run 1.63, the
+  sprint state; sideways 1.12 (1.06) -> 0.99; backward 0.84 (0.79) -> 0.56. Walk -> run at
+  2.23 m/s drawn (Rifle_Aim_Walk at 1.54), run -> sprint at 3.58 (Run at 1.375); back down at
+  2.93 and 1.83. The run's upper `Walk` then plays at 1.455 x Run's rate (2.4 x its authored
+  speed at full speed): one arm cycle per stride.
+- Skating (the planted foot against the ground, share of the unit's speed): walk gaits 3.5-8 %,
+  run 14 % (its flight phase blurs the planted test), the same in every direction.
+- The speed estimate: mean within 1.2 % of the true speed at 60 fps (3 % at 30 fps).
+
+**Findings in the assets (Erik's).**
+- `Hit_Right` lurches the head 0.55 m to the body's RIGHT at 0.77 s -- the same way as
+  `Hit_Left` (0.53 m) -- so a hit from the right leans the marine toward the shooter. It wants
+  regenerating, or a mirror of `Hit_Left` (as `Rifle_Aim_Left` is of `Rifle_Aim_Right`).
+- `Rifle_Shoot`, `Rifle_Aim_Left` (the mirror of a right-handed strafe), `Rifle_Aim_Back` are
+  left-handed (above).
+- With `[render.pose] enabled = false` the old clip player reads `CLIP_MAP`'s Quaternius names
+  as they are, so the SOMA marine plays its first clip in every state: the pose-off revert wants
+  `player = ["space_marine"]` back as well.
+
+**Waits on #183.** `ReloadEvent(unit_id, ticks)` and `ThrowEvent(unit_id, kind, ticks)` (looked
+up by name; inert until then); the reload and throw clip names and the throw's `release_s`.
