@@ -15,7 +15,7 @@ before the residency port's gameplay half (#29 P3a onward):
 
 | # | patch | sim change | new verb | moves the bots' pinned matches |
 |---|---|---|---|---|
-| G1p | keyboard + mouse, two cameras, continuous speed | the speed argument only | (`set_move_dir`'s speed becomes a throttle) | no |
+| G1p | keyboard + mouse, continuous speed, turn-rate cap | the speed argument, the turn cap | (`set_move_dir`'s speed becomes a throttle) | yes (the cap) |
 | G2p | reload and magazines | yes | `reload_intent` | yes (the carbine gets a magazine) |
 | G3p | grenade kinds; the flashbang blinds | yes | (`throw_grenade_intent` gains a kind; fuse in ticks) | no |
 | G4p | focus-fire armour debuff (#181) | yes | none | yes |
@@ -81,9 +81,11 @@ is no keyboard + mouse scheme for direct control.
 - Keys are DATA: a `[controls.keys]` table (action → key), so WASD and RDFG
   are two tables swapped without code. Shipped default **RULED (Erik,
   2026-11-10)**: R / F forward / back, D / G strafe left / right, mouse aim,
-  left button trigger, Z reload, W grenade, Q flashlight, E use, Space
-  melee, A full speed. PROPOSED for the two he did not name: right mouse
-  button shove, mouse wheel (or 1-2-3) picks the grenade kind.
+  left button trigger, right button melee, Space shove, Z reload, W throws
+  the selected grenade, 4 cycles the grenade kind (Counter-Strike's grenade
+  slot: each press steps to the next kind carried), Q flashlight, E use, A
+  full speed. Melee, shove, reload, the kind and the flashlight are bound in
+  the table now and do nothing until their patches land.
 - Two camera modes, `[display] camera_mode`, switched live:
   - `"centred"`: north-up, the marine in the centre, the marine turns
     (Diablo / Dota style);
@@ -99,9 +101,25 @@ is no keyboard + mouse scheme for direct control.
   pad; on the keyboard Shift is ONE and unshifted is 0. Bots send 0 (today's
   walk), so their matches do not move.
 
-**Sim change:** the throttle only. **Gate:** throttle 0 and ONE reproduce
-today's walk and sprint bit for bit; the pins unchanged; the quantization
-test extended to the mouse vector. **HUMAN-TEST:** both cameras, both
+- **Turn-rate cap (RULED 2026-11-10: aim is not immediate).** `set_aim`
+  names the facing a unit WANTS; each tick its facing turns toward it by at
+  most `turn_rate` (a Q16 angle per tick, the shorter way round, integer
+  through `atan2_q16`). Shipped PLACEHOLDER: **360° per second** (15° per
+  tick; an about-face takes 0.5 s, a quarter turn 0.25 s), which is a fast
+  trained pivot with a rifle and slow enough to feel. It is read per unit
+  (`[marine] turn_rate_deg_per_s` now; later a stat scaled by dexterity and
+  armour weight, Erik's rules to come). A shot still leaves along the
+  CURRENT facing, so a unit that fires mid-turn sprays the arc; the bots
+  hold the trigger until their facing is within the weapon's spread of the
+  aim. G5p replaces the bare cap with angular inertia (§5); the cap is that
+  law's top speed.
+
+**Sim change:** the throttle and the turn-rate cap. **Gate:** throttle 0 and
+ONE reproduce today's walk and sprint bit for bit; a turn never exceeds the
+cap in a tick, always takes the shorter way, and reaches the aim exactly;
+with the cap set to a half turn per tick every pin is unchanged (the cap is
+the only thing that moves them); the quantization test extended to the mouse
+vector. The pins re-baseline at the shipped cap. **HUMAN-TEST:** both
 devices.
 
 **OPEN (small):** is sprint unlimited (today) or does it cost something? Not
@@ -121,7 +139,11 @@ agent reloads when it chooses.
 **PROPOSED.**
 - `[weapons.*]` rows keep `mag_size` / `reload_seconds`; `[loadouts.*]` gains
   `magazines` (total, including the one loaded). `k5_carbine`: `mag_size =
-  30`, `reload_seconds` PLACEHOLDER 2.0.
+  30`, `reload_seconds` 2.0 (RULED as a placeholder).
+- **The carbine's rate: 12 rounds per second (RULED 2026-11-10)**: one round
+  every 2 ticks (`shots_per_trigger = 1`, `rof_interval_seconds = 1/12`),
+  from today's 5 rounds every 4 ticks (30 per second). A magazine is 2.5 s
+  of fire.
 - Unit state: `current_mag`, `spare_mags`, `reload_done_tick`.
 - `reload_intent(unit)` (a latch): if a spare exists, the unit is not already
   reloading and the magazine is not full, the current magazine is discarded,
@@ -401,6 +423,23 @@ progress):
    shooters push twice as hard with no record of who shot: the same shape as
    G4p's exposure. Whether exposure and balance are ONE decaying accumulator
    or two is a question for the session.
+
+**RULED (Erik, 2026-11-10), after the literature search
+(`docs/research/impulse_on_a_person_2026-11-10.md`):**
+- Bullets push with their REAL momentum; a declared multiplier
+  (`[impulse] bullet_push_mult`, shipped 1.0) exists for experiments.
+- The wind bands are restated as force over body weight (Claude's call,
+  Erik leans yes): slowing from about 0.036, falling at about 0.22, which
+  keeps the #140 numbers for the reference marine and makes mass and
+  presented area count.
+- A sustained force above the footing limit DOES displace a unit, by its
+  excess over the limit; below it, it only slows.
+- A unit's OWN turning has inertia as well as being turned by outside
+  forces (shots, shoves).
+
+Still to design on these rulings: the integer law itself, its state, the
+moment of inertia and lever arms (a short follow-up search), and the
+remaining questions below.
 
 **Questions for the session.**
 1. Per-round push: the round's real momentum (PROPOSED, see the table), with
