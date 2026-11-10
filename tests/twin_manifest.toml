@@ -91,6 +91,7 @@ build = [
 "src/simulation/entities/vents.py" = "setup only: the vent entity rows (Class T, P6b)"
 "src/simulation/events.py" = "Class T: the tick's event rows (slots 2 / 4 / 5: hits, kills, render-only shots and reloads), built with their producers from P7a"
 "src/simulation/exchange.py" = "Class T: the coupling rows (slots 3, 9c-9c3), built from P6"
+"src/simulation/exposure.py" = "Class T: the focus-fire law (G4p: slot 1c's decay, the damage door's scale, slot 2 / 4c's landing), built with the packet door from P6 / P7a"
 "src/simulation/factions.py" = "setup only"
 "src/simulation/field_edit.py" = "Class P from P4c (the device edit queue); no device twin yet"
 "src/simulation/generation.py" = "setup only"
