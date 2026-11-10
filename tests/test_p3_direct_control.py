@@ -340,7 +340,7 @@ def _scripted_trajectory():
         sim.set_aim(uid, mdx, mdy)
         sim.set_trigger(uid, t % 4 == 0)
         if t == 10:
-            sim.throw_grenade_intent(uid, FP_ONE, 0, 2.0)
+            sim.throw_grenade_intent(uid, FP_ONE, 0, 48)     # 2 s
         if t == 20:
             sim.use_intent(uid)
         sim.step()
