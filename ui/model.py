@@ -713,7 +713,116 @@ def ds3_menu(sim, unit, page_index: int = 0) -> MenuModel:
     return model
 
 
+# ---------------------------------------------------------------------------
+# The side panel's game-state block (G2p) -- what the HUD says, as data
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class PanelLine:
+    """One line of the side panel: its text, font size, colour and the
+    vertical advance after it. ``draw_panel`` renders them and decides
+    nothing."""
+    text: str
+    size: int = 14
+    color: tuple | None = None       # None = the draw default
+    advance: int = 18
+
+
+def ammo_text(unit, tick: int, weapons):
+    """The magazine readout of ``unit`` -- ``"Ammo: 17/30   spare 2"``, with
+    ``"RELOADING"`` while the stall runs and ``"DRY"`` with an empty magazine
+    and no spare -- or ``None`` for a unit whose weapon tracks no magazine.
+    ``spare`` is ``inf`` when the loadout does not count magazines. Reads the
+    unit, mutates nothing (``combat.mag_status``); ``weapons`` is the sim's
+    ``weapons_tables.weapons.by_name``."""
+    from simulation.combat import mag_status
+    weapon = weapons.get(getattr(unit, "weapon_id", ""))
+    if weapon is None:
+        return None
+    status = mag_status(unit, weapon, int(tick))
+    if status is None:
+        return None
+    rounds, spares, reloading = status
+    spare = "inf" if spares is None else str(spares)
+    text = f"Ammo: {rounds}/{int(weapon.mag_size)}   spare {spare}"
+    if reloading:
+        text += "   RELOADING"
+    elif rounds <= 0:
+        text += "   DRY"
+    return text
+
+
+def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
+                      current_mode=None) -> list:
+    """The side panel's game-state block as :class:`PanelLine` rows: the run
+    state, then the selected unit's summary. A turn-based ruleset shows its
+    round / phase / tick-in-round, planning phase, AP and queued orders;
+    under ``ContinuousRealtime`` (direct control, a watched match) none of
+    that exists, so the panel shows the tick, the unit's hit points, its
+    weapon and its MAGAZINE (rounds in the gun, spare magazines) instead."""
+    from simulation.ruleset import ContinuousRealtime
+    continuous = isinstance(sim.ruleset, ContinuousRealtime)
+    paused = sim.is_paused()
+    lines = []
+    if continuous:
+        lines.append(PanelLine("PAUSED" if paused else "EXECUTING", 16,
+                               (255, 220, 120, 255) if paused
+                               else (120, 255, 120, 255), 22))
+        lines.append(PanelLine(f"Tick {sim.get_tick()}", 13,
+                               (180, 180, 200, 255), 18))
+    else:
+        lines.append(PanelLine(
+            "PAUSED — planning" if paused else "EXECUTING", 16,
+            (255, 220, 120, 255) if paused else (120, 255, 120, 255), 22))
+        lines.append(PanelLine(f"Round {getattr(sim, 'turn_number', 1)}   "
+                               f"Phase {sim.get_phase() + 1}/2", 14, None, 18))
+        lines.append(PanelLine(f"Tick {sim.get_tick()} / "
+                               f"{sim._ticks_per_round}", 13,
+                               (180, 180, 200, 255), 18))
+    n_events = len(getattr(sim, "tick_events", []))
+    lines.append(PanelLine(f"Tick events: {n_events}", 12,
+                           (150, 150, 180, 255), 18))
+    if paused and not continuous:
+        lines.append(PanelLine(f"Planning phase {planning_phase + 1}", 12,
+                               (200, 200, 120, 255), 16))
+    lines.append(PanelLine("", 12, None, 6))
+
+    if selected_unit is not None and getattr(selected_unit, "alive", False):
+        from simulation.stats import effective_vitality
+        lines.append(PanelLine(f"Selected: {selected_unit.name}", 14,
+                               (120, 220, 255, 255), 18))
+        weapon_id = getattr(selected_unit, "weapon_id", "")
+        if weapon_id:
+            lines.append(PanelLine(f"Weapon: {weapon_id}  (N cycles)", 13,
+                                   (255, 200, 120, 255), 16))
+        lines.append(PanelLine(
+            f"HP: {int(selected_unit.current_hp)}/"
+            f"{int(effective_vitality(selected_unit))}", 13, None, 16))
+        if continuous:
+            ammo = ammo_text(selected_unit, sim.get_tick(),
+                             sim.weapons_tables.weapons.by_name)
+            if ammo is not None:
+                lines.append(PanelLine(ammo, 14, (255, 230, 150, 255), 18))
+        else:
+            lines.append(PanelLine(
+                f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
+                13, None, 16))
+        lines.append(PanelLine(f"Grenades: {selected_unit.has_grenade}   "
+                               f"Charges: {selected_unit.has_explosive}",
+                               12, None, 18))
+        if not continuous:
+            lines.append(PanelLine(
+                f"Queued orders: {len(selected_unit.orders)}", 12,
+                (180, 180, 180, 255), 18))
+    if current_mode is not None and not continuous:
+        from simulation.orders import ORDER_NAMES
+        lines.append(PanelLine(
+            f"Mode: {ORDER_NAMES.get(current_mode, str(current_mode))}", 13,
+            (255, 200, 120, 255), 22))
+    return lines
+
+
 __all__ = [
+    "PanelLine", "ammo_text", "panel_state_lines",
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
     "PlanOverlay", "PlanningClock", "RoundEndGhost", "TargetMarker",

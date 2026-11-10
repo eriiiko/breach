@@ -76,7 +76,10 @@ FORMAT_NAME = "breach-match-replay"
 #: the Q16 THROTTLE (was a speed-mode order id), and ``set_aim`` turns at the
 #: turn-rate cap -- a v1 recording would replay as another match, so it is
 #: refused by the header, never migrated.
-FORMAT_VERSION = 2
+#: v3 (gameplay pack G2p, 2026-11-10): the ``reload_intent`` kind, and a
+#: carbine that fires 12 rounds a second from a counted 30-round magazine --
+#: a v2 recording of a match with that weapon would replay as another match.
+FORMAT_VERSION = 3
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -89,6 +92,7 @@ INTENT_KINDS = {
     "set_trigger": ("int", "bool"),
     "throw_grenade_intent": ("int", "int", "int", "fhex", "int?"),
     "use_intent": ("int",),
+    "reload_intent": ("int",),
     "drive_zombies": ("ints",),
 }
 #: Entry points the tap sees but the format refuses to record.

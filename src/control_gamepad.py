@@ -24,6 +24,7 @@ Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
     Right trigger  -> TRIGGER held/released (auto-fire at weapon cadence)
     A (south)      -> THROW grenade along aim/facing
     X (west)       -> USE (toggle an adjacent door)
+    Y (north)      -> RELOAD (discard the magazine, run the reload stall)
 
 The actual controller FEEL is Erik's HUMAN-TEST — this module is not driven in
 the headless test suite (it needs a live pad). What the tests pin is the pure
@@ -56,6 +57,7 @@ class GamepadHalf:
         # Edge-detection state for the single-shot buttons (throw / use).
         self._prev_throw = False
         self._prev_use = False
+        self._prev_reload = False
 
     @staticmethod
     def available() -> bool:
@@ -138,8 +140,14 @@ class GamepadHalf:
         use = use_down and not self._prev_use
         self._prev_use = use_down
 
+        # ---- Y (north) -> RELOAD (edge) ----
+        reload_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_RIGHT_FACE_UP)
+        reload = reload_down and not self._prev_reload
+        self._prev_reload = reload_down
+
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
-                           use=use)
+                           use=use, reload=reload)
 
 
 __all__ = ["GamepadHalf"]

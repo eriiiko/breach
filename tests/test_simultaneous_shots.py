@@ -67,6 +67,21 @@ from simulation.weapons import AmmoDef, WeaponDef  # noqa: E402
 
 SEED = 20261106
 HULL, AIR = 1, 4
+
+
+@pytest.fixture(autouse=True)
+def _k5_fires_the_five_round_burst(monkeypatch):
+    """These properties are about ONE tick's burst being resolved together,
+    and need a burst of several rounds; the shipped carbine is one round a
+    pull since #183 G2p (Erik's 12 rounds a second), so the rows the tests
+    fire are the carbine with the five-round burst it had. The burst size is
+    the tests' own arrangement; the simultaneity law does not read it."""
+    from config import CFG
+    # the config row (a Simulation rebuilds its tables from it) and the
+    # shared table (the direct callers read it)
+    monkeypatch.setattr(CFG.weapons.k5_carbine, "shots_per_trigger", 5)
+    row = weapons_mod.get_tables().weapons.by_name["k5_carbine"]
+    monkeypatch.setattr(row, "shots_per_trigger", 5)
 W = 30                     # the duel lane's width: tile i mirrors 29 - i
 
 

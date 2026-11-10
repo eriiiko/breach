@@ -105,6 +105,18 @@ def _marine(x, y, name="M", team=0):
     return u
 
 
+def _k5_five_round_burst():
+    """The shipped carbine row (its round, cone, range, speed) with the
+    five-round burst it had before gameplay pack G2p made it a one-round,
+    12-per-second weapon: these tests are about the march's burst machinery
+    (same-tick resolution, one cone draw per bullet), which a tuned rate must
+    not move, so the burst size is the test's own arrangement."""
+    import copy
+    row = copy.copy(weapons_mod.get_tables().weapons.by_name["k5_carbine"])
+    row.shots_per_trigger = 5
+    return row
+
+
 def _hits(events):
     return [e for e in events if isinstance(e, UnitHitEvent)]
 
@@ -127,7 +139,7 @@ def test_k5_resolves_same_tick_and_bullets_list_stays_empty():
     shots, events, bullets = [], [], []
     fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
-               bullets=bullets)
+               bullets=bullets, weapon=_k5_five_round_burst())
     assert bullets == []                      # resolved in the firing tick
     assert len(_hits(events)) == 5            # k5 burst, 12 tiles, 3 deg cone
     assert len(_tracers(events)) == 5
@@ -375,14 +387,13 @@ def test_directional_bypass_flank_draws_nothing():
 # ---------------------------------------------------------------------------
 # Lazy-draw stream stability: bit-identical to the PRE-W2 march
 # ---------------------------------------------------------------------------
-def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng):
+def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng,
+                         k5):
     """The shipped (pre-W2) fire_burst algorithm, verbatim: k5 row numbers,
     one cone draw per bullet, kit-trig steps, the same stop rules — computing
     endpoints + hit targets WITHOUT mutating anything. The W2 march must
     reproduce this bit-for-bit when no cover intervenes and crit_chance == 0
     (the lazy-roll rule)."""
-    tables = weapons_mod.get_tables()
-    k5 = tables.weapons.by_name["k5_carbine"]
     cone = math.radians(k5.spread_deg)
     base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
     h, w = gmap.material.shape
@@ -429,11 +440,14 @@ def test_lazy_draws_k5_bit_identical_to_prew2_firefight():
 
     rng = np.random.default_rng(SEED)
     parallel = np.random.default_rng(SEED)
-    replica = _prew2_burst_replica(gmap, units, shooter, 3, 9, 15, 9, parallel)
+    k5 = _k5_five_round_burst()
+    replica = _prew2_burst_replica(gmap, units, shooter, 3, 9, 15, 9, parallel,
+                                   k5)
 
     shots, events = [], []
     fire_burst(gmap, units, shooter, 3, 9, 15, 9,
-               tick=0, shots=shots, real_time=0.0, rng=rng, events=events)
+               tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
+               weapon=k5)
 
     # Stream: exactly the 5 cone draws, nothing else (crit 0, no cover).
     assert rng.bit_generator.state == parallel.bit_generator.state
