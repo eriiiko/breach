@@ -432,8 +432,21 @@ def test_a_tick_without_interaction_is_bit_identical_to_the_one_pass_slot(
     state and the hashed hit / kill events match the conductor run with
     every effect applied at once (``simultaneous.IMMEDIATE``, the pre-#169
     behaviour) in lockstep. Breaks if the deferral reorders effects, moves
-    an RNG draw, or loses / duplicates a packet, a chew or a facing write."""
+    an RNG draw, or loses / duplicates a packet, a chew or a facing write.
+
+    The focus-fire law is DORMANT here (``k_expose = 0``, #183 G4p): with it
+    live, a burst's rounds on one target DO interact -- one-pass, each hit's
+    exposure raise is read by the next round's damage; deferred, every round
+    reads the slot-start level (the start-of-slot rule,
+    ``tests/test_exposure.py``) -- so this scenario would no longer be one
+    "without interaction"."""
+    from config import CFG
     from field_ab_harness import capture_trajectory
+    from simulation import exposure
+    # (the shared settings object is restored at teardown: the sims below
+    # rebuild it from the patched CFG)
+    monkeypatch.setattr(exposure, "_SETTINGS", exposure.get_settings())
+    monkeypatch.setattr(CFG.damage.exposure, "k_expose", 0.0)
 
     def run(immediate):
         if immediate:

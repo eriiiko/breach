@@ -426,11 +426,19 @@ def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng,
     return out
 
 
-def test_lazy_draws_k5_bit_identical_to_prew2_firefight():
+def test_lazy_draws_k5_bit_identical_to_prew2_firefight(monkeypatch):
     """A scripted k5 burst on a zombie (crit 0, no cover): endpoints, hp
     deltas, event stream, and the generator END STATE all equal the pre-W2
     replica on a parallel generator — the ONLY consumers are the 5 cone
-    draws (the lazy-roll rule made structural)."""
+    draws (the lazy-roll rule made structural).
+
+    The focus-fire law is dormant here (``k_expose = 0``, #183 G4p): the
+    replica's hp is the bare site rule per bullet, and a one-pass burst with
+    the law live raises the target's exposure between its rounds."""
+    from dataclasses import replace
+    from simulation import exposure
+    monkeypatch.setattr(exposure, "_SETTINGS",
+                        replace(exposure.get_settings(), k_q=0))
     gmap = _room()
     shooter = _marine(2, 8, "S")
     zombie = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
