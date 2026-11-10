@@ -21,7 +21,12 @@ So an attack slot runs in TWO PHASES:
   recorded effects in the order they were recorded (shooter by shooter in
   the slot's walk order, round by round within a shooter): damage packets
   through the one door (``damage.apply_packet``), attack statuses, facing
-  snaps, wall chew, payload detonations, spray deposits.
+  snaps, wall chew, payload detonations, spray deposits. The hits' EXPOSURE
+  raises (G4p, :mod:`simulation.exposure`) land together after the last
+  effect, so every hit of the slot reads its target's slot-start exposure.
+  (A packet a ``world`` effect applies -- a detonation's blast -- goes
+  through the door directly and raises at once; no such packet carries an
+  ``expose`` in v1.)
 
 Consequences that hold by construction: two units can kill each other on
 one tick; a unit killed this tick by another's round still got its own shot
@@ -47,6 +52,7 @@ walls and the hashed hit / kill events).
 from __future__ import annotations
 
 from simulation.damage import apply_packet
+from simulation.exposure import ExposureLanding
 from simulation.status import apply_status
 
 _HIT, _STATUS, _FACE, _WORLD = 0, 1, 2, 3
@@ -117,13 +123,22 @@ class SimultaneousEffects:
     # -- phase B ------------------------------------------------------------
     def resolve(self) -> None:
         """Apply every recorded effect in recording order and empty the list.
-        A no-op for :data:`IMMEDIATE` (it never records)."""
+        A no-op for :data:`IMMEDIATE` (it never records).
+
+        The slot's EXPOSURE (G4p) lands at the end: every recorded hit reads
+        its target's exposure as it stood when the slot began, and the raises
+        (and the zeroing of a unit the slot killed) of all of them land
+        together after the last effect (an
+        :class:`~simulation.exposure.ExposureLanding`), so two shooters on one
+        tick take the same damage per round whatever their ids."""
         pending, self._pending = self._pending, []
+        landing = ExposureLanding()
         for eff in pending:
             kind = eff[0]
             if kind == _HIT:
                 _, unit, packet, events, source = eff
-                apply_packet(unit, packet, events, source=source)
+                apply_packet(unit, packet, events, source=source,
+                             exposure_landing=landing)
             elif kind == _STATUS:
                 _, unit, skind, magnitude, duration, source_id = eff
                 _status_if_alive(unit, skind, magnitude, duration, source_id)
@@ -133,6 +148,7 @@ class SimultaneousEffects:
             else:
                 _, fn, args, kwargs = eff
                 fn(*args, **kwargs)
+        landing.land()
 
     def __len__(self) -> int:
         return len(self._pending)

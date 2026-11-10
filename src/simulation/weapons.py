@@ -224,8 +224,14 @@ class AmmoDef:
                  speed_tiles_per_tick=0.0, travel_speed_tiles_per_second=0.0,
                  payload="", wall_damage=0,
                  heat_deposit=0.0, gas_species="", gas_amount=0.0,
-                 glow=""):
+                 glow="", expose=0.0):
         self.name = name
+        # EXPOSURE (gameplay pack G4p, simulation.exposure): how far one hit
+        # of this round raises the target's exposure of the round's dtype
+        # (before the target's resistance). 0 = the round exposes nothing.
+        # ``expose_q`` is the door's Q16 quantization; the law reads only it.
+        self.expose = float(expose)
+        self.expose_q = 0                       # derived by AmmoTable
         self.family = family                    # must match a weapon's ammo_family
         self.dtype = dtype                      # mechanics/06 type name string
         self.dtype_id = DTYPE_BY_NAME[dtype]    # the damage-module constant
@@ -604,6 +610,12 @@ class AmmoTable:
                 gas_amount=_get_field(row, "ammo", name, "gas_amount", 0.0),
                 glow=str(_get_field(row, "ammo", name, "glow", "")),
             )
+            # expose (G4p): refused by name when negative or not a number,
+            # quantized once to the Q16 raise per hit.
+            from simulation.exposure import expose_q as _expose_q
+            raw_expose = _get_field(row, "ammo", name, "expose", 0.0)
+            a.expose_q = _expose_q(raw_expose, f"ammo.{name}.expose")
+            a.expose = float(raw_expose)
             # speed_q16: the authored tiles-per-tick quantized ONCE onto the
             # Q16.16 grid (ingress door 2) — the unified march's integer
             # step-budget source (W2). 96.0 -> 6291456 exactly.

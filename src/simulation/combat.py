@@ -435,12 +435,15 @@ class BulletInFlight:
                         actual_dmg, dmult)
             # Packet through the pipeline (mechanics/06 §2) — dtype/ap off the
             # ammo row (the k5's kinetic/0 reproduces the shipped packet
-            # exactly); bullet deaths never convert.
+            # exactly); bullet deaths never convert. G4p: the round's
+            # `expose` rides the packet (the focus-fire law raises the
+            # target's exposure at the slot's landing).
             fx.hit(hit_unit,
                    DamagePacket(amount=actual_dmg,
                                 dtype=self.ammo.dtype_id,
                                 attacker_id=self.shooter_id,
-                                ap=self.ammo.ap),
+                                ap=self.ammo.ap,
+                                expose=getattr(self.ammo, "expose_q", 0)),
                    events, source="bullet")
 
         if n_steps > 0:   # a budget-starved tick (<1 tile) has nothing to draw
@@ -1360,7 +1363,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                         fx.hit(
                             e,
                             DamagePacket(amount=amount, dtype=ammo.dtype_id,
-                                         attacker_id=shooter_id, ap=ammo.ap),
+                                         attacker_id=shooter_id, ap=ammo.ap,
+                                         expose=getattr(ammo, "expose_q", 0)),
                             events, source="laser")
 
         shots.append(Shot(fx1, fy1, rx, ry, real_time))

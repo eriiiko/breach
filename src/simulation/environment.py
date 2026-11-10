@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from simulation.damage import N_DAMAGE_TYPES
+
 
 class SubmersionRule(Enum):
     DROWNS         = "drowns"
@@ -70,6 +72,14 @@ class EnvironmentProfile:
     behind_arc_deg: float = 90.0
 
     submersion: SubmersionRule = SubmersionRule.DROWNS
+
+    # --- Exposure resistance (gameplay pack G4p, simulation.exposure) ---
+    # How much of a hit's EXPOSURE this unit shrugs off, per damage type: a
+    # fixed block of Q16 ints, 0 = fully exposed (the baseline), ONE = immune
+    # (the heavy suit against light rounds). Authored in [env_profiles.*] as
+    # a scalar (every type) or a table by damage-type name, in [0, 1], and
+    # quantized at the profile door (simulation.exposure.resist_block).
+    expose_resist: tuple = (0,) * N_DAMAGE_TYPES
 
     # Damage per tick while outside any tolerance — data only;
     # not applied by any tick handler yet (deferred per spec §13).

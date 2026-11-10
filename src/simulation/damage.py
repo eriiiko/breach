@@ -8,7 +8,9 @@ everything after::
        │
        ▼ mitigation   amount' = max(0, amount − max(0, armor[dtype] − ap))
        │                        × resist_mult[dtype]
-       ▼ quantize     unit_fixed.quantize_hp_delta (the Q2-lift snap)
+       ▼ quantize     unit_fixed.quantize_hp_delta (the Q2-lift snap), with the
+       │              target's EXPOSURE of dtype applied on the Q16 grid
+       │              between its halves (G4p, simulation.exposure)
        ▼ apply        unit.current_hp -= applied ;  events carry APPLIED amounts
        ▼ life         hp <= 0 → DEAD
 
@@ -159,12 +161,18 @@ class DamagePacket:
                     the idle stance's ``recent_attackers`` list ignores an
                     indirect hit, exactly as it ignored those (then
                     unattributed) packets before #123 — no behaviour moved.
+    ``expose``    — the Q16 EXPOSURE this hit adds to the target's level of
+                    its type before the target's resistance (G4p,
+                    :mod:`simulation.exposure`): the round's ``[ammo.*]
+                    expose``, quantized once at the ammo door. 0 (every
+                    non-round source) raises nothing.
     """
     amount:      float
     dtype:       int
     attacker_id: Optional[int] = NO_ATTACKER
     ap:          float = 0
     indirect:    bool = False
+    expose:      int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +305,20 @@ def mitigation_for(unit) -> MitigationProfile:
 # ---------------------------------------------------------------------------
 # Apply (mechanics/06 §2): mitigate → quantize → hp → events → life.
 # ---------------------------------------------------------------------------
+_exposure_mod = None
+
+
+def _exposure():
+    global _exposure_mod
+    if _exposure_mod is None:
+        from simulation import exposure as _m
+        _exposure_mod = _m
+    return _exposure_mod
+
+
 def apply_packet(unit, packet: DamagePacket, events=None, *,
-                 source: str, mark_killed_by_zombie: bool = False):
+                 source: str, mark_killed_by_zombie: bool = False,
+                 exposure_landing=None):
     """Apply one packet to one unit — the single owner of the post-source
     damage chain. Replicates the shipped inline sequence EXACTLY (this is
     the load-bearing behaviour-preservation contract; the lockstep digest
@@ -306,7 +326,10 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
 
     1. mitigate (§3) — at the position the old per-site multipliers sat
        (pre-quantize, inside the float64 chain);
-    2. ``unit_fixed.quantize_hp_delta`` — the Q2-lift snap; the APPLIED value;
+    2. the Q2-lift snap onto the Q16 grid (``unit_fixed.quantize_hp_delta``'s
+       two halves), with the target's EXPOSURE of the packet's type applied
+       between them in integers (G4p, :func:`simulation.exposure.scale_q`;
+       the identity, bit for bit, at exposure 0) — the APPLIED value;
     3. ``unit.current_hp -= applied``;
     4. ``events``: :class:`UnitHitEvent` with the applied damage, the cause
        ``source`` and the packet's ``attacker_id``; ``events=None`` emits
@@ -328,13 +351,23 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     zero is the kill and a later packet on the corpse emits its UnitHit but
     no second UnitKilled (and never re-marks the conversion flag). Returns
     the applied (post-quantize) delta.
+
+    EXPOSURE (G4p): a packet that reaches a LIVING unit raises its exposure
+    of the packet's type by ``packet.expose`` (less the target's
+    resistance), and a death zeroes the block. ``exposure_landing`` (an
+    :class:`simulation.exposure.ExposureLanding`, passed by an attack slot's
+    phase B) holds both back until the slot lands, so every packet of the
+    slot reads the exposure of the slot's start; ``None`` applies them at
+    once.
     """
     source = cause_value(source)                  # the door: refuse first
     was_alive = bool(getattr(unit, "alive", True))
     attacker = attacker_value(getattr(packet, "attacker_id", NO_ATTACKER))
     amount = mitigate(packet.amount, packet.dtype, mitigation_for(unit),
                       ap=packet.ap)
-    dmg = unit_fixed.quantize_hp_delta(amount)
+    expo = _exposure()
+    dmg = unit_fixed.dequantize_scalar(expo.scale_q(
+        unit_fixed.quantize_scalar(amount), unit, packet.dtype))
     unit.current_hp -= dmg
     # Who is shooting at me (onephase_wego design §13, the idle stance): a unit
     # with no orders "returns fire at attackers — preferring marked targets —
@@ -360,12 +393,15 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
                                    attacker_id=attacker))
     if was_alive and unit.current_hp <= 0:
         unit.alive = False
+        expo.on_death(unit, exposure_landing)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:
             uid = getattr(unit, "id", -1)
             events.append(UnitKilledEvent(unit_id=uid, killed_by=source,
                                           attacker_id=attacker))
+    if was_alive:
+        expo.on_hit(unit, packet, exposure_landing)
     return dmg
 
 

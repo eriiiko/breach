@@ -3459,6 +3459,7 @@ loudness = 0.7                        # a bigger roar than the Dragon-7's 0.6
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
 dtype = "kinetic"
+expose = 0.5                  # G4p: EXPOSURE per hit (in proportion to damage)
 ap = 0
 # 96 t/t @ 24 tps = 2304 tiles/s — authored >= range_tiles (90) so small-arms
 # fire resolves same-tick (mechanics/03 §2); corrected from the 12-tps draft's
@@ -3651,6 +3652,7 @@ gas_amount = 0.35
 family = "9mm"
 damage = 12                           # heavy slow slug — armory "12 KIN"
 dtype = "kinetic"
+expose = 0.6                  # G4p: EXPOSURE per hit (in proportion to damage)
 ap = 0
 speed_tiles_per_tick = 60.0           # armory 60 t/t = 1440 tiles/s @ 24 tps
 wall_damage = 1
@@ -3659,6 +3661,7 @@ wall_damage = 1
 family = "9mm"
 damage = 7                            # light FMJ — armory "7 KIN"; volume kills
 dtype = "kinetic"
+expose = 0.35                 # G4p: EXPOSURE per hit (in proportion to damage)
 ap = 0
 speed_tiles_per_tick = 60.0
 wall_damage = 1
@@ -3667,6 +3670,7 @@ wall_damage = 1
 family = "rifle_50"
 damage = 90                           # armory "90 KIN, AP 10" — one shot, one door
 dtype = "kinetic"
+expose = 4.5                  # G4p: EXPOSURE per hit (in proportion to damage)
 ap = 10                               # armor pierce (mechanics/06 mitigation)
 speed_tiles_per_tick = 128.0          # fastest round in the game
 wall_damage = 8                       # chews cover fast — an AM rifle eats crates
@@ -3675,6 +3679,7 @@ wall_damage = 8                       # chews cover fast — an AM rifle eats cr
 family = "shell_12g"
 damage = 6                            # PER PELLET (x8 per trigger) — armory "6 KIN x8"
 dtype = "kinetic"
+expose = 0.3                  # G4p: EXPOSURE per hit (in proportion to damage)
 ap = 0
 speed_tiles_per_tick = 50.0
 wall_damage = 1                       # each pellet chips; a full face of 8 bites
@@ -4434,6 +4439,21 @@ ignite_intensity = 0.6
 clear_smoke = false
 emit_blast_smoke = false
 
+# =============================================================================
+# [damage.exposure] -- the FOCUS-FIRE law (gameplay pack v1 G4p, issue #181;
+# src/simulation/exposure.py). Every unit carries one decaying EXPOSURE level
+# per damage type; a hit by a round with an `expose` raises the level of the
+# round's type by `expose x (1 - the target's expose_resist)`, capped at x_max;
+# the level halves every `half_life_seconds` (an exact integer step per tick);
+# damage of that type is multiplied by (1 + k_expose x level). Construction-
+# bound (a new Simulation reads it). `k_expose = 0` makes the law DORMANT
+# (nothing is raised: damage and every digest exactly as before G4p).
+# (Dormant in this commit: the shipped dials land with the pins' re-baseline.)
+[damage.exposure]
+half_life_seconds = 0.1
+k_expose = 0.0
+x_max = 3.0
+
 [zombie]
 hp = 400
 # (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
@@ -4465,6 +4485,10 @@ fire_damage_multiplier = 4.0
 # Ctrl+R. The marine baseline (1.0) lives on EnvironmentProfile.stability.
 stability = 0.9
 attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
+# G4p (#181): the zombie state's resistance to EXPOSURE (the focus-fire law,
+# [damage.exposure]; selected on is_zombie like its mitigation): a scalar or a
+# table by damage type, in [0, 1]; 0 = a zombie is exposed like anyone else.
+expose_resist = 0.0
 
 [marine]
 hp = 100
@@ -4576,6 +4600,10 @@ front_arc_deg = 120.0
 behind_arc_deg = 90.0
 submersion = "drowns"
 environmental_damage_rate = 1.0
+# G4p (#181): how much of a hit's EXPOSURE (the focus-fire law, [damage.exposure])
+# the suit shrugs off -- a scalar for every damage type or a table by type name
+# ({ kinetic = 0.5 }), in [0, 1]: 0 = fully exposed (the baseline), 1 = immune.
+expose_resist = 0.0
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness

@@ -70,6 +70,7 @@ SYNCED_UNIT_FIELDS = (
     "tile_x", "tile_y", "x", "y", "current_hp",
     "alive", "life_state", "faction", "offsets",
     "facing", "ap", "n_orders", "statuses",
+    "exposure",     # G4p: recorded only while non-zero (absence-transparent)
 )
 
 # Every field the physics writes — the sim state a structural refactor must
@@ -189,7 +190,7 @@ def _unit_record(u):
 
     life = getattr(u, "life_state", None)
     life_repr = getattr(life, "value", str(life))   # enum -> its .value string
-    return {
+    rec = {
         "id":         int(getattr(u, "id", -1)),
         "tile_x":     int(u.tile_x),
         "tile_y":     int(u.tile_y),
@@ -215,6 +216,14 @@ def _unit_record(u):
         # waiting one tick downstream — hashed at the source instead.
         "statuses":   serialize_statuses(u),
     }
+    # G4p: the EXPOSURE block (simulation.exposure), one Q16 int per damage
+    # type -- synced state the damage door reads -- hashed only while any of
+    # it is non-zero (the absence-transparent precedent of DIGEST_SECTIONS):
+    # a unit nothing has exposed records exactly as it did before G4p.
+    block = getattr(u, "exposure", None)
+    if block and any(block):
+        rec["exposure"] = [int(x) for x in block]
+    return rec
 
 
 def _event_record(ev):

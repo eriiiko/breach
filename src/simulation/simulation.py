@@ -76,6 +76,8 @@ from simulation.combat import (
 # Simultaneous resolution of an attack slot (#169): phase A records, phase B
 # (``resolve``) applies. Bare name: the lockstep test rebinds it.
 from simulation.simultaneous import SimultaneousEffects
+# The focus-fire law (G4p): its dials (built at construction) and its decay.
+from simulation import exposure
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -345,6 +347,9 @@ class Simulation:
         # Loadouts + env profiles (#119): validated against the weapon table
         # just built (an unknown weapon / profile is a load error here).
         self.loadout_tables = rebuild_loadout_tables()
+        # The focus-fire law's dials (G4p, [damage.exposure] + [zombie]
+        # expose_resist), quantized once through their refusing door.
+        self.exposure_settings = exposure.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -1699,6 +1704,7 @@ class Simulation:
         ``Game._process_tick`` (game.py:1696-1747), with the status pass
         (2b) added at the top of the unit-simulation section (P3):
           1. Clear tick_events (this tick is a fresh slate)
+          1c. Exposure decays (G4p)
           2. Update projectiles (advance position, detonate)
           2b. Tick unit statuses (durations count down; DoT/HoT emit)
           3. Update player movement (read precomputed path)
@@ -1742,6 +1748,11 @@ class Simulation:
         # tick like a WEGO grenade and a TRIGGER arms slot 4's fire order.
         # Dormant under WEGO (no possessed units) — a single set-empty check.
         self._consume_direct_intents()
+
+        # 1c. Exposure decays one tick (G4p, simulation.exposure) -- before
+        # every attack of this tick, so each hit reads the level left by the
+        # hits up to last tick, decayed exactly once since.
+        exposure.decay_units(self.units)
 
         # 2. Update projectiles.
         self._update_projectiles()

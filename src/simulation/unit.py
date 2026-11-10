@@ -208,6 +208,14 @@ class Unit:
         # never this list directly.
         self.statuses: list = []
 
+        # EXPOSURE (gameplay pack G4p, simulation.exposure): the focus-fire
+        # level, one Q16 int per damage type (a fixed block, all 0), raised by
+        # the hits of a round with an `expose`, decaying every tick, read at
+        # the damage door. Zeroed at death and at conversion. SYNCED: hashed
+        # in the unit digest while non-zero (field_ab_harness._unit_record).
+        from simulation.exposure import new_block as _new_exposure_block
+        self.exposure: list = _new_exposure_block()
+
         # Hidden Hartmann fields — data only; behaviour deferred (spec §13).
         self.awakened: bool = False
 

@@ -156,7 +156,12 @@ class EnvProfileTable:
                     raise ValueError(
                         f"env_profiles.{name}: unknown field {col!r} "
                         f"(EnvironmentProfile has {sorted(_PROFILE_FIELDS)})")
-                if col == "submersion":
+                if col == "expose_resist":
+                    # G4p: a scalar or a table by damage type, in [0, 1].
+                    from simulation.exposure import resist_block
+                    value = resist_block(
+                        value, f"env_profiles.{name}.expose_resist")
+                elif col == "submersion":
                     try:
                         value = SubmersionRule(value)
                     except ValueError:
