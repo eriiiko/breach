@@ -209,6 +209,16 @@ depends on facing.
   difference of `atan2_q16(to the flash)` and the unit's facing. A wall
   protects fully (no line of sight). Looking away is therefore a thing a
   team does on a called throw.
+- **The throw has a wind-up (RULED 2026-11-10).** `[weapons.hand_grenade]
+  throw_windup_seconds` (PLACEHOLDER 0.3): the verb is consumed, a
+  render-only `ThrowEvent(unit_id, kind, ticks)` is emitted at once (the
+  animation session, #184, plays the clip to it), and the grenade leaves the
+  hand `ticks` later, along the facing the unit has THEN, if it is still
+  alive and able to act. A second throw during a wind-up is ignored. The
+  count is spent when the grenade leaves.
+- The direct-control key 4 steps the selected kind through the kinds the
+  unit still carries; W throws it; the HUD's grenade line shows the selected
+  kind and each count.
 - Smoke: selection only. Whether smoke hides a unit from the sight oracle is
   left as it is (Erik: it can wait).
 

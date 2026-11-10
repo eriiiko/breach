@@ -54,8 +54,8 @@ search's picks unless marked):
 | sudden-push limit `v_inplace` fwd / side / back | 0.25 / 0.20 / 0.15 m/s | search §1 |
 | fall limit `v_fall` fwd / side / back | 1.5 / 1.1 / 0.8 m/s, × `stability` | only fwd is measured |
 | reaction delay `t_react` | 0.30 s (7 ticks) | search §1 |
-| yaw inertia `I` | 2.5 kg·m² (PLACEHOLDER, from memory, to verify) | body + kit + rifle held forward |
-| own turning: top speed, acceleration | 360°/s (G1p's cap), 50 rad/s² (PLACEHOLDER) | the acceleration is new |
+| yaw inertia `I` | 3.0 kg·m² | body about 1.3 (NASA OCHMO-HB-004, scaled to 80 kg) + rifle, shooting grip, armour (estimates); `docs/research/rotation_litcheck_2026-11-10.md` |
+| own turning: top speed, acceleration | 360°/s (G1p's cap), 30 rad/s² | about 90 N·m, within trunk and footing torque (the check): 90° in 0.46 s, 180° in 0.73 s |
 | body radius for lever arms | 0.25 m | half a shoulder width |
 | `bullet_push_mult` | 1.0 (RULED) | the declared experiment dial |
 
@@ -168,8 +168,11 @@ multiplier on the hold exists as a dial and ships at 1. 7 two patches.
 
 ## 10. Not verified
 
-The yaw inertia and the turning acceleration are from memory and want a
-short literature check; the backward and sideways limits are modelled, not
+The yaw inertia and the turning acceleration were checked on 2026-11-10
+(`docs/research/rotation_litcheck_2026-11-10.md`: 3.0 kg·m², 30 rad/s²; no
+maximal-turn measurement exists, so the 360°/s top speed stays a judgement;
+capping the acceleration by deck friction and a facing-dependent prone drag
+are left out of v1); the backward and sideways limits are modelled, not
 measured (the search says so); the prone drag area is a guess. All are
 play-test dials.
 
