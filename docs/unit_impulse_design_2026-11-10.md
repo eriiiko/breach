@@ -409,3 +409,131 @@ onephase facings (path steps, the attack snap, the overwatch bearing) now
 turn at the law instead of jumping, and a snap no longer moves the facing on
 the tick it is recorded; a unit still holding a live aim ignores a snap (its
 aim is the target).
+
+
+## As built (G5p-a2, 2026-11-10)
+
+Run 2 of 3, the linear law, built to §5 and the §13 sheet in two commits of
+behaviour. `src/simulation/unit_impulse.py` holds the door
+(`impulse_settings`, `[impulse]` + `[impulse.shove]`, every key refused by
+name), the per-map `ImpulseTable` (`impulse_table(cfg, tile_size_m)`, built
+once as `Simulation.impulse_table` beside the speed table and cached on the
+map, `table_for(gmap)`, for the combat helpers that take only the map), THE
+entry `add(table, unit, jx_q, jy_q, lever, twist)`, the integration
+`integrate` / `integrate_all` (slot 1a, then `turning.step(u, a, w, dw)`),
+the displacement `move` (slot 3), the walk's readers `effort_scale_q16` and
+`walk_allowed`, the shove (`shove_target`, `shove`) and the books
+(`books_identity`). The state is integer per unit (`imp_x/imp_y/imp_l`,
+`swx/swy`, `pvx/pvy`, `effort`, `react_ticks`, `last_shove_tick`,
+`pending_shove`, `mass_g`, and the diagnostic `impulse_books`).
+
+Numbers at the playground's 0.333 m tiles, 24 tps: one tick of hold 753
+counts (0.092 m/s), prone 1339, in-place 2048 / 1638 / 1229 (fwd / side /
+back), fall 12288 / 9011 / 6554, reaction delay 7 ticks, yaw inertia 27 000
+g tile^2, body radius 0.75 tiles; the carbine round 2.95e7 counts (3.6 N s),
+the shove 8.19e8 (100 N s). The reference marine is 100 kg (80 + the
+rifleman's `kit_kg = 20`), a zombie 80.
+
+Built as the sheet says, with these readings (each the simplest consistent
+with §13):
+
+- **The mass** is a loadout column, `[loadouts.*] kit_kg` (optional, 0
+  absent); `Unit.mass_g` is bound at construction and again in
+  `Simulation.add_unit`, kept at conversion.
+- **The momentum of a round** is two `[ammo.*]` columns, `bullet_g` and
+  `muzzle_mps` (a pair or neither), on every marching round: 5.56 4.0 g at
+  900 m/s (the design's 3.6 N s), 9 mm 9.5 / 300 and 8.0 / 360, .50 42.8 /
+  887, a 12-gauge pellet 3.9 / 400, every 40 mm body 230 / 76 (PLACEHOLDER,
+  M433-like), the plasma bolts 0 (no slug). The hand grenades are lobbed
+  `Projectile`s, not marching rounds: they push nothing.
+- **The shove's dials** live in `[impulse.shove]` (`impulse_ns` 100,
+  `cooldown_seconds` 1.0, `cone_half_deg` 60, all PLACEHOLDER), not in
+  `[weapons.shove]`: a `[weapons.*]` row needs an archetype and would join the
+  weapon table (the debug weapon cycle, the bots' rows). The cone is this
+  run's addition to critique B's selection rule ("nearest that facing"):
+  without it a unit standing BEHIND the shover would be shoved along the
+  shover's facing, through the shover. Adjacent = a squared centre distance
+  at most `((fp_a + fp_b) / 2 + 1)^2` tiles (B's `(fp + 1)^2` for two
+  footprints), in Q16 integers.
+- **A push onto a corpse is dropped** (the `push` kind applies only to a
+  living unit, as `status` does), and death zeroes the impulse state (as the
+  exposure's), so a corpse never carries a hashed push; conversion zeroes it
+  again.
+- **Prone**: entering it folds the sway into the pushed velocity (momentum
+  exact) and clears the delay; the knockdown is refreshed while the effort
+  (always on the standing hold, one denominator) is at least stability^2 or
+  pv is non-zero after the friction.
+- **The torque's sign**: positive = counter-clockwise in the facing's (y-up)
+  frame, `lever = ((c - o) x s)` as B writes it. A round passing on the
+  shooter's right of the target's centre therefore turns the target
+  COUNTER-clockwise, as the physics says (the struck side is driven back);
+  B's G6 sentence says "clockwise" for that case and is the one thing built
+  against its letter (`tests/test_unit_impulse.py::test_g6_...`).
+- **Every signed rounding truncates** (`unit_fixed.div_trunc`, `shr_trunc`;
+  the effort step rounds away), so a mirrored scene is mirrored to the count;
+  the twins are `fixed_point.h::div_trunc_q`, `shr_trunc_q`,
+  `effort_step_q` and the existing `sqrt_q16`, exposed as `fp_*` bindings and
+  held equal by `tests/test_unit_impulse_twins.py` (G15).
+- **The walk on the Q16 grid** (B's M6, which the sheet put in run 1's
+  representation commit and run 1 did not build) lands here:
+  `movement.move_speed_q16` is the speed law's rational rounded half up once
+  to Q16 tiles per tick, the step `(d_q * v_q) >> 16` toward zero.
+- **No `__unit_push__` sub-hash label** (B's M9 asks for one): the impulse
+  state is hashed in every unit record, so in `__unit_state__` and the
+  pinned unit stream; a new label would re-baseline `GOLDEN_AGGREGATE` and
+  its cascade with no behaviour change. Left for P3a's schema.
+- **The walk ban** holds the walk for the ticks the reaction delay still
+  runs after the overflow's own resist step: 6 slot-3 walks at the shipped 7
+  ticks, while pv goes unresisted for 7.
+
+Re-baselines. (1) The law with every input at zero (`bullet_push_mult =
+recoil_mult = 0` in that commit's config, no controller shoves) and the walk
+on the Q16 grid: ship_demo seed 1 keeps win 0 at 265 and its field_digest;
+tick_digest and the unit stream move; the box is unchanged (idle marines
+never walk); the instant-turn run's field_digest moves too (ship_demo:
+tick f0f3a30a -> 2ca1d895, units 1b3b013f -> ec0dad03). Proof: with the
+pre-run-2 float walk step monkeypatched back, this tree gives every previous
+pin exactly (ship_demo, the box, and the exposure, wind-up, instant-turn and
+unlimited-acceleration runs) -- the integration, the displacement loop, the
+effort member, the digest keys, the events and the door move nothing while
+every input is off. (2) Hits push and guns recoil (both multipliers 1.0,
+RULED): ship_demo seed 1 keeps win 0 at 265 and every kill's tick, unit and
+cause; all three digests move (field 65fd9690 -> ab499f29, tick 2ca1d895
+-> 2620c396, units ec0dad03 -> badb4a79). Proof: with both at 0 it plays re-pin 1
+exactly (G1, permanent, asserting every impulse state 0 on every tick). Per
+tick: identical through tick 204; the first round lands on tick 205; no unit
+is ever displaced in this match (pv stays 0: a carbine or two is soft input);
+the effort (peak 0.32 of the hold) slows the shooters and the struck by a few
+per cent. The shove changes no bots match (no bot shoves); it landed in the
+first commit with the law (it is dormant until a controller issues it).
+
+E2E (`tools/e2e_drive.py --control direct`, door_test, the mouse east of
+Alpha): Space shoves Bravo, one footprint east -- it staggers (StaggerEvent)
+and moves 1.09 tiles (0.36 m) over 15 ticks, on its feet; a .50 round from
+Alpha staggers Bravo 0.17 tiles and staggers Alpha by its recoil (critique
+A, m7: intended); held carbine fire raises the shooter's effort to about
+0.2 of the hold (the design's "2 % slower") and never displaces the target:
+one carbine is soft input, by the law.
+
+Findings from the gates, left as the law specifies them:
+
+- **§8's soft-input wording is loose.** "Per-tick |dv| within the in-place
+  capacity and mean below the hold" admits bursts (two consecutive ticks of
+  1.6 holds) that DO overflow the sway. The exact condition is the sway's
+  Lindley bound: any k consecutive ticks carry at most the capacity plus
+  k - 1 ticks of hold. The gate is written with it.
+- **Above stability sqrt(F / hold) a steady over-hold force slides a unit at
+  its excess** until its fall limit (v_fall x stability): the effort cannot
+  reach stability^2, and the unrecoverable-push fall (condition 3) never
+  fires because each tick's overflow re-arms the reaction delay. No shipped
+  unit is above 1.0; the gate bounds the time by the law's own climb. G5p-b's
+  wind reaches such units; whether a renewed overflow should count as "no
+  recovery" is a modelling call.
+- **Displacement is monotone in mass within a regime, not across the fall
+  boundary**: a 100 N s shove floors a 50 kg body, whose prone friction stops
+  it sooner (1.49 tiles) than a 70 kg one that staggers on its feet through
+  the reaction delay (1.90). The gate holds the property inside each regime.
+- **G5's tolerance**: the effort step B fixes carries a bias of less than 4
+  counts (of ~51 000) on the mean of a 2-tick sawtooth (its fixed point is
+  D/2 + 4 (d1 - d2), d1, d2 the two roundings); "one count per tick of
+  period" is not reachable with it. The gate holds the filter's bound.
