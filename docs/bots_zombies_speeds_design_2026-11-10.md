@@ -60,6 +60,32 @@ the throttle and in cos θ; the zombie sprint is greater than the marine's
 backward speed and within 70 to 90 % of its walk (a config-door check, so a
 later retune cannot break Erik's rule silently). **HUMAN-TEST.**
 
+**As built (G1p-c, 2026-11-10).** `[speeds]` in `config.toml`, read by the
+refusing door `simulation/speeds.py::speed_settings` (each key by name; the
+sprint band and the backward-walk rule; and `walk <= full`,
+`0 < backward_frac <= sideways_frac <= 1`, which the law's monotonicity
+needs) and quantized once per map by `speed_table` into `Simulation.
+speed_table`. The marine's two speeds are Q16 TICKS PER TILE, not Q16 tiles
+per tick: the old walk, 1/18 tile a tick, has no Q16 tiles-per-tick value,
+and in the cost currency `movement.default_speed` (terrain, wind) applies
+unchanged, so the proof of cause below is exact. The law is
+`movement.move_speed_tiles_per_tick` (one exact rational, one division, as
+the G1p throttle was); theta is `atan2_q16(move) - facing` through
+`turning.wrap_q16` and `cos_q16` (`movement.facing_cos_q16`, exact at the
+cardinal angles), and a unit holding no aim has theta 0. The zombie's
+shamble is its integer cadence (`ticks_from_seconds(tile / mps, tps)`):
+`Unit.speed_ticks_per_tile` defaults to None = the table, so a converted
+marine shambles too (before, it kept the marine's 18-tick attack dial). The
+`[zombie] seconds_per_tile` dial is deleted; `[movement]` stays, WEGO's
+alone. Realised on the 0.333 m tile at 24 tps: walk 1.400, full 4.500,
+sideways 1.120, backward 0.840, zombie 0.615 m/s (13 ticks per tile), the
+sprint 1.150 (unused until G9p). `ReloadEvent(unit_id, ticks)`, render-only,
+from `combat.reload_begin`. The pinned ship_demo match: win 1 unchanged,
+700 -> 240 ticks; with the table at the old cadences (18 / 8 / 14 ticks per
+tile, factors 1.0) it is the G2p pin bit for bit. The SOMA walk rates were
+re-derived (Walk 0.998, Rifle_Aim_Walk 1.044, Zombie_Hunch_Walk 0.572); the
+walk clip plays at the walk rate at every throttle (a run clip is #184's).
+
 ## 2. The bot pass (G8p)
 
 **RULED.** The three-layer shape. Bots stay Python on the host. Erik expects
