@@ -5,7 +5,8 @@ Design: ``docs/gameplay_pack_v1_design_2026-11-10.md`` §3 G1p (on
 direct`` (``--control gamepad`` is an alias) possesses the first living
 marine of ``sim.player_team`` and drives it through the sim's per-tick intent
 facade (``set_move_dir`` / ``set_aim`` / ``set_trigger`` /
-``throw_grenade_intent`` / ``use_intent``) under ``ContinuousRealtime``.
+``throw_grenade_intent`` / ``use_intent`` / ``reload_intent``) under
+``ContinuousRealtime``.
 
 Every frame it reads BOTH devices and uses whichever was touched last (Erik:
 "the player plays with whatever they have connected"). A device is a HALF:
@@ -26,9 +27,10 @@ becomes intents. A new device is a half, never a second scheme.
   reach is. The mouse is ignored while ``GameRenderer.pointer_captured()``
   (the light-curve panel owns it).
 
-``melee``, ``shove``, ``reload``, ``cycle_grenade`` and ``flashlight`` are
-bound in the table and do nothing yet: their verbs arrive with G2p..G7p
-(:data:`INERT_ACTIONS`). The camera (``[display] camera_mode``, the
+``melee``, ``shove``, ``cycle_grenade`` and ``flashlight`` are bound in the
+table and do nothing yet: their verbs arrive with G3p..G7p
+(:data:`INERT_ACTIONS`). ``reload`` (G2p) is ``reload_intent``: pressed once
+it discards the magazine in the gun and runs the reload stall. The camera (``[display] camera_mode``, the
 :attr:`camera_mode` main.py reads) is the follow camera's, never camera code
 here.
 
@@ -46,9 +48,9 @@ from control_source import (ControlSource, quantize_point_aim,
 KEY_ACTIONS = ("move_forward", "move_back", "strafe_left", "strafe_right",
                "trigger", "melee", "shove", "reload", "throw",
                "cycle_grenade", "flashlight", "use", "full_speed")
-#: Bound now, inert until their verbs land (G2p reload, G3p the grenade kind,
-#: G5p shove, G6p melee, G7p flashlight).
-INERT_ACTIONS = ("melee", "shove", "reload", "cycle_grenade", "flashlight")
+#: Bound now, inert until their verbs land (G3p the grenade kind, G5p shove,
+#: G6p melee, G7p flashlight).
+INERT_ACTIONS = ("melee", "shove", "cycle_grenade", "flashlight")
 
 #: Q16 one -- the throttle of a held ``full_speed``.
 _THROTTLE_ONE = 1 << 16
@@ -142,12 +144,13 @@ class DeviceFrame:
     ``move`` ``(dx_q, dy_q, throttle_q)`` or None (stop: ``clear_move_dir``);
     ``aim`` ``(dx_q, dy_q)`` or None (keep the facing); ``trigger`` held;
     ``throw`` ``(dx_q, dy_q, reach_q | None)`` on the frame it was pressed;
-    ``use`` True on the frame it was pressed."""
+    ``use`` and ``reload`` True on the frame they were pressed."""
     move: tuple | None
     aim: tuple | None
     trigger: bool
     throw: tuple | None
     use: bool
+    reload: bool = False
 
 
 def keyboard_move(forward: bool, back: bool, left: bool, right: bool,
@@ -231,8 +234,9 @@ class KeyboardMouseHalf:
             throw = ((aim[0], aim[1], reach_q) if aim is not None
                      else (*facing_dir(), None))
         use = self._pressed("use")
+        reload = self._pressed("reload")
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
-                           use=use)
+                           use=use, reload=reload)
 
 
 class DirectControl(ControlSource):
@@ -354,6 +358,8 @@ class DirectControl(ControlSource):
                                      reach_q=reach_q)
         if frame.use:
             sim.use_intent(uid)
+        if frame.reload:
+            sim.reload_intent(uid)
 
     @staticmethod
     def _facing_dir(u):

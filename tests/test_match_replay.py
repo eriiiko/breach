@@ -186,6 +186,8 @@ class _ThrowerControl(ControlSource):
                     None if u.id % 2 else 6 * 65536)
             if sim.tick % 25 == 3:
                 sim.use_intent(u.id)
+            if sim.tick % 31 == 11:
+                sim.reload_intent(u.id)
             if sim.tick % 9 == 0:
                 sim.set_move_dir(u.id, dx, dy, 32768)   # half throttle
             elif sim.tick % 9 == 5:
@@ -201,7 +203,8 @@ def thrower(monkeypatch):
 
 def test_every_intent_kind_replays_live(tmp_path, thrower):
     """Property: a match issuing every recordable kind (move, clear, aim,
-    trigger, throw with and without a reach, USE, the horde's ZOMBIE intent)
+    trigger, throw with and without a reach, USE, RELOAD, the horde's ZOMBIE
+    intent)
     replays to every checkpoint and the original final digests. Breaks if
     any kind is fed back with another argument, out of order, or dropped
     (checked: dropping the throws diverges at tick 15). USE has no effect in

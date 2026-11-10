@@ -2005,62 +2005,20 @@ class GameRenderer:
         y += 22
 
         # ----- Game state (if a Simulation was passed) -----
+        # The block's text is DATA (ui.model.panel_state_lines: a turn-based
+        # ruleset's round / phase / AP, or under ContinuousRealtime the tick
+        # and the unit's magazine); this only draws it.
         if sim is not None:
-            paused = sim.is_paused()
-            state_label = "PAUSED — planning" if paused else "EXECUTING"
-            state_color = (255, 220, 120, 255) if paused else (120, 255, 120, 255)
-            draw_text(state_label, x, y, 16, color=state_color)
-            y += 22
-            draw_text(f"Round {getattr(sim, 'turn_number', 1)}   "
-                      f"Phase {sim.get_phase() + 1}/2", x, y, 14)
-            y += 18
-            draw_text(f"Tick {sim.get_tick()} / "
-                      f"{sim._ticks_per_round}", x, y, 13,
-                      color=(180, 180, 200, 255))
-            y += 18
-            n_events = len(getattr(sim, "tick_events", []))
-            draw_text(f"Tick events: {n_events}", x, y, 12,
-                      color=(150, 150, 180, 255))
-            y += 18
-            if paused:
-                draw_text(f"Planning phase {planning_phase + 1}",
-                          x, y, 12, color=(200, 200, 120, 255))
-                y += 16
-            y += 6
-
-            # Selected unit summary.
-            if selected_unit is not None and getattr(selected_unit, "alive", False):
-                draw_text(f"Selected: {selected_unit.name}", x, y, 14,
-                          color=(120, 220, 255, 255))
-                y += 18
-                # W6: the equipped weapon row — the weapon-cycle key's (N)
-                # on-screen feedback during Erik's tuning session.
-                weapon_id = getattr(selected_unit, "weapon_id", "")
-                if weapon_id:
-                    draw_text(f"Weapon: {weapon_id}  (N cycles)", x, y, 13,
-                              color=(255, 200, 120, 255))
-                    y += 16
-                from simulation.stats import effective_vitality
-                draw_text(f"HP: {int(selected_unit.current_hp)}/{int(effective_vitality(selected_unit))}",
-                          x, y, 13)
-                y += 16
-                draw_text(f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
-                          x, y, 13)
-                y += 16
-                draw_text(f"Grenades: {selected_unit.has_grenade}   "
-                          f"Charges: {selected_unit.has_explosive}",
-                          x, y, 12)
-                y += 18
-                n_orders = len(selected_unit.orders)
-                draw_text(f"Queued orders: {n_orders}",
-                          x, y, 12, color=(180, 180, 180, 255))
-                y += 18
-            if current_mode is not None:
-                from simulation.orders import ORDER_NAMES
-                mode_name = ORDER_NAMES.get(current_mode, str(current_mode))
-                draw_text(f"Mode: {mode_name}", x, y, 13,
-                          color=(255, 200, 120, 255))
-                y += 22
+            from ui.model import panel_state_lines
+            for line in panel_state_lines(sim, selected_unit,
+                                          planning_phase, current_mode):
+                if line.text:
+                    if line.color is None:
+                        draw_text(line.text, x, y, line.size)
+                    else:
+                        draw_text(line.text, x, y, line.size,
+                                  color=line.color)
+                y += line.advance
 
         draw_text(f"FPS: {rl.get_fps()}", x, y, 14)
         y += 18
