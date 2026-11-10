@@ -367,6 +367,17 @@ class Unit:
         # (simulation.horde), so a zombie carries no path.
         self.zombie_activated       = False
         self.zombie_move_accumulator = 0
+        # The horde's behaviours (G9p stage 2, simulation.horde): the noise
+        # a HEARING zombie walks to (tile; -1 = none) and the ticks it keeps
+        # chasing it, and a DORMANT zombie's wander anchor (-1 = unset).
+        # SYNCED fixed-width state, hashed in the unit digest only while
+        # set (absence-transparent); cleared at death and conversion
+        # (horde.clear).
+        self.zombie_noise_y         = -1
+        self.zombie_noise_x         = -1
+        self.zombie_noise_ticks     = 0
+        self.zombie_anchor_y        = -1
+        self.zombie_anchor_x        = -1
         self.last_melee_tick        = -999
         self.killed_by_zombie       = False
 

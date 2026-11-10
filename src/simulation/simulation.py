@@ -79,6 +79,7 @@ from simulation.simultaneous import SimultaneousEffects
 # The focus-fire law (G4p): its dials (built at construction) and its decay.
 from simulation import exposure
 from simulation import horde
+from simulation import noise
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -624,6 +625,9 @@ class Simulation:
         so a controller naming the whole horde reproduces the conductor's
         call exactly). A bite's hit / kill events ride ``tick_events``
         with source ``"melee"`` (#122), like a bullet's."""
+        # G9p: the noises made since the last slot are drained HERE, every
+        # tick, whether or not any zombie is driven (simulation/noise.py).
+        noises = noise.take(self.gmap)
         reqs = self._zombie_requests
         if reqs is None:
             units = self.units
@@ -637,7 +641,9 @@ class Simulation:
                             events=self.tick_events,
                             shamble_ticks=self.speed_table.zombie_shamble_ticks,
                             settings=self.horde_settings,
-                            state=self.horde_state)
+                            state=self.horde_state, noises=noises,
+                            doors=self._doors,
+                            sprint_ticks=self.speed_table.zombie_sprint_ticks)
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""

@@ -224,7 +224,7 @@ def test_the_zombie_law_calls_no_a_star(tmp_path, monkeypatch):
 def _corridor(w=40):
     tm = np.full((7, w), MAT_HULL, dtype=np.int32)
     tm[2:5, 1:w - 1] = MAT_AIR                            # 3 wide: one lane
-    return LevelData(name="corridor", version="1", path=Path("."),
+    return LevelData(name="corridor", version="3", path=Path("."),
                      tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
 
 
@@ -278,7 +278,7 @@ def test_the_activation_gate_is_the_old_sqrt_gate_in_integers():
     w = r + 20
     tm = np.full((9, w), MAT_HULL, dtype=np.int32)
     tm[1:8, 1:w - 1] = MAT_AIR
-    lvl = LevelData(name="gate", version="1", path=Path("."), tilemap=tm,
+    lvl = LevelData(name="gate", version="3", path=Path("."), tilemap=tm,
                     tile_size_m=1.0, diffuse_path=Path("."))
     for gap, woken in ((r, False), (r - 1, True)):
         g = GameMap(lvl)
@@ -297,7 +297,7 @@ def test_a_zombie_with_no_path_waits(tmp_path):
     tm = np.full((20, 30), MAT_HULL, dtype=np.int32)
     tm[1:19, 1:12] = MAT_AIR
     tm[1:19, 14:29] = MAT_AIR
-    lvl = LevelData(name="sealed", version="1", path=Path("."), tilemap=tm,
+    lvl = LevelData(name="sealed", version="3", path=Path("."), tilemap=tm,
                     tile_size_m=1.0, diffuse_path=Path("."))
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False,
                      ruleset=ContinuousRealtime())

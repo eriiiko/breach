@@ -349,6 +349,12 @@ class GameMap:
         # blast covered it (entities have no hp path in the damage system).
         # Plain Python list: never digested, never recorded, never a field.
         self.blast_log = []
+        # The NOISE LOG (#183 G9p, simulation/noise.py): every noise made
+        # since the last zombie slot as ``(fy, fx, radius_tiles)`` in the
+        # order made -- shots, detonations, door bashes -- appended only by
+        # ``noise.emit`` and DRAINED once per tick by the zombie slot
+        # (``noise.take``). Plain list: never digested, never recorded.
+        self.noise_log = []
         # #31: the blast's pending divergence source, Q16 1/s, owned by
         # blast_expansion.py and consumed at the head of the physics step.
         # Synced state (tests/field_digest.py hashes it while non-zero). The

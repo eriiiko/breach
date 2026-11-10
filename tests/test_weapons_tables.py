@@ -167,7 +167,8 @@ def test_breach_charge_row():
 # ---------------------------------------------------------------------------
 # Validation is loud (dict-built minimal configs — the GasTable test path)
 # ---------------------------------------------------------------------------
-_WEAPON_OK = {"archetype": "projectile", "ammo_family": "f"}
+_WEAPON_OK = {"archetype": "projectile", "ammo_family": "f",
+              "loudness": 10.0}   # G9p: required on a row that fires
 _AMMO_OK = {"family": "f", "dtype": "kinetic"}
 
 
@@ -230,6 +231,10 @@ def test_bad_dtype_rejected():
 def test_missing_required_columns_are_loud():
     with pytest.raises(KeyError, match="archetype"):
         _build({"w": {"ammo_family": "none"}}, {}, {})
+    # G9p: a row that fires is a noise -- its loudness is required.
+    with pytest.raises(KeyError, match="loudness"):
+        _build({"w": {"archetype": "hitscan", "ammo_family": "f"}},
+               {"a": {"family": "f", "dtype": "kinetic"}}, {})
     with pytest.raises(KeyError, match="family"):
         _build({"w": dict(_WEAPON_OK)}, {"a": {"dtype": "kinetic"}}, {})
 
@@ -249,7 +254,8 @@ def test_unit_weapon_id():
 # ---------------------------------------------------------------------------
 def test_lance_3_row_equals_the_armory():
     """mechanics/03 §6: hitscan, cell_laser, 0.1°/0.1°, range 60, 1 @ 0.5 s,
-    crit 0 (HITSCAN does not crit in v1), mass 4.1, loudness 0.1."""
+    crit 0 (HITSCAN does not crit in v1), mass 4.1, loudness 0.1 (x 30 m
+    since G9p: 3 m of hearing radius)."""
     t = get_tables()
     lance = t.weapons.by_name["lance_3"]
     cell = t.ammo.by_name["cell_laser_standard"]
@@ -263,7 +269,7 @@ def test_lance_3_row_equals_the_armory():
         0.5, CFG.clock.ticks_per_second)
     assert lance.crit_chance == 0.0
     assert lance.mass_kg == 4.1
-    assert lance.loudness == 0.1
+    assert lance.loudness == 3.0
     assert cell.damage == 25
     assert cell.dtype == "energy"
     assert cell.ap == 0

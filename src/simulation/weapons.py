@@ -141,7 +141,11 @@ class WeaponDef:
         self.crit_chance = crit_chance          # §3 crit base (activates W2)
         self.crit_mult = crit_mult
         self.mass_kg = mass_kg                  # handling / melee impulse (future)
-        self.loudness = loudness                # reserved — stealth layer, no consumer
+        # G9p: the hearing radius of a shot, METRES (simulation.noise);
+        # REQUIRED on a row that fires (projectile / hitscan / spray),
+        # quantized once to ``loudness_tiles`` at the table build.
+        self.loudness = loudness
+        self.loudness_tiles = 0
         # default_ammo (W6): the STATIC round-selection seam — "" = the
         # shipped first-family-match (ammo_for_weapon, the W2 rule); a row
         # name = THIS weapon's standard round. Lets two weapons share an
@@ -305,6 +309,9 @@ class PayloadDef:
                  blind_radius=0.0, blind_seconds=0.0, blind_away_frac=1.0,
                  blind_radius_q=0, blind_ticks=0, blind_away_q=1 << 16):
         self.name = name
+        # G9p: the detonation's hearing radius (metres; tiles once built).
+        self.loudness = 0.0
+        self.loudness_tiles = 0
         # G3p: the detonation BLINDS units (docs/gameplay_pack_v1_design
         # §3 G3p; simulation/flash_blind.py): every living unit within
         # ``blind_radius`` tiles with a line of sight to the detonation is
@@ -398,6 +405,9 @@ class PayloadDef:
 # is either a config.Namespace (attributes) or a plain dict (tests).
 # ---------------------------------------------------------------------------
 _REQUIRED = object()   # sentinel: no default -> missing column is a KeyError
+#: The archetypes whose trigger pull is a SHOT -- a noise (G9p): their rows
+#: must author ``loudness`` (metres).
+_FIRING_ARCHETYPES = ("projectile", "hitscan", "spray")
 
 
 def _iter_rows(section_cfg):
@@ -474,7 +484,8 @@ class WeaponTable:
                 crit_chance=col("crit_chance", 0.0),
                 crit_mult=col("crit_mult", 2.0),
                 mass_kg=col("mass_kg", 0.0),
-                loudness=col("loudness", 0.0),
+                loudness=col("loudness", _REQUIRED
+                             if archetype in _FIRING_ARCHETYPES else 0.0),
                 max_throw_range=col("max_throw_range", 0),
                 fuse_min_seconds=col("fuse_min_seconds", 0.0),
                 fuse_max_seconds=col("fuse_max_seconds", 0.0),
@@ -506,6 +517,14 @@ class WeaponTable:
                 raise ValueError(
                     f"weapons.{name}.melee_arc_half_deg {_a!r} must be a "
                     f"number in (0, 180] (degrees)")
+            _ld = w.loudness
+            if (isinstance(_ld, bool) or not isinstance(_ld, (int, float))
+                    or not _ld >= 0.0 or _ld == float("inf")):
+                raise ValueError(
+                    f"weapons.{name}.loudness {_ld!r} must be a finite "
+                    f"number >= 0 (metres of hearing radius)")
+            from simulation.noise import radius_tiles as _radius_tiles
+            w.loudness_tiles = _radius_tiles(_ld, self.tile_size_m)
             from simulation import unit_fixed as _uf
             import math as _math
             w.melee_arc_half_q = _uf.quantize_scalar(_math.radians(float(_a)))
@@ -894,7 +913,7 @@ class PayloadTable:
     typo'd species is loud at startup, not at the first detonation."""
 
     def __init__(self, payloads_cfg, explosives_cfg=None, blast_cfg=None,
-                 ticks_per_second=None):
+                 ticks_per_second=None, tile_size_m=1.0):
         # Lazy import (module constants only, mirrors AmmoTable's unit_fixed).
         from simulation.gases import GAS_NAMES, N_GASES, N_TRACE_GASES
         valid_gases = set(GAS_NAMES.values())
@@ -978,6 +997,18 @@ class PayloadTable:
                 **flash,
                 **blind,
             )
+            # G9p: the detonation's hearing radius, METRES (optional; 0 =
+            # silent), quantized once to tiles at this map's tile size.
+            _ld = col("loudness", 0.0)
+            if (isinstance(_ld, bool) or not isinstance(_ld, (int, float))
+                    or not _ld >= 0.0 or _ld == float("inf")):
+                raise ValueError(
+                    f"payloads.{name}.loudness {_ld!r} must be a finite "
+                    f"number >= 0 (metres of hearing radius; 0 = silent)")
+            from simulation.noise import radius_tiles as _radius_tiles
+            pdef = self.by_name[name]
+            pdef.loudness = float(_ld)
+            pdef.loudness_tiles = _radius_tiles(_ld, float(tile_size_m))
         self.names = list(self.by_name)
 
 
@@ -1004,7 +1035,8 @@ class WeaponsTables:
                                    tile_size_m=tile_size_m)
         self.ammo = AmmoTable(ammo_cfg)
         self.payloads = PayloadTable(payloads_cfg,
-                                     ticks_per_second=ticks_per_second)
+                                     ticks_per_second=ticks_per_second,
+                                     tile_size_m=tile_size_m)
         self._validate_cross_refs()
         # The hand-grenade KINDS (G3p): the ``[ammo.*]`` rows of the
         # hand-grenade family, in config (table) order -- the index of a row

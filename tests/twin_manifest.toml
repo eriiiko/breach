@@ -103,6 +103,7 @@ build = [
 "src/simulation/match_session.py" = "the host loop (MatchSession): the farm's session, never a twin"
 "src/simulation/materials.py" = "setup only: the materials table (its upload is Class P)"
 "src/simulation/movement.py" = "Class T: slot 3, built from P6"
+"src/simulation/noise.py" = "Class T: the noise log (#183 G9p: emitted by slots 2 / 4 / 5 / 9e, drained by slot 5), built with the horde at P7d"
 "src/simulation/payloads.py" = "Class T: the payload executor (slot 2's grenade detonations), built at P7c"
 "src/simulation/physics.py" = "Class T: apply_explosion's wall damage (slot 2's detonations, through the payload executor), built at P7c"
 "src/simulation/ruleset.py" = "Class T: MatchRules (the done kernel, P8b)"
