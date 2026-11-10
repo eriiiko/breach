@@ -105,6 +105,7 @@ build = [
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
 "src/simulation/status.py" = "Class T: slot 2b, built from P6"
+"src/simulation/turning.py" = "Class T: slot 1b's turn-rate cap (the aim turn; the bots read it outside step), built from P6"
 "src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge); Class T at P6b"
 "src/simulation/unit_fixed.py" = "Class T: built from P6"
 "src/simulation/vent_system.py" = "Class T: the vent kernels (slot 9e), built at P6b"
