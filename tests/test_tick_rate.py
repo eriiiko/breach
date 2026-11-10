@@ -59,8 +59,11 @@ def test_live_config_is_consistent_with_helper():
     assert CFG.zombie.attack_cooldown_ticks == ticks_from_seconds(ATTACK_COOLDOWN_S, tps)
     # W1 re-home: the rifle cadence now derives on the k5_carbine weapon row
     # (rof_interval_seconds -> rof_interval_ticks), same helper, same result.
+    # The row's OWN seconds: the carbine's rate is a ruling that moves (G2p:
+    # 1/12 s, was RIFLE_BURST_S); what this protects is the derivation.
     k5 = weapon_tables().weapons.by_name["k5_carbine"]
-    assert k5.rof_interval_ticks == ticks_from_seconds(RIFLE_BURST_S, tps)
+    assert k5.rof_interval_ticks == ticks_from_seconds(
+        k5.rof_interval_seconds, tps)
     assert CFG.recorder.capacity == round(REPLAY_S * tps)
 
 
