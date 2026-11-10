@@ -190,7 +190,10 @@ def _s_min_q16(g):
 def test_move_dir_walks_at_the_slowed_cadence_in_a_gale():
     """Property: a MOVE_DIR step in an s_min wind advances
     1 / half_up(calm * ONE, s_min_q16) tiles, against the field at
-    execution. Breaks if MOVE_DIR builds samples without the wind."""
+    execution. Breaks if MOVE_DIR builds samples without the wind.
+    (G5p-a2: the step is that speed rounded half up ONCE onto the Q16
+    grid, ``half_up(ONE^2, cost)`` counts -- critique B's M6; the property
+    is unchanged.)"""
     bp = pytest.importorskip("breach_physics")
     from config import CFG
     from simulation import Simulation
@@ -209,13 +212,13 @@ def test_move_dir_walks_at_the_slowed_cadence_in_a_gale():
     _blow(sim.gmap, on=False)
     x0 = u.x
     sim._step_move_dir(u, md)
-    assert u.x == x0 + FP_ONE / calm
+    assert u.x == x0 + half_up(FP_ONE * FP_ONE, calm) / FP_ONE
     _blow(sim.gmap, on=True)
     x0 = u.x
     sim._step_move_dir(u, md)
     slowed = half_up(calm * SCALE_ONE, _s_min_q16(sim.gmap))
     assert slowed > calm
-    assert u.x == x0 + FP_ONE / slowed
+    assert u.x == x0 + half_up(FP_ONE * FP_ONE, slowed) / FP_ONE
 
 
 def test_the_onephase_cadence_takes_the_slowed_scale():

@@ -9,9 +9,10 @@ renderer, the pose layer and every other reader. Every reason to face
 somewhere -- the live aim, the travel direction of a unit holding no aim, the
 zombie's walk, the attack resolve's facing snap, the legacy WEGO and onephase
 plans -- is a TARGET handed over through :func:`set_target`; the target
-persists until something replaces it. Once per tick, in conductor slot 1a,
-:func:`step_units` turns every living unit toward its target (the live aim's
-angle while a non-zero live aim is held) through :func:`step`. Nothing else
+persists until something replaces it. Once per tick, in conductor slot 1a
+(``unit_impulse.integrate_all``, after each unit's linear impulse step), every
+living unit turns toward its target (the live aim's angle while a non-zero
+live aim is held) through :func:`step`. Nothing else
 writes ``_facing_q`` except :func:`place`, the one constructor-time door
 (spawn: ``Unit.__init__``), which sets the facing AND the target at rest.
 
@@ -172,7 +173,7 @@ def place(unit, angle_q: int) -> None:
 def set_target(unit, angle_q: int) -> None:
     """The facing ``unit`` should turn to: every site that used to write the
     facing hands its angle (Q16.16 radians) here. The target persists until
-    replaced; slot 1a turns toward it (:func:`step_units`)."""
+    replaced; slot 1a turns toward it (:func:`step`)."""
     unit.facing_target_q = normalize_q16(angle_q)
 
 
@@ -195,30 +196,25 @@ def aim_target_q16(unit):
     return atan2_q16(-int(aim.dy_q), int(aim.dx_q))
 
 
-def predict(unit, target_q: int, a: int, w: int) -> int:
+def predict(unit, target_q: int, a: int, w: int, dw: int = 0) -> int:
     """The facing ``unit`` has after this tick's turn toward ``target_q``:
     exactly what :func:`step` would write, without writing it (the bots'
-    trigger rule, ``Simulation.facing_after_turn_q16``)."""
-    return law_q16(unit._facing_q, unit.omega_q, target_q, a, w)[0]
+    trigger rule, ``Simulation.facing_after_turn_q16``). ``dw`` is the
+    outside spin slot 1a adds first (``unit_impulse.pending_dw``)."""
+    return law_q16(unit._facing_q, unit.omega_q + int(dw), target_q, a, w)[0]
 
 
-def step(unit, a: int, w: int) -> None:
-    """One tick of the law for ``unit`` (slot 1a only): the live aim, if one
-    is held, becomes the target; then the facing and omega advance."""
+def step(unit, a: int, w: int, dw: int = 0) -> None:
+    """One tick of the law for ``unit`` (slot 1a only, called by
+    ``unit_impulse.integrate_all`` after the unit's linear integration):
+    ``omega += dw`` (the outside spin the impulse law integrated, G5p-a2),
+    the live aim, if one is held, becomes the target; then the facing and
+    omega advance."""
     aim = aim_target_q16(unit)
     if aim is not None:
         set_target(unit, aim)
     unit._facing_q, unit.omega_q = law_q16(
-        unit._facing_q, unit.omega_q, unit.facing_target_q, a, w)
-
-
-def step_units(sim) -> None:
-    """Slot 1a: every living unit turns one tick, in id (list) order, at its
-    own dials (``sim.unit_turn_accel_q16`` / ``unit_turn_rate_q16``). Each
-    reads only its own state, so the order changes nothing."""
-    for u in sim.units:
-        if u.alive:
-            step(u, sim.unit_turn_accel_q16(u), sim.unit_turn_rate_q16(u))
+        unit._facing_q, unit.omega_q + int(dw), unit.facing_target_q, a, w)
 
 
 # ---------------------------------------------------------------------------
@@ -274,4 +270,4 @@ __all__ = ["PI_Q16", "TWO_PI_Q16", "OMEGA_MAX_Q16", "TURN_TRIALS_MAX",
            "FACING_NORTH_Q16", "wrap_q16", "normalize_q16", "turn_toward_q16",
            "braking_distance_q16", "top_speed_within", "law_q16", "place",
            "set_target", "settle", "aim_target_q16", "predict", "step",
-           "step_units", "turn_rate_q16", "turn_accel_q16"]
+           "turn_rate_q16", "turn_accel_q16"]

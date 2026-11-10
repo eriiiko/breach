@@ -26,6 +26,7 @@ Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
     X (west)       -> USE (toggle an adjacent door)
     Y (north)      -> RELOAD (discard the magazine, run the reload stall)
     B (east)       -> CYCLE the selected grenade kind (G3p; A throws it)
+    RB             -> SHOVE the adjacent unit nearest the facing (G5p-a2)
 
 The actual controller FEEL is Erik's HUMAN-TEST — this module is not driven in
 the headless test suite (it needs a live pad). What the tests pin is the pure
@@ -60,6 +61,7 @@ class GamepadHalf:
         self._prev_use = False
         self._prev_reload = False
         self._prev_cycle = False
+        self._prev_shove = False
 
     @staticmethod
     def available() -> bool:
@@ -154,8 +156,15 @@ class GamepadHalf:
         cycle = cycle_down and not self._prev_cycle
         self._prev_cycle = cycle_down
 
+        # ---- RB -> SHOVE (edge; G5p-a2) ----
+        shove_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_RIGHT_TRIGGER_1)
+        shove = shove_down and not self._prev_shove
+        self._prev_shove = shove_down
+
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
-                           use=use, reload=reload, cycle_grenade=cycle)
+                           use=use, reload=reload, cycle_grenade=cycle,
+                           shove=shove)
 
 
 __all__ = ["GamepadHalf"]

@@ -260,6 +260,33 @@ class BulletInFlight:
         # to know which ruleset launched it.
         self.march_cover = None
         self.march_facing_defense = False
+        # G5p-a2 (the unit impulse law): the round's line in integers -- its
+        # origin and its kit step vector on the Q16 grid (both exact) -- for
+        # the lever arm of the push it gives the unit it stops on.
+        self.ox_q = unit_fixed.quantize_scalar(origin_fx)
+        self.oy_q = unit_fixed.quantize_scalar(origin_fy)
+        self.sx_q = unit_fixed.quantize_scalar(step_x)
+        self.sy_q = unit_fixed.quantize_scalar(step_y)
+
+    def push_on(self, gmap, unit, fx) -> None:
+        """Record this round's PUSH on ``unit``, the unit it stopped on
+        (G5p-a2, design §4 / §13): every projectile and pellet that stops on
+        a unit pushes with its own row's momentum (``[ammo.*] bullet_g``,
+        ``muzzle_mps``; a payload round with its body's), along its flight,
+        times ``[impulse] bullet_push_mult``; its lever arm is the
+        perpendicular distance from the unit's centre to the round's line
+        (integers, no draw), its spin times ``bullet_twist_mult``. Recorded
+        through the slot's ``push`` effect, right after the hit."""
+        from simulation import unit_impulse
+        table = unit_impulse.table_for(gmap)
+        j_q = table.ammo_push_q.get(self.ammo.name, 0)
+        if not j_q:
+            return
+        jx, jy = unit_impulse.along_q(j_q, self.sx_q, self.sy_q)
+        cx, cy = unit_impulse.centre_q(unit)
+        lever = unit_impulse.lever_q(cx, cy, self.ox_q, self.oy_q,
+                                     self.sx_q, self.sy_q)
+        fx.push(table, unit, jx, jy, lever, table.twist_q16)
 
     def advance(self, gmap, units, shots, real_time, rng, events=None,
                 queue=None, cover=None, facing_defense=False, effects=None):
@@ -445,6 +472,10 @@ class BulletInFlight:
                                 ap=self.ammo.ap,
                                 expose=getattr(self.ammo, "expose_q", 0)),
                    events, source="bullet")
+        # G5p-a2: the round that stopped on a unit pushes it -- whatever its
+        # damage (the 40 mm's body too); recorded right after the hit.
+        if hit_unit is not None:
+            self.push_on(gmap, hit_unit, fx)
 
         if n_steps > 0:   # a budget-starved tick (<1 tile) has nothing to draw
             shots.append(Shot(seg_x, seg_y, self.rx, self.ry, real_time))
@@ -1131,6 +1162,21 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
         u.last_fire_tick = tick
 
 
+def _record_recoil(gmap, shooter, bullet, effects) -> None:
+    """The recoil of ``bullet`` on its ``shooter`` (G5p-a2): minus the
+    round's row momentum along its kit step vector, times ``[impulse]
+    recoil_mult``, recorded through the attack slot's ``push`` effect (one
+    shape for every impulse; :data:`IMMEDIATE` when the caller owns no
+    slot)."""
+    from simulation import unit_impulse
+    table = unit_impulse.table_for(gmap)
+    j_q = table.ammo_recoil_q.get(bullet.ammo.name, 0)
+    if not j_q or not hasattr(shooter, "impulse_books"):
+        return
+    jx, jy = unit_impulse.along_q(j_q, bullet.sx_q, bullet.sy_q)
+    effects_or_immediate(effects).push(table, shooter, -jx, -jy)
+
+
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
                weapon=None, ammo=None, spread_deg=None, bullets=None,
@@ -1202,6 +1248,10 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         step_y = unit_fixed.sin_rad(angle)
         b = BulletInFlight(shooter, shooter_id, weapon, ammo,
                            fx1, fy1, angle, step_x, step_y)
+        # G5p-a2 (RULED): the shooter recoils with minus the round's
+        # momentum along its flight (times [impulse] recoil_mult), through
+        # the slot's push effect -- no lever arm.
+        _record_recoil(gmap, shooter, b, effects)
         b.march_cover = cover
         b.march_facing_defense = facing_defense
         still_flying = b.advance(gmap, units, shots, real_time, rng,

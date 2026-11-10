@@ -153,7 +153,11 @@ def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     the weapon table's meter->tile derivation.
     """
     base = base_ticks_per_tile(gmap)
-    samples = footprint_samples(gmap, fy, fx, unit.footprint)
+    from simulation import unit_impulse
+    samples = footprint_samples(
+        gmap, fy, fx, unit.footprint,
+        effort_scale_q16=unit_impulse.effort_scale_q16(
+            unit_impulse.table_for(gmap), unit))   # G5p-a2, at compile time
     terrain = default_speed(samples, base)
     pct = speed_pct(order_type, reversing)
     if pct >= 1.0:

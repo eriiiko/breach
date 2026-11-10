@@ -115,6 +115,7 @@ build = [
 "src/simulation/turning.py" = "Class T: slot 1a's turning law (every unit's facing, G5p-a1; the bots read its predictor outside step) and slot 3's direction rule (theta, G1p-c), built from P6"
 "src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge); Class T at P6b"
 "src/simulation/unit_fixed.py" = "Class T: built from P6"
+"src/simulation/unit_impulse.py" = "Class T: the unit impulse law (G5p-a2: slot 1a's integration before the turn, slot 1b's shove, slot 2 / 4c's pushes and recoil, slot 3's displacement), built from P6"
 "src/simulation/vent_system.py" = "Class T: the vent kernels (slot 9e), built at P6b"
 "src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step)"
 "src/simulation/wall_fixed.py" = "setup only"

@@ -607,14 +607,26 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: (was field 3086f0bfa2047def383cbe22d2e0d964f5e681d584a75b8063ce35dbe879ef44,
 #: tick 3c33cb848ddb0c0319fb40d214e21ff07c046d9a31ae945290cc806ae9076271,
 #: units 0cec524a21865e061416a1e1708eb00fe0b2218a1c1f8214af3a4e9aa243b617)
+#: RE-MEASURED at #183 G5p-a2 re-pin 1 (2026-11-10, the unit impulse law built with every input at zero -- [impulse]
+#: bullet_push_mult = recoil_mult = 0, no shove -- and the MOVE_DIR walk
+#: on the Q16 grid (the step is the speed law's rational rounded ONCE to
+#: Q16 tiles per tick, critique B M6)):
+#: the same wind-up-0 run on the new tree. Outcome, ticks and field_digest
+#: UNCHANGED (win 1 at 240); tick_digest and the unit stream move. SOLE CAUSE, verified on the same tree: with the pre-G5p-a2 float walk
+#: step reinstated (a scratch monkeypatch of Simulation._step_move_dir)
+#: this run gives EXACTLY the previous values -- slot 1a's integration,
+#: slot 3's displacement loop, the effort member, the digest keys, the
+#: events and the door change nothing while every input is off.
+#: (was tick 8617b35e8ac55502272f08ad134afc0b23c2ccb715eca0761e7fd9e414540624,
+#: units 07bb8c856fe9cf2c0d6dec11a044cc6671548150db87e8743b0701654faffbd4)
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
     field_digest="65597eedae3789674659a53d292031f1"
                  "332b4c608d3bac91c240db109abf2bf2",
-    tick_digest="8617b35e8ac55502272f08ad134afc0b"
-                "23c2ccb715eca0761e7fd9e414540624",
-    unit_stream="07bb8c856fe9cf2c0d6dec11a044cc66"
-                "71548150db87e8743b0701654faffbd4")
+    tick_digest="8fb8dbe88af5bc83d618c0104ed68ee7"
+                "835eabb433825b66289f90035f4b7d4b",
+    unit_stream="2e1dde64fe02fe7f4dd3e7e22f6bf36d"
+                "c641658f6064e9f1ba22634a55626fe2")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

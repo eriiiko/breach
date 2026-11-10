@@ -26,6 +26,7 @@ import math
 from config import CFG
 from simulation import exposure as _exposure
 from simulation import turning as _turning
+from simulation import unit_impulse as _unit_impulse
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
 from simulation.movement import default_speed, footprint_samples
@@ -175,13 +176,19 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
         # Status gate: an immobilized zombie's stride clock PAUSES (the
         # accumulator does not advance while suppressed — cadence resumes
         # where it left off, mirroring the marine path-offset shift).
-        if not flags.can_move:
+        # G5p-a2: a zombie catching itself after a push (its reaction delay,
+        # unit_impulse.walk_allowed) does not walk either: the stride clock
+        # pauses the same way.
+        if not flags.can_move or not _unit_impulse.walk_allowed(z):
             continue
         # Terrain cadence (mobility design §4.1): the §4 area-average mobility
         # over the zombie's CURRENT footprint scales its base cadence into the
         # ticks this step costs — a zombie clambering through furniture is 2.5x
         # slower. A* stays speed-blind; the multiplier composes here only.
-        samples = footprint_samples(gmap, z.tile_y, z.tile_x, z.footprint)
+        samples = footprint_samples(
+            gmap, z.tile_y, z.tile_x, z.footprint,
+            effort_scale_q16=_unit_impulse.effort_scale_q16(
+                _unit_impulse.table_for(gmap), z))
         cadence = z.speed_ticks_per_tile
         if cadence is None:
             if shamble_ticks is None:
@@ -250,6 +257,9 @@ def convert_marines_to_zombies(units):
             # G5p-a1: the turn comes to rest where the body faces (a revived
             # corpse inherits no stale target or angular velocity).
             _turning.settle(u)
+            # G5p-a2: nor a stale push (zeroed at death too; a push that
+            # landed on the corpse after its killing hit is dropped here).
+            _unit_impulse.clear(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

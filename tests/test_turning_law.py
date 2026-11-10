@@ -507,14 +507,27 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
 #: ship_demo seed 1 and the box at G5p-a1's re-pin 1 (the representation and
 #: the routing, unlimited acceleration): the values the pins held before the
 #: shipped 30 rad/s^2 moved them (tests/test_zombie_control.py).
+#: RE-MEASURED at #183 G5p-a2 re-pin 1 (2026-11-10, the unit impulse law built with every input at zero -- [impulse]
+#: bullet_push_mult = recoil_mult = 0, no shove -- and the MOVE_DIR walk
+#: on the Q16 grid (the step is the speed law's rational rounded ONCE to
+#: Q16 tiles per tick, critique B M6)):
+#: the same unlimited-acceleration run on the new tree. Outcome, ticks and
+#: field_digest UNCHANGED; tick_digest and the unit stream move. SOLE CAUSE, verified on the same tree: with the pre-G5p-a2 float walk
+#: step reinstated (a scratch monkeypatch of Simulation._step_move_dir)
+#: this run gives EXACTLY the previous values -- slot 1a's integration,
+#: slot 3's displacement loop, the effort member, the digest keys, the
+#: events and the door change nothing while every input is off.
+#: (was tick 6e408f1955d11e567974b29252a93ecb080cff000e6d38a7d9653476d095267a,
+#: units c792732fc27000f1adf5d04c223c598022016368c9dbd81c79ffba31bac3e5b5;
+#: the box is UNCHANGED: its idle marines never walk.)
 _RE_PIN_1_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=246,
     field_digest="4a30c340a0982a80080a1d29f85cdc37"
                  "7bb579e9ff85c6f685699c86fe725440",
-    tick_digest="6e408f1955d11e567974b29252a93ecb"
-                "080cff000e6d38a7d9653476d095267a",
-    unit_stream="c792732fc27000f1adf5d04c223c5980"
-                "22016368c9dbd81c79ffba31bac3e5b5")
+    tick_digest="9932ea99d2b3149ed58be5ddf07c9197"
+                "2b1b531087e4f66a196c26987a7cba2e",
+    unit_stream="6d94773610af96c82da8ce023d69d496"
+                "a97c8175d65d7c59b80219fea77a1f46")
 _RE_PIN_1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="a672c7249e18d0eebbb8e398b696bd9c"

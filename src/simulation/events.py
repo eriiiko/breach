@@ -154,6 +154,31 @@ class ReloadEvent:
 
 
 @dataclass
+class ShoveEvent:
+    """A unit SHOVED another this tick (gameplay pack G5p-a2,
+    ``Simulation.shove_intent`` consumed in slot 1b and a target found):
+    ``unit_id`` shoved ``target_id``, whose impulse lands in the next slot
+    1a. Render-only (the animation session, #184), like
+    :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves
+    no digest; the push itself is synced unit state."""
+    unit_id: int                    # the shover
+    target_id: int                  # the unit shoved
+
+
+@dataclass
+class StaggerEvent:
+    """A unit's in-place SWAY overflowed this tick (G5p-a2,
+    ``unit_impulse.integrate`` in slot 1a): a push beyond what it absorbs
+    without a step, so it is now pushed (``pv``) and catching itself for
+    ``ticks`` ticks (the reaction delay; it cannot walk meanwhile, it can
+    shoot). Emitted on every overflow, a renewed one included. Render-only,
+    like :class:`ReloadEvent`: outside the synced event digest."""
+    unit_id: int                    # the staggered unit
+    ticks: int                      # the reaction delay's length, in ticks
+
+
+@dataclass
 class ThrowEvent:
     """A unit STARTED a grenade throw this tick (gameplay pack G3p): emitted
     by ``Simulation._start_throw`` on the tick the throw verb is consumed
@@ -313,6 +338,8 @@ __all__ = [
     "attacker_value",
     "ShotFiredEvent",
     "ReloadEvent",
+    "ShoveEvent",
+    "StaggerEvent",
     "ThrowEvent",
     "LaserFiredEvent",
     "SprayJetEvent",

@@ -394,6 +394,11 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     if was_alive and unit.current_hp <= 0:
         unit.alive = False
         expo.on_death(unit, exposure_landing)
+        # G5p-a2: a corpse carries no push (the impulse law integrates only
+        # the living; a conversion zeroes it again).
+        if hasattr(unit, "impulse_books"):
+            from simulation import unit_impulse
+            unit_impulse.clear(unit)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:

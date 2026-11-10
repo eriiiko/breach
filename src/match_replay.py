@@ -83,7 +83,11 @@ FORMAT_NAME = "breach-match-replay"
 #: v4 (gameplay pack G3p, 2026-11-10): ``throw_grenade_intent`` takes its fuse
 #: in INTEGER ticks and a ``kind``, and a grenade leaves the hand after the
 #: throw's wind-up -- a v3 recording would replay as another match.
-FORMAT_VERSION = 4
+#: v5 (gameplay pack G5p-a2, 2026-11-10): the ``shove_intent`` kind, and the
+#: unit impulse law -- a round that hits pushes its target, the shooter
+#: recoils, a walk is a Q16 step -- so a v4 recording would replay as
+#: another match.
+FORMAT_VERSION = 5
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -97,6 +101,7 @@ INTENT_KINDS = {
     "throw_grenade_intent": ("int", "int", "int", "int", "int?", "int"),
     "use_intent": ("int",),
     "reload_intent": ("int",),
+    "shove_intent": ("int",),
     "drive_zombies": ("ints",),
 }
 #: Entry points the tap sees but the format refuses to record.
