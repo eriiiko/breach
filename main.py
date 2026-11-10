@@ -956,6 +956,8 @@ def main():
                 selected_unit=selected,
                 planning_phase=control_source.planning_phase,
                 current_mode=control_source.current_mode,
+                grenade_kind=getattr(control_source,
+                                     "selected_grenade_kind", None),
             )
             # Screen-space HUD (§16): hotbar, round banner, planning clock,
             # and the DS3 menu when it is open. After the panel so the menu

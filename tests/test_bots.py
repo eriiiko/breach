@@ -238,7 +238,10 @@ def test_the_grenade_rule_throws_at_a_pair_and_not_near_a_teammate(tmp_path):
     bot = units[0]
     g0 = bot.has_grenade
     assert g0 > 0
-    _run(sim, [BotTeam(0)], 1)
+    # the grenade leaves the hand after the wind-up (G3p), along the facing
+    # the bot has then -- which it holds on the lob's direction meanwhile
+    windup = sim.weapons_tables.weapons.by_name["hand_grenade"]         .throw_windup_ticks
+    _run(sim, [BotTeam(0)], 1 + windup)
     assert bot.has_grenade == g0 - 1
     proj = sim.projectiles[-1]
     assert abs(proj.target_fx - 0.5 - centre[0]) <= 2.0

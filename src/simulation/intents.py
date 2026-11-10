@@ -77,19 +77,23 @@ class AimIntent:
 
 @dataclass
 class ThrowIntent:
-    """Lob a grenade along ``dx_q``/``dy_q`` (Q16.16 unit vector), fusing after
-    ``fuse_seconds`` (§3c THROW). Edge-triggered: latched by the facade until
-    the next tick consumes it, so a button tap between two ticks is never
-    dropped and never double-fired."""
+    """Lob a grenade along ``dx_q``/``dy_q`` (Q16.16 unit vector), fusing
+    ``fuse_ticks`` INTEGER ticks after it leaves the hand (§3c THROW; G3p).
+    Edge-triggered: latched by the facade until the next tick consumes it,
+    so a button tap between two ticks is never dropped and never
+    double-fired. ``kind`` is the index of the hand-grenade ``[ammo.*]`` row
+    thrown (``WeaponsTables.hand_grenade_rows``)."""
 
     dx_q: int
     dy_q: int
-    fuse_seconds: float
+    fuse_ticks: int
     #: How far to lob, Q16.16 tiles (#121: a controller aiming at a POINT,
     #: the bots' group centre). ``None`` = the v0.1 fixed reach (the gamepad's
     #: throw, unchanged). The consumer clamps it to the hand grenade row's
     #: ``max_throw_range``.
     reach_q: int | None = None
+    #: The hand-grenade row's index (0 = ``grenade_frag``).
+    kind: int = 0
 
 
 __all__ = [

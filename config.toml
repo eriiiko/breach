@@ -3151,6 +3151,11 @@ max_throw_range = 30
 fuse_min_seconds = 0.0
 fuse_max_seconds = 10.0
 fuse_default_seconds = 1.0
+# G3p (#183): the throw's WIND-UP -- the verb is consumed, a render-only
+# ThrowEvent is emitted, and the grenade leaves the hand this long after, along
+# the facing the unit has then. Quantized once to ticks (0 = the same-tick
+# throw). PLACEHOLDER: Erik tunes at the play test.
+throw_windup_seconds = 0.3
 mass_kg = 0.4
 loudness = 0.0                        # the payload is what's loud
 
@@ -3523,6 +3528,20 @@ ap = 0
 speed_tiles_per_tick = 1.25
 travel_speed_tiles_per_second = 30.0
 payload = "poison_cloud"
+
+# G3p (#183): the flashbang hand grenade -- the same lobbed delivery, the
+# payload row that flashes and blinds. APPEND-ONLY order: a hand-grenade
+# row's position among the family's rows is the throw verb's `kind` index
+# (frag 0, smoke 1, tear 2, poison 3, flash 4; the incendiary row, further
+# down, is 5) -- insert a new grenade row at the END of the family.
+[ammo.grenade_flash]
+family = "hand_grenade"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+travel_speed_tiles_per_second = 30.0
+payload = "flashbang"
 
 # --- W3 40 mm launcher rounds (mechanics/03 §4/§6): payload refs point at THE
 # SAME payload rows as the hand grenades — one definition of frag/smoke/tear/
@@ -4193,7 +4212,16 @@ flash = 0.0                           # PLACEHOLDER (G4 P5): its hot soot lights
 flash = 200.0                         # PLACEHOLDER: light units at peak, under the transient cap (1024; critique B1). 800 saturated the room for ~8 s (Erik, 2026-11-07)
 flash_decay_s = 0.1                   # PLACEHOLDER: Erik wants the flash VERY short -- the blinding is a unit debuff (gameplay), not the light
 flash_color = [1.0, 1.0, 1.0]
-emit_blast_smoke = false              # a flash alone; its blinding of units is gameplay, not here
+emit_blast_smoke = false              # a flash alone; the light is render-only
+# G3p (#183): the flash BLINDS (simulation/flash_blind.py): every living unit of
+# ANY team within blind_radius tiles with a line of sight to the detonation is
+# BLINDED (no aim: its fire falls to the snap cone) for blind_seconds scaled by
+# distance (1 at the flash, 0 at the radius) and by facing (1 within 60 degrees
+# of the flash, blind_away_frac with its back to it). ALL THREE ARE PLACEHOLDERS
+# Erik tunes at the play test.
+blind_radius = 12.0                   # PLACEHOLDER: tiles
+blind_seconds = 4.0                   # PLACEHOLDER: at the flash, facing it
+blind_away_frac = 0.25                # PLACEHOLDER: the share left facing straight away
 
 # --- Department hazards (levelgen vocabulary B.4 / B.5, #133) ---------------
 # Fired by a heat-triggered [[entity]] timed_charge (trigger = "heat"): the
@@ -4478,9 +4506,9 @@ belt = ["hand_grenade", "breach_charge"]
 # nothing, engine/12 §5), launch `main.py --level playground`, issue fire
 # orders, watch rooms burn. Zombies carry no loadout.
 # ---------------------------------------------------------------------------
-[loadouts.rifleman]      # the v1 loadout (rl-ready scope §3): K5 + 2 frags
+[loadouts.rifleman]      # the v1 loadout (rl-ready scope §3, G3p): K5 + 2 frags, a smoke, a flashbang
 weapon = "k5_carbine"
-grenades = 2
+grenades = { grenade_frag = 2, grenade_smoke = 1, grenade_flash = 1 }   # by hand-grenade [ammo.*] row; a bare int means that many frags
 explosives = 2
 magazines = 3            # TOTAL carried, the one in the gun included (G2p: one loaded, two spare); 0 or absent = spares untracked, today's infinite auto-reload
 

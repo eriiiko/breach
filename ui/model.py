@@ -751,14 +751,34 @@ def ammo_text(unit, tick: int, weapons):
     return text
 
 
+def grenade_text(rows, counts, selected=None) -> str:
+    """The grenade line's text (G3p, pure): each hand-grenade row the unit
+    carries with its count (``frag 2  smoke 1  flash 1``, the row name
+    without its ``grenade_`` prefix), the SELECTED kind in brackets
+    (``[frag 2]``; shown even at 0), ``none`` when it carries none and
+    nothing is selected. ``rows`` are the row names in kind order, ``counts``
+    the unit's block."""
+    parts = []
+    for k, (row, n) in enumerate(zip(rows, counts)):
+        name = row[len("grenade_"):] if row.startswith("grenade_") else row
+        if k == selected:
+            parts.append(f"[{name} {n}]")
+        elif n > 0:
+            parts.append(f"{name} {n}")
+    return "  ".join(parts) if parts else "none"
+
+
 def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
-                      current_mode=None) -> list:
+                      current_mode=None, grenade_kind=None) -> list:
     """The side panel's game-state block as :class:`PanelLine` rows: the run
     state, then the selected unit's summary. A turn-based ruleset shows its
     round / phase / tick-in-round, planning phase, AP and queued orders;
     under ``ContinuousRealtime`` (direct control, a watched match) none of
     that exists, so the panel shows the tick, the unit's hit points, its
-    weapon and its MAGAZINE (rounds in the gun, spare magazines) instead."""
+    weapon and its MAGAZINE (rounds in the gun, spare magazines) instead.
+    ``grenade_kind`` (G3p) is the direct control's selected grenade kind (an
+    index of the hand-grenade rows) for the grenade line, None = none
+    selected."""
     from simulation.ruleset import ContinuousRealtime
     continuous = isinstance(sim.ruleset, ContinuousRealtime)
     paused = sim.is_paused()
@@ -806,9 +826,11 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
             lines.append(PanelLine(
                 f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
                 13, None, 16))
-        lines.append(PanelLine(f"Grenades: {selected_unit.has_grenade}   "
-                               f"Charges: {selected_unit.has_explosive}",
-                               12, None, 18))
+        rows = sim.weapons_tables.hand_grenade_rows
+        lines.append(PanelLine(
+            f"Grenades: {grenade_text(rows, selected_unit.grenade_counts, grenade_kind)}"
+            f"   Charges: {selected_unit.has_explosive}"
+            + ("  (4 cycles)" if continuous else ""), 12, None, 18))
         if not continuous:
             lines.append(PanelLine(
                 f"Queued orders: {len(selected_unit.orders)}", 12,
@@ -822,7 +844,7 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
 
 
 __all__ = [
-    "PanelLine", "ammo_text", "panel_state_lines",
+    "PanelLine", "ammo_text", "grenade_text", "panel_state_lines",
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
     "PlanOverlay", "PlanningClock", "RoundEndGhost", "TargetMarker",

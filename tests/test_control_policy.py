@@ -108,7 +108,7 @@ def test_latch_kinds_go_out_on_the_first_tick_only():
     pol.set_rows(_row(set_move_dir__dx_q=FP_ONE, set_aim__dy_q=FP_ONE,
                       set_trigger__held=1,
                       throw_grenade_intent__dx_q=FP_ONE,
-                      throw_grenade_intent__fuse_seconds=FP_ONE,
+                      throw_grenade_intent__fuse_ticks=24,
                       use_intent=1)[None])
     for t in range(3):
         sim.tick = t
@@ -157,23 +157,24 @@ def test_rows_drive_only_the_living_units_still_on_the_team():
     assert {a[0] for _, _, a in sim.calls} == {1, 4}
 
 
-def test_the_fuse_and_reach_columns_decode_exactly():
-    """Property: the fuse column (Q16.16 seconds) reaches the entry point as
-    the exact float q / 65536, and the reach column's NONE_Q as None, any
-    other value as that int. Breaks if a float is formed inexactly (the
-    recording's float.hex would then not be what the policy meant) or None
-    cannot be expressed."""
+def test_the_fuse_kind_and_reach_columns_decode_exactly():
+    """Property (G3p): the fuse column reaches the entry point as that many
+    INTEGER ticks (an int, not a float), the kind column as that hand-grenade
+    row index, and the reach column's NONE_Q as None, any other value as that
+    int. Breaks if the fuse is formed as a float again, the kind is dropped
+    or reordered, or None cannot be expressed."""
     sim = _Sim({0: [_U(7, 0)]})
     pol = cp.AgentPolicy(0)
-    q = 98304 + 3          # 1.5 s + 3 LSB
     pol.set_rows(np.stack([
         _row(throw_grenade_intent__dx_q=FP_ONE,
-             throw_grenade_intent__fuse_seconds=q,
-             throw_grenade_intent__reach_q=cp.NONE_Q)]))
+             throw_grenade_intent__fuse_ticks=37,
+             throw_grenade_intent__reach_q=cp.NONE_Q,
+             throw_grenade_intent__kind=4)]))
     pol.handle_frame(sim, None)
     (_, _, args), = [c for c in sim.calls if c[1] == "throw_grenade_intent"]
-    assert args[3] == q / 65536.0 and args[3].hex() == (q / 65536.0).hex()
+    assert args[3] == 37 and type(args[3]) is int
     assert args[4] is None
+    assert args[5] == 4 and type(args[5]) is int
     sim2 = _Sim({0: [_U(7, 0)]})
     sim2.tick = 1          # a new tick (a second call in one tick is a no-op)
     pol.set_rows(np.stack([_row(throw_grenade_intent__dy_q=-FP_ONE,

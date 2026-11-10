@@ -65,6 +65,7 @@ from simulation.intents import FP_ONE
 from simulation.stats import effective_vitality
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
+from simulation.weapons import FRAG_ROW, fuse_ticks_from_seconds
 from simulation.weapons import get_tables as weapon_tables
 from simulation import vision
 
@@ -152,7 +153,8 @@ def _direction_q(dx, dy):
 
 class _BotState:
     """One unit's controller-side memory (never on the Unit: not synced)."""
-    __slots__ = ("path", "idx", "goal", "replan_at", "last_throw_tick")
+    __slots__ = ("path", "idx", "goal", "replan_at", "last_throw_tick",
+                 "throw_aim")
 
     def __init__(self):
         self.path = None          # list of top-left tiles, or None
@@ -160,6 +162,7 @@ class _BotState:
         self.goal = None          # the top-left tile the path leads to
         self.replan_at = 0
         self.last_throw_tick = None
+        self.throw_aim = None     # the lob's direction, held through its wind-up
 
 
 class BotTeam(ControlSource):
@@ -170,8 +173,13 @@ class BotTeam(ControlSource):
         self.settings = bot_settings(CFG) if settings is None else settings
         self.cooldown_ticks = max(1, int(round(
             self.settings.grenade_cooldown_s * CFG.clock.ticks_per_second)))
-        grenade = weapon_tables().weapons.by_name["hand_grenade"]
-        self.fuse_seconds = float(grenade.fuse_default_seconds)
+        tables = weapon_tables()
+        grenade = tables.weapons.by_name["hand_grenade"]
+        # The throw verb takes INTEGER ticks and a kind (G3p): converted once
+        # here. Bots throw FRAGS only (smoke and flashbangs are a later patch).
+        self.fuse_ticks = fuse_ticks_from_seconds(
+            grenade.fuse_default_seconds, CFG.clock.ticks_per_second)
+        self.frag_kind = tables.hand_grenade_rows.index(FRAG_ROW)
         self.throw_range = int(grenade.max_throw_range)
         #: The team's shared last known enemy position (a top-left tile, so
         #: it is a footprint a unit stood on), or None.
@@ -210,7 +218,13 @@ class BotTeam(ControlSource):
             st.path = None
         else:
             move_dir = self._advance(sim, u, st)
-        if target is not None:
+        if st.throw_aim is not None and u.throw_release_tick >= 0:
+            # Winding up a lob (G3p): the grenade leaves along the facing the
+            # unit has THEN, so hold the aim on the lob's direction (the
+            # group's centre, as before the wind-up) and hold fire.
+            sim.set_aim(u.id, *st.throw_aim)
+            sim.set_trigger(u.id, False)
+        elif target is not None:
             (tx, ty), (ux, uy) = _centre(target), _centre(u)
             aim = _direction_q(tx - ux, ty - uy)
             fire = True
@@ -331,9 +345,10 @@ class BotTeam(ControlSource):
         if d is None:
             return False
         reach_q = quantize_scalar(float(_d2(uc, c)) ** 0.5)
-        sim.throw_grenade_intent(u.id, d[0], d[1], self.fuse_seconds,
-                                 reach_q=reach_q)
+        sim.throw_grenade_intent(u.id, d[0], d[1], self.fuse_ticks,
+                                 reach_q=reach_q, kind=self.frag_kind)
         st.last_throw_tick = tick
+        st.throw_aim = d
         return True
 
     # ------------------------------------------------------------------

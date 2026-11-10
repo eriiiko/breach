@@ -58,6 +58,7 @@ added; the snapshot contract is forward-compatible.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Integral
 from typing import List, Optional
 
 import numpy as np
@@ -88,8 +89,9 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
     apply_teargas_blind, apply_wind_knockdown,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
-    DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
+    DoorDestroyedEvent, ExplosionEvent, ThrowEvent, WallDestroyedEvent,
 )
+from simulation.unit import THROW_NO_REACH
 from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
@@ -146,7 +148,8 @@ from simulation.damage import tick_credit
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
 from simulation.weapons import (
-    FIRE_ORDER_ARCHETYPES, rebuild_tables as rebuild_weapon_tables,
+    FIRE_ORDER_ARCHETYPES, fuse_ticks_from_seconds,
+    rebuild_tables as rebuild_weapon_tables,
 )
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
 # rebuilt beside the weapon tables at every construction/reset.
@@ -998,24 +1001,43 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def throw_grenade_intent(self, unit_id: int, dx_q: int, dy_q: int,
-                             fuse_seconds: float,
-                             reach_q: int | None = None) -> None:
-        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c). Consumed
-        (and cleared) at the next tick; ignored if the unit is out of
-        grenades then. ``reach_q`` (#121) is the lob distance in Q16.16
-        tiles, clamped to the hand grenade's ``max_throw_range`` at
-        consumption; ``None`` keeps the fixed v0.1 reach (the gamepad)."""
+                             fuse_ticks: int,
+                             reach_q: int | None = None,
+                             kind: int = 0) -> None:
+        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c).
+        Consumed (and cleared) at the next tick by :meth:`_start_throw`.
+
+        ``kind`` (G3p) is the index of the hand-grenade ``[ammo.*]`` row
+        thrown (``self.weapons_tables.hand_grenade_rows``; 0 = the frag),
+        refused by name here when it names none. ``fuse_ticks`` is the fuse
+        in INTEGER ticks (was float seconds: every caller converts once at
+        its own door, ``weapons.fuse_ticks_from_seconds``), counted from the
+        tick the grenade LEAVES the hand and clamped at release to the hand
+        grenade row's fuse range. ``reach_q`` (#121) is the lob distance in
+        Q16.16 tiles, clamped to the hand grenade's ``max_throw_range`` at
+        release; ``None`` keeps the fixed v0.1 reach (the gamepad).
+
+        The verb starts a WIND-UP (``[weapons.hand_grenade]
+        throw_windup_seconds``): ignored if the unit has none of that kind,
+        is already winding up, or cannot act; otherwise a render-only
+        :class:`~simulation.events.ThrowEvent` is emitted and the grenade
+        leaves the hand that many ticks later (the count is spent then)."""
+        self.weapons_tables.hand_grenade_kind(kind)         # refuses by name
+        if isinstance(fuse_ticks, bool) or not isinstance(fuse_ticks, Integral):
+            raise TypeError(
+                f"throw_grenade_intent: fuse_ticks must be an integer number "
+                f"of ticks (G3p: it was float seconds), got {fuse_ticks!r}")
         if self._intent_log is not None:
             self._intent_log.record(
                 self.tick, "throw_grenade_intent",
-                (int(unit_id), int(dx_q), int(dy_q), float(fuse_seconds),
-                 None if reach_q is None else int(reach_q)))
+                (int(unit_id), int(dx_q), int(dy_q), int(fuse_ticks),
+                 None if reach_q is None else int(reach_q), int(kind)))
         u = self.get_unit(unit_id)
         if u is None:
             return
         u.pending_throw = _intents.ThrowIntent(
-            int(dx_q), int(dy_q), float(fuse_seconds),
-            None if reach_q is None else int(reach_q))
+            int(dx_q), int(dy_q), int(fuse_ticks),
+            None if reach_q is None else int(reach_q), int(kind))
         self._possessed_ids.add(unit_id)
 
     def use_intent(self, unit_id: int) -> None:
@@ -1086,9 +1108,13 @@ class Simulation:
         for u in self.units:
             if u.id not in self._possessed_ids or not u.alive or u.is_zombie:
                 # A now-invalid possessor (dead / unpossessed / wrong team)
-                # releases a held trigger, so a later rebind starts clean.
+                # releases a held trigger, so a later rebind starts clean,
+                # and drops a throw wind-up (G3p: nothing leaves the hand,
+                # the count was never spent).
                 if getattr(u, "live_trigger", False):
                     u.live_trigger = False
+                if getattr(u, "throw_release_tick", -1) >= 0:
+                    u.throw_release_tick = -1
                 continue
 
             # AIM -> facing, turned at most the unit's turn rate this tick
@@ -1100,11 +1126,13 @@ class Simulation:
                 u.facing = unit_fixed.dequantize_scalar(
                     self.facing_after_turn_q16(u, aim.dx_q, aim.dy_q))
 
-            # THROW -> spawn a grenade now (edge; latched until consumed).
+            # THROW -> start the wind-up (edge; latched until consumed); a
+            # wind-up under way is carried to its release tick (G3p).
             throw = getattr(u, "pending_throw", None)
             if throw is not None:
                 u.pending_throw = None
-                self._spawn_direct_grenade(u, throw)
+                self._start_throw(u, throw)
+            self._advance_throw(u)
 
             # USE -> toggle an adjacent door latch (edge; latched).
             if getattr(u, "pending_use", False):
@@ -1124,42 +1152,98 @@ class Simulation:
             # the tile-target band-aid (_aim_fire_order / live_fire_order) is
             # gone, and with it the unbounded-phase landmine (design §8).
 
-    def _spawn_direct_grenade(self, u, throw) -> None:
-        """THROW consumption: lob a grenade from ``u`` along the intent's
-        Q16.16 unit vector, fusing after ``throw.fuse_seconds``. Reuses the
-        shipped :class:`~simulation.combat.Projectile` (the WEGO grenade path);
-        the target tile is derived deterministically from the fixed-point
-        direction. No-op if the unit has no grenade left."""
-        if getattr(u, "has_grenade", 0) <= 0:
+    def _start_throw(self, u, throw) -> None:
+        """THROW consumption (the law of :meth:`throw_grenade_intent`, G3p).
+        Integer state only, no random number. A throw of a kind the unit
+        does not carry, one arriving while the unit is already winding up,
+        and one from a unit whose statuses forbid acting, do nothing and
+        emit nothing. Otherwise a :class:`~simulation.events.ThrowEvent` is
+        emitted and the wind-up starts; with a wind-up of 0 ticks the
+        grenade leaves the hand NOW, along the intent's own vector -- the
+        pre-G3p same-tick throw, bit for bit."""
+        if u.throw_release_tick >= 0:
+            return                            # already winding up
+        if u.grenade_counts[throw.kind] <= 0:
+            return                            # none of that kind
+        if not composed_flags(u).can_act:
+            return                            # stunned, paralysed, ...
+        ticks = self.weapons_tables.weapons.by_name[
+            "hand_grenade"].throw_windup_ticks
+        self.tick_events.append(ThrowEvent(unit_id=int(u.id),
+                                           kind=int(throw.kind),
+                                           ticks=int(ticks)))
+        if ticks == 0:
+            self._release_grenade(u, throw.kind, throw.fuse_ticks,
+                                  throw.reach_q, throw.dx_q, throw.dy_q)
             return
+        u.throw_release_tick = self.tick + ticks
+        u.throw_kind = int(throw.kind)
+        u.throw_fuse_ticks = int(throw.fuse_ticks)
+        u.throw_reach_q = (THROW_NO_REACH if throw.reach_q is None
+                           else int(throw.reach_q))
+
+    def _advance_throw(self, u) -> None:
+        """One tick of a wind-up under way: a unit that can no longer act
+        throws NOTHING and keeps its count (the wind-up is dropped); at the
+        release tick the grenade leaves the hand along the facing the unit
+        has THEN (Q16 ``cos`` / ``sin`` of its facing, world y down), at the
+        reach the intent named. (A dead unit never gets here: the consume
+        loop drops its wind-up.)"""
+        if u.throw_release_tick < 0:
+            return
+        if not composed_flags(u).can_act:
+            u.throw_release_tick = -1
+            return
+        if self.tick < u.throw_release_tick:
+            return
+        u.throw_release_tick = -1
+        facing_q = unit_fixed.quantize_scalar(u.facing)
+        self._release_grenade(
+            u, u.throw_kind, u.throw_fuse_ticks,
+            None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
+            unit_fixed.cos_q16(facing_q), -unit_fixed.sin_q16(facing_q))
+
+    def _release_grenade(self, u, kind, fuse_ticks, reach_q, dx_q,
+                         dy_q) -> None:
+        """The grenade of throw kind ``kind`` leaves ``u``'s hand: lob it
+        along the Q16.16 vector ``(dx_q, dy_q)``, fusing ``fuse_ticks`` ticks
+        (clamped to the hand grenade row's fuse range) later, and spend one
+        of that kind. Reuses the shipped
+        :class:`~simulation.combat.Projectile` (the WEGO grenade path); the
+        target tile is derived deterministically from the fixed-point
+        direction."""
+        if u.grenade_counts[kind] <= 0:
+            return
+        hand = self.weapons_tables.weapons.by_name["hand_grenade"]
         cx = u.center_tile_x()
         cy = u.center_tile_y()
-        dirx = _intents.dequantize(throw.dx_q)
-        diry = _intents.dequantize(throw.dy_q)
+        dirx = _intents.dequantize(dx_q)
+        diry = _intents.dequantize(dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
         # Erik; the grenade's own fuse/blast are the shipped numbers). A
         # controller throwing at a point (#121, the bots) names its reach in
         # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
-        if throw.reach_q is None:
+        if reach_q is None:
             reach = 6.0  # tiles
         else:
-            max_q = int(self.weapons_tables.weapons.by_name[
-                "hand_grenade"].max_throw_range) << _intents.FP_SHIFT
-            reach = _intents.dequantize(min(max(0, int(throw.reach_q)),
-                                            max_q))
+            max_q = int(hand.max_throw_range) << _intents.FP_SHIFT
+            reach = _intents.dequantize(min(max(0, int(reach_q)), max_q))
         tgt_fx = cx + dirx * reach
         tgt_fy = cy + diry * reach
+        lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
+        hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
         proj = Projectile(
             ORDER_GRENADE,
             cx, cy,
             tgt_fx + 0.5, tgt_fy + 0.5,
-            fuse_seconds=throw.fuse_seconds,
+            fuse_seconds=0.0,
             thrown_tick=self.tick,
-            ammo_name="grenade_frag",
+            ammo_name=self.weapons_tables.hand_grenade_kind(kind),
             owner_id=getattr(u, "id", -1),
+            fuse_ticks=min(max(int(fuse_ticks), lo), hi),
         )
         self.projectiles.append(proj)
-        u.has_grenade -= 1
+        u.grenade_counts[kind] -= 1
 
     def _direct_use(self, u) -> None:
         """USE consumption: flip the ``want_open`` latch of the first live door

@@ -154,6 +154,23 @@ class ReloadEvent:
 
 
 @dataclass
+class ThrowEvent:
+    """A unit STARTED a grenade throw this tick (gameplay pack G3p): emitted
+    by ``Simulation._start_throw`` on the tick the throw verb is consumed
+    and a wind-up begins (the unit carries a grenade of that kind and is not
+    already winding up; a refused verb emits nothing). ``kind`` is the throw
+    verb's hand-grenade row index; ``ticks`` the wind-up's length -- the
+    grenade leaves the hand ``ticks`` ticks later (0: this very tick).
+    Render-only (the animation session, #184, plays the throw clip to it),
+    like :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the unit that is throwing
+    kind: int                       # the hand-grenade row index
+    ticks: int                      # the wind-up's length, in ticks
+
+
+@dataclass
 class LaserFiredEvent:
     """A hitscan beam was fired (mechanics/03 §5, W2 — the Lance family).
 
@@ -296,6 +313,7 @@ __all__ = [
     "attacker_value",
     "ShotFiredEvent",
     "ReloadEvent",
+    "ThrowEvent",
     "LaserFiredEvent",
     "SprayJetEvent",
     "ProjectileGlowEvent",

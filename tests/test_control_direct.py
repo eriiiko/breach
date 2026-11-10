@@ -204,6 +204,7 @@ def test_a_frame_becomes_intents_through_the_one_emit_path():
     hand grenade's fuse, a use on its edge. Breaks if a device half reaches
     the facade by another path or an unnamed aim overwrites the facing."""
     dc = DirectControl(keys=key_table(CFG))
+    dc.grenade_kind = 1                     # the selected kind (G3p)
     sim = _FakeSim([_unit(1)])
     dc._emit(sim, 1, DeviceFrame(move=(FP_ONE, 0, FP_ONE), aim=(0, -FP_ONE),
                                  trigger=True, throw=(0, -FP_ONE, 5 * FP_ONE),
@@ -213,7 +214,7 @@ def test_a_frame_becomes_intents_through_the_one_emit_path():
         ("set_aim", (1, 0, -FP_ONE), {}),
         ("set_trigger", (1, True), {}),
         ("throw_grenade_intent", (1, 0, -FP_ONE, dc.grenade_fuse),
-         {"reach_q": 5 * FP_ONE}),
+         {"reach_q": 5 * FP_ONE, "kind": 1}),
         ("use_intent", (1,), {}),
     ]
     sim.calls.clear()
