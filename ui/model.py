@@ -827,10 +827,14 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
                 f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
                 13, None, 16))
         rows = sim.weapons_tables.hand_grenade_rows
+        # Two lines: the kinds with the selection, then the charges (one line
+        # is wider than the panel).
         lines.append(PanelLine(
-            f"Grenades: {grenade_text(rows, selected_unit.grenade_counts, grenade_kind)}"
-            f"   Charges: {selected_unit.has_explosive}"
-            + ("  (4 cycles)" if continuous else ""), 12, None, 18))
+            f"Grenades{' (4)' if continuous else ''}: "
+            f"{grenade_text(rows, selected_unit.grenade_counts, grenade_kind)}",
+            12, None, 16))
+        lines.append(PanelLine(f"Charges: {selected_unit.has_explosive}",
+                               12, None, 18))
         if not continuous:
             lines.append(PanelLine(
                 f"Queued orders: {len(selected_unit.orders)}", 12,

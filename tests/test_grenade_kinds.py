@@ -809,3 +809,56 @@ def test_the_policy_row_carries_the_kind_and_an_integer_fuse():
     assert k.min() >= 0 and k.max() < len(ROWS)
     assert len(set(k.tolist())) > 1
     assert f.min() >= 0
+
+
+# ---------------------------------------------------------------------------
+# F. End to end: the real main.py in a hidden window, direct control
+# ---------------------------------------------------------------------------
+def test_e2e_four_cycles_w_throws_each_kind_after_the_wind_up():
+    """Property (the real window, direct control on door_test): W throws the
+    selected kind, FOUR steps the selection to the next carried kind, a spent
+    kind hands the selection to the next carried one by itself -- so frag,
+    FOUR, smoke, W (the flashbang is selected now), flashbang, W (the frag
+    left) throw four grenades of the kinds frag, smoke, flash, frag; each
+    ThrowEvent names the wind-up, each grenade leaves exactly that many ticks
+    after it and is of that kind's round, each count falls by one when its
+    grenade leaves, and the flashbang blinds. Breaks if a key is not wired to
+    the verb, the selection is not the throw's kind, a grenade leaves at the
+    verb's tick, or the flash does not blind."""
+    import json
+    import os
+    import subprocess
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    r = subprocess.run(
+        [sys.executable, "tests/_e2e_throw_probe.py", "--level", "door_test",
+         "--control", "direct", "--mouse", "900,508@1", "--frames", "480",
+         "--press", "W@20", "--press", "FOUR@200", "--press", "W@260",
+         "--press", "W@330", "--press", "W@420"],
+        cwd=str(ROOT), env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    line = next(ln for ln in r.stdout.splitlines()
+                if ln.startswith("THROWPROBE "))
+    log = json.loads(line[len("THROWPROBE "):])
+    events = [(t, tuple(ev)) for t, counts, evs, *_ in log for ev in evs]
+    assert [k for _, (k, _n) in events] == [FRAG, SMOKE, FLASH, FRAG]
+    assert all(n == WINDUP for _, (_k, n) in events)
+    # each grenade is in flight WINDUP ticks after its event, of its row
+    flights = {}
+    for t, counts, evs, flying, blind, *_ in log:
+        for thrown, ammo in flying:
+            flights[thrown] = ammo
+    for t, (k, _n) in events:
+        assert flights[t + WINDUP] == ROWS[k]
+    # the counts: one less of that kind when it leaves, not at the verb
+    by_tick = {t: counts for t, counts, *_ in log}
+    start = log[0][1]
+    for i, (t, (k, _n)) in enumerate(events):
+        spent = sum(1 for _, (k2, _n2) in events[:i] if k2 == k)
+        assert by_tick[t][k] == start[k] - spent            # still in hand
+        assert by_tick[t + WINDUP][k] == start[k] - spent - 1
+    assert min(min(c) for _, c, *_ in log) >= 0
+    # the flashbang blinds somebody (the units of door_test stand in the room)
+    flash_release = next(t for t, (k, _n) in events if k == FLASH) + WINDUP
+    after = [b for t, _c, _e, _f, b, *_ in log if t > flash_release]
+    assert any(after), "the flashbang blinded nobody"

@@ -4498,8 +4498,9 @@ belt = ["hand_grenade", "breach_charge"]
 
 # ---------------------------------------------------------------------------
 # Loadouts (#119) — what a unit carries, one row per kit. `weapon` names a
-# [weapons.*] row (refused at load if it names none), `grenades` / `explosives`
-# are non-negative integer counts. Read by simulation/loadouts.py at Unit
+# [weapons.*] row (refused at load if it names none), `explosives` is a
+# non-negative integer count, `grenades` (G3p) a table of such counts keyed by
+# hand-grenade [ammo.*] row name (a bare int = that many frags). Read by simulation/loadouts.py at Unit
 # construction (construction-bound like the weapon tables: RESTART to re-arm).
 # ERIK'S FEEL-CHECK LOOP: set rifleman's weapon to "dragon_7" (or
 # "miasma_vent"), RESTART the game (Ctrl+R alone re-reads config but re-arms

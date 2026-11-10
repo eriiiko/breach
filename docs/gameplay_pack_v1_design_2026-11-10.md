@@ -230,6 +230,44 @@ and a blinded agent's observation is not masked in v1; the status only
 removes aim. Both are later work with their own design (the obs door is
 P8b's).
 
+**As built (2026-11-10).** `[loadouts.*] grenades` is a table by hand-grenade
+`[ammo.*]` row (a bare int = frags; `loadouts._grenade_counts`, refused by
+name); `Unit.grenade_counts` is the fixed block, one slot per family row in
+config order (frag 0, smoke 1, tear 2, poison 3, flash 4, incendiary 5: append
+only), and `Unit.has_grenade` is its frag slot, so the old order path, the
+bots and the pickup hooks read one count as before. The rifleman carries 2
+frags, a smoke and a flashbang. `throw_grenade_intent(unit, dx, dy, fuse_ticks,
+reach_q, kind)`: integer fuse (callers convert once with
+`weapons.fuse_ticks_from_seconds`, the truncation the projectile always used),
+`kind` refused by name; `FORMAT_VERSION` 4. The wind-up is
+`Simulation._start_throw` (the verb: a `ThrowEvent`, then the release at
+`tick + throw_windup_ticks`) and `_advance_throw` (each tick: drop it if the
+unit cannot act, release it at its tick along `cos_q16` / `sin_q16` of the
+facing then); 0 ticks releases at once along the verb's own vector (today's
+throw, bit for bit). Wind-up state is four ints on the unit
+(`throw_release_tick`, `throw_kind`, `throw_reach_q`, `throw_fuse_ticks`), not
+digested. The blinding is `simulation/flash_blind.py`, called from
+`execute_payload` (inside an attack slot the whole detonation is already the
+recorded `world` effect, so nothing is recorded separately): `g` and `f` are Q16
+floors, the angle is `atan2_q16` against the Q16 facing, the front cone is
+`PI_Q16 // 3`; a longer blinding is never shortened by a weaker flash.
+PLACEHOLDERS: `blind_radius` 12 tiles, `blind_seconds` 4.0, `blind_away_frac`
+0.25, `throw_windup_seconds` 0.3 (7 ticks). Direct control: key 4 / pad B
+(`cycle_grenade`) steps `DirectControl.grenade_kind` through the kinds still
+carried, W throws it, a spent kind hands the selection on; the HUD shows
+`Grenades (4): frag 1  [smoke 1]  flash 1`. DEVIATIONS from the draft: (a) the
+pins DID move -- the wind-up is a sim change for the bots too (ship_demo seed 1
+240 -> 246 ticks, same winner); with the wind-up at 0 the match equals its old
+pin exactly (`tests/test_grenade_kinds.py`); (b) a bot holds its aim on the
+lob's direction through the wind-up (the grenade leaves along the FACING, and
+a bot's facing otherwise follows its shooting target), the one change to
+`control_bots.py`; (c) a unit that cannot act (stunned, knocked down) cannot
+START a throw either -- found in the real window, where the thrower's own frag
+knocked it down for 42 ticks; (d) the verb's `dx_q` / `dy_q` mean the throw's
+direction only at a 0-tick wind-up -- at 7 ticks the facing decides, so a
+controller must turn the unit first (the direct control sets the aim every
+frame, the bots hold it).
+
 ### G4p. Focus-fire armour debuff (#181)
 
 **RULED (Erik, #181).** Hits lower a target's defences; the lowering decays;
@@ -490,7 +528,7 @@ session run while G1p to G4p are built.
 |---|---|---|---|---|
 | G1p | Opus | built 2026-11-10, awaiting the play test | yes | re-baselined (the turn-rate cap) |
 | G2p | Sonnet | ½ day | yes | re-baseline |
-| G3p | Sonnet | ½ day | yes | unchanged |
+| G3p | Sonnet | ½ day | yes | re-baselined (the wind-up) |
 | G4p | Opus (the bench, the tuning with Erik) | ½ day + tuning | yes | re-baseline |
 | G5p | Opus | 1–2 days after its design | yes | re-baseline |
 | G6p | Sonnet | ½ day | yes | unchanged |
