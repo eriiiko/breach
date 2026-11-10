@@ -100,7 +100,7 @@ def test_a_squad_at_a_venting_door_is_not_moved_and_a_walker_keeps_cadence():
 
     sim, squad, walker = _scene()
     start = {u.id: (u.x, u.y) for u in squad}
-    calm_step = 1.0 / int(CFG.movement.marine_attack_ticks_per_tile)
+    calm_step = 65536 / sim.speed_table.walk_cost_q   # the [speeds] walk
     dx_q, dy_q, _ = quantize_stick_direction(-1.0, 0.0, 0.0)
     x0 = walker.x
     for t in range(VENT_TICKS):

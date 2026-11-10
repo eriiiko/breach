@@ -138,6 +138,22 @@ class ShotFiredEvent:
 
 
 @dataclass
+class ReloadEvent:
+    """A unit STARTED a reload this tick (gameplay pack G1p-c): the manual one
+    (``Simulation.reload_intent``) or the automatic one when the magazine
+    empties (``combat.mag_spend``) -- emitted by ``combat.reload_begin`` on
+    the tick the stall starts, only when a stall starts (a dry unit with no
+    spare emits nothing). ``ticks`` is the stall's length
+    (``weapon.reload_ticks``): the gun holds a full magazine ``ticks`` ticks
+    later. Render-only (an animation session, #184, plays the reload clip
+    from it), like :class:`ShotFiredEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the unit that is reloading
+    ticks: int                      # the stall's length, in ticks
+
+
+@dataclass
 class LaserFiredEvent:
     """A hitscan beam was fired (mechanics/03 §5, W2 — the Lance family).
 
@@ -279,6 +295,7 @@ __all__ = [
     "cause_value",
     "attacker_value",
     "ShotFiredEvent",
+    "ReloadEvent",
     "LaserFiredEvent",
     "SprayJetEvent",
     "ProjectileGlowEvent",

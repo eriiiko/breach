@@ -107,8 +107,9 @@ from simulation.heat_source_system import (build_heat_sources,
                                            sweep_heat_sources)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
-from simulation.movement import (default_speed, footprint_samples,
-                                 THROTTLE_ONE, throttle_tiles_per_tick)
+from simulation.movement import (default_speed, facing_cos_q16,
+                                 footprint_samples, move_speed_tiles_per_tick,
+                                 THROTTLE_ONE)
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
@@ -120,6 +121,7 @@ from simulation.orders import (
 # ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
 # on a ``getattr(..., default)`` (the dormancy guarantee).
 from simulation import intents as _intents
+from simulation import speeds
 from simulation import turning
 from simulation import unit_fixed
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
@@ -400,6 +402,11 @@ class Simulation:
         # G1p: the marine turn-rate cap, Q16.16 radians per tick, quantized
         # ONCE here from [marine] turn_rate_deg_per_s (the refusing door).
         self._marine_turn_rate_q16 = turning.turn_rate_q16(CFG)
+        # G1p-c: the [speeds] table (m/s) quantized ONCE here with this map's
+        # tile size (the refusing door, simulation/speeds.py): the marine's
+        # walk / full costs in Q16 ticks per tile, the direction factors, the
+        # zombie's integer shamble cadence.
+        self.speed_table = speeds.speed_table(CFG, self.gmap.tile_size_m)
 
         # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
         # conductor's zombie slot runs the shipped law over every zombie (every
@@ -597,7 +604,8 @@ class Simulation:
                      if not u.is_zombie or u.id in reqs]
             reqs.clear()
         update_zombies_tick(self.gmap, units, self.tick,
-                            events=self.tick_events)
+                            events=self.tick_events,
+                            shamble_ticks=self.speed_table.zombie_shamble_ticks)
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -916,8 +924,9 @@ class Simulation:
                      throttle_q: int) -> None:
         """MOVE_DIR: hold a Q16.16 unit-vector move direction + a THROTTLE
         for ``unit_id`` (§3c; gameplay pack G1p). ``throttle_q`` is Q16 in
-        ``[0, ONE]`` -- 0 the walk, ONE the sprint, continuous between
-        (``movement.throttle_tiles_per_tick``) -- CLAMPED here, as a throw's
+        ``[0, ONE]`` -- 0 the walk, ONE the full speed, continuous between,
+        the extra speed forward only (``movement.move_speed_tiles_per_tick``,
+        the ``[speeds]`` table in m/s) -- CLAMPED here, as a throw's
         reach is clamped (the neighbouring intents refuse nothing), and the
         clamped value is what the tap records. Overwrites each call;
         :meth:`clear_move_dir` (stick inside the deadzone) stops the unit."""
@@ -1052,7 +1061,7 @@ class Simulation:
             return                            # the magazine is full
         if u.spare_mags == 0:
             return                            # no spare magazine left
-        reload_begin(u, weapon, self.tick)
+        reload_begin(u, weapon, self.tick, events=self.tick_events)
 
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
@@ -2107,13 +2116,16 @@ class Simulation:
         SAME predicate A* uses (:meth:`GameMap.is_passable_block`), so direct
         move and A* agree on both speed and what blocks.
 
-        Speed (G1p): the walk (``ORDER_MOVE_ATTACK``) and sprint
-        (``ORDER_SPRINT``) base ticks-per-tile (:func:`_ticks_per_tile`), each
-        scaled by the footprint's area-average mobility exactly as the WEGO A*
-        replay scales it (:func:`movement.default_speed`) — a furniture tile
-        is 2.5x slower for both — and the intent's throttle between them
-        (:func:`movement.throttle_tiles_per_tick`, linear in tiles per second;
-        throttle 0 advances exactly ``1 / walk_cost`` tiles, as before).
+        Speed (G1p-c): the ``[speeds]`` table's marine walk and full speed
+        (``self.speed_table``, Q16 ticks per tile, quantized once from m/s),
+        each scaled by the footprint's area-average mobility and the wind
+        exactly as every walker is (:func:`movement.default_speed`) — a
+        furniture tile is 2.5x slower for both — then the direction rule and
+        the intent's throttle (:func:`movement.move_speed_tiles_per_tick`):
+        the walk slows sideways and backward, the throttle's extra speed is
+        forward only. ``theta`` is the angle between the move and the facing
+        THIS tick (the aim already turned it, ``_consume_direct_intents``);
+        a unit holding no aim faces where it walks, so ``theta`` is 0.
 
         Determinism: the direction arrives as a Q16.16 unit vector; the only
         floats are the exact power-of-two dequantize and the position math on
@@ -2130,13 +2142,19 @@ class Simulation:
         """
         fp = u.footprint
         samples = footprint_samples(self.gmap, u.tile_y, u.tile_x, fp)
-        # G1p: the throttle between the walk and the sprint cadence, each
-        # reduced by terrain and wind (ticks per tile), as ONE exact rational
-        # and one division: throttle 0 is the walk, ONE the sprint, bit for bit.
-        tiles_per_tick = throttle_tiles_per_tick(
-            default_speed(samples, _ticks_per_tile(ORDER_MOVE_ATTACK)),
-            default_speed(samples, _ticks_per_tile(ORDER_SPRINT)),
-            move_dir.throttle_q)
+        # G1p-c: the walk and the full speed (Q16 ticks per tile), each
+        # reduced by terrain and wind, then the direction rule and the
+        # throttle as ONE exact rational and one division.
+        table = self.speed_table
+        if getattr(u, "live_aim", None) is None:
+            cos_q = unit_fixed.FP_ONE         # facing follows the move
+        else:
+            cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q,
+                                   unit_fixed.quantize_scalar(u.facing))
+        tiles_per_tick = move_speed_tiles_per_tick(
+            default_speed(samples, table.walk_cost_q),
+            default_speed(samples, table.full_cost_q),
+            table.side_q, table.back_q, move_dir.throttle_q, cos_q)
         dx = _intents.dequantize(move_dir.dx_q)
         dy = _intents.dequantize(move_dir.dy_q)
         step_x = dx * tiles_per_tick

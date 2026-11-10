@@ -216,7 +216,8 @@ def test_a_bot_with_nothing_in_sight_advances_on_the_enemy_spawn(tmp_path):
     goal = _room_centre(1)
     d0 = _dist(bot, goal)
     _run(sim, [BotTeam(0)], 240)
-    walked = 10.0 / float(CFG.movement.marine_attack_seconds_per_tile)
+    # 10 s at the [speeds] walk (G1p-c): tiles per tick x ticks
+    walked = 240 * 65536 / sim.speed_table.walk_cost_q
     assert d0 - _dist(bot, goal) >= 0.5 * walked
 
 

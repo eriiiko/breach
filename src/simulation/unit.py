@@ -14,8 +14,8 @@ locked design decisions (``docs/patch_game_logic_migration.md``):
   can't issue a "use grenade" order.
 - ``speed_ticks_per_tile`` replaces the legacy
   ``zombie_speed_override`` monkey-patch (game.py:1294, 1301, 1944).
-  It always exists; default comes from CFG.zombie.ticks_per_tile for
-  zombies, CFG.marine attack speed for marines.
+  It always exists; its default ``None`` is the ``[speeds]`` shamble
+  cadence at the map's tile size (G1p-c), resolved by the zombie walk.
 - Position lives in physics-tile units as float ``x`` / ``y``.
   Integer matrix indexing via ``tile_x`` / ``tile_y`` properties.
   The old fxf/fyf float fields and fx/fy integer fields are gone —
@@ -217,14 +217,14 @@ class Unit:
 
         # ---- Legacy fields: kept unchanged --------------------------------
 
-        # Movement speed in ticks per fine tile. Replaces the legacy
-        # zombie_speed_override monkey-patch. Marines override per-order
-        # (movement.marine_attack/cover/sprint_ticks_per_tile); zombies
-        # use this field directly.
-        if self.is_zombie:
-            self.speed_ticks_per_tile = CFG.zombie.ticks_per_tile
-        else:
-            self.speed_ticks_per_tile = CFG.movement.marine_attack_ticks_per_tile
+        # The zombie walk's cadence in ticks per fine tile. Replaces the
+        # legacy zombie_speed_override monkey-patch. None (G1p-c) = the
+        # [speeds] zombie_shamble_mps cadence at the map's tile size
+        # (ai_zombie.update_zombies_tick resolves it), so a marine that turns
+        # zombie shambles like every other; an int overrides it (tests, a
+        # later per-unit stat). Marines never read it: the continuous path
+        # walks by the [speeds] table, WEGO by its per-order dials.
+        self.speed_ticks_per_tile = None
 
         # Order / planning state.
         self.orders = []

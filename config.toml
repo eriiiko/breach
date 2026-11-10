@@ -78,6 +78,9 @@ idle_return_fire = true        # §13 idle stance: return fire (false = do
                                # nothing — the §20 item 5 alternative)
 
 [movement]
+# LEGACY (G1p-c): read ONLY by the WEGO order path (simulation._ticks_per_tile:
+# TwoPhaseWEGO's attack / cover / sprint orders); the continuous path (the
+# player, the bots, a policy) walks by [speeds] below, the zombies too.
 # Per-second tunables (tick-rate independent). config.py derives the integer
 # *_ticks_per_tile counts via max(1, round(seconds * ticks_per_second)).
 # Values chosen to reproduce the legacy 12-tps integers (9, 6, 4).
@@ -85,6 +88,29 @@ marine_attack_seconds_per_tile = 0.75       # 0.75 s/tile -> 9 ticks @ 12 tps
 marine_cover_seconds_per_tile = 0.5         # 0.5  s/tile -> 6 ticks @ 12 tps
 marine_sprint_seconds_per_tile = 0.33333333 # 1/3  s/tile -> 4 ticks @ 12 tps
 xeno_sprint_ticks_per_tile = 1
+
+# ---------------------------------------------------------------------------
+# Speeds (gameplay pack v1 G1p-c, docs/bots_zombies_speeds_design_2026-11-10.md
+# §1; Erik's ruling 2026-11-10: speeds are given in m/s). Read through the
+# refusing door src/simulation/speeds.py (a missing or mistyped key, or a
+# broken rule, is refused by name) and quantized ONCE at sim construction with
+# the map's tile_size_m and [clock] ticks_per_second -- the marine's two
+# speeds into Q16 ticks per tile, the zombie's shamble into its integer walk
+# cadence. Realised values below are for the shipped 0.333 m tile at 24 tps.
+# The continuous path (player, bots, policy: set_move_dir) moves at
+#   speed = f(theta) * walk + throttle * (full - walk) * max(0, cos theta)
+#   f = 1 forward, sideways_frac at 90 deg, backward_frac at 180, linear in cos
+# theta the angle between the move and the facing: nobody sprints backwards.
+# The door also holds Erik's rules: the zombie sprint is within 70..90 % of
+# the marine walk and above backward_frac * marine_walk_mps.
+# ---------------------------------------------------------------------------
+[speeds]
+marine_walk_mps = 1.4      # throttle 0, weapon ready. PLACEHOLDER, Erik tunes (realised 1.400 m/s: 5.709 ticks/tile)
+marine_full_mps = 4.5      # throttle ONE, a run with ~20 kg of kit. PLACEHOLDER (realised 4.500 m/s: 1.776 ticks/tile)
+zombie_shamble_mps = 0.6   # PLACEHOLDER; the zombie walk is whole ticks per tile: 13 -> realised 0.615 m/s
+zombie_sprint_mps = 1.15   # 82 % of the marine walk. PLACEHOLDER; read and door-checked, UNUSED until the zombie patch (G9p)
+sideways_frac = 0.8        # the walk at 90 deg to the facing (Erik's number): 1.12 m/s
+backward_frac = 0.6        # the walk straight backward, every throttle (Erik's number): 0.84 m/s
 
 [physics]
 wave_c = 66.0                        # wave speed (tiles/s), ~c / 3 m/s physical
@@ -4518,7 +4544,7 @@ emit_blast_smoke = false
 
 [zombie]
 hp = 400
-seconds_per_tile = 0.58333333      # 7/12 s -> 7 ticks @ 12 tps (faster than marine attack move)
+# (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
 melee_damage = 60
 trigger_radius = 48
 propagation_radius = 15

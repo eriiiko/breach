@@ -215,14 +215,22 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: 96e9373a0e12006c03abdbec1e849f4aca7dc4b0, tick f35ed2beadb77141ccea20d944
 #: a70a66e93c70818ae4c44bbf6ba1edc01024b3, units 4408c8740425593b0d47d35e7d0
 #: 658c4efbd62caed87f5fd69a9e8f894ac02dd.)
+#: RE-MEASURED again at #183 G1p-c (2026-11-10, speeds in m/s): the same
+#: instant-turn run at the new speeds. SOLE CAUSE, verified on the same
+#: tree: with the speed table at the old cadences (walk 18, full 8, zombie
+#: 14 ticks per tile, the direction factors 1.0) the instant-turn run gives
+#: exactly the G2p values (win 1 at 700, field 8deadde6d6d9c9f3f87a3a565fb1
+#: bc57054d9e6882f79abbbcd79ce01a3d52e2, tick e4e39176f31246219319a3c72bbc
+#: 598f5da16aa7d02def7469fedde2da966324, units bc1166d31b6df445503733eca435
+#: f24ac2ad48fe788d50b5eb89d19460f7a3a6).
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=700,
-    field_digest="8deadde6d6d9c9f3f87a3a565fb1bc57"
-                 "054d9e6882f79abbbcd79ce01a3d52e2",
-    tick_digest="e4e39176f31246219319a3c72bbc598f"
-                "5da16aa7d02def7469fedde2da966324",
-    unit_stream="bc1166d31b6df445503733eca435f24a"
-                "c2ad48fe788d50b5eb89d19460f7a3a6")
+    outcome="win", team=1, ticks=237,
+    field_digest="305c4e13667c1262869ab2d8d4e15e6c"
+                 "6fdff661d8a6cadc49b7ce05d499876e",
+    tick_digest="7e58771a0fa44b9539260472ab5cec22"
+                "edc1a60e885c1e9c39ae69fd60f173df",
+    unit_stream="e0b47942bd115b8d72070494597061f7"
+                "727126ef442caf452dc62cb42e5e7233")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

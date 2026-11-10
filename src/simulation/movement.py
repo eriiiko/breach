@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from simulation.atmosphere_fixed import FP_ONE
+from simulation import turning, unit_fixed
 
 
 # Fixed-point scale for mobility milli-units (mobility design §3). air == 1000.
@@ -132,6 +133,12 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
     AFTER the mobility cost as ``cost' = half_up(cost * SCALE_ONE, scale)`` --
     a scale of one half doubles the ticks per tile; ``SCALE_ONE`` returns the
     mobility cost exactly (the calm path is bit-identical).
+
+    The CURRENCY of ``speed_class`` is the caller's, and the result comes
+    back in it (both reductions are linear): whole ticks per tile for the
+    zombie walk and the WEGO / onephase cadences, Q16.16 ticks per tile for
+    the ``[speeds]`` table's marine costs (G1p-c, ``speeds.SpeedTable``) --
+    one law at two resolutions, never a second copy of it.
     """
     mob = footprint_samples.mobility
     n = len(mob)
@@ -158,31 +165,65 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
 THROTTLE_ONE = FP_ONE
 
 
-def throttle_tiles_per_tick(cost_walk: int, cost_sprint: int,
-                            throttle_q: int) -> float:
-    """THE commanded speed of a unit on the continuous path (G1p): tiles per
-    tick at ``throttle_q`` (Q16 in ``[0, THROTTLE_ONE]``) between its walk and
-    its sprint, each an already-reduced tick cost (``default_speed`` over the
-    walk and sprint cadence dials, so terrain and wind slow both ends alike).
+def facing_cos_q16(dx_q: int, dy_q: int, facing_q: int) -> int:
+    """``cos theta`` in Q16, theta the angle between a Q16 move direction
+    ``(dx_q, dy_q)`` (world axes, y down) and a facing ``facing_q`` (Q16.16
+    radians, math-style: the ``Unit.facing`` convention) -- through the kit:
+    the move's own ``atan2_q16`` (``-dy``: world y runs down, as
+    ``Unit.face_towards``), the shorter angle difference
+    (``turning.wrap_q16``) and ``cos_q16``. Exact at the cardinal angles
+    (``ONE`` when the facing IS the move's own atan2, ``-ONE`` reversed,
+    ``0`` at a right angle) and in ``[-ONE, ONE]``. Integer only, no draw."""
+    move_q = unit_fixed.atan2_q16(-int(dy_q), int(dx_q))
+    theta = turning.wrap_q16(move_q - int(facing_q))
+    c = unit_fixed.cos_q16(theta)
+    return -FP_ONE if c < -FP_ONE else (FP_ONE if c > FP_ONE else c)
 
-    The speed is linear in the throttle in tiles per second,
-    ``v = v_walk + t * (v_sprint - v_walk)`` with ``v = 1 / cost``, formed as
-    ONE exact rational in integers::
 
-        v = ((ONE - t) * cost_sprint + t * cost_walk) / (cost_walk * cost_sprint * ONE)
+def move_speed_tiles_per_tick(cost_walk_q: int, cost_full_q: int,
+                              side_q: int, back_q: int, throttle_q: int,
+                              cos_q: int) -> float:
+    """THE commanded speed of a unit on the continuous path (G1p-c, Erik's
+    direction rule of 2026-11-10): tiles per tick at throttle ``throttle_q``
+    (Q16, ``[0, THROTTLE_ONE]``) moving at ``cos theta = cos_q`` (Q16) to its
+    facing::
 
-    and divided ONCE (Python's int / int is correctly rounded) -- the same one
-    division the walk step always made (``1.0 / tick_cost``, also correctly
-    rounded of the same rational). So throttle 0 IS the walk and
-    ``THROTTLE_ONE`` IS the sprint, bit for bit, and the speed is monotone in
-    the throttle (an exactly linear rational, rounded monotonically). Refuses
-    a throttle outside ``[0, THROTTLE_ONE]`` (the door clamps; this is the
-    law's own guard) and a cost below 1."""
+        v = f(theta) * v_walk + t * (v_full - v_walk) * max(0, cos theta)
+        f = 1 forward, side at a right angle, back reversed, linear in cos theta
+
+    -- the walk slows by Erik's factors as the move turns from the facing,
+    and the sprint's extra speed exists only forward: nobody sprints
+    backwards. ``cost_walk_q`` / ``cost_full_q`` are the walk and the full
+    speed as ALREADY-REDUCED Q16 tick costs (``default_speed`` over the
+    ``[speeds]`` table's costs, so terrain and wind scale both ends by the
+    one law); ``v = ONE / cost``. Formed as ONE exact rational in integers
+    (``F`` = ``f`` in Q32, ``c+ = max(0, cos_q)``)::
+
+        v = (F * Cf + t * c+ * (Cw - Cf)) / (ONE * Cw * Cf)
+
+    and divided ONCE (Python's int / int is correctly rounded) -- the one
+    division the walk step always made. So forward at throttle 0 it IS
+    ``ONE / Cw`` (the walk), at ``THROTTLE_ONE`` ``ONE / Cf`` (the full
+    speed), straight backward ``back * walk`` and at a right angle ``side *
+    walk`` at EVERY throttle, each exactly the rounded rational; monotone in
+    the throttle and in ``cos theta`` (``0 < back <= side <= ONE``,
+    ``Cf <= Cw``: the speed door's rules). Refuses a throttle outside
+    ``[0, THROTTLE_ONE]`` (the door clamps; this is the law's own guard), a
+    ``cos_q`` outside ``[-ONE, ONE]`` and a cost below 1."""
     t = int(throttle_q)
     if not 0 <= t <= THROTTLE_ONE:
         raise ValueError(f"throttle_q must be in [0, {THROTTLE_ONE}], got {t}")
-    cw, cs = int(cost_walk), int(cost_sprint)
-    if cw < 1 or cs < 1:
-        raise ValueError(f"tick costs must be >= 1, got walk {cw}, "
-                         f"sprint {cs}")
-    return ((THROTTLE_ONE - t) * cs + t * cw) / (cw * cs * THROTTLE_ONE)
+    c = int(cos_q)
+    if not -FP_ONE <= c <= FP_ONE:
+        raise ValueError(f"cos_q must be in [-{FP_ONE}, {FP_ONE}], got {c}")
+    cw, cf = int(cost_walk_q), int(cost_full_q)
+    if cw < 1 or cf < 1:
+        raise ValueError(f"tick costs must be >= 1, got walk {cw}, full {cf}")
+    side, back = int(side_q), int(back_q)
+    if c >= 0:
+        f32 = side * FP_ONE + (FP_ONE - side) * c
+        c_plus = c
+    else:
+        f32 = side * FP_ONE + (side - back) * c
+        c_plus = 0
+    return (f32 * cf + t * c_plus * (cw - cf)) / (FP_ONE * cw * cf)

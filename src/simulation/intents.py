@@ -22,8 +22,8 @@ The ``dx_q``/``dy_q`` pair of :class:`MoveDirIntent` / :class:`AimIntent` /
 :class:`ThrowIntent` is a Q16.16 **unit vector** (the control seam normalizes
 before quantizing), so a common scale factor never leaks a speed dependency
 into direction. ``throttle_q`` (gameplay pack G1p) is a Q16 THROTTLE in
-``[0, ONE]`` between the walk and the sprint cadence WEGO uses
-(``ORDER_MOVE_ATTACK`` / ``ORDER_SPRINT``): continuous, never a speed-mode id.
+``[0, ONE]`` between the ``[speeds]`` table's walk and full speed (G1p-c, m/s;
+the extra speed forward only): continuous, never a speed-mode id.
 """
 from __future__ import annotations
 
@@ -50,10 +50,11 @@ class MoveDirIntent:
 
     ``dx_q``/``dy_q`` — Q16.16 unit-vector direction (normalized at the control
     seam). ``throttle_q`` — Q16 in ``[0, ONE]`` (clamped at
-    ``Simulation.set_move_dir``): 0 walks, ONE sprints, linear in tiles per
-    second between (``movement.throttle_tiles_per_tick``); both cadences are
-    scaled by the footprint's area-average mobility, exactly as the WEGO A*
-    replay scales its own.
+    ``Simulation.set_move_dir``): 0 walks, ONE runs at full speed, linear in
+    tiles per second between, the extra speed forward only and the walk
+    slower sideways and backward (``movement.move_speed_tiles_per_tick``,
+    G1p-c); both ends are scaled by the footprint's area-average mobility and
+    the wind, exactly as every walker is (``movement.default_speed``).
     """
 
     dx_q: int
