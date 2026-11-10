@@ -587,3 +587,67 @@ def test_the_continuous_panel_shows_the_magazine_and_nothing_turn_based():
     text = "\n".join(ln.text for ln in panel_state_lines(
         wego, wego.get_unit(uid)))
     assert "Round" in text and "AP:" in text and "Ammo" not in text
+
+
+# ---------------------------------------------------------------------------
+# H. End to end: the real main.py in a hidden window, direct control
+# ---------------------------------------------------------------------------
+def _drive_probe(*args):
+    """``tests/_e2e_mag_probe.py`` over ``tools/e2e_drive.py`` on door_test
+    (the first [[spawn]] marine is possessed); returns the probe's log rows
+    ``[tick, rounds, current_mag, spare_mags, reload_done_tick]``."""
+    import json
+    import os
+    import subprocess
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    r = subprocess.run(
+        [sys.executable, "tests/_e2e_mag_probe.py", "--level", "door_test",
+         "--control", "direct", "--mouse", "900,508@1", *args],
+        cwd=str(ROOT), env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    line = next(ln for ln in r.stdout.splitlines()
+                if ln.startswith("MAGPROBE "))
+    return json.loads(line[len("MAGPROBE "):])
+
+
+def test_e2e_holding_fire_empties_reloads_by_itself_and_goes_dry():
+    """Property (the real window, the left mouse button held): the marine
+    fires its magazine, the automatic reload stalls exactly reload_ticks
+    with no round in it, fire resumes from a full magazine, and after
+    `mag_size x magazines` rounds in all the trigger does nothing for the
+    rest of the run. Breaks if the auto reload needs another input, the
+    stall is another length, fire resumes early, or a dry gun fires."""
+    log = _drive_probe("--frames", "720", "--hold", "MOUSE_LEFT@10-710")
+    shots = [(t, n) for t, n, *_ in log if n]
+    from simulation.loadouts import get_tables as loadout_tables
+    carried = loadout_tables().loadout("rifleman").magazines
+    assert carried >= 2
+    assert sum(n for _, n in shots) <= MAG * carried
+    assert sum(n for _, n in shots) == MAG * carried
+    ticks = [t for t, n in shots for _ in range(n)]
+    gaps = np.diff(ticks)
+    stalls = sorted(set(int(g) for g in gaps if g > ROF))
+    assert stalls == [RELOAD_TICKS]
+    assert (gaps > ROF).sum() == carried - 1       # one reload per spare
+    assert log[-1][2] == 0 and log[-1][3] == 0     # dry at the end
+
+
+def test_e2e_the_reload_key_mid_magazine_discards_the_rest():
+    """Property (the real window, Z pressed with the trigger held): the
+    rounds still in the gun are thrown away, a spare is used, no round
+    leaves for exactly reload_ticks from the tick the key was consumed, and
+    the next magazine is full. Breaks if the key is not wired to the verb,
+    keeps the old rounds, or lets a shot through the stall."""
+    log = _drive_probe("--frames", "330", "--hold", "MOUSE_LEFT@10-320",
+                       "--press", "Z@90")
+    # the discard: current_mag drops to 0 with a round count still unspent
+    i = next(i for i, (t, n, mag, sp, done) in enumerate(log)
+             if mag == 0 and done >= 0)
+    t0, n0, mag0, spare0, done0 = log[i]
+    before = log[i - 1]
+    assert 0 < before[2] < MAG and n0 == 0         # discarded mid-magazine
+    assert before[3] - spare0 == 1                  # exactly one spare used
+    assert done0 == t0 + RELOAD_TICKS
+    after = [row for row in log[i + 1:] if row[1]]
+    assert after[0][0] == done0 and after[0][2] == MAG - 1
