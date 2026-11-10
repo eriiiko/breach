@@ -84,12 +84,13 @@ def test_move_dir_steps_by_mobility_scaled_amount():
     fp = u.footprint
 
     # Expected per-tick advance, computed through the SAME predicates the
-    # movement branch reuses: base order cadence -> area-average mobility.
-    base = _ticks_per_tile(ORDER_MOVE_ATTACK)
+    # movement branch reuses: the [speeds] walk (Q16 ticks per tile, G1p-c)
+    # -> area-average mobility. No aim is held, so theta is 0.
+    base = sim.speed_table.walk_cost_q
     samples = FootprintSamples(
         mobility=sim.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))
     tick_cost = default_speed(samples, base)
-    expected_step = dequantize(FP_ONE) * (1.0 / tick_cost)   # +X unit vector
+    expected_step = dequantize(FP_ONE) * (FP_ONE / tick_cost)  # +X unit vector
 
     sim.set_move_dir(uid, FP_ONE, 0, 0)     # pure +X, throttle 0 (walk)
     sim.step()

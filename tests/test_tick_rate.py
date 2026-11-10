@@ -55,7 +55,9 @@ def test_live_config_is_consistent_with_helper():
     assert CFG.movement.marine_attack_ticks_per_tile == ticks_from_seconds(MARINE_ATTACK_S, tps)
     assert CFG.movement.marine_cover_ticks_per_tile == ticks_from_seconds(MARINE_COVER_S, tps)
     assert CFG.movement.marine_sprint_ticks_per_tile == ticks_from_seconds(MARINE_SPRINT_S, tps)
-    assert CFG.zombie.ticks_per_tile == ticks_from_seconds(ZOMBIE_S, tps)
+    # (the zombie's walk cadence left this derivation at G1p-c: it is the
+    # [speeds] zombie_shamble_mps row at the map's tile size,
+    # tests/test_speed_table.py)
     assert CFG.zombie.attack_cooldown_ticks == ticks_from_seconds(ATTACK_COOLDOWN_S, tps)
     # W1 re-home: the rifle cadence now derives on the k5_carbine weapon row
     # (rof_interval_seconds -> rof_interval_ticks), same helper, same result.

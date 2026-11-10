@@ -497,6 +497,10 @@ def test_e2e_can_act_suppression_blocks_zombie_melee():
 def test_e2e_can_move_suppression_freezes_zombie_walk():
     """can_move == False on the zombie: it stands (stride clock paused)
     while the control zombie closes distance over the same ticks."""
+    # G1p-c: the zombie's cadence is the [speeds] shamble on the map's tile
+    # (1 m here: tens of ticks per tile), so run past one stride.
+    n = _tiny_sim().speed_table.zombie_shamble_ticks + 4
+
     def build(immobilize):
         sim = _tiny_sim()
         m = Unit("M1", x=2, y=5, team=0)
@@ -504,16 +508,16 @@ def test_e2e_can_move_suppression_freezes_zombie_walk():
         sim.add_unit(m)
         sim.add_unit(z)
         if immobilize:
-            apply_status(z, IMMOBILIZED, magnitude=0.0, duration_ticks=25)
+            apply_status(z, IMMOBILIZED, magnitude=0.0, duration_ticks=n + 5)
         return sim, z, (z.x, z.y)
 
     sim, z, start = build(immobilize=False)
-    _step(sim, 20)
+    _step(sim, n)
     assert (z.x, z.y) != start, \
         "control zombie must walk (validates pathfinding is live)"
 
     sim, z, start = build(immobilize=True)
-    _step(sim, 20)
+    _step(sim, n)
     assert (z.x, z.y) == start, "immobilized zombie never moved"
     assert z.zombie_activated, "perception is deliberately ungated"
 

@@ -7,7 +7,8 @@ Lifted from ``game.py``:
 
 The legacy code monkey-patched ``zombie_speed_override`` after construction;
 the lifted version reads ``z.speed_ticks_per_tile`` directly (the field
-was promoted onto :class:`simulation.unit.Unit` in Phase 1 step 2).
+was promoted onto :class:`simulation.unit.Unit` in Phase 1 step 2); since
+G1p-c its default ``None`` means the ``[speeds]`` shamble cadence.
 
 Pathfinding is provided by :mod:`pathfinding.astar`. If pathfinding fails
 to import, the helper falls back to "stand still" (matches legacy
@@ -35,10 +36,17 @@ except ImportError:
     HAS_PATHFINDING = False
 
 
+def _shamble_ticks(gmap) -> int:
+    """The ``[speeds]`` shamble cadence on ``gmap``'s tile (a direct caller's
+    fallback; the Simulation hands its own quantization in)."""
+    from simulation.speeds import speed_table
+    return speed_table(CFG, gmap.tile_size_m).zombie_shamble_ticks
+
+
 # ---------------------------------------------------------------------------
 # Per-tick AI step
 # ---------------------------------------------------------------------------
-def update_zombies_tick(gmap, units, tick, events=None):
+def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
     """Run one tick of zombie AI for every active zombie on the map.
 
     Three sequential passes:
@@ -49,13 +57,21 @@ def update_zombies_tick(gmap, units, tick, events=None):
          the set stabilises).
       3. Per-zombie movement + combat — pick nearest living player,
          melee if adjacent (with cooldown), otherwise A* toward target
-         at ``z.speed_ticks_per_tile`` cadence. Repath every 5 steps.
+         at the shamble cadence (below). Repath every 5 steps.
 
     Mutates unit HP / alive / killed_by_zombie / zombie_* fields. ``events``
     (the sim's ``tick_events``; #122) receives each bite's
     :class:`UnitHitEvent` and, on a kill, :class:`UnitKilledEvent`, both with
     source ``"melee"`` -- credited kills, like a bullet's. ``None`` emits
     nothing (the pre-#122 shape, kept for direct callers).
+
+    The walk cadence (G1p-c): a zombie whose ``speed_ticks_per_tile`` is
+    ``None`` (every zombie, spawned or converted, unless something set an
+    int) walks at ``shamble_ticks`` -- the ``[speeds] zombie_shamble_mps``
+    cadence the Simulation quantized once with its map's tile size
+    (``SpeedTable.zombie_shamble_ticks``); a direct caller that passes none
+    gets the same quantization of ``gmap.tile_size_m`` here, the first time
+    a zombie of the call walks (a call that only bites never reads it).
     """
     # Prey = every living non-zombie, whatever its team (#119); the horde is
     # is_zombie — never a team literal.
@@ -152,7 +168,8 @@ def update_zombies_tick(gmap, units, tick, events=None):
                              mark_killed_by_zombie=True)
             continue
 
-        # Movement: one tile every (terrain-scaled) speed_ticks_per_tile ticks.
+        # Movement: one tile every (terrain-scaled) cadence ticks -- the
+        # [speeds] shamble unless the unit carries its own int.
         # Status gate: an immobilized zombie's stride clock PAUSES (the
         # accumulator does not advance while suppressed — cadence resumes
         # where it left off, mirroring the marine path-offset shift).
@@ -163,7 +180,12 @@ def update_zombies_tick(gmap, units, tick, events=None):
         # ticks this step costs — a zombie clambering through furniture is 2.5x
         # slower. A* stays speed-blind; the multiplier composes here only.
         samples = footprint_samples(gmap, z.tile_y, z.tile_x, z.footprint)
-        step_ticks = default_speed(samples, z.speed_ticks_per_tile)
+        cadence = z.speed_ticks_per_tile
+        if cadence is None:
+            if shamble_ticks is None:
+                shamble_ticks = _shamble_ticks(gmap)
+            cadence = shamble_ticks
+        step_ticks = default_speed(samples, cadence)
         z.zombie_move_accumulator += 1
         if z.zombie_move_accumulator >= step_ticks:
             z.zombie_move_accumulator = 0

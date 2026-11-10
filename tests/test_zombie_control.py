@@ -239,11 +239,11 @@ def test_each_zombie_is_driven_once_per_tick_in_a_match(tmp_path,
     seen = []
     real = sim_mod.update_zombies_tick
 
-    def counting(gmap, units, tick, events=None):
+    def counting(gmap, units, tick, events=None, **kw):
         calls[tick] += 1
         ids = [u.id for u in units if u.is_zombie and u.alive]
         seen.append((tick, ids))
-        return real(gmap, units, tick, events=events)
+        return real(gmap, units, tick, events=events, **kw)
 
     monkeypatch.setattr(sim_mod, "update_zombies_tick", counting)
 
