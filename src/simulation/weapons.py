@@ -232,6 +232,15 @@ class AmmoDef:
         # ``expose_q`` is the door's Q16 quantization; the law reads only it.
         self.expose = float(expose)
         self.expose_q = 0                       # derived by AmmoTable
+        # MOMENTUM (gameplay pack G5p-a2, simulation.unit_impulse): the
+        # round's real mass and muzzle speed (``bullet_g``, ``muzzle_mps``;
+        # absent = 0, a round that pushes nothing). ``momentum_ns`` (N s =
+        # bullet_g / 1000 * muzzle_mps) is what a hit pushes its target with
+        # and its recoil pushes the shooter with, through the impulse
+        # table's multipliers, quantized once per map there.
+        self.bullet_g = 0.0
+        self.muzzle_mps = 0.0
+        self.momentum_ns = 0.0
         self.family = family                    # must match a weapon's ammo_family
         self.dtype = dtype                      # mechanics/06 type name string
         self.dtype_id = DTYPE_BY_NAME[dtype]    # the damage-module constant
@@ -569,6 +578,28 @@ class WeaponTable:
         self.names = list(self.by_name)
 
 
+def _momentum_columns(row, name):
+    """The ``[ammo.*] bullet_g`` / ``muzzle_mps`` pair (G5p-a2, the unit
+    impulse law): (0.0, 0.0) when both are absent; refused by name when only
+    one is given or either is not a finite number >= 0."""
+    import math
+    has = [(k in row) if isinstance(row, dict) else hasattr(row, k)
+           for k in ("bullet_g", "muzzle_mps")]
+    if not any(has):
+        return 0.0, 0.0
+    if not all(has):
+        raise ValueError(f"ammo.{name}: bullet_g and muzzle_mps come as a "
+                         f"pair (the round's momentum), one is missing")
+    out = []
+    for k in ("bullet_g", "muzzle_mps"):
+        v = row[k] if isinstance(row, dict) else getattr(row, k)
+        if isinstance(v, bool) or not isinstance(v, (int, float))                 or not math.isfinite(float(v)) or v < 0:
+            raise ValueError(f"ammo.{name}.{k} must be a finite number >= 0, "
+                             f"got {v!r}")
+        out.append(float(v))
+    return out[0], out[1]
+
+
 class AmmoTable:
     """``[ammo.*]`` rows keyed by name. ``family`` and ``dtype`` are required
     (dtype validated against the mechanics/06 names); the rest default."""
@@ -616,6 +647,10 @@ class AmmoTable:
             raw_expose = _get_field(row, "ammo", name, "expose", 0.0)
             a.expose_q = _expose_q(raw_expose, f"ammo.{name}.expose")
             a.expose = float(raw_expose)
+            # bullet_g / muzzle_mps (G5p-a2): both or neither, each a finite
+            # number >= 0 -- refused by name otherwise.
+            a.bullet_g, a.muzzle_mps = _momentum_columns(row, name)
+            a.momentum_ns = a.bullet_g / 1000.0 * a.muzzle_mps
             # speed_q16: the authored tiles-per-tick quantized ONCE onto the
             # Q16.16 grid (ingress door 2) — the unified march's integer
             # step-budget source (W2). 96.0 -> 6291456 exactly.

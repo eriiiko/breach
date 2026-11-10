@@ -4,7 +4,7 @@ design §4.1 / §4.5; the ``AgentPolicy`` slot ``control_source`` reserved).
 A policy drives its team's units through the SAME per-tick intent facade the
 bots and the gamepad use -- ``Simulation.set_move_dir`` / ``clear_move_dir`` /
 ``set_aim`` / ``set_trigger`` / ``throw_grenade_intent`` / ``use_intent`` /
-``reload_intent`` --
+``reload_intent`` / ``shove_intent`` --
 so the sim's one intent tap (``Simulation.attach_intent_log``) sees every
 call and a recorded episode replays under ``tools/run_match.py --replay``.
 Nothing else drives a policy's units, and the policy decides nothing: it
@@ -17,7 +17,7 @@ THE ACTION ROW is an int32 vector whose columns are GENERATED from
 and the entry points' own parameter names (:func:`action_schema`):
 
 - a kind with no argument beyond the unit (``clear_move_dir``,
-  ``use_intent``, ``reload_intent``) is ONE flag column named after the kind (0 = not issued);
+  ``use_intent``, ``reload_intent``, ``shove_intent``) is ONE flag column named after the kind (0 = not issued);
 - every other argument is a column ``<kind>.<parameter>``, encoded by its
   ``INTENT_KINDS`` type: ``int`` as is (Q16.16 values are their raw ints),
   ``bool`` as 0/1, ``fhex`` (a float argument; none today since G3p made
@@ -31,7 +31,7 @@ vector: a zero vector holds a live, motionless move intent), ``set_aim.dx_q``,
 ``set_aim.dy_q``, ``set_trigger.held``, ``throw_grenade_intent.dx_q`` /
 ``.dy_q`` / ``.fuse_ticks`` (integer ticks) / ``.reach_q`` / ``.kind`` (the
 hand-grenade row index, G3p), ``use_intent``,
-``reload_intent`` (G2p).
+``reload_intent`` (G2p), ``shove_intent`` (G5p-a2).
 
 WHEN a kind is issued is its row in :data:`VERB_RULES` -- a new kind in
 ``INTENT_KINDS`` is refused here until it has one (the column follows for
@@ -40,7 +40,8 @@ free; the rule is a decision):
 - ``hold`` kinds are issued on EVERY tick of a decimation step (the sim
   overwrites the unit's live slot each call): move, aim, the trigger HOLD;
 - ``latch`` kinds only on the FIRST tick after :meth:`AgentPolicy.set_rows`
-  (the sim latches them until a tick consumes them): throw, use, reload;
+  (the sim latches them until a tick consumes them): throw, use, reload,
+  shove;
 
 each gated: ``always``; ``flag`` (its own flag column is non-zero);
 ``unless:<kind>`` (not when that kind's flag is set: ``set_move_dir`` yields
@@ -83,6 +84,7 @@ VERB_RULES = {
     "throw_grenade_intent": ("latch", "vector"),
     "use_intent": ("latch", "flag"),
     "reload_intent": ("latch", "flag"),
+    "shove_intent": ("latch", "flag"),
 }
 VERB_CLASSES = ("hold", "latch")
 
@@ -305,7 +307,7 @@ class AgentPolicy(ControlSource):
 # ---------------------------------------------------------------------------
 #: The random driver's placeholder domain: per decimation step a unit clears
 #: its move with p_clear, holds the trigger with p_trigger, and issues each
-#: latch kind (throw, use, reload) with p_latch; every direction is a uniform random
+#: latch kind (throw, use, reload, shove) with p_latch; every direction is a uniform random
 #: unit vector, ``throttle_q`` uniform in [0, ONE] (G1p), the
 #: fuse uniform in [fuse_lo_ticks, fuse_hi_ticks] (0.5 to 3 s at 24 tps), the
 #: reach uniform in [0, reach_hi_tiles] (the sim clamps it to the hand

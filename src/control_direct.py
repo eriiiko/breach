@@ -5,8 +5,8 @@ Design: ``docs/gameplay_pack_v1_design_2026-11-10.md`` §3 G1p (on
 direct`` (``--control gamepad`` is an alias) possesses the first living
 marine of ``sim.player_team`` and drives it through the sim's per-tick intent
 facade (``set_move_dir`` / ``set_aim`` / ``set_trigger`` /
-``throw_grenade_intent`` / ``use_intent`` / ``reload_intent``) under
-``ContinuousRealtime``.
+``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
+``shove_intent``) under ``ContinuousRealtime``.
 
 Every frame it reads BOTH devices and uses whichever was touched last (Erik:
 "the player plays with whatever they have connected"). A device is a HALF:
@@ -27,8 +27,10 @@ becomes intents. A new device is a half, never a second scheme.
   reach is. The mouse is ignored while ``GameRenderer.pointer_captured()``
   (the light-curve panel owns it).
 
-``melee``, ``shove`` and ``flashlight`` are bound in the table and do
-nothing yet: their verbs arrive with G5p..G7p (:data:`INERT_ACTIONS`).
+``melee`` and ``flashlight`` are bound in the table and do nothing yet:
+their verbs arrive with G6p / G7p (:data:`INERT_ACTIONS`). ``shove`` (G5p-a2;
+Space, pad RB) is ``shove_intent``: pressed once it pushes the adjacent unit
+nearest the facing through the unit impulse law.
 ``reload`` (G2p) is ``reload_intent``: pressed once it discards the magazine
 in the gun and runs the reload stall. ``cycle_grenade`` (G3p; key 4, pad B)
 steps the SELECTED grenade kind through the kinds the unit still carries and
@@ -54,9 +56,9 @@ from control_source import (ControlSource, quantize_point_aim,
 KEY_ACTIONS = ("move_forward", "move_back", "strafe_left", "strafe_right",
                "trigger", "melee", "shove", "reload", "throw",
                "cycle_grenade", "flashlight", "use", "full_speed")
-#: Bound now, inert until their verbs land (G5p shove, G6p melee, G7p
-#: flashlight).
-INERT_ACTIONS = ("melee", "shove", "flashlight")
+#: Bound now, inert until their verbs land (G6p melee, G7p flashlight; the
+#: G5p-a2 shove is live).
+INERT_ACTIONS = ("melee", "flashlight")
 
 #: Q16 one -- the throttle of a held ``full_speed``.
 _THROTTLE_ONE = 1 << 16
@@ -150,8 +152,8 @@ class DeviceFrame:
     ``move`` ``(dx_q, dy_q, throttle_q)`` or None (stop: ``clear_move_dir``);
     ``aim`` ``(dx_q, dy_q)`` or None (keep the facing); ``trigger`` held;
     ``throw`` ``(dx_q, dy_q, reach_q | None)`` on the frame it was pressed;
-    ``use``, ``reload`` and ``cycle_grenade`` True on the frame they were
-    pressed."""
+    ``use``, ``reload``, ``cycle_grenade`` and ``shove`` True on the frame
+    they were pressed."""
     move: tuple | None
     aim: tuple | None
     trigger: bool
@@ -159,6 +161,7 @@ class DeviceFrame:
     use: bool
     reload: bool = False
     cycle_grenade: bool = False
+    shove: bool = False
 
 
 def next_carried_kind(counts, current):
@@ -259,8 +262,10 @@ class KeyboardMouseHalf:
         use = self._pressed("use")
         reload = self._pressed("reload")
         cycle = self._pressed("cycle_grenade")
+        shove = self._pressed("shove")
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
-                           use=use, reload=reload, cycle_grenade=cycle)
+                           use=use, reload=reload, cycle_grenade=cycle,
+                           shove=shove)
 
 
 class DirectControl(ControlSource):
@@ -398,6 +403,8 @@ class DirectControl(ControlSource):
             sim.use_intent(uid)
         if frame.reload:
             sim.reload_intent(uid)
+        if frame.shove:
+            sim.shove_intent(uid)
 
     def _sync_grenade_kind(self, u) -> None:
         """Keep the selection on a kind the unit still carries: when the

@@ -132,6 +132,55 @@ def cos_rad(angle: float) -> float:
     return dequantize_scalar(b.cos_q16(quantize_scalar(angle)))
 
 
+# ---------------------------------------------------------------------------
+# Integer helpers of the unit impulse law (gameplay pack G5p-a2; critique B,
+# M2). Each has a ``fixed_point.h`` twin, held equal by
+# ``tests/test_unit_impulse_twins.py`` (gate G15): Python's ``//`` FLOORS,
+# C / CUDA ``/`` truncates toward zero, so the law names its rounding here and
+# never writes a bare ``//`` on a signed value.
+# ---------------------------------------------------------------------------
+def div_trunc(n: int, d: int) -> int:
+    """``n / d`` rounded toward ZERO -- exactly C's (and CUDA's) integer
+    ``/`` (``fixed_point.h::div_trunc_q``). ``d`` must not be 0."""
+    n, d = int(n), int(d)
+    q = abs(n) // abs(d)
+    return q if (n >= 0) == (d > 0) else -q
+
+
+def shr_trunc(n: int, k: int = FP_SHIFT) -> int:
+    """``n / 2**k`` rounded toward ZERO (a sign-symmetric shift: a mirrored
+    input gives the mirrored output to the count; ``fixed_point.h::
+    shr_trunc_q``). ``>>`` alone floors a negative value."""
+    n = int(n)
+    return n >> k if n >= 0 else -((-n) >> k)
+
+
+def isqrt(n: int) -> int:
+    """``floor(sqrt(n))`` of a non-negative integer, exact (``math.isqrt``)
+    -- the twin of the kit's fixed-iteration ``sqrt_q16`` for every radicand
+    below 2^62 (the law's squares are below 1.4e11). A negative radicand
+    is 0, as the kit's guard makes it."""
+    n = int(n)
+    return math.isqrt(n) if n > 0 else 0
+
+
+def isqrt_ceil(n: int) -> int:
+    """``ceil(sqrt(n))`` of a non-negative integer: the floor root, plus one
+    unless it is exact (so a vector scaled by ``limit / isqrt_ceil(|v|^2)``
+    never comes out longer than ``limit``)."""
+    r = isqrt(n)
+    return r + 1 if r * r < int(n) else r
+
+
+def effort_step(d: int) -> int:
+    """One step of the effort low-pass toward its input, ``d / 8`` rounded
+    AWAY from zero: ``sign(d) * ((|d| + 7) >> 3)`` -- never 0 for a
+    non-zero ``d`` and never past it, so the filter reaches its input
+    exactly (critique A, B2; ``fixed_point.h::effort_step_q``)."""
+    d = int(d)
+    return (d + 7) >> 3 if d >= 0 else -((-d + 7) >> 3)
+
+
 def quantize_hp_delta(dmg: float) -> float:
     """Snap a damage delta to the Q16.16 grid: ``dequantize(quantize(dmg))``.
 

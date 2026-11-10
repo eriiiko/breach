@@ -112,7 +112,7 @@ from simulation.heat_source_system import (build_heat_sources,
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import (default_speed, facing_cos_q16,
-                                 footprint_samples, move_speed_tiles_per_tick,
+                                 footprint_samples, move_speed_q16,
                                  THROTTLE_ONE)
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
@@ -128,6 +128,7 @@ from simulation import intents as _intents
 from simulation import speeds
 from simulation import turning
 from simulation import unit_fixed
+from simulation import unit_impulse
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
 # extracted verbatim. Simulation owns one Ruleset instance, chosen at
@@ -418,6 +419,13 @@ class Simulation:
         # walk / full costs in Q16 ticks per tile, the direction factors, the
         # zombie's integer shamble cadence.
         self.speed_table = speeds.speed_table(CFG, self.gmap.tile_size_m)
+        # G5p-a2: the unit impulse law's dials ([impulse], the ammo rows'
+        # momentum) quantized ONCE here with this map's tile size (the
+        # refusing door, simulation/unit_impulse.py), and handed to the map
+        # so the combat helpers that take only the map read the same table.
+        self.impulse_table = unit_impulse.impulse_table(
+            CFG, self.gmap.tile_size_m)
+        self.gmap._impulse_table = self.impulse_table
 
         # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
         # conductor's zombie slot runs the shipped law over every zombie (every
@@ -431,7 +439,7 @@ class Simulation:
         # The intent tap (#126, replay by re-simulation): ``None`` = dormant
         # (every path but a recorded match; each intent entry point pays one
         # ``is None`` check). Attached by :meth:`attach_intent_log`, it is
-        # handed EVERY call of the eight intent entry points, with the tick it
+        # handed EVERY call of the ten intent entry points, with the tick it
         # was issued at, BEFORE the call acts -- the one recording seam; no
         # controller logs anything itself. Never synced, never digested;
         # dropped by reset().
@@ -520,6 +528,7 @@ class Simulation:
         base_stats, mass, base_speed = predefined_unit_attributes(species)
         unit.base_stats = base_stats
         unit.mass = mass
+        unit_impulse.bind_mass(unit)          # G5p-a2: body + kit, grams
         unit.base_speed = base_speed
         unit.current_hp = float(base_stats.vitality)
 
@@ -1002,8 +1011,13 @@ class Simulation:
         :meth:`step`. World Y runs down and facing is math-style, hence
         ``-dy`` -- the convention of ``Unit.face_towards``."""
         target = unit_fixed.atan2_q16(-int(dy_q), int(dx_q))
+        # G5p-a2: slot 1a adds the outside spin integrated from the unit's
+        # angular accumulator before it turns (every producer of it -- slot
+        # 2, 4c, the previous tick's shoves -- has run when a controller's
+        # handle_frame reads this).
         return turning.predict(u, target, self.unit_turn_accel_q16(u),
-                               self.unit_turn_rate_q16(u))
+                               self.unit_turn_rate_q16(u),
+                               unit_impulse.pending_dw(self.impulse_table, u))
 
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
@@ -1086,6 +1100,27 @@ class Simulation:
         u.pending_reload = True
         self._possessed_ids.add(unit_id)
 
+    def shove_intent(self, unit_id: int) -> None:
+        """SHOVE (gameplay pack G5p-a2, ``docs/unit_impulse_design_
+        2026-11-10.md`` §4, §13): latch a shove. Consumed (and cleared) at
+        the next tick's slot 1b by ``unit_impulse.shove``: if the unit can
+        act and its cooldown (``[impulse.shove] cooldown_seconds``) has run,
+        the adjacent living unit of ANY team nearest its facing (within the
+        shove's cone) takes the shove's impulse (``[impulse.shove]
+        impulse_ns``) along that facing through the unit impulse law -- it
+        is pushed by its mass, staggers, or falls -- and a render-only
+        ``ShoveEvent`` is emitted; with no such unit nothing happens and the
+        cooldown is not spent. A zombie does not shove. Hand-written bots
+        never call it yet (G8p); an RL agent and the human do."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "shove_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_shove = True
+        self._possessed_ids.add(unit_id)
+
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine
@@ -1111,7 +1146,7 @@ class Simulation:
         single set-empty check and the digest is byte-identical.
 
         AIM is NOT consumed here: slot 1a turns toward a held aim
-        (``turning.step_units``, G5p-a1); THROW spawns a grenade
+        (``unit_impulse.integrate_all``, G5p-a1); THROW spawns a grenade
         BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
         this tick like a WEGO one; USE toggles a door latch; RELOAD discards
         the magazine and starts the stall (G2p). TRIGGER is not
@@ -1155,6 +1190,18 @@ class Simulation:
             if getattr(u, "pending_reload", False):
                 u.pending_reload = False
                 self._reload(u)
+
+            # SHOVE -> push the adjacent unit nearest the facing (edge;
+            # latched; G5p-a2). It ADDS to the target's accumulators only
+            # (integrated next tick's 1a), reading the slot-start positions
+            # and the shover's 1a-turned facing: every shove of a tick reads
+            # the same state and integer sums commute, so shovers' ids
+            # change nothing.
+            if getattr(u, "pending_shove", False):
+                u.pending_shove = False
+                if composed_flags(u).can_act:
+                    unit_impulse.shove(self.impulse_table, self.units, u,
+                                       self.tick, events=self.tick_events)
 
             # TRIGGER is NOT consumed here: a held ``live_trigger`` (set by
             # set_trigger) is read directly by the shooting slot (slot 4),
@@ -1401,7 +1448,12 @@ class Simulation:
                             # #140: the builder adds the wind's cadence
                             # scale, sampled here at ORDER time (WEGO's
                             # plan-time precompute -- an accepted gap).
-                            samples = footprint_samples(gmap, tile_y, tile_x, fp)
+                            # G5p-a2: the unit's effort scale, read at
+                            # order time like the wind.
+                            samples = footprint_samples(
+                                gmap, tile_y, tile_x, fp,
+                                effort_scale_q16=unit_impulse.effort_scale_q16(
+                                    unit_impulse.table_for(gmap), u))
                             step_ticks = default_speed(samples, speed)
                             for st in range(step_ticks):
                                 frac = (st + 1) / step_ticks
@@ -1749,14 +1801,18 @@ class Simulation:
         # simulation.ruleset.TwoPhaseWEGO.on_round_start.
         self.ruleset.on_round_start(self)
 
-        # 1a. Turn (G5p-a1, simulation.turning): every living unit's facing
-        # takes one tick of the turning law toward its target (the live aim
-        # while one is held) -- the ONLY writer of a facing. BEFORE 1b (a
-        # throw leaves along the turned facing), the movement slot (the Speed
-        # table's direction rule reads THIS tick's facing) and the shooting
-        # slot (a shot leaves along it; the bots' predictor evaluates exactly
-        # this step before the tick).
-        turning.step_units(self)
+        # 1a. Integrate + turn (G5p-a2 / G5p-a1, simulation.unit_impulse and
+        # simulation.turning): every living unit, in id order, integrates the
+        # impulses it received since last tick (its sway, pushed velocity,
+        # effort, reaction delay and the knockdown checks; the displacement
+        # itself is slot 3's), then takes one tick of the turning law toward
+        # its target (the live aim while one is held) with the outside spin
+        # added -- the ONLY writer of a facing. BEFORE 1b (a throw leaves
+        # along the turned facing; a shove reads it), the movement slot (the
+        # Speed table's direction rule reads THIS tick's facing) and the
+        # shooting slot (a shot leaves along it; the bots' predictor
+        # evaluates exactly this step before the tick).
+        unit_impulse.integrate_all(self)
 
         # 1b. Direct-control intents (control-modularity P3, §3c): consume the
         # possessed units' held/latched per-tick verbs (AIM/THROW/USE/TRIGGER)
@@ -1802,6 +1858,9 @@ class Simulation:
         # (onephase_wego design §3). The legacy path below is untouched and
         # still runs verbatim for every other ruleset.
         if self.ruleset.drives_units:
+            # G5p-a2: the pushed velocity moves every unit under every
+            # ruleset (slot 3's displacement), then the timeline plays.
+            self._displace_pushed()
             self.ruleset.drive_units(self)
         else:
             # 3. Update player movement.
@@ -2168,7 +2227,23 @@ class Simulation:
             self.bullets = survivors
 
     def _update_player_movement(self) -> None:
-        """Step each player unit along its precomputed path.
+        """Slot 3: THE displacement loop (G5p-a2, design §13) over every
+        living unit in id order, then each player unit's legacy WEGO path.
+
+        - A unit holding a live MOVE_DIR walks (:meth:`_step_move_dir`): its
+          walk and its pushed velocity move it as ONE displacement
+          (``unit_impulse.move``).
+        - Every other unit with a pushed velocity -- standing, prone, a
+          zombie, a WEGO unit -- moves by it alone; the pushed velocity moves
+          a unit whatever its statuses say about moving on its own. A zombie
+          so displaced drops its path (its next slot-5 step repaths from its
+          floored tile: the step snaps to the tile grid, an accepted gap
+          until the horde field, G9p).
+        - Then the WEGO path step (LEGACY), which overwrites a push (an
+          accepted gap, the Control seams row).
+
+        Each move reads only the map and the unit's own state, so the loop
+        is order-free (units pass through each other, #142).
 
         Status gate (mechanics/06 §4): a unit whose composed ``can_move`` is
         suppressed (knocked down / immobilized / paralyzed) holds position
@@ -2177,10 +2252,12 @@ class Simulation:
         at the next un-walked path index (no catch-up teleport; the round
         may end before the tail is walked — being knocked down costs the
         distance). With no statuses this is a dead path, bit-identical to
-        pre-P3 behavior.
+        pre-P3 behavior. A unit in its reaction delay
+        (``unit_impulse.walk_allowed``) is held the same way.
         """
+        gmap = self.gmap
         for u in self.units:
-            if not u.alive or u.is_zombie:
+            if not u.alive:
                 continue
 
             # Direct-control branch (control-modularity P3, §3c): a unit with a
@@ -2189,13 +2266,22 @@ class Simulation:
             # replays a WEGO path. Dormant under WEGO (no unit carries
             # ``live_move_dir``), so the branch below is untouched and
             # byte-identical.
-            move_dir = getattr(u, "live_move_dir", None)
+            move_dir = None if u.is_zombie else getattr(u, "live_move_dir",
+                                                        None)
             if move_dir is not None:
-                if composed_flags(u).can_move:
-                    self._step_move_dir(u, move_dir)
+                self._step_move_dir(u, move_dir)
                 continue
 
-            if not composed_flags(u).can_move:
+            # No walk of its own this slot: the pushed velocity alone.
+            if (u.pvx or u.pvy) and unit_impulse.move(gmap, u):
+                if u.is_zombie:
+                    u.zombie_path = []
+                    u.zombie_path_idx = 0
+            if u.is_zombie:
+                continue
+
+            if (not composed_flags(u).can_move
+                    or not unit_impulse.walk_allowed(u)):
                 u.path_tick_offset += 1
                 continue
             path_idx = self.tick - u.path_tick_offset
@@ -2220,6 +2306,19 @@ class Simulation:
                 u.x = px
                 u.y = py
 
+    def _displace_pushed(self) -> None:
+        """Slot 3 under a ruleset that drives the units itself (OnePhaseWEGO,
+        ``drives_units``): every living unit with a pushed velocity moves by
+        it (``unit_impulse.move``), before the ruleset's compiled timeline
+        (which then overwrites it: an accepted legacy gap). The same rule as
+        the pushed branch of :meth:`_update_player_movement`."""
+        for u in self.units:
+            if u.alive and (u.pvx or u.pvy) and unit_impulse.move(self.gmap,
+                                                                   u):
+                if u.is_zombie:
+                    u.zombie_path = []
+                    u.zombie_path_idx = 0
+
     def _step_move_dir(self, u, move_dir) -> None:
         """MOVE_DIR consumption (control-modularity P3, §3c) — the real new
         mechanic: advance ``u`` one tick along its live direction by a
@@ -2229,61 +2328,55 @@ class Simulation:
 
         Speed (G1p-c): the ``[speeds]`` table's marine walk and full speed
         (``self.speed_table``, Q16 ticks per tile, quantized once from m/s),
-        each scaled by the footprint's area-average mobility and the wind
-        exactly as every walker is (:func:`movement.default_speed`) — a
-        furniture tile is 2.5x slower for both — then the direction rule and
-        the intent's throttle (:func:`movement.move_speed_tiles_per_tick`):
-        the walk slows sideways and backward, the throttle's extra speed is
-        forward only. ``theta`` is the angle between the move and the facing
-        THIS tick (slot 1a already turned it, G5p-a1); a unit holding no aim
-        makes its travel direction its facing TARGET and turns there with
-        inertia like everyone else, so for a few ticks after a change of
-        direction it walks at the sideways / backward factor.
+        each scaled by the footprint's area-average mobility, the wind and
+        (G5p-a2) the unit's effort exactly as every walker is
+        (:func:`movement.default_speed`) — a furniture tile is 2.5x slower
+        for both — then the direction rule and the intent's throttle
+        (:func:`movement.move_speed_q16`, the rational rounded once to Q16
+        tiles per tick): the walk slows sideways and backward, the throttle's
+        extra speed is forward only. ``theta`` is the angle between the move
+        and the facing THIS tick (slot 1a already turned it, G5p-a1); a unit
+        holding no aim makes its travel direction its facing TARGET and turns
+        there with inertia like everyone else, so for a few ticks after a
+        change of direction it walks at the sideways / backward factor.
 
-        Determinism: the direction arrives as a Q16.16 unit vector; the only
-        floats are the exact power-of-two dequantize and the position math on
-        ``u.x``/``u.y`` (plain IEEE +/-/*/ — no libm, no transcendentals), so
-        the trajectory is bit-reproducible cross-machine (``u.x``/``y`` are
-        synced digest fields — this stays on the same float discipline as the
-        WEGO path).
+        The walk runs only while the unit's statuses let it move
+        (``can_move``) and it is not catching itself after a push
+        (``unit_impulse.walk_allowed``); either way its pushed velocity is
+        applied. Walk and push move it as ONE displacement
+        (``unit_impulse.move``): on the Q16 grid, in sub-tile substeps (one,
+        today's single test, at a walk alone), each the slide rule -- the
+        full move; else along X alone; else along Y alone; else hold -- so
+        pushing diagonally into a wall glides rather than dead-stops.
 
-        Collision: try the full move; if the destination footprint is blocked,
-        slide along each axis independently (still :meth:`is_passable_block`),
-        so pushing diagonally into a wall glides rather than dead-stops. A
-        fully boxed-in unit holds. A unit holding no live AIM makes the move
-        direction its facing target (turned toward from the next tick's 1a).
+        Determinism: integers only; ``u.x`` / ``u.y`` leave as exact n/65536
+        doubles (synced digest fields).
         """
-        fp = u.footprint
-        samples = footprint_samples(self.gmap, u.tile_y, u.tile_x, fp)
-        # G1p-c: the walk and the full speed (Q16 ticks per tile), each
-        # reduced by terrain and wind, then the direction rule and the
-        # throttle as ONE exact rational and one division.
-        table = self.speed_table
-        cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
-        tiles_per_tick = move_speed_tiles_per_tick(
-            default_speed(samples, table.walk_cost_q),
-            default_speed(samples, table.full_cost_q),
-            table.side_q, table.back_q, move_dir.throttle_q, cos_q)
-        dx = _intents.dequantize(move_dir.dx_q)
-        dy = _intents.dequantize(move_dir.dy_q)
-        step_x = dx * tiles_per_tick
-        step_y = dy * tiles_per_tick
-        nx = u.x + step_x
-        ny = u.y + step_y
-
-        gmap = self.gmap
-        if gmap.is_passable_block(int(ny), int(nx), fp):
-            u.x, u.y = nx, ny
-        elif gmap.is_passable_block(int(u.y), int(nx), fp):
-            u.x = nx                          # slide along X
-        elif gmap.is_passable_block(int(ny), int(u.x), fp):
-            u.y = ny                          # slide along Y
-        # else fully blocked -> hold position this tick.
+        walking = (composed_flags(u).can_move
+                   and unit_impulse.walk_allowed(u))
+        wdx = wdy = 0
+        if walking:
+            fp = u.footprint
+            samples = footprint_samples(
+                self.gmap, u.tile_y, u.tile_x, fp,
+                effort_scale_q16=unit_impulse.effort_scale_q16(
+                    self.impulse_table, u))
+            # G1p-c: the walk and the full speed (Q16 ticks per tile), each
+            # reduced by terrain, wind and effort, then the direction rule and
+            # the throttle as ONE exact rational, rounded once to Q16.
+            table = self.speed_table
+            cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
+            v_q = move_speed_q16(
+                default_speed(samples, table.walk_cost_q),
+                default_speed(samples, table.full_cost_q),
+                table.side_q, table.back_q, move_dir.throttle_q, cos_q)
+            wdx, wdy = unit_impulse.walk_step_q(move_dir, v_q)
+        unit_impulse.move(self.gmap, u, wdx, wdy)
 
         # Facing: a held aim wins (slot 1a's target); otherwise the
         # direction of travel becomes the facing TARGET (G5p-a1: turned
         # toward with inertia from the next tick's 1a, never written here).
-        if getattr(u, "live_aim", None) is None and (
+        if walking and getattr(u, "live_aim", None) is None and (
                 move_dir.dx_q != 0 or move_dir.dy_q != 0):
             turning.set_target(u, unit_fixed.atan2_q16(-int(move_dir.dy_q),
                                                        int(move_dir.dx_q)))
@@ -2305,6 +2398,11 @@ class Simulation:
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
+            # G5p-a2: the shove's cooldown rewinds with the tick counter (the
+            # last_fire_tick precedent), and a push does not survive the
+            # round boundary's snap to the tile grid.
+            u.last_shove_tick = -1
+            unit_impulse.clear(u)
             # W3 ammo economy: the round boundary tops everyone off (the
             # WEGO planning pause is a between-rounds breather — v1 rule,
             # Erik's dial later). Also REQUIRED for correctness: the tick

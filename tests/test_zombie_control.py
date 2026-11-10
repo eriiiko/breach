@@ -261,7 +261,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="65fd96904dfa3cc25edc0fc344027876be1b6c11b824c92c6b5930bb3c9c3499",
+    field_digest="ab499f298a66d2dfe4b0b3134b67ebaa663e4c95d7b7a5791954eb90eb8df573",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -315,8 +315,42 @@ _PRE_122_SHIP_DEMO = dict(
     #  f685699c86fe725440; tick 6e408f1955d11e567974b29252a93ecb080cff000e6d
     #  38a7d9653476d095267a; units c792732fc27000f1adf5d04c223c598022016368c9
     #  dbd81c79ffba31bac3e5b5)
-    tick_digest="f0f3a30ae5757a5833f00ce6f21fbdd4dcc8fad1fb20bf121ebfe3e1b44e7952",
-    unit_stream="1b3b013ff5a33f0802ec853f1c123d1ab6aa2b3a72a4ecdccdf33904277a131a")
+    # #183 G5p-a2 re-pin 1 (2026-11-10, the unit impulse law built with every input at zero -- [impulse]
+    # bullet_push_mult = recoil_mult = 0, no shove -- and the MOVE_DIR walk
+    # on the Q16 grid (the step is the speed law's rational rounded ONCE to
+    # Q16 tiles per tick, critique B M6)). Outcome,
+    # team, ticks (win 0 at 265) and field_digest UNCHANGED; tick_digest and
+    # the unit stream move (the walking bots' sub-tile positions). SOLE CAUSE, verified on the same tree: with the pre-G5p-a2 float walk
+    # step reinstated (a scratch monkeypatch of Simulation._step_move_dir)
+    # this run gives EXACTLY the previous values -- slot 1a's integration,
+    # slot 3's displacement loop, the effort member, the digest keys, the
+    # events and the door change nothing while every input is off.
+    # tests/test_unit_impulse.py::test_g1_with_every_input_off_nothing_is_
+    # pushed_and_the_pins_are_re_pin_1s holds that the law is dormant.
+    # Measured on the CPU, CUDA and resident backends alike.
+    # (was tick f0f3a30ae5757a5833f00ce6f21fbdd4dcc8fad1fb20bf121ebfe3e1b44e7952,
+    #  units 1b3b013ff5a33f0802ec853f1c123d1ab6aa2b3a72a4ecdccdf33904277a131a)
+    # #183 G5p-a2 re-pin 2 (2026-11-10, hits push and guns recoil: [impulse] bullet_push_mult =
+    # recoil_mult = 1.0, the RULED real momentum -- a carbine round 3.6 N s on
+    # the target, its recoil on the shooter).
+    # Outcome, team, ticks (win 0 at 265) and every kill (tick, unit, cause)
+    # UNCHANGED; field_digest, tick_digest and the unit stream move. SOLE CAUSE, verified on the same tree: with both
+    # multipliers at 0 this run gives exactly re-pin 1's values
+    # (2ca1d895 / ec0dad03) --
+    # tests/test_unit_impulse.py::test_g1_with_every_input_off_nothing_is_
+    # pushed_and_the_pins_are_re_pin_1s holds that. Per-tick trace (dormant
+    # vs shipped): identical through tick 204; on tick 205 the first round
+    # lands (unit 6 recoils, zombie 11 is struck); no unit is ever displaced
+    # (pv stays 0: a carbine or two is soft input), the effort (peak 0.32 of
+    # the hold) slows the shooters' and the struck zombies' walks by a few
+    # per cent, so positions and the field drift. Measured on the CPU, CUDA
+    # and resident backends alike.
+    # (was field 65fd96904dfa3cc25edc0fc344027876be1b6c11b824c92c6b5930bb3c9c3499,
+    #  tick 2ca1d895b11749e6b16f281bdf976379e52077e1d29929284683648f8369c6a4,
+    #  units ec0dad03ce0b0ef6389589f50b24728dc074a5f81a9340549b44d86e3338fd35;
+    #  the box is UNCHANGED: its idle marines never fire)
+    tick_digest="2620c39692177c6fe900df314650de1bf9b932bd1667224e5145c9a73068992b",
+    unit_stream="badb4a7984486a23519cdbbc7b85b72b8b8fb2953e3a02811ec8b7083fb1c922")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):

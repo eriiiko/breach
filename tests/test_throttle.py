@@ -42,7 +42,7 @@ from simulation import Simulation  # noqa: E402
 from simulation.intents import FP_ONE  # noqa: E402
 from simulation.movement import (FootprintSamples, SCALE_ONE,  # noqa: E402
                                  THROTTLE_ONE, default_speed, facing_cos_q16,
-                                 move_speed_tiles_per_tick)
+                                 move_speed_q16, move_speed_tiles_per_tick)
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.speeds import speed_settings, speed_table  # noqa: E402
 from simulation.turning import PI_Q16  # noqa: E402
@@ -219,6 +219,13 @@ def _step_once(throttle_q, move=(FP_ONE, 0), facing_q=None, aim=None):
     return sim, u, x0, y0
 
 
+def _qv(t, throttle_q, cos_q):
+    """The Q16 walk step (tiles) of an axis-aligned move at ``cos_q`` to the
+    facing: ``move_speed_q16`` of the arena's own costs, as a float."""
+    return move_speed_q16(t.walk_cost_q, t.full_cost_q, t.side_q, t.back_q,
+                          throttle_q, cos_q) / FP_ONE
+
+
 def test_the_movement_step_walks_at_the_table_and_slows_off_the_facing():
     """Property: through slot 3, on open floor, one tick advances exactly
     the law's speed for the map's own table (the arena's 1 m tile): forward
@@ -226,19 +233,25 @@ def test_the_movement_step_walks_at_the_table_and_slows_off_the_facing():
     aiming east while moving west, ``backward_frac x walk`` at both
     throttles; aiming north while moving east, ``sideways_frac x walk``.
     Breaks if the step reads another table or tile size, takes theta from
-    anything but this tick's facing, or ignores the direction rule."""
+    anything but this tick's facing, or ignores the direction rule.
+    (G5p-a2: the step is the law's rational rounded half up ONCE onto the
+    Q16 grid, ``movement.move_speed_q16`` -- critique B's M6; :func:`_qv`.)"""
     t = speed_table(CFG, 1.0)
     east, north = (FP_ONE, 0), (0, -FP_ONE)
     sim, u, x0, _ = _step_once(0, aim=east, facing_q=0)
     assert sim.speed_table == t
-    assert u.x == x0 + FP_ONE / t.walk_cost_q
+    assert u.x == x0 + _qv(t, 0, FP_ONE)
+    assert _qv(t, 0, FP_ONE) == pytest.approx(FP_ONE / t.walk_cost_q,
+                                              abs=1 / FP_ONE)
     _, u, x0, _ = _step_once(THROTTLE_ONE, aim=east, facing_q=0)
-    assert u.x == x0 + FP_ONE / t.full_cost_q
+    assert u.x == x0 + _qv(t, THROTTLE_ONE, FP_ONE)
     for th in (0, THROTTLE_ONE):
         _, u, x0, _ = _step_once(th, move=(-FP_ONE, 0), aim=east, facing_q=0)
-        assert u.x == x0 - t.back_q / t.walk_cost_q
+        assert u.x == x0 - _qv(t, th, -FP_ONE)
+        assert _qv(t, th, -FP_ONE) == pytest.approx(
+            t.back_q / t.walk_cost_q, abs=1 / FP_ONE)
         _, u, x0, _ = _step_once(th, aim=north, facing_q=102944)
-        assert u.x == x0 + t.side_q / t.walk_cost_q
+        assert u.x == x0 + _qv(t, th, 0)
 
 
 def test_with_no_aim_the_direction_rule_reads_the_facing_and_travel_is_the_target():
@@ -253,12 +266,12 @@ def test_with_no_aim_the_direction_rule_reads_the_facing_and_travel_is_the_targe
     t = speed_table(CFG, 1.0)
     for th in (0, THROTTLE_ONE):
         _, u, x0, _ = _step_once(th, move=(FP_ONE, 0))      # east, no aim
-        assert u.x == x0 + t.side_q / t.walk_cost_q
+        assert u.x == x0 + _qv(t, th, 0)
         assert u.facing_q == 102944 and u.facing_target_q == 0
     _, u, _, y0 = _step_once(0, move=(0, FP_ONE))          # south, no aim
-    assert u.y == y0 + t.back_q / t.walk_cost_q
+    assert u.y == y0 + _qv(t, 0, -FP_ONE)
     _, u, x0, _ = _step_once(THROTTLE_ONE, move=(FP_ONE, 0), facing_q=0)
-    assert u.x == x0 + FP_ONE / t.full_cost_q
+    assert u.x == x0 + _qv(t, THROTTLE_ONE, FP_ONE)
 
 
 def test_the_door_clamps_the_throttle_and_the_tap_records_the_clamp():
@@ -325,9 +338,11 @@ def test_e2e_the_keyboard_walks_runs_strafes_and_backs_at_the_table():
             runs.setdefault((row[6], row[7], row[8]), []).append((row, step))
 
     def law(key, row):
-        return move_speed_tiles_per_tick(
+        # G5p-a2: the step is the law's speed on the Q16 grid (every key is
+        # an axis-aligned move, so the step IS the speed in counts).
+        return move_speed_q16(
             t.walk_cost_q, t.full_cost_q, t.side_q, t.back_q, key[2],
-            facing_cos_q16(key[0], key[1], quantize_scalar(row[5])))
+            facing_cos_q16(key[0], key[1], quantize_scalar(row[5]))) / FP_ONE
 
     north, south = (0, -FP_ONE), (0, FP_ONE)
     table = {(*north, 0): FP_ONE / t.walk_cost_q,

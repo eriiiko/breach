@@ -524,14 +524,37 @@ def test_a_unit_with_no_exposure_records_as_before_and_one_with_some_does_not():
 #: ba06c3b14528bd6175, tick d207abc729f885076ddcabffcf7b9bcdb2797f4950534032
 #: ca4f1e220f49c7c4, units 4c26af9bdab372237cd4570021296285c73dc93d878a9b60
 #: 3dc7c6cd2aa05672)
+#: RE-MEASURED at #183 G5p-a2 re-pin 1 (2026-11-10, the unit impulse law built with every input at zero -- [impulse]
+#: bullet_push_mult = recoil_mult = 0, no shove -- and the MOVE_DIR walk
+#: on the Q16 grid (the step is the speed law's rational rounded ONCE to
+#: Q16 tiles per tick, critique B M6)):
+#: the same dormant-exposure run on the new tree. Outcome, ticks and
+#: field_digest UNCHANGED (win 0 at 266); tick_digest and the unit stream
+#: move. SOLE CAUSE, verified on the same tree: with the pre-G5p-a2 float walk
+#: step reinstated (a scratch monkeypatch of Simulation._step_move_dir)
+#: this run gives EXACTLY the previous values -- slot 1a's integration,
+#: slot 3's displacement loop, the effort member, the digest keys, the
+#: events and the door change nothing while every input is off.
+#: (was tick e6a38e5f509d1a91ed74ac11057f90dd2e6f2f791c3f46dd11321be4fc62e314,
+#: units c5108241c836c8e7a6d85636f9ad9048f3b2119bb94f1a3c499716b9c77006ee)
+#: RE-MEASURED at #183 G5p-a2 re-pin 2 (2026-11-10, hits push and guns recoil: [impulse] bullet_push_mult =
+#: recoil_mult = 1.0, the RULED real momentum -- a carbine round 3.6 N s on
+#: the target, its recoil on the shooter):
+#: the same dormant-exposure run with hits pushing and guns recoiling.
+#: Outcome and ticks UNCHANGED (win 0 at 266); field_digest, tick_digest and
+#: the unit stream move. SOLE CAUSE, verified on the same tree: with both
+#: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
+#: (was field 226202de75e88edd60e00666a884a9be860e5d5981f9d183e251edf1782fca89,
+#: tick f88fb88162203c4dc219f31d57a204be1d3d912a45da8e8eed3faa9f6e759121,
+#: units 262cc298e43a73ca7e6b668e4419008cdd4b7a8436da0ae0827accd8e78c0863)
 _PRE_G4P_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=266,
-    field_digest="226202de75e88edd60e00666a884a9be"
-                 "860e5d5981f9d183e251edf1782fca89",
-    tick_digest="e6a38e5f509d1a91ed74ac11057f90dd"
-                "2e6f2f791c3f46dd11321be4fc62e314",
-    unit_stream="c5108241c836c8e7a6d85636f9ad9048"
-                "f3b2119bb94f1a3c499716b9c77006ee")
+    field_digest="e54b96fa081f8d6588c6a309d23bcfee"
+                 "a99c17eff5d4323e119230899aabcb5e",
+    tick_digest="7b1fdf8920e54d262717284ab693dd6e"
+                "b22526464aeec0b11b610428573cb6be",
+    unit_stream="5c6236e4261b2c897c9787389b493849"
+                "0af60ce74a242bfe461fa5712ee3788d")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

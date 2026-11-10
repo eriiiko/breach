@@ -233,6 +233,19 @@ class Unit:
         # facing = North (quantize(pi/2)), matching the legacy "N" default.
         _turning.place(self, _turning.FACING_NORTH_Q16)
 
+        # ---- The unit impulse law (G5p-a2, simulation.unit_impulse) -------
+        # The accumulators ``imp_x`` / ``imp_y`` (Q16 gram-tiles per tick,
+        # the remainder of J / m kept) and ``imp_l`` (angular), the in-place
+        # sway ``swx`` / ``swy`` and the pushed velocity ``pvx`` / ``pvy``
+        # (Q16 tiles per tick), the ``effort`` (Q16) and ``react_ticks``; the
+        # shove's ``last_shove_tick`` cooldown and ``pending_shove`` latch;
+        # ``mass_g``, body + kit in integer grams; ``impulse_books``, the
+        # momentum books (diagnostic, never digested). All integers, all at
+        # rest here. Written only through unit_impulse (``add`` is the one
+        # entry). SYNCED: hashed in the unit digest while non-zero.
+        from simulation import unit_impulse as _unit_impulse
+        _unit_impulse.init_state(self)
+
         # ---- HP: current_hp from sampled vitality ------------------------
         # max_hp is removed; use effective_vitality(unit) from stats module.
         self.current_hp: float = float(self.base_stats.vitality)

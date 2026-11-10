@@ -69,9 +69,14 @@ class FootprintSamples:
 
     mobility: Sequence[int]
     wind_scale_q16: int = SCALE_ONE
+    #: G5p-a2: the unit impulse law's walking scale from the unit's effort
+    #: (``unit_impulse.effort_scale_q16``; ``SCALE_ONE`` = the feet are not
+    #: working against anything), composed AFTER the wind's.
+    effort_scale_q16: int = SCALE_ONE
 
 
-def footprint_samples(gmap, fy, fx, fp) -> FootprintSamples:
+def footprint_samples(gmap, fy, fx, fp,
+                      effort_scale_q16: int = SCALE_ONE) -> FootprintSamples:
     """THE :class:`FootprintSamples` builder (#140, design §2.2): the terrain
     mobility under the ``fp`` x ``fp`` footprint anchored at ``(fy, fx)``
     (``GameMap.footprint_mobility``) and the wind's cadence scale there.
@@ -87,13 +92,19 @@ def footprint_samples(gmap, fy, fx, fp) -> FootprintSamples:
     MOVE_DIR and the zombie walk see the wind at execution, the WEGO order
     path and the onephase cadence when their path is compiled (design §2.2,
     an accepted gap).
+
+    ``effort_scale_q16`` (G5p-a2) is the walker's own walking scale from its
+    effort (``unit_impulse.effort_scale_q16(table, unit)``), passed by every
+    caller in ``src/`` (the unit is not this builder's to read: the samples
+    stay a struct of numbers).
     """
     from simulation import exchange
     settings = exchange.gmap_wind_settings(gmap)
     w = gmap.footprint_wind_load(fy, fx, fp)
     return FootprintSamples(
         mobility=gmap.footprint_mobility(fy, fx, fp),
-        wind_scale_q16=exchange.wind_scale_q16(w, settings))
+        wind_scale_q16=exchange.wind_scale_q16(w, settings),
+        effort_scale_q16=int(effort_scale_q16))
 
 
 def half_up(num: int, den: int) -> int:
@@ -132,7 +143,10 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
     #140: the samples' ``wind_scale_q16`` (Q16, ``<= SCALE_ONE``) composes
     AFTER the mobility cost as ``cost' = half_up(cost * SCALE_ONE, scale)`` --
     a scale of one half doubles the ticks per tile; ``SCALE_ONE`` returns the
-    mobility cost exactly (the calm path is bit-identical).
+    mobility cost exactly (the calm path is bit-identical). G5p-a2: the
+    ``effort_scale_q16`` member composes the same way AFTER the wind (in
+    patch a the two multiply; G5p-b deletes the wind's member when wind
+    moves onto the impulse law).
 
     The CURRENCY of ``speed_class`` is the caller's, and the result comes
     back in it (both reductions are linear): whole ticks per tile for the
@@ -151,12 +165,15 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
         raise ValueError("default_speed: footprint has non-positive total mobility "
                          "(should have been gated by is_passable_block)")
     cost = half_up(int(speed_class) * n * MOBILITY_ONE, total)
-    scale = int(footprint_samples.wind_scale_q16)
-    if scale != SCALE_ONE:
-        if scale <= 0:
-            raise ValueError("default_speed: wind_scale_q16 must be > 0, "
-                             f"got {scale}")
-        cost = half_up(cost * SCALE_ONE, scale)
+    for name in ("wind_scale_q16", "effort_scale_q16"):
+        # #140's wind first, then G5p-a2's effort: each half_up, each skipped
+        # at SCALE_ONE so the unscaled path is bit-identical.
+        scale = int(getattr(footprint_samples, name, SCALE_ONE))
+        if scale != SCALE_ONE:
+            if scale <= 0:
+                raise ValueError(f"default_speed: {name} must be > 0, "
+                                 f"got {scale}")
+            cost = half_up(cost * SCALE_ONE, scale)
     return cost if cost >= 1 else 1
 
 
@@ -227,3 +244,29 @@ def move_speed_tiles_per_tick(cost_walk_q: int, cost_full_q: int,
         f32 = side * FP_ONE + (side - back) * c
         c_plus = 0
     return (f32 * cf + t * c_plus * (cw - cf)) / (FP_ONE * cw * cf)
+
+
+def move_speed_q16(cost_walk_q: int, cost_full_q: int, side_q: int,
+                   back_q: int, throttle_q: int, cos_q: int) -> int:
+    """:func:`move_speed_tiles_per_tick` on the Q16.16 grid (G5p-a2,
+    critique B M6): the SAME exact rational, rounded half up ONCE to Q16
+    tiles per tick -- ``half_up(F * Cf + t * c+ * (Cw - Cf), Cw * Cf)``, no
+    float -- so the walk step and every position it writes lie on the grid
+    (``unit_impulse.move``). Refuses what the float form refuses."""
+    t = int(throttle_q)
+    if not 0 <= t <= THROTTLE_ONE:
+        raise ValueError(f"throttle_q must be in [0, {THROTTLE_ONE}], got {t}")
+    c = int(cos_q)
+    if not -FP_ONE <= c <= FP_ONE:
+        raise ValueError(f"cos_q must be in [-{FP_ONE}, {FP_ONE}], got {c}")
+    cw, cf = int(cost_walk_q), int(cost_full_q)
+    if cw < 1 or cf < 1:
+        raise ValueError(f"tick costs must be >= 1, got walk {cw}, full {cf}")
+    side, back = int(side_q), int(back_q)
+    if c >= 0:
+        f32 = side * FP_ONE + (FP_ONE - side) * c
+        c_plus = c
+    else:
+        f32 = side * FP_ONE + (side - back) * c
+        c_plus = 0
+    return half_up(f32 * cf + t * c_plus * (cw - cf), cw * cf)

@@ -250,14 +250,36 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: it in play comes after that slot 1a and is unchanged.
 #: (was tick cfc087f4ff68f8395881ba629d4de73f70bb63edd0088789bcf8281e3decb819,
 #: units 030e28aaf6a4d3c64242ff617bb9ab554ffbd91449b1d3b8667f9201f94ab19e)
+#: RE-MEASURED at #183 G5p-a2 re-pin 1 (2026-11-10, the unit impulse law built with every input at zero -- [impulse]
+#: bullet_push_mult = recoil_mult = 0, no shove -- and the MOVE_DIR walk
+#: on the Q16 grid (the step is the speed law's rational rounded ONCE to
+#: Q16 tiles per tick, critique B M6)):
+#: the same instant-turn run on the new tree. Outcome and ticks UNCHANGED
+#: (win 1 at 244); field_digest, tick_digest and the unit stream move. SOLE CAUSE, verified on the same tree: with the pre-G5p-a2 float walk
+#: step reinstated (a scratch monkeypatch of Simulation._step_move_dir)
+#: this run gives EXACTLY the previous values -- slot 1a's integration,
+#: slot 3's displacement loop, the effort member, the digest keys, the
+#: events and the door change nothing while every input is off.
+#: (was field d74c0c9c3e4efb2bab446009bd7b9c8f7e05ca1fa976b29fa45df0de63d2e2a0,
+#: tick 74f88f8db69c11c9ac93accdd48a49ac9b90e046f22b3f57dc9421f8dde846bf,
+#: units a402a66787dde297706acd243a3b2c108c854339f2bf30d7ef074bd514b1e53c)
+#: RE-MEASURED at #183 G5p-a2 re-pin 2 (2026-11-10, hits push and guns recoil: [impulse] bullet_push_mult =
+#: recoil_mult = 1.0, the RULED real momentum -- a carbine round 3.6 N s on
+#: the target, its recoil on the shooter):
+#: the same instant-turn run with hits pushing and guns recoiling. Outcome,
+#: ticks and field_digest UNCHANGED; tick_digest and the unit stream move.
+#: SOLE CAUSE, verified on the same tree: with both
+#: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
+#: (was tick 6363856b30393dbcfef1c9801f03b3cfa423652cbd8f95f72f269ab59a394f36,
+#: units 02e8717ae42a475dd629ff355596da554f5771f91d258b8da83143e27af0dcb7)
 _PRE_G1P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=244,
-    field_digest="d74c0c9c3e4efb2bab446009bd7b9c8f"
-                 "7e05ca1fa976b29fa45df0de63d2e2a0",
-    tick_digest="74f88f8db69c11c9ac93accdd48a49ac"
-                "9b90e046f22b3f57dc9421f8dde846bf",
-    unit_stream="a402a66787dde297706acd243a3b2c10"
-                "8c854339f2bf30d7ef074bd514b1e53c")
+    field_digest="f479f16f80b1071550eda76c4630e538"
+                 "0f15c501f89e9160c4966fed9b0634ad",
+    tick_digest="16cfecdec6e602d9b547f9d37019b63f"
+                "d309764dc1cd282ef9665a5c597453c6",
+    unit_stream="72b7eba882b7bcb97c382e525690666e"
+                "83135343c8f045d042c93671b130fd1c")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

@@ -21,7 +21,8 @@ So an attack slot runs in TWO PHASES:
   recorded effects in the order they were recorded (shooter by shooter in
   the slot's walk order, round by round within a shooter): damage packets
   through the one door (``damage.apply_packet``), attack statuses, facing
-  snaps (targets for the turning law), wall chew, payload detonations, spray deposits. The hits' EXPOSURE
+  snaps (targets for the turning law), wall chew, payload detonations, spray deposits, the
+  impulses (G5p-a2: hits' pushes, recoil) through ``unit_impulse.add``. The hits' EXPOSURE
   raises (G4p, :mod:`simulation.exposure`) land together after the last
   effect, so every hit of the slot reads its target's slot-start exposure.
   (A packet a ``world`` effect applies -- a detonation's blast -- goes
@@ -55,8 +56,10 @@ from simulation.damage import apply_packet
 from simulation.exposure import ExposureLanding
 from simulation.status import apply_status
 from simulation.turning import set_target
+from simulation.unit_fixed import FP_ONE as ONE
+from simulation.unit_impulse import add as _impulse_add
 
-_HIT, _STATUS, _FACE, _WORLD = 0, 1, 2, 3
+_HIT, _STATUS, _FACE, _WORLD, _PUSH = 0, 1, 2, 3, 4
 
 
 class SimultaneousEffects:
@@ -64,7 +67,7 @@ class SimultaneousEffects:
     :meth:`resolve` (phase B) in recording order. ``deferred=False`` is
     :data:`IMMEDIATE`: each effect applies when recorded.
 
-    The four effect kinds are the whole interface; an attack path that
+    The five effect kinds are the whole interface; an attack path that
     changes the world or a unit records through one of them -- never a
     direct write inside phase A, which would let a later decision of the
     same slot read it:
@@ -77,7 +80,13 @@ class SimultaneousEffects:
       turns there from the next tick's slot 1a; a target's facing is what a
       crit or a facing-defense roll of another shooter reads);
     - :meth:`world`  -- any other world write (wall chew, a payload
-      detonation, a spray's deposit): a call run at its turn.
+      detonation, a spray's deposit): a call run at its turn;
+    - :meth:`push`   -- an impulse on a unit through the one entry
+      ``unit_impulse.add`` (G5p-a2: a hit's push, recorded right after its
+      hit; a shot's recoil on its shooter), applied only if the unit is
+      still alive at its turn. Integer sums commute, so its place in the
+      order changes nothing; it lands in the accumulators the next slot 1a
+      integrates.
     """
 
     __slots__ = ("deferred", "_pending")
@@ -115,6 +124,20 @@ class SimultaneousEffects:
         else:
             set_target(unit, angle_q)
 
+    def push(self, table, unit, jx_q: int, jy_q: int, lever_q: int = 0,
+             twist_q16: int = ONE) -> None:
+        """``unit_impulse.add(table, unit, jx_q, jy_q, lever_q, twist_q16)``
+        at its turn, if ``unit`` is alive then (a corpse takes no push). A
+        push of zero (an input switched off at its multiplier) is not
+        recorded at all."""
+        if not (jx_q or jy_q):
+            return
+        if self.deferred:
+            self._pending.append((_PUSH, table, unit, int(jx_q), int(jy_q),
+                                  int(lever_q), int(twist_q16)))
+        elif unit.alive:
+            _impulse_add(table, unit, jx_q, jy_q, lever_q, twist_q16)
+
     def world(self, fn, *args, **kwargs) -> None:
         """``fn(*args, **kwargs)`` at its turn -- a world write (the wall
         chew, a payload detonation, a spray deposit). ``fn`` must draw no
@@ -149,6 +172,10 @@ class SimultaneousEffects:
             elif kind == _FACE:
                 _, unit, angle_q = eff
                 set_target(unit, angle_q)
+            elif kind == _PUSH:
+                _, table, unit, jx, jy, lever, twist = eff
+                if unit.alive:
+                    _impulse_add(table, unit, jx, jy, lever, twist)
             else:
                 _, fn, args, kwargs = eff
                 fn(*args, **kwargs)

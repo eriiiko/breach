@@ -238,6 +238,23 @@ def _unit_record(u):
             rec["turn"] = int(turn)
         if getattr(u, "omega_q", 0):
             rec["omega"] = int(u.omega_q)
+    # G5p-a2: the unit impulse law's cross-tick state, absence-transparent
+    # (each key only while non-zero, so a unit nothing has pushed records
+    # exactly as before): the accumulators with their kept remainders, the
+    # sway, the pushed velocity, the effort and the reaction delay. The
+    # cooldown / latch of the shove are intent state (the magazine
+    # precedent) and the books are diagnostics: neither is hashed.
+    imp = [int(getattr(u, k, 0)) for k in ("imp_x", "imp_y", "imp_l")]
+    if any(imp):
+        rec["imp"] = imp
+    for key, names in (("sw", ("swx", "swy")), ("pv", ("pvx", "pvy"))):
+        v = [int(getattr(u, k, 0)) for k in names]
+        if any(v):
+            rec[key] = v
+    if getattr(u, "effort", 0):
+        rec["effort"] = int(u.effort)
+    if getattr(u, "react_ticks", 0):
+        rec["react"] = int(u.react_ticks)
     return rec
 
 

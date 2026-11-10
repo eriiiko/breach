@@ -171,13 +171,23 @@ def _duel(hp, left_first, n_ticks):
 # ---------------------------------------------------------------------------
 # (a) mirrored shooters both fire; the id swap mirrors the result
 # ---------------------------------------------------------------------------
-def test_mirrored_shooters_both_fire_and_the_id_swap_mirrors_the_result():
+def test_mirrored_shooters_both_fire_and_the_id_swap_mirrors_the_result(
+        monkeypatch):
     """Property: two shooters with sight of each other on the same tick both
     fire on that tick, a mirrored pair stays mirrored tick for tick (equal
     hp, equal life), and the result is the same per POSITION whichever of
     them holds the lower id. Breaks if the shooting slot applies a hit
     before a later shooter's turn (the pre-#169 walk: the lower id's second
-    burst kills the other before it fires, so the duel is won by id)."""
+    burst kills the other before it fires, so the duel is won by id).
+    (G5p-a2: rounds now push their target and recoil their shooter along
+    their own flight, so the cone draws -- different for the two shooters --
+    would move the pair apart unequally and break the mirror the property
+    reads; the cone is closed here, so every push is mirrored exactly. The
+    draws are still taken, in the same order.)"""
+    from config import CFG
+    monkeypatch.setattr(CFG.weapons.k5_carbine, "spread_deg", 0.0)
+    row = weapons_mod.get_tables().weapons.by_name["k5_carbine"]
+    monkeypatch.setattr(row, "spread_deg", 0.0)
     _s, L1, R1, run_lo = _duel(hp=100, left_first=True, n_ticks=12)
     _s, L2, R2, run_hi = _duel(hp=100, left_first=False, n_ticks=12)
     assert L1.id < R1.id and L2.id > R2.id       # the swap happened

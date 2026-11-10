@@ -1985,6 +1985,28 @@ PYBIND11_MODULE(breach_physics, m) {
           "Q2-LIFT: pure-integer cos on Q16.16 radians (output Q16.16 in "
           "[-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).");
 
+    // G5p-a2 (the unit impulse law): the kit's roundings and its integer
+    // root, exposed so the Python law (src/simulation/unit_impulse.py, via
+    // unit_fixed) is GATED against them (tests/test_unit_impulse_twins.py,
+    // gate G15) -- the device port of slot 1a / 3 runs these, not Python's.
+    m.def("fp_div_trunc",
+          [](int64_t n, int64_t d) { return fixedpoint::div_trunc_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h div_trunc_q: n / d rounded toward zero (C's /).");
+    m.def("fp_shr_trunc",
+          [](int64_t n, int k) { return fixedpoint::shr_trunc_q(n, k); },
+          py::arg("n"), py::arg("k"),
+          "fixed_point.h shr_trunc_q: n / 2^k rounded toward zero.");
+    m.def("fp_effort_step",
+          [](int64_t d) { return fixedpoint::effort_step_q(d); },
+          py::arg("d"),
+          "fixed_point.h effort_step_q: d / 8 rounded away from zero.");
+    m.def("fp_sqrt_q16",
+          [](int64_t x) { return fixedpoint::sqrt_q16(x); },
+          py::arg("x"),
+          "fixed_point.h sqrt_q16: floor(sqrt(x)) of an int64, fixed 32 "
+          "trips (clamped at INT32_MAX).");
+
     // FUEL-FRACTION AXIS (2026-07-30): the load-time reciprocal bake itself,
     // exposed so Python can be GATED against it rather than trusted to
     // reproduce it. `src/simulation/materials.fuel_recip_from_hp` bakes each

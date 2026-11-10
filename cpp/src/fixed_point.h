@@ -798,6 +798,34 @@ FP_HD inline int64_t floordiv_q(int64_t n, int64_t d) {
     return q;
 }
 
+// ---- the unit impulse law's roundings (gameplay pack G5p-a2) ---------------
+//
+// The law (src/simulation/unit_impulse.py, design §13 / critique B M2) names
+// its rounding at every signed division; these are the C twins of
+// `unit_fixed.div_trunc` / `shr_trunc` / `effort_step`, held equal by
+// tests/test_unit_impulse_twins.py (gate G15) through the fp_* bindings.
+// Its magnitudes are `sqrt_q16` (below), the twin of `unit_fixed.isqrt`.
+//
+// div_trunc_q: n / d rounded toward ZERO -- C's own `/`, named so the device
+// port reads the rounding off the call. d != 0 (the callers divide by a mass,
+// an inertia or a vector length, all >= 1).
+FP_HD inline int64_t div_trunc_q(int64_t n, int64_t d) {
+    return n / d;
+}
+
+// shr_trunc_q: n / 2^k rounded toward ZERO (sign-symmetric: a mirrored input
+// gives the mirrored output to the count). `>>` alone floors a negative.
+FP_HD inline int64_t shr_trunc_q(int64_t n, int k) {
+    return n >= 0 ? (n >> k) : -((-n) >> k);
+}
+
+// effort_step_q: one step of the effort low-pass toward its input, d / 8
+// rounded AWAY from zero -- never 0 for d != 0 and never past d, so the
+// filter reaches its input exactly (critique A, B2).
+FP_HD inline int64_t effort_step_q(int64_t d) {
+    return d >= 0 ? ((d + 7) >> 3) : -(((-d) + 7) >> 3);
+}
+
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------
 //
 // n = ceil(a_real / b_real), computed entirely in integer from the Q16.16

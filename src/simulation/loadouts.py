@@ -3,6 +3,8 @@ what it survives, as config rows.
 
     [loadouts.<name>]      weapon (a [weapons.*] id), grenades, explosives,
                            optionally magazines (total carried, 0 = untracked)
+                           and kit_kg (the kit's mass, G5p-a2: the unit
+                           impulse law's mass is body + kit)
                            ``grenades`` is a table by hand-grenade ``[ammo.*]``
                            row name (``{ grenade_frag = 2, grenade_smoke = 1 }``,
                            G3p) or a bare int, which means that many frags
@@ -54,6 +56,15 @@ def _count(value, where: str) -> int:
     return int(value)
 
 
+def _kg(value, where: str) -> float:
+    """A non-negative, finite mass in kg (G5p-a2's ``kit_kg``)."""
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float))             or not math.isfinite(float(value)) or value < 0:
+        raise ValueError(f"{where} must be a non-negative number of kg "
+                         f"(got {value!r})")
+    return float(value)
+
+
 def _grenade_counts(value, where: str, grenade_rows) -> dict:
     """The ``grenades`` column of a loadout row as ``{ammo row name: count}``
     (G3p). A bare int (the pre-G3p form) means that many FRAGS; a table is
@@ -84,6 +95,9 @@ class LoadoutDef:
     #: Magazines carried, TOTAL including the one loaded (G2p). 0 = spare
     #: magazines untracked: the infinite auto-reload every weapon had before.
     magazines: int = 0
+    #: What the kit weighs, kg (G5p-a2: the unit impulse law's mass is the
+    #: body's plus this). 0 = nothing carried that counts.
+    kit_kg: float = 0.0
 
     @property
     def frags(self) -> int:
@@ -94,7 +108,7 @@ class LoadoutDef:
 
 _LOADOUT_COLUMNS = ("weapon", "grenades", "explosives")
 #: Optional columns (absent = the default named on :class:`LoadoutDef`).
-_LOADOUT_OPTIONAL = ("magazines",)
+_LOADOUT_OPTIONAL = ("magazines", "kit_kg")
 
 
 class LoadoutTable:
@@ -130,7 +144,9 @@ class LoadoutTable:
                 explosives=_count(cols["explosives"],
                                   f"loadouts.{name}.explosives"),
                 magazines=_count(cols.get("magazines", 0),
-                                 f"loadouts.{name}.magazines"))
+                                 f"loadouts.{name}.magazines"),
+                kit_kg=_kg(cols.get("kit_kg", 0.0),
+                           f"loadouts.{name}.kit_kg"))
 
     def get(self, name: str) -> LoadoutDef:
         try:
