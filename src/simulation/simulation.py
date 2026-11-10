@@ -1147,6 +1147,24 @@ class Simulation:
             return
         u.pending_melee = True
 
+    def set_flashlight(self, unit_id: int, off: bool) -> None:
+        """FLASHLIGHT (gameplay pack G7p): hold ``unit_id``'s flashlight bit
+        ``off`` (True) or on (False; every unit starts on). A HOLD verb,
+        like :meth:`set_trigger`: the sim overwrites the bit on every call.
+        The argument is the OFF sense so that a zero action row (a policy's
+        do-nothing stance) leaves the light as it was and every pinned
+        digest as it is. SYNCED (hashed in the unit digest only while off),
+        read by nothing in the sim (light as game state is #81): the frame
+        lights draw the unit's cone from it
+        (``ui.model.flashlight_cones``)."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_flashlight",
+                                    (int(unit_id), bool(off)))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.flashlight_on = not bool(off)
+
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine

@@ -194,6 +194,9 @@ class _ThrowerControl(ControlSource):
                 sim.shove_intent(u.id)        # G5p-a2 (a shove of anyone near)
             if sim.tick % 13 == 2:
                 sim.melee_intent(u.id)        # G6p (a blow at anyone adjacent)
+            # G7p: the light off for a stretch of every 50 ticks (the hold
+            # verb, issued every tick as a control would)
+            sim.set_flashlight(u.id, sim.tick % 50 >= 30)
             if sim.tick % 9 == 0:
                 sim.set_move_dir(u.id, dx, dy, 32768)   # half throttle
             elif sim.tick % 9 == 5:
@@ -210,7 +213,7 @@ def thrower(monkeypatch):
 def test_every_intent_kind_replays_live(tmp_path, thrower):
     """Property: a match issuing every recordable kind (move, clear, aim,
     trigger, throw with and without a reach, USE, RELOAD, SHOVE (G5p-a2),
-    MELEE (G6p), the horde's ZOMBIE intent)
+    MELEE (G6p), the FLASHLIGHT hold (G7p), the horde's ZOMBIE intent)
     replays to every checkpoint and the original final digests. Breaks if
     any kind is fed back with another argument, out of order, or dropped
     (checked: dropping the throws diverges at tick 15). USE has no effect in
@@ -247,6 +250,8 @@ def _synthetic():
             ("use_intent", (1,)),
             ("shove_intent", (0,)),
             ("melee_intent", (1,)),
+            ("set_flashlight", (0, True)),
+            ("set_flashlight", (1, False)),
             ("drive_zombies", ([9, 4, 7],)),
             ("drive_zombies", ([],))],
     }
@@ -282,8 +287,8 @@ def test_the_format_round_trips_every_intent_kind_exactly():
     # G5p-a2 (gate G14): a v4 recording (before the shove and the impulse
     # law) would replay as another match -- refused by its header.
     (lambda h, rows: h.update(version=4), "version"),
-    # G6p: a v5 recording (before the melee verb) would replay on a changed
-    # intent set -- refused by its header.
+    # G6p / G7p: a v5 recording (before the melee verb and the flashlight
+    # hold) would replay on a changed intent set -- refused by its header.
     (lambda h, rows: h.update(version=5), "version"),
     (lambda h, rows: h.update(format="other"), "not a"),
     (lambda h, rows: rows[0]["i"].append(["teleport", 0]), "unknown intent"),
@@ -333,14 +338,17 @@ def test_the_tap_records_every_entry_point_as_issued(tmp_path):
     sim.drive_zombies((u.id for u in sim.zombies()))
     sim.shove_intent(np.int64(1))
     sim.melee_intent(np.int64(0))
+    sim.set_flashlight(np.int64(1), np.bool_(True))
     got = rec.intents[0]
     assert [k for k, _ in got] == ["set_move_dir", "clear_move_dir",
                                    "set_aim", "set_trigger",
                                    "throw_grenade_intent", "use_intent",
                                    "drive_zombies", "shove_intent",
-                                   "melee_intent"]
+                                   "melee_intent", "set_flashlight"]
     assert got[7][1] == (1,) and type(got[7][1][0]) is int
     assert got[8][1] == (0,) and type(got[8][1][0]) is int       # G6p
+    assert got[9][1] == (1, True)                                # G7p
+    assert type(got[9][1][0]) is int and type(got[9][1][1]) is bool
     assert got[0][1] == (0, 65536, 0, 1) and type(got[0][1][0]) is int
     assert got[3][1] == (0, True) and type(got[3][1][1]) is bool
     assert got[4][1] == (0, 65536, 0, 48, None, 1)
@@ -350,7 +358,7 @@ def test_the_tap_records_every_entry_point_as_issued(tmp_path):
         sim.apply_action(0, Order(ORDER_MOVE, 5, 5, 0))
     sim.attach_intent_log(None)
     sim.set_aim(0, 65536, 0)
-    assert len(rec.intents[0]) == 9
+    assert len(rec.intents[0]) == 10
 
 
 def test_replay_is_registered_but_no_match_file_can_name_it(tmp_path):

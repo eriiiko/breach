@@ -1395,9 +1395,10 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # mouse button "MOUSE_LEFT" / "MOUSE_RIGHT" / "MOUSE_MIDDLE". The aim is the
 # mouse (the marine faces the cursor). Shipped table: Erik's ruling,
 # 2026-11-10 (RDFG). melee (G6p: strike the adjacent enemy nearest the
-# facing; hold the button to keep striking at the weapon's cadence) is live
-# now, as are reload (G2p), cycle_grenade (G3p) and shove (G5p-a2: push the
-# adjacent unit nearest the facing); flashlight is BOUND BUT INERT until G7p.
+# facing; hold the button to keep striking at the weapon's cadence) and
+# flashlight (G7p: a TOGGLE of the possessed unit's light bit) are live now,
+# as are reload (G2p), cycle_grenade (G3p) and shove (G5p-a2: push the
+# adjacent unit nearest the facing).
 [controls.keys]
 move_forward = "R"
 move_back = "F"

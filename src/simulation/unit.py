@@ -346,6 +346,11 @@ class Unit:
         self.melee_id = "" if _kit is None else str(_kit.melee)
         self.pending_melee = False
         self.last_blow_tick = -1
+        # The flashlight bit (gameplay pack G7p, ``Simulation.set_flashlight``):
+        # ON by default; SYNCED, hashed in the unit digest only while OFF
+        # (absence-transparent). Nothing in the sim reads it (light as game
+        # state is #81): the frame-light assembly draws the cone from it.
+        self.flashlight_on = True
 
         # W4 SPRAY burst state (mechanics/03 §5): armed by
         # combat.start_spray_burst on a spray trigger; counted down by

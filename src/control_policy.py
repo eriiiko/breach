@@ -4,7 +4,7 @@ design §4.1 / §4.5; the ``AgentPolicy`` slot ``control_source`` reserved).
 A policy drives its team's units through the SAME per-tick intent facade the
 bots and the gamepad use -- ``Simulation.set_move_dir`` / ``clear_move_dir`` /
 ``set_aim`` / ``set_trigger`` / ``throw_grenade_intent`` / ``use_intent`` /
-``reload_intent`` / ``shove_intent`` / ``melee_intent`` --
+``reload_intent`` / ``shove_intent`` / ``melee_intent`` / ``set_flashlight`` --
 so the sim's one intent tap (``Simulation.attach_intent_log``) sees every
 call and a recorded episode replays under ``tools/run_match.py --replay``.
 Nothing else drives a policy's units, and the policy decides nothing: it
@@ -31,7 +31,8 @@ vector: a zero vector holds a live, motionless move intent), ``set_aim.dx_q``,
 ``set_aim.dy_q``, ``set_trigger.held``, ``throw_grenade_intent.dx_q`` /
 ``.dy_q`` / ``.fuse_ticks`` (integer ticks) / ``.reach_q`` / ``.kind`` (the
 hand-grenade row index, G3p), ``use_intent``,
-``reload_intent`` (G2p), ``shove_intent`` (G5p-a2), ``melee_intent`` (G6p).
+``reload_intent`` (G2p), ``shove_intent`` (G5p-a2), ``melee_intent`` (G6p),
+``set_flashlight.off`` (G7p: the OFF sense, so a zero row keeps every light on).
 
 WHEN a kind is issued is its row in :data:`VERB_RULES` -- a new kind in
 ``INTENT_KINDS`` is refused here until it has one (the column follows for
@@ -86,6 +87,9 @@ VERB_RULES = {
     "reload_intent": ("latch", "flag"),
     "shove_intent": ("latch", "flag"),
     "melee_intent": ("latch", "flag"),
+    # The flashlight bit is held every tick like the trigger; its argument is
+    # the OFF sense (Simulation.set_flashlight) so a zero row leaves it on.
+    "set_flashlight": ("hold", "always"),
 }
 VERB_CLASSES = ("hold", "latch")
 
@@ -308,7 +312,7 @@ class AgentPolicy(ControlSource):
 # ---------------------------------------------------------------------------
 #: The random driver's placeholder domain: per decimation step a unit clears
 #: its move with p_clear, holds the trigger with p_trigger, and issues each
-#: latch kind (throw, use, reload, shove, melee) with p_latch; every direction is a uniform random
+#: latch kind (throw, use, reload, shove, melee) with p_latch (and darkens the flashlight with it); every direction is a uniform random
 #: unit vector, ``throttle_q`` uniform in [0, ONE] (G1p), the
 #: fuse uniform in [fuse_lo_ticks, fuse_hi_ticks] (0.5 to 3 s at 24 tps), the
 #: reach uniform in [0, reach_hi_tiles] (the sim clamps it to the hand
@@ -358,7 +362,9 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
             p = d["p_latch"] if latch else d["p_clear"]
             rows[:, i] = rng.random(n) < p
         elif c.type == "bool":
-            rows[:, i] = rng.random(n) < d["p_trigger"]
+            # The flashlight's OFF is rare (p_latch), the trigger's hold half.
+            p = d["p_latch"] if c.kind == "set_flashlight" else d["p_trigger"]
+            rows[:, i] = rng.random(n) < p
         elif c.name.endswith(".fuse_ticks"):
             rows[:, i] = rng.integers(int(d["fuse_lo_ticks"]),
                                       int(d["fuse_hi_ticks"]) + 1, size=n)

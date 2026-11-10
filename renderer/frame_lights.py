@@ -62,9 +62,12 @@ EMITTER_INPUTS = {
     "lamp":       ("sim",    "level [[light]] row (position, colour, intensity)"),
     "beacon":     ("sim",    "level [[light]] row + the monotonic sim tick (facing)"),
     "spot":       ("sim",    "level [[light]] row (position, colour, intensity, aim, beam)"),
-    "flashlight": ("render", "unit position + facing (sim) + the flashlight mode and "
-                             "selected unit (control-source state) + the planning aim "
-                             "at the cursor while paused (mouse)"),
+    "flashlight": ("render", "unit position + facing + the unit's flashlight bit "
+                             "(sim, G7p: Unit.flashlight_on, a synced hold verb; off = "
+                             "no cone) + the flashlight mode and selected unit "
+                             "(control-source state; direct control: the possessed "
+                             "unit, a watched match: every living marine) + the "
+                             "planning aim at the cursor while paused (mouse)"),
     "cursor":     ("render", "the mouse position (WEGO's cursor lamp)"),
     "transient":  ("render", "the renderer's W6 effect queue (sim events, aged and "
                              "faded on the wall clock) -- the jets, the plasma bolts "

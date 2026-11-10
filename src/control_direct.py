@@ -6,7 +6,8 @@ direct`` (``--control gamepad`` is an alias) possesses the first living
 marine of ``sim.player_team`` and drives it through the sim's per-tick intent
 facade (``set_move_dir`` / ``set_aim`` / ``set_trigger`` /
 ``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
-``shove_intent`` / ``melee_intent``) under ``ContinuousRealtime``.
+``shove_intent`` / ``melee_intent`` / ``set_flashlight``) under
+``ContinuousRealtime``.
 
 Every frame it reads BOTH devices and uses whichever was touched last (Erik:
 "the player plays with whatever they have connected"). A device is a HALF:
@@ -27,12 +28,15 @@ becomes intents. A new device is a half, never a second scheme.
   reach is. The mouse is ignored while ``GameRenderer.pointer_captured()``
   (the light-curve panel owns it).
 
-``flashlight`` is bound in the table and does nothing yet: its verb arrives
-with G7p (:data:`INERT_ACTIONS`).
+Every action of the table is live now (:data:`INERT_ACTIONS` is empty).
 ``melee`` (G6p; the right mouse button, pad R3) is ``melee_intent``: the
 button HELD sends it every frame and the sim's own cadence (the weapon row's)
 decides when a blow lands, so holding the button keeps striking the adjacent
-enemy nearest the facing. ``shove`` (G5p-a2;
+enemy nearest the facing. ``flashlight`` (G7p; Q, pad D-pad up) TOGGLES the
+possessed unit's light: the control keeps the on/off state
+(:attr:`DirectControl.flashlight_off`, seeded from the unit's own bit when a
+unit is possessed) and holds it with ``set_flashlight`` every frame, as the
+trigger is held. ``shove`` (G5p-a2;
 Space, pad RB) is ``shove_intent``: pressed once it pushes the adjacent unit
 nearest the facing through the unit impulse law.
 ``reload`` (G2p) is ``reload_intent``: pressed once it discards the magazine
@@ -60,9 +64,10 @@ from control_source import (ControlSource, quantize_point_aim,
 KEY_ACTIONS = ("move_forward", "move_back", "strafe_left", "strafe_right",
                "trigger", "melee", "shove", "reload", "throw",
                "cycle_grenade", "flashlight", "use", "full_speed")
-#: Bound now, inert until their verbs land (G7p flashlight; the G6p melee
-#: and the G5p-a2 shove are live).
-INERT_ACTIONS = ("flashlight",)
+#: Bound but with no verb behind them yet: none since G7p (melee G6p,
+#: flashlight G7p, shove G5p-a2 are live). A new bound-but-inert action is
+#: listed here until its verb lands.
+INERT_ACTIONS = ()
 
 #: Q16 one -- the throttle of a held ``full_speed``.
 _THROTTLE_ONE = 1 << 16
@@ -156,9 +161,9 @@ class DeviceFrame:
     ``move`` ``(dx_q, dy_q, throttle_q)`` or None (stop: ``clear_move_dir``);
     ``aim`` ``(dx_q, dy_q)`` or None (keep the facing); ``trigger`` held;
     ``throw`` ``(dx_q, dy_q, reach_q | None)`` on the frame it was pressed;
-    ``use``, ``reload``, ``cycle_grenade`` and ``shove`` True on the frame
-    they were pressed; ``melee`` True on every frame its button is held (the
-    sim's cadence spaces the blows)."""
+    ``use``, ``reload``, ``cycle_grenade``, ``shove`` and
+    ``flashlight_toggle`` True on the frame they were pressed; ``melee`` True
+    on every frame its button is held (the sim's cadence spaces the blows)."""
     move: tuple | None
     aim: tuple | None
     trigger: bool
@@ -168,6 +173,7 @@ class DeviceFrame:
     cycle_grenade: bool = False
     shove: bool = False
     melee: bool = False
+    flashlight_toggle: bool = False
 
 
 def next_carried_kind(counts, current):
@@ -271,9 +277,11 @@ class KeyboardMouseHalf:
         shove = self._pressed("shove")
         melee = (not captured) and (self._down("melee")
                                     or self._pressed("melee"))
+        flashlight = self._pressed("flashlight")
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
                            use=use, reload=reload, cycle_grenade=cycle,
-                           shove=shove, melee=melee)
+                           shove=shove, melee=melee,
+                           flashlight_toggle=flashlight)
 
 
 class DirectControl(ControlSource):
@@ -308,6 +316,12 @@ class DirectControl(ControlSource):
         #: (``WeaponsTables.hand_grenade_rows``), None until a unit carrying
         #: one is possessed. Control-layer state, never on the sim.
         self.grenade_kind = None
+        #: The flashlight's OFF state the control holds (G7p): control-layer
+        #: state seeded from the possessed unit's own bit (so a unit darkened
+        #: by anything else is not lit by the next frame) and sent every
+        #: frame through ``set_flashlight``. The toggle flips it.
+        self.flashlight_off = False
+        self._flash_unit_id = None
         self._kbm = KeyboardMouseHalf(self.keys)
         self._pad = None          # built on the first frame (pyray import)
         #: The device in use: "keyboard" until the pad is touched.
@@ -378,6 +392,7 @@ class DirectControl(ControlSource):
         elif self._pad.touched():
             self.active = "pad"
         self._sync_grenade_kind(u)
+        self._sync_flashlight(u)
         facing = lambda: self._facing_dir(u)          # noqa: E731
         if self.active == "pad":
             if not self._pad.available():
@@ -415,6 +430,17 @@ class DirectControl(ControlSource):
             sim.shove_intent(uid)
         if frame.melee:
             sim.melee_intent(uid)
+        if frame.flashlight_toggle:
+            self.flashlight_off = not self.flashlight_off
+        sim.set_flashlight(uid, self.flashlight_off)
+
+    def _sync_flashlight(self, u) -> None:
+        """Seed the held flashlight state from a newly possessed unit's own
+        bit (the control follows the unit, not the other way round)."""
+        if u is None or u.id == self._flash_unit_id:
+            return
+        self._flash_unit_id = u.id
+        self.flashlight_off = not getattr(u, "flashlight_on", True)
 
     def _sync_grenade_kind(self, u) -> None:
         """Keep the selection on a kind the unit still carries: when the

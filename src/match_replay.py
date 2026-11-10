@@ -89,7 +89,9 @@ FORMAT_NAME = "breach-match-replay"
 #: another match.
 #: v6 (gameplay pack G6p, 2026-11-10): the ``melee_intent`` kind, and the
 #: rifleman's loadout carries a melee row -- a v5 recording could not name
-#: either and is refused rather than replayed on a changed intent set.
+#: either and is refused rather than replayed on a changed intent set. G7p
+#: (the ``set_flashlight`` kind) lands under this same v6: nothing was
+#: released between the two patches, so one bump covers both.
 FORMAT_VERSION = 6
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
@@ -106,6 +108,7 @@ INTENT_KINDS = {
     "reload_intent": ("int",),
     "shove_intent": ("int",),
     "melee_intent": ("int",),
+    "set_flashlight": ("int", "bool"),
     "drive_zombies": ("ints",),
 }
 #: Entry points the tap sees but the format refuses to record.
