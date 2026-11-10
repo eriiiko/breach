@@ -619,14 +619,23 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: events and the door change nothing while every input is off.
 #: (was tick 8617b35e8ac55502272f08ad134afc0b23c2ccb715eca0761e7fd9e414540624,
 #: units 07bb8c856fe9cf2c0d6dec11a044cc6671548150db87e8743b0701654faffbd4)
+#: RE-MEASURED at #183 G5p-a2 re-pin 2 (2026-11-10, hits push and guns recoil: [impulse] bullet_push_mult =
+#: recoil_mult = 1.0, the RULED real momentum -- a carbine round 3.6 N s on
+#: the target, its recoil on the shooter):
+#: the same wind-up-0 run with hits pushing and guns recoiling. Outcome,
+#: ticks and field_digest UNCHANGED (win 1 at 240); tick_digest and the unit
+#: stream move. SOLE CAUSE, verified on the same tree: with both
+#: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
+#: (was tick 8fb8dbe88af5bc83d618c0104ed68ee7835eabb433825b66289f90035f4b7d4b,
+#: units 2e1dde64fe02fe7f4dd3e7e22f6bf36dc641658f6064e9f1ba22634a55626fe2)
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
     field_digest="65597eedae3789674659a53d292031f1"
                  "332b4c608d3bac91c240db109abf2bf2",
-    tick_digest="8fb8dbe88af5bc83d618c0104ed68ee7"
-                "835eabb433825b66289f90035f4b7d4b",
-    unit_stream="2e1dde64fe02fe7f4dd3e7e22f6bf36d"
-                "c641658f6064e9f1ba22634a55626fe2")
+    tick_digest="7330ebaf873f9b1310d1d275d090970d"
+                "3eed2ab5b303287f8202b3e1fa41473a",
+    unit_stream="bad73d8e1bb486c18da8315506796c63"
+                "ce9a11b69ebada33ab4a9972da696a76")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

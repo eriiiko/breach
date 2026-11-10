@@ -4612,9 +4612,9 @@ r_body_m = 0.25              # every lever arm is clamped to the body radius
 # Declared experiment dials (RULED 2026-11-10: real momentum, all 1.0). At 0
 # the input is off: bullet_push_mult the hit's push, bullet_twist_mult its
 # spin, recoil_mult the shooter's recoil.
-bullet_push_mult = 0.0
+bullet_push_mult = 1.0
 bullet_twist_mult = 1.0
-recoil_mult = 0.0
+recoil_mult = 1.0
 zombie_hold_mult = 1.0       # the zombie state's hold (RULED 1.0: a copy of the unit it infected)
 
 [impulse.shove]

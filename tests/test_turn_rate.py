@@ -263,14 +263,23 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: (was field d74c0c9c3e4efb2bab446009bd7b9c8f7e05ca1fa976b29fa45df0de63d2e2a0,
 #: tick 74f88f8db69c11c9ac93accdd48a49ac9b90e046f22b3f57dc9421f8dde846bf,
 #: units a402a66787dde297706acd243a3b2c108c854339f2bf30d7ef074bd514b1e53c)
+#: RE-MEASURED at #183 G5p-a2 re-pin 2 (2026-11-10, hits push and guns recoil: [impulse] bullet_push_mult =
+#: recoil_mult = 1.0, the RULED real momentum -- a carbine round 3.6 N s on
+#: the target, its recoil on the shooter):
+#: the same instant-turn run with hits pushing and guns recoiling. Outcome,
+#: ticks and field_digest UNCHANGED; tick_digest and the unit stream move.
+#: SOLE CAUSE, verified on the same tree: with both
+#: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
+#: (was tick 6363856b30393dbcfef1c9801f03b3cfa423652cbd8f95f72f269ab59a394f36,
+#: units 02e8717ae42a475dd629ff355596da554f5771f91d258b8da83143e27af0dcb7)
 _PRE_G1P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=244,
     field_digest="f479f16f80b1071550eda76c4630e538"
                  "0f15c501f89e9160c4966fed9b0634ad",
-    tick_digest="6363856b30393dbcfef1c9801f03b3cf"
-                "a423652cbd8f95f72f269ab59a394f36",
-    unit_stream="02e8717ae42a475dd629ff355596da55"
-                "4f5771f91d258b8da83143e27af0dcb7")
+    tick_digest="16cfecdec6e602d9b547f9d37019b63f"
+                "d309764dc1cd282ef9665a5c597453c6",
+    unit_stream="72b7eba882b7bcb97c382e525690666e"
+                "83135343c8f045d042c93671b130fd1c")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

@@ -539,8 +539,9 @@ _RE_PIN_1_BOX = dict(
 def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
         monkeypatch, tmp_path):
     """G3 (permanent): with ``[marine] turn_accel_rad_per_s2`` at or above
-    twice the top speed per tick (1000 rad/s^2 against 302), ship_demo seed
-    1 and the box play exactly the matches of re-pin 1 -- so the shipped
+    twice the top speed per tick (1000 rad/s^2 against 302) and every
+    impulse input off (G5p-a2: the push and recoil multipliers at 0), ship_demo
+    seed 1 and the box play exactly the matches of re-pin 1 -- so the shipped
     acceleration is the ONLY cause of re-pin 2, and the law changes nothing
     its dials do not control. Breaks if the braking law leaks into the
     instant limit, or anything else moved with the acceleration."""
@@ -548,6 +549,9 @@ def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
     from run_match import run_match
     from test_zombie_control import _UnitStream, _box
     monkeypatch.setattr(CFG.marine, "turn_accel_rad_per_s2", 1000.0)
+    # G5p-a2 (critique B's G3: "and every input off"): no push, no recoil.
+    monkeypatch.setattr(CFG.impulse, "bullet_push_mult", 0.0)
+    monkeypatch.setattr(CFG.impulse, "recoil_mult", 0.0)
     w = turning.turn_rate_q16(CFG)
     assert turn_accel_q16(CFG) >= 2 * w
     stream = _UnitStream()
