@@ -125,11 +125,20 @@ _PRE_122_BOX = dict(
     # is set in slot 5 and turned in the next tick's slot 1a).
     # (was units 61ec546723a826944ed2fa0f369f4054346609cca30756b37089b944b262
     #  db23)
+    # #183 G5p-a1 re-pin 2 (2026-11-10, the shipped turning acceleration,
+    # 30 rad/s^2, PLACEHOLDER). Outcome, team, ticks and field_digest
+    # UNCHANGED; the unit stream moves (the zombies' facings now speed up and
+    # brake through their turns). SOLE CAUSE, verified on the same tree: with
+    # `[marine] turn_accel_rad_per_s2` >= 2w (1000, unlimited) this match
+    # gives exactly re-pin 1's values -- tests/test_turning_law.py::
+    # test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s holds that.
+    # (was units a8f571251bbb5cc7572f7c4711dc1a3186b67dcdfd4c42837dacfcaeff1f
+    #  efa0)
     outcome="win", team=1, ticks=130,
     field_digest="a672c7249e18d0eebbb8e398b696bd9c"
                  "3d34417445f66c3cab498ec7cd783ab1",
-    unit_stream="a8f571251bbb5cc7572f7c4711dc1a31"
-                "86b67dcdfd4c42837dacfcaeff1fefa0")
+    unit_stream="f2ba375dd16868470f118df2bbbcab6c"
+                "151ce28d4e2e108ab5f4433360406497")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -227,7 +236,7 @@ _PRE_122_SHIP_DEMO = dict(
     #  bd6175; tick e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c90
     #  99e53076; units 6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522
     #  385e7d1cfe)
-    outcome="win", team=1, ticks=246,
+    outcome="win", team=0, ticks=265,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -252,7 +261,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="4a30c340a0982a80080a1d29f85cdc377bb579e9ff85c6f685699c86fe725440",
+    field_digest="65fd96904dfa3cc25edc0fc344027876be1b6c11b824c92c6b5930bb3c9c3499",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -287,8 +296,27 @@ _PRE_122_SHIP_DEMO = dict(
     # Measured on the CPU, CUDA and resident backends alike.
     # (was tick 948fde5ffe4c509fa0d971a145304e5867c6f8b3feeaf12d3c52bbec754f2ccf,
     #  units 15438ec250cd193b2bfa7edd184ce46c109428ba4669891e0cc28a0a81f05015)
-    tick_digest="6e408f1955d11e567974b29252a93ecb080cff000e6d38a7d9653476d095267a",
-    unit_stream="c792732fc27000f1adf5d04c223c598022016368c9dbd81c79ffba31bac3e5b5")
+    # #183 G5p-a1 re-pin 2 (2026-11-10, the shipped turning acceleration,
+    # 30 rad/s^2, PLACEHOLDER: a turn now speeds up and brakes, 90 deg in 11
+    # ticks, 180 in 17). The WINNER CHANGES: win 0 at 265 (was win 1 at 246);
+    # all four digests move. SOLE CAUSE, verified on the same tree: with
+    # `[marine] turn_accel_rad_per_s2` >= 2w (1000, unlimited) this match
+    # gives exactly re-pin 1's values -- tests/test_turning_law.py::
+    # test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s holds that.
+    # Per-tick trace (re-pin 1 vs 2): positions differ from tick 0 -- the
+    # bots aim where they walk, and from the spawn facing (north) their
+    # facing now reaches the walk later, so the Speed table's direction rule
+    # holds them at the sideways factor a few ticks longer; the zombies'
+    # first bites land on other ticks (re-pin 1 bit units 3 and 6 on tick
+    # 193); the frag kills four on tick 220 (units 1, 2, 8, 9; re-pin 1 three
+    # on 218), and team 0's survivors then kill 4, 5, 6 and 7 (ticks 244 ..
+    # 264). Measured on the CPU, CUDA and resident backends alike.
+    # (was win 1 at 246; field 4a30c340a0982a80080a1d29f85cdc377bb579e9ff85c6
+    #  f685699c86fe725440; tick 6e408f1955d11e567974b29252a93ecb080cff000e6d
+    #  38a7d9653476d095267a; units c792732fc27000f1adf5d04c223c598022016368c9
+    #  dbd81c79ffba31bac3e5b5)
+    tick_digest="f0f3a30ae5757a5833f00ce6f21fbdd4dcc8fad1fb20bf121ebfe3e1b44e7952",
+    unit_stream="1b3b013ff5a33f0802ec853f1c123d1ab6aa2b3a72a4ecdccdf33904277a131a")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -308,8 +336,9 @@ def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
     the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
     at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
-    G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure: win team
-    1 at tick 246) with the same tick_digest. Breaks like the box test, on
+    G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure, then at
+    G5p-a1's turning law: win team 0 at tick 265) with the same
+    tick_digest. Breaks like the box test, on
     the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()

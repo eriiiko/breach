@@ -24,6 +24,7 @@ no digest; the direct control's selection and the HUD line.
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -456,8 +457,9 @@ def test_the_grenade_leaves_exactly_the_wind_up_after_the_verb_along_the_facing(
     """Property: the ThrowEvent is emitted on the tick the verb is consumed
     with `ticks` = the wind-up; the grenade leaves the hand exactly `ticks`
     ticks later (thrown_tick, and the count falls then, not before) along
-    the facing the unit has THEN -- turned meanwhile at the turn cap, not the
-    direction the verb named; the fuse counts from the release. Breaks if the
+    the facing the unit has THEN -- turned meanwhile by the turning law (at
+    the shipped dials still short of the 90 degrees it was asked for), not
+    the direction the verb named; the fuse counts from the release. Breaks if the
     grenade leaves early or late, is aimed with the verb's vector or the
     facing at the verb, or the fuse counts from the verb."""
     assert WINDUP >= 2
@@ -470,11 +472,14 @@ def test_the_grenade_leaves_exactly_the_wind_up_after_the_verb_along_the_facing(
                              kind=FRAG)
     sim.set_aim(u.id, 0, -FP_ONE)                    # turn to north (90 deg)
     ev = []
+    at_release = None
     for _ in range(WINDUP + 1):
         before = u.grenade_counts[FRAG]
         t = sim.tick
         sim.set_aim(u.id, 0, -FP_ONE)
         sim.step()
+        if before == 1 and u.grenade_counts[FRAG] == 0:
+            at_release = u.facing           # the facing it left along
         ev += [(t, e) for e in sim.tick_events if isinstance(e, ThrowEvent)]
         if sim.tick - 1 < t0 + WINDUP:
             assert u.grenade_counts[FRAG] == before == 1
@@ -486,10 +491,11 @@ def test_the_grenade_leaves_exactly_the_wind_up_after_the_verb_along_the_facing(
     assert proj.thrown_tick == t0 + WINDUP
     assert proj.fuse_ticks == 30
     assert proj.get_detonate_tick() == t0 + WINDUP + 30
-    # north: the target is straight above the thrower's centre, 8 tiles
+    # along the release facing (turned off east, toward north), 8 tiles
+    assert at_release is not None and 0.0 < at_release <= math.pi / 2 + 1e-4
     cx, cy = u.center_tile_x(), u.center_tile_y()
-    assert abs(proj.target_fx - 0.5 - cx) < 0.1
-    assert abs(proj.target_fy - 0.5 - (cy - 8)) < 0.1
+    assert abs(proj.target_fx - 0.5 - (cx + 8 * math.cos(at_release))) < 0.1
+    assert abs(proj.target_fy - 0.5 - (cy - 8 * math.sin(at_release))) < 0.1
 
 
 def test_a_second_throw_intent_during_a_wind_up_is_ignored():
@@ -593,14 +599,22 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: walk's facing lands a tick later, through slot 1a).
 #: (was tick 0fe41371d6d3c881305628ad25114c8c631b69075483cb58f1175bfefba157f3,
 #: units cdbc400cffeb98d9e0514afe4310d64685621f19fb1f2205b8fc66398c9de81b)
+#: RE-MEASURED at #183 G5p-a1 commit 2 (2026-11-10, the shipped turning
+#: acceleration, 30 rad/s^2): the same run with the turns now speeding up
+#: and braking. SOLE CAUSE, verified on the same tree: with
+#: `turn_accel_rad_per_s2` >= 2w (1000) the run gives exactly the values of
+#: re-pin 1 (in the comment above).
+#: (was field 3086f0bfa2047def383cbe22d2e0d964f5e681d584a75b8063ce35dbe879ef44,
+#: tick 3c33cb848ddb0c0319fb40d214e21ff07c046d9a31ae945290cc806ae9076271,
+#: units 0cec524a21865e061416a1e1708eb00fe0b2218a1c1f8214af3a4e9aa243b617)
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
-    field_digest="3086f0bfa2047def383cbe22d2e0d964"
-                 "f5e681d584a75b8063ce35dbe879ef44",
-    tick_digest="3c33cb848ddb0c0319fb40d214e21ff0"
-                "7c046d9a31ae945290cc806ae9076271",
-    unit_stream="0cec524a21865e061416a1e1708eb00f"
-                "e0b2218a1c1f8214af3a4e9aa243b617")
+    field_digest="65597eedae3789674659a53d292031f1"
+                 "332b4c608d3bac91c240db109abf2bf2",
+    tick_digest="8617b35e8ac55502272f08ad134afc0b"
+                "23c2ccb715eca0761e7fd9e414540624",
+    unit_stream="07bb8c856fe9cf2c0d6dec11a044cc66"
+                "71548150db87e8743b0701654faffbd4")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

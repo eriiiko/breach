@@ -499,3 +499,53 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     run_match(level)
     assert seen["n"] > 50
+
+
+# ---------------------------------------------------------------------------
+# G3: at unlimited acceleration the pinned matches are re-pin 1's
+# ---------------------------------------------------------------------------
+#: ship_demo seed 1 and the box at G5p-a1's re-pin 1 (the representation and
+#: the routing, unlimited acceleration): the values the pins held before the
+#: shipped 30 rad/s^2 moved them (tests/test_zombie_control.py).
+_RE_PIN_1_SHIP_DEMO = dict(
+    outcome="win", team=1, ticks=246,
+    field_digest="4a30c340a0982a80080a1d29f85cdc37"
+                 "7bb579e9ff85c6f685699c86fe725440",
+    tick_digest="6e408f1955d11e567974b29252a93ecb"
+                "080cff000e6d38a7d9653476d095267a",
+    unit_stream="c792732fc27000f1adf5d04c223c5980"
+                "22016368c9dbd81c79ffba31bac3e5b5")
+_RE_PIN_1_BOX = dict(
+    outcome="win", team=1, ticks=130,
+    field_digest="a672c7249e18d0eebbb8e398b696bd9c"
+                 "3d34417445f66c3cab498ec7cd783ab1",
+    unit_stream="a8f571251bbb5cc7572f7c4711dc1a31"
+                "86b67dcdfd4c42837dacfcaeff1fefa0")
+
+
+def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
+        monkeypatch, tmp_path):
+    """G3 (permanent): with ``[marine] turn_accel_rad_per_s2`` at or above
+    twice the top speed per tick (1000 rad/s^2 against 302), ship_demo seed
+    1 and the box play exactly the matches of re-pin 1 -- so the shipped
+    acceleration is the ONLY cause of re-pin 2, and the law changes nothing
+    its dials do not control. Breaks if the braking law leaks into the
+    instant limit, or anything else moved with the acceleration."""
+    import level_loader
+    from run_match import run_match
+    from test_zombie_control import _UnitStream, _box
+    monkeypatch.setattr(CFG.marine, "turn_accel_rad_per_s2", 1000.0)
+    w = turning.turn_rate_q16(CFG)
+    assert turn_accel_q16(CFG) >= 2 * w
+    stream = _UnitStream()
+    o = run_match(level_loader.load("ship_demo", str(ROOT / "levels")),
+                  on_tick=stream)
+    assert dict(outcome=o.result.outcome, team=o.result.team,
+                ticks=o.result.ticks, field_digest=o.field_digest,
+                tick_digest=o.tick_digest,
+                unit_stream=stream.h.hexdigest()) == _RE_PIN_1_SHIP_DEMO
+    stream = _UnitStream()
+    o = run_match(_box(tmp_path, "box"), on_tick=stream)
+    assert dict(outcome=o.result.outcome, team=o.result.team,
+                ticks=o.result.ticks, field_digest=o.field_digest,
+                unit_stream=stream.h.hexdigest()) == _RE_PIN_1_BOX

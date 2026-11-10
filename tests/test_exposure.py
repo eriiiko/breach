@@ -515,14 +515,23 @@ def test_a_unit_with_no_exposure_records_as_before_and_one_with_some_does_not():
 #: walk's facing lands a tick later, through slot 1a).
 #: (was tick e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c9099e53076,
 #: units 6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522385e7d1cfe)
+#: RE-MEASURED at #183 G5p-a1 commit 2 (2026-11-10, the shipped turning
+#: acceleration, 30 rad/s^2): the same run with the turns now speeding up
+#: and braking. SOLE CAUSE, verified on the same tree: with
+#: `turn_accel_rad_per_s2` >= 2w (1000) the run gives exactly the values of
+#: re-pin 1 (in the comment above).
+#: (was win 1 at 246; field 5175fd4cddd17c018e84bc9548b1b81b5a92ebac0d1c25
+#: ba06c3b14528bd6175, tick d207abc729f885076ddcabffcf7b9bcdb2797f4950534032
+#: ca4f1e220f49c7c4, units 4c26af9bdab372237cd4570021296285c73dc93d878a9b60
+#: 3dc7c6cd2aa05672)
 _PRE_G4P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=246,
-    field_digest="5175fd4cddd17c018e84bc9548b1b81b"
-                 "5a92ebac0d1c25ba06c3b14528bd6175",
-    tick_digest="d207abc729f885076ddcabffcf7b9bcd"
-                "b2797f4950534032ca4f1e220f49c7c4",
-    unit_stream="4c26af9bdab372237cd4570021296285"
-                "c73dc93d878a9b603dc7c6cd2aa05672")
+    outcome="win", team=0, ticks=266,
+    field_digest="226202de75e88edd60e00666a884a9be"
+                 "860e5d5981f9d183e251edf1782fca89",
+    tick_digest="e6a38e5f509d1a91ed74ac11057f90dd"
+                "2e6f2f791c3f46dd11321be4fc62e314",
+    unit_stream="c5108241c836c8e7a6d85636f9ad9048"
+                "f3b2119bb94f1a3c499716b9c77006ee")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

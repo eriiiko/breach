@@ -133,6 +133,12 @@ def _digest(sim):
 def _scripted_run():
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=8, team=0))
+    # G5p-a1: the facing turns with inertia, and the scripted aim sweeps at
+    # 0.25 rad a tick (just under the top speed), so a unit starting north
+    # would chase it the whole run; it stands facing the stream's first aim
+    # (east, at the enemy), which is what makes the stream deal damage.
+    from simulation.turning import place
+    place(sim.get_unit(uid), 0)
     _dummy_enemy(sim, x=13, y=8)
     # The pre-run state first, so "the stream dealt damage" compares against
     # the spawn HP, not against the state after the first tick's shots (#119:
