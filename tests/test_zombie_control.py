@@ -93,11 +93,25 @@ class _UnitStream:
 # else these matches touch) moves it -- then re-pin deliberately, with the
 # rationale, never to make the wrapping pass.
 _PRE_122_BOX = dict(
-    outcome="win", team=1, ticks=82,
-    field_digest="87e20008aff3541d2d0b1d64113108d5"
-                 "c09f85dd40ae1b58a0a6f58f12f83268",
-    unit_stream="6dab6957a82fdd55786f7ec375e39761"
-                "bdced4c61aa69a4cc6eb66a8cffb580a")
+    # #183 G1p-c re-pin (2026-11-10, speeds in m/s): the box is a 1 m tile,
+    # so the zombies' cadence, the old [zombie] 14 ticks per tile (1.7 m/s
+    # here), is now the [speeds] shamble, 0.6 m/s = 40 ticks per tile; and a
+    # bitten marine that turns now shambles too (it kept the marine's 18-tick
+    # attack dial before). Outcome and team UNCHANGED (win 1); ticks 82 ->
+    # 130; field_digest and the unit stream move. SOLE CAUSES, verified on
+    # the same tree: with the speed table at the old cadences on every map
+    # (walk 18, full 8, zombie 14 ticks per tile, the direction factors 1.0)
+    # AND a converting marine handed its old 18, this match gives exactly
+    # the pin below; with the old cadences alone it ends at tick 78 -- the
+    # converted zombies' shamble is the second cause, here only.
+    # (was ticks 82; field 87e20008aff3541d2d0b1d64113108d5c09f85dd40ae1b58
+    #  a0a6f58f12f83268; units 6dab6957a82fdd55786f7ec375e39761bdced4c61aa69a
+    #  4cc6eb66a8cffb580a)
+    outcome="win", team=1, ticks=130,
+    field_digest="a672c7249e18d0eebbb8e398b696bd9c"
+                 "3d34417445f66c3cab498ec7cd783ab1",
+    unit_stream="61ec546723a826944ed2fa0f369f4054"
+                "346609cca30756b37089b944b262db23")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -138,7 +152,26 @@ _PRE_122_SHIP_DEMO = dict(
     #  284aaf2bbc96e39; tick 74ea61e8bb5e83a7fe55ee8272f0228a6c333aff2db2fdf3
     #  571f100c1de0e437; units 07ee472c29f86f18e64f2b01141ac8bb0ad64ec97828df
     #  8509830bd8fac1dbc)
-    outcome="win", team=1, ticks=700,
+    # #183 G1p-c re-pin (2026-11-10, speeds in m/s, Erik's ruling: the
+    # marine walks 1.4 m/s at throttle 0 -- was 18 ticks per tile, 0.44 m/s
+    # -- slower sideways and backward; the zombies shamble 0.6 m/s, 13 ticks
+    # per tile, was 14). The bots walk at throttle 0, so the map plays about
+    # three times faster: outcome and team UNCHANGED (win 1), ticks 700 ->
+    # 240, team 1 now ends with slots [0, 1, 3] alive (was [0, 1]); all
+    # three digests and the unit stream move. SOLE CAUSE, verified on the
+    # same tree: with the speed table at the old cadences (walk 18, full 8,
+    # zombie 14 ticks per tile, sideways_frac = backward_frac = 1.0) this
+    # match gives exactly the G2p pin below (win 1 at 700, 1b9392ab /
+    # 230d50a1 / a345834d) -- the direction rule's factors at 1.0 and the
+    # bots' throttle 0 leave the forward-only term nothing to do, the
+    # converted zombies' new cadence moves nothing here, and the ReloadEvent
+    # moves no digest. Measured on the CPU, CUDA and resident backends alike
+    # (tools/match_pin_check.py).
+    # (was ticks 700; field 1b9392ab2c184a4684a28a6d7489684827ef10968c098fea
+    #  2405945a37fc5e83; tick 230d50a18db03437b34b0600d87d795a57af4c93d969f31
+    #  474e038db1a87f891; units a345834dfe6685918d0e0887667b978de462e09d0bfa6
+    #  fcc26e9b9a68babcb9d)
+    outcome="win", team=1, ticks=240,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -163,7 +196,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="1b9392ab2c184a4684a28a6d7489684827ef10968c098fea2405945a37fc5e83",
+    field_digest="4a6ae8a34011fc3cc832c20326df631cd174b27bf64fc359d6249717ae6c9d89",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -181,8 +214,8 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="230d50a18db03437b34b0600d87d795a57af4c93d969f31474e038db1a87f891",
-    unit_stream="a345834dfe6685918d0e0887667b978de462e09d0bfa6fcc26e9b9a68babcb9d")
+    tick_digest="6eb3105b24e4debf47cdcb6366caea9df2d8717bbc2ca6387aba968a3002939e",
+    unit_stream="816192b5309273533dff345e4300080b980e5323c43fb4c46241c92af38ae4ad")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -201,8 +234,8 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
 def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
     the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
-    at #183 G1p's turn-rate cap, then at G2p's carbine rate: win team 1 at
-    tick 700) with the same tick_digest. Breaks like the box test, on
+    at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
+    G1p-c's speeds: win team 1 at tick 240) with the same tick_digest. Breaks like the box test, on
     the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
