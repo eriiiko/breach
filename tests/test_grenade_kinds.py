@@ -573,14 +573,22 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 
 #: ship_demo seed 1 as it played before G3p's wind-up (the pin of G1p-c / G2p
 #: at main 0f0225bf: win 1 at 240). With the wind-up at 0 it must be again.
+#: RE-MEASURED at #183 G4p (2026-11-10, the focus-fire law, another cause --
+#: the test_turn_rate precedent): the same wind-up-0 run with exposure live
+#: (the shipped [damage.exposure] dials). SOLE CAUSE, verified on the same
+#: tree: with `k_expose = 0` the wind-up-0 run gives exactly the values this
+#: gate held at G3p (win 1 at 240, field 4a6ae8a34011fc3cc832c20326df631cd17
+#: 4b27bf64fc359d6249717ae6c9d89, tick 6eb3105b24e4debf47cdcb6366caea9df2d871
+#: 7bbc2ca6387aba968a3002939e, units 816192b5309273533dff345e4300080b980e5323
+#: c43fb4c46241c92af38ae4ad).
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
-    field_digest="4a6ae8a34011fc3cc832c20326df631c"
-                 "d174b27bf64fc359d6249717ae6c9d89",
-    tick_digest="6eb3105b24e4debf47cdcb6366caea9d"
-                "f2d8717bbc2ca6387aba968a3002939e",
-    unit_stream="816192b5309273533dff345e4300080b"
-                "980e5323c43fb4c46241c92af38ae4ad")
+    field_digest="3086f0bfa2047def383cbe22d2e0d964"
+                 "f5e681d584a75b8063ce35dbe879ef44",
+    tick_digest="0fe41371d6d3c881305628ad25114c8c"
+                "631b69075483cb58f1175bfefba157f3",
+    unit_stream="cdbc400cffeb98d9e0514afe4310d646"
+                "85621f19fb1f2205b8fc66398c9de81b")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

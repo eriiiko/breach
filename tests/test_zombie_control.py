@@ -188,6 +188,27 @@ _PRE_122_SHIP_DEMO = dict(
     #  d6249717ae6c9d89; tick 6eb3105b24e4debf47cdcb6366caea9df2d8717bbc2ca6
     #  387aba968a3002939e; units 816192b5309273533dff345e4300080b980e5323c43f
     #  b4c46241c92af38ae4ad)
+    # #183 G4p re-pin (2026-11-10, the focus-fire law: a kinetic round's
+    # `expose` raises the target's exposure, which decays with a 3-tick
+    # half-life and multiplies the damage of its type by 1 + level;
+    # [damage.exposure] half_life_seconds 0.125, k_expose 1, x_max 2.5, the
+    # carbine round's expose 0.35, all PLACEHOLDERS). Outcome, team, ticks and
+    # the living slots UNCHANGED (win 1 at 246, team 1 [1, 2, 3]); field_digest,
+    # tick_digest and the unit stream move. SOLE CAUSE, verified on the same
+    # tree: with `k_expose = 0` (the law dormant) this match gives exactly the
+    # G3p pin below (5175fd4c / e4e42ce9 / 6e30ef3f) --
+    # tests/test_exposure.py::test_with_the_law_dormant_the_pinned_match_is_
+    # the_pre_g4p_match holds that. Per-tick trace (dormant vs shipped): the
+    # unit state is identical through tick 197; on tick 198 zombie 11 carries
+    # a kinetic exposure from a bot's round (the record's new key), the 22
+    # bullet hits of the match then hit it harder, and it dies (to the fire,
+    # as before) on tick 233 instead of 236; every other kill is on the same
+    # tick by the same cause. Measured on the CPU, CUDA and resident backends
+    # alike (tools/match_pin_check.py).
+    # (was field 5175fd4cddd17c018e84bc9548b1b81b5a92ebac0d1c25ba06c3b14528
+    #  bd6175; tick e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c90
+    #  99e53076; units 6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522
+    #  385e7d1cfe)
     outcome="win", team=1, ticks=246,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
@@ -213,7 +234,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="5175fd4cddd17c018e84bc9548b1b81b5a92ebac0d1c25ba06c3b14528bd6175",
+    field_digest="4a30c340a0982a80080a1d29f85cdc377bb579e9ff85c6f685699c86fe725440",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -231,8 +252,8 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c9099e53076",
-    unit_stream="6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522385e7d1cfe")
+    tick_digest="948fde5ffe4c509fa0d971a145304e5867c6f8b3feeaf12d3c52bbec754f2ccf",
+    unit_stream="15438ec250cd193b2bfa7edd184ce46c109428ba4669891e0cc28a0a81f05015")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -252,7 +273,8 @@ def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
     the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
     at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
-    G1p-c's speeds: win team 1 at tick 240) with the same tick_digest. Breaks like the box test, on
+    G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure: win team
+    1 at tick 246) with the same tick_digest. Breaks like the box test, on
     the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()

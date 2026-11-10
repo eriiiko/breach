@@ -230,14 +230,21 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: 305c4e13667c1262869ab2d8d4e15e6c6fdff661d8a6cadc49b7ce05d499876e, tick
 #: 7e58771a0fa44b9539260472ab5cec22edc1a60e885c1e9c39ae69fd60f173df, units
 #: e0b47942bd115b8d72070494597061f7727126ef442caf452dc62cb42e5e7233).
+#: RE-MEASURED again at #183 G4p (2026-11-10, the focus-fire law): the same
+#: instant-turn run with exposure live (the shipped [damage.exposure] dials).
+#: SOLE CAUSE, verified on the same tree: with `k_expose = 0` the
+#: instant-turn run gives exactly the G3p values (win 1 at 244, field
+#: 8cb12fa8d9b2028a3507013627b3a46acf7fbd51ce68ad6129da34949caf3a03, tick
+#: b435f76ecdedf393e6417be05caf6f2a0988d7f903cde82a1307afd6acbe47ba, units
+#: 8c9d7b3af1423b147386f066dd36cb135c28e4c12a73152b447713ca39d42937).
 _PRE_G1P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=244,
-    field_digest="8cb12fa8d9b2028a3507013627b3a46a"
-                 "cf7fbd51ce68ad6129da34949caf3a03",
-    tick_digest="b435f76ecdedf393e6417be05caf6f2a"
-                "0988d7f903cde82a1307afd6acbe47ba",
-    unit_stream="8c9d7b3af1423b147386f066dd36cb13"
-                "5c28e4c12a73152b447713ca39d42937")
+    field_digest="d74c0c9c3e4efb2bab446009bd7b9c8f"
+                 "7e05ca1fa976b29fa45df0de63d2e2a0",
+    tick_digest="cfc087f4ff68f8395881ba629d4de73f"
+                "70bb63edd0088789bcf8281e3decb819",
+    unit_stream="030e28aaf6a4d3c64242ff617bb9ab55"
+                "4ffbd91449b1d3b8667f9201f94ab19e")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
