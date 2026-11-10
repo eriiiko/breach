@@ -223,14 +223,21 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: bc57054d9e6882f79abbbcd79ce01a3d52e2, tick e4e39176f31246219319a3c72bbc
 #: 598f5da16aa7d02def7469fedde2da966324, units bc1166d31b6df445503733eca435
 #: f24ac2ad48fe788d50b5eb89d19460f7a3a6).
+#: RE-MEASURED again at #183 G3p (2026-11-10, the throw wind-up): the same
+#: instant-turn run with the grenade leaving the hand 7 ticks after the verb.
+#: SOLE CAUSE, verified on the same tree: with `throw_windup_seconds = 0` the
+#: instant-turn run gives exactly the G1p-c values (win 1 at 237, field
+#: 305c4e13667c1262869ab2d8d4e15e6c6fdff661d8a6cadc49b7ce05d499876e, tick
+#: 7e58771a0fa44b9539260472ab5cec22edc1a60e885c1e9c39ae69fd60f173df, units
+#: e0b47942bd115b8d72070494597061f7727126ef442caf452dc62cb42e5e7233).
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=237,
-    field_digest="305c4e13667c1262869ab2d8d4e15e6c"
-                 "6fdff661d8a6cadc49b7ce05d499876e",
-    tick_digest="7e58771a0fa44b9539260472ab5cec22"
-                "edc1a60e885c1e9c39ae69fd60f173df",
-    unit_stream="e0b47942bd115b8d72070494597061f7"
-                "727126ef442caf452dc62cb42e5e7233")
+    outcome="win", team=1, ticks=244,
+    field_digest="8cb12fa8d9b2028a3507013627b3a46a"
+                 "cf7fbd51ce68ad6129da34949caf3a03",
+    tick_digest="b435f76ecdedf393e6417be05caf6f2a"
+                "0988d7f903cde82a1307afd6acbe47ba",
+    unit_stream="8c9d7b3af1423b147386f066dd36cb13"
+                "5c28e4c12a73152b447713ca39d42937")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
