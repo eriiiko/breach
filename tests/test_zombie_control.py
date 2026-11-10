@@ -131,8 +131,22 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field b6ab1595011cfe96ff4297f12b2d7c2e062a43e58bd7e9fe09b7bdf71c740824;
     #  tick d017f087185330c123d5bc81ccc06b6bb7077d28105f3c884404ec834bada3ac,
     #  units 9abe08854b5ea8bebc02cdfb3f4f56c5804f165f9f9364248183dab833dd36cc)
-    field_digest="da05242a99122428c903ad8a96e9373a"
-                 "0e12006c03abdbec1e849f4aca7dc4b0",
+    # #183 G1p re-pin (2026-11-10, the turn-rate cap, Erik's ruling: aim is
+    # not immediate; [marine] turn_rate_deg_per_s = 360, 15 deg a tick).
+    # Outcome, team and ticks UNCHANGED (win 1 at 722); field_digest,
+    # tick_digest and the unit stream move. SOLE CAUSE, verified on the same
+    # tree: with the cap at half a turn per tick (4320 deg/s, the instant
+    # facing) this match gives exactly the pre-G1p values below --
+    # tests/test_turn_rate.py::test_at_half_a_turn_per_tick_the_pinned_match_
+    # is_the_pre_g1p_match holds that -- so the throttle (bots walk at 0),
+    # the bots' trigger discipline and the format bump move nothing; the bots
+    # now turn toward a target over several ticks and fire once within their
+    # 3 deg spread, so rounds leave later and along other facings.
+    # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
+    #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
+    #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
+    field_digest="6aa5b17aa32e5ec77ddd56519458cd9b"
+                 "1c115346fabc70dcf284aaf2bbc96e39",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -150,10 +164,10 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="f35ed2beadb77141ccea20d944a70a66"
-                "e93c70818ae4c44bbf6ba1edc01024b3",
-    unit_stream="4408c8740425593b0d47d35e7d0658c4"
-                "efbd62caed87f5fd69a9e8f894ac02dd")
+    tick_digest="74ea61e8bb5e83a7fe55ee8272f0228a"
+                "6c333aff2db2fdf3571f100c1de0e437",
+    unit_stream="07ee472c29f86f18e64f2b01141ac8bb"
+                "0ad64ec97828df8f509830bd8fac1dbc")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -171,8 +185,8 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
 
 def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
-    the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169: win
-    team 1 at tick 722) with the same tick_digest. Breaks like the box test, on
+    the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
+    at #183 G1p's turn-rate cap: win team 1 at tick 722) with the same tick_digest. Breaks like the box test, on
     the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
