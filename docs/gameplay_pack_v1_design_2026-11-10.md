@@ -79,17 +79,18 @@ is no keyboard + mouse scheme for direct control.
   "the player plays with whatever they have connected"). `GamepadDirect`
   becomes its pad half; `--control gamepad` stays as an alias.
 - Keys are DATA: a `[controls.keys]` table (action → key), so WASD and RDFG
-  are two tables Erik can swap without code. Shipped default PROPOSED: WASD
-  move, mouse aim, left button trigger, G grenade, mouse wheel / 1-2-3 picks
-  the grenade kind, R reload, F shove, V melee, E use, Q flashlight, Shift =
-  full speed.
+  are two tables swapped without code. Shipped default **RULED (Erik,
+  2026-11-10)**: R / F forward / back, D / G strafe left / right, mouse aim,
+  left button trigger, Z reload, W grenade, Q flashlight, E use, Space
+  melee, A full speed. PROPOSED for the two he did not name: right mouse
+  button shove, mouse wheel (or 1-2-3) picks the grenade kind.
 - Two camera modes, `[display] camera_mode`, switched live:
   - `"centred"`: north-up, the marine in the centre, the marine turns
     (Diablo / Dota style);
   - `"player_up"`: the view rotates so the marine's facing is up, the marine
     low on the screen (FPS style). This needs the world drawn rotated and the
-    mouse mapped back through the rotation: a **spike first** (one day cap)
-    before it is promised. In this mode the mouse turns the marine by its
+    mouse mapped back through the rotation: a **one-day spike, slotted AFTER
+    the gameplay patches (RULED)**, as G1p-b; G1p ships `"centred"` only. In this mode the mouse turns the marine by its
     horizontal motion; there is no cursor to aim at.
 - **Continuous speed (RULED in principle: "continuous, not two states").**
   `set_move_dir`'s fourth argument becomes `throttle_q`, Q16 in [0, ONE]: the
@@ -165,7 +166,9 @@ depends on facing.
 - The flashbang: `[ammo.grenade_flash]` → `[payloads.flashbang]`, which gains
   `blind_radius` (tiles), `blind_seconds`, `blind_away_frac`. At detonation,
   every living unit of ANY team within the radius whose `has_los` to the
-  detonation tile holds is BLINDED for `blind_seconds × f`, where `f` falls
+  detonation tile holds is BLINDED for `blind_seconds × f × g`, where `g` falls linearly with
+  distance from 1 at the flash to 0 at the radius (RULED: direction,
+  distance and line of sight; any team), and `f` falls
   from 1 (facing the flash, within ±60°) linearly to `blind_away_frac`
   (PLACEHOLDER 0.25) when facing straight away. The angle is the integer
   difference of `atan2_q16(to the flash)` and the unit's facing. A wall
@@ -190,13 +193,25 @@ needs about 30 to 40 rounds for a zombie, two together about 20 in all; the
 mechanic is for every unit, not only zombies; armour types may resist it and
 ammunition may drive it differently.
 
-**PROPOSED law.** One per-unit integer, the EXPOSURE `x` (Q16, ≥ 0):
+**Damage types exist already** (`damage.py`): kinetic (bullets, melee),
+blast, heat (fire and radiant), energy (beams), poison, asphyxiation, heal,
+and two reserved (electric, psy); every unit profile has an `armor` and a
+`resist_mult` per type, and the zombie's weakness to fire IS a resistance
+(`resist_mult[HEAT] = 4.0`, i.e. four times the damage). The set is a table
+and can grow (a `piercing` split from kinetic, say) while this matures.
+
+**PROPOSED law.** A per-unit EXPOSURE `x[T]` (Q16, ≥ 0), one level per
+damage type T (a fixed block; RULED: each ammunition has its own debuff):
 
 ```
-on each hit that reaches the unit:   x += ammo.expose · (ONE − profile.expose_resist)     (capped at x_max)
-each tick:                           x −= max(1, x · decay)                               (to 0)
-damage taken:                        amount' = mitigate(amount) · (ONE + k_expose · x)
+on each hit of type T that reaches the unit:   x[T] += ammo.expose · (ONE − profile.expose_resist[T])   (capped at x_max)
+each tick:                                     x[T] −= max(1, x[T] · decay)                             (to 0)
+damage of type T taken:                        amount' = mitigate(amount) · (ONE + k_expose · x[T])
 ```
+
+A round with `expose = 0` (fire, PROPOSED) debuffs nothing. A round that
+should soften a target for ANOTHER type (an armour-stripping round) is a
+later column, `expose_type`.
 
 - `ammo.expose` is a `[ammo.*]` column (0 = this round does not expose);
   `expose_resist` is an `[env_profiles.*]` / species column (1 = immune: the
@@ -208,8 +223,14 @@ damage taken:                        amount' = mitigate(amount) · (ONE + k_expo
 - Exposure is not a status row: a status carries a duration and a fixed
   magnitude, this is a decaying level. It is one column and one term in
   `damage.mitigate`'s caller.
-- It applies to kinetic hits in v1 (PROPOSED); the zombie's weakness to fire
-  stays its `resist_mult[HEAT]`.
+- In v1 only the bullet rows carry an `expose` (RULED); the zombie's weakness
+  to fire stays its low resistance to heat.
+
+**To settle with the tuning: the carbine's rate of fire.** Today it fires 5
+rounds per trigger every 1/6 s, i.e. 30 rounds per second, so a 30-round
+magazine is ONE SECOND of fire and three magazines are three. A real carbine
+is about 13 rounds per second. The rate, the magazine and the zombie's
+vitality are tuned together on the bench below.
 
 **Tuning is Erik's, with an instrument.** A headless bench
 (`tools/bench_focus_fire.py`): n shooters at the carbine's rate on one
@@ -320,6 +341,42 @@ mass (drawn from a distribution later).
 - No unit has a velocity: a unit advances along its move direction at a
   cadence, collision-checked per tick.
 
+**Erik's additions and corrections (2026-11-10).**
+- **Rotational momentum.** Units also carry ANGULAR momentum: a push or hit
+  off the body's centre turns the unit (torque over moment of inertia), so a
+  hit on the shoulder twists an aim. Open for the session: whether a unit's
+  OWN turning also has inertia (a turn rate from mass and what it carries),
+  or only external pushes spin it while aiming stays immediate.
+- **The wind wording corrected.** The ruling is not "wind never displaces a
+  unit". It is: SOFT wind does not displace a unit (the old law pushed on the
+  smallest wind and made units vibrate); below a threshold it only slows.
+  Above the threshold a force may move a unit.
+- **One law.** The present wind law is acceptable, but the goal is ONE law
+  that also gives the knockdown from explosions: wind, blast, shove and hits
+  are four inputs of it. So wind and blast are IN this design, not later;
+  whether they switch over in G5p or in a follow-up patch is a sizing
+  question for the session. The CLAUDE.md wind row is amended when they do.
+- **Bullets are enough as they are.** Erik is right that the real momentum
+  adds up. Per round it is small (3.6 N·s; 0.04 m/s on 90 kg), but sustained
+  fire is a FORCE: rounds per second × 3.6 N·s. Against the wind note's own
+  thresholds for a person (felt and slowed at about 29 N, hard to walk at 88
+  N, blown over at 183 N):
+
+  | fire on one target | mean force | band on the wind law's scale |
+  |---|---|---|
+  | one shooter, 13 rounds/s (a real carbine) | 47 N | slowed |
+  | two shooters | 94 N | hard to walk |
+  | four shooters | 187 N | falls |
+  | one shooter at today's 30 rounds/s | 108 N | hard to walk |
+
+  So the physical impulse, through the SAME footing law as wind, already
+  gives "one shooter slows it, a team stops it or floors it" with no
+  inflated dial. Claude's earlier "a game rule, not physics" was too strong:
+  it holds for a single round, not for automatic fire. Two honest caveats:
+  a round that passes through delivers only part of its momentum, and by the
+  same law the SHOOTER takes the equal recoil (which the law can carry, as a
+  braced force below the footing limit).
+
 **The frame Claude proposes to design inside** (to be confirmed against the
 literature search, `docs/research/impulse_on_a_person_2026-11-10.md`, in
 progress):
@@ -334,29 +391,22 @@ progress):
    limit it is KNOCKED_DOWN (the existing status) and slides to rest.
 3. The pushed velocity moves the unit through the SAME collision predicate
    walking uses; a wall stops it.
-4. Inputs in v1: the shove (`shove_intent`: an impulse from the shover's
-   strength along its facing, on an adjacent unit of any team, so a marine
-   can push a teammate out of a line of fire) and hits. Blasts and wind keep
-   their present laws in v1 and join later by Erik's ruling; the wind row's
-   "never a displacement" clause in CLAUDE.md stands until then.
+4. Inputs: the shove (`shove_intent`: an impulse from the shover's strength
+   along its facing, on an adjacent unit of any team, so a marine can push a
+   teammate out of a line of fire), hits (each round's real momentum along
+   its flight), wind (`q · C_d·A`, the #140 read) and blast (the same read
+   behind the front, plus whatever the literature says the front itself
+   adds). Each also carries a lever arm for the angular part.
 5. Hits read the START-of-slot state and land together (rule 5), so two
    shooters push twice as hard with no record of who shot: the same shape as
    G4p's exposure. Whether exposure and balance are ONE decaying accumulator
    or two is a question for the session.
 
-**One thing to say plainly before the session.** By arithmetic, a carbine
-round (about 4 g at about 900 m/s) carries about 3.6 N·s; stopped by a 90 kg
-body that is about 0.04 m/s. Real bullets do not push people back; what
-staggers a hit person is the body's response, not momentum. So "zombies are
-pushed back under fire" is a game rule, not physics. The honest design keeps
-the FORM physical (impulse over mass, summed over shooters, resisted by
-footing) and makes the per-round impulse a stated gameplay dial
-(`ammo.push`, far above the round's real momentum), or ties the stagger to
-the damage done instead. The literature search covers this, and which it
-should be is Erik's call.
-
 **Questions for the session.**
-1. Per-round push: a gameplay impulse dial, or a stagger driven by damage?
+1. Per-round push: the round's real momentum (PROPOSED, see the table), with
+   what fraction for a round that passes through?
+1b. Rotation: does a unit's own turning have inertia, or only pushes?
+1c. Do wind and blast switch to the one law inside G5p, or in a follow-up?
 2. Does a marine get the same pushback from hits as a zombie (by mass and
    profile), or do marines only stagger from shoves and blasts?
 3. One accumulator with exposure, or two?
@@ -369,7 +419,8 @@ should be is Erik's call.
 
 ## 6. Order, size, re-baselines
 
-Order (Erik agreed): G1p → G2p → G3p → G4p → G5p → G6p → G7p → G8p, then the
+Order (Erik agreed): G1p → G2p → G3p → G4p → G5p → G6p → G7p → G8p → G1p-b (the `player_up`
+camera spike), then the
 G1 reading (#29), then P3a onward. G5p's literature search and design
 session run while G1p to G4p are built.
 
