@@ -55,6 +55,8 @@ from simulation.status import (BLINDED, STUNNED, apply_status,  # noqa: E402
 from simulation.turning import PI_Q16  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import FRAG_ROW, PayloadTable, get_tables  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 7
 TABLES = get_tables()
@@ -88,7 +90,7 @@ def _sim(wall_x=None) -> Simulation:
 def _add(sim, name, x, y, team=0, facing_q=0):
     uid = sim.add_unit(Unit(name, x=x, y=y, team=team))
     u = sim.get_unit(uid)
-    u.facing = unit_fixed.dequantize_scalar(facing_q)
+    _place_facing(u, facing_q)
     return u
 
 
@@ -581,14 +583,24 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: 4b27bf64fc359d6249717ae6c9d89, tick 6eb3105b24e4debf47cdcb6366caea9df2d871
 #: 7bbc2ca6387aba968a3002939e, units 816192b5309273533dff345e4300080b980e5323
 #: c43fb4c46241c92af38ae4ad).
+#: RE-MEASURED at #183 G5p-a1 commit 1 (2026-11-10, the turning law's
+#: representation and routing at unlimited acceleration): the same run on
+#: the new tree. Outcome, ticks and field_digest UNCHANGED; tick_digest and
+#: the unit stream move. SOLE CAUSES, verified on the same tree: with every
+#: non-aim facing writer placing the facing at once again and the old float
+#: representation hashed, the run gives exactly the previous values; with
+#: the representation alone undone only the unit stream moves (the zombie
+#: walk's facing lands a tick later, through slot 1a).
+#: (was tick 0fe41371d6d3c881305628ad25114c8c631b69075483cb58f1175bfefba157f3,
+#: units cdbc400cffeb98d9e0514afe4310d64685621f19fb1f2205b8fc66398c9de81b)
 _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=240,
     field_digest="3086f0bfa2047def383cbe22d2e0d964"
                  "f5e681d584a75b8063ce35dbe879ef44",
-    tick_digest="0fe41371d6d3c881305628ad25114c8c"
-                "631b69075483cb58f1175bfefba157f3",
-    unit_stream="cdbc400cffeb98d9e0514afe4310d646"
-                "85621f19fb1f2205b8fc66398c9de81b")
+    tick_digest="3c33cb848ddb0c0319fb40d214e21ff0"
+                "7c046d9a31ae945290cc806ae9076271",
+    unit_stream="0cec524a21865e061416a1e1708eb00f"
+                "e0b2218a1c1f8214af3a4e9aa243b617")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

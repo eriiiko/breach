@@ -107,11 +107,29 @@ _PRE_122_BOX = dict(
     # (was ticks 82; field 87e20008aff3541d2d0b1d64113108d5c09f85dd40ae1b58
     #  a0a6f58f12f83268; units 6dab6957a82fdd55786f7ec375e39761bdced4c61aa69a
     #  4cc6eb66a8cffb580a)
+    # #183 G5p-a1 re-pin 1 (2026-11-10, the turning law's representation and
+    # routing at UNLIMITED acceleration, a >= 2w: the facing is the int
+    # facing_q spawned at quantize(pi/2), hashed as that int, with turn /
+    # omega keys while non-zero; every facing writer hands slot 1a a target,
+    # so the zombie walk's facing turns at the 15 deg cap, a tick later).
+    # Outcome, team, ticks and field_digest UNCHANGED; the unit stream moves.
+    # SOLE CAUSES, verified on the same
+    # tree (a scratch proof over the five pinned matches): with (1) every
+    # non-aim facing writer (travel, zombie walk, attack snap, WEGO,
+    # onephase) placing the facing at once in its own slot again AND (2) the
+    # old representation (Unit.facing the float pi/2 until first written, the
+    # record hashing q(float facing), no turn / omega keys), this tree gives
+    # EXACTLY the previous pin; with (2) alone undone, outcome, ticks,
+    # field_digest and tick_digest are the previous ones and only the unit
+    # stream moves (the zombie walk's facing lands one tick later: its target
+    # is set in slot 5 and turned in the next tick's slot 1a).
+    # (was units 61ec546723a826944ed2fa0f369f4054346609cca30756b37089b944b262
+    #  db23)
     outcome="win", team=1, ticks=130,
     field_digest="a672c7249e18d0eebbb8e398b696bd9c"
                  "3d34417445f66c3cab498ec7cd783ab1",
-    unit_stream="61ec546723a826944ed2fa0f369f4054"
-                "346609cca30756b37089b944b262db23")
+    unit_stream="a8f571251bbb5cc7572f7c4711dc1a31"
+                "86b67dcdfd4c42837dacfcaeff1fefa0")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -252,8 +270,25 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="948fde5ffe4c509fa0d971a145304e5867c6f8b3feeaf12d3c52bbec754f2ccf",
-    unit_stream="15438ec250cd193b2bfa7edd184ce46c109428ba4669891e0cc28a0a81f05015")
+    # #183 G5p-a1 re-pin 1 (2026-11-10, the turning law's representation and
+    # routing at UNLIMITED acceleration, a >= 2w; see the box pin above).
+    # Outcome, team, ticks (win 1 at 246) and field_digest UNCHANGED;
+    # tick_digest (the last tick's unit records: the int facing, the turn
+    # key) and the unit stream move. SOLE CAUSES, verified on the same
+    # tree (a scratch proof over the five pinned matches): with (1) every
+    # non-aim facing writer (travel, zombie walk, attack snap, WEGO,
+    # onephase) placing the facing at once in its own slot again AND (2) the
+    # old representation (Unit.facing the float pi/2 until first written, the
+    # record hashing q(float facing), no turn / omega keys), this tree gives
+    # EXACTLY the previous pin; with (2) alone undone, outcome, ticks,
+    # field_digest and tick_digest are the previous ones and only the unit
+    # stream moves (the zombie walk's facing lands one tick later: its target
+    # is set in slot 5 and turned in the next tick's slot 1a).
+    # Measured on the CPU, CUDA and resident backends alike.
+    # (was tick 948fde5ffe4c509fa0d971a145304e5867c6f8b3feeaf12d3c52bbec754f2ccf,
+    #  units 15438ec250cd193b2bfa7edd184ce46c109428ba4669891e0cc28a0a81f05015)
+    tick_digest="6e408f1955d11e567974b29252a93ecb080cff000e6d38a7d9653476d095267a",
+    unit_stream="c792732fc27000f1adf5d04c223c598022016368c9dbd81c79ffba31bac3e5b5")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):

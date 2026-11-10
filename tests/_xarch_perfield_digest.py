@@ -588,7 +588,21 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # wave_source, wave_v. vs (a): only __unit_status__ / __unit_state__ move.
 # REPRODUCED: captured twice, byte-identical; the ten cuda_*_check.py readers
 # of GOLDEN_AGGREGATE are green on a fresh CUDA build (cpp/build_cuda.bat).
-GOLDEN_AGGREGATE = "46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8"
+#
+# 2026-11-10 -- #183 G5p-a1 THE TURNING LAW, commit 1 (the facing's
+# representation and its routing; docs/unit_impulse_design_2026-11-10.md
+# §13): a unit's synced facing is the int `facing_q` (Q16.16 radians, the
+# trig kit's currency), spawned at quantize(pi/2) = 102944 (it was the float
+# pi/2, which is not dyadic), and the unit record hashes that int (and the
+# turn / omega keys only while non-zero; the canonical marine never turns).
+# SOLE CAUSE, verified: the HEAD tree (743f1adf) reproduces 46750ce2...
+# exactly; this tree differs from it in `__unit_facing__` (every tick: the
+# canonical marine's spawn facing, the int in place of q(pi/2)) and so in
+# `__unit_state__`, and in NOTHING ELSE over all 30 ticks -- every gmap field,
+# __unit_hp__, __unit_pos__, __unit_life_events__ and __unit_status__ are
+# byte-identical per (tick, field).
+# (was 46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8)
+GOLDEN_AGGREGATE = "e42d8f41998cd289383b48e7ab978008d700ae9fbdf0848d0d4292ff360f0a6a"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
