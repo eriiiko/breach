@@ -94,6 +94,10 @@ _NORTH = math.pi / 2   # 1.5707963267948966 radians
 # an 8-compass snap table with no reader anywhere in the repo.)
 
 
+#: ``Unit.throw_reach_q`` when the throw named no reach (the v0.1 fixed one).
+THROW_NO_REACH = -(2 ** 31)
+
+
 class Unit:
     """Game entity: marine, zombie, or future creature.
 
@@ -236,7 +240,26 @@ class Unit:
         # row carries the pre-#119 [marine] numbers, byte-identical).
         _kit = None if self.is_zombie else _loadout_tables().loadout(
             self.loadout_name)
-        self.has_grenade   = 0 if _kit is None else _kit.grenades
+        # Hand grenades (G3p): ONE count per hand-grenade [ammo.*] row, a
+        # fixed block (the rows of the family are the capacity), indexed by
+        # the throw verb's ``kind`` (``WeaponsTables.hand_grenade_rows``).
+        # ``has_grenade`` below is the FRAG slot of it (the legacy single
+        # count: the old order path, the bots, the pickup hooks, the tests).
+        from simulation.weapons import FRAG_ROW as _FRAG_ROW
+        from simulation.weapons import get_tables as _weapon_tables
+        _rows = _weapon_tables().hand_grenade_rows
+        self._frag_slot = _rows.index(_FRAG_ROW) if _FRAG_ROW in _rows else -1
+        self.grenade_counts = [
+            0 if _kit is None else int(_kit.grenades.get(r, 0)) for r in _rows]
+        # The throw's wind-up (G3p, Simulation._start_throw): the tick the
+        # grenade leaves the hand (-1 = not winding up) and what was asked
+        # for. Integers only; deliberately NOT in the synced digest (the
+        # magazine state's precedent): the grenade's flight and the blast
+        # are, and the hashed events catch a divergence.
+        self.throw_release_tick = -1
+        self.throw_kind = 0
+        self.throw_reach_q = THROW_NO_REACH
+        self.throw_fuse_ticks = 0
         self.has_explosive = 0 if _kit is None else _kit.explosives
         # Magazines carried, TOTAL including the one loaded (G2p; the loadout
         # row's `magazines`, 0 = spares untracked = infinite auto-reload).
@@ -471,6 +494,21 @@ class Unit:
     def tile_y(self) -> int:
         """Integer tile index (row) — for matrix access."""
         return int(self.y)
+
+    @property
+    def has_grenade(self) -> int:
+        """The FRAG count: the legacy single grenade count, the slot of
+        ``grenade_counts`` that holds ``grenade_frag`` (G3p). Settable, so
+        the old order path, the pickup hooks and the tests keep their
+        arithmetic; a table with no frag row reads 0."""
+        return self.grenade_counts[self._frag_slot] if self._frag_slot >= 0 else 0
+
+    @has_grenade.setter
+    def has_grenade(self, n: int) -> None:
+        if self._frag_slot < 0:
+            raise ValueError("this weapon table has no grenade_frag row to "
+                             "hold has_grenade")
+        self.grenade_counts[self._frag_slot] = int(n)
 
     def center_tile_x(self) -> int:
         """Col index of the unit's center tile."""

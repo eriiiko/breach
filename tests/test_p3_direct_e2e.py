@@ -237,12 +237,15 @@ def test_directional_spray_cone_follows_facing():
 
 
 def test_directional_grenade_still_throws():
-    """THROW is consumed by the rewritten _consume_direct_intents unchanged."""
+    """THROW is consumed by the rewritten _consume_direct_intents: the verb
+    starts the wind-up (G3p) and the grenade is in flight once it is over."""
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=9, team=0))
     n0 = len(sim.projectiles)
-    sim.throw_grenade_intent(uid, FP_ONE, 0, 2.0)   # lob east
-    sim.step()
+    sim.throw_grenade_intent(uid, FP_ONE, 0, 48)    # lob east, fuse 2 s
+    windup = sim.weapons_tables.weapons.by_name["hand_grenade"]         .throw_windup_ticks
+    for _ in range(windup + 1):
+        sim.step()
     assert len(sim.projectiles) == n0 + 1
 
 

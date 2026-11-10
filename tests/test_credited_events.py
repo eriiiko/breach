@@ -124,7 +124,10 @@ def _scripted_match(n_ticks=60, on_tick=None):
     sim.set_trigger(who["S"].id, True)
     # The lob: from T's centre (4, 12) nine tiles east -> VB's centre tile.
     who["T"].has_grenade = 1
-    sim.throw_grenade_intent(who["T"].id, FP_ONE, 0, fuse_seconds=0.5,
+    # G3p: the grenade leaves the hand after the wind-up, along the facing
+    # it has THEN -- so T faces east first (the aim, as a controller would).
+    sim.set_aim(who["T"].id, FP_ONE, 0)
+    sim.throw_grenade_intent(who["T"].id, FP_ONE, 0, fuse_ticks=12,
                              reach_q=9 << FP_SHIFT)
     events, digests = [], []
     for _ in range(n_ticks):

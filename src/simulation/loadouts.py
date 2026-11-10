@@ -3,6 +3,9 @@ what it survives, as config rows.
 
     [loadouts.<name>]      weapon (a [weapons.*] id), grenades, explosives,
                            optionally magazines (total carried, 0 = untracked)
+                           ``grenades`` is a table by hand-grenade ``[ammo.*]``
+                           row name (``{ grenade_frag = 2, grenade_smoke = 1 }``,
+                           G3p) or a bare int, which means that many frags
     [env_profiles.<name>]  any subset of :class:`EnvironmentProfile`'s fields
 
 A loadout is a ROW, never code: ``[marine] loadout`` names the row every marine
@@ -51,15 +54,42 @@ def _count(value, where: str) -> int:
     return int(value)
 
 
+def _grenade_counts(value, where: str, grenade_rows) -> dict:
+    """The ``grenades`` column of a loadout row as ``{ammo row name: count}``
+    (G3p). A bare int (the pre-G3p form) means that many FRAGS; a table is
+    keyed by hand-grenade ``[ammo.*]`` row names, refused by name when a key
+    is not a row of the hand-grenade family (``grenade_rows``) and when a
+    count is not a non-negative integer. A kind absent from the table is 0."""
+    from simulation.weapons import FRAG_ROW
+    if not (isinstance(value, dict) or hasattr(value, "__dict__")):
+        return {FRAG_ROW: _count(value, where)}
+    out = {}
+    for row, n in _row_items(value):
+        if row not in grenade_rows:
+            raise ValueError(
+                f"{where}.{row} names no hand-grenade [ammo.*] row "
+                f"(known: {sorted(grenade_rows)})")
+        out[str(row)] = _count(n, f"{where}.{row}")
+    return out
+
+
 @dataclass(frozen=True)
 class LoadoutDef:
     name: str
     weapon: str
-    grenades: int
+    #: Hand grenades carried: ``{ammo row name: count}`` (G3p), the rows the
+    #: loadout names; a row of the family it does not name is 0.
+    grenades: dict
     explosives: int
     #: Magazines carried, TOTAL including the one loaded (G2p). 0 = spare
     #: magazines untracked: the infinite auto-reload every weapon had before.
     magazines: int = 0
+
+    @property
+    def frags(self) -> int:
+        """The frag count (a bare-int ``grenades`` is exactly this)."""
+        from simulation.weapons import FRAG_ROW
+        return int(self.grenades.get(FRAG_ROW, 0))
 
 
 _LOADOUT_COLUMNS = ("weapon", "grenades", "explosives")
@@ -71,8 +101,9 @@ class LoadoutTable:
     """``[loadouts.*]`` rows keyed by name; every ``weapon`` must name a row
     of the weapon table (``weapon_names``)."""
 
-    def __init__(self, loadouts_cfg, weapon_names):
+    def __init__(self, loadouts_cfg, weapon_names, grenade_rows=()):
         weapon_names = set(weapon_names)
+        grenade_rows = tuple(grenade_rows)
         self.by_name: dict[str, LoadoutDef] = {}
         for name, row in _iter_rows(loadouts_cfg):
             cols = dict(_row_items(row))
@@ -93,7 +124,9 @@ class LoadoutTable:
                     f"row (known: {sorted(weapon_names)})")
             self.by_name[name] = LoadoutDef(
                 name=name, weapon=weapon,
-                grenades=_count(cols["grenades"], f"loadouts.{name}.grenades"),
+                grenades=_grenade_counts(cols["grenades"],
+                                         f"loadouts.{name}.grenades",
+                                         grenade_rows),
                 explosives=_count(cols["explosives"],
                                   f"loadouts.{name}.explosives"),
                 magazines=_count(cols.get("magazines", 0),
@@ -156,8 +189,8 @@ class LoadoutTables:
     """The two tables plus the marine default, validated together."""
 
     def __init__(self, loadouts_cfg, profiles_cfg, weapon_names,
-                 default_loadout: str):
-        self.loadouts = LoadoutTable(loadouts_cfg, weapon_names)
+                 default_loadout: str, grenade_rows=()):
+        self.loadouts = LoadoutTable(loadouts_cfg, weapon_names, grenade_rows)
         self.env_profiles = EnvProfileTable(profiles_cfg)
         if default_loadout not in self.loadouts.by_name:
             raise ValueError(
@@ -179,10 +212,12 @@ class LoadoutTables:
             from config import CFG
             cfg = CFG
         from simulation.weapons import get_tables
+        tables = get_tables()
         return cls(getattr(cfg, "loadouts", None),
                    getattr(cfg, "env_profiles", None),
-                   get_tables().weapons.by_name.keys(),
-                   str(cfg.marine.loadout))
+                   tables.weapons.by_name.keys(),
+                   str(cfg.marine.loadout),
+                   grenade_rows=tables.hand_grenade_rows)
 
 
 _TABLES: LoadoutTables | None = None

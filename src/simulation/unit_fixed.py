@@ -104,6 +104,13 @@ def cos_q16(angle_q: int) -> int:
     return int(_kit().cos_q16(int(angle_q)))
 
 
+def sin_q16(angle_q: int) -> int:
+    """The kit's ``sin_q16`` on a Q16.16 radian int, Q16.16 out -- the
+    integer form of :func:`sin_rad` (G3p: the direction a throw leaves the
+    hand, the facing's unit vector)."""
+    return int(_kit().sin_q16(int(angle_q)))
+
+
 def sin_rad(angle: float) -> float:
     """Deterministic sin of ``angle`` (radians): quantize -> sin_q16 ->
     dequantize. Exact n/65536 double in [-1.0, 1.0]. Accuracy pinned for

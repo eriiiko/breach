@@ -37,6 +37,8 @@ restart to take effect.
 """
 from __future__ import annotations
 
+from numbers import Integral
+
 from config import ticks_from_seconds
 from simulation.damage import DAMAGE_TYPE_NAMES
 
@@ -61,6 +63,19 @@ FIRE_ORDER_ARCHETYPES = frozenset({"hitscan", "projectile", "spray", "melee"})
 # types). Validated at load so a typo'd dtype is loud at startup, not silent
 # until W2 consumes it.
 DTYPE_BY_NAME = {name: dtype_id for dtype_id, name in DAMAGE_TYPE_NAMES.items()}
+
+
+#: The ammo family of a thrown grenade, and the row a bare-int loadout
+#: ``grenades`` means (G3p).
+HAND_GRENADE_FAMILY = "hand_grenade"
+FRAG_ROW = "grenade_frag"
+
+
+def fuse_ticks_from_seconds(seconds, ticks_per_second) -> int:
+    """A fuse in seconds as the integer ticks the throw verb takes: the
+    truncation the projectile always used (``int(seconds * tps)``), so a
+    caller converting at its own door detonates on the tick it always did."""
+    return int(float(seconds) * ticks_per_second)
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +105,7 @@ class WeaponDef:
                  cone_half_angle_degrees=0.0, burst_seconds=0.0,
                  melee_damage=0, melee_dtype="",
                  status_kind="", status_seconds=0.0,
-                 range_m=0.0, default_ammo=""):
+                 range_m=0.0, default_ammo="", throw_windup_seconds=0.0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -139,6 +154,12 @@ class WeaponDef:
         self.fuse_min_seconds = fuse_min_seconds
         self.fuse_max_seconds = fuse_max_seconds
         self.fuse_default_seconds = fuse_default_seconds
+        # The throw's WIND-UP (gameplay pack G3p): seconds between the throw
+        # verb being consumed and the grenade leaving the hand; derived to
+        # integer ticks by WeaponTable (0 = the grenade leaves the same tick,
+        # exactly the pre-G3p throw).
+        self.throw_windup_seconds = throw_windup_seconds
+        self.throw_windup_ticks = 0             # derived by WeaponTable (G3p)
         # SPRAY extras (mechanics/03 §5, W4). CONVENTION OF RECORD: the
         # armory table (§6) quotes the FULL cone angle ("30° cone"); config
         # authors the HALF-angle (the membership test's natural quantity —
@@ -256,8 +277,25 @@ class PayloadDef:
                  bulk_amount_q=0, bulk_temp_q=0,
                  expansion_m3=0.0, expansion_radius=0.0, expansion_ticks=1,
                  strength=0.0, heat_mj=0.0, source_r2=0, heat_r2=0,
-                 flash=0.0, flash_decay_s=0.3, flash_color=(1.0, 1.0, 1.0)):
+                 flash=0.0, flash_decay_s=0.3, flash_color=(1.0, 1.0, 1.0),
+                 blind_radius=0.0, blind_seconds=0.0, blind_away_frac=1.0,
+                 blind_radius_q=0, blind_ticks=0, blind_away_q=1 << 16):
         self.name = name
+        # G3p: the detonation BLINDS units (docs/gameplay_pack_v1_design
+        # §3 G3p; simulation/flash_blind.py): every living unit within
+        # ``blind_radius`` tiles with a line of sight to the detonation is
+        # BLINDED for up to ``blind_seconds`` (quantized once to ``blind_ticks``),
+        # less with distance and with its back to the flash, never below
+        # ``blind_away_frac`` of it by facing alone. ``blind_radius`` 0 = this
+        # row blinds nobody. The ``*_q`` / ``blind_ticks`` are the door's
+        # quantizations (Q16 tiles, integer ticks, Q16 fraction): the law
+        # reads only those.
+        self.blind_radius = float(blind_radius)
+        self.blind_seconds = float(blind_seconds)
+        self.blind_away_frac = float(blind_away_frac)
+        self.blind_radius_q = int(blind_radius_q)
+        self.blind_ticks = int(blind_ticks)
+        self.blind_away_q = int(blind_away_q)
         # G4 P5 (#75): the detonation's FLASH, a render-only row property
         # (docs/explosion_look_design_2026-11-07.md §3.5): ``flash`` light units
         # at peak (0 = none), fading as exp(-age / flash_decay_s) on the sim
@@ -425,7 +463,18 @@ class WeaponTable:
                 status_seconds=col("status_seconds", 0.0),
                 range_m=col("range_m", 0.0),
                 default_ammo=str(col("default_ammo", "")),
+                throw_windup_seconds=col("throw_windup_seconds", 0.0),
             )
+            # The throw wind-up (G3p): seconds -> integer ticks, the
+            # reload_ticks derivation (door 1); 0 stays 0 (no wind-up).
+            _wu = w.throw_windup_seconds
+            if (isinstance(_wu, bool) or not isinstance(_wu, (int, float))
+                    or not _wu >= 0.0 or _wu != _wu or _wu == float("inf")):
+                raise ValueError(
+                    f"weapons.{name}.throw_windup_seconds {_wu!r} must be a "
+                    f"finite number >= 0 (seconds; 0 = no wind-up)")
+            w.throw_windup_ticks = (ticks_from_seconds(_wu, ticks_per_second)
+                                    if _wu > 0 else 0)
             # METER-BASED RANGE (W6, Erik's 2026-07-07 decision): range_m is
             # the authored physical reach; range_tiles derives ONCE here at
             # the level's tile size (quantize-once, door 2; the divide is
@@ -647,6 +696,65 @@ def _flash_columns(name, row, col):
     return dict(flash=flash, flash_decay_s=decay, flash_color=color)
 
 
+# The blind columns (G3p): any other ``blind_*`` key is a typo, refused.
+_BLIND_COLUMNS = ("blind_radius", "blind_seconds", "blind_away_frac")
+
+
+def _blind_columns(name, row, col, ticks_per_second):
+    """The ``[payloads.*]`` blind door (G3p, design §3 G3p): read and validate
+    ``blind_radius`` (tiles, >= 0; absent or 0 = this row blinds nobody),
+    ``blind_seconds`` (> 0, REQUIRED when the radius is) and
+    ``blind_away_frac`` (in [0, 1], REQUIRED when the radius is: the share of
+    the blinding that is left when the unit faces straight away from the
+    flash). Refuses any key starting ``blind`` that is not one of the three,
+    and a ``blind_seconds`` / ``blind_away_frac`` on a row with no radius
+    (dead data is a typo). Quantizes ONCE: the radius to Q16 tiles, the
+    duration to integer ticks (``ticks_from_seconds``), the fraction to Q16.
+    Returns the PayloadDef keyword arguments."""
+    import math
+    from simulation import unit_fixed
+    keys = row.keys() if isinstance(row, dict) else vars(row).keys()
+    bad = sorted(k for k in keys
+                 if str(k).startswith("blind") and k not in _BLIND_COLUMNS)
+    if bad:
+        raise ValueError(f"payloads.{name} has unknown blind column(s) {bad}: "
+                         f"the blind columns are {list(_BLIND_COLUMNS)}")
+    radius = col("blind_radius", 0.0)
+    if (isinstance(radius, bool) or not isinstance(radius, (int, float))
+            or not (math.isfinite(radius) and radius >= 0.0)):
+        raise ValueError(f"payloads.{name}.blind_radius {radius!r} must be a "
+                         f"finite number >= 0 (tiles; 0 = blinds nobody)")
+    radius = float(radius)
+    if radius == 0.0:
+        stray = [c for c in ("blind_seconds", "blind_away_frac")
+                 if c in (row if isinstance(row, dict) else vars(row))]
+        if stray:
+            raise ValueError(f"payloads.{name} sets {stray} without a "
+                             f"blind_radius > 0 (the row would blind nobody)")
+        return {}
+    secs = col("blind_seconds", None)
+    away = col("blind_away_frac", None)
+    if (isinstance(secs, bool) or not isinstance(secs, (int, float))
+            or not (math.isfinite(secs) and secs > 0.0)):
+        raise ValueError(f"payloads.{name}.blind_seconds {secs!r} must be a "
+                         f"finite number > 0 (required with blind_radius)")
+    if (isinstance(away, bool) or not isinstance(away, (int, float))
+            or not (math.isfinite(away) and 0.0 <= away <= 1.0)):
+        raise ValueError(f"payloads.{name}.blind_away_frac {away!r} must be a "
+                         f"number in [0, 1] (required with blind_radius)")
+    radius_q = unit_fixed.quantize_scalar(radius)
+    if radius_q <= 0:
+        raise ValueError(f"payloads.{name}.blind_radius {radius!r} quantizes "
+                         f"to 0 Q16 tiles")
+    if ticks_per_second is None:
+        from config import CFG
+        ticks_per_second = CFG.clock.ticks_per_second
+    return dict(blind_radius=radius, blind_seconds=float(secs),
+                blind_away_frac=float(away), blind_radius_q=radius_q,
+                blind_ticks=ticks_from_seconds(float(secs), ticks_per_second),
+                blind_away_q=unit_fixed.quantize_scalar(float(away)))
+
+
 def _bulk_gas_columns(name, col, gas_species, bulk_gases, trace_gases):
     """The ``[payloads.*]`` bulk-gas door (#133 E.2): read and validate the
     ``bulk_gas`` / ``bulk_amount`` / ``bulk_radius`` / ``bulk_temp`` columns
@@ -709,7 +817,8 @@ class PayloadTable:
     (simulation.gases.GAS_NAMES — the ``gmap.gas`` slice vocabulary) so a
     typo'd species is loud at startup, not at the first detonation."""
 
-    def __init__(self, payloads_cfg, explosives_cfg=None, blast_cfg=None):
+    def __init__(self, payloads_cfg, explosives_cfg=None, blast_cfg=None,
+                 ticks_per_second=None):
         # Lazy import (module constants only, mirrors AmmoTable's unit_fixed).
         from simulation.gases import GAS_NAMES, N_GASES, N_TRACE_GASES
         valid_gases = set(GAS_NAMES.values())
@@ -743,6 +852,7 @@ class PayloadTable:
             bulk = _bulk_gas_columns(name, col, gas_species, bulk_gases,
                                      trace_gases)
             flash = _flash_columns(name, row, col)
+            blind = _blind_columns(name, row, col, ticks_per_second)
             emit_blast_smoke = bool(col("emit_blast_smoke", False))
             explosive = str(col("explosive", ""))
             # A strength row's charge is derived, so it is known before the
@@ -790,6 +900,7 @@ class PayloadTable:
                 **blast,
                 **bulk,
                 **flash,
+                **blind,
             )
         self.names = list(self.by_name)
 
@@ -816,8 +927,28 @@ class WeaponsTables:
         self.weapons = WeaponTable(weapons_cfg, ticks_per_second,
                                    tile_size_m=tile_size_m)
         self.ammo = AmmoTable(ammo_cfg)
-        self.payloads = PayloadTable(payloads_cfg)
+        self.payloads = PayloadTable(payloads_cfg,
+                                     ticks_per_second=ticks_per_second)
         self._validate_cross_refs()
+        # The hand-grenade KINDS (G3p): the ``[ammo.*]`` rows of the
+        # hand-grenade family, in config (table) order -- the index of a row
+        # in this tuple IS the throw verb's ``kind`` and the slot of its
+        # count on a unit. Append a new row at the END of the family's rows
+        # so an existing index keeps its meaning (``grenade_frag`` is first:
+        # kind 0, the default).
+        self.hand_grenade_rows = tuple(
+            n for n, a in self.ammo.by_name.items()
+            if a.family == HAND_GRENADE_FAMILY)
+
+    def hand_grenade_kind(self, kind) -> str:
+        """The ``[ammo.*]`` row name of throw kind ``kind``. Refuses a
+        non-int or an index outside the family, naming the kinds."""
+        if (isinstance(kind, bool) or not isinstance(kind, Integral)
+                or not 0 <= kind < len(self.hand_grenade_rows)):
+            raise ValueError(
+                f"unknown grenade kind {kind!r}: the hand-grenade kinds are "
+                f"{dict(enumerate(self.hand_grenade_rows))}")
+        return self.hand_grenade_rows[int(kind)]
 
     def _validate_cross_refs(self):
         accepted_families = {w.ammo_family

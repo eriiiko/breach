@@ -171,7 +171,24 @@ _PRE_122_SHIP_DEMO = dict(
     #  2405945a37fc5e83; tick 230d50a18db03437b34b0600d87d795a57af4c93d969f31
     #  474e038db1a87f891; units a345834dfe6685918d0e0887667b978de462e09d0bfa6
     #  fcc26e9b9a68babcb9d)
-    outcome="win", team=1, ticks=240,
+    # #183 G3p re-pin (2026-11-10, the throw wind-up: the grenade leaves the
+    # hand 7 ticks (0.3 s, PLACEHOLDER) after the verb, along the facing the
+    # unit has then). Outcome and team UNCHANGED (win 1); ticks 240 -> 246;
+    # field_digest, tick_digest and the unit stream move. SOLE CAUSE,
+    # verified on the same tree: with `throw_windup_seconds = 0` this match
+    # gives exactly the G1p-c pin below (win 1 at 240, 4a6ae8a3 / 6eb3105b /
+    # 816192b5) -- tests/test_grenade_kinds.py::test_with_no_wind_up_the_
+    # pinned_match_is_the_pre_g3p_match holds that -- and so does the new
+    # loadout table alone (the bots throw frags only: smoke and the
+    # flashbang are carried, never thrown), the integer fuse, the kind
+    # column and the ThrowEvent (render-only). The bots' lobs now land a
+    # wind-up later, along the aim they hold through it. Measured on the CPU,
+    # CUDA and resident backends alike (tools/match_pin_check.py).
+    # (was ticks 240; field 4a6ae8a34011fc3cc832c20326df631cd174b27bf64fc359
+    #  d6249717ae6c9d89; tick 6eb3105b24e4debf47cdcb6366caea9df2d8717bbc2ca6
+    #  387aba968a3002939e; units 816192b5309273533dff345e4300080b980e5323c43f
+    #  b4c46241c92af38ae4ad)
+    outcome="win", team=1, ticks=246,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -196,7 +213,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="4a6ae8a34011fc3cc832c20326df631cd174b27bf64fc359d6249717ae6c9d89",
+    field_digest="5175fd4cddd17c018e84bc9548b1b81b5a92ebac0d1c25ba06c3b14528bd6175",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -214,8 +231,8 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="6eb3105b24e4debf47cdcb6366caea9df2d8717bbc2ca6387aba968a3002939e",
-    unit_stream="816192b5309273533dff345e4300080b980e5323c43fb4c46241c92af38ae4ad")
+    tick_digest="e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c9099e53076",
+    unit_stream="6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522385e7d1cfe")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):

@@ -205,7 +205,7 @@ def test_default_marine_is_armed_by_the_marine_loadout_row():
     assert row.name == CFG.marine.loadout
     u = Unit("M", x=5, y=5)
     assert (u.weapon_id, u.has_grenade, u.has_explosive) == \
-        (row.weapon, row.grenades, row.explosives)
+        (row.weapon, row.frags, row.explosives)
     assert u.loadout[0] == row.weapon
 
 
@@ -215,7 +215,7 @@ def test_a_loadout_row_arms_the_unit_with_its_weapon_and_grenades():
         row = get_tables().loadout(name)
         u = Unit("M", x=5, y=5, team=3, loadout_name=name)
         assert u.weapon_id == row.weapon and u.loadout[0] == row.weapon
-        assert u.has_grenade == row.grenades
+        assert u.has_grenade == row.frags
         assert u.has_explosive == row.explosives
         assert u.loadout_name == name
 

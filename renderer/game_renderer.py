@@ -1990,7 +1990,8 @@ class GameRenderer:
 
     def draw_panel(self, sim=None, selected_unit=None,
                    planning_phase: int = 0,
-                   current_mode: Optional[int] = None) -> None:
+                   current_mode: Optional[int] = None,
+                   grenade_kind: Optional[int] = None) -> None:
         """Right-side info panel. ``sim`` may be ``None`` for the demo;
         when provided we show turn/phase/tick state and (optionally) the
         selected unit's HP / inventory / orders summary."""
@@ -2011,7 +2012,8 @@ class GameRenderer:
         if sim is not None:
             from ui.model import panel_state_lines
             for line in panel_state_lines(sim, selected_unit,
-                                          planning_phase, current_mode):
+                                          planning_phase, current_mode,
+                                          grenade_kind=grenade_kind):
                 if line.text:
                     if line.color is None:
                         draw_text(line.text, x, y, line.size)

@@ -56,6 +56,7 @@ from simulation.blast_expansion import (heat_units_per_mj, open_mask,
 from simulation.damage import CREDIT_HEAT, tick_credit
 from simulation.events import NO_ATTACKER, ExplosionEvent
 from simulation.exchange import apply_blast_damage
+from simulation.flash_blind import apply_flash_blind
 from simulation.field_edit import (FieldEdit, EditMode, Falloff, Region,
                                    _iter_region)
 from simulation.gases import smoke_units_of_soot
@@ -384,6 +385,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
        into ``events``). A row authoring ``unit_damage > 0`` with
        ``radius == 0`` is a config bug (the geometric falloff needs a
        radius); no shipped row does.
+    2b. ``apply_flash_blind``  — when ``blind_radius > 0`` (G3p, the
+       flashbang: BLINDED by line of sight, distance and facing;
+       simulation/flash_blind.py; integer, no draw).
     3. ``add_explosion_smoke`` — when ``emit_blast_smoke`` (the noisy cloud;
        its per-tile noise is drawn at the queue flush, not here).
     4. ``emit_gas``            — when ``gas_species`` is nonempty (W3).
@@ -434,6 +438,11 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         apply_blast_damage(units, fx, fy, payload.radius,
                            payload.unit_damage, events=events,
                            attacker_id=owner_id)
+    # The flash blinds (G3p): every living unit that sees the detonation, by
+    # distance and facing (simulation/flash_blind.py). A row without
+    # blind_radius blinds nobody.
+    if getattr(payload, "blind_radius_q", 0) > 0:
+        apply_flash_blind(gmap, units, fy, fx, payload, owner_id)
     # A charge reads the air it goes off in (#31): smoke per tile, heat for the
     # whole blast. Read here, after its wall damage and before any of this
     # payload's edits land. A strength row's walks run at this same point, so a

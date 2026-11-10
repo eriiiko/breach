@@ -18,7 +18,7 @@ The parts:
 - :class:`MatchRecorder` owns a recording in progress: it attaches the log,
   takes the checkpoints as the runner steps, and closes into a
   :class:`Recording`. ``tools/run_match.py --record`` drives it.
-- :func:`write_recording` / :func:`read_recording`: the on-disk format (v2 since G1p),
+- :func:`write_recording` / :func:`read_recording`: the on-disk format (v4 since G3p),
   one gzip'd JSON-lines file per match (below).
 - :class:`ReplayControl`: the registered match controller ``"replay"``
   (``control_source``), built from a recording by
@@ -29,10 +29,10 @@ The parts:
   the tick. ``tools/run_match.py --replay`` drives it headless; #127 puts it
   behind ``main.py --replay``.
 
-Format v2 (gzip, mtime 0, so one recording is one byte string), UTF-8 JSON,
+Format v4 (gzip, mtime 0, so one recording is one byte string), UTF-8 JSON,
 one object per line::
 
-    {"format": "breach-match-replay", "version": 2, "level": "ship_demo",
+    {"format": "breach-match-replay", "version": 4, "level": "ship_demo",
      "seed": 1, "checkpoint_every_ticks": 60, "build": "<git describe>",
      "spec": {...MatchSpec as a dict...}}
     {"t": 0, "i": [["set_move_dir", 0, 65536, 0, 0], ["drive_zombies", [8, 9]]]}
@@ -43,8 +43,9 @@ one object per line::
 An ``"i"`` row is one tick's intents in issue order, each ``[kind, *args]``
 with the arguments exactly as the sim's method normalises them: ints stay
 ints (Q16.16 values are their raw ints), ``set_trigger``'s ``held`` a bool,
-``throw_grenade_intent``'s ``fuse_seconds`` its exact IEEE value as
-``float.hex()``, its ``reach_q`` an int or null. A tick with no intent has no
+``throw_grenade_intent``'s ``fuse_ticks`` an int (v4; it was the float
+seconds as ``float.hex()``), its ``reach_q`` an int or null, its ``kind`` the
+hand-grenade row index. A tick with no intent has no
 row. ``apply_action`` orders are REFUSED at record time (v1 matches issue
 only the per-tick intents; an ``Order`` has no serializer yet): recording a
 match that places orders raises :class:`RecordingRefused`.
@@ -79,7 +80,10 @@ FORMAT_NAME = "breach-match-replay"
 #: v3 (gameplay pack G2p, 2026-11-10): the ``reload_intent`` kind, and a
 #: carbine that fires 12 rounds a second from a counted 30-round magazine --
 #: a v2 recording of a match with that weapon would replay as another match.
-FORMAT_VERSION = 3
+#: v4 (gameplay pack G3p, 2026-11-10): ``throw_grenade_intent`` takes its fuse
+#: in INTEGER ticks and a ``kind``, and a grenade leaves the hand after the
+#: throw's wind-up -- a v3 recording would replay as another match.
+FORMAT_VERSION = 4
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -90,7 +94,7 @@ INTENT_KINDS = {
     "clear_move_dir": ("int",),
     "set_aim": ("int", "int", "int"),
     "set_trigger": ("int", "bool"),
-    "throw_grenade_intent": ("int", "int", "int", "fhex", "int?"),
+    "throw_grenade_intent": ("int", "int", "int", "int", "int?", "int"),
     "use_intent": ("int",),
     "reload_intent": ("int",),
     "drive_zombies": ("ints",),
@@ -295,7 +299,7 @@ class MatchRecorder:
 
 
 # ---------------------------------------------------------------------------
-# The format (v2): writer + reader
+# The format (v4): writer + reader
 # ---------------------------------------------------------------------------
 def _encode_args(kind: str, args: tuple) -> list:
     out = []

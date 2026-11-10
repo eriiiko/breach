@@ -102,7 +102,7 @@ class Projectile:
 
     def __init__(self, proj_type, start_fx, start_fy, target_fx, target_fy,
                  fuse_seconds, thrown_tick, ammo_name="grenade_frag",
-                 owner_id=-1):
+                 owner_id=-1, fuse_ticks=None):
         self.proj_type = proj_type
         # The thrower (#123): the detonation's blast, heat and gas are
         # credited to it. -1 = nobody (a scripted / test lob).
@@ -114,6 +114,9 @@ class Projectile:
         self.target_fx = float(target_fx)
         self.target_fy = float(target_fy)
         self.fuse_seconds = fuse_seconds
+        #: The fuse in INTEGER ticks (the direct throw verb's, G3p); None =
+        #: derive it from ``fuse_seconds`` (the WEGO order path).
+        self.fuse_ticks = None if fuse_ticks is None else int(fuse_ticks)
         self.thrown_tick = thrown_tick
         self.detonated = False
         self.ammo_name = ammo_name
@@ -126,6 +129,8 @@ class Projectile:
 
     def get_detonate_tick(self):
         """Tick at which this projectile detonates."""
+        if self.fuse_ticks is not None:
+            return self.thrown_tick + self.fuse_ticks
         tps = CFG.clock.ticks_per_second
         return self.thrown_tick + int(self.fuse_seconds * tps)
 

@@ -20,9 +20,8 @@ and the entry points' own parameter names (:func:`action_schema`):
   ``use_intent``, ``reload_intent``) is ONE flag column named after the kind (0 = not issued);
 - every other argument is a column ``<kind>.<parameter>``, encoded by its
   ``INTENT_KINDS`` type: ``int`` as is (Q16.16 values are their raw ints),
-  ``bool`` as 0/1, ``fhex`` (today's float ``fuse_seconds``) as Q16.16
-  SECONDS dequantized exactly (``n / 65536``) into the float the entry point
-  takes -- the integer fuse is P3e, ``INTENT_KINDS`` is unchanged here --,
+  ``bool`` as 0/1, ``fhex`` (a float argument; none today since G3p made
+  the fuse integer ticks) as Q16.16 dequantized exactly (``n / 65536``),
   ``int?`` as the int or :data:`NONE_Q` (int32 min) for ``None``.
 
 So ``set_move_dir.dx_q``, ``set_move_dir.dy_q`` (a Q16.16 unit vector),
@@ -30,7 +29,8 @@ So ``set_move_dir.dx_q``, ``set_move_dir.dy_q`` (a Q16.16 unit vector),
 the sim clamps it), ``clear_move_dir`` (a flag DISTINCT from a zero
 vector: a zero vector holds a live, motionless move intent), ``set_aim.dx_q``,
 ``set_aim.dy_q``, ``set_trigger.held``, ``throw_grenade_intent.dx_q`` /
-``.dy_q`` / ``.fuse_seconds`` / ``.reach_q``, ``use_intent``,
+``.dy_q`` / ``.fuse_ticks`` (integer ticks) / ``.reach_q`` / ``.kind`` (the
+hand-grenade row index, G3p), ``use_intent``,
 ``reload_intent`` (G2p).
 
 WHEN a kind is issued is its row in :data:`VERB_RULES` -- a new kind in
@@ -307,10 +307,11 @@ class AgentPolicy(ControlSource):
 #: its move with p_clear, holds the trigger with p_trigger, and issues each
 #: latch kind (throw, use, reload) with p_latch; every direction is a uniform random
 #: unit vector, ``throttle_q`` uniform in [0, ONE] (G1p), the
-#: fuse uniform in [fuse_lo_s, fuse_hi_s], the reach uniform in
-#: [0, reach_hi_tiles] (the sim clamps it to the hand grenade's range).
+#: fuse uniform in [fuse_lo_ticks, fuse_hi_ticks] (0.5 to 3 s at 24 tps), the
+#: reach uniform in [0, reach_hi_tiles] (the sim clamps it to the hand
+#: grenade's range), the grenade ``kind`` uniform over the hand-grenade rows.
 RANDOM_DOMAIN = dict(p_clear=0.25, p_trigger=0.5, p_latch=0.05,
-                     fuse_lo_s=0.5, fuse_hi_s=3.0, reach_hi_tiles=16)
+                     fuse_lo_ticks=12, fuse_hi_ticks=72, reach_hi_tiles=16)
 
 
 def _unit_vectors(rng, n: int) -> np.ndarray:
@@ -355,10 +356,13 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
             rows[:, i] = rng.random(n) < p
         elif c.type == "bool":
             rows[:, i] = rng.random(n) < d["p_trigger"]
-        elif c.type == "fhex":
-            lo = int(d["fuse_lo_s"] * FP_ONE)
-            hi = int(d["fuse_hi_s"] * FP_ONE)
-            rows[:, i] = rng.integers(lo, hi + 1, size=n)
+        elif c.name.endswith(".fuse_ticks"):
+            rows[:, i] = rng.integers(int(d["fuse_lo_ticks"]),
+                                      int(d["fuse_hi_ticks"]) + 1, size=n)
+        elif c.name.endswith(".kind"):
+            from simulation.weapons import get_tables
+            rows[:, i] = rng.integers(
+                0, len(get_tables().hand_grenade_rows), size=n)
         elif c.type == "int?":
             rows[:, i] = rng.integers(0, int(d["reach_hi_tiles"]) * FP_ONE + 1,
                                       size=n)
