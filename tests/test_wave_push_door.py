@@ -28,7 +28,6 @@ import level_loader  # noqa: E402
 from control_source import quantize_stick_direction  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_DOOR, MAT_HULL  # noqa: E402
-from simulation.orders import ORDER_MOVE_ATTACK  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
@@ -65,6 +64,6 @@ def test_a_walking_unit_crosses_a_legacy_door_on_a_quiet_map(tmp_path):
     assert sim.gmap.is_passable_block(6, DOOR_X, 3)   # ... yet walkable
     dx, dy, _ = quantize_stick_direction(1.0, 0.0, 0.0)
     for _ in range(24 * 12):                  # 12 s ~ 16 tiles of walking
-        sim.set_move_dir(u.id, dx, dy, ORDER_MOVE_ATTACK)
+        sim.set_move_dir(u.id, dx, dy, 0)  # throttle 0: the walk
         sim.step()
     assert u.x > DOOR_X + 3, u.x              # footprint wholly past it

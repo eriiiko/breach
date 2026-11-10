@@ -106,7 +106,8 @@ from simulation.heat_source_system import (build_heat_sources,
                                            sweep_heat_sources)
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
-from simulation.movement import default_speed, footprint_samples
+from simulation.movement import (default_speed, footprint_samples,
+                                 THROTTLE_ONE, throttle_tiles_per_tick)
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
@@ -118,6 +119,7 @@ from simulation.orders import (
 # ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
 # on a ``getattr(..., default)`` (the dormancy guarantee).
 from simulation import intents as _intents
+from simulation import turning
 from simulation import unit_fixed
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
@@ -394,6 +396,9 @@ class Simulation:
         # ``_consume_direct_intents`` short-circuits and the whole continuous
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
+        # G1p: the marine turn-rate cap, Q16.16 radians per tick, quantized
+        # ONCE here from [marine] turn_rate_deg_per_s (the refusing door).
+        self._marine_turn_rate_q16 = turning.turn_rate_q16(CFG)
 
         # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
         # conductor's zombie slot runs the shipped law over every zombie (every
@@ -907,19 +912,24 @@ class Simulation:
     # possessed, which arms ``_consume_direct_intents`` (dormant while empty).
 
     def set_move_dir(self, unit_id: int, dx_q: int, dy_q: int,
-                     speed_mode: int) -> None:
-        """MOVE_DIR: hold a Q16.16 unit-vector move direction + speed mode for
-        ``unit_id`` (§3c). Overwrites each call; :meth:`clear_move_dir` (stick
-        inside the deadzone) stops the unit."""
+                     throttle_q: int) -> None:
+        """MOVE_DIR: hold a Q16.16 unit-vector move direction + a THROTTLE
+        for ``unit_id`` (§3c; gameplay pack G1p). ``throttle_q`` is Q16 in
+        ``[0, ONE]`` -- 0 the walk, ONE the sprint, continuous between
+        (``movement.throttle_tiles_per_tick``) -- CLAMPED here, as a throw's
+        reach is clamped (the neighbouring intents refuse nothing), and the
+        clamped value is what the tap records. Overwrites each call;
+        :meth:`clear_move_dir` (stick inside the deadzone) stops the unit."""
+        throttle_q = min(max(int(throttle_q), 0), THROTTLE_ONE)
         if self._intent_log is not None:
             self._intent_log.record(self.tick, "set_move_dir",
                                     (int(unit_id), int(dx_q), int(dy_q),
-                                     int(speed_mode)))
+                                     throttle_q))
         u = self.get_unit(unit_id)
         if u is None:
             return
         u.live_move_dir = _intents.MoveDirIntent(int(dx_q), int(dy_q),
-                                                 int(speed_mode))
+                                                 throttle_q)
         self._possessed_ids.add(unit_id)
 
     def clear_move_dir(self, unit_id: int) -> None:
@@ -933,9 +943,11 @@ class Simulation:
             u.live_move_dir = None
 
     def set_aim(self, unit_id: int, dx_q: int, dy_q: int) -> None:
-        """AIM: hold a Q16.16 unit-vector facing for ``unit_id`` (§3c). The
-        sim turns it into ``Unit.facing`` via the deterministic integer atan2
-        kit at the next tick."""
+        """AIM: hold a Q16.16 unit-vector facing ``unit_id`` WANTS (§3c). Each
+        tick the sim turns ``Unit.facing`` toward it (the deterministic
+        integer atan2 kit) by at most the unit's turn rate, the shorter way,
+        reaching it exactly (G1p, ``simulation/turning.py``); a shot leaves
+        along the CURRENT facing."""
         if self._intent_log is not None:
             self._intent_log.record(self.tick, "set_aim",
                                     (int(unit_id), int(dx_q), int(dy_q)))
@@ -944,6 +956,24 @@ class Simulation:
             return
         u.live_aim = _intents.AimIntent(int(dx_q), int(dy_q))
         self._possessed_ids.add(unit_id)
+
+    def unit_turn_rate_q16(self, u) -> int:
+        """The turn-rate cap of unit ``u`` in Q16.16 radians per tick (G1p).
+        Read per unit: today every unit has the marine row's
+        (``[marine] turn_rate_deg_per_s``); later a stat (dexterity, armour
+        weight) -- a change here, never at the callers."""
+        return self._marine_turn_rate_q16
+
+    def facing_after_turn_q16(self, u, dx_q: int, dy_q: int) -> int:
+        """The facing (Q16.16 radians) ``u`` has after this tick's turn
+        toward the Q16.16 aim vector ``(dx_q, dy_q)``: THE turn law
+        (``turning.turn_toward_q16`` at :meth:`unit_turn_rate_q16`), also what
+        a controller reads to know where a shot it fires this tick will go
+        (the bots' trigger discipline). World Y runs down and facing is
+        math-style, hence ``-dy`` -- the convention of ``Unit.face_towards``."""
+        target = unit_fixed.atan2_q16(-int(dy_q), int(dx_q))
+        return turning.turn_toward_q16(unit_fixed.quantize_scalar(u.facing),
+                                       target, self.unit_turn_rate_q16(u))
 
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
@@ -1016,15 +1046,14 @@ class Simulation:
                     u.live_trigger = False
                 continue
 
-            # AIM -> facing (synced state via the deterministic atan2 kit; a
-            # zero vector leaves facing untouched).
+            # AIM -> facing, turned at most the unit's turn rate this tick
+            # (G1p; synced state through the deterministic atan2 kit, integer
+            # Q16 radians; a zero vector leaves facing untouched). A cap of
+            # half a turn or more reaches the aim at once: the pre-G1p law.
             aim = getattr(u, "live_aim", None)
             if aim is not None and (aim.dx_q != 0 or aim.dy_q != 0):
-                dx = _intents.dequantize(aim.dx_q)
-                dy = _intents.dequantize(aim.dy_q)
-                # World Y increases downward; facing is math-style (Y-up), so
-                # negate dy — the same convention as Unit.face_towards.
-                u.facing = unit_fixed.atan2_rad(-dy, dx)
+                u.facing = unit_fixed.dequantize_scalar(
+                    self.facing_after_turn_q16(u, aim.dx_q, aim.dy_q))
 
             # THROW -> spawn a grenade now (edge; latched until consumed).
             throw = getattr(u, "pending_throw", None)
@@ -2037,11 +2066,13 @@ class Simulation:
         SAME predicate A* uses (:meth:`GameMap.is_passable_block`), so direct
         move and A* agree on both speed and what blocks.
 
-        Speed: the unit's per-tile cadence is the WEGO base ticks-per-tile for
-        the intent's ``speed_mode`` (:func:`_ticks_per_tile`), scaled by the
-        footprint's area-average mobility exactly as the WEGO A* replay scales
-        it (:func:`movement.default_speed`) — a furniture tile is 2.5x slower
-        for both. The per-tick advance is ``1 / tick_cost`` tiles.
+        Speed (G1p): the walk (``ORDER_MOVE_ATTACK``) and sprint
+        (``ORDER_SPRINT``) base ticks-per-tile (:func:`_ticks_per_tile`), each
+        scaled by the footprint's area-average mobility exactly as the WEGO A*
+        replay scales it (:func:`movement.default_speed`) — a furniture tile
+        is 2.5x slower for both — and the intent's throttle between them
+        (:func:`movement.throttle_tiles_per_tick`, linear in tiles per second;
+        throttle 0 advances exactly ``1 / walk_cost`` tiles, as before).
 
         Determinism: the direction arrives as a Q16.16 unit vector; the only
         floats are the exact power-of-two dequantize and the position math on
@@ -2056,11 +2087,15 @@ class Simulation:
         fully boxed-in unit holds. Facing follows the move direction unless a
         live AIM overrides it (aim already set facing this tick).
         """
-        base_ticks = _ticks_per_tile(move_dir.speed_mode)
         fp = u.footprint
         samples = footprint_samples(self.gmap, u.tile_y, u.tile_x, fp)
-        tick_cost = default_speed(samples, base_ticks)   # ticks per tile
-        tiles_per_tick = 1.0 / tick_cost
+        # G1p: the throttle between the walk and the sprint cadence, each
+        # reduced by terrain and wind (ticks per tile), as ONE exact rational
+        # and one division: throttle 0 is the walk, ONE the sprint, bit for bit.
+        tiles_per_tick = throttle_tiles_per_tick(
+            default_speed(samples, _ticks_per_tile(ORDER_MOVE_ATTACK)),
+            default_speed(samples, _ticks_per_tile(ORDER_SPRINT)),
+            move_dir.throttle_q)
         dx = _intents.dequantize(move_dir.dx_q)
         dy = _intents.dequantize(move_dir.dy_q)
         step_x = dx * tiles_per_tick
@@ -2078,7 +2113,9 @@ class Simulation:
         # else fully blocked -> hold position this tick.
 
         # Facing: aim wins (already applied in _consume_direct_intents this
-        # tick); otherwise face the direction of travel.
+        # tick); otherwise face the direction of travel -- at once, as before
+        # G1p: the turn cap is the aim's law, and a unit that never named an
+        # aim (scripts, WEGO-era tests) keeps its old trajectory.
         if getattr(u, "live_aim", None) is None and (dx != 0.0 or dy != 0.0):
             u.face_towards(u.x + dx, u.y + dy)
 

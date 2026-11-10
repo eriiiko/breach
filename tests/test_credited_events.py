@@ -327,6 +327,11 @@ def test_a_flame_jet_credits_its_own_heat_to_the_sprayer():
     sprayer = _add(sim, "F", 3, 3, team=0)
     sprayer.weapon_id = "dragon_7"
     victim = _add(sim, "V", 8, 3, team=1)
+    # G1p: a facing turns at the turn-rate cap, and a jet started mid-turn
+    # owns the trigger until its burst ends; this test is about the credit,
+    # so the sprayer already faces its aim (east) -- the turn is
+    # test_turn_rate's.
+    sprayer.facing = 0.0
     sim.set_aim(sprayer.id, FP_ONE, 0)
     sim.set_trigger(sprayer.id, True)
     heat_hits = []

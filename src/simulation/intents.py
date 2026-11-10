@@ -21,9 +21,9 @@ math (``Unit.x``/``y``) or the deterministic integer trig kit
 The ``dx_q``/``dy_q`` pair of :class:`MoveDirIntent` / :class:`AimIntent` /
 :class:`ThrowIntent` is a Q16.16 **unit vector** (the control seam normalizes
 before quantizing), so a common scale factor never leaks a speed dependency
-into direction. ``speed_mode`` is one of the movement order-type ids
-(``ORDER_MOVE_ATTACK`` / ``ORDER_MOVE_COVER`` / ``ORDER_SPRINT``) so the
-continuous move branch reuses the exact same per-order base cadence WEGO uses.
+into direction. ``throttle_q`` (gameplay pack G1p) is a Q16 THROTTLE in
+``[0, ONE]`` between the walk and the sprint cadence WEGO uses
+(``ORDER_MOVE_ATTACK`` / ``ORDER_SPRINT``): continuous, never a speed-mode id.
 """
 from __future__ import annotations
 
@@ -49,22 +49,26 @@ class MoveDirIntent:
     """Move the possessed unit by velocity this tick (§3c, the new mechanic).
 
     ``dx_q``/``dy_q`` — Q16.16 unit-vector direction (normalized at the control
-    seam). ``speed_mode`` — a movement order-type id whose base ticks-per-tile
-    cadence the continuous branch scales by the footprint's area-average
-    mobility, exactly as the WEGO A* replay does.
+    seam). ``throttle_q`` — Q16 in ``[0, ONE]`` (clamped at
+    ``Simulation.set_move_dir``): 0 walks, ONE sprints, linear in tiles per
+    second between (``movement.throttle_tiles_per_tick``); both cadences are
+    scaled by the footprint's area-average mobility, exactly as the WEGO A*
+    replay scales its own.
     """
 
     dx_q: int
     dy_q: int
-    speed_mode: int
+    throttle_q: int
 
 
 @dataclass
 class AimIntent:
     """Continuous facing (§3c). ``dx_q``/``dy_q`` — Q16.16 unit-vector aim
-    direction. The sim turns it into ``Unit.facing`` through the deterministic
-    integer ``atan2`` kit (``unit_fixed.atan2_rad``), never ``math.atan2`` —
-    facing is synced state hashed by the lockstep digest."""
+    direction: the facing the unit WANTS. Each tick the sim turns
+    ``Unit.facing`` toward it by at most the unit's turn rate (G1p,
+    ``simulation/turning.py``) through the deterministic integer ``atan2``
+    kit (``unit_fixed.atan2_q16``), never ``math.atan2`` — facing is synced
+    state hashed by the lockstep digest."""
 
     dx_q: int
     dy_q: int

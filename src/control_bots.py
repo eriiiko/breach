@@ -17,7 +17,11 @@ The rules, one method each, evaluated per unit per tick:
 1. **Shoot on sight** (:meth:`_pick_target`) — the nearest enemy the unit
    itself sees through the sight oracle (``vision.state_for``), within its
    weapon's range, whose line of fire has no teammate in its first
-   ``friendly_line_tiles``; the unit stops, aims at it and holds the trigger.
+   ``friendly_line_tiles``; the unit stops, aims at it and pulls the trigger
+   once its facing after this tick's turn (the turn-rate cap, G1p:
+   ``Simulation.facing_after_turn_q16``) is within its weapon's
+   ``spread_deg`` of the aim (:meth:`_on_target`) -- a bot never sprays the
+   arc of a turn.
 2. **Grenade a group** (:meth:`_grenade_rule`) — two or more seen enemies
    within ``group_radius`` of each other, the group centre farther than
    ``danger_radius`` from the thrower and from every teammate, within the
@@ -30,7 +34,7 @@ The rules, one method each, evaluated per unit per tick:
    last known enemy position (any teammate's sighting), else to the enemy
    spawn room's centre; A* (``pathfinding.astar``, the only pathfinder)
    replanned every ``replan_ticks``, on arrival or on a new goal, followed
-   with MOVE_DIR at the walking speed mode.
+   with MOVE_DIR at throttle 0 (the walk, :data:`WALK_THROTTLE`).
 5. **Zombies** are enemies like any other unit of another team.
 
 Determinism. Every decision reads synced sim state only — integer centre
@@ -49,6 +53,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import math
+
 import numpy as np
 
 from config import CFG
@@ -56,14 +62,14 @@ from control_source import ControlSource, quantize_stick_direction
 from pathfinding import astar
 from simulation.factions import ZOMBIE_TEAM
 from simulation.intents import FP_ONE
-from simulation.orders import ORDER_MOVE_ATTACK
 from simulation.stats import effective_vitality
-from simulation.unit_fixed import quantize_scalar
+from simulation.turning import wrap_q16
+from simulation.unit_fixed import atan2_q16, quantize_scalar
 from simulation.weapons import get_tables as weapon_tables
 from simulation import vision
 
-#: The speed mode the bots walk at (the gamepad's walk).
-WALK_MODE = ORDER_MOVE_ATTACK
+#: The throttle the bots walk at (G1p: 0 = the walk cadence, today's speed).
+WALK_THROTTLE = 0
 #: A waypoint is reached within a quarter tile on both axes (Q16.16).
 ARRIVE_TOL_Q = FP_ONE // 4
 #: Bots steer for the MIDDLE of a waypoint tile (``tile + 1/2``): the sim
@@ -173,6 +179,7 @@ class BotTeam(ControlSource):
         self._state: dict = {}
         self._last_tick = None
         self._passable = None     # (tick, footprint, bool grid)
+        self._spread_q = {}       # weapon id -> spread_deg in Q16.16 rad
 
     # ------------------------------------------------------------------
     def handle_frame(self, sim, renderer=None) -> None:
@@ -206,9 +213,11 @@ class BotTeam(ControlSource):
         if target is not None:
             (tx, ty), (ux, uy) = _centre(target), _centre(u)
             aim = _direction_q(tx - ux, ty - uy)
+            fire = True
             if aim is not None:
                 sim.set_aim(u.id, *aim)
-            sim.set_trigger(u.id, True)
+                fire = self._on_target(sim, u, aim)
+            sim.set_trigger(u.id, fire)
         else:
             if move_dir is not None:
                 sim.set_aim(u.id, *move_dir)  # look where it walks
@@ -236,6 +245,25 @@ class BotTeam(ControlSource):
                 continue
             best = (d2, e)
         return None if best is None else best[1]
+
+    def _on_target(self, sim, u, aim) -> bool:
+        """Will ``u``'s shot this tick leave within its weapon's
+        ``spread_deg`` of ``aim``? Reads the facing the sim's turn law gives
+        it this tick (``Simulation.facing_after_turn_q16``), so with a turn
+        cap of half a turn a bot fires exactly as before the cap (G1p)."""
+        after = sim.facing_after_turn_q16(u, aim[0], aim[1])
+        want = atan2_q16(-aim[1], aim[0])
+        return abs(wrap_q16(want - after)) <= self._weapon_spread_q(u)
+
+    def _weapon_spread_q(self, u) -> int:
+        weapon_id = getattr(u, "weapon_id", "")
+        q = self._spread_q.get(weapon_id)
+        if q is None:
+            deg = (float(weapon_tables().weapons.by_name[weapon_id].spread_deg)
+                   if weapon_id else 0.0)
+            q = quantize_scalar(math.radians(deg))
+            self._spread_q[weapon_id] = q
+        return q
 
     def _teammate_on_line(self, u, target, mine) -> bool:
         """Is a teammate's footprint on the segment shooter -> target within
@@ -404,7 +432,7 @@ class BotTeam(ControlSource):
         if d is None:
             sim.clear_move_dir(u.id)
             return None
-        sim.set_move_dir(u.id, d[0], d[1], WALK_MODE)
+        sim.set_move_dir(u.id, d[0], d[1], WALK_THROTTLE)
         return d
 
     def _plan(self, sim, u, goal) -> list:
@@ -457,4 +485,4 @@ class BotTeam(ControlSource):
         return tuple(placement_cells(room, 1)[0])
 
 
-__all__ = ["BotTeam", "BotSettings", "bot_settings", "WALK_MODE"]
+__all__ = ["BotTeam", "BotSettings", "bot_settings", "WALK_THROTTLE"]

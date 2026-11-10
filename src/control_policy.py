@@ -25,7 +25,8 @@ and the entry points' own parameter names (:func:`action_schema`):
   ``int?`` as the int or :data:`NONE_Q` (int32 min) for ``None``.
 
 So ``set_move_dir.dx_q``, ``set_move_dir.dy_q`` (a Q16.16 unit vector),
-``set_move_dir.speed_mode``, ``clear_move_dir`` (a flag DISTINCT from a zero
+``set_move_dir.throttle_q`` (Q16 in [0, ONE]: 0 walks, ONE sprints -- G1p;
+the sim clamps it), ``clear_move_dir`` (a flag DISTINCT from a zero
 vector: a zero vector holds a live, motionless move intent), ``set_aim.dx_q``,
 ``set_aim.dy_q``, ``set_trigger.held``, ``throw_grenade_intent.dx_q`` /
 ``.dy_q`` / ``.fuse_seconds`` / ``.reach_q``, ``use_intent``.
@@ -302,7 +303,7 @@ class AgentPolicy(ControlSource):
 #: The random driver's placeholder domain: per decimation step a unit clears
 #: its move with p_clear, holds the trigger with p_trigger, and issues each
 #: latch kind (throw, use) with p_latch; every direction is a uniform random
-#: unit vector, ``speed_mode`` uniform over the three movement order ids, the
+#: unit vector, ``throttle_q`` uniform in [0, ONE] (G1p), the
 #: fuse uniform in [fuse_lo_s, fuse_hi_s], the reach uniform in
 #: [0, reach_hi_tiles] (the sim clamps it to the hand grenade's range).
 RANDOM_DOMAIN = dict(p_clear=0.25, p_trigger=0.5, p_latch=0.05,
@@ -358,8 +359,8 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
         elif c.type == "int?":
             rows[:, i] = rng.integers(0, int(d["reach_hi_tiles"]) * FP_ONE + 1,
                                       size=n)
-        elif c.name.endswith(".speed_mode"):
-            rows[:, i] = rng.integers(0, 3, size=n)
+        elif c.name.endswith(".throttle_q"):
+            rows[:, i] = rng.integers(0, FP_ONE + 1, size=n)
         else:
             raise RuntimeError(f"random_action_rows: no domain for column "
                                f"{c.name!r} ({c.type})")

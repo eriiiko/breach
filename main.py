@@ -29,6 +29,7 @@ Run:
     C:/Users/steen/anaconda3/python.exe main.py
     C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
     C:/Users/steen/anaconda3/python.exe main.py --control wego       # explicit default
+    C:/Users/steen/anaconda3/python.exe main.py --control direct     # play one marine: pad or keyboard + mouse (G1p)
     C:/Users/steen/anaconda3/python.exe main.py --level smoke_light_studio --control gamepad --warp 4.5   # frozen frame
     C:/Users/steen/anaconda3/python.exe main.py --replay m.replay.gz --seek 600   # watch a recorded match (#127)
 """
@@ -151,7 +152,7 @@ def _parse_control_flag() -> str:
     control_modularity design §3b: the ``ControlSource`` seam). Defaults to
     ``"wego"`` — today's WEGO planning input, unchanged behavior. See
     ``control_source.create_control_source`` for the set of valid names
-    (only ``"wego"`` exists until P3 adds ``GamepadDirect``).
+    (``wego``, ``direct`` and its alias ``gamepad``, ``onephase``, ``match``).
     """
     if "--control" not in sys.argv:
         return "wego"
@@ -607,6 +608,22 @@ def main():
             raise SystemExit(f"config.toml: {e}")
         print(f"  camera: {follow.target} (C cycles action -> units -> "
               f"free; a pan frees it)")
+    # G1p: the camera of direct control -- [display] camera_mode, the follow
+    # camera LOCKED on the possessed marine ("centred": north-up, the marine
+    # in the centre), never camera code in the control source.
+    possessed_cam = None
+    if control_source.camera_mode is not None:
+        from renderer.follow_camera import CENTRED, FollowCamera, follow_settings
+        if control_source.camera_mode == CENTRED:
+            try:
+                possessed_cam = FollowCamera(follow_settings(CFG))
+            except ValueError as e:
+                raise SystemExit(f"config.toml: {e}")
+        print(f"  DIRECT: camera {control_source.camera_mode} | keys "
+              + " ".join(f"{a}={b.name}" for a, b in
+                         control_source.keys.bindings.items())
+              + " | pad: left stick move (deflection = speed), right stick "
+              "aim, RT fire")
     if replay is not None:
         replay.on_seek_tick = (
             lambda s, target: _draw_seek_overlay(s.tick, target,
@@ -772,11 +789,18 @@ def main():
             # through under --debug; zoom is a view control, not a diagnostic,
             # so it stays live either way — with Q/E released, since Q is the
             # weapon swap there.
-            if control_source.wants_renderer_toggles:
+            # G1p: a scheme that owns the camera keys (direct control, whose
+            # movement keys are data) keeps the diagnostic toggles but not the
+            # Q/E zoom or the WASD / arrow pan.
+            owns_keys = control_source.owns_camera_keys
+            if control_source.wants_renderer_toggles and not owns_keys:
                 renderer.poll_toggles()
+            elif control_source.wants_renderer_toggles:
+                renderer.poll_debug_toggles()
+                renderer.poll_camera_zoom(allow_qe=False)
             else:
                 renderer.poll_camera_zoom(allow_qe=False)
-            panned = renderer.update_camera(dt)
+            panned = False if owns_keys else renderer.update_camera(dt)
             if follow is not None:
                 if panned:
                     follow.manual_pan()
@@ -877,6 +901,9 @@ def main():
             # #128: the follow camera moves after the ticks, before the draw.
             if follow is not None:
                 follow.apply(renderer.camera, sim.units, dt)
+            if possessed_cam is not None:
+                possessed_cam.lock(control_source.selected_unit_id)
+                possessed_cam.apply(renderer.camera, sim.units, dt)
 
             # ----- Upload + draw -----
             # alpha = the sub-tick fraction of the accumulator (graphics G3
@@ -964,6 +991,17 @@ def main():
             print(f"  camera at centre ({cam.pos_tile_x + 0.5 * w:.2f}, "
                   f"{cam.pos_tile_y + 0.5 * h:.2f}) pos ({cam.pos_tile_x:.2f}, "
                   f"{cam.pos_tile_y:.2f}) {follow.hud_line(sim.units)}")
+        if possessed_cam is not None:
+            u = sim.get_unit(control_source.selected_unit_id) \
+                if control_source.selected_unit_id is not None else None
+            cam = renderer.camera
+            w, h = cam.visible_tiles()
+            # the G1p E2E reads this line (tests/test_control_direct_e2e.py)
+            print(f"  direct: device {control_source.active}, unit "
+                  + (f"{u.name} at ({u.x:.4f}, {u.y:.4f}) facing "
+                     f"{u.facing:.4f}" if u is not None else "none")
+                  + f", camera centre ({cam.pos_tile_x + 0.5 * w:.2f}, "
+                  f"{cam.pos_tile_y + 0.5 * h:.2f})")
         renderer.shutdown()
 
 

@@ -187,7 +187,7 @@ class _ThrowerControl(ControlSource):
             if sim.tick % 25 == 3:
                 sim.use_intent(u.id)
             if sim.tick % 9 == 0:
-                sim.set_move_dir(u.id, dx, dy, 1)
+                sim.set_move_dir(u.id, dx, dy, 32768)   # half throttle
             elif sim.tick % 9 == 5:
                 sim.clear_move_dir(u.id)
 

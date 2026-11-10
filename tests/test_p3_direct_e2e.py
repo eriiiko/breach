@@ -78,7 +78,17 @@ def _dummy_enemy(sim, x, y):
 
 
 def _aim_east(sim, uid):
+    """Aim +X (facing 0, east) and let the unit TURN there before the caller
+    pulls the trigger: since G1p a facing turns at the turn-rate cap (a
+    spawned unit faces north, a quarter turn away), and these tests are about
+    where a shot goes along the facing, not about the turn."""
     sim.set_aim(uid, FP_ONE, 0)     # +X unit vector -> facing 0 (east)
+    u = sim.get_unit(uid)
+    for _ in range(64):
+        if u.facing == 0.0:
+            return
+        sim.step()
+    raise AssertionError(f"the unit never turned east (facing {u.facing})")
 
 
 # ===========================================================================
@@ -128,14 +138,13 @@ def _scripted_run():
     # the spawn HP, not against the state after the first tick's shots (#119:
     # at full, non-zombie damage the whole effect lands on tick 0).
     trace = [_digest(sim)]
-    from simulation.orders import ORDER_MOVE_ATTACK
     for t in range(50):
         ax, ay = np.cos(t * 0.25), np.sin(t * 0.25)
         mdx, mdy, mmag = quantize_stick_direction(float(ax), float(ay))
         if mmag == 0:
             sim.clear_move_dir(uid)
         else:
-            sim.set_move_dir(uid, mdx, mdy, ORDER_MOVE_ATTACK)
+            sim.set_move_dir(uid, mdx, mdy, 0)  # throttle 0: the walk
         sim.set_aim(uid, mdx, mdy)
         sim.set_trigger(uid, t % 3 == 0)
         sim.step()

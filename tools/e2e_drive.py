@@ -17,6 +17,13 @@ Flags (this tool's own):
                       M, F11, SPACE, I, ...)
     --shot PATH@F     save the frame-F picture to PATH (.png; repeatable),
                       read back just before that frame's end_drawing
+    --hold KEY@A-B    report KEY as held DOWN on frames A..B inclusive (and
+                      pressed on frame A; repeatable). KEY is a KeyboardKey
+                      name as for --press, or MOUSE_LEFT / MOUSE_RIGHT /
+                      MOUSE_MIDDLE (a mouse button). Direct control's
+                      movement reads held keys (gameplay pack G1p)
+    --mouse X,Y@F     from frame F on, the mouse is at screen pixel (X, Y)
+                      (repeatable; the last one at or before a frame wins)
     --level NAME      the level (passed through to main.py)
     --profile         time the loop and print a report after the run: frame ms
                       and fps, sim steps per frame, the sim's pace, and the
@@ -67,11 +74,22 @@ _PROFILE_FLAGS = ("--profile", "--profile-skip", "--glfinish", "--profile-inner"
 
 
 def parse_args(argv):
-    """Split argv into (frames, {frame: [key names]}, main.py argv). Pure --
-    the tool's own flags are consumed, everything else passes through."""
+    """Split argv into (frames, {frame: [key names]}, {frame: [shot paths]},
+    main.py argv). Pure -- the tool's own flags are consumed, everything else
+    passes through. (The holds and mouse moves: :func:`parse_args_full`.)"""
+    frames, presses, shots, _holds, _mouse, passthrough = parse_args_full(argv)
+    return frames, presses, shots, passthrough
+
+
+def parse_args_full(argv):
+    """:func:`parse_args` plus the scripted held keys ``[(key name, first,
+    last)]`` and mouse moves ``[(frame, x, y)]`` (G1p): (frames, presses,
+    shots, holds, mouse, main.py argv)."""
     frames = DEFAULT_FRAMES
     presses = {}
     shots = {}
+    holds = []
+    mouse = []
     passthrough = []
     i = 0
     while i < len(argv):
@@ -88,6 +106,24 @@ def parse_args(argv):
             presses.setdefault(int(at), []).append(key.upper())
             i += 2
             continue
+        if a == "--hold":
+            spec = argv[i + 1]
+            key, _, span = spec.partition("@")
+            lo, _, hi = span.partition("-")
+            if not key or not lo or not hi:
+                raise SystemExit(f"--hold wants KEY@FIRST-LAST, got {spec!r}")
+            holds.append((key.upper(), int(lo), int(hi)))
+            i += 2
+            continue
+        if a == "--mouse":
+            spec = argv[i + 1]
+            xy, _, at = spec.partition("@")
+            x, _, y = xy.partition(",")
+            if not x or not y or not at:
+                raise SystemExit(f"--mouse wants X,Y@FRAME, got {spec!r}")
+            mouse.append((int(at), int(x), int(y)))
+            i += 2
+            continue
         if a == "--shot":
             spec = argv[i + 1]
             path, _, at = spec.rpartition("@")
@@ -102,7 +138,7 @@ def parse_args(argv):
         raise SystemExit(f"--frames must be >= 1, got {frames}")
     if "--windowed" not in passthrough:
         passthrough.append("--windowed")
-    return frames, presses, shots, passthrough
+    return frames, presses, shots, holds, sorted(mouse), passthrough
 
 
 def main(argv=None) -> int:
@@ -113,7 +149,7 @@ def main(argv=None) -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import frame_profile
         profile_opts, argv = frame_profile.split_profile_args(argv)
-    frames, presses, shots, passthrough = parse_args(argv)
+    frames, presses, shots, holds, mouse, passthrough = parse_args_full(argv)
 
     os.chdir(ROOT)
     import pyray as rl
@@ -129,6 +165,21 @@ def main(argv=None) -> int:
                 raise SystemExit(f"--press: unknown key {name!r} (a raylib "
                                  f"KeyboardKey name without KEY_, e.g. M, F11)")
             scripted.setdefault(at, set()).add(code)
+    # --hold: keyboard keys -> held_keys, mouse buttons -> held_buttons, each
+    # {code: [(first, last)]}; a hold's first frame is also a press.
+    mouse_buttons = {"MOUSE_LEFT": 0, "MOUSE_RIGHT": 1, "MOUSE_MIDDLE": 2}
+    held_keys, held_buttons = {}, {}
+    for name, lo, hi in holds:
+        if name in mouse_buttons:
+            held_buttons.setdefault(mouse_buttons[name], []).append((lo, hi))
+            continue
+        try:
+            code = int(getattr(rl.KeyboardKey, f"KEY_{name}"))
+        except AttributeError:
+            raise SystemExit(f"--hold: unknown key {name!r} (a raylib "
+                             f"KeyboardKey name without KEY_, or MOUSE_LEFT / "
+                             f"MOUSE_RIGHT / MOUSE_MIDDLE)")
+        held_keys.setdefault(code, []).append((lo, hi))
 
     prof = None
     if profile_opts is not None:
@@ -152,12 +203,52 @@ def main(argv=None) -> int:
             print(f"[e2e_drive] frame {frame[0]}", flush=True)
         return frame[0] > frames or orig_close()
 
+    def _in(spans, f):
+        return any(lo <= f <= hi for lo, hi in spans)
+
     def _is_key_pressed(key):
         if int(key) in scripted.get(frame[0], ()):
             print(f"[e2e_drive] frame {frame[0]}: pressing "
                   f"{rl.KeyboardKey(int(key)).name}", flush=True)
             return True
+        if any(lo == frame[0] for lo, _ in held_keys.get(int(key), ())):
+            return True
         return orig_pressed(key)
+
+    orig_down = rl.is_key_down
+    orig_btn_down = rl.is_mouse_button_down
+    orig_btn_pressed = rl.is_mouse_button_pressed
+    orig_mx, orig_my = rl.get_mouse_x, rl.get_mouse_y
+
+    def _is_key_down(key):
+        if _in(held_keys.get(int(key), ()), frame[0]):
+            return True
+        return orig_down(key)
+
+    def _is_mouse_button_down(button):
+        if _in(held_buttons.get(int(button), ()), frame[0]):
+            return True
+        return orig_btn_down(button)
+
+    def _is_mouse_button_pressed(button):
+        if any(lo == frame[0] for lo, _ in held_buttons.get(int(button), ())):
+            return True
+        return orig_btn_pressed(button)
+
+    def _mouse_at():
+        at = None
+        for f, x, y in mouse:
+            if f <= frame[0]:
+                at = (x, y)
+        return at
+
+    def _get_mouse_x():
+        at = _mouse_at()
+        return orig_mx() if at is None else at[0]
+
+    def _get_mouse_y():
+        at = _mouse_at()
+        return orig_my() if at is None else at[1]
 
     orig_end_drawing = rl.end_drawing
 
@@ -177,10 +268,20 @@ def main(argv=None) -> int:
     rl.window_should_close = _should_close
     rl.is_key_pressed = _is_key_pressed
     rl.end_drawing = _end_drawing
+    if held_keys:
+        rl.is_key_down = _is_key_down
+    if held_buttons:
+        rl.is_mouse_button_down = _is_mouse_button_down
+        rl.is_mouse_button_pressed = _is_mouse_button_pressed
+    if mouse:
+        rl.get_mouse_x = _get_mouse_x
+        rl.get_mouse_y = _get_mouse_y
 
     sys.argv = ["main.py"] + passthrough
     print(f"[e2e_drive] main.py {' '.join(passthrough)} -- {frames} frames, "
-          f"presses {dict(sorted(presses.items()))}", flush=True)
+          f"presses {dict(sorted(presses.items()))}"
+          + (f", holds {holds}" if holds else "")
+          + (f", mouse {mouse}" if mouse else ""), flush=True)
     try:
         runpy.run_path(str(ROOT / "main.py"), run_name="__main__")
     except SystemExit as exc:

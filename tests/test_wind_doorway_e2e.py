@@ -97,7 +97,6 @@ def _scene():
 def test_a_squad_at_a_venting_door_is_not_moved_and_a_walker_keeps_cadence():
     from control_source import quantize_stick_direction
     from config import CFG
-    from simulation.orders import ORDER_MOVE_ATTACK
 
     sim, squad, walker = _scene()
     start = {u.id: (u.x, u.y) for u in squad}
@@ -106,7 +105,7 @@ def test_a_squad_at_a_venting_door_is_not_moved_and_a_walker_keeps_cadence():
     x0 = walker.x
     for t in range(VENT_TICKS):
         wx, wy = walker.x, walker.y
-        sim.set_move_dir(walker.id, dx_q, dy_q, ORDER_MOVE_ATTACK)
+        sim.set_move_dir(walker.id, dx_q, dy_q, 0)  # throttle 0: the walk
         sim.step()
         for u in squad:
             assert (u.x, u.y) == start[u.id], (
