@@ -74,7 +74,7 @@ SLOT_WRAPS = (
     ("simulation.physics_runner", "PhysicsRunner.step", SLOT7),
     ("simulation.gamemap", "GameMap.find_burst_walls", "9b over-pressure walls"),
     ("simulation.simulation", "apply_environmental_damage", "9c unit heat damage"),
-    ("simulation.simulation", "apply_wind_knockdown", "9c2 wind on units"),
+    ("simulation.simulation", "apply_wind_force", "9c2 wind on units"),
     ("simulation.simulation", "apply_teargas_blind", "9c3 gas rows"),
     ("simulation.simulation", "apply_poison_dose", "9c3 gas rows"),
     ("simulation.simulation", "apply_temperature_ignition", "9d ignition"),

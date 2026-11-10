@@ -95,11 +95,12 @@ class HoverReadout:
     wind_vy: float = 0.0          # dequantized wind_y, m/s
     # #140: what this tile's air does to a body standing on it -- the wind
     # load W through THE read (GameMap.footprint_wind_load, footprint 1), q in
-    # Pa and the law's cadence scale (exchange.wind_scale_q16, 1 = calm); nan
-    # without a GameMap that carries the read.
+    # Pa (exchange.wind_q_pa) and, since G5p-b, the force it puts on a
+    # standing body, q * [impulse] drag_area_m2 in N (the unit impulse law's
+    # input); nan without a GameMap that carries the read.
     wind_w: int = 0
     wind_q_pa: float = float("nan")
-    wind_scale: float = float("nan")
+    wind_force_n: float = float("nan")
     water_depth: float = 0.0      # dequantized standing-water depth, metres
     wall_hp: float = 0.0          # dequantized structural HP (the fuel source)
     fuel_frac: float = 0.0        # F = clamp01(wall_hp / this tile's full hp)
@@ -183,15 +184,15 @@ def pack_hover_readout(gmap, tx: int, ty: int,
     pressure = _atmo_fx.dequantize(gmap.atmosphere[ty, tx]).item()
     wind_vx = _atmo_fx.dequantize(gmap.wind_x[ty, tx]).item()
     wind_vy = _atmo_fx.dequantize(gmap.wind_y[ty, tx]).item()
-    wind_w, wind_q_pa, wind_scale = 0, float("nan"), float("nan")
+    wind_w, wind_q_pa, wind_force_n = 0, float("nan"), float("nan")
     if (hasattr(gmap, "footprint_wind_load")
             and hasattr(getattr(gmap, "materials", None), "density")):
         from simulation import exchange as _exchange
-        _wst = _exchange.gmap_wind_settings(gmap)
+        from simulation import unit_impulse as _unit_impulse
         wind_w = int(gmap.footprint_wind_load(ty, tx, 1))
-        wind_q_pa = _wst.rho_ref * wind_w / float(2 * _gas_fx.BULK_ONE * _atmo_fx.FP_ONE)
-        wind_scale = (_exchange.wind_scale_q16(wind_w, _wst)
-                      / float(_exchange.WIND_ONE))
+        wind_q_pa = _exchange.wind_q_pa(gmap, wind_w)
+        wind_force_n = wind_q_pa * float(
+            _unit_impulse.table_for(gmap).settings.drag_area_m2)
 
     # Bulk N — the Dalton N_total the EOS derives pressure from: o2 +
     # inert_n2, the two CONSERVATIVE bulk gas planes (gamemap._gas_bulk_n_raw
@@ -316,14 +317,14 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         f"light: {light_rgb[0]:8.5f} {light_rgb[1]:8.5f} {light_rgb[2]:8.5f} lu",
         # #140: what this tile's air does to a body (appended: the panel's
         # earlier rows keep their places)
-        f"wind q: {wind_q_pa:8.1f} Pa  W {wind_w:.3e}  walk x{wind_scale:4.2f}",
+        f"wind q: {wind_q_pa:8.1f} Pa  W {wind_w:.3e}  F {wind_force_n:6.1f} N",
     ]
     return HoverReadout(tx=int(tx), ty=int(ty), material=material,
                         t_game=t_game, kelvin=kelvin, fire=fire, gases=gases,
                         pressure=pressure, bulk_n=bulk_n,
                         wind_vx=wind_vx, wind_vy=wind_vy,
                         wind_w=wind_w, wind_q_pa=wind_q_pa,
-                        wind_scale=wind_scale,
+                        wind_force_n=wind_force_n,
                         water_depth=water_depth, wall_hp=wall_hp,
                         fuel_frac=fuel_frac, gas_energy=gas_energy,
                         phi=phi, atten_a=atten_a, atten_d=atten_d,

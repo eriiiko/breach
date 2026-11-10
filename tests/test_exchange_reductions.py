@@ -311,7 +311,7 @@ def test_coupling_table_responses_are_the_shipped_implementations():
     table = exchange.COUPLING_TABLE
     assert _row(table, "heat").response is exchange.apply_environmental_damage
     assert _row(table, "wave_p").response is exchange.apply_blast_damage
-    assert _row(table, "wind").response is exchange.apply_wind_knockdown
+    assert _row(table, "wind").response is exchange.apply_wind_force
     assert _row(table, "gas[teargas]").response is exchange.apply_teargas_blind
     assert _row(table, "gas[poison]").response is exchange.apply_poison_dose
     assert combat.apply_environmental_damage is exchange.apply_environmental_damage

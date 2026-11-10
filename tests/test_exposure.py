@@ -547,14 +547,29 @@ def test_a_unit_with_no_exposure_records_as_before_and_one_with_some_does_not():
 #: (was field 226202de75e88edd60e00666a884a9be860e5d5981f9d183e251edf1782fca89,
 #: tick f88fb88162203c4dc219f31d57a204be1d3d912a45da8e8eed3faa9f6e759121,
 #: units 262cc298e43a73ca7e6b668e4419008cdd4b7a8436da0ae0827accd8e78c0863)
+#: RE-MEASURED at #183 G5p-b (2026-11-10, the wind and the blast onto the
+#: unit impulse law: the dynamic pressure at each footprint is a force
+#: q * drag_area through unit_impulse.add_wind; #140's cadence scale and
+#: bespoke knockdown DELETED in the same commit).
+#: The same dormant-exposure run. Outcome and ticks UNCHANGED (win 0 at
+#: 266); all three digests and the unit stream move.
+#: SOLE CAUSE, verified on the same build: the pre-G5p-b tree (0b57fc6e)
+#: with #140's wind law off (wind_q_slow_pa / wind_q_fall_pa = 1e15 /
+#: 2e15) and this tree with the wind's input off ([impulse]
+#: wind_push_mult = 0) give exactly the same values (win 0 at 266, 7ec78192 / a53745f5 / ecc897c9) --
+#: replacing the law is the whole change.
+#: (was field e54b96fa081f8d6588c6a309d23bcfeea99c17eff5d4323e1192308
+#: 99aabcb5e, tick 7b1fdf8920e54d262717284ab693dd6eb22526464aeec0b11b6
+#: 10428573cb6be, units 5c6236e4261b2c897c9787389b4938490af60ce74a242bf
+#: e461fa5712ee3788d)
 _PRE_G4P_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=266,
-    field_digest="e54b96fa081f8d6588c6a309d23bcfee"
-                 "a99c17eff5d4323e119230899aabcb5e",
-    tick_digest="7b1fdf8920e54d262717284ab693dd6e"
-                "b22526464aeec0b11b610428573cb6be",
-    unit_stream="5c6236e4261b2c897c9787389b493849"
-                "0af60ce74a242bfe461fa5712ee3788d")
+    field_digest="8f63758be630e4af3dd834777cd4f28a"
+                 "bdb17924628ee1fbf0e27c53da5f733c",
+    tick_digest="da215754064fd37cc5c6f7b6a5e48e8e"
+                "953665a316bf0e29ab7a548f89bed24e",
+    unit_stream="977423cbbc572f03ad30183d6956713a"
+                "86b4eae2261524be65912ec6da21e2d2")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

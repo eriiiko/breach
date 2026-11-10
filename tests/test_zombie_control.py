@@ -134,6 +134,10 @@ _PRE_122_BOX = dict(
     # test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s holds that.
     # (was units a8f571251bbb5cc7572f7c4711dc1a3186b67dcdfd4c42837dacfcaeff1f
     #  efa0)
+    # #183 G5p-b (2026-11-10, the wind and the blast onto the unit impulse
+    # law): UNCHANGED, the calm match -- no wind at any unit here is a force
+    # the law answers (no frag, no vent), and the pre-G5p-b tree with #140's
+    # wind law off gives the same values too.
     outcome="win", team=1, ticks=130,
     field_digest="a672c7249e18d0eebbb8e398b696bd9c"
                  "3d34417445f66c3cab498ec7cd783ab1",
@@ -236,7 +240,7 @@ _PRE_122_SHIP_DEMO = dict(
     #  bd6175; tick e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c90
     #  99e53076; units 6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522
     #  385e7d1cfe)
-    outcome="win", team=0, ticks=265,
+    outcome="win", team=0, ticks=266,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -261,7 +265,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="ab499f298a66d2dfe4b0b3134b67ebaa663e4c95d7b7a5791954eb90eb8df573",
+    field_digest="1879b8965a72968467a9cfdb721d92982ab641cf1a86d5611fe02a733aa13cac",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -349,8 +353,32 @@ _PRE_122_SHIP_DEMO = dict(
     #  tick 2ca1d895b11749e6b16f281bdf976379e52077e1d29929284683648f8369c6a4,
     #  units ec0dad03ce0b0ef6389589f50b24728dc074a5f81a9340549b44d86e3338fd35;
     #  the box is UNCHANGED: its idle marines never fire)
-    tick_digest="2620c39692177c6fe900df314650de1bf9b932bd1667224e5145c9a73068992b",
-    unit_stream="badb4a7984486a23519cdbbc7b85b72b8b8fb2953e3a02811ec8b7083fb1c922")
+    # #183 G5p-b re-pin (2026-11-10, the wind and the blast onto the unit impulse law: the dynamic
+    # pressure at each footprint is a force q * drag_area (0.9 m2
+    # standing, 0.15 prone) through unit_impulse.add_wind; #140's
+    # cadence scale and bespoke knockdown DELETED in the same commit).
+    # Outcome and team UNCHANGED (win 0); ticks 265 -> 266; all three
+    # digests and the unit stream move.
+    # SOLE CAUSE, verified on the same build: the pre-G5p-b tree
+    # (0b57fc6e) with #140's wind law switched off (wind_q_slow_pa /
+    # wind_q_fall_pa = 1e15 / 2e15) and this tree with the wind's
+    # input off ([impulse] wind_push_mult = 0) give exactly the same
+    # values (win 0 at 266, b16e9f79 / 14a6c85a / 79cad822) -- replacing the law is the whole change.
+    # Per-tick trace (shipped vs wind off): identical through tick 217;
+    # every push lands within 13 ticks of the frags of ticks 218-221 (pv
+    # non-zero on units 3, 4, 6, 7, 10, 11 in ticks 222-233, at most 0.39
+    # tile, 13 cm), and the law floors one unit (3, ticks 222-230) where
+    # #140's law floored six (3, 4, 6, 7, 10, 11) on q alone: a blast's
+    # one-tick wind is a small impulse. With zombie 10 left standing, it
+    # bites unit 4 on tick 222 (the old law had it down); the match is then
+    # won by team 0 one tick later. Measured on the CPU, CUDA and resident
+    # backends alike (tools/match_pin_check.py).
+    # (was ticks 265; field ab499f298a66d2dfe4b0b3134b67ebaa663e4c95d7b7a5
+    #  791954eb90eb8df573; tick 2620c39692177c6fe900df314650de1bf9b932bd16
+    #  67224e5145c9a73068992b; units badb4a7984486a23519cdbbc7b85b72b8b8fb2
+    #  953e3a02811ec8b7083fb1c922)
+    tick_digest="3bd9fb40d7a71327c4e8b00217862c3c119d110d23e98db53f0be02e74975d8c",
+    unit_stream="3262ff82f251fe64443ab17c59be0ad6680f30f6308e3e0ad34ff32c20631cd9")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -371,7 +399,8 @@ def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
     at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
     G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure, then at
-    G5p-a1's turning law: win team 0 at tick 265) with the same
+    G5p-a1's turning law, then at G5p-b's wind: win team 0 at tick 266)
+    with the same
     tick_digest. Breaks like the box test, on
     the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))

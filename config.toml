@@ -4520,10 +4520,11 @@ bullet_damage_multiplier = 0.25
 # (test_unit_heat_damage / test_fire_heat_source) read the same key as the
 # expected zombie/marine damage ratio, so sim + tests move together.
 fire_damage_multiplier = 4.0
-# stability: knockdown susceptibility (mechanics/06 §4) — since #140 the wind
-# knocks a unit down when its footprint's wind load reaches
-# [exchange] wind_q_fall_pa * stability^2 (stability scales the knockdown WIND
-# SPEED; q goes as v^2), so LOWER = topples easier. 0.9 = shamblers go down at
+# stability: knockdown susceptibility (mechanics/06 §4) — since G5p the unit
+# impulse law falls a unit when its effort (the force on its feet over its
+# hold) reaches stability^2 or its pushed speed its fall limit x stability
+# (for a steady wind: stability scales the knockdown WIND SPEED; q goes as
+# v^2), so LOWER = topples easier. 0.9 = shamblers go down at
 # 0.9x the wind speed a marine does (feel: the outer blast ring bowls the horde
 # over while the marines stagger). The ONE non-physical knockdown knob
 # (resist tables mitigate damage only). STANDARD VALUE placeholder
@@ -4609,12 +4610,27 @@ t_react_seconds = 0.30       # the reaction delay after a push that overflows th
 n_rec_ticks = 24             # the recovery horizon: a push the margin left cannot work off in this many ticks floors the unit
 yaw_inertia_kgm2 = 3.0       # a person's yaw moment of inertia (the rotation check)
 r_body_m = 0.25              # every lever arm is clamped to the body radius
+# The WIND on a body (G5p-b; the #140 read, GameMap.footprint_wind): each tick
+# at Simulation.step 9c2 the dynamic pressure q = 1/2 rho v^2 at the
+# footprint's highest-q gas tile becomes the force q * drag_area along that
+# tile's wind, handed to the unit as the impulse q * drag_area / tps -- the
+# blast's wind included (a detonation pushes the units its wind reaches,
+# nothing else, so nothing is counted twice). With k_hold and k_slow above the
+# reference marine (100 kg) is slowed from 39 Pa and floored at 245 Pa, the
+# #140 bands; a lighter body sooner. Standing area 0.9 m2 (kitted marine, the
+# wind note), prone 0.15 (an estimate: no measurement found); one value for
+# every unit in v1 (PLACEHOLDER: a per-row area later). A prone unit is kept
+# down while the wind it WOULD take standing floors it (critique A, M7).
+drag_area_m2 = 0.9
+drag_area_prone_m2 = 0.15
 # Declared experiment dials (RULED 2026-11-10: real momentum, all 1.0). At 0
 # the input is off: bullet_push_mult the hit's push, bullet_twist_mult its
-# spin, recoil_mult the shooter's recoil.
+# spin, recoil_mult the shooter's recoil, wind_push_mult the wind's force
+# (and with it the blast's).
 bullet_push_mult = 1.0
 bullet_twist_mult = 1.0
 recoil_mult = 1.0
+wind_push_mult = 1.0
 zombie_hold_mult = 1.0       # the zombie state's hold (RULED 1.0: a copy of the unit it infected)
 
 [impulse.shove]
@@ -4814,26 +4830,16 @@ environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec
 # push_max_tile_per_tick, push_grad_floor_atm, knockdown_dv_threshold) is
 # RETIRED -- a pressure gradient is not what the air does to a body, and its
 # linear drift shoved a squad out of a venting doorway for ~28 s. The row at
-# Simulation.step 9c2 is now the wind law below (exchange.apply_wind_knockdown).
+# Simulation.step 9c2 is the wind row (exchange.apply_wind_force).
+#
+# 2026-11-10 (#183 G5p-b): the #140 wind law's own bands (wind_q_slow_pa 39,
+# wind_q_fall_pa 245, wind_slow_min_scale 0.5: a cadence scale and a bespoke
+# knockdown) are RETIRED -- the wind is a FORCE on the unit impulse law
+# ([impulse] drag_area_m2 above), whose hold (k_hold) and slow edge (k_slow)
+# restate the same bands as force over body weight for the 100 kg reference
+# marine, and whose own outcomes (slowed, pushed by the excess, knocked down)
+# replace the two.
 [exchange]
-# --- Wind on units (#140, docs/wind_on_units_design_2026-10-31.md) -----------
-# q = 1/2 rho v^2 at the footprint (max over its gas tiles), rho from the tile's
-# bulk N against ambient ([materials.air] density, the one owner). Research picks:
-# docs/research/wind_on_a_person_2026-10-31.md (39 Pa = 8 m/s, 245 Pa = 20 m/s
-# at sea-level density; the hunch point, 120 Pa = 14 m/s, sits in the band and
-# is where a later "hunched" status would start). Nothing in the law moves a
-# unit's position: below q_slow the air does nothing, between the two the
-# walking CADENCE is scaled down (movement.footprint_samples -> default_speed,
-# every walker: MOVE_DIR, zombies, onephase, WEGO orders), at q_fall the unit
-# is KNOCKED_DOWN (refresh-stacked while the wind holds).
-# CADENCE QUANTIZATION blunts the low band: ticks per tile are integers, so an
-# 8 ticks/tile walker does not slow until the scale is under 0.941 (q ~63 Pa,
-# ~10 m/s), and a 1 tick/tile sprinter jumps 1 -> 2 at 0.667 and nothing before.
-# HOT-RELOAD: read every pass through exchange.wind_settings (which refuses a
-# missing / mistyped key, q_slow >= q_fall and a scale outside (0, 1]) -- Ctrl+R.
-wind_q_slow_pa = 39.0           # below this nothing; above, cadence scales down
-wind_q_fall_pa = 245.0          # at stability 1.0: KNOCKED_DOWN (stability scales the SPEED: W_fall * stability^2)
-wind_slow_min_scale = 0.5       # cadence scale at q_fall (linear in q from 1.0 at q_slow)
 # knockdown_getup_seconds — prone time (no move/act, sprite sideways). Feel:
 # the crowd-control payoff window after a good grenade. Interesting range
 # 0.5 (a stumble) .. 4.0 (a real opening). Re-knocks refresh the timer.
