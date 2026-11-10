@@ -865,14 +865,25 @@ def test_the_shove_and_stagger_events_are_render_only():
 #: 81ba6bb1a51769f09988db7dd5aeb0f06e25e690dc15aade7f6adbe25dc65dc9; tick
 #: 52f184d32ae6fa3f1e6a0d28eaacdda9215eba4d06f16358db023fdd91f349ef; units
 #: 9c98dc5d7ab477d944d73452a9e2ca8dee2e9d4759cd102a967242319b65566f)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 252; field
+#: ceb234133f9f62f8d421b1b68baccac69836be1d99a141c2106592b4e79f87b8; tick
+#: 72ae1c16c1615e9573dd8b05fa099cf3753cddbc09443d4fbe74bf620a0c50c0; units
+#: b4ac3fd1c5d15dd6ad493cec70476fb1c7c40b0b90adf68c41fdf32fbb5274f7)
 _RE_PIN_1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=252,
-    field_digest="ceb234133f9f62f8d421b1b68baccac6"
-                 "9836be1d99a141c2106592b4e79f87b8",
-    tick_digest="72ae1c16c1615e9573dd8b05fa099cf3"
-                "753cddbc09443d4fbe74bf620a0c50c0",
-    unit_stream="b4ac3fd1c5d15dd6ad493cec70476fb1"
-                "c7c40b0b90adf68c41fdf32fbb5274f7")
+    outcome="win", team=0, ticks=240,
+    field_digest="187e4a6f710671ff3644584fd51b6278"
+                 "eaadb4bac5fbb1225bfeee7b5572de26",
+    tick_digest="46ff80270890878daa488b0c0f031659"
+                "33ec3a7b6bbdd9055a23b45fb4f3a9fb",
+    unit_stream="93709823f7ef9829b77acc5f8215e5fd"
+                "8a08721d278a3a9910544cf4c61377e6")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -882,12 +893,22 @@ _RE_PIN_1_SHIP_DEMO = dict(
 #: (was win 1 at 130; field
 #: a672c7249e18d0eebbb8e398b696bd9c3d34417445f66c3cab498ec7cd783ab1; units
 #: f2ba375dd16868470f118df2bbbcab6c151ce28d4e2e108ab5f4433360406497)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 130; field
+#: 0fdc79f228cc2e64ca6936cf5a2ec41c52642adfca545cbe51324cfad2e21631; units
+#: 05bdbac7c76250b949ef35aef81fdd403bd89af88232eebe061bf753e47b1e3d)
 _RE_PIN_1_BOX = dict(
-    outcome="win", team=1, ticks=130,
-    field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
-                 "52642adfca545cbe51324cfad2e21631",
-    unit_stream="05bdbac7c76250b949ef35aef81fdd40"
-                "3bd89af88232eebe061bf753e47b1e3d")
+    outcome="win", team=1, ticks=92,
+    field_digest="2a9339a53e67d28c29ff513f6942dab9"
+                 "1586f5e85c6eb552885554c16ebe4c3b",
+    unit_stream="e082f7dfe103e2fdd594a952da81143c"
+                "a4202e996238969b22c85eea05b0fd3d")
 
 _IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
                   "swy", "pvx", "pvy", "effort", "react_ticks")

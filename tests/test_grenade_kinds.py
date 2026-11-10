@@ -653,14 +653,25 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: ef81cd2f9f0b720adfefaea226f51f905829a20d09cdcf5bf11c6c25545c592b; tick
 #: 8c9f1e0df467a41c1fbfc44101be87d07a08fba40aaaaaa3065e05ab2a7c2839; units
 #: a004003626bb2325f48149a5a4ff2b41f8e809b4d22dd686db622bcfc0215235)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 240; field
+#: b04c1ad46450b1f834b83f9bee13b0b37ba9301c4d0d430ab1a6c45397602a58; tick
+#: 435352e97169d7af477efc406cea55d8e0360556c6e830f189908468c92da09b; units
+#: a401c2ceb2db9cd87f25beaef33285e0e42740e0c06b8f2ac964037b6ad6c2f4)
 _PRE_G3P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=240,
-    field_digest="b04c1ad46450b1f834b83f9bee13b0b3"
-                 "7ba9301c4d0d430ab1a6c45397602a58",
-    tick_digest="435352e97169d7af477efc406cea55d8"
-                "e0360556c6e830f189908468c92da09b",
-    unit_stream="a401c2ceb2db9cd87f25beaef33285e0"
-                "e42740e0c06b8f2ac964037b6ad6c2f4")
+    outcome="win", team=0, ticks=259,
+    field_digest="49f3a5ccd6971212a2b0d11cd11d8170"
+                 "d7de7347f940dc091f5482459aceb302",
+    tick_digest="cb5002a478a11cf381582e9ee7cabfbd"
+                "8e1c9a4841f7c1c918a1359da137eba3",
+    unit_stream="0172be1b67ad34f55e51c6d2981f18c8"
+                "f292a9a94cd17b0f46bcc34f7554e32c")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):
