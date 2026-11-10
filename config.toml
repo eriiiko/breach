@@ -4532,8 +4532,15 @@ x_max = 2.5
 hp = 400
 # (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
 melee_damage = 60
-trigger_radius = 48
-propagation_radius = 15
+trigger_radius = 48        # tiles (squared-distance compare, strictly inside)
+propagation_radius = 15    # tiles (an awake zombie wakes those within)
+# The HORDE FIELD (gameplay pack G9p, the residency design's P3d;
+# src/simulation/horde.py): the horde walks one integer distance field per
+# footprint, flooded from every living non-zombie and re-flooded every this
+# many ticks (and whenever the topology changes). 2 = a marine at full speed
+# (4.5 m/s = 0.56 tile a tick on the 0.333 m tile) is at most ~1.1 tile ahead
+# of the field it is chased on. PLACEHOLDER.
+field_refresh_ticks = 2
 bullet_damage_multiplier = 0.25
 # fire_damage_multiplier: the zombie's HEAT vulnerability — since P5 this key
 # IS the live source of resist_mult[HEAT] on the zombie mitigation table

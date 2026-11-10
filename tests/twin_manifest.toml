@@ -96,6 +96,7 @@ build = [
 "src/simulation/field_edit.py" = "Class P from P4c (the device edit queue); no device twin yet"
 "src/simulation/generation.py" = "setup only"
 "src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source); Class T at P6b"
+"src/simulation/horde.py" = "Class T: the horde field law (slot 5, #183 G9p: the settings door, the field cache, the descent; its flood is PhysicsEngine.horde_field, cpp/src/horde_field.cpp, a host call in both modules), built at P7d (one block per (env, field))"
 "src/simulation/intents.py" = "Class T: slot 1b, built from P6"
 "src/simulation/loadouts.py" = "setup only: the bank compile (P8a)"
 "src/simulation/match.py" = "setup only: spawn_match (the bank compile, P8a)"

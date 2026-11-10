@@ -78,6 +78,7 @@ from simulation.combat import (
 from simulation.simultaneous import SimultaneousEffects
 # The focus-fire law (G4p): its dials (built at construction) and its decay.
 from simulation import exposure
+from simulation import horde
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -419,6 +420,13 @@ class Simulation:
         # walk / full costs in Q16 ticks per tile, the direction factors, the
         # zombie's integer shamble cadence.
         self.speed_table = speeds.speed_table(CFG, self.gmap.tile_size_m)
+        # G9p: the horde field's dials ([zombie], the refusing door
+        # simulation/horde.py), quantized ONCE for this map, and the map's
+        # field cache (derived, never synced: re-flooded every
+        # field_refresh_ticks and whenever the topology moves).
+        self.horde_settings = horde.horde_settings(CFG,
+                                                   self.gmap.tile_size_m)
+        self.horde_state = horde.HordeState()
         # G5p-a2: the unit impulse law's dials ([impulse], the ammo rows'
         # momentum) quantized ONCE here with this map's tile size (the
         # refusing door, simulation/unit_impulse.py), and handed to the map
@@ -592,8 +600,9 @@ class Simulation:
 
     def drive_zombies(self, unit_ids) -> None:
         """ZOMBIE intent (#122): the zombie law (``ai_zombie.
-        update_zombies_tick`` — trigger, chain activation, nearest prey,
-        melee, A*) drives these units at this tick's zombie slot. Requests in
+        update_zombies_tick`` — trigger, chain activation, the horde field's
+        descent (G9p), the bite) drives these units at this tick's zombie
+        slot. Requests in
         one tick UNION (a unit named twice is still driven once); the request
         is consumed by the slot. Refused unless the horde was handed to a
         controller (:meth:`hand_zombies_to_controller`) — on a game path the
@@ -626,7 +635,9 @@ class Simulation:
             reqs.clear()
         update_zombies_tick(self.gmap, units, self.tick,
                             events=self.tick_events,
-                            shamble_ticks=self.speed_table.zombie_shamble_ticks)
+                            shamble_ticks=self.speed_table.zombie_shamble_ticks,
+                            settings=self.horde_settings,
+                            state=self.horde_state)
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -2290,9 +2301,8 @@ class Simulation:
         - Every other unit with a pushed velocity -- standing, prone, a
           zombie, a WEGO unit -- moves by it alone; the pushed velocity moves
           a unit whatever its statuses say about moving on its own. A zombie
-          so displaced drops its path (its next slot-5 step repaths from its
-          floored tile: the step snaps to the tile grid, an accepted gap
-          until the horde field, G9p).
+          so displaced reads the horde field at its floored tile in slot 5
+          (G9p: no path to drop; its step snaps to the tile grid).
         - Then the WEGO path step (LEGACY), which overwrites a push (an
           accepted gap, the Control seams row).
 
@@ -2327,10 +2337,8 @@ class Simulation:
                 continue
 
             # No walk of its own this slot: the pushed velocity alone.
-            if (u.pvx or u.pvy) and unit_impulse.move(gmap, u):
-                if u.is_zombie:
-                    u.zombie_path = []
-                    u.zombie_path_idx = 0
+            if u.pvx or u.pvy:
+                unit_impulse.move(gmap, u)
             if u.is_zombie:
                 continue
 
@@ -2367,11 +2375,8 @@ class Simulation:
         (which then overwrites it: an accepted legacy gap). The same rule as
         the pushed branch of :meth:`_update_player_movement`."""
         for u in self.units:
-            if u.alive and (u.pvx or u.pvy) and unit_impulse.move(self.gmap,
-                                                                   u):
-                if u.is_zombie:
-                    u.zombie_path = []
-                    u.zombie_path_idx = 0
+            if u.alive and (u.pvx or u.pvy):
+                unit_impulse.move(self.gmap, u)
 
     def _step_move_dir(self, u, move_dir) -> None:
         """MOVE_DIR consumption (control-modularity P3, §3c) — the real new

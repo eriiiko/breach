@@ -1,42 +1,34 @@
-"""Zombie AI: activation, chain propagation, target selection, melee, A* movement, conversion.
+"""Zombie AI: activation, chain propagation, the horde field's descent, the
+bite, conversion.
 
-Lifted from ``game.py``:
+THE LAW (gameplay pack v1 G9p, the residency design's P3d; Erik's ruling of
+2026-11-10, ``docs/bots_zombies_speeds_design_2026-11-10.md`` §3): the horde
+walks the integer distance field of :mod:`simulation.horde` -- no per-zombie
+search, no A* (A* stays the host pathfinder of the bots and the tools).
+Activation (sight radius + line of sight, then the wake-neighbours chain)
+and the bite are the pre-G9p law's; its ``math.sqrt`` gates are integer
+compares of squared tile distances now.
 
-- :func:`update_zombies_tick`  (game.py:1867-1979 — ``Game._update_zombies_tick``)
-- :func:`convert_marines_to_zombies`  (extracted from ``Game._end_execution`` lines 2019-2028)
+- :func:`update_zombies_tick` -- slot 5's law (the conductor's, or a match's
+  zombie controller's through ``Simulation.drive_zombies``);
+- :func:`convert_marines_to_zombies` -- the conversion (lifted from
+  ``game.py``'s ``_end_execution``).
 
-The legacy code monkey-patched ``zombie_speed_override`` after construction;
-the lifted version reads ``z.speed_ticks_per_tile`` directly (the field
-was promoted onto :class:`simulation.unit.Unit` in Phase 1 step 2); since
-G1p-c its default ``None`` means the ``[speeds]`` shamble cadence.
-
-Pathfinding is provided by :mod:`pathfinding.astar`. If pathfinding fails
-to import, the helper falls back to "stand still" (matches legacy
-``HAS_PATHFINDING=False`` branch). Temporal A* exists in pathfinding.py
-but is explicitly NOT wired up here — see migration plan anti-goals.
-
-The chain-activation loop is ``while changed:`` over a nested O(N^2)
-sweep. Correct but O(N^3) in the worst case. Fine for current squad
-sizes; flagged in docs/architecture.md §9 as a refactoring target.
+The walk cadence: ``z.speed_ticks_per_tile`` ``None`` (every zombie unless a
+test set an int) is the ``[speeds]`` shamble (G1p-c). Integer throughout; no
+random number.
 """
 from __future__ import annotations
 
-import math
-
 from config import CFG
 from simulation import exposure as _exposure
+from simulation import horde as _horde
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
 from simulation.movement import default_speed, footprint_samples
 from simulation.status import composed_flags
-
-try:
-    from pathfinding import astar
-    HAS_PATHFINDING = True
-except ImportError:
-    HAS_PATHFINDING = False
 
 
 def _shamble_ticks(gmap) -> int:
@@ -46,45 +38,63 @@ def _shamble_ticks(gmap) -> int:
     return speed_table(CFG, gmap.tile_size_m).zombie_shamble_ticks
 
 
+def _d2(ax, ay, bx, by) -> int:
+    """Squared tile distance (the integer form of the law's old sqrt)."""
+    dx = ax - bx
+    dy = ay - by
+    return dx * dx + dy * dy
+
+
 # ---------------------------------------------------------------------------
 # Per-tick AI step
 # ---------------------------------------------------------------------------
-def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
-    """Run one tick of zombie AI for every active zombie on the map.
+def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
+                        settings=None, state=None):
+    """Run one tick of the zombie law for every zombie in ``units``.
 
-    Three sequential passes:
-      1. Trigger detection — inactive zombies with LOS to any living
-         player within ``CFG.zombie.trigger_radius`` activate.
-      2. Chain propagation — activated zombies wake up nearby inactive
-         zombies within ``CFG.zombie.propagation_radius`` (BFS until
-         the set stabilises).
-      3. Per-zombie movement + combat — pick nearest living player,
-         melee if adjacent (with cooldown), otherwise A* toward target
-         at the shamble cadence (below). Repath every 5 steps.
+    Three passes:
+      1. Trigger detection -- an inactive zombie with line of sight to a
+         living non-zombie within ``[zombie] trigger_radius`` tiles wakes
+         (squared distance, strictly inside).
+      2. Chain propagation -- an awake zombie wakes every inactive one within
+         ``propagation_radius`` tiles (until the set stabilises).
+      3. Per awake zombie, in list order: bite the (Euclidean-)nearest prey
+         when within ``footprint + 1`` tiles (its cooldown), else DESCEND
+         the prey field one step at its cadence (:mod:`simulation.horde`).
 
-    Mutates unit HP / alive / killed_by_zombie / zombie_* fields. ``events``
+    ``settings`` (:class:`~simulation.horde.HordeSettings`) and ``state``
+    (the field cache, :class:`~simulation.horde.HordeState`) are the
+    Simulation's, built once per map; a direct caller that passes none gets
+    the config's settings on ``gmap``'s tile and a fresh cache. ``events``
     (the sim's ``tick_events``; #122) receives each bite's
-    :class:`UnitHitEvent` and, on a kill, :class:`UnitKilledEvent`, both with
-    source ``"melee"`` -- credited kills, like a bullet's. ``None`` emits
-    nothing (the pre-#122 shape, kept for direct callers).
+    :class:`UnitHitEvent` and, on a kill, :class:`UnitKilledEvent`, both
+    with source ``"melee"``; ``None`` emits nothing.
 
     The walk cadence (G1p-c): a zombie whose ``speed_ticks_per_tile`` is
-    ``None`` (every zombie, spawned or converted, unless something set an
-    int) walks at ``shamble_ticks`` -- the ``[speeds] zombie_shamble_mps``
-    cadence the Simulation quantized once with its map's tile size
-    (``SpeedTable.zombie_shamble_ticks``); a direct caller that passes none
-    gets the same quantization of ``gmap.tile_size_m`` here, the first time
-    a zombie of the call walks (a call that only bites never reads it).
+    ``None`` walks at ``shamble_ticks`` -- the ``[speeds] zombie_shamble_mps``
+    cadence the Simulation quantized once with its map's tile size; a direct
+    caller that passes none gets the same quantization of
+    ``gmap.tile_size_m``, the first time a zombie of the call walks. A
+    zombie steps when its stride clock reaches its terrain-scaled cadence
+    and a step is open; one that cannot step keeps its clock and steps the
+    tick one opens.
     """
     # Prey = every living non-zombie, whatever its team (#119); the horde is
-    # is_zombie — never a team literal.
+    # is_zombie -- never a team literal.
     players = [u for u in units if not u.is_zombie and u.alive]
     if not players:
         return
 
     zombies = [u for u in units if u.is_zombie and u.alive]
+    if settings is None:
+        settings = _horde.horde_settings(
+            CFG, float(getattr(gmap, "tile_size_m", 1.0)))
+    if state is None:
+        state = _horde.HordeState()
+    state.begin_tick(gmap, tick, settings)
 
     # ---- 1. Trigger detection (LOS + radius) ----
+    trigger_r2 = settings.trigger_r2
     for z in zombies:
         if z.zombie_activated:
             continue
@@ -93,13 +103,13 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
         for p in players:
             pc_fx = p.center_tile_x()
             pc_fy = p.center_tile_y()
-            dist = math.sqrt((zc_fx - pc_fx) ** 2 + (zc_fy - pc_fy) ** 2)
-            if dist < CFG.zombie.trigger_radius:
+            if _d2(zc_fx, zc_fy, pc_fx, pc_fy) < trigger_r2:
                 if gmap.has_los(zc_fy, zc_fx, pc_fy, pc_fx):
                     z.zombie_activated = True
                     break
 
     # ---- 2. Chain activation: BFS until no new activations ----
+    prop_r2 = settings.propagation_r2
     changed = True
     while changed:
         changed = False
@@ -109,60 +119,48 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
             for z2 in zombies:
                 if z2.zombie_activated or z2 is z:
                     continue
-                dist = math.sqrt(
-                    (z.center_tile_x() - z2.center_tile_x()) ** 2 +
-                    (z.center_tile_y() - z2.center_tile_y()) ** 2)
-                if dist < CFG.zombie.propagation_radius:
+                if _d2(z.center_tile_x(), z.center_tile_y(),
+                       z2.center_tile_x(), z2.center_tile_y()) < prop_r2:
                     z2.zombie_activated = True
                     changed = True
 
-    # ---- 3. Movement + combat for activated zombies ----
-    h, w = gmap.material.shape
+    # ---- 3. Bite or descend, per awake zombie ----
     for z in zombies:
         if not z.zombie_activated:
             continue
 
         # Status gate (mechanics/06 §4): the composed flags decide what this
-        # zombie may DO this tick — can_act gates the melee bite, can_move
-        # gates the walk below. Activation/perception (passes 1-2) is
-        # deliberately ungated: a paralyzed zombie still notices you.
-        # Dead paths until P4+ wires status triggers.
+        # zombie may DO this tick -- can_act gates the bite, can_move the
+        # walk below. Activation (passes 1-2) is deliberately ungated: a
+        # paralyzed zombie still notices you.
         flags = composed_flags(z)
         if not flags.can_move and not flags.can_act:
             continue
 
-        # Nearest living player by Euclidean distance.
+        # Nearest living prey by (squared) Euclidean distance: the bite's.
         nearest = None
-        nearest_dist = float('inf')
+        nearest_d2 = None
         zc_fx = z.center_tile_x()
         zc_fy = z.center_tile_y()
         for p in players:
-            pc_fx = p.center_tile_x()
-            pc_fy = p.center_tile_y()
-            dist = math.sqrt((zc_fx - pc_fx) ** 2 + (zc_fy - pc_fy) ** 2)
-            if dist < nearest_dist:
-                nearest_dist = dist
+            d2 = _d2(zc_fx, zc_fy, p.center_tile_x(), p.center_tile_y())
+            if nearest_d2 is None or d2 < nearest_d2:
+                nearest_d2 = d2
                 nearest = p
 
-        if not nearest:
-            continue
-
-        # Melee attack if adjacent (footprint + 1 tiles threshold). An
-        # adjacent zombie that cannot act (stunned/paralyzed/knocked down)
-        # stands and waits — its melee cooldown does NOT reset (nothing is
-        # spent by suppression).
-        if nearest_dist <= z.footprint + 1:
+        # Bite if adjacent (footprint + 1 tiles). An adjacent zombie that
+        # cannot act (stunned/paralyzed/knocked down) stands and waits -- its
+        # cooldown does NOT reset (nothing is spent by suppression).
+        reach = z.footprint + 1
+        if nearest_d2 <= reach * reach:
             cooldown = CFG.zombie.attack_cooldown_ticks
             if flags.can_act and tick - z.last_melee_tick >= cooldown:
                 z.last_melee_tick = tick
-                # KINETIC packet through the pipeline (mechanics/06 §2):
-                # neutral mitigation passes the int melee_damage through
-                # exactly, then the same Q2-lift quantize -> hp chain as
-                # before. The hit and the kill ride the tick's events with
-                # source "melee" (#122: credited zombie kills; events change
-                # no sim state) — and the kill keeps melee's unique
-                # conversion semantics (killed_by_zombie=True; the ONLY
-                # converting death, mechanics/06 §6).
+                # KINETIC packet through the pipeline (mechanics/06 §2); the
+                # hit and the kill ride the tick's events with source
+                # "melee" (#122), credited to the biter (#123), and the kill
+                # keeps melee's conversion semantics (killed_by_zombie, the
+                # ONLY converting death, mechanics/06 §6).
                 apply_packet(nearest,
                              DamagePacket(amount=CFG.zombie.melee_damage,
                                           dtype=KINETIC,
@@ -171,20 +169,14 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
                              mark_killed_by_zombie=True)
             continue
 
-        # Movement: one tile every (terrain-scaled) cadence ticks -- the
-        # [speeds] shamble unless the unit carries its own int.
-        # Status gate: an immobilized zombie's stride clock PAUSES (the
-        # accumulator does not advance while suppressed — cadence resumes
-        # where it left off, mirroring the marine path-offset shift).
-        # G5p-a2: a zombie catching itself after a push (its reaction delay,
-        # unit_impulse.walk_allowed) does not walk either: the stride clock
-        # pauses the same way.
+        # The walk: one tile every (terrain-scaled) cadence ticks. Status
+        # gate: an immobilized zombie's stride clock PAUSES; so does one
+        # catching itself after a push (G5p-a2, unit_impulse.walk_allowed).
         if not flags.can_move or not _unit_impulse.walk_allowed(z):
             continue
-        # Terrain cadence (mobility design §4.1): the §4 area-average mobility
-        # over the zombie's CURRENT footprint scales its base cadence into the
-        # ticks this step costs — a zombie clambering through furniture is 2.5x
-        # slower. A* stays speed-blind; the multiplier composes here only.
+        # Terrain cadence (mobility design §4.1): the area-average mobility
+        # over the CURRENT footprint scales the base cadence into the ticks
+        # this step costs; the field stays speed-blind.
         samples = footprint_samples(
             gmap, z.tile_y, z.tile_x, z.footprint,
             effort_scale_q16=_unit_impulse.effort_scale_q16(
@@ -196,38 +188,17 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None):
             cadence = shamble_ticks
         step_ticks = default_speed(samples, cadence)
         z.zombie_move_accumulator += 1
-        if z.zombie_move_accumulator >= step_ticks:
+        if z.zombie_move_accumulator < step_ticks:
+            continue
+        fp = z.footprint
+        field = state.prey_field(gmap, fp, players)
+        step = _horde.descend(gmap, field, z.tile_y, z.tile_x, fp)
+        if step is not None:
+            ny, nx = step
             z.zombie_move_accumulator = 0
-
-            # Repath if no path, finished, or every 5 steps to track movement.
-            needs_repath = (not z.zombie_path
-                            or z.zombie_path_idx >= len(z.zombie_path)
-                            or z.zombie_path_idx % 5 == 0)
-            if needs_repath:
-                if HAS_PATHFINDING:
-                    def is_blocked(x, y, _gmap=gmap, _fp=z.footprint):
-                        return not _gmap.is_passable_block(y, x, _fp)
-                    z.zombie_path = astar(z.tile_x, z.tile_y,
-                                          nearest.tile_x, nearest.tile_y,
-                                          is_blocked, w, h)
-                    z.zombie_path_idx = 1  # skip current position
-                else:
-                    z.zombie_path = []
-                    z.zombie_path_idx = 0
-
-            # Step along the path if any.
-            if z.zombie_path and z.zombie_path_idx < len(z.zombie_path):
-                next_x, next_y = z.zombie_path[z.zombie_path_idx]
-                # Re-check passability (walls may have changed).
-                if gmap.is_passable_block(next_y, next_x, z.footprint):
-                    z.face_towards(float(next_x), float(next_y))
-                    z.x = float(next_x)
-                    z.y = float(next_y)
-                    z.zombie_path_idx += 1
-                else:
-                    # Blocked: drop the stale path and try again next tick.
-                    z.zombie_path = []
-                    z.zombie_path_idx = 0
+            z.face_towards(float(nx), float(ny))
+            z.x = float(nx)
+            z.y = float(ny)
 
 
 # ---------------------------------------------------------------------------

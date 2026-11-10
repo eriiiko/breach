@@ -5,7 +5,7 @@ locked design decisions (``docs/patch_game_logic_migration.md``):
 
 - One class for everyone. Zombie-ness is a STATE (``is_zombie``), not a
   subclass. Marine-only fields (``orders``, ``ap``) and zombie-only
-  fields (``zombie_path``, ``last_melee_tick``) coexist on the same
+  fields (``zombie_activated``, ``last_melee_tick``) coexist on the same
   object; ``apply_action`` (Phase 2) is the chokepoint that ignores
   orders for zombified units.
 - Inventory (``has_grenade``, ``has_explosive``) is a BASE field, always
@@ -363,10 +363,9 @@ class Unit:
         self.spray_target = None
         self.spray_order = None
 
-        # Zombie AI state.
+        # Zombie AI state. G9p: the horde walks the distance field
+        # (simulation.horde), so a zombie carries no path.
         self.zombie_activated       = False
-        self.zombie_path            = []
-        self.zombie_path_idx        = 0
         self.zombie_move_accumulator = 0
         self.last_melee_tick        = -999
         self.killed_by_zombie       = False

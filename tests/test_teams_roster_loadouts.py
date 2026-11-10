@@ -202,7 +202,7 @@ def test_two_marine_teams_engage_each_other_and_the_zombie_ai_ignores_them():
     assert {red.id, blue.id} <= shooters              # both sides fire
     for u in (red, blue):                             # zombie AI never ran
         assert not u.is_zombie
-        assert not u.zombie_activated and u.zombie_path == []
+        assert not u.zombie_activated and u.zombie_move_accumulator == 0
         assert u.last_melee_tick == -999
 
 
