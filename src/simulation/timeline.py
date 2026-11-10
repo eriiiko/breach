@@ -761,7 +761,7 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
                       sim.shots, sim.real_time, sim.rng, sim.tick_events,
                       sim.bullets, weapon, spread, sim.edit_queue,
                       cover=sim.cover, facing_defense=True)
-    mag_spend(unit, weapon, sim.tick)
+    mag_spend(unit, weapon, sim.tick, events=sim.tick_events)
     unit.last_fire_tick = sim.tick
     return True
 

@@ -97,6 +97,13 @@ def atan2_q16(y_q: int, x_q: int) -> int:
     return int(_kit().atan2_q16(int(y_q), int(x_q)))
 
 
+def cos_q16(angle_q: int) -> int:
+    """The kit's ``cos_q16`` on a Q16.16 radian int, Q16.16 out -- the
+    integer form of :func:`cos_rad` (G1p-c: the speed law's direction
+    factor, ``movement.facing_cos_q16``)."""
+    return int(_kit().cos_q16(int(angle_q)))
+
+
 def sin_rad(angle: float) -> float:
     """Deterministic sin of ``angle`` (radians): quantize -> sin_q16 ->
     dequantize. Exact n/65536 double in [-1.0, 1.0]. Accuracy pinned for

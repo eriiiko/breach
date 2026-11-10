@@ -78,6 +78,9 @@ idle_return_fire = true        # §13 idle stance: return fire (false = do
                                # nothing — the §20 item 5 alternative)
 
 [movement]
+# LEGACY (G1p-c): read ONLY by the WEGO order path (simulation._ticks_per_tile:
+# TwoPhaseWEGO's attack / cover / sprint orders); the continuous path (the
+# player, the bots, a policy) walks by [speeds] below, the zombies too.
 # Per-second tunables (tick-rate independent). config.py derives the integer
 # *_ticks_per_tile counts via max(1, round(seconds * ticks_per_second)).
 # Values chosen to reproduce the legacy 12-tps integers (9, 6, 4).
@@ -85,6 +88,29 @@ marine_attack_seconds_per_tile = 0.75       # 0.75 s/tile -> 9 ticks @ 12 tps
 marine_cover_seconds_per_tile = 0.5         # 0.5  s/tile -> 6 ticks @ 12 tps
 marine_sprint_seconds_per_tile = 0.33333333 # 1/3  s/tile -> 4 ticks @ 12 tps
 xeno_sprint_ticks_per_tile = 1
+
+# ---------------------------------------------------------------------------
+# Speeds (gameplay pack v1 G1p-c, docs/bots_zombies_speeds_design_2026-11-10.md
+# §1; Erik's ruling 2026-11-10: speeds are given in m/s). Read through the
+# refusing door src/simulation/speeds.py (a missing or mistyped key, or a
+# broken rule, is refused by name) and quantized ONCE at sim construction with
+# the map's tile_size_m and [clock] ticks_per_second -- the marine's two
+# speeds into Q16 ticks per tile, the zombie's shamble into its integer walk
+# cadence. Realised values below are for the shipped 0.333 m tile at 24 tps.
+# The continuous path (player, bots, policy: set_move_dir) moves at
+#   speed = f(theta) * walk + throttle * (full - walk) * max(0, cos theta)
+#   f = 1 forward, sideways_frac at 90 deg, backward_frac at 180, linear in cos
+# theta the angle between the move and the facing: nobody sprints backwards.
+# The door also holds Erik's rules: the zombie sprint is within 70..90 % of
+# the marine walk and above backward_frac * marine_walk_mps.
+# ---------------------------------------------------------------------------
+[speeds]
+marine_walk_mps = 1.4      # throttle 0, weapon ready. PLACEHOLDER, Erik tunes (realised 1.400 m/s: 5.709 ticks/tile)
+marine_full_mps = 4.5      # throttle ONE, a run with ~20 kg of kit. PLACEHOLDER (realised 4.500 m/s: 1.776 ticks/tile)
+zombie_shamble_mps = 0.6   # PLACEHOLDER; the zombie walk is whole ticks per tile: 13 -> realised 0.615 m/s
+zombie_sprint_mps = 1.15   # 82 % of the marine walk. PLACEHOLDER; read and door-checked, UNUSED until the zombie patch (G9p)
+sideways_frac = 0.8        # the walk at 90 deg to the facing (Erik's number): 1.12 m/s
+backward_frac = 0.6        # the walk straight backward, every throttle (Erik's number): 0.84 m/s
 
 [physics]
 wave_c = 66.0                        # wave speed (tiles/s), ~c / 3 m/s physical
@@ -2424,16 +2450,20 @@ states.walk = { legs = "Zombie_Hunch_Walk", upper = "Zombie_Hunch_Walk", head = 
 # The walk rates stop the feet skating: rate = the unit's DRAWN speed / the
 # clip's in-place stride speed (the stance foot's backward speed, measured
 # from the clip: Walk 1.34, Rifle_Aim_Walk 1.27, Zombie_Hunch_Walk 1.01 m/s).
-# Drawn speed: a unit moves 24 tps / speed_ticks_per_tile tiles per second
-# (a marine 24 / 18 = 1.333, a zombie 24 / 14 = 1.714 tiles/s), and the
-# renderer draws one tile as 1.885 / 6 = 0.3142 model metres (the space
-# marine's height = _SCALE_TILES_TALL 6 tiles): 0.419 m/s marine, 0.539 m/s
-# zombie. Retune with the sim's speeds (tests/test_pose_soma.py holds it).
+# Drawn speed: a unit moves 24 tps / its ticks per tile, tiles per second --
+# since G1p-c the [speeds] table on the ship's 0.333 m tile: the marine's
+# walk 5.709 ticks per tile = 4.204 tiles/s (1.4 m/s), the zombie's shamble
+# 13 = 1.846 tiles/s -- and the renderer draws one tile as 1.885 / 6 =
+# 0.3141 model metres (the space marine's height = _SCALE_TILES_TALL 6
+# tiles): 1.321 m/s marine, 0.580 m/s zombie. Retune with the sim's speeds
+# (tests/test_pose_soma.py holds it; the measured strides are Walk 1.324,
+# Rifle_Aim_Walk 1.265, Zombie_Hunch_Walk 1.014 m/s). The walk plays at the
+# walk rate at every throttle: a run clip is #184's.
 [render.pose.skeletons.soma.clips]
 Idle = {}
-Walk = { rate = 0.312 }                  # 0.419 / 1.344
+Walk = { rate = 0.998 }                  # 1.321 / 1.324 (G1p-c; was 0.312 at 0.44 m/s)
 Run = {}                                 # registered, no run state yet
-Rifle_Aim_Walk = { rate = 0.330 }        # 0.419 / 1.27: the aim overlay (upper + head)
+Rifle_Aim_Walk = { rate = 1.044 }        # 1.321 / 1.265: the aim overlay (upper + head)
 Rifle_Shoot = { loop = false }           # the shot one-shot: a held aim, ~3 deg of sway
 Hit_Chest = { loop = false, rate = 1.5 } # the flinch additive (PLACEHOLDER, HUMAN-TEST)
 Hit_Back = { loop = false }              # registered: the hit event has no direction yet
@@ -2441,7 +2471,7 @@ Hit_Left = { loop = false }
 Hit_Right = { loop = false }
 Fall = { loop = false }                  # dead (dormant: dead units are not drawn); keeps its travel
 Get_Up = { loop = false }                # registered: knockdown is #149; keeps its travel
-Zombie_Hunch_Walk = { rate = 0.531 }     # 0.539 / 1.014
+Zombie_Hunch_Walk = { rate = 0.572 }     # 0.580 / 1.014 (G1p-c; was 0.531)
 
 # State -> clip per layer. The renderer's state names (select_clip): today
 # idle and walk; dead is dormant, as in CLIP_MAP (firing is the fire
@@ -4378,7 +4408,7 @@ emit_blast_smoke = false
 
 [zombie]
 hp = 400
-seconds_per_tile = 0.58333333      # 7/12 s -> 7 ticks @ 12 tps (faster than marine attack move)
+# (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
 melee_damage = 60
 trigger_radius = 48
 propagation_radius = 15

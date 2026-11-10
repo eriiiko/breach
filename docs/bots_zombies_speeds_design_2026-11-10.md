@@ -1,0 +1,228 @@
+# Bots, zombies and speeds — design (draft 1, 2026-11-10)
+
+Part of the gameplay pack (#183). Three patches beside the pack's eight:
+**G1p-c** speeds in m/s and direction-dependent walking, **G8p** the bot
+pass, **G9p** the zombie law v2. Vocabulary (Erik, 2026-11-10): **bots** are
+hand-written AI, **agents** are RL-trained policies.
+
+Status: DRAFT. **RULED** = Erik's words of 2026-11-10; the rest is Claude's
+proposal.
+
+## 1. Speeds in m/s (G1p-c)
+
+**RULED.** Speeds are given in m/s; the tiles-per-second dials are leftovers
+and every number may change. Walking backwards is slower: forward 1.0,
+sideways 0.8, backward 0.6. A sprinting zombie reaches 70 to 90 % of a
+marine's walk and catches a marine walking backwards. The zombie's sprint is
+unlimited.
+
+**Today** (a tile is 0.333 m): marine walk 18 ticks per tile = 0.44 m/s,
+full speed 8 ticks per tile = 1.0 m/s, zombie 14 ticks per tile = 0.57 m/s.
+A real walk is about 1.4 m/s and a run with kit 4 to 5 m/s, so today's
+marine sprints slower than a person strolls. The unit impulse law works in
+real units (a shove gives about 1 m/s), so the speeds must be real for it to
+read right.
+
+**PROPOSED table** (all PLACEHOLDER for the play test, one `[speeds]` table
+in m/s, quantized once at load):
+
+| who | mode | m/s | note |
+|---|---|---|---|
+| marine | walk (throttle 0) | 1.4 | a normal walk, weapon ready |
+| marine | full (throttle ONE) | 4.5 | a run with 20 kg of kit |
+| zombie | shamble | 0.6 | |
+| zombie | sprint | 1.15 | 82 % of the marine's walk |
+
+**Direction rule (RULED 2026-11-10: sprinting is forward only).** With θ the angle between the move direction
+and the facing:
+
+```
+speed = f(θ) · v_walk + throttle · (v_full − v_walk) · max(0, cos θ)
+f(θ): 1.0 forward, 0.8 sideways, 0.6 backward (blended by cos θ through the kit)
+```
+
+So the walk is slower sideways and backward by Erik's factors, and the
+sprint's extra speed exists only in the forward direction: nobody sprints
+backwards. A marine backing away moves at 0.84 m/s whatever the throttle,
+and a sprinting zombie (1.15) catches it; a marine that turns and runs
+(4.5) escapes but cannot shoot behind itself. That trade is the point.
+
+A zombie obeys the same rule with its own two speeds.
+
+**Consequences to accept:** every movement-dependent pin re-baselines; the
+map plays about three times faster on foot (a 20 m ship is crossed in under
+five seconds at a run), so match lengths, the bots' thresholds and the
+grenade timings want a look at the play test. The drawn walk-cycle rates
+(`[render.pose]`, re-derived from the drawn speed by its own test) follow.
+
+**Gate:** throttle 0 facing forward = `v_walk` exactly; speed monotone in
+the throttle and in cos θ; the zombie sprint is greater than the marine's
+backward speed and within 70 to 90 % of its walk (a config-door check, so a
+later retune cannot break Erik's rule silently). **HUMAN-TEST.**
+
+**As built (G1p-c, 2026-11-10).** `[speeds]` in `config.toml`, read by the
+refusing door `simulation/speeds.py::speed_settings` (each key by name; the
+sprint band and the backward-walk rule; and `walk <= full`,
+`0 < backward_frac <= sideways_frac <= 1`, which the law's monotonicity
+needs) and quantized once per map by `speed_table` into `Simulation.
+speed_table`. The marine's two speeds are Q16 TICKS PER TILE, not Q16 tiles
+per tick: the old walk, 1/18 tile a tick, has no Q16 tiles-per-tick value,
+and in the cost currency `movement.default_speed` (terrain, wind) applies
+unchanged, so the proof of cause below is exact. The law is
+`movement.move_speed_tiles_per_tick` (one exact rational, one division, as
+the G1p throttle was); theta is `atan2_q16(move) - facing` through
+`turning.wrap_q16` and `cos_q16` (`movement.facing_cos_q16`, exact at the
+cardinal angles), and a unit holding no aim has theta 0. The zombie's
+shamble is its integer cadence (`ticks_from_seconds(tile / mps, tps)`):
+`Unit.speed_ticks_per_tile` defaults to None = the table, so a converted
+marine shambles too (before, it kept the marine's 18-tick attack dial). The
+`[zombie] seconds_per_tile` dial is deleted; `[movement]` stays, WEGO's
+alone. Realised on the 0.333 m tile at 24 tps: walk 1.400, full 4.500,
+sideways 1.120, backward 0.840, zombie 0.615 m/s (13 ticks per tile), the
+sprint 1.150 (unused until G9p). `ReloadEvent(unit_id, ticks)`, render-only,
+from `combat.reload_begin`. The pinned ship_demo match: win 1 unchanged,
+700 -> 240 ticks; with the table at the old cadences (18 / 8 / 14 ticks per
+tile, factors 1.0) it is the G2p pin bit for bit. The SOMA walk rates were
+re-derived (Walk 0.998, Rifle_Aim_Walk 1.044, Zombie_Hunch_Walk 0.572); the
+walk clip plays at the walk rate at every throttle (a run clip is #184's).
+
+## 2. The bot pass (G8p)
+
+**RULED.** The three-layer shape. Bots stay Python on the host. Erik expects
+Claude to choose the techniques: good and cheap.
+
+### 2.1 Layers
+
+1. **Team layer** (one object per team, a few times per second): the shared
+   picture (known enemies with last-seen tick, who targets what), the shared
+   target, and the current PLAY.
+2. **Unit layer** (per bot, a few times per second, staggered by unit id so
+   the cost is spread): every possible action gets a SCORE and the best one
+   wins: shoot, hold fire, move to a position, throw (by kind), shove,
+   melee. A new behaviour is a new scored action.
+3. **Position layer**: where to stand. Candidate tiles near the bot are
+   scored by FEATURES; the bot paths (A*, as today) to the best.
+
+### 2.2 The position features (each a yes / no question about a tile)
+
+- sees the shared target from here;
+- is outside every teammate's fire lane (the line from a shooting teammate
+  to its target, marked on a small grid);
+- is at least the spacing distance from every teammate;
+- is beside a corner or behind cover relative to the target;
+- is not visible to an enemy that is not the target;
+- is closer to the play's objective than the current tile;
+- is not in fire, dense smoke or vacuum;
+- is reachable within n steps.
+
+v1 scores a tile by a hand-set weight per feature. The features are kept as
+explicit booleans on purpose (see §2.5).
+
+### 2.3 Plays (v1: three)
+
+- **Bound**: the team is two halves; one half moves to its best positions
+  while the other holds and watches; they swap when the movers arrive.
+- **Hold**: everyone takes the best position covering a chokepoint or the
+  last-seen enemy; nobody advances.
+- **Fall back**: against a horde or when outnumbered, retreat toward home
+  facing the enemy and shooting (the backward walk of §1), shove a zombie
+  that reaches a bot; the half that is farther covers the nearer.
+
+The team layer picks the play from counts it already has (enemies seen,
+teammates alive, ammunition left, zombies near). Room breaching (flashbang,
+two doors) is a fourth play for a second round.
+
+### 2.4 Also in the pass
+
+Focus fire through the shared target (most exposed by G4p's debuff, then
+weakest, then nearest); flashbang or frag by the scored throw action; #142
+(stacking: the spacing feature; doors: a bot opens an adjacent closed door
+on its path) and #138 (judder: a bot commits to a position until the next
+decision).
+
+### 2.5 The gate is a tournament
+
+`tools/bot_tournament.py` over the headless match runner: new bots against
+the old bots (kept registered as `bots_v1`), and both against the horde,
+over many seeds and both ships. Report win rate, survivors, rounds fired per
+kill, friendly-fire hits. The pass merges when the new bots clearly beat the
+old ones and hit each other less. The old bots stay as an opponent for
+agents: a ladder of opponents is worth more than one.
+
+### 2.6 Later: learned scoring (Erik's idea, v2)
+
+The position features are yes / no questions, which is exactly a Tsetlin
+machine's input. A v2 side project trains a small Tsetlin machine to score
+tiles (and the same layer could later be a small neural network), from the
+tournament's outcomes, as one more kind of opponent in a varied cast. The
+feature list above is its interface, so nothing in v1 needs to change for
+it. The octopus arm brains (#108) plan the same technique.
+
+## 3. The zombie law v2 (G9p)
+
+**RULED.** Zombies do not stand idle: they wander. They hear (by distance
+alone, walls ignored, no sound system needed). They fear fire and would
+rather avoid smoke. They bash doors. They are slow, with an unlimited
+sprint (§1). A zombie is a STATE of a unit and in v1 a copy of the unit it
+infected.
+
+**Today.** Dormant until a living non-zombie is within 48 tiles in line of
+sight; a woken zombie wakes others within 15 tiles; each walks by its own A*
+(re-planned every 5 steps) to the Euclidean-nearest prey and bites when
+adjacent.
+
+**The residency design already replaces the pathing** (its P3d): the horde
+walks ONE integer distance field per map, flooded from every living marine
+over the passable tiles, refreshed every few ticks, each zombie stepping to
+its lowest neighbour. It is far cheaper than an A* per zombie, it gives
+path-nearest instead of straight-line-nearest prey, and it makes a horde
+flow around obstacles and arrive from every open side.
+
+**RULED 2026-11-10: the distance field moves forward now. G9p is P3d pulled
+forward, with the new behaviours designed onto the field**, so the horde is rewritten once:
+
+| behaviour | law |
+|---|---|
+| wander | a dormant zombie takes a slow step every few seconds in a direction picked by a hash of (zombie id, tick), staying within a few tiles of where it stood; no random stream is drawn |
+| sight | as today (radius + line of sight), wakes it and its neighbours |
+| hearing | every shot, detonation and door bash is a NOISE at a tile with a radius from its loudness (`[weapons.*] loudness` exists, unread; payloads get one); a zombie within the radius, walls ignored, wakes and walks toward the noise; reaching it without seeing prey, it returns to wandering there |
+| the chase | awake with prey known: descend the prey field at the shamble; SPRINT when it has line of sight to prey within `sprint_radius` |
+| fear of fire | burning and very hot tiles are removed from the field's passable mask: a zombie never paths through fire, so a fire line closes a corridor; one with no path waits at the edge |
+| wary of smoke | PROPOSED later: the field is an unweighted flood, and "expensive" tiles need a weighted one; v1 treats dense smoke like any air |
+| door bashing | a closed door counts as passable in the field; a zombie that reaches one strikes it with its melee through the door's existing per-tile hit points until it breaks; each strike is a noise |
+| bite | unchanged |
+
+**Open with Erik (small):** the sprint radius; how long a zombie keeps
+chasing a noise; whether a door should hold for seconds or for a minute
+(a number for the play test).
+
+**Gate:** the field's distances equal a reference flood on every map; a
+zombie never steps onto a burning tile; a noise wakes exactly the zombies
+within its radius; with wander, hearing, fire and doors switched off the
+horde's behaviour is the P3d field law alone (its own written spec and
+re-pin). **HUMAN-TEST.** Tier: Opus.
+
+## 4. Order
+
+G1p (done) → G2p (building) → G1p-c speeds → G3p → G4p → G5p-a / G5p-b →
+G6p → G7p → G9p zombies → G8p bots (last, so they use everything and fight
+the new horde) → the `player_up` camera spike.
+
+## 5. Systems
+
+(a) Uses: the Match controller registry (`bots`, `zombies`), the intent
+facade, A* (bots), Vision (`has_los`), Timed/blast seams for noise sources
+(`blast_log`, `ShotFiredEvent`), the Footprint samples builder and
+`default_speed` (speeds compose there), Fixed-point kits (`cos_q16`), the
+Headless match runner, Config.
+
+(b) Creates:
+
+| system | draft rule |
+|---|---|
+| Speed table (`[speeds]`, m/s) | Every unit speed is a row in m/s, quantized once; never a ticks-per-tile literal; the direction rule is the one place facing changes a speed |
+| Bot layers (`control_bots`: team / unit / position) | A new bot behaviour is a scored action, a play, or a position feature; never a fixed-order rule or a second controller |
+| Position features | A tile is judged through named yes / no features; a learned scorer reads the same list |
+| Bot tournament (`tools/bot_tournament.py`) | THE measure of a bot change: win rate and friendly fire over seeds, never an opinion |
+| Horde field (the residency design's P3d) | The horde paths ONLY by the distance field; a new zombie behaviour is a mask, a goal set or a rule on the descent, never a per-zombie search |
+| Noise (`loudness` on weapon and payload rows) | What can be heard is a noise event with a radius; hearing reads noises, never the sources |

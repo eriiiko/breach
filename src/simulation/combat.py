@@ -50,7 +50,8 @@ from simulation.cover_system import cover_at
 from simulation.damage import (KINETIC, CREDIT_HEAT, DamagePacket, apply_packet,
                                tick_credit)
 from simulation.events import (
-    LaserFiredEvent, ProjectileGlowEvent, ShotFiredEvent, SprayJetEvent,
+    LaserFiredEvent, ProjectileGlowEvent, ReloadEvent, ShotFiredEvent,
+    SprayJetEvent,
 )
 from simulation.gases import N_TRACE_GASES
 from simulation import gas_fixed
@@ -748,7 +749,7 @@ def mag_gate(u, weapon, tick):
     return u.current_mag > 0               # 0 = dry (no spare was left)
 
 
-def reload_begin(u, weapon, tick):
+def reload_begin(u, weapon, tick, events=None):
     """Start a reload NOW: the magazine in the gun is DISCARDED with every
     round still in it (``current_mag = 0``; rounds are never moved between
     magazines), one spare is consumed when spares are counted, and the stall
@@ -756,7 +757,12 @@ def reload_begin(u, weapon, tick):
     gun when it ends (:func:`mag_settle`). With no spare left nothing starts
     and the unit is dry (``current_mag`` 0, none pending). True when a reload
     started. The caller has settled the magazine and checked its own
-    preconditions (:func:`mag_spend` on empty, ``Simulation._reload``)."""
+    preconditions (:func:`mag_spend` on empty, ``Simulation._reload``).
+
+    G1p-c: a started reload appends ONE render-only
+    :class:`~simulation.events.ReloadEvent` ``(unit id, stall ticks)`` to
+    ``events`` (the tick's events; ``None`` emits nothing) -- the one emission
+    site, so the manual and the automatic reload are told alike."""
     spare = getattr(u, "spare_mags", SPARES_UNTRACKED)
     u.current_mag = 0
     if spare == 0:
@@ -765,20 +771,24 @@ def reload_begin(u, weapon, tick):
     if spare > 0:
         u.spare_mags = spare - 1
     u.reload_done_tick = tick + int(weapon.reload_ticks)
+    if events is not None:
+        events.append(ReloadEvent(unit_id=int(getattr(u, "id", -1)),
+                                  ticks=int(weapon.reload_ticks)))
     return True
 
 
-def mag_spend(u, weapon, tick):
+def mag_spend(u, weapon, tick, events=None):
     """Spend one round per TRIGGER (a shotgun's 8 pellets = one trigger =
     one round). Emptying the magazine starts the automatic reload NOW
     (:func:`reload_begin`): the stall between the last shot and the next is
     exactly ``reload_seconds``; with no spare left the unit goes dry. No-op
-    for untracked weapons."""
+    for untracked weapons. ``events`` receives the reload's
+    :class:`~simulation.events.ReloadEvent` (:func:`reload_begin`)."""
     if weapon.mag_size <= 0:
         return
     u.current_mag -= 1
     if u.current_mag <= 0:
-        reload_begin(u, weapon, tick)
+        reload_begin(u, weapon, tick, events=events)
 
 
 def mag_status(u, weapon, tick):
@@ -934,7 +944,7 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         if weapon.archetype == "melee":
             if melee_strike(units, u, target_fx, target_fy, rng, events,
                             weapon, effects=fx):
-                mag_spend(u, weapon, tick)
+                mag_spend(u, weapon, tick, events=events)
                 u.last_fire_tick = tick
             continue
 
@@ -969,7 +979,7 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
                               target_fx, target_fy, tick, shots, real_time,
                               rng, events, bullets, weapon, spread, queue,
                               effects=fx)
-        mag_spend(u, weapon, tick)
+        mag_spend(u, weapon, tick, events=events)
         u.last_fire_tick = tick
 
     if own_slot:
@@ -1051,7 +1061,7 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
                           effects=effects)
     else:
         return   # lobbed / placed: not a trigger ray (design §4c) — no-op
-    mag_spend(u, weapon, tick)
+    mag_spend(u, weapon, tick, events=events)
     u.last_fire_tick = tick
 
 
@@ -1109,7 +1119,7 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
                           tick, shots, real_time, rng, events, bullets,
                           weapon, weapon.spread_snap_deg, queue,
                           effects=effects)
-        mag_spend(u, weapon, tick)
+        mag_spend(u, weapon, tick, events=events)
         u.last_fire_tick = tick
 
 

@@ -172,10 +172,23 @@ def _stance_speed(rig, clip: str) -> float:
     return float(np.mean(speeds))
 
 
+def _ship_table():
+    """The ``[speeds]`` table on the shipped ship's tile (``levels/ship_demo``,
+    0.333 m): the speeds a unit is DRAWN at in play (G1p-c)."""
+    import tomllib
+    from simulation.speeds import speed_table
+    with open(ROOT / "levels" / "ship_demo" / "level.toml", "rb") as f:
+        lvl = tomllib.load(f)
+    tile = lvl.get("tile_size_m", lvl.get("level", {}).get("tile_size_m"))
+    return speed_table(CFG, float(tile))
+
+
+# ticks per tile: the marine's walk (throttle 0, a Q16 cost), the zombie's
+# shamble (its integer cadence)
 @pytest.mark.parametrize("clip, role, ticks", [
-    ("Walk_Loop", None, lambda: CFG.movement.marine_attack_ticks_per_tile),
-    ("Pistol_Idle_Loop", None, lambda: CFG.movement.marine_attack_ticks_per_tile),
-    ("Zombie_Hunch_Walk", "zombie", lambda: CFG.zombie.ticks_per_tile),
+    ("Walk_Loop", None, lambda: _ship_table().walk_cost_q / 65536),
+    ("Pistol_Idle_Loop", None, lambda: _ship_table().walk_cost_q / 65536),
+    ("Zombie_Hunch_Walk", "zombie", lambda: _ship_table().zombie_shamble_ticks),
 ])
 def test_a_soma_walk_strides_at_the_units_drawn_speed(layer, clip, role, ticks):
     """PROPERTY: a SOMA walking clip played at its effective rate (skeleton
@@ -185,8 +198,8 @@ def test_a_soma_walk_strides_at_the_units_drawn_speed(layer, clip, role, ticks):
     not skate. (The aim overlay is held to the walk's speed too, so its arm
     swing keeps the legs' tempo.)
 
-    BREAKS IF: the sim's walking speed or tick rate is retuned, the
-    renderer's scale changes, the clip is re-exported at another speed, or
+    BREAKS IF: the sim's walking speed (``[speeds]``, G1p-c) or tick rate is
+    retuned, the renderer's scale changes, the clip is re-exported at another speed, or
     the SOMA rate rows are edited -- without re-deriving the rate.
     """
     rig = layer.rig(SOMA)

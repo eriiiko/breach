@@ -23,6 +23,8 @@ SPAWN = (24.0, 20.0)
 # view starts at tile (0, 1.2) and Alpha's centre (25.5, 21.5) is at screen
 # pixel (637.5, 507.5). A cursor at (900, 508) starts due east of it.
 MOUSE_EAST = "900,508"
+# ... and a cursor at (638, 100) starts (very nearly) due north of it.
+MOUSE_NORTH = "638,100"
 
 
 def _drive(*args):
@@ -44,9 +46,12 @@ def test_the_rdfg_keys_move_the_possessed_marine_and_the_mouse_aims_it():
     """Property: in the real window, holding R moves the possessed marine
     up the screen (forward, -y) and nothing sideways, holding G moves it
     right (+x) and nothing vertically, holding A with R moves it farther than
-    R alone (full speed), and a cursor due east turns it to face east. Breaks
-    if the key table is not wired to the movement intents, a key moves the
-    wrong way, full speed is not the sprint, or the mouse does not aim."""
+    R alone (full speed) when the cursor is ahead of it and no farther when
+    the cursor is to its side (G1p-c: the sprint is forward only), and a
+    cursor due east turns it to face east. Breaks if the key table is not
+    wired to the movement intents, a key moves the wrong way, A is not the
+    full speed, the full speed ignores the facing, or the mouse does not
+    aim."""
     dev, name, x, y, facing = _drive("--hold", "R@10-70",
                                      "--mouse", f"{MOUSE_EAST}@1")
     assert (dev, name) == ("keyboard", "Alpha")
@@ -61,6 +66,15 @@ def test_the_rdfg_keys_move_the_possessed_marine_and_the_mouse_aims_it():
     _, _, x, y, _ = _drive("--hold", "G@10-70", "--mouse", f"{MOUSE_EAST}@1")
     assert y == SPAWN[1] and x > SPAWN[0] + 0.5
 
+    # G1p-c: the throttle's extra speed is FORWARD ONLY (Erik's ruling,
+    # 2026-11-10). With the cursor east, R moves the marine at 90 deg to its
+    # aim, so A adds nothing: it strafes at the same speed.
     _, _, x, y, _ = _drive("--hold", "R@10-70", "--hold", "A@10-70",
                            "--mouse", f"{MOUSE_EAST}@1")
-    assert x == SPAWN[0] and SPAWN[1] - y > 1.5 * walked
+    assert x == SPAWN[0] and SPAWN[1] - y < 1.2 * walked
+    # With the cursor north (along the move), A runs: farther than R alone.
+    _, _, x, y, _ = _drive("--hold", "R@10-30", "--mouse", f"{MOUSE_NORTH}@1")
+    walked_north = SPAWN[1] - y
+    _, _, x, y, _ = _drive("--hold", "R@10-30", "--hold", "A@10-30",
+                           "--mouse", f"{MOUSE_NORTH}@1")
+    assert x == SPAWN[0] and SPAWN[1] - y > 1.5 * walked_north

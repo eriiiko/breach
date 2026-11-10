@@ -200,17 +200,18 @@ def test_move_dir_walks_at_the_slowed_cadence_in_a_gale():
     u = Unit("w", x=6.0, y=10.0, team=0)
     sim.add_unit(u)
     md = SimpleNamespace(throttle_q=0, dx_q=FP_ONE, dy_q=0)  # the walk
-    calm = int(CFG.movement.marine_attack_ticks_per_tile)
+    # G1p-c: the [speeds] walk, a Q16 ticks-per-tile cost (no aim: theta 0)
+    calm = sim.speed_table.walk_cost_q
     _blow(sim.gmap, on=False)
     x0 = u.x
     sim._step_move_dir(u, md)
-    assert u.x == x0 + 1.0 / calm
+    assert u.x == x0 + FP_ONE / calm
     _blow(sim.gmap, on=True)
     x0 = u.x
     sim._step_move_dir(u, md)
     slowed = half_up(calm * SCALE_ONE, _s_min_q16(sim.gmap))
     assert slowed > calm
-    assert u.x == x0 + 1.0 / slowed
+    assert u.x == x0 + FP_ONE / slowed
 
 
 def test_the_onephase_cadence_takes_the_slowed_scale():
@@ -257,11 +258,15 @@ def test_the_zombie_walk_takes_the_slowed_scale():
     half_up(calm * ONE, s_min_q16) ticks, calm after its own cadence --
     zombies lean in the wind like marines. Breaks if the zombie walk builds
     samples without the wind."""
+    from config import CFG
+    from simulation.speeds import speed_table
     g = GameMap(_gale_room())
+    # G1p-c: the zombie's cadence is the [speeds] shamble at this map's tile
+    shamble = speed_table(CFG, g.tile_size_m).zombie_shamble_ticks
     _blow(g, on=False)
     t_calm, z = _ticks_to_first_zombie_step(g)
-    assert t_calm == z.speed_ticks_per_tile
+    assert t_calm == shamble
     _blow(g, on=True)
     t_gale, z = _ticks_to_first_zombie_step(g)
-    assert t_gale == half_up(z.speed_ticks_per_tile * SCALE_ONE, _s_min_q16(g))
+    assert t_gale == half_up(shamble * SCALE_ONE, _s_min_q16(g))
     assert t_gale > t_calm
