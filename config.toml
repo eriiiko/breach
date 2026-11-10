@@ -2137,13 +2137,40 @@ density_max = 2.0        # clamp ceiling on frac: overpressure can push sway
 # read once when the renderer loads (restart to change), never on Unit, no
 # digest. All looks share the space marine's scale, so each is drawn at its own
 # true height relative to him (renderer/unit_model_renderer.py).
-player = ["space_marine"]
+player = ["soma_space_marine"]   # #184: the marine on the SOMA skeleton (the pose
+                                 # layer's [render.pose.skeletons.soma]); "space_marine"
+                                 # (the Quaternius file, the scale reference) is the A/B
 zombie = ["worker_male", "worker_female"]
 # Try the SOMA-skeleton worker (#179; pose layer [render.pose.skeletons.soma]):
 # swap this line in for the one above (any look of any skeleton can sit in
 # either list), or see every unit as him without editing anything:
 #   python art/characters/charkit/preview_in_game.py --root . --model assets/models/soma_worker_male/soma_worker_male.glb -- --level playground
 # zombie = ["soma_worker_male", "worker_male", "worker_female"]
+
+[render.held_props]
+# What a 3D unit holds (#184; renderer/held_props.py): a prop is its own asset
+# (character models carry none) drawn on a hand SOCKET of the unit's composed
+# pose ([render.pose.skeletons.*.sockets]) through the units' one lit shader,
+# in its projected shadow. Pose layer on only; a look whose skeleton has no
+# such socket holds nothing. Read once when the renderer loads. Every key is
+# required; a missing, unknown or mistyped one raises, naming it.
+weapons = { k5_carbine = "carbine" }   # [weapons.*] id (the unit's loadout weapon) -> prop
+
+[render.held_props.props.carbine]
+model = "cqb_carbine"   # assets/models/cqb_carbine (TRELLIS-normalised: long axis x, muzzle +x, up +y)
+length_m = 0.70         # the file's longest side is scaled to this
+socket = "right_hand"   # held on this socket (a grips row below)
+grip = [-0.1006, -0.0749, 0.0]   # the point the hand closes on, file units: the top of the
+                                 # pistol grip, under the receiver (found as local-models'
+                                 # blender/attach_weapon.py finds it)
+gloss = 0.12            # the lit shader's gloss for the whole prop (its albedo carries no gloss
+                        # alpha): its metallic-roughness map's mean roughness 0.45 through the
+                        # game-ready step's mapping ((0.85 - r) / 0.8)^3
+# Per socket: the grip point's place in the hand bone's frame (metres) and the
+# prop's turn there (XYZ Euler degrees, about x then y then z). right_hand:
+# the palm (half way from the wrist to the middle finger's end) with the barrel
+# toward the left palm, its top up, averaged over Rifle_Aim_Walk (#184 as-built).
+grips.right_hand = { offset_m = [0.0017, 0.096, -0.0327], rotation_deg = [123.36, 49.24, 98.12] }
 
 [render.unit_shading]
 # The 3D units' edge glow (renderer/marine_shader.py rim term). Read every
@@ -2403,15 +2430,99 @@ legs = [["LeftLeg", "LeftShin", "LeftFoot"],
 
 [render.pose.skeletons.soma]
 rate = 1.0              # the Kimodo clips are authored at true speed
+# Directional hits (#184): the flinch clip of the row whose from_deg is nearest
+# the direction the hit came from, relative to the facing (0 = in front, +90 =
+# from the unit's left, 180 = from behind). The direction is the attacker's
+# last drawn position; for an explosion the blast's centre (Erik's ruling);
+# unknown (no attacker) = the front. A skeleton without this list plays
+# [render.pose.hit] clip for every hit.
+hit_directions = [
+  { clip = "Hit_Chest", from_deg = 0.0 },
+  { clip = "Hit_Left", from_deg = 90.0 },
+  { clip = "Hit_Back", from_deg = 180.0 },
+  { clip = "Hit_Right", from_deg = -90.0 },
+]
+
+# Sockets (#184): the bone a held prop hangs on ([render.held_props]).
+[render.pose.skeletons.soma.sockets]
+right_hand = "RightHand"
+left_hand = "LeftHand"     # unused yet: a throw may move the carbine here (a reaction row, later)
 
 [render.pose.skeletons.soma.clip_names]   # Hit_Chest is its own name
 Idle_Loop = "Idle"
 Walk_Loop = "Walk"
 Death01 = "Fall"
-Pistol_Idle_Loop = "Rifle_Aim_Walk"      # the aim overlay (hands empty: no rifle prop yet)
+Pistol_Idle_Loop = "Rifle_Aim_Walk"      # the aim overlay
 Pistol_Shoot = "Rifle_Shoot"
 Punch_Jab = ""                           # no strike clip yet: a SOMA zombie's melee
 Punch_Cross = ""                         # reaction does nothing
+
+# The skeleton's own state rows (#184), keyed by its own clip names, for every
+# role on SOMA looks (a role's own row below still wins). A look lacking a clip
+# falls back as for a global row. The aiming walk is the forward walk; the
+# strafes and the backward walk take their LEGS from their own clips and the
+# torso, arms and head from the aiming walk: Rifle_Aim_Left / Rifle_Aim_Back
+# (and Rifle_Shoot) hold the rifle LEFT-handed (the right hand on the
+# handguard), which the carbine in the right hand cannot follow. Running
+# carries the rifle (the Walk clip is the rifle-carry walk) over the Run legs:
+# Run's own arms pump empty-handed.
+[render.pose.skeletons.soma.states]
+walk       = { legs = "Rifle_Aim_Walk",  upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
+walk_left  = { legs = "Rifle_Aim_Left",  upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
+walk_right = { legs = "Rifle_Aim_Right", upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
+walk_back  = { legs = "Rifle_Aim_Back",  upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
+run        = { legs = "Run",             upper = "Walk",           head = "Walk" }
+sprint     = { legs = "Run",             upper = "Walk",           head = "Walk" }   # no sprint clip yet: one line when it comes
+
+# Locomotion (#184, renderer/pose_locomotion.py): a unit of a role listed here
+# is driven by its DRAWN speed. Every looping clip's stride speed is measured
+# from the clip at load (the planted feet, `feet`; the first foot's swing is
+# the gait phase's zero), and a gait clip plays at drawn speed / stride speed
+# -- no literal rates, so the feet do not skate at any speed the sim sets.
+# gaits, slowest first: a gait steps up when its clip would play faster than
+# its max_rate x (1 + hysteresis), back down when the slower gait's clip would
+# play under its max_rate x (1 - hysteresis); the first gait starts above
+# min_rate (and stops below it) likewise -- choices RELATIVE TO THE CLIPS,
+# never a speed in m/s. sectors: the gait's state per direction of travel
+# against the facing (center_deg, + = the unit's left; each reaches half way
+# to its neighbours, sticky by sector_hysteresis_deg); the legs then twist by
+# the residual only (the travel against the clip's own measured travel). A
+# gait without sectors keeps [render.pose.aim_travel]'s two-sector rule (a
+# unit running sideways runs forward, its legs twisted up to theta_deg;
+# backwards past it). The drawn speed: the distance since the last position
+# change over the wall time since it, low-passed over speed_smooth_s; no
+# change for stop_after_s = stopped (it must outlast the gap between two
+# moves: a marine moves every sim tick, a zombie one tile every ~14 ticks);
+# a jump past teleport_m (model metres) is no walk. PLACEHOLDERS (HUMAN-TEST).
+[render.pose.skeletons.soma.locomotion]
+feet = ["LeftFoot", "RightFoot"]
+
+[render.pose.skeletons.soma.locomotion.roles.player]
+idle = "idle"
+hysteresis = 0.1
+sector_hysteresis_deg = 10.0
+speed_smooth_s = 0.15
+stop_after_s = 0.15
+teleport_m = 1.5
+gaits = [
+  { state = "walk", min_rate = 0.1, max_rate = 1.4, sectors = [
+      { state = "walk",       center_deg = 0.0 },
+      { state = "walk_left",  center_deg = 90.0 },
+      { state = "walk_back",  center_deg = 180.0 },
+      { state = "walk_right", center_deg = -90.0 },
+  ] },
+  { state = "run", max_rate = 1.25 },
+  { state = "sprint" },
+]
+
+[render.pose.skeletons.soma.locomotion.roles.zombie]
+idle = "idle"
+hysteresis = 0.1
+sector_hysteresis_deg = 10.0
+speed_smooth_s = 0.5
+stop_after_s = 0.9
+teleport_m = 1.5
+gaits = [ { state = "walk", min_rate = 0.1 } ]
 
 # A SOMA zombie walks Erik's generated hunch clip (Zombie_Hunch_Walk), so its
 # posture offsets default to OFF (0.0; the maps above stay, 1.0 = the stalk
@@ -2421,27 +2532,26 @@ Punch_Cross = ""                         # reaction does nothing
 posture = 0.0
 states.walk = { legs = "Zombie_Hunch_Walk", upper = "Zombie_Hunch_Walk", head = "Zombie_Hunch_Walk" }
 
-# The walk rates stop the feet skating: rate = the unit's DRAWN speed / the
-# clip's in-place stride speed (the stance foot's backward speed, measured
-# from the clip: Walk 1.34, Rifle_Aim_Walk 1.27, Zombie_Hunch_Walk 1.01 m/s).
-# Drawn speed: a unit moves 24 tps / speed_ticks_per_tile tiles per second
-# (a marine 24 / 18 = 1.333, a zombie 24 / 14 = 1.714 tiles/s), and the
-# renderer draws one tile as 1.885 / 6 = 0.3142 model metres (the space
-# marine's height = _SCALE_TILES_TALL 6 tiles): 0.419 m/s marine, 0.539 m/s
-# zombie. Retune with the sim's speeds (tests/test_pose_soma.py holds it).
+# Clip rows. The gait clips have no rate (#184): the locomotion above plays
+# them at the unit's drawn speed / their own measured stride speed, all in one
+# gait phase (the aim overlay's Rifle_Aim_Walk too: it holds still while the
+# unit stands).
 [render.pose.skeletons.soma.clips]
 Idle = {}
-Walk = { rate = 0.312 }                  # 0.419 / 1.344
-Run = {}                                 # registered, no run state yet
-Rifle_Aim_Walk = { rate = 0.330 }        # 0.419 / 1.27: the aim overlay (upper + head)
+Walk = {}
+Run = {}
+Rifle_Aim_Walk = {}
+Rifle_Aim_Left = {}
+Rifle_Aim_Right = {}
+Rifle_Aim_Back = {}
 Rifle_Shoot = { loop = false }           # the shot one-shot: a held aim, ~3 deg of sway
-Hit_Chest = { loop = false, rate = 1.5 } # the flinch additive (PLACEHOLDER, HUMAN-TEST)
-Hit_Back = { loop = false }              # registered: the hit event has no direction yet
-Hit_Left = { loop = false }
-Hit_Right = { loop = false }
+Hit_Chest = { loop = false, rate = 1.5 } # the flinch additives, by direction (PLACEHOLDER, HUMAN-TEST)
+Hit_Back = { loop = false, rate = 1.5 }
+Hit_Left = { loop = false, rate = 1.5 }
+Hit_Right = { loop = false, rate = 1.5 }
 Fall = { loop = false }                  # dead (dormant: dead units are not drawn); keeps its travel
 Get_Up = { loop = false }                # registered: knockdown is #149; keeps its travel
-Zombie_Hunch_Walk = { rate = 0.531 }     # 0.539 / 1.014
+Zombie_Hunch_Walk = {}
 
 # State -> clip per layer. The renderer's state names (select_clip): today
 # idle and walk; dead is dormant, as in CLIP_MAP (firing is the fire
@@ -2540,11 +2650,30 @@ layers = ["upper"]
 causes = ["melee"]
 suppress = ["arm_forward", "arm_open"]
 
+# Reload and throw (#184): one-shots time-scaled to the sim's own timing,
+# DORMANT until the gameplay pack (#183) emits the events (looked up by name:
+# ReloadEvent(unit_id, ticks) at the tick a reload starts, ThrowEvent(unit_id,
+# kind, ticks) at the start of the throw's wind-up). The reload clip plays over
+# exactly `ticks` sim ticks; the throw clip so that `release_s` (clip seconds,
+# the frame the hand lets go) lands at the end of the wind-up, the grenade's
+# release (Erik's ruling, 2026-11-10). clip "" = the reaction does nothing:
+# both clips are being generated -- the clip name is the one thing to fill in
+# (a look without the clip then does nothing; a clip no look holds is refused).
+[render.pose.reload]
+clip = ""
+layers = ["upper", "head"]
+
+[render.pose.throw]
+clip = ""
+layers = ["upper", "head"]
+release_s = 0.0         # PLACEHOLDER: the throw clip's release frame, clip seconds
+
 # Roles (#164; renderer/unit_looks.py ROLES, the role from is_zombie): the
 # reactions a unit of the role plays (fire = the aim hold + recoil on its own
-# shots, hit = the flinch, melee = the strike above) and its posture amount.
+# shots, hit = the flinch, melee = the strike above, reload / throw the
+# one-shots above) and its posture amount.
 [render.pose.roles]
-player = { reactions = ["fire", "hit"], posture = 0.0 }
+player = { reactions = ["fire", "hit", "reload", "throw"], posture = 0.0 }
 zombie = { reactions = ["melee", "hit"], posture = 1.0 }
 
 # Per-clip playback rows; a clip without a row loops at the global rate with

@@ -516,7 +516,7 @@ def _cast(r, events_at, frames=8):
 
 
 def _melee_layers(r):
-    return r._pose.rig(SHIPPED[0]).melee_layers
+    return r._pose.rig(ZOMBIE_LOOKS[0]).melee_layers   # #184: the melee is a zombie's
 
 
 def _playing_melee(r, ps):

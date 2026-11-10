@@ -136,7 +136,19 @@ class RoleSettings:
     posture: float
 
 
-REACTIONS = ("fire", "hit", "melee")
+@dataclass(frozen=True)
+class TimedShotSettings:
+    """``[render.pose.reload]`` / ``[render.pose.throw]`` (#184): a one-shot
+    ``clip`` on ``layers``, time-scaled to the event's length in sim ticks
+    -- the reload's whole clip over its ticks; the throw so that its
+    ``release_s`` (clip seconds) lands at the end of the wind-up.
+    ``clip`` :data:`ABSENT_CLIP` = the reaction does nothing (no clip yet)."""
+    clip: str
+    layers: Tuple[str, ...]
+    release_s: float = 0.0
+
+
+REACTIONS = ("fire", "hit", "melee", "reload", "throw")
 
 # A ``clip_names`` value meaning "this skeleton has no such clip" (#179): a
 # state falls back as for any missing clip; an overlay leaves that layer
@@ -167,11 +179,30 @@ class SkeletonPlayback:
     * ``clips``: per-clip rows keyed by THIS skeleton's clip names,
       replacing the global ``[render.pose.clips]`` (None = the global rows).
     * ``roles``: per-role overrides on this skeleton (:class:`SkeletonRole`).
+
+    #184 adds:
+
+    * ``states``: state rows keyed by THIS skeleton's clip names, for every
+      role on its looks -- replacing a global row of the same name, or a
+      state of the skeleton's own (a strafe) the global table lacks. A
+      role's own row (``roles``) still wins.
+    * ``locomotion``: the gait / direction / derived-rate table
+      (``pose_locomotion.LocomotionRule``); None = the renderer's idle /
+      walk and the two-sector twist, as before.
+    * ``hit_directions``: per-direction flinch clips, ``(clip, from)`` with
+      ``from`` the direction the hit comes from relative to the facing
+      (radians, + = the unit's left); empty = the single ``[render.pose.hit]``
+      clip.
+    * ``sockets``: socket name -> bone name (a held prop's hand).
     """
     clip_names: Dict[str, str] = field(default_factory=dict)
     rate: Optional[float] = None
     clips: Optional[Dict[str, ClipRow]] = None
     roles: Dict[str, SkeletonRole] = field(default_factory=dict)
+    states: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    locomotion: Optional[Any] = None
+    hit_directions: Tuple[Tuple[str, float], ...] = ()
+    sockets: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -199,6 +230,9 @@ class PoseSettings:
     # #179: per-skeleton clip names, rate, clip rows and role overrides
     # (a skeleton table without them plays the global ones)
     playback: Dict[str, SkeletonPlayback] = field(default_factory=dict)
+    # #184: the reload and throw one-shots (clip "" = off)
+    reload: Optional[TimedShotSettings] = None
+    throw: Optional[TimedShotSettings] = None
 
 
 def _as_dict(obj) -> Dict[str, Any]:
@@ -227,8 +261,11 @@ def _names(value, where: str) -> Tuple[str, ...]:
 
 _TOP_KEYS = ("enabled", "rate", "crossfade_s", "layers", "fallback_state",
              "event_queue", "skeletons", "states", "clips", "overlays", "fire",
-             "hit", "aim_travel", "posture", "melee", "roles")
+             "hit", "aim_travel", "posture", "melee", "roles", "reload", "throw")
 _MELEE_KEYS = ("clips", "layers", "causes", "suppress")
+_RELOAD_KEYS = ("clip", "layers")
+_THROW_KEYS = ("clip", "layers", "release_s")
+_HIT_DIR_KEYS = ("clip", "from_deg")
 _ROLE_KEYS = ("reactions", "posture")
 _CLIP_KEYS = ("loop", "rate", "root_motion", "additive_ref")
 _FIRE_KEYS = ("overlay", "aim_hold_s", "shot_clip", "shot_layer")
@@ -238,7 +275,9 @@ _AIM_TRAVEL_KEYS = ("theta_deg", "hysteresis_deg", "smooth_s", "twist_rate_deg_s
 _TWIST_KEYS = ("lower", "counter", "shares")
 _SKELETON_KEYS = ("masks", "twist", "posture")
 # #179: optional per-skeleton playback keys; absent = the global table
-_SKELETON_PLAYBACK_KEYS = ("clip_names", "rate", "clips", "roles")
+# (#184: states, locomotion, hit_directions, sockets)
+_SKELETON_PLAYBACK_KEYS = ("clip_names", "rate", "clips", "roles", "states",
+                           "locomotion", "hit_directions", "sockets")
 _SKELETON_ROLE_KEYS = ("posture", "states")
 
 
@@ -303,6 +342,13 @@ def _parse_playback(sk_name: str, sk: Dict[str, Any], layers: Sequence[str],
         rate = _number(rate, f"{where} rate", 0.0, lo_open=True)
     clips = (_parse_clip_rows(sk["clips"], f"{where} clips")
              if "clips" in sk else None)
+    # #184: the skeleton's own state rows (its own clip names)
+    own_raw = sk.get("states", {})
+    if not isinstance(own_raw, dict):
+        raise PoseConfigError(f"{where} states must be a table of state rows")
+    own_states = {n: _state_row(v, layers, f"{where} states.{n}")
+                  for n, v in own_raw.items()}
+    all_states = set(states) | set(own_states)
     roles_raw = sk.get("roles", {})
     if not isinstance(roles_raw, dict):
         raise PoseConfigError(f"{where} roles must be a table of role rows")
@@ -317,14 +363,38 @@ def _parse_playback(sk_name: str, sk: Dict[str, Any], layers: Sequence[str],
         if not isinstance(st, dict):
             raise PoseConfigError(f"{rw} states must be a table of state rows")
         for st_name in st:
-            if st_name not in states:
-                raise PoseConfigError(f"{rw} states.{st_name}: not a "
-                                      f"[render.pose.states] state {sorted(states)}")
+            if st_name not in all_states:
+                raise PoseConfigError(f"{rw} states.{st_name}: not a [render.pose.states] "
+                                      f"state nor one of the skeleton's own "
+                                      f"{sorted(all_states)}")
         sroles[role] = SkeletonRole(
             posture=_number(r["posture"], f"{rw} posture", 0.0, hi=1.0),
             states={n: _state_row(v, layers, f"{rw} states.{n}") for n, v in st.items()})
+    loco = None
+    if "locomotion" in sk:
+        from .pose_locomotion import LocomotionConfigError, parse_locomotion
+        try:
+            loco = parse_locomotion(sk["locomotion"], f"{where} locomotion", list(roles),
+                                    sorted(all_states))
+        except LocomotionConfigError as exc:
+            raise PoseConfigError(str(exc)) from None
+    hd_raw = sk.get("hit_directions", [])
+    if not isinstance(hd_raw, list):
+        raise PoseConfigError(f"{where} hit_directions must be a list of rows")
+    hit_dirs = []
+    for i, row in enumerate(hd_raw):
+        hw = f"{where} hit_directions[{i}]"
+        r = _exact_table(row, _HIT_DIR_KEYS, hw)
+        f_deg = _number(r["from_deg"], f"{hw} from_deg", -180.0, hi=180.0)
+        hit_dirs.append((_name(r["clip"], f"{hw} clip"), float(np.radians(f_deg))))
+    sock_raw = sk.get("sockets", {})
+    if not isinstance(sock_raw, dict) or not all(
+            isinstance(k, str) and k and isinstance(v, str) and v for k, v in sock_raw.items()):
+        raise PoseConfigError(f"{where} sockets must be a table of socket = bone name, "
+                              f"got {sock_raw!r}")
     return SkeletonPlayback(clip_names=dict(names_raw), rate=rate, clips=clips,
-                            roles=sroles)
+                            roles=sroles, states=own_states, locomotion=loco,
+                            hit_directions=tuple(hit_dirs), sockets=dict(sock_raw))
 
 
 def _exact_table(d, keys: Sequence[str], where: str) -> Dict[str, Any]:
@@ -560,10 +630,29 @@ def pose_settings(cfg) -> PoseSettings:
             reactions=tuple(rx),
             posture=_number(r["posture"], f"{rw} {role} posture", 0.0, hi=1.0))
 
+    # #184: reload / throw one-shots (clip "" = off until the clip exists)
+    def timed(key: str, keys: Sequence[str]) -> TimedShotSettings:
+        tw = f"[render.pose.{key}]"
+        t = _exact_table(d[key], keys, tw)
+        clip = t["clip"]
+        if not isinstance(clip, str):
+            raise PoseConfigError(f"{tw} clip must be a clip name or \"\" (none yet), "
+                                  f"got {clip!r}")
+        t_layers = _names(t["layers"], f"{tw} layers")
+        bad = [x for x in t_layers if x not in layers]
+        if bad:
+            raise PoseConfigError(f"{tw} layers {bad} are not layers {list(layers)}")
+        rel = _number(t["release_s"], f"{tw} release_s", 0.0) if "release_s" in keys else 0.0
+        return TimedShotSettings(clip=clip, layers=t_layers, release_s=rel)
+
+    reload = timed("reload", _RELOAD_KEYS)
+    throw = timed("throw", _THROW_KEYS)
+
     # #179: per-skeleton playback (clip names, rate, rows, role overrides)
-    canonical = sorted({c for row in states.values() for c in row.values()}
-                       | {c for row in overlays.values() for c in row.values()}
-                       | {fire.shot_clip, hit.clip} | set(melee.clips))
+    canonical = sorted(({c for row in states.values() for c in row.values()}
+                        | {c for row in overlays.values() for c in row.values()}
+                        | {fire.shot_clip, hit.clip} | set(melee.clips)
+                        | {reload.clip, throw.clip}) - {ABSENT_CLIP})
     playback = {sk_name: _parse_playback(sk_name, sk, layers, canonical, roles, states)
                 for sk_name, sk in skel_tables.items()}
 
@@ -573,7 +662,8 @@ def pose_settings(cfg) -> PoseSettings:
                         skeletons=tuple(skeletons), states=states, clips=clips,
                         overlays=overlays, fire=fire, hit=hit, aim_travel=aim_travel,
                         twists=twists, posture=posture, postures=postures,
-                        melee=melee, roles=roles, playback=playback)
+                        melee=melee, roles=roles, playback=playback,
+                        reload=reload, throw=throw)
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +761,12 @@ class PoseState:
                  "layer_rate", "twist", "travel", "back", "aim_left",
                  "shot_pending", "flinch_t", "flinch_peak",
                  "posture", "noise", "tau", "tempo", "melee_pending",
-                 "melee_next", "melee_w")
+                 "melee_next", "melee_w",
+                 # #184: locomotion (drawn speed, gait, sector, gait phase),
+                 # the per-hit flinch clip, the timed one-shot (reload /
+                 # throw), and per-prop socket overrides (none yet)
+                 "speed", "motion_acc", "motion_d", "motion_t", "gait", "sector", "gait_phase",
+                 "loco_state", "flinch_clip", "timed", "prop_sockets")
 
     def __init__(self, look: str, clips: np.ndarray) -> None:
         n = len(clips)
@@ -705,6 +800,41 @@ class PoseState:
         self.melee_pending = False
         self.melee_next = 0
         self.melee_w = 0.0
+        # #184
+        self.speed = 0.0               # drawn speed, model m per wall s
+        self.motion_acc = 0.0          # wall s since the last position change
+        self.motion_d = 0.0            # low-passed distance per sample (model m)
+        self.motion_t = 0.0            # low-passed wall s per sample
+        self.gait = -1                 # gait row index, -1 = idle
+        self.sector = -1               # sector index within the gait
+        self.gait_phase = 0.0          # [0, 1): the shared phase of the gait clips
+        self.loco_state: Optional[str] = None
+        self.flinch_clip = NO_CLIP     # the clip of the current flinch
+        self.timed: Optional["TimedShot"] = None
+        self.prop_sockets: Dict[str, str] = {}   # prop -> socket (a future reaction's row)
+
+
+@dataclass
+class TimedShot:
+    """A running time-scaled one-shot (#184, reload / throw): ``clip`` on
+    ``layers`` at clip time ``t``, advancing ``speed`` clip s per wall s
+    until ``t`` reaches ``change_at``, then ``speed_after``."""
+    clip: int
+    layers: Tuple[int, ...]
+    t: float
+    speed: float
+    change_at: float
+    speed_after: float
+
+    def step(self, dt: float) -> None:
+        if self.t < self.change_at:
+            nxt = self.t + dt * self.speed
+            if nxt > self.change_at and self.speed > 0.0:
+                rest = dt - (self.change_at - self.t) / self.speed
+                nxt = self.change_at + rest * self.speed_after
+            self.t = nxt
+        else:
+            self.t += dt * self.speed_after
 
 
 @dataclass
@@ -756,6 +886,14 @@ class LookRig:
     clip_names: Dict[str, str] = field(default_factory=dict)
     role_state_clips: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
     role_posture: Dict[str, float] = field(default_factory=dict)
+    # #184: locomotion (pose_locomotion.ResolvedLocomotion; None = none),
+    # the per-direction flinch clips ((clip, from), empty = hit_clip), the
+    # reload / throw one-shot clips, and the sockets (name -> bone index)
+    locomotion: Optional[Any] = None
+    hit_dirs: Tuple[Tuple[int, float], ...] = ()
+    reload_clip: int = NO_CLIP
+    throw_clip: int = NO_CLIP
+    sockets: Dict[str, int] = field(default_factory=dict)
 
     def clip_name(self, canonical: str) -> str:
         """This look's own name for a clip the tables name (#179); a name
@@ -837,6 +975,20 @@ class PoseLayer:
                     clip = fb[layer]
                 ids.append(bank.index(clip))
             rig.state_clips[st_name] = np.array(ids, dtype=np.int64)
+        # #184: the skeleton's own state rows (its own clip names); a clip
+        # the look lacks falls back as a global row's does (a skeleton's
+        # looks need not all hold every clip: the SOMA worker has no strafes)
+        for st_name, row in pb.states.items():
+            ids = []
+            for layer in s.layers:
+                clip = row[layer]
+                if not bank.has(clip):
+                    self.warnings.append(f"{name}: [render.pose.skeletons.{sk_name}] "
+                                         f"states.{st_name} layer {layer!r} clip {clip!r} "
+                                         f"missing; plays {fb[layer]!r}")
+                    clip = fb[layer]
+                ids.append(bank.index(clip))
+            rig.state_clips[st_name] = np.array(ids, dtype=np.int64)
         # #179: the skeleton's own rows for a role (clips required: the
         # skeleton table names them for its own looks)
         for role, sr in pb.roles.items():
@@ -868,6 +1020,29 @@ class PoseLayer:
             rig.hit_clip = self._clip_or_raise(bank, own(s.hit.clip), name,
                                                "[render.pose.hit] clip")
             rig.hit_bones = masks.weights[[masks.index(m) for m in s.hit.masks]].sum(0)
+            # #184: per-direction flinch clips (the skeleton's own names)
+            rig.hit_dirs = tuple(
+                (self._clip_or_raise(bank, clip, name,
+                                     f"[render.pose.skeletons.{sk_name}] hit_directions"),
+                 frm) for clip, frm in pb.hit_directions)
+        # #184: reload / throw -- a look without the clip does nothing (only
+        # the looks that reload or throw need it); the renderer refuses a
+        # named clip that NO look holds
+        for key, attr in (("reload", "reload_clip"), ("throw", "throw_clip")):
+            ts = getattr(s, key)
+            if ts is not None and ts.clip != ABSENT_CLIP and own(ts.clip) != ABSENT_CLIP:
+                if bank.has(own(ts.clip)):
+                    setattr(rig, attr, bank.index(own(ts.clip)))
+                else:
+                    self.warnings.append(f"{name}: [render.pose.{key}] clip "
+                                         f"{own(ts.clip)!r} missing; the {key} reaction "
+                                         "does nothing on this look")
+        # #184: sockets (a look whose skeleton lacks the bone holds no prop there)
+        for sock, bone in pb.sockets.items():
+            if bone not in bank.skeleton.names:
+                raise PoseConfigError(f"{name}: [render.pose.skeletons.{sk_name}] sockets."
+                                      f"{sock} bone {bone!r} is not in {bank.skeleton.source}")
+            rig.sockets[sock] = bank.skeleton.index(bone)
         if s.melee is not None:
             ids = [self._clip_or_raise(bank, own(c), name, "[render.pose.melee] clips")
                    for c in s.melee.clips]
@@ -886,6 +1061,18 @@ class PoseLayer:
                 raise PoseConfigError(str(exc)) from None
         for mod in self.modifiers:
             mod.prepare(rig)
+        if pb.locomotion is not None:                    # #184
+            from .pose_locomotion import LocomotionConfigError, resolve as loco_resolve
+            if s.aim_travel is None:
+                raise PoseConfigError(f"{name}: [render.pose.skeletons.{sk_name}] "
+                                      "locomotion needs [render.pose.aim_travel]")
+            try:
+                rig.locomotion = loco_resolve(
+                    pb.locomotion, rig, lambda st, role: self._state_ids(rig, st, role),
+                    f"{name}: [render.pose.skeletons.{sk_name}] locomotion")
+            except LocomotionConfigError as exc:
+                raise PoseConfigError(str(exc)) from None
+            self.warnings.extend(rig.locomotion.warnings)
         self._rigs[name] = rig
         return rig
 
@@ -921,6 +1108,7 @@ class PoseLayer:
         rig = self._rigs[look]
         ps = PoseState(look, self._state_ids(rig, state, role))
         ps.state = state
+        ps.flinch_clip = rig.hit_clip
         return ps
 
     def role_posture(self, look: str, role: str) -> float:
@@ -986,19 +1174,114 @@ class PoseLayer:
         ps.aim_left = f.aim_hold_s
         ps.shot_pending = True
 
-    def hit(self, ps: PoseState, damage: float, cause: Optional[str] = None) -> None:
+    def hit(self, ps: PoseState, damage: float, cause: Optional[str] = None,
+            source: Optional[float] = None) -> None:
         """This unit was hit: (re)start the flinch additive at a weight that
         rises with ``damage``, clamped to ``[weight_min, weight_max]``. A
         cause outside ``[render.pose.hit] causes`` does nothing (a burn's
         per-tick damage must not make the unit twitch). A retrigger restarts
         the clip: a second jolt (the clip's first key is its own additive
-        reference, so the restart lands on the un-flinched pose)."""
+        reference, so the restart lands on the un-flinched pose).
+
+        #184: ``source`` is the direction the hit came from, relative to the
+        unit's facing (radians, + = its left; None = unknown, taken as the
+        front). On a look whose skeleton has ``hit_directions`` the flinch
+        clip is the row nearest it; otherwise the single clip."""
         h = self.settings.hit
         if h is None or (cause is not None and cause not in h.causes):
             return
         x = min(1.0, max(0.0, float(damage) / h.damage_full))
         ps.flinch_peak = h.weight_min + (h.weight_max - h.weight_min) * x
         ps.flinch_t = 0.0
+        ps.flinch_clip = self.flinch_clip_for(self._rigs[ps.look], source)
+
+    @staticmethod
+    def flinch_clip_for(rig: LookRig, source: Optional[float]) -> int:
+        """The flinch clip of a hit from ``source`` (see :meth:`hit`)."""
+        if not rig.hit_dirs:
+            return rig.hit_clip
+        a = 0.0 if source is None else float(source)
+
+        def gap(row) -> float:
+            return abs((a - row[1] + np.pi) % (2.0 * np.pi) - np.pi)
+        return int(min(rig.hit_dirs, key=gap)[0])
+
+    def reload(self, ps: PoseState, seconds: float) -> None:
+        """A reload started (#184): the reload clip plays over exactly
+        ``seconds`` (the event's ticks / ticks per second) on the row's
+        layers. Nothing on a look without the clip, or for ``seconds <= 0``."""
+        rig = self._rigs[ps.look]
+        ts = self.settings.reload
+        if ts is None or rig.reload_clip == NO_CLIP or not seconds > 0.0:
+            return
+        dur = float(rig.bank.duration[rig.reload_clip])
+        speed = dur / float(seconds)
+        ps.timed = TimedShot(clip=rig.reload_clip,
+                             layers=tuple(self.settings.layers.index(l) for l in ts.layers),
+                             t=0.0, speed=speed, change_at=dur, speed_after=speed)
+
+    def throw(self, ps: PoseState, windup_s: float) -> None:
+        """A throw's wind-up started (#184): the throw clip plays so that its
+        ``release_s`` lands exactly ``windup_s`` from now (the grenade leaves
+        at the end of the wind-up) and at its authored speed after. A wind-up
+        at least as long as the clip's own (``release_s`` at authored speed)
+        plays the clip from its start, slowed; a shorter one starts the clip
+        part-way, at authored speed; ``windup_s <= 0`` (an instant throw)
+        plays the follow-through from the release on."""
+        rig = self._rigs[ps.look]
+        ts = self.settings.throw
+        if ts is None or rig.throw_clip == NO_CLIP:
+            return
+        c = rig.throw_clip
+        dur = float(rig.bank.duration[c])
+        rel = min(ts.release_s, dur)
+        authored = rig.rate * float(rig.bank.rate[c])
+        w = max(0.0, float(windup_s))
+        if w * authored >= rel and w > 0.0:
+            t0, speed = 0.0, rel / w
+        else:
+            t0, speed = rel - w * authored, authored
+        ps.timed = TimedShot(clip=c,
+                             layers=tuple(self.settings.layers.index(l) for l in ts.layers),
+                             t=t0, speed=speed, change_at=rel, speed_after=authored)
+
+    def socket_bone(self, ps: PoseState, prop: str, default_socket: str) -> int:
+        """The bone a held prop hangs on for this unit (#184): the unit's
+        socket for ``prop`` (``ps.prop_sockets`` -- where a future reaction
+        row moves a prop, e.g. the carbine to the left hand for a throw;
+        nothing writes it yet) or ``default_socket``, resolved on the unit's
+        look; -1 when its skeleton has no such socket."""
+        socket = ps.prop_sockets.get(prop, default_socket)
+        return self._rigs[ps.look].sockets.get(socket, -1)
+
+    def locomotes(self, look: str, role: Optional[str]) -> bool:
+        """Whether units of ``role`` drawn with ``look`` are driven by the
+        locomotion table (#184)."""
+        loco = self._rigs[look].locomotion
+        return loco is not None and role in loco.roles
+
+    def locomote(self, ps: PoseState, state: str, moved_m: float,
+                 travel: Optional[float], moving: bool, dt: float,
+                 role: Optional[str] = None, start_span_s: float = 1.0 / 24.0) -> str:
+        """The unit's motion this frame (#163, #184); returns the state to
+        :meth:`drive`. On a look whose skeleton carries a ``locomotion``
+        table for ``role``: the gait, the direction and the gait phase from
+        the drawn speed (``moved_m``: model metres moved since the last
+        frame) and the relative ``travel`` (``pose_locomotion.locomote``),
+        replacing the renderer's ``state`` when it is one the table drives
+        (its idle or a gait / sector state). Otherwise exactly
+        :meth:`steer` (``state`` returned unchanged). ``start_span_s``: one
+        sim tick in wall seconds (the span of a first delta after a stop)."""
+        rig = self._rigs[ps.look]
+        loco = rig.locomotion
+        if loco is None or role not in loco.roles:
+            self.steer(ps, travel, moving, dt)
+            return state
+        if state not in loco.rule.states():
+            return state
+        from .pose_locomotion import locomote
+        return locomote(ps, loco, loco.roles[role], self.settings.aim_travel,
+                        moved_m, travel, dt, start_span_s)
 
     def melee(self, ps: PoseState) -> None:
         """This unit's melee strike landed (#164): the next :meth:`drive`
@@ -1101,11 +1384,24 @@ class PoseLayer:
                 c = ps.clip[ml]
                 if np.isin(c, mc) and ps.time[ml] < rig.bank.duration[c]:
                     want[ml] = c                          # the strike plays out
+        tm = ps.timed                                     # #184: reload / throw
+        if tm is not None and tm.t >= rig.bank.duration[tm.clip]:
+            ps.timed = tm = None                          # played out: back to the state
+        if tm is not None:
+            for tl in tm.layers:
+                want[tl] = tm.clip
         for layer in range(len(want)):
             self.set_layer_clip(ps, layer, int(want[layer]))
         ps.state = state
         ps.tempo = self._tempo(ps)
         self.advance(ps, dt)
+        if rig.locomotion is not None and role in rig.locomotion.roles:
+            from .pose_locomotion import lock_phase
+            lock_phase(ps, rig.locomotion, rig.bank)      # #184: one gait phase
+        if tm is not None:
+            for tl in tm.layers:
+                ps.time[tl] = min(tm.t, float(rig.bank.duration[tm.clip]))
+            tm.step(max(dt, 0.0))
         ps.tau += max(dt, 0.0)
         ps.aim_left = max(0.0, ps.aim_left - max(dt, 0.0))
         self._flinch(ps, rig, dt)
@@ -1127,7 +1423,7 @@ class PoseLayer:
         h = self.settings.hit
         if h is None or ps.flinch_t < 0.0:
             return
-        c = rig.hit_clip
+        c = ps.flinch_clip if ps.flinch_clip != NO_CLIP else rig.hit_clip   # #184
         if c == NO_CLIP:                       # #179: the look has no flinch clip
             ps.flinch_t = -1.0
             return
@@ -1374,7 +1670,7 @@ __all__ = [
     "PoseConfigError", "PoseSettings", "MaskRule", "MaskTable", "PoseState",
     "TwistRule", "FireSettings", "HitSettings", "AimTravelSettings",
     "MeleeSettings", "RoleSettings", "REACTIONS", "SkeletonPlayback",
-    "SkeletonRole", "ABSENT_CLIP",
+    "SkeletonRole", "ABSENT_CLIP", "TimedShotSettings", "TimedShot",
     "PoseBatch", "PoseModifier", "LookRig", "PoseLayer", "pose_settings",
     "masks_for", "sample_bank", "forward_kinematics", "global_trs",
     "GLOBAL_TRS_WIDTH", "NO_CLIP",

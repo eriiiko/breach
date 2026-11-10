@@ -28,22 +28,24 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests"):
         sys.path.insert(0, str(_p))
 
 from config import CFG  # noqa: E402
-from renderer.pose_clips import read_glb  # noqa: E402
 from renderer.pose_layer import (NO_CLIP, PoseConfigError, PoseLayer,  # noqa: E402
                                  SkeletonPlayback, forward_kinematics, pose_settings)
 from renderer.pose_posture import PARAMS, apply  # noqa: E402
-from renderer.unit_looks import all_look_names, look_path, looks_table  # noqa: E402
+from renderer.unit_looks import look_path  # noqa: E402
+
+from _pose_looks import quaternius_looks  # noqa: E402
 
 SOMA = "soma_worker_male"
+SOMA_MARINE = "soma_space_marine"                # #184: the player's look
 SOMA_TABLE = "soma"
-QUAT = all_look_names(looks_table(CFG))          # the shipped (Quaternius) looks
+QUAT = quaternius_looks()                        # the Quaternius looks (space_marine first)
 SETTINGS = pose_settings(CFG)
 
 
 @pytest.fixture(scope="module")
 def layer() -> PoseLayer:
     pl = PoseLayer(SETTINGS)
-    for name in QUAT + [SOMA]:
+    for name in QUAT + [SOMA, SOMA_MARINE]:
         pl.add_look(name, look_path(name))
     return pl
 
@@ -141,19 +143,6 @@ def test_looping_soma_clips_wrap_seamlessly(layer):
 # playback speed: the feet do not skate
 # ---------------------------------------------------------------------------
 
-def _model_m_per_tile() -> float:
-    """Model metres one drawn tile spans: the renderer draws the space marine
-    (the scale reference) ``_SCALE_TILES_TALL`` tiles tall."""
-    from renderer import unit_model_renderer as umr
-    doc, _ = read_glb(umr._MODEL_PATH)
-    lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
-    for mesh in doc["meshes"]:
-        for prim in mesh["primitives"]:
-            acc = doc["accessors"][prim["attributes"]["POSITION"]]
-            lo, hi = np.minimum(lo, acc["min"]), np.maximum(hi, acc["max"])
-    return float(hi[1] - lo[1]) / umr._SCALE_TILES_TALL
-
-
 def _stance_speed(rig, clip: str) -> float:
     """The clip's in-place stride speed (model m/s of clip time): the
     median backward speed of the feet while they are on the ground (their
@@ -172,30 +161,29 @@ def _stance_speed(rig, clip: str) -> float:
     return float(np.mean(speeds))
 
 
-@pytest.mark.parametrize("clip, role, ticks", [
-    ("Walk_Loop", None, lambda: CFG.movement.marine_attack_ticks_per_tile),
-    ("Pistol_Idle_Loop", None, lambda: CFG.movement.marine_attack_ticks_per_tile),
-    ("Zombie_Hunch_Walk", "zombie", lambda: CFG.zombie.ticks_per_tile),
-])
-def test_a_soma_walk_strides_at_the_units_drawn_speed(layer, clip, role, ticks):
-    """PROPERTY: a SOMA walking clip played at its effective rate (skeleton
-    rate x clip rate) moves its planted foot back at the speed the unit
-    moves on screen -- 24 tps / the unit's ticks per tile, in tiles/s,
-    times the model metres a drawn tile spans -- within 5 %: the feet do
-    not skate. (The aim overlay is held to the walk's speed too, so its arm
-    swing keeps the legs' tempo.)
+@pytest.mark.parametrize("look", [SOMA, SOMA_MARINE])
+@pytest.mark.parametrize("clip", ["Walk_Loop", "Pistol_Idle_Loop", "Zombie_Hunch_Walk"])
+def test_the_measured_stride_agrees_with_an_independent_measurement(layer, look, clip):
+    """PROPERTY (#184): the pose code's stride measurement
+    (``pose_locomotion.measure_gait``, the ONE the derived rates use) of a
+    forward walking clip agrees within 5 % with this file's own, simpler
+    measurement (the feet's median backward speed while low, the knee-bend
+    legs' last bones) -- and says the clip walks forward (within 15 deg).
 
-    BREAKS IF: the sim's walking speed or tick rate is retuned, the
-    renderer's scale changes, the clip is re-exported at another speed, or
-    the SOMA rate rows are edited -- without re-deriving the rate.
+    BREAKS IF: the measurement is changed into something else (a wrong
+    axis, the swing foot instead of the planted one, a sign), which would
+    make every derived rate skate.
     """
-    rig = layer.rig(SOMA)
+    from renderer.pose_locomotion import measure_gait
+    rig = layer.rig(look)
     own = rig.clip_name(clip)
-    c = rig.bank.index(own)
-    rate = rig.rate * rig.bank.rate[c]
-    feet = _stance_speed(rig, own) * rate
-    unit = CFG.clock.ticks_per_second / ticks() * _model_m_per_tile()
-    assert abs(feet / unit - 1.0) < 0.05, (own, rate, feet, unit)
+    sk = rig.bank.skeleton
+    feet = [sk.index(leg[2]) for leg in SETTINGS.postures[rig.skeleton_table].knee.legs]
+    m = measure_gait(rig.bank, rig.bank.index(own), feet)
+    assert m is not None, own
+    ref = _stance_speed(rig, own)
+    assert abs(m.stride / ref - 1.0) < 0.05, (own, m.stride, ref)
+    assert abs(math.degrees(m.travel)) < 15.0, (own, math.degrees(m.travel))
 
 
 # ---------------------------------------------------------------------------

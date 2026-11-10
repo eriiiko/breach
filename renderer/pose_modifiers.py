@@ -181,6 +181,17 @@ def steer(ps: PoseState, a: AimTravelSettings, legs_layer: int,
     """
     if dt <= 0.0:
         return
+    alpha = lowpass_travel(ps, a, travel, moving, dt)
+    slew_twist(ps, a, backpedal_goal(ps, a, alpha), dt)
+    ps.layer_rate[legs_layer] = -1.0 if ps.back else 1.0
+
+
+def lowpass_travel(ps: PoseState, a: AimTravelSettings, travel: Optional[float],
+                   moving: bool, dt: float) -> float:
+    """:func:`steer`'s first stage, shared with the locomotion (#184): the
+    relative travel low-passed as a vector (target ``travel``; forward when
+    not moving; held when moving with no delta this frame). Returns its
+    angle ``alpha`` (radians, + = the unit's left)."""
     if travel is not None:
         target = (math.cos(travel), math.sin(travel))
     elif not moving:
@@ -190,17 +201,29 @@ def steer(ps: PoseState, a: AimTravelSettings, legs_layer: int,
     if target is not None:
         k = 1.0 if a.smooth_s <= 0.0 else 1.0 - math.exp(-dt / a.smooth_s)
         ps.travel = ps.travel + (np.array(target) - ps.travel) * k
-    alpha = math.atan2(float(ps.travel[1]), float(ps.travel[0]))
+    return math.atan2(float(ps.travel[1]), float(ps.travel[0]))
+
+
+def backpedal_goal(ps: PoseState, a: AimTravelSettings, alpha: float) -> float:
+    """The two-sector rule (#163): forward within ``theta``, backpedal past
+    ``theta + hysteresis`` (sets ``ps.back``); the legs' yaw goal, clamped
+    to ``+-theta``."""
     if ps.back:
         if abs(alpha) < a.theta - a.hysteresis:
             ps.back = False
     elif abs(alpha) > a.theta + a.hysteresis:
         ps.back = True
     goal = _wrap_pi(alpha - math.pi) if ps.back else alpha
-    goal = min(a.theta, max(-a.theta, goal))
+    return min(a.theta, max(-a.theta, goal))
+
+
+def slew_twist(ps: PoseState, a: AimTravelSettings, goal: float, dt: float) -> None:
+    """The twist moves toward ``goal`` at most ``twist_rate * dt``."""
     step = a.twist_rate * dt
     ps.twist += min(step, max(-step, goal - ps.twist))
-    ps.layer_rate[legs_layer] = -1.0 if ps.back else 1.0
 
 
-__all__ = ["AimTravelTwist", "steer"]
+__all__ = ["AimTravelTwist", "steer", "lowpass_travel", "backpedal_goal",
+           "slew_twist", "wrap_pi"]
+
+wrap_pi = _wrap_pi

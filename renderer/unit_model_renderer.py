@@ -157,6 +157,24 @@ def pose_layer_enabled(cfg) -> bool:
     return value
 
 
+# #184: the render-only events the reload and throw reactions read, looked up
+# BY NAME in simulation.events -- the gameplay pack (#183) adds them; until
+# then both reactions are inert. ReloadEvent(unit_id, ticks): a reload starts,
+# lasting `ticks`; ThrowEvent(unit_id, kind, ticks): a throw's wind-up starts,
+# lasting `ticks` (the grenade leaves at its end).
+RELOAD_EVENT = "ReloadEvent"
+THROW_EVENT = "ThrowEvent"
+
+
+@dataclass(frozen=True)
+class _SourcedHit:
+    """#184: a hit event queued with the point it came from (tile units;
+    None = unknown) -- the blast centre for an explosion, else the
+    attacker's last drawn centre."""
+    event: object
+    source: Optional[tuple]
+
+
 @dataclass
 class _UnitAnimState:
     """Renderer-side per-unit animation state (NEVER on Unit)."""
@@ -168,6 +186,9 @@ class _UnitAnimState:
     initialised: bool = False
     shadow: Optional[ShadowCast] = None   # projected shadow, low-passed (#33)
     pose: Optional[object] = None         # pose_layer.PoseState (#162; pose layer on)
+    # #184: the unit's last drawn centre (tile units), kept across the game's
+    # two draw_units calls (players, zombies): a hit's attacker position
+    centre: Optional[tuple] = None
 
 
 @dataclass
@@ -182,6 +203,45 @@ class _Look:
     clip_index: Dict[str, int]
     native_height: float
     normal_tex: object = None             # P2 normal map (ROUGHNESS slot)
+
+
+@dataclass
+class _HeldModel:
+    """#184: one loaded held-prop model (a look-like record, so the looks'
+    normal-map bind serves it): its file's longest side in file units."""
+    name: str
+    path: Path
+    model: object
+    extent: float
+    normal_tex: object = None
+
+
+@dataclass
+class _HeldProps:
+    """#184: the ``[render.held_props]`` settings, the loaded models (by
+    model name) and the grip matrices built so far (by (prop, socket))."""
+    settings: object
+    models: Dict[str, _HeldModel]
+    grips: Dict[tuple, object] = None
+
+    def __post_init__(self) -> None:
+        if self.grips is None:
+            self.grips = {}
+
+
+def _np_matrix(m) -> "np.ndarray":
+    """A raylib Matrix as a 4x4 (column vectors): field ``m{4c + r}`` is
+    row r, column c."""
+    import numpy as np
+    return np.array([[getattr(m, f"m{4 * c + r}") for c in range(4)] for r in range(4)],
+                    dtype=np.float64)
+
+
+def _set_rl_matrix(m, a) -> None:
+    """Write a 4x4 (column vectors) into a raylib Matrix in place."""
+    for r in range(4):
+        for c in range(4):
+            setattr(m, f"m{4 * c + r}", float(a[r][c]))
 
 
 class UnitModelRenderer:
@@ -213,6 +273,11 @@ class UnitModelRenderer:
         self._skinner = None
         self._delivered: Dict[int, object] = {}   # the last event batch (#163)
         self._shot_event = self._hit_event = None
+        # #184: blasts (a hit's direction), reload / throw (by name), one sim
+        # tick in seconds, and the held props (pose layer on only)
+        self._blast_event = self._reload_event = self._throw_event = None
+        self._tick_s = 1.0 / 24.0
+        self._held = None
 
     @property
     def model(self):
@@ -285,12 +350,14 @@ class UnitModelRenderer:
         to the CPU-inject skinner (tests pass their own)."""
         if not pose_layer_enabled(CFG):
             return
-        from .pose_layer import PoseConfigError, PoseLayer, pose_settings
+        from .pose_layer import NO_CLIP, PoseConfigError, PoseLayer, pose_settings
         from .pose_skinner import CpuInjectSkinner
         # #163: the events the reactions read (render-side import, as in
         # GameRenderer.consume_events) and the hit causes checked against
         # the sim's closed cause vocabulary
-        from simulation.events import CAUSE_NAMES, ShotFiredEvent, UnitHitEvent
+        from simulation import events as sim_events
+        from simulation.events import (CAUSE_NAMES, ExplosionEvent, ShotFiredEvent,
+                                       UnitHitEvent)
         settings = pose_settings(CFG)
         if settings.hit is not None:
             unknown = sorted(set(settings.hit.causes) - set(CAUSE_NAMES))
@@ -306,6 +373,12 @@ class UnitModelRenderer:
             raise PoseConfigError(f"[render.pose.roles] must hold exactly the roles "
                                   f"{list(ROLES)}, got {sorted(settings.roles)}")
         self._shot_event, self._hit_event = ShotFiredEvent, UnitHitEvent
+        self._blast_event = ExplosionEvent
+        # #184: the reload / throw events, BY NAME -- the gameplay pack (#183)
+        # adds them; until then the two reactions are inert
+        self._reload_event = getattr(sim_events, RELOAD_EVENT, None)
+        self._throw_event = getattr(sim_events, THROW_EVENT, None)
+        self._tick_s = 1.0 / float(CFG.clock.ticks_per_second)
         pose = PoseLayer(settings)
         skinner = skinner if skinner is not None else CpuInjectSkinner(rl)
         for look in self._looks.values():
@@ -314,11 +387,118 @@ class UnitModelRenderer:
                             rig.bank.skeleton.names)
             print(f"[unit_model] pose layer: {look.name} {rig.bank.n_clips} clips, "
                   f"{rig.bank.skeleton.n_bones} bones, masks "
-                  f"[render.pose.skeletons.{rig.skeleton_table}]")
+                  f"[render.pose.skeletons.{rig.skeleton_table}]"
+                  + (" + locomotion" if rig.locomotion is not None else ""))
+        for key, attr in (("reload", "reload_clip"), ("throw", "throw_clip")):
+            ts = getattr(settings, key)
+            if ts is not None and ts.clip and all(
+                    getattr(pose.rig(n), attr) == NO_CLIP for n in pose.looks):
+                raise PoseConfigError(f"[render.pose.{key}] clip {ts.clip!r} is a clip "
+                                      "of no loaded look")
         for warning in pose.warnings:
             print(f"[unit_model] WARN: pose layer: {warning}")
         self._pose = pose
         self._skinner = skinner
+        self._setup_held_props(settings)
+
+    def _setup_held_props(self, pose_settings_=None) -> None:
+        """#184: load every held prop ``[render.held_props]`` names (pose
+        layer on only: the socket is a bone of the composed pose). A prop's
+        model gets the units' ONE lit shader, its own normal map moved to
+        the shader's slot (as a look's) and its row's gloss as the albedo's
+        alpha. A refused setting raises; a socket no skeleton table names is
+        refused (a typo would hold nothing); a model that fails to load is
+        said once and its units hold nothing."""
+        from .held_props import HeldPropConfigError, held_prop_settings, model_extent
+        settings = held_prop_settings(CFG)
+        known = {s for pb in (pose_settings_.playback.values() if pose_settings_ else ())
+                 for s in pb.sockets}
+        for prop in settings.props.values():
+            bad = [s for s in prop.grips if s not in known]
+            if bad:
+                raise HeldPropConfigError(
+                    f"[render.held_props.props.{prop.name}] grips {bad} are sockets of no "
+                    f"[render.pose.skeletons.*.sockets] table {sorted(known)}")
+        models: Dict[str, _HeldModel] = {}
+        for prop in settings.props.values():
+            if prop.model in models:
+                continue
+            path = look_path(prop.model)
+            if not path.is_file():
+                print(f"[unit_model] WARN: held prop model not found: {path}")
+                continue
+            try:
+                model = rl.load_model(str(path.resolve()))
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[unit_model] WARN: could not load held prop {path}: {exc}")
+                continue
+            if model is None or not getattr(model, "meshCount", 0):
+                print(f"[unit_model] WARN: held prop {path} has no mesh; not drawn")
+                continue
+            hm = _HeldModel(name=prop.model, path=path, model=model,
+                            extent=model_extent(path))
+            if self._shader is not None:
+                for mi in self._live_materials(model):
+                    model.materials[mi].shader = self._shader
+                self._bind_normal_map(hm)
+            self._gloss_albedo(hm, prop.gloss)
+            models[prop.model] = hm
+            print(f"[unit_model] held prop {prop.name}: {path.name}, "
+                  f"{prop.length_m} m on {prop.socket!r}")
+        self._held = _HeldProps(settings=settings, models=models)
+
+    def _gloss_albedo(self, hm: "_HeldModel", gloss: float) -> None:
+        """#184: a prop's albedo with ``gloss`` as its alpha (the lit
+        shader's gloss mask, #33), mipmapped and trilinear (a prop is drawn a
+        few dozen pixels long)."""
+        MM = rl.MaterialMapIndex
+        g = int(round(255 * gloss))
+        for mi in self._live_materials(hm.model):
+            maps = hm.model.materials[mi].maps
+            old = maps[MM.MATERIAL_MAP_ALBEDO].texture
+            if old.id <= 1:
+                continue
+            try:
+                img = rl.load_image_from_texture(old)
+                mask = rl.gen_image_color(img.width, img.height, rl.Color(g, g, g, 255))
+                rl.image_alpha_mask(img, mask)
+                rl.unload_image(mask)
+                new = rl.load_texture_from_image(img)
+                rl.unload_image(img)
+                if new.id == 0:
+                    continue
+                rl.gen_texture_mipmaps(new)
+                rl.set_texture_filter(new, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+                rl.unload_texture(old)
+                maps[MM.MATERIAL_MAP_ALBEDO].texture = new
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[unit_model] WARN: {hm.name}: could not set the gloss: {exc}")
+
+    def _held_prop_of(self, u, look: "_Look", pose_row):
+        """#184: ``(held model, grip matrix, hand bone)`` of the prop unit
+        ``u`` holds, or None (no weapon prop, no socket on its skeleton, no
+        pose)."""
+        if self._held is None or pose_row is None:
+            return None
+        prop = self._held.settings.prop_for(str(getattr(u, "weapon_id", "") or ""))
+        if prop is None:
+            return None
+        hm = self._held.models.get(prop.model)
+        st = self._anim.get(unit_key(u))
+        if hm is None or st is None or st.pose is None:
+            return None
+        bone = self._pose.socket_bone(st.pose, prop.name, prop.socket)
+        if bone < 0:
+            return None
+        socket = st.pose.prop_sockets.get(prop.name, prop.socket)
+        if socket not in prop.grips:
+            return None
+        key = (prop.name, socket)
+        grip = self._held.grips.get(key)
+        if grip is None:
+            from .held_props import grip_matrix
+            grip = self._held.grips[key] = grip_matrix(prop, socket, hm.extent)
+        return hm, grip, bone
 
     def queue_events(self, events: Sequence) -> None:
         """#162: hand the frame's sim events to the pose layer, one queue per
@@ -341,35 +521,85 @@ class UnitModelRenderer:
         seen = self._delivered
         self._delivered = {id(ev): ev for ev in events}
         melee = self._pose.settings.melee
+        # #184: the blasts of this frame's events, for a hit's direction
+        blasts = [(float(ev.pos[0]) + 0.5, float(ev.pos[1]) + 0.5)
+                  for ev in events if isinstance(ev, self._blast_event)]
         for ev in events:
             if seen.get(id(ev)) is ev:
                 continue
             uid = getattr(ev, "unit_id", None)
+            item = ev
+            if isinstance(ev, self._hit_event):          # #184: where it came from
+                item = _SourcedHit(ev, self._hit_source(ev, blasts))
             if uid is not None:
-                self._pose.queue_event(int(uid), ev, now)
+                self._pose.queue_event(int(uid), item, now)
             if melee is not None and isinstance(ev, self._hit_event) \
                     and ev.source in melee.causes and ev.attacker_id >= 0 \
                     and ev.attacker_id != uid:
-                self._pose.queue_event(int(ev.attacker_id), ev, now)
+                self._pose.queue_event(int(ev.attacker_id), item, now)
 
-    def _react(self, ps, uid: int, role: str) -> None:
+    def _hit_source(self, ev, blasts) -> Optional[tuple]:
+        """#184: the point (tile units) a hit came from: for an explosion the
+        blast centre of this frame's events nearest the victim (Erik's
+        ruling), else -- and when none is found -- the attacker's last drawn
+        centre; None when neither is known (no attacker, or one never drawn:
+        the flinch then plays as from the front)."""
+        victim = self._anim.get(int(ev.unit_id))
+        vc = None if victim is None else victim.centre
+        if ev.source == "explosion" and blasts and vc is not None:
+            return min(blasts, key=lambda b: (b[0] - vc[0]) ** 2 + (b[1] - vc[1]) ** 2)
+        if ev.attacker_id >= 0 and ev.attacker_id != ev.unit_id:
+            att = self._anim.get(int(ev.attacker_id))
+            if att is not None and att.centre is not None:
+                return att.centre
+        return None
+
+    @staticmethod
+    def _source_angle(u, source: Optional[tuple]) -> Optional[float]:
+        """#184: the direction of ``source`` from unit ``u``'s centre,
+        relative to its facing (radians, + = its left, the sim's convention:
+        0 = +x, counter-clockwise, world y down); None when unknown or on top
+        of the unit."""
+        if source is None:
+            return None
+        fp = float(getattr(u, "footprint", 3))
+        dx = source[0] - (float(u.x) + fp / 2.0)
+        dy = source[1] - (float(u.y) + fp / 2.0)
+        if dx * dx + dy * dy < 1e-9:
+            return None
+        rel = math.atan2(-dy, dx) - float(getattr(u, "facing", math.pi / 2.0))
+        return _YAW_SIGN * ((rel + math.pi) % (2.0 * math.pi) - math.pi)
+
+    def _react(self, ps, uid: int, role: str, u=None) -> None:
         """#163: act on the unit's queued events (oldest first): a round that
         left its barrel fires, a hit flinches (the layer filters the
         cause). #164: only the reactions the unit's ROLE plays
         (``[render.pose.roles]``), and a melee hit this unit DEALT strikes.
-        Other events are dropped."""
+        #184: a hit carries the direction it came from (relative to ``u``'s
+        facing); a reload / a throw's wind-up plays its one-shot over the
+        event's ticks (the event classes are looked up by name: inert until
+        the sim defines them). Other events are dropped."""
         allowed = self._pose.settings.roles[role].reactions
         melee = self._pose.settings.melee
-        for ev in self._pose.take_events(uid):
+        for item in self._pose.take_events(uid):
+            ev = item.event if isinstance(item, _SourcedHit) else item
             if isinstance(ev, self._shot_event):
                 if ev.launch and "fire" in allowed:
                     self._pose.fire(ps)
             elif isinstance(ev, self._hit_event):
                 if ev.unit_id == uid and "hit" in allowed:
-                    self._pose.hit(ps, ev.damage, ev.source)
+                    src = item.source if isinstance(item, _SourcedHit) else None
+                    self._pose.hit(ps, ev.damage, ev.source,
+                                   None if u is None else self._source_angle(u, src))
                 if ev.attacker_id == uid and "melee" in allowed and melee is not None \
                         and ev.source in melee.causes:
                     self._pose.melee(ps)
+            elif self._reload_event is not None and isinstance(ev, self._reload_event):
+                if ev.unit_id == uid and "reload" in allowed:
+                    self._pose.reload(ps, float(ev.ticks) * self._tick_s)
+            elif self._throw_event is not None and isinstance(ev, self._throw_event):
+                if ev.unit_id == uid and "throw" in allowed:
+                    self._pose.throw(ps, float(ev.ticks) * self._tick_s)
 
     def _load_look(self, name: str, path: Path) -> Optional[_Look]:
         """Load one look; None (with one warning) if missing, unloadable or
@@ -566,6 +796,12 @@ class UnitModelRenderer:
             self._shadow_painter = None
         if self._skinner is not None:
             self._skinner.release()
+        if self._held is not None:          # #184: the held props, once each
+            for hm in self._held.models.values():
+                if hm.normal_tex is not None:
+                    rl.unload_texture(hm.normal_tex)
+                rl.unload_model(hm.model)
+            self._held = None
         self._pose = None
         self._skinner = None
         self._looks.clear()
@@ -690,9 +926,11 @@ class UnitModelRenderer:
                 and light_ctx is not None:
             MM = rl.MaterialMapIndex
             mats = []
-            for look in self._looks.values():
-                for mi in self._live_materials(look.model):
-                    mat = look.model.materials[mi]
+            # #184: the held props are drawn with the same shader and slots
+            held = [] if self._held is None else [hm.model for hm in self._held.models.values()]
+            for model in [lk.model for lk in self._looks.values()] + held:
+                for mi in self._live_materials(model):
+                    mat = model.materials[mi]
                     mat.maps[MM.MATERIAL_MAP_METALNESS].texture = light_ctx.tex_a
                     mat.maps[MM.MATERIAL_MAP_NORMAL].texture = light_ctx.tex_b
                     mats.append(mat)
@@ -760,11 +998,16 @@ class UnitModelRenderer:
         queued events become reactions (fire, flinch) and its travel this
         frame, relative to its facing, steers the aim-vs-travel twist."""
         groups: Dict[str, list] = {}
+        m_per_tile = self._scale_height / _SCALE_TILES_TALL    # #184: drawn tile, model m
         for i, (u, name) in enumerate(zip(alive, names)):
             look = self._resolve[name]
             st = self._state_for(u)
             travel = self._relative_travel(u, st)
+            moved_m = math.hypot(float(u.x) - st.last_x,
+                                 float(u.y) - st.last_y) * m_per_tile
             moving = self._infer_motion(u, st, clock)
+            fp = float(getattr(u, "footprint", 3))
+            st.centre = (float(u.x) + fp / 2.0, float(u.y) + fp / 2.0)
             state = self.select_clip(u, moving)
             role = role_of(u)
             if st.pose is None or st.pose.look != look.name:
@@ -772,8 +1015,11 @@ class UnitModelRenderer:
             # #164 posture; #179: the look's skeleton may carry its own amount
             self._pose.set_posture(st.pose, unit_key(u),
                                    self._pose.role_posture(look.name, role))
-            self._react(st.pose, unit_key(u), role)
-            self._pose.steer(st.pose, travel, moving, dt)
+            self._react(st.pose, unit_key(u), role, u)
+            # #163 the twist; #184: on a locomotion skeleton the gait, the
+            # direction and the derived rates from the drawn speed
+            state = self._pose.locomote(st.pose, state, moved_m, travel, moving, dt,
+                                        role, self._tick_s)
             self._pose.drive(st.pose, state, dt, role)   # #179: role state rows
             groups.setdefault(look.name, []).append((i, st.pose))
         rows = [None] * len(alive)
@@ -870,6 +1116,15 @@ class UnitModelRenderer:
         cy = (float(u.y) + fp / 2.0) * wpt
         facing = float(getattr(u, "facing", math.pi / 2.0))
         yaw = _YAW_SIGN * math.degrees(facing) + _YAW_OFFSET_DEG
+        # #184: the prop in the unit's hand -- body @ hand bone @ grip, its
+        # world matrix written into the prop model's own transform, so the
+        # body's draw and shadow calls draw it unchanged at the origin
+        held = self._held_prop_of(u, look, pose_row)
+        if held is not None:
+            from .held_props import body_matrix, prop_world
+            hm, grip, bone = held
+            body = body_matrix(cx, cy, yaw, scale, _np_matrix(look.model.transform))
+            _set_rl_matrix(hm.model.transform, prop_world(body, pose_row[bone], grip))
 
         # Projected shadow (#33) first, from the pose just skinned (no second
         # skinning). Its fixed far depth keeps it off every body, whichever
@@ -882,6 +1137,10 @@ class UnitModelRenderer:
                 self._shadow_painter.draw(
                     look.model, self._live_materials(look.model), st.shadow,
                     rl.Vector3(cx, 0.0, cy), yaw, scale)
+                if held is not None:                       # #184: the prop's shadow
+                    self._shadow_painter.draw(
+                        held[0].model, self._live_materials(held[0].model), st.shadow,
+                        rl.Vector3(0.0, 0.0, 0.0), 0.0, 1.0)
 
         # Blob shadow first (on the floor, under the model — reads great
         # top-down, no shadow maps). A thin filled disc via a short cylinder.
@@ -907,6 +1166,10 @@ class UnitModelRenderer:
                          rl.Vector3(0.0, 1.0, 0.0), yaw,
                          rl.Vector3(scale, scale, scale),
                          rl.Color(br, bg, bb2, ba))
+        if held is not None:     # #184: same shader, same per-unit light uniforms
+            rl.draw_model_ex(held[0].model, rl.Vector3(0.0, 0.0, 0.0),
+                             rl.Vector3(0.0, 1.0, 0.0), 0.0,
+                             rl.Vector3(1.0, 1.0, 1.0), rl.Color(br, bg, bb2, ba))
 
     def _prune(self, clock: float) -> None:
         """Drop anim state for units unseen for _STALE_SECONDS (dead/despawned)."""
