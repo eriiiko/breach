@@ -521,6 +521,7 @@ def test_burst_mag_reload_cadence_exact_ticks():
 
     deposit_ticks = []
     mag_at = {}
+    done_at = {}
     for t in range(210):
         process_shooting(gmap, [u], t, shots, 0.0, rng, queue=queue)
         process_sprays(gmap, [u], queue)
@@ -529,6 +530,7 @@ def test_burst_mag_reload_cadence_exact_ticks():
         queue.clear()                                 # never flushed — cadence only
         if t in (0, 108, 143, 150, 204):
             mag_at[t] = u.current_mag
+            done_at[t] = u.reload_done_tick
 
     # 4 back-to-back bursts: every tick 0..143 deposits; then the stall.
     assert deposit_ticks[:144] == list(range(144))
@@ -538,7 +540,7 @@ def test_burst_mag_reload_cadence_exact_ticks():
     # reload window 108 + 96 = 204; refilled-and-spent -> 3 at tick 204.
     assert mag_at[0] == 3
     assert mag_at[108] == 0 and mag_at[143] == 0 and mag_at[150] == 0
-    assert u.reload_done_tick == 108 + 96
+    assert done_at[150] == 108 + 96                   # the stall's deadline
     assert mag_at[204] == 3
     assert rng.bit_generator.state == state0          # NO RNG anywhere in W4
 

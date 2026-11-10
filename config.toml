@@ -1368,8 +1368,8 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # "LEFT_ALT" / "RIGHT_ALT", "UP" / "DOWN" / "LEFT" / "RIGHT", "F1".."F12", or a
 # mouse button "MOUSE_LEFT" / "MOUSE_RIGHT" / "MOUSE_MIDDLE". The aim is the
 # mouse (the marine faces the cursor). Shipped table: Erik's ruling,
-# 2026-11-10 (RDFG). melee / shove / reload / cycle_grenade / flashlight are
-# BOUND BUT INERT until their patches (G2p..G7p) add the verbs.
+# 2026-11-10 (RDFG). melee / shove / cycle_grenade / flashlight are BOUND BUT
+# INERT until their patches (G3p..G7p) add the verbs; reload is live (G2p).
 [controls.keys]
 move_forward = "R"
 move_back = "F"
@@ -3243,10 +3243,10 @@ ammo_family = "rifle_556"
 spread_deg = 3.0                      # aimed cone half-angle (was cone_half_angle_degrees)
 spread_snap_deg = 3.0                 # == spread_deg in W1; the snap/aim split activates in W2
 range_m = 90.0                        # was range_tiles = 90 @ the 1.0 m/tile test worlds (W6 meters)
-shots_per_trigger = 5                 # was bullets_per_burst
-rof_interval_seconds = 0.16666667     # 1/6 s (was burst_interval_seconds) -> 4 ticks @ 24 tps
-mag_size = 0                          # 0 = ammo not tracked until W3 wires the economy
-reload_seconds = 0.0
+shots_per_trigger = 1                 # one round per pull (gameplay pack G2p; was 5 = bullets_per_burst)
+rof_interval_seconds = 0.08333333     # 1/12 s -> 2 ticks @ 24 tps = 12 rounds per second (Erik, 2026-11-10; was 5 rounds / 4 ticks = 30 per second)
+mag_size = 30                         # 30 rounds a magazine (G2p, Erik 2026-11-10); the loadout counts the magazines
+reload_seconds = 2.0                  # PLACEHOLDER (Erik's, 2026-11-10): the stall, 48 ticks @ 24 tps
 ap_cost = 1
 crit_chance = 0.0                     # crits activate in W2
 crit_mult = 2.0
@@ -4592,6 +4592,7 @@ belt = ["hand_grenade", "breach_charge"]
 weapon = "k5_carbine"
 grenades = 2
 explosives = 2
+magazines = 3            # TOTAL carried, the one in the gun included (G2p: one loaded, two spare); 0 or absent = spares untracked, today's infinite auto-reload
 
 # ---------------------------------------------------------------------------
 # Bot team (#121) — the rule-based match controller `bots`

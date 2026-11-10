@@ -70,6 +70,7 @@ from simulation.combat import (
     apply_temperature_ignition,
     process_shooting, process_sprays,
     Projectile,
+    mag_settle, reload_begin,
 )
 # Simultaneous resolution of an attack slot (#169): phase A records, phase B
 # (``resolve``) applies. Bare name: the lockstep test rebinds it.
@@ -553,8 +554,8 @@ class Simulation:
     def attach_intent_log(self, log) -> None:
         """Attach the intent tap's sink (#126): from now on every call of
         ``set_move_dir`` / ``clear_move_dir`` / ``set_aim`` / ``set_trigger``
-        / ``throw_grenade_intent`` / ``use_intent`` / ``drive_zombies`` /
-        ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
+        / ``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
+        ``drive_zombies`` / ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
         the method name, ``args`` its arguments normalised exactly as the
         method itself normalises them) before it acts. ``None`` detaches.
         The sink may refuse a call by raising (``match_replay`` refuses
@@ -1019,6 +1020,40 @@ class Simulation:
         u.pending_use = True
         self._possessed_ids.add(unit_id)
 
+    def reload_intent(self, unit_id: int) -> None:
+        """RELOAD (gameplay pack G2p): latch a manual reload. Consumed (and
+        cleared) at the next tick by :meth:`_reload`: if the unit's weapon
+        tracks a magazine, a spare magazine exists, the unit is not already
+        reloading and the magazine in the gun is not full, that magazine is
+        DISCARDED with every round in it, one spare is used and the stall
+        runs ``reload_seconds``; otherwise nothing happens. Hand-written
+        bots never call it (they rely on the automatic reload when the
+        magazine empties); an RL agent reloads when it chooses."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "reload_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_reload = True
+        self._possessed_ids.add(unit_id)
+
+    def _reload(self, u) -> None:
+        """RELOAD consumption (the law of :meth:`reload_intent`): integer
+        state only, no random number. A unit whose weapon has no magazine
+        (``mag_size`` 0) is left untouched."""
+        weapon = self.weapons_tables.weapons.by_name.get(
+            getattr(u, "weapon_id", ""))
+        if weapon is None or weapon.mag_size <= 0:
+            return
+        if not mag_settle(u, weapon, self.tick):
+            return                            # already reloading
+        if u.current_mag >= weapon.mag_size:
+            return                            # the magazine is full
+        if u.spare_mags == 0:
+            return                            # no spare magazine left
+        reload_begin(u, weapon, self.tick)
+
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
         called once at the top of :meth:`step` (after the round-clock head).
@@ -1029,7 +1064,8 @@ class Simulation:
 
         AIM sets facing (deterministic integer atan2); THROW spawns a grenade
         BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
-        this tick like a WEGO one; USE toggles a door latch. TRIGGER is not
+        this tick like a WEGO one; USE toggles a door latch; RELOAD discards
+        the magazine and starts the stall (G2p). TRIGGER is not
         consumed here — a held ``live_trigger`` is read directly by the shooting
         slot (slot 4), where ``combat._directional_fire`` marches a free-aim
         shot along ``u.facing`` (free_aim_shooting_design §4b). MOVE_DIR is
@@ -1065,6 +1101,11 @@ class Simulation:
             if getattr(u, "pending_use", False):
                 u.pending_use = False
                 self._direct_use(u)
+
+            # RELOAD -> discard the magazine, run the stall (edge; latched).
+            if getattr(u, "pending_reload", False):
+                u.pending_reload = False
+                self._reload(u)
 
             # TRIGGER is NOT consumed here: a held ``live_trigger`` (set by
             # set_trigger) is read directly by the shooting slot (slot 4),

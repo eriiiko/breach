@@ -165,6 +165,19 @@ unit with `mag_size = 0` touches none of the state. The pins re-baseline
 zombie" makes ammunition the match's clock. That is intended (#181) and is
 tuned in G4p, not here.
 
+**As built (2026-11-10).** `combat.mag_bind` / `mag_settle` / `mag_gate` /
+`reload_begin` / `mag_spend` / `mag_status` are the whole law;
+`Simulation.reload_intent` latches `pending_reload`, `_reload` consumes it in
+`_consume_direct_intents`. State: `current_mag` (None = unbound, bound lazily
+at the first trigger), `spare_mags` (`SPARES_UNTRACKED` = -1 = infinite),
+`reload_done_tick` (-1 = none pending; a reload completes lazily at the next
+gate or settle). `Unit.magazines` is the loadout's count, applied only to the
+loadout's own weapon (`magazines_carried`): a swapped-in weapon keeps
+untracked spares. Match format v3. Direct control: Z, pad Y. The HUD panel is
+`ui.model.panel_state_lines`. The pinned ship_demo match moved by the rate
+alone (win 1, 722 -> 700 ticks): no marine in it fires more than 12 rounds, so
+no gun empties; the magazines are first felt in a longer match.
+
 ### G3p. Grenade kinds; the flashbang blinds
 
 **Exists.** `[ammo.grenade_frag]`, `grenade_smoke`, `grenade_tear`,

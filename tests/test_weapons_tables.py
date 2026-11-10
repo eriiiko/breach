@@ -68,7 +68,11 @@ def test_archetypes_are_the_closed_six():
 # ---------------------------------------------------------------------------
 # Re-home equivalence: the literal old numbers, bit-for-bit
 # ---------------------------------------------------------------------------
-def test_k5_carbine_equals_the_old_rifle():
+def test_k5_carbine_keeps_the_old_rifle_but_its_rate():
+    """The re-homed k5 keeps the old rifle's round, cone, range and cost; its
+    RATE and MAGAZINE are gameplay pack G2p's (Erik, 2026-11-10: one round
+    per pull, 12 a second, 30 to the magazine), which a re-tune of the rate
+    is free to move again but a re-homing mistake in the rest would break."""
     t = get_tables()
     k5 = t.weapons.by_name["k5_carbine"]
     round_556 = t.ammo.by_name["rifle_556_standard"]
@@ -76,16 +80,18 @@ def test_k5_carbine_equals_the_old_rifle():
     assert k5.ammo_family == "rifle_556" == round_556.family
     assert round_556.damage == 10                  # was damage_per_bullet
     assert round_556.dtype == "kinetic"
-    assert k5.shots_per_trigger == 5               # was bullets_per_burst
+    assert k5.shots_per_trigger == 1               # was bullets_per_burst 5 (G2p)
     assert k5.spread_deg == 3.0                    # was cone_half_angle_degrees
     assert k5.spread_snap_deg == 3.0               # single cone until W2
     assert k5.range_tiles == 90
     assert k5.ap_cost == 1
-    # The cadence derivation moved onto the row — same helper, same input
-    # (0.16666667 s, the old burst_interval_seconds), same integer out.
+    # The cadence derivation lives on the row — one helper, the row's own
+    # seconds in, an integer out; 1/12 s is two ticks at the shipped 24 tps.
     tps = CFG.clock.ticks_per_second
-    assert k5.rof_interval_seconds == 0.16666667
-    assert k5.rof_interval_ticks == ticks_from_seconds(0.16666667, tps)
+    assert k5.rof_interval_ticks == ticks_from_seconds(
+        k5.rof_interval_seconds, tps)
+    assert tps != 24 or k5.rof_interval_ticks == 2
+    assert k5.mag_size > 0 and k5.reload_ticks > 0   # tracked since G2p
 
 
 def test_grenade_frag_ammo_resolves_to_a_payload_row():

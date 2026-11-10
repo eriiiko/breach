@@ -205,16 +205,24 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 # ---------------------------------------------------------------------------
 # (d) THE GATE: at half a turn per tick the pinned match is the pre-G1p one
 # ---------------------------------------------------------------------------
-#: ship_demo seed 1 as it stood before G1p (main da6a8d9e, the values
-#: test_zombie_control pinned until G1p re-pinned them at the shipped cap).
+#: ship_demo seed 1 at an INSTANT turn: the pre-G1p match (main da6a8d9e,
+#: win 1 at 722, field da05242a / tick f35ed2be / units 4408c874) until
+#: #183 G2p's carbine rate (one round per pull, 12 a second) moved the match
+#: for another cause -- the retirement this gate's docstring announced. The
+#: values below are the same instant-turn run RE-MEASURED at the G2p tree
+#: (2026-11-10): they hold the turn cap as the only G1p cause, as before.
+#: (G1p's instant-turn values were ticks 722, field da05242a99122428c903ad8a
+#: 96e9373a0e12006c03abdbec1e849f4aca7dc4b0, tick f35ed2beadb77141ccea20d944
+#: a70a66e93c70818ae4c44bbf6ba1edc01024b3, units 4408c8740425593b0d47d35e7d0
+#: 658c4efbd62caed87f5fd69a9e8f894ac02dd.)
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=722,
-    field_digest="da05242a99122428c903ad8a96e9373a"
-                 "0e12006c03abdbec1e849f4aca7dc4b0",
-    tick_digest="f35ed2beadb77141ccea20d944a70a66"
-                "e93c70818ae4c44bbf6ba1edc01024b3",
-    unit_stream="4408c8740425593b0d47d35e7d0658c4"
-                "efbd62caed87f5fd69a9e8f894ac02dd")
+    outcome="win", team=1, ticks=700,
+    field_digest="8deadde6d6d9c9f3f87a3a565fb1bc57"
+                 "054d9e6882f79abbbcd79ce01a3d52e2",
+    tick_digest="e4e39176f31246219319a3c72bbc598f"
+                "5da16aa7d02def7469fedde2da966324",
+    unit_stream="bc1166d31b6df445503733eca435f24a"
+                "c2ad48fe788d50b5eb89d19460f7a3a6")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

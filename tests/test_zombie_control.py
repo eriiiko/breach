@@ -120,7 +120,25 @@ _PRE_122_SHIP_DEMO = dict(
     #  321bffbf442d3ca4; tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab0
     #  6ef7c5f41ba25c37; units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15
     #  da59f0b415cedb4e)
-    outcome="win", team=1, ticks=722,
+    # #183 G2p re-pin (2026-11-10, the carbine's rate: Erik's ruling, one
+    # round per pull at 12 a second -- shots_per_trigger 1, rof 1/12 s = 2
+    # ticks -- from 5 rounds every 4 ticks, 30 a second). Outcome and team
+    # UNCHANGED (win 1); ticks 722 -> 700; field_digest, tick_digest and the
+    # unit stream move. SOLE CAUSE, verified on the same tree: with the
+    # carbine's row and the rifleman at their pre-G2p values (5 per pull, 4
+    # ticks, mag_size 0, no `magazines`) this match gives exactly the G1p pin
+    # below (win 1 at 722, 6aa5b17a / 74ea61e8 / 07ee472c); with ONLY the new
+    # rate (no magazine) it gives the new values, bit for bit the same as with
+    # the magazines -- in this match no marine fires more than 12 rounds in
+    # all (tools/match_pin_check.py, a counting probe), so no gun empties and
+    # no reload runs: the magazines, the verb and the spares move nothing
+    # here; the whole move is the rate. The bots now put one round at a time
+    # on a target instead of a five-round burst.
+    # (was ticks 722; field 6aa5b17aa32e5ec77ddd56519458cd9b1c115346fabc70dcf
+    #  284aaf2bbc96e39; tick 74ea61e8bb5e83a7fe55ee8272f0228a6c333aff2db2fdf3
+    #  571f100c1de0e437; units 07ee472c29f86f18e64f2b01141ac8bb0ad64ec97828df
+    #  8509830bd8fac1dbc)
+    outcome="win", team=1, ticks=700,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -145,8 +163,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="6aa5b17aa32e5ec77ddd56519458cd9b"
-                 "1c115346fabc70dcf284aaf2bbc96e39",
+    field_digest="1b9392ab2c184a4684a28a6d7489684827ef10968c098fea2405945a37fc5e83",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -164,10 +181,8 @@ _PRE_122_SHIP_DEMO = dict(
     # pre_122_ship_demo -vv (the diff prints both values).
     # (was tick ce979185366be487732e587a851ab6e3589d0b0ea8671ab06ef7c5f41ba25c37,
     #  units b55cc54e4e12bd7002a70cecd01d137703964eb73fa63c15da59f0b415cedb4e)
-    tick_digest="74ea61e8bb5e83a7fe55ee8272f0228a"
-                "6c333aff2db2fdf3571f100c1de0e437",
-    unit_stream="07ee472c29f86f18e64f2b01141ac8bb"
-                "0ad64ec97828df8f509830bd8fac1dbc")
+    tick_digest="230d50a18db03437b34b0600d87d795a57af4c93d969f31474e038db1a87f891",
+    unit_stream="a345834dfe6685918d0e0887667b978de462e09d0bfa6fcc26e9b9a68babcb9d")
 
 
 def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
@@ -186,7 +201,8 @@ def test_the_wrapped_law_plays_the_pre_122_match_on_a_small_box(tmp_path):
 def test_the_wrapped_law_plays_the_pre_122_ship_demo_match():
     """Property: ship_demo seed 1 (bots vs bots + 4 zombies) ends exactly as
     the conductor-driven law plays it (re-pinned at #140, then at #31 and its merge with #169, then
-    at #183 G1p's turn-rate cap: win team 1 at tick 722) with the same tick_digest. Breaks like the box test, on
+    at #183 G1p's turn-rate cap, then at G2p's carbine rate: win team 1 at
+    tick 700) with the same tick_digest. Breaks like the box test, on
     the real level."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()

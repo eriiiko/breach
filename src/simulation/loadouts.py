@@ -1,7 +1,8 @@
 """Loadout + environment-profile tables (#119 P1) — what a unit carries and
 what it survives, as config rows.
 
-    [loadouts.<name>]      weapon (a [weapons.*] id), grenades, explosives
+    [loadouts.<name>]      weapon (a [weapons.*] id), grenades, explosives,
+                           optionally magazines (total carried, 0 = untracked)
     [env_profiles.<name>]  any subset of :class:`EnvironmentProfile`'s fields
 
 A loadout is a ROW, never code: ``[marine] loadout`` names the row every marine
@@ -56,9 +57,14 @@ class LoadoutDef:
     weapon: str
     grenades: int
     explosives: int
+    #: Magazines carried, TOTAL including the one loaded (G2p). 0 = spare
+    #: magazines untracked: the infinite auto-reload every weapon had before.
+    magazines: int = 0
 
 
 _LOADOUT_COLUMNS = ("weapon", "grenades", "explosives")
+#: Optional columns (absent = the default named on :class:`LoadoutDef`).
+_LOADOUT_OPTIONAL = ("magazines",)
 
 
 class LoadoutTable:
@@ -70,11 +76,13 @@ class LoadoutTable:
         self.by_name: dict[str, LoadoutDef] = {}
         for name, row in _iter_rows(loadouts_cfg):
             cols = dict(_row_items(row))
-            unknown = sorted(set(cols) - set(_LOADOUT_COLUMNS))
+            unknown = sorted(set(cols) - set(_LOADOUT_COLUMNS)
+                             - set(_LOADOUT_OPTIONAL))
             if unknown:
                 raise ValueError(
                     f"loadouts.{name}: unknown column(s) {unknown} "
-                    f"(a loadout row carries {list(_LOADOUT_COLUMNS)})")
+                    f"(a loadout row carries {list(_LOADOUT_COLUMNS)}, "
+                    f"optionally {list(_LOADOUT_OPTIONAL)})")
             for c in _LOADOUT_COLUMNS:
                 if c not in cols:
                     raise KeyError(f"loadouts.{name} missing column '{c}'")
@@ -87,7 +95,9 @@ class LoadoutTable:
                 name=name, weapon=weapon,
                 grenades=_count(cols["grenades"], f"loadouts.{name}.grenades"),
                 explosives=_count(cols["explosives"],
-                                  f"loadouts.{name}.explosives"))
+                                  f"loadouts.{name}.explosives"),
+                magazines=_count(cols.get("magazines", 0),
+                                 f"loadouts.{name}.magazines"))
 
     def get(self, name: str) -> LoadoutDef:
         try:

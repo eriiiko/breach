@@ -671,47 +671,137 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
 # ---------------------------------------------------------------------------
 # Ammo economy (mechanics/03 §4 mag_size / reload_seconds — W3)
 # ---------------------------------------------------------------------------
+#: ``Unit.spare_mags`` of a unit whose spare magazines are NOT tracked (its
+#: loadout row has ``magazines`` 0 or absent): infinite auto-reload, today's
+#: law. Any value >= 0 is a counted spare.
+SPARES_UNTRACKED = -1
+
+
+def magazines_carried(u):
+    """The TOTAL magazines (the one in the gun included) the unit carries for
+    the weapon in its hands, 0 = spares untracked. The loadout row's
+    ``magazines`` count belongs to the loadout's OWN weapon
+    (``Unit.magazines_weapon``): a weapon swapped in (the debug cycle key,
+    OnePhaseWEGO's secondary) is not counted, so it keeps infinite spares
+    until a loadout names it -- nothing but the loadout's weapon moves."""
+    total = int(getattr(u, "magazines", 0))
+    own = getattr(u, "magazines_weapon", None)
+    if total > 0 and own is not None and getattr(u, "weapon_id", own) != own:
+        return 0
+    return total
+
+
+def mag_bind(u, weapon):
+    """First bind of a tracked weapon's magazine (the lazy first-trigger
+    bind, and every re-bind after a ``current_mag = None`` reset: a swapped
+    weapon, a WEGO round boundary): a FULL magazine in the gun and, when the
+    loadout counts magazines for this weapon (:func:`magazines_carried` > 0),
+    ``magazines - 1`` spares; otherwise the spares are untracked."""
+    u.current_mag = int(weapon.mag_size)
+    total = magazines_carried(u)
+    u.spare_mags = SPARES_UNTRACKED if total <= 0 else total - 1
+    u.reload_done_tick = -1
+
+
+def mag_settle(u, weapon, tick):
+    """Bring a TRACKED weapon's magazine state up to ``tick``: bind a
+    never-bound magazine, and complete a reload whose stall has ended (the
+    gun then holds a FULL magazine). Returns False while a reload's stall is
+    still running. A reload is PENDING while ``reload_done_tick >= 0``; a dry
+    unit (empty magazine, no spare) has none pending. Integer, no RNG."""
+    if getattr(u, "current_mag", None) is None:
+        mag_bind(u, weapon)
+        return True
+    done = getattr(u, "reload_done_tick", -1)
+    if done >= 0:
+        if tick < done:
+            return False
+        u.current_mag = int(weapon.mag_size)
+        u.reload_done_tick = -1
+    return True
+
+
 def mag_gate(u, weapon, tick):
-    """The per-TRIGGER magazine gate (W3 ammo economy). True = the trigger
-    may fire this tick; False = the unit is mid-reload (the stall).
+    """The per-TRIGGER magazine gate (W3 ammo economy; gameplay pack G2p).
+    True = the trigger may fire this tick; False = the unit is mid-reload
+    (the stall) or DRY (an empty magazine and no spare: the trigger does
+    nothing, for good).
 
-    ``mag_size <= 0`` = ammo untracked — an immediate True with ZERO state
-    touched (the k5/pistol tier and every pre-W3 weapon: shipped scenarios
-    never see the new fields, so the golden digest cannot move). For tracked
-    weapons: a unit inside its reload window (``tick < reload_done_tick``)
-    is stalled; otherwise an empty (or never-bound: ``current_mag is None``
-    — the lazy first-trigger bind) magazine refills to ``mag_size`` here,
-    i.e. the auto-reload COMPLETES at the first trigger attempt past the
-    stall. Pure integer state + compares (door 1) on door-2 row constants;
-    no RNG. Deterministic mirror of the rof cadence gate it sits beside.
+    ``mag_size <= 0`` = ammo untracked -- an immediate True with ZERO state
+    touched (every pre-W3 weapon: shipped scenarios never see the fields, so
+    the golden digest cannot move). For tracked weapons the state is
+    ``current_mag`` / ``spare_mags`` / ``reload_done_tick`` (see
+    :func:`mag_settle`); the reload COMPLETES at the first trigger attempt
+    past the stall, and :func:`mag_status` reads it settled without
+    mutating. Pure integer state + compares on row constants; no RNG.
 
-    Mag state (``current_mag`` / ``reload_done_tick``) lives ON THE UNIT and
-    is deliberately NOT in the synced digest surface
-    (field_ab_harness.SYNCED_UNIT_FIELDS) — matching the ``last_fire_tick``
+    Mag state lives ON THE UNIT and is deliberately NOT in the synced digest
+    surface (field_ab_harness.SYNCED_UNIT_FIELDS) -- the ``last_fire_tick``
     precedent: combat-cadence state is a deterministic derivation of synced
-    inputs (orders + tick), not hashed directly; a divergence would surface
-    one tick downstream in the hashed hp/event stream.
+    inputs (intents + tick); a divergence surfaces one tick downstream in the
+    hashed hp / event stream (P3a's schema hashes it).
     """
     if weapon.mag_size <= 0:
-        return True                        # untracked — exactly pre-W3
-    if tick < getattr(u, "reload_done_tick", -1):
+        return True                        # untracked -- exactly pre-W3
+    if not mag_settle(u, weapon, tick):
         return False                       # mid-reload: the stall
-    if getattr(u, "current_mag", None) is None or u.current_mag <= 0:
-        u.current_mag = int(weapon.mag_size)   # first bind / reload complete
+    return u.current_mag > 0               # 0 = dry (no spare was left)
+
+
+def reload_begin(u, weapon, tick):
+    """Start a reload NOW: the magazine in the gun is DISCARDED with every
+    round still in it (``current_mag = 0``; rounds are never moved between
+    magazines), one spare is consumed when spares are counted, and the stall
+    runs ``weapon.reload_ticks`` from ``tick``; the full magazine is in the
+    gun when it ends (:func:`mag_settle`). With no spare left nothing starts
+    and the unit is dry (``current_mag`` 0, none pending). True when a reload
+    started. The caller has settled the magazine and checked its own
+    preconditions (:func:`mag_spend` on empty, ``Simulation._reload``)."""
+    spare = getattr(u, "spare_mags", SPARES_UNTRACKED)
+    u.current_mag = 0
+    if spare == 0:
+        u.reload_done_tick = -1
+        return False
+    if spare > 0:
+        u.spare_mags = spare - 1
+    u.reload_done_tick = tick + int(weapon.reload_ticks)
     return True
 
 
 def mag_spend(u, weapon, tick):
     """Spend one round per TRIGGER (a shotgun's 8 pellets = one trigger =
-    one round). Emptying the magazine starts the auto-reload NOW:
-    ``reload_done_tick = tick + reload_ticks`` — so the stall between the
-    last shot and the next is exactly ``reload_seconds`` (no manual reload
-    order in v1). No-op for untracked weapons."""
+    one round). Emptying the magazine starts the automatic reload NOW
+    (:func:`reload_begin`): the stall between the last shot and the next is
+    exactly ``reload_seconds``; with no spare left the unit goes dry. No-op
+    for untracked weapons."""
     if weapon.mag_size <= 0:
         return
     u.current_mag -= 1
     if u.current_mag <= 0:
-        u.reload_done_tick = tick + int(weapon.reload_ticks)
+        reload_begin(u, weapon, tick)
+
+
+def mag_status(u, weapon, tick):
+    """What a HUD (or a test) reads, WITHOUT mutating the unit: a tuple
+    ``(rounds, spares, reloading)`` for a tracked weapon -- the rounds in the
+    gun as :func:`mag_settle` would leave them at ``tick`` (a never-bound
+    unit shows a full magazine and its loadout's spares), the counted spare
+    magazines (``None`` = untracked spares) and whether a stall is still
+    running -- or ``None`` for an untracked weapon (``mag_size <= 0``)."""
+    if weapon.mag_size <= 0:
+        return None
+    full = int(weapon.mag_size)
+    if getattr(u, "current_mag", None) is None:
+        total = magazines_carried(u)
+        return (full, None if total <= 0 else total - 1, False)
+    spare = getattr(u, "spare_mags", SPARES_UNTRACKED)
+    spares = None if spare < 0 else int(spare)
+    done = getattr(u, "reload_done_tick", -1)
+    if done >= 0:
+        if tick < done:
+            return (int(u.current_mag), spares, True)
+        return (full, spares, False)
+    return (int(u.current_mag), spares, False)
 
 
 # ---------------------------------------------------------------------------

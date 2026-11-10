@@ -238,6 +238,14 @@ class Unit:
             self.loadout_name)
         self.has_grenade   = 0 if _kit is None else _kit.grenades
         self.has_explosive = 0 if _kit is None else _kit.explosives
+        # Magazines carried, TOTAL including the one loaded (G2p; the loadout
+        # row's `magazines`, 0 = spares untracked = infinite auto-reload).
+        # Config-static like the two counts above; read only by
+        # combat.mag_bind, and only for a weapon with mag_size > 0.
+        self.magazines = 0 if _kit is None else _kit.magazines
+        # ... counted for the loadout's OWN weapon only (a swapped-in weapon
+        # keeps untracked spares): combat.magazines_carried.
+        self.magazines_weapon = "" if _kit is None else str(_kit.weapon)
 
         # Weapon binding (mechanics/03 §4, W1; data-driven W4): which
         # [weapons.*] row this unit fires — its loadout row's `weapon` (#119;
@@ -260,13 +268,17 @@ class Unit:
         # keeps mag_size 0 = untracked = exactly pre-W3 behavior, so shipped
         # scenarios never move this state). current_mag: None = full mag,
         # lazily bound to the weapon row's mag_size at the first trigger
-        # (combat.mag_gate — survives weapon_id swaps in tests);
-        # reload_done_tick: the auto-reload stall's end tick (started when
-        # the mag empties, combat.mag_spend). Deterministic derivations of
-        # synced inputs (orders + tick), deliberately NOT in the synced
+        # (combat.mag_bind via mag_gate — survives weapon_id swaps in tests);
+        # spare_mags: the spare magazines left (G2p; bound with current_mag
+        # from `magazines`, combat.SPARES_UNTRACKED = infinite);
+        # reload_done_tick: the reload stall's end tick (-1 = none pending;
+        # started when the mag empties or by Simulation.reload_intent,
+        # combat.reload_begin). Deterministic derivations of
+        # synced inputs (intents + tick), deliberately NOT in the synced
         # digest surface — the last_fire_tick precedent
         # (field_ab_harness.SYNCED_UNIT_FIELDS).
         self.current_mag = None
+        self.spare_mags = -1
         self.reload_done_tick = -1
 
         # W4 SPRAY burst state (mechanics/03 §5): armed by
