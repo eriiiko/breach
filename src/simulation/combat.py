@@ -677,14 +677,28 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
 SPARES_UNTRACKED = -1
 
 
+def magazines_carried(u):
+    """The TOTAL magazines (the one in the gun included) the unit carries for
+    the weapon in its hands, 0 = spares untracked. The loadout row's
+    ``magazines`` count belongs to the loadout's OWN weapon
+    (``Unit.magazines_weapon``): a weapon swapped in (the debug cycle key,
+    OnePhaseWEGO's secondary) is not counted, so it keeps infinite spares
+    until a loadout names it -- nothing but the loadout's weapon moves."""
+    total = int(getattr(u, "magazines", 0))
+    own = getattr(u, "magazines_weapon", None)
+    if total > 0 and own is not None and getattr(u, "weapon_id", own) != own:
+        return 0
+    return total
+
+
 def mag_bind(u, weapon):
     """First bind of a tracked weapon's magazine (the lazy first-trigger
     bind, and every re-bind after a ``current_mag = None`` reset: a swapped
     weapon, a WEGO round boundary): a FULL magazine in the gun and, when the
-    loadout counts magazines (``u.magazines`` > 0, TOTAL including the one
-    loaded), ``magazines - 1`` spares; otherwise the spares are untracked."""
+    loadout counts magazines for this weapon (:func:`magazines_carried` > 0),
+    ``magazines - 1`` spares; otherwise the spares are untracked."""
     u.current_mag = int(weapon.mag_size)
-    total = int(getattr(u, "magazines", 0))
+    total = magazines_carried(u)
     u.spare_mags = SPARES_UNTRACKED if total <= 0 else total - 1
     u.reload_done_tick = -1
 
@@ -778,7 +792,7 @@ def mag_status(u, weapon, tick):
         return None
     full = int(weapon.mag_size)
     if getattr(u, "current_mag", None) is None:
-        total = int(getattr(u, "magazines", 0))
+        total = magazines_carried(u)
         return (full, None if total <= 0 else total - 1, False)
     spare = getattr(u, "spare_mags", SPARES_UNTRACKED)
     spares = None if spare < 0 else int(spare)

@@ -243,6 +243,9 @@ class Unit:
         # Config-static like the two counts above; read only by
         # combat.mag_bind, and only for a weapon with mag_size > 0.
         self.magazines = 0 if _kit is None else _kit.magazines
+        # ... counted for the loadout's OWN weapon only (a swapped-in weapon
+        # keeps untracked spares): combat.magazines_carried.
+        self.magazines_weapon = "" if _kit is None else str(_kit.weapon)
 
         # Weapon binding (mechanics/03 §4, W1; data-driven W4): which
         # [weapons.*] row this unit fires — its loadout row's `weapon` (#119;

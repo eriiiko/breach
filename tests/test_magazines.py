@@ -351,6 +351,29 @@ def test_a_weapon_with_mag_size_zero_never_touches_the_state_or_the_verb():
     assert mag_status(r.u, get_tables().weapons.by_name["lance_3"], 0) is None
 
 
+def test_a_swapped_in_weapon_keeps_untracked_spares():
+    """Property: the loadout's `magazines` belong to the loadout's own
+    weapon. A tracked weapon the unit swaps to (the debug cycle key, a
+    secondary) binds with untracked spares, so nothing but the weapon the
+    loadout names is limited. Breaks if the rifleman's three magazines leak
+    onto whatever else it holds (the p12_whisper would run dry after 36)."""
+    other = "p12_whisper"
+    row = get_tables().weapons.by_name[other]
+    assert row.mag_size > 0
+    r = _Range(magazines=3)
+    r.u.weapon_id = other
+    r.u.current_mag = None
+    assert r.status() == (int(row.mag_size), None, False)
+    r.hold()
+    r.step()
+    assert r.u.spare_mags == SPARES_UNTRACKED
+    # and back to the loadout's own weapon: counted again
+    r.u.weapon_id = "k5_carbine"
+    r.u.current_mag = None
+    r.run(6)
+    assert r.u.spare_mags == 2
+
+
 def test_untracked_spares_are_todays_infinite_auto_reload():
     """Property: a loadout with `magazines` 0 (or absent) reloads forever
     by the old law -- the stall after each emptied magazine, the same
