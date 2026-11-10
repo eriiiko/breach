@@ -786,7 +786,7 @@ def test_the_hud_line_shows_the_selected_kind_and_each_count():
     u = _unit_at(sim, 10, 12)
     lines = [ln.text for ln in panel_state_lines(sim, u, grenade_kind=FLASH)]
     joined = "\n".join(lines)
-    assert "Grenades:" in joined
+    assert "Grenades (4): " in joined and "Charges: " in joined
     carried = {r: n for r, n in zip(ROWS, u.grenade_counts)}
     assert f"[flash {carried['grenade_flash']}]" in joined
     assert f"frag {carried['grenade_frag']}" in joined
