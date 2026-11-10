@@ -179,6 +179,11 @@ def held_prop_settings(cfg, weapon_ids: Optional[Sequence[str]] = None) -> HeldP
 # Transforms (4x4, column vectors: p_world = M @ p)
 # ---------------------------------------------------------------------------
 
+def _mm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """A matrix product WITHOUT BLAS (the frame-path rule: plain einsum)."""
+    return np.einsum("ij,jk->ik", a, b)
+
+
 def euler_xyz(deg: Sequence[float]) -> np.ndarray:
     """The rotation of XYZ Euler angles in degrees: about x, then y, then z
     (fixed axes): ``Rz @ Ry @ Rx``."""
@@ -188,7 +193,7 @@ def euler_xyz(deg: Sequence[float]) -> np.ndarray:
     rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
     ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-    return rz @ ry @ rx
+    return _mm(_mm(rz, ry), rx)
 
 
 def trs_matrix(row: np.ndarray) -> np.ndarray:
@@ -212,7 +217,7 @@ def grip_matrix(prop: HeldProp, socket: str, file_extent: float) -> np.ndarray:
     s = prop.length_m / float(file_extent)
     m = np.eye(4)
     m[:3, :3] = euler_xyz(g.rotation_deg) * s
-    m[:3, 3] = np.asarray(g.offset_m) - m[:3, :3] @ np.asarray(prop.grip)
+    m[:3, 3] = np.asarray(g.offset_m) - np.einsum("ij,j->i", m[:3, :3], np.asarray(prop.grip))
     return m
 
 
@@ -226,13 +231,13 @@ def body_matrix(x: float, z: float, yaw_deg: float, scale: float,
                           [-math.sin(a), 0, math.cos(a)]]) * scale
     m[0, 3], m[2, 3] = x, z
     if model_transform is not None:
-        m = m @ np.asarray(model_transform, dtype=np.float64)
+        m = _mm(m, np.asarray(model_transform, dtype=np.float64))
     return m
 
 
 def prop_world(body: np.ndarray, hand_row: np.ndarray, grip: np.ndarray) -> np.ndarray:
     """The prop's world transform: ``body @ hand @ grip``."""
-    return body @ trs_matrix(hand_row) @ grip
+    return _mm(_mm(body, trs_matrix(hand_row)), grip)
 
 
 def model_extent(path) -> float:

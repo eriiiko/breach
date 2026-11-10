@@ -119,7 +119,7 @@ def measure_gait(bank, clip: int, feet: Sequence[int]) -> Optional[GaitMeasure]:
     if n < 1e-9:
         return None
     ground = mean / n                               # (x, z) the ground moves to
-    stride = float(np.median(v @ ground))
+    stride = float(np.median(v[:, 0] * ground[0] + v[:, 1] * ground[1]))
     if not stride >= STRIDE_MIN:
         return None
     travel = math.atan2(-ground[0], -ground[1])
