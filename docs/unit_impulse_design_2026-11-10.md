@@ -537,3 +537,126 @@ Findings from the gates, left as the law specifies them:
   counts (of ~51 000) on the mean of a 2-tick sawtooth (its fixed point is
   D/2 + 4 (d1 - d2), d1, d2 the two roundings); "one count per tick of
   period" is not reachable with it. The gate holds the filter's bound.
+
+
+## As built (G5p-b, 2026-11-10)
+
+Run 3 of 3: the wind and the blast onto the law, in ONE commit of behaviour
+(§7's gate: #140's cadence scale and knockdown are deleted in the commit that
+makes the force live). `exchange.apply_wind_force` is the 9c2 row: per living
+unit, `GameMap.footprint_wind(...)` (the max-q read, now also handing back the
+wind of the tile it was read on; `footprint_wind_load` is its W) becomes one
+tick of impulse through `unit_impulse.add_wind`: `J = q * A / tps` along that
+wind, no lever, `A` the standing or the prone drag area. The price is one
+table constant per map and area, `wind_k_q = round(rho A mult 1000 / (2 tile
+tps^2) * 2^16)` applied as `((W >> 16) * k) >> 16` (185 224 standing, 30 868
+prone at 0.333 m and 24 tps; int64-safe to a q of 4e8 Pa), with `rho` the
+map's `[materials.air]` row (`ImpulseTable.rho_air`). Deleted:
+`exchange.wind_settings` / `gmap_wind_settings` / `WindSettings` /
+`wind_scale_q16` / `wind_knocks_down` / `apply_wind_knockdown`, `[exchange]
+wind_q_slow_pa` / `wind_q_fall_pa` / `wind_slow_min_scale`, and
+`FootprintSamples.wind_scale_q16` (the builder reads no wind; the effort
+carries the slowing). The tile inspector shows q and the standing force
+`q * A` in N.
+
+Dials (`[impulse]`, the refusing door): `drag_area_m2 = 0.9` (§3),
+`drag_area_prone_m2 = 0.15` (§3, "an estimate"), `wind_push_mult = 1.0` (the
+declared experiment dial, 0 = the input off). One area for every unit in v1
+(PLACEHOLDER: §3 puts it per species / profile / loadout row; nothing yet
+differs, so no column was added).
+
+**The blast is the wind (§4, §13).** A detonation pushes exactly the units its
+wind reaches -- the divergence source lies on the canonical blast walk's tiles
+and the flow it drives stops at walls -- through this row and nothing else;
+the direct damage disc is unchanged. There is no second blast input, so the
+"(a) wind, (b) blast" split of re-baselines collapses into one: the blast has
+no switch of its own beside `wind_push_mult`.
+
+**M7 (critique A), built:** a prone body takes its prone area's impulse, and
+the surplus of the standing area's over it is kept in `Unit.stand_x` /
+`stand_y` (written at 9c2, read once by the next slot 1a's demand, never
+momentum; hashed as `stand` while non-zero), so the knockdown is refreshed on
+the wind the unit WOULD take standing: in a steady 1.5-hold wind a marine stays
+down for three get-up times with no get-up cycle, and gets up once the wind
+drops.
+
+**The gale, measured** (shipped stabilities; a steady wind set at the body,
+as `tests/test_wave_push.py` does; 100 kg marine, stability 1.0; 80 kg zombie,
+0.9; the zombie's column in fractions of ITS hold):
+
+| steady force, x hold | marine | zombie |
+|---|---|---|
+| 0.5 / 0.99 (122 / 243 Pa) | never moved, never floored; effort settles on F / hold | 0.80: stands |
+| 1.01 (248 Pa) | floored in 36 ticks (1.5 s), moved 0 | 0.82: floored in 35 ticks |
+| 1.05 | floored in 24 ticks, moved 0 to 1 cm | floored in 13 ticks |
+| 1.5 / 3 | floored in 10 / 7 ticks, moved 5 / 31 cm, then held prone | 3: 13 cm |
+| 12 (2.9 kPa, ~70 m/s) | floored in 3 ticks, then SLIDES prone (q x 0.15 m^2 > mu_slide m g above 2.6 kPa) | -- |
+
+So §6 holds for every shipped unit: a strong enough steady wind floors a unit
+(the effort route, `effort >= stability^2`, fires because no shipped unit is
+above stability 1.0) after a displacement of the excess of a few centimetres,
+and a prone unit slides only past about ten times the standing fall wind. The
+run-2 finding stands, measured: a stability-1.5 profile at 1.05 holds slides
+6 m in 12 s without falling (its effort cannot reach 2.25 and each overflow
+re-arms the reaction delay); at 1.5 / 2 holds it falls after 51 / 26 ticks. No
+shipped row has it, so the law is unchanged and a gate holds the bounded fall
+(`test_a_braced_profile_is_floored_later_but_floored`). Critique A's B1 (a
+shove from behind in a 0.99-hold wind): 0.16 m, the unit falls on the
+unrecoverable-push rule and stops, against 0.33 m in calm air.
+
+**#140's scene (`tests/test_wind_doorway_e2e.py`) -- a DEVIATION from §7's
+wording.** §7 asks that "the 1.44 atm room must not move the squad". With the
+force live it cannot, by the RULED law: the door's jet reaches up to ~5.7 kPa
+(over twenty holds) at the squad for about six ticks. The squad is floored and
+pushed by that excess, 0.28 / 0.33 / 0.37 m, and every member is at rest
+within eleven ticks; for the remaining nine seconds of the vent nobody moves,
+and all are standing at the end. The property kept is #140's own: the LASTING
+vent (far under the hold) moves nobody -- the 28-35 s drift cannot return --
+and with the wind's input off nothing moves a standing unit at all. A
+teammate's shove in the lasting vent moves its target as far as with the
+wind off (to 5 cm; measured 0.31 m) and it stops. The walker leaving through
+the lower door gets out and, once the jet is over, never walks faster than
+its calm cadence.
+
+**The frag** (shipped `frag_standard`, strength 1, 0.333 m tiles, an open
+room). Its wind is essentially ONE tick of q (3.1 / 1.8 / 1.1 / 0.76 / 0.54 /
+0.31 kPa at 0.67 / 1.0 / 1.33 / 1.67 / 2.0 / 2.66 m), an impulse of 120 / 74 /
+48 / 35 / 26 / 14 N s on a standing body. Through the law (HP held up so the
+push is seen): a marine is floored only within ~0.7 m and facing the blast
+(the backward fall limit, 0.8 m/s), pushed 0.4-0.5 m there, 0.2 m at 1 m, 5-9
+cm at 1.3 m, nothing past 2 m; a zombie (80 kg, 0.9) is floored within 0.7 m
+whichever way it faces, and at 1 m facing it. #140's q threshold floored a
+marine out to ~2.7 m (the explosion design's "knocked down to 2.5 m"): a
+one-tick gust is a small impulse. The frag's direct damage kills inside
+~0.7 m anyway. Whether a blast should carry more impulse (its tertiary range,
+research §5) is a modelling call left to Erik; nothing was tuned.
+
+**Re-baselines** (one, for the one behaviour commit; proof in every pinned
+run: the pre-G5p-b tree with #140's law off and this tree with
+`wind_push_mult = 0` give the same values). ship_demo seed 1: win 0 at 265 ->
+266 (field 1879b896, tick 3bd9fb40, units 3262ff82): the frags of ticks
+218-221 push six units by up to 13 cm and floor one, where #140's law floored
+six; a zombie left standing bites unit 4 on tick 222. The box: unchanged
+(calm). The instant-turn side gate: the WINNER CHANGES, win 1 -> win 0 at
+244 -- caused by #140's law leaving (its knockdowns had saved units 6 and 7),
+shown by the old tree with the law off giving win 0 at 244 too. The
+every-input-off gates (G1, the turning law's G3) now switch the wind off as
+well and are re-pinned to the old tree's law-off values (win 0 at 266; win 1
+at 241). Exposure-off and wind-up-0: outcomes unchanged, digests moved.
+GOLDEN_AGGREGATE 58f766f4 (the canonical marine's one-tick 882 Pa pulse now
+staggers it on its feet, where #140's law floored it).
+
+**E2E** (`tools/e2e_drive.py --control direct`): door_test, a frag thrown with
+W to land 4 tiles east of Bravo staggers it 0.21 m west, away from the blast,
+over about ten ticks, on its feet (Alpha and Cobra 6 cm); one landing in
+Bravo's footprint kills it. wind_studio (#140's HUMAN-TEST level), its door
+opened with E (use): Alpha in the doorway takes 2.2-2.9 kPa for two ticks, is
+floored, slides 0.47 m and rests within ten ticks, and stands again about
+1.5 s later; the flankers take one tick of ~1.1 kPa and stagger 7-13 cm on
+their feet; nobody moves for the remaining six seconds. (No prone pose is
+drawn yet: #184.)
+
+Finding, left alone: the O door key is dead under `--control direct` (dev
+keys are WEGO / onephase only), so airlock_demo's outer door could not be
+opened by key in that scheme; the decompression E2E is #140's own HUMAN-TEST
+level instead, its door opened by the use verb.
