@@ -30,6 +30,15 @@ window starts in), ``time_constant_s``, ``dead_zone_tiles``,
 ``action_memory_s``, ``action_event_weight``, ``action_radius_tiles``, read
 by :func:`follow_settings` through ``match_replay.replay_key`` -- the same
 refusing door as ``checkpoint_every_ticks``.
+
+THE CAMERA MODE of direct control (gameplay pack G1p): ``[display]
+camera_mode``, read by :func:`camera_mode` (a refusing door), is how the view
+follows the POSSESSED unit under ``main.py --control direct``. ``"centred"``
+(:data:`CENTRED`) is north-up with the unit in the centre: a
+:class:`FollowCamera` LOCKED on it (:meth:`FollowCamera.lock`), which snaps
+every frame instead of easing (the world clamp still applies at the edges).
+A new framing (G1p-b's ``"player_up"``) is a value of :data:`CAMERA_MODES`,
+never camera code in a control source.
 """
 from __future__ import annotations
 
@@ -41,6 +50,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 FOLLOW_MODES = ("action", "free")
 ACTION = "action"
 FREE = "free"
+#: The modes ``[display] camera_mode`` may name (G1p): how the view follows
+#: a possessed unit under direct control.
+CENTRED = "centred"
+CAMERA_MODES = (CENTRED,)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +91,20 @@ def follow_settings(cfg) -> FollowSettings:
         action_radius_tiles=float(replay_key(cfg, "action_radius_tiles",
                                              *pos)),
     )
+
+
+def camera_mode(cfg) -> str:
+    """``[display] camera_mode`` of a loaded config (``CFG``): one of
+    :data:`CAMERA_MODES`. Refused (ValueError naming the key) when the
+    section or key is missing or names no mode."""
+    section = getattr(cfg, "display", None)
+    if section is None or not hasattr(section, "camera_mode"):
+        raise ValueError("[display] is missing 'camera_mode'")
+    v = section.camera_mode
+    if v not in CAMERA_MODES:
+        raise ValueError(f"[display] camera_mode must be one of "
+                         f"{', '.join(map(repr, CAMERA_MODES))}, got {v!r}")
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +213,9 @@ class FollowCamera:
         self.tracker = ActionTracker(settings.action_memory_s)
         self.target = ACTION if settings.camera == ACTION else FREE
         self._snap = True
+        #: Locked on a unit (the direct-control ``"centred"`` mode): snap to
+        #: it every frame, no easing.
+        self.locked = False
 
     # -- state changes ----------------------------------------------------
     def reset(self) -> None:
@@ -199,6 +229,13 @@ class FollowCamera:
 
     def manual_pan(self) -> None:
         self.target = FREE
+
+    def lock(self, unit_id) -> None:
+        """Follow ``unit_id`` exactly, every frame (the ``"centred"`` camera
+        mode, G1p): the view centre IS the unit's centre, clamped to the
+        world. ``None`` (nothing possessed) leaves the camera where it is."""
+        self.locked = True
+        self.target = FREE if unit_id is None else unit_id
 
     def cycle(self, units) -> None:
         """``action`` -> each living unit (team, slot) -> ``free`` ->
@@ -258,7 +295,7 @@ class FollowCamera:
             return
         w, h = camera.visible_tiles()
         centre = (camera.pos_tile_x + 0.5 * w, camera.pos_tile_y + 0.5 * h)
-        if self._snap:
+        if self._snap or self.locked:
             new = target
             self._snap = False
         else:
@@ -266,6 +303,7 @@ class FollowCamera:
         camera.pan(new[0] - centre[0], new[1] - centre[1])
 
 
-__all__ = ["FOLLOW_MODES", "ACTION", "FREE", "FollowSettings",
+__all__ = ["FOLLOW_MODES", "ACTION", "FREE", "CENTRED", "CAMERA_MODES",
+           "camera_mode", "FollowSettings",
            "follow_settings", "unit_centre", "action_target",
            "ActionTracker", "smooth_step", "cycle_order", "FollowCamera"]

@@ -129,6 +129,11 @@ def _duel(hp, left_first, n_ticks):
     who = {name: _add(sim, name, x, 2, team=team, hp=hp)
            for (name, x, team) in spawn}
     L, R = who["L"], who["R"]
+    # G1p: a facing turns at the turn-rate cap; this duel is about the slot,
+    # so both already face their aim (the turn is test_turn_rate's). West is
+    # the kit's pi, exactly what the aim (-1, 0) turns to.
+    from simulation.turning import PI_Q16
+    L.facing, R.facing = 0.0, PI_Q16 / 65536.0
     sim.set_aim(L.id, FP_ONE, 0)          # east
     sim.set_aim(R.id, -FP_ONE, 0)         # west
     sim.set_trigger(L.id, True)

@@ -1345,6 +1345,11 @@ level = "playground"              # folder under levels/ to load on startup (the
 sim_speed = 1.0                   # playback speed: 1.0 = real time, 0.25 = quarter-speed slow motion (a tuning aid,
                                   # 2026-10-04). Wall-clock pacing ONLY -- the sim steps the same ticks, so nothing
                                   # physical changes. Range (0, 4]. Restart to apply.
+camera_mode = "centred"           # how the view follows the possessed marine under --control direct
+                                  # (gameplay pack G1p): "centred" = north-up, the marine in the centre
+                                  # (renderer/follow_camera.py CAMERA_MODES; "player_up" is the G1p-b
+                                  # spike, not built). Refused when it names no mode.
+
 # Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
 # placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
 # GameRenderer binds them once at construction (the water_display_max
@@ -1353,6 +1358,32 @@ sim_speed = 1.0                   # playback speed: 1.0 = real time, 0.25 = quar
 water_ripple_shade = 0.35   # ripple-slope brightness gain: full +/-35% of the tint at slope 0.05 m/tile (fresh splash)
 water_foam_thresh = 0.03    # |grad ripple| (m/tile) above which foam whitens; splash slope ~0.075 foams, settled ~0 never
 water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing water; grows with local ripple energy, cap 0.40
+
+# Direct-control keys (gameplay pack v1 G1p; src/control_direct.py, `--control
+# direct`): action -> key name, read through the refusing door
+# control_direct.key_table (every action must be bound; an unknown action, an
+# unknown key name or a key bound twice is refused by name). Key names: a
+# letter "A".."Z", a digit "0".."9", "SPACE", "TAB", "ENTER", "ESCAPE",
+# "BACKSPACE", "LEFT_SHIFT" / "RIGHT_SHIFT", "LEFT_CONTROL" / "RIGHT_CONTROL",
+# "LEFT_ALT" / "RIGHT_ALT", "UP" / "DOWN" / "LEFT" / "RIGHT", "F1".."F12", or a
+# mouse button "MOUSE_LEFT" / "MOUSE_RIGHT" / "MOUSE_MIDDLE". The aim is the
+# mouse (the marine faces the cursor). Shipped table: Erik's ruling,
+# 2026-11-10 (RDFG). melee / shove / reload / cycle_grenade / flashlight are
+# BOUND BUT INERT until their patches (G2p..G7p) add the verbs.
+[controls.keys]
+move_forward = "R"
+move_back = "F"
+strafe_left = "D"
+strafe_right = "G"
+trigger = "MOUSE_LEFT"
+melee = "MOUSE_RIGHT"
+shove = "SPACE"
+reload = "Z"
+throw = "W"
+cycle_grenade = "4"
+flashlight = "Q"
+use = "E"
+full_speed = "A"
 
 # Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7 — the shipped
 # GLSL Fresnel/GGX/refraction look, NOT the CPU placeholder above). RENDER-ONLY
@@ -4379,6 +4410,16 @@ attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
 
 [marine]
 hp = 100
+# The turn-rate cap (gameplay pack v1 G1p, Erik's ruling 2026-11-10: aim is
+# not immediate). set_aim names the facing a unit wants; each tick its facing
+# turns toward it by at most this, the shorter way round, and reaches it
+# exactly (src/simulation/turning.py). Quantized ONCE at sim construction to
+# Q16.16 radians per tick (360 deg/s = 15 deg a tick at 24 tps: an about-face
+# in 0.5 s). Every unit driven through set_aim (player, bots, policy). Read per
+# unit; later a stat scaled by dexterity and armour weight. PLACEHOLDER, Erik
+# tunes. A value of half a turn per tick or more (>= 4320 at 24 tps) is the
+# pre-G1p instant facing.
+turn_rate_deg_per_s = 360.0
 # loadout — the [loadouts.*] row a marine is armed with when nothing names
 # one (#119; the row replaced this table's old weapon / grenades / explosives
 # keys with the same values). A match config names a row per team (#119 P2).

@@ -17,6 +17,8 @@ P2 (2026-07-22, pure seam + rename, NO behavior change): only
 identical behavior, selected by the default ``--control wego``.
 ``GamepadDirect`` (one possessed unit, per-tick MOVE_DIR/AIM/TRIGGER
 intents) and ``AgentPolicy`` (the RL path) are P3 — not built here.
+(Direct control is ``control_direct.DirectControl`` since the gameplay pack's
+G1p: the pad and keyboard + mouse halves of one scheme.)
 (``AgentPolicy`` exists since #29 P1a as the match controller ``policy``,
 ``control_policy.py``: a trainer's action rows through the intent facade.)
 """
@@ -59,6 +61,36 @@ def quantize_stick_direction(ax: float, ay: float, deadzone: float = 0.15):
     uy = ay * inv
     mag_c = 1.0 if mag > 1.0 else mag
     return (quantize_scalar(ux), quantize_scalar(uy), quantize_scalar(mag_c))
+
+
+def quantize_point_aim(ox: float, oy: float, px: float, py: float,
+                       deadzone: float = 0.0):
+    """Aim at a POINT (gameplay pack G1p, the mouse): the Q16.16 unit vector
+    from ``(ox, oy)`` (the possessed unit's centre, world tiles) to
+    ``(px, py)`` (the cursor's world position) through THE seam,
+    :func:`quantize_stick_direction` (so its normalisation, rounding and
+    deadzone are the stick's), plus the distance in Q16.16 tiles (a throw's
+    reach). ``(dx_q, dy_q, reach_q)``; ``(0, 0, 0)`` when the point is within
+    ``deadzone`` tiles. ``math.sqrt`` is correctly rounded, so the reach is
+    as deterministic as the direction."""
+    vx = float(px) - float(ox)
+    vy = float(py) - float(oy)
+    dx_q, dy_q, mag_q = quantize_stick_direction(vx, vy, deadzone)
+    if mag_q == 0:
+        return (0, 0, 0)
+    return (dx_q, dy_q, quantize_scalar(math.sqrt(vx * vx + vy * vy)))
+
+
+def stick_throttle_q(mag_q: int, deadzone: float) -> int:
+    """A stick's deflection as the move THROTTLE (G1p), Q16 in ``[0, ONE]``:
+    ``mag_q`` (the clamped magnitude :func:`quantize_stick_direction`
+    returned) rescaled so the edge of the ``deadzone`` is 0 (the walk) and
+    full deflection is ONE (the sprint). Pure; 0 for a centred stick."""
+    mag = mag_q / 65536.0
+    if mag <= deadzone:
+        return 0
+    t = (mag - deadzone) / (1.0 - deadzone)
+    return quantize_scalar(1.0 if t > 1.0 else t)
 
 
 class ControlSource:
@@ -136,6 +168,20 @@ class ControlSource:
         arms them.
         """
         return True
+
+    @property
+    def owns_camera_keys(self) -> bool:
+        """Are the camera's KEYS this scheme's (gameplay pack G1p)? ``True``
+        for direct control, whose movement keys are data
+        (``[controls.keys]``): main.py then neither pans the view with
+        WASD / arrows nor zooms with Q / E (the wheel and -/+ still zoom).
+        ``False`` for every other scheme -- their keymaps are unchanged."""
+        return False
+
+    #: How main.py frames this scheme's possessed unit (``[display]
+    #: camera_mode``, ``renderer/follow_camera.py``): ``None`` = no
+    #: possessed-unit camera (every scheme but direct control).
+    camera_mode = None
 
 
 class IdleControl(ControlSource):
@@ -274,11 +320,13 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
     return controllers
 
 
-# Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
-# point (AgentPolicy) is driven differently — it has no per-frame poll loop —
-# so it does not route through this factory: it is the match controller
-# "policy" above (#29 P1a), built by the batched environment.
-_KNOWN_CONTROLS = ("wego", "gamepad", "onephase", "match")
+# Launch-flag name -> factory. P3 added "gamepad"; G1p (gameplay pack v1) made
+# it an alias of "direct" (control_direct.DirectControl: the pad AND keyboard
+# + mouse, whichever was touched last). The ML entry point (AgentPolicy) is
+# driven differently — it has no per-frame poll loop — so it does not route
+# through this factory: it is the match controller "policy" above (#29 P1a),
+# built by the batched environment.
+_KNOWN_CONTROLS = ("wego", "direct", "gamepad", "onephase", "match")
 
 
 def create_control_source(name: str, debug: bool = False,
@@ -286,8 +334,9 @@ def create_control_source(name: str, debug: bool = False,
     """Factory for the ``--control`` launch flag (§3b).
 
     ``name`` must be one of :data:`_KNOWN_CONTROLS`: ``"wego"`` (today's
-    default WEGO planning input) or ``"gamepad"`` (P3 direct control — one
-    possessed marine, per-tick intents, ContinuousRealtime). An unknown name
+    default WEGO planning input), ``"direct"`` (G1p direct control — one
+    possessed marine, per-tick intents, ContinuousRealtime, pad or keyboard +
+    mouse; ``"gamepad"`` is its alias), ``"onephase"`` or ``"match"``. An unknown name
     is a launch-time error (``SystemExit``), never a silent fallback — the same
     convention ``main.py``'s other ``--flag`` parsers use for a bad value.
     """
@@ -296,13 +345,16 @@ def create_control_source(name: str, debug: bool = False,
         # which imports ControlSource from here to declare its base class.
         from input_handler import WEGOPlanningInput
         return WEGOPlanningInput()
-    if name == "gamepad":
-        # Deferred import: control_gamepad imports pyray (the raylib gamepad
-        # API) at module load; keeping it lazy means importing control_source
+    if name in ("direct", "gamepad"):
+        # Deferred import: the direct scheme's halves import pyray (the
+        # raylib input API); keeping it lazy means importing control_source
         # (which the sim-side test path and input_handler both do) never
-        # requires pyray.
-        from control_gamepad import GamepadDirect
-        return GamepadDirect()
+        # requires pyray. "gamepad" is the alias kept from P3 (G1p).
+        from control_direct import DirectControl
+        try:
+            return DirectControl()
+        except ValueError as e:
+            raise SystemExit(f"config.toml: {e}")
     if name == "onephase":
         # The turn-formula redesign (onephase_wego design). Picks OnePhaseWEGO
         # as its ruleset; ``debug`` re-arms the evicted diagnostic keys (§17 +
@@ -322,6 +374,7 @@ def create_control_source(name: str, debug: bool = False,
 
 __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
+    "quantize_point_aim", "stick_throttle_q",
     "IdleControl", "register_controller", "registered_controllers",
     "create_controller", "create_match_controllers", "match_file_controllers",
 ]

@@ -292,7 +292,6 @@ def _quiet_ship_trace(monkeypatch, astronomical):
     from control_source import quantize_stick_direction
     from level_loader import load as load_level
     from simulation import Simulation
-    from simulation.orders import ORDER_MOVE_ATTACK
     from simulation.ruleset import ContinuousRealtime
     if astronomical:
         monkeypatch.setattr(CFG.exchange, "wind_q_slow_pa", 1e15)
@@ -310,7 +309,7 @@ def _quiet_ship_trace(monkeypatch, astronomical):
     dx, dy, _ = quantize_stick_direction(1.0, 0.0, 0.0)
     trace = []
     for _ in range(96):
-        sim.set_move_dir(walker.id, dx, dy, ORDER_MOVE_ATTACK)
+        sim.set_move_dir(walker.id, dx, dy, 0)  # throttle 0: the walk
         sim.set_paused(False)
         sim.step()
         trace.append(tuple((u.x, u.y, tuple((s.kind, s.remaining_ticks)

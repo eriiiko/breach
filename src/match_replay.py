@@ -18,7 +18,7 @@ The parts:
 - :class:`MatchRecorder` owns a recording in progress: it attaches the log,
   takes the checkpoints as the runner steps, and closes into a
   :class:`Recording`. ``tools/run_match.py --record`` drives it.
-- :func:`write_recording` / :func:`read_recording`: the on-disk format v1,
+- :func:`write_recording` / :func:`read_recording`: the on-disk format (v2 since G1p),
   one gzip'd JSON-lines file per match (below).
 - :class:`ReplayControl`: the registered match controller ``"replay"``
   (``control_source``), built from a recording by
@@ -29,13 +29,13 @@ The parts:
   the tick. ``tools/run_match.py --replay`` drives it headless; #127 puts it
   behind ``main.py --replay``.
 
-Format v1 (gzip, mtime 0, so one recording is one byte string), UTF-8 JSON,
+Format v2 (gzip, mtime 0, so one recording is one byte string), UTF-8 JSON,
 one object per line::
 
-    {"format": "breach-match-replay", "version": 1, "level": "ship_demo",
+    {"format": "breach-match-replay", "version": 2, "level": "ship_demo",
      "seed": 1, "checkpoint_every_ticks": 60, "build": "<git describe>",
      "spec": {...MatchSpec as a dict...}}
-    {"t": 0, "i": [["set_move_dir", 0, 65536, 0, 1], ["drive_zombies", [8, 9]]]}
+    {"t": 0, "i": [["set_move_dir", 0, 65536, 0, 0], ["drive_zombies", [8, 9]]]}
     {"c": 0, "f": "<field_digest>", "k": "<tick_digest>"}
     ...
     {"end": 240, "result": {"outcome": "draw", "team": null, "ticks": 240}}
@@ -72,7 +72,11 @@ from control_source import ControlSource
 from simulation.match import MatchSpec, MatchTeam
 
 FORMAT_NAME = "breach-match-replay"
-FORMAT_VERSION = 1
+#: v2 (gameplay pack G1p, 2026-11-10): ``set_move_dir``'s fourth argument is
+#: the Q16 THROTTLE (was a speed-mode order id), and ``set_aim`` turns at the
+#: turn-rate cap -- a v1 recording would replay as another match, so it is
+#: refused by the header, never migrated.
+FORMAT_VERSION = 2
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -87,12 +91,12 @@ INTENT_KINDS = {
     "use_intent": ("int",),
     "drive_zombies": ("ints",),
 }
-#: Entry points the tap sees but format v1 refuses to record.
+#: Entry points the tap sees but the format refuses to record.
 REFUSED_KINDS = ("apply_action",)
 
 
 class RecordingRefused(ValueError):
-    """The match did something format v1 cannot record."""
+    """The match did something the format cannot record."""
 
 
 class ReplayRefused(ValueError):
@@ -221,7 +225,7 @@ class Recording:
 class IntentLog:
     """The tap's sink (``Simulation.attach_intent_log``): appends every
     recordable call to ``recording.intents[tick]`` in issue order; refuses
-    the kinds format v1 cannot record."""
+    the kinds the format cannot record."""
 
     def __init__(self, recording: Recording):
         self.recording = recording
@@ -287,7 +291,7 @@ class MatchRecorder:
 
 
 # ---------------------------------------------------------------------------
-# Format v1: writer + reader
+# The format (v2): writer + reader
 # ---------------------------------------------------------------------------
 def _encode_args(kind: str, args: tuple) -> list:
     out = []
@@ -339,7 +343,7 @@ def _dumps(obj) -> bytes:
 
 
 def encode_recording(rec: Recording) -> bytes:
-    """The recording as format-v1 bytes (gzip, mtime 0: deterministic)."""
+    """The recording as format bytes (gzip, mtime 0: deterministic)."""
     if rec.end_tick is None:
         raise ValueError("an unfinished recording (MatchRecorder.finish "
                          "was not called)")
@@ -372,7 +376,7 @@ def write_recording(rec: Recording, path) -> int:
 
 
 def decode_recording(data: bytes, where: str = "recording") -> Recording:
-    """Format-v1 bytes -> a :class:`Recording`. Refuses another format or
+    """Format bytes -> a :class:`Recording`. Refuses another format or
     version, a malformed row, an unknown intent kind, or a missing end."""
     try:
         text = gzip.decompress(data).decode("utf-8")

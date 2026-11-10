@@ -194,13 +194,12 @@ def test_move_dir_walks_at_the_slowed_cadence_in_a_gale():
     bp = pytest.importorskip("breach_physics")
     from config import CFG
     from simulation import Simulation
-    from simulation.orders import ORDER_MOVE_ATTACK
     from simulation.unit import Unit
     sim = Simulation(_gale_room(), seed=1, breach_physics=bp,
                      enable_recorder=False)
     u = Unit("w", x=6.0, y=10.0, team=0)
     sim.add_unit(u)
-    md = SimpleNamespace(speed_mode=ORDER_MOVE_ATTACK, dx_q=FP_ONE, dy_q=0)
+    md = SimpleNamespace(throttle_q=0, dx_q=FP_ONE, dy_q=0)  # the walk
     calm = int(CFG.movement.marine_attack_ticks_per_tile)
     _blow(sim.gmap, on=False)
     x0 = u.x

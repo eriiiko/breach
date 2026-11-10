@@ -1,0 +1,242 @@
+"""G1p (gameplay pack v1, #183) -- the turn-rate cap (``simulation/turning.py``).
+
+``set_aim`` names the facing a unit WANTS; each tick its facing turns toward
+it by at most the unit's turn rate, the shorter way round, in integer Q16.16
+radians (the kit's ``atan2_q16`` currency), reaching it exactly. Properties:
+
+* the law: one tick never turns more than the cap, always the shorter way,
+  and lands on the aim exactly (no overshoot, no residual) -- on a sweep of
+  angles across the wrap, and through the sim's AIM slot;
+* the door refuses a missing or non-positive rate and quantizes once;
+* the bots never fire while this tick's turn leaves them outside their
+  weapon's spread of the aim (the trigger discipline);
+* THE GATE of the patch: with the cap at half a turn per tick, the pinned
+  ship_demo match is the PRE-G1p match exactly -- so the cap is the only
+  thing that moved its re-pinned digests.
+"""
+from __future__ import annotations
+
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
+           ROOT / "tools", ROOT / "tests"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import breach_physics as bp  # noqa: E402
+
+from config import CFG, Namespace  # noqa: E402
+from simulation import Simulation  # noqa: E402
+from simulation import turning, unit_fixed  # noqa: E402
+from simulation.intents import FP_ONE  # noqa: E402
+from simulation.ruleset import ContinuousRealtime  # noqa: E402
+from simulation.turning import (PI_Q16, TWO_PI_Q16, turn_rate_q16,  # noqa: E402
+                                turn_toward_q16, wrap_q16)
+from simulation.unit import Unit  # noqa: E402
+
+#: 15 degrees in Q16.16 radians -- the shipped placeholder's per-tick cap.
+CAP_15 = unit_fixed.quantize_scalar(math.radians(15.0))
+
+
+def _dist(a, b) -> int:
+    """The shorter-way angular distance |a - b| in Q16.16 radians."""
+    return abs(wrap_q16(a - b))
+
+
+# ---------------------------------------------------------------------------
+# (a) the law
+# ---------------------------------------------------------------------------
+def test_the_kit_constants_are_the_kits_own():
+    """Property: PI_Q16 is the trig kit's own pi (atan2_q16 of the negative
+    x axis), so both ends of the facing range name one angle under the wrap.
+    Breaks if the constant is re-derived from a float pi or the period is not
+    twice it."""
+    assert unit_fixed.atan2_q16(0, -FP_ONE) == PI_Q16
+    assert TWO_PI_Q16 == 2 * PI_Q16
+    assert wrap_q16(PI_Q16) == PI_Q16 and wrap_q16(-PI_Q16) == PI_Q16
+
+
+@pytest.mark.parametrize("cap", [1, 977, CAP_15, PI_Q16 // 2, PI_Q16])
+def test_a_turn_never_exceeds_the_cap_takes_the_shorter_way_and_lands(cap):
+    """Property: for any facing and any aim (a seeded sweep across the wrap,
+    plus the range ends and the exact half turn), one tick moves the facing
+    by at most ``cap`` along the shorter arc, never past the aim, and
+    repeated ticks reach the aim EXACTLY in ceil(distance / cap) ticks, each
+    tick closing the distance by exactly the cap until the last (walked to
+    the end for aims within 64 caps, the first 65 ticks beyond). Breaks if
+    the turn takes the long way round the wrap, overshoots, stops a residual
+    short, or steps by anything but the cap."""
+    rng = np.random.default_rng(183)
+    angles = [-PI_Q16, PI_Q16, 0, 1, -1, PI_Q16 - 1, -PI_Q16 + 1]
+    angles += [int(a) for a in rng.integers(-PI_Q16, PI_Q16 + 1, size=60)]
+    for cur in angles:
+        for target in angles[:12] + [cur + PI_Q16, cur - PI_Q16 + 1,
+                                     cur + 3 * cap // 2, cur - 5 * cap // 2]:
+            target = turning.normalize_q16(target)
+            d0 = _dist(target, cur)
+            if d0 > 64 * cap:
+                # far for this cap: walk the first ticks only (the step law
+                # is the same on every tick; the near targets above walk in)
+                d0 = None
+            f = cur
+            for k in range(1, 66 if d0 is None else (d0 + cap - 1) // cap + 2):
+                nxt = turn_toward_q16(f, target, cap)
+                step = wrap_q16(nxt - f)
+                assert abs(step) <= cap
+                # the shorter way: the step goes the way of the short arc
+                if nxt != target:
+                    assert abs(step) == cap
+                    assert step == (cap if wrap_q16(target - f) > 0
+                                    else -cap)
+                    assert _dist(target, nxt) == _dist(target, f) - cap
+                f = nxt
+                if f == target:
+                    break
+            if d0 is not None:
+                assert f == target, (cur, target, cap)
+                assert k == max(1, (d0 + cap - 1) // cap)
+
+
+def test_a_cap_of_half_a_turn_is_the_instant_facing():
+    """Property: at a cap of half a turn (or more) every aim is reached in
+    one tick -- the pre-G1p law. Breaks if the wrap leaves any aim farther
+    than half a turn."""
+    rng = np.random.default_rng(7)
+    for cur, target in rng.integers(-PI_Q16, PI_Q16 + 1, size=(500, 2)):
+        assert turn_toward_q16(int(cur), int(target), PI_Q16) == int(target)
+
+
+def _arena(h=20, w=20):
+    from level_loader import LevelData
+    tm = np.ones((h, w), dtype=np.int32)
+    tm[1:h - 1, 1:w - 1] = 4
+    return LevelData(name="turn_open", version="1", path=Path("."),
+                     tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
+
+
+def test_the_sim_turns_a_unit_at_its_cap_and_reaches_the_aim_exactly():
+    """Property: through ``set_aim`` and the sim's AIM slot, a marine facing
+    north that aims south-west turns by at most its cap per tick, the shorter
+    way (counter-clockwise from north, through west), and ends on exactly the
+    facing the instant law gave (``atan2_rad`` of the aim). Breaks if the
+    slot writes the aim at once, turns the long way, or ends a residual away."""
+    sim = Simulation(_arena(), seed=1, breach_physics=bp,
+                     enable_recorder=False, ruleset=ContinuousRealtime())
+    sim.set_paused(False)
+    uid = sim.add_unit(Unit("M", x=8, y=8, team=0))
+    u = sim.get_unit(uid)
+    cap = sim.unit_turn_rate_q16(u)
+    assert cap == turn_rate_q16(CFG)
+    dx_q, dy_q = -46341, 46341                      # south-west (y down)
+    want = unit_fixed.atan2_rad(-dy_q / FP_ONE, dx_q / FP_ONE)
+    prev = unit_fixed.quantize_scalar(u.facing)
+    for _ in range(40):
+        sim.set_aim(uid, dx_q, dy_q)
+        sim.step()
+        now = unit_fixed.quantize_scalar(u.facing)
+        assert abs(wrap_q16(now - prev)) <= cap
+        assert wrap_q16(now - prev) >= 0            # CCW: north -> west -> SW
+        prev = now
+        if u.facing == want:
+            break
+    assert u.facing == want
+
+
+# ---------------------------------------------------------------------------
+# (b) the door
+# ---------------------------------------------------------------------------
+def _cfg(rate, tps=24):
+    return Namespace({"marine": ({} if rate is None
+                                 else {"turn_rate_deg_per_s": rate}),
+                      "clock": {"ticks_per_second": tps}})
+
+
+def test_the_door_quantizes_the_shipped_rate_once():
+    """Property: 360 deg/s at 24 tps is quantize(15 deg) per tick. Breaks if
+    the door reads another key, forgets the tick rate or rounds another way."""
+    assert turn_rate_q16(_cfg(360.0)) == CAP_15
+    assert turn_rate_q16(_cfg(4320.0)) == PI_Q16      # half a turn per tick
+
+
+@pytest.mark.parametrize("bad", [None, 0, -10.0, True, "fast", 1e-9])
+def test_the_door_refuses_a_bad_rate_by_name(bad):
+    """Property: a missing, non-positive, non-numeric or sub-count rate is
+    refused naming ``turn_rate_deg_per_s``. Breaks if a typo silently turns
+    units at a default rate (or never)."""
+    with pytest.raises(ValueError, match="turn_rate_deg_per_s"):
+        turn_rate_q16(_cfg(bad))
+
+
+# ---------------------------------------------------------------------------
+# (c) the bots' trigger discipline
+# ---------------------------------------------------------------------------
+def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
+    """Property: a bot whose seen foe is ~22 degrees off its facing holds the
+    trigger released while this tick's turn leaves it outside its weapon's
+    spread of the aim, and pulls it once inside; every tick it pulls the
+    trigger, the facing the tick gives it is within the spread. Breaks if
+    the bot fires mid-turn (spraying the arc) or never fires."""
+    from test_bots import BotTeam, _level, _sim
+    lvl = _level(tmp_path, "turnfire")
+    sim, (bot, foe) = _sim(lvl, [(0, 10, 25), (1, 16, 10)])
+    team = BotTeam(0)
+    spread_q = team._weapon_spread_q(bot)
+    pulls = []
+    for _ in range(12):
+        team.handle_frame(sim, None)
+        pulled = bool(bot.live_trigger)
+        aim = bot.live_aim
+        sim.step()
+        if pulled:
+            want = unit_fixed.atan2_q16(-aim.dy_q, aim.dx_q)
+            assert _dist(want, unit_fixed.quantize_scalar(bot.facing)) \
+                <= spread_q
+        pulls.append(pulled)
+    assert pulls[0] is False          # 22 deg off, a 15 deg cap: not yet
+    assert any(pulls)
+
+
+# ---------------------------------------------------------------------------
+# (d) THE GATE: at half a turn per tick the pinned match is the pre-G1p one
+# ---------------------------------------------------------------------------
+#: ship_demo seed 1 as it stood before G1p (main da6a8d9e, the values
+#: test_zombie_control pinned until G1p re-pinned them at the shipped cap).
+_PRE_G1P_SHIP_DEMO = dict(
+    outcome="win", team=1, ticks=722,
+    field_digest="da05242a99122428c903ad8a96e9373a"
+                 "0e12006c03abdbec1e849f4aca7dc4b0",
+    tick_digest="f35ed2beadb77141ccea20d944a70a66"
+                "e93c70818ae4c44bbf6ba1edc01024b3",
+    unit_stream="4408c8740425593b0d47d35e7d0658c4"
+                "efbd62caed87f5fd69a9e8f894ac02dd")
+
+
+def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
+        monkeypatch):
+    """Property: with ``[marine] turn_rate_deg_per_s`` at half a turn per
+    tick, ship_demo seed 1 (bots vs bots + the horde) plays the pre-G1p match
+    tick for tick -- the throttle (bots walk at 0), the format bump, the
+    bots' trigger discipline and the direct-control scheme change nothing in
+    it, so the turn cap is the ONLY cause of the G1p re-pin. Breaks if
+    throttle 0 is not today's walk, if the bots fire differently at an
+    instant turn, or if the cap at half a turn is not the instant facing. The
+    next DELIBERATE re-pin of this match (another cause) retires this gate's
+    values with it."""
+    import level_loader
+    from run_match import run_match
+    from test_zombie_control import _UnitStream
+    tps = int(CFG.clock.ticks_per_second)
+    monkeypatch.setattr(CFG.marine, "turn_rate_deg_per_s", 180.0 * tps)
+    level = level_loader.load("ship_demo", str(ROOT / "levels"))
+    stream = _UnitStream()
+    o = run_match(level, on_tick=stream)
+    got = dict(outcome=o.result.outcome, team=o.result.team,
+               ticks=o.result.ticks, field_digest=o.field_digest,
+               tick_digest=o.tick_digest, unit_stream=stream.h.hexdigest())
+    assert got == _PRE_G1P_SHIP_DEMO

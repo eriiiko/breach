@@ -88,6 +88,15 @@ def atan2_rad(y: float, x: float) -> float:
     return dequantize_scalar(b.atan2_q16(quantize_scalar(y), quantize_scalar(x)))
 
 
+def atan2_q16(y_q: int, x_q: int) -> int:
+    """The kit's ``atan2_q16`` on Q16.16 ints, Q16.16 radians out -- the
+    integer form of :func:`atan2_rad` (``atan2_rad(dequantize(y_q),
+    dequantize(x_q)) == dequantize_scalar(atan2_q16(y_q, x_q))`` exactly,
+    since quantizing an exact n/65536 double gives n back). The turn-rate
+    law (``simulation/turning.py``) works in this currency."""
+    return int(_kit().atan2_q16(int(y_q), int(x_q)))
+
+
 def sin_rad(angle: float) -> float:
     """Deterministic sin of ``angle`` (radians): quantize -> sin_q16 ->
     dequantize. Exact n/65536 double in [-1.0, 1.0]. Accuracy pinned for

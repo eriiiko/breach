@@ -151,3 +151,38 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
                              f"got {scale}")
         cost = half_up(cost * SCALE_ONE, scale)
     return cost if cost >= 1 else 1
+
+
+#: The throttle's Q16 one (gameplay pack v1, G1p): ``set_move_dir``'s
+#: ``throttle_q`` lives in ``[0, THROTTLE_ONE]``.
+THROTTLE_ONE = FP_ONE
+
+
+def throttle_tiles_per_tick(cost_walk: int, cost_sprint: int,
+                            throttle_q: int) -> float:
+    """THE commanded speed of a unit on the continuous path (G1p): tiles per
+    tick at ``throttle_q`` (Q16 in ``[0, THROTTLE_ONE]``) between its walk and
+    its sprint, each an already-reduced tick cost (``default_speed`` over the
+    walk and sprint cadence dials, so terrain and wind slow both ends alike).
+
+    The speed is linear in the throttle in tiles per second,
+    ``v = v_walk + t * (v_sprint - v_walk)`` with ``v = 1 / cost``, formed as
+    ONE exact rational in integers::
+
+        v = ((ONE - t) * cost_sprint + t * cost_walk) / (cost_walk * cost_sprint * ONE)
+
+    and divided ONCE (Python's int / int is correctly rounded) -- the same one
+    division the walk step always made (``1.0 / tick_cost``, also correctly
+    rounded of the same rational). So throttle 0 IS the walk and
+    ``THROTTLE_ONE`` IS the sprint, bit for bit, and the speed is monotone in
+    the throttle (an exactly linear rational, rounded monotonically). Refuses
+    a throttle outside ``[0, THROTTLE_ONE]`` (the door clamps; this is the
+    law's own guard) and a cost below 1."""
+    t = int(throttle_q)
+    if not 0 <= t <= THROTTLE_ONE:
+        raise ValueError(f"throttle_q must be in [0, {THROTTLE_ONE}], got {t}")
+    cw, cs = int(cost_walk), int(cost_sprint)
+    if cw < 1 or cs < 1:
+        raise ValueError(f"tick costs must be >= 1, got walk {cw}, "
+                         f"sprint {cs}")
+    return ((THROTTLE_ONE - t) * cs + t * cw) / (cw * cs * THROTTLE_ONE)
