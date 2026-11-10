@@ -47,6 +47,7 @@ from enum import Enum
 
 
 from config import CFG
+from simulation import turning as _turning
 from simulation import unit_fixed
 from simulation.generation import predefined_unit_attributes
 from simulation.inventory import Inventory
@@ -88,7 +89,8 @@ class LifeState(Enum):
 # This matches Python's math.atan2 / trigonometry convention and makes
 # angle arithmetic (e.g. angular difference between two positions) natural.
 
-_NORTH = math.pi / 2   # 1.5707963267948966 radians
+#   (The spawn facing is turning.FACING_NORTH_Q16 = quantize(pi/2), in the
+#   facing's own Q16.16 radian currency -- G5p-a1.)
 
 # (_COMPASS_LABELS / _SECTOR_HALF DELETED - audit Patch A / A9, 2026-08-04:
 # an 8-compass snap table with no reader anywhere in the repo.)
@@ -122,8 +124,9 @@ class Unit:
     loadout``); ``env_profile`` an ``[env_profiles.*]`` row (``None`` = the
     species baseline). Zombies carry no loadout.
 
-    Facing convention: float radians, 0=East, CCW positive.
-    Default spawn: π/2 (North).
+    Facing convention: Q16.16 radians (``facing_q``; ``facing`` the float
+    view), 0=East, CCW positive. Default spawn: North. Written only by the
+    turning law (G5p-a1, ``simulation.turning``).
     """
 
     def __init__(self, name: str, x: float, y: float, team: int = 0,
@@ -219,9 +222,16 @@ class Unit:
         # Hidden Hartmann fields — data only; behaviour deferred (spec §13).
         self.awakened: bool = False
 
-        # ---- Facing (float radians, 0=East CCW, π/2=North) ---------------
-        # Default spawn facing = North (π/2), matching legacy "N" default.
-        self.facing: float = _NORTH
+        # ---- Facing (G5p-a1: the turning law, simulation.turning) ---------
+        # ``_facing_q`` (Q16.16 radians, 0=East CCW) is the SYNCED facing;
+        # ``facing`` / ``facing_q`` are read-only views. ``facing_target_q``
+        # is where the unit is turning to (persists until replaced) and
+        # ``omega_q`` its angular velocity per tick. Only simulation.turning
+        # writes them: the spawn here through ``turning.place`` (the one
+        # constructor-time door), every later reason to face somewhere through
+        # ``turning.set_target``, the turn itself in slot 1a. Default spawn
+        # facing = North (quantize(pi/2)), matching the legacy "N" default.
+        _turning.place(self, _turning.FACING_NORTH_Q16)
 
         # ---- HP: current_hp from sampled vitality ------------------------
         # max_hp is removed; use effective_vitality(unit) from stats module.
@@ -440,31 +450,42 @@ class Unit:
     # Facing helpers
     # ------------------------------------------------------------------
 
+    @property
+    def facing(self) -> float:
+        """The facing in float radians (0=East, CCW positive): a READ-ONLY
+        view of the synced ``facing_q`` (an exact n/65536 double) for the
+        renderer, the pose layer and every float reader. No setter: a unit's
+        facing is written only by the turning law (``simulation.turning``) --
+        hand it a target (:meth:`face_towards`, ``turning.set_target``)."""
+        return self._facing_q / 65536.0
+
+    @property
+    def facing_q(self) -> int:
+        """The synced facing, Q16.16 radians in ``(-PI_Q16, PI_Q16]``."""
+        return self._facing_q
+
     def face_towards(self, target_x: float, target_y: float) -> None:
-        """Update ``self.facing`` to point from the unit's current position
-        toward ``(target_x, target_y)``. Called by the movement code each
-        tick a unit takes a step, so sprites visibly track direction of
-        travel. No-op if the target is the current position.
+        """Make the direction from the unit's current position toward
+        ``(target_x, target_y)`` its facing TARGET (``turning.set_target``):
+        the turning law turns it there in slot 1a. Called by the movement
+        code each tick a unit takes a step (the zombie walk, the legacy WEGO
+        and onephase plans), so the sprite tracks the direction of travel.
+        No-op if the target is the current position.
 
         World Y increases downward; the facing convention is math-style
-        (Y-up). The negation on dy converts between them.
+        (Y-up). The negation on dy converts between them. The angle is the
+        pure-integer kit's (Q2-lift: math.atan2 is libm and differs at the
+        last ULP across CRT/Python versions): the deltas quantized at the
+        boundary, integer atan2. Deltas that BOTH quantize to zero
+        (|d| < 1/131072 tiles) give 0 -- deterministic, and unreachable from
+        real movement steps (>= ~1e-2 tiles).
         """
         dx = target_x - self.x
         dy = target_y - self.y
         if dx == 0 and dy == 0:
             return
-        # Q2-lift: facing is SYNCED state, and math.atan2 is libm — CRT/Python
-        # versions differ at the last ULP, which the lockstep digest amplifies
-        # into a cross-machine hash flip (the X-ARCH Ada finding). Route
-        # through the pure-integer kit: quantize the deltas at the boundary,
-        # integer atan2, dequantize back — an exact n/65536 double, identical
-        # everywhere. Shift vs libm <= ~1.5e-5 rad (imperceptible;
-        # pre-approved, no feel-check). Downstream consumers (facing_compass,
-        # renderer, flashlight cone) are unchanged — they still see a float
-        # radian. Deltas that BOTH quantize to zero (|d| < 1/131072 tiles)
-        # yield facing 0.0 — deterministic, and unreachable from real
-        # movement steps (>= ~1e-2 tiles).
-        self.facing = unit_fixed.atan2_rad(-dy, dx)
+        _turning.set_target(self, unit_fixed.atan2_q16(
+            unit_fixed.quantize_scalar(-dy), unit_fixed.quantize_scalar(dx)))
 
     def facing_compass(self) -> str:
         """Convert self.facing (radians) to 8-compass string.

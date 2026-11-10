@@ -141,6 +141,15 @@ def test_conversion_keeps_the_slot_in_the_old_teams_roster():
 # ---------------------------------------------------------------------------
 # Hostility
 # ---------------------------------------------------------------------------
+def _face(u, x, y):
+    """Stand ``u`` facing ``(x, y)`` before the test acts: the direction is
+    its facing target (``face_towards``) and the fixture places the facing
+    there at rest (G5p-a1: in play the turning law turns it, over ticks)."""
+    from simulation.turning import place
+    u.face_towards(x, y)
+    place(u, u.facing_target_q)
+
+
 def test_a_converted_marine_is_hostile_to_its_old_team_not_to_zombies():
     sim = _sim()
     level = load("playground")
@@ -152,7 +161,7 @@ def test_a_converted_marine_is_hostile_to_its_old_team_not_to_zombies():
     zombie = Unit("Z0", x=bx, y=by, team=ZOMBIE_TEAM)
     for u in (old_mate, turned, zombie):
         sim.add_unit(u)
-    old_mate.face_towards(float(bx), float(by))
+    _face(old_mate, float(bx), float(by))
     assert turned not in engagement._enemies_visible_to(sim, old_mate)
 
     turned.alive = False
@@ -160,7 +169,7 @@ def test_a_converted_marine_is_hostile_to_its_old_team_not_to_zombies():
     convert_marines_to_zombies(sim.units)
     assert turned.is_zombie and turned.alive and turned.team == ZOMBIE_TEAM
     assert turned in engagement._enemies_visible_to(sim, old_mate)
-    zombie.face_towards(float(bx), float(by))
+    _face(zombie, float(bx), float(by))
     assert turned.team == zombie.team                 # a friend of the zombies
     assert turned not in engagement._enemies_visible_to(sim, zombie)
 
@@ -175,8 +184,8 @@ def test_two_marine_teams_engage_each_other_and_the_zombie_ai_ignores_them():
     blue = Unit("B", x=bx, y=by, team=1)
     sim.add_unit(red)
     sim.add_unit(blue)
-    red.face_towards(float(bx), float(by))
-    blue.face_towards(float(ax), float(ay))
+    _face(red, float(bx), float(by))
+    _face(blue, float(ax), float(ay))
 
     assert blue.id in sim.visible_enemy_ids(0)
     assert red.id in sim.visible_enemy_ids(1)

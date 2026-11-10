@@ -1,0 +1,501 @@
+"""G5p-a1 (#183) -- the turning law: every unit's facing has angular inertia
+and ONE writer (``simulation/turning.py``; ``docs/unit_impulse_design_
+2026-11-10.md`` §5.1, §13; critique B's B3 and gates G2, G9, G10).
+
+PROPERTIES PROTECTED
+  1. For a FIXED target, from rest and from any state the law can reach, the
+     facing lands on the target EXACTLY in bounded ticks, the own torque
+     never drives |omega| past the top speed, and afterwards facing and omega
+     stay put (no limit cycle); from rest it never overshoots. Swept over
+     many (start, target, a, w), targets across the wrap included.
+  2. An incoming omega ABOVE the top speed or pointing AWAY from the target
+     (an outside spin, run 2) slows at exactly ``a`` per tick, comes back and
+     settles exactly; it never speeds up past what it came in with.
+  3. The turn goes the shorter way; at the shipped dials 90 degrees land in
+     11 ticks (0.458 s) and 180 in 17 (0.708 s), as the law predicts.
+  4. G2: at ``a >= 2 w`` the law IS G1p's cap ``turn_toward_q16``, bit for
+     bit, over a sweep.
+  5. The doors: ``turn_accel_rad_per_s2`` quantized once, refused by name
+     when missing / non-positive / sub-count / needing too many trials.
+  6. G10: ``Unit.facing`` has no setter, and no module of ``src/`` writes the
+     facing's state outside ``turning.py`` (whose ``place`` is the one
+     constructor-time door, called by ``Unit.__init__``).
+  7. One writer, every reason: the travel direction of a walker holding no
+     aim, the zombie walk and the attack snap set TARGETS that slot 1a turns
+     toward through the law -- never an instant write; a target persists and
+     a zero aim holds the last one.
+  8. The Speed table's direction rule reads the post-turn facing: a walker
+     holding no aim that reverses turns over several ticks, moves at the
+     reduced sideways / backward speed meanwhile, then walks at full speed.
+  9. G9: under a bots match, the ``facing_after_turn_q16`` a bot reads in
+     ``handle_frame`` is the facing the shooting slot fires along, every tick.
+"""
+from __future__ import annotations
+
+import ast
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
+           ROOT / "tools", ROOT / "tests"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import breach_physics as bp  # noqa: E402
+
+from config import CFG, Namespace  # noqa: E402
+from simulation import Simulation  # noqa: E402
+from simulation import simulation as simulation_mod  # noqa: E402
+from simulation import turning, unit_fixed  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.intents import FP_ONE  # noqa: E402
+from simulation.ruleset import ContinuousRealtime  # noqa: E402
+from simulation.simultaneous import SimultaneousEffects  # noqa: E402
+from simulation.turning import (  # noqa: E402
+    OMEGA_MAX_Q16, PI_Q16, braking_distance_q16, law_q16, top_speed_within,
+    turn_accel_q16, turn_toward_q16, wrap_q16,
+)
+from simulation.unit import Unit  # noqa: E402
+
+TPS = int(CFG.clock.ticks_per_second)
+#: The shipped dials (360 deg/s, 30 rad/s^2 at 24 tps) in the law's currency.
+W_SHIP = unit_fixed.quantize_scalar(math.radians(360.0) / TPS)
+A_SHIP = unit_fixed.quantize_scalar(30.0 / (TPS * TPS))
+
+
+def _settle(facing, omega, target, a, w, max_ticks):
+    """Run the law to rest on ``target``; returns the trajectory of
+    ``(facing, omega)`` up to and including the first tick at rest on it."""
+    traj = []
+    for _ in range(max_ticks):
+        facing, omega = law_q16(facing, omega, target, a, w)
+        traj.append((facing, omega))
+        if facing == target and omega == 0:
+            return traj
+    raise AssertionError(f"no rest in {max_ticks} ticks: start "
+                         f"{traj[0]}, target {target}, a {a}, w {w}")
+
+
+def _bound(a, w):
+    """A generous tick bound for any reachable start: shed up to a half turn
+    per tick of spin at ``a``, then cross a half turn twice."""
+    return 4 * (-(-PI_Q16 // min(w, PI_Q16)) + -(-OMEGA_MAX_Q16 // a)) + 16
+
+
+#: (a, w) pairs swept by the trajectory gates: the shipped dials, a slow and
+#: a fast acceleration, a top speed below one tick of acceleration, the
+#: instant limit and a large top speed (a sweep over tiny dials would be the
+#: same law over hundreds of thousands of ticks; the s(e) gate takes those).
+_DIALS = [(A_SHIP, W_SHIP), (977, 17157), (3413, 1000), (40000, 17157),
+          (2 * W_SHIP, W_SHIP), (PI_Q16, PI_Q16 // 3), (5000, 60000)]
+#: ... and the s(e) gate's, tiny dials included.
+_SMALL_DIALS = _DIALS + [(1, 7), (5, 3), (2, 40)]
+
+
+# ---------------------------------------------------------------------------
+# 1 -- the law on a fixed target
+# ---------------------------------------------------------------------------
+def test_s_is_the_largest_speed_that_can_still_stop_by_the_target():
+    """Property: ``s(e)`` brakes within ``e`` and one count more does not
+    (unless capped at ``w``), and ``s(e) <= e`` (the step never overshoots).
+    Breaks if the closed form searches the wrong segment, rounds up, or
+    stops the search early."""
+    rng = np.random.default_rng(51)
+    for a, w in _SMALL_DIALS:
+        w = min(w, PI_Q16)
+        for e in list(range(0, 40)) + [int(x) for x in
+                                       rng.integers(0, PI_Q16 + 1, 300)]:
+            s = top_speed_within(e, a, w)
+            assert 0 <= s <= min(e, w)
+            assert braking_distance_q16(s, a) <= e
+            if s < w:
+                assert braking_distance_q16(s + 1, a) > e, (e, a, w, s)
+
+
+@pytest.mark.parametrize("a,w", _DIALS)
+def test_from_rest_a_fixed_target_is_reached_exactly_never_overshot(a, w):
+    """Property 1 (from rest): the facing reaches the target exactly in
+    bounded ticks, the remaining turn never changes sign (no overshoot),
+    |omega| never exceeds ``min(w, pi)``, and once there it stays for good.
+    Swept over starts and targets across the wrap. Breaks if the braking
+    distance is underestimated (the M3 chatter), the cap is ignored, or the
+    landing leaves a residual."""
+    rng = np.random.default_rng(183)
+    angles = [-PI_Q16 + 1, PI_Q16, 0, 1, -1, PI_Q16 - 1]
+    angles += [int(x) for x in rng.integers(-PI_Q16 + 1, PI_Q16 + 1, 24)]
+    for start in angles:
+        for target in angles[:10] + [turning.normalize_q16(start + PI_Q16),
+                                     turning.normalize_q16(start - 3)]:
+            e0 = wrap_q16(target - start)
+            traj = _settle(start, 0, target, a, w, _bound(a, w))
+            for f, om in traj:
+                assert abs(om) <= min(w, PI_Q16)
+                e = wrap_q16(target - f)
+                assert e == 0 or (e > 0) == (e0 > 0), (start, target, a, w)
+            f, om = traj[-1]
+            for _ in range(5):                  # no limit cycle
+                f, om = law_q16(f, om, target, a, w)
+                assert (f, om) == (target, 0)
+
+
+@pytest.mark.parametrize("a,w", _DIALS)
+def test_from_any_reachable_state_a_new_target_is_reached_and_held(a, w):
+    """Property 1 (any reachable state): turn toward one target for a few
+    ticks, then switch to another -- whatever (facing, omega) the first turn
+    left, the second lands exactly in bounded ticks, |omega| stays within the
+    top speed (own torque only), and the unit stays put. Breaks if a moving
+    start can orbit the target or the own torque accelerates past ``w``."""
+    rng = np.random.default_rng(7)
+    for _ in range(150):
+        start, first, second = (int(x) for x in
+                                rng.integers(-PI_Q16 + 1, PI_Q16 + 1, 3))
+        f, om = start, 0
+        for _ in range(int(rng.integers(1, 12))):
+            f, om = law_q16(f, om, first, a, w)
+        traj = _settle(f, om, second, a, w, _bound(a, w))
+        assert all(abs(o) <= min(w, PI_Q16) for _, o in traj)
+        f, om = traj[-1]
+        for _ in range(5):
+            f, om = law_q16(f, om, second, a, w)
+            assert (f, om) == (second, 0)
+
+
+# ---------------------------------------------------------------------------
+# 2 -- an outside spin decays at a and returns
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("a,w", _DIALS)
+def test_a_spin_above_the_top_speed_or_away_decays_at_a_and_settles(a, w):
+    """Property 2: an incoming omega above the top speed, or pointing away
+    from the target, loses exactly ``a`` per tick while it points away or
+    exceeds what can still stop (never more, never a jump), the unit comes
+    back and settles exactly, and |omega| never grows past what it came in
+    with (or the top speed). The incoming spin is clamped below half a turn
+    per tick. Breaks if the top speed clamps the total omega (an unbooked
+    loss), the decay is not ``a``, or the spin aliases."""
+    rng = np.random.default_rng(29)
+    for _ in range(120):
+        start, target = (int(x) for x in
+                         rng.integers(-PI_Q16 + 1, PI_Q16 + 1, 2))
+        spin = int(rng.integers(-3 * PI_Q16, 3 * PI_Q16))
+        f, om = start, spin
+        cap = max(min(abs(spin), OMEGA_MAX_Q16), min(w, PI_Q16))
+        for _ in range(_bound(a, w)):
+            om_in = max(-OMEGA_MAX_Q16, min(OMEGA_MAX_Q16, om))
+            e = wrap_q16(target - f)
+            f, om = law_q16(f, om, target, a, w)
+            assert abs(om) <= cap
+            assert abs(om - om_in) <= a
+            away = om_in != 0 and (e == 0 or (e > 0) != (om_in > 0))
+            if away and abs(om_in) >= a:
+                assert om == om_in - (a if om_in > 0 else -a)
+            if f == target and om == 0:
+                break
+        assert (f, om) == (target, 0), (start, target, spin, a, w)
+
+
+# ---------------------------------------------------------------------------
+# 3 -- the shorter way, the shipped times
+# ---------------------------------------------------------------------------
+def test_the_turn_goes_the_shorter_way():
+    """Property 3: from rest the first step goes the way of
+    ``wrap(target - facing)`` (an exact half turn goes counter-clockwise).
+    Breaks if the law turns the long way round the wrap."""
+    rng = np.random.default_rng(3)
+    for f, t in rng.integers(-PI_Q16 + 1, PI_Q16 + 1, (400, 2)):
+        f, t = int(f), int(t)
+        e = wrap_q16(t - f)
+        _, om = law_q16(f, 0, t, A_SHIP, W_SHIP)
+        assert (om > 0) == (e > 0) and (om == 0) == (e == 0)
+
+
+def test_the_shipped_dials_turn_90_and_180_degrees_in_the_predicted_time():
+    """Property 3: at the shipped 360 deg/s and 30 rad/s^2 the config's
+    dials quantize to the law's (w, a), and from rest 90 degrees land in 11
+    ticks (0.458 s) and 180 degrees in 17 (0.708 s): within one tick of the
+    continuous bang-bang time ``D / w + w / a`` (0.459 s, 0.709 s). Breaks
+    if a dial or its quantization moves, or the discrete law loses ticks."""
+    cfg = Namespace({"marine": {"turn_rate_deg_per_s": 360.0,
+                                "turn_accel_rad_per_s2": 30.0},
+                     "clock": {"ticks_per_second": TPS}})
+    assert turning.turn_rate_q16(cfg) == W_SHIP
+    assert turn_accel_q16(cfg) == A_SHIP
+    for deg, want in ((90, 11), (180, 17)):
+        target = turning.normalize_q16(
+            unit_fixed.quantize_scalar(math.radians(deg)))
+        traj = _settle(0, 0, target, A_SHIP, W_SHIP, 100)
+        land = next(i + 1 for i, (f, _) in enumerate(traj) if f == target)
+        assert land == want
+        cont = math.radians(deg) / (2 * math.pi) + (2 * math.pi) / 30.0
+        assert abs(land / TPS - cont) <= 1.0 / TPS
+
+
+# ---------------------------------------------------------------------------
+# 4 -- G2: unlimited acceleration is G1p's cap
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("w", [1, 977, W_SHIP, PI_Q16 // 2, PI_Q16])
+def test_at_a_at_least_2w_the_law_is_the_g1p_cap_bit_for_bit(w):
+    """G2: at ``a >= 2 w`` one tick of the law from any facing, any
+    (normalized) target and any own-torque omega equals
+    ``turn_toward_q16(facing, target, w)`` exactly, and chained ticks stay
+    equal. Breaks if the braking law leaks into the instant limit."""
+    rng = np.random.default_rng(2)
+    for a in (2 * w, 2 * w + 1, 50 * w):
+        for _ in range(400):
+            f, t = (turning.normalize_q16(int(x)) for x in
+                    rng.integers(-PI_Q16, PI_Q16 + 1, 2))
+            om = int(rng.integers(-w, w + 1))
+            g, g_om = f, om
+            for _ in range(4):
+                nxt, g_om = law_q16(g, g_om, t, a, w)
+                assert nxt == turn_toward_q16(g, t, w), (g, t, w, a)
+                g = nxt
+
+
+# ---------------------------------------------------------------------------
+# 5 -- the door
+# ---------------------------------------------------------------------------
+def _cfg(rate=360.0, accel=30.0):
+    m = {"turn_rate_deg_per_s": rate}
+    if accel is not None:
+        m["turn_accel_rad_per_s2"] = accel
+    return Namespace({"marine": m, "clock": {"ticks_per_second": TPS}})
+
+
+@pytest.mark.parametrize("bad", [None, 0, -1.0, True, "fast", 1e-9, 0.2])
+def test_the_accel_door_refuses_by_name(bad):
+    """Property 5: a missing, non-positive, non-numeric, sub-count or
+    too-slow acceleration (more than ``TURN_TRIALS_MAX`` trials against the
+    top speed: 0.2 rad/s^2 at 360 deg/s) is refused naming
+    ``turn_accel_rad_per_s2``. Breaks if a typo silently turns units at a
+    default, or the trial count is unbounded."""
+    with pytest.raises(ValueError, match="turn_accel_rad_per_s2"):
+        turn_accel_q16(_cfg(accel=bad))
+
+
+def test_the_shipped_config_bounds_the_trials():
+    """Property 5: the shipped config passes the door, and its trial count
+    ``ceil(min(w, pi) / a)`` is within the bound. Breaks if the shipped
+    dials need an unbounded search."""
+    w = turning.turn_rate_q16(CFG)
+    a = turn_accel_q16(CFG)
+    assert -(-min(w, PI_Q16) // a) <= turning.TURN_TRIALS_MAX
+
+
+# ---------------------------------------------------------------------------
+# 6 -- G10: one writer
+# ---------------------------------------------------------------------------
+_STATE = {"facing", "_facing_q", "facing_q", "facing_target_q", "omega_q"}
+
+
+def test_facing_has_no_setter():
+    """G10: assigning ``Unit.facing`` (or ``facing_q``) raises -- a missed
+    writer fails at its own line. Breaks if a setter is added."""
+    u = Unit("M", 5, 5)
+    with pytest.raises(AttributeError):
+        u.facing = 0.0
+    with pytest.raises(AttributeError):
+        u.facing_q = 0
+    assert u.facing == u.facing_q / 65536.0
+    assert u.facing_q == u.facing_target_q == turning.FACING_NORTH_Q16
+
+
+def test_no_src_module_writes_the_facing_outside_turning():
+    """G10: parse every module under ``src/``; no assignment (plain,
+    augmented, annotated, tuple) to an attribute named like the facing's
+    state, and no ``setattr`` naming one, outside
+    ``simulation/turning.py``. Breaks if a new site writes a facing instead
+    of handing the law a target."""
+    offenders = []
+    for path in sorted((ROOT / "src").rglob("*.py")):
+        rel = path.relative_to(ROOT / "src").as_posix()
+        if rel == "simulation/turning.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            elif (isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)
+                  and node.func.id == "setattr" and len(node.args) >= 2
+                  and isinstance(node.args[1], ast.Constant)
+                  and node.args[1].value in _STATE):
+                offenders.append(f"{rel}:{node.lineno} setattr")
+            for t in targets:
+                for sub in ast.walk(t):
+                    if isinstance(sub, ast.Attribute) and sub.attr in _STATE:
+                        offenders.append(f"{rel}:{sub.lineno} .{sub.attr}")
+    assert not offenders, offenders
+
+
+# ---------------------------------------------------------------------------
+# 7 -- every reason to face somewhere is a target
+# ---------------------------------------------------------------------------
+def _arena(h=40, w=40):
+    from level_loader import LevelData
+    tm = np.ones((h, w), dtype=np.int32)
+    tm[1:h - 1, 1:w - 1] = 4
+    return LevelData(name="turn_law", version="1", path=Path("."),
+                     tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
+
+
+def _sim(**kw):
+    sim = Simulation(_arena(**kw), seed=1, breach_physics=bp,
+                     enable_recorder=False, ruleset=ContinuousRealtime())
+    sim.set_paused(False)
+    return sim
+
+
+def test_the_attack_snap_is_a_target_turned_toward_from_the_next_tick():
+    """Property 7: a recorded facing snap (``SimultaneousEffects.face``)
+    changes the TARGET at resolve and never the facing; the next ticks turn
+    the facing there through the law. Breaks if the snap writes the facing
+    (an instant turn) or is lost."""
+    sim = _sim()
+    u = sim.get_unit(sim.add_unit(Unit("M", x=8, y=8, team=0)))
+    f0 = u.facing_q
+    fx = SimultaneousEffects()
+    fx.face(u, 0)                                 # east
+    assert u.facing_target_q == f0                # recorded, not applied
+    fx.resolve()
+    assert u.facing_target_q == 0 and u.facing_q == f0
+    a, w = sim.unit_turn_accel_q16(u), sim.unit_turn_rate_q16(u)
+    want = law_q16(f0, 0, 0, a, w)
+    sim.step()
+    assert (u.facing_q, u.omega_q) == want
+    for _ in range(40):
+        sim.step()
+    assert u.facing_q == 0 and u.omega_q == 0
+
+
+def test_a_target_persists_and_a_zero_aim_holds_the_last_one():
+    """Property 7: after an aim turned the unit, a zero aim (the policy's
+    "facing untouched" row) keeps turning toward / holding the last aimed
+    angle, never back to an older target. Breaks if the aim is not stored
+    as the target or a zero aim releases it."""
+    sim = _sim()
+    uid = sim.add_unit(Unit("M", x=8, y=8, team=0))
+    u = sim.get_unit(uid)
+    sim.set_aim(uid, 0, FP_ONE)                   # south (y down)
+    sim.step()
+    want = unit_fixed.atan2_q16(-FP_ONE, 0)
+    assert u.facing_target_q == want
+    sim.set_aim(uid, 0, 0)
+    for _ in range(40):
+        sim.step()
+    assert u.facing_q == want and u.omega_q == 0
+
+
+def test_a_zombie_turns_toward_its_walk_through_the_law():
+    """Property 7: a walking zombie's facing never jumps: each tick it moves
+    by exactly one step of the law toward its target, the target is the
+    direction of its last step, and it gets there. Breaks if the zombie walk
+    writes the facing (an instant turn) again."""
+    sim = _sim()
+    sim.add_unit(Unit("M", x=30, y=8, team=0))
+    z = sim.get_unit(sim.add_unit(Unit("Z", x=8, y=30, team=ZOMBIE_TEAM)))
+    z.zombie_activated = True
+    a, w = sim.unit_turn_accel_q16(z), sim.unit_turn_rate_q16(z)
+    steps = turned = 0
+    reached = False
+    for _ in range(400):
+        before = (z.facing_q, z.omega_q, z.facing_target_q)
+        x0, y0 = z.x, z.y
+        sim.step()
+        assert (z.facing_q, z.omega_q) == law_q16(*before[:2], before[2],
+                                                  a, w)
+        if (z.x, z.y) != (x0, y0):
+            steps += 1
+            assert z.facing_target_q == unit_fixed.atan2_q16(
+                unit_fixed.quantize_scalar(-(z.y - y0)),
+                unit_fixed.quantize_scalar(z.x - x0))
+        if z.facing_q != before[0]:
+            turned += 1
+            reached |= z.facing_q == z.facing_target_q
+    assert steps > 3 and turned > 1 and reached
+
+
+def test_a_walker_holding_no_aim_turns_into_a_reversal_at_the_reduced_speed():
+    """Property 8: a unit walking east with no aim faces east at full walk
+    speed; reversed to the west it keeps moving at less than full speed while
+    its facing turns (several ticks, through the law), and walks at full
+    speed again once it faces west. Breaks if the no-aim shortcut
+    (cos = ONE) returns, or the travel facing is written at once."""
+    sim = _sim()
+    uid = sim.add_unit(Unit("M", x=20, y=20, team=0))
+    u = sim.get_unit(uid)
+
+    def walk(dx_q, ticks):
+        out = []
+        for _ in range(ticks):
+            x0 = u.x
+            sim.set_move_dir(uid, dx_q, 0, 0)           # walk, throttle 0
+            sim.step()
+            out.append((abs(u.x - x0), u.facing_q))
+        return out
+
+    east = walk(FP_ONE, 30)
+    full = east[-1][0]
+
+    def is_full(d):                              # float positions: ULPs
+        return d == pytest.approx(full, rel=1e-9)
+    assert east[-1][1] == 0 and is_full(east[-2][0])  # facing east, steady
+    assert east[0][0] < full and not is_full(east[0][0])  # it faced north
+    west = walk(-FP_ONE, 40)
+    slow = [i for i, (d, _) in enumerate(west) if not is_full(d)]
+    assert len(slow) >= 5                        # several ticks of turning
+    assert all(west[i][0] < full for i in slow)
+    assert west[-1][1] == PI_Q16 and is_full(west[-1][0])
+    assert all(is_full(d) for d, _ in west[slow[-1] + 1:])
+    turning_ticks = [f for _, f in west[:slow[-1] + 1]]
+    assert len(set(turning_ticks)) >= 5          # the facing moved gradually
+
+
+# ---------------------------------------------------------------------------
+# 9 -- G9: the bots' predictor is the shooting slot's facing
+# ---------------------------------------------------------------------------
+def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
+        monkeypatch):
+    """G9: in ship_demo seed 1 (bots vs bots + the horde), every
+    ``facing_after_turn_q16`` a bot reads in ``handle_frame`` (its trigger
+    rule) equals the facing that unit has in the shooting slot of the same
+    tick. Breaks if the turn moves after a producer of the facing, or the
+    predictor is a copy of the law that drifts from slot 1a."""
+    import control_bots
+    import level_loader
+    from run_match import run_match
+
+    predicted = {}
+    seen = {"n": 0}
+    orig_after = simulation_mod.Simulation.facing_after_turn_q16
+
+    def after(self, u, dx_q, dy_q):
+        q = orig_after(self, u, dx_q, dy_q)
+        predicted[(self.tick, u.id)] = q
+        return q
+
+    orig_shoot = simulation_mod.process_shooting
+
+    def shoot(gmap, units, tick, *args, **kwargs):
+        for (t, uid), q in list(predicted.items()):
+            if t == tick:
+                u = next(x for x in units if x.id == uid)
+                assert u.facing_q == q, (tick, uid)
+                seen["n"] += 1
+                del predicted[(t, uid)]
+        return orig_shoot(gmap, units, tick, *args, **kwargs)
+
+    monkeypatch.setattr(simulation_mod.Simulation, "facing_after_turn_q16",
+                        after)
+    monkeypatch.setattr(simulation_mod, "process_shooting", shoot)
+    assert control_bots.BotTeam._on_target    # the reader this gate covers
+    level = level_loader.load("ship_demo", str(ROOT / "levels"))
+    run_match(level)
+    assert seen["n"] > 50

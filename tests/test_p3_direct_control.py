@@ -80,12 +80,16 @@ def test_move_dir_steps_by_mobility_scaled_amount():
     sim = _continuous_sim(_open_arena())
     uid = sim.add_unit(Unit("M1", x=6, y=6, team=0))
     u = sim.get_unit(uid)
+    # G5p-a1: a walker holding no aim turns to its travel with inertia; this
+    # test is about the step's size, so the unit already faces +X.
+    from simulation.turning import place
+    place(u, 0)
     x0, y0 = u.x, u.y
     fp = u.footprint
 
     # Expected per-tick advance, computed through the SAME predicates the
     # movement branch reuses: the [speeds] walk (Q16 ticks per tile, G1p-c)
-    # -> area-average mobility. No aim is held, so theta is 0.
+    # -> area-average mobility. The unit faces its move, so theta is 0.
     base = sim.speed_table.walk_cost_q
     samples = FootprintSamples(
         mobility=sim.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))

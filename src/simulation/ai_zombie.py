@@ -25,6 +25,7 @@ import math
 
 from config import CFG
 from simulation import exposure as _exposure
+from simulation import turning as _turning
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
 from simulation.movement import default_speed, footprint_samples
@@ -246,6 +247,9 @@ def convert_marines_to_zombies(units):
             # G4p: a zombie starts with no exposure (its death zeroed it
             # already; this is the conversion's own rule).
             _exposure.clear(u)
+            # G5p-a1: the turn comes to rest where the body faces (a revived
+            # corpse inherits no stale target or angular velocity).
+            _turning.settle(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

@@ -56,6 +56,8 @@ from simulation.intents import FP_ONE, FP_SHIFT  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.status import STATUS_REGISTRY  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20261029
 HULL, AIR = 1, 4
@@ -334,7 +336,7 @@ def test_a_flame_jet_credits_its_own_heat_to_the_sprayer():
     # owns the trigger until its burst ends; this test is about the credit,
     # so the sprayer already faces its aim (east) -- the turn is
     # test_turn_rate's.
-    sprayer.facing = 0.0
+    _place_facing(sprayer, _q_rad(0.0))
     sim.set_aim(sprayer.id, FP_ONE, 0)
     sim.set_trigger(sprayer.id, True)
     heat_hits = []

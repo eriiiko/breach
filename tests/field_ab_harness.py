@@ -205,7 +205,11 @@ def _unit_record(u):
         # direction), action points (gate synced actions), and the count of
         # remaining orders (a divergence in order-consumption shows here). A
         # full per-order serialization is a future extension if needed.
-        "facing":     q(getattr(u, "facing", 0.0)),
+        # G5p-a1: the facing's own integer (Q16.16 radians, the turning
+        # law's synced representation); a bare stand-in without one falls
+        # back to its float quantized the same way.
+        "facing":     (int(u.facing_q) if hasattr(u, "facing_q")
+                       else round(float(getattr(u, "facing", 0.0)) * 65536)),
         "ap":         [int(a) for a in getattr(u, "ap", ())],
         "n_orders":   len(getattr(u, "orders", ())),
         # P3: the status/condition list (mechanics/06 §4) — canonical
@@ -223,6 +227,17 @@ def _unit_record(u):
     block = getattr(u, "exposure", None)
     if block and any(block):
         rec["exposure"] = [int(x) for x in block]
+    # G5p-a1: the turning law's cross-tick state, absence-transparent: the
+    # turn still to go (``wrap(target - facing)``; the target itself is never
+    # zero, so it is hashed as this difference) and the angular velocity,
+    # each only while non-zero.
+    if hasattr(u, "facing_target_q"):
+        from simulation.turning import wrap_q16
+        turn = wrap_q16(int(u.facing_target_q) - int(u.facing_q))
+        if turn:
+            rec["turn"] = int(turn)
+        if getattr(u, "omega_q", 0):
+            rec["omega"] = int(u.omega_q)
     return rec
 
 

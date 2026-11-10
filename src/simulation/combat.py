@@ -1181,13 +1181,12 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     # it is left untouched (no re-derivation, no risk to the hashed field).
     if aim_angle is None:
         base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
-        # W2 (mechanics/06 §5): firing SETS the shooter's facing to the aim
-        # bearing (before spread) — through the kit, in the unit facing
-        # convention (y up: the dy negation, unit.face_towards). Facing is
-        # already-synced state derived from synced inputs; the digest surface
-        # is unchanged.
+        # W2 (mechanics/06 §5): firing makes the aim bearing (before spread)
+        # the shooter's facing TARGET (G5p-a1: the turning law turns it there
+        # from the next tick's slot 1a) — through the kit, in the unit facing
+        # convention (y up: the dy negation, unit.face_towards).
         effects_or_immediate(effects).face(
-            shooter, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
+            shooter, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     else:
         base_angle = float(aim_angle)
 
@@ -1285,7 +1284,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     if aim_angle is None:
         base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
         # Facing = aim bearing at fire, before spread (the fire_burst rule).
-        fx.face(shooter, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
+        fx.face(shooter, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     else:
         base_angle = float(aim_angle)
     shooter_id = getattr(shooter, "id", -1)
@@ -1586,7 +1585,7 @@ def start_spray_burst(u, weapon, fire_order, tick, effects=None):
     u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
     u.spray_order = fire_order
     u.spray_aim_angle = None   # tile-derived cone bearing (the WEGO path)
-    effects_or_immediate(effects).face(u, unit_fixed.atan2_rad(
+    effects_or_immediate(effects).face(u, unit_fixed.atan2_q16_of(
         -(float(fire_order.target_fy) - u.center_tile_y()),
         float(fire_order.target_fx) - u.center_tile_x()))
 
@@ -1813,7 +1812,7 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon,
     # Facing = strike bearing (kit trig, unit y-up convention — the
     # fire_burst rule); the strike angle itself stays in SCREEN convention
     # for the arc classifier (the march-angle contract of arc_multiplier).
-    fx.face(attacker, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
+    fx.face(attacker, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
 
     amount = int(weapon.melee_damage)
