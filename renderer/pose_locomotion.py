@@ -482,11 +482,14 @@ def locomote(ps, res: ResolvedLocomotion, role: ResolvedRole, aim_travel,
     from .pose_modifiers import backpedal_goal, lowpass_travel, slew_twist
     if dt <= 0.0:
         return ps.loco_state or role.idle
+    # the travel filter steps over the wall time since the last delta (the
+    # frames between two sim ticks hold it): its time constant is wall time
+    span = ps.motion_acc + dt if travel is not None else dt
     observe_speed(ps, role.speed, moved_m, dt, start_span_s)
     moving = ps.speed > 0.0
     if ps.gait < 0 and moving and travel is not None:
         ps.travel = np.array([math.cos(travel), math.sin(travel)])   # a start: at once
-    alpha = lowpass_travel(ps, aim_travel, travel, moving, dt)
+    alpha = lowpass_travel(ps, aim_travel, travel, moving, span)
     h = role.hysteresis
     gaits = role.gaits
 

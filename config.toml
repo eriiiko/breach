@@ -2385,6 +2385,11 @@ head  = { subtree = ["Neck1"] }                        # necks, head, jaw, eyes
 lower = "Hips"
 counter = ["Spine1", "Spine2", "Chest"]
 shares = [0.4, 0.3, 0.3]
+pivot = "origin"        # #184 (optional; "bone" = through the hips, as quaternius_ual):
+                        # the legs yaw about the unit's own vertical line -- the Kimodo
+                        # strafes sway their hips, and a twist about the swaying hips
+                        # slid the planted feet (25 % of the walk speed at a 58 deg
+                        # residual, measured)
 
 # Model-space rows mean the same motion on any rig facing +z with +y up and
 # +x its left (the axis is converted into each bone's parent frame at rest),
@@ -2436,6 +2441,9 @@ rate = 1.0              # the Kimodo clips are authored at true speed
 # last drawn position; for an explosion the blast's centre (Erik's ruling);
 # unknown (no attacker) = the front. A skeleton without this list plays
 # [render.pose.hit] clip for every hit.
+# MEASURED (#184): Hit_Right lurches the head 0.55 m to the body's RIGHT, as
+# Hit_Left does (0.53 m) -- so a hit from the right leans the marine toward the
+# shooter; the clip wants regenerating (or a mirror of Hit_Left).
 hit_directions = [
   { clip = "Hit_Chest", from_deg = 0.0 },
   { clip = "Hit_Left", from_deg = 90.0 },
@@ -2453,7 +2461,10 @@ Idle_Loop = "Idle"
 Walk_Loop = "Walk"
 Death01 = "Fall"
 Pistol_Idle_Loop = "Rifle_Aim_Walk"      # the aim overlay
-Pistol_Shoot = "Rifle_Shoot"
+Pistol_Shoot = ""                        # #184: no shot one-shot -- Rifle_Shoot holds the rifle
+                                         # LEFT-handed (the right hand forward on the handguard: the
+                                         # carbine in the right palm points up off the shoulder) and is
+                                         # a held aim with no recoil (#179); a shot holds the aim overlay
 Punch_Jab = ""                           # no strike clip yet: a SOMA zombie's melee
 Punch_Cross = ""                         # reaction does nothing
 

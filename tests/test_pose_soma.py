@@ -95,7 +95,12 @@ def test_every_mapped_clip_name_is_a_clip_of_the_soma_look(layer):
         assert own == "" or rig.bank.has(own), (canonical, own)
     for ids in rig.state_clips.values():
         assert (ids >= 0).all()
-    assert rig.shot_clip != NO_CLIP and rig.hit_clip != NO_CLIP
+    # #184: the shot one-shot is DECLARED absent on SOMA (its Rifle_Shoot is
+    # left-handed); a declared-absent clip resolves to none, any other to a clip
+    shot = SETTINGS.playback[SOMA_TABLE].clip_names.get(SETTINGS.fire.shot_clip,
+                                                         SETTINGS.fire.shot_clip)
+    assert (rig.shot_clip == NO_CLIP) == (shot == "")
+    assert rig.hit_clip != NO_CLIP
 
 
 def test_a_mapped_name_the_file_lacks_is_refused_at_load_by_name():

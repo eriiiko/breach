@@ -603,7 +603,12 @@ def test_a_launch_fires_and_a_mid_flight_segment_does_not(monkeypatch):
                                              launch=True)] if k == 0 else [], 2)
     ps = r._anim[1].pose
     assert ps.aim_left > 0.0
-    assert ps.clip[_layer_index(FIRE.shot_layer)] == r._pose.rig(ALL_SHIPPED[0]).shot_clip
+    # the shot one-shot -- or, on a look that declares none (#184: the SOMA
+    # marine's Rifle_Shoot is left-handed), the aim overlay's clip
+    rig = r._pose.rig(ALL_SHIPPED[0])
+    sl = _layer_index(FIRE.shot_layer)
+    want = rig.shot_clip if rig.shot_clip != NO_CLIP else rig.overlay_clips[FIRE.overlay][sl]
+    assert ps.clip[sl] == want
 
 
 def test_the_legs_walk_along_the_travel_in_the_world(monkeypatch):

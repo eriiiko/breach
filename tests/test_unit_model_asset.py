@@ -85,7 +85,8 @@ def test_every_shipped_look_carries_every_clip_the_renderer_names():
         clips = {a.get("name") for a in doc.get("animations", [])}
         table = masks_for(_glb_skeleton(path), settings)[0]
         names = settings.playback[table].clip_names
-        missing = sorted({names.get(c, c) for c in CLIP_MAP.values()} - clips)
+        # "" = the skeleton declares it has none (#179; the SOMA shot, #184)
+        missing = sorted({names.get(c, c) for c in CLIP_MAP.values()} - clips - {""})
         assert not missing, f"{path.name} lacks the clips {missing}"
         assert doc.get("skins"), f"{path.name} has no skin"
 

@@ -73,6 +73,11 @@ class TwistRule:
     lower: str
     counter: Tuple[str, ...]
     shares: Tuple[float, ...]
+    # #184: the vertical line the lower body yaws about: "bone" = through the
+    # lower bone's position this frame (#163); "origin" = through the model's
+    # origin, the unit's own position -- a FIXED line, so a clip whose hips
+    # sway does not slide its planted feet when the legs are twisted
+    pivot: str = "bone"
 
 
 @dataclass(frozen=True)
@@ -273,6 +278,7 @@ _HIT_KEYS = ("clip", "masks", "causes", "ramp_in_s", "ramp_out_s", "weight_min",
              "weight_max", "damage_full")
 _AIM_TRAVEL_KEYS = ("theta_deg", "hysteresis_deg", "smooth_s", "twist_rate_deg_s")
 _TWIST_KEYS = ("lower", "counter", "shares")
+TWIST_PIVOTS = ("bone", "origin")                  # #184: [..twist] pivot (optional)
 _SKELETON_KEYS = ("masks", "twist", "posture")
 # #179: optional per-skeleton playback keys; absent = the global table
 # (#184: states, locomotion, hit_directions, sockets)
@@ -426,6 +432,10 @@ def _name(v, where: str) -> str:
 
 
 def _parse_twist(raw, where: str) -> TwistRule:
+    raw = dict(raw) if isinstance(raw, dict) else raw
+    pivot = raw.pop("pivot", "bone") if isinstance(raw, dict) else "bone"
+    if pivot not in TWIST_PIVOTS:
+        raise PoseConfigError(f"{where}.pivot must be one of {TWIST_PIVOTS}, got {pivot!r}")
     t = _exact_table(raw, _TWIST_KEYS, where)
     lower = _name(t["lower"], f"{where}.lower")
     counter = _names(t["counter"], f"{where}.counter")
@@ -437,7 +447,8 @@ def _parse_twist(raw, where: str) -> TwistRule:
     if abs(sum(shares) - 1.0) > 1e-6:
         raise PoseConfigError(f"{where}.shares must sum to 1 (the torso ends on the "
                               f"facing), got {sum(shares)!r}")
-    return TwistRule(lower=lower, counter=counter, shares=tuple(float(s) for s in shares))
+    return TwistRule(lower=lower, counter=counter, shares=tuple(float(s) for s in shares),
+                     pivot=pivot)
 
 
 def pose_settings(cfg) -> PoseSettings:
