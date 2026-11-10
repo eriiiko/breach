@@ -407,9 +407,12 @@ class Simulation:
         # ``_consume_direct_intents`` short-circuits and the whole continuous
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
-        # G1p: the marine turn-rate cap, Q16.16 radians per tick, quantized
-        # ONCE here from [marine] turn_rate_deg_per_s (the refusing door).
+        # G1p / G5p-a1: the marine turning law's dials, quantized ONCE here
+        # through the refusing doors (simulation/turning.py): the top speed
+        # (Q16.16 radians per tick, [marine] turn_rate_deg_per_s) and the
+        # acceleration (per tick^2, [marine] turn_accel_rad_per_s2).
         self._marine_turn_rate_q16 = turning.turn_rate_q16(CFG)
+        self._marine_turn_accel_q16 = turning.turn_accel_q16(CFG)
         # G1p-c: the [speeds] table (m/s) quantized ONCE here with this map's
         # tile size (the refusing door, simulation/speeds.py): the marine's
         # walk / full costs in Q16 ticks per tile, the direction factors, the
@@ -976,22 +979,31 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def unit_turn_rate_q16(self, u) -> int:
-        """The turn-rate cap of unit ``u`` in Q16.16 radians per tick (G1p).
-        Read per unit: today every unit has the marine row's
-        (``[marine] turn_rate_deg_per_s``); later a stat (dexterity, armour
-        weight) -- a change here, never at the callers."""
+        """The top turning speed of unit ``u`` in Q16.16 radians per tick
+        (G1p's cap; the turning law's ``w``). Read per unit: today every unit
+        -- a zombie too, a copy of the unit it infected -- has the marine
+        row's (``[marine] turn_rate_deg_per_s``); later a stat (dexterity,
+        armour weight) -- a change here, never at the callers."""
         return self._marine_turn_rate_q16
+
+    def unit_turn_accel_q16(self, u) -> int:
+        """The own angular acceleration of unit ``u`` in Q16.16 radians per
+        tick^2 (G5p-a1, the turning law's ``a``; ``[marine]
+        turn_accel_rad_per_s2``), read per unit as the top speed is."""
+        return self._marine_turn_accel_q16
 
     def facing_after_turn_q16(self, u, dx_q: int, dy_q: int) -> int:
         """The facing (Q16.16 radians) ``u`` has after this tick's turn
-        toward the Q16.16 aim vector ``(dx_q, dy_q)``: THE turn law
-        (``turning.turn_toward_q16`` at :meth:`unit_turn_rate_q16`), also what
-        a controller reads to know where a shot it fires this tick will go
-        (the bots' trigger discipline). World Y runs down and facing is
-        math-style, hence ``-dy`` -- the convention of ``Unit.face_towards``."""
+        toward the Q16.16 aim vector ``(dx_q, dy_q)``: the pure evaluation of
+        exactly slot 1a's step (``turning.predict``: the law at the unit's
+        facing, angular velocity and dials), also what a controller reads to
+        know where a shot it fires this tick will go (the bots' trigger
+        discipline). Exact when read after the aim is set and before
+        :meth:`step`. World Y runs down and facing is math-style, hence
+        ``-dy`` -- the convention of ``Unit.face_towards``."""
         target = unit_fixed.atan2_q16(-int(dy_q), int(dx_q))
-        return turning.turn_toward_q16(unit_fixed.quantize_scalar(u.facing),
-                                       target, self.unit_turn_rate_q16(u))
+        return turning.predict(u, target, self.unit_turn_accel_q16(u),
+                               self.unit_turn_rate_q16(u))
 
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
@@ -1098,7 +1110,8 @@ class Simulation:
         under TwoPhaseWEGO ``_possessed_ids`` is always empty, so this is a
         single set-empty check and the digest is byte-identical.
 
-        AIM sets facing (deterministic integer atan2); THROW spawns a grenade
+        AIM is NOT consumed here: slot 1a turns toward a held aim
+        (``turning.step_units``, G5p-a1); THROW spawns a grenade
         BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
         this tick like a WEGO one; USE toggles a door latch; RELOAD discards
         the magazine and starts the stall (G2p). TRIGGER is not
@@ -1122,14 +1135,8 @@ class Simulation:
                     u.throw_release_tick = -1
                 continue
 
-            # AIM -> facing, turned at most the unit's turn rate this tick
-            # (G1p; synced state through the deterministic atan2 kit, integer
-            # Q16 radians; a zero vector leaves facing untouched). A cap of
-            # half a turn or more reaches the aim at once: the pre-G1p law.
-            aim = getattr(u, "live_aim", None)
-            if aim is not None and (aim.dx_q != 0 or aim.dy_q != 0):
-                u.facing = unit_fixed.dequantize_scalar(
-                    self.facing_after_turn_q16(u, aim.dx_q, aim.dy_q))
+            # AIM: already turned toward in slot 1a (the turning law, G5p-a1;
+            # a zero vector holds the last target).
 
             # THROW -> start the wind-up (edge; latched until consumed); a
             # wind-up under way is carried to its release tick (G3p).
@@ -1742,6 +1749,15 @@ class Simulation:
         # simulation.ruleset.TwoPhaseWEGO.on_round_start.
         self.ruleset.on_round_start(self)
 
+        # 1a. Turn (G5p-a1, simulation.turning): every living unit's facing
+        # takes one tick of the turning law toward its target (the live aim
+        # while one is held) -- the ONLY writer of a facing. BEFORE 1b (a
+        # throw leaves along the turned facing), the movement slot (the Speed
+        # table's direction rule reads THIS tick's facing) and the shooting
+        # slot (a shot leaves along it; the bots' predictor evaluates exactly
+        # this step before the tick).
+        turning.step_units(self)
+
         # 1b. Direct-control intents (control-modularity P3, §3c): consume the
         # possessed units' held/latched per-tick verbs (AIM/THROW/USE/TRIGGER)
         # BEFORE projectiles advance, so a THROW lobbed this tick travels this
@@ -2219,8 +2235,10 @@ class Simulation:
         the intent's throttle (:func:`movement.move_speed_tiles_per_tick`):
         the walk slows sideways and backward, the throttle's extra speed is
         forward only. ``theta`` is the angle between the move and the facing
-        THIS tick (the aim already turned it, ``_consume_direct_intents``);
-        a unit holding no aim faces where it walks, so ``theta`` is 0.
+        THIS tick (slot 1a already turned it, G5p-a1); a unit holding no aim
+        makes its travel direction its facing TARGET and turns there with
+        inertia like everyone else, so for a few ticks after a change of
+        direction it walks at the sideways / backward factor.
 
         Determinism: the direction arrives as a Q16.16 unit vector; the only
         floats are the exact power-of-two dequantize and the position math on
@@ -2232,8 +2250,8 @@ class Simulation:
         Collision: try the full move; if the destination footprint is blocked,
         slide along each axis independently (still :meth:`is_passable_block`),
         so pushing diagonally into a wall glides rather than dead-stops. A
-        fully boxed-in unit holds. Facing follows the move direction unless a
-        live AIM overrides it (aim already set facing this tick).
+        fully boxed-in unit holds. A unit holding no live AIM makes the move
+        direction its facing target (turned toward from the next tick's 1a).
         """
         fp = u.footprint
         samples = footprint_samples(self.gmap, u.tile_y, u.tile_x, fp)
@@ -2241,11 +2259,7 @@ class Simulation:
         # reduced by terrain and wind, then the direction rule and the
         # throttle as ONE exact rational and one division.
         table = self.speed_table
-        if getattr(u, "live_aim", None) is None:
-            cos_q = unit_fixed.FP_ONE         # facing follows the move
-        else:
-            cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q,
-                                   unit_fixed.quantize_scalar(u.facing))
+        cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
         tiles_per_tick = move_speed_tiles_per_tick(
             default_speed(samples, table.walk_cost_q),
             default_speed(samples, table.full_cost_q),
@@ -2266,12 +2280,13 @@ class Simulation:
             u.y = ny                          # slide along Y
         # else fully blocked -> hold position this tick.
 
-        # Facing: aim wins (already applied in _consume_direct_intents this
-        # tick); otherwise face the direction of travel -- at once, as before
-        # G1p: the turn cap is the aim's law, and a unit that never named an
-        # aim (scripts, WEGO-era tests) keeps its old trajectory.
-        if getattr(u, "live_aim", None) is None and (dx != 0.0 or dy != 0.0):
-            u.face_towards(u.x + dx, u.y + dy)
+        # Facing: a held aim wins (slot 1a's target); otherwise the
+        # direction of travel becomes the facing TARGET (G5p-a1: turned
+        # toward with inertia from the next tick's 1a, never written here).
+        if getattr(u, "live_aim", None) is None and (
+                move_dir.dx_q != 0 or move_dir.dy_q != 0):
+            turning.set_target(u, unit_fixed.atan2_q16(-int(move_dir.dy_q),
+                                                       int(move_dir.dx_q)))
 
     def _end_round(self) -> None:
         """End-of-round teardown — convert dead-by-zombie marines, reset state.

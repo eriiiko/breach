@@ -4522,8 +4522,20 @@ hp = 100
 # in 0.5 s). Every unit driven through set_aim (player, bots, policy). Read per
 # unit; later a stat scaled by dexterity and armour weight. PLACEHOLDER, Erik
 # tunes. A value of half a turn per tick or more (>= 4320 at 24 tps) is the
-# pre-G1p instant facing.
+# pre-G1p instant facing. Since G5p-a1 this is the TOP SPEED of the turning
+# law (the unit's own torque only), and every reason to face somewhere turns
+# through it (the aim, the travel direction, the zombie walk, the attack snap).
 turn_rate_deg_per_s = 360.0
+# The turning law's own angular ACCELERATION (G5p-a1, docs/unit_impulse_design
+# _2026-11-10.md §5.1): a unit speeds up and brakes its turn at this, landing
+# on its target exactly. Quantized ONCE to Q16.16 radians per tick^2; refused
+# if it would need more than 32 trials a tick against the top speed. At
+# >= 2 x the top speed per tick (>= 302 rad/s^2 at 360 deg/s, 24 tps) the law
+# is G1p's bare cap bit for bit. PLACEHOLDER, Erik tunes: 30 rad/s^2 is the
+# rotation literature check's (docs/research/rotation_litcheck_2026-11-10.md:
+# about 90 N*m of own torque on a 3.0 kg*m^2 yaw inertia) -- with the top
+# speed above, 90 deg in 11 ticks (0.46 s), 180 deg in 17 (0.71 s).
+turn_accel_rad_per_s2 = 30.0
 # loadout — the [loadouts.*] row a marine is armed with when nothing names
 # one (#119; the row replaced this table's old weapon / grenades / explosives
 # keys with the same values). A match config names a row per team (#119 P2).

@@ -64,6 +64,8 @@ from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.status import STUNNED, composed_flags  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import AmmoDef, WeaponDef  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20261106
 HULL, AIR = 1, 4
@@ -148,7 +150,8 @@ def _duel(hp, left_first, n_ticks):
     # so both already face their aim (the turn is test_turn_rate's). West is
     # the kit's pi, exactly what the aim (-1, 0) turns to.
     from simulation.turning import PI_Q16
-    L.facing, R.facing = 0.0, PI_Q16 / 65536.0
+    _place_facing(L, 0)
+    _place_facing(R, PI_Q16)
     sim.set_aim(L.id, FP_ONE, 0)          # east
     sim.set_aim(R.id, -FP_ONE, 0)         # west
     sim.set_trigger(L.id, True)

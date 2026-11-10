@@ -59,6 +59,8 @@ from simulation.orders import (  # noqa: E402
 )
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import AmmoDef, WeaponDef  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20260705
 
@@ -475,8 +477,9 @@ def test_lazy_draws_k5_bit_identical_to_prew2_firefight(monkeypatch):
     for _ in range(n_hits_replica):
         expected_hp -= per_bullet
     assert zombie.current_hp == expected_hp
-    # Firing set the shooter's facing to the aim bearing (kit, y-up).
-    assert shooter.facing == unit_fixed.atan2_rad(-(9 - 9), 15 - 3) == 0.0
+    # Firing made the aim bearing the shooter's facing TARGET (kit, y-up;
+    # G5p-a1: the turning law turns it there, the facing is not written).
+    assert shooter.facing_target_q == unit_fixed.atan2_q16(0, 12 << 16) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +503,7 @@ def test_crit_arc_multipliers_predicted_draw_for_draw():
             shooter = _marine(2, 8, "S")
             target = _marine(14, 8, "T")
             shooter.id, target.id = 1, 2
-            target.facing = facing
+            _place_facing(target, _q_rad(facing))
             rng = np.random.default_rng(seed)
             parallel = np.random.default_rng(seed)
             cone = math.radians(0.0)
@@ -550,7 +553,7 @@ def test_facing_determinism_same_seed_same_firefight():
         shooter = _marine(2, 8, "S")
         target = _marine(14, 8, "T")
         shooter.id, target.id = 1, 2
-        target.facing = 0.0                    # behind: p = .6
+        _place_facing(target, _q_rad(0.0))  # behind: p = .6
         rng = np.random.default_rng(7)
         shots, events = [], []
         fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,

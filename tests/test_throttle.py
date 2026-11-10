@@ -48,6 +48,8 @@ from simulation.speeds import speed_settings, speed_table  # noqa: E402
 from simulation.turning import PI_Q16  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.unit_fixed import dequantize_scalar  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 #: The shipped table on the shipped 0.333 m tile.
 TABLE = speed_table(CFG, 0.333)
@@ -208,7 +210,7 @@ def _step_once(throttle_q, move=(FP_ONE, 0), facing_q=None, aim=None):
     uid = sim.add_unit(Unit("M", x=6, y=6, team=0))
     u = sim.get_unit(uid)
     if facing_q is not None:
-        u.facing = dequantize_scalar(facing_q)
+        _place_facing(u, facing_q)
     if aim is not None:
         sim.set_aim(uid, *aim)
     x0, y0 = u.x, u.y
@@ -239,16 +241,24 @@ def test_the_movement_step_walks_at_the_table_and_slows_off_the_facing():
         assert u.x == x0 + t.side_q / t.walk_cost_q
 
 
-def test_with_no_aim_the_facing_follows_the_move_so_theta_is_zero():
-    """Property: a unit holding no aim walks at its forward speed in every
-    direction, whatever its facing was (it faces where it walks): a unit
-    facing north (the spawn facing) stepping east at throttle ONE gets the
-    full speed. Breaks if the no-aim path reads the stale facing."""
+def test_with_no_aim_the_direction_rule_reads_the_facing_and_travel_is_the_target():
+    """Property (G5p-a1, which deletes the "no aim means theta 0" shortcut):
+    a unit holding no aim is held to the direction rule against THIS tick's
+    facing like everyone else -- facing north (the spawn facing) and stepping
+    east it gets the sideways walk at either throttle, stepping south the
+    backward walk -- and the move becomes its facing TARGET (the turning law
+    turns it there from the next tick); facing its move it walks at the
+    table's walk / full speed. Breaks if the shortcut returns, or the travel
+    writes the facing at once."""
     t = speed_table(CFG, 1.0)
-    _, u, x0, _ = _step_once(THROTTLE_ONE, move=(FP_ONE, 0))
-    assert u.x == x0 + FP_ONE / t.full_cost_q
+    for th in (0, THROTTLE_ONE):
+        _, u, x0, _ = _step_once(th, move=(FP_ONE, 0))      # east, no aim
+        assert u.x == x0 + t.side_q / t.walk_cost_q
+        assert u.facing_q == 102944 and u.facing_target_q == 0
     _, u, _, y0 = _step_once(0, move=(0, FP_ONE))          # south, no aim
-    assert u.y == y0 + FP_ONE / t.walk_cost_q
+    assert u.y == y0 + t.back_q / t.walk_cost_q
+    _, u, x0, _ = _step_once(THROTTLE_ONE, move=(FP_ONE, 0), facing_q=0)
+    assert u.x == x0 + FP_ONE / t.full_cost_q
 
 
 def test_the_door_clamps_the_throttle_and_the_tap_records_the_clamp():

@@ -199,8 +199,12 @@ def test_move_dir_walks_at_the_slowed_cadence_in_a_gale():
                      enable_recorder=False)
     u = Unit("w", x=6.0, y=10.0, team=0)
     sim.add_unit(u)
+    # G5p-a1: a walker turns to its travel with inertia; this test is about
+    # the wind's cadence, so it already faces its walk (east): theta 0.
+    from simulation.turning import place
+    place(u, 0)
     md = SimpleNamespace(throttle_q=0, dx_q=FP_ONE, dy_q=0)  # the walk
-    # G1p-c: the [speeds] walk, a Q16 ticks-per-tile cost (no aim: theta 0)
+    # G1p-c: the [speeds] walk, a Q16 ticks-per-tile cost (facing it: theta 0)
     calm = sim.speed_table.walk_cost_q
     _blow(sim.gmap, on=False)
     x0 = u.x

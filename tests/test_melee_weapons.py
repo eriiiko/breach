@@ -61,6 +61,8 @@ from simulation.orders import ORDER_FIRE, Order  # noqa: E402
 from simulation.status import STUNNED, composed_flags  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20260707
 
@@ -193,7 +195,7 @@ def _strike_from(dx_anchor, dy_anchor, seed, target_team=ZOMBIE_TEAM):
     knife = _weapon("combat_knife")
     a = _unit("A", 4 + dx_anchor, 4 + dy_anchor, team=0, uid=1)
     z = _unit("Z", 4, 4, team=target_team, uid=2)
-    z.facing = 0.0                                # facing EAST (y-up, 0=E)
+    _place_facing(z, _q_rad(0.0))  # facing EAST (y-up, 0=E)
     rng = np.random.default_rng(seed)
     hp0 = z.current_hp
     assert melee_strike([a, z], a, 5.0, 5.0, rng, None, knife)
@@ -232,13 +234,16 @@ def test_knife_flank_and_front_arcs_pinned():
 
 def test_strike_snaps_attacker_facing_to_the_bearing():
     """The fire_burst facing rule holds for melee: a connecting strike due
-    EAST sets facing 0 (kit atan2, y-up convention); a whiff does not."""
+    EAST makes 0 the attacker's facing TARGET (kit atan2, y-up convention;
+    G5p-a1: the turning law turns it there from the next tick, the facing
+    itself is not written); a whiff does not."""
     baton = _weapon("arc_baton")
     a = _unit("A", 4, 4, team=0, uid=1)
     z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
     rng = np.random.default_rng(SEED)
+    f0 = a.facing_q
     assert melee_strike([a, z], a, 8.0, 5.0, rng, None, baton)
-    assert a.facing == 0.0
+    assert a.facing_target_q == 0 and a.facing_q == f0
 
 
 # ---------------------------------------------------------------------------

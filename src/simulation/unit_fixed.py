@@ -97,6 +97,13 @@ def atan2_q16(y_q: int, x_q: int) -> int:
     return int(_kit().atan2_q16(int(y_q), int(x_q)))
 
 
+def atan2_q16_of(y: float, x: float) -> int:
+    """:func:`atan2_rad` with the Q16.16 radians left as the integer (the
+    turning law's currency, G5p-a1): ``quantize_scalar(atan2_rad(y, x))``
+    exactly."""
+    return atan2_q16(quantize_scalar(y), quantize_scalar(x))
+
+
 def cos_q16(angle_q: int) -> int:
     """The kit's ``cos_q16`` on a Q16.16 radian int, Q16.16 out -- the
     integer form of :func:`cos_rad` (G1p-c: the speed law's direction

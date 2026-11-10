@@ -61,17 +61,21 @@ def test_the_rdfg_keys_move_the_possessed_marine_and_the_mouse_aims_it():
     cx, cy = 0.0 + 900 / 25.0, 1.2 + 508 / 25.0
     want = math.atan2(-(cy - (y + 1.5)), cx - (x + 1.5))
     assert abs(facing - want) < 0.01, (facing, want)
-    walked = SPAWN[1] - y
 
     _, _, x, y, _ = _drive("--hold", "G@10-70", "--mouse", f"{MOUSE_EAST}@1")
     assert y == SPAWN[1] and x > SPAWN[0] + 0.5
 
     # G1p-c: the throttle's extra speed is FORWARD ONLY (Erik's ruling,
     # 2026-11-10). With the cursor east, R moves the marine at 90 deg to its
-    # aim, so A adds nothing: it strafes at the same speed.
-    _, _, x, y, _ = _drive("--hold", "R@10-70", "--hold", "A@10-70",
+    # aim, so A adds nothing: it strafes at the same speed. G5p-a1: the
+    # facing turns from north to the cursor with inertia (90 deg in 11
+    # ticks, ~30 frames here), so both runs start walking once it faces east.
+    _, _, x, y, _ = _drive("--hold", "R@45-75", "--mouse", f"{MOUSE_EAST}@1")
+    strafed = SPAWN[1] - y
+    assert strafed > 0.5
+    _, _, x, y, _ = _drive("--hold", "R@45-75", "--hold", "A@45-75",
                            "--mouse", f"{MOUSE_EAST}@1")
-    assert x == SPAWN[0] and SPAWN[1] - y < 1.2 * walked
+    assert x == SPAWN[0] and SPAWN[1] - y < 1.2 * strafed
     # With the cursor north (along the move), A runs: farther than R alone.
     _, _, x, y, _ = _drive("--hold", "R@10-30", "--mouse", f"{MOUSE_NORTH}@1")
     walked_north = SPAWN[1] - y

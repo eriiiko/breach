@@ -237,14 +237,27 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: 8cb12fa8d9b2028a3507013627b3a46acf7fbd51ce68ad6129da34949caf3a03, tick
 #: b435f76ecdedf393e6417be05caf6f2a0988d7f903cde82a1307afd6acbe47ba, units
 #: 8c9d7b3af1423b147386f066dd36cb135c28e4c12a73152b447713ca39d42937).
+#: RE-MEASURED at #183 G5p-a1 commit 1 (2026-11-10, the turning law): the
+#: instant turn is now a top speed of half a turn per tick AND unlimited
+#: acceleration (a >= 2w; the run sets both). Outcome, ticks and field_digest
+#: UNCHANGED; tick_digest and the unit stream move. SOLE CAUSES, verified on
+#: the same tree: with every non-aim facing writer placing the facing at
+#: once again and the old float representation hashed, the run gives exactly
+#: the G4p values above (d74c0c9c / cfc087f4 / 030e28aa); with the
+#: representation alone undone only the unit stream moves -- even at an
+#: instant turn the zombie walk's facing is hashed a tick later (its target
+#: is set in slot 5, turned in the next tick's slot 1a), while every read of
+#: it in play comes after that slot 1a and is unchanged.
+#: (was tick cfc087f4ff68f8395881ba629d4de73f70bb63edd0088789bcf8281e3decb819,
+#: units 030e28aaf6a4d3c64242ff617bb9ab554ffbd91449b1d3b8667f9201f94ab19e)
 _PRE_G1P_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=244,
     field_digest="d74c0c9c3e4efb2bab446009bd7b9c8f"
                  "7e05ca1fa976b29fa45df0de63d2e2a0",
-    tick_digest="cfc087f4ff68f8395881ba629d4de73f"
-                "70bb63edd0088789bcf8281e3decb819",
-    unit_stream="030e28aaf6a4d3c64242ff617bb9ab55"
-                "4ffbd91449b1d3b8667f9201f94ab19e")
+    tick_digest="74f88f8db69c11c9ac93accdd48a49ac"
+                "9b90e046f22b3f57dc9421f8dde846bf",
+    unit_stream="a402a66787dde297706acd243a3b2c10"
+                "8c854339f2bf30d7ef074bd514b1e53c")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
@@ -263,6 +276,8 @@ def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
     from test_zombie_control import _UnitStream
     tps = int(CFG.clock.ticks_per_second)
     monkeypatch.setattr(CFG.marine, "turn_rate_deg_per_s", 180.0 * tps)
+    # G5p-a1: an instant turn is also an unlimited acceleration (a >= 2w).
+    monkeypatch.setattr(CFG.marine, "turn_accel_rad_per_s2", 1e7)
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
     o = run_match(level, on_tick=stream)

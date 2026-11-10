@@ -360,3 +360,52 @@ decisions, in short:
    Gates G1, G4 to G8, G11 to G15.
 3. **G5p-b, wind and blast** onto the law (§7).
 
+
+## As built (G5p-a1, 2026-11-10)
+
+Run 1 of 3, the turning law, built to §5.1 and §13 in two commits of
+behaviour. `src/simulation/turning.py` is the only writer of a facing:
+`Unit._facing_q` (Q16.16 radians; `Unit.facing` / `facing_q` read-only, no
+setter), `facing_target_q`, `omega_q`. `turning.place` is the one
+constructor-time door (`Unit.__init__`, north = quantize(pi/2) = 102944; test
+fixtures stand units with it); `set_target` is every other writer's voice: the
+live aim (stored by slot 1a each tick it is held, so a zero aim holds the last
+aimed angle), the travel of a walker holding no aim (slot 3, from the
+intent's own vector), the zombie walk and WEGO / onephase steps
+(`face_towards`), the onephase overwatch bearing, and the attack snap
+(`SimultaneousEffects.face`, now a Q16 target applied in record order).
+`settle` (target = facing, omega 0) runs at conversion. Slot 1a is
+`turning.step_units(self)`, one call line before 1b. `law_q16` is the §5.1
+step; `top_speed_within` is critique B's closed form, at most
+`ceil(min(w, pi) / a)` trials (6 at the shipped dials; the door refuses more
+than 32). The incoming omega (run 2's `omega += dw` goes in front of the
+law unchanged) is clamped to `PI_Q16 - 1`; the own-torque result is not
+clamped further, so at a top speed of half a turn a half-turn step still
+lands (G2 at `w = PI_Q16`). `Simulation.facing_after_turn_q16` is
+`turning.predict`. The direction rule's no-aim shortcut is deleted. The
+digest hashes the int facing and, while non-zero, `turn` (wrap(target -
+facing)) and `omega`.
+
+Times at the shipped 360 deg/s and 30 rad/s^2: 90 degrees land in 11 ticks
+(0.458 s), 180 in 17 (0.708 s; §3's "0.73 s" is the check's rounder figure,
+the continuous bang-bang time is 0.709 s).
+
+Re-baselines. (1) Representation + routing at unlimited acceleration
+(`turn_accel_rad_per_s2 = 1000`, >= 2w): outcome, ticks and field_digest of
+every pinned match unchanged; tick_digest and the unit stream moved;
+GOLDEN_AGGREGATE moved in `__unit_facing__` only. Proof: undoing the routing
+(instant placement in the writer's slot) and the representation (float pi/2,
+q(float) hashing) by monkeypatch gives every previous pin exactly; undoing the
+representation alone leaves only the unit stream moved (the zombie walk's
+facing lands a tick later, through slot 1a). (2) The shipped 30 rad/s^2:
+ship_demo seed 1 is now won by team 0 at tick 265 (was team 1 at 246), the
+bots' first walks being held at the sideways factor longer as their facings
+come round from the spawn; the box keeps its result (unit stream moved). G3
+(`tests/test_turning_law.py`) holds that at a >= 2w both matches are re-pin
+1's.
+
+Legacy behaviour changed (Control seams row: one line each): WEGO and
+onephase facings (path steps, the attack snap, the overwatch bearing) now
+turn at the law instead of jumping, and a snap no longer moves the facing on
+the tick it is recorded; a unit still holding a live aim ignores a snap (its
+aim is the target).

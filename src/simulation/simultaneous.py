@@ -21,7 +21,7 @@ So an attack slot runs in TWO PHASES:
   recorded effects in the order they were recorded (shooter by shooter in
   the slot's walk order, round by round within a shooter): damage packets
   through the one door (``damage.apply_packet``), attack statuses, facing
-  snaps, wall chew, payload detonations, spray deposits. The hits' EXPOSURE
+  snaps (targets for the turning law), wall chew, payload detonations, spray deposits. The hits' EXPOSURE
   raises (G4p, :mod:`simulation.exposure`) land together after the last
   effect, so every hit of the slot reads its target's slot-start exposure.
   (A packet a ``world`` effect applies -- a detonation's blast -- goes
@@ -46,14 +46,15 @@ the pre-#169 behaviour, for direct callers of the combat helpers that own
 no slot (tests, tools, OnePhaseWEGO's timeline).
 
 Pure bookkeeping: no float, no RNG, no new synced state. The pending list
-lives one slot and is never digested; its effect is (hp, statuses, facing,
-walls and the hashed hit / kill events).
+lives one slot and is never digested; its effect is (hp, statuses, facing
+targets, walls and the hashed hit / kill events).
 """
 from __future__ import annotations
 
 from simulation.damage import apply_packet
 from simulation.exposure import ExposureLanding
 from simulation.status import apply_status
+from simulation.turning import set_target
 
 _HIT, _STATUS, _FACE, _WORLD = 0, 1, 2, 3
 
@@ -71,8 +72,10 @@ class SimultaneousEffects:
     - :meth:`hit`    -- a damage packet through ``apply_packet``;
     - :meth:`status` -- an attack's delivery-site status (the baton's stun),
       applied only if the unit is still alive at its turn;
-    - :meth:`face`   -- the shooter's facing snap (a target's facing is what
-      a crit or a facing-defense roll of another shooter reads);
+    - :meth:`face`   -- the shooter's facing snap, a FACING TARGET handed to
+      the turning law (``turning.set_target``, G5p-a1: the facing itself
+      turns there from the next tick's slot 1a; a target's facing is what a
+      crit or a facing-defense roll of another shooter reads);
     - :meth:`world`  -- any other world write (wall chew, a payload
       detonation, a spray's deposit): a call run at its turn.
     """
@@ -104,12 +107,13 @@ class SimultaneousEffects:
         else:
             _status_if_alive(unit, kind, magnitude, duration_ticks, source_id)
 
-    def face(self, unit, facing) -> None:
-        """``unit.facing = facing`` at its turn."""
+    def face(self, unit, angle_q: int) -> None:
+        """``turning.set_target(unit, angle_q)`` (Q16.16 radians) at its
+        turn: the facing snap is a target, never a facing write (G5p-a1)."""
         if self.deferred:
-            self._pending.append((_FACE, unit, facing))
+            self._pending.append((_FACE, unit, int(angle_q)))
         else:
-            unit.facing = facing
+            set_target(unit, angle_q)
 
     def world(self, fn, *args, **kwargs) -> None:
         """``fn(*args, **kwargs)`` at its turn -- a world write (the wall
@@ -143,8 +147,8 @@ class SimultaneousEffects:
                 _, unit, skind, magnitude, duration, source_id = eff
                 _status_if_alive(unit, skind, magnitude, duration, source_id)
             elif kind == _FACE:
-                _, unit, facing = eff
-                unit.facing = facing
+                _, unit, angle_q = eff
+                set_target(unit, angle_q)
             else:
                 _, fn, args, kwargs = eff
                 fn(*args, **kwargs)

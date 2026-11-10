@@ -58,6 +58,7 @@ from simulation.orders import (
 )
 from simulation.status import composed_flags
 from simulation.weapons import FIRE_ORDER_ARCHETYPES
+from simulation import turning as _turning
 from simulation import unit_fixed
 
 try:
@@ -842,7 +843,9 @@ def set_overwatch(sim, unit, step) -> None:
                    float(half)))
     unit.overwatch_facing = facing
     unit.overwatch_half_deg = half
-    unit.facing = facing
+    # The overwatch bearing is the facing TARGET (G5p-a1: the turning law
+    # turns the unit there; nothing writes a facing directly).
+    _turning.set_target(unit, unit_fixed.quantize_scalar(facing))
 
 
 def throw_grenade(sim, unit, step) -> None:

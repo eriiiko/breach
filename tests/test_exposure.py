@@ -56,6 +56,8 @@ from simulation.simultaneous import SimultaneousEffects  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.unit_fixed import FP_ONE  # noqa: E402
 from simulation.weapons import AmmoTable, get_tables  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 CARBINE_ROUND = get_tables().ammo.by_name["rifle_556_standard"]
 
@@ -266,8 +268,7 @@ def _duel(swap: bool):
     shooters = []
     for (x, y, ax) in spots:
         u = sim.get_unit(sim.add_unit(Unit("S", x=x, y=y, team=0)))
-        u.facing = 0.0 if ax > 0 else unit_fixed.dequantize_scalar(
-            unit_fixed.quantize_scalar(np.pi))
+        _place_facing(u, 0 if ax > 0 else unit_fixed.quantize_scalar(np.pi))
         shooters.append((u, ax))
     sim.set_paused(False)
     trace = []
@@ -504,14 +505,33 @@ def test_a_unit_with_no_exposure_records_as_before_and_one_with_some_does_not():
 
 
 #: ship_demo seed 1 as it played before G4p (the G3p pin, win 1 at 246).
+#: RE-MEASURED at #183 G5p-a1 commit 1 (2026-11-10, the turning law's
+#: representation and routing at unlimited acceleration): the same run on
+#: the new tree. Outcome, ticks and field_digest UNCHANGED; tick_digest and
+#: the unit stream move. SOLE CAUSES, verified on the same tree: with every
+#: non-aim facing writer placing the facing at once again and the old float
+#: representation hashed, the run gives exactly the previous values; with
+#: the representation alone undone only the unit stream moves (the zombie
+#: walk's facing lands a tick later, through slot 1a).
+#: (was tick e4e42ce9320d57c1782bc625289e3429937300e1fbebd767a0440c9099e53076,
+#: units 6e30ef3f7df49f556d8d0b1e43bc55d2499303302095935a26b522385e7d1cfe)
+#: RE-MEASURED at #183 G5p-a1 commit 2 (2026-11-10, the shipped turning
+#: acceleration, 30 rad/s^2): the same run with the turns now speeding up
+#: and braking. SOLE CAUSE, verified on the same tree: with
+#: `turn_accel_rad_per_s2` >= 2w (1000) the run gives exactly the values of
+#: re-pin 1 (in the comment above).
+#: (was win 1 at 246; field 5175fd4cddd17c018e84bc9548b1b81b5a92ebac0d1c25
+#: ba06c3b14528bd6175, tick d207abc729f885076ddcabffcf7b9bcdb2797f4950534032
+#: ca4f1e220f49c7c4, units 4c26af9bdab372237cd4570021296285c73dc93d878a9b60
+#: 3dc7c6cd2aa05672)
 _PRE_G4P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=246,
-    field_digest="5175fd4cddd17c018e84bc9548b1b81b"
-                 "5a92ebac0d1c25ba06c3b14528bd6175",
-    tick_digest="e4e42ce9320d57c1782bc625289e3429"
-                "937300e1fbebd767a0440c9099e53076",
-    unit_stream="6e30ef3f7df49f556d8d0b1e43bc55d2"
-                "499303302095935a26b522385e7d1cfe")
+    outcome="win", team=0, ticks=266,
+    field_digest="226202de75e88edd60e00666a884a9be"
+                 "860e5d5981f9d183e251edf1782fca89",
+    tick_digest="e6a38e5f509d1a91ed74ac11057f90dd"
+                "2e6f2f791c3f46dd11321be4fc62e314",
+    unit_stream="c5108241c836c8e7a6d85636f9ad9048"
+                "f3b2119bb94f1a3c499716b9c77006ee")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(
