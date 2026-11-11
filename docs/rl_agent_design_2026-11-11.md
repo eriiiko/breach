@@ -221,7 +221,7 @@ the soldier's own.
 - The observation is built once per decision per soldier. "Do I see it" comes from the per-tick sight cache the game already keeps; the route map from the flood the bots already run. The farm's speed with the new observation is measured against today's.
 - Test: the observation equals an independent reconstruction from the game state; no entry ever shows a unit the team cannot know of.
 
-## 4. The team display (PROPOSED)
+## 4. The team display (AGREED, Erik 2026-11-11: "I think we got it now. I have nothing to add.")
 
 ### 4.1 Principles
 
@@ -277,9 +277,10 @@ of fire. This is the bots' lane grid, handed over.
 - **Staggered decisions:** soldiers of a team decide on different ticks, as the bots do, so that each sees what the others have just chosen. It may cure two soldiers picking the same thing in the same instant; it costs more calls to the environment.
 - **Later, a "mark" verb:** a soldier points out a target or a place to its team, a fixed readable signal that a human could give too.
 
-### 4.8 Open with Erik
+### 4.8 Asked of Erik
 
-What a soldier would want to know about its squad that is not in this picture.
+"If you were the soldier, what would you want to know about your squad that
+is not in this picture?" Nothing to add (2026-11-11).
 
 ## 5. The order (OPEN)
 
