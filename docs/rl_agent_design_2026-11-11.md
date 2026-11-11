@@ -19,12 +19,12 @@ The plan around it: `docs/rl_agent_roadmap_2026-11-11.md`. The reasons:
 8. Hit points, armour and every other game value reach the soldier as ratios of table values, never as raw numbers (they will be re-tuned).
 9. C4 on the continuous path is Erik's separate patch; this design assumes its verb exists when needed.
 
-## 1. Frame and rate (PROPOSED)
+## 1. Frame and rate (AGREED with the action space, Erik 2026-11-11; the window's frame is settled with section 3)
 
 - **Frame: north up, centred on the soldier.** Positions in the list are offsets from the soldier along the map's own axes, and the map window does not turn with it. The soldier's facing is one of its own features. Reason: the ships' walls run along the map's axes, so a window that never rotates keeps every wall straight for the network, and a rotated window would have to be resampled and blurred. It is also the frame of the human's north-up camera.
 - **Rate: one decision every 4 ticks** (six a second, 167 ms; OpenAI Five's reaction time was 167 to 267 ms, Honor of Kings acts every 133 ms). Between decisions the choices are held, and the decoder (2.2) keeps issuing verbs on every tick. The rate is one of rung 3's experiments (4, 6, 8 ticks).
 
-## 2. Action spec v1 (PROPOSED)
+## 2. Action spec v1 (AGREED, Erik 2026-11-11: "your action space is blessed")
 
 ### 2.1 The choices
 
@@ -42,6 +42,8 @@ Notes:
 - **Strafing needs no choice of its own.** It is what happens when the feet and the aim point different ways. The game's speed law already makes sideways and backward steps slower, and gives full speed only when running the way the body faces.
 - **A throw goes where the soldier aims.** The game already releases a grenade along the body's facing at the end of the wind-up, so the throw has no separate direction: the soldier aims, chooses the kind and the reach, and the grenade leaves after the wind-up (0.3 s today).
 - **"Where I walk"** is the game's own rule for a unit that holds no aim: its travel direction becomes its facing target.
+- **The three speeds, in Erik's words:** walk is the quiet pace with the steadier aim, as walking in Counter-Strike; half is the normal pace; full is the sprint. In the game today the three differ in speed only: a footstep makes no noise and the weapon's spread does not depend on how fast the soldier moves. Until the game gives the slow pace a benefit, a learning soldier has no reason to choose it. Footsteps heard by speed and spread by speed are a gameplay patch of Erik's to order (section 11).
+- **Why three levels and not a continuous speed.** The game already takes any speed: the throttle is a whole number from 0 to 65 536, which is how the pad's stick feeds it, and no float enters the game. The limit of three is the soldier's, not the game's: networks learn a choice among a few levels far more easily than a continuous number (survey B.7). A finer set of levels is a later spec.
 - **Reach is a fraction of the table's range**, never a number of tiles (skeleton line 8).
 - **Size.** 49 foot choices, about 17 + the list's aimable entries for the aim, 2 for the trigger, about 8 hand verbs, 5 reaches.
 
@@ -90,9 +92,8 @@ verbs, then adds a row to a table and changes no shape.
 
 - **Flashlight.** Nothing in the game reads the bit until light becomes game state (#81), and the observation refuses light. An action with no effect the soldier can sense is noise for learning. Its entry is reserved and masked; it opens at rung 8.
 - **Choosing a fuse.** The table's default fuse per kind. A short / normal / long choice is a later spec.
-- **Aiming at team-mates,** and pointing at doors or corners as entries: the compass directions cover them.
-- **A route autopilot.** The soldier walks itself. What it gets instead is a compass in the observation: the direction and length of the shortest walkable route to the order's place (section 3, when written). The same principle as the trigger: the game shows the soldier what the bots know, and the soldier acts.
-- **Crouch, prone, weapon swap, pick up:** no such verbs exist in the game.
+- **Aiming at team-mates, doors or corners as entries.** No verb acts on them yet, and the compass directions cover looking their way. They become entries when the verbs of 2.8 arrive.
+- **A route autopilot.** The soldier walks itself. What it gets instead is a compass in the observation: the direction and length of the shortest walkable route to the order's place (section 3). The same principle as the trigger: the game shows the soldier what the bots know, and the soldier acts.
 
 ### 2.7 The tests that can fail (rung 1)
 
@@ -105,9 +106,80 @@ unconstrained. Run in these variants, so each number above is a measurement:
 - the trigger decided per decision against per tick (how much the 4-tick trigger costs in hits);
 - throws onto list entries against throws by direction and reach.
 
-## 3. Observation spec v1 (OPEN: next)
+### 2.8 Places reserved for verbs the game will get
 
-## 4. The team display (OPEN)
+Erik, 2026-11-11, wants these in time; none is built: reviving a downed
+team-mate, dragging a downed unit, picking up and placing a bag (a mission
+objective), a general "use" (buttons and the like), crouching, going prone.
+
+- **Stance becomes a fifth choice:** stand, crouch, prone. It is a state that is held, like the feet, not an event. Reserved, and fixed at "stand" until the game has stances.
+- **Revive, drag (take hold / let go), pick up, put down and use are hand verbs.** Each acts on the thing the soldier is aimed at, within reach, the way melee and shove already act on what the body faces. So the aim list gains entry types as these verbs arrive: a downed team-mate, a bag, a button, a door.
+- **Reserving costs nothing:** verbs are pointed at (2.5), and an entry type is a row in a table. **Building each is a gameplay patch** with its own design, play test and unit state: what crouching does to cover, sight, speed and aim; a downed state between alive and dead, and how it meets the zombie conversion; what carrying or dragging does to speed and to the hands.
+
+## 3. Observation spec v1 (PROPOSED)
+
+### 3.1 Rules
+
+- **Honest.** A soldier is shown only what its team may know (3.6). The training-only value network is shown everything (section 7).
+- **No raw numbers.** A quantity is a ratio of a table value (health over full health). An angle is its cosine and sine. A kind (class, weapon, grenade kind, entry type) is a learned vector per kind, never an id number. A yes / no is a flag.
+- **Positions are offsets from the soldier, north up,** as a fraction of a reference length from the tables, with the distance given again on a compressed scale so that near things are resolved finely.
+- **Lists are capped, nearest first,** and an empty slot is masked out, never filled with zeros that could be mistaken for a thing at the soldier's feet.
+
+### 3.2 Itself (one vector)
+
+- **Body:** health; facing; how fast it is turning and how far it still has to turn to its aim; its velocity; whether it is being pushed, is catching itself, or is knocked down; stunned, blinded, burning, poisoned, suffocating, each with the time left.
+- **Weapon and kit:** rounds left in the magazine, magazines left, reloading and the time left; grenades by kind, a throw being wound up and the time left; charges carried (when C4 exists); the melee and shove cool-downs; what it is (class) and what it carries (the kit's table values as ratios: range, rate of fire, spread).
+- **The air where it stands:** pressure, oxygen, temperature, smoke, fire.
+- **What just happened to it:** the direction its last hit came from, how long ago, and by what kind of cause.
+- **Its own previous choices,** and the time left in the match.
+
+### 3.3 The list
+
+| entry type | cap | each entry shows |
+|---|---|---|
+| a team-mate | all | where it is, facing, velocity, health, class, reloading / winding up a throw / stunned / blinded / down. What it intends is section 4. |
+| an enemy the team sees now (marine or zombie) | 16 | where it is, facing, velocity, class, what it is doing (firing, reloading, winding up a throw, stunned, down). **For me:** do I see it myself or does a team-mate; is my line of fire to it clear; is a team-mate in that line; how long until my body could be on it; is it in weapon range, in throw range; is its facing on me. |
+| a last-seen record | 8 | where it was last seen, how long ago, which way it was moving, its class |
+| a grenade in the air or on the floor; a planted charge | 6 | where it is, its velocity, its kind, whose it is, the time left |
+| a door | 4 | where it is, open or closed, within reach or not |
+| reserved | | a downed team-mate, a bag, a button (2.8); a noise heard (rung 8) |
+
+- **"How long until my body could be on it"** is the trigger's aid, given for every candidate target before the choice: the turning law's own time to bring the weapon within its spread of that target. For the current aim target the soldier also sees the bots' exact prediction for the next tick.
+- **The line-of-fire flags** are the bots' two rules handed over as information: a wall in the way, a team-mate in the way.
+- About 40 entries at most. Attention over that many costs almost nothing.
+
+### 3.4 The map window
+
+North up, centred on the soldier, at two scales:
+
+- **near:** 25 x 25 tiles at full resolution (about 8 m across), for walls, doors and cover;
+- **far:** 25 x 25 blocks of 4 x 4 tiles (about 33 m across: the room, its neighbours and the corridors between), for the layout and where the fire is. Units beyond the window are still in the list.
+
+Planes at both scales: wall, door, fire, smoke, hot, low pressure. In the far
+window also: where the team-mates are, where the seen enemies are, and the
+route map of 3.5.
+
+### 3.5 The compass
+
+For the order's place the soldier sees the direction of the first step of the
+shortest walkable route and the route's length, and in the far window the same
+route as a plane (steps to the place from every block). This is the distance
+field the bots' team layer already computes for its objective. The feet stay
+the soldier's own.
+
+### 3.6 Sight: who may know what
+
+- **One sight rule per match, the same for every seat in it** (bots, learned soldiers, a human). It is a setting of the match. Otherwise a win over the bots would be a win by better eyes.
+- **Training matches start with all-round sight, walls block, shared across the team.** The cone the game has today (110 degrees in front, a 4-tile circle all round) stays the rule of every existing match, so no pinned match moves, and it returns as its own experiment at rung 8.
+- **Last-seen records** are kept as the bots keep them: where and when, forgotten after the memory time (6 s today, a setting).
+- **What may be known about a seen enemy** beyond what the screen shows: its health and its focus-fire level. OPEN, Erik's call. The bots read both today.
+
+### 3.7 Cost and tests (rung 1b)
+
+- The observation is built once per decision per soldier. "Do I see it" comes from the per-tick sight cache the game already keeps; the route map from the flood the bots already run. The farm's speed with the new observation is measured against today's.
+- Test: the observation equals an independent reconstruction from the game state; no entry ever shows a unit the team cannot know of.
+
+## 4. The team display (OPEN: next)
 
 ## 5. The order (OPEN)
 
@@ -124,8 +196,18 @@ unconstrained. Run in these variants, so each number above is a measurement:
 | the charges carried and a planting in progress | the C4 patch | Erik's patch |
 | the order: its kind, its argument, the tick it runs to | section 5 | to be designed |
 | (none for the aim) | the decoder is controller-side; "whom a unit is turning toward" is already unit state, the facing target | — |
+| the stance; an object carried; dragging / being dragged; a downed state and its timer | 2.8 | when Erik builds each verb; none is needed at P3a, whose schema extends |
 
 ## 10. Systems
 
 As in the roadmap's section 7; this document adds the detail of each as its
 section is agreed.
+
+## 11. Gameplay the design leans on, Erik's to order
+
+Not part of this design; listed so they are not lost.
+
+- **C4 on the continuous path** (in work, Erik, 2026-11-11).
+- **A reason to walk:** footsteps heard by speed, spread by speed (2.1).
+- **The verbs of 2.8:** stance, revive, drag, pick up / put down, a general use.
+- **Sight per match** as a match setting (3.6) is part of rung 1, not a gameplay patch: it adds a rule no existing match uses.

@@ -145,7 +145,8 @@ are in no fixed order: take them by motivation.
 - **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of the unit state this design adds, not the rungs after it. **Erik, 2026-11-11: P3a restarts when rung 0 is agreed**, and runs beside rungs 1 and 2.
 - **C4.** Erik's separate patch. The agent side needs three things from it: the verb in the verb table (its action column then follows by itself); a planted charge listed where the observation can read it (where, whose, ticks left); the count carried and the planting in progress as unit state.
 - **Light (#81), sight through smoke, noise the soldiers hear:** rung 8 needs them; nothing before does.
-- **GitHub.** When the ladder is agreed, each rung becomes a milestone or an issue and the pinned roadmap issue gets the order. (This session could not write to GitHub.)
+- **GitHub.** The design session is issue #192. When the ladder is agreed in detail, each rung becomes a milestone or an issue and the pinned roadmap issue gets the order.
+- **Gameplay the design leans on,** Erik's to order, listed in the design document's section 11: a reason to walk (footsteps and spread by speed), stances, revive, drag, pick up / put down, a general use.
 
 ## 5. Network sizes, and what a run costs
 
