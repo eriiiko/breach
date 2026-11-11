@@ -143,11 +143,23 @@ def can_see(sim, observer, target) -> bool:
        why a marine is not blind to something standing right behind him.
 
     A dead observer sees nothing; a unit always "sees" itself.
+
+    The rule is the match's (#195 1a, ``sim.sight``): under ``"all_round"``
+    every living non-zombie observer sees every living unit of another team
+    along a clear line (:func:`ray_clear`) -- no cone, no radius -- and a
+    zombie observes nothing (nothing reads what a zombie sees; its waking is
+    ``ai_zombie``'s own law). The cone path below is untouched.
     """
     if observer is target:
         return True
     if not observer.alive or not target.alive:
         return False
+    if getattr(sim, "sight", "cone") == "all_round":
+        if observer.is_zombie or observer.team == target.team:
+            return False
+        return ray_clear(sim, observer.center_tile_y(),
+                         observer.center_tile_x(), target.center_tile_y(),
+                         target.center_tile_x())
 
     ox, oy = observer.center_tile_x(), observer.center_tile_y()
     tx, ty = target.center_tile_x(), target.center_tile_y()

@@ -475,6 +475,11 @@ def format_match_text(spec) -> str:
     zctrl = getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER)
     if zctrl != DEFAULT_ZOMBIE_CONTROLLER:
         lines.append(f"zombie_controller = {_fmt_value(zctrl)}\n")
+    # #195 1a: the same rule for the sight key.
+    from simulation.match import DEFAULT_SIGHT
+    sight = getattr(spec, "sight", DEFAULT_SIGHT)
+    if sight != DEFAULT_SIGHT:
+        lines.append(f"sight = {_fmt_value(sight)}\n")
     for t in spec.teams:
         lines += [
             "\n", "[[team]]\n",

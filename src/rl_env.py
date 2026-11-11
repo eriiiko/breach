@@ -211,6 +211,8 @@ class RunConfig:
     sha256: str = ""
     path: str = ""
     out_dir: str = ""           # [run] out_dir, resolved; "" = none
+    sight: str | None = None    # [run] sight (#195 1a): replaces every level's
+                                # match.toml sight; None = the level's own
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -229,7 +231,7 @@ class RunConfig:
 
 _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
              "levels": True, "policy": True, "levels_dir": False,
-             "out_dir": False}
+             "out_dir": False, "sight": False}
 _OBS_KEYS = {"channels": True, "crop_radius": True, "vector": True}
 
 
@@ -332,6 +334,10 @@ def parse_run(raw: dict, where: str = "run file",
                              f"the checkout {str(ROOT)!r}: run outputs go "
                              f"outside it (a snapshot's tree stays clean)")
         out_dir = str(p)
+    sight = None
+    if "sight" in run:
+        from simulation.match import check_sight
+        sight = check_sight(run["sight"], f"{where}: [run] sight")
     channels = _names_key(obs, "obs", "channels", where)
     try:
         channels = resolve_crop_channels(channels)
@@ -358,7 +364,8 @@ def parse_run(raw: dict, where: str = "run file",
     return RunConfig(seed=seed, n_envs=n_envs, decimation=decimation,
                      levels=levels, policy=pol, levels_dir=levels_dir,
                      channels=channels, crop_radius=crop_radius,
-                     vector=vector, reward=reward, out_dir=out_dir)
+                     vector=vector, reward=reward, out_dir=out_dir,
+                     sight=sight)
 
 
 def load_run(path) -> RunConfig:
@@ -509,6 +516,8 @@ class EnvRunner:
         ctrls = self.run.team_controllers(len(base.teams), level.name)
         spec = replace(base, seed=seed, teams=tuple(
             replace(t, controller=c) for t, c in zip(base.teams, ctrls)))
+        if self.run.sight is not None:      # #195 1a: the run file's rule wins;
+            spec = replace(spec, sight=self.run.sight)   # the recorder keeps it
         self.seed, self.level_index = seed, li
         self.session = MatchSession(level, spec, seed=seed,
                                     breach_physics=self.bp)

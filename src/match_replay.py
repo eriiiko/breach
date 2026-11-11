@@ -70,7 +70,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from control_source import ControlSource
-from simulation.match import MatchSpec, MatchTeam
+from simulation.match import DEFAULT_SIGHT, MatchSpec, MatchTeam
 
 FORMAT_NAME = "breach-match-replay"
 #: v2 (gameplay pack G1p, 2026-11-10): ``set_move_dir``'s fourth argument is
@@ -216,6 +216,11 @@ def build_id() -> str | None:
 def spec_to_dict(spec: MatchSpec) -> dict:
     d = asdict(spec)
     d["teams"] = [dict(t) for t in d["teams"]]
+    # #195 1a: written only when it is not the default, so a cone match's
+    # header is byte for byte the one recorded before the key existed (and
+    # an old recording, which has no field, reads as cone: no format bump).
+    if d.get("sight") == DEFAULT_SIGHT:
+        del d["sight"]
     return d
 
 
