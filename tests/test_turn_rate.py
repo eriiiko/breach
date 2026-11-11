@@ -182,7 +182,7 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
     spread of the aim, and pulls it once inside; every tick it pulls the
     trigger, the facing the tick gives it is within the spread. Breaks if
     the bot fires mid-turn (spraying the arc) or never fires."""
-    from test_bots import BotTeam, _level, _sim
+    from test_bots_v1 import BotTeam, _level, _sim   # the first bots
     lvl = _level(tmp_path, "turnfire")
     sim, (bot, foe) = _sim(lvl, [(0, 10, 25), (1, 16, 10)])
     team = BotTeam(0)
@@ -342,9 +342,12 @@ def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
     monkeypatch.setattr(CFG.marine, "turn_rate_deg_per_s", 180.0 * tps)
     # G5p-a1: an instant turn is also an unlimited acceleration (a >= 2w).
     monkeypatch.setattr(CFG.marine, "turn_accel_rad_per_s2", 1e7)
+    from test_bots_v1 import v1_spec
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
-    o = run_match(level, on_tick=stream)
+    # G8p: the first bots (bots_v1) played this pin; the layered bots
+    # moved the shipped match, so this gate plays it with them.
+    o = run_match(level, v1_spec(level), on_tick=stream)
     got = dict(outcome=o.result.outcome, team=o.result.team,
                ticks=o.result.ticks, field_digest=o.field_digest,
                tick_digest=o.tick_digest, unit_stream=stream.h.hexdigest())

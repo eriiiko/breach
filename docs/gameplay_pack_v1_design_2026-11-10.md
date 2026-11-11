@@ -515,6 +515,20 @@ an opponent and a baseline; nothing specific bothers Erik today.
 Bots stay Python on the host: residency ruling §12.3 leaves how bots run
 beside device envs to G2, so a richer bot adds no port work now.
 
+**As built (2026-11-11).** The layered bots (`control_bots.BotTeam`, now
+`bots`; the first bots kept unchanged as `bots_v1`): team / unit / position
+layers, three plays, nine scored actions, eight position features, doors
+opened with USE, judder and stacking fixed, frags and flashbangs by score;
+measured by `tools/bot_tournament.py` -- on held-out seeds they win every
+decided match against `bots_v1` on ship_demo and the s28 freighter, hit
+each other almost never (0.00-0.20 friendly hits a match against 4.5 /
+19.5) and survive the horde (2.6 / 2.75 marines against 0 / 0.5). Not
+built: smoke to cross a line, the two-door room entry (the fourth play).
+The whole record, every weight and the tables: the as-built of
+`docs/bots_zombies_speeds_design_2026-11-10.md` §2.7. Pins re-baselined
+once (ship_demo: win 1 at 2721, was win 0 at 264). Play test waived by
+Erik's mandate of 2026-11-10.
+
 ## 4. The action row after the pack
 
 Generated from `INTENT_KINDS`, as today (residency design §4.5):
@@ -663,7 +677,7 @@ session run while G1p to G4p are built.
 | G5p | Opus | 1–2 days after its design | yes | re-baseline |
 | G6p | Sonnet | ½ day | yes | unchanged |
 | G7p | Sonnet | 2 h | no | unchanged |
-| G8p | Opus | 1–2 days after its design | yes | re-baseline |
+| G8p | Opus | built 2026-11-11 (play test waived: Erik's mandate of 2026-11-10) | yes | re-baselined (the layered bots) |
 
 One implementation agent at a time, each patch its own commits on this
 branch or its own branch off main, merged `--no-ff` on green after Erik's

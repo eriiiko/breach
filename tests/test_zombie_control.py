@@ -325,7 +325,29 @@ _PRE_122_SHIP_DEMO = dict(
     #  39a8011c230b88cecde; tick f6b702b5550299dcebfe2db8794a1e310b228648319
     #  b7c668b3a4c8ac1920f33; units d83ee4d35c56f376d47daec6179ac3c37dfef360c
     #  d149d7ef6d48c6efa3a9f3f)
-    outcome="win", team=0, ticks=264,
+    # #183 G8p re-pin (2026-11-11, the bot pass: `bots` is the layered bots,
+    # control_bots.BotTeam; the first bots live on unchanged as `bots_v1`).
+    # The WINNER CHANGES: win 1 at 2721 (was win 0 at 264); team 1 ends with
+    # slots [2, 3] alive, team 0 and the horde with none; all three digests
+    # and the unit stream move. A NEW CONTROLLER, so proved by what stays:
+    # with every team on `bots_v1` this match is the pre-G8p pin below bit
+    # for bit -- outcome, ticks, field digest, tick digest and unit stream
+    # (tests/test_bots_v1.py::test_bots_v1_play_the_pre_g8p_pinned_match,
+    # permanent) -- so the controller is the whole move. The new match: the
+    # horde bites units 4 (team 1) and 0 (team 0) on ticks 423 and 454 (both
+    # convert); the bots' frags (12 thrown, a lone zombie too) kill zombies
+    # 10 and 11 (586), the converted 4 (683), zombies 9 and 8 (714) and the
+    # converted 0 (920); then the squads fight it out: unit 1 to a bullet
+    # (1903), unit 5 to a frag's heat (1925), units 3 and 2, team 0's last,
+    # to unit 6's bullets (2638, 2721). 93 rounds, 2 shoves, no flashbang
+    # (no enemy was known out of sight while the team bounded).
+    # Measured on the CPU, CUDA and resident backends alike
+    # (tools/match_pin_check.py).
+    # (was win 0 at 264; field a7f9fd78c8a13c2bf9fc38657b05eae042993affcd85b
+    #  c777493724808fe2b8b; tick 8df76cf7f0a3681c583c99e10f31624d8803f33c4ec
+    #  d3adb3fdd0535e5a4cf46; units 1082d3b490f52183e4f047ed136219ecf2e5367
+    #  0e946b20a63ed989d46065a76)
+    outcome="win", team=1, ticks=2721,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -350,7 +372,7 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="a7f9fd78c8a13c2bf9fc38657b05eae042993affcd85bc777493724808fe2b8b",
+    field_digest="58a67f4473cc3fe4ffb37123259f5fa0a8c0ca820be9179218404499b9749c04",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -462,8 +484,8 @@ _PRE_122_SHIP_DEMO = dict(
     #  791954eb90eb8df573; tick 2620c39692177c6fe900df314650de1bf9b932bd16
     #  67224e5145c9a73068992b; units badb4a7984486a23519cdbbc7b85b72b8b8fb2
     #  953e3a02811ec8b7083fb1c922)
-    tick_digest="8df76cf7f0a3681c583c99e10f31624d8803f33c4ecd3adb3fdd0535e5a4cf46",
-    unit_stream="1082d3b490f52183e4f047ed136219ecf2e53670e946b20a63ed989d46065a76")
+    tick_digest="3344bc96528bb08756456338112f9f25163bdacc56352be453f4debc5a172bf4",
+    unit_stream="bf34f1bbf43f0cb555dd65c57c73d72cd3c56edbacd0a8753e4a6844ee308ab8")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
@@ -486,8 +508,10 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
     G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure, then at
     G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field
-    and its behaviours: win team 0 at tick 264) with the same tick_digest. Breaks like the box
-    test, on the real level."""
+    and its behaviours, then at G8p's layered bots: win team 1 at tick
+    2721) with the same tick_digest. Breaks like the box test, on the real
+    level -- and on any change of the bots (then re-pin, the bots_v1 pin of
+    tests/test_bots_v1.py staying)."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
     o = run_match(level, on_tick=stream)

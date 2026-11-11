@@ -106,8 +106,11 @@ def test_with_every_behaviour_off_the_horde_plays_the_stage_1_law(
     from test_zombie_control import _UnitStream, _box
     _off(monkeypatch)
     stream = _UnitStream()
-    o = run_match(level_loader.load("ship_demo", str(ROOT / "levels")),
-                  on_tick=stream)
+    from test_bots_v1 import v1_spec
+    ship = level_loader.load("ship_demo", str(ROOT / "levels"))
+    # G8p: the first bots (bots_v1) played this pin; the layered bots
+    # moved the shipped match, so this gate plays it with them.
+    o = run_match(ship, v1_spec(ship), on_tick=stream)
     assert dict(outcome=o.result.outcome, team=o.result.team,
                 ticks=o.result.ticks, field_digest=o.field_digest,
                 tick_digest=o.tick_digest,

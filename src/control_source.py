@@ -207,11 +207,20 @@ class IdleControl(ControlSource):
 # --control flag picks between.
 # ---------------------------------------------------------------------------
 def _bots(team: int) -> "ControlSource":
-    """The rule-based bot team (#121, ``control_bots.BotTeam``, settings
-    ``config.toml [bots]``). Deferred import: control_bots pulls in the sim's
-    tables and the pathfinder, which importing this module must not."""
+    """The layered bot team (#183 G8p, ``control_bots.BotTeam``: team / unit
+    / position layers, settings ``config.toml [bots]``). Deferred import:
+    control_bots pulls in the sim's tables and the pathfinder, which
+    importing this module must not."""
     from control_bots import BotTeam
     return BotTeam(team)
+
+
+def _bots_v1(team: int) -> "ControlSource":
+    """The first rule-based bot team (#121, ``control_bots_v1.BotTeamV1``),
+    kept unchanged beside the layered bots as a second opponent (#183 G8p:
+    a ladder of opponents)."""
+    from control_bots_v1 import BotTeamV1
+    return BotTeamV1(team)
 
 
 def _zombies(team: int) -> "ControlSource":
@@ -247,6 +256,7 @@ def _replay(team, recording=None) -> "ControlSource":
 _MATCH_CONTROLLERS: dict = {
     "idle": IdleControl,
     "bots": _bots,
+    "bots_v1": _bots_v1,
     "zombies": _zombies,
     "replay": _replay,
     "policy": _policy,

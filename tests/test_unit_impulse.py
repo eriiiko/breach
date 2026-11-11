@@ -947,8 +947,11 @@ def test_g1_with_every_input_off_nothing_is_pushed_and_the_pins_are_re_pin_1s(
     monkeypatch.setattr(CFG.impulse, "recoil_mult", 0.0)
     monkeypatch.setattr(CFG.impulse, "wind_push_mult", 0.0)
     hook = _AtRest(_UnitStream())
-    o = run_match(level_loader.load("ship_demo", str(ROOT / "levels")),
-                  on_tick=hook)
+    from test_bots_v1 import v1_spec
+    ship = level_loader.load("ship_demo", str(ROOT / "levels"))
+    # G8p: the first bots (bots_v1) played this pin; the layered bots
+    # moved the shipped match, so this gate plays it with them.
+    o = run_match(ship, v1_spec(ship), on_tick=hook)
     assert hook.ticks > 200
     assert dict(outcome=o.result.outcome, team=o.result.team,
                 ticks=o.result.ticks, field_digest=o.field_digest,

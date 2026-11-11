@@ -236,6 +236,15 @@ class EntityFieldAccessor:
         """
         return int(self._channel_array(channel)[int(fy), int(fx)])
 
+    def sample_many(self, channel: Channel, fys, fxs) -> np.ndarray:
+        """:meth:`sample` at many tiles at once (#183 G8p, the bots' position
+        features): an int64 array of the Q16.16 values at ``(fys[i],
+        fxs[i])``, the channel converted once per call. No dequantize."""
+        arr = self._channel_array(channel)
+        return np.asarray(arr[np.asarray(fys, dtype=np.int64),
+                              np.asarray(fxs, dtype=np.int64)],
+                          dtype=np.int64)
+
     def area(self, channel: Channel, disc_tiles) -> tuple:
         """Integer ``(sum, n)`` over a disc, masked to currently NON-SOLID
         tiles (impl doc §4/§6): the area-mean numerator + its live non-solid

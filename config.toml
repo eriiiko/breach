@@ -4751,11 +4751,19 @@ kit_kg = 20.0            # G5p-a2: what the kit weighs; the unit impulse law's m
 melee = "rifle_butt"     # G6p: a [weapons.*] row of the melee archetype, the blow of the melee verb (RMB / pad R3); absent = no melee, the verb does nothing
 
 # ---------------------------------------------------------------------------
-# Bot team (#121) — the rule-based match controller `bots`
-# (src/control_bots.py). Distances are in TILES (squared-integer compares on
-# centre tiles; at the 0.333 m tiles of ship_demo / the playground a marine's
-# footprint is 3 tiles); every key is required (bot_settings refuses a
-# missing or mistyped one). Read once when a BotTeam is built.
+# Bot teams -- the match controllers `bots` (the layered bots, #183 G8p,
+# src/control_bots.py) and `bots_v1` (the first rule-based bots, #121,
+# src/control_bots_v1.py, kept unchanged as a second opponent). Distances are
+# in TILES (squared-integer compares on centre tiles; at the 0.333 m tiles of
+# ship_demo / the playground a marine's footprint is 3 tiles); every key is
+# required (control_bots.bot_settings / control_bots_v1.bot_v1_settings refuse
+# a missing or mistyped one, each its own keys). Read once when a team is
+# built. The first seven keys are bots_v1's; the layered bots share
+# replan_ticks, group_radius, danger_radius and grenade_cooldown_s with the
+# same meaning. Every value of the layered bots
+# is a hand-set PLACEHOLDER, tuned by the bot tournament
+# (tools/bot_tournament.py; the as-built section of
+# docs/bots_zombies_speeds_design_2026-11-10.md).
 # ---------------------------------------------------------------------------
 [bots]
 replan_ticks = 24            # A* replan cadence while advancing (1 s @ 24 tps); also on arrival / a new goal
@@ -4765,6 +4773,60 @@ grenade_cooldown_s = 4.0     # per bot, between two throws
 fallback_hp_frac = 0.5       # below this fraction of vitality ...
 fallback_r = 15              # ... with no living teammate within this many tiles -> fall back home
 friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fire within this many tiles
+# --- the layered bots (#183 G8p) ---
+team_period_ticks = 6        # the team layer (picture -> play, shared target, objective, lanes) every this many ticks
+unit_period_ticks = 8        # each bot scores its actions every this many ticks, staggered by unit id (and at once on a new sighting)
+memory_s = 6.0               # the team forgets an enemy not seen for this long
+flash_memory_s = 4.0         # a flashbang goes only onto an enemy seen within this long
+candidate_radius = 9         # the position layer's candidates: anchors within this many tiles ...
+candidate_stride = 3         # ... on a lattice of this pitch (the bot's own anchor and its committed goal always in)
+reach_steps = 14             # feature `reachable`: within this many 4-connected steps of the bot
+progress_steps = 4           # feature `closer_to_objective`: at least this many steps nearer the play's objective
+advance_steps = 12           # a mover's leap: this many steps down the objective's field is always a candidate
+plan_max_steps = 24          # A* runs only toward a goal at most this many flood steps away (the cost bound; farther = stand and choose again)
+los_budget = 6               # the line-of-sight features are cast for this many best candidates only
+commit_margin = 0.5          # the committed goal keeps its place unless beaten by this many weight units (#138)
+spacing_tiles = 5            # feature `spaced`: centres at least this far from every teammate and its goal (#142)
+lane_cell = 3                # the fire-lane grid's cell, tiles
+lane_halfwidth = 1           # a lane is widened by this many cells each side
+cover_min_tiles = 2          # feature `cover`: this many solid ring tiles on the threat's side of the body
+smoke_dense = 0.5            # feature `safe_ground`: smoke at or above this (real units) is dense
+vacuum_atm = 0.5             # ... pressure below this (atm) is vacuum
+hot_temp = 60.0              # ... a tile this hot (game degrees above ambient) is fire
+line_clear_tiles = 2         # hold fire while a teammate's body is within this many tiles (plus half a body) of the line, anywhere up to the target
+frag_min_group = 1           # a frag goes onto this many enemies (zombies count) within group_radius: 1 = a lone zombie too (its heat is the horde's answer)
+zombie_engage_tiles = 24     # a zombie farther than this is not shot (every shot is heard)
+zombie_near_tiles = 24       # a known zombie this close to a teammate counts as near (the Fall back play)
+outnumber_margin = 1         # Fall back when the known enemy marines outnumber the team by more than this
+bound_max_s = 4.0            # the Bound halves swap when the movers arrive or after this long
+travel_throttle = 0.0        # the throttle out of contact (0 = the walk; contact always walks)
+door_retry_ticks = 24        # a bot asks a closed door open (USE) at most once per this many ticks (#142)
+
+[bots.features]              # the position layer's weight per yes / no feature (design §2.2)
+sees_target = 3.0
+outside_fire_lanes = 2.0
+spaced = 3.5
+cover = 1.0
+hidden_from_others = 1.0
+closer_to_objective = 4.0
+safe_ground = 5.0
+reachable = 4.0
+
+[bots.actions]               # the unit layer's score per action; the best wins its channel (hands / feet)
+shoot = 10.0
+hold_fire = 1.0
+frag = 12.0
+flash = 11.0
+shove = 14.0
+melee = 13.0
+move = 5.0
+retreat = 6.0
+stand = 4.0
+
+[bots.plays]                 # the team layer: among the eligible plays the highest weight wins
+fall_back = 3.0              # eligible: a known zombie near, or outnumbered
+hold = 2.0                   # eligible: an enemy marine in the team's sight now
+bound = 1.0                  # always eligible: close on the last-known enemy, else its spawn room
 
 # ---------------------------------------------------------------------------
 # Match recording (#126) — replay by RE-SIMULATION (src/match_replay.py): a
