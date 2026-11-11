@@ -812,6 +812,23 @@ Recorded as given; the numbering is the question's.
 6. **Class T in the played `--resident` game: no.** Claude's recommendation;
    Erik had no objection. The played game keeps Python gameplay over device
    physics.
+7. **G1 (2026-11-10): the device route continues -- RULED.** The reading is
+   `docs/residency_benchmark_2026-11-07.md`, "G1: the reading": measured on
+   the Home Desktop, the batched path is at 0.34x (small) / 0.78x (medium) of
+   the 16-worker farm today; projected with the host work gone and the
+   allowance charged, 2.2 to 3.0x the full-game farm for the device alone and
+   3.1 to 3.9x with a farm on the slot's spare cores (§3's metric); per A100
+   slot 2.5 to 4.3x and 3.4 to 5.2x at the integer factor. Erik, with those
+   numbers in front of him: yes, continue, and the kernel throughput work
+   (P9 and beyond) is wanted after the flip -- "this is the whole point of
+   the project". So the arc proceeds to P3a once the gameplay pack (#183) has
+   landed. The 3x working factor was not re-ruled: the ruling is on the
+   route, at a projected 2 to 4x per slot before P9. Two consequences for §3:
+   the yardstick on an 8-core / 16-thread box is the 16-worker farm (P1a
+   measured 8), and G2's farm row runs one worker per hardware thread.
+   OPEN, Erik's to rule: whether the PC reading stands as G1 without a node
+   run (the reading's item 5 recommends yes, with a 15-minute calibration on
+   one slot the first time Berzelius is in use).
 
 ## 13. Systems
 
