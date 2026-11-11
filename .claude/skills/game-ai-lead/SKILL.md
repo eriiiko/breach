@@ -114,9 +114,11 @@ from the survey. The ones most often needed:
   patches, 1a to 1j (roadmap). Erik blessed 1d's step (ii) in advance: it
   merges on the tournament's numbers, without his look. The residency patch
   P3a may restart, with the design document's section 9 as its input.
-- Rung 1 is to be run by an orchestrator session. The design document says
-  WHAT; no patch has its implementation note yet (who writes each is in the
-  session's closing message and in memory).
+- **Rung 1 is run by an orchestrator session** (Opus), from the handoff plan
+  `docs/rl_agent_rung1_plan_2026-11-11.md`, tracked on **#195**. See section
+  11 below. The plan holds the full notes for 1a, 1b and 1c; the orchestrator
+  writes the others' notes at each boundary; 1g gets a spec document first
+  and is tiered to Fable in small pieces (Erik, 2026-11-11).
 - Rung 0's lesson document is still owed (how a policy learns from reward,
   in plain words).
 - Game findings from the critique, Erik's to rule on (design document section
@@ -130,7 +132,8 @@ from the survey. The ones most often needed:
 
 ## 7. Where things live
 
-- **Issue:** #192. The pinned roadmap issue #46 carries the order across arcs.
+- **Issues:** #192 (the design, and the ladder's later rungs); **#195 (rung 1,
+  the orchestrator's checkpoints)**. The pinned roadmap issue #46 carries the order across arcs.
   #194 (milestone 12) holds Erik's idea of levels shaped by AI input on what
   makes a strong defensive layout; it needs the room graph saved with the
   level and, in one form, trained agents as the judge.
@@ -138,7 +141,9 @@ from the survey. The ones most often needed:
   today; how six other systems were built; section B.9 says what was checked);
   `docs/research/rl_agent_survey_2026-11-11_raw/` (seven digests with source
   ledgers); `docs/rl_agent_roadmap_2026-11-11.md` (the ladder);
-  `docs/rl_agent_design_2026-11-11.md` (rung 0, section by section). Earlier:
+  `docs/rl_agent_design_2026-11-11.md` (rung 0, section by section; version
+  2, agreed; its critique in `docs/rl_agent_design_2026-11-11_critique/`);
+  `docs/rl_agent_rung1_plan_2026-11-11.md` (rung 1's handoff plan). Earlier:
   `docs/research/rl_litsearch_2026-07-20.md`, `docs/roadmap_2026-07-30_rl_push.md`.
 - **Code seams:** `src/rl_env.py` (`BatchedEnv`), `src/control_policy.py`
   (the `policy` controller, `VERB_RULES`), `src/match_replay.py`
@@ -207,3 +212,22 @@ implementation agents and critics stay one at a time.
   file from its first finding, and was told not to read the others';
   (5) put Erik's summary and question BEFORE the critique, but expect to come
   back with the fixes that touch what he agreed, as one short list.
+
+## 11. Running rung 1 (for the orchestrator session)
+
+Erik handed rung 1's implementation to an orchestrator on 2026-11-11. If you
+are that session:
+
+1. You act inside this role's mandate (section 1), with one limit: you
+   execute the agreed design, you do not change it. A design question that
+   the design document does not answer, and that is more than an encoding
+   detail, stops the patch and goes to Erik or to a design session.
+2. Load `autonomous-patch-workflow` and `git-workflow` as well. Read
+   `docs/rl_agent_rung1_plan_2026-11-11.md` in full: it is your contract
+   (how you work, the ten patches with implementer and gate, the notes for
+   1a to 1c, what each later note must settle, how to live beside the
+   residency arc).
+3. Checkpoints go on #195 after every merge, in plain words for Erik, and
+   into memory (`project_rl_agent_design_session.md`).
+4. Add one dated line to the run log below when a patch teaches something
+   the next one should know.
