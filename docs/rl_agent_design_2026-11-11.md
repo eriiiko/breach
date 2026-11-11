@@ -700,7 +700,7 @@ synthesis after the round, against one version of this document.
 
 | lens | asks | verdict file | blockers | status |
 |---|---|---|---|---|
-| 1. Reward | How will a learner cheat sections 6 and 4a? Do the books close? Three sides. | `lens_1_reward.md` | | pending |
+| 1. Reward | How will a learner cheat sections 6 and 4a? Do the books close? Three sides. | `lens_1_reward.md` | 0 (5 major, 8 minor) | in: survives with fixes |
 | 2. Honesty and information | Does anything in sections 3, 4, 4a, 5 show a soldier what its team may not know, or withhold what the bots have? Does every feature exist in the game's state? | `lens_2_information.md` | | pending |
 | 3. Systems and buildability | Is every verb, gate and field the design names real in the code? Does it build a second copy of an existing system? Is section 9 complete for P3a? Does anything from a network reach the synced game? | `lens_3_systems.md` | | pending |
 | 4. Network and trainer | Do sections 2.3, 7 and 8 fit a PPO trainer: the joint probability of the choices, the masks, the memory, the dead rows, the value outputs? Do the weights add up? | `lens_4_network.md` | | pending |
