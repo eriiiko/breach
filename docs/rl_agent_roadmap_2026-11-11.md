@@ -1,6 +1,7 @@
 # RL agent roadmap: the ladder
 
-2026-11-11. **DRAFT v0, for Erik's edits.** A plan in rungs for Breach's
+2026-11-11. **v0, agreed in outline by Erik the same day** ("everything
+sounds very very good"); open to his edits. A plan in rungs for Breach's
 learned agents. Each rung ends at a gate that can fail, and each is a place to
 stop and still own something that works.
 
@@ -18,7 +19,7 @@ cited below as "survey A.x / B.x".
 - **Built:** the batched environment (about 1 400 match-ticks a second on the small ship), the control verbs through one tap, two scripted bot teams, the horde, generated ships, replay in the game window, credited hit and kill events, the bot tournament.
 - **Placeholder:** the observation and the reward (survey A.2, A.5).
 - **Missing:** the layer from a network's choices to the control verbs, the masks, a trainer, a rating.
-- **Decided by Erik, 2026-11-11:** soldiers first, the commander later. The game is real time. A soldier aims by pointing at enemy k or at a direction, and pulls its own trigger. One action per grenade kind. A team display. C4 comes to the continuous path in a separate patch of Erik's; this plan assumes it is there when needed. Different network designs and action spaces will be tried side by side.
+- **Decided by Erik, 2026-11-11:** soldiers first, the commander later. The game is real time. A soldier aims by pointing at enemy k or at a direction, and pulls its own trigger, shown the bots' prediction of whether the shot will be on target. One action per grenade kind. A team display. C4 comes to the continuous path in a separate patch of Erik's; this plan assumes it is there when needed. Different network designs and action spaces will be tried side by side.
 
 ## 2. What we keep from the survey
 
@@ -141,7 +142,7 @@ are in no fixed order: take them by motivation.
 
 ## 4. Around the ladder
 
-- **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of the unit state this design adds, not the rungs after it. Whether it then runs beside rungs 1 and 2 or after first light is Erik's call (budget and attention).
+- **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of the unit state this design adds, not the rungs after it. **Erik, 2026-11-11: P3a restarts when rung 0 is agreed**, and runs beside rungs 1 and 2.
 - **C4.** Erik's separate patch. The agent side needs three things from it: the verb in the verb table (its action column then follows by itself); a planted charge listed where the observation can read it (where, whose, ticks left); the count carried and the planting in progress as unit state.
 - **Light (#81), sight through smoke, noise the soldiers hear:** rung 8 needs them; nothing before does.
 - **GitHub.** When the ladder is agreed, each rung becomes a milestone or an issue and the pinned roadmap issue gets the order. (This session could not write to GitHub.)
