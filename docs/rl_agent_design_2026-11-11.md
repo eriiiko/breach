@@ -121,6 +121,8 @@ objective), a general "use" (buttons and the like), crouching, going prone.
 ### 3.1 Rules
 
 - **Honest.** A soldier is shown only what its team may know (3.6). The training-only value network is shown everything (section 7).
+- **Everything the bots have** (AGREED, Erik 2026-11-11). Whatever the scripted bots read to decide, a learned soldier may see: an enemy's health and focus-fire level, the team picture, the shared target, the play, the fire lanes, and what the bots know about the tiles around them (3.4).
+- **Every field that acts on a unit, in that unit's own terms** (3.4).
 - **No raw numbers.** A quantity is a ratio of a table value (health over full health). An angle is its cosine and sine. A kind (class, weapon, grenade kind, entry type) is a learned vector per kind, never an id number. A yes / no is a flag.
 - **Positions are offsets from the soldier, north up,** as a fraction of a reference length from the tables, with the distance given again on a compressed scale so that near things are resolved finely.
 - **Lists are capped, nearest first,** and an empty slot is masked out, never filled with zeros that could be mistaken for a thing at the soldier's feet.
@@ -138,7 +140,7 @@ objective), a general "use" (buttons and the like), crouching, going prone.
 | entry type | cap | each entry shows |
 |---|---|---|
 | a team-mate | all | where it is, facing, velocity, health, class, reloading / winding up a throw / stunned / blinded / down. What it intends is section 4. |
-| an enemy the team sees now (marine or zombie) | 16 | where it is, facing, velocity, class, what it is doing (firing, reloading, winding up a throw, stunned, down). **For me:** do I see it myself or does a team-mate; is my line of fire to it clear; is a team-mate in that line; how long until my body could be on it; is it in weapon range, in throw range; is its facing on me. |
+| an enemy the team sees now (marine or zombie) | 16 | where it is, facing, velocity, class, its health and its focus-fire level (as the bots read them), what it is doing (firing, reloading, winding up a throw, stunned, down). **For me:** do I see it myself or does a team-mate; is my line of fire to it clear; is a team-mate in that line; how long until my body could be on it; is it in weapon range, in throw range; is its facing on me. |
 | a last-seen record | 8 | where it was last seen, how long ago, which way it was moving, its class |
 | a grenade in the air or on the floor; a planted charge | 6 | where it is, its velocity, its kind, whose it is, the time left |
 | a door | 4 | where it is, open or closed, within reach or not |
@@ -155,9 +157,49 @@ North up, centred on the soldier, at two scales:
 - **near:** 25 x 25 tiles at full resolution (about 8 m across), for walls, doors and cover;
 - **far:** 25 x 25 blocks of 4 x 4 tiles (about 33 m across: the room, its neighbours and the corridors between), for the layout and where the fire is. Units beyond the window are still in the list.
 
-Planes at both scales: wall, door, fire, smoke, hot, low pressure. In the far
-window also: where the team-mates are, where the seen enemies are, and the
-route map of 3.5.
+**The physics planes: every field that can hurt, blind, push or drown a unit,
+and no other.** Each is given in the unit's own terms, as a ratio of what its
+environment profile tolerates, so that 1.0 means "this starts to hurt me":
+
+| plane | scaled by |
+|---|---|
+| temperature | the profile's highest bearable temperature |
+| pressure | the profile's lowest and highest bearable pressure |
+| oxygen | the profile's lowest breathable level |
+| poison gas | the dose that starts to harm |
+| tear gas | the density that blinds |
+| smoke | the density the bots treat as dense |
+| fire | its intensity |
+| wind, two planes (its push east and south) | the push that knocks this unit down |
+| water depth | whether this unit drowns or swims |
+| fuel vapour | the density that can ignite |
+
+A suited marine then sees a vacuum as harmless, and a later unit class sees
+the same ship in its own terms, with no change to the network's shape. The
+soldier's own tile gets the same ratios in its vector (3.2). Left out is what
+acts on nothing a unit can sense or use: the nitrogen, the energy books, the
+blast source, and light until it is game state (#81). Erik, 2026-11-11:
+temperature, smoke and poison should be seen "if they don't get the whole
+physics tensor"; this rule is the lead's answer to "what do you think".
+
+**The structure planes:** wall, door.
+
+**The sight planes (PROPOSED, near window): what the bots know about the tiles
+around them.** A bot judges a tile by whether it sees the target and whether
+it is hidden from the other known enemies. To give a soldier the same:
+
+- *watched:* the tiles that at least one known enemy has a line of sight to;
+- *sees my target:* the tiles from which the soldier's aim target can be seen.
+
+Both come from one new small routine in the engine: from a point, which tiles
+are in line of sight. It runs once per known enemy per decision and is shared
+by the whole team. It uses only enemies the team knows of, so it stays honest.
+Reason: cover and concealment are most of what a soldier does with its feet,
+and line of sight is the one thing a small network infers badly from a map of
+walls.
+
+**In the far window also:** where the team-mates are, where the seen enemies
+are, and the route map of 3.5.
 
 ### 3.5 The compass
 
@@ -172,7 +214,7 @@ the soldier's own.
 - **One sight rule per match, the same for every seat in it** (bots, learned soldiers, a human). It is a setting of the match. Otherwise a win over the bots would be a win by better eyes.
 - **Training matches start with all-round sight, walls block, shared across the team.** The cone the game has today (110 degrees in front, a 4-tile circle all round) stays the rule of every existing match, so no pinned match moves, and it returns as its own experiment at rung 8.
 - **Last-seen records** are kept as the bots keep them: where and when, forgotten after the memory time (6 s today, a setting).
-- **What may be known about a seen enemy** beyond what the screen shows: its health and its focus-fire level. OPEN, Erik's call. The bots read both today.
+- **What may be known about a seen enemy** beyond what the screen shows: its health and its focus-fire level. AGREED, Erik 2026-11-11: "let's give them everything that the bots have".
 
 ### 3.7 Cost and tests (rung 1b)
 
