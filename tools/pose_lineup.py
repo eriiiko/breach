@@ -22,7 +22,10 @@ Scenes (``--scenes``, comma list; default all):
   loco_back / loco_diag / loco_run / loco_sprint / loco_slow (the locomotion
   at a set travel and drawn speed, on a look whose skeleton has one) and
   hit_front / hit_left / hit_back / hit_right (a directional flinch); --prop
-  carbine draws a held prop on its socket.
+  carbine draws a held prop on its socket. #187: ``clip=NAME@F`` holds clip
+  NAME (a file clip or a ``mirror_of`` row) on every layer at fraction F of
+  its length (``clip=Hit_Left_Mirror@0.4``); ``--left-handed`` draws every
+  scene's unit left-handed (the mirror image, the prop on the partner hand).
 
 The shading is a plain Lambert from one light over the albedo (no light
 field, no gloss): enough to read a silhouette and the limbs, not the game's
@@ -78,37 +81,41 @@ void main() { vec3 n = normalize(nrm); float l = max(dot(n, -lightDir), 0.0);
               finalColor = vec4(c * (0.35 + 0.75 * l), 1.0); }"""
 
 
-def _run(pl: PoseLayer, look: str, scene: str, uid: int = 1):
+def _run(pl: PoseLayer, look: str, scene: str, uid: int = 1, left: bool = False):
     """Drive one unit through ``scene``; returns its PoseState, or None
-    when the look cannot show the scene."""
+    when the look cannot show the scene. ``left``: a left-handed unit (#187)."""
     rig = pl.rig(look)
     bank = rig.bank
+    _new = pl.new_state
+
+    def new_state(look_, state, role=None):
+        return _new(look_, state, role, left)
 
     def steps(ps, state, seconds, role=None):
         for _ in range(int(round(seconds / DT))):
             pl.drive(ps, state, DT, role)
 
     if scene == "idle":
-        ps = pl.new_state(look, "idle")
+        ps = new_state(look, "idle")
         steps(ps, "idle", 0.8)
     elif scene == "walk":
-        ps = pl.new_state(look, "walk")
+        ps = new_state(look, "walk")
         steps(ps, "walk", 1.6)
     elif scene == "aim_walk":
-        ps = pl.new_state(look, "walk")
+        ps = new_state(look, "walk")
         steps(ps, "walk", 1.0)
         for _ in range(int(0.6 / DT)):
             ps.aim_left = 1.0                    # the overlay held, no shot
             pl.drive(ps, "walk", DT)
     elif scene == "shot":
-        ps = pl.new_state(look, "idle")
+        ps = new_state(look, "idle")
         steps(ps, "idle", 0.5)
         pl.fire(ps)
         steps(ps, "idle", 0.2)
     elif scene == "flinch":
         if rig.hit_clip == NO_CLIP:
             return None
-        ps = pl.new_state(look, "idle")
+        ps = new_state(look, "idle")
         steps(ps, "idle", 0.5)
         pl.hit(ps, 60.0, "melee")
         # the frame where the additive moves the bones most
@@ -127,12 +134,12 @@ def _run(pl: PoseLayer, look: str, scene: str, uid: int = 1):
                 best, best_ps = d, copy.deepcopy(ps)
         ps = best_ps
     elif scene == "fall":
-        ps = pl.new_state(look, "dead")
+        ps = new_state(look, "dead")
         steps(ps, "dead", 5.0)
     elif scene in ("get_up_mid", "get_up_end"):
         if not bank.has("Get_Up"):
             return None
-        ps = pl.new_state(look, "idle")
+        ps = new_state(look, "idle")
         c = bank.index("Get_Up")
         ps.clip[:] = c
         ps.time[:] = bank.duration[c] * (0.5 if scene == "get_up_mid" else 1.0)
@@ -140,7 +147,7 @@ def _run(pl: PoseLayer, look: str, scene: str, uid: int = 1):
         if not pl.locomotes(look, "player"):
             return None
         rel, speed = LOCO_SCENES[scene]
-        ps = pl.new_state(look, "idle", "player")
+        ps = new_state(look, "idle", "player")
         for _ in range(int(round(1.5 / DT))):
             state = pl.locomote(ps, "walk", speed * DT, math.radians(rel), True, DT,
                                 "player", DT)
@@ -148,12 +155,20 @@ def _run(pl: PoseLayer, look: str, scene: str, uid: int = 1):
     elif scene in HIT_SCENES:
         if rig.hit_clip == NO_CLIP:
             return None
-        ps = pl.new_state(look, "idle")
+        ps = new_state(look, "idle")
         steps(ps, "idle", 0.5)
         pl.hit(ps, 60.0, "bullet", math.radians(HIT_SCENES[scene]))
         steps(ps, "idle", 0.55)
+    elif scene.startswith("clip="):               # #187: one clip, held
+        name, _, frac = scene[len("clip="):].partition("@")
+        if not bank.has(name):
+            return None
+        ps = new_state(look, "idle")
+        c = bank.index(name)
+        ps.clip[:] = c
+        ps.time[:] = bank.duration[c] * (float(frac) if frac else 0.5)
     elif scene in ("zombie_walk", "zombie_walk_posture"):
-        ps = pl.new_state(look, "walk", "zombie")
+        ps = new_state(look, "walk", "zombie")
         a = 1.0 if scene == "zombie_walk_posture" else pl.role_posture(look, "zombie")
         pl.set_posture(ps, uid, a)
         steps(ps, "walk", 1.6, "zombie")
@@ -176,6 +191,8 @@ def main(argv=None) -> int:
                     help="the side camera's target height, model metres (1.35: the hands)")
     ap.add_argument("--side-from", choices=("left", "right"), default="left",
                     help="the body side the side camera looks from (right: the carbine hand)")
+    ap.add_argument("--left-handed", action="store_true",
+                    help="#187: every scene's unit left-handed (the mirror image)")
     ap.add_argument("--focus-socket", action="store_true",
                     help="centre both cameras on the --prop's socket bone (a close-up of the grip)")
     args = ap.parse_args(argv)
@@ -215,7 +232,7 @@ def main(argv=None) -> int:
                                        rl.Color(40, 40, 46, 255))
             root = int(rig.bank.skeleton.roots[0])
             for col, scene in enumerate(scenes):
-                ps = _run(pl, look, scene)
+                ps = _run(pl, look, scene, left=args.left_handed)
                 for row, view in enumerate(("top", "side")):
                     rl.begin_texture_mode(rt)
                     rl.clear_background(rl.Color(70, 72, 80, 255))
@@ -225,6 +242,7 @@ def main(argv=None) -> int:
                         cx, cz = float(g[root, 0]), float(g[root, 2])
                         side_y = args.side_y
                         fb = rig.sockets.get(prop.socket, -1) if prop is not None else -1
+                        fb = pl.held_bone(ps, fb)
                         if args.focus_socket and fb >= 0:
                             cx, side_y, cz = (float(v) for v in g[fb, 0:3])
                         cam = rl.Camera3D()
@@ -254,8 +272,13 @@ def main(argv=None) -> int:
                                          rl.Vector3(1, 1, 1), rl.WHITE)
                         bone = rig.sockets.get(prop.socket, -1) if prop is not None else -1
                         if bone >= 0:
-                            from renderer.held_props import prop_world
-                            m = prop_world(np.eye(4), g[bone], grip)
+                            from renderer.held_props import mirrored_grip, prop_world
+                            pg = grip
+                            if ps.mirrored:       # #187: the partner hand, the mirror grip
+                                pg = mirrored_grip(pl.mirror_conj(look, bone), grip,
+                                                   prop.mirror_axis)
+                                bone = pl.held_bone(ps, bone)
+                            m = prop_world(np.eye(4), g[bone], pg)
                             t = prop_model.transform
                             for r_ in range(4):
                                 for c_ in range(4):
@@ -273,9 +296,10 @@ def main(argv=None) -> int:
                     rl.unload_image(img)
                     rl.image_draw_text(sheet, f"{scene} {view}" if ps is not None else f"{scene}: n/a",
                                        col * CELL_W + 4, 24 + row * CELL_H + 4, 16, rl.WHITE)
-            rl.image_draw_text(sheet, f"{look}  [render.pose.skeletons.{rig.skeleton_table}]",
+            rl.image_draw_text(sheet, f"{look}  [render.pose.skeletons.{rig.skeleton_table}]"
+                               + ("  LEFT-HANDED" if args.left_handed else ""),
                                4, 4, 16, rl.WHITE)
-            out = args.out / f"lineup_{look}.png"
+            out = args.out / f"lineup_{look}{'_left' if args.left_handed else ''}.png"
             rl.export_image(sheet, str(out))
             rl.unload_image(sheet)
             written.append(out)

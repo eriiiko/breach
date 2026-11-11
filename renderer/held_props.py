@@ -13,7 +13,9 @@ unit holds is data:
   gloss from the albedo's alpha; a prop's albedo has none) and one grip row
   per socket it may be held on (``grips.<socket>``: where that point sits in
   the hand bone's frame, metres, and how the prop is turned there, XYZ Euler
-  degrees);
+  degrees) and its ``mirror_axis`` (#187: the normal of the prop's own
+  symmetry plane, file frame -- a left-handed unit holds the mirror image,
+  :func:`mirrored_grip`, on the partner bone);
 * a skeleton table's ``sockets`` (``[render.pose.skeletons.<s>.sockets]``)
   names the bone of each socket; a look whose skeleton lacks the socket
   draws no prop.
