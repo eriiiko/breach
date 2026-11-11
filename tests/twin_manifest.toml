@@ -108,6 +108,7 @@ build = [
 "src/simulation/philox32.py" = "Class T: the vendored Philox block, used by the horde's wander as a seedless hash of (id, tick) (slot 5, #183 G9p); its device twin is philox32.h, built with the horde at P7d"
 "src/simulation/physics.py" = "Class T: apply_explosion's wall damage (slot 2's detonations, through the payload executor), built at P7c"
 "src/simulation/ruleset.py" = "Class T: MatchRules (the done kernel, P8b)"
+"src/simulation/sensor_accessor.py" = "the bots' controller side (outside step, #183 G8p): the position features read fire / smoke / pressure / temperature through EntityFieldAccessor.sample_many; never a twin (the sensors' resident gather is its own later backing)"
 "src/simulation/signal_bus.py" = "setup only on the corpus; Class T at P6b"
 "src/simulation/simulation.py" = "the conductor: its slots are Class T, built from P6 (the device tick mirrors the slot order)"
 "src/simulation/simultaneous.py" = "Class T: phase A / B, built at P7a"

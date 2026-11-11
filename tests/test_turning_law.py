@@ -617,8 +617,11 @@ def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
     w = turning.turn_rate_q16(CFG)
     assert turn_accel_q16(CFG) >= 2 * w
     stream = _UnitStream()
-    o = run_match(level_loader.load("ship_demo", str(ROOT / "levels")),
-                  on_tick=stream)
+    from test_bots_v1 import v1_spec
+    ship = level_loader.load("ship_demo", str(ROOT / "levels"))
+    # G8p: the first bots (bots_v1) played this pin; the layered bots
+    # moved the shipped match, so this gate plays it with them.
+    o = run_match(ship, v1_spec(ship), on_tick=stream)
     assert dict(outcome=o.result.outcome, team=o.result.team,
                 ticks=o.result.ticks, field_digest=o.field_digest,
                 tick_digest=o.tick_digest,

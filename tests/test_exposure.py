@@ -606,9 +606,12 @@ def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(
     from run_match import run_match
     from test_zombie_control import _UnitStream
     monkeypatch.setattr(CFG.damage.exposure, "k_expose", 0.0)
+    from test_bots_v1 import v1_spec
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
-    o = run_match(level, on_tick=stream)
+    # G8p: the first bots (bots_v1) played this pin; the layered bots
+    # moved the shipped match, so this gate plays it with them.
+    o = run_match(level, v1_spec(level), on_tick=stream)
     got = dict(outcome=o.result.outcome, team=o.result.team,
                ticks=o.result.ticks, field_digest=o.field_digest,
                tick_digest=o.tick_digest, unit_stream=stream.h.hexdigest())
