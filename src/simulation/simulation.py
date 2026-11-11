@@ -472,6 +472,12 @@ class Simulation:
         # every consumer in a tick sees ONE consistent answer.
         self._vision_cache = None
 
+        # The sight rule (#195 1a): "cone" on every path that is not a match;
+        # ``spawn_match`` sets it from the match's spec. Read by
+        # ``vision.can_see`` from here, never from a caller. Constant for a
+        # sim, so the per-tick cache above needs no key for it.
+        self.sight = "cone"
+
         # Ambush barriers (design §10): ``{target_unit_id: release_tick}``.
         # A per-group readiness counter in the sim — NO SignalBus is needed in
         # v1, though the action registry's ``start_condition`` field keeps that
