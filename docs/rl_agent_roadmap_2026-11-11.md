@@ -70,15 +70,23 @@ are in no fixed order: take them by motivation.
 ### Rung 1. The door
 
 - **Goal.** Everything a network needs from the game, proven without a network.
-- **Patches**, each with property tests, one at a time:
-  - **1a. The team picture as a shared system.** What a team knows of the enemy (seen now, last seen where and when) moves out of the bots' brain into one place that the bots, the agents and later the screen all read. Gate: the bots' pinned matches stay bit for bit.
-  - **1b. Observation spec v1** through the sensor accessor: the soldier's own vector, the list, the map window, the order, the masks, and the value network's full view, all in the farm's buffers.
-  - **1c. Action spec v1 and its decoder:** from choices to verbs on every tick, including "keep turning toward entity k".
-  - **1d. The order:** its fields, the verb that sets it, and the bots' team layer writing it for its own team.
-  - **1e. Reward profile v1** as run-file data: win or lose, a blend of own and team reward, friendly-fire terms.
+- **Patches**, each with property tests, one at a time. Re-cut on 2026-11-11 after the design's critique (design document section 12), which found three things the first cut of five patches had no place for (the room graph, the sight setting, the verbs' gates) and one patch in the wrong place (the observation used the order before the order existed):
+
+  | patch | what | gate | changes play? |
+  |---|---|---|---|
+  | **1a** | **Sight as a setting of the match:** a key in the match file, cone or all-round, default the cone. | every pinned match bit for bit | no |
+  | **1b** | **The room graph saved with the level:** rooms, openings and a tile-to-room map, from the generator through the level writer; which openings are passable now is derived. | the saved graph equals the generator's; a level without one is refused for training | no |
+  | **1c** | **Sight for many tiles, in C++,** and the per-tick sight test no longer run for zombies as observers. | equal to the existing sight test tile for tile; the farm's speed measured; touches the engine's build, so it needs the CUDA build green as well | no |
+  | **1d** | **The team picture as a shared system,** in two steps. (i) What a team knows of the enemy moves out of the bots' brain into one place, unchanged. (ii) Records become honest (they outlive an unseen death), the fire lanes are read from state, and the bots are moved onto both. | (i) the layered bots bit for bit against a reference match taken before the patch; (ii) the bot tournament | (i) no; (ii) **yes, the bots: Erik looks** |
+  | **1e** | **The verbs' gates lifted** into read-only functions that the verb and the mask both call. | the game's digests in lockstep before and after | no |
+  | **1f** | **The order:** its four fields as unit state, the commander's verb (recorded; a new recording format version), the bots' team layer writing it for a team driven through the door. | a match of bots alone plays and hashes as before | no |
+  | **1g** | **Observation spec v1 and the value network's full view** through the sensor accessor, with the two row flags, in the farm's buffers. | equals an independent reconstruction; never shows what the team cannot know; the farm's speed measured | no |
+  | **1h** | **Action spec v1, its decoder and the masks,** inside the `policy` controller. | a masked choice issued by force does nothing in the game | no |
+  | **1i** | **Reward profile v1:** the counters, the five numbers, the clock as an ending. | the books close (design 6.8) | no |
+  | **1j** | **The bots through the door,** and their play saved as records for imitation. | see below | no |
+
 - **The gate that matters: the bots through the door.** Drive the layered bots through action spec v1 at the agent's decision rate, each of their decisions translated to the nearest choice, and play them against the unconstrained bots in the tournament. If they lose badly, the action space or the decision rate is too coarse, and we learn it before any training. The same run yields the bots' play as (observation, choice) records, ready for imitation.
-- **Other gates.** A masked choice never does anything in the game. The observation equals an independent reconstruction from the game state. The farm's speed with the new observation is measured against today's.
-- **Erik decides.** Nothing by eye: these patches change no behaviour of the game. 1a touches the bots and is held to bit-identity.
+- **Erik decides.** One thing by eye: step (ii) of 1d changes what the layered bots know (no more word of deaths nobody saw) and where they see fire lanes, so their play may shift; the tournament gives the numbers and Erik looks. Everything else changes no behaviour of the game.
 
 ### Rung 2. First light
 
@@ -143,7 +151,7 @@ are in no fixed order: take them by motivation.
 
 ## 4. Around the ladder
 
-- **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of the unit state this design adds, not the rungs after it. **Erik, 2026-11-11: P3a restarts when rung 0 is agreed**, and runs beside rungs 1 and 2.
+- **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of unit state, not the rungs after it. That list is the design document's section 9, which the critique widened: it now names the unit state the observation *reads* as well as what the design adds, since all of it must be a device column. **Erik, 2026-11-11: P3a restarts when rung 0 is agreed**, and runs beside rungs 1 and 2.
 - **C4.** Erik's separate patch, landed 2026-11-11 as #193 (`plant_charge_intent`; the design document's sections 2, 3, 4 and 9 are written against it). The agent side needed three things from it, all now there: the verb in the verb table (its action column then follows by itself); a planted charge listed where the observation can read it (where, whose, ticks left); the count carried and the planting in progress as unit state.
 - **Light (#81), sight through smoke, noise the soldiers hear:** rung 8 needs them; nothing before does.
 - **GitHub.** The design session is issue #192. When the ladder is agreed in detail, each rung becomes a milestone or an issue and the pinned roadmap issue gets the order.
@@ -205,17 +213,21 @@ controller (`INTENT_KINDS`, `VERB_RULES`); the sensor accessor; the sight model
 (`vision.py`, `GameMap.has_los`); the turning law (`turning.set_target`,
 `facing_after_turn_q16`); Bot layers and Position features; Credited cause;
 Match recording / replay; the Bot tournament; Training snapshot; the level
-bank (LevelSpec); Loadouts, Grenade kinds, Timed charge.
+bank (LevelSpec); Loadouts, Grenade kinds, Planted charge; Match config;
+the Level data layer and the ship generator; the horde's flood; Wind load on
+a body; the Speed table and Throttle. The design document's section 10 adds
+three new systems to the table below: Room graph, Sight for many tiles, Verb
+gates.
 
 **New systems it will create**, each with its draft rule. The rules are
 written into the project instructions only when the code exists.
 
 | system | rung | draft rule |
 |---|---|---|
-| Team picture | 1a | What a team knows of the enemy lives in one place; the bots, the agents and the screen read it; never a second picture. |
-| Observation spec | 1b | An observation layout is a named, versioned spec served by the sensor accessor. A new idea is a new spec, never an edit of one a trained network uses. Every feature is a ratio of a table value. |
-| Action spec and decoder | 1c | The one layer from a network's choices to control verbs. Masks come from the game's own gates, never a copy of them. |
-| Order | 1d | An order is game state set through one verb by any seat (a scripted team layer, a network, a human) and recorded like every verb. |
-| Reward profile | 1e | A reward is a named table of weights over counters, in the run file; a new term is a new counter. |
+| Team picture | 1d | What a team knows of the enemy lives in one place; the bots, the agents and the screen read it; never a second picture. |
+| Observation spec | 1g | An observation layout is a named, versioned spec served by the sensor accessor. A new idea is a new spec, never an edit of one a trained network uses. Every feature is a ratio of a table value. |
+| Action spec and decoder | 1h | The one layer from a network's choices to control verbs. Masks come from the game's own gates, never a copy of them. |
+| Order | 1f | An order is game state set through one verb by any seat (a scripted team layer, a network, a human) and recorded like every verb. |
+| Reward profile | 1i | A reward is a named table of weights over counters, in the run file; a new term is a new counter. |
 | Trainer | 2 | Outside the game's source tree; touches the game only through `BatchedEnv`. |
 | Rating | 2 | Strength is a rating against a fixed reference pool through the bot tournament, on held-out seeds and ships. |
