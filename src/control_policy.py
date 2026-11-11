@@ -4,9 +4,9 @@ design §4.1 / §4.5; the ``AgentPolicy`` slot ``control_source`` reserved).
 A policy drives its team's units through the SAME per-tick intent facade the
 bots and the gamepad use -- ``Simulation.set_move_dir`` / ``clear_move_dir`` /
 ``set_aim`` / ``set_trigger`` / ``throw_grenade_intent`` / ``use_intent`` /
-``reload_intent`` / ``shove_intent`` / ``melee_intent`` / ``set_flashlight`` --
-so the sim's one intent tap (``Simulation.attach_intent_log``) sees every
-call and a recorded episode replays under ``tools/run_match.py --replay``.
+``reload_intent`` / ``shove_intent`` / ``melee_intent`` / ``set_flashlight``
+/ ``plant_charge_intent`` -- so the sim's one intent tap
+(``Simulation.attach_intent_log``) sees every call and a recorded episode replays under ``tools/run_match.py --replay``.
 Nothing else drives a policy's units, and the policy decides nothing: it
 holds ONE ACTION ROW per roster slot of its team, handed to it by a trainer
 (the batched environment's farm worker, ``src/rl_env.py``) through
@@ -32,7 +32,9 @@ vector: a zero vector holds a live, motionless move intent), ``set_aim.dx_q``,
 ``.dy_q`` / ``.fuse_ticks`` (integer ticks) / ``.reach_q`` / ``.kind`` (the
 hand-grenade row index, G3p), ``use_intent``,
 ``reload_intent`` (G2p), ``shove_intent`` (G5p-a2), ``melee_intent`` (G6p),
-``set_flashlight.off`` (G7p: the OFF sense, so a zero row keeps every light on).
+``set_flashlight.off`` (G7p: the OFF sense, so a zero row keeps every light on),
+``plant_charge_intent.fuse_ticks`` (#193: integer ticks, the sim clamps it to
+5 .. 60 s; 0 = no plant, so a zero row plants nothing).
 
 WHEN a kind is issued is its row in :data:`VERB_RULES` -- a new kind in
 ``INTENT_KINDS`` is refused here until it has one (the column follows for
@@ -42,12 +44,13 @@ free; the rule is a decision):
   overwrites the unit's live slot each call): move, aim, the trigger HOLD;
 - ``latch`` kinds only on the FIRST tick after :meth:`AgentPolicy.set_rows`
   (the sim latches them until a tick consumes them): throw, use, reload,
-  shove, melee;
+  shove, melee, plant;
 
 each gated: ``always``; ``flag`` (its own flag column is non-zero);
 ``unless:<kind>`` (not when that kind's flag is set: ``set_move_dir`` yields
 to ``clear_move_dir``, so a row issues exactly one of the two); ``vector``
-(its ``dx_q, dy_q`` pair is not zero: a throw needs a direction).
+(its ``dx_q, dy_q`` pair is not zero: a throw needs a direction);
+``nonzero`` (its ONE argument is not zero: a plant needs a timer).
 
 A ZERO row therefore issues ``set_move_dir(0, 0, 0)``, ``set_aim(0, 0)`` and
 ``set_trigger(False)`` every tick: a held, motionless stance with the facing
@@ -90,6 +93,9 @@ VERB_RULES = {
     # The flashlight bit is held every tick like the trigger; its argument is
     # the OFF sense (Simulation.set_flashlight) so a zero row leaves it on.
     "set_flashlight": ("hold", "always"),
+    # The plant (#193) latches like the throw, gated on its one argument: a
+    # zero fuse column is no plant (the sim would clamp a 0 up to 5 s).
+    "plant_charge_intent": ("latch", "nonzero"),
 }
 VERB_CLASSES = ("hold", "latch")
 
@@ -156,6 +162,11 @@ def _check_rules() -> None:
             if "dx_q" not in _params(kind) or "dy_q" not in _params(kind):
                 raise RuntimeError(f"VERB_RULES[{kind!r}]: a 'vector' gate "
                                    f"needs dx_q / dy_q arguments")
+        elif gate == "nonzero":
+            if len(INTENT_KINDS[kind][1:]) != 1:
+                raise RuntimeError(f"VERB_RULES[{kind!r}]: a 'nonzero' gate "
+                                   f"needs a kind with exactly one argument "
+                                   f"beyond the unit")
         elif gate != "always":
             raise RuntimeError(f"VERB_RULES[{kind!r}]: unknown gate {gate!r}")
 
@@ -225,6 +236,8 @@ class _Plan:
             elif gate == "vector":
                 gate_col = (schema.index(f"{kind}.dx_q"),
                             schema.index(f"{kind}.dy_q"))
+            elif gate == "nonzero":
+                gate_col = args[0][0]
             self.steps.append((kind, cls == "latch", gate.split(":")[0],
                                gate_col, args))
 
@@ -257,6 +270,9 @@ def issue_row(sim, unit_id: int, row, first: bool, plan: _Plan) -> None:
                 continue
         elif gate == "vector":
             if row[gate_col[0]] == 0 and row[gate_col[1]] == 0:
+                continue
+        elif gate == "nonzero":
+            if not row[gate_col]:
                 continue
         getattr(sim, kind)(unit_id, *[_decode(row[i], t) for i, t in args])
 
@@ -318,7 +334,8 @@ class AgentPolicy(ControlSource):
 #: reach uniform in [0, reach_hi_tiles] (the sim clamps it to the hand
 #: grenade's range), the grenade ``kind`` uniform over the hand-grenade rows.
 RANDOM_DOMAIN = dict(p_clear=0.25, p_trigger=0.5, p_latch=0.05,
-                     fuse_lo_ticks=12, fuse_hi_ticks=72, reach_hi_tiles=16)
+                     fuse_lo_ticks=12, fuse_hi_ticks=72, reach_hi_tiles=16,
+                     plant_lo_ticks=120, plant_hi_ticks=1440)
 
 
 def _unit_vectors(rng, n: int) -> np.ndarray:
@@ -354,8 +371,9 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
         v = _unit_vectors(rng, n)
         rows[:, ij["dx"]] = v[:, 0]
         rows[:, ij["dy"]] = v[:, 1]
+    nonzero = {k for k, (_, g) in VERB_RULES.items() if g == "nonzero"}
     for i, c in enumerate(schema.columns):
-        if c.name.endswith((".dx_q", ".dy_q")):
+        if c.name.endswith((".dx_q", ".dy_q")) or c.kind in nonzero:
             continue
         latch = VERB_RULES[c.kind][0] == "latch"
         if c.type == "flag":
@@ -386,6 +404,15 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
             off = rng.random(n) >= d["p_latch"]
             rows[off, schema.index(f"{kind}.dx_q")] = 0
             rows[off, schema.index(f"{kind}.dy_q")] = 0
+    # A latch kind gated on its one argument (the plant, #193) fires with
+    # p_latch, its fuse uniform in [plant_lo_ticks, plant_hi_ticks]: drawn
+    # LAST, so every other column is the draw it was before the kind.
+    for i, c in enumerate(schema.columns):
+        if c.kind in nonzero:
+            v = rng.integers(int(d["plant_lo_ticks"]),
+                             int(d["plant_hi_ticks"]) + 1, size=n)
+            v[rng.random(n) >= d["p_latch"]] = 0
+            rows[:, i] = v
     return rows.astype(np.int32)
 
 

@@ -943,6 +943,9 @@ def main():
                 orders_phase2=None if onephase else sim.orders_for_phase(1),
                 current_phase=control_source.planning_phase,
                 doors=sim._doors,   # A6 dev door draw (render-read only)
+                # #193: planted charges' blinking markers (render-read only).
+                charges=sim.planted_charges,
+                charge_tick=sim.tick,
                 # Props & vegetation arc #60 P3: loaded prop entities flow
                 # loader -> sim -> renderer as placement records; zero cost
                 # when the level has none (design §4.3).
@@ -971,6 +974,8 @@ def main():
                 current_mode=control_source.current_mode,
                 grenade_kind=getattr(control_source,
                                      "selected_grenade_kind", None),
+                charge_timer_s=getattr(control_source,
+                                       "charge_timer_s", None),
             )
             # Screen-space HUD (§16): hotbar, round banner, planning clock,
             # and the DS3 menu when it is open. After the panel so the menu

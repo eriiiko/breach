@@ -271,7 +271,29 @@ def _unit_record(u):
         rec["effort"] = int(u.effort)
     if getattr(u, "react_ticks", 0):
         rec["react"] = int(u.react_ticks)
+    # #193: a plant under way (Simulation._start_plant), absence-transparent:
+    # the tick the charge lies down and its fuse, only while planting -- a
+    # unit that is not planting records exactly as before.
+    if getattr(u, "plant_done_tick", -1) >= 0:
+        rec["plant"] = [int(u.plant_done_tick), int(u.plant_fuse_ticks)]
     return rec
+
+
+def _charge_records(sim):
+    """#193: the live planted charges (``sim.planted_charges``, plant order)
+    as canonical records -- synced state the conductor fires at slot 9e:
+    tile, detonation tick (``None`` = a remote charge), ammo row, owner and
+    approach tile."""
+    out = []
+    for c in getattr(sim, "planted_charges", ()) or ():
+        if not getattr(c, "live", False):
+            continue
+        ap = getattr(c, "approach", None)
+        out.append([int(c.x), int(c.y),
+                    None if c.det_tick is None else int(c.det_tick),
+                    str(c.ammo_name), int(c.owner_id),
+                    None if ap is None else [int(ap[0]), int(ap[1])]])
+    return out
 
 
 def _event_record(ev):
@@ -325,6 +347,12 @@ def _capture_unit_state(sim):
         if type(ev).__name__ in _SYNCED_EVENT_TYPES
     ]
     payload = {"units": unit_records, "events": event_records}
+    # #193: the live planted charges, ABSENCE-TRANSPARENT -- the key exists
+    # only while a charge lies on the floor, so a match without one hashes
+    # exactly the bytes it did before (no golden, no pinned digest moves).
+    charges = _charge_records(sim)
+    if charges:
+        payload["charges"] = charges
     blob = repr(payload).encode("utf-8")   # repr of nested int/str/bool == stable
     digest = hashlib.sha256(blob).hexdigest()
     return {"units": unit_records, "events": event_records, "hash": digest}

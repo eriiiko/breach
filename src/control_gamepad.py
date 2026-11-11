@@ -30,6 +30,8 @@ Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
     R3 (right stick click), held -> MELEE: strike the adjacent enemy nearest
                       the facing at the weapon's cadence (G6p)
     D-pad up       -> toggle the FLASHLIGHT (G7p)
+    D-pad down     -> PLANT the charge at the feet (#193)
+    D-pad left     -> step the plant TIMER (#193)
 
 The actual controller FEEL is Erik's HUMAN-TEST — this module is not driven in
 the headless test suite (it needs a live pad). What the tests pin is the pure
@@ -66,6 +68,8 @@ class GamepadHalf:
         self._prev_cycle = False
         self._prev_shove = False
         self._prev_flashlight = False
+        self._prev_plant = False
+        self._prev_timer = False
 
     @staticmethod
     def available() -> bool:
@@ -176,10 +180,23 @@ class GamepadHalf:
         flashlight = flash_down and not self._prev_flashlight
         self._prev_flashlight = flash_down
 
+        # ---- D-pad down -> PLANT the charge (edge; #193) ----
+        plant_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_LEFT_FACE_DOWN)
+        plant = plant_down and not self._prev_plant
+        self._prev_plant = plant_down
+
+        # ---- D-pad left -> step the plant TIMER (edge; #193) ----
+        timer_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_LEFT_FACE_LEFT)
+        timer = timer_down and not self._prev_timer
+        self._prev_timer = timer_down
+
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
                            use=use, reload=reload, cycle_grenade=cycle,
                            shove=shove, melee=melee,
-                           flashlight_toggle=flashlight)
+                           flashlight_toggle=flashlight,
+                           plant_charge=plant, cycle_charge_timer=timer)
 
 
 __all__ = ["GamepadHalf"]

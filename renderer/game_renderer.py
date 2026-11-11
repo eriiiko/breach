@@ -885,7 +885,9 @@ class GameRenderer:
                       current_phase: int = 0,
                       doors: Sequence = (),
                       props: Sequence = (),
-                      overlay_fn=None) -> None:
+                      overlay_fn=None,
+                      charges: Sequence = (),
+                      charge_tick: int = 0) -> None:
         """Draw every world-space layer into the world render targets.
 
         Two stages (graphics arc G0 P1, renderer/world_composite.py):
@@ -934,6 +936,11 @@ class GameRenderer:
         ``renderer.static_props.placements_from_entities(sim.entities, ...)``.
         Drawn in the SAME shared 3D pass as the units (one batch flush, one
         depth buffer); zero cost when empty.
+
+        ``charges`` (#193) is the sim's ``planted_charges`` (read-only) and
+        ``charge_tick`` the sim tick: each live charge with a timer is drawn
+        as a blinking floor marker with its seconds left (display stage,
+        beside the doors).
 
         ``overlay_fn(world_px_per_tile)`` draws in the DISPLAY stage: it is
         for UI in authored colours. Lit 3D geometry goes in through
@@ -1130,6 +1137,10 @@ class GameRenderer:
         # list (span/state/alive); no overlay system, no field writes.
         if doors:
             self._draw_doors_world(doors)
+        # 7b. Planted charges (#193): a blinking marker + the seconds left on
+        # each live charge's tile. Render-read only.
+        if charges:
+            self._draw_charges_world(charges, charge_tick)
 
         # 8. Waypoints, sprite units (the 2D fallback when the 3D pass did not
         # draw the units), projectiles, effects, grid — world-pixel space.
@@ -1244,6 +1255,40 @@ class GameRenderer:
                     rl.draw_rectangle_lines(
                         x, y, side, side,
                         rl.Color(*self._DOOR_OPEN_OUTLINE))
+
+    def _draw_charges_world(self, charges: Sequence, tick: int) -> None:
+        """A planted charge (#193) as a small red square on its tile that
+        blinks on the SIM clock (twice a second, four times in the last five
+        seconds; a paused game holds it), with the whole seconds left above
+        it. Reads ``x``, ``y``, ``det_tick`` and ``live`` and writes
+        nothing; a remote charge (no timer) shows a steady marker."""
+        from config import CFG
+        tps = int(CFG.clock.ticks_per_second)
+        wpt = self.world.world_px_per_tile
+        side = max(4, int(1.2 * wpt))
+        for c in charges:
+            if not getattr(c, "live", False):
+                continue
+            cx = int((c.x + 0.5) * wpt)
+            cy = int((c.y + 0.5) * wpt)
+            det = getattr(c, "det_tick", None)
+            left = None if det is None else max(0, int(det) - int(tick))
+            on = True
+            if left is not None:
+                half = max(1, tps // (4 if left < 5 * tps else 2))
+                on = (left // half) % 2 == 0
+            col = (rl.Color(255, 40, 30, 255) if on
+                   else rl.Color(90, 20, 15, 255))
+            rl.draw_rectangle(cx - side // 2, cy - side // 2, side, side, col)
+            rl.draw_rectangle_lines(cx - side // 2, cy - side // 2, side,
+                                    side, rl.Color(20, 10, 5, 255))
+            if left is not None:
+                secs = -(-left // tps)
+                size = max(10, int(1.5 * wpt))
+                text = str(secs)
+                w = rl.measure_text(text, size)
+                rl.draw_text(text, cx - w // 2, cy - side // 2 - size - 2,
+                             size, rl.Color(255, 230, 200, 255))
 
     def _draw_overlay_to_world(self, field_tex: rl.Texture) -> None:
         """Stretch a physics-resolution texture across the full world RT."""
@@ -1991,7 +2036,8 @@ class GameRenderer:
     def draw_panel(self, sim=None, selected_unit=None,
                    planning_phase: int = 0,
                    current_mode: Optional[int] = None,
-                   grenade_kind: Optional[int] = None) -> None:
+                   grenade_kind: Optional[int] = None,
+                   charge_timer_s: Optional[int] = None) -> None:
         """Right-side info panel. ``sim`` may be ``None`` for the demo;
         when provided we show turn/phase/tick state and (optionally) the
         selected unit's HP / inventory / orders summary."""
@@ -2013,7 +2059,8 @@ class GameRenderer:
             from ui.model import panel_state_lines
             for line in panel_state_lines(sim, selected_unit,
                                           planning_phase, current_mode,
-                                          grenade_kind=grenade_kind):
+                                          grenade_kind=grenade_kind,
+                                          charge_timer_s=charge_timer_s):
                 if line.text:
                     if line.color is None:
                         draw_text(line.text, x, y, line.size)

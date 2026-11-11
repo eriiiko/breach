@@ -292,6 +292,16 @@ class Unit:
         self.throw_reach_q = THROW_NO_REACH
         self.throw_fuse_ticks = 0
         self.has_explosive = 0 if _kit is None else _kit.explosives
+        # The planted charge (#193, Simulation.plant_charge_intent): WHICH
+        # charge ``has_explosive`` counts (a demo-charge [ammo.*] row, "" =
+        # none: the plant verb does nothing), the latched verb (its fuse in
+        # ticks, None = none), and the plant under way: the tick the charge
+        # lies down (-1 = not planting) and its fuse. The plant is hashed in
+        # the unit digest only while under way (field_ab_harness).
+        self.charge_ammo = "" if _kit is None else _kit.charge
+        self.pending_plant = None
+        self.plant_done_tick = -1
+        self.plant_fuse_ticks = 0
         # Magazines carried, TOTAL including the one loaded (G2p; the loadout
         # row's `magazines`, 0 = spares untracked = infinite auto-reload).
         # Config-static like the two counts above; read only by

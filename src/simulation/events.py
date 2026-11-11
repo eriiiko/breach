@@ -212,6 +212,20 @@ class ThrowEvent:
 
 
 @dataclass
+class PlantEvent:
+    """A unit STARTED planting a charge this tick (#193): emitted by
+    ``Simulation._start_plant`` on the tick the plant verb is consumed and
+    the plant begins (the unit carries a charge, can act and is neither
+    planting nor throwing; a refused verb emits nothing). ``ticks`` is the
+    plant's length -- the charge lies on the floor ``ticks`` ticks later
+    unless the unit dies or is stunned first. Render-only, like
+    :class:`ThrowEvent`: not in the synced event digest, so emitting it
+    moves no digest."""
+    unit_id: int                    # the unit that is planting
+    ticks: int                      # the plant's length, in ticks
+
+
+@dataclass
 class LaserFiredEvent:
     """A hitscan beam was fired (mechanics/03 §5, W2 — the Lance family).
 
@@ -358,6 +372,7 @@ __all__ = [
     "MeleeEvent",
     "StaggerEvent",
     "ThrowEvent",
+    "PlantEvent",
     "LaserFiredEvent",
     "SprayJetEvent",
     "ProjectileGlowEvent",
