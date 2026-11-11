@@ -58,6 +58,10 @@ quickly." Concretely:
 
 ## 4. Deliberately NOT decided here (agent design, after RL ready)
 
+**Since 2026-11-11 these are being decided: load the `game-ai-lead` skill**
+(issue #192, `docs/rl_agent_design_2026-11-11.md`). This skill stays the game
+side: levelgen, the match, the bots, replay, and the residency arc's log.
+
 Observation (full map vs local crop, line of sight), action set, reward,
 episode length, one policy per marine vs one per team, communication between
 marines, trainer library, batching (#77), device unit store (#29 B3). Erik:

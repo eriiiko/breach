@@ -116,7 +116,7 @@ objective), a general "use" (buttons and the like), crouching, going prone.
 - **Revive, drag (take hold / let go), pick up, put down and use are hand verbs.** Each acts on the thing the soldier is aimed at, within reach, the way melee and shove already act on what the body faces. So the aim list gains entry types as these verbs arrive: a downed team-mate, a bag, a button, a door.
 - **Reserving costs nothing:** verbs are pointed at (2.5), and an entry type is a row in a table. **Building each is a gameplay patch** with its own design, play test and unit state: what crouching does to cover, sight, speed and aim; a downed state between alive and dead, and how it meets the zombie conversion; what carrying or dragging does to speed and to the hands.
 
-## 3. Observation spec v1 (PROPOSED)
+## 3. Observation spec v1 (AGREED, Erik 2026-11-11: "I bless all of it")
 
 ### 3.1 Rules
 
@@ -212,7 +212,7 @@ the soldier's own.
 ### 3.6 Sight: who may know what
 
 - **One sight rule per match, the same for every seat in it** (bots, learned soldiers, a human). It is a setting of the match. Otherwise a win over the bots would be a win by better eyes.
-- **Training matches start with all-round sight, walls block, shared across the team.** The cone the game has today (110 degrees in front, a 4-tile circle all round) stays the rule of every existing match, so no pinned match moves, and it returns as its own experiment at rung 8.
+- **Training matches start with all-round sight, walls block, shared across the team.** The cone the game has today (110 degrees in front, a 4-tile circle all round) returns as its own experiment at rung 8. Erik, 2026-11-11: cones are wanted, but "just to have agents playing good is more important"; reducing what they know comes after, and will cost much more computation, since the soldiers must then keep their own memory of the world; "it's fine to cheat like this a little bit now". He does not need any match played before today preserved, so rung 1 is free to change the game's sight setting outright if that is simpler than a setting per match.
 - **Last-seen records** are kept as the bots keep them: where and when, forgotten after the memory time (6 s today, a setting).
 - **What may be known about a seen enemy** beyond what the screen shows: its health and its focus-fire level. AGREED, Erik 2026-11-11: "let's give them everything that the bots have".
 
@@ -221,7 +221,65 @@ the soldier's own.
 - The observation is built once per decision per soldier. "Do I see it" comes from the per-tick sight cache the game already keeps; the route map from the flood the bots already run. The farm's speed with the new observation is measured against today's.
 - Test: the observation equals an independent reconstruction from the game state; no entry ever shows a unit the team cannot know of.
 
-## 4. The team display (OPEN: next)
+## 4. The team display (PROPOSED)
+
+### 4.1 Principles
+
+- **It is read from the game's state, never from a controller's memory.** Where a unit is turning to, whether its trigger is held, where its feet are taking it, a throw being wound up, a reload, its order: all of these are already the unit's state in the game. So a bot, a learned soldier and a human look the same to their squad-mates, and the display needs no new channel.
+- **Fixed and readable.** No learned messages (roadmap rule 4; survey B.8.4).
+- **The radio is perfect, for now.** Every living team-mate is shown, wherever it is on the ship. This goes with all-round sight: cheat a little now, reduce later (rung 8).
+- **"Whom it aims at" is decided by one rule for everyone:** the enemy the team knows of that lies on the unit's aim line within its weapon's spread, with no wall between. Otherwise it aims at a direction.
+
+### 4.2 On each team-mate's entry
+
+Added to its state (3.3):
+
+| shown | meaning |
+|---|---|
+| its aim | the point it is turning to, whether that is a unit, whether it is firing |
+| its feet | the direction and speed it has chosen |
+| a throw being wound up | the kind, where it will land, the time to release |
+| a reload | the time left |
+| its order | what it has been told, and where |
+| the lanes between us | am I in its line of fire; is it in mine |
+
+### 4.3 On each enemy's entry
+
+- how many team-mates aim at it, and how many are firing at it;
+- the damage it took in the last second;
+- whether it is the commander's shared target (section 5);
+- how many team-mates a frag thrown at it would catch.
+
+### 4.4 The team as a whole
+
+The bots' own counts, as one small vector: team-mates alive, the team's
+ammunition, enemies known and seen, zombies near, and the play (section 5).
+
+### 4.5 In the near window
+
+One more plane: **the fire lanes**, the tiles that lie in a team-mate's line
+of fire. This is the bots' lane grid, handed over.
+
+### 4.6 What each part is for
+
+| behaviour wanted | what serves it |
+|---|---|
+| focus fire | the counts on each enemy; its health and focus-fire level (3.3); the shared target |
+| not shooting a team-mate | "is it in my line of fire" on each team-mate and each enemy |
+| not standing in a team-mate's fire | "am I in its line of fire"; the lanes plane |
+| not walking into a team-mate's grenade | the throw being wound up and where it lands; grenades in the list with whose and time left |
+| spacing; covering different directions | each team-mate's position, aim and feet |
+| not all reloading at once | each team-mate's reload and time left |
+
+### 4.7 Experiments (rung 3)
+
+- **The display on and off:** sections 4.2 to 4.5 removed, sight still shared. Does the display earn its place, measured in wins and in friendly-fire hits per match?
+- **Staggered decisions:** soldiers of a team decide on different ticks, as the bots do, so that each sees what the others have just chosen. It may cure two soldiers picking the same thing in the same instant; it costs more calls to the environment.
+- **Later, a "mark" verb:** a soldier points out a target or a place to its team, a fixed readable signal that a human could give too.
+
+### 4.8 Open with Erik
+
+What a soldier would want to know about its squad that is not in this picture.
 
 ## 5. The order (OPEN)
 
