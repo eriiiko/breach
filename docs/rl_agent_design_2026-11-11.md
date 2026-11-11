@@ -1,13 +1,13 @@
 # RL soldier agent: the design (rung 0)
 
-Started 2026-11-11. **DRAFT, every section now written** (sections 6, 7 and 8
+Started 2026-11-11. **AGREED, version 2; rung 0 is closed** (sections 6, 7 and 8
 added on branch `192-rl-agent-design`, delegated by Erik to the lead; the C4
 verb of #193 folded into sections 2, 3, 4 and 9). Erik agreed to all of it
 on 2026-11-11 ("yes i agree with it all"), before the critique. The critique
 (four lenses, section 12) then found no blocker and 23 major points; **this
 is version 2, with every fix made on paper**. Where a fix changes something
-Erik had agreed, the line says "(critique)" and section 12.3 lists it for his
-yes. Nothing is built from a line that still awaits it.
+Erik had agreed, the line says "(critique)" and section 12.3 lists it. He
+agreed to all eight the same evening ("yes i agree"). **Rung 0 is closed.**
 
 The plan around it: `docs/rl_agent_roadmap_2026-11-11.md`. The reasons:
 `docs/rl_agent_survey_2026-11-11.md`, cited as "survey A.x / B.x".
@@ -911,7 +911,7 @@ noise (4a).
 outputs, the batch size and its memory budget, and whether learning keeps
 pace with collecting (rung 2, the trainer's design).
 
-### 12.3 What changed in sections Erik had already agreed, for his yes
+### 12.3 What changed in sections Erik had already agreed (AGREED, Erik 2026-11-11: "yes i agree")
 
 1. **Sight is a setting of the match,** with today's cone as the default, not a change of the game's one rule (3.6).
 2. **A last-seen record no longer vanishes when its unit dies unseen.** The bots lose that small cheat too (3.6).

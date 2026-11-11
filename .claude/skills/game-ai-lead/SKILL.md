@@ -105,14 +105,18 @@ from the survey. The ones most often needed:
 | 2026-11-11 | **C4 on the continuous path** is Erik's own patch; the agent design assumes the verb. It landed as #193 (`plant_charge_intent`); the plant is a hand verb whose one argument is a timer (four choices). |
 | 2026-11-11 | **"yes i agree with it all"** (Erik, to the second session's summary, before the critique): 4a (sides); reward profile v1 (outcome +10 / −10 / clock −3; a "balance" of health in bars read off the state; team share 0.3 to 0.8; friendly fire the shooter's alone; an order term reserved at weight 0); the value network's full view; network v1 (about 1.55 M weights; list attention, two small map readers, a GRU, pointer heads); an enemy charge's timer visible when seen; four plant timers. |
 | 2026-11-11 | **Erik's note for rung 2:** the trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so one run can later be spread over his three PCs on Tailscale; until then the three PCs run three experiments at once and share saved networks as opponents. (Roadmap, rung 2.) |
-| 2026-11-11 | **The critique** (four lenses, one Opus critic at a time; design document section 12): no blocker, 23 major points, all fixed on paper as version 2. Eight of the fixes change sections Erik had agreed (section 12.3) and await his yes. Rung 1 was re-cut into ten patches, 1a to 1j (roadmap). |
+| 2026-11-11 | **The critique** (four lenses, one Opus critic at a time; design document section 12): no blocker, 23 major points, all fixed on paper as version 2. Eight of the fixes changed sections Erik had agreed (section 12.3): sight as a match setting; records that outlive an unseen death; the physics planes' true scales; "whom it aims at" from the facing; a throw's aim held through the wind-up; "the play" dropped; masks from the real gates; the map shown through walls. **Erik: "yes i agree".** Rung 1 was re-cut into ten patches, 1a to 1j (roadmap); **"i dont need to look at 1d, i bless it all ready now"**. |
 
 ## 6. Open
 
-- Rung 0's gate: Erik's yes on the eight changes the critique made to agreed
-  sections (design document 12.3). Then: merge the branch, rung 1 starts at
-  patch 1a, and the residency patch P3a restarts with the design document's
-  section 9 as its input.
+- **Rung 0 is CLOSED** (Erik, 2026-11-11: "yes i agree" to the eight changes of
+  design document 12.3; merged the same evening). **Rung 1 is live:** ten
+  patches, 1a to 1j (roadmap). Erik blessed 1d's step (ii) in advance: it
+  merges on the tournament's numbers, without his look. The residency patch
+  P3a may restart, with the design document's section 9 as its input.
+- Rung 1 is to be run by an orchestrator session. The design document says
+  WHAT; no patch has its implementation note yet (who writes each is in the
+  session's closing message and in memory).
 - Rung 0's lesson document is still owed (how a policy learns from reward,
   in plain words).
 - Game findings from the critique, Erik's to rule on (design document section
