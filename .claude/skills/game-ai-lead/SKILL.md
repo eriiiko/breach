@@ -117,6 +117,9 @@ from the survey. The ones most often needed:
 ## 7. Where things live
 
 - **Issue:** #192. The pinned roadmap issue #46 carries the order across arcs.
+  #194 (milestone 12) holds Erik's idea of levels shaped by AI input on what
+  makes a strong defensive layout; it needs the room graph saved with the
+  level and, in one form, trained agents as the judge.
 - **Documents:** `docs/rl_agent_survey_2026-11-11.md` (what the env gives
   today; how six other systems were built; section B.9 says what was checked);
   `docs/research/rl_agent_survey_2026-11-11_raw/` (seven digests with source
