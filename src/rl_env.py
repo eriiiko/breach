@@ -84,6 +84,14 @@ mask):
   at tick 0 and at an episode's last tick -- the recording's checkpoints, so
   the equality gates can compare them with ``run_match``.
 
+THE OBSERVATION BUFFERS ARE THE ENV'S. ``obs["crop"]``, ``obs["vector"]`` and
+the three ``info["final_obs"]`` arrays are the same arrays on every call,
+overwritten by the next :meth:`BatchedEnv.step` / :meth:`BatchedEnv.reset`: a
+caller that keeps one across a step copies it (a trainer's write into its
+rollout buffer is that copy). A fresh ~10 MB array per step cost the driver
+1.8 to 2.3 ms at 64 envs in page faults, with every worker idle meanwhile
+(#29, 2026-11-11). Every other returned array is a fresh copy.
+
 SNAPSHOTS AND THE RUN MANIFEST (#29 P1b, residency design §6). A training run
 on a snapshot calls :func:`require_snapshot` (``BatchedEnv(...,
 snapshot=tag)`` does): an ANNOTATED tag whose commit is HEAD, a tree clean
@@ -1091,6 +1099,13 @@ class BatchedEnv:
                 self._shm[key] = shm
                 self._a[key] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
                 self._a[key][...] = 0
+            # The env-owned observation buffers (see the module doc).
+            self._buf = {k: np.zeros_like(self._a[k])
+                         for k in ("crop", "vector", "final_crop",
+                                   "final_vector")}
+            self._buf["final_valid"] = np.zeros(
+                self._a["final_valid"].shape, dtype=bool)
+            self._final_rows = np.zeros(n, dtype=bool)
             blocks = np.array_split(np.arange(n), self.n_workers)
             ctx = mp.get_context("spawn")
             weights = self.run.reward_weights()
@@ -1186,11 +1201,30 @@ class BatchedEnv:
         sim, bp_file, bid = seen.pop()
         return {"simulation_file": sim, "bp_file": bp_file, "build_id": bid}
 
-    def _obs(self, prefix="") -> dict:
-        a = self._a
-        return {"crop": a[prefix + "crop"].copy(),
-                "vector": a[prefix + "vector"].copy(),
-                "valid": a[prefix + "valid"].astype(bool)}
+    def _obs(self) -> dict:
+        """The observation, in the env's own buffers (valid until the next
+        step / reset; see the module doc)."""
+        a, b = self._a, self._buf
+        np.copyto(b["crop"], a["crop"])
+        np.copyto(b["vector"], a["vector"])
+        return {"crop": b["crop"], "vector": b["vector"],
+                "valid": a["valid"].astype(bool)}
+
+    def _final_obs(self, ended) -> dict:
+        """The terminal observation of the envs that ended, zeros on every
+        other row, in the env's own buffers: last step's rows are wiped and
+        only this step's are copied."""
+        a, b = self._a, self._buf
+        out = {"crop": b["final_crop"], "vector": b["final_vector"],
+               "valid": b["final_valid"]}
+        if self._final_rows.any():
+            for v in out.values():
+                v[self._final_rows] = 0
+        if ended.any():
+            for key, v in out.items():
+                v[ended] = a["final_" + key][ended]
+        self._final_rows = ended.copy()
+        return out
 
     def _info_arrays(self) -> dict:
         a = self._a
@@ -1248,10 +1282,7 @@ class BatchedEnv:
         info = self._info_arrays()
         info["ticks"] = a["ticks"].copy()
         info["ended"] = ended
-        final = self._obs("final_")
-        for v in final.values():        # only the envs that ended carry one
-            v[~ended] = 0
-        info["final_obs"] = final
+        info["final_obs"] = self._final_obs(ended)
         info["result"] = [got[e]["result"] for e in range(n)]
         info["counters"] = a["counters"].copy()
         info["checkpoints"] = [got[e]["checkpoints"] for e in range(n)]

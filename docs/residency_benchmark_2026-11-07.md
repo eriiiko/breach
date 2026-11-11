@@ -1328,3 +1328,45 @@ Facts from the tables, in the order of what they cost today. None is acted on he
   backend and a farm running together on one machine.
 - The large ship; decimation 4 on the device side (the batch has no decimation yet).
 - More than one repetition of the full-game farm rows (each ran once, 77 000 to 345 000 ticks).
+
+## The farm's lock-step loss, measured and partly recovered (2026-11-11)
+
+The G1 reading left one farm question: how much of the gap between the free-running same-scene
+farm and the lock-step full-game farm is the game, and how much is the farm waiting. Measured on
+the Home Desktop at `8061b204` (the gameplay pack merged, the over-pressure wall failure off), 16
+worker processes, the full game of §9.1 (4 v 4 + 4 zombies, random rows, observation and reward
+rows on), small ship, decimation 1.
+
+**Method.** Both sides run the SAME 3 000 steps per env from fresh episodes (a fixed-seconds
+window compares different stretches of the start-up transient: the first pass here did, and its
+numbers are not used). Free-running = 16 processes each stepping one `EnvRunner` with its
+observation and resets, no driver, no pipes. Lock-step = `BatchedEnv`, with the driver's step
+split timed around its pipe sends and receives and each worker's CPU time read from the OS.
+
+| configuration | env-ticks/s | step ms: wait for the workers / driver copies | workers busy |
+|---|---|---|---|
+| free-running, 16 workers (the ceiling) | 1 637 | | 1.00 |
+| lock-step, 16 envs, before | 1 090 | 12.48 / 1.66 | 0.64 |
+| lock-step, 64 envs (4 per worker), before | 1 266 | 43.94 / 5.88 | 0.77 |
+| lock-step, 16 envs, env-owned buffers | 1 205 | 12.42 / 0.33 | 0.72 |
+| **lock-step, 64 envs, env-owned buffers** | **1 404** | 43.94 / 1.00 | 0.84 |
+
+- **The loss was 33 %** (1 090 of 1 637), and it was the farm's, not the game's: the workers were
+  busy 64 % of the time.
+- **Two causes.** (1) The step waits for the slowest of 16 workers: 12.5 ms of waiting for about
+  9 ms of mean work. (2) The driver's serial part, during which every worker idles: 1.7 ms per
+  step at 16 envs, 5.9 ms at 64.
+- **Four envs per worker: +16 %** (1 090 -> 1 266; medium ship 355 -> 413 in the fixed-seconds
+  pass, where every run stayed inside the start-up phase). A worker's step is then the sum of four
+  matches, so the slowest-to-mean ratio shrinks. No code: `n_envs` in the run file.
+- **Env-owned observation buffers: +11 %** at either env count (`BatchedEnv._obs` /
+  `_final_obs`). The driver's cost was not copying but ALLOCATING: a fresh 9.8 MB crop copy takes
+  1.8 ms, the same copy into an existing array 0.65 ms, a fresh zeroed array 2.3 ms (page faults).
+  The observation and final-observation arrays are now the env's, valid until the next step.
+- **Together: 1 090 -> 1 404, +29 %, 86 % of the free-running ceiling.**
+
+Not done: the remaining 14 % (still the slowest-worker wait; more envs per worker would shrink it
+further and was not measured past 4); the medium ship and decimation 4 with the fix (the mechanism
+is the same; not re-measured); `tools/rl_smoke.py` still reports one env per worker by default.
+The yardstick rows of the G1 reading (one env per worker, before the fix) are NOT re-measured: a
+future device-against-farm reading uses 4 envs per worker.
