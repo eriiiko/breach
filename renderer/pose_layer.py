@@ -12,6 +12,11 @@ Pure numpy, render-only, pyray-free. Sources in, bone matrices out:
       -> FK as 4x4 products, one per depth level (never a per-bone loop)
       -> procedural modifiers, post-FK (#163: the aim-vs-travel twist,
          renderer/pose_modifiers.py)
+      -> the mirror image for a LEFT-HANDED unit (#187: the whole pose
+         reflected across the body's sagittal plane, paired bones swapped,
+         ``pose_clips.mirror_globals``; its direction inputs -- travel, a
+         hit's source -- are reflected on the way in, so the mirrored
+         composition sees a right-hander's world)
       -> global TRS (N, J, 10) and skin matrices (N, J, 4, 4)
 
 A skinner (``renderer/pose_skinner.py``) takes a unit's global-TRS row to the
@@ -40,8 +45,9 @@ from typing import (Any, Deque, Dict, List, Mapping, Optional, Protocol,
 
 import numpy as np
 
-from .pose_clips import (ROOT_MOTION_MODES, ClipBank, ClipRow, Skeleton,
-                         build_clip_bank, mat3_to_quat, quat_conj, quat_mul,
+from .pose_clips import (ROOT_MOTION_MODES, ClipBank, ClipRow, MirrorRig,
+                         PoseDataError, Skeleton, build_clip_bank, mat3_to_quat,
+                         mirror_globals, mirror_rig, quat_conj, quat_mul,
                          quat_nlerp, read_glb, read_skeleton, trs_matrices)
 
 GLOBAL_TRS_WIDTH = 10          # translation 3, rotation 4 (xyzw), scale 3
@@ -199,6 +205,11 @@ class SkeletonPlayback:
       (radians, + = the unit's left); empty = the single ``[render.pose.hit]``
       clip.
     * ``sockets``: socket name -> bone name (a held prop's hand).
+
+    #187 adds ``mirror_pairs``: the name rule pairing a bone with its
+    mirror partner (token pairs swapped in the bone names, e.g.
+    ``("Left", "Right")``); empty = the skeleton is never mirrored (no
+    ``mirror_of`` clip rows, every unit right-handed).
     """
     clip_names: Dict[str, str] = field(default_factory=dict)
     rate: Optional[float] = None
@@ -208,6 +219,7 @@ class SkeletonPlayback:
     locomotion: Optional[Any] = None
     hit_directions: Tuple[Tuple[str, float], ...] = ()
     sockets: Dict[str, str] = field(default_factory=dict)
+    mirror_pairs: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -272,7 +284,7 @@ _RELOAD_KEYS = ("clip", "layers")
 _THROW_KEYS = ("clip", "layers", "release_s")
 _HIT_DIR_KEYS = ("clip", "from_deg")
 _ROLE_KEYS = ("reactions", "posture")
-_CLIP_KEYS = ("loop", "rate", "root_motion", "additive_ref")
+_CLIP_KEYS = ("loop", "rate", "root_motion", "additive_ref", "mirror_of")
 _FIRE_KEYS = ("overlay", "aim_hold_s", "shot_clip", "shot_layer")
 _HIT_KEYS = ("clip", "masks", "causes", "ramp_in_s", "ramp_out_s", "weight_min",
              "weight_max", "damage_full")
@@ -283,7 +295,8 @@ _SKELETON_KEYS = ("masks", "twist", "posture")
 # #179: optional per-skeleton playback keys; absent = the global table
 # (#184: states, locomotion, hit_directions, sockets)
 _SKELETON_PLAYBACK_KEYS = ("clip_names", "rate", "clips", "roles", "states",
-                           "locomotion", "hit_directions", "sockets")
+                           "locomotion", "hit_directions", "sockets",
+                           "mirror_pairs")          # #187
 _SKELETON_ROLE_KEYS = ("posture", "states")
 
 
@@ -314,8 +327,23 @@ def _parse_clip_rows(raw, where: str) -> Dict[str, ClipRow]:
                                   f"{ROOT_MOTION_MODES}, got {rm!r}")
         if not isinstance(ref, int) or isinstance(ref, bool) or ref < 0:
             raise PoseConfigError(f"{w} additive_ref must be an int >= 0, got {ref!r}")
+        mirror_of = row.get("mirror_of", "")
+        if not isinstance(mirror_of, str) or mirror_of == c_name:
+            raise PoseConfigError(f"{w} mirror_of must name another clip, got {mirror_of!r}")
         clips[c_name] = ClipRow(loop=loop, rate=float(rate), root_motion=rm,
-                                additive_ref=ref)
+                                additive_ref=ref, mirror_of=mirror_of)
+    # #187: a mirror row mirrors a clip row of the same table (a typo would
+    # bake nothing) that is no mirror itself
+    for c_name, row in clips.items():
+        if not row.mirror_of:
+            continue
+        src = clips.get(row.mirror_of)
+        if src is None:
+            raise PoseConfigError(f"{where} {c_name} mirror_of {row.mirror_of!r} is no "
+                                  f"clip row of the table")
+        if src.mirror_of:
+            raise PoseConfigError(f"{where} {c_name} mirror_of {row.mirror_of!r}, itself "
+                                  "a mirror (refused: mirror a clip of the file)")
     return clips
 
 
@@ -398,9 +426,22 @@ def _parse_playback(sk_name: str, sk: Dict[str, Any], layers: Sequence[str],
             isinstance(k, str) and k and isinstance(v, str) and v for k, v in sock_raw.items()):
         raise PoseConfigError(f"{where} sockets must be a table of socket = bone name, "
                               f"got {sock_raw!r}")
+    mp_raw = sk.get("mirror_pairs", [])                  # #187
+    if not isinstance(mp_raw, list) or not all(
+            isinstance(p, list) and len(p) == 2 and all(isinstance(x, str) and x for x in p)
+            and p[0] != p[1] for p in mp_raw):
+        raise PoseConfigError(f"{where} mirror_pairs must be a list of [token, token] "
+                              f"pairs of two different names, got {mp_raw!r}")
+    toks = [x for p in mp_raw for x in p]
+    if len(set(toks)) != len(toks):
+        raise PoseConfigError(f"{where} mirror_pairs names a token twice: {mp_raw!r}")
+    if clips is not None and any(r.mirror_of for r in clips.values()) and not mp_raw:
+        raise PoseConfigError(f"{where} clips has mirror_of rows but the table has no "
+                              "mirror_pairs")
     return SkeletonPlayback(clip_names=dict(names_raw), rate=rate, clips=clips,
                             roles=sroles, states=own_states, locomotion=loco,
-                            hit_directions=tuple(hit_dirs), sockets=dict(sock_raw))
+                            hit_directions=tuple(hit_dirs), sockets=dict(sock_raw),
+                            mirror_pairs=tuple(tuple(p) for p in mp_raw))
 
 
 def _exact_table(d, keys: Sequence[str], where: str) -> Dict[str, Any]:
@@ -777,7 +818,9 @@ class PoseState:
                  # the per-hit flinch clip, the timed one-shot (reload /
                  # throw), and per-prop socket overrides (none yet)
                  "speed", "motion_acc", "motion_d", "motion_t", "gait", "sector", "gait_phase",
-                 "loco_state", "flinch_clip", "timed", "prop_sockets")
+                 "loco_state", "flinch_clip", "timed", "prop_sockets",
+                 # #187: a left-handed unit -- its pose is the mirror image
+                 "mirrored")
 
     def __init__(self, look: str, clips: np.ndarray) -> None:
         n = len(clips)
@@ -823,6 +866,7 @@ class PoseState:
         self.flinch_clip = NO_CLIP     # the clip of the current flinch
         self.timed: Optional["TimedShot"] = None
         self.prop_sockets: Dict[str, str] = {}   # prop -> socket (a future reaction's row)
+        self.mirrored = False          # #187: left-handed (PoseLayer.new_state)
 
 
 @dataclass
@@ -850,7 +894,9 @@ class TimedShot:
 
 @dataclass
 class PoseBatch:
-    """The output of one :meth:`PoseLayer.compose` call, rows in input order."""
+    """The output of one :meth:`PoseLayer.compose` call, rows in input order.
+    ``local_t`` / ``local_r`` are the composed locals BEFORE a left-handed
+    unit's mirror (#187); the global rows and the skin are the drawn pose."""
     global_trs: np.ndarray       # (N, J, 10) float32: T xyz, R xyzw, S xyz (model space)
     skin: np.ndarray             # (N, J, 4, 4) float32: global @ inverse bind
     local_t: np.ndarray          # (N, J, 3) the composed local pose (pre-FK)
@@ -905,6 +951,9 @@ class LookRig:
     reload_clip: int = NO_CLIP
     throw_clip: int = NO_CLIP
     sockets: Dict[str, int] = field(default_factory=dict)
+    # #187: the skeleton's mirror (pose_clips.MirrorRig; None = its table
+    # has no mirror_pairs: every unit of the look is drawn right-handed)
+    mirror: Optional[MirrorRig] = None
 
     def clip_name(self, canonical: str) -> str:
         """This look's own name for a clip the tables name (#179); a name
@@ -944,7 +993,12 @@ class PoseLayer:
             # #179: the skeleton table first (its own clip rows shape the bake)
             sk_name, masks = masks_for(_glb_skeleton(glb_path), s)
             pb = s.playback.get(sk_name, SkeletonPlayback())
-            bank = build_clip_bank(glb_path, s.clips if pb.clips is None else pb.clips)
+            try:
+                bank = build_clip_bank(glb_path, s.clips if pb.clips is None else pb.clips,
+                                       pb.mirror_pairs)
+            except PoseDataError as exc:
+                raise PoseConfigError(f"{name}: [render.pose.skeletons.{sk_name}]: {exc}") \
+                    from None
         else:
             sk_name, masks = masks_for(bank.skeleton, s)
             pb = s.playback.get(sk_name, SkeletonPlayback())
@@ -966,10 +1020,17 @@ class PoseLayer:
             orphans = sorted({masks.names[m] for m in masks.owner[owner_layer < 0]})
             raise PoseConfigError(f"{name}: masks {orphans} own bones but are no "
                                   f"layer of [render.pose] layers {list(s.layers)}")
+        mirror = bank.mirror
+        if mirror is None and pb.mirror_pairs:          # #187: a ready bank
+            try:
+                mirror = mirror_rig(bank.skeleton, pb.mirror_pairs,
+                                    f"[render.pose.skeletons.{sk_name}] mirror_pairs")
+            except PoseDataError as exc:
+                raise PoseConfigError(f"{name}: {exc}") from None
         rig = LookRig(name=name, bank=bank, masks=masks, skeleton_table=sk_name,
                       layer_masks=layer_masks, owner_layer=owner_layer,
                       rate=s.rate if pb.rate is None else pb.rate,
-                      clip_names=dict(names))
+                      clip_names=dict(names), mirror=mirror)
         fb = {layer: own(clip) for layer, clip in s.states[s.fallback_state].items()}
         for layer in s.layers:
             if not bank.has(fb[layer]):
@@ -1114,12 +1175,19 @@ class PoseLayer:
             ids = rig.state_clips[self.settings.fallback_state]
         return ids
 
-    def new_state(self, look: str, state: str, role: Optional[str] = None) -> PoseState:
-        """A unit's first state: its clips start at time 0, no crossfade."""
+    def new_state(self, look: str, state: str, role: Optional[str] = None,
+                  left_handed: bool = False) -> PoseState:
+        """A unit's first state: its clips start at time 0, no crossfade.
+
+        #187: ``left_handed`` -- the unit is drawn as the MIRROR IMAGE of
+        what it would be (every clip, reaction, twist and posture mirrored;
+        its direction inputs reflected), for its life; ignored on a look
+        whose skeleton has no ``mirror_pairs``."""
         rig = self._rigs[look]
         ps = PoseState(look, self._state_ids(rig, state, role))
         ps.state = state
         ps.flinch_clip = rig.hit_clip
+        ps.mirrored = bool(left_handed) and rig.mirror is not None
         return ps
 
     def role_posture(self, look: str, role: str) -> float:
@@ -1204,6 +1272,8 @@ class PoseLayer:
         x = min(1.0, max(0.0, float(damage) / h.damage_full))
         ps.flinch_peak = h.weight_min + (h.weight_max - h.weight_min) * x
         ps.flinch_t = 0.0
+        if ps.mirrored and source is not None:      # #187: the mirrored world
+            source = -float(source)
         ps.flinch_clip = self.flinch_clip_for(self._rigs[ps.look], source)
 
     @staticmethod
@@ -1261,9 +1331,28 @@ class PoseLayer:
         socket for ``prop`` (``ps.prop_sockets`` -- where a future reaction
         row moves a prop, e.g. the carbine to the left hand for a throw;
         nothing writes it yet) or ``default_socket``, resolved on the unit's
-        look; -1 when its skeleton has no such socket."""
+        look; -1 when its skeleton has no such socket.
+
+        #187: for a left-handed unit this is the socket bone of the pose
+        BEFORE the mirror; the prop is drawn on its partner
+        (:meth:`held_bone`)."""
         socket = ps.prop_sockets.get(prop, default_socket)
         return self._rigs[ps.look].sockets.get(socket, -1)
+
+    def held_bone(self, ps: PoseState, bone: int) -> int:
+        """#187: the bone of the DRAWN pose a prop on ``bone`` (a
+        :meth:`socket_bone`) hangs on: ``bone`` itself, or for a left-handed
+        unit its mirror partner (the right hand's prop in the left hand)."""
+        if not ps.mirrored or bone < 0:
+            return bone
+        return int(self._rigs[ps.look].mirror.partner[bone])
+
+    def mirror_conj(self, look: str, bone: int) -> np.ndarray:
+        """#187: ``A_bone`` of the look's mirror (``pose_clips.MirrorRig``):
+        a prop gripped by ``grip`` on ``bone`` in the un-mirrored pose sits,
+        mirrored, at ``A_bone @ grip @ (the prop's own reflection)`` on the
+        partner bone (``A_{m(j)} = A_j^-1``)."""
+        return self._rigs[look].mirror.conj[bone]
 
     def locomotes(self, look: str, role: Optional[str]) -> bool:
         """Whether units of ``role`` drawn with ``look`` are driven by the
@@ -1288,6 +1377,8 @@ class PoseLayer:
         if loco is None or role not in loco.roles:
             self.steer(ps, travel, moving, dt)
             return state
+        if ps.mirrored and travel is not None:       # #187: the mirrored world
+            travel = -float(travel)
         if state not in loco.rule.states():
             return state
         from .pose_locomotion import locomote
@@ -1356,6 +1447,8 @@ class PoseLayer:
         :func:`pose_modifiers.steer`."""
         if self.settings.aim_travel is None or not self.modifiers:
             return
+        if ps.mirrored and travel is not None:       # #187: the mirrored world
+            travel = -float(travel)
         from .pose_modifiers import steer
         steer(ps, self.settings.aim_travel, self._rigs[ps.look].twist_layer,
               travel, moving, dt)
@@ -1569,6 +1662,11 @@ class PoseLayer:
         g = forward_kinematics(sk, lt, lr, ls)
         for mod in modifiers:
             mod.apply(rig, states, g)
+        # #187: left-handed units, as the mirror image (one batched product)
+        if rig.mirror is not None:
+            mi = np.flatnonzero(np.array([ps.mirrored for ps in states]))
+            if len(mi):
+                g[mi] = mirror_globals(rig.mirror, g[mi])
         return PoseBatch(global_trs=global_trs(g), skin=_mat4_mul(g, sk.bind_inverse.astype(np.float32)),
                          local_t=lt, local_r=lr)
 

@@ -219,7 +219,8 @@ class _HeldModel:
 @dataclass
 class _HeldProps:
     """#184: the ``[render.held_props]`` settings, the loaded models (by
-    model name) and the grip matrices built so far (by (prop, socket))."""
+    model name) and the grip matrices built so far (by (prop, socket); #187:
+    a left-hander's mirrored grip by (prop, socket, look))."""
     settings: object
     models: Dict[str, _HeldModel]
     grips: Dict[tuple, object] = None
@@ -270,6 +271,7 @@ class UnitModelRenderer:
         # #162 pose layer + its skinner: built in load() only when
         # [render.pose] enabled; None = the clip player as before.
         self._pose = None
+        self._hands = None               # #187: unit_looks.HandAssigner (pose layer on)
         self._skinner = None
         self._delivered: Dict[int, object] = {}   # the last event batch (#163)
         self._shot_event = self._hit_event = None
@@ -398,6 +400,9 @@ class UnitModelRenderer:
         for warning in pose.warnings:
             print(f"[unit_model] WARN: pose layer: {warning}")
         self._pose = pose
+        # #187: who is drawn left-handed (render-only, dealt by unit id)
+        from .unit_looks import HandAssigner, handedness_table
+        self._hands = HandAssigner(handedness_table(CFG))
         self._skinner = skinner
         self._setup_held_props(settings)
 
@@ -498,6 +503,16 @@ class UnitModelRenderer:
         if grip is None:
             from .held_props import grip_matrix
             grip = self._held.grips[key] = grip_matrix(prop, socket, hm.extent)
+        if st.pose.mirrored:
+            # #187: a left-hander holds the mirror image on the partner bone
+            # (the grip a constant per look and socket)
+            mkey = (prop.name, socket, look.name)
+            mgrip = self._held.grips.get(mkey)
+            if mgrip is None:
+                from .held_props import mirrored_grip
+                mgrip = self._held.grips[mkey] = mirrored_grip(
+                    self._pose.mirror_conj(look.name, bone), grip, prop.mirror_axis)
+            return hm, mgrip, self._pose.held_bone(st.pose, bone)
         return hm, grip, bone
 
     def queue_events(self, events: Sequence) -> None:
@@ -803,6 +818,7 @@ class UnitModelRenderer:
                 rl.unload_model(hm.model)
             self._held = None
         self._pose = None
+        self._hands = None
         self._skinner = None
         self._looks.clear()
         self._resolve.clear()
@@ -999,6 +1015,7 @@ class UnitModelRenderer:
         frame, relative to its facing, steers the aim-vs-travel twist."""
         groups: Dict[str, list] = {}
         m_per_tile = self._scale_height / _SCALE_TILES_TALL    # #184: drawn tile, model m
+        left = self._hands.left_handed(alive)                  # #187
         for i, (u, name) in enumerate(zip(alive, names)):
             look = self._resolve[name]
             st = self._state_for(u)
@@ -1011,7 +1028,7 @@ class UnitModelRenderer:
             state = self.select_clip(u, moving)
             role = role_of(u)
             if st.pose is None or st.pose.look != look.name:
-                st.pose = self._pose.new_state(look.name, state, role)
+                st.pose = self._pose.new_state(look.name, state, role, left[i])
             # #164 posture; #179: the look's skeleton may carry its own amount
             self._pose.set_posture(st.pose, unit_key(u),
                                    self._pose.role_posture(look.name, role))

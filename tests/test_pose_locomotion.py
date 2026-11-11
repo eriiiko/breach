@@ -464,7 +464,15 @@ def _draw(r, units, k):
 # attackers 2 (east of it: its right), 3 (west: its left), 4 (south: behind),
 # 5 (north: in front)
 _ATTACKERS = {2: (30.0, 20.0), 3: (10.0, 20.0), 4: (20.0, 30.0), 5: (20.0, 10.0)}
-_FROM = {2: "Hit_Right", 3: "Hit_Left", 4: "Hit_Back", 5: "Hit_Chest"}
+# the side each attacker hits from, as the hit_directions row's from_deg
+# (#187: which clip a row plays is data -- the right one is a mirror clip)
+_FROM = {2: -90.0, 3: 90.0, 4: 180.0, 5: 0.0}
+
+
+def _row_clip(from_deg):
+    """The SOMA hit_directions row's clip for a side."""
+    rows = pose_settings(CFG).playback["soma"].hit_directions
+    return next(clip for clip, frm in rows if abs(np.degrees(frm) - from_deg) < 1e-6)
 
 
 def _hit_clip(monkeypatch, attacker, blast=None, source="bullet"):
@@ -493,14 +501,14 @@ def test_a_hit_flinches_away_from_where_its_attacker_stands(monkeypatch, attacke
     renderer's two draw calls, or the direction is dropped on the way to
     the pose layer.
     """
-    assert _hit_clip(monkeypatch, attacker) == _FROM[attacker]
+    assert _hit_clip(monkeypatch, attacker) == _row_clip(_FROM[attacker])
 
 
 def test_an_unknown_attacker_flinches_from_the_front(monkeypatch):
     """PROPERTY: a hit with no attacker (-1) plays the front flinch.
 
     BREAKS IF: an unknown direction picks an arbitrary row."""
-    assert _hit_clip(monkeypatch, -1) == "Hit_Chest"
+    assert _hit_clip(monkeypatch, -1) == _row_clip(0.0)
 
 
 def test_an_explosion_flinches_away_from_the_blast_not_the_thrower(monkeypatch):
@@ -512,8 +520,8 @@ def test_an_explosion_flinches_away_from_the_blast_not_the_thrower(monkeypatch):
     BREAKS IF: explosions read the attacker (the thrower) when a blast is
     there, or a frame without one loses the direction.
     """
-    assert _hit_clip(monkeypatch, 2, blast=(15, 21), source="explosion") == "Hit_Left"
-    assert _hit_clip(monkeypatch, 2, source="explosion") == "Hit_Right"
+    assert _hit_clip(monkeypatch, 2, blast=(15, 21), source="explosion") == _row_clip(90.0)
+    assert _hit_clip(monkeypatch, 2, source="explosion") == _row_clip(-90.0)
 
 
 def test_a_skeleton_without_hit_directions_keeps_its_single_flinch(layer):

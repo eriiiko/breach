@@ -39,7 +39,8 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 _TOP_KEYS = ("weapons", "props")
-_PROP_KEYS = ("model", "length_m", "socket", "grip", "gloss", "grips")
+_PROP_KEYS = ("model", "length_m", "socket", "grip", "gloss", "grips", "mirror_axis")
+MIRROR_AXES = ("x", "y", "z")
 _GRIP_KEYS = ("offset_m", "rotation_deg")
 
 
@@ -64,6 +65,7 @@ class HeldProp:
     grip: Tuple[float, float, float]      # the point the hand closes on, file units
     gloss: float
     grips: Dict[str, Grip]
+    mirror_axis: str = "z"                # #187: normal of the prop's own symmetry plane (file frame)
 
 
 @dataclass(frozen=True)
@@ -157,10 +159,14 @@ def held_prop_settings(cfg, weapon_ids: Optional[Sequence[str]] = None) -> HeldP
         if socket not in grips:
             raise HeldPropConfigError(f"{w} socket {socket!r} has no grips row "
                                       f"(rows: {sorted(grips)})")
+        axis = r["mirror_axis"]
+        if axis not in MIRROR_AXES:
+            raise HeldPropConfigError(f"{w} mirror_axis must be one of {MIRROR_AXES}, "
+                                      f"got {axis!r}")
         props[name] = HeldProp(name=name, model=_text(r["model"], f"{w} model"),
                                length_m=float(length), socket=socket,
                                grip=_vec3(r["grip"], f"{w} grip"), gloss=float(gloss),
-                               grips=grips)
+                               grips=grips, mirror_axis=axis)
     wraw = d["weapons"]
     if not isinstance(wraw, dict):
         raise HeldPropConfigError("[render.held_props] weapons must be a table of "
@@ -221,6 +227,20 @@ def grip_matrix(prop: HeldProp, socket: str, file_extent: float) -> np.ndarray:
     return m
 
 
+def mirrored_grip(conj: np.ndarray, grip: np.ndarray, mirror_axis: str) -> np.ndarray:
+    """#187: a LEFT-HANDED unit's grip. The unit's drawn pose is the mirror
+    image ``G'_j = M @ G_{m(j)} @ A_j`` of a right-hander's
+    (``pose_clips.MirrorRig``), so the right-hander's prop ``G_R @ grip``
+    mirrored and made proper (reflected in its own ``mirror_axis`` too),
+    ``M @ G_R @ grip @ Z``, sits on the partner bone at
+    ``G'_L @ (A_R @ grip @ Z)`` (``A_L^-1 = A_R``): a constant per
+    (look, socket), never per frame. ``conj`` = ``A_R`` of the socket's
+    bone (``PoseLayer.mirror_conj``)."""
+    z = np.eye(4)
+    z[MIRROR_AXES.index(mirror_axis), MIRROR_AXES.index(mirror_axis)] = -1.0
+    return _mm(_mm(np.asarray(conj, dtype=np.float64), grip), z)
+
+
 def body_matrix(x: float, z: float, yaw_deg: float, scale: float,
                 model_transform: Optional[np.ndarray] = None) -> np.ndarray:
     """The transform ``draw_model_ex(model, (x, 0, z), (0, 1, 0), yaw_deg,
@@ -258,4 +278,5 @@ def model_extent(path) -> float:
 
 __all__ = ["HeldPropConfigError", "Grip", "HeldProp", "HeldPropSettings",
            "held_prop_settings", "euler_xyz", "trs_matrix", "grip_matrix",
+           "mirrored_grip", "MIRROR_AXES",
            "body_matrix", "prop_world", "model_extent"]
