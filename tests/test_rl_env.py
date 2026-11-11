@@ -227,6 +227,38 @@ def test_truncation_is_the_time_limit_and_not_a_termination(tmp_path):
     assert info["final_obs"]["valid"][0].any() and obs["valid"][0].any()
 
 
+def test_a_final_observation_lasts_one_step(tmp_path):
+    """Property: ``final_obs`` carries a terminal observation only on the
+    step an env ended, and zeros on every other step -- the step after
+    included, although the env reuses its buffers. Breaks if the reused
+    buffers keep last step's rows (the wipe is dropped) or an ended row is
+    not copied in."""
+    spec = MatchSpec(teams=(IDLE, IDLE), seed=1, zombies=0,
+                     time_limit_s=2.0)
+    _box(tmp_path, "tbox", spec)
+    run = rl_env.load_run(_run_toml(tmp_path / "run.toml", levels=["tbox"],
+                                    levels_dir=tmp_path, n_envs=1,
+                                    decimation=5))
+    seen_end = False
+    with rl_env.BatchedEnv(run, n_workers=1) as env:
+        env.reset()
+        for _ in range(100):
+            _, _, _, _, info = env.step(_zero_actions(env))
+            final = info["final_obs"]
+            if info["ended"][0]:
+                seen_end = True
+                assert final["valid"][0].any() and final["crop"][0].any()
+                _, _, _, _, info = env.step(_zero_actions(env))
+                assert not info["ended"][0]
+                final = info["final_obs"]
+            if not info["ended"][0]:
+                assert not final["valid"].any()
+                assert not final["crop"].any() and not final["vector"].any()
+            if seen_end:
+                break
+    assert seen_end
+
+
 # ---------------------------------------------------------------------------
 # G-b: a random episode records and replays
 # ---------------------------------------------------------------------------
