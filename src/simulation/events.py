@@ -189,9 +189,16 @@ class StaggerEvent:
     without a step, so it is now pushed (``pv``) and catching itself for
     ``ticks`` ticks (the reaction delay; it cannot walk meanwhile, it can
     shoot). Emitted on every overflow, a renewed one included. Render-only,
-    like :class:`ReloadEvent`: outside the synced event digest."""
+    like :class:`ReloadEvent`: outside the synced event digest.
+
+    ``dir_x_q`` / ``dir_y_q`` (#185): the direction of the push that
+    overflowed -- the overflow itself, the part of the sway this tick moved
+    into ``pv`` (Q16 tiles per tick, x right, y down). The renderer's
+    stagger reaction plays along it."""
     unit_id: int                    # the staggered unit
     ticks: int                      # the reaction delay's length, in ticks
+    dir_x_q: int = 0                # the overflow, Q16 tiles / tick
+    dir_y_q: int = 0
 
 
 @dataclass
@@ -278,13 +285,24 @@ class UnitHitEvent:
     hit, :data:`NO_ATTACKER` (-1) for the environment — see
     ``damage.apply_packet`` for who is credited with what.
 
-    SYNCED: hashed into the per-tick unit digest with all four fields
-    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``).
+    ``dir_x_q`` / ``dir_y_q`` (#185) is the direction the hit TRAVELLED, a
+    Q16 tile vector (x right, y down, not normalised), from the packet
+    (``damage.DamagePacket``): a round's flight, striker -> victim for a
+    blow or a bite, detonation -> victim for a blast; ``(0, 0)`` = none
+    (heat, gas, status, the environment). The renderer's directional flinch
+    reads it (the side the hit came from is minus this vector).
+
+    SYNCED: hashed into the per-tick unit digest with its first four fields
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``; ``_event_record`` reads
+    NAMED fields, so the direction is NOT hashed: render-only, it moves no
+    digest).
     """
     unit_id: int
     damage: int
     source: str
     attacker_id: int = NO_ATTACKER
+    dir_x_q: int = 0
+    dir_y_q: int = 0
 
     def __post_init__(self):
         self.source = cause_value(self.source)

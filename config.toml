@@ -2469,10 +2469,12 @@ legs = [["LeftLeg", "LeftShin", "LeftFoot"],
 rate = 1.0              # the Kimodo clips are authored at true speed
 # Directional hits (#184): the flinch clip of the row whose from_deg is nearest
 # the direction the hit came from, relative to the facing (0 = in front, +90 =
-# from the unit's left, 180 = from behind). The direction is the attacker's
-# last drawn position; for an explosion the blast's centre (Erik's ruling);
-# unknown (no attacker) = the front. A skeleton without this list plays
-# [render.pose.hit] clip for every hit.
+# from the unit's left, 180 = from behind). The direction is the SIM's own
+# (#185): the hit event's travel vector (a round's flight, striker -> victim,
+# detonation -> victim), the side it came from being minus that; a hit
+# without one (0, 0) = the front. [render.pose.stagger] picks from the same
+# rows along its push. A skeleton without this list plays [render.pose.hit]
+# clip for every hit.
 # MEASURED (#184): Hit_Right lurches the head 0.55 m to the body's RIGHT, as
 # Hit_Left does (0.53 m) -- so a hit from the right leans the marine toward the
 # shooter; the clip wants regenerating (or a mirror of Hit_Left).
@@ -2625,7 +2627,8 @@ shot_layer = "upper"
 # ADDITIVE over `masks` (its delta against its own first key, never the bind
 # pose), ramped in and out, restarted by every hit. Weight =
 # weight_min + (weight_max - weight_min) * clamp(damage / damage_full, 0, 1);
-# both weights in [0, 1]. The event has no direction: chest only for now.
+# both weights in [0, 1]. The clip is the skeleton's hit_directions row for
+# the side the hit came from (#185: the event's own direction), else `clip`.
 [render.pose.hit]
 clip = "Hit_Chest"
 masks = ["upper", "head"]
@@ -2635,6 +2638,20 @@ ramp_out_s = 0.12       # PLACEHOLDER (HUMAN-TEST)
 weight_min = 0.5        # PLACEHOLDER (HUMAN-TEST): a graze (a zombie takes 2.5 per round)
 weight_max = 1.0
 damage_full = 60        # PLACEHOLDER: a zombie's bite (60) flinches at weight_max
+
+# Stagger (#185): a StaggerEvent (the unit impulse law's sway overflowed: the
+# unit is pushed and catching itself -- a blast's wind a few ticks after its
+# flinch, a shove, a heavy round) plays a reaction ALONG ITS PUSH: the
+# skeleton's hit_directions row for the side the push came from (minus the
+# event's push vector, relative to the facing), else `clip`, as an ADDITIVE
+# over `masks` (it takes the flinch's additive slot: the latest of a hit and
+# a stagger plays), ramped in and out, at `weight` in [0, 1].
+[render.pose.stagger]
+clip = "Hit_Chest"
+masks = ["legs", "upper", "head"]   # PLACEHOLDER (HUMAN-TEST): the whole body lurches
+ramp_in_s = 0.05        # PLACEHOLDER (HUMAN-TEST)
+ramp_out_s = 0.2        # PLACEHOLDER (HUMAN-TEST)
+weight = 1.0            # PLACEHOLDER (HUMAN-TEST)
 
 # Aim vs travel (#163, design §4.5 correction 7): with the body facing its
 # aim, the legs yaw toward the travel direction up to theta_deg either side;
@@ -2714,10 +2731,10 @@ release_s = 0.0         # PLACEHOLDER: the throw clip's release frame, clip seco
 # Roles (#164; renderer/unit_looks.py ROLES, the role from is_zombie): the
 # reactions a unit of the role plays (fire = the aim hold + recoil on its own
 # shots, hit = the flinch, melee = the strike above, reload / throw the
-# one-shots above) and its posture amount.
+# one-shots above, stagger = the push reaction above) and its posture amount.
 [render.pose.roles]
-player = { reactions = ["fire", "hit", "reload", "throw"], posture = 0.0 }
-zombie = { reactions = ["melee", "hit"], posture = 1.0 }
+player = { reactions = ["fire", "hit", "reload", "throw", "stagger"], posture = 0.0 }
+zombie = { reactions = ["melee", "hit", "stagger"], posture = 1.0 }
 
 # Per-clip playback rows; a clip without a row loops at the global rate with
 # its root motion kept. loop, rate (x the global rate), root_motion ("keep" |

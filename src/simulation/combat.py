@@ -471,7 +471,10 @@ class BulletInFlight:
                                 dtype=self.ammo.dtype_id,
                                 attacker_id=self.shooter_id,
                                 ap=self.ammo.ap,
-                                expose=getattr(self.ammo, "expose_q", 0)),
+                                expose=getattr(self.ammo, "expose_q", 0),
+                                # #185: the hit travels along the flight
+                                # (the march's own Q16 step, as the push)
+                                dir_x_q=self.sx_q, dir_y_q=self.sy_q),
                    events, source="bullet")
         # G5p-a2: the round that stopped on a unit pushes it -- whatever its
         # damage (the 40 mm's body too); recorded right after the hit.
@@ -1363,6 +1366,9 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
         angle = base_angle + float(rng.uniform(-cone, cone))
         step_x = unit_fixed.cos_rad(angle)
         step_y = unit_fixed.sin_rad(angle)
+        # #185: the beam's hit direction, its own kit step (exact n/65536)
+        sx_q = unit_fixed.quantize_scalar(step_x)
+        sy_q = unit_fixed.quantize_scalar(step_y)
         rx, ry = float(fx1), float(fy1)
         energy_q = int(ammo.damage) << unit_fixed.FP_SHIFT   # door 2 (exact)
         skewered = []   # units already hit by THIS beam (identity — hit once)
@@ -1424,7 +1430,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                             e,
                             DamagePacket(amount=amount, dtype=ammo.dtype_id,
                                          attacker_id=shooter_id, ap=ammo.ap,
-                                         expose=getattr(ammo, "expose_q", 0)),
+                                         expose=getattr(ammo, "expose_q", 0),
+                                         dir_x_q=sx_q, dir_y_q=sy_q),
                             events, source="laser")
 
         shots.append(Shot(fx1, fy1, rx, ry, real_time))
@@ -1898,9 +1905,13 @@ def melee_blow(attacker, target, rng, events, weapon, effects,
         if attack_resolver.roll_crit(crit_chance, mult, rng):
             amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
 
+    # #185: the blow travels striker centre -> victim centre (Q16)
+    from simulation.unit_impulse import centre_q
+    (ax_q, ay_q), (tx_q, ty_q) = centre_q(attacker), centre_q(target)
     fx.hit(target,
            DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
-                        attacker_id=getattr(attacker, "id", -1)),
+                        attacker_id=getattr(attacker, "id", -1),
+                        dir_x_q=tx_q - ax_q, dir_y_q=ty_q - ay_q),
            events, source="melee")
 
     if weapon.status_kind_id is not None:

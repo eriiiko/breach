@@ -75,6 +75,7 @@ from typing import Callable, Optional, Sequence
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
+from simulation import unit_fixed as _unit_fixed
 from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
@@ -458,10 +459,17 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
                 # through exactly, then the same Q2-lift quantize -> hp ->
                 # hit/kill events as before (source "explosion"; blast
                 # deaths never set killed_by_zombie — only melee converts).
+                # #185: the hit travels detonation tile -> the victim's
+                # centre tile, the geometry the falloff reads; (0, 0) on
+                # the victim's own centre tile (no direction).
                 apply_packet(u,
                              DamagePacket(amount=damage, dtype=BLAST,
                                           attacker_id=attacker_id,
-                                          indirect=True),
+                                          indirect=True,
+                                          dir_x_q=_unit_fixed.quantize_scalar(
+                                              uc_fx - fx),
+                                          dir_y_q=_unit_fixed.quantize_scalar(
+                                              uc_fy - fy)),
                              events, source="explosion")
 
 
