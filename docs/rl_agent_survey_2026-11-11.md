@@ -241,4 +241,229 @@ patch and one play test.
 
 ## Part B. How other groups built observation and action spaces
 
-*(being assembled from the research digests)*
+Six systems, then what changed since, then what it adds up to for each open
+question. Every claim below comes from a digest, which names its source and
+how much of it was read; B.9 says what was checked and what is recalled.
+
+More words, used from here on:
+
+- *Entity list*: the observation as a list of things (each soldier, each enemy, each object), one row of numbers per thing, instead of a picture.
+- *Embedding*: the vector a network computes for one item of such a list.
+- *Attention*: a network layer that, for each item, looks at all the others and weighs the ones that matter. It does not care about the order or the number of items. A *transformer* is a stack of such layers.
+- *Pointer*: choosing an item from the list as the answer. The network forms a "query" vector from its state, scores every item's embedding against it, and picks by those scores. This is how "attack that unit" is expressed.
+- *Head*: one output of the network, giving the choice for one part of the action.
+- *Mask*: a list of which choices are legal right now; illegal ones get probability zero.
+- *LSTM* / *GRU*: a memory. A vector the network carries from one decision to the next.
+- *Ablation*: rerunning without one part to measure what that part bought.
+- *Self-play*: training against copies of oneself, present or past.
+- *Imitation* (behaviour cloning): training a network to copy recorded play, with no reward involved.
+- *Elo*: a rating scale; 100 points more means winning about 64 % of games.
+
+### B.0 At a glance
+
+| | who decides | units seen as | map seen as | target / aim | choices per step | team-mates share | policy sees / critic sees |
+|---|---|---|---|---|---|---|---|
+| OpenAI Five | one net per hero, same weights | list of 189 units, pooled | 8 x 8 terrain patch | point at a unit, or a cell of a 9 x 9 offset grid | one verb + its arguments | the whole team's sight, by game rule | team sight / the same |
+| Honor of Kings | one net per hero, same weights | unit vectors, pooled | 6 planes of 17 x 17 | point at a unit ("target attention") | one verb + who + how | team sight; in one model, allies' destinations | team sight / everything |
+| AlphaStar | one net for the whole army | one list of up to 512 entities, transformer | 128 x 128 planes, units written into them | point at a unit, or a cell of a 256 x 256 grid | one verb + chained arguments | (one mind) | fog of war / the opponent's view too |
+| Hide-and-seek | one net per agent, same weights | entity list with attention, plus 30 range rays | none (the rays) | turn by a torque, 11 levels | move, turn, grab, lock at once | nothing | 135 degree cone and walls / everything |
+| Capture the flag | one net per agent, a population | none: 84 x 84 pixels | pixels | turn by 10 or 60 degrees | six choices at once | nothing | the camera / the same |
+| MAPPO on SMAC | one net per soldier, same weights | fixed blocks in a flat vector | none | "attack enemy k"; the game aims | one choice of all | allies within sight | a sight circle / the whole state |
+
+### B.1 OpenAI Five (Dota 2)
+
+Berner et al. 2019, arXiv:1912.06680. Five heroes a side. One network, copied
+five times with the same weights, each copy with its own memory.
+
+- **Units.** A list of up to 189 units per step, grouped (allied heroes, enemy heroes, other allied units, other enemy units, neutrals). Each unit is a row: type, health over the last frames, position, facing as cosine and sine, "is it attacking me", "am I attacking it". Each row goes through the same small network and the results are pooled. The only map is an 8 x 8 patch of terrain near each hero. About 16 000 numbers a step.
+- **Team-mates.** Dota shares sight across a team by its rules, so the five copies get nearly the same input. On top, a quarter of each copy's internal vector is pooled across the five. There is no message channel. A hero sees whether an ally is attacking, but not whom.
+- **Hidden things.** A unit in fog is not in the list. A hidden enemy hero is kept as it was last seen, with a "time since last seen" number: a last-seen record, built by hand, shared by the team.
+- **Actions.** One verb per step (move, attack, each ability, each item), chosen among the ones available now, plus arguments: a target unit, an offset on a 9 x 9 grid around the caster or the target, a delay. The target is chosen by pointing. Arguments the chosen verb does not use are left out of the learning signal. It acts every 4th frame (7.5 times a second), with a reaction time of 167 to 267 ms.
+- **Reward.** Heavily shaped (win 5, death -1, plus last hits, health, towers and more). "Team spirit": each hero's reward is a blend of its own and the team's average, moved from 0.3 team to 0.8 team during training.
+- **Many hero types.** One network, the hero's identity as an input, a pool of 17. With 80 heroes early training ran about 20 % slower.
+- **What it cost.** Ten months on up to 1 536 GPUs. The network was altered more than twenty times mid-run by "surgery" as the game and the inputs changed. A clean rerun on the final design took two months and a fifth of the compute, and beat the original in 98 % of games. Their conclusion: when the environment is understood from the start, design the interface first.
+
+### B.2 Honor of Kings (Tencent)
+
+Ye et al., AAAI 2020 (arXiv:1912.09729) and NeurIPS 2020 (arXiv:2011.12692);
+Wu et al. 2018 (arXiv:1812.07887); Gao et al. 2021 and 2023 (arXiv:2110.14221,
+2304.11632). The same kind of game as Dota. It is here because it is the one
+line of work that measured what each part bought.
+
+- **Units and map.** A feature vector per unit, units of one type pooled; small map planes beside them (6 planes of 17 x 17 in the 5 v 5 agent).
+- **Target.** The same pointer, which they call target attention. In the 1 v 1 ablation, each part was added alone to a base agent and played against it: the pointer won 75 %, memory 73 %, masks 50.5 % (no stronger, but trained in 65 hours instead of 80), all three together 90 %.
+- **Actions.** What (the button), who (the target), how (a direction or an offset). The heads are chosen independently of each other, with one exception: the direction depends on the skill.
+- **Critic.** The value network sees what is hidden from the policy, in training only. They report it raised strength, without a number.
+- **Team-mates' intentions.** In the 2018 model each hero is told which of 144 map regions each ally is heading for. With that it beat the same model without it 62.5 % to 37.5 %. That model was trained by imitation of human games, not by reward.
+- **Orders.** Two later papers give the hero an order as an input: a place on the map, what to do there, and a time limit. Obeying is paid by a reward for closing the distance, with a weight. At the weight where the agent completes 82 % of orders (humans complete 80 %) it still wins about half its games against the strongest earlier agents. Pushed toward 100 %, "this will significantly reduce the win rate", because the order is sometimes wrong.
+- **Many hero types.** Forty heroes in one network failed with plain training: 480 hours and still 400 Elo short. What worked: train teachers on fixed line-ups, copy them into one student network, then keep training on random line-ups: 336 hours. The final network has 17 million weights against OpenAI Five's 159 million.
+
+### B.3 AlphaStar (StarCraft II)
+
+Vinyals et al., Nature 575, 2019. One network plays a whole army, so it is a
+commander and not a soldier. It is read here for its parts.
+
+- **Units.** One list of up to 512 entities, own, enemy and neutral together, with a field that says whose each is. Per entity: type (one of 256), health in buckets, position written in binary digits, weapon cooldown, its current order, "was targeted by my last action". A transformer of three layers reads the list.
+- **Map.** Planes of 128 x 128 (height, visibility, walkable and so on) through a convolution network. "Scatter connections" write each unit's embedding into the map at the unit's position, so the map branch knows who stands where.
+- **Actions.** A verb with arguments, chosen in a chain where each choice is fed to the next: the action type (several hundred; every ability is its own type), a delay, which of my units, then a target unit or a target place, never both. The target unit is a pointer whose query includes the chosen verb. A place is a choice among the cells of a 256 x 256 grid, not two coordinate numbers.
+- **No aiming.** "Attack unit k" is carried out by the game's own unit logic.
+- **Hidden things.** The policy sees what a human player would. During training the value network also sees the opponent's whole view.
+- **A strategy as an input.** The policy takes a summary of a strategy, called z (a build order and what was built), taken from a human game. It is blanked 10 % of the time during imitation training, and in self-play following it earns a side reward that is switched on in a quarter of the games. With z fixed by hand the same network plays 17 chosen strategies on demand. This is the precedent for an order input.
+- **What the parts bought** (one map, one matchup). Built up in this order, the imitation-trained agent's win rate against the built-in elite bot: baseline 0 %, with action delays 7 %, with the pointer 36 %, with the entity transformer 71 %, with scatter connections 87 %. The value network with the opponent's view: 82 % against 22 % without, the largest single training effect in the paper. Without human games: Elo 149 against 1 540.
+- **What it cost.** 971 000 human replays; a league of 12 agents, each on 32 accelerators for 44 days. A later replication at a fraction of the compute (TStarBot-X, arXiv:2011.13729) found that without the transformer the agent "barely control[s] one or a few units", and that PPO did about as well as AlphaStar's own training rule.
+
+### B.4 Hide-and-seek (OpenAI)
+
+Baker et al. 2019, arXiv:1909.07528. Two to six agents with bodies in a
+physics room. The closest in spirit to Breach.
+
+- **Units.** An entity list (the other agents, boxes, ramps: position, velocity, size) read with attention, and beside it 30 range rays all round the body, like a lidar, for the walls. A memory. 1.6 million weights.
+- **Sight.** An entity outside a 135 degree cone in front of the agent, or behind a wall, is masked out of the list. Team-mates too: an agent does not always know where its own team is. The rays are not masked.
+- **Actions.** Three choices at once each step: a push along x and y and a turning torque (11 levels each), grab, lock. Turning is relative, on a body with inertia, as in Breach.
+- **Team-mates.** The same weights, a team reward, no sharing of any kind.
+- **Critic.** The training-time value network sees the whole room. Rerun with a value network limited to the agent's own view, training "never progressed past stage 3" of six.
+- **Attention.** It learned from fewer samples than a network that only pooled the entities.
+- **What it cost.** 31.7 billion frames to reach the fourth of its six strategies. At the farm's speed today that is about 260 days.
+
+### B.5 Capture the flag, "For The Win" (DeepMind)
+
+Jaderberg et al., Science 2019, arXiv:1807.01281.
+
+- **Observation.** First-person pixels, 84 x 84. No entity list, no map, nothing about team-mates beyond what the camera shows.
+- **Actions.** Six choices at once: turn left or right by 10 or 60 degrees, look up or down 5 degrees, strafe, forward or back, fire, jump. 15 decisions a second.
+- **Team-mates.** No communication. Each agent learns on its own, in a population of 30.
+- **Results.** It hit with 80 % of its shots against humans' 48 %, and reacted in 258 ms.
+- **What it cost.** Two billion steps per agent. The paper has no ablation of the interface.
+
+So turn-left / turn-right from pixels does work, at a price far beyond ours,
+and this system has nothing to say about team information.
+
+### B.6 MAPPO on SMAC
+
+Samvelyan et al. 2019 (arXiv:1902.04043); Yu et al. 2021 (arXiv:2103.01955);
+SMACv2, Ellis et al. 2022 (arXiv:2212.07489). SMAC is a benchmark: each
+soldier of a small StarCraft squad is its own agent, against the game's
+scripted army. MAPPO is PPO with the same weights for every soldier and a
+value network that sees more.
+
+- **Units.** A flat vector. For every ally and every enemy inside a sight circle there is a fixed block: distance, relative x and y, health, shield, type. An enemy's block starts with "can I attack it now". Everything is relative to the soldier itself. By default there is no map at all.
+- **Actions.** One choice per step out of: nothing, stop, move north / south / east / west, attack enemy 1 ... n. A mask says which are possible; attack k only when k is alive and in range.
+- **Aiming.** None. After "attack k" the game walks into range, turns and fires.
+- **Why "enemy k" can be learned there.** Slot k is the same enemy for the whole episode, the mask removes impossible targets, and (in the networks that work best, such as UPDeT, arXiv:2101.08001) the score of "attack k" is computed from enemy k's own embedding. When UPDeT's authors broke that tie on purpose, the network fell below the simple baseline.
+- **Team-mates.** Allies in sight appear as blocks. Showing the allies' last actions is an option, and the benchmark's own runs left it off. No channel.
+- **MAPPO's findings.** The best value-network input is the whole state plus the soldier's own view, with duplicated features removed (removing them alone moved one hard map from 63.3 % to 84.4 %). For a dead soldier: zeros plus its id. Shared weights against a separate network per soldier, on a map with three unit types: 90.6 % against 13.0 %. Reuse each batch of data 5 to 15 times.
+- **SMACv2's two findings.** On the original maps, with their fixed start positions, a policy that sees only the clock does respectably on many: agents memorise a script. So starts and team make-up must be random. And when only the soldier who spots an enemy sees it, the standard methods "struggle to attain even modest performance"; with sight shared across the team they "come close to solving the task". Team-mates did not learn to make up for unshared sight.
+- **An unused option.** SMACv2's code has a switch, off by default and absent from the published results: twelve extra actions that each set the soldier's facing to one of twelve fixed directions, with sight and fire limited to a 30 degree cone.
+
+### B.7 Since then
+
+- **Lists and attention became the norm.** A transformer over entities replaced pooling. Nothing newer has replaced the pointer for choosing a target.
+- **Industry shooter bots mostly keep aiming out of the learned part.** A 2024 model of professional Counter-Strike movement (arXiv:2408.13934) learns where to walk, with all ten players as a list, and leaves aiming to rules. Tencent's Arena Breakout (arXiv:2410.04936) writes that "pure RL alone cannot effectively control firearms" and sets the firing point by rule; that hybrid wins about 30 % more than pure learning. EA's Battlefield 6 work (arXiv:2606.20210) learns locomotion only. Riot's bots (arXiv:2501.00078) do learn aim, by imitation, as one choice on a 15 x 11 grid of directions.
+- **Two good targets break a single-number aim.** Three groups ran into it: an output that is one angle lands between two enemies. Each fixed it by making the aim one choice among discrete options.
+- **Commanders are now often language models.** In Honor of Kings (2025, arXiv:2508.21365) one picks among about 40 team objectives; in an EA shooter prototype (2026, arXiv:2606.20014) one picks among four skills per soldier twice a second. Unit control underneath is unchanged. In the EA work, learning with no commander layer lost clearly to both the rule bots and the hybrid, and the skills took no target as a parameter, which the authors name as the next step.
+- **Squad methods.** The strongest current cooperative method (Sable, arXiv:2410.01706) is best on 34 of 45 tasks, but it is one network running the whole squad with every soldier's view, and on the SMAC-like tasks it leads plain independent PPO by one point.
+- **Trainers.** The digest found no 2025 or 2026 result that beats PPO in competitive team games. A large 2026 study (arXiv:2502.08938, abstract only) finds plain PPO matching or beating the game-theory methods in two-player hidden-information games. The two ready-made trainers July's survey named no longer fit: PufferLib 5 takes only environments written in C, and Sample Factory has had no release since 2023 and does not run on Windows.
+- **Tsetlin machines.** Their published reinforcement-learning results are grid worlds up to 10 x 10 and CartPole. They need yes / no inputs. The bots' eight position questions (A.7) are exactly that shape.
+
+### B.8 What it adds up to, question by question
+
+**1. How to show units, team-mates and the map.** Every system since 2019
+that handles many units shows them as a list read by attention, plus a small
+map. The measured gains are large (AlphaStar: 36 % to 71 % from the
+transformer; hide-and-seek: fewer samples; the industry movement model got
+worse without it). The gap: none of these games has Breach's walls and physics
+fields at Breach's weight. The benchmarks closest to our soldier (SMAC and its
+successors) have no map at all. AlphaStar's scatter connection is the one
+published way to join the list to the map.
+
+**2. Aiming.** Every many-unit system picks the target by pointing at it.
+Every system that turns left and right is a first-person game played from
+pixels, and paid billions of steps. No paper compares the two on one task.
+Erik's leaning, "aim at enemy k", is the many-unit systems' choice, with one
+difference to keep in view: there the game does the aiming once the unit is
+picked. In Breach the turning law can play that part, because it already turns
+a body toward a set point; when to pull the trigger stays a decision. For a
+direction with no enemy in sight the precedents are a small set of fixed
+directions (12 in SMACv2's option, 16 in the Counter-Strike movement model) or
+a cell on a grid (OpenAI Five, AlphaStar). A pointer can only point at things
+in the list, so doors, corners and last-seen positions must be in the list, or
+be reached by direction. A single continuous angle is the one form with
+evidence against it.
+
+**3. Factoring the actions.** Two families. Commander-like agents choose one
+verb per step with arguments. Body-like agents (hide-and-seek, capture the
+flag, the shooters) make several choices at once: move, turn, fire. A Breach
+soldier is the second kind, and today's action row already is. Each grenade
+kind as its own action matches how every ability is its own verb in Dota and
+StarCraft; it should be one choice among "nothing, frag, smoke, flash, ...", so
+that a soldier cannot throw two at once. Heads chosen independently worked in
+both MOBA systems; the one dependency they kept is that the target or
+direction depends on the verb. Masks bought training time in Tencent's
+ablation, and a later Honor of Kings study calls them essential.
+
+**4. What team-mates share.** Shared sight, by rule, is in every strong team
+system and has the clearest measurement (SMACv2). Allies' state is always
+there as list entries. An ally's intention was shared in one system only
+(Honor of Kings, the destination), was worth 62.5 to 37.5, and was fixed and
+readable. Learned message channels have weak or negative results in combat
+tasks. "Whom is my team-mate aiming at" appears in no system the digests read.
+Friendly fire appears in no landmark system either. On both, Breach would be
+on new ground, with the bots' picture as the only worked example.
+
+**5. An order input for a later commander.** Every system that ended with an
+obedient lower level had the order as an input while that level was learning.
+The orders came from a generator, from a scripted layer, or from labelling
+what the unit actually did, never from the final commander. Adding inputs
+later is mechanically easy and cost OpenAI Five strength. The orders that
+worked were small and concrete (a place among 144, a target among 3, fight or
+flee) and were held for seconds. Obedience is a dial; near 80 % kept strength.
+
+**6. Fog of war and field of view.** The pattern with the largest measured
+effects in the whole survey: the policy sees only what is legal, the
+training-time value network sees everything (AlphaStar 82 % against 22 %;
+hide-and-seek's stall without it). A cone exists in hide-and-seek only and was
+never ablated; that it produces arc-covering or corner-checking is a hope, not
+a result. Starting with full information and removing it gradually has one
+good precedent (Suphx, arXiv:2003.13590). Copying a teacher that sees through
+walls into a student that does not is a known trap.
+
+**7. Many unit classes.** One network with the unit's type as an input and
+masks for the verbs it lacks works inside a family that shares its verbs (17,
+40 and 102 heroes; three unit types in SMAC). Where bodies and verbs differ
+wholesale, practice splits the networks (AlphaStar: one per race). No study
+compares the two when verb sets truly differ. With many classes the proven
+route is specialists first, then one student.
+
+**8. The trainer.** PPO, in the MAPPO arrangement: same weights for every
+soldier, a value network that sees everything, several passes over each batch
+because our simulator is slow. Opponents: mostly the current self, a share of
+past selves, a share of the scripted bots. Progress: a rating against a fixed
+pool that includes the bots, through the existing bot tournament. Written by
+ourselves against `BatchedEnv`, in about two thousand lines. The first
+learning tasks must be SMAC-sized (about ten million steps, a figure recalled
+and not re-read; under a day on the farm), not hide-and-seek-sized.
+
+### B.9 What was checked and what is recalled
+
+- **Checked by me.** All of Part A, from the code, with the schema functions run. Two claims of Part B, re-read at the source after the digests came in: MAPPO's shared-against-separate table, and the facing-direction option in SMACv2's code.
+- **Read by the digests, in full or in the relevant parts.** OpenAI Five (the appendices and OpenAI's 2018 architecture diagram); the Tencent papers named in B.2; the AlphaStar paper with its Methods and its supplementary architecture text (the latter from an unofficial mirror); hide-and-seek (the paper and its released code); the capture-the-flag arXiv text; SMAC, MAPPO and SMACv2 (papers and code); UPDeT and three related papers; the shooter papers of B.7; the PPO references behind B.8 item 8.
+- **Weaker, and marked so in the digests.** AlphaStar's ablation numbers were read from the figure's text layer, and which label goes with which bar is the reader's pairing (two cross-checks agree). The SMAC and SMAX code facts came through a summarising reader, not verbatim. The 2025 and 2026 language-model commander papers, Sable's details, the 2026 PPO study and most Tsetlin sources are known from abstracts. Capture the flag's network internals and AlphaStar's league details are from memory.
+- **Looked for and not found.** A test of turning against pointing on one task. A test of a cone against all-round sight. A test of a hand-designed team display against learned messages. A shooter soldier trained to take orders. A comparison of one network against one per class when the classes' verbs differ. Any representation shown to make avoiding friendly fire learnable.
+
+That last list is where Breach's design cannot lean on anyone, and where our
+own experiments have to be able to fail.
+
+---
+
+## Existing systems the design will have to use
+
+Not a design section; a reminder of what already exists, so nothing parallel
+gets built. All are rows in the project's canonical-systems table.
+
+- **Batched environment** and **MatchSession + the `policy` controller**: the one env and the one way a policy reaches the game. A new verb is a row in `INTENT_KINDS` and in `VERB_RULES`.
+- **The sensor accessor** (`EntityFieldAccessor.crop`): the one door for observations. An entity list is a new product of that door.
+- **The sight model** (`vision.py`, `GameMap.has_los`): the one answer to "who sees whom".
+- **The turning law** (`turning.set_target`, `Simulation.facing_after_turn_q16`): already takes a set point and already predicts where a shot will go.
+- **Bot layers** (`TeamBrain`) and **Position features**: the only worked team picture, a ready source of orders, and the yes / no list a Tsetlin machine could read.
+- **Credited cause** and the reward counters; **Match recording / replay** (how a trained agent is watched); the **Bot tournament** (how it is measured).
+- **Loadouts**, **Grenade kinds**, **Timed charge** and `charges.py` (the C4 question).
