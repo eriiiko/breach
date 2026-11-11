@@ -383,10 +383,11 @@ def test_c4_det_slot_detonation_with_demolition_numbers():
     m = Unit("M", x=5, y=9, team=0)      # centre (6, 10) -> dist 6 from (0,10)
     mid = sim.add_unit(m)
     m.current_hp = 1e9
+    carried = m.has_explosive            # the loadout's count (#193: 1)
     assert sim.apply_action(mid, Order(
         ORDER_EXPLOSIVE, target_fx=0, target_fy=10, phase=0,
         det_slot=DET_START_PHASE1, ammo_name="demo_c4"))
-    assert m.has_explosive == 1          # the shipped count pool decremented
+    assert m.has_explosive == carried - 1  # the shipped count pool decremented
 
     hp_before = m.current_hp
     sim.set_paused(False)
