@@ -456,7 +456,10 @@ def test_hp_ledger_no_heal_no_smear():
 # §13.12 — external destruction / whole-door (observables only, N3)
 # ---------------------------------------------------------------------------
 
-def test_burst_differential_kills_whole_door():
+def test_burst_differential_kills_whole_door(monkeypatch):
+    # 9b is off in config.toml since 2026-11-11 (#186); this test is about what
+    # it does to a door, so it turns the switch on for itself.
+    monkeypatch.setattr(CFG.physics, "burst_enabled", True)
     tm = _split_box_tm(gap_rows=(5, 6))
     lvl = _level(tm, [_door_inst("d", 0, x=6, y=5, orientation="v",
                                  length_m=2.0)])
