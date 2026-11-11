@@ -1,4 +1,4 @@
-"""``BotTeam`` -- the layered bot team (#183 G8p), the match controller ``"bots"``.
+"""``BotTeam`` -- the layered bot team (#183 G8p), match controller ``"bots"``.
 
 ``docs/bots_zombies_speeds_design_2026-11-10.md`` §2 (Erik's rulings: the
 three-layer shape, bots stay Python on the host, the techniques good AND
@@ -107,6 +107,7 @@ _SCALARS = {
     "reach_steps": (int, 1),
     "progress_steps": (int, 1),
     "advance_steps": (int, 1),
+    "plan_max_steps": (int, 1),
     "los_budget": (int, 1),
     "commit_margin": (float, 0.0),
     "spacing_tiles": (int, 0),
@@ -395,7 +396,8 @@ class TeamBrain:
         ids = sorted(m.id for m in mine)
         self.halves = {uid: i % 2 for i, uid in enumerate(ids)}
         if self.play == "bound":
-            movers = [m for m in mine if self.halves[m.id] == self.bound_moving]
+            movers = [m for m in mine
+                      if self.halves[m.id] == self.bound_moving]
             arrived = all(bots.arrived(m) for m in movers)
             if (arrived and tick - self.bound_since > s.unit_period_ticks) \
                     or tick - self.bound_since >= self.bound_max_ticks:
@@ -905,6 +907,7 @@ class BotTeam(ControlSource):
         self._grid = None          # (key, tile_ok, block grid, door tiles)
         self._acc = None
         self._aimed = False
+        self._planned_tick = None
         self._rings = {}
         self._spread_q = {}
         self._weapons = {}
@@ -1382,19 +1385,19 @@ class BotTeam(ControlSource):
         tick = c.tick
         if (st.path is None or st.path_goal != goal or tick >= st.replan_at
                 or st.idx >= len(st.path)):
-            grid = self.block_grid(sim, u.footprint)
-            h, w = sim.gmap.material.shape
-            # walk AROUND standing teammates when there is room (#142: a
-            # body never passes through a teammate if it need not)
-            clear = self._around_mates(grid, u, c.mine, goal)
-            st.path = astar(u.tile_x, u.tile_y, goal[0], goal[1], None, w, h,
-                            passable=clear)
-            if not st.path:
-                st.path = astar(u.tile_x, u.tile_y, goal[0], goal[1], None,
-                                w, h, passable=grid)
-            st.idx = 1
-            st.path_goal = goal
-            st.replan_at = tick + self.s.replan_ticks
+            if self._planned_tick == tick:
+                # ONE path search per team per tick (the cost is staggered):
+                # the others keep their path -- or stand -- for a tick
+                st.replan_at = tick + 1
+                if st.path is None or st.path_goal != goal:
+                    sim.clear_move_dir(u.id)
+                    return None
+            else:
+                self._planned_tick = tick
+                st.path = self._plan(sim, u, c.mine, goal)
+                st.idx = 1
+                st.path_goal = goal
+                st.replan_at = tick + self.s.replan_ticks
         path = st.path
         while st.idx < len(path) and self._at(u, path[st.idx]):
             st.idx += 1
@@ -1414,22 +1417,34 @@ class BotTeam(ControlSource):
         sim.set_move_dir(u.id, d[0], d[1], throttle)
         return d
 
-    @staticmethod
-    def _around_mates(grid, u, mine, goal):
-        """``grid`` with every anchor whose body would overlap a teammate's
-        body blocked (the bot's own anchor and its goal left open)."""
+    def _plan(self, sim, u, mine, goal) -> list:
+        """The A* path to ``goal``: AROUND the standing teammates when that
+        way exists (#142: a body never passes through a teammate if it need
+        not), else through them, else none. Whether a way exists -- and is
+        at most ``plan_max_steps`` long -- is asked of the flood first
+        (``horde.flood``, one C++ pass), so A* never runs a search that
+        cannot succeed or must wander (a failed search expands the whole
+        map: the multi-ms spike); a goal farther than that is no path (the
+        bot stands until its next decision chooses again)."""
         fp = u.footprint
-        h, w = grid.shape
-        out = grid.copy()
+        h, w = sim.gmap.material.shape
+        tile_ok = self.tile_ok(sim)
+        clear_ok = tile_ok.copy()
         for m in mine:
-            if m is u:
-                continue
-            x0, y0 = m.tile_x - fp + 1, m.tile_y - fp + 1
-            x1, y1 = m.tile_x + m.footprint, m.tile_y + m.footprint
-            out[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = False
-        out[u.tile_y, u.tile_x] = grid[u.tile_y, u.tile_x]
-        out[goal[1], goal[0]] = grid[goal[1], goal[0]]
-        return out
+            if m is not u:
+                clear_ok[m.tile_y:m.tile_y + m.footprint,
+                         m.tile_x:m.tile_x + m.footprint] = False
+        for ok in (clear_ok, tile_ok):
+            dist = horde.flood(sim.gmap, ok, fp, [(goal[1], goal[0])])
+            if int(dist[u.tile_y, u.tile_x]) > self.s.plan_max_steps:
+                continue                       # UNREACHED is larger still
+            grid = (self.block_grid(sim, fp) if ok is tile_ok
+                    else horde.block_passable(ok, fp))
+            path = astar(u.tile_x, u.tile_y, goal[0], goal[1], None, w, h,
+                         passable=grid)
+            if path:
+                return path
+        return []
 
     def _open_door(self, sim, u, st, way, tick) -> None:
         """#142: a closed (non-hull) door in the next waypoint's block is

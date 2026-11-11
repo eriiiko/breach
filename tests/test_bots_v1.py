@@ -1,5 +1,6 @@
 """#121 — the first rule-based bot team (``control_bots_v1.BotTeamV1``,
-controller "bots_v1" since #183 G8p; moved here from test_bots.py with the law).
+controller "bots_v1" since #183 G8p; moved here from test_bots.py with the
+law).
 
 Properties of the five rules, the seed gate and the registry, on small
 levels written through ``level_lib`` (never a hand-written toml). The

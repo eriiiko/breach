@@ -4783,6 +4783,7 @@ candidate_stride = 3         # ... on a lattice of this pitch (the bot's own anc
 reach_steps = 14             # feature `reachable`: within this many 4-connected steps of the bot
 progress_steps = 4           # feature `closer_to_objective`: at least this many steps nearer the play's objective
 advance_steps = 12           # a mover's leap: this many steps down the objective's field is always a candidate
+plan_max_steps = 24          # A* runs only toward a goal at most this many flood steps away (the cost bound; farther = stand and choose again)
 los_budget = 6               # the line-of-sight features are cast for this many best candidates only
 commit_margin = 0.5          # the committed goal keeps its place unless beaten by this many weight units (#138)
 spacing_tiles = 5            # feature `spaced`: centres at least this far from every teammate and its goal (#142)
