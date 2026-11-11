@@ -97,14 +97,17 @@ from the survey. The ones most often needed:
 | 2026-11-11 | **Observation spec v1** ("I bless all of it"): the soldier's own vector; the list (team-mates, enemies the team sees, last-seen records, grenades and charges, doors); a two-scale map window; physics planes = every field that can hurt, blind, push or drown a unit, as ratios of that unit's environment profile; two sight planes (tiles the known enemies watch, tiles that see my target); a compass to the order's place. |
 | 2026-11-11 | **Sight: all-round for now,** walls block, shared across the team, the same rule for both teams of a match. Cones are wanted later ("just to have agents playing good is more important"; reducing information "needs much more computation"). No match played before 2026-11-11 has to be preserved. |
 | 2026-11-11 | **The team display** ("I think we got it now"): read from the game's state, never a controller's memory, so a bot, a learned soldier and a human look alike. Per team-mate: its aim, feet, a throw being wound up, a reload, its order, the fire lanes between us. Per enemy: how many team-mates aim and fire at it, recent damage, shared target, team-mates a frag would catch. The bots' counts for the team. A fire-lanes plane. The radio is perfect for now. |
+| 2026-11-11 | **The order** ("agree with all your suggestions"): a place on the ship's room graph, never a tile. What (none, go to, hold, clear, fall back to), where (a room or an opening), until; plus an optional priority target. Route, position, cover and fire are the soldier's. The bots' team layer is the first commander; orders are information until rung 4 makes them binding; the format is a named spec ("rooms"). Erik's aim: "not a copy of StarCraft, but distributed intelligence: the agents are their own AIs, the commander is its own". His commander idea: a graph network over the room graph (rung 6). He hopes the generation graph is used directly or as a seed, and sees a later project: level generation with AI input on what makes a strong defensive layout. |
+| 2026-11-11 | **Three sides matter to Erik:** zombies bring the chaos that makes matches winnable by wit (ambush the team busy with zombies; make the horde work for you). Design document 4a (proposed): each enemy entry shows its side and whom it aims at; a zombie shows dormant / hunting / drawn by noise. |
+| 2026-11-11 | **Erik delegated the rest of rung 0** (reward, the value network's input, network v1) to Claude, to be brought back as proposals he can veto. |
 | 2026-11-11 | **The ladder** (`docs/rl_agent_roadmap_2026-11-11.md`): 0 the design, 1 the door, 2 first light, 3 a fireteam that fights, 4 orders, 5 scale, 6 the commander, 7 unit classes, 8 senses, 9 other learners. Network sizes: about 1 million weights first, 1 to 3 million for the fireteam, 5 to 20 million at scale. |
 | 2026-11-11 | **The residency patch P3a restarts when rung 0 is agreed** and runs beside rungs 1 and 2. |
 | 2026-11-11 | **C4 on the continuous path** is Erik's own patch; the agent design assumes the verb. |
 
 ## 6. Open
 
-- Rung 0, still to write and agree: the order, reward profile v1, what the
-  value network sees, network v1. Then the critique
+- Rung 0, still to write (delegated to Claude, Erik vetoes): reward profile
+  v1, what the value network sees, network v1; and Erik's yes on 4a (sides). Then the critique
   passes, one critic at a time.
 - Gameplay the design leans on, Erik's to order (design document section 11):
   a reason to walk (footsteps and spread by speed), the reserved verbs.

@@ -282,7 +282,19 @@ of fire. This is the bots' lane grid, handed over.
 "If you were the soldier, what would you want to know about your squad that
 is not in this picture?" Nothing to add (2026-11-11).
 
-## 5. The order (PROPOSED)
+## 4a. Sides: zombies and more than two teams (PROPOSED, the lead's reading of Erik 2026-11-11)
+
+Erik: three sides are more interesting than two. A symmetric match is hard to
+win consistently; the zombies bring chaos, and it can pay to ambush the team
+that is busy killing zombies, or to get the zombies to work for you.
+
+- **Zombies are in everything above already:** entries in the list with their class, in the far window, in the team's counts, and in every training match from rung 3.
+- **Every enemy entry says which side it is on:** the horde, or which of the other marine teams. The env already takes any number of teams.
+- **Every enemy entry says whom it is aiming at:** me, a team-mate, another side, nobody. The same rule as for team-mates (4.1). This is what makes "they are busy with the zombies" visible.
+- **A zombie's entry says whether it is dormant, hunting, or walking toward a noise.** Zombies come to noise, and a soldier who can see that can use it.
+- **Matches with three sides** (two marine teams and the horde, or three marine teams) are a setting of the training runs, not a new design. One consequence for the reward section: with three sides one team's gain is no longer exactly another's loss.
+
+## 5. The order (AGREED, Erik 2026-11-11: "Agree with all your suggestions"; the grain of a room or a door is "very good"; "this part of the ship" may be a later refinement)
 
 Erik, 2026-11-11: not a copy of StarCraft but distributed intelligence. "The
 agents are their own AIs, the commander is its own." An order to a tile
