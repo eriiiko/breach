@@ -79,6 +79,7 @@ class _Tape:
                 self.cov["pushed_unit_ticks"] += 1
         if charges:
             self.cov["charge_ticks"] += 1
+        self.last_conversions = _conversions(sim)
 
 
 def _conversions(sim):
@@ -90,6 +91,7 @@ def _match(level, spec=None):
     from run_match import run_match
     tape = _Tape()
     o = run_match(level, spec, on_tick=tape)
+    tape.cov["conversions"] = tape.last_conversions
     return tape, (o.result.outcome, o.result.team, o.result.ticks,
                   o.field_digest)
 
@@ -165,6 +167,7 @@ def scenario_scripted(n_ticks=420):
     s = add("S", 20, 20, 0, 0)                      # striker, facing east
     e = add("E", 23, 20, 1, PI_Q16)                 # enemy, adjacent east
     f = add("F", 20, 30, 0, -(PI_Q16 // 2))         # thrower, facing south
+    p = add("P", 40, 12, 0, 0)                      # the planter, alone
     add("Z", 50, 50, ZOMBIE_TEAM, 0)                # a zombie the conductor walks
     one = 1 << 16
     kinds = get_tables().hand_grenade_rows
@@ -184,7 +187,7 @@ def scenario_scripted(n_ticks=420):
         if t == 110:                                # a frag between S and E
             sim.throw_grenade_intent(f.id, 0, -one, 20, 9 * one, 0)
         if t == 30:
-            sim.plant_charge_intent(e.id, 0)        # clamped to the minimum
+            sim.plant_charge_intent(p.id, 0)        # clamped to the minimum
         if 50 <= t < 70:
             sim.set_move_dir(e.id, 0, -one, one)
         if t == 70:

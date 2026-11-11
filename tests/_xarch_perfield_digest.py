@@ -656,17 +656,21 @@ def _perfield_hash(name: str, arr: np.ndarray) -> str:
 def _unit_subfield_payloads(ustate: dict) -> dict[str, object]:
     """Split one tick's unit-state dict (harness format: id-sorted records +
     emission-ordered synced events) into the four named sub-payloads."""
+    # #29 P3a: the records are the unit schema's (``unit_schema.
+    # digest_record``): the hp is its Q16 count, the position the two
+    # ``round(v * 1e9)`` columns (the derived tile indices left the record),
+    # the life its enum index (``alive`` left: a property of it), the status
+    # block present only while a unit holds a status.
     units = ustate.get("units", [])
     return {
         "__unit_hp__":     [(r["id"], r["current_hp"]) for r in units],
         "__unit_facing__": [(r["id"], r["facing"]) for r in units],
-        "__unit_pos__":    [(r["id"], r["tile_x"], r["tile_y"], r["x"], r["y"])
-                            for r in units],
+        "__unit_pos__":    [(r["id"], r["x"], r["y"]) for r in units],
         "__unit_life_events__": {
-            "life":   [(r["id"], r["alive"], r["life_state"]) for r in units],
+            "life":   [(r["id"], r["life_state"]) for r in units],
             "events": ustate.get("events", []),
         },
-        "__unit_status__": [(r["id"], r["statuses"]) for r in units],
+        "__unit_status__": [(r["id"], r.get("statuses", ())) for r in units],
     }
 
 

@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from simulation import unit_fixed
+from simulation.unit_schema import STATUS_STACK_CAP
 from simulation.damage import (
     ASPHYX, HEAL, HEAT, POISON, DamagePacket, apply_packet,
 )
@@ -225,6 +226,13 @@ def composed_flags(unit) -> ComposedFlags:
     return ComposedFlags(can_move, can_act, can_aim, is_prone)
 
 
+#: Applications of a ``STACK_STACK`` kind refused at the stack cap
+#: (``unit_schema.STATUS_STACK_CAP``), by kind -- a diagnostic counter (not
+#: synced state: the refusal itself is, through the statuses it left alone).
+#: No shipped scenario or test reaches the cap (``tests/test_unit_schema.py``).
+OVERFLOW_REFUSED: dict = {}
+
+
 # ---------------------------------------------------------------------------
 # Application (with the per-kind stacking rule)
 # ---------------------------------------------------------------------------
@@ -241,14 +249,19 @@ def apply_status(unit, kind: int, magnitude: float, duration_ticks: int,
     Stacking (mechanics/06 §4, per-kind data):
       - ``refresh``: one instance — re-application overwrites its magnitude,
         duration, and source (timer reset).
-      - ``stack``:   instances coexist — always appends; each ticks and
-        expires independently (dose accumulation).
+      - ``stack``:   instances coexist — appends; each ticks and expires
+        independently (dose accumulation). CAPPED (#29 P3a, the unit
+        schema's fixed status block): a unit already holding
+        ``unit_schema.STATUS_STACK_CAP`` instances of the kind REFUSES the
+        new one (nothing changes; counted in :data:`OVERFLOW_REFUSED`, by
+        kind) and ``None`` is returned.
       - ``max``:     one instance — keeps ``max(magnitude)`` and
         ``max(remaining_ticks)`` component-wise; the source updates only
         when the new magnitude is strictly greater (the stronger burn's
         cause gets the attribution).
 
-    Returns the created/updated :class:`StatusEffect`. List positions are
+    Returns the created/updated :class:`StatusEffect` (``None`` when the
+    stack cap refused it). List positions are
     stable (an existing instance refreshes IN PLACE), so P0's list order is
     the application order of first contact — deterministic.
     """
@@ -278,6 +291,11 @@ def apply_status(unit, kind: int, magnitude: float, duration_ticks: int,
                     st.source_id = source_id
                 st.remaining_ticks = max(st.remaining_ticks, duration)
             return st
+    else:
+        held = sum(1 for st in statuses if st.kind == kind)
+        if held >= STATUS_STACK_CAP:      # the fixed block's door (#29 P3a)
+            OVERFLOW_REFUSED[kind] = OVERFLOW_REFUSED.get(kind, 0) + 1
+            return None
 
     st = StatusEffect(kind=kind, magnitude_q16=mag_q16,
                       remaining_ticks=duration, source_id=source_id)

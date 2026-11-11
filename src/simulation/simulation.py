@@ -97,6 +97,7 @@ from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export 
     WallDestroyedEvent,
 )
 from simulation.unit import THROW_NO_REACH
+from simulation.unit_schema import MAG_UNBOUND
 from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
@@ -489,6 +490,9 @@ class Simulation:
         # because the ruleset's clock is monotonic: "1.8 s into the round" and
         # "t=0 of the next round" are the same kind of number.
         self.planted_charges: list = []
+        # Plants refused because the table held unit_schema.CHARGE_CAPACITY
+        # live charges (#29 P3a, charges.place); a diagnostic counter.
+        self.charges_refused = 0
 
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
@@ -1418,10 +1422,11 @@ class Simulation:
             return
         u.plant_done_tick = -1
         ty, tx = u.center_tile_y(), u.center_tile_x()
-        self.planted_charges.append(charges.PlantedCharge(
-            tx, ty, u.charge_ammo, u.id,
-            det_tick=self.tick + int(u.plant_fuse_ticks),
-            approach=(ty, tx)))
+        if not charges.place(self, charges.PlantedCharge(
+                tx, ty, u.charge_ammo, u.id,
+                det_tick=self.tick + int(u.plant_fuse_ticks),
+                approach=(ty, tx))):
+            return        # the charge table is full (#29 P3a): count kept
         u.has_explosive -= 1
 
     def _release_grenade(self, u, kind, fuse_ticks, reach_q, dx_q,
@@ -1538,7 +1543,7 @@ class Simulation:
         idx = rows.index(cur) if cur in rows else -1
         u.weapon_id = rows[(idx + 1) % len(rows)]
         # Fresh-magazine + dead-burst state (see docstring).
-        u.current_mag = None
+        u.current_mag = MAG_UNBOUND
         u.reload_done_tick = -1
         u.spray_ticks_left = 0
         u.spray_order = None
@@ -2588,7 +2593,7 @@ class Simulation:
             # next one (the exact hazard last_fire_tick = -999 solves).
             # None = full mag (the lazy first-trigger bind, combat.mag_gate);
             # untracked (mag_size 0) units never read either field.
-            u.current_mag = None
+            u.current_mag = MAG_UNBOUND
             u.reload_done_tick = -1
             # W4: a spray burst does not survive the round boundary — the
             # orders it would ride are cleared above, and burst state is a
