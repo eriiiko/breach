@@ -1167,6 +1167,12 @@ class LevelData:
     # None (every hand-made level and v1 ship). Provenance only: nothing in
     # the game reads it.
     levelgen: Optional["LevelgenRecord"] = None
+    # ---- the room graph (#195 1b) -----------------------------------------
+    # [[room]] + [[opening]] + rooms.npy (RoomGraph), or None (hand-made
+    # levels, ships generated before 1b). At BASE resolution, like
+    # spawn_rooms: `--res` does not scale it. Its changing part (passable
+    # now, rooms joined now) is simulation.room_graph's, never stored.
+    rooms: Optional["RoomGraph"] = None
 
     @property
     def height(self) -> int:
@@ -1361,6 +1367,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     spawn_rooms = _parse_spawn_rooms(raw, toml_path, tilemap, version)
     match = _parse_match_file(base, spawn_rooms)
     levelgen = _parse_levelgen(raw, toml_path)
+    rooms = _parse_room_graph(raw, base, toml_path, tilemap)
 
     # ---- [[light]] entities (engine/15 §2.2, P4) -------------------------
     lights_raw = raw.get("light", [])
@@ -1442,6 +1449,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         spawn_rooms=spawn_rooms,
         match=match,
         levelgen=levelgen,
+        rooms=rooms,
     )
 
 
@@ -1593,6 +1601,201 @@ def _parse_levelgen(raw: dict, toml_path) -> Optional[LevelgenRecord]:
     if "levelgen" not in raw:
         return None
     return parse_levelgen(raw["levelgen"], str(toml_path))
+
+
+# ---------------------------------------------------------------------------
+# [[room]] + [[opening]] + rooms.npy -- the room graph (#195 1b)
+# ---------------------------------------------------------------------------
+
+#: The tile -> room map beside level.toml, found by PRESENCE (the zones.npy /
+#: air_init.npy pattern): int32, the tilemap's shape, a room id or -1.
+ROOMS_FILENAME = "rooms.npy"
+ROOM_KEYS = ("id", "x", "y", "w", "h", "kind")
+OPENING_KEYS = ("id", "a", "b", "kind", "x", "y", "w", "h")
+
+
+@dataclass(frozen=True)
+class RoomRecord:
+    """One ``[[room]]`` row: the generator's room id and its AIR rectangle
+    (``x, y, w, h`` in tiles) and kind."""
+    id: int
+    x: int
+    y: int
+    w: int
+    h: int
+    kind: str
+
+    def as_dict(self) -> dict:
+        return {k: getattr(self, k) for k in ROOM_KEYS}
+
+
+@dataclass(frozen=True)
+class OpeningRecord:
+    """One ``[[opening]]`` row: a way between rooms ``a < b`` that a unit
+    can walk now or later (a door of any sort, an open edge, an airlock, a
+    breakable wall), ``kind`` the generator's edge kind and ``x, y, w, h``
+    the rectangle of its tiles. ``id`` is the row's RANK under
+    :func:`opening_order_key`, never a counter."""
+    id: int
+    a: int
+    b: int
+    kind: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+    def as_dict(self) -> dict:
+        return {k: getattr(self, k) for k in OPENING_KEYS}
+
+    @property
+    def tiles(self) -> tuple:
+        """The opening's ``(y, x)`` tiles, row-major."""
+        return tuple((y, x) for y in range(self.y, self.y + self.h)
+                     for x in range(self.x, self.x + self.w))
+
+
+def opening_order_key(a: int, b: int, x: int, y: int) -> tuple:
+    """THE order of a level's openings (design 5.7): (lower room id, higher
+    room id, first tile row-major). An opening's id is its rank under it."""
+    return (min(a, b), max(a, b), y, x)
+
+
+@dataclass(frozen=True, eq=False)
+class RoomGraph:
+    """``LevelData.rooms``: the FIXED part of the ship's room graph -- the
+    rooms, the openings between them and the tile -> room map (``grid``,
+    int32, read-only, -1 outside every room). Identity-hashed (a cache key
+    of :mod:`simulation.room_graph`). What is passable NOW is never stored:
+    ``simulation.room_graph`` works it out from the map."""
+    rooms: tuple
+    openings: tuple
+    grid: np.ndarray
+
+
+def _rg_int(v, where: str, k: str) -> int:
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"{where}: '{k}' must be an integer (got {v!r})")
+    return int(v)
+
+
+def _rg_rows(rows, family: str, keys: tuple, where: str) -> list:
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError(f"[[{family}]] in {where} must be an array of "
+                         f"tables (spell it [[{family}]])")
+    out = []
+    for i, row in enumerate(rows):
+        w = f"[[{family}]] #{i} in {where}"
+        if not isinstance(row, dict):
+            raise ValueError(f"{w} must be a table")
+        unknown = sorted(set(row) - set(keys))
+        if unknown:
+            raise ValueError(f"{w}: unknown key(s) {unknown} (it carries "
+                             f"{list(keys)})")
+        for k in keys:
+            if k not in row:
+                raise ValueError(f"{w}: missing key '{k}'")
+        if not isinstance(row["kind"], str) or not row["kind"]:
+            raise ValueError(f"{w}: 'kind' must be a non-empty string "
+                             f"(got {row['kind']!r})")
+        out.append((w, {k: (row[k] if k == "kind" else _rg_int(row[k], w, k))
+                        for k in keys}))
+    return out
+
+
+def _rg_rect(w: str, d: dict, shape: tuple, what: str) -> None:
+    h_map, w_map = shape
+    if d["w"] < 1 or d["h"] < 1:
+        raise ValueError(f"{w}: {what} has an empty rectangle "
+                         f"({d['w']}x{d['h']})")
+    if (d["x"] < 0 or d["y"] < 0 or d["x"] + d["w"] > w_map
+            or d["y"] + d["h"] > h_map):
+        raise ValueError(f"{w}: {what} ({d['x']},{d['y']}) {d['w']}x"
+                         f"{d['h']} leaves the {w_map}x{h_map} map")
+
+
+def parse_room_graph(room_rows, opening_rows, grid, shape: tuple,
+                     where: str) -> RoomGraph:
+    """THE room-graph door (#195 1b): the raw ``[[room]]`` / ``[[opening]]``
+    rows and the ``rooms.npy`` grid -> a :class:`RoomGraph`, or ValueError
+    naming what is wrong: an unknown or missing key, a mistyped value, a room
+    outside the map (or ids not 0..n-1 in row order), an opening outside the
+    map, naming a room that does not exist, with ``a >= b`` or with an id
+    that is not its rank under :func:`opening_order_key`, a grid that is not
+    int32 of the map's ``shape`` or holds a value that is neither -1 nor a
+    room id. ``level_lib``'s writer runs every graph through here first."""
+    rooms = []
+    for i, (w, d) in enumerate(_rg_rows(room_rows, "room", ROOM_KEYS,
+                                        where)):
+        if d["id"] != i:
+            raise ValueError(f"{w}: id {d['id']} (room rows are ids 0..n-1 "
+                             f"in order)")
+        _rg_rect(w, d, shape, f"room {d['id']}")
+        rooms.append(RoomRecord(**d))
+    n = len(rooms)
+    if not rooms:
+        raise ValueError(f"room graph in {where}: no [[room]] rows")
+    parsed = []
+    for w, d in _rg_rows(opening_rows, "opening", OPENING_KEYS, where):
+        for k in ("a", "b"):
+            if not 0 <= d[k] < n:
+                raise ValueError(f"{w}: '{k}' names room {d[k]}, which does "
+                                 f"not exist (rooms 0..{n - 1})")
+        if d["a"] >= d["b"]:
+            raise ValueError(f"{w}: a = {d['a']} must be below b = {d['b']}")
+        _rg_rect(w, d, shape, f"opening {d['id']}")
+        parsed.append((w, d))
+    ranked = sorted(parsed, key=lambda wd: opening_order_key(
+        wd[1]["a"], wd[1]["b"], wd[1]["x"], wd[1]["y"]))
+    for rank, (w, d) in enumerate(ranked):
+        if d["id"] != rank:
+            raise ValueError(f"{w}: id {d['id']} is not its rank {rank} "
+                             f"under (lower room, higher room, first tile "
+                             f"row-major)")
+    openings = tuple(OpeningRecord(**d) for _w, d in ranked)
+    g = np.asarray(grid)
+    if g.dtype != np.int32:
+        raise ValueError(f"{ROOMS_FILENAME} in {where} must be dtype int32 "
+                         f"(got {g.dtype})")
+    if g.shape != tuple(shape):
+        raise ValueError(f"{ROOMS_FILENAME} in {where}: shape {g.shape} != "
+                         f"the map's {tuple(shape)}")
+    if g.size and (int(g.min()) < -1 or int(g.max()) >= n):
+        raise ValueError(f"{ROOMS_FILENAME} in {where}: values "
+                         f"{int(g.min())}..{int(g.max())} leave -1..{n - 1} "
+                         f"(-1 or a room id)")
+    g = np.array(g, dtype=np.int32, copy=True)
+    g.setflags(write=False)
+    return RoomGraph(rooms=tuple(rooms), openings=openings, grid=g)
+
+
+def _parse_room_graph(raw: dict, base: Path, toml_path,
+                      tilemap: np.ndarray) -> Optional[RoomGraph]:
+    """The level's room graph, or None when it carries none (every hand-made
+    level, and every ship generated before #195 1b). The three parts come
+    together or not at all: rows without ``rooms.npy`` (or the reverse), or
+    ``[[opening]]`` rows without ``[[room]]`` rows, are refused by name."""
+    npy = base / ROOMS_FILENAME
+    has_rows, has_open = "room" in raw, "opening" in raw
+    if not (has_rows or has_open or npy.is_file()):
+        return None
+    if not has_rows:
+        raise ValueError(f"{toml_path}: a room graph without [[room]] rows "
+                         f"(found {'[[opening]] rows' if has_open else ''}"
+                         f"{' and ' if has_open and npy.is_file() else ''}"
+                         f"{ROOMS_FILENAME if npy.is_file() else ''})")
+    if not npy.is_file():
+        raise ValueError(f"{toml_path}: [[room]] rows without "
+                         f"{ROOMS_FILENAME} beside it")
+    try:
+        grid = np.load(npy, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{ROOMS_FILENAME} is not a readable .npy array: "
+                         f"{npy}: {e}")
+    return parse_room_graph(raw.get("room"), raw.get("opening"), grid,
+                            tilemap.shape, str(toml_path))
 
 
 def _parse_match_file(base: Path, spawn_rooms: list):
