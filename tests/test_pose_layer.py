@@ -38,8 +38,14 @@ from renderer.unit_looks import all_look_names, look_path, looks_table  # noqa: 
 
 from _pose_glb import (CRITTER_BONES, axis_quat, critter_clips,  # noqa: E402
                        critter_settings, write_glb)
+from _pose_looks import quaternius_looks  # noqa: E402
 
-SHIPPED = all_look_names(looks_table(CFG))
+# The looks these tests' properties are about: the Quaternius pack's (its
+# clip names, its 0.51 rate); every look the table ships is ALL_SHIPPED
+# (#184: the player is a SOMA look, tests/test_pose_soma.py and
+# tests/test_pose_locomotion.py)
+SHIPPED = quaternius_looks()
+ALL_SHIPPED = all_look_names(looks_table(CFG))
 SETTINGS = pose_settings(CFG)
 
 
@@ -720,7 +726,7 @@ def _renderer(monkeypatch, enabled: bool, skinner=None):
     monkeypatch.setattr(CFG.render.pose, "enabled", enabled)
     r = umr.UnitModelRenderer()
     table = looks_table(CFG)
-    for name in SHIPPED:
+    for name in ALL_SHIPPED:
         model = SimpleNamespace(boneCount=53, name=name)
         anims = [SimpleNamespace(tag=(name, k), frameCount=40) for k in range(4)]
         r._looks[name] = umr._Look(name=name, path=look_path(name), model=model,
@@ -781,7 +787,7 @@ def test_on_path_is_render_only_and_batched_per_look(monkeypatch):
     monkeypatch.setattr(umr, "rl", fake)
     sk = _FakeSkinner()
     r = _renderer(monkeypatch, enabled=True, skinner=sk)
-    assert r._pose is not None and {p[0] for p in sk.prepared} == set(SHIPPED)
+    assert r._pose is not None and {p[0] for p in sk.prepared} == set(ALL_SHIPPED)
     units = [_FrozenUnit(i, 3 * i, 5, path=[(0, 0)] if i % 2 else None,
                          zombie=i > 3) for i in range(1, 8)]
     for k in range(4):

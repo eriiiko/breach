@@ -170,6 +170,9 @@ def critter_settings(**over) -> dict:
                   "suppress": ["arm_forward"]},
         "roles": {"player": {"reactions": ["fire", "hit"], "posture": 0.0},
                   "zombie": {"reactions": ["melee", "hit"], "posture": 1.0}},
+        # #184: the reload / throw one-shots, off ("" = no clip)
+        "reload": {"clip": "", "layers": ["front"]},
+        "throw": {"clip": "", "layers": ["front"], "release_s": 0.0},
     }
     pose.update(over)
     return {"render": {"pose": pose}}

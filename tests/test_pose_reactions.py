@@ -36,8 +36,13 @@ from renderer.unit_looks import all_look_names, look_path, looks_table  # noqa: 
 from simulation.events import ShotFiredEvent, UnitHitEvent  # noqa: E402
 
 from _pose_glb import CRITTER_BONES, critter_clips, critter_settings, write_glb  # noqa: E402
+from _pose_looks import quaternius_looks  # noqa: E402
 
-SHIPPED = all_look_names(looks_table(CFG))
+# The layer-level reaction tests run on the Quaternius looks (the two-sector
+# twist, the pack's clips); the renderer stubs register every shipped look
+# (#184: the player is a SOMA look; its locomotion: tests/test_pose_locomotion.py)
+SHIPPED = quaternius_looks()
+ALL_SHIPPED = all_look_names(looks_table(CFG))
 SETTINGS = pose_settings(CFG)
 LOOK = SHIPPED[0]
 DT = 1.0 / 60.0
@@ -509,7 +514,7 @@ def _renderer(monkeypatch, enabled=True):
     monkeypatch.setattr(umr, "rl", _Rl())
     monkeypatch.setattr(CFG.render.pose, "enabled", enabled)
     r = umr.UnitModelRenderer()
-    for name in SHIPPED:
+    for name in ALL_SHIPPED:
         model = SimpleNamespace(boneCount=53, name=name)
         anims = [SimpleNamespace(tag=(name, k), frameCount=40) for k in range(2)]
         r._looks[name] = umr._Look(name=name, path=look_path(name), model=model,
@@ -530,9 +535,9 @@ def _frames(r, sk, script, n_frames, x0=4.0):
     for k in range(n_frames):
         r.queue_events(script(k))
         units = [_Unit(1, x0, 40 - 0.25 * k), _Unit(2, x0 + 10, 40 - 0.25 * k)]
-        before = len(sk.rows.get(SHIPPED[0], []))
+        before = len(sk.rows.get(ALL_SHIPPED[0], []))
         r.draw_units(units, 8.0, 1.0 + k * DT, camera3d=None, light_view=None)
-        new = sk.rows[SHIPPED[0]][before:]
+        new = sk.rows[ALL_SHIPPED[0]][before:]
         rows[1].append(new[0])
         rows[2].append(new[1])
     return rows
@@ -598,7 +603,12 @@ def test_a_launch_fires_and_a_mid_flight_segment_does_not(monkeypatch):
                                              launch=True)] if k == 0 else [], 2)
     ps = r._anim[1].pose
     assert ps.aim_left > 0.0
-    assert ps.clip[_layer_index(FIRE.shot_layer)] == r._pose.rig(SHIPPED[0]).shot_clip
+    # the shot one-shot -- or, on a look that declares none (#184: the SOMA
+    # marine's Rifle_Shoot is left-handed), the aim overlay's clip
+    rig = r._pose.rig(ALL_SHIPPED[0])
+    sl = _layer_index(FIRE.shot_layer)
+    want = rig.shot_clip if rig.shot_clip != NO_CLIP else rig.overlay_clips[FIRE.overlay][sl]
+    assert ps.clip[sl] == want
 
 
 def test_the_legs_walk_along_the_travel_in_the_world(monkeypatch):

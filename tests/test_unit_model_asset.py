@@ -64,17 +64,29 @@ def test_every_shipped_look_file_exists():
 
 def test_every_shipped_look_carries_every_clip_the_renderer_names():
     """PROPERTY: for every model named in ``[render.unit_looks]``, every clip
-    name in ``CLIP_MAP`` is one of its animations, on a skinned mesh.
+    name in ``CLIP_MAP`` is one of its animations -- under the name its
+    skeleton's ``[render.pose.skeletons.*] clip_names`` gives it (#179; the
+    pose layer plays a SOMA look by those names, #184 ships one as the
+    player) -- on a skinned mesh.
 
     BREAKS IF: a model is regenerated without its clips or with renamed ones,
     a ``CLIP_MAP`` row names a clip some look does not have (that state would
     silently play idle on those units), or a file loses its skin (the
     renderer then reports it as not rigged and draws another look).
+    (Known limit, #184: with ``[render.pose] enabled = false`` the clip
+    player reads ``CLIP_MAP`` names as they are, so a SOMA look plays its
+    first clip in every state there -- the pose-off revert wants the
+    Quaternius ``space_marine`` back in the player row.)
     """
+    from renderer.pose_layer import _glb_skeleton, masks_for, pose_settings
+    settings = pose_settings(CFG)
     for path in _shipped_look_paths():
         doc = _gltf_json(path)
         clips = {a.get("name") for a in doc.get("animations", [])}
-        missing = sorted(set(CLIP_MAP.values()) - clips)
+        table = masks_for(_glb_skeleton(path), settings)[0]
+        names = settings.playback[table].clip_names
+        # "" = the skeleton declares it has none (#179; the SOMA shot, #184)
+        missing = sorted({names.get(c, c) for c in CLIP_MAP.values()} - clips - {""})
         assert not missing, f"{path.name} lacks the clips {missing}"
         assert doc.get("skins"), f"{path.name} has no skin"
 

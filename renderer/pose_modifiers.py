@@ -49,6 +49,7 @@ class _ResolvedTwist:
     bones: np.ndarray                            # every bone the twist moves (lower's subtree)
     region: np.ndarray                           # per moved bone: 0 = lower only, k = inside counter k
     counter: Tuple[Tuple[int, float], ...]       # (bone, share), the chain root-most first
+    origin_pivot: bool = False                   # #184: yaw about the model's origin
 
 
 def _yaw_about(angle: np.ndarray, pivot: np.ndarray) -> np.ndarray:
@@ -119,7 +120,8 @@ class AimTravelTwist:
             counter.append((c, float(share)))
         bones = np.flatnonzero(lower_sub)
         self._rigs[rig.name] = _ResolvedTwist(lower=lower, bones=bones,
-                                              region=region[bones], counter=tuple(counter))
+                                              region=region[bones], counter=tuple(counter),
+                                              origin_pivot=rule.pivot == "origin")
         rig.twist_layer = int(rig.owner_layer[lower])
 
     def apply(self, rig: LookRig, states: Sequence[PoseState], g: np.ndarray) -> None:
@@ -135,7 +137,8 @@ class AimTravelTwist:
         r = self._rigs[rig.name]
         d = twist[rows]
         gs = g[rows]
-        motions = [_yaw_about(d, gs[:, r.lower, :3, 3])]
+        pivot = np.zeros_like(gs[:, r.lower, :3, 3]) if r.origin_pivot             else gs[:, r.lower, :3, 3]
+        motions = [_yaw_about(d, pivot)]
         for c, share in r.counter:               # the chain, root-most first
             m = motions[-1]
             p = np.einsum("nij,nj->ni", m[:, :3, :3], gs[:, c, :3, 3]) + m[:, :3, 3]
@@ -181,6 +184,17 @@ def steer(ps: PoseState, a: AimTravelSettings, legs_layer: int,
     """
     if dt <= 0.0:
         return
+    alpha = lowpass_travel(ps, a, travel, moving, dt)
+    slew_twist(ps, a, backpedal_goal(ps, a, alpha), dt)
+    ps.layer_rate[legs_layer] = -1.0 if ps.back else 1.0
+
+
+def lowpass_travel(ps: PoseState, a: AimTravelSettings, travel: Optional[float],
+                   moving: bool, dt: float) -> float:
+    """:func:`steer`'s first stage, shared with the locomotion (#184): the
+    relative travel low-passed as a vector (target ``travel``; forward when
+    not moving; held when moving with no delta this frame). Returns its
+    angle ``alpha`` (radians, + = the unit's left)."""
     if travel is not None:
         target = (math.cos(travel), math.sin(travel))
     elif not moving:
@@ -190,17 +204,29 @@ def steer(ps: PoseState, a: AimTravelSettings, legs_layer: int,
     if target is not None:
         k = 1.0 if a.smooth_s <= 0.0 else 1.0 - math.exp(-dt / a.smooth_s)
         ps.travel = ps.travel + (np.array(target) - ps.travel) * k
-    alpha = math.atan2(float(ps.travel[1]), float(ps.travel[0]))
+    return math.atan2(float(ps.travel[1]), float(ps.travel[0]))
+
+
+def backpedal_goal(ps: PoseState, a: AimTravelSettings, alpha: float) -> float:
+    """The two-sector rule (#163): forward within ``theta``, backpedal past
+    ``theta + hysteresis`` (sets ``ps.back``); the legs' yaw goal, clamped
+    to ``+-theta``."""
     if ps.back:
         if abs(alpha) < a.theta - a.hysteresis:
             ps.back = False
     elif abs(alpha) > a.theta + a.hysteresis:
         ps.back = True
     goal = _wrap_pi(alpha - math.pi) if ps.back else alpha
-    goal = min(a.theta, max(-a.theta, goal))
+    return min(a.theta, max(-a.theta, goal))
+
+
+def slew_twist(ps: PoseState, a: AimTravelSettings, goal: float, dt: float) -> None:
+    """The twist moves toward ``goal`` at most ``twist_rate * dt``."""
     step = a.twist_rate * dt
     ps.twist += min(step, max(-step, goal - ps.twist))
-    ps.layer_rate[legs_layer] = -1.0 if ps.back else 1.0
 
 
-__all__ = ["AimTravelTwist", "steer"]
+__all__ = ["AimTravelTwist", "steer", "lowpass_travel", "backpedal_goal",
+           "slew_twist", "wrap_pi"]
+
+wrap_pi = _wrap_pi

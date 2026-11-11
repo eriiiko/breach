@@ -24,6 +24,8 @@ Flags (this tool's own):
                       movement reads held keys (gameplay pack G1p)
     --mouse X,Y@F     from frame F on, the mouse is at screen pixel (X, Y)
                       (repeatable; the last one at or before a frame wins)
+    --wheel D@F       the mouse wheel moves by D on frame F (repeatable; a
+                      zoom: + in, - out) (#184)
     --level NAME      the level (passed through to main.py)
     --profile         time the loop and print a report after the run: frame ms
                       and fps, sim steps per frame, the sim's pace, and the
@@ -68,6 +70,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_FRAMES = 120
+# --wheel: {frame: [delta, ...]}, filled by parse_args_full (#184)
+_WHEEL = {}
 
 # the profiler's own flags (tools/frame_profile.py); any of them loads it
 _PROFILE_FLAGS = ("--profile", "--profile-skip", "--glfinish", "--profile-inner")
@@ -122,6 +126,14 @@ def parse_args_full(argv):
             if not x or not y or not at:
                 raise SystemExit(f"--mouse wants X,Y@FRAME, got {spec!r}")
             mouse.append((int(at), int(x), int(y)))
+            i += 2
+            continue
+        if a == "--wheel":
+            spec = argv[i + 1]
+            d, _, at = spec.partition("@")
+            if not d or not at:
+                raise SystemExit(f"--wheel wants DELTA@FRAME, got {spec!r}")
+            _WHEEL.setdefault(int(at), []).append(float(d))
             i += 2
             continue
         if a == "--shot":
@@ -276,6 +288,13 @@ def main(argv=None) -> int:
     if mouse:
         rl.get_mouse_x = _get_mouse_x
         rl.get_mouse_y = _get_mouse_y
+    if _WHEEL:
+        orig_wheel = rl.get_mouse_wheel_move
+
+        def _get_mouse_wheel_move():
+            got = _WHEEL.get(frame[0])
+            return sum(got) if got else orig_wheel()
+        rl.get_mouse_wheel_move = _get_mouse_wheel_move
 
     sys.argv = ["main.py"] + passthrough
     print(f"[e2e_drive] main.py {' '.join(passthrough)} -- {frames} frames, "
