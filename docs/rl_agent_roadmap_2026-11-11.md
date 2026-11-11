@@ -65,7 +65,7 @@ are in no fixed order: take them by motivation.
 - **Product.** A design document on this branch: observation spec v1 (every list, every feature and its encoding), action spec v1 (every choice, its mask, and how a choice becomes verbs tick by tick), the order format v1, reward profile v1, what the value network sees, and the list of unit state the design adds. Then the critique passes, one critic at a time.
 - **How.** The discussion, one question at a time. Settled so far: the skeleton and the trigger. Next: what is in the list; the aim entries; the feet; the hand actions; the team display; the order; the reward; sight.
 - **Gate.** Erik agrees; the critique is closed.
-- **Lesson document.** How a policy learns from reward, in plain words (PPO).
+- **Lesson document.** How a policy learns from reward, in plain words (PPO): `docs/rl_lesson_0_learning_from_reward_2026-11-11.md`.
 
 ### Rung 1. The door
 

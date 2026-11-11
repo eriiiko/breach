@@ -119,8 +119,6 @@ from the survey. The ones most often needed:
   11 below. The plan holds the full notes for 1a, 1b and 1c; the orchestrator
   writes the others' notes at each boundary; 1g gets a spec document first
   and is tiered to Fable in small pieces (Erik, 2026-11-11).
-- Rung 0's lesson document is still owed (how a policy learns from reward,
-  in plain words).
 - Game findings from the critique, Erik's to rule on (design document section
   11): spawned zombies have 100 hit points and turned ones 400; a stunned
   soldier can reload and open doors; the bots' adjacent-enemy check ignores
@@ -143,7 +141,9 @@ from the survey. The ones most often needed:
   ledgers); `docs/rl_agent_roadmap_2026-11-11.md` (the ladder);
   `docs/rl_agent_design_2026-11-11.md` (rung 0, section by section; version
   2, agreed; its critique in `docs/rl_agent_design_2026-11-11_critique/`);
-  `docs/rl_agent_rung1_plan_2026-11-11.md` (rung 1's handoff plan). Earlier:
+  `docs/rl_agent_rung1_plan_2026-11-11.md` (rung 1's handoff plan);
+  `docs/rl_lesson_0_learning_from_reward_2026-11-11.md` (rung 0's lesson:
+  PPO in plain words; rung 2's lesson goes through the trainer). Earlier:
   `docs/research/rl_litsearch_2026-07-20.md`, `docs/roadmap_2026-07-30_rl_push.md`.
 - **Code seams:** `src/rl_env.py` (`BatchedEnv`), `src/control_policy.py`
   (the `policy` controller, `VERB_RULES`), `src/match_replay.py`
