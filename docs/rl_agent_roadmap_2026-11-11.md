@@ -88,6 +88,7 @@ are in no fixed order: take them by motivation.
   - **Shooting range:** one soldier, standing targets, one room. Minutes of training.
   - **Duel:** one against one first-generation bot, random rooms. About an hour.
   - **Experiment:** does copying the bots first (imitation on rung 1's records) shorten the path? Erik's ruling in the residency design (12.3) wants the bots to bootstrap early training.
+- **Erik's note for the trainer's design (2026-11-11).** The trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so that one run can later be spread over Erik's three PCs on Tailscale. Until then the three PCs run three experiments at once and share saved networks as opponents.
 - **Gate.** On rooms it has never seen, the soldier wins more than half its duels against the first-generation bot, and the replay shows it aiming, firing and moving on purpose.
 - **Lesson document.** The trainer, line by line.
 
@@ -143,7 +144,7 @@ are in no fixed order: take them by motivation.
 ## 4. Around the ladder
 
 - **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of the unit state this design adds, not the rungs after it. **Erik, 2026-11-11: P3a restarts when rung 0 is agreed**, and runs beside rungs 1 and 2.
-- **C4.** Erik's separate patch. The agent side needs three things from it: the verb in the verb table (its action column then follows by itself); a planted charge listed where the observation can read it (where, whose, ticks left); the count carried and the planting in progress as unit state.
+- **C4.** Erik's separate patch, landed 2026-11-11 as #193 (`plant_charge_intent`; the design document's sections 2, 3, 4 and 9 are written against it). The agent side needed three things from it, all now there: the verb in the verb table (its action column then follows by itself); a planted charge listed where the observation can read it (where, whose, ticks left); the count carried and the planting in progress as unit state.
 - **Light (#81), sight through smoke, noise the soldiers hear:** rung 8 needs them; nothing before does.
 - **GitHub.** The design session is issue #192. When the ladder is agreed in detail, each rung becomes a milestone or an issue and the pinned roadmap issue gets the order.
 - **Gameplay the design leans on,** Erik's to order, listed in the design document's section 11: a reason to walk (footsteps and spread by speed), stances, revive, drag, pick up / put down, a general use.
