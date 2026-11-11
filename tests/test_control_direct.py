@@ -32,7 +32,9 @@ from simulation.intents import FP_ONE  # noqa: E402
 SHIPPED = dict(move_forward="R", move_back="F", strafe_left="D",
                strafe_right="G", trigger="MOUSE_LEFT", melee="MOUSE_RIGHT",
                shove="SPACE", reload="Z", throw="W", cycle_grenade="4",
-               flashlight="Q", use="E", full_speed="A")
+               flashlight="Q", use="E", full_speed="A",
+               # #193 (Erik blessed the defaults, 2026-11-11)
+               plant_charge="X", cycle_charge_timer="5")
 
 
 def _cfg(keys):

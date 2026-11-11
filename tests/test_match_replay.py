@@ -197,6 +197,8 @@ class _ThrowerControl(ControlSource):
             # G7p: the light off for a stretch of every 50 ticks (the hold
             # verb, issued every tick as a control would)
             sim.set_flashlight(u.id, sim.tick % 50 >= 30)
+            if sim.tick == 6:
+                sim.plant_charge_intent(u.id, 1)    # #193 (clamped to 5 s)
             if sim.tick % 9 == 0:
                 sim.set_move_dir(u.id, dx, dy, 32768)   # half throttle
             elif sim.tick % 9 == 5:
@@ -213,7 +215,8 @@ def thrower(monkeypatch):
 def test_every_intent_kind_replays_live(tmp_path, thrower):
     """Property: a match issuing every recordable kind (move, clear, aim,
     trigger, throw with and without a reach, USE, RELOAD, SHOVE (G5p-a2),
-    MELEE (G6p), the FLASHLIGHT hold (G7p), the horde's ZOMBIE intent)
+    MELEE (G6p), the FLASHLIGHT hold (G7p), the PLANT (#193), the horde's
+    ZOMBIE intent)
     replays to every checkpoint and the original final digests. Breaks if
     any kind is fed back with another argument, out of order, or dropped
     (checked: dropping the throws diverges at tick 15). USE has no effect in

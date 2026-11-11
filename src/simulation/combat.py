@@ -1968,7 +1968,8 @@ def process_melee_intents(units, tick, tables, impulse_table, events=None,
         u.pending_melee = False
         if not u.alive or u.is_zombie or not u.melee_id:
             continue
-        if not composed_flags(u).can_act or u.throw_release_tick >= 0:
+        if (not composed_flags(u).can_act or u.throw_release_tick >= 0
+                or getattr(u, "plant_done_tick", -1) >= 0):  # planting (#193)
             continue
         weapon = tables.weapons.by_name[u.melee_id]
         if (u.last_blow_tick >= 0

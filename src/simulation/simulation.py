@@ -93,7 +93,8 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
     apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
-    DoorDestroyedEvent, ExplosionEvent, ThrowEvent, WallDestroyedEvent,
+    DoorDestroyedEvent, ExplosionEvent, PlantEvent, ThrowEvent,
+    WallDestroyedEvent,
 )
 from simulation.unit import THROW_NO_REACH
 from simulation.cover_system import attach_cover
@@ -126,6 +127,7 @@ from simulation.orders import (
 # TwoPhaseWEGO: WEGO control sources never call the intent facade, so no unit
 # ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
 # on a ``getattr(..., default)`` (the dormancy guarantee).
+from simulation import charges
 from simulation import intents as _intents
 from simulation import speeds
 from simulation import turning
@@ -153,7 +155,7 @@ from simulation.damage import tick_credit
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
 from simulation.weapons import (
-    FIRE_ORDER_ARCHETYPES, fuse_ticks_from_seconds,
+    FIRE_ORDER_ARCHETYPES, PLANT_WEAPON, fuse_ticks_from_seconds,
     rebuild_tables as rebuild_weapon_tables,
 )
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
@@ -1089,6 +1091,43 @@ class Simulation:
             None if reach_q is None else int(reach_q), int(kind))
         self._possessed_ids.add(unit_id)
 
+    def plant_charge_intent(self, unit_id: int, fuse_ticks: int) -> None:
+        """PLANT (#193): latch planting the unit's charge on the floor at its
+        feet with a timer of ``fuse_ticks`` INTEGER ticks (every caller
+        converts once at its own door, ``weapons.fuse_ticks_from_seconds``),
+        CLAMPED here to the plant row's fuse range (``[weapons.c4_satchel]
+        fuse_min_seconds`` .. ``fuse_max_seconds``, 5 .. 60 s), as a
+        throttle is clamped; the clamped value is what the tap records.
+        Consumed (and cleared) at the next tick's slot 1b by
+        :meth:`_start_plant`.
+
+        The plant takes ``[weapons.c4_satchel] plant_seconds``: ignored,
+        with no event, if the unit carries no charge, is already planting
+        or winding up a throw, or cannot act; otherwise a render-only
+        :class:`~simulation.events.PlantEvent` is emitted and, that many
+        ticks later, the charge lies on the unit's centre tile as it stands
+        THEN, owned by the unit (the blast's credit), detonating ``fuse``
+        ticks after that (the conductor's slot 9e, ``charges.tick``); the
+        count is spent then. A unit that dies or is stunned meanwhile plants
+        nothing and keeps its count. Integer, no random number. Bots never
+        call it (yet); an RL agent and the human do."""
+        if isinstance(fuse_ticks, bool) or not isinstance(fuse_ticks, Integral):
+            raise TypeError(
+                f"plant_charge_intent: fuse_ticks must be an integer number "
+                f"of ticks, got {fuse_ticks!r}")
+        row = self.weapons_tables.weapons.by_name[PLANT_WEAPON]
+        lo = fuse_ticks_from_seconds(row.fuse_min_seconds, self._tps)
+        hi = fuse_ticks_from_seconds(row.fuse_max_seconds, self._tps)
+        fuse_ticks = min(max(int(fuse_ticks), lo), hi)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "plant_charge_intent",
+                                    (int(unit_id), fuse_ticks))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_plant = fuse_ticks
+        self._possessed_ids.add(unit_id)
+
     def use_intent(self, unit_id: int) -> None:
         """USE: latch a context interaction (toggle an adjacent door's latch,
         §3c). Consumed (and cleared) at the next tick."""
@@ -1229,6 +1268,10 @@ class Simulation:
                     u.live_trigger = False
                 if getattr(u, "throw_release_tick", -1) >= 0:
                     u.throw_release_tick = -1
+                # ... and a plant under way (#193): nothing is planted, the
+                # count was never spent.
+                if getattr(u, "plant_done_tick", -1) >= 0:
+                    u.plant_done_tick = -1
                 continue
 
             # AIM: already turned toward in slot 1a (the turning law, G5p-a1;
@@ -1241,6 +1284,14 @@ class Simulation:
                 u.pending_throw = None
                 self._start_throw(u, throw)
             self._advance_throw(u)
+
+            # PLANT -> start planting the charge (edge; latched); a plant
+            # under way is carried to its last tick (#193).
+            plant = getattr(u, "pending_plant", None)
+            if plant is not None:
+                u.pending_plant = None
+                self._start_plant(u, plant)
+            self._advance_plant(u)
 
             # USE -> toggle an adjacent door latch (edge; latched).
             if getattr(u, "pending_use", False):
@@ -1283,6 +1334,8 @@ class Simulation:
         pre-G3p same-tick throw, bit for bit."""
         if u.throw_release_tick >= 0:
             return                            # already winding up
+        if u.plant_done_tick >= 0:
+            return                            # planting a charge (#193)
         if u.grenade_counts[throw.kind] <= 0:
             return                            # none of that kind
         if not composed_flags(u).can_act:
@@ -1322,6 +1375,48 @@ class Simulation:
             u, u.throw_kind, u.throw_fuse_ticks,
             None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
             unit_fixed.cos_q16(facing_q), -unit_fixed.sin_q16(facing_q))
+
+    def _start_plant(self, u, fuse_ticks) -> None:
+        """PLANT consumption (the law of :meth:`plant_charge_intent`, #193).
+        Integer state only, no random number. A unit carrying no charge,
+        already planting or winding up a throw, or whose statuses forbid
+        acting, does nothing and emits nothing; otherwise a
+        :class:`~simulation.events.PlantEvent` is emitted and the plant runs
+        until ``plant_done_tick`` (with a 0-tick plant the charge lies down
+        this very tick, :meth:`_advance_plant` being called next)."""
+        if u.plant_done_tick >= 0 or u.throw_release_tick >= 0:
+            return                            # hands busy
+        if u.has_explosive <= 0 or not u.charge_ammo:
+            return                            # no charge carried
+        if not composed_flags(u).can_act:
+            return                            # stunned, paralysed, ...
+        ticks = self.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks
+        self.tick_events.append(PlantEvent(unit_id=int(u.id),
+                                           ticks=int(ticks)))
+        u.plant_done_tick = self.tick + ticks
+        u.plant_fuse_ticks = int(fuse_ticks)
+
+    def _advance_plant(self, u) -> None:
+        """One tick of a plant under way: a unit that can no longer act
+        plants NOTHING and keeps its count; on the plant's last tick the
+        charge lies on the unit's centre tile as it stands now, owned by the
+        unit, detonating ``plant_fuse_ticks`` after this tick, and one
+        charge is spent. (A dead unit never gets here: the consume loop
+        drops its plant.)"""
+        if u.plant_done_tick < 0:
+            return
+        if not composed_flags(u).can_act:
+            u.plant_done_tick = -1
+            return
+        if self.tick < u.plant_done_tick:
+            return
+        u.plant_done_tick = -1
+        ty, tx = u.center_tile_y(), u.center_tile_x()
+        self.planted_charges.append(charges.PlantedCharge(
+            tx, ty, u.charge_ammo, u.id,
+            det_tick=self.tick + int(u.plant_fuse_ticks),
+            approach=(ty, tx)))
+        u.has_explosive -= 1
 
     def _release_grenade(self, u, kind, fuse_ticks, reach_q, dx_q,
                          dy_q) -> None:
@@ -2150,6 +2245,16 @@ class Simulation:
         # the sources read it for damage; then each living source enqueues
         # its per-tick heat (lands at the next 6b flush). A source-free level
         # only clears the log, which is empty at every tick boundary.
+        # Planted charges (#193): the continuous path's ONE driver of
+        # ``charges.tick`` -- a ruleset that owns the unit slots
+        # (OnePhaseWEGO, ``drives_units``) ticks them at the head of its own
+        # timeline instead, so no charge is ever ticked twice. Beside the
+        # timed charges and for the same reasons (this tick's door state;
+        # the wall damage before the recorder snapshot; the edits at the
+        # next 6b), and BEFORE the heat sources so its blast is in
+        # gmap.blast_log when they read it.
+        if self.planted_charges and not self.ruleset.drives_units:
+            charges.tick(self)              # (d') planted-charge detonations
         if self._heat_sources:
             sweep_heat_sources(self)        # (d'') heat-source blasts + deposits
         elif self.gmap.blast_log:

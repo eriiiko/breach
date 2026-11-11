@@ -11,7 +11,7 @@ debug ring.
 
 The parts:
 
-- **The tap** lives in the sim (``Simulation.attach_intent_log``): the eight
+- **The tap** lives in the sim (``Simulation.attach_intent_log``): the
   intent entry points hand every call to the attached sink BEFORE acting,
   with the tick it was issued at. :class:`IntentLog` is that sink. No
   controller logs anything itself.
@@ -92,7 +92,10 @@ FORMAT_NAME = "breach-match-replay"
 #: either and is refused rather than replayed on a changed intent set. G7p
 #: (the ``set_flashlight`` kind) lands under this same v6: nothing was
 #: released between the two patches, so one bump covers both.
-FORMAT_VERSION = 6
+#: v7 (#193, 2026-11-11): the ``plant_charge_intent`` kind, and the
+#: rifleman's loadout carries ONE planted C4 (was two unplantable charges) --
+#: a v6 recording could not name the verb and is refused.
+FORMAT_VERSION = 7
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -109,6 +112,7 @@ INTENT_KINDS = {
     "shove_intent": ("int",),
     "melee_intent": ("int",),
     "set_flashlight": ("int", "bool"),
+    "plant_charge_intent": ("int", "int"),
     "drive_zombies": ("ints",),
 }
 #: Entry points the tap sees but the format refuses to record.

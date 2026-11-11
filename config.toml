@@ -1398,7 +1398,8 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # facing; hold the button to keep striking at the weapon's cadence) and
 # flashlight (G7p: a TOGGLE of the possessed unit's light bit) are live now,
 # as are reload (G2p), cycle_grenade (G3p) and shove (G5p-a2: push the
-# adjacent unit nearest the facing).
+# adjacent unit nearest the facing), plant_charge and cycle_charge_timer
+# (#193: plant the carried charge on the floor; step its timer).
 [controls.keys]
 move_forward = "R"
 move_back = "F"
@@ -1413,6 +1414,8 @@ cycle_grenade = "4"
 flashlight = "Q"
 use = "E"
 full_speed = "A"
+plant_charge = "X"       # #193: plant the C4 at the feet with the selected timer
+cycle_charge_timer = "5" # #193: step the timer 5 -> 10 -> ... -> 60 -> 5 s
 
 # Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7 — the shipped
 # GLSL Fresnel/GGX/refraction look, NOT the CPU placeholder above). RENDER-ONLY
@@ -3346,6 +3349,13 @@ ammo_family = "demo_charge"
 ap_cost = 1
 mass_kg = 2.0
 loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
+# The continuous plant verb's row (#193, Simulation.plant_charge_intent):
+# planting takes plant_seconds (death or a stun meanwhile plants nothing), and
+# the timer is clamped to [fuse_min_seconds, fuse_max_seconds] (Erik's ruling,
+# 2026-11-11: 5 s .. 1 min, chosen in 5 s steps by the direct control).
+plant_seconds = 1.0                   # PLACEHOLDER
+fuse_min_seconds = 5.0
+fuse_max_seconds = 60.0
 
 # --- W4 SPRAY rows (mechanics/03 §5/§6): sustained cone of FIELD WRITES ------
 # CONE-ANGLE CONVENTION OF RECORD: the armory table (§6) quotes the FULL cone
@@ -4881,7 +4891,8 @@ cone_half_deg = 60.0         # the shove reaches the adjacent unit nearest the f
 [loadouts.rifleman]      # the v1 loadout (rl-ready scope §3, G3p): K5 + 2 frags, a smoke, a flashbang
 weapon = "k5_carbine"
 grenades = { grenade_frag = 2, grenade_smoke = 1, grenade_flash = 1 }   # by hand-grenade [ammo.*] row; a bare int means that many frags
-explosives = 2
+explosives = 1           # #193: ONE planted charge (X plants it, 5 steps the timer)
+charge = "demo_c4"       # #193: WHICH charge -- a demo-charge [ammo.*] row (the C4 satchel: [payloads.demolition_c4])
 magazines = 3            # TOTAL carried, the one in the gun included (G2p: one loaded, two spare); 0 or absent = spares untracked, today's infinite auto-reload
 kit_kg = 20.0            # G5p-a2: what the kit weighs; the unit impulse law's mass is the body's (80 kg) plus this -- the 100 kg reference marine
 melee = "rifle_butt"     # G6p: a [weapons.*] row of the melee archetype, the blow of the melee verb (RMB / pad R3); absent = no melee, the verb does nothing
