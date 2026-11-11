@@ -202,6 +202,103 @@ within its radius; with wander, hearing, fire and doors switched off the
 horde's behaviour is the P3d field law alone (its own written spec and
 re-pin). **HUMAN-TEST.** Tier: Opus.
 
+**As built (G9p, 2026-11-11).** Two stages, each re-pinned on its own.
+
+*Stage 1, the field law (residency P3d).* `src/simulation/horde.py` +
+`cpp/src/horde_field.cpp` (`PhysicsEngine.horde_field`, a host call in the CPU
+and the CUDA module, on the `/fp:strict` list; `horde.flood_reference` is the
+same law for a map without an engine). A field is a 4-connected integer BFS
+over the ANCHOR grid of a footprint (an anchor is passable when its whole
+block is in bounds and on `mobility > 0`, `is_passable_block`'s own
+predicate); seeds are labelled 0 passable or not, the frontier enters only
+passable cells, an unreached cell is `0x7FFFFFFF`. The prey field is seeded
+at every living non-zombie's centre in the zombie's anchor space
+(`centre - fp // 2`: A*'s old goal when the footprints agree). Each awake
+zombie steps to its lowest 4-neighbour STRICTLY below its own cell that it
+can enter now, else waits (keeping its stride clock, so it steps the tick a
+way opens). The cache (`HordeState`, never synced, never digested) drops
+every field at a tick `% field_refresh_ticks == 0` and whenever
+`GameMap._tile_serial` moved, and floods a field the first tick a step needs
+it. Activation and the bite are unchanged, the `sqrt` gates integer squared
+compares (identical results: a correctly rounded sqrt is monotone). No A*
+call remains in the law; `Unit.zombie_path` / `zombie_path_idx` are gone.
+DEVIATION: the descent's tie order is per cell parity (vertical first on an
+even `x + y`, horizontal first on an odd one) instead of one fixed order --
+on a 4-connected field a diagonal goal has two equal lower neighbours on
+every cell, and one fixed order walks an L (all north, then all east); the
+parity order walks the staircase. Still one fixed rule per cell.
+
+*Stage 2, the behaviours on the field* (each a `[zombie]` switch through the
+refusing door `horde.horde_settings`; all five off is stage 1 bit for bit,
+the permanent gate `tests/test_horde_behaviours.py::test_with_every_
+behaviour_off_the_horde_plays_the_stage_1_law`):
+
+- WANDER: a dormant zombie steps on ticks with `(tick + 37 id) % period == 0`,
+  in the direction `NEIGHBOURS[philox32_below(w, 4)]`, `w` the first word of
+  the vendored Philox block with key 0 and counter `(tick, 0, "WAND", id)` --
+  a seedless hash, never a stream (the sim's generator is untouched, gated).
+  A step that would leave the leash is skipped; a zombie pushed outside it
+  steps back toward its anchor.
+- HEARING (`simulation/noise.py`, `GameMap.noise_log`): a noise is
+  `(tile, radius in tiles)`; shots (each trigger pull of a ranged marcher and
+  each spray burst, at the shooter's centre), detonations (`execute_payload`)
+  and door bashes emit; the log is drained at slot 5 every tick. A non-awake
+  zombie within a radius (squared, inclusive, walls ignored) takes the
+  nearest noise as its target with a fresh timeout and walks the noise's
+  field (seeded at the noise tile in anchor space) at the shamble; within
+  `noise_arrive_m`, at the timeout, or with no path it SETTLES -- dormant
+  there, its wander anchor moved there. At most `noise_fields_max` distinct
+  targets live (the newest; a dropped one's zombies settle). `loudness` is
+  METRES of hearing radius on weapon rows (required on projectile / hitscan /
+  spray rows; the old 0..1 identities x 30 m) and payload rows (optional).
+- FEAR OF FIRE: burning tiles and tiles with `temperature >= fear_temp` (Q16
+  game degrees above ambient) are out of the mask at each refresh; every step
+  (descent and wander) refuses a block holding one on the LIVE map. A zombie
+  the feared field does not reach walks the same prey goals flooded without
+  the fear, so it comes up to the fire's edge and waits there (the design's
+  "waits at the edge"; without it a cut-off zombie would wait where it
+  stood).
+- DOOR BASHING: the tiles of a living closed door entity that is not a hull
+  door (no span tile borders vacuum, the ambient ring or the map's edge,
+  4-way) are in the mask; a descent blocked only by such tiles strikes the
+  first one (row-major) through `combat.chew_wall` (the door tile's own
+  `wall_hp`; `destroy_wall` at 0, and the slot-9e door sweep then destroys the
+  whole door) at the bite's cadence (`last_melee_tick`), only while it can
+  act; each strike is a noise. No schema hp was needed: a closed door's hp is
+  its tiles' `wall_hp`.
+- SPRINT: an awake zombie with `has_los` to a living prey within
+  `sprint_radius_m` walks at `SpeedTable.zombie_sprint_ticks` (the `[speeds]`
+  sprint as an integer cadence) through `default_speed` (terrain, effort).
+  A zombie with its own int cadence keeps it.
+- State: `Unit.zombie_noise_y/x/ticks`, `zombie_anchor_y/x` (fixed-width,
+  synced), hashed in the unit digest as `noise` / `anchor` only while set,
+  cleared at death, conversion and waking (`horde.clear`).
+
+PLACEHOLDERS chosen (Erik tunes at the play test): `field_refresh_ticks = 2`
+(a marine at full speed outruns the field by at most ~1.1 tile);
+`wander_period_seconds = 3.0`, `wander_leash_m = 1.5` (5 tiles);
+`noise_timeout_seconds = 20.0`, `noise_arrive_m = 0.7` (2 tiles),
+`noise_fields_max = 4`; `fear_temp = 60.0`; `door_bash_damage = 2.0` (a
+40 hp closed door takes 20 strikes at the 1 s bite cadence: 20 s for one
+zombie), `bash_loudness_m = 12.0`; `sprint_radius_m = 8.0` (24 tiles); weapon
+loudness carbine 24 m, whisper 4.5 m, lances 3 m, LR-50 / Jackhammer 30 m;
+payload loudness frag 40 m, C4 / cook-off / engine death 60 m, smoke, teargas
+and poison 8 m.
+
+Re-pins: stage 1 -- ship_demo seed 1 win 0 at 266 -> win 1 at 264 (the
+spawned horde's activation ticks unchanged, the first different step on tick
+195, zombie 10 never bites); the box's outcome and kills unchanged. Stage 2 --
+ship_demo win 1 at 264 -> win 0 at 264 (the sprinting horde bites and converts
+three bots, 204-214); the box 130 -> 92 ticks (the sprint alone). Rationale and
+values beside the pins in `tests/test_zombie_control.py`. Slot 5 on ship_demo
+seed 1 (CPU, `bench_bot_matches --profile`): before 0.152 ms mean / 0.200 p95
+/ 2.04 max (the A* spikes), stage 1 0.139 / 0.192 / 0.32, stage 2 0.162 /
+0.248 / 0.81.
+
+Not done: smoke wariness (later, by design); the device kernel (P7d). A noise
+log entry made at slot 9e is heard the next tick and is not synced (accepted
+gap for a save / load between).
+
 ## 4. Order
 
 G1p (done) → G2p (building) → G1p-c speeds → G3p → G4p → G5p-a / G5p-b →

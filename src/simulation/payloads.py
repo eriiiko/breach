@@ -434,6 +434,10 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         if log is not None:
             log.append((int(fy), int(fx), int(payload.radius),
                         float(payload.wall_damage)))
+    # G9p: the detonation is a NOISE at its tile with the row's
+    # ``loudness`` (metres, quantized once; 0 = silent).
+    from simulation.noise import emit as _emit_noise
+    _emit_noise(gmap, fy, fx, getattr(payload, "loudness_tiles", 0))
     if payload.unit_damage > 0:
         apply_blast_damage(units, fx, fy, payload.radius,
                            payload.unit_damage, events=events,

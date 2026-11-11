@@ -399,6 +399,10 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         if hasattr(unit, "impulse_books"):
             from simulation import unit_impulse
             unit_impulse.clear(unit)
+        # G9p: a corpse hears nothing and wanders nowhere.
+        if hasattr(unit, "zombie_noise_ticks"):
+            from simulation import horde
+            horde.clear(unit)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:

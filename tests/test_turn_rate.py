@@ -293,14 +293,35 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: 9160c4966fed9b0634ad, tick 16cfecdec6e602d9b547f9d37019b63fd309764dc1
 #: cd282ef9665a5c597453c6, units 72b7eba882b7bcb97c382e525690666e83135343
 #: c8f045d042c93671b130fd1c)
+#: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
+#: residency P3d: the horde descends an integer BFS field, no A*; see
+#: tests/test_zombie_control.py's pins for the law and its proof). This
+#: gate's dial is untouched; the horde under it walks the field now, so
+#: the match it pins is re-measured on this tree with the gate's own
+#: settings -- the law is the whole move.
+#: (was win 0 at 244; field
+#: a669d9431e8ba01e9c13d8dc9397ac91100eeecc2f1e69d41c6821c6a8f39cae; tick
+#: 94c39cffdb18d4740053e7d643d91b2feb453f468834b781dd752d4ace8e2e5c; units
+#: 13124e00feec4fe69d07512b624595d00f9bb797a649ae71d2dbe0a62a431cf0)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 244; field
+#: d60edc2e550ade27abc7db88a8d0c91f233f3f9f2979a434e899a72e041ba36f; tick
+#: d00e655e3f97f5e7301c47572fca0a36585d58484729b63265184162814ed150; units
+#: 48d75c9a7320bf40d0d013aecdd7be165c31a3dcb76ec2902cc55a477951c8f6)
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=244,
-    field_digest="a669d9431e8ba01e9c13d8dc9397ac91"
-                 "100eeecc2f1e69d41c6821c6a8f39cae",
-    tick_digest="94c39cffdb18d4740053e7d643d91b2f"
-                "eb453f468834b781dd752d4ace8e2e5c",
-    unit_stream="13124e00feec4fe69d07512b624595d0"
-                "0f9bb797a649ae71d2dbe0a62a431cf0")
+    outcome="draw", team=None, ticks=260,
+    field_digest="ff07e64c5d41ebfd86c553e60d2637ee"
+                 "32a8f99be4a72f3bc677ee9254e04349",
+    tick_digest="cf0300aa1adc8bd8f1ea33a1938a54ee"
+                "a0bea6a77701abe14fa1818c9d85106f",
+    unit_stream="4c6bae4002187bd7bb77bfaa88e832d9"
+                "50b134c644eda8cb76696f6f2f8c8668")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

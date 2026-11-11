@@ -13,6 +13,7 @@
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
+#include "horde_field.h"   // #183 G9p: the horde's distance field (host reference)
 
 // #29 P1b: the build id, defined in the GENERATED TU <build dir>/generated/
 // build_id.cpp that cpp/gen_build_id.cmake writes at BUILD time (git HEAD's
@@ -4011,6 +4012,38 @@ PYBIND11_MODULE(breach_physics, m) {
     // moves in here in S4.
     py::class_<PhysicsEngine>(m, "PhysicsEngine")
         .def(py::init<>())
+        // #183 G9p (residency P3d, design §4.9): THE HORDE FIELD's host
+        // reference -- an integer BFS over the footprint-passable anchor grid
+        // (horde_field.h). A host call in both modules (the device kernel is
+        // residency P7d). `tile_ok` (h, w) uint8, `seeds` (n, 2) int32 rows
+        // (y, x), `out` (h, w) int32, overwritten; returns the cells reached.
+        // Stateless: it reads nothing of the engine.
+        .def("horde_field",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> tile_ok, int fp,
+                py::array_t<int32_t, py::array::c_style> seeds,
+                py::array_t<int32_t, py::array::c_style> out) {
+                 auto [ok, h, w] = get_2d_const(tile_ok);
+                 auto [dst, h2, w2] = get_2d(out);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "horde_field: tile_ok and out differ in shape");
+                 if (fp < 1)
+                     throw std::invalid_argument("horde_field: fp must be >= 1");
+                 if (seeds.ndim() != 2 || seeds.shape(1) != 2)
+                     throw std::invalid_argument(
+                         "horde_field: seeds must be an (n, 2) int32 array");
+                 const int n_seeds = static_cast<int>(seeds.shape(0));
+                 const int32_t* sp = n_seeds > 0 ? seeds.data() : nullptr;
+                 int64_t reached;
+                 {
+                     py::gil_scoped_release release;
+                     reached = horde::flood(ok, h, w, fp, sp, n_seeds, dst);
+                 }
+                 return reached;
+             },
+             py::arg("tile_ok"), py::arg("fp"), py::arg("seeds"),
+             py::arg("out"))
         // arc #54 §2.7 (gas-energy conservation): energy that left the
         // accountable set through the W3 water-displacement evacuation
         // (shares into vacuum / the ambient ring / thermal solids). int64,

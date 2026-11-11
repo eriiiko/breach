@@ -75,14 +75,16 @@ class SpeedTable:
     (``full_cost_q > ONE``: never a whole tile in a tick). ``side_q`` /
     ``back_q``: the direction factors in Q16. ``zombie_shamble_ticks``: the
     zombie's integer walk cadence (ticks per tile). ``zombie_sprint_cost_q``:
-    the zombie sprint in Q16 ticks per tile -- read and checked now, used by
-    nothing until the zombie patch (G9p)."""
+    the zombie sprint in Q16 ticks per tile (checked: never a whole tile in a
+    tick); ``zombie_sprint_ticks`` its integer cadence, the horde's sprint
+    (G9p, ``ai_zombie``)."""
     walk_cost_q: int
     full_cost_q: int
     side_q: int
     back_q: int
     zombie_shamble_ticks: int
     zombie_sprint_cost_q: int
+    zombie_sprint_ticks: int
     tile_size_m: float
     ticks_per_second: int
 
@@ -181,6 +183,8 @@ def speed_table(cfg, tile_size_m: float) -> SpeedTable:
         zombie_shamble_ticks=ticks_from_seconds(tile / s.zombie_shamble_mps,
                                                 tps),
         zombie_sprint_cost_q=sprint,
+        zombie_sprint_ticks=ticks_from_seconds(tile / s.zombie_sprint_mps,
+                                               tps),
         tile_size_m=tile,
         ticks_per_second=tps,
     )

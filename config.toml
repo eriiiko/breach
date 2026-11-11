@@ -108,7 +108,7 @@ xeno_sprint_ticks_per_tile = 1
 marine_walk_mps = 1.4      # throttle 0, weapon ready. PLACEHOLDER, Erik tunes (realised 1.400 m/s: 5.709 ticks/tile)
 marine_full_mps = 4.5      # throttle ONE, a run with ~20 kg of kit. PLACEHOLDER (realised 4.500 m/s: 1.776 ticks/tile)
 zombie_shamble_mps = 0.6   # PLACEHOLDER; the zombie walk is whole ticks per tile: 13 -> realised 0.615 m/s
-zombie_sprint_mps = 1.15   # 82 % of the marine walk. PLACEHOLDER; read and door-checked, UNUSED until the zombie patch (G9p)
+zombie_sprint_mps = 1.15   # 82 % of the marine walk. PLACEHOLDER; the horde's sprint (G9p, [zombie] sprint): 7 ticks per tile on the 0.333 m tile
 sideways_frac = 0.8        # the walk at 90 deg to the facing (Erik's number): 1.12 m/s
 backward_frac = 0.6        # the walk straight backward, every throttle (Erik's number): 0.84 m/s
 
@@ -3115,7 +3115,10 @@ cover_exposure = 1.0   # the `foliage` precedent (permeable, never a roll): a
 # as rows here with the SAME NUMBERS — zero behavior change; the unified
 # march / spread split / crits / payload executor / ammo economy are W2/W3.
 # Unlisted columns take the loader defaults (spread 0, shots 1, rof 0, mag 0,
-# crit_chance 0, crit_mult 2.0, mass 0, loudness 0, payload columns 0/empty).
+# crit_chance 0, crit_mult 2.0, mass 0, payload columns 0/empty). loudness
+# (G9p) is METRES of hearing radius and REQUIRED on a row that fires
+# (projectile / hitscan / spray: a shot is a noise, simulation/noise.py);
+# 0 elsewhere.
 #
 # METER-BASED RANGES (W6, Erik's design decision 2026-07-07): weapon reach is
 # authored as range_m — PHYSICAL METERS — and converts to the integer tile
@@ -3144,7 +3147,7 @@ ap_cost = 1
 crit_chance = 0.0                     # crits activate in W2
 crit_mult = 2.0
 mass_kg = 3.4
-loudness = 0.8                        # reserved, no consumer yet (stealth layer)
+loudness = 24.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.hand_grenade]                # thrown — the shipped grenade, re-homed
 archetype = "lobbed"
@@ -3160,14 +3163,14 @@ fuse_default_seconds = 1.0
 # throw). PLACEHOLDER: Erik tunes at the play test.
 throw_windup_seconds = 0.3
 mass_kg = 0.4
-loudness = 0.0                        # the payload is what's loud
+loudness = 0.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.breach_charge]               # demolition — the shipped door charge, re-homed
 archetype = "placed"
 ammo_family = "demo_charge"
 ap_cost = 1
 mass_kg = 1.0
-loudness = 1.0
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.lance_3]                     # laser rifle — the FIRST HITSCAN (W2, mechanics/03 §5/§6)
 archetype = "hitscan"
@@ -3183,7 +3186,7 @@ ap_cost = 1
 crit_chance = 0.0                     # HITSCAN does not crit in v1 (skewer+attenuation is its identity)
 crit_mult = 2.0
 mass_kg = 4.1
-loudness = 0.1                        # quiet — the stealth-tech identity (reserved, no consumer)
+loudness = 3.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.gl6_revolver]                # grenade launcher (mechanics/03 §6) — the FIRST
 archetype = "projectile"              # payload-carrying PROJECTILE + the FIRST tracked mag (W3)
@@ -3199,14 +3202,14 @@ ap_cost = 1
 crit_chance = 0.0                     # the payload does the work; no direct-hit packet
 crit_mult = 2.0
 mass_kg = 5.5
-loudness = 0.9                        # reserved, no consumer yet (stealth layer)
+loudness = 27.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.c4_satchel]                  # demolition — PLACED, same det-slot flow as the
 archetype = "placed"                  # breach charge, ammo demo_c4 (selection UI = W6)
 ammo_family = "demo_charge"
 ap_cost = 1
 mass_kg = 2.0
-loudness = 1.0
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 # --- W4 SPRAY rows (mechanics/03 §5/§6): sustained cone of FIELD WRITES ------
 # CONE-ANGLE CONVENTION OF RECORD: the armory table (§6) quotes the FULL cone
@@ -3238,7 +3241,7 @@ ap_cost = 1
 crit_chance = 0.0                     # sprays never touch units — no crit path
 crit_mult = 2.0
 mass_kg = 8.0
-loudness = 0.6                        # reserved, no consumer yet (stealth layer)
+loudness = 18.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.miasma_vent]                 # poison projector — SPRAY (W4)
 archetype = "spray"
@@ -3254,7 +3257,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 6.0
-loudness = 0.4                        # a hiss, not a roar (reserved column)
+loudness = 12.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.combat_knife]                # melee — the assassin's tool (W5)
 archetype = "melee"
@@ -3274,7 +3277,7 @@ crit_mult = 2.0
 melee_damage = 35
 melee_dtype = "kinetic"
 mass_kg = 0.3
-loudness = 0.05                       # near-silent — the stealth identity
+loudness = 1.5                       # metres of hearing radius (G9p noise); PLACEHOLDER
                                       # (reserved column, no consumer yet)
 
 [weapons.arc_baton]                   # melee — the crowd-control stick (W5)
@@ -3302,7 +3305,7 @@ melee_dtype = "energy"
 status_kind = "stunned"
 status_seconds = 1.5
 mass_kg = 1.1
-loudness = 0.2                        # a crack of arc discharge (reserved)
+loudness = 6.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.rifle_butt]                  # melee -- the rifleman's own blow (gameplay pack G6p)
 archetype = "melee"
@@ -3327,7 +3330,7 @@ status_seconds = 0.4
 melee_push_ns = 40.0
 melee_arc_half_deg = 60.0
 mass_kg = 3.5
-loudness = 0.1
+loudness = 3.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 # --- W6 ARMORY (mechanics/03 §6 — the full table as data; Erik's grand
 # tuning session is the balance pass). Every number below is a STANDARD
@@ -3352,10 +3355,9 @@ crit_chance = 0.0                     # STANDARD VALUE — the assassin's pistol
                                       # wants ~0.1 when Erik dials crits in
 crit_mult = 2.0
 mass_kg = 1.1
-# loudness 0.15 — the row's identity (armory §6): the stealth layer's
-# reserved consumer will let a Whisper shot go unheard by sound-hunting
-# zombies where the K5's 0.8 wakes the deck. Data lands now (W1 rule).
-loudness = 0.15
+# loudness — the row's identity (armory §6): since G9p the horde hears it, so
+# a Whisper shot (4.5 m) goes unheard by zombies a K5's 24 m would wake.
+loudness = 4.5                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.mp11_pdw]                    # SMG — close-quarters bullet hose
 archetype = "projectile"
@@ -3372,7 +3374,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 2.6
-loudness = 0.7
+loudness = 21.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.lr50]                        # marksman / anti-materiel rifle
 archetype = "projectile"
@@ -3391,7 +3393,7 @@ ap_cost = 1
 crit_chance = 0.0                     # the headshot fantasy is Erik's dial
 crit_mult = 2.0
 mass_kg = 12.0
-loudness = 1.0                        # the whole deck hears a .50
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.jackhammer_8]                # combat shotgun — 8 pellets per trigger
 archetype = "projectile"
@@ -3407,7 +3409,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 4.5
-loudness = 1.0
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.lance_5]                     # "Longlight" heavy laser — HITSCAN
 archetype = "hitscan"
@@ -3425,7 +3427,7 @@ ap_cost = 1
 crit_chance = 0.0                     # HITSCAN does not crit (W2 rule of record)
 crit_mult = 2.0
 mass_kg = 7.8
-loudness = 0.1                        # quiet — the stealth-tech identity
+loudness = 3.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.sunspot]                     # plasma caster — slow glowing bolt + splash
 archetype = "projectile"
@@ -3442,7 +3444,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 5.2
-loudness = 0.5
+loudness = 15.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.helios]                      # heavy plasma — bigger bolt, bigger splash
 archetype = "projectile"
@@ -3459,7 +3461,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 9.5
-loudness = 0.6
+loudness = 18.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.dragon_9_heavy]              # heavy flamethrower — the Dragon-7's big brother
 archetype = "spray"
@@ -3481,7 +3483,7 @@ ap_cost = 1
 crit_chance = 0.0                     # sprays never touch units — no crit path
 crit_mult = 2.0
 mass_kg = 16.0
-loudness = 0.7                        # a bigger roar than the Dragon-7's 0.6
+loudness = 21.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [ammo.rifle_556_standard]
 family = "rifle_556"
@@ -3891,6 +3893,7 @@ soot_yield = 0.0
 # room light is its soot's own emission; the flash is a per-row TOP-UP. Every
 # flash value is a PLACEHOLDER.
 [payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
+loudness = 40.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 1.0                        # PLACEHOLDER: the unit of [blast]
 radius = 2                            # was blast_radius (5 until 2026-10-03)
 wall_damage = 200
@@ -4214,6 +4217,7 @@ heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
 heat_radius = 4.0                     # PROVISIONAL
 
 [payloads.breach_focus]               # the door charge
+loudness = 40.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 0.1                        # PLACEHOLDER: a shaped cutting charge; about 0.09 g of smoke, effectively none (accepted, #31)
 radius = 3
 wall_damage = 500
@@ -4231,21 +4235,25 @@ flash_decay_s = 0.3                   # PLACEHOLDER
 # above 1.0 saturates the cloud core to full density (the [0,1] slice clamp)
 # and feathers the edge.
 [payloads.smoke_screen]               # the laser countermeasure / concealment cloud
+loudness = 8.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "steam"
 gas_amount = 1.5                      # saturates the core out to ~1/3 radius; interesting range 0.5..2.0
 gas_radius = 4
 
 [payloads.tear_burst]                 # area denial: teargas -> BLINDED (snap-cone fire)
+loudness = 8.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "teargas"
 gas_amount = 1.0
 gas_radius = 3
 
 [payloads.poison_cloud]               # lethal cloud: poison -> POISON DoT (zombies immune)
+loudness = 8.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "poison"
 gas_amount = 1.0
 gas_radius = 3
 
 [payloads.incendiary_splash]          # ignition ring: fire = max(fire, intensity*falloff)
+loudness = 15.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 ignite_radius = 2.5                   # tiles; flammable tiles only (fire policy skip-mask)
 ignite_intensity = 0.5                # seed intensity at the centre; never lowers a bigger fire
 
@@ -4256,6 +4264,7 @@ heat_radius = 0.5                     # heat-only way, CLAUDE.md "Starting a fir
                                       # a squad 8 tiles away within a second (measured 2026-10-22)
 
 [payloads.demolition_c4]              # "bigger bombs" (mechanics/03 §5): C4 satchel warhead
+loudness = 60.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 12.0                       # PLACEHOLDER
 radius = 8
 wall_damage = 800
@@ -4266,6 +4275,7 @@ explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*]
 flash = 0.0                           # PLACEHOLDER (G4 P5): its hot soot lights the room (Erik: no flash as a principle)
 
 [payloads.flashbang]                  # G4 P5 (#75): a flash and nothing else -- no strength, no radius, no heat, no gas
+loudness = 40.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 flash = 200.0                         # PLACEHOLDER: light units at peak, under the transient cap (1024; critique B1). 800 saturated the room for ~8 s (Erik, 2026-11-07)
 flash_decay_s = 0.1                   # PLACEHOLDER: Erik wants the flash VERY short -- the blinding is a unit debuff (gameplay), not the light
 flash_color = [1.0, 1.0, 1.0]
@@ -4285,6 +4295,7 @@ blind_away_frac = 0.25                # PLACEHOLDER: the share left facing strai
 # stored hazard goes off when its own tile reaches trigger_temp. EVERY VALUE
 # BELOW IS A PLACEHOLDER FOR ERIK TO TUNE (the armory / cargo sessions).
 [payloads.magazine_cookoff]           # B.5: the magazine cooks off -- a generic explosion, bigger
+loudness = 60.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 8.0                        # PLACEHOLDER
 radius = 7                            # PLACEHOLDER (studio_large 6, demolition_c4 8)
 wall_damage = 400                     # PLACEHOLDER (studio_large 200, demolition_c4 800)
@@ -4295,6 +4306,7 @@ explosive = "comp_b"  # shell fills (the M67's Composition B), PLACEHOLDER
 flash = 0.0                           # PLACEHOLDER (G4 P5): its soot lights the room
 
 [payloads.hazmat_release]             # B.4: the solvent store ruptures -- poison_cloud's shape on fuel_gas
+loudness = 10.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "fuel_gas"              # the flammable trace row: it finds a flame later
 gas_amount = 1.5                      # PLACEHOLDER (smoke_screen's saturating core)
 gas_radius = 4                        # PLACEHOLDER
@@ -4305,6 +4317,7 @@ gas_radius = 4                        # PLACEHOLDER
 # follows is the physics' answer (CLAUDE.md "Starting a fire"). EVERY VALUE IS A
 # PLACEHOLDER FOR ERIK TO TUNE (the engineering session).
 [payloads.engine_death]               # B.2: the engine goes up -- a mid blast
+loudness = 60.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 3.0                        # PLACEHOLDER
 radius = 3                            # PLACEHOLDER (breach_focus 3, studio_medium 5)
 wall_damage = 300                     # PLACEHOLDER (breach_focus 500, studio_* 200)
@@ -4441,11 +4454,13 @@ mix = { kindling = 1.0 }
 # the vent sweep's own guard). `bulk_temp` = game degrees above ambient
 # (default 0: born at ambient). Energy books: `payload_bulk_gas`.
 [payloads.o2_store_rupture]           # B.3: the medbay O2 store ruptures -- pure O2, a fire next door roars
+loudness = 15.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 bulk_gas = "o2"
 bulk_amount = 0.21                    # PLACEHOLDER: one ambient tile's O2 again -> DOUBLES the O2 on every disc tile (X 0.21 -> 0.42/1.21 = 0.35, o2f ~2.6 of its 5.0 cap) and adds 0.21 atm
 bulk_radius = 3.0                     # PLACEHOLDER (tiles)
 
 [payloads.halon_dump]                 # A.6: the server farm's suppression dumps inert gas -- the fire dies, and so does whoever is inside
+loudness = 10.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 bulk_gas = "inert_n2"
 bulk_amount = 1.5                     # PLACEHOLDER. The O2 law ([physics.fire]): o2f = clamp((X - o2_frac_ext)/(o2_frac_amb - o2_frac_ext), 0, cap), X the O2 mole fraction, o2_frac_ext = 0.13 (the logistic death wall sits at X ~ 0.131). Adding a of N2 to an ambient tile gives X = 0.21/(1 + a): 0.13 needs a > 0.615. 1.5 gives X = 0.084 on the disc (o2f = 0), and after the room mixes X = 0.21*A/(A + 1.5*D) for a room of A open tiles and a disc of D -- below 0.13 while A < 2.44*D, i.e. ~110 open tiles for this radius-4 disc (D = 45, strict dist < 4). The pressure gate (p_ext_atm / p_full_atm) is no help: the dump RAISES pressure (to ~2.5 atm on the disc).
 bulk_radius = 4.0                     # PLACEHOLDER (tiles)
@@ -4463,6 +4478,7 @@ bulk_radius = 4.0                     # PLACEHOLDER (tiles)
 # LINEAR falloff keeps instant-ignition inside ~1/5 of heat_radius; the
 # ignite ring below guarantees the visible fire pop regardless).
 [payloads.plasma_splash_small]        # Sunspot
+loudness = 15.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 radius = 2                            # modest wall damage + a small pressure pop
 # wall_damage 25 — a SCORCH, not a breacher: wood walls carry hp 60, so a
 # Sunspot bolt chips the partition it wants to IGNITE rather than blowing
@@ -4478,6 +4494,7 @@ clear_smoke = false                   # a bolt is not a blast wave
 emit_blast_smoke = false              # its smoke comes from what it BURNS
 
 [payloads.plasma_splash_large]        # Helios
+loudness = 25.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 radius = 3
 pressure = 2.5
 # wall_damage 45 — heavier scorch (2 Helios bolts break a wood wall; steel
@@ -4532,8 +4549,57 @@ x_max = 2.5
 hp = 400
 # (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
 melee_damage = 60
-trigger_radius = 48
-propagation_radius = 15
+trigger_radius = 48        # tiles (squared-distance compare, strictly inside)
+propagation_radius = 15    # tiles (an awake zombie wakes those within)
+# The HORDE FIELD (gameplay pack G9p, the residency design's P3d;
+# src/simulation/horde.py): the horde walks one integer distance field per
+# footprint, flooded from every living non-zombie and re-flooded every this
+# many ticks (and whenever the topology changes). 2 = a marine at full speed
+# (4.5 m/s = 0.56 tile a tick on the 0.333 m tile) is at most ~1.1 tile ahead
+# of the field it is chased on. PLACEHOLDER.
+field_refresh_ticks = 2
+# The horde's BEHAVIOURS on the field (G9p stage 2; docs/bots_zombies_speeds_
+# design_2026-11-10.md §3, Erik's rulings of 2026-11-10). Each is a switch;
+# all five false is the stage-1 field law exactly (tests/test_horde_
+# behaviours.py holds that). Every number below is a PLACEHOLDER (Erik tunes
+# at the play test).
+# WANDER: a dormant zombie takes one step every wander_period_seconds (its
+# tick staggered by its id) in a direction hashed from (its id, the tick) --
+# no random number is drawn -- staying within wander_leash_m of its anchor
+# (where it first stood, or where it settled after a noise).
+wander = true
+wander_period_seconds = 3.0
+wander_leash_m = 1.5           # 5 tiles on the 0.333 m tile
+# HEARING: a noise (a shot at its weapon row's loudness, a detonation at its
+# payload row's, a door bash at bash_loudness_m -- all METRES of radius) wakes
+# every non-awake zombie within its radius, walls ignored; it walks the
+# noise's field until it is within noise_arrive_m of it (then it settles
+# there, dormant) or noise_timeout_seconds pass. At most noise_fields_max
+# distinct noise targets live at once (the newest), so the fields stay few.
+hearing = true
+noise_timeout_seconds = 20.0
+noise_arrive_m = 0.7           # 2 tiles on the 0.333 m tile
+noise_fields_max = 4
+# FEAR OF FIRE: a burning tile, or one at or above fear_temp game degrees
+# above ambient on the temperature mirror (an integer compare), is out of the
+# field's mask at every refresh, and no step ever puts a body on one; a
+# zombie with no path waits. (Smoke is air in v1: wariness of smoke is later.)
+fear_fire = true
+fear_temp = 60.0
+# DOOR BASHING: a closed door (not a hull door: none whose far side is space)
+# counts as passable in the field; a zombie whose step it blocks strikes it at
+# the bite's cadence (attack_cooldown_seconds) for door_bash_damage of the
+# door tile's hp through the wall-chew seam -- [materials.door_closed] hp 40
+# / 2 = 20 strikes at 1 s: a door holds one zombie for 20 s. Each strike is a
+# noise of bash_loudness_m.
+bash_doors = true
+door_bash_damage = 2.0
+bash_loudness_m = 12.0
+# SPRINT: an awake zombie with a line of sight to a living prey within
+# sprint_radius_m walks at the [speeds] zombie_sprint_mps cadence (unlimited)
+# instead of the shamble; terrain and effort still scale it.
+sprint = true
+sprint_radius_m = 8.0
 bullet_damage_multiplier = 0.25
 # fire_damage_multiplier: the zombie's HEAT vulnerability — since P5 this key
 # IS the live source of resist_mult[HEAT] on the zombie mitigation table

@@ -96,6 +96,7 @@ set(BREACH_SOURCES
     src/emissive_table.cpp   # ray-engine-v2 P1: the E° bake, out of line (strict)
     src/radiation_sweep.cpp  # ray-engine-v2 P1: the radiation sweep (integer)
     src/physics_engine.cpp
+    src/horde_field.cpp      # #183 G9p: the horde's distance field (host reference; device P7d)
     src/bindings.cpp
 )
 if(BREACH_CUDA)
@@ -231,6 +232,8 @@ set_source_files_properties(
     # /fp:fast, so the body is out of line here on the floor.
     src/emissive_table.cpp
     src/radiation_sweep.cpp
+    # #183 G9p: the horde field (pure integer BFS; a sim TU, so on the floor).
+    src/horde_field.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)

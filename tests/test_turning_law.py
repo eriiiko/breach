@@ -498,7 +498,9 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
     assert control_bots.BotTeam._on_target    # the reader this gate covers
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     run_match(level)
-    assert seen["n"] > 50
+    # Non-vacuity, not a count pin: the bots read the predictor dozens of
+    # times in the match (44 at G9p, where the horde eats half the squad).
+    assert seen["n"] > 20
 
 
 # ---------------------------------------------------------------------------
@@ -537,20 +539,60 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
 #: 725440, tick 9932ea99d2b3149ed58be5ddf07c91972b1b531087e4f66a196c2698
 #: 7a7cba2e, units 6d94773610af96c82da8ce023d69d496a97c8175d65d7c59b80219
 #: fea77a1f46)
+#: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
+#: residency P3d: the horde descends an integer BFS field, no A*; see
+#: tests/test_zombie_control.py's pins for the law and its proof). This
+#: gate's dial is untouched; the horde under it walks the field now, so
+#: the match it pins is re-measured on this tree with the gate's own
+#: settings -- the law is the whole move.
+#: (was win 1 at 241; field
+#: c198fe24ac6dd5b0201619a60476d4f81ea00f5c5a2527b7146716a300759744; tick
+#: f6545050e5ba3f41c54f7d0a8ea2dbed9934dfa92606fd6ef2f6aa082f139002; units
+#: 1d1573ec408624eccf25481d02bcec9ac62ad03262b58aa06ece5682fca740a1)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 244; field
+#: 87c4dff86973a2ebc2310ea0f6c235dac18826ca0675b6f6774357758838a191; tick
+#: 0d8dff655ad15306c696896a2b6ac7be0ddc77b01789503d79eeadafa6abef71; units
+#: db7c0e8376ea39397a0d2c079f5243d24c3ac86a25618ceea57ed807e08a4317)
 _RE_PIN_1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=241,
-    field_digest="c198fe24ac6dd5b0201619a60476d4f8"
-                 "1ea00f5c5a2527b7146716a300759744",
-    tick_digest="f6545050e5ba3f41c54f7d0a8ea2dbed"
-                "9934dfa92606fd6ef2f6aa082f139002",
-    unit_stream="1d1573ec408624eccf25481d02bcec9a"
-                "c62ad03262b58aa06ece5682fca740a1")
+    outcome="win", team=1, ticks=244,
+    field_digest="841869decf00a406da93a7e35a561d81"
+                 "dc2d581cc090309ea33f0b957e7625ba",
+    tick_digest="df36873fbb14eda3ff329f89e89f20d7"
+                "35202b973638f6f3e4d29b724197a9bc",
+    unit_stream="6480df664eb192d90ff0be9dc50e8f9c"
+                "a9263a89f4b85c050b9a27a7183eefc9")
+#: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
+#: residency P3d: the horde descends an integer BFS field, no A*; see
+#: tests/test_zombie_control.py's pins for the law and its proof). This
+#: gate's dial is untouched; the horde under it walks the field now, so
+#: the match it pins is re-measured on this tree with the gate's own
+#: settings -- the law is the whole move.
+#: (was win 1 at 130; field
+#: a672c7249e18d0eebbb8e398b696bd9c3d34417445f66c3cab498ec7cd783ab1; units
+#: a8f571251bbb5cc7572f7c4711dc1a3186b67dcdfd4c42837dacfcaeff1fefa0)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 130; field
+#: 0fdc79f228cc2e64ca6936cf5a2ec41c52642adfca545cbe51324cfad2e21631; units
+#: 19d264664c2b3885c6aec68e6634eb2c79e450266bdb88cc6677aea5bda38248)
 _RE_PIN_1_BOX = dict(
-    outcome="win", team=1, ticks=130,
-    field_digest="a672c7249e18d0eebbb8e398b696bd9c"
-                 "3d34417445f66c3cab498ec7cd783ab1",
-    unit_stream="a8f571251bbb5cc7572f7c4711dc1a31"
-                "86b67dcdfd4c42837dacfcaeff1fefa0")
+    outcome="win", team=1, ticks=92,
+    field_digest="2a9339a53e67d28c29ff513f6942dab9"
+                 "1586f5e85c6eb552885554c16ebe4c3b",
+    unit_stream="035304b74d47d0dfcd73e661ebe44011"
+                "21994f1a121abcc851c301e7a3c588c7")
 
 
 def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(

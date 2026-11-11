@@ -259,6 +259,14 @@ def _unit_record(u):
     # light is OFF records a key -- so no digest moves until a verb darkens one.
     if not getattr(u, "flashlight_on", True):
         rec["dark"] = True
+    # G9p: the horde's state, absence-transparent: a hearing zombie's noise
+    # target and ticks left, a dormant one's wander anchor, each only while
+    # set -- a zombie with neither records exactly as before.
+    if getattr(u, "zombie_noise_ticks", 0):
+        rec["noise"] = [int(u.zombie_noise_y), int(u.zombie_noise_x),
+                        int(u.zombie_noise_ticks)]
+    if getattr(u, "zombie_anchor_y", -1) >= 0:
+        rec["anchor"] = [int(u.zombie_anchor_y), int(u.zombie_anchor_x)]
     if getattr(u, "effort", 0):
         rec["effort"] = int(u.effort)
     if getattr(u, "react_ticks", 0):

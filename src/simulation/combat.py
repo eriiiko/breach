@@ -61,6 +61,7 @@ from simulation.orders import (
     MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
+from simulation import noise as _noise          # G9p: shots are noises
 # Physics event entry points: re-exported for legacy imports; the detonation
 # sites themselves now go through the payload executor (W3). Bare-name import
 # of execute_payload on purpose — instrumentation/replica tests rebind
@@ -1013,6 +1014,8 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             # because the burst captures the ORDER (interruption consumes
             # it). Spread is meaningless on a cone weapon — no draw, ever.
             start_spray_burst(u, weapon, fire_order, tick, effects=fx)
+            _noise.emit(gmap, uc_fy, uc_fx,
+                        getattr(weapon, "loudness_tiles", 0))  # G9p
         else:
             _dispatch_trigger(gmap, units, u, uc_fx, uc_fy,
                               target_fx, target_fy, tick, shots, real_time,
@@ -1035,7 +1038,13 @@ def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
     None = tile-derived bearing (WEGO), provided = free-aim march bearing.
     ``cover`` / ``facing_defense`` are the OnePhaseWEGO march rules (§7/§9);
     both default to the shipped behaviour. ``effects`` (#169) is the
-    attack slot's phase-B record (``None`` = apply at once)."""
+    attack slot's phase-B record (``None`` = apply at once).
+
+    G9p: every pull is a NOISE at the shooter's centre with the row's
+    ``loudness_tiles`` (simulation.noise) -- decided in phase A like the
+    shot itself, heard at the zombie slot."""
+    _noise.emit(gmap, u.center_tile_y(), u.center_tile_x(),
+                getattr(weapon, "loudness_tiles", 0))
     if weapon.archetype == "hitscan":
         fire_beam(gmap, units, u, fx1, fy1, fx2, fy2,
                   tick, shots, real_time, rng, events=events,
@@ -1090,6 +1099,8 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
         if getattr(u, "spray_ticks_left", 0) > 0:
             return
         start_spray_burst_directional(u, weapon, tick, aim_angle)
+        _noise.emit(gmap, u.center_tile_y(), u.center_tile_x(),
+                    getattr(weapon, "loudness_tiles", 0))      # G9p
     elif weapon.archetype in ("projectile", "hitscan"):
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()

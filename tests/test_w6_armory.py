@@ -112,7 +112,7 @@ def _dict_tables(tile_size_m, weapon_extra=None):
     """Minimal dict-table bundle (the GasTable test-config path) with one
     ranged weapon authored in METERS."""
     weapon = {"archetype": "projectile", "ammo_family": "w6f",
-              "range_m": 10.0}
+              "range_m": 10.0, "loudness": 10.0}   # G9p: required
     if weapon_extra:
         weapon.update(weapon_extra)
     return WeaponsTables(
@@ -220,7 +220,7 @@ def test_armory_numbers_pin_the_section6_table():
 
     p12 = t.weapons.by_name["p12_whisper"]
     assert (p12.spread_deg, p12.spread_snap_deg) == (2.5, 5.0)
-    assert p12.loudness == 0.15                     # the row's identity
+    assert p12.loudness == 4.5                      # the row's identity (0.15 x 30 m, G9p)
     assert p12.rof_interval_ticks == ticks_from_seconds(0.25, tps)
     assert t.ammo_for_weapon(p12).damage == 12      # 9mm_subsonic
 
