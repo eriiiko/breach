@@ -282,8 +282,78 @@ of fire. This is the bots' lane grid, handed over.
 "If you were the soldier, what would you want to know about your squad that
 is not in this picture?" Nothing to add (2026-11-11).
 
-## 5. The order (OPEN)
+## 5. The order (PROPOSED)
 
+Erik, 2026-11-11: not a copy of StarCraft but distributed intelligence. "The
+agents are their own AIs, the commander is its own." An order to a tile
+"defeats the purpose of having actual agents play the soldiers"; a room to
+secure, with the soldiers finding their own cover, is the level he leans to.
+He wants to try several approaches. His picture of the commander: a schematic
+graph of the map (rooms, choke points, objectives, threats) read by a graph
+network.
+
+### 5.1 An order names a place on the ship's graph, never a tile
+
+The generator already builds every ship as a graph: rooms are the nodes, and
+the doors and other openings between them are the edges. A door is a choke
+point by construction. That graph is the commander's map and the order's
+vocabulary.
+
+An order is three things:
+
+| part | values in v1 |
+|---|---|
+| what | none; go to; hold; clear; fall back to |
+| where | a room, or an opening between two rooms (a door to watch or to hold) |
+| until | a number of seconds, or until told otherwise |
+
+Beside it, optionally, a **priority target**: one enemy the commander wants
+shot first. This is the bots' shared target.
+
+How to get there, where to stand, what cover to take, when to shoot and at
+whom when no priority is set: all the soldier's.
+
+### 5.2 What the soldier sees of its order
+
+The kind; the time left; whether it is inside the place; the compass (3.5) to
+the place; the place drawn as a plane in the far window; a flag on the list
+entry that is the priority target. Each team-mate's order is on its entry
+(4.2), so a soldier knows who was sent where.
+
+### 5.3 The first commander
+
+The bots' team layer, translated: its objective tile becomes the room that
+tile is in; fall back, hold and bound become "fall back to", "hold" and "go
+to"; its shared target becomes the priority target. Orders in training also
+come from a generator of random legal orders and from labels of what a soldier
+in fact did (roadmap rung 4).
+
+### 5.4 Orders start as information and become binding at rung 4
+
+From the first trained network the order is in the observation, written by
+the bots' team layer. Until rung 4 nothing rewards obeying it; it is simply
+useful (it says where the enemy was last known to be). At rung 4 a reward for
+following comes in, with a weight that is swept (the reward section).
+
+### 5.5 The order format is a named spec
+
+Like the observation and the action space. This one is "rooms". A looser one
+("be in this general area") or a tighter one can be tried beside it, and
+teams under different formats can fight each other.
+
+### 5.6 The later commander (rung 6), in outline
+
+It reads the same graph, each room carrying what the team knows: who is in
+it, threats last seen there, fire, vacuum, the objective. A graph network is
+the natural reader. It is attention restricted to neighbours, the same family
+as the soldier's list network, and it runs on whatever graph it is handed at
+each decision, so rooms whose contents change, a wall blown open (a new edge)
+or a door sealed (an edge gone) are all ordinary input. Its design is rung 6's.
+
+### 5.7 What this needs from the game
+
+- **The room graph saved with the level.** The generator has it and today writes only the spawn rooms. Rung 1: write rooms and openings through the level writer, and keep the graph current when a wall is destroyed or a door sealed.
+- **The order as unit state,** set through one verb by whoever commands: what, where (a room or an opening id), until, the priority target's id.
 ## 6. Reward profile v1 (OPEN)
 
 ## 7. What the value network sees (OPEN)
@@ -295,7 +365,7 @@ is not in this picture?" Nothing to add (2026-11-11).
 | state | from | status |
 |---|---|---|
 | the charges carried and a planting in progress | the C4 patch | Erik's patch |
-| the order: its kind, its argument, the tick it runs to | section 5 | to be designed |
+| the order: what, where (a room or an opening id), the tick it runs to, the priority target's id | section 5 | proposed |
 | (none for the aim) | the decoder is controller-side; "whom a unit is turning toward" is already unit state, the facing target | — |
 | the stance; an object carried; dragging / being dragged; a downed state and its timer | 2.8 | when Erik builds each verb; none is needed at P3a, whose schema extends |
 
