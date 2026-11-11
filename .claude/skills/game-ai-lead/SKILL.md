@@ -102,13 +102,27 @@ from the survey. The ones most often needed:
 | 2026-11-11 | **Erik delegated the rest of rung 0** (reward, the value network's input, network v1) to Claude, to be brought back as proposals he can veto. |
 | 2026-11-11 | **The ladder** (`docs/rl_agent_roadmap_2026-11-11.md`): 0 the design, 1 the door, 2 first light, 3 a fireteam that fights, 4 orders, 5 scale, 6 the commander, 7 unit classes, 8 senses, 9 other learners. Network sizes: about 1 million weights first, 1 to 3 million for the fireteam, 5 to 20 million at scale. |
 | 2026-11-11 | **The residency patch P3a restarts when rung 0 is agreed** and runs beside rungs 1 and 2. |
-| 2026-11-11 | **C4 on the continuous path** is Erik's own patch; the agent design assumes the verb. |
+| 2026-11-11 | **C4 on the continuous path** is Erik's own patch; the agent design assumes the verb. It landed as #193 (`plant_charge_intent`); the plant is a hand verb whose one argument is a timer (four choices). |
+| 2026-11-11 | **"yes i agree with it all"** (Erik, to the second session's summary, before the critique): 4a (sides); reward profile v1 (outcome +10 / −10 / clock −3; a "balance" of health in bars read off the state; team share 0.3 to 0.8; friendly fire the shooter's alone; an order term reserved at weight 0); the value network's full view; network v1 (about 1.55 M weights; list attention, two small map readers, a GRU, pointer heads); an enemy charge's timer visible when seen; four plant timers. |
+| 2026-11-11 | **Erik's note for rung 2:** the trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so one run can later be spread over his three PCs on Tailscale; until then the three PCs run three experiments at once and share saved networks as opponents. (Roadmap, rung 2.) |
+| 2026-11-11 | **The critique** (four lenses, one Opus critic at a time; design document section 12): no blocker, 23 major points, all fixed on paper as version 2. Eight of the fixes changed sections Erik had agreed (section 12.3): sight as a match setting; records that outlive an unseen death; the physics planes' true scales; "whom it aims at" from the facing; a throw's aim held through the wind-up; "the play" dropped; masks from the real gates; the map shown through walls. **Erik: "yes i agree".** Rung 1 was re-cut into ten patches, 1a to 1j (roadmap); **"i dont need to look at 1d, i bless it all ready now"**. |
 
 ## 6. Open
 
-- Rung 0, still to write (delegated to Claude, Erik vetoes): reward profile
-  v1, what the value network sees, network v1; and Erik's yes on 4a (sides). Then the critique
-  passes, one critic at a time.
+- **Rung 0 is CLOSED** (Erik, 2026-11-11: "yes i agree" to the eight changes of
+  design document 12.3; merged the same evening). **Rung 1 is live:** ten
+  patches, 1a to 1j (roadmap). Erik blessed 1d's step (ii) in advance: it
+  merges on the tournament's numbers, without his look. The residency patch
+  P3a may restart, with the design document's section 9 as its input.
+- Rung 1 is to be run by an orchestrator session. The design document says
+  WHAT; no patch has its implementation note yet (who writes each is in the
+  session's closing message and in memory).
+- Rung 0's lesson document is still owed (how a policy learns from reward,
+  in plain words).
+- Game findings from the critique, Erik's to rule on (design document section
+  11): spawned zombies have 100 hit points and turned ones 400; a stunned
+  soldier can reload and open doors; the bots' adjacent-enemy check ignores
+  walls.
 - Gameplay the design leans on, Erik's to order (design document section 11):
   a reason to walk (footsteps and spread by speed), the reserved verbs.
 - The trainer's own design is rung 2 (recommended by the survey: PPO in the
@@ -175,3 +189,21 @@ implementation agents and critics stay one at a time.
   gives it a meaning: check what each choice does in the code before putting
   it in a spec; (5) Erik blesses a compact table quickly and stalls on a
   coined sentence.
+- 2026-11-11, evening -- the second session (branch `192-rl-agent-design`,
+  documents only): sections 6, 7, 8 written, #193 folded in, Erik's yes, then
+  the critique. What the critique taught, for the next design: (1) a design
+  section that says "as the bots do it" or "the game's own gate" must be
+  checked against the code line by line before it is shown to Erik: the
+  masks, the fire lanes, the last-seen records and the meaning of the physics
+  planes were all paraphrases that the code contradicted; (2) "the unit's
+  full health" and "1.0 = it hurts" were claims about game numbers that the
+  game does not yet make true: ask of every ratio which table value divides
+  it and what reads that value; (3) section 9 must list the state a design
+  READS, not only what it adds, or the device port cuts the observation off;
+  (4) four lenses that worked for an interface design: how a learner cheats
+  the reward; what a soldier may know; is every named thing real and is
+  anything built twice; does it fit the trainer. About 5 minutes and 200 to
+  270 thousand tokens per critic on Opus. Each critic wrote its own verdict
+  file from its first finding, and was told not to read the others';
+  (5) put Erik's summary and question BEFORE the critique, but expect to come
+  back with the fixes that touch what he agreed, as one short list.
