@@ -692,7 +692,8 @@ def integrate(table: ImpulseTable, u, events=None) -> int:
             if events is not None:
                 from simulation.events import StaggerEvent
                 events.append(StaggerEvent(unit_id=int(getattr(u, "id", -1)),
-                                           ticks=int(table.react_ticks)))
+                                           ticks=int(table.react_ticks),
+                                           dir_x_q=sx - kx, dir_y_q=sy - ky))
     px, py = _clamp_vmax(u.pvx, u.pvy)
     b[CLAMP_X] += u.pvx - px
     b[CLAMP_Y] += u.pvy - py

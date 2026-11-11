@@ -296,11 +296,16 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                     # source "melee" (#122), credited to the biter (#123),
                     # and the kill keeps melee's conversion semantics
                     # (killed_by_zombie, the ONLY converting death).
+                    # #185: the bite travels biter centre -> prey centre.
+                    zx_q, zy_q = _unit_impulse.centre_q(z)
+                    px_q, py_q = _unit_impulse.centre_q(nearest)
                     apply_packet(nearest,
                                  DamagePacket(amount=CFG.zombie.melee_damage,
                                               dtype=KINETIC,
                                               attacker_id=getattr(z, "id",
-                                                                  -1)),
+                                                                  -1),
+                                              dir_x_q=px_q - zx_q,
+                                              dir_y_q=py_q - zy_q),
                                  events=events, source="melee",
                                  mark_killed_by_zombie=True)
                 continue

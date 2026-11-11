@@ -173,6 +173,9 @@ def critter_settings(**over) -> dict:
         # #184: the reload / throw one-shots, off ("" = no clip)
         "reload": {"clip": "", "layers": ["front"]},
         "throw": {"clip": "", "layers": ["front"], "release_s": 0.0},
+        # #185: the push reaction
+        "stagger": {"clip": "look", "masks": ["front", "top"], "ramp_in_s": 0.05,
+                    "ramp_out_s": 0.1, "weight": 0.5},
     }
     pose.update(over)
     return {"render": {"pose": pose}}

@@ -166,6 +166,17 @@ class DamagePacket:
                     :mod:`simulation.exposure`): the round's ``[ammo.*]
                     expose``, quantized once at the ammo door. 0 (every
                     non-round source) raises nothing.
+    ``dir_x_q``, ``dir_y_q`` — the direction the hit TRAVELLED (#185), a
+                    Q16 tile vector (x right, y down; not normalised: only
+                    its angle means anything), set by the producer from sim
+                    state in integers: a round its flight step, a melee
+                    blow or a bite striker centre -> victim centre, a
+                    blast's direct damage detonation tile -> victim centre
+                    tile. ``(0, 0)`` = no direction (heat, gas, status, the
+                    environment, a blast on the victim's own tile). It
+                    rides :class:`UnitHitEvent` and changes nothing else:
+                    no damage, no push, no digest (the event record reads
+                    named fields only).
     """
     amount:      float
     dtype:       int
@@ -173,6 +184,8 @@ class DamagePacket:
     ap:          float = 0
     indirect:    bool = False
     expose:      int = 0
+    dir_x_q:     int = 0
+    dir_y_q:     int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +345,8 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
        the identity, bit for bit, at exposure 0) — the APPLIED value;
     3. ``unit.current_hp -= applied``;
     4. ``events``: :class:`UnitHitEvent` with the applied damage, the cause
-       ``source`` and the packet's ``attacker_id``; ``events=None`` emits
+       ``source``, the packet's ``attacker_id`` and its direction
+       (``dir_x_q`` / ``dir_y_q``, #185); ``events=None`` emits
        nothing (since #122 the melee site passes the tick's events too);
     5. life transition: ``hp <= 0`` → ``alive = False``; then
        ``mark_killed_by_zombie`` sets the conversion flag (melee kills ONLY —
@@ -390,7 +404,9 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     if events is not None:
         uid = getattr(unit, "id", -1)
         events.append(UnitHitEvent(unit_id=uid, damage=dmg, source=source,
-                                   attacker_id=attacker))
+                                   attacker_id=attacker,
+                                   dir_x_q=int(getattr(packet, "dir_x_q", 0)),
+                                   dir_y_q=int(getattr(packet, "dir_y_q", 0))))
     if was_alive and unit.current_hp <= 0:
         unit.alive = False
         expo.on_death(unit, exposure_landing)
