@@ -969,3 +969,362 @@ N = 2, where the masked env was windless --, an un-rebased `K_pstar` temperature
 `cuda_tick_capture_check` (3 segments / ~690-720 graph nodes per tick, host syncs exactly `max_n_sub`, `books`;
 validated by launching `K_store_atm` on the default stream: "operation would make the legacy stream depend on a
 capturing blocking stream").
+
+## G1: the reading (2026-11-10)
+
+The design's first stop reading (§3): the same scene on both sides, the batched device path against
+the CPU farm, on the Home Desktop. Measured numbers first, then the projection against the 3x gate,
+then the transfer to an A100 slot. Every line below says whether it is measured or projected.
+
+**In short.**
+- Measured, same scene, today's code: the batched device path runs 597 (small) / 432 (medium)
+  env-ticks/s; the 16-worker farm runs 1 756 / 552. The device path is at 0.34x / 0.78x of the farm
+  today, because each env still pays 1.5 to 1.8 ms of host work per tick.
+- Measured: the device chain alone costs 2.9 ms per batched tick plus 0.197 ms (small) / 0.486 ms
+  (medium) per env, linear from N = 16 to 256.
+- Projected, this PC, host work gone and the allowance charged: 2 950 / 1 335 env-ticks/s, which is
+  2.2 to 2.6x (small) and 2.7 to 3.0x (medium) the full-game farm. With a farm on the slot's spare
+  cores beside the device, as §3's metric counts it: 3.1 to 3.5x and 3.6 to 3.9x.
+- Projected, one A100 slot: 2.5 to 3.3x (small) and 3.2 to 4.3x (medium) at the design's integer
+  factor, more if a stage turns out bandwidth-bound; 3.4 to 4.2x and 4.1 to 5.2x with the farm on
+  the spare cores.
+- New since P1a: the farm scales past 8 workers. 16 workers give 45 to 54 % more than 8, so the
+  yardstick moved up.
+- **Erik's ruling (2026-11-10, on these numbers as they came in): the device route continues**
+  (design §12.7).
+
+### Method
+
+- **Machine:** the Home Desktop (Ryzen 7 3700X, 8 cores / 16 threads, 16 GB; RTX 3070 8 GB, driver
+  610.88, "Prefer maximum performance" set globally since 2026-11-07). Before timing: no heavy job;
+  Spotify held about 0.4 of one core and VS Code about 0.1 to 0.8 throughout; the idle WSL VM was shut
+  down. Everything ran serially, one configuration per fresh process.
+- **Code:** main at `ad9cb343` (#183 G1p to G3p merged) on branch `29-g1-reading`, with its own CPU
+  build (`cpp/build/Release`) and CUDA build (`cpp/build_cuda`), `bp.build_id()` == that commit on
+  both. No `cpp/` file changed since P10.
+- **The scene (design §3):** NO units, the level's entities ON (vents, ducts, doors),
+  `ContinuousRealtime`, headless (no ripple), the small ship (`tools/gen_ship.py --seed 1 --size
+  small --vents`, 60 x 40 = 2 400 tiles, outside `levels/`) and the medium ship (`levels/ship_demo`,
+  100 x 70 = 7 000 tiles).
+- **The scene is not stationary, so both sides time the same ticks of it.** A fresh empty ship runs
+  the EOS at its substep cap (n_sub = 8) while its vents start; the small ship then settles (ticks
+  0 to 1 000: n_sub mean 7.2 to 7.9; 1 000 to 1 200: 6.3; from 1 200: about 1), and its CPU tick
+  falls from 5.3 ms to 2.8 ms. The medium ship holds 7.4 to 8.0 through tick 1 600. P5's batched
+  numbers were ticks 6 to 65 of that transient. Here both sides time **ticks 51 to 400 after a
+  fresh start** (n_sub mean 7.97 small / 8.00 medium on both sides), repeated from fresh starts
+  until enough time is pooled. A full game was checked afterwards (2026-11-11,
+  "Measured: substeps in a full game" below): it holds the cap for its first 1 200 (small) to
+  2 400 (medium) ticks and runs at about half the substeps after that, so this window is a
+  match's most expensive stretch, not its average.
+- **Same scene, checked:** the tick digest of the first envs after 300 ticks is identical on the
+  device side and on the farm side (`c56541526370` small, `e70e091a1672` medium), at every N and W.
+- **Device side:** `tools/bench_resident_scaling.py --batch-run --window 50:400` -- N envs in ONE
+  `ResidentBatch` (the P5 driver). The context is first loaded for 15 s on a throwaway state, then
+  every env is replaced by a fresh simulation (`ResidentBatch.reset_env`) and ticks 51 to 400 are
+  timed, pooled to at least 30 s. A second fresh start runs 100 ticks with a device sync after
+  every device stage: the attributed split (`tick_stage_profile`'s timers plus the batch driver's
+  own callables). `nvidia-smi` sampled the GPU every 0.5 s over the timed ticks: P2, 1 830 to
+  2 010 MHz in every run, so the P2 section's clock drop did not occur.
+- **Farm side, same scene:** `--farm-run --window 50:400` -- W processes on the CPU build, one env
+  each, one BLAS thread (`rl_env.WORKER_ENV`), every worker timing ticks 51 to 400 of fresh start
+  after fresh start until it has 25 s, and cycling on until all have (constant load). No driver
+  and no IPC per step, so this is the farm's best case for the scene.
+- **Farm side, the full game:** the §9.1 protocol unchanged (`tools/rl_smoke.py`, P1a's run files:
+  4 v 4 + 4 zombies, random rows, the placeholder observation and reward rows ON, at least 3
+  episodes per env, 20 warm-up steps), at 8 and 16 workers, decimation 1 and 4.
+- **Machine time:** about 75 minutes (device 22, same-scene farm 9, full-game farm 44).
+
+```
+# device side, one fresh process per (level, N); N in 1 4 16 64 128 256
+python tools/bench_resident_scaling.py --levels-dir <dir> --level <level> --batch-run --n <N> \
+    --build cpp/build_cuda --warmup 5 --warmup-s 15 --window 50:400 --seconds 30 \
+    --split-ticks 100 --digest-tick 300
+# farm side, the same scene; W in 1 4 7 8 12 16
+python tools/bench_resident_scaling.py --levels-dir <dir> --level <level> --farm-run --workers <W> \
+    --cpu-build cpp/build/Release --window 50:400 --seconds 25 --digest-tick 300
+# farm side, the full game (run files as in "P1a" above, n_envs = workers)
+python tools/rl_smoke.py <scratch>/run_<level>_d<D>_n<W>.toml --workers <W> --episodes 3 --seed 0 \
+    --warmup-steps 20
+# the allowance: the batched sweep core
+python tools/bench_radiation_sweep.py --cuda --build cpp/build_cuda --envs 16,64,256 [--env-grid 70x100]
+```
+
+### Measured: the device side
+
+Plain = no stage syncs (the truth for the whole tick). Attributed = the synced pass; its sum is 3
+to 6 % above the plain tick.
+
+| small (2 400 cells) | N = 1 | 4 | 16 | 64 | 128 | 256 |
+|---|---|---|---|---|---|---|
+| batched tick, ms (plain) | 5.51 | 11.04 | 30.84 | 116.4 | 214.3 | 436.1 |
+| **env-ticks / s (whole tick)** | 182 | 363 | 519 | 550 | **597** | 587 |
+| host slots per env, ms (plain: tick minus slot 7) | 0.50 | 0.44 | 0.41 | 0.45 | 0.41 | 0.41 |
+| per-env bus (from_host + to_host), ms (attributed) | 1.22 | 1.02 | 1.19 | 1.17 | 1.04 | 1.06 |
+| device chain per batched tick, ms (attributed) | 4.00 | 3.90 | 6.51 | 15.11 | 27.71 | 53.43 |
+| **device chain per env, ms** | 4.00 | 0.98 | 0.41 | 0.236 | 0.217 | **0.209** |
+| GPU utilisation over the timed ticks, % | 50 | 35 | 24 | 23 | 23 | 14 |
+
+| medium (7 000 cells) | N = 1 | 4 | 16 | 64 | 128 | 256 |
+|---|---|---|---|---|---|---|
+| batched tick, ms (plain) | 6.24 | 12.42 | 40.82 | 153.3 | 296.1 | 603.9 |
+| **env-ticks / s (whole tick)** | 160 | 322 | 392 | 418 | **432** | 424 |
+| host slots per env, ms (plain) | 0.61 | 0.55 | 0.55 | 0.57 | 0.57 | 0.64 |
+| per-env bus, ms (attributed) | 1.16 | 1.26 | 1.23 | 1.31 | 1.21 | 1.21 |
+| device chain per batched tick, ms (attributed) | 4.06 | 4.88 | 10.64 | 33.88 | 65.00 | 127.34 |
+| **device chain per env, ms** | 4.06 | 1.22 | 0.67 | 0.529 | 0.508 | **0.497** |
+| GPU utilisation over the timed ticks, % | 52 | 39 | 35 | 39 | 22 | 23 |
+
+**The device chain is linear in N** (least squares over N = 16, 64, 128, 256; the four points sit
+within 7 % of the line):
+
+| | fixed per batched tick | per env | per cell per tick | the chain alone, N large |
+|---|---|---|---|---|
+| small | 2.90 ms | 0.197 ms | 82 ns | 5 090 env-ticks/s |
+| medium | 2.80 ms | 0.486 ms | 69 ns | 2 060 env-ticks/s |
+
+The fixed part is what does not grow with N (launches, the two host syncs); the per-env part is
+what the card does per env once it is busy.
+
+**Where one env-tick goes at N = 256 (attributed, ms per env-tick).** The device side's host cost,
+line by line, as §3 asks:
+
+| line | small | medium | after the flip |
+|---|---|---|---|
+| device chain: EOS | 0.081 | 0.248 | stays |
+| device chain: tail (fire + the sweep + temperature + books) | 0.122 | 0.235 | stays |
+| device chain: stamp + trace tail + combustion | 0.006 | 0.014 | stays |
+| **device chain, sum** | **0.209** | **0.497** | |
+| bus: entry upload (164 / 479 KiB per env) | 0.50 | 0.55 | leaves (P6+) |
+| bus: exit download (291 / 848 KiB per env) | 0.56 | 0.66 | leaves (P6+) |
+| host slot 9e, the entities (vents, ducts, doors) | 0.051 | 0.052 | becomes a kernel (P6b) |
+| host slot 9b, the over-pressure wall scan | 0.248 | 0.335 | becomes a kernel (P6) |
+| host slots, the rest (stamp rows 0.03 to 0.05, ignition, gas rows, the round head) | 0.12 | 0.28 | become kernels |
+| slot 7's own host work (prepare, the physics head, the driver) | 0.07 | 0.08 | leaves |
+| **host, sum** | **1.56** | **1.96** | |
+| the attributed tick | 1.76 | 2.45 | |
+
+- The per-env bus is 60 % (small) and 49 % (medium) of today's batched tick. It is about 27
+  pageable CuPy `set` / `get` calls per env per tick; its cost barely differs between 455 KiB and
+  1.3 MiB, so it is bound by the calls, not by the bytes.
+- Device memory: 2.7 MiB per small env and 6.8 MiB per medium env (700 MiB / 1.7 GiB at N = 256).
+  Host memory: 2.3 / 6 MB per env on top of ~320 MB.
+
+**The batched sweep core** (the allowance below), re-measured at this commit: 0.130 ms per small
+env and 0.252 ms per medium env at N = 64 to 256 (3.4 / 2.2 ns per cell-update; 63 / 103 launches
+per tick). In the chain the whole tail costs 0.122 / 0.235 ms per env, so the sweep is 58 % of the
+small chain and 47 % of the medium one.
+
+### Measured: the farm
+
+**The same scene** (no units, free-running workers, ticks 51 to 400):
+
+| workers | small env-ticks/s | per worker | core-equivalents | medium env-ticks/s | per worker | core-equivalents |
+|---|---|---|---|---|---|---|
+| 1 | 184 | 184 | 1.00 | 57.1 | 57.1 | 1.00 |
+| 4 | 700 | 175 | 3.80 | 216 | 53.9 | 3.77 |
+| 7 | 1 122 | 160 | 6.09 | 319 | 45.6 | 5.58 |
+| 8 | 1 210 | 151 | 6.57 | 368 | 46.0 | 6.44 |
+| 12 | 1 478 | 123 | 8.02 | 448 | 37.3 | 7.83 |
+| **16** | **1 756** | 110 | 9.53 | **552** | 34.5 | 9.66 |
+
+**The full game** (§9.1: 4 v 4 + 4 zombies, random rows, observation and reward rows on, the
+lock-step `BatchedEnv`):
+
+| ship | decimation | workers | env-ticks/s | step ms p50 / p95 | timed ticks | / the same-scene farm at that W |
+|---|---|---|---|---|---|---|
+| small | 1 | 8 | 758 | 10.3 / 13.5 | 76 984 | 0.63 |
+| small | 1 | 16 | **1 114** | 13.6 / 18.1 | 272 096 | 0.63 |
+| small | 4 | 8 | 869 | 36.7 / 45.3 | 122 719 | 0.72 |
+| small | 4 | 16 | **1 342** | 46.7 / 56.7 | 242 309 | 0.76 |
+| medium | 1 | 8 | 320 | 23.9 / 36.7 | 172 640 | 0.87 |
+| medium | 1 | 16 | **451** | 33.6 / 46.9 | 345 280 | 0.82 |
+| medium | 4 | 8 | 326 | 99.9 / 120.8 | 172 115 | 0.89 |
+| medium | 4 | 16 | **487** | 128.9 / 155.9 | 344 239 | 0.88 |
+
+- **The farm scales past 8 workers.** Sixteen workers on the 8 cores / 16 threads give 9.5 to 9.7
+  single-core equivalents on the same scene (8 workers: 6.4 to 6.6), and 41 to 54 % more full-game
+  throughput than 8. P1a measured 7 and 8 only; its "the 8th worker buys nothing at decimation 1"
+  holds for 7 against 8, not beyond. **The yardstick on this PC is the 16-worker farm: 1 114 to
+  1 342 env-ticks/s small, 451 to 487 medium.**
+- At 8 workers the full game is where P1a had it (758 / 869 against 727 to 755 / 951; 320 / 326
+  against 277 / 337), so the gameplay pack did not move the farm's cost.
+- **The physics share**, as §3 uses the word (the full-game farm over the same-scene farm): 0.63
+  to 0.76 on small, 0.82 to 0.89 on medium. It holds everything the full game adds: units and
+  controllers, the observation, the pipes, the lock-step wait for the slowest worker, resets. §3
+  assumed about 0.8 on small.
+- Random-row episodes are long at this commit: about 2 400 ticks per episode on average on small
+  (P1a: mostly 100 to 200). With magazines and reloads (G2p) random teams no longer kill each other
+  in the spawn rooms.
+- Farm workers hold 45 to 49 MB each at any W.
+
+### Measured: substeps in a full game (2026-11-11)
+
+One in-process `EnvRunner` on the CPU build (the object a farm worker runs), the full game of §9.1
+(4 v 4 + 4 zombies, random rows), decimation 1, `eos.dbg_last_n_sub` read every tick: 30 000 ticks
+on small (14 episodes), 15 000 on medium (2 episodes, both to the 7 200-tick limit).
+
+| ticks into the episode | small: mean n_sub | share at the cap of 8 | medium: mean n_sub | share at the cap of 8 |
+|---|---|---|---|---|
+| 1 to 400 | 7.89 | 0.98 | 7.96 | 0.99 |
+| 401 to 1 200 | 7.30 | 0.86 | 7.88 | 0.98 |
+| 1 201 to 2 400 | 2.58 | 0.21 | 7.60 | 0.91 |
+| 2 401 to 4 800 | 2.73 | 0.25 | 3.69 | 0.34 |
+| 4 801 to 7 200 | 4.37 | 0.48 | 2.95 | 0.24 |
+| **all ticks** | **4.43** | **0.48** | **4.92** | **0.53** |
+
+- A tick is at 1 substep or at the cap, rarely between: 49 % / 37 % of all ticks ran exactly 1,
+  48 % / 53 % exactly 8.
+- The start-up transient of the vents is the same as in the empty scene, so the timed window
+  (ticks 51 to 400) matches the first part of a match and overstates the rest of it.
+- What this does to the device side is NOT measured. A batch runs both substep loops to the
+  largest n_sub among its envs, which at N = 256 is 8 on nearly every tick; an env past its own
+  n_sub is masked and does no arithmetic, but its launches still run. The EOS is 39 % (small) /
+  50 % (medium) of the chain, so the per-env chain in a full game lies between the measured number
+  and roughly three quarters of it.
+- Random-row episodes on small are short or long, rarely between (8 of 14 under 250 ticks, 2 at
+  the limit; mean 2 100 ticks), so the per-bucket means of the later rows rest on few episodes.
+
+### The reading
+
+**1. Measured against measured (the same scene, today's code).**
+
+| | small | medium |
+|---|---|---|
+| device, whole batched tick (N = 128) | 597 | 432 |
+| farm, 16 workers | 1 756 | 552 |
+| device / farm | **0.34x** | **0.78x** |
+| device / the 8-worker farm | 0.49x | 1.18x |
+
+Today the batched path is slower than the farm on both ships. P5 read "below on small, above on
+medium" against the 8-worker farm; against 16 workers it is below on both. This is the state §3
+calls R1: resident physics with the gameplay still on the host, never a shipped one.
+
+**2. Projected against the 3x gate (this PC).** The device backend as the design completes it,
+against the full-game farm. The assumptions, each stated:
+
+| # | assumption | basis |
+|---|---|---|
+| A1 | After the flip the device side's per-env host work is zero: no bus, no host slots. | The design's goal (§1); not measured. The 1.56 / 1.96 ms above is what must vanish. |
+| A2 | The gameplay kernels and applier stages that replace the host slots cost one more sweep per env-tick: 0.130 ms small, 0.252 ms medium. | §3's allowance, the sweep core measured at this commit. No such kernel exists; this is the least certain number here. |
+| A3 | The device chain in a full game costs what it costs in this scene. | Both run the substep cap, which is the chain's worst case. Measured afterwards: a full game runs the cap on about half its ticks (mean n_sub 4.4 / 4.9). The farm's full-game rows already contain the cheap ticks and the device's chain numbers do not, so A3 errs AGAINST the device; by how much is not measured. |
+| A4 | N = 256. | Measured. The fixed 2.9 ms is 5 % of the chain there. |
+| A5 | The farm is the full game at 16 workers, as measured. | Measured. |
+| A6 | Nothing is charged for the policy sharing the GPU, the observation export or the rollout buffers. | §3 names them; nothing of them exists at G1. A downside. |
+
+| | small | medium |
+|---|---|---|
+| device chain per env, N = 256 (measured) | 0.209 ms | 0.497 ms |
+| + the allowance (A2) | 0.130 ms | 0.252 ms |
+| = projected device tick per env | 0.339 ms | 0.749 ms |
+| **projected device env-ticks/s** | **2 950** | **1 335** |
+| farm, full game, 16 workers: decimation 4 / 1 (measured) | 1 342 / 1 114 | 487 / 451 |
+| **ratio, the device alone** | **2.2x / 2.6x** | **2.7x / 3.0x** |
+| **ratio, the device plus a farm on the slot's spare cores** (§3's metric) | **3.1x / 3.5x** | **3.6x / 3.9x** |
+| ratio, the device alone, against the 8-worker farm (P1a's yardstick) | 3.4x / 3.9x | 4.1x / 4.2x |
+
+- The second ratio adds 0.9: 14 farm workers on the threads the device's one driver thread leaves
+  free are about 0.9 of the 16-worker farm (the same-scene table, between its 12- and 16-worker
+  rows). The two were not run together, and a trainer that consumes both backends at once is not
+  built. §3 words the metric this way; the first ratio is the stricter one.
+- Sensitivity to A2: with no allowance the device-alone ratios are 3.6 / 4.3 (small) and 4.1 / 4.5
+  (medium); with twice the allowance 1.6 / 1.9 and 2.1 / 2.2.
+- The design's own estimate for this PC was 1.4 to 3.4x (§2.3). The reading lands inside it.
+
+**Against the working gate of 3x: on this PC the device alone projects below it on the small ship
+(2.2 to 2.6x) and at its edge on the medium ship (2.7 to 3.0x); by §3's own metric it projects at or
+above it on both (3.1 to 3.9x).**
+
+**3. Transferred to one A100 slot (projected from projections).** §3's factors, applied by part:
+
+| part | this PC | A100 slot | factor | why |
+|---|---|---|---|---|
+| device, fixed per batched tick | 2.9 ms | 3.6 ms | 0.8x | launch- and sync-bound: a slower host core and a lower GPU clock |
+| device, per env (chain + allowance) | 0.327 / 0.738 ms | 0.172 / 0.389 ms | 1.9x | the integer factor: 2.35x the SMs at 0.8x the clock |
+| the same, if a stage is bandwidth-bound | | 0.073 to 0.093 / 0.164 to 0.211 ms | 3.5 to 4.5x | the A100's DRAM bandwidth; today's chain runs far below the 3070's bandwidth limit, so this is upside, not the expectation |
+| farm, full game, decimation 4 | 1 342 / 487 | 1 610 to 2 150 / 584 to 779 | 1.2 to 1.6x | 32 threads against 16, each Epyc 7742 core 0.6 to 0.8 of a 3700X core, the same scaling with workers assumed |
+
+| one A100 slot, N = 256 | small | medium |
+|---|---|---|
+| projected device env-ticks/s, integer factor | 5 380 | 2 490 |
+| projected device env-ticks/s, bandwidth factor | 9 300 to 11 500 | 4 450 to 5 630 |
+| projected farm env-ticks/s | 1 610 to 2 150 | 584 to 779 |
+| **ratio, the device alone, integer factor** | **2.5x to 3.3x** | **3.2x to 4.3x** |
+| ratio, the device alone, bandwidth factor | 4.3x to 7.2x | 5.7x to 9.6x |
+| ratio with the farm on the spare cores, integer factor | 3.4x to 4.2x | 4.1x to 5.2x |
+| GPU-hours per 5e8 env-ticks (one §2.4 training run): farm / device at the integer factor | 65 to 86 / 26 | 178 to 238 / 56 |
+
+- The integer factor is the one to expect. The per-env cost is constant from N = 16 to 256 on the
+  3070, so the card is saturated in what the kernels ask of it, and the chain sits at about a sixth
+  of the 3070's bandwidth limit (§2.3's ~6 KB per cell per tick against 448 GB/s), so bandwidth is
+  not what saturates it.
+- The transfer multiplies the PC ratio by 1.2 to 1.6 at the integer factor (1.9 over 1.2 to 1.6).
+  It lowers the ratio only if the A100 gains less on today's kernels than the Epyc farm gains over
+  this farm.
+- A larger N on the A100 changes little: the fixed part is already under 10 % at N = 256.
+
+**4. What is measured and what is projected.**
+
+- Measured here: the device chain per env and its split, the fixed part, the bus, every host line,
+  the farm on the same scene and on the full game at 8 and 16 workers, the sweep core, the GPU's
+  clocks, digest equality of the scene.
+- Projected: that the host lines vanish (A1), what the gameplay kernels cost (A2), that a full game
+  costs the chain what this scene does (A3), every A100 and Epyc number.
+- Not measured at all: a policy on the same GPU, the observation and rollout buffers, 14 or 32
+  farm workers on a node, the device backend and a farm together.
+
+**5. Can this PC reading stand as the G1 reading? (Erik's question; his to rule.)**
+
+Recommendation: **yes.** A node run would replace two numbers, the A100's factor on today's
+kernels and the Epyc farm's factor. It would not touch the two assumptions the projection leans on
+most, A1 and A2, which no machine can measure before the gameplay kernels exist: they are what G2
+measures. So a node reading at G1 narrows the smaller uncertainty and leaves the larger.
+
+What could make that wrong:
+- The A100 gains less than about 1.6x on today's kernels (a stage bound by per-thread latency
+  rather than by the number of SMs). The slot ratio would then be below the PC's.
+- The Epyc farm does better than 0.8 of a 3700X core per core, or scales better across 32 threads
+  than this farm does across 16.
+- The allowance (A2) is too small: at twice the allowance every ratio here falls by about a
+  quarter.
+- The policy shares the A100 with the device envs and slows them; the farm leaves the GPU to the
+  learner.
+
+The check is cheap when Berzelius is in use anyway: the two commands above on one slot, about 15
+minutes of one GPU, with the container P10 built. It is a calibration of the transfer, worth
+doing in the first session there, not a gate. G2 is the reading that belongs on a node.
+
+**6. The ruling.** Erik, 2026-11-10, with the numbers above in front of him (the projection at
+about 2 to 4x per slot at today's kernels): the device route continues, and the kernel throughput
+work is wanted after it ("the whole point of the project"). Recorded in the design doc, §12.7.
+Whether this PC reading stands as G1 without a node run is asked in item 5 and not yet ruled.
+
+### Where the time is: input for the throughput work
+
+Facts from the tables, in the order of what they cost today. None is acted on here.
+
+1. **The per-env bus, 1.0 to 1.3 ms per env-tick,** is the largest line of today's batched tick. It
+   leaves with the flip (P6+). Until then it is bound by the number of copy calls (about 27 per env
+   per tick), not by bytes: one copy per field over the whole batch instead of one per env would
+   remove most of it.
+2. **Slot 9b, the over-pressure wall scan, 0.25 to 0.34 ms per env-tick,** is the largest host
+   slot, five to six times the entities (9e, 0.05 ms).
+3. **In the device chain the sweep is as large as the EOS:** the tail is 58 % of the small chain
+   and 47 % of the medium one, at 3.4 / 2.2 ns per cell-update and 63 / 103 launches per tick. P9's
+   single-launch sweep is the first kernel target by size.
+4. **The fixed cost per batched tick is 2.9 ms** and already small at N = 128 (11 % of the small
+   chain); the graph capture (P9) can only win that part back.
+5. **The substep cap.** A fresh ship holds n_sub = 8 for its first 1 000 ticks or more with nothing
+   happening in it, and a settled small ship ticks at half the CPU cost. How many substeps a match
+   needs is a physics question (Erik's); each one less is cheaper on both backends.
+   In a full game about half of all ticks sit at the cap and the first 1 200 to 2 400 ticks of
+   every episode nearly all do (the table above): the vents' start-up, not the fight.
+6. **The farm has headroom too:** it loses 24 to 37 % (small) between the free-running same scene
+   and the lock-step full game, part of it the wait for the slowest worker.
+
+### Not measured
+
+- A Berzelius node: the A100, 14 to 32 farm workers on Epyc cores.
+- The policy update in the loop, the observation and rollout buffers (§3's full metric); the device
+  backend and a farm running together on one machine.
+- The large ship; decimation 4 on the device side (the batch has no decimation yet).
+- More than one repetition of the full-game farm rows (each ran once, 77 000 to 345 000 ticks).
