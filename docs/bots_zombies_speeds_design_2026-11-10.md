@@ -158,6 +158,150 @@ tournament's outcomes, as one more kind of opponent in a varied cast. The
 feature list above is its interface, so nothing in v1 needs to change for
 it. The octopus arm brains (#108) plan the same technique.
 
+### 2.7 As built (G8p, 2026-11-11)
+
+**The gate is met** on the held-out seeds (table below). `bots` is now the
+layered bots (`src/control_bots.py`, `BotTeam`); the first bots live on
+unchanged as `bots_v1` (`src/control_bots_v1.py`, `BotTeamV1`, its law
+pinned bit for bit by `tests/test_bots_v1.py`). The shipped ship_demo pin
+moved once (G8p's re-pin, `tests/test_zombie_control.py`): the winner
+changes, win 1 at tick 2721 (was win 0 at 264); the historical cause-gates
+now play with `bots_v1`, so no other pin moved.
+
+**Team layer** (`TeamBrain`, every `team_period_ticks` = 6): the shared
+picture (every enemy a teammate saw, last-seen tile and tick, forgotten
+after `memory_s` = 6 s; updated every tick from the sight oracle), the
+counts, the play, the shared target (`focus_key`: most exposed by the
+exposure law's kinetic level, then fewest hit points, then nearest the
+team's centroid, then the lower id), the objective and its flood
+(`horde.flood`, recomputed only when the objective or the topology moves),
+the Bound halves (roster order, alternating ids) and the teammates' fire
+lanes on a `lane_cell` = 3 grid.
+
+**Plays** (`PLAYS`, the eligible row of highest `[bots.plays]` weight):
+
+| play | eligible | weight | objective |
+|---|---|---|---|
+| `fall_back` | a known zombie within `zombie_near_tiles` = 24 of a teammate, or known enemy marines > the team + `outnumber_margin` (1) | 3 | home spawn room; feet `retreat` (facing the threat: the backward walk) |
+| `hold` | an enemy marine in the team's sight now | 2 | where the team stands (the teammate nearest the centroid) |
+| `bound` | always | 1 | the shared target, else the nearest known enemy marine, else the enemy spawn room; one half moves (`move`), the other holds (`stand`), swapping when the movers arrive or after `bound_max_s` = 4 s |
+
+**Actions** (`ACTIONS`; scored per bot every `unit_period_ticks` = 8,
+staggered by `(tick + 3 id) % 8`, and at once on a new sighting or contact,
+never inside a throw's wind-up; the best wins its channel, then the best
+whose channels are free):
+
+| action | channel | eligible | weight |
+|---|---|---|---|
+| `shove` | hands | an enemy (zombies included) adjacent; the latch only when `unit_impulse.shove_target` names an enemy and the cooldown has run | 14 |
+| `melee` | hands | the same, with a melee row; latched when `melee_arc_target` has one and the cadence has run | 13 |
+| `frag` | hands | the largest group of `frag_min_group` = 1+ enemies the team sees within `group_radius` 6, farther than `danger_radius` 8 from every teammate, within the throw range, cooldown `grenade_cooldown_s` 4 s | 12 |
+| `flash` | hands | Bound only: a known enemy marine the team does NOT see (seen within `flash_memory_s` = 4 s), in range, and no teammate (the thrower included) within the flash row's `blind_radius` with a line of sight to the landing point | 11 |
+| `shoot` | hands | a fire target: the shared target if this bot sees it, else its own best by the focus order; in range; a zombie only within `zombie_engage_tiles` = 24; never with a teammate's body within half a body + `line_clear_tiles` (2) of the line anywhere up to the target; the trigger only when the turning law's predictor lands within the weapon's spread | 10 |
+| `hold_fire` | hands | always | 1 |
+| `retreat` | feet | Fall back | 6 |
+| `move` | feet | not Fall back, not a Bound holder | 5 |
+| `stand` | feet | a Bound holder | 4 |
+
+**Position features** (`FEATURES`, weights `[bots.features]`): the
+candidates are the passable anchors on a `candidate_stride` = 3 lattice
+within `candidate_radius` = 9 of the bot, plus its own anchor, its committed
+goal and (a mover) the anchor `advance_steps` = 12 steps down the
+objective's flood. `sees_target` 3 (LOS), `outside_fire_lanes` 2, `spaced`
+3.5 (`spacing_tiles` 5 from every teammate and its goal), `cover` 1 (two
+solid ring tiles on the threat's side), `hidden_from_others` 1 (LOS from the
+two nearest other known enemies), `closer_to_objective` 4
+(`progress_steps` 4 nearer by the flood), `safe_ground` 5 (no fire, smoke
+under 0.5, pressure from 0.5 atm, under 60 game degrees above ambient,
+through `EntityFieldAccessor.sample_many`), `reachable` 4 (within
+`reach_steps` 14 of the bot's flood). The two LOS features are cast only for
+the `los_budget` = 6 best candidates. The committed goal gets
+`commit_margin` = 0.5. Exact ties go to `tie_hash(seed, id, tick,
+candidate)`. A mover paths by A* around its standing teammates when there
+is room, and asks a closed non-hull, unwired door on its path open with USE
+(`door_retry_ticks` 24). The cost bound: A* runs only where the flood
+shows a way of at most `plan_max_steps` = 24 steps (a failed A* search
+expands the whole map: the old bots' 28 ms spikes), and one search per team
+per tick (another bot due to plan waits a tick).
+
+**The tournament** (`tools/bot_tournament.py`): `bots` against `bots_v1`
+both ways round, and each against an `idle` team with the horde in (both
+ways), on `ship_demo` and the recipe freighter
+`ship_freighter_standard_s28_medium` (a generated level from the main
+checkout, untracked, copied to a scratch levels dir -- not committed). The
+gate: at least 65 % of the decided matches against `bots_v1` on each level,
+fewer friendly-fire hits per match, no fewer survivors against the horde.
+
+HELD-OUT seeds 101-130 (reported; never tuned on):
+
+| level | pairing | n | bots wins / decided | bots survivors | v1 survivors | rounds / kill bots / v1 | FF hits / match bots / v1 | ticks bots / v1 |
+|---|---|---|---|---|---|---|---|---|
+| ship_demo | duel (both sides) | 60 | 60 / 60 (100 %) | 4.00 | 0.00 | - / - | 0.00 / 4.50 | 234 |
+| ship_demo | each vs idle + horde | 60 + 60 | 54 vs 0 | 2.60 | 0.00 | 9.9 / - | 0.20 / 4.50 | 2292 / 234 |
+| s28_medium | duel (both sides) | 60 | 59 / 59 (100 %), 1 draw | 3.95 | 0.02 | 7.5 / 41.3 | 0.00 / 19.50 | 1300 |
+| s28_medium | each vs idle + horde | 60 + 60 | 55 vs 0 (v1: 29 draws) | 2.75 | 0.48 | 7.9 / 35.4 | 0.03 / 19.50 | 3075 / 3737 |
+
+Throws per match against the horde: 5.1 frags and 0.8 flashbangs (ship_demo),
+4.6 and 0.9 (s28); `bots_v1` throws its 2 frags. Wall clock per match: a
+duel 8 s (ship_demo) / 32 s (s28); a horde match 72 / 76 s for the bots
+(they survive it), 8 / 84 s for `bots_v1`.
+
+Tuning seeds 1-20 (round 4, the shipped code and weights):
+
+| level | pairing | n | bots wins / decided | bots survivors | v1 survivors | rounds / kill bots / v1 | FF hits / match bots / v1 | ticks bots / v1 |
+|---|---|---|---|---|---|---|---|---|
+| ship_demo | duel | 40 | 40 / 40 (100 %) | 4.00 | 0.00 | - / - | 0.00 / 4.50 | 234 |
+| ship_demo | each vs idle + horde | 40 + 40 | 34 vs 0 | 2.42 | 0.00 | 11.3 / - | 0.38 / 4.50 | 1982 / 234 |
+| s28_medium | duel | 40 | 40 / 40 (100 %) | 3.92 | 0.00 | 6.6 / 38.6 | 0.00 / 19.50 | 1181 |
+| s28_medium | each vs idle + horde | 40 + 40 | 38 vs 0 (v1: 20 draws) | 3.15 | 0.50 | 7.4 / 35.0 | 0.03 / 19.50 | 2893 / 3798 |
+
+The tuning took four tournament rounds and seven one-variable experiments
+on the tuning seeds: round 1 (the first weights, seeds 1-10) already met
+the gate (100 % / 100 %, FF 0 vs 4.5 / 19.5, horde survivors 1.1 / 1.05 vs
+0 / 0.5). Then: the Hold play keyed on an enemy in sight (so Bound closes
+on a known enemy, the flashbang's case), the friendly line checked up to the
+target, paths around standing teammates and `spaced` 2.5 -> 3.5 /
+`closer_to_objective` 3 -> 4 with the mover's leap (the corridor test's
+stacking); round 2 (seeds 1-20): 100 % / 95 %, horde survivors 1.00 / 1.23.
+The horde experiments (seeds 1-10, horde only): `zombie_engage_tiles` 30
+moved nothing; `frag_min_group` 2 -> 1 doubled the ship_demo wins (6 -> 13
+of 20, survivors 0.75 -> 1.60; s28 12 -> 16, 1.65 -> 2.25); then
+`zombie_near_tiles` 18 -> 24 (13 -> 18 of 20, 1.60 -> 2.30; s28 16 -> 17,
+2.25 -> 2.30), 30 no better, 12 worse; shove and melee BELOW shoot was worse
+(13 -> 12 wins, survivors 1.60 -> 1.35). Round 3 (seeds 1-20, those
+weights): 100 % / 100 %, horde survivors 2.27 / 2.33, wins 35 / 32 of 40;
+its first held-out run met the gate as well (100 % / 100 %, survivors 2.23 /
+2.48). Then the cost fix (A* gated by the flood, `plan_max_steps`, one
+search per team per tick) changed which paths are searched, so the tuning
+round (4, the table above) and the held-out run were made again on the
+shipped code: four tournament rounds in all, no weight moved after round 3.
+
+Read the duel honestly: on ship_demo the first bots walk into the horde
+and are eaten before they meet the layered bots (the duel ends at tick 234
+in every seed, as `bots_v1` against an idle team does) -- the layered bots
+win by not walking into the middle while the horde is up. The pure
+firefight was measured too (`--zombies 0`): held-out seeds
+101-130, `--zombies 0`: ship_demo 58 of 59 decided (98.3 %, 1 draw),
+survivors 3.27 vs 0.05, rounds per kill 6.5 vs 34.1, FF hits per match
+0.23 vs 14.22; s28 59 of 59 (100 %, 1 draw), 3.50 vs 0.02, 8.2 vs 50.6,
+0.00 vs 18.42. So the layered bots also win the straight fight: focus fire
+under the exposure law, Hold on a seen enemy, spacing and clear lines.
+
+**Cost** (ship_demo, both teams on the bots, seeds 1-2, the controllers'
+`handle_frame` per tick, quiet machine): mean 0.96 ms, p99
+2.1 ms, max 3.1 ms per tick for the 8 bots (`bots_v1`: mean 1.51, p99
+23.7, max 27.9 -- its failed A* searches). Both include the shared sight
+oracle (`vision.state_for`, ~0.3 ms a tick, computed by whichever
+controller asks first). In the watched match (`e2e_drive --profile`) the
+match observer's whole per-tick work is 1.3 ms a tick.
+
+**Not built**: room breaching (the fourth play: a flashbang through one
+door, entry from two) and smoke to cross an open line (the smoke grenade is
+carried, never thrown); learned scoring (§2.6, v2); `travel_throttle` is 0
+(the bots walk; the run is untuned); the recipe freighter `s7_large` is not
+in the tournament (a match there costs minutes of wall clock); the bots do
+not hear (only the horde does).
+
 ## 3. The zombie law v2 (G9p)
 
 **RULED.** Zombies do not stand idle: they wander. They hear (by distance
