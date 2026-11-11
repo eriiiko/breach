@@ -5,7 +5,7 @@ locked design decisions (``docs/patch_game_logic_migration.md``):
 
 - One class for everyone. Zombie-ness is a STATE (``is_zombie``), not a
   subclass. Marine-only fields (``orders``, ``ap``) and zombie-only
-  fields (``zombie_path``, ``last_melee_tick``) coexist on the same
+  fields (``zombie_activated``, ``last_melee_tick``) coexist on the same
   object; ``apply_action`` (Phase 2) is the chokepoint that ignores
   orders for zombified units.
 - Inventory (``has_grenade``, ``has_explosive``) is a BASE field, always
@@ -47,6 +47,7 @@ from enum import Enum
 
 
 from config import CFG
+from simulation import turning as _turning
 from simulation import unit_fixed
 from simulation.generation import predefined_unit_attributes
 from simulation.inventory import Inventory
@@ -88,10 +89,15 @@ class LifeState(Enum):
 # This matches Python's math.atan2 / trigonometry convention and makes
 # angle arithmetic (e.g. angular difference between two positions) natural.
 
-_NORTH = math.pi / 2   # 1.5707963267948966 radians
+#   (The spawn facing is turning.FACING_NORTH_Q16 = quantize(pi/2), in the
+#   facing's own Q16.16 radian currency -- G5p-a1.)
 
 # (_COMPASS_LABELS / _SECTOR_HALF DELETED - audit Patch A / A9, 2026-08-04:
 # an 8-compass snap table with no reader anywhere in the repo.)
+
+
+#: ``Unit.throw_reach_q`` when the throw named no reach (the v0.1 fixed one).
+THROW_NO_REACH = -(2 ** 31)
 
 
 class Unit:
@@ -118,8 +124,9 @@ class Unit:
     loadout``); ``env_profile`` an ``[env_profiles.*]`` row (``None`` = the
     species baseline). Zombies carry no loadout.
 
-    Facing convention: float radians, 0=East, CCW positive.
-    Default spawn: π/2 (North).
+    Facing convention: Q16.16 radians (``facing_q``; ``facing`` the float
+    view), 0=East, CCW positive. Default spawn: North. Written only by the
+    turning law (G5p-a1, ``simulation.turning``).
     """
 
     def __init__(self, name: str, x: float, y: float, team: int = 0,
@@ -204,12 +211,40 @@ class Unit:
         # never this list directly.
         self.statuses: list = []
 
+        # EXPOSURE (gameplay pack G4p, simulation.exposure): the focus-fire
+        # level, one Q16 int per damage type (a fixed block, all 0), raised by
+        # the hits of a round with an `expose`, decaying every tick, read at
+        # the damage door. Zeroed at death and at conversion. SYNCED: hashed
+        # in the unit digest while non-zero (field_ab_harness._unit_record).
+        from simulation.exposure import new_block as _new_exposure_block
+        self.exposure: list = _new_exposure_block()
+
         # Hidden Hartmann fields — data only; behaviour deferred (spec §13).
         self.awakened: bool = False
 
-        # ---- Facing (float radians, 0=East CCW, π/2=North) ---------------
-        # Default spawn facing = North (π/2), matching legacy "N" default.
-        self.facing: float = _NORTH
+        # ---- Facing (G5p-a1: the turning law, simulation.turning) ---------
+        # ``_facing_q`` (Q16.16 radians, 0=East CCW) is the SYNCED facing;
+        # ``facing`` / ``facing_q`` are read-only views. ``facing_target_q``
+        # is where the unit is turning to (persists until replaced) and
+        # ``omega_q`` its angular velocity per tick. Only simulation.turning
+        # writes them: the spawn here through ``turning.place`` (the one
+        # constructor-time door), every later reason to face somewhere through
+        # ``turning.set_target``, the turn itself in slot 1a. Default spawn
+        # facing = North (quantize(pi/2)), matching the legacy "N" default.
+        _turning.place(self, _turning.FACING_NORTH_Q16)
+
+        # ---- The unit impulse law (G5p-a2, simulation.unit_impulse) -------
+        # The accumulators ``imp_x`` / ``imp_y`` (Q16 gram-tiles per tick,
+        # the remainder of J / m kept) and ``imp_l`` (angular), the in-place
+        # sway ``swx`` / ``swy`` and the pushed velocity ``pvx`` / ``pvy``
+        # (Q16 tiles per tick), the ``effort`` (Q16) and ``react_ticks``; the
+        # shove's ``last_shove_tick`` cooldown and ``pending_shove`` latch;
+        # ``mass_g``, body + kit in integer grams; ``impulse_books``, the
+        # momentum books (diagnostic, never digested). All integers, all at
+        # rest here. Written only through unit_impulse (``add`` is the one
+        # entry). SYNCED: hashed in the unit digest while non-zero.
+        from simulation import unit_impulse as _unit_impulse
+        _unit_impulse.init_state(self)
 
         # ---- HP: current_hp from sampled vitality ------------------------
         # max_hp is removed; use effective_vitality(unit) from stats module.
@@ -236,7 +271,26 @@ class Unit:
         # row carries the pre-#119 [marine] numbers, byte-identical).
         _kit = None if self.is_zombie else _loadout_tables().loadout(
             self.loadout_name)
-        self.has_grenade   = 0 if _kit is None else _kit.grenades
+        # Hand grenades (G3p): ONE count per hand-grenade [ammo.*] row, a
+        # fixed block (the rows of the family are the capacity), indexed by
+        # the throw verb's ``kind`` (``WeaponsTables.hand_grenade_rows``).
+        # ``has_grenade`` below is the FRAG slot of it (the legacy single
+        # count: the old order path, the bots, the pickup hooks, the tests).
+        from simulation.weapons import FRAG_ROW as _FRAG_ROW
+        from simulation.weapons import get_tables as _weapon_tables
+        _rows = _weapon_tables().hand_grenade_rows
+        self._frag_slot = _rows.index(_FRAG_ROW) if _FRAG_ROW in _rows else -1
+        self.grenade_counts = [
+            0 if _kit is None else int(_kit.grenades.get(r, 0)) for r in _rows]
+        # The throw's wind-up (G3p, Simulation._start_throw): the tick the
+        # grenade leaves the hand (-1 = not winding up) and what was asked
+        # for. Integers only; deliberately NOT in the synced digest (the
+        # magazine state's precedent): the grenade's flight and the blast
+        # are, and the hashed events catch a divergence.
+        self.throw_release_tick = -1
+        self.throw_kind = 0
+        self.throw_reach_q = THROW_NO_REACH
+        self.throw_fuse_ticks = 0
         self.has_explosive = 0 if _kit is None else _kit.explosives
         # Magazines carried, TOTAL including the one loaded (G2p; the loadout
         # row's `magazines`, 0 = spares untracked = infinite auto-reload).
@@ -281,6 +335,23 @@ class Unit:
         self.spare_mags = -1
         self.reload_done_tick = -1
 
+        # The MELEE verb (gameplay pack G6p, ``Simulation.melee_intent``):
+        # the loadout's melee weapon row ("" = none: the verb does nothing),
+        # the verb's latch (consumed in slot 4's phase A,
+        # ``combat.process_melee_intents``) and the tick of the last blow (the
+        # row's cadence; -1 = none yet; a zombie's bite keeps its own
+        # ``last_melee_tick``). Intent state: deliberately NOT in the synced
+        # digest (the shove's and the magazine's precedent); the blow itself
+        # is (hp, status, push, events).
+        self.melee_id = "" if _kit is None else str(_kit.melee)
+        self.pending_melee = False
+        self.last_blow_tick = -1
+        # The flashlight bit (gameplay pack G7p, ``Simulation.set_flashlight``):
+        # ON by default; SYNCED, hashed in the unit digest only while OFF
+        # (absence-transparent). Nothing in the sim reads it (light as game
+        # state is #81): the frame-light assembly draws the cone from it.
+        self.flashlight_on = True
+
         # W4 SPRAY burst state (mechanics/03 §5): armed by
         # combat.start_spray_burst on a spray trigger; counted down by
         # combat.process_sprays (one cone-deposit tick per count).
@@ -292,11 +363,21 @@ class Unit:
         self.spray_target = None
         self.spray_order = None
 
-        # Zombie AI state.
+        # Zombie AI state. G9p: the horde walks the distance field
+        # (simulation.horde), so a zombie carries no path.
         self.zombie_activated       = False
-        self.zombie_path            = []
-        self.zombie_path_idx        = 0
         self.zombie_move_accumulator = 0
+        # The horde's behaviours (G9p stage 2, simulation.horde): the noise
+        # a HEARING zombie walks to (tile; -1 = none) and the ticks it keeps
+        # chasing it, and a DORMANT zombie's wander anchor (-1 = unset).
+        # SYNCED fixed-width state, hashed in the unit digest only while
+        # set (absence-transparent); cleared at death and conversion
+        # (horde.clear).
+        self.zombie_noise_y         = -1
+        self.zombie_noise_x         = -1
+        self.zombie_noise_ticks     = 0
+        self.zombie_anchor_y        = -1
+        self.zombie_anchor_x        = -1
         self.last_melee_tick        = -999
         self.killed_by_zombie       = False
 
@@ -409,31 +490,42 @@ class Unit:
     # Facing helpers
     # ------------------------------------------------------------------
 
+    @property
+    def facing(self) -> float:
+        """The facing in float radians (0=East, CCW positive): a READ-ONLY
+        view of the synced ``facing_q`` (an exact n/65536 double) for the
+        renderer, the pose layer and every float reader. No setter: a unit's
+        facing is written only by the turning law (``simulation.turning``) --
+        hand it a target (:meth:`face_towards`, ``turning.set_target``)."""
+        return self._facing_q / 65536.0
+
+    @property
+    def facing_q(self) -> int:
+        """The synced facing, Q16.16 radians in ``(-PI_Q16, PI_Q16]``."""
+        return self._facing_q
+
     def face_towards(self, target_x: float, target_y: float) -> None:
-        """Update ``self.facing`` to point from the unit's current position
-        toward ``(target_x, target_y)``. Called by the movement code each
-        tick a unit takes a step, so sprites visibly track direction of
-        travel. No-op if the target is the current position.
+        """Make the direction from the unit's current position toward
+        ``(target_x, target_y)`` its facing TARGET (``turning.set_target``):
+        the turning law turns it there in slot 1a. Called by the movement
+        code each tick a unit takes a step (the zombie walk, the legacy WEGO
+        and onephase plans), so the sprite tracks the direction of travel.
+        No-op if the target is the current position.
 
         World Y increases downward; the facing convention is math-style
-        (Y-up). The negation on dy converts between them.
+        (Y-up). The negation on dy converts between them. The angle is the
+        pure-integer kit's (Q2-lift: math.atan2 is libm and differs at the
+        last ULP across CRT/Python versions): the deltas quantized at the
+        boundary, integer atan2. Deltas that BOTH quantize to zero
+        (|d| < 1/131072 tiles) give 0 -- deterministic, and unreachable from
+        real movement steps (>= ~1e-2 tiles).
         """
         dx = target_x - self.x
         dy = target_y - self.y
         if dx == 0 and dy == 0:
             return
-        # Q2-lift: facing is SYNCED state, and math.atan2 is libm — CRT/Python
-        # versions differ at the last ULP, which the lockstep digest amplifies
-        # into a cross-machine hash flip (the X-ARCH Ada finding). Route
-        # through the pure-integer kit: quantize the deltas at the boundary,
-        # integer atan2, dequantize back — an exact n/65536 double, identical
-        # everywhere. Shift vs libm <= ~1.5e-5 rad (imperceptible;
-        # pre-approved, no feel-check). Downstream consumers (facing_compass,
-        # renderer, flashlight cone) are unchanged — they still see a float
-        # radian. Deltas that BOTH quantize to zero (|d| < 1/131072 tiles)
-        # yield facing 0.0 — deterministic, and unreachable from real
-        # movement steps (>= ~1e-2 tiles).
-        self.facing = unit_fixed.atan2_rad(-dy, dx)
+        _turning.set_target(self, unit_fixed.atan2_q16(
+            unit_fixed.quantize_scalar(-dy), unit_fixed.quantize_scalar(dx)))
 
     def facing_compass(self) -> str:
         """Convert self.facing (radians) to 8-compass string.
@@ -471,6 +563,21 @@ class Unit:
     def tile_y(self) -> int:
         """Integer tile index (row) — for matrix access."""
         return int(self.y)
+
+    @property
+    def has_grenade(self) -> int:
+        """The FRAG count: the legacy single grenade count, the slot of
+        ``grenade_counts`` that holds ``grenade_frag`` (G3p). Settable, so
+        the old order path, the pickup hooks and the tests keep their
+        arithmetic; a table with no frag row reads 0."""
+        return self.grenade_counts[self._frag_slot] if self._frag_slot >= 0 else 0
+
+    @has_grenade.setter
+    def has_grenade(self, n: int) -> None:
+        if self._frag_slot < 0:
+            raise ValueError("this weapon table has no grenade_frag row to "
+                             "hold has_grenade")
+        self.grenade_counts[self._frag_slot] = int(n)
 
     def center_tile_x(self) -> int:
         """Col index of the unit's center tile."""

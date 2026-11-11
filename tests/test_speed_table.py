@@ -204,11 +204,15 @@ def _zombie_step_ticks(tile, convert):
 
 
 @pytest.mark.parametrize("tile", [0.333, 1.0])
-def test_a_born_and_a_converted_zombie_shamble_at_the_tables_cadence(tile):
+def test_a_born_and_a_converted_zombie_shamble_at_the_tables_cadence(
+        tile, monkeypatch):
     """Property: every zombie -- spawned as one or a marine that turned --
     takes its first step after exactly the table's shamble cadence on its
     map. Breaks if a converted marine keeps a marine cadence, or the walk
-    reads anything but the ``[speeds]`` row."""
+    reads anything but the ``[speeds]`` row. (G9p: the horde's SPRINT is
+    off here -- a zombie seeing prey within 8 m sprints; the sprint's own
+    cadence is tests/test_horde_behaviours.py's.)"""
+    monkeypatch.setattr(CFG.zombie, "sprint", False)
     want = speed_table(CFG, tile).zombie_shamble_ticks
     assert _zombie_step_ticks(tile, convert=False) == want
     assert _zombie_step_ticks(tile, convert=True) == want

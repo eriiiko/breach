@@ -25,6 +25,11 @@ Button / stick map (Xbox-style names; the raylib enum is layout-agnostic):
     A (south)      -> THROW grenade along aim/facing
     X (west)       -> USE (toggle an adjacent door)
     Y (north)      -> RELOAD (discard the magazine, run the reload stall)
+    B (east)       -> CYCLE the selected grenade kind (G3p; A throws it)
+    RB             -> SHOVE the adjacent unit nearest the facing (G5p-a2)
+    R3 (right stick click), held -> MELEE: strike the adjacent enemy nearest
+                      the facing at the weapon's cadence (G6p)
+    D-pad up       -> toggle the FLASHLIGHT (G7p)
 
 The actual controller FEEL is Erik's HUMAN-TEST — this module is not driven in
 the headless test suite (it needs a live pad). What the tests pin is the pure
@@ -58,6 +63,9 @@ class GamepadHalf:
         self._prev_throw = False
         self._prev_use = False
         self._prev_reload = False
+        self._prev_cycle = False
+        self._prev_shove = False
+        self._prev_flashlight = False
 
     @staticmethod
     def available() -> bool:
@@ -146,8 +154,32 @@ class GamepadHalf:
         reload = reload_down and not self._prev_reload
         self._prev_reload = reload_down
 
+        # ---- B (east) -> CYCLE the grenade kind (edge) ----
+        cycle_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_RIGHT_FACE_RIGHT)
+        cycle = cycle_down and not self._prev_cycle
+        self._prev_cycle = cycle_down
+
+        # ---- RB -> SHOVE (edge; G5p-a2) ----
+        shove_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_RIGHT_TRIGGER_1)
+        shove = shove_down and not self._prev_shove
+        self._prev_shove = shove_down
+
+        # ---- R3 (right stick click), held -> MELEE (G6p) ----
+        melee = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_RIGHT_THUMB)
+
+        # ---- D-pad up -> toggle the FLASHLIGHT (edge; G7p) ----
+        flash_down = rl.is_gamepad_button_down(
+            _PAD, GB.GAMEPAD_BUTTON_LEFT_FACE_UP)
+        flashlight = flash_down and not self._prev_flashlight
+        self._prev_flashlight = flash_down
+
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
-                           use=use, reload=reload)
+                           use=use, reload=reload, cycle_grenade=cycle,
+                           shove=shove, melee=melee,
+                           flashlight_toggle=flashlight)
 
 
 __all__ = ["GamepadHalf"]

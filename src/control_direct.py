@@ -5,7 +5,8 @@ Design: ``docs/gameplay_pack_v1_design_2026-11-10.md`` §3 G1p (on
 direct`` (``--control gamepad`` is an alias) possesses the first living
 marine of ``sim.player_team`` and drives it through the sim's per-tick intent
 facade (``set_move_dir`` / ``set_aim`` / ``set_trigger`` /
-``throw_grenade_intent`` / ``use_intent`` / ``reload_intent``) under
+``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
+``shove_intent`` / ``melee_intent`` / ``set_flashlight``) under
 ``ContinuousRealtime``.
 
 Every frame it reads BOTH devices and uses whichever was touched last (Erik:
@@ -27,10 +28,25 @@ becomes intents. A new device is a half, never a second scheme.
   reach is. The mouse is ignored while ``GameRenderer.pointer_captured()``
   (the light-curve panel owns it).
 
-``melee``, ``shove``, ``cycle_grenade`` and ``flashlight`` are bound in the
-table and do nothing yet: their verbs arrive with G3p..G7p
-(:data:`INERT_ACTIONS`). ``reload`` (G2p) is ``reload_intent``: pressed once
-it discards the magazine in the gun and runs the reload stall. The camera (``[display] camera_mode``, the
+Every action of the table is live now (:data:`INERT_ACTIONS` is empty).
+``melee`` (G6p; the right mouse button, pad R3) is ``melee_intent``: the
+button HELD sends it every frame and the sim's own cadence (the weapon row's)
+decides when a blow lands, so holding the button keeps striking the adjacent
+enemy nearest the facing. ``flashlight`` (G7p; Q, pad D-pad up) TOGGLES the
+possessed unit's light: the control keeps the on/off state
+(:attr:`DirectControl.flashlight_off`, seeded from the unit's own bit when a
+unit is possessed) and holds it with ``set_flashlight`` every frame, as the
+trigger is held. ``shove`` (G5p-a2;
+Space, pad RB) is ``shove_intent``: pressed once it pushes the adjacent unit
+nearest the facing through the unit impulse law.
+``reload`` (G2p) is ``reload_intent``: pressed once it discards the magazine
+in the gun and runs the reload stall. ``cycle_grenade`` (G3p; key 4, pad B)
+steps the SELECTED grenade kind through the kinds the unit still carries and
+``throw`` throws the selected kind (``throw_grenade_intent(..., kind=)``):
+the selection is control-layer state (:attr:`DirectControl.grenade_kind`,
+never a sim field), moves on by itself to the next carried kind when the
+selected one runs out, and the HUD reads it (``ui.model.panel_state_lines``,
+``grenade_kind=``). The camera (``[display] camera_mode``, the
 :attr:`camera_mode` main.py reads) is the follow camera's, never camera code
 here.
 
@@ -48,9 +64,10 @@ from control_source import (ControlSource, quantize_point_aim,
 KEY_ACTIONS = ("move_forward", "move_back", "strafe_left", "strafe_right",
                "trigger", "melee", "shove", "reload", "throw",
                "cycle_grenade", "flashlight", "use", "full_speed")
-#: Bound now, inert until their verbs land (G3p the grenade kind, G5p shove,
-#: G6p melee, G7p flashlight).
-INERT_ACTIONS = ("melee", "shove", "cycle_grenade", "flashlight")
+#: Bound but with no verb behind them yet: none since G7p (melee G6p,
+#: flashlight G7p, shove G5p-a2 are live). A new bound-but-inert action is
+#: listed here until its verb lands.
+INERT_ACTIONS = ()
 
 #: Q16 one -- the throttle of a held ``full_speed``.
 _THROTTLE_ONE = 1 << 16
@@ -144,13 +161,34 @@ class DeviceFrame:
     ``move`` ``(dx_q, dy_q, throttle_q)`` or None (stop: ``clear_move_dir``);
     ``aim`` ``(dx_q, dy_q)`` or None (keep the facing); ``trigger`` held;
     ``throw`` ``(dx_q, dy_q, reach_q | None)`` on the frame it was pressed;
-    ``use`` and ``reload`` True on the frame they were pressed."""
+    ``use``, ``reload``, ``cycle_grenade``, ``shove`` and
+    ``flashlight_toggle`` True on the frame they were pressed; ``melee`` True
+    on every frame its button is held (the sim's cadence spaces the blows)."""
     move: tuple | None
     aim: tuple | None
     trigger: bool
     throw: tuple | None
     use: bool
     reload: bool = False
+    cycle_grenade: bool = False
+    shove: bool = False
+    melee: bool = False
+    flashlight_toggle: bool = False
+
+
+def next_carried_kind(counts, current):
+    """The grenade kind to select next (pure): the first kind AFTER
+    ``current`` (wrapping round) of which the unit still carries one
+    (``counts[k] > 0``); ``current`` itself when it is the only kind carried;
+    ``None`` when the unit carries none. ``current`` may be None (nothing
+    selected yet: the search starts at kind 0)."""
+    n = len(counts)
+    start = -1 if current is None else int(current)
+    for step in range(1, n + 1):
+        k = (start + step) % n
+        if counts[k] > 0:
+            return k
+    return None
 
 
 def keyboard_move(forward: bool, back: bool, left: bool, right: bool,
@@ -235,8 +273,15 @@ class KeyboardMouseHalf:
                      else (*facing_dir(), None))
         use = self._pressed("use")
         reload = self._pressed("reload")
+        cycle = self._pressed("cycle_grenade")
+        shove = self._pressed("shove")
+        melee = (not captured) and (self._down("melee")
+                                    or self._pressed("melee"))
+        flashlight = self._pressed("flashlight")
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
-                           use=use, reload=reload)
+                           use=use, reload=reload, cycle_grenade=cycle,
+                           shove=shove, melee=melee,
+                           flashlight_toggle=flashlight)
 
 
 class DirectControl(ControlSource):
@@ -261,9 +306,22 @@ class DirectControl(ControlSource):
         self.current_mode = ORDER_MOVE_ATTACK
         self.planning_phase = 0
         # Grenade fuse comes off the hand_grenade weapon row (same source the
-        # WEGO input uses), read once at construction.
-        self.grenade_fuse = weapon_tables().weapons.by_name[
-            "hand_grenade"].fuse_default_seconds
+        # WEGO input uses), read once at construction and converted ONCE to
+        # the integer ticks the throw verb takes (G3p).
+        from simulation.weapons import fuse_ticks_from_seconds
+        self.grenade_fuse = fuse_ticks_from_seconds(
+            weapon_tables().weapons.by_name["hand_grenade"]
+            .fuse_default_seconds, CFG.clock.ticks_per_second)
+        #: The SELECTED grenade kind (G3p): an index of the hand-grenade rows
+        #: (``WeaponsTables.hand_grenade_rows``), None until a unit carrying
+        #: one is possessed. Control-layer state, never on the sim.
+        self.grenade_kind = None
+        #: The flashlight's OFF state the control holds (G7p): control-layer
+        #: state seeded from the possessed unit's own bit (so a unit darkened
+        #: by anything else is not lit by the next frame) and sent every
+        #: frame through ``set_flashlight``. The toggle flips it.
+        self.flashlight_off = False
+        self._flash_unit_id = None
         self._kbm = KeyboardMouseHalf(self.keys)
         self._pad = None          # built on the first frame (pyray import)
         #: The device in use: "keyboard" until the pad is touched.
@@ -333,6 +391,8 @@ class DirectControl(ControlSource):
             self.active = "keyboard"
         elif self._pad.touched():
             self.active = "pad"
+        self._sync_grenade_kind(u)
+        self._sync_flashlight(u)
         facing = lambda: self._facing_dir(u)          # noqa: E731
         if self.active == "pad":
             if not self._pad.available():
@@ -352,14 +412,54 @@ class DirectControl(ControlSource):
         if frame.aim is not None:
             sim.set_aim(uid, *frame.aim)
         sim.set_trigger(uid, frame.trigger)
-        if frame.throw is not None:
+        if frame.cycle_grenade:
+            u = sim.get_unit(uid)
+            if u is not None:
+                k = next_carried_kind(u.grenade_counts, self.grenade_kind)
+                if k is not None:
+                    self.grenade_kind = k
+        if frame.throw is not None and self.grenade_kind is not None:
             tdx, tdy, reach_q = frame.throw
             sim.throw_grenade_intent(uid, tdx, tdy, self.grenade_fuse,
-                                     reach_q=reach_q)
+                                     reach_q=reach_q, kind=self.grenade_kind)
         if frame.use:
             sim.use_intent(uid)
         if frame.reload:
             sim.reload_intent(uid)
+        if frame.shove:
+            sim.shove_intent(uid)
+        if frame.melee:
+            sim.melee_intent(uid)
+        if frame.flashlight_toggle:
+            self.flashlight_off = not self.flashlight_off
+        sim.set_flashlight(uid, self.flashlight_off)
+
+    def _sync_flashlight(self, u) -> None:
+        """Seed the held flashlight state from a newly possessed unit's own
+        bit (the control follows the unit, not the other way round)."""
+        if u is None or u.id == self._flash_unit_id:
+            return
+        self._flash_unit_id = u.id
+        self.flashlight_off = not getattr(u, "flashlight_on", True)
+
+    def _sync_grenade_kind(self, u) -> None:
+        """Keep the selection on a kind the unit still carries: when the
+        selected kind has run out (or none is selected yet) it moves to the
+        next carried kind; a unit carrying none leaves it where it is."""
+        if u is None:
+            return
+        counts = u.grenade_counts
+        sel = self.grenade_kind
+        if sel is None or not 0 <= sel < len(counts) or counts[sel] <= 0:
+            k = next_carried_kind(counts, sel)
+            if k is not None:
+                self.grenade_kind = k
+
+    @property
+    def selected_grenade_kind(self):
+        """The selected grenade kind for the HUD (main.py hands it to the
+        panel); None when nothing is selected."""
+        return self.grenade_kind
 
     @staticmethod
     def _facing_dir(u):
@@ -376,6 +476,6 @@ class DirectControl(ControlSource):
         return (unit_fixed.quantize_scalar(dx), unit_fixed.quantize_scalar(dy))
 
 
-__all__ = ["DirectControl", "DeviceFrame", "KeyboardMouseHalf", "KeyTable",
+__all__ = ["DirectControl", "DeviceFrame", "next_carried_kind", "KeyboardMouseHalf", "KeyTable",
            "Binding", "KEY_ACTIONS", "INERT_ACTIONS", "KEY_NAMES",
            "key_table", "keyboard_move", "MOUSE_DEADZONE_TILES"]

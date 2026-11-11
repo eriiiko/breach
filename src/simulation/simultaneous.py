@@ -21,7 +21,13 @@ So an attack slot runs in TWO PHASES:
   recorded effects in the order they were recorded (shooter by shooter in
   the slot's walk order, round by round within a shooter): damage packets
   through the one door (``damage.apply_packet``), attack statuses, facing
-  snaps, wall chew, payload detonations, spray deposits.
+  snaps (targets for the turning law), wall chew, payload detonations, spray deposits, the
+  impulses (G5p-a2: hits' pushes, recoil) through ``unit_impulse.add``. The hits' EXPOSURE
+  raises (G4p, :mod:`simulation.exposure`) land together after the last
+  effect, so every hit of the slot reads its target's slot-start exposure.
+  (A packet a ``world`` effect applies -- a detonation's blast -- goes
+  through the door directly and raises at once; no such packet carries an
+  ``expose`` in v1.)
 
 Consequences that hold by construction: two units can kill each other on
 one tick; a unit killed this tick by another's round still got its own shot
@@ -41,15 +47,19 @@ the pre-#169 behaviour, for direct callers of the combat helpers that own
 no slot (tests, tools, OnePhaseWEGO's timeline).
 
 Pure bookkeeping: no float, no RNG, no new synced state. The pending list
-lives one slot and is never digested; its effect is (hp, statuses, facing,
-walls and the hashed hit / kill events).
+lives one slot and is never digested; its effect is (hp, statuses, facing
+targets, walls and the hashed hit / kill events).
 """
 from __future__ import annotations
 
 from simulation.damage import apply_packet
+from simulation.exposure import ExposureLanding
 from simulation.status import apply_status
+from simulation.turning import set_target
+from simulation.unit_fixed import FP_ONE as ONE
+from simulation.unit_impulse import add as _impulse_add
 
-_HIT, _STATUS, _FACE, _WORLD = 0, 1, 2, 3
+_HIT, _STATUS, _FACE, _WORLD, _PUSH = 0, 1, 2, 3, 4
 
 
 class SimultaneousEffects:
@@ -57,7 +67,7 @@ class SimultaneousEffects:
     :meth:`resolve` (phase B) in recording order. ``deferred=False`` is
     :data:`IMMEDIATE`: each effect applies when recorded.
 
-    The four effect kinds are the whole interface; an attack path that
+    The five effect kinds are the whole interface; an attack path that
     changes the world or a unit records through one of them -- never a
     direct write inside phase A, which would let a later decision of the
     same slot read it:
@@ -65,10 +75,18 @@ class SimultaneousEffects:
     - :meth:`hit`    -- a damage packet through ``apply_packet``;
     - :meth:`status` -- an attack's delivery-site status (the baton's stun),
       applied only if the unit is still alive at its turn;
-    - :meth:`face`   -- the shooter's facing snap (a target's facing is what
-      a crit or a facing-defense roll of another shooter reads);
+    - :meth:`face`   -- the shooter's facing snap, a FACING TARGET handed to
+      the turning law (``turning.set_target``, G5p-a1: the facing itself
+      turns there from the next tick's slot 1a; a target's facing is what a
+      crit or a facing-defense roll of another shooter reads);
     - :meth:`world`  -- any other world write (wall chew, a payload
-      detonation, a spray's deposit): a call run at its turn.
+      detonation, a spray's deposit): a call run at its turn;
+    - :meth:`push`   -- an impulse on a unit through the one entry
+      ``unit_impulse.add`` (G5p-a2: a hit's push, recorded right after its
+      hit; a shot's recoil on its shooter), applied only if the unit is
+      still alive at its turn. Integer sums commute, so its place in the
+      order changes nothing; it lands in the accumulators the next slot 1a
+      integrates.
     """
 
     __slots__ = ("deferred", "_pending")
@@ -98,12 +116,27 @@ class SimultaneousEffects:
         else:
             _status_if_alive(unit, kind, magnitude, duration_ticks, source_id)
 
-    def face(self, unit, facing) -> None:
-        """``unit.facing = facing`` at its turn."""
+    def face(self, unit, angle_q: int) -> None:
+        """``turning.set_target(unit, angle_q)`` (Q16.16 radians) at its
+        turn: the facing snap is a target, never a facing write (G5p-a1)."""
         if self.deferred:
-            self._pending.append((_FACE, unit, facing))
+            self._pending.append((_FACE, unit, int(angle_q)))
         else:
-            unit.facing = facing
+            set_target(unit, angle_q)
+
+    def push(self, table, unit, jx_q: int, jy_q: int, lever_q: int = 0,
+             twist_q16: int = ONE) -> None:
+        """``unit_impulse.add(table, unit, jx_q, jy_q, lever_q, twist_q16)``
+        at its turn, if ``unit`` is alive then (a corpse takes no push). A
+        push of zero (an input switched off at its multiplier) is not
+        recorded at all."""
+        if not (jx_q or jy_q):
+            return
+        if self.deferred:
+            self._pending.append((_PUSH, table, unit, int(jx_q), int(jy_q),
+                                  int(lever_q), int(twist_q16)))
+        elif unit.alive:
+            _impulse_add(table, unit, jx_q, jy_q, lever_q, twist_q16)
 
     def world(self, fn, *args, **kwargs) -> None:
         """``fn(*args, **kwargs)`` at its turn -- a world write (the wall
@@ -117,22 +150,36 @@ class SimultaneousEffects:
     # -- phase B ------------------------------------------------------------
     def resolve(self) -> None:
         """Apply every recorded effect in recording order and empty the list.
-        A no-op for :data:`IMMEDIATE` (it never records)."""
+        A no-op for :data:`IMMEDIATE` (it never records).
+
+        The slot's EXPOSURE (G4p) lands at the end: every recorded hit reads
+        its target's exposure as it stood when the slot began, and the raises
+        (and the zeroing of a unit the slot killed) of all of them land
+        together after the last effect (an
+        :class:`~simulation.exposure.ExposureLanding`), so two shooters on one
+        tick take the same damage per round whatever their ids."""
         pending, self._pending = self._pending, []
+        landing = ExposureLanding()
         for eff in pending:
             kind = eff[0]
             if kind == _HIT:
                 _, unit, packet, events, source = eff
-                apply_packet(unit, packet, events, source=source)
+                apply_packet(unit, packet, events, source=source,
+                             exposure_landing=landing)
             elif kind == _STATUS:
                 _, unit, skind, magnitude, duration, source_id = eff
                 _status_if_alive(unit, skind, magnitude, duration, source_id)
             elif kind == _FACE:
-                _, unit, facing = eff
-                unit.facing = facing
+                _, unit, angle_q = eff
+                set_target(unit, angle_q)
+            elif kind == _PUSH:
+                _, table, unit, jx, jy, lever, twist = eff
+                if unit.alive:
+                    _impulse_add(table, unit, jx, jy, lever, twist)
             else:
                 _, fn, args, kwargs = eff
                 fn(*args, **kwargs)
+        landing.land()
 
     def __len__(self) -> int:
         return len(self._pending)

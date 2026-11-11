@@ -154,6 +154,64 @@ class ReloadEvent:
 
 
 @dataclass
+class ShoveEvent:
+    """A unit SHOVED another this tick (gameplay pack G5p-a2,
+    ``Simulation.shove_intent`` consumed in slot 1b and a target found):
+    ``unit_id`` shoved ``target_id``, whose impulse lands in the next slot
+    1a. Render-only (the animation session, #184), like
+    :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves
+    no digest; the push itself is synced unit state."""
+    unit_id: int                    # the shover
+    target_id: int                  # the unit shoved
+
+
+@dataclass
+class MeleeEvent:
+    """A unit STRUCK a blow (gameplay pack G6p, ``Simulation.melee_intent``
+    consumed in slot 4's phase A and a target found): ``unit_id`` struck
+    ``target_id``; the blow's packet, stun and push land at the slot's
+    phase B. ``ticks`` is the blow's cadence, the row's
+    ``rof_interval_ticks`` (what the swing animation spans). Render-only
+    (the animation session, #184), like :class:`ShoveEvent` and
+    :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the striker
+    target_id: int                  # the unit struck
+    ticks: int                      # the blow's cadence, in ticks
+
+
+@dataclass
+class StaggerEvent:
+    """A unit's in-place SWAY overflowed this tick (G5p-a2,
+    ``unit_impulse.integrate`` in slot 1a): a push beyond what it absorbs
+    without a step, so it is now pushed (``pv``) and catching itself for
+    ``ticks`` ticks (the reaction delay; it cannot walk meanwhile, it can
+    shoot). Emitted on every overflow, a renewed one included. Render-only,
+    like :class:`ReloadEvent`: outside the synced event digest."""
+    unit_id: int                    # the staggered unit
+    ticks: int                      # the reaction delay's length, in ticks
+
+
+@dataclass
+class ThrowEvent:
+    """A unit STARTED a grenade throw this tick (gameplay pack G3p): emitted
+    by ``Simulation._start_throw`` on the tick the throw verb is consumed
+    and a wind-up begins (the unit carries a grenade of that kind and is not
+    already winding up; a refused verb emits nothing). ``kind`` is the throw
+    verb's hand-grenade row index; ``ticks`` the wind-up's length -- the
+    grenade leaves the hand ``ticks`` ticks later (0: this very tick).
+    Render-only (the animation session, #184, plays the throw clip to it),
+    like :class:`ReloadEvent`: not in the synced event digest
+    (``tests/field_ab_harness._SYNCED_EVENT_TYPES``), so emitting it moves no
+    digest."""
+    unit_id: int                    # the unit that is throwing
+    kind: int                       # the hand-grenade row index
+    ticks: int                      # the wind-up's length, in ticks
+
+
+@dataclass
 class LaserFiredEvent:
     """A hitscan beam was fired (mechanics/03 §5, W2 — the Lance family).
 
@@ -296,6 +354,10 @@ __all__ = [
     "attacker_value",
     "ShotFiredEvent",
     "ReloadEvent",
+    "ShoveEvent",
+    "MeleeEvent",
+    "StaggerEvent",
+    "ThrowEvent",
     "LaserFiredEvent",
     "SprayJetEvent",
     "ProjectileGlowEvent",

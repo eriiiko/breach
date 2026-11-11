@@ -70,6 +70,7 @@ SYNCED_UNIT_FIELDS = (
     "tile_x", "tile_y", "x", "y", "current_hp",
     "alive", "life_state", "faction", "offsets",
     "facing", "ap", "n_orders", "statuses",
+    "exposure",     # G4p: recorded only while non-zero (absence-transparent)
 )
 
 # Every field the physics writes — the sim state a structural refactor must
@@ -189,7 +190,7 @@ def _unit_record(u):
 
     life = getattr(u, "life_state", None)
     life_repr = getattr(life, "value", str(life))   # enum -> its .value string
-    return {
+    rec = {
         "id":         int(getattr(u, "id", -1)),
         "tile_x":     int(u.tile_x),
         "tile_y":     int(u.tile_y),
@@ -204,7 +205,11 @@ def _unit_record(u):
         # direction), action points (gate synced actions), and the count of
         # remaining orders (a divergence in order-consumption shows here). A
         # full per-order serialization is a future extension if needed.
-        "facing":     q(getattr(u, "facing", 0.0)),
+        # G5p-a1: the facing's own integer (Q16.16 radians, the turning
+        # law's synced representation); a bare stand-in without one falls
+        # back to its float quantized the same way.
+        "facing":     (int(u.facing_q) if hasattr(u, "facing_q")
+                       else round(float(getattr(u, "facing", 0.0)) * 65536)),
         "ap":         [int(a) for a in getattr(u, "ap", ())],
         "n_orders":   len(getattr(u, "orders", ())),
         # P3: the status/condition list (mechanics/06 §4) — canonical
@@ -215,6 +220,58 @@ def _unit_record(u):
         # waiting one tick downstream — hashed at the source instead.
         "statuses":   serialize_statuses(u),
     }
+    # G4p: the EXPOSURE block (simulation.exposure), one Q16 int per damage
+    # type -- synced state the damage door reads -- hashed only while any of
+    # it is non-zero (the absence-transparent precedent of DIGEST_SECTIONS):
+    # a unit nothing has exposed records exactly as it did before G4p.
+    block = getattr(u, "exposure", None)
+    if block and any(block):
+        rec["exposure"] = [int(x) for x in block]
+    # G5p-a1: the turning law's cross-tick state, absence-transparent: the
+    # turn still to go (``wrap(target - facing)``; the target itself is never
+    # zero, so it is hashed as this difference) and the angular velocity,
+    # each only while non-zero.
+    if hasattr(u, "facing_target_q"):
+        from simulation.turning import wrap_q16
+        turn = wrap_q16(int(u.facing_target_q) - int(u.facing_q))
+        if turn:
+            rec["turn"] = int(turn)
+        if getattr(u, "omega_q", 0):
+            rec["omega"] = int(u.omega_q)
+    # G5p-a2: the unit impulse law's cross-tick state, absence-transparent
+    # (each key only while non-zero, so a unit nothing has pushed records
+    # exactly as before): the accumulators with their kept remainders, the
+    # sway, the pushed velocity, the effort and the reaction delay. The
+    # cooldown / latch of the shove are intent state (the magazine
+    # precedent) and the books are diagnostics: neither is hashed.
+    imp = [int(getattr(u, k, 0)) for k in ("imp_x", "imp_y", "imp_l")]
+    if any(imp):
+        rec["imp"] = imp
+    # G5p-b: the wind's standing surplus on a prone body (written at 9c2,
+    # read by the next slot 1a's demand), absence-transparent like the rest.
+    for key, names in (("stand", ("stand_x", "stand_y")),
+                       ("sw", ("swx", "swy")), ("pv", ("pvx", "pvy"))):
+        v = [int(getattr(u, k, 0)) for k in names]
+        if any(v):
+            rec[key] = v
+    # G7p: the flashlight bit (Simulation.set_flashlight), absence-
+    # transparent: ON is the default and hashes nothing, only a unit whose
+    # light is OFF records a key -- so no digest moves until a verb darkens one.
+    if not getattr(u, "flashlight_on", True):
+        rec["dark"] = True
+    # G9p: the horde's state, absence-transparent: a hearing zombie's noise
+    # target and ticks left, a dormant one's wander anchor, each only while
+    # set -- a zombie with neither records exactly as before.
+    if getattr(u, "zombie_noise_ticks", 0):
+        rec["noise"] = [int(u.zombie_noise_y), int(u.zombie_noise_x),
+                        int(u.zombie_noise_ticks)]
+    if getattr(u, "zombie_anchor_y", -1) >= 0:
+        rec["anchor"] = [int(u.zombie_anchor_y), int(u.zombie_anchor_x)]
+    if getattr(u, "effort", 0):
+        rec["effort"] = int(u.effort)
+    if getattr(u, "react_ticks", 0):
+        rec["react"] = int(u.react_ticks)
+    return rec
 
 
 def _event_record(ev):

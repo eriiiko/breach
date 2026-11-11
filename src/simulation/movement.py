@@ -12,9 +12,10 @@ Contract (§4.1)::
 
 * ``footprint_samples`` — a :class:`FootprintSamples` struct carrying the
   per-tile field values under the unit's footprint (``mobility``, milli-units)
-  AND, since #140, a coupling row's already-reduced Q16 speed SCALE
-  (``wind_scale_q16``; the planned ``water_depth`` speed row is the next
-  member). It is a *struct*, not a bare array, so composition is a
+  AND an already-reduced Q16 speed SCALE member (``effort_scale_q16``, the
+  unit impulse law's; #140's ``wind_scale_q16`` was deleted at G5p-b, when
+  the wind became a force on that law; the planned ``water_depth`` speed row
+  is the next member). It is a *struct*, not a bare array, so composition is a
   non-breaking addition (§4.1 forward-compat). The function never receives
   the unit object — a float field on the unit (e.g. ``base_speed``) must not
   leak in and break lockstep. :func:`footprint_samples` is THE builder: every
@@ -57,24 +58,29 @@ class FootprintSamples:
 
     * per-tile FIELD values the speed function reduces itself — ``mobility``,
       the static per-material terrain floor in fixed-point milli-units;
-    * a coupling row's ALREADY-REDUCED Q16 speed scale — ``wind_scale_q16``
-      (#140, ``exchange.wind_scale_q16`` over the footprint's wind load;
-      :data:`SCALE_ONE` = no slowdown, the default, so every pre-#140
-      construction is bit-identical). The planned ``water_depth`` speed row
-      is the next member of this kind.
+    * an ALREADY-REDUCED Q16 speed scale — ``effort_scale_q16``, the unit
+      impulse law's walking scale from the unit's effort (G5p-a2;
+      :data:`SCALE_ONE` = no slowdown, the default). Since G5p-b it carries
+      the wind's slowing too: the wind is a force on that law, so #140's
+      ``wind_scale_q16`` member is gone. The planned ``water_depth`` speed
+      row is the next member of this kind.
 
     :func:`default_speed` composes both and stays pure. Built in ``src/`` only
     by :func:`footprint_samples` (tests may build their own).
     """
 
     mobility: Sequence[int]
-    wind_scale_q16: int = SCALE_ONE
+    #: G5p-a2: the unit impulse law's walking scale from the unit's effort
+    #: (``unit_impulse.effort_scale_q16``; ``SCALE_ONE`` = the feet are not
+    #: working against anything: shots, recoil, a shove, the wind).
+    effort_scale_q16: int = SCALE_ONE
 
 
-def footprint_samples(gmap, fy, fx, fp) -> FootprintSamples:
+def footprint_samples(gmap, fy, fx, fp,
+                      effort_scale_q16: int = SCALE_ONE) -> FootprintSamples:
     """THE :class:`FootprintSamples` builder (#140, design §2.2): the terrain
     mobility under the ``fp`` x ``fp`` footprint anchored at ``(fy, fx)``
-    (``GameMap.footprint_mobility``) and the wind's cadence scale there.
+    (``GameMap.footprint_mobility``) and the walker's effort scale.
 
     Every ``default_speed`` caller in ``src/`` takes its samples from here, so
     every walker -- MOVE_DIR, the zombie walk, the onephase cadence, the WEGO
@@ -82,18 +88,16 @@ def footprint_samples(gmap, fy, fx, fp) -> FootprintSamples:
     builder.py`` greps for a caller that builds its own). Lives in the unit
     layer, not on GameMap: the field store must not import the coupling layer.
 
-    The wind scale is ``exchange.wind_scale_q16`` over
-    ``gmap.footprint_wind_load`` -- the field at the moment of the call, so
-    MOVE_DIR and the zombie walk see the wind at execution, the WEGO order
-    path and the onephase cadence when their path is compiled (design §2.2,
-    an accepted gap).
+    ``effort_scale_q16`` (G5p-a2) is the walker's own walking scale from its
+    effort (``unit_impulse.effort_scale_q16(table, unit)``), passed by every
+    caller in ``src/`` (the unit is not this builder's to read: the samples
+    stay a struct of numbers). Since G5p-b the wind slows a walker through
+    it (the wind is a force on the impulse law, entered at slot 9c2): the
+    builder reads no wind of its own.
     """
-    from simulation import exchange
-    settings = exchange.gmap_wind_settings(gmap)
-    w = gmap.footprint_wind_load(fy, fx, fp)
     return FootprintSamples(
         mobility=gmap.footprint_mobility(fy, fx, fp),
-        wind_scale_q16=exchange.wind_scale_q16(w, settings))
+        effort_scale_q16=int(effort_scale_q16))
 
 
 def half_up(num: int, den: int) -> int:
@@ -129,10 +133,12 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
     returns at least 1 tick (a step can never be instantaneous; the §3
     ``mobility > 1`` speed-boost range quantises coarsely against this floor).
 
-    #140: the samples' ``wind_scale_q16`` (Q16, ``<= SCALE_ONE``) composes
-    AFTER the mobility cost as ``cost' = half_up(cost * SCALE_ONE, scale)`` --
-    a scale of one half doubles the ticks per tile; ``SCALE_ONE`` returns the
-    mobility cost exactly (the calm path is bit-identical).
+    The samples' ``effort_scale_q16`` (Q16, ``<= SCALE_ONE``; G5p-a2)
+    composes AFTER the mobility cost as ``cost' = half_up(cost * SCALE_ONE,
+    scale)`` -- a scale of one half doubles the ticks per tile;
+    ``SCALE_ONE`` returns the mobility cost exactly (the unpushed path is
+    bit-identical). #140's ``wind_scale_q16`` composed the same way before
+    it; G5p-b deleted it when the wind moved onto the impulse law.
 
     The CURRENCY of ``speed_class`` is the caller's, and the result comes
     back in it (both reductions are linear): whole ticks per tile for the
@@ -151,12 +157,15 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
         raise ValueError("default_speed: footprint has non-positive total mobility "
                          "(should have been gated by is_passable_block)")
     cost = half_up(int(speed_class) * n * MOBILITY_ONE, total)
-    scale = int(footprint_samples.wind_scale_q16)
-    if scale != SCALE_ONE:
-        if scale <= 0:
-            raise ValueError("default_speed: wind_scale_q16 must be > 0, "
-                             f"got {scale}")
-        cost = half_up(cost * SCALE_ONE, scale)
+    for name in ("effort_scale_q16",):
+        # G5p-a2's effort (the wind's slowing too, since G5p-b): half_up,
+        # skipped at SCALE_ONE so the unscaled path is bit-identical.
+        scale = int(getattr(footprint_samples, name, SCALE_ONE))
+        if scale != SCALE_ONE:
+            if scale <= 0:
+                raise ValueError(f"default_speed: {name} must be > 0, "
+                                 f"got {scale}")
+            cost = half_up(cost * SCALE_ONE, scale)
     return cost if cost >= 1 else 1
 
 
@@ -227,3 +236,29 @@ def move_speed_tiles_per_tick(cost_walk_q: int, cost_full_q: int,
         f32 = side * FP_ONE + (side - back) * c
         c_plus = 0
     return (f32 * cf + t * c_plus * (cw - cf)) / (FP_ONE * cw * cf)
+
+
+def move_speed_q16(cost_walk_q: int, cost_full_q: int, side_q: int,
+                   back_q: int, throttle_q: int, cos_q: int) -> int:
+    """:func:`move_speed_tiles_per_tick` on the Q16.16 grid (G5p-a2,
+    critique B M6): the SAME exact rational, rounded half up ONCE to Q16
+    tiles per tick -- ``half_up(F * Cf + t * c+ * (Cw - Cf), Cw * Cf)``, no
+    float -- so the walk step and every position it writes lie on the grid
+    (``unit_impulse.move``). Refuses what the float form refuses."""
+    t = int(throttle_q)
+    if not 0 <= t <= THROTTLE_ONE:
+        raise ValueError(f"throttle_q must be in [0, {THROTTLE_ONE}], got {t}")
+    c = int(cos_q)
+    if not -FP_ONE <= c <= FP_ONE:
+        raise ValueError(f"cos_q must be in [-{FP_ONE}, {FP_ONE}], got {c}")
+    cw, cf = int(cost_walk_q), int(cost_full_q)
+    if cw < 1 or cf < 1:
+        raise ValueError(f"tick costs must be >= 1, got walk {cw}, full {cf}")
+    side, back = int(side_q), int(back_q)
+    if c >= 0:
+        f32 = side * FP_ONE + (FP_ONE - side) * c
+        c_plus = c
+    else:
+        f32 = side * FP_ONE + (side - back) * c
+        c_plus = 0
+    return half_up(f32 * cf + t * c_plus * (cw - cf), cw * cf)

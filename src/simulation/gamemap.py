@@ -349,6 +349,12 @@ class GameMap:
         # blast covered it (entities have no hp path in the damage system).
         # Plain Python list: never digested, never recorded, never a field.
         self.blast_log = []
+        # The NOISE LOG (#183 G9p, simulation/noise.py): every noise made
+        # since the last zombie slot as ``(fy, fx, radius_tiles)`` in the
+        # order made -- shots, detonations, door bashes -- appended only by
+        # ``noise.emit`` and DRAINED once per tick by the zombie slot
+        # (``noise.take``). Plain list: never digested, never recorded.
+        self.noise_log = []
         # #31: the blast's pending divergence source, Q16 1/s, owned by
         # blast_expansion.py and consumed at the head of the physics step.
         # Synced state (tests/field_digest.py hashes it while non-zero). The
@@ -2391,21 +2397,32 @@ class GameMap:
 
         Every product is a Python int (unbounded): the planes are int32 and a
         square in int32 wraps above 0.707 m/s. Pure read; the coupling layer
-        (``exchange.wind_scale_q16`` / ``apply_wind_knockdown``) owns the law.
+        (``exchange.apply_wind_force``, the unit impulse law) owns what it
+        does to a body. The W of :meth:`footprint_wind`.
         """
+        return GameMap.footprint_wind(self, fy, fx, footprint)[0]
+
+    def footprint_wind(self, fy, fx, footprint: int = 3):
+        """``(W, vx, vy)``: the wind LOAD on a footprint at (fy, fx) --
+        :meth:`footprint_wind_load`'s max -- and the wind (Q16 m/s, the
+        planes' own ints, world axes) of the gas tile it was read on, the
+        first such tile in row-major order on a tie. ``(0, 0, 0)`` when no
+        gas tile of the footprint carries any load. THE read of what the air
+        does to a body (G5p-b: the force's direction comes through here,
+        never from the planes, critique B §6)."""
         from simulation.atmosphere_fixed import FP_SHIFT
         y0 = max(0, fy)
         x0 = max(0, fx)
         y1 = min(self._h, fy + footprint)
         x1 = min(self._w, fx + footprint)
         if y1 <= y0 or x1 <= x0:
-            return 0
+            return 0, 0, 0
         solid = self.solid[y0:y1, x0:x1].tolist()
         vx = self.wind_x[y0:y1, x0:x1].tolist()
         vy = self.wind_y[y0:y1, x0:x1].tolist()
         n_o2 = self.gas[O2][y0:y1, x0:x1].tolist()
         n_n2 = self.gas[INERT_N2][y0:y1, x0:x1].tolist()
-        best = 0
+        best, bvx, bvy = 0, 0, 0
         for r in range(y1 - y0):
             for c in range(x1 - x0):
                 if solid[r][c]:
@@ -2413,8 +2430,8 @@ class GameMap:
                 v2 = (vx[r][c] * vx[r][c] + vy[r][c] * vy[r][c]) >> FP_SHIFT
                 w_i = (n_o2[r][c] + n_n2[r][c]) * v2
                 if w_i > best:
-                    best = w_i
-        return best
+                    best, bvx, bvy = w_i, vx[r][c], vy[r][c]
+        return best, int(bvx), int(bvy)
 
     def has_los(self, fy1, fx1, fy2, fx2, physical=False):
         """Bresenham line check between two tiles.

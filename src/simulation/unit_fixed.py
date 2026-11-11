@@ -97,11 +97,25 @@ def atan2_q16(y_q: int, x_q: int) -> int:
     return int(_kit().atan2_q16(int(y_q), int(x_q)))
 
 
+def atan2_q16_of(y: float, x: float) -> int:
+    """:func:`atan2_rad` with the Q16.16 radians left as the integer (the
+    turning law's currency, G5p-a1): ``quantize_scalar(atan2_rad(y, x))``
+    exactly."""
+    return atan2_q16(quantize_scalar(y), quantize_scalar(x))
+
+
 def cos_q16(angle_q: int) -> int:
     """The kit's ``cos_q16`` on a Q16.16 radian int, Q16.16 out -- the
     integer form of :func:`cos_rad` (G1p-c: the speed law's direction
     factor, ``movement.facing_cos_q16``)."""
     return int(_kit().cos_q16(int(angle_q)))
+
+
+def sin_q16(angle_q: int) -> int:
+    """The kit's ``sin_q16`` on a Q16.16 radian int, Q16.16 out -- the
+    integer form of :func:`sin_rad` (G3p: the direction a throw leaves the
+    hand, the facing's unit vector)."""
+    return int(_kit().sin_q16(int(angle_q)))
 
 
 def sin_rad(angle: float) -> float:
@@ -116,6 +130,55 @@ def cos_rad(angle: float) -> float:
     """Deterministic cos of ``angle`` (radians) — see :func:`sin_rad`."""
     b = _kit()
     return dequantize_scalar(b.cos_q16(quantize_scalar(angle)))
+
+
+# ---------------------------------------------------------------------------
+# Integer helpers of the unit impulse law (gameplay pack G5p-a2; critique B,
+# M2). Each has a ``fixed_point.h`` twin, held equal by
+# ``tests/test_unit_impulse_twins.py`` (gate G15): Python's ``//`` FLOORS,
+# C / CUDA ``/`` truncates toward zero, so the law names its rounding here and
+# never writes a bare ``//`` on a signed value.
+# ---------------------------------------------------------------------------
+def div_trunc(n: int, d: int) -> int:
+    """``n / d`` rounded toward ZERO -- exactly C's (and CUDA's) integer
+    ``/`` (``fixed_point.h::div_trunc_q``). ``d`` must not be 0."""
+    n, d = int(n), int(d)
+    q = abs(n) // abs(d)
+    return q if (n >= 0) == (d > 0) else -q
+
+
+def shr_trunc(n: int, k: int = FP_SHIFT) -> int:
+    """``n / 2**k`` rounded toward ZERO (a sign-symmetric shift: a mirrored
+    input gives the mirrored output to the count; ``fixed_point.h::
+    shr_trunc_q``). ``>>`` alone floors a negative value."""
+    n = int(n)
+    return n >> k if n >= 0 else -((-n) >> k)
+
+
+def isqrt(n: int) -> int:
+    """``floor(sqrt(n))`` of a non-negative integer, exact (``math.isqrt``)
+    -- the twin of the kit's fixed-iteration ``sqrt_q16`` for every radicand
+    below 2^62 (the law's squares are below 1.4e11). A negative radicand
+    is 0, as the kit's guard makes it."""
+    n = int(n)
+    return math.isqrt(n) if n > 0 else 0
+
+
+def isqrt_ceil(n: int) -> int:
+    """``ceil(sqrt(n))`` of a non-negative integer: the floor root, plus one
+    unless it is exact (so a vector scaled by ``limit / isqrt_ceil(|v|^2)``
+    never comes out longer than ``limit``)."""
+    r = isqrt(n)
+    return r + 1 if r * r < int(n) else r
+
+
+def effort_step(d: int) -> int:
+    """One step of the effort low-pass toward its input, ``d / 8`` rounded
+    AWAY from zero: ``sign(d) * ((|d| + 7) >> 3)`` -- never 0 for a
+    non-zero ``d`` and never past it, so the filter reaches its input
+    exactly (critique A, B2; ``fixed_point.h::effort_step_q``)."""
+    d = int(d)
+    return (d + 7) >> 3 if d >= 0 else -((-d + 7) >> 3)
 
 
 def quantize_hp_delta(dmg: float) -> float:

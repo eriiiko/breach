@@ -598,6 +598,13 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
     ``mode``. During PLANNING the flashlight aims toward the cursor, which is
     what makes it a planning affordance rather than decoration.
 
+    GAMEPLAY PACK G7p: a unit whose flashlight bit is OFF
+    (``Unit.flashlight_on``, ``Simulation.set_flashlight``) has no cone, in
+    every mode. Direct control asks for ``mode="selected"`` with the
+    possessed unit (its one light); a watched match asks for ``mode="all"``:
+    every living non-zombie unit of ANY team, ``team`` ignored (a zombie
+    carries no flashlight).
+
     **Render-only in v1.** These cones must not reach the sim: the moment
     lights affect gameplay (zombies drawn to light, vision limited to lit
     areas) they cross into a stealth system, which is a deliberate decision
@@ -608,7 +615,12 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
     half = float(CFG.onephase.vision_cone_half_deg)
     out = []
     for u in sim.units:
-        if u.team != team or not u.alive:
+        if not u.alive or not getattr(u, "flashlight_on", True):
+            continue
+        if mode == "all":
+            if u.is_zombie:
+                continue
+        elif u.team != team:
             continue
         # `selected_unit_id or -1` would be a bug here: unit id 0 is falsy.
         if mode == "selected" and (selected_unit_id is None
@@ -628,6 +640,24 @@ def flashlight_cones(sim, team: int | None = None, mode: str = "team",
             y=float(u.center_tile_y()), facing=facing, half_deg=half,
             range_tiles=25.0))
     return out
+
+
+def carried_flashlight_cones(sim, possessed_id=None, watching: bool = False,
+                             ) -> list:
+    """The flashlight cones of a game with no onephase planning (gameplay
+    pack G7p): DIRECT CONTROL lights its possessed unit only
+    (``possessed_id``, :func:`flashlight_cones` mode "selected"), a WATCHED
+    MATCH (``watching``: a replay or ``--control match``) every living marine
+    of any team (mode "all"), anything else nothing. Each follows the unit's
+    own bit (``Unit.flashlight_on``): a unit with its light off has no cone.
+    The SAME cones :func:`renderer.frame_lights.flashlight_specs` turns into
+    the one assembly's specs. Render-only, like :func:`flashlight_cones`."""
+    if possessed_id is not None:
+        return flashlight_cones(sim, mode="selected",
+                                selected_unit_id=possessed_id)
+    if watching:
+        return flashlight_cones(sim, mode="all")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -751,14 +781,34 @@ def ammo_text(unit, tick: int, weapons):
     return text
 
 
+def grenade_text(rows, counts, selected=None) -> str:
+    """The grenade line's text (G3p, pure): each hand-grenade row the unit
+    carries with its count (``frag 2  smoke 1  flash 1``, the row name
+    without its ``grenade_`` prefix), the SELECTED kind in brackets
+    (``[frag 2]``; shown even at 0), ``none`` when it carries none and
+    nothing is selected. ``rows`` are the row names in kind order, ``counts``
+    the unit's block."""
+    parts = []
+    for k, (row, n) in enumerate(zip(rows, counts)):
+        name = row[len("grenade_"):] if row.startswith("grenade_") else row
+        if k == selected:
+            parts.append(f"[{name} {n}]")
+        elif n > 0:
+            parts.append(f"{name} {n}")
+    return "  ".join(parts) if parts else "none"
+
+
 def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
-                      current_mode=None) -> list:
+                      current_mode=None, grenade_kind=None) -> list:
     """The side panel's game-state block as :class:`PanelLine` rows: the run
     state, then the selected unit's summary. A turn-based ruleset shows its
     round / phase / tick-in-round, planning phase, AP and queued orders;
     under ``ContinuousRealtime`` (direct control, a watched match) none of
     that exists, so the panel shows the tick, the unit's hit points, its
-    weapon and its MAGAZINE (rounds in the gun, spare magazines) instead."""
+    weapon and its MAGAZINE (rounds in the gun, spare magazines) instead.
+    ``grenade_kind`` (G3p) is the direct control's selected grenade kind (an
+    index of the hand-grenade rows) for the grenade line, None = none
+    selected."""
     from simulation.ruleset import ContinuousRealtime
     continuous = isinstance(sim.ruleset, ContinuousRealtime)
     paused = sim.is_paused()
@@ -806,8 +856,14 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
             lines.append(PanelLine(
                 f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
                 13, None, 16))
-        lines.append(PanelLine(f"Grenades: {selected_unit.has_grenade}   "
-                               f"Charges: {selected_unit.has_explosive}",
+        rows = sim.weapons_tables.hand_grenade_rows
+        # Two lines: the kinds with the selection, then the charges (one line
+        # is wider than the panel).
+        lines.append(PanelLine(
+            f"Grenades{' (4)' if continuous else ''}: "
+            f"{grenade_text(rows, selected_unit.grenade_counts, grenade_kind)}",
+            12, None, 16))
+        lines.append(PanelLine(f"Charges: {selected_unit.has_explosive}",
                                12, None, 18))
         if not continuous:
             lines.append(PanelLine(
@@ -822,7 +878,7 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
 
 
 __all__ = [
-    "PanelLine", "ammo_text", "panel_state_lines",
+    "PanelLine", "ammo_text", "grenade_text", "panel_state_lines",
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
     "PlanOverlay", "PlanningClock", "RoundEndGhost", "TargetMarker",

@@ -182,7 +182,7 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
     spread of the aim, and pulls it once inside; every tick it pulls the
     trigger, the facing the tick gives it is within the spread. Breaks if
     the bot fires mid-turn (spraying the arc) or never fires."""
-    from test_bots import BotTeam, _level, _sim
+    from test_bots_v1 import BotTeam, _level, _sim   # the first bots
     lvl = _level(tmp_path, "turnfire")
     sim, (bot, foe) = _sim(lvl, [(0, 10, 25), (1, 16, 10)])
     team = BotTeam(0)
@@ -223,14 +223,105 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: bc57054d9e6882f79abbbcd79ce01a3d52e2, tick e4e39176f31246219319a3c72bbc
 #: 598f5da16aa7d02def7469fedde2da966324, units bc1166d31b6df445503733eca435
 #: f24ac2ad48fe788d50b5eb89d19460f7a3a6).
+#: RE-MEASURED again at #183 G3p (2026-11-10, the throw wind-up): the same
+#: instant-turn run with the grenade leaving the hand 7 ticks after the verb.
+#: SOLE CAUSE, verified on the same tree: with `throw_windup_seconds = 0` the
+#: instant-turn run gives exactly the G1p-c values (win 1 at 237, field
+#: 305c4e13667c1262869ab2d8d4e15e6c6fdff661d8a6cadc49b7ce05d499876e, tick
+#: 7e58771a0fa44b9539260472ab5cec22edc1a60e885c1e9c39ae69fd60f173df, units
+#: e0b47942bd115b8d72070494597061f7727126ef442caf452dc62cb42e5e7233).
+#: RE-MEASURED again at #183 G4p (2026-11-10, the focus-fire law): the same
+#: instant-turn run with exposure live (the shipped [damage.exposure] dials).
+#: SOLE CAUSE, verified on the same tree: with `k_expose = 0` the
+#: instant-turn run gives exactly the G3p values (win 1 at 244, field
+#: 8cb12fa8d9b2028a3507013627b3a46acf7fbd51ce68ad6129da34949caf3a03, tick
+#: b435f76ecdedf393e6417be05caf6f2a0988d7f903cde82a1307afd6acbe47ba, units
+#: 8c9d7b3af1423b147386f066dd36cb135c28e4c12a73152b447713ca39d42937).
+#: RE-MEASURED at #183 G5p-a1 commit 1 (2026-11-10, the turning law): the
+#: instant turn is now a top speed of half a turn per tick AND unlimited
+#: acceleration (a >= 2w; the run sets both). Outcome, ticks and field_digest
+#: UNCHANGED; tick_digest and the unit stream move. SOLE CAUSES, verified on
+#: the same tree: with every non-aim facing writer placing the facing at
+#: once again and the old float representation hashed, the run gives exactly
+#: the G4p values above (d74c0c9c / cfc087f4 / 030e28aa); with the
+#: representation alone undone only the unit stream moves -- even at an
+#: instant turn the zombie walk's facing is hashed a tick later (its target
+#: is set in slot 5, turned in the next tick's slot 1a), while every read of
+#: it in play comes after that slot 1a and is unchanged.
+#: (was tick cfc087f4ff68f8395881ba629d4de73f70bb63edd0088789bcf8281e3decb819,
+#: units 030e28aaf6a4d3c64242ff617bb9ab554ffbd91449b1d3b8667f9201f94ab19e)
+#: RE-MEASURED at #183 G5p-a2 re-pin 1 (2026-11-10, the unit impulse law built with every input at zero -- [impulse]
+#: bullet_push_mult = recoil_mult = 0, no shove -- and the MOVE_DIR walk
+#: on the Q16 grid (the step is the speed law's rational rounded ONCE to
+#: Q16 tiles per tick, critique B M6)):
+#: the same instant-turn run on the new tree. Outcome and ticks UNCHANGED
+#: (win 1 at 244); field_digest, tick_digest and the unit stream move. SOLE CAUSE, verified on the same tree: with the pre-G5p-a2 float walk
+#: step reinstated (a scratch monkeypatch of Simulation._step_move_dir)
+#: this run gives EXACTLY the previous values -- slot 1a's integration,
+#: slot 3's displacement loop, the effort member, the digest keys, the
+#: events and the door change nothing while every input is off.
+#: (was field d74c0c9c3e4efb2bab446009bd7b9c8f7e05ca1fa976b29fa45df0de63d2e2a0,
+#: tick 74f88f8db69c11c9ac93accdd48a49ac9b90e046f22b3f57dc9421f8dde846bf,
+#: units a402a66787dde297706acd243a3b2c108c854339f2bf30d7ef074bd514b1e53c)
+#: RE-MEASURED at #183 G5p-a2 re-pin 2 (2026-11-10, hits push and guns recoil: [impulse] bullet_push_mult =
+#: recoil_mult = 1.0, the RULED real momentum -- a carbine round 3.6 N s on
+#: the target, its recoil on the shooter):
+#: the same instant-turn run with hits pushing and guns recoiling. Outcome,
+#: ticks and field_digest UNCHANGED; tick_digest and the unit stream move.
+#: SOLE CAUSE, verified on the same tree: with both
+#: multipliers at 0 this run gives exactly re-pin 1's values (the comment above).
+#: (was tick 6363856b30393dbcfef1c9801f03b3cfa423652cbd8f95f72f269ab59a394f36,
+#: units 02e8717ae42a475dd629ff355596da554f5771f91d258b8da83143e27af0dcb7)
+#: RE-MEASURED at #183 G5p-b (2026-11-10, the wind and the blast onto the
+#: unit impulse law: the dynamic pressure at each footprint is a force
+#: q * drag_area through unit_impulse.add_wind; #140's cadence scale and
+#: bespoke knockdown DELETED in the same commit).
+#: The instant-turn run's WINNER CHANGES: win 0 at 244 (was win 1 at
+#: 244); all three digests and the unit stream move.
+#: SOLE CAUSE, verified on the same build: the pre-G5p-b tree (0b57fc6e)
+#: with #140's wind law off (wind_q_slow_pa / wind_q_fall_pa = 1e15 /
+#: 2e15) and this tree with the wind's input off ([impulse]
+#: wind_push_mult = 0) give exactly the same values (win 0 at 244, 55a525f9 / 23b0bdfe / 1af4fccd) --
+#: replacing the law is the whole change.
+#: So the change of winner is #140's law leaving, not the force: with
+#: it off the frag of ticks 218-219 floors nobody (the old law floored
+#: units 1, 3, 6, 7, 10, 11 on q alone), units 6 and 7 die on ticks
+#: 219-220 instead of surviving to 244, and team 0 wins; the force then
+#: pushes 1, 3, 7, 10, 11 by up to 1.1 tiles without changing the
+#: winner or the end tick.
+#: (was win 1 at 244; field f479f16f80b1071550eda76c4630e5380f15c501f89e
+#: 9160c4966fed9b0634ad, tick 16cfecdec6e602d9b547f9d37019b63fd309764dc1
+#: cd282ef9665a5c597453c6, units 72b7eba882b7bcb97c382e525690666e83135343
+#: c8f045d042c93671b130fd1c)
+#: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
+#: residency P3d: the horde descends an integer BFS field, no A*; see
+#: tests/test_zombie_control.py's pins for the law and its proof). This
+#: gate's dial is untouched; the horde under it walks the field now, so
+#: the match it pins is re-measured on this tree with the gate's own
+#: settings -- the law is the whole move.
+#: (was win 0 at 244; field
+#: a669d9431e8ba01e9c13d8dc9397ac91100eeecc2f1e69d41c6821c6a8f39cae; tick
+#: 94c39cffdb18d4740053e7d643d91b2feb453f468834b781dd752d4ace8e2e5c; units
+#: 13124e00feec4fe69d07512b624595d00f9bb797a649ae71d2dbe0a62a431cf0)
+#: RE-MEASURED at #183 G9p STAGE 2 (2026-11-11, the horde behaviours
+#: on the field: wander, hearing, fear of fire, door bashing and the
+#: sprint, [zombie]; see tests/test_zombie_control.py's pins). This
+#: gate's dial is untouched; the match it pins is re-measured on this
+#: tree with the gate's own settings -- the behaviours are the whole
+#: move (tests/test_horde_behaviours.py: with all of them off, the
+#: stage-1 law exactly).
+#: (was win 1 at 244; field
+#: d60edc2e550ade27abc7db88a8d0c91f233f3f9f2979a434e899a72e041ba36f; tick
+#: d00e655e3f97f5e7301c47572fca0a36585d58484729b63265184162814ed150; units
+#: 48d75c9a7320bf40d0d013aecdd7be165c31a3dcb76ec2902cc55a477951c8f6)
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=237,
-    field_digest="305c4e13667c1262869ab2d8d4e15e6c"
-                 "6fdff661d8a6cadc49b7ce05d499876e",
-    tick_digest="7e58771a0fa44b9539260472ab5cec22"
-                "edc1a60e885c1e9c39ae69fd60f173df",
-    unit_stream="e0b47942bd115b8d72070494597061f7"
-                "727126ef442caf452dc62cb42e5e7233")
+    outcome="draw", team=None, ticks=260,
+    field_digest="ff07e64c5d41ebfd86c553e60d2637ee"
+                 "32a8f99be4a72f3bc677ee9254e04349",
+    tick_digest="cf0300aa1adc8bd8f1ea33a1938a54ee"
+                "a0bea6a77701abe14fa1818c9d85106f",
+    unit_stream="4c6bae4002187bd7bb77bfaa88e832d9"
+                "50b134c644eda8cb76696f6f2f8c8668")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
@@ -249,9 +340,14 @@ def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
     from test_zombie_control import _UnitStream
     tps = int(CFG.clock.ticks_per_second)
     monkeypatch.setattr(CFG.marine, "turn_rate_deg_per_s", 180.0 * tps)
+    # G5p-a1: an instant turn is also an unlimited acceleration (a >= 2w).
+    monkeypatch.setattr(CFG.marine, "turn_accel_rad_per_s2", 1e7)
+    from test_bots_v1 import v1_spec
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
     stream = _UnitStream()
-    o = run_match(level, on_tick=stream)
+    # G8p: the first bots (bots_v1) played this pin; the layered bots
+    # moved the shipped match, so this gate plays it with them.
+    o = run_match(level, v1_spec(level), on_tick=stream)
     got = dict(outcome=o.result.outcome, team=o.result.team,
                ticks=o.result.ticks, field_digest=o.field_digest,
                tick_digest=o.tick_digest, unit_stream=stream.h.hexdigest())

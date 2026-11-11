@@ -133,6 +133,12 @@ def _digest(sim):
 def _scripted_run():
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=8, team=0))
+    # G5p-a1: the facing turns with inertia, and the scripted aim sweeps at
+    # 0.25 rad a tick (just under the top speed), so a unit starting north
+    # would chase it the whole run; it stands facing the stream's first aim
+    # (east, at the enemy), which is what makes the stream deal damage.
+    from simulation.turning import place
+    place(sim.get_unit(uid), 0)
     _dummy_enemy(sim, x=13, y=8)
     # The pre-run state first, so "the stream dealt damage" compares against
     # the spawn HP, not against the state after the first tick's shots (#119:
@@ -237,12 +243,15 @@ def test_directional_spray_cone_follows_facing():
 
 
 def test_directional_grenade_still_throws():
-    """THROW is consumed by the rewritten _consume_direct_intents unchanged."""
+    """THROW is consumed by the rewritten _consume_direct_intents: the verb
+    starts the wind-up (G3p) and the grenade is in flight once it is over."""
     sim = _sim(_open_arena(20, 20))
     uid = sim.add_unit(Unit("M1", x=8, y=9, team=0))
     n0 = len(sim.projectiles)
-    sim.throw_grenade_intent(uid, FP_ONE, 0, 2.0)   # lob east
-    sim.step()
+    sim.throw_grenade_intent(uid, FP_ONE, 0, 48)    # lob east, fuse 2 s
+    windup = sim.weapons_tables.weapons.by_name["hand_grenade"]         .throw_windup_ticks
+    for _ in range(windup + 1):
+        sim.step()
     assert len(sim.projectiles) == n0 + 1
 
 

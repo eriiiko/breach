@@ -56,6 +56,8 @@ from simulation.intents import FP_ONE, FP_SHIFT  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.status import STATUS_REGISTRY  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20261029
 HULL, AIR = 1, 4
@@ -124,7 +126,10 @@ def _scripted_match(n_ticks=60, on_tick=None):
     sim.set_trigger(who["S"].id, True)
     # The lob: from T's centre (4, 12) nine tiles east -> VB's centre tile.
     who["T"].has_grenade = 1
-    sim.throw_grenade_intent(who["T"].id, FP_ONE, 0, fuse_seconds=0.5,
+    # G3p: the grenade leaves the hand after the wind-up, along the facing
+    # it has THEN -- so T faces east first (the aim, as a controller would).
+    sim.set_aim(who["T"].id, FP_ONE, 0)
+    sim.throw_grenade_intent(who["T"].id, FP_ONE, 0, fuse_ticks=12,
                              reach_q=9 << FP_SHIFT)
     events, digests = [], []
     for _ in range(n_ticks):
@@ -331,7 +336,7 @@ def test_a_flame_jet_credits_its_own_heat_to_the_sprayer():
     # owns the trigger until its burst ends; this test is about the credit,
     # so the sprayer already faces its aim (east) -- the turn is
     # test_turn_rate's.
-    sprayer.facing = 0.0
+    _place_facing(sprayer, _q_rad(0.0))
     sim.set_aim(sprayer.id, FP_ONE, 0)
     sim.set_trigger(sprayer.id, True)
     heat_hits = []

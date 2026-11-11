@@ -61,6 +61,7 @@ from simulation.orders import (
     MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
+from simulation import noise as _noise          # G9p: shots are noises
 # Physics event entry points: re-exported for legacy imports; the detonation
 # sites themselves now go through the payload executor (W3). Bare-name import
 # of execute_payload on purpose — instrumentation/replica tests rebind
@@ -102,7 +103,7 @@ class Projectile:
 
     def __init__(self, proj_type, start_fx, start_fy, target_fx, target_fy,
                  fuse_seconds, thrown_tick, ammo_name="grenade_frag",
-                 owner_id=-1):
+                 owner_id=-1, fuse_ticks=None):
         self.proj_type = proj_type
         # The thrower (#123): the detonation's blast, heat and gas are
         # credited to it. -1 = nobody (a scripted / test lob).
@@ -114,6 +115,9 @@ class Projectile:
         self.target_fx = float(target_fx)
         self.target_fy = float(target_fy)
         self.fuse_seconds = fuse_seconds
+        #: The fuse in INTEGER ticks (the direct throw verb's, G3p); None =
+        #: derive it from ``fuse_seconds`` (the WEGO order path).
+        self.fuse_ticks = None if fuse_ticks is None else int(fuse_ticks)
         self.thrown_tick = thrown_tick
         self.detonated = False
         self.ammo_name = ammo_name
@@ -126,6 +130,8 @@ class Projectile:
 
     def get_detonate_tick(self):
         """Tick at which this projectile detonates."""
+        if self.fuse_ticks is not None:
+            return self.thrown_tick + self.fuse_ticks
         tps = CFG.clock.ticks_per_second
         return self.thrown_tick + int(self.fuse_seconds * tps)
 
@@ -255,6 +261,33 @@ class BulletInFlight:
         # to know which ruleset launched it.
         self.march_cover = None
         self.march_facing_defense = False
+        # G5p-a2 (the unit impulse law): the round's line in integers -- its
+        # origin and its kit step vector on the Q16 grid (both exact) -- for
+        # the lever arm of the push it gives the unit it stops on.
+        self.ox_q = unit_fixed.quantize_scalar(origin_fx)
+        self.oy_q = unit_fixed.quantize_scalar(origin_fy)
+        self.sx_q = unit_fixed.quantize_scalar(step_x)
+        self.sy_q = unit_fixed.quantize_scalar(step_y)
+
+    def push_on(self, gmap, unit, fx) -> None:
+        """Record this round's PUSH on ``unit``, the unit it stopped on
+        (G5p-a2, design §4 / §13): every projectile and pellet that stops on
+        a unit pushes with its own row's momentum (``[ammo.*] bullet_g``,
+        ``muzzle_mps``; a payload round with its body's), along its flight,
+        times ``[impulse] bullet_push_mult``; its lever arm is the
+        perpendicular distance from the unit's centre to the round's line
+        (integers, no draw), its spin times ``bullet_twist_mult``. Recorded
+        through the slot's ``push`` effect, right after the hit."""
+        from simulation import unit_impulse
+        table = unit_impulse.table_for(gmap)
+        j_q = table.ammo_push_q.get(self.ammo.name, 0)
+        if not j_q:
+            return
+        jx, jy = unit_impulse.along_q(j_q, self.sx_q, self.sy_q)
+        cx, cy = unit_impulse.centre_q(unit)
+        lever = unit_impulse.lever_q(cx, cy, self.ox_q, self.oy_q,
+                                     self.sx_q, self.sy_q)
+        fx.push(table, unit, jx, jy, lever, table.twist_q16)
 
     def advance(self, gmap, units, shots, real_time, rng, events=None,
                 queue=None, cover=None, facing_defense=False, effects=None):
@@ -430,13 +463,20 @@ class BulletInFlight:
                         actual_dmg, dmult)
             # Packet through the pipeline (mechanics/06 §2) — dtype/ap off the
             # ammo row (the k5's kinetic/0 reproduces the shipped packet
-            # exactly); bullet deaths never convert.
+            # exactly); bullet deaths never convert. G4p: the round's
+            # `expose` rides the packet (the focus-fire law raises the
+            # target's exposure at the slot's landing).
             fx.hit(hit_unit,
                    DamagePacket(amount=actual_dmg,
                                 dtype=self.ammo.dtype_id,
                                 attacker_id=self.shooter_id,
-                                ap=self.ammo.ap),
+                                ap=self.ammo.ap,
+                                expose=getattr(self.ammo, "expose_q", 0)),
                    events, source="bullet")
+        # G5p-a2: the round that stopped on a unit pushes it -- whatever its
+        # damage (the 40 mm's body too); recorded right after the hit.
+        if hit_unit is not None:
+            self.push_on(gmap, hit_unit, fx)
 
         if n_steps > 0:   # a budget-starved tick (<1 tile) has nothing to draw
             shots.append(Shot(seg_x, seg_y, self.rx, self.ry, real_time))
@@ -974,6 +1014,8 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             # because the burst captures the ORDER (interruption consumes
             # it). Spread is meaningless on a cone weapon — no draw, ever.
             start_spray_burst(u, weapon, fire_order, tick, effects=fx)
+            _noise.emit(gmap, uc_fy, uc_fx,
+                        getattr(weapon, "loudness_tiles", 0))  # G9p
         else:
             _dispatch_trigger(gmap, units, u, uc_fx, uc_fy,
                               target_fx, target_fy, tick, shots, real_time,
@@ -996,7 +1038,13 @@ def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
     None = tile-derived bearing (WEGO), provided = free-aim march bearing.
     ``cover`` / ``facing_defense`` are the OnePhaseWEGO march rules (§7/§9);
     both default to the shipped behaviour. ``effects`` (#169) is the
-    attack slot's phase-B record (``None`` = apply at once)."""
+    attack slot's phase-B record (``None`` = apply at once).
+
+    G9p: every pull is a NOISE at the shooter's centre with the row's
+    ``loudness_tiles`` (simulation.noise) -- decided in phase A like the
+    shot itself, heard at the zombie slot."""
+    _noise.emit(gmap, u.center_tile_y(), u.center_tile_x(),
+                getattr(weapon, "loudness_tiles", 0))
     if weapon.archetype == "hitscan":
         fire_beam(gmap, units, u, fx1, fy1, fx2, fy2,
                   tick, shots, real_time, rng, events=events,
@@ -1051,6 +1099,8 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
         if getattr(u, "spray_ticks_left", 0) > 0:
             return
         start_spray_burst_directional(u, weapon, tick, aim_angle)
+        _noise.emit(gmap, u.center_tile_y(), u.center_tile_x(),
+                    getattr(weapon, "loudness_tiles", 0))      # G9p
     elif weapon.archetype in ("projectile", "hitscan"):
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
@@ -1123,6 +1173,21 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
         u.last_fire_tick = tick
 
 
+def _record_recoil(gmap, shooter, bullet, effects) -> None:
+    """The recoil of ``bullet`` on its ``shooter`` (G5p-a2): minus the
+    round's row momentum along its kit step vector, times ``[impulse]
+    recoil_mult``, recorded through the attack slot's ``push`` effect (one
+    shape for every impulse; :data:`IMMEDIATE` when the caller owns no
+    slot)."""
+    from simulation import unit_impulse
+    table = unit_impulse.table_for(gmap)
+    j_q = table.ammo_recoil_q.get(bullet.ammo.name, 0)
+    if not j_q or not hasattr(shooter, "impulse_books"):
+        return
+    jx, jy = unit_impulse.along_q(j_q, bullet.sx_q, bullet.sy_q)
+    effects_or_immediate(effects).push(table, shooter, -jx, -jy)
+
+
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
                weapon=None, ammo=None, spread_deg=None, bullets=None,
@@ -1173,13 +1238,12 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     # it is left untouched (no re-derivation, no risk to the hashed field).
     if aim_angle is None:
         base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
-        # W2 (mechanics/06 §5): firing SETS the shooter's facing to the aim
-        # bearing (before spread) — through the kit, in the unit facing
-        # convention (y up: the dy negation, unit.face_towards). Facing is
-        # already-synced state derived from synced inputs; the digest surface
-        # is unchanged.
+        # W2 (mechanics/06 §5): firing makes the aim bearing (before spread)
+        # the shooter's facing TARGET (G5p-a1: the turning law turns it there
+        # from the next tick's slot 1a) — through the kit, in the unit facing
+        # convention (y up: the dy negation, unit.face_towards).
         effects_or_immediate(effects).face(
-            shooter, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
+            shooter, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     else:
         base_angle = float(aim_angle)
 
@@ -1195,6 +1259,10 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         step_y = unit_fixed.sin_rad(angle)
         b = BulletInFlight(shooter, shooter_id, weapon, ammo,
                            fx1, fy1, angle, step_x, step_y)
+        # G5p-a2 (RULED): the shooter recoils with minus the round's
+        # momentum along its flight (times [impulse] recoil_mult), through
+        # the slot's push effect -- no lever arm.
+        _record_recoil(gmap, shooter, b, effects)
         b.march_cover = cover
         b.march_facing_defense = facing_defense
         still_flying = b.advance(gmap, units, shots, real_time, rng,
@@ -1277,7 +1345,7 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     if aim_angle is None:
         base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
         # Facing = aim bearing at fire, before spread (the fire_burst rule).
-        fx.face(shooter, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
+        fx.face(shooter, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     else:
         base_angle = float(aim_angle)
     shooter_id = getattr(shooter, "id", -1)
@@ -1355,7 +1423,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                         fx.hit(
                             e,
                             DamagePacket(amount=amount, dtype=ammo.dtype_id,
-                                         attacker_id=shooter_id, ap=ammo.ap),
+                                         attacker_id=shooter_id, ap=ammo.ap,
+                                         expose=getattr(ammo, "expose_q", 0)),
                             events, source="laser")
 
         shots.append(Shot(fx1, fy1, rx, ry, real_time))
@@ -1577,7 +1646,7 @@ def start_spray_burst(u, weapon, fire_order, tick, effects=None):
     u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
     u.spray_order = fire_order
     u.spray_aim_angle = None   # tile-derived cone bearing (the WEGO path)
-    effects_or_immediate(effects).face(u, unit_fixed.atan2_rad(
+    effects_or_immediate(effects).face(u, unit_fixed.atan2_q16_of(
         -(float(fire_order.target_fy) - u.center_tile_y()),
         float(fire_order.target_fx) - u.center_tile_x()))
 
@@ -1798,13 +1867,28 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon,
         return False
     if not melee_adjacent(attacker, target):
         return False
+    melee_blow(attacker, target, rng, events, weapon, fx, snap_facing=True)
+    return True
 
+
+def melee_blow(attacker, target, rng, events, weapon, effects,
+               snap_facing=True):
+    """The strike itself, shared by the order path (:func:`melee_strike`,
+    which found its target by tile) and the melee verb
+    (:func:`process_melee_intents`, which found it by facing arc): the
+    steps 1-5 of :func:`melee_strike`'s docstring, recorded on ``effects``.
+    ``snap_facing`` False (the verb: the arc IS the aim, and the turning law
+    owns the facing) records no facing snap. A row with ``crit_chance`` > 0
+    draws from ``rng`` (the order path only: a loadout's melee row is
+    refused with a crit at the loadouts door)."""
+    fx = effects_or_immediate(effects)
     fx1, fy1 = attacker.center_tile_x(), attacker.center_tile_y()
     fx2, fy2 = target.center_tile_x(), target.center_tile_y()
     # Facing = strike bearing (kit trig, unit y-up convention — the
     # fire_burst rule); the strike angle itself stays in SCREEN convention
     # for the arc classifier (the march-angle contract of arc_multiplier).
-    fx.face(attacker, unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1))
+    if snap_facing:
+        fx.face(attacker, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
     angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
 
     amount = int(weapon.melee_damage)
@@ -1824,7 +1908,90 @@ def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon,
         fx.status(target, weapon.status_kind_id, magnitude=0,
                   duration_ticks=weapon.status_ticks,
                   source_id=getattr(attacker, "id", -1))
-    return True
+
+
+def melee_arc_target(units, u, weapon):
+    """The unit ``u``'s melee verb strikes (gameplay pack G6p): among the
+    other LIVING units of a DIFFERENT team (a zombie's team is its own, so
+    zombies are enemies; a teammate never is) that are
+    :func:`melee_adjacent` to ``u`` and whose bearing from ``u``'s centre
+    lies within ``weapon.melee_arc_half_q`` of ``u``'s facing, the one
+    nearest that facing (smallest ``|wrap(bearing - facing)|``), ties to the
+    lower id. ``None`` when there is none. Integer only (``atan2_q16`` of
+    the Q16 centre offset against ``Unit.facing_q``,
+    ``turning.wrap_q16``), no random number; reads the slot-start state. A
+    target whose centre coincides with ``u``'s has no bearing: it counts as
+    dead ahead."""
+    from simulation import turning, unit_impulse
+    cx, cy = unit_impulse.centre_q(u)
+    best, best_key = None, None
+    for t in units:
+        if t is u or not t.alive or t.team == u.team:
+            continue
+        if not melee_adjacent(u, t):
+            continue
+        tx, ty = unit_impulse.centre_q(t)
+        dx, dy = tx - cx, ty - cy
+        off = 0 if (dx == 0 and dy == 0) else abs(turning.wrap_q16(
+            unit_fixed.atan2_q16(-dy, dx) - u.facing_q))
+        if off > weapon.melee_arc_half_q:
+            continue
+        key = (off, int(t.id))
+        if best_key is None or key < best_key:
+            best, best_key = t, key
+    return best
+
+
+def process_melee_intents(units, tick, tables, impulse_table, events=None,
+                          effects=None):
+    """THE MELEE VERB (gameplay pack G6p, ``Simulation.melee_intent``):
+    slot 4's phase A walk over the units' latched ``pending_melee``. Every
+    latch is CONSUMED here (a verb that finds nothing to do is not kept).
+    A unit strikes only if it is alive, not a zombie (whose bite is its own
+    law), has a melee row (``melee_id``), can act (composed ``can_act``),
+    is not winding up a throw, its row's cadence has run
+    (``rof_interval_ticks`` since ``last_blow_tick``), and
+    :func:`melee_arc_target` finds a target; a reload stall does not stop a
+    blow (the butt needs no magazine). The blow is :func:`melee_blow`'s
+    (a ``DamagePacket`` of the row's damage credited to the striker with the
+    ``melee`` cause, the row's delivery-site stun, no facing snap) plus a
+    ``push`` effect of the row's ``melee_push_ns`` along striker -> target;
+    all RECORDED on ``effects`` (decided against the slot-start state,
+    applied together at phase B), and a render-only ``MeleeEvent`` is
+    emitted. A whiff (nothing in arc) costs nothing: no cooldown. Integer,
+    no draw (the loadouts door refuses a row with a crit)."""
+    from simulation import unit_impulse
+    fx = effects_or_immediate(effects)
+    for u in units:
+        if not getattr(u, "pending_melee", False):
+            continue
+        u.pending_melee = False
+        if not u.alive or u.is_zombie or not u.melee_id:
+            continue
+        if not composed_flags(u).can_act or u.throw_release_tick >= 0:
+            continue
+        weapon = tables.weapons.by_name[u.melee_id]
+        if (u.last_blow_tick >= 0
+                and tick - u.last_blow_tick < weapon.rof_interval_ticks):
+            continue
+        target = melee_arc_target(units, u, weapon)
+        if target is None:
+            continue
+        u.last_blow_tick = int(tick)
+        melee_blow(u, target, None, events, weapon, fx, snap_facing=False)
+        j_q = impulse_table.melee_push_q.get(weapon.name, 0)
+        if j_q:
+            cx, cy = unit_impulse.centre_q(u)
+            tx, ty = unit_impulse.centre_q(target)
+            bearing = (unit_fixed.atan2_q16(-(ty - cy), tx - cx)
+                       if (tx != cx or ty != cy) else u.facing_q)
+            sx, sy = unit_fixed.cos_q16(bearing), -unit_fixed.sin_q16(bearing)
+            jx, jy = unit_impulse.along_q(j_q, sx, sy)
+            fx.push(impulse_table, target, jx, jy)
+        if events is not None:
+            from simulation.events import MeleeEvent
+            events.append(MeleeEvent(unit_id=int(u.id), target_id=int(target.id),
+                                     ticks=int(weapon.rof_interval_ticks)))
 
 
 # ---------------------------------------------------------------------------

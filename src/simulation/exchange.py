@@ -36,13 +36,14 @@ shipped call sites.
 P4 (2026-07-05) added the first NEW row — ``apply_wave_push``, the
 ``wave_p | grad`` impulse push + KNOCKED_DOWN trigger at ``Simulation.step``
 9c2. **#140 (2026-10-31) RETIRED it** (history in git and mechanics/05 §1):
-the 9c2 row is now :func:`apply_wind_knockdown`, the ``wind | max`` row of
-the momentum-flux threshold law (docs/wind_on_units_design_2026-10-31.md) --
-the dynamic pressure ``q = 1/2 rho v^2`` at the footprint, nothing below
-``wind_q_slow_pa``, a cadence scale (:func:`wind_scale_q16`, composed by
-``movement.default_speed``) up to ``wind_q_fall_pa``, KNOCKED_DOWN at or
-above it. Nothing in the law writes a position. Still directly after the
-heat row (the documented within-tick exchange order: heat, then wind).
+the 9c2 row became the ``wind | max`` row (docs/wind_on_units_design_2026-
+10-31.md): the dynamic pressure ``q = 1/2 rho v^2`` at the footprint. Since
+#183 G5p-b that row is :func:`apply_wind_force`: the dynamic pressure is a
+FORCE handed to the unit impulse law (``unit_impulse.add_wind``), whose own
+outcomes (slowed, pushed by the excess over the hold, knocked down) replace
+#140's cadence scale and bespoke knockdown, both deleted. Still directly
+after the heat row (the documented within-tick exchange order: heat, then
+wind).
 
 P2 note (also behaviour-preserving, 2026-07-05): both responses now hand
 their pre-mitigation amounts to the mechanics/06 DamagePacket pipeline
@@ -74,7 +75,6 @@ from typing import Callable, Optional, Sequence
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
-from simulation import unit_fixed
 from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
@@ -84,7 +84,7 @@ from simulation.events import NO_ATTACKER
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
 from simulation.species import ZOMBIE_STABILITY
-from simulation.status import BLINDED, KNOCKED_DOWN, apply_status
+from simulation.status import BLINDED, apply_status
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +468,9 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
 # ---------------------------------------------------------------------------
 # Wind on units -- the `wind | max` coupling row (#140; mechanics/05 §1, the
 # knockdown spec mechanics/06 §4). Replaces the retired `wave_p | grad` push.
-# docs/wind_on_units_design_2026-10-31.md; research basis
-# docs/research/wind_on_a_person_2026-10-31.md.
+# docs/wind_on_units_design_2026-10-31.md (the read); since #183 G5p-b the
+# wind is a force on the unit impulse law (docs/unit_impulse_design_2026-11-
+# 10.md §4, §7). Research: docs/research/wind_on_a_person_2026-10-31.md.
 # ---------------------------------------------------------------------------
 def _stability_for(unit) -> float:
     """Resolve the unit's knockdown ``stability`` (mechanics/06 §4).
@@ -479,8 +480,10 @@ def _stability_for(unit) -> float:
     exact ``mitigation_for`` pattern. Everyone else reads the species
     :class:`EnvironmentProfile` pointer stamped on the unit at construction
     (``unit.environment.stability``, default 1.0); bare stub units fall back
-    to the human baseline 1.0. Since #140 it scales the knockdown WIND SPEED
-    (the compare is against ``W_fall * stability^2``).
+    to the human baseline 1.0. The unit impulse law reads it
+    (``unit_impulse.stability_q16``): it scales the fall limit, and the
+    effort falls a unit at ``stability^2`` -- so for a steady wind it scales
+    the knockdown WIND SPEED (q goes as v^2), as #140's compare did.
     """
     if getattr(unit, "is_zombie", False):
         return ZOMBIE_STABILITY
@@ -488,133 +491,59 @@ def _stability_for(unit) -> float:
     return float(getattr(env, "stability", 1.0))
 
 
-#: The Q16 one the wind law's scale and stability are written in (the
-#: cadence compose's one -- never ``movement.MOBILITY_ONE``).
-WIND_ONE = _atm_fx.FP_ONE
-#: ``W = (N / N_amb) * v^2 * 2^32``, so ``q = 1/2 rho_ref W / 2^32`` and a
-#: threshold ``W_thr = q_thr * 2^33 / rho_ref``; 2^33 = 2 * BULK_ONE * FP_ONE.
+#: ``W = (N / N_amb) * v^2 * 2^32``, so ``q = 1/2 rho_ref W / 2^32``;
+#: 2^33 = 2 * BULK_ONE * FP_ONE.
 _W_PER_Q_RHO = float(2 * gas_fixed.BULK_ONE * _atm_fx.FP_ONE)
 
 
-@dataclass(frozen=True)
-class WindSettings:
-    """The wind law's dials, refused at the door and quantized ONCE per pass
-    (door 2): ``w_slow`` / ``w_fall`` are the int wind loads at ``q_slow_pa``
-    / ``q_fall_pa``; ``s_min_q16`` is the cadence scale at ``q_fall``."""
-    q_slow_pa: float
-    q_fall_pa: float
-    slow_min_scale: float
-    rho_ref: float
-    getup_ticks: int
-    w_slow: int
-    w_fall: int
-    s_min_q16: int
-
-
-def _number(cfg, key):
-    if not hasattr(cfg, key):
-        raise KeyError(f"[exchange] {key} is missing (wind on units, #140)")
-    v = getattr(cfg, key)
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        raise TypeError(f"[exchange] {key} must be a number, got {v!r}")
-    return float(v)
-
-
-def wind_settings(cfg, rho_ref) -> WindSettings:
-    """THE door of the wind law (#140, design §5). ``cfg`` is
-    ``CFG.exchange``; ``rho_ref`` is the ``[materials.air]`` density
-    (``gmap.materials.density[MAT_AIR]`` -- the one owner; there is no
-    density dial here, :func:`gmap_wind_settings` passes it). Refuses, by
-    name, a missing or mistyped key, ``q_slow >= q_fall``, two thresholds
-    that quantize to the same load, ``wind_slow_min_scale`` outside (0, 1]
-    and ``rho_ref <= 0``. Called every pass, so a Ctrl+R lands live."""
-    q_slow = _number(cfg, "wind_q_slow_pa")
-    q_fall = _number(cfg, "wind_q_fall_pa")
-    s_min = _number(cfg, "wind_slow_min_scale")
-    getup = int(_number(cfg, "knockdown_getup_ticks"))
-    rho = float(rho_ref)
-    if not rho > 0.0:
-        raise ValueError(f"wind law: rho_ref (the [materials.air] density) "
-                         f"must be > 0, got {rho_ref!r}")
-    if not 0.0 <= q_slow < q_fall:
-        raise ValueError(f"[exchange] wind_q_slow_pa ({q_slow}) must be >= 0 "
-                         f"and below wind_q_fall_pa ({q_fall})")
-    if not 0.0 < s_min <= 1.0:
-        raise ValueError(f"[exchange] wind_slow_min_scale must be in (0, 1], "
-                         f"got {s_min}")
-    w_slow = int(q_slow * _W_PER_Q_RHO / rho + 0.5)
-    w_fall = int(q_fall * _W_PER_Q_RHO / rho + 0.5)
-    if w_slow >= w_fall:
-        raise ValueError(f"[exchange] wind_q_slow_pa ({q_slow}) and "
-                         f"wind_q_fall_pa ({q_fall}) quantize to the same "
-                         f"wind load ({w_slow})")
-    s_min_q16 = unit_fixed.quantize_scalar(s_min)
-    return WindSettings(q_slow, q_fall, s_min, rho, getup,
-                        w_slow, w_fall, s_min_q16)
-
-
-def gmap_wind_settings(gmap) -> WindSettings:
-    """:func:`wind_settings` for ``gmap``: the live ``[exchange]`` dials and
-    the map's own ``[materials.air]`` density row."""
+def wind_q_pa(gmap, w: int) -> float:
+    """The dynamic pressure in Pa of the wind load ``w`` on ``gmap``:
+    ``rho_ref * W / 2^33`` with ``rho_ref`` the map's ``[materials.air]``
+    density row (the one owner). Display and reports only (the tile
+    inspector, the probe); the law prices the load once, in the impulse
+    table (``unit_impulse.wind_impulse_q``)."""
     from simulation.materials import MAT_AIR
-    return wind_settings(CFG.exchange, gmap.materials.density[MAT_AIR])
+    return float(gmap.materials.density[MAT_AIR]) * int(w) / _W_PER_Q_RHO
 
 
-def wind_scale_q16(w: int, settings: WindSettings) -> int:
-    """The slowed band (design §2.1): the cadence scale (Q16, ``WIND_ONE`` =
-    no slowdown) at wind load ``w``. Exactly ``WIND_ONE`` below ``w_slow``
-    (the calm band is the dormancy guarantee, not ``w == 0``); linear in q
-    (q is proportional to the drag force) down to ``s_min_q16`` at
-    ``w_fall``; clamped there above. Pure int; ``w`` is clamped BEFORE the
-    product so the slope term stays bounded."""
-    w = int(w)
-    lo, hi, s_min = settings.w_slow, settings.w_fall, settings.s_min_q16
-    if w < lo:
-        return WIND_ONE
-    w_c = w if w < hi else hi
-    scale = WIND_ONE - ((WIND_ONE - s_min) * (w_c - lo)) // (hi - lo)
-    return scale if scale > s_min else s_min
+def apply_wind_force(units, gmap, table=None):
+    """The ``wind | max`` row's 9c2 output (#140's read, G5p-b's law): per
+    LIVING unit, the wind load and its direction through THE read,
+    ``gmap.footprint_wind(...)`` (the max over the footprint's gas tiles of
+    ``N_raw * (v^2 >> 16)`` and that tile's wind), become ONE tick of force
+    on the unit impulse law: ``unit_impulse.add_wind`` -- the impulse ``q *
+    drag_area / tps`` along the wind (``[impulse] drag_area_m2``, the
+    prone body's ``drag_area_prone_m2`` while KNOCKED_DOWN), integrated in
+    the next tick's slot 1a. A blast's wind is wind: a detonation pushes
+    the units its wind reaches through this row and nothing else.
 
-
-def wind_knocks_down(w: int, stability_q16: int,
-                     settings: WindSettings) -> bool:
-    """The topple edge, THE pinned integer form (design §2.1):
-    ``W * ONE^2 >= W_fall * stab_q16^2`` -- stability scales the knockdown
-    wind SPEED (q goes as v^2)."""
-    return (int(w) * WIND_ONE * WIND_ONE
-            >= settings.w_fall * int(stability_q16) * int(stability_q16))
-
-
-def apply_wind_knockdown(units, gmap):
-    """The ``wind | max`` row's 9c2 output (#140, design §2.3): per LIVING
-    unit, ``W = gmap.footprint_wind_load(...)`` (the max over the
-    footprint's gas tiles of ``N_raw * (v^2 >> 16)``); at or above
-    ``W_fall * stability^2`` the unit is laid KNOCKED_DOWN for
-    ``knockdown_getup_ticks``, refresh-stacked while the wind holds (P3).
-    It writes NO position -- nothing in the wind law displaces a unit; the
-    slowed band's effect is the cadence scale the movement builder reads
-    (``movement.footprint_samples``).
+    What a unit then does is the law's (design §5, §6): a force below its
+    hold never moves it (the sway is resisted every tick) and only slows it
+    from ``k_slow`` of body weight (the effort's walking scale); above the
+    hold it is pushed by the excess and floored (effort at stability^2, its
+    pushed speed at the fall limit); prone, it is kept down while the wind
+    it would take standing floors it and slides only past its prone
+    friction. This row writes no position, no status and no speed.
 
     Runs post-physics at ``Simulation.step`` 9c2, after the heat row (a unit
-    the heat row killed this tick is a corpse). It reads the end-of-tick
-    wind, which is the field MOVE_DIR and the zombie walk sample next tick,
-    so a unit is either prone or slowed against the same field, never both.
-    A status applied here starts suppressing NEXT tick (step-2b semantics).
-
-    Determinism: every input is int (door 1) or a door-2 constant quantized
-    once per pass; the compare is the pinned integer form. No RNG.
+    the heat row killed this tick is a corpse); it reads the end-of-tick
+    wind. Determinism: every input is an int; the table's constants are
+    quantized once per map; no RNG; each unit reads only its own footprint.
     """
-    settings = gmap_wind_settings(gmap)
+    from simulation import unit_impulse
+    from simulation.status import composed_flags
+    if table is None:
+        table = unit_impulse.table_for(gmap)
+    if table.wind_k_q == 0 and table.wind_k_prone_q == 0:
+        return                              # the input switched off
     for u in units:
         if not u.alive:
             continue
-        w = gmap.footprint_wind_load(u.tile_y, u.tile_x, u.footprint)
+        w, vx, vy = gmap.footprint_wind(u.tile_y, u.tile_x, u.footprint)
         if w <= 0:
             continue
-        stab_q16 = unit_fixed.quantize_scalar(_stability_for(u))
-        if wind_knocks_down(w, stab_q16, settings):
-            apply_status(u, KNOCKED_DOWN, magnitude=0,
-                         duration_ticks=settings.getup_ticks, source_id=None)
+        unit_impulse.add_wind(table, u, w, vx, vy,
+                              composed_flags(u).is_prone)
 
 
 # ---------------------------------------------------------------------------
@@ -788,18 +717,19 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
     CouplingRow(
         field="wind",
         reduction="max",
-        response=apply_wind_knockdown,
+        response=apply_wind_force,
         note=(
-            "Wind on units (#140; mechanics/05 §1 / 06 §4): the dynamic "
-            "pressure q = 1/2 rho v^2 at the footprint as the int W = N_raw * "
+            "Wind on units (#140's read; G5p-b's law): the dynamic pressure "
+            "q = 1/2 rho v^2 at the footprint as the int W = N_raw * "
             "(v^2 >> 16). The max is over the DERIVED per-tile W "
-            "(GameMap.footprint_wind_load), not REDUCTIONS['max'] over a "
-            "plane. Below wind_q_slow_pa nothing; up to wind_q_fall_pa a "
-            "cadence scale (wind_scale_q16, composed in movement.default_"
-            "speed through movement.footprint_samples); at W_fall * "
-            "stability^2 KNOCKED_DOWN. Never a displacement. Replaces the "
-            "retired wave_p|grad push row. Runs post-physics at "
-            "Simulation.step 9c2, directly after the heat row."
+            "(GameMap.footprint_wind, with that tile's wind as the "
+            "direction), not REDUCTIONS['max'] over a plane. The force q * "
+            "drag_area (prone: its prone area) is one tick of impulse on "
+            "the unit impulse law (unit_impulse.add_wind), whose outcomes "
+            "are the row's: below the hold no displacement, slowed from "
+            "k_slow, pushed by the excess and floored above it. A blast's "
+            "wind is wind. Runs post-physics at Simulation.step 9c2, "
+            "directly after the heat row."
         ),
     ),
     CouplingRow(
@@ -837,7 +767,6 @@ __all__ = [
     "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
     "CouplingRow", "COUPLING_TABLE",
     "apply_blast_damage", "apply_environmental_damage",
-    "WindSettings", "wind_settings", "gmap_wind_settings", "wind_scale_q16",
-    "wind_knocks_down", "apply_wind_knockdown",
+    "wind_q_pa", "apply_wind_force",
     "apply_teargas_blind", "apply_poison_dose",
 ]

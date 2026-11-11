@@ -58,6 +58,7 @@ added; the snapshot contract is forward-compatible.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Integral
 from typing import List, Optional
 
 import numpy as np
@@ -68,13 +69,17 @@ from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition,
-    process_shooting, process_sprays,
+    process_shooting, process_sprays, process_melee_intents,
     Projectile,
     mag_settle, reload_begin,
 )
 # Simultaneous resolution of an attack slot (#169): phase A records, phase B
 # (``resolve``) applies. Bare name: the lockstep test rebinds it.
 from simulation.simultaneous import SimultaneousEffects
+# The focus-fire law (G4p): its dials (built at construction) and its decay.
+from simulation import exposure
+from simulation import horde
+from simulation import noise
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -85,11 +90,12 @@ from simulation.simultaneous import SimultaneousEffects
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
     apply_blast_damage, apply_environmental_damage, apply_poison_dose,
-    apply_teargas_blind, apply_wind_knockdown,
+    apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
-    DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
+    DoorDestroyedEvent, ExplosionEvent, ThrowEvent, WallDestroyedEvent,
 )
+from simulation.unit import THROW_NO_REACH
 from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
@@ -108,7 +114,7 @@ from simulation.heat_source_system import (build_heat_sources,
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import (default_speed, facing_cos_q16,
-                                 footprint_samples, move_speed_tiles_per_tick,
+                                 footprint_samples, move_speed_q16,
                                  THROTTLE_ONE)
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
@@ -124,6 +130,7 @@ from simulation import intents as _intents
 from simulation import speeds
 from simulation import turning
 from simulation import unit_fixed
+from simulation import unit_impulse
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
 # extracted verbatim. Simulation owns one Ruleset instance, chosen at
@@ -146,7 +153,8 @@ from simulation.damage import tick_credit
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
 from simulation.weapons import (
-    FIRE_ORDER_ARCHETYPES, rebuild_tables as rebuild_weapon_tables,
+    FIRE_ORDER_ARCHETYPES, fuse_ticks_from_seconds,
+    rebuild_tables as rebuild_weapon_tables,
 )
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
 # rebuilt beside the weapon tables at every construction/reset.
@@ -342,6 +350,9 @@ class Simulation:
         # Loadouts + env profiles (#119): validated against the weapon table
         # just built (an unknown weapon / profile is a load error here).
         self.loadout_tables = rebuild_loadout_tables()
+        # The focus-fire law's dials (G4p, [damage.exposure] + [zombie]
+        # expose_resist), quantized once through their refusing door.
+        self.exposure_settings = exposure.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -399,14 +410,32 @@ class Simulation:
         # ``_consume_direct_intents`` short-circuits and the whole continuous
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
-        # G1p: the marine turn-rate cap, Q16.16 radians per tick, quantized
-        # ONCE here from [marine] turn_rate_deg_per_s (the refusing door).
+        # G1p / G5p-a1: the marine turning law's dials, quantized ONCE here
+        # through the refusing doors (simulation/turning.py): the top speed
+        # (Q16.16 radians per tick, [marine] turn_rate_deg_per_s) and the
+        # acceleration (per tick^2, [marine] turn_accel_rad_per_s2).
         self._marine_turn_rate_q16 = turning.turn_rate_q16(CFG)
+        self._marine_turn_accel_q16 = turning.turn_accel_q16(CFG)
         # G1p-c: the [speeds] table (m/s) quantized ONCE here with this map's
         # tile size (the refusing door, simulation/speeds.py): the marine's
         # walk / full costs in Q16 ticks per tile, the direction factors, the
         # zombie's integer shamble cadence.
         self.speed_table = speeds.speed_table(CFG, self.gmap.tile_size_m)
+        # G9p: the horde field's dials ([zombie], the refusing door
+        # simulation/horde.py), quantized ONCE for this map, and the map's
+        # field cache (derived, never synced: re-flooded every
+        # field_refresh_ticks and whenever the topology moves).
+        self.horde_settings = horde.horde_settings(CFG,
+                                                   self.gmap.tile_size_m)
+        self.horde_state = horde.HordeState()
+        # G5p-a2: the unit impulse law's dials ([impulse], the ammo rows'
+        # momentum) quantized ONCE here with this map's tile size (the
+        # refusing door, simulation/unit_impulse.py), and handed to the map
+        # so the combat helpers that take only the map read the same table.
+        self.impulse_table = unit_impulse.impulse_table(
+            CFG, self.gmap.tile_size_m,
+            rho_air=unit_impulse.map_air_density(self.gmap))
+        self.gmap._impulse_table = self.impulse_table
 
         # Who drives the horde (#122, rl-ready §5 item 1): ``None`` = the
         # conductor's zombie slot runs the shipped law over every zombie (every
@@ -420,7 +449,7 @@ class Simulation:
         # The intent tap (#126, replay by re-simulation): ``None`` = dormant
         # (every path but a recorded match; each intent entry point pays one
         # ``is None`` check). Attached by :meth:`attach_intent_log`, it is
-        # handed EVERY call of the eight intent entry points, with the tick it
+        # handed EVERY call of the ten intent entry points, with the tick it
         # was issued at, BEFORE the call acts -- the one recording seam; no
         # controller logs anything itself. Never synced, never digested;
         # dropped by reset().
@@ -509,6 +538,7 @@ class Simulation:
         base_stats, mass, base_speed = predefined_unit_attributes(species)
         unit.base_stats = base_stats
         unit.mass = mass
+        unit_impulse.bind_mass(unit)          # G5p-a2: body + kit, grams
         unit.base_speed = base_speed
         unit.current_hp = float(base_stats.vitality)
 
@@ -571,8 +601,9 @@ class Simulation:
 
     def drive_zombies(self, unit_ids) -> None:
         """ZOMBIE intent (#122): the zombie law (``ai_zombie.
-        update_zombies_tick`` — trigger, chain activation, nearest prey,
-        melee, A*) drives these units at this tick's zombie slot. Requests in
+        update_zombies_tick`` — trigger, chain activation, the horde field's
+        descent (G9p), the bite) drives these units at this tick's zombie
+        slot. Requests in
         one tick UNION (a unit named twice is still driven once); the request
         is consumed by the slot. Refused unless the horde was handed to a
         controller (:meth:`hand_zombies_to_controller`) — on a game path the
@@ -594,6 +625,9 @@ class Simulation:
         so a controller naming the whole horde reproduces the conductor's
         call exactly). A bite's hit / kill events ride ``tick_events``
         with source ``"melee"`` (#122), like a bullet's."""
+        # G9p: the noises made since the last slot are drained HERE, every
+        # tick, whether or not any zombie is driven (simulation/noise.py).
+        noises = noise.take(self.gmap)
         reqs = self._zombie_requests
         if reqs is None:
             units = self.units
@@ -605,7 +639,11 @@ class Simulation:
             reqs.clear()
         update_zombies_tick(self.gmap, units, self.tick,
                             events=self.tick_events,
-                            shamble_ticks=self.speed_table.zombie_shamble_ticks)
+                            shamble_ticks=self.speed_table.zombie_shamble_ticks,
+                            settings=self.horde_settings,
+                            state=self.horde_state, noises=noises,
+                            doors=self._doors,
+                            sprint_ticks=self.speed_table.zombie_sprint_ticks)
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -968,22 +1006,36 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def unit_turn_rate_q16(self, u) -> int:
-        """The turn-rate cap of unit ``u`` in Q16.16 radians per tick (G1p).
-        Read per unit: today every unit has the marine row's
-        (``[marine] turn_rate_deg_per_s``); later a stat (dexterity, armour
-        weight) -- a change here, never at the callers."""
+        """The top turning speed of unit ``u`` in Q16.16 radians per tick
+        (G1p's cap; the turning law's ``w``). Read per unit: today every unit
+        -- a zombie too, a copy of the unit it infected -- has the marine
+        row's (``[marine] turn_rate_deg_per_s``); later a stat (dexterity,
+        armour weight) -- a change here, never at the callers."""
         return self._marine_turn_rate_q16
+
+    def unit_turn_accel_q16(self, u) -> int:
+        """The own angular acceleration of unit ``u`` in Q16.16 radians per
+        tick^2 (G5p-a1, the turning law's ``a``; ``[marine]
+        turn_accel_rad_per_s2``), read per unit as the top speed is."""
+        return self._marine_turn_accel_q16
 
     def facing_after_turn_q16(self, u, dx_q: int, dy_q: int) -> int:
         """The facing (Q16.16 radians) ``u`` has after this tick's turn
-        toward the Q16.16 aim vector ``(dx_q, dy_q)``: THE turn law
-        (``turning.turn_toward_q16`` at :meth:`unit_turn_rate_q16`), also what
-        a controller reads to know where a shot it fires this tick will go
-        (the bots' trigger discipline). World Y runs down and facing is
-        math-style, hence ``-dy`` -- the convention of ``Unit.face_towards``."""
+        toward the Q16.16 aim vector ``(dx_q, dy_q)``: the pure evaluation of
+        exactly slot 1a's step (``turning.predict``: the law at the unit's
+        facing, angular velocity and dials), also what a controller reads to
+        know where a shot it fires this tick will go (the bots' trigger
+        discipline). Exact when read after the aim is set and before
+        :meth:`step`. World Y runs down and facing is math-style, hence
+        ``-dy`` -- the convention of ``Unit.face_towards``."""
         target = unit_fixed.atan2_q16(-int(dy_q), int(dx_q))
-        return turning.turn_toward_q16(unit_fixed.quantize_scalar(u.facing),
-                                       target, self.unit_turn_rate_q16(u))
+        # G5p-a2: slot 1a adds the outside spin integrated from the unit's
+        # angular accumulator before it turns (every producer of it -- slot
+        # 2, 4c, the previous tick's shoves -- has run when a controller's
+        # handle_frame reads this).
+        return turning.predict(u, target, self.unit_turn_accel_q16(u),
+                               self.unit_turn_rate_q16(u),
+                               unit_impulse.pending_dw(self.impulse_table, u))
 
     def set_trigger(self, unit_id: int, held: bool) -> None:
         """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
@@ -998,24 +1050,43 @@ class Simulation:
         self._possessed_ids.add(unit_id)
 
     def throw_grenade_intent(self, unit_id: int, dx_q: int, dy_q: int,
-                             fuse_seconds: float,
-                             reach_q: int | None = None) -> None:
-        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c). Consumed
-        (and cleared) at the next tick; ignored if the unit is out of
-        grenades then. ``reach_q`` (#121) is the lob distance in Q16.16
-        tiles, clamped to the hand grenade's ``max_throw_range`` at
-        consumption; ``None`` keeps the fixed v0.1 reach (the gamepad)."""
+                             fuse_ticks: int,
+                             reach_q: int | None = None,
+                             kind: int = 0) -> None:
+        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c).
+        Consumed (and cleared) at the next tick by :meth:`_start_throw`.
+
+        ``kind`` (G3p) is the index of the hand-grenade ``[ammo.*]`` row
+        thrown (``self.weapons_tables.hand_grenade_rows``; 0 = the frag),
+        refused by name here when it names none. ``fuse_ticks`` is the fuse
+        in INTEGER ticks (was float seconds: every caller converts once at
+        its own door, ``weapons.fuse_ticks_from_seconds``), counted from the
+        tick the grenade LEAVES the hand and clamped at release to the hand
+        grenade row's fuse range. ``reach_q`` (#121) is the lob distance in
+        Q16.16 tiles, clamped to the hand grenade's ``max_throw_range`` at
+        release; ``None`` keeps the fixed v0.1 reach (the gamepad).
+
+        The verb starts a WIND-UP (``[weapons.hand_grenade]
+        throw_windup_seconds``): ignored if the unit has none of that kind,
+        is already winding up, or cannot act; otherwise a render-only
+        :class:`~simulation.events.ThrowEvent` is emitted and the grenade
+        leaves the hand that many ticks later (the count is spent then)."""
+        self.weapons_tables.hand_grenade_kind(kind)         # refuses by name
+        if isinstance(fuse_ticks, bool) or not isinstance(fuse_ticks, Integral):
+            raise TypeError(
+                f"throw_grenade_intent: fuse_ticks must be an integer number "
+                f"of ticks (G3p: it was float seconds), got {fuse_ticks!r}")
         if self._intent_log is not None:
             self._intent_log.record(
                 self.tick, "throw_grenade_intent",
-                (int(unit_id), int(dx_q), int(dy_q), float(fuse_seconds),
-                 None if reach_q is None else int(reach_q)))
+                (int(unit_id), int(dx_q), int(dy_q), int(fuse_ticks),
+                 None if reach_q is None else int(reach_q), int(kind)))
         u = self.get_unit(unit_id)
         if u is None:
             return
         u.pending_throw = _intents.ThrowIntent(
-            int(dx_q), int(dy_q), float(fuse_seconds),
-            None if reach_q is None else int(reach_q))
+            int(dx_q), int(dy_q), int(fuse_ticks),
+            None if reach_q is None else int(reach_q), int(kind))
         self._possessed_ids.add(unit_id)
 
     def use_intent(self, unit_id: int) -> None:
@@ -1047,6 +1118,70 @@ class Simulation:
         u.pending_reload = True
         self._possessed_ids.add(unit_id)
 
+    def shove_intent(self, unit_id: int) -> None:
+        """SHOVE (gameplay pack G5p-a2, ``docs/unit_impulse_design_
+        2026-11-10.md`` §4, §13): latch a shove. Consumed (and cleared) at
+        the next tick's slot 1b by ``unit_impulse.shove``: if the unit can
+        act and its cooldown (``[impulse.shove] cooldown_seconds``) has run,
+        the adjacent living unit of ANY team nearest its facing (within the
+        shove's cone) takes the shove's impulse (``[impulse.shove]
+        impulse_ns``) along that facing through the unit impulse law -- it
+        is pushed by its mass, staggers, or falls -- and a render-only
+        ``ShoveEvent`` is emitted; with no such unit nothing happens and the
+        cooldown is not spent. A zombie does not shove. Hand-written bots
+        never call it yet (G8p); an RL agent and the human do."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "shove_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_shove = True
+        self._possessed_ids.add(unit_id)
+
+    def melee_intent(self, unit_id: int) -> None:
+        """MELEE (gameplay pack G6p, ``docs/gameplay_pack_v1_design_
+        2026-11-10.md`` §3): latch a blow. Consumed (and cleared) at the next
+        slot 4 by ``combat.process_melee_intents``, in phase A against the
+        slot's start state: if the unit is a living marine with a melee row
+        (its loadout's ``melee``), can act, is not winding up a throw, its
+        row's cadence has run and an ENEMY (another team, zombies included,
+        never a teammate) is melee-adjacent within the row's facing arc
+        (``melee_arc_half_deg``), the one nearest the facing (ties to the
+        lower id) takes the row's blow -- a ``DamagePacket`` credited to the
+        striker with the ``melee`` cause, the row's short STUNNED and its
+        push along striker -> target through the unit impulse law, all
+        landing at the slot's phase B -- and a render-only ``MeleeEvent`` is
+        emitted. With no such target nothing happens and no cadence is
+        spent. A zombie does not use the verb (its bite is its own law).
+        Hand-written bots never call it yet (G8p); an RL agent and the human
+        do."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "melee_intent",
+                                    (int(unit_id),))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_melee = True
+
+    def set_flashlight(self, unit_id: int, off: bool) -> None:
+        """FLASHLIGHT (gameplay pack G7p): hold ``unit_id``'s flashlight bit
+        ``off`` (True) or on (False; every unit starts on). A HOLD verb,
+        like :meth:`set_trigger`: the sim overwrites the bit on every call.
+        The argument is the OFF sense so that a zero action row (a policy's
+        do-nothing stance) leaves the light as it was and every pinned
+        digest as it is. SYNCED (hashed in the unit digest only while off),
+        read by nothing in the sim (light as game state is #81): the frame
+        lights draw the unit's cone from it
+        (``ui.model.flashlight_cones``)."""
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "set_flashlight",
+                                    (int(unit_id), bool(off)))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.flashlight_on = not bool(off)
+
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine
@@ -1071,7 +1206,8 @@ class Simulation:
         under TwoPhaseWEGO ``_possessed_ids`` is always empty, so this is a
         single set-empty check and the digest is byte-identical.
 
-        AIM sets facing (deterministic integer atan2); THROW spawns a grenade
+        AIM is NOT consumed here: slot 1a turns toward a held aim
+        (``unit_impulse.integrate_all``, G5p-a1); THROW spawns a grenade
         BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
         this tick like a WEGO one; USE toggles a door latch; RELOAD discards
         the magazine and starts the stall (G2p). TRIGGER is not
@@ -1086,25 +1222,25 @@ class Simulation:
         for u in self.units:
             if u.id not in self._possessed_ids or not u.alive or u.is_zombie:
                 # A now-invalid possessor (dead / unpossessed / wrong team)
-                # releases a held trigger, so a later rebind starts clean.
+                # releases a held trigger, so a later rebind starts clean,
+                # and drops a throw wind-up (G3p: nothing leaves the hand,
+                # the count was never spent).
                 if getattr(u, "live_trigger", False):
                     u.live_trigger = False
+                if getattr(u, "throw_release_tick", -1) >= 0:
+                    u.throw_release_tick = -1
                 continue
 
-            # AIM -> facing, turned at most the unit's turn rate this tick
-            # (G1p; synced state through the deterministic atan2 kit, integer
-            # Q16 radians; a zero vector leaves facing untouched). A cap of
-            # half a turn or more reaches the aim at once: the pre-G1p law.
-            aim = getattr(u, "live_aim", None)
-            if aim is not None and (aim.dx_q != 0 or aim.dy_q != 0):
-                u.facing = unit_fixed.dequantize_scalar(
-                    self.facing_after_turn_q16(u, aim.dx_q, aim.dy_q))
+            # AIM: already turned toward in slot 1a (the turning law, G5p-a1;
+            # a zero vector holds the last target).
 
-            # THROW -> spawn a grenade now (edge; latched until consumed).
+            # THROW -> start the wind-up (edge; latched until consumed); a
+            # wind-up under way is carried to its release tick (G3p).
             throw = getattr(u, "pending_throw", None)
             if throw is not None:
                 u.pending_throw = None
-                self._spawn_direct_grenade(u, throw)
+                self._start_throw(u, throw)
+            self._advance_throw(u)
 
             # USE -> toggle an adjacent door latch (edge; latched).
             if getattr(u, "pending_use", False):
@@ -1116,6 +1252,18 @@ class Simulation:
                 u.pending_reload = False
                 self._reload(u)
 
+            # SHOVE -> push the adjacent unit nearest the facing (edge;
+            # latched; G5p-a2). It ADDS to the target's accumulators only
+            # (integrated next tick's 1a), reading the slot-start positions
+            # and the shover's 1a-turned facing: every shove of a tick reads
+            # the same state and integer sums commute, so shovers' ids
+            # change nothing.
+            if getattr(u, "pending_shove", False):
+                u.pending_shove = False
+                if composed_flags(u).can_act:
+                    unit_impulse.shove(self.impulse_table, self.units, u,
+                                       self.tick, events=self.tick_events)
+
             # TRIGGER is NOT consumed here: a held ``live_trigger`` (set by
             # set_trigger) is read directly by the shooting slot (slot 4),
             # where ``combat._directional_fire`` marches a FREE-AIM shot along
@@ -1124,42 +1272,98 @@ class Simulation:
             # the tile-target band-aid (_aim_fire_order / live_fire_order) is
             # gone, and with it the unbounded-phase landmine (design §8).
 
-    def _spawn_direct_grenade(self, u, throw) -> None:
-        """THROW consumption: lob a grenade from ``u`` along the intent's
-        Q16.16 unit vector, fusing after ``throw.fuse_seconds``. Reuses the
-        shipped :class:`~simulation.combat.Projectile` (the WEGO grenade path);
-        the target tile is derived deterministically from the fixed-point
-        direction. No-op if the unit has no grenade left."""
-        if getattr(u, "has_grenade", 0) <= 0:
+    def _start_throw(self, u, throw) -> None:
+        """THROW consumption (the law of :meth:`throw_grenade_intent`, G3p).
+        Integer state only, no random number. A throw of a kind the unit
+        does not carry, one arriving while the unit is already winding up,
+        and one from a unit whose statuses forbid acting, do nothing and
+        emit nothing. Otherwise a :class:`~simulation.events.ThrowEvent` is
+        emitted and the wind-up starts; with a wind-up of 0 ticks the
+        grenade leaves the hand NOW, along the intent's own vector -- the
+        pre-G3p same-tick throw, bit for bit."""
+        if u.throw_release_tick >= 0:
+            return                            # already winding up
+        if u.grenade_counts[throw.kind] <= 0:
+            return                            # none of that kind
+        if not composed_flags(u).can_act:
+            return                            # stunned, paralysed, ...
+        ticks = self.weapons_tables.weapons.by_name[
+            "hand_grenade"].throw_windup_ticks
+        self.tick_events.append(ThrowEvent(unit_id=int(u.id),
+                                           kind=int(throw.kind),
+                                           ticks=int(ticks)))
+        if ticks == 0:
+            self._release_grenade(u, throw.kind, throw.fuse_ticks,
+                                  throw.reach_q, throw.dx_q, throw.dy_q)
             return
+        u.throw_release_tick = self.tick + ticks
+        u.throw_kind = int(throw.kind)
+        u.throw_fuse_ticks = int(throw.fuse_ticks)
+        u.throw_reach_q = (THROW_NO_REACH if throw.reach_q is None
+                           else int(throw.reach_q))
+
+    def _advance_throw(self, u) -> None:
+        """One tick of a wind-up under way: a unit that can no longer act
+        throws NOTHING and keeps its count (the wind-up is dropped); at the
+        release tick the grenade leaves the hand along the facing the unit
+        has THEN (Q16 ``cos`` / ``sin`` of its facing, world y down), at the
+        reach the intent named. (A dead unit never gets here: the consume
+        loop drops its wind-up.)"""
+        if u.throw_release_tick < 0:
+            return
+        if not composed_flags(u).can_act:
+            u.throw_release_tick = -1
+            return
+        if self.tick < u.throw_release_tick:
+            return
+        u.throw_release_tick = -1
+        facing_q = unit_fixed.quantize_scalar(u.facing)
+        self._release_grenade(
+            u, u.throw_kind, u.throw_fuse_ticks,
+            None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
+            unit_fixed.cos_q16(facing_q), -unit_fixed.sin_q16(facing_q))
+
+    def _release_grenade(self, u, kind, fuse_ticks, reach_q, dx_q,
+                         dy_q) -> None:
+        """The grenade of throw kind ``kind`` leaves ``u``'s hand: lob it
+        along the Q16.16 vector ``(dx_q, dy_q)``, fusing ``fuse_ticks`` ticks
+        (clamped to the hand grenade row's fuse range) later, and spend one
+        of that kind. Reuses the shipped
+        :class:`~simulation.combat.Projectile` (the WEGO grenade path); the
+        target tile is derived deterministically from the fixed-point
+        direction."""
+        if u.grenade_counts[kind] <= 0:
+            return
+        hand = self.weapons_tables.weapons.by_name["hand_grenade"]
         cx = u.center_tile_x()
         cy = u.center_tile_y()
-        dirx = _intents.dequantize(throw.dx_q)
-        diry = _intents.dequantize(throw.dy_q)
+        dirx = _intents.dequantize(dx_q)
+        diry = _intents.dequantize(dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
         # Erik; the grenade's own fuse/blast are the shipped numbers). A
         # controller throwing at a point (#121, the bots) names its reach in
         # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
-        if throw.reach_q is None:
+        if reach_q is None:
             reach = 6.0  # tiles
         else:
-            max_q = int(self.weapons_tables.weapons.by_name[
-                "hand_grenade"].max_throw_range) << _intents.FP_SHIFT
-            reach = _intents.dequantize(min(max(0, int(throw.reach_q)),
-                                            max_q))
+            max_q = int(hand.max_throw_range) << _intents.FP_SHIFT
+            reach = _intents.dequantize(min(max(0, int(reach_q)), max_q))
         tgt_fx = cx + dirx * reach
         tgt_fy = cy + diry * reach
+        lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
+        hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
         proj = Projectile(
             ORDER_GRENADE,
             cx, cy,
             tgt_fx + 0.5, tgt_fy + 0.5,
-            fuse_seconds=throw.fuse_seconds,
+            fuse_seconds=0.0,
             thrown_tick=self.tick,
-            ammo_name="grenade_frag",
+            ammo_name=self.weapons_tables.hand_grenade_kind(kind),
             owner_id=getattr(u, "id", -1),
+            fuse_ticks=min(max(int(fuse_ticks), lo), hi),
         )
         self.projectiles.append(proj)
-        u.has_grenade -= 1
+        u.grenade_counts[kind] -= 1
 
     def _direct_use(self, u) -> None:
         """USE consumption: flip the ``want_open`` latch of the first live door
@@ -1305,7 +1509,12 @@ class Simulation:
                             # #140: the builder adds the wind's cadence
                             # scale, sampled here at ORDER time (WEGO's
                             # plan-time precompute -- an accepted gap).
-                            samples = footprint_samples(gmap, tile_y, tile_x, fp)
+                            # G5p-a2: the unit's effort scale, read at
+                            # order time like the wind.
+                            samples = footprint_samples(
+                                gmap, tile_y, tile_x, fp,
+                                effort_scale_q16=unit_impulse.effort_scale_q16(
+                                    unit_impulse.table_for(gmap), u))
                             step_ticks = default_speed(samples, speed)
                             for st in range(step_ticks):
                                 frac = (st + 1) / step_ticks
@@ -1615,6 +1824,7 @@ class Simulation:
         ``Game._process_tick`` (game.py:1696-1747), with the status pass
         (2b) added at the top of the unit-simulation section (P3):
           1. Clear tick_events (this tick is a fresh slate)
+          1c. Exposure decays (G4p)
           2. Update projectiles (advance position, detonate)
           2b. Tick unit statuses (durations count down; DoT/HoT emit)
           3. Update player movement (read precomputed path)
@@ -1652,12 +1862,30 @@ class Simulation:
         # simulation.ruleset.TwoPhaseWEGO.on_round_start.
         self.ruleset.on_round_start(self)
 
+        # 1a. Integrate + turn (G5p-a2 / G5p-a1, simulation.unit_impulse and
+        # simulation.turning): every living unit, in id order, integrates the
+        # impulses it received since last tick (its sway, pushed velocity,
+        # effort, reaction delay and the knockdown checks; the displacement
+        # itself is slot 3's), then takes one tick of the turning law toward
+        # its target (the live aim while one is held) with the outside spin
+        # added -- the ONLY writer of a facing. BEFORE 1b (a throw leaves
+        # along the turned facing; a shove reads it), the movement slot (the
+        # Speed table's direction rule reads THIS tick's facing) and the
+        # shooting slot (a shot leaves along it; the bots' predictor
+        # evaluates exactly this step before the tick).
+        unit_impulse.integrate_all(self)
+
         # 1b. Direct-control intents (control-modularity P3, §3c): consume the
         # possessed units' held/latched per-tick verbs (AIM/THROW/USE/TRIGGER)
         # BEFORE projectiles advance, so a THROW lobbed this tick travels this
         # tick like a WEGO grenade and a TRIGGER arms slot 4's fire order.
         # Dormant under WEGO (no possessed units) — a single set-empty check.
         self._consume_direct_intents()
+
+        # 1c. Exposure decays one tick (G4p, simulation.exposure) -- before
+        # every attack of this tick, so each hit reads the level left by the
+        # hits up to last tick, decayed exactly once since.
+        exposure.decay_units(self.units)
 
         # 2. Update projectiles.
         self._update_projectiles()
@@ -1691,6 +1919,9 @@ class Simulation:
         # (onephase_wego design §3). The legacy path below is untouched and
         # still runs verbatim for every other ruleset.
         if self.ruleset.drives_units:
+            # G5p-a2: the pushed velocity moves every unit under every
+            # ruleset (slot 3's displacement), then the timeline plays.
+            self._displace_pushed()
             self.ruleset.drive_units(self)
         else:
             # 3. Update player movement.
@@ -1705,6 +1936,15 @@ class Simulation:
                              self.shots, self.real_time, self.rng,
                              events=self.tick_events, bullets=self.bullets,
                              queue=self.edit_queue, effects=attack_effects)
+
+        # 4a. The MELEE verb (gameplay pack G6p): the units' latched
+        # ``melee_intent`` blows, decided in the same phase A as the shots
+        # (against the slot-start state) and recorded on the same effects, so
+        # a blow and a shot of one tick land together at 4c. Under every
+        # ruleset (the latch is consumed even where slot 4 is the timeline's).
+        process_melee_intents(self.units, self.tick, self.weapons_tables,
+                              self.impulse_table, events=self.tick_events,
+                              effects=attack_effects)
 
         # 4b. SPRAY deposits (mechanics/03 §5, W4) — the shooting slot's
         # second half: every active spray burst enqueues its aimed heat/gas
@@ -1801,18 +2041,19 @@ class Simulation:
                 events=self.tick_events,
             )
 
-        # 9c2. Wind on units (#140; the `wind | max` row, mechanics/05 §1 --
-        # exchange.apply_wind_knockdown): the dynamic pressure q = 1/2 rho v^2
-        # at each living unit's footprint (GameMap.footprint_wind_load) lays
-        # it KNOCKED_DOWN at or above wind_q_fall_pa * stability^2 (prone,
-        # refresh-stacked get-up timer). It writes NO position; the slowed
-        # band below it is the cadence scale movement.footprint_samples
-        # hands every walker. WITHIN-TICK EXCHANGE ORDER (documented
-        # contract): heat damage (9c) FIRST, then wind -- a unit the heat row
-        # kills this tick is a corpse. A status applied here starts
-        # suppressing next tick (the step-2b P3 trigger-position semantics).
+        # 9c2. Wind on units (#140's read, the `wind | max` row, mechanics/05
+        # §1 -- exchange.apply_wind_force; G5p-b): the dynamic pressure
+        # q = 1/2 rho v^2 at each living unit's footprint
+        # (GameMap.footprint_wind) is a FORCE on the unit impulse law: one
+        # tick of impulse q * drag_area along the wind, through
+        # unit_impulse.add_wind, integrated in the next tick's slot 1a (whose
+        # outcomes -- slowed, pushed by the excess, knocked down -- are the
+        # wind's; a blast's wind included). It writes no position, status
+        # or speed. WITHIN-TICK EXCHANGE ORDER (documented contract): heat
+        # damage (9c) FIRST, then wind -- a unit the heat row kills this
+        # tick is a corpse.
         if self.physics_runner is not None:
-            apply_wind_knockdown(self.units, self.gmap)
+            apply_wind_force(self.units, self.gmap, self.impulse_table)
 
         # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
         # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
@@ -2057,7 +2298,22 @@ class Simulation:
             self.bullets = survivors
 
     def _update_player_movement(self) -> None:
-        """Step each player unit along its precomputed path.
+        """Slot 3: THE displacement loop (G5p-a2, design §13) over every
+        living unit in id order, then each player unit's legacy WEGO path.
+
+        - A unit holding a live MOVE_DIR walks (:meth:`_step_move_dir`): its
+          walk and its pushed velocity move it as ONE displacement
+          (``unit_impulse.move``).
+        - Every other unit with a pushed velocity -- standing, prone, a
+          zombie, a WEGO unit -- moves by it alone; the pushed velocity moves
+          a unit whatever its statuses say about moving on its own. A zombie
+          so displaced reads the horde field at its floored tile in slot 5
+          (G9p: no path to drop; its step snaps to the tile grid).
+        - Then the WEGO path step (LEGACY), which overwrites a push (an
+          accepted gap, the Control seams row).
+
+        Each move reads only the map and the unit's own state, so the loop
+        is order-free (units pass through each other, #142).
 
         Status gate (mechanics/06 §4): a unit whose composed ``can_move`` is
         suppressed (knocked down / immobilized / paralyzed) holds position
@@ -2066,10 +2322,12 @@ class Simulation:
         at the next un-walked path index (no catch-up teleport; the round
         may end before the tail is walked — being knocked down costs the
         distance). With no statuses this is a dead path, bit-identical to
-        pre-P3 behavior.
+        pre-P3 behavior. A unit in its reaction delay
+        (``unit_impulse.walk_allowed``) is held the same way.
         """
+        gmap = self.gmap
         for u in self.units:
-            if not u.alive or u.is_zombie:
+            if not u.alive:
                 continue
 
             # Direct-control branch (control-modularity P3, §3c): a unit with a
@@ -2078,13 +2336,20 @@ class Simulation:
             # replays a WEGO path. Dormant under WEGO (no unit carries
             # ``live_move_dir``), so the branch below is untouched and
             # byte-identical.
-            move_dir = getattr(u, "live_move_dir", None)
+            move_dir = None if u.is_zombie else getattr(u, "live_move_dir",
+                                                        None)
             if move_dir is not None:
-                if composed_flags(u).can_move:
-                    self._step_move_dir(u, move_dir)
+                self._step_move_dir(u, move_dir)
                 continue
 
-            if not composed_flags(u).can_move:
+            # No walk of its own this slot: the pushed velocity alone.
+            if u.pvx or u.pvy:
+                unit_impulse.move(gmap, u)
+            if u.is_zombie:
+                continue
+
+            if (not composed_flags(u).can_move
+                    or not unit_impulse.walk_allowed(u)):
                 u.path_tick_offset += 1
                 continue
             path_idx = self.tick - u.path_tick_offset
@@ -2109,6 +2374,16 @@ class Simulation:
                 u.x = px
                 u.y = py
 
+    def _displace_pushed(self) -> None:
+        """Slot 3 under a ruleset that drives the units itself (OnePhaseWEGO,
+        ``drives_units``): every living unit with a pushed velocity moves by
+        it (``unit_impulse.move``), before the ruleset's compiled timeline
+        (which then overwrites it: an accepted legacy gap). The same rule as
+        the pushed branch of :meth:`_update_player_movement`."""
+        for u in self.units:
+            if u.alive and (u.pvx or u.pvy):
+                unit_impulse.move(self.gmap, u)
+
     def _step_move_dir(self, u, move_dir) -> None:
         """MOVE_DIR consumption (control-modularity P3, §3c) — the real new
         mechanic: advance ``u`` one tick along its live direction by a
@@ -2118,65 +2393,58 @@ class Simulation:
 
         Speed (G1p-c): the ``[speeds]`` table's marine walk and full speed
         (``self.speed_table``, Q16 ticks per tile, quantized once from m/s),
-        each scaled by the footprint's area-average mobility and the wind
-        exactly as every walker is (:func:`movement.default_speed`) — a
-        furniture tile is 2.5x slower for both — then the direction rule and
-        the intent's throttle (:func:`movement.move_speed_tiles_per_tick`):
-        the walk slows sideways and backward, the throttle's extra speed is
-        forward only. ``theta`` is the angle between the move and the facing
-        THIS tick (the aim already turned it, ``_consume_direct_intents``);
-        a unit holding no aim faces where it walks, so ``theta`` is 0.
+        each scaled by the footprint's area-average mobility, the wind and
+        (G5p-a2) the unit's effort exactly as every walker is
+        (:func:`movement.default_speed`) — a furniture tile is 2.5x slower
+        for both — then the direction rule and the intent's throttle
+        (:func:`movement.move_speed_q16`, the rational rounded once to Q16
+        tiles per tick): the walk slows sideways and backward, the throttle's
+        extra speed is forward only. ``theta`` is the angle between the move
+        and the facing THIS tick (slot 1a already turned it, G5p-a1); a unit
+        holding no aim makes its travel direction its facing TARGET and turns
+        there with inertia like everyone else, so for a few ticks after a
+        change of direction it walks at the sideways / backward factor.
 
-        Determinism: the direction arrives as a Q16.16 unit vector; the only
-        floats are the exact power-of-two dequantize and the position math on
-        ``u.x``/``u.y`` (plain IEEE +/-/*/ — no libm, no transcendentals), so
-        the trajectory is bit-reproducible cross-machine (``u.x``/``y`` are
-        synced digest fields — this stays on the same float discipline as the
-        WEGO path).
+        The walk runs only while the unit's statuses let it move
+        (``can_move``) and it is not catching itself after a push
+        (``unit_impulse.walk_allowed``); either way its pushed velocity is
+        applied. Walk and push move it as ONE displacement
+        (``unit_impulse.move``): on the Q16 grid, in sub-tile substeps (one,
+        today's single test, at a walk alone), each the slide rule -- the
+        full move; else along X alone; else along Y alone; else hold -- so
+        pushing diagonally into a wall glides rather than dead-stops.
 
-        Collision: try the full move; if the destination footprint is blocked,
-        slide along each axis independently (still :meth:`is_passable_block`),
-        so pushing diagonally into a wall glides rather than dead-stops. A
-        fully boxed-in unit holds. Facing follows the move direction unless a
-        live AIM overrides it (aim already set facing this tick).
+        Determinism: integers only; ``u.x`` / ``u.y`` leave as exact n/65536
+        doubles (synced digest fields).
         """
-        fp = u.footprint
-        samples = footprint_samples(self.gmap, u.tile_y, u.tile_x, fp)
-        # G1p-c: the walk and the full speed (Q16 ticks per tile), each
-        # reduced by terrain and wind, then the direction rule and the
-        # throttle as ONE exact rational and one division.
-        table = self.speed_table
-        if getattr(u, "live_aim", None) is None:
-            cos_q = unit_fixed.FP_ONE         # facing follows the move
-        else:
-            cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q,
-                                   unit_fixed.quantize_scalar(u.facing))
-        tiles_per_tick = move_speed_tiles_per_tick(
-            default_speed(samples, table.walk_cost_q),
-            default_speed(samples, table.full_cost_q),
-            table.side_q, table.back_q, move_dir.throttle_q, cos_q)
-        dx = _intents.dequantize(move_dir.dx_q)
-        dy = _intents.dequantize(move_dir.dy_q)
-        step_x = dx * tiles_per_tick
-        step_y = dy * tiles_per_tick
-        nx = u.x + step_x
-        ny = u.y + step_y
+        walking = (composed_flags(u).can_move
+                   and unit_impulse.walk_allowed(u))
+        wdx = wdy = 0
+        if walking:
+            fp = u.footprint
+            samples = footprint_samples(
+                self.gmap, u.tile_y, u.tile_x, fp,
+                effort_scale_q16=unit_impulse.effort_scale_q16(
+                    self.impulse_table, u))
+            # G1p-c: the walk and the full speed (Q16 ticks per tile), each
+            # reduced by terrain, wind and effort, then the direction rule and
+            # the throttle as ONE exact rational, rounded once to Q16.
+            table = self.speed_table
+            cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
+            v_q = move_speed_q16(
+                default_speed(samples, table.walk_cost_q),
+                default_speed(samples, table.full_cost_q),
+                table.side_q, table.back_q, move_dir.throttle_q, cos_q)
+            wdx, wdy = unit_impulse.walk_step_q(move_dir, v_q)
+        unit_impulse.move(self.gmap, u, wdx, wdy)
 
-        gmap = self.gmap
-        if gmap.is_passable_block(int(ny), int(nx), fp):
-            u.x, u.y = nx, ny
-        elif gmap.is_passable_block(int(u.y), int(nx), fp):
-            u.x = nx                          # slide along X
-        elif gmap.is_passable_block(int(ny), int(u.x), fp):
-            u.y = ny                          # slide along Y
-        # else fully blocked -> hold position this tick.
-
-        # Facing: aim wins (already applied in _consume_direct_intents this
-        # tick); otherwise face the direction of travel -- at once, as before
-        # G1p: the turn cap is the aim's law, and a unit that never named an
-        # aim (scripts, WEGO-era tests) keeps its old trajectory.
-        if getattr(u, "live_aim", None) is None and (dx != 0.0 or dy != 0.0):
-            u.face_towards(u.x + dx, u.y + dy)
+        # Facing: a held aim wins (slot 1a's target); otherwise the
+        # direction of travel becomes the facing TARGET (G5p-a1: turned
+        # toward with inertia from the next tick's 1a, never written here).
+        if walking and getattr(u, "live_aim", None) is None and (
+                move_dir.dx_q != 0 or move_dir.dy_q != 0):
+            turning.set_target(u, unit_fixed.atan2_q16(-int(move_dir.dy_q),
+                                                       int(move_dir.dx_q)))
 
     def _end_round(self) -> None:
         """End-of-round teardown — convert dead-by-zombie marines, reset state.
@@ -2195,6 +2463,12 @@ class Simulation:
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
+            # G5p-a2: the shove's cooldown rewinds with the tick counter (the
+            # last_fire_tick precedent), and a push does not survive the
+            # round boundary's snap to the tile grid.
+            u.last_shove_tick = -1
+            u.last_blow_tick = -1             # G6p: the melee cadence, same
+            unit_impulse.clear(u)
             # W3 ammo economy: the round boundary tops everyone off (the
             # WEGO planning pause is a between-rounds breather — v1 rule,
             # Erik's dial later). Also REQUIRED for correctness: the tick

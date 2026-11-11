@@ -16,7 +16,8 @@ continuous path no longer reads those dials (they are WEGO's alone), so that
 property is gone; its successors are below: throttle 0 forward IS the table's
 walk and ONE its full speed (exactly the rounded rationals), monotone in the
 throttle and in cos theta, nobody sprints backwards or sideways, terrain and
-wind scale the new base exactly as they scaled the old one, and the door
+the speed scale (the effort's: the wind's since G5p-b) scale the new base
+exactly as they scaled the old one, and the door
 still clamps.
 """
 from __future__ import annotations
@@ -42,26 +43,29 @@ from simulation import Simulation  # noqa: E402
 from simulation.intents import FP_ONE  # noqa: E402
 from simulation.movement import (FootprintSamples, SCALE_ONE,  # noqa: E402
                                  THROTTLE_ONE, default_speed, facing_cos_q16,
-                                 move_speed_tiles_per_tick)
+                                 move_speed_q16, move_speed_tiles_per_tick)
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.speeds import speed_settings, speed_table  # noqa: E402
 from simulation.turning import PI_Q16  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.unit_fixed import dequantize_scalar  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 #: The shipped table on the shipped 0.333 m tile.
 TABLE = speed_table(CFG, 0.333)
 CW, CF, SIDE, BACK = (TABLE.walk_cost_q, TABLE.full_cost_q, TABLE.side_q,
                       TABLE.back_q)
 
-#: Footprint samples spanning the terrain + wind reductions: open air,
+#: Footprint samples spanning the terrain + effort reductions (the wind slows
+#: through the effort since G5p-b): open air,
 #: furniture, a mixed footprint, a gale's half-speed scale, an odd scale.
 SAMPLES = [
     FootprintSamples(mobility=[1000] * 9),
     FootprintSamples(mobility=[400] * 9),
     FootprintSamples(mobility=[1000, 400, 700, 1000, 1000, 250, 1000, 900, 1]),
-    FootprintSamples(mobility=[1000] * 9, wind_scale_q16=SCALE_ONE // 2),
-    FootprintSamples(mobility=[600] * 9, wind_scale_q16=40961),
+    FootprintSamples(mobility=[1000] * 9, effort_scale_q16=SCALE_ONE // 2),
+    FootprintSamples(mobility=[600] * 9, effort_scale_q16=40961),
 ]
 
 #: Throttles: the ends, a 37-step sweep, a seeded random set.
@@ -97,7 +101,7 @@ def test_forward_throttle_zero_is_the_walk_and_one_the_full_speed():
 @pytest.mark.parametrize("s", SAMPLES)
 def test_the_speed_is_monotone_in_the_throttle(s, c):
     """Property: more throttle is never slower, at every angle to the facing
-    and on every terrain / wind cost. Breaks if the throttle term can go
+    and on every terrain / speed-scale cost. Breaks if the throttle term can go
     negative (full slower than walk) or the law rounds non-monotonically."""
     cw, cf = default_speed(s, CW), default_speed(s, CF)
     v = [_v(t, c, cw, cf) for t in THROTTLES]
@@ -134,15 +138,15 @@ def test_nobody_sprints_backward_or_sideways():
 
 
 @pytest.mark.parametrize("s", SAMPLES)
-def test_terrain_and_wind_scale_the_new_base_as_they_scaled_the_old(s):
-    """Property: terrain mobility and the wind scale reach the new law
+def test_terrain_and_the_speed_scale_the_new_base_as_they_scaled_the_old(s):
+    """Property: terrain mobility and the effort scale reach the new law
     through the SAME function the old cadence went through
     (``default_speed``, here at the Q16 cost currency): the reduced walk is
     exactly ``ONE / default_speed(samples, walk_cost_q)``, and the factor it
     applies to the base speed equals the factor the old integer cadence got
     (18 ticks per tile, the old walk dial) to within that integer
     reduction's own half-up rounding. Breaks if the new law re-derives the
-    terrain or wind reduction, drops one of them, or applies it twice."""
+    terrain or effort reduction, drops one of them, or applies it twice."""
     cw, cf = default_speed(s, CW), default_speed(s, CF)
     assert _v(0, FP_ONE, cw, cf) == FP_ONE / cw
     assert _v(THROTTLE_ONE, FP_ONE, cw, cf) == FP_ONE / cf
@@ -151,9 +155,9 @@ def test_terrain_and_wind_scale_the_new_base_as_they_scaled_the_old(s):
     old = 18
     old_factor = default_speed(plain, old) / default_speed(s, old)
     # The integer reduction rounds its cost by half a tick per stage (the
-    # mobility stage's error then scaled by the wind's 1/scale <= 2): 1.5.
+    # mobility stage's error then scaled by the effort's 1/scale <= 2): 1.5.
     assert abs(new_factor - old_factor) <= old_factor * 1.5 / default_speed(s, old)
-    exact = (sum(s.mobility) / (len(s.mobility) * 1000)) * (s.wind_scale_q16 / SCALE_ONE)
+    exact = (sum(s.mobility) / (len(s.mobility) * 1000)) * (s.effort_scale_q16 / SCALE_ONE)
     assert new_factor == pytest.approx(exact, rel=1e-5)
 
 
@@ -208,13 +212,20 @@ def _step_once(throttle_q, move=(FP_ONE, 0), facing_q=None, aim=None):
     uid = sim.add_unit(Unit("M", x=6, y=6, team=0))
     u = sim.get_unit(uid)
     if facing_q is not None:
-        u.facing = dequantize_scalar(facing_q)
+        _place_facing(u, facing_q)
     if aim is not None:
         sim.set_aim(uid, *aim)
     x0, y0 = u.x, u.y
     sim.set_move_dir(uid, move[0], move[1], throttle_q)
     sim.step()
     return sim, u, x0, y0
+
+
+def _qv(t, throttle_q, cos_q):
+    """The Q16 walk step (tiles) of an axis-aligned move at ``cos_q`` to the
+    facing: ``move_speed_q16`` of the arena's own costs, as a float."""
+    return move_speed_q16(t.walk_cost_q, t.full_cost_q, t.side_q, t.back_q,
+                          throttle_q, cos_q) / FP_ONE
 
 
 def test_the_movement_step_walks_at_the_table_and_slows_off_the_facing():
@@ -224,31 +235,45 @@ def test_the_movement_step_walks_at_the_table_and_slows_off_the_facing():
     aiming east while moving west, ``backward_frac x walk`` at both
     throttles; aiming north while moving east, ``sideways_frac x walk``.
     Breaks if the step reads another table or tile size, takes theta from
-    anything but this tick's facing, or ignores the direction rule."""
+    anything but this tick's facing, or ignores the direction rule.
+    (G5p-a2: the step is the law's rational rounded half up ONCE onto the
+    Q16 grid, ``movement.move_speed_q16`` -- critique B's M6; :func:`_qv`.)"""
     t = speed_table(CFG, 1.0)
     east, north = (FP_ONE, 0), (0, -FP_ONE)
     sim, u, x0, _ = _step_once(0, aim=east, facing_q=0)
     assert sim.speed_table == t
-    assert u.x == x0 + FP_ONE / t.walk_cost_q
+    assert u.x == x0 + _qv(t, 0, FP_ONE)
+    assert _qv(t, 0, FP_ONE) == pytest.approx(FP_ONE / t.walk_cost_q,
+                                              abs=1 / FP_ONE)
     _, u, x0, _ = _step_once(THROTTLE_ONE, aim=east, facing_q=0)
-    assert u.x == x0 + FP_ONE / t.full_cost_q
+    assert u.x == x0 + _qv(t, THROTTLE_ONE, FP_ONE)
     for th in (0, THROTTLE_ONE):
         _, u, x0, _ = _step_once(th, move=(-FP_ONE, 0), aim=east, facing_q=0)
-        assert u.x == x0 - t.back_q / t.walk_cost_q
+        assert u.x == x0 - _qv(t, th, -FP_ONE)
+        assert _qv(t, th, -FP_ONE) == pytest.approx(
+            t.back_q / t.walk_cost_q, abs=1 / FP_ONE)
         _, u, x0, _ = _step_once(th, aim=north, facing_q=102944)
-        assert u.x == x0 + t.side_q / t.walk_cost_q
+        assert u.x == x0 + _qv(t, th, 0)
 
 
-def test_with_no_aim_the_facing_follows_the_move_so_theta_is_zero():
-    """Property: a unit holding no aim walks at its forward speed in every
-    direction, whatever its facing was (it faces where it walks): a unit
-    facing north (the spawn facing) stepping east at throttle ONE gets the
-    full speed. Breaks if the no-aim path reads the stale facing."""
+def test_with_no_aim_the_direction_rule_reads_the_facing_and_travel_is_the_target():
+    """Property (G5p-a1, which deletes the "no aim means theta 0" shortcut):
+    a unit holding no aim is held to the direction rule against THIS tick's
+    facing like everyone else -- facing north (the spawn facing) and stepping
+    east it gets the sideways walk at either throttle, stepping south the
+    backward walk -- and the move becomes its facing TARGET (the turning law
+    turns it there from the next tick); facing its move it walks at the
+    table's walk / full speed. Breaks if the shortcut returns, or the travel
+    writes the facing at once."""
     t = speed_table(CFG, 1.0)
-    _, u, x0, _ = _step_once(THROTTLE_ONE, move=(FP_ONE, 0))
-    assert u.x == x0 + FP_ONE / t.full_cost_q
+    for th in (0, THROTTLE_ONE):
+        _, u, x0, _ = _step_once(th, move=(FP_ONE, 0))      # east, no aim
+        assert u.x == x0 + _qv(t, th, 0)
+        assert u.facing_q == 102944 and u.facing_target_q == 0
     _, u, _, y0 = _step_once(0, move=(0, FP_ONE))          # south, no aim
-    assert u.y == y0 + FP_ONE / t.walk_cost_q
+    assert u.y == y0 + _qv(t, 0, -FP_ONE)
+    _, u, x0, _ = _step_once(THROTTLE_ONE, move=(FP_ONE, 0), facing_q=0)
+    assert u.x == x0 + _qv(t, THROTTLE_ONE, FP_ONE)
 
 
 def test_the_door_clamps_the_throttle_and_the_tap_records_the_clamp():
@@ -315,9 +340,11 @@ def test_e2e_the_keyboard_walks_runs_strafes_and_backs_at_the_table():
             runs.setdefault((row[6], row[7], row[8]), []).append((row, step))
 
     def law(key, row):
-        return move_speed_tiles_per_tick(
+        # G5p-a2: the step is the law's speed on the Q16 grid (every key is
+        # an axis-aligned move, so the step IS the speed in counts).
+        return move_speed_q16(
             t.walk_cost_q, t.full_cost_q, t.side_q, t.back_q, key[2],
-            facing_cos_q16(key[0], key[1], quantize_scalar(row[5])))
+            facing_cos_q16(key[0], key[1], quantize_scalar(row[5]))) / FP_ONE
 
     north, south = (0, -FP_ONE), (0, FP_ONE)
     table = {(*north, 0): FP_ONE / t.walk_cost_q,

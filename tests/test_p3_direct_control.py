@@ -76,21 +76,27 @@ def _continuous_sim(level) -> Simulation:
 def test_move_dir_steps_by_mobility_scaled_amount():
     """A live MOVE_DIR moves the unit by exactly the mobility-scaled per-tick
     distance the WEGO cadence math yields (1 / default_speed tiles), and along
-    the fixed-point direction only."""
+    the fixed-point direction only. (G5p-a2: on the Q16 grid -- that speed
+    rounded half up once to Q16 tiles, ``half_up(ONE^2, cost)`` counts.)"""
     sim = _continuous_sim(_open_arena())
     uid = sim.add_unit(Unit("M1", x=6, y=6, team=0))
     u = sim.get_unit(uid)
+    # G5p-a1: a walker holding no aim turns to its travel with inertia; this
+    # test is about the step's size, so the unit already faces +X.
+    from simulation.turning import place
+    place(u, 0)
     x0, y0 = u.x, u.y
     fp = u.footprint
 
     # Expected per-tick advance, computed through the SAME predicates the
     # movement branch reuses: the [speeds] walk (Q16 ticks per tile, G1p-c)
-    # -> area-average mobility. No aim is held, so theta is 0.
+    # -> area-average mobility. The unit faces its move, so theta is 0.
     base = sim.speed_table.walk_cost_q
     samples = FootprintSamples(
         mobility=sim.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))
     tick_cost = default_speed(samples, base)
-    expected_step = dequantize(FP_ONE) * (FP_ONE / tick_cost)  # +X unit vector
+    from simulation.movement import half_up
+    expected_step = half_up(FP_ONE * FP_ONE, tick_cost) / FP_ONE  # +X, Q16
 
     sim.set_move_dir(uid, FP_ONE, 0, 0)     # pure +X, throttle 0 (walk)
     sim.step()
@@ -340,7 +346,7 @@ def _scripted_trajectory():
         sim.set_aim(uid, mdx, mdy)
         sim.set_trigger(uid, t % 4 == 0)
         if t == 10:
-            sim.throw_grenade_intent(uid, FP_ONE, 0, 2.0)
+            sim.throw_grenade_intent(uid, FP_ONE, 0, 48)     # 2 s
         if t == 20:
             sim.use_intent(uid)
         sim.step()

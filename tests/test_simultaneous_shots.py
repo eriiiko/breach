@@ -64,6 +64,8 @@ from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.status import STUNNED, composed_flags  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import AmmoDef, WeaponDef  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20261106
 HULL, AIR = 1, 4
@@ -148,7 +150,8 @@ def _duel(hp, left_first, n_ticks):
     # so both already face their aim (the turn is test_turn_rate's). West is
     # the kit's pi, exactly what the aim (-1, 0) turns to.
     from simulation.turning import PI_Q16
-    L.facing, R.facing = 0.0, PI_Q16 / 65536.0
+    _place_facing(L, 0)
+    _place_facing(R, PI_Q16)
     sim.set_aim(L.id, FP_ONE, 0)          # east
     sim.set_aim(R.id, -FP_ONE, 0)         # west
     sim.set_trigger(L.id, True)
@@ -168,13 +171,23 @@ def _duel(hp, left_first, n_ticks):
 # ---------------------------------------------------------------------------
 # (a) mirrored shooters both fire; the id swap mirrors the result
 # ---------------------------------------------------------------------------
-def test_mirrored_shooters_both_fire_and_the_id_swap_mirrors_the_result():
+def test_mirrored_shooters_both_fire_and_the_id_swap_mirrors_the_result(
+        monkeypatch):
     """Property: two shooters with sight of each other on the same tick both
     fire on that tick, a mirrored pair stays mirrored tick for tick (equal
     hp, equal life), and the result is the same per POSITION whichever of
     them holds the lower id. Breaks if the shooting slot applies a hit
     before a later shooter's turn (the pre-#169 walk: the lower id's second
-    burst kills the other before it fires, so the duel is won by id)."""
+    burst kills the other before it fires, so the duel is won by id).
+    (G5p-a2: rounds now push their target and recoil their shooter along
+    their own flight, so the cone draws -- different for the two shooters --
+    would move the pair apart unequally and break the mirror the property
+    reads; the cone is closed here, so every push is mirrored exactly. The
+    draws are still taken, in the same order.)"""
+    from config import CFG
+    monkeypatch.setattr(CFG.weapons.k5_carbine, "spread_deg", 0.0)
+    row = weapons_mod.get_tables().weapons.by_name["k5_carbine"]
+    monkeypatch.setattr(row, "spread_deg", 0.0)
     _s, L1, R1, run_lo = _duel(hp=100, left_first=True, n_ticks=12)
     _s, L2, R2, run_hi = _duel(hp=100, left_first=False, n_ticks=12)
     assert L1.id < R1.id and L2.id > R2.id       # the swap happened
@@ -432,8 +445,21 @@ def test_a_tick_without_interaction_is_bit_identical_to_the_one_pass_slot(
     state and the hashed hit / kill events match the conductor run with
     every effect applied at once (``simultaneous.IMMEDIATE``, the pre-#169
     behaviour) in lockstep. Breaks if the deferral reorders effects, moves
-    an RNG draw, or loses / duplicates a packet, a chew or a facing write."""
+    an RNG draw, or loses / duplicates a packet, a chew or a facing write.
+
+    The focus-fire law is DORMANT here (``k_expose = 0``, #183 G4p): with it
+    live, a burst's rounds on one target DO interact -- one-pass, each hit's
+    exposure raise is read by the next round's damage; deferred, every round
+    reads the slot-start level (the start-of-slot rule,
+    ``tests/test_exposure.py``) -- so this scenario would no longer be one
+    "without interaction"."""
+    from config import CFG
     from field_ab_harness import capture_trajectory
+    from simulation import exposure
+    # (the shared settings object is restored at teardown: the sims below
+    # rebuild it from the patched CFG)
+    monkeypatch.setattr(exposure, "_SETTINGS", exposure.get_settings())
+    monkeypatch.setattr(CFG.damage.exposure, "k_expose", 0.0)
 
     def run(immediate):
         if immediate:

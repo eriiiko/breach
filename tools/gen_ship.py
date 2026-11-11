@@ -155,11 +155,13 @@ LAMP_LIGHT_BUDGET = (CONE_LIGHT_UNITS - TRANSIENT_LIGHT / OMNI_SHARE
 # order, so the int form keeps v1's exact draws).
 FUEL_MIX_V1 = {"furniture": 0.6, "wood": 0.4}
 
-# Entity doors (A6). The bots (control_bots) never USE a door and a closed
-# entity door stamps MAT_DOOR_CLOSED (mobility 0), which no unit crosses --
-# so stage 2 emits every entity door OPEN (MAT_AIR in the CSV, the loader's
-# own stamp) until a door-opening rule exists (#142). Still a compartment
-# boundary in the gates: it can close.
+# Entity doors (A6). A closed entity door stamps MAT_DOOR_CLOSED (mobility
+# 0), which no unit crosses, and the first bots (control_bots_v1) never USE a
+# door -- so stage 2 emits every entity door OPEN (MAT_AIR in the CSV, the
+# loader's own stamp). Since #183 G8p the layered bots (control_bots) open a
+# closed non-hull door on their path (#142); the default stays open (a
+# closed default is a ship re-baseline and bots_v1 would be shut in). Still a
+# compartment boundary in the gates: it can close.
 ENTITY_DOOR_INITIAL = "open"
 
 # The CARGO DOOR IN THE HULL (vocabulary B.4 / E.2 row 5): a room's

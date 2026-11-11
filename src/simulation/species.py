@@ -226,8 +226,8 @@ ZOMBIE_MITIGATION = build_mitigation(resist_mult={
 # species, so the zombie's `stability` is selected on ``unit.is_zombie`` at
 # exchange time (exchange._stability_for) instead of living on a species
 # EnvironmentProfile. 0.9 = shamblers topple a little easier than a braced
-# marine (they go down at 0.9x the wind speed: the knockdown wind load is
-# ``[exchange] wind_q_fall_pa * 0.9^2``, #140).
+# marine (they go down at 0.9x the wind speed: the unit impulse law floors a
+# unit at an effort of stability^2 = 0.81 of its hold, G5p).
 # STANDARD VALUE for Erik to tune (mechanics/06 §8) — since P5 SOURCED from
 # ``[zombie] stability`` in config.toml (feel comment + range there), read
 # ONCE at module import, snapped onto the Q16.16 grid at definition (door 2;

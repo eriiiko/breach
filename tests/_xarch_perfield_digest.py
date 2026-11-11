@@ -588,7 +588,45 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # wave_source, wave_v. vs (a): only __unit_status__ / __unit_state__ move.
 # REPRODUCED: captured twice, byte-identical; the ten cuda_*_check.py readers
 # of GOLDEN_AGGREGATE are green on a fresh CUDA build (cpp/build_cuda.bat).
-GOLDEN_AGGREGATE = "46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8"
+#
+# 2026-11-10 -- #183 G5p-a1 THE TURNING LAW, commit 1 (the facing's
+# representation and its routing; docs/unit_impulse_design_2026-11-10.md
+# §13): a unit's synced facing is the int `facing_q` (Q16.16 radians, the
+# trig kit's currency), spawned at quantize(pi/2) = 102944 (it was the float
+# pi/2, which is not dyadic), and the unit record hashes that int (and the
+# turn / omega keys only while non-zero; the canonical marine never turns).
+# SOLE CAUSE, verified: the HEAD tree (743f1adf) reproduces 46750ce2...
+# exactly; this tree differs from it in `__unit_facing__` (every tick: the
+# canonical marine's spawn facing, the int in place of q(pi/2)) and so in
+# `__unit_state__`, and in NOTHING ELSE over all 30 ticks -- every gmap field,
+# __unit_hp__, __unit_pos__, __unit_life_events__ and __unit_status__ are
+# byte-identical per (tick, field).
+# (was 46750ce2685ea8a11ce1c0cb2037b3d20865a4aa035f3533c2a9d3dbf47179b8)
+#
+# 2026-11-10 -- #183 G5p-b THE WIND AND THE BLAST ONTO THE UNIT IMPULSE LAW
+# (docs/unit_impulse_design_2026-11-10.md §4, §7): the 9c2 row is
+# exchange.apply_wind_force -- the dynamic pressure at the footprint is a
+# FORCE q * drag_area on the impulse law (unit_impulse.add_wind) -- and
+# #140's cadence scale and bespoke knockdown are DELETED. SOLE CAUSE,
+# verified on the same build: the HEAD tree (0b57fc6e) with wind_q_slow_pa /
+# wind_q_fall_pa = 1e15 / 2e15 (its wind law off) and THIS tree with
+# [impulse] wind_push_mult = 0 (its wind input off) both give cb6bc7a7...
+# (cb6bc7a774867f60530a97adcf78821f0871fb366a3761c79824ba434f584583), per-
+# field file byte-identical -- the replacement is the whole change. With
+# the force live, the canonical marine's one-tick pulse (q = 882 Pa at its
+# footprint on tick 1, #140's knockdown) is now an impulse of about 33 N s
+# on 100 kg: it overflows the in-place sway and STAGGERS the marine on its
+# feet (pushed a fraction of a tile, no knockdown).
+# MOVED vs wind off: __unit_state__ (tick 0: the impulse keys), __unit_pos__
+# (tick 1), atmosphere, wind_x, wind_y, gas, temperature, gas_energy,
+# dyn_heat_atten_q (tick 1: the body's stamp moves under the gas), wave_p
+# (tick 2). UNMOVED over all 30 ticks: __unit_facing__, __unit_hp__,
+# __unit_life_events__, __unit_status__ (the old golden's knockdown is
+# already gone with the old law), dem_acc, fire, flow_vx, flow_vy, heat,
+# ignition_armed, is_vacuum, material, obstacles, wall_hp, water_depth,
+# wave_source, wave_v.
+# (was e42d8f41998cd289383b48e7ab978008d700ae9fbdf0848d0d4292ff360f0a6a)
+GOLDEN_AGGREGATE = "58f766f440f4fcbdb6c2003adb7f4d4159f6a98440c334cf14c70a29177b4576"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

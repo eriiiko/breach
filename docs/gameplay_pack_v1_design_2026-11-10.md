@@ -209,6 +209,16 @@ depends on facing.
   difference of `atan2_q16(to the flash)` and the unit's facing. A wall
   protects fully (no line of sight). Looking away is therefore a thing a
   team does on a called throw.
+- **The throw has a wind-up (RULED 2026-11-10).** `[weapons.hand_grenade]
+  throw_windup_seconds` (PLACEHOLDER 0.3): the verb is consumed, a
+  render-only `ThrowEvent(unit_id, kind, ticks)` is emitted at once (the
+  animation session, #184, plays the clip to it), and the grenade leaves the
+  hand `ticks` later, along the facing the unit has THEN, if it is still
+  alive and able to act. A second throw during a wind-up is ignored. The
+  count is spent when the grenade leaves.
+- The direct-control key 4 steps the selected kind through the kinds the
+  unit still carries; W throws it; the HUD's grenade line shows the selected
+  kind and each count.
 - Smoke: selection only. Whether smoke hides a unit from the sight oracle is
   left as it is (Erik: it can wait).
 
@@ -219,6 +229,44 @@ facing angle; frag-only loadouts and the pins unchanged. **HUMAN-TEST.**
 and a blinded agent's observation is not masked in v1; the status only
 removes aim. Both are later work with their own design (the obs door is
 P8b's).
+
+**As built (2026-11-10).** `[loadouts.*] grenades` is a table by hand-grenade
+`[ammo.*]` row (a bare int = frags; `loadouts._grenade_counts`, refused by
+name); `Unit.grenade_counts` is the fixed block, one slot per family row in
+config order (frag 0, smoke 1, tear 2, poison 3, flash 4, incendiary 5: append
+only), and `Unit.has_grenade` is its frag slot, so the old order path, the
+bots and the pickup hooks read one count as before. The rifleman carries 2
+frags, a smoke and a flashbang. `throw_grenade_intent(unit, dx, dy, fuse_ticks,
+reach_q, kind)`: integer fuse (callers convert once with
+`weapons.fuse_ticks_from_seconds`, the truncation the projectile always used),
+`kind` refused by name; `FORMAT_VERSION` 4. The wind-up is
+`Simulation._start_throw` (the verb: a `ThrowEvent`, then the release at
+`tick + throw_windup_ticks`) and `_advance_throw` (each tick: drop it if the
+unit cannot act, release it at its tick along `cos_q16` / `sin_q16` of the
+facing then); 0 ticks releases at once along the verb's own vector (today's
+throw, bit for bit). Wind-up state is four ints on the unit
+(`throw_release_tick`, `throw_kind`, `throw_reach_q`, `throw_fuse_ticks`), not
+digested. The blinding is `simulation/flash_blind.py`, called from
+`execute_payload` (inside an attack slot the whole detonation is already the
+recorded `world` effect, so nothing is recorded separately): `g` and `f` are Q16
+floors, the angle is `atan2_q16` against the Q16 facing, the front cone is
+`PI_Q16 // 3`; a longer blinding is never shortened by a weaker flash.
+PLACEHOLDERS: `blind_radius` 12 tiles, `blind_seconds` 4.0, `blind_away_frac`
+0.25, `throw_windup_seconds` 0.3 (7 ticks). Direct control: key 4 / pad B
+(`cycle_grenade`) steps `DirectControl.grenade_kind` through the kinds still
+carried, W throws it, a spent kind hands the selection on; the HUD shows
+`Grenades (4): frag 1  [smoke 1]  flash 1`. DEVIATIONS from the draft: (a) the
+pins DID move -- the wind-up is a sim change for the bots too (ship_demo seed 1
+240 -> 246 ticks, same winner); with the wind-up at 0 the match equals its old
+pin exactly (`tests/test_grenade_kinds.py`); (b) a bot holds its aim on the
+lob's direction through the wind-up (the grenade leaves along the FACING, and
+a bot's facing otherwise follows its shooting target), the one change to
+`control_bots.py`; (c) a unit that cannot act (stunned, knocked down) cannot
+START a throw either -- found in the real window, where the thrower's own frag
+knocked it down for 42 ticks; (d) the verb's `dx_q` / `dy_q` mean the throw's
+direction only at a 0-tick wind-up -- at 7 ticks the facing decides, so a
+controller must turn the unit first (the direct control sets the aim every
+frame, the bots hold it).
 
 ### G4p. Focus-fire armour debuff (#181)
 
@@ -276,6 +324,69 @@ zombie's vitality and the three dials are set from it to hit 30–40 / ~20.
 strictly decreasing in the number of simultaneous shooters; `x` returns to 0
 without hits. The pins re-baseline at the shipped dials. **HUMAN-TEST.**
 
+**As built (2026-11-10).** `src/simulation/exposure.py` is the law:
+`Unit.exposure` a block of `N_DAMAGE_TYPES` Q16 ints; the raise
+`expose * (ONE - resist[T]) >> 16` capped at `x_max`; the decay
+`x -= max(1, x * d >> 16)` at a new slot 1c (before every attack of the tick),
+`d` the smallest Q16 fraction for which that step halves ONE within
+`half_life_seconds` (quantized to ticks; found by integer bisection over the
+law, no libm); the scale `dmg_q * (ONE + (k * x >> 16)) >> 16` applied in
+`damage.apply_packet` between the two halves of the existing Q2-lift snap, so
+the float mitigation path is untouched and the new arithmetic is integer
+(identity at 0; HEAL never scaled). `DamagePacket.expose` carries the round's
+`[ammo.*] expose` (both packet sites of a round: the projectile march and the
+beam). The start-of-slot rule is an `ExposureLanding` that
+`SimultaneousEffects.resolve` passes to every recorded hit and lands after its
+last effect: the raises and a death's zeroing wait for it, so every hit of the
+slot reads the slot-start level (a packet applied outside a slot raises at
+once). `[damage.exposure]` (`half_life_seconds`, `k_expose`, `x_max`) is a
+refusing door; `[env_profiles.*] expose_resist` and `[zombie] expose_resist`
+(the zombie STATE's, selected on `is_zombie`) take a scalar or a table by
+damage type in [0, 1]; `[ammo.*] expose` is refused negative. Zeroed at death
+and at conversion; hashed in the unit digest only while non-zero.
+DEVIATIONS: (a) `k_expose = 0` makes the law DORMANT -- nothing is raised, not
+only nothing scaled -- so the proof-of-cause pin holds with the digest key
+absent; (b) the decay dial is a half-life (more readable than a per-second
+fraction).
+
+The bench, `tools/bench_focus_fire.py` (n carbines at 12 tiles from one
+target, the volleys landing on one tick; single = one pull per second each;
+reloads as in the game), at the shipped dials -- `half_life_seconds` 0.125
+(3 ticks), `k_expose` 1.0, `x_max` 2.5, `expose` 0.035 per point of damage
+(carbine 0.35), zombie hp and `bullet_damage_multiplier` untouched:
+
+| target | mode | n = 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| zombie | continuous, rounds in all (seconds) | 34 (4.71) | 26 (1.04) | 24 (0.62) | 24 (0.46) |
+| zombie | single, rounds in all | 50 | 50 | 51 | 52 |
+| marine | continuous, rounds in all (seconds) | 8 (0.62) | 8 (0.29) | 9 (0.21) | 8 (0.12) |
+| marine | single, rounds in all | 10 | 10 | 12 | 12 |
+
+Without the law the zombie takes 50 rounds and the marine 10 in every row.
+THE TARGETS CANNOT ALL HOLD under this law (Erik's: one marine 30-40, single
+shots ~40, two together ~20): it is linear in hits, so a second shooter saves
+rounds only through the decay during the kill. With a half-life of a second
+the rounds in all hardly depend on the shooters (34 / 32 / 33 / 32, single
+48); the level must fade between one shooter's rounds (2 ticks apart) for two
+shooters' volleys to stack higher than one's, and then nothing is left a
+second later, so single shots are the no-law count. And a spawned zombie's 50
+rounds bound every count from above: two shooters at ~20 with one at ~35
+needs a no-law count near 140. The shipped set keeps the lone marine in the
+middle of its band and buys the most focus-fire saving with it; the curve's
+other points are beside the dials in `config.toml`. Single shots from several
+shooters gain nothing (their volleys read each other's raises only a second
+later). Marine-vs-marine is shortened 10 -> 8 rounds, not absurdly; the
+default profile keeps `expose_resist = 0`. FINDING: a SPAWNED zombie has the
+species' 100 hp (`Simulation.add_unit`); `[zombie] hp = 400` reaches only a
+CONVERTED marine, which even under the law takes about 136 rounds alone --
+more than a rifleman carries (90) -- and 98 from two.
+
+Pins: ship_demo seed 1 keeps its outcome, ticks and survivors (win 1 at 246,
+team 1 [1, 2, 3]); its three digests move (zombie 11, exposed from tick 198,
+dies to the fire at 233 instead of 236). With `k_expose = 0` it is the G3p pin
+exactly (`tests/test_exposure.py`); the G1p and G3p isolation gates are
+re-measured with exposure live.
+
 ### G5p. Unit impulse: shove and hit pushback — see §5 (OPEN)
 
 ### G6p. Melee
@@ -298,6 +409,47 @@ law.
 **Gate:** no strike without adjacency or outside the arc; the cadence holds;
 the pins unchanged (no controller uses it until G8p). **HUMAN-TEST.**
 
+**As built (2026-11-10).** `Simulation.melee_intent(unit)` latches
+`Unit.pending_melee` (recorded through the tap, `INTENT_KINDS` row, `VERB_RULES`
+latch / flag); `combat.process_melee_intents` is slot 4a, called in the
+conductor after slot 4 (every ruleset: the latch is consumed even where slot 4
+is the timeline's) and before the sprays, on the SAME `attack_effects`, so a
+blow and a shot of one tick land together at 4c. `combat.melee_arc_target`
+picks the target (living, other team, zombies included, `melee_adjacent`,
+`|wrap(atan2_q16(-dy, dx) - facing_q)|` within the row's `melee_arc_half_q`,
+smallest first, ties to the lower id; a coincident centre counts as dead
+ahead); `combat.melee_blow` is the order path's strike factored out of
+`melee_strike` (hit, delivery-site stun, optional facing snap), so the verb
+and the old order share one damage path and the pushed `push` effect is the
+verb's own addition (`melee_push_ns` along the striker -> target bearing, no
+lever). `[loadouts.*] melee` names the row (door: refused by name when
+unknown, not of the melee archetype, or carrying `crit_chance` > 0, because a
+crit draws a number and the pack's law draws none). New weapon-row columns
+`melee_push_ns` (N s, default 0) and `melee_arc_half_deg` (default 60),
+quantized once (`melee_arc_half_q`; `ImpulseTable.melee_push_q`). Direct
+control: the right mouse button HELD sends `melee_intent` every frame (the
+row's cadence spaces the blows, so holding keeps striking), pad R3 likewise.
+PLACEHOLDERS (Erik tunes), all on `[weapons.rifle_butt]`: `melee_damage` 20
+KIN (a 100 hp zombie dies on the fifth blow), `rof_interval_seconds` 0.6
+(14 ticks), STUNNED 0.4 s (10 ticks, under the cadence so it never
+chain-stuns), `melee_push_ns` 40, arc half-angle 60 degrees. FORMAT_VERSION 6
+(one bump for G6p and G7p: nothing was released between them). DEVIATIONS from
+the draft: (a) the cadence is its own `Unit.last_blow_tick`, not
+`last_melee_tick`, which is the zombie bite's cooldown and not rewound at a
+round boundary (a converted marine would have carried its blow into the
+bite's cooldown); (b) the verb records no facing snap (the arc is the aim, and
+G5p's turning law owns the facing); (c) a reload stall does not stop a blow
+(a butt needs no magazine), a throw wind-up does. MEASURED (E2E, `e2e_drive
+--control direct`, hold RMB beside an idle enemy marine, 100 hp): blows at
+ticks 24, 38, 52, 66, 80 (14 apart), hp 80 / 60 / 40 / 20 / dead, each a
+`melee` hit credited to the striker. FINDING FOR ERIK: the adjacency predicate
+is tile-quantized (touching footprints, at most one tile = 0.33 m apart) and
+a 40 N s blow moves a 100 kg target about 0.2 tile, which can break contact
+when it stood at the band's edge, so a held button lands one blow and then
+needs the striker to step in again (the E2E needed two short steps); 25 N s
+still moves it at the edge, 15 N s is absorbed in place. The reach, not only
+the push, is the dial to look at in the play test.
+
 ### G7p. Flashlight on/off
 
 **Exists.** Flashlights are render state (the selected unit's, a mode key).
@@ -312,6 +464,32 @@ follows the bit.
 Erik is unsure this is worth it before #81; it is the cheapest patch of the
 pack and puts the column in the action space now, so the recommendation is
 to keep it. It can be dropped without touching anything else.
+
+**As built (2026-11-10).** `Unit.flashlight_on` (default True) and
+`Simulation.set_flashlight(unit_id, off)`, a hold verb recorded through the tap
+(`INTENT_KINDS` `("int", "bool")`, `VERB_RULES` hold / always). DEVIATION from
+the draft's `set_flashlight(unit, on)`: the argument is the OFF sense. The
+action row's column is the entry point's parameter, and a policy's ZERO row is
+the do-nothing stance (the reference-equality gate drives idle controllers
+against it); with an `on` argument a zero row would darken every unit and move
+every digest, so the column is `set_flashlight.off`. The bit is hashed in
+`field_ab_harness._unit_record` as `dark` only while off (absence-transparent),
+read by nothing in the sim. The assembly: `ui.model.flashlight_cones` skips a
+unit whose bit is off in every mode (so onephase honours it too) and gained
+`mode="all"` (every living non-zombie unit, any team); the one choice is
+`ui.model.carried_flashlight_cones(sim, possessed_id=, watching=)` -- direct
+control lights its possessed unit, a watched match (`--replay`, `--control
+match`) every living marine -- feeding the existing `flashlight_specs` ->
+`cone_rows` in main.py's `assemble_lights`; `EMITTER_INPUTS["flashlight"]`
+names the bit. Before this patch direct control and watched matches had NO
+unit flashlight (only WEGO's cursor lamp and onephase's team cones): the cone
+under direct control is new, and the cursor lamp is unchanged. Direct control:
+Q (pad D-pad up) TOGGLES; the control keeps `DirectControl.flashlight_off`
+(seeded from the possessed unit's own bit) and holds `set_flashlight` every
+frame. MEASURED (E2E, hidden window, Q pressed twice, pictures read): on, off
+(marine and the floor ahead dark), on again (the beam north of the marine
+back). Pins unchanged (`match_pin_check` equal to the pin on cpu, cuda and
+resident).
 
 ### G8p. Bot pass
 
@@ -336,6 +514,20 @@ an opponent and a baseline; nothing specific bothers Erik today.
 
 Bots stay Python on the host: residency ruling §12.3 leaves how bots run
 beside device envs to G2, so a richer bot adds no port work now.
+
+**As built (2026-11-11).** The layered bots (`control_bots.BotTeam`, now
+`bots`; the first bots kept unchanged as `bots_v1`): team / unit / position
+layers, three plays, nine scored actions, eight position features, doors
+opened with USE, judder and stacking fixed, frags and flashbangs by score;
+measured by `tools/bot_tournament.py` -- on held-out seeds they win every
+decided match against `bots_v1` on ship_demo and the s28 freighter, hit
+each other almost never (0.00-0.20 friendly hits a match against 4.5 /
+19.5) and survive the horde (2.6 / 2.75 marines against 0 / 0.5). Not
+built: smoke to cross a line, the two-door room entry (the fourth play).
+The whole record, every weight and the tables: the as-built of
+`docs/bots_zombies_speeds_design_2026-11-10.md` §2.7. Pins re-baselined
+once (ship_demo: win 1 at 2721, was win 0 at 264). Play test waived by
+Erik's mandate of 2026-11-10.
 
 ## 4. The action row after the pack
 
@@ -480,12 +672,12 @@ session run while G1p to G4p are built.
 |---|---|---|---|---|
 | G1p | Opus | built 2026-11-10, awaiting the play test | yes | re-baselined (the turn-rate cap) |
 | G2p | Sonnet | ½ day | yes | re-baseline |
-| G3p | Sonnet | ½ day | yes | unchanged |
-| G4p | Opus (the bench, the tuning with Erik) | ½ day + tuning | yes | re-baseline |
+| G3p | Sonnet | ½ day | yes | re-baselined (the wind-up) |
+| G4p | Opus (the bench, the tuning with Erik) | built 2026-11-10, awaiting the play test | yes | re-baselined (the law) |
 | G5p | Opus | 1–2 days after its design | yes | re-baseline |
 | G6p | Sonnet | ½ day | yes | unchanged |
 | G7p | Sonnet | 2 h | no | unchanged |
-| G8p | Opus | 1–2 days after its design | yes | re-baseline |
+| G8p | Opus | built 2026-11-11 (play test waived: Erik's mandate of 2026-11-10) | yes | re-baselined (the layered bots) |
 
 One implementation agent at a time, each patch its own commits on this
 branch or its own branch off main, merged `--no-ff` on green after Erik's
@@ -502,6 +694,8 @@ play test.
 | `last_melee_tick` (exists for zombies), `last_shove_tick` | G5p, G6p | int | −1 |
 | `flashlight_on` | G7p | bool | on |
 | `pending_reload`, `pending_shove`, `pending_melee` | G2p, G5p, G6p | latch bits | clear |
+| `zombie_noise_y`, `zombie_noise_x`, `zombie_noise_ticks` (a hearing zombie's target and the ticks it keeps chasing it) | G9p | int | -1, -1, 0 (hashed while ticks > 0) |
+| `zombie_anchor_y`, `zombie_anchor_x` (a dormant zombie's wander anchor) | G9p | int | -1 (hashed while set) |
 
 Magazine state is NOT in the unit digest today (`mag_gate`'s docstring says
 why). P3a's schema hashes it; until then the hashed hp / event stream

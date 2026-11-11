@@ -108,7 +108,7 @@ xeno_sprint_ticks_per_tile = 1
 marine_walk_mps = 1.4      # throttle 0, weapon ready. PLACEHOLDER, Erik tunes (realised 1.400 m/s: 5.709 ticks/tile)
 marine_full_mps = 4.5      # throttle ONE, a run with ~20 kg of kit. PLACEHOLDER (realised 4.500 m/s: 1.776 ticks/tile)
 zombie_shamble_mps = 0.6   # PLACEHOLDER; the zombie walk is whole ticks per tile: 13 -> realised 0.615 m/s
-zombie_sprint_mps = 1.15   # 82 % of the marine walk. PLACEHOLDER; read and door-checked, UNUSED until the zombie patch (G9p)
+zombie_sprint_mps = 1.15   # 82 % of the marine walk. PLACEHOLDER; the horde's sprint (G9p, [zombie] sprint): 7 ticks per tile on the 0.333 m tile
 sideways_frac = 0.8        # the walk at 90 deg to the facing (Erik's number): 1.12 m/s
 backward_frac = 0.6        # the walk straight backward, every throttle (Erik's number): 0.84 m/s
 
@@ -1394,8 +1394,11 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # "LEFT_ALT" / "RIGHT_ALT", "UP" / "DOWN" / "LEFT" / "RIGHT", "F1".."F12", or a
 # mouse button "MOUSE_LEFT" / "MOUSE_RIGHT" / "MOUSE_MIDDLE". The aim is the
 # mouse (the marine faces the cursor). Shipped table: Erik's ruling,
-# 2026-11-10 (RDFG). melee / shove / cycle_grenade / flashlight are BOUND BUT
-# INERT until their patches (G3p..G7p) add the verbs; reload is live (G2p).
+# 2026-11-10 (RDFG). melee (G6p: strike the adjacent enemy nearest the
+# facing; hold the button to keep striking at the weapon's cadence) and
+# flashlight (G7p: a TOGGLE of the possessed unit's light bit) are live now,
+# as are reload (G2p), cycle_grenade (G3p) and shove (G5p-a2: push the
+# adjacent unit nearest the facing).
 [controls.keys]
 move_forward = "R"
 move_back = "F"
@@ -3248,7 +3251,10 @@ cover_exposure = 1.0   # the `foliage` precedent (permeable, never a roll): a
 # as rows here with the SAME NUMBERS — zero behavior change; the unified
 # march / spread split / crits / payload executor / ammo economy are W2/W3.
 # Unlisted columns take the loader defaults (spread 0, shots 1, rof 0, mag 0,
-# crit_chance 0, crit_mult 2.0, mass 0, loudness 0, payload columns 0/empty).
+# crit_chance 0, crit_mult 2.0, mass 0, payload columns 0/empty). loudness
+# (G9p) is METRES of hearing radius and REQUIRED on a row that fires
+# (projectile / hitscan / spray: a shot is a noise, simulation/noise.py);
+# 0 elsewhere.
 #
 # METER-BASED RANGES (W6, Erik's design decision 2026-07-07): weapon reach is
 # authored as range_m — PHYSICAL METERS — and converts to the integer tile
@@ -3277,7 +3283,7 @@ ap_cost = 1
 crit_chance = 0.0                     # crits activate in W2
 crit_mult = 2.0
 mass_kg = 3.4
-loudness = 0.8                        # reserved, no consumer yet (stealth layer)
+loudness = 24.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.hand_grenade]                # thrown — the shipped grenade, re-homed
 archetype = "lobbed"
@@ -3287,15 +3293,20 @@ max_throw_range = 30
 fuse_min_seconds = 0.0
 fuse_max_seconds = 10.0
 fuse_default_seconds = 1.0
+# G3p (#183): the throw's WIND-UP -- the verb is consumed, a render-only
+# ThrowEvent is emitted, and the grenade leaves the hand this long after, along
+# the facing the unit has then. Quantized once to ticks (0 = the same-tick
+# throw). PLACEHOLDER: Erik tunes at the play test.
+throw_windup_seconds = 0.3
 mass_kg = 0.4
-loudness = 0.0                        # the payload is what's loud
+loudness = 0.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.breach_charge]               # demolition — the shipped door charge, re-homed
 archetype = "placed"
 ammo_family = "demo_charge"
 ap_cost = 1
 mass_kg = 1.0
-loudness = 1.0
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.lance_3]                     # laser rifle — the FIRST HITSCAN (W2, mechanics/03 §5/§6)
 archetype = "hitscan"
@@ -3311,7 +3322,7 @@ ap_cost = 1
 crit_chance = 0.0                     # HITSCAN does not crit in v1 (skewer+attenuation is its identity)
 crit_mult = 2.0
 mass_kg = 4.1
-loudness = 0.1                        # quiet — the stealth-tech identity (reserved, no consumer)
+loudness = 3.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.gl6_revolver]                # grenade launcher (mechanics/03 §6) — the FIRST
 archetype = "projectile"              # payload-carrying PROJECTILE + the FIRST tracked mag (W3)
@@ -3327,14 +3338,14 @@ ap_cost = 1
 crit_chance = 0.0                     # the payload does the work; no direct-hit packet
 crit_mult = 2.0
 mass_kg = 5.5
-loudness = 0.9                        # reserved, no consumer yet (stealth layer)
+loudness = 27.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.c4_satchel]                  # demolition — PLACED, same det-slot flow as the
 archetype = "placed"                  # breach charge, ammo demo_c4 (selection UI = W6)
 ammo_family = "demo_charge"
 ap_cost = 1
 mass_kg = 2.0
-loudness = 1.0
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 # --- W4 SPRAY rows (mechanics/03 §5/§6): sustained cone of FIELD WRITES ------
 # CONE-ANGLE CONVENTION OF RECORD: the armory table (§6) quotes the FULL cone
@@ -3366,7 +3377,7 @@ ap_cost = 1
 crit_chance = 0.0                     # sprays never touch units — no crit path
 crit_mult = 2.0
 mass_kg = 8.0
-loudness = 0.6                        # reserved, no consumer yet (stealth layer)
+loudness = 18.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.miasma_vent]                 # poison projector — SPRAY (W4)
 archetype = "spray"
@@ -3382,7 +3393,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 6.0
-loudness = 0.4                        # a hiss, not a roar (reserved column)
+loudness = 12.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.combat_knife]                # melee — the assassin's tool (W5)
 archetype = "melee"
@@ -3402,7 +3413,7 @@ crit_mult = 2.0
 melee_damage = 35
 melee_dtype = "kinetic"
 mass_kg = 0.3
-loudness = 0.05                       # near-silent — the stealth identity
+loudness = 1.5                       # metres of hearing radius (G9p noise); PLACEHOLDER
                                       # (reserved column, no consumer yet)
 
 [weapons.arc_baton]                   # melee — the crowd-control stick (W5)
@@ -3430,7 +3441,32 @@ melee_dtype = "energy"
 status_kind = "stunned"
 status_seconds = 1.5
 mass_kg = 1.1
-loudness = 0.2                        # a crack of arc discharge (reserved)
+loudness = 6.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
+
+[weapons.rifle_butt]                  # melee -- the rifleman's own blow (gameplay pack G6p)
+archetype = "melee"
+ammo_family = "none"
+# THE melee VERB's row (Simulation.melee_intent, a loadout's `melee`): a blow
+# of the rifle's butt. ALL FIVE VALUES ARE PLACEHOLDERS (Erik tunes):
+# 20 KIN = five blows to drop a 100 hp zombie; 0.6 s between blows (14 ticks
+# @ 24 tps); STUNNED 0.4 s (10 ticks, shorter than the cadence, so it never
+# chain-stuns -- the baton's dial pair, see arc_baton); a 40 N s push on the
+# unit it hits (a shove is 100: a blow staggers a little, never floors);
+# strikes the adjacent enemy nearest the facing within 60 degrees of it.
+# crit_chance must be 0 for a loadout's melee (the verb draws no random
+# number; the door refuses a row with a crit).
+rof_interval_seconds = 0.6
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+melee_damage = 20
+melee_dtype = "kinetic"
+status_kind = "stunned"
+status_seconds = 0.4
+melee_push_ns = 40.0
+melee_arc_half_deg = 60.0
+mass_kg = 3.5
+loudness = 3.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 # --- W6 ARMORY (mechanics/03 §6 — the full table as data; Erik's grand
 # tuning session is the balance pass). Every number below is a STANDARD
@@ -3455,10 +3491,9 @@ crit_chance = 0.0                     # STANDARD VALUE — the assassin's pistol
                                       # wants ~0.1 when Erik dials crits in
 crit_mult = 2.0
 mass_kg = 1.1
-# loudness 0.15 — the row's identity (armory §6): the stealth layer's
-# reserved consumer will let a Whisper shot go unheard by sound-hunting
-# zombies where the K5's 0.8 wakes the deck. Data lands now (W1 rule).
-loudness = 0.15
+# loudness — the row's identity (armory §6): since G9p the horde hears it, so
+# a Whisper shot (4.5 m) goes unheard by zombies a K5's 24 m would wake.
+loudness = 4.5                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.mp11_pdw]                    # SMG — close-quarters bullet hose
 archetype = "projectile"
@@ -3475,7 +3510,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 2.6
-loudness = 0.7
+loudness = 21.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.lr50]                        # marksman / anti-materiel rifle
 archetype = "projectile"
@@ -3494,7 +3529,7 @@ ap_cost = 1
 crit_chance = 0.0                     # the headshot fantasy is Erik's dial
 crit_mult = 2.0
 mass_kg = 12.0
-loudness = 1.0                        # the whole deck hears a .50
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.jackhammer_8]                # combat shotgun — 8 pellets per trigger
 archetype = "projectile"
@@ -3510,7 +3545,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 4.5
-loudness = 1.0
+loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.lance_5]                     # "Longlight" heavy laser — HITSCAN
 archetype = "hitscan"
@@ -3528,7 +3563,7 @@ ap_cost = 1
 crit_chance = 0.0                     # HITSCAN does not crit (W2 rule of record)
 crit_mult = 2.0
 mass_kg = 7.8
-loudness = 0.1                        # quiet — the stealth-tech identity
+loudness = 3.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.sunspot]                     # plasma caster — slow glowing bolt + splash
 archetype = "projectile"
@@ -3545,7 +3580,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 5.2
-loudness = 0.5
+loudness = 15.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.helios]                      # heavy plasma — bigger bolt, bigger splash
 archetype = "projectile"
@@ -3562,7 +3597,7 @@ ap_cost = 1
 crit_chance = 0.0
 crit_mult = 2.0
 mass_kg = 9.5
-loudness = 0.6
+loudness = 18.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [weapons.dragon_9_heavy]              # heavy flamethrower — the Dragon-7's big brother
 archetype = "spray"
@@ -3584,17 +3619,20 @@ ap_cost = 1
 crit_chance = 0.0                     # sprays never touch units — no crit path
 crit_mult = 2.0
 mass_kg = 16.0
-loudness = 0.7                        # a bigger roar than the Dragon-7's 0.6
+loudness = 21.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
 [ammo.rifle_556_standard]
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
 dtype = "kinetic"
+expose = 0.35                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 # 96 t/t @ 24 tps = 2304 tiles/s — authored >= range_tiles (90) so small-arms
 # fire resolves same-tick (mechanics/03 §2); corrected from the 12-tps draft's
 # 150. Consumed by the W2 unified march (quantized once to Q16.16 at load).
 speed_tiles_per_tick = 96.0
+bullet_g = 4.0                        # G5p-a2 momentum (hit push, recoil): 5.56 x 45 mm: 3.6 N s, the design's carbine round (research §3.1: M855 3.7-3.8)
+muzzle_mps = 900.0
 # Bullet chew (mechanics/03 §3, W2): wall HP deposited where a bullet stops on
 # a solid tile, and into a cover tile that absorbs a failed exposure roll.
 wall_damage = 2
@@ -3660,6 +3698,20 @@ speed_tiles_per_tick = 1.25
 travel_speed_tiles_per_second = 30.0
 payload = "poison_cloud"
 
+# G3p (#183): the flashbang hand grenade -- the same lobbed delivery, the
+# payload row that flashes and blinds. APPEND-ONLY order: a hand-grenade
+# row's position among the family's rows is the throw verb's `kind` index
+# (frag 0, smoke 1, tear 2, poison 3, flash 4; the incendiary row, further
+# down, is 5) -- insert a new grenade row at the END of the family.
+[ammo.grenade_flash]
+family = "hand_grenade"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+travel_speed_tiles_per_second = 30.0
+payload = "flashbang"
+
 # --- W3 40 mm launcher rounds (mechanics/03 §4/§6): payload refs point at THE
 # SAME payload rows as the hand grenades — one definition of frag/smoke/tear/
 # poison, two deliveries (hand or tube; row-object identity is a test gate).
@@ -3673,6 +3725,8 @@ damage = 0
 dtype = "blast"
 ap = 0
 speed_tiles_per_tick = 1.25
+bullet_g = 230.0                      # G5p-a2 momentum (hit push, recoil): a 40 mm grenade body: 17.5 N s (M433-like; PLACEHOLDER) -- its blast is the wind's business (G5p-b)
+muzzle_mps = 76.0
 wall_damage = 0
 payload = "frag_standard"
 
@@ -3682,6 +3736,8 @@ damage = 0
 dtype = "blast"
 ap = 0
 speed_tiles_per_tick = 1.25
+bullet_g = 230.0                      # G5p-a2 momentum (hit push, recoil): a 40 mm body (PLACEHOLDER)
+muzzle_mps = 76.0
 wall_damage = 0
 payload = "smoke_screen"
 
@@ -3691,6 +3747,8 @@ damage = 0
 dtype = "blast"
 ap = 0
 speed_tiles_per_tick = 1.25
+bullet_g = 230.0                      # G5p-a2 momentum (hit push, recoil): a 40 mm body (PLACEHOLDER)
+muzzle_mps = 76.0
 wall_damage = 0
 payload = "tear_burst"
 
@@ -3700,6 +3758,8 @@ damage = 0
 dtype = "blast"
 ap = 0
 speed_tiles_per_tick = 1.25
+bullet_g = 230.0                      # G5p-a2 momentum (hit push, recoil): a 40 mm body (PLACEHOLDER)
+muzzle_mps = 76.0
 wall_damage = 0
 payload = "poison_cloud"
 
@@ -3768,32 +3828,44 @@ gas_amount = 0.35
 family = "9mm"
 damage = 12                           # heavy slow slug — armory "12 KIN"
 dtype = "kinetic"
+expose = 0.42                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 speed_tiles_per_tick = 60.0           # armory 60 t/t = 1440 tiles/s @ 24 tps
+bullet_g = 9.5                        # G5p-a2 momentum (hit push, recoil): 9 x 19 mm subsonic 147 gr: 2.85 N s (typical load)
+muzzle_mps = 300.0
 wall_damage = 1
 
 [ammo.9mm_fmj]                        # the MP-11's loading (default_ammo)
 family = "9mm"
 damage = 7                            # light FMJ — armory "7 KIN"; volume kills
 dtype = "kinetic"
+expose = 0.245                        # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 speed_tiles_per_tick = 60.0
+bullet_g = 8.0                        # G5p-a2 momentum (hit push, recoil): 9 x 19 mm 124 gr: 2.9 N s (research §3.1)
+muzzle_mps = 360.0
 wall_damage = 1
 
 [ammo.rifle_50_ap]                    # the LR-50's anti-materiel round
 family = "rifle_50"
 damage = 90                           # armory "90 KIN, AP 10" — one shot, one door
 dtype = "kinetic"
+expose = 3.15                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 10                               # armor pierce (mechanics/06 mitigation)
 speed_tiles_per_tick = 128.0          # fastest round in the game
+bullet_g = 42.8                       # G5p-a2 momentum (hit push, recoil): .50 BMG M33: 38 N s (research §3.1)
+muzzle_mps = 887.0
 wall_damage = 8                       # chews cover fast — an AM rifle eats crates
 
 [ammo.shell_12g_buck]                 # the Jackhammer's buckshot
 family = "shell_12g"
 damage = 6                            # PER PELLET (x8 per trigger) — armory "6 KIN x8"
 dtype = "kinetic"
+expose = 0.21                         # G4p: 0.035 exposure per point of damage (PLACEHOLDER)
 ap = 0
 speed_tiles_per_tick = 50.0
+bullet_g = 3.9                        # G5p-a2 momentum (hit push, recoil): one 00 buck pellet (8 of 31.5 g): 1.56 N s, 12.5 a shell (research §3.1)
+muzzle_mps = 400.0
 wall_damage = 1                       # each pellet chips; a full face of 8 bites
 
 [ammo.cell_laser_heavy]               # the Lance-5's cell (default_ammo). Placed
@@ -3817,6 +3889,8 @@ damage = 40                           # armory "40 HEAT + splash" — the direct
 dtype = "heat"
 ap = 0
 speed_tiles_per_tick = 1.5            # armory 1.5 t/t — a slow glowing bolt
+bullet_g = 0.0                        # G5p-a2 momentum (hit push, recoil): a plasma bolt is ionised gas, no slug: it pushes nothing (its splash is the wind's, G5p-b)
+muzzle_mps = 0.0
 wall_damage = 0                       # the SPLASH does the wall work (40mm rule)
 payload = "plasma_splash_small"
 glow = "plasma"
@@ -3827,6 +3901,8 @@ damage = 70                           # armory "70 HEAT + splash"
 dtype = "heat"
 ap = 0
 speed_tiles_per_tick = 1.25           # armory 1.25 t/t — slower, heavier
+bullet_g = 0.0                        # G5p-a2 momentum (hit push, recoil): as the Sunspot bolt
+muzzle_mps = 0.0
 wall_damage = 0
 payload = "plasma_splash_large"
 glow = "plasma"
@@ -3860,6 +3936,8 @@ damage = 0                            # two deliveries — the W3 row-identity r
 dtype = "blast"
 ap = 0
 speed_tiles_per_tick = 1.25
+bullet_g = 230.0                      # G5p-a2 momentum (hit push, recoil): a 40 mm body (PLACEHOLDER)
+muzzle_mps = 76.0
 wall_damage = 0
 payload = "incendiary_splash"
 
@@ -3951,6 +4029,7 @@ soot_yield = 0.0
 # room light is its soot's own emission; the flash is a per-row TOP-UP. Every
 # flash value is a PLACEHOLDER.
 [payloads.frag_standard]              # the frag grenade (hand + 40 mm): Erik's by-eye tuning, 2026-10-03 -- expect retuning
+loudness = 40.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 1.0                        # PLACEHOLDER: the unit of [blast]
 radius = 2                            # was blast_radius (5 until 2026-10-03)
 wall_damage = 200
@@ -4274,6 +4353,7 @@ heat_amount = 3200.0                  # PROVISIONAL — 1x frag_heat
 heat_radius = 4.0                     # PROVISIONAL
 
 [payloads.breach_focus]               # the door charge
+loudness = 40.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 0.1                        # PLACEHOLDER: a shaped cutting charge; about 0.09 g of smoke, effectively none (accepted, #31)
 radius = 3
 wall_damage = 500
@@ -4291,21 +4371,25 @@ flash_decay_s = 0.3                   # PLACEHOLDER
 # above 1.0 saturates the cloud core to full density (the [0,1] slice clamp)
 # and feathers the edge.
 [payloads.smoke_screen]               # the laser countermeasure / concealment cloud
+loudness = 8.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "steam"
 gas_amount = 1.5                      # saturates the core out to ~1/3 radius; interesting range 0.5..2.0
 gas_radius = 4
 
 [payloads.tear_burst]                 # area denial: teargas -> BLINDED (snap-cone fire)
+loudness = 8.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "teargas"
 gas_amount = 1.0
 gas_radius = 3
 
 [payloads.poison_cloud]               # lethal cloud: poison -> POISON DoT (zombies immune)
+loudness = 8.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "poison"
 gas_amount = 1.0
 gas_radius = 3
 
 [payloads.incendiary_splash]          # ignition ring: fire = max(fire, intensity*falloff)
+loudness = 15.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 ignite_radius = 2.5                   # tiles; flammable tiles only (fire policy skip-mask)
 ignite_intensity = 0.5                # seed intensity at the centre; never lowers a bigger fire
 
@@ -4316,6 +4400,7 @@ heat_radius = 0.5                     # heat-only way, CLAUDE.md "Starting a fir
                                       # a squad 8 tiles away within a second (measured 2026-10-22)
 
 [payloads.demolition_c4]              # "bigger bombs" (mechanics/03 §5): C4 satchel warhead
+loudness = 60.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 12.0                       # PLACEHOLDER
 radius = 8
 wall_damage = 800
@@ -4326,16 +4411,27 @@ explosive = "c4"      # #12 handle 3: what the charge is made of ([explosives.*]
 flash = 0.0                           # PLACEHOLDER (G4 P5): its hot soot lights the room (Erik: no flash as a principle)
 
 [payloads.flashbang]                  # G4 P5 (#75): a flash and nothing else -- no strength, no radius, no heat, no gas
+loudness = 40.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 flash = 200.0                         # PLACEHOLDER: light units at peak, under the transient cap (1024; critique B1). 800 saturated the room for ~8 s (Erik, 2026-11-07)
 flash_decay_s = 0.1                   # PLACEHOLDER: Erik wants the flash VERY short -- the blinding is a unit debuff (gameplay), not the light
 flash_color = [1.0, 1.0, 1.0]
-emit_blast_smoke = false              # a flash alone; its blinding of units is gameplay, not here
+emit_blast_smoke = false              # a flash alone; the light is render-only
+# G3p (#183): the flash BLINDS (simulation/flash_blind.py): every living unit of
+# ANY team within blind_radius tiles with a line of sight to the detonation is
+# BLINDED (no aim: its fire falls to the snap cone) for blind_seconds scaled by
+# distance (1 at the flash, 0 at the radius) and by facing (1 within 60 degrees
+# of the flash, blind_away_frac with its back to it). ALL THREE ARE PLACEHOLDERS
+# Erik tunes at the play test.
+blind_radius = 12.0                   # PLACEHOLDER: tiles
+blind_seconds = 4.0                   # PLACEHOLDER: at the flash, facing it
+blind_away_frac = 0.25                # PLACEHOLDER: the share left facing straight away
 
 # --- Department hazards (levelgen vocabulary B.4 / B.5, #133) ---------------
 # Fired by a heat-triggered [[entity]] timed_charge (trigger = "heat"): the
 # stored hazard goes off when its own tile reaches trigger_temp. EVERY VALUE
 # BELOW IS A PLACEHOLDER FOR ERIK TO TUNE (the armory / cargo sessions).
 [payloads.magazine_cookoff]           # B.5: the magazine cooks off -- a generic explosion, bigger
+loudness = 60.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 8.0                        # PLACEHOLDER
 radius = 7                            # PLACEHOLDER (studio_large 6, demolition_c4 8)
 wall_damage = 400                     # PLACEHOLDER (studio_large 200, demolition_c4 800)
@@ -4346,6 +4442,7 @@ explosive = "comp_b"  # shell fills (the M67's Composition B), PLACEHOLDER
 flash = 0.0                           # PLACEHOLDER (G4 P5): its soot lights the room
 
 [payloads.hazmat_release]             # B.4: the solvent store ruptures -- poison_cloud's shape on fuel_gas
+loudness = 10.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 gas_species = "fuel_gas"              # the flammable trace row: it finds a flame later
 gas_amount = 1.5                      # PLACEHOLDER (smoke_screen's saturating core)
 gas_radius = 4                        # PLACEHOLDER
@@ -4356,6 +4453,7 @@ gas_radius = 4                        # PLACEHOLDER
 # follows is the physics' answer (CLAUDE.md "Starting a fire"). EVERY VALUE IS A
 # PLACEHOLDER FOR ERIK TO TUNE (the engineering session).
 [payloads.engine_death]               # B.2: the engine goes up -- a mid blast
+loudness = 60.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 strength = 3.0                        # PLACEHOLDER
 radius = 3                            # PLACEHOLDER (breach_focus 3, studio_medium 5)
 wall_damage = 300                     # PLACEHOLDER (breach_focus 500, studio_* 200)
@@ -4492,11 +4590,13 @@ mix = { kindling = 1.0 }
 # the vent sweep's own guard). `bulk_temp` = game degrees above ambient
 # (default 0: born at ambient). Energy books: `payload_bulk_gas`.
 [payloads.o2_store_rupture]           # B.3: the medbay O2 store ruptures -- pure O2, a fire next door roars
+loudness = 15.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 bulk_gas = "o2"
 bulk_amount = 0.21                    # PLACEHOLDER: one ambient tile's O2 again -> DOUBLES the O2 on every disc tile (X 0.21 -> 0.42/1.21 = 0.35, o2f ~2.6 of its 5.0 cap) and adds 0.21 atm
 bulk_radius = 3.0                     # PLACEHOLDER (tiles)
 
 [payloads.halon_dump]                 # A.6: the server farm's suppression dumps inert gas -- the fire dies, and so does whoever is inside
+loudness = 10.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 bulk_gas = "inert_n2"
 bulk_amount = 1.5                     # PLACEHOLDER. The O2 law ([physics.fire]): o2f = clamp((X - o2_frac_ext)/(o2_frac_amb - o2_frac_ext), 0, cap), X the O2 mole fraction, o2_frac_ext = 0.13 (the logistic death wall sits at X ~ 0.131). Adding a of N2 to an ambient tile gives X = 0.21/(1 + a): 0.13 needs a > 0.615. 1.5 gives X = 0.084 on the disc (o2f = 0), and after the room mixes X = 0.21*A/(A + 1.5*D) for a room of A open tiles and a disc of D -- below 0.13 while A < 2.44*D, i.e. ~110 open tiles for this radius-4 disc (D = 45, strict dist < 4). The pressure gate (p_ext_atm / p_full_atm) is no help: the dump RAISES pressure (to ~2.5 atm on the disc).
 bulk_radius = 4.0                     # PLACEHOLDER (tiles)
@@ -4514,6 +4614,7 @@ bulk_radius = 4.0                     # PLACEHOLDER (tiles)
 # LINEAR falloff keeps instant-ignition inside ~1/5 of heat_radius; the
 # ignite ring below guarantees the visible fire pop regardless).
 [payloads.plasma_splash_small]        # Sunspot
+loudness = 15.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 radius = 2                            # modest wall damage + a small pressure pop
 # wall_damage 25 — a SCORCH, not a breacher: wood walls carry hp 60, so a
 # Sunspot bolt chips the partition it wants to IGNITE rather than blowing
@@ -4529,6 +4630,7 @@ clear_smoke = false                   # a bolt is not a blast wave
 emit_blast_smoke = false              # its smoke comes from what it BURNS
 
 [payloads.plasma_splash_large]        # Helios
+loudness = 25.0                 # metres of hearing radius (G9p noise); PLACEHOLDER
 radius = 3
 pressure = 2.5
 # wall_damage 45 — heavier scorch (2 Helios bolts break a wood wall; steel
@@ -4542,12 +4644,98 @@ ignite_intensity = 0.6
 clear_smoke = false
 emit_blast_smoke = false
 
+# =============================================================================
+# [damage.exposure] -- the FOCUS-FIRE law (gameplay pack v1 G4p, issue #181;
+# src/simulation/exposure.py). Every unit carries one decaying EXPOSURE level
+# per damage type; a hit by a round with an `expose` raises the level of the
+# round's type by `expose x (1 - the target's expose_resist)`, capped at x_max;
+# the level halves every `half_life_seconds` (quantized to whole ticks; an
+# exact integer step per tick); damage of that type is multiplied by
+# (1 + k_expose x level). Construction-bound (a new Simulation reads it).
+# `k_expose = 0` makes the law DORMANT (nothing is raised: damage and every
+# digest exactly as before G4p).
+#
+# ALL PLACEHOLDERS, tuned by Claude on tools/bench_focus_fire.py (2026-11-10,
+# Erik away; his targets: one marine ~30-40 rounds of continuous fire for a
+# zombie, single spaced shots ~40, two marines together ~20 in all). Shipped,
+# against a spawned zombie (100 hp, 2 per carbine round = 50 rounds without
+# the law): one marine 34 rounds, two 26 in all, three 24, four 24; single
+# spaced shots 50 (the level has decayed between pulls). Moved: only these
+# three dials and the rounds' `expose` (zombie hp and bullet_damage_multiplier
+# untouched). k_expose = 1 so the level reads as "extra damage": 1.0 = double.
+# WHY so short a half-life: the law is linear in hits, so a second shooter
+# saves rounds ONLY through the decay during the kill -- with a half-life of a
+# second or more, the rounds in all barely depend on how many shoot (bench,
+# 1 s and expose 0.06: 34 / 32 / 33 / 32, single 48). The level must fade between one shooter's rounds
+# (2 ticks apart) for two shooters' volleys to stack higher than one's, and
+# then nothing is left one second later: single shots are the no-law count.
+# The three targets cannot all hold under this law; this set keeps the lone
+# marine in the middle of its band and buys the most focus-fire saving with
+# it. Other points on the same curve (half-life / carbine expose -> rounds
+# for n = 1..4, at x_max 2.5): 0.125 / 0.45 -> 30 / 24 / 24 / 24; 0.083 / 0.5
+# -> 35 / 28 / 27 / 28 (uncapped 35 / 28 / 24 / 24). x_max 2.5 binds at four
+# shooters here (peak 2.5) and keeps a large squad's stack bounded; 2.0
+# makes three and four shooters worse than two (34 / 26 / 27 / 28).
+[damage.exposure]
+half_life_seconds = 0.125   # 3 ticks at 24 tps
+k_expose = 1.0
+x_max = 2.5
+
 [zombie]
 hp = 400
 # (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
 melee_damage = 60
-trigger_radius = 48
-propagation_radius = 15
+trigger_radius = 48        # tiles (squared-distance compare, strictly inside)
+propagation_radius = 15    # tiles (an awake zombie wakes those within)
+# The HORDE FIELD (gameplay pack G9p, the residency design's P3d;
+# src/simulation/horde.py): the horde walks one integer distance field per
+# footprint, flooded from every living non-zombie and re-flooded every this
+# many ticks (and whenever the topology changes). 2 = a marine at full speed
+# (4.5 m/s = 0.56 tile a tick on the 0.333 m tile) is at most ~1.1 tile ahead
+# of the field it is chased on. PLACEHOLDER.
+field_refresh_ticks = 2
+# The horde's BEHAVIOURS on the field (G9p stage 2; docs/bots_zombies_speeds_
+# design_2026-11-10.md §3, Erik's rulings of 2026-11-10). Each is a switch;
+# all five false is the stage-1 field law exactly (tests/test_horde_
+# behaviours.py holds that). Every number below is a PLACEHOLDER (Erik tunes
+# at the play test).
+# WANDER: a dormant zombie takes one step every wander_period_seconds (its
+# tick staggered by its id) in a direction hashed from (its id, the tick) --
+# no random number is drawn -- staying within wander_leash_m of its anchor
+# (where it first stood, or where it settled after a noise).
+wander = true
+wander_period_seconds = 3.0
+wander_leash_m = 1.5           # 5 tiles on the 0.333 m tile
+# HEARING: a noise (a shot at its weapon row's loudness, a detonation at its
+# payload row's, a door bash at bash_loudness_m -- all METRES of radius) wakes
+# every non-awake zombie within its radius, walls ignored; it walks the
+# noise's field until it is within noise_arrive_m of it (then it settles
+# there, dormant) or noise_timeout_seconds pass. At most noise_fields_max
+# distinct noise targets live at once (the newest), so the fields stay few.
+hearing = true
+noise_timeout_seconds = 20.0
+noise_arrive_m = 0.7           # 2 tiles on the 0.333 m tile
+noise_fields_max = 4
+# FEAR OF FIRE: a burning tile, or one at or above fear_temp game degrees
+# above ambient on the temperature mirror (an integer compare), is out of the
+# field's mask at every refresh, and no step ever puts a body on one; a
+# zombie with no path waits. (Smoke is air in v1: wariness of smoke is later.)
+fear_fire = true
+fear_temp = 60.0
+# DOOR BASHING: a closed door (not a hull door: none whose far side is space)
+# counts as passable in the field; a zombie whose step it blocks strikes it at
+# the bite's cadence (attack_cooldown_seconds) for door_bash_damage of the
+# door tile's hp through the wall-chew seam -- [materials.door_closed] hp 40
+# / 2 = 20 strikes at 1 s: a door holds one zombie for 20 s. Each strike is a
+# noise of bash_loudness_m.
+bash_doors = true
+door_bash_damage = 2.0
+bash_loudness_m = 12.0
+# SPRINT: an awake zombie with a line of sight to a living prey within
+# sprint_radius_m walks at the [speeds] zombie_sprint_mps cadence (unlimited)
+# instead of the shamble; terrain and effort still scale it.
+sprint = true
+sprint_radius_m = 8.0
 bullet_damage_multiplier = 0.25
 # fire_damage_multiplier: the zombie's HEAT vulnerability — since P5 this key
 # IS the live source of resist_mult[HEAT] on the zombie mitigation table
@@ -4561,10 +4749,11 @@ bullet_damage_multiplier = 0.25
 # (test_unit_heat_damage / test_fire_heat_source) read the same key as the
 # expected zombie/marine damage ratio, so sim + tests move together.
 fire_damage_multiplier = 4.0
-# stability: knockdown susceptibility (mechanics/06 §4) — since #140 the wind
-# knocks a unit down when its footprint's wind load reaches
-# [exchange] wind_q_fall_pa * stability^2 (stability scales the knockdown WIND
-# SPEED; q goes as v^2), so LOWER = topples easier. 0.9 = shamblers go down at
+# stability: knockdown susceptibility (mechanics/06 §4) — since G5p the unit
+# impulse law falls a unit when its effort (the force on its feet over its
+# hold) reaches stability^2 or its pushed speed its fall limit x stability
+# (for a steady wind: stability scales the knockdown WIND SPEED; q goes as
+# v^2), so LOWER = topples easier. 0.9 = shamblers go down at
 # 0.9x the wind speed a marine does (feel: the outer blast ring bowls the horde
 # over while the marines stagger). The ONE non-physical knockdown knob
 # (resist tables mitigate damage only). STANDARD VALUE placeholder
@@ -4573,6 +4762,10 @@ fire_damage_multiplier = 4.0
 # Ctrl+R. The marine baseline (1.0) lives on EnvironmentProfile.stability.
 stability = 0.9
 attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
+# G4p (#181): the zombie state's resistance to EXPOSURE (the focus-fire law,
+# [damage.exposure]; selected on is_zombie like its mitigation): a scalar or a
+# table by damage type, in [0, 1]; 0 = a zombie is exposed like anyone else.
+expose_resist = 0.0
 
 [marine]
 hp = 100
@@ -4584,8 +4777,20 @@ hp = 100
 # in 0.5 s). Every unit driven through set_aim (player, bots, policy). Read per
 # unit; later a stat scaled by dexterity and armour weight. PLACEHOLDER, Erik
 # tunes. A value of half a turn per tick or more (>= 4320 at 24 tps) is the
-# pre-G1p instant facing.
+# pre-G1p instant facing. Since G5p-a1 this is the TOP SPEED of the turning
+# law (the unit's own torque only), and every reason to face somewhere turns
+# through it (the aim, the travel direction, the zombie walk, the attack snap).
 turn_rate_deg_per_s = 360.0
+# The turning law's own angular ACCELERATION (G5p-a1, docs/unit_impulse_design
+# _2026-11-10.md §5.1): a unit speeds up and brakes its turn at this, landing
+# on its target exactly. Quantized ONCE to Q16.16 radians per tick^2; refused
+# if it would need more than 32 trials a tick against the top speed. At
+# >= 2 x the top speed per tick (>= 302 rad/s^2 at 360 deg/s, 24 tps) the law
+# is G1p's bare cap bit for bit. PLACEHOLDER, Erik tunes: 30 rad/s^2 is the
+# rotation literature check's (docs/research/rotation_litcheck_2026-11-10.md:
+# about 90 N*m of own torque on a 3.0 kg*m^2 yaw inertia) -- with the top
+# speed above, 90 deg in 11 ticks (0.46 s), 180 deg in 17 (0.71 s).
+turn_accel_rad_per_s2 = 30.0
 # loadout — the [loadouts.*] row a marine is armed with when nothing names
 # one (#119; the row replaced this table's old weapon / grenades / explosives
 # keys with the same values). A match config names a row per team (#119 P2).
@@ -4605,27 +4810,96 @@ secondary = "p12_whisper"
 belt = ["hand_grenade", "breach_charge"]
 
 # ---------------------------------------------------------------------------
+# The unit impulse law (gameplay pack v1 G5p, src/simulation/unit_impulse.py;
+# docs/unit_impulse_design_2026-11-10.md §3-§6, §13): everything that pushes a
+# unit (a round that hits, its recoil, a shove; wind and blast from G5p-b)
+# hands it an impulse; once per tick the unit's feet resist up to one tick of
+# HOLD (k_hold of body weight), a sudden push is absorbed IN PLACE up to the
+# in-place capacity, only what overflows that moves the unit, the low-passed
+# demand on the feet (the effort) slows the walk, and past the fall limit, a
+# saturated effort or an unrecoverable push it goes KNOCKED_DOWN (for
+# [exchange] knockdown_getup_ticks). Every value is quantized ONCE per map
+# (its tile size) at sim construction; every key is required (the door
+# unit_impulse.impulse_settings refuses a missing or mistyped one by name).
+# The values are the design's (research: docs/research/impulse_on_a_person
+# _2026-11-10.md); the ones it marks PLACEHOLDER are Erik's to tune.
+# ---------------------------------------------------------------------------
+[impulse]
+gravity_mps2 = 9.81
+k_hold = 0.2248              # hold per body weight standing: today's 245 Pa wind fall edge for the 100 kg reference marine
+k_slow = 0.036               # effort below k_slow / k_hold slows nothing (today's 39 Pa wind slow edge)
+mu_slide = 0.4               # a prone body's friction per body weight (search §4, an assumption)
+v_inplace_fwd_mps = 0.25     # absorbed in place without a step, pushed from behind (search §1)
+v_inplace_side_mps = 0.20
+v_inplace_back_mps = 0.15
+v_fall_fwd_mps = 1.5         # the fall limit (x stability), pushed from behind -- only this one is measured
+v_fall_side_mps = 1.1        # modelled, not measured (design §9)
+v_fall_back_mps = 0.8        # modelled, not measured (design §9)
+t_react_seconds = 0.30       # the reaction delay after a push that overflows the sway: 7 ticks at 24 tps (half up); the unit cannot walk meanwhile (PLACEHOLDER, design §9) and can shoot
+n_rec_ticks = 24             # the recovery horizon: a push the margin left cannot work off in this many ticks floors the unit
+yaw_inertia_kgm2 = 3.0       # a person's yaw moment of inertia (the rotation check)
+r_body_m = 0.25              # every lever arm is clamped to the body radius
+# The WIND on a body (G5p-b; the #140 read, GameMap.footprint_wind): each tick
+# at Simulation.step 9c2 the dynamic pressure q = 1/2 rho v^2 at the
+# footprint's highest-q gas tile becomes the force q * drag_area along that
+# tile's wind, handed to the unit as the impulse q * drag_area / tps -- the
+# blast's wind included (a detonation pushes the units its wind reaches,
+# nothing else, so nothing is counted twice). With k_hold and k_slow above the
+# reference marine (100 kg) is slowed from 39 Pa and floored at 245 Pa, the
+# #140 bands; a lighter body sooner. Standing area 0.9 m2 (kitted marine, the
+# wind note), prone 0.15 (an estimate: no measurement found); one value for
+# every unit in v1 (PLACEHOLDER: a per-row area later). A prone unit is kept
+# down while the wind it WOULD take standing floors it (critique A, M7).
+drag_area_m2 = 0.9
+drag_area_prone_m2 = 0.15
+# Declared experiment dials (RULED 2026-11-10: real momentum, all 1.0). At 0
+# the input is off: bullet_push_mult the hit's push, bullet_twist_mult its
+# spin, recoil_mult the shooter's recoil, wind_push_mult the wind's force
+# (and with it the blast's).
+bullet_push_mult = 1.0
+bullet_twist_mult = 1.0
+recoil_mult = 1.0
+wind_push_mult = 1.0
+zombie_hold_mult = 1.0       # the zombie state's hold (RULED 1.0: a copy of the unit it infected)
+
+[impulse.shove]
+impulse_ns = 100.0           # a strong two-handed shove (search §2: 75-115 N s); PLACEHOLDER, later scaled by strength
+cooldown_seconds = 1.0       # between two shoves of one unit (PLACEHOLDER)
+cone_half_deg = 60.0         # the shove reaches the adjacent unit nearest the facing within this half-angle (PLACEHOLDER)
+
+# ---------------------------------------------------------------------------
 # Loadouts (#119) — what a unit carries, one row per kit. `weapon` names a
-# [weapons.*] row (refused at load if it names none), `grenades` / `explosives`
-# are non-negative integer counts. Read by simulation/loadouts.py at Unit
+# [weapons.*] row (refused at load if it names none), `explosives` is a
+# non-negative integer count, `grenades` (G3p) a table of such counts keyed by
+# hand-grenade [ammo.*] row name (a bare int = that many frags). Read by simulation/loadouts.py at Unit
 # construction (construction-bound like the weapon tables: RESTART to re-arm).
 # ERIK'S FEEL-CHECK LOOP: set rifleman's weapon to "dragon_7" (or
 # "miasma_vent"), RESTART the game (Ctrl+R alone re-reads config but re-arms
 # nothing, engine/12 §5), launch `main.py --level playground`, issue fire
 # orders, watch rooms burn. Zombies carry no loadout.
 # ---------------------------------------------------------------------------
-[loadouts.rifleman]      # the v1 loadout (rl-ready scope §3): K5 + 2 frags
+[loadouts.rifleman]      # the v1 loadout (rl-ready scope §3, G3p): K5 + 2 frags, a smoke, a flashbang
 weapon = "k5_carbine"
-grenades = 2
+grenades = { grenade_frag = 2, grenade_smoke = 1, grenade_flash = 1 }   # by hand-grenade [ammo.*] row; a bare int means that many frags
 explosives = 2
 magazines = 3            # TOTAL carried, the one in the gun included (G2p: one loaded, two spare); 0 or absent = spares untracked, today's infinite auto-reload
+kit_kg = 20.0            # G5p-a2: what the kit weighs; the unit impulse law's mass is the body's (80 kg) plus this -- the 100 kg reference marine
+melee = "rifle_butt"     # G6p: a [weapons.*] row of the melee archetype, the blow of the melee verb (RMB / pad R3); absent = no melee, the verb does nothing
 
 # ---------------------------------------------------------------------------
-# Bot team (#121) — the rule-based match controller `bots`
-# (src/control_bots.py). Distances are in TILES (squared-integer compares on
-# centre tiles; at the 0.333 m tiles of ship_demo / the playground a marine's
-# footprint is 3 tiles); every key is required (bot_settings refuses a
-# missing or mistyped one). Read once when a BotTeam is built.
+# Bot teams -- the match controllers `bots` (the layered bots, #183 G8p,
+# src/control_bots.py) and `bots_v1` (the first rule-based bots, #121,
+# src/control_bots_v1.py, kept unchanged as a second opponent). Distances are
+# in TILES (squared-integer compares on centre tiles; at the 0.333 m tiles of
+# ship_demo / the playground a marine's footprint is 3 tiles); every key is
+# required (control_bots.bot_settings / control_bots_v1.bot_v1_settings refuse
+# a missing or mistyped one, each its own keys). Read once when a team is
+# built. The first seven keys are bots_v1's; the layered bots share
+# replan_ticks, group_radius, danger_radius and grenade_cooldown_s with the
+# same meaning. Every value of the layered bots
+# is a hand-set PLACEHOLDER, tuned by the bot tournament
+# (tools/bot_tournament.py; the as-built section of
+# docs/bots_zombies_speeds_design_2026-11-10.md).
 # ---------------------------------------------------------------------------
 [bots]
 replan_ticks = 24            # A* replan cadence while advancing (1 s @ 24 tps); also on arrival / a new goal
@@ -4635,6 +4909,60 @@ grenade_cooldown_s = 4.0     # per bot, between two throws
 fallback_hp_frac = 0.5       # below this fraction of vitality ...
 fallback_r = 15              # ... with no living teammate within this many tiles -> fall back home
 friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fire within this many tiles
+# --- the layered bots (#183 G8p) ---
+team_period_ticks = 6        # the team layer (picture -> play, shared target, objective, lanes) every this many ticks
+unit_period_ticks = 8        # each bot scores its actions every this many ticks, staggered by unit id (and at once on a new sighting)
+memory_s = 6.0               # the team forgets an enemy not seen for this long
+flash_memory_s = 4.0         # a flashbang goes only onto an enemy seen within this long
+candidate_radius = 9         # the position layer's candidates: anchors within this many tiles ...
+candidate_stride = 3         # ... on a lattice of this pitch (the bot's own anchor and its committed goal always in)
+reach_steps = 14             # feature `reachable`: within this many 4-connected steps of the bot
+progress_steps = 4           # feature `closer_to_objective`: at least this many steps nearer the play's objective
+advance_steps = 12           # a mover's leap: this many steps down the objective's field is always a candidate
+plan_max_steps = 24          # A* runs only toward a goal at most this many flood steps away (the cost bound; farther = stand and choose again)
+los_budget = 6               # the line-of-sight features are cast for this many best candidates only
+commit_margin = 0.5          # the committed goal keeps its place unless beaten by this many weight units (#138)
+spacing_tiles = 5            # feature `spaced`: centres at least this far from every teammate and its goal (#142)
+lane_cell = 3                # the fire-lane grid's cell, tiles
+lane_halfwidth = 1           # a lane is widened by this many cells each side
+cover_min_tiles = 2          # feature `cover`: this many solid ring tiles on the threat's side of the body
+smoke_dense = 0.5            # feature `safe_ground`: smoke at or above this (real units) is dense
+vacuum_atm = 0.5             # ... pressure below this (atm) is vacuum
+hot_temp = 60.0              # ... a tile this hot (game degrees above ambient) is fire
+line_clear_tiles = 2         # hold fire while a teammate's body is within this many tiles (plus half a body) of the line, anywhere up to the target
+frag_min_group = 1           # a frag goes onto this many enemies (zombies count) within group_radius: 1 = a lone zombie too (its heat is the horde's answer)
+zombie_engage_tiles = 24     # a zombie farther than this is not shot (every shot is heard)
+zombie_near_tiles = 24       # a known zombie this close to a teammate counts as near (the Fall back play)
+outnumber_margin = 1         # Fall back when the known enemy marines outnumber the team by more than this
+bound_max_s = 4.0            # the Bound halves swap when the movers arrive or after this long
+travel_throttle = 0.0        # the throttle out of contact (0 = the walk; contact always walks)
+door_retry_ticks = 24        # a bot asks a closed door open (USE) at most once per this many ticks (#142)
+
+[bots.features]              # the position layer's weight per yes / no feature (design §2.2)
+sees_target = 3.0
+outside_fire_lanes = 2.0
+spaced = 3.5
+cover = 1.0
+hidden_from_others = 1.0
+closer_to_objective = 4.0
+safe_ground = 5.0
+reachable = 4.0
+
+[bots.actions]               # the unit layer's score per action; the best wins its channel (hands / feet)
+shoot = 10.0
+hold_fire = 1.0
+frag = 12.0
+flash = 11.0
+shove = 14.0
+melee = 13.0
+move = 5.0
+retreat = 6.0
+stand = 4.0
+
+[bots.plays]                 # the team layer: among the eligible plays the highest weight wins
+fall_back = 3.0              # eligible: a known zombie near, or outnumbered
+hold = 2.0                   # eligible: an enemy marine in the team's sight now
+bound = 1.0                  # always eligible: close on the last-known enemy, else its spawn room
 
 # ---------------------------------------------------------------------------
 # Match recording (#126) — replay by RE-SIMULATION (src/match_replay.py): a
@@ -4683,6 +5011,10 @@ front_arc_deg = 120.0
 behind_arc_deg = 90.0
 submersion = "drowns"
 environmental_damage_rate = 1.0
+# G4p (#181): how much of a hit's EXPOSURE (the focus-fire law, [damage.exposure])
+# the suit shrugs off -- a scalar for every damage type or a table by type name
+# ({ kinetic = 0.5 }), in [0, 1]: 0 = fully exposed (the baseline), 1 = immune.
+expose_resist = 0.0
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness
@@ -4790,26 +5122,16 @@ environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec
 # push_max_tile_per_tick, push_grad_floor_atm, knockdown_dv_threshold) is
 # RETIRED -- a pressure gradient is not what the air does to a body, and its
 # linear drift shoved a squad out of a venting doorway for ~28 s. The row at
-# Simulation.step 9c2 is now the wind law below (exchange.apply_wind_knockdown).
+# Simulation.step 9c2 is the wind row (exchange.apply_wind_force).
+#
+# 2026-11-10 (#183 G5p-b): the #140 wind law's own bands (wind_q_slow_pa 39,
+# wind_q_fall_pa 245, wind_slow_min_scale 0.5: a cadence scale and a bespoke
+# knockdown) are RETIRED -- the wind is a FORCE on the unit impulse law
+# ([impulse] drag_area_m2 above), whose hold (k_hold) and slow edge (k_slow)
+# restate the same bands as force over body weight for the 100 kg reference
+# marine, and whose own outcomes (slowed, pushed by the excess, knocked down)
+# replace the two.
 [exchange]
-# --- Wind on units (#140, docs/wind_on_units_design_2026-10-31.md) -----------
-# q = 1/2 rho v^2 at the footprint (max over its gas tiles), rho from the tile's
-# bulk N against ambient ([materials.air] density, the one owner). Research picks:
-# docs/research/wind_on_a_person_2026-10-31.md (39 Pa = 8 m/s, 245 Pa = 20 m/s
-# at sea-level density; the hunch point, 120 Pa = 14 m/s, sits in the band and
-# is where a later "hunched" status would start). Nothing in the law moves a
-# unit's position: below q_slow the air does nothing, between the two the
-# walking CADENCE is scaled down (movement.footprint_samples -> default_speed,
-# every walker: MOVE_DIR, zombies, onephase, WEGO orders), at q_fall the unit
-# is KNOCKED_DOWN (refresh-stacked while the wind holds).
-# CADENCE QUANTIZATION blunts the low band: ticks per tile are integers, so an
-# 8 ticks/tile walker does not slow until the scale is under 0.941 (q ~63 Pa,
-# ~10 m/s), and a 1 tick/tile sprinter jumps 1 -> 2 at 0.667 and nothing before.
-# HOT-RELOAD: read every pass through exchange.wind_settings (which refuses a
-# missing / mistyped key, q_slow >= q_fall and a scale outside (0, 1]) -- Ctrl+R.
-wind_q_slow_pa = 39.0           # below this nothing; above, cadence scales down
-wind_q_fall_pa = 245.0          # at stability 1.0: KNOCKED_DOWN (stability scales the SPEED: W_fall * stability^2)
-wind_slow_min_scale = 0.5       # cadence scale at q_fall (linear in q from 1.0 at q_slow)
 # knockdown_getup_seconds — prone time (no move/act, sprite sideways). Feel:
 # the crowd-control payoff window after a good grenade. Interesting range
 # 0.5 (a stumble) .. 4.0 (a real opening). Re-knocks refresh the timer.

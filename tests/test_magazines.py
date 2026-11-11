@@ -490,7 +490,9 @@ def test_the_direct_control_reload_action_is_live_and_emits_the_verb():
     sim = SimpleNamespace(
         reload_intent=lambda uid: calls.append(("reload_intent", uid)),
         clear_move_dir=lambda uid: calls.append(("clear", uid)),
-        set_trigger=lambda uid, held: calls.append(("trigger", uid, held)))
+        set_trigger=lambda uid, held: calls.append(("trigger", uid, held)),
+        # G7p: the scheme holds the flashlight bit every frame
+        set_flashlight=lambda uid, off: None)
     dc = cd.DirectControl(keys=cd.key_table(CFG))
     dc._emit(sim, 7, cd.DeviceFrame(move=None, aim=None, trigger=False,
                                     throw=None, use=False, reload=True))
@@ -532,6 +534,12 @@ def _reload_match(tmp_path, monkeypatch):
 
     monkeypatch.setitem(control_source._MATCH_CONTROLLERS, "g2p_reloader",
                         _Reloader)
+    # The focus-fire law dormant (#183 G4p, k_expose = 0): with it live the
+    # duel ends before anyone empties a magazine or reaches a choice reload,
+    # and this match is about reloads, not about how fast marines die.
+    from simulation import exposure
+    monkeypatch.setattr(exposure, "_SETTINGS", exposure.get_settings())
+    monkeypatch.setattr(CFG.damage.exposure, "k_expose", 0.0)
     t = tmr.MatchTeam(n=2, loadout="rifleman", env_profile="default",
                       controller="g2p_reloader")
     spec = replace(tmr.BOX_SPEC, teams=(t, t), zombies=0, time_limit_s=12.0)

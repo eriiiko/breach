@@ -58,6 +58,7 @@ from simulation.orders import (
 )
 from simulation.status import composed_flags
 from simulation.weapons import FIRE_ORDER_ARCHETYPES
+from simulation import turning as _turning
 from simulation import unit_fixed
 
 try:
@@ -152,7 +153,11 @@ def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     the weapon table's meter->tile derivation.
     """
     base = base_ticks_per_tile(gmap)
-    samples = footprint_samples(gmap, fy, fx, unit.footprint)
+    from simulation import unit_impulse
+    samples = footprint_samples(
+        gmap, fy, fx, unit.footprint,
+        effort_scale_q16=unit_impulse.effort_scale_q16(
+            unit_impulse.table_for(gmap), unit))   # G5p-a2, at compile time
     terrain = default_speed(samples, base)
     pct = speed_pct(order_type, reversing)
     if pct >= 1.0:
@@ -842,7 +847,9 @@ def set_overwatch(sim, unit, step) -> None:
                    float(half)))
     unit.overwatch_facing = facing
     unit.overwatch_half_deg = half
-    unit.facing = facing
+    # The overwatch bearing is the facing TARGET (G5p-a1: the turning law
+    # turns the unit there; nothing writes a facing directly).
+    _turning.set_target(unit, unit_fixed.quantize_scalar(facing))
 
 
 def throw_grenade(sim, unit, step) -> None:
