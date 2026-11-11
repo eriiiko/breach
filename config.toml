@@ -130,7 +130,7 @@ explosion_smoke_noise = 0.85           # per-tile contrast of the explosion smok
 unit_permeability = 0.5                # gas/smoke permeability of a living unit's footprint (0 = seals, 1 = open; 0.5 = porous body slows flow)
 unit_wave_absorb = 0.5                  # shockwave energy a living unit's footprint absorbs (0 = none, 1 = full; high = a body soaks the blast)
 wave_absorb_strength = 8.0             # global scale on per-cell wave_absorb damping (tuned so units visibly soak the wave without nuking it)
-burst_enabled = true                   # over-pressure wall failure (emergent pressure-relief valve)
+burst_enabled = false                  # over-pressure wall failure: OFF since 2026-11-11 (Erik: not realistic enough; redesign in #186). Blast and damage breaches are a separate path and stay
 burst_max_per_tick = 16                # cap on walls that may burst in one tick (anti-runaway)
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick

@@ -841,9 +841,12 @@ Recorded as given; the numbering is the question's.
    route, at a projected 2 to 4x per slot before P9. Two consequences for §3:
    the yardstick on an 8-core / 16-thread box is the 16-worker farm (P1a
    measured 8), and G2's farm row runs one worker per hardware thread.
-   OPEN, Erik's to rule: whether the PC reading stands as G1 without a node
-   run (the reading's item 5 recommends yes, with a 15-minute calibration on
-   one slot the first time Berzelius is in use).
+   RULED (Erik, 2026-11-11): the PC reading stands as G1 without a node run
+   ("yes absolutely"); the 15-minute calibration on one slot stays worth
+   doing the first time Berzelius is in use, as a calibration, not a gate.
+   Also 2026-11-11: the over-pressure wall failure (slot 9b) is switched off
+   (`[physics] burst_enabled = false`, #186: a redesign in its own session),
+   so the port writes no kernel for it.
 
 ## 13. Systems
 
