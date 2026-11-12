@@ -353,4 +353,117 @@ The mark:
 |---|---|---|---|---|
 | 66 | `prev_aim` | this entry was the previous decision's aim target (1h's held uid; 0 in 1g) | flag | no |
 
+## 3. The two windows (design 3.4, 3.5, 4.5, 5.2)
+
+### 3.1 Frames
+
+- **Near:** `WIN = 25` tiles square at full resolution, centred on the
+  soldier's centre tile `(cy, cx)`: rows `cy - 12 .. cy + 12`, columns
+  likewise; plane cell `[i, j]` is tile `(cy - 12 + i, cx - 12 + j)`.
+- **Far:** `WIN = 25` blocks square of `BLOCK = 4` tiles, centred on the
+  soldier's block `(cy // 4, cx // 4)`; cell `[i, j]` is block
+  `(cy // 4 - 12 + i, cx // 4 - 12 + j)`, i.e. tiles `[4 by .. 4 by + 4) x
+  [4 bx .. 4 bx + 4)`. The block grid is anchored at tile `(0, 0)`; the map
+  is padded to a multiple of 4 with the outside value.
+- **Outside the map** (CHOICE): `wall` reads 1 (nothing enters there), every
+  other plane 0, `route` -1. (`has_los` lets a line run outside the map
+  without blocking, `gamemap.py:2457`; the sight planes follow it.)
+- Both windows never rotate (design 1).
+
+### 3.2 The physics planes (both windows; design 3.4's table, the critique's denominators)
+
+Each is read ONCE per tick for the whole map (a float64 plane), reduced to
+blocks for the far window (3.3), then cropped per soldier. `u` is the
+observing soldier; "profile" is `u.environment` (`unit.py:213`,
+`EnvironmentProfile`, `src/simulation/environment.py:23`).
+
+| order | name | read from | divided by (the unit's own terms) | squash | type |
+|---|---|---|---|---|---|
+| 0 | `temperature` | `gas_fixed.dequantize_q16(gmap.temperature)` (the crop's read, `sensor_accessor.py:137`): game degrees above ambient | `profile.temperature_max` (`environment.py:40`, `[env_profiles.*] temperature_max` `config.toml:5044`; the plane shows where the hot tiles are, the bots avoid them at `[bots] hot_temp`, `control_bots.py:599-610`) | yes | float16 |
+| 1 | `fire` | `fire_fixed.dequantize_f32(gmap.fire)` (`:139`) | the field's full scale, 1.0 | yes | float16 |
+| 2 | `poison` | `gas_fixed.dequantize_trace_f32(gmap.gas[POISON])` (`src/simulation/gas_fixed.py:127`) | `[exchange] poison_min_density` (`:5193`; the row's threshold, `exchange.py:634`), the quotient TIMES the unit's `mitigation_for(u).resist_mult[POISON]` (`damage.py:298`; a zombie's 0 reads 0 -- harmless to it, `exchange.py:644`) | yes | float16 |
+| 3 | `teargas` | the teargas slice likewise | `[exchange] teargas_blind_density` (`:5185`, `exchange.py:589`) | yes | float16 |
+| 4 | `smoke` | the smoke slice likewise (`:133`) | `[bots] smoke_dense` (`:4956`; acts on nothing yet, the bots avoid it) | yes | float16 |
+| 5 | `pressure` | `atmosphere_fixed.dequantize_f32(gmap.atmosphere)` (`:130`), atm | the profile's band: `(p - pressure_min) / (pressure_max - pressure_min)` (`environment.py:31-32`; CHOICE: 0 at the low limit, 1 at the high, a vacuum negative; no coupling yet, design 3.4) | yes | float16 |
+| 6, 7 | `wind_x`, `wind_y` | `GameMap.wind_load_plane()` (1.7): per tile the wind's one-tick impulse `unit_impulse.wind_impulse_q(table, W_i)` (`unit_impulse.py:515`; standing area) over `u.mass_g` (`unit_schema.py:487`) as a velocity change, along `(wind_x, wind_y)` of that tile (the wind's own x east, y SOUTH: the planes are world axes, `gamemap.py:2406-2412`) | `ImpulseTable.cap_q` (`:197`; one tick of hold, `[impulse] k_hold` `:4856`: at 1.0 the wind pushes the standing body, the #140 fall edge) | yes | float16 |
+
+Reserved and not built (design 3.4): oxygen, water depth, fuel vapour.
+
+### 3.3 How the far window is made (design 3.7's third thing)
+
+Once per tick per env, not per soldier: each physics plane `P` (h, w) is
+padded to `(4 ceil(h / 4), 4 ceil(w / 4))` with 0 and reduced
+`P.reshape(H, 4, W, 4).max(axis=(1, 3))` -- the MAX over the block's tiles,
+the coupling rows' own reduction (the hottest, densest tile on a body is
+the exposure, `exchange.py:594, 641`). The wind planes reduce by the block's
+largest `W_i` and carry that tile's direction (as `footprint_wind`,
+`gamemap.py:2425-2433`). The structure planes reduce as 3.4 says. The
+soldier's far window is then a crop of the reduced planes. The per-unit
+denominators (temperature, poison, wind) are applied AFTER the reduce, per
+soldier, on the cropped 25 x 25 (a divide of 625 cells).
+
+### 3.4 The structure planes (both windows)
+
+| name | near | far | type |
+|---|---|---|---|
+| `wall` | `gmap.solid` (what stops a round and a line of sight; CHOICE: a grille is not solid and reads as floor here -- an accepted gap, the route plane carries walkability) | the share of solid tiles in the block, `count / 16` (outside tiles count as solid) | near uint8; far float16 (16 levels) |
+| `door` | 0 none, 1 a tile of a living door's span with `state == DOOR_OPEN`, 2 with `DOOR_CLOSED` (`door.py:43-44`; the spans from `sim._doors`) | the largest code in the block | uint8 |
+
+### 3.5 The sight planes (near window; design 3.4, the many-tiles routine of 1c)
+
+| name | what | read from |
+|---|---|---|
+| `watched` | the tiles at least one KNOWN enemy has a line of sight to | for each record of my team's picture (seen or remembered, at its recorded `centre`): `vision.window_clear(sim, ry, rx, cy - 12, cx - 12, 25, 25, to_window=False)` (`vision.py:217`: FROM the enemy's tile to each window tile), OR-ed. A known enemy's RECORDED place, never its live one (honest: the team's knowledge). |
+| `sees_target` | the tiles from which my aim target can be seen | `window_clear(sim, ty, tx, ..., to_window=True)` (FROM each window tile to the target's tile) for the entry 1h's decoder holds as my aim (its live centre if seen, its record's if remembered); all 0 with no aim entry (1g: always 0 -- CHOICE: the plane exists, with its builder, so 1h adds one line) |
+
+Both uint8. Cost: one window call (625 lines) per known enemy per soldier
+per decision, plus one for the target; the routine is C++ (`sight_lines`,
+the 1c row). CHOICE: per soldier, not shared across the team in (b); if the
+budget of section 6 fails, the measured next step is one window per known
+enemy over the union rectangle of the team's windows, cropped per soldier.
+When cones return (rung 8) the enemy's facing enters here (design 3.4).
+
+### 3.6 The fire-lanes plane (near window; design 4.5)
+
+`fire_lanes(sim, team, lane_cell, lane_halfwidth)` once per team per
+decision (`team_picture.py:227`, from STATE: every mate holding its trigger;
+the dials `[bots] lane_cell` / `lane_halfwidth` `config.toml:4953-4954`,
+CHOICE: the same lanes the bots read, one source); the plane cell for tile
+`(y, x)` is 1 when `grid[y // cell, x // cell]` is an owner other than me or
+-2 (several owners) -- "the tiles that lie in a team-mate's line of fire".
+uint8.
+
+### 3.7 The far window's unit planes (design 3.4 "in the far window also"; the critique's major 4)
+
+Drawn FROM THE LIST, never from the crop's `units_*` planes
+(`sensor_accessor.py:84-92`, which see every unit and are not part of this
+spec):
+
+| name | what | type |
+|---|---|---|
+| `mates` | the number of living team-mates (me excluded) whose centre tile lies in the block | uint8 count |
+| `enemies` | the number of entries of type 1 (seen now) whose centre lies in the block | uint8 count |
+| `records` | the number of entries of type 2 (CHOICE: the remembered places drawn too, as a third plane, so the far map shows what the list shows) | uint8 count |
+
+### 3.8 The order's planes (far window; design 3.5, 5.2)
+
+| name | what | type |
+|---|---|---|
+| `route` | `route(sim, graph, order_where, fp)` (1.7): per block the MIN of the field over the block's 16 anchor cells, divided by `L_ref`, squashed; -1 where every cell is `UNREACHED` or when I hold no order | float16 |
+| `place` | 1 on a block that holds a tile of my order's place (a room's rectangle, `graph.grid == room`; an opening's rectangle); 0 otherwise or with no order | uint8 |
+
+### 3.9 The planes in order
+
+Near (13 planes, `(13, 25, 25)`): `wall` u8, `door` u8, the eight physics
+planes f16 in 3.2's order, `watched` u8, `sees_target` u8, `lanes` u8. Stored
+as two arrays, `near_f` `(8, 25, 25)` float16 and `near_u` `(5, 25, 25)`
+uint8, in the orders `[temperature, fire, poison, teargas, smoke, pressure,
+wind_x, wind_y]` and `[wall, door, watched, sees_target, lanes]`.
+
+Far (15 planes): `far_f` `(10, 25, 25)` float16 = `[wall_share, the eight
+physics planes, route]`; `far_u` `(5, 25, 25)` uint8 = `[door, mates,
+enemies, records, place]`.
+
+Per soldier per decision: `(8 + 10) * 625 * 2 + (5 + 5) * 625 = 28.75 KB`.
+
 <!-- continued -->
