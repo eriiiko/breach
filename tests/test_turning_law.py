@@ -635,8 +635,15 @@ _RE_PIN_1_BOX = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 035304b74d47d0dfcd73e661ebe4401121994f1a121abcc851c301e7a3c588c7)
-    unit_stream="1e05debc38bf2ad1aebc1c8b5a758110"
-                "19205bc09e78bc506b7fe0aab20f0f57")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 1e05debc38bf2ad1aebc1c8b5a75811019205bc09e78bc506b7fe0aab20f0f57)
+    unit_stream="764ee188445aa1bf3e4f8357a44d2576"
+                "edabd6d0f301b9ce6b87c435f2d3879d")
 
 
 def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(

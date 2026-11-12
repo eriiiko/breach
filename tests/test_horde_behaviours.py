@@ -105,8 +105,15 @@ _STAGE1_BOX = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 05bdbac7c76250b949ef35aef81fdd403bd89af88232eebe061bf753e47b1e3d)
-    unit_stream="a8f43fe1faf94900de0fb22c1b75e32d"
-                "0ca991e25a69412e544a77b1b47343df")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was a8f43fe1faf94900de0fb22c1b75e32d0ca991e25a69412e544a77b1b47343df)
+    unit_stream="4a87a8bb9efdef78446729e66cebed58"
+                "acfdda243deb7ba4cdff947a55fa2740")
 
 
 def _off(monkeypatch, keep=()):
