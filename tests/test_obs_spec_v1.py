@@ -1044,7 +1044,10 @@ def _windows_of(sim, ctx, u, know=None):
 
 def test_the_planes_equal_an_independent_reconstruction():
     """Property (spec 7, (b)): over the ship_demo bots-vs-bots match,
-    observed every 24 ticks for 600 ticks, every plane of ``near_f`` /
+    observed every 24 ticks for 600 ticks (and on, to at most 1200, until
+    every counted plane has been non-empty once: since Erik's zombie bite
+    balance of 2026-11-12 the first fire lane comes on tick 984), every
+    plane of ``near_f`` /
     ``near_u`` / ``far_f`` / ``far_u`` equals ``_obs_reference.py``'s tile
     by tile and block by block (``has_los`` per cell, the loops' maxima,
     the counts from the picture) -- and the vector's ``air`` block is the
@@ -1060,8 +1063,10 @@ def test_the_planes_equal_an_independent_reconstruction():
     # door and wind planes are covered by the random-map reduce test)
     seen = {"watched": 0, "lanes": 0, "enemies": 0, "records": 0}
     rows_checked = 0
-    for _ in range(600):
+    for _ in range(1200):
         ses.tick()
+        if sim.tick > 600 and all(v > 0 for v in seen.values()):
+            break
         if sim.tick % 24 or ses.is_terminal():
             continue
         out = _observe(sim, ctx, spec, S)
