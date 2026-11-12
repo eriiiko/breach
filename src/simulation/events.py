@@ -272,6 +272,9 @@ class ExplosionEvent:
     flash_color: tuple = (1.0, 1.0, 1.0)
     approach: object = None         # (y, x) the charge came from, as
                                     # execute_payload received it, or None
+    payload: str = ""               # the [payloads.*] row that fired (#202:
+                                    # the sound layer's binding key); "" =
+                                    # not from a row. Render-only.
 
 
 @dataclass

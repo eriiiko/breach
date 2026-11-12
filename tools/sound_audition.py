@@ -1,6 +1,7 @@
 """Sound audition: hear generated clips the way the game would play them.
 
     <breach-py> tools/sound_audition.py [--dir DIR] [--rate 12] [--prepare]
+    <breach-py> tools/sound_audition.py --export SRC DST [--shot N]
 
 DIR (default docs/sound/prototypes/seed_audio) holds generated clips
 (.mp3 / .wav). Every clip whose name starts with `carbine_` and does not
@@ -20,6 +21,9 @@ reverb rings out. Single shots and bursts are the same code.
   V              variation on / off (random sample, pitch and volume +-3 %)
   UP / DOWN      choke fade, ms                    LEFT / RIGHT     rounds per second
   F1..F12        the other clips in DIR (a name with `loop` toggles a loop)
+
+`--export` writes one clip as a game sample (assets/sounds/...): the way
+every sample of the sound layer (audio/) is made.
 
 This is a listening tool, not the game's audio layer.
 """
@@ -55,6 +59,23 @@ def decode(path: Path) -> tuple[np.ndarray, int]:
     rl.unload_wave_samples(ptr)
     rl.unload_wave(w)
     return (x if ch == 1 else x.reshape(-1, ch)), sr
+
+
+def export_clip(src: Path, dst: Path, shot: int = 1) -> None:
+    """One generated clip -> one game sample (assets/sounds/): shot number
+    `shot` of the clip (1 = the first; 0 = the whole clip -- a sound made of
+    several transients, a reload, an explosion with debris), from its first
+    transient, normalized."""
+    x, sr = decode(src)
+    shots = sc.split_shots(x, sr) or [sc.trim(x, sr)]
+    if shot == 0:                       # the whole clip, only trimmed
+        shots, shot = [sc.trim(x, sr)], 1
+    if not (1 <= shot <= len(shots)):
+        raise SystemExit(f"{src.name} has {len(shots)} shot(s), no shot {shot}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    y = sc.normalize(shots[shot - 1])
+    sc.write_wav(dst, y, sr)
+    print(f"{src.name} shot {shot} -> {dst} ({len(y) * 1000 / sr:.0f} ms, {sr} Hz)")
 
 
 def is_shot_source(p: Path) -> bool:
@@ -263,7 +284,13 @@ def main() -> None:
     ap.add_argument("--dir", type=Path, default=DEFAULT_DIR)
     ap.add_argument("--rate", type=float, default=12.0, help="rounds per second (the carbine: 12)")
     ap.add_argument("--prepare", action="store_true", help="cut the samples, print, exit")
+    ap.add_argument("--export", nargs=2, type=Path, metavar=("SRC", "DST"),
+                    help="write one clip as a game sample (trimmed, normalized WAV), exit")
+    ap.add_argument("--shot", type=int, default=1, help="with --export: which shot of the clip (0 = the whole clip)")
     a = ap.parse_args()
+    if a.export:
+        export_clip(a.export[0], a.export[1], a.shot)
+        return
     if not a.dir.is_dir():
         raise SystemExit(f"no such folder: {a.dir}")
     if a.prepare:
