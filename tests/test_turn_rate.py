@@ -328,8 +328,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was cf0300aa1adc8bd8f1ea33a1938a54eea0bea6a77701abe14fa1818c9d85106f)
-    tick_digest="926d40875787f2cff919f1df62aefb9a"
-                "a1682dcd3764e9023be73cb59a5a76f6",
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 926d40875787f2cff919f1df62aefb9aa1682dcd3764e9023be73cb59a5a76f6)
+    tick_digest="15b04577c53c82d949cd7bc4b85c778e"
+                "90c8d4969e42cb8a1f3a272794e4975c",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -340,8 +347,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 4c6bae4002187bd7bb77bfaa88e832d950b134c644eda8cb76696f6f2f8c8668)
-    unit_stream="09aabf488d15593cb576b9bc19a03f44"
-                "1dd3691fd6bdb601656c107d0fce292c")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 09aabf488d15593cb576b9bc19a03f441dd3691fd6bdb601656c107d0fce292c)
+    unit_stream="03d85730046dd1afce99dc1c39f62756"
+                "d6ff31dc16b0ca70fe89a20f70bf1a7e")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

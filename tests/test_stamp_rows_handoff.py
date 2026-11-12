@@ -118,8 +118,7 @@ def test_the_rows_alone_rebuild_the_five_planes():
     units = _units()
     for t in range(6):
         for i, u in enumerate(units):
-            u.x += ((i + t) % 3) - 1
-            u.y += ((2 * i + t) % 3) - 1
+            u.set_pos(u.x + ((i + t) % 3) - 1, u.y + ((2 * i + t) % 3) - 1)
         g.stamp_units(units)
         rows = g.take_stamp_rows()
         assert rows is not None and rows.dtype == np.int32 and rows.shape[1] == 9

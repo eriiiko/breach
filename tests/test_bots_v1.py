@@ -202,7 +202,7 @@ def test_a_bot_holds_fire_with_a_teammate_on_the_line(tmp_path):
         team.handle_frame(sim, None)
         sim.clear_move_dir(mate.id)
         sim.set_trigger(mate.id, False)
-        mate.x, mate.y = 10.0, 24.0       # pin the mate on the line
+        mate.set_pos(10.0, 24.0)       # pin the mate on the line
         sim.step()
         watch(sim)
     assert n[0] == 0
@@ -367,8 +367,15 @@ _PRE_G8P_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 8df76cf7f0a3681c583c99e10f31624d8803f33c4ecd3adb3fdd0535e5a4cf46)
-    tick_digest="b58afffbe86c3c2f47969fc5e29d7a4c"
-                "4ab522e32bb14b7c7ff8e3ef67c51290",
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was b58afffbe86c3c2f47969fc5e29d7a4c4ab522e32bb14b7c7ff8e3ef67c51290)
+    tick_digest="cea75eeedc7e953e210c4a45201870a2"
+                "c36519a67995a3d9c18192f34212dd42",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -379,8 +386,15 @@ _PRE_G8P_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 1082d3b490f52183e4f047ed136219ecf2e53670e946b20a63ed989d46065a76)
-    unit_stream="f9b510c240c4e80554afa85419f305ae"
-                "c6d4de7d4b94ae58c0d85d66d51a42d5")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was f9b510c240c4e80554afa85419f305aec6d4de7d4b94ae58c0d85d66d51a42d5)
+    unit_stream="1a3e3d18b044c64c90472ab6a628550e"
+                "3b7b5c1989f9a36ee36723784941da73")
 
 
 def v1_spec(level):

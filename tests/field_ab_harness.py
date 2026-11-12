@@ -59,7 +59,7 @@ UNIT_DIGEST_KEY = "__unit_state__"
 
 # The synced unit state the digest captures is THE UNIT SCHEMA's group S
 # (#29 P3a, ``simulation.unit_schema.COLUMNS``): every column under its key,
-# hashed always (id, life_state, x, y, facing, current_hp) or only while it
+# hashed always (id, life_state, x_q, y_q, facing, current_hp) or only while it
 # differs from its default (absence-transparent). WEGO's ``ap`` / ``n_orders``
 # and the derived ``tile_x`` / ``tile_y`` / ``alive`` / ``faction`` /
 # ``offsets`` left the record at P3a. Kept as the record's key tuple for
@@ -168,8 +168,8 @@ def _snapshot(gmap, fields):
 def _unit_record(u):
     """One unit's synced record: THE schema's (#29 P3a,
     ``simulation.unit_schema.digest_record``) -- every group-S column's
-    integer encoding under its key, positions as ``round(v * 1e9)`` until
-    P3c, the hp as its exact Q16 count, the status block fixed-width, the
+    integer encoding under its key, the positions as their Q16 ints
+    ``x_q`` / ``y_q`` (#29 P3c), the hp as its exact Q16 count, the status block fixed-width, the
     intents with a presence flag, each column only while it differs from its
     default bar the *always* ones. Built by ``getattr``, so a stand-in object
     records its defaults."""

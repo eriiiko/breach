@@ -215,7 +215,7 @@ STATES = {
               ("planting, done now", _planting(0)),
               ("no charge", _no_charge)],
     "use": [("rest", _none), ("stunned 3", _stunned(3)),
-            ("three tiles from the door", lambda w: setattr(w.a, "x", 8.0))],
+            ("three tiles from the door", lambda w: w.a.set_pos(8.0, w.a.y))],
     "reload": [("never bound (full)", _none), ("bound, full", _bound()),
                ("bound, partial, 2 spare", _bound(10, 2)),
                ("bound, partial, untracked spares",
@@ -706,7 +706,7 @@ def test_door_in_reach_is_the_ring_scan_and_use_door_is_unchanged():
         door.alive = not dead
         for y in range(door.span[0][0] - 6, door.span[-1][0] + 6):
             for x in range(door.span[0][1] - 6, door.span[-1][1] + 6):
-                u.x, u.y = float(x), float(y)
+                u.set_pos(float(x), float(y))
                 want = _ring_scan_use_door(sim, u)
                 assert verb_gates.use_door(sim, u) is want, (x, y, dead)
                 assert verb_gates.door_in_reach(u, door) == (

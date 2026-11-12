@@ -120,14 +120,14 @@ def _move(units, t, scene):
     for i, u in enumerate(units):
         dx = ((i * 7 + t * 3) % 5) - 2
         dy = ((i * 5 + t * 2) % 5) - 2
-        u.x = float(min(W + 1, max(-1, u.x + dx * 0.9)))
-        u.y = float(min(H + 1, max(-1, u.y + dy * 0.9)))
+        u.set_pos(float(min(W + 1, max(-1, u.x + dx * 0.9))),
+                  float(min(H + 1, max(-1, u.y + dy * 0.9))))
     if scene in ("crowd", "edits"):
         if t == 5:
             units[2].alive = False
         if t == 8:
             units[2].alive = True
-            units[2].x, units[2].y = 15.0, 14.0
+            units[2].set_pos(15.0, 14.0)
 
 
 def _dense():

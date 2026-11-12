@@ -555,8 +555,7 @@ class Simulation:
         """
         if position is not None:
             x, y = position
-            unit.x = float(x)
-            unit.y = float(y)
+            unit.set_pos(x, y)            # #29 P3c: the float door
 
         # Deterministic predefined attributes (ingress door 2 — quantized
         # species means; see generation.py). The sim RNG no longer touches
@@ -2553,8 +2552,10 @@ class Simulation:
                     u.path_tick_offset += 1
                     continue
                 u.face_towards(px, py)
-                u.x = px
-                u.y = py
+                # #29 P3c: the precomputed path's interpolated position is
+                # quantized ONCE at the float door (legacy WEGO: its
+                # (st + 1) / step_ticks fractions are off the Q16 grid).
+                u.set_pos(px, py)
 
     def _displace_pushed(self) -> None:
         """Slot 3 under a ruleset that drives the units itself (OnePhaseWEGO,
@@ -2639,9 +2640,9 @@ class Simulation:
         convert_marines_to_zombies(self.units)
 
         for u in self.units:
-            # Snap float position to nearest integer tile boundary.
-            u.x = float(round(u.x))
-            u.y = float(round(u.y))
+            # Snap the position to the nearest integer tile boundary (the
+            # same round() as before #29 P3c, on the Q16 position's view).
+            u.set_pos_q(round(u.x) << 16, round(u.y) << 16)
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999

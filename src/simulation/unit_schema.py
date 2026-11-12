@@ -33,9 +33,11 @@ The encoding reuses the entity system's field kinds (``int`` / ``q16`` /
 (:func:`record_bytes`, under the ``UNIT_SECT_V2`` preamble); the unit-only
 kinds are ``table`` (a kit string as its row index in a named config table,
 ``-1`` = none), ``block`` (a fixed-width list of ints), ``optional`` (an
-intent object or ``None``, encoded as a presence flag + its integer fields)
-and ``float_e9`` (a float the sim has not made integer yet, encoded as
-``round(v * 1e9)`` -- the positions until P3c, the spray's aim until P3e).
+intent object or ``None``, encoded as a presence flag + its integer fields).
+The spray's aim, a float until P3e, is encoded inside its ``optional``
+columns as ``round(v * 1e9)``. The positions are Q16 integers since P3c
+(``x_q`` / ``y_q``; ``Unit.x`` / ``Unit.y`` are their read-only float views,
+written only through ``Unit.set_pos_q`` / ``Unit.set_pos``).
 
 The capacities live here too: the status block's width
 (:data:`STATUS_CAPACITY`, with the ``STACK_STACK`` cap
@@ -107,7 +109,6 @@ CHARGE_SECT_PREAMBLE = b"CHARGE_SECT_V1\n"
 KIND_TABLE = "table"          # a config row name as its row index (-1 none)
 KIND_BLOCK = "block"          # a fixed-width list of ints
 KIND_OPTIONAL = "optional"    # an intent object or None: presence + ints
-KIND_FLOAT_E9 = "float_e9"    # a float until its integer patch: round(v*1e9)
 
 DIGEST_ALWAYS = "always"
 DIGEST_NONDEFAULT = "nondefault"
@@ -486,10 +487,12 @@ COLUMNS: tuple[Column, ...] = (
     _c("footprint", KIND_INT, "kit", 3),
     _c("mass_g", KIND_INT, "kit", 0, note="body + kit, integer grams"),
     # position
-    _c("x", KIND_FLOAT_E9, "position", 0.0, _enc_e9, _dec_e9,
-       digest=DIGEST_ALWAYS, until="P3c"),
-    _c("y", KIND_FLOAT_E9, "position", 0.0, _enc_e9, _dec_e9,
-       digest=DIGEST_ALWAYS, until="P3c"),
+    # Q16 tiles (#29 P3c): `x` / `y` are their read-only float views;
+    # written only through Unit.set_pos_q (Unit.set_pos the float door)
+    _c("x_q", KIND_Q16, "position", 0, digest=DIGEST_ALWAYS, store="_x_q",
+       note="Q16 tiles; `x` = x_q / 65536 (read-only), P3c"),
+    _c("y_q", KIND_Q16, "position", 0, digest=DIGEST_ALWAYS, store="_y_q",
+       note="Q16 tiles; `y` = y_q / 65536 (read-only), P3c"),
     _c("facing_q", KIND_Q16, "position", 0, digest=DIGEST_ALWAYS,
        store="_facing_q", key="facing"),
     _c("facing_target_q", KIND_Q16, "position", 0, key="turn",

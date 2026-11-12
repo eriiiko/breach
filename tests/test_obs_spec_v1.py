@@ -1307,7 +1307,7 @@ def test_felt_temperature_is_the_heat_rows(tmp_path):
         rad[...] = rng.integers(0, 5 << 20, size=rad.shape)
     hits = 0
     for _ in range(200):
-        me.x, me.y = float(rng.integers(1, 55)), float(rng.integers(1, 35))
+        me.set_pos(float(rng.integers(1, 55)), float(rng.integers(1, 35)))
         got = exchange.felt_temperature(g, me, dials)
         want = R.felt_temperature(sim, me)
         assert got[0] == want

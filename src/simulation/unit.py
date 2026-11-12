@@ -16,11 +16,11 @@ locked design decisions (``docs/patch_game_logic_migration.md``):
   ``zombie_speed_override`` monkey-patch (game.py:1294, 1301, 1944).
   It always exists; its default ``None`` is the ``[speeds]`` shamble
   cadence at the map's tile size (G1p-c), resolved by the zombie walk.
-- Position lives in physics-tile units as float ``x`` / ``y``.
+- Position lives in physics-tile units as the Q16.16 ints ``x_q`` /
+  ``y_q`` (#29 P3c); ``x`` / ``y`` are their READ-ONLY float views (exact
+  n/65536 doubles), written only through :meth:`Unit.set_pos_q` (the
+  float door :meth:`Unit.set_pos` quantizes once, half away from zero).
   Integer matrix indexing via ``tile_x`` / ``tile_y`` properties.
-  The old fxf/fyf float fields and fx/fy integer fields are gone —
-  ``x`` and ``y`` are the sole source of truth (coord system cleanup
-  2026-05-20).
 
 Unit class foundation additions (2026-05-21):
 - ``species_id``, ``base_stats``, ``mass``, ``base_speed`` — sampled from
@@ -105,9 +105,11 @@ THROW_NO_REACH = unit_schema.THROW_NO_REACH
 class Unit:
     """Game entity: marine, zombie, or future creature.
 
-    Position lives in physics-tile units. ``x`` and ``y`` are float;
-    integer tile indices for matrix access come from ``tile_x`` /
-    ``tile_y`` properties (which simply floor the float).
+    Position lives in physics-tile units: the synced ``x_q`` / ``y_q``
+    (Q16.16 ints, #29 P3c) with ``x`` / ``y`` their read-only float views;
+    written ONLY through :meth:`set_pos_q` (or the float door
+    :meth:`set_pos`). Integer tile indices for matrix access come from
+    ``tile_x`` / ``tile_y`` (truncated toward zero, as ``int(x)`` was).
 
     ``team`` semantics (#119): any int; hostility = a different team. Marine
     teams count from 0 (the human controls ``Simulation.player_team``);
@@ -170,10 +172,10 @@ class Unit:
         # Stable integer id, assigned by Simulation.add_unit; the schema
         # default -1 means the unit has not yet been added.
 
-        # Position on the physics-tile grid. Float so renderer can
-        # interpolate; integer indexing via tile_x / tile_y properties.
-        self.x = float(x)
-        self.y = float(y)
+        # Position on the physics-tile grid: Q16.16 ints (#29 P3c), the
+        # float spawn position quantized ONCE at the float door; ``x`` /
+        # ``y`` are read-only float views, tile_x / tile_y the indices.
+        self.set_pos(x, y)
 
         # Side length of the unit's square footprint, in physics tiles.
         # Kept as a plain int field for backward compatibility with callers
@@ -573,15 +575,65 @@ class Unit:
     # Tile-coordinate helpers
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Position (#29 P3c): Q16.16 ints, ONE writer
+    # ------------------------------------------------------------------
+
+    @property
+    def x_q(self) -> int:
+        """The synced x position, Q16.16 tiles (an int)."""
+        return self._x_q
+
+    @property
+    def y_q(self) -> int:
+        """The synced y position, Q16.16 tiles (an int)."""
+        return self._y_q
+
+    @property
+    def x(self) -> float:
+        """The x position in tiles: a READ-ONLY float view of ``x_q`` (an
+        exact n/65536 double) for every float reader. No setter: write
+        through :meth:`set_pos_q` / :meth:`set_pos`."""
+        return self._x_q / 65536.0
+
+    @property
+    def y(self) -> float:
+        """The y position in tiles: the read-only float view of ``y_q``."""
+        return self._y_q / 65536.0
+
+    def set_pos_q(self, x_q: int, y_q: int) -> None:
+        """THE position writer (#29 P3c): every move, spawn, teleport and
+        snap of a unit lands here as Q16.16 ints. Refuses a value that is
+        not an integer (a bool, a float with a fraction) by raising -- a
+        float position goes through :meth:`set_pos`, quantized once."""
+        for name, v in (("x_q", x_q), ("y_q", y_q)):
+            if isinstance(v, bool) or int(v) != v:
+                raise ValueError(f"unit {getattr(self, 'name', '?')}: "
+                                 f"{name} {v!r} is not an integer (P3c)")
+        self._x_q = int(x_q)
+        self._y_q = int(y_q)
+
+    def set_pos(self, x: float, y: float) -> None:
+        """The FLOAT door onto :meth:`set_pos_q`: quantizes each coordinate
+        ONCE, round half away from zero (``unit_fixed.quantize_scalar``,
+        the kit's ``fixedpoint::quantize`` -- the rule ``unit_impulse.move``
+        applied to a position before P3c). A value already on the Q16 grid
+        is kept exactly."""
+        self.set_pos_q(unit_fixed.quantize_scalar(x),
+                       unit_fixed.quantize_scalar(y))
+
     @property
     def tile_x(self) -> int:
-        """Integer tile index (col) — for matrix access."""
-        return int(self.x)
+        """Integer tile index (col) — for matrix access: ``int(x)``
+        (truncation toward zero), computed on the integer."""
+        q = self._x_q
+        return q >> 16 if q >= 0 else -((-q) >> 16)
 
     @property
     def tile_y(self) -> int:
-        """Integer tile index (row) — for matrix access."""
-        return int(self.y)
+        """Integer tile index (row) — for matrix access: ``int(y)``."""
+        q = self._y_q
+        return q >> 16 if q >= 0 else -((-q) >> 16)
 
     @property
     def has_grenade(self) -> int:
