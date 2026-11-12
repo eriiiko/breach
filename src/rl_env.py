@@ -26,6 +26,10 @@ missing key or a mistyped value (:func:`load_run`)::
                                   # refused INSIDE the checkout): the run
                                   # manifest goes there
     [obs]
+    spec = "crop"                 # OPTIONAL: the observation spec (#195 1g):
+                                  # "crop" (default, the placeholder rows
+                                  # below) or "v1" (simulation.obs_spec_v1;
+                                  # the three crop keys are then refused)
     channels = ["pressure", "smoke", "temperature", "solid", "material",
                 "units_own", "units_enemy", "units_zombie"]
     crop_radius = 8               # the crop is (2r+1) x (2r+1) tiles
@@ -33,6 +37,21 @@ missing key or a mistyped value (:func:`load_run`)::
     [reward]                      # a weight per counter name (absent = 0)
     kills = 1.0
     deaths_bullet = -1.0
+
+THE OBSERVATION (#195 1g). ``[obs] spec`` names the layout the sensor
+accessor's ``observe`` door serves (``sensor_accessor.OBS_SPECS``). Under
+``"v1"`` the keys are ``docs/rl_agent_obs_spec_v1_2026-11-12.md`` 4.1's:
+``vector`` ``(N, U, 97)`` float32, ``list`` ``(N, U, E, 67)`` float32 with
+``E = S + 33``, ``list_mask`` ``(N, U, E)`` uint8, ``list_uid`` ``(N, U, E)``
+int32 (an EQUALITY key for the decoder, never a network input), and the two
+row flags ``valid`` (the unit acts: alive and still on its team) and
+``in_match`` (the roster slot holds a unit, dead or turned included) --
+``(N, U)`` uint8 each; a row with ``valid`` 0 is all zeros. A run on ``"v1"``
+refuses a level without a room graph at the map's shape (the compass reads
+it). WHO MAY READ WHICH ROWS: a policy acting for team ``t`` reads only rows
+``t*S .. t*S + S - 1`` of every key, through :meth:`BatchedEnv.team_rows`
+(views of the env-owned arrays), and nothing of ``info``, ``reward`` or
+``counters``; the trainer reads those for its losses.
 
 EPISODES. Episode ``k`` of env ``e`` plays level ``levels[i]`` with match
 seed ``s``, ``(s, i) = episode_draw(run_seed, e, k, len(levels))``: ONE
@@ -213,6 +232,7 @@ class RunConfig:
     out_dir: str = ""           # [run] out_dir, resolved; "" = none
     sight: str | None = None    # [run] sight (#195 1a): replaces every level's
                                 # match.toml sight; None = the level's own
+    spec: str = "crop"          # [obs] spec (#195 1g): the observation layout
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -232,7 +252,11 @@ class RunConfig:
 _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
              "levels": True, "policy": True, "levels_dir": False,
              "out_dir": False, "sight": False}
-_OBS_KEYS = {"channels": True, "crop_radius": True, "vector": True}
+#: The ``[obs]`` keys per spec (#195 1g): the three crop keys belong to the
+#: ``"crop"`` placeholder alone; ``"v1"`` takes none (its layout is the spec).
+_OBS_KEYS = {"crop": {"spec": False, "channels": True, "crop_radius": True,
+                      "vector": True},
+             "v1": {"spec": False}}
 
 
 def _is_int(v) -> bool:
@@ -280,13 +304,26 @@ def parse_run(raw: dict, where: str = "run file",
     unknown controller, crop channel (``light`` included, until #81),
     vector field or counter."""
     from control_source import match_file_controllers
-    from simulation.sensor_accessor import resolve_crop_channels
+    from simulation.sensor_accessor import OBS_SPECS, resolve_crop_channels
     bad = sorted(set(raw) - {"run", "obs", "reward"})
     if bad:
         raise ValueError(f"{where}: unknown table(s) {bad} (a run file "
                          f"carries [run], [obs], [reward])")
     run = _table(raw, "run", _RUN_KEYS, where)
-    obs = _table(raw, "obs", _OBS_KEYS, where)
+    if not isinstance(raw.get("obs"), dict):
+        raise ValueError(f"{where}: missing table [obs]")
+    spec = raw["obs"].get("spec", "crop")
+    if not isinstance(spec, str) or spec not in OBS_SPECS:
+        raise ValueError(f"{where}: [obs] spec must be one of "
+                         f"{list(OBS_SPECS)}, got {spec!r}")
+    try:
+        obs = _table(raw, "obs", _OBS_KEYS[spec], where)
+    except ValueError as e:
+        if spec != "crop" and "unknown key" in str(e):
+            raise ValueError(f"{where}: {e} -- the crop keys (channels, "
+                             f"crop_radius, vector) belong to the 'crop' "
+                             f"spec; spec {spec!r} takes none") from None
+        raise
     if not isinstance(raw.get("reward"), dict):
         raise ValueError(f"{where}: missing table [reward]")
     seed = _int_key(run, "run", "seed", where, 0, 2 ** 64)
@@ -338,19 +375,21 @@ def parse_run(raw: dict, where: str = "run file",
     if "sight" in run:
         from simulation.match import check_sight
         sight = check_sight(run["sight"], f"{where}: [run] sight")
-    channels = _names_key(obs, "obs", "channels", where)
-    try:
-        channels = resolve_crop_channels(channels)
-    except ValueError as e:
-        raise ValueError(f"{where}: [obs] channels: {e}") from None
-    crop_radius = _int_key(obs, "obs", "crop_radius", where, 0)
-    vector = _names_key(obs, "obs", "vector", where, allow_empty=True)
-    for v in vector:
-        if v not in VECTOR_FIELDS:
-            raise ValueError(f"{where}: [obs] vector names {v!r} (known: "
-                             f"{sorted(VECTOR_FIELDS)})")
-    if len(set(vector)) != len(vector):
-        raise ValueError(f"{where}: [obs] vector names a field twice")
+    channels, crop_radius, vector = (), 0, ()
+    if spec == "crop":
+        channels = _names_key(obs, "obs", "channels", where)
+        try:
+            channels = resolve_crop_channels(channels)
+        except ValueError as e:
+            raise ValueError(f"{where}: [obs] channels: {e}") from None
+        crop_radius = _int_key(obs, "obs", "crop_radius", where, 0)
+        vector = _names_key(obs, "obs", "vector", where, allow_empty=True)
+        for v in vector:
+            if v not in VECTOR_FIELDS:
+                raise ValueError(f"{where}: [obs] vector names {v!r} "
+                                 f"(known: {sorted(VECTOR_FIELDS)})")
+        if len(set(vector)) != len(vector):
+            raise ValueError(f"{where}: [obs] vector names a field twice")
     weights = {}
     for k, v in raw["reward"].items():
         if k not in COUNTER_NAMES:
@@ -365,7 +404,7 @@ def parse_run(raw: dict, where: str = "run file",
                      levels=levels, policy=pol, levels_dir=levels_dir,
                      channels=channels, crop_radius=crop_radius,
                      vector=vector, reward=reward, out_dir=out_dir,
-                     sight=sight)
+                     sight=sight, spec=spec)
 
 
 def load_run(path) -> RunConfig:
@@ -401,6 +440,7 @@ class Layout:
     crop_radius: int
     vector: tuple
     counters: tuple = field(default=COUNTER_NAMES)
+    spec: str = "crop"          # the observation spec (#195 1g)
 
     @property
     def n_rows(self) -> int:
@@ -410,18 +450,40 @@ class Layout:
     def crop_side(self) -> int:
         return 2 * self.crop_radius + 1
 
+    @property
+    def n_entries(self) -> int:
+        """``E`` of the ``"v1"`` list: ``S + 33`` (spec 2.1)."""
+        from simulation.obs_spec_v1 import ENTRIES_BEYOND_SLOTS
+        return self.n_slots + ENTRIES_BEYOND_SLOTS
+
+    @property
+    def obs_keys(self) -> tuple:
+        """The observation keys of the spec, in order (each has a
+        ``final_`` twin)."""
+        if self.spec == "crop":
+            return ("crop", "vector", "valid")
+        return ("vector", "list", "list_mask", "list_uid", "valid",
+                "in_match")
+
+    def obs_shapes(self) -> dict:
+        n, u = self.n_envs, self.n_rows
+        if self.spec == "crop":
+            k = self.crop_side
+            c, v = len(self.channels), len(self.vector)
+            return {"crop": ((n, u, c, k, k), np.float32),
+                    "vector": ((n, u, v), np.float32),
+                    "valid": ((n, u), np.uint8)}
+        from simulation.obs_spec_v1 import shapes
+        return shapes(n, u, self.n_slots)
+
     def shapes(self) -> dict:
         n, u = self.n_envs, self.n_rows
-        k = self.crop_side
-        c, v, kk = len(self.channels), len(self.vector), len(self.counters)
-        return {
-            "actions": ((n, u, self.n_actions), np.int32),
-            "crop": ((n, u, c, k, k), np.float32),
-            "vector": ((n, u, v), np.float32),
-            "valid": ((n, u), np.uint8),
-            "final_crop": ((n, u, c, k, k), np.float32),
-            "final_vector": ((n, u, v), np.float32),
-            "final_valid": ((n, u), np.uint8),
+        kk = len(self.counters)
+        out = {"actions": ((n, u, self.n_actions), np.int32)}
+        obs = self.obs_shapes()
+        out.update(obs)
+        out.update({"final_" + k: v for k, v in obs.items()})
+        out.update({
             "reward": ((n, u), np.float32),
             "counters": ((n, u, kk), np.float32),
             "terminated": ((n,), np.uint8),
@@ -431,7 +493,8 @@ class Layout:
             "episode_seed": ((n,), np.uint64),
             "level": ((n,), np.int64),
             "ticks": ((n,), np.int64),
-        }
+        })
+        return out
 
 
 def _team_slots(level) -> list:
@@ -448,12 +511,15 @@ def make_layout(run: RunConfig, levels: list) -> Layout:
     n_slots = max(max(_team_slots(lv)) for lv in levels)
     return Layout(n_envs=run.n_envs, n_teams=n_teams, n_slots=n_slots,
                   n_actions=len(action_schema()), channels=run.channels,
-                  crop_radius=run.crop_radius, vector=run.vector)
+                  crop_radius=run.crop_radius, vector=run.vector,
+                  spec=run.spec)
 
 
 def load_levels(run: RunConfig) -> list:
-    """Load every level of the run (refusing one without a match.toml or
-    whose team count disagrees with a per-team ``policy`` list)."""
+    """Load every level of the run (refusing one without a match.toml,
+    whose team count disagrees with a per-team ``policy`` list, or -- under
+    an observation spec that reads the room graph, ``"v1"`` -- without a
+    room graph at the map's shape, #195 1g)."""
     import level_loader
     out = []
     for name in run.levels:
@@ -462,6 +528,15 @@ def load_levels(run: RunConfig) -> list:
             raise ValueError(f"run level {name!r} has no "
                              f"{level_loader.MATCH_FILENAME}")
         run.team_controllers(len(lv.match.teams), repr(name))
+        if run.spec == "v1":
+            graph = lv.rooms
+            if graph is None or (tuple(graph.grid.shape)
+                                 != tuple(lv.tilemap.shape)):
+                raise ValueError(
+                    f"run level {name!r} has no room graph at the map's "
+                    f"shape ({level_loader.ROOMS_FILENAME}): a run whose "
+                    f"observation spec ({run.spec!r}) reads the room graph "
+                    f"refuses a level without one")
         out.append(lv)
     return out
 
@@ -499,6 +574,7 @@ class EnvRunner:
         self.session = None
         self.seed = None
         self.level_index = None
+        self.ctx = None             # the "v1" spec's per-episode context
 
     # -- episodes -------------------------------------------------------
     def reset(self) -> list:
@@ -533,6 +609,9 @@ class EnvRunner:
             for u in sim.roster(t):
                 self._id_row[u.id] = (t, t * S + u.slot)
         self._limit = self.session.rules.limit_ticks(sim)
+        if self.layout.spec == "v1":
+            from simulation.obs_spec_v1 import ObsContext
+            self.ctx = ObsContext.build(sim, spec, S)
         return [(self.k, 0, *self.session.digests())]
 
     def step(self, actions) -> dict:
@@ -626,18 +705,42 @@ class EnvRunner:
                     out[t * S + u.slot] = u
         return out
 
-    def observe(self, crop_out, vector_out, valid_out) -> None:
-        """Write the observation into the given ``(U, ...)`` views."""
+    def row_flags(self) -> tuple:
+        """``(valid, in_match)`` per row (spec 4.2): ``in_match`` while the
+        roster slot holds a unit (dead or turned included), ``valid`` while
+        that unit is alive and still on the row's team; an empty roster
+        place reads 0, 0."""
+        sim = self.session.sim
+        S = self.layout.n_slots
+        n = self.layout.n_rows
+        valid = np.zeros(n, dtype=np.uint8)
+        in_match = np.zeros(n, dtype=np.uint8)
+        for t in range(len(self.session.spec.teams)):
+            for u in sim.roster(t):
+                if u is None:
+                    continue
+                in_match[t * S + u.slot] = 1
+                if u.alive and u.team == t:
+                    valid[t * S + u.slot] = 1
+        return valid, in_match
+
+    def observe(self, out: dict) -> None:
+        """Write the observation into ``out``'s ``(U, ...)`` views (the
+        spec's keys, ``layout.obs_keys``) through the sensor accessor's
+        ``observe`` door, and the row flags beside it."""
+        sim = self.session.sim
         units = self.row_units()
-        crop_out[...] = self.accessor.crop(
-            units, self.layout.channels, self.layout.crop_radius,
-            all_units=self.session.sim.units)
-        vector_out[...] = 0.0
-        for i, u in enumerate(units):
-            valid_out[i] = u is not None
-            if u is not None:
-                for j, f in enumerate(self._vec):
-                    vector_out[i, j] = f(u)
+        if self.layout.spec == "crop":
+            self.accessor.observe("crop", units, out,
+                                  channels=self.layout.channels,
+                                  r=self.layout.crop_radius,
+                                  all_units=sim.units, vector_fields=self._vec)
+            out["valid"][...] = [u is not None for u in units]
+            return
+        self.accessor.observe("v1", units, out, sim=sim, context=self.ctx)
+        valid, in_match = self.row_flags()
+        out["valid"][...] = valid
+        out["in_match"][...] = in_match
 
 
 # ---------------------------------------------------------------------------
@@ -681,12 +784,14 @@ def _worker_main(conn, task: dict) -> None:
         runners = {e: EnvRunner(e, run, layout, levels, breach_physics=bp)
                    for e in task["envs"]}
 
+        keys = layout.obs_keys
+
         def publish(e, r):
             a["tick"][e] = r.session.tick_count
             a["episode"][e] = r.k
             a["episode_seed"][e] = r.seed
             a["level"][e] = r.level_index
-            r.observe(a["crop"][e], a["vector"][e], a["valid"][e])
+            r.observe({k: a[k][e] for k in keys})
 
         conn.send(("ready", os.getpid()))
         while True:
@@ -712,8 +817,7 @@ def _worker_main(conn, task: dict) -> None:
                     a["truncated"][e] = out["truncated"]
                     cps = out["checkpoints"]
                     if out["ended"]:
-                        r.observe(a["final_crop"][e], a["final_vector"][e],
-                                  a["final_valid"][e])
+                        r.observe({k: a["final_" + k][e] for k in keys})
                         cps = cps + r.reset()
                     publish(e, r)
                     info[e] = {"checkpoints": cps, "ended": out["ended"],
@@ -1108,12 +1212,17 @@ class BatchedEnv:
                 self._shm[key] = shm
                 self._a[key] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
                 self._a[key][...] = 0
-            # The env-owned observation buffers (see the module doc).
-            self._buf = {k: np.zeros_like(self._a[k])
-                         for k in ("crop", "vector", "final_crop",
-                                   "final_vector")}
-            self._buf["final_valid"] = np.zeros(
-                self._a["final_valid"].shape, dtype=bool)
+            # The env-owned observation buffers (see the module doc): one
+            # per observation key of the spec and its ``final_`` twin. The
+            # "crop" spec's ``valid`` keeps its bool copy (as it was).
+            self._buf = {}
+            for k in self.layout.obs_keys:
+                if not (self.layout.spec == "crop" and k == "valid"):
+                    self._buf[k] = np.zeros_like(self._a[k])
+                self._buf["final_" + k] = (
+                    np.zeros(self._a["final_" + k].shape, dtype=bool)
+                    if self.layout.spec == "crop" and k == "valid"
+                    else np.zeros_like(self._a["final_" + k]))
             self._final_rows = np.zeros(n, dtype=bool)
             blocks = np.array_split(np.arange(n), self.n_workers)
             ctx = mp.get_context("spawn")
@@ -1212,20 +1321,23 @@ class BatchedEnv:
 
     def _obs(self) -> dict:
         """The observation, in the env's own buffers (valid until the next
-        step / reset; see the module doc)."""
+        step / reset; see the module doc): the spec's keys."""
         a, b = self._a, self._buf
-        np.copyto(b["crop"], a["crop"])
-        np.copyto(b["vector"], a["vector"])
-        return {"crop": b["crop"], "vector": b["vector"],
-                "valid": a["valid"].astype(bool)}
+        out = {}
+        for k in self.layout.obs_keys:
+            if k not in b:                      # "crop"'s valid: a bool copy
+                out[k] = a[k].astype(bool)
+                continue
+            np.copyto(b[k], a[k])
+            out[k] = b[k]
+        return out
 
     def _final_obs(self, ended) -> dict:
         """The terminal observation of the envs that ended, zeros on every
         other row, in the env's own buffers: last step's rows are wiped and
         only this step's are copied."""
         a, b = self._a, self._buf
-        out = {"crop": b["final_crop"], "vector": b["final_vector"],
-               "valid": b["final_valid"]}
+        out = {k: b["final_" + k] for k in self.layout.obs_keys}
         if self._final_rows.any():
             for v in out.values():
                 v[self._final_rows] = 0
@@ -1234,6 +1346,19 @@ class BatchedEnv:
                 v[ended] = a["final_" + key][ended]
         self._final_rows = ended.copy()
         return out
+
+    def team_rows(self, obs: dict, team: int) -> dict:
+        """THE one path a trainer takes to a team's observation (#195 1g,
+        spec 4.1): every key of ``obs`` (an ``obs`` or ``final_obs`` dict
+        this env returned) as the VIEW ``arr[:, t*S : (t+1)*S]`` of team
+        ``team``'s rows -- never a copy (the env-owned rule). A policy
+        acting for a team is fed only through this."""
+        S = self.layout.n_slots
+        t = int(team)
+        if not 0 <= t < self.layout.n_teams:
+            raise ValueError(f"team {team} is not a row block of this run "
+                             f"(T = {self.layout.n_teams})")
+        return {k: v[:, t * S:(t + 1) * S] for k, v in obs.items()}
 
     def _info_arrays(self) -> dict:
         a = self._a
