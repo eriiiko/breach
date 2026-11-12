@@ -357,7 +357,30 @@ _PRE_122_SHIP_DEMO = dict(
     #  c777493724808fe2b8b; tick 8df76cf7f0a3681c583c99e10f31624d8803f33c4ec
     #  d3adb3fdd0535e5a4cf46; units 1082d3b490f52183e4f047ed136219ecf2e5367
     #  0e946b20a63ed989d46065a76)
-    outcome="win", team=1, ticks=2721,
+    # #195 1d step (ii) re-pin (2026-11-12, the honest team picture and the
+    # fire lanes from state, docs/rl_agent_rung1_note_1d_2026-11-12.md 4: a
+    # record keeps the class, side and place the team saw and outlives a
+    # death the team did not see for its memory time; the layered bots'
+    # lanes are every teammate holding its trigger, along its facing to its
+    # weapon's range). Outcome and team UNCHANGED (win 1); ticks 2721 ->
+    # 2902; team 1 ends with slot [3] alive (was [2, 3]); all three digests
+    # and the unit stream move. SOLE CAUSE, verified on the same build:
+    # step (i)'s last commit (main 38b5a54b) reproduces the old pin bit for
+    # bit, and THIS tree with only the record rules put back to step (i)'s
+    # (class and side refreshed from the live unit, a dead unit's record
+    # dropped at once; a scratch monkeypatch) does too -- so the state lanes
+    # move nothing in this match and the records are the whole move.
+    # Per-tick trace (old vs new): unit states identical through tick 920
+    # and every kill up to then the same (bites of 4 and 0 on 423 / 454, the
+    # frags' kills of 10, 11, 4, 9, 8 and of the converted 0 on 920); on
+    # tick 921 they part -- team 0 never saw the converted 0 die to team 1's
+    # frag (last seen on 888), so it keeps that record, and its bots keep
+    # reading an enemy there. The squads' fight then runs later: units
+    # 2 (2500), 5 (2560), 1 (2610), 6 (2896) and 3 (2902) to bullets; 109
+    # rounds (was 93), 16 throws (was 12). CPU only (no CUDA build on this
+    # checkout).
+    # (was ticks 2721)
+    outcome="win", team=1, ticks=2902,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -382,7 +405,9 @@ _PRE_122_SHIP_DEMO = dict(
     # (was field da05242a99122428c903ad8a96e9373a0e12006c03abdbec1e849f4aca7dc4b0;
     #  tick f35ed2beadb77141ccea20d944a70a66e93c70818ae4c44bbf6ba1edc01024b3;
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
-    field_digest="58a67f4473cc3fe4ffb37123259f5fa0a8c0ca820be9179218404499b9749c04",
+    # #195 1d step (ii) re-pin (see above).
+    # (was 58a67f4473cc3fe4ffb37123259f5fa0a8c0ca820be9179218404499b9749c04)
+    field_digest="0afdec8bfef8943048652975d92945c2fafdf0a6751a900ccbf8a1c8702cc617",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -504,7 +529,9 @@ _PRE_122_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 3344bc96528bb08756456338112f9f25163bdacc56352be453f4debc5a172bf4)
-    tick_digest="0b093a26a96d2c39775240fbc0514fe9f869600026cc5c977e50f5d899294ec1",
+    # #195 1d step (ii) re-pin (see above).
+    # (was 0b093a26a96d2c39775240fbc0514fe9f869600026cc5c977e50f5d899294ec1)
+    tick_digest="1030e119469b9e9abeaebd504ab5b59c9ae0fac090fe4d04c566bb6488633d54",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -515,7 +542,9 @@ _PRE_122_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was bf34f1bbf43f0cb555dd65c57c73d72cd3c56edbacd0a8753e4a6844ee308ab8)
-    unit_stream="869f75cbb8da51b410991c77dbbdeaed0566e7a6dbeb444318c0b0664416bd6d")
+    # #195 1d step (ii) re-pin (see above).
+    # (was 869f75cbb8da51b410991c77dbbdeaed0566e7a6dbeb444318c0b0664416bd6d)
+    unit_stream="16b425f124d6fcc66b409ff2f0433fb59540b7dbab273f0fc1dfe69c7f1706d7")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
@@ -538,8 +567,8 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     at #183 G1p's turn-rate cap, then at G2p's carbine rate, then at
     G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure, then at
     G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field
-    and its behaviours, then at G8p's layered bots: win team 1 at tick
-    2721) with the same tick_digest. Breaks like the box test, on the real
+    and its behaviours, then at G8p's layered bots, then at #195 1d's honest
+    team picture: win team 1 at tick 2902) with the same tick_digest. Breaks like the box test, on the real
     level -- and on any change of the bots (then re-pin, the bots_v1 pin of
     tests/test_bots_v1.py staying)."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))

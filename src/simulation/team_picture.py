@@ -20,24 +20,30 @@ records carry the tick the next controllers run at). Never on demand:
 Host-side memory, not synced, not hashed, in no digest or recording: it is
 rebuilt by re-simulation only.
 
-STEP (i) (this file today): the records keep today's bot meaning bit for
-bit -- every update refreshes a record's ``zombie`` and ``team`` from the
-live unit and drops the record of a dead unit, of a unit now on the team's
-own side, and one older than ``[team_picture] memory_s``. Step (ii)
-replaces that refresh and the liveness check with the honest rules
-(records outlive an unseen death).
+A record is never refreshed from the live unit (step (ii) of 1d): its
+class, side and place stay as the team saw them. It is dropped when the
+team SAW the death -- the victim of one of the step's ``UnitKilledEvent`` events
+whose record was written at the observation just before that step (a kill
+of a unit the team did not see at that moment, a frag's included, is not a
+seen death) -- and when it is older than ``[team_picture] memory_s``; so a
+record outlives an unseen death (or an unseen conversion) for its whole
+memory time, and a converted unit seen again gets a fresh zombie record.
 
-The fire lanes' one drawing routine is :func:`draw_lanes` (design 4.5).
+The fire lanes are read from STATE (design 4.5): :func:`fire_lanes` (every
+living marine of the team with its trigger held, from its centre along its
+facing to its weapon's range, cut at the first solid tile) through the one
+drawing routine :func:`draw_lanes`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from types import MappingProxyType
 
 import numpy as np
 
 from simulation import vision
-from simulation.unit_fixed import quantize_scalar
+from simulation.events import UnitKilledEvent
+from simulation.unit_fixed import cos_q16, quantize_scalar, shr_trunc, sin_q16
 
 
 # ---------------------------------------------------------------------------
@@ -141,24 +147,26 @@ class TeamPicture:
                 f"team picture at tick {self.tick} asked to update at tick "
                 f"{tick}: the conductor must update it once every tick")
         vis = vision.state_for(sim)
+        # this step's deaths (the first update, at the start, has no step)
+        killed = () if self.tick is None else sorted(
+            {int(ev.unit_id) for ev in sim.tick_events
+             if isinstance(ev, UnitKilledEvent)})
         by_id = {u.id: u for u in sim.units}
         for team in self.teams:
             recs = self._records[team]
-            for uid in vis.visible_by_team.get(team, ()):
-                u = by_id[uid]
-                recs[uid] = _sighting(u, tick, recs.get(uid))
-            # step (i): today's bot meaning -- the class and side read live,
-            # a dead unit's record dropped at once
-            for uid in sorted(recs):
-                rec = recs[uid]
-                u = by_id.get(uid)
-                if (u is None or not u.alive or u.team == team
-                        or tick - rec.tick > self.memory_ticks):
+            # (1) a SEEN death: the victim was in the team's sight at the
+            # observation just before the step it died in
+            for uid in killed:
+                rec = recs.get(uid)
+                if rec is not None and rec.tick == tick - 1:
                     del recs[uid]
-                    continue
-                if rec.zombie != bool(u.is_zombie) or rec.team != u.team:
-                    recs[uid] = replace(rec, zombie=bool(u.is_zombie),
-                                        team=int(u.team))
+            # (2) the memory: kept while tick - rec.tick <= memory_ticks
+            for uid in sorted(recs):
+                if tick - recs[uid].tick > self.memory_ticks:
+                    del recs[uid]
+            # (3) this tick's sightings
+            for uid in vis.visible_by_team.get(team, ()):
+                recs[uid] = _sighting(by_id[uid], tick, recs.get(uid))
         self.tick = tick
 
     # -- the readers ----------------------------------------------------
@@ -214,3 +222,40 @@ def draw_lanes(h: int, w: int, segments, cell: int, halfwidth: int):
             c[(c != -1) & (c != uid)] = -2
             c[c == -1] = uid
     return grid
+
+
+def fire_lanes(sim, team: int, cell: int, halfwidth: int):
+    """``team``'s fire lanes from STATE (design 4.5; read-only, no memory):
+    for each living non-zombie unit of ``team`` (id order) whose
+    ``live_trigger`` is held and whose weapon row has ``range_tiles > 0``,
+    a segment from its centre tile S along its facing (``facing_q``, the
+    grid y-down) to E = S + ``range_tiles`` -- cut at the last tile before
+    the first solid (or off-map) tile of a per-tile walk S -> E -- drawn
+    through :func:`draw_lanes`. The clip is a drawing step on the coarse
+    grid, not a line-of-fire test."""
+    gmap = sim.gmap
+    solid = gmap.solid
+    h, w = solid.shape
+    rows = sim.weapons_tables.weapons.by_name
+    segments = []
+    for u in sorted(sim.units, key=lambda u: u.id):
+        if (u.team != team or not u.alive or u.is_zombie
+                or not getattr(u, "live_trigger", False)):
+            continue
+        row = rows.get(getattr(u, "weapon_id", "") or "")
+        rng = int(getattr(row, "range_tiles", 0) or 0) if row else 0
+        if rng <= 0:
+            continue
+        sx, sy = int(u.center_tile_x()), int(u.center_tile_y())
+        f = int(u.facing_q)
+        dx = shr_trunc(rng * cos_q16(f), 16)
+        dy = -shr_trunc(rng * sin_q16(f), 16)
+        n = max(abs(dx), abs(dy))
+        ex, ey = sx, sy
+        for i in range(1, n + 1):
+            px, py = sx + dx * i // n, sy + dy * i // n
+            if not (0 <= px < w and 0 <= py < h) or solid[py, px]:
+                break
+            ex, ey = px, py
+        segments.append((int(u.id), (sx, sy), (ex, ey)))
+    return draw_lanes(h, w, segments, cell, halfwidth)

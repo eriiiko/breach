@@ -71,7 +71,7 @@ from simulation.factions import ZOMBIE_TEAM
 from simulation.intents import FP_ONE
 from simulation.movement import THROTTLE_ONE
 from simulation.sensor_accessor import Channel, EntityFieldAccessor
-from simulation.team_picture import draw_lanes
+from simulation.team_picture import fire_lanes
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
 from simulation.unit_impulse import shove_target
@@ -309,7 +309,6 @@ class TeamBrain:
         self.bound_since = 0
         self.halves: dict = {}           # unit id -> 0 / 1
         self.lanes = None                # coarse grid of lane owners
-        self.firing: dict = {}           # unit id -> target id (last tick)
         self.updated_at = None
         self.centroid = (0, 0)
 
@@ -393,8 +392,9 @@ class TeamBrain:
                     or tick - self.bound_since >= self.bound_max_ticks:
                 self.bound_moving ^= 1
                 self.bound_since = tick
-        # the fire lanes of last tick's shooters
-        self.lanes = self._lanes(sim, mine)
+        # the fire lanes, from state (every teammate holding its trigger)
+        self.lanes = fire_lanes(sim, self.team, s.lane_cell,
+                                s.lane_halfwidth)
 
     def _objective(self, bots, sim, mine):
         fp = mine[0].footprint
@@ -431,23 +431,6 @@ class TeamBrain:
         self.obj_field = horde.flood(sim.gmap, bots.tile_ok(sim), fp,
                                      [(oy, ox)])
         self._obj_key = key
-
-    def _lanes(self, sim, mine):
-        """A coarse grid (``lane_cell`` tiles a cell) of who fires along
-        each cell (-1 nobody, a unit id its lane alone, -2 several lanes):
-        each of last tick's shooter -> target segments through THE lane
-        rasteriser, ``team_picture.draw_lanes``."""
-        s = self.s
-        h, w = sim.gmap.material.shape
-        by_id = {m.id: m for m in mine}
-        segments = []
-        for uid in sorted(self.firing):
-            m = by_id.get(uid)
-            tgt = self.firing[uid]
-            if m is None or tgt is None or not tgt.alive:
-                continue
-            segments.append((uid, _centre(m), _centre(tgt)))
-        return draw_lanes(h, w, segments, s.lane_cell, s.lane_halfwidth)
 
 
 def descend(field, x: int, y: int, steps: int) -> tuple:
@@ -668,8 +651,7 @@ class Action:
     = not possible now); its ``[bots.actions]`` weight is its score and the
     best wins its ``channels``. ``start(bots, uctx, st, payload)`` runs once
     when the action is chosen (a latched verb is issued there);
-    ``each_tick(bots, uctx, st, payload) -> fire target or None`` runs
-    every tick until the next decision (a hands action aims and pulls the
+    ``each_tick(bots, uctx, st, payload)`` runs every tick until the next decision (a hands action aims and pulls the
     trigger there). ``look``: a feet action's facing when the hands do not
     aim -- ``"walk"`` (along the move) or ``"threat"`` (at the nearest known
     enemy: the backward walk of a retreat)."""
@@ -911,15 +893,13 @@ class BotTeam(ControlSource):
         if (brain.updated_at is None
                 or tick - brain.updated_at >= self.s.team_period_ticks):
             brain.update(self, sim, mine, vis)
-        firing = {}
         for u in mine:
             st = self._state.setdefault(u.id, _BotState())
             seen = [e for e in enemies if u.id in vis.observers_of(e.id)]
             c = UnitContext(sim, u, brain, mine, seen, tick)
             if self._due(u, st, c):
                 self._decide(c, st)
-            firing[u.id] = self._execute(c, st)
-        brain.firing = firing
+            self._execute(c, st)
 
     # -- when a bot decides ---------------------------------------------
     def _due(self, u, st, c) -> bool:
@@ -1060,15 +1040,14 @@ class BotTeam(ControlSource):
         """Every tick: the feet follow their path, then the hands action
         runs its ``each_tick``; when the hands aimed nowhere this tick the
         bot looks along its walk or at the threat (its feet action's
-        ``look``). Returns the unit it fires at (the fire lanes) or None."""
+        ``look``)."""
         sim, u = c.sim, c.unit
         move_dir = self._follow(sim, u, st, c)
         self._aimed = False
         name, payload = st.hands
         act = ACTION_BY_NAME[name]
-        fired = None
         if act.each_tick is not None:
-            fired = act.each_tick(self, c, st, payload)
+            act.each_tick(self, c, st, payload)
         if not self._aimed:
             look = None
             if ACTION_BY_NAME[st.feet[0]].look == "threat":
@@ -1080,7 +1059,6 @@ class BotTeam(ControlSource):
                 look = move_dir
             if look is not None:
                 sim.set_aim(u.id, *look)
-        return fired
 
     def shoot(self, c, only=None):
         """This tick's shot: aim at the fire target (``only``: that unit or
