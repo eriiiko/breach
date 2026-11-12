@@ -546,7 +546,9 @@ def _advance_movement(sim, unit) -> None:
         # schedule after it does not shift.
         return
     unit.face_towards(nx, ny)
-    unit.x, unit.y = nx, ny
+    # #29 P3c: the compiled path's interpolated position, quantized ONCE at
+    # the float door (its (st + 1) / step_ticks fractions are off the grid).
+    unit.set_pos(nx, ny)
 
 
 def occupied_by_unit(sim, unit, nx: float, ny: float) -> bool:

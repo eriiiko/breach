@@ -113,8 +113,8 @@ def _check_unit(u):
         for x in flat:
             _pack_i64(c.name, x)                  # fits the int64 row
         assert c.encode(c.decode(e)) == e, f"{c.name}: encode∘decode"
-        if c.kind == us.KIND_FLOAT_E9 or c.until:
-            continue                               # a float until P3c / P3e
+        if c.until:
+            continue                               # a float until P3e
         back = c.decode(e)
         if c.name == "statuses":
             assert us._enc_statuses(back) == e
@@ -174,7 +174,7 @@ _SAMPLES = {
     "env_profile_name": "default", "weapon_id": "k5_carbine",
     "melee_id": "rifle_butt", "charge_ammo": "grenade_frag",
     "magazines_weapon": "k5_carbine",
-    "x": 1.5, "y": 2.5, "current_hp": 12.5,
+    "current_hp": 12.5,
     "live_move_dir": MoveDirIntent(1, 2, 3), "live_aim": AimIntent(1, 2),
     "pending_throw": ThrowIntent(1, 2, 3, None, 0),
     "pending_plant": 120, "spray_target": (1.0, 2.0),
@@ -205,7 +205,7 @@ def test_a_column_at_its_default_adds_no_key():
     the bare record)."""
     # §4.4a's *always* columns, written out (not read from the table, so a
     # column wrongly made *always* fails here).
-    always = ["id", "life_state", "x", "y", "facing", "current_hp"]
+    always = ["id", "life_state", "x_q", "y_q", "facing", "current_hp"]
     assert [c.key for c in us.COLUMNS if c.digest == us.DIGEST_ALWAYS] == always
     bare = us.digest_record(SimpleNamespace(facing_q=0))
     assert list(bare) == always

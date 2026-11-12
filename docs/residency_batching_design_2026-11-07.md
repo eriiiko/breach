@@ -515,6 +515,41 @@ column changed group. Corrections and choices, one line each:
   `facing_q` as `facing`, `omega_q` as `omega`; every other key is the column
   name.
 
+**As built (P3c, 2026-11-12).** Positions are the synced Q16 ints `x_q` /
+`y_q` (schema columns, *always*, hashed as plain ints under the keys `x_q` /
+`y_q`); `x` / `y` are read-only float properties (`x_q / 65536`, exact), so
+no reader changed. One writer, `Unit.set_pos_q(x_q, y_q)` (refuses a
+non-integer); its float door `Unit.set_pos(x, y)` quantizes once, round half
+away from zero (`unit_fixed.quantize_scalar`, the rule `unit_impulse.move`
+already applied on entry). `tile_x` / `tile_y` truncate on the int, as
+`int(x)` did (negative positions included: a test fixture reaches -1).
+One line each:
+- Every writer, and whether it was on the grid: spawn (`Unit.__init__`,
+  `add_unit(position=)`, so `spawn_match`) through the float door -- every
+  match spawn is a whole tile, an authored off-grid spawn is quantized (one
+  legacy test spawns at 4.37: its assert now allows 2^-17);
+  `unit_impulse.move` reads and writes its own ints (was `quantize(u.x)` in,
+  `x / 65536.0` out: bit-identical); the zombie step and wander write whole
+  tiles (`nx << 16`); the WEGO path and the one-phase timeline go through
+  the float door (their `(st + 1) / step_ticks` interpolation is OFF the
+  grid: 348 / 310 off-grid unit-ticks in the driver's two legacy scenarios);
+  the WEGO round snap is `round(x) << 16` (the same `round`).
+- The integer movement law: the only continuous-path step that left the
+  integers was `move`'s float round trip, now gone; nothing else was
+  changed (every float reader of a position is P3e's).
+- Proof (`tests/_p3c_sole_cause.py`, main `229f7097` vs the branch, records
+  normalised to `x_q := round(x * 65536)`): EQUAL records and field digests
+  over ship_demo bots (2902 ticks), bots_v1 (264), the #122 box (92), the
+  scripted arena (420) -- 0 off-grid positions on main -- AND over the
+  one-phase (200) and TwoPhaseWEGO (260) scenarios: the legacy quantization
+  moved no later decision there.
+- The re-pin: unit_stream / tick_digest of nine pinned matches (outcome,
+  ticks, field_digest unmoved) and `GOLDEN_AGGREGATE` `3646fd0d` ->
+  `4a13fc72` (per-field lines identical bar `__unit_pos__` /
+  `__unit_state__`). Recording format unchanged (positions are not
+  recorded; P3a's precedent for a digest redefinition). ship_demo bots
+  match: 51.66 s -> 51.24 s (medians of three, noise).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
@@ -798,7 +833,7 @@ in a fresh worktree skips every CUDA gate and would never place one.
 |---|---|---|---|---|
 | P3a the unit schema (+ `__slots__`, capacities, the digest redefinition) | one definition of a unit's synced state | digest re-pin with rationale; property test "every attribute is a schema row or REFERENCE_ONLY" | none | four drifting definitions; a new attribute never reaches the device |
 | P3b Philox at the match draw sites + the refusing `sim.rng` stand-in | per-env keyed draws | goldens regenerated; the kit's KAT + layout tests | none | no device draws can match the reference's stream |
-| P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | none: Erik blessed Q16 without a play test (§12.1, 2026-11-07), so the HUMAN-TEST is waived | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
+| P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law (BUILT 2026-11-12, §4.4a's As built (P3c)) | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | none: Erik blessed Q16 without a play test (§12.1, 2026-11-07), so the HUMAN-TEST is waived | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
 | P3d the distance field (both paths, C++ reference) | per-unit A* has no device shape | goldens; ship_demo seeds 1–8 before / after; the A* and zombies rows amended | HUMAN-TEST on main | the horde stays on the host: no device backend  **Built in #183 G9p (host half; §4.9)** |
 | P3e the match path to integer (the table below) | no float in the ported slots; exact device ports | goldens; A/B of hit rates and blast outcomes in real units over many seeds | HUMAN-TEST on main (shot and blast feel) | an IEEE-double transcription per site (op order pinned, `--fmad=false`), gated by lockstep: doable, fragile |
 

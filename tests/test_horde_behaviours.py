@@ -63,8 +63,15 @@ _STAGE1_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was f6b702b5550299dcebfe2db8794a1e310b228648319b7c668b3a4c8ac1920f33)
-    tick_digest="9f78cd9b7ffe6d7016457f3ec8ca406d"
-                "7d570114a7152a3f46153d7abdc6c6c1",
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 9f78cd9b7ffe6d7016457f3ec8ca406d7d570114a7152a3f46153d7abdc6c6c1)
+    tick_digest="82a361e85a0334a3a18dc84e63aea8be"
+                "e0755ba6ac1b0d18423ea4c9f0aeea3e",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -75,8 +82,15 @@ _STAGE1_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was d83ee4d35c56f376d47daec6179ac3c37dfef360cd149d7ef6d48c6efa3a9f3f)
-    unit_stream="f44bfcb5271c1768920a7727538c3c33"
-                "4d2c91f8ef3e9b98ce82e6bf5ff9cd20")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was f44bfcb5271c1768920a7727538c3c334d2c91f8ef3e9b98ce82e6bf5ff9cd20)
+    unit_stream="fd0d6bd79fbe4fa624065eda6bc9c04b"
+                "c200e8ef38d7cdd5bd77bd4e5643877e")
 _STAGE1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
@@ -91,8 +105,15 @@ _STAGE1_BOX = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 05bdbac7c76250b949ef35aef81fdd403bd89af88232eebe061bf753e47b1e3d)
-    unit_stream="a8f43fe1faf94900de0fb22c1b75e32d"
-                "0ca991e25a69412e544a77b1b47343df")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was a8f43fe1faf94900de0fb22c1b75e32d0ca991e25a69412e544a77b1b47343df)
+    unit_stream="4a87a8bb9efdef78446729e66cebed58"
+                "acfdda243deb7ba4cdff947a55fa2740")
 
 
 def _off(monkeypatch, keep=()):
@@ -237,7 +258,7 @@ def test_a_noise_wakes_exactly_the_zombies_within_its_radius(monkeypatch):
         z = Unit(f"Z{i}", x=cx + dx - 1, y=cy + dy - 1, team=ZOMBIE_TEAM)
         z.id = i
         zs.append(z)
-    zs[5].x, zs[5].y = 31.0, 11.0                 # beyond the wall, d = 12
+    zs[5].set_pos(31.0, 11.0)                 # beyond the wall, d = 12
     zs[6].zombie_activated = True
     noise.emit(g, cy, cx, r)
     update_zombies_tick(g, [prey] + zs, 1, settings=s)

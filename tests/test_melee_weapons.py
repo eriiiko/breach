@@ -376,7 +376,7 @@ def test_whiff_charges_no_cadence():
     for t in range(10):
         process_shooting(gmap, [a, z], t, [], 0.0, rng)
     assert a.last_fire_tick == -999 and z.current_hp == 100.0
-    z.x = 7.0                                     # into contact, on the tile
+    z.set_pos(7.0, z.y)                                     # into contact, on the tile
     events = []
     process_shooting(gmap, [a, z], 10, [], 0.0, rng, events=events)
     assert a.last_fire_tick == 10

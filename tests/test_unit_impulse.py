@@ -469,7 +469,7 @@ def test_g8_at_no_push_the_move_is_the_walks_single_test_slide():
         y = int(rng.integers(12 * ONE, 26 * ONE))
         sx = int(rng.integers(-ONE // 2, ONE // 2))
         sy = int(rng.integers(-ONE // 2, ONE // 2))
-        u.x, u.y = x / ONE, y / ONE
+        u.set_pos_q(x, y)
         if not g.is_passable_block(u.tile_y, u.tile_x, 3):
             continue
         nx, ny = (x + sx) / ONE, (y + sy) / ONE
@@ -797,7 +797,7 @@ def test_the_shove_cooldown_runs_and_a_missed_shove_spends_none():
         assert s.last_shove_tick == first
     while sim.tick - first < cd:
         sim.step()
-    t.x = s.x + 3.0                                     # still adjacent
+    t.set_pos(s.x + 3.0, t.y)                           # still adjacent
     sim.shove_intent(s.id)
     sim.step()
     assert s.last_shove_tick > first
@@ -892,8 +892,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 46ff80270890878daa488b0c0f03165933ec3a7b6bbdd9055a23b45fb4f3a9fb)
-    tick_digest="46f9509e0b5e5db20e52fa4edb89bbec"
-                "1bca1b4cf33c0d95a30f96e920ba3c1b",
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 46f9509e0b5e5db20e52fa4edb89bbec1bca1b4cf33c0d95a30f96e920ba3c1b)
+    tick_digest="cf02f69aefb3d506c436070eebefa4c9"
+                "2e7f00016398d2ba28c1668850ea1a6c",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -904,8 +911,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 93709823f7ef9829b77acc5f8215e5fd8a08721d278a3a9910544cf4c61377e6)
-    unit_stream="478e0b323a021b085799c215d6548a34"
-                "4a35f475aae2aa3d0be0e0d128822104")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 478e0b323a021b085799c215d6548a344a35f475aae2aa3d0be0e0d128822104)
+    unit_stream="f6453368880f8b5a2cfc3eeb62385e20"
+                "d457eeb9460a90ff9e64a59525abc75a")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -939,8 +953,15 @@ _RE_PIN_1_BOX = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was e082f7dfe103e2fdd594a952da81143ca4202e996238969b22c85eea05b0fd3d)
-    unit_stream="ac9bda6c239304078bef33858e2582f8"
-                "83e0684eddd14d541ec7f269e8a88c16")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
+    unit_stream="85d051afa1acda1b9bc1d3a680e63736"
+                "32bfdb9f735b65bf51ec1a9bbf834238")
 
 _IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
                   "swy", "pvx", "pvy", "effort", "react_ticks")
