@@ -44,12 +44,23 @@ each plane is dequantized ONCE at the read through its Q16 boundary module
 (:func:`_crop_plane`), never written back, never inside the sim path. This is
 the CPU backing; #25's gather kernel is its device backing (P8b). ``light``
 is refused until #81 separates light's inputs (ACCEPTED GAP).
+
+**The observation door (#195 1g).** ``observe(spec, units, out, **kw)`` is
+THE one way an observation layout is served: it dispatches by spec name
+(:data:`OBS_SPECS`) into the caller's ``(U, ...)`` views -- ``"crop"`` the
+placeholder rows above (the crop plus the run file's vector fields),
+``"v1"`` ``simulation.obs_spec_v1`` (the spec as code: the soldier's vector,
+the list). The env calls only this; a new layout is a new spec name here,
+never an edit of one a trained network uses.
 """
 from __future__ import annotations
 
 from enum import Enum
 
 import numpy as np
+
+#: The observation specs ``observe`` serves, by name (``[obs] spec``).
+OBS_SPECS = ("crop", "v1")
 
 
 class Channel(Enum):
@@ -267,6 +278,35 @@ class EntityFieldAccessor:
             total += int(arr[fy, fx])
             n += 1
         return total, n
+
+    def observe(self, spec: str, units, out: dict, **kw) -> None:
+        """THE observation door (#195 1g): write the layout ``spec`` names
+        for ``units`` (one unit or ``None`` per row) into ``out``'s
+        ``(U, ...)`` views. ``"crop"``: ``out["crop"]`` through :meth:`crop`
+        (``channels``, ``r``, ``all_units``) and ``out["vector"]`` through
+        the callables ``vector_fields`` (the run file's placeholder rows);
+        ``"v1"``: ``simulation.obs_spec_v1.observe_rows`` (``sim``,
+        ``context``) into ``vector`` / ``list`` / ``list_mask`` /
+        ``list_uid``. The row flags are the env's. An unknown spec is
+        refused by name."""
+        if spec == "crop":
+            out["crop"][...] = self.crop(units, kw["channels"], kw["r"],
+                                         all_units=kw.get("all_units"))
+            vec = out.get("vector")
+            if vec is not None:
+                vec[...] = 0.0
+                fns = tuple(kw.get("vector_fields", ()))
+                for i, u in enumerate(units):
+                    if u is not None:
+                        for j, f in enumerate(fns):
+                            vec[i, j] = f(u)
+            return
+        if spec == "v1":
+            from simulation.obs_spec_v1 import observe_rows
+            observe_rows(kw["sim"], kw["context"], units, out)
+            return
+        raise ValueError(f"unknown observation spec {spec!r} (known: "
+                         f"{list(OBS_SPECS)})")
 
     def crop(self, units, channels, r: int, *, all_units=None):
         """The observation crop (#29 P1a): ``(U, C, 2r+1, 2r+1)`` float32,

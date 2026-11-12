@@ -82,20 +82,46 @@ def can_plant(sim, u) -> bool:
             and composed_flags(u).can_act)
 
 
-def use_door(sim, u):
-    """The door USE would flip: the first live door whose span touches the
-    unit's footprint or its one-tile ring (``Simulation.door_at``, row-major
-    over the ring), or ``None``. THE scan of the verb, moved here."""
+def _reach_key(u, door):
+    """The row-major index, over the unit's footprint plus its one-tile ring
+    (the verb's own geometry), of the first ring tile ``door``'s span holds;
+    ``None`` when the span touches none. THE one statement of "in reach":
+    :func:`door_in_reach` reads it, :func:`use_door` orders by it."""
     x0, y0 = u.tile_x, u.tile_y
     fp = u.footprint
-    # Footprint tiles plus a one-tile ring so a marine standing beside a
-    # door can open it without overlapping it.
-    for ty in range(y0 - 1, y0 + fp + 1):
-        for tx in range(x0 - 1, x0 + fp + 1):
-            door = sim.door_at(ty, tx)
-            if door is not None and door.alive:
-                return door
-    return None
+    side = fp + 2
+    best = None
+    for ty, tx in door.span:
+        ry, rx = int(ty) - (y0 - 1), int(tx) - (x0 - 1)
+        if 0 <= ry < side and 0 <= rx < side:
+            k = ry * side + rx
+            if best is None or k < best:
+                best = k
+    return best
+
+
+def door_in_reach(u, door) -> bool:
+    """Whether ``door``'s span touches ``u``'s footprint or its one-tile ring
+    -- the use verb's own geometry per door (#195 1g: the door entries'
+    ``in_reach``). Liveness is not a term. A pure read."""
+    return _reach_key(u, door) is not None
+
+
+def use_door(sim, u):
+    """The door USE would flip: the first live door whose span touches the
+    unit's footprint or its one-tile ring -- the live door holding the
+    row-major FIRST ring tile any live door holds (what the ring scan
+    through ``Simulation.door_at`` returned; spans are disjoint, so the tile
+    names one door), or ``None``. THE scan of the verb, on
+    :func:`door_in_reach`'s geometry."""
+    best = None
+    for door in sim._doors:
+        if not door.alive:
+            continue
+        k = _reach_key(u, door)
+        if k is not None and (best is None or k < best[0]):
+            best = (k, door)
+    return None if best is None else best[1]
 
 
 def can_use(sim, u) -> bool:
@@ -155,5 +181,5 @@ def can_melee(u, tick: int, tables, *, at_tick_start: bool) -> bool:
             or tick - u.last_blow_tick >= weapon.rof_interval_ticks)
 
 
-__all__ = ["can_throw", "can_plant", "use_door", "can_use", "can_reload",
-           "can_shove", "can_melee"]
+__all__ = ["can_throw", "can_plant", "door_in_reach", "use_door", "can_use",
+           "can_reload", "can_shove", "can_melee"]

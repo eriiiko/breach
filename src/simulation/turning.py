@@ -204,6 +204,26 @@ def predict(unit, target_q: int, a: int, w: int, dw: int = 0) -> int:
     return law_q16(unit._facing_q, unit.omega_q + int(dw), target_q, a, w)[0]
 
 
+def ticks_to_within(unit, target_q: int, a: int, w: int, dw: int,
+                    tol_q: int, cap: int) -> int:
+    """The ticks until ``abs(wrap(target_q - facing)) <= tol_q`` for
+    ``unit`` turning toward ``target_q`` under its own ``a`` / ``w``, from
+    its facing and ``omega_q + dw`` (the outside spin its next slot 1a adds
+    first) -- by ITERATING :func:`law_q16`, exactly the steps slot 1a would
+    take, never a copy of the law. 0 when already within; ``cap`` when not
+    reached in ``cap`` ticks (the observation's trigger aid, #195 1g: the
+    entry's ``ticks_to_on``). A pure read."""
+    facing, omega = int(unit._facing_q), int(unit.omega_q) + int(dw)
+    target, tol, cap = int(target_q), int(tol_q), int(cap)
+    n = 0
+    while n < cap:
+        if abs(wrap_q16(target - facing)) <= tol:
+            return n
+        facing, omega = law_q16(facing, omega, target, a, w)
+        n += 1
+    return cap
+
+
 def step(unit, a: int, w: int, dw: int = 0) -> None:
     """One tick of the law for ``unit`` (slot 1a only, called by
     ``unit_impulse.integrate_all`` after the unit's linear integration):
@@ -269,5 +289,5 @@ def turn_accel_q16(cfg) -> int:
 __all__ = ["PI_Q16", "TWO_PI_Q16", "OMEGA_MAX_Q16", "TURN_TRIALS_MAX",
            "FACING_NORTH_Q16", "wrap_q16", "normalize_q16", "turn_toward_q16",
            "braking_distance_q16", "top_speed_within", "law_q16", "place",
-           "set_target", "settle", "aim_target_q16", "predict", "step",
-           "turn_rate_q16", "turn_accel_q16"]
+           "set_target", "settle", "aim_target_q16", "predict",
+           "ticks_to_within", "step", "turn_rate_q16", "turn_accel_q16"]
