@@ -73,8 +73,9 @@ from control_source import ControlSource
 from match_replay import INTENT_KINDS
 from simulation.intents import FP_ONE, dequantize
 
-#: The intent kinds no policy row carries (the horde's own intent).
-EXCLUDED_KINDS = ("drive_zombies",)
+#: The intent kinds no policy row carries: the horde's own intent and the
+#: commander's order (#195 1f -- a soldier's policy never orders itself).
+EXCLUDED_KINDS = ("drive_zombies", "order_intent")
 #: The kinds a policy row carries, in ``INTENT_KINDS`` order.
 POLICY_KINDS = tuple(k for k in INTENT_KINDS if k not in EXCLUDED_KINDS)
 

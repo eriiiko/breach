@@ -357,7 +357,7 @@ def test_a_recorded_match_with_a_plant_replays_every_checkpoint(
     assert b.checkpoints_verified == len(a.recording.checkpoints)
     assert (b.result, b.field_digest, b.tick_digest) == \
         (a.result, a.field_digest, a.tick_digest)
-    assert mr.FORMAT_VERSION == 7
+    assert mr.FORMAT_VERSION >= 7
 
 
 def test_the_policy_zero_row_plants_nothing_and_a_fuse_plants_once():

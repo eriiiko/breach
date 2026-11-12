@@ -55,7 +55,7 @@ BOX_SPEC = MatchSpec(teams=(BOTS, BOTS), seed=3, zombies=2,
                      time_limit_s=15.0)
 
 
-def _box(tmp_path, name, spec=BOX_SPEC, *, w=40, h=24):
+def _box(tmp_path, name, spec=BOX_SPEC, *, w=40, h=24, room_graph=False):
     lvl = tmp_path / name
     lvl.mkdir()
     level_lib.write_level_header(lvl, name=name, tile_size_m=1.0)
@@ -66,6 +66,13 @@ def _box(tmp_path, name, spec=BOX_SPEC, *, w=40, h=24):
     Image.new("RGB", (w, h)).save(lvl / "diffuse.png")
     level_lib.write_spawn_rooms(lvl / "level.toml", ROOMS)
     level_lib.write_match(lvl, spec)
+    if room_graph:
+        # #195 1f: one room over the floor, no openings (an order names it)
+        grid = np.full((h, w), -1, dtype=np.int32)
+        grid[1:h - 1, 1:w - 1] = 0
+        level_lib.write_room_graph(
+            lvl, [dict(id=0, x=1, y=1, w=w - 2, h=h - 2, kind="room")], [],
+            grid)
     return level_loader.load(name, str(tmp_path))
 
 
@@ -197,6 +204,15 @@ class _ThrowerControl(ControlSource):
             # G7p: the light off for a stretch of every 50 ticks (the hold
             # verb, issued every tick as a control would)
             sim.set_flashlight(u.id, sim.tick % 50 >= 30)
+            if sim.tick % 19 == 4:
+                # #195 1f: the commander's order (every kind, the one room,
+                # with and without a time limit and a priority target)
+                sim.order_intent(u.id, (sim.tick // 19) % 5,
+                                 0 if (sim.tick // 19) % 5 else -1,
+                                 (30 if u.id % 2 else 0)
+                                 if (sim.tick // 19) % 5 else 0,
+                                 f.id if (sim.tick // 19) % 5 and u.id % 2
+                                 else -1)
             if sim.tick == 6:
                 sim.plant_charge_intent(u.id, 1)    # #193 (clamped to 5 s)
             if sim.tick % 9 == 0:
@@ -215,7 +231,8 @@ def thrower(monkeypatch):
 def test_every_intent_kind_replays_live(tmp_path, thrower):
     """Property: a match issuing every recordable kind (move, clear, aim,
     trigger, throw with and without a reach, USE, RELOAD, SHOVE (G5p-a2),
-    MELEE (G6p), the FLASHLIGHT hold (G7p), the PLANT (#193), the horde's
+    MELEE (G6p), the FLASHLIGHT hold (G7p), the PLANT (#193), the
+    commander's ORDER (#195 1f: the box carries a room graph), the horde's
     ZOMBIE intent)
     replays to every checkpoint and the original final digests. Breaks if
     any kind is fed back with another argument, out of order, or dropped
@@ -224,7 +241,8 @@ def test_every_intent_kind_replays_live(tmp_path, thrower):
     exact encoding is the format test's."""
     t = MatchTeam(n=2, loadout="rifleman", env_profile="default",
                   controller=thrower)
-    lvl = _box(tmp_path, "throwbox", replace(BOX_SPEC, teams=(t, t)))
+    lvl = _box(tmp_path, "throwbox", replace(BOX_SPEC, teams=(t, t)),
+               room_graph=True)
     a = run_match(lvl, record=True, checkpoint_every_ticks=5)
     # the frags lobbed at tick 5 (fuse 0.3 s) end this match: it outlives them
     assert a.result.ticks > 5 + 8, a.result
