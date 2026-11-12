@@ -2377,6 +2377,7 @@ min_screen_px = 0.8     # zoomed out, the radius floor in SCREEN px
 streak_s = 0.03         # motion stretch: the trail is |v| x this long
 brightness = 6.0        # x the ramp's emission
 cap = 256               # never more alive at once
+seed = 8788             # the cap's fair-subset draw
 
 [render.unit_shadow]
 # The 3D units' SHARP projected shadows (#33, tier 1;
