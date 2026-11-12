@@ -317,6 +317,31 @@ def reader_engine_sweep():
     return checked
 
 
+def reader_obs_spec_v1():
+    """src/simulation/obs_spec_v1.py::FieldPlanes -- the observation's poison /
+    teargas / smoke planes (#195 1g (b)): the one trace dequantize per plane,
+    float-identical to S_old / 2^16 on every cell; the far reduce is the max
+    of those floats, so a block's value is the same number."""
+    from simulation import unit_impulse as ui
+    from simulation.obs_spec_v1 import FieldPlanes
+    g = _box_gmap()
+    table = ui.table_for(g)
+    y, x = 5, 5
+    checked = 0
+    for s_old in S_OLD + [S_NEG]:
+        olds = {POISON: s_old, TEARGAS: max(0, s_old - 7), SMOKE: 2 * s_old}
+        for gas_id, so in olds.items():
+            g.gas[gas_id][y, x] = trace_lift(so)
+        P = FieldPlanes(g, (), table)
+        for name, gas_id in (("poison", POISON), ("teargas", TEARGAS),
+                             ("smoke", SMOKE)):
+            assert P.raw[name][y, x] == olds[gas_id] / float(OLD_ONE), (name, s_old)
+            assert P.far_raw[name][y // 4, x // 4] == max(
+                0.0, olds[gas_id] / float(OLD_ONE)) or olds[gas_id] < 0, name
+        checked += 1
+    return checked
+
+
 # The REGISTRY: every src/ and renderer/ module that reads a trace slice, with
 # the public entry point(s) this file drives -- or, for a module that only
 # MOVES trace (scale-free by construction, §2.5) or hands it on unread, the
@@ -330,6 +355,7 @@ REGISTRY = {
     "src/simulation/combat.py": reader_fire_beam,
     "src/simulation/recorder.py": reader_recorder,
     "src/simulation/physics_runner.py": reader_engine_sweep,   # hands gas to the sweep
+    "src/simulation/obs_spec_v1.py": reader_obs_spec_v1,       # the observation planes
 }
 NOT_READERS = {
     "src/simulation/gamemap.py": "movers only: seal/unseal divmod, inject, the "
