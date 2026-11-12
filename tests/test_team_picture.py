@@ -1,12 +1,14 @@
 """#195 1d -- the team picture (``simulation/team_picture.py``).
 
-Step (i) properties (``docs/rl_agent_rung1_note_1d_2026-11-12.md``, "Property
+Properties (``docs/rl_agent_rung1_note_1d_2026-11-12.md``, "Property
 tests"): the conductor's one update per tick, never on demand; a record is
 plain values taken at its sighting, its motion from two consecutive
 sightings, kept exactly ``memory_ticks``; nothing the team never saw; the
-one lane rasteriser. The bit-for-bit gate of step (i) is the pins under
-``docs/rl_agent_rung1_1d_pins/`` (``tools/bot_tournament.py``) plus the two
-pinned matches (``test_zombie_control`` / ``test_bots_v1``).
+one lane rasteriser. Step (ii): a record outlives an unseen death or
+conversion and goes at a seen death; the fire lanes are read from state
+(``fire_lanes``). The bit-for-bit gate of step (i) is the pins under
+``docs/rl_agent_rung1_1d_pins/`` (step (ii) moves them by design); step
+(ii)'s gate is the tournament the note names.
 
 Scenes are the bots' test boxes (``test_bots_v1._level``: an open hull box,
 optionally split by a wall), the sight rule ``all_round`` where a scene
@@ -36,6 +38,10 @@ from simulation import Simulation, vision  # noqa: E402
 from simulation import team_picture as tp  # noqa: E402
 from simulation.match import MatchSpec, MatchTeam  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
+from simulation.damage import KINETIC, DamagePacket, apply_packet  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.turning import PI_Q16  # noqa: E402
+from simulation.turning import place as place_facing  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.unit_fixed import quantize_scalar  # noqa: E402
 from test_bots import _match_level  # noqa: E402
@@ -274,3 +280,134 @@ def test_draw_lanes_order_free_and_shared_cells():
     assert a[18 // 4, 20 // 4] == 7
     assert a[0, 47 // 4] == -1
     assert set(np.unique(a)) <= {-2, -1, 3, 7, 9}
+
+
+# ---------------------------------------------------------------------------
+# step (ii): honest records
+# ---------------------------------------------------------------------------
+def _kill_in_next_step(monkeypatch, sim, victim, *, by_zombie=False):
+    """Kill ``victim`` INSIDE the next step (its ``UnitKilledEvent`` on that
+    step's ``tick_events``, before the picture's slot 11; a zombie's kill
+    converts in the same ``on_tick_end``, as a bite does)."""
+    rules = sim.ruleset
+    real = type(rules).on_tick_end
+    done = []
+
+    def hooked(sim_):
+        if not done:
+            done.append(True)
+            apply_packet(victim, DamagePacket(10_000, KINETIC, -1),
+                         sim_.tick_events, source="bullet",
+                         mark_killed_by_zombie=by_zombie)
+        return real(rules, sim_)
+    monkeypatch.setattr(rules, "on_tick_end", hooked)
+
+
+def test_an_unseen_death_keeps_the_record_its_memory_time(tmp_path,
+                                                          monkeypatch):
+    """Property: a unit killed while out of the team's sight (its record
+    older than the observation before the step it died in) keeps its record,
+    unchanged, for the record's whole memory time, and loses it one tick
+    later. Breaks if the death is detected by liveness (``alive``) or by any
+    kill event, seen or not."""
+    m = 8
+    sim, (me, foe) = _scene(tmp_path, "unseen", [(0, 10, 20), (1, 40, 20)],
+                            wall_x=30, memory_ticks=m)
+    pic = sim.team_picture
+    rec = pic._write(sim, 0, foe)         # seen now, then never again
+    sim.step()
+    _kill_in_next_step(monkeypatch, sim, foe)
+    sim.step()
+    assert not foe.alive
+    assert pic.records(0)[foe.id] == rec
+    while sim.tick - rec.tick < m:
+        sim.step()
+        assert pic.records(0)[foe.id] == rec
+    sim.step()
+    assert foe.id not in pic.records(0)
+
+
+def test_a_seen_death_drops_the_record(tmp_path, monkeypatch):
+    """Property: a unit the team saw at the observation just before the step
+    it died in loses its record on that step's update. Breaks if a seen
+    death is kept for the memory time (the event is not read) or the
+    "seen" test reads another tick."""
+    sim, (me, foe) = _scene(tmp_path, "seen", [(0, 10, 20), (1, 30, 20)])
+    pic = sim.team_picture
+    sim.step()
+    assert pic.records(0)[foe.id].tick == sim.tick
+    _kill_in_next_step(monkeypatch, sim, foe)
+    sim.step()
+    assert not foe.alive
+    assert foe.id not in pic.records(0)
+
+
+def test_an_unseen_conversion_keeps_the_marine_record(tmp_path, monkeypatch):
+    """Property: a marine converted out of the team's sight stays a marine
+    record (class and side as seen); once the team sees it again the record
+    is the zombie's. Breaks if the class or side is read from the live
+    unit."""
+    sim, (me, foe) = _scene(tmp_path, "conv", [(0, 10, 20), (1, 24, 20)])
+    sim.sight = "cone"
+    place_facing(me, PI_Q16)              # looking west, away from the foe
+    sim.step()
+    pic = sim.team_picture
+    rec = pic.records(0)[foe.id]          # seen all-round at the start ...
+    assert rec.tick < sim.tick            # ... and not since
+    _kill_in_next_step(monkeypatch, sim, foe, by_zombie=True)
+    sim.step()
+    assert foe.is_zombie and foe.team == ZOMBIE_TEAM
+    r = pic.records(0)[foe.id]
+    assert r == rec and (r.zombie, r.team) == (False, 1)
+    sim.set_aim(me.id, ONE, 0)            # turn east: see it again
+    for _ in range(40):
+        sim.step()
+        r = pic.records(0).get(foe.id)
+        if r is not None and r.tick == sim.tick:
+            break
+    assert r is not None and r.tick == sim.tick
+    assert (r.zombie, r.team) == (True, ZOMBIE_TEAM)
+
+
+# ---------------------------------------------------------------------------
+# step (ii): the fire lanes from state
+# ---------------------------------------------------------------------------
+def test_a_lane_is_a_held_trigger_cut_at_the_wall(tmp_path):
+    """Property: a unit holding its trigger, facing east, owns the lane
+    cells along its row from its centre tile to the last open tile before
+    the wall, and no others; with the trigger released there is no lane.
+    Breaks if the lanes read anything but the units' state (trigger,
+    facing, weapon range) or the walk does not stop at the first solid
+    tile."""
+    sim, (me, foe) = _scene(tmp_path, "lane", [(0, 10, 20), (1, 50, 20)],
+                            wall_x=30)
+    place_facing(me, 0)
+    rng = sim.weapons_tables.weapons.by_name[me.weapon_id].range_tiles
+    assert rng > 30 - me.center_tile_x()  # the wall cuts the lane
+    cx, cy = me.center_tile_x(), me.center_tile_y()
+    sim.set_trigger(me.id, True)
+    g = tp.fire_lanes(sim, 0, 1, 0)
+    lane = {(int(y), int(x)) for y, x in zip(*np.nonzero(g == me.id))}
+    assert lane == {(cy, x) for x in range(cx, 30)}
+    assert set(np.unique(g)) == {-1, me.id}
+    assert (tp.fire_lanes(sim, 1, 1, 0) == -1).all()  # the other team's
+    sim.set_trigger(me.id, False)
+    assert (tp.fire_lanes(sim, 0, 1, 0) == -1).all()
+
+
+def test_a_bot_reads_the_lanes_any_controller_would(tmp_path):
+    """Property: the layered bots' lanes are ``fire_lanes`` of the units'
+    state at the team update -- the same grid an ``idle`` team's unit in
+    that state has, whoever set its trigger. Breaks if the bots draw lanes
+    from their own memory (last tick's targets)."""
+    sim, (a, b, foe) = _scene(tmp_path, "botlane",
+                              [(0, 10, 12), (0, 10, 26), (1, 50, 20)],
+                              wall_x=30)
+    place_facing(a, 0)
+    sim.set_trigger(a.id, True)           # set as an idle team's would be
+    bots = BotTeam(0)
+    s = bots.s
+    want = tp.fire_lanes(sim, 0, s.lane_cell, s.lane_halfwidth)
+    assert (want == a.id).any()
+    bots.handle_frame(sim, None)          # the first frame: a team update
+    assert np.array_equal(bots.brain.lanes, want)
