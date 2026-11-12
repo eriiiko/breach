@@ -561,3 +561,67 @@ needed (expected not: no Class-P file is touched; `simulation.py`,
 1. A unit can fire its weapon while winding up a throw (nothing in
    `combat.py` reads the wind-up; the bots release the trigger themselves).
    The note leaves the agent's trigger free, as the game is. Intended?
+
+## As built (2026-11-13)
+
+Commits on `192-1h-actions`: the module (A), the decoder and the env (B+C),
+the observation fill (D), the gate, the tests and the documents (E), and a
+follow-up to the gate. Where the code chose beyond this note:
+
+- **The decoder resolves the list type by POSITION.** `set_decisions` gets
+  only `list_uid` (as specified); an entry is aimable iff its position lies
+  in the seen / record blocks (`ActionTables.aim_lo .. aim_hi`, from `S` and
+  the fixed caps) and its uid is not -1 -- the same answer as the mask's
+  `type in (1, 2) and list_mask`, since the blocks are positional.
+- **The reserved flashlight decodes as hand "nothing"** (it has no gate: a
+  decoded `set_flashlight(off=True)` would change the hashed bit). The raw
+  row's flashlight column stays 0, so every v1 tick holds the light ON, as a
+  zero raw row does.
+- **"Onto target" needs a decoded unit aim**: a throw with argument 4 whose
+  aim decoded to anything but a unit (a token, "keep", a masked entry)
+  decodes as hand "nothing" -- one rule for the masked argument and for a
+  masked aim under a legal-looking argument, so A and B of the gate agree.
+- **"Hold the last vector issued"** = the last `set_aim` vector the decoder
+  issued for that unit (a unit aim whose record is gone and whose
+  `last_point` offset is zero re-issues it).
+- **`prev`** is the decision's decoded choice after the fallbacks: "keep"
+  reads 17 only while a wind-up holds the aim on the first tick, else 16;
+  a throw / plant that fell back reads hand 0, argument -1.
+- **Col 66 / 28 / `sees_target`** look for the aimed uid among the unit
+  entries (types 0-2) only; col 28 and the plane are written for an enemy
+  entry (type 1 or 2) from its record's centre; a zero offset leaves col 28
+  at 0. The full view's copies of cols 28 / 66 stay 0 (the note does not
+  ask for them).
+- **An in-process `EnvRunner` refuses a v1 step without an `observe` since
+  the last step / reset** (the `list_uid` the rows were chosen on); the farm
+  always observes in `publish`.
+- **`tools/rl_smoke.py`** draws v1 rows among the served masks (each head
+  uniform over its legal options, the argument over `arg_mask`), vectorised.
+- **The forced gate's coverage**: random play on ship_demo never lands a
+  melee blow nor brings the horde onto a marine, so the driver adds a third
+  run on `test_rl_env`'s zombie box (a one-room graph): 400 + 400 + 150
+  decisions. It forces, per decision, the least-covered (option, state)
+  bucket, a masked blow with an enemy in reach first. ship_demo and the box
+  hold no door entity: the "aim at a door" case was never forced (its
+  decoding is the same positional fallback as an object's, which was).
+- **Break (i) of section 5** (`build_masks` reading `can_melee` at the
+  verb's moment) is NOT reached by random play (a stun swept on the very
+  tick a masked blow has a target in its arc): the driver stays EQUAL under
+  it. A deterministic scene catches it -- `test_a_blow_on_the_sweep_tick_
+  is_offered_exactly_when_it_lands`, and `test_the_mask_is_the_gate` --
+  both fail under the break. Breaks (ii) and (iii) fail the driver.
+- **The farm (section 7's gate)**, one session on the Home Desktop, the
+  design's 9.1 protocol (64 envs / 16 workers, ship_demo, decimation 4, 750
+  measured steps after 20 of warm-up, `tools/rl_smoke.py --max-steps 770`):
+  `crop` 400.6 env-ticks/s (p50 635 ms a step); `v1` observation + full
+  view on the `"raw"` action spec 350.5 (87 % of crop, p50 731); the same
+  on `[action] spec = "v1"` 321.5 (**80 % of crop**, p50 789) -- above
+  spec 6's 70 %. Against `"raw"` it is 8.3 % slower: a FINDING (over the
+  note's 5 %), with its profile -- in-process on ship_demo, 300 decisions of
+  one env, the 1h parts cost 0.20 ms (the masks) + 0.39 ms (the decoder,
+  over 4 ticks) + ~1 ms (the fill, inside the observation: 14.1 against
+  12.5 ms) per env-decision of ~100 ms, i.e. ~2 %; the rest is the PLAY the
+  driver's rows make: legal-uniform v1 rows throw every grenade kind and
+  end episodes 1.7x as often (about 13 against 7.5 per env in the window),
+  and a lock-stepped worker waits for its slowest env (fires, smoke). Not a
+  stop; no part of the patch was optimised.
