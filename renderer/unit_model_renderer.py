@@ -266,6 +266,10 @@ class UnitModelRenderer:
         self._stagger_event = self._reload_event = self._throw_event = None
         self._tick_s = 1.0 / 24.0
         self._held = None
+        # #87: where each unit's muzzle is THIS frame (unit key -> (x, y,
+        # dir x, dir y) in tiles, on the floor plane), written by _draw_one
+        # for every unit drawn holding a prop; the muzzle flame reads it
+        self.muzzle_poses: Dict[int, tuple] = {}
 
     @property
     def model(self):
@@ -463,9 +467,9 @@ class UnitModelRenderer:
                 print(f"[unit_model] WARN: {hm.name}: could not set the gloss: {exc}")
 
     def _held_prop_of(self, u, look: "_Look", pose_row):
-        """#184: ``(held model, grip matrix, hand bone)`` of the prop unit
-        ``u`` holds, or None (no weapon prop, no socket on its skeleton, no
-        pose)."""
+        """#184: ``(held model, grip matrix, hand bone, prop row)`` of the
+        prop unit ``u`` holds, or None (no weapon prop, no socket on its
+        skeleton, no pose)."""
         if self._held is None or pose_row is None:
             return None
         prop = self._held.settings.prop_for(str(getattr(u, "weapon_id", "") or ""))
@@ -486,7 +490,7 @@ class UnitModelRenderer:
         if grip is None:
             from .held_props import grip_matrix
             grip = self._held.grips[key] = grip_matrix(prop, socket, hm.extent)
-        return hm, grip, bone
+        return hm, grip, bone, prop
 
     def queue_events(self, events: Sequence) -> None:
         """#162: hand the frame's sim events to the pose layer, one queue per
@@ -1090,9 +1094,15 @@ class UnitModelRenderer:
         held = self._held_prop_of(u, look, pose_row)
         if held is not None:
             from .held_props import body_matrix, prop_world
-            hm, grip, bone = held
+            hm, grip, bone, prop = held
             body = body_matrix(cx, cy, yaw, scale, _np_matrix(look.model.transform))
-            _set_rl_matrix(hm.model.transform, prop_world(body, pose_row[bone], grip))
+            world = prop_world(body, pose_row[bone], grip)
+            _set_rl_matrix(hm.model.transform, world)
+            # #87: the barrel tip of the prop as it is drawn this frame
+            from .muzzle_flame import muzzle_pose_from_matrix
+            mp = muzzle_pose_from_matrix(world, prop.muzzle, wpt)
+            if mp is not None:
+                self.muzzle_poses[unit_key(u)] = mp
 
         # Projected shadow (#33) first, from the pose just skinned (no second
         # skinning). Its fixed far depth keeps it off every body, whichever
