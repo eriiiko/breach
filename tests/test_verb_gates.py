@@ -674,3 +674,45 @@ def test_the_deferred_settle_still_happens(start):
     assert (unit_schema.digest_record(w.a)
             == unit_schema.digest_record(old.a))
     assert _digests(w) == _digests(old)
+
+
+# ---------------------------------------------------------------------------
+# #195 1g -- door_in_reach: the use verb's geometry per door, use_door on it
+# ---------------------------------------------------------------------------
+def _ring_scan_use_door(sim, u):
+    """The use verb's ring scan as it stood before 1g (the frozen body):
+    row-major over the footprint plus its one-tile ring, the first live
+    door ``door_at`` finds."""
+    x0, y0 = u.tile_x, u.tile_y
+    fp = u.footprint
+    for ty in range(y0 - 1, y0 + fp + 1):
+        for tx in range(x0 - 1, x0 + fp + 1):
+            door = sim.door_at(ty, tx)
+            if door is not None and door.alive:
+                return door
+    return None
+
+
+def test_door_in_reach_is_the_ring_scan_and_use_door_is_unchanged():
+    """Property (#195 1g, obs spec 1.7): ``door_in_reach(u, door)`` holds
+    exactly where the verb's ring scan found that door, and ``use_door``
+    returns what the ring scan returned before 1g, for every anchor around
+    the door (dead door included). Breaks if the geometry moves (a wider
+    ring, the footprint alone) or the ordering between doors changes."""
+    w = World(door=True)
+    sim, u = w.sim, w.a
+    door = sim._doors[0]
+    for dead in (False, True):
+        door.alive = not dead
+        for y in range(door.span[0][0] - 6, door.span[-1][0] + 6):
+            for x in range(door.span[0][1] - 6, door.span[-1][1] + 6):
+                u.set_pos(float(x), float(y))
+                want = _ring_scan_use_door(sim, u)
+                assert verb_gates.use_door(sim, u) is want, (x, y, dead)
+                assert verb_gates.door_in_reach(u, door) == (
+                    _ring_scan_use_door(sim, u) is door or (
+                        dead and any(
+                            u.tile_y - 1 <= ty <= u.tile_y + u.footprint
+                            and u.tile_x - 1 <= tx <= u.tile_x + u.footprint
+                            for ty, tx in door.span)))
+    door.alive = True
