@@ -419,6 +419,10 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         if hasattr(unit, "zombie_noise_ticks"):
             from simulation import horde
             horde.clear(unit)
+        # #195 1f: a corpse holds no order.
+        if hasattr(unit, "order_what"):
+            from simulation import unit_orders
+            unit_orders.clear(unit)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:

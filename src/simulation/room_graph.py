@@ -15,6 +15,11 @@ read-only functions:
   through a wall; a hole has no id: the ACCEPTED GAP, an order cannot name
   it).
 
+and one read of the FIXED part:
+
+- :func:`place_at`: the ONE map from a tile to a place an order can name
+  (#195 1f): its room, else the opening it lies in, else no place.
+
 Both are cached per map on ``GameMap._tile_serial`` (every topology seam --
 ``destroy_wall``, ``seal_tiles``, ``unseal_tiles``, a door -- moves it
 through ``on_tile_changed``) and, for the openings, the doors' states and
@@ -31,6 +36,7 @@ import numpy as np
 
 from simulation.entities.door import DOOR_CLOSED
 from simulation.horde import NEIGHBOURS, is_hull_door, walkable_tiles
+from simulation.unit_orders import NO_PLACE, ORDER_OPENING_BASE
 
 #: map -> {(function, graph): (cache key, value)}; dies with the map.
 _CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -159,3 +165,23 @@ def joined_pairs(graph, gmap) -> frozenset:
         return frozenset(pairs)
 
     return _cached(gmap, "joined", graph, gmap._tile_serial, compute)
+
+
+def place_at(graph, y: int, x: int) -> int:
+    """The place an order names for the tile ``(y, x)`` (#195 1f): its room
+    id (``graph.grid[y, x]``) when it lies in a room, else
+    ``unit_orders.ORDER_OPENING_BASE`` + the lowest-id opening whose
+    rectangle holds it, else ``unit_orders.NO_PLACE`` (a wall, a void, an
+    airlock's vestibule, a tile off the map). THE one map from a tile to a
+    place -- never a second."""
+    y, x = int(y), int(x)
+    h, w = graph.grid.shape
+    if not (0 <= y < h and 0 <= x < w):
+        return NO_PLACE
+    r = int(graph.grid[y, x])
+    if r >= 0:
+        return r
+    for o in graph.openings:
+        if o.x <= x < o.x + o.w and o.y <= y < o.y + o.h:
+            return ORDER_OPENING_BASE + int(o.id)
+    return NO_PLACE

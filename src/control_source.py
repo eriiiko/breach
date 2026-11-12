@@ -240,6 +240,17 @@ def _policy(team: int) -> "ControlSource":
     return AgentPolicy(team)
 
 
+def _commander(team: int) -> "ControlSource":
+    """The commander (#195 1f, ``control_bots.BotCommander``): the layered
+    bots' TEAM layer alone, writing its play, objective and target as the
+    team's ORDERS through ``Simulation.order_intent`` -- and nothing else.
+    Built by :func:`create_match_controllers` only, for a team whose row
+    names a :data:`DOOR_CONTROLLERS` controller on a level with a room
+    graph; a match file cannot name it."""
+    from control_bots import BotCommander
+    return BotCommander(team)
+
+
 def _replay(team, recording=None) -> "ControlSource":
     """The replay controller (#126, ``match_replay.ReplayControl``): feeds a
     recorded match's intents back. Built only from a recording, by
@@ -260,11 +271,17 @@ _MATCH_CONTROLLERS: dict = {
     "zombies": _zombies,
     "replay": _replay,
     "policy": _policy,
+    "commander": _commander,
 }
 #: Registered controllers a match.toml may NOT name (they need more than a
 #: team to be built, or something only code hands them): the match door reads
 #: :func:`match_file_controllers`.
-_NOT_NAMEABLE: set = {"replay", "policy"}
+_NOT_NAMEABLE: set = {"replay", "policy", "commander"}
+#: The controllers that drive a team THROUGH THE DOOR (the action spec,
+#: #195 1f): a team on one of them gets the bots' commander
+#: (``commander``) beside it on a level with a room graph, so its units hold
+#: orders. 1j adds its door-driven bots here by name.
+DOOR_CONTROLLERS = frozenset({"policy"})
 
 
 def register_controller(name: str, factory, *, nameable: bool = True) -> None:
@@ -315,7 +332,12 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
     ``recording`` (#126, a ``match_replay.Recording``): replay it instead --
     the horde is handed over the same way, and ONE ``replay`` controller
     re-issues every recorded intent of every team and the horde, in the
-    order they were issued."""
+    order they were issued.
+
+    A team whose row names a :data:`DOOR_CONTROLLERS` controller gets the
+    ``commander`` after the team rows, on a level whose room graph is at
+    the map's shape (#195 1f); a replay re-issues its recorded orders
+    instead."""
     from simulation.factions import ZOMBIE_TEAM
     from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
     if recording is not None:
@@ -323,6 +345,13 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
         return [create_controller("replay", None, recording=recording)]
     controllers = [create_controller(row.controller, team)
                    for team, row in enumerate(spec.teams)]
+    # #195 1f: a team driven through the door gets the commander (orders on
+    # the room graph) -- only where an order can name a place.
+    from simulation.unit_orders import graph_of
+    if graph_of(sim) is not None:
+        controllers += [create_controller("commander", team)
+                        for team, row in enumerate(spec.teams)
+                        if row.controller in DOOR_CONTROLLERS]
     sim.hand_zombies_to_controller()
     controllers.append(create_controller(
         getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER),

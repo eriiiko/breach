@@ -95,7 +95,12 @@ FORMAT_NAME = "breach-match-replay"
 #: v7 (#193, 2026-11-11): the ``plant_charge_intent`` kind, and the
 #: rifleman's loadout carries ONE planted C4 (was two unplantable charges) --
 #: a v6 recording could not name the verb and is refused.
-FORMAT_VERSION = 7
+#: v8 (#195 1f, 2026-11-12): the ``order_intent`` kind (the commander's
+#: order: what, where, ticks, priority target), and a match with a team
+#: driven through the door carries the bots' commander, whose orders are
+#: hashed unit state -- a v7 recording could not name the verb and is
+#: refused.
+FORMAT_VERSION = 8
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -113,6 +118,9 @@ INTENT_KINDS = {
     "melee_intent": ("int",),
     "set_flashlight": ("int", "bool"),
     "plant_charge_intent": ("int", "int"),
+    # The commander's order (#195 1f): unit, what, where, ticks, target (-1
+    # = none, the schema's own encoding). Out of every policy row.
+    "order_intent": ("int", "int", "int", "int", "int"),
     "drive_zombies": ("ints",),
 }
 #: Entry points the tap sees but the format refuses to record.

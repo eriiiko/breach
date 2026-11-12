@@ -547,6 +547,16 @@ COLUMNS: tuple[Column, ...] = (
     _c("zombie_anchor_x", KIND_INT, "zombie", -1),
     # flags
     _c("flashlight_on", KIND_BOOL, "flags", True, _enc_bool, _dec_bool),
+    # order (#195 1f): the unit's order (simulation.unit_orders, the ONE
+    # writer; information only until rung 4), hashed only while held
+    _c("order_what", KIND_INT, "order", 0,
+       note="unit_orders.ORDER_WHAT code; 0 = none"),
+    _c("order_where", KIND_INT, "order", -1,
+       note="a room id, or ORDER_OPENING_BASE + an opening id; -1 = none"),
+    _c("order_until", KIND_INT, "order", -1,
+       note="the first tick it no longer holds; -1 = until told otherwise"),
+    _c("order_target", KIND_INT, "order", -1,
+       note="the priority target's unit id; -1 = none"),
     # intent state: the held verbs and the latches
     _c("live_move_dir", KIND_OPTIONAL, "intent", None, _enc_move, _dec_move,
        width=4),

@@ -45,6 +45,7 @@ from simulation import horde as _horde
 from simulation import noise as _noise
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
+from simulation import unit_orders as _unit_orders
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
 from simulation.unit_schema import SPEED_FROM_TABLE
@@ -427,6 +428,9 @@ def convert_marines_to_zombies(units):
             _unit_impulse.clear(u)
             # G9p: nor a noise or a wander anchor (cleared at death too).
             _horde.clear(u)
+            # #195 1f: nor an order (cleared at death too; a zombie takes
+            # none).
+            _unit_orders.clear(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

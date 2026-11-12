@@ -294,4 +294,5 @@ def test_an_old_spec_without_the_field_reads_as_cone_and_cone_writes_none():
     d2 = match_replay.spec_to_dict(replace(spec, sight=ALL_ROUND))
     assert d2["sight"] == ALL_ROUND
     assert match_replay.spec_from_dict(d2).sight == ALL_ROUND
-    assert match_replay.FORMAT_VERSION == 7
+    # 1a moved no format version (v7 then); later patches may (1f: v8)
+    assert match_replay.FORMAT_VERSION >= 7
