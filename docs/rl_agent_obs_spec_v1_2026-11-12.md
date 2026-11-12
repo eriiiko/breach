@@ -692,4 +692,117 @@ the farm's number as information.
 | **The farm.** `tools/rl_smoke.py` on a `"v1"` run file with the full view, 2 envs, 2 workers, 10 steps: no exception, every array of 4.1 and 5.2 of its shape and dtype, `final_*` filled for an env that ended; the §9.1 numbers in (c)'s report | a shape, a dtype or the env-owned copy is wrong |
 | **Replay unmoved.** A recorded `policy` match (zero rows) with `"v1"` observation on replays with every checkpoint equal; `tools/match_pin_check.py` EQUAL; `pytest tests -q` green | the observation writes sim state |
 
-<!-- continued -->
+## 8. The cut into three implementation patches
+
+Each its own branch, worktree, brief and `--no-ff` merge (plan 1.2, 1.5);
+each small enough for one Fable agent to finish without a resume (plan 5:
+a killed agent is rebuilt from its commits, never resumed). The order is
+fixed: (b) builds on (a)'s module and layout, (c) on both. Every patch:
+this machine's breach Python, `pytest tests -q`, explicit paths staged,
+a commit at every coherent step, tests as properties from section 7, a
+failing old test a finding, the house rules of plan 1.4. None touches
+`src/control_bots_v1.py`. None has a HUMAN-TEST.
+
+### (a) `192-1g-a-vector-list`: the soldier's vector, the list, the row flags
+
+| | |
+|---|---|
+| files | NEW `src/simulation/obs_spec_v1.py` (sections 0.2, 0.4, 1, 2, 4.2 as data and builders; the window and full-view builders ABSENT), NEW `src/simulation/line_of_fire.py`, `src/simulation/team_picture.py` (the four trackers of 1.6 and the death tick of 5.6), `src/simulation/turning.py` (`ticks_to_within`), `src/simulation/verb_gates.py` (`door_in_reach`), `src/simulation/sensor_accessor.py` (`observe`), `src/rl_env.py` (`[obs] spec`, the refusals, `Layout` keys `vector` / `list` / `list_mask` / `list_uid` / `in_match` and their `final_*`, `EnvRunner.observe` through the accessor, `_buf`), NEW `tests/test_obs_spec_v1.py` + `tests/_obs_reference.py` (the vector, list and flag parts), `tests/test_team_picture.py` (the trackers), `tests/test_turning_law.py` (`ticks_to_within`), `tests/test_verb_gates.py` (`use_door` unchanged), `CLAUDE.md` (section 10), `tests/twin_manifest.toml` (`[not_twinned]` rows for the two new modules, regenerated) |
+| builds | the whole vector (the window-dependent `air` block, cols 58-65, written from the plane builders of (b): in (a) those eight read 0 and the test skips them -- CHOICE), the five list blocks and the 67-column entry (cols 28, 52-53, 66 read 0 until 1h / (b): `on_next_tick`, the lane pair, `prev_aim`), `list_uid`, the two row flags, the run-file door, the graph refusal, the env-owned copies |
+| gates | section 7's reconstruction (vector, list), honesty (list and the pair test), record-outlives, graph refusal, row flags, squash, no raw number, the new functions, the trackers, replay unmoved; `tests/test_team_picture.py` green with the trackers; the 1d pins and `match_pin_check.py` EQUAL (the trackers write no sim state); `tools/rl_smoke.py` on a `"v1"` run, 2 envs; the farm's number as information (section 6) |
+| report | the measured ms of its parts; every CHOICE it had to make beyond this document, one line each |
+
+### (b) `192-1g-b-windows`: the two windows, the sight planes, the lanes
+
+| | |
+|---|---|
+| files | `src/simulation/obs_spec_v1.py` (section 3: the plane readers, the far reduce, the crops, the sight planes, the lanes plane, the unit planes, `route` and the order planes; the `air` block of the vector), `src/simulation/gamemap.py` (`wind_load_plane`), `src/rl_env.py` (`Layout` keys `near_f` / `near_u` / `far_f` / `far_u` and their `final_*`), `tests/test_obs_spec_v1.py` + `tests/_obs_reference.py` (the plane parts), `tests/test_sight_lines.py` or a new `tests/test_wind_load_plane.py` (the plane equals the footprint read), `CLAUDE.md` (the row's amendment) |
+| builds | 3.1-3.9 and 1.3 |
+| gates | the reconstruction (every plane), honesty (the far unit planes, `watched` from recorded centres), the far reduce, the sight planes equal `has_los`, the lanes plane, `route`'s field, `wind_load_plane`; `pytest tests -q`; the farm's number as information, with the sight planes' part measured at 12 known enemies |
+| report | the ms per part of section 6's table; whether 3.5's union sharing is needed |
+
+### (c) `192-1g-c-full-view`: the full view
+
+| | |
+|---|---|
+| files | `src/simulation/obs_spec_v1.py` (section 5's builders, `FULL_VIEW_NAME`), `src/rl_env.py` (the `full_*` keys in the layout and the shared memory, `info["full_view"]` in `step` / `reset`, env-owned; the dead row of 5.6), `tests/test_obs_spec_v1.py` (the full-view, policy-never-sees-it and farm properties), `CLAUDE.md` (the Full view row), `tests/twin_manifest.toml` if a file moved |
+| builds | 5.1-5.7 |
+| gates | section 7's full view, policy-never-sees-it, farm; `pytest tests -q`; **the budget of section 6**: the §9.1 before / after reading, in the checkpoint comment; below 70 %, the order of attack of section 6 inside this patch, and if it still fails: commit, report, stop (plan 1.7) |
+| report | the final farm numbers under `"crop"` and `"v1"`; the per-part table filled |
+
+1h then writes the columns this document reserves for it: `prev[h]` (1.5),
+`on_next_tick` (2.2 col 28), `prev_aim` (col 66), `sees_target` (3.5), and
+reads `list_uid` and the gates of 1e for its masks. 1i reads `in_match`,
+`valid` and `bars`.
+
+## 9. The CHOICE and STOP register
+
+Every CHOICE above, in one line each, so the critic reads them in one
+place. No STOP was found: the design and the code at `ee25fe98` agree once
+1a-1f's facts are known (the sight cache every tick, the picture's seen
+rule, the order's absolute `until`, the wind read per footprint).
+
+| where | CHOICE |
+|---|---|
+| 0.1 | `L_ref` = the `[marine] loadout` weapon's `range_tiles`; `v_ref` = the marine full speed; the reference kit's rof and spread divide every unit's |
+| 0.1 | `d_c = ln(1 + d) / ln(1 + L_ref)` |
+| 0.2 | the squash: identity on [-1, 1], `sign(x)(1 + ln|x|)` beyond, capped at 4 |
+| 0.3 | float16 planes, float32 vector and list, int32 ids, uint8 flags and counts |
+| 0.4 | the spec lives in `obs_spec_v1.py`; the accessor's `observe(spec, ...)` is the door; `[obs] spec` selects it, `"crop"` the default; the graph refusal in `load_levels` |
+| 1.1 | `omega` over the top speed; `pushed` over the forward fall limit; `effort` over ONE; all nine status kinds in the vector |
+| 1.2 | `mags` over the loadout's total; untracked = 1.0 + a flag; kinds stored as row indices |
+| 1.5 | `order_left` over the match's `limit_ticks` (an order's own length is not stored); the previous-choice block is six reserved columns 1h fills; team counts over the match rows' `n` and `zombies` |
+| 1.6 | the motion, last-hit, damage-window and bar trackers are members of `TeamPicture` on slot 11; the damage window is `ticks_per_second` ticks; 1g builds the bar tracker 1i was to build |
+| 1.7 | `line_of_fire.py` holds the bots' line geometry verbatim; the bots are not moved onto it in 1g |
+| 1.7 | `aim_of`'s cone for a weaponless body (a zombie) is the reference kit's melee arc |
+| 1.7 | `route`'s `tile_ok` adds the openable openings' tiles; seeds = passable anchors whose block centre is in the place; the first step by `horde.candidates` |
+| 1.7 | `STATUS_SCALE_TICKS`: per kind the longest shipped applier's duration, 1 when none |
+| 2.1 | the mate block's cap is `S - 1`; nearest first in every block, ties by id; `list_uid` codes objects and doors by index plus a base |
+| 2.2 | a record's facing reads (0, 0); the lane pair per mate from the rasteriser's own per-owner cells |
+| 3.1 | outside the map: wall 1, planes 0, route -1 |
+| 3.2 | pressure as the profile's band, 0 at the low limit, 1 at the high; the poison quotient times the unit's `resist_mult` |
+| 3.4 | `wall` = `solid` (a grille reads as floor; the route plane carries walkability) |
+| 3.5 | `sees_target` always 0 in 1g (1h's aim fills it); the sight windows per soldier, the team's union rectangle the fallback |
+| 3.6 | the lanes plane uses the bots' `lane_cell` / `lane_halfwidth` |
+| 3.7 | a third far unit plane, `records` |
+| 4.1 | `valid` keeps its name and meaning (= acts); `in_match` is the new flag |
+| 5.3 | the full view's four status columns; its order's place and its air are not per-unit columns |
+| 5.4 | the balance column is the health sum until 1i replaces the builder |
+| 5.6 | a dead row's full view is built, centred on the corpse, its first entry itself |
+| 6 | the budget: 70 % of today's env-ticks/s at decimation 4, held at (c) |
+| 8 (a) | the vector's `air` block reads 0 until (b) |
+
+## 10. The `CLAUDE.md` rows (written by the patches, from design 10's draft rules)
+
+- **New row "Observation spec"** (Gameplay, after "Batched environment";
+  patch (a), amended by (b)): an observation layout is a named, versioned
+  spec served by the sensor accessor's `observe` -- `obs_spec_v1.py`'s
+  tables are the spec, the run file's `[obs] spec` names it, `"crop"` is
+  the placeholder; a new idea is a new spec, never an edit of one a
+  trained network uses; every feature is a ratio of a table value, an
+  angle's cosine and sine, a flag or a kind, squashed by the one curve;
+  units, grenades and charges reach a soldier only through its team's
+  picture and a team-mate's line of sight, the map, doors and fields
+  unfogged; the windows never rotate; the sight planes call the many-tiles
+  routine, the lanes the picture's `fire_lanes`, the route the horde's
+  flood -- nothing walks its own lines or floods its own field; a run on
+  this spec refuses a level without a room graph; the two row flags
+  `in_match` / `valid`.
+- **New row "Full view"** (patch (c), design 10's draft rule): what the
+  training-only value network is shown is one named spec (`full_v1`)
+  served beside the observation by the same door, under `info`, never a
+  key of `obs`; a policy never reads it; a new privileged input is a new
+  version of that spec.
+- **Amend "Team picture"**: the four trackers (motion, last hit, damage
+  window, bars) and the death tick are members of the picture on the same
+  slot-11 driver; the observation reads them, never memory on demand.
+- **Amend "Turning law"** (`ticks_to_within`, the trigger aid: a call of
+  the law, never a copy), **"Verb gates"** (`door_in_reach`), **"Wind load
+  on a body"** (`wind_load_plane`, the per-tile term of the one read, a
+  read-side product), **"Sight for many tiles"** (the sight planes as its
+  user), **"Batched environment"** (`[obs] spec`; the v1 arrays; the two
+  row flags; the full view in `info`), **"Vision / engagements / cover"**
+  (`line_of_fire.py`: the line-of-fire flags judge a round's path --
+  `rays_clear(physical=True)` and live cover -- never sight).
+- The header line, each patch.
+
