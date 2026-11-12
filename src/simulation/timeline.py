@@ -766,7 +766,7 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
     # (§9). ``sim.cover`` is passed even when empty — it is the LIST, not its
     # contents, that selects the model.
     _dispatch_trigger(sim.gmap, sim.units, unit, ux, uy, tx, ty, sim.tick,
-                      sim.shots, sim.real_time, sim.rng, sim.tick_events,
+                      sim.shots, sim.real_time, sim.draws, sim.tick_events,
                       sim.bullets, weapon, spread, sim.edit_queue,
                       cover=sim.cover, facing_defense=True)
     mag_spend(unit, weapon, sim.tick, events=sim.tick_events)
