@@ -203,7 +203,15 @@ class ComposedFlags:
 FLAGS_DEFAULT = ComposedFlags()
 
 
-def composed_flags(unit) -> ComposedFlags:
+def survives_sweep(st) -> bool:
+    """Whether the status ``st`` is still in the unit's list after the NEXT
+    status sweep: ``tick_statuses`` removes what the previous pass zeroed
+    (``remaining_ticks`` 0) before it counts down. THE one statement of that
+    rule (the sweep and ``composed_flags(after_sweep=True)`` both read it)."""
+    return st.remaining_ticks > 0
+
+
+def composed_flags(unit, *, after_sweep: bool = False) -> ComposedFlags:
     """Compose the behavior flags over ``unit``'s active statuses.
 
     AND across suppressions (any active status that declares
@@ -211,6 +219,11 @@ def composed_flags(unit) -> ComposedFlags:
     ``is_prone``. With no statuses this is the all-True default — the
     consumers' checks are then dead paths, bit-identical to pre-status
     behavior (the P3 wiring contract).
+
+    ``after_sweep=True`` (#195 1e) composes over the statuses that survive
+    the coming sweep only (:func:`survives_sweep`): the flags slot 4a sees
+    when it runs after this tick's 2b, read at the START of the tick
+    (``verb_gates.can_melee``). A read, not a state change.
     """
     statuses = getattr(unit, "statuses", None)
     if not statuses:
@@ -218,6 +231,8 @@ def composed_flags(unit) -> ComposedFlags:
     can_move = can_act = can_aim = True
     is_prone = False
     for st in statuses:
+        if after_sweep and not survives_sweep(st):
+            continue
         row = STATUS_REGISTRY[st.kind]
         can_move = can_move and row.can_move
         can_act = can_act and row.can_act
@@ -331,7 +346,7 @@ def tick_statuses(units, events=None) -> None:
         if not statuses:
             continue
         # (a) Sweep what the previous pass zeroed — flags released now.
-        statuses[:] = [st for st in statuses if st.remaining_ticks > 0]
+        statuses[:] = [st for st in statuses if survives_sweep(st)]
         # (b) + (c) Emit, then count down, in list order.
         for st in statuses:
             row = STATUS_REGISTRY[st.kind]
@@ -370,6 +385,6 @@ __all__ = [
     "N_STATUS_KINDS",
     "STACK_REFRESH", "STACK_STACK", "STACK_MAX",
     "StatusKindDef", "STATUS_REGISTRY", "StatusEffect",
-    "ComposedFlags", "FLAGS_DEFAULT", "composed_flags",
+    "ComposedFlags", "FLAGS_DEFAULT", "composed_flags", "survives_sweep",
     "apply_status", "tick_statuses", "serialize_statuses",
 ]

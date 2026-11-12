@@ -134,6 +134,7 @@ from simulation import speeds
 from simulation import turning
 from simulation import unit_fixed
 from simulation import unit_impulse
+from simulation import verb_gates
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
 # extracted verbatim. Simulation owns one Ruleset instance, chosen at
@@ -1256,18 +1257,20 @@ class Simulation:
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine
-        (``mag_size`` 0) is left untouched."""
-        weapon = self.weapons_tables.weapons.by_name.get(
-            getattr(u, "weapon_id", ""))
-        if weapon is None or weapon.mag_size <= 0:
+        (``mag_size`` 0), and any reload the gate refuses, leave the unit
+        UNTOUCHED: the decision is the gate's (``verb_gates.can_reload``, a
+        pure read of the settled magazine, ``mag_status``), and the lazy
+        settle (binding a never-bound magazine, completing a stall that has
+        run out) is bookkeeping the next trigger pull or ``mag_status`` does
+        anyway -- so a refused reload writes nothing, and a forced one leaves
+        the digests where a do-nothing tick leaves them (#195 1e, the 1h
+        gate)."""
+        if not verb_gates.can_reload(self, u):
             return
-        if not mag_settle(u, weapon, self.tick):
-            return                            # already reloading
-        if u.current_mag >= weapon.mag_size:
-            return                            # the magazine is full
-        if u.spare_mags == 0:
-            return                            # no spare magazine left
-        reload_begin(u, weapon, self.tick, events=self.tick_events)
+        weapon = self.weapons_tables.weapons.by_name[u.weapon_id]
+        mag_settle(u, weapon, self.tick)          # a no-op when ready; the
+        reload_begin(u, weapon, self.tick,         # begin's own precondition
+                     events=self.tick_events)
 
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
@@ -1343,7 +1346,7 @@ class Simulation:
             # change nothing.
             if getattr(u, "pending_shove", False):
                 u.pending_shove = False
-                if composed_flags(u).can_act:
+                if verb_gates.can_shove(self, u):
                     unit_impulse.shove(self.impulse_table, self.units, u,
                                        self.tick, events=self.tick_events)
 
@@ -1364,14 +1367,10 @@ class Simulation:
         emitted and the wind-up starts; with a wind-up of 0 ticks the
         grenade leaves the hand NOW, along the intent's own vector -- the
         pre-G3p same-tick throw, bit for bit."""
-        if u.throw_release_tick >= 0:
-            return                            # already winding up
-        if u.plant_done_tick >= 0:
-            return                            # planting a charge (#193)
-        if u.grenade_counts[throw.kind] <= 0:
-            return                            # none of that kind
-        if not composed_flags(u).can_act:
-            return                            # stunned, paralysed, ...
+        # The decision is the gate's (verb_gates.can_throw, #195 1e): already
+        # winding up, planting (#193), none of that kind, stunned / paralysed.
+        if not verb_gates.can_throw(self, u, throw.kind):
+            return
         ticks = self.weapons_tables.weapons.by_name[
             "hand_grenade"].throw_windup_ticks
         self.tick_events.append(ThrowEvent(unit_id=int(u.id),
@@ -1416,12 +1415,10 @@ class Simulation:
         :class:`~simulation.events.PlantEvent` is emitted and the plant runs
         until ``plant_done_tick`` (with a 0-tick plant the charge lies down
         this very tick, :meth:`_advance_plant` being called next)."""
-        if u.plant_done_tick >= 0 or u.throw_release_tick >= 0:
-            return                            # hands busy
-        if u.has_explosive <= 0 or not u.charge_ammo:
-            return                            # no charge carried
-        if not composed_flags(u).can_act:
-            return                            # stunned, paralysed, ...
+        # The decision is the gate's (verb_gates.can_plant, #195 1e): hands
+        # busy, no charge carried, stunned / paralysed.
+        if not verb_gates.can_plant(self, u):
+            return
         ticks = self.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks
         self.tick_events.append(PlantEvent(unit_id=int(u.id),
                                            ticks=int(ticks)))
@@ -1498,16 +1495,9 @@ class Simulation:
         whose span touches the unit's footprint or its immediate ring (§3c).
         Reuses :meth:`door_at`; the slot-9e door sweep applies/retries the
         latch, exactly like the dev O-key."""
-        x0, y0 = u.tile_x, u.tile_y
-        fp = u.footprint
-        # Footprint tiles plus a one-tile ring so a marine standing beside a
-        # door can open it without overlapping it.
-        for ty in range(y0 - 1, y0 + fp + 1):
-            for tx in range(x0 - 1, x0 + fp + 1):
-                door = self.door_at(ty, tx)
-                if door is not None and door.alive:
-                    door.want_open = not door.want_open
-                    return
+        door = verb_gates.use_door(self, u)         # the scan is the gate's
+        if door is not None:
+            door.want_open = not door.want_open
 
     def get_legal_actions(self, unit_id: int) -> list:
         """Stub for the AI training contract — minimal v1.

@@ -1970,21 +1970,15 @@ def process_melee_intents(units, tick, tables, impulse_table, events=None,
     applied together at phase B), and a render-only ``MeleeEvent`` is
     emitted. A whiff (nothing in arc) costs nothing: no cooldown. Integer,
     no draw (the loadouts door refuses a row with a crit)."""
-    from simulation import unit_impulse
+    from simulation import unit_impulse, verb_gates
     fx = effects_or_immediate(effects)
     for u in units:
         if not getattr(u, "pending_melee", False):
             continue
         u.pending_melee = False
-        if not u.alive or u.is_zombie or not u.melee_id:
-            continue
-        if (not composed_flags(u).can_act or u.throw_release_tick >= 0
-                or getattr(u, "plant_done_tick", -1) >= 0):  # planting (#193)
+        if not verb_gates.can_melee(u, tick, tables, at_tick_start=False):
             continue
         weapon = tables.weapons.by_name[u.melee_id]
-        if (u.last_blow_tick >= 0
-                and tick - u.last_blow_tick < weapon.rof_interval_ticks):
-            continue
         target = melee_arc_target(units, u, weapon)
         if target is None:
             continue

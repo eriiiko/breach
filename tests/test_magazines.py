@@ -258,8 +258,9 @@ def test_the_verb_does_nothing_with_a_full_magazine():
     r = _Range(magazines=3)
     r.sim.reload_intent(r.uid)
     r.run(5)
-    assert (r.u.current_mag, r.u.spare_mags, r.u.reload_done_tick) == \
-        (MAG, r.u.magazines - 1, -1)
+    # read through mag_status, the settled view (#195 1e way (a): a refused
+    # reload no longer binds the magazine eagerly; nothing observable moves)
+    assert r.status() == (MAG, r.u.magazines - 1, False)
     # also after a stall has just completed (the gun is full again)
     r.hold()
     r.run_until_shots(2)
