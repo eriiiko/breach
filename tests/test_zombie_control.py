@@ -387,7 +387,10 @@ _PRE_122_SHIP_DEMO = dict(
     # rounds (was 93), 16 throws (was 12). CPU only (no CUDA build on this
     # checkout).
     # (was ticks 2721)
-    outcome="win", team=1, ticks=2902,
+    # #29 P3e re-pin: the integer match path moved the game -- team 1 at 2902
+    # ticks becomes team 0 at 2966 (one seed; the A/B over 24-72 seeds is in
+    # docs/p3e_ab_2026-11-12.md and within seed noise).
+    outcome="win", team=0, ticks=2966,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -414,7 +417,15 @@ _PRE_122_SHIP_DEMO = dict(
     #  units 4408c8740425593b0d47d35e7d0658c4efbd62caed87f5fd69a9e8f894ac02dd)
     # #195 1d step (ii) re-pin (see above).
     # (was 58a67f4473cc3fe4ffb37123259f5fa0a8c0ca820be9179218404499b9749c04)
-    field_digest="0afdec8bfef8943048652975d92945c2fafdf0a6751a900ccbf8a1c8702cc617",
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was 0afdec8bfef8943048652975d92945c2fafdf0a6751a900ccbf8a1c8702cc617)
+    field_digest="5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -545,7 +556,15 @@ _PRE_122_SHIP_DEMO = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was 1030e119469b9e9abeaebd504ab5b59c9ae0fac090fe4d04c566bb6488633d54)
-    tick_digest="402970f74f8e71af449d04cd8c245de8bd4a3069771ca31529506fe08a1b6dad",
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was 402970f74f8e71af449d04cd8c245de8bd4a3069771ca31529506fe08a1b6dad)
+    tick_digest="4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -565,7 +584,15 @@ _PRE_122_SHIP_DEMO = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was 16b425f124d6fcc66b409ff2f0433fb59540b7dbab273f0fc1dfe69c7f1706d7)
-    unit_stream="537ec052b34d2e9b52887299ddf38162ae47f4efb3acc51f7df3ffb3175742ca")
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was 537ec052b34d2e9b52887299ddf38162ae47f4efb3acc51f7df3ffb3175742ca)
+    unit_stream="8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
