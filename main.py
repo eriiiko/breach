@@ -704,7 +704,12 @@ def main():
                     paused=sim.is_paused()),
                 _footprint_of)
         else:
-            cursor = frame_lights.cursor_lamp_spec(renderer.mouse_to_tile_float())
+            # Direct control has no cursor lamp (Erik, 2026-11-12): the
+            # possessed unit carries its own flashlight (below), and the dark
+            # is moodier lit by that alone. Every other scheme keeps it.
+            cursor = (None if control_source.camera_mode is not None
+                      else frame_lights.cursor_lamp_spec(
+                          renderer.mouse_to_tile_float()))
             if cursor is not None:
                 extra.append(cursor)
             # G7p: a unit's flashlight cone follows its synced bit
