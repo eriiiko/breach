@@ -2395,15 +2395,16 @@ cap = 256                   # live tracers at once, the oldest dropped
 min_screen_px = 0.75        # zoomed out, a streak's radius floor in SCREEN px
 
 [render.tracers.kinds.bullet]
-speed_scale = 1.0       # x the round's own speed ([ammo.*] muzzle_mps). 1 = HONEST (Erik,
-                        # 2026-11-12, "I'd like to try it"): a rifle round crosses a room
-                        # inside one or two frames. 0.25 = slowed for the eye: it visibly
-                        # flies, and the picture then lags the sim by up to ~0.1 s
+speed_scale = 0.20      # x the round's own speed ([ammo.*] muzzle_mps). 0.20 = Erik's play
+                        # test, 2026-11-12 (he tried 1 = HONEST first: a rifle round crosses
+                        # a room inside one or two frames): slowed for the eye, the round
+                        # visibly flies, and the picture lags the sim by up to ~0.1 s
 shutter_s = 0.0167      # the streak is the path flown in this long (a 60 fps exposure)
 width_m = 0.010         # the streak's radius
 temp_k = 3600.0         # its colour on the blackbody ramp (white-hot)
 brightness = 0.7        # its radiance, x the ramp's emission
-halo_gain = 0.04        # the soft halo round it (4 x the radius), over the streak's radiance
+halo_gain = 0.54        # the soft halo round it (4 x the radius), over the streak's radiance
+                        # (Erik's play test, 2026-11-12; was 0.04)
 glow_s = 0.05           # the afterglow's e-fold, seconds: the path behind the round
 glow_gain = 0.05        # ... its radiance over the streak's
 glow_temp_k = 1500.0    # ... and its colour (orange)

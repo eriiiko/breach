@@ -16,6 +16,12 @@ move and glow, and perhaps sparks where the bullets hit".
 | 7 | A round's first segment starts at the shooter's muzzle | Flame and tracer leave the same point |
 | 8 | The legacy flat line is deleted | One picture of a round |
 
+## As played (2026-11-12)
+
+Erik tried honest speed and landed on `speed_scale = 0.20` and `halo_gain =
+0.54` ("ok, I'm happy"). The speed is still derived from the round's own
+`muzzle_mps`; the scale is the one look dial on it.
+
 ## Not in this patch
 
 A round that hits a unit or a cover crate throws nothing (a body hit deserves
