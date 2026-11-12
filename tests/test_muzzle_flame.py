@@ -314,6 +314,20 @@ def test_a_flash_stays_on_its_gun_and_keeps_its_last_place():
     assert [f.unit for f in fl.flashes] == [1]
 
 
+def test_the_flame_points_where_the_round_went():
+    """PROPERTY: a flash whose effect carries the round's path sits on the
+    muzzle but points along THAT path (the tracer's), whatever direction
+    the drawn barrel has; without a path it points along the barrel. Breaks
+    if the flame follows the gun's pose and parts from its tracer."""
+    fl = _flames()
+    fx = dict(_tracer(), **{"from": (4.0, 4.0), "to": (4.0, 14.0)})
+    fl.consume([fx, _tracer(unit=2)], lambda u: "k5_carbine", 10)
+    fl.update(1.0, lambda u: POSE)                 # the barrel points east
+    by_unit = {f.unit: f.pose for f in fl.flashes}
+    assert by_unit[1] == pytest.approx((5.0, 6.0, 0.0, 1.0))
+    assert by_unit[2] == POSE
+
+
 def test_the_cap_holds_and_off_is_empty():
     """PROPERTY: never more than ``cap`` flashes alive (the newest kept);
     disabled, nothing is ever born but the effects are still marked seen (no

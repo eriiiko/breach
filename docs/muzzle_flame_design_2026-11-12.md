@@ -45,6 +45,11 @@ Local frame in METRES: x along the barrel, y across, origin at the muzzle.
   that draws the prop in the hand (`held_props.prop_world`), recorded per
   unit by the unit renderer each frame (`UnitModelRenderer.muzzle_poses`), so
   the flame sits on the barrel through walk, turn and recoil.
+- The flame's DIRECTION is the round's own (the tracer's `from` → `to`), not
+  the drawn barrel's: the first in-game look showed the aim pose holding the
+  gun some degrees off the shot, and a flame that parts from its tracer reads
+  as a bug. The barrel's direction is the fallback for an effect with no
+  path.
 - A unit with no drawn prop (sprites, pose layer off, no socket): the
   footprint's edge along its facing — the light's own rule.
 - `[render.muzzle_flame] weapons = { <weapon id> = "<kind>" }`, `default_kind`

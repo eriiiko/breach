@@ -456,6 +456,7 @@ class Flash:
     tick0: int
     kind: FlameKind
     shot: Shot
+    aim: Optional[Tuple[float, float]] = None   # the round's own direction
     pose: Optional[Tuple[float, float, float, float]] = None
     t_first: Optional[float] = None     # sim seconds at its first drawn frame
     age: float = 0.0                    # normalised, [0, 1)
@@ -468,7 +469,10 @@ class MuzzleFlames:
     them on the sim clock from the first frame each is drawn (so a paused
     game holds a flash and every shot shows its age-0 frame), puts each on
     its shooter's muzzle (``pose_fn(unit_id)`` -> (x, y, dir_x, dir_y) tiles
-    or None = keep the last) and drops the spent ones; :meth:`pack` hands
+    or None = keep the last) -- pointing along the ROUND's own direction
+    (the tracer's ``from`` -> ``to``) when the effect carries one, so the
+    flame and the tracer agree whatever the gun's drawn pose, else along
+    the barrel -- and drops the spent ones; :meth:`pack` hands
     the draw its data rows. Never more than ``cap`` alive (the oldest go)."""
 
     def __init__(self, settings: FlameSettings):
@@ -515,8 +519,15 @@ class MuzzleFlames:
             kind = s.kind_for(str(wid))
             if kind is None:
                 continue
+            aim = None
+            a, b = fx.get("from"), fx.get("to")
+            if a is not None and b is not None:
+                ax, ay = float(b[0]) - float(a[0]), float(b[1]) - float(a[1])
+                n = math.hypot(ax, ay)
+                if n > 1e-6:
+                    aim = (ax / n, ay / n)
             self.flashes.append(Flash(
-                unit=int(unit), tick0=tick0, kind=kind,
+                unit=int(unit), tick0=tick0, kind=kind, aim=aim,
                 shot=shot_rows(kind, shot_rng(s.seed, int(unit), tick0))))
         if len(self._seen) > 4096:          # keys older than any live effect
             keep = {(f.unit, f.tick0) for f in self.flashes}
@@ -534,7 +545,8 @@ class MuzzleFlames:
         for f in self.flashes:
             pose = pose_fn(f.unit)
             if pose is not None:
-                f.pose = pose
+                f.pose = (pose if f.aim is None
+                          else (pose[0], pose[1], f.aim[0], f.aim[1]))
             if f.pose is None:
                 continue                      # nowhere to draw it, ever
             if f.t_first is None:
