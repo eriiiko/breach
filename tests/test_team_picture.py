@@ -411,3 +411,195 @@ def test_a_bot_reads_the_lanes_any_controller_would(tmp_path):
     assert (want == a.id).any()
     bots.handle_frame(sim, None)          # the first frame: a team update
     assert np.array_equal(bots.brain.lanes, want)
+
+
+# ---------------------------------------------------------------------------
+# #195 1g: the trackers (obs spec 1.6) -- members of the picture on the
+# same slot-11 driver, never memory on demand
+# ---------------------------------------------------------------------------
+def _hit_in_next_step(monkeypatch, sim, victim, dmg, attacker_id=-1,
+                      direction=(0, 0), source="bullet"):
+    """Land ONE hit on ``victim`` inside the next step (its ``UnitHitEvent``
+    on that step's ``tick_events``, before the picture's slot 11)."""
+    rules = sim.ruleset
+    real = type(rules).on_tick_end
+    done = []
+
+    def hooked(sim_):
+        if not done:
+            done.append(True)
+            apply_packet(victim, DamagePacket(dmg, KINETIC, attacker_id,
+                                              dir_x_q=direction[0],
+                                              dir_y_q=direction[1]),
+                         sim_.tick_events, source=source)
+        return real(rules, sim_)
+    monkeypatch.setattr(rules, "on_tick_end", hooked)
+
+
+def test_motion_is_the_last_ticks_displacement(tmp_path):
+    """Property: ``motion[uid]`` is the unit's Q16 position at this update
+    and the one before, so ``velocity_q`` is the last tick's displacement,
+    ``(0, 0)`` at the first update; a standing unit reads ``(0, 0)``.
+    Breaks if the tracker is taken across a skipped tick or on demand."""
+    sim, (me, foe) = _scene(tmp_path, "motion", [(0, 10, 20), (1, 30, 20)])
+    pic = sim.team_picture
+    assert pic.velocity_q(me.id) == (0, 0)
+    assert pic.velocity_q(foe.id) == (0, 0)
+    sim.set_move_dir(me.id, ONE, 0, 0)
+    for _ in range(6):
+        p0 = quantize_scalar(me.x), quantize_scalar(me.y)
+        sim.step()
+        p1 = quantize_scalar(me.x), quantize_scalar(me.y)
+        assert pic.motion[me.id] == (p0, p1)
+        assert pic.velocity_q(me.id) == (p1[0] - p0[0], p1[1] - p0[1])
+    assert pic.velocity_q(me.id)[0] > 0
+    assert pic.velocity_q(foe.id) == (0, 0)
+    assert pic.velocity_q(999) == (0, 0)
+
+
+def test_last_hit_is_the_last_damaging_hit_and_never_clears(tmp_path,
+                                                            monkeypatch):
+    """Property: ``last_hit[uid]`` is the tick, travel vector and cause of
+    the last ``damage > 0`` hit on the unit, kept as its age grows; a hit
+    of no damage moves nothing. Breaks if a hit is dropped, a heal counted
+    or the memory cleared."""
+    sim, (me, foe) = _scene(tmp_path, "lasthit", [(0, 10, 20), (1, 30, 20)])
+    pic = sim.team_picture
+    assert me.id not in pic.last_hit
+    _hit_in_next_step(monkeypatch, sim, me, 5, foe.id, (ONE, -ONE),
+                      source="bullet")
+    sim.step()
+    t = int(sim.tick)
+    assert pic.last_hit[me.id] == (t, ONE, -ONE, "bullet")
+    for _ in range(10):
+        sim.step()
+    assert pic.last_hit[me.id] == (t, ONE, -ONE, "bullet")   # age grows
+    _hit_in_next_step(monkeypatch, sim, me, 3, -1, (0, 0), source="heat")
+    sim.step()
+    assert pic.last_hit[me.id] == (int(sim.tick), 0, 0, "heat")
+
+
+def test_damage_window_sums_what_the_team_dealt_or_saw(tmp_path,
+                                                        monkeypatch):
+    """Property: a team's window sums the hits it DEALT (the attacker a
+    living marine of the team) and the hits on a unit it SAW at the
+    previous tick -- a THIRD side's hit on a watched enemy included -- and
+    nothing else; entries fall out after ``window_ticks``. Breaks if the
+    window reads an unseen hit, keys the saw rule on this tick's sighting,
+    or forgets too early or late."""
+    # me (team 0) sees foe (team 1) across the open box; a third side's unit
+    # (team 2) stands beside the foe, no picture of its own
+    sim, (me, foe, third) = _scene(tmp_path, "window",
+                                   [(0, 10, 20), (1, 30, 20), (2, 30, 30)])
+    pic = sim.team_picture
+    W = pic.window_ticks
+    assert W == max(1, int(round(float(sim._tps))))
+    sim.step()
+    assert pic.records(0)[foe.id].tick == sim.tick       # seen now
+    # (1) the third side hits the foe my team watches: SEEN by team 0
+    _hit_in_next_step(monkeypatch, sim, foe, 7, third.id)
+    sim.step()
+    t1 = int(sim.tick)
+    assert pic.damage_last_s(0, foe.id) == 7.0
+    assert pic.damage_last_s(1, foe.id) == 0.0           # team 1 dealt nothing
+    # (2) my team deals a hit on the third side's unit, which team 1 saw too
+    _hit_in_next_step(monkeypatch, sim, third, 4, me.id)
+    sim.step()
+    assert pic.damage_last_s(0, third.id) == 4.0         # dealt
+    assert pic.damage_last_s(1, third.id) == 4.0         # saw
+    # (3) a hit on a unit nobody watched: the foe behind a wall
+    sim2, (me2, foe2) = _scene(tmp_path, "window2", [(0, 10, 20), (1, 40, 20)],
+                               wall_x=30)
+    sim2.step()
+    assert foe2.id not in sim2.team_picture.records(0)
+    _hit_in_next_step(monkeypatch, sim2, foe2, 9, -1)
+    sim2.step()
+    assert sim2.team_picture.damage_last_s(0, foe2.id) == 0.0
+    # (4) the window: the first hit leaves W ticks after it landed
+    while sim.tick - t1 < W - 1:
+        sim.step()
+    assert pic.damage_last_s(0, foe.id) == 7.0
+    sim.step()
+    assert pic.damage_last_s(0, foe.id) == 0.0
+
+
+def test_bars_are_the_spawn_hp_and_the_turning_hp(tmp_path, monkeypatch):
+    """Property: ``bars[uid]`` is the unit's hp at the first update at which
+    it exists (its spawn: an enemy first seen wounded reads its true ratio)
+    and ``[zombie] hp`` once it has turned. Breaks if the bar is taken at
+    the first sighting or never re-taken at the conversion."""
+    from simulation.stats import effective_vitality
+    sim, (me, foe) = _scene(tmp_path, "bars", [(0, 10, 20), (1, 40, 20)],
+                            wall_x=30)
+    pic = sim.team_picture
+    assert pic.bars[foe.id] == float(foe.current_hp) == effective_vitality(foe)
+    _hit_in_next_step(monkeypatch, sim, foe, 30, -1)   # wounded, unseen
+    sim.step()
+    assert foe.current_hp < pic.bars[foe.id]           # the bar stays
+    # a late spawn exists from its first update
+    late = Unit("late", x=20, y=30, team=1, footprint=3)
+    sim.add_unit(late)
+    sim.step()
+    assert pic.bars[late.id] == float(late.current_hp)
+    # a conversion re-takes the bar
+    _kill_in_next_step(monkeypatch, sim, foe, by_zombie=True)
+    sim.step()
+    assert foe.is_zombie
+    assert pic.bars[foe.id] == float(CFG.zombie.hp)
+    assert pic.death_tick[foe.id] == int(sim.tick)
+
+
+def test_the_object_tracker_gives_a_seen_object_one_id_for_its_life(
+        tmp_path):
+    """Property: a grenade or charge a team-mate has a line of sight to gets
+    the team's next object id at its first sighting and keeps it while it
+    lives (seen again after a gap: the same id); the next first-seen object
+    gets the next id; an object behind a wall gets none; a spent object is
+    forgotten. Breaks if the id is a list index, a sim index or a live
+    position."""
+    from simulation import charges as ch
+    sim, (me, foe) = _scene(tmp_path, "objects", [(0, 10, 20), (1, 40, 20)],
+                            wall_x=30)
+    pic = sim.team_picture
+    seen = ch.PlantedCharge(20, 20, "demo_c4", foe.id, det_tick=None)
+    hidden = ch.PlantedCharge(45, 20, "demo_c4", foe.id, det_tick=None)
+    assert ch.place(sim, hidden) and ch.place(sim, seen)
+    sim.step()
+    ids0 = pic.object_ids(0)
+    assert ids0[seen] == tp.OBJECT_UID_BASE and hidden not in ids0
+    assert pic.seen_now[0] == [(seen, tp.OBJECT_UID_BASE)]
+    assert pic.seen_now[1] == [(hidden, tp.OBJECT_UID_BASE)]   # team 1's own
+    # the foe lobs a grenade: team 1 sees it, team 0 does not; the next
+    # thing team 0 sees gets its NEXT id, not the sim's index
+    sim.throw_grenade_intent(foe.id, ONE, 0, 24, 3 << 16, 0)
+    for _ in range(10):
+        sim.step()
+    assert len(sim.projectiles) == 1
+    assert sim.projectiles[0] not in pic.object_ids(0)
+    assert pic.object_ids(1)[sim.projectiles[0]] == tp.OBJECT_UID_BASE + 1
+    seen2 = ch.PlantedCharge(22, 24, "demo_c4", foe.id, det_tick=None)
+    assert ch.place(sim, seen2)
+    sim.step()
+    assert pic.object_ids(0)[seen2] == tp.OBJECT_UID_BASE + 1
+    assert pic.object_ids(0)[seen] == tp.OBJECT_UID_BASE
+    # a spent charge is forgotten, the ids of the others unmoved
+    seen.live = False
+    sim.step()
+    assert seen not in pic.object_ids(0)
+    assert pic.object_ids(0)[seen2] == tp.OBJECT_UID_BASE + 1
+
+
+def test_a_record_carries_the_facing_at_the_sighting(tmp_path):
+    """Property: ``Record.facing_q`` is the unit's facing when it was last
+    seen and does not follow a later turn out of sight. Breaks if the
+    facing is read live."""
+    sim, (me, foe) = _scene(tmp_path, "facing", [(0, 10, 20), (1, 40, 20)],
+                            wall_x=30)
+    place_facing(foe, 0)
+    rec = sim.team_picture._write(sim, 0, foe)
+    assert rec.facing_q == 0 == foe.facing_q
+    sim.set_aim(foe.id, 0, -ONE)                 # turn north, unseen
+    for _ in range(12):
+        sim.step()
+    assert foe.facing_q != 0
+    assert sim.team_picture.records(0)[foe.id].facing_q == 0
