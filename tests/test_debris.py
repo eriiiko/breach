@@ -356,6 +356,8 @@ def test_ember_and_spark_packs_are_byte_identical_with_the_debris_present():
         fake = SimpleNamespace(
             embers=es, sparks=ss, debris=ds, ember_draw=draw,
             # #87: the muzzle sparks ride the same draw; none here
+            impact_sparks=SimpleNamespace(enabled=False,
+                                          p=SimpleNamespace(n=0)),
             muzzle_sparks=SimpleNamespace(enabled=False,
                                           p=SimpleNamespace(n=0)),
             _ember_sprites=None,
