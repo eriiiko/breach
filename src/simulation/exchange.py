@@ -509,15 +509,23 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
     :class:`UnitKilledEvent` per kill so the renderer can spawn matching
     visual effects.
     """
+    # #29 P3e: integers -- membership ``d2 <= r^2`` on the Q16 radius, the
+    # damage ``floor(max_damage * (1 - dist/radius))`` exact
+    # (unit_fixed.falloff_floor: what int() of the float falloff computed,
+    # bar float rounding on a boundary).
+    r_q = _unit_fixed.quantize_scalar(float(radius))           # p3e-door
+    r2_q = r_q * r_q
+    max_d = int(max_damage)
     for u in units:
         if not u.alive:
             continue
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
-        dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
-        if dist <= radius:
-            falloff = 1.0 - (dist / radius)
-            damage = int(max_damage * falloff)
+        dx_q = _unit_fixed.quantize_scalar(uc_fx - fx)   # tiles: exact
+        dy_q = _unit_fixed.quantize_scalar(uc_fy - fy)
+        d2 = dx_q * dx_q + dy_q * dy_q                    # Q32
+        if r_q > 0 and d2 <= r2_q:
+            damage = _unit_fixed.falloff_floor(max_d, d2, r2_q)
             if damage >= CFG.combat.blast_damage_threshold:
                 # BLAST packet through the pipeline (mechanics/06 §2). The
                 # geometric pre-mitigation amount + the chip-damage threshold
@@ -532,10 +540,7 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
                              DamagePacket(amount=damage, dtype=BLAST,
                                           attacker_id=attacker_id,
                                           indirect=True,
-                                          dir_x_q=_unit_fixed.quantize_scalar(
-                                              uc_fx - fx),
-                                          dir_y_q=_unit_fixed.quantize_scalar(
-                                              uc_fy - fy)),
+                                          dir_x_q=dx_q, dir_y_q=dy_q),
                              events, source="explosion")
 
 

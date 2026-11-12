@@ -57,6 +57,28 @@ SITES = [
     ("exchange.py", "felt_temperature_q"),
     ("exchange.py", "apply_environmental_damage"),
     ("exchange.py", "apply_poison_dose"),
+    # (f) FieldEdit and the stamp refill
+    ("field_edit.py", "_iter_region"),
+    ("field_edit.py", "apply_field_edit"),
+    ("field_edit.py", "_combine_q"),
+    ("field_edit.py", "_combine_heat_q"),
+    ("field_edit.py", "amount_q_of"),
+    ("gamemap.py", "GameMap._neighbor_mean"),
+    # (e) blasts, payloads, sprays, grenade flight
+    ("physics.py", "apply_explosion"),
+    ("exchange.py", "apply_blast_damage"),
+    ("payloads.py", "linear_weights"),
+    ("payloads.py", "deposit_over_tiles"),
+    ("payloads.py", "blast_smoke_peak_q"),
+    ("payloads.py", "execute_payload"),
+    ("blast_expansion.py", "_source_q"),
+    ("heat_source_system.py", "_blast_damage_q16"),
+    ("combat.py", "Projectile.update_position"),
+    ("combat.py", "spray_cone_tiles"),
+    ("combat.py", "deposit_spray_cone"),
+    ("combat.py", "_enqueue_spray_cells"),
+    ("combat.py", "start_spray_burst_directional"),
+    ("simulation.py", "Simulation._release_grenade"),
 ]
 
 _DRAW_NAMES = {"uniform", "random", "normal", "standard_normal"}
@@ -78,22 +100,37 @@ def _find(tree, qual):
     return found
 
 
+def _marked_lines(fn, lines):
+    """Every line of a statement carrying a mark: a simple statement's whole
+    span, a compound one's header (its lines before its body)."""
+    marked = set()
+    for st in ast.walk(fn):
+        if not isinstance(st, ast.stmt) or st is fn:
+            continue
+        body = getattr(st, "body", None)
+        end = (body[0].lineno - 1 if isinstance(body, list) and body
+               else st.end_lineno)
+        span = range(st.lineno, max(end, st.lineno) + 1)
+        if any(m in lines[i - 1] for i in span for m in _MARKS):
+            marked.update(span)
+    return marked
+
+
 def _offences(fn, lines):
     out = []
+    marked = _marked_lines(fn, lines)
     for node in ast.walk(fn):
         line = getattr(node, "lineno", None)
         if line is None:
             continue
         text = lines[line - 1]
-        end = getattr(node, "end_lineno", line) or line
-        span = " ".join(lines[line - 1:end])
-        if any(m in span for m in _MARKS):
+        if line in marked:
             continue
         bad = None
         if isinstance(node, ast.Call):
             f = node.func
             if (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
-                    and f.value.id == "math"):
+                    and f.value.id == "math" and f.attr != "isqrt"):
                 bad = f"math.{f.attr}"
             elif isinstance(f, ast.Name) and f.id == "float":
                 bad = "float()"

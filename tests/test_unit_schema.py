@@ -159,8 +159,8 @@ def test_every_intent_column_round_trips_when_set():
     u.pending_plant = 120
     u.pending_reload = u.pending_shove = u.pending_melee = True
     u.pending_use = True
-    u.spray_target = (3.25, 4.5)
-    u.spray_aim_angle = 0.75
+    u.spray_target = (3 << 16, 4 << 16)     # Q16 (#29 P3e)
+    u.spray_aim_angle = 49152
     _check_unit(u)
     u.pending_throw = ThrowIntent(1, 2, 30, 5 << 16, 1)
     _check_unit(u)
@@ -177,8 +177,8 @@ _SAMPLES = {
     "current_hp": 12 << 16,      # read as hp_q, the Q16 int (#29 P3e)
     "live_move_dir": MoveDirIntent(1, 2, 3), "live_aim": AimIntent(1, 2),
     "pending_throw": ThrowIntent(1, 2, 3, None, 0),
-    "pending_plant": 120, "spray_target": (1.0, 2.0),
-    "spray_aim_angle": 0.5, "speed_ticks_per_tile": 9,
+    "pending_plant": 120, "spray_target": (1 << 16, 2 << 16),
+    "spray_aim_angle": 32768, "speed_ticks_per_tile": 9,
     "current_mag": 3,
 }
 

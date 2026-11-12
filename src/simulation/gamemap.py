@@ -340,7 +340,7 @@ class GameMap:
         self.render_dirty = set()
         # The BLAST LOG (levelgen vocabulary E.2 row 3, the heat-source
         # entity's death hook): every explosion disc ``execute_payload``
-        # executes this tick, as ``(fy, fx, radius, wall_damage)`` in call
+        # executes this tick, as ``(fy, fx, radius, wall_damage_q)`` in call
         # order. Appended ONLY by ``payloads.execute_payload`` (step 1, when
         # ``radius > 0``) and DRAINED once per tick at slot 9e -- by
         # ``heat_source_system.sweep_heat_sources`` when the level has
@@ -2489,18 +2489,22 @@ class GameMap:
                 y += sy
 
     def _neighbor_mean(self, field, fy, fx):
-        """Mean of field values from passable (non-solid, non-vacuum) 4-neighbors."""
+        """Mean of field values from passable (non-solid, non-vacuum)
+        4-neighbors -- an INTEGER division rounded toward zero (#29 P3e): the
+        field is an int32 plane (the atmosphere, Q16), whose store truncated
+        the old float quotient toward zero; this is that value exactly."""
+        from simulation.unit_fixed import div_trunc
         h, w = field.shape
-        total = 0.0
+        total = 0
         count = 0
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             ny, nx = fy + dy, fx + dx
             if (0 <= ny < h and 0 <= nx < w
                     and not self.solid[ny, nx]
                     and not self.is_vacuum[ny, nx]):
-                total += field[ny, nx]
+                total += int(field[ny, nx])
                 count += 1
-        return total / count if count > 0 else 0.0
+        return div_trunc(total, count) if count > 0 else 0
 
     # (``_seed_bulk_gas_neighbor_mean`` DELETED — P-M3: it WAS the mint. It
     # seeded gas[O2]/gas[INERT_N2] at a newly-opened tile with the neighbour

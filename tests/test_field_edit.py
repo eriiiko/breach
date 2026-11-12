@@ -337,22 +337,20 @@ def test_heat_field_edit_saturates_on_overlap():
 # ---------------------------------------------------------------------------
 # Channel path (RGB field)
 # ---------------------------------------------------------------------------
-def test_channel_write():
+def test_a_policy_without_an_integer_currency_is_refused():
+    """#29 P3e: every write through FieldEdit is integer in its field's
+    currency; a policy whose dtype has none (the old float fields -- no
+    shipped field is one) is REFUSED, never combined in floats. Breaks if a
+    float combine path returns."""
+    import pytest
     g = _GMapStub()
-    # No policy entry for light_rgb -> would raise; use a registered float field
-    # instead is not possible (all float policies are scalar). Register-free path:
-    # the channel path is exercised by writing a known (h,w,3) field that HAS a
-    # policy. None of the shipped policies are (h,w,3); so we assert the channel
-    # arg is honoured on a manually-policied field via monkeypatch-free route:
-    # skip if no (h,w,3) policy exists. (Kept as a guard for when one is added.)
     from simulation.field_edit import FIELD_POLICY, _FieldPolicy
     FIELD_POLICY["light_rgb"] = _FieldPolicy("float", None, None)
     try:
-        apply_field_edit(g, FieldEdit("light_rgb", Region.TILE, (5, 5), 0.5,
-                                      EditMode.ADD, channel=1), _rng())
-        assert abs(float(g.light_rgb[5, 5, 1]) - 0.5) < 1e-6
-        assert float(g.light_rgb[5, 5, 0]) == 0.0
-        assert float(g.light_rgb[5, 5, 2]) == 0.0
+        with pytest.raises(ValueError, match="no currency"):
+            apply_field_edit(g, FieldEdit("light_rgb", Region.TILE, (5, 5),
+                                          0.5, EditMode.ADD, channel=1),
+                             _rng())
     finally:
         del FIELD_POLICY["light_rgb"]
 
@@ -409,15 +407,23 @@ def test_noise_draw_deterministic_for_fixed_seed():
 
 
 class _CountingRng:
-    """Wraps a Generator, counting uniform() calls — to prove the skip-mask
-    veto runs BEFORE the RNG draw (a skipped tile consumes no random value)."""
+    """Wraps a Generator, counting raw steps of its bit generator (#29 P3e:
+    the noise draw is ``draws.noise_mult_q16``, one raw step) — to prove the
+    skip-mask veto runs BEFORE the RNG draw (a skipped tile consumes no
+    random value)."""
     def __init__(self, seed):
         self._g = np.random.default_rng(seed)
         self.draws = 0
+        outer = self
 
-    def uniform(self, lo, hi):
-        self.draws += 1
-        return self._g.uniform(lo, hi)
+        class _BG:
+            def random_raw(self_inner):
+                outer.draws += 1
+                return outer._g.bit_generator.random_raw()
+        self.bit_generator = _BG()
+
+    def uniform(self, lo, hi):          # pragma: no cover - refused (P3e)
+        raise AssertionError("the noise draw must not call uniform")
 
 
 def test_skipped_tile_draws_no_noise():
@@ -462,36 +468,36 @@ def _open_gmap(h=24, w=24):
 
 
 def test_add_explosion_smoke_equivalence():
-    """The migrated add_explosion_smoke deposit == the legacy inline formula."""
+    """The migrated add_explosion_smoke deposit == THE integer law written by
+    hand (#29 P3e): the amount quantized once into the trace currency, the
+    DISC's LINEAR weight ``falloff_round`` on the Q16 radius, one integer
+    noise draw per surviving tile in row-major order, the product rounded
+    once (half away) -- on the same seed, bit for bit."""
     from simulation.physics import add_explosion_smoke
-    import math
+    from simulation import draws, unit_fixed as ufx
 
     radius, noise, seed = 8, 0.85, 11
     cy, cx = 12, 12
+    one = ufx.FP_ONE
 
-    # Reference: the exact legacy inline loop (row-major draw order), in float
-    # density, then QUANTIZED per-cell exactly as the "gas" field-edit combine
-    # does (S2b: smoke is int32 Q16.16). The combine accumulates in real density
-    # and re-quantizes each ADD, so the reference quantizes the running value at
-    # each step too (a single deposit per tile here, so one quantize at the end
-    # is equivalent).
-    ref_f = _open_gmap()
-    ref_f.smoke = np.zeros(ref_f.smoke.shape, dtype=np.float64)
+    ref = _open_gmap()
+    ref_q = np.zeros(ref.smoke.shape, dtype=np.int64)
     rng_ref = np.random.default_rng(seed)
-    low = 1.0 - noise
-    h, w = ref_f.material.shape
+    amount_q = gas_fixed.quantize_trace_scalar(0.8)
+    low_q = one - ufx.quantize_scalar(noise)
+    r_q = radius * one
+    h, w = ref.material.shape
     for ddy in range(-radius, radius + 1):
         for ddx in range(-radius, radius + 1):
             ny, nx = cy + ddy, cx + ddx
-            if 0 <= ny < h and 0 <= nx < w and not ref_f.solid[ny, nx]:
-                dist = math.sqrt(ddy ** 2 + ddx ** 2)
-                if dist < radius:
-                    base = 0.8 * (1 - dist / radius)
-                    mult = float(rng_ref.uniform(low, 1.0))
-                    ref_f.smoke[ny, nx] = min(1.0, ref_f.smoke[ny, nx] + base * mult)  # real units, not counts (#88)
-    ref_q = gas_fixed.quantize_trace(ref_f.smoke)
+            if 0 <= ny < h and 0 <= nx < w and not ref.solid[ny, nx]:
+                d2 = (ddy * ddy + ddx * ddx) << 32
+                if d2 < r_q * r_q:
+                    wgt = ufx.falloff_round(one, d2, r_q * r_q)
+                    mult = draws.noise_mult_q16(rng_ref, low_q)
+                    ref_q[ny, nx] += ufx.div_round(amount_q * wgt * mult,
+                                                   one * one)
 
-    # Migrated path through the queue, same seed (int32 Q16.16 field).
     got = _open_gmap()
     got.smoke[:] = 0
     q = EditQueue()
@@ -499,7 +505,7 @@ def test_add_explosion_smoke_equivalence():
     q.flush(got, np.random.default_rng(seed))
 
     assert np.array_equal(ref_q, got.smoke), \
-        "migrated add_explosion_smoke diverged from the legacy quantized deposit"
+        "migrated add_explosion_smoke diverged from the integer law"
 
 
 def test_apply_explosion_atmosphere_equivalence():

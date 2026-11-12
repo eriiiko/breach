@@ -249,9 +249,16 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
     assert int(ws[10, 11]) == gas_fixed.quantize_trace_scalar(1.5)
     # On-axis d=2: weight 0.5 -> 0.75 exactly (hand: .75 * TRACE_ONE, #88).
     assert int(ws[10, 9]) == gas_fixed.quantize_trace_scalar(0.75) == (3 * gas_fixed.TRACE_ONE) // 4
-    # Diagonal d=sqrt(5) (dy=1,dx=2): the float falloff chain, quantized once.
+    # Diagonal d=sqrt(5) (dy=1,dx=2): #29 P3e -- the DISC weight is the Q16
+    # integer falloff_round(1 - sqrt(5)/4), the product with the amount (in
+    # the trace currency) rounded once; within a Q16 weight step (2^-17
+    # relative) of the float chain.
+    from simulation import unit_fixed as ufx
+    wq = ufx.falloff_round(ufx.FP_ONE, 5 << 32, (4 << 16) ** 2)
+    want = ufx.div_round(gas_fixed.quantize_trace_scalar(1.5) * wq, ufx.FP_ONE)
+    assert int(ws[11, 13]) == want
     w = _disc_weight(1, 2, 4.0)
-    assert int(ws[11, 13]) == gas_fixed.quantize_trace_scalar(1.5 * w)
+    assert abs(want - gas_fixed.quantize_trace_scalar(1.5 * w)) <=         gas_fixed.quantize_trace_scalar(1.5) / (1 << 17) + 1
     # d=3 on-axis: weight 0.25 -> 0.375 exactly (3/8 of TRACE_ONE).
     assert int(ws[13, 11]) == (3 * gas_fixed.TRACE_ONE) // 8
     # The solid tile inside the disc: SKIPPED (gas does not enter walls).

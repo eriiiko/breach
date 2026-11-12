@@ -167,10 +167,16 @@ def heat_units_per_mj(gmap) -> float:
 
 def _source_q(gmap, expansion_m3, ticks, n_tiles) -> int:
     """The flat per-tile source of ``expansion_m3`` over ``ticks`` ticks, Q16 1/s,
-    as a Python int: the walk can make it wider than int32."""
-    dt = 1.0 / float(CFG.clock.ticks_per_second)
-    return gas_fixed.quantize_q16_scalar(
-        expansion_m3 / (ticks * n_tiles * tile_volume_m3(gmap) * dt))
+    as a Python int: the walk can make it wider than int32.
+
+    #29 P3e: the per-tick total ``expansion / (ticks * V_tile * dt)`` is a
+    constant of the row and the level, quantized ONCE (the door); the walk's
+    tile count divides it in integers, rounded once (half away)."""
+    from simulation.unit_fixed import div_round
+    dt = 1.0 / float(CFG.clock.ticks_per_second)              # p3e-door
+    total_q = gas_fixed.quantize_q16_scalar(
+        expansion_m3 / (ticks * tile_volume_m3(gmap) * dt))   # p3e-door
+    return div_round(total_q, int(n_tiles))
 
 
 def add_source(gmap, tiles, s_q) -> None:

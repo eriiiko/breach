@@ -34,8 +34,9 @@ The encoding reuses the entity system's field kinds (``int`` / ``q16`` /
 kinds are ``table`` (a kit string as its row index in a named config table,
 ``-1`` = none), ``block`` (a fixed-width list of ints), ``optional`` (an
 intent object or ``None``, encoded as a presence flag + its integer fields).
-The spray's aim, a float until P3e, is encoded inside its ``optional``
-columns as ``round(v * 1e9)``. The positions are Q16 integers since P3c
+The spray's aim is a Q16 angle and its target a Q16 point since P3e, encoded
+inside its ``optional`` columns as those ints; the hp is the Q16 int ``hp_q``
+since P3e (``current_hp`` its float view). The positions are Q16 integers since P3c
 (``x_q`` / ``y_q``; ``Unit.x`` / ``Unit.y`` are their read-only float views,
 written only through ``Unit.set_pos_q`` / ``Unit.set_pos``).
 
@@ -265,14 +266,6 @@ def _dec_bool(e):
     return bool(e)
 
 
-def _enc_e9(v):
-    return int(round(float(v) * 1_000_000_000))
-
-
-def _dec_e9(e):
-    return e / 1_000_000_000
-
-
 def _table_codec(table: str, none):
     def enc(v):
         return NO_ROW if v == none or v is None else table_row(table, v)
@@ -360,22 +353,24 @@ def _dec_throw(e):
                        None if e[4] == THROW_NO_REACH else e[4], e[5])
 
 
-def _enc_point_e9(v):
+def _enc_point_q16(v):
+    """The spray's nominal target, a Q16 point (#29 P3e), or None."""
     if v is None:
         return (0, 0, 0)
-    return (1, _enc_e9(v[0]), _enc_e9(v[1]))
+    return (1, _enc_int(v[0]), _enc_int(v[1]))
 
 
-def _dec_point_e9(e):
-    return None if not e[0] else (_dec_e9(e[1]), _dec_e9(e[2]))
+def _dec_point_q16(e):
+    return None if not e[0] else (int(e[1]), int(e[2]))
 
 
-def _enc_angle_e9(v):
-    return (0, 0) if v is None else (1, _enc_e9(v))
+def _enc_angle_q16(v):
+    """The spray's bearing, a Q16 angle (#29 P3e), or None."""
+    return (0, 0) if v is None else (1, _enc_int(v))
 
 
-def _dec_angle_e9(e):
-    return None if not e[0] else _dec_e9(e[1])
+def _dec_angle_q16(e):
+    return None if not e[0] else int(e[1])
 
 
 # --- the status block --------------------------------------------------------
@@ -524,10 +519,10 @@ COLUMNS: tuple[Column, ...] = (
     _c("last_melee_tick", KIND_INT, "cooldowns", -999),
     # spray
     _c("spray_ticks_left", KIND_INT, "spray", 0),
-    _c("spray_target", KIND_OPTIONAL, "spray", None, _enc_point_e9,
-       _dec_point_e9, width=3, until="P3e"),
-    _c("spray_aim_angle", KIND_OPTIONAL, "spray", None, _enc_angle_e9,
-       _dec_angle_e9, width=2, until="P3e"),
+    _c("spray_target", KIND_OPTIONAL, "spray", None, _enc_point_q16,
+       _dec_point_q16, width=3),
+    _c("spray_aim_angle", KIND_OPTIONAL, "spray", None, _enc_angle_q16,
+       _dec_angle_q16, width=2),
     # zombie
     _c("zombie_activated", KIND_BOOL, "zombie", False, _enc_bool, _dec_bool),
     _c("killed_by_zombie", KIND_BOOL, "zombie", False, _enc_bool, _dec_bool),
