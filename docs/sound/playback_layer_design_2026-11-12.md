@@ -1,6 +1,7 @@
 # Sound playback layer — design (2026-11-12)
 
-> **Status: PROPOSAL, awaiting Erik.** No game code written. The audition tool
+> **Status: S1 BUILT 2026-11-12 (tracker #202), HUMAN-TEST owed; as-built notes in
+> section 12.** Originally a proposal: The audition tool
 > (`tools/sound_audition.py`, branch `sound-audition`) proved the carbine's
 > choke scheme by ear; this is the layer that puts sounds in the game.
 > Companion: `README.md` (the parked pressure-field idea — this layer is its
@@ -226,3 +227,27 @@ Every patch is feel-adjacent, so none auto-merges.
 - **Sound assets** (`assets/sounds/` + `SOURCES.md`): every sample is
   written by `tools/sound_clips.py` and has its generator and prompt
   recorded.
+
+## 12. As built (S1, 2026-11-12)
+
+- **Reach: Erik said yes, as a stopgap.** His intent (recorded in #201): loudness
+  is a source level, not a distance; hearing ranges should be far more realistic
+  than in normal games (he would not mind hearing every shot on the level), with
+  muffling through walls and doors, and zombies reacting to what reaches them.
+  24 m is "a little too short" but stays for now.
+- The layer is three files, not two: `audio/game.py` holds what main.py needs
+  (`SoundLayer`, the sim view, the listener) so main.py gains five short hooks.
+- `[sound.cues.*]` keys as built: `files`, `reach` (metres or `"loudness"`),
+  optional `gain`, `pitch_jitter`, `gain_jitter`, `choke`, `choke_fade_ms`.
+  `loop`, `max_emitters` and `reach_m` of section 3 are S2's (refused today).
+- **Reload is unbound.** The generated reload clip runs 7 s against the
+  carbine's 2 s reload; it needs a tighter clip. The `reload` binding kind works
+  and is tested.
+- The frag explosion is exported whole (10.8 s; its second transient at 2.6 s is
+  debris, not a second blast) -- `--export ... --shot 0`.
+- A one-shot keeps the gain and pan it started with (the listener moving during
+  a 10 s explosion tail does not change it). S2 brings per-frame updates with
+  the loops.
+- Muted when the window is hidden, so the E2E driver runs the layer silently.
+- Not heard by anyone yet: left / right panning rests on reading raylib 5.5's
+  source (1.0 = left), not on a listening test.
