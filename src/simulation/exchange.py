@@ -245,6 +245,77 @@ REDUCTIONS: dict[str, Callable] = {
 HEAT_SCALE = 65536
 
 
+def heat_dials(cfg) -> tuple:
+    """The ``[combat]`` dials of the felt-temperature law, read once per
+    call of the row (or once per episode by the observation): ``(absorption,
+    reflectivity, flux_to_temp, ambient_ref)`` as floats."""
+    cmb = cfg.combat
+    return (float(cmb.unit_absorption), float(cmb.unit_reflectivity),
+            float(cmb.heat_flux_to_temp), float(cmb.heat_ambient_ref))
+
+
+def felt_temperature(gmap, u, dials) -> tuple:
+    """THE felt temperature of one body (the ``heat | max`` row's own law,
+    extracted in #195 1g (b) so the row and the observation call ONE
+    function; obs spec 1.3 col 96): ``(t_felt, peak_tile, peak_from_heat)``.
+
+    ``peak_raw`` is the max over the unit's in-bounds footprint tiles of the
+    larger of the ``heat`` deposit buffer and the radiation sensor
+    ``rad_flux_sweep`` (converted once out of the sweep's fine currency,
+    #78) -- the hottest tile on the body is the exposure; ``peak_tile`` is
+    that tile ``(ty, tx)`` (None when nothing reaches the body:
+    ``peak_raw <= 0``, the row's cold-tile early-out), ``peak_from_heat``
+    whether its exposure was the ``heat`` buffer (the #123 credit question).
+    Then, the float chain the row has always run, unchanged::
+
+        phi     = peak_raw / HEAT_SCALE
+        phi_abs = phi * absorption * (1 - reflectivity)
+        t_felt  = ambient_ref + flux_to_temp * phi_abs
+
+    With no flux ``t_felt`` is ``ambient_ref``. ``dials`` is
+    :func:`heat_dials`. Pure read: nothing is written anywhere."""
+    from simulation import optics_fixed as _optics_fx
+    absorption, reflectivity, flux_to_temp, ambient_ref = dials
+    h, w = gmap.heat.shape
+    heat = gmap.heat
+    rad_flux = getattr(gmap, "rad_flux_sweep", None)
+    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
+    # max-over-footprint incident flux (the hottest tile on the body is the
+    # exposure that matters; shadowed tiles read ~0, max picks the burning
+    # side). In-bounds guard for safety against off-grid footprints.
+    peak_raw = 0
+    # #123 credit: the hottest footprint tile and whether its exposure
+    # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
+    # an igniter's heat) or the radiation sensor (fire light: nobody's).
+    peak_tile = None
+    peak_from_heat = False
+    for (tx, ty) in u.occupied_tiles():
+        if 0 <= ty < h and 0 <= tx < w:
+            v = int(heat[ty, tx])
+            from_heat = True
+            if rad_flux is not None:
+                # D3: the radiant sensor and the (non-radiative) heat
+                # writers are two independent exposures at the same tile —
+                # take the larger, exactly as the footprint loop takes the
+                # hottest tile. Both are Q16.16 in the same domain --
+                # once the sensor leaves the sweep's fine currency (#78).
+                fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
+                                              rad_fine_bits)
+                if fv > v:
+                    v = fv
+                    from_heat = False
+            if v > peak_raw:
+                peak_raw = v
+                peak_tile = (ty, tx)
+                peak_from_heat = from_heat
+    if peak_raw <= 0:
+        return ambient_ref, None, False
+    phi = peak_raw / HEAT_SCALE
+    phi_abs = phi * absorption * (1.0 - reflectivity)
+    t_felt = ambient_ref + flux_to_temp * phi_abs
+    return t_felt, peak_tile, peak_from_heat
+
+
 def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     """Apply per-tick radiant heat damage to every LIVING unit (proposal §4.2).
 
@@ -332,17 +403,8 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # exactly as before in real units -- the fine bits refine the sweep's
     # exchange, they are not heat (tests/test_sweep_fine_currency.py: the same
     # HP per second within 1 %).
-    from simulation import optics_fixed as _optics_fx
-    h, w = gmap.heat.shape
-    heat = gmap.heat
-    rad_flux = getattr(gmap, "rad_flux_sweep", None)
-    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
     cmb = CFG.combat
-
-    absorption   = float(cmb.unit_absorption)
-    reflectivity = float(cmb.unit_reflectivity)
-    flux_to_temp = float(cmb.heat_flux_to_temp)
-    ambient_ref  = float(cmb.heat_ambient_ref)
+    dials = heat_dials(CFG)
     overtemp_k   = float(cmb.heat_overtemp_scale)
     temp_max_cfg = float(cmb.temperature_max)
     env_rate_cfg = float(cmb.environmental_damage_rate)
@@ -353,46 +415,19 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         if not u.alive:
             continue
 
-        # max-over-footprint incident flux (the hottest tile on the body is the
-        # exposure that matters; shadowed tiles read ~0, max picks the burning
-        # side). In-bounds guard for safety against off-grid footprints.
-        peak_raw = 0
-        # #123 credit: the hottest footprint tile and whether its exposure
-        # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
-        # an igniter's heat) or the radiation sensor (fire light: nobody's).
-        peak_tile = None
-        peak_from_heat = False
-        for (tx, ty) in u.occupied_tiles():
-            if 0 <= ty < h and 0 <= tx < w:
-                v = int(heat[ty, tx])
-                from_heat = True
-                if rad_flux is not None:
-                    # D3: the radiant sensor and the (non-radiative) heat
-                    # writers are two independent exposures at the same tile —
-                    # take the larger, exactly as the footprint loop takes the
-                    # hottest tile. Both are Q16.16 in the same domain --
-                    # once the sensor leaves the sweep's fine currency (#78).
-                    fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
-                                                  rad_fine_bits)
-                    if fv > v:
-                        v = fv
-                        from_heat = False
-                if v > peak_raw:
-                    peak_raw = v
-                    peak_tile = (ty, tx)
-                    peak_from_heat = from_heat
-        if peak_raw <= 0:
+        # THE felt temperature (#195 1g (b): one function, the row's own
+        # law, read by the observation too -- never a copy): the hottest
+        # footprint tile's exposure, which tile, and whether it was the
+        # `heat` deposit buffer (#123 credit).
+        t_felt, peak_tile, peak_from_heat = felt_temperature(gmap, u, dials)
+        if peak_tile is None:
             continue  # cold tile: no radiant flux, no heat damage
-
-        phi = peak_raw / HEAT_SCALE
-        phi_abs = phi * absorption * (1.0 - reflectivity)
 
         # Per-unit EnvironmentProfile band / rate, else the global fallback.
         env = getattr(u, "environment", None)
         temp_max = float(getattr(env, "temperature_max", temp_max_cfg))
         env_rate = float(getattr(env, "environmental_damage_rate", env_rate_cfg))
 
-        t_felt = ambient_ref + flux_to_temp * phi_abs
         over = t_felt - temp_max
         if over <= 0.0:
             continue  # within the tolerance band: survivable, no damage
