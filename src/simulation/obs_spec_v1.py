@@ -82,7 +82,7 @@ from simulation.status import (BURNING, KNOCKED_DOWN, N_STATUS_KINDS,
                                POISONED, STATUS_REGISTRY, STUNNED,
                                composed_flags)
 from simulation.team_picture import (OBJECT_UID_BASE, fire_lanes_of,
-                                     object_tile)
+                                     live_objects, object_tile)
 from simulation.turning import PI_Q16, wrap_q16
 from simulation.unit_fixed import (FP_ONE, atan2_q16, cos_q16, quantize_scalar,
                                    sin_q16)
@@ -1406,6 +1406,139 @@ def _unit_columns(e, it, ctx, tick, rows):
     e[23] = float(fl.is_prone)
 
 
+@dataclass(frozen=True)
+class _Aimer:
+    """The observing soldier's own terms for the enemy columns 27, 29, 30
+    (``ticks_to_on``, ``in_range``, ``in_throw_range``) and ``frag_catch``:
+    its weapon's reach and spread, its turning dials and pending spin, the
+    cap -- read once per soldier per decision, by either view."""
+    range2: int
+    spread_q: int
+    throw2: int
+    frag2: int
+    a: int
+    w: int
+    dw: int
+    cap: int
+
+    @staticmethod
+    def build(world, u, ctx: ObsContext) -> "_Aimer":
+        rows = world.weapons_tables.weapons.by_name
+        my_weapon = rows.get(getattr(u, "weapon_id", "") or "")
+        return _Aimer(
+            range2=(int(my_weapon.range_tiles) ** 2 if my_weapon is not None
+                    else -1),
+            spread_q=(quantize_scalar(math.radians(float(my_weapon.spread_deg)))
+                      if my_weapon is not None else 0),
+            throw2=ctx.max_throw_range ** 2, frag2=ctx.frag_radius ** 2,
+            a=world.unit_turn_accel_q16(u), w=world.unit_turn_rate_q16(u),
+            dw=unit_impulse.pending_dw(world.impulse_table, u),
+            cap=4 * ctx.half_turn_ticks)
+
+
+def _enemy_geometry(e, aimer: _Aimer, u, dx: int, dy: int, ctx: ObsContext):
+    """Cols 27, 29, 30 of an enemy entry at offset ``(dx, dy)`` from ``u``:
+    the ticks to bring the aim within the spread (``turning.ticks_to_within``,
+    a call of the law) over the half turn, the reach flags."""
+    want = atan2_q16(-dy << 16, dx << 16)
+    ticks = turning.ticks_to_within(u, want, aimer.a, aimer.w, aimer.dw,
+                                    aimer.spread_q, aimer.cap)
+    e[27] = squash(ratio(ticks, ctx.half_turn_ticks))
+    d2 = dx * dx + dy * dy
+    e[29] = float(d2 <= aimer.range2)
+    e[30] = float(d2 <= aimer.throw2)
+
+
+def _mate_tail(e, m, mx: int, my: int, cx: int, cy: int, tick: int,
+               ctx: ObsContext, graph, my_where: int, aim_is_unit: bool):
+    """Cols 39-51 of a team-mate entry (spec 2.2, the team display on a
+    team-mate): its facing TARGET, whether that aim rests on a unit (the
+    caller's ``aim_of`` answer), its feet, where its wound-up throw lands
+    from ME, its order's kind, place and clock. The lane pair (52, 53) is
+    the caller's: each view has its own lanes."""
+    ft = int(m.facing_target_q)
+    e[39], e[40] = cos_q16(ft) / FP_ONE, sin_q16(ft) / FP_ONE
+    e[41] = float(aim_is_unit)
+    mv = getattr(m, "live_move_dir", None)
+    if mv is not None:
+        e[42] = int(mv.dx_q) / FP_ONE
+        e[43] = int(mv.dy_q) / FP_ONE
+        e[44] = ratio(int(mv.throttle_q), THROTTLE_ONE)
+    if int(m.throw_release_tick) >= 0:
+        rq = int(m.throw_reach_q)
+        reach = 6.0 if rq == THROW_NO_REACH else rq / FP_ONE
+        lx = mx + reach * (cos_q16(ft) / FP_ONE) - cx
+        ly = my - reach * (sin_q16(ft) / FP_ONE) - cy
+        e[45], e[46] = squash(ratio(lx, ctx.l_ref)), squash(ratio(ly, ctx.l_ref))
+    what = int(m.order_what)
+    e[47] = float(what)
+    if what:
+        pc = _place_centre(graph, int(m.order_where))
+        if pc is not None:
+            e[48] = squash(ratio(pc[0] - cx, ctx.l_ref))
+            e[49] = squash(ratio(pc[1] - cy, ctx.l_ref))
+        e[50] = float(my_where != NO_PLACE and int(m.order_where) == my_where)
+        until = int(m.order_until)
+        if until != NO_LIMIT:
+            e[51] = ratio(until - tick, ctx.limit_ticks)
+
+
+def _object_entry(e, o, cx: int, cy: int, me: int, roster_ids, tick: int,
+                  ctx: ObsContext, tables) -> None:
+    """A grenade or a charge's entry (spec 2.2, type 3): cols 0-9 and
+    55-61 -- its tile from me, a grenade's flight as a velocity, ``side``
+    -1, its ammo row, ``whose`` by the roster (never a live owner read),
+    the time left over its family's fuse, the remote flag, the blast
+    radius and whether I stand in it, whether it lies on the floor."""
+    oy, ox = object_tile(o)
+    _entry_common(e, TYPE_OBJECT, ox - cx, oy - cy, ctx)
+    charge = hasattr(o, "det_tick")
+    if not charge:
+        ddx, ddy = o.target_fx - o.start_fx, o.target_fy - o.start_fy
+        dist = math.sqrt(ddx * ddx + ddy * ddy)
+        landed = (o.fx == o.target_fx and o.fy == o.target_fy)
+        if dist >= 0.1 and not landed:
+            vt = o.travel_speed / ctx.tps / dist
+            e[6] = squash(ratio(ddx * vt, ctx.v_ref_q / FP_ONE))
+            e[7] = squash(ratio(ddy * vt, ctx.v_ref_q / FP_ONE))
+    e[8], e[9] = -1.0, -1.0
+    name = o.ammo_name
+    e[55] = float(ctx.obj_rows.index(name)) if name in ctx.obj_rows else -1.0
+    owner = int(o.owner_id)
+    e[56] = (0.0 if owner == me else 1.0 if owner in roster_ids
+             else 2.0 if owner >= 0 else 3.0)
+    if charge:
+        if o.det_tick is None:
+            e[58] = 1.0
+        else:
+            e[57] = squash(ratio(int(o.det_tick) - tick, ctx.c4_fuse_max_ticks))
+        e[61] = 1.0
+    else:
+        e[57] = squash(ratio(int(o.get_detonate_tick()) - tick,
+                             ctx.hand_fuse_max_ticks))
+        e[61] = float(o.fx == o.target_fx and o.fy == o.target_fy)
+    try:
+        r = int(tables.payload_for_ammo(name).radius)
+    except KeyError:
+        r = 0
+    e[59] = squash(ratio(r, ctx.l_ref))
+    e[60] = float((ox - cx) ** 2 + (oy - cy) ** 2 <= r * r)
+
+
+def _door_entry(e, d, u, cx: int, cy: int, ctx: ObsContext, gmap,
+                wired) -> None:
+    """A door's entry (spec 2.2, type 4): cols 0-9 and 62-65 -- its span's
+    centre from me, ``side`` / ``class`` -1, open, in the use verb's reach
+    of ``u``, a hull door, wired."""
+    dx_, dy_ = _door_centre(d)
+    _entry_common(e, TYPE_DOOR, dx_ - cx, dy_ - cy, ctx)
+    e[8], e[9] = -1.0, -1.0
+    e[62] = float(d.state == DOOR_OPEN)
+    e[63] = float(verb_gates.door_in_reach(u, d))
+    e[64] = float(horde.is_hull_door(gmap, d.span))
+    e[65] = float(int(d.ordinal) in wired)
+
+
 def _candidates(know, u):
     """The five blocks' candidates, each ``(sort key, payload)``, nearest
     first by squared centre distance, ties by the lower id."""
@@ -1445,16 +1578,8 @@ def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
     rows = world.weapons_tables.weapons.by_name
     me = int(u.id)
     cx, cy = int(u.center_tile_x()), int(u.center_tile_y())
-    my_weapon = rows.get(getattr(u, "weapon_id", "") or "")
-    range2 = int(my_weapon.range_tiles) ** 2 if my_weapon is not None else -1
-    spread_q = (quantize_scalar(math.radians(float(my_weapon.spread_deg)))
-                if my_weapon is not None else 0)
-    throw2 = ctx.max_throw_range ** 2
-    frag2 = ctx.frag_radius ** 2
-    a_me = world.unit_turn_accel_q16(u)
-    w_me = world.unit_turn_rate_q16(u)
-    dw_me = unit_impulse.pending_dw(world.impulse_table, u)
-    cap = 4 * ctx.half_turn_ticks
+    aimer = _Aimer.build(world, u, ctx)
+    frag2 = aimer.frag2
     mates_c = [(int(m.center_tile_x()), int(m.center_tile_y()), muid)
                for muid, m in know.mates.items()]
     others_c = [(x, y) for x, y, muid in mates_c if muid != me]
@@ -1480,32 +1605,8 @@ def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
         e[9] = float(_row_index("loadouts", getattr(m, "loadout_name", None)))
         e[10] = squash(ratio(m.current_hp, know.trackers.bar(muid)))
         _unit_columns(e, m, ctx, tick, rows)
-        ft = int(m.facing_target_q)
-        e[39], e[40] = cos_q16(ft) / FP_ONE, sin_q16(ft) / FP_ONE
-        e[41] = float(aim_of(know, ctx, m, me)[0] != 0)
-        mv = getattr(m, "live_move_dir", None)
-        if mv is not None:
-            e[42] = int(mv.dx_q) / FP_ONE
-            e[43] = int(mv.dy_q) / FP_ONE
-            e[44] = ratio(int(mv.throttle_q), THROTTLE_ONE)
-        if int(m.throw_release_tick) >= 0:
-            rq = int(m.throw_reach_q)
-            reach = 6.0 if rq == THROW_NO_REACH else rq / FP_ONE
-            lx = mx + reach * (cos_q16(ft) / FP_ONE) - cx
-            ly = my - reach * (sin_q16(ft) / FP_ONE) - cy
-            e[45], e[46] = squash(ratio(lx, ctx.l_ref)), squash(ratio(ly, ctx.l_ref))
-        what = int(m.order_what)
-        e[47] = float(what)
-        if what:
-            pc = _place_centre(graph, int(m.order_where))
-            if pc is not None:
-                e[48] = squash(ratio(pc[0] - cx, ctx.l_ref))
-                e[49] = squash(ratio(pc[1] - cy, ctx.l_ref))
-            e[50] = float(my_where != NO_PLACE
-                          and int(m.order_where) == my_where)
-            until = int(m.order_until)
-            if until != NO_LIMIT:
-                e[51] = ratio(until - tick, ctx.limit_ticks)
+        _mate_tail(e, m, mx, my, cx, cy, tick, ctx, graph, my_where,
+                   aim_of(know, ctx, m, me)[0] != 0)
         # the lane pair (3.6, a CHOICE): each owner's OWN rasterised lane
         cell = know.lane_dials[0]
         e[52] = float(know.lane_of(muid)[cy // cell, cx // cell] == muid)
@@ -1540,14 +1641,7 @@ def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
         e[26] = float(line_of_fire.mate_in_way((cx, cy), (ex, ey), others_c,
                                                ctx.line_clear_tiles,
                                                int(u.footprint)))
-        want = atan2_q16(-dy << 16, dx << 16)
-        ticks = turning.ticks_to_within(u, want, a_me, w_me, dw_me, spread_q,
-                                        cap)
-        e[27] = squash(ratio(ticks, ctx.half_turn_ticks))
-        # col 28 (on_next_tick) is 1h's
-        d2 = dx * dx + dy * dy
-        e[29] = float(d2 <= range2)
-        e[30] = float(d2 <= throw2)
+        _enemy_geometry(e, aimer, u, dx, dy, ctx)   # col 28 is 1h's
         cat, _ = aim_of(know, ctx, it, me)
         e[31] = float(cat == 1)
         e[32] = float(cat)
@@ -1586,42 +1680,8 @@ def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
 
     # -- type 3: grenades and charges --
     for _, ouid, o in objs[:caps[3]]:
-        e = out[i]
-        oy, ox = object_tile(o)
-        _entry_common(e, TYPE_OBJECT, ox - cx, oy - cy, ctx)
-        charge = hasattr(o, "det_tick")
-        if not charge:
-            ddx, ddy = o.target_fx - o.start_fx, o.target_fy - o.start_fy
-            dist = math.sqrt(ddx * ddx + ddy * ddy)
-            landed = (o.fx == o.target_fx and o.fy == o.target_fy)
-            if dist >= 0.1 and not landed:
-                vt = o.travel_speed / ctx.tps / dist
-                e[6] = squash(ratio(ddx * vt, ctx.v_ref_q / FP_ONE))
-                e[7] = squash(ratio(ddy * vt, ctx.v_ref_q / FP_ONE))
-        e[8], e[9] = -1.0, -1.0
-        name = o.ammo_name
-        e[55] = float(ctx.obj_rows.index(name)) if name in ctx.obj_rows \
-            else -1.0
-        owner = int(o.owner_id)
-        e[56] = (0.0 if owner == me else 1.0 if owner in know.roster_ids
-                 else 2.0 if owner >= 0 else 3.0)
-        if charge:
-            fam = ctx.c4_fuse_max_ticks
-            if o.det_tick is None:
-                e[58] = 1.0
-            else:
-                e[57] = squash(ratio(int(o.det_tick) - tick, fam))
-            e[61] = 1.0
-        else:
-            e[57] = squash(ratio(int(o.get_detonate_tick()) - tick,
-                                 ctx.hand_fuse_max_ticks))
-            e[61] = float(o.fx == o.target_fx and o.fy == o.target_fy)
-        try:
-            r = int(world.weapons_tables.payload_for_ammo(name).radius)
-        except KeyError:
-            r = 0
-        e[59] = squash(ratio(r, ctx.l_ref))
-        e[60] = float((ox - cx) ** 2 + (oy - cy) ** 2 <= r * r)
+        _object_entry(out[i], o, cx, cy, me, know.roster_ids, tick, ctx,
+                      world.weapons_tables)
         mask[i], uid[i] = 1, ouid
         i += 1
     i = caps[0] + caps[1] + caps[2] + caps[3]
@@ -1629,16 +1689,504 @@ def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
     # -- type 4: doors --
     wired = room_graph.wired_door_ordinals(world.wires)
     for _, ordinal, d in doors[:caps[4]]:
-        e = out[i]
-        dx_, dy_ = _door_centre(d)
-        _entry_common(e, TYPE_DOOR, dx_ - cx, dy_ - cy, ctx)
-        e[8], e[9] = -1.0, -1.0
-        e[62] = float(d.state == DOOR_OPEN)
-        e[63] = float(verb_gates.door_in_reach(u, d))
-        e[64] = float(horde.is_hull_door(world.gmap, d.span))
-        e[65] = float(ordinal in wired)
+        _door_entry(out[i], d, u, cx, cy, ctx, world.gmap, wired)
         mask[i], uid[i] = 1, DOOR_UID_BASE + ordinal
         i += 1
+
+
+# ---------------------------------------------------------------------------
+# The full view (section 5): the other side of the wall
+# ---------------------------------------------------------------------------
+class FullView:
+    """What the value network is shown, read from the sim ITSELF (spec 5.2:
+    "the other side of the wall"), ONE per env per decision, built by
+    :meth:`build` -- the one full-view function that touches ``sim``. It
+    holds every living unit, every live object and door, the picture and
+    the sight cache, and the full view's OWN caches: the aim cone per uid,
+    the every-unit aim answer per ``(uid, ray, cone, centre)``, the line of
+    fire per tile pair, the lanes per team and per mate, the mates' aims per
+    team, and ``full_watched``'s window per ``(enemy centre, window)``.
+    Nothing here is ``TeamKnowledge``'s and nothing of it reaches ``obs``:
+    the pair test (f) of spec 7 holds it."""
+
+    __slots__ = ("tick", "world", "picture", "vis", "living", "marines",
+                 "zombies", "objects", "doors", "rows", "_roster", "_cone",
+                 "_aim", "_lof", "_lanes", "_lane_of", "_mate_aims",
+                 "_watched", "_lane_dials", "_wired", "_match",
+                 "_seen_objects", "_known_objects", "_static")
+
+    def __init__(self):
+        self._roster = {}
+        self._cone = {}
+        self._aim = {}
+        self._lof = {}
+        self._lanes = {}
+        self._lane_of = {}
+        self._mate_aims = {}
+        self._watched = {}
+        self._lane_dials = None
+        self._wired = None
+        self._match = None
+        self._seen_objects = {}
+        self._known_objects = {}
+        self._static = {}
+
+    @classmethod
+    def build(cls, sim, ctx: ObsContext) -> "FullView":
+        """The env's full view at this decision: every living unit of every
+        side, the marines in ``(team, slot)`` order, the objects in the
+        trackers' order, the living doors, the picture, the sight cache."""
+        picture = sim.team_picture
+        if picture is None:
+            raise RuntimeError("obs spec v1: the sim has no team picture "
+                               "(Simulation.start_team_picture)")
+        fv = cls()
+        fv.tick = int(sim.tick)
+        fv.world = ObsWorld(sim, planes=None)     # its planes never asked for
+        fv.picture = picture
+        fv.vis = vision.state_for(sim)
+        fv.living = [u for u in sim.units if u.alive]
+        fv.marines = sorted((u for u in fv.living if not u.is_zombie),
+                            key=lambda u: (int(u.team), int(getattr(u, "slot", 0)),
+                                           int(u.id)))
+        fv.zombies = [u for u in fv.living if u.is_zombie]
+        fv.objects = tuple(live_objects(sim))
+        fv.doors = tuple(d for d in sim._doors if d.alive)
+        fv.rows = fv.world.weapons_tables.weapons.by_name
+        for t in range(len(ctx.spec.teams)):
+            fv._roster[t] = frozenset(int(u.id) for u in sim.roster(t)
+                                      if u is not None)
+        return fv
+
+    # -- the team's side of the full view ---------------------------------
+    def roster_ids(self, team: int) -> frozenset:
+        return self._roster.get(int(team), frozenset())
+
+    def mates(self, team: int) -> dict:
+        """``team``'s living non-zombie units by id."""
+        return {int(u.id): u for u in self.marines if int(u.team) == int(team)}
+
+    def seen_objects(self, team: int) -> dict:
+        """``{id(obj): team uid}`` of the objects ``team`` sees now."""
+        team = int(team)
+        got = self._seen_objects.get(team)
+        if got is None:
+            got = self._seen_objects[team] = {
+                id(o): ouid for o, ouid in self.picture.seen_now.get(team, ())}
+        return got
+
+    def known_objects(self, team: int) -> frozenset:
+        """``id(obj)`` of every live object ``team`` has ever seen."""
+        team = int(team)
+        got = self._known_objects.get(team)
+        if got is None:
+            got = self._known_objects[team] = frozenset(
+                id(o) for o in self.picture.object_ids(team))
+        return got
+
+    @property
+    def lane_dials(self) -> tuple:
+        if self._lane_dials is None:
+            from config import CFG
+            self._lane_dials = (_cfg_int(CFG, "bots", "lane_cell"),
+                                _cfg_int(CFG, "bots", "lane_halfwidth"))
+        return self._lane_dials
+
+    def lane_of(self, team: int, m) -> np.ndarray:
+        """ONE mate's own rasterised lane (the full view's own copy)."""
+        key = (int(team), int(m.id))
+        grid = self._lane_of.get(key)
+        if grid is None:
+            cell, hw = self.lane_dials
+            grid = self._lane_of[key] = fire_lanes_of(
+                self.world.gmap, self.world.weapons_tables, [m], int(team),
+                cell, hw)
+        return grid
+
+    @property
+    def wired(self) -> frozenset:
+        if self._wired is None:
+            self._wired = room_graph.wired_door_ordinals(self.world.wires)
+        return self._wired
+
+    # -- the caches ---------------------------------------------------------
+    def cone(self, ctx: ObsContext, u) -> int:
+        key = int(u.id)
+        q = self._cone.get(key)
+        if q is None:
+            q = self._cone[key] = _cone_of(self.rows, ctx, u)
+        return q
+
+    def aim(self, ctx: ObsContext, u, use_target: bool) -> int:
+        """The 4.1 rule with EVERY living unit as a candidate (spec 5.3):
+        the nearest other living unit within ``u``'s cone of its ray (its
+        facing TARGET when ``use_target`` -- a team-mate of the observing
+        soldier -- else its facing) to which the ray is clear; its uid, or
+        -1. Cached per ``(uid, ray, cone, centre)``."""
+        uid_u = int(u.id)
+        ray = int(u.facing_target_q if use_target else u.facing_q)
+        cone = self.cone(ctx, u)
+        ux, uy = int(u.center_tile_x()), int(u.center_tile_y())
+        key = (uid_u, ray, cone, ux, uy)
+        hit = self._aim.get(key)
+        if hit is None:
+            inside = []
+            for v in self.living:
+                vid = int(v.id)
+                if vid == uid_u:
+                    continue
+                vx, vy = int(v.center_tile_x()), int(v.center_tile_y())
+                dx, dy = vx - ux, vy - uy
+                bearing = atan2_q16(-dy << 16, dx << 16)
+                if abs(wrap_q16(bearing - ray)) <= cone:
+                    inside.append((dx * dx + dy * dy, vid, vx, vy))
+            inside.sort()
+            hit = -1
+            for _, vid, vx, vy in inside:
+                if vision.ray_clear(self.world, uy, ux, vy, vx):
+                    hit = vid
+                    break
+            self._aim[key] = hit
+        return hit
+
+    def mate_aims(self, ctx: ObsContext, team: int) -> list:
+        """Every living mate of ``team``'s every-unit aim answer and
+        trigger, once per decision per team."""
+        team = int(team)
+        got = self._mate_aims.get(team)
+        if got is None:
+            got = self._mate_aims[team] = [
+                (muid, self.aim(ctx, m, True),
+                 bool(getattr(m, "live_trigger", False)))
+                for muid, m in self.mates(team).items()]
+        return got
+
+    def lof_batch(self, cx: int, cy: int, targets) -> None:
+        """Fill the line-of-fire cache from ``(cx, cy)`` to every centre of
+        ``targets`` not yet in it, in ONE sight call
+        (``line_of_fire.solid_in_way_many``)."""
+        want = [(ex, ey) for ex, ey in targets
+                if (cx, cy, ex, ey) not in self._lof]
+        if want:
+            got = line_of_fire.solid_in_way_many(self.world, (cx, cy), want)
+            for (ex, ey), v in zip(want, got):
+                self._lof[(cx, cy, ex, ey)] = bool(v)
+
+    def lof(self, cx: int, cy: int, ex: int, ey: int) -> bool:
+        key = (cx, cy, ex, ey)
+        got = self._lof.get(key)
+        if got is None:
+            got = self._lof[key] = line_of_fire.solid_in_way(
+                self.world, (cx, cy), (ex, ey))
+        return got
+
+    def static(self, ctx: ObsContext, it) -> np.ndarray:
+        """A living unit's observer-independent columns, once per unit per
+        decision: cols 4-10 (its facing, the motion tracker's velocity --
+        the full view knows every unit's truth --, side, class, hp over its
+        bar), 11-23 (``_unit_columns``) and ``F + 1 .. F + 17`` (the kit,
+        four statuses, the order). The rows copy them in."""
+        uid = int(it.id)
+        st = self._static.get(uid)
+        if st is None:
+            st = np.zeros(FULL_F, dtype=np.float32)
+            f = int(it.facing_q)
+            st[4], st[5] = cos_q16(f) / FP_ONE, sin_q16(f) / FP_ONE
+            vx, vy = self.picture.velocity_q(uid)
+            st[6] = squash(ratio(vx, ctx.v_ref_q))
+            st[7] = squash(ratio(vy, ctx.v_ref_q))
+            st[8] = float(int(it.team))
+            st[9] = (float(ctx.zombie_class) if it.is_zombie
+                     else float(_row_index("loadouts",
+                                           getattr(it, "loadout_name", None))))
+            st[10] = squash(ratio(it.current_hp,
+                                  self.picture.bars.get(uid, 0.0)))
+            _unit_columns(st, it, ctx, self.tick, self.rows)
+            _full_extra(st, self, it, self.tick, ctx)
+            self._static[uid] = st
+        return st
+
+    def watched_from(self, ey: int, ex: int, y0: int, x0: int) -> np.ndarray:
+        """The window at ``(y0, x0)`` an enemy at ``(ey, ex)`` sees
+        (``vision.window_clear`` FROM its tile), the full view's own copy."""
+        key = (ey, ex, y0, x0)
+        got = self._watched.get(key)
+        if got is None:
+            got = self._watched[key] = vision.window_clear(
+                self.world, ey, ex, y0, x0, WIN, WIN, to_window=False)
+        return got
+
+    # -- the match (5.4): one vector per env per decision -------------------
+    def match(self, ctx: ObsContext) -> np.ndarray:
+        if self._match is None:
+            m = np.zeros(ctx.n_match, dtype=np.float32)
+            teams = ctx.spec.teams
+            bars = self.picture.bars
+            for t in range(ctx.n_teams):
+                if t >= len(teams):
+                    continue
+                n_t = int(teams[t].n)
+                mine = [u for u in self.marines if int(u.team) == t]
+                m[2 * t] = ratio(len(mine), n_t)
+                balance = sum(ratio(u.current_hp, bars.get(int(u.id), 0.0))
+                              for u in mine)
+                m[2 * t + 1] = squash(ratio(balance, n_t))
+            nz = int(ctx.spec.zombies)
+            awake = sum(1 for z in self.zombies if z.zombie_activated)
+            k = 2 * ctx.n_teams
+            m[k] = squash(ratio(awake, nz))
+            m[k + 1] = squash(ratio(len(self.zombies) - awake, nz))
+            m[k + 2] = ratio(ctx.limit_ticks - self.tick, ctx.limit_ticks)
+            self._match = m
+        return self._match
+
+
+def _full_entries(fv: FullView, u, cx: int, cy: int) -> tuple:
+    """The full list's entries after the soldier's own (spec 5.3): the
+    other living marines in ``(team, slot)`` order, the zombies nearest
+    first, the objects nearest first (ties in the trackers' order), the
+    doors nearest first (ties by ordinal); over :data:`FULL_ENTRIES` the
+    farthest zombies are dropped first, then the farthest objects (never a
+    marine; a door only past that, a CHOICE for an absurd map). Returns
+    ``(marines, zombies, objects, doors)`` as kept."""
+    me = int(u.id)
+
+    def d2(x, y):
+        return (x - cx) ** 2 + (y - cy) ** 2
+
+    marines = [m for m in fv.marines if int(m.id) != me]
+    # every living zombie: a TURNED soldier's own zombie is among them, shown
+    # as the zombie it is behind its corpse entry (5.6, a CHOICE)
+    zombies = sorted(((d2(z.center_tile_x(), z.center_tile_y()), int(z.id), z)
+                      for z in fv.zombies), key=lambda t: t[:2])
+    objects = sorted(((d2(object_tile(o)[1], object_tile(o)[0]), k, o)
+                      for k, o in enumerate(fv.objects)), key=lambda t: t[:2])
+    doors = sorted(((d2(*_door_centre(d)), int(d.ordinal), d)
+                    for d in fv.doors), key=lambda t: t[:2])
+    room = FULL_ENTRIES - 1 - len(marines)
+    if room < len(doors):
+        doors = doors[:max(0, room)]
+    room -= len(doors)
+    objects = objects[:max(0, min(len(objects), room))]
+    zombies = zombies[:max(0, min(len(zombies), room - len(objects)))]
+    return (marines, [z for _, _, z in zombies], [o for _, _, o in objects],
+            [d for _, _, d in doors])
+
+
+def _full_extra(e, fv: FullView, it, tick: int, ctx: ObsContext) -> None:
+    """Cols ``F+1..F+17`` of a UNIT entry (spec 5.3): its kit (the vector's
+    own reader), four statuses, its order; col ``F`` (the team's knowledge
+    of it) is the row's."""
+    weapon = fv.rows.get(getattr(it, "weapon_id", "") or "")
+    melee = fv.rows.get(getattr(it, "melee_id", "") or "")
+    kit = _kit_values(it, weapon, melee, _loadout_of(it), tick, ctx)
+    e[F + 1], e[F + 2], e[F + 3] = kit[0], kit[1], kit[2]
+    for k in range(HAND_GRENADE_SLOTS):
+        e[F + 4 + k] = kit[5][k]
+    e[F + 10], e[F + 11], e[F + 12] = kit[6], kit[7], kit[8]
+    for j, kind in enumerate(FULL_STATUS_KINDS):
+        e[F + 13 + j] = squash(ratio(_status_left(it, kind),
+                                     ctx.status_scale[kind]))
+    e[F + 17] = float(int(it.order_what))
+
+
+def _knowledge(uid: int, recs, seen) -> int:
+    """Spec 5.3 col 67: the team sees it, has a record of it, or not."""
+    if uid in seen:
+        return KNOW_SEEN
+    if uid in recs:
+        return KNOW_RECORD
+    return KNOW_UNKNOWN
+
+
+def build_full_list(fv: FullView, team: int, u, alive: bool, ctx: ObsContext,
+                    out, mask, uid) -> None:
+    """Section 5.3 into ``out`` (``(FULL_ENTRIES, FULL_F)`` float32),
+    ``mask`` and ``uid`` for the roster unit ``u`` of ``team``'s row:
+    entry 0 the soldier itself (``alive``: its live entry at offset 0; else
+    the corpse of 5.6 -- ``type`` 0, ``hp`` 0, ``age`` = the ticks since the
+    picture first saw it dead or turned over ``limit_ticks``), then every
+    other living unit where it truly is (a team-mate as a type-0 entry, any
+    other unit as type 1 with the LIVE unit's columns and ``aims_at`` over
+    every living unit), every live object (``whose`` by the roster, the
+    uid ``OBJECT_UID_BASE`` + its place in the block), every living door --
+    the first 67 columns 2.2's entry by the same helpers against ``u``,
+    then :data:`FULL_EXTRA_COLUMNS`."""
+    out[...] = 0.0
+    mask[...] = 0
+    uid[...] = -1
+    world = fv.world
+    tick = fv.tick
+    rows = fv.rows
+    team = int(team)
+    me = int(u.id)
+    cx, cy = int(u.center_tile_x()), int(u.center_tile_y())
+    aimer = _Aimer.build(world, u, ctx)
+    mates = fv.mates(team)
+    mates_c = [(int(m.center_tile_x()), int(m.center_tile_y()), muid)
+               for muid, m in mates.items()]
+    others_c = [(x, y) for x, y, muid in mates_c if muid != me]
+    teams = ctx.spec.teams
+    n_t = int(teams[team].n) if team < len(teams) else 0
+    my_where = int(u.order_where) if int(u.order_what) else NO_PLACE
+    graph = world.graph
+    recs = fv.picture.records(team)
+    seen = frozenset(fv.vis.visible_by_team.get(team, ()))
+    cell = fv.lane_dials[0]
+    marines, zombies, objects, doors = _full_entries(fv, u, cx, cy)
+    enemies = [m for m in marines if int(m.team) != team] + zombies
+    fv.lof_batch(cx, cy, [(int(v.center_tile_x()), int(v.center_tile_y()))
+                          for v in enemies])
+
+    def unit_head(e, it, etype, ex, ey):
+        """Cols 0-3 of a living unit's entry from me, then its
+        observer-independent columns copied in (``FullView.static``)."""
+        _entry_common(e, etype, ex - cx, ey - cy, ctx)
+        st = fv.static(ctx, it)
+        e[4:24] = st[4:24]
+        e[F + 1:FULL_F] = st[F + 1:FULL_F]
+
+    def mate_entry(e, m):
+        mx, my = int(m.center_tile_x()), int(m.center_tile_y())
+        unit_head(e, m, TYPE_MATE, mx, my)
+        _mate_tail(e, m, mx, my, cx, cy, tick, ctx, graph, my_where,
+                   fv.aim(ctx, m, True) >= 0)
+        if int(m.id) != me:          # my own lane marks nothing (a CHOICE)
+            e[52] = float(fv.lane_of(team, m)[cy // cell, cx // cell] == int(m.id))
+            e[53] = float(fv.lane_of(team, u)[my // cell, mx // cell] == me)
+        e[F] = float(KNOW_SEEN)
+
+    def enemy_entry(e, it):
+        ex, ey = int(it.center_tile_x()), int(it.center_tile_y())
+        unit_head(e, it, TYPE_SEEN, ex, ey)
+        euid = int(it.id)
+        e[24] = float(me in fv.vis.observers_of(euid))
+        e[25] = float(fv.lof(cx, cy, ex, ey))
+        e[26] = float(line_of_fire.mate_in_way((cx, cy), (ex, ey), others_c,
+                                               ctx.line_clear_tiles,
+                                               int(u.footprint)))
+        _enemy_geometry(e, aimer, u, ex - cx, ey - cy, ctx)
+        hit = fv.aim(ctx, it, False)
+        cat = 0 if hit < 0 else 1 if hit == me else 2 if hit in mates else 3
+        e[31] = float(cat == 1)
+        e[32] = float(cat)
+        if it.is_zombie:
+            e[33] = (2.0 if it.zombie_activated
+                     else 3.0 if int(it.zombie_noise_ticks) > 0 else 1.0)
+        aiming = [(muid, trig) for muid, aimed, trig in fv.mate_aims(ctx, team)
+                  if muid != me and aimed == euid]
+        e[34] = ratio(len(aiming), n_t)
+        e[35] = ratio(sum(1 for _, trig in aiming if trig), n_t)
+        e[36] = squash(ratio(fv.picture.damage_last_s(team, euid),
+                             fv.picture.bars.get(euid, 0.0)))
+        e[37] = float(int(u.order_target) == euid)
+        e[38] = ratio(sum(1 for mx, my, _ in mates_c
+                          if (mx - ex) ** 2 + (my - ey) ** 2 <= aimer.frag2),
+                      n_t)
+        e[F] = float(_knowledge(euid, recs, seen))
+
+    # -- entry 0: the soldier itself (5.3; the corpse of 5.6) --
+    e = out[0]
+    if alive:
+        mate_entry(e, u)
+    else:
+        _entry_common(e, TYPE_MATE, 0, 0, ctx)
+        f = int(u.facing_q)
+        e[4], e[5] = cos_q16(f) / FP_ONE, sin_q16(f) / FP_ONE
+        e[8] = float(team)
+        e[9] = float(_row_index("loadouts", getattr(u, "loadout_name", None)))
+        died = fv.picture.death_tick.get(me, tick)
+        e[54] = ratio(tick - int(died), ctx.limit_ticks)
+    mask[0], uid[0] = 1, me
+    i = 1
+    # -- the other living units: the marines, then the zombies --
+    for m in marines:
+        e = out[i]
+        if int(m.team) == team:
+            mate_entry(e, m)
+        else:
+            enemy_entry(e, m)
+        mask[i], uid[i] = 1, int(m.id)
+        i += 1
+    for z in zombies:
+        enemy_entry(out[i], z)
+        mask[i], uid[i] = 1, int(z.id)
+        i += 1
+    # -- the objects (type 3): whose by the roster, the block position's uid --
+    roster_ids = fv.roster_ids(team)
+    seen_objs = fv.seen_objects(team)
+    known_objs = fv.known_objects(team)
+    for k, o in enumerate(objects):
+        e = out[i]
+        _object_entry(e, o, cx, cy, me, roster_ids, tick, ctx,
+                      world.weapons_tables)
+        e[F] = float(KNOW_SEEN if id(o) in seen_objs
+                     else KNOW_RECORD if id(o) in known_objs else KNOW_UNKNOWN)
+        mask[i], uid[i] = 1, OBJECT_UID_BASE + k
+        i += 1
+    # -- the doors (type 4): public --
+    wired = fv.wired
+    for d in doors:
+        _door_entry(out[i], d, u, cx, cy, ctx, world.gmap, wired)
+        mask[i], uid[i] = 1, DOOR_UID_BASE + int(d.ordinal)
+        i += 1
+
+
+def build_full_watched(fv: FullView, team: int, u, out) -> None:
+    """Section 5.5 into ``out`` (``(WIN, WIN)`` uint8): 3.5's ``watched``
+    from EVERY living enemy of ``team`` at its LIVE centre, zombies
+    included, dormant or not -- one ``window_clear`` per enemy, the full
+    view's own."""
+    cx, cy = int(u.center_tile_x()), int(u.center_tile_y())
+    y0, x0 = cy - HALF, cx - HALF
+    watched = np.zeros((WIN, WIN), dtype=bool)
+    for v in fv.living:
+        if int(v.team) == int(team) and not v.is_zombie:
+            continue
+        watched |= fv.watched_from(int(v.center_tile_y()),
+                                   int(v.center_tile_x()), y0, x0)
+    out[...] = watched
+
+
+def observe_full_rows(sim, ctx: ObsContext, units, out: dict) -> None:
+    """Write :data:`FULL_KEYS` of ``out`` (the ``(U, ...)`` views) for
+    ``units`` -- per row its ROSTER unit, dead or turned included (spec 5.6:
+    a row with ``in_match`` 1 gets its view), or None for an empty roster
+    place --, through ONE :class:`FullView` for the env: the full list,
+    the match vector (one per env, copied per row) and the watched-by-
+    everyone plane. The full view's door to the sim, beside
+    :meth:`FullView.build`."""
+    out["full_list"][...] = 0.0
+    out["full_mask"][...] = 0
+    out["full_uid"][...] = -1
+    out["full_match"][...] = 0.0
+    out["full_watched"][...] = 0
+    if not any(u is not None for u in units):
+        return
+    fv = FullView.build(sim, ctx)
+    S = ctx.n_slots
+    match = fv.match(ctx)
+    for i, u in enumerate(units):
+        if u is None:
+            continue
+        team = i // S
+        alive = bool(u.alive) and int(u.team) == team
+        build_full_list(fv, team, u, alive, ctx, out["full_list"][i],
+                        out["full_mask"][i], out["full_uid"][i])
+        out["full_match"][i] = match
+        build_full_watched(fv, team, u, out["full_watched"][i])
+
+
+def full_shapes(n_envs: int, n_rows: int, n_teams: int) -> dict:
+    """The full view's keys and shapes (spec 5.2) for the env's layout."""
+    n, u = int(n_envs), int(n_rows)
+    return {
+        "full_list": ((n, u, FULL_ENTRIES, FULL_F), np.float32),
+        "full_mask": ((n, u, FULL_ENTRIES), np.uint8),
+        "full_uid": ((n, u, FULL_ENTRIES), np.int32),
+        "full_match": ((n, u, 2 * int(n_teams) + 3), np.float32),
+        "full_watched": ((n, u, WIN, WIN), np.uint8),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1717,4 +2265,9 @@ __all__ = [
     "PLANE_COLUMNS", "OUTSIDE_FILL", "DOOR_NONE", "DOOR_CODE_OPEN",
     "DOOR_CODE_CLOSED", "FieldPlanes", "blocks", "crop", "inside_mask",
     "physics_value", "place_blocks",
+    # the full view (section 5, patch (c))
+    "FULL_VIEW_NAME", "FULL_ENTRIES", "FULL_F", "FULL_EXTRA_COLUMNS",
+    "FULL_KEYS", "FULL_STATUS_KINDS", "KNOW_SEEN", "KNOW_RECORD",
+    "KNOW_UNKNOWN", "full_match_columns", "FullView", "build_full_list",
+    "build_full_watched", "observe_full_rows", "full_shapes",
 ]

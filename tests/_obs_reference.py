@@ -784,3 +784,312 @@ def far_planes(sim, K, u):
                 if (r.centre[1] // BLOCK, r.centre[0] // BLOCK) == (by, bx):
                     fu[2 if uid in seen else 3, i, j] += 1
     return ff, fu
+
+
+# -- section 5: the full view, by hand -------------------------------------
+FULL_N, FULL_F = 64, 85
+FULL_STATUS = (KNOCKED_DOWN, STUNNED, 4, 5)        # + burning, poisoned
+
+
+def living(sim):
+    return [v for v in sim.units if v.alive]
+
+
+def aim_all(sim, K, u, use_target):
+    """Spec 5.3: the 4.1 rule with EVERY living unit a candidate, from
+    ``u``'s facing (its target for a mate of the observing soldier); the
+    nearest in the cone with a clear ray, ties the lower id; the uid or -1."""
+    ray = u.facing_target_q if use_target else u.facing_q
+    cone = cone_of(sim, K, u)
+    ux, uy = centre(u)
+    inside = []
+    for v in living(sim):
+        if v.id == u.id:
+            continue
+        vx, vy = centre(v)
+        dx, dy = vx - ux, vy - uy
+        if abs(wrap_q16(atan2_q16((-dy) << 16, dx << 16) - ray)) <= cone:
+            inside.append((dx * dx + dy * dy, v.id, vx, vy))
+    for _, vid, vx, vy in sorted(inside):
+        if vision.ray_clear(sim, uy, ux, vy, vx):
+            return vid
+    return -1
+
+
+def kit_cols(sim, K, it, tick):
+    """Spec 5.3 cols 68-79: 1.2's rounds / mags / untracked, the six
+    grenade ratios, charges, the melee and shove cooldowns."""
+    out = np.zeros(12, np.float32)
+    w = weapon(sim, it)
+    lo = loadout(it)
+    st = combat.mag_status(it, w, tick) if w is not None else None
+    if st is None:
+        out[0:3] = 1.0
+    else:
+        rounds, spares, _ = st
+        out[0] = over(rounds, w.mag_size)
+        if spares is None:
+            out[1] = out[2] = 1.0
+        else:
+            out[1] = squash(over(spares, max(1, lo.magazines if lo else 0)))
+    for k, name in enumerate(K["hand"]):
+        n = lo.grenades.get(name, 0) if lo else 0
+        if n > 0:
+            out[3 + k] = over(it.grenade_counts[k], n)
+    out[9] = over(it.has_explosive, lo.explosives if lo else 0)
+    melee = sim.weapons_tables.weapons.by_name.get(it.melee_id or "")
+    if melee is not None and it.last_blow_tick >= 0:
+        r = melee.rof_interval_ticks
+        out[10] = over(max(0, it.last_blow_tick + r - tick), r)
+    if it.last_shove_tick >= 0:
+        cd = K["shove_cd"]
+        out[11] = over(max(0, it.last_shove_tick + cd - tick), cd)
+    return out
+
+
+def full_list(sim, K, team, u, alive, bots=None):
+    """Spec 5.3 / 5.6 by hand: ``(entries (64, 85), mask, uid)`` for the
+    ROSTER unit ``u`` of ``team``'s row -- itself first (alive: its live
+    entry; else the corpse: type 0, hp 0, age), then every other living
+    marine in (team, slot) order, the zombies nearest first, every live
+    object nearest first, every living door nearest first; the farthest
+    zombies, then objects, dropped past 64."""
+    tick = int(sim.tick)
+    pic = sim.team_picture
+    L = K["L"]
+    out = np.zeros((FULL_N, FULL_F), np.float32)
+    mask = np.zeros(FULL_N, np.uint8)
+    uid = np.full(FULL_N, -1, np.int32)
+    me = int(u.id)
+    cx, cy = centre(u)
+    mates = mates_of(sim, team)
+    others = [m for m in mates if m.id != me]
+    recs = pic.records(team)
+    vis = vision.state_for(sim)
+    seen = set(vis.visible_by_team.get(team, ()))
+    graph = graph_of(sim)
+    if bots is None:
+        bots = BotTeam(team)
+    w = weapon(sim, u)
+    spread_q = quantize_scalar(math.radians(w.spread_deg)) if w else 0
+    my_where = u.order_where if u.order_what else NO_PLACE
+    n_t = K["spec"].teams[team].n
+    a, wq = sim.unit_turn_accel_q16(u), sim.unit_turn_rate_q16(u)
+    dw = pending_dw(sim.impulse_table, u)
+    cell, hw = int(CFG.bots.lane_cell), int(CFG.bots.lane_halfwidth)
+
+    def common(e, t, ex, ey):
+        e[0] = t
+        e[1], e[2] = squash(over(ex - cx, L)), squash(over(ey - cy, L))
+        e[3] = dc(math.hypot(ex - cx, ey - cy), L)
+
+    def d2(p):
+        return (p[0] - cx) ** 2 + (p[1] - cy) ** 2
+
+    def head(e, it):
+        e[4], e[5] = cos_q16(it.facing_q) / FP_ONE, sin_q16(it.facing_q) / FP_ONE
+        mo = pic.motion.get(it.id)
+        vel = (mo[1][0] - mo[0][0], mo[1][1] - mo[0][1]) if mo else (0, 0)
+        e[6], e[7] = squash(over(vel[0], K["v_ref"])), squash(over(vel[1], K["v_ref"]))
+        e[8] = it.team
+        e[9] = K["zombie_class"] if it.is_zombie else row("loadouts", it.loadout_name)
+        e[10] = squash(over(it.current_hp, pic.bars[it.id]))
+        unit_cols(e, it, sim, K, tick)
+
+    def extra(e, it, know):
+        e[67] = know
+        e[68:80] = kit_cols(sim, K, it, tick)
+        for j, k in enumerate(FULL_STATUS):
+            e[80 + j] = squash(over(status_left(it, k), K["scale"][k]))
+        e[84] = it.order_what
+
+    def mate(e, m):
+        mx, my = centre(m)
+        common(e, 0, mx, my)
+        head(e, m)
+        ft = m.facing_target_q
+        e[39], e[40] = cos_q16(ft) / FP_ONE, sin_q16(ft) / FP_ONE
+        e[41] = aim_all(sim, K, m, True) >= 0
+        if m.live_move_dir is not None:
+            e[42] = m.live_move_dir.dx_q / FP_ONE
+            e[43] = m.live_move_dir.dy_q / FP_ONE
+            e[44] = over(m.live_move_dir.throttle_q, THROTTLE_ONE)
+        if m.throw_release_tick >= 0:
+            reach = 6.0 if m.throw_reach_q == THROW_NO_REACH else m.throw_reach_q / FP_ONE
+            lx = mx + reach * cos_q16(ft) / FP_ONE - cx
+            ly = my - reach * sin_q16(ft) / FP_ONE - cy
+            e[45], e[46] = squash(over(lx, L)), squash(over(ly, L))
+        e[47] = m.order_what
+        if m.order_what:
+            pc = place_centre(graph, m.order_where)
+            if pc:
+                e[48], e[49] = squash(over(pc[0] - cx, L)), squash(over(pc[1] - cy, L))
+            e[50] = my_where != NO_PLACE and m.order_where == my_where
+            if m.order_until != NO_LIMIT:
+                e[51] = over(m.order_until - tick, K["limit"])
+        if m.id != me:
+            its = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [m], team, cell, hw)
+            mine = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [u], team, cell, hw)
+            e[52] = its[cy // cell, cx // cell] == m.id
+            e[53] = mine[my // cell, mx // cell] == me
+        extra(e, m, 0)
+
+    def enemy(e, it):
+        ex, ey = centre(it)
+        common(e, 1, ex, ey)
+        head(e, it)
+        e[24] = me in vis.observers_of(it.id)
+        e[25] = not sim.gmap.has_los(cy, cx, ey, ex, physical=True) or any(
+            c.alive and c.blocks_segment(cx, cy, ex, ey)
+            for c in (sim.cover or ()))
+        e[26] = bots._teammate_on_line(u, it, mates)
+        dx, dy = ex - cx, ey - cy
+        want = atan2_q16((-dy) << 16, dx << 16)
+        facing, omega, n = u.facing_q, u.omega_q + dw, 0
+        cap = 4 * K["half_turn"]
+        while n < cap and abs(wrap_q16(want - facing)) > spread_q:
+            facing, omega = law_q16(facing, omega, want, a, wq)
+            n += 1
+        e[27] = squash(over(n, K["half_turn"]))
+        dd = dx * dx + dy * dy
+        e[29] = w is not None and dd <= w.range_tiles ** 2
+        e[30] = dd <= K["throw_r"] ** 2
+        hit = aim_all(sim, K, it, False)
+        cat = (0 if hit < 0 else 1 if hit == me
+               else 2 if any(m.id == hit for m in mates) else 3)
+        e[31], e[32] = cat == 1, cat
+        if it.is_zombie:
+            e[33] = 2 if it.zombie_activated else 3 if it.zombie_noise_ticks > 0 else 1
+        aiming = [m for m in others if aim_all(sim, K, m, True) == it.id]
+        e[34] = over(len(aiming), n_t)
+        e[35] = over(sum(1 for m in aiming if m.live_trigger), n_t)
+        e[36] = squash(over(pic.damage_last_s(team, it.id), pic.bars[it.id]))
+        e[37] = u.order_target == it.id
+        e[38] = over(sum(1 for m in mates if (centre(m)[0] - ex) ** 2
+                         + (centre(m)[1] - ey) ** 2 <= K["frag_r"] ** 2), n_t)
+        extra(e, it, 0 if it.id in seen else 1 if it.id in recs else 2)
+
+    e = out[0]
+    if alive:
+        mate(e, u)
+    else:
+        common(e, 0, cx, cy)
+        e[4], e[5] = cos_q16(u.facing_q) / FP_ONE, sin_q16(u.facing_q) / FP_ONE
+        e[8], e[9] = team, row("loadouts", u.loadout_name)
+        e[54] = over(tick - pic.death_tick.get(me, tick), K["limit"])
+    mask[0], uid[0] = 1, me
+    i = 1
+    marines = sorted([v for v in living(sim) if not v.is_zombie and v.id != me],
+                     key=lambda v: (v.team, v.slot, v.id))
+    zombies = sorted([v for v in living(sim) if v.is_zombie],
+                     key=lambda v: (d2(centre(v)), v.id))
+    objs = sorted(enumerate(tp.live_objects(sim)),
+                  key=lambda t: (d2((tp.object_tile(t[1])[1],
+                                     tp.object_tile(t[1])[0])), t[0]))
+    doors = sorted([d for d in sim._doors if d.alive],
+                   key=lambda d: (d2((d.span[len(d.span) // 2][1],
+                                      d.span[len(d.span) // 2][0])), d.ordinal))
+    room = FULL_N - 1 - len(marines)
+    doors = doors[:max(0, room)]
+    room -= len(doors)
+    objs = objs[:max(0, room)]
+    zombies = zombies[:max(0, room - len(objs))]
+    for m in marines:
+        (mate if m.team == team else enemy)(out[i], m)
+        mask[i], uid[i] = 1, m.id
+        i += 1
+    for z in zombies:
+        enemy(out[i], z)
+        mask[i], uid[i] = 1, z.id
+        i += 1
+    roster = {x.id for x in sim.roster(team) if x is not None}
+    seen_objs = {id(o) for o, _ in pic.seen_now[team]}
+    known_objs = {id(o) for o in pic.object_ids(team)}
+    for k, (_, o) in enumerate(objs):
+        e = out[i]
+        oy, ox = tp.object_tile(o)
+        common(e, 3, ox, oy)
+        charge = hasattr(o, "det_tick")
+        if not charge:
+            ddx, ddy = o.target_fx - o.start_fx, o.target_fy - o.start_fy
+            dist = math.hypot(ddx, ddy)
+            if dist >= 0.1 and not (o.fx == o.target_fx and o.fy == o.target_fy):
+                vx = ddx / dist * o.travel_speed / K["tps"]
+                vy = ddy / dist * o.travel_speed / K["tps"]
+                e[6] = squash(over(vx, K["v_ref"] / FP_ONE))
+                e[7] = squash(over(vy, K["v_ref"] / FP_ONE))
+        e[8] = e[9] = -1.0
+        e[55] = K["objs"].index(o.ammo_name) if o.ammo_name in K["objs"] else -1
+        e[56] = (0 if o.owner_id == me else 1 if o.owner_id in roster
+                 else 2 if o.owner_id >= 0 else 3)
+        if charge:
+            if o.det_tick is None:
+                e[58] = 1.0
+            else:
+                e[57] = squash(over(o.det_tick - tick, K["c4_fuse"]))
+            e[61] = 1.0
+        else:
+            e[57] = squash(over(o.get_detonate_tick() - tick, K["hand_fuse"]))
+            e[61] = o.fx == o.target_fx and o.fy == o.target_fy
+        try:
+            r = sim.weapons_tables.payload_for_ammo(o.ammo_name).radius
+        except KeyError:
+            r = 0
+        e[59] = squash(over(r, L))
+        e[60] = (ox - cx) ** 2 + (oy - cy) ** 2 <= r * r
+        e[67] = 0 if id(o) in seen_objs else 1 if id(o) in known_objs else 2
+        mask[i], uid[i] = 1, OBJ_BASE + k
+        i += 1
+    wired = room_graph.wired_door_ordinals(sim.level.wires)
+    for d in doors:
+        e = out[i]
+        t = d.span[len(d.span) // 2]
+        common(e, 4, t[1], t[0])
+        e[8] = e[9] = -1.0
+        e[62] = d.state == DOOR_OPEN
+        x0, y0, fp = u.tile_x, u.tile_y, u.footprint
+        e[63] = any(y0 - 1 <= ty <= y0 + fp and x0 - 1 <= tx <= x0 + fp
+                    for ty, tx in d.span)
+        e[64] = horde.is_hull_door(sim.gmap, d.span)
+        e[65] = d.ordinal in wired
+        mask[i], uid[i] = 1, DOOR_BASE + d.ordinal
+        i += 1
+    return out, mask, uid
+
+
+def full_match(sim, K, T):
+    """Spec 5.4 by hand: per team of the run its living count and health
+    balance over ``n_t``, the horde awake / dormant over ``spec.zombies``,
+    the clock."""
+    spec = K["spec"]
+    pic = sim.team_picture
+    tick = int(sim.tick)
+    m = np.zeros(2 * T + 3, np.float32)
+    for t in range(T):
+        if t >= len(spec.teams):
+            continue
+        mine = mates_of(sim, t)
+        n_t = spec.teams[t].n
+        m[2 * t] = over(len(mine), n_t)
+        m[2 * t + 1] = squash(over(sum(over(x.current_hp, pic.bars[x.id])
+                                       for x in mine), n_t))
+    zs = [z for z in living(sim) if z.is_zombie]
+    awake = sum(1 for z in zs if z.zombie_activated)
+    m[2 * T] = squash(over(awake, spec.zombies))
+    m[2 * T + 1] = squash(over(len(zs) - awake, spec.zombies))
+    m[2 * T + 2] = over(K["limit"] - tick, K["limit"])
+    return m
+
+
+def full_watched(sim, team, u):
+    """Spec 5.5 by hand: tile by tile, ``has_los`` from EVERY living enemy
+    of ``team`` (zombies included) at its LIVE centre, OR-ed."""
+    cx, cy = centre(u)
+    out = np.zeros((WIN, WIN), np.uint8)
+    enemies = [v for v in living(sim) if v.team != team or v.is_zombie]
+    for i in range(WIN):
+        for j in range(WIN):
+            y, x = cy - HALF + i, cx - HALF + j
+            out[i, j] = any(sim.gmap.has_los(centre(v)[1], centre(v)[0], y, x)
+                            for v in enemies)
+    return out

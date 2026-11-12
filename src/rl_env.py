@@ -30,6 +30,9 @@ missing key or a mistyped value (:func:`load_run`)::
                                   # "crop" (default, the placeholder rows
                                   # below) or "v1" (simulation.obs_spec_v1;
                                   # the three crop keys are then refused)
+    full_view = true              # OPTIONAL, "v1" only: serve the value
+                                  # network's full view under info (1g (c));
+                                  # false = none (a farm reading without it)
     channels = ["pressure", "smoke", "temperature", "solid", "material",
                 "units_own", "units_enemy", "units_zombie"]
     crop_radius = 8               # the crop is (2r+1) x (2r+1) tiles
@@ -56,6 +59,21 @@ it). WHO MAY READ WHICH ROWS: a policy acting for team ``t`` reads only rows
 ``t*S .. t*S + S - 1`` of every key, through :meth:`BatchedEnv.team_rows`
 (views of the env-owned arrays), and nothing of ``info``, ``reward`` or
 ``counters``; the trainer reads those for its losses.
+
+THE FULL VIEW (#195 1g (c), spec section 5): what the training-only VALUE
+network is shown, ``obs_spec_v1.FULL_VIEW_NAME`` = ``"full_v1"``, served by
+the same accessor door beside ``"v1"`` (``[obs] full_view``, default true)
+into the farm's OWN buffers under ``info["full_view"]`` of ``step`` /
+``reset`` -- NEVER a key of ``obs`` --: ``full_list`` ``(N, U, 64, 85)``
+float32 (every living unit of every side where it truly is, the soldier
+itself first, every live grenade and charge, every living door),
+``full_mask`` / ``full_uid`` ``(N, U, 64)``, ``full_match`` ``(N, U, 2T + 3)``
+float32 and ``full_watched`` ``(N, U, 25, 25)`` uint8; built for every row
+with ``in_match`` 1, a dead or turned soldier's centred on its last place
+(spec 5.6). The terminal full view of an env that ended inside the step is
+``info["final_full_view"]`` (the same five keys, zeros on every other row)
+-- never a ``final_full_*`` key inside ``info["final_obs"]``. Under
+``"crop"`` both are empty dicts.
 
 EPISODES. Episode ``k`` of env ``e`` plays level ``levels[i]`` with match
 seed ``s``, ``(s, i) = episode_draw(run_seed, e, k, len(levels))``: ONE
@@ -107,8 +125,10 @@ mask):
   at tick 0 and at an episode's last tick -- the recording's checkpoints, so
   the equality gates can compare them with ``run_match``.
 
-THE OBSERVATION BUFFERS ARE THE ENV'S. ``obs["crop"]``, ``obs["vector"]`` and
-the three ``info["final_obs"]`` arrays are the same arrays on every call,
+THE OBSERVATION BUFFERS ARE THE ENV'S. ``obs["crop"]``, ``obs["vector"]``,
+the ``info["final_obs"]`` arrays (and under ``"v1"`` every observation key,
+the ``info["full_view"]`` and ``info["final_full_view"]`` arrays alike) are
+the same arrays on every call,
 overwritten by the next :meth:`BatchedEnv.step` / :meth:`BatchedEnv.reset`: a
 caller that keeps one across a step copies it (a trainer's write into its
 rollout buffer is that copy). A fresh ~10 MB array per step cost the driver
@@ -237,6 +257,8 @@ class RunConfig:
     sight: str | None = None    # [run] sight (#195 1a): replaces every level's
                                 # match.toml sight; None = the level's own
     spec: str = "crop"          # [obs] spec (#195 1g): the observation layout
+    full_view: bool = True      # [obs] full_view (#195 1g (c)): serve the
+                                # value network's full view under info ("v1")
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -260,7 +282,7 @@ _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
 #: ``"crop"`` placeholder alone; ``"v1"`` takes none (its layout is the spec).
 _OBS_KEYS = {"crop": {"spec": False, "channels": True, "crop_radius": True,
                       "vector": True},
-             "v1": {"spec": False}}
+             "v1": {"spec": False, "full_view": False}}
 
 
 def _is_int(v) -> bool:
@@ -380,6 +402,12 @@ def parse_run(raw: dict, where: str = "run file",
         from simulation.match import check_sight
         sight = check_sight(run["sight"], f"{where}: [run] sight")
     channels, crop_radius, vector = (), 0, ()
+    full_view = True
+    if spec == "v1" and "full_view" in obs:
+        full_view = obs["full_view"]
+        if not isinstance(full_view, bool):
+            raise ValueError(f"{where}: [obs] full_view must be true or "
+                             f"false, got {full_view!r}")
     if spec == "crop":
         channels = _names_key(obs, "obs", "channels", where)
         try:
@@ -408,7 +436,7 @@ def parse_run(raw: dict, where: str = "run file",
                      levels=levels, policy=pol, levels_dir=levels_dir,
                      channels=channels, crop_radius=crop_radius,
                      vector=vector, reward=reward, out_dir=out_dir,
-                     sight=sight, spec=spec)
+                     sight=sight, spec=spec, full_view=full_view)
 
 
 def load_run(path) -> RunConfig:
@@ -445,10 +473,26 @@ class Layout:
     vector: tuple
     counters: tuple = field(default=COUNTER_NAMES)
     spec: str = "crop"          # the observation spec (#195 1g)
+    full_view: bool = False     # the value network's full view served (1g (c))
 
     @property
     def n_rows(self) -> int:
         return self.n_teams * self.n_slots
+
+    @property
+    def full_keys(self) -> tuple:
+        """The full view's keys (``info["full_view"]``), in order (each has
+        a ``final_`` twin); empty when it is not served."""
+        if not self.full_view:
+            return ()
+        from simulation.obs_spec_v1 import FULL_KEYS
+        return FULL_KEYS
+
+    def full_shapes(self) -> dict:
+        if not self.full_view:
+            return {}
+        from simulation.obs_spec_v1 import full_shapes
+        return full_shapes(self.n_envs, self.n_rows, self.n_teams)
 
     @property
     def crop_side(self) -> int:
@@ -487,6 +531,9 @@ class Layout:
         obs = self.obs_shapes()
         out.update(obs)
         out.update({"final_" + k: v for k, v in obs.items()})
+        full = self.full_shapes()
+        out.update(full)
+        out.update({"final_" + k: v for k, v in full.items()})
         out.update({
             "reward": ((n, u), np.float32),
             "counters": ((n, u, kk), np.float32),
@@ -516,7 +563,8 @@ def make_layout(run: RunConfig, levels: list) -> Layout:
     return Layout(n_envs=run.n_envs, n_teams=n_teams, n_slots=n_slots,
                   n_actions=len(action_schema()), channels=run.channels,
                   crop_radius=run.crop_radius, vector=run.vector,
-                  spec=run.spec)
+                  spec=run.spec,
+                  full_view=bool(run.spec == "v1" and run.full_view))
 
 
 def load_levels(run: RunConfig) -> list:
@@ -615,7 +663,8 @@ class EnvRunner:
         self._limit = self.session.rules.limit_ticks(sim)
         if self.layout.spec == "v1":
             from simulation.obs_spec_v1 import ObsContext
-            self.ctx = ObsContext.build(sim, spec, S)
+            self.ctx = ObsContext.build(sim, spec, S,
+                                        n_teams=self.layout.n_teams)
         return [(self.k, 0, *self.session.digests())]
 
     def step(self, actions) -> dict:
@@ -709,6 +758,18 @@ class EnvRunner:
                     out[t * S + u.slot] = u
         return out
 
+    def roster_units(self) -> list:
+        """The ROSTER unit of every row (dead and turned ones included; the
+        full view's rows, spec 5.6), ``None`` at an empty roster place."""
+        sim = self.session.sim
+        S = self.layout.n_slots
+        out = [None] * self.layout.n_rows
+        for t in range(len(self.session.spec.teams)):
+            for u in sim.roster(t):
+                if u is not None:
+                    out[t * S + u.slot] = u
+        return out
+
     def row_flags(self) -> tuple:
         """``(valid, in_match)`` per row (spec 4.2): ``in_match`` while the
         roster slot holds a unit (dead or turned included), ``valid`` while
@@ -731,7 +792,9 @@ class EnvRunner:
     def observe(self, out: dict) -> None:
         """Write the observation into ``out``'s ``(U, ...)`` views (the
         spec's keys, ``layout.obs_keys``) through the sensor accessor's
-        ``observe`` door, and the row flags beside it."""
+        ``observe`` door, and the row flags beside it -- and, when ``out``
+        carries the full view's keys (``layout.full_keys``), the full view
+        through the same door for the rows' ROSTER units (1g (c))."""
         sim = self.session.sim
         units = self.row_units()
         if self.layout.spec == "crop":
@@ -745,6 +808,10 @@ class EnvRunner:
         valid, in_match = self.row_flags()
         out["valid"][...] = valid
         out["in_match"][...] = in_match
+        if self.layout.full_keys and self.layout.full_keys[0] in out:
+            from simulation.sensor_accessor import FULL_VIEW_SPEC
+            self.accessor.observe(FULL_VIEW_SPEC, self.roster_units(), out,
+                                  sim=sim, context=self.ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -788,7 +855,7 @@ def _worker_main(conn, task: dict) -> None:
         runners = {e: EnvRunner(e, run, layout, levels, breach_physics=bp)
                    for e in task["envs"]}
 
-        keys = layout.obs_keys
+        keys = layout.obs_keys + layout.full_keys
 
         def publish(e, r):
             a["tick"][e] = r.session.tick_count
@@ -1220,7 +1287,7 @@ class BatchedEnv:
             # per observation key of the spec and its ``final_`` twin. The
             # "crop" spec's ``valid`` keeps its bool copy (as it was).
             self._buf = {}
-            for k in self.layout.obs_keys:
+            for k in self.layout.obs_keys + self.layout.full_keys:
                 if not (self.layout.spec == "crop" and k == "valid"):
                     self._buf[k] = np.zeros_like(self._a[k])
                 self._buf["final_" + k] = (
@@ -1336,20 +1403,41 @@ class BatchedEnv:
             out[k] = b[k]
         return out
 
-    def _final_obs(self, ended) -> dict:
-        """The terminal observation of the envs that ended, zeros on every
-        other row, in the env's own buffers: last step's rows are wiped and
-        only this step's are copied."""
+    def _final(self, keys, ended) -> dict:
+        """The terminal arrays ``keys`` of the envs that ended, zeros on
+        every other row, in the env's own buffers: last step's rows
+        (``_final_rows``, the caller moves it) are wiped and only this
+        step's are copied."""
         a, b = self._a, self._buf
-        out = {k: b["final_" + k] for k in self.layout.obs_keys}
+        out = {k: b["final_" + k] for k in keys}
         if self._final_rows.any():
             for v in out.values():
                 v[self._final_rows] = 0
         if ended.any():
             for key, v in out.items():
                 v[ended] = a["final_" + key][ended]
-        self._final_rows = ended.copy()
         return out
+
+    def _final_obs(self, ended) -> dict:
+        """The terminal observation of the envs that ended (the spec's
+        keys)."""
+        return self._final(self.layout.obs_keys, ended)
+
+    def _full_view(self) -> dict:
+        """The full view (#195 1g (c), spec 5), in the env's own buffers:
+        the layout's full keys (empty under ``"crop"`` or ``full_view =
+        false``)."""
+        a, b = self._a, self._buf
+        out = {}
+        for k in self.layout.full_keys:
+            np.copyto(b[k], a[k])
+            out[k] = b[k]
+        return out
+
+    def _final_full_view(self, ended) -> dict:
+        """The terminal full view of the envs that ended (spec 5.2's
+        ``info["final_full_view"]``)."""
+        return self._final(self.layout.full_keys, ended)
 
     def team_rows(self, obs: dict, team: int) -> dict:
         """THE one path a trainer takes to a team's observation (#195 1g,
@@ -1393,6 +1481,7 @@ class BatchedEnv:
         info = self._info_arrays()
         info["checkpoints"] = [got[e]["checkpoints"] if e in got else []
                                for e in range(n)]
+        info["full_view"] = self._full_view()
         return self._obs(), info
 
     def step(self, actions) -> tuple:
@@ -1421,6 +1510,9 @@ class BatchedEnv:
         info["ticks"] = a["ticks"].copy()
         info["ended"] = ended
         info["final_obs"] = self._final_obs(ended)
+        info["final_full_view"] = self._final_full_view(ended)
+        self._final_rows = ended.copy()
+        info["full_view"] = self._full_view()
         info["result"] = [got[e]["result"] for e in range(n)]
         info["counters"] = a["counters"].copy()
         info["checkpoints"] = [got[e]["checkpoints"] for e in range(n)]

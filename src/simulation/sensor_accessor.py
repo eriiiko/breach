@@ -61,6 +61,11 @@ import numpy as np
 
 #: The observation specs ``observe`` serves, by name (``[obs] spec``).
 OBS_SPECS = ("crop", "v1")
+#: The value network's full view (#195 1g (c), obs spec v1 section 5):
+#: ``observe`` serves it beside ``"v1"`` into ``info["full_view"]``'s
+#: buffers; it is NOT in :data:`OBS_SPECS`, so no run file can name it as
+#: the policy's observation.
+FULL_VIEW_SPEC = "full_v1"
 
 
 class Channel(Enum):
@@ -305,8 +310,16 @@ class EntityFieldAccessor:
             from simulation.obs_spec_v1 import observe_rows
             observe_rows(kw["sim"], kw["context"], units, out)
             return
+        if spec == FULL_VIEW_SPEC:
+            # the value network's full view (spec 5): served beside "v1" by
+            # this door into the farm's OWN buffers (info["full_view"]),
+            # never a run-file spec -- ``units`` are the rows' ROSTER units
+            from simulation.obs_spec_v1 import observe_full_rows
+            observe_full_rows(kw["sim"], kw["context"], units, out)
+            return
         raise ValueError(f"unknown observation spec {spec!r} (known: "
-                         f"{list(OBS_SPECS)})")
+                         f"{list(OBS_SPECS)} and the full view "
+                         f"{FULL_VIEW_SPEC!r})")
 
     def crop(self, units, channels, r: int, *, all_units=None):
         """The observation crop (#29 P1a): ``(U, C, 2r+1, 2r+1)`` float32,
