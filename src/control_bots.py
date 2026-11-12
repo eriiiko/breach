@@ -70,11 +70,13 @@ from simulation.damage import DAMAGE_TYPE_NAMES
 from simulation.factions import ZOMBIE_TEAM
 from simulation.intents import FP_ONE
 from simulation.movement import THROTTLE_ONE
+from simulation.room_graph import place_at
 from simulation.sensor_accessor import Channel, EntityFieldAccessor
 from simulation.team_picture import fire_lanes
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
 from simulation.unit_impulse import shove_target
+from simulation import unit_orders
 from simulation.weapons import FRAG_ROW, fuse_ticks_from_seconds
 from simulation.weapons import get_tables as weapon_tables
 
@@ -285,6 +287,32 @@ PLAYS = (
     Play("hold", _play_hold),
     Play("bound", _play_bound),
 )
+
+
+#: The order each play gives (#195 1f, design 5.3): the commander
+#: (:class:`BotCommander`) writes ``PLAY_ORDER[brain.play]`` -- a code name
+#: of ``unit_orders.ORDER_WHAT`` -- to every living marine of a door-driven
+#: team. A row per :data:`PLAYS` row (a fourth play must name its order);
+#: ``clear`` is not written by the bots.
+PLAY_ORDER = {"fall_back": "fall_back_to", "hold": "hold", "bound": "go_to"}
+
+
+def check_play_order(plays=PLAYS, table=PLAY_ORDER) -> None:
+    """Refuse, by name, a play with no :data:`PLAY_ORDER` row and a row
+    naming no order kind (run at import)."""
+    missing = [p.name for p in plays if p.name not in table]
+    if missing:
+        raise ValueError(f"PLAY_ORDER: the plays {missing} name no order "
+                         f"(a play must say which order the commander "
+                         f"gives; #195 1f)")
+    bad = {k: v for k, v in table.items()
+           if v not in unit_orders.ORDER_WHAT[1:]}
+    if bad:
+        raise ValueError(f"PLAY_ORDER: {bad} name no order kind "
+                         f"({unit_orders.ORDER_WHAT[1:]})")
+
+
+check_play_order()
 
 
 class TeamBrain:
@@ -1506,7 +1534,71 @@ class BotTeam(ControlSource):
         return tuple(placement_cells(room, 1)[0])
 
 
-__all__ = ["BotTeam", "BotSettings", "bot_settings", "TeamBrain", "FEATURES",
+class BotCommander(BotTeam):
+    """The COMMANDER (#195 1f, design 5.3): the bots' TEAM layer alone,
+    for a team driven through the door (a policy's). Once per tick it reads
+    the team picture and, every ``team_period_ticks``, takes the team
+    layer's decision (play, shared target, objective; no unit layer, no
+    ``_BotState``, so ``arrived`` is True for every unit and the Bound
+    halves swap on their timers alone) -- and translates it into ONE order
+    for every living marine of the team, issued through
+    ``Simulation.order_intent`` only when it differs from what the unit
+    holds: what = ``PLAY_ORDER[play]``, where = ``room_graph.place_at`` of
+    the objective body's CENTRE tile, until told otherwise, the shared
+    target's id (or none). An objective on no room and no opening (or no
+    objective) clears the order. Draws nothing, writes nothing else, calls
+    no other verb. Registered as ``commander`` (not nameable); built by
+    ``control_source.create_match_controllers``."""
+
+    def handle_frame(self, sim, renderer=None) -> None:
+        tick = int(sim.tick)
+        if tick == self._last_tick:
+            return
+        self._last_tick = tick
+        self.seed = int(getattr(sim, "_seed", 0) or 0)
+        mine = [u for u in sim.units
+                if u.team == self.team and u.alive and not u.is_zombie]
+        if not mine:
+            return
+        brain = self.brain
+        brain.observe(sim)
+        if (brain.updated_at is None
+                or tick - brain.updated_at >= self.s.team_period_ticks):
+            brain.update(self, sim, mine, vision.state_for(sim))
+            self._issue(sim, mine)
+
+    def order_for(self, sim, mine) -> tuple:
+        """The team's order now, as the four held fields ``(what, where,
+        until, target)`` (``unit_orders.NO_ORDER`` when the objective names
+        no place)."""
+        brain = self.brain
+        graph = unit_orders.graph_of(sim)
+        if brain.objective is None or graph is None:
+            return unit_orders.NO_ORDER
+        fp = mine[0].footprint
+        ox, oy = brain.objective
+        where = place_at(graph, oy + fp // 2, ox + fp // 2)
+        if where == unit_orders.NO_PLACE:
+            return unit_orders.NO_ORDER
+        what = unit_orders.ORDER_WHAT.index(PLAY_ORDER[brain.play])
+        t = brain.target
+        target = (int(t.id) if t is not None and t.alive
+                  and t.team != self.team else unit_orders.NO_TARGET)
+        return (what, where, unit_orders.NO_LIMIT, target)
+
+    def _issue(self, sim, mine) -> None:
+        want = self.order_for(sim, mine)
+        what, where, _until, target = want
+        args = ((0, unit_orders.NO_PLACE, 0, unit_orders.NO_TARGET)
+                if what == unit_orders.ORDER_NONE else (what, where, 0,
+                                                        target))
+        for u in sorted(mine, key=lambda u: u.id):
+            if unit_orders.held(u) != want:
+                sim.order_intent(u.id, *args)
+
+
+__all__ = ["BotTeam", "BotCommander", "PLAY_ORDER", "check_play_order",
+           "BotSettings", "bot_settings", "TeamBrain", "FEATURES",
            "ACTIONS", "PLAYS", "Feature", "Action", "Play",
            "PositionContext", "evaluate_features", "choose_position",
            "resolve_actions", "focus_key", "tie_hash"]
