@@ -1,12 +1,14 @@
 """tools/obs_body_imprint.py -- the bodies' imprint in the observation's
-physics planes (#195 1g (b); obs spec v1 section 3.2, PENDING ERIK).
+physics planes (#195 1g (b); obs spec v1 section 3.2 -- an ACCEPTED GAP
+since Erik's ruling of 2026-11-12, "on the wind question, its OK! We accept
+it!"; the measurement's table is in the spec).
 
 ``GameMap.stamp_units`` writes every living body into ``dyn_permeability``,
 ``dyn_wave_absorb`` and ``dyn_heat_atten_q``, which the gas solver and the
 radiation sweep read -- so the eight physics planes of the observation are
 not a function of public state alone: a hidden body leaves a wake. This
-tool MEASURES that wake for Erik's ruling (accept it as a gap, or move the
-spec): the ``test_wind_doorway_e2e`` scene (ship_demo, the zombie room
+tool MEASURES that wake (it measured it for Erik's ruling; it stays the
+instrument should the gap ever be revisited): the ``test_wind_doorway_e2e`` scene (ship_demo, the zombie room
 over-pressured by +0.44 atm venting through its two west doors: a
 half-second JET, then a lasting draft), played twice in lock-step -- once
 with ONE body (standing in the draft in front of the upper door, or walking
