@@ -204,7 +204,8 @@ def test_scenario_actually_kills_the_unit():
 
     # The unit ends DEAD (life/alive flips are part of the synced digest).
     final = traj[-1][UNIT_DIGEST_KEY]["units"][0]
-    assert final["alive"] is False, "unit should be dead at the end of the scenario"
+    # #29 P3a: the record holds the life state's enum index (1 = dead).
+    assert final["life_state"] == 1, "unit should be dead at the end of the scenario"
 
 
 def test_kill_event_lands_on_the_same_tick_run_twice():

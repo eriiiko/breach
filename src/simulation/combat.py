@@ -61,6 +61,7 @@ from simulation.orders import (
     MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
+from simulation.unit_schema import MAG_UNBOUND
 from simulation import noise as _noise          # G9p: shots are noises
 # Physics event entry points: re-exported for legacy imports; the detonation
 # sites themselves now go through the payload executor (W3). Bare-name import
@@ -737,7 +738,8 @@ def magazines_carried(u):
 
 def mag_bind(u, weapon):
     """First bind of a tracked weapon's magazine (the lazy first-trigger
-    bind, and every re-bind after a ``current_mag = None`` reset: a swapped
+    bind, and every re-bind after a ``current_mag = MAG_UNBOUND`` reset (it
+    was None before #29 P3a): a swapped
     weapon, a WEGO round boundary): a FULL magazine in the gun and, when the
     loadout counts magazines for this weapon (:func:`magazines_carried` > 0),
     ``magazines - 1`` spares; otherwise the spares are untracked."""
@@ -753,7 +755,7 @@ def mag_settle(u, weapon, tick):
     gun then holds a FULL magazine). Returns False while a reload's stall is
     still running. A reload is PENDING while ``reload_done_tick >= 0``; a dry
     unit (empty magazine, no spare) has none pending. Integer, no RNG."""
-    if getattr(u, "current_mag", None) is None:
+    if getattr(u, "current_mag", MAG_UNBOUND) == MAG_UNBOUND:
         mag_bind(u, weapon)
         return True
     done = getattr(u, "reload_done_tick", -1)
@@ -779,11 +781,8 @@ def mag_gate(u, weapon, tick):
     past the stall, and :func:`mag_status` reads it settled without
     mutating. Pure integer state + compares on row constants; no RNG.
 
-    Mag state lives ON THE UNIT and is deliberately NOT in the synced digest
-    surface (field_ab_harness.SYNCED_UNIT_FIELDS) -- the ``last_fire_tick``
-    precedent: combat-cadence state is a deterministic derivation of synced
-    inputs (intents + tick); a divergence surfaces one tick downstream in the
-    hashed hp / event stream (P3a's schema hashes it).
+    Mag state lives ON THE UNIT as unit-schema columns, hashed in the unit
+    digest while set (#29 P3a, ``simulation.unit_schema``).
     """
     if weapon.mag_size <= 0:
         return True                        # untracked -- exactly pre-W3
@@ -844,7 +843,7 @@ def mag_status(u, weapon, tick):
     if weapon.mag_size <= 0:
         return None
     full = int(weapon.mag_size)
-    if getattr(u, "current_mag", None) is None:
+    if getattr(u, "current_mag", MAG_UNBOUND) == MAG_UNBOUND:
         total = magazines_carried(u)
         return (full, None if total <= 0 else total - 1, False)
     spare = getattr(u, "spare_mags", SPARES_UNTRACKED)

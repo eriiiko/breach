@@ -318,10 +318,30 @@ _PRE_G1P_SHIP_DEMO = dict(
     outcome="draw", team=None, ticks=260,
     field_digest="ff07e64c5d41ebfd86c553e60d2637ee"
                  "32a8f99be4a72f3bc677ee9254e04349",
-    tick_digest="cf0300aa1adc8bd8f1ea33a1938a54ee"
-                "a0bea6a77701abe14fa1818c9d85106f",
-    unit_stream="4c6bae4002187bd7bb77bfaa88e832d9"
-                "50b134c644eda8cb76696f6f2f8c8668")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was cf0300aa1adc8bd8f1ea33a1938a54eea0bea6a77701abe14fa1818c9d85106f)
+    tick_digest="926d40875787f2cff919f1df62aefb9a"
+                "a1682dcd3764e9023be73cb59a5a76f6",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 4c6bae4002187bd7bb77bfaa88e832d950b134c644eda8cb76696f6f2f8c8668)
+    unit_stream="09aabf488d15593cb576b9bc19a03f44"
+                "1dd3691fd6bdb601656c107d0fce292c")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

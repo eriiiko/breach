@@ -357,10 +357,30 @@ _PRE_G8P_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=264,
     field_digest="a7f9fd78c8a13c2bf9fc38657b05eae0"
                  "42993affcd85bc777493724808fe2b8b",
-    tick_digest="8df76cf7f0a3681c583c99e10f31624d"
-                "8803f33c4ecd3adb3fdd0535e5a4cf46",
-    unit_stream="1082d3b490f52183e4f047ed136219ec"
-                "f2e53670e946b20a63ed989d46065a76")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 8df76cf7f0a3681c583c99e10f31624d8803f33c4ecd3adb3fdd0535e5a4cf46)
+    tick_digest="b58afffbe86c3c2f47969fc5e29d7a4c"
+                "4ab522e32bb14b7c7ff8e3ef67c51290",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 1082d3b490f52183e4f047ed136219ecf2e53670e946b20a63ed989d46065a76)
+    unit_stream="f9b510c240c4e80554afa85419f305ae"
+                "c6d4de7d4b94ae58c0d85d66d51a42d5")
 
 
 def v1_spec(level):

@@ -47,6 +47,7 @@ from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
+from simulation.unit_schema import SPEED_FROM_TABLE
 from simulation.movement import default_speed, footprint_samples
 from simulation.status import composed_flags
 
@@ -198,7 +199,8 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
     :class:`DoorDestroyedEvent`; ``None`` emits nothing.
 
     The walk cadence (G1p-c): a zombie whose ``speed_ticks_per_tile`` is
-    ``None`` walks at ``shamble_ticks`` (or, sprinting, ``sprint_ticks``) --
+    ``SPEED_FROM_TABLE`` (``None`` before #29 P3a) walks at
+    ``shamble_ticks`` (or, sprinting, ``sprint_ticks``) --
     the ``[speeds]`` rows the Simulation quantized once for its map; a
     direct caller that passes none gets the same quantization of
     ``gmap.tile_size_m`` the first time a zombie of the call walks. A zombie
@@ -314,7 +316,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
             if not flags.can_move or not _unit_impulse.walk_allowed(z):
                 continue
             base = z.speed_ticks_per_tile
-            if base is None:
+            if base == SPEED_FROM_TABLE:
                 if settings.sprint and _sees_prey(gmap, z, players,
                                                   settings.sprint_r2):
                     if sprint_ticks is None:
@@ -355,7 +357,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                 _horde.settle(z, settings)     # arrived, saw nobody
                 continue
             base = z.speed_ticks_per_tile
-            if base is None:
+            if base == SPEED_FROM_TABLE:
                 if shamble_ticks is None:
                     shamble_ticks = _speed_table(gmap).zombie_shamble_ticks
                 base = shamble_ticks

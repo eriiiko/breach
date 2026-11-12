@@ -816,9 +816,11 @@ def test_the_digest_keys_are_absence_transparent():
     sim = _sim()
     u = _unit(sim, 10, 10)
     rest = _unit_record(u)
-    assert not {"imp", "sw", "pv", "effort", "react"} & set(rest)
-    for attr, key in (("imp_l", "imp"), ("swy", "sw"), ("pvx", "pv"),
-                      ("effort", "effort"), ("react_ticks", "react")):
+    names = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",
+             "pvx", "pvy", "effort", "react_ticks")   # #29 P3a: the schema's
+    assert not set(names) & set(rest)
+    for attr in names:
+        key = attr
         setattr(u, attr, 5)
         rec = _unit_record(u)
         assert key in rec
@@ -880,10 +882,30 @@ _RE_PIN_1_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=240,
     field_digest="187e4a6f710671ff3644584fd51b6278"
                  "eaadb4bac5fbb1225bfeee7b5572de26",
-    tick_digest="46ff80270890878daa488b0c0f031659"
-                "33ec3a7b6bbdd9055a23b45fb4f3a9fb",
-    unit_stream="93709823f7ef9829b77acc5f8215e5fd"
-                "8a08721d278a3a9910544cf4c61377e6")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 46ff80270890878daa488b0c0f03165933ec3a7b6bbdd9055a23b45fb4f3a9fb)
+    tick_digest="46f9509e0b5e5db20e52fa4edb89bbec"
+                "1bca1b4cf33c0d95a30f96e920ba3c1b",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 93709823f7ef9829b77acc5f8215e5fd8a08721d278a3a9910544cf4c61377e6)
+    unit_stream="478e0b323a021b085799c215d6548a34"
+                "4a35f475aae2aa3d0be0e0d128822104")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -907,8 +929,18 @@ _RE_PIN_1_BOX = dict(
     outcome="win", team=1, ticks=92,
     field_digest="2a9339a53e67d28c29ff513f6942dab9"
                  "1586f5e85c6eb552885554c16ebe4c3b",
-    unit_stream="e082f7dfe103e2fdd594a952da81143c"
-                "a4202e996238969b22c85eea05b0fd3d")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was e082f7dfe103e2fdd594a952da81143ca4202e996238969b22c85eea05b0fd3d)
+    unit_stream="ac9bda6c239304078bef33858e2582f8"
+                "83e0684eddd14d541ec7f269e8a88c16")
 
 _IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
                   "swy", "pvx", "pvy", "effort", "react_ticks")

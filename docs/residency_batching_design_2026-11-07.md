@@ -395,6 +395,126 @@ the slots not yet ported executing on the host over bridged `Unit` objects,
 so every mid-port gate compares equal games; after P7 the bridge serves the
 recorder export and the tile inspector only.
 
+#### 4.4a Amendment 2026-11-11: P3a re-planned against the code at `bac6e077`
+
+The column list above was written on 2026-11-07. Since then the gameplay pack
+(#183: turning, unit impulse, exposure, magazines, grenade kinds, melee,
+flashlight, the horde field), #193 (the planted charge) and the agent design
+(`docs/rl_agent_design_2026-11-11.md` §9) changed what a unit holds. The
+inventory below was taken from the code, not from memory: `unit.py`, a grep
+of every attribute write on a unit in `src/`, and a spy on `Unit.__setattr__`
+over the whole suite (5 613 tests), which found 109 attribute names. Every
+one is sorted into exactly one group. P3a's property test holds the sort.
+
+**Group S, synced columns** (device columns; hashed from the schema, each
+only while it differs from its schema default unless marked *always*):
+
+| block | columns | note |
+|---|---|---|
+| identity | `id`, `slot`, `team`, `is_zombie`, `life_state` (*always*) | `alive` stays a property over `life_state` |
+| kit (table indices on the device; strings on the host) | `species_id`, `loadout_name`, `env_profile_name`, `weapon_id`, `melee_id`, `charge_ammo` (`""` = none), `magazines_weapon`, `magazines`, `footprint`, `mass_g` | fixed per unit bar a weapon swap; NEW vs §4.4: melee row, charge row, mass |
+| position | `x`, `y` (*always*, `round(v·1e9)` until P3c), `facing_q` (*always*), `facing_target_q` (hashed as `turn`), `omega_q` | the turning law's state is NEW vs §4.4 |
+| motion | `speed_ticks_per_tile` (`None` → an integer sentinel), `zombie_move_accumulator` | |
+| health | `current_hp` (*always*, hashed as a Q16 integer; P3a asserts it is an exact n/65536 at every write), `statuses` (fixed-width block, capacity below), `exposure` (fixed block) | |
+| impulse | `imp_x`, `imp_y`, `imp_l`, `stand_x`, `stand_y`, `swx`, `swy`, `pvx`, `pvy`, `effort`, `react_ticks` | NEW vs §4.4 |
+| magazine | `current_mag` (`None` → `MAG_UNBOUND`, an integer sentinel), `spare_mags`, `reload_done_tick` | |
+| grenades and charges | `grenade_counts` (fixed block, one per hand-grenade row), `has_explosive`, `throw_release_tick`, `throw_kind`, `throw_reach_q`, `throw_fuse_ticks`, `plant_done_tick`, `plant_fuse_ticks` | throw and plant in progress NEW vs §4.4 |
+| cool-downs | `last_fire_tick`, `last_blow_tick`, `last_shove_tick`, `last_melee_tick` | |
+| spray | `spray_ticks_left`, `spray_target`, `spray_aim_angle` | the last two FLOAT until P3e (as positions until P3c) |
+| zombie | `zombie_activated`, `killed_by_zombie`, `zombie_noise_y`, `zombie_noise_x`, `zombie_noise_ticks`, `zombie_anchor_y`, `zombie_anchor_x` | the horde's state NEW vs §4.4; §4.4's "descent cursor" does not exist (the field law keeps none) |
+| flags | `flashlight_on` | NEW |
+| intent state (the held verbs and the latches) | `live_move_dir`, `live_aim`, `live_trigger`, `pending_throw`, `pending_reload`, `pending_shove`, `pending_melee`, `pending_plant`, `pending_use` | each with an integer encoding in the schema (an absent intent = the default); the agent design's §9 needs the held verbs on the device (the team display reads them) |
+
+**Group D, derived constants** (never written after spawn; rebuilt on the
+device from group S's kit indices, so not columns and not hashed): `base_stats`,
+`base_speed`, `mass` (the species' float kg; `mass_g` is the synced one),
+`offsets`, `environment`, `mitigation`, `inventory` (a stub, always empty),
+`_frag_slot`; and the four per-unit optics overrides the stamp reads by
+`getattr` with a map default (`permeability`, `wave_absorb`, `heat_atten`,
+`light_atten`: no game path sets them, tests do), declared as slots and left
+unset. A property test checks every group-D value equals its derivation from
+group S at every tick of a match, conversion included.
+
+**Group R, `REFERENCE_ONLY`** (host only; never read on the continuous match
+path, or a diagnostic): the WEGO / onephase state (`orders`,
+`current_order_type`, `ap`, `plan`, `plan_round`, `busy_until_tick`,
+`gcd_until_tick`, `swap_cd_until_tick`, `action_cd`, `loadout`, `belt`,
+`active_slot`, `overwatch_facing`, `overwatch_half_deg`, `move_path`,
+`path_tick_offset`, `spray_order`, `fire_target`), `recent_attackers`
+(unread on the match path), `impulse_books` (the momentum books: a
+diagnostic, as today), `name` (a label; conversion prefixes it), and
+`awakened` (written only by `__init__`; read only by `stats.py`'s hidden
+`imagination` stat -- P3a deletes it if nothing else reads it, else R).
+
+**Not unit state, a table of its own: the planted charges**
+(`Simulation.planted_charges`, #193). A `CHARGE_SCHEMA` in the same module:
+tile x / y, `det_tick` (`None` = remote → `NO_TIMER`), the charge row as its
+index among the ammo rows, `owner_id`, the approach tile (`None` →
+`NO_TILE`), `live`; a fixed capacity per sim with a refusing door at the
+plant (a plant into a full table is refused, counted, no event); hashed as
+today, only while one lives.
+
+**Capacities.** `statuses`: a fixed width, `STACK_STACK` kinds capped, the
+overflow rule at `status.apply`'s door (refuse the new instance, counted) --
+the width chosen so that no test, no pinned match and no shipped weapon row
+reaches it, asserted. `grenade_counts`, `exposure`: already fixed.
+`_possessed_ids` (§4.4) is a set on the Simulation, not unit state; it stays
+there.
+
+**Differences from §4.4's list**, in one line each: NEW columns -- the
+turning law (3), the impulse state (11), `mass_g`, the melee row, the charge
+row, `has_explosive`'s partner `charge_ammo`, the throw (4) and plant (2) in
+progress, the shove and blow cool-downs, the horde's noise and anchor (5),
+the flashlight bit, the nine intent fields named one by one; DROPPED --
+"descent cursor" (no such state), "cadence" (it is `speed_ticks_per_tile`),
+`awakened` (to R or deleted), "valid" (a store column, not a `Unit`
+attribute; it arrives with the store in P6); MOVED -- `_possessed_ids` stays
+on the Simulation. The order's four columns (the agent design's patch 1f,
+#195) are NOT in P3a: 1f adds them as four schema rows, hashed only while
+set.
+
+**The digest change at P3a** (§5 item 9): the unit record is built from the
+schema; `ap` and `n_orders` leave it; `current_hp` hashes as a Q16 integer;
+every group-S column hashes while it differs from its default (so the
+magazine, the grenades, the cool-downs, the kit and the intent state enter
+the digest for the first time); the events and the charges keep their
+records (the event ring is P6's). Proof that only the hash moved, not the
+game: the new record is computed by the SAME schema code on the old `Unit`
+(main before P3a, attributes read by `getattr`) and on the new one, tick by
+tick over the pinned matches, and must be equal; every field digest is
+unchanged.
+
+**Tier.** §9 gives P3a to Sonnet; the list doubled since and the sort, the
+sentinels and the derivations are judgement, and the re-pin is not a tol-0
+gate, so P3a runs on Opus (the lead's call, 2026-11-11).
+
+**As built (P3a, 2026-11-12).** The sort above held against the code; no
+column changed group. Corrections and choices, one line each:
+- `orders` and `move_path` are WEGO state the continuous path still READS --
+  slot 4's `process_shooting` looks for a fire order in `orders`, slot 3's
+  WEGO branch takes `len(move_path)` -- but both are always empty there, so
+  they stay R (a REFERENCE_ONLY reason says so); `path_tick_offset`,
+  `recent_attackers`, `impulse_books` and `name` are WRITTEN on the match
+  path and never decided on. Property (e) holds it: a bots and a bots_v1
+  match with every other R attribute poisoned (raises on any use) and those
+  four given garbage play to the same result and digests.
+- `awakened` stays R (read by `stats.is_stat_player_visible`).
+- The status block is 16 rows (8 non-stacking kinds x 1 + POISONED x
+  `STATUS_STACK_CAP` 8); the planted-charge table holds `CHARGE_CAPACITY` 32.
+- `current_hp` is a property over the slot `_current_hp` whose setter refuses
+  a value off the Q16 grid; no write in the suite or the pinned matches was
+  off it.
+- Sentinels on the HOST: `current_mag` `MAG_UNBOUND` = -1, `speed_ticks_per_tile`
+  `SPEED_FROM_TABLE` = -1. Encoded only (host keeps `None`): `pending_plant`
+  `NO_PLANT` -1, a throw's reach `THROW_NO_REACH`, a charge's remote
+  `det_tick` `NO_TIMER` -1 and missing approach `NO_TILE` (-1, -1); a table
+  column's "none" row -1; an intent column is a presence flag + its ints.
+- The record's bytes are `name|int64` rows under `UNIT_SECT_V2`
+  (`unit_schema.unit_section_bytes`), the charges `CHARGE_SECT_V1`; the events
+  keep their repr. `facing_target_q` hashes as `turn` (the turn still to go),
+  `facing_q` as `facing`, `omega_q` as `omega`; every other key is the column
+  name.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

@@ -53,16 +53,46 @@ _STAGE1_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=264,
     field_digest="d9c4c5cef6c04f9d80eaa2b368d88782"
                  "a8fa28132f7cd39a8011c230b88cecde",
-    tick_digest="f6b702b5550299dcebfe2db8794a1e31"
-                "0b228648319b7c668b3a4c8ac1920f33",
-    unit_stream="d83ee4d35c56f376d47daec6179ac3c3"
-                "7dfef360cd149d7ef6d48c6efa3a9f3f")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was f6b702b5550299dcebfe2db8794a1e310b228648319b7c668b3a4c8ac1920f33)
+    tick_digest="9f78cd9b7ffe6d7016457f3ec8ca406d"
+                "7d570114a7152a3f46153d7abdc6c6c1",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was d83ee4d35c56f376d47daec6179ac3c37dfef360cd149d7ef6d48c6efa3a9f3f)
+    unit_stream="f44bfcb5271c1768920a7727538c3c33"
+                "4d2c91f8ef3e9b98ce82e6bf5ff9cd20")
 _STAGE1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
                  "52642adfca545cbe51324cfad2e21631",
-    unit_stream="05bdbac7c76250b949ef35aef81fdd40"
-                "3bd89af88232eebe061bf753e47b1e3d")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 05bdbac7c76250b949ef35aef81fdd403bd89af88232eebe061bf753e47b1e3d)
+    unit_stream="a8f43fe1faf94900de0fb22c1b75e32d"
+                "0ca991e25a69412e544a77b1b47343df")
 
 
 def _off(monkeypatch, keep=()):
@@ -496,12 +526,16 @@ def test_the_horde_state_is_absence_transparent_and_cleared(monkeypatch):
     from field_ab_harness import _unit_record
     from simulation.damage import DamagePacket, KINETIC, apply_packet
     z = Unit("Z", x=5, y=5, team=ZOMBIE_TEAM)
+    keys = {"zombie_noise_y", "zombie_noise_x", "zombie_noise_ticks",
+            "zombie_anchor_y", "zombie_anchor_x"}   # #29 P3a: the schema's
     rec = _unit_record(z)
-    assert "noise" not in rec and "anchor" not in rec
+    assert not keys & set(rec)
     z.zombie_noise_y, z.zombie_noise_x, z.zombie_noise_ticks = 3, 4, 10
     z.zombie_anchor_y, z.zombie_anchor_x = 5, 5
     rec = _unit_record(z)
-    assert rec["noise"] == [3, 4, 10] and rec["anchor"] == [5, 5]
+    assert [rec[k] for k in ("zombie_noise_y", "zombie_noise_x",
+                             "zombie_noise_ticks")] == [3, 4, 10]
+    assert [rec["zombie_anchor_y"], rec["zombie_anchor_x"]] == [5, 5]
     z.current_hp = 1.0
     apply_packet(z, DamagePacket(amount=100, dtype=KINETIC), source="bullet")
     assert not z.alive

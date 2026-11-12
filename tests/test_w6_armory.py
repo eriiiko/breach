@@ -65,6 +65,7 @@ from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import (  # noqa: E402
     FIRE_ORDER_ARCHETYPES, WeaponsTables, get_tables,
 )
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 SEED = 20260707
 
@@ -459,7 +460,7 @@ def test_weapon_cycle_walks_every_triggerable_row_through_the_facade():
     m.current_mag = 1
     m.spray_ticks_left = 7
     sim.debug_cycle_weapon(mid)
-    assert m.current_mag is None and m.reload_done_tick == -1
+    assert m.current_mag == MAG_UNBOUND and m.reload_done_tick == -1
     assert m.spray_ticks_left == 0
 
     # Zombies refuse (no weapon rows — the ai_zombie path).
