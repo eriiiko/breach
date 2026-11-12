@@ -886,6 +886,14 @@ def shove_target(table: ImpulseTable, units, u):
     return best
 
 
+def shove_cooled(table: ImpulseTable, u, tick: int) -> bool:
+    """Whether ``u``'s shove cooldown has run at ``tick`` (a unit that never
+    shoved is always cooled). THE test of :func:`shove` and of
+    ``verb_gates.can_shove``; a pure read."""
+    last = int(getattr(u, "last_shove_tick", -1))
+    return not (last >= 0 and tick - last < table.shove_cooldown_ticks)
+
+
 def shove(table: ImpulseTable, units, u, tick: int, events=None) -> bool:
     """One shove by ``u`` (slot 1b's consumption of ``shove_intent``): if its
     cooldown has run and a target exists (:func:`shove_target`), the shove's
@@ -894,8 +902,7 @@ def shove(table: ImpulseTable, units, u, tick: int, events=None) -> bool:
     the cooldown starts and a render-only ``ShoveEvent`` is emitted. With no
     target nothing happens and the cooldown is not spent. The shover feels
     no reaction in v1 (ACCEPTED GAP, design §1)."""
-    last = int(getattr(u, "last_shove_tick", -1))
-    if last >= 0 and tick - last < table.shove_cooldown_ticks:
+    if not shove_cooled(table, u, tick):
         return False
     t = shove_target(table, units, u)
     if t is None:
@@ -920,5 +927,5 @@ __all__ = [
     "lever_q", "add", "along_q", "wind_impulse_q", "add_wind",
     "map_air_density", "stability_q16", "pending_dw", "integrate",
     "integrate_all", "effort_scale_q16", "walk_allowed", "move",
-    "walk_step_q", "centre_q", "shove_target", "shove",
+    "walk_step_q", "centre_q", "shove_target", "shove_cooled", "shove",
 ]
