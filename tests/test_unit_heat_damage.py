@@ -71,11 +71,48 @@ def _expected_marine_dmg_raw(phi, tps):
     return 1.0 * (1.0 + float(cmb.heat_overtemp_scale) * over) * (1.0 / tps)
 
 
+def _q(v):
+    return unit_fixed.quantize_scalar(float(v))
+
+
+def _expected_marine_dmg_q(phi, tps, mult_q=1 << 16):
+    """THE row's law in Q16 (#29 P3e), written by hand: the gain and the
+    dials quantized once, every product / quotient the real value rounded
+    once (half away) -- for a default-human marine (temperature_max 60,
+    environmental_damage_rate 1.0); ``mult_q`` a resist (the zombie's)."""
+    cmb = CFG.combat
+    one = 1 << 16
+    peak = int(round(phi * HEAT_SCALE))
+    gain_q = _q(float(cmb.heat_flux_to_temp) * float(cmb.unit_absorption)
+                * (1.0 - float(cmb.unit_reflectivity)))
+    t_q = _q(cmb.heat_ambient_ref) + unit_fixed.mul_q16_round(gain_q, peak)
+    over_q = t_q - _q(60.0)
+    if over_q <= 0:
+        return 0
+    k_q = _q(cmb.heat_overtemp_scale)
+    dmg_q = unit_fixed.div_round(
+        _q(1.0) * (one + unit_fixed.mul_q16_round(k_q, over_q)), one * tps)
+    return unit_fixed.mul_q16_round(dmg_q, mult_q)
+
+
 def _expected_marine_dmg(phi, tps):
-    """The APPLIED per-tick HP loss: the §4.2 model snapped to the Q16.16 grid
-    (Q2-lift — combat.py quantizes every damage delta before it touches HP;
-    change vs the raw model <= 1/131072 ~= 7.6e-6, the documented contract)."""
-    return unit_fixed.quantize_hp_delta(_expected_marine_dmg_raw(phi, tps))
+    """The APPLIED per-tick HP loss: the integer law's Q16 count as HP. It
+    stays within 1e-4 (relative) of the float model above -- the Q16
+    quantization of the dials, the documented #29 P3e re-baseline (held by
+    ``test_the_integer_law_tracks_the_float_model``)."""
+    return _expected_marine_dmg_q(phi, tps) / 65536.0
+
+
+def test_the_integer_law_tracks_the_float_model():
+    """PROPERTY (#29 P3e): over the fixtures' flux range the integer row is
+    the float model to within 1e-4 relative + one Q16 count. BREAKS IF a
+    dial is quantized to a coarser grid or a rounding is dropped."""
+    for phi in (phi_of(2.5), phi_of(3.0), phi_of(5.0), phi_of(10.0),
+                phi_of(20.0), 1.0, 20.0, 50.0, 200.0):
+        for tps in (12, 24):
+            raw = _expected_marine_dmg_raw(round(phi * HEAT_SCALE) / HEAT_SCALE, tps)
+            got = _expected_marine_dmg(phi, tps)
+            assert abs(got - raw) <= 1e-4 * raw + 1.0 / 65536, (phi, tps)
 
 
 def _place(unit, x, y):
@@ -201,10 +238,11 @@ def test_zombie_takes_fire_multiplier_more():
     assert marine_dmg > 0.0
     # Exact applied deltas (Q2-lift): each snapped to the Q16.16 grid AFTER
     # the zombie multiplier, mirroring combat.py's operation order — sharp.
-    raw = _expected_marine_dmg_raw(phi, 24)
     mult = float(CFG.zombie.fire_damage_multiplier)
-    assert abs(marine_dmg - unit_fixed.quantize_hp_delta(raw)) < 1e-9
-    assert abs(zombie_dmg - unit_fixed.quantize_hp_delta(raw * mult)) < 1e-9
+    # #29 P3e: the marine's Q16 damage, the zombie's its resist product
+    # rounded once (mitigate_q).
+    assert marine_dmg == _expected_marine_dmg_q(phi, 24) / 65536.0
+    assert zombie_dmg == _expected_marine_dmg_q(phi, 24, _q(mult)) / 65536.0
     ratio = zombie_dmg / marine_dmg
     # The two INDEPENDENT Q16.16 snaps (Q2-lift) perturb the exact multiplier
     # ratio by up to (|dz| + mult*|dm|)/marine ~= (1+mult)*(0.5/65536)/marine

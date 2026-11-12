@@ -296,9 +296,10 @@ def test_fire_order_aims_and_move_attack_snaps():
         # Predict the first snap draw on a parallel generator: the sim's rng
         # is fresh-seeded; the burst is its first consumer this tick.
         parallel = np.random.default_rng(SEED)
-        cone = math.radians(25.0)
-        first_draw = float(parallel.uniform(-cone, cone))
-        assert abs(first_draw) > 1e-3         # comfortably off-axis
+        from simulation import draws
+        first_draw = draws.cone_offset_q16(
+            parallel, unit_fixed.quantize_scalar(math.radians(25.0)))
+        assert abs(first_draw) > 65            # comfortably off-axis (Q16)
         sim2.set_paused(False)
         sim2.step()
         snapped = _tracers(sim2.tick_events)
@@ -333,13 +334,13 @@ def test_exposure_roll_pass_and_fail_with_absorption_chew():
         if exposure is None:
             from simulation.attack_resolver import cover_exposure_at
             exposure = cover_exposure_at(gmap, 9, 13)
-            assert exposure == float(np.float32(0.55))
+            assert exposure == unit_fixed.quantize_scalar(
+                float(np.float32(0.55)))       # Q16 since #29 P3e
         hp_before = int(gmap.wall_hp[9, 13])
         rng = np.random.default_rng(seed)
         parallel = np.random.default_rng(seed)
-        cone = math.radians(0.0)
-        float(parallel.uniform(-cone, cone))          # the cone draw
-        connects = float(parallel.uniform(0.0, 1.0)) < exposure
+        parallel.bit_generator.random_raw()           # the cone draw
+        connects = (int(parallel.bit_generator.random_raw()) >> 48) < exposure
         shots, events = [], []
         fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                    tick=0, shots=shots, real_time=0.0, rng=rng,
@@ -374,8 +375,7 @@ def test_directional_bypass_flank_draws_nothing():
     w, a = _test_weapon(speed=96.0, range_tiles=30, damage=10, wall_damage=2)
     rng = np.random.default_rng(SEED)
     parallel = np.random.default_rng(SEED)
-    cone = math.radians(0.0)
-    float(parallel.uniform(-cone, cone))              # cone draw ONLY
+    parallel.bit_generator.random_raw()               # cone draw ONLY
     shots, events = [], []
     fire_burst(gmap, [shooter, target], shooter, 15, 19, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
@@ -395,15 +395,18 @@ def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng,
     one cone draw per bullet, kit-trig steps, the same stop rules — computing
     endpoints + hit targets WITHOUT mutating anything. The W2 march must
     reproduce this bit-for-bit when no cover intervenes and crit_chance == 0
-    (the lazy-roll rule)."""
-    cone = math.radians(k5.spread_deg)
-    base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+    (the lazy-roll rule). #29 P3e: the cone draw is the integer one
+    (``draws.cone_offset_q16``, one raw step), the angle Q16."""
+    from simulation import draws
+    cone_q = unit_fixed.quantize_scalar(math.radians(k5.spread_deg))
+    base_q = unit_fixed.quantize_scalar(
+        unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1))
     h, w = gmap.material.shape
     out = []
     for _ in range(k5.shots_per_trigger):
-        angle = base_angle + float(rng.uniform(-cone, cone))
-        step_x = unit_fixed.cos_rad(angle)
-        step_y = unit_fixed.sin_rad(angle)
+        angle_q = base_q + draws.cone_offset_q16(rng, cone_q)
+        step_x = unit_fixed.cos_q16(angle_q) / 65536.0
+        step_y = unit_fixed.sin_q16(angle_q) / 65536.0
         rx, ry = float(fx1), float(fy1)
         hit_unit = None
         for _step in range(int(k5.range_tiles)):
@@ -506,9 +509,10 @@ def test_crit_arc_multipliers_predicted_draw_for_draw():
             _place_facing(target, _q_rad(facing))
             rng = np.random.default_rng(seed)
             parallel = np.random.default_rng(seed)
-            cone = math.radians(0.0)
-            float(parallel.uniform(-cone, cone))            # cone draw
-            crit = float(parallel.uniform(0.0, 1.0)) < 0.15 * mult
+            parallel.bit_generator.random_raw()             # cone draw
+            p_q = unit_fixed.mul_q16_round(unit_fixed.quantize_scalar(0.15),
+                                           unit_fixed.quantize_scalar(mult))
+            crit = (int(parallel.bit_generator.random_raw()) >> 48) < p_q
             shots, events = [], []
             fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                        tick=0, shots=shots, real_time=0.0, rng=rng,
@@ -534,7 +538,7 @@ def test_crit_chance_zero_draws_nothing():
     w, a = _test_weapon(speed=96.0, range_tiles=30, damage=10, crit=0.0)
     rng = np.random.default_rng(SEED)
     parallel = np.random.default_rng(SEED)
-    float(parallel.uniform(-math.radians(0.0), math.radians(0.0)))
+    parallel.bit_generator.random_raw()               # the cone draw
     shots, events = [], []
     fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
@@ -592,12 +596,12 @@ def test_chew_destroys_furniture_so_it_stops_being_cover():
     furniture tile converts it to air — the crate stops being cover."""
     from simulation.attack_resolver import cover_exposure_at
     gmap = _room(edits=[(9, 13, MAT_FURNITURE)])
-    assert cover_exposure_at(gmap, 9, 13) < 1.0
+    assert cover_exposure_at(gmap, 9, 13) < unit_fixed.FP_ONE   # Q16 (P3e)
     chew_wall(gmap, 9, 13, 40)              # > the crate's 30 HP
     assert int(gmap.material[9, 13]) == MAT_AIR
     assert not bool(gmap.solid[9, 13])
     assert not bool(gmap.is_vacuum[9, 13])
-    assert cover_exposure_at(gmap, 9, 13) == 1.0          # concealment gone
+    assert cover_exposure_at(gmap, 9, 13) == unit_fixed.FP_ONE  # concealment gone
 
 
 def test_marching_round_requires_positive_speed():
@@ -606,7 +610,7 @@ def test_marching_round_requires_positive_speed():
     w, a = _test_weapon(speed=0.0)
     a.speed_q16 = 0
     with pytest.raises(ValueError, match="speed_tiles_per_tick"):
-        BulletInFlight(None, -1, w, a, 3, 9, 0.0, 1.0, 0.0)
+        BulletInFlight(None, -1, w, a, 3 << 16, 9 << 16, 0, 1 << 16, 0)
 
 
 if __name__ == "__main__":

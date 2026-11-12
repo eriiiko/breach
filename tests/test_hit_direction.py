@@ -29,6 +29,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
+from simulation.unit_fixed import quantize_scalar  # noqa: E402
 from simulation import unit_impulse as ui  # noqa: E402
 from simulation.combat import fire_beam, fire_burst, melee_blow  # noqa: E402
 from simulation.events import StaggerEvent, UnitHitEvent  # noqa: E402
@@ -92,7 +93,7 @@ def test_a_bullet_hit_travels_along_its_flight(east):
     events = []
     fire_burst(sim.gmap, sim.units, s, s.center_tile_x(), 20, tx, 20, sim.tick, [],
                0.0, sim.rng, events, weapon=sim.weapons_tables.weapons.by_name["lr50"],
-               spread_deg=0.0, aim_angle=aim)
+               spread_deg=0.0, aim_q=quantize_scalar(aim))
     hits = _hits(events, t.id)
     assert len(hits) == 1 and hits[0].source == "bullet"
     sign = 1 if east else -1
@@ -126,7 +127,7 @@ def test_a_beam_hit_travels_along_the_beam():
     events = []
     fire_beam(sim.gmap, sim.units, s, 24, 20, 1, 20, sim.tick, [], 0.0, sim.rng,
               events, weapon=sim.weapons_tables.weapons.by_name["lance_3"],
-              spread_deg=0.0, aim_angle=math.pi)
+              spread_deg=0.0, aim_q=quantize_scalar(math.pi))
     (h,) = _hits(events, t.id)
     assert h.source == "laser"
     assert (h.dir_x_q, h.dir_y_q) == (-ONE, 0)

@@ -443,21 +443,34 @@ class Unit:
 
     # Faction id — alias for team (spec §10.1). A property so it can never go
     # stale when conversion moves the unit to ZOMBIE_TEAM (#119).
-    # The hp (a schema column, #29 P3a): a float that is always an exact
-    # n/65536, hashed as that count. Asserted at EVERY write -- a write off
-    # the Q16 grid raises here, at its source, instead of rounding silently
-    # at the digest (an inexact hp would be a P3e finding, never rounded).
+    # The hp (a schema column, #29 P3a): since #29 P3e STORED as the Q16
+    # int ``_hp_q`` (``hp_q``), the damage pipeline's currency; ``current_hp``
+    # is its float VIEW (exact n/65536). A float write must sit exactly on
+    # the Q16 grid -- it raises here, at its source, instead of rounding
+    # silently (an authored hp off the grid is a finding, never rounded).
+    @property
+    def hp_q(self) -> int:
+        return self._hp_q
+
+    @hp_q.setter
+    def hp_q(self, value) -> None:
+        if isinstance(value, bool) or int(value) != value:
+            raise ValueError(f"unit {getattr(self, 'name', '?')}: hp_q "
+                             f"{value!r} is not an integer (#29 P3e)")
+        self._hp_q = int(value)
+
     @property
     def current_hp(self) -> float:
-        return self._current_hp
+        return self._hp_q / 65536.0
 
     @current_hp.setter
     def current_hp(self, value) -> None:
         v = float(value)
-        if round(v * 65536) / 65536 != v:
+        q = round(v * 65536)
+        if q / 65536 != v:
             raise ValueError(f"unit {getattr(self, 'name', '?')}: hp {v!r} "
                              f"is not an exact n/65536 (#29 P3a)")
-        self._current_hp = v
+        self._hp_q = int(q)
 
     @property
     def faction_id(self) -> int:

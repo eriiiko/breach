@@ -854,6 +854,123 @@ named with the applier function or kernel it lands in):
 | 9c's heat chain (`exchange.py` 384–401), 9c3's poison dose (`:709`) | float | integer | the coupling-row kernels (9c, 9c3) |
 | the grenade fuse (`fuse_seconds`) | float seconds | integer ticks at the door; `INTENT_KINDS` amended | 1b |
 
+#### §7 P3e site table, re-inventoried 2026-11-12 (main `24b87481`)
+
+The table above was written against the code of 2026-11-07. Re-taken by
+reading every slot of `Simulation.step` on the CONTINUOUS ruleset (a
+`MatchSession` with the `bots` controller and the horde, and the human's
+direct control), function by function, at main `24b87481` (after P3a, P3c,
+the gameplay pack #183 and #193). A "site" is a float operation whose result
+can change a synced outcome (hp, a status, a position, a wall, a field, a
+draw). Status: **DONE-already** (integer before P3e), **TODO** (P3e does
+it; the group letter is the commit group), **OUT** (out of scope, with the
+reason). "Exact" = the integer form gives the same value as today's float
+on every input (no game change); otherwise the change is a deliberate
+re-baseline measured by the A/B.
+
+Doors (a config or table constant quantized ONCE, at load or at the edge)
+are not sites: a float→Q16 conversion of an authored number at a door is
+allowed by the iron rule's four doors. Where a constant was re-quantized
+per tick from config, P3e moves it to the door unchanged in value.
+
+| # | slot / site (file :: function) | today | decision (kit) | lands in | status |
+|---|---|---|---|---|---|
+| 1 | 1a impulse + turning (`unit_impulse.integrate_all`, `turning.step`) | integer (G5p-a1/a2) | -- | 1a | DONE-already |
+| 2 | 1b throw release target (`Simulation._release_grenade`: `cx + dequantize(dx_q) * reach + 0.5`, `int(target_fx)` at detonation) | float (exact rationals) | Q16 target `(cx << 16) + (dx_q * reach_q >> 16) + HALF`; detonation tile `shr_trunc` (exact) | 1b, 2 | TODO (e) |
+| 3 | 1b wind-up release direction (`_advance_throw`: `quantize_scalar(u.facing)`) | float round trip of an exact value | `u.facing_q` (exact) | 1b | TODO (a) |
+| 4 | 1b shove, plant, the fuse in ticks | integer (#183, #193) | -- | 1b | DONE-already |
+| 5 | 1c exposure decay | integer (G4p) | -- | 1c | DONE-already |
+| 6 | 2 grenade flight (`Projectile.update_position`: `sqrt`, `/ travel_speed`, `elapsed / travel`) | float | Q16 positions, `isqrt` distance, one rational per tick; `fx` / `fy` float views | 2 | TODO (e). Read by the observation and the renderer only: the detonation reads the target |
+| 7 | 2 WEGO fuse `int(fuse_seconds * tps)` (`Projectile.get_detonate_tick`) | float | -- | -- | OUT: WEGO order path; the continuous throw carries `fuse_ticks` |
+| 8 | 2 / 4 the shot cone (`fire_burst`, `fire_beam`: `math.radians(spread)`, `rng.uniform(-cone, cone)`, float angle) | float draw | integer draw `draws.cone_offset_q16(rng, cone_q)` (one draw per former draw, same order), `cone_q` at the weapons door; angle Q16 | 4 phase A, 2 | TODO (a). Re-baseline: new random values |
+| 9 | 2 / 4 the line march (`BulletInFlight.advance`: `rx += step_x`, `int(rx)`) | float, exact on the Q16 grid | Q16 ints, `shr_trunc` tiling (exact) | 4 phase A, 2 | TODO (a) |
+| 10 | 4 free-aim bearing (`_directional_fire`: `-u.facing`) | float (exact) | `-u.facing_q` | 4 | TODO (a) |
+| 11 | 4 tile-target bearing (`atan2_rad(fy2 - fy1, ...)`) | float in / kit / float out | `atan2_q16` of Q16 deltas (exact) | 4 | TODO (a) |
+| 12 | 2 / 4 exposure roll (`attack_resolver.roll_exposure`: `uniform(0, 1) < exposure`) | float draw | `draws.roll_q16(rng, p_q)` -- `rng.integers(0, ONE) < p_q`, `p_q` the materials door's Q16 `cover_exposure` | 4 phase A | TODO (b). Live on the match path (furniture 0.55). Re-baseline |
+| 13 | crit roll (`roll_crit`: `uniform < chance * arc_mult`), `arc_multiplier` (float angles, `math.pi` wrap) | float | `roll_q16` against `mul_q16(chance_q, mult_q)`; arc on `facing_q` with `turning.wrap_q16`, half-arcs Q16 at the profile door | 4 phase A | TODO (b). Dormant on the match path (the loadouts door refuses a melee crit; no ranged row has one) |
+| 14 | `scale_half_away(amount, mult)` (crit / facing-defense amount) | float product | `amount * mult_q` rounded half away (exact for grid multipliers) | 4 | TODO (b) |
+| 15 | `int(dmg * bullet_damage_multiplier)` (zombie hit, `BulletInFlight.advance`) | float product | `(dmg * mult_q) >> 16` (truncation of a non-negative, exact for a grid multiplier: 0.25) | 4 phase A | TODO (c) |
+| 16 | mitigation + the hp write (`damage.mitigate`, `apply_packet`: float `max(0, a - armor) * resist`, then the Q2-lift snap; `Unit.current_hp` a float store) | float then Q16 | `DamagePacket.amount_q` (Q16; the float `amount` quantized once at the packet door when no `amount_q`), armor / resist Q16 at the species door, `mul_q16_round` (half away), hp stored as the int `Unit._hp_q`, `current_hp` a read-only-grid float view | `apply_packet` | TODO (c). Exact for every amount already on the grid (every shipped packet but heat / poison) |
+| 17 | 2b status DoT (`tick_statuses`: `dequantize(magnitude_q16)`) | float of an exact value | `amount_q = magnitude_q16` | 2b | TODO (c), exact |
+| 18 | 4c `chew_wall`: `quantize_scalar(float(wall_damage))` | float of an int | `wall_damage << 16` (exact) | 4c | TODO (e) |
+| 19 | 4 range gates `math.sqrt(...) > range_tiles` (`process_shooting`, `auto_fire`) | float | -- | -- | OUT: WEGO fire orders / Move & Attack only; the continuous path fires directionally and the march bounds range in integer steps |
+| 20 | 4 melee verb (`process_melee_intents`, `melee_arc_target`) | integer (G6p) | -- | 4a | DONE-already |
+| 21 | 4b spray cone (`spray_cone_tiles`: `atan2_rad`, `cos_rad(radians(half))`), amounts `heat / div`, `gas / div`; `spray_target`, `spray_aim_angle` float columns | float | bearing `atan2_q16`, cone cosine at the weapons door, amounts through FieldEdit's integer door (`amount_q // div`, rounded), the two columns Q16 ints (`spray_target` a Q16 point, `spray_aim_angle` a Q16 angle) | 4b | TODO (e). No shipped match loadout sprays |
+| 22 | 5 the horde (`horde.py`, `ai_zombie.py`: field, wander, activation, bite) | integer (G9p) | -- | 5 | DONE-already |
+| 23 | 5 `face_towards(float(nx), float(ny))` | float in, quantized at the kit (exact on whole tiles and Q16 positions) | -- | 5 | DONE-already (exact; the device reads `x_q`) |
+| 24 | 3 the walk and the push (`move_speed_q16`, `unit_impulse.move`) | integer (G5p-a2, P3c) | -- | 3 | DONE-already |
+| 25 | 6 the stamp refill (`GameMap._neighbor_mean`: `total / count` into int32) | float division, truncated by the int32 store | `total // count` (exact: non-negative ints) | 6 | TODO (f) |
+| 26 | 6b FieldEdit: the bridges (dequantize → float combine → requantize per field), `amount * weight * mult * scale/ONE`, the DISC / BEAM `sqrt` weights, `_falloff_weight`, TILES float weights, the noise `uniform(low, 1)`, the atmosphere 21 / 79 split | float64 | the amount quantized ONCE per edit into the field's currency (or handed in as `amount_q`); integer weights (`linear_weight_q16`, exact rounding of `1 - sqrt(d2)/r`), TILES integer weights over a `weight_den`, the noise an integer draw `draws.noise_mult_q16`, the combine an integer add / sub / max / clamp in the currency, the split `mul_q16_round` by the Q16 fractions | 6b | TODO (f). Re-baseline: every blast's deposits move by rounding |
+| 27 | 2 / 9e `apply_explosion` (`sqrt` falloff, `quantize(wall_damage * falloff)`, the 3x3 `wave_source` amounts, the inner smoke clear `radius * 0.4`) | float | exact integer falloff (`unit_fixed.falloff_round` / `falloff_floor`, from `isqrt` of the scaled square), wave amounts as `amount_q`, inner radius Q16 | `execute_payload` | TODO (e) |
+| 28 | `apply_blast_damage` (`sqrt`, `int(max_damage * falloff)`) | float | `falloff_floor` (exact: `M - ceil(isqrt_ceil(M^2 d2) / r)`), range `d2 <= r^2` | `execute_payload` | TODO (e), exact bar float rounding on boundaries |
+| 29 | the generic explosion's deposits (`linear_weights` `sqrt`, `deposit_over_tiles` `w / norm`, `total / (1 - noise/2)`, `heat_mj * units_per_mj * scale/ONE`, smoke units of soot) | float | integer weights + `weight_den`, totals quantized once per (payload, map) at a door, scaled by the Q16 air read in integers | `execute_payload` | TODO (e) |
+| 30 | `blast_expansion._source_q` (`expansion / (ticks * n * V * dt)`) | float with the walk's tile count | per-tick total quantized once, `div_round(total_q, n)` | `execute_payload` | TODO (e). Class-P twin file (div_source) |
+| 31 | the heat source's blast wall law (`heat_source_system._blast_damage_q`: `sqrt` falloff) | float | the same `falloff_round` as `apply_explosion` | 9e | TODO (e) |
+| 32 | non-strength payload rows (`blast_smoke_peak`'s float weight sum, `ignite_ring`, `deposit_heat`, `start_expansion`, `add_explosion_smoke`) | float amounts | amounts reach FieldEdit's integer door; the peak's weight sum through the same integer weights | `execute_payload` | TODO (e) for the weights; the authored float amounts are doors. No shipped match loadout carries these rows (smoke_screen is a gas emit, the flashbang has none) |
+| 33 | `apply_flash_blind`, noise radii | integer (G3p, G9p) | -- | 2 / 9e | DONE-already |
+| 34 | 9c heat chain (`felt_temperature`: `peak / HEAT_SCALE`, `phi * abs * (1 - refl)`, `amb + k * phi`; `apply_environmental_damage`: `rate * (1 + k * over) * dt`) | float | `t_felt_q = amb_q + mul_q16_round(A_q, peak)` with `A = flux_to_temp * abs * (1 - refl)` at the door; `dmg_q = div_round(rate_q * (ONE + mul_q16_round(k_q, over_q)), ONE * tps)` | 9c | TODO (g). Re-baseline by rounding |
+| 35 | 9c2 wind (`apply_wind_force`, `wind_impulse_q`) | integer (G5p-b) | -- | 9c2 | DONE-already (`wind_q_pa` is a diagnostic) |
+| 36 | 9c3 teargas | integer | -- | 9c3 | DONE-already |
+| 37 | 9c3 poison dose (`dps * dequantize_trace(d) * dt`) | float | `div_round(dps_q * d, TRACE_ONE * tps)` | 9c3 | TODO (g) |
+| 38 | 9d ignition (`quantize_scalar(o2_frac_ext)`, `ignition_seed` per tick) | config floats quantized at the call | -- | 9d | DONE-already (door) |
+| 39 | 9e vents, pumps, doors, timed charges, `charges.tick`, heat-source deposit (`heat_q16` at build) | integer / door | -- | 9e | DONE-already |
+| 40 | 7 the physics core | integer C++ | -- | 7 | DONE-already |
+| 41 | the bots (`control_bots*.py`, `pathfinding.astar`) | float decision code | -- | -- | OUT: host controllers, not ported (§12.3); they write only intents, which are integer at the facade |
+| 42 | `ExplosionEvent.strength` / `flash*`, `ShotFiredEvent` tiles, `Shot` tracers | float | -- | -- | OUT: render-only, outside the digest |
+| 43 | onephase / WEGO (`timeline.py`, the round snap, `defense_multiplier`, `cover_at`) | float | -- | -- | OUT: legacy (§11) |
+| 44 | the stamp's float32 `permeability` / `wave_absorb` per-unit values | float32 bits | -- | -- | OUT: physics-plane dtypes already stamped bit-exact on the device (P4b) |
+
+Counts: 44 rows -- DONE-already 13, TODO 25 (in seven groups), OUT 6.
+Changes from the 2026-11-07 table: the range gates (row 19) are WEGO-only
+on today's code (OUT); the zombie `math.sqrt` gates were done by G9p; the
+fuse was done by G3p; NEW sites: the throw target (2), the spray columns
+(21), the generic explosion's deposits (29), `_source_q` (30), the heat
+source's wall law (31), grenade flight (6).
+
+**As built (P3e, 2026-11-12, branch `29-p3e-integer-match`, HUMAN-TEST
+pending).** Every TODO row done; none deferred. One line each:
+- Groups a + b (one commit): the cone `draws.cone_offset_q16` on a Q16
+  bearing (`aim_q`, the free aim `-facing_q`), the march `rx_q` / `ry_q`
+  (bit-identical: the float march was exact on the grid), the rolls
+  `draws.roll_q16` against the materials table's new `cover_exposure_q16`
+  and a Q16 crit product, `arc_multiplier` on `wrap_q16` returning Q16.
+- Group c: `DamagePacket.amount_q` + the door `q()`, `damage.mitigate_q`
+  (one rounding, half away; exact for grid amounts), the hp STORED as the
+  int `Unit._hp_q` (`hp_q`), `current_hp` its float view, the schema column
+  keeping its name and key (read through `hp_q`); the zombie bullet
+  multiplier a Q16 product truncated as `int()` was; DoT hands its Q16.
+- Group g: `exchange.felt_temperature_q` (one gain quantized at the door),
+  the heat row and the poison dose as single rationals rounded once; within
+  1e-4 relative of the float model (the dials' Q16 quantization).
+- Groups f + e (one commit, coupled): FieldEdit integer from the door to the
+  field (`_CURRENCY`, Q16 weights, `falloff_round`, BEAM as an exact
+  rational, TILES over `weight_den`, the noise draw, one rounding per tile,
+  the 21 / 79 split per hundred); `_neighbor_mean` `div_trunc`
+  (bit-identical); `apply_explosion` / the heat source's wall law
+  `falloff_round`; `apply_blast_damage` `falloff_floor` (exactly
+  `int(M * falloff)`); the generic explosion's weights and totals integer;
+  `_source_q` divided in integers; sprays, the throw target and the
+  grenade flight Q16.
+- Choices where the design was silent: hp as an int store (not a float with a
+  grid assert); the draw = ONE raw step of the bit generator's high 32 bits
+  (`uniform` was one step too, so the stream position per draw is as
+  before); LINEAR weights Q16 (2^-17 relative of the weight), not exact
+  through the product; atmosphere split as the exact 21 / 100; a policy with
+  no integer currency refused (the float combine deleted: no shipped field
+  used it); the throw target rounded to Q16 (its tile can differ from the
+  float's only within 2^-17 of a tile edge).
+- Not as the design expected: `GOLDEN_AGGREGATE` did NOT move (4a13fc72:
+  its scenario reaches no P3e site that changes a value); the recording
+  format was NOT bumped (no recorded intent's meaning changed; the
+  precedent of G9p / P3c: a game change alone diverges at a checkpoint).
+- The A/B: `docs/p3e_ab_2026-11-12.md` — within seed noise; the firefight's
+  heat deaths (+21 %, ~1.6 s.e.) the one number to watch.
+
+Draws: every match-path draw P3e touches goes through ONE module,
+`src/simulation/draws.py` (`cone_offset_q16`, `roll_q16`,
+`noise_mult_q16`), each ONE `rng.integers` call per former `rng.uniform`
+call, in the same order -- so P3b swaps the generator in one file.
+
 Order: P3a, P3c and P3e before P6 (P6 needs the schema, Q16 positions and
 the integer hp / mitigation); P3b before P7a (the shot cone's draws) and
 before P4c (the noise); P3d before P7d. Each merged to main on green with

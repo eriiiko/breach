@@ -106,7 +106,9 @@ def _fire(resolver, weapon, aim_angle):
     fx2, fy2 = cx + float(weapon.range_tiles), cy
     resolver(gmap, units, shooter, cx, cy, fx2, fy2, tick=0, shots=[],
              real_time=0.0, rng=rng, events=events, weapon=weapon, ammo=ammo,
-             spread_deg=0.0, aim_angle=aim_angle)
+             spread_deg=0.0,
+             aim_q=(None if aim_angle is None
+                    else unit_fixed.quantize_scalar(aim_angle)))
     hits = sorted((e.unit_id, e.source, round(float(e.damage), 6))
                   for e in events if isinstance(e, UnitHitEvent))
     return hits

@@ -62,6 +62,10 @@ from simulation.field_edit import (FieldEdit, EditMode, Falloff, Region,
 from simulation.gases import smoke_units_of_soot
 from simulation.physics import (_SRC_EXPLOSION_SMOKE, add_explosion_smoke,
                                 apply_explosion)
+from simulation import gas_fixed as _gas_fx
+from simulation import unit_fixed as _ufx
+from simulation import wall_fixed as _wall_fx
+from simulation.field_edit import HEAT_SCALE as _HEAT_SCALE
 
 # source_id namespace for payload-issued edits (engine/13 stable-sort key).
 # physics.py owns 1 (_SRC_EXPLOSION) and 2 (_SRC_EXPLOSION_SMOKE); the W3
@@ -205,7 +209,7 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
 
 
 def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius,
-                 owner_id=NO_ATTACKER):
+                 owner_id=NO_ATTACKER, amount_q=None):
     """Enqueue a one-shot heat splash into the engine/06 ``heat`` ingress
     buffer (mechanics/03 §4 heat payload columns — W6, the plasma splash).
 
@@ -222,7 +226,7 @@ def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius,
     queue.enqueue(FieldEdit(
         field="heat", region=Region.DISC, coords=(fy, fx, float(heat_radius)),
         amount=float(heat_amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
-        source_id=_SRC_PAYLOAD_HEAT,
+        amount_q=amount_q, source_id=_SRC_PAYLOAD_HEAT,
     ))
 
 
@@ -294,65 +298,92 @@ def inject_bulk_gas(gmap, fy, fx, payload):
 
 
 def linear_weights(tiles, fy, fx, r2):
-    """The shipped LINEAR falloff over a walked tile list: ``1 - dist/radius`` from
-    the blast's centre. Row-major, as ``tiles`` is. Strictly positive: the walk
-    stays inside ``r2``, and a seed touches the centre of a radius of at least 2
-    (``heat_r2`` is ``4 * r_s**2``)."""
-    radius = math.sqrt(r2)
-    return [1.0 - math.sqrt((y - fy) ** 2 + (x - fx) ** 2) / radius
+    """The shipped LINEAR falloff over a walked tile list: ``1 - dist/radius``
+    from the blast's centre, as Q16 INTEGERS (#29 P3e: ``1 - sqrt(d2 / r2)``,
+    the real value rounded once, ``unit_fixed.falloff_round``). Row-major, as
+    ``tiles`` is. The walk stays inside ``r2``, so every weight is >= 0; a
+    seed touches the centre of a radius of at least 2 (``heat_r2`` is
+    ``4 * r_s**2``)."""
+    r2 = int(r2)
+    one = _ufx.FP_ONE
+    return [_ufx.falloff_round(one, (y - fy) ** 2 + (x - fx) ** 2, r2)
             for y, x in tiles]
 
 
-def deposit_over_tiles(queue, field, tiles, weights, total, noise=0.0,
+def deposit_over_tiles(queue, field, tiles, weights, total_q, noise=0.0,
                        scale=None, source_id=0, channel=None):
-    """THE fixed-total deposit (#31): land ``total`` on a walked tile list, each
-    tile its share of ``weights``, however many tiles the walk reached. One
-    FieldEdit on one tile-list region; the flush quantizes once per tile, so the
-    total holds to n/2 LSB. With ``noise`` the per-tile multiplier is drawn at the
-    flush, as every noisy deposit's is, so the total holds in expectation. No-op
-    for no tiles or no total."""
-    if total <= 0.0 or not tiles:
+    """THE fixed-total deposit (#31): land ``total_q`` (the total, in the
+    field's currency, #29 P3e) on a walked tile list, each tile its share of
+    the integer ``weights``, however many tiles the walk reached. One
+    FieldEdit on one tile-list region whose weights are the integers over
+    their sum (``weight_den``); the flush rounds each tile's share once, so the
+    total holds to n/2 LSB. With ``noise`` the per-tile multiplier is drawn at
+    the flush (mean ``1 - noise/2``), and the amount is scaled by its inverse
+    in integers, so the total holds in expectation. No-op for no tiles, no
+    total or no weight."""
+    total_q = int(total_q)
+    norm = int(sum(int(w) for w in weights))
+    if total_q <= 0 or not tiles or norm <= 0:
         return
-    norm = float(sum(weights))
+    one = _ufx.FP_ONE
+    noise_q = 0
+    if noise > 0.0:
+        noise_q = min(_ufx.quantize_scalar(float(noise)), one)  # p3e-door
+    amount_q = _ufx.div_round(total_q * 2 * one, 2 * one - noise_q)
     queue.enqueue(FieldEdit(
         field=field, region=Region.TILES,
-        coords=tuple((y, x, w / norm) for (y, x), w in zip(tiles, weights)),
-        amount=float(total) / (1.0 - 0.5 * noise),
+        coords=tuple((y, x, int(w)) for (y, x), w in zip(tiles, weights)),
+        amount=0.0, amount_q=amount_q, weight_den=norm,
         mode=EditMode.ADD, noise=noise, scale=scale, channel=channel,
         source_id=source_id))
 
 
-def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None):
-    """The peak density of the blast-smoke disc that deposits ``soot_g`` grams
-    of soot (#12 handle 3, 2026-10-04): the disc keeps its shape -- LINEAR
-    falloff to ``radius``, per-tile noise uniform in [1 - noise, 1] drawn at
-    the flush -- and its peak is scaled so the EXPECTED total equals the
-    charge's soot in smoke units (gases.smoke_units_of_soot):
+def blast_smoke_peak_q(gmap, fy, fx, radius, soot_g, noise=None) -> int:
+    """The peak density, in the TRACE currency, of the blast-smoke disc that
+    deposits ``soot_g`` grams of soot (#12 handle 3, 2026-10-04): the disc
+    keeps its shape -- LINEAR falloff to ``radius``, per-tile noise uniform in
+    [1 - noise, 1] drawn at the flush -- and its peak is scaled so the
+    EXPECTED total equals the charge's soot in smoke units
+    (gases.smoke_units_of_soot):
 
         peak = units / (sum_{disc, non-solid} (1 - d/r) * (1 - noise/2))
 
-    The sum walks the SAME disc the FieldEdit flush walks
-    (field_edit._iter_region) and skips the smoke policy's solid tiles, so
-    smoke is not budgeted onto walls. 0 for no soot (an RDX/C4 charge) or a
-    disc with no open tile. Nothing clamps the deposit from above (smoke
-    transport v2 D1): it adds exactly its soot onto whatever the tile holds."""
+    in integers (#29 P3e): the units quantized once (the door), the weights
+    the FieldEdit DISC's own Q16 weights (field_edit._iter_region) over the
+    SAME disc the flush walks, skipping the smoke policy's solid tiles, one
+    rational rounded once. 0 for no soot (an RDX/C4 charge) or a disc with no
+    open tile. Nothing clamps the deposit from above (smoke transport v2
+    D1): it adds exactly its soot onto whatever the tile holds."""
     if radius <= 0 or soot_g <= 0.0:
-        return 0.0
+        return 0
     from simulation.field_edit import _iter_region, Region, Falloff
     from simulation.gases import smoke_units_of_soot
     from config import CFG
     if noise is None:
-        noise = float(getattr(CFG.physics, "explosion_smoke_noise", 0.85))
+        noise = float(getattr(CFG.physics, "explosion_smoke_noise",
+                              0.85))                           # p3e-door
     noise = min(1.0, max(0.0, noise))
+    one = _ufx.FP_ONE
+    noise_q = min(_ufx.quantize_scalar(noise), one)              # p3e-door
     solid = gmap.solid
-    wsum = 0.0
-    for r, c, wgt in _iter_region(Region.DISC, (fy, fx, float(radius)),
+    wsum = 0
+    for r, c, wgt in _iter_region(Region.DISC,
+                                  (fy, fx, float(radius)),  # p3e-door
                                   Falloff.LINEAR, solid.shape):
         if not solid[r, c]:
-            wsum += wgt
-    if wsum <= 0.0:
-        return 0.0
-    return smoke_units_of_soot(soot_g) / (wsum * (1.0 - 0.5 * noise))
+            wsum += int(wgt)
+    if wsum <= 0:
+        return 0
+    units_q = _gas_fx.quantize_trace_scalar(smoke_units_of_soot(soot_g))
+    # units / ((wsum / ONE) * (2 ONE - noise_q) / (2 ONE))
+    return _ufx.div_round(units_q * one * 2 * one,
+                          wsum * (2 * one - noise_q))
+
+
+def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None) -> float:
+    """:func:`blast_smoke_peak_q` as real density (its exact float view)."""
+    return float(_gas_fx.dequantize_trace(
+        blast_smoke_peak_q(gmap, fy, fx, radius, soot_g, noise)))
 
 
 def _blast_noise() -> float:
@@ -432,8 +463,11 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         # without one (test stubs) records nothing.
         log = getattr(gmap, "blast_log", None)
         if log is not None:
+            # #29 P3e: the wall damage as its Q16 (the door), read by the
+            # heat source's wall law in integers.
             log.append((int(fy), int(fx), int(payload.radius),
-                        float(payload.wall_damage)))
+                        _wall_fx.quantize_scalar(
+                            float(payload.wall_damage))))      # p3e-door
     # G9p: the detonation is a NOISE at its tile with the row's
     # ``loudness`` (metres, quantized once; 0 = silent).
     from simulation.noise import emit as _emit_noise
@@ -468,16 +502,21 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         start_expansion(gmap, fy, fx, payload)
     if generic:
         noise = _blast_noise()
+        # #29 P3e: the soot's smoke units quantized once into the trace
+        # currency (a door: the row's explosive and the [blast_air] dials).
+        smoke_q = _gas_fx.quantize_trace_scalar(
+            smoke_units_of_soot(blast_base_soot_g(payload)))
         deposit_over_tiles(queue, "smoke", heat_tiles, heat_weights,
-                           smoke_units_of_soot(blast_base_soot_g(payload)),
-                           noise=noise, scale=air.smoke_scale_q16,
+                           smoke_q, noise=noise, scale=air.smoke_scale_q16,
                            source_id=_SRC_EXPLOSION_SMOKE)
     elif payload.emit_blast_smoke:
-        peak = blast_smoke_peak(gmap, fy, fx, payload.radius,
-                                blast_base_soot_g(payload))
-        if peak > 0.0:
+        peak_q = blast_smoke_peak_q(gmap, fy, fx, payload.radius,
+                                    blast_base_soot_g(payload))
+        if peak_q > 0:
             add_explosion_smoke(gmap, queue, fy, fx, payload.radius,
-                                amount=peak,
+                                # p3e-view: amount_q is what lands
+                                amount=float(_gas_fx.dequantize_trace(peak_q)),
+                                amount_q=peak_q,
                                 scale=(air.smoke_scale_q16 if air else None))
     if payload.gas_species:
         emit_gas(gmap, queue, fy, fx, payload.gas_species,
@@ -486,21 +525,28 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         inject_bulk_gas(gmap, fy, fx, payload)
     if generic:
         _claim_tiles(gmap, CREDIT_HEAT, heat_tiles, owner_id)
+        # #29 P3e: the row's heat in the map's heat units quantized once (a
+        # door: the row and the level's tile), times the Q16 air read,
+        # rounded once.
+        base_q = _ufx.quantize_scalar(
+            payload.heat_mj * heat_units_per_mj(gmap))        # p3e-door
         deposit_over_tiles(queue, "heat", heat_tiles, heat_weights,
-                           payload.heat_mj * heat_units_per_mj(gmap)
-                           * (air.heat_scale_q16 / _BLAST_ONE),
+                           _ufx.div_round(base_q * int(air.heat_scale_q16),
+                                          _BLAST_ONE),
                            source_id=_SRC_PAYLOAD_HEAT)
     elif payload.ignite_radius > 0:
         ignite_ring(gmap, queue, fy, fx, payload.ignite_radius,
                     payload.ignite_intensity, owner_id=owner_id)
     if getattr(payload, "heat_amount", 0.0) > 0:
         heat = payload.heat_amount
+        heat_q = _ufx.quantize_scalar(float(heat))             # p3e-door
         if air is not None:
-            heat = heat * (air.heat_scale_q16 / _BLAST_ONE)
-        deposit_heat(gmap, queue, fy, fx, heat,
-                     payload.heat_radius, owner_id=owner_id)
+            heat_q = _ufx.div_round(heat_q * int(air.heat_scale_q16),
+                                    _BLAST_ONE)
+        deposit_heat(gmap, queue, fy, fx, _ufx.dequantize_scalar(heat_q),
+                     payload.heat_radius, owner_id=owner_id, amount_q=heat_q)
     if events is not None:
-        events.append(ExplosionEvent(
+        events.append(ExplosionEvent(  # p3e-view: render-only, undigested
             pos=(fx, fy), radius=payload.radius, kind=kind,
             strength=float(getattr(payload, "strength", 0.0) or 0.0),
             flash=float(getattr(payload, "flash", 0.0) or 0.0),
@@ -513,5 +559,6 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
 
 __all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",
            "inject_bulk_gas", "bulk_gas_tiles", "blast_smoke_peak",
+           "blast_smoke_peak_q",
            "deposit_over_tiles", "linear_weights",
            "BULK_GAS_BOOKS", "BULK_GAS_RAIL_BOOKS"]

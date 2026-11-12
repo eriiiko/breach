@@ -25,7 +25,8 @@ decided HERE, in front of the pipeline. The doctrine (DECIDED 2026-07-04):
   (``EnvironmentProfile.front_arc_deg`` / ``behind_arc_deg``): a slime blob
   ships 360/0 and has no back to stab — zero special-case code.
 
-Determinism (engine/14 — every number through a door):
+Determinism (engine/14 — every number through a door; integer since #29
+P3e):
 
 - **THE LAZY-ROLL RULE (mechanics/03 §3, canon):** a roll that cannot matter
   is never drawn. No cover on the approach → no exposure draw;
@@ -33,109 +34,125 @@ Determinism (engine/14 — every number through a door):
   synced state, so replay/cross-machine identity hold and a weapon with the
   feature dialed to zero leaves the RNG stream — and the golden digest —
   untouched (the dormant-seam pattern).
-- **THE DRAW FORM OF RECORD (door 4):** every roll here is
-  ``float(rng.uniform(0.0, 1.0)) < p`` — one uniform dyadic from the seeded
-  PCG64 stream (``uniform`` is affine on the bitstream: exact) compared
-  against a load-time constant ``p``. The compare is exact for ANY fixed
-  ``p``; the door-2 ingress step is the once-at-load float32 cast /
-  config-float read that produced ``p`` (cover_exposure column, crit
-  columns). No distribution methods, no re-quantize per roll.
-- **No trig:** arc classification is pure ``+ − ×`` on angles that are
-  already deterministic (kit-atan2 facings, kit-based march angles,
-  ``math.radians`` on config constants — the same affine transform the
-  shipped cone code uses) plus exact float compares — door 3 throughout.
+- **THE DRAW FORM OF RECORD (#29 P3e):** every roll here is
+  ``draws.roll_q16(rng, p_q)`` -- one raw generator step whose high 16
+  bits compare below a Q16 probability ``p_q`` (exactly ``p_q / 65536``).
+  ``p_q`` is quantized at a door: the materials table's
+  ``cover_exposure_q16``, the weapon's ``crit_chance`` and the
+  ``[combat] crit_*_mult`` constants (Q16, once per value).
+- **No trig, no float:** arc classification compares the Q16.16 wrapped
+  difference between the impact bearing and the target's synced
+  ``facing_q`` (``turning.wrap_q16``) against Q16 half-arcs quantized from
+  the profile's degrees at the door.
 """
 from __future__ import annotations
 
 import math
 
 from config import CFG
+from simulation import draws as _draws
+from simulation import unit_fixed as _ufx
 
 
 # ---------------------------------------------------------------------------
 # Exposure vs cover (mechanics/06 §5; mechanics/03 §3 "the exposure roll")
 # ---------------------------------------------------------------------------
 def cover_exposure_at(gmap, iy, ix):
-    """The ``cover_exposure`` of the material at (iy, ix) — 1.0 = no
-    concealment (never roll), < 1.0 = soft cover (roll on entry-through).
+    """The ``cover_exposure`` of the material at (iy, ix) as a Q16
+    probability (#29 P3e) — ``ONE`` = no concealment (never roll), below
+    ``ONE`` = soft cover (roll on entry-through).
 
-    Reads the materials-table column projected through the material grid.
-    Bare test stubs without a materials table carry no cover data → 1.0 (no
+    Reads the materials table's ``cover_exposure_q16`` column (quantized once
+    at its build -- the door) through the material grid. Bare test stubs
+    without a materials table carry no cover data → ``ONE`` (no
     concealment), which keeps the lazy-roll rule intact: a stub map draws
-    nothing. Returned as a plain float — a load-time constant (the float32
-    cast happened once at table build; ingress door 2)."""
+    nothing."""
     materials = getattr(gmap, "materials", None)
-    if materials is None or not hasattr(materials, "cover_exposure"):
-        return 1.0
-    return float(materials.cover_exposure[int(gmap.material[iy, ix])])
+    col = getattr(materials, "cover_exposure_q16", None)
+    if col is None:
+        return _ufx.FP_ONE
+    return int(col[int(gmap.material[iy, ix])])
 
 
-def roll_exposure(exposure, rng):
+def roll_exposure(exposure_q, rng):
     """One exposure roll — True = the shot connects, False = the cover
-    absorbs it. THE DRAW FORM OF RECORD (module docstring):
-    ``float(rng.uniform(0.0, 1.0)) < exposure`` — door 4, exact.
+    absorbs it: ``draws.roll_q16(rng, exposure_q)`` (one raw draw, True with
+    probability ``exposure_q / 65536``).
 
-    Callers must invoke this LAZILY (only when ``exposure < 1.0``): the
+    Callers must invoke this LAZILY (only when ``exposure_q < ONE``): the
     lazy-roll rule is what keeps dormant cover off the RNG stream."""
-    return float(rng.uniform(0.0, 1.0)) < exposure
+    return _draws.roll_q16(rng, exposure_q)
 
 
 # ---------------------------------------------------------------------------
 # Crit vs facing (mechanics/06 §5 "the crit roll")
 # ---------------------------------------------------------------------------
-_TWO_PI = 2.0 * math.pi
+_HALF_ARC_Q = {}
 
 
-def arc_multiplier(shot_angle_screen, target):
+def _half_arc_q(deg) -> int:
+    """Half of an arc in degrees as Q16.16 radians -- the door of a profile
+    constant, cached per value (#29 P3e)."""
+    key = float(deg)
+    q = _HALF_ARC_Q.get(key)
+    if q is None:
+        q = _ufx.quantize_scalar(0.5 * math.radians(key))   # p3e-door
+        _HALF_ARC_Q[key] = q
+    return q
+
+
+_PI_Q = _ufx.quantize_scalar(math.pi)                         # p3e-door
+
+
+def arc_multiplier(shot_angle_q, target) -> int:
     """Classify the attack arc of a connecting hit and return its crit
-    multiplier (``[combat] crit_front/flank/behind_mult``).
+    multiplier as a Q16 int (``[combat] crit_front/flank/behind_mult``,
+    quantized at the door).
 
-    ``shot_angle_screen`` is the bullet's march angle in SCREEN convention
-    (y down — the combat.py march: direction (cos a, sin a) on the grid).
-    The unit facing convention is math-style (y up, 0 = East, CCW —
+    ``shot_angle_q`` is the hit's travel bearing in SCREEN convention, Q16.16
+    radians (y down — the combat.py march: direction (cos a, sin a) on the
+    grid). The unit facing convention is math-style (y up, 0 = East, CCW —
     unit.py), so the flight direction maps to ``-a`` and the IMPACT
     DIRECTION REVERSED (target → shooter bearing) is ``-a + π``. The arc is
     the wrapped difference between that bearing and the target's synced
-    facing:
+    ``facing_q`` (``turning.wrap_q16``):
 
         |Δ| ≤ front_arc/2         → front  (×1)
         |Δ| ≥ π − behind_arc/2    → behind (×4)
         else                      → flank  (×2)
 
-    Pure ``+ − ×`` + exact compares on deterministic inputs (kit facings,
-    kit-derived march angles, ``math.radians`` of profile constants) —
-    door 3; consumes NO randomness (the multiplier feeds the caller's lazy
-    crit draw). Arc widths come from the target's ``environment`` profile
-    (species data — mechanics/06 §5 "arcs are data"); bare stubs fall back
-    to the human 120/90."""
+    Integer compares only (#29 P3e); consumes NO randomness (the multiplier
+    feeds the caller's lazy crit draw). Arc widths come from the target's
+    ``environment`` profile (species data — mechanics/06 §5 "arcs are
+    data"); bare stubs fall back to the human 120/90."""
+    from simulation.turning import wrap_q16
     profile = getattr(target, "environment", None)
-    front_half = 0.5 * math.radians(
-        float(getattr(profile, "front_arc_deg", 120.0)))
-    behind_half = 0.5 * math.radians(
-        float(getattr(profile, "behind_arc_deg", 90.0)))
-
-    incoming = -float(shot_angle_screen) + math.pi   # target→shooter bearing (y-up)
-    delta = incoming - float(getattr(target, "facing", 0.0))
-    while delta > math.pi:
-        delta -= _TWO_PI
-    while delta < -math.pi:
-        delta += _TWO_PI
-    ad = abs(delta)
-
+    front_half = _half_arc_q(getattr(profile, "front_arc_deg", 120.0))
+    behind_half = _half_arc_q(getattr(profile, "behind_arc_deg", 90.0))
+    incoming = -int(shot_angle_q) + _PI_Q     # target→shooter bearing (y-up)
+    facing_q = int(getattr(target, "facing_q", 0))
+    ad = abs(wrap_q16(incoming - facing_q))
     combat = CFG.combat
     if ad <= front_half:
-        return float(getattr(combat, "crit_front_mult", 1.0))
-    if ad >= math.pi - behind_half:
-        return float(getattr(combat, "crit_behind_mult", 4.0))
-    return float(getattr(combat, "crit_flank_mult", 2.0))
+        return _mult_q(getattr(combat, "crit_front_mult", 1.0))
+    if ad >= _PI_Q - behind_half:
+        return _mult_q(getattr(combat, "crit_behind_mult", 4.0))
+    return _mult_q(getattr(combat, "crit_flank_mult", 2.0))
 
 
-def roll_crit(crit_chance, arc_mult, rng):
-    """One crit roll — the draw form of record against
-    ``crit_chance × arc_mult`` (an exact IEEE product of two load-time
-    constants). Callers must gate LAZILY on ``crit_chance > 0`` BEFORE
-    calling (all shipped weapons carry 0 → the stream never moves)."""
-    return float(rng.uniform(0.0, 1.0)) < float(crit_chance) * float(arc_mult)
+def _mult_q(v) -> int:
+    """A config multiplier as Q16 (the door; exact for the grid values)."""
+    return _ufx.quantize_scalar(float(v))                     # p3e-door
+
+
+def roll_crit(crit_chance, arc_mult_q, rng):
+    """One crit roll: ``draws.roll_q16`` against ``crit_chance × arc_mult``
+    in Q16 (``crit_chance`` quantized at the door, the product rounded half
+    away). Callers must gate LAZILY on ``crit_chance > 0`` BEFORE calling
+    (all shipped ranged weapons carry 0 → the stream never moves)."""
+    chance_q = _ufx.quantize_scalar(float(crit_chance))  # p3e-door: the row's
+    p_q = _ufx.mul_q16_round(chance_q, int(arc_mult_q))
+    return _draws.roll_q16(rng, p_q)
 
 
 def scale_half_away(amount, mult):
@@ -144,14 +161,13 @@ def scale_half_away(amount, mult):
     before mitigation; W2 pins the rounding).
 
     ``amount`` is the integer pre-mitigation packet amount; ``mult`` the
-    weapon's ``crit_mult`` (config float, door 2). The product is one
-    correctly-rounded IEEE multiply (exact for in-range game numbers); the
-    round is the ``fixedpoint::quantize`` idiom without the ×65536 —
-    ``floor(v + 0.5)`` for v ≥ 0, ``ceil(v − 0.5)`` below (sign-symmetric,
-    no toward-−∞ bias — the fixed-point-arc lesson). 4.5 → 5, 10.5 → 11,
-    −4.5 → −5; integer products pass through exactly."""
-    v = float(amount) * float(mult)
-    return int(math.floor(v + 0.5) if v >= 0.0 else math.ceil(v - 0.5))
+    multiplier -- a Q16 int (#29 P3e: the arc / crit path), or a config
+    float quantized to Q16 here (the door: ``crit_mult``, the legacy facing
+    defense). ``amount × mult_q / 65536`` rounded half away from zero, the
+    ``fixedpoint::quantize`` idiom: 4.5 → 5, 10.5 → 11, −4.5 → −5; integer
+    products pass through exactly."""
+    m = mult if isinstance(mult, int) else _ufx.quantize_scalar(float(mult))
+    return _ufx.mul_q16_round(int(amount), m)
 
 
 __all__ = [
