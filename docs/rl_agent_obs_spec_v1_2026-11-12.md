@@ -624,4 +624,72 @@ zero (4.2). The "blanked" variant of 7.4's experiment is the trainer's
 - The network-side wall (separate weights, scrambling the full view's
   inputs changes no choice) is rung 2's test (design 8.6), not 1g's.
 
+## 6. The cost budget per decision (design 3.7)
+
+The design gives no number; it names three things that must be built for
+the cost to hold and says the farm's speed is measured against today's.
+Two of the three exist (1c's C++ routine; 1a's all-round sight skips
+zombie observers, `vision.py:341`); the third is 3.3. The sight cache is
+built every tick already (slot 11's update calls `vision.state_for`,
+`team_picture.py:149`), so the observation never builds it.
+
+**The budget** (CHOICE, the lead's; Erik may move it): with `[obs] spec =
+"v1"`, the full view on and `decimation = 4`, the farm's env-ticks/s is at
+least **70 %** of the same run under `"crop"` -- the whole v1 observation
+may cost at most three tenths of the match. Measured by the §9.1 protocol
+of `docs/residency_benchmark_2026-11-07.md` with `tools/rl_smoke.py`
+(`drive`, `:41`): the SAME fixed number of steps per env from fresh
+episodes (3 000 steps at decimation 1 was the lock-step reading's,
+`:1340`; 750 at decimation 4 covers the same ticks), 16 workers, 4 envs per
+worker (`:1359`), `ship_demo` 4 v 4 + 4 zombies, random rows, before and
+after, both run files' text in the patch's checkpoint comment.
+
+**What must be measured**, each a line of the report, in ms per soldier
+per decision on the Home Desktop (`tools/frame_profile.py`'s timers around
+the builders, or `time.perf_counter` in a one-off script; the estimates are
+the lead's and are to be replaced):
+
+| part | where | estimate | measured by |
+|---|---|---|---|
+| the trackers' update | slot 11, per tick per env | 0.05 per tick | (a) |
+| the vector and the list (40 entries; `aim_of` over ~30 candidates with a `ray_clear` each; `ticks_to_within` per enemy, at most 48 law steps) | per soldier | 0.6 | (a) |
+| the objects' line-of-sight gate (`rays_clear`, one call per team) | per team | 0.05 | (a) |
+| the physics planes read + the far reduce | per tick per env (3.3) | 0.3 per tick | (b) |
+| the two crops and the per-unit denominators | per soldier | 0.1 | (b) |
+| the sight planes: one `window_clear` (625 lines) per known enemy per soldier, plus the target | per soldier | 0.4 at 12 known enemies (the union-rectangle sharing of 3.5 is the fallback) | (b) |
+| the route field (a flood per `(place, fp)` per topology change, cached) | per change | 1 per flood (`horde.flood`, C++) | (b) |
+| the lanes grid | per team per decision | 0.05 | (b) |
+| the full view: the 64-entry list, `full_watched` (a window per living enemy per soldier) | per soldier | 0.8 | (c) |
+
+At 8 soldiers and a decision every 4 ticks the estimates sum to about 2.5
+ms per soldier-decision = 20 ms per 4 ticks against ~36 ms of ticks
+(`:900`: 9 ms a tick), i.e. a 35 % loss -- OVER the budget on the
+estimates. The order of attack if the measurement agrees: (1) the sight
+planes' union sharing (3.5); (2) `aim_of` and the lanes per TEAM per
+decision, cached and read per soldier; (3) the full view's `full_watched`
+from one window per enemy over the team's union. The budget is held at
+(c)'s merge, not at (a)'s or (b)'s: each of those reports its parts and
+the farm's number as information.
+
+## 7. The tests (properties; `tests/test_obs_spec_v1.py` unless named)
+
+| property | breaks if |
+|---|---|
+| **Equals an independent reconstruction.** Over a `ship_demo` match of `bots` vs `bots` with the farm's rows observed every 4 ticks for 600 ticks, every vector column, every list entry and every plane equals a reference built in `tests/_obs_reference.py` from the sim's state alone -- a second, plainer implementation written from THIS document (loops over units and tiles, `has_los` per tile instead of the window routine, the bots' own `_teammate_on_line`, the horde's `flood_reference`), never importing `obs_spec_v1` | a builder reads the wrong seam, denominator, order or frame |
+| **Shows nothing the team cannot know.** For every decision of that match: every `list_uid` of types 0-2 is my living team-mate's id or a key of `records(team)`; every type-3 uid's tile is `rays_clear` from a living team-mate's centre; the far `mates` / `enemies` / `records` planes sum to the counts of those entries inside the window; `watched` equals the OR of `has_los` from the RECORDED centres (never a live position). And the pair test: two sims equal but for one dormant zombie in a sealed room no team-mate sees give byte-identical `vector`, `list`, `near_*`, `far_*` for every row and a `full_list` that differs by exactly that entry | an entry, a plane or a flag leaks a unit the team has no record of |
+| **A record outlives its unit's unseen death.** A seen enemy walks out of sight and is killed by a status out of sight: its type-2 entry stays for `memory_ticks` with its `age` rising and its `dx`, `class`, `vel` frozen at the sighting; a seen death drops it on the next decision | the list reads liveness or the live unit |
+| **A level without a room graph is refused.** `load_levels` on a run with `spec = "v1"` and `levels = ["playground"]` (no `rooms.npy`) raises naming the level and the spec; the same run under `"crop"` loads | the refusal is missing or on the wrong path |
+| **The two row flags' truth table.** A soldier killed mid-match: `in_match` 1, `valid` 0, zero vector, mask all 0; a converted one likewise; a slot beyond the team's `n`: 0, 0; a living one: 1, 1 -- in `obs` and in `final_*` | a dead row reads as an empty place, or is observed |
+| **The squash.** Identity on `[-1, 1]`, monotone, continuous at +-1, capped at +-4; `squash(e) == 2`; every float16 plane lies in `[-4, 4]` | the curve changes or a builder skips it |
+| **No raw number.** Every vector column and entry column is declared in `obs_spec_v1`'s tables with a denominator, `flag`, `kind` or `angle`; a column with none fails the test (a scan of the table, the roadmap's rule) | a builder stores a game number |
+| **The far reduce.** On a random map the reduced planes equal a per-tile reference (the max over each block; the wall share; the wind's direction from the block's largest load) | the reshape or the padding is off by one |
+| **The sight planes equal the one sight test.** `watched` cell for cell equals `gmap.has_los(ry, rx, y, x)` OR-ed over the records; `sees_target` equals `has_los(y, x, ty, tx)` | a window argument (`to_window`) is swapped |
+| **The lanes plane.** A mate holding its trigger facing east marks the near cells along its facing to its range, widened by the dials; released, none; my own lane marks nothing | the plane reads the wrong owner |
+| **The new functions.** `ticks_to_within` equals stepping `law_q16` by hand on three cases (already within; a quarter turn; the cap); `mate_in_way` equals `BotTeam._teammate_on_line` on 1 000 random triples; `door_in_reach` makes `use_door` return what it returned before (the verb-gate tests stay green); `wind_load_plane`'s footprint max equals `footprint_wind` on random footprints; `aim_of` on a hand-built scene: me / a mate / another side / nobody, an unknown unit never answered, a wall between answers nobody; `route`'s field at a room's seeds is 0 and its first step descends | a function is a copy of a law instead of a call of it |
+| **The trackers.** `motion` equals the position delta of the last tick; `last_hit` holds the last damaging hit's direction and cause and clears nothing (age grows); `damage_window` sums hits my team dealt plus hits on a unit my team saw at the previous observation, nothing else, over the last `ticks_per_second` ticks; `bars` = `effective_vitality` for every marine and `[zombie] hp` for a converted one | a tracker reads on demand or counts an unseen hit |
+| **The full view.** Every living unit of the sim is in `full_list` exactly once (`full_uid`), the marines first in `(team, slot)` order; `knowledge` agrees with the picture; `full_watched` equals the OR of `has_los` from every living enemy's LIVE centre; `full_match` reproduces the counts; a dead row's view is built and its first entry is itself | the full view misses a unit, or uses the picture where it must not |
+| **The policy never sees it.** `obs` has no key of 5.2; the grep of 5.7 passes | a full-view array reaches the policy's dict |
+| **The farm.** `tools/rl_smoke.py` on a `"v1"` run file with the full view, 2 envs, 2 workers, 10 steps: no exception, every array of 4.1 and 5.2 of its shape and dtype, `final_*` filled for an env that ended; the §9.1 numbers in (c)'s report | a shape, a dtype or the env-owned copy is wrong |
+| **Replay unmoved.** A recorded `policy` match (zero rows) with `"v1"` observation on replays with every checkpoint equal; `tools/match_pin_check.py` EQUAL; `pytest tests -q` green | the observation writes sim state |
+
 <!-- continued -->
