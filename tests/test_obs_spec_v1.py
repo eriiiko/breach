@@ -14,8 +14,15 @@ replay unmoved; the farm. Patch (b)'s: the reconstruction of every plane
 (and the vector's ``air`` / ``felt_temp``), the family (a)-(e) extended to
 ``near_u`` / ``far_u`` and the non-physics far planes, the far reduce, the
 sight planes against ``has_los``, the lanes plane and the lane pair,
-``felt_temperature`` against the heat row, the scan's new callees. The full
-view is patch (c)'s.
+``felt_temperature`` against the heat row, the scan's new callees. Patch
+(c)'s: the full view's reconstruction (every living unit once, the marines
+in (team, slot) order, ``knowledge`` as the picture, ``full_watched`` from
+every living enemy's LIVE centre, ``full_match``), the pair case (f) -- the
+full view on vs off leaves EVERY observation array byte-identical, the
+physics planes included --, the dead row's view, the policy-never-sees-it
+row extended (no full key in ``obs`` or ``final_obs``; the scan's full-view
+doors), the farm's ``info["full_view"]`` / ``info["final_full_view"]``, the
+run file's ``[obs] full_view`` key.
 """
 from __future__ import annotations
 
@@ -617,6 +624,17 @@ def test_no_raw_number():
     # the vector's air block reads the planes' denominators
     for p, name in enumerate(O.PHYSICS_PLANES):
         assert O.VECTOR_COLUMNS[58 + p].denom == O.PLANE_COLUMNS[name][0]
+    # (c): the full view's extra columns and the match vector, declared too
+    assert [f.pos for f in O.FULL_EXTRA_COLUMNS] == list(range(O.F, O.FULL_F))
+    assert O.FULL_F == 85
+    for T in (1, 2, 3):
+        cols = O.full_match_columns(T)
+        assert [f.pos for f in cols] == list(range(2 * T + 3))
+        for f in O.FULL_EXTRA_COLUMNS + cols:
+            assert f.denom and (f.denom in kinds or f.denom in O.DENOMINATORS), f
+            if f.denom in kinds:
+                assert not f.squash, f
+            assert f.denom != O.COUNT
 
 
 # ---------------------------------------------------------------------------
@@ -805,7 +823,9 @@ def _banned_uses(node, exclude=()):
 def test_the_scan_finds_no_banned_name_in_the_builders():
     """Property (spec 5.7): an AST scan of ``obs_spec_v1.py`` (bar
     ``TeamKnowledge.build`` and ``observe_rows``, the two doors that take
-    the sim), ``line_of_fire.py``, ``turning.ticks_to_within``,
+    the sim, and the full view's two, ``FullView.build`` and
+    ``observe_full_rows`` -- section 5's functions, listed by name),
+    ``line_of_fire.py``, ``turning.ticks_to_within``,
     ``verb_gates.door_in_reach`` / ``_reach_key``, ``route``'s callees in
     ``horde.py`` and the vision routines finds none of the banned names.
     A new callee joins the list in the patch that adds it. Breaks if a
@@ -817,8 +837,14 @@ def test_the_scan_finds_no_banned_name_in_the_builders():
         return ast.parse((src / name).read_text(encoding="utf-8"))
 
     t = tree("obs_spec_v1.py")
-    doors = [_function(t, "TeamKnowledge.build"), _function(t, "observe_rows")]
+    doors = [_function(t, "TeamKnowledge.build"), _function(t, "observe_rows"),
+             _function(t, "FullView.build"), _function(t, "observe_full_rows")]
     assert not _banned_uses(t, exclude=doors)
+    assert _banned_uses(doors[2])            # the full view's door reads it
+    # the full-view builders reach the sim only through the FullView
+    for fn in ("build_full_list", "build_full_watched", "FullView.static",
+               "FullView.aim", "FullView.match", "_full_entries", "_full_extra"):
+        assert not _banned_uses(_function(t, fn)), fn
     assert not _banned_uses(tree("line_of_fire.py"))
     assert not _banned_uses(_function(tree("turning.py"), "ticks_to_within"))
     vg = tree("verb_gates.py")
@@ -845,22 +871,32 @@ def test_the_scan_finds_no_banned_name_in_the_builders():
 
 def test_obs_holds_the_spec_keys_and_team_rows_are_views(tmp_path):
     """Property (spec 4.1, 5.7, 7): ``obs`` holds exactly the v1 keys (no
-    ``full_*`` key, nothing of info); ``BatchedEnv.team_rows(obs, t)``
-    returns every key as the VIEW of team ``t``'s rows, equal to the slice
-    and sharing its memory; a team outside the run is refused. Breaks if a
-    full-view array or another team's row reaches the policy, or the rows
-    are copied."""
+    ``full_*`` key, nothing of info) and ``info["final_obs"]`` likewise;
+    the full view's five keys sit under ``info["full_view"]`` and
+    ``info["final_full_view"]`` and nowhere else; ``BatchedEnv.team_rows(obs,
+    t)`` returns every key as the VIEW of team ``t``'s rows, equal to the
+    slice and sharing its memory; a team outside the run is refused.
+    Breaks if a full-view array or another team's row reaches the policy,
+    or the rows are copied."""
     from test_rl_env import BOX_SPEC
     _graph_box(tmp_path, "tbox", BOX_SPEC)
     run = rl_env.load_run(_run_v1(tmp_path / "run.toml", levels=["tbox"],
                                   levels_dir=tmp_path, n_envs=2))
     with rl_env.BatchedEnv(run, n_workers=1) as env:
-        obs, _ = env.reset()
+        obs, info0 = env.reset()
+        assert set(info0["full_view"]) == set(O.FULL_KEYS)
         obs, _, _, _, info = env.step(_zero_actions(env))
         assert set(obs) == set(OBS_KEYS) | {"valid", "in_match"}
         assert set(OBS_KEYS) == {"vector", "list", "list_mask", "list_uid",
                                  "near_f", "near_u", "far_f", "far_u"}
-        assert not any(k.startswith("full") for k in list(obs) + list(info))
+        assert not any(k.startswith("full") for k in obs)
+        assert set(info["final_obs"]) == set(obs)
+        assert set(info["full_view"]) == set(O.FULL_KEYS)
+        assert set(info["final_full_view"]) == set(O.FULL_KEYS)
+        assert set(O.FULL_KEYS) == {"full_list", "full_mask", "full_uid",
+                                    "full_match", "full_watched"}
+        assert not any(k.startswith("full") for k in info
+                       if k not in ("full_view", "final_full_view"))
         S, T = env.layout.n_slots, env.layout.n_teams
         for t in range(T):
             rows = env.team_rows(obs, t)
@@ -911,9 +947,11 @@ def test_replay_is_unmoved_by_the_observation(tmp_path):
 def test_the_farm_serves_v1_and_fills_the_final_arrays(tmp_path, capsys):
     """Property (spec 7, the farm): ``tools/rl_smoke.py`` on a ``"v1"``
     run (2 envs, 2 workers) runs without an exception; ``BatchedEnv``
-    returns every array of 4.1 at its shape and dtype, env-owned (the same
-    object every step), and ``final_*`` filled for an env that ended.
-    Breaks if a shape, a dtype or the env-owned copy is wrong."""
+    returns every array of 4.1 and 5.2 at its shape and dtype, env-owned
+    (the same object every step; the full view's under ``info["full_view"]``),
+    ``final_*`` and ``info["final_full_view"]`` filled for an env that
+    ended. Breaks if a shape, a dtype or the env-owned copy is wrong, or
+    the terminal full view is not served."""
     import rl_smoke
     spec = MatchSpec(teams=(IDLE, IDLE), seed=1, zombies=0, time_limit_s=1.0)
     _graph_box(tmp_path, "fbox", spec)
@@ -924,7 +962,8 @@ def test_the_farm_serves_v1_and_fills_the_final_arrays(tmp_path, capsys):
     assert "env-ticks/s:" in capsys.readouterr().out
     run = rl_env.load_run(p)
     with rl_env.BatchedEnv(run, n_workers=2) as env:
-        N, U, S = env.n_envs, env.layout.n_rows, env.layout.n_slots
+        N, U, S, T = (env.n_envs, env.layout.n_rows, env.layout.n_slots,
+                      env.layout.n_teams)
         E = S + 33
         want = {"vector": ((N, U, 97), np.float32),
                 "list": ((N, U, E, 67), np.float32),
@@ -935,16 +974,30 @@ def test_the_farm_serves_v1_and_fills_the_final_arrays(tmp_path, capsys):
                 "far_f": ((N, U, 10, 25, 25), np.float16),
                 "far_u": ((N, U, 5, 25, 25), np.uint8),
                 "valid": ((N, U), np.uint8), "in_match": ((N, U), np.uint8)}
-        obs, _ = env.reset()
+        want_full = {"full_list": ((N, U, 64, 85), np.float32),
+                     "full_mask": ((N, U, 64), np.uint8),
+                     "full_uid": ((N, U, 64), np.int32),
+                     "full_match": ((N, U, 2 * T + 3), np.float32),
+                     "full_watched": ((N, U, 25, 25), np.uint8)}
+        obs, info = env.reset()
         first = {k: id(v) for k, v in obs.items()}
+        first_full = {k: id(v) for k, v in info["full_view"].items()}
         ended = False
         for _ in range(10):
             obs, rew, term, trunc, info = env.step(_zero_actions(env))
             assert {k: id(v) for k, v in obs.items()} == first
+            assert {k: id(v) for k, v in info["full_view"].items()} == first_full
             for k, (shape, dtype) in want.items():
                 assert obs[k].shape == shape and obs[k].dtype == dtype, k
                 assert info["final_obs"][k].shape == shape
                 assert info["final_obs"][k].dtype == dtype, k
+            for k, (shape, dtype) in want_full.items():
+                fv = info["full_view"][k]
+                assert fv.shape == shape and fv.dtype == dtype, k
+                assert info["final_full_view"][k].shape == shape
+                assert info["final_full_view"][k].dtype == dtype, k
+            assert (info["full_view"]["full_mask"].sum(axis=2)
+                    == obs["in_match"] * info["full_view"]["full_mask"].sum(axis=2)).all()
             if info["ended"].any():
                 ended = True
                 e = int(np.flatnonzero(info["ended"])[0])
@@ -953,8 +1006,13 @@ def test_the_farm_serves_v1_and_fills_the_final_arrays(tmp_path, capsys):
                 assert info["final_obs"]["vector"][e].any()
                 assert info["final_obs"]["list_mask"][e].any()
                 assert info["final_obs"]["near_u"][e].any()
+                ffv = info["final_full_view"]
+                assert ffv["full_mask"][e].any() and ffv["full_match"][e].any()
+                assert (ffv["full_uid"][e][ffv["full_mask"][e] == 1] >= 0).all()
+                assert not ffv["full_mask"][~info["ended"]].any()
                 assert np.abs(obs["vector"]).max() <= 4.0
                 assert np.abs(obs["list"]).max() <= max(4.0, 255.0)
+                assert np.abs(info["full_view"]["full_list"]).max() <= 255.0
                 for k in ("near_f", "far_f"):
                     assert np.abs(obs[k].astype(np.float32)).max() <= 4.0, k
         assert ended
@@ -1320,3 +1378,246 @@ def test_felt_temperature_is_the_heat_rows(tmp_path):
     assert v[96] == np.float32(O.squash(O.ratio(
         exchange.felt_temperature(g, me, dials)[0],
         me.environment.temperature_max)))
+
+
+# ---------------------------------------------------------------------------
+# patch (c): the full view
+# ---------------------------------------------------------------------------
+def _roster_rows(sim, spec, S):
+    """Per row its ROSTER unit (dead or turned included), the full view's
+    rows."""
+    units = [None] * (len(spec.teams) * S)
+    for t in range(len(spec.teams)):
+        for u in sim.roster(t):
+            if u is not None:
+                units[t * S + u.slot] = u
+    return units
+
+
+def _observe_full(sim, ctx, spec, S, T=None):
+    """The accessor's door for the full view over every roster row."""
+    T = len(spec.teams) if T is None else T
+    U = len(spec.teams) * S
+    out = {k: np.zeros(shape[1:], dtype)
+           for k, (shape, dtype) in O.full_shapes(1, U, T).items()}
+    EntityFieldAccessor(sim.gmap).observe("full_v1", _roster_rows(sim, spec, S),
+                                          out, sim=sim, context=ctx)
+    return out
+
+
+def _all_bytes(out):
+    return tuple(np.ascontiguousarray(out[k]).tobytes()
+                 for k in OBS_KEYS + ("valid", "in_match"))
+
+
+def test_the_full_view_equals_an_independent_reconstruction():
+    """Property (spec 7, the full view): over the ship_demo bots-vs-bots
+    match, every living unit of the sim is in ``full_list`` exactly once
+    (``full_uid``), the soldier itself first, then the marines in (team,
+    slot) order; every column equals the reference built from the sim's
+    state alone (``_obs_reference.full_list``: ``knowledge`` as the
+    picture, the live unit's columns, ``aims_at`` over every living unit);
+    ``full_match`` reproduces the counts; ``full_watched`` equals the OR of
+    ``has_los`` from every living enemy's LIVE centre (every 48 ticks).
+    Breaks if the full view misses a unit, orders them otherwise, or uses
+    the picture where it must not."""
+    ses, spec, S = _ship_match()
+    sim = ses.sim
+    T = len(spec.teams)
+    ctx = O.ObsContext.build(sim, spec, S, n_teams=T)
+    K = R.constants(sim, spec, S)
+    bots = {c.team: c for c in ses.controllers if isinstance(c, BotTeam)}
+    checked = watched = 0
+    for _ in range(600):
+        ses.tick()
+        if sim.tick % 12 or ses.is_terminal():
+            continue
+        out = _observe_full(sim, ctx, spec, S)
+        rows = _roster_rows(sim, spec, S)
+        living = sorted(u.id for u in sim.units if u.alive)
+        want_match = R.full_match(sim, K, T)
+        for i, u in enumerate(rows):
+            if u is None:
+                assert not out["full_mask"][i].any()
+                continue
+            team = i // S
+            alive = u.alive and u.team == team
+            got, mask, uid = (out["full_list"][i], out["full_mask"][i],
+                              out["full_uid"][i])
+            ids = uid[mask == 1].tolist()
+            assert ids[0] == u.id and got[0, 0] == 0
+            units_in = [x for x in ids if x < O.OBJECT_UID_BASE]
+            if alive:
+                assert sorted(units_in) == living
+                assert len(set(units_in)) == len(units_in)
+            else:
+                assert sorted(set(units_in)) == sorted(set(living) | {u.id})
+            marines = [sim.get_unit(x) for x in units_in[1:]
+                       if not sim.get_unit(x).is_zombie]
+            assert [(m.team, m.slot) for m in marines] == \
+                sorted((m.team, m.slot) for m in marines)
+            e, m, w = R.full_list(sim, K, team, u, alive, bots.get(team))
+            assert np.array_equal(mask, m) and np.array_equal(uid, w), (i, sim.tick)
+            bad = np.argwhere(~np.isclose(got, e, rtol=1e-5, atol=1e-6))
+            assert bad.size == 0, (i, sim.tick, bad[:8].tolist(),
+                                   got[tuple(bad[:8].T)], e[tuple(bad[:8].T)])
+            assert np.allclose(out["full_match"][i], want_match, atol=1e-6)
+            if sim.tick % 48 == 0:
+                assert np.array_equal(out["full_watched"][i],
+                                      R.full_watched(sim, team, u)), (i, sim.tick)
+                watched += 1
+            checked += 1
+    assert checked > 100 and watched > 0
+
+
+def _family_f_scene(tmp_path):
+    """Team 0's soldier (10, 20) facing east sees the foe (30, 20) through
+    a gap in a wall at x = 20 (rows 18..22); the foe faces SOUTH at a third
+    side's unit (30, 32) that the wall hides from team 0 (the line from me
+    crosses it at rows 26-27) -- the full view answers the foe's aim with
+    it (category 3), the honest observation with nobody."""
+    lvl = _level(tmp_path, "fam_f", wall_x=20, gap=(18, 23))
+    units = [(0, 10, 20), (1, 30, 20), (2, 30, 32)]
+    a, ua = _sim(lvl, units)
+    b, ub = _sim(lvl, units)
+    for us in (ua, ub):
+        place_facing(us[0], 0)                       # east
+        place_facing(us[1], -PI_Q16 // 2)            # south
+        place_facing(us[2], PI_Q16 // 2)             # north
+    S = 2
+    ctxs = (O.ObsContext.build(a, PAIR_SPEC, S), O.ObsContext.build(b, PAIR_SPEC, S))
+    return (a, b), (ua, ub), ctxs, S
+
+
+def test_family_f_the_full_view_on_vs_off_changes_no_obs_array(tmp_path):
+    """Property (spec 7, case f; 0.5, 5.7): the same sim observed with the
+    full view OFF (A) and ON (B: the full view built BEFORE the
+    observation, then again after it) gives EVERY observation array byte
+    for byte equal at every decision -- the physics planes included, since
+    nothing physical differs -- and the scene is one where the full view
+    knows more (the foe aims at a unit team 0 cannot see: ``aims_at`` 3 in
+    the full view, 0 in the observation). Breaks if a cache crosses the
+    wall between the two views (an aim, a cone, a line of fire, a lane or
+    a window shared), or the full view writes sim state."""
+    sims, (ua, ub), ctxs, S = _family_f_scene(tmp_path)
+    n = 0
+    for _ in range(24):
+        _step_both(sims)
+        if sims[0].tick % 4:
+            continue
+        a = _observe(sims[0], ctxs[0], PAIR_SPEC, S)
+        full = _observe_full(sims[1], ctxs[1], PAIR_SPEC, S)
+        b = _observe(sims[1], ctxs[1], PAIR_SPEC, S)
+        full2 = _observe_full(sims[1], ctxs[1], PAIR_SPEC, S)
+        b2 = _observe(sims[1], ctxs[1], PAIR_SPEC, S)
+        for k, x, y, z in zip(OBS_KEYS + ("valid", "in_match"), _all_bytes(a),
+                              _all_bytes(b), _all_bytes(b2)):
+            assert x == y == z, (k, sims[0].tick)
+        for k in O.FULL_KEYS:
+            assert np.array_equal(full[k], full2[k]), k
+        # the scene: team 0 sees the foe, not the third side's unit
+        assert ub[1].id in sims[1].team_picture.records(0)
+        assert ub[2].id not in sims[1].team_picture.records(0)
+        k_obs = int(np.flatnonzero(b["list_uid"][0] == ub[1].id)[0])
+        k_full = int(np.flatnonzero(full["full_uid"][0] == ub[1].id)[0])
+        assert b["list"][0, k_obs, 0] == O.TYPE_SEEN
+        assert b["list"][0, k_obs, 32] == 0                  # nobody known
+        assert full["full_list"][0, k_full, 32] == 3          # another side
+        assert full["full_list"][0, k_full, O.F] == O.KNOW_SEEN
+        k3 = int(np.flatnonzero(full["full_uid"][0] == ub[2].id)[0])
+        assert full["full_list"][0, k3, O.F] == O.KNOW_UNKNOWN
+        n += 1
+    assert n > 0
+
+
+def test_the_full_views_dead_row(tmp_path, monkeypatch):
+    """Property (spec 5.6, 7): a soldier killed mid-match keeps a full
+    view -- ``in_match`` 1, ``valid`` 0, its observation zero -- centred on
+    its corpse: entry 0 is itself with ``type`` 0, ``hp`` 0, ``age`` the
+    ticks since the picture first saw it dead over ``limit_ticks``, the
+    other living units after it, ``full_watched`` the enemies' sight of
+    the corpse's window; a converted soldier likewise, its zombie shown in
+    the list as the zombie it is. Breaks if a dead row is not built, is
+    centred elsewhere, or its first entry is not itself."""
+    lvl = _level(tmp_path, "dead")
+    sim, (me, mate, foe) = _sim(lvl, [(0, 10, 20), (0, 10, 30), (1, 30, 20)],
+                                sight="all_round")
+    S = 2
+    ctx = O.ObsContext.build(sim, PAIR_SPEC, S)
+    K = R.constants(sim, PAIR_SPEC, S)
+    sim.step()
+    _hook_step(monkeypatch, sim, _kill(me))
+    sim.step()
+    assert not me.alive
+    died = sim.team_picture.death_tick[me.id]
+    for _ in range(3):
+        sim.step()
+        obs = _observe(sim, ctx, PAIR_SPEC, S)
+        full = _observe_full(sim, ctx, PAIR_SPEC, S)
+        assert obs["in_match"][0] == 1 and obs["valid"][0] == 0
+        assert not obs["vector"][0].any() and not obs["list_mask"][0].any()
+        e, m, w = full["full_list"][0], full["full_mask"][0], full["full_uid"][0]
+        assert m[0] == 1 and w[0] == me.id
+        assert e[0, 0] == 0 and e[0, 10] == 0 and e[0, 1] == 0 and e[0, 2] == 0
+        assert e[0, 54] == pytest.approx((sim.tick - died) / ctx.limit_ticks)
+        assert set(w[m == 1].tolist()) == {me.id, mate.id, foe.id}
+        assert e[1, 0] == 0 and w[1] == mate.id          # my mate, type 0
+        assert e[2, 0] == 1 and w[2] == foe.id           # the foe, type 1
+        assert np.array_equal(full["full_watched"][0],
+                              R.full_watched(sim, 0, me))
+        ref, rm, rw = R.full_list(sim, K, 0, me, False)
+        assert np.array_equal(m, rm) and np.array_equal(w, rw)
+        assert np.allclose(e, ref, rtol=1e-5, atol=1e-6)
+        assert full["full_match"][0, 0] == pytest.approx(1 / 2)   # team 0: one of two
+    # a converted soldier: the corpse entry first, its zombie in the list too
+    lvl2 = _level(tmp_path, "turned")
+    sim2, (me2, mate2, foe2) = _sim(lvl2, [(0, 10, 20), (0, 10, 30), (1, 30, 20)],
+                                    sight="all_round")
+    ctx2 = O.ObsContext.build(sim2, PAIR_SPEC, S)
+    sim2.step()
+    _hook_step(monkeypatch, sim2, _kill(me2, by_zombie=True))
+    sim2.step()
+    sim2.step()
+    assert me2.is_zombie and me2.alive
+    full = _observe_full(sim2, ctx2, PAIR_SPEC, S)
+    e, m, w = full["full_list"][0], full["full_mask"][0], full["full_uid"][0]
+    assert w[0] == me2.id and e[0, 0] == 0 and e[0, 10] == 0 and e[0, 54] > 0
+    zs = [k for k in range(1, 64) if m[k] and w[k] == me2.id]
+    assert len(zs) == 1 and e[zs[0], 0] == 1 and e[zs[0], 9] == ctx2.zombie_class
+    obs = _observe(sim2, ctx2, PAIR_SPEC, S)
+    assert obs["in_match"][0] == 1 and obs["valid"][0] == 0
+
+
+def test_the_run_file_full_view_key(tmp_path):
+    """Property (spec 5.1, 6): ``[obs] full_view = false`` under ``"v1"``
+    serves no full view (the layout has no full key, ``info["full_view"]``
+    is empty) -- the farm's reading without it --; the key is refused by
+    name under ``"crop"`` and when not a bool. Breaks if the switch is
+    ignored or leaks into the crop spec."""
+    from test_rl_env import BOX_SPEC
+    _graph_box(tmp_path, "kbox", BOX_SPEC)
+    p = _run_v1(tmp_path / "run.toml", levels=["kbox"], levels_dir=tmp_path,
+                n_envs=1)
+    txt = p.read_text(encoding="utf-8")
+    p.write_text(txt.replace('spec = "v1"\n', 'spec = "v1"\nfull_view = false\n'),
+                 encoding="utf-8")
+    run = rl_env.load_run(p)
+    assert run.full_view is False
+    layout = rl_env.make_layout(run, rl_env.load_levels(run))
+    assert layout.full_keys == () and "full_list" not in layout.shapes()
+    with rl_env.BatchedEnv(run, n_workers=1) as env:
+        obs, info = env.reset()
+        assert info["full_view"] == {}
+        obs, _, _, _, info = env.step(_zero_actions(env))
+        assert info["full_view"] == {} and info["final_full_view"] == {}
+    assert rl_env.load_run(_run_v1(tmp_path / "run2.toml", levels=["kbox"],
+                                   levels_dir=tmp_path, n_envs=1)).full_view
+    p.write_text(txt.replace('spec = "v1"\n', 'spec = "v1"\nfull_view = 1\n'),
+                 encoding="utf-8")
+    with pytest.raises(ValueError, match="full_view must be true or false"):
+        rl_env.load_run(p)
+    p.write_text(txt.replace('spec = "v1"\n', 'full_view = false\n'
+                             'channels = ["pressure"]\ncrop_radius = 2\n'
+                             'vector = ["hp"]\n'), encoding="utf-8")
+    with pytest.raises(ValueError, match="full_view"):
+        rl_env.load_run(p)
