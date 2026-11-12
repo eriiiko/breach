@@ -228,3 +228,29 @@ as written would catch none of these, because the one counterfactual they run pe
 ever reads (MAJOR 6). Each fix is a definition, a chokepoint or a test on paper; none changes the design.
 
 **Count: BLOCKER 0, MAJOR 6, MINOR 12** (8 minors on the text and tests, 4 on what the soldier lacks).
+
+## Resolution (2026-11-12, spec v2)
+
+Folded into `docs/rl_agent_obs_spec_v1_2026-11-12.md` (same file name, a v2 changelog at its top),
+commits `e9aadccf` and `1b0df6e8`.
+
+| finding | spec section changed | how |
+|---|---|---|
+| MAJOR 1 | 1.6 (object tracker), 2.1, 7 | the team's own object id `2^20 + k`, counted at the team's first sighting, kept while the object lives |
+| MAJOR 2 | 0.5 (`roster_ids`), 2.2 cols 8, 56, 7 (e) | `side` -1 on objects; `whose` by my id / my roster ids, no live read |
+| MAJOR 3 | 3.2, 8 (b), 9 (PENDING ERIK), 10, 7 | PENDING ERIK: proposed an ACCEPTED GAP; (b) measures the imprint in a vent draft; the pair tests exclude the physics planes except (f) |
+| MAJOR 4 | 0.5 (new), 1.7 `aim_of`, 3.6, 5.7, 6, 7 | `TeamKnowledge` + the `ObsWorld` facade as the only way in; trackers in scope; caches keyed by inputs, the full view's separate; the scan widened to every callee |
+| MAJOR 5 | 4.1, 5.7, 7, 8 | a team-t policy reads only team t's rows, nothing of `info` / `reward` / `counters`; `BatchedEnv.team_rows` |
+| MAJOR 6 | 7, 8 | the counterfactual family (a)-(f), same match.toml and seed, the observing team's rows only |
+| minor 1 | 1.6, 7 | the saw rule against the records before this tick's sightings; third-side hit tested |
+| minor 2 | 1.6, 7 | `bars` at spawn |
+| minor 3 | 1.7, 2.2, 7 | `aim_of` returns `(category, uid)`, ties by distance then uid |
+| minor 4 | 2.1 | `physical=False` |
+| minor 5 | 5.5 | its own key of `info["full_view"]` |
+| minor 6 | 5.2, 7 | `info["final_full_view"]` |
+| minor 7 | 2.1 | a uid is an equality key only |
+| minor 8 | 7 | the reconstruction named a correctness gate |
+| minor 9 | 1.3, 4.1, 8 (b), 10 | vector col 96 `felt_temp` via an extracted `exchange.felt_temperature`; V = 97 |
+| minor 10 | 1.6, 2.2 | `Record.facing_q` |
+| minor 11 | 3.7, 7 | far unit planes from the whole picture |
+| minor 12 | 9 | recorded as a parity gap for the orchestrator, not fixed in 1g |
