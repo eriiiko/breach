@@ -338,7 +338,8 @@ def spawn_match(sim, spec: MatchSpec) -> list:
     standing on its slot's cell of its room's placement rule. Returns the
     units in spawn order. Draws no randomness (the match seed is the sim's
     own, passed at construction). Sets the sim's sight rule from the spec
-    (``sim.sight``, #195 1a): the one place a match hands it over."""
+    (``sim.sight``, #195 1a): the one place a match hands it over. Starts
+    the team picture last (``Simulation.start_team_picture``, #195 1d)."""
     from simulation.unit import Unit
 
     if sim.units:
@@ -365,6 +366,9 @@ def spawn_match(sim, spec: MatchSpec) -> list:
               env_profile=row.env_profile)
     if spec.zombies:
         place(ZOMBIE_TEAM, spec.zombies)
+    # the team picture (#195 1d): one per marine team of the spec, the
+    # horde none; its first update is taken here, at the spawn tick
+    sim.start_team_picture(range(len(spec.teams)))
     return spawned
 
 

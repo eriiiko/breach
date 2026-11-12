@@ -478,6 +478,13 @@ class Simulation:
         # sim, so the per-tick cache above needs no key for it.
         self.sight = "cone"
 
+        # The team picture (#195 1d, ``simulation/team_picture.py``): what
+        # each marine team knows of the enemy. None off a match;
+        # ``start_team_picture`` (called by ``spawn_match``) switches it on
+        # and the conductor's slot 11 updates it once per tick. Not synced,
+        # not hashed: rebuilt by re-simulation only.
+        self.team_picture = None
+
         # Ambush barriers (design §10): ``{target_unit_id: release_tick}``.
         # A per-group readiness counter in the sim — NO SignalBus is needed in
         # v1, though the action registry's ``start_condition`` field keeps that
@@ -585,6 +592,21 @@ class Simulation:
         if spec is None:
             raise ValueError(f"level {self.level.name!r} has no match.toml")
         return spawn_match(self, spec)
+
+    def start_team_picture(self, teams, memory_ticks: int | None = None):
+        """Switch on the team picture (#195 1d) for the marine ``teams`` and
+        take its first update now; from then on the conductor's slot 11
+        updates it every tick. ``spawn_match`` calls it for a match; a
+        hand-built sim (a test) calls it itself. ``memory_ticks`` defaults
+        to ``[team_picture] memory_s`` quantized once (tests may pass a
+        short one). Returns the picture."""
+        from simulation import team_picture as tp
+        if memory_ticks is None:
+            memory_ticks = tp.memory_ticks(tp.picture_settings(CFG),
+                                           float(self._tps))
+        self.team_picture = tp.TeamPicture(self, teams, int(memory_ticks))
+        self.team_picture.update(self)
+        return self.team_picture
 
     def hand_zombies_to_controller(self) -> None:
         """Give the horde to a match's zombie controller (#122): from now on
@@ -2353,6 +2375,13 @@ class Simulation:
         self.real_time += sim_time_per_tick
 
         self.ruleset.on_tick_end(self)
+
+        # 11. The team picture (#195 1d; a match only): each marine team's
+        # records of what it sees at the tick the next controllers run at --
+        # after the tick advance and on_tick_end, so a conversion this step
+        # made is seen. Once per tick, never on demand.
+        if self.team_picture is not None:
+            self.team_picture.update(self)
 
     # ------------------------------------------------------------------
     # Tick-step helpers

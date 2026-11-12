@@ -4940,7 +4940,6 @@ friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fir
 # --- the layered bots (#183 G8p) ---
 team_period_ticks = 6        # the team layer (picture -> play, shared target, objective, lanes) every this many ticks
 unit_period_ticks = 8        # each bot scores its actions every this many ticks, staggered by unit id (and at once on a new sighting)
-memory_s = 6.0               # the team forgets an enemy not seen for this long
 flash_memory_s = 4.0         # a flashbang goes only onto an enemy seen within this long
 candidate_radius = 9         # the position layer's candidates: anchors within this many tiles ...
 candidate_stride = 3         # ... on a lattice of this pitch (the bot's own anchor and its committed goal always in)
@@ -4991,6 +4990,15 @@ stand = 4.0
 fall_back = 3.0              # eligible: a known zombie near, or outnumbered
 hold = 2.0                   # eligible: an enemy marine in the team's sight now
 bound = 1.0                  # always eligible: close on the last-known enemy, else its spawn room
+
+# ---------------------------------------------------------------------------
+# The team picture (#195 1d, src/simulation/team_picture.py): what a marine
+# team knows of the enemy, kept by the conductor for every match and read by
+# the bots (and later the agents). Read by `team_picture.picture_settings`
+# (refuses a missing, mistyped or unknown key).
+# ---------------------------------------------------------------------------
+[team_picture]
+memory_s = 6.0               # the team forgets an enemy not seen for this long (was [bots] memory_s)
 
 # ---------------------------------------------------------------------------
 # Match recording (#126) — replay by RE-SIMULATION (src/match_replay.py): a
