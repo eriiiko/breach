@@ -19,7 +19,7 @@ cannot be resolved without changing one of them (there is none; section 9).
 |---|---|
 | MAJOR 1 object `list_uid` is a list index | the team's own object id, `2^20 + k` from a per-team counter at the team's first sighting, kept while the object lives (the object tracker, 1.6; 2.1); honesty test on it (7) |
 | MAJOR 2 object `side` read off the live owner | `side` -1 on objects; `whose` by `owner_id` against my id and my team's roster ids, no live read (2.2 cols 8, 56; 0.5 `roster_ids`); pair case (e) (7) |
-| MAJOR 3 the fields carry every body | **PENDING ERIK**: proposed an ACCEPTED GAP (a body really obstructs air and heat), stated in 3.2 and the CLAUDE.md row; patch (b) measures the imprint in a vent draft and reports it (8 (b)); the pair tests keep the physics planes out of (a)-(e) (7); register (9) |
+| MAJOR 3 the fields carry every body | **ACCEPTED GAP** (Erik, 2026-11-12: "on the wind question, its OK! We accept it!"; proposed in v2 as one -- a body really obstructs air and heat), stated in 3.2 with patch (b)'s measurement and in the CLAUDE.md row; the pair tests keep the physics planes out of (a)-(e) (7); register (9) |
 | MAJOR 4 the wall is a two-name grep | `TeamKnowledge` (0.5) is the builders' only way in, `ObsWorld` a facade without `units` & co. (a run-time wall); trackers answer in scope; caches keyed by inputs, the full view's separate; the scan widened to every callee module (5.7, 7) |
 | MAJOR 5 every team's rows and the counters | a policy of team t reads only team t's rows and nothing of `info` / `reward` / `counters`; what the trainer may read; `BatchedEnv.team_rows` (4.1, 5.7) |
 | MAJOR 6 the pair test perturbs nothing read | the counterfactual family (a)-(f), same match.toml and seed, only the observing team's rows compared byte for byte (7); cut across (a), (b), (c) (8) |
@@ -478,7 +478,8 @@ observing soldier; "profile" is `u.environment` (`unit.py:213`,
 
 Reserved and not built (design 3.4): oxygen, water depth, fuel vapour.
 
-**PENDING ERIK: the fields carry every unit's body** (v2; critique MAJOR 3).
+**ACCEPTED GAP: the fields carry every unit's body** (v2; critique MAJOR 3;
+RULED by Erik, 2026-11-12: "on the wind question, its OK! We accept it!").
 The eight planes are not a function of public state alone:
 `GameMap.stamp_units` (`gamemap.py:2071-2090`) writes every living body into
 `dyn_permeability` (0.5 on a marine's 3x3), `dyn_wave_absorb` and
@@ -487,23 +488,45 @@ The eight planes are not a function of public state alone:
 `ship_demo` matches, idle, seed 7, identical but for one marine dead from
 tick 0, differ after 300 ticks in ~4 700 cells out to 96 tiles (wind up to
 0.44 m/s, mean 0.08 within 3 tiles of the body against a field noise of
-~0.1; temperature mean 5.7 game degrees within 3 tiles). In still air the
-signal is weak and mostly chaotic divergence; in a vent draft, a breach or a
-blast front a half-permeable block may cast a wake (UNMEASURED). The physics
-is real -- a body does obstruct air and heat -- so the PROPOSED handling is
-an ACCEPTED GAP, stated here and in the CLAUDE.md row (section 10): "the
-fields carry the bodies' own aerodynamic and radiative imprint
-(`stamp_units`)". It is NOT decided by this document: the orchestrator asks
-Erik. Patch (b) measures the imprint (section 8 (b), its report): the same
-A/B with one hidden body standing in a vent draft and one walking through
-it, the largest squashed float16 difference per plane inside a 25 x 25 window
-around the body against the same statistic far from it (beyond 50 tiles);
-the near/far ratio per plane is reported. If Erik does not accept the gap,
-the candidate remedies (his choice, a v2 spec, not 1g's) are a coarser
-quantisation of the wind planes, the far window's physics planes from the
-block MEAN, or no far wind. Consequence for the tests now: the pair tests of
-section 7 compare the physics planes (and the `air` / `felt_temp` columns
-that read them) only in the pair whose bodies are identical, (f).
+~0.1; temperature mean 5.7 game degrees within 3 tiles). The physics is
+real -- a body does obstruct air and heat -- so the handling is an ACCEPTED
+GAP, stated here and in the CLAUDE.md row (section 10): "the fields carry
+the bodies' own aerodynamic and radiative imprint (`stamp_units`)". A
+hidden body can therefore be read off the physics planes where the air
+moves; the candidate remedies if that ever matters (a v2 spec, Erik's
+call) are a coarser quantisation of the wind planes, the far window's
+physics planes from the block MEAN, or no far wind.
+
+**The measurement** (patch (b)'s instrument `tools/obs_body_imprint.py`,
+re-run at (c) on the merged (b) code, 2026-11-12): the `test_wind_doorway_e2e`
+scene (ship_demo, the zombie room over-pressured by +0.44 atm venting through
+its two west doors -- a half-second JET, ticks 1..24, then a lasting DRAFT),
+played twice in lock-step with ONE hidden body (standing in the draft in
+front of the upper door; walking out through the lower door) and with none;
+per tick and plane the largest absolute difference of the SQUASHED float16
+plane values within the 25 x 25 window around the body (near) against the
+same statistic beyond 50 tiles from it (far), the max over the phase's
+ticks, and their ratio:
+
+| case, phase | window | temperature near / far (ratio) | wind_x | wind_y | pressure |
+|---|---|---|---|---|---|
+| standing, jet | near | 6.10 / 0.15 (40) | 1.50 / 0.034 (44) | 1.93 / 0.029 (68) | 0.011 / 0.0024 (4.5) |
+| standing, jet | far | 2.01 / 0.11 (18) | 4.29 / 0.037 (118) | 4.13 / 0.029 (145) | 0.0066 / 0.0024 (2.7) |
+| standing, draft | near | 2.22 / 0.27 (8.4) | 0.12 / 0.012 (10) | 0.42 / 0.017 (25) | 0.0012 / 0.0015 (0.8) |
+| standing, draft | far | 1.03 / 0.17 (6.2) | 0.26 / 0.016 (16) | 0.42 / 0.017 (25) | 0.0015 / 0.0015 (1.0) |
+| walking, jet | near | 5.66 / 0.15 (37) | 1.96 / 0.008 (255) | 2.48 / 0.009 (284) | 0.017 / 0.0032 (5.5) |
+| walking, jet | far | 2.07 / 0.10 (21) | 2.53 / 0.008 (330) | 3.24 / 0.009 (372) | 0.0098 / 0.0032 (3.1) |
+| walking, draft | near | 1.70 / 0.35 (4.8) | 0.047 / 0.009 (5.1) | 0.090 / 0.007 (13) | 0.0010 / 0.0007 (1.3) |
+| walking, draft | far | 0.78 / 0.19 (4.0) | 0.17 / 0.017 (10) | 0.19 / 0.023 (8.0) | 0.0012 / 0.0007 (1.7) |
+
+Fire, poison, teargas and smoke: 0 everywhere (none in the scene). In the
+jet a body's wake reaches the squash's cap in the wind planes (4.1-4.3 of
+4, far window) and ~6 in temperature (two capped values apart), tens to
+hundreds of times the far-field divergence; in the draft it is 5-25 times
+it in wind and 4-8 in temperature; pressure never leaves the noise.
+Consequence for the tests: the pair tests of section 7 compare the physics
+planes (and the `air` / `felt_temp` columns that read them) only in the
+pair whose bodies are identical, (f).
 
 ### 3.3 How the far window is made (design 3.7's third thing)
 
@@ -846,13 +869,29 @@ spec allows. The budget is held at
 (c)'s merge, not at (a)'s or (b)'s: each of those reports its parts and
 the farm's number as information.
 
+**As built, (c), 2026-11-12** (the protocol above, one session on the Home
+Desktop, 64 envs / 16 workers, decimation 4, 750 measured steps after 20
+of warmup; the run files `run_crop.toml` / `run_v1.toml` /
+`run_v1_nofull.toml` = `run_v1.toml` + `[obs] full_view = false`):
+`crop` 417.3 env-ticks/s (p50 597 ms a step), `v1` without the full view
+385.3 (92 %, p50 665), `v1` with it 358.2 (**86 %**, p50 722). The budget
+holds; nothing of the order of attack was applied. Per part on ship_demo
+(in-process, 8 rows, `bots` vs `bots`): the observation 7.7 ms per
+env-decision (the windows about half of it: 16 crops and squashes per
+soldier), the full view 6.6 (first built at 9.6; the two things that
+cut it: the per-unit columns computed once per unit instead of once per
+(row, unit), and the rows' lines of fire in ONE `rays_clear` call --
+`line_of_fire.solid_in_way_many` -- instead of one per pair; what is
+left is the `window_clear` per (soldier, enemy) for `full_watched`, ~1
+ms, and `ticks_to_within` per pair, ~1 ms).
+
 ## 7. The tests (properties; `tests/test_obs_spec_v1.py` unless named)
 
 | property | breaks if |
 |---|---|
 | **Equals an independent reconstruction.** Over a `ship_demo` match of `bots` vs `bots` with the farm's rows observed every 4 ticks for 600 ticks, every vector column, every list entry and every plane equals a reference built in `tests/_obs_reference.py` from the sim's state alone -- a second, plainer implementation written from THIS document (loops over units and tiles, `has_los` per tile instead of the window routine, the bots' own `_teammate_on_line`, the horde's `flood_reference`), never importing `obs_spec_v1` (v2, critique minor 8: this is a CORRECTNESS gate -- the reference is written from this document, so a leak written into the document passes both; the honesty gate is the next row) | a builder reads the wrong seam, denominator, order or frame |
 | **Shows nothing the team cannot know: the direct checks.** For every decision of that match: every `list_uid` of types 0-2 is my living team-mate's id or a key of `records(team)`; every type-3 `list_uid` is a value of the team's object tracker for an object in `seen_now[team]` (a function of the objects the team has seen), and its tile is `rays_clear(physical=False)` from a living team-mate's centre; the far `mates` / `enemies` / `records` planes equal the counts of `TeamKnowledge.mates` / `.seen` / the other records inside each block (the whole picture, not the capped list); `watched` equals the OR of `has_los` from the RECORDED centres (never a live position) | an entry, a plane or a flag leaks a unit the team has no record of |
-| **Shows nothing the team cannot know: the counterfactual family** (v2; critique MAJOR 6, replacing v1's sealed-room zombie pair, which perturbed nothing a builder reads and changed `spec.zombies`, the bodies in the air and the unit ids). Each case is TWO sims built from the SAME match.toml, level and seed (so every denominator, roster, `n_t`, `spec.zombies` and unit id is equal), stepped identically to a tick `T`, then differing ONLY in hidden state of a unit outside `visible_by_team[team]` since its last sighting, introduced at `T` through the sim's own doors (a `DamagePacket`, a status row, a conversion call, a throw intent) or, for (b), a test-only position write named as such; the OBSERVING team's rows of `vector`, `list`, `list_mask`, `list_uid`, `near_u`, `far_u`, `valid`, `in_match` are compared BYTE FOR BYTE at every decision for `memory_ticks` after `T` (only that team's rows: the other team legitimately differs). Because a body is stamped into the air (3.2, PENDING ERIK), the comparison of (a)-(e) excludes the physics planes (`near_f`, `far_f` bar `wall_share` and `route`) and the vector's `air` and `felt_temp` columns (58-65, 96) -- the fields are judged by (b)'s imprint measurement, not here. The cases: (a) a remembered enemy killed unseen by a status vs. left alive (every array, not only its type-2 entry: counts, `watched`, `aims_at`, the far planes); (b) a remembered enemy moved unseen; (c) a remembered enemy converted unseen; (d) an extra grenade thrown by an unseen unit before a grenade the team sees (the seen grenade's `list_uid` unchanged); (e) an unseen conversion of the owner of a charge the team sees (`side`, `whose` unchanged); (f) the same sim with the full view ON vs OFF -- here EVERY observation array is compared, physics planes included, since nothing physical differs (a cache shared with the full view) | a builder reads liveness, place, class, team or count of a unit or object the team cannot know, or a cache crosses the wall |
+| **Shows nothing the team cannot know: the counterfactual family** (v2; critique MAJOR 6, replacing v1's sealed-room zombie pair, which perturbed nothing a builder reads and changed `spec.zombies`, the bodies in the air and the unit ids). Each case is TWO sims built from the SAME match.toml, level and seed (so every denominator, roster, `n_t`, `spec.zombies` and unit id is equal), stepped identically to a tick `T`, then differing ONLY in hidden state of a unit outside `visible_by_team[team]` since its last sighting, introduced at `T` through the sim's own doors (a `DamagePacket`, a status row, a conversion call, a throw intent) or, for (b), a test-only position write named as such; the OBSERVING team's rows of `vector`, `list`, `list_mask`, `list_uid`, `near_u`, `far_u`, `valid`, `in_match` are compared BYTE FOR BYTE at every decision for `memory_ticks` after `T` (only that team's rows: the other team legitimately differs). Because a body is stamped into the air (3.2, an ACCEPTED GAP), the comparison of (a)-(e) excludes the physics planes (`near_f`, `far_f` bar `wall_share` and `route`) and the vector's `air` and `felt_temp` columns (58-65, 96) -- the fields are judged by (b)'s imprint measurement, not here. The cases: (a) a remembered enemy killed unseen by a status vs. left alive (every array, not only its type-2 entry: counts, `watched`, `aims_at`, the far planes); (b) a remembered enemy moved unseen; (c) a remembered enemy converted unseen; (d) an extra grenade thrown by an unseen unit before a grenade the team sees (the seen grenade's `list_uid` unchanged); (e) an unseen conversion of the owner of a charge the team sees (`side`, `whose` unchanged); (f) the same sim with the full view ON vs OFF -- here EVERY observation array is compared, physics planes included, since nothing physical differs (a cache shared with the full view) | a builder reads liveness, place, class, team or count of a unit or object the team cannot know, or a cache crosses the wall |
 | **A record outlives its unit's unseen death.** A seen enemy walks out of sight and is killed by a status out of sight: its type-2 entry stays for `memory_ticks` with its `age` rising and its `dx`, `class`, `vel` frozen at the sighting; a seen death drops it on the next decision; its `cos`, `sin` are `Record.facing_q`'s (frozen too). Every OTHER array's invariance under the unseen death is case (a) of the family above | the list reads liveness or the live unit |
 | **A level without a room graph is refused.** `load_levels` on a run with `spec = "v1"` and `levels = ["playground"]` (no `rooms.npy`) raises naming the level and the spec; the same run under `"crop"` loads | the refusal is missing or on the wrong path |
 | **The two row flags' truth table.** A soldier killed mid-match: `in_match` 1, `valid` 0, zero vector, mask all 0; a converted one likewise; a slot beyond the team's `n`: 0, 0; a living one: 1, 1 -- in `obs` and in `final_*` | a dead row reads as an empty place, or is observed |
@@ -956,11 +995,11 @@ rule, the order's absolute `until`, the wind read per footprint).
 | 6 | the budget: 70 % of today's env-ticks/s at decimation 4, held at (c) |
 | 8 (a) | the vector's `air` block and `felt_temp` read 0 until (b) |
 
-**PENDING ERIK** (v2; not a CHOICE -- the lead does not decide it):
+**RULED BY ERIK** (v2 put it to him; not a CHOICE -- the lead did not decide it):
 
-| where | question |
-|---|---|
-| 3.2, 10 | **The fields carry every unit's body** (`stamp_units`): accept the bodies' aerodynamic and radiative imprint in the eight physics planes as an ACCEPTED GAP (proposed: the physics is real), or remove it from the observation (a later spec version). Patch (b) measures it in a vent draft and reports the near/far ratios before the question is put. |
+| where | question | ruling |
+|---|---|---|
+| 3.2, 10 | **The fields carry every unit's body** (`stamp_units`): accept the bodies' aerodynamic and radiative imprint in the eight physics planes as an ACCEPTED GAP (proposed: the physics is real), or remove it from the observation (a later spec version). Patch (b) measured it in a vent draft (the table in 3.2) before the question was put. | **ACCEPTED GAP** -- Erik, 2026-11-12: "on the wind question, its OK! We accept it!" |
 
 **For the orchestrator** (findings outside 1g's scope, v2):
 
@@ -980,8 +1019,8 @@ rule, the order's absolute `until`, the wind read per footprint).
   units, grenades and charges reach a soldier only through its team's
   picture and a team-mate's line of sight, the map, doors and fields
   unfogged (the fields carry the bodies' own aerodynamic and radiative
-  imprint, `stamp_units` -- the ACCEPTED GAP if Erik accepts it, 3.2;
-  PENDING ERIK until then); the builders reach the sim ONLY through the
+  imprint, `stamp_units` -- an ACCEPTED GAP, Erik 2026-11-12, 3.2); the
+  builders reach the sim ONLY through the
   `TeamKnowledge` view and its `ObsWorld` facade, never `sim.units` /
   `roster` / `get_unit` / `projectiles` / `planted_charges`, every cache
   keyed by its inputs; an object's id is its team's own counter, its owner

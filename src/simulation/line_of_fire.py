@@ -43,6 +43,25 @@ def solid_in_way(sim, a, b) -> bool:
     return False
 
 
+def solid_in_way_many(sim, a, targets) -> list:
+    """:func:`solid_in_way` from ``a`` to every ``(x, y)`` of ``targets``
+    in ONE ``rays_clear`` call (the full view's rows ask for every living
+    unit at once; a one-pair call per target was the cost), the same
+    answer pair for pair. Returns a list of bools in ``targets``' order."""
+    ax, ay = int(a[0]), int(a[1])
+    targets = [(int(t[0]), int(t[1])) for t in targets]
+    if not targets:
+        return []
+    clear = vision.rays_clear(sim, [(ay, ax, by, bx) for bx, by in targets],
+                              physical=True)
+    cover = [c for c in (getattr(sim, "cover", ()) or ()) if c.alive]
+    out = []
+    for (bx, by), ok in zip(targets, clear.tolist()):
+        out.append((not ok) or any(c.blocks_segment(ax, ay, bx, by)
+                                   for c in cover))
+    return out
+
+
 def mate_in_way(a, b, mates, clear_tiles: int, fp: int) -> bool:
     """Is a team-mate's body near the segment ``a`` -> ``b`` (centre tiles,
     ``(x, y)``), anywhere along it? ``mates`` are the OTHER mates' centre
@@ -67,4 +86,4 @@ def mate_in_way(a, b, mates, clear_tiles: int, fp: int) -> bool:
     return False
 
 
-__all__ = ["solid_in_way", "mate_in_way"]
+__all__ = ["solid_in_way", "solid_in_way_many", "mate_in_way"]
