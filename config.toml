@@ -4711,7 +4711,9 @@ x_max = 2.5
 [zombie]
 hp = 400
 # (the walk cadence is [speeds] zombie_shamble_mps since G1p-c)
-melee_damage = 60
+# Erik, 2026-11-12: three bites kill a 100 HP marine, two do not (34 x 3 = 102;
+# the marine's KINETIC mitigation is neutral, so the bite lands whole). Was 60.
+melee_damage = 34
 trigger_radius = 48        # tiles (squared-distance compare, strictly inside)
 propagation_radius = 15    # tiles (an awake zombie wakes those within)
 # The HORDE FIELD (gameplay pack G9p, the residency design's P3d;
@@ -4788,7 +4790,9 @@ fire_damage_multiplier = 4.0
 # Q16.16-snapped at species-table import (door 2) -> RESTART to apply, not
 # Ctrl+R. The marine baseline (1.0) lives on EnvironmentProfile.stability.
 stability = 0.9
-attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
+# Erik, 2026-11-12: one bite every 2 s (was 1.0) -- a lone zombie at contact
+# kills a marine who only fires back; a shove, a step back and fire wins.
+attack_cooldown_seconds = 2.0      # 2.0 s -> 48 ticks @ 24 tps
 # G4p (#181): the zombie state's resistance to EXPOSURE (the focus-fire law,
 # [damage.exposure]; selected on is_zombie like its mitigation): a scalar or a
 # table by damage type, in [0, 1]; 0 = a zombie is exposed like anyone else.
