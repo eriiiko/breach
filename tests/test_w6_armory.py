@@ -350,7 +350,7 @@ def test_plasma_splash_payload_identity_with_its_row():
     t = get_tables()
     sunspot = t.weapons.by_name["sunspot"]
     ammo = t.ammo_for_weapon(sunspot)
-    b = BulletInFlight(None, 1, sunspot, ammo, 5.0, 5.0, 0.0, 1.0, 0.0)
+    b = BulletInFlight(None, 1, sunspot, ammo, 5 << 16, 5 << 16, 0, 1 << 16, 0)
     row = t.payloads.by_name["plasma_splash_small"]
     assert b.payload is row
     assert row.heat_amount == 3200.0 and row.heat_radius == 2.0

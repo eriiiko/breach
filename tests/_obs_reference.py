@@ -593,8 +593,15 @@ def felt_temperature(sim, u):
     c = CFG.combat
     if peak <= 0:
         return float(c.heat_ambient_ref)
-    phi = peak / 65536 * float(c.unit_absorption) * (1.0 - float(c.unit_reflectivity))
-    return float(c.heat_ambient_ref) + float(c.heat_flux_to_temp) * phi
+    # #29 P3e: the row's law in Q16 -- the one gain quantized once, its
+    # product with the Q16 peak rounded half away, the ambient added.
+    gain = (float(c.heat_flux_to_temp) * float(c.unit_absorption)
+            * (1.0 - float(c.unit_reflectivity)))
+    g_q = int(math.floor(gain * 65536 + 0.5))
+    a_q = int(math.floor(float(c.heat_ambient_ref) * 65536 + 0.5))
+    prod = g_q * peak
+    t_q = a_q + (prod + 32768) // 65536          # both non-negative
+    return t_q / 65536
 
 
 def raw_tile(sim, name, y, x):

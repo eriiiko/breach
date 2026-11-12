@@ -351,13 +351,14 @@ def tick_statuses(units, events=None) -> None:
         for st in statuses:
             row = STATUS_REGISTRY[st.kind]
             if row.dtype is not None and st.magnitude_q16 != 0 and u.alive:
-                amount = unit_fixed.dequantize_scalar(st.magnitude_q16)
+                amount_q = int(st.magnitude_q16)   # #29 P3e: the Q16 itself
                 if row.dtype == HEAL:
-                    amount = -amount    # heal = negative-direction damage
+                    amount_q = -amount_q  # heal = negative-direction damage
                 apply_packet(
                     u,
-                    DamagePacket(amount=amount, dtype=row.dtype,
-                                 attacker_id=st.source_id),
+                    DamagePacket(amount=unit_fixed.dequantize_scalar(amount_q),
+                                 dtype=row.dtype, attacker_id=st.source_id,
+                                 amount_q=amount_q),
                     events, source=row.name)
             st.remaining_ticks -= 1
 

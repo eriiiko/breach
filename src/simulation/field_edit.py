@@ -20,9 +20,20 @@ Three composing parts:
   coords, amount, mode, falloff, channel, clamp, noise, source_id).
 * :func:`apply_field_edit` — the ONLY code that writes a field through this
   path. :func:`_iter_region` yields ``(row, col, weight)`` (the disc/beam/rect
-  loop, written once); :func:`_combine` does float ``+=`` / ``-=`` / ``max`` for
-  float fields and a Q16.16 saturating branch for the ``heat`` field (never a
-  float ``+=`` on ``heat``).
+  loop, written once); the combine is INTEGER in the field's own currency
+  (#29 P3e, below), a saturating branch for the ``heat`` field.
+
+INTEGER (#29 P3e, design §4.8 / §7): an edit's ``amount`` is quantized ONCE,
+at the door, into its field's currency (:data:`_CURRENCY`; or handed in
+already there as ``amount_q``); every region weight is a Q16 integer (the
+LINEAR falloff ``1 - dist/radius`` exact, rounded once:
+``unit_fixed.falloff_round``; a TILES region's integer weights over its
+``weight_den``); the noise multiplier is an integer draw
+(``draws.noise_mult_q16``); the blast's air read a Q16 plane. Per tile the
+contribution is ``amount_q * weight * mult * scale`` over the product of
+their denominators, rounded ONCE (half away), and combined with integer
+``+`` / ``-`` / ``max`` and the policy's clamp in the same currency. No float
+between the door and the field; the device edit queue (P4c) transcribes it.
 * :class:`EditQueue` — consumers ``enqueue`` during the tick; ``flush`` applies
   EVERY queued edit in a **stable sort** by ``(field, source_id, region, seq)``,
   so the applied order is identical on every machine regardless of enqueue
@@ -59,6 +70,8 @@ from simulation import wave_fixed     # S2a: wave_source Q16.16 quantize helpers
 from simulation import gas_fixed      # S2b: smoke/gas Q16.16 quantize helpers
 from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 quantize helpers
 from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
+from simulation import unit_fixed as _ufx   # #29 P3e: the integer kit
+from simulation import draws as _draws      # #29 P3e: the noise draw
 from simulation import gases as _gas_ids  # #88 P2: the SMOKE id a "smoke" edit books under
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
@@ -172,6 +185,8 @@ class FieldEdit:
     noise: float = 0.0                           # >0 = per-tile multiplier in [1-noise, 1], drawn from sim.rng
     scale: Any = dc_field(default=None, compare=False)  # optional (h, w) Q16 per-tile factor (the blast's air read, #31)
     source_id: int = 0                           # bookkeeping + stable-sort grouping (one emitter = one id)
+    amount_q: Optional[int] = None               # #29 P3e: the amount already in the field's currency (else ``amount`` quantized once)
+    weight_den: int = 0                          # #29 P3e: TILES only -- its weights are ints over this (0 = float weights, quantized to Q16)
 
 
 # ---------------------------------------------------------------------------
@@ -296,41 +311,49 @@ def _policy(field: str) -> _FieldPolicy:
 # so every consumer is bounds-safe.
 # ---------------------------------------------------------------------------
 def _iter_region(region: Region, coords: Tuple, falloff: Falloff, shape):
-    """Yield ``(row, col, weight)`` for every in-bounds tile of ``region``.
+    """Yield ``(row, col, weight_q)`` for every in-bounds tile of ``region``,
+    ``weight_q`` a Q16 int (#29 P3e).
 
     Order is row-major (ascending row, then ascending col) and identical on
     every machine — this is what makes the noise RNG draw sequence (one draw per
-    surviving tile, at flush) deterministic. ``weight`` applies ``falloff``:
-    FLAT -> 1; LINEAR -> ``1 - dist/radius`` (clamped to [0, 1]).
+    surviving tile, at flush) deterministic. ``weight_q`` applies ``falloff``:
+    FLAT -> ``ONE``; LINEAR -> ``1 - dist/radius`` in Q16, the real value
+    rounded once (``unit_fixed.falloff_round``; 0 at and past the radius).
 
     DISC uses a STRICT ``dist < radius`` membership (matching the legacy
-    ``add_explosion_smoke`` predicate); the ``dist == radius`` ring has weight 0
-    under LINEAR anyway, so excluding it changes no additive/max result while
-    keeping the deterministic per-tile RNG draw count exact.
+    ``add_explosion_smoke`` predicate) as the integer compare ``d2 * 2^32 <
+    r_q^2`` on the Q16 radius (the coords' float radius quantized once, the
+    door). TILES yields its explicit weights: ints over the edit's
+    ``weight_den`` (see :func:`apply_field_edit`), or floats quantized to Q16.
     """
     h, w = shape
-
+    one = _ufx.FP_ONE
     if region == Region.TILE:
         r, c = int(coords[0]), int(coords[1])
         if 0 <= r < h and 0 <= c < w:
-            yield r, c, 1.0
+            yield r, c, one
         return
-
     if region == Region.DISC:
-        cr, cc, radius = int(coords[0]), int(coords[1]), float(coords[2])
-        r0 = max(0, int(np.floor(cr - radius)))
-        r1 = min(h - 1, int(np.ceil(cr + radius)))
-        c0 = max(0, int(np.floor(cc - radius)))
-        c1 = min(w - 1, int(np.ceil(cc + radius)))
+        cr, cc = int(coords[0]), int(coords[1])
+        r_q = _ufx.quantize_scalar(float(coords[2]))      # p3e-door: radius
+        if r_q <= 0:
+            return
+        ext = (r_q + one - 1) >> _ufx.FP_SHIFT            # ceil(radius)
+        r2 = r_q * r_q
+        r0 = max(0, cr - ext)
+        r1 = min(h - 1, cr + ext)
+        c0 = max(0, cc - ext)
+        c1 = min(w - 1, cc + ext)
+        linear = falloff == Falloff.LINEAR
         for r in range(r0, r1 + 1):
             dr = r - cr
             for c in range(c0, c1 + 1):
                 dc = c - cc
-                dist = float(np.sqrt(dr * dr + dc * dc))
-                if radius > 0.0 and dist < radius:
-                    yield r, c, _falloff_weight(falloff, dist, radius)
+                d2 = (dr * dr + dc * dc) << 32
+                if d2 < r2:
+                    yield r, c, (_ufx.falloff_round(one, d2, r2) if linear
+                                 else _flat_weight(falloff))
         return
-
     if region == Region.RECT:
         r0, c0, r1, c1 = (int(coords[0]), int(coords[1]),
                           int(coords[2]), int(coords[3]))
@@ -342,210 +365,132 @@ def _iter_region(region: Region, coords: Tuple, falloff: Falloff, shape):
         r1 = min(h - 1, r1); c1 = min(w - 1, c1)
         for r in range(r0, r1 + 1):
             for c in range(c0, c1 + 1):
-                yield r, c, 1.0
+                yield r, c, one
         return
-
     if region == Region.BEAM:
-        # Thick line from (r0,c0) to (r1,c1) with half-width `width`. We rasterise
-        # the bounding box and keep tiles whose perpendicular distance to the
-        # segment is <= width. Row-major scan -> deterministic order. LINEAR
-        # falloff fades with perpendicular distance across the beam's width.
-        r0, c0, r1, c1, width = (int(coords[0]), int(coords[1]),
-                                 int(coords[2]), int(coords[3]), float(coords[4]))
+        # The point-to-segment distance as an exact rational num / den
+        # (#29 P3e), the membership and the LINEAR weight on it.
+        r0, c0, r1, c1 = (int(coords[0]), int(coords[1]),
+                          int(coords[2]), int(coords[3]))
+        w_q = _ufx.quantize_scalar(float(coords[4]))      # p3e-door: width
+        ext = (max(w_q, 0) + one - 1) >> _ufx.FP_SHIFT    # ceil(width)
+        R_q = w_q if w_q > one else one                   # max(width, 1)
         seg_r = r1 - r0
         seg_c = c1 - c0
-        seg_len2 = float(seg_r * seg_r + seg_c * seg_c)
-        br0 = max(0, min(r0, r1) - int(np.ceil(width)))
-        br1 = min(h - 1, max(r0, r1) + int(np.ceil(width)))
-        bc0 = max(0, min(c0, c1) - int(np.ceil(width)))
-        bc1 = min(w - 1, max(c0, c1) + int(np.ceil(width)))
+        seg_len2 = seg_r * seg_r + seg_c * seg_c
+        br0 = max(0, min(r0, r1) - ext)
+        br1 = min(h - 1, max(r0, r1) + ext)
+        bc0 = max(0, min(c0, c1) - ext)
+        bc1 = min(w - 1, max(c0, c1) + ext)
+        linear = falloff == Falloff.LINEAR
         for r in range(br0, br1 + 1):
             for c in range(bc0, bc1 + 1):
-                # Perpendicular distance from (r, c) to the segment.
-                if seg_len2 <= 0.0:
-                    t = 0.0
+                ar, ac = r - r0, c - c0
+                dot = ar * seg_r + ac * seg_c
+                if seg_len2 <= 0 or dot <= 0:
+                    num, den = ar * ar + ac * ac, 1
+                elif dot >= seg_len2:
+                    br_, bc_ = r - r1, c - c1
+                    num, den = br_ * br_ + bc_ * bc_, 1
                 else:
-                    t = ((r - r0) * seg_r + (c - c0) * seg_c) / seg_len2
-                    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-                pr = r0 + t * seg_r
-                pc = c0 + t * seg_c
-                dist = float(np.sqrt((r - pr) ** 2 + (c - pc) ** 2))
-                if dist <= width:
-                    # LINEAR fades across the half-width; FLAT is uniform.
-                    yield r, c, _falloff_weight(falloff, dist, max(width, 1.0))
+                    num = (ar * ar + ac * ac) * seg_len2 - dot * dot
+                    den = seg_len2
+                # dist <= width  <=>  num * 2^32 <= w_q^2 * den
+                if w_q < 0 or (num << 32) > w_q * w_q * den:
+                    continue
+                if linear:
+                    yield r, c, _ufx.falloff_round(one, num << 32,
+                                                   R_q * R_q * den)
+                else:
+                    yield r, c, _flat_weight(falloff)
         return
-
     if region == Region.TILES:
-        # A walked set of tiles (#31): the caller's list IS the region and its
-        # weights ARE the falloff (`falloff` is not read). Row-major is the
-        # caller's contract, as it is every other region's: the noise RNG draw
-        # sequence follows this order.
         for r, c, weight in coords:
             r, c = int(r), int(c)
             if 0 <= r < h and 0 <= c < w:
-                yield r, c, float(weight)
+                yield r, c, weight
         return
-
     raise ValueError(f"FieldEdit: unknown region {region!r}")  # pragma: no cover
 
 
-def _falloff_weight(falloff: Falloff, dist: float, radius: float) -> float:
-    """Per-tile falloff weight in [0, 1]."""
-    if falloff == Falloff.FLAT:
-        return 1.0
-    if falloff == Falloff.LINEAR:
-        if radius <= 0.0:
-            return 1.0
-        wgt = 1.0 - dist / radius
-        return 0.0 if wgt < 0.0 else (1.0 if wgt > 1.0 else wgt)
+def _flat_weight(falloff: Falloff) -> int:
+    """The FLAT weight (``ONE``); refuses an unknown falloff."""
+    if falloff == Falloff.FLAT or falloff == Falloff.LINEAR:
+        return _ufx.FP_ONE
     raise ValueError(f"FieldEdit: unknown falloff {falloff!r}")  # pragma: no cover
 
 
-# ---------------------------------------------------------------------------
-# Combine — old value + contribution -> new value, per mode and dtype.
-# Float fields: +=, -=, max. The `heat` (Q16.16) field: NEVER a float +=; the
-# contribution is quantized and saturating-added.
-# ---------------------------------------------------------------------------
-def _combine_float(old: float, contribution: float, mode: EditMode,
-                   clamp: Optional[Tuple[float, float]]) -> float:
+#: Counts per real unit of each policy dtype's field (the currency an edit's
+#: amount is quantized into, once, at the door; #29 P3e).
+_CURRENCY = {
+    "gas": gas_fixed.TRACE_ONE,          # the trace planes (#88)
+    "atmosphere": gas_fixed.BULK_ONE,    # bulk N, split 21 / 79 below
+    "wave": HEAT_SCALE,                  # wave_source -> temperature, Q16
+    "fire": fire_fixed.FP_ONE,
+    "heat": HEAT_SCALE,
+    "water": water_fixed.FP_ONE,
+    "gas_energy": 1,                     # raw N * T_abs counts
+}
+
+#: The atmosphere policy's ambient split of a bulk-N deposit, as the exact
+#: rational 21 / 100 and 79 / 100 (EOS refactor P3; #29 P3e).
+_O2_PCT, _N2_PCT = 21, 79
+
+_T_MAX_PHYS_Q = int(T_MAX_PHYS) * HEAT_SCALE
+
+
+def _quantize_in(value: float, scale: int) -> int:
+    """A real amount into ``scale`` counts per unit, round half away (the
+    ``quantize_scalar`` rule; the door)."""
+    v = float(value) * scale                                  # p3e-door
+    return int(np.floor(v + 0.5)) if v >= 0.0 else int(np.ceil(v - 0.5))
+
+
+def amount_q_of(edit: FieldEdit, dtype: str) -> int:
+    """The edit's amount in its field's currency: ``amount_q`` as given, else
+    ``amount`` quantized ONCE here (#29 P3e)."""
+    if edit.amount_q is not None:
+        return int(edit.amount_q)
+    return _quantize_in(edit.amount, _CURRENCY[dtype])
+
+
+def _clamp_q(clamp, scale: int):
+    """A float clamp pair into ``(lo_q, hi_q)`` counts (``None`` for an
+    unbounded side); ``None`` for no clamp."""
+    if clamp is None:
+        return None
+    lo, hi = clamp
+    lo_q = None if lo == float("-inf") else _quantize_in(lo, scale)
+    hi_q = None if hi == float("inf") else _quantize_in(hi, scale)
+    return (lo_q, hi_q)
+
+
+def _combine_q(old: int, c: int, mode: EditMode, clamp_q) -> int:
+    """THE integer combine: ``old + c`` / ``old - c`` / ``max(old, c)``, then
+    the clamp, all in one currency (#29 P3e)."""
     if mode == EditMode.ADD:
-        new = old + contribution
+        new = old + c
     elif mode == EditMode.REMOVE:
-        new = old - contribution
+        new = old - c
     elif mode == EditMode.MAX:
-        new = old if old >= contribution else contribution
+        new = old if old >= c else c
     else:  # pragma: no cover - deferred modes
-        raise ValueError(f"FieldEdit: unsupported float mode {mode!r}")
-    if clamp is not None:
-        lo, hi = clamp
-        if new < lo:
+        raise ValueError(f"FieldEdit: unsupported mode {mode!r}")
+    if clamp_q is not None:
+        lo, hi = clamp_q
+        if lo is not None and new < lo:
             new = lo
-        elif new > hi:
+        elif hi is not None and new > hi:
             new = hi
     return new
 
 
-def _combine_water(old_q: int, contribution: float, mode: EditMode,
-                   clamp: Optional[Tuple[float, float]]) -> int:
-    """Q16.16 combine for the `water_depth` field (S1). The stored value is an
-    int32 in Q16.16 metres; dequantize to metres, combine in metres with the
-    metres clamp (the float path's exact semantics), re-quantize round-to-
-    nearest. Keeps edits authored in metres while the field stays integer."""
-    old_m = float(old_q) / water_fixed.FP_ONE_F
-    new_m = _combine_float(old_m, contribution, mode, clamp)
-    return water_fixed.quantize_scalar(new_m)
-
-
-def _combine_wave(old_q: int, contribution: float, mode: EditMode,
-                  clamp: Optional[Tuple[float, float]]) -> int:
-    """Q16.16 combine for the `wave_source` field (S2a). The stored value is an
-    int32 in Q16.16; dequantize to real units, combine with the float path's
-    exact +=/-=/max semantics (and any clamp), re-quantize round-to-nearest.
-    Keeps the explosion's wave_source deposits authored in real units while the
-    field stays integer/deterministic (the same idiom as `_combine_water`)."""
-    old_v = float(old_q) / wave_fixed.FP_ONE_F
-    new_v = _combine_float(old_v, contribution, mode, clamp)
-    return wave_fixed.quantize_scalar(new_v)
-
-
-# (_combine_atmosphere() DELETED - audit Patch A / A9, 2026-08-04. Its own
-# docstring said it was "RETAINED for any legacy direct caller"; a repo-wide
-# grep found none. P is solver-owned since EOS refactor P3, so a direct write
-# here would be clobbered next tick anyway - apply_field_edit's "atmosphere"
-# policy goes through _combine_atmosphere_to_N below.)
-
-# EOS refactor P3 (design §6 "FieldEdit atmosphere/wave_source policies"):
-# ambient composition split (P1 §2.1) — 21% O2, 79% inert_N2, matching the
-# calibration that makes N_amb == 1.0 == P_amb at ambient (config
-# [physics.eos] C = 1/t_amb_k). An "atmosphere" edit's `amount`/`contribution`
-# keeps the SAME real-number scale the old direct-P edit used (both are
-# calibrated to the same N_amb==P_amb==1.0 point), so shipped config values
-# land in a similar ballpark without a forced re-tune — an explicit
-# k_push/k_p-style tuning pass is a LATER patch (P3 reports deltas, does not
-# secretly retune, per the design's own instruction).
-_O2_FRACTION = 0.21
-_N2_FRACTION = 0.79
-
-
-def _combine_atmosphere_to_N(old_o2_q: int, old_n2_q: int, contribution: float,
-                             mode: EditMode,
-                             clamp: Optional[Tuple[float, float]]) -> Tuple[int, int]:
-    """EOS refactor P3: the `atmosphere` FieldEdit policy's new target — a
-    bulk-N deposit split 21/79 across `gas[O2]`/`gas[INERT_N2]` (design §6),
-    REPLACING the direct P write `_combine_atmosphere` performed. `contribution`
-    is split by the ambient fraction BEFORE combining, and any clamp is
-    likewise fraction-scaled so a `(0, 2.0)` atmosphere clamp still bounds the
-    TOTAL N the same way a total-pressure clamp would have."""
-    old_o2 = float(gas_fixed.dequantize_bulk(old_o2_q))
-    old_n2 = float(gas_fixed.dequantize_bulk(old_n2_q))
-    o2_clamp = None
-    n2_clamp = None
-    if clamp is not None:
-        lo, hi = clamp
-        o2_clamp = (lo * _O2_FRACTION, hi * _O2_FRACTION)
-        n2_clamp = (lo * _N2_FRACTION, hi * _N2_FRACTION)
-    new_o2 = _combine_float(old_o2, contribution * _O2_FRACTION, mode, o2_clamp)
-    new_n2 = _combine_float(old_n2, contribution * _N2_FRACTION, mode, n2_clamp)
-    return gas_fixed.quantize_bulk_scalar(new_o2), gas_fixed.quantize_bulk_scalar(new_n2)
-
-
-def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
-                         clamp: Optional[Tuple[float, float]]) -> int:
-    """EOS refactor P3: the `wave_source` FieldEdit policy's new target —
-    a `temperature` energy deposit (design §6: "wave_source -> T energy
-    deposit"; explosions inject energy, not phantom acoustic staging).
-    `temperature` shares the Q16.16 scale with `heat` (TEMP_SCALE ==
-    HEAT_SCALE == 65536, materials.py); dequantize, combine with the float
-    path's exact +=/-=/max semantics, re-quantize round-to-nearest (the same
-    idiom as every other `_combine_*` helper). `contribution` keeps the SAME
-    real-number scale the old `wave_source` edit used — a Kelvin re-tune of
-    explosion `amount`s is a LATER pass, not done here.
-
-    v2.4 (eos-p3fix-thermal-ceiling): the result additionally caps at
-    T_MAX_PHYS — this is a T write path, and an authored explosion deposit
-    past the physical ceiling would silently break the field-wide invariant
-    every C++ solver rail maintains (module constant above)."""
-    old_v = float(old_q) / HEAT_SCALE
-    new_v = _combine_float(old_v, contribution, mode, clamp)
-    if new_v > T_MAX_PHYS:
-        new_v = T_MAX_PHYS
-    return int(new_v * HEAT_SCALE + (0.5 if new_v >= 0 else -0.5))
-
-
-def _combine_gas(old_q: int, contribution: float, mode: EditMode,
-                 clamp: Optional[Tuple[float, float]]) -> int:
-    """The TRACE-currency combine for the `smoke` / gas fields (S2b; #88). The
-    stored value is an int32 in the trace currency (gas_fixed.TRACE_ONE per real
-    unit); dequantize to real density (exact in float64 for any int32 tile), combine with the float
-    path's exact +=/-=/max semantics (and the policy's TRACE_CLAMP: additive,
-    floor 0 — smoke transport v2 D1), re-quantize round-to-nearest. Keeps the
-    explosion smoke deposit / clear authored in real density
-    while the field stays integer/deterministic (the same idiom as
-    `_combine_wave` / `_combine_water`)."""
-    old_v = float(gas_fixed.dequantize_trace(old_q))
-    new_v = _combine_float(old_v, contribution, mode, clamp)
-    return gas_fixed.quantize_trace_scalar(new_v)
-
-
-def _combine_fire(old_q: int, contribution: float, mode: EditMode,
-                  clamp: Optional[Tuple[float, float]]) -> int:
-    """Q16.16 combine for the `fire` field (S3a). The stored value is an int32 in
-    Q16.16 intensity; dequantize to real [0,1] intensity, combine with the float
-    path's exact +=/-=/max semantics (and the [0,1] clamp), re-quantize round-to-
-    nearest. Keeps the explosion's `fire = max(...)` ignite deposit authored in
-    real intensity while the field stays integer/deterministic (the same idiom as
-    `_combine_gas`)."""
-    old_v = float(old_q) / fire_fixed.FP_ONE_F
-    new_v = _combine_float(old_v, contribution, mode, clamp)
-    return fire_fixed.quantize_scalar(new_v)
-
-
-def _combine_heat(old: int, contribution: float, mode: EditMode) -> int:
-    """Q16.16 combine for the `heat` field. ADD only path uses the saturating
-    integer add; REMOVE/MAX are defined for completeness (saturating subtract /
-    integer max) but the live deposit path is ADD.
-    """
-    raw = heat_quantize(contribution)
+def _combine_heat_q(old: int, c: int, mode: EditMode) -> int:
+    """The ``heat`` field's combine on a Q16 contribution: a non-positive
+    contribution lands as 0 (the deposit is additive-only, as
+    :func:`heat_quantize` made it), ADD saturates at ``INT32_MAX``, REMOVE
+    floors at 0, MAX is the integer max."""
+    raw = c if c > 0 else 0
     if mode == EditMode.ADD:
         return heat_saturating_add(int(old), raw)
     if mode == EditMode.REMOVE:
@@ -557,9 +502,6 @@ def _combine_heat(old: int, contribution: float, mode: EditMode) -> int:
     raise ValueError(f"FieldEdit: unsupported heat mode {mode!r}")  # pragma: no cover
 
 
-# ---------------------------------------------------------------------------
-# The applier — the ONLY code that writes a field through this path.
-# ---------------------------------------------------------------------------
 def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     """Apply one :class:`FieldEdit` to ``gmap`` in place.
 
@@ -606,10 +548,31 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     skip_mask = pol.skip(gmap) if pol.skip is not None else None
     clamp = edit.clamp if edit.clamp is not None else pol.clamp
 
-    noise = edit.noise
-    if noise > 0.0:
-        noise = 1.0 if noise > 1.0 else noise
-    low = 1.0 - noise
+    # #29 P3e: the door -- the amount into the field's currency, the noise
+    # into a Q16 low bound, the clamp into counts, ONCE per edit.
+    scale_cur = _CURRENCY.get(pol.dtype)
+    if scale_cur is None:
+        raise ValueError(f"FieldEdit: no currency for policy dtype "
+                         f"{pol.dtype!r}")
+    amount_q = amount_q_of(edit, pol.dtype)
+    noise_q = 0
+    if edit.noise > 0.0:
+        noise_q = min(_ufx.quantize_scalar(float(edit.noise)),   # p3e-door
+                      _ufx.FP_ONE)
+    low_q = _ufx.FP_ONE - noise_q
+    tiles_int = edit.region == Region.TILES and int(edit.weight_den) > 0
+    den = int(edit.weight_den) if tiles_int else _ufx.FP_ONE
+    if noise_q:
+        den *= _ufx.FP_ONE
+    if edit.scale is not None:
+        den *= _ufx.FP_ONE
+    clamp_q = _clamp_q(clamp, scale_cur)
+    clamp_o2 = clamp_n2 = None
+    if pol.dtype == "atmosphere" and clamp is not None:
+        clamp_o2 = _clamp_q((clamp[0] * 0.21, clamp[1] * 0.21),  # p3e-door
+                            scale_cur)
+        clamp_n2 = _clamp_q((clamp[0] * 0.79, clamp[1] * 0.79),  # p3e-door
+                            scale_cur)
 
     is_heat = (pol.dtype == "heat")
     is_water = (pol.dtype == "water")
@@ -669,20 +632,22 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
         if skip_mask is not None and skip_mask[r, c]:
             continue
 
-        if noise > 0.0:
-            mult = float(rng.uniform(low, 1.0))
-        else:
-            mult = 1.0
-
-        contribution = edit.amount * weight * mult
+        # #29 P3e: amount_q x weight x mult x scale over their denominators,
+        # rounded ONCE (half away) -- the contribution in the field's currency.
+        if edit.region == Region.TILES and not tiles_int:
+            weight = _ufx.quantize_scalar(float(weight))  # p3e-door: float weight
+        num = amount_q * int(weight)
+        if noise_q:
+            num *= _draws.noise_mult_q16(rng, low_q)
         if edit.scale is not None:
-            contribution *= int(edit.scale[r, c]) / _Q16_ONE
+            num *= int(edit.scale[r, c])
+        contribution = _ufx.div_round(num, den)
 
         if is_heat:
-            arr[r, c] = _combine_heat(arr[r, c], contribution, edit.mode)
+            arr[r, c] = _combine_heat_q(arr[r, c], contribution, edit.mode)
         elif is_water:
-            arr[r, c] = _combine_water(int(arr[r, c]), contribution,
-                                       edit.mode, clamp)
+            arr[r, c] = _combine_q(int(arr[r, c]), contribution, edit.mode,
+                                   clamp_q)
         elif is_wave:
             # EOS refactor P3: `arr` is `gmap.temperature` here (resolved
             # above) — the energy-deposit target, not the retired wave_source
@@ -698,7 +663,9 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             # T write: those are not in the books, and a solid's T is its own
             # truth (D2).
             t_old = int(arr[r, c])
-            t_new = _combine_temperature(t_old, contribution, edit.mode, clamp)
+            t_new = _combine_q(t_old, contribution, edit.mode, clamp_q)
+            if t_new > _T_MAX_PHYS_Q:          # the T write path's ceiling
+                t_new = _T_MAX_PHYS_Q
             if has_seam and gmap.gas_is_accountable(r, c):
                 n = gmap.gas_bulk_n_at(r, c)
                 gmap.gas_energy_deposit(r, c, n * (t_new - t_old),
@@ -716,7 +683,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
                                         "field_edit")
         elif is_gas:
             old_q = int(arr[r, c])
-            new_q = _combine_gas(old_q, contribution, edit.mode, clamp)
+            new_q = _combine_q(old_q, contribution, edit.mode, clamp_q)
             d = new_q - old_q
             if d > 0:
                 # An insertion (ADD, MAX, or any positive change): booked at
@@ -738,8 +705,14 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             # EOS refactor P3: bulk-N deposit split 21/79 across O2/inert_N2
             # (o2_arr/n2_arr resolved above), not a direct P write.
             old_o2, old_n2 = int(o2_arr[r, c]), int(n2_arr[r, c])
-            new_o2, new_n2 = _combine_atmosphere_to_N(
-                old_o2, old_n2, contribution, edit.mode, clamp)
+            # #29 P3e: the split as the exact rational 21 / 79 per hundred,
+            # each share rounded once, in the bulk currency.
+            new_o2 = _combine_q(old_o2,
+                                _ufx.div_round(contribution * _O2_PCT, 100),
+                                edit.mode, clamp_o2)
+            new_n2 = _combine_q(old_n2,
+                                _ufx.div_round(contribution * _N2_PCT, 100),
+                                edit.mode, clamp_n2)
             o2_arr[r, c] = new_o2
             n2_arr[r, c] = new_n2
             # arc #54 P-G1b (design §2.7 FieldEdit row): an `atmosphere` edit
@@ -759,14 +732,11 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
                     gmap.gas_energy_deposit(
                         r, c, dn * gmap.gas_t_abs_at(r, c), "field_edit_atm")
         elif is_fire:
-            arr[r, c] = _combine_fire(int(arr[r, c]), contribution,
-                                      edit.mode, clamp)
-        elif ch is None:
-            arr[r, c] = _combine_float(float(arr[r, c]), contribution,
-                                       edit.mode, clamp)
-        else:
-            arr[r, c, ch] = _combine_float(float(arr[r, c, ch]), contribution,
-                                           edit.mode, clamp)
+            arr[r, c] = _combine_q(int(arr[r, c]), contribution, edit.mode,
+                                   clamp_q)
+        else:  # pragma: no cover - every policy dtype is integer (P3e)
+            raise ValueError(f"FieldEdit: no integer combine for "
+                             f"{pol.dtype!r}")
 
 
 # ---------------------------------------------------------------------------

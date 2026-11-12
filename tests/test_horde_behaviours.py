@@ -51,8 +51,16 @@ OFF = [(k, False) for k in horde.BEHAVIOUR_SWITCHES]
 # of the field law by another cause retires them with it.
 _STAGE1_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=264,
-    field_digest="d9c4c5cef6c04f9d80eaa2b368d88782"
-                 "a8fa28132f7cd39a8011c230b88cecde",
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was d9c4c5cef6c04f9d80eaa2b368d88782a8fa28132f7cd39a8011c230b88cecde)
+    field_digest="22e944fe6477d16ab0367b9562c357e9"
+                 "6c8ed0a7a2277dde8dce6b2a486e9f23",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -70,8 +78,16 @@ _STAGE1_SHIP_DEMO = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was 9f78cd9b7ffe6d7016457f3ec8ca406d7d570114a7152a3f46153d7abdc6c6c1)
-    tick_digest="82a361e85a0334a3a18dc84e63aea8be"
-                "e0755ba6ac1b0d18423ea4c9f0aeea3e",
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was 82a361e85a0334a3a18dc84e63aea8bee0755ba6ac1b0d18423ea4c9f0aeea3e)
+    tick_digest="87dfe255f97bdc33320a7df36fea68db"
+                "fbfcd92fc9ff1fc86f91894febddd94d",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -89,8 +105,16 @@ _STAGE1_SHIP_DEMO = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was f44bfcb5271c1768920a7727538c3c334d2c91f8ef3e9b98ce82e6bf5ff9cd20)
-    unit_stream="fd0d6bd79fbe4fa624065eda6bc9c04b"
-                "c200e8ef38d7cdd5bd77bd4e5643877e")
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was fd0d6bd79fbe4fa624065eda6bc9c04bc200e8ef38d7cdd5bd77bd4e5643877e)
+    unit_stream="c144ab6cb3bec1f33f143eaa1bfff97d"
+                "e346743f316ec412b60e65ec140e761a")
 _STAGE1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"

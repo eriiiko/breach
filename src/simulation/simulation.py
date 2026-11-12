@@ -1437,7 +1437,7 @@ class Simulation:
         if self.tick < u.throw_release_tick:
             return
         u.throw_release_tick = -1
-        facing_q = unit_fixed.quantize_scalar(u.facing)
+        facing_q = int(u.facing_q)          # #29 P3e: the int, no round trip
         self._release_grenade(
             u, u.throw_kind, u.throw_fuse_ticks,
             None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
@@ -1498,25 +1498,31 @@ class Simulation:
         hand = self.weapons_tables.weapons.by_name["hand_grenade"]
         cx = u.center_tile_x()
         cy = u.center_tile_y()
-        dirx = _intents.dequantize(dx_q)
-        diry = _intents.dequantize(dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
         # Erik; the grenade's own fuse/blast are the shipped numbers). A
         # controller throwing at a point (#121, the bots) names its reach in
         # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
         if reach_q is None:
-            reach = 6.0  # tiles
+            reach_q = 6 << _intents.FP_SHIFT  # tiles
         else:
             max_q = int(hand.max_throw_range) << _intents.FP_SHIFT
-            reach = _intents.dequantize(min(max(0, int(reach_q)), max_q))
-        tgt_fx = cx + dirx * reach
-        tgt_fy = cy + diry * reach
+            reach_q = min(max(0, int(reach_q)), max_q)
+        # #29 P3e: the target in Q16 integers -- the centre plus the Q16
+        # direction times the Q16 reach (the float product of two n/65536
+        # values was exact; this is its Q16 rounding, half away), plus the
+        # half tile; the Projectile reads it exactly.
+        half = 1 << (_intents.FP_SHIFT - 1)
+        tgt_x_q = ((cx << _intents.FP_SHIFT) + half
+                   + unit_fixed.mul_q16_round(int(dx_q), reach_q))
+        tgt_y_q = ((cy << _intents.FP_SHIFT) + half
+                   + unit_fixed.mul_q16_round(int(dy_q), reach_q))
         lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
         hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
         proj = Projectile(
             ORDER_GRENADE,
             cx, cy,
-            tgt_fx + 0.5, tgt_fy + 0.5,
+            unit_fixed.dequantize_scalar(tgt_x_q),
+            unit_fixed.dequantize_scalar(tgt_y_q),
             fuse_seconds=0.0,
             thrown_tick=self.tick,
             ammo_name=self.weapons_tables.hand_grenade_kind(kind),
@@ -2439,8 +2445,7 @@ class Simulation:
             if self.tick >= proj.get_detonate_tick():
                 proj.detonated = True
                 if proj.proj_type == ORDER_GRENADE:
-                    fx = int(proj.target_fx)
-                    fy = int(proj.target_fy)
+                    fy, fx = proj.target_tile()           # #29 P3e: integers
                     # W3: the LOBBED detonation goes through the payload
                     # EXECUTOR via the projectile's round (hand_grenade ->
                     # proj.ammo_name -> its payload row). The default
@@ -2456,7 +2461,8 @@ class Simulation:
                         self.gmap, self.edit_queue, self.units, fy, fx,
                         payload, self.rng, events=self.tick_events,
                         kind="grenade", owner_id=proj.owner_id,
-                        approach=(int(proj.start_fy), int(proj.start_fx)))
+                        approach=(unit_fixed.shr_trunc(proj.start_y_q),
+                                  unit_fixed.shr_trunc(proj.start_x_q)))
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
