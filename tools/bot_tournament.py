@@ -136,8 +136,9 @@ def _level(name, levels_dir):
 def play(job) -> dict:
     """Run one match: ``job`` = (level, levels_dir, controllers (team 0,
     team 1), seed, time_limit_s or None, zombies or None, ``--set``
-    overrides). Returns its record."""
-    name, levels_dir, ctrls, seed, limit, zombies, sets = job
+    overrides[, the sight rule or None]). Returns its record."""
+    name, levels_dir, ctrls, seed, limit, zombies, sets = job[:7]
+    sight = job[7] if len(job) > 7 else None
     apply_sets(sets)
     from run_match import run_match
     level = _level(name, levels_dir)
@@ -148,6 +149,8 @@ def play(job) -> dict:
         spec = replace(spec, time_limit_s=float(limit))
     if zombies is not None:
         spec = replace(spec, zombies=int(zombies))
+    if sight is not None:
+        spec = replace(spec, sight=str(sight))
     tlog, dlog = TeamLog(), DeathLog()
 
     def watch(sim):
@@ -163,6 +166,7 @@ def play(job) -> dict:
     rec = {"level": name, "controllers": list(ctrls), "seed": seed,
            "outcome": o.result.outcome, "team": o.result.team,
            "ticks": o.result.ticks, "wall": wall,
+           "sight": spec.sight, "field_digest": o.field_digest,
            "tick_digest": o.tick_digest}
     for t in (0, 1):
         rec[f"t{t}"] = {"survivors": survivors[t], "shots": tlog.shots[t],
@@ -283,7 +287,7 @@ def _kind_name(k) -> str:
 
 
 def jobs_for(levels, levels_dir, seeds, a, b, horde, limit,
-             zombies=None, sets=(), duel=True) -> list:
+             zombies=None, sets=(), duel=True, sight=None) -> list:
     sets = tuple(sets)
     jobs = []
     for name in levels:
@@ -300,7 +304,7 @@ def jobs_for(levels, levels_dir, seeds, a, b, horde, limit,
                                  zombies, sets))
                     jobs.append((name, levels_dir, ("idle", x), seed, limit,
                                  zombies, sets))
-    return jobs
+    return [j + (sight,) for j in jobs] if sight is not None else jobs
 
 
 def _seeds(text: str) -> list:
@@ -329,13 +333,15 @@ def main(argv=None) -> int:
     ap.add_argument("--set", action="append", default=[],
                     help="override a [bots] value for this run "
                          "(key=value, features.spaced=1.5); repeatable")
+    ap.add_argument("--sight", default=None, choices=("cone", "all_round"),
+                    help="replace the match's sight rule (#195 1d)")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--json", default=None, help="write every match record")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     levels = [s for s in args.levels.split(",") if s]
     jobs = jobs_for(levels, args.levels_dir, _seeds(args.seeds), args.a,
                     args.b, args.horde, args.time_limit, args.zombies,
-                    args.set, duel=not args.no_duel)
+                    args.set, duel=not args.no_duel, sight=args.sight)
     t0 = time.perf_counter()
     records = []
     if args.workers > 1:

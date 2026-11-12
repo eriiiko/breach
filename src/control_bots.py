@@ -71,6 +71,7 @@ from simulation.factions import ZOMBIE_TEAM
 from simulation.intents import FP_ONE
 from simulation.movement import THROTTLE_ONE
 from simulation.sensor_accessor import Channel, EntityFieldAccessor
+from simulation.team_picture import draw_lanes
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
 from simulation.unit_impulse import shove_target
@@ -100,7 +101,6 @@ _SCALARS = {
     "team_period_ticks": (int, 1),
     "unit_period_ticks": (int, 1),
     "replan_ticks": (int, 1),
-    "memory_s": (float, 0.0),
     "flash_memory_s": (float, 0.0),
     "candidate_radius": (int, 1),
     "candidate_stride": (int, 1),
@@ -246,15 +246,6 @@ def los(sim, a, b) -> bool:
 # The team layer
 # ===========================================================================
 @dataclass
-class Sighting:
-    """What the team knows of one enemy: where it was last seen."""
-    unit: object
-    tile: tuple        # top-left (x, y)
-    centre: tuple      # (x, y)
-    tick: int
-
-
-@dataclass
 class TeamCounts:
     """The counts the play is chosen from (§2.3: enemies seen, teammates
     alive, ammunition left, zombies near)."""
@@ -297,15 +288,16 @@ PLAYS = (
 
 
 class TeamBrain:
-    """One team's shared picture, play, target and objective."""
+    """One team's play, target and objective, read off the team picture
+    (``simulation/team_picture.py``, #195 1d: the picture is the sim's, the
+    bots only read it)."""
 
     def __init__(self, team: int, s: BotSettings, tps: float):
         self.team = int(team)
         self.s = s
-        self.memory_ticks = max(1, int(round(s.memory_s * tps)))
         self.flash_memory_ticks = max(1, int(round(s.flash_memory_s * tps)))
         self.bound_max_ticks = max(1, int(round(s.bound_max_s * tps)))
-        self.picture: dict = {}          # enemy id -> Sighting
+        self.picture = {}                # enemy id -> team_picture.Record
         self.counts = TeamCounts()
         self.play = "bound"
         self.target = None               # the shared target (a unit) or None
@@ -322,26 +314,23 @@ class TeamBrain:
         self.centroid = (0, 0)
 
     # -- every tick: the picture ----------------------------------------
-    def observe(self, sim, vis, enemies) -> None:
-        tick = int(sim.tick)
-        seen = set(vis.visible_by_team.get(self.team, ()))
-        for e in enemies:                          # id order
-            if e.id in seen:
-                self.picture[e.id] = Sighting(e, (e.tile_x, e.tile_y),
-                                              _centre(e), tick)
-        for eid in sorted(self.picture):
-            sg = self.picture[eid]
-            u = sg.unit
-            if (not u.alive or u.team == self.team
-                    or tick - sg.tick > self.memory_ticks):
-                del self.picture[eid]
+    def observe(self, sim) -> None:
+        """Read this tick's records off the sim's team picture (the
+        conductor keeps it; never built here)."""
+        pic = getattr(sim, "team_picture", None)
+        if pic is None:
+            raise RuntimeError(
+                "the layered bots read the team picture: this sim has none "
+                "(a match starts it in spawn_match; a hand-built sim calls "
+                "Simulation.start_team_picture)")
+        self.picture = pic.records(self.team)
 
     def known(self, zombies=None):
-        """The picture's sightings in id order (``zombies``: only / none)."""
+        """The picture's records in id order (``zombies``: only / none)."""
         out = []
         for eid in sorted(self.picture):
             sg = self.picture[eid]
-            if zombies is None or bool(sg.unit.is_zombie) == zombies:
+            if zombies is None or sg.zombie == zombies:
                 out.append(sg)
         return out
 
@@ -355,7 +344,7 @@ class TeamBrain:
         zombies = self.known(zombies=True)
         seen_ids = set(vis.visible_by_team.get(self.team, ()))
         c.marines_known = len(marines)
-        c.marines_seen = sum(1 for sg in marines if sg.unit.id in seen_ids)
+        c.marines_seen = sum(1 for sg in marines if sg.uid in seen_ids)
         c.zombies_known = len(zombies)
         c.contact = bool(marines)
         near2 = s.zombie_near_tiles * s.zombie_near_tiles
@@ -386,7 +375,8 @@ class TeamBrain:
         cx = sum(m.center_tile_x() for m in mine) // len(mine)
         cy = sum(m.center_tile_y() for m in mine) // len(mine)
         self.centroid = (cx, cy)
-        cands = [sg.unit for sg in self.known() if sg.unit.id in seen_ids]
+        units = {u.id: u for u in sim.units}
+        cands = [units[sg.uid] for sg in self.known() if sg.uid in seen_ids]
         self.target = min(cands, key=lambda e: focus_key(e, (cx, cy)),
                           default=None)
         # the objective
@@ -425,7 +415,7 @@ class TeamBrain:
             return (self.target.tile_x, self.target.tile_y)
         if known:
             sg = min(known, key=lambda sg: (_d2(sg.centre, self.centroid),
-                                            sg.unit.id))
+                                            sg.uid))
             return sg.tile
         return bots.enemy_room_goal(sim, fp)
 
@@ -444,32 +434,20 @@ class TeamBrain:
 
     def _lanes(self, sim, mine):
         """A coarse grid (``lane_cell`` tiles a cell) of who fires along
-        each cell: -1 nobody, a unit id its lane alone, -2 several lanes.
-        Integer rasterisation of each shooter -> target segment, widened by
-        ``lane_halfwidth`` cells."""
+        each cell (-1 nobody, a unit id its lane alone, -2 several lanes):
+        each of last tick's shooter -> target segments through THE lane
+        rasteriser, ``team_picture.draw_lanes``."""
         s = self.s
         h, w = sim.gmap.material.shape
-        k = s.lane_cell
-        grid = np.full((h // k + 1, w // k + 1), -1, dtype=np.int64)
-        gh, gw = grid.shape
         by_id = {m.id: m for m in mine}
+        segments = []
         for uid in sorted(self.firing):
             m = by_id.get(uid)
             tgt = self.firing[uid]
             if m is None or tgt is None or not tgt.alive:
                 continue
-            (sx, sy), (tx, ty) = _centre(m), _centre(tgt)
-            n = max(abs(tx - sx), abs(ty - sy)) // max(1, k // 2) + 1
-            r = s.lane_halfwidth
-            for i in range(1, n + 1):
-                gx = (sx + (tx - sx) * i // n) // k
-                gy = (sy + (ty - sy) * i // n) // k
-                ys = slice(max(0, gy - r), min(gh, gy + r + 1))
-                xs = slice(max(0, gx - r), min(gw, gx + r + 1))
-                cell = grid[ys, xs]
-                cell[(cell != -1) & (cell != uid)] = -2
-                cell[cell == -1] = uid
-        return grid
+            segments.append((uid, _centre(m), _centre(tgt)))
+        return draw_lanes(h, w, segments, s.lane_cell, s.lane_halfwidth)
 
 
 def descend(field, x: int, y: int, steps: int) -> tuple:
@@ -929,7 +907,7 @@ class BotTeam(ControlSource):
         vis = vision.state_for(sim)
         enemies = [u for u in sim.units if u.alive and u.team != self.team]
         brain = self.brain
-        brain.observe(sim, vis, enemies)
+        brain.observe(sim)
         if (brain.updated_at is None
                 or tick - brain.updated_at >= self.s.team_period_ticks):
             brain.update(self, sim, mine, vis)
@@ -1035,11 +1013,11 @@ class BotTeam(ControlSource):
             known = team.known(zombies=False)
             if known:
                 target = min(known, key=lambda sg: (_d2(sg.centre, uc),
-                                                    sg.unit.id)).centre
+                                                    sg.uid)).centre
         others = sorted(
             (sg for sg in team.known()
              if target is None or sg.centre != target),
-            key=lambda sg: (_d2(sg.centre, uc), sg.unit.id))[:2]
+            key=lambda sg: (_d2(sg.centre, uc), sg.uid))[:2]
         mates = []
         for m in c.mine:
             if m is u:
@@ -1070,7 +1048,7 @@ class BotTeam(ControlSource):
         known = c.team.known()
         if known:
             return min(known, key=lambda sg: (_d2(sg.centre, uc),
-                                              sg.unit.id)).centre
+                                              sg.uid)).centre
         o = c.team.objective
         if o is None:
             return None
@@ -1270,7 +1248,7 @@ class BotTeam(ControlSource):
         uc = _centre(u)
         seen_ids = set(vision.state_for(c.sim).visible_by_team.get(
             self.team, ()))
-        pts = [sg for sg in team.known() if sg.unit.id in seen_ids]
+        pts = [sg for sg in team.known() if sg.uid in seen_ids]
         if len(pts) < s.frag_min_group:
             return None
         gr2 = s.group_radius * s.group_radius
@@ -1310,7 +1288,7 @@ class BotTeam(ControlSource):
         tr2 = self.throw_range * self.throw_range
         best = None
         for sg in c.team.known(zombies=False):
-            if sg.unit.id in seen_ids:
+            if sg.uid in seen_ids:
                 continue
             if c.tick - sg.tick > c.team.flash_memory_ticks:
                 continue
@@ -1319,7 +1297,7 @@ class BotTeam(ControlSource):
                 continue
             if not self.flash_safe(c.sim, c.mine, p):
                 continue
-            key = (_d2(uc, p), sg.unit.id)
+            key = (_d2(uc, p), sg.uid)
             if best is None or key < best[0]:
                 best = (key, p)
         if best is None:
