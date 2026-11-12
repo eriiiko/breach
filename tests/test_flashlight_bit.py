@@ -107,11 +107,11 @@ def test_the_digest_is_unchanged_while_the_light_is_on_and_moves_when_it_is_off(
     b = _unit(sim, 20, 10, team=1)
     sim.step()
     base = _capture_unit_state(sim)["hash"]
-    assert "dark" not in _unit_record(a)
+    assert "flashlight_on" not in _unit_record(a)
     sim.set_flashlight(a.id, True)
     dark = _capture_unit_state(sim)["hash"]
-    assert dark != base and "dark" in _unit_record(a)
-    assert "dark" not in _unit_record(b)
+    assert dark != base and "flashlight_on" in _unit_record(a)
+    assert "flashlight_on" not in _unit_record(b)
     sim.set_flashlight(a.id, False)
     assert _capture_unit_state(sim)["hash"] == base
 
@@ -136,7 +136,7 @@ def test_nothing_in_the_sim_reads_the_bit():
         recs = []
         for u in sorted(sim.units, key=lambda u: u.id):
             r = dict(_unit_record(u))
-            r.pop("dark", None)
+            r.pop("flashlight_on", None)
             recs.append(r)
         return recs
     assert play(False) == play(True)

@@ -587,10 +587,30 @@ _PRE_G4P_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=264,
     field_digest="a7f9fd78c8a13c2bf9fc38657b05eae0"
                  "42993affcd85bc777493724808fe2b8b",
-    tick_digest="ea975da670c3cec503c4f756b3a4b5c6"
-                "1e60bf49a0721638e4944ec1220c255d",
-    unit_stream="6795601371a29973269791c8dc67e453"
-                "9bf08cd219a18fb7ae2cadab2c4ba565")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was ea975da670c3cec503c4f756b3a4b5c61e60bf49a0721638e4944ec1220c255d)
+    tick_digest="dfd9854cf32b78da456df84335203937"
+                "1cfa4d8ec3b33d7043cd4cc3a67c21cf",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 6795601371a29973269791c8dc67e4539bf08cd219a18fb7ae2cadab2c4ba565)
+    unit_stream="7bbfcee472970bce0238e63b255e5f7d"
+                "d1fa74d7b8141dea65105d8886dab25e")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

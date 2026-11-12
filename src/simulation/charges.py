@@ -29,6 +29,7 @@ always been. No RNG is drawn here; the executor draws its own, in queue order.
 from __future__ import annotations
 
 from simulation.payloads import execute_payload
+from simulation.unit_schema import CHARGE_CAPACITY
 
 
 class PlantedCharge:
@@ -59,12 +60,28 @@ class PlantedCharge:
                 f"{when}, live={self.live})")
 
 
-def plant(sim, unit, order) -> PlantedCharge:
+def place(sim, charge) -> bool:
+    """THE door into ``sim.planted_charges`` (#29 P3a, the unit schema's
+    ``CHARGE_SCHEMA`` table): append ``charge`` unless the sim already holds
+    ``unit_schema.CHARGE_CAPACITY`` live charges, in which case it is
+    REFUSED -- nothing is planted -- and counted in
+    ``sim.charges_refused``. True when placed. No shipped scenario or test
+    reaches the capacity (``tests/test_unit_schema.py``)."""
+    live = sum(1 for c in sim.planted_charges if c.live)
+    if live >= CHARGE_CAPACITY:
+        sim.charges_refused = getattr(sim, "charges_refused", 0) + 1
+        return False
+    sim.planted_charges.append(charge)
+    return True
+
+
+def plant(sim, unit, order):
     """Bring a charge into existence at the completion of a planting step.
 
     Called when the channeled ``plant_charge`` step RETIRES — see the module
     docstring: an interrupted plant leaves nothing behind, which is the point
-    of the action being channeled in the first place.
+    of the action being channeled in the first place. ``None`` when the
+    charge table is full (:func:`place` refused it).
     """
     charge = PlantedCharge(
         order.target_fx, order.target_fy,
@@ -72,8 +89,7 @@ def plant(sim, unit, order) -> PlantedCharge:
         getattr(unit, "id", -1),
         det_tick=getattr(order, "det_tick", None),
         approach=(unit.center_tile_y(), unit.center_tile_x()))
-    sim.planted_charges.append(charge)
-    return charge
+    return charge if place(sim, charge) else None
 
 
 def fire(sim, charge) -> None:
@@ -118,4 +134,5 @@ def tick(sim) -> None:
         sim.planted_charges = [c for c in sim.planted_charges if c.live]
 
 
-__all__ = ["PlantedCharge", "detonate_owned", "fire", "plant", "tick"]
+__all__ = ["PlantedCharge", "detonate_owned", "fire", "place", "plant",
+           "tick"]

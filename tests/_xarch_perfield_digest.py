@@ -626,7 +626,26 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # ignition_armed, is_vacuum, material, obstacles, wall_hp, water_depth,
 # wave_source, wave_v.
 # (was e42d8f41998cd289383b48e7ab978008d700ae9fbdf0848d0d4292ff360f0a6a)
-GOLDEN_AGGREGATE = "58f766f440f4fcbdb6c2003adb7f4d4159f6a98440c334cf14c70a29177b4576"
+#
+# 2026-11-12 -- #29 P3a THE UNIT SCHEMA (docs/residency_batching_design_
+# 2026-11-07.md §4.4a, §5 item 9): the unit record the digest hashes is now
+# the schema's (simulation.unit_schema.digest_record, as name|int64 rows under
+# UNIT_SECT_V2): WEGO's ap / n_orders and the derived tile_x / tile_y / alive /
+# faction / offsets left it, the hp hashes as its exact Q16 count, the life
+# state as its enum index, and every synced column hashes while it differs
+# from its default (the canonical marine's kit, magazine, grenades, cool-downs
+# enter it). A RE-BASELINE OF THE HASH, NOT OF THE GAME: the same scenario on
+# main edc0d2b1 (58f766f4..., matching the old golden) and on this tree gives
+# per-field files whose EVERY gmap field line is byte-identical over all 30
+# ticks, and __unit_facing__ too (the facing's own int, unchanged); MOVED, by
+# construction, only __unit_hp__, __unit_pos__ (no tile indices),
+# __unit_life_events__ (no alive bool), __unit_status__ (the fixed block,
+# absent while empty) and __unit_state__. The game itself is proven unchanged
+# by tests/_p3a_sole_cause.py (equal per-tick records and field digests over
+# ship_demo bots / bots_v1, the #122 box with conversions and a scripted
+# arena of every verb).
+# (was 58f766f440f4fcbdb6c2003adb7f4d4159f6a98440c334cf14c70a29177b4576)
+GOLDEN_AGGREGATE = "3646fd0dd0f8b5b9d1a40b520d41905f99a56ecd7a839f5ed4899546e3df1e28"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -656,17 +675,21 @@ def _perfield_hash(name: str, arr: np.ndarray) -> str:
 def _unit_subfield_payloads(ustate: dict) -> dict[str, object]:
     """Split one tick's unit-state dict (harness format: id-sorted records +
     emission-ordered synced events) into the four named sub-payloads."""
+    # #29 P3a: the records are the unit schema's (``unit_schema.
+    # digest_record``): the hp is its Q16 count, the position the two
+    # ``round(v * 1e9)`` columns (the derived tile indices left the record),
+    # the life its enum index (``alive`` left: a property of it), the status
+    # block present only while a unit holds a status.
     units = ustate.get("units", [])
     return {
         "__unit_hp__":     [(r["id"], r["current_hp"]) for r in units],
         "__unit_facing__": [(r["id"], r["facing"]) for r in units],
-        "__unit_pos__":    [(r["id"], r["tile_x"], r["tile_y"], r["x"], r["y"])
-                            for r in units],
+        "__unit_pos__":    [(r["id"], r["x"], r["y"]) for r in units],
         "__unit_life_events__": {
-            "life":   [(r["id"], r["alive"], r["life_state"]) for r in units],
+            "life":   [(r["id"], r["life_state"]) for r in units],
             "events": ustate.get("events", []),
         },
-        "__unit_status__": [(r["id"], r["statuses"]) for r in units],
+        "__unit_status__": [(r["id"], r.get("statuses", ())) for r in units],
     }
 
 

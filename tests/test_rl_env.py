@@ -120,6 +120,28 @@ def _zero_actions(env):
     return np.broadcast_to(rows, (env.n_envs,) + rows.shape).copy()
 
 
+def _zero_policy_reference(lv, seed, n_slots):
+    """THE in-process twin of a zero-row farm env (#29 P3a): the level's
+    match with every team on the ``policy`` controller holding zero rows,
+    recorded at ``EVERY``. Since P3a the unit digest hashes the held verbs
+    (a zero row HOLDS ``set_aim(0, 0)`` and ``set_move_dir(0, 0, 0)``: a
+    present zero intent, where an idle unit carries none), so the farm's
+    tick digests equal THIS match's, and ``run_match``'s idle match is the
+    reference for the GAME (field digests, result) only."""
+    from simulation.match_session import MatchSession
+    spec = replace(lv.match, seed=seed, teams=tuple(
+        replace(t, controller="policy")
+                               for t in lv.match.teams))
+    ses = MatchSession(lv, spec, seed=seed, breach_physics=bp)
+    ses.record(EVERY)
+    for c in ses.controllers:
+        if isinstance(c, cp.AgentPolicy):
+            c.set_rows(cp.zero_rows(n_slots))
+    while not ses.is_terminal():
+        ses.tick()
+    return ses.finish().checkpoints
+
+
 def _episode0_checkpoints(env, actions_fn, max_steps=10_000):
     """Reset, then step until every env's episode 0 ended; per env the
     checkpoints of episode 0 as {tick: (field, tick)} and its result."""
@@ -170,7 +192,14 @@ def test_g_a_zero_rows_play_run_match_s_idle_match_on_ship_demo(tmp_path):
     for e, s in enumerate(seeds):
         ref = run_match(lv, lv.match, seed=s, record=True,
                         checkpoint_every_ticks=EVERY)
-        assert cps[e] == ref.recording.checkpoints, f"env {e} seed {s}"
+        # #29 P3a: the GAME is the idle match's (every field digest); the
+        # tick digests are the in-process zero-row match's (the held zero
+        # verbs are hashed unit state since P3a).
+        assert ({t: f for t, (f, _) in cps[e].items()}
+                == {t: f for t, (f, _) in ref.recording.checkpoints.items()}), \
+            f"env {e} seed {s}"
+        assert cps[e] == _zero_policy_reference(
+            lv, s, env.layout.n_slots), f"env {e} seed {s}"
         res, term, trunc, _, _ = results[e]
         assert res == {"outcome": ref.result.outcome, "team": ref.result.team,
                        "ticks": ref.result.ticks}
@@ -195,7 +224,11 @@ def test_g_a_zero_rows_play_the_idle_match_where_the_horde_kills(tmp_path):
     s = rl_env.episode_draw(run.seed, 0, 0, 1)[0]
     ref = run_match(lv, lv.match, seed=s, record=True,
                     checkpoint_every_ticks=EVERY)
-    assert cps[0] == ref.recording.checkpoints
+    # #29 P3a: the game is the idle match's, the hash the zero-row match's
+    # (see _zero_policy_reference).
+    assert ({t: f for t, (f, _) in cps[0].items()}
+            == {t: f for t, (f, _) in ref.recording.checkpoints.items()})
+    assert cps[0] == _zero_policy_reference(lv, s, S)
     res, term, trunc, rew, counters = results[0]
     assert ref.result.outcome == "win" and res["team"] == ref.result.team
     assert term and not trunc

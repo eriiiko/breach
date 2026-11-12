@@ -162,7 +162,10 @@ def test_reading_the_light_for_shadows_changes_nothing():
     sim, unit = _lit_playground_with_a_lamp_left_of_a_unit()
     g = sim.gmap
     arrays = {k: v.copy() for k, v in vars(g).items() if isinstance(v, np.ndarray)}
-    units = [copy.deepcopy(vars(u)) for u in sim.units]
+    # #29 P3a: a unit is slotted (no __dict__): its state is its set slots.
+    def state(u):
+        return {n: getattr(u, n) for n in type(u).__slots__ if hasattr(u, n)}
+    units = [copy.deepcopy(state(u)) for u in sim.units]
     assert len(arrays) > 20 and g.light_q.any()
 
     view = light_field.read_light(g)
@@ -172,9 +175,9 @@ def test_reading_the_light_for_shadows_changes_nothing():
     for k, before in arrays.items():
         assert np.array_equal(getattr(g, k), before), f"GameMap.{k} changed"
     for u, before in zip(sim.units, units):
-        assert vars(u).keys() == before.keys(), f"unit {u.id} gained/lost attributes"
+        assert state(u).keys() == before.keys(), f"unit {u.id} gained/lost attributes"
         for k, v in before.items():
-            now = vars(u)[k]
+            now = state(u)[k]
             same = (np.array_equal(now, v) if isinstance(v, np.ndarray) else now == v)
             assert same, f"unit {u.id}.{k} changed"
 
