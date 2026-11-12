@@ -535,6 +535,32 @@ def test_the_sweep_predicate_is_stated_once():
                     assert composed_flags(w.a) == predicted
 
 
+@pytest.mark.parametrize("verb", VERBS)
+def test_the_verb_is_its_gate(monkeypatch, verb):
+    """Property: each verb's decision IS its gate -- with the gate forced
+    False the verb does nothing in a state where it would act; forced True
+    in a state where it would not, the verb carries on to its own act (or a
+    law the gate does not own: a target). Breaks if a verb keeps a private
+    copy of the decision."""
+    name = {"throw": "can_throw", "plant": "can_plant", "use": "can_use",
+            "reload": "can_reload", "shove": "can_shove",
+            "melee": "can_melee"}[verb]
+    if verb == "use":
+        name = "use_door"                       # the verb flips what it finds
+    w = World(door=(verb == "use"))
+    if verb == "reload":
+        _bound(10, 2)(w)
+    if verb == "use":
+        monkeypatch.setattr(verb_gates, name, lambda sim, u: None)
+    elif verb == "throw":
+        monkeypatch.setattr(verb_gates, name, lambda sim, u, k: False)
+    elif verb == "melee":
+        monkeypatch.setattr(verb_gates, name, lambda *a, **k: False)
+    else:
+        monkeypatch.setattr(verb_gates, name, lambda sim, u: False)
+    assert not w.issue_and_step(verb)
+
+
 def test_a_throw_kind_and_a_plant_spend_through_their_own_laws():
     """Property: the gates leave the verbs' spending where it was -- a
     gate-passed throw spends its count at the RELEASE and a plant its charge
