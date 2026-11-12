@@ -23,6 +23,9 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release",
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import breach_physics as bp  # noqa: E402
+from field_ab_harness import SIM_FIELDS, _snapshot, capture_snapshot  # noqa: E402
+from field_digest import field_digest, tick_digest  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation, combat, unit_impulse, unit_schema  # noqa: E402
 from simulation import verb_gates  # noqa: E402
@@ -37,6 +40,7 @@ from simulation.status import (BLINDED, KNOCKED_DOWN, PARALYZED,  # noqa: E402
 from simulation.turning import PI_Q16, place  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.combat import SPARES_UNTRACKED  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
 
 ONE = 1 << 16
@@ -89,8 +93,9 @@ class World:
     sim with no physics (the verbs read none). With ``door`` the pair stands
     where ``a`` is beside the interior door (b is out of the way)."""
 
-    def __init__(self, door=False, *, b=True, seed=5):
-        self.sim = Simulation(_level(door), seed=seed, breach_physics=None,
+    def __init__(self, door=False, *, b=True, seed=5, physics=False):
+        self.sim = Simulation(_level(door), seed=seed,
+                              breach_physics=bp if physics else None,
                               enable_recorder=False,
                               ruleset=ContinuousRealtime())
         self.sim.set_paused(False)
@@ -580,3 +585,92 @@ def test_a_throw_kind_and_a_plant_spend_through_their_own_laws():
     assert w2.a.has_explosive == c
     w2.step(1)
     assert w2.a.has_explosive == c - 1
+
+
+# ---------------------------------------------------------------------------
+# way (a): a refused reload writes nothing (the lazy settle is deferred)
+# ---------------------------------------------------------------------------
+def _digests(w):
+    return (field_digest(_snapshot(w.sim.gmap, SIM_FIELDS)),
+            tick_digest(capture_snapshot(w.sim)))
+
+
+def _fresh(w):
+    """Match start: the magazine was never bound."""
+    assert w.a.current_mag == MAG_UNBOUND
+
+
+def _ran_out(w):
+    """Right after a stall has run out: fire to bind, reload, let the stall
+    end with nothing touching the unit -- the finished stall is still
+    unsettled (``reload_done_tick`` stale) at this tick start."""
+    w.sim.set_aim(w.a.id, 0, -ONE)
+    w.sim.set_trigger(w.a.id, True)
+    w.step(3)
+    w.sim.set_trigger(w.a.id, False)
+    w.sim.reload_intent(w.a.id)
+    w.step(1)
+    w.step(RELOAD_TICKS)                       # the stall's last tick passed
+    assert 0 <= w.a.reload_done_tick <= w.sim.tick
+    assert w.a.current_mag == 0                # ... and nothing settled it
+
+
+@pytest.mark.parametrize("start", [_fresh, _ran_out],
+                         ids=["match start", "after a stall ran out"])
+def test_a_refused_reload_by_force_leaves_the_digests_where_a_do_nothing_tick_does(
+        start):
+    """Property (the 1h gate, way (a)): a reload issued by force that the
+    gate refuses -- the gun full and never bound, or full by a stall that has
+    run out -- leaves ``field_digest`` AND ``tick_digest`` where a twin that
+    did nothing leaves them, every tick of the step and after. Breaks if the
+    verb settles the magazine before it knows the reload is legal (the lazy
+    bind or the completed stall then moves the unit record)."""
+    forced, idle = World(physics=True), World(physics=True)
+    for w in (forced, idle):
+        start(w)
+    assert not verb_gates.can_reload(forced.sim, forced.a)
+    assert _digests(forced) == _digests(idle)
+    forced.sim.reload_intent(forced.a.id)
+    for _ in range(4):
+        forced.step()
+        idle.step()
+        assert _digests(forced) == _digests(idle)
+    rec = unit_schema.digest_record
+    assert rec(forced.a) == rec(idle.a)
+
+
+@pytest.mark.parametrize("start", [_fresh, _ran_out],
+                         ids=["match start", "after a stall ran out"])
+def test_the_deferred_settle_still_happens(start):
+    """Property: deferring the settle changes nothing a player, a bot or an
+    agent can observe -- ``mag_status`` reads the settled magazine before and
+    after the refused reload alike, and the next trigger pull leaves the
+    unit exactly where the old eager settle then the pull left it (a twin
+    that settled by hand at the reload's tick, as the old verb did), the
+    round count and the spares included. Breaks if the trigger no longer
+    settles lazily, or ``mag_status`` stops reading the settled view."""
+    w, old = World(physics=True), World(physics=True)
+    for x in (w, old):
+        start(x)
+    weapon = TABLES.weapons.by_name["k5_carbine"]
+    status = combat.mag_status(w.a, weapon, w.sim.tick)
+    assert status[0] == MAG and status[2] is False
+    w.sim.reload_intent(w.a.id)
+    old.sim.reload_intent(old.a.id)
+    combat.mag_settle(old.a, weapon, old.sim.tick)   # the old verb's write
+    w.step()
+    old.step()
+    assert combat.mag_status(w.a, weapon, w.sim.tick) == status
+    assert combat.mag_status(old.a, weapon, old.sim.tick) == status
+    for x in (w, old):                               # the next trigger pull
+        x.sim.set_aim(x.a.id, 0, -ONE)
+        x.sim.set_trigger(x.a.id, True)
+    for _ in range(6):
+        w.step()
+        old.step()
+        assert (combat.mag_status(w.a, weapon, w.sim.tick)
+                == combat.mag_status(old.a, weapon, old.sim.tick))
+    assert w.a.current_mag < MAG and w.a.reload_done_tick == -1
+    assert (unit_schema.digest_record(w.a)
+            == unit_schema.digest_record(old.a))
+    assert _digests(w) == _digests(old)

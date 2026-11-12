@@ -1257,17 +1257,20 @@ class Simulation:
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine
-        (``mag_size`` 0) is left untouched."""
-        # The decision is the gate's (verb_gates.can_reload), a pure read of
-        # the settled magazine (``mag_status``), taken BEFORE the settle.
-        ready = verb_gates.can_reload(self, u)
-        weapon = self.weapons_tables.weapons.by_name.get(
-            getattr(u, "weapon_id", ""))
-        if weapon is None or weapon.mag_size <= 0:
+        (``mag_size`` 0), and any reload the gate refuses, leave the unit
+        UNTOUCHED: the decision is the gate's (``verb_gates.can_reload``, a
+        pure read of the settled magazine, ``mag_status``), and the lazy
+        settle (binding a never-bound magazine, completing a stall that has
+        run out) is bookkeeping the next trigger pull or ``mag_status`` does
+        anyway -- so a refused reload writes nothing, and a forced one leaves
+        the digests where a do-nothing tick leaves them (#195 1e, the 1h
+        gate)."""
+        if not verb_gates.can_reload(self, u):
             return
-        mag_settle(u, weapon, self.tick)
-        if ready:
-            reload_begin(u, weapon, self.tick, events=self.tick_events)
+        weapon = self.weapons_tables.weapons.by_name[u.weapon_id]
+        mag_settle(u, weapon, self.tick)          # a no-op when ready; the
+        reload_begin(u, weapon, self.tick,         # begin's own precondition
+                     events=self.tick_events)
 
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
