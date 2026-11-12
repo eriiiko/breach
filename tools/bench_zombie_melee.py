@@ -19,6 +19,8 @@ open arena at the shipped 0.333 m tile, the zombie either SPAWNED (a
 - ``duel``: both act from contact (the zombie bites, the marine fires);
 - ``shove``: both act from contact, the marine shoves on tick 0, walks two
   tiles straight back (trigger released) and resumes full auto;
+- ``shove_repeat``: as ``shove``, and again every time the zombie is back
+  at contact (the shove's own cooldown applies);
 - ``range``: the zombie 10 m away, awake, walking in; the marine fires full
   auto from tick 0.
 
@@ -56,7 +58,8 @@ CONTACT_TILES = 3
 RANGE_M = 10.0
 STEP_BACK_TILES = 2
 MAX_SECONDS = 60
-CASES = ("idle", "fire_vs_standing", "duel", "shove", "range")
+CASES = ("idle", "fire_vs_standing", "duel", "shove", "shove_repeat",
+         "range")
 ZOMBIES = ("spawned", "turned")
 
 
@@ -132,7 +135,7 @@ def run_case(zombie: str, case: str) -> Result:
     zhp0 = float(z.current_hp)
 
     fires = case != "idle"
-    phase = "shove" if case == "shove" else "fire"
+    phase = "shove" if case.startswith("shove") else "fire"
     start_cx = _centre(marine)[0]
     bites = rounds = 0
     bite_damage = 0.0
@@ -143,6 +146,10 @@ def run_case(zombie: str, case: str) -> Result:
         ax, ay = _unit_vector_q(zcx - mcx, zcy - mcy)
         if fires:
             sim.set_aim(marine.id, ax, ay)
+        if (case == "shove_repeat" and phase == "fire"
+                and math.hypot(zcx - mcx, zcy - mcy) <= CONTACT_TILES + 0.5):
+            phase = "shove"
+            start_cx = mcx
         if phase == "shove":
             sim.shove_intent(marine.id)
             sim.set_trigger(marine.id, False)
