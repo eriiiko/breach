@@ -665,7 +665,20 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: 435352e97169d7af477efc406cea55d8e0360556c6e830f189908468c92da09b; units
 #: a401c2ceb2db9cd87f25beaef33285e0e42740e0c06b8f2ac964037b6ad6c2f4)
 _PRE_G3P_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=259,
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   team 0 (now 1)
+    #   ticks 259 (now 240)
+    #   field_digest c429d8a6a5cd69232ef602c8947e50865230450f
+    #     86a8c01e3a68e8eddaa8ac5c
+    #   tick_digest 5c010886716e4a2bc7c935c9ad5e4bfb0552abd2
+    #     a014e7241fc024dcf8fce047
+    #   unit_stream ac4f6845ea60c23d3b04c7ca0231a50cfc4d8597
+    #     547df9efd8206ac6f40109c1
+    outcome="win", team=1, ticks=240,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -674,8 +687,8 @@ _PRE_G3P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 49f3a5ccd6971212a2b0d11cd11d8170d7de7347f940dc091f5482459aceb302)
-    field_digest="c429d8a6a5cd69232ef602c8947e5086"
-                 "5230450f86a8c01e3a68e8eddaa8ac5c",
+    field_digest="59356719b867b23c06332b25bf2ccfbc"
+                 "c49fc4bbf96b04ca8b37cea1ac81687b",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -701,8 +714,8 @@ _PRE_G3P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 54ac125c031dc6e10fe923b4b8f1c00e58c905e309a6ea3b920d1226230db10d)
-    tick_digest="5c010886716e4a2bc7c935c9ad5e4bfb"
-                "0552abd2a014e7241fc024dcf8fce047",
+    tick_digest="03df1ef8faa8d816f8d4f3474ee39131"
+                "f5fd034e6a9b62e52c901783f63fccb0",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -728,8 +741,8 @@ _PRE_G3P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 20b78defd670f746e16fbf74b176cd16f55907a04d0f3353a40535179316296c)
-    unit_stream="ac4f6845ea60c23d3b04c7ca0231a50c"
-                "fc4d8597547df9efd8206ac6f40109c1")
+    unit_stream="bc313c936d5ed14c1fda5c97999ebdc2"
+                "ba520ebaeadcd1ecda74cf4b0b8afdb4")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

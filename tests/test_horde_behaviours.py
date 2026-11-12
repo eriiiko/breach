@@ -50,7 +50,19 @@ OFF = [(k, False) for k in horde.BEHAVIOUR_SWITCHES]
 # gate holds them while every behaviour is off; the next DELIBERATE re-pin
 # of the field law by another cause retires them with it.
 _STAGE1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=264,
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 264 (now 254)
+    #   field_digest 22e944fe6477d16ab0367b9562c357e96c8ed0a7
+    #     a2277dde8dce6b2a486e9f23
+    #   tick_digest 87dfe255f97bdc33320a7df36fea68dbfbfcd92f
+    #     c9ff1fc86f91894febddd94d
+    #   unit_stream c144ab6cb3bec1f33f143eaa1bfff97de346743f
+    #     316ec412b60e65ec140e761a
+    outcome="win", team=1, ticks=254,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -59,8 +71,8 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was d9c4c5cef6c04f9d80eaa2b368d88782a8fa28132f7cd39a8011c230b88cecde)
-    field_digest="22e944fe6477d16ab0367b9562c357e9"
-                 "6c8ed0a7a2277dde8dce6b2a486e9f23",
+    field_digest="2e4852a4ac2077e62af6f4df06d253f1"
+                 "d48cee022632f248b7356917e3b4373b",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -86,8 +98,8 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 82a361e85a0334a3a18dc84e63aea8bee0755ba6ac1b0d18423ea4c9f0aeea3e)
-    tick_digest="87dfe255f97bdc33320a7df36fea68db"
-                "fbfcd92fc9ff1fc86f91894febddd94d",
+    tick_digest="55d714459d7db78897a9b8e830139548"
+                "86e279cde0714acc105d39231dad457c",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -113,12 +125,22 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was fd0d6bd79fbe4fa624065eda6bc9c04bc200e8ef38d7cdd5bd77bd4e5643877e)
-    unit_stream="c144ab6cb3bec1f33f143eaa1bfff97d"
-                "e346743f316ec412b60e65ec140e761a")
+    unit_stream="46dc6d4c5ad2ff73fd89e55430930884"
+                "e4119672c4c5be7c73d88e5e3eeb87f1")
 _STAGE1_BOX = dict(
-    outcome="win", team=1, ticks=130,
-    field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
-                 "52642adfca545cbe51324cfad2e21631",
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 130 (now 294)
+    #   field_digest 0fdc79f228cc2e64ca6936cf5a2ec41c52642adf
+    #     ca545cbe51324cfad2e21631
+    #   unit_stream 4a87a8bb9efdef78446729e66cebed58acfdda24
+    #     3deb7ba4cdff947a55fa2740
+    outcome="win", team=1, ticks=294,
+    field_digest="ca6a1f289099dad155e21f9608e506f2"
+                 "f19c481ca92ebd4efd0336aea658f15c",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -136,8 +158,8 @@ _STAGE1_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was a8f43fe1faf94900de0fb22c1b75e32d0ca991e25a69412e544a77b1b47343df)
-    unit_stream="4a87a8bb9efdef78446729e66cebed58"
-                "acfdda243deb7ba4cdff947a55fa2740")
+    unit_stream="12cb16f75ea1727bda19f2dade7dcd98"
+                "eb63e240a571e8bf4ca5f121fc2d5abf")
 
 
 def _off(monkeypatch, keep=()):

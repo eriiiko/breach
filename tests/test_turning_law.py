@@ -561,7 +561,19 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
 #: 0d8dff655ad15306c696896a2b6ac7be0ddc77b01789503d79eeadafa6abef71; units
 #: db7c0e8376ea39397a0d2c079f5243d24c3ac86a25618ceea57ed807e08a4317)
 _RE_PIN_1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=244,
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 244 (now 246)
+    #   field_digest 309590f66a864df062ccb7c9cdf92caba03dfbfe
+    #     8bdad86f22e435ab30b2a5be
+    #   tick_digest 3d21436d8858106d5d9f26c57829d7b5b9e6de23
+    #     2d0bd2492e7a841c749d4bb8
+    #   unit_stream 7e4d0161cf924be4dfe170b52d7d2386b77c59c9
+    #     84a5a27bdea519d2431ffdcb
+    outcome="win", team=1, ticks=246,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -570,8 +582,8 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 841869decf00a406da93a7e35a561d81dc2d581cc090309ea33f0b957e7625ba)
-    field_digest="309590f66a864df062ccb7c9cdf92cab"
-                 "a03dfbfe8bdad86f22e435ab30b2a5be",
+    field_digest="d7f9c3738e7a5f299eac7fde4d67b755"
+                 "3661d63427d7ae293aef1fedea457adf",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -597,8 +609,8 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was cdb2152bc2d764dce97483c26f70152b9017c463083d53b7275529f447e8b9b4)
-    tick_digest="3d21436d8858106d5d9f26c57829d7b5"
-                "b9e6de232d0bd2492e7a841c749d4bb8",
+    tick_digest="d3bd3a44dc5a79b2fd5638a10157c186"
+                "e2989edcbeaffd1bcda2eced1079fac0",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -624,8 +636,8 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was da9febf7321dbe971ef9e5fa7c3ed599c8453f7cc969f18aad6251dc3c07d529)
-    unit_stream="7e4d0161cf924be4dfe170b52d7d2386"
-                "b77c59c984a5a27bdea519d2431ffdcb")
+    unit_stream="106dfd20dc5185c08cc11f71001fae0e"
+                "1942f07a258d4f25093400f0752d3597")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -646,9 +658,19 @@ _RE_PIN_1_SHIP_DEMO = dict(
 #: 0fdc79f228cc2e64ca6936cf5a2ec41c52642adfca545cbe51324cfad2e21631; units
 #: 19d264664c2b3885c6aec68e6634eb2c79e450266bdb88cc6677aea5bda38248)
 _RE_PIN_1_BOX = dict(
-    outcome="win", team=1, ticks=92,
-    field_digest="2a9339a53e67d28c29ff513f6942dab9"
-                 "1586f5e85c6eb552885554c16ebe4c3b",
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 92 (now 231)
+    #   field_digest 2a9339a53e67d28c29ff513f6942dab91586f5e8
+    #     5c6eb552885554c16ebe4c3b
+    #   unit_stream 764ee188445aa1bf3e4f8357a44d2576edabd6d0
+    #     f301b9ce6b87c435f2d3879d
+    outcome="win", team=1, ticks=231,
+    field_digest="2cf3e8481a3792bce622f72c0b5cc0a2"
+                 "68f19f856903a7313440ed21573faf5f",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -666,8 +688,8 @@ _RE_PIN_1_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was 1e05debc38bf2ad1aebc1c8b5a75811019205bc09e78bc506b7fe0aab20f0f57)
-    unit_stream="764ee188445aa1bf3e4f8357a44d2576"
-                "edabd6d0f301b9ce6b87c435f2d3879d")
+    unit_stream="b608c3a7959ab28026487ecec317c8d5"
+                "eb7353c4c266453a5a5ca313353478de")
 
 
 def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(

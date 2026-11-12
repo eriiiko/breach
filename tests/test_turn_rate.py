@@ -315,7 +315,21 @@ def test_a_bot_fires_only_once_its_turn_lands_within_the_spread(tmp_path):
 #: d00e655e3f97f5e7301c47572fca0a36585d58484729b63265184162814ed150; units
 #: 48d75c9a7320bf40d0d013aecdd7be165c31a3dcb76ec2902cc55a477951c8f6)
 _PRE_G1P_SHIP_DEMO = dict(
-    outcome="draw", team=None, ticks=260,
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   outcome draw (now win)
+    #   team None (now 1)
+    #   ticks 260 (now 244)
+    #   field_digest 86b99eae5b25be77a37cdebbd2bf05409afc8a87
+    #     6f2bdd47eb5805d7bbcbef64
+    #   tick_digest 73bbb0a449d658c042f67029682f78d844faf096
+    #     4fd807d8f7cd1c6c32c77803
+    #   unit_stream 6778d0617e32108d426335322dafa459ee7fd341
+    #     4e7c3481558a92339db5bfba
+    outcome="win", team=1, ticks=244,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -324,8 +338,8 @@ _PRE_G1P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was ff07e64c5d41ebfd86c553e60d2637ee32a8f99be4a72f3bc677ee9254e04349)
-    field_digest="86b99eae5b25be77a37cdebbd2bf0540"
-                 "9afc8a876f2bdd47eb5805d7bbcbef64",
+    field_digest="2be01a17672c5646601a1925384aa87a"
+                 "e429191e21f4cb61b8aedd79e605899b",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -351,8 +365,8 @@ _PRE_G1P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 15b04577c53c82d949cd7bc4b85c778e90c8d4969e42cb8a1f3a272794e4975c)
-    tick_digest="73bbb0a449d658c042f67029682f78d8"
-                "44faf0964fd807d8f7cd1c6c32c77803",
+    tick_digest="25d6908f488cf81d16027f66de3194ff"
+                "b12724a7dd55a8b1a4f1516e18f70eb0",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -378,8 +392,8 @@ _PRE_G1P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 03d85730046dd1afce99dc1c39f62756d6ff31dc16b0ca70fe89a20f70bf1a7e)
-    unit_stream="6778d0617e32108d426335322dafa459"
-                "ee7fd3414e7c3481558a92339db5bfba")
+    unit_stream="04172ca7cded865a914b1b6127376ded"
+                "e0c1f81122f3167b940e948557e41be7")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
