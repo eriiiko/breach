@@ -2195,6 +2195,9 @@ socket = "right_hand"   # held on this socket (a grips row below)
 grip = [-0.1006, -0.0749, 0.0]   # the point the hand closes on, file units: the top of the
                                  # pistol grip, under the receiver (found as local-models'
                                  # blender/attach_weapon.py finds it)
+muzzle = [0.50, 0.0113, 0.0]   # the barrel's tip, file units (the vertices beyond x = 0.48:
+                        # their mean y, z; the bounds' +x) -- where the muzzle flame sits
+                        # ([render.muzzle_flame], #87)
 gloss = 0.12            # the lit shader's gloss for the whole prop (its albedo carries no gloss
                         # alpha): its metallic-roughness map's mean roughness 0.45 through the
                         # game-ready step's mapping ((0.85 - r) / 0.8)^3
@@ -2274,6 +2277,107 @@ duration_s = 0.1        # fades linearly to dark in this long (wall clock):
                         # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
                         # tracer it rides lives 0.18 s, so longer is cut there
 color = [1.0, 0.82, 0.55]   # warm white, a little yellower than the flashlight
+
+[render.muzzle_flame]
+# THE MUZZLE FLAME (#87; renderer/muzzle_flame.py, shaders/muzzle_flame.fs,
+# docs/muzzle_flame_design_2026-11-12.md): the fire at a gun's barrel when it
+# fires -- a procedural flame, new for every shot (its jets drawn from a
+# generator seeded by the shooter and the tick), additive linear HDR in the
+# scene, coloured only through the blackbody ramp. The shot's room LIGHT is
+# [render.muzzle_flash] above, unchanged. WHERE it sits is the held prop's
+# `muzzle` point ([render.held_props.props.*]); a unit drawn without a prop
+# gets it at its footprint's edge. Re-read every frame (F5); every key is
+# required (a refusing door). Render-only.
+enabled = true
+default_kind = "rifle"      # any weapon that fires a round and is not in `weapons`; "" = no flame
+weapons = { k5_carbine = "rifle", gl6_revolver = "launcher" }   # [weapons.*] id -> kinds row ("" = none)
+seed = 8787                 # mixed with each shot's (unit id, tick)
+cap = 64                    # live flames at once, the oldest dropped
+
+[render.muzzle_flame.kinds.rifle]
+# Cinematic, and bigger than one would expect (Erik, 2026-11-12): the tongue
+# is longer than the 0.70 m carbine. Lengths are METRES before `size`.
+size = 1.0              # THE size dial: scales every length below
+length_m = 0.95         # the forward tongue (each shot draws 80..125 % of it)
+width_m = 0.13
+side_jets = 2           # 0..4: pairs mirror about the barrel, an odd one strays
+side_len_m = 0.55
+side_width_m = 0.085
+side_angle_deg = 55.0   # a side jet's angle off the barrel (each draws 65..135 %)
+core_m = 0.10           # the white ball at the muzzle
+halo_m = 0.30           # the soft glow's radius (the resolve has no bloom)
+halo_gain = 0.035
+t_core_k = 4200.0       # blackbody temperatures: the core ...
+t_edge_k = 1050.0       # ... and the torn rim (deep orange)
+gain = 1.6              # x the ramp's emission
+tear = 0.8              # how hard the noise eats the edge (0 = a clean tongue)
+fireball_chance = 0.12  # share of shots that are a short fat ball
+duration_s = 0.055      # sim seconds from the first drawn frame to dark
+sparks = 3              # mean sparks a shot throws (0 = none)
+
+[render.muzzle_flame.kinds.heavy]
+# The oversized flash for the heavy guns (Erik's favourite sheet): 1.8 x the
+# rifle's, four side jets, hotter, a little longer-lived. No weapon names it
+# yet -- a heavy gun's row in `weapons` does.
+size = 1.8
+length_m = 0.95
+width_m = 0.13
+side_jets = 4
+side_len_m = 0.55
+side_width_m = 0.085
+side_angle_deg = 55.0
+core_m = 0.10
+halo_m = 0.30
+halo_gain = 0.035
+t_core_k = 4600.0
+t_edge_k = 1050.0
+gain = 1.6
+tear = 0.8
+fireball_chance = 0.12
+duration_s = 0.07
+sparks = 6
+
+[render.muzzle_flame.kinds.launcher]
+# A fat short ball (the grenade launcher's thump; a shotgun's later).
+size = 1.3
+length_m = 0.5
+width_m = 0.2
+side_jets = 3
+side_len_m = 0.3
+side_width_m = 0.085
+side_angle_deg = 55.0
+core_m = 0.16
+halo_m = 0.30
+halo_gain = 0.035
+t_core_k = 4200.0
+t_edge_k = 1050.0
+gain = 1.6
+tear = 0.8
+fireball_chance = 0.5
+duration_s = 0.06
+sparks = 2
+
+[render.muzzle_flame.sparks]
+# The sparks a shot throws from the muzzle: the particle primitive's fourth
+# consumer (renderer/particles.py MuzzleSparkSystem) -- the blast sparks' law
+# (drag toward the tamed wind + curl noise, Newton cooling down the one ramp,
+# dead in a wall), born in a forward cone. How MANY is the kind's `sparks`.
+enabled = true
+cone_deg = 28.0         # half-angle of the cone round the barrel (a normal draw's sigma)
+v0_mps = 9.0            # birth speed, metres per second
+v_spread = 0.5          # the speed is v0 * (1 +- v_spread * U(-1, 1))
+t_born_k = 2600.0       # birth temperature, K (they only cool)
+cool_s = 0.25           # e-fold of (T - T_amb), Newton
+life_s = 0.22           # mean lifetime, s (VFX clock)
+life_jitter = 0.5       # each lives life_s * (1 +- life_jitter * U(-1, 1))
+drag = 5.0              # 1/s: how fast the air catches them
+curl = 0.6              # tiles/s of curl-noise drift (the embers' field)
+size_tiles = 0.022      # sprite radius, tiles
+min_screen_px = 0.8     # zoomed out, the radius floor in SCREEN px
+streak_s = 0.03         # motion stretch: the trail is |v| x this long
+brightness = 6.0        # x the ramp's emission
+cap = 256               # never more alive at once
+seed = 8788             # the cap's fair-subset draw
 
 [render.unit_shadow]
 # The 3D units' SHARP projected shadows (#33, tier 1;
