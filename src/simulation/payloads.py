@@ -554,7 +554,8 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
             flash_color=tuple(float(c) for c in getattr(
                 payload, "flash_color", (1.0, 1.0, 1.0))),
             approach=None if approach is None
-            else (int(approach[0]), int(approach[1]))))
+            else (int(approach[0]), int(approach[1])),
+            payload=str(getattr(payload, "name", "") or "")))
 
 
 __all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat",

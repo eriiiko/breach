@@ -5377,3 +5377,57 @@ poison_dps = 6.0
 # Physics ring-buffer length in seconds. config.py derives the integer slot
 # capacity via round(replay_seconds * ticks_per_second). 100 s -> 1200 @ 12 tps.
 replay_seconds = 100.0
+
+# =============================================================================
+# SOUND (#202; design docs/sound/playback_layer_design_2026-11-12.md). The
+# sound layer is presentation only: main.py plays it, nothing headless loads
+# it, no digest moves. THE door: audio/model.py::sound_settings (a missing or
+# unknown key, an unknown cue / weapon / payload, a missing file: refused by
+# name). Samples live in assets/sounds/ (provenance: SOURCES.md there),
+# written by tools/sound_audition.py --export.
+# =============================================================================
+[sound]
+enabled = true
+master = 0.8              # 0..1, the whole layer's volume
+max_voices = 24           # sounds playing at once; when full the quietest gives way
+pan_width_m = 12.0        # a source this far to the listener's right is fully in the right speaker
+
+# A CUE: `files` (several = picked at random, never the same twice running),
+# `reach` = metres at which it fades to nothing, or "loudness" = the weapon /
+# payload row's own `loudness` (the radius zombies hear it in) -- a STOPGAP,
+# Erik 2026-11-12: loudness is a source level, not a distance (#201).
+# Optional: gain (1.0), pitch_jitter (0), gain_jitter (0), choke ("none" |
+# "emitter": a new one fades the previous one of the same unit over
+# choke_fade_ms, 12 -- so automatic fire's tails never stack and the last
+# shot rings out).
+[sound.cues.carbine_shot]
+files = ["carbine/corridor_1.wav"]
+reach = "loudness"
+pitch_jitter = 0.03
+gain_jitter = 0.06
+choke = "emitter"
+choke_fade_ms = 12.0
+
+# The generated clip ran 7 s; exported with --squeeze (its silences shortened)
+# it is 2.4 s against the carbine's 2 s reload, the bolt snapping at 1.8 s.
+[sound.cues.carbine_reload]
+files = ["carbine/reload_1.wav"]
+reach = 15.0              # metres; PLACEHOLDER (a reload is worth listening for)
+gain = 0.8                # PLACEHOLDER
+pitch_jitter = 0.02
+
+[sound.cues.frag_explosion]
+files = ["explosion/frag_steel_room.wav"]
+reach = "loudness"
+pitch_jitter = 0.03
+
+# A BINDING: kind -> { weapon id or payload row = cue }. An unbound weapon or
+# payload is silent.
+[sound.bindings.shot]
+k5_carbine = "carbine_shot"
+
+[sound.bindings.reload]
+k5_carbine = "carbine_reload"
+
+[sound.bindings.explosion]
+frag_standard = "frag_explosion"
