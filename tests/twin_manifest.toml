@@ -78,6 +78,7 @@ build = [
 # with the reason (test_twin_debt refuses an unclassified one).
 "src/simulation/__init__.py" = "setup only: the package import"
 "src/simulation/action_registry.py" = "setup only: the verb registry (its device table is Class T, P8b)"
+"src/simulation/action_spec_v1.py" = "Class T: the action spec's masks and tables, host-side (#195 1h)"
 "src/simulation/ai_zombie.py" = "Class T: the horde (slot 5 + 10), built at P7d"
 "src/simulation/attack_resolver.py" = "Class T: the cover exposure a shot reads (slot 4's phase A), built at P7a"
 "src/simulation/atmosphere_fixed.py" = "Class T: slot 9b's over-pressure walls (the applier's topology), built from P6"
