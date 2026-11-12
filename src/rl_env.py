@@ -43,7 +43,11 @@ accessor's ``observe`` door serves (``sensor_accessor.OBS_SPECS``). Under
 ``"v1"`` the keys are ``docs/rl_agent_obs_spec_v1_2026-11-12.md`` 4.1's:
 ``vector`` ``(N, U, 97)`` float32, ``list`` ``(N, U, E, 67)`` float32 with
 ``E = S + 33``, ``list_mask`` ``(N, U, E)`` uint8, ``list_uid`` ``(N, U, E)``
-int32 (an EQUALITY key for the decoder, never a network input), and the two
+int32 (an EQUALITY key for the decoder, never a network input), the two
+windows (1g (b), spec 3.9: ``near_f`` ``(N, U, 8, 25, 25)`` float16 and
+``near_u`` ``(N, U, 5, 25, 25)`` uint8 at tile resolution, ``far_f``
+``(N, U, 10, 25, 25)`` float16 and ``far_u`` ``(N, U, 5, 25, 25)`` uint8 in
+4 x 4-tile blocks, both centred on the soldier, never rotated), and the two
 row flags ``valid`` (the unit acts: alive and still on its team) and
 ``in_match`` (the roster slot holds a unit, dead or turned included) --
 ``(N, U)`` uint8 each; a row with ``valid`` 0 is all zeros. A run on ``"v1"``
@@ -462,8 +466,8 @@ class Layout:
         ``final_`` twin)."""
         if self.spec == "crop":
             return ("crop", "vector", "valid")
-        return ("vector", "list", "list_mask", "list_uid", "valid",
-                "in_match")
+        from simulation.obs_spec_v1 import OBS_KEYS
+        return OBS_KEYS + ("valid", "in_match")
 
     def obs_shapes(self) -> dict:
         n, u = self.n_envs, self.n_rows

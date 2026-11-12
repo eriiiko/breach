@@ -414,15 +414,16 @@ def fire_lanes(sim, team: int, cell: int, halfwidth: int):
                          cell, halfwidth)
 
 
-def fire_lanes_of(gmap, weapons_tables, units, team: int, cell: int,
+def fire_lanes_of(gmap, weapons_tables, members, team: int, cell: int,
                   halfwidth: int):
-    """:func:`fire_lanes` over an explicit unit list (every unit of the
-    team that may own a lane must be in it)."""
+    """:func:`fire_lanes` over an explicit unit list ``members`` (every
+    unit of the team that may own a lane must be in it; the observation
+    hands it the team's mates, or one mate for its own lane)."""
     solid = gmap.solid
     h, w = solid.shape
     rows = weapons_tables.weapons.by_name
     segments = []
-    for u in sorted(units, key=lambda u: u.id):
+    for u in sorted(members, key=lambda u: u.id):
         if (u.team != team or not u.alive or u.is_zombie
                 or not getattr(u, "live_trigger", False)):
             continue
