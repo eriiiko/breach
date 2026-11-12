@@ -31,7 +31,10 @@ impulse law are the game's own. Deterministic: a fixed seed, no draw here.
 
     C:/Users/steen/anaconda3/envs/data/python.exe tools/bench_zombie_melee.py
 
-Measurement only: it reads the sim, never writes the config.
+Measurement only: it reads the sim, never writes the config. ``--cooldown``,
+``--getup`` and ``--turned-hp`` override ``[zombie] attack_cooldown_seconds``,
+``[exchange] knockdown_getup_seconds`` (THE knockdown's length, every cause:
+shove, wind, blast, bullets) and ``[zombie] hp`` IN THIS PROCESS only.
 """
 from __future__ import annotations
 
@@ -193,11 +196,33 @@ def run_case(zombie: str, case: str) -> Result:
                   zombie_hp0=zhp0, rounds=rounds)
 
 
+def apply_overrides(cooldown_s=None, getup_s=None, turned_hp=None) -> None:
+    """In-process overrides of the loaded config (never written): the
+    seconds re-derived to ticks the way ``config.py`` derives them. The
+    impulse table reads the getup at sim construction, so a case built after
+    this call sees it."""
+    from config import CFG, ticks_from_seconds
+    tps = int(CFG.clock.ticks_per_second)
+    if cooldown_s is not None:
+        CFG.zombie.attack_cooldown_seconds = float(cooldown_s)
+        CFG.zombie.attack_cooldown_ticks = ticks_from_seconds(
+            float(cooldown_s), tps)
+    if getup_s is not None:
+        CFG.exchange.knockdown_getup_seconds = float(getup_s)
+        CFG.exchange.knockdown_getup_ticks = ticks_from_seconds(
+            float(getup_s), tps)
+    if turned_hp is not None:
+        CFG.zombie.hp = turned_hp
+
+
 def _print(rows) -> None:
     from config import CFG
     print(f"[zombie] melee_damage = {CFG.zombie.melee_damage}, "
           f"attack_cooldown_seconds = {CFG.zombie.attack_cooldown_seconds} "
-          f"({CFG.zombie.attack_cooldown_ticks} ticks)")
+          f"({CFG.zombie.attack_cooldown_ticks} ticks), knockdown "
+          f"{CFG.exchange.knockdown_getup_seconds} s "
+          f"({CFG.exchange.knockdown_getup_ticks} ticks), turned hp "
+          f"{CFG.zombie.hp}")
     print(f"{'zombie':8s} {'case':17s} {'winner':7s} {'s':>6s} {'bites':>5s}"
           f" {'bite':>6s} {'m hp':>6s} {'z hp':>7s} {'z hp0':>6s} "
           f"{'rounds':>6s}")
@@ -211,7 +236,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="bench_zombie_melee")
     ap.add_argument("--zombies", default=",".join(ZOMBIES))
     ap.add_argument("--cases", default=",".join(CASES))
+    ap.add_argument("--cooldown", type=float)
+    ap.add_argument("--getup", type=float)
+    ap.add_argument("--turned-hp", type=float)
     args = ap.parse_args(argv)
+    apply_overrides(args.cooldown, args.getup, args.turned_hp)
     rows = [run_case(zk, c) for zk in args.zombies.split(",")
             for c in args.cases.split(",")]
     _print(rows)
