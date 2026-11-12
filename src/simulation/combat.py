@@ -148,8 +148,8 @@ class Projectile:
         self.start_y_q = q(float(start_fy))                      # p3e-door
         self.target_x_q = q(float(target_fx))                    # p3e-door
         self.target_y_q = q(float(target_fy))                    # p3e-door
-        self.x_q = self.start_x_q
-        self.y_q = self.start_y_q
+        self.pos_x_q = self.start_x_q
+        self.pos_y_q = self.start_y_q
         self.fuse_seconds = fuse_seconds
         #: The fuse in INTEGER ticks (the direct throw verb's, G3p); None =
         #: derive it from ``fuse_seconds`` (the WEGO order path).
@@ -167,8 +167,8 @@ class Projectile:
             float(self.travel_speed))                           # p3e-door
 
     # Float views of the integer flight (exact n/65536).
-    fx = property(lambda self: unit_fixed.dequantize_scalar(self.x_q))
-    fy = property(lambda self: unit_fixed.dequantize_scalar(self.y_q))
+    fx = property(lambda self: unit_fixed.dequantize_scalar(self.pos_x_q))
+    fy = property(lambda self: unit_fixed.dequantize_scalar(self.pos_y_q))
     start_fx = property(
         lambda self: unit_fixed.dequantize_scalar(self.start_x_q))
     start_fy = property(
@@ -206,13 +206,13 @@ class Projectile:
         dist_q = unit_fixed.isqrt(dx_q * dx_q + dy_q * dy_q)
         if dist_q < _FLIGHT_EPS_Q or elapsed * self.travel_speed_q >= \
                 dist_q * tps:
-            self.x_q = self.target_x_q
-            self.y_q = self.target_y_q
+            self.pos_x_q = self.target_x_q
+            self.pos_y_q = self.target_y_q
             return
         num = elapsed * self.travel_speed_q
         den = tps * dist_q
-        self.x_q = self.start_x_q + unit_fixed.div_round(dx_q * num, den)
-        self.y_q = self.start_y_q + unit_fixed.div_round(dy_q * num, den)
+        self.pos_x_q = self.start_x_q + unit_fixed.div_round(dx_q * num, den)
+        self.pos_y_q = self.start_y_q + unit_fixed.div_round(dy_q * num, den)
 
 
 # ---------------------------------------------------------------------------
