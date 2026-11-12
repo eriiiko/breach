@@ -466,4 +466,162 @@ enemies, records, place]`.
 
 Per soldier per decision: `(8 + 10) * 625 * 2 + (5 + 5) * 625 = 28.75 KB`.
 
+## 4. The layout in the env's buffers, and the two row flags
+
+### 4.1 Shapes (`Layout.shapes`, `rl_env.py:413`, under `[obs] spec = "v1"`)
+
+`N` envs, `U = T * S` rows (row `t * S + s` = team `t`'s roster slot `s`,
+`rl_env.py:57-61`), `E = S + 33` entries, `V = 96`, `F = 67`.
+
+| key | shape | dtype | what |
+|---|---|---|---|
+| `vector` | `(N, U, V)` | float32 | section 1 |
+| `list` | `(N, U, E, F)` | float32 | section 2 |
+| `list_mask` | `(N, U, E)` | uint8 | 1 = a real entry |
+| `list_uid` | `(N, U, E)` | int32 | the entry's game id (2.1), -1 empty; the decoder's and the mask's, never the network's |
+| `near_f` | `(N, U, 8, 25, 25)` | float16 | 3.9 |
+| `near_u` | `(N, U, 5, 25, 25)` | uint8 | 3.9 |
+| `far_f` | `(N, U, 10, 25, 25)` | float16 | 3.9 |
+| `far_u` | `(N, U, 5, 25, 25)` | uint8 | 3.9 |
+| `valid` | `(N, U)` | uint8 | the `acts` flag (4.2; the existing key, its meaning unchanged) |
+| `in_match` | `(N, U)` | uint8 | the second row flag (4.2) |
+| `final_*` | the same eight observation arrays | | the terminal observation of an env that ended inside the step (`BatchedEnv._final_obs`, `rl_env.py:1222`) |
+
+The compass and the order are columns of `vector` (1.5); there is no
+separate key. `actions`, `reward`, `counters`, `terminated`, `truncated`
+and the info arrays are unchanged (`rl_env.py:418-433`). Every observation
+array is ENV-OWNED, overwritten by the next step (`BatchedEnv._buf`,
+`rl_env.py:1111-1116`; the module doc's rule): the new keys join `_buf` and
+`_obs` / `_final_obs` copy into them, never allocate. The `"crop"` spec's
+keys (`crop`, `vector` of `VECTOR_FIELDS`) are what they are today; a run
+file names one spec and gets that spec's keys.
+
+Per soldier per decision: vector 0.4 KB + list 36 x 67 x 4 = 9.6 KB + windows
+28.75 KB = about 39 KB; a batch of 64 envs x 8 rows = 20 MB, within the
+module doc's measured budget for the env-owned copies (`rl_env.py:87-93`).
+
+### 4.2 The two row flags (design 6.3; the critique's L4 M2)
+
+| row | `in_match` | `valid` (= acts) | set from |
+|---|---|---|---|
+| a living soldier | 1 | 1 | the roster unit is `alive` and `team == t` (`EnvRunner.row_units`, `rl_env.py:618-627`) |
+| dead or turned | 1 | 0 | the roster holds a unit for the slot (`Simulation.roster(t)`, `simulation.py:584`) that is dead or whose `team != t` |
+| an empty roster place | 0 | 0 | no unit in the slot (`slot >= n_t` of the level's match row) |
+
+Written by `EnvRunner.observe` beside the observation, both every step and
+in `final_*`. A row with `valid` 0 has a zero vector, an empty list (mask
+0) and zero windows: a dead soldier's observation is not built (its value
+estimate is the full view's business, 5.3). The trainer reads `in_match`
+to pay reward and value to a dead row and `valid` to let it choose (1i's
+contract, design 6.8).
+
+## 5. The value network's full view (design 7)
+
+### 5.1 What it is
+
+One named spec, `FULL_VIEW_NAME = "full_v1"`, served beside the
+observation by the same door (`EntityFieldAccessor.observe(spec, ...)`)
+into the farm's own buffers, under `info["full_view"]` of
+`BatchedEnv.step` / `reset` -- NEVER a key of `obs`. Centred on the same
+soldier as its observation (design 7.1). The soldier's own vector and
+windows are read a SECOND TIME from the observation arrays by the trainer
+(design 7.1: "the same stored arrays, not a copy"); the full view holds
+only what the soldier does not get.
+
+### 5.2 Its arrays
+
+| key | shape | dtype | what |
+|---|---|---|---|
+| `full_list` | `(N, U, 64, F + 18)` | float32 | 5.3 |
+| `full_mask` | `(N, U, 64)` | uint8 | |
+| `full_uid` | `(N, U, 64)` | int32 | |
+| `full_match` | `(N, U, M)` | float32 | 5.4; `M = 2 T + 3` |
+| `full_watched` | `(N, U, 25, 25)` | uint8 | 5.5 |
+
+### 5.3 The full list (replaces the soldier's list, design 7.1 / 7.2)
+
+Up to 64 entries: EVERY living unit of every side where it truly is (the
+live `Unit`), the marines first in `(team, slot)` order, then the zombies
+nearest first (dormant ones included), then every live grenade and charge
+(types 3, as 2.2, all of them, with owner and time left), then every
+living door (type 4). More than 64: the farthest zombies, then the
+farthest objects, are dropped (never a marine). The first 67 columns are
+2.2's entry, built with the same builders against the observing soldier
+(so `dx`, `dist_c`, `in_range`, `lof_*`, `aims_at` mean the same), with
+these differences:
+
+- a unit entry's `type` is 0 for a team-mate and 1 for every other unit
+  (there are no records: the unit itself is shown);
+- `hp`, `exposure`, `firing`, `reloading`, `winding`, `planting`, the
+  statuses, `zombie_state` are the LIVE unit's for every entry;
+- `aims_at` is evaluated with EVERY living unit as a candidate (the full
+  view knows them all), still from the unit's facing (or a mate's target).
+
+The 18 extra columns (`F .. F + 17`; design 7.1 "per unit"):
+
+| pos | name | read from | divided by | squash |
+|---|---|---|---|---|
+| 67 | `knowledge` | 0 my team sees it (uid in `visible_by_team[team]`), 1 my team has a record of it (in `records(team)`), 2 my team does not know of it; my own team-mates: 0 | kind | no |
+| 68, 69, 70 | `rounds`, `mags`, `ammo_untracked` | as 1.2 cols 24-26 for this unit | its weapon's `mag_size`, its loadout's `magazines` | as 1.2 |
+| 71..76 | `grenade[k]` | as 1.2 cols 29.. (the count ratios only; 6 rows today) | its loadout's counts | no |
+| 77 | `charges` | as 1.2 col 44 | | |
+| 78, 79 | `melee_cool`, `shove_cool` | as 1.2 cols 49, 51 | | |
+| 80..83 | `status_left` for knocked_down, stunned, burning, poisoned (CHOICE: the four kinds a shipped path applies; the soldier's own vector carries all nine) | as 1.1 | `STATUS_SCALE_TICKS` | yes |
+| 84 | `order_what` | its `Unit.order_what` | kind | no |
+
+Its order's place and the air where it stands are NOT columns (CHOICE): the
+place is the far window's `place` plane for the soldier, not per unit; the
+air is readable from the soldier's windows for every unit inside them, and
+a unit outside them is beyond the design's purpose. A reader that needs
+them adds a version of this spec (the Full view row, design 10).
+
+### 5.4 The match (design 7.1 "the match")
+
+`full_match`, `M = 2 T + 3`: per marine team `t` of the run's `T`
+(zero for a team the level lacks) its living count / `n_t` and its
+BALANCE -- the sum over its living units of `current_hp / bars[uid]` over
+`n_t` (CHOICE: the reward's balance of design 6 is 1i's; until 1i lands
+the balance here is this health sum, the same quantity 1i's team part
+differences; 1i replaces the builder, not the column) -- then the zombies
+awake / `spec.zombies`, dormant / `spec.zombies` (`zombie_activated`),
+and `time_left` (as 1.5 col 77). The soldier's own team counts (1.5 cols
+78-83) stay in its vector.
+
+### 5.5 The watched-by-everyone plane (design 7.1 "the map")
+
+`full_watched`: 3.5's `watched` built from EVERY living enemy of the
+soldier's team at its LIVE centre (zombies included, dormant or not), a
+`window_clear` per enemy per soldier. Stored beside the observation's
+`watched`; the soldier's own stays as it is.
+
+### 5.6 A dead soldier's view (design 7.2)
+
+For a row with `in_match` 1 and `valid` 0 the full view IS built, centred
+on the unit's last centre tile (a corpse keeps its position; a converted
+unit its live one), with `full_match` and `full_list` as for a living row,
+and `full_list`'s first entry replaced by the dead soldier itself with
+`type` 0, `hp` 0 and `age` (col 54) = `tick - death_tick` over
+`limit_ticks` (the death tick from the trackers: the first update that saw
+it dead or turned). The soldier's own vector and windows for that row are
+zero (4.2). The "blanked" variant of 7.4's experiment is the trainer's
+(it zeroes the arrays); the env always builds the view.
+
+### 5.7 The proof obligation: the policy never sees it
+
+- `obs` (the dict `BatchedEnv._obs` returns) holds exactly the keys of
+  4.1 and no key of 5.2: asserted by `tests/test_obs_spec_v1.py` on the
+  live env.
+- The observation builders of sections 1-3 take `(sim, picture, trackers,
+  team, u)` and read units only through my living team-mates, the
+  picture's `records(team)`, and the line-of-sight-gated objects of 2.1;
+  the full-view builders take `sim.units`. A grep test holds that
+  `obs_spec_v1`'s observation functions never read `sim.units` or
+  `sim.roster` directly (the names are listed; the full-view functions are
+  the only ones that may).
+- The behavioural test (section 7, "shows nothing the team cannot know"):
+  two sims differing only in a unit no team-mate can know of give
+  byte-identical observation arrays and different full views.
+- The network-side wall (separate weights, scrambling the full view's
+  inputs changes no choice) is rung 2's test (design 8.6), not 1g's.
+
 <!-- continued -->
