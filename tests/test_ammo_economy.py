@@ -51,6 +51,7 @@ from simulation.orders import ORDER_FIRE, Order  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
 from simulation import weapons as weapons_mod  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 from _test_charge import install_test_charge  # noqa: E402
 
@@ -223,7 +224,7 @@ def test_mag_gate_and_spend_cadence_exact_ticks():
     gl6 = get_tables().weapons.by_name["gl6_revolver"]
     assert gl6.rof_interval_ticks == 29 and gl6.reload_ticks == 72
     u = Unit("S", x=2, y=8, team=0)
-    assert u.current_mag is None and u.reload_done_tick == -1
+    assert u.current_mag == MAG_UNBOUND and u.reload_done_tick == -1
 
     fire_ticks = []
     for i in range(6):
@@ -305,7 +306,7 @@ def test_untracked_weapon_never_touches_the_state():
         process_shooting(gmap, [u, target], tick, shots, 0.0, rng,
                          events=events)
     assert any(isinstance(e, UnitHitEvent) for e in events)   # it fired
-    assert u.current_mag is None
+    assert u.current_mag == MAG_UNBOUND
     assert u.spare_mags == SPARES_UNTRACKED
     assert u.reload_done_tick == -1
 
@@ -321,7 +322,7 @@ def test_round_boundary_resets_mag_state():
     m.current_mag = 2
     m.reload_done_tick = 500
     sim._end_round()
-    assert m.current_mag is None
+    assert m.current_mag == MAG_UNBOUND
     assert m.reload_done_tick == -1
     assert m.last_fire_tick == -999
 

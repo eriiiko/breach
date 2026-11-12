@@ -633,7 +633,9 @@ OPTICS_OVERRIDES = ("permeability", "wave_absorb", "heat_atten", "light_atten")
 # ---------------------------------------------------------------------------
 _WEGO = "WEGO / onephase state: inert under ContinuousRealtime"
 REFERENCE_ONLY: dict[str, str] = {
-    "orders": _WEGO + " (the order queue)",
+    "orders": _WEGO + " (the order queue; ALWAYS EMPTY on the continuous "
+                      "path, where slot 4's process_shooting still looks "
+                      "for a fire order in it)",
     "current_order_type": _WEGO,
     "ap": _WEGO + " (action points; left the digest at P3a)",
     "plan": _WEGO + " (the compiled timeline Plan)",

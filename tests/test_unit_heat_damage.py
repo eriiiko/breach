@@ -248,7 +248,9 @@ def test_heat_death_sets_source_and_no_conversion():
     killed_by_zombie (a burned corpse must not convert)."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    m.current_hp = 0.01  # one strong tick kills it
+    # One strong tick kills it. #29 P3a: an hp is an exact n/65536 (the
+    # setter refuses anything else), so 1/128, not the old 0.01.
+    m.current_hp = 1.0 / 128
     _inject(stub, m, 200.0)
     events = []
 

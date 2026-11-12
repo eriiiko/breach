@@ -32,6 +32,7 @@ from simulation import timeline as T  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 TPS = CFG.clock.ticks_per_second
 GCD = CFG.onephase.gcd_ticks
@@ -574,7 +575,7 @@ def test_swapping_flips_the_active_slot_and_resets_coupled_state():
     _run(sim, 2)
     assert u.active_slot == 1
     assert u.weapon_id == "gl6_revolver"
-    assert u.current_mag is None, "a swapped weapon arrives with a fresh mag"
+    assert u.current_mag == MAG_UNBOUND, "a swapped weapon arrives with a fresh mag"
     assert u.swap_cd_until_tick > sim.tick
 
 

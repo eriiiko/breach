@@ -39,7 +39,7 @@ from config import CFG, Namespace  # noqa: E402
 from control_bots import (BotTeam, Sighting, UnitContext,  # noqa: E402
                           bot_settings, evaluate_features)
 from field_ab_harness import capture_snapshot  # noqa: E402
-from field_digest import tick_digest  # noqa: E402
+from field_digest import field_digest, tick_digest  # noqa: E402
 from run_match import run_match  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.events import ShoveEvent, UnitHitEvent  # noqa: E402
@@ -522,8 +522,11 @@ def test_teammates_do_not_stack_in_a_corridor(tmp_path, controller, stacks):
 # (h) the controller drives only through the intent facade
 # ---------------------------------------------------------------------------
 def test_the_bots_change_nothing_but_intents(tmp_path):
-    """Property: with no renderer, a bots tick writes no synced state (the
-    tick digest is the same before and after ``handle_frame``) and every
+    """Property: with no renderer, a bots tick writes no synced state but
+    the intent columns (the field digest and every unit record bar the
+    schema's ``intent`` block are the same before and after
+    ``handle_frame`` -- #29 P3a: the held verbs and latches are synced
+    columns now, hashed while set) and every
     call it makes on the sim goes through the intent facade's tap (a row of
     ``match_replay.INTENT_KINDS``), never the reload verb (RULED); and no
     line of ``control_bots`` assigns to a unit, the sim or the map. Breaks
@@ -541,11 +544,19 @@ def test_the_bots_change_nothing_but_intents(tmp_path):
     ses.sim.attach_intent_log(_Tap())
     bots = [c for c in ses.controllers if isinstance(c, BotTeam)]
     assert bots
+    from simulation import unit_schema
+    intent_keys = {c.key for c in unit_schema.COLUMNS if c.block == "intent"}
+
+    def state():
+        snap = capture_snapshot(ses.sim)
+        units = [{k: v for k, v in r.items() if k not in intent_keys}
+                 for r in snap["__unit_state__"]["units"]]
+        return field_digest(snap), units
     while not ses.is_terminal():
-        before = tick_digest(capture_snapshot(ses.sim))
+        before = state()
         for b in bots:
             b.handle_frame(ses.sim, None)
-        assert tick_digest(capture_snapshot(ses.sim)) == before
+        assert state() == before
         ses.tick()
     assert kinds and set(kinds) <= set(match_replay.INTENT_KINDS)
     assert "reload_intent" not in kinds

@@ -64,6 +64,7 @@ from simulation.orders import (  # noqa: E402
 from simulation.status import STUNNED, apply_status  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 SEED = 20260707
 
@@ -476,7 +477,7 @@ def test_stationary_rule_move_order_blocks_the_burst():
     _step(sim, 30)
     assert s.spray_ticks_left == 0
     assert not sim.gmap.heat.any()                    # nothing ever deposited
-    assert s.current_mag is None                      # mag state untouched
+    assert s.current_mag == MAG_UNBOUND                      # mag state untouched
     assert s.last_fire_tick == -999
 
 
@@ -496,7 +497,7 @@ def test_auto_fire_skips_spray_weapons_and_draws_nothing():
     assert s.spray_ticks_left == 0
     assert not sim.gmap.heat.any()
     assert not sim.gmap.gas[FUEL_GAS].any()
-    assert s.last_fire_tick == -999 and s.current_mag is None
+    assert s.last_fire_tick == -999 and s.current_mag == MAG_UNBOUND
     assert sim.rng.bit_generator.state == state0
 
 

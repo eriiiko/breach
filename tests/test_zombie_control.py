@@ -183,8 +183,18 @@ _PRE_122_BOX = dict(
     outcome="win", team=1, ticks=92,
     field_digest="2a9339a53e67d28c29ff513f6942dab9"
                  "1586f5e85c6eb552885554c16ebe4c3b",
-    unit_stream="e082f7dfe103e2fdd594a952da81143c"
-                "a4202e996238969b22c85eea05b0fd3d")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was e082f7dfe103e2fdd594a952da81143ca4202e996238969b22c85eea05b0fd3d)
+    unit_stream="ac9bda6c239304078bef33858e2582f8"
+                "83e0684eddd14d541ec7f269e8a88c16")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -484,8 +494,28 @@ _PRE_122_SHIP_DEMO = dict(
     #  791954eb90eb8df573; tick 2620c39692177c6fe900df314650de1bf9b932bd16
     #  67224e5145c9a73068992b; units badb4a7984486a23519cdbbc7b85b72b8b8fb2
     #  953e3a02811ec8b7083fb1c922)
-    tick_digest="3344bc96528bb08756456338112f9f25163bdacc56352be453f4debc5a172bf4",
-    unit_stream="bf34f1bbf43f0cb555dd65c57c73d72cd3c56edbacd0a8753e4a6844ee308ab8")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 3344bc96528bb08756456338112f9f25163bdacc56352be453f4debc5a172bf4)
+    tick_digest="0b093a26a96d2c39775240fbc0514fe9f869600026cc5c977e50f5d899294ec1",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was bf34f1bbf43f0cb555dd65c57c73d72cd3c56edbacd0a8753e4a6844ee308ab8)
+    unit_stream="869f75cbb8da51b410991c77dbbdeaed0566e7a6dbeb444318c0b0664416bd6d")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):

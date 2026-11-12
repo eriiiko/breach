@@ -488,6 +488,33 @@ unchanged.
 sentinels and the derivations are judgement, and the re-pin is not a tol-0
 gate, so P3a runs on Opus (the lead's call, 2026-11-11).
 
+**As built (P3a, 2026-11-12).** The sort above held against the code; no
+column changed group. Corrections and choices, one line each:
+- `orders` and `move_path` are WEGO state the continuous path still READS --
+  slot 4's `process_shooting` looks for a fire order in `orders`, slot 3's
+  WEGO branch takes `len(move_path)` -- but both are always empty there, so
+  they stay R (a REFERENCE_ONLY reason says so); `path_tick_offset`,
+  `recent_attackers`, `impulse_books` and `name` are WRITTEN on the match
+  path and never decided on. Property (e) holds it: a bots and a bots_v1
+  match with every other R attribute poisoned (raises on any use) and those
+  four given garbage play to the same result and digests.
+- `awakened` stays R (read by `stats.is_stat_player_visible`).
+- The status block is 16 rows (8 non-stacking kinds x 1 + POISONED x
+  `STATUS_STACK_CAP` 8); the planted-charge table holds `CHARGE_CAPACITY` 32.
+- `current_hp` is a property over the slot `_current_hp` whose setter refuses
+  a value off the Q16 grid; no write in the suite or the pinned matches was
+  off it.
+- Sentinels on the HOST: `current_mag` `MAG_UNBOUND` = -1, `speed_ticks_per_tile`
+  `SPEED_FROM_TABLE` = -1. Encoded only (host keeps `None`): `pending_plant`
+  `NO_PLANT` -1, a throw's reach `THROW_NO_REACH`, a charge's remote
+  `det_tick` `NO_TIMER` -1 and missing approach `NO_TILE` (-1, -1); a table
+  column's "none" row -1; an intent column is a presence flag + its ints.
+- The record's bytes are `name|int64` rows under `UNIT_SECT_V2`
+  (`unit_schema.unit_section_bytes`), the charges `CHARGE_SECT_V1`; the events
+  keep their repr. `facing_target_q` hashes as `turn` (the turn still to go),
+  `facing_q` as `facing`, `omega_q` as `omega`; every other key is the column
+  name.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

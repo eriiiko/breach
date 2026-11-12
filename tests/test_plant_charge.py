@@ -298,20 +298,23 @@ def test_charges_and_a_plant_are_hashed_only_while_they_exist():
     from field_ab_harness import _capture_unit_state, _unit_record
     sim = _sim(physics=False)
     u = _marine(sim, 10, 10)
-    assert "plant" not in _unit_record(u)
+    keys = ("plant_done_tick", "plant_fuse_ticks")   # #29 P3a: the schema's
+    assert not set(keys) & set(_unit_record(u))
     before = _capture_unit_state(sim)
     sim.plant_charge_intent(u.id, LO)
     _run(sim, 1)
-    assert _unit_record(u)["plant"] == [u.plant_done_tick, LO]
+    rec = _unit_record(u)
+    assert (rec["plant_done_tick"], rec["plant_fuse_ticks"]) ==         (u.plant_done_tick, LO)
     _run(sim, PLANT)
-    assert "plant" not in _unit_record(u)
+    assert "plant_done_tick" not in _unit_record(u)
     snap = _capture_unit_state(sim)
     c = sim.planted_charges[0]
     c.det_tick += 1
     assert _capture_unit_state(sim)["hash"] != snap["hash"]
     c.live = False
     sim.planted_charges.clear()
-    u.has_explosive = 1                  # (not hashed)
+    u.has_explosive = 1                  # (hashed since #29 P3a: restored)
+    u.plant_fuse_ticks = 0               # the fuse is left set after a plant
     sim.tick_events.clear()
     assert set(_capture_unit_state(sim)) == set(before)
 

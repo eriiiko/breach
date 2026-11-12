@@ -668,10 +668,30 @@ _PRE_G3P_SHIP_DEMO = dict(
     outcome="win", team=0, ticks=259,
     field_digest="49f3a5ccd6971212a2b0d11cd11d8170"
                  "d7de7347f940dc091f5482459aceb302",
-    tick_digest="cb5002a478a11cf381582e9ee7cabfbd"
-                "8e1c9a4841f7c1c918a1359da137eba3",
-    unit_stream="0172be1b67ad34f55e51c6d2981f18c8"
-                "f292a9a94cd17b0f46bcc34f7554e32c")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was cb5002a478a11cf381582e9ee7cabfbd8e1c9a4841f7c1c918a1359da137eba3)
+    tick_digest="b45fc566daed25b1cbed8ebc675e1125"
+                "21096f193f101f193b35c1e65d326076",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 0172be1b67ad34f55e51c6d2981f18c8f292a9a94cd17b0f46bcc34f7554e32c)
+    unit_stream="577e4fe2e1269c18537e970a51ea10a9"
+                "35de1056172f37175c0fc20c6875560d")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

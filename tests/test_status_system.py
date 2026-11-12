@@ -553,14 +553,18 @@ def test_unit_record_carries_canonical_status_serialization():
 
     u = _marine()
     u.id = 0
-    assert _unit_record(u)["statuses"] == []
+    # #29 P3a: the record is the unit schema's -- no statuses, no key; else
+    # the fixed block, rows in list order, padded with (-1, 0, 0, -1).
+    from simulation.unit_schema import status_capacity
+    assert "statuses" not in _unit_record(u)
     apply_status(u, BURNING, magnitude=1.5, duration_ticks=4, source_id=2)
     apply_status(u, KNOCKED_DOWN, magnitude=0.0, duration_ticks=2)
     rec = _unit_record(u)
-    assert rec["statuses"] == serialize_statuses(u) == [
+    assert serialize_statuses(u) == [
         [BURNING, 98304, 4, 2],
         [KNOCKED_DOWN, 0, 2, -1],
     ]
+    assert rec["statuses"] == (BURNING, 98304, 4, 2, KNOCKED_DOWN, 0, 2, -1)         + (-1, 0, 0, -1) * (status_capacity() - 2)
 
 
 def test_unit_state_hash_sensitive_to_statuses():

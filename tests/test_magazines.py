@@ -52,6 +52,7 @@ from simulation.loadouts import LoadoutTable  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
+from simulation.unit_schema import MAG_UNBOUND  # noqa: E402  (#29 P3a; was None)
 
 SEED = 7
 K5 = get_tables().weapons.by_name["k5_carbine"]
@@ -145,7 +146,7 @@ def test_the_rifleman_carries_the_carbine_and_three_magazines():
     assert total >= 2 and K5.mag_size > 0
     assert r.u.weapon_id == "k5_carbine"
     assert r.status() == (MAG, total - 1, False)       # read-only, unbound
-    assert r.u.current_mag is None                      # reading bound nothing
+    assert r.u.current_mag == MAG_UNBOUND                      # reading bound nothing
     r.hold()
     r.step()
     assert r.u.current_mag == MAG - 1 and r.u.spare_mags == total - 1
@@ -345,7 +346,7 @@ def test_a_weapon_with_mag_size_zero_never_touches_the_state_or_the_verb():
     r.hold()
     r.sim.reload_intent(r.uid)
     r.run(200)
-    assert r.u.current_mag is None
+    assert r.u.current_mag == MAG_UNBOUND
     assert r.u.spare_mags == SPARES_UNTRACKED
     assert r.u.reload_done_tick == -1
     assert mag_status(r.u, get_tables().weapons.by_name["lance_3"], 0) is None
@@ -362,14 +363,14 @@ def test_a_swapped_in_weapon_keeps_untracked_spares():
     assert row.mag_size > 0
     r = _Range(magazines=3)
     r.u.weapon_id = other
-    r.u.current_mag = None
+    r.u.current_mag = MAG_UNBOUND
     assert r.status() == (int(row.mag_size), None, False)
     r.hold()
     r.step()
     assert r.u.spare_mags == SPARES_UNTRACKED
     # and back to the loadout's own weapon: counted again
     r.u.weapon_id = "k5_carbine"
-    r.u.current_mag = None
+    r.u.current_mag = MAG_UNBOUND
     r.run(6)
     assert r.u.spare_mags == 2
 
@@ -418,7 +419,7 @@ def test_the_gate_and_spend_stand_alone_for_a_tracked_weapon():
     the stall, with none leaves the gate shut for good. Breaks if the law
     lives anywhere else than these functions (a bot, a test, the timeline
     would each need their own copy)."""
-    u = SimpleNamespace(magazines=2, current_mag=None, spare_mags=-1,
+    u = SimpleNamespace(magazines=2, current_mag=MAG_UNBOUND, spare_mags=-1,
                         reload_done_tick=-1)
     assert mag_gate(u, K5, 0) and u.current_mag == MAG and u.spare_mags == 1
     for t in range(MAG):

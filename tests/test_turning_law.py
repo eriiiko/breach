@@ -564,10 +564,30 @@ _RE_PIN_1_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=244,
     field_digest="841869decf00a406da93a7e35a561d81"
                  "dc2d581cc090309ea33f0b957e7625ba",
-    tick_digest="df36873fbb14eda3ff329f89e89f20d7"
-                "35202b973638f6f3e4d29b724197a9bc",
-    unit_stream="6480df664eb192d90ff0be9dc50e8f9c"
-                "a9263a89f4b85c050b9a27a7183eefc9")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was df36873fbb14eda3ff329f89e89f20d735202b973638f6f3e4d29b724197a9bc)
+    tick_digest="ddda3bb5d992ff8071f36cbf4d7550e5"
+                "525baada5dd12738ed6c7c7c3a6c6943",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 6480df664eb192d90ff0be9dc50e8f9ca9263a89f4b85c050b9a27a7183eefc9)
+    unit_stream="e8c7ef9db453387ff803d525b5577b35"
+                "82fe008dd458bf14708612c429ab85d3")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -591,8 +611,18 @@ _RE_PIN_1_BOX = dict(
     outcome="win", team=1, ticks=92,
     field_digest="2a9339a53e67d28c29ff513f6942dab9"
                  "1586f5e85c6eb552885554c16ebe4c3b",
-    unit_stream="035304b74d47d0dfcd73e661ebe44011"
-                "21994f1a121abcc851c301e7a3c588c7")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 035304b74d47d0dfcd73e661ebe4401121994f1a121abcc851c301e7a3c588c7)
+    unit_stream="1e05debc38bf2ad1aebc1c8b5a758110"
+                "19205bc09e78bc506b7fe0aab20f0f57")
 
 
 def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
