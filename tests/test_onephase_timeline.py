@@ -418,7 +418,7 @@ def test_aim_tracks_a_moving_target():
     sim.apply_action(u.id, O.Order(O.ORDER_SHOOT, z.tile_x, z.tile_y, 0,
                                    target_unit_id=z.id))
     _run(sim, 6)
-    z.x, z.y = 9.0, 12.0                      # teleport the target
+    z.set_pos(9.0, 12.0)                      # teleport the target
     hp0 = z.current_hp
     _run(sim, 24)
     assert z.current_hp < hp0, "the shooter kept firing at the old tile"
@@ -671,7 +671,7 @@ def test_the_lane_clearing_lets_the_walker_resume():
     sim.apply_action(walker.id, _move(4, 20))
     _run(sim, 250)
     held_at = walker.y
-    blocker.x, blocker.y = 20.0, 20.0          # step out of the way
+    blocker.set_pos(20.0, 20.0)          # step out of the way
     _run(sim, 250)
     assert walker.y > held_at, "the walker never resumed once clear"
 

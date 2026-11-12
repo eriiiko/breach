@@ -215,7 +215,7 @@ STATES = {
               ("planting, done now", _planting(0)),
               ("no charge", _no_charge)],
     "use": [("rest", _none), ("stunned 3", _stunned(3)),
-            ("three tiles from the door", lambda w: setattr(w.a, "x", 8.0))],
+            ("three tiles from the door", lambda w: w.a.set_pos(8.0, w.a.y))],
     "reload": [("never bound (full)", _none), ("bound, full", _bound()),
                ("bound, partial, 2 spare", _bound(10, 2)),
                ("bound, partial, untracked spares",

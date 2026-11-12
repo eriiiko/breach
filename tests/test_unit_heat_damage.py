@@ -79,8 +79,7 @@ def _expected_marine_dmg(phi, tps):
 
 
 def _place(unit, x, y):
-    unit.x = float(x)
-    unit.y = float(y)
+    unit.set_pos(float(x), float(y))
     return unit
 
 

@@ -778,8 +778,8 @@ def walk_allowed(u) -> bool:
 def move(gmap, u, walk_dx_q: int = 0, walk_dy_q: int = 0) -> bool:
     """Move ``u`` by its walk ``(walk_dx_q, walk_dy_q)`` (Q16 tiles this
     tick) and its pushed velocity as ONE displacement (§13), on the Q16 grid
-    (the position enters as ``quantize(u.x)`` and leaves as an exact
-    n/65536 double, so every position this writes is on the grid). In
+    (the position's own Q16 ints ``u.x_q`` / ``u.y_q`` in and out through
+    ``Unit.set_pos_q``, #29 P3c). In
     ``k = ceil(max(|dx|, |dy|) / SUBSTEP_Q)`` substeps of under one tile per
     axis (one, i.e. today's test, at a walk alone), each running the walk's
     own slide rule through the collision predicate walking uses
@@ -794,8 +794,8 @@ def move(gmap, u, walk_dx_q: int = 0, walk_dy_q: int = 0) -> bool:
     if dx == 0 and dy == 0:
         return False
     fp = u.footprint
-    x0 = unit_fixed.quantize_scalar(u.x)
-    y0 = unit_fixed.quantize_scalar(u.y)
+    x0 = u.x_q
+    y0 = u.y_q
     x, y = x0, y0
     k = max(1, -(-max(abs(dx), abs(dy)) // SUBSTEP_Q))
     px, py = div_trunc(dx, k), div_trunc(dy, k)
@@ -833,8 +833,7 @@ def move(gmap, u, walk_dx_q: int = 0, walk_dy_q: int = 0) -> bool:
             break
     if (x, y) == (x0, y0):
         return False
-    u.x = x / 65536.0
-    u.y = y / 65536.0
+    u.set_pos_q(x, y)
     return True
 
 

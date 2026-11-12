@@ -252,7 +252,7 @@ def test_cover_position_matters_not_a_stat():
     hp0 = z.current_hp
     _shoot(sim, m, z, ticks=12)
     assert z.current_hp == hp0
-    z.x, z.y = 20.0, 28.0                    # step clear of the crate's row
+    z.set_pos(20.0, 28.0)                    # step clear of the crate's row
     _place_facing(m, _q_rad(0.0))
     sim.apply_action(m.id, O.Order(O.ORDER_SHOOT, z.tile_x, z.tile_y, 0,
                                    target_unit_id=z.id))

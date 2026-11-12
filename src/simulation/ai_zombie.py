@@ -157,8 +157,7 @@ def _walk(gmap, z, get_field, state, tick, flags, settings, events,
         _, ny, nx = move
         z.zombie_move_accumulator = 0
         z.face_towards(float(nx), float(ny))
-        z.x = float(nx)
-        z.y = float(ny)
+        z.set_pos_q(int(nx) << 16, int(ny) << 16)      # a whole tile (P3c)
         return "step"
     _, ny, nx, tile = move
     _bash(gmap, z, ny, nx, tile, tick, flags, settings, events)
@@ -392,8 +391,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                     gmap, ny, nx, fp, settings.fear_temp_q16):
                 continue
             z.face_towards(float(nx), float(ny))
-            z.x = float(nx)
-            z.y = float(ny)
+            z.set_pos_q(int(nx) << 16, int(ny) << 16)  # a whole tile (P3c)
 
 
 # ---------------------------------------------------------------------------

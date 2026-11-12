@@ -292,7 +292,7 @@ def test_occupancy_blocks_close_and_retries():
     assert d.state == OPEN and d.want_open is False   # blocked, latch kept
     assert int(sim.gmap.material[6, 6]) == MAT_AIR
 
-    u.x, u.y = 3.0, 3.0                               # step off
+    u.set_pos(3.0, 3.0)                               # step off
     _step(sim)
     assert d.state == CLOSED                          # closes next sweep
     assert u.alive                                    # never crushed
