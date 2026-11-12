@@ -109,7 +109,49 @@ embeds it (design 3.1). The tables are named per row below.
   (`Simulation._step_post_physics`, `src/simulation/simulation.py:2426`; the
   1d note's "Not in 1d"): see 1.6.
 
-## 1. The soldier's vector (design 3.2, 4.4, 5.2; 96 float32)
+### 0.5 The team knowledge view: the observation's ONLY way into the sim (v2; critique MAJOR 4)
+
+The observation builders of sections 1-3 never receive the `Simulation`.
+They receive ONE object per team per decision, `TeamKnowledge`, built by ONE
+function, `TeamKnowledge.build(sim, picture, team)` in `obs_spec_v1.py` --
+the only observation code that touches `sim`, reviewed as the wall and
+tested by itself. It exposes exactly:
+
+| member | what | why it is the team's |
+|---|---|---|
+| `team`, `tick` | the team id, `sim.tick` | public |
+| `mates` | my team's LIVING non-zombie units, the live `Unit` objects, by id (me among them) | the radio is perfect (design 4.1) |
+| `roster_ids` | the ids of `Simulation.roster(team)`, fixed at spawn (dead and converted slots included) | the team's own muster; the objects' `whose` (2.2 col 56) reads it, never a live owner |
+| `records` | `picture.records(team)`, plain `Record` values | the team's memory (1d) |
+| `seen` | `{uid: live Unit}` for `uid in visible_by_team[team]` (all of them are in `records` at this tick) -- the only live enemies a builder reaches, for the type-1 columns | seen by a team-mate this tick |
+| `seen_by(mate_id, uid)` | `mate_id in vision.state_for(sim).observers_of(uid)`, answered for a mate id only (refused otherwise) | a mate's own sight |
+| `objects` | the grenades and charges the team sees now, each `(obj, team_uid)` (2.1, the object tracker of 1.6) | gated by a mate's line of sight |
+| `doors` | every living `DoorRuntime` (`sim._doors`) | doors are unfogged (design 3.1) |
+| `lanes` | `team_picture.fire_lanes(sim, team, ...)`'s grid, computed here once (it reads only my team's units, `team_picture.py:241`) | my team's state |
+| `trackers` | the 1.6 trackers, read through methods that refuse a uid outside their scope: `motion(uid)` for a mate only; `bar(uid)` and `damage_last_s(uid)` for a mate or a `seen` uid only; `last_hit()` for the observing soldier only | each tracker holds every unit; the view hands out only what the team may know |
+| `world` | the `ObsWorld` facade (below) | the public world |
+
+`ObsWorld` is a small object with an explicit attribute list and NO
+`__getattr__` fallback: `gmap`, `tick`, `weapons_tables`, `speed_table`,
+`impulse_table`, the room graph (`unit_orders.graph_of`), `level.wires`, the
+config dials the spec names, and the unit-free sim methods the spec calls
+with a MATE argument (`unit_turn_rate_q16`, `unit_turn_accel_q16`,
+`facing_after_turn_q16`). It is what the builders pass as `sim` to the
+sight routines (`vision.ray_clear` / `rays_clear` / `window_clear` read
+only `sim.gmap`, `vision.py:195-230`), `line_of_fire`, `route`. It has no
+`units`, `roster`, `get_unit`, `projectiles`, `planted_charges`,
+`team_picture`, `tick_events`, `vision` cache or `_units_by_id`: a read of
+one raises `AttributeError` at run time -- the wall is enforced, not only
+grepped.
+
+**Caches** (section 6's order of attack plans several): every cache an
+observation builder keeps is keyed by the INPUTS it was computed from (the
+team, the source tile, the candidate set as a frozenset of `(uid, centre)`,
+the tick), never by a uid alone; the full view (section 5) owns SEPARATE
+caches and never reads or fills the observation's. A cache shared between
+the two is the bug the pair test (f) of section 7 catches.
+
+## 1. The soldier's vector (design 3.2, 4.4, 5.2; 97 float32)
 
 One row per feature. "Position" is the column index. "Divided by" names the
 table value (or says `flag` / `kind` / `angle`). "Squash" is yes unless the
@@ -165,7 +207,13 @@ unless a function is cited.
 
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
-| 58..65 | `air[p]`, p over the eight physics planes of 2.2 in their order (temperature, fire, poison, teargas, smoke, pressure, wind_x, wind_y) | the near window's plane value at the soldier's centre tile (built by the same plane builders, 2.2; the unit's own profile for the per-unit denominators) | as 2.2 | as 2.2 |
+| 58..65 | `air[p]`, p over the eight physics planes of 3.2 in their order (temperature, fire, poison, teargas, smoke, pressure, wind_x, wind_y) | the near window's plane value at the soldier's centre tile (built by the same plane builders, 3.2; the unit's own profile for the per-unit denominators) | as 3.2 | as 3.2 |
+| 96 | `felt_temp` (v2; critique minor 9; APPENDED so no column moves) | the heat row's own felt temperature for this body, `t_felt` (`exchange.py:358-397`: the max over the footprint of the `heat` buffer and the radiation sensor `rad_flux_sweep`, through the row's absorption) -- the one law extracted as a read-only function `exchange.felt_temperature(gmap, u, ...)` that the heat row calls, never a copy (bit-identical: `match_pin_check.py` EQUAL); the row's `ambient_ref` when no flux reaches the body | `profile.temperature_max` (the row's own edge: 1.0 = it starts to burn) | yes |
+
+`air[0]` is the TILE's gas temperature; a soldier cooked by a fire's
+radiation across a room reads a cool tile there and its burning body in
+`felt_temp`. Both are its own body's reads: no honesty question (but see the
+fields' row in 3.2).
 
 ### 1.4 What just happened to it (design 3.2; the critique's minor 6)
 
@@ -208,10 +256,15 @@ computes memory on demand. All are host-side, never synced or hashed.
 
 | tracker | holds | written | read by |
 |---|---|---|---|
-| `motion[uid]` | `(pos_q_prev, pos_q_now)`, Q16 tiles (`unit_fixed.quantize_scalar(u.x)`, as `Record.pos_q`); the velocity is their difference, `(0, 0)` on the first update | every living unit, every update | 1.1 `vel`, the mate entries' `vel` (an enemy entry's velocity is its record's `vel_q`, `team_picture.py:103`) |
-| `last_hit[uid]` | `(tick, dir_x_q, dir_y_q, cause)` of the last `UnitHitEvent` with `damage > 0` on `uid` in the step's `sim.tick_events` | at the update, events in emission order (the last wins) | 1.4 |
-| `damage_window[team][uid]` | a deque of `(tick, damage)` of hits on `uid` the team DEALT (the event's `attacker_id` on `team`) or SAW (the victim's record has `tick == now - 1`, the picture's own seen rule, `team_picture.py:157-162`); entries older than `WINDOW_TICKS = ticks_per_second` dropped (CHOICE: the design's "last second", quantized once) | at the update | the enemy entries' `dmg_last_s` (2.2) |
-| `bars[uid]` | the unit's `current_hp` at the first update that sees it (spawn) and again at the update that first sees `is_zombie` true for it (the conversion ran in `on_tick_end` before slot 11, `simulation.py:2419-2426`; design 6.1 "health at spawn or at turning") | at the update | every `hp` ratio and `dmg_last_s`; patch 1i's bar tracker reads this one (CHOICE: 1g builds it because the hp ratio needs it first; 1i's note takes it over) |
+| `motion[uid]` | `(pos_q_prev, pos_q_now)`, Q16 tiles (`unit_fixed.quantize_scalar(u.x)`, as `Record.pos_q`); the velocity is their difference, `(0, 0)` on the first update | every living unit, every update | 1.1 `vel`, the mate entries' `vel` -- through `TeamKnowledge.trackers.motion(uid)`, which refuses a non-mate (0.5); an enemy entry's velocity is ALWAYS its record's `vel_q` (`team_picture.py:103`), never this tracker |
+| `last_hit[uid]` | `(tick, dir_x_q, dir_y_q, cause)` of the last `UnitHitEvent` with `damage > 0` on `uid` in the step's `sim.tick_events` | at the update, events in emission order (the last wins) | 1.4, the observing soldier's own only |
+| `damage_window[team][uid]` | a deque of `(tick, damage)` of hits on `uid` the team DEALT (the event's `attacker_id` on `team`) or SAW (the victim's record has `tick == now - 1` as the records stood BEFORE this tick's sightings -- the seen-death rule's own moment, `team_picture.py:157-162`; v2, critique minor 1: the window is updated before step (3) rewrites a still-seen record to `tick == now`); entries older than `WINDOW_TICKS = ticks_per_second` dropped (CHOICE: the design's "last second", quantized once) | at the update, before the sightings | the enemy entries' `dmg_last_s` (2.2), for a `seen` uid only |
+| `bars[uid]` | the unit's `current_hp` at the first update at which the unit EXISTS in `sim.units` (its spawn; v2, critique minor 2: not its first sighting, so an enemy first seen wounded reads its true ratio) and again at the update that first sees `is_zombie` true for it (the conversion ran in `on_tick_end` before slot 11, `simulation.py:2419-2426`; design 6.1 "health at spawn or at turning") | at the update | every `hp` ratio and `dmg_last_s` (a mate or a `seen` uid only, 0.5); patch 1i's bar tracker reads this one (CHOICE: 1g builds it because the hp ratio needs it first; 1i's note takes it over) |
+| `objects[team]` (v2; critique MAJOR 1) | per team, `{obj: team_uid}` for every live grenade and charge the team has seen (2.1's gate, now evaluated HERE every tick, one `rays_clear` per team), the `team_uid` taken from a per-team counter at the team's FIRST sighting of that object (`2^20 + k` for the team's k-th seen object of the episode) and kept while the object lives; an object that detonated or was spent is dropped; plus `seen_now[team]`, the objects the gate passes this tick | at the update, objects in `sim.projectiles` then `sim.planted_charges` order (the counter's order among objects first seen on one tick) | 2.1's type-3 entries and their `list_uid`, through `TeamKnowledge.objects` |
+
+The `Record` (1d) gains ONE field, `facing_q` (`Unit.facing_q` at the
+sighting; v2, critique minor 10), written by `_sighting`
+(`team_picture.py:107`): the team saw which way the enemy faced.
 
 ### 1.7 New read-only functions (design 3.7 names them; none exists today)
 
@@ -220,7 +273,7 @@ computes memory on demand. All are host-side, never synced or hashed.
 | `turning.ticks_to_within(unit, target_q, a, w, dw, tol_q, cap)` | NEW in `src/simulation/turning.py` beside `predict` (`:199`) | the ticks until `abs(wrap(target - facing)) <= tol_q`, by iterating `law_q16` (`:140`) from the unit's facing and `omega_q + dw` -- never a copy of the law; `cap` ticks at most (returns `cap` when not reached). The trigger aid of 2.2. |
 | `GameMap.wind_load_plane()` | NEW in `src/simulation/gamemap.py` beside `footprint_wind` (`:2405`) | the per-tile term of that read, `W_i = N_raw * ((wind_x^2 + wind_y^2) >> 16)` over gas tiles (0 on solid), with `(wind_x, wind_y)` -- as float64 arrays (a read-side product like the crop, `sensor_accessor.py:123`; the int product overflows int64). The wind planes of 2.2. |
 | `line_of_fire.solid_in_way(sim, a, b)` and `mate_in_way(a, b, mates, clear_tiles, fp)` | NEW module `src/simulation/line_of_fire.py` | as a round flies (the critique's minor 7): `solid_in_way` = `not vision.rays_clear(sim, [(ay, ax, by, bx)], physical=True)[0]` (`vision.py:195`) or a live cover entity's `blocks_segment` (every live cover, as the march stops on any, `combat.py:381-387`); `mate_in_way` = the bots' geometry verbatim (`control_bots.BotTeam._teammate_on_line`, `:1199-1223`, with `[bots] line_clear_tiles` `config.toml:4959`), a module function; held equal to the bots' method by a test; the bots are NOT moved onto it in 1g (a one-line finding). |
-| `obs_spec_v1.aim_of(sim, picture, team, u, mates, known)` | NEW in `obs_spec_v1.py` | the 4.1 rule judged by MY team's knowledge: among the units my team knows (my living team-mates at their live centres; the picture's records at their recorded `centre`), the nearest one, other than `u`, whose bearing from `u` is within `u`'s cone of `u`'s facing ray and to which `vision.ray_clear` from `u`'s centre tile holds; answers 0 nobody, 1 me, 2 a team-mate, 3 a known unit of another side. The facing ray is `facing_q` (for a team-mate `facing_target_q` instead, design 4.1); the cone is the unit's weapon `spread_deg` (its `melee_arc_half_q`, `weapons.py:213`, when it has no ranged weapon; CHOICE for a zombie: the reference kit's melee row `[weapons.rifle_butt] melee_arc_half_deg` `config.toml:3494`, the one table cone a weaponless body gets). An unknown unit never answers. |
+| `obs_spec_v1.aim_of(know, u)` | NEW in `obs_spec_v1.py` | the 4.1 rule judged by MY team's knowledge (`know`, the 0.5 view): among the units my team knows (`know.mates` at their live centres; `know.records` at their recorded `centre`), the nearest one, other than `u`, whose bearing from `u` is within `u`'s cone of `u`'s facing ray and to which `vision.ray_clear` from `u`'s centre tile holds -- nearest by squared centre distance, ties by the lower uid; answers `(category, uid)` (v2, critique minor 3): category 0 nobody, 1 me, 2 a team-mate, 3 a known unit of another side, and the uid of that mate or record (-1 for nobody) -- never the uid of a unit the team does not know. The facing ray is `facing_q` (for a team-mate `facing_target_q` instead, design 4.1); the cone is the unit's weapon `spread_deg` (its `melee_arc_half_q`, `weapons.py:213`, when it has no ranged weapon; CHOICE for a zombie: the reference kit's melee row `[weapons.rifle_butt] melee_arc_half_deg` `config.toml:3494`, the one table cone a weaponless body gets). An unknown unit never answers. |
 | `obs_spec_v1.route(sim, graph, where, fp)` | NEW | the compass's field (1.5, 2.3): `horde.flood(gmap, tile_ok, fp, seeds)` (`src/simulation/horde.py:260`) with `tile_ok = horde.walkable_tiles(gmap)` (`:274`) OR the tiles of every opening whose `OpeningState.openable` (`room_graph.opening_states`, `:81`) -- a door the soldier could open is on the route -- and `seeds` = every anchor `a` with `horde.block_passable(tile_ok, fp)[a]` (`:219`) whose block's centre tile has `place_at == where`. Cached per `(where, fp)` on `gmap._tile_serial` (`gamemap.py:829`) and the doors' states (the openings' cache key). The first step from the soldier's anchor is the first entry of `horde.candidates(field, ay, ax)` (`:431`, `DESCENT_ORDER` ties, `:87`); the length is `field[ay, ax]` (`UNREACHED` -> -1). |
 | `verb_gates.door_in_reach(u, door)` | NEW in `src/simulation/verb_gates.py`; `use_door` (`:85`) becomes the first live door for which it holds | the use verb's own geometry per door (the span touches the footprint or its one-tile ring), for the door entries' `in_reach`. |
 | `STATUS_SCALE_TICKS[k]` | NEW in `obs_spec_v1.py`, built once from the tables | per status kind the longest shipped applier's duration in ticks, at least 1: knocked_down `[exchange] knockdown_getup_ticks` (`config.toml:5174`; `ImpulseTable.getup_ticks`); blinded `max(teargas_blind_ticks, max over payload rows of blind_ticks)` (`:5190`, `:4453`; `PayloadDef.blind_ticks` `weapons.py:337`); stunned / immobilized / paralyzed the largest `WeaponDef.status_ticks` among rows whose `status_kind` is that kind (`:205`); burning / poisoned / suffocating / regen have no shipped applier: 1 (a value that is always 0 divided by 1). A new applier joins the max; no game number enters the interface. |
@@ -234,7 +287,7 @@ computes memory on demand. All are host-side, never synced or hashed.
 | team-mates | 0 | `S - 1` (`S = Layout.n_slots`, the largest roster of the run, `rl_env.py:398`; the design's "all") | every living non-zombie unit of my team but me | the radio is perfect (design 4.1) |
 | enemies seen now | 1 | 16 | the picture's records whose uid is in `visible_by_team[team]` this tick (marines and zombies) | seen by at least one team-mate this tick |
 | last-seen records | 2 | 8 | the picture's other records (`TeamPicture.records(team)`, `team_picture.py:173`) | the team's own memory; a record outlives an unseen death (1d step ii) |
-| grenades and charges | 3 | 6 | every live `Projectile` of `sim.projectiles` not `detonated` (`combat.py:94-124`, `simulation.py:381`) and every live `PlantedCharge` of `sim.planted_charges` (`src/simulation/charges.py:35-52`, `simulation.py:508`) whose tile some living unit of my team (me included) has `vision.rays_clear` to (one call per team per decision over all (mate centre, object tile) pairs) | a team-mate has a line of sight to its tile (design 3.3; an enemy's timer is shown, Erik's ruling) |
+| grenades and charges | 3 | 6 | every live `Projectile` of `sim.projectiles` not `detonated` (`combat.py:94-124`, `simulation.py:381`) and every live `PlantedCharge` of `sim.planted_charges` (`src/simulation/charges.py:35-52`, `simulation.py:508`) whose tile some living unit of my team (me included) has `vision.rays_clear(..., physical=False)` to -- SIGHT, the units' own rule (`sight_screen` and `blocks_los` cover stop it, `vision.py:304-316`; v2, critique minor 4: never `physical=True`, which is 1.7's line of fire and would show a grenade through a grille no unit is seen through) -- one call per team per TICK over all (mate centre, object tile) pairs, in the object tracker (1.6); the builder reads `TeamKnowledge.objects` | a team-mate has a line of sight to its tile (design 3.3; an enemy's timer is shown, Erik's ruling) |
 | doors | 4 | 4 | every living `DoorRuntime` of `sim._doors` (`src/simulation/door_system.py:123`; `alive`, `state`, `span`, `ordinal` as `room_graph.py:91-102` reads them) | doors are shown unfogged (design 3.1) |
 | reserved | 5 downed team-mate, 6 bag, 7 button, 8 noise heard | 0 | nothing in v1 (design 3.3) | |
 
@@ -245,10 +298,19 @@ computes memory on demand. All are host-side, never synced or hashed.
   (design 3.2). A block with more candidates than its cap keeps the nearest.
 - **Padding and mask:** an empty slot is all zeros, its `mask` 0 and its
   `uid` -1; the network never reads an unmasked slot as a thing (design
-  3.1). `uid` (int32) is the game's unit id for types 0-2, the projectile's
-  index in `sim.projectiles` plus `2^20` or the charge's index plus `2^21`
-  for type 3, the door's ordinal plus `2^22` for type 4 -- for the decoder
-  and the aim mask (1h) only; never a feature.
+  3.1). `uid` (int32) is the game's unit id for types 0-2, the TEAM's own
+  object id for type 3 (`2^20 + k`, the object tracker's counter of 1.6: a
+  function of the objects this team has seen, stable for as long as the
+  object lives, so 1h may hold it across decisions; v2, critique MAJOR 1 --
+  v1's index into `sim.projectiles` / `sim.planted_charges` counted the
+  unseen objects ahead of it and moved when one of them detonated), the
+  door's ordinal plus `2^22` for type 4 (doors are public) -- for the
+  decoder and the aim mask (1h) only; never a feature.
+- **What a `uid` may be used for** (v2, critique minor 7): an EQUALITY key
+  only -- 1h's decoder matches a held uid against the list's uids and the
+  masks key on it; nothing reads a uid's VALUE (a unit id carries spawn
+  order, and a conversion keeps it, so a seen zombie's uid equals the
+  marine it was). A network input built from a uid's value is the bug.
 - **The previous aim mark** (col 66) is written by 1h's decoder (the held
   uid); 0 in 1g.
 
@@ -261,12 +323,14 @@ Common columns (every type):
 | 0 | `type` | the block | kind (0..8) | no |
 | 1, 2 | `dx`, `dy` | the entry's centre tile minus mine (a record: `Record.centre`, `team_picture.py:101`; a projectile: `int(fx), int(fy)`; a charge: `(x, y)`; a door: its span's centre) | `L_ref` | yes |
 | 3 | `dist_c` | that offset's length | `d_c` | no |
-| 4, 5 | `cos`, `sin` | a unit's `facing_q` (a seen unit: live; a record: 0, 0 -- the record stores no facing, CHOICE; objects: 0, 0) | angle | no |
+| 4, 5 | `cos`, `sin` | a unit's `facing_q` (a seen unit: live; a record: `Record.facing_q`, its facing when last seen -- v2, critique minor 10, the field added in 1.6; objects: 0, 0) | angle | no |
 | 6, 7 | `vel_x`, `vel_y` | a mate: `motion` (1.6); a seen enemy / a record: `Record.vel_q` (`:103`); a grenade in flight: `(target - start) / dist * travel_speed / tps` tiles per tick (`Projectile.update_position`'s own law, `combat.py:139-157`), `(0, 0)` once landed; a charge, a door: 0 | `v_ref` | yes |
-| 8 | `side` | the unit's team as seen (`Record.team`, a mate's `Unit.team`; the horde reads `factions.ZOMBIE_TEAM`); objects: the owner's side (col 56) ; a door: -1 | kind (team id; 255 the horde) | no |
+| 8 | `side` | the unit's team as seen (`Record.team`, a mate's `Unit.team`; the horde reads `factions.ZOMBIE_TEAM`); objects and doors: -1 (v2, critique MAJOR 2: an object's owner is told only by `whose`, col 56, never by a live team read -- v1's owner side flipped on an unseen conversion and named which team threw an unseen thrower's grenade) | kind (team id; 255 the horde) | no |
 | 9 | `class` | `Record.loadout` / `Unit.loadout_name` as its `[loadouts.*]` row index; a zombie: `len(loadouts)` (one code past the rows: the zombie class); objects, doors: -1 | kind | no |
 
-Unit columns (types 0, 1; a record (2) shows only what it holds: cols 0-3, 6-9, 54):
+Unit columns (types 0, 1; a record (2) shows only what it holds: cols 0-9, 54). A
+type-1 column reads the live unit only through `TeamKnowledge.seen` (0.5);
+a type-0 column through `TeamKnowledge.mates`:
 
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
@@ -284,22 +348,22 @@ Unit columns (types 0, 1; a record (2) shows only what it holds: cols 0-3, 6-9, 
 
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
-| 24 | `seen_by_me` | my id in `vision.state_for(sim).observers_of(uid)` (`vision.py:266`) | flag | no |
+| 24 | `seen_by_me` | `TeamKnowledge.seen_by(my id, uid)` (`vision.state_for(sim).observers_of(uid)`, `vision.py:266`, answered for a mate only, 0.5) | flag | no |
 | 25 | `lof_solid` | `line_of_fire.solid_in_way(sim, my centre, its centre)` (1.7) | flag (1 = something solid in the way) | no |
 | 26 | `lof_mate` | `line_of_fire.mate_in_way(my centre, its centre, my living mates, line_clear_tiles, fp)` | flag | no |
 | 27 | `ticks_to_on` | `turning.ticks_to_within(me, atan2_q16(-dy_q, dx_q) of the offset to its centre, a, w, unit_impulse.pending_dw(table, me), spread_q, cap)` (1.7; `a`, `w` = `Simulation.unit_turn_accel_q16 / unit_turn_rate_q16`, `simulation.py:1053-1065`; `spread_q = quantize(radians(weapon.spread_deg))`, the bots' `_weapon_spread_q` `control_bots.py:1188`; `cap = 4 * HALF_TURN_TICKS`) | `HALF_TURN_TICKS = ceil(PI_Q16 / w)` (the half turn at top speed; 12 ticks at the shipped dials) | yes (reads 4 at the cap) |
 | 28 | `on_next_tick` | for the entry that is my current aim target only (1h's held uid; 0 in 1g): `abs(wrap(want - Simulation.facing_after_turn_q16(me, dx_q, dy_q))) <= spread_q` (`simulation.py:1067`; the bots' `_on_target`, `control_bots.py:1180-1186`) | flag | no |
 | 29 | `in_range` | squared centre distance `<= range_tiles^2` of my weapon | flag | no |
 | 30 | `in_throw_range` | `<= max_throw_range^2` (`[weapons.hand_grenade] max_throw_range` `config.toml:3312`) | flag | no |
-| 31 | `facing_on_me` | `aim_of(...) == 1` for this unit | flag | no |
-| 32 | `aims_at` | `aim_of(sim, picture, team, it, ...)` (1.7; design 4.1 / 4a) | kind (0 nobody, 1 me, 2 a team-mate, 3 a known unit of another side) | no |
+| 31 | `facing_on_me` | `aim_of(know, it)`'s category `== 1` | flag | no |
+| 32 | `aims_at` | `aim_of(know, it)`'s category (1.7; design 4.1 / 4a) | kind (0 nobody, 1 me, 2 a team-mate, 3 a known unit of another side) | no |
 | 33 | `zombie_state` | a seen zombie: 1 dormant, 2 hunting (`Unit.zombie_activated`, `unit_schema.py:541`), 3 walking to a noise (`zombie_noise_ticks > 0`, `:545`; `ai_zombie.py:346-369`); a marine or a record: 0 (design 4a; the critique's minor 3 is an accepted gap the design kept) | kind | no |
 
 The team display on an enemy (type 1; design 4.3):
 
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
-| 34 | `mates_aiming` | living mates whose `aim_of` answer names this unit (the 4.1 rule evaluated per mate; me excluded) | `n_t` | no |
+| 34 | `mates_aiming` | living mates whose `aim_of(know, mate)` answer's UID is this unit's (the 4.1 rule evaluated per mate, with its facing target; me excluded) | `n_t` | no |
 | 35 | `mates_firing` | those with `live_trigger` | `n_t` | no |
 | 36 | `dmg_last_s` | `damage_window[team][uid]`'s sum (1.6) | `bars[uid]` (bars) | yes |
 | 37 | `priority` | `uid == my Unit.order_target` (`unit_schema.py:558`; design 5.2) | flag | no |
@@ -310,7 +374,7 @@ The team display on a team-mate (type 0; design 4.2):
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
 | 39, 40 | `aim_cos`, `aim_sin` | `cos / sin(Unit.facing_target_q)` -- the point it is turning to (`unit_schema.py:495`; the live aim becomes the target at slot 1a, `turning.py:213-215`) | angle | no |
-| 41 | `aim_is_unit` | `aim_of(it, ...)` != 0 (with its facing target in place of its facing) | flag | no |
+| 41 | `aim_is_unit` | `aim_of(know, it)`'s category != 0 (with its facing target in place of its facing) | flag | no |
 | 42, 43, 44 | `feet_dx`, `feet_dy`, `throttle` | `Unit.live_move_dir` (`:561`; `MoveDirIntent.dx_q / dy_q / throttle_q`, `src/simulation/intents.py:60-62`) / `FP_ONE`; `(0, 0, 0)` when `None` | angle; `THROTTLE_ONE` (`movement.py:174`) | no |
 | 45, 46 | `land_dx`, `land_dy` | where its wound-up throw lands, from ME: its centre + `throw_reach_q` (`:525`; `THROW_NO_REACH` -> the verb's fixed 6 tiles, `simulation.py:1509`) along `(cos, -sin)(facing_target_q)` (design 3.7: the facing target and the reach), minus my centre; `(0, 0)` when not winding up | `L_ref` | yes |
 | 47 | `order_what` | its `Unit.order_what` | kind | no |
@@ -331,7 +395,7 @@ A grenade or a charge (type 3):
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
 | 55 | `obj_kind` | the `[ammo.*]` row index of `Projectile.ammo_name` / `PlantedCharge.ammo_name` among the hand-grenade rows followed by the charge rows (`WeaponsTables.hand_grenade_rows + charge_rows`, `weapons.py:1038`; `loadouts.py:289`) | kind | no |
-| 56 | `whose` | `owner_id` (`combat.py:111`, `charges.py:45`): 0 me, 1 a team-mate (on my team), 2 another side, 3 nobody (-1) | kind | no |
+| 56 | `whose` | `owner_id` (`combat.py:111`, `charges.py:45`), decided WITHOUT a live read (v2, critique MAJOR 2): 0 `owner_id` is my id, 1 it is in `TeamKnowledge.roster_ids` (my team's muster, fixed at spawn -- a mate who threw it and has since died or turned still reads 1), 2 any other `owner_id >= 0`, 3 `owner_id == -1` | kind | no |
 | 57 | `time_left` | `get_detonate_tick() - tick` (`combat.py:132`) / `det_tick - tick` (`charges.py:48`); 0 when remote | `fuse_ticks_from_seconds(fuse_max_seconds)` of its family's weapon row (`hand_grenade` `config.toml:3314`; `c4_satchel` `:3375`) | yes (a charge may be timed past a grenade's max) |
 | 58 | `remote` | a charge with `det_tick is None` | flag | no |
 | 59 | `blast_r` | its payload row's `radius` (`PayloadDef.radius`, `weapons.py:361`; `payload_for_ammo`) -- 0 for a row without one (smoke, tear, flash) | `L_ref` | yes |
@@ -389,6 +453,33 @@ observing soldier; "profile" is `u.environment` (`unit.py:213`,
 
 Reserved and not built (design 3.4): oxygen, water depth, fuel vapour.
 
+**PENDING ERIK: the fields carry every unit's body** (v2; critique MAJOR 3).
+The eight planes are not a function of public state alone:
+`GameMap.stamp_units` (`gamemap.py:2071-2090`) writes every living body into
+`dyn_permeability` (0.5 on a marine's 3x3), `dyn_wave_absorb` and
+`dyn_heat_atten_q`, which the gas solver and the radiation sweep read
+(`physics_runner.py:995, 1215, 1293`). The critic measured it: two
+`ship_demo` matches, idle, seed 7, identical but for one marine dead from
+tick 0, differ after 300 ticks in ~4 700 cells out to 96 tiles (wind up to
+0.44 m/s, mean 0.08 within 3 tiles of the body against a field noise of
+~0.1; temperature mean 5.7 game degrees within 3 tiles). In still air the
+signal is weak and mostly chaotic divergence; in a vent draft, a breach or a
+blast front a half-permeable block may cast a wake (UNMEASURED). The physics
+is real -- a body does obstruct air and heat -- so the PROPOSED handling is
+an ACCEPTED GAP, stated here and in the CLAUDE.md row (section 10): "the
+fields carry the bodies' own aerodynamic and radiative imprint
+(`stamp_units`)". It is NOT decided by this document: the orchestrator asks
+Erik. Patch (b) measures the imprint (section 8 (b), its report): the same
+A/B with one hidden body standing in a vent draft and one walking through
+it, the largest squashed float16 difference per plane inside a 25 x 25 window
+around the body against the same statistic far from it (beyond 50 tiles);
+the near/far ratio per plane is reported. If Erik does not accept the gap,
+the candidate remedies (his choice, a v2 spec, not 1g's) are a coarser
+quantisation of the wind planes, the far window's physics planes from the
+block MEAN, or no far wind. Consequence for the tests now: the pair tests of
+section 7 compare the physics planes (and the `air` / `felt_temp` columns
+that read them) only in the pair whose bodies are identical, (f).
+
 ### 3.3 How the far window is made (design 3.7's third thing)
 
 Once per tick per env, not per soldier: each physics plane `P` (h, w) is
@@ -425,8 +516,9 @@ When cones return (rung 8) the enemy's facing enters here (design 3.4).
 
 ### 3.6 The fire-lanes plane (near window; design 4.5)
 
-`fire_lanes(sim, team, lane_cell, lane_halfwidth)` once per team per
-decision (`team_picture.py:227`, from STATE: every mate holding its trigger;
+`TeamKnowledge.lanes` (0.5): `fire_lanes(sim, team, lane_cell,
+lane_halfwidth)` once per team per decision, inside the view's build
+(`team_picture.py:227`, from STATE: every mate holding its trigger;
 the dials `[bots] lane_cell` / `lane_halfwidth` `config.toml:4953-4954`,
 CHOICE: the same lanes the bots read, one source); the plane cell for tile
 `(y, x)` is 1 when `grid[y // cell, x // cell]` is an owner other than me or
@@ -435,15 +527,17 @@ uint8.
 
 ### 3.7 The far window's unit planes (design 3.4 "in the far window also"; the critique's major 4)
 
-Drawn FROM THE LIST, never from the crop's `units_*` planes
-(`sensor_accessor.py:84-92`, which see every unit and are not part of this
-spec):
+Drawn from the TEAM KNOWLEDGE view (0.5), never from the crop's `units_*`
+planes (`sensor_accessor.py:84-92`, which see every unit and are not part of
+this spec). v2 (critique minor 11): drawn from the WHOLE picture, not from
+the capped list -- a ninth remembered enemy 30 m away was in no array, while
+the bots' team layer reads every record:
 
 | name | what | type |
 |---|---|---|
-| `mates` | the number of living team-mates (me excluded) whose centre tile lies in the block | uint8 count |
-| `enemies` | the number of entries of type 1 (seen now) whose centre lies in the block | uint8 count |
-| `records` | the number of entries of type 2 (CHOICE: the remembered places drawn too, as a third plane, so the far map shows what the list shows) | uint8 count |
+| `mates` | the number of `TeamKnowledge.mates` (me excluded) whose centre tile lies in the block | uint8 count |
+| `enemies` | the number of `TeamKnowledge.seen` units (every one, past the list's cap of 16) whose RECORDED centre (= its live one this tick) lies in the block | uint8 count |
+| `records` | the number of the other `TeamKnowledge.records` (every one, past the cap of 8) whose recorded centre lies in the block (CHOICE: the remembered places drawn too, as a third plane) | uint8 count |
 
 ### 3.8 The order's planes (far window; design 3.5, 5.2)
 
@@ -471,7 +565,7 @@ Per soldier per decision: `(8 + 10) * 625 * 2 + (5 + 5) * 625 = 28.75 KB`.
 ### 4.1 Shapes (`Layout.shapes`, `rl_env.py:413`, under `[obs] spec = "v1"`)
 
 `N` envs, `U = T * S` rows (row `t * S + s` = team `t`'s roster slot `s`,
-`rl_env.py:57-61`), `E = S + 33` entries, `V = 96`, `F = 67`.
+`rl_env.py:57-61`), `E = S + 33` entries, `V = 97`, `F = 67`.
 
 | key | shape | dtype | what |
 |---|---|---|---|
@@ -495,6 +589,26 @@ array is ENV-OWNED, overwritten by the next step (`BatchedEnv._buf`,
 `_obs` / `_final_obs` copy into them, never allocate. The `"crop"` spec's
 keys (`crop`, `vector` of `VECTOR_FIELDS`) are what they are today; a run
 file names one spec and gets that spec's keys.
+
+**Who may read which rows** (v2; critique MAJOR 5). `obs` holds every
+marine team's rows, because one env serves every team; a row is the
+knowledge of ITS team only. A policy acting for team `t` -- its network,
+any batching, shared attention or pooling over rows, rung 4's commander --
+reads ONLY rows `t*S .. t*S + S - 1` of every `obs` key (its own soldier's
+row and its team-mates' rows: the radio is perfect, design 4.1, so a
+team-mate's row is team knowledge), including `valid` / `in_match` of
+those rows only (another team's `valid` is a death counter of the enemy).
+It reads NOTHING of `info`, `reward` or `counters` (they credit kills and
+hits the team never saw, `EnvRunner._count`, `rl_env.py:585-612`): no
+previous reward fed to a recurrent policy, no counter as an input. Another
+team's rows are full-view material (section 5's side of the wall). The
+TRAINER (not the policy) may read `reward`, `counters`, `terminated`,
+`truncated` and `info` (the full view for the value network, section 5) to
+form its losses. The one path a trainer takes to a team's observation is
+the env's helper `BatchedEnv.team_rows(obs, t)` (NEW, patch (a)): a dict of
+the same keys, each the view `arr[:, t*S : (t+1)*S]` (a view, never a
+copy, the env-owned rule), `final_*` likewise; 1i's and rung 2's trainer
+tests assert that the policy's forward pass is fed only through it.
 
 Per soldier per decision: vector 0.4 KB + list 36 x 67 x 4 = 9.6 KB + windows
 28.75 KB = about 39 KB; a batch of 64 envs x 8 rows = 20 MB, within the
@@ -537,6 +651,18 @@ only what the soldier does not get.
 | `full_uid` | `(N, U, 64)` | int32 | |
 | `full_match` | `(N, U, M)` | float32 | 5.4; `M = 2 T + 3` |
 | `full_watched` | `(N, U, 25, 25)` | uint8 | 5.5 |
+
+All five are keys of `info["full_view"]`. The terminal full view of an env
+that ended inside the step (a truncated episode's value bootstrap needs it)
+is `info["final_full_view"]`, the same five keys (v2, critique minor 6) --
+never a `final_full_*` key inside `info["final_obs"]`, the policy's terminal
+dict.
+
+The full view's builders take `sim` itself (they are the other side of the
+wall, 0.5) and keep their OWN caches. Its type-3 entries carry `side` -1 and
+`whose` by the roster as 2.2 does; their `full_uid` is `2^20` plus the
+object's position in the full list's object block (privileged, never an
+`obs` value).
 
 ### 5.3 The full list (replaces the soldier's list, design 7.1 / 7.2)
 
@@ -591,8 +717,10 @@ and `time_left` (as 1.5 col 77). The soldier's own team counts (1.5 cols
 
 `full_watched`: 3.5's `watched` built from EVERY living enemy of the
 soldier's team at its LIVE centre (zombies included, dormant or not), a
-`window_clear` per enemy per soldier. Stored beside the observation's
-`watched`; the soldier's own stays as it is.
+`window_clear` per enemy per soldier. Its own key of 5.2,
+`info["full_view"]["full_watched"]` -- never a channel of an `obs` array
+(v2, critique minor 5); the soldier's own `watched` (a channel of `near_u`)
+stays as it is.
 
 ### 5.6 A dead soldier's view (design 7.2)
 
@@ -611,16 +739,34 @@ zero (4.2). The "blanked" variant of 7.4's experiment is the trainer's
 - `obs` (the dict `BatchedEnv._obs` returns) holds exactly the keys of
   4.1 and no key of 5.2: asserted by `tests/test_obs_spec_v1.py` on the
   live env.
-- The observation builders of sections 1-3 take `(sim, picture, trackers,
-  team, u)` and read units only through my living team-mates, the
-  picture's `records(team)`, and the line-of-sight-gated objects of 2.1;
-  the full-view builders take `sim.units`. A grep test holds that
-  `obs_spec_v1`'s observation functions never read `sim.units` or
-  `sim.roster` directly (the names are listed; the full-view functions are
-  the only ones that may).
-- The behavioural test (section 7, "shows nothing the team cannot know"):
-  two sims differing only in a unit no team-mate can know of give
-  byte-identical observation arrays and different full views.
+- **The chokepoint** (v2; critique MAJOR 4, replacing v1's two-name grep):
+  the observation builders of sections 1-3 take `(know, u)` -- the
+  `TeamKnowledge` view of 0.5 and the observing soldier -- and never the
+  `Simulation`; `TeamKnowledge.build(sim, picture, team)` is the only
+  observation function that touches `sim`. Every routine they call
+  receives `know.world` (the `ObsWorld` facade) as its `sim`, so a read of
+  `units`, `roster`, `get_unit`, `projectiles`, `planted_charges`,
+  `team_picture`, `tick_events` raises at run time; the trackers answer
+  only in their scope (0.5). The full-view builders take `sim` and own
+  separate caches.
+- **The scan test**, widened to every module the builders call: an AST scan
+  of `obs_spec_v1.py` (bar `TeamKnowledge.build` and section 5's
+  functions, listed by name), `line_of_fire.py`, `turning.ticks_to_within`,
+  `verb_gates.door_in_reach`, `obs_spec_v1.route`'s callees in `horde.py`
+  (`flood`, `walkable_tiles`, `block_passable`, `candidates`),
+  `gamemap.wind_load_plane`, `exchange.felt_temperature` and the vision
+  routines `ray_clear` / `rays_clear` / `window_clear` finds none of the
+  banned names (`.units`, `.roster`, `.get_unit`, `.projectiles`,
+  `.planted_charges`, `.team_picture`, `.tick_events`, `_units_by_id`,
+  `state_for`) outside the listed exceptions; a new callee joins the list
+  in the patch that adds it. Every observation cache is keyed by its inputs
+  (0.5).
+- **The rows** (4.1): a policy of team `t` reads only team `t`'s rows,
+  through `BatchedEnv.team_rows(obs, t)`, and nothing of `info`, `reward`
+  or `counters`; the trainer reads those for its losses only.
+- **The behavioural tests** (section 7, "shows nothing the team cannot
+  know"): the counterfactual family (a)-(f), each comparing only the
+  observing team's rows.
 - The network-side wall (separate weights, scrambling the full view's
   inputs changes no choice) is rung 2's test (design 8.6), not 1g's.
 
@@ -653,7 +799,8 @@ the lead's and are to be replaced):
 |---|---|---|---|
 | the trackers' update | slot 11, per tick per env | 0.05 per tick | (a) |
 | the vector and the list (40 entries; `aim_of` over ~30 candidates with a `ray_clear` each; `ticks_to_within` per enemy, at most 48 law steps) | per soldier | 0.6 | (a) |
-| the objects' line-of-sight gate (`rays_clear`, one call per team) | per team | 0.05 | (a) |
+| the objects' line-of-sight gate (`rays_clear`, one call per team, in the object tracker; v2: every tick, not every decision) | per team per tick | 0.05 | (a) |
+| `TeamKnowledge.build` (the seen map, the roster ids, the lanes) | per team per decision | 0.05 | (a) |
 | the physics planes read + the far reduce | per tick per env (3.3) | 0.3 per tick | (b) |
 | the two crops and the per-unit denominators | per soldier | 0.1 | (b) |
 | the sight planes: one `window_clear` (625 lines) per known enemy per soldier, plus the target | per soldier | 0.4 at 12 known enemies (the union-rectangle sharing of 3.5 is the fallback) | (b) |
@@ -667,7 +814,10 @@ ms per soldier-decision = 20 ms per 4 ticks against ~36 ms of ticks
 estimates. The order of attack if the measurement agrees: (1) the sight
 planes' union sharing (3.5); (2) `aim_of` and the lanes per TEAM per
 decision, cached and read per soldier; (3) the full view's `full_watched`
-from one window per enemy over the team's union. The budget is held at
+from one window per enemy over the team's union. Every such cache is keyed
+by its inputs and the full view's are separate from the observation's
+(0.5): sharing a window between the two sides is not an optimisation this
+spec allows. The budget is held at
 (c)'s merge, not at (a)'s or (b)'s: each of those reports its parts and
 the farm's number as information.
 
@@ -675,9 +825,10 @@ the farm's number as information.
 
 | property | breaks if |
 |---|---|
-| **Equals an independent reconstruction.** Over a `ship_demo` match of `bots` vs `bots` with the farm's rows observed every 4 ticks for 600 ticks, every vector column, every list entry and every plane equals a reference built in `tests/_obs_reference.py` from the sim's state alone -- a second, plainer implementation written from THIS document (loops over units and tiles, `has_los` per tile instead of the window routine, the bots' own `_teammate_on_line`, the horde's `flood_reference`), never importing `obs_spec_v1` | a builder reads the wrong seam, denominator, order or frame |
-| **Shows nothing the team cannot know.** For every decision of that match: every `list_uid` of types 0-2 is my living team-mate's id or a key of `records(team)`; every type-3 uid's tile is `rays_clear` from a living team-mate's centre; the far `mates` / `enemies` / `records` planes sum to the counts of those entries inside the window; `watched` equals the OR of `has_los` from the RECORDED centres (never a live position). And the pair test: two sims equal but for one dormant zombie in a sealed room no team-mate sees give byte-identical `vector`, `list`, `near_*`, `far_*` for every row and a `full_list` that differs by exactly that entry | an entry, a plane or a flag leaks a unit the team has no record of |
-| **A record outlives its unit's unseen death.** A seen enemy walks out of sight and is killed by a status out of sight: its type-2 entry stays for `memory_ticks` with its `age` rising and its `dx`, `class`, `vel` frozen at the sighting; a seen death drops it on the next decision | the list reads liveness or the live unit |
+| **Equals an independent reconstruction.** Over a `ship_demo` match of `bots` vs `bots` with the farm's rows observed every 4 ticks for 600 ticks, every vector column, every list entry and every plane equals a reference built in `tests/_obs_reference.py` from the sim's state alone -- a second, plainer implementation written from THIS document (loops over units and tiles, `has_los` per tile instead of the window routine, the bots' own `_teammate_on_line`, the horde's `flood_reference`), never importing `obs_spec_v1` (v2, critique minor 8: this is a CORRECTNESS gate -- the reference is written from this document, so a leak written into the document passes both; the honesty gate is the next row) | a builder reads the wrong seam, denominator, order or frame |
+| **Shows nothing the team cannot know: the direct checks.** For every decision of that match: every `list_uid` of types 0-2 is my living team-mate's id or a key of `records(team)`; every type-3 `list_uid` is a value of the team's object tracker for an object in `seen_now[team]` (a function of the objects the team has seen), and its tile is `rays_clear(physical=False)` from a living team-mate's centre; the far `mates` / `enemies` / `records` planes equal the counts of `TeamKnowledge.mates` / `.seen` / the other records inside each block (the whole picture, not the capped list); `watched` equals the OR of `has_los` from the RECORDED centres (never a live position) | an entry, a plane or a flag leaks a unit the team has no record of |
+| **Shows nothing the team cannot know: the counterfactual family** (v2; critique MAJOR 6, replacing v1's sealed-room zombie pair, which perturbed nothing a builder reads and changed `spec.zombies`, the bodies in the air and the unit ids). Each case is TWO sims built from the SAME match.toml, level and seed (so every denominator, roster, `n_t`, `spec.zombies` and unit id is equal), stepped identically to a tick `T`, then differing ONLY in hidden state of a unit outside `visible_by_team[team]` since its last sighting, introduced at `T` through the sim's own doors (a `DamagePacket`, a status row, a conversion call, a throw intent) or, for (b), a test-only position write named as such; the OBSERVING team's rows of `vector`, `list`, `list_mask`, `list_uid`, `near_u`, `far_u`, `valid`, `in_match` are compared BYTE FOR BYTE at every decision for `memory_ticks` after `T` (only that team's rows: the other team legitimately differs). Because a body is stamped into the air (3.2, PENDING ERIK), the comparison of (a)-(e) excludes the physics planes (`near_f`, `far_f` bar `wall_share` and `route`) and the vector's `air` and `felt_temp` columns (58-65, 96) -- the fields are judged by (b)'s imprint measurement, not here. The cases: (a) a remembered enemy killed unseen by a status vs. left alive (every array, not only its type-2 entry: counts, `watched`, `aims_at`, the far planes); (b) a remembered enemy moved unseen; (c) a remembered enemy converted unseen; (d) an extra grenade thrown by an unseen unit before a grenade the team sees (the seen grenade's `list_uid` unchanged); (e) an unseen conversion of the owner of a charge the team sees (`side`, `whose` unchanged); (f) the same sim with the full view ON vs OFF -- here EVERY observation array is compared, physics planes included, since nothing physical differs (a cache shared with the full view) | a builder reads liveness, place, class, team or count of a unit or object the team cannot know, or a cache crosses the wall |
+| **A record outlives its unit's unseen death.** A seen enemy walks out of sight and is killed by a status out of sight: its type-2 entry stays for `memory_ticks` with its `age` rising and its `dx`, `class`, `vel` frozen at the sighting; a seen death drops it on the next decision; its `cos`, `sin` are `Record.facing_q`'s (frozen too). Every OTHER array's invariance under the unseen death is case (a) of the family above | the list reads liveness or the live unit |
 | **A level without a room graph is refused.** `load_levels` on a run with `spec = "v1"` and `levels = ["playground"]` (no `rooms.npy`) raises naming the level and the spec; the same run under `"crop"` loads | the refusal is missing or on the wrong path |
 | **The two row flags' truth table.** A soldier killed mid-match: `in_match` 1, `valid` 0, zero vector, mask all 0; a converted one likewise; a slot beyond the team's `n`: 0, 0; a living one: 1, 1 -- in `obs` and in `final_*` | a dead row reads as an empty place, or is observed |
 | **The squash.** Identity on `[-1, 1]`, monotone, continuous at +-1, capped at +-4; `squash(e) == 2`; every float16 plane lies in `[-4, 4]` | the curve changes or a builder skips it |
@@ -685,11 +836,11 @@ the farm's number as information.
 | **The far reduce.** On a random map the reduced planes equal a per-tile reference (the max over each block; the wall share; the wind's direction from the block's largest load) | the reshape or the padding is off by one |
 | **The sight planes equal the one sight test.** `watched` cell for cell equals `gmap.has_los(ry, rx, y, x)` OR-ed over the records; `sees_target` equals `has_los(y, x, ty, tx)` | a window argument (`to_window`) is swapped |
 | **The lanes plane.** A mate holding its trigger facing east marks the near cells along its facing to its range, widened by the dials; released, none; my own lane marks nothing | the plane reads the wrong owner |
-| **The new functions.** `ticks_to_within` equals stepping `law_q16` by hand on three cases (already within; a quarter turn; the cap); `mate_in_way` equals `BotTeam._teammate_on_line` on 1 000 random triples; `door_in_reach` makes `use_door` return what it returned before (the verb-gate tests stay green); `wind_load_plane`'s footprint max equals `footprint_wind` on random footprints; `aim_of` on a hand-built scene: me / a mate / another side / nobody, an unknown unit never answered, a wall between answers nobody; `route`'s field at a room's seeds is 0 and its first step descends | a function is a copy of a law instead of a call of it |
-| **The trackers.** `motion` equals the position delta of the last tick; `last_hit` holds the last damaging hit's direction and cause and clears nothing (age grows); `damage_window` sums hits my team dealt plus hits on a unit my team saw at the previous observation, nothing else, over the last `ticks_per_second` ticks; `bars` = `effective_vitality` for every marine and `[zombie] hp` for a converted one | a tracker reads on demand or counts an unseen hit |
+| **The new functions.** `ticks_to_within` equals stepping `law_q16` by hand on three cases (already within; a quarter turn; the cap); `mate_in_way` equals `BotTeam._teammate_on_line` on 1 000 random triples; `door_in_reach` makes `use_door` return what it returned before (the verb-gate tests stay green); `wind_load_plane`'s footprint max equals `footprint_wind` on random footprints; `aim_of` on a hand-built scene: me / a mate / another side / nobody with the right uid, two candidates at equal distance answer the lower uid, an unknown unit never answered (category nor uid), a wall between answers nobody; `exchange.felt_temperature` equals the heat row's `t_felt` on random bodies near a fire and the heat row's damage is unchanged (`match_pin_check.py` EQUAL); `route`'s field at a room's seeds is 0 and its first step descends | a function is a copy of a law instead of a call of it |
+| **The trackers.** `motion` equals the position delta of the last tick; `last_hit` holds the last damaging hit's direction and cause and clears nothing (age grows); `damage_window` sums hits my team dealt plus hits on a unit my team saw at the previous tick, nothing else, over the last `ticks_per_second` ticks -- including a hit by a THIRD side on an enemy my team sees at both ticks (the saw rule against the records before this tick's sightings, critique minor 1); `bars` = the unit's `current_hp` at spawn (`effective_vitality` for a marine) even for an enemy first seen wounded, and `[zombie] hp` for a converted one; the object tracker gives a seen object one id for its life, the next id to the team's next first-seen object, and nothing to an object never seen; the view refuses `motion` of a non-mate and `bar` of an unseen uid | a tracker reads on demand, counts an unseen hit, or hands out out-of-scope memory |
 | **The full view.** Every living unit of the sim is in `full_list` exactly once (`full_uid`), the marines first in `(team, slot)` order; `knowledge` agrees with the picture; `full_watched` equals the OR of `has_los` from every living enemy's LIVE centre; `full_match` reproduces the counts; a dead row's view is built and its first entry is itself | the full view misses a unit, or uses the picture where it must not |
-| **The policy never sees it.** `obs` has no key of 5.2; the grep of 5.7 passes | a full-view array reaches the policy's dict |
-| **The farm.** `tools/rl_smoke.py` on a `"v1"` run file with the full view, 2 envs, 2 workers, 10 steps: no exception, every array of 4.1 and 5.2 of its shape and dtype, `final_*` filled for an env that ended; the §9.1 numbers in (c)'s report | a shape, a dtype or the env-owned copy is wrong |
+| **The policy never sees it.** `obs` has no key of 5.2 and `info["final_obs"]` none of 5.2's; the chokepoint of 5.7: a builder handed `know.world` and asked for each banned name raises `AttributeError`, and the widened AST scan of 5.7 passes; `BatchedEnv.team_rows(obs, t)` returns exactly team `t`'s rows of every key, as views | a full-view array or another team's row reaches the policy, or a builder reaches the sim |
+| **The farm.** `tools/rl_smoke.py` on a `"v1"` run file with the full view, 2 envs, 2 workers, 10 steps: no exception, every array of 4.1 and 5.2 of its shape and dtype, `final_*` and `info["final_full_view"]` filled for an env that ended; the §9.1 numbers in (c)'s report | a shape, a dtype or the env-owned copy is wrong |
 | **Replay unmoved.** A recorded `policy` match (zero rows) with `"v1"` observation on replays with every checkpoint equal; `tools/match_pin_check.py` EQUAL; `pytest tests -q` green | the observation writes sim state |
 
 ## 8. The cut into three implementation patches
