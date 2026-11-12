@@ -134,6 +134,7 @@ from simulation import speeds
 from simulation import turning
 from simulation import unit_fixed
 from simulation import unit_impulse
+from simulation import unit_orders
 from simulation import verb_gates
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
@@ -450,6 +451,13 @@ class Simulation:
         # ever driven twice, and an idle zombie controller leaves it standing.
         self._zombie_requests: set | None = None
 
+        # The commander's orders latched this tick (#195 1f, the
+        # ``drive_zombies`` precedent): unit id -> (what, where, until,
+        # target), the last ``order_intent`` of the tick per unit; written
+        # onto the units at slot 1b' (``unit_orders.apply_requests``) and
+        # emptied there. Never synced, never digested; empty between ticks.
+        self._order_requests: dict = {}
+
         # The intent tap (#126, replay by re-simulation): ``None`` = dormant
         # (every path but a recorded match; each intent entry point pays one
         # ``is None`` check). Attached by :meth:`attach_intent_log`, it is
@@ -627,7 +635,9 @@ class Simulation:
         """Attach the intent tap's sink (#126): from now on every call of
         ``set_move_dir`` / ``clear_move_dir`` / ``set_aim`` / ``set_trigger``
         / ``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
-        ``drive_zombies`` / ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
+        ``shove_intent`` / ``melee_intent`` / ``set_flashlight`` /
+        ``plant_charge_intent`` / ``order_intent`` / ``drive_zombies`` /
+        ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
         the method name, ``args`` its arguments normalised exactly as the
         method itself normalises them) before it acts. ``None`` detaches.
         The sink may refuse a call by raising (``match_replay`` refuses
@@ -1253,6 +1263,33 @@ class Simulation:
         if u is None:
             return
         u.flashlight_on = not bool(off)
+
+    def order_intent(self, unit_id: int, what: int, where: int, ticks: int,
+                     target_id: int) -> None:
+        """ORDER (#195 1f, ``simulation.unit_orders``): the COMMANDER's
+        verb, not a soldier's -- give ``unit_id`` the order ``what``
+        (``unit_orders.ORDER_WHAT``'s code: 1 go to, 2 hold, 3 clear, 4 fall
+        back to; 0 = none, which CLEARS the unit's order and takes no other
+        field) at the place ``where`` on the level's room graph (a room id,
+        or ``ORDER_OPENING_BASE`` + an opening id), for ``ticks`` INTEGER
+        ticks (0 = until told otherwise; every caller converts seconds once
+        at its own door), with the priority target ``target_id`` (an enemy's
+        unit id, or -1).
+
+        Refused by name at :func:`unit_orders.check` BEFORE the tap (so a
+        recording never holds a refused call); then recorded and LATCHED on
+        the sim (a second call for the unit in one tick replaces the first)
+        and written onto the unit at the next slot 1b'. Cleared at death, at
+        conversion and when its tick comes (``order_until``, after the tick
+        advance). Does not possess the unit. INFORMATION ONLY until rung 4:
+        nothing in the game reads an order for a decision."""
+        args = unit_orders.check(self, unit_id, what, where, ticks,
+                                 target_id)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "order_intent", args)
+        uid, what, where, ticks, target = args
+        until = unit_orders.NO_LIMIT if ticks == 0 else self.tick + ticks
+        self._order_requests[uid] = (what, where, until, target)
 
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
@@ -2000,6 +2037,12 @@ class Simulation:
         # Dormant under WEGO (no possessed units) — a single set-empty check.
         self._consume_direct_intents()
 
+        # 1b'. The commander's orders (#195 1f): this tick's latched
+        # ``order_intent`` requests are written onto their units (the ONE
+        # writer of the order columns, unit_orders). Information only: no
+        # slot reads an order. Dormant on an empty request dict.
+        unit_orders.apply_requests(self)
+
         # 1c. Exposure decays one tick (G4p, simulation.exposure) -- before
         # every attack of this tick, so each hit reads the level left by the
         # hits up to last tick, decayed exactly once since.
@@ -2368,6 +2411,10 @@ class Simulation:
         # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
         self.tick += 1
         self.real_time += sim_time_per_tick
+
+        # 10'. An order whose tick has come is cleared (#195 1f) -- right
+        # after the advance, so between ticks a held order has time left.
+        unit_orders.expire(self)
 
         self.ruleset.on_tick_end(self)
 
