@@ -174,7 +174,7 @@ _SAMPLES = {
     "env_profile_name": "default", "weapon_id": "k5_carbine",
     "melee_id": "rifle_butt", "charge_ammo": "grenade_frag",
     "magazines_weapon": "k5_carbine",
-    "current_hp": 12.5,
+    "current_hp": 12 << 16,      # read as hp_q, the Q16 int (#29 P3e)
     "live_move_dir": MoveDirIntent(1, 2, 3), "live_aim": AimIntent(1, 2),
     "pending_throw": ThrowIntent(1, 2, 3, None, 0),
     "pending_plant": 120, "spray_target": (1.0, 2.0),

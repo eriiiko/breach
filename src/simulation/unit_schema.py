@@ -265,19 +265,6 @@ def _dec_bool(e):
     return bool(e)
 
 
-def _enc_q16_exact(v):
-    """A float that must sit exactly on the Q16 grid (the hp): its count.
-    Refuses a value that does not (P3a asserts the hp is exact)."""
-    q = round(float(v) * 65536)
-    if q / 65536 != float(v):
-        raise ValueError(f"unit schema: {v!r} is not an exact n/65536")
-    return int(q)
-
-
-def _dec_q16(e):
-    return e / 65536.0
-
-
 def _enc_e9(v):
     return int(round(float(v) * 1_000_000_000))
 
@@ -503,9 +490,10 @@ COLUMNS: tuple[Column, ...] = (
        _enc_sentinel(SPEED_FROM_TABLE)),
     _c("zombie_move_accumulator", KIND_INT, "motion", 0),
     # health
-    _c("current_hp", KIND_Q16, "health", 0.0, _enc_q16_exact, _dec_q16,
-       digest=DIGEST_ALWAYS, store="_current_hp",
-       note="host float, exact n/65536 (asserted at every write)"),
+    _c("current_hp", KIND_Q16, "health", 0, attr="hp_q",
+       digest=DIGEST_ALWAYS, store="_hp_q",
+       note="the Q16 int hp_q since #29 P3e (current_hp its float view); "
+            "hashed under current_hp as before"),
     _c("statuses", KIND_BLOCK, "health", list, _enc_statuses, _dec_statuses,
        width=lambda: 4 * status_capacity()),
     _c("exposure", KIND_BLOCK, "health", _exposure_default, _enc_block,
@@ -684,6 +672,9 @@ REFERENCE_ONLY: dict[str, str] = {
 #: The backing slots of the properties (``facing_q`` / ``facing``,
 #: ``current_hp``): a column's ``store`` when it differs from its ``attr``.
 _PRIVATE_STORES = tuple(c.store for c in COLUMNS if c.store != c.attr)
+#: The property names a column is read through when they differ from its
+#: name (``hp_q`` for ``current_hp``, #29 P3e).
+_COLUMN_ATTRS = tuple(c.attr for c in COLUMNS if c.attr != c.name)
 
 
 def slot_names() -> tuple[str, ...]:
@@ -700,7 +691,8 @@ def slot_names() -> tuple[str, ...]:
 def group_of(name: str) -> str:
     """'S', 'D' or 'R' for a unit attribute (the property names of a column
     -- ``facing_q``, ``current_hp`` -- are S); KeyError when undeclared."""
-    if name in COLUMN_BY_NAME or name in _PRIVATE_STORES:
+    if (name in COLUMN_BY_NAME or name in _PRIVATE_STORES
+            or name in _COLUMN_ATTRS):
         return "S"
     if name in DERIVED or name in OPTICS_OVERRIDES:
         return "D"

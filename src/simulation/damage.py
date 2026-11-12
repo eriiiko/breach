@@ -14,16 +14,15 @@ everything after::
        ▼ apply        unit.current_hp -= applied ;  events carry APPLIED amounts
        ▼ life         hp <= 0 → DEAD
 
-P2 scope (behaviour-preserving wiring, 2026-07-05): ``amount`` lives in the
-SAME float64 domain the shipped damage chains use (ingress door 3 — pure
-``+ − × ÷`` on deterministic inputs, quantized at the HP write boundary by
-:func:`unit_fixed.quantize_hp_delta`). The chapter's integer-packet
-(``amount_q16``) representation and the per-unit/per-phase batching stage are
-LATER patches; nothing here reorders or merges damage applications. With the
-neutral default tables (armor 0, resist 1.0) every mitigation is an IEEE-exact
-no-op (``x − 0`` and ``x × 1.0`` are identity ops on every finite float), so
-routing the shipped sites through this pipeline is bit-identical to the
-inline code it replaces — proven bitwise in ``tests/test_damage_pipeline.py``.
+#29 P3e (2026-11-12): the pipeline is INTEGER from the packet door to the
+hp. A packet's amount is quantized ONCE to Q16 at its door
+(:meth:`DamagePacket.q`; a producer that computed it in integers hands
+``amount_q``), mitigation runs on Q16 armor / resist tables with one rounding
+(half away from zero), the exposure scale is the integer law, and the hp is
+the unit's Q16 int ``hp_q``. For every amount already on the grid (every
+shipped packet but the heat and poison rows, which P3e made integer at their
+source) this is exactly the P2 float chain's result -- the float form was
+``quantize(max(0, a - armor) * resist)`` on exact inputs.
 
 Mitigation tables (mechanics/06 §3) are door-2 species-profile data
 (:mod:`simulation.species`): flat ``armor[dtype]`` (mainly KINETIC/ENERGY,
@@ -102,10 +101,18 @@ class MitigationProfile:
     ``resist_mult`` — multiplier: 0 immune, 1 neutral, >1 vulnerable.
 
     Both are length-``N_DAMAGE_TYPES`` tuples of Q16.16-snapped floats
-    (door 2). Build instances with :func:`build_mitigation`.
+    (door 2). Build instances with :func:`build_mitigation`. ``armor_q`` /
+    ``resist_q`` are the same tables as Q16 ints (#29 P3e), derived here --
+    the integer mitigation reads them.
     """
     armor:       tuple
     resist_mult: tuple
+
+    def __post_init__(self):
+        object.__setattr__(self, "armor_q", tuple(
+            unit_fixed.quantize_scalar(float(v)) for v in self.armor))
+        object.__setattr__(self, "resist_q", tuple(
+            unit_fixed.quantize_scalar(float(v)) for v in self.resist_mult))
 
 
 def build_mitigation(armor: Optional[dict] = None,
@@ -141,9 +148,11 @@ NEUTRAL_MITIGATION = build_mitigation()
 class DamagePacket:
     """One quantum of damage entering the pipeline (mechanics/06 §2).
 
-    ``amount``    — pre-mitigation damage in the float64 domain the shipped
-                    door-3 chains use (int amounts pass through exactly; the
-                    integer ``amount_q16`` form is a later patch).
+    ``amount``    — pre-mitigation damage as authored (an int, or a value
+                    on the Q16 grid); quantized once at the packet door
+                    (:meth:`q`) unless ``amount_q`` is given.
+    ``amount_q``  — the pre-mitigation amount already in Q16 (#29 P3e: the
+                    heat and poison rows compute it in integers).
     ``dtype``     — damage type (KINETIC … PSY above).
     ``attacker_id`` — the unit CREDITED with the hit (#123): the shooter,
                     the striker, the biting zombie, the thrower / firer /
@@ -186,6 +195,16 @@ class DamagePacket:
     expose:      int = 0
     dir_x_q:     int = 0
     dir_y_q:     int = 0
+    amount_q:    Optional[int] = None
+
+    def q(self) -> int:
+        """The pre-mitigation amount in Q16 (#29 P3e): ``amount_q`` when the
+        producer computed it in integers, else ``amount`` quantized ONCE
+        here -- the packet door (round half away; exact for every integer
+        amount and every value already on the grid)."""
+        if self.amount_q is not None:
+            return int(self.amount_q)
+        return unit_fixed.quantize_scalar(self.amount)
 
 
 # ---------------------------------------------------------------------------
@@ -262,23 +281,35 @@ def tick_credit(gmap) -> TickCredit:
 def mitigate(amount, dtype: int, profile: MitigationProfile, ap=0):
     """``amount' = max(0, amount − max(0, armor[dtype] − ap)) × resist_mult[dtype]``
 
-    Runs PRE-quantize, inside the existing float64 door-3 chain shape: pure
-    ``+ − ×`` and comparisons on deterministic inputs — cross-machine exact.
-    The floor keeps over-armored hits at 0 (small arms chip harmlessly off
-    heavy plate) and keeps them 0 through the multiplier.
-
-    Neutral identity (proven bitwise in tests): with armor 0 / resist 1.0,
-    ``x − 0`` and ``x × 1.0`` are IEEE-exact no-ops, so ``mitigate(x) == x``
-    to the bit for every finite non-negative amount.
-
-    HEAL is unresisted in v1 (mechanics/06 §2) — mitigation is the identity:
-    the damage floor must not zero a negative-direction (healing) amount, and
-    armor never blocks a heal.
-    """
+    The float form (a reader's view; the pipeline itself runs
+    :func:`mitigate_q`). HEAL is unresisted in v1 (mechanics/06 §2) —
+    mitigation is the identity."""
     if dtype == HEAL:
         return amount
     effective_armor = max(0, profile.armor[dtype] - ap)
     return max(0.0, amount - effective_armor) * profile.resist_mult[dtype]
+
+
+def mitigate_q(amount_q: int, dtype: int, profile: MitigationProfile,
+               ap=0) -> int:
+    """THE mitigation, in Q16 integers (#29 P3e): ``max(0, a − max(0, armor −
+    ap)) × resist`` with the product rounded half away from zero
+    (:func:`unit_fixed.mul_q16_round`) -- the real result of the float form
+    rounded ONCE, so for every amount already on the grid it is exactly the
+    old ``quantize(mitigate(...))``. ``ap`` is the packet's (an authored
+    number, quantized at this door). The floor keeps over-armored hits at 0.
+    HEAL is the identity: a heal is never floored or resisted."""
+    a = int(amount_q)
+    if dtype == HEAL:
+        return a
+    ap_q = unit_fixed.quantize_scalar(float(ap))   # p3e-door: the row's AP
+    eff = profile.armor_q[dtype] - ap_q
+    if eff < 0:
+        eff = 0
+    a -= eff
+    if a <= 0:
+        return 0
+    return unit_fixed.mul_q16_round(a, profile.resist_q[dtype])
 
 
 # Lazily-bound simulation.species (the unit_fixed._kit pattern). species.py
@@ -337,13 +368,12 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     the load-bearing behaviour-preservation contract; the lockstep digest
     hashes the applied deltas, the emitted event stream, and hp):
 
-    1. mitigate (§3) — at the position the old per-site multipliers sat
-       (pre-quantize, inside the float64 chain);
-    2. the Q2-lift snap onto the Q16 grid (``unit_fixed.quantize_hp_delta``'s
-       two halves), with the target's EXPOSURE of the packet's type applied
-       between them in integers (G4p, :func:`simulation.exposure.scale_q`;
-       the identity, bit for bit, at exposure 0) — the APPLIED value;
-    3. ``unit.current_hp -= applied``;
+    1. the packet door (:meth:`DamagePacket.q`: the amount in Q16) and
+       :func:`mitigate_q` (§3, in integers since #29 P3e);
+    2. the target's EXPOSURE of the packet's type (G4p,
+       :func:`simulation.exposure.scale_q`; the identity, bit for bit, at
+       exposure 0) — the APPLIED value, Q16;
+    3. ``unit.hp_q -= applied`` (the Q16 hp, #29 P3e);
     4. ``events``: :class:`UnitHitEvent` with the applied damage, the cause
        ``source``, the packet's ``attacker_id`` and its direction
        (``dir_x_q`` / ``dir_y_q``, #185); ``events=None`` emits
@@ -377,12 +407,17 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     source = cause_value(source)                  # the door: refuse first
     was_alive = bool(getattr(unit, "alive", True))
     attacker = attacker_value(getattr(packet, "attacker_id", NO_ATTACKER))
-    amount = mitigate(packet.amount, packet.dtype, mitigation_for(unit),
-                      ap=packet.ap)
+    # #29 P3e: Q16 from the packet door to the hp -- mitigate, the exposure
+    # scale, the hp write, all integers.
+    amount_q = mitigate_q(packet.q(), packet.dtype, mitigation_for(unit),
+                          ap=packet.ap)
     expo = _exposure()
-    dmg = unit_fixed.dequantize_scalar(expo.scale_q(
-        unit_fixed.quantize_scalar(amount), unit, packet.dtype))
-    unit.current_hp -= dmg
+    dmg_q = expo.scale_q(amount_q, unit, packet.dtype)
+    dmg = unit_fixed.dequantize_scalar(dmg_q)       # the events' float view
+    if hasattr(unit, "hp_q"):
+        unit.hp_q = unit.hp_q - dmg_q
+    else:                                           # bare stubs in tests
+        unit.current_hp -= dmg
     # Who is shooting at me (onephase_wego design §13, the idle stance): a unit
     # with no orders "returns fire at attackers — preferring marked targets —
     # but does not free-fire at everything it sees", so it needs to know who
@@ -438,6 +473,7 @@ __all__ = [
     "KINETIC", "BLAST", "HEAT", "ENERGY", "POISON", "ASPHYX", "HEAL",
     "ELECTRIC", "PSY", "N_DAMAGE_TYPES", "DAMAGE_TYPE_NAMES",
     "MitigationProfile", "build_mitigation", "NEUTRAL_MITIGATION",
-    "DamagePacket", "mitigate", "mitigation_for", "apply_packet",
+    "DamagePacket", "mitigate", "mitigate_q", "mitigation_for",
+    "apply_packet",
     "CREDIT_HEAT", "TickCredit", "tick_credit",
 ]

@@ -92,6 +92,13 @@ from simulation.weapons import get_tables as weapon_tables
 _CONE_Q_CACHE = {}
 
 
+def _bullet_mult_q() -> int:
+    """``[zombie] bullet_damage_multiplier`` as Q16 (#29 P3e; the door of a
+    config constant, read per call so an F5 reload is seen)."""
+    return unit_fixed.quantize_scalar(
+        float(CFG.zombie.bullet_damage_multiplier))           # p3e-door
+
+
 def cone_q16_of_deg(spread_deg) -> int:
     """A cone half-angle in degrees (a weapon row's ``spread_deg`` /
     ``spread_snap_deg``) as Q16.16 radians -- THE door of the shot cone
@@ -476,7 +483,9 @@ class BulletInFlight:
                 # the packet) is part of the shipped numbers; the zombie's
                 # KINETIC resist stays neutral (mechanics/06 — only the heat
                 # ×4 dissolved into the mitigation tables).
-                actual_dmg = int(actual_dmg * CFG.zombie.bullet_damage_multiplier)
+                # #29 P3e: the multiplier in Q16 (the door), the product
+                # truncated as int() truncated (a non-negative value).
+                actual_dmg = (actual_dmg * _bullet_mult_q()) >> unit_fixed.FP_SHIFT
             # Crit vs facing (mechanics/06 §5), LAZY: crit_chance == 0 (every
             # shipped weapon) draws nothing. On a crit the amount scales by
             # crit_mult in exact ints (round half away from zero), AFTER the
