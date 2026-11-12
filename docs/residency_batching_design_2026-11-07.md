@@ -927,6 +927,45 @@ fuse was done by G3p; NEW sites: the throw target (2), the spray columns
 (21), the generic explosion's deposits (29), `_source_q` (30), the heat
 source's wall law (31), grenade flight (6).
 
+**As built (P3e, 2026-11-12, branch `29-p3e-integer-match`, HUMAN-TEST
+pending).** Every TODO row done; none deferred. One line each:
+- Groups a + b (one commit): the cone `draws.cone_offset_q16` on a Q16
+  bearing (`aim_q`, the free aim `-facing_q`), the march `rx_q` / `ry_q`
+  (bit-identical: the float march was exact on the grid), the rolls
+  `draws.roll_q16` against the materials table's new `cover_exposure_q16`
+  and a Q16 crit product, `arc_multiplier` on `wrap_q16` returning Q16.
+- Group c: `DamagePacket.amount_q` + the door `q()`, `damage.mitigate_q`
+  (one rounding, half away; exact for grid amounts), the hp STORED as the
+  int `Unit._hp_q` (`hp_q`), `current_hp` its float view, the schema column
+  keeping its name and key (read through `hp_q`); the zombie bullet
+  multiplier a Q16 product truncated as `int()` was; DoT hands its Q16.
+- Group g: `exchange.felt_temperature_q` (one gain quantized at the door),
+  the heat row and the poison dose as single rationals rounded once; within
+  1e-4 relative of the float model (the dials' Q16 quantization).
+- Groups f + e (one commit, coupled): FieldEdit integer from the door to the
+  field (`_CURRENCY`, Q16 weights, `falloff_round`, BEAM as an exact
+  rational, TILES over `weight_den`, the noise draw, one rounding per tile,
+  the 21 / 79 split per hundred); `_neighbor_mean` `div_trunc`
+  (bit-identical); `apply_explosion` / the heat source's wall law
+  `falloff_round`; `apply_blast_damage` `falloff_floor` (exactly
+  `int(M * falloff)`); the generic explosion's weights and totals integer;
+  `_source_q` divided in integers; sprays, the throw target and the
+  grenade flight Q16.
+- Choices where the design was silent: hp as an int store (not a float with a
+  grid assert); the draw = ONE raw step of the bit generator's high 32 bits
+  (`uniform` was one step too, so the stream position per draw is as
+  before); LINEAR weights Q16 (2^-17 relative of the weight), not exact
+  through the product; atmosphere split as the exact 21 / 100; a policy with
+  no integer currency refused (the float combine deleted: no shipped field
+  used it); the throw target rounded to Q16 (its tile can differ from the
+  float's only within 2^-17 of a tile edge).
+- Not as the design expected: `GOLDEN_AGGREGATE` did NOT move (4a13fc72:
+  its scenario reaches no P3e site that changes a value); the recording
+  format was NOT bumped (no recorded intent's meaning changed; the
+  precedent of G9p / P3c: a game change alone diverges at a checkpoint).
+- The A/B: `docs/p3e_ab_2026-11-12.md` — within seed noise; the firefight's
+  heat deaths (+21 %, ~1.6 s.e.) the one number to watch.
+
 Draws: every match-path draw P3e touches goes through ONE module,
 `src/simulation/draws.py` (`cone_offset_q16`, `roll_q16`,
 `noise_mult_q16`), each ONE `rng.integers` call per former `rng.uniform`
