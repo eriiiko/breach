@@ -97,7 +97,7 @@ def _add(sim, name, x, y, team=0, facing_q=0):
 
 def _flash_at(sim, fy, fx, owner=-1):
     execute_payload(sim.gmap, sim.edit_queue, sim.units, fy, fx, FLASHBANG,
-                    sim.rng, events=sim.tick_events, kind="grenade",
+                    sim.draws, events=sim.tick_events, kind="grenade",
                     owner_id=owner)
 
 
@@ -360,7 +360,7 @@ def test_a_payload_without_blind_columns_blinds_nobody():
         sim = _sim()
         u = _unit_at(sim, 16, 12, team=1, facing_q=PI_Q16)
         execute_payload(sim.gmap, sim.edit_queue, sim.units, 12, 14,
-                        TABLES.payloads.by_name[name], sim.rng,
+                        TABLES.payloads.by_name[name], sim.draws,
                         events=sim.tick_events, kind="grenade", owner_id=-1)
         assert all(s.kind != BLINDED for s in u.statuses), name
         assert TABLES.payloads.by_name[name].blind_radius_q == 0

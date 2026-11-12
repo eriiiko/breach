@@ -92,7 +92,7 @@ def test_a_bullet_hit_travels_along_its_flight(east):
                          _unit(sim, 14, 19, name="T"), math.pi, 1)
     events = []
     fire_burst(sim.gmap, sim.units, s, s.center_tile_x(), 20, tx, 20, sim.tick, [],
-               0.0, sim.rng, events, weapon=sim.weapons_tables.weapons.by_name["lr50"],
+               0.0, sim.draws, events, weapon=sim.weapons_tables.weapons.by_name["lr50"],
                spread_deg=0.0, aim_q=quantize_scalar(aim))
     hits = _hits(events, t.id)
     assert len(hits) == 1 and hits[0].source == "bullet"
@@ -109,7 +109,7 @@ def test_a_diagonal_bullet_hit_points_along_the_shot():
     sim = _sim()
     s, t = _unit(sim, 4, 4, name="S"), _unit(sim, 14, 14, name="T")
     events = []
-    fire_burst(sim.gmap, sim.units, s, 5, 5, 25, 25, sim.tick, [], 0.0, sim.rng,
+    fire_burst(sim.gmap, sim.units, s, 5, 5, 25, 25, sim.tick, [], 0.0, sim.draws,
                events, weapon=sim.weapons_tables.weapons.by_name["lr50"],
                spread_deg=0.0)
     (h,) = _hits(events, t.id)
@@ -125,7 +125,7 @@ def test_a_beam_hit_travels_along_the_beam():
     sim = _sim()
     s, t = _unit(sim, 24, 19, WEST, name="S"), _unit(sim, 10, 19, name="T")
     events = []
-    fire_beam(sim.gmap, sim.units, s, 24, 20, 1, 20, sim.tick, [], 0.0, sim.rng,
+    fire_beam(sim.gmap, sim.units, s, 24, 20, 1, 20, sim.tick, [], 0.0, sim.draws,
               events, weapon=sim.weapons_tables.weapons.by_name["lance_3"],
               spread_deg=0.0, aim_q=quantize_scalar(math.pi))
     (h,) = _hits(events, t.id)
@@ -146,7 +146,7 @@ def test_a_melee_blow_travels_from_striker_to_victim():
     for (ax, ay), want in (((17, 20), (3 * ONE, 0)), ((20, 23), (0, -3 * ONE))):
         a = _unit(sim, ax, ay, name="A")
         events = []
-        melee_blow(a, t, sim.rng, events, weapon, None, snap_facing=False)
+        melee_blow(a, t, sim.draws, events, weapon, None, snap_facing=False)
         (h,) = _hits(events, t.id)
         assert h.source == "melee" and h.attacker_id == a.id
         assert (h.dir_x_q, h.dir_y_q) == want

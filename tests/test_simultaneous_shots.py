@@ -45,6 +45,7 @@ import breach_physics as bp  # noqa: E402
 
 from field_ab_harness import assert_trajectories_match, capture_snapshot  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.draws import MatchDraws as _MatchDraws  # noqa: E402 (#29 P3b)
 from simulation import Simulation  # noqa: E402
 from simulation import simulation as simulation_mod  # noqa: E402
 from simulation import simultaneous  # noqa: E402
@@ -269,7 +270,7 @@ def test_a_shooter_stunned_or_killed_this_tick_still_fires_this_tick(
                    hp=victim_hp)
     _order_on(striker, victim)
     _order_on(victim, striker)
-    rng = np.random.default_rng(SEED)
+    rng = _MatchDraws(SEED)
     events = []
     process_shooting(gmap, [striker, victim], 0, [], 0.0, rng, events=events)
     assert _launches(events, victim)                 # B fired on tick 0
@@ -308,7 +309,7 @@ def test_rounds_stop_on_a_unit_killed_this_tick_and_it_dies_once():
     units = [a, c, x, y]
     # Both shooters fire straight east along X's rows (spread 0, origins on
     # X's footprint rows 7..9), Y directly behind X.
-    rng = np.random.default_rng(SEED)
+    rng = _MatchDraws(SEED)
     events = []
     fx = simultaneous.SimultaneousEffects()
     for shooter, row in ((a, 7.5), (c, 9.5)):
@@ -351,7 +352,7 @@ def test_two_rounds_landing_on_one_tick_both_stop_on_the_first_unit():
     y = _add(sim, "Y", 17, 7, team=1, hp=1e9)
     w, am = _slow_weapon()
     events = []
-    rng = np.random.default_rng(SEED)
+    rng = _MatchDraws(SEED)
     for shooter, row in ((a, 7.5), (c, 9.5)):
         fire_burst(sim.gmap, sim.units, shooter, 4.5, row, 25.0, row, tick=0,
                    shots=[], real_time=0.0, rng=rng, events=events,
@@ -434,7 +435,7 @@ def _quiet_firefight() -> Simulation:
 
 
 def _rng_tail(sim):
-    return sim.rng.bit_generator.state["state"]["state"]
+    return sim.draws.drawn
 
 
 def test_a_tick_without_interaction_is_bit_identical_to_the_one_pass_slot(

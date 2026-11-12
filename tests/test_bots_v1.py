@@ -119,7 +119,7 @@ def _dist(u, p):
 def test_bot_match_one_seed_one_digest_another_seed_differs(tmp_path):
     """Property: a bots-vs-bots match is a pure function of config + seed --
     two runs of one seed give one digest, another seed another (the bots'
-    bullets draw from sim.rng). Breaks if a bot decision reads anything
+    bullets draw from sim.draws). Breaks if a bot decision reads anything
     unsynced (wall clock, set order, an OS-seeded draw) or if the bots never
     fire (seed 1 == seed 2)."""
     spec = MatchSpec(teams=(BOTS, BOTS), seed=1, time_limit_s=6.0)

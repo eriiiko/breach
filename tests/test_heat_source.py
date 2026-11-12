@@ -98,7 +98,7 @@ def _blast(sim, row=None, at=SRC_AT):
     fire that follows is the death payload's."""
     execute_payload(sim.gmap, sim.edit_queue, sim.units, at[0], at[1],
                     HEAT_FREE if row is None
-                    else sim.weapons_tables.payloads.by_name[row], sim.rng,
+                    else sim.weapons_tables.payloads.by_name[row], sim.draws,
                     events=sim.tick_events)
 
 

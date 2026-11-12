@@ -336,7 +336,7 @@ def _hit_with_a_50(y_target):
     target.current_hp = 10_000.0                  # the .50 must not kill it
     lr50 = sim.weapons_tables.weapons.by_name["lr50"]
     fire_burst(sim.gmap, sim.units, shooter, 5, 20, 30, 20, sim.tick, [],
-               0.0, sim.rng, weapon=lr50, spread_deg=0.0, aim_q=0)
+               0.0, sim.draws, weapon=lr50, spread_deg=0.0, aim_q=0)
     l_after_hit = target.imp_l
     sim.step()
     return l_after_hit, target.facing_q, target.omega_q

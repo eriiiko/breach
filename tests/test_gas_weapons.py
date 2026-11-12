@@ -219,21 +219,26 @@ def test_blinded_unit_fires_snap_cone_on_an_aimed_order():
     try:
         # (a) BLINDED: the aimed order draws from the SNAP cone (25 deg).
         gmap, shooter = scene(gassed=True)
-        rng = np.random.default_rng(SEED)
-        parallel = np.random.default_rng(SEED)
-        snap_draw = float(parallel.uniform(-math.radians(25.0),
-                                           math.radians(25.0)))
-        assert abs(snap_draw) > 1e-3                  # comfortably off-axis
+        # #29 P3b: the shooter's first cone draw is keyed (seed, tick 0,
+        # index 0, SHOT_CONE, its id): predicted from its own key
+        from simulation import draws
+        from simulation.combat import cone_q16_of_deg
+        from simulation.rng_salts import Salt
+        rng = draws.MatchDraws(SEED)
+        snap_draw = draws.cone_offset_q16(
+            draws.MatchDraws(SEED).at(Salt.SHOT_CONE, shooter.id, 0),
+            cone_q16_of_deg(25.0))
+        assert abs(snap_draw) > 66                    # comfortably off-axis
         shots, events = [], []
         process_shooting(gmap, [shooter], 0, shots, 0.0, rng, events=events)
         tracers = [e for e in events if isinstance(e, ShotFiredEvent)]
         assert len(tracers) == 1
         assert tracers[0].to_tile[1] != 9.0           # the snap cone moved it
-        assert rng.bit_generator.state == parallel.bit_generator.state
+        assert rng.drawn == 1                         # its one cone draw
 
         # (b) Control (no gas): the aimed cone (0 deg) flies the exact axis.
         gmap2, shooter2 = scene(gassed=False)
-        rng2 = np.random.default_rng(SEED)
+        rng2 = draws.MatchDraws(SEED)
         shots2, events2 = [], []
         process_shooting(gmap2, [shooter2], 0, shots2, 0.0, rng2,
                          events=events2)

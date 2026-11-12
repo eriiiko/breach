@@ -94,7 +94,7 @@ def _fire(sim, payload_name, at, n_steps, on_step=None):
                          IGNITE_HEAT, 1.0)
         if i == PAYLOAD_STEP and payload_name is not None:
             execute_payload(g, sim.edit_queue, sim.units, at[0], at[1],
-                            _payload(sim, payload_name), sim.rng,
+                            _payload(sim, payload_name), sim.draws,
                             events=sim.tick_events)
         _step(sim)
         if on_step is not None:
@@ -142,7 +142,7 @@ def test_o2_store_rupture_enriches_the_disc_and_nothing_else():
     o2_0 = g.gas[O2].astype(np.int64).copy()
     n2_0 = g.gas[INERT_N2].astype(np.int64).copy()
     t_0 = g.temperature.astype(np.int64).copy()
-    execute_payload(g, sim.edit_queue, sim.units, at[0], at[1], pl, sim.rng)
+    execute_payload(g, sim.edit_queue, sim.units, at[0], at[1], pl, sim.draws)
     o2_1 = g.gas[O2].astype(np.int64)
     n2_1 = g.gas[INERT_N2].astype(np.int64)
     hit = np.zeros(g.solid.shape, dtype=bool)
@@ -338,7 +338,7 @@ def test_closure_identity_counts_a_railed_hot_deposit():
     def fire(i, s):
         if i == 5:
             execute_payload(s.gmap, s.edit_queue, s.units, CENTRE[0],
-                            CENTRE[1], pl, s.rng)
+                            CENTRE[1], pl, s.draws)
 
     bad = _closure_run(sim, 20, before_step=fire)
     books = sim.gmap.gas_energy_books

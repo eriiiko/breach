@@ -434,7 +434,7 @@ def test_teargas_in_the_heads_reaches_the_bunks_and_nowhere_off_its_air(
     execute_payload(g, sim.edit_queue, sim.units, heads.y + heads.h // 2,
                     heads.x + heads.w // 2,
                     sim.weapons_tables.payloads.by_name["tear_burst"],
-                    sim.rng)
+                    sim.draws)
     for _t in range(TEAR_S * int(sim._tps)):
         sim.step()
 

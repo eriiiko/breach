@@ -213,7 +213,7 @@ def _wander_run(monkeypatch, seed, ticks=1500):
     zs = [sim.get_unit(sim.add_unit(Unit(f"Z{i}", x=8 + 9 * i, y=12,
                                          team=ZOMBIE_TEAM)))
           for i in range(4)]
-    rng0 = sim.rng.bit_generator.state
+    rng0 = sim.draws.drawn
     track = []
     for _ in range(ticks):
         sim.step()
@@ -247,7 +247,7 @@ def test_the_wander_draws_no_random_number_and_is_a_hash_of_id_and_tick(
     _, _, t1, _ = _wander_run(monkeypatch, 1, ticks=600)
     sim, _, t2, rng0 = _wander_run(monkeypatch, 99, ticks=600)
     assert t1 == t2
-    assert sim.rng.bit_generator.state == rng0
+    assert sim.draws.drawn == rng0
     a = [horde.wander_direction(3, t) for t in range(200)]
     assert a == [horde.wander_direction(3, t) for t in range(200)]
     assert set(a) == set(horde.NEIGHBOURS)
@@ -370,13 +370,13 @@ def test_shots_and_detonations_are_noises_at_their_rows_loudness():
     w = sim.weapons_tables.weapons.by_name[u.weapon_id]
     assert w.loudness_tiles == noise.radius_tiles(w.loudness, 0.5) > 0
     _dispatch_trigger(sim.gmap, sim.units, u, u.center_tile_x(),
-                      u.center_tile_y(), 30, 6, 1, [], 0.0, sim.rng, None,
+                      u.center_tile_y(), 30, 6, 1, [], 0.0, sim.draws, None,
                       None, w, 0.0)
     assert sim.gmap.noise_log[-1] == (u.center_tile_y(), u.center_tile_x(),
                                       w.loudness_tiles)
     frag = sim.weapons_tables.payloads.by_name["frag_standard"]
     assert frag.loudness_tiles == noise.radius_tiles(frag.loudness, 0.5) > 0
-    execute_payload(sim.gmap, EditQueue(), sim.units, 10, 20, frag, sim.rng)
+    execute_payload(sim.gmap, EditQueue(), sim.units, 10, 20, frag, sim.draws)
     assert sim.gmap.noise_log[-1] == (10, 20, frag.loudness_tiles)
     with pytest.raises(KeyError, match="loudness"):
         WeaponTable({"r": dict(archetype="projectile", range_tiles=10)}, 24)

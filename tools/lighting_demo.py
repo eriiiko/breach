@@ -837,7 +837,7 @@ def _capture_map_viewport(renderer, out_path: str, gmap=None) -> None:
 # fuse-out site resolves it (Simulation._update_projectiles:
 # `weapons_tables.payload_for_ammo(proj.ammo_name)` -> grenade_frag ->
 # [payloads.frag_standard]), writing through `sim.edit_queue` / `sim.units` /
-# `sim.rng` — the FieldEdit seam, not the fields.
+# `sim.draws` — the FieldEdit seam, not the fields.
 DEMO_GRENADE_AMMO = "grenade_frag"      # -> [payloads.frag_standard]
 
 
@@ -887,7 +887,7 @@ def detonate(sim, renderer, state, tile) -> bool:
         state.get("explosion_smoke_noise"))
     events: list = []
     execute_payload(sim.gmap, sim.edit_queue, sim.units, ty, tx,
-                    demo_payload(sim, state), sim.rng, events=events,
+                    demo_payload(sim, state), sim.draws, events=events,
                     kind="grenade")
     renderer.consume_events(events)
     return True
@@ -1560,7 +1560,7 @@ def _run_fire_vfx_perf(renderer, sim, lights_in, light_sky,
         payload = sim.weapons_tables.payloads.by_name["studio_ignite"]
         for (x, y) in ignite:
             execute_payload(sim.gmap, sim.edit_queue, sim.units, y, x,
-                            payload, sim.rng, events=[], kind="charge")
+                            payload, sim.draws, events=[], kind="charge")
 
     def _lit_step():
         total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)

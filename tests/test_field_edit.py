@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import numpy as np
+import pytest
 
 from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff, EditQueue,
@@ -116,7 +117,8 @@ class _GMapStub:
 
 
 def _rng(seed=0):
-    return np.random.default_rng(seed)
+    from simulation.draws import MatchDraws   # #29 P3b: the keyed draws
+    return MatchDraws(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -406,50 +408,40 @@ def test_noise_draw_deterministic_for_fixed_seed():
     assert not np.array_equal(g1.smoke, g3.smoke), "noise ignored the seed"
 
 
-class _CountingRng:
-    """Wraps a Generator, counting raw steps of its bit generator (#29 P3e:
-    the noise draw is ``draws.noise_mult_q16``, one raw step) — to prove the
-    skip-mask veto runs BEFORE the RNG draw (a skipped tile consumes no
-    random value)."""
-    def __init__(self, seed):
-        self._g = np.random.default_rng(seed)
-        self.draws = 0
-        outer = self
-
-        class _BG:
-            def random_raw(self_inner):
-                outer.draws += 1
-                return outer._g.bit_generator.random_raw()
-        self.bit_generator = _BG()
-
-    def uniform(self, lo, hi):          # pragma: no cover - refused (P3e)
-        raise AssertionError("the noise draw must not call uniform")
-
-
 def test_skipped_tile_draws_no_noise():
-    # A noisy smoke disc: the number of RNG draws must equal the number of
+    # A noisy smoke disc: the number of draws must equal the number of
     # SURVIVING (non-skipped) tiles, not the full region tile count. So masking
     # one interior tile solid must drop the draw count by exactly one — proving
-    # the skip-mask veto precedes the draw (skipped tiles consume no randomness).
+    # the skip-mask veto precedes the draw (skipped tiles draw nothing). And,
+    # since #29 P3b, every OTHER tile keeps its value: a tile's draw is keyed
+    # by (tick, edit key, tile), not by its place in a stream.
     e = FieldEdit("smoke", Region.DISC, (6, 6, 4.0), 0.8, EditMode.ADD,
                   Falloff.LINEAR, clamp=(0.0, 1.0), noise=0.85, source_id=1)
 
     g_clean = _GMapStub()
-    rng_clean = _CountingRng(seed=3)
-    apply_field_edit(g_clean, e, rng_clean)
+    rng_clean = _rng(seed=3)
+    apply_field_edit(g_clean, e, rng_clean, key=0)
     n_survivors = int(np.count_nonzero(g_clean.smoke > 0))
     # Every surviving tile drew exactly once (LINEAR weight > 0 inside the disc).
-    assert rng_clean.draws == n_survivors, \
-        f"draws {rng_clean.draws} != surviving tiles {n_survivors}"
+    assert rng_clean.drawn == n_survivors,         f"draws {rng_clean.drawn} != surviving tiles {n_survivors}"
 
     g_solid = _GMapStub()
     g_solid.solid[5, 5] = True  # one interior disc tile masked out
-    rng_solid = _CountingRng(seed=3)
-    apply_field_edit(g_solid, e, rng_solid)
+    rng_solid = _rng(seed=3)
+    apply_field_edit(g_solid, e, rng_solid, key=0)
     assert float(g_solid.smoke[5, 5]) == 0.0
-    # Exactly one fewer draw — the skipped tile consumed no RNG value.
-    assert rng_solid.draws == rng_clean.draws - 1, \
-        f"masking a solid tile changed draw count by {rng_clean.draws - rng_solid.draws}, expected 1"
+    # Exactly one fewer draw — the skipped tile drew nothing.
+    assert rng_solid.drawn == rng_clean.drawn - 1,         f"masking a solid tile changed draw count by {rng_clean.drawn - rng_solid.drawn}, expected 1"
+    keep = np.ones(g_clean.smoke.shape, dtype=bool)
+    keep[5, 5] = False
+    assert np.array_equal(g_clean.smoke[keep], g_solid.smoke[keep])
+
+
+def test_a_noisy_edit_needs_its_edit_key():
+    """apply_field_edit refuses a noisy edit without its key (#29 P3b)."""
+    e = FieldEdit("smoke", Region.TILE, (2, 2), 0.5, noise=0.5, source_id=1)
+    with pytest.raises(ValueError, match="edit key"):
+        apply_field_edit(_GMapStub(), e, _rng(1))
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +474,9 @@ def test_add_explosion_smoke_equivalence():
 
     ref = _open_gmap()
     ref_q = np.zeros(ref.smoke.shape, dtype=np.int64)
-    rng_ref = np.random.default_rng(seed)
+    from simulation.draws import MatchDraws
+    from simulation.rng_salts import Salt
+    rng_ref = MatchDraws(seed)
     amount_q = gas_fixed.quantize_trace_scalar(0.8)
     low_q = one - ufx.quantize_scalar(noise)
     r_q = radius * one
@@ -494,7 +488,9 @@ def test_add_explosion_smoke_equivalence():
                 d2 = (ddy * ddy + ddx * ddx) << 32
                 if d2 < r_q * r_q:
                     wgt = ufx.falloff_round(one, d2, r_q * r_q)
-                    mult = draws.noise_mult_q16(rng_ref, low_q)
+                    # keyed: (tick 0, edit key = the edit's seq 0, tile)
+                    mult = draws.noise_mult_q16(
+                        rng_ref.at(Salt.FIELD_NOISE, ny * w + nx, 0), low_q)
                     ref_q[ny, nx] += ufx.div_round(amount_q * wgt * mult,
                                                    one * one)
 
@@ -502,7 +498,7 @@ def test_add_explosion_smoke_equivalence():
     got.smoke[:] = 0
     q = EditQueue()
     add_explosion_smoke(got, q, cy, cx, radius, noise=noise)
-    q.flush(got, np.random.default_rng(seed))
+    q.flush(got, _rng(seed))
 
     assert np.array_equal(ref_q, got.smoke), \
         "migrated add_explosion_smoke diverged from the integer law"
@@ -544,7 +540,7 @@ def test_apply_explosion_atmosphere_equivalence():
     got = _open_gmap()
     q = EditQueue()
     apply_explosion(got, q, cy, cx, radius, pressure, wall_damage)
-    q.flush(got, np.random.default_rng(0))
+    q.flush(got, _rng(0))
 
     got_o2 = gas_fixed.dequantize_bulk(got.gas[O2])
     got_n2 = gas_fixed.dequantize_bulk(got.gas[INERT_N2])

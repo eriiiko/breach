@@ -111,52 +111,42 @@ def test_div_round_half_away_both_signs():
         assert div_round(n, d) == (want if n >= 0 else -want)
 
 
-class _Counting:
-    """A generator whose bit generator counts its raw steps."""
-
-    def __init__(self, seed):
-        self._g = np.random.default_rng(seed)
-        self.steps = 0
-        outer = self
-
-        class _BG:
-            def random_raw(self_inner):
-                outer.steps += 1
-                return outer._g.bit_generator.random_raw()
-        self.bit_generator = _BG()
-
-    def uniform(self, *a, **k):              # pragma: no cover - refused
-        raise AssertionError("a P3e draw must not call uniform")
-
-
-def test_each_draw_is_one_raw_step():
-    g = _Counting(1)
-    draws.cone_offset_q16(g, 3431)
-    assert g.steps == 1
-    draws.cone_offset_q16(g, 0)
-    assert g.steps == 2
-    draws.roll_q16(g, 36044)
-    assert g.steps == 3
-    draws.noise_mult_q16(g, FP_ONE - 55705)
-    assert g.steps == 4
+def test_each_draw_is_one_word():
+    """Each helper takes exactly ONE word of its keyed draw (#29 P3b: one
+    Philox block, ``drawn`` counts it). Breaks if a helper draws twice or
+    loops on rejection."""
+    md = draws.MatchDraws(1)
+    from simulation.rng_salts import Salt
+    draws.cone_offset_q16(md.next(Salt.SHOT_CONE, 0), 3431)
+    assert md.drawn == 1
+    draws.cone_offset_q16(md.next(Salt.SHOT_CONE, 0), 0)
+    assert md.drawn == 2
+    draws.roll_q16(md.next(Salt.EXPOSURE, 0), 36044)
+    assert md.drawn == 3
+    draws.noise_mult_q16(md.at(Salt.FIELD_NOISE, 5, 0), FP_ONE - 55705)
+    assert md.drawn == 4
 
 
 def test_draw_ranges():
-    g = np.random.default_rng(7)
+    from simulation.rng_salts import Salt
+    md = draws.MatchDraws(7)
+
+    def nxt():                       # a fresh keyed draw each call
+        return md.next(Salt.SHOT_CONE, 1)
     seen = set()
     for _ in range(4000):
-        o = draws.cone_offset_q16(g, 3)
+        o = draws.cone_offset_q16(nxt(), 3)
         assert -3 <= o <= 3
         seen.add(o)
     assert seen == set(range(-3, 4))
-    assert draws.cone_offset_q16(g, 0) == 0
-    hits = sum(draws.roll_q16(g, FP_ONE // 4) for _ in range(20000))
+    assert draws.cone_offset_q16(nxt(), 0) == 0
+    hits = sum(draws.roll_q16(nxt(), FP_ONE // 4) for _ in range(20000))
     assert 4500 < hits < 5500
-    assert not any(draws.roll_q16(g, 0) for _ in range(200))
-    assert all(draws.roll_q16(g, FP_ONE) for _ in range(200))
+    assert not any(draws.roll_q16(nxt(), 0) for _ in range(200))
+    assert all(draws.roll_q16(nxt(), FP_ONE) for _ in range(200))
     lo = FP_ONE - 55705
-    vals = [draws.noise_mult_q16(g, lo) for _ in range(5000)]
+    vals = [draws.noise_mult_q16(nxt(), lo) for _ in range(5000)]
     assert min(vals) >= lo and max(vals) <= FP_ONE
-    assert draws.noise_mult_q16(g, FP_ONE) == FP_ONE
+    assert draws.noise_mult_q16(nxt(), FP_ONE) == FP_ONE
     with pytest.raises(ValueError):
-        draws.cone_offset_q16(g, -1)
+        draws.cone_offset_q16(nxt(), -1)

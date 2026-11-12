@@ -63,6 +63,9 @@ from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import get_tables  # noqa: E402
 from simulation.turning import place as _place_facing  # noqa: E402
 from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
+from simulation import draws as _draws  # noqa: E402  (#29 P3b)
+from simulation.rng_salts import Salt  # noqa: E402
+from simulation.unit_fixed import mul_q16_round as _mul_q  # noqa: E402
 
 SEED = 20260707
 
@@ -156,15 +159,15 @@ def test_baton_always_connects_and_draws_nothing():
     exposure roll, no crit roll — the RNG stream never moves (the
     lazy-roll rule: rolls that cannot matter are never drawn)."""
     baton = _weapon("arc_baton")
-    rng = np.random.default_rng(SEED)
-    state0 = rng.bit_generator.state
+    rng = _draws.MatchDraws(SEED)
+    state0 = rng.drawn
     for i in range(25):
         a = _unit("A", 4, 4, team=0, uid=1)
         z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
         hp0 = z.current_hp
         assert melee_strike([a, z], a, 8.0, 5.0, rng, None, baton)
         assert z.current_hp == hp0 - 10           # 10 ENERGY, exact
-    assert rng.bit_generator.state == state0      # zero draws in 25 strikes
+    assert rng.drawn == state0                    # zero draws in 25 strikes
 
 
 def test_whiff_semantics_no_target_or_not_adjacent():
@@ -172,8 +175,8 @@ def test_whiff_semantics_no_target_or_not_adjacent():
     of contact: the strike returns False and NOTHING is touched (no
     facing snap, no draw, no packet)."""
     knife = _weapon("combat_knife")
-    rng = np.random.default_rng(SEED)
-    state0 = rng.bit_generator.state
+    rng = _draws.MatchDraws(SEED)
+    state0 = rng.drawn
     a = _unit("A", 4, 4, team=0, uid=1)
     friend = _unit("F", 7, 4, team=0, uid=2)
     far = _unit("Z", 12, 4, team=ZOMBIE_TEAM, uid=3)
@@ -182,7 +185,7 @@ def test_whiff_semantics_no_target_or_not_adjacent():
     assert not melee_strike([a, friend, far], a, 13.0, 5.0, rng, None, knife)
     assert a.facing == facing0
     assert friend.current_hp == 100.0 and far.current_hp == 100.0
-    assert rng.bit_generator.state == state0
+    assert rng.drawn == state0
 
 
 # ---------------------------------------------------------------------------
@@ -196,40 +199,47 @@ def _strike_from(dx_anchor, dy_anchor, seed, target_team=ZOMBIE_TEAM):
     a = _unit("A", 4 + dx_anchor, 4 + dy_anchor, team=0, uid=1)
     z = _unit("Z", 4, 4, team=target_team, uid=2)
     _place_facing(z, _q_rad(0.0))  # facing EAST (y-up, 0=E)
-    rng = np.random.default_rng(seed)
+    rng = _draws.MatchDraws(seed)
     hp0 = z.current_hp
     assert melee_strike([a, z], a, 5.0, 5.0, rng, None, knife)
-    # Count the draws by replaying the twin stream.
-    twin = np.random.default_rng(seed)
-    n = 0
-    while twin.bit_generator.state != rng.bit_generator.state and n < 4:
-        twin.uniform(0.0, 1.0)
-        n += 1
-    assert twin.bit_generator.state == rng.bit_generator.state
-    return hp0 - z.current_hp, n
+    return hp0 - z.current_hp, rng.drawn
+
+
+def _predicted_crit(seed, arc_mult):
+    """Whether the knife's crit roll crits for ``seed`` (#29 P3b): the
+    attacker's (uid 1) first MELEE_CRIT draw of tick 0 below 0.15 x arc."""
+    p_q = _mul_q(_q_rad(0.15), arc_mult << 16)
+    word = _draws.MatchDraws(seed).at(Salt.MELEE_CRIT, 1, 0).word()
+    return (word >> 16) < p_q
+
+
+def _arc_case(dx, dy, arc_mult):
+    """Over 40 seeds, every strike from (dx, dy) does 70 exactly when its
+    keyed draw predicts a crit at ``arc_mult`` (else 35), with ONE draw
+    each, and both outcomes occur (the roll is live, not pinned)."""
+    seen = set()
+    for seed in range(1, 41):
+        crit = _predicted_crit(seed, arc_mult)
+        assert _strike_from(dx, dy, seed=seed) == (70.0 if crit else 35.0, 1)
+        seen.add(crit)
+    assert seen == {True, False}
 
 
 def test_knife_behind_arc_crit_pinned():
     """Target faces EAST; attacker strikes from the WEST -> impact arrives
-    from BEHIND -> crit% = 0.15 x 4 = 0.60 (human 120/90 arcs). Seed 1's
-    first uniform is 0.5118 < 0.60 -> CRIT: 35 x 2 = 70, exactly one draw.
-    Seed 5's 0.8050 >= 0.60 -> no crit: 35. THE ASSASSIN FANTASY, pinned
-    — and no bullet_damage_multiplier on a zombie target (melee is not
-    the bullet site rule)."""
-    dmg, n = _strike_from(-3, 0, seed=1)          # attacker west, strikes east
-    assert (dmg, n) == (70.0, 1)
-    dmg, n = _strike_from(-3, 0, seed=5)
-    assert (dmg, n) == (35.0, 1)
+    from BEHIND -> crit% = 0.15 x 4 = 0.60 (human 120/90 arcs): a crit
+    doubles 35 to 70, exactly one draw per strike, decided by the keyed
+    draw (#29 P3b). THE ASSASSIN FANTASY -- and no bullet_damage_multiplier
+    on a zombie target (melee is not the bullet site rule). Breaks if the
+    arc multiplier, the roll or its draw key changes."""
+    _arc_case(-3, 0, 4)                           # attacker west, strikes east
 
 
 def test_knife_flank_and_front_arcs_pinned():
-    """Flank (impact from the side): 0.15 x 2 = 0.30 — seed 2 (0.2616)
-    crits, seed 1 (0.5118) does not. Front (impact head-on): 0.15 x 1 —
-    seed 3 (0.0856) crits, seed 2 does not. One draw each, always."""
-    assert _strike_from(0, -3, seed=2) == (70.0, 1)   # from the north: flank
-    assert _strike_from(0, -3, seed=1) == (35.0, 1)
-    assert _strike_from(3, 0, seed=3) == (70.0, 1)    # from the east: front
-    assert _strike_from(3, 0, seed=2) == (35.0, 1)
+    """Flank (impact from the side): 0.15 x 2 = 0.30; front (head-on):
+    0.15 x 1. One draw each, always, decided by the keyed draw."""
+    _arc_case(0, -3, 2)                           # from the north: flank
+    _arc_case(3, 0, 1)                            # from the east: front
 
 
 def test_strike_snaps_attacker_facing_to_the_bearing():
@@ -240,7 +250,7 @@ def test_strike_snaps_attacker_facing_to_the_bearing():
     baton = _weapon("arc_baton")
     a = _unit("A", 4, 4, team=0, uid=1)
     z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
-    rng = np.random.default_rng(SEED)
+    rng = _draws.MatchDraws(SEED)
     f0 = a.facing_q
     assert melee_strike([a, z], a, 8.0, 5.0, rng, None, baton)
     assert a.facing_target_q == 0 and a.facing_q == f0
@@ -269,7 +279,7 @@ def test_baton_applies_stunned_36_ticks_at_the_site():
     a = _unit("A", 4, 4, team=0, uid=7)
     z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
     events = []
-    rng = np.random.default_rng(SEED)
+    rng = _draws.MatchDraws(SEED)
     assert melee_strike([a, z], a, 8.0, 5.0, rng, events, baton)
     # The packet did the damage (event stream), the status came separately.
     assert [type(e) for e in events] == [UnitHitEvent]
@@ -297,7 +307,9 @@ def test_knife_applies_no_status_and_corpses_take_none():
     baton = _weapon("arc_baton")
     a = _unit("A", 4, 4, team=0, uid=1)
     z = _unit("Z", 7, 4, team=ZOMBIE_TEAM, uid=2)
-    rng = np.random.default_rng(5)                # 0.8050: no crit anywhere
+    seed = next(sd for sd in range(1, 100)       # a seed whose front roll
+                if not _predicted_crit(sd, 1))   # does not crit
+    rng = _draws.MatchDraws(seed)
     assert melee_strike([a, z], a, 8.0, 5.0, rng, None, knife)
     assert not z.statuses
     z.current_hp = 8.0                            # the next jolt kills
@@ -325,8 +337,8 @@ def test_row_derivations_and_ap_cost():
 def test_cooldown_gates_the_strike_train_exact_ticks():
     """A standing fire order on an adjacent zombie, driven straight through
     process_shooting: baton strikes land at ticks 0/19/38/57 exactly;
-    knife (seed 13: first three flank draws 0.8648/0.8553/0.8110, no
-    crits) at 0/14/28 — the third kills (3 x 35 > 100) and the train
+    knife (a seed whose three keyed crit draws cannot crit at any arc,
+    found from their keys) at 0/14/28 — the third kills (3 x 35 > 100) and the train
     stops on the corpse."""
     gmap = _room()
     # Baton cadence.
@@ -334,27 +346,41 @@ def test_cooldown_gates_the_strike_train_exact_ticks():
     a.weapon_id = "arc_baton"
     z = _unit("Z", 7, 9, team=ZOMBIE_TEAM, uid=2)
     a.orders = [Order(ORDER_FIRE, target_fx=8, target_fy=10, phase=0)]
-    rng = np.random.default_rng(SEED)
-    state0 = rng.bit_generator.state
+    rng = _draws.MatchDraws(SEED)
+    state0 = rng.drawn
     hit_ticks = []
     for t in range(70):
         events = []
+        rng.set_tick(t)
         process_shooting(gmap, [a, z], t, [], 0.0, rng, events=events)
         if any(isinstance(e, UnitHitEvent) for e in events):
             hit_ticks.append(t)
     assert hit_ticks == [0, 19, 38, 57]
     assert z.current_hp == 100.0 - 4 * 10
-    assert rng.bit_generator.state == state0      # crit-0: still zero draws
+    assert rng.drawn == state0                    # crit-0: still zero draws
 
-    # Knife cadence + kill stop (seed 13 — pinned no-crit prefix).
+    # Knife cadence + kill stop (a no-crit seed, predicted from its keys).
     a2 = _unit("A2", 4, 9, team=0, uid=3)
     a2.weapon_id = "combat_knife"
     z2 = _unit("Z2", 7, 9, team=ZOMBIE_TEAM, uid=4)
     a2.orders = [Order(ORDER_FIRE, target_fx=8, target_fy=10, phase=0)]
-    rng = np.random.default_rng(13)
+    # a seed whose three strikes (ticks 0 / 14 / 28, attacker uid 3) do not
+    # crit at ANY arc (the largest, behind: 0.15 x 4) -- predicted from
+    # their keys (#29 P3b)
+    p_q = _mul_q(_q_rad(0.15), 4 << 16)
+
+    def no_crit(sd):
+        md = _draws.MatchDraws(sd)
+        out = []
+        for t in (0, 14, 28):
+            md.set_tick(t)
+            out.append((md.at(Salt.MELEE_CRIT, 3, 0).word() >> 16) >= p_q)
+        return all(out)
+    rng = _draws.MatchDraws(next(sd for sd in range(1, 400) if no_crit(sd)))
     hits, kills = [], []
     for t in range(60):
         events = []
+        rng.set_tick(t)
         process_shooting(gmap, [a2, z2], t, [], 0.0, rng, events=events)
         hits += [(t, e.damage) for e in events if isinstance(e, UnitHitEvent)]
         kills += [e for e in events if isinstance(e, UnitKilledEvent)]
@@ -372,7 +398,7 @@ def test_whiff_charges_no_cadence():
     a.weapon_id = "arc_baton"
     z = _unit("Z", 12, 9, team=ZOMBIE_TEAM, uid=2)          # far from the order tile
     a.orders = [Order(ORDER_FIRE, target_fx=8, target_fy=10, phase=0)]
-    rng = np.random.default_rng(SEED)
+    rng = _draws.MatchDraws(SEED)
     for t in range(10):
         process_shooting(gmap, [a, z], t, [], 0.0, rng)
     assert a.last_fire_tick == -999 and z.current_hp == 100.0
@@ -402,7 +428,7 @@ def test_e2e_baton_chain_stun_suppresses_the_zombie_bite():
     mid = sim.add_unit(m)
     sim.add_unit(z)
     z.zombie_activated = True
-    state0 = sim.rng.bit_generator.state
+    state0 = sim.draws.drawn
     assert sim.apply_action(mid, Order(
         ORDER_FIRE, target_fx=9, target_fy=10, phase=0))
     hp_m, hp_z = m.current_hp, z.current_hp
@@ -411,7 +437,7 @@ def test_e2e_baton_chain_stun_suppresses_the_zombie_bite():
     assert z.current_hp == hp_z - 4 * 10
     assert any(st.kind == STUNNED for st in z.statuses)
     assert not composed_flags(z).can_act
-    assert sim.rng.bit_generator.state == state0  # zero draws, whole fight
+    assert sim.draws.drawn == state0  # zero draws, whole fight
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +459,7 @@ def test_zombie_bite_keeps_its_shipped_path():
     sim.add_unit(m)
     sim.add_unit(z)
     z.zombie_activated = True
-    state0 = sim.rng.bit_generator.state
+    state0 = sim.draws.drawn
     hp0 = m.current_hp
     bite = CFG.zombie.melee_damage
     _step(sim, 1)                                 # bite lands tick 0
@@ -448,7 +474,7 @@ def test_zombie_bite_keeps_its_shipped_path():
     from simulation.events import UnitKilledEvent
     kills = [e for e in sim.tick_events if isinstance(e, UnitKilledEvent)]
     assert [(e.unit_id, e.killed_by) for e in kills] == [(m.id, "melee")]
-    assert sim.rng.bit_generator.state == state0  # the bite draws nothing
+    assert sim.draws.drawn == state0  # the bite draws nothing
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +519,7 @@ def test_dormancy_no_melee_weapon_is_bit_identical_to_prew5():
             snap["__hp__"] = tuple(u.current_hp for u in sim.units)
             snap["__pos__"] = tuple((u.x, u.y) for u in sim.units)
             traj.append(snap)
-        return traj, sim.rng.bit_generator.state
+        return traj, sim.draws.drawn
 
     traj_new, rng_new = run(build())
 

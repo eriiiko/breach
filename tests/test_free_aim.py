@@ -32,6 +32,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from level_loader import LevelData  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import unit_fixed  # noqa: E402
 from simulation.combat import fire_beam, fire_burst  # noqa: E402
 from simulation.events import UnitHitEvent  # noqa: E402
@@ -99,7 +100,7 @@ def _fire(resolver, weapon, aim_angle):
     t = get_tables()
     ammo = t.ammo_for_weapon(weapon)
     events: list = []
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     cx, cy = shooter.center_tile_x(), shooter.center_tile_y()
     # Tile target due east at the weapon's nominal range (only used when
     # aim_angle is None); when aim_angle is provided the tile is ignored.
