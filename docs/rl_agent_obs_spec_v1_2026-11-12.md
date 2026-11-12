@@ -869,6 +869,22 @@ spec allows. The budget is held at
 (c)'s merge, not at (a)'s or (b)'s: each of those reports its parts and
 the farm's number as information.
 
+**As built, (c), 2026-11-12** (the protocol above, one session on the Home
+Desktop, 64 envs / 16 workers, decimation 4, 750 measured steps after 20
+of warmup; the run files `run_crop.toml` / `run_v1.toml` /
+`run_v1_nofull.toml` = `run_v1.toml` + `[obs] full_view = false`):
+`crop` 417.3 env-ticks/s (p50 597 ms a step), `v1` without the full view
+385.3 (92 %, p50 665), `v1` with it 358.2 (**86 %**, p50 722). The budget
+holds; nothing of the order of attack was applied. Per part on ship_demo
+(in-process, 8 rows, `bots` vs `bots`): the observation 7.7 ms per
+env-decision (the windows about half of it: 16 crops and squashes per
+soldier), the full view 6.6 (first built at 9.6; the two things that
+cut it: the per-unit columns computed once per unit instead of once per
+(row, unit), and the rows' lines of fire in ONE `rays_clear` call --
+`line_of_fire.solid_in_way_many` -- instead of one per pair; what is
+left is the `window_clear` per (soldier, enemy) for `full_watched`, ~1
+ms, and `ticks_to_within` per pair, ~1 ms).
+
 ## 7. The tests (properties; `tests/test_obs_spec_v1.py` unless named)
 
 | property | breaks if |
