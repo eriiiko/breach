@@ -50,7 +50,9 @@ OFF = [(k, False) for k in horde.BEHAVIOUR_SWITCHES]
 # gate holds them while every behaviour is off; the next DELIBERATE re-pin
 # of the field law by another cause retires them with it.
 _STAGE1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=264,
+    # #29 P3b re-pin (2026-11-12, keyed Philox draws): ticks 264 -> 251,
+    # outcome and team UNCHANGED (the sole-cause plugin gives 264 back).
+    outcome="win", team=1, ticks=251,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -59,8 +61,15 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was d9c4c5cef6c04f9d80eaa2b368d88782a8fa28132f7cd39a8011c230b88cecde)
-    field_digest="22e944fe6477d16ab0367b9562c357e9"
-                 "6c8ed0a7a2277dde8dce6b2a486e9f23",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 22e944fe6477d16ab0367b9562c357e96c8ed0a7a2277dde8dce6b2a486e9f23)
+    field_digest="cc46ec4b934902f73090aae00bef0b3f"
+                 "6e98f3f041948f51593bc9f86b8b8ba8",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -86,8 +95,15 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 82a361e85a0334a3a18dc84e63aea8bee0755ba6ac1b0d18423ea4c9f0aeea3e)
-    tick_digest="87dfe255f97bdc33320a7df36fea68db"
-                "fbfcd92fc9ff1fc86f91894febddd94d",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 87dfe255f97bdc33320a7df36fea68dbfbfcd92fc9ff1fc86f91894febddd94d)
+    tick_digest="ab061346257c0c5b2ec5a2bf99fbad26"
+                "aa74d6661a3886119c759f1de459b05e",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -113,8 +129,15 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was fd0d6bd79fbe4fa624065eda6bc9c04bc200e8ef38d7cdd5bd77bd4e5643877e)
-    unit_stream="c144ab6cb3bec1f33f143eaa1bfff97d"
-                "e346743f316ec412b60e65ec140e761a")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was c144ab6cb3bec1f33f143eaa1bfff97de346743f316ec412b60e65ec140e761a)
+    unit_stream="6707d27e1ccba0eb1ce455803d552c1b"
+                "4126cdd87cf55780d3c82cc5f5c24560")
 _STAGE1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"

@@ -324,8 +324,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was ff07e64c5d41ebfd86c553e60d2637ee32a8f99be4a72f3bc677ee9254e04349)
-    field_digest="86b99eae5b25be77a37cdebbd2bf0540"
-                 "9afc8a876f2bdd47eb5805d7bbcbef64",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 86b99eae5b25be77a37cdebbd2bf05409afc8a876f2bdd47eb5805d7bbcbef64)
+    field_digest="967bc6afbfde610e94aa14389c32aa6b"
+                 "beedba0dab2ed25705f315f4177294e8",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -351,8 +358,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 15b04577c53c82d949cd7bc4b85c778e90c8d4969e42cb8a1f3a272794e4975c)
-    tick_digest="73bbb0a449d658c042f67029682f78d8"
-                "44faf0964fd807d8f7cd1c6c32c77803",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 73bbb0a449d658c042f67029682f78d844faf0964fd807d8f7cd1c6c32c77803)
+    tick_digest="ef60a0ea6e438cde1e00f80bed76ec16"
+                "86d9ea7babea1070db5b395967935bc6",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -378,8 +392,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 03d85730046dd1afce99dc1c39f62756d6ff31dc16b0ca70fe89a20f70bf1a7e)
-    unit_stream="6778d0617e32108d426335322dafa459"
-                "ee7fd3414e7c3481558a92339db5bfba")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 6778d0617e32108d426335322dafa459ee7fd3414e7c3481558a92339db5bfba)
+    unit_stream="ef36d0c528f1d6b28e4c8c97a65ec9d7"
+                "5974f9864e4c4571e5c1181b743095c0")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(
