@@ -661,3 +661,43 @@ def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
     assert dict(outcome=o.result.outcome, team=o.result.team,
                 ticks=o.result.ticks, field_digest=o.field_digest,
                 unit_stream=stream.h.hexdigest()) == _RE_PIN_1_BOX
+
+
+# ---------------------------------------------------------------------------
+# #195 1g -- ticks_to_within: the trigger aid is the law iterated, not a copy
+# ---------------------------------------------------------------------------
+def test_ticks_to_within_is_the_law_stepped_by_hand():
+    """Property (#195 1g, obs spec 1.7): ``ticks_to_within`` is the count of
+    ``law_q16`` steps until the facing lies within ``tol_q`` of the target
+    -- 0 when already within, the hand-stepped count for a quarter turn
+    (with and without an outside spin), and ``cap`` when the turn cannot
+    land within the cap. Breaks if the aid stops reading the law (a copy, a
+    closed form) or counts the landing tick off by one."""
+    u = Unit("t", x=5, y=5, team=0, footprint=3)
+    tol = unit_fixed.quantize_scalar(math.radians(3.0))
+    quarter = turning.normalize_q16(unit_fixed.quantize_scalar(math.pi / 2))
+    # already within: zero ticks, whatever the spin
+    turning.place(u, 0)
+    assert turning.ticks_to_within(u, tol // 2, A_SHIP, W_SHIP, 0, tol,
+                                   48) == 0
+    # a quarter turn from rest: step the law by hand to the same answer
+    turning.place(u, 0)
+    facing, omega, n = 0, 0, 0
+    while abs(wrap_q16(quarter - facing)) > tol:
+        facing, omega = law_q16(facing, omega, quarter, A_SHIP, W_SHIP)
+        n += 1
+    assert 1 < n < 11
+    assert turning.ticks_to_within(u, quarter, A_SHIP, W_SHIP, 0, tol,
+                                   48) == n
+    # the same with an outside spin ``dw`` added first, as slot 1a adds it
+    dw = -3 * A_SHIP
+    facing, omega, m = 0, dw, 0
+    while abs(wrap_q16(quarter - facing)) > tol:
+        facing, omega = law_q16(facing, omega, quarter, A_SHIP, W_SHIP)
+        m += 1
+    assert m != n
+    assert turning.ticks_to_within(u, quarter, A_SHIP, W_SHIP, dw, tol,
+                                   48) == m
+    # the cap: a half turn at a tiny top speed is not reached in 4 ticks
+    assert turning.ticks_to_within(u, PI_Q16, A_SHIP, 100, 0, tol, 4) == 4
+    assert u.facing_q == 0 and u.omega_q == 0      # a pure read
