@@ -325,6 +325,10 @@ def main(scenarios=SCENARIOS, floor: int = 20, bias: float = 0.7,
                     sts = _states(sim_a, u, int(h))
                     score = min([cover[(_verb(int(h)), s)] for s in sts]
                                 + [forced[names[h]]])
+                    if h == A.HAND_MELEE and _near_enemy(sim_a, u, oa, i)                             is not None:
+                        # a masked blow with someone in reach: the case a
+                        # wrong MOMENT would let land -- forced first
+                        score = -1
                     cands.append((score, forced[names[h]], i, "hand", int(h),
                                   sts))
                 for label, a in _aim_options(oa, i, S):
@@ -338,6 +342,11 @@ def main(scenarios=SCENARIOS, floor: int = 20, bias: float = 0.7,
                 _, _, i, head, opt, sts = cands[pick]
                 u = units_a[i]
                 if head == "hand":
+                    near = (_near_enemy(sim_a, u, oa, i)
+                            if opt == A.HAND_MELEE else None)
+                    if near is not None and oa["mask_aim"][i][near]:
+                        rows_a[i, 1] = rows_b[i, 1] = near
+                        cover[("melee", "in_reach")] += 1
                     rows_b[i, 3] = opt
                     rows_b[i, 4] = (int(rng.integers(0, A.N_FRACTIONS))
                                     if opt >= A.HAND_THROW0

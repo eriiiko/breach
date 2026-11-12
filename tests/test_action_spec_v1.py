@@ -934,3 +934,30 @@ def test_forced_masked_choices_do_nothing():
                           ("use", "no_door"), ("flashlight", "reserved"),
                           ("invalid", "dead")))
     assert got["decisions"] == 170
+
+
+def test_a_blow_on_the_sweep_tick_is_offered_exactly_when_it_lands(tmp_path):
+    """Property (note 3 / 5, the MOMENT): a unit whose stun the coming sweep
+    releases, an enemy in its arc: the melee bit built at the start of the
+    tick says what the blow issued then does -- 1, and the blow lands; with
+    the stun lasting one more tick, 0, and the forced blow does nothing.
+    Breaks if the mask reads the gate at the verb's moment
+    (``at_tick_start=False``: masked, yet it lands) -- the deliberate break
+    (i) of the note's section 5, which random play reaches too rarely for
+    the driver to see."""
+    from simulation.status import STUNNED, apply_status
+    for extra, lands in ((0, True), (1, False)):
+        sim, (me, foe) = _sim(_level(tmp_path, f"sw{extra}"),
+                              [(0, 10, 20), (1, 13, 20)])
+        place_facing(me, 0)
+        assert me.melee_id
+        st = apply_status(me, STUNNED, 0, 1 + extra)
+        sc = _Scene(sim)
+        sim.step()                       # the sweep counts it to `extra`
+        assert st.remaining_ticks == extra
+        out = sc.observe()
+        assert out["mask_hand"][0][A.HAND_MELEE] == int(lands)
+        hp = foe.current_hp
+        sc.decide(_rows_for(sc, 0, {0: _row(hand=A.HAND_MELEE)}))
+        sc.tick()
+        assert (foe.current_hp < hp) == lands, (extra, hp, foe.current_hp)
