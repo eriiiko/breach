@@ -193,8 +193,15 @@ _PRE_122_BOX = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was e082f7dfe103e2fdd594a952da81143ca4202e996238969b22c85eea05b0fd3d)
-    unit_stream="ac9bda6c239304078bef33858e2582f8"
-                "83e0684eddd14d541ec7f269e8a88c16")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
+    unit_stream="85d051afa1acda1b9bc1d3a680e63736"
+                "32bfdb9f735b65bf51ec1a9bbf834238")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -531,7 +538,14 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 3344bc96528bb08756456338112f9f25163bdacc56352be453f4debc5a172bf4)
     # #195 1d step (ii) re-pin (see above).
     # (was 0b093a26a96d2c39775240fbc0514fe9f869600026cc5c977e50f5d899294ec1)
-    tick_digest="1030e119469b9e9abeaebd504ab5b59c9ae0fac090fe4d04c566bb6488633d54",
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 1030e119469b9e9abeaebd504ab5b59c9ae0fac090fe4d04c566bb6488633d54)
+    tick_digest="402970f74f8e71af449d04cd8c245de8bd4a3069771ca31529506fe08a1b6dad",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -544,7 +558,14 @@ _PRE_122_SHIP_DEMO = dict(
     # (was bf34f1bbf43f0cb555dd65c57c73d72cd3c56edbacd0a8753e4a6844ee308ab8)
     # #195 1d step (ii) re-pin (see above).
     # (was 869f75cbb8da51b410991c77dbbdeaed0566e7a6dbeb444318c0b0664416bd6d)
-    unit_stream="16b425f124d6fcc66b409ff2f0433fb59540b7dbab273f0fc1dfe69c7f1706d7")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 16b425f124d6fcc66b409ff2f0433fb59540b7dbab273f0fc1dfe69c7f1706d7)
+    unit_stream="537ec052b34d2e9b52887299ddf38162ae47f4efb3acc51f7df3ffb3175742ca")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):

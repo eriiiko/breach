@@ -574,8 +574,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was df36873fbb14eda3ff329f89e89f20d735202b973638f6f3e4d29b724197a9bc)
-    tick_digest="ddda3bb5d992ff8071f36cbf4d7550e5"
-                "525baada5dd12738ed6c7c7c3a6c6943",
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was ddda3bb5d992ff8071f36cbf4d7550e5525baada5dd12738ed6c7c7c3a6c6943)
+    tick_digest="cdb2152bc2d764dce97483c26f70152b"
+                "9017c463083d53b7275529f447e8b9b4",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -586,8 +593,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # equal per-tick records and identical field digests on main edc0d2b1 and
     # on this tree. Only the hash's definition moved.
     # (was 6480df664eb192d90ff0be9dc50e8f9ca9263a89f4b85c050b9a27a7183eefc9)
-    unit_stream="e8c7ef9db453387ff803d525b5577b35"
-                "82fe008dd458bf14708612c429ab85d3")
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was e8c7ef9db453387ff803d525b5577b3582fe008dd458bf14708612c429ab85d3)
+    unit_stream="da9febf7321dbe971ef9e5fa7c3ed599"
+                "c8453f7cc969f18aad6251dc3c07d529")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This

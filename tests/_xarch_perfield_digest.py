@@ -645,7 +645,22 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # ship_demo bots / bots_v1, the #122 box with conversions and a scripted
 # arena of every verb).
 # (was 58f766f440f4fcbdb6c2003adb7f4d4159f6a98440c334cf14c70a29177b4576)
-GOLDEN_AGGREGATE = "3646fd0dd0f8b5b9d1a40b520d41905f99a56ecd7a839f5ed4899546e3df1e28"
+#
+# 2026-11-12 -- #29 P3c POSITIONS TO Q16 (design §4.4, §7 P3c, §12.1): a
+# unit's position is the synced Q16 ints x_q / y_q (x / y are read-only float
+# views, written only through Unit.set_pos_q), and the unit record hashes them
+# as plain ints under the keys x_q / y_q instead of round(x * 1e9) under x / y.
+# A RE-BASELINE OF THE HASH, NOT OF THE GAME: the per-field files of main
+# 229f7097 (3646fd0d..., the golden) and of this tree are byte-identical on
+# every gmap field line, __unit_hp__, __unit_facing__, __unit_life_events__
+# and __unit_status__ over all 30 ticks; MOVED, by construction, only
+# __unit_pos__ (the key and its encoding) and __unit_state__. The scenario's
+# unit was already on the Q16 grid at every tick. The game is proven unchanged
+# by tests/_p3c_sole_cause.py (equal per-tick records with x_q := round(x *
+# 65536) and equal field digests over ship_demo bots / bots_v1, the #122 box,
+# the scripted arena, a one-phase WEGO and a TwoPhaseWEGO scenario).
+# (was 3646fd0dd0f8b5b9d1a40b520d41905f99a56ecd7a839f5ed4899546e3df1e28)
+GOLDEN_AGGREGATE = "4a13fc72353f2686935f1f5397922df533d166fbc436096534dfa3a7c4171fab"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -676,15 +691,16 @@ def _unit_subfield_payloads(ustate: dict) -> dict[str, object]:
     """Split one tick's unit-state dict (harness format: id-sorted records +
     emission-ordered synced events) into the four named sub-payloads."""
     # #29 P3a: the records are the unit schema's (``unit_schema.
-    # digest_record``): the hp is its Q16 count, the position the two
-    # ``round(v * 1e9)`` columns (the derived tile indices left the record),
+    # digest_record``): the hp is its Q16 count, the position the two Q16
+    # ints ``x_q`` / ``y_q`` (#29 P3c; ``round(v * 1e9)`` before), (the
+    # derived tile indices left the record),
     # the life its enum index (``alive`` left: a property of it), the status
     # block present only while a unit holds a status.
     units = ustate.get("units", [])
     return {
         "__unit_hp__":     [(r["id"], r["current_hp"]) for r in units],
         "__unit_facing__": [(r["id"], r["facing"]) for r in units],
-        "__unit_pos__":    [(r["id"], r["x"], r["y"]) for r in units],
+        "__unit_pos__":    [(r["id"], r["x_q"], r["y_q"]) for r in units],
         "__unit_life_events__": {
             "life":   [(r["id"], r["life_state"]) for r in units],
             "events": ustate.get("events", []),
