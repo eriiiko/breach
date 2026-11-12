@@ -21,8 +21,28 @@ WHOLE picture, the order's ``route`` (the horde's flood) and ``place``
 planes -- and with them the vector's ``air`` block (cols 58-65, the near
 window's values at the soldier's centre tile) and ``felt_temp`` (col 96,
 ``exchange.felt_temperature``, the heat row's own law) and the mate
-entries' lane pair (cols 52-53). Cols 28 and 66 read 0 until 1h; the full
-view is patch (c).
+entries' lane pair (cols 52-53). Cols 28 and 66 read 0 until 1h.
+
+Patch (c) builds THE FULL VIEW (section 5), ``FULL_VIEW_NAME = "full_v1"``:
+what the training-only VALUE network is shown beside the observation, served
+by the same accessor door into the farm's own buffers under
+``info["full_view"]`` (its terminal twin ``info["final_full_view"]``), NEVER
+a key of ``obs``. Per row: ``full_list`` -- up to :data:`FULL_ENTRIES`
+entries of :data:`FULL_F` columns, the soldier itself first (a dead row: the
+corpse of 5.6, ``type`` 0, ``hp`` 0, ``age``), then EVERY other living unit
+of every side where it truly is (the marines in (team, slot) order, then the
+zombies nearest first), every live grenade and charge, every living door;
+the first 67 columns 2.2's entry built with the same helpers against the
+observing soldier, then :data:`FULL_EXTRA_COLUMNS` (the team's ``knowledge``
+of the entry, its kit, four statuses, its order) --, ``full_mask``,
+``full_uid``, ``full_match`` (:func:`full_match_columns`: per team of the
+run its living count and health balance, the horde awake / dormant, the
+clock) and ``full_watched`` (3.5's plane from EVERY living enemy's LIVE
+centre). The full-view builders take the sim's state through ONE
+:class:`FullView` per env per decision (built by :meth:`FullView.build`, the
+other side of the wall) and keep THEIR OWN caches on it -- never the
+observation's (``TeamKnowledge``'s): nothing the full view computes reaches
+``obs``, the pair test (f) of spec 7 holds it.
 
 THE WALL (spec 0.5, 5.7). The builders of sections 1-3 never receive the
 ``Simulation``: they take ``(know, u)`` -- ONE :class:`TeamKnowledge` per
@@ -58,7 +78,9 @@ from simulation.events import CAUSE_NAMES
 from simulation.gases import POISON as GAS_POISON, SMOKE as GAS_SMOKE, \
     TEARGAS as GAS_TEARGAS
 from simulation.movement import THROTTLE_ONE
-from simulation.status import N_STATUS_KINDS, STATUS_REGISTRY, composed_flags
+from simulation.status import (BURNING, KNOCKED_DOWN, N_STATUS_KINDS,
+                               POISONED, STATUS_REGISTRY, STUNNED,
+                               composed_flags)
 from simulation.team_picture import (OBJECT_UID_BASE, fire_lanes_of,
                                      object_tile)
 from simulation.turning import PI_Q16, wrap_q16
@@ -261,6 +283,53 @@ assert F == 67 and [f.pos for f in ENTRY_COLUMNS] == list(range(F))
 _VC = {f.name: f.pos for f in VECTOR_COLUMNS}
 _EC = {f.name: f.pos for f in ENTRY_COLUMNS}
 
+# -- section 5: the full view (spec 5.1-5.6) ---------------------------------
+FULL_VIEW_NAME = "full_v1"
+#: ``full_list`` holds at most this many entries (spec 5.3).
+FULL_ENTRIES = 64
+#: The ``knowledge`` column's codes (spec 5.3 col 67): my team sees it, has
+#: a record of it, does not know of it.
+KNOW_SEEN, KNOW_RECORD, KNOW_UNKNOWN = 0, 1, 2
+#: The four status kinds the full view's entry carries (spec 5.3 cols
+#: 80-83, a CHOICE: the kinds a shipped path applies).
+FULL_STATUS_KINDS = (KNOCKED_DOWN, STUNNED, BURNING, POISONED)
+#: The 18 columns beyond 2.2's entry (spec 5.3): ``F .. F + 17``.
+FULL_EXTRA_COLUMNS = tuple(
+    _cols(F, [("knowledge", KIND, False), ("rounds", "mag_size", False),
+              ("mags", "magazines", True), ("ammo_untracked", FLAG, False)])
+    + _cols(F + 4, [(f"grenade[{k}]", "loadout_count", False)
+                    for k in range(HAND_GRENADE_SLOTS)])
+    + _cols(F + 10, [("charges", "explosives", False),
+                     ("melee_cool", "rof_interval_ticks", False),
+                     ("shove_cool", "shove_cooldown_ticks", False)])
+    + _cols(F + 13, [(f"status_left[{k}]", "STATUS_SCALE_TICKS", True)
+                     for k in FULL_STATUS_KINDS])
+    + _cols(F + 17, [("order_what", KIND, False)])
+)
+#: ``F + 18``: a full-list entry's width.
+FULL_F = F + len(FULL_EXTRA_COLUMNS)
+assert FULL_F == 85 and [f.pos for f in FULL_EXTRA_COLUMNS] == list(range(F, FULL_F))
+#: The keys of ``info["full_view"]`` in the layout's order (spec 5.2).
+FULL_KEYS = ("full_list", "full_mask", "full_uid", "full_match",
+             "full_watched")
+_XC = {f.name: f.pos for f in FULL_EXTRA_COLUMNS}
+
+
+def full_match_columns(n_teams: int) -> tuple:
+    """``full_match``'s ``M = 2 T + 3`` columns (spec 5.4) for a run of
+    ``n_teams`` marine teams: per team its living count over ``n_t`` and
+    its BALANCE (the sum of its living units' ``hp / bar`` over ``n_t``,
+    squashed: a bar may be exceeded), then the horde awake and dormant
+    over ``spec.zombies`` (squashed: a converted marine adds one) and
+    ``time_left`` over ``limit_ticks``."""
+    rows = []
+    for t in range(int(n_teams)):
+        rows += [(f"alive[{t}]", "n_t", False), (f"balance[{t}]", "n_t", True)]
+    rows += [("zombies_awake", "zombies", True),
+             ("zombies_dormant", "zombies", True),
+             ("time_left", "limit_ticks", False)]
+    return tuple(_cols(0, rows))
+
 
 # ---------------------------------------------------------------------------
 # The squash and the compressed distance (spec 0.1, 0.2)
@@ -387,10 +456,17 @@ class ObsContext:
     smoke_dense: float           # [bots] smoke_dense
     cap_q: int                   # ImpulseTable.cap_q: one tick of hold
     heat_dials: tuple            # exchange.heat_dials(CFG)
+    # -- the full view's (spec 5.4; patch (c)) --
+    n_teams: int = 0             # T: the run's marine teams (full_match)
 
     @property
     def n_entries(self) -> int:
         return self.n_slots + ENTRIES_BEYOND_SLOTS
+
+    @property
+    def n_match(self) -> int:
+        """``M = 2 T + 3``: ``full_match``'s width (spec 5.4)."""
+        return 2 * self.n_teams + 3
 
     @property
     def caps(self) -> tuple:
@@ -401,7 +477,10 @@ class ObsContext:
         return self.hand_rows + self.charge_rows
 
     @staticmethod
-    def build(sim, spec, n_slots: int) -> "ObsContext":
+    def build(sim, spec, n_slots: int, n_teams: int | None = None) -> "ObsContext":
+        """The context for one episode: ``n_slots`` the layout's ``S``,
+        ``n_teams`` its ``T`` (default: the match's own team count; the
+        env passes the run's, so ``full_match`` is one width per run)."""
         from config import CFG
         from simulation.exposure import get_settings
         from simulation.loadouts import get_tables as loadout_tables
@@ -462,6 +541,7 @@ class ObsContext:
             smoke_dense=_cfg_float(CFG, "bots", "smoke_dense"),
             cap_q=int(it.cap_q),
             heat_dials=exchange.heat_dials(CFG),
+            n_teams=int(len(spec.teams) if n_teams is None else n_teams),
         )
 
 
@@ -474,7 +554,7 @@ class ObsWorld:
     attributes, no fallback: a banned sim member raises ``AttributeError``."""
 
     __slots__ = ("gmap", "tick", "weapons_tables", "speed_table",
-                 "impulse_table", "graph", "wires", "cover", "doors", "planes",
+                 "impulse_table", "graph", "wires", "cover", "doors", "_planes",
                  "_turn_rate", "_turn_accel", "_after_turn")
 
     def __init__(self, sim, planes=None):
@@ -489,11 +569,17 @@ class ObsWorld:
         self.doors = tuple(sim._doors)      # every door runtime: unfogged
         # the whole map's planes (spec 3.2-3.4): read once per env per
         # decision by observe_rows and handed in; a direct build reads them
-        self.planes = (FieldPlanes(self.gmap, self.doors) if planes is None
-                       else planes)
+        # on the first ask (the full view's facade never asks)
+        self._planes = planes
         self._turn_rate = sim.unit_turn_rate_q16
         self._turn_accel = sim.unit_turn_accel_q16
         self._after_turn = sim.facing_after_turn_q16
+
+    @property
+    def planes(self) -> "FieldPlanes":
+        if self._planes is None:
+            self._planes = FieldPlanes(self.gmap, self.doors)
+        return self._planes
 
     def unit_turn_rate_q16(self, u) -> int:
         return self._turn_rate(u)
@@ -635,26 +721,29 @@ class TeamKnowledge:
 # ---------------------------------------------------------------------------
 # aim_of (spec 1.7): the 4.1 rule judged by the team's knowledge
 # ---------------------------------------------------------------------------
-def cone_q(know, ctx: ObsContext, u) -> int:
+def _cone_of(rows, ctx: ObsContext, u) -> int:
     """The half-angle (Q16 radians) of ``u``'s aim cone: its ranged
     weapon's ``spread_deg``, else its melee row's arc, a zombie (or a
-    weaponless body) the reference kit's melee arc."""
-    key = int(u.id)
-    q = know._cone.get(key)
-    if q is not None:
-        return q
-    rows = know.world.weapons_tables.weapons.by_name
+    weaponless body) the reference kit's melee arc. Pure; the two views
+    cache it each on its own."""
     row = rows.get(getattr(u, "weapon_id", "") or "")
     melee = rows.get(getattr(u, "melee_id", "") or "")
     if u.is_zombie:
-        q = ctx.ref_melee_arc_q
-    elif row is not None and int(row.range_tiles) > 0:
-        q = quantize_scalar(math.radians(float(row.spread_deg)))
-    elif melee is not None:
-        q = int(melee.melee_arc_half_q)
-    else:
-        q = ctx.ref_melee_arc_q
-    know._cone[key] = q
+        return ctx.ref_melee_arc_q
+    if row is not None and int(row.range_tiles) > 0:
+        return quantize_scalar(math.radians(float(row.spread_deg)))
+    if melee is not None:
+        return int(melee.melee_arc_half_q)
+    return ctx.ref_melee_arc_q
+
+
+def cone_q(know, ctx: ObsContext, u) -> int:
+    """:func:`_cone_of` cached per uid on the team's view."""
+    key = int(u.id)
+    q = know._cone.get(key)
+    if q is None:
+        q = know._cone[key] = _cone_of(know.world.weapons_tables.weapons.by_name,
+                                       ctx, u)
     return q
 
 
@@ -1070,6 +1159,47 @@ def _hit_from(hit):
     return -dx / n, dy / n
 
 
+def _kit_values(u, weapon, melee, loadout, tick: int, ctx: ObsContext) -> tuple:
+    """The kit ratios of spec 1.2 that the soldier's vector (cols 24-26,
+    29.., 44, 49, 51) and the full view's extra columns (5.3 cols 68-79)
+    both carry, as ``(rounds, mags, untracked, reloading, reload_left,
+    grenade[0..], charges, melee_cool, shove_cool)`` -- one reader, so the
+    two agree column for column."""
+    st = combat.mag_status(u, weapon, tick) if weapon is not None else None
+    mags_total = int(loadout.magazines) if loadout is not None else 0
+    reloading = reload_left = 0.0
+    if st is None:
+        rounds = mags = untracked = 1.0
+    else:
+        r_, spares, rel = st
+        rounds = ratio(r_, weapon.mag_size)
+        if spares is None:
+            mags = untracked = 1.0
+        else:
+            mags, untracked = squash(ratio(spares, max(1, mags_total))), 0.0
+        reloading = float(rel)
+        if rel:
+            reload_left = ratio(int(u.reload_done_tick) - tick,
+                                weapon.reload_ticks)
+    counts = loadout.grenades if loadout is not None else {}
+    grenades = []
+    for k, row in enumerate(ctx.hand_rows):
+        have = int(counts.get(row, 0))
+        grenades.append(ratio(u.grenade_counts[k], have) if have > 0 else 0.0)
+    explosives = int(loadout.explosives) if loadout is not None else 0
+    charges = ratio(u.has_explosive, explosives)
+    melee_cool = 0.0
+    if melee is not None and int(u.last_blow_tick) >= 0:
+        rof = int(melee.rof_interval_ticks)
+        melee_cool = ratio(max(0, int(u.last_blow_tick) + rof - tick), rof)
+    shove_cool = 0.0
+    cd = ctx.shove_cooldown_ticks
+    if int(u.last_shove_tick) >= 0:
+        shove_cool = ratio(max(0, int(u.last_shove_tick) + cd - tick), cd)
+    return (rounds, mags, untracked, reloading, reload_left, tuple(grenades),
+            charges, melee_cool, shove_cool)
+
+
 def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out) -> None:
     """Section 1 into ``out`` (``(V,)`` float32), for the living mate ``u``
     of ``know``'s team. The ``air`` block and ``felt_temp`` read 0 in (a)."""
@@ -1103,25 +1233,12 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out) -> None:
     for k in range(N_STATUS_KINDS):
         out[15 + k] = squash(ratio(_status_left(u, k), ctx.status_scale[k]))
     # -- 1.2 weapon and kit --
-    st = combat.mag_status(u, weapon, tick) if weapon is not None else None
-    mags_total = int(loadout.magazines) if loadout is not None else 0
-    if st is None:
-        out[24], out[25], out[26] = 1.0, 1.0, 1.0
-    else:
-        rounds, spares, reloading = st
-        out[24] = ratio(rounds, weapon.mag_size)
-        if spares is None:
-            out[25], out[26] = 1.0, 1.0
-        else:
-            out[25] = squash(ratio(spares, max(1, mags_total)))
-        out[27] = float(reloading)
-        if reloading:
-            out[28] = ratio(int(u.reload_done_tick) - tick, weapon.reload_ticks)
+    kit = _kit_values(u, weapon, melee, loadout, tick, ctx)
+    out[24], out[25], out[26], out[27], out[28] = kit[:5]
     counts = loadout.grenades if loadout is not None else {}
     for k, row in enumerate(ctx.hand_rows):
-        have = int(counts.get(row, 0))
-        if have > 0:
-            out[29 + 2 * k] = ratio(u.grenade_counts[k], have)
+        if int(counts.get(row, 0)) > 0:
+            out[29 + 2 * k] = kit[5][k]
             out[30 + 2 * k] = 1.0
     winding = int(u.throw_release_tick) >= 0
     out[41] = float(winding)
@@ -1130,21 +1247,16 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out) -> None:
         out[43] = float(int(u.throw_kind))
     else:
         out[43] = -1.0
-    explosives = int(loadout.explosives) if loadout is not None else 0
-    out[44] = ratio(u.has_explosive, explosives)
+    out[44] = kit[6]
     out[45] = float(bool(loadout is not None and loadout.charge))
     planting = int(u.plant_done_tick) >= 0
     out[46] = float(planting)
     if planting:
         out[47] = ratio(int(u.plant_done_tick) - tick, ctx.plant_ticks)
         out[48] = ratio(int(u.plant_fuse_ticks), ctx.c4_fuse_max_ticks)
-    if melee is not None and int(u.last_blow_tick) >= 0:
-        rof = int(melee.rof_interval_ticks)
-        out[49] = ratio(max(0, int(u.last_blow_tick) + rof - tick), rof)
+    out[49] = kit[7]
     out[50] = float(bool(getattr(u, "melee_id", "")))
-    cd = ctx.shove_cooldown_ticks
-    if int(u.last_shove_tick) >= 0:
-        out[51] = ratio(max(0, int(u.last_shove_tick) + cd - tick), cd)
+    out[51] = kit[8]
     out[52] = float(_row_index("loadouts", getattr(u, "loadout_name", None)))
     out[53] = float(_row_index("weapons", getattr(u, "weapon_id", "")))
     if weapon is not None:
