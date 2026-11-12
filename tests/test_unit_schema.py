@@ -203,7 +203,10 @@ def test_a_column_at_its_default_adds_no_key():
     column's digest compares to the wrong default or hashes unconditionally
     (validated: marking ``flashlight_on`` *always* puts ``flashlight_on`` in
     the bare record)."""
-    always = [c.key for c in us.COLUMNS if c.digest == us.DIGEST_ALWAYS]
+    # §4.4a's *always* columns, written out (not read from the table, so a
+    # column wrongly made *always* fails here).
+    always = ["id", "life_state", "x", "y", "facing", "current_hp"]
+    assert [c.key for c in us.COLUMNS if c.digest == us.DIGEST_ALWAYS] == always
     bare = us.digest_record(SimpleNamespace(facing_q=0))
     assert list(bare) == always
     for c in us.COLUMNS:
