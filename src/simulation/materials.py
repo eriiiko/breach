@@ -1217,6 +1217,11 @@ class MaterialTable:
             val = self._get_field_opt(row, "cover_exposure")
             cover.append(float(val) if val is not None else 1.0)
         self.cover_exposure = np.array(cover, dtype=np.float32)
+        # #29 P3e: the same column as a Q16 probability, quantized once here
+        # (the door), which the integer exposure roll compares against.
+        from simulation.unit_fixed import quantize_scalar as _q16
+        self.cover_exposure_q16 = np.array(
+            [_q16(float(c)) for c in self.cover_exposure], dtype=np.int64)
 
     # -- conduction face-shift tables (engine/06 §2.4–§2.5) --------------
     def _build_conduction_tables(self, thermal_cfg):

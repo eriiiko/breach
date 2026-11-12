@@ -1437,7 +1437,7 @@ class Simulation:
         if self.tick < u.throw_release_tick:
             return
         u.throw_release_tick = -1
-        facing_q = unit_fixed.quantize_scalar(u.facing)
+        facing_q = int(u.facing_q)          # #29 P3e: the int, no round trip
         self._release_grenade(
             u, u.throw_kind, u.throw_fuse_ticks,
             None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
