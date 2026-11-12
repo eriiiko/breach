@@ -11,7 +11,9 @@ Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]``,
 ``[water]``, ``[[entity]]`` (A3), ``[[wire]]`` (B1) and — since Arc C9 —
 ``[art.bare]``/``[art.align]``/``[bake]`` (the baker's writeback, ported off
 its original bespoke line-targeted regex upsert), ``[[spawn_room]]`` (#119)
-and ``[levelgen]`` (#136, a generated level's LevelSpec); the writer is
+and ``[levelgen]`` (#136, a generated level's LevelSpec), ``[[room]]`` /
+``[[opening]]`` (#195 1b, the room graph; its ``rooms.npy`` beside it is
+written by :func:`write_rooms_npy`); the writer is
 family-generic. On save every existing table of a replaced
 family is removed and the new block is written at the position of the first
 one (or appended at EOF); every byte OUTSIDE the managed tables — comments,
@@ -50,6 +52,7 @@ WATER_FILENAME = "water_init.npy"
 ZONES_FILENAME = level_loader.ZONES_FILENAME    # "zones.npy" — one source
 AIR_INIT_FILENAME = level_loader.AIR_INIT_FILENAME  # "air_init.npy" (A9)
 TEMP_INIT_FILENAME = level_loader.TEMP_INIT_FILENAME  # "temp_init.npy" (E.2)
+ROOMS_FILENAME = level_loader.ROOMS_FILENAME  # "rooms.npy" (#195 1b)
 
 _TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
 
@@ -106,6 +109,12 @@ MANAGED_FAMILIES = {
     # (gen_ship's recipe path only). Its inline `cycles` table keeps the
     # family one header long, so the span rule above holds.
     "levelgen": ManagedFamily("levelgen", array=False),
+    # #195 1b: the room graph's fixed part -- the generator's rooms and the
+    # walkable openings between them (rooms.npy, the tile -> room map, sits
+    # beside level.toml: write_rooms_npy). The `room` header regex needs
+    # `[[` right before the name, so it never matches `[[spawn_room]]`.
+    "room": ManagedFamily("room", array=True),
+    "opening": ManagedFamily("opening", array=True),
 }
 
 
@@ -198,6 +207,80 @@ def write_levelgen(toml_path, record, write_bak: bool = False):
         {"levelgen": lambda nl: ([] if record is None
                                  else format_levelgen_lines(record, nl))},
         write_bak=write_bak)
+
+
+def _room_graph_door(rooms, openings, grid):
+    """Every room graph goes through the loader's own door
+    (``level_loader.parse_room_graph``) before a byte is written, so the
+    writer never writes a graph its loader refuses."""
+    g = np.asarray(grid)
+    return level_loader.parse_room_graph(
+        [r.as_dict() if hasattr(r, "as_dict") else dict(r) for r in rooms],
+        [o.as_dict() if hasattr(o, "as_dict") else dict(o)
+         for o in openings],
+        g, g.shape, "room graph (writer)")
+
+
+def format_room_lines(rooms, nl: str = "\n") -> list:
+    """The managed ``[[room]]`` block (#195 1b): one table per room
+    (``level_loader.ROOM_KEYS``, all written), blank line between."""
+    lines = []
+    for i, r in enumerate(rooms):
+        d = r.as_dict() if hasattr(r, "as_dict") else dict(r)
+        if i:
+            lines.append(nl)
+        lines.append(f"[[room]]{nl}")
+        for k in level_loader.ROOM_KEYS:
+            lines.append(f"{k} = {_fmt_value(d[k])}{nl}")
+    return lines
+
+
+def format_opening_lines(openings, nl: str = "\n") -> list:
+    """The managed ``[[opening]]`` block (#195 1b): one table per opening
+    (``level_loader.OPENING_KEYS``), in id order, blank line between."""
+    lines = []
+    for i, o in enumerate(openings):
+        d = o.as_dict() if hasattr(o, "as_dict") else dict(o)
+        if i:
+            lines.append(nl)
+        lines.append(f"[[opening]]{nl}")
+        for k in level_loader.OPENING_KEYS:
+            lines.append(f"{k} = {_fmt_value(d[k])}{nl}")
+    return lines
+
+
+def room_graph_blocks(rooms, openings, grid) -> dict:
+    """The ``[[room]]`` and ``[[opening]]`` replacements for
+    :func:`write_managed_blocks` (so a caller writing other families too
+    lands them in ONE atomic write), after the loader's door has accepted
+    ``(rooms, openings, grid)``; the rows come out in the door's order."""
+    rg = _room_graph_door(rooms, openings, grid)
+    return {"room": lambda nl: format_room_lines(rg.rooms, nl),
+            "opening": lambda nl: format_opening_lines(rg.openings, nl)}
+
+
+def write_rooms_npy(level_dir, grid, rooms, openings=()) -> Path:
+    """Write ``rooms.npy`` (#195 1b): THE ONE WRITER of the tile -> room
+    map (int32, a room id or -1, the tilemap's shape), found by the loader
+    by PRESENCE. The graph it belongs to goes through the loader's door
+    first. Returns the path."""
+    rg = _room_graph_door(rooms, openings, grid)
+    npy_path = Path(level_dir) / ROOMS_FILENAME
+    np.save(npy_path, np.ascontiguousarray(rg.grid))
+    return npy_path
+
+
+def write_room_graph(level_dir, rooms, openings, grid,
+                     write_bak: bool = False):
+    """Write a level's whole room graph: the ``[[room]]`` / ``[[opening]]``
+    managed blocks (the :func:`write_managed_blocks` contract) and
+    ``rooms.npy``. Returns the .bak path, or None."""
+    level_dir = Path(level_dir)
+    bak = write_managed_blocks(level_dir / "level.toml",
+                               room_graph_blocks(rooms, openings, grid),
+                               write_bak=write_bak)
+    write_rooms_npy(level_dir, grid, rooms, openings)
+    return bak
 
 
 def format_light_lines(lights, nl: str = "\n") -> list:

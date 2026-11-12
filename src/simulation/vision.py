@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from config import CFG
 from simulation import unit_fixed
 
@@ -103,6 +105,139 @@ def ray_clear(sim, y0, x0, y1, x1) -> bool:
         if cov.blocks_los and cov.alive and cov.blocks_segment(x0, y0, x1, y1):
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Sight for many tiles (#195 1c)
+# ---------------------------------------------------------------------------
+# ``GameMap.has_los``'s walk run in bulk by ``PhysicsEngine.sight_rays`` /
+# ``sight_window`` (``cpp/src/sight_lines.{h,cpp}``, a host call in both
+# modules, like the horde field), plus -- here, in Python, the cover entities
+# being few -- the cover that blocks sight, so each wrapper equals
+# :func:`ray_clear` on every map. A new reader of "what can be seen from
+# here" calls these; nothing walks its own lines.
+def sight_lines_reference(solid, screen, pairs, physical=False):
+    """The routine's pure-Python reference, for a bare map with no engine:
+    ``has_los``'s walk over an ``(n, 4)`` array of ``(y0, x0, y1, x1)`` tile
+    pairs on the ``solid`` / ``screen`` bool planes. Returns ``(n,)`` uint8,
+    1 = clear. Held equal to ``has_los`` and to the C++ routine by
+    ``tests/test_sight_lines.py``; the same walk, so an arithmetic change
+    lands in ``has_los`` first and here and in C++ with it."""
+    h, w = solid.shape
+    scr = None if physical else screen
+    rows = np.asarray(pairs, dtype=np.int64).reshape(-1, 4).tolist()
+    out = np.zeros(len(rows), dtype=np.uint8)
+    for k, (fy1, fx1, fy2, fx2) in enumerate(rows):
+        dx = abs(fx2 - fx1)
+        dy = abs(fy2 - fy1)
+        sx = 1 if fx1 < fx2 else -1
+        sy = 1 if fy1 < fy2 else -1
+        err = dx - dy
+        x, y = fx1, fy1
+        while True:
+            if x == fx2 and y == fy2:
+                out[k] = 1
+                break
+            if 0 <= y < h and 0 <= x < w and (
+                    solid[y, x] or (scr is not None and scr[y, x])):
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+    return out
+
+
+def _planes(gmap):
+    """The two uint8 views the routine reads (no copy: the planes are bool)."""
+    solid = np.ascontiguousarray(gmap.solid).view(np.uint8)
+    screen = np.ascontiguousarray(gmap.sight_screen).view(np.uint8)
+    return solid, screen
+
+
+def lines_clear(gmap, pairs, physical=False):
+    """The map half of :func:`rays_clear` (no cover): the C++ routine when
+    ``gmap`` has an engine bound, else :func:`sight_lines_reference`."""
+    pairs = np.ascontiguousarray(
+        np.asarray(pairs, dtype=np.int32).reshape(-1, 4))
+    solid, screen = _planes(gmap)
+    eng = getattr(gmap, "_physics_engine", None)
+    if eng is None:
+        return sight_lines_reference(solid, screen, pairs, physical)
+    out = np.empty(pairs.shape[0], dtype=np.uint8)
+    eng.sight_rays(solid, screen, bool(physical), pairs, out)
+    return out
+
+
+def _blocking_cover(sim):
+    return [c for c in (getattr(sim, "cover", ()) or ())
+            if c.blocks_los and c.alive]
+
+
+def _apply_cover(sim, pairs, clear):
+    """Clear a line a sight-blocking cover entity crosses (``ray_clear``'s
+    second half, in its own order, with its own float slab test)."""
+    covers = _blocking_cover(sim)
+    if not covers:
+        return
+    rows = np.asarray(pairs).reshape(-1, 4).tolist()
+    for k in np.flatnonzero(clear).tolist():
+        y0, x0, y1, x1 = rows[k]
+        for cov in covers:
+            if cov.blocks_segment(x0, y0, x1, y1):
+                clear[k] = False
+                break
+
+
+def rays_clear(sim, pairs, physical=False):
+    """MANY RAYS: for an ``(n, 4)`` array of ``(y0, x0, y1, x1)`` tile pairs,
+    is each line clear -- ``ray_clear`` for every row, one call. Returns an
+    ``(n,)`` bool array. ``physical=True`` is ``has_los(physical=True)``'s
+    question (stop on ``solid`` only; cover that blocks sight is a question
+    of sight and is not asked)."""
+    pairs = np.ascontiguousarray(
+        np.asarray(pairs, dtype=np.int32).reshape(-1, 4))
+    clear = lines_clear(sim.gmap, pairs, physical).astype(bool)
+    if not physical:
+        _apply_cover(sim, pairs, clear)
+    return clear
+
+
+def _window_pairs(y, x, wy, wx, wh, ww, to_window):
+    yy, xx = np.mgrid[wy:wy + wh, wx:wx + ww]
+    ty, tx = yy.reshape(-1), xx.reshape(-1)
+    fy, fx = np.full_like(ty, y), np.full_like(tx, x)
+    return (np.stack((ty, tx, fy, fx), axis=1) if to_window
+            else np.stack((fy, fx, ty, tx), axis=1))
+
+
+def window_clear(sim, y, x, wy, wx, wh, ww, to_window=False, physical=False):
+    """A WINDOW: the ``(wh, ww)`` bool plane of lines between the tile
+    ``(y, x)`` and every tile of the rectangle whose top-left is ``(wy, wx)``
+    (it may reach outside the map) -- FROM the tile to each rectangle tile, or
+    (``to_window``) FROM each rectangle tile to the tile: the walk is not
+    symmetric. Equal, cell for cell, to :func:`rays_clear` over the same
+    pairs."""
+    y, x, wy, wx, wh, ww = (int(v) for v in (y, x, wy, wx, wh, ww))
+    gmap = sim.gmap
+    eng = getattr(gmap, "_physics_engine", None)
+    if eng is None:
+        return rays_clear(sim, _window_pairs(y, x, wy, wx, wh, ww, to_window),
+                          physical).reshape(wh, ww)
+    solid, screen = _planes(gmap)
+    out = np.empty((wh, ww), dtype=np.uint8)
+    eng.sight_window(solid, screen, bool(physical), y, x, wy, wx,
+                     bool(to_window), out)
+    clear = out.astype(bool)
+    if not physical and _blocking_cover(sim):
+        pairs = _window_pairs(y, x, wy, wx, wh, ww, to_window)
+        flat = clear.reshape(-1)
+        _apply_cover(sim, pairs, flat)
+        clear = flat.reshape(wh, ww)
+    return clear
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +316,54 @@ def compute(sim) -> VisionState:
     stores are in a fixed order regardless of how any caller later iterates
     them. O(units^2) LOS tests — with squad-scale rosters that is nothing, and
     each test is a march bounded by map geometry (§8's cost note).
+
+    Under the match's ``"all_round"`` rule (#195 1a) the observer -> target
+    lines are asked for in ONE :func:`rays_clear` call (#195 1c) -- the same
+    answer as :func:`compute_pairwise`, line for line; the cone rule keeps its
+    per-pair path.
     """
+    if getattr(sim, "sight", "cone") == "all_round":
+        return _compute_all_round(sim)
+    return compute_pairwise(sim)
+
+
+def _compute_all_round(sim) -> VisionState:
+    """All-round vision in bulk: :func:`can_see`'s all-round branch for every
+    (observer, target) pair of the match, the lines through
+    :func:`rays_clear` in one call."""
+    state = VisionState(sim.tick)
+    living = [u for u in sim.units if u.alive]
+    pair_ids = []        # (target index, observer index) in compute's order
+    rows = []
+    for ti, target in enumerate(living):
+        ty, tx = target.center_tile_y(), target.center_tile_x()
+        for oi, observer in enumerate(living):
+            if observer.team == target.team or observer.is_zombie:
+                continue
+            pair_ids.append((ti, oi))
+            rows.append((observer.center_tile_y(), observer.center_tile_x(),
+                         ty, tx))
+    clear = (rays_clear(sim, np.asarray(rows, dtype=np.int32).reshape(-1, 4))
+             if rows else np.zeros(0, dtype=bool))
+    seen: dict[int, list] = {}
+    by_team: dict[int, list] = {}
+    for (ti, oi), ok in zip(pair_ids, clear.tolist()):
+        if not ok:
+            continue
+        target, observer = living[ti], living[oi]
+        seen.setdefault(int(target.id), []).append(int(observer.id))
+        by_team.setdefault(int(observer.team), []).append(int(target.id))
+    for tid, obs in seen.items():
+        state.seen_by[tid] = tuple(sorted(obs))
+    state.visible_by_team = {t: tuple(sorted(set(ids)))
+                             for t, ids in by_team.items()}
+    return state
+
+
+def compute_pairwise(sim) -> VisionState:
+    """:func:`compute`'s per-pair loop (every pair through :func:`can_see`):
+    the cone rule's path, and the reference the all-round batch is held equal
+    to (``tests/test_sight_lines.py``)."""
     state = VisionState(sim.tick)
     by_team: dict[int, list] = {}
     for target in sim.units:

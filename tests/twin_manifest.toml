@@ -122,7 +122,7 @@ build = [
 "src/simulation/unit_schema.py" = "setup only on the corpus: the unit schema (#29 P3a: Unit.__slots__, the column defaults at construction, the digest record); the device unit store's column table from P6"
 "src/simulation/unit_impulse.py" = "Class T: the unit impulse law (G5p-a2: slot 1a's integration before the turn, slot 1b's shove, slot 2 / 4c's pushes and recoil, slot 3's displacement), built from P6"
 "src/simulation/vent_system.py" = "Class T: the vent kernels (slot 9e), built at P6b"
-"src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step)"
+"src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step); its many-tiles routine (#195 1c) is PhysicsEngine.sight_rays / sight_window, cpp/src/sight_lines.cpp, a host call in both modules"
 "src/simulation/wall_fixed.py" = "setup only"
 "src/simulation/weapons.py" = "Class T: the weapon rows (slots 4 / 4b; table upload P8b), built from P7a"
 

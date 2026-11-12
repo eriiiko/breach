@@ -97,6 +97,7 @@ set(BREACH_SOURCES
     src/radiation_sweep.cpp  # ray-engine-v2 P1: the radiation sweep (integer)
     src/physics_engine.cpp
     src/horde_field.cpp      # #183 G9p: the horde's distance field (host reference; device P7d)
+    src/sight_lines.cpp      # #195 1c: has_los's walk for many tiles (a host call, both modules)
     src/bindings.cpp
 )
 if(BREACH_CUDA)
@@ -234,6 +235,8 @@ set_source_files_properties(
     src/radiation_sweep.cpp
     # #183 G9p: the horde field (pure integer BFS; a sim TU, so on the floor).
     src/horde_field.cpp
+    # #195 1c: the sight routine for many tiles (pure integer; a sim TU, so on the floor).
+    src/sight_lines.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)

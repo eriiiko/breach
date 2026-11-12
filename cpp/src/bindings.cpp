@@ -14,6 +14,7 @@
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
 #include "horde_field.h"   // #183 G9p: the horde's distance field (host reference)
+#include "sight_lines.h"   // #195 1c: has_los's walk for many tiles (host call)
 
 // #29 P1b: the build id, defined in the GENERATED TU <build dir>/generated/
 // build_id.cpp that cpp/gen_build_id.cmake writes at BUILD time (git HEAD's
@@ -4044,6 +4045,69 @@ PYBIND11_MODULE(breach_physics, m) {
              },
              py::arg("tile_ok"), py::arg("fp"), py::arg("seeds"),
              py::arg("out"))
+        // #195 1c: SIGHT FOR MANY TILES (sight_lines.h) -- GameMap.has_los's
+        // walk, step for step, over many lines. A host call in both modules,
+        // stateless like horde_field: `solid` / `screen` (h, w) uint8
+        // (nonzero = blocks; `screen` ignored when `physical`), the
+        // vision.py wrappers add cover that blocks sight. `sight_rays`:
+        // `pairs` (n, 4) int32 rows (y0, x0, y1, x1), `out` (n,) uint8.
+        .def("sight_rays",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> solid,
+                py::array_t<uint8_t, py::array::c_style> screen, bool physical,
+                py::array_t<int32_t, py::array::c_style> pairs,
+                py::array_t<uint8_t, py::array::c_style> out) {
+                 auto [sol, h, w] = get_2d_const(solid);
+                 auto [scr, h2, w2] = get_2d_const(screen);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "sight_rays: solid and screen differ in shape");
+                 if (pairs.ndim() != 2 || pairs.shape(1) != 4)
+                     throw std::invalid_argument(
+                         "sight_rays: pairs must be an (n, 4) int32 array");
+                 const int64_t n = pairs.shape(0);
+                 if (out.ndim() != 1 || out.shape(0) != n)
+                     throw std::invalid_argument(
+                         "sight_rays: out must be an (n,) uint8 array");
+                 const int32_t* pp = n > 0 ? pairs.data() : nullptr;
+                 uint8_t* dst = n > 0 ? out.mutable_data() : nullptr;
+                 {
+                     py::gil_scoped_release release;
+                     sight::rays(sol, scr, h, w, physical, pp, n, dst);
+                 }
+             },
+             py::arg("solid"), py::arg("screen"), py::arg("physical"),
+             py::arg("pairs"), py::arg("out"))
+        // `sight_window`: one tile (y, x) against the wh x ww rectangle at
+        // (wy, wx) (may reach outside the map); `out` (wh, ww) uint8. FROM
+        // the tile to each rectangle tile, or (to_window) FROM each rectangle
+        // tile to the tile -- the walk is not symmetric.
+        .def("sight_window",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> solid,
+                py::array_t<uint8_t, py::array::c_style> screen, bool physical,
+                int y, int x, int wy, int wx, bool to_window,
+                py::array_t<uint8_t, py::array::c_style> out) {
+                 auto [sol, h, w] = get_2d_const(solid);
+                 auto [scr, h2, w2] = get_2d_const(screen);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "sight_window: solid and screen differ in shape");
+                 if (out.ndim() != 2)
+                     throw std::invalid_argument(
+                         "sight_window: out must be a (wh, ww) uint8 array");
+                 const int wh = static_cast<int>(out.shape(0));
+                 const int ww = static_cast<int>(out.shape(1));
+                 uint8_t* dst = (wh > 0 && ww > 0) ? out.mutable_data() : nullptr;
+                 {
+                     py::gil_scoped_release release;
+                     sight::window(sol, scr, h, w, physical, y, x, wy, wx, wh,
+                                   ww, to_window, dst);
+                 }
+             },
+             py::arg("solid"), py::arg("screen"), py::arg("physical"),
+             py::arg("y"), py::arg("x"), py::arg("wy"), py::arg("wx"),
+             py::arg("to_window"), py::arg("out"))
         // arc #54 §2.7 (gas-energy conservation): energy that left the
         // accountable set through the W3 water-displacement evacuation
         // (shares into vacuum / the ambient ring / thermal solids). int64,

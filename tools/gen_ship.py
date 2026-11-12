@@ -2909,7 +2909,69 @@ def _authored_spawns(plan: ShipPlan) -> list:
     return out
 
 
-DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml")
+def _opening_rect(tiles) -> tuple:
+    """``(x, y, w, h)`` of a set of ``(y, x)`` tiles that fill exactly
+    their bounding rectangle (ValueError otherwise: a row is a rectangle)."""
+    ys = [y for y, _x in tiles]
+    xs = [x for _y, x in tiles]
+    x0, y0 = min(xs), min(ys)
+    w, h = max(xs) - x0 + 1, max(ys) - y0 + 1
+    if len(set(tiles)) != w * h:
+        raise ValueError(f"opening tiles {sorted(tiles)} do not fill their "
+                         f"rectangle ({x0},{y0}) {w}x{h}")
+    return x0, y0, w, h
+
+
+def room_graph(graph: ShipGraph) -> tuple:
+    """THE ROOM GRAPH a ship is saved with (#195 1b, design 5.1 / 5.7):
+    ``(rooms, openings, grid)`` -- a pure function of the graph, so the same
+    seed gives the same rows.
+
+    - ``rooms``: one ``level_loader.RoomRecord`` per graph room (its id, AIR
+      rectangle and kind).
+    - ``openings``: one ``OpeningRecord`` per edge a unit can walk now or
+      later -- the kinds whose :class:`EdgeKind` row is ``keep_clear`` (a
+      door of any sort, ``open``, an airlock, a breakable wall); none for a
+      window, a grille, a bulkhead or a vent-only edge. Its tiles are the
+      opening in the shared wall; an AIRLOCK's are the whole passage (outer
+      door, vestibule, inner door -- a rectangle), so they touch both rooms.
+      ``a < b``; the id is the rank under ``level_loader.opening_order_key``.
+    - ``grid``: int32, the tilemap's shape, each room's id over its
+      rectangle minus the vestibules carved out of it, -1 elsewhere."""
+    from level_loader import OpeningRecord, RoomRecord, opening_order_key
+    rooms = tuple(RoomRecord(id=rm.id, x=rm.x, y=rm.y, w=rm.w, h=rm.h,
+                             kind=rm.kind) for rm in graph.rooms)
+    grid = np.full((graph.height, graph.width), -1, dtype=np.int32)
+    for rm in graph.rooms:
+        grid[rm.y:rm.y + rm.h, rm.x:rm.x + rm.w] = rm.id
+    for rid, tiles in _carved(graph).items():
+        for (y, x) in tiles:
+            if grid[y, x] == rid:
+                grid[y, x] = -1
+    airlocks = dict(_airlocks(graph))
+    rows = []
+    for i, e in enumerate(graph.edges):
+        if not e.spec.keep_clear:
+            continue
+        if i in airlocks:
+            al = airlocks[i]
+            x0, y0, x1, y1 = al.chamber
+            tiles = (set(al.outer) | set(al.inner)
+                     | {(y, x) for y in range(y0, y1 + 1)
+                        for x in range(x0, x1 + 1)})
+        else:
+            tiles = _opening_tiles(graph, e)
+        x, y, w, h = _opening_rect(tiles)
+        rows.append(dict(a=min(e.a, e.b), b=max(e.a, e.b), kind=e.kind,
+                         x=x, y=y, w=w, h=h))
+    rows.sort(key=lambda r: opening_order_key(r["a"], r["b"], r["x"],
+                                              r["y"]))
+    openings = tuple(OpeningRecord(id=k, **r) for k, r in enumerate(rows))
+    return rooms, openings, grid
+
+
+DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml",
+              level_lib.ROOMS_FILENAME)
 # Written only when the plan needs them (``temp_init.npy``: a ``temp`` tag);
 # cleared on every regenerate like DATA_FILES, so a stale one never survives.
 OPTIONAL_DATA_FILES = (level_lib.TEMP_INIT_FILENAME,)
@@ -2986,7 +3048,10 @@ def write(plan: ShipPlan, out_dir, *, version: str | None = None) -> Path:
     if record is not None:
         blocks["levelgen"] = lambda nl: level_lib.format_levelgen_lines(
             record, nl)
+    g_rooms, g_openings, g_grid = room_graph(plan.graph)
+    blocks.update(level_lib.room_graph_blocks(g_rooms, g_openings, g_grid))
     level_lib.write_managed_blocks(toml_path, blocks, write_bak=False)
+    level_lib.write_rooms_npy(out_dir, g_grid, g_rooms, g_openings)
     level_lib.write_match(out_dir, plan.match_spec())
     if plan.embedding.temp_init is not None:
         level_lib.write_temp_init_npy(out_dir, plan.embedding.temp_init,
