@@ -180,9 +180,20 @@ _PRE_122_BOX = dict(
     # (was ticks 130; field 0fdc79f228cc2e64ca6936cf5a2ec41c52642adfca545cbe
     #  51324cfad2e21631; units 05bdbac7c76250b949ef35aef81fdd403bd89af88232e
     #  ebe061bf753e47b1e3d)
-    outcome="win", team=1, ticks=92,
-    field_digest="2a9339a53e67d28c29ff513f6942dab9"
-                 "1586f5e85c6eb552885554c16ebe4c3b",
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100; three
+    # bites kill a 100 HP marine, docs/zombie_bite_balance_2026-11-12.md).
+    # Outcome and team UNCHANGED (win 1); ticks 92 -> 231: the two melee
+    # kills (units 1 and 0) come on ticks 106 and 231 (were 46 and 92), each
+    # marine now taking three bites. SOLE CAUSE: this tree with the three
+    # old values set back in-process gives the old pin bit for bit (outcome,
+    # ticks, field digest, unit stream).
+    # (was ticks 92; field 2a9339a53e67d28c29ff513f6942dab91586f5e85c6eb552
+    #  885554c16ebe4c3b; units 85d051afa1acda1b9bc1d3a680e6373632bfdb9f735b
+    #  65bf51ec1a9bbf834238)
+    outcome="win", team=1, ticks=231,
+    field_digest="2cf3e8481a3792bce622f72c0b5cc0a2"
+                 "68f19f856903a7313440ed21573faf5f",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -200,8 +211,9 @@ _PRE_122_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
-    unit_stream="85d051afa1acda1b9bc1d3a680e63736"
-                "32bfdb9f735b65bf51ec1a9bbf834238")
+    # Erik's zombie bite balance re-pin (2026-11-12, see the box's ticks).
+    unit_stream="3a6b230941d73d3b6f325af378ffe67b"
+                "44a86953bbb4d46736245fbf4caa31ee")
 _PRE_122_SHIP_DEMO = dict(
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
@@ -390,7 +402,21 @@ _PRE_122_SHIP_DEMO = dict(
     # #29 P3e re-pin: the integer match path moved the game -- team 1 at 2902
     # ticks becomes team 0 at 2966 (one seed; the A/B over 24-72 seeds is in
     # docs/p3e_ab_2026-11-12.md and within seed noise).
-    outcome="win", team=0, ticks=2966,
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100 -- the hp a
+    # TURNED marine comes back with; docs/zombie_bite_balance_2026-11-12.md).
+    # Outcome and team UNCHANGED (win 0); ticks 2966 -> 2881; all three
+    # digests and the unit stream move. SOLE CAUSE: this tree (main 321babcf
+    # merged in) with the three old values set back in-process gives the
+    # P3e pin bit for bit (tools/match_pin_check.py: EQUAL; field, tick
+    # digests and unit stream too). The new match: the horde's first bites
+    # no longer kill on ticks 423 / 454 (two bites at 34 do not); one melee
+    # kill (unit 4 by zombie 11, tick 673) where there were two; the frags'
+    # heat kills zombies 8 and 9 (457), 10 and 11 (719) and the converted 4
+    # (1019); then the squads: units 0 (1160), 6 (1576), 7 (2615) and 5
+    # (2881) to bullets -- team 0 (slots 1, 2, 3) stands.
+    # (was ticks 2966)
+    outcome="win", team=0, ticks=2881,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -425,7 +451,9 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 0afdec8bfef8943048652975d92945c2fafdf0a6751a900ccbf8a1c8702cc617)
-    field_digest="5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136",
+    # Erik's zombie bite balance re-pin (2026-11-12, see ticks above).
+    # (was 5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136)
+    field_digest="b1b830b3f1dc44da0834018e0397e04fe14daae599e090c360475a54523b71dc",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -564,7 +592,9 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 402970f74f8e71af449d04cd8c245de8bd4a3069771ca31529506fe08a1b6dad)
-    tick_digest="4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509",
+    # Erik's zombie bite balance re-pin (2026-11-12, see ticks above).
+    # (was 4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509)
+    tick_digest="1dccdfab187dddcbc5ae483677b5afda7b58f58cd4c1033ee1f6ee22336d814f",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -592,7 +622,9 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 537ec052b34d2e9b52887299ddf38162ae47f4efb3acc51f7df3ffb3175742ca)
-    unit_stream="8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba")
+    # Erik's zombie bite balance re-pin (2026-11-12, see ticks above).
+    # (was 8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba)
+    unit_stream="5e8cdc5ef919a4f0ae94c527c85c81c6ac582f2b84575a09afa0588fa383e537")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
@@ -616,7 +648,8 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     G1p-c's speeds, then at G3p's throw wind-up and G4p's exposure, then at
     G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field
     and its behaviours, then at G8p's layered bots, then at #195 1d's honest
-    team picture: win team 1 at tick 2902) with the same tick_digest. Breaks like the box test, on the real
+    team picture, then at #29 P3e's integer match path, then at Erik's
+    zombie bite balance: win team 0 at tick 2881) with the same tick_digest. Breaks like the box test, on the real
     level -- and on any change of the bots (then re-pin, the bots_v1 pin of
     tests/test_bots_v1.py staying)."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))

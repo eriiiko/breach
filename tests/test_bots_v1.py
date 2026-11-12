@@ -354,7 +354,21 @@ def test_registry_builds_bots_that_drive_only_their_team(tmp_path):
 #: A change of the SIM (not of the bots) moves it like any other pin: then
 #: re-pin it here too, with the rationale.
 _PRE_G8P_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=264,
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). The RESULT CHANGES: a draw at
+    # the 300 s limit (7200 ticks) where team 0 won at 264; all three digests
+    # and the unit stream move. SOLE CAUSE: this tree (main 321babcf merged
+    # in) with the three old values set back in-process gives the P3e pin
+    # below bit for bit (outcome, ticks, field and tick digests, unit
+    # stream). The old match ended on bites: three melee kills on ticks 204,
+    # 211, 214 (units 6, 3, 4, converted) and two more on 263-264 (units 5,
+    # 7). At 34 a bite every 2.2 s no bite kills before the frag of tick
+    # 221; its heat (and the frag of 224) kills units 1, 2, 3, 4, 7, 8, 9, 10,
+    # 11 and unit 6 on 230 -- and the two marines left, one per team (units 0
+    # and 5), never meet again before the limit.
+    # (was win 0 at 264)
+    outcome="draw", team=None, ticks=7200,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -363,8 +377,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was a7f9fd78c8a13c2bf9fc38657b05eae042993affcd85bc777493724808fe2b8b)
-    field_digest="2db5b2eaac6dcfafdbcfd85ec91772df"
-                 "e838b1fddff573e90a09eba1de6bcb08",
+    # Erik's zombie bite balance re-pin (2026-11-12, see the outcome above).
+    # (was 2db5b2eaac6dcfafdbcfd85ec91772dfe838b1fddff573e90a09eba1de6bcb08)
+    field_digest="539899d7be43d79aea7e48346333c9bf"
+                 "23ea4ef7e69c9a10273d3fff25a99988",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -390,8 +406,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was cea75eeedc7e953e210c4a45201870a2c36519a67995a3d9c18192f34212dd42)
-    tick_digest="48c4be2c99dd3a35dfd64a439732a6f9"
-                "e92e77f0ea1aacfd58e8909e6285c524",
+    # Erik's zombie bite balance re-pin (2026-11-12, see the outcome above).
+    # (was 48c4be2c99dd3a35dfd64a439732a6f9e92e77f0ea1aacfd58e8909e6285c524)
+    tick_digest="19b8391c0a97a96d87378d111bea6441"
+                "6b6af43ba40fa10eec78d92b20a6fc8e",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -417,8 +435,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 1a3e3d18b044c64c90472ab6a628550e3b7b5c1989f9a36ee36723784941da73)
-    unit_stream="4503c2306583d04f3f85bbf87131ef8a"
-                "5101b138cbc02fda0d9b5d01a5a9bd2f")
+    # Erik's zombie bite balance re-pin (2026-11-12, see the outcome above).
+    # (was 4503c2306583d04f3f85bbf87131ef8a5101b138cbc02fda0d9b5d01a5a9bd2f)
+    unit_stream="f76c2a1bce0e65d0f0cf5443725866fd"
+                "83f3608acec09b7b4995670d7d8edd2f")
 
 
 def v1_spec(level):
