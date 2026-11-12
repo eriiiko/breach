@@ -282,6 +282,7 @@ def test_an_ember_only_frame_draws_exactly_the_embers_sprites():
         embers=es, sparks=ss, ember_draw=draw, _ember_sprites=None,
         # #87: the muzzle sparks ride the same draw; none here
         muzzle_sparks=SimpleNamespace(enabled=False, p=SimpleNamespace(n=0)),
+        impact_sparks=SimpleNamespace(enabled=False, p=SimpleNamespace(n=0)),
         camera=SimpleNamespace(zoom_px_per_tile=24.0),
         world=SimpleNamespace(world_px_per_tile=48.0, world_px_w=1152.0,
                               world_px_h=1152.0),

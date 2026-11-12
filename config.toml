@@ -2379,6 +2379,76 @@ brightness = 6.0        # x the ramp's emission
 cap = 256               # never more alive at once
 seed = 8788             # the cap's fair-subset draw
 
+[render.tracers]
+# THE TRACERS (#141; renderer/tracers.py): a round in flight as a white-hot
+# streak with a halo, a dim afterglow along its path, and -- where it stopped
+# on a wall -- a pinpoint flash and sparks thrown back off the wall. Sprites
+# of the particle draw: additive linear HDR after the units, coloured through
+# the blackbody ramp. The path is the sim's own; a round's first segment
+# starts at the muzzle. Re-read every frame (F5); every key is required (a
+# refusing door). Render-only.
+enabled = true
+default_kind = "bullet"     # any weapon that fires a round and is not in `weapons`; "" = none
+weapons = { gl6_revolver = "slug" }   # [weapons.*] id -> kinds row ("" = none)
+seed = 4141                 # mixed into each impact's spark draw
+cap = 256                   # live tracers at once, the oldest dropped
+min_screen_px = 0.75        # zoomed out, a streak's radius floor in SCREEN px
+
+[render.tracers.kinds.bullet]
+speed_scale = 0.20      # x the round's own speed ([ammo.*] muzzle_mps). 0.20 = Erik's play
+                        # test, 2026-11-12 (he tried 1 = HONEST first: a rifle round crosses
+                        # a room inside one or two frames): slowed for the eye, the round
+                        # visibly flies, and the picture lags the sim by up to ~0.1 s
+shutter_s = 0.0167      # the streak is the path flown in this long (a 60 fps exposure)
+width_m = 0.010         # the streak's radius
+temp_k = 3600.0         # its colour on the blackbody ramp (white-hot)
+brightness = 0.7        # its radiance, x the ramp's emission
+halo_gain = 0.54        # the soft halo round it (4 x the radius), over the streak's radiance
+                        # (Erik's play test, 2026-11-12; was 0.04)
+glow_s = 0.05           # the afterglow's e-fold, seconds: the path behind the round
+glow_gain = 0.05        # ... its radiance over the streak's
+glow_temp_k = 1500.0    # ... and its colour (orange)
+impact_sparks = 5       # mean sparks thrown back off a wall (0 = none)
+impact_flash_s = 0.03   # the pinpoint flash at the wall: its e-fold ...
+impact_flash_m = 0.07   # ... and its radius
+
+[render.tracers.kinds.slug]
+# A slow heavy round (the 40 mm): a short dull-orange streak, no sparks (its
+# payload does the work).
+speed_scale = 1.0
+shutter_s = 0.0167
+width_m = 0.03
+temp_k = 1700.0
+brightness = 1.2
+halo_gain = 0.10
+glow_s = 0.03
+glow_gain = 0.0
+glow_temp_k = 1400.0
+impact_sparks = 0
+impact_flash_s = 0.03
+impact_flash_m = 0.05
+
+[render.tracers.sparks]
+# The sparks a round throws back off a wall: the muzzle sparks' law and dials
+# (renderer/particles.py MuzzleSparkSystem), born at the impact, flying back
+# along the round's path in a wide cone.
+enabled = true
+cone_deg = 50.0         # half-angle round the way back (a normal draw's sigma)
+v0_mps = 6.0            # birth speed, metres per second
+v_spread = 0.6
+t_born_k = 2800.0
+cool_s = 0.2
+life_s = 0.2
+life_jitter = 0.5
+drag = 6.0
+curl = 0.6
+size_tiles = 0.02
+min_screen_px = 0.8
+streak_s = 0.03
+brightness = 6.0
+cap = 256
+seed = 4142
+
 [render.unit_shadow]
 # The 3D units' SHARP projected shadows (#33, tier 1;
 # renderer/unit_shadow.py): each unit's posed model drawn once more, flattened
