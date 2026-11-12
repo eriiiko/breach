@@ -216,7 +216,7 @@ def squash(x: float) -> float:
     ax = abs(x)
     if ax <= 1.0:
         return x
-    v = min(SQUASH_CAP, 1.0 + math.log(ax))
+    v = min(SQUASH_CAP, 1.0 + math.log(ax))  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
     return v if x > 0.0 else -v
 
 
@@ -229,7 +229,7 @@ def ratio(x, denom) -> float:
 
 def d_c(d: float, l_ref: int) -> float:
     """The compressed distance: ``ln(1 + d) / ln(1 + L_ref)``, squashed."""
-    return squash(math.log1p(max(0.0, float(d))) / math.log1p(float(l_ref)))
+    return squash(math.log1p(max(0.0, float(d))) / math.log1p(float(l_ref)))  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +690,7 @@ def _hit_from(hit):
     if hit is None:
         return 0.0, 0.0
     dx, dy = float(hit[1]), float(hit[2])
-    n = math.hypot(dx, dy)
+    n = math.hypot(dx, dy)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
     if n == 0.0:
         return 0.0, 0.0
     return -dx / n, dy / n
@@ -849,7 +849,7 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out) -> None:
                 pdx, pdy = pc[0] - cx, pc[1] - cy
                 out[89] = squash(ratio(pdx, ctx.l_ref))
                 out[90] = squash(ratio(pdy, ctx.l_ref))
-                out[91] = d_c(math.hypot(pdx, pdy), ctx.l_ref)
+                out[91] = d_c(math.hypot(pdx, pdy), ctx.l_ref)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
             field = route(world, graph, where, int(u.footprint))
             ay, ax = int(u.tile_y), int(u.tile_x)
             cands = horde.candidates(field, ay, ax)
@@ -880,7 +880,7 @@ def _entry_common(e, etype, dx, dy, ctx):
     e[0] = float(etype)
     e[1] = squash(ratio(dx, ctx.l_ref))
     e[2] = squash(ratio(dy, ctx.l_ref))
-    e[3] = d_c(math.hypot(dx, dy), ctx.l_ref)
+    e[3] = d_c(math.hypot(dx, dy), ctx.l_ref)  # ingress-exempt: observation output for the network, float by design; never written to synced sim state
 
 
 def _unit_columns(e, it, ctx, tick, rows):
