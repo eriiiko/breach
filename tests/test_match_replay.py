@@ -204,9 +204,11 @@ class _ThrowerControl(ControlSource):
             # G7p: the light off for a stretch of every 50 ticks (the hold
             # verb, issued every tick as a control would)
             sim.set_flashlight(u.id, sim.tick % 50 >= 30)
-            if sim.tick % 19 == 4:
+            if sim.tick % 19 == 4 and sim.level.rooms is not None:
                 # #195 1f: the commander's order (every kind, the one room,
-                # with and without a time limit and a priority target)
+                # with and without a time limit and a priority target) --
+                # only on a box with a room graph (test_grenade_kinds reuses
+                # this controller on a graphless one)
                 sim.order_intent(u.id, (sim.tick // 19) % 5,
                                  0 if (sim.tick // 19) % 5 else -1,
                                  (30 if u.id % 2 else 0)
