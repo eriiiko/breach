@@ -337,3 +337,21 @@ clear `pending_*`, which P3a hashes while set, `unit_schema.py:556-563`); the
 gates say False, the game does nothing, the digest moves. 1h's decoder must
 not issue hand verbs for dead rows (design 6.3's dead rows), and its forced
 test should run on living rows.
+
+## STOP resolved (the orchestrator, 2026-11-12): way (a)
+
+Way (a) is taken: in its OWN commit after the refactor, `_reload` settles the
+magazine only when `can_reload` says yes. Reason: the settle is lazy
+bookkeeping, not game behaviour; every reader that matters settles or reads
+the settled view (`mag_status`) itself, so deferring it changes nothing a
+player, a bot or an agent can observe, and it keeps the design's 1h gate as
+written instead of weakening it (way (b)). This is a technical call inside the
+lead's mandate, reported to Erik on #195 and vetoable. Conditions on the
+implementer, each a stop if it fails: (1) show that no observable outcome
+moves -- every existing pin, golden and recorded replay in the repository
+replays equal (no bot calls `reload_intent`, so none should move); (2) a
+property test: a refused reload issued by force leaves `field_digest` and
+`tick_digest` where a do-nothing tick leaves them, at match start (never-bound
+magazine) and right after a stall has run out; (3) a property test that the
+deferred settle still happens -- the magazine read through `mag_status`, and
+the next trigger pull, are the same as before the change.
