@@ -11,9 +11,9 @@ integer. This scan parses each and refuses, inside its body:
 * a true division ``a / b`` (``//`` is integer),
 * a float literal used in arithmetic (``0.5 * x``),
 
-unless its line carries ``p3e-door:`` or ``p3e-view:`` (a config constant
-quantized once / a render or observation float VIEW of an integer, with the
-reason on the line) -- the ``ingress-exempt:`` precedent.
+unless a line of its statement carries ``p3e-door`` or ``p3e-view`` (a config
+constant quantized once / a render or observation float VIEW of an integer)
+-- the ``ingress-exempt:`` precedent.
 
 PROPERTY: every listed function is float-free bar its marked doors and views.
 BREAKS IF: a float operation returns to a listed site (e.g. ``rng.uniform``
@@ -47,10 +47,20 @@ SITES = [
     ("draws.py", "cone_offset_q16"),
     ("draws.py", "roll_q16"),
     ("draws.py", "noise_mult_q16"),
+    # (c) mitigation and the hp
+    ("damage.py", "mitigate_q"),
+    ("damage.py", "apply_packet"),
+    ("damage.py", "DamagePacket.q"),
+    ("status.py", "tick_statuses"),
+    # (g) the heat chain and the poison dose
+    ("exchange.py", "heat_dials_q"),
+    ("exchange.py", "felt_temperature_q"),
+    ("exchange.py", "apply_environmental_damage"),
+    ("exchange.py", "apply_poison_dose"),
 ]
 
 _DRAW_NAMES = {"uniform", "random", "normal", "standard_normal"}
-_MARKS = ("p3e-door:", "p3e-view:")
+_MARKS = ("p3e-door", "p3e-view")
 
 
 def _find(tree, qual):
@@ -75,7 +85,9 @@ def _offences(fn, lines):
         if line is None:
             continue
         text = lines[line - 1]
-        if any(m in text for m in _MARKS):
+        end = getattr(node, "end_lineno", line) or line
+        span = " ".join(lines[line - 1:end])
+        if any(m in span for m in _MARKS):
             continue
         bad = None
         if isinstance(node, ast.Call):

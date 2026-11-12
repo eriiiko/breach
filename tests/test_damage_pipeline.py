@@ -336,9 +336,12 @@ def test_zombie_non_heat_types_stay_neutral_bitwise():
 
 
 def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
-    """The routed heat response reproduces the pre-P2 inline chain exactly:
-    for a phi sweep, marine hp delta == quantize(raw) and zombie hp delta ==
-    quantize(raw * 4.0) to the BIT, with identical events."""
+    """#29 P3e: the routed heat response is THE integer law, bit for bit: for
+    a phi sweep, the marine's hp delta is the Q16 law written here by hand
+    (the gain and dials quantized once, each product / quotient rounded once,
+    half away) and the zombie's that times its Q16 resist, rounded once
+    (``mitigate_q``), with identical events; and each stays within 1e-4
+    (relative) of the pre-P2 float chain (the documented re-baseline)."""
     import numpy as np
     from simulation.exchange import HEAT_SCALE, apply_environmental_damage
 
@@ -346,6 +349,8 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
         def __init__(self, h, w):
             self.heat = np.zeros((h, w), dtype=np.int32)
 
+    q = unit_fixed.quantize_scalar
+    one = 1 << 16
     cmb = CFG.combat
     for phi in (12.0, 50.0, 73.25, 200.0):
         stub = _HeatStub(40, 40)
@@ -360,27 +365,36 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
         apply_environmental_damage([m, z], stub, ticks_per_second=24,
                                    events=events)
 
-        # The pre-P2 inline chain, replicated verbatim.
-        phi_f = raw_counts / HEAT_SCALE
-        phi_abs = phi_f * float(cmb.unit_absorption) * \
-            (1.0 - float(cmb.unit_reflectivity))
-        t_felt = float(cmb.heat_ambient_ref) + \
-            float(cmb.heat_flux_to_temp) * phi_abs
-        over = t_felt - 60.0   # HUMAN_ENVIRONMENT temperature_max
-        assert over > 0.0
-        raw = 1.0 * (1.0 + float(cmb.heat_overtemp_scale) * over) * (1.0 / 24)
-        old_marine = unit_fixed.quantize_hp_delta(raw)
-        old_zombie = unit_fixed.quantize_hp_delta(
-            raw * float(CFG.zombie.fire_damage_multiplier))
+        # THE integer law, by hand.
+        gain_q = q(float(cmb.heat_flux_to_temp) * float(cmb.unit_absorption)
+                   * (1.0 - float(cmb.unit_reflectivity)))
+        t_q = q(cmb.heat_ambient_ref) + unit_fixed.mul_q16_round(gain_q,
+                                                                 raw_counts)
+        over_q = t_q - q(60.0)   # HUMAN_ENVIRONMENT temperature_max
+        assert over_q > 0
+        dmg_q = unit_fixed.div_round(
+            q(1.0) * (one + unit_fixed.mul_q16_round(
+                q(cmb.heat_overtemp_scale), over_q)), one * 24)
+        new_marine = dmg_q / 65536.0
+        new_zombie = unit_fixed.mul_q16_round(
+            dmg_q, q(CFG.zombie.fire_damage_multiplier)) / 65536.0
 
-        assert _bits(1e9 - m.current_hp) == _bits(old_marine)
-        assert _bits(1e9 - z.current_hp) == _bits(old_zombie)
+        assert _bits(1e9 - m.current_hp) == _bits(new_marine)
+        assert _bits(1e9 - z.current_hp) == _bits(new_zombie)
         # Event stream: same order (unit list order), same sources, same
         # APPLIED values — what the lockstep digest hashes.
         assert [type(e) for e in events] == [UnitHitEvent, UnitHitEvent]
         assert [e.source for e in events] == ["heat", "heat"]
-        assert _bits(events[0].damage) == _bits(old_marine)
-        assert _bits(events[1].damage) == _bits(old_zombie)
+        assert _bits(events[0].damage) == _bits(new_marine)
+        assert _bits(events[1].damage) == _bits(new_zombie)
+
+        # Within 1e-4 of the pre-P2 float chain.
+        phi_f = raw_counts / HEAT_SCALE
+        t_felt = float(cmb.heat_ambient_ref) + float(cmb.heat_flux_to_temp) \
+            * phi_f * float(cmb.unit_absorption) \
+            * (1.0 - float(cmb.unit_reflectivity))
+        raw = (1.0 + float(cmb.heat_overtemp_scale) * (t_felt - 60.0)) / 24
+        assert abs(new_marine - raw) <= 1e-4 * raw
 
 
 # ---------------------------------------------------------------------------
