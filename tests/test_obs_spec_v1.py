@@ -1,6 +1,7 @@
-"""#195 1g (a) -- observation spec v1: the soldier's vector, the list and
-the row flags (``simulation/obs_spec_v1.py``; the contract
-``docs/rl_agent_obs_spec_v1_2026-11-12.md`` v2, section 7's properties).
+"""#195 1g (a), (b) -- observation spec v1: the soldier's vector, the list,
+the row flags and the two windows (``simulation/obs_spec_v1.py``; the
+contract ``docs/rl_agent_obs_spec_v1_2026-11-12.md`` v2, section 7's
+properties).
 
 Patch (a)'s gates: the reconstruction (vector, list) against the plainer
 second implementation ``tests/_obs_reference.py``; honesty -- the direct
@@ -9,7 +10,12 @@ checks and the counterfactual family's cases (a)-(e) over ``vector`` /
 (``TeamKnowledge`` / ``ObsWorld``), the AST scan and ``team_rows``; a
 record outlives an unseen death; the graph refusal; the row flags' truth
 table; the squash; no raw number; the new functions; the trackers in scope;
-replay unmoved; the farm. The windows are patch (b)'s, the full view (c)'s.
+replay unmoved; the farm. Patch (b)'s: the reconstruction of every plane
+(and the vector's ``air`` / ``felt_temp``), the family (a)-(e) extended to
+``near_u`` / ``far_u`` and the non-physics far planes, the far reduce, the
+sight planes against ``has_los``, the lanes plane and the lane pair,
+``felt_temperature`` against the heat row, the scan's new callees. The full
+view is patch (c)'s.
 """
 from __future__ import annotations
 
@@ -62,7 +68,14 @@ PAIR_SPEC = MatchSpec(teams=(IDLE, IDLE), seed=1, zombies=0,
                       time_limit_s=60.0)
 BANNED = ("units", "roster", "get_unit", "projectiles", "planted_charges",
           "team_picture", "tick_events", "_units_by_id", "state_for")
-OBS_KEYS = ("vector", "list", "list_mask", "list_uid")
+OBS_KEYS = O.OBS_KEYS
+#: The arrays the counterfactual family compares byte for byte (spec 7):
+#: everything but the physics planes and the vector's air / felt_temp
+#: columns (the bodies are stamped into the air, spec 3.2 PENDING ERIK).
+FAMILY_KEYS = ("vector", "list", "list_mask", "list_uid", "near_u", "far_u",
+               "far_f", "valid", "in_match")
+AIR_COLS = list(range(58, 66)) + [96]
+FAR_NON_PHYSICS = (0, 9)            # wall_share, route
 
 
 # ---------------------------------------------------------------------------
@@ -105,12 +118,13 @@ def _flags(sim, spec, S):
 
 
 def _observe(sim, ctx, spec, S):
-    """The accessor's door over every row: the four arrays plus the flags."""
-    U, E = len(spec.teams) * S, ctx.n_entries
-    out = {"vector": np.zeros((U, O.V), np.float32),
-           "list": np.zeros((U, E, O.F), np.float32),
-           "list_mask": np.zeros((U, E), np.uint8),
-           "list_uid": np.full((U, E), -1, np.int32)}
+    """The accessor's door over every row: the eight arrays plus the
+    flags."""
+    U = len(spec.teams) * S
+    out = {k: np.zeros(shape[1:], dtype)
+           for k, (shape, dtype) in O.shapes(1, U, S).items()
+           if k in OBS_KEYS}
+    out["list_uid"][...] = -1
     EntityFieldAccessor(sim.gmap).observe("v1", _rows(sim, spec, S), out,
                                           sim=sim, context=ctx)
     out["valid"], out["in_match"] = _flags(sim, spec, S)
@@ -118,8 +132,20 @@ def _observe(sim, ctx, spec, S):
 
 
 def _team_bytes(out, team, S):
-    return tuple(out[k][team * S:(team + 1) * S].tobytes()
-                 for k in OBS_KEYS + ("valid", "in_match"))
+    """Team ``team``'s rows of every array the family compares, as bytes:
+    the vector without its air / felt_temp columns, ``far_f``'s wall share
+    and route planes only (spec 7: the physics planes are (b)'s imprint
+    measurement's, not the family's)."""
+    rows = slice(team * S, (team + 1) * S)
+    got = []
+    for k in FAMILY_KEYS:
+        a = out[k][rows]
+        if k == "vector":
+            a = np.delete(a, AIR_COLS, axis=1)
+        elif k == "far_f":
+            a = a[:, list(FAR_NON_PHYSICS)]
+        got.append(np.ascontiguousarray(a).tobytes())
+    return tuple(got)
 
 
 def _hook_step(monkeypatch, sim, fn):
@@ -317,17 +343,18 @@ def _compare_team0(sims, ctxs, S, ticks, every=4):
             continue
         a = _team_bytes(_observe(sims[0], ctxs[0], PAIR_SPEC, S), 0, S)
         b = _team_bytes(_observe(sims[1], ctxs[1], PAIR_SPEC, S), 0, S)
-        for k, (x, y) in zip(OBS_KEYS + ("valid", "in_match"), zip(a, b)):
+        for k, (x, y) in zip(FAMILY_KEYS, zip(a, b)):
             assert x == y, (k, sims[0].tick)
         n += 1
     assert n > 0
 
 
-def _seen_then_unseen(tmp_path, name):
+def _seen_then_unseen(tmp_path, name, memory_ticks=40):
     """The cone scene: me (team 0) facing east sees the foe (team 1) once,
     turns north and loses it; returns the pair with the foe remembered."""
     sims, (ua, ub), ctxs, S = _pair(tmp_path, name,
-                                    [(0, 10, 20), (1, 30, 20)])
+                                    [(0, 10, 20), (1, 30, 20)],
+                                    memory_ticks=memory_ticks)
     for me in (ua[0], ub[0]):
         place_facing(me, 0)
     _step_both(sims)
@@ -534,8 +561,9 @@ def test_the_two_row_flags_truth_table(tmp_path):
                             assert not o["vector"][0, r].any()
                             assert not o["list_mask"][0, r].any()
                             assert (o["list_uid"][0, r] == -1).all()
-                for k in ("vector", "list", "list_mask", "list_uid", "valid",
-                          "in_match"):
+                            for k in ("near_f", "near_u", "far_f", "far_u"):
+                                assert not o[k][0, r].any(), k
+                for k in OBS_KEYS + ("valid", "in_match"):
                     assert o[k].dtype == env.layout.shapes()[k][1]
             if info["ended"][0]:
                 assert final["in_match"][0, :2].all()
@@ -576,6 +604,19 @@ def test_no_raw_number():
             if f.denom in kinds:
                 assert not f.squash, f
     assert O.V == 97 and O.F == 67
+    # (b): every plane of both windows is declared too (a plane may be a
+    # COUNT, the far unit planes; a vector or entry column never is)
+    planes = set(O.NEAR_F_PLANES) | set(O.NEAR_U_PLANES) | set(O.FAR_F_PLANES) \
+        | set(O.FAR_U_PLANES)
+    assert planes == set(O.PLANE_COLUMNS)
+    for name, (denom, sq) in O.PLANE_COLUMNS.items():
+        assert denom in kinds | {O.COUNT} or denom in O.DENOMINATORS, name
+        if denom in kinds | {O.COUNT}:
+            assert not sq, name
+    assert not any(f.denom == O.COUNT for f in O.VECTOR_COLUMNS + O.ENTRY_COLUMNS)
+    # the vector's air block reads the planes' denominators
+    for p, name in enumerate(O.PHYSICS_PLANES):
+        assert O.VECTOR_COLUMNS[58 + p].denom == O.PLANE_COLUMNS[name][0]
 
 
 # ---------------------------------------------------------------------------
@@ -791,6 +832,14 @@ def test_the_scan_finds_no_banned_name_in_the_builders():
     for fn in ("ray_clear", "rays_clear", "window_clear", "lines_clear",
                "_apply_cover", "_blocking_cover"):
         assert not _banned_uses(_function(vs, fn))
+    # patch (b)'s callees: the wind plane, the felt temperature, the lanes
+    assert not _banned_uses(_function(tree("gamemap.py"), "GameMap.wind_load_plane"))
+    ex = tree("exchange.py")
+    for fn in ("felt_temperature", "heat_dials"):
+        assert not _banned_uses(_function(ex, fn))
+    tpm = tree("team_picture.py")
+    for fn in ("fire_lanes_of", "draw_lanes"):
+        assert not _banned_uses(_function(tpm, fn))
     assert _banned_uses(doors[0])            # the door itself does read it
 
 
@@ -808,8 +857,9 @@ def test_obs_holds_the_spec_keys_and_team_rows_are_views(tmp_path):
     with rl_env.BatchedEnv(run, n_workers=1) as env:
         obs, _ = env.reset()
         obs, _, _, _, info = env.step(_zero_actions(env))
-        assert set(obs) == {"vector", "list", "list_mask", "list_uid", "valid",
-                            "in_match"}
+        assert set(obs) == set(OBS_KEYS) | {"valid", "in_match"}
+        assert set(OBS_KEYS) == {"vector", "list", "list_mask", "list_uid",
+                                 "near_f", "near_u", "far_f", "far_u"}
         assert not any(k.startswith("full") for k in list(obs) + list(info))
         S, T = env.layout.n_slots, env.layout.n_teams
         for t in range(T):
@@ -880,6 +930,10 @@ def test_the_farm_serves_v1_and_fills_the_final_arrays(tmp_path, capsys):
                 "list": ((N, U, E, 67), np.float32),
                 "list_mask": ((N, U, E), np.uint8),
                 "list_uid": ((N, U, E), np.int32),
+                "near_f": ((N, U, 8, 25, 25), np.float16),
+                "near_u": ((N, U, 5, 25, 25), np.uint8),
+                "far_f": ((N, U, 10, 25, 25), np.float16),
+                "far_u": ((N, U, 5, 25, 25), np.uint8),
                 "valid": ((N, U), np.uint8), "in_match": ((N, U), np.uint8)}
         obs, _ = env.reset()
         first = {k: id(v) for k, v in obs.items()}
@@ -898,6 +952,371 @@ def test_the_farm_serves_v1_and_fills_the_final_arrays(tmp_path, capsys):
                 assert info["final_obs"]["valid"][e].any()
                 assert info["final_obs"]["vector"][e].any()
                 assert info["final_obs"]["list_mask"][e].any()
+                assert info["final_obs"]["near_u"][e].any()
                 assert np.abs(obs["vector"]).max() <= 4.0
                 assert np.abs(obs["list"]).max() <= max(4.0, 255.0)
+                for k in ("near_f", "far_f"):
+                    assert np.abs(obs[k].astype(np.float32)).max() <= 4.0, k
         assert ended
+
+
+# ---------------------------------------------------------------------------
+# patch (b): the two windows
+# ---------------------------------------------------------------------------
+def _planes_close(got, want, name, where):
+    """A float16 plane against its float64 reference: within float16's
+    own precision on [-4, 4]."""
+    g = np.asarray(got, dtype=np.float64)
+    bad = np.abs(g - want) > 2e-3 + 2e-3 * np.abs(want)
+    assert not bad.any(), (name, where, np.argwhere(bad)[:5],
+                           g[bad][:5], want[bad][:5])
+
+
+def _windows_of(sim, ctx, u, know=None):
+    """One soldier's four window arrays through ``build_windows``."""
+    know = O.TeamKnowledge.build(sim, sim.team_picture, int(u.team)) \
+        if know is None else know
+    nf = np.zeros((8, 25, 25), np.float16)
+    nu = np.zeros((5, 25, 25), np.uint8)
+    ff = np.zeros((10, 25, 25), np.float16)
+    fu = np.zeros((5, 25, 25), np.uint8)
+    O.build_windows(know, u, ctx, nf, nu, ff, fu)
+    return nf, nu, ff, fu
+
+
+def test_the_planes_equal_an_independent_reconstruction():
+    """Property (spec 7, (b)): over the ship_demo bots-vs-bots match,
+    observed every 24 ticks for 600 ticks, every plane of ``near_f`` /
+    ``near_u`` / ``far_f`` / ``far_u`` equals ``_obs_reference.py``'s tile
+    by tile and block by block (``has_los`` per cell, the loops' maxima,
+    the counts from the picture) -- and the vector's ``air`` block is the
+    near window's centre cell. Breaks if a plane reads the wrong seam,
+    denominator, frame, fill or reduction. The reference draws ``watched``
+    from the RECORDED centres and the far unit planes from the whole
+    picture, so this is also spec 7's direct honesty check for them."""
+    ses, spec, S = _ship_match()
+    sim = ses.sim
+    ctx = O.ObsContext.build(sim, spec, S)
+    K = R.constants(sim, spec, S)
+    # (ship_demo's doors are tiles, not entities, and its air is still: the
+    # door and wind planes are covered by the random-map reduce test)
+    seen = {"watched": 0, "lanes": 0, "enemies": 0, "records": 0}
+    rows_checked = 0
+    for _ in range(600):
+        ses.tick()
+        if sim.tick % 24 or ses.is_terminal():
+            continue
+        out = _observe(sim, ctx, spec, S)
+        for i, u in enumerate(_rows(sim, spec, S)):
+            if u is None:
+                for k in ("near_f", "near_u", "far_f", "far_u"):
+                    assert not out[k][i].any()
+                continue
+            nf, nu = R.near_planes(sim, K, u)
+            ff, fu = R.far_planes(sim, K, u)
+            for k, name in enumerate(O.NEAR_F_PLANES):
+                _planes_close(out["near_f"][i, k], nf[k], name, (sim.tick, u.name))
+            for k, name in enumerate(O.NEAR_U_PLANES):
+                assert np.array_equal(out["near_u"][i, k], nu[k]), (name, sim.tick, u.name)
+            for k, name in enumerate(O.FAR_F_PLANES):
+                _planes_close(out["far_f"][i, k], ff[k], name, (sim.tick, u.name))
+            for k, name in enumerate(O.FAR_U_PLANES):
+                assert np.array_equal(out["far_u"][i, k], fu[k]), (name, sim.tick, u.name)
+            # the air block is the near window's centre cell (float32 vs 16)
+            centre = out["near_f"][i, :, O.HALF, O.HALF].astype(np.float64)
+            assert np.allclose(out["vector"][i, 58:66], centre, atol=4e-3)
+            seen["watched"] += int(out["near_u"][i, 2].any())
+            seen["lanes"] += int(out["near_u"][i, 4].any())
+            seen["enemies"] += int(out["far_u"][i, 2].any())
+            seen["records"] += int(out["far_u"][i, 3].any())
+            rows_checked += 1
+        if ses.is_terminal():
+            break
+    assert rows_checked > 40
+    assert all(v > 0 for v in seen.values()), seen
+
+
+def test_the_route_and_place_planes_follow_the_order(tmp_path):
+    """Property (spec 3.8, 7): a soldier ordered to the other room reads
+    the far ``route`` plane as the flood's block minimum over ``L_ref``
+    (-1 unreached) and ``place`` 1 on the blocks holding that room's
+    tiles; without an order both are -1 / 0 everywhere; an opening's
+    place is its rectangle. Breaks if the seeds, the reduce or the place
+    mask move."""
+    from test_orders import _sim as orders_sim
+    from simulation import unit_orders as UO
+    sim = orders_sim(graph=True)
+    a = Unit("a", x=4, y=4, team=0)
+    b = Unit("b", x=4, y=12, team=0)
+    sim.add_unit(a)
+    sim.add_unit(b)
+    sim.start_team_picture((0,), memory_ticks=40)
+    sim.order_intent(a.id, UO.ORDER_GO_TO, 1, 0, -1)
+    sim.step()
+    assert a.order_what == UO.ORDER_GO_TO and not b.order_what
+    ctx = O.ObsContext.build(sim, PAIR_SPEC, 2)
+    K = R.constants(sim, PAIR_SPEC, 2)
+    know = O.TeamKnowledge.build(sim, sim.team_picture, 0)
+    for u, has in ((a, True), (b, False)):
+        _, _, ff, fu = _windows_of(sim, ctx, u, know)
+        rff, rfu = R.far_planes(sim, K, u)
+        _planes_close(ff[9], rff[9], "route", u.name)
+        assert np.array_equal(fu[4], rfu[4])
+        assert (ff[9] > -1).any() == has and fu[4].any() == has
+        if has:
+            # the block under the unit (the other room) is no place and its
+            # route cell is reached and positive; at the place the route is 0
+            assert fu[4, 12, 12] == 0 and 0 < ff[9, 12, 12] <= 4
+            assert (ff[9][fu[4] == 1] == 0).all()
+    sim.order_intent(a.id, UO.ORDER_GO_TO, UO.ORDER_OPENING_BASE + 0, 0, -1)
+    sim.step()
+    _, _, _, fu = _windows_of(sim, ctx, a)
+    o = know.world.graph.openings[0]
+    by0, bx0 = a.center_tile_y() // 4 - 12, a.center_tile_x() // 4 - 12
+    want = np.zeros((25, 25), np.uint8)
+    for y in range(o.y, o.y + o.h):
+        for x in range(o.x, o.x + o.w):
+            want[y // 4 - by0, x // 4 - bx0] = 1
+    assert np.array_equal(fu[4], want)
+
+
+def test_the_far_reduce_on_a_random_map():
+    """Property (spec 3.3, 7): on a random room with random planes the
+    reduced planes equal a per-tile reference -- the max over each 4 x 4
+    block (padded with 0), the wall share (outside tiles solid), the door
+    code's max, and the wind's direction from the block's largest load,
+    first in row-major on a tie. Breaks if the reshape or the padding is
+    off by one or the wind's tile is not the load's argmax."""
+    from types import SimpleNamespace
+    from simulation import unit_impulse as ui
+    from simulation.gases import INERT_N2, O2, POISON as GP, SMOKE as GS, \
+        TEARGAS as GT
+    from test_wave_push import _room_map
+    rng = np.random.default_rng(3)
+    g = _room_map(18, 30)                       # 18 x 30: ragged blocks
+    h, w = g.solid.shape
+    open_ = ~g.solid
+    g.temperature[...] = rng.integers(-5 << 16, 400 << 16, size=(h, w))
+    g.fire[...] = rng.integers(0, 1 << 16, size=(h, w))
+    for k in (GP, GS, GT):
+        g.gas[k][...] = rng.integers(0, 1 << 24, size=(h, w))
+    g.atmosphere[...] = rng.integers(0, 3 << 16, size=(h, w))
+    n = rng.integers(13_000, 200_000, size=(h, w))
+    g.gas[O2][open_] = (n // 5)[open_]
+    g.gas[INERT_N2][open_] = (n - n // 5)[open_]
+    g.wind_x[open_] = rng.integers(-20 << 16, 20 << 16, size=(h, w))[open_]
+    g.wind_y[open_] = rng.integers(-20 << 16, 20 << 16, size=(h, w))[open_]
+    ys, xs = np.nonzero(open_)
+    pick = rng.choice(len(ys), size=len(ys) // 8, replace=False)
+    g.solid[ys[pick], xs[pick]] = True
+    doors = (SimpleNamespace(alive=True, state=1, span=[(5, 7), (5, 8)]),
+             SimpleNamespace(alive=True, state=0, span=[(6, 7)]),
+             SimpleNamespace(alive=False, state=0, span=[(2, 2)]))
+    P = O.FieldPlanes(g, doors, ui.table_for(g))
+    hb, wb = -(-h // 4), -(-w // 4)
+    assert P.wall_share.shape == (hb, wb)
+    load, vx, vy = g.wind_load_plane()
+    for by in range(hb):
+        for bx in range(wb):
+            tiles = [(by * 4 + a, bx * 4 + b) for a in range(4) for b in range(4)]
+            inb = [(y, x) for y, x in tiles if y < h and x < w]
+            for name in O.PHYSICS_PLANES[:6]:
+                want = max([0.0] + [P.raw[name][y, x] for y, x in inb])
+                assert P.far_raw[name][by, bx] == want, (name, by, bx)
+            best, at = 0.0, None
+            for y, x in inb:
+                if load[y, x] > best:
+                    best, at = load[y, x], (y, x)
+            for name in ("wind_x", "wind_y"):
+                want = P.raw[name][at] if at is not None else 0.0
+                assert P.far_raw[name][by, bx] == want, (name, by, bx)
+            solid = sum(1 for y, x in tiles
+                        if y >= h or x >= w or g.solid[y, x])
+            assert P.wall_share[by, bx] == solid / 16.0
+            assert P.far_door[by, bx] == max(
+                [0] + [P.door[y, x] for y, x in inb])
+    assert P.door[5, 7] == 1 and P.door[5, 8] == 1 and P.door[6, 7] == 2
+    assert P.door[2, 2] == 0 and P.far_door[1, 1] == 2
+    assert (P.raw["wind_x"][g.solid] == 0).all()
+
+
+def test_the_sight_planes_equal_the_one_sight_test(tmp_path):
+    """Property (spec 3.5, 7): ``watched`` cell for cell equals
+    ``gmap.has_los(ry, rx, y, x)`` OR-ed over the team's records at their
+    RECORDED centres (a remembered enemy that moved unseen is still watched
+    from where it was seen; cells outside the map follow ``has_los``);
+    ``sees_target`` is all 0 in 1g. Breaks if a window argument
+    (``to_window``) is swapped, a live position is read, or the outside
+    rule differs."""
+    lvl = _level(tmp_path, "sight", wall_x=30, gap=(18, 23))
+    sim, (me, foe, far) = _sim(lvl, [(0, 10, 20), (1, 45, 20), (1, 45, 5)],
+                               sight="all_round")
+    ctx = O.ObsContext.build(sim, PAIR_SPEC, 2)
+    sim.step()
+    recs = sim.team_picture.records(0)
+    assert foe.id in recs and far.id not in recs      # far: behind the wall
+    sim.team_picture._write(sim, 0, far)              # remembered by hand
+    sim.set_aim(me.id, 0, -ONE)                       # look away: the foe
+    for _ in range(12):                               # walks south unseen
+        sim.step()
+    sim.set_move_dir(foe.id, 0, ONE, 0)
+    for _ in range(12):
+        sim.step()
+    recs = sim.team_picture.records(0)
+    assert foe.id in recs and far.id in recs
+    cx, cy = me.center_tile_x(), me.center_tile_y()
+    nf, nu, _, _ = _windows_of(sim, ctx, me)
+    want = np.zeros((25, 25), np.uint8)
+    for i in range(25):
+        for j in range(25):
+            y, x = cy - 12 + i, cx - 12 + j
+            want[i, j] = any(sim.gmap.has_los(r.centre[1], r.centre[0], y, x)
+                             for r in recs.values())
+    assert np.array_equal(nu[2], want)
+    assert want.any() and not want.all()
+    assert not nu[3].any()
+    assert nu[2][12, 12] == 1                          # me, from the foe
+    assert nu[0][12, 12 - cx] == 1                     # the hull at x = 0
+    assert nu[0][12, 12 - cx - 1] == 1                 # outside the map: wall
+
+
+def test_watched_is_drawn_from_the_recorded_centre(tmp_path):
+    """Property (spec 3.5, 7: family case (b) with an occluder, and the
+    direct check): me behind a wall with a gap sees an enemy through the
+    gap, turns away and loses it; in one of two identical sims the enemy
+    then walks out of the gap's line, unseen. Team 0's rows -- ``near_u``'s
+    ``watched`` and the far ``records`` plane included -- stay byte-equal at
+    every decision, and ``watched`` is the lines from where the team LAST
+    SAW it (through the gap), not from where it stands (behind the wall:
+    a different plane). Breaks if the plane reads a live position."""
+    sims, (ua, ub), ctxs, S = _pair(tmp_path, "watched",
+                                    [(0, 10, 20), (1, 40, 20)],
+                                    wall_x=30, gap=(18, 23), memory_ticks=200)
+    for me in (ua[0], ub[0]):
+        place_facing(me, 0)
+    _step_both(sims)
+    for s, u in zip(sims, (ua, ub)):
+        assert u[1].id in s.team_picture.records(0)     # seen through the gap
+        s.set_aim(u[0].id, 0, -ONE)                     # turn north, away
+    _step_both(sims, 16)
+    for s, u in zip(sims, (ua, ub)):
+        assert u[1].id not in vision.state_for(s).visible_by_team.get(0, ())
+    rec = sims[1].team_picture.records(0)[ub[1].id]
+    sims[1].set_move_dir(ub[1].id, 0, ONE, ONE)         # south, unseen, fast
+    _compare_team0(sims, ctxs, S, 48)
+    sim, (me, foe), ctx = sims[1], ub, ctxs[1]
+    assert sim.team_picture.records(0)[foe.id].centre == rec.centre
+    assert foe.center_tile_y() >= 23 > rec.centre[1]    # behind the wall now
+    cx, cy = me.center_tile_x(), me.center_tile_y()
+    _, nu, _, fu = _windows_of(sim, ctx, me)
+    recorded = np.zeros((25, 25), np.uint8)
+    live = np.zeros((25, 25), np.uint8)
+    for i in range(25):
+        for j in range(25):
+            y, x = cy - 12 + i, cx - 12 + j
+            recorded[i, j] = sim.gmap.has_los(rec.centre[1], rec.centre[0], y, x)
+            live[i, j] = sim.gmap.has_los(foe.center_tile_y(),
+                                          foe.center_tile_x(), y, x)
+    assert np.array_equal(nu[2], recorded)
+    assert recorded.any() and not np.array_equal(live, recorded)
+    by0, bx0 = cy // 4 - 12, cx // 4 - 12
+    assert fu[3, rec.centre[1] // 4 - by0, rec.centre[0] // 4 - bx0] == 1
+    assert fu[3].sum() == 1 and not fu[2].any()
+
+
+def test_the_lanes_plane_and_the_lane_pair(tmp_path):
+    """Property (spec 3.6, 2.2 cols 52-53, 7): a mate holding its trigger
+    facing east marks the near cells along its facing to its range,
+    widened by the dials ``[bots] lane_cell`` / ``lane_halfwidth``, and no
+    others; released, none; my own lane marks nothing in my plane; a mate
+    standing in my lane reads ``it_in_my_lane`` and one whose lane holds
+    me ``me_in_its_lane``. Breaks if the plane reads the wrong owner or the
+    pair the shared grid instead of each owner's own."""
+    lvl = _level(tmp_path, "lanes")
+    sim, (me, mate) = _sim(lvl, [(0, 10, 20), (0, 20, 20)], sight="all_round")
+    ctx = O.ObsContext.build(sim, PAIR_SPEC, 2)
+    place_facing(me, 0)
+    place_facing(mate, 0)
+    sim.step()
+    cell, hw = int(CFG.bots.lane_cell), int(CFG.bots.lane_halfwidth)
+
+    def plane(u):
+        return _windows_of(sim, ctx, u)[1][4]
+
+    def pair(u):
+        out = _observe(sim, ctx, PAIR_SPEC, 2)
+        row = 0 if u is me else 1
+        i = int(np.flatnonzero(out["list_mask"][row])[0])
+        e = out["list"][row, i]
+        assert e[0] == O.TYPE_MATE
+        return int(e[52]), int(e[53])
+
+    assert not plane(me).any() and pair(me) == (0, 0)
+    sim.set_trigger(mate.id, True)
+    p = plane(me)
+    grid = tp.fire_lanes(sim, 0, cell, hw)
+    cx, cy = me.center_tile_x(), me.center_tile_y()
+    h, w = sim.gmap.solid.shape
+    want = np.zeros((25, 25), np.uint8)
+    for i in range(25):
+        for j in range(25):
+            y, x = cy - 12 + i, cx - 12 + j
+            if 0 <= y < h and 0 <= x < w:
+                want[i, j] = grid[y // cell, x // cell] == mate.id
+    assert np.array_equal(p, want) and want.any()
+    mx = mate.center_tile_x()
+    # east of the mate along its row: marked; far north of it: not
+    assert p[12, 12 + (mx + 2 - cx)] == 1
+    assert p[12 - (6 + hw * cell), 12 + (mx - cx)] == 0
+    # I am west of the mate: not in its lane; it is not in mine (no trigger)
+    assert pair(me) == (0, 0)
+    sim.set_trigger(me.id, True)                 # my lane runs east over it
+    assert not plane(mate)[12, 12] or pair(mate) == (1, 0)
+    assert pair(me) == (0, 1)
+    assert pair(mate) == (1, 0)
+    assert not plane(me).any() or np.array_equal(plane(me), want)  # mine never
+    place_facing(mate, PI_Q16)                   # it turns west: onto me
+    assert pair(me) == (1, 1)
+    sim.set_trigger(mate.id, False)
+    sim.set_trigger(me.id, False)
+    assert not plane(me).any() and pair(me) == (0, 0)
+
+
+def test_felt_temperature_is_the_heat_rows(tmp_path):
+    """Property (spec 1.3, 7): ``exchange.felt_temperature`` equals the heat
+    row's ``t_felt`` written by hand (the reference) on random bodies over
+    random ``heat`` and radiation-sensor planes, bit for bit; it answers
+    ``heat_ambient_ref`` with no flux; and the vector's col 96 is that
+    temperature over the profile's ``temperature_max``, squashed. The
+    row's damage is held by ``tools/match_pin_check.py`` and
+    ``test_unit_heat_damage.py``. Breaks if the row or the observation
+    carries a copy of the law."""
+    from simulation import exchange
+    lvl = _level(tmp_path, "felt")
+    sim, (me, _) = _sim(lvl, [(0, 10, 20), (0, 30, 20)], sight="all_round")
+    ctx = O.ObsContext.build(sim, PAIR_SPEC, 2)
+    g = sim.gmap
+    rng = np.random.default_rng(5)
+    dials = exchange.heat_dials(CFG)
+    assert exchange.felt_temperature(g, me, dials)[0] == float(
+        CFG.combat.heat_ambient_ref)
+    g.heat[...] = rng.integers(0, 3 << 16, size=g.heat.shape)
+    g.heat[g.heat < (1 << 15)] = 0
+    rad = getattr(g, "rad_flux_sweep", None)
+    if rad is not None:
+        rad[...] = rng.integers(0, 5 << 20, size=rad.shape)
+    hits = 0
+    for _ in range(200):
+        me.set_pos(float(rng.integers(1, 55)), float(rng.integers(1, 35)))
+        got = exchange.felt_temperature(g, me, dials)
+        want = R.felt_temperature(sim, me)
+        assert got[0] == want
+        assert (got[1] is None) == (want == float(CFG.combat.heat_ambient_ref))
+        hits += got[1] is not None
+    assert hits > 100
+    know = O.TeamKnowledge.build(sim, sim.team_picture, 0)
+    v = np.zeros(O.V, np.float32)
+    O.build_vector(know, me, ctx, v)
+    assert v[96] == np.float32(O.squash(O.ratio(
+        exchange.felt_temperature(g, me, dials)[0],
+        me.environment.temperature_max)))

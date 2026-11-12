@@ -79,7 +79,7 @@ import numpy as np
 
 from simulation import vision
 from simulation.events import UnitHitEvent, UnitKilledEvent
-from simulation.unit_fixed import cos_q16, quantize_scalar, shr_trunc, sin_q16
+from simulation.unit_fixed import cos_q16, shr_trunc, sin_q16
 
 #: A team's object ids start here (``obs spec`` 2.1): ``OBJECT_UID_BASE + k``
 #: for the team's k-th first-seen grenade or charge, never a unit id.
@@ -148,7 +148,7 @@ class Record:
 
 
 def _sighting(u, tick: int, prev) -> Record:
-    pos_q = (quantize_scalar(u.x), quantize_scalar(u.y))
+    pos_q = (int(u.x_q), int(u.y_q))
     if prev is not None and prev.tick == tick - 1:
         vel_q = (pos_q[0] - prev.pos_q[0], pos_q[1] - prev.pos_q[1])
     else:
@@ -269,7 +269,7 @@ class TeamPicture:
                 if uid not in self.death_tick:
                     self.death_tick[uid] = tick
                 continue
-            now = (quantize_scalar(u.x), quantize_scalar(u.y))
+            now = (int(u.x_q), int(u.y_q))
             prev = motion.get(uid)
             motion[uid] = (now if prev is None else prev[1], now)
         for ev in hits:                        # emission order: the last wins
@@ -414,15 +414,16 @@ def fire_lanes(sim, team: int, cell: int, halfwidth: int):
                          cell, halfwidth)
 
 
-def fire_lanes_of(gmap, weapons_tables, units, team: int, cell: int,
+def fire_lanes_of(gmap, weapons_tables, members, team: int, cell: int,
                   halfwidth: int):
-    """:func:`fire_lanes` over an explicit unit list (every unit of the
-    team that may own a lane must be in it)."""
+    """:func:`fire_lanes` over an explicit unit list ``members`` (every
+    unit of the team that may own a lane must be in it; the observation
+    hands it the team's mates, or one mate for its own lane)."""
     solid = gmap.solid
     h, w = solid.shape
     rows = weapons_tables.weapons.by_name
     segments = []
-    for u in sorted(units, key=lambda u: u.id):
+    for u in sorted(members, key=lambda u: u.id):
         if (u.team != team or not u.alive or u.is_zombie
                 or not getattr(u, "live_trigger", False)):
             continue

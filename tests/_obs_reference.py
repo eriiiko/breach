@@ -18,11 +18,17 @@ import numpy as np
 
 from config import CFG
 from control_bots import BotTeam
-from simulation import combat, horde, room_graph, vision
+from simulation import (atmosphere_fixed, combat, fire_fixed, gas_fixed,
+                        horde, optics_fixed, room_graph, vision)
 from simulation import team_picture as tp
-from simulation.damage import KINETIC
-from simulation.entities.door import DOOR_OPEN
+from simulation import unit_impulse as ui
+from simulation.damage import KINETIC, POISON, mitigation_for
+from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
 from simulation.events import CAUSE_NAMES
+from simulation.gases import INERT_N2, O2
+from simulation.gases import POISON as G_POISON
+from simulation.gases import SMOKE as G_SMOKE
+from simulation.gases import TEARGAS as G_TEARGAS
 from simulation.exposure import get_settings as exposure_settings
 from simulation.loadouts import get_tables as loadout_tables
 from simulation.movement import THROTTLE_ONE
@@ -268,6 +274,9 @@ def vector(sim, K, u):
         v[55] = squash(over(w.rof_interval_ticks, K["ref_rof"]))
         v[56] = squash(over(w.spread_deg, K["ref_spread"]))
     v[57] = bool(u.live_trigger)
+    cx0, cy0 = centre(u)
+    v[58:66] = [squash(x) for x in air_at(sim, u, cy0, cx0)]
+    v[96] = squash(over(felt_temperature(sim, u), u.environment.temperature_max))
     hit = pic.last_hit.get(u.id)
     if hit is None:
         v[67], v[70] = 1.0, -1.0
@@ -435,6 +444,12 @@ def entry_list(sim, K, u, bots=None):
             e[50] = my_where != NO_PLACE and m.order_where == my_where
             if m.order_until != NO_LIMIT:
                 e[51] = over(m.order_until - tick, K["limit"])
+        # the lane pair (spec 2.2 cols 52, 53): each owner's own lane
+        cell, hw = int(CFG.bots.lane_cell), int(CFG.bots.lane_halfwidth)
+        its = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [m], team, cell, hw)
+        mine = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [u], team, cell, hw)
+        e[52] = its[cy // cell, cx // cell] == m.id
+        e[53] = mine[my // cell, mx // cell] == me
         mask[i], uid[i] = 1, m.id
         i += 1
     i = caps[0]
@@ -553,3 +568,219 @@ def entry_list(sim, K, u, bots=None):
         mask[i], uid[i] = 1, DOOR_BASE + ordinal
         i += 1
     return out, mask, uid
+
+
+# -- section 3: the two windows, tile by tile ------------------------------
+WIN, HALF, BLOCK = 25, 12, 4
+PHYSICS = ("temperature", "fire", "poison", "teargas", "smoke", "pressure",
+           "wind_x", "wind_y")
+
+
+def felt_temperature(sim, u):
+    """Spec 1.3 col 96 by hand: the heat row's chain over the hottest
+    footprint tile of max(heat, the radiation sensor)."""
+    g = sim.gmap
+    h, w = g.heat.shape
+    rad = getattr(g, "rad_flux_sweep", None)
+    bits = optics_fixed.sweep_fine_bits(g)
+    peak = 0
+    for tx, ty in u.occupied_tiles():
+        if 0 <= ty < h and 0 <= tx < w:
+            v = int(g.heat[ty, tx])
+            if rad is not None:
+                v = max(v, optics_fixed.fine_heat_shr(int(rad[ty, tx]), 0, bits))
+            peak = max(peak, v)
+    c = CFG.combat
+    if peak <= 0:
+        return float(c.heat_ambient_ref)
+    phi = peak / 65536 * float(c.unit_absorption) * (1.0 - float(c.unit_reflectivity))
+    return float(c.heat_ambient_ref) + float(c.heat_flux_to_temp) * phi
+
+
+def raw_tile(sim, name, y, x):
+    """One physics plane's real-unit value on tile (y, x); outside 0."""
+    g = sim.gmap
+    h, w = g.solid.shape
+    if not (0 <= y < h and 0 <= x < w):
+        return 0.0
+    if name == "temperature":
+        return float(gas_fixed.dequantize_q16(g.temperature[y, x]))
+    if name == "fire":
+        return float(fire_fixed.dequantize(g.fire[y, x]))
+    if name == "poison":
+        return float(gas_fixed.dequantize_trace(g.gas[G_POISON][y, x]))
+    if name == "teargas":
+        return float(gas_fixed.dequantize_trace(g.gas[G_TEARGAS][y, x]))
+    if name == "smoke":
+        return float(gas_fixed.dequantize_trace(g.gas[G_SMOKE][y, x]))
+    if name == "pressure":
+        return float(atmosphere_fixed.dequantize(g.atmosphere[y, x]))
+    raise KeyError(name)
+
+
+def wind_tile(sim, y, x):
+    """``(W_i, vx, vy)`` on tile (y, x) in ints: the footprint read's own
+    term (0, 0, 0 on a solid or outside tile)."""
+    g = sim.gmap
+    h, w = g.solid.shape
+    if not (0 <= y < h and 0 <= x < w) or g.solid[y, x]:
+        return 0, 0, 0
+    vx, vy = int(g.wind_x[y, x]), int(g.wind_y[y, x])
+    n = int(g.gas[O2][y, x]) + int(g.gas[INERT_N2][y, x])
+    return n * ((vx * vx + vy * vy) >> 16), vx, vy
+
+
+def wind_value(sim, u, w_i, vx, vy):
+    """The wind pair's ratio (spec 3.2 rows 6, 7): one tick of impulse on
+    the standing body over its mass, along the wind, over the hold."""
+    t = sim.impulse_table
+    j = ui.wind_impulse_q(t, w_i)
+    n = math.hypot(vx, vy)
+    if n == 0 or j == 0:
+        return 0.0, 0.0
+    d = float(u.mass_g) * float(t.cap_q)
+    return j * vx / n / d, j * vy / n / d
+
+
+def physics_ratio(sim, u, name, raw):
+    env = u.environment
+    if name == "temperature":
+        return over(raw, env.temperature_max)
+    if name == "fire":
+        return raw
+    if name == "poison":
+        return over(raw, CFG.exchange.poison_min_density) \
+            * mitigation_for(u).resist_mult[POISON]
+    if name == "teargas":
+        return over(raw, CFG.exchange.teargas_blind_density)
+    if name == "smoke":
+        return over(raw, CFG.bots.smoke_dense)
+    if name == "pressure":
+        return over(raw - env.pressure_min, env.pressure_max - env.pressure_min)
+    raise KeyError(name)
+
+
+def air_at(sim, u, y, x):
+    """The eight physics ratios on one tile (before the squash)."""
+    out = [physics_ratio(sim, u, n, raw_tile(sim, n, y, x)) for n in PHYSICS[:6]]
+    out += list(wind_value(sim, u, *wind_tile(sim, y, x)))
+    return out
+
+
+def door_code(sim, y, x):
+    for d in sim._doors:
+        if d.alive and any((int(t[0]), int(t[1])) == (y, x) for t in d.span):
+            if d.state == DOOR_OPEN:
+                return 1
+            if d.state == DOOR_CLOSED:
+                return 2
+    return 0
+
+
+def lane_cell(sim, team, me, y, x):
+    g = sim.gmap
+    h, w = g.solid.shape
+    if not (0 <= y < h and 0 <= x < w):
+        return 0
+    cell, hw = int(CFG.bots.lane_cell), int(CFG.bots.lane_halfwidth)
+    o = tp.fire_lanes(sim, team, cell, hw)[y // cell, x // cell]
+    return int(o == -2 or (o >= 0 and o != me))
+
+
+def near_planes(sim, K, u):
+    """``(near_f (8, 25, 25) float64, near_u (5, 25, 25) uint8)``, cell by
+    cell from the document: the physics ratios squashed (0 outside the
+    map), wall (1 outside), door, watched = OR over the team's records of
+    ``has_los`` from the recorded centre, sees_target 0, lanes."""
+    g = sim.gmap
+    h, w = g.solid.shape
+    team = int(u.team)
+    cx, cy = centre(u)
+    recs = sim.team_picture.records(team)
+    nf = np.zeros((8, WIN, WIN))
+    nu = np.zeros((5, WIN, WIN), np.uint8)
+    for i in range(WIN):
+        for j in range(WIN):
+            y, x = cy - HALF + i, cx - HALF + j
+            inside = 0 <= y < h and 0 <= x < w
+            if inside:
+                for k, r in enumerate(air_at(sim, u, y, x)):
+                    nf[k, i, j] = squash(r)
+                nu[0, i, j] = g.solid[y, x]
+                nu[1, i, j] = door_code(sim, y, x)
+                nu[4, i, j] = lane_cell(sim, team, u.id, y, x)
+            else:
+                nu[0, i, j] = 1
+            nu[2, i, j] = any(g.has_los(r.centre[1], r.centre[0], y, x)
+                              for r in recs.values())
+    return nf, nu
+
+
+def far_planes(sim, K, u):
+    """``(far_f (10, 25, 25) float64, far_u (5, 25, 25) uint8)`` block by
+    block from the document: the wall share (outside tiles solid), the
+    physics maxima over the block's tiles (padded with 0; the wind by the
+    block's largest load, first in row-major), the route's block minimum
+    over the field (-1 unreached or no order), the door's largest code,
+    the mate / seen / record counts by centre tile, the place."""
+    g = sim.gmap
+    h, w = g.solid.shape
+    hb, wb = -(-h // BLOCK), -(-w // BLOCK)
+    team = int(u.team)
+    cx, cy = centre(u)
+    by0, bx0 = cy // BLOCK - HALF, cx // BLOCK - HALF
+    recs = sim.team_picture.records(team)
+    seen = set(vision.state_for(sim).visible_by_team.get(team, ()))
+    ff = np.zeros((10, WIN, WIN))
+    fu = np.zeros((5, WIN, WIN), np.uint8)
+    ff[9] = -1.0
+    field = place = None
+    graph = graph_of(sim)
+    if u.order_what and graph is not None:
+        field = route_field(sim, graph, u.order_where, u.footprint)
+        place = np.zeros((h, w), bool)
+        if u.order_where < ORDER_OPENING_BASE:
+            place = np.asarray(graph.grid) == u.order_where
+        else:
+            for o in graph.openings:
+                if ORDER_OPENING_BASE + o.id == u.order_where:
+                    place[o.y:o.y + o.h, o.x:o.x + o.w] = True
+    for i in range(WIN):
+        for j in range(WIN):
+            by, bx = by0 + i, bx0 + j
+            if not (0 <= by < hb and 0 <= bx < wb):
+                ff[0, i, j] = 1.0
+                continue
+            tiles = [(by * BLOCK + a, bx * BLOCK + b)
+                     for a in range(BLOCK) for b in range(BLOCK)]
+            inb = [(y, x) for y, x in tiles if 0 <= y < h and 0 <= x < w]
+            ff[0, i, j] = (16 - len(inb) + sum(1 for y, x in inb
+                                              if g.solid[y, x])) / 16.0
+            for k, name in enumerate(PHYSICS[:6]):
+                # the map's padding is 0; a block wholly inside takes its
+                # own maximum (negative on a cold deck)
+                vals = [raw_tile(sim, name, y, x) for y, x in inb]
+                raw = max(vals + ([0.0] if len(inb) < 16 else []))
+                ff[1 + k, i, j] = squash(physics_ratio(sim, u, name, raw))
+            best = (0, 0, 0)
+            for y, x in tiles:
+                wt = wind_tile(sim, y, x)
+                if wt[0] > best[0]:
+                    best = wt
+            wx, wy = wind_value(sim, u, *best)
+            ff[7, i, j], ff[8, i, j] = squash(wx), squash(wy)
+            if field is not None:
+                m = min(horde.field_at(field, y, x) for y, x in tiles)
+                if m != horde.UNREACHED:
+                    ff[9, i, j] = squash(over(m, K["L"]))
+                fu[4, i, j] = any(0 <= y < h and 0 <= x < w and place[y, x]
+                                  for y, x in tiles)
+            fu[0, i, j] = max(door_code(sim, y, x) for y, x in tiles)
+            for m in mates_of(sim, team):
+                if m.id != u.id:
+                    mx, my = centre(m)
+                    fu[1, i, j] += (my // BLOCK, mx // BLOCK) == (by, bx)
+            for uid, r in recs.items():
+                if (r.centre[1] // BLOCK, r.centre[0] // BLOCK) == (by, bx):
+                    fu[2 if uid in seen else 3, i, j] += 1
+    return ff, fu
