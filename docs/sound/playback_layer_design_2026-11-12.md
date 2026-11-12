@@ -251,3 +251,8 @@ Every patch is feel-adjacent, so none auto-merges.
 - Muted when the window is hidden, so the E2E driver runs the layer silently.
 - Not heard by anyone yet: left / right panning rests on reading raylib 5.5's
   source (1.0 = left), not on a listening test.
+- **Reload bound after all (same day, Erik: "one that's important to listen
+  for").** The 7 s clip is exported with `--squeeze` (every silence inside it
+  shortened to 60 ms): 2.4 s, the bolt snapping at 1.8 s of the 2 s reload.
+  If `reload_seconds` is retuned the sample no longer fits; a reload cue timed
+  to the event's ticks is a later refinement.

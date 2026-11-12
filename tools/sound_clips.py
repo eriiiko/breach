@@ -8,6 +8,7 @@ samples:
   onsets(x, sr)        where each transient (shot) starts
   split_shots(x, sr)   one sample per shot that keeps a usable tail
   trim(x, sr)          leading silence and dead tail removed, tail faded
+  squeeze_silence(x)   every silence shortened (a reload spread too long)
   normalize(x)         peak to a fixed level
   layer(body, head)    a dry crack laid over a body-and-tail sample
   write_wav / read_wav 16-bit PCM through the stdlib
@@ -119,6 +120,39 @@ def split_shots(x: np.ndarray, sr: int) -> list[np.ndarray]:
         seg = fade_out(seg, sr, 5.0) if cut else trim(seg, sr)
         shots.append(seg)
     return shots
+
+
+def squeeze_silence(x: np.ndarray, sr: int, *, floor_db: float = -50.0,
+                    gap_ms: float = 60.0, pad_ms: float = 30.0) -> np.ndarray:
+    """The clip with every silence shortened to `gap_ms`: the stretches
+    louder than `floor_db` (re the peak), each kept with `pad_ms` around it
+    and faded at both ends, joined in order. For a sound made of several
+    separate actions (a reload) that the generator spread over more time
+    than the game gives it. Nothing audible is dropped or reordered."""
+    x = np.asarray(x, dtype=np.float32)
+    env = envelope(x, sr)
+    if len(env) == 0 or float(env.max()) <= 0.0:
+        return x
+    hop = max(1, int(round(sr / 1000.0)))
+    loud = env > float(env.max()) * 10.0 ** (floor_db / 20.0)
+    pad = int(round(pad_ms))
+    spans: list[list[int]] = []
+    for i in np.nonzero(loud)[0]:
+        a, b = max(0, int(i) - pad), min(len(env), int(i) + pad + 1)
+        if spans and a <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    gap = np.zeros((int(round(sr * gap_ms / 1000.0)),) + x.shape[1:], dtype=np.float32)
+    fade = min(pad_ms / 2.0, 10.0)
+    parts: list[np.ndarray] = []
+    for k, (a, b) in enumerate(spans):
+        seg = fade_out(x[a * hop:b * hop], sr, fade)
+        seg = fade_out(seg[::-1], sr, fade)[::-1]          # and a fade in
+        if k:
+            parts.append(gap)
+        parts.append(seg)
+    return np.concatenate(parts) if parts else x
 
 
 def normalize(x: np.ndarray, peak: float = PEAK) -> np.ndarray:

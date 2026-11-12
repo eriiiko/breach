@@ -5234,6 +5234,14 @@ gain_jitter = 0.06
 choke = "emitter"
 choke_fade_ms = 12.0
 
+# The generated clip ran 7 s; exported with --squeeze (its silences shortened)
+# it is 2.4 s against the carbine's 2 s reload, the bolt snapping at 1.8 s.
+[sound.cues.carbine_reload]
+files = ["carbine/reload_1.wav"]
+reach = 15.0              # metres; PLACEHOLDER (a reload is worth listening for)
+gain = 0.8                # PLACEHOLDER
+pitch_jitter = 0.02
+
 [sound.cues.frag_explosion]
 files = ["explosion/frag_steel_room.wav"]
 reach = "loudness"
@@ -5244,9 +5252,8 @@ pitch_jitter = 0.03
 [sound.bindings.shot]
 k5_carbine = "carbine_shot"
 
-# (no reload cue yet: the generated reload clip runs 7 s against the carbine's
-# 2 s reload -- a tighter clip first)
 [sound.bindings.reload]
+k5_carbine = "carbine_reload"
 
 [sound.bindings.explosion]
 frag_standard = "frag_explosion"

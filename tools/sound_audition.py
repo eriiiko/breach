@@ -1,7 +1,7 @@
 """Sound audition: hear generated clips the way the game would play them.
 
     <breach-py> tools/sound_audition.py [--dir DIR] [--rate 12] [--prepare]
-    <breach-py> tools/sound_audition.py --export SRC DST [--shot N]
+    <breach-py> tools/sound_audition.py --export SRC DST [--shot N] [--squeeze] [--max-ms MS]
 
 DIR (default docs/sound/prototypes/seed_audio) holds generated clips
 (.mp3 / .wav). Every clip whose name starts with `carbine_` and does not
@@ -61,7 +61,8 @@ def decode(path: Path) -> tuple[np.ndarray, int]:
     return (x if ch == 1 else x.reshape(-1, ch)), sr
 
 
-def export_clip(src: Path, dst: Path, shot: int = 1) -> None:
+def export_clip(src: Path, dst: Path, shot: int = 1, squeeze: bool = False,
+                max_ms: float = 0.0) -> None:
     """One generated clip -> one game sample (assets/sounds/): shot number
     `shot` of the clip (1 = the first; 0 = the whole clip -- a sound made of
     several transients, a reload, an explosion with debris), from its first
@@ -73,7 +74,12 @@ def export_clip(src: Path, dst: Path, shot: int = 1) -> None:
     if not (1 <= shot <= len(shots)):
         raise SystemExit(f"{src.name} has {len(shots)} shot(s), no shot {shot}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    y = sc.normalize(shots[shot - 1])
+    y = shots[shot - 1]
+    if squeeze:                         # silences shortened (sound_clips.squeeze_silence)
+        y = sc.squeeze_silence(y, sr)
+    if max_ms > 0.0 and len(y) * 1000.0 / sr > max_ms:
+        y = sc.fade_out(y[: int(sr * max_ms / 1000.0)], sr, 30.0)
+    y = sc.normalize(y)
     sc.write_wav(dst, y, sr)
     print(f"{src.name} shot {shot} -> {dst} ({len(y) * 1000 / sr:.0f} ms, {sr} Hz)")
 
@@ -287,9 +293,13 @@ def main() -> None:
     ap.add_argument("--export", nargs=2, type=Path, metavar=("SRC", "DST"),
                     help="write one clip as a game sample (trimmed, normalized WAV), exit")
     ap.add_argument("--shot", type=int, default=1, help="with --export: which shot of the clip (0 = the whole clip)")
+    ap.add_argument("--squeeze", action="store_true",
+                    help="with --export: shorten every silence inside the clip")
+    ap.add_argument("--max-ms", type=float, default=0.0,
+                    help="with --export: cut the sample at this length (faded)")
     a = ap.parse_args()
     if a.export:
-        export_clip(a.export[0], a.export[1], a.shot)
+        export_clip(a.export[0], a.export[1], a.shot, a.squeeze, a.max_ms)
         return
     if not a.dir.is_dir():
         raise SystemExit(f"no such folder: {a.dir}")

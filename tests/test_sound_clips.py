@@ -70,6 +70,27 @@ def test_an_early_echo_stays_inside_its_shot():
     assert first * 1000.0 / SR <= 3.0
 
 
+def test_squeezing_shortens_the_silences_and_keeps_every_sound_in_order():
+    """Breaks if a quiet-but-audible action is dropped, the order changes,
+    or a silence survives longer than the gap."""
+    a, b, c = (_shot(120.0, decay_ms=25.0, seed=s) for s in (20, 21, 22))
+    b = b * 0.2                                    # a soft click between two loud ones
+    x = _clip([(100.0, a), (2400.0, b), (6000.0, c)], 7000.0)
+    y = sc.squeeze_silence(x, SR)
+    assert len(y) * 1000.0 / SR < 700.0            # three ~150 ms sounds + two gaps
+    ons = sc.onsets(y, SR, level=0.1)
+    assert len(ons) == 3
+    peaks = [float(np.abs(y[o:o + int(SR * 0.05)]).max()) for o in ons]
+    assert peaks[1] < 0.5 * peaks[0] and peaks[1] < 0.5 * peaks[2]   # soft one still in the middle
+    env = sc.envelope(y, SR)
+    quiet = env < env.max() * 10 ** (-50 / 20)
+    run = longest = 0
+    for q in quiet:
+        run = run + 1 if q else 0
+        longest = max(longest, run)
+    assert longest <= 60 + 2 * 30 + 5              # the gap plus both pads, ms
+
+
 def test_normalize_sets_the_peak_and_keeps_silence():
     x = _shot(200.0) * 0.1
     assert np.abs(sc.normalize(x)).max() == pytest.approx(sc.PEAK, rel=1e-5)
