@@ -1,0 +1,1365 @@
+{
+ "args": {
+  "levels": "ship_demo,ship_freighter_standard_s28_medium",
+  "levels_dir": "C:/tmp/breach_1d/levels",
+  "seeds": "1-5",
+  "a": "bots",
+  "b": "bots",
+  "horde": true,
+  "no_duel": false,
+  "time_limit": null,
+  "zombies": null,
+  "set": [],
+  "sight": "all_round",
+  "workers": 12,
+  "json": "docs/rl_agent_rung1_1d_pins/all_round.json"
+ },
+ "rows": [
+  {
+   "level": "ship_demo",
+   "pairing": "duel",
+   "n": 5,
+   "ticks": 2358.0,
+   "wall": 67.61424786001444,
+   "draws": 0,
+   "bots": {
+    "wins": 4,
+    "survivors": 1.6,
+    "rounds_per_kill": 9.576923076923077,
+    "ff_per_match": 0.2,
+    "self_per_match": 0.0,
+    "throws_per_match": {
+     "0": 5.0,
+     "4": 0.4
+    }
+   }
+  },
+  {
+   "level": "ship_demo",
+   "pairing": "horde:bots",
+   "n": 10,
+   "ticks": 1937.8,
+   "wall": 53.60313498999458,
+   "draws": 0,
+   "bots": {
+    "wins": 10,
+    "survivors": 2.8,
+    "rounds_per_kill": 11.097560975609756,
+    "ff_per_match": 0.0,
+    "self_per_match": 0.0,
+    "throws_per_match": {
+     "0": 4.6,
+     "4": 0.4
+    }
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "pairing": "duel",
+   "n": 5,
+   "ticks": 2616.2,
+   "wall": 59.592722339998,
+   "draws": 1,
+   "bots": {
+    "wins": 2,
+    "survivors": 0.6,
+    "rounds_per_kill": 5.0,
+    "ff_per_match": 0.2,
+    "self_per_match": 0.0,
+    "throws_per_match": {
+     "0": 5.4,
+     "4": 0.6
+    }
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "pairing": "horde:bots",
+   "n": 10,
+   "ticks": 3147.0,
+   "wall": 65.1997736499994,
+   "draws": 1,
+   "bots": {
+    "wins": 9,
+    "survivors": 3.2,
+    "rounds_per_kill": 6.682539682539683,
+    "ff_per_match": 0.0,
+    "self_per_match": 0.0,
+    "throws_per_match": {
+     "0": 4.9,
+     "4": 0.9
+    }
+   }
+  }
+ ],
+ "records": [
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 1,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 3077,
+   "wall": 82.39878620003583,
+   "sight": "all_round",
+   "field_digest": "05e97fe139ba27cdb44adf9052eda3e05b5c103bb38d2ef64fbfd96b555195c1",
+   "tick_digest": "a869a20a286dc1caf1469a91cd058b957cf8bcd53d71e571b208228c19a86a66",
+   "t0": {
+    "survivors": 0,
+    "shots": 62,
+    "kills": 5,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 62,
+    "throws": {
+     "0": 6,
+     "4": 1
+    }
+   },
+   "t1": {
+    "survivors": 1,
+    "shots": 56,
+    "kills": 6,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 59,
+    "throws": {
+     "0": 6,
+     "4": 2
+    }
+   },
+   "marine_deaths": {
+    "melee": 2,
+    "bullet": 5
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 1,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 2390,
+   "wall": 72.30307510000421,
+   "sight": "all_round",
+   "field_digest": "d0dd6a48a0f5c974052c04c8f29ca2d6ea99e859e5b4ed7241c62e7df9303f37",
+   "tick_digest": "15dc27e63656a409dfc3febffd7f0fb561dcde013054a9b4de99f0f03b6b9d74",
+   "t0": {
+    "survivors": 3,
+    "shots": 50,
+    "kills": 6,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 56,
+    "throws": {
+     "0": 6,
+     "4": 1
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "heat": 1,
+    "bullet": 3
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 1,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 1239,
+   "wall": 37.592444699956104,
+   "sight": "all_round",
+   "field_digest": "048bd2b0a98ec838856d56619d963cc5126694fb42b0e8ed5494263a9c1a8178",
+   "tick_digest": "11e9fc9f292fbcb0e5e3d3115d3b73163a1d676c937d8fa5c93b966b40a88eee",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 27,
+    "kills": 2,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 29,
+    "throws": {
+     "0": 3
+    }
+   },
+   "marine_deaths": {
+    "melee": 5
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 2,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 1988,
+   "wall": 60.46109619998606,
+   "sight": "all_round",
+   "field_digest": "cfc6faba64188cf7d0fd1d208f27eb416674f04113f06cfaddb35bf168a7682b",
+   "tick_digest": "6c08d601a854972322466b2c32c4e267e9105a779f26af6e6fce7e97dcc6daa2",
+   "t0": {
+    "survivors": 2,
+    "shots": 40,
+    "kills": 6,
+    "zombie_kills": 5,
+    "ff_hits": 1,
+    "self_hits": 0,
+    "hits": 47,
+    "throws": {
+     "0": 4
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 49,
+    "kills": 3,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 53,
+    "throws": {
+     "0": 2
+    }
+   },
+   "marine_deaths": {
+    "melee": 5,
+    "bullet": 1
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 2,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 1007,
+   "wall": 31.016975399979856,
+   "sight": "all_round",
+   "field_digest": "4ac2b03442b718fa9cc4ec7ac6ff8d5227257b177078a743f67ac5603080cdf4",
+   "tick_digest": "55b7da89b358d53b2f8e3435b316cf1415f3dcc5a8941cb8c90cad6f61b9f0ad",
+   "t0": {
+    "survivors": 3,
+    "shots": 28,
+    "kills": 3,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 28,
+    "throws": {
+     "0": 3
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 5
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 2,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 4221,
+   "wall": 101.47133139998186,
+   "sight": "all_round",
+   "field_digest": "10f6f475bafdf49278423a29af8f2f9834bad585e3e16f29fff5f0ddb6bdd01f",
+   "tick_digest": "644a38fc11a3851c1d0d68011230b1d245fee7b55d7d3cc34ff6df8253547d2c",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 2,
+    "shots": 75,
+    "kills": 7,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 81,
+    "throws": {
+     "0": 5
+    }
+   },
+   "marine_deaths": {
+    "melee": 2,
+    "bullet": 4
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 3,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 3086,
+   "wall": 83.85655820003012,
+   "sight": "all_round",
+   "field_digest": "77ddb6caa1cdbe2c9c5539d5f0eae2bb785d4879c6ac0d88d3916fe494ece13c",
+   "tick_digest": "11a9b83f06939023819e2bb39b5bfcfc0e8856bdb7a116f2e17b4b07020ffa64",
+   "t0": {
+    "survivors": 1,
+    "shots": 35,
+    "kills": 5,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 34,
+    "throws": {
+     "0": 4
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 55,
+    "kills": 4,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 56,
+    "throws": {
+     "0": 6,
+     "4": 1
+    }
+   },
+   "marine_deaths": {
+    "melee": 2,
+    "bullet": 4,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 3,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 3858,
+   "wall": 93.4094599999953,
+   "sight": "all_round",
+   "field_digest": "b660b717c859218ed76421b428289a7e8393ab0881985d5b11f25d583253b70f",
+   "tick_digest": "30455a68a5e6026f9dd5cb1280835308540a42a53bf5ccd8e1a206efccc6e192",
+   "t0": {
+    "survivors": 3,
+    "shots": 71,
+    "kills": 7,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 75,
+    "throws": {
+     "0": 7,
+     "4": 2
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "bullet": 4
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 3,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 1245,
+   "wall": 37.22201510000741,
+   "sight": "all_round",
+   "field_digest": "63fb1dfe59c2843dfb498ee2c77783c50a587a25cf397d39addea979deaf33be",
+   "tick_digest": "1fe86d682b98b8abc4942a2504678591bc471e870e9586cf671417ce42caf606",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 19,
+    "kills": 2,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 20,
+    "throws": {
+     "0": 3
+    }
+   },
+   "marine_deaths": {
+    "melee": 5
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 4,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 2360,
+   "wall": 72.63467060000403,
+   "sight": "all_round",
+   "field_digest": "e909afdf21444e4232a2e614a0e672cd8ee7438d7512ec10fcbb6e94d4321a45",
+   "tick_digest": "e7607d008f6c4e05f2def13e51d57e6af3fd181b06661f702a2541f00297ccda",
+   "t0": {
+    "survivors": 3,
+    "shots": 54,
+    "kills": 7,
+    "zombie_kills": 4,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 55,
+    "throws": {
+     "0": 7,
+     "4": 1
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 42,
+    "kills": 2,
+    "zombie_kills": 1,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 39,
+    "throws": {
+     "0": 6,
+     "4": 1
+    }
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "bullet": 4
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 4,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 2163,
+   "wall": 64.96271669998532,
+   "sight": "all_round",
+   "field_digest": "92c59899ee8564f9f4d5a78456e26fd349c9bbde339ff3b5894f4702f99ccfc5",
+   "tick_digest": "74e59eedbd57916e4c34bac7374061e35913e4cc203b7028a71e54bcae045e07",
+   "t0": {
+    "survivors": 3,
+    "shots": 92,
+    "kills": 8,
+    "zombie_kills": 5,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 97,
+    "throws": {
+     "0": 5,
+     "4": 1
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "heat": 2,
+    "bullet": 2
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 4,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 978,
+   "wall": 29.294613200007007,
+   "sight": "all_round",
+   "field_digest": "c97e5b890ce73b716c27c144b71ed22f395cc9010362a8654f4019c092052928",
+   "tick_digest": "1f94a56a142d2f4ece57cddeb62319cd36f1e37ff9e9cb8a7a45227f0f21e93f",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 26,
+    "kills": 3,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 29,
+    "throws": {
+     "0": 5
+    }
+   },
+   "marine_deaths": {
+    "melee": 5
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 5,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 1279,
+   "wall": 38.720128100016154,
+   "sight": "all_round",
+   "field_digest": "6e4a3ba39a0af863cc4226d0c596529df99f3bf384d7eed39eb5c51eb05f84c0",
+   "tick_digest": "3108a8e4a746c3d9f853744701bc848ac6d4a1e875eba889ff226db24b3d2550",
+   "t0": {
+    "survivors": 2,
+    "shots": 58,
+    "kills": 3,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 60,
+    "throws": {
+     "0": 4
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 68,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 67,
+    "throws": {
+     "0": 4
+    }
+   },
+   "marine_deaths": {
+    "melee": 6
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 5,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 1298,
+   "wall": 39.15272220002953,
+   "sight": "all_round",
+   "field_digest": "b7a74dd6d0749c1b6db8bf53e6fa40daba73533f44141253518f0d0978623b1f",
+   "tick_digest": "7a6bfc2d4f5670ef6ad905aaa630ddf5a20a6cadcfcf2729d05f86383a9ac447",
+   "t0": {
+    "survivors": 3,
+    "shots": 37,
+    "kills": 3,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 42,
+    "throws": {
+     "0": 6
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 5
+   }
+  },
+  {
+   "level": "ship_demo",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 5,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 979,
+   "wall": 29.605996099999174,
+   "sight": "all_round",
+   "field_digest": "9aefbe76b56c235bdea34f6557b06195eadc74f72e460e95b60505a597403ade",
+   "tick_digest": "d79fcfdd64818fae785220075bd25efbf4926396a6984d56e6cfc500039c89c3",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 2,
+    "shots": 30,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 30,
+    "throws": {
+     "0": 3
+    }
+   },
+   "marine_deaths": {
+    "melee": 6
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 1,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 2435,
+   "wall": 55.6866369000054,
+   "sight": "all_round",
+   "field_digest": "bfe40b9a4edf1bb8d5c639aa571b237beb3214f408e4b18ea6e8fc86ae879e84",
+   "tick_digest": "fd61e6cfdec542f2f74eb84f53c882b8a5f9ef0a6ed25234713475541458032d",
+   "t0": {
+    "survivors": 0,
+    "shots": 23,
+    "kills": 4,
+    "zombie_kills": 3,
+    "ff_hits": 1,
+    "self_hits": 0,
+    "hits": 23,
+    "throws": {
+     "0": 6
+    }
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 22,
+    "kills": 3,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 22,
+    "throws": {
+     "0": 5
+    }
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "bullet": 3,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 1,
+   "outcome": "draw",
+   "team": null,
+   "ticks": 7200,
+   "wall": 134.04453680000734,
+   "sight": "all_round",
+   "field_digest": "2dcc8c5c1cd97404b004a673240b2468add9d66a79c727fda2729d532e0fb510",
+   "tick_digest": "c2f4f911de61521b22a1f448367d57e6af420e97b3ff47658863bb528667e129",
+   "t0": {
+    "survivors": 2,
+    "shots": 92,
+    "kills": 3,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 92,
+    "throws": {
+     "0": 3
+    }
+   },
+   "t1": {
+    "survivors": 4,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 2
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 1,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 2803,
+   "wall": 61.92486560001271,
+   "sight": "all_round",
+   "field_digest": "af45dd60672c0677815ec8ee29e1902d9deec21d14e7bf067ed9fd17d8391cf0",
+   "tick_digest": "9f19f5de9b34514e7a5e1d0039acec7d97947bb12fd7cf157cf2c37fb11bc7b0",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 44,
+    "kills": 8,
+    "zombie_kills": 4,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 52,
+    "throws": {
+     "0": 7
+    }
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "bullet": 3,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 2,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 2674,
+   "wall": 61.148574999999255,
+   "sight": "all_round",
+   "field_digest": "24fe191dc024189296a4229abe34b33cae28e928fb45cbf738ffc99369ba3112",
+   "tick_digest": "7ac8eb57697340bbc0687e3888c10afef3d07123a46f45246efc075775ac7d47",
+   "t0": {
+    "survivors": 0,
+    "shots": 15,
+    "kills": 3,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 15,
+    "throws": {
+     "0": 4
+    }
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 31,
+    "kills": 6,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 33,
+    "throws": {
+     "0": 5
+    }
+   },
+   "marine_deaths": {
+    "bullet": 4,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 2,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 1641,
+   "wall": 35.11944679997396,
+   "sight": "all_round",
+   "field_digest": "f6e4ed494380b1ba3725cc8ff4cf57ab652cd3d9240c8a85051f3774adf2a8fd",
+   "tick_digest": "41eaa992bf3b68558efc804193bfcd0a3ebd840ed5a08f589b384610971442af",
+   "t0": {
+    "survivors": 4,
+    "shots": 24,
+    "kills": 6,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 27,
+    "throws": {
+     "0": 3
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "bullet": 3,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 2,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 3140,
+   "wall": 67.56198070000391,
+   "sight": "all_round",
+   "field_digest": "9250bddab9595e4d8b73e7959061e438e022e9f0ffac13321c0f3d52067c368a",
+   "tick_digest": "1c57b03dea50d67acd478c47db8baee8e996c02d23eb953373f86c0159118af3",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 57,
+    "kills": 7,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 65,
+    "throws": {
+     "0": 6,
+     "4": 2
+    }
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "heat": 1,
+    "bullet": 3
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 3,
+   "outcome": "draw",
+   "team": null,
+   "ticks": 3141,
+   "wall": 70.93584069999633,
+   "sight": "all_round",
+   "field_digest": "a78a068524e39ed12b392b4b89f447d65279d5ddc2884daa42d3b93b285d209e",
+   "tick_digest": "1b08c406882750f582bc62a1dde8cfef7c1a8d261ca0b28ea7d580fa245b3f99",
+   "t0": {
+    "survivors": 0,
+    "shots": 24,
+    "kills": 5,
+    "zombie_kills": 1,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 26,
+    "throws": {
+     "0": 7,
+     "4": 3
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 22,
+    "kills": 4,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 23,
+    "throws": {
+     "0": 7,
+     "4": 2
+    }
+   },
+   "marine_deaths": {
+    "bullet": 6,
+    "heat": 2
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 3,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 3439,
+   "wall": 73.75291139999172,
+   "sight": "all_round",
+   "field_digest": "45f15b9edd6ee819f60ffb84f57a91931bac7fa8dc0c3a777f7d540c7f03343a",
+   "tick_digest": "014181bd9d3281b6c7fa989e02bdaa5783b14e4ccc49a49352080459ac43099d",
+   "t0": {
+    "survivors": 3,
+    "shots": 28,
+    "kills": 9,
+    "zombie_kills": 5,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 34,
+    "throws": {
+     "0": 6,
+     "4": 3
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "heat": 1,
+    "bullet": 3
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 3,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 2142,
+   "wall": 47.86057970003458,
+   "sight": "all_round",
+   "field_digest": "a6460e680fb83e955c2f298f21bd807757b820fdfc646034c1350f02d7208bb4",
+   "tick_digest": "6ecc822380bb3382e45bc281a43828017952bb9e79ab97c797e21839175e0f8b",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 4,
+    "shots": 28,
+    "kills": 8,
+    "zombie_kills": 4,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 33,
+    "throws": {
+     "0": 4
+    }
+   },
+   "marine_deaths": {
+    "bullet": 3,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 4,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 2593,
+   "wall": 57.636199500004295,
+   "sight": "all_round",
+   "field_digest": "e93dafd4c515b92e2b75eb3a0152b171d58017647bedbbd30538d6339cb3ed71",
+   "tick_digest": "48cb54016407dc6a1c3fc10308495a7ad24c8e306653a03c050afe8f7ca04548",
+   "t0": {
+    "survivors": 1,
+    "shots": 26,
+    "kills": 6,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 29,
+    "throws": {
+     "0": 5
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 32,
+    "kills": 5,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 28,
+    "throws": {
+     "0": 6,
+     "4": 1
+    }
+   },
+   "marine_deaths": {
+    "bullet": 5,
+    "heat": 2
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 4,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 3402,
+   "wall": 67.73974160000216,
+   "sight": "all_round",
+   "field_digest": "13548238fea9e78bbe52c8463d2252da2a196634104947c116950cf865c3d523",
+   "tick_digest": "ea567029d6f71c702ce6e6aed68687cff85c2d4b730494ec2245a8d066fad7f0",
+   "t0": {
+    "survivors": 3,
+    "shots": 29,
+    "kills": 7,
+    "zombie_kills": 3,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 28,
+    "throws": {
+     "0": 7,
+     "4": 2
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "heat": 1,
+    "bullet": 3
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 4,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 3828,
+   "wall": 83.37312260002363,
+   "sight": "all_round",
+   "field_digest": "9357e7e6c23361119374181c01d74309de656af24a89979790bbdc081d3df47b",
+   "tick_digest": "3ba0d4ee739d2b2710f47b69b7d96c53983f24aacfd1d746e06ec8826a9c9e71",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 3,
+    "shots": 58,
+    "kills": 6,
+    "zombie_kills": 2,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 60,
+    "throws": {
+     "0": 7,
+     "4": 1
+    }
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "heat": 1,
+    "bullet": 3
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "bots"
+   ],
+   "seed": 5,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 2238,
+   "wall": 52.55635959998472,
+   "sight": "all_round",
+   "field_digest": "206e3c11917baa24af26c01910378d1e685d1183e0ac35f5fdfa56eb94ef3f0c",
+   "tick_digest": "4cdb675a63fb27257ca325cb21ff53b969b826c358e0aed172acb3ed6098b90d",
+   "t0": {
+    "survivors": 2,
+    "shots": 22,
+    "kills": 4,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 21,
+    "throws": {
+     "0": 5
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 24,
+    "kills": 2,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 23,
+    "throws": {
+     "0": 7
+    }
+   },
+   "marine_deaths": {
+    "bullet": 5,
+    "heat": 1
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "bots",
+    "idle"
+   ],
+   "seed": 5,
+   "outcome": "win",
+   "team": 0,
+   "ticks": 2202,
+   "wall": 50.45981789997313,
+   "sight": "all_round",
+   "field_digest": "a2c6352871d825a1178faf8017778cb71e2d67246a7068caf666266355d1d8e1",
+   "tick_digest": "e3553d2ad08c0c884088b0dc3674e2f37238bcd3a30aa9379bd33963078c525b",
+   "t0": {
+    "survivors": 3,
+    "shots": 34,
+    "kills": 4,
+    "zombie_kills": 1,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 32,
+    "throws": {
+     "0": 3
+    }
+   },
+   "t1": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "marine_deaths": {
+    "melee": 1,
+    "bullet": 2,
+    "heat": 2
+   }
+  },
+  {
+   "level": "ship_freighter_standard_s28_medium",
+   "controllers": [
+    "idle",
+    "bots"
+   ],
+   "seed": 5,
+   "outcome": "win",
+   "team": 1,
+   "ticks": 1673,
+   "wall": 30.160733399970923,
+   "sight": "all_round",
+   "field_digest": "7c268bef50abc9534c1383c93d8ecb58e467c8e39a1d8b8fb7925fdbc9ebe872",
+   "tick_digest": "977fd9877e3b6ca04d74735da1a1ddc5b3806fad5af225521d4edfe39dec9db8",
+   "t0": {
+    "survivors": 0,
+    "shots": 0,
+    "kills": 0,
+    "zombie_kills": 0,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 0,
+    "throws": {}
+   },
+   "t1": {
+    "survivors": 4,
+    "shots": 27,
+    "kills": 5,
+    "zombie_kills": 1,
+    "ff_hits": 0,
+    "self_hits": 0,
+    "hits": 32,
+    "throws": {
+     "0": 3,
+     "4": 1
+    }
+   },
+   "marine_deaths": {
+    "heat": 1,
+    "bullet": 3
+   }
+  }
+ ]
+}
