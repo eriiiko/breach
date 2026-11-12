@@ -402,12 +402,16 @@ def test_only_the_order_modules_name_the_order_columns():
     ``order_where`` / ``order_until`` / ``order_target`` but
     ``unit_orders.py`` (the writer), ``unit_schema.py`` (the columns),
     ``damage.py`` / ``ai_zombie.py`` (the clears), ``simulation.py`` and
-    ``control_bots.py`` (the commander's read of the held order) -- so
-    nothing reads an order for a decision before rung 4. Breaks if a reader
-    appears without a design line."""
+    ``control_bots.py`` (the commander's read of the held order) and
+    ``obs_spec_v1.py`` (the soldier's own order shown to it, #195 1g: obs
+    spec 1.5 / 2.2, the design's 5.2 -- an INPUT to the agent, not a
+    decision of the game) -- so nothing in the game reads an order for a
+    decision before rung 4. Breaks if a reader appears without a design
+    line."""
     allowed = {"simulation/unit_orders.py", "simulation/unit_schema.py",
                "simulation/damage.py", "simulation/ai_zombie.py",
-               "simulation/simulation.py", "control_bots.py"}
+               "simulation/simulation.py", "control_bots.py",
+               "simulation/obs_spec_v1.py"}
     pat = re.compile(r"\border_(what|where|until|target)\b")
     hits = set()
     for p in (ROOT / "src").rglob("*.py"):

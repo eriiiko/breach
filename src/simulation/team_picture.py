@@ -408,13 +408,21 @@ def fire_lanes(sim, team: int, cell: int, halfwidth: int):
     grid y-down) to E = S + ``range_tiles`` -- cut at the last tile before
     the first solid (or off-map) tile of a per-tile walk S -> E -- drawn
     through :func:`draw_lanes`. The clip is a drawing step on the coarse
-    grid, not a line-of-fire test."""
-    gmap = sim.gmap
+    grid, not a line-of-fire test. The body is :func:`fire_lanes_of` over
+    the sim's units (the observation hands it the team's mates, #195 1g)."""
+    return fire_lanes_of(sim.gmap, sim.weapons_tables, sim.units, team,
+                         cell, halfwidth)
+
+
+def fire_lanes_of(gmap, weapons_tables, units, team: int, cell: int,
+                  halfwidth: int):
+    """:func:`fire_lanes` over an explicit unit list (every unit of the
+    team that may own a lane must be in it)."""
     solid = gmap.solid
     h, w = solid.shape
-    rows = sim.weapons_tables.weapons.by_name
+    rows = weapons_tables.weapons.by_name
     segments = []
-    for u in sorted(sim.units, key=lambda u: u.id):
+    for u in sorted(units, key=lambda u: u.id):
         if (u.team != team or not u.alive or u.is_zombie
                 or not getattr(u, "live_trigger", False)):
             continue

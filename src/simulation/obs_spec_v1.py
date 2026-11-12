@@ -500,23 +500,13 @@ class TeamKnowledge:
         mates, the bots' dials), computed once per view on first read."""
         if self._lanes is None:
             from config import CFG
-            from simulation.team_picture import fire_lanes
-            self._lanes = fire_lanes(_MatesOnly(self), self.team,
-                                     _cfg_int(CFG, "bots", "lane_cell"),
-                                     _cfg_int(CFG, "bots", "lane_halfwidth"))
+            from simulation.team_picture import fire_lanes_of
+            self._lanes = fire_lanes_of(
+                self.world.gmap, self.world.weapons_tables,
+                list(self.mates.values()), self.team,
+                _cfg_int(CFG, "bots", "lane_cell"),
+                _cfg_int(CFG, "bots", "lane_halfwidth"))
         return self._lanes
-
-
-class _MatesOnly:
-    """The ``sim`` ``fire_lanes`` reads (``gmap``, ``weapons_tables``,
-    ``units``): the team's living mates stand in for the unit list."""
-
-    __slots__ = ("gmap", "weapons_tables", "units")
-
-    def __init__(self, know):
-        self.gmap = know.world.gmap
-        self.weapons_tables = know.world.weapons_tables
-        self.units = list(know.mates.values())
 
 
 # ---------------------------------------------------------------------------
