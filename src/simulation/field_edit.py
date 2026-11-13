@@ -507,6 +507,75 @@ def _combine_heat_q(old: int, c: int, mode: EditMode) -> int:
     raise ValueError(f"FieldEdit: unsupported heat mode {mode!r}")  # pragma: no cover
 
 
+@dataclass(frozen=True)
+class _Door:
+    """One edit at the door (#29 P3e), in its field's currency: what
+    :func:`apply_field_edit` and the device pack (:func:`pack_for_device`,
+    #29 P4c) both read -- ONE door, so the two backends cannot quantize
+    differently."""
+    amount_q: int
+    noise_q: int
+    low_q: int
+    tiles_int: bool
+    den: int
+    clamp_q: Any
+    clamp_o2: Any
+    clamp_n2: Any
+
+
+def _edit_door(edit: FieldEdit, pol: _FieldPolicy, key) -> _Door:
+    """The per-edit door: the amount into the field's currency, the noise
+    into a Q16 low bound, the clamp into counts, ONCE per edit; refuses an
+    unknown dtype and a noisy edit without its key."""
+    clamp = edit.clamp if edit.clamp is not None else pol.clamp
+    scale_cur = _CURRENCY.get(pol.dtype)
+    if scale_cur is None:
+        raise ValueError(f"FieldEdit: no currency for policy dtype "
+                         f"{pol.dtype!r}")
+    amount_q = amount_q_of(edit, pol.dtype)
+    noise_q = 0
+    if edit.noise > 0.0:
+        noise_q = min(_ufx.quantize_scalar(float(edit.noise)),   # p3e-door
+                      _ufx.FP_ONE)
+    low_q = _ufx.FP_ONE - noise_q
+    if noise_q and key is None:
+        raise ValueError("FieldEdit: a noisy edit needs its edit key (the "
+                         "queue's seq) for its keyed draws (#29 P3b)")
+    tiles_int = edit.region == Region.TILES and int(edit.weight_den) > 0
+    den = int(edit.weight_den) if tiles_int else _ufx.FP_ONE
+    if noise_q:
+        den *= _ufx.FP_ONE
+    if edit.scale is not None:
+        den *= _ufx.FP_ONE
+    clamp_q = _clamp_q(clamp, scale_cur)
+    clamp_o2 = clamp_n2 = None
+    if pol.dtype == "atmosphere" and clamp is not None:
+        clamp_o2 = _clamp_q((clamp[0] * 0.21, clamp[1] * 0.21),  # p3e-door
+                            scale_cur)
+        clamp_n2 = _clamp_q((clamp[0] * 0.79, clamp[1] * 0.79),  # p3e-door
+                            scale_cur)
+    return _Door(amount_q, noise_q, low_q, tiles_int, den, clamp_q,
+                 clamp_o2, clamp_n2)
+
+
+def _refuse_conservative_slice(gmap, edit: FieldEdit) -> None:
+    """arc #54 P-G1b (design §2.7 FieldEdit row): the generic "gas" policy
+    REFUSES a CONSERVATIVE slice (see :func:`apply_field_edit`). Called by
+    both backends, so the refusal stays a HOST refusal on every path."""
+    if edit.field not in ("gas", "smoke"):
+        return
+    gid = edit.channel
+    if gid is None and edit.field == "smoke":
+        gid = gmap.gases.name_to_id.get("smoke")
+    if gid is not None and bool(gmap.gases.conservative[int(gid)]):
+        raise AssertionError(
+            f"FieldEdit: the 'gas' policy refuses the CONSERVATIVE slice "
+            f"{int(gid)} — bulk N is the quantity gas_energy is "
+            f"denominated against (arc #54 design §2.7). Use the pump "
+            f"primitives or the 'atmosphere' policy, which carry the "
+            f"energy with the mass.")
+
+
 def apply_field_edit(gmap, edit: FieldEdit, rng, key=None) -> None:
     """Apply one :class:`FieldEdit` to ``gmap`` in place.
 
@@ -552,36 +621,14 @@ def apply_field_edit(gmap, edit: FieldEdit, rng, key=None) -> None:
     shape = (arr.shape[0], arr.shape[1])
 
     skip_mask = pol.skip(gmap) if pol.skip is not None else None
-    clamp = edit.clamp if edit.clamp is not None else pol.clamp
 
     # #29 P3e: the door -- the amount into the field's currency, the noise
-    # into a Q16 low bound, the clamp into counts, ONCE per edit.
-    scale_cur = _CURRENCY.get(pol.dtype)
-    if scale_cur is None:
-        raise ValueError(f"FieldEdit: no currency for policy dtype "
-                         f"{pol.dtype!r}")
-    amount_q = amount_q_of(edit, pol.dtype)
-    noise_q = 0
-    if edit.noise > 0.0:
-        noise_q = min(_ufx.quantize_scalar(float(edit.noise)),   # p3e-door
-                      _ufx.FP_ONE)
-    low_q = _ufx.FP_ONE - noise_q
-    if noise_q and key is None:
-        raise ValueError("FieldEdit: a noisy edit needs its edit key (the "
-                         "queue's seq) for its keyed draws (#29 P3b)")
-    tiles_int = edit.region == Region.TILES and int(edit.weight_den) > 0
-    den = int(edit.weight_den) if tiles_int else _ufx.FP_ONE
-    if noise_q:
-        den *= _ufx.FP_ONE
-    if edit.scale is not None:
-        den *= _ufx.FP_ONE
-    clamp_q = _clamp_q(clamp, scale_cur)
-    clamp_o2 = clamp_n2 = None
-    if pol.dtype == "atmosphere" and clamp is not None:
-        clamp_o2 = _clamp_q((clamp[0] * 0.21, clamp[1] * 0.21),  # p3e-door
-                            scale_cur)
-        clamp_n2 = _clamp_q((clamp[0] * 0.79, clamp[1] * 0.79),  # p3e-door
-                            scale_cur)
+    # into a Q16 low bound, the clamp into counts, ONCE per edit (one helper,
+    # shared with the device pack, #29 P4c).
+    door = _edit_door(edit, pol, key)
+    amount_q, noise_q, low_q = door.amount_q, door.noise_q, door.low_q
+    tiles_int, den = door.tiles_int, door.den
+    clamp_q, clamp_o2, clamp_n2 = door.clamp_q, door.clamp_o2, door.clamp_n2
 
     is_heat = (pol.dtype == "heat")
     is_water = (pol.dtype == "water")
@@ -607,17 +654,8 @@ def apply_field_edit(gmap, edit: FieldEdit, rng, key=None) -> None:
     # nothing and closes the door before someone opens it. A conservative-slice
     # edit belongs on the pump primitives or the `atmosphere` policy, both of
     # which carry the energy.
-    if is_gas and has_seam and edit.field in ("gas", "smoke"):
-        gid = edit.channel
-        if gid is None and edit.field == "smoke":
-            gid = gmap.gases.name_to_id.get("smoke")
-        if gid is not None and bool(gmap.gases.conservative[int(gid)]):
-            raise AssertionError(
-                f"FieldEdit: the 'gas' policy refuses the CONSERVATIVE slice "
-                f"{int(gid)} — bulk N is the quantity gas_energy is "
-                f"denominated against (arc #54 design §2.7). Use the pump "
-                f"primitives or the 'atmosphere' policy, which carry the "
-                f"energy with the mass.")
+    if is_gas and has_seam:
+        _refuse_conservative_slice(gmap, edit)
     # ``ch`` was resolved above: None for scalar fields (incl. a gas SLICE,
     # already sliced out), 0/1/2 for the RGB channel of an (h, w, 3) field.
 
@@ -789,19 +827,184 @@ class EditQueue:
         edit, seq = item
         return (edit.field, int(edit.source_id), int(edit.region), seq)
 
+    def take_ordered(self):
+        """The queued edits as ``[(edit, seq), ...]`` in the flush's applied
+        order (the stable sort), and the queue cleared -- the one ordering both
+        backends apply (the host flush, the device edit queue, #29 P4c)."""
+        if not self._edits:
+            return []
+        ordered = sorted(self._edits, key=self._sort_key)
+        self.clear()
+        return ordered
+
     def flush(self, gmap, rng) -> None:
         """Apply every queued edit in stable-sorted order, then clear the queue.
 
         Deterministic regardless of enqueue order: the sort key is
         ``(field, source_id, region, seq)``. The ``noise`` draws happen here,
         keyed by each edit's ``seq`` (``rng`` is the sim's keyed draws).
+        On the resident path the device edit queue is this flush (#29 P4c:
+        :func:`pack_for_device`, applied in the resident tick).
         """
-        if not self._edits:
-            return
-        ordered = sorted(self._edits, key=self._sort_key)
-        for edit, seq in ordered:
-            apply_field_edit(gmap, edit, rng, key=seq)
-        self.clear()
+        apply_ordered(gmap, self.take_ordered(), rng)
+
+
+def apply_ordered(gmap, ordered, rng) -> None:
+    """THE host flush body: apply ``[(edit, seq), ...]`` (already in the
+    applied order, :meth:`EditQueue.take_ordered`) to ``gmap``."""
+    for edit, seq in ordered:
+        apply_field_edit(gmap, edit, rng, key=seq)
+
+
+# ---------------------------------------------------------------------------
+# THE DEVICE EDIT QUEUE'S PACK (#29 P4c, residency design §4.8). On the
+# resident path slot 6b's flush is applied by the device: the host still
+# enqueues and sorts exactly as above (the order the CPU flush applies), and
+# this pack turns that order into records for the device applier
+# (cpp/src/cuda_edit_queue.cu) without reading any field:
+#
+#   an EDIT row  (EDIT_COLS int64): env, field ordinal, gas slice, mode,
+#                amount_q, den, noisy, low_q, key (the edit's seq), the clamp
+#                flags and six clamp bounds -- this module's door, once;
+#   a TILE row   (TILE_COLS int64): edit row, tile r*w+c, weight_q, scale --
+#                the region walked HERE, by _iter_region (the one walk), in
+#                its row-major order, so the device never re-derives a region.
+#
+# The device applies the tiles of an env in row order, serially (the host's
+# order: edit by edit, tile by tile), with the per-field skip masks, the
+# integer contribution (amount_q x weight x mult x scale over den, rounded
+# once), the keyed noise (Philox on (tick, key, FIELD_NOISE, tile) under the
+# sim's seed: draws.noise_mult_q16's law), the combines and the gas-energy
+# seam -- every book into the arena, folded back into the map by the runner.
+# A tick this pack cannot serve returns a REASON and the runner flushes on the
+# host at 6b (the fallback, bit-identical: today's flush).
+# ---------------------------------------------------------------------------
+#: A field's ordinal on the device: its rank in the lexicographic order of
+#: FIELD_POLICY's names (cpp/src/cuda_resident.h EDQ_F_*; the binding's
+#: ``EDIT_FIELD_ORDINALS`` must equal this table -- the pack refuses
+#: otherwise).
+DEVICE_FIELD_ORDINALS = {name: k for k, name in enumerate(sorted(FIELD_POLICY))}
+
+#: Fields the device queue never serves, with the reason: a tick that edits
+#: one is flushed on the host (the fallback).
+DEVICE_REFUSED_FIELDS = {
+    "water_depth": "the resident pre-step reads water_depth on the host "
+                   "(the dormancy decision, the source holds) before slot 7's "
+                   "upload",
+}
+
+EDIT_COLS = 16
+TILE_COLS = 4
+# EDIT row columns
+E_ENV, E_FIELD, E_SLICE, E_MODE, E_AMOUNT, E_DEN, E_NOISY, E_LOW, E_KEY, \
+    E_CLAMP_FLAGS, E_LO, E_HI, E_O2_LO, E_O2_HI, E_N2_LO, E_N2_HI = range(EDIT_COLS)
+
+#: The device's integer headroom (cuda_edit_queue.cu): the product's
+#: magnitude in 128 bits, the denominator and the contribution in 64.
+_LIM_PRODUCT = 1 << 125
+_LIM_DEN = 1 << 62
+_LIM_CONTRIB = 1 << 55
+_I64 = 1 << 63
+_M32 = (1 << 32) - 1
+
+
+@dataclass
+class DevicePack:
+    """One env's flush, packed for the device (:func:`pack_for_device`)."""
+    edits: np.ndarray          # (E, EDIT_COLS) int64
+    tiles: np.ndarray          # (T, TILE_COLS) int64, the env's applied order
+    tick_word: int             # the draws' tick & (2^32 - 1)
+    key: Tuple[int, int]       # the draws' Philox key (seed lo, seed hi)
+    t_amb_raw: int             # gas_t_amb_raw(): the seam's ambient
+    ordered: list              # [(edit, seq)]: the host fallback's input
+    rng: Any                   # the sim's draws (the noise count folds into .drawn)
+
+
+def _fits64(v) -> bool:
+    return -_I64 <= int(v) < _I64
+
+
+def pack_for_device(gmap, ordered, rng):
+    """Pack ONE env's ordered flush for the device edit queue.
+
+    Returns ``(DevicePack, None)``, or ``(None, reason)`` when the device
+    cannot serve this tick (the caller flushes on the host instead). Raises
+    exactly what the host flush raises for a malformed edit (no policy, a gas
+    edit without its channel, a CONSERVATIVE slice through the gas policy, a
+    noisy edit without a key), so every refusal stays a host refusal. Reads
+    no field: the masks the policies skip on and every combine are the
+    device's.
+    """
+    h, w = int(gmap._h), int(gmap._w)
+    smoke_id = int(_gas_ids.SMOKE)
+    n_gases = int(gmap.gas.shape[0])
+    erows = []
+    trows = []
+    noisy_any = False
+    for idx, (edit, seq) in enumerate(ordered):
+        pol = _policy(edit.field)
+        if edit.field in DEVICE_REFUSED_FIELDS:
+            return None, f"a {edit.field!r} edit: {DEVICE_REFUSED_FIELDS[edit.field]}"
+        ordinal = DEVICE_FIELD_ORDINALS[edit.field]
+        gslice = -1
+        if pol.dtype == "gas":
+            if edit.field == "smoke":
+                gslice = smoke_id
+            else:
+                if edit.channel is None:
+                    raise ValueError(
+                        "FieldEdit: a 'gas' edit must set channel=<gas id> "
+                        "(the (N, h, w) slice index — gmap.gases.name_to_id)")
+                gslice = int(edit.channel)
+                if not 0 <= gslice < n_gases:
+                    return None, f"a gas edit on slice {gslice} (numpy's index wrap)"
+            _refuse_conservative_slice(gmap, edit)
+        door = _edit_door(edit, pol, seq)
+        if door.noise_q:
+            noisy_any = True
+        flags = 0
+        bounds = [0, 0, 0, 0, 0, 0]
+        for k, pair in enumerate((door.clamp_q, door.clamp_o2, door.clamp_n2)):
+            if pair is None:
+                continue
+            lo, hi = pair
+            if lo is not None:
+                flags |= 1 << (2 * k)
+                bounds[2 * k] = int(lo)
+            if hi is not None:
+                flags |= 1 << (2 * k + 1)
+                bounds[2 * k + 1] = int(hi)
+        row = [0, ordinal, gslice, int(edit.mode), door.amount_q, door.den,
+               1 if door.noise_q else 0, door.low_q, int(seq), flags] + bounds
+        if not all(_fits64(v) for v in row) or door.den >= _LIM_DEN:
+            return None, "an edit whose integers leave the device's 64-bit range"
+        erows.append(row)
+        a_abs = abs(door.amount_q)
+        mult_max = _ufx.FP_ONE if door.noise_q else 1
+        den = door.den
+        float_w = edit.region == Region.TILES and not door.tiles_int
+        scale = edit.scale
+        for (r, c, weight) in _iter_region(edit.region, edit.coords,
+                                           edit.falloff, (h, w)):
+            if float_w:
+                weight = _ufx.quantize_scalar(float(weight))  # p3e-door: float weight
+            weight = int(weight)
+            s = int(scale[r, c]) if scale is not None else 1
+            bound = a_abs * abs(weight) * mult_max * abs(s)
+            if (bound >= _LIM_PRODUCT or not _fits64(weight) or not _fits64(s)
+                    or (2 * bound + den) // (2 * den) >= _LIM_CONTRIB):
+                return None, "an edit whose integer product leaves the device's range"
+            trows.append((idx, r * w + c, weight, s))
+    if noisy_any and not isinstance(rng, _draws.MatchDraws):
+        return None, "noisy edits without the sim's keyed draws (MatchDraws)"
+    edits = np.array(erows, dtype=np.int64).reshape(-1, EDIT_COLS)
+    tiles = np.array(trows, dtype=np.int64).reshape(-1, TILE_COLS)
+    if isinstance(rng, _draws.MatchDraws):
+        tick_word, key = int(rng.tick) & _M32, (int(rng.key[0]), int(rng.key[1]))
+    else:
+        tick_word, key = 0, (0, 0)
+    return DevicePack(edits, tiles, tick_word, key, int(gmap.gas_t_amb_raw()),
+                      ordered, rng), None
 
 
 __all__ = [

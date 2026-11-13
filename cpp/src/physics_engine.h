@@ -608,6 +608,14 @@ public:
     // stamps built (cuda_resident.h STAMP_ROW_COLS; env = the batch index).
     void stamp_units_resident(const ResidentFields& f, const int32_t* rows,
                               int n_rows, const ResidentEngineList& engs = {}) const;
+    // #29 P4c: slot 6b's FieldEdit flush on the device (the device edit queue,
+    // cuda_edit_queue.cu) from every env's packed records -- `buf` the one
+    // int64 buffer of cuda_resident_tick.h's resident_edits. Its books fold
+    // into each env's `edit_queue_books` at step_tail_resident.
+    void apply_edits_resident(const ResidentFields& f, const int64_t* buf,
+                              int n_edits, int n_tiles, uint32_t salt,
+                              int o2_idx, int n2_idx,
+                              const ResidentEngineList& engs = {}) const;
     std::vector<std::vector<std::pair<int, int>>> step_tail_resident(
         const ResidentFields& f, const ResidentTickArgs& a,
         const ResidentEngineList& engs = {}) const;
@@ -753,6 +761,10 @@ public:
     // solids). PER-CALL reset, the EOSSolver counter idiom; int64, in the
     // gas_energy Q32 currency.
     mutable int64_t e_water_evac_export_sum = 0;
+    // #29 P4c: the device edit queue's books of the LAST tick it ran
+    // (cuda_resident.h EDQ_SLOTS, ASSIGNED at the books fold): the runner adds
+    // them into the map's trace books, gas-energy channels and draw count.
+    mutable std::vector<int64_t> edit_queue_books;
 
     // --- stamp_units: the per-tick dynamic-field rebuild --------------------
     // Moves GameMap.stamp_units' FIELD REBUILD (gamemap.py:485-589) into C++ —
