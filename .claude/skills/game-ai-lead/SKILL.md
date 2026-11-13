@@ -163,8 +163,9 @@ from the survey. The ones most often needed:
 3. Design work is language first: a section of the design document, proposed,
    then agreed. Nothing is built from a section that is not AGREED.
 4. Build per `autonomous-patch-workflow` on a branch with its worktree. A patch
-   of rung 1 changes no behaviour of the game and merges on green; anything
-   that changes how a match plays is a HUMAN-TEST.
+   of rung 1 changes no behaviour of the game and merges on green; a patch
+   that changes how a match plays merges on green too, unless Erik asked to
+   play it first (CLAUDE.md iron rule, 2026-11-13).
 5. Close: record rulings in the design document and memory, update #192, amend
    this skill.
 

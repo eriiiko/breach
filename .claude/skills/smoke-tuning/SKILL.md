@@ -136,7 +136,7 @@ are 256x larger: read them through `gas_fixed.trace_*`, never `/65536`.
 - Dials only: commit `config.toml` with each changed value's reason in its comment (what it
   looked like before, Erik's words). In a shared tree, read `git diff config.toml` and stage
   only your own hunks: Erik may be tuning there too.
-- It's feel-adjacent, so HUMAN-TEST: Erik plays it before it merges.
+- It merges on green unless Erik asked to look first (CLAUDE.md iron rule, 2026-11-13); in a tuning session he is already at the screen.
 - Run `pytest tests -q`. `tests/test_gas_relief.py` refuses missing, mistyped or out-of-range
   dials.
 - A look Erik loves but that doesn't fit the main smoke is kept, not lost: record its recipe and
