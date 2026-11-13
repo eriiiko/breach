@@ -77,6 +77,9 @@ def test_every_shipped_look_carries_every_clip_the_renderer_names():
     player reads ``CLIP_MAP`` names as they are, so a SOMA look plays its
     first clip in every state there -- the pose-off revert wants the
     Quaternius ``space_marine`` back in the player row.)
+    (#187: a clip may also be a ``mirror_of`` row of the skeleton's clip
+    table -- baked at load from the file's clip it mirrors, which must then
+    be in the file.)
     """
     from renderer.pose_layer import _glb_skeleton, masks_for, pose_settings
     settings = pose_settings(CFG)
@@ -84,9 +87,15 @@ def test_every_shipped_look_carries_every_clip_the_renderer_names():
         doc = _gltf_json(path)
         clips = {a.get("name") for a in doc.get("animations", [])}
         table = masks_for(_glb_skeleton(path), settings)[0]
-        names = settings.playback[table].clip_names
+        pb = settings.playback[table]
+        names = pb.clip_names
+        rows = settings.clips if pb.clips is None else pb.clips
+        # #187: a mirror row stands for its source clip of the file
+        wanted = {names.get(c, c) for c in CLIP_MAP.values()}
+        wanted = {rows[c].mirror_of if c in rows and rows[c].mirror_of else c
+                  for c in wanted}
         # "" = the skeleton declares it has none (#179; the SOMA shot, #184)
-        missing = sorted({names.get(c, c) for c in CLIP_MAP.values()} - clips - {""})
+        missing = sorted(wanted - clips - {""})
         assert not missing, f"{path.name} lacks the clips {missing}"
         assert doc.get("skins"), f"{path.name} has no skin"
 

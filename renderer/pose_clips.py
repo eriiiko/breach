@@ -326,6 +326,106 @@ def read_skeleton(doc: dict, binary: bytes, src: str) -> Skeleton:
                     bind_inverse=bind_inv, source=src)
 
 
+
+# ---------------------------------------------------------------------------
+# Mirror (#187)
+# ---------------------------------------------------------------------------
+
+# The body's sagittal reflection in model space: glTF is Y-up, the body faces
+# +z, so its left-right axis is x.
+MIRROR = np.diag([-1.0, 1.0, 1.0, 1.0])
+
+
+@dataclass(frozen=True)
+class MirrorRig:
+    """How one skeleton is mirrored (#187): ``partner[j]`` = the bone whose
+    motion bone ``j`` takes in the mirror image (itself when unpaired), and
+    ``conj[j] = A_j = bind_{m(j)}^-1 @ M @ bind_j`` -- the constant that
+    turns the partner's global pose into bone ``j``'s:
+
+        G'_j = M @ G_{m(j)} @ A_j        (so skin'_j = M @ skin_{m(j)} @ M)
+
+    exact for ANY rest pose (a symmetric one makes ``A_j`` a pure reflection
+    in the bone's frame; SOMA's is a few tenths of a degree and up to 1 cm
+    off, the Quaternius rig exact). ``A_{m(j)} = A_j^-1``, so the inverse
+    needs no second table."""
+    partner: np.ndarray            # (J,) int
+    conj: np.ndarray               # (J, 4, 4) float64
+
+
+def _swap_tokens(name: str, pairs: Sequence[Tuple[str, str]]) -> str:
+    """``name`` with every token of ``pairs`` swapped for its partner, in
+    one left-to-right pass (longest token first at each position)."""
+    table = {}
+    for a, b in pairs:
+        table[a], table[b] = b, a
+    toks = sorted(table, key=len, reverse=True)
+    out, i = [], 0
+    while i < len(name):
+        for tok in toks:
+            if name.startswith(tok, i):
+                out.append(table[tok])
+                i += len(tok)
+                break
+        else:
+            out.append(name[i])
+            i += 1
+    return "".join(out)
+
+
+def mirror_rig(sk: Skeleton, pairs: Sequence[Tuple[str, str]],
+               where: str = "mirror_pairs") -> MirrorRig:
+    """The :class:`MirrorRig` of ``sk`` under the name rule ``pairs`` (a
+    skeleton table's ``mirror_pairs``: token pairs swapped in bone names).
+    Refuses, by name: a bone whose partner name is no bone, and a pair of
+    bones whose parents are not partners (the clip mirror's local form
+    needs ``parent(m(j)) == m(parent(j))``)."""
+    J = sk.n_bones
+    partner = np.arange(J)
+    for j, name in enumerate(sk.names):
+        other = _swap_tokens(name, pairs)
+        if other == name:
+            continue
+        if other not in sk.names:
+            raise PoseDataError(f"{sk.source}: {where}: bone {name!r} has no partner "
+                                f"{other!r} in the skeleton")
+        partner[j] = sk.names.index(other)
+    for j in range(J):
+        p = sk.parents[j]
+        pm = sk.parents[partner[j]]
+        if (p < 0) != (pm < 0) or (p >= 0 and pm != partner[p]):
+            raise PoseDataError(
+                f"{sk.source}: {where}: the parents of {sk.names[j]!r} and its partner "
+                f"{sk.names[partner[j]]!r} are not partners")
+    bind = np.linalg.inv(sk.bind_inverse.astype(np.float64))   # blas-exempt: load time, once per look
+    conj = np.einsum("jab,bc,jcd->jad", sk.bind_inverse[partner].astype(np.float64),
+                     MIRROR, bind)
+    return MirrorRig(partner=partner, conj=conj)
+
+
+def mirror_globals(mr: MirrorRig, g: np.ndarray) -> np.ndarray:
+    """Global bone matrices ``(N, J, 4, 4)`` -> their mirror image
+    ``M @ G[:, m(j)] @ A_j`` (one batched product, no BLAS: the frame path
+    of a left-handed unit)."""
+    conj = mr.conj.astype(g.dtype)
+    return np.einsum("ab,njbc,jcd->njad", MIRROR.astype(g.dtype), g[:, mr.partner], conj)
+
+
+def mirror_locals(mr: MirrorRig, sk: Skeleton, t: np.ndarray, r: np.ndarray,
+                  s: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Local TRS ``(K, J, ...)`` -> the locals whose FK is the mirror image
+    (:func:`mirror_globals` of their FK): ``L'_j = A_p^-1 @ L_{m(j)} @ A_j``
+    (``A_p^-1 = A_{m(p)}``; a root's left factor is ``M``). Load time."""
+    L = trs_matrices(t, r, s).astype(np.float64)
+    left = np.where((sk.parents < 0)[:, None, None], MIRROR[None],
+                    mr.conj[mr.partner[np.maximum(sk.parents, 0)]])
+    out = np.einsum("jab,kjbc,jcd->kjad", left, L[:, mr.partner], mr.conj)
+    rot = out[..., :3, :3]
+    scale = np.linalg.norm(rot, axis=-2)
+    q = mat3_to_quat(rot / scale[..., None, :])
+    return out[..., :3, 3].copy(), q, scale
+
+
 # ---------------------------------------------------------------------------
 # Clip bank
 # ---------------------------------------------------------------------------
@@ -333,11 +433,16 @@ def read_skeleton(doc: dict, binary: bytes, src: str) -> Skeleton:
 @dataclass(frozen=True)
 class ClipRow:
     """Per-clip playback data (``[render.pose.clips]``; defaults = every clip
-    loops at the global rate, root motion kept, additive reference frame 0)."""
+    loops at the global rate, root motion kept, additive reference frame 0).
+
+    #187: ``mirror_of`` names another clip of the file: the row is then a
+    NEW clip, the mirror image of that one (:func:`mirror_locals`), baked
+    once at load ("" = a clip of the file)."""
     loop: bool = True
     rate: float = 1.0
     root_motion: str = ROOT_MOTION_KEEP
     additive_ref: int = 0
+    mirror_of: str = ""
 
 
 @dataclass
@@ -360,6 +465,7 @@ class ClipBank:
     rate: np.ndarray               # (C,) float, per-clip rate multiplier
     additive_ref: np.ndarray       # (C,) int, frame index of the additive reference
     root_motion: Tuple[str, ...] = ()
+    mirror: Optional[MirrorRig] = None   # #187: the skeleton's mirror (None = no mirror_pairs)
     _index: Dict[str, int] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -412,29 +518,35 @@ def _sample_channel(inp: np.ndarray, out: np.ndarray, grid: np.ndarray,
 
 
 def build_clip_bank(path, clip_rows: Optional[Mapping[str, ClipRow]] = None,
+                    mirror_pairs: Sequence[Tuple[str, str]] = (),
                     ) -> ClipBank:
     """Read one look's ``.glb`` and bake every animation it holds.
 
     ``clip_rows`` maps a clip name to its :class:`ClipRow`; a clip without a
     row takes the defaults. A row naming a clip the file lacks is not an
-    error here (looks may differ); the caller checks the names it needs."""
+    error here (looks may differ); the caller checks the names it needs.
+
+    #187: a row with ``mirror_of`` is a NEW clip, the mirror image of that
+    clip of the file, baked here once (before its own root-motion strip);
+    the bank's :class:`MirrorRig` (``mirror_pairs``, the skeleton table's
+    name rule; empty = no mirror) is kept as ``bank.mirror``. Refused, by
+    name: a mirror row named like a clip of the file (it would shadow it),
+    a mirror of a mirror, a mirror row on a skeleton without
+    ``mirror_pairs``. A mirror of a clip this file lacks is not baked (the
+    look lacks it, as any absent clip)."""
     path = Path(path)
     src = path.name
     doc, binary = read_glb(path)
     sk = read_skeleton(doc, binary, src)
     rows = dict(clip_rows or {})
+    mr = mirror_rig(sk, mirror_pairs) if mirror_pairs else None
     jpos = {node: i for i, node in enumerate(doc["skins"][0]["joints"])}
     J = sk.n_bones
-    names: List[str] = []
-    t_parts, r_parts, s_parts = [], [], []
-    step_t, step_r, step_s = [], [], []
-    offset, n_keys_l, key_dt, duration = [], [], [], []
-    loop, rate, add_ref, root_mode = [], [], [], []
-    any_scale = bool(np.abs(sk.rest_s - 1.0).max() > _IDENT_EPS)
-    total = 0
+    # raw[name] = (t, r, s, step_t, step_r, step_s, key step), before the strip
+    raw: Dict[str, tuple] = {}
     for a_i, anim in enumerate(doc.get("animations", [])):
         name = str(anim.get("name", f"clip{a_i}"))
-        if name in names:
+        if name in raw:
             raise PoseDataError(f"{src}: duplicate clip name {name!r}")
         what = f"clip {name!r}"
         channels = []
@@ -472,6 +584,40 @@ def build_clip_bank(path, clip_rows: Optional[Mapping[str, ClipRow]] = None,
             else:
                 cs[:, bone] = v
                 st_s[bone] = interp == INTERP_STEP
+        raw[name] = (ct, cr, cs, st_t, st_r, st_s, step)
+    if not raw:
+        raise PoseDataError(f"{src}: no animations")
+    # #187: the mirror rows, from the raw (unstripped) source
+    for name, row in rows.items():
+        if not row.mirror_of:
+            continue
+        if name in raw:
+            raise PoseDataError(f"{src}: clip row {name!r} mirrors {row.mirror_of!r} but "
+                                "is named like a clip of the file (it would shadow it)")
+        src_row = rows.get(row.mirror_of)
+        if src_row is not None and src_row.mirror_of:
+            raise PoseDataError(f"{src}: clip row {name!r} mirrors {row.mirror_of!r}, "
+                                "itself a mirror (refused: mirror a clip of the file)")
+        if row.mirror_of not in raw:
+            continue                          # this look lacks the source clip
+        if mr is None:
+            raise PoseDataError(f"{src}: clip row {name!r} mirrors {row.mirror_of!r} but "
+                                "its skeleton table has no mirror_pairs")
+        ct, cr, cs, st_t, st_r, st_s, step = raw[row.mirror_of]
+        mt, mq, ms = mirror_locals(mr, sk, ct, cr, cs)
+        p = mr.partner
+        # a mirrored translation also follows the partner's rotation
+        raw[name] = (mt, mq, ms, st_t[p] & st_r[p], st_r[p], st_s[p], step)
+    names: List[str] = []
+    t_parts, r_parts, s_parts = [], [], []
+    step_t, step_r, step_s = [], [], []
+    offset, n_keys_l, key_dt, duration = [], [], [], []
+    loop, rate, add_ref, root_mode = [], [], [], []
+    any_scale = bool(np.abs(sk.rest_s - 1.0).max() > _IDENT_EPS)
+    total = 0
+    for name, (ct, cr, cs, st_t, st_r, st_s, step) in raw.items():
+        ct, cr, cs = ct.copy(), cr.copy(), cs.copy()
+        K = len(ct)
         # hemisphere continuity along time (so a sub-frame nlerp never takes
         # the long way round between two neighbouring keys)
         if K > 1:
@@ -506,8 +652,6 @@ def build_clip_bank(path, clip_rows: Optional[Mapping[str, ClipRow]] = None,
         add_ref.append(int(row.additive_ref))
         root_mode.append(row.root_motion)
         total += K
-    if not names:
-        raise PoseDataError(f"{src}: no animations")
     f32 = np.float32
     return ClipBank(
         skeleton=sk, names=tuple(names),
@@ -520,7 +664,7 @@ def build_clip_bank(path, clip_rows: Optional[Mapping[str, ClipRow]] = None,
         key_dt=np.array(key_dt), duration=np.array(duration),
         loop=np.array(loop), rate=np.array(rate),
         additive_ref=np.array(add_ref, dtype=np.int64),
-        root_motion=tuple(root_mode))
+        root_motion=tuple(root_mode), mirror=mr)
 
 
 __all__ = [
@@ -528,4 +672,5 @@ __all__ = [
     "read_skeleton", "build_clip_bank", "quat_mul", "quat_conj", "quat_nlerp",
     "quat_slerp", "quat_to_mat3", "mat3_to_quat", "trs_matrices",
     "ROOT_MOTION_KEEP", "ROOT_MOTION_STRIP", "ROOT_MOTION_MODES",
+    "MIRROR", "MirrorRig", "mirror_rig", "mirror_globals", "mirror_locals",
 ]
