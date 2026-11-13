@@ -757,11 +757,20 @@ them adds a version of this spec (the Full view row, design 10).
 (zero for a team the level lacks) its living count / `n_t` and its
 BALANCE -- the sum over its living units of `current_hp / bars[uid]` over
 `n_t` (CHOICE: the reward's balance of design 6 is 1i's; until 1i lands
-the balance here is this health sum, the same quantity 1i's team part
-differences; 1i replaces the builder, not the column) -- then the zombies
+the balance here is this health sum; 1i replaces the builder, not the
+column) -- then the zombies
 awake / `spec.zombies`, dormant / `spec.zombies` (`zombie_activated`),
 and `time_left` (as 1.5 col 77). The soldier's own team counts (1.5 cols
 78-83) stay in its vector.
+
+(1i, 2026-11-13) The column is now built by the reward's one standing
+(`reward_v1.standing(...).h(t) / n_t`, squashed): the team's own health
+term `H_t`, each unit's health clipped at one bar -- its only change, which
+no shipped unit reaches. It is ONE term of the balance `B_t` that 1i's team
+part differences (`B_t = mb (H_t - H_enemy) + ma (A_t - A_enemy) - zb
+H_zombie`), not `B_t` itself; the value network has the living counts and
+every unit beside it, and `B_t` as a column would be a new version of the
+full view.
 
 ### 5.5 The watched-by-everyone plane (design 7.1 "the map")
 

@@ -1963,18 +1963,19 @@ class FullView:
     # -- the match (5.4): one vector per env per decision -------------------
     def match(self, ctx: ObsContext) -> np.ndarray:
         if self._match is None:
+            from simulation.reward_v1 import standing
             m = np.zeros(ctx.n_match, dtype=np.float32)
             teams = ctx.spec.teams
-            bars = self.picture.bars
+            # #195 1i: the team's health in bars through the reward's ONE
+            # standing (clipped at one bar); the column keeps its meaning
+            parts = standing(self.marines, self.picture.bars)
             for t in range(ctx.n_teams):
                 if t >= len(teams):
                     continue
                 n_t = int(teams[t].n)
                 mine = [u for u in self.marines if int(u.team) == t]
                 m[2 * t] = ratio(len(mine), n_t)
-                balance = sum(ratio(u.current_hp, bars.get(int(u.id), 0.0))
-                              for u in mine)
-                m[2 * t + 1] = squash(ratio(balance, n_t))
+                m[2 * t + 1] = squash(ratio(parts.h(t), n_t))
             nz = int(ctx.spec.zombies)
             awake = sum(1 for z in self.zombies if z.zombie_activated)
             k = 2 * ctx.n_teams
