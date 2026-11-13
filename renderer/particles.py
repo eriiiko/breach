@@ -73,6 +73,10 @@ flame (``renderer/muzzle_flame.py``) queues each new flash's sparks at the
 barrel's tip, in a forward cone; from then on they are blast sparks in every
 respect (the same :func:`integrate`, :func:`pack_sprites` and draw).
 ``[render.muzzle_flame.sparks]`` holds their dials, behind a refusing door.
+A second instance throws the BULLET IMPACTS' sparks back off a wall (#141,
+``renderer/tracers.py``; ``[render.tracers.sparks]``, the same dials). The
+tracers themselves are sprites of :class:`ParticleDraw` (their own instance,
+drawn after the units), packed by ``tracers.Tracers.pack``.
 
 NOT HERE: the renderer's ``_effects`` queue (tracers, explosion rings, hit
 splats) is LEGACY DISPLAY-SPACE EFFECTS, drawn after the resolve -- it is not
@@ -822,18 +826,21 @@ class MuzzleSparkSettings:
 _MUZZLE_SPARK_KINDS = {f.name: f.type for f in fields(MuzzleSparkSettings)}
 
 
-def muzzle_spark_settings(cfg) -> MuzzleSparkSettings:
-    """``[render.muzzle_flame.sparks]`` -> settings, read every frame. A
-    REFUSING door (``muzzle_flame.typed_row``: a missing, unknown or
-    mistyped key raises ValueError naming it)."""
+def muzzle_spark_settings(cfg, table: str = "muzzle_flame"
+                          ) -> MuzzleSparkSettings:
+    """``[render.<table>.sparks]`` -> settings, read every frame: the muzzle
+    sparks' (``table`` "muzzle_flame") or the bullet impacts' ("tracers",
+    #141 -- the same dials, thrown back off a wall). A REFUSING door
+    (``muzzle_flame.typed_row``: a missing, unknown or mistyped key raises
+    ValueError naming it)."""
     from collections.abc import Mapping
     from .muzzle_flame import _as_dict, typed_row
     if isinstance(cfg, Mapping):
-        sec = cfg.get("render", {}).get("muzzle_flame", {}).get("sparks")
+        sec = cfg.get("render", {}).get(table, {}).get("sparks")
     else:
-        sec = getattr(getattr(getattr(cfg, "render", None), "muzzle_flame",
+        sec = getattr(getattr(getattr(cfg, "render", None), table,
                               None), "sparks", None)
-    w = "[render.muzzle_flame.sparks]"
+    w = f"[render.{table}.sparks]"
     if sec is None:
         raise ValueError(f"config.toml has no {w} section")
     s = MuzzleSparkSettings(**typed_row(_as_dict(sec), _MUZZLE_SPARK_KINDS, w))

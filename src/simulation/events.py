@@ -31,7 +31,7 @@ belongs in the renderer.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -272,6 +272,10 @@ class ExplosionEvent:
     flash_color: tuple = (1.0, 1.0, 1.0)
     approach: object = None         # (y, x) the charge came from, as
                                     # execute_payload received it, or None
+    # #202: the [payloads.*] row that fired -- the sound layer's binding key;
+    # "" = not from a row. Render-only, and out of the repr and of equality,
+    # so two rows that do the same thing still make equal events.
+    payload: str = field(default="", repr=False, compare=False)
 
 
 @dataclass
