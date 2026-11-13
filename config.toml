@@ -5485,6 +5485,48 @@ files = ["explosion/frag_steel_room.wav"]
 reach = "loudness"
 pitch_jitter = 0.03
 
+# LOOPS (#202 S2): `loop = true` -- played from the world's STATE every
+# frame, never from an event; `reach` in metres; `max_emitters` = how many
+# of its emitters may sound at once (the loudest at the listener). The
+# samples are seamless (tools/sound_audition.py --export SRC DST --loop MS),
+# mono, at one common loudness, so `gain` is the mix dial.
+[sound.cues.vent_fan]
+files = ["loops/vent_fan.wav"]
+loop = true
+reach = 8.0               # metres; PLACEHOLDER
+gain = 0.45               # PLACEHOLDER
+max_emitters = 4
+
+[sound.cues.fire_small]
+files = ["loops/fire_small.wav"]
+loop = true
+reach = 15.0              # metres; PLACEHOLDER
+gain = 0.8                # PLACEHOLDER
+max_emitters = 1          # the fire is ONE emitter
+
+[sound.cues.fire_large]
+files = ["loops/fire_large.wav"]
+loop = true
+reach = 30.0              # metres; PLACEHOLDER
+gain = 0.8                # PLACEHOLDER
+max_emitters = 1
+
+# Which loop cue each emitter kind plays ("" = silent). Vents: every running
+# vent (alive, wired to a duct, q_circ > 0) at its aperture tile. The fire:
+# ONE pair of voices for the whole fire. Its amount is the burning AREA heard
+# at the listener (each burning tile's area x its fire level x the distance
+# law under that cue's reach): the crackle is full at fire_small_full_m2, the
+# roar comes in from fire_large_from_m2 and is full at fire_large_full_m2.
+# (A 0.333 m tile is 0.11 m2.) Every loop's gain change is ramped over ramp_ms.
+[sound.loops]
+vent = "vent_fan"
+fire_small = "fire_small"
+fire_large = "fire_large"
+ramp_ms = 150.0
+fire_small_full_m2 = 0.3  # PLACEHOLDER
+fire_large_from_m2 = 1.5  # PLACEHOLDER
+fire_large_full_m2 = 10.0 # PLACEHOLDER
+
 # A BINDING: kind -> { weapon id or payload row = cue }. An unbound weapon or
 # payload is silent.
 [sound.bindings.shot]

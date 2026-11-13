@@ -61,6 +61,22 @@ def decode(path: Path) -> tuple[np.ndarray, int]:
     return (x if ch == 1 else x.reshape(-1, ch)), sr
 
 
+def export_loop(src: Path, dst: Path, crossfade_ms: float) -> None:
+    """One generated clip -> one seamless LOOP sample (#202 S2): the whole
+    clip, its tail crossfaded onto its head (`sound_clips.make_loop`), at
+    the loops' common loudness (`normalize_rms`), MONO (a loop is placed by
+    the layer's pan; a stereo image would fight it, and it halves the file).
+    No trim: a loop is steady from its first sample."""
+    x, sr = decode(src)
+    if x.ndim == 2:
+        x = x.mean(axis=1).astype(np.float32)
+    y = sc.normalize_rms(sc.make_loop(x, sr, crossfade_ms))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_wav(dst, y, sr)
+    print(f"{src.name} loop -> {dst} ({len(y) * 1000 / sr:.0f} ms, {sr} Hz, "
+          f"crossfade {crossfade_ms:.0f} ms)")
+
+
 def export_clip(src: Path, dst: Path, shot: int = 1, squeeze: bool = False,
                 max_ms: float = 0.0) -> None:
     """One generated clip -> one game sample (assets/sounds/): shot number
@@ -297,7 +313,13 @@ def main() -> None:
                     help="with --export: shorten every silence inside the clip")
     ap.add_argument("--max-ms", type=float, default=0.0,
                     help="with --export: cut the sample at this length (faded)")
+    ap.add_argument("--loop", type=float, default=0.0, metavar="MS",
+                    help="with --export: write a seamless loop, its tail crossfaded "
+                         "onto its head over MS milliseconds (the whole clip)")
     a = ap.parse_args()
+    if a.export and a.loop > 0.0:
+        export_loop(a.export[0], a.export[1], a.loop)
+        return
     if a.export:
         export_clip(a.export[0], a.export[1], a.shot, a.squeeze, a.max_ms)
         return
