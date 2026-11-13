@@ -404,8 +404,16 @@ _PRE_G8P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 48c4be2c99dd3a35dfd64a439732a6f9e92e77f0ea1aacfd58e8909e6285c524)
-    tick_digest="931e69092a57230f06ecfdfdcb21248c"
-                "2028fa980c9ea014ebc55b6533e6cc94",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED;
+    # the tick_digest moves. SOLE CAUSE, verified on the same tree: with
+    # verb_gates.can_fire forced True this test gives exactly the old
+    # value. A bot holding its trigger on the tick its throw starts fired
+    # on that tick (the bots pin: ticks 554 and 657, unit 5); now that
+    # round does not leave, and the cadence moves after it.
+    # (was 931e69092a57230f06ecfdfdcb21248c2028fa980c9ea014ebc55b6533e6cc94)
+    tick_digest="0eaa1fab94b441b780d8ccacd1509bca"
+                "df262e925097daef20cfd348d043c794",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -438,8 +446,16 @@ _PRE_G8P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 4503c2306583d04f3f85bbf87131ef8a5101b138cbc02fda0d9b5d01a5a9bd2f)
-    unit_stream="27aeb24c34c49368bff2a7884bb8f019"
-                "ed959d02130ccc799fb38d2d30f2a3c0")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED;
+    # the unit_stream moves. SOLE CAUSE, verified on the same tree: with
+    # verb_gates.can_fire forced True this test gives exactly the old
+    # value. A bot holding its trigger on the tick its throw starts fired
+    # on that tick (the bots pin: ticks 554 and 657, unit 5); now that
+    # round does not leave, and the cadence moves after it.
+    # (was 27aeb24c34c49368bff2a7884bb8f019ed959d02130ccc799fb38d2d30f2a3c0)
+    unit_stream="2a0cba288ce1e8a18eb7038a27367744"
+                "b5f3a1040f84698b458d6875cf850cfb")
 
 
 def v1_spec(level):

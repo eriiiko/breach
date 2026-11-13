@@ -586,7 +586,15 @@ _PRE_122_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509)
-    tick_digest="dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED;
+    # the tick_digest moves. SOLE CAUSE, verified on the same tree: with
+    # verb_gates.can_fire forced True this test gives exactly the old
+    # value. A bot holding its trigger on the tick its throw starts fired
+    # on that tick (the bots pin: ticks 554 and 657, unit 5); now that
+    # round does not leave, and the cadence moves after it.
+    # (was dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0)
+    tick_digest="e46289f9e60a100518c559a5223d33d236cf6ad4e6b61f6e5dc7b22216f37282",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -621,7 +629,15 @@ _PRE_122_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba)
-    unit_stream="d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED;
+    # the unit_stream moves. SOLE CAUSE, verified on the same tree: with
+    # verb_gates.can_fire forced True this test gives exactly the old
+    # value. A bot holding its trigger on the tick its throw starts fired
+    # on that tick (the bots pin: ticks 554 and 657, unit 5); now that
+    # round does not leave, and the cadence moves after it.
+    # (was d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64)
+    unit_stream="93a30f4376c4f8115586d1300b57b019962326f74daf62c5709153b5ee0d1c0b")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):

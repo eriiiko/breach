@@ -611,8 +611,16 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 3d21436d8858106d5d9f26c57829d7b5b9e6de232d0bd2492e7a841c749d4bb8)
-    tick_digest="1775613f19c56ce58fb53975fa1ad64c"
-                "e472ccb59073b404578eaff67c99ed93",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED;
+    # the tick_digest moves. SOLE CAUSE, verified on the same tree: with
+    # verb_gates.can_fire forced True this test gives exactly the old
+    # value. A bot holding its trigger on the tick its throw starts fired
+    # on that tick (the bots pin: ticks 554 and 657, unit 5); now that
+    # round does not leave, and the cadence moves after it.
+    # (was 1775613f19c56ce58fb53975fa1ad64ce472ccb59073b404578eaff67c99ed93)
+    tick_digest="bc211fbe91ab81cde55e1fcf4085a611"
+                "af30c2cfdc34f1431392f4c049d6cba9",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -645,8 +653,16 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 7e4d0161cf924be4dfe170b52d7d2386b77c59c984a5a27bdea519d2431ffdcb)
-    unit_stream="27cefe3132431e8d06ca4838afe4b4d4"
-                "8219ea21403d53c2d300fdecfdf8643b")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED;
+    # the unit_stream moves. SOLE CAUSE, verified on the same tree: with
+    # verb_gates.can_fire forced True this test gives exactly the old
+    # value. A bot holding its trigger on the tick its throw starts fired
+    # on that tick (the bots pin: ticks 554 and 657, unit 5); now that
+    # round does not leave, and the cadence moves after it.
+    # (was 27cefe3132431e8d06ca4838afe4b4d48219ea21403d53c2d300fdecfdf8643b)
+    unit_stream="2d57334578451b54a9c0caa62c728f26"
+                "0a91eed499dca0da5f2b0ed2cf0bf739")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
