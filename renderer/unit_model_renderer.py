@@ -166,15 +166,6 @@ RELOAD_EVENT = "ReloadEvent"
 THROW_EVENT = "ThrowEvent"
 
 
-@dataclass(frozen=True)
-class _SourcedHit:
-    """#184: a hit event queued with the point it came from (tile units;
-    None = unknown) -- the blast centre for an explosion, else the
-    attacker's last drawn centre."""
-    event: object
-    source: Optional[tuple]
-
-
 @dataclass
 class _UnitAnimState:
     """Renderer-side per-unit animation state (NEVER on Unit)."""
@@ -186,9 +177,6 @@ class _UnitAnimState:
     initialised: bool = False
     shadow: Optional[ShadowCast] = None   # projected shadow, low-passed (#33)
     pose: Optional[object] = None         # pose_layer.PoseState (#162; pose layer on)
-    # #184: the unit's last drawn centre (tile units), kept across the game's
-    # two draw_units calls (players, zombies): a hit's attacker position
-    centre: Optional[tuple] = None
 
 
 @dataclass
@@ -275,11 +263,15 @@ class UnitModelRenderer:
         self._skinner = None
         self._delivered: Dict[int, object] = {}   # the last event batch (#163)
         self._shot_event = self._hit_event = None
-        # #184: blasts (a hit's direction), reload / throw (by name), one sim
-        # tick in seconds, and the held props (pose layer on only)
-        self._blast_event = self._reload_event = self._throw_event = None
+        # #184: reload / throw (by name), #185: the stagger, one sim tick in
+        # seconds, and the held props (pose layer on only)
+        self._stagger_event = self._reload_event = self._throw_event = None
         self._tick_s = 1.0 / 24.0
         self._held = None
+        # #87: where each unit's muzzle is THIS frame (unit key -> (x, y,
+        # dir x, dir y) in tiles, on the floor plane), written by _draw_one
+        # for every unit drawn holding a prop; the muzzle flame reads it
+        self.muzzle_poses: Dict[int, tuple] = {}
 
     @property
     def model(self):
@@ -358,7 +350,7 @@ class UnitModelRenderer:
         # GameRenderer.consume_events) and the hit causes checked against
         # the sim's closed cause vocabulary
         from simulation import events as sim_events
-        from simulation.events import (CAUSE_NAMES, ExplosionEvent, ShotFiredEvent,
+        from simulation.events import (CAUSE_NAMES, ShotFiredEvent, StaggerEvent,
                                        UnitHitEvent)
         settings = pose_settings(CFG)
         if settings.hit is not None:
@@ -375,7 +367,7 @@ class UnitModelRenderer:
             raise PoseConfigError(f"[render.pose.roles] must hold exactly the roles "
                                   f"{list(ROLES)}, got {sorted(settings.roles)}")
         self._shot_event, self._hit_event = ShotFiredEvent, UnitHitEvent
-        self._blast_event = ExplosionEvent
+        self._stagger_event = StaggerEvent          # #185: the push reaction
         # #184: the reload / throw events, BY NAME -- the gameplay pack (#183)
         # adds them; until then the two reactions are inert
         self._reload_event = getattr(sim_events, RELOAD_EVENT, None)
@@ -480,9 +472,9 @@ class UnitModelRenderer:
                 print(f"[unit_model] WARN: {hm.name}: could not set the gloss: {exc}")
 
     def _held_prop_of(self, u, look: "_Look", pose_row):
-        """#184: ``(held model, grip matrix, hand bone)`` of the prop unit
-        ``u`` holds, or None (no weapon prop, no socket on its skeleton, no
-        pose)."""
+        """#184: ``(held model, grip matrix, hand bone, prop row)`` of the
+        prop unit ``u`` holds, or None (no weapon prop, no socket on its
+        skeleton, no pose)."""
         if self._held is None or pose_row is None:
             return None
         prop = self._held.settings.prop_for(str(getattr(u, "weapon_id", "") or ""))
@@ -512,14 +504,14 @@ class UnitModelRenderer:
                 from .held_props import mirrored_grip
                 mgrip = self._held.grips[mkey] = mirrored_grip(
                     self._pose.mirror_conj(look.name, bone), grip, prop.mirror_axis)
-            return hm, mgrip, self._pose.held_bone(st.pose, bone)
-        return hm, grip, bone
+            return hm, mgrip, self._pose.held_bone(st.pose, bone), prop
+        return hm, grip, bone, prop
 
     def queue_events(self, events: Sequence) -> None:
         """#162: hand the frame's sim events to the pose layer, one queue per
         unit (``event.unit_id``); the next draw acts on them (#163: a
-        launched shot -> the fire reaction, a hit -> the flinch). A no-op
-        with the pose layer off.
+        launched shot -> the fire reaction, a hit -> the flinch; #185: a
+        stagger -> the push reaction). A no-op with the pose layer off.
 
         The game hands over ``sim.tick_events`` EVERY frame, and that list
         is only cleared by the next sim step -- at 60 fps and 24 ticks/s
@@ -536,53 +528,30 @@ class UnitModelRenderer:
         seen = self._delivered
         self._delivered = {id(ev): ev for ev in events}
         melee = self._pose.settings.melee
-        # #184: the blasts of this frame's events, for a hit's direction
-        blasts = [(float(ev.pos[0]) + 0.5, float(ev.pos[1]) + 0.5)
-                  for ev in events if isinstance(ev, self._blast_event)]
         for ev in events:
             if seen.get(id(ev)) is ev:
                 continue
             uid = getattr(ev, "unit_id", None)
-            item = ev
-            if isinstance(ev, self._hit_event):          # #184: where it came from
-                item = _SourcedHit(ev, self._hit_source(ev, blasts))
             if uid is not None:
-                self._pose.queue_event(int(uid), item, now)
+                self._pose.queue_event(int(uid), ev, now)
             if melee is not None and isinstance(ev, self._hit_event) \
                     and ev.source in melee.causes and ev.attacker_id >= 0 \
                     and ev.attacker_id != uid:
-                self._pose.queue_event(int(ev.attacker_id), item, now)
-
-    def _hit_source(self, ev, blasts) -> Optional[tuple]:
-        """#184: the point (tile units) a hit came from: for an explosion the
-        blast centre of this frame's events nearest the victim (Erik's
-        ruling), else -- and when none is found -- the attacker's last drawn
-        centre; None when neither is known (no attacker, or one never drawn:
-        the flinch then plays as from the front)."""
-        victim = self._anim.get(int(ev.unit_id))
-        vc = None if victim is None else victim.centre
-        if ev.source == "explosion" and blasts and vc is not None:
-            return min(blasts, key=lambda b: (b[0] - vc[0]) ** 2 + (b[1] - vc[1]) ** 2)
-        if ev.attacker_id >= 0 and ev.attacker_id != ev.unit_id:
-            att = self._anim.get(int(ev.attacker_id))
-            if att is not None and att.centre is not None:
-                return att.centre
-        return None
+                self._pose.queue_event(int(ev.attacker_id), ev, now)
 
     @staticmethod
-    def _source_angle(u, source: Optional[tuple]) -> Optional[float]:
-        """#184: the direction of ``source`` from unit ``u``'s centre,
-        relative to its facing (radians, + = its left, the sim's convention:
-        0 = +x, counter-clockwise, world y down); None when unknown or on top
-        of the unit."""
-        if source is None:
+    def _source_angle(u, dir_x_q: int, dir_y_q: int) -> Optional[float]:
+        """#185: the side a hit or a push CAME FROM, relative to unit ``u``'s
+        facing (radians, + = its left, the sim's convention: 0 = +x,
+        counter-clockwise, world y down), from the sim's own direction of
+        travel (``dir_x_q``, ``dir_y_q``: Q16, x right, y down) -- the source
+        side is minus that vector, so a round travelling +x came from the
+        unit's -x side. None for (0, 0): no direction (the reaction then
+        plays as from the front). Render-side float, read only."""
+        if not dir_x_q and not dir_y_q:
             return None
-        fp = float(getattr(u, "footprint", 3))
-        dx = source[0] - (float(u.x) + fp / 2.0)
-        dy = source[1] - (float(u.y) + fp / 2.0)
-        if dx * dx + dy * dy < 1e-9:
-            return None
-        rel = math.atan2(-dy, dx) - float(getattr(u, "facing", math.pi / 2.0))
+        sx, sy = -float(dir_x_q), -float(dir_y_q)
+        rel = math.atan2(-sy, sx) - float(getattr(u, "facing", math.pi / 2.0))
         return _YAW_SIGN * ((rel + math.pi) % (2.0 * math.pi) - math.pi)
 
     def _react(self, ps, uid: int, role: str, u=None) -> None:
@@ -591,24 +560,29 @@ class UnitModelRenderer:
         cause). #164: only the reactions the unit's ROLE plays
         (``[render.pose.roles]``), and a melee hit this unit DEALT strikes.
         #184: a hit carries the direction it came from (relative to ``u``'s
-        facing); a reload / a throw's wind-up plays its one-shot over the
+        facing) -- #185: read from the sim's own vector on the event, never
+        guessed; a reload / a throw's wind-up plays its one-shot over the
         event's ticks (the event classes are looked up by name: inert until
-        the sim defines them). Other events are dropped."""
+        the sim defines them). #185: a stagger plays the push reaction from
+        the side its push came from. Other events are dropped."""
         allowed = self._pose.settings.roles[role].reactions
         melee = self._pose.settings.melee
-        for item in self._pose.take_events(uid):
-            ev = item.event if isinstance(item, _SourcedHit) else item
+        for ev in self._pose.take_events(uid):
             if isinstance(ev, self._shot_event):
                 if ev.launch and "fire" in allowed:
                     self._pose.fire(ps)
             elif isinstance(ev, self._hit_event):
                 if ev.unit_id == uid and "hit" in allowed:
-                    src = item.source if isinstance(item, _SourcedHit) else None
                     self._pose.hit(ps, ev.damage, ev.source,
-                                   None if u is None else self._source_angle(u, src))
+                                   None if u is None else self._source_angle(
+                                       u, ev.dir_x_q, ev.dir_y_q))
                 if ev.attacker_id == uid and "melee" in allowed and melee is not None \
                         and ev.source in melee.causes:
                     self._pose.melee(ps)
+            elif isinstance(ev, self._stagger_event):
+                if ev.unit_id == uid and "stagger" in allowed:
+                    self._pose.stagger(ps, None if u is None else self._source_angle(
+                        u, ev.dir_x_q, ev.dir_y_q))
             elif self._reload_event is not None and isinstance(ev, self._reload_event):
                 if ev.unit_id == uid and "reload" in allowed:
                     self._pose.reload(ps, float(ev.ticks) * self._tick_s)
@@ -1023,8 +997,6 @@ class UnitModelRenderer:
             moved_m = math.hypot(float(u.x) - st.last_x,
                                  float(u.y) - st.last_y) * m_per_tile
             moving = self._infer_motion(u, st, clock)
-            fp = float(getattr(u, "footprint", 3))
-            st.centre = (float(u.x) + fp / 2.0, float(u.y) + fp / 2.0)
             state = self.select_clip(u, moving)
             role = role_of(u)
             if st.pose is None or st.pose.look != look.name:
@@ -1139,9 +1111,15 @@ class UnitModelRenderer:
         held = self._held_prop_of(u, look, pose_row)
         if held is not None:
             from .held_props import body_matrix, prop_world
-            hm, grip, bone = held
+            hm, grip, bone, prop = held
             body = body_matrix(cx, cy, yaw, scale, _np_matrix(look.model.transform))
-            _set_rl_matrix(hm.model.transform, prop_world(body, pose_row[bone], grip))
+            world = prop_world(body, pose_row[bone], grip)
+            _set_rl_matrix(hm.model.transform, world)
+            # #87: the barrel tip of the prop as it is drawn this frame
+            from .muzzle_flame import muzzle_pose_from_matrix
+            mp = muzzle_pose_from_matrix(world, prop.muzzle, wpt)
+            if mp is not None:
+                self.muzzle_poses[unit_key(u)] = mp
 
         # Projected shadow (#33) first, from the pose just skinned (no second
         # skinning). Its fixed far depth keeps it off every body, whichever

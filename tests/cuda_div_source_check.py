@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 
 # Import the CUDA build FIRST so it is the cached `breach_physics`.
 import breach_physics as bp
@@ -57,7 +58,7 @@ def _build():
     runner = PhysicsRunner(bp)
     g.bind_physics_engine(runner.engine)
     dt = 1.0 / float(CFG.clock.ticks_per_second)
-    return runner, g, dt, EditQueue(), np.random.default_rng(5)
+    return runner, g, dt, EditQueue(), MatchDraws(5)
 
 
 def _tick(world, t, rows, mute=False):

@@ -24,15 +24,14 @@ stop) go through the payload EXECUTOR
 sequences the physics entry points (``apply_explosion``,
 ``add_explosion_smoke``) byte-identically to the pre-W3 inline sites.
 
-Determinism — Phase 2:
-    ``fire_burst`` and the explosion-smoke helper accept a
-    :class:`numpy.random.Generator` (``rng`` parameter) for the bullet
-    cone offsets and smoke noise. The Simulation facade owns one
-    :class:`numpy.random.Generator` and plumbs it through these calls
-    on every tick so AI rollouts can be reproduced bit-for-bit. If you
-    invoke these helpers ad-hoc (e.g. from a test), pass an RNG with a
-    known seed — the legacy fallback to process-global ``random`` has
-    been removed.
+Determinism (#29 P3b):
+    every ``rng`` parameter below is the sim's KEYED draws
+    (:class:`simulation.draws.MatchDraws`, ``sim.draws``): each draw names
+    its site (``rng_salts.Salt``), its unit and its local index -- the k-th
+    cone draw a shooter makes this tick (``rng.next``), an in-flight round's
+    ``round_index(age, ordinal)`` -- so no draw depends on any other. An
+    ad-hoc caller (a test) passes ``draws.MatchDraws(seed)``; a numpy
+    Generator is refused at the first draw.
 """
 from __future__ import annotations
 
@@ -61,6 +60,9 @@ from simulation.orders import (
     MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
+from simulation import draws as _draws          # #29 P3e: the match draws
+from simulation.rng_salts import Salt            # #29 P3b: the draw sites
+from simulation.unit_schema import MAG_UNBOUND
 from simulation import noise as _noise          # G9p: shots are noises
 # Physics event entry points: re-exported for legacy imports; the detonation
 # sites themselves now go through the payload executor (W3). Bare-name import
@@ -87,6 +89,34 @@ from simulation.exchange import (                                # noqa: F401
 from simulation.weapons import get_tables as weapon_tables
 
 
+_CONE_Q_CACHE = {}
+
+#: A grenade thrown less than this far (Q16 tiles: 0.1) lands at once.
+_FLIGHT_EPS_Q = unit_fixed.quantize_scalar(0.1)                 # p3e-door
+
+
+def _bullet_mult_q() -> int:
+    """``[zombie] bullet_damage_multiplier`` as Q16 (#29 P3e; the door of a
+    config constant, read per call so an F5 reload is seen)."""
+    return unit_fixed.quantize_scalar(
+        float(CFG.zombie.bullet_damage_multiplier))           # p3e-door
+
+
+def cone_q16_of_deg(spread_deg) -> int:
+    """A cone half-angle in degrees (a weapon row's ``spread_deg`` /
+    ``spread_snap_deg``) as Q16.16 radians -- THE door of the shot cone
+    (#29 P3e): the config constant quantized once, cached per value
+    (round half away, ``quantize_scalar``; ``math.radians`` of a constant)."""
+    key = float(spread_deg)
+    q = _CONE_Q_CACHE.get(key)
+    if q is None:
+        q = unit_fixed.quantize_scalar(math.radians(key))   # p3e-door
+        if q < 0:
+            raise ValueError(f"cone half-angle {spread_deg!r} < 0")
+        _CONE_Q_CACHE[key] = q
+    return q
+
+
 # ---------------------------------------------------------------------------
 # Projectile: in-flight grenade
 # ---------------------------------------------------------------------------
@@ -108,12 +138,18 @@ class Projectile:
         # The thrower (#123): the detonation's blast, heat and gas are
         # credited to it. -1 = nobody (a scripted / test lob).
         self.owner_id = -1 if owner_id is None else int(owner_id)
-        self.fx = float(start_fx)
-        self.fy = float(start_fy)
-        self.start_fx = float(start_fx)
-        self.start_fy = float(start_fy)
-        self.target_fx = float(target_fx)
-        self.target_fy = float(target_fy)
+        # #29 P3e: the flight on the Q16 grid -- start and target quantized
+        # ONCE here (the door: exact for the continuous throw, whose target
+        # is already a Q16 point), the live position written by
+        # update_position in integers; fx / fy / start_* / target_* are the
+        # float views the renderer and the observation read.
+        q = unit_fixed.quantize_scalar
+        self.start_x_q = q(float(start_fx))                      # p3e-door
+        self.start_y_q = q(float(start_fy))                      # p3e-door
+        self.target_x_q = q(float(target_fx))                    # p3e-door
+        self.target_y_q = q(float(target_fy))                    # p3e-door
+        self.pos_x_q = self.start_x_q
+        self.pos_y_q = self.start_y_q
         self.fuse_seconds = fuse_seconds
         #: The fuse in INTEGER ticks (the direct throw verb's, G3p); None =
         #: derive it from ``fuse_seconds`` (the WEGO order path).
@@ -127,6 +163,26 @@ class Projectile:
         # speed_tiles_per_tick twin is the W2 unified-march data-of-record.
         self.travel_speed = weapon_tables().ammo.by_name[
             ammo_name].travel_speed_tiles_per_second
+        self.travel_speed_q = unit_fixed.quantize_scalar(
+            float(self.travel_speed))                           # p3e-door
+
+    # Float views of the integer flight (exact n/65536).
+    fx = property(lambda self: unit_fixed.dequantize_scalar(self.pos_x_q))
+    fy = property(lambda self: unit_fixed.dequantize_scalar(self.pos_y_q))
+    start_fx = property(
+        lambda self: unit_fixed.dequantize_scalar(self.start_x_q))
+    start_fy = property(
+        lambda self: unit_fixed.dequantize_scalar(self.start_y_q))
+    target_fx = property(
+        lambda self: unit_fixed.dequantize_scalar(self.target_x_q))
+    target_fy = property(
+        lambda self: unit_fixed.dequantize_scalar(self.target_y_q))
+
+    def target_tile(self):
+        """The detonation tile ``(y, x)``: the target truncated toward zero
+        (what ``int()`` of the float target was), in integers."""
+        return (unit_fixed.shr_trunc(self.target_y_q),
+                unit_fixed.shr_trunc(self.target_x_q))
 
     def get_detonate_tick(self):
         """Tick at which this projectile detonates."""
@@ -136,24 +192,27 @@ class Projectile:
         return self.thrown_tick + int(self.fuse_seconds * tps)
 
     def update_position(self, current_tick):
-        """Move the projectile toward the target based on travel time so far."""
-        tps = CFG.clock.ticks_per_second
-        elapsed_sec = (current_tick - self.thrown_tick) / tps
-        dx = self.target_fx - self.start_fx
-        dy = self.target_fy - self.start_fy
-        dist = math.sqrt(dx * dx + dy * dy)
-        if dist < 0.1:
-            self.fx = self.target_fx
-            self.fy = self.target_fy
+        """Move the projectile toward the target based on travel time so far
+        -- in integers since #29 P3e: the distance is ``isqrt`` of the Q32
+        square (Q16 tiles), "arrived" is ``elapsed * speed >= dist * tps``,
+        and the position the start plus the delta times ``elapsed * speed /
+        (tps * dist)``, ONE rational rounded once (half away). (The
+        detonation reads the target, not this position: the flight is what
+        the renderer and the observation see.)"""
+        tps = int(CFG.clock.ticks_per_second)
+        elapsed = int(current_tick) - int(self.thrown_tick)
+        dx_q = self.target_x_q - self.start_x_q
+        dy_q = self.target_y_q - self.start_y_q
+        dist_q = unit_fixed.isqrt(dx_q * dx_q + dy_q * dy_q)
+        if dist_q < _FLIGHT_EPS_Q or elapsed * self.travel_speed_q >= \
+                dist_q * tps:
+            self.pos_x_q = self.target_x_q
+            self.pos_y_q = self.target_y_q
             return
-        travel_time = dist / self.travel_speed
-        if elapsed_sec >= travel_time:
-            self.fx = self.target_fx
-            self.fy = self.target_fy
-        else:
-            frac = elapsed_sec / travel_time
-            self.fx = self.start_fx + dx * frac
-            self.fy = self.start_fy + dy * frac
+        num = elapsed * self.travel_speed_q
+        den = tps * dist_q
+        self.pos_x_q = self.start_x_q + unit_fixed.div_round(dx_q * num, den)
+        self.pos_y_q = self.start_y_q + unit_fixed.div_round(dy_q * num, den)
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +288,7 @@ class BulletInFlight:
     """
 
     def __init__(self, shooter, shooter_id, weapon, ammo,
-                 origin_fx, origin_fy, angle, step_x, step_y):
+                 origin_x_q, origin_y_q, angle_q, step_x_q, step_y_q):
         if int(ammo.speed_q16) <= 0:
             raise ValueError(
                 f"ammo.{ammo.name}.speed_tiles_per_tick must be > 0 for a "
@@ -238,13 +297,14 @@ class BulletInFlight:
         self.shooter_id = shooter_id    # packet attribution
         self.weapon = weapon            # WeaponDef (crit columns, range)
         self.ammo = ammo                # AmmoDef (damage, dtype, ap, chew)
-        self.angle = angle              # march angle, screen convention
-        self.rx = float(origin_fx)      # live position (tile floats)
-        self.ry = float(origin_fy)
-        self.step_x = step_x            # kit-trig unit step (exact n/65536)
-        self.step_y = step_y
-        self.prev_ix = int(origin_fx)   # last tile CROSSED (cover inspection)
-        self.prev_iy = int(origin_fy)
+        # #29 P3e: the march in INTEGERS -- the Q16.16 march angle (screen
+        # convention), the live position and the kit step vector on the Q16
+        # grid (the float march was exact on that grid: bit-identical).
+        self.angle_q = int(angle_q)
+        self.rx_q = int(origin_x_q)
+        self.ry_q = int(origin_y_q)
+        self.prev_ix = unit_fixed.shr_trunc(self.rx_q)   # last tile CROSSED
+        self.prev_iy = unit_fixed.shr_trunc(self.ry_q)   # (cover inspection)
         self.remaining_steps = int(weapon.range_tiles)
         self.speed_q16 = int(ammo.speed_q16)
         self.budget_q16 = 0             # fractional-tile carry (Q16.16)
@@ -262,12 +322,41 @@ class BulletInFlight:
         self.march_cover = None
         self.march_facing_defense = False
         # G5p-a2 (the unit impulse law): the round's line in integers -- its
-        # origin and its kit step vector on the Q16 grid (both exact) -- for
-        # the lever arm of the push it gives the unit it stops on.
-        self.ox_q = unit_fixed.quantize_scalar(origin_fx)
-        self.oy_q = unit_fixed.quantize_scalar(origin_fy)
-        self.sx_q = unit_fixed.quantize_scalar(step_x)
-        self.sy_q = unit_fixed.quantize_scalar(step_y)
+        # origin and its kit step vector on the Q16 grid -- for the lever arm
+        # of the push it gives the unit it stops on.
+        self.ox_q = self.rx_q
+        self.oy_q = self.ry_q
+        self.sx_q = int(step_x_q)
+        self.sy_q = int(step_y_q)
+        # #29 P3b: the round's identity for its later draws -- the draws'
+        # tick it was fired on and its ordinal among its shooter's rounds of
+        # that tick (set by fire_burst from its cone draw; None = never fired
+        # through it, and such a round refuses to roll).
+        self.spawn_tick = None
+        self.ordinal = 0
+
+    def _draw(self, rng, salt):
+        """This round's keyed draw of ``salt`` on this tick: id = its
+        shooter, index = ``round_index(age, ordinal)`` (#29 P3b)."""
+        if self.spawn_tick is None:
+            raise ValueError("BulletInFlight: a round rolls only once fired "
+                             "through fire_burst (it has no spawn tick)")
+        return rng.at(salt, self.shooter_id, _draws.round_index(
+            rng.tick - self.spawn_tick, self.ordinal))
+
+    # Float VIEWS of the integer march (exact n/65536): the tracer, the
+    # render-only events and the legacy onephase cover read them.
+    @property
+    def rx(self) -> float:
+        return self.rx_q / unit_fixed.FP_ONE_F
+
+    @property
+    def ry(self) -> float:
+        return self.ry_q / unit_fixed.FP_ONE_F
+
+    @property
+    def angle(self) -> float:
+        return self.angle_q / unit_fixed.FP_ONE_F
 
     def push_on(self, gmap, unit, fx) -> None:
         """Record this round's PUSH on ``unit``, the unit it stopped on
@@ -343,7 +432,7 @@ class BulletInFlight:
         facing_defense = facing_defense or self.march_facing_defense
 
         h, w = gmap.material.shape
-        seg_x, seg_y = self.rx, self.ry          # tracer segment start
+        seg_x, seg_y = self.rx, self.ry          # tracer segment start (view)
         # No step marched yet: this segment leaves the muzzle (the renderer's
         # muzzle flash; read-only, no new round state).
         launch = self.remaining_steps == int(self.weapon.range_tiles)
@@ -358,10 +447,12 @@ class BulletInFlight:
         stopped = False
         approach_x, approach_y = seg_x, seg_y     # where the hit came FROM
         for _step in range(n_steps):
-            px, py = self.rx, self.ry            # pre-step (absorption rollback)
-            self.rx += self.step_x
-            self.ry += self.step_y
-            ix, iy = int(self.rx), int(self.ry)
+            px, py = self.rx_q, self.ry_q        # pre-step (absorption rollback)
+            self.rx_q += self.sx_q
+            self.ry_q += self.sy_q
+            # int() of the float march truncated toward zero: shr_trunc
+            ix = unit_fixed.shr_trunc(self.rx_q)
+            iy = unit_fixed.shr_trunc(self.ry_q)
 
             if 0 <= iy < h and 0 <= ix < w:
                 if gmap.solid[iy, ix]:
@@ -381,7 +472,7 @@ class BulletInFlight:
                 hit_cover = cover_at(cover, self.rx, self.ry)
                 if hit_cover is not None:
                     fx.world(hit_cover.chew, self.ammo.wall_damage)
-                    self.rx, self.ry = px, py     # stop AT its face
+                    self.rx_q, self.ry_q = px, py     # stop AT its face
                     stopped = True
                     break
 
@@ -393,7 +484,9 @@ class BulletInFlight:
                     hit_unit = e
                     break
             if hit_unit:
-                approach_x, approach_y = px, py
+                # (the legacy onephase facing defense reads float views)
+                approach_x = unit_fixed.dequantize_scalar(px)
+                approach_y = unit_fixed.dequantize_scalar(py)
                 # Exposure vs cover (mechanics/06 §5): inspect the tile
                 # crossed immediately BEFORE entering the footprint. LAZY:
                 # exposure 1.0 (no concealment — the overwhelming case)
@@ -408,14 +501,14 @@ class BulletInFlight:
                 if cover is None:
                     exposure = attack_resolver.cover_exposure_at(
                         gmap, self.prev_iy, self.prev_ix)
-                    if (exposure < 1.0
-                            and not attack_resolver.roll_exposure(exposure,
-                                                                  rng)):
+                    if (exposure < unit_fixed.FP_ONE
+                            and not attack_resolver.roll_exposure(
+                                exposure, self._draw(rng, Salt.EXPOSURE))):
                         # Absorbed by the cover tile: it eats the round's wall
                         # damage, the tracer ends there, no unit packet.
                         fx.world(chew_wall, gmap, self.prev_iy, self.prev_ix,
                                  self.ammo.wall_damage)
-                        self.rx, self.ry = px, py
+                        self.rx_q, self.ry_q = px, py
                         hit_unit = None
                         stopped = True
                 break
@@ -437,15 +530,18 @@ class BulletInFlight:
                 # the packet) is part of the shipped numbers; the zombie's
                 # KINETIC resist stays neutral (mechanics/06 — only the heat
                 # ×4 dissolved into the mitigation tables).
-                actual_dmg = int(actual_dmg * CFG.zombie.bullet_damage_multiplier)
+                # #29 P3e: the multiplier in Q16 (the door), the product
+                # truncated as int() truncated (a non-negative value).
+                actual_dmg = (actual_dmg * _bullet_mult_q()) >> unit_fixed.FP_SHIFT
             # Crit vs facing (mechanics/06 §5), LAZY: crit_chance == 0 (every
             # shipped weapon) draws nothing. On a crit the amount scales by
             # crit_mult in exact ints (round half away from zero), AFTER the
             # site rule, BEFORE mitigation.
-            crit_chance = float(self.weapon.crit_chance)
-            if crit_chance > 0.0:
-                mult = attack_resolver.arc_multiplier(self.angle, hit_unit)
-                if attack_resolver.roll_crit(crit_chance, mult, rng):
+            crit_chance = self.weapon.crit_chance       # quantized by the roll
+            if crit_chance > 0:
+                mult = attack_resolver.arc_multiplier(self.angle_q, hit_unit)
+                if attack_resolver.roll_crit(
+                        crit_chance, mult, self._draw(rng, Salt.SHOT_CRIT)):
                     actual_dmg = attack_resolver.scale_half_away(
                         actual_dmg, self.weapon.crit_mult)
             # FACING DETERMINES DEFENSE (onephase_wego design §9): a round
@@ -471,7 +567,10 @@ class BulletInFlight:
                                 dtype=self.ammo.dtype_id,
                                 attacker_id=self.shooter_id,
                                 ap=self.ammo.ap,
-                                expose=getattr(self.ammo, "expose_q", 0)),
+                                expose=getattr(self.ammo, "expose_q", 0),
+                                # #185: the hit travels along the flight
+                                # (the march's own Q16 step, as the push)
+                                dir_x_q=self.sx_q, dir_y_q=self.sy_q),
                    events, source="bullet")
         # G5p-a2: the round that stopped on a unit pushes it -- whatever its
         # damage (the 40 mm's body too); recorded right after the hit.
@@ -515,7 +614,8 @@ class BulletInFlight:
                     f"{self.payload.name!r} but advance() got no EditQueue "
                     f"— pass queue= (the sim's edit_queue) so the "
                     f"detonation can deposit")
-            det_y, det_x = int(self.ry), int(self.rx)
+            det_y = unit_fixed.shr_trunc(self.ry_q)
+            det_x = unit_fixed.shr_trunc(self.rx_q)
             if not (0 <= det_y < h and 0 <= det_x < w):
                 det_y, det_x = self.prev_iy, self.prev_ix
             fx.world(execute_payload, gmap, queue, units, det_y, det_x,
@@ -734,7 +834,8 @@ def magazines_carried(u):
 
 def mag_bind(u, weapon):
     """First bind of a tracked weapon's magazine (the lazy first-trigger
-    bind, and every re-bind after a ``current_mag = None`` reset: a swapped
+    bind, and every re-bind after a ``current_mag = MAG_UNBOUND`` reset (it
+    was None before #29 P3a): a swapped
     weapon, a WEGO round boundary): a FULL magazine in the gun and, when the
     loadout counts magazines for this weapon (:func:`magazines_carried` > 0),
     ``magazines - 1`` spares; otherwise the spares are untracked."""
@@ -750,7 +851,7 @@ def mag_settle(u, weapon, tick):
     gun then holds a FULL magazine). Returns False while a reload's stall is
     still running. A reload is PENDING while ``reload_done_tick >= 0``; a dry
     unit (empty magazine, no spare) has none pending. Integer, no RNG."""
-    if getattr(u, "current_mag", None) is None:
+    if getattr(u, "current_mag", MAG_UNBOUND) == MAG_UNBOUND:
         mag_bind(u, weapon)
         return True
     done = getattr(u, "reload_done_tick", -1)
@@ -776,11 +877,8 @@ def mag_gate(u, weapon, tick):
     past the stall, and :func:`mag_status` reads it settled without
     mutating. Pure integer state + compares on row constants; no RNG.
 
-    Mag state lives ON THE UNIT and is deliberately NOT in the synced digest
-    surface (field_ab_harness.SYNCED_UNIT_FIELDS) -- the ``last_fire_tick``
-    precedent: combat-cadence state is a deterministic derivation of synced
-    inputs (intents + tick); a divergence surfaces one tick downstream in the
-    hashed hp / event stream (P3a's schema hashes it).
+    Mag state lives ON THE UNIT as unit-schema columns, hashed in the unit
+    digest while set (#29 P3a, ``simulation.unit_schema``).
     """
     if weapon.mag_size <= 0:
         return True                        # untracked -- exactly pre-W3
@@ -841,7 +939,7 @@ def mag_status(u, weapon, tick):
     if weapon.mag_size <= 0:
         return None
     full = int(weapon.mag_size)
-    if getattr(u, "current_mag", None) is None:
+    if getattr(u, "current_mag", MAG_UNBOUND) == MAG_UNBOUND:
         total = magazines_carried(u)
         return (full, None if total <= 0 else total - 1, False)
     spare = getattr(u, "spare_mags", SPARES_UNTRACKED)
@@ -1030,12 +1128,13 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
 
 def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
                       real_time, rng, events, bullets, weapon, spread_deg,
-                      queue=None, aim_angle=None, cover=None,
+                      queue=None, aim_q=None, cover=None,
                       facing_defense=False, effects=None):
     """Route one trigger pull to its delivery archetype (mechanics/03 §1).
     The archetype set is CLOSED; only the ranged marchers dispatch here.
-    ``aim_angle`` (free_aim_shooting_design §4a) is forwarded to the resolver:
-    None = tile-derived bearing (WEGO), provided = free-aim march bearing.
+    ``aim_q`` (free_aim_shooting_design §4a; Q16.16 radians since #29 P3e)
+    is forwarded to the resolver: None = tile-derived bearing (WEGO),
+    provided = free-aim march bearing.
     ``cover`` / ``facing_defense`` are the OnePhaseWEGO march rules (§7/§9);
     both default to the shipped behaviour. ``effects`` (#169) is the
     attack slot's phase-B record (``None`` = apply at once).
@@ -1048,13 +1147,13 @@ def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
     if weapon.archetype == "hitscan":
         fire_beam(gmap, units, u, fx1, fy1, fx2, fy2,
                   tick, shots, real_time, rng, events=events,
-                  weapon=weapon, spread_deg=spread_deg, aim_angle=aim_angle,
+                  weapon=weapon, spread_deg=spread_deg, aim_q=aim_q,
                   cover=cover, effects=effects)
     else:  # "projectile" — the default marcher (validated set, mechanics/03)
         fire_burst(gmap, units, u, fx1, fy1, fx2, fy2,
                    tick, shots, real_time, rng, events=events,
                    weapon=weapon, spread_deg=spread_deg, bullets=bullets,
-                   queue=queue, aim_angle=aim_angle, cover=cover,
+                   queue=queue, aim_q=aim_q, cover=cover,
                    facing_defense=facing_defense, effects=effects)
 
 
@@ -1085,9 +1184,10 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
     # CONVENTION (design §6): ``u.facing`` is math-style (y-up); the march
     # bearing is screen-style (y-down); they are mirror images across the
     # x-axis, so the march bearing is ``-facing``. This is the ONE y-up->y-down
-    # flip in the free-aim path — the resolvers take ``aim_angle`` already in
+    # flip in the free-aim path — the resolvers take ``aim_q`` already in
     # the march convention and consume it verbatim (see fire_burst §4a).
-    aim_angle = -u.facing
+    # #29 P3e: in integers, the unit's own Q16 facing.
+    aim_q = -int(u.facing_q)
 
     spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
 
@@ -1098,16 +1198,16 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
         # process_sprays); re-arm only once it has finished (continuous hosing).
         if getattr(u, "spray_ticks_left", 0) > 0:
             return
-        start_spray_burst_directional(u, weapon, tick, aim_angle)
+        start_spray_burst_directional(u, weapon, tick, aim_q)
         _noise.emit(gmap, u.center_tile_y(), u.center_tile_x(),
                     getattr(weapon, "loudness_tiles", 0))      # G9p
     elif weapon.archetype in ("projectile", "hitscan"):
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
-        # Origin only; the tile target is unused when aim_angle is provided.
+        # Origin only; the tile target is unused when aim_q is provided.
         _dispatch_trigger(gmap, units, u, uc_fx, uc_fy, uc_fx, uc_fy,
                           tick, shots, real_time, rng, events, bullets,
-                          weapon, spread, queue, aim_angle=aim_angle,
+                          weapon, spread, queue, aim_q=aim_q,
                           effects=effects)
     else:
         return   # lobbed / placed: not a trigger ray (design §4c) — no-op
@@ -1191,14 +1291,14 @@ def _record_recoil(gmap, shooter, bullet, effects) -> None:
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
                weapon=None, ammo=None, spread_deg=None, bullets=None,
-               queue=None, aim_angle=None, cover=None, facing_defense=False,
+               queue=None, aim_q=None, cover=None, facing_defense=False,
                effects=None):
     """Fire a burst of PROJECTILE rounds from (fx1, fy1) toward (fx2, fy2).
 
     Lifted from ``game.py:_fire_burst``; W2 generalizes the march to the
     weapon/ammo rows (speed as data) without touching its arithmetic: each
-    bullet draws one cone angle (``rng.uniform(-cone, +cone)`` — the shipped
-    door-4 pattern), takes its kit-trig step vector, and marches through
+    bullet draws one cone angle (``draws.cone_offset_q16``, one integer draw
+    since #29 P3e), takes its kit-trig step vector, and marches through
     :class:`BulletInFlight` — which preserves the pre-W2 inner loop verbatim
     (same tile stepping, same stop rules, same packet chain; the k5 resolves
     same-tick because 96 t/t ≥ range 90). A round that outranges its per-tick
@@ -1220,45 +1320,47 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         ammo = tables.ammo_for_weapon(weapon)
     if spread_deg is None:
         spread_deg = weapon.spread_deg
-    cone = math.radians(spread_deg)
+    cone_q = cone_q16_of_deg(spread_deg)
     n_bullets = weapon.shots_per_trigger
-    # Q2-lift: the bullet march decides hits -> current_hp -> kills, i.e. it
-    # FEEDS SYNCED STATE — so its trig must be the deterministic integer kit,
-    # not libm (math.atan2/cos/sin differ at the last ULP across CRT/Python
-    # versions; a ULP can flip a grazing hit cross-machine). math.radians and
-    # rng.uniform stay: pure IEEE arithmetic + the seeded Generator's fixed
-    # bit-stream, already cross-machine exact.
+    # The bullet march decides hits -> current_hp -> kills, i.e. it FEEDS
+    # SYNCED STATE: its trig is the deterministic integer kit (Q2-lift) and,
+    # since #29 P3e, its whole arithmetic is integer -- the cone is ONE
+    # integer draw per bullet (``draws.cone_offset_q16``, in the order the
+    # float ``uniform`` was drawn) added to the Q16.16 bearing.
     #
-    # FREE-AIM SEAM (free_aim_shooting_design §4a): ``aim_angle`` is an
-    # optional Q16.16-exact bearing in the MARCH convention (screen y-down,
-    # exactly this function's ``base_angle``). ``None`` = derive from the
-    # tile target verbatim (the WEGO/targeted path -> byte-identical goldens);
-    # provided = march straight from it (no tile round-trip). When provided,
-    # ``shooter.facing`` was already set to this bearing by the AIM intent, so
-    # it is left untouched (no re-derivation, no risk to the hashed field).
-    if aim_angle is None:
-        base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+    # FREE-AIM SEAM (free_aim_shooting_design §4a): ``aim_q`` is an optional
+    # Q16.16 bearing in the MARCH convention (screen y-down, exactly this
+    # function's base bearing). ``None`` = derive from the tile target (the
+    # WEGO/targeted path); provided = march straight from it. When provided,
+    # the shooter's facing is the turning law's, left untouched.
+    dx_q = unit_fixed.quantize_scalar(fx2 - fx1)     # tile deltas: exact
+    dy_q = unit_fixed.quantize_scalar(fy2 - fy1)
+    if aim_q is None:
+        base_q = unit_fixed.atan2_q16(dy_q, dx_q)
         # W2 (mechanics/06 §5): firing makes the aim bearing (before spread)
         # the shooter's facing TARGET (G5p-a1: the turning law turns it there
         # from the next tick's slot 1a) — through the kit, in the unit facing
         # convention (y up: the dy negation, unit.face_towards).
         effects_or_immediate(effects).face(
-            shooter, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
+            shooter, unit_fixed.atan2_q16(-dy_q, dx_q))
     else:
-        base_angle = float(aim_angle)
+        base_q = int(aim_q)
+    ox_q = unit_fixed.quantize_scalar(fx1)           # the centre tile: exact
+    oy_q = unit_fixed.quantize_scalar(fy1)
 
     shooter_id = getattr(shooter, "id", -1)
 
     for _ in range(n_bullets):
-        angle = base_angle + float(rng.uniform(-cone, cone))
-        # Per-bullet step vector through the kit (angle is constant per
-        # bullet — hoisted out of the march loop, bit-identical to
-        # re-evaluating inside it). Steps are exact n/65536 doubles; the
-        # rx/ry accumulation is plain float + (IEEE-exact, deterministic).
-        step_x = unit_fixed.cos_rad(angle)
-        step_y = unit_fixed.sin_rad(angle)
+        # #29 P3b: the shooter's next cone draw this tick (its index is the
+        # round's ordinal, carried for the round's later draws)
+        d = rng.next(Salt.SHOT_CONE, shooter_id)
+        angle_q = base_q + _draws.cone_offset_q16(d, cone_q)
+        # Per-bullet step vector through the kit (exact Q16 ints).
+        step_x_q = unit_fixed.cos_q16(angle_q)
+        step_y_q = unit_fixed.sin_q16(angle_q)
         b = BulletInFlight(shooter, shooter_id, weapon, ammo,
-                           fx1, fy1, angle, step_x, step_y)
+                           ox_q, oy_q, angle_q, step_x_q, step_y_q)
+        b.spawn_tick, b.ordinal = d.tick, d.index
         # G5p-a2 (RULED): the shooter recoils with minus the round's
         # momentum along its flight (times [impulse] recoil_mult), through
         # the slot's push effect -- no lever arm.
@@ -1286,7 +1388,7 @@ BEAM_MIN_ENERGY_Q16 = unit_fixed.quantize_scalar(0.01)
 
 def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
               tick, shots, real_time, rng, events=None, *,
-              weapon, ammo=None, spread_deg=None, aim_angle=None, cover=None,
+              weapon, ammo=None, spread_deg=None, aim_q=None, cover=None,
               effects=None):
     """Fire a HITSCAN beam from (fx1, fy1) toward (fx2, fy2) — physically
     instant: the full-range march happens in the firing tick (photons don't
@@ -1337,17 +1439,21 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
         ammo = tables.ammo_for_weapon(weapon)
     if spread_deg is None:
         spread_deg = weapon.spread_deg
-    cone = math.radians(spread_deg)
-    # FREE-AIM SEAM (free_aim_shooting_design §4a): see fire_burst — aim_angle
-    # is the march-convention (screen y-down) bearing; None = tile-derived
-    # verbatim (byte-identical WEGO), provided = march straight from it (facing
-    # already set by the AIM intent, so left untouched).
-    if aim_angle is None:
-        base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+    cone_q = cone_q16_of_deg(spread_deg)
+    # FREE-AIM SEAM (free_aim_shooting_design §4a): see fire_burst — aim_q is
+    # the march-convention (screen y-down) Q16.16 bearing; None = tile-derived
+    # (WEGO), provided = march straight from it (the facing is the turning
+    # law's, left untouched). Integer since #29 P3e.
+    dx_q = unit_fixed.quantize_scalar(fx2 - fx1)
+    dy_q = unit_fixed.quantize_scalar(fy2 - fy1)
+    if aim_q is None:
+        base_q = unit_fixed.atan2_q16(dy_q, dx_q)
         # Facing = aim bearing at fire, before spread (the fire_burst rule).
-        fx.face(shooter, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
+        fx.face(shooter, unit_fixed.atan2_q16(-dy_q, dx_q))
     else:
-        base_angle = float(aim_angle)
+        base_q = int(aim_q)
+    ox_q = unit_fixed.quantize_scalar(fx1)
+    oy_q = unit_fixed.quantize_scalar(fy1)
     shooter_id = getattr(shooter, "id", -1)
     h, w = gmap.material.shape
     # Per-gas Q16.16 absorption (once-at-build constants; plain ints), Q16 per
@@ -1360,17 +1466,20 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     one = unit_fixed.FP_ONE
 
     for _ in range(int(weapon.shots_per_trigger)):
-        angle = base_angle + float(rng.uniform(-cone, cone))
-        step_x = unit_fixed.cos_rad(angle)
-        step_y = unit_fixed.sin_rad(angle)
-        rx, ry = float(fx1), float(fy1)
+        angle_q = base_q + _draws.cone_offset_q16(
+            rng.next(Salt.BEAM_CONE, shooter_id), cone_q)
+        # #185: the beam's hit direction, its own kit step (Q16 ints)
+        sx_q = unit_fixed.cos_q16(angle_q)
+        sy_q = unit_fixed.sin_q16(angle_q)
+        rx_q, ry_q = ox_q, oy_q
         energy_q = int(ammo.damage) << unit_fixed.FP_SHIFT   # door 2 (exact)
         skewered = []   # units already hit by THIS beam (identity — hit once)
 
         for _step in range(int(weapon.range_tiles)):
-            rx += step_x
-            ry += step_y
-            ix, iy = int(rx), int(ry)
+            rx_q += sx_q
+            ry_q += sy_q
+            ix = unit_fixed.shr_trunc(rx_q)
+            iy = unit_fixed.shr_trunc(ry_q)
             if not (0 <= iy < h and 0 <= ix < w):
                 break
 
@@ -1403,7 +1512,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
             # bodies behind it. ``cover=None`` (every shipped caller) skips
             # this entirely, so the pre-existing beam is byte-identical.
             if cover:
-                hit_cover = cover_at(cover, rx, ry)
+                hit_cover = cover_at(cover, unit_fixed.dequantize_scalar(rx_q),
+                                     unit_fixed.dequantize_scalar(ry_q))
                 if hit_cover is not None:
                     fx.world(hit_cover.chew, ammo.wall_damage)
                     break
@@ -1424,9 +1534,12 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                             e,
                             DamagePacket(amount=amount, dtype=ammo.dtype_id,
                                          attacker_id=shooter_id, ap=ammo.ap,
-                                         expose=getattr(ammo, "expose_q", 0)),
+                                         expose=getattr(ammo, "expose_q", 0),
+                                         dir_x_q=sx_q, dir_y_q=sy_q),
                             events, source="laser")
 
+        rx = unit_fixed.dequantize_scalar(rx_q)   # render-only views (exact)
+        ry = unit_fixed.dequantize_scalar(ry_q)
         shots.append(Shot(fx1, fy1, rx, ry, real_time))
         if events is not None:
             events.append(LaserFiredEvent(
@@ -1473,7 +1586,7 @@ _SRC_SPRAY_GAS = 6
 
 
 def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
-                     cone_half_angle_degrees, exclude=(), aim_angle=None):
+                     cone_half_angle_degrees, exclude=(), aim_q=None):
     """Yield ``(y, x, falloff_div)`` for every tile of an aimed spray cone,
     in FIXED ROW-MAJOR order (mechanics/03 §5, W4).
 
@@ -1520,22 +1633,22 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
     # Aim bearing + unit vector through the kit; the exact n/65536 doubles
     # scale to Q16.16 ints losslessly (quantize of an exact n/65536 is n).
     #
-    # FREE-AIM SEAM (free_aim_shooting_design §4c): ``aim_angle`` (march
-    # convention, screen y-down — the same frame this atan2 produces) overrides
-    # the target-tile-derived bearing. ``None`` = tile-derived verbatim (the
-    # WEGO spray path -> byte-identical). Provided = the free-aim shooter.facing
-    # bearing; no target tile is consulted for the cone geometry.
-    if aim_angle is None:
-        angle = unit_fixed.atan2_rad(
-            float(target_fy) - ay, float(target_fx) - ax)
+    # FREE-AIM SEAM (free_aim_shooting_design §4c): ``aim_q`` (Q16.16 radians,
+    # march convention, screen y-down — the same frame this atan2 produces)
+    # overrides the target-tile-derived bearing. ``None`` = tile-derived (the
+    # WEGO spray path). Provided = the free-aim shooter's facing bearing; no
+    # target tile is consulted for the cone geometry. #29 P3e: integers (the
+    # float round trip was exact: bit-identical).
+    if aim_q is None:
+        angle_q = unit_fixed.atan2_q16(
+            unit_fixed.quantize_scalar(target_fy - ay),
+            unit_fixed.quantize_scalar(target_fx - ax))
     else:
-        angle = float(aim_angle)
-    cos_q = unit_fixed.quantize_scalar(unit_fixed.cos_rad(angle))
-    sin_q = unit_fixed.quantize_scalar(unit_fixed.sin_rad(angle))
-    # Cone cosine through the kit (math.radians is pure arithmetic; the cos
-    # itself is the deterministic fixed-point kit — no libm on this path).
-    c_q = unit_fixed.quantize_scalar(
-        unit_fixed.cos_rad(math.radians(float(cone_half_angle_degrees))))
+        angle_q = int(aim_q)
+    cos_q = unit_fixed.cos_q16(angle_q)
+    sin_q = unit_fixed.sin_q16(angle_q)
+    # Cone cosine through the kit, the half-angle at its door.
+    c_q = unit_fixed.cos_q16(cone_q16_of_deg(cone_half_angle_degrees))
     c_sq = c_q * c_q                                   # Q32.32, exact int
 
     for y in range(max(0, ay - r), min(h - 1, ay + r) + 1):
@@ -1558,7 +1671,7 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
 
 
 def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
-                       target_fx, target_fy, aim_angle=None, effects=None):
+                       target_fx, target_fy, aim_q=None, effects=None):
     """Enqueue ONE tick of a spray burst's cone deposits (mechanics/03 §5).
 
     Per member tile (fixed row-major order from :func:`spray_cone_tiles`),
@@ -1592,8 +1705,11 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
     the slot's world writes keep one order.
     """
     owner = getattr(shooter, "id", -1)
-    heat = float(ammo.heat_deposit)
-    gas_amount = float(ammo.gas_amount)
+    # #29 P3e: the row's per-tick amounts in their fields' currencies,
+    # quantized once (the doors); each tile's share divided in integers.
+    heat_q = unit_fixed.quantize_scalar(
+        float(ammo.heat_deposit))                              # p3e-door
+    gas_q = gas_fixed.quantize_trace_scalar(float(ammo.gas_amount))  # p3e-door
     gas_id = None
     if ammo.gas_species:
         gas_id = int(gmap.gases.name_to_id[ammo.gas_species])
@@ -1601,30 +1717,33 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
     cells = list(spray_cone_tiles(
         gmap, shooter.center_tile_y(), shooter.center_tile_x(),
         target_fx, target_fy, weapon.range_tiles,
-        weapon.cone_half_angle_degrees, exclude=own, aim_angle=aim_angle))
+        weapon.cone_half_angle_degrees, exclude=own, aim_q=aim_q))
     effects_or_immediate(effects).world(
-        _enqueue_spray_cells, gmap, queue, owner, heat, gas_id, gas_amount,
+        _enqueue_spray_cells, gmap, queue, owner, heat_q, gas_id, gas_q,
         cells)
 
 
-def _enqueue_spray_cells(gmap, queue, owner, heat, gas_id, gas_amount, cells):
+def _enqueue_spray_cells(gmap, queue, owner, heat_q, gas_id, gas_q, cells):
     """The world write of one spray tick: per member ``(y, x, div)`` in the
     cone's row-major order, the heat and / or gas FieldEdit and its
     TickCredit claim (:func:`deposit_spray_cone`'s body)."""
     credit = tick_credit(gmap)
     for y, x, div in cells:
-        if heat > 0.0:
+        if heat_q > 0:
+            a_q = unit_fixed.div_round(heat_q, div)
             queue.enqueue(FieldEdit(
                 field="heat", region=Region.TILE, coords=(y, x),
-                amount=heat / div, mode=EditMode.ADD,
-                source_id=_SRC_SPRAY_HEAT,
+                amount=unit_fixed.dequantize_scalar(a_q), amount_q=a_q,
+                mode=EditMode.ADD, source_id=_SRC_SPRAY_HEAT,
             ))
             credit.claim(CREDIT_HEAT, ((y, x),), owner)
-        if gas_id is not None and gas_amount > 0.0:
+        if gas_id is not None and gas_q > 0:
             credit.claim(gas_id, ((y, x),), owner)
-            queue.enqueue(FieldEdit(
+            g_q = unit_fixed.div_round(gas_q, div)
+            queue.enqueue(FieldEdit(        # p3e-view: amount_q lands
                 field="gas", region=Region.TILE, coords=(y, x),
-                amount=gas_amount / div, mode=EditMode.ADD,
+                amount=float(gas_fixed.dequantize_trace(g_q)), amount_q=g_q,
+                mode=EditMode.ADD,
                 channel=gas_id,   # policy TRACE_CLAMP: additive (D1)
                 source_id=_SRC_SPRAY_GAS,
             ))
@@ -1643,7 +1762,9 @@ def start_spray_burst(u, weapon, fire_order, tick, effects=None):
     (the fire_burst rule — kit trig, unit y-up convention).
     """
     u.spray_ticks_left = int(weapon.burst_ticks)
-    u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
+    # #29 P3e: the target as a Q16 point (the order's tile, quantized once).
+    u.spray_target = (unit_fixed.quantize_scalar(fire_order.target_fx),
+                      unit_fixed.quantize_scalar(fire_order.target_fy))
     u.spray_order = fire_order
     u.spray_aim_angle = None   # tile-derived cone bearing (the WEGO path)
     effects_or_immediate(effects).face(u, unit_fixed.atan2_q16_of(
@@ -1651,21 +1772,25 @@ def start_spray_burst(u, weapon, fire_order, tick, effects=None):
         float(fire_order.target_fx) - u.center_tile_x()))
 
 
-def start_spray_burst_directional(u, weapon, tick, aim_angle):
+def start_spray_burst_directional(u, weapon, tick, aim_q):
     """Arm a spray burst aimed along a FREE-AIM bearing (design §4c): the cone
     bearing is ``u.facing`` (passed as the march-convention ``aim_angle``), NOT
-    a target tile. Stores the exact bearing as ``spray_aim_angle`` — non-hashed
+    a target tile. Stores the bearing (Q16, #29 P3e) as ``spray_aim_angle`` —
     derived state (the ``last_fire_tick`` precedent, not in the digest surface)
     that :func:`process_sprays` feeds :func:`deposit_spray_cone`. ``spray_target``
     is kept for the RENDER-ONLY :class:`SprayJetEvent` only (a nominal tile one
     range along the bearing); the cone geometry uses ``spray_aim_angle``.
     ``facing`` is left as the AIM intent set it — never re-derived."""
     u.spray_ticks_left = int(weapon.burst_ticks)
-    u.spray_aim_angle = float(aim_angle)
+    # #29 P3e: the bearing a Q16 angle, the nominal target a Q16 point.
+    u.spray_aim_angle = int(aim_q)
     u.spray_order = None
-    r = float(weapon.range_tiles)
-    u.spray_target = (u.center_tile_x() + unit_fixed.cos_rad(aim_angle) * r,
-                      u.center_tile_y() + unit_fixed.sin_rad(aim_angle) * r)
+    r_q = unit_fixed.quantize_scalar(float(weapon.range_tiles))  # p3e-door
+    u.spray_target = (
+        (u.center_tile_x() << unit_fixed.FP_SHIFT)
+        + unit_fixed.mul_q16_round(unit_fixed.cos_q16(aim_q), r_q),
+        (u.center_tile_y() << unit_fixed.FP_SHIFT)
+        + unit_fixed.mul_q16_round(unit_fixed.sin_q16(aim_q), r_q))
 
 
 def process_sprays(gmap, units, queue, events=None, effects=None):
@@ -1733,11 +1858,13 @@ def process_sprays(gmap, units, queue, events=None, effects=None):
             continue
         weapon = tables.weapons.by_name[u.weapon_id]
         ammo = tables.ammo_for_weapon(weapon)
-        tx, ty = u.spray_target
+        tx_q, ty_q = u.spray_target            # Q16 (#29 P3e)
+        tx = unit_fixed.dequantize_scalar(tx_q)
+        ty = unit_fixed.dequantize_scalar(ty_q)
         # Free-aim bursts carry an exact facing bearing (design §4c); WEGO
-        # bursts leave it None -> the tile-derived bearing, byte-identical.
+        # bursts leave it None -> the tile-derived bearing.
         aim = getattr(u, "spray_aim_angle", None)
-        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty, aim_angle=aim,
+        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty, aim_q=aim,
                            effects=fx)
         if events is not None:
             # W6: the jet visual — one event per DEPOSITING tick (an
@@ -1889,18 +2016,24 @@ def melee_blow(attacker, target, rng, events, weapon, effects,
     # for the arc classifier (the march-angle contract of arc_multiplier).
     if snap_facing:
         fx.face(attacker, unit_fixed.atan2_q16_of(-(fy2 - fy1), fx2 - fx1))
-    angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+    angle_q = unit_fixed.atan2_q16((fy2 - fy1) << unit_fixed.FP_SHIFT,
+                                   (fx2 - fx1) << unit_fixed.FP_SHIFT)
 
     amount = int(weapon.melee_damage)
     crit_chance = float(weapon.crit_chance)
     if crit_chance > 0.0:
-        mult = attack_resolver.arc_multiplier(angle, target)
-        if attack_resolver.roll_crit(crit_chance, mult, rng):
+        mult = attack_resolver.arc_multiplier(angle_q, target)
+        d = rng.next(Salt.MELEE_CRIT, getattr(attacker, "id", -1))
+        if attack_resolver.roll_crit(crit_chance, mult, d):
             amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
 
+    # #185: the blow travels striker centre -> victim centre (Q16)
+    from simulation.unit_impulse import centre_q
+    (ax_q, ay_q), (tx_q, ty_q) = centre_q(attacker), centre_q(target)
     fx.hit(target,
            DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
-                        attacker_id=getattr(attacker, "id", -1)),
+                        attacker_id=getattr(attacker, "id", -1),
+                        dir_x_q=tx_q - ax_q, dir_y_q=ty_q - ay_q),
            events, source="melee")
 
     if weapon.status_kind_id is not None:
@@ -1960,20 +2093,15 @@ def process_melee_intents(units, tick, tables, impulse_table, events=None,
     applied together at phase B), and a render-only ``MeleeEvent`` is
     emitted. A whiff (nothing in arc) costs nothing: no cooldown. Integer,
     no draw (the loadouts door refuses a row with a crit)."""
-    from simulation import unit_impulse
+    from simulation import unit_impulse, verb_gates
     fx = effects_or_immediate(effects)
     for u in units:
         if not getattr(u, "pending_melee", False):
             continue
         u.pending_melee = False
-        if not u.alive or u.is_zombie or not u.melee_id:
-            continue
-        if not composed_flags(u).can_act or u.throw_release_tick >= 0:
+        if not verb_gates.can_melee(u, tick, tables, at_tick_start=False):
             continue
         weapon = tables.weapons.by_name[u.melee_id]
-        if (u.last_blow_tick >= 0
-                and tick - u.last_blow_tick < weapon.rof_interval_ticks):
-            continue
         target = melee_arc_target(units, u, weapon)
         if target is None:
             continue

@@ -69,6 +69,12 @@ DTYPE_BY_NAME = {name: dtype_id for dtype_id, name in DAMAGE_TYPE_NAMES.items()}
 #: ``grenades`` means (G3p).
 HAND_GRENADE_FAMILY = "hand_grenade"
 FRAG_ROW = "grenade_frag"
+#: The ammo family of a planted charge, the rows a loadout's ``charge`` may
+#: name (#193), and the ``[weapons.*]`` row whose ``plant_seconds`` and fuse
+#: range are the plant verb's (``Simulation.plant_charge_intent``) -- as the
+#: throw verb reads ``hand_grenade``'s.
+CHARGE_FAMILY = "demo_charge"
+PLANT_WEAPON = "c4_satchel"
 
 
 def fuse_ticks_from_seconds(seconds, ticks_per_second) -> int:
@@ -106,7 +112,8 @@ class WeaponDef:
                  melee_damage=0, melee_dtype="",
                  status_kind="", status_seconds=0.0,
                  range_m=0.0, default_ammo="", throw_windup_seconds=0.0,
-                 melee_push_ns=0.0, melee_arc_half_deg=60.0):
+                 melee_push_ns=0.0, melee_arc_half_deg=60.0,
+                 plant_seconds=0.0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -165,6 +172,8 @@ class WeaponDef:
         # exactly the pre-G3p throw).
         self.throw_windup_seconds = throw_windup_seconds
         self.throw_windup_ticks = 0             # derived by WeaponTable (G3p)
+        self.plant_seconds = plant_seconds
+        self.plant_ticks = 0                    # derived by WeaponTable (#193)
         # SPRAY extras (mechanics/03 §5, W4). CONVENTION OF RECORD: the
         # armory table (§6) quotes the FULL cone angle ("30° cone"); config
         # authors the HALF-angle (the membership test's natural quantity —
@@ -501,6 +510,7 @@ class WeaponTable:
                 throw_windup_seconds=col("throw_windup_seconds", 0.0),
                 melee_push_ns=col("melee_push_ns", 0.0),
                 melee_arc_half_deg=col("melee_arc_half_deg", 60.0),
+                plant_seconds=col("plant_seconds", 0.0),
             )
             # The melee verb's columns (G6p): the push a finite number >= 0,
             # the arc in (0, 180] degrees; the arc quantized ONCE to Q16
@@ -538,6 +548,16 @@ class WeaponTable:
                     f"finite number >= 0 (seconds; 0 = no wind-up)")
             w.throw_windup_ticks = (ticks_from_seconds(_wu, ticks_per_second)
                                     if _wu > 0 else 0)
+            # The plant (#193): seconds -> integer ticks, the wind-up's
+            # derivation; 0 stays 0 (the charge lies down on the verb's tick).
+            _pl = w.plant_seconds
+            if (isinstance(_pl, bool) or not isinstance(_pl, (int, float))
+                    or not _pl >= 0.0 or _pl != _pl or _pl == float("inf")):
+                raise ValueError(
+                    f"weapons.{name}.plant_seconds {_pl!r} must be a "
+                    f"finite number >= 0 (seconds; 0 = an instant plant)")
+            w.plant_ticks = (ticks_from_seconds(_pl, ticks_per_second)
+                             if _pl > 0 else 0)
             # METER-BASED RANGE (W6, Erik's 2026-07-07 decision): range_m is
             # the authored physical reach; range_tiles derives ONCE here at
             # the level's tile size (quantize-once, door 2; the divide is
@@ -1047,6 +1067,11 @@ class WeaponsTables:
         self.hand_grenade_rows = tuple(
             n for n, a in self.ammo.by_name.items()
             if a.family == HAND_GRENADE_FAMILY)
+        #: The planted-charge rows (#193): the ``[ammo.*]`` rows of the
+        #: demo-charge family, the rows a loadout's ``charge`` may name.
+        self.charge_rows = tuple(
+            n for n, a in self.ammo.by_name.items()
+            if a.family == CHARGE_FAMILY)
 
     def hand_grenade_kind(self, kind) -> str:
         """The ``[ammo.*]`` row name of throw kind ``kind``. Refuses a

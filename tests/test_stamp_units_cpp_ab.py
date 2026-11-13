@@ -119,15 +119,13 @@ def _drive(sim: Simulation, tick: int) -> None:
     if len(units) >= 1:
         # M1 walks a diagonal box, staying inside [2, 16].
         m1 = units[0]
-        m1.x = float(2 + (tick % 14))
-        m1.y = float(2 + ((tick // 2) % 14))
+        m1.set_pos(float(2 + (tick % 14)), float(2 + ((tick // 2) % 14)))
     if len(units) >= 2:
         m2 = units[1]
         if tick >= 20:
             m2.alive = False           # dies -> footprint must STOP stamping
         else:
-            m2.x = float(16 - (tick % 14))
-            m2.y = float(2 + (tick % 14))
+            m2.set_pos(float(16 - (tick % 14)), float(2 + (tick % 14)))
 
 
 def _capture(use_cpp_stamp: bool):

@@ -117,14 +117,12 @@ def _drive(sim, tick, kill_m2_at=DEATH_TICK):
     if len(units) >= 1:
         m1 = units[0]
         if m1.alive:
-            m1.x = float(2 + (tick % 14))
-            m1.y = float(2 + ((tick // 2) % 14))
+            m1.set_pos(float(2 + (tick % 14)), float(2 + ((tick // 2) % 14)))
             _inject_heat(sim, m1, phi_of(MILD_KW_M2))   # mild, survivable burn each tick
     if len(units) >= 2:
         m2 = units[1]
         if m2.alive:
-            m2.x = float(16 - (tick % 12))
-            m2.y = float(3 + (tick % 12))
+            m2.set_pos(float(16 - (tick % 12)), float(3 + (tick % 12)))
             if tick == kill_m2_at - 1:
                 m2.current_hp = 0.5             # set up the kill
             phi = phi_of(HARD_KW_M2) if tick >= kill_m2_at else phi_of(MILD_KW_M2)
@@ -169,13 +167,17 @@ def test_unit_digest_is_nontrivial():
     assert late["current_hp"] < early["current_hp"], "M1 never took heat damage"
 
     # Position actually moved.
-    assert (early["tile_x"], early["tile_y"]) != (late["tile_x"], late["tile_y"]), \
+    # (#29 P3a: the schema's record keeps the positions, not the derived
+    # tile indices; and the life state as its enum index, 1 = dead. #29
+    # P3c: the positions are the Q16 ints x_q / y_q.)
+    assert (early["x_q"], early["y_q"]) != (late["x_q"], late["y_q"]), \
         "M1 never moved"
 
     # M2 died: it is ALIVE early and DEAD by the end, and a UnitKilledEvent fired.
     m2_early = next(u for u in traj[2][UNIT_DIGEST_KEY]["units"] if u["id"] == 1)
     m2_late = next(u for u in traj[-1][UNIT_DIGEST_KEY]["units"] if u["id"] == 1)
-    assert m2_early["alive"] and not m2_late["alive"], "M2 never died"
+    assert m2_early["life_state"] == 0 and m2_late["life_state"] == 1, \
+        "M2 never died"
 
     all_events = [e for s in traj for e in s[UNIT_DIGEST_KEY]["events"]]
     kinds = {e["kind"] for e in all_events}

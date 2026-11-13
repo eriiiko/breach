@@ -60,6 +60,7 @@ from simulation.status import composed_flags
 from simulation.weapons import FIRE_ORDER_ARCHETYPES
 from simulation import turning as _turning
 from simulation import unit_fixed
+from simulation.unit_schema import MAG_UNBOUND
 
 try:
     from pathfinding import astar
@@ -545,7 +546,9 @@ def _advance_movement(sim, unit) -> None:
         # schedule after it does not shift.
         return
     unit.face_towards(nx, ny)
-    unit.x, unit.y = nx, ny
+    # #29 P3c: the compiled path's interpolated position, quantized ONCE at
+    # the float door (its (st + 1) / step_ticks fractions are off the grid).
+    unit.set_pos(nx, ny)
 
 
 def occupied_by_unit(sim, unit, nx: float, ny: float) -> bool:
@@ -763,7 +766,7 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
     # (§9). ``sim.cover`` is passed even when empty — it is the LIST, not its
     # contents, that selects the model.
     _dispatch_trigger(sim.gmap, sim.units, unit, ux, uy, tx, ty, sim.tick,
-                      sim.shots, sim.real_time, sim.rng, sim.tick_events,
+                      sim.shots, sim.real_time, sim.draws, sim.tick_events,
                       sim.bullets, weapon, spread, sim.edit_queue,
                       cover=sim.cover, facing_defense=True)
     mag_spend(unit, weapon, sim.tick, events=sim.tick_events)
@@ -819,7 +822,7 @@ def swap_weapon(sim, unit, step) -> None:
         return
     unit.active_slot = 1 - int(getattr(unit, "active_slot", 0))
     unit.weapon_id = loadout[unit.active_slot]
-    unit.current_mag = None
+    unit.current_mag = MAG_UNBOUND
     unit.reload_done_tick = -1
     unit.spray_ticks_left = 0
     unit.spray_order = None

@@ -186,7 +186,7 @@ def test_fieldedit_books_its_attempt_and_clips_the_excess(mode):
     # ADD: a quarter-ceiling on a nearly full cell; MAX: a target above it.
     amount = 0.25 * CEIL_UNITS if mode == EditMode.ADD else 1.25 * CEIL_UNITS
     apply_field_edit(g, FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
-                                  coords=(4, 4), amount=amount, mode=mode), sim.rng)
+                                  coords=(4, 4), amount=amount, mode=mode), sim.draws)
     want = gas_fixed.quantize_trace_scalar(
         (amount if mode == EditMode.MAX else gas_fixed.dequantize_trace(near_trace) + amount))
     attempt = want - near_trace
@@ -198,7 +198,7 @@ def test_fieldedit_books_its_attempt_and_clips_the_excess(mode):
     # A3: an over-ceiling amount into an EMPTY cell.
     g.reset_trace_books()
     apply_field_edit(g, FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
-                                  coords=(6, 6), amount=OVER, mode=mode), sim.rng)
+                                  coords=(6, 6), amount=OVER, mode=mode), sim.draws)
     q = gas_fixed.quantize_trace_scalar(OVER)
     assert q > TRACE_MAX
     assert int(g.gas[SMOKE][6, 6]) == TRACE_MAX
@@ -217,12 +217,12 @@ def test_fieldedit_remove_books_nothing_and_a_representable_add_is_exact():
     g = sim.gmap
     g.reset_trace_books()
     apply_field_edit(g, FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
-                                  coords=(4, 4), amount=0.5, mode=EditMode.ADD), sim.rng)
+                                  coords=(4, 4), amount=0.5, mode=EditMode.ADD), sim.draws)
     assert g.trace_deposit_books[SMOKE] == int(g.gas[SMOKE][4, 4]) > 0
     assert g.trace_clip_books[SMOKE] == 0
     g.reset_trace_books()
     apply_field_edit(g, FieldEdit(field="gas", channel=SMOKE, region=Region.TILE,
-                                  coords=(4, 4), amount=0.25, mode=EditMode.REMOVE), sim.rng)
+                                  coords=(4, 4), amount=0.25, mode=EditMode.REMOVE), sim.draws)
     assert g.trace_deposit_books[SMOKE] == 0 and g.trace_clip_books[SMOKE] == 0
 
 

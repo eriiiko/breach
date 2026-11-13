@@ -1398,7 +1398,8 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # facing; hold the button to keep striking at the weapon's cadence) and
 # flashlight (G7p: a TOGGLE of the possessed unit's light bit) are live now,
 # as are reload (G2p), cycle_grenade (G3p) and shove (G5p-a2: push the
-# adjacent unit nearest the facing).
+# adjacent unit nearest the facing), plant_charge and cycle_charge_timer
+# (#193: plant the carried charge on the floor; step its timer).
 [controls.keys]
 move_forward = "R"
 move_back = "F"
@@ -1413,6 +1414,8 @@ cycle_grenade = "4"
 flashlight = "Q"
 use = "E"
 full_speed = "A"
+plant_charge = "X"       # #193: plant the C4 at the feet with the selected timer
+cycle_charge_timer = "5" # #193: step the timer 5 -> 10 -> ... -> 60 -> 5 s
 
 # Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7 — the shipped
 # GLSL Fresnel/GGX/refraction look, NOT the CPU placeholder above). RENDER-ONLY
@@ -2204,6 +2207,9 @@ mirror_axis = "z"       # #187: the axis normal to the prop's own plane of symme
 grip = [-0.1006, -0.0749, 0.0]   # the point the hand closes on, file units: the top of the
                                  # pistol grip, under the receiver (found as local-models'
                                  # blender/attach_weapon.py finds it)
+muzzle = [0.50, 0.0113, 0.0]   # the barrel's tip, file units (the vertices beyond x = 0.48:
+                        # their mean y, z; the bounds' +x) -- where the muzzle flame sits
+                        # ([render.muzzle_flame], #87)
 gloss = 0.12            # the lit shader's gloss for the whole prop (its albedo carries no gloss
                         # alpha): its metallic-roughness map's mean roughness 0.45 through the
                         # game-ready step's mapping ((0.85 - r) / 0.8)^3
@@ -2283,6 +2289,177 @@ duration_s = 0.1        # fades linearly to dark in this long (wall clock):
                         # ~2-3 sim ticks at 24 tps -- a pop, never a lamp. The
                         # tracer it rides lives 0.18 s, so longer is cut there
 color = [1.0, 0.82, 0.55]   # warm white, a little yellower than the flashlight
+
+[render.muzzle_flame]
+# THE MUZZLE FLAME (#87; renderer/muzzle_flame.py, shaders/muzzle_flame.fs,
+# docs/muzzle_flame_design_2026-11-12.md): the fire at a gun's barrel when it
+# fires -- a procedural flame, new for every shot (its jets drawn from a
+# generator seeded by the shooter and the tick), additive linear HDR in the
+# scene, coloured only through the blackbody ramp. The shot's room LIGHT is
+# [render.muzzle_flash] above, unchanged. WHERE it sits is the held prop's
+# `muzzle` point ([render.held_props.props.*]); a unit drawn without a prop
+# gets it at its footprint's edge. Re-read every frame (F5); every key is
+# required (a refusing door). Render-only.
+enabled = true
+default_kind = "rifle"      # any weapon that fires a round and is not in `weapons`; "" = no flame
+weapons = { k5_carbine = "rifle", gl6_revolver = "launcher" }   # [weapons.*] id -> kinds row ("" = none)
+seed = 8787                 # mixed with each shot's (unit id, tick)
+cap = 64                    # live flames at once, the oldest dropped
+
+[render.muzzle_flame.kinds.rifle]
+# Cinematic, and bigger than one would expect (Erik, 2026-11-12): the tongue
+# is longer than the 0.70 m carbine. Lengths are METRES before `size`.
+size = 1.0              # THE size dial: scales every length below
+length_m = 0.95         # the forward tongue (each shot draws 80..125 % of it)
+width_m = 0.13
+side_jets = 2           # 0..4: pairs mirror about the barrel, an odd one strays
+side_len_m = 0.55
+side_width_m = 0.085
+side_angle_deg = 55.0   # a side jet's angle off the barrel (each draws 65..135 %)
+core_m = 0.10           # the white ball at the muzzle
+halo_m = 0.30           # the soft glow's radius (the resolve has no bloom)
+halo_gain = 0.035
+t_core_k = 4200.0       # blackbody temperatures: the core ...
+t_edge_k = 1050.0       # ... and the torn rim (deep orange)
+gain = 1.6              # x the ramp's emission
+tear = 0.8              # how hard the noise eats the edge (0 = a clean tongue)
+fireball_chance = 0.12  # share of shots that are a short fat ball
+duration_s = 0.055      # sim seconds from the first drawn frame to dark
+sparks = 3              # mean sparks a shot throws (0 = none)
+
+[render.muzzle_flame.kinds.heavy]
+# The oversized flash for the heavy guns (Erik's favourite sheet): 1.8 x the
+# rifle's, four side jets, hotter, a little longer-lived. No weapon names it
+# yet -- a heavy gun's row in `weapons` does.
+size = 1.8
+length_m = 0.95
+width_m = 0.13
+side_jets = 4
+side_len_m = 0.55
+side_width_m = 0.085
+side_angle_deg = 55.0
+core_m = 0.10
+halo_m = 0.30
+halo_gain = 0.035
+t_core_k = 4600.0
+t_edge_k = 1050.0
+gain = 1.6
+tear = 0.8
+fireball_chance = 0.12
+duration_s = 0.07
+sparks = 6
+
+[render.muzzle_flame.kinds.launcher]
+# A fat short ball (the grenade launcher's thump; a shotgun's later).
+size = 1.3
+length_m = 0.5
+width_m = 0.2
+side_jets = 3
+side_len_m = 0.3
+side_width_m = 0.085
+side_angle_deg = 55.0
+core_m = 0.16
+halo_m = 0.30
+halo_gain = 0.035
+t_core_k = 4200.0
+t_edge_k = 1050.0
+gain = 1.6
+tear = 0.8
+fireball_chance = 0.5
+duration_s = 0.06
+sparks = 2
+
+[render.muzzle_flame.sparks]
+# The sparks a shot throws from the muzzle: the particle primitive's fourth
+# consumer (renderer/particles.py MuzzleSparkSystem) -- the blast sparks' law
+# (drag toward the tamed wind + curl noise, Newton cooling down the one ramp,
+# dead in a wall), born in a forward cone. How MANY is the kind's `sparks`.
+enabled = true
+cone_deg = 28.0         # half-angle of the cone round the barrel (a normal draw's sigma)
+v0_mps = 9.0            # birth speed, metres per second
+v_spread = 0.5          # the speed is v0 * (1 +- v_spread * U(-1, 1))
+t_born_k = 2600.0       # birth temperature, K (they only cool)
+cool_s = 0.25           # e-fold of (T - T_amb), Newton
+life_s = 0.22           # mean lifetime, s (VFX clock)
+life_jitter = 0.5       # each lives life_s * (1 +- life_jitter * U(-1, 1))
+drag = 5.0              # 1/s: how fast the air catches them
+curl = 0.6              # tiles/s of curl-noise drift (the embers' field)
+size_tiles = 0.022      # sprite radius, tiles
+min_screen_px = 0.8     # zoomed out, the radius floor in SCREEN px
+streak_s = 0.03         # motion stretch: the trail is |v| x this long
+brightness = 6.0        # x the ramp's emission
+cap = 256               # never more alive at once
+seed = 8788             # the cap's fair-subset draw
+
+[render.tracers]
+# THE TRACERS (#141; renderer/tracers.py): a round in flight as a white-hot
+# streak with a halo, a dim afterglow along its path, and -- where it stopped
+# on a wall -- a pinpoint flash and sparks thrown back off the wall. Sprites
+# of the particle draw: additive linear HDR after the units, coloured through
+# the blackbody ramp. The path is the sim's own; a round's first segment
+# starts at the muzzle. Re-read every frame (F5); every key is required (a
+# refusing door). Render-only.
+enabled = true
+default_kind = "bullet"     # any weapon that fires a round and is not in `weapons`; "" = none
+weapons = { gl6_revolver = "slug" }   # [weapons.*] id -> kinds row ("" = none)
+seed = 4141                 # mixed into each impact's spark draw
+cap = 256                   # live tracers at once, the oldest dropped
+min_screen_px = 0.75        # zoomed out, a streak's radius floor in SCREEN px
+
+[render.tracers.kinds.bullet]
+speed_scale = 0.20      # x the round's own speed ([ammo.*] muzzle_mps). 0.20 = Erik's play
+                        # test, 2026-11-12 (he tried 1 = HONEST first: a rifle round crosses
+                        # a room inside one or two frames): slowed for the eye, the round
+                        # visibly flies, and the picture lags the sim by up to ~0.1 s
+shutter_s = 0.0167      # the streak is the path flown in this long (a 60 fps exposure)
+width_m = 0.010         # the streak's radius
+temp_k = 3600.0         # its colour on the blackbody ramp (white-hot)
+brightness = 0.7        # its radiance, x the ramp's emission
+halo_gain = 0.54        # the soft halo round it (4 x the radius), over the streak's radiance
+                        # (Erik's play test, 2026-11-12; was 0.04)
+glow_s = 0.05           # the afterglow's e-fold, seconds: the path behind the round
+glow_gain = 0.05        # ... its radiance over the streak's
+glow_temp_k = 1500.0    # ... and its colour (orange)
+impact_sparks = 5       # mean sparks thrown back off a wall (0 = none)
+impact_flash_s = 0.03   # the pinpoint flash at the wall: its e-fold ...
+impact_flash_m = 0.07   # ... and its radius
+
+[render.tracers.kinds.slug]
+# A slow heavy round (the 40 mm): a short dull-orange streak, no sparks (its
+# payload does the work).
+speed_scale = 1.0
+shutter_s = 0.0167
+width_m = 0.03
+temp_k = 1700.0
+brightness = 1.2
+halo_gain = 0.10
+glow_s = 0.03
+glow_gain = 0.0
+glow_temp_k = 1400.0
+impact_sparks = 0
+impact_flash_s = 0.03
+impact_flash_m = 0.05
+
+[render.tracers.sparks]
+# The sparks a round throws back off a wall: the muzzle sparks' law and dials
+# (renderer/particles.py MuzzleSparkSystem), born at the impact, flying back
+# along the round's path in a wide cone.
+enabled = true
+cone_deg = 50.0         # half-angle round the way back (a normal draw's sigma)
+v0_mps = 6.0            # birth speed, metres per second
+v_spread = 0.6
+t_born_k = 2800.0
+cool_s = 0.2
+life_s = 0.2
+life_jitter = 0.5
+drag = 6.0
+curl = 0.6
+size_tiles = 0.02
+min_screen_px = 0.8
+streak_s = 0.03
+brightness = 6.0
+cap = 256
+seed = 4142
 
 [render.unit_shadow]
 # The 3D units' SHARP projected shadows (#33, tier 1;
@@ -2486,10 +2663,12 @@ legs = [["LeftLeg", "LeftShin", "LeftFoot"],
 rate = 1.0              # the Kimodo clips are authored at true speed
 # Directional hits (#184): the flinch clip of the row whose from_deg is nearest
 # the direction the hit came from, relative to the facing (0 = in front, +90 =
-# from the unit's left, 180 = from behind). The direction is the attacker's
-# last drawn position; for an explosion the blast's centre (Erik's ruling);
-# unknown (no attacker) = the front. A skeleton without this list plays
-# [render.pose.hit] clip for every hit.
+# from the unit's left, 180 = from behind). The direction is the SIM's own
+# (#185): the hit event's travel vector (a round's flight, striker -> victim,
+# detonation -> victim), the side it came from being minus that; a hit
+# without one (0, 0) = the front. [render.pose.stagger] picks from the same
+# rows along its push. A skeleton without this list plays [render.pose.hit]
+# clip for every hit.
 # MEASURED (#184): Hit_Right lurches the head 0.55 m to the body's RIGHT, as
 # Hit_Left does (0.53 m) -- so a hit from the right leans the marine toward the
 # shooter; the clip wants regenerating (or a mirror of Hit_Left).
@@ -2656,7 +2835,8 @@ shot_layer = "upper"
 # ADDITIVE over `masks` (its delta against its own first key, never the bind
 # pose), ramped in and out, restarted by every hit. Weight =
 # weight_min + (weight_max - weight_min) * clamp(damage / damage_full, 0, 1);
-# both weights in [0, 1]. The event has no direction: chest only for now.
+# both weights in [0, 1]. The clip is the skeleton's hit_directions row for
+# the side the hit came from (#185: the event's own direction), else `clip`.
 [render.pose.hit]
 clip = "Hit_Chest"
 masks = ["upper", "head"]
@@ -2666,6 +2846,20 @@ ramp_out_s = 0.12       # PLACEHOLDER (HUMAN-TEST)
 weight_min = 0.5        # PLACEHOLDER (HUMAN-TEST): a graze (a zombie takes 2.5 per round)
 weight_max = 1.0
 damage_full = 60        # PLACEHOLDER: a zombie's bite (60) flinches at weight_max
+
+# Stagger (#185): a StaggerEvent (the unit impulse law's sway overflowed: the
+# unit is pushed and catching itself -- a blast's wind a few ticks after its
+# flinch, a shove, a heavy round) plays a reaction ALONG ITS PUSH: the
+# skeleton's hit_directions row for the side the push came from (minus the
+# event's push vector, relative to the facing), else `clip`, as an ADDITIVE
+# over `masks` (it takes the flinch's additive slot: the latest of a hit and
+# a stagger plays), ramped in and out, at `weight` in [0, 1].
+[render.pose.stagger]
+clip = "Hit_Chest"
+masks = ["legs", "upper", "head"]   # PLACEHOLDER (HUMAN-TEST): the whole body lurches
+ramp_in_s = 0.05        # PLACEHOLDER (HUMAN-TEST)
+ramp_out_s = 0.2        # PLACEHOLDER (HUMAN-TEST)
+weight = 1.0            # PLACEHOLDER (HUMAN-TEST)
 
 # Aim vs travel (#163, design §4.5 correction 7): with the body facing its
 # aim, the legs yaw toward the travel direction up to theta_deg either side;
@@ -2745,10 +2939,10 @@ release_s = 0.0         # PLACEHOLDER: the throw clip's release frame, clip seco
 # Roles (#164; renderer/unit_looks.py ROLES, the role from is_zombie): the
 # reactions a unit of the role plays (fire = the aim hold + recoil on its own
 # shots, hit = the flinch, melee = the strike above, reload / throw the
-# one-shots above) and its posture amount.
+# one-shots above, stagger = the push reaction above) and its posture amount.
 [render.pose.roles]
-player = { reactions = ["fire", "hit", "reload", "throw"], posture = 0.0 }
-zombie = { reactions = ["melee", "hit"], posture = 1.0 }
+player = { reactions = ["fire", "hit", "reload", "throw", "stagger"], posture = 0.0 }
+zombie = { reactions = ["melee", "hit", "stagger"], posture = 1.0 }
 
 # Per-clip playback rows; a clip without a row loops at the global rate with
 # its root motion kept. loop, rate (x the global rate), root_motion ("keep" |
@@ -3380,6 +3574,13 @@ ammo_family = "demo_charge"
 ap_cost = 1
 mass_kg = 2.0
 loudness = 30.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
+# The continuous plant verb's row (#193, Simulation.plant_charge_intent):
+# planting takes plant_seconds (death or a stun meanwhile plants nothing), and
+# the timer is clamped to [fuse_min_seconds, fuse_max_seconds] (Erik's ruling,
+# 2026-11-11: 5 s .. 1 min, chosen in 5 s steps by the direct control).
+plant_seconds = 1.0                   # PLACEHOLDER
+fuse_min_seconds = 5.0
+fuse_max_seconds = 60.0
 
 # --- W4 SPRAY rows (mechanics/03 §5/§6): sustained cone of FIELD WRITES ------
 # CONE-ANGLE CONVENTION OF RECORD: the armory table (§6) quotes the FULL cone
@@ -4915,7 +5116,8 @@ cone_half_deg = 60.0         # the shove reaches the adjacent unit nearest the f
 [loadouts.rifleman]      # the v1 loadout (rl-ready scope §3, G3p): K5 + 2 frags, a smoke, a flashbang
 weapon = "k5_carbine"
 grenades = { grenade_frag = 2, grenade_smoke = 1, grenade_flash = 1 }   # by hand-grenade [ammo.*] row; a bare int means that many frags
-explosives = 2
+explosives = 1           # #193: ONE planted charge (X plants it, 5 steps the timer)
+charge = "demo_c4"       # #193: WHICH charge -- a demo-charge [ammo.*] row (the C4 satchel: [payloads.demolition_c4])
 magazines = 3            # TOTAL carried, the one in the gun included (G2p: one loaded, two spare); 0 or absent = spares untracked, today's infinite auto-reload
 kit_kg = 20.0            # G5p-a2: what the kit weighs; the unit impulse law's mass is the body's (80 kg) plus this -- the 100 kg reference marine
 melee = "rifle_butt"     # G6p: a [weapons.*] row of the melee archetype, the blow of the melee verb (RMB / pad R3); absent = no melee, the verb does nothing
@@ -4946,7 +5148,6 @@ friendly_line_tiles = 12     # hold fire if a teammate stands on the line of fir
 # --- the layered bots (#183 G8p) ---
 team_period_ticks = 6        # the team layer (picture -> play, shared target, objective, lanes) every this many ticks
 unit_period_ticks = 8        # each bot scores its actions every this many ticks, staggered by unit id (and at once on a new sighting)
-memory_s = 6.0               # the team forgets an enemy not seen for this long
 flash_memory_s = 4.0         # a flashbang goes only onto an enemy seen within this long
 candidate_radius = 9         # the position layer's candidates: anchors within this many tiles ...
 candidate_stride = 3         # ... on a lattice of this pitch (the bot's own anchor and its committed goal always in)
@@ -4997,6 +5198,15 @@ stand = 4.0
 fall_back = 3.0              # eligible: a known zombie near, or outnumbered
 hold = 2.0                   # eligible: an enemy marine in the team's sight now
 bound = 1.0                  # always eligible: close on the last-known enemy, else its spawn room
+
+# ---------------------------------------------------------------------------
+# The team picture (#195 1d, src/simulation/team_picture.py): what a marine
+# team knows of the enemy, kept by the conductor for every match and read by
+# the bots (and later the agents). Read by `team_picture.picture_settings`
+# (refuses a missing, mistyped or unknown key).
+# ---------------------------------------------------------------------------
+[team_picture]
+memory_s = 6.0               # the team forgets an enemy not seen for this long (was [bots] memory_s)
 
 # ---------------------------------------------------------------------------
 # Match recording (#126) — replay by RE-SIMULATION (src/match_replay.py): a
@@ -5201,3 +5411,57 @@ poison_dps = 6.0
 # Physics ring-buffer length in seconds. config.py derives the integer slot
 # capacity via round(replay_seconds * ticks_per_second). 100 s -> 1200 @ 12 tps.
 replay_seconds = 100.0
+
+# =============================================================================
+# SOUND (#202; design docs/sound/playback_layer_design_2026-11-12.md). The
+# sound layer is presentation only: main.py plays it, nothing headless loads
+# it, no digest moves. THE door: audio/model.py::sound_settings (a missing or
+# unknown key, an unknown cue / weapon / payload, a missing file: refused by
+# name). Samples live in assets/sounds/ (provenance: SOURCES.md there),
+# written by tools/sound_audition.py --export.
+# =============================================================================
+[sound]
+enabled = true
+master = 0.8              # 0..1, the whole layer's volume
+max_voices = 24           # sounds playing at once; when full the quietest gives way
+pan_width_m = 12.0        # a source this far to the listener's right is fully in the right speaker
+
+# A CUE: `files` (several = picked at random, never the same twice running),
+# `reach` = metres at which it fades to nothing, or "loudness" = the weapon /
+# payload row's own `loudness` (the radius zombies hear it in) -- a STOPGAP,
+# Erik 2026-11-12: loudness is a source level, not a distance (#201).
+# Optional: gain (1.0), pitch_jitter (0), gain_jitter (0), choke ("none" |
+# "emitter": a new one fades the previous one of the same unit over
+# choke_fade_ms, 12 -- so automatic fire's tails never stack and the last
+# shot rings out).
+[sound.cues.carbine_shot]
+files = ["carbine/corridor_1.wav"]
+reach = "loudness"
+pitch_jitter = 0.03
+gain_jitter = 0.06
+choke = "emitter"
+choke_fade_ms = 12.0
+
+# The generated clip ran 7 s; exported with --squeeze (its silences shortened)
+# it is 2.4 s against the carbine's 2 s reload, the bolt snapping at 1.8 s.
+[sound.cues.carbine_reload]
+files = ["carbine/reload_1.wav"]
+reach = 15.0              # metres; PLACEHOLDER (a reload is worth listening for)
+gain = 0.8                # PLACEHOLDER
+pitch_jitter = 0.02
+
+[sound.cues.frag_explosion]
+files = ["explosion/frag_steel_room.wav"]
+reach = "loudness"
+pitch_jitter = 0.03
+
+# A BINDING: kind -> { weapon id or payload row = cue }. An unbound weapon or
+# payload is silent.
+[sound.bindings.shot]
+k5_carbine = "carbine_shot"
+
+[sound.bindings.reload]
+k5_carbine = "carbine_reload"
+
+[sound.bindings.explosion]
+frag_standard = "frag_explosion"

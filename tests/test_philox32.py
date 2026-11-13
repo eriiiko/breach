@@ -1,11 +1,11 @@
 """philox32 -- vendoring gate for the Philox-4x32-10 RNG package.
 
-Vendored from branch ``63-swarm-units`` (arc #63 P1) by #29 P1a, which uses
-ONLY the pure-Python twin (``src/simulation/philox32.py``): the farm's
-per-episode seed function (``rl_env.episode_draw``). The C++ header
-(``cpp/src/philox32.h``) and its binding are NOT on main yet -- they arrive
-with the match-path draws (#29 P3b) -- so every test below that needs the
-binding skips on its own until then, and the Python half always runs.
+Vendored from branch ``63-swarm-units`` (arc #63 P1) by #29 P1a (the
+pure-Python twin, ``src/simulation/philox32.py``: the farm's per-episode seed
+function ``rl_env.episode_draw``); the C++ header (``cpp/src/philox32.h``) and
+its binding came with the match-path draws (#29 P3b, ``simulation/draws.py``),
+so the binding legs below run on every build that has them (and skip on an
+older module).
 
 Source: github.com/eriiiko/philox32 (MIT, commit 6c33a3d0737e1f9f64b7dd84b
 dbda02fbbc863d2), adopted as breach's second sanctioned raw-draw source
@@ -61,12 +61,12 @@ try:
 except ImportError:  # pragma: no cover - build missing
     bp = None
 
-#: The C++ binding arrives with #29 P3b (the header is not vendored yet):
-#: every test that needs it skips on its own; the Python twin's run always.
+#: The C++ binding (#29 P3b): a module built before it skips these legs;
+#: the Python twin's run always.
 needs_binding = pytest.mark.skipif(
     bp is None or not hasattr(bp, "philox32_4x32_10"),
-    reason="breach_physics has no philox32_4x32_10 binding yet (the C++ "
-           "header arrives with #29 P3b)")
+    reason="breach_physics has no philox32_4x32_10 binding (a module built "
+           "before #29 P3b)")
 
 KAT_PATH = ROOT / "tests" / "data" / "philox4x32_10_kat.txt"
 PHILOX32_H = ROOT / "cpp" / "src" / "philox32.h"

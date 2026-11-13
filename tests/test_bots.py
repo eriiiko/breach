@@ -36,10 +36,10 @@ import level_lib  # noqa: E402
 import level_loader  # noqa: E402
 import match_replay  # noqa: E402
 from config import CFG, Namespace  # noqa: E402
-from control_bots import (BotTeam, Sighting, UnitContext,  # noqa: E402
+from control_bots import (BotTeam, UnitContext,  # noqa: E402
                           bot_settings, evaluate_features)
 from field_ab_harness import capture_snapshot  # noqa: E402
-from field_digest import tick_digest  # noqa: E402
+from field_digest import field_digest, tick_digest  # noqa: E402
 from run_match import run_match  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.events import ShoveEvent, UnitHitEvent  # noqa: E402
@@ -47,6 +47,7 @@ from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.match import MatchSpec, MatchTeam, SpawnRoom  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
+from simulation.team_picture import draw_lanes  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from test_bots_v1 import ROOMS, _level  # noqa: E402
 
@@ -70,6 +71,7 @@ def _sim(level, units, zombies=()):
         z = Unit(f"z{j}", x=x, y=y, team=ZOMBIE_TEAM, footprint=3)
         sim.add_unit(z)
         zs.append(z)
+    sim.start_team_picture((0, 1))
     return sim, out, zs
 
 
@@ -134,10 +136,9 @@ def _ctx(bots, sim, u, cands):
 
 
 def _know(bots, sim, e):
-    """Put enemy ``e`` in the team's picture, seen now."""
-    bots.brain.picture[e.id] = Sighting(e, (e.tile_x, e.tile_y),
-                                        (e.center_tile_x(), e.center_tile_y()),
-                                        int(sim.tick))
+    """Put enemy ``e`` in the team's picture, seen now (the picture's own
+    writer)."""
+    sim.team_picture._write(sim, bots.team, e)
 
 
 # ---------------------------------------------------------------------------
@@ -253,8 +254,12 @@ def test_feature_outside_fire_lanes(tmp_path):
                                           (1, 10, 5)])
     bots = BotTeam(0)
     bots.handle_frame(sim, None)
-    bots.brain.firing = {mate.id: foe}
-    bots.brain.lanes = bots.brain._lanes(sim, [bot, mate])
+    s = bots.s
+    h, w = sim.gmap.material.shape
+    bots.brain.lanes = draw_lanes(
+        h, w, [(mate.id, (mate.center_tile_x(), mate.center_tile_y()),
+                (foe.center_tile_x(), foe.center_tile_y()))],
+        s.lane_cell, s.lane_halfwidth)
     ctx = _ctx(bots, sim, bot, [(10, 18), (40, 18)])
     assert _feature(ctx, "outside_fire_lanes") == [False, True]
 
@@ -522,8 +527,11 @@ def test_teammates_do_not_stack_in_a_corridor(tmp_path, controller, stacks):
 # (h) the controller drives only through the intent facade
 # ---------------------------------------------------------------------------
 def test_the_bots_change_nothing_but_intents(tmp_path):
-    """Property: with no renderer, a bots tick writes no synced state (the
-    tick digest is the same before and after ``handle_frame``) and every
+    """Property: with no renderer, a bots tick writes no synced state but
+    the intent columns (the field digest and every unit record bar the
+    schema's ``intent`` block are the same before and after
+    ``handle_frame`` -- #29 P3a: the held verbs and latches are synced
+    columns now, hashed while set) and every
     call it makes on the sim goes through the intent facade's tap (a row of
     ``match_replay.INTENT_KINDS``), never the reload verb (RULED); and no
     line of ``control_bots`` assigns to a unit, the sim or the map. Breaks
@@ -541,11 +549,19 @@ def test_the_bots_change_nothing_but_intents(tmp_path):
     ses.sim.attach_intent_log(_Tap())
     bots = [c for c in ses.controllers if isinstance(c, BotTeam)]
     assert bots
+    from simulation import unit_schema
+    intent_keys = {c.key for c in unit_schema.COLUMNS if c.block == "intent"}
+
+    def state():
+        snap = capture_snapshot(ses.sim)
+        units = [{k: v for k, v in r.items() if k not in intent_keys}
+                 for r in snap["__unit_state__"]["units"]]
+        return field_digest(snap), units
     while not ses.is_terminal():
-        before = tick_digest(capture_snapshot(ses.sim))
+        before = state()
         for b in bots:
             b.handle_frame(ses.sim, None)
-        assert tick_digest(capture_snapshot(ses.sim)) == before
+        assert state() == before
         ses.tick()
     assert kinds and set(kinds) <= set(match_replay.INTENT_KINDS)
     assert "reload_intent" not in kinds
@@ -606,6 +622,7 @@ def test_a_bot_opens_a_closed_door_on_its_path(tmp_path):
     sim.set_paused(False)
     bot = sim.get_unit(sim.add_unit(Unit("B", x=8, y=4, team=0)))
     foe = sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    sim.start_team_picture((0, 1))
     door = sim._doors[0]
     uses = []
 

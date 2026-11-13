@@ -692,7 +692,8 @@ def integrate(table: ImpulseTable, u, events=None) -> int:
             if events is not None:
                 from simulation.events import StaggerEvent
                 events.append(StaggerEvent(unit_id=int(getattr(u, "id", -1)),
-                                           ticks=int(table.react_ticks)))
+                                           ticks=int(table.react_ticks),
+                                           dir_x_q=sx - kx, dir_y_q=sy - ky))
     px, py = _clamp_vmax(u.pvx, u.pvy)
     b[CLAMP_X] += u.pvx - px
     b[CLAMP_Y] += u.pvy - py
@@ -777,8 +778,8 @@ def walk_allowed(u) -> bool:
 def move(gmap, u, walk_dx_q: int = 0, walk_dy_q: int = 0) -> bool:
     """Move ``u`` by its walk ``(walk_dx_q, walk_dy_q)`` (Q16 tiles this
     tick) and its pushed velocity as ONE displacement (§13), on the Q16 grid
-    (the position enters as ``quantize(u.x)`` and leaves as an exact
-    n/65536 double, so every position this writes is on the grid). In
+    (the position's own Q16 ints ``u.x_q`` / ``u.y_q`` in and out through
+    ``Unit.set_pos_q``, #29 P3c). In
     ``k = ceil(max(|dx|, |dy|) / SUBSTEP_Q)`` substeps of under one tile per
     axis (one, i.e. today's test, at a walk alone), each running the walk's
     own slide rule through the collision predicate walking uses
@@ -793,8 +794,8 @@ def move(gmap, u, walk_dx_q: int = 0, walk_dy_q: int = 0) -> bool:
     if dx == 0 and dy == 0:
         return False
     fp = u.footprint
-    x0 = unit_fixed.quantize_scalar(u.x)
-    y0 = unit_fixed.quantize_scalar(u.y)
+    x0 = u.x_q
+    y0 = u.y_q
     x, y = x0, y0
     k = max(1, -(-max(abs(dx), abs(dy)) // SUBSTEP_Q))
     px, py = div_trunc(dx, k), div_trunc(dy, k)
@@ -832,8 +833,7 @@ def move(gmap, u, walk_dx_q: int = 0, walk_dy_q: int = 0) -> bool:
             break
     if (x, y) == (x0, y0):
         return False
-    u.x = x / 65536.0
-    u.y = y / 65536.0
+    u.set_pos_q(x, y)
     return True
 
 
@@ -885,6 +885,14 @@ def shove_target(table: ImpulseTable, units, u):
     return best
 
 
+def shove_cooled(table: ImpulseTable, u, tick: int) -> bool:
+    """Whether ``u``'s shove cooldown has run at ``tick`` (a unit that never
+    shoved is always cooled). THE test of :func:`shove` and of
+    ``verb_gates.can_shove``; a pure read."""
+    last = int(getattr(u, "last_shove_tick", -1))
+    return not (last >= 0 and tick - last < table.shove_cooldown_ticks)
+
+
 def shove(table: ImpulseTable, units, u, tick: int, events=None) -> bool:
     """One shove by ``u`` (slot 1b's consumption of ``shove_intent``): if its
     cooldown has run and a target exists (:func:`shove_target`), the shove's
@@ -893,8 +901,7 @@ def shove(table: ImpulseTable, units, u, tick: int, events=None) -> bool:
     the cooldown starts and a render-only ``ShoveEvent`` is emitted. With no
     target nothing happens and the cooldown is not spent. The shover feels
     no reaction in v1 (ACCEPTED GAP, design §1)."""
-    last = int(getattr(u, "last_shove_tick", -1))
-    if last >= 0 and tick - last < table.shove_cooldown_ticks:
+    if not shove_cooled(table, u, tick):
         return False
     t = shove_target(table, units, u)
     if t is None:
@@ -919,5 +926,5 @@ __all__ = [
     "lever_q", "add", "along_q", "wind_impulse_q", "add_wind",
     "map_air_density", "stability_q16", "pending_dw", "integrate",
     "integrate_all", "effort_scale_q16", "walk_allowed", "move",
-    "walk_step_q", "centre_q", "shove_target", "shove",
+    "walk_step_q", "centre_q", "shove_target", "shove_cooled", "shove",
 ]

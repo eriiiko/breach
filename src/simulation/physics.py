@@ -41,6 +41,7 @@ from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff,
 )
 from simulation import wall_fixed   # S3b: wall_hp Q16.16 quantize helpers
+from simulation import unit_fixed   # #29 P3e: the integer falloff
 
 # source_id namespace for explosion-issued edits (engine/13 stable-sort key).
 # Distinct ids keep an explosion's field families grouped + ordered in the flush
@@ -91,6 +92,7 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
     # tiles). The field policy supplies the skip-mask (solid) and we add vacuum
     # explicitly to mirror the legacy ``not is_vacuum`` guard.
     queue.enqueue(FieldEdit(
+        # p3e-door: the row's radius and pressure (the flush quantizes once)
         field="atmosphere", region=Region.DISC, coords=(fy, fx, float(radius)),
         amount=float(pressure), mode=EditMode.ADD, falloff=Falloff.LINEAR,
         source_id=_SRC_EXPLOSION,
@@ -99,7 +101,10 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
     # Smoke clear over the inner 40 percent — a REMOVE-to-0 (large amount, the
     # smoke policy's floor-0 TRACE_CLAMP drives it to exactly 0). FLAT so every
     # inner tile is fully cleared, matching the old ``smoke[...] = 0.0``.
-    inner = float(radius) * 0.4
+    # #29 P3e: the inner radius is 2/5 of the radius on the Q16 grid (one
+    # rounding), handed to the DISC as its exact float view.
+    inner = unit_fixed.dequantize_scalar(
+        unit_fixed.div_round(int(radius) * 2 * unit_fixed.FP_ONE, 5))
     if inner > 0.0:
         queue.enqueue(FieldEdit(
             field="smoke", region=Region.DISC, coords=(fy, fx, inner),
@@ -107,28 +112,31 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
             source_id=_SRC_EXPLOSION,   # policy TRACE_CLAMP: floor 0
         ))
 
+    # #29 P3e: the falloff in integers. Membership ``d2 <= r^2``; the wall
+    # decrement ``wall_damage * (1 - dist/radius)`` in Q16 and the wave
+    # amount ``pressure * falloff * kw / 16`` in the temperature's Q16, each
+    # the real value rounded ONCE (unit_fixed.falloff_round, exact).
+    r = int(radius)
+    r2 = r * r
+    wall_q = wall_fixed.quantize_scalar(float(wall_damage))   # p3e-door
+    press_q = unit_fixed.quantize_scalar(float(pressure))     # p3e-door
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny, nx = fy + dy, fx + dx
             if 0 <= ny < h and 0 <= nx < w:
-                dist = math.sqrt(dy * dy + dx * dx)
-                if dist <= radius:
-                    falloff = 1.0 - (dist / radius)
+                d2 = dy * dy + dx * dx
+                if d2 <= r2:
                     # --- Structural wall damage (immediate, NOT a FieldEdit) ---
-                    # S3b: wall_hp is int32 Q16.16 — quantize the (float) blast
-                    # decrement into the same Q16.16 domain before subtracting.
                     if gmap.material[ny, nx] in _BLAST_WALL_MATERIALS:
-                        gmap.wall_hp[ny, nx] -= wall_fixed.quantize_scalar(
-                            float(wall_damage) * float(falloff))
+                        gmap.wall_hp[ny, nx] -= unit_fixed.falloff_round(
+                            wall_q, d2, r2)
                         if gmap.wall_hp[ny, nx] <= 0:
                             gmap.destroy_wall(ny, nx)
                     if not gmap.solid[ny, nx] and not gmap.is_vacuum[ny, nx]:
                         # Smoothed 3x3 deposit into wave_source (shockwave). The
                         # per-tile stencil spread is not a single region, so we
                         # enqueue the 9 weighted TILE ADDs here — their `seq`
-                        # preserves the exact original summation order
-                        # (bit-identical float accumulation through the flush).
-                        amount = pressure * falloff
+                        # preserves the original summation order.
                         for ky, kx, kw in [
                                 (0, 0, 4),
                                 (-1, 0, 2), (1, 0, 2), (0, -1, 2), (0, 1, 2),
@@ -137,27 +145,31 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                             if (0 <= sy < h and 0 <= sx < w
                                     and not gmap.solid[sy, sx]
                                     and not gmap.is_vacuum[sy, sx]):
+                                a_q = unit_fixed.div_round(
+                                    unit_fixed.falloff_round(
+                                        press_q * kw, d2, r2), 16)
                                 queue.enqueue(FieldEdit(
                                     field="wave_source", region=Region.TILE,
                                     coords=(sy, sx),
-                                    amount=amount * kw / 16.0,
+                                    amount=unit_fixed.dequantize_scalar(a_q),
+                                    amount_q=a_q,
                                     mode=EditMode.ADD,
                                     source_id=_SRC_EXPLOSION,
                                 ))
 
 
 def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8,
-                        scale=None):
+                        scale=None, amount_q=None):
     """Enqueue a noisy smoke disc into ``gmap.smoke`` (engine/13 ADD edit).
 
     Behaviour-preserving migration of the legacy inline deposit onto the
     :class:`EditQueue`. Each tile gets ``base * mult`` where
     ``base = 0.8 * (1 - dist/radius)`` (a DISC + LINEAR falloff with
     ``amount = 0.8``) and ``mult`` is the per-tile noise multiplier drawn uniform
-    in ``[1 - noise, 1.0]`` — but the draw now happens **at flush time**, from
-    the sim's seeded ``rng``, in the queue's deterministic per-tile order, so the
-    seeded-rollout guarantee is structural (one RNG consumer) rather than a
-    per-caller convention.
+    in ``[1 - noise, 1.0]`` — but the draw happens **at flush time**, a keyed
+    draw per (tick, edit, tile) under the sim's seed (#29 P3b), so the
+    seeded-rollout guarantee is structural rather than a per-caller
+    convention.
 
     ``noise`` is the per-tile contrast knob (ch.05 §4 "explosion smoke noise too
     subtle"):
@@ -185,6 +197,6 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8,
     queue.enqueue(FieldEdit(
         field="smoke", region=Region.DISC, coords=(fy, fx, float(radius)),
         amount=float(amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
-        noise=noise, scale=scale,
+        noise=noise, scale=scale, amount_q=amount_q,
         source_id=_SRC_EXPLOSION_SMOKE,   # policy TRACE_CLAMP (D1)
     ))

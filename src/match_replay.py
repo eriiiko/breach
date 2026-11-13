@@ -11,7 +11,7 @@ debug ring.
 
 The parts:
 
-- **The tap** lives in the sim (``Simulation.attach_intent_log``): the eight
+- **The tap** lives in the sim (``Simulation.attach_intent_log``): the
   intent entry points hand every call to the attached sink BEFORE acting,
   with the tick it was issued at. :class:`IntentLog` is that sink. No
   controller logs anything itself.
@@ -50,9 +50,10 @@ row. ``apply_action`` orders are REFUSED at record time (v1 matches issue
 only the per-tick intents; an ``Order`` has no serializer yet): recording a
 match that places orders raises :class:`RecordingRefused`.
 
-Determinism, verified for #126 (not assumed): the only random draw in a
-match is ``Simulation(seed=)``'s ``sim.rng``; nothing outside
-``src/simulation`` reads it on the match path (bots and zombies draw nothing:
+Determinism, verified for #126 (not assumed): every random draw in a
+match is a keyed draw under ``Simulation(seed=)`` (``sim.draws``, #29 P3b;
+``sim.rng`` refuses any use in a match); nothing outside
+``src/simulation`` draws on the match path (bots and zombies draw nothing:
 ``control_bots`` / ``control_zombies`` headers; ``run_match`` passes the seed
 only). A replay spawns through the same ``Simulation.spawn_match`` +
 ``MatchRules`` path as the recorded run, so unit ids agree.
@@ -70,7 +71,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from control_source import ControlSource
-from simulation.match import MatchSpec, MatchTeam
+from simulation.match import DEFAULT_SIGHT, MatchSpec, MatchTeam
 
 FORMAT_NAME = "breach-match-replay"
 #: v2 (gameplay pack G1p, 2026-11-10): ``set_move_dir``'s fourth argument is
@@ -92,7 +93,15 @@ FORMAT_NAME = "breach-match-replay"
 #: either and is refused rather than replayed on a changed intent set. G7p
 #: (the ``set_flashlight`` kind) lands under this same v6: nothing was
 #: released between the two patches, so one bump covers both.
-FORMAT_VERSION = 6
+#: v7 (#193, 2026-11-11): the ``plant_charge_intent`` kind, and the
+#: rifleman's loadout carries ONE planted C4 (was two unplantable charges) --
+#: a v6 recording could not name the verb and is refused.
+#: v8 (#195 1f, 2026-11-12): the ``order_intent`` kind (the commander's
+#: order: what, where, ticks, priority target), and a match with a team
+#: driven through the door carries the bots' commander, whose orders are
+#: hashed unit state -- a v7 recording could not name the verb and is
+#: refused.
+FORMAT_VERSION = 8
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a
@@ -109,6 +118,10 @@ INTENT_KINDS = {
     "shove_intent": ("int",),
     "melee_intent": ("int",),
     "set_flashlight": ("int", "bool"),
+    "plant_charge_intent": ("int", "int"),
+    # The commander's order (#195 1f): unit, what, where, ticks, target (-1
+    # = none, the schema's own encoding). Out of every policy row.
+    "order_intent": ("int", "int", "int", "int", "int"),
     "drive_zombies": ("ints",),
 }
 #: Entry points the tap sees but the format refuses to record.
@@ -212,6 +225,11 @@ def build_id() -> str | None:
 def spec_to_dict(spec: MatchSpec) -> dict:
     d = asdict(spec)
     d["teams"] = [dict(t) for t in d["teams"]]
+    # #195 1a: written only when it is not the default, so a cone match's
+    # header is byte for byte the one recorded before the key existed (and
+    # an old recording, which has no field, reads as cone: no format bump).
+    if d.get("sight") == DEFAULT_SIGHT:
+        del d["sight"]
     return d
 
 

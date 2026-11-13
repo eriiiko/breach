@@ -10,6 +10,7 @@ argv scans, never per-test dicts::
     time_limit_s = 300.0         # sim seconds (default 300.0); draw at the limit
     zombies = 5                  # placed in the ZOMBIE_TEAM spawn room
     zombie_controller = "zombies"  # the horde's controller (default; #122)
+    sight = "cone"               # who may see whom (default; #195 1a): "cone" | "all_round"
 
     [[team]]                     # row i IS team i (0, 1, 2, ...)
     n = 4
@@ -55,7 +56,16 @@ FORMATION_PITCH = FORMATION_FOOTPRINT + FORMATION_GAP
 
 _ROOM_KEYS = ("team", "x", "y", "w", "h", "max_per_team", "placement")
 _MATCH_KEYS = ("objective", "seed", "time_limit_s", "zombies",
-               "zombie_controller", "team")
+               "zombie_controller", "sight", "team")
+#: The sight rules a match may name (#195 1a, RL agent design 3.6): ONE rule
+#: per match, the same for every seat in it. ``"cone"`` is the game's own
+#: (the onephase facing cone + awareness radius, ``vision.can_see``);
+#: ``"all_round"`` is every living non-zombie unit seeing every living unit
+#: of another team along a clear line (``vision.ray_clear``). The writer
+#: omits the key at the default, so a match file that never named one stays
+#: byte-identical.
+SIGHT_RULES = ("cone", "all_round")
+DEFAULT_SIGHT = "cone"
 #: The horde's controller when match.toml names none (#122): the shipped
 #: zombie law through the control seam. The writer omits the key at this
 #: value, so a match file that never named one stays byte-identical.
@@ -96,6 +106,9 @@ class MatchSpec:
     #: the registered controller that drives ZOMBIE_TEAM (#122) — the spawned
     #: horde and every converted marine.
     zombie_controller: str = DEFAULT_ZOMBIE_CONTROLLER
+    #: the match's sight rule (#195 1a): ``Simulation.spawn_match`` hands it
+    #: to the sim, ``vision.can_see`` reads it there.
+    sight: str = DEFAULT_SIGHT
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +221,15 @@ def parse_spawn_rooms(raw_list, where: str) -> list:
 # The door — match.toml
 # ---------------------------------------------------------------------------
 
+def check_sight(value, where: str) -> str:
+    """THE door of a sight rule (match.toml ``sight``, a run file's
+    ``[run] sight``): one of :data:`SIGHT_RULES`, refused by name."""
+    if not isinstance(value, str) or value not in SIGHT_RULES:
+        raise ValueError(f"{where} {value!r} is not a sight rule "
+                         f"(known: {list(SIGHT_RULES)})")
+    return value
+
+
 def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
     """A raw match.toml dict -> a validated :class:`MatchSpec`, checked
     against the level's ``spawn_rooms`` and the live tables: a known
@@ -286,6 +308,7 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
         raise ValueError(f"{where}.zombie_controller {zctrl!r} is not a "
                          f"registered controller (known: "
                          f"{sorted(controllers)})")
+    sight = check_sight(raw.get("sight", DEFAULT_SIGHT), f"{where}.sight")
     if zombies:
         zroom = rooms.get(ZOMBIE_TEAM)
         if zroom is None:
@@ -297,7 +320,7 @@ def parse_match(raw: dict, spawn_rooms, where: str) -> MatchSpec:
                              f"room's max_per_team = {zroom.max_per_team}")
     return MatchSpec(teams=tuple(teams), seed=seed, zombies=zombies,
                      time_limit_s=float(tl), objective=objective,
-                     zombie_controller=zctrl)
+                     zombie_controller=zctrl, sight=sight)
 
 
 # ---------------------------------------------------------------------------
@@ -314,12 +337,21 @@ def spawn_match(sim, spec: MatchSpec) -> list:
     row's ``n`` units from its loadout + env_profile, then the zombies, each
     standing on its slot's cell of its room's placement rule. Returns the
     units in spawn order. Draws no randomness (the match seed is the sim's
-    own, passed at construction)."""
+    own, passed at construction; it keys ``sim.draws``, and ``sim.rng`` is
+    replaced by the refusing stand-in, #29 P3b). Sets the sim's sight rule from the spec
+    (``sim.sight``, #195 1a): the one place a match hands it over. Starts
+    the team picture last (``Simulation.start_team_picture``, #195 1d)."""
     from simulation.unit import Unit
 
     if sim.units:
         raise ValueError("spawn_match needs a fresh Simulation (it already "
                          f"holds {len(sim.units)} units); slots start at 0")
+    sim.sight = check_sight(getattr(spec, "sight", DEFAULT_SIGHT),
+                            "spec.sight")
+    # #29 P3b (design §4.7): a match draws ONLY through sim.draws (keyed
+    # Philox); sim.rng becomes a stand-in that raises on any use, naming it.
+    from simulation.draws import RefusingRng
+    sim.rng = RefusingRng()
     rooms = {r.team: r for r in sim.level.spawn_rooms}
     spawned = []
 
@@ -339,6 +371,9 @@ def spawn_match(sim, spec: MatchSpec) -> list:
               env_profile=row.env_profile)
     if spec.zombies:
         place(ZOMBIE_TEAM, spec.zombies)
+    # the team picture (#195 1d): one per marine team of the spec, the
+    # horde none; its first update is taken here, at the spawn tick
+    sim.start_team_picture(range(len(spec.teams)))
     return spawned
 
 

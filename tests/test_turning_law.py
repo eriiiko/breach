@@ -562,12 +562,91 @@ def test_g9_the_bots_prediction_is_the_facing_the_shot_leaves_along(
 #: db7c0e8376ea39397a0d2c079f5243d24c3ac86a25618ceea57ed807e08a4317)
 _RE_PIN_1_SHIP_DEMO = dict(
     outcome="win", team=1, ticks=244,
-    field_digest="841869decf00a406da93a7e35a561d81"
-                 "dc2d581cc090309ea33f0b957e7625ba",
-    tick_digest="df36873fbb14eda3ff329f89e89f20d7"
-                "35202b973638f6f3e4d29b724197a9bc",
-    unit_stream="6480df664eb192d90ff0be9dc50e8f9c"
-                "a9263a89f4b85c050b9a27a7183eefc9")
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was 841869decf00a406da93a7e35a561d81dc2d581cc090309ea33f0b957e7625ba)
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 309590f66a864df062ccb7c9cdf92caba03dfbfe8bdad86f22e435ab30b2a5be)
+    field_digest="d6ff90dbce559fa603805b9eaf8139bd"
+                 "5e18b34c0ac39b251894c3686140d780",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was df36873fbb14eda3ff329f89e89f20d735202b973638f6f3e4d29b724197a9bc)
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was ddda3bb5d992ff8071f36cbf4d7550e5525baada5dd12738ed6c7c7c3a6c6943)
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was cdb2152bc2d764dce97483c26f70152b9017c463083d53b7275529f447e8b9b4)
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 3d21436d8858106d5d9f26c57829d7b5b9e6de232d0bd2492e7a841c749d4bb8)
+    tick_digest="1775613f19c56ce58fb53975fa1ad64c"
+                "e472ccb59073b404578eaff67c99ed93",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 6480df664eb192d90ff0be9dc50e8f9ca9263a89f4b85c050b9a27a7183eefc9)
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was e8c7ef9db453387ff803d525b5577b3582fe008dd458bf14708612c429ab85d3)
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was da9febf7321dbe971ef9e5fa7c3ed599c8453f7cc969f18aad6251dc3c07d529)
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 7e4d0161cf924be4dfe170b52d7d2386b77c59c984a5a27bdea519d2431ffdcb)
+    unit_stream="27cefe3132431e8d06ca4838afe4b4d4"
+                "8219ea21403d53c2d300fdecfdf8643b")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -591,8 +670,25 @@ _RE_PIN_1_BOX = dict(
     outcome="win", team=1, ticks=92,
     field_digest="2a9339a53e67d28c29ff513f6942dab9"
                  "1586f5e85c6eb552885554c16ebe4c3b",
-    unit_stream="035304b74d47d0dfcd73e661ebe44011"
-                "21994f1a121abcc851c301e7a3c588c7")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 035304b74d47d0dfcd73e661ebe4401121994f1a121abcc851c301e7a3c588c7)
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 1e05debc38bf2ad1aebc1c8b5a75811019205bc09e78bc506b7fe0aab20f0f57)
+    unit_stream="764ee188445aa1bf3e4f8357a44d2576"
+                "edabd6d0f301b9ce6b87c435f2d3879d")
 
 
 def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
@@ -631,3 +727,43 @@ def test_g3_at_unlimited_acceleration_the_pins_are_re_pin_1s(
     assert dict(outcome=o.result.outcome, team=o.result.team,
                 ticks=o.result.ticks, field_digest=o.field_digest,
                 unit_stream=stream.h.hexdigest()) == _RE_PIN_1_BOX
+
+
+# ---------------------------------------------------------------------------
+# #195 1g -- ticks_to_within: the trigger aid is the law iterated, not a copy
+# ---------------------------------------------------------------------------
+def test_ticks_to_within_is_the_law_stepped_by_hand():
+    """Property (#195 1g, obs spec 1.7): ``ticks_to_within`` is the count of
+    ``law_q16`` steps until the facing lies within ``tol_q`` of the target
+    -- 0 when already within, the hand-stepped count for a quarter turn
+    (with and without an outside spin), and ``cap`` when the turn cannot
+    land within the cap. Breaks if the aid stops reading the law (a copy, a
+    closed form) or counts the landing tick off by one."""
+    u = Unit("t", x=5, y=5, team=0, footprint=3)
+    tol = unit_fixed.quantize_scalar(math.radians(3.0))
+    quarter = turning.normalize_q16(unit_fixed.quantize_scalar(math.pi / 2))
+    # already within: zero ticks, whatever the spin
+    turning.place(u, 0)
+    assert turning.ticks_to_within(u, tol // 2, A_SHIP, W_SHIP, 0, tol,
+                                   48) == 0
+    # a quarter turn from rest: step the law by hand to the same answer
+    turning.place(u, 0)
+    facing, omega, n = 0, 0, 0
+    while abs(wrap_q16(quarter - facing)) > tol:
+        facing, omega = law_q16(facing, omega, quarter, A_SHIP, W_SHIP)
+        n += 1
+    assert 1 < n < 11
+    assert turning.ticks_to_within(u, quarter, A_SHIP, W_SHIP, 0, tol,
+                                   48) == n
+    # the same with an outside spin ``dw`` added first, as slot 1a adds it
+    dw = -3 * A_SHIP
+    facing, omega, m = 0, dw, 0
+    while abs(wrap_q16(quarter - facing)) > tol:
+        facing, omega = law_q16(facing, omega, quarter, A_SHIP, W_SHIP)
+        m += 1
+    assert m != n
+    assert turning.ticks_to_within(u, quarter, A_SHIP, W_SHIP, dw, tol,
+                                   48) == m
+    # the cap: a half turn at a tiny top speed is not reached in 4 ticks
+    assert turning.ticks_to_within(u, PI_Q16, A_SHIP, 100, 0, tol, 4) == 4
+    assert u.facing_q == 0 and u.omega_q == 0      # a pure read

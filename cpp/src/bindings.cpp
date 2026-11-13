@@ -14,6 +14,8 @@
 #include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // the Q16.16 kit (quantize, make_recip, the trig kit, ...)
 #include "horde_field.h"   // #183 G9p: the horde's distance field (host reference)
+#include "sight_lines.h"   // #195 1c: has_los's walk for many tiles (host call)
+#include "philox32.h"      // #29 P3b: the vendored Philox-4x32-10 (KAT / twin gate)
 
 // #29 P1b: the build id, defined in the GENERATED TU <build dir>/generated/
 // build_id.cpp that cpp/gen_build_id.cmake writes at BUILD time (git HEAD's
@@ -1897,6 +1899,70 @@ PYBIND11_MODULE(breach_physics, m) {
 
     // (smoke_cliff_count — the integer smoke-CFL substep-count helper — is
     //  DELETED with the n_smoke kit, smoke transport v2, #12.)
+
+    // arc #63 P1 (docs/architecture/engine/17_swarm_units.md §3): expose the
+    // vendored Philox-4x32-10 (cpp/src/philox32.h) so tests/test_philox32_*.py
+    // can verify the SHIPPED C++ header bit-identical to the pure-Python twin
+    // (src/simulation/philox32.py) and to Random123's published KAT vectors
+    // (tests/data/philox4x32_10_kat.txt). Brought to main by #29 P3b (the
+    // match draws are Philox on the Python twin; the device draws of P4c /
+    // P7a compile this header): no C++ sim call site draws yet.
+    m.def("philox32_4x32_10",
+          [](uint32_t ctr0, uint32_t ctr1, uint32_t ctr2, uint32_t ctr3,
+             uint32_t key0, uint32_t key1) {
+              const uint32_t ctr[4] = {ctr0, ctr1, ctr2, ctr3};
+              const uint32_t key[2] = {key0, key1};
+              uint32_t out[4];
+              philox32_4x32_10(ctr, key, out);
+              return std::make_tuple(out[0], out[1], out[2], out[3]);
+          },
+          py::arg("ctr0"), py::arg("ctr1"), py::arg("ctr2"), py::arg("ctr3"),
+          py::arg("key0"), py::arg("key1"),
+          "philox32 (arc #63 P1): the vendored Philox-4x32-10 block function -- "
+          "out = F(ctr[4], key[2]), 10 rounds, integer-only (cpp/src/philox32.h).");
+
+    // Vectorised: ctr (n, 4) uint32, key (n, 2) uint32 -> out (n, 4) uint32.
+    // A thin loop over the same scalar block function above -- no separate
+    // algorithm -- so a large cross-language sweep (test c) runs in one call
+    // instead of n Python<->C++ round trips.
+    m.def("philox32_4x32_10_np",
+          [](py::array_t<uint32_t> ctr, py::array_t<uint32_t> key) {
+              auto c = ctr.unchecked<2>();
+              auto k = key.unchecked<2>();
+              if (c.shape(1) != 4 || k.shape(1) != 2 || c.shape(0) != k.shape(0)) {
+                  throw std::invalid_argument(
+                      "philox32_4x32_10_np: expected ctr (n, 4) and key (n, 2) "
+                      "with matching n");
+              }
+              const py::ssize_t n = c.shape(0);
+              py::array_t<uint32_t> out(std::vector<py::ssize_t>{n, 4});
+              auto o = out.mutable_unchecked<2>();
+              for (py::ssize_t i = 0; i < n; ++i) {
+                  const uint32_t cc[4] = {c(i, 0), c(i, 1), c(i, 2), c(i, 3)};
+                  const uint32_t kk[2] = {k(i, 0), k(i, 1)};
+                  uint32_t oo[4];
+                  philox32_4x32_10(cc, kk, oo);
+                  o(i, 0) = oo[0]; o(i, 1) = oo[1]; o(i, 2) = oo[2]; o(i, 3) = oo[3];
+              }
+              return out;
+          },
+          py::arg("ctr"), py::arg("key"),
+          "philox32 (arc #63 P1): vectorised philox32_4x32_10 over (n,4) ctr / "
+          "(n,2) key uint32 arrays -> (n,4) uint32 out. Bulk-sweep path only, "
+          "same block function as philox32_4x32_10.");
+
+    m.def("philox32_uniform_q16",
+          [](uint32_t w) { return philox32_uniform_q16(w); }, py::arg("w"),
+          "philox32 (arc #63 P1): w >> 16 -- Q16.16 uniform in [0, 1).");
+    m.def("philox32_angle_q16",
+          [](uint32_t w) { return philox32_angle_q16(w); }, py::arg("w"),
+          "philox32 (arc #63 P1): (w * TWO_PI_Q16) >> 32 -- Q16.16 angle in [0, 2*pi).");
+    m.def("philox32_below",
+          [](uint32_t w, uint32_t n) { return philox32_below(w, n); },
+          py::arg("w"), py::arg("n"),
+          "philox32 (arc #63 P1): (w * n) >> 32 -- Lemire multiply-shift integer "
+          "in [0, n), never % or float.");
+    m.attr("PHILOX32_TWO_PI_Q16") = PHILOX32_TWO_PI_Q16;
 
     // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
     // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
@@ -4044,6 +4110,69 @@ PYBIND11_MODULE(breach_physics, m) {
              },
              py::arg("tile_ok"), py::arg("fp"), py::arg("seeds"),
              py::arg("out"))
+        // #195 1c: SIGHT FOR MANY TILES (sight_lines.h) -- GameMap.has_los's
+        // walk, step for step, over many lines. A host call in both modules,
+        // stateless like horde_field: `solid` / `screen` (h, w) uint8
+        // (nonzero = blocks; `screen` ignored when `physical`), the
+        // vision.py wrappers add cover that blocks sight. `sight_rays`:
+        // `pairs` (n, 4) int32 rows (y0, x0, y1, x1), `out` (n,) uint8.
+        .def("sight_rays",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> solid,
+                py::array_t<uint8_t, py::array::c_style> screen, bool physical,
+                py::array_t<int32_t, py::array::c_style> pairs,
+                py::array_t<uint8_t, py::array::c_style> out) {
+                 auto [sol, h, w] = get_2d_const(solid);
+                 auto [scr, h2, w2] = get_2d_const(screen);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "sight_rays: solid and screen differ in shape");
+                 if (pairs.ndim() != 2 || pairs.shape(1) != 4)
+                     throw std::invalid_argument(
+                         "sight_rays: pairs must be an (n, 4) int32 array");
+                 const int64_t n = pairs.shape(0);
+                 if (out.ndim() != 1 || out.shape(0) != n)
+                     throw std::invalid_argument(
+                         "sight_rays: out must be an (n,) uint8 array");
+                 const int32_t* pp = n > 0 ? pairs.data() : nullptr;
+                 uint8_t* dst = n > 0 ? out.mutable_data() : nullptr;
+                 {
+                     py::gil_scoped_release release;
+                     sight::rays(sol, scr, h, w, physical, pp, n, dst);
+                 }
+             },
+             py::arg("solid"), py::arg("screen"), py::arg("physical"),
+             py::arg("pairs"), py::arg("out"))
+        // `sight_window`: one tile (y, x) against the wh x ww rectangle at
+        // (wy, wx) (may reach outside the map); `out` (wh, ww) uint8. FROM
+        // the tile to each rectangle tile, or (to_window) FROM each rectangle
+        // tile to the tile -- the walk is not symmetric.
+        .def("sight_window",
+             [](const PhysicsEngine&,
+                py::array_t<uint8_t, py::array::c_style> solid,
+                py::array_t<uint8_t, py::array::c_style> screen, bool physical,
+                int y, int x, int wy, int wx, bool to_window,
+                py::array_t<uint8_t, py::array::c_style> out) {
+                 auto [sol, h, w] = get_2d_const(solid);
+                 auto [scr, h2, w2] = get_2d_const(screen);
+                 if (h != h2 || w != w2)
+                     throw std::invalid_argument(
+                         "sight_window: solid and screen differ in shape");
+                 if (out.ndim() != 2)
+                     throw std::invalid_argument(
+                         "sight_window: out must be a (wh, ww) uint8 array");
+                 const int wh = static_cast<int>(out.shape(0));
+                 const int ww = static_cast<int>(out.shape(1));
+                 uint8_t* dst = (wh > 0 && ww > 0) ? out.mutable_data() : nullptr;
+                 {
+                     py::gil_scoped_release release;
+                     sight::window(sol, scr, h, w, physical, y, x, wy, wx, wh,
+                                   ww, to_window, dst);
+                 }
+             },
+             py::arg("solid"), py::arg("screen"), py::arg("physical"),
+             py::arg("y"), py::arg("x"), py::arg("wy"), py::arg("wx"),
+             py::arg("to_window"), py::arg("out"))
         // arc #54 §2.7 (gas-energy conservation): energy that left the
         // accountable set through the W3 water-displacement evacuation
         // (shares into vacuum / the ambient ring / thermal solids). int64,

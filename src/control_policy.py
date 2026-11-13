@@ -4,9 +4,9 @@ design §4.1 / §4.5; the ``AgentPolicy`` slot ``control_source`` reserved).
 A policy drives its team's units through the SAME per-tick intent facade the
 bots and the gamepad use -- ``Simulation.set_move_dir`` / ``clear_move_dir`` /
 ``set_aim`` / ``set_trigger`` / ``throw_grenade_intent`` / ``use_intent`` /
-``reload_intent`` / ``shove_intent`` / ``melee_intent`` / ``set_flashlight`` --
-so the sim's one intent tap (``Simulation.attach_intent_log``) sees every
-call and a recorded episode replays under ``tools/run_match.py --replay``.
+``reload_intent`` / ``shove_intent`` / ``melee_intent`` / ``set_flashlight``
+/ ``plant_charge_intent`` -- so the sim's one intent tap
+(``Simulation.attach_intent_log``) sees every call and a recorded episode replays under ``tools/run_match.py --replay``.
 Nothing else drives a policy's units, and the policy decides nothing: it
 holds ONE ACTION ROW per roster slot of its team, handed to it by a trainer
 (the batched environment's farm worker, ``src/rl_env.py``) through
@@ -32,7 +32,9 @@ vector: a zero vector holds a live, motionless move intent), ``set_aim.dx_q``,
 ``.dy_q`` / ``.fuse_ticks`` (integer ticks) / ``.reach_q`` / ``.kind`` (the
 hand-grenade row index, G3p), ``use_intent``,
 ``reload_intent`` (G2p), ``shove_intent`` (G5p-a2), ``melee_intent`` (G6p),
-``set_flashlight.off`` (G7p: the OFF sense, so a zero row keeps every light on).
+``set_flashlight.off`` (G7p: the OFF sense, so a zero row keeps every light on),
+``plant_charge_intent.fuse_ticks`` (#193: integer ticks, the sim clamps it to
+5 .. 60 s; 0 = no plant, so a zero row plants nothing).
 
 WHEN a kind is issued is its row in :data:`VERB_RULES` -- a new kind in
 ``INTENT_KINDS`` is refused here until it has one (the column follows for
@@ -42,12 +44,13 @@ free; the rule is a decision):
   overwrites the unit's live slot each call): move, aim, the trigger HOLD;
 - ``latch`` kinds only on the FIRST tick after :meth:`AgentPolicy.set_rows`
   (the sim latches them until a tick consumes them): throw, use, reload,
-  shove, melee;
+  shove, melee, plant;
 
 each gated: ``always``; ``flag`` (its own flag column is non-zero);
 ``unless:<kind>`` (not when that kind's flag is set: ``set_move_dir`` yields
 to ``clear_move_dir``, so a row issues exactly one of the two); ``vector``
-(its ``dx_q, dy_q`` pair is not zero: a throw needs a direction).
+(its ``dx_q, dy_q`` pair is not zero: a throw needs a direction);
+``nonzero`` (its ONE argument is not zero: a plant needs a timer).
 
 A ZERO row therefore issues ``set_move_dir(0, 0, 0)``, ``set_aim(0, 0)`` and
 ``set_trigger(False)`` every tick: a held, motionless stance with the facing
@@ -70,8 +73,9 @@ from control_source import ControlSource
 from match_replay import INTENT_KINDS
 from simulation.intents import FP_ONE, dequantize
 
-#: The intent kinds no policy row carries (the horde's own intent).
-EXCLUDED_KINDS = ("drive_zombies",)
+#: The intent kinds no policy row carries: the horde's own intent and the
+#: commander's order (#195 1f -- a soldier's policy never orders itself).
+EXCLUDED_KINDS = ("drive_zombies", "order_intent")
 #: The kinds a policy row carries, in ``INTENT_KINDS`` order.
 POLICY_KINDS = tuple(k for k in INTENT_KINDS if k not in EXCLUDED_KINDS)
 
@@ -90,6 +94,9 @@ VERB_RULES = {
     # The flashlight bit is held every tick like the trigger; its argument is
     # the OFF sense (Simulation.set_flashlight) so a zero row leaves it on.
     "set_flashlight": ("hold", "always"),
+    # The plant (#193) latches like the throw, gated on its one argument: a
+    # zero fuse column is no plant (the sim would clamp a 0 up to 5 s).
+    "plant_charge_intent": ("latch", "nonzero"),
 }
 VERB_CLASSES = ("hold", "latch")
 
@@ -156,6 +163,11 @@ def _check_rules() -> None:
             if "dx_q" not in _params(kind) or "dy_q" not in _params(kind):
                 raise RuntimeError(f"VERB_RULES[{kind!r}]: a 'vector' gate "
                                    f"needs dx_q / dy_q arguments")
+        elif gate == "nonzero":
+            if len(INTENT_KINDS[kind][1:]) != 1:
+                raise RuntimeError(f"VERB_RULES[{kind!r}]: a 'nonzero' gate "
+                                   f"needs a kind with exactly one argument "
+                                   f"beyond the unit")
         elif gate != "always":
             raise RuntimeError(f"VERB_RULES[{kind!r}]: unknown gate {gate!r}")
 
@@ -225,6 +237,8 @@ class _Plan:
             elif gate == "vector":
                 gate_col = (schema.index(f"{kind}.dx_q"),
                             schema.index(f"{kind}.dy_q"))
+            elif gate == "nonzero":
+                gate_col = args[0][0]
             self.steps.append((kind, cls == "latch", gate.split(":")[0],
                                gate_col, args))
 
@@ -258,7 +272,43 @@ def issue_row(sim, unit_id: int, row, first: bool, plan: _Plan) -> None:
         elif gate == "vector":
             if row[gate_col[0]] == 0 and row[gate_col[1]] == 0:
                 continue
+        elif gate == "nonzero":
+            if not row[gate_col]:
+                continue
         getattr(sim, kind)(unit_id, *[_decode(row[i], t) for i, t in args])
+
+
+class _Aim:
+    """One decoded aim choice (the decoder's, never the Unit's): a compass
+    token (``kind`` "tok", ``value`` its direction), "walk", "keep", or a
+    unit (``value`` its game id, ``last_point`` the last centre tile it
+    resolved to)."""
+    __slots__ = ("kind", "value", "last_point")
+
+    def __init__(self, kind: str, value: int = -1):
+        self.kind, self.value, self.last_point = kind, int(value), None
+
+
+_WALK = _Aim("walk")
+
+
+class _Decision:
+    """One slot's decoded decision (the five choices after the fallbacks
+    that need no sim)."""
+    __slots__ = ("feet", "aim", "aim_index", "trigger", "hand", "arg")
+
+
+class _SlotState:
+    """The decoder's per-unit memory (controller state: never on the Unit,
+    never synced; design 9 "the decoder's held aim")."""
+    __slots__ = ("throw_aim", "last_vec", "aimed_uid", "prev", "uid")
+
+    def __init__(self):
+        self.throw_aim = None
+        self.last_vec = (0, 0)
+        self.aimed_uid = -1
+        self.prev = None
+        self.uid = -1
 
 
 class AgentPolicy(ControlSource):
@@ -266,7 +316,15 @@ class AgentPolicy(ControlSource):
     of ``team`` each tick (see the module doc). :meth:`set_rows` starts a
     decimation step; until the first call it issues nothing. Works with
     ``renderer=None``; calling ``handle_frame`` twice in one tick is a
-    no-op."""
+    no-op.
+
+    THE ACTION SPEC (#195 1h, ``[action] spec``): ``"raw"`` (the default)
+    takes the generated rows through :meth:`set_rows`; ``"v1"``
+    (:meth:`configure`, ``simulation.action_spec_v1``) takes five integers
+    per slot through :meth:`set_decisions` and DECODES them every tick into
+    one raw row issued through :func:`issue_row` -- so ``VERB_RULES`` stays
+    the one hold / latch rule and nothing new reaches the sim or the
+    recording."""
 
     def __init__(self, team: int):
         self.team = int(team)
@@ -275,12 +333,96 @@ class AgentPolicy(ControlSource):
         self._rows = None
         self._first = False
         self._last_tick = None
+        self.action_spec = "raw"
+        self._tables = None
+        self._dec = None            # v1: per slot a _Decision
+        self._slot = {}             # v1: per slot a _SlotState
+        idx = self.schema.index
+        self._col = {n: idx(n) for n in self.schema.names}
+
+    # -- the action spec (#195 1h) -----------------------------------------
+    def configure(self, spec: str, tables=None) -> None:
+        """Choose the action spec: ``"raw"`` or ``"v1"`` with its
+        ``ActionTables`` (``action_spec_v1.action_tables``). Refused once a
+        row has been handed over."""
+        from simulation.action_spec_v1 import ACTION_SPECS
+        if spec not in ACTION_SPECS:
+            raise ValueError(f"unknown action spec {spec!r} (known: "
+                             f"{list(ACTION_SPECS)})")
+        if self._rows is not None or self._dec is not None:
+            raise RuntimeError("AgentPolicy.configure after a row was handed "
+                               "over: the action spec is set once, first")
+        if spec == "v1" and tables is None:
+            raise ValueError("action spec 'v1' needs its ActionTables")
+        self.action_spec = spec
+        self._tables = tables if spec == "v1" else None
+
+    def set_decisions(self, rows5, list_uid) -> None:
+        """The ``"v1"`` twin of :meth:`set_rows`: ``rows5`` the team's
+        ``(S, 5)`` block of ``(feet, aim, trigger, hand, arg)``, ``list_uid``
+        its ``(S, E)`` block of the observation those rows were chosen on.
+        A list pointer becomes a game id HERE, once, and is never kept as a
+        position (design 2.2). Indices are trusted in range (the env's door
+        refuses the rest)."""
+        from simulation import action_spec_v1 as A
+        if self.action_spec != "v1":
+            raise RuntimeError("set_decisions is the 'v1' action spec's; "
+                               "this policy is on 'raw' (set_rows)")
+        tb = self._tables
+        rows5 = np.asarray(rows5)
+        list_uid = np.asarray(list_uid)
+        if rows5.ndim != 2 or rows5.shape[1] != len(A.HEADS):
+            raise ValueError(f"v1 decisions must be (slots, 5), got "
+                             f"{rows5.shape}")
+        if list_uid.shape != (rows5.shape[0], tb.n_entries):
+            raise ValueError(f"list_uid must be ({rows5.shape[0]}, "
+                             f"{tb.n_entries}), got {list_uid.shape}")
+        decs = []
+        for s in range(rows5.shape[0]):
+            feet, aim, trig, hand, arg = (int(v) for v in rows5[s])
+            d = _Decision()
+            d.feet, d.trigger, d.arg = feet, trig, arg
+            if aim < A.AIM_WALK:
+                d.aim, d.aim_index = _Aim("tok", aim), aim
+            elif aim == A.AIM_KEEP:
+                d.aim, d.aim_index = _Aim("keep"), A.AIM_KEEP
+            else:
+                d.aim, d.aim_index = _WALK, A.AIM_WALK
+                i = aim - A.AIM_TOKENS
+                if i >= 0:
+                    uid = int(list_uid[s, i])
+                    if uid >= 0 and tb.aim_lo <= i < tb.aim_hi:
+                        d.aim, d.aim_index = _Aim("unit", uid), A.AIM_TOKENS
+            # the fallbacks that need no sim (note section 2): the reserved
+            # flashlight and a masked argument decode as hand "nothing"
+            if hand == A.HAND_FLASHLIGHT:
+                hand = A.HAND_NOTHING
+            elif hand >= A.HAND_THROW0:
+                if arg == A.ARG_ONTO and d.aim.kind != "unit":
+                    hand = A.HAND_NOTHING
+            elif hand == A.HAND_PLANT and arg == A.ARG_ONTO:
+                hand = A.HAND_NOTHING
+            d.hand = hand
+            decs.append(d)
+        self._dec = decs
+        self._first = True
+
+    def aim_view(self) -> dict:
+        """The decoder's view the observation reads (note section 4): per
+        unit id of this team ``(aimed_uid, prev)`` -- the unit its body
+        aimed at on the last tick issued (-1 for a token) and the six
+        decoded choices of the last decision (``None`` before the first)."""
+        return {st.uid: (st.aimed_uid, st.prev)
+                for st in self._slot.values() if st.uid >= 0}
 
     def set_rows(self, rows) -> None:
         """Hand the policy its action rows for the next decimation step:
         ``rows[s]`` is roster slot ``s``'s row (an int array ``(S, A)``,
         ``A`` = the schema's width; slots beyond the roster are ignored).
         The latch kinds go out on the next tick only."""
+        if self.action_spec != "raw":
+            raise RuntimeError("set_rows is the 'raw' action spec's; this "
+                               "policy is on 'v1' (set_decisions)")
         rows = np.asarray(rows)
         if rows.ndim != 2 or rows.shape[1] != len(self.schema):
             raise ValueError(f"policy rows must be (slots, "
@@ -291,6 +433,9 @@ class AgentPolicy(ControlSource):
         self._first = True
 
     def handle_frame(self, sim, renderer=None) -> None:
+        if self.action_spec == "v1":
+            self._decode_frame(sim)
+            return
         rows = self._rows
         if rows is None:
             return
@@ -306,6 +451,130 @@ class AgentPolicy(ControlSource):
                 continue
             issue_row(sim, u.id, rows[slot], first, self._plan)
 
+    # -- the v1 decoder: one raw row per living unit per tick ---------------
+    def _decode_frame(self, sim) -> None:
+        decs = self._dec
+        if decs is None:
+            return
+        tick = int(sim.tick)
+        if tick == self._last_tick:
+            return
+        self._last_tick = tick
+        first, self._first = self._first, False
+        roster = sim.roster(self.team)
+        records = None
+        for slot in range(min(len(roster), len(decs))):
+            u = roster[slot]
+            # a dead or turned row issues NOTHING, ever (1e's note: a latch
+            # for such a unit would never be consumed and stay hashed)
+            if not u.alive or u.team != self.team:
+                continue
+            if records is None:
+                records = sim.team_picture.records(self.team)
+            st = self._slot.get(slot)
+            if st is None:
+                st = self._slot[slot] = _SlotState()
+            st.uid = int(u.id)
+            issue_row(sim, u.id, self._decode(u, decs[slot], st, records,
+                                              tick, first),
+                      first, self._plan)
+
+    @staticmethod
+    def _point(aim, records):
+        """The centre an aim at a unit resolves to on this tick: its
+        record's centre in the team's own picture (the live centre while
+        seen, the last-seen one otherwise), else its ``last_point``."""
+        rec = records.get(aim.value)
+        if rec is not None:
+            aim.last_point = (int(rec.centre[0]), int(rec.centre[1]))
+        return aim.last_point
+
+    def _decode(self, u, d, st, records, tick, first) -> list:
+        """Decision ``d`` as one raw row for unit ``u`` on this tick (note
+        section 2)."""
+        from simulation import action_spec_v1 as A
+        tb = self._tables
+        c = self._col
+        row = [0] * len(self.schema)
+        # -- the aim held through a wind-up: the game's own state decides --
+        if st.throw_aim is not None and int(u.throw_release_tick) < tick:
+            st.throw_aim = None
+        hand = d.hand
+        dec_aim = d.aim if d.aim.kind != "keep" or st.throw_aim is not None \
+            else _WALK
+        if first and hand >= A.HAND_THROW0 and int(u.throw_release_tick) < 0:
+            st.throw_aim = dec_aim
+        aim = st.throw_aim if st.throw_aim is not None else dec_aim
+        if aim.kind == "keep":
+            aim = _WALK
+        # -- feet --
+        opt = A.feet_option(d.feet)
+        if opt is None:
+            row[c["clear_move_dir"]] = 1
+        else:
+            dx, dy = A.COMPASS_Q16[opt[0]]
+            row[c["set_move_dir.dx_q"]] = dx
+            row[c["set_move_dir.dy_q"]] = dy
+            row[c["set_move_dir.throttle_q"]] = tb.throttles[opt[1]]
+        # -- aim --
+        if aim.kind == "tok":
+            v = A.COMPASS_Q16[aim.value]
+            st.aimed_uid = -1
+        elif aim.kind == "unit":
+            p = self._point(aim, records)
+            v = A.aim_vector(u, p) if p is not None else None
+            if v is None:
+                v = st.last_vec
+            st.aimed_uid = aim.value
+        else:
+            v = (0, 0)
+            st.aimed_uid = -1
+        st.last_vec = v
+        row[c["set_aim.dx_q"]], row[c["set_aim.dy_q"]] = v
+        row[c["set_trigger.held"]] = 1 if d.trigger else 0
+        # -- hand (a latch: issue_row sends it on the first tick only) --
+        if first:
+            arg_used = -1
+            if hand == A.HAND_RELOAD:
+                row[c["reload_intent"]] = 1
+            elif hand == A.HAND_MELEE:
+                row[c["melee_intent"]] = 1
+            elif hand == A.HAND_SHOVE:
+                row[c["shove_intent"]] = 1
+            elif hand == A.HAND_USE:
+                row[c["use_intent"]] = 1
+            elif hand == A.HAND_PLANT:
+                row[c["plant_charge_intent.fuse_ticks"]] = \
+                    tb.plant_timers[d.arg]
+                arg_used = d.arg
+            elif hand >= A.HAND_THROW0:
+                if d.arg == A.ARG_ONTO:
+                    p = self._point(d.aim, records)
+                    reach = None if p is None else A.onto_reach_q(u, p)
+                else:
+                    reach = tb.reaches_q[d.arg]
+                if reach is None:
+                    hand = A.HAND_NOTHING
+                else:
+                    fx, fy = A.facing_vector(u)
+                    row[c["throw_grenade_intent.dx_q"]] = fx
+                    row[c["throw_grenade_intent.dy_q"]] = fy
+                    row[c["throw_grenade_intent.fuse_ticks"]] = tb.fuse_ticks
+                    row[c["throw_grenade_intent.reach_q"]] = reach
+                    row[c["throw_grenade_intent.kind"]] = \
+                        hand - A.HAND_THROW0
+                    arg_used = d.arg
+            if opt is None:
+                pf, ps = A.N_DIRS, -1
+            else:
+                pf, ps = opt
+            aim_idx = d.aim_index
+            if aim_idx == A.AIM_KEEP and d.aim.kind == "keep" and \
+                    dec_aim is _WALK:
+                aim_idx = A.AIM_WALK
+            st.prev = (pf, ps, aim_idx, 1 if d.trigger else 0, hand, arg_used)
+        return row
+
 
 # ---------------------------------------------------------------------------
 # The random-action rows (the smoke driver's and the gates' trainer stub)
@@ -318,7 +587,8 @@ class AgentPolicy(ControlSource):
 #: reach uniform in [0, reach_hi_tiles] (the sim clamps it to the hand
 #: grenade's range), the grenade ``kind`` uniform over the hand-grenade rows.
 RANDOM_DOMAIN = dict(p_clear=0.25, p_trigger=0.5, p_latch=0.05,
-                     fuse_lo_ticks=12, fuse_hi_ticks=72, reach_hi_tiles=16)
+                     fuse_lo_ticks=12, fuse_hi_ticks=72, reach_hi_tiles=16,
+                     plant_lo_ticks=120, plant_hi_ticks=1440)
 
 
 def _unit_vectors(rng, n: int) -> np.ndarray:
@@ -354,8 +624,9 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
         v = _unit_vectors(rng, n)
         rows[:, ij["dx"]] = v[:, 0]
         rows[:, ij["dy"]] = v[:, 1]
+    nonzero = {k for k, (_, g) in VERB_RULES.items() if g == "nonzero"}
     for i, c in enumerate(schema.columns):
-        if c.name.endswith((".dx_q", ".dy_q")):
+        if c.name.endswith((".dx_q", ".dy_q")) or c.kind in nonzero:
             continue
         latch = VERB_RULES[c.kind][0] == "latch"
         if c.type == "flag":
@@ -386,6 +657,15 @@ def random_action_rows(rng, n: int, domain: dict | None = None) -> np.ndarray:
             off = rng.random(n) >= d["p_latch"]
             rows[off, schema.index(f"{kind}.dx_q")] = 0
             rows[off, schema.index(f"{kind}.dy_q")] = 0
+    # A latch kind gated on its one argument (the plant, #193) fires with
+    # p_latch, its fuse uniform in [plant_lo_ticks, plant_hi_ticks]: drawn
+    # LAST, so every other column is the draw it was before the kind.
+    for i, c in enumerate(schema.columns):
+        if c.kind in nonzero:
+            v = rng.integers(int(d["plant_lo_ticks"]),
+                             int(d["plant_hi_ticks"]) + 1, size=n)
+            v[rng.random(n) >= d["p_latch"]] = 0
+            rows[:, i] = v
     return rows.astype(np.int32)
 
 

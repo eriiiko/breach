@@ -57,8 +57,8 @@ def test_door_explosive_detonates_without_crash():
 
     # THE REGRESSION: this raised before the fix.
     process_door_explosives(
-        sim.gmap, sim.edit_queue, sim.units, DET_START_PHASE1, sim.rng)
-    sim.edit_queue.flush(sim.gmap, sim.rng)
+        sim.gmap, sim.edit_queue, sim.units, DET_START_PHASE1, sim.draws)
+    sim.edit_queue.flush(sim.gmap, sim.draws)
 
     hp_after = float(sim.gmap.wall_hp.astype(np.int64).sum())
     assert hp_after < hp_before, (

@@ -798,8 +798,20 @@ def grenade_text(rows, counts, selected=None) -> str:
     return "  ".join(parts) if parts else "none"
 
 
+def charge_text(unit, timer_s=None) -> str:
+    """The side panel's planted-charge line (#193, pure): the count the unit
+    carries, and with a plant timer (the direct control's) the keys and the
+    timer -- ``"C4 (X): 1   timer 10 s (5)"``; without one
+    ``"Charges: 1"``."""
+    n = int(getattr(unit, "has_explosive", 0))
+    if timer_s is None:
+        return f"Charges: {n}"
+    return f"C4 (X): {n}   timer {int(timer_s)} s (5)"
+
+
 def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
-                      current_mode=None, grenade_kind=None) -> list:
+                      current_mode=None, grenade_kind=None,
+                      charge_timer_s=None) -> list:
     """The side panel's game-state block as :class:`PanelLine` rows: the run
     state, then the selected unit's summary. A turn-based ruleset shows its
     round / phase / tick-in-round, planning phase, AP and queued orders;
@@ -808,7 +820,9 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
     weapon and its MAGAZINE (rounds in the gun, spare magazines) instead.
     ``grenade_kind`` (G3p) is the direct control's selected grenade kind (an
     index of the hand-grenade rows) for the grenade line, None = none
-    selected."""
+    selected. ``charge_timer_s`` (#193) is the direct control's plant timer
+    in seconds: with it the charge line names the charge, the keys and the
+    timer; None (no direct control) shows the bare count."""
     from simulation.ruleset import ContinuousRealtime
     continuous = isinstance(sim.ruleset, ContinuousRealtime)
     paused = sim.is_paused()
@@ -863,7 +877,7 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
             f"Grenades{' (4)' if continuous else ''}: "
             f"{grenade_text(rows, selected_unit.grenade_counts, grenade_kind)}",
             12, None, 16))
-        lines.append(PanelLine(f"Charges: {selected_unit.has_explosive}",
+        lines.append(PanelLine(charge_text(selected_unit, charge_timer_s),
                                12, None, 18))
         if not continuous:
             lines.append(PanelLine(
@@ -878,7 +892,8 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
 
 
 __all__ = [
-    "PanelLine", "ammo_text", "grenade_text", "panel_state_lines",
+    "PanelLine", "ammo_text", "charge_text", "grenade_text",
+    "panel_state_lines",
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
     "PlanOverlay", "PlanningClock", "RoundEndGhost", "TargetMarker",

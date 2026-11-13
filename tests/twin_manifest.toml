@@ -78,6 +78,7 @@ build = [
 # with the reason (test_twin_debt refuses an unclassified one).
 "src/simulation/__init__.py" = "setup only: the package import"
 "src/simulation/action_registry.py" = "setup only: the verb registry (its device table is Class T, P8b)"
+"src/simulation/action_spec_v1.py" = "Class T: the action spec's masks and tables, host-side (#195 1h)"
 "src/simulation/ai_zombie.py" = "Class T: the horde (slot 5 + 10), built at P7d"
 "src/simulation/attack_resolver.py" = "Class T: the cover exposure a shot reads (slot 4's phase A), built at P7a"
 "src/simulation/atmosphere_fixed.py" = "Class T: slot 9b's over-pressure walls (the applier's topology), built from P6"
@@ -85,6 +86,7 @@ build = [
 "src/simulation/combat.py" = "Class T: slots 4 / 4b / 9d, built from P7a"
 "src/simulation/cover_system.py" = "setup only"
 "src/simulation/damage.py" = "Class T: the packet door and credit, built from P6"
+"src/simulation/draws.py" = "Class T: THE keyed draws (#29 P3b: Philox on (seed; tick, index, salt, id)) -- the shot / beam cones and the rolls (slots 2 / 4, built at P7a) and the FieldEdit noise (slot 6b, the device edit queue, P4c); its device twin is philox32.h on the same layout"
 "src/simulation/door_system.py" = "setup only on the corpus (no door); Class T at P6b"
 "src/simulation/entities/registry.py" = "setup only: the entity registry (Class T, P6b)"
 "src/simulation/entities/schema.py" = "setup only: the entity schema (Class T, P6b)"
@@ -98,15 +100,19 @@ build = [
 "src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source); Class T at P6b"
 "src/simulation/horde.py" = "Class T: the horde field law (slot 5, #183 G9p: the settings door, the field cache, the descent; its flood is PhysicsEngine.horde_field, cpp/src/horde_field.cpp, a host call in both modules), built at P7d (one block per (env, field))"
 "src/simulation/intents.py" = "Class T: slot 1b, built from P6"
+"src/simulation/line_of_fire.py" = "the observation's line-of-fire flags (#195 1g; outside step, read through the sight routine): never a twin -- the device observation is P8b's gather"
 "src/simulation/loadouts.py" = "setup only: the bank compile (P8a)"
 "src/simulation/match.py" = "setup only: spawn_match (the bank compile, P8a)"
 "src/simulation/match_session.py" = "the host loop (MatchSession): the farm's session, never a twin"
 "src/simulation/materials.py" = "setup only: the materials table (its upload is Class P)"
 "src/simulation/movement.py" = "Class T: slot 3, built from P6"
 "src/simulation/noise.py" = "Class T: the noise log (#183 G9p: emitted by slots 2 / 4 / 5 / 9e, drained by slot 5), built with the horde at P7d"
+"src/simulation/obs_spec_v1.py" = "the observation spec v1 (#195 1g; outside step, the env's observe through the sensor accessor): never a twin -- the device observation is P8b's gather"
 "src/simulation/payloads.py" = "Class T: the payload executor (slot 2's grenade detonations), built at P7c"
-"src/simulation/philox32.py" = "Class T: the vendored Philox block, used by the horde's wander as a seedless hash of (id, tick) (slot 5, #183 G9p); its device twin is philox32.h, built with the horde at P7d"
+"src/simulation/philox32.py" = "Class T: the vendored Philox block -- the horde's wander as a seedless hash of (id, tick) (slot 5, #183 G9p; P7d) and every keyed draw through draws.py (#29 P3b; P7a / P4c); its device twin is philox32.h"
 "src/simulation/physics.py" = "Class T: apply_explosion's wall damage (slot 2's detonations, through the payload executor), built at P7c"
+"src/simulation/rng_salts.py" = "Class T: the one Philox salt enum (#29 P3b), constants the device twins of draws.py / the wander read"
+"src/simulation/room_graph.py" = "setup only on the corpus: the room graph's host reads (#195 1b; place_at, 1f), imported by the bots for the commander; never called in the tick"
 "src/simulation/ruleset.py" = "Class T: MatchRules (the done kernel, P8b)"
 "src/simulation/sensor_accessor.py" = "the bots' controller side (outside step, #183 G8p): the position features read fire / smoke / pressure / temperature through EntityFieldAccessor.sample_many; never a twin (the sensors' resident gather is its own later backing)"
 "src/simulation/signal_bus.py" = "setup only on the corpus; Class T at P6b"
@@ -116,12 +122,16 @@ build = [
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
 "src/simulation/status.py" = "Class T: slot 2b, built from P6"
+"src/simulation/team_picture.py" = "the team picture (#195 1d, conductor slot 11, a match only): host-side match memory, never synced or hashed; the device's own arrays at the residency arc's later stage (RL agent design 9)"
 "src/simulation/turning.py" = "Class T: slot 1a's turning law (every unit's facing, G5p-a1; the bots read its predictor outside step) and slot 3's direction rule (theta, G1p-c), built from P6"
 "src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge); Class T at P6b"
 "src/simulation/unit_fixed.py" = "Class T: built from P6"
+"src/simulation/unit_schema.py" = "setup only on the corpus: the unit schema (#29 P3a: Unit.__slots__, the column defaults at construction, the digest record); the device unit store's column table from P6"
 "src/simulation/unit_impulse.py" = "Class T: the unit impulse law (G5p-a2: slot 1a's integration before the turn, slot 1b's shove, slot 2 / 4c's pushes and recoil, slot 3's displacement), built from P6"
+"src/simulation/unit_orders.py" = "Class T: the order (#195 1f), applied at slot 1b', expired at slot 10; information only until rung 4; a device column at the residency arc's P6"
 "src/simulation/vent_system.py" = "Class T: the vent kernels (slot 9e), built at P6b"
-"src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step)"
+"src/simulation/verb_gates.py" = "Class T: the hand verbs' gates, read at slots 1b and 4a (#195 1e); the device's at the residency arc's P6"
+"src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step); its many-tiles routine (#195 1c) is PhysicsEngine.sight_rays / sight_window, cpp/src/sight_lines.cpp, a host call in both modules"
 "src/simulation/wall_fixed.py" = "setup only"
 "src/simulation/weapons.py" = "Class T: the weapon rows (slots 4 / 4b; table upload P8b), built from P7a"
 
@@ -176,7 +186,7 @@ device = [
 ]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call)"]
 level = true
-level_at = "bf53bd0b8fd42eb84bc96d1f3248f4cb3b65743e"
+level_at = "652b875ea455439eabee5c09e3a300da19da3bac"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.cpp",
@@ -250,7 +260,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_kick_compression.cu"]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call) / div_source"]
 level = true
-level_at = "bf53bd0b8fd42eb84bc96d1f3248f4cb3b65743e"
+level_at = "652b875ea455439eabee5c09e3a300da19da3bac"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -445,7 +455,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_stamp.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["6 stamp_units"]
 level = true
-level_at = "bf53bd0b8fd42eb84bc96d1f3248f4cb3b65743e"
+level_at = "652b875ea455439eabee5c09e3a300da19da3bac"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",

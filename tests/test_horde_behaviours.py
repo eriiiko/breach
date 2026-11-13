@@ -50,19 +50,117 @@ OFF = [(k, False) for k in horde.BEHAVIOUR_SWITCHES]
 # gate holds them while every behaviour is off; the next DELIBERATE re-pin
 # of the field law by another cause retires them with it.
 _STAGE1_SHIP_DEMO = dict(
-    outcome="win", team=1, ticks=264,
-    field_digest="d9c4c5cef6c04f9d80eaa2b368d88782"
-                 "a8fa28132f7cd39a8011c230b88cecde",
-    tick_digest="f6b702b5550299dcebfe2db8794a1e31"
-                "0b228648319b7c668b3a4c8ac1920f33",
-    unit_stream="d83ee4d35c56f376d47daec6179ac3c3"
-                "7dfef360cd149d7ef6d48c6efa3a9f3f")
+    # #29 P3b re-pin (2026-11-12, keyed Philox draws): ticks 264 -> 251,
+    # outcome and team UNCHANGED (the sole-cause plugin gives 264 back).
+    outcome="win", team=1, ticks=251,
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was d9c4c5cef6c04f9d80eaa2b368d88782a8fa28132f7cd39a8011c230b88cecde)
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 22e944fe6477d16ab0367b9562c357e96c8ed0a7a2277dde8dce6b2a486e9f23)
+    field_digest="cc46ec4b934902f73090aae00bef0b3f"
+                 "6e98f3f041948f51593bc9f86b8b8ba8",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was f6b702b5550299dcebfe2db8794a1e310b228648319b7c668b3a4c8ac1920f33)
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was 9f78cd9b7ffe6d7016457f3ec8ca406d7d570114a7152a3f46153d7abdc6c6c1)
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was 82a361e85a0334a3a18dc84e63aea8bee0755ba6ac1b0d18423ea4c9f0aeea3e)
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 87dfe255f97bdc33320a7df36fea68dbfbfcd92fc9ff1fc86f91894febddd94d)
+    tick_digest="ab061346257c0c5b2ec5a2bf99fbad26"
+                "aa74d6661a3886119c759f1de459b05e",
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was d83ee4d35c56f376d47daec6179ac3c37dfef360cd149d7ef6d48c6efa3a9f3f)
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was f44bfcb5271c1768920a7727538c3c334d2c91f8ef3e9b98ce82e6bf5ff9cd20)
+    # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
+    # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
+    # (simulation.draws: new random values), and the blast falloff, the payload
+    # deposits, the heat and poison rows, mitigation and the hp are integer
+    # (re-rounded) -- the GAME moved by design, not only the hash.
+    # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
+    # blast outcomes within seed noise over 24-72 seeds.
+    # (was fd0d6bd79fbe4fa624065eda6bc9c04bc200e8ef38d7cdd5bd77bd4e5643877e)
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was c144ab6cb3bec1f33f143eaa1bfff97de346743f316ec412b60e65ec140e761a)
+    unit_stream="6707d27e1ccba0eb1ce455803d552c1b"
+                "4126cdd87cf55780d3c82cc5f5c24560")
 _STAGE1_BOX = dict(
     outcome="win", team=1, ticks=130,
     field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
                  "52642adfca545cbe51324cfad2e21631",
-    unit_stream="05bdbac7c76250b949ef35aef81fdd40"
-                "3bd89af88232eebe061bf753e47b1e3d")
+    # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
+    # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
+    # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
+    # faction / offsets left it, the hp hashes as its Q16 count, and every
+    # synced column hashes while it differs from its default (the kit, the
+    # magazine, the grenades, the cool-downs, the throw / plant in progress,
+    # the intents). The GAME is unchanged: tests/_p3a_sole_cause.py gives
+    # equal per-tick records and identical field digests on main edc0d2b1 and
+    # on this tree. Only the hash's definition moved.
+    # (was 05bdbac7c76250b949ef35aef81fdd403bd89af88232eebe061bf753e47b1e3d)
+    # #29 P3c re-pin (2026-11-12, positions to Q16): the unit record hashes a
+    # unit's position as its Q16 ints x_q / y_q instead of round(x * 1e9) under
+    # x / y. The GAME is unchanged: tests/_p3c_sole_cause.py gives equal per-tick
+    # records (x_q := round(x * 65536), every position already on the grid) and
+    # identical field digests on main 229f7097 and on this tree; outcome, ticks
+    # and field_digest here are unmoved. Only the hash's definition moved.
+    # (was a8f43fe1faf94900de0fb22c1b75e32d0ca991e25a69412e544a77b1b47343df)
+    unit_stream="4a87a8bb9efdef78446729e66cebed58"
+                "acfdda243deb7ba4cdff947a55fa2740")
 
 
 def _off(monkeypatch, keep=()):
@@ -138,7 +236,7 @@ def _wander_run(monkeypatch, seed, ticks=1500):
     zs = [sim.get_unit(sim.add_unit(Unit(f"Z{i}", x=8 + 9 * i, y=12,
                                          team=ZOMBIE_TEAM)))
           for i in range(4)]
-    rng0 = sim.rng.bit_generator.state
+    rng0 = sim.draws.drawn
     track = []
     for _ in range(ticks):
         sim.step()
@@ -172,7 +270,7 @@ def test_the_wander_draws_no_random_number_and_is_a_hash_of_id_and_tick(
     _, _, t1, _ = _wander_run(monkeypatch, 1, ticks=600)
     sim, _, t2, rng0 = _wander_run(monkeypatch, 99, ticks=600)
     assert t1 == t2
-    assert sim.rng.bit_generator.state == rng0
+    assert sim.draws.drawn == rng0
     a = [horde.wander_direction(3, t) for t in range(200)]
     assert a == [horde.wander_direction(3, t) for t in range(200)]
     assert set(a) == set(horde.NEIGHBOURS)
@@ -207,7 +305,7 @@ def test_a_noise_wakes_exactly_the_zombies_within_its_radius(monkeypatch):
         z = Unit(f"Z{i}", x=cx + dx - 1, y=cy + dy - 1, team=ZOMBIE_TEAM)
         z.id = i
         zs.append(z)
-    zs[5].x, zs[5].y = 31.0, 11.0                 # beyond the wall, d = 12
+    zs[5].set_pos(31.0, 11.0)                 # beyond the wall, d = 12
     zs[6].zombie_activated = True
     noise.emit(g, cy, cx, r)
     update_zombies_tick(g, [prey] + zs, 1, settings=s)
@@ -295,13 +393,13 @@ def test_shots_and_detonations_are_noises_at_their_rows_loudness():
     w = sim.weapons_tables.weapons.by_name[u.weapon_id]
     assert w.loudness_tiles == noise.radius_tiles(w.loudness, 0.5) > 0
     _dispatch_trigger(sim.gmap, sim.units, u, u.center_tile_x(),
-                      u.center_tile_y(), 30, 6, 1, [], 0.0, sim.rng, None,
+                      u.center_tile_y(), 30, 6, 1, [], 0.0, sim.draws, None,
                       None, w, 0.0)
     assert sim.gmap.noise_log[-1] == (u.center_tile_y(), u.center_tile_x(),
                                       w.loudness_tiles)
     frag = sim.weapons_tables.payloads.by_name["frag_standard"]
     assert frag.loudness_tiles == noise.radius_tiles(frag.loudness, 0.5) > 0
-    execute_payload(sim.gmap, EditQueue(), sim.units, 10, 20, frag, sim.rng)
+    execute_payload(sim.gmap, EditQueue(), sim.units, 10, 20, frag, sim.draws)
     assert sim.gmap.noise_log[-1] == (10, 20, frag.loudness_tiles)
     with pytest.raises(KeyError, match="loudness"):
         WeaponTable({"r": dict(archetype="projectile", range_tiles=10)}, 24)
@@ -496,12 +594,16 @@ def test_the_horde_state_is_absence_transparent_and_cleared(monkeypatch):
     from field_ab_harness import _unit_record
     from simulation.damage import DamagePacket, KINETIC, apply_packet
     z = Unit("Z", x=5, y=5, team=ZOMBIE_TEAM)
+    keys = {"zombie_noise_y", "zombie_noise_x", "zombie_noise_ticks",
+            "zombie_anchor_y", "zombie_anchor_x"}   # #29 P3a: the schema's
     rec = _unit_record(z)
-    assert "noise" not in rec and "anchor" not in rec
+    assert not keys & set(rec)
     z.zombie_noise_y, z.zombie_noise_x, z.zombie_noise_ticks = 3, 4, 10
     z.zombie_anchor_y, z.zombie_anchor_x = 5, 5
     rec = _unit_record(z)
-    assert rec["noise"] == [3, 4, 10] and rec["anchor"] == [5, 5]
+    assert [rec[k] for k in ("zombie_noise_y", "zombie_noise_x",
+                             "zombie_noise_ticks")] == [3, 4, 10]
+    assert [rec["zombie_anchor_y"], rec["zombie_anchor_x"]] == [5, 5]
     z.current_hp = 1.0
     apply_packet(z, DamagePacket(amount=100, dtype=KINETIC), source="bullet")
     assert not z.alive

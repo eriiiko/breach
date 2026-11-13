@@ -6,8 +6,8 @@ direct`` (``--control gamepad`` is an alias) possesses the first living
 marine of ``sim.player_team`` and drives it through the sim's per-tick intent
 facade (``set_move_dir`` / ``set_aim`` / ``set_trigger`` /
 ``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
-``shove_intent`` / ``melee_intent`` / ``set_flashlight``) under
-``ContinuousRealtime``.
+``shove_intent`` / ``melee_intent`` / ``set_flashlight`` /
+``plant_charge_intent``) under ``ContinuousRealtime``.
 
 Every frame it reads BOTH devices and uses whichever was touched last (Erik:
 "the player plays with whatever they have connected"). A device is a HALF:
@@ -48,7 +48,12 @@ never a sim field), moves on by itself to the next carried kind when the
 selected one runs out, and the HUD reads it (``ui.model.panel_state_lines``,
 ``grenade_kind=``). The camera (``[display] camera_mode``, the
 :attr:`camera_mode` main.py reads) is the follow camera's, never camera code
-here.
+here. ``plant_charge`` (#193; X, pad D-pad down) plants the unit's charge at
+its feet with the SELECTED timer, which ``cycle_charge_timer`` (5, pad D-pad
+left) steps through :data:`CHARGE_TIMER_STEPS_S` (5 -> 10 -> ... -> 60 -> 5
+s): control-layer state (:attr:`DirectControl.charge_timer_s`, default
+:data:`CHARGE_TIMER_DEFAULT_S`), converted once to the verb's integer ticks
+and shown by the HUD (``panel_state_lines``, ``charge_timer_s=``).
 
 Pyray is imported lazily by the halves' readers, so the key-table door is a
 pure function (``tests/test_control_direct.py``).
@@ -63,7 +68,8 @@ from control_source import (ControlSource, quantize_point_aim,
 #: Every action the key table must bind, in table order.
 KEY_ACTIONS = ("move_forward", "move_back", "strafe_left", "strafe_right",
                "trigger", "melee", "shove", "reload", "throw",
-               "cycle_grenade", "flashlight", "use", "full_speed")
+               "cycle_grenade", "flashlight", "use", "full_speed",
+               "plant_charge", "cycle_charge_timer")
 #: Bound but with no verb behind them yet: none since G7p (melee G6p,
 #: flashlight G7p, shove G5p-a2 are live). A new bound-but-inert action is
 #: listed here until its verb lands.
@@ -73,6 +79,10 @@ INERT_ACTIONS = ()
 _THROTTLE_ONE = 1 << 16
 #: A cursor within this many tiles of the marine's centre names no aim.
 MOUSE_DEADZONE_TILES = 0.25
+#: The plant timer's choices in seconds (#193, Erik's ruling: 5 s steps up
+#: to one minute) and the one a fresh control starts on.
+CHARGE_TIMER_STEPS_S = tuple(range(5, 61, 5))
+CHARGE_TIMER_DEFAULT_S = 10
 
 
 def _key_names() -> dict:
@@ -163,7 +173,9 @@ class DeviceFrame:
     ``throw`` ``(dx_q, dy_q, reach_q | None)`` on the frame it was pressed;
     ``use``, ``reload``, ``cycle_grenade``, ``shove`` and
     ``flashlight_toggle`` True on the frame they were pressed; ``melee`` True
-    on every frame its button is held (the sim's cadence spaces the blows)."""
+    on every frame its button is held (the sim's cadence spaces the blows);
+    ``plant_charge`` and ``cycle_charge_timer`` (#193) True on the frame
+    they were pressed."""
     move: tuple | None
     aim: tuple | None
     trigger: bool
@@ -174,6 +186,19 @@ class DeviceFrame:
     shove: bool = False
     melee: bool = False
     flashlight_toggle: bool = False
+    plant_charge: bool = False
+    cycle_charge_timer: bool = False
+
+
+def next_charge_timer(current_s: int) -> int:
+    """The plant timer after one step (pure): the next of
+    :data:`CHARGE_TIMER_STEPS_S` after ``current_s``, wrapping from the
+    last to the first; a value off the list goes to the first step above
+    it (or wraps)."""
+    for s in CHARGE_TIMER_STEPS_S:
+        if s > int(current_s):
+            return s
+    return CHARGE_TIMER_STEPS_S[0]
 
 
 def next_carried_kind(counts, current):
@@ -281,7 +306,10 @@ class KeyboardMouseHalf:
         return DeviceFrame(move=move, aim=aim, trigger=trigger, throw=throw,
                            use=use, reload=reload, cycle_grenade=cycle,
                            shove=shove, melee=melee,
-                           flashlight_toggle=flashlight)
+                           flashlight_toggle=flashlight,
+                           plant_charge=self._pressed("plant_charge"),
+                           cycle_charge_timer=self._pressed(
+                               "cycle_charge_timer"))
 
 
 class DirectControl(ControlSource):
@@ -322,6 +350,12 @@ class DirectControl(ControlSource):
         #: frame through ``set_flashlight``. The toggle flips it.
         self.flashlight_off = False
         self._flash_unit_id = None
+        #: The plant timer in seconds (#193): control-layer state, stepped
+        #: by ``cycle_charge_timer``, converted once per plant to the
+        #: verb's integer ticks (the sim clamps it to the plant row's
+        #: range), read by the HUD.
+        self.charge_timer_s = CHARGE_TIMER_DEFAULT_S
+        self._tps = CFG.clock.ticks_per_second
         self._kbm = KeyboardMouseHalf(self.keys)
         self._pad = None          # built on the first frame (pyray import)
         #: The device in use: "keyboard" until the pad is touched.
@@ -433,6 +467,12 @@ class DirectControl(ControlSource):
         if frame.flashlight_toggle:
             self.flashlight_off = not self.flashlight_off
         sim.set_flashlight(uid, self.flashlight_off)
+        if frame.cycle_charge_timer:
+            self.charge_timer_s = next_charge_timer(self.charge_timer_s)
+        if frame.plant_charge:
+            from simulation.weapons import fuse_ticks_from_seconds
+            sim.plant_charge_intent(
+                uid, fuse_ticks_from_seconds(self.charge_timer_s, self._tps))
 
     def _sync_flashlight(self, u) -> None:
         """Seed the held flashlight state from a newly possessed unit's own
@@ -476,6 +516,8 @@ class DirectControl(ControlSource):
         return (unit_fixed.quantize_scalar(dx), unit_fixed.quantize_scalar(dy))
 
 
-__all__ = ["DirectControl", "DeviceFrame", "next_carried_kind", "KeyboardMouseHalf", "KeyTable",
+__all__ = ["DirectControl", "DeviceFrame", "next_carried_kind",
+           "next_charge_timer", "CHARGE_TIMER_STEPS_S",
+           "CHARGE_TIMER_DEFAULT_S", "KeyboardMouseHalf", "KeyTable",
            "Binding", "KEY_ACTIONS", "INERT_ACTIONS", "KEY_NAMES",
            "key_table", "keyboard_move", "MOUSE_DEADZONE_TILES"]

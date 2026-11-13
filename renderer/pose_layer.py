@@ -113,6 +113,21 @@ class HitSettings:
 
 
 @dataclass(frozen=True)
+class StaggerSettings:
+    """``[render.pose.stagger]`` (#185): a ``StaggerEvent`` (the sim's sway
+    overflowed: the unit is pushed) plays a flinch-style ADDITIVE over
+    ``masks``, ramped in / out, at ``weight``, from the side the push came
+    from -- the skeleton's ``hit_directions`` clips where it has them, else
+    ``clip``. It shares the flinch's one additive slot: the latest of a hit
+    and a stagger plays."""
+    clip: str
+    masks: Tuple[str, ...]
+    ramp_in_s: float
+    ramp_out_s: float
+    weight: float
+
+
+@dataclass(frozen=True)
 class AimTravelSettings:
     """``[render.pose.aim_travel]`` (#163, design §4.5 correction 7), angles
     in radians: the legs yaw toward travel within ``+-theta``; past
@@ -159,7 +174,7 @@ class TimedShotSettings:
     release_s: float = 0.0
 
 
-REACTIONS = ("fire", "hit", "melee", "reload", "throw")
+REACTIONS = ("fire", "hit", "melee", "reload", "throw", "stagger")
 
 # A ``clip_names`` value meaning "this skeleton has no such clip" (#179): a
 # state falls back as for any missing clip; an overlay leaves that layer
@@ -250,6 +265,8 @@ class PoseSettings:
     # #184: the reload and throw one-shots (clip "" = off)
     reload: Optional[TimedShotSettings] = None
     throw: Optional[TimedShotSettings] = None
+    # #185: the push reaction (a StaggerEvent)
+    stagger: Optional[StaggerSettings] = None
 
 
 def _as_dict(obj) -> Dict[str, Any]:
@@ -278,7 +295,8 @@ def _names(value, where: str) -> Tuple[str, ...]:
 
 _TOP_KEYS = ("enabled", "rate", "crossfade_s", "layers", "fallback_state",
              "event_queue", "skeletons", "states", "clips", "overlays", "fire",
-             "hit", "aim_travel", "posture", "melee", "roles", "reload", "throw")
+             "hit", "aim_travel", "posture", "melee", "roles", "reload", "throw",
+             "stagger")
 _MELEE_KEYS = ("clips", "layers", "causes", "suppress")
 _RELOAD_KEYS = ("clip", "layers")
 _THROW_KEYS = ("clip", "layers", "release_s")
@@ -288,6 +306,7 @@ _CLIP_KEYS = ("loop", "rate", "root_motion", "additive_ref", "mirror_of")
 _FIRE_KEYS = ("overlay", "aim_hold_s", "shot_clip", "shot_layer")
 _HIT_KEYS = ("clip", "masks", "causes", "ramp_in_s", "ramp_out_s", "weight_min",
              "weight_max", "damage_full")
+_STAGGER_KEYS = ("clip", "masks", "ramp_in_s", "ramp_out_s", "weight")
 _AIM_TRAVEL_KEYS = ("theta_deg", "hysteresis_deg", "smooth_s", "twist_rate_deg_s")
 _TWIST_KEYS = ("lower", "counter", "shares")
 TWIST_PIVOTS = ("bone", "origin")                  # #184: [..twist] pivot (optional)
@@ -623,6 +642,20 @@ def pose_settings(cfg) -> PoseSettings:
         weight_min=w_min, weight_max=w_max,
         damage_full=_number(h["damage_full"], f"{hw} damage_full", 0.0, lo_open=True))
 
+    g = _exact_table(d["stagger"], _STAGGER_KEYS, "[render.pose.stagger]")
+    gw = "[render.pose.stagger]"
+    st_masks = _names(g["masks"], f"{gw} masks")
+    for sk_name, masks in skeletons:
+        missing = [m for m in st_masks if m not in masks]
+        if missing:
+            raise PoseConfigError(f"{gw} masks {missing} are not masks of "
+                                  f"[render.pose.skeletons.{sk_name}]")
+    stagger = StaggerSettings(
+        clip=_name(g["clip"], f"{gw} clip"), masks=st_masks,
+        ramp_in_s=_number(g["ramp_in_s"], f"{gw} ramp_in_s", 0.0),
+        ramp_out_s=_number(g["ramp_out_s"], f"{gw} ramp_out_s", 0.0),
+        weight=_number(g["weight"], f"{gw} weight", 0.0, hi=1.0))
+
     a = _exact_table(d["aim_travel"], _AIM_TRAVEL_KEYS, "[render.pose.aim_travel]")
     aw = "[render.pose.aim_travel]"
     theta = _number(a["theta_deg"], f"{aw} theta_deg", 0.0, lo_open=True, hi=180.0)
@@ -703,7 +736,7 @@ def pose_settings(cfg) -> PoseSettings:
     # #179: per-skeleton playback (clip names, rate, rows, role overrides)
     canonical = sorted(({c for row in states.values() for c in row.values()}
                         | {c for row in overlays.values() for c in row.values()}
-                        | {fire.shot_clip, hit.clip} | set(melee.clips)
+                        | {fire.shot_clip, hit.clip, stagger.clip} | set(melee.clips)
                         | {reload.clip, throw.clip}) - {ABSENT_CLIP})
     playback = {sk_name: _parse_playback(sk_name, sk, layers, canonical, roles, states)
                 for sk_name, sk in skel_tables.items()}
@@ -715,7 +748,7 @@ def pose_settings(cfg) -> PoseSettings:
                         overlays=overlays, fire=fire, hit=hit, aim_travel=aim_travel,
                         twists=twists, posture=posture, postures=postures,
                         melee=melee, roles=roles, playback=playback,
-                        reload=reload, throw=throw)
+                        reload=reload, throw=throw, stagger=stagger)
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +852,9 @@ class PoseState:
                  # throw), and per-prop socket overrides (none yet)
                  "speed", "motion_acc", "motion_d", "motion_t", "gait", "sector", "gait_phase",
                  "loco_state", "flinch_clip", "timed", "prop_sockets",
+                 # #185: the running additive's envelope (a hit's or a
+                 # stagger's ramps) and its bone weights
+                 "flinch_ramps", "flinch_bones",
                  # #187: a left-handed unit -- its pose is the mirror image
                  "mirrored")
 
@@ -864,6 +900,8 @@ class PoseState:
         self.gait_phase = 0.0          # [0, 1): the shared phase of the gait clips
         self.loco_state: Optional[str] = None
         self.flinch_clip = NO_CLIP     # the clip of the current flinch
+        self.flinch_ramps = (0.0, 0.0)  # (ramp_in_s, ramp_out_s) of the current one
+        self.flinch_bones: Optional[np.ndarray] = None
         self.timed: Optional["TimedShot"] = None
         self.prop_sockets: Dict[str, str] = {}   # prop -> socket (a future reaction's row)
         self.mirrored = False          # #187: left-handed (PoseLayer.new_state)
@@ -933,6 +971,8 @@ class LookRig:
     shot_clip: int = NO_CLIP
     hit_clip: int = NO_CLIP
     hit_bones: Optional[np.ndarray] = None        # (J,) the flinch's bone weights
+    stagger_clip: int = NO_CLIP                   # (#185) the stagger's single clip
+    stagger_bones: Optional[np.ndarray] = None    # (#185) its bone weights
     twist_layer: int = 0                          # the layer the twist's lower bone is on
     posture: Optional[Any] = None                 # pose_posture.ResolvedPosture (#164)
     melee_clips: Optional[np.ndarray] = None      # (#164) clip ids, played in turn
@@ -1097,6 +1137,11 @@ class PoseLayer:
                 (self._clip_or_raise(bank, clip, name,
                                      f"[render.pose.skeletons.{sk_name}] hit_directions"),
                  frm) for clip, frm in pb.hit_directions)
+        if s.stagger is not None:                 # #185: the push reaction
+            rig.stagger_clip = self._clip_or_raise(bank, own(s.stagger.clip), name,
+                                                   "[render.pose.stagger] clip")
+            rig.stagger_bones = masks.weights[
+                [masks.index(m) for m in s.stagger.masks]].sum(0)
         # #184: reload / throw -- a look without the clip does nothing (only
         # the looks that reload or throw need it); the renderer refuses a
         # named clip that NO look holds
@@ -1270,17 +1315,43 @@ class PoseLayer:
         if h is None or (cause is not None and cause not in h.causes):
             return
         x = min(1.0, max(0.0, float(damage) / h.damage_full))
+        rig = self._rigs[ps.look]
         ps.flinch_peak = h.weight_min + (h.weight_max - h.weight_min) * x
         ps.flinch_t = 0.0
         if ps.mirrored and source is not None:      # #187: the mirrored world
             source = -float(source)
-        ps.flinch_clip = self.flinch_clip_for(self._rigs[ps.look], source)
+        ps.flinch_clip = self.flinch_clip_for(rig, source)
+        ps.flinch_ramps = (h.ramp_in_s, h.ramp_out_s)
+        ps.flinch_bones = rig.hit_bones
+
+    def stagger(self, ps: PoseState, source: Optional[float] = None) -> None:
+        """This unit was pushed past its sway (#185, a ``StaggerEvent``):
+        (re)start the stagger additive at ``[render.pose.stagger] weight``
+        from ``source``, the side the push came from relative to the facing
+        (radians, + = its left; None = the front) -- the skeleton's
+        ``hit_directions`` row nearest it, else the row's single clip. It
+        takes over the flinch's additive slot (envelope, masks) until it
+        ends or the next hit restarts it."""
+        g = self.settings.stagger
+        if g is None:
+            return
+        rig = self._rigs[ps.look]
+        if ps.mirrored and source is not None:      # #187: the mirrored world
+            source = -float(source)
+        ps.flinch_peak = g.weight
+        ps.flinch_t = 0.0
+        ps.flinch_clip = self.flinch_clip_for(rig, source, rig.stagger_clip)
+        ps.flinch_ramps = (g.ramp_in_s, g.ramp_out_s)
+        ps.flinch_bones = rig.stagger_bones
 
     @staticmethod
-    def flinch_clip_for(rig: LookRig, source: Optional[float]) -> int:
-        """The flinch clip of a hit from ``source`` (see :meth:`hit`)."""
+    def flinch_clip_for(rig: LookRig, source: Optional[float],
+                        single: Optional[int] = None) -> int:
+        """The flinch clip of a hit (or, #185, a push) from ``source`` (see
+        :meth:`hit`); ``single`` is the clip of a skeleton without
+        ``hit_directions`` (default: the hit's)."""
         if not rig.hit_dirs:
-            return rig.hit_clip
+            return rig.hit_clip if single is None else single
         a = 0.0 if source is None else float(source)
 
         def gap(row) -> float:
@@ -1524,8 +1595,7 @@ class PoseLayer:
         times a ramp down to 0 over the clip's last ``ramp_out_s`` -- 0 at
         its end, where the additive is dropped (the pose is exactly the
         un-flinched one again)."""
-        h = self.settings.hit
-        if h is None or ps.flinch_t < 0.0:
+        if ps.flinch_t < 0.0:
             return
         c = ps.flinch_clip if ps.flinch_clip != NO_CLIP else rig.hit_clip   # #184
         if c == NO_CLIP:                       # #179: the look has no flinch clip
@@ -1540,10 +1610,11 @@ class PoseLayer:
             ps.add_clip = NO_CLIP
             ps.add_weight = 0.0
             return
-        up = 1.0 if h.ramp_in_s <= 0.0 else min(1.0, tau / h.ramp_in_s)
-        down = 1.0 if h.ramp_out_s <= 0.0 else min(1.0, (wall_dur - tau) / h.ramp_out_s)
+        ramp_in, ramp_out = ps.flinch_ramps          # #185: the hit's or the stagger's
+        up = 1.0 if ramp_in <= 0.0 else min(1.0, tau / ramp_in)
+        down = 1.0 if ramp_out <= 0.0 else min(1.0, (wall_dur - tau) / ramp_out)
         ps.add_clip = c
-        ps.add_bones = rig.hit_bones
+        ps.add_bones = ps.flinch_bones if ps.flinch_bones is not None else rig.hit_bones
         ps.add_time = tau * speed
         ps.add_weight = ps.flinch_peak * up * down
 
@@ -1777,7 +1848,7 @@ def global_trs(g: np.ndarray) -> np.ndarray:
 
 __all__ = [
     "PoseConfigError", "PoseSettings", "MaskRule", "MaskTable", "PoseState",
-    "TwistRule", "FireSettings", "HitSettings", "AimTravelSettings",
+    "TwistRule", "FireSettings", "HitSettings", "StaggerSettings", "AimTravelSettings",
     "MeleeSettings", "RoleSettings", "REACTIONS", "SkeletonPlayback",
     "SkeletonRole", "ABSENT_CLIP", "TimedShotSettings", "TimedShot",
     "PoseBatch", "PoseModifier", "LookRig", "PoseLayer", "pose_settings",

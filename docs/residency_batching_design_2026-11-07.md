@@ -395,6 +395,161 @@ the slots not yet ported executing on the host over bridged `Unit` objects,
 so every mid-port gate compares equal games; after P7 the bridge serves the
 recorder export and the tile inspector only.
 
+#### 4.4a Amendment 2026-11-11: P3a re-planned against the code at `bac6e077`
+
+The column list above was written on 2026-11-07. Since then the gameplay pack
+(#183: turning, unit impulse, exposure, magazines, grenade kinds, melee,
+flashlight, the horde field), #193 (the planted charge) and the agent design
+(`docs/rl_agent_design_2026-11-11.md` §9) changed what a unit holds. The
+inventory below was taken from the code, not from memory: `unit.py`, a grep
+of every attribute write on a unit in `src/`, and a spy on `Unit.__setattr__`
+over the whole suite (5 613 tests), which found 109 attribute names. Every
+one is sorted into exactly one group. P3a's property test holds the sort.
+
+**Group S, synced columns** (device columns; hashed from the schema, each
+only while it differs from its schema default unless marked *always*):
+
+| block | columns | note |
+|---|---|---|
+| identity | `id`, `slot`, `team`, `is_zombie`, `life_state` (*always*) | `alive` stays a property over `life_state` |
+| kit (table indices on the device; strings on the host) | `species_id`, `loadout_name`, `env_profile_name`, `weapon_id`, `melee_id`, `charge_ammo` (`""` = none), `magazines_weapon`, `magazines`, `footprint`, `mass_g` | fixed per unit bar a weapon swap; NEW vs §4.4: melee row, charge row, mass |
+| position | `x`, `y` (*always*, `round(v·1e9)` until P3c), `facing_q` (*always*), `facing_target_q` (hashed as `turn`), `omega_q` | the turning law's state is NEW vs §4.4 |
+| motion | `speed_ticks_per_tile` (`None` → an integer sentinel), `zombie_move_accumulator` | |
+| health | `current_hp` (*always*, hashed as a Q16 integer; P3a asserts it is an exact n/65536 at every write), `statuses` (fixed-width block, capacity below), `exposure` (fixed block) | |
+| impulse | `imp_x`, `imp_y`, `imp_l`, `stand_x`, `stand_y`, `swx`, `swy`, `pvx`, `pvy`, `effort`, `react_ticks` | NEW vs §4.4 |
+| magazine | `current_mag` (`None` → `MAG_UNBOUND`, an integer sentinel), `spare_mags`, `reload_done_tick` | |
+| grenades and charges | `grenade_counts` (fixed block, one per hand-grenade row), `has_explosive`, `throw_release_tick`, `throw_kind`, `throw_reach_q`, `throw_fuse_ticks`, `plant_done_tick`, `plant_fuse_ticks` | throw and plant in progress NEW vs §4.4 |
+| cool-downs | `last_fire_tick`, `last_blow_tick`, `last_shove_tick`, `last_melee_tick` | |
+| spray | `spray_ticks_left`, `spray_target`, `spray_aim_angle` | the last two FLOAT until P3e (as positions until P3c) |
+| zombie | `zombie_activated`, `killed_by_zombie`, `zombie_noise_y`, `zombie_noise_x`, `zombie_noise_ticks`, `zombie_anchor_y`, `zombie_anchor_x` | the horde's state NEW vs §4.4; §4.4's "descent cursor" does not exist (the field law keeps none) |
+| flags | `flashlight_on` | NEW |
+| intent state (the held verbs and the latches) | `live_move_dir`, `live_aim`, `live_trigger`, `pending_throw`, `pending_reload`, `pending_shove`, `pending_melee`, `pending_plant`, `pending_use` | each with an integer encoding in the schema (an absent intent = the default); the agent design's §9 needs the held verbs on the device (the team display reads them) |
+
+**Group D, derived constants** (never written after spawn; rebuilt on the
+device from group S's kit indices, so not columns and not hashed): `base_stats`,
+`base_speed`, `mass` (the species' float kg; `mass_g` is the synced one),
+`offsets`, `environment`, `mitigation`, `inventory` (a stub, always empty),
+`_frag_slot`; and the four per-unit optics overrides the stamp reads by
+`getattr` with a map default (`permeability`, `wave_absorb`, `heat_atten`,
+`light_atten`: no game path sets them, tests do), declared as slots and left
+unset. A property test checks every group-D value equals its derivation from
+group S at every tick of a match, conversion included.
+
+**Group R, `REFERENCE_ONLY`** (host only; never read on the continuous match
+path, or a diagnostic): the WEGO / onephase state (`orders`,
+`current_order_type`, `ap`, `plan`, `plan_round`, `busy_until_tick`,
+`gcd_until_tick`, `swap_cd_until_tick`, `action_cd`, `loadout`, `belt`,
+`active_slot`, `overwatch_facing`, `overwatch_half_deg`, `move_path`,
+`path_tick_offset`, `spray_order`, `fire_target`), `recent_attackers`
+(unread on the match path), `impulse_books` (the momentum books: a
+diagnostic, as today), `name` (a label; conversion prefixes it), and
+`awakened` (written only by `__init__`; read only by `stats.py`'s hidden
+`imagination` stat -- P3a deletes it if nothing else reads it, else R).
+
+**Not unit state, a table of its own: the planted charges**
+(`Simulation.planted_charges`, #193). A `CHARGE_SCHEMA` in the same module:
+tile x / y, `det_tick` (`None` = remote → `NO_TIMER`), the charge row as its
+index among the ammo rows, `owner_id`, the approach tile (`None` →
+`NO_TILE`), `live`; a fixed capacity per sim with a refusing door at the
+plant (a plant into a full table is refused, counted, no event); hashed as
+today, only while one lives.
+
+**Capacities.** `statuses`: a fixed width, `STACK_STACK` kinds capped, the
+overflow rule at `status.apply`'s door (refuse the new instance, counted) --
+the width chosen so that no test, no pinned match and no shipped weapon row
+reaches it, asserted. `grenade_counts`, `exposure`: already fixed.
+`_possessed_ids` (§4.4) is a set on the Simulation, not unit state; it stays
+there.
+
+**Differences from §4.4's list**, in one line each: NEW columns -- the
+turning law (3), the impulse state (11), `mass_g`, the melee row, the charge
+row, `has_explosive`'s partner `charge_ammo`, the throw (4) and plant (2) in
+progress, the shove and blow cool-downs, the horde's noise and anchor (5),
+the flashlight bit, the nine intent fields named one by one; DROPPED --
+"descent cursor" (no such state), "cadence" (it is `speed_ticks_per_tile`),
+`awakened` (to R or deleted), "valid" (a store column, not a `Unit`
+attribute; it arrives with the store in P6); MOVED -- `_possessed_ids` stays
+on the Simulation. The order's four columns (the agent design's patch 1f,
+#195) are NOT in P3a: 1f adds them as four schema rows, hashed only while
+set.
+
+**The digest change at P3a** (§5 item 9): the unit record is built from the
+schema; `ap` and `n_orders` leave it; `current_hp` hashes as a Q16 integer;
+every group-S column hashes while it differs from its default (so the
+magazine, the grenades, the cool-downs, the kit and the intent state enter
+the digest for the first time); the events and the charges keep their
+records (the event ring is P6's). Proof that only the hash moved, not the
+game: the new record is computed by the SAME schema code on the old `Unit`
+(main before P3a, attributes read by `getattr`) and on the new one, tick by
+tick over the pinned matches, and must be equal; every field digest is
+unchanged.
+
+**Tier.** §9 gives P3a to Sonnet; the list doubled since and the sort, the
+sentinels and the derivations are judgement, and the re-pin is not a tol-0
+gate, so P3a runs on Opus (the lead's call, 2026-11-11).
+
+**As built (P3a, 2026-11-12).** The sort above held against the code; no
+column changed group. Corrections and choices, one line each:
+- `orders` and `move_path` are WEGO state the continuous path still READS --
+  slot 4's `process_shooting` looks for a fire order in `orders`, slot 3's
+  WEGO branch takes `len(move_path)` -- but both are always empty there, so
+  they stay R (a REFERENCE_ONLY reason says so); `path_tick_offset`,
+  `recent_attackers`, `impulse_books` and `name` are WRITTEN on the match
+  path and never decided on. Property (e) holds it: a bots and a bots_v1
+  match with every other R attribute poisoned (raises on any use) and those
+  four given garbage play to the same result and digests.
+- `awakened` stays R (read by `stats.is_stat_player_visible`).
+- The status block is 16 rows (8 non-stacking kinds x 1 + POISONED x
+  `STATUS_STACK_CAP` 8); the planted-charge table holds `CHARGE_CAPACITY` 32.
+- `current_hp` is a property over the slot `_current_hp` whose setter refuses
+  a value off the Q16 grid; no write in the suite or the pinned matches was
+  off it.
+- Sentinels on the HOST: `current_mag` `MAG_UNBOUND` = -1, `speed_ticks_per_tile`
+  `SPEED_FROM_TABLE` = -1. Encoded only (host keeps `None`): `pending_plant`
+  `NO_PLANT` -1, a throw's reach `THROW_NO_REACH`, a charge's remote
+  `det_tick` `NO_TIMER` -1 and missing approach `NO_TILE` (-1, -1); a table
+  column's "none" row -1; an intent column is a presence flag + its ints.
+- The record's bytes are `name|int64` rows under `UNIT_SECT_V2`
+  (`unit_schema.unit_section_bytes`), the charges `CHARGE_SECT_V1`; the events
+  keep their repr. `facing_target_q` hashes as `turn` (the turn still to go),
+  `facing_q` as `facing`, `omega_q` as `omega`; every other key is the column
+  name.
+
+**As built (P3c, 2026-11-12).** Positions are the synced Q16 ints `x_q` /
+`y_q` (schema columns, *always*, hashed as plain ints under the keys `x_q` /
+`y_q`); `x` / `y` are read-only float properties (`x_q / 65536`, exact), so
+no reader changed. One writer, `Unit.set_pos_q(x_q, y_q)` (refuses a
+non-integer); its float door `Unit.set_pos(x, y)` quantizes once, round half
+away from zero (`unit_fixed.quantize_scalar`, the rule `unit_impulse.move`
+already applied on entry). `tile_x` / `tile_y` truncate on the int, as
+`int(x)` did (negative positions included: a test fixture reaches -1).
+One line each:
+- Every writer, and whether it was on the grid: spawn (`Unit.__init__`,
+  `add_unit(position=)`, so `spawn_match`) through the float door -- every
+  match spawn is a whole tile, an authored off-grid spawn is quantized (one
+  legacy test spawns at 4.37: its assert now allows 2^-17);
+  `unit_impulse.move` reads and writes its own ints (was `quantize(u.x)` in,
+  `x / 65536.0` out: bit-identical); the zombie step and wander write whole
+  tiles (`nx << 16`); the WEGO path and the one-phase timeline go through
+  the float door (their `(st + 1) / step_ticks` interpolation is OFF the
+  grid: 348 / 310 off-grid unit-ticks in the driver's two legacy scenarios);
+  the WEGO round snap is `round(x) << 16` (the same `round`).
+- The integer movement law: the only continuous-path step that left the
+  integers was `move`'s float round trip, now gone; nothing else was
+  changed (every float reader of a position is P3e's).
+- Proof (`tests/_p3c_sole_cause.py`, main `229f7097` vs the branch, records
+  normalised to `x_q := round(x * 65536)`): EQUAL records and field digests
+  over ship_demo bots (2902 ticks), bots_v1 (264), the #122 box (92), the
+  scripted arena (420) -- 0 off-grid positions on main -- AND over the
+  one-phase (200) and TwoPhaseWEGO (260) scenarios: the legacy quantization
+  moved no later decision there.
+- The re-pin: unit_stream / tick_digest of nine pinned matches (outcome,
+  ticks, field_digest unmoved) and `GOLDEN_AGGREGATE` `3646fd0d` ->
+  `4a13fc72` (per-field lines identical bar `__unit_pos__` /
+  `__unit_state__`). Recording format unchanged (positions are not
+  recorded; P3a's precedent for a digest redefinition). ship_demo bots
+  match: 51.66 s -> 51.24 s (medians of three, noise).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
@@ -678,7 +833,7 @@ in a fresh worktree skips every CUDA gate and would never place one.
 |---|---|---|---|---|
 | P3a the unit schema (+ `__slots__`, capacities, the digest redefinition) | one definition of a unit's synced state | digest re-pin with rationale; property test "every attribute is a schema row or REFERENCE_ONLY" | none | four drifting definitions; a new attribute never reaches the device |
 | P3b Philox at the match draw sites + the refusing `sim.rng` stand-in | per-env keyed draws | goldens regenerated; the kit's KAT + layout tests | none | no device draws can match the reference's stream |
-| P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | none: Erik blessed Q16 without a play test (§12.1, 2026-11-07), so the HUMAN-TEST is waived | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
+| P3c positions to Q16 (`x_q` / `y_q`; float properties kept) + the integer movement law (BUILT 2026-11-12, §4.4a's As built (P3c)) | the iron rule; integer digests | goldens regenerated once; movement A/B in dequantized units | none: Erik blessed Q16 without a play test (§12.1, 2026-11-07), so the HUMAN-TEST is waived | float64 columns on the device (IEEE, `--fmad=false`) and a standing exception to the iron rule — Erik's option B in §12.1 |
 | P3d the distance field (both paths, C++ reference) | per-unit A* has no device shape | goldens; ship_demo seeds 1–8 before / after; the A* and zombies rows amended | HUMAN-TEST on main | the horde stays on the host: no device backend  **Built in #183 G9p (host half; §4.9)** |
 | P3e the match path to integer (the table below) | no float in the ported slots; exact device ports | goldens; A/B of hit rates and blast outcomes in real units over many seeds | HUMAN-TEST on main (shot and blast feel) | an IEEE-double transcription per site (op order pinned, `--fmad=false`), gated by lockstep: doable, fragile |
 
@@ -698,6 +853,171 @@ named with the applier function or kernel it lands in):
 | the payload heat product; spray amounts; grenade flight | float | integer | `execute_payload`, spray deposit, slot 2 |
 | 9c's heat chain (`exchange.py` 384–401), 9c3's poison dose (`:709`) | float | integer | the coupling-row kernels (9c, 9c3) |
 | the grenade fuse (`fuse_seconds`) | float seconds | integer ticks at the door; `INTENT_KINDS` amended | 1b |
+
+#### §7 P3e site table, re-inventoried 2026-11-12 (main `24b87481`)
+
+The table above was written against the code of 2026-11-07. Re-taken by
+reading every slot of `Simulation.step` on the CONTINUOUS ruleset (a
+`MatchSession` with the `bots` controller and the horde, and the human's
+direct control), function by function, at main `24b87481` (after P3a, P3c,
+the gameplay pack #183 and #193). A "site" is a float operation whose result
+can change a synced outcome (hp, a status, a position, a wall, a field, a
+draw). Status: **DONE-already** (integer before P3e), **TODO** (P3e does
+it; the group letter is the commit group), **OUT** (out of scope, with the
+reason). "Exact" = the integer form gives the same value as today's float
+on every input (no game change); otherwise the change is a deliberate
+re-baseline measured by the A/B.
+
+Doors (a config or table constant quantized ONCE, at load or at the edge)
+are not sites: a float→Q16 conversion of an authored number at a door is
+allowed by the iron rule's four doors. Where a constant was re-quantized
+per tick from config, P3e moves it to the door unchanged in value.
+
+| # | slot / site (file :: function) | today | decision (kit) | lands in | status |
+|---|---|---|---|---|---|
+| 1 | 1a impulse + turning (`unit_impulse.integrate_all`, `turning.step`) | integer (G5p-a1/a2) | -- | 1a | DONE-already |
+| 2 | 1b throw release target (`Simulation._release_grenade`: `cx + dequantize(dx_q) * reach + 0.5`, `int(target_fx)` at detonation) | float (exact rationals) | Q16 target `(cx << 16) + (dx_q * reach_q >> 16) + HALF`; detonation tile `shr_trunc` (exact) | 1b, 2 | TODO (e) |
+| 3 | 1b wind-up release direction (`_advance_throw`: `quantize_scalar(u.facing)`) | float round trip of an exact value | `u.facing_q` (exact) | 1b | TODO (a) |
+| 4 | 1b shove, plant, the fuse in ticks | integer (#183, #193) | -- | 1b | DONE-already |
+| 5 | 1c exposure decay | integer (G4p) | -- | 1c | DONE-already |
+| 6 | 2 grenade flight (`Projectile.update_position`: `sqrt`, `/ travel_speed`, `elapsed / travel`) | float | Q16 positions, `isqrt` distance, one rational per tick; `fx` / `fy` float views | 2 | TODO (e). Read by the observation and the renderer only: the detonation reads the target |
+| 7 | 2 WEGO fuse `int(fuse_seconds * tps)` (`Projectile.get_detonate_tick`) | float | -- | -- | OUT: WEGO order path; the continuous throw carries `fuse_ticks` |
+| 8 | 2 / 4 the shot cone (`fire_burst`, `fire_beam`: `math.radians(spread)`, `rng.uniform(-cone, cone)`, float angle) | float draw | integer draw `draws.cone_offset_q16(rng, cone_q)` (one draw per former draw, same order), `cone_q` at the weapons door; angle Q16 | 4 phase A, 2 | TODO (a). Re-baseline: new random values |
+| 9 | 2 / 4 the line march (`BulletInFlight.advance`: `rx += step_x`, `int(rx)`) | float, exact on the Q16 grid | Q16 ints, `shr_trunc` tiling (exact) | 4 phase A, 2 | TODO (a) |
+| 10 | 4 free-aim bearing (`_directional_fire`: `-u.facing`) | float (exact) | `-u.facing_q` | 4 | TODO (a) |
+| 11 | 4 tile-target bearing (`atan2_rad(fy2 - fy1, ...)`) | float in / kit / float out | `atan2_q16` of Q16 deltas (exact) | 4 | TODO (a) |
+| 12 | 2 / 4 exposure roll (`attack_resolver.roll_exposure`: `uniform(0, 1) < exposure`) | float draw | `draws.roll_q16(rng, p_q)` -- `rng.integers(0, ONE) < p_q`, `p_q` the materials door's Q16 `cover_exposure` | 4 phase A | TODO (b). Live on the match path (furniture 0.55). Re-baseline |
+| 13 | crit roll (`roll_crit`: `uniform < chance * arc_mult`), `arc_multiplier` (float angles, `math.pi` wrap) | float | `roll_q16` against `mul_q16(chance_q, mult_q)`; arc on `facing_q` with `turning.wrap_q16`, half-arcs Q16 at the profile door | 4 phase A | TODO (b). Dormant on the match path (the loadouts door refuses a melee crit; no ranged row has one) |
+| 14 | `scale_half_away(amount, mult)` (crit / facing-defense amount) | float product | `amount * mult_q` rounded half away (exact for grid multipliers) | 4 | TODO (b) |
+| 15 | `int(dmg * bullet_damage_multiplier)` (zombie hit, `BulletInFlight.advance`) | float product | `(dmg * mult_q) >> 16` (truncation of a non-negative, exact for a grid multiplier: 0.25) | 4 phase A | TODO (c) |
+| 16 | mitigation + the hp write (`damage.mitigate`, `apply_packet`: float `max(0, a - armor) * resist`, then the Q2-lift snap; `Unit.current_hp` a float store) | float then Q16 | `DamagePacket.amount_q` (Q16; the float `amount` quantized once at the packet door when no `amount_q`), armor / resist Q16 at the species door, `mul_q16_round` (half away), hp stored as the int `Unit._hp_q`, `current_hp` a read-only-grid float view | `apply_packet` | TODO (c). Exact for every amount already on the grid (every shipped packet but heat / poison) |
+| 17 | 2b status DoT (`tick_statuses`: `dequantize(magnitude_q16)`) | float of an exact value | `amount_q = magnitude_q16` | 2b | TODO (c), exact |
+| 18 | 4c `chew_wall`: `quantize_scalar(float(wall_damage))` | float of an int | `wall_damage << 16` (exact) | 4c | TODO (e) |
+| 19 | 4 range gates `math.sqrt(...) > range_tiles` (`process_shooting`, `auto_fire`) | float | -- | -- | OUT: WEGO fire orders / Move & Attack only; the continuous path fires directionally and the march bounds range in integer steps |
+| 20 | 4 melee verb (`process_melee_intents`, `melee_arc_target`) | integer (G6p) | -- | 4a | DONE-already |
+| 21 | 4b spray cone (`spray_cone_tiles`: `atan2_rad`, `cos_rad(radians(half))`), amounts `heat / div`, `gas / div`; `spray_target`, `spray_aim_angle` float columns | float | bearing `atan2_q16`, cone cosine at the weapons door, amounts through FieldEdit's integer door (`amount_q // div`, rounded), the two columns Q16 ints (`spray_target` a Q16 point, `spray_aim_angle` a Q16 angle) | 4b | TODO (e). No shipped match loadout sprays |
+| 22 | 5 the horde (`horde.py`, `ai_zombie.py`: field, wander, activation, bite) | integer (G9p) | -- | 5 | DONE-already |
+| 23 | 5 `face_towards(float(nx), float(ny))` | float in, quantized at the kit (exact on whole tiles and Q16 positions) | -- | 5 | DONE-already (exact; the device reads `x_q`) |
+| 24 | 3 the walk and the push (`move_speed_q16`, `unit_impulse.move`) | integer (G5p-a2, P3c) | -- | 3 | DONE-already |
+| 25 | 6 the stamp refill (`GameMap._neighbor_mean`: `total / count` into int32) | float division, truncated by the int32 store | `total // count` (exact: non-negative ints) | 6 | TODO (f) |
+| 26 | 6b FieldEdit: the bridges (dequantize → float combine → requantize per field), `amount * weight * mult * scale/ONE`, the DISC / BEAM `sqrt` weights, `_falloff_weight`, TILES float weights, the noise `uniform(low, 1)`, the atmosphere 21 / 79 split | float64 | the amount quantized ONCE per edit into the field's currency (or handed in as `amount_q`); integer weights (`linear_weight_q16`, exact rounding of `1 - sqrt(d2)/r`), TILES integer weights over a `weight_den`, the noise an integer draw `draws.noise_mult_q16`, the combine an integer add / sub / max / clamp in the currency, the split `mul_q16_round` by the Q16 fractions | 6b | TODO (f). Re-baseline: every blast's deposits move by rounding |
+| 27 | 2 / 9e `apply_explosion` (`sqrt` falloff, `quantize(wall_damage * falloff)`, the 3x3 `wave_source` amounts, the inner smoke clear `radius * 0.4`) | float | exact integer falloff (`unit_fixed.falloff_round` / `falloff_floor`, from `isqrt` of the scaled square), wave amounts as `amount_q`, inner radius Q16 | `execute_payload` | TODO (e) |
+| 28 | `apply_blast_damage` (`sqrt`, `int(max_damage * falloff)`) | float | `falloff_floor` (exact: `M - ceil(isqrt_ceil(M^2 d2) / r)`), range `d2 <= r^2` | `execute_payload` | TODO (e), exact bar float rounding on boundaries |
+| 29 | the generic explosion's deposits (`linear_weights` `sqrt`, `deposit_over_tiles` `w / norm`, `total / (1 - noise/2)`, `heat_mj * units_per_mj * scale/ONE`, smoke units of soot) | float | integer weights + `weight_den`, totals quantized once per (payload, map) at a door, scaled by the Q16 air read in integers | `execute_payload` | TODO (e) |
+| 30 | `blast_expansion._source_q` (`expansion / (ticks * n * V * dt)`) | float with the walk's tile count | per-tick total quantized once, `div_round(total_q, n)` | `execute_payload` | TODO (e). Class-P twin file (div_source) |
+| 31 | the heat source's blast wall law (`heat_source_system._blast_damage_q`: `sqrt` falloff) | float | the same `falloff_round` as `apply_explosion` | 9e | TODO (e) |
+| 32 | non-strength payload rows (`blast_smoke_peak`'s float weight sum, `ignite_ring`, `deposit_heat`, `start_expansion`, `add_explosion_smoke`) | float amounts | amounts reach FieldEdit's integer door; the peak's weight sum through the same integer weights | `execute_payload` | TODO (e) for the weights; the authored float amounts are doors. No shipped match loadout carries these rows (smoke_screen is a gas emit, the flashbang has none) |
+| 33 | `apply_flash_blind`, noise radii | integer (G3p, G9p) | -- | 2 / 9e | DONE-already |
+| 34 | 9c heat chain (`felt_temperature`: `peak / HEAT_SCALE`, `phi * abs * (1 - refl)`, `amb + k * phi`; `apply_environmental_damage`: `rate * (1 + k * over) * dt`) | float | `t_felt_q = amb_q + mul_q16_round(A_q, peak)` with `A = flux_to_temp * abs * (1 - refl)` at the door; `dmg_q = div_round(rate_q * (ONE + mul_q16_round(k_q, over_q)), ONE * tps)` | 9c | TODO (g). Re-baseline by rounding |
+| 35 | 9c2 wind (`apply_wind_force`, `wind_impulse_q`) | integer (G5p-b) | -- | 9c2 | DONE-already (`wind_q_pa` is a diagnostic) |
+| 36 | 9c3 teargas | integer | -- | 9c3 | DONE-already |
+| 37 | 9c3 poison dose (`dps * dequantize_trace(d) * dt`) | float | `div_round(dps_q * d, TRACE_ONE * tps)` | 9c3 | TODO (g) |
+| 38 | 9d ignition (`quantize_scalar(o2_frac_ext)`, `ignition_seed` per tick) | config floats quantized at the call | -- | 9d | DONE-already (door) |
+| 39 | 9e vents, pumps, doors, timed charges, `charges.tick`, heat-source deposit (`heat_q16` at build) | integer / door | -- | 9e | DONE-already |
+| 40 | 7 the physics core | integer C++ | -- | 7 | DONE-already |
+| 41 | the bots (`control_bots*.py`, `pathfinding.astar`) | float decision code | -- | -- | OUT: host controllers, not ported (§12.3); they write only intents, which are integer at the facade |
+| 42 | `ExplosionEvent.strength` / `flash*`, `ShotFiredEvent` tiles, `Shot` tracers | float | -- | -- | OUT: render-only, outside the digest |
+| 43 | onephase / WEGO (`timeline.py`, the round snap, `defense_multiplier`, `cover_at`) | float | -- | -- | OUT: legacy (§11) |
+| 44 | the stamp's float32 `permeability` / `wave_absorb` per-unit values | float32 bits | -- | -- | OUT: physics-plane dtypes already stamped bit-exact on the device (P4b) |
+
+Counts: 44 rows -- DONE-already 13, TODO 25 (in seven groups), OUT 6.
+Changes from the 2026-11-07 table: the range gates (row 19) are WEGO-only
+on today's code (OUT); the zombie `math.sqrt` gates were done by G9p; the
+fuse was done by G3p; NEW sites: the throw target (2), the spray columns
+(21), the generic explosion's deposits (29), `_source_q` (30), the heat
+source's wall law (31), grenade flight (6).
+
+**As built (P3e, 2026-11-12, branch `29-p3e-integer-match`, HUMAN-TEST
+pending).** Every TODO row done; none deferred. One line each:
+- Groups a + b (one commit): the cone `draws.cone_offset_q16` on a Q16
+  bearing (`aim_q`, the free aim `-facing_q`), the march `rx_q` / `ry_q`
+  (bit-identical: the float march was exact on the grid), the rolls
+  `draws.roll_q16` against the materials table's new `cover_exposure_q16`
+  and a Q16 crit product, `arc_multiplier` on `wrap_q16` returning Q16.
+- Group c: `DamagePacket.amount_q` + the door `q()`, `damage.mitigate_q`
+  (one rounding, half away; exact for grid amounts), the hp STORED as the
+  int `Unit._hp_q` (`hp_q`), `current_hp` its float view, the schema column
+  keeping its name and key (read through `hp_q`); the zombie bullet
+  multiplier a Q16 product truncated as `int()` was; DoT hands its Q16.
+- Group g: `exchange.felt_temperature_q` (one gain quantized at the door),
+  the heat row and the poison dose as single rationals rounded once; within
+  1e-4 relative of the float model (the dials' Q16 quantization).
+- Groups f + e (one commit, coupled): FieldEdit integer from the door to the
+  field (`_CURRENCY`, Q16 weights, `falloff_round`, BEAM as an exact
+  rational, TILES over `weight_den`, the noise draw, one rounding per tile,
+  the 21 / 79 split per hundred); `_neighbor_mean` `div_trunc`
+  (bit-identical); `apply_explosion` / the heat source's wall law
+  `falloff_round`; `apply_blast_damage` `falloff_floor` (exactly
+  `int(M * falloff)`); the generic explosion's weights and totals integer;
+  `_source_q` divided in integers; sprays, the throw target and the
+  grenade flight Q16.
+- Choices where the design was silent: hp as an int store (not a float with a
+  grid assert); the draw = ONE raw step of the bit generator's high 32 bits
+  (`uniform` was one step too, so the stream position per draw is as
+  before); LINEAR weights Q16 (2^-17 relative of the weight), not exact
+  through the product; atmosphere split as the exact 21 / 100; a policy with
+  no integer currency refused (the float combine deleted: no shipped field
+  used it); the throw target rounded to Q16 (its tile can differ from the
+  float's only within 2^-17 of a tile edge).
+- Not as the design expected: `GOLDEN_AGGREGATE` did NOT move (4a13fc72:
+  its scenario reaches no P3e site that changes a value); the recording
+  format was NOT bumped (no recorded intent's meaning changed; the
+  precedent of G9p / P3c: a game change alone diverges at a checkpoint).
+- The A/B: `docs/p3e_ab_2026-11-12.md` — within seed noise; the firefight's
+  heat deaths (+21 %, ~1.6 s.e.) the one number to watch.
+
+Draws: every match-path draw P3e touches goes through ONE module,
+`src/simulation/draws.py` (`cone_offset_q16`, `roll_q16`,
+`noise_mult_q16`), each ONE `rng.integers` call per former `rng.uniform`
+call, in the same order -- so P3b swaps the generator in one file.
+
+As built (P3b, 2026-11-12, branch `29-p3b-philox`):
+- THE salt enum: `src/simulation/rng_salts.py` (`Salt`: EPISODE and WANDER
+  moved in with their values, so the farm's episode draws and the wander are
+  bit-identical; SHOT_CONE, BEAM_CONE, EXPOSURE, SHOT_CRIT, MELEE_CRIT,
+  FIELD_NOISE -- four ASCII letters each). No salt literal in `src/`
+  (`tests/test_match_draws.py` scans the block calls).
+- The keyed draws: `draws.MatchDraws` on every sim as `sim.draws` -- key =
+  the seed (64 bits; an UNSEEDED sim keys from its entropy-seeded
+  generator, so it stays unseeded: CHOICE), counter = (tick, index, salt,
+  id), the block's `out[0]`, one block per draw. `next(salt, id)` is the
+  site-local index (the k-th draw of that (salt, id) this tick, the count
+  cleared when the tick changes); `at(salt, id, index)` names one. The
+  tick is the sim's own clock plus `tick_base`, which legacy TwoPhaseWEGO's
+  `_end_round` advances by the round's length before rewinding `sim.tick`
+  (CHOICE: otherwise every round would replay the last one's draws). An id
+  of -1 ("no unit") is the word 2^32 - 1.
+- Sites: the shot cone is the shooter's `next(SHOT_CONE, id)`; the round
+  carries that draw's tick and index (`spawn_tick`, `ordinal`), and its
+  later exposure / crit rolls are `at(EXPOSURE | SHOT_CRIT, shooter,
+  round_index(age, ordinal))`, `(age << 16) | ordinal` (refused past 16
+  bits each); the beam cone `next(BEAM_CONE, id)`; the order path's melee
+  crit `next(MELEE_CRIT, attacker)` (the melee VERB never draws: its rows
+  carry no crit). FieldEdit noise, on EVERY path: `at(FIELD_NOISE, r * w +
+  c, edit key)`, the EDIT KEY being the queue's `seq` in this flush (its
+  enqueue index, the existing deterministic tie-break; CHOICE: P4c's
+  composite key orders records exactly as `seq` does, so the device can
+  rebuild it as the rank); `apply_field_edit` refuses a noisy edit
+  without a key. Charges, timed charges, heat sources and the zombie bite
+  draw nothing (`MatchDraws.drawn`, a word counter, proves it in tests).
+- `sim.rng` is drawn from by nothing in `src/` (every former caller --
+  the slots, the ruleset's door explosives, the onephase timeline, the
+  charge / timed-charge / heat-source detonations -- passes `sim.draws`);
+  `simulation.match.spawn_match` replaces it with `draws.RefusingRng`,
+  which raises on any attribute use, naming it. The helpers refuse a numpy
+  Generator by name.
+- The C++ header `cpp/src/philox32.h` vendored verbatim (as on
+  `63-swarm-units`, upstream 6c33a3d0, recorded sha256) with its bindings,
+  so `tests/test_philox32.py`'s C++ KAT, Python == C++ sweep and Q16
+  mappings run; no C++ sim code draws yet (P4c / P7a). The paper is
+  archived (`docs/papers/salmon2011_random123_philox_sc11.pdf`).
+- SOLE CAUSE: `tests/_p3b_sole_cause.py` (a pytest plugin feeding main's
+  numpy words through the keyed sites) makes all eight pinned matches pass
+  at main's values on the branch. Re-pinned once (ship_demo seed 1: win 0
+  at 2966 -> win 0 at 2708); `GOLDEN_AGGREGATE` unmoved (its scenario draws
+  nothing). No recording format bump (no intent's meaning changed: a
+  recording re-simulates from its seed). A/B: `docs/p3b_ab_2026-11-12.md`,
+  everything within 1.6 s.e.
 
 Order: P3a, P3c and P3e before P6 (P6 needs the schema, Q16 positions and
 the integer hp / mitigation); P3b before P7a (the shot cone's draws) and

@@ -340,7 +340,7 @@ class GameMap:
         self.render_dirty = set()
         # The BLAST LOG (levelgen vocabulary E.2 row 3, the heat-source
         # entity's death hook): every explosion disc ``execute_payload``
-        # executes this tick, as ``(fy, fx, radius, wall_damage)`` in call
+        # executes this tick, as ``(fy, fx, radius, wall_damage_q)`` in call
         # order. Appended ONLY by ``payloads.execute_payload`` (step 1, when
         # ``radius > 0``) and DRAINED once per tick at slot 9e -- by
         # ``heat_source_system.sweep_heat_sources`` when the level has
@@ -2433,6 +2433,29 @@ class GameMap:
                     best, bvx, bvy = w_i, vx[r][c], vy[r][c]
         return best, int(bvx), int(bvy)
 
+    def wind_load_plane(self):
+        """``(W, vx, vy)``: the per-tile term of :meth:`footprint_wind`'s
+        read over the whole map (#195 1g, obs spec 1.7) -- ``W[i] = N_raw[i]
+        * ((wind_x[i]^2 + wind_y[i]^2) >> FP_SHIFT)`` on every GAS tile, 0
+        on a solid one, and the wind planes' own Q16 m/s values (world axes)
+        beside it -- as three float64 arrays of the map's shape. A READ-SIDE
+        product like the observation crop's dequantize (the int product
+        overflows int64 at a few atmospheres of a gale): the square is exact
+        in int64, the product float64, nothing is written back and nothing
+        in the sim reads it. The footprint max of ``W`` is
+        :meth:`footprint_wind_load`'s value wherever that value fits a
+        float64 exactly (below 2^53; the shipped game's wind loads are
+        orders of magnitude under it). The observation's wind planes."""
+        from simulation.atmosphere_fixed import FP_SHIFT
+        vx = np.asarray(self.wind_x, dtype=np.int64)
+        vy = np.asarray(self.wind_y, dtype=np.int64)
+        v2 = (vx * vx + vy * vy) >> FP_SHIFT
+        n_raw = (np.asarray(self.gas[O2], dtype=np.int64)
+                 + np.asarray(self.gas[INERT_N2], dtype=np.int64))
+        w = n_raw.astype(np.float64) * v2.astype(np.float64)
+        w[np.asarray(self.solid, dtype=bool)] = 0.0
+        return w, vx.astype(np.float64), vy.astype(np.float64)
+
     def has_los(self, fy1, fx1, fy2, fx2, physical=False):
         """Bresenham line check between two tiles.
 
@@ -2466,18 +2489,22 @@ class GameMap:
                 y += sy
 
     def _neighbor_mean(self, field, fy, fx):
-        """Mean of field values from passable (non-solid, non-vacuum) 4-neighbors."""
+        """Mean of field values from passable (non-solid, non-vacuum)
+        4-neighbors -- an INTEGER division rounded toward zero (#29 P3e): the
+        field is an int32 plane (the atmosphere, Q16), whose store truncated
+        the old float quotient toward zero; this is that value exactly."""
+        from simulation.unit_fixed import div_trunc
         h, w = field.shape
-        total = 0.0
+        total = 0
         count = 0
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             ny, nx = fy + dy, fx + dx
             if (0 <= ny < h and 0 <= nx < w
                     and not self.solid[ny, nx]
                     and not self.is_vacuum[ny, nx]):
-                total += field[ny, nx]
+                total += int(field[ny, nx])
                 count += 1
-        return total / count if count > 0 else 0.0
+        return div_trunc(total, count) if count > 0 else 0
 
     # (``_seed_bulk_gas_neighbor_mean`` DELETED — P-M3: it WAS the mint. It
     # seeded gas[O2]/gas[INERT_N2] at a newly-opened tile with the neighbour

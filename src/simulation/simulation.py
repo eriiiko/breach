@@ -18,14 +18,13 @@ and ``is_terminal`` for the Gymnasium contract.
 
 Determinism / RNG plumbing
 --------------------------
-A single :class:`numpy.random.Generator` lives on ``sim.rng``. It is
-plumbed through the three known nondeterminism sites:
-
-- :func:`simulation.combat.fire_burst` — bullet cone offsets
-- :func:`simulation.physics.add_explosion_smoke` — per-tile noise
-- (gone) the old render march's per-source ``jitter`` — pinned 0.0 for
-  every light and then deleted with the C++ Raycaster at ray-engine-v2 P6c;
-  the radiation sweep that lights the game draws no random numbers.
+Every random number the sim draws is a KEYED draw on ``sim.draws``
+(:class:`simulation.draws.MatchDraws`, #29 P3b): Philox-4x32-10 keyed by the
+seed, counter ``(tick, index, salt, id)`` -- the shot and beam cones, the
+exposure and crit rolls, the FieldEdit noise at the flush. No draw depends on
+a stream position. ``sim.rng`` (a numpy Generator) is drawn from by nothing in
+the sim; a match replaces it with a stand-in that refuses any use
+(:class:`simulation.draws.RefusingRng`, installed by ``spawn_match``).
 
 The same seed gives the same trajectory for any sequence of
 ``apply_action / step`` calls — assuming the C++ physics is
@@ -93,9 +92,11 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
     apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
-    DoorDestroyedEvent, ExplosionEvent, ThrowEvent, WallDestroyedEvent,
+    DoorDestroyedEvent, ExplosionEvent, PlantEvent, ThrowEvent,
+    WallDestroyedEvent,
 )
 from simulation.unit import THROW_NO_REACH
+from simulation.unit_schema import MAG_UNBOUND
 from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
@@ -126,11 +127,15 @@ from simulation.orders import (
 # TwoPhaseWEGO: WEGO control sources never call the intent facade, so no unit
 # ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
 # on a ``getattr(..., default)`` (the dormancy guarantee).
+from simulation import charges
+from simulation import draws as _draws
 from simulation import intents as _intents
 from simulation import speeds
 from simulation import turning
 from simulation import unit_fixed
 from simulation import unit_impulse
+from simulation import unit_orders
+from simulation import verb_gates
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
 # extracted verbatim. Simulation owns one Ruleset instance, chosen at
@@ -153,7 +158,7 @@ from simulation.damage import tick_credit
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
 from simulation.weapons import (
-    FIRE_ORDER_ARCHETYPES, fuse_ticks_from_seconds,
+    FIRE_ORDER_ARCHETYPES, PLANT_WEAPON, fuse_ticks_from_seconds,
     rebuild_tables as rebuild_weapon_tables,
 )
 # The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
@@ -294,6 +299,14 @@ class Simulation:
         self.gmap = GameMap(self.level)
         self.rng = np.random.default_rng(seed)
         self._seed = seed
+        # #29 P3b (design §4.7): THE draws -- keyed Philox, key = the seed,
+        # counter (tick, index, salt, id) on this sim's clock. An unseeded
+        # sim takes its key once from its (entropy-seeded) generator, so it
+        # stays unseeded; a seeded one is keyed by its seed itself.
+        self.draws = _draws.MatchDraws(
+            seed if seed is not None
+            else int(self.rng.integers(0, 2 ** 63)),
+            clock=lambda: self.tick)
 
         # A6 (a6 doors design §6.1): the sim's RUNTIME entity list — the
         # level's parsed instances with door entries replaced by fresh
@@ -446,6 +459,13 @@ class Simulation:
         # ever driven twice, and an idle zombie controller leaves it standing.
         self._zombie_requests: set | None = None
 
+        # The commander's orders latched this tick (#195 1f, the
+        # ``drive_zombies`` precedent): unit id -> (what, where, until,
+        # target), the last ``order_intent`` of the tick per unit; written
+        # onto the units at slot 1b' (``unit_orders.apply_requests``) and
+        # emptied there. Never synced, never digested; empty between ticks.
+        self._order_requests: dict = {}
+
         # The intent tap (#126, replay by re-simulation): ``None`` = dormant
         # (every path but a recorded match; each intent entry point pays one
         # ``is None`` check). Attached by :meth:`attach_intent_log`, it is
@@ -470,6 +490,19 @@ class Simulation:
         # every consumer in a tick sees ONE consistent answer.
         self._vision_cache = None
 
+        # The sight rule (#195 1a): "cone" on every path that is not a match;
+        # ``spawn_match`` sets it from the match's spec. Read by
+        # ``vision.can_see`` from here, never from a caller. Constant for a
+        # sim, so the per-tick cache above needs no key for it.
+        self.sight = "cone"
+
+        # The team picture (#195 1d, ``simulation/team_picture.py``): what
+        # each marine team knows of the enemy. None off a match;
+        # ``start_team_picture`` (called by ``spawn_match``) switches it on
+        # and the conductor's slot 11 updates it once per tick. Not synced,
+        # not hashed: rebuilt by re-simulation only.
+        self.team_picture = None
+
         # Ambush barriers (design §10): ``{target_unit_id: release_tick}``.
         # A per-group readiness counter in the sim — NO SignalBus is needed in
         # v1, though the action registry's ``start_condition`` field keeps that
@@ -481,6 +514,9 @@ class Simulation:
         # because the ruleset's clock is monotonic: "1.8 s into the round" and
         # "t=0 of the next round" are the same kind of number.
         self.planted_charges: list = []
+        # Plants refused because the table held unit_schema.CHARGE_CAPACITY
+        # live charges (#29 P3a, charges.place); a diagnostic counter.
+        self.charges_refused = 0
 
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
@@ -527,8 +563,7 @@ class Simulation:
         """
         if position is not None:
             x, y = position
-            unit.x = float(x)
-            unit.y = float(y)
+            unit.set_pos(x, y)            # #29 P3c: the float door
 
         # Deterministic predefined attributes (ingress door 2 — quantized
         # species means; see generation.py). The sim RNG no longer touches
@@ -578,6 +613,21 @@ class Simulation:
             raise ValueError(f"level {self.level.name!r} has no match.toml")
         return spawn_match(self, spec)
 
+    def start_team_picture(self, teams, memory_ticks: int | None = None):
+        """Switch on the team picture (#195 1d) for the marine ``teams`` and
+        take its first update now; from then on the conductor's slot 11
+        updates it every tick. ``spawn_match`` calls it for a match; a
+        hand-built sim (a test) calls it itself. ``memory_ticks`` defaults
+        to ``[team_picture] memory_s`` quantized once (tests may pass a
+        short one). Returns the picture."""
+        from simulation import team_picture as tp
+        if memory_ticks is None:
+            memory_ticks = tp.memory_ticks(tp.picture_settings(CFG),
+                                           float(self._tps))
+        self.team_picture = tp.TeamPicture(self, teams, int(memory_ticks))
+        self.team_picture.update(self)
+        return self.team_picture
+
     def hand_zombies_to_controller(self) -> None:
         """Give the horde to a match's zombie controller (#122): from now on
         the conductor's zombie slot no longer runs the law on its own; it
@@ -592,7 +642,9 @@ class Simulation:
         """Attach the intent tap's sink (#126): from now on every call of
         ``set_move_dir`` / ``clear_move_dir`` / ``set_aim`` / ``set_trigger``
         / ``throw_grenade_intent`` / ``use_intent`` / ``reload_intent`` /
-        ``drive_zombies`` / ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
+        ``shove_intent`` / ``melee_intent`` / ``set_flashlight`` /
+        ``plant_charge_intent`` / ``order_intent`` / ``drive_zombies`` /
+        ``apply_action`` is handed to ``log.record(tick, kind, args)`` (``kind``
         the method name, ``args`` its arguments normalised exactly as the
         method itself normalises them) before it acts. ``None`` detaches.
         The sink may refuse a call by raising (``match_replay`` refuses
@@ -1089,6 +1141,43 @@ class Simulation:
             None if reach_q is None else int(reach_q), int(kind))
         self._possessed_ids.add(unit_id)
 
+    def plant_charge_intent(self, unit_id: int, fuse_ticks: int) -> None:
+        """PLANT (#193): latch planting the unit's charge on the floor at its
+        feet with a timer of ``fuse_ticks`` INTEGER ticks (every caller
+        converts once at its own door, ``weapons.fuse_ticks_from_seconds``),
+        CLAMPED here to the plant row's fuse range (``[weapons.c4_satchel]
+        fuse_min_seconds`` .. ``fuse_max_seconds``, 5 .. 60 s), as a
+        throttle is clamped; the clamped value is what the tap records.
+        Consumed (and cleared) at the next tick's slot 1b by
+        :meth:`_start_plant`.
+
+        The plant takes ``[weapons.c4_satchel] plant_seconds``: ignored,
+        with no event, if the unit carries no charge, is already planting
+        or winding up a throw, or cannot act; otherwise a render-only
+        :class:`~simulation.events.PlantEvent` is emitted and, that many
+        ticks later, the charge lies on the unit's centre tile as it stands
+        THEN, owned by the unit (the blast's credit), detonating ``fuse``
+        ticks after that (the conductor's slot 9e, ``charges.tick``); the
+        count is spent then. A unit that dies or is stunned meanwhile plants
+        nothing and keeps its count. Integer, no random number. Bots never
+        call it (yet); an RL agent and the human do."""
+        if isinstance(fuse_ticks, bool) or not isinstance(fuse_ticks, Integral):
+            raise TypeError(
+                f"plant_charge_intent: fuse_ticks must be an integer number "
+                f"of ticks, got {fuse_ticks!r}")
+        row = self.weapons_tables.weapons.by_name[PLANT_WEAPON]
+        lo = fuse_ticks_from_seconds(row.fuse_min_seconds, self._tps)
+        hi = fuse_ticks_from_seconds(row.fuse_max_seconds, self._tps)
+        fuse_ticks = min(max(int(fuse_ticks), lo), hi)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "plant_charge_intent",
+                                    (int(unit_id), fuse_ticks))
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_plant = fuse_ticks
+        self._possessed_ids.add(unit_id)
+
     def use_intent(self, unit_id: int) -> None:
         """USE: latch a context interaction (toggle an adjacent door's latch,
         §3c). Consumed (and cleared) at the next tick."""
@@ -1182,21 +1271,50 @@ class Simulation:
             return
         u.flashlight_on = not bool(off)
 
+    def order_intent(self, unit_id: int, what: int, where: int, ticks: int,
+                     target_id: int) -> None:
+        """ORDER (#195 1f, ``simulation.unit_orders``): the COMMANDER's
+        verb, not a soldier's -- give ``unit_id`` the order ``what``
+        (``unit_orders.ORDER_WHAT``'s code: 1 go to, 2 hold, 3 clear, 4 fall
+        back to; 0 = none, which CLEARS the unit's order and takes no other
+        field) at the place ``where`` on the level's room graph (a room id,
+        or ``ORDER_OPENING_BASE`` + an opening id), for ``ticks`` INTEGER
+        ticks (0 = until told otherwise; every caller converts seconds once
+        at its own door), with the priority target ``target_id`` (an enemy's
+        unit id, or -1).
+
+        Refused by name at :func:`unit_orders.check` BEFORE the tap (so a
+        recording never holds a refused call); then recorded and LATCHED on
+        the sim (a second call for the unit in one tick replaces the first)
+        and written onto the unit at the next slot 1b'. Cleared at death, at
+        conversion and when its tick comes (``order_until``, after the tick
+        advance). Does not possess the unit. INFORMATION ONLY until rung 4:
+        nothing in the game reads an order for a decision."""
+        args = unit_orders.check(self, unit_id, what, where, ticks,
+                                 target_id)
+        if self._intent_log is not None:
+            self._intent_log.record(self.tick, "order_intent", args)
+        uid, what, where, ticks, target = args
+        until = unit_orders.NO_LIMIT if ticks == 0 else self.tick + ticks
+        self._order_requests[uid] = (what, where, until, target)
+
     def _reload(self, u) -> None:
         """RELOAD consumption (the law of :meth:`reload_intent`): integer
         state only, no random number. A unit whose weapon has no magazine
-        (``mag_size`` 0) is left untouched."""
-        weapon = self.weapons_tables.weapons.by_name.get(
-            getattr(u, "weapon_id", ""))
-        if weapon is None or weapon.mag_size <= 0:
+        (``mag_size`` 0), and any reload the gate refuses, leave the unit
+        UNTOUCHED: the decision is the gate's (``verb_gates.can_reload``, a
+        pure read of the settled magazine, ``mag_status``), and the lazy
+        settle (binding a never-bound magazine, completing a stall that has
+        run out) is bookkeeping the next trigger pull or ``mag_status`` does
+        anyway -- so a refused reload writes nothing, and a forced one leaves
+        the digests where a do-nothing tick leaves them (#195 1e, the 1h
+        gate)."""
+        if not verb_gates.can_reload(self, u):
             return
-        if not mag_settle(u, weapon, self.tick):
-            return                            # already reloading
-        if u.current_mag >= weapon.mag_size:
-            return                            # the magazine is full
-        if u.spare_mags == 0:
-            return                            # no spare magazine left
-        reload_begin(u, weapon, self.tick, events=self.tick_events)
+        weapon = self.weapons_tables.weapons.by_name[u.weapon_id]
+        mag_settle(u, weapon, self.tick)          # a no-op when ready; the
+        reload_begin(u, weapon, self.tick,         # begin's own precondition
+                     events=self.tick_events)
 
     def _consume_direct_intents(self) -> None:
         """Apply the possessed units' latched/held per-tick intents (§3c),
@@ -1229,6 +1347,10 @@ class Simulation:
                     u.live_trigger = False
                 if getattr(u, "throw_release_tick", -1) >= 0:
                     u.throw_release_tick = -1
+                # ... and a plant under way (#193): nothing is planted, the
+                # count was never spent.
+                if getattr(u, "plant_done_tick", -1) >= 0:
+                    u.plant_done_tick = -1
                 continue
 
             # AIM: already turned toward in slot 1a (the turning law, G5p-a1;
@@ -1241,6 +1363,14 @@ class Simulation:
                 u.pending_throw = None
                 self._start_throw(u, throw)
             self._advance_throw(u)
+
+            # PLANT -> start planting the charge (edge; latched); a plant
+            # under way is carried to its last tick (#193).
+            plant = getattr(u, "pending_plant", None)
+            if plant is not None:
+                u.pending_plant = None
+                self._start_plant(u, plant)
+            self._advance_plant(u)
 
             # USE -> toggle an adjacent door latch (edge; latched).
             if getattr(u, "pending_use", False):
@@ -1260,7 +1390,7 @@ class Simulation:
             # change nothing.
             if getattr(u, "pending_shove", False):
                 u.pending_shove = False
-                if composed_flags(u).can_act:
+                if verb_gates.can_shove(self, u):
                     unit_impulse.shove(self.impulse_table, self.units, u,
                                        self.tick, events=self.tick_events)
 
@@ -1281,12 +1411,10 @@ class Simulation:
         emitted and the wind-up starts; with a wind-up of 0 ticks the
         grenade leaves the hand NOW, along the intent's own vector -- the
         pre-G3p same-tick throw, bit for bit."""
-        if u.throw_release_tick >= 0:
-            return                            # already winding up
-        if u.grenade_counts[throw.kind] <= 0:
-            return                            # none of that kind
-        if not composed_flags(u).can_act:
-            return                            # stunned, paralysed, ...
+        # The decision is the gate's (verb_gates.can_throw, #195 1e): already
+        # winding up, planting (#193), none of that kind, stunned / paralysed.
+        if not verb_gates.can_throw(self, u, throw.kind):
+            return
         ticks = self.weapons_tables.weapons.by_name[
             "hand_grenade"].throw_windup_ticks
         self.tick_events.append(ThrowEvent(unit_id=int(u.id),
@@ -1317,11 +1445,52 @@ class Simulation:
         if self.tick < u.throw_release_tick:
             return
         u.throw_release_tick = -1
-        facing_q = unit_fixed.quantize_scalar(u.facing)
+        facing_q = int(u.facing_q)          # #29 P3e: the int, no round trip
         self._release_grenade(
             u, u.throw_kind, u.throw_fuse_ticks,
             None if u.throw_reach_q == THROW_NO_REACH else u.throw_reach_q,
             unit_fixed.cos_q16(facing_q), -unit_fixed.sin_q16(facing_q))
+
+    def _start_plant(self, u, fuse_ticks) -> None:
+        """PLANT consumption (the law of :meth:`plant_charge_intent`, #193).
+        Integer state only, no random number. A unit carrying no charge,
+        already planting or winding up a throw, or whose statuses forbid
+        acting, does nothing and emits nothing; otherwise a
+        :class:`~simulation.events.PlantEvent` is emitted and the plant runs
+        until ``plant_done_tick`` (with a 0-tick plant the charge lies down
+        this very tick, :meth:`_advance_plant` being called next)."""
+        # The decision is the gate's (verb_gates.can_plant, #195 1e): hands
+        # busy, no charge carried, stunned / paralysed.
+        if not verb_gates.can_plant(self, u):
+            return
+        ticks = self.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks
+        self.tick_events.append(PlantEvent(unit_id=int(u.id),
+                                           ticks=int(ticks)))
+        u.plant_done_tick = self.tick + ticks
+        u.plant_fuse_ticks = int(fuse_ticks)
+
+    def _advance_plant(self, u) -> None:
+        """One tick of a plant under way: a unit that can no longer act
+        plants NOTHING and keeps its count; on the plant's last tick the
+        charge lies on the unit's centre tile as it stands now, owned by the
+        unit, detonating ``plant_fuse_ticks`` after this tick, and one
+        charge is spent. (A dead unit never gets here: the consume loop
+        drops its plant.)"""
+        if u.plant_done_tick < 0:
+            return
+        if not composed_flags(u).can_act:
+            u.plant_done_tick = -1
+            return
+        if self.tick < u.plant_done_tick:
+            return
+        u.plant_done_tick = -1
+        ty, tx = u.center_tile_y(), u.center_tile_x()
+        if not charges.place(self, charges.PlantedCharge(
+                tx, ty, u.charge_ammo, u.id,
+                det_tick=self.tick + int(u.plant_fuse_ticks),
+                approach=(ty, tx))):
+            return        # the charge table is full (#29 P3a): count kept
+        u.has_explosive -= 1
 
     def _release_grenade(self, u, kind, fuse_ticks, reach_q, dx_q,
                          dy_q) -> None:
@@ -1337,25 +1506,31 @@ class Simulation:
         hand = self.weapons_tables.weapons.by_name["hand_grenade"]
         cx = u.center_tile_x()
         cy = u.center_tile_y()
-        dirx = _intents.dequantize(dx_q)
-        diry = _intents.dequantize(dy_q)
         # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
         # Erik; the grenade's own fuse/blast are the shipped numbers). A
         # controller throwing at a point (#121, the bots) names its reach in
         # Q16.16 tiles, clamped to [0, the hand grenade's max_throw_range].
         if reach_q is None:
-            reach = 6.0  # tiles
+            reach_q = 6 << _intents.FP_SHIFT  # tiles
         else:
             max_q = int(hand.max_throw_range) << _intents.FP_SHIFT
-            reach = _intents.dequantize(min(max(0, int(reach_q)), max_q))
-        tgt_fx = cx + dirx * reach
-        tgt_fy = cy + diry * reach
+            reach_q = min(max(0, int(reach_q)), max_q)
+        # #29 P3e: the target in Q16 integers -- the centre plus the Q16
+        # direction times the Q16 reach (the float product of two n/65536
+        # values was exact; this is its Q16 rounding, half away), plus the
+        # half tile; the Projectile reads it exactly.
+        half = 1 << (_intents.FP_SHIFT - 1)
+        tgt_x_q = ((cx << _intents.FP_SHIFT) + half
+                   + unit_fixed.mul_q16_round(int(dx_q), reach_q))
+        tgt_y_q = ((cy << _intents.FP_SHIFT) + half
+                   + unit_fixed.mul_q16_round(int(dy_q), reach_q))
         lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
         hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
         proj = Projectile(
             ORDER_GRENADE,
             cx, cy,
-            tgt_fx + 0.5, tgt_fy + 0.5,
+            unit_fixed.dequantize_scalar(tgt_x_q),
+            unit_fixed.dequantize_scalar(tgt_y_q),
             fuse_seconds=0.0,
             thrown_tick=self.tick,
             ammo_name=self.weapons_tables.hand_grenade_kind(kind),
@@ -1370,16 +1545,9 @@ class Simulation:
         whose span touches the unit's footprint or its immediate ring (§3c).
         Reuses :meth:`door_at`; the slot-9e door sweep applies/retries the
         latch, exactly like the dev O-key."""
-        x0, y0 = u.tile_x, u.tile_y
-        fp = u.footprint
-        # Footprint tiles plus a one-tile ring so a marine standing beside a
-        # door can open it without overlapping it.
-        for ty in range(y0 - 1, y0 + fp + 1):
-            for tx in range(x0 - 1, x0 + fp + 1):
-                door = self.door_at(ty, tx)
-                if door is not None and door.alive:
-                    door.want_open = not door.want_open
-                    return
+        door = verb_gates.use_door(self, u)         # the scan is the gate's
+        if door is not None:
+            door.want_open = not door.want_open
 
     def get_legal_actions(self, unit_id: int) -> list:
         """Stub for the AI training contract — minimal v1.
@@ -1437,7 +1605,7 @@ class Simulation:
         idx = rows.index(cur) if cur in rows else -1
         u.weapon_id = rows[(idx + 1) % len(rows)]
         # Fresh-magazine + dead-burst state (see docstring).
-        u.current_mag = None
+        u.current_mag = MAG_UNBOUND
         u.reload_done_tick = -1
         u.spray_ticks_left = 0
         u.spray_order = None
@@ -1882,6 +2050,12 @@ class Simulation:
         # Dormant under WEGO (no possessed units) — a single set-empty check.
         self._consume_direct_intents()
 
+        # 1b'. The commander's orders (#195 1f): this tick's latched
+        # ``order_intent`` requests are written onto their units (the ONE
+        # writer of the order columns, unit_orders). Information only: no
+        # slot reads an order. Dormant on an empty request dict.
+        unit_orders.apply_requests(self)
+
         # 1c. Exposure decays one tick (G4p, simulation.exposure) -- before
         # every attack of this tick, so each hit reads the level left by the
         # hits up to last tick, decayed exactly once since.
@@ -1933,7 +2107,7 @@ class Simulation:
             # W3: the edit queue rides along so payload rounds (GL-6) can
             # deposit their detonation; the mag/reload economy gates triggers.
             process_shooting(self.gmap, self.units, self.tick,
-                             self.shots, self.real_time, self.rng,
+                             self.shots, self.real_time, self.draws,
                              events=self.tick_events, bullets=self.bullets,
                              queue=self.edit_queue, effects=attack_effects)
 
@@ -1973,8 +2147,8 @@ class Simulation:
         # solvers run — so the solvers advect / propagate the settled NET deposit
         # for this tick (a laser burn-off and a grenade cloud issued the same
         # tick both land before smoke advection). This is the single RNG consumer
-        # for noise>0 edits, drawing from the seeded sim.rng in sorted order.
-        self.edit_queue.flush(self.gmap, self.rng)
+        # for noise>0 edits, keyed draws (seed, tick, edit key, tile; P3b).
+        self.edit_queue.flush(self.gmap, self.draws)
         return True
 
     def _step_physics(self):
@@ -2150,6 +2324,16 @@ class Simulation:
         # the sources read it for damage; then each living source enqueues
         # its per-tick heat (lands at the next 6b flush). A source-free level
         # only clears the log, which is empty at every tick boundary.
+        # Planted charges (#193): the continuous path's ONE driver of
+        # ``charges.tick`` -- a ruleset that owns the unit slots
+        # (OnePhaseWEGO, ``drives_units``) ticks them at the head of its own
+        # timeline instead, so no charge is ever ticked twice. Beside the
+        # timed charges and for the same reasons (this tick's door state;
+        # the wall damage before the recorder snapshot; the edits at the
+        # next 6b), and BEFORE the heat sources so its blast is in
+        # gmap.blast_log when they read it.
+        if self.planted_charges and not self.ruleset.drives_units:
+            charges.tick(self)              # (d') planted-charge detonations
         if self._heat_sources:
             sweep_heat_sources(self)        # (d'') heat-source blasts + deposits
         elif self.gmap.blast_log:
@@ -2241,7 +2425,18 @@ class Simulation:
         self.tick += 1
         self.real_time += sim_time_per_tick
 
+        # 10'. An order whose tick has come is cleared (#195 1f) -- right
+        # after the advance, so between ticks a held order has time left.
+        unit_orders.expire(self)
+
         self.ruleset.on_tick_end(self)
+
+        # 11. The team picture (#195 1d; a match only): each marine team's
+        # records of what it sees at the tick the next controllers run at --
+        # after the tick advance and on_tick_end, so a conversion this step
+        # made is seen. Once per tick, never on demand.
+        if self.team_picture is not None:
+            self.team_picture.update(self)
 
     # ------------------------------------------------------------------
     # Tick-step helpers
@@ -2258,8 +2453,7 @@ class Simulation:
             if self.tick >= proj.get_detonate_tick():
                 proj.detonated = True
                 if proj.proj_type == ORDER_GRENADE:
-                    fx = int(proj.target_fx)
-                    fy = int(proj.target_fy)
+                    fy, fx = proj.target_tile()           # #29 P3e: integers
                     # W3: the LOBBED detonation goes through the payload
                     # EXECUTOR via the projectile's round (hand_grenade ->
                     # proj.ammo_name -> its payload row). The default
@@ -2273,13 +2467,14 @@ class Simulation:
                         proj.ammo_name)
                     execute_payload(
                         self.gmap, self.edit_queue, self.units, fy, fx,
-                        payload, self.rng, events=self.tick_events,
+                        payload, self.draws, events=self.tick_events,
                         kind="grenade", owner_id=proj.owner_id,
-                        approach=(int(proj.start_fy), int(proj.start_fx)))
+                        approach=(unit_fixed.shr_trunc(proj.start_y_q),
+                                  unit_fixed.shr_trunc(proj.start_x_q)))
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
-        # inside advance() (same rng, fixed spawn order). Survivors stay.
+        # inside advance() (keyed draws, #29 P3b). Survivors stay.
         # W3: the edit queue rides along — an in-flight payload round (the
         # GL-6 40 mm) detonates at its stop through the payload executor.
         # #169: two rounds landing on one tick land TOGETHER — every round
@@ -2290,7 +2485,7 @@ class Simulation:
             landing = SimultaneousEffects()
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
-                             self.real_time, self.rng,
+                             self.real_time, self.draws,
                              events=self.tick_events,
                              queue=self.edit_queue, effects=landing):
                     survivors.append(b)
@@ -2371,8 +2566,10 @@ class Simulation:
                     u.path_tick_offset += 1
                     continue
                 u.face_towards(px, py)
-                u.x = px
-                u.y = py
+                # #29 P3c: the precomputed path's interpolated position is
+                # quantized ONCE at the float door (legacy WEGO: its
+                # (st + 1) / step_ticks fractions are off the Q16 grid).
+                u.set_pos(px, py)
 
     def _displace_pushed(self) -> None:
         """Slot 3 under a ruleset that drives the units itself (OnePhaseWEGO,
@@ -2457,9 +2654,9 @@ class Simulation:
         convert_marines_to_zombies(self.units)
 
         for u in self.units:
-            # Snap float position to nearest integer tile boundary.
-            u.x = float(round(u.x))
-            u.y = float(round(u.y))
+            # Snap the position to the nearest integer tile boundary (the
+            # same round() as before #29 P3c, on the Q16 position's view).
+            u.set_pos_q(round(u.x) << 16, round(u.y) << 16)
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
@@ -2477,7 +2674,7 @@ class Simulation:
             # next one (the exact hazard last_fire_tick = -999 solves).
             # None = full mag (the lazy first-trigger bind, combat.mag_gate);
             # untracked (mag_size 0) units never read either field.
-            u.current_mag = None
+            u.current_mag = MAG_UNBOUND
             u.reload_done_tick = -1
             # W4: a spray burst does not survive the round boundary — the
             # orders it would ride are cleared above, and burst state is a
@@ -2497,7 +2694,10 @@ class Simulation:
         # In-flight kinetic rounds carry over too (W2): they are physical
         # objects mid-air, tick-counter-free (per-call budget), so the round
         # rewind cannot skew them. Empty for every shipped weapon.
-        # Rewind for the next round.
+        # Rewind for the next round. #29 P3b: the draws' clock carries on
+        # past the rewind (legacy TwoPhaseWEGO), so a round never repeats
+        # the previous one's draws.
+        self.draws.tick_base += self.tick
         self.tick = 0
         self.phase = 0
         self.real_time = 0.0

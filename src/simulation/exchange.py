@@ -75,6 +75,7 @@ from typing import Callable, Optional, Sequence
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
+from simulation import unit_fixed as _unit_fixed
 from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
@@ -244,6 +245,95 @@ REDUCTIONS: dict[str, Callable] = {
 HEAT_SCALE = 65536
 
 
+def heat_dials(cfg) -> tuple:
+    """The ``[combat]`` dials of the felt-temperature law, read once per
+    call of the row (or once per episode by the observation): ``(absorption,
+    reflectivity, flux_to_temp, ambient_ref)`` as floats."""
+    cmb = cfg.combat
+    return (float(cmb.unit_absorption), float(cmb.unit_reflectivity),
+            float(cmb.heat_flux_to_temp), float(cmb.heat_ambient_ref))
+
+
+def heat_dials_q(dials) -> tuple:
+    """:func:`heat_dials` at the door (#29 P3e): ``(gain_q, ambient_q)``,
+    Q16 -- the law's ONE gain ``flux_to_temp * absorption * (1 -
+    reflectivity)`` (felt degrees per heat unit) and the ambient felt
+    temperature, each quantized once (config constants)."""
+    absorption, reflectivity, flux_to_temp, ambient_ref = dials
+    gain = flux_to_temp * absorption * (1.0 - reflectivity)   # p3e-door
+    return (_unit_fixed.quantize_scalar(gain),
+            _unit_fixed.quantize_scalar(ambient_ref))
+
+
+def felt_temperature(gmap, u, dials) -> tuple:
+    """THE felt temperature of one body (the ``heat | max`` row's own law,
+    extracted in #195 1g (b) so the row and the observation call ONE
+    function; obs spec 1.3 col 96): ``(t_felt, peak_tile, peak_from_heat)``.
+
+    ``peak_raw`` is the max over the unit's in-bounds footprint tiles of the
+    larger of the ``heat`` deposit buffer and the radiation sensor
+    ``rad_flux_sweep`` (converted once out of the sweep's fine currency,
+    #78) -- the hottest tile on the body is the exposure; ``peak_tile`` is
+    that tile ``(ty, tx)`` (None when nothing reaches the body:
+    ``peak_raw <= 0``, the row's cold-tile early-out), ``peak_from_heat``
+    whether its exposure was the ``heat`` buffer (the #123 credit question).
+    Then the law, in Q16 integers since #29 P3e (:func:`felt_temperature_q`;
+    ``peak_raw`` is already Q16 heat units)::
+
+        t_felt_q = ambient_q + round(gain_q * peak_raw / 65536)
+        gain     = flux_to_temp * absorption * (1 - reflectivity)
+
+    returned here as its exact float view. With no flux ``t_felt`` is
+    ``ambient_ref``. ``dials`` is :func:`heat_dials`. Pure read: nothing is
+    written anywhere."""
+    t_q, peak_tile, peak_from_heat = felt_temperature_q(
+        gmap, u, heat_dials_q(dials))
+    return _unit_fixed.dequantize_scalar(t_q), peak_tile, peak_from_heat
+
+
+def felt_temperature_q(gmap, u, dials_q) -> tuple:
+    """:func:`felt_temperature` in Q16 (#29 P3e): ``(t_felt_q, peak_tile,
+    peak_from_heat)``; ``dials_q`` is :func:`heat_dials_q`."""
+    from simulation import optics_fixed as _optics_fx
+    gain_q, ambient_q = dials_q
+    h, w = gmap.heat.shape
+    heat = gmap.heat
+    rad_flux = getattr(gmap, "rad_flux_sweep", None)
+    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
+    # max-over-footprint incident flux (the hottest tile on the body is the
+    # exposure that matters; shadowed tiles read ~0, max picks the burning
+    # side). In-bounds guard for safety against off-grid footprints.
+    peak_raw = 0
+    # #123 credit: the hottest footprint tile and whether its exposure
+    # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
+    # an igniter's heat) or the radiation sensor (fire light: nobody's).
+    peak_tile = None
+    peak_from_heat = False
+    for (tx, ty) in u.occupied_tiles():
+        if 0 <= ty < h and 0 <= tx < w:
+            v = int(heat[ty, tx])
+            from_heat = True
+            if rad_flux is not None:
+                # D3: the radiant sensor and the (non-radiative) heat
+                # writers are two independent exposures at the same tile —
+                # take the larger, exactly as the footprint loop takes the
+                # hottest tile. Both are Q16.16 in the same domain --
+                # once the sensor leaves the sweep's fine currency (#78).
+                fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
+                                              rad_fine_bits)
+                if fv > v:
+                    v = fv
+                    from_heat = False
+            if v > peak_raw:
+                peak_raw = v
+                peak_tile = (ty, tx)
+                peak_from_heat = from_heat
+    if peak_raw <= 0:
+        return ambient_q, None, False
+    return (ambient_q + _unit_fixed.mul_q16_round(gain_q, peak_raw),
+            peak_tile, peak_from_heat)
+
+
 def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     """Apply per-tick radiant heat damage to every LIVING unit (proposal §4.2).
 
@@ -331,72 +421,48 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # exactly as before in real units -- the fine bits refine the sweep's
     # exchange, they are not heat (tests/test_sweep_fine_currency.py: the same
     # HP per second within 1 %).
-    from simulation import optics_fixed as _optics_fx
-    h, w = gmap.heat.shape
-    heat = gmap.heat
-    rad_flux = getattr(gmap, "rad_flux_sweep", None)
-    rad_fine_bits = _optics_fx.sweep_fine_bits(gmap)
+    # #29 P3e: the row in Q16 integers -- the dials quantized once here (the
+    # door), the felt temperature from felt_temperature_q, the over-band and
+    # the damage as ONE rational each (div_round: the real value rounded
+    # once, half away):
+    #     dmg_q = round(rate_q * (ONE + round(k_q * over_q / ONE)) / (ONE * tps))
     cmb = CFG.combat
-
-    absorption   = float(cmb.unit_absorption)
-    reflectivity = float(cmb.unit_reflectivity)
-    flux_to_temp = float(cmb.heat_flux_to_temp)
-    ambient_ref  = float(cmb.heat_ambient_ref)
-    overtemp_k   = float(cmb.heat_overtemp_scale)
-    temp_max_cfg = float(cmb.temperature_max)
-    env_rate_cfg = float(cmb.environmental_damage_rate)
-
-    dt_tick = 1.0 / float(ticks_per_second)
+    dials_q = heat_dials_q(heat_dials(CFG))
+    q = _unit_fixed.quantize_scalar
+    overtemp_q = q(float(cmb.heat_overtemp_scale))        # p3e-door
+    temp_max_cfg = cmb.temperature_max
+    env_rate_cfg = cmb.environmental_damage_rate
+    tps = int(ticks_per_second)
+    one = _unit_fixed.FP_ONE
 
     for u in units:
         if not u.alive:
             continue
 
-        # max-over-footprint incident flux (the hottest tile on the body is the
-        # exposure that matters; shadowed tiles read ~0, max picks the burning
-        # side). In-bounds guard for safety against off-grid footprints.
-        peak_raw = 0
-        # #123 credit: the hottest footprint tile and whether its exposure
-        # is the `heat` deposit buffer (a claimable deposit: a jet, a splash,
-        # an igniter's heat) or the radiation sensor (fire light: nobody's).
-        peak_tile = None
-        peak_from_heat = False
-        for (tx, ty) in u.occupied_tiles():
-            if 0 <= ty < h and 0 <= tx < w:
-                v = int(heat[ty, tx])
-                from_heat = True
-                if rad_flux is not None:
-                    # D3: the radiant sensor and the (non-radiative) heat
-                    # writers are two independent exposures at the same tile —
-                    # take the larger, exactly as the footprint loop takes the
-                    # hottest tile. Both are Q16.16 in the same domain --
-                    # once the sensor leaves the sweep's fine currency (#78).
-                    fv = _optics_fx.fine_heat_shr(int(rad_flux[ty, tx]), 0,
-                                                  rad_fine_bits)
-                    if fv > v:
-                        v = fv
-                        from_heat = False
-                if v > peak_raw:
-                    peak_raw = v
-                    peak_tile = (ty, tx)
-                    peak_from_heat = from_heat
-        if peak_raw <= 0:
+        # THE felt temperature (#195 1g (b): one function, the row's own
+        # law, read by the observation too -- never a copy): the hottest
+        # footprint tile's exposure, which tile, and whether it was the
+        # `heat` deposit buffer (#123 credit).
+        t_felt_q, peak_tile, peak_from_heat = felt_temperature_q(
+            gmap, u, dials_q)
+        if peak_tile is None:
             continue  # cold tile: no radiant flux, no heat damage
 
-        phi = peak_raw / HEAT_SCALE
-        phi_abs = phi * absorption * (1.0 - reflectivity)
-
-        # Per-unit EnvironmentProfile band / rate, else the global fallback.
+        # Per-unit EnvironmentProfile band / rate, else the global fallback
+        # (profile constants, quantized at this door).
         env = getattr(u, "environment", None)
-        temp_max = float(getattr(env, "temperature_max", temp_max_cfg))
-        env_rate = float(getattr(env, "environmental_damage_rate", env_rate_cfg))
+        temp_max_q = q(float(getattr(env, "temperature_max",
+                                     temp_max_cfg)))         # p3e-door
+        rate_q = q(float(getattr(env, "environmental_damage_rate",
+                                 env_rate_cfg)))             # p3e-door
 
-        t_felt = ambient_ref + flux_to_temp * phi_abs
-        over = t_felt - temp_max
-        if over <= 0.0:
+        over_q = t_felt_q - temp_max_q
+        if over_q <= 0:
             continue  # within the tolerance band: survivable, no damage
 
-        dmg = env_rate * (1.0 + overtemp_k * over) * dt_tick
+        dmg_q = _unit_fixed.div_round(
+            rate_q * (one + _unit_fixed.mul_q16_round(overtemp_q, over_q)),
+            one * tps)
 
         # The DamagePacket pipeline (mechanics/06 §2) owns everything after
         # the pre-mitigation amount: mitigation applies the unit's resist
@@ -414,9 +480,10 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         attacker = NO_ATTACKER
         if peak_from_heat and peak_tile is not None:
             attacker = tick_credit(gmap).attacker_at(CREDIT_HEAT, *peak_tile)
-        apply_packet(u, DamagePacket(amount=dmg, dtype=HEAT,
-                                     attacker_id=attacker,
-                                     indirect=True),
+        apply_packet(u, DamagePacket(
+                         amount=_unit_fixed.dequantize_scalar(dmg_q),
+                         dtype=HEAT, attacker_id=attacker, indirect=True,
+                         amount_q=dmg_q),
                      events, source="heat")
 
 
@@ -442,15 +509,23 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
     :class:`UnitKilledEvent` per kill so the renderer can spawn matching
     visual effects.
     """
+    # #29 P3e: integers -- membership ``d2 <= r^2`` on the Q16 radius, the
+    # damage ``floor(max_damage * (1 - dist/radius))`` exact
+    # (unit_fixed.falloff_floor: what int() of the float falloff computed,
+    # bar float rounding on a boundary).
+    r_q = _unit_fixed.quantize_scalar(float(radius))           # p3e-door
+    r2_q = r_q * r_q
+    max_d = int(max_damage)
     for u in units:
         if not u.alive:
             continue
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
-        dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
-        if dist <= radius:
-            falloff = 1.0 - (dist / radius)
-            damage = int(max_damage * falloff)
+        dx_q = _unit_fixed.quantize_scalar(uc_fx - fx)   # tiles: exact
+        dy_q = _unit_fixed.quantize_scalar(uc_fy - fy)
+        d2 = dx_q * dx_q + dy_q * dy_q                    # Q32
+        if r_q > 0 and d2 <= r2_q:
+            damage = _unit_fixed.falloff_floor(max_d, d2, r2_q)
             if damage >= CFG.combat.blast_damage_threshold:
                 # BLAST packet through the pipeline (mechanics/06 §2). The
                 # geometric pre-mitigation amount + the chip-damage threshold
@@ -458,10 +533,14 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
                 # through exactly, then the same Q2-lift quantize -> hp ->
                 # hit/kill events as before (source "explosion"; blast
                 # deaths never set killed_by_zombie — only melee converts).
+                # #185: the hit travels detonation tile -> the victim's
+                # centre tile, the geometry the falloff reads; (0, 0) on
+                # the victim's own centre tile (no direction).
                 apply_packet(u,
                              DamagePacket(amount=damage, dtype=BLAST,
                                           attacker_id=attacker_id,
-                                          indirect=True),
+                                          indirect=True,
+                                          dir_x_q=dx_q, dir_y_q=dy_q),
                              events, source="explosion")
 
 
@@ -623,9 +702,13 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     if not bool(slice_.any()):
         return                              # dormant plane: no poison anywhere
     cfg = CFG.exchange
-    thresh_q = gas_fixed.quantize_trace_scalar(float(cfg.poison_min_density))   # #88 A1
-    dps = float(cfg.poison_dps)
-    dt_tick = 1.0 / float(ticks_per_second)
+    thresh_q = gas_fixed.quantize_trace_scalar(
+        float(cfg.poison_min_density))   # #88 A1; p3e-door
+    # #29 P3e: the dose in Q16 integers -- dps quantized once (the door), the
+    # density in the trace currency, ONE rational rounded once:
+    #     amount_q = round(dps_q * density_q / (TRACE_ONE * tps))
+    dps_q = _unit_fixed.quantize_scalar(float(cfg.poison_dps))   # p3e-door
+    den = int(gas_fixed.TRACE_ONE) * int(ticks_per_second)
     for u in units:
         if not u.alive:
             continue
@@ -633,9 +716,9 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
         density_q = reduce_max(slice_, tiles)
         if density_q < thresh_q:
             continue
-        if mitigation_for(u).resist_mult[POISON] == 0.0:
+        if mitigation_for(u).resist_q[POISON] == 0:
             continue                        # immune: no packet, no event (lazy)
-        amount = dps * float(gas_fixed.dequantize_trace(density_q)) * dt_tick
+        amount_q = _unit_fixed.div_round(dps_q * int(density_q), den)
         # CREDIT (#123): the claimant of THIS tick's poison deposit on the
         # densest footprint tile (the first one, in footprint order — the
         # tile reduce_max read): a miasma jet's sprayer, a gas payload's
@@ -648,8 +731,9 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
                 attacker = tick_credit(gmap).attacker_at(GAS_POISON, ty, tx)
                 break
         apply_packet(u,
-                     DamagePacket(amount=amount, dtype=POISON,
-                                  attacker_id=attacker, indirect=True),
+                     DamagePacket(amount=_unit_fixed.dequantize_scalar(amount_q),
+                                  dtype=POISON, attacker_id=attacker,
+                                  indirect=True, amount_q=amount_q),
                      events, source="poison_gas")
 
 

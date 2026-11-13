@@ -69,7 +69,7 @@ def probe(level: str, ticks: int, detonate=None, v_ref=WIND_V_REF,
         if detonate is not None and t == detonate[2]:
             pay = sim.weapons_tables.payload_for_ammo("grenade_frag")
             execute_payload(sim.gmap, sim.edit_queue, sim.units, detonate[1],
-                            detonate[0], pay, sim.rng, events=[],
+                            detonate[0], pay, sim.draws, events=[],
                             kind="grenade")
         if sim.is_paused():
             sim.set_paused(False)

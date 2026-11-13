@@ -70,10 +70,13 @@ from simulation.damage import DAMAGE_TYPE_NAMES
 from simulation.factions import ZOMBIE_TEAM
 from simulation.intents import FP_ONE
 from simulation.movement import THROTTLE_ONE
+from simulation.room_graph import place_at
 from simulation.sensor_accessor import Channel, EntityFieldAccessor
+from simulation.team_picture import fire_lanes
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
 from simulation.unit_impulse import shove_target
+from simulation import unit_orders
 from simulation.weapons import FRAG_ROW, fuse_ticks_from_seconds
 from simulation.weapons import get_tables as weapon_tables
 
@@ -100,7 +103,6 @@ _SCALARS = {
     "team_period_ticks": (int, 1),
     "unit_period_ticks": (int, 1),
     "replan_ticks": (int, 1),
-    "memory_s": (float, 0.0),
     "flash_memory_s": (float, 0.0),
     "candidate_radius": (int, 1),
     "candidate_stride": (int, 1),
@@ -246,15 +248,6 @@ def los(sim, a, b) -> bool:
 # The team layer
 # ===========================================================================
 @dataclass
-class Sighting:
-    """What the team knows of one enemy: where it was last seen."""
-    unit: object
-    tile: tuple        # top-left (x, y)
-    centre: tuple      # (x, y)
-    tick: int
-
-
-@dataclass
 class TeamCounts:
     """The counts the play is chosen from (§2.3: enemies seen, teammates
     alive, ammunition left, zombies near)."""
@@ -296,16 +289,43 @@ PLAYS = (
 )
 
 
+#: The order each play gives (#195 1f, design 5.3): the commander
+#: (:class:`BotCommander`) writes ``PLAY_ORDER[brain.play]`` -- a code name
+#: of ``unit_orders.ORDER_WHAT`` -- to every living marine of a door-driven
+#: team. A row per :data:`PLAYS` row (a fourth play must name its order);
+#: ``clear`` is not written by the bots.
+PLAY_ORDER = {"fall_back": "fall_back_to", "hold": "hold", "bound": "go_to"}
+
+
+def check_play_order(plays=PLAYS, table=PLAY_ORDER) -> None:
+    """Refuse, by name, a play with no :data:`PLAY_ORDER` row and a row
+    naming no order kind (run at import)."""
+    missing = [p.name for p in plays if p.name not in table]
+    if missing:
+        raise ValueError(f"PLAY_ORDER: the plays {missing} name no order "
+                         f"(a play must say which order the commander "
+                         f"gives; #195 1f)")
+    bad = {k: v for k, v in table.items()
+           if v not in unit_orders.ORDER_WHAT[1:]}
+    if bad:
+        raise ValueError(f"PLAY_ORDER: {bad} name no order kind "
+                         f"({unit_orders.ORDER_WHAT[1:]})")
+
+
+check_play_order()
+
+
 class TeamBrain:
-    """One team's shared picture, play, target and objective."""
+    """One team's play, target and objective, read off the team picture
+    (``simulation/team_picture.py``, #195 1d: the picture is the sim's, the
+    bots only read it)."""
 
     def __init__(self, team: int, s: BotSettings, tps: float):
         self.team = int(team)
         self.s = s
-        self.memory_ticks = max(1, int(round(s.memory_s * tps)))
         self.flash_memory_ticks = max(1, int(round(s.flash_memory_s * tps)))
         self.bound_max_ticks = max(1, int(round(s.bound_max_s * tps)))
-        self.picture: dict = {}          # enemy id -> Sighting
+        self.picture = {}                # enemy id -> team_picture.Record
         self.counts = TeamCounts()
         self.play = "bound"
         self.target = None               # the shared target (a unit) or None
@@ -317,31 +337,27 @@ class TeamBrain:
         self.bound_since = 0
         self.halves: dict = {}           # unit id -> 0 / 1
         self.lanes = None                # coarse grid of lane owners
-        self.firing: dict = {}           # unit id -> target id (last tick)
         self.updated_at = None
         self.centroid = (0, 0)
 
     # -- every tick: the picture ----------------------------------------
-    def observe(self, sim, vis, enemies) -> None:
-        tick = int(sim.tick)
-        seen = set(vis.visible_by_team.get(self.team, ()))
-        for e in enemies:                          # id order
-            if e.id in seen:
-                self.picture[e.id] = Sighting(e, (e.tile_x, e.tile_y),
-                                              _centre(e), tick)
-        for eid in sorted(self.picture):
-            sg = self.picture[eid]
-            u = sg.unit
-            if (not u.alive or u.team == self.team
-                    or tick - sg.tick > self.memory_ticks):
-                del self.picture[eid]
+    def observe(self, sim) -> None:
+        """Read this tick's records off the sim's team picture (the
+        conductor keeps it; never built here)."""
+        pic = getattr(sim, "team_picture", None)
+        if pic is None:
+            raise RuntimeError(
+                "the layered bots read the team picture: this sim has none "
+                "(a match starts it in spawn_match; a hand-built sim calls "
+                "Simulation.start_team_picture)")
+        self.picture = pic.records(self.team)
 
     def known(self, zombies=None):
-        """The picture's sightings in id order (``zombies``: only / none)."""
+        """The picture's records in id order (``zombies``: only / none)."""
         out = []
         for eid in sorted(self.picture):
             sg = self.picture[eid]
-            if zombies is None or bool(sg.unit.is_zombie) == zombies:
+            if zombies is None or sg.zombie == zombies:
                 out.append(sg)
         return out
 
@@ -355,7 +371,7 @@ class TeamBrain:
         zombies = self.known(zombies=True)
         seen_ids = set(vis.visible_by_team.get(self.team, ()))
         c.marines_known = len(marines)
-        c.marines_seen = sum(1 for sg in marines if sg.unit.id in seen_ids)
+        c.marines_seen = sum(1 for sg in marines if sg.uid in seen_ids)
         c.zombies_known = len(zombies)
         c.contact = bool(marines)
         near2 = s.zombie_near_tiles * s.zombie_near_tiles
@@ -386,7 +402,8 @@ class TeamBrain:
         cx = sum(m.center_tile_x() for m in mine) // len(mine)
         cy = sum(m.center_tile_y() for m in mine) // len(mine)
         self.centroid = (cx, cy)
-        cands = [sg.unit for sg in self.known() if sg.unit.id in seen_ids]
+        units = {u.id: u for u in sim.units}
+        cands = [units[sg.uid] for sg in self.known() if sg.uid in seen_ids]
         self.target = min(cands, key=lambda e: focus_key(e, (cx, cy)),
                           default=None)
         # the objective
@@ -403,8 +420,9 @@ class TeamBrain:
                     or tick - self.bound_since >= self.bound_max_ticks:
                 self.bound_moving ^= 1
                 self.bound_since = tick
-        # the fire lanes of last tick's shooters
-        self.lanes = self._lanes(sim, mine)
+        # the fire lanes, from state (every teammate holding its trigger)
+        self.lanes = fire_lanes(sim, self.team, s.lane_cell,
+                                s.lane_halfwidth)
 
     def _objective(self, bots, sim, mine):
         fp = mine[0].footprint
@@ -425,7 +443,7 @@ class TeamBrain:
             return (self.target.tile_x, self.target.tile_y)
         if known:
             sg = min(known, key=lambda sg: (_d2(sg.centre, self.centroid),
-                                            sg.unit.id))
+                                            sg.uid))
             return sg.tile
         return bots.enemy_room_goal(sim, fp)
 
@@ -441,35 +459,6 @@ class TeamBrain:
         self.obj_field = horde.flood(sim.gmap, bots.tile_ok(sim), fp,
                                      [(oy, ox)])
         self._obj_key = key
-
-    def _lanes(self, sim, mine):
-        """A coarse grid (``lane_cell`` tiles a cell) of who fires along
-        each cell: -1 nobody, a unit id its lane alone, -2 several lanes.
-        Integer rasterisation of each shooter -> target segment, widened by
-        ``lane_halfwidth`` cells."""
-        s = self.s
-        h, w = sim.gmap.material.shape
-        k = s.lane_cell
-        grid = np.full((h // k + 1, w // k + 1), -1, dtype=np.int64)
-        gh, gw = grid.shape
-        by_id = {m.id: m for m in mine}
-        for uid in sorted(self.firing):
-            m = by_id.get(uid)
-            tgt = self.firing[uid]
-            if m is None or tgt is None or not tgt.alive:
-                continue
-            (sx, sy), (tx, ty) = _centre(m), _centre(tgt)
-            n = max(abs(tx - sx), abs(ty - sy)) // max(1, k // 2) + 1
-            r = s.lane_halfwidth
-            for i in range(1, n + 1):
-                gx = (sx + (tx - sx) * i // n) // k
-                gy = (sy + (ty - sy) * i // n) // k
-                ys = slice(max(0, gy - r), min(gh, gy + r + 1))
-                xs = slice(max(0, gx - r), min(gw, gx + r + 1))
-                cell = grid[ys, xs]
-                cell[(cell != -1) & (cell != uid)] = -2
-                cell[cell == -1] = uid
-        return grid
 
 
 def descend(field, x: int, y: int, steps: int) -> tuple:
@@ -690,8 +679,7 @@ class Action:
     = not possible now); its ``[bots.actions]`` weight is its score and the
     best wins its ``channels``. ``start(bots, uctx, st, payload)`` runs once
     when the action is chosen (a latched verb is issued there);
-    ``each_tick(bots, uctx, st, payload) -> fire target or None`` runs
-    every tick until the next decision (a hands action aims and pulls the
+    ``each_tick(bots, uctx, st, payload)`` runs every tick until the next decision (a hands action aims and pulls the
     trigger there). ``look``: a feet action's facing when the hands do not
     aim -- ``"walk"`` (along the move) or ``"threat"`` (at the nearest known
     enemy: the backward walk of a retreat)."""
@@ -929,19 +917,17 @@ class BotTeam(ControlSource):
         vis = vision.state_for(sim)
         enemies = [u for u in sim.units if u.alive and u.team != self.team]
         brain = self.brain
-        brain.observe(sim, vis, enemies)
+        brain.observe(sim)
         if (brain.updated_at is None
                 or tick - brain.updated_at >= self.s.team_period_ticks):
             brain.update(self, sim, mine, vis)
-        firing = {}
         for u in mine:
             st = self._state.setdefault(u.id, _BotState())
             seen = [e for e in enemies if u.id in vis.observers_of(e.id)]
             c = UnitContext(sim, u, brain, mine, seen, tick)
             if self._due(u, st, c):
                 self._decide(c, st)
-            firing[u.id] = self._execute(c, st)
-        brain.firing = firing
+            self._execute(c, st)
 
     # -- when a bot decides ---------------------------------------------
     def _due(self, u, st, c) -> bool:
@@ -1035,11 +1021,11 @@ class BotTeam(ControlSource):
             known = team.known(zombies=False)
             if known:
                 target = min(known, key=lambda sg: (_d2(sg.centre, uc),
-                                                    sg.unit.id)).centre
+                                                    sg.uid)).centre
         others = sorted(
             (sg for sg in team.known()
              if target is None or sg.centre != target),
-            key=lambda sg: (_d2(sg.centre, uc), sg.unit.id))[:2]
+            key=lambda sg: (_d2(sg.centre, uc), sg.uid))[:2]
         mates = []
         for m in c.mine:
             if m is u:
@@ -1070,7 +1056,7 @@ class BotTeam(ControlSource):
         known = c.team.known()
         if known:
             return min(known, key=lambda sg: (_d2(sg.centre, uc),
-                                              sg.unit.id)).centre
+                                              sg.uid)).centre
         o = c.team.objective
         if o is None:
             return None
@@ -1082,15 +1068,14 @@ class BotTeam(ControlSource):
         """Every tick: the feet follow their path, then the hands action
         runs its ``each_tick``; when the hands aimed nowhere this tick the
         bot looks along its walk or at the threat (its feet action's
-        ``look``). Returns the unit it fires at (the fire lanes) or None."""
+        ``look``)."""
         sim, u = c.sim, c.unit
         move_dir = self._follow(sim, u, st, c)
         self._aimed = False
         name, payload = st.hands
         act = ACTION_BY_NAME[name]
-        fired = None
         if act.each_tick is not None:
-            fired = act.each_tick(self, c, st, payload)
+            act.each_tick(self, c, st, payload)
         if not self._aimed:
             look = None
             if ACTION_BY_NAME[st.feet[0]].look == "threat":
@@ -1102,7 +1087,6 @@ class BotTeam(ControlSource):
                 look = move_dir
             if look is not None:
                 sim.set_aim(u.id, *look)
-        return fired
 
     def shoot(self, c, only=None):
         """This tick's shot: aim at the fire target (``only``: that unit or
@@ -1270,7 +1254,7 @@ class BotTeam(ControlSource):
         uc = _centre(u)
         seen_ids = set(vision.state_for(c.sim).visible_by_team.get(
             self.team, ()))
-        pts = [sg for sg in team.known() if sg.unit.id in seen_ids]
+        pts = [sg for sg in team.known() if sg.uid in seen_ids]
         if len(pts) < s.frag_min_group:
             return None
         gr2 = s.group_radius * s.group_radius
@@ -1310,7 +1294,7 @@ class BotTeam(ControlSource):
         tr2 = self.throw_range * self.throw_range
         best = None
         for sg in c.team.known(zombies=False):
-            if sg.unit.id in seen_ids:
+            if sg.uid in seen_ids:
                 continue
             if c.tick - sg.tick > c.team.flash_memory_ticks:
                 continue
@@ -1319,7 +1303,7 @@ class BotTeam(ControlSource):
                 continue
             if not self.flash_safe(c.sim, c.mine, p):
                 continue
-            key = (_d2(uc, p), sg.unit.id)
+            key = (_d2(uc, p), sg.uid)
             if best is None or key < best[0]:
                 best = (key, p)
         if best is None:
@@ -1550,7 +1534,89 @@ class BotTeam(ControlSource):
         return tuple(placement_cells(room, 1)[0])
 
 
-__all__ = ["BotTeam", "BotSettings", "bot_settings", "TeamBrain", "FEATURES",
+class BotCommander(BotTeam):
+    """The COMMANDER (#195 1f, design 5.3): the bots' TEAM layer alone,
+    for a team driven through the door (a policy's). Once per tick it reads
+    the team picture and, every ``team_period_ticks``, takes the team
+    layer's decision (play, shared target, objective; no unit layer, no
+    ``_BotState``, so ``arrived`` is True for every unit and the Bound
+    halves swap on their timers alone) -- and translates it into ONE order
+    for every living marine of the team, issued through
+    ``Simulation.order_intent`` only when it differs from what the unit
+    holds: what = ``PLAY_ORDER[play]``, where = ``room_graph.place_at`` of
+    the objective body's CENTRE tile, until told otherwise, the shared
+    target's id (or none). An objective on no room and no opening (or no
+    objective) clears the order. Draws nothing, writes nothing else, calls
+    no other verb. Registered as ``commander`` (not nameable); built by
+    ``control_source.create_match_controllers``."""
+
+    def handle_frame(self, sim, renderer=None) -> None:
+        tick = int(sim.tick)
+        if tick == self._last_tick:
+            return
+        self._last_tick = tick
+        self.seed = int(getattr(sim, "_seed", 0) or 0)
+        mine = [u for u in sim.units
+                if u.team == self.team and u.alive and not u.is_zombie]
+        if not mine:
+            return
+        brain = self.brain
+        brain.observe(sim)
+        if (brain.updated_at is None
+                or tick - brain.updated_at >= self.s.team_period_ticks):
+            brain.update(self, sim, mine, vision.state_for(sim))
+            self._issue(sim, mine)
+
+    def order_for(self, sim, mine) -> tuple:
+        """The team's order now (:func:`team_order` of this brain)."""
+        return team_order(self.brain, sim, mine, self.team)
+
+    def _issue(self, sim, mine) -> None:
+        issue_team_order(sim, mine, self.order_for(sim, mine))
+
+
+def team_order(brain, sim, mine, team) -> tuple:
+    """The order a team's brain gives now, as the four held fields
+    ``(what, where, until, target)`` (``unit_orders.NO_ORDER`` when the
+    objective names no place): what = ``PLAY_ORDER[play]``, where =
+    ``room_graph.place_at`` of the objective body's centre tile, until told
+    otherwise, the shared target's id. The commander's rule, lifted (#195
+    1j) so the door bots' own brain writes its team's orders by the same
+    function."""
+    graph = unit_orders.graph_of(sim)
+    if brain.objective is None or graph is None:
+        return unit_orders.NO_ORDER
+    fp = mine[0].footprint
+    ox, oy = brain.objective
+    where = place_at(graph, oy + fp // 2, ox + fp // 2)
+    if where == unit_orders.NO_PLACE:
+        return unit_orders.NO_ORDER
+    what = unit_orders.ORDER_WHAT.index(PLAY_ORDER[brain.play])
+    t = brain.target
+    target = (int(t.id) if t is not None and t.alive
+              and t.team != team else unit_orders.NO_TARGET)
+    return (what, where, unit_orders.NO_LIMIT, target)
+
+
+def issue_team_order(sim, mine, want) -> int:
+    """Issue ``want`` (:func:`team_order`) through ``Simulation.
+    order_intent`` to every unit of ``mine`` (id order) that does not hold
+    it already -- issue on change only. Returns the calls made."""
+    what, where, _until, target = want
+    args = ((0, unit_orders.NO_PLACE, 0, unit_orders.NO_TARGET)
+            if what == unit_orders.ORDER_NONE else (what, where, 0,
+                                                    target))
+    n = 0
+    for u in sorted(mine, key=lambda u: u.id):
+        if unit_orders.held(u) != want:
+            sim.order_intent(u.id, *args)
+            n += 1
+    return n
+
+
+__all__ = ["BotTeam", "BotCommander", "PLAY_ORDER", "check_play_order",
+           "team_order", "issue_team_order",
+           "BotSettings", "bot_settings", "TeamBrain", "FEATURES",
            "ACTIONS", "PLAYS", "Feature", "Action", "Play",
            "PositionContext", "evaluate_features", "choose_position",
            "resolve_actions", "focus_key", "tie_hash"]

@@ -220,6 +220,8 @@ def _drive(pl, look, left, travel, hit_src, role="player", posture=0.0):
             pl.hit(ps, 30.0, "bullet", hit_src)
         if k == 50:
             pl.fire(ps)
+        if k == 60:
+            pl.stagger(ps, hit_src)      # #185's stagger, from the same side
         pl.drive(ps, state, DT, role)
     return ps
 
@@ -230,12 +232,12 @@ def test_a_left_hander_is_the_mirror_image_of_a_right_hander_in_the_mirrored_wor
         layer, look, role, posture):
     """PROPERTY: a left-handed unit moving along ``a`` and hit from ``s``
     is drawn EXACTLY as the mirror image of a right-handed one moving
-    along ``-a`` and hit from ``-s`` -- locomotion (gait, sector, phase,
-    the twist), the reactions and the posture all included.
+    along ``-a`` and hit (and staggered) from ``-s`` -- locomotion (gait,
+    sector, phase, the twist), the reactions and the posture all included.
 
     BREAKS IF: a direction input is not reflected for the left-hander (it
     would strafe the wrong way, its legs twisted off its travel, or flinch
-    toward the shooter), or the mirror runs before a modifier (the twist
+    or stagger toward the shooter), or the mirror runs before a modifier (the twist
     applied after it turns the wrong way).
     """
     a, s = math.radians(70.0), math.radians(-60.0)

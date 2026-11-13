@@ -145,7 +145,7 @@ class TwoPhaseWEGO(Ruleset):
         if sim.tick == 0 and not sim._fired_start_p1:
             process_door_explosives(
                 sim.gmap, sim.edit_queue, sim.units, DET_START_PHASE1,
-                sim.rng, events=sim.tick_events,
+                sim.draws, events=sim.tick_events,
             )
             sim._fired_start_p1 = True
             # Initialise per-unit path offsets for this round.
@@ -168,7 +168,7 @@ class TwoPhaseWEGO(Ruleset):
         if sim.tick == sim._ticks_per_phase and not sim._fired_between:
             process_door_explosives(
                 sim.gmap, sim.edit_queue, sim.units, DET_BETWEEN_PHASES,
-                sim.rng, events=sim.tick_events,
+                sim.draws, events=sim.tick_events,
             )
             sim._fired_between = True
             sim.phase = 1
@@ -178,7 +178,7 @@ class TwoPhaseWEGO(Ruleset):
             if not sim._fired_end_p2:
                 process_door_explosives(
                     sim.gmap, sim.edit_queue, sim.units, DET_END_PHASE2,
-                    sim.rng, events=sim.tick_events,
+                    sim.draws, events=sim.tick_events,
                 )
                 sim._fired_end_p2 = True
             sim._end_round()

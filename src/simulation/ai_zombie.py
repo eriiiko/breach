@@ -45,8 +45,10 @@ from simulation import horde as _horde
 from simulation import noise as _noise
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
+from simulation import unit_orders as _unit_orders
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
+from simulation.unit_schema import SPEED_FROM_TABLE
 from simulation.movement import default_speed, footprint_samples
 from simulation.status import composed_flags
 
@@ -155,8 +157,7 @@ def _walk(gmap, z, get_field, state, tick, flags, settings, events,
         _, ny, nx = move
         z.zombie_move_accumulator = 0
         z.face_towards(float(nx), float(ny))
-        z.x = float(nx)
-        z.y = float(ny)
+        z.set_pos_q(int(nx) << 16, int(ny) << 16)      # a whole tile (P3c)
         return "step"
     _, ny, nx, tile = move
     _bash(gmap, z, ny, nx, tile, tick, flags, settings, events)
@@ -198,7 +199,8 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
     :class:`DoorDestroyedEvent`; ``None`` emits nothing.
 
     The walk cadence (G1p-c): a zombie whose ``speed_ticks_per_tile`` is
-    ``None`` walks at ``shamble_ticks`` (or, sprinting, ``sprint_ticks``) --
+    ``SPEED_FROM_TABLE`` (``None`` before #29 P3a) walks at
+    ``shamble_ticks`` (or, sprinting, ``sprint_ticks``) --
     the ``[speeds]`` rows the Simulation quantized once for its map; a
     direct caller that passes none gets the same quantization of
     ``gmap.tile_size_m`` the first time a zombie of the call walks. A zombie
@@ -296,11 +298,16 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                     # source "melee" (#122), credited to the biter (#123),
                     # and the kill keeps melee's conversion semantics
                     # (killed_by_zombie, the ONLY converting death).
+                    # #185: the bite travels biter centre -> prey centre.
+                    zx_q, zy_q = _unit_impulse.centre_q(z)
+                    px_q, py_q = _unit_impulse.centre_q(nearest)
                     apply_packet(nearest,
                                  DamagePacket(amount=CFG.zombie.melee_damage,
                                               dtype=KINETIC,
                                               attacker_id=getattr(z, "id",
-                                                                  -1)),
+                                                                  -1),
+                                              dir_x_q=px_q - zx_q,
+                                              dir_y_q=py_q - zy_q),
                                  events=events, source="melee",
                                  mark_killed_by_zombie=True)
                 continue
@@ -309,7 +316,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
             if not flags.can_move or not _unit_impulse.walk_allowed(z):
                 continue
             base = z.speed_ticks_per_tile
-            if base is None:
+            if base == SPEED_FROM_TABLE:
                 if settings.sprint and _sees_prey(gmap, z, players,
                                                   settings.sprint_r2):
                     if sprint_ticks is None:
@@ -350,7 +357,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                 _horde.settle(z, settings)     # arrived, saw nobody
                 continue
             base = z.speed_ticks_per_tile
-            if base is None:
+            if base == SPEED_FROM_TABLE:
                 if shamble_ticks is None:
                     shamble_ticks = _speed_table(gmap).zombie_shamble_ticks
                 base = shamble_ticks
@@ -384,8 +391,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                     gmap, ny, nx, fp, settings.fear_temp_q16):
                 continue
             z.face_towards(float(nx), float(ny))
-            z.x = float(nx)
-            z.y = float(ny)
+            z.set_pos_q(int(nx) << 16, int(ny) << 16)  # a whole tile (P3c)
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +426,9 @@ def convert_marines_to_zombies(units):
             _unit_impulse.clear(u)
             # G9p: nor a noise or a wander anchor (cleared at death too).
             _horde.clear(u)
+            # #195 1f: nor an order (cleared at death too; a zombie takes
+            # none).
+            _unit_orders.clear(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

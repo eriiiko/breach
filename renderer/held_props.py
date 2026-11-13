@@ -9,7 +9,8 @@ unit holds is data:
 * ``[render.held_props.props.<name>]``: the prop's model (``assets/models/
   <model>/<model>.glb``), its length in metres (the file's longest side is
   scaled to it), the socket it is held on by default, the point of the file
-  the hand closes on (``grip``, file units), its gloss (the shader reads
+  the hand closes on (``grip``, file units), the barrel's tip (``muzzle``,
+  file units: where ``renderer/muzzle_flame.py`` draws the flame, #87), its gloss (the shader reads
   gloss from the albedo's alpha; a prop's albedo has none) and one grip row
   per socket it may be held on (``grips.<socket>``: where that point sits in
   the hand bone's frame, metres, and how the prop is turned there, XYZ Euler
@@ -41,7 +42,7 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 _TOP_KEYS = ("weapons", "props")
-_PROP_KEYS = ("model", "length_m", "socket", "grip", "gloss", "grips", "mirror_axis")
+_PROP_KEYS = ("model", "length_m", "socket", "grip", "muzzle", "gloss", "grips", "mirror_axis")
 MIRROR_AXES = ("x", "y", "z")
 _GRIP_KEYS = ("offset_m", "rotation_deg")
 
@@ -65,6 +66,8 @@ class HeldProp:
     length_m: float
     socket: str
     grip: Tuple[float, float, float]      # the point the hand closes on, file units
+    muzzle: Tuple[float, float, float]    # the barrel's tip, file units (#87: the
+                                          # muzzle flame's place; the barrel runs +x)
     gloss: float
     grips: Dict[str, Grip]
     mirror_axis: str = "z"                # #187: normal of the prop's own symmetry plane (file frame)
@@ -167,7 +170,9 @@ def held_prop_settings(cfg, weapon_ids: Optional[Sequence[str]] = None) -> HeldP
                                       f"got {axis!r}")
         props[name] = HeldProp(name=name, model=_text(r["model"], f"{w} model"),
                                length_m=float(length), socket=socket,
-                               grip=_vec3(r["grip"], f"{w} grip"), gloss=float(gloss),
+                               grip=_vec3(r["grip"], f"{w} grip"),
+                               muzzle=_vec3(r["muzzle"], f"{w} muzzle"),
+                               gloss=float(gloss),
                                grips=grips, mirror_axis=axis)
     wraw = d["weapons"]
     if not isinstance(wraw, dict):

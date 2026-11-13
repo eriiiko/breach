@@ -26,6 +26,13 @@ missing key or a mistyped value (:func:`load_run`)::
                                   # refused INSIDE the checkout): the run
                                   # manifest goes there
     [obs]
+    spec = "crop"                 # OPTIONAL: the observation spec (#195 1g):
+                                  # "crop" (default, the placeholder rows
+                                  # below) or "v1" (simulation.obs_spec_v1;
+                                  # the three crop keys are then refused)
+    full_view = true              # OPTIONAL, "v1" only: serve the value
+                                  # network's full view under info (1g (c));
+                                  # false = none (a farm reading without it)
     channels = ["pressure", "smoke", "temperature", "solid", "material",
                 "units_own", "units_enemy", "units_zombie"]
     crop_radius = 8               # the crop is (2r+1) x (2r+1) tiles
@@ -33,13 +40,50 @@ missing key or a mistyped value (:func:`load_run`)::
     [reward]                      # a weight per counter name (absent = 0)
     kills = 1.0
     deaths_bullet = -1.0
+    # -- or (#195 1i) a named profile and overrides of ITS TERMS:
+    # profile = "fireteam"        # needs [obs] spec = "v1"
+    # zombie_bar = 0.1
+
+THE OBSERVATION (#195 1g). ``[obs] spec`` names the layout the sensor
+accessor's ``observe`` door serves (``sensor_accessor.OBS_SPECS``). Under
+``"v1"`` the keys are ``docs/rl_agent_obs_spec_v1_2026-11-12.md`` 4.1's:
+``vector`` ``(N, U, 97)`` float32, ``list`` ``(N, U, E, 67)`` float32 with
+``E = S + 33``, ``list_mask`` ``(N, U, E)`` uint8, ``list_uid`` ``(N, U, E)``
+int32 (an EQUALITY key for the decoder, never a network input), the two
+windows (1g (b), spec 3.9: ``near_f`` ``(N, U, 8, 25, 25)`` float16 and
+``near_u`` ``(N, U, 5, 25, 25)`` uint8 at tile resolution, ``far_f``
+``(N, U, 10, 25, 25)`` float16 and ``far_u`` ``(N, U, 5, 25, 25)`` uint8 in
+4 x 4-tile blocks, both centred on the soldier, never rotated), and the two
+row flags ``valid`` (the unit acts: alive and still on its team) and
+``in_match`` (the roster slot holds a unit, dead or turned included) --
+``(N, U)`` uint8 each; a row with ``valid`` 0 is all zeros. A run on ``"v1"``
+refuses a level without a room graph at the map's shape (the compass reads
+it). WHO MAY READ WHICH ROWS: a policy acting for team ``t`` reads only rows
+``t*S .. t*S + S - 1`` of every key, through :meth:`BatchedEnv.team_rows`
+(views of the env-owned arrays), and nothing of ``info``, ``reward`` or
+``counters``; the trainer reads those for its losses.
+
+THE FULL VIEW (#195 1g (c), spec section 5): what the training-only VALUE
+network is shown, ``obs_spec_v1.FULL_VIEW_NAME`` = ``"full_v1"``, served by
+the same accessor door beside ``"v1"`` (``[obs] full_view``, default true)
+into the farm's OWN buffers under ``info["full_view"]`` of ``step`` /
+``reset`` -- NEVER a key of ``obs`` --: ``full_list`` ``(N, U, 64, 85)``
+float32 (every living unit of every side where it truly is, the soldier
+itself first, every live grenade and charge, every living door),
+``full_mask`` / ``full_uid`` ``(N, U, 64)``, ``full_match`` ``(N, U, 2T + 3)``
+float32 and ``full_watched`` ``(N, U, 25, 25)`` uint8; built for every row
+with ``in_match`` 1, a dead or turned soldier's centred on its last place
+(spec 5.6). The terminal full view of an env that ended inside the step is
+``info["final_full_view"]`` (the same five keys, zeros on every other row)
+-- never a ``final_full_*`` key inside ``info["final_obs"]``. Under
+``"crop"`` both are empty dicts.
 
 EPISODES. Episode ``k`` of env ``e`` plays level ``levels[i]`` with match
 seed ``s``, ``(s, i) = episode_draw(run_seed, e, k, len(levels))``: ONE
 Philox-4x32-10 block keyed by the run seed, counter ``(e, k, EPISODE_SALT,
 0)`` -- a pure function of its arguments, so an env's episode sequence never
-depends on N or on when other envs end. The match's own draws stay
-``sim.rng`` seeded by ``s`` (P3b moves them to Philox). The match is the
+depends on N or on when other envs end. The match's own draws are keyed
+Philox under ``s`` (``sim.draws``, #29 P3b; ``sim.rng`` refuses any use). The match is the
 level's match.toml (``LevelData.match``) with the seed replaced and every
 team's controller set by ``[run] policy``; the horde keeps its
 ``zombie_controller``.
@@ -69,23 +113,39 @@ mask):
   ``crop`` (the frozen channels + ``material`` + unit occupancy by team),
   ``obs["vector"]`` ``(N, U, V)`` float32 (:data:`VECTOR_FIELDS`),
   ``obs["valid"]`` ``(N, U)`` bool. Placeholder rows (agent era).
-- ``reward`` ``(N, U)`` float32: the step's per-unit counters
-  (:data:`COUNTER_NAMES`, from the ticks' credited ``UnitHitEvent`` /
-  ``UnitKilledEvent``) weighted by ``[reward]``. PLACEHOLDER.
+- ``reward``: under ``[reward] profile = "counters"`` (the default, the
+  PLACEHOLDER) ``(N, U)`` float32, the step's per-unit counters
+  (:data:`COUNTER_NAMES`) weighted by ``[reward]``. Under a named profile
+  (#195 1i, ``simulation.reward_v1``: ``"fireteam"``) ``(N, U, 5)`` float32,
+  the FIVE group numbers in ``reward_v1.REWARD_GROUPS`` order (outcome,
+  own, team, friendly fire, order) for every row with ``in_match`` 1, dead
+  and turned rows included, zeros for an empty roster place and for a row
+  whose records ended -- never their sum (the trainer weights them).
 - ``terminated`` ``(N,)`` bool: the ``MatchRules`` law (fewer than two marine
-  teams alive). ``truncated`` ``(N,)`` bool: the time limit, a DRAW today --
-  PLACEHOLDER until the agent era.
+  teams alive). ``truncated`` ``(N,)`` bool: the time limit, a DRAW --
+  under ``"counters"``. Under a named profile the clock is an ENDING
+  (design 6.5): every end is ``terminated`` and ``truncated`` is False.
 - ``info``: ``tick``, ``episode``, ``episode_seed``, ``level``, ``ticks``
   (simulated this step), ``ended``, ``final_obs`` (the terminal observation
   of the envs that ended; they were reset inside the step and ``obs`` is
-  their episode k+1's tick 0), ``result``, ``counters`` and
+  their episode k+1's tick 0), ``result``, ``counters`` (``(N, U, K)``:
+  the generated old counters, then the reward books' own,
+  ``reward_v1.BOOK_COUNTERS``), the reward books' per-team blocks
+  ``team_balance`` / ``team_uncredited`` / ``team_outcome`` ``(N, T)``
+  float32 (the step's change of each team's balance read from state, its
+  uncredited rest, the outcome group paid to each of its rows; an env that
+  ended in the step: the ENDED episode's), ``rows_ended`` ``(N, U)`` bool
+  (the step a row's records ended: its team eliminated or the episode
+  over), and
   ``checkpoints``: per env the ``(episode, tick, field_digest,
   tick_digest)`` taken at the ``[replay] checkpoint_every_ticks`` cadence,
   at tick 0 and at an episode's last tick -- the recording's checkpoints, so
   the equality gates can compare them with ``run_match``.
 
-THE OBSERVATION BUFFERS ARE THE ENV'S. ``obs["crop"]``, ``obs["vector"]`` and
-the three ``info["final_obs"]`` arrays are the same arrays on every call,
+THE OBSERVATION BUFFERS ARE THE ENV'S. ``obs["crop"]``, ``obs["vector"]``,
+the ``info["final_obs"]`` arrays (and under ``"v1"`` every observation key,
+the ``info["full_view"]`` and ``info["final_full_view"]`` arrays alike) are
+the same arrays on every call,
 overwritten by the next :meth:`BatchedEnv.step` / :meth:`BatchedEnv.reset`: a
 caller that keeps one across a step copies it (a trainer's write into its
 rollout buffer is that copy). A fresh ~10 MB array per step cost the driver
@@ -126,14 +186,16 @@ from pathlib import Path
 
 import numpy as np
 
+from simulation.rng_salts import Salt as _Salt   # #29 P3b: the one salt enum
+
 ROOT = Path(__file__).resolve().parent.parent
 CPU_BUILD = ROOT / "cpp" / "build" / "Release"
 DEFAULT_LEVELS_DIR = ROOT / "levels"
 
 BACKENDS = ("cpu_farm",)
-#: The Philox stream salt of the episode draw ("EPIS"); P3b's salt enum
-#: takes it over.
-EPISODE_SALT = 0x45504953
+#: The Philox stream salt of the episode draw ("EPIS"): the one salt
+#: enum's (``simulation.rng_salts.Salt.EPISODE``, #29 P3b).
+EPISODE_SALT = int(_Salt.EPISODE)
 #: The environment every farm worker starts with: ONE BLAS / OpenMP thread.
 #: Nothing per tick contracts through BLAS (the no-BLAS rule), and OpenBLAS
 #: otherwise commits a buffer per hardware thread in every process: measured
@@ -154,11 +216,16 @@ VECTOR_FIELDS = {
 }
 
 
-def _counter_names() -> tuple:
+def _old_counter_names() -> tuple:
     from simulation.events import CAUSE_NAMES
     return (("hits_dealt", "damage_dealt", "team_hits", "kills", "team_kills",
              "hits_taken", "damage_taken")
             + tuple(f"deaths_{c}" for c in CAUSE_NAMES))
+
+
+def _counter_names() -> tuple:
+    from simulation.reward_v1 import BOOK_COUNTERS
+    return _old_counter_names() + BOOK_COUNTERS
 
 
 #: The per-unit reward counters, generated from ``events.Cause`` (a new
@@ -168,8 +235,12 @@ def _counter_names() -> tuple:
 #: another team (marines or the horde); ``team_hits`` -- on another unit of
 #: its own team; ``kills`` / ``team_kills`` likewise for kills; its own
 #: ``hits_taken`` / ``damage_taken`` (any source, damage > 0: a heal is not a
-#: hit) and ``deaths_<cause>``. Self-hits count only as taken.
+#: hit) and ``deaths_<cause>``. Self-hits count only as taken. APPENDED
+#: after them (#195 1i): the reward books' counters
+#: (``simulation.reward_v1.BOOK_COUNTERS``), filled under every profile.
 COUNTER_NAMES = _counter_names()
+#: How many of :data:`COUNTER_NAMES` are the old (event-counted) ones.
+N_OLD_COUNTERS = len(_old_counter_names())
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +282,25 @@ class RunConfig:
     sha256: str = ""
     path: str = ""
     out_dir: str = ""           # [run] out_dir, resolved; "" = none
+    sight: str | None = None    # [run] sight (#195 1a): replaces every level's
+                                # match.toml sight; None = the level's own
+    spec: str = "crop"          # [obs] spec (#195 1g): the observation layout
+    full_view: bool = True      # [obs] full_view (#195 1g (c)): serve the
+                                # value network's full view under info ("v1")
+    action_spec: str = "raw"    # [action] spec (#195 1h): the action layout
+    reward_profile: str = "counters"   # [reward] profile (#195 1i)
+    reward_terms: tuple = ()    # ((term, weight), ...): the profile's table
+                                # with the run file's overrides; () under
+                                # "counters"
+
+    def terms(self) -> dict:
+        """The term weights of the books (#195 1i): the profile's table with
+        the overrides; under ``"counters"`` the ``"fireteam"`` table (the
+        books' per-team info blocks are in its balance units)."""
+        if self.reward_terms:
+            return dict(self.reward_terms)
+        from simulation.reward_v1 import PROFILES
+        return dict(PROFILES["fireteam"])
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -229,8 +319,12 @@ class RunConfig:
 
 _RUN_KEYS = {"seed": True, "n_envs": True, "decimation": True,
              "levels": True, "policy": True, "levels_dir": False,
-             "out_dir": False}
-_OBS_KEYS = {"channels": True, "crop_radius": True, "vector": True}
+             "out_dir": False, "sight": False}
+#: The ``[obs]`` keys per spec (#195 1g): the three crop keys belong to the
+#: ``"crop"`` placeholder alone; ``"v1"`` takes none (its layout is the spec).
+_OBS_KEYS = {"crop": {"spec": False, "channels": True, "crop_radius": True,
+                      "vector": True},
+             "v1": {"spec": False, "full_view": False}}
 
 
 def _is_int(v) -> bool:
@@ -278,13 +372,26 @@ def parse_run(raw: dict, where: str = "run file",
     unknown controller, crop channel (``light`` included, until #81),
     vector field or counter."""
     from control_source import match_file_controllers
-    from simulation.sensor_accessor import resolve_crop_channels
-    bad = sorted(set(raw) - {"run", "obs", "reward"})
+    from simulation.sensor_accessor import OBS_SPECS, resolve_crop_channels
+    bad = sorted(set(raw) - {"run", "obs", "reward", "action"})
     if bad:
         raise ValueError(f"{where}: unknown table(s) {bad} (a run file "
-                         f"carries [run], [obs], [reward])")
+                         f"carries [run], [obs], [reward], [action])")
     run = _table(raw, "run", _RUN_KEYS, where)
-    obs = _table(raw, "obs", _OBS_KEYS, where)
+    if not isinstance(raw.get("obs"), dict):
+        raise ValueError(f"{where}: missing table [obs]")
+    spec = raw["obs"].get("spec", "crop")
+    if not isinstance(spec, str) or spec not in OBS_SPECS:
+        raise ValueError(f"{where}: [obs] spec must be one of "
+                         f"{list(OBS_SPECS)}, got {spec!r}")
+    try:
+        obs = _table(raw, "obs", _OBS_KEYS[spec], where)
+    except ValueError as e:
+        if spec != "crop" and "unknown key" in str(e):
+            raise ValueError(f"{where}: {e} -- the crop keys (channels, "
+                             f"crop_radius, vector) belong to the 'crop' "
+                             f"spec; spec {spec!r} takes none") from None
+        raise
     if not isinstance(raw.get("reward"), dict):
         raise ValueError(f"{where}: missing table [reward]")
     seed = _int_key(run, "run", "seed", where, 0, 2 ** 64)
@@ -332,21 +439,49 @@ def parse_run(raw: dict, where: str = "run file",
                              f"the checkout {str(ROOT)!r}: run outputs go "
                              f"outside it (a snapshot's tree stays clean)")
         out_dir = str(p)
-    channels = _names_key(obs, "obs", "channels", where)
-    try:
-        channels = resolve_crop_channels(channels)
-    except ValueError as e:
-        raise ValueError(f"{where}: [obs] channels: {e}") from None
-    crop_radius = _int_key(obs, "obs", "crop_radius", where, 0)
-    vector = _names_key(obs, "obs", "vector", where, allow_empty=True)
-    for v in vector:
-        if v not in VECTOR_FIELDS:
-            raise ValueError(f"{where}: [obs] vector names {v!r} (known: "
-                             f"{sorted(VECTOR_FIELDS)})")
-    if len(set(vector)) != len(vector):
-        raise ValueError(f"{where}: [obs] vector names a field twice")
+    sight = None
+    if "sight" in run:
+        from simulation.match import check_sight
+        sight = check_sight(run["sight"], f"{where}: [run] sight")
+    channels, crop_radius, vector = (), 0, ()
+    full_view = True
+    if spec == "v1" and "full_view" in obs:
+        full_view = obs["full_view"]
+        if not isinstance(full_view, bool):
+            raise ValueError(f"{where}: [obs] full_view must be true or "
+                             f"false, got {full_view!r}")
+    if spec == "crop":
+        channels = _names_key(obs, "obs", "channels", where)
+        try:
+            channels = resolve_crop_channels(channels)
+        except ValueError as e:
+            raise ValueError(f"{where}: [obs] channels: {e}") from None
+        crop_radius = _int_key(obs, "obs", "crop_radius", where, 0)
+        vector = _names_key(obs, "obs", "vector", where, allow_empty=True)
+        for v in vector:
+            if v not in VECTOR_FIELDS:
+                raise ValueError(f"{where}: [obs] vector names {v!r} "
+                                 f"(known: {sorted(VECTOR_FIELDS)})")
+        if len(set(vector)) != len(vector):
+            raise ValueError(f"{where}: [obs] vector names a field twice")
+    from simulation.reward_v1 import (COUNTERS_PROFILE, REWARD_PROFILES,
+                                      profile_terms)
+    rtab = dict(raw["reward"])
+    profile = rtab.pop("profile", COUNTERS_PROFILE)
+    if not isinstance(profile, str) or profile not in REWARD_PROFILES:
+        raise ValueError(f"{where}: [reward] profile must be one of "
+                         f"{list(REWARD_PROFILES)}, got {profile!r}")
+    reward_terms = ()
+    if profile != COUNTERS_PROFILE:
+        if spec != "v1":
+            raise ValueError(f"{where}: [reward] profile {profile!r} needs "
+                             f"[obs] spec 'v1' (a dead row's pay is read "
+                             f"with in_match), got [obs] spec {spec!r}")
+        terms = profile_terms(profile, rtab, f"{where}: [reward]")
+        reward_terms = tuple(sorted(terms.items()))
+        rtab = {}
     weights = {}
-    for k, v in raw["reward"].items():
+    for k, v in rtab.items():
         if k not in COUNTER_NAMES:
             raise ValueError(f"{where}: [reward] {k!r} is not a counter "
                              f"(known: {list(COUNTER_NAMES)})")
@@ -355,10 +490,28 @@ def parse_run(raw: dict, where: str = "run file",
                              f"{v!r}")
         weights[k] = float(v)
     reward = tuple((n, weights[n]) for n in COUNTER_NAMES if n in weights)
+    action_spec = "raw"
+    if "action" in raw:
+        from simulation.action_spec_v1 import ACTION_SPECS
+        if not isinstance(raw["action"], dict):
+            raise ValueError(f"{where}: [action] must be a table")
+        act = _table(raw, "action", {"spec": False}, where)
+        action_spec = act.get("spec", "raw")
+        if (not isinstance(action_spec, str)
+                or action_spec not in ACTION_SPECS):
+            raise ValueError(f"{where}: [action] spec must be one of "
+                             f"{list(ACTION_SPECS)}, got {action_spec!r}")
+        if action_spec == "v1" and spec != "v1":
+            raise ValueError(f"{where}: [action] spec 'v1' needs [obs] spec "
+                             f"'v1' (its aim pointer indexes the v1 list), "
+                             f"got [obs] spec {spec!r}")
     return RunConfig(seed=seed, n_envs=n_envs, decimation=decimation,
                      levels=levels, policy=pol, levels_dir=levels_dir,
                      channels=channels, crop_radius=crop_radius,
-                     vector=vector, reward=reward, out_dir=out_dir)
+                     vector=vector, reward=reward, out_dir=out_dir,
+                     sight=sight, spec=spec, full_view=full_view,
+                     action_spec=action_spec, reward_profile=profile,
+                     reward_terms=reward_terms)
 
 
 def load_run(path) -> RunConfig:
@@ -394,29 +547,109 @@ class Layout:
     crop_radius: int
     vector: tuple
     counters: tuple = field(default=COUNTER_NAMES)
+    spec: str = "crop"          # the observation spec (#195 1g)
+    full_view: bool = False     # the value network's full view served (1g (c))
+    action_spec: str = "raw"    # the action spec (#195 1h)
+    n_kinds: int = 0            # K: the hand-grenade rows ("v1" actions)
+    reward_profile: str = "counters"   # [reward] profile (#195 1i)
+
+    @property
+    def reward_shape_tail(self) -> tuple:
+        """``()`` under ``"counters"`` (one weighted sum per row), ``(5,)``
+        under a named profile (one number per reward group)."""
+        if self.reward_profile == "counters":
+            return ()
+        from simulation.reward_v1 import REWARD_GROUPS
+        return (len(REWARD_GROUPS),)
 
     @property
     def n_rows(self) -> int:
         return self.n_teams * self.n_slots
 
     @property
+    def full_keys(self) -> tuple:
+        """The full view's keys (``info["full_view"]``), in order (each has
+        a ``final_`` twin); empty when it is not served."""
+        if not self.full_view:
+            return ()
+        from simulation.obs_spec_v1 import FULL_KEYS
+        return FULL_KEYS
+
+    def full_shapes(self) -> dict:
+        if not self.full_view:
+            return {}
+        from simulation.obs_spec_v1 import full_shapes
+        return full_shapes(self.n_envs, self.n_rows, self.n_teams)
+
+    @property
     def crop_side(self) -> int:
         return 2 * self.crop_radius + 1
 
+    @property
+    def n_entries(self) -> int:
+        """``E`` of the ``"v1"`` list: ``S + 33`` (spec 2.1)."""
+        from simulation.obs_spec_v1 import ENTRIES_BEYOND_SLOTS
+        return self.n_slots + ENTRIES_BEYOND_SLOTS
+
+    @property
+    def head_sizes(self) -> tuple:
+        """The five heads' sizes under ``[action] spec = "v1"`` (empty
+        under ``"raw"``)."""
+        if self.action_spec != "v1":
+            return ()
+        from simulation.action_spec_v1 import head_sizes
+        return head_sizes(self.n_entries, self.n_kinds)
+
+    @property
+    def mask_keys(self) -> tuple:
+        """The action masks served in ``obs`` (``"v1"`` actions only)."""
+        if self.action_spec != "v1":
+            return ()
+        from simulation.action_spec_v1 import MASK_KEYS
+        return MASK_KEYS
+
+    @property
+    def obs_keys(self) -> tuple:
+        """The observation keys of the spec, in order (each has a
+        ``final_`` twin), and -- under ``[action] spec = "v1"`` -- the
+        action masks after them (#195 1h: what a policy is FED)."""
+        if self.spec == "crop":
+            return ("crop", "vector", "valid")
+        from simulation.obs_spec_v1 import OBS_KEYS
+        return OBS_KEYS + ("valid", "in_match") + self.mask_keys
+
+    def obs_shapes(self) -> dict:
+        n, u = self.n_envs, self.n_rows
+        if self.spec == "crop":
+            k = self.crop_side
+            c, v = len(self.channels), len(self.vector)
+            return {"crop": ((n, u, c, k, k), np.float32),
+                    "vector": ((n, u, v), np.float32),
+                    "valid": ((n, u), np.uint8)}
+        from simulation.obs_spec_v1 import shapes
+        out = shapes(n, u, self.n_slots)
+        if self.action_spec == "v1":
+            from simulation.action_spec_v1 import mask_shapes
+            out.update(mask_shapes(n, u, self.n_entries, self.n_kinds))
+        return out
+
     def shapes(self) -> dict:
         n, u = self.n_envs, self.n_rows
-        k = self.crop_side
-        c, v, kk = len(self.channels), len(self.vector), len(self.counters)
-        return {
-            "actions": ((n, u, self.n_actions), np.int32),
-            "crop": ((n, u, c, k, k), np.float32),
-            "vector": ((n, u, v), np.float32),
-            "valid": ((n, u), np.uint8),
-            "final_crop": ((n, u, c, k, k), np.float32),
-            "final_vector": ((n, u, v), np.float32),
-            "final_valid": ((n, u), np.uint8),
-            "reward": ((n, u), np.float32),
+        kk = len(self.counters)
+        out = {"actions": ((n, u, self.n_actions), np.int32)}
+        obs = self.obs_shapes()
+        out.update(obs)
+        out.update({"final_" + k: v for k, v in obs.items()})
+        full = self.full_shapes()
+        out.update(full)
+        out.update({"final_" + k: v for k, v in full.items()})
+        out.update({
+            "reward": ((n, u) + self.reward_shape_tail, np.float32),
             "counters": ((n, u, kk), np.float32),
+            "team_balance": ((n, self.n_teams), np.float32),
+            "team_uncredited": ((n, self.n_teams), np.float32),
+            "team_outcome": ((n, self.n_teams), np.float32),
+            "rows_ended": ((n, u), np.uint8),
             "terminated": ((n,), np.uint8),
             "truncated": ((n,), np.uint8),
             "tick": ((n,), np.int64),
@@ -424,7 +657,8 @@ class Layout:
             "episode_seed": ((n,), np.uint64),
             "level": ((n,), np.int64),
             "ticks": ((n,), np.int64),
-        }
+        })
+        return out
 
 
 def _team_slots(level) -> list:
@@ -439,14 +673,25 @@ def make_layout(run: RunConfig, levels: list) -> Layout:
     from control_policy import action_schema
     n_teams = max(len(lv.match.teams) for lv in levels)
     n_slots = max(max(_team_slots(lv)) for lv in levels)
+    n_kinds, n_actions = 0, len(action_schema())
+    if run.action_spec == "v1":
+        from simulation.action_spec_v1 import HEADS
+        from simulation.weapons import get_tables
+        n_kinds, n_actions = len(get_tables().hand_grenade_rows), len(HEADS)
     return Layout(n_envs=run.n_envs, n_teams=n_teams, n_slots=n_slots,
-                  n_actions=len(action_schema()), channels=run.channels,
-                  crop_radius=run.crop_radius, vector=run.vector)
+                  n_actions=n_actions, channels=run.channels,
+                  crop_radius=run.crop_radius, vector=run.vector,
+                  spec=run.spec,
+                  full_view=bool(run.spec == "v1" and run.full_view),
+                  action_spec=run.action_spec, n_kinds=n_kinds,
+                  reward_profile=run.reward_profile)
 
 
 def load_levels(run: RunConfig) -> list:
-    """Load every level of the run (refusing one without a match.toml or
-    whose team count disagrees with a per-team ``policy`` list)."""
+    """Load every level of the run (refusing one without a match.toml,
+    whose team count disagrees with a per-team ``policy`` list, or -- under
+    an observation spec that reads the room graph, ``"v1"`` -- without a
+    room graph at the map's shape, #195 1g)."""
     import level_loader
     out = []
     for name in run.levels:
@@ -455,6 +700,15 @@ def load_levels(run: RunConfig) -> list:
             raise ValueError(f"run level {name!r} has no "
                              f"{level_loader.MATCH_FILENAME}")
         run.team_controllers(len(lv.match.teams), repr(name))
+        if run.spec == "v1":
+            graph = lv.rooms
+            if graph is None or (tuple(graph.grid.shape)
+                                 != tuple(lv.tilemap.shape)):
+                raise ValueError(
+                    f"run level {name!r} has no room graph at the map's "
+                    f"shape ({level_loader.ROOMS_FILENAME}): a run whose "
+                    f"observation spec ({run.spec!r}) reads the room graph "
+                    f"refuses a level without one")
         out.append(lv)
     return out
 
@@ -488,10 +742,20 @@ class EnvRunner:
         self._hit, self._kill = UnitHitEvent, UnitKilledEvent
         self._vec = [VECTOR_FIELDS[v] for v in layout.vector]
         self._ci = {n: i for i, n in enumerate(layout.counters)}
+        # #195 1i: the reward books' terms and the group matrix (built
+        # once); under "counters" the per-counter weights
+        from simulation.reward_v1 import group_weights
+        self._terms = run.terms()
+        self._profile = run.reward_profile
+        self._G = (group_weights(self._terms, layout.counters)
+                   if self._profile != "counters" else None)
+        self._w = run.reward_weights()
+        self.books = None
         self.k = -1
         self.session = None
         self.seed = None
         self.level_index = None
+        self.ctx = None             # the "v1" spec's per-episode context
 
     # -- episodes -------------------------------------------------------
     def reset(self) -> list:
@@ -509,6 +773,8 @@ class EnvRunner:
         ctrls = self.run.team_controllers(len(base.teams), level.name)
         spec = replace(base, seed=seed, teams=tuple(
             replace(t, controller=c) for t, c in zip(base.teams, ctrls)))
+        if self.run.sight is not None:      # #195 1a: the run file's rule wins;
+            spec = replace(spec, sight=self.run.sight)   # the recorder keeps it
         self.seed, self.level_index = seed, li
         self.session = MatchSession(level, spec, seed=seed,
                                     breach_physics=self.bp)
@@ -524,6 +790,22 @@ class EnvRunner:
             for u in sim.roster(t):
                 self._id_row[u.id] = (t, t * S + u.slot)
         self._limit = self.session.rules.limit_ticks(sim)
+        # #195 1i: one episode's reward books (always: one code path)
+        from simulation.reward_v1 import RewardBooks
+        self.books = RewardBooks(sim, spec, S, self._terms,
+                                 n_teams=self.layout.n_teams)
+        if self.layout.spec == "v1":
+            from simulation.obs_spec_v1 import ObsContext
+            self.ctx = ObsContext.build(sim, spec, S,
+                                        n_teams=self.layout.n_teams)
+        self.act_tables = None
+        self._list_uid = None
+        if self.layout.action_spec == "v1":
+            # #195 1h: the decoder, set before any row is handed over
+            from simulation.action_spec_v1 import action_tables
+            self.act_tables = action_tables(sim, S)
+            for pol in self.policies.values():
+                pol.configure("v1", self.act_tables)
         return [(self.k, 0, *self.session.digests())]
 
     def step(self, actions) -> dict:
@@ -535,31 +817,68 @@ class EnvRunner:
         s = self.session
         sim = s.sim
         S = self.layout.n_slots
-        for team, pol in self.policies.items():
-            pol.set_rows(actions[team * S:(team + 1) * S])
-        counters = np.zeros((self.layout.n_rows, len(self.layout.counters)),
-                            dtype=np.float32)
+        if self.layout.action_spec == "v1":
+            # #195 1h: each policy team's (S, 5) block with the list_uid of
+            # the observation it was chosen on (this runner's last publish)
+            lu = self._list_uid
+            if lu is None:
+                raise RuntimeError(
+                    f"env {self.env}: a 'v1' action step needs the "
+                    f"observation it was chosen on -- observe() after "
+                    f"reset() and after every step()")
+            self._list_uid = None
+            for team, pol in self.policies.items():
+                pol.set_decisions(actions[team * S:(team + 1) * S],
+                                  lu[team * S:(team + 1) * S])
+        else:
+            for team, pol in self.policies.items():
+                pol.set_rows(actions[team * S:(team + 1) * S])
+        k0 = N_OLD_COUNTERS
+        id_row, ci = self._id_row, self._ci
+        # the old counters accumulate in float32 exactly as before #195 1i
+        old = np.zeros((self.layout.n_rows, k0), dtype=np.float32)
+        books = self.books
+        books.start_step()
+        named = self._profile != "counters"
         cps = []
         ticks = 0
         for _ in range(self.run.decimation):
             team_before = {u.id: int(u.team) for u in sim.units}
+            books.begin(sim)
             s.tick()
             ticks += 1
-            self._count(sim.tick_events, team_before, counters)
+            ended = books.ended
+            # a row whose records ended earns nothing more (6.6)
+            count_events(sim.tick_events, team_before, id_row, ci, old,
+                         frozen=ended if named and ended.any() else None)
+            books.end(sim)
             if sim.tick % self.every == 0:
                 cps.append((self.k, int(sim.tick), *s.digests()))
             if s.is_terminal():
                 break
+        terminal = s.is_terminal()
+        res = s.result() if terminal else None
+        if terminal:
+            books.finish(res)
+        counters = np.concatenate(
+            [old.astype(np.float64), books.counters], axis=1)
         out = {"counters": counters, "ticks": ticks, "checkpoints": cps,
                "ended": False, "terminated": False, "truncated": False,
-               "result": None}
-        if s.is_terminal():
+               "result": None, "reward": self._reward(old, counters),
+               "team_balance": books.d_balance.copy(),
+               "team_uncredited": books.rest.copy(),
+               "team_outcome": books.outcome.copy(),
+               "rows_ended": books.rows_ended.copy()}
+        if terminal:
             if not cps or cps[-1][1] != int(sim.tick):
                 cps.append((self.k, int(sim.tick), *s.digests()))
-            res = s.result()
             out["ended"] = True
-            out["terminated"] = len(s.rules.living_teams(sim)) < 2
-            out["truncated"] = not out["terminated"]
+            if named:                   # 6.5: the clock is an ending
+                out["terminated"] = True
+                out["truncated"] = False
+            else:
+                out["terminated"] = len(s.rules.living_teams(sim)) < 2
+                out["truncated"] = not out["terminated"]
             out["result"] = {"outcome": res.outcome, "team": res.team,
                              "ticks": res.ticks}
             rec = s.finish()
@@ -567,43 +886,21 @@ class EnvRunner:
                 self.last_recording = rec
         return out
 
-    def _row(self, uid: int, team_before: dict):
-        tr = self._id_row.get(uid)
-        if tr is None or team_before.get(uid) != tr[0]:
-            return None
-        return tr[1]
+    def _reward(self, old, counters) -> np.ndarray:
+        """The step's reward (float64, cast at the shared-memory write).
+        ``"counters"``: the weighted sum, its old columns summed in float32
+        exactly as before #195 1i (the books' columns add an exact 0 unless
+        the run weights them); a named profile: ``(U, 5)``, each group the
+        counters times their term weights (a broadcast, never BLAS)."""
+        if self._G is None:
+            w, k0 = self._w, N_OLD_COUNTERS
+            c32 = counters.astype(np.float32)
+            return ((old * w[:k0]).sum(axis=1)
+                    + (c32[:, k0:] * w[k0:]).sum(axis=1))
+        return (counters[:, :, None] * self._G[None]).sum(axis=1)
 
     def _count(self, events, team_before, counters) -> None:
-        ci = self._ci
-        for ev in events:
-            if isinstance(ev, self._hit):
-                dmg = float(ev.damage)
-                if dmg <= 0.0:
-                    continue
-                v, a = int(ev.unit_id), int(ev.attacker_id)
-                vr = self._row(v, team_before)
-                if vr is not None:
-                    counters[vr, ci["hits_taken"]] += 1.0
-                    counters[vr, ci["damage_taken"]] += dmg
-                if a >= 0 and a != v:
-                    ar = self._row(a, team_before)
-                    if ar is not None:
-                        if team_before.get(v) == team_before.get(a):
-                            counters[ar, ci["team_hits"]] += 1.0
-                        else:
-                            counters[ar, ci["hits_dealt"]] += 1.0
-                            counters[ar, ci["damage_dealt"]] += dmg
-            elif isinstance(ev, self._kill):
-                v, a = int(ev.unit_id), int(ev.attacker_id)
-                vr = self._row(v, team_before)
-                if vr is not None:
-                    counters[vr, ci[f"deaths_{ev.killed_by}"]] += 1.0
-                if a >= 0 and a != v:
-                    ar = self._row(a, team_before)
-                    if ar is not None:
-                        key = ("team_kills" if team_before.get(v)
-                               == team_before.get(a) else "kills")
-                        counters[ar, ci[key]] += 1.0
+        count_events(events, team_before, self._id_row, self._ci, counters)
 
     # -- observation ----------------------------------------------------
     def row_units(self) -> list:
@@ -617,18 +914,142 @@ class EnvRunner:
                     out[t * S + u.slot] = u
         return out
 
-    def observe(self, crop_out, vector_out, valid_out) -> None:
-        """Write the observation into the given ``(U, ...)`` views."""
+    def roster_units(self) -> list:
+        """The ROSTER unit of every row (dead and turned ones included; the
+        full view's rows, spec 5.6), ``None`` at an empty roster place."""
+        sim = self.session.sim
+        S = self.layout.n_slots
+        out = [None] * self.layout.n_rows
+        for t in range(len(self.session.spec.teams)):
+            for u in sim.roster(t):
+                if u is not None:
+                    out[t * S + u.slot] = u
+        return out
+
+    def row_flags(self) -> tuple:
+        """``(valid, in_match)`` per row (spec 4.2): ``in_match`` while the
+        roster slot holds a unit (dead or turned included), ``valid`` while
+        that unit is alive and still on the row's team; an empty roster
+        place reads 0, 0."""
+        sim = self.session.sim
+        S = self.layout.n_slots
+        n = self.layout.n_rows
+        valid = np.zeros(n, dtype=np.uint8)
+        in_match = np.zeros(n, dtype=np.uint8)
+        for t in range(len(self.session.spec.teams)):
+            for u in sim.roster(t):
+                if u is None:
+                    continue
+                in_match[t * S + u.slot] = 1
+                if u.alive and u.team == t:
+                    valid[t * S + u.slot] = 1
+        return valid, in_match
+
+    def observe(self, out: dict) -> None:
+        """Write the observation into ``out``'s ``(U, ...)`` views (the
+        spec's keys, ``layout.obs_keys``) through the sensor accessor's
+        ``observe`` door, and the row flags beside it -- and, when ``out``
+        carries the full view's keys (``layout.full_keys``), the full view
+        through the same door for the rows' ROSTER units (1g (c))."""
+        sim = self.session.sim
         units = self.row_units()
-        crop_out[...] = self.accessor.crop(
-            units, self.layout.channels, self.layout.crop_radius,
-            all_units=self.session.sim.units)
-        vector_out[...] = 0.0
-        for i, u in enumerate(units):
-            valid_out[i] = u is not None
-            if u is not None:
-                for j, f in enumerate(self._vec):
-                    vector_out[i, j] = f(u)
+        if self.layout.spec == "crop":
+            self.accessor.observe("crop", units, out,
+                                  channels=self.layout.channels,
+                                  r=self.layout.crop_radius,
+                                  all_units=sim.units, vector_fields=self._vec)
+            out["valid"][...] = [u is not None for u in units]
+            return
+        # the decoder's view (1h) from EVERY controller that has one: the
+        # policy teams and the door bots (#195 1j); a raw-action policy's
+        # view is empty, so a run without a v1 decoder reads the "none"s
+        aims = {}
+        for c in self.session.controllers:
+            view = getattr(c, "aim_view", None)
+            if view is not None:
+                aims.update(view())
+        v1_actions = self.layout.action_spec == "v1"
+        observe_v1(self.accessor, sim, self.ctx, units, out, aims,
+                   self.act_tables if v1_actions else None,
+                   self.run.decimation)
+        valid, in_match = self.row_flags()
+        out["valid"][...] = valid
+        out["in_match"][...] = in_match
+        if v1_actions:
+            self._list_uid = np.array(out["list_uid"], copy=True)
+        if self.layout.full_keys and self.layout.full_keys[0] in out:
+            from simulation.sensor_accessor import FULL_VIEW_SPEC
+            self.accessor.observe(FULL_VIEW_SPEC, self.roster_units(), out,
+                                  sim=sim, context=self.ctx)
+
+
+# ---------------------------------------------------------------------------
+# The two lifts (#195 1j): the env's observation and counting, as functions
+# the door bots' records call (code motion, bit for bit)
+# ---------------------------------------------------------------------------
+def observe_v1(accessor, sim, ctx, units, out, aims, tables,
+               decimation) -> None:
+    """Observation spec v1 for ``units`` (one living unit or None per row)
+    into ``out``'s ``(U, ...)`` views through the sensor accessor's door,
+    then -- with ``tables`` (action spec v1's ``ActionTables``) -- the four
+    masks at the START of the decision tick from the list just built (one
+    gate call per hand bit; ``decimation`` the decision's ticks). The row
+    flags are the caller's. ``EnvRunner.observe``'s ``"v1"`` branch."""
+    accessor.observe("v1", units, out, sim=sim, context=ctx, aims=aims)
+    if tables is not None:
+        from simulation.action_spec_v1 import build_masks
+        lst = out["list"]
+        build_masks(sim, units, lst[:, :, 0], out["list_mask"],
+                    out["list_uid"], tables, decimation, out)
+
+
+def count_events(events, team_before, id_row, ci, counters,
+                 frozen=None) -> None:
+    """Add one tick's ``events`` to the OLD per-row counters (``counters``
+    ``(U, k0)``, ``ci`` name -> column, ``id_row`` unit id -> ``(team,
+    row)``, ``team_before`` unit id -> its team at the tick's start; see
+    :data:`COUNTER_NAMES`). ``frozen`` (a ``(U,)`` bool mask) keeps those
+    rows as they were (a row whose records ended earns nothing more, #195
+    1i 6.6). ``EnvRunner._count``'s body."""
+    from simulation.events import UnitHitEvent, UnitKilledEvent
+    keep = None if frozen is None else counters[frozen].copy()
+
+    def row(uid):
+        tr = id_row.get(uid)
+        if tr is None or team_before.get(uid) != tr[0]:
+            return None
+        return tr[1]
+    for ev in events:
+        if isinstance(ev, UnitHitEvent):
+            dmg = float(ev.damage)
+            if dmg <= 0.0:
+                continue
+            v, a = int(ev.unit_id), int(ev.attacker_id)
+            vr = row(v)
+            if vr is not None:
+                counters[vr, ci["hits_taken"]] += 1.0
+                counters[vr, ci["damage_taken"]] += dmg
+            if a >= 0 and a != v:
+                ar = row(a)
+                if ar is not None:
+                    if team_before.get(v) == team_before.get(a):
+                        counters[ar, ci["team_hits"]] += 1.0
+                    else:
+                        counters[ar, ci["hits_dealt"]] += 1.0
+                        counters[ar, ci["damage_dealt"]] += dmg
+        elif isinstance(ev, UnitKilledEvent):
+            v, a = int(ev.unit_id), int(ev.attacker_id)
+            vr = row(v)
+            if vr is not None:
+                counters[vr, ci[f"deaths_{ev.killed_by}"]] += 1.0
+            if a >= 0 and a != v:
+                ar = row(a)
+                if ar is not None:
+                    key = ("team_kills" if team_before.get(v)
+                           == team_before.get(a) else "kills")
+                    counters[ar, ci[key]] += 1.0
+    if keep is not None:
+        counters[frozen] = keep
 
 
 # ---------------------------------------------------------------------------
@@ -672,12 +1093,14 @@ def _worker_main(conn, task: dict) -> None:
         runners = {e: EnvRunner(e, run, layout, levels, breach_physics=bp)
                    for e in task["envs"]}
 
+        keys = layout.obs_keys + layout.full_keys
+
         def publish(e, r):
             a["tick"][e] = r.session.tick_count
             a["episode"][e] = r.k
             a["episode_seed"][e] = r.seed
             a["level"][e] = r.level_index
-            r.observe(a["crop"][e], a["vector"][e], a["valid"][e])
+            r.observe({k: a[k][e] for k in keys})
 
         conn.send(("ready", os.getpid()))
         while True:
@@ -696,15 +1119,16 @@ def _worker_main(conn, task: dict) -> None:
                 for e, r in runners.items():
                     out = r.step(a["actions"][e])
                     a["counters"][e] = out["counters"]
-                    a["reward"][e] = (out["counters"]
-                                      * task["weights"]).sum(axis=1)
+                    a["reward"][e] = out["reward"]
+                    for key in ("team_balance", "team_uncredited",
+                                "team_outcome", "rows_ended"):
+                        a[key][e] = out[key]
                     a["ticks"][e] = out["ticks"]
                     a["terminated"][e] = out["terminated"]
                     a["truncated"][e] = out["truncated"]
                     cps = out["checkpoints"]
                     if out["ended"]:
-                        r.observe(a["final_crop"][e], a["final_vector"][e],
-                                  a["final_valid"][e])
+                        r.observe({k: a["final_" + k][e] for k in keys})
                         cps = cps + r.reset()
                     publish(e, r)
                     info[e] = {"checkpoints": cps, "ended": out["ended"],
@@ -1099,24 +1523,27 @@ class BatchedEnv:
                 self._shm[key] = shm
                 self._a[key] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
                 self._a[key][...] = 0
-            # The env-owned observation buffers (see the module doc).
-            self._buf = {k: np.zeros_like(self._a[k])
-                         for k in ("crop", "vector", "final_crop",
-                                   "final_vector")}
-            self._buf["final_valid"] = np.zeros(
-                self._a["final_valid"].shape, dtype=bool)
+            # The env-owned observation buffers (see the module doc): one
+            # per observation key of the spec and its ``final_`` twin. The
+            # "crop" spec's ``valid`` keeps its bool copy (as it was).
+            self._buf = {}
+            for k in self.layout.obs_keys + self.layout.full_keys:
+                if not (self.layout.spec == "crop" and k == "valid"):
+                    self._buf[k] = np.zeros_like(self._a[k])
+                self._buf["final_" + k] = (
+                    np.zeros(self._a["final_" + k].shape, dtype=bool)
+                    if self.layout.spec == "crop" and k == "valid"
+                    else np.zeros_like(self._a["final_" + k]))
             self._final_rows = np.zeros(n, dtype=bool)
             blocks = np.array_split(np.arange(n), self.n_workers)
             ctx = mp.get_context("spawn")
-            weights = self.run.reward_weights()
             for w, envs in enumerate(blocks):
                 envs = [int(e) for e in envs]
                 for e in envs:
                     self._owner[e] = w
                 parent, child = ctx.Pipe()
                 task = {"run": self.run, "layout": self.layout, "envs": envs,
-                        "shm": {k: s.name for k, s in self._shm.items()},
-                        "weights": weights}
+                        "shm": {k: s.name for k, s in self._shm.items()}}
                 p = ctx.Process(target=_worker_main, args=(child, task),
                                 daemon=True, name=f"breach-farm-{w}")
                 saved = {k: os.environ.get(k) for k in WORKER_ENV}
@@ -1203,28 +1630,65 @@ class BatchedEnv:
 
     def _obs(self) -> dict:
         """The observation, in the env's own buffers (valid until the next
-        step / reset; see the module doc)."""
+        step / reset; see the module doc): the spec's keys."""
         a, b = self._a, self._buf
-        np.copyto(b["crop"], a["crop"])
-        np.copyto(b["vector"], a["vector"])
-        return {"crop": b["crop"], "vector": b["vector"],
-                "valid": a["valid"].astype(bool)}
+        out = {}
+        for k in self.layout.obs_keys:
+            if k not in b:                      # "crop"'s valid: a bool copy
+                out[k] = a[k].astype(bool)
+                continue
+            np.copyto(b[k], a[k])
+            out[k] = b[k]
+        return out
 
-    def _final_obs(self, ended) -> dict:
-        """The terminal observation of the envs that ended, zeros on every
-        other row, in the env's own buffers: last step's rows are wiped and
-        only this step's are copied."""
+    def _final(self, keys, ended) -> dict:
+        """The terminal arrays ``keys`` of the envs that ended, zeros on
+        every other row, in the env's own buffers: last step's rows
+        (``_final_rows``, the caller moves it) are wiped and only this
+        step's are copied."""
         a, b = self._a, self._buf
-        out = {"crop": b["final_crop"], "vector": b["final_vector"],
-               "valid": b["final_valid"]}
+        out = {k: b["final_" + k] for k in keys}
         if self._final_rows.any():
             for v in out.values():
                 v[self._final_rows] = 0
         if ended.any():
             for key, v in out.items():
                 v[ended] = a["final_" + key][ended]
-        self._final_rows = ended.copy()
         return out
+
+    def _final_obs(self, ended) -> dict:
+        """The terminal observation of the envs that ended (the spec's
+        keys)."""
+        return self._final(self.layout.obs_keys, ended)
+
+    def _full_view(self) -> dict:
+        """The full view (#195 1g (c), spec 5), in the env's own buffers:
+        the layout's full keys (empty under ``"crop"`` or ``full_view =
+        false``)."""
+        a, b = self._a, self._buf
+        out = {}
+        for k in self.layout.full_keys:
+            np.copyto(b[k], a[k])
+            out[k] = b[k]
+        return out
+
+    def _final_full_view(self, ended) -> dict:
+        """The terminal full view of the envs that ended (spec 5.2's
+        ``info["final_full_view"]``)."""
+        return self._final(self.layout.full_keys, ended)
+
+    def team_rows(self, obs: dict, team: int) -> dict:
+        """THE one path a trainer takes to a team's observation (#195 1g,
+        spec 4.1): every key of ``obs`` (an ``obs`` or ``final_obs`` dict
+        this env returned) as the VIEW ``arr[:, t*S : (t+1)*S]`` of team
+        ``team``'s rows -- never a copy (the env-owned rule). A policy
+        acting for a team is fed only through this."""
+        S = self.layout.n_slots
+        t = int(team)
+        if not 0 <= t < self.layout.n_teams:
+            raise ValueError(f"team {team} is not a row block of this run "
+                             f"(T = {self.layout.n_teams})")
+        return {k: v[:, t * S:(t + 1) * S] for k, v in obs.items()}
 
     def _info_arrays(self) -> dict:
         a = self._a
@@ -1255,6 +1719,7 @@ class BatchedEnv:
         info = self._info_arrays()
         info["checkpoints"] = [got[e]["checkpoints"] if e in got else []
                                for e in range(n)]
+        info["full_view"] = self._full_view()
         return self._obs(), info
 
     def step(self, actions) -> tuple:
@@ -1273,6 +1738,15 @@ class BatchedEnv:
                                                       np.integer):
             raise ValueError(f"actions must be an integer {want} array, got "
                              f"{actions.shape} {actions.dtype}")
+        masked = None
+        if self.layout.action_spec == "v1":
+            # #195 1h: an index outside its head is a trainer bug, refused;
+            # a masked in-range one is decoded by its fallback and COUNTED,
+            # against the masks served with the observation it answers
+            from simulation.action_spec_v1 import check_actions, masked_choices
+            check_actions(actions, self.layout.head_sizes)
+            masked = masked_choices(actions, {k: self._a[k]
+                                              for k in self.layout.mask_keys})
         self._a["actions"][...] = actions
         got = self._broadcast({w: ("step", None)
                                for w in range(self.n_workers)})
@@ -1283,9 +1757,19 @@ class BatchedEnv:
         info["ticks"] = a["ticks"].copy()
         info["ended"] = ended
         info["final_obs"] = self._final_obs(ended)
+        info["final_full_view"] = self._final_full_view(ended)
+        self._final_rows = ended.copy()
+        info["full_view"] = self._full_view()
         info["result"] = [got[e]["result"] for e in range(n)]
         info["counters"] = a["counters"].copy()
+        # #195 1i: the reward books' per-team blocks and the rows' endings
+        info["team_balance"] = a["team_balance"].copy()
+        info["team_uncredited"] = a["team_uncredited"].copy()
+        info["team_outcome"] = a["team_outcome"].copy()
+        info["rows_ended"] = a["rows_ended"].astype(bool)
         info["checkpoints"] = [got[e]["checkpoints"] for e in range(n)]
+        if masked is not None:
+            info["masked_choices"] = masked
         return (self._obs(), a["reward"].copy(),
                 a["terminated"].astype(bool), a["truncated"].astype(bool),
                 info)
@@ -1337,7 +1821,7 @@ class BatchedEnv:
 __all__ = [
     "BatchedEnv", "EnvRunner", "RunConfig", "Layout", "load_run",
     "parse_run", "make_layout", "load_levels", "episode_draw",
-    "COUNTER_NAMES", "VECTOR_FIELDS", "BACKENDS", "EPISODE_SALT",
+    "COUNTER_NAMES", "N_OLD_COUNTERS", "VECTOR_FIELDS", "BACKENDS", "EPISODE_SALT",
     "require_snapshot", "SnapshotRefused", "check_annotated_tag",
     "check_head_at_tag", "check_clean_tree", "check_module_paths",
     "check_build_id", "check_run_recorded", "check_twin_debt",

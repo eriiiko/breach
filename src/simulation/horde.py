@@ -68,6 +68,8 @@ from numbers import Integral, Real
 
 import numpy as np
 
+from simulation.rng_salts import Salt as _Salt   # #29 P3b: the one salt enum
+
 #: The value of a cell the flood never reached (no path: the zombie waits).
 #: Equal to ``horde::UNREACHED`` in ``cpp/src/horde_field.h``.
 UNREACHED = 0x7FFFFFFF
@@ -87,9 +89,10 @@ NEIGHBOURS = ((-1, 0), (0, -1), (0, 1), (1, 0))
 DESCENT_ORDER = (((-1, 0), (1, 0), (0, -1), (0, 1)),
                  ((0, -1), (0, 1), (-1, 0), (1, 0)))
 
-#: The wander hash's counter salt (ASCII "WAND") and the per-id stagger of
-#: the wander's step ticks (odd, so ids spread over the period).
-WANDER_SALT = 0x57414E44
+#: The wander hash's counter salt (ASCII "WAND"; the one salt enum's,
+#: ``rng_salts.Salt.WANDER``, #29 P3b) and the per-id stagger of the
+#: wander's step ticks (odd, so ids spread over the period).
+WANDER_SALT = int(_Salt.WANDER)
 WANDER_STAGGER = 37
 _M32 = 0xFFFFFFFF
 

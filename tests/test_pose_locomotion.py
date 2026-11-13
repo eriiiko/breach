@@ -460,13 +460,16 @@ def _draw(r, units, k):
     r.draw_units(units, 8.0, 1.0 + k * DT, camera3d=None, light_view=None)
 
 
-# the victim (id 1) at tile (20, 20) facing north (+pi/2: screen up, world -y);
-# attackers 2 (east of it: its right), 3 (west: its left), 4 (south: behind),
-# 5 (north: in front)
-_ATTACKERS = {2: (30.0, 20.0), 3: (10.0, 20.0), 4: (20.0, 30.0), 5: (20.0, 10.0)}
-# the side each attacker hits from, as the hit_directions row's from_deg
+# the victim (id 1) at tile (20, 20) facing north (+pi/2: screen up, world -y).
+# #185: a hit carries the direction it TRAVELLED (Q16, x right, y down); the
+# side it came from is minus that. Rows: travel -> the flinch of the source
+# side (travelling west = from the unit's right, east = from its left, north
+# (-y) = from behind, south (+y) = from the front).
+_Q = 1 << 16
+_TRAVEL = {"west": (-_Q, 0), "east": (_Q, 0), "north": (0, -_Q), "south": (0, _Q)}
+# the side each travel hits from, as the hit_directions row's from_deg
 # (#187: which clip a row plays is data -- the right one is a mirror clip)
-_FROM = {2: -90.0, 3: 90.0, 4: 180.0, 5: 0.0}
+_FROM = {"west": -90.0, "east": 90.0, "north": 180.0, "south": 0.0}
 
 
 def _row_clip(from_deg):
@@ -475,53 +478,107 @@ def _row_clip(from_deg):
     return next(clip for clip, frm in rows if abs(np.degrees(frm) - from_deg) < 1e-6)
 
 
-def _hit_clip(monkeypatch, attacker, blast=None, source="bullet"):
-    from simulation.events import ExplosionEvent, UnitHitEvent
+def _react_clip(monkeypatch, evs, units=None):
+    """The flinch clip unit 1 plays after ``evs`` are queued and drawn."""
     r = _renderer(monkeypatch)
-    units = [_Unit(1, 20.0, 20.0)] + [_Unit(i, x, y) for i, (x, y) in _ATTACKERS.items()]
+    units = units or [_Unit(1, 20.0, 20.0)]
     _draw(r, units, 0)
-    evs = [UnitHitEvent(unit_id=1, damage=20, source=source, attacker_id=attacker)]
-    if blast is not None:
-        evs.append(ExplosionEvent(pos=blast, radius=3, kind="grenade"))
     r.queue_events(evs)
     _draw(r, units, 1)
     ps = r._anim[1].pose
     return r._pose.rig(ps.look).bank.names[ps.flinch_clip]
 
 
-@pytest.mark.parametrize("attacker", sorted(_ATTACKERS))
-def test_a_hit_flinches_away_from_where_its_attacker_stands(monkeypatch, attacker):
-    """PROPERTY: a hit on a SOMA marine plays the flinch clip of the side
-    its attacker stands on (the attacker's last drawn centre against the
-    victim's facing): front, left, behind, right; with no attacker (-1)
-    the front.
+def _hit_clip(monkeypatch, travel, source="bullet", attacker=-1, extra=(), units=None):
+    from simulation.events import UnitHitEvent
+    dx, dy = travel
+    evs = [UnitHitEvent(unit_id=1, damage=20, source=source, attacker_id=attacker,
+                        dir_x_q=dx, dir_y_q=dy)] + list(extra)
+    return _react_clip(monkeypatch, evs, units)
 
-    BREAKS IF: the angle's sign or zero is wrong (a hit from the left plays
-    the right flinch), the attacker's position is not kept across the
-    renderer's two draw calls, or the direction is dropped on the way to
-    the pose layer.
+
+@pytest.mark.parametrize("travel", sorted(_TRAVEL))
+def test_a_hit_flinches_from_the_side_its_travel_came_from(monkeypatch, travel):
+    """PROPERTY (#185): a hit on a SOMA marine plays the flinch clip of the
+    side the hit CAME FROM -- minus the event's own travel vector, against
+    the victim's facing: front, left, behind, right.
+
+    BREAKS IF: the source side is taken as the travel instead of minus it
+    (every flinch reversed), the angle's sign or zero is wrong (a hit from
+    the left plays the right flinch), or the vector is dropped on the way
+    to the pose layer.
     """
-    assert _hit_clip(monkeypatch, attacker) == _row_clip(_FROM[attacker])
+    assert _hit_clip(monkeypatch, _TRAVEL[travel]) == _row_clip(_FROM[travel])
 
 
-def test_an_unknown_attacker_flinches_from_the_front(monkeypatch):
-    """PROPERTY: a hit with no attacker (-1) plays the front flinch.
+def test_a_hit_without_a_direction_flinches_from_the_front(monkeypatch):
+    """PROPERTY: a hit carrying (0, 0) (no direction) plays the front
+    flinch, whoever is credited.
 
-    BREAKS IF: an unknown direction picks an arbitrary row."""
-    assert _hit_clip(monkeypatch, -1) == _row_clip(0.0)
+    BREAKS IF: an unknown direction picks an arbitrary row, or a guess
+    (the attacker's position) comes back as a fallback."""
+    units = [_Unit(1, 20.0, 20.0), _Unit(3, 10.0, 20.0)]     # attacker on its left
+    assert _hit_clip(monkeypatch, (0, 0), attacker=3, units=units) == _row_clip(0.0)
 
 
-def test_an_explosion_flinches_away_from_the_blast_not_the_thrower(monkeypatch):
-    """PROPERTY (Erik's ruling): a hit of cause ``explosion`` takes its
-    direction from the nearest blast centre among the same frame's
-    ``ExplosionEvent``s -- the thrower east of the victim, the blast west
-    of it: the LEFT flinch; with no blast in the frame, from the attacker.
+def test_the_direction_is_the_events_not_a_guess(monkeypatch):
+    """PROPERTY (#185, Erik's option c): the flinch reads ONLY the event's
+    vector -- an explosion hit travelling east (blast west of the victim)
+    plays the LEFT flinch although its thrower stands east and an
+    ``ExplosionEvent`` lies east in the same frame.
 
-    BREAKS IF: explosions read the attacker (the thrower) when a blast is
-    there, or a frame without one loses the direction.
-    """
-    assert _hit_clip(monkeypatch, 2, blast=(15, 21), source="explosion") == _row_clip(90.0)
-    assert _hit_clip(monkeypatch, 2, source="explosion") == _row_clip(-90.0)
+    BREAKS IF: the deleted guesses return (the attacker's drawn position,
+    the nearest ``ExplosionEvent``), as a source or as a fallback."""
+    from simulation.events import ExplosionEvent
+    units = [_Unit(1, 20.0, 20.0), _Unit(2, 30.0, 20.0)]    # thrower on its right
+    blast = ExplosionEvent(pos=(28, 21), radius=3, kind="grenade")
+    assert _hit_clip(monkeypatch, _TRAVEL["east"], source="explosion", attacker=2,
+                     extra=[blast], units=units) == _row_clip(90.0)
+
+
+@pytest.mark.parametrize("travel", sorted(_TRAVEL))
+def test_a_stagger_plays_along_its_push(monkeypatch, travel):
+    """PROPERTY (#185): a ``StaggerEvent`` plays the stagger reaction from
+    the side its PUSH came from (minus the push vector, against the facing),
+    at ``[render.pose.stagger] weight``, over that row's masks.
+
+    BREAKS IF: the stagger is dropped (no reaction), reads the push's
+    direction instead of its source side, or plays with the hit's weight
+    or bones instead of its own row's."""
+    from simulation.events import StaggerEvent
+    dx, dy = _TRAVEL[travel]
+    r = _renderer(monkeypatch)
+    units = [_Unit(1, 20.0, 20.0)]
+    _draw(r, units, 0)
+    r.queue_events([StaggerEvent(unit_id=1, ticks=6, dir_x_q=dx, dir_y_q=dy)])
+    _draw(r, units, 1)
+    ps = r._anim[1].pose
+    rig = r._pose.rig(ps.look)
+    assert rig.bank.names[ps.flinch_clip] == _row_clip(_FROM[travel])
+    assert ps.flinch_peak == SETTINGS.stagger.weight
+    assert ps.flinch_ramps == (SETTINGS.stagger.ramp_in_s, SETTINGS.stagger.ramp_out_s)
+    assert np.array_equal(ps.flinch_bones, rig.stagger_bones)
+
+
+def test_a_role_without_the_stagger_reaction_does_not_stagger(monkeypatch):
+    """PROPERTY: the stagger reaction follows the role's ``reactions`` list
+    (the shipped player and zombie both carry it; a role without it plays
+    nothing).
+
+    BREAKS IF: the renderer plays the stagger regardless of the role."""
+    from simulation.events import StaggerEvent
+    roles = dict(SETTINGS.roles)
+    roles["player"] = dataclasses.replace(
+        roles["player"], reactions=tuple(x for x in roles["player"].reactions
+                                         if x != "stagger"))
+    r = _renderer(monkeypatch, settings=dataclasses.replace(SETTINGS, roles=roles))
+    units = [_Unit(1, 20.0, 20.0)]
+    _draw(r, units, 0)
+    r.queue_events([StaggerEvent(unit_id=1, ticks=6, dir_x_q=_Q, dir_y_q=0)])
+    _draw(r, units, 1)
+    assert r._anim[1].pose.flinch_t < 0.0
+    assert "stagger" in SETTINGS.roles["player"].reactions
+    assert "stagger" in SETTINGS.roles["zombie"].reactions
 
 
 def test_a_skeleton_without_hit_directions_keeps_its_single_flinch(layer):

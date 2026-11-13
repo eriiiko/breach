@@ -33,7 +33,7 @@ relaxed toward ambient; this only withholds its own heat.
 DEATH (the blast hook). Entities have no hp path in the damage system
 (``damage.py`` targets units, ``apply_explosion`` walls), so a source reads
 the BLAST LOG: ``payloads.execute_payload`` appends every explosion disc
-``(fy, fx, radius, wall_damage)`` to ``gmap.blast_log`` (every detonation in
+``(fy, fx, radius, wall_damage_q)`` (Q16, #29 P3e) to ``gmap.blast_log`` (every detonation in
 the game -- grenade, shell, planted or door charge, timed charge -- goes
 through it), and this sweep drains it. A disc covering the source's tile
 subtracts ``wall_damage * (1 - dist/radius)`` (``dist <= radius``),
@@ -183,18 +183,21 @@ def build_heat_sources(sim) -> list:
     return sources
 
 
-def _blast_damage_q16(src, fy, fx, radius, wall_damage) -> int:
+def _blast_damage_q16(src, fy, fx, radius, wall_q) -> int:
     """The wall law of ``apply_explosion`` at the source's tile: 0 outside
-    ``dist <= radius``, else ``wall_damage * (1 - dist/radius)`` quantized
-    once into the wall_hp currency."""
-    if radius <= 0:
+    ``d2 <= radius^2``, else ``wall_damage * (1 - dist/radius)`` in the
+    wall_hp currency -- in integers since #29 P3e: ``wall_q`` is the blast
+    log's Q16 wall damage, the falloff the real value rounded once
+    (``unit_fixed.falloff_round``, exactly apply_explosion's)."""
+    from simulation.unit_fixed import falloff_round
+    r = int(radius)
+    if r <= 0:
         return 0
-    dy, dx = src.fy - fy, src.fx - fx
-    dist = math.sqrt(dy * dy + dx * dx)
-    if dist > radius:
+    dy, dx = int(src.fy) - int(fy), int(src.fx) - int(fx)
+    d2 = dy * dy + dx * dx
+    if d2 > r * r:
         return 0
-    falloff = 1.0 - (dist / radius)
-    return wall_fixed.quantize_scalar(float(wall_damage) * float(falloff))
+    return falloff_round(int(wall_q), d2, r * r)
 
 
 def _die(sim, src) -> None:
@@ -205,7 +208,7 @@ def _die(sim, src) -> None:
     src.hp_q16 = 0
     if src.death_payload is not None:
         execute_payload(sim.gmap, sim.edit_queue, sim.units, src.fy, src.fx,
-                        src.death_payload, sim.rng, events=sim.tick_events,
+                        src.death_payload, sim.draws, events=sim.tick_events,
                         kind=EVENT_KIND)
 
 
@@ -221,12 +224,12 @@ def sweep_heat_sources(sim) -> None:
     sources = sim._heat_sources
     i = 0
     while i < len(discs):                 # a death payload extends `discs`
-        fy, fx, radius, wall_damage = discs[i]
+        fy, fx, radius, wall_q = discs[i]
         i += 1
         for s in sources:
             if not s.alive:
                 continue
-            dmg = _blast_damage_q16(s, fy, fx, radius, wall_damage)
+            dmg = _blast_damage_q16(s, fy, fx, radius, wall_q)
             if dmg <= 0:
                 continue
             s.hp_q16 -= dmg
