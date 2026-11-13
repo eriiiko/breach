@@ -159,27 +159,30 @@ def test_cover_exposure_stub_without_table_is_no_concealment():
 # The draw form of record (#29 P3e: one raw step, an integer compare)
 # ---------------------------------------------------------------------------
 def test_roll_exposure_draw_form_and_stream():
+    """The exposure roll is ``(word >> 16) < p_q`` on ONE keyed draw (#29
+    P3b): the word of its own (salt, id, index), one word taken."""
     from simulation import draws
+    from simulation.rng_salts import Salt
     p_q = Q(0.55)
     for seed in range(8):
-        rng = np.random.default_rng(seed)
-        parallel = np.random.default_rng(seed)
-        expected = (int(parallel.bit_generator.random_raw()) >> 48) < p_q
-        assert ar.roll_exposure(p_q, rng) == expected
-        # Exactly ONE raw step consumed — streams line up bit-for-bit.
-        assert rng.bit_generator.state == parallel.bit_generator.state
-        assert draws.roll_q16(np.random.default_rng(seed), p_q) == expected
+        md = draws.MatchDraws(seed)
+        d = md.at(Salt.EXPOSURE, 3, 0)
+        expected = (d.word() >> 16) < p_q
+        before = md.drawn
+        assert ar.roll_exposure(p_q, d) == expected
+        assert md.drawn == before + 1          # exactly one word
 
 
 def test_roll_crit_draw_form():
+    from simulation import draws
+    from simulation.rng_salts import Salt
     for seed in range(8):
-        rng = np.random.default_rng(seed)
-        parallel = np.random.default_rng(seed)
+        md = draws.MatchDraws(seed)
+        d = md.at(Salt.SHOT_CRIT, 3, 0)
         # 0.15 x behind(4.0) = 0.6 in Q16, the product rounded half away.
         p_q = ufx.mul_q16_round(Q(0.15), 4 * ONE)
-        expected = (int(parallel.bit_generator.random_raw()) >> 48) < p_q
-        assert ar.roll_crit(0.15, 4 * ONE, rng) == expected
-        assert rng.bit_generator.state == parallel.bit_generator.state
+        expected = (d.word() >> 16) < p_q
+        assert ar.roll_crit(0.15, 4 * ONE, d) == expected
 
 
 if __name__ == "__main__":

@@ -47,6 +47,7 @@ from _radiation_sweep_harness import ONE, R, cpp_sweep, live_table  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData, load as load_level  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import gas_fixed, unit_fixed  # noqa: E402
 from simulation.gases import (  # noqa: E402
     GAS_NAMES, INERT_N2, N_GASES, N_TRACE_GASES, O2, POISON, SMOKE, STEAM,
@@ -214,7 +215,7 @@ def reader_fire_beam():
         shooter.id, z.id = 1, 2
         events = []
         fire_beam(g, [shooter, z], shooter, 3, 9, 25, 9, tick=0, shots=[],
-                  real_time=0.0, rng=np.random.default_rng(1), events=events,
+                  real_time=0.0, rng=MatchDraws(1), events=events,
                   weapon=weapon, ammo=ammo, spread_deg=0.0)
         # the pre-#88 law on S_old (combat.fire_beam before #88, per term >> 16)
         energy = int(ammo.damage) << 16

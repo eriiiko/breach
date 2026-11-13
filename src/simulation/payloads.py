@@ -35,9 +35,8 @@ Then the NEW W3 effects:
     ignition ring    when ignite_radius > 0         (:func:`ignite_ring`)
 
 Determinism (engine/14): the executor DRAWS NO RANDOMNESS. The explosion
-smoke's per-tile noise is drawn at the EditQueue flush (the single RNG
-consumer, unchanged from pre-W3), in the tile list's row-major order on a strength
-row; the gas deposit is deliberately noise-free
+smoke's per-tile noise is drawn at the EditQueue flush (keyed draws by
+edit, tick and tile since #29 P3b); the gas deposit is deliberately noise-free
 (a flat deterministic radial falloff — texture can come later as a dial);
 the ignite ring is a pure MAX deposit. ``rng`` stays in the signature for
 symmetry with the detonation sites (process_door_explosives already carries
@@ -437,8 +436,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
        look (G4, #75); render-only, outside the digest. A flash-only row (no
        radius, no strength, no gas: the flashbang) does nothing BUT this.
 
-    ``rng`` is the sim generator — carried for signature symmetry with the
-    detonation sites; the executor itself never draws (module docstring).
+    ``rng`` is the sim's keyed draws (``sim.draws``, #29 P3b) — carried for
+    signature symmetry with the detonation sites; the executor itself never
+    draws (module docstring).
 
     ``approach`` (#31) names the side a charge came from, read only when its
     tile is still solid after its wall damage: the tile a round came from, or

@@ -40,6 +40,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import wall_fixed  # noqa: E402
 from simulation.combat import (SPARES_UNTRACKED, fire_burst, mag_gate,  # noqa: E402
                                mag_spend, process_shooting)
@@ -121,7 +122,7 @@ def test_gl6_detonates_on_the_stopping_wall(monkeypatch):
     shooter = Unit("S", x=2, y=8, team=0)
     shooter.id = 1
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events, bullets, shots = [], [], []
     _fire_gl6(gmap, [shooter], shooter, 23, 9, queue=queue, rng=rng,
               events=events, bullets=bullets, shots=shots)
@@ -164,7 +165,7 @@ def test_gl6_detonates_on_unit_footprint_no_direct_hit_packet(monkeypatch):
     shooter.id, target.id = 1, 2
     target.current_hp = 1e9
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events, bullets, shots = [], [], []
     _fire_gl6(gmap, [shooter, target], shooter, 15, 9, queue=queue, rng=rng,
               events=events, bullets=bullets, shots=shots)
@@ -198,7 +199,7 @@ def test_gl6_airbursts_at_max_range(monkeypatch):
     shooter = Unit("S", x=2, y=8, team=0)
     shooter.id = 1
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events, bullets, shots = [], [], []
     _fire_gl6(gmap, [shooter], shooter, 55, 9, queue=queue, rng=rng,
               events=events, bullets=bullets, shots=shots)
@@ -263,7 +264,7 @@ def test_mag_cadence_through_process_shooting():
     u.orders = [Order(ORDER_FIRE, target_fx=15, target_fy=9, phase=0),
                 Order(ORDER_FIRE, target_fx=15, target_fy=9, phase=1)]
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events, bullets = [], [], []
 
     fired_at = []
@@ -300,7 +301,7 @@ def test_untracked_weapon_never_touches_the_state():
     target.id = 2
     target.current_hp = 1e9
     u.orders = [Order(ORDER_FIRE, target_fx=15, target_fy=9, phase=0)]
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events = [], []
     for tick in range(0, 40):
         process_shooting(gmap, [u, target], tick, shots, 0.0, rng,

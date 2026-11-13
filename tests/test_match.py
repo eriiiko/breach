@@ -71,7 +71,7 @@ def _spec(*, teams=(IDLE, IDLE), zombies=0, seed=1, time_limit_s=60.0):
 class _TriggerControl(ControlSource):
     """Test controller: every living unit of its team aims at the nearest
     living enemy's footprint EDGE and holds the trigger — the fire cone
-    draws from sim.rng and straddles the edge, so which rounds hit depends
+    draws from sim.draws and straddles the edge, so which rounds hit depends
     on the draws and the match seed matters. (Aimed at the centre, every
     k5 round lands at this range whatever the draw; until #169 the seed
     still showed because rounds flew on through a body killed earlier in
@@ -128,7 +128,7 @@ def test_one_seed_one_digest_another_seed_differs(tmp_path,
                                                   trigger_controller):
     """Property: a match is a pure function of its config + seed — two runs
     of one seed end in the same digest, and the seed is LIVE (another seed
-    moves the digest when shots draw from sim.rng). Breaks if anything but
+    moves the digest when shots draw from sim.draws). Breaks if anything but
     the sim's seeded rng draws randomness (an OS-seeded draw makes run 1 !=
     run 2), or if the match seed never reaches Simulation(seed=) (seed 1 ==
     seed 2)."""

@@ -35,8 +35,9 @@ P3e):
   feature dialed to zero leaves the RNG stream — and the golden digest —
   untouched (the dormant-seam pattern).
 - **THE DRAW FORM OF RECORD (#29 P3e):** every roll here is
-  ``draws.roll_q16(rng, p_q)`` -- one raw generator step whose high 16
-  bits compare below a Q16 probability ``p_q`` (exactly ``p_q / 65536``).
+  ``draws.roll_q16(d, p_q)`` -- one keyed draw ``d`` (#29 P3b: a
+  ``simulation.draws.Draw``, its Philox word's high 16 bits) compared below
+  a Q16 probability ``p_q`` (exactly ``p_q / 65536``).
   ``p_q`` is quantized at a door: the materials table's
   ``cover_exposure_q16``, the weapon's ``crit_chance`` and the
   ``[combat] crit_*_mult`` constants (Q16, once per value).
@@ -74,14 +75,14 @@ def cover_exposure_at(gmap, iy, ix):
     return int(col[int(gmap.material[iy, ix])])
 
 
-def roll_exposure(exposure_q, rng):
+def roll_exposure(exposure_q, d):
     """One exposure roll — True = the shot connects, False = the cover
-    absorbs it: ``draws.roll_q16(rng, exposure_q)`` (one raw draw, True with
-    probability ``exposure_q / 65536``).
+    absorbs it: ``draws.roll_q16(d, exposure_q)`` (one keyed draw ``d``,
+    True with probability ``exposure_q / 65536``).
 
     Callers must invoke this LAZILY (only when ``exposure_q < ONE``): the
     lazy-roll rule is what keeps dormant cover off the RNG stream."""
-    return _draws.roll_q16(rng, exposure_q)
+    return _draws.roll_q16(d, exposure_q)
 
 
 # ---------------------------------------------------------------------------
@@ -145,14 +146,14 @@ def _mult_q(v) -> int:
     return _ufx.quantize_scalar(float(v))                     # p3e-door
 
 
-def roll_crit(crit_chance, arc_mult_q, rng):
+def roll_crit(crit_chance, arc_mult_q, d):
     """One crit roll: ``draws.roll_q16`` against ``crit_chance × arc_mult``
     in Q16 (``crit_chance`` quantized at the door, the product rounded half
     away). Callers must gate LAZILY on ``crit_chance > 0`` BEFORE calling
     (all shipped ranged weapons carry 0 → the stream never moves)."""
     chance_q = _ufx.quantize_scalar(float(crit_chance))  # p3e-door: the row's
     p_q = _ufx.mul_q16_round(chance_q, int(arc_mult_q))
-    return _draws.roll_q16(rng, p_q)
+    return _draws.roll_q16(d, p_q)
 
 
 def scale_half_away(amount, mult):

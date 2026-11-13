@@ -337,7 +337,8 @@ def spawn_match(sim, spec: MatchSpec) -> list:
     row's ``n`` units from its loadout + env_profile, then the zombies, each
     standing on its slot's cell of its room's placement rule. Returns the
     units in spawn order. Draws no randomness (the match seed is the sim's
-    own, passed at construction). Sets the sim's sight rule from the spec
+    own, passed at construction; it keys ``sim.draws``, and ``sim.rng`` is
+    replaced by the refusing stand-in, #29 P3b). Sets the sim's sight rule from the spec
     (``sim.sight``, #195 1a): the one place a match hands it over. Starts
     the team picture last (``Simulation.start_team_picture``, #195 1d)."""
     from simulation.unit import Unit
@@ -347,6 +348,10 @@ def spawn_match(sim, spec: MatchSpec) -> list:
                          f"holds {len(sim.units)} units); slots start at 0")
     sim.sight = check_sight(getattr(spec, "sight", DEFAULT_SIGHT),
                             "spec.sight")
+    # #29 P3b (design §4.7): a match draws ONLY through sim.draws (keyed
+    # Philox); sim.rng becomes a stand-in that raises on any use, naming it.
+    from simulation.draws import RefusingRng
+    sim.rng = RefusingRng()
     rooms = {r.team: r for r in sim.level.spawn_rooms}
     spawned = []
 
