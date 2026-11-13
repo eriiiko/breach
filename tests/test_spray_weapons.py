@@ -492,13 +492,13 @@ def test_auto_fire_skips_spray_weapons_and_draws_nothing():
     sim.add_unit(z)
     assert sim.apply_action(sid, Order(
         ORDER_MOVE_ATTACK, target_fx=6, target_fy=10, phase=0))
-    state0 = sim.rng.bit_generator.state
+    state0 = sim.draws.drawn
     _step(sim, 10)
     assert s.spray_ticks_left == 0
     assert not sim.gmap.heat.any()
     assert not sim.gmap.gas[FUEL_GAS].any()
     assert s.last_fire_tick == -999 and s.current_mag == MAG_UNBOUND
-    assert sim.rng.bit_generator.state == state0
+    assert sim.draws.drawn == state0
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +583,7 @@ def test_dormancy_no_spray_weapon_is_bit_identical_to_prew4():
             snap["__hp__"] = tuple(u.current_hp for u in sim.units)
             snap["__pos__"] = tuple((u.x, u.y) for u in sim.units)
             traj.append(snap)
-        return traj, sim.rng.bit_generator.state
+        return traj, sim.draws.drawn
 
     traj_new, rng_new = run(build())
 

@@ -18,14 +18,13 @@ and ``is_terminal`` for the Gymnasium contract.
 
 Determinism / RNG plumbing
 --------------------------
-A single :class:`numpy.random.Generator` lives on ``sim.rng``. It is
-plumbed through the three known nondeterminism sites:
-
-- :func:`simulation.combat.fire_burst` — bullet cone offsets
-- :func:`simulation.physics.add_explosion_smoke` — per-tile noise
-- (gone) the old render march's per-source ``jitter`` — pinned 0.0 for
-  every light and then deleted with the C++ Raycaster at ray-engine-v2 P6c;
-  the radiation sweep that lights the game draws no random numbers.
+Every random number the sim draws is a KEYED draw on ``sim.draws``
+(:class:`simulation.draws.MatchDraws`, #29 P3b): Philox-4x32-10 keyed by the
+seed, counter ``(tick, index, salt, id)`` -- the shot and beam cones, the
+exposure and crit rolls, the FieldEdit noise at the flush. No draw depends on
+a stream position. ``sim.rng`` (a numpy Generator) is drawn from by nothing in
+the sim; a match replaces it with a stand-in that refuses any use
+(:class:`simulation.draws.RefusingRng`, installed by ``spawn_match``).
 
 The same seed gives the same trajectory for any sequence of
 ``apply_action / step`` calls — assuming the C++ physics is
@@ -129,6 +128,7 @@ from simulation.orders import (
 # ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
 # on a ``getattr(..., default)`` (the dormancy guarantee).
 from simulation import charges
+from simulation import draws as _draws
 from simulation import intents as _intents
 from simulation import speeds
 from simulation import turning
@@ -299,6 +299,14 @@ class Simulation:
         self.gmap = GameMap(self.level)
         self.rng = np.random.default_rng(seed)
         self._seed = seed
+        # #29 P3b (design §4.7): THE draws -- keyed Philox, key = the seed,
+        # counter (tick, index, salt, id) on this sim's clock. An unseeded
+        # sim takes its key once from its (entropy-seeded) generator, so it
+        # stays unseeded; a seeded one is keyed by its seed itself.
+        self.draws = _draws.MatchDraws(
+            seed if seed is not None
+            else int(self.rng.integers(0, 2 ** 63)),
+            clock=lambda: self.tick)
 
         # A6 (a6 doors design §6.1): the sim's RUNTIME entity list — the
         # level's parsed instances with door entries replaced by fresh
@@ -2099,7 +2107,7 @@ class Simulation:
             # W3: the edit queue rides along so payload rounds (GL-6) can
             # deposit their detonation; the mag/reload economy gates triggers.
             process_shooting(self.gmap, self.units, self.tick,
-                             self.shots, self.real_time, self.rng,
+                             self.shots, self.real_time, self.draws,
                              events=self.tick_events, bullets=self.bullets,
                              queue=self.edit_queue, effects=attack_effects)
 
@@ -2139,8 +2147,8 @@ class Simulation:
         # solvers run — so the solvers advect / propagate the settled NET deposit
         # for this tick (a laser burn-off and a grenade cloud issued the same
         # tick both land before smoke advection). This is the single RNG consumer
-        # for noise>0 edits, drawing from the seeded sim.rng in sorted order.
-        self.edit_queue.flush(self.gmap, self.rng)
+        # for noise>0 edits, keyed draws (seed, tick, edit key, tile; P3b).
+        self.edit_queue.flush(self.gmap, self.draws)
         return True
 
     def _step_physics(self):
@@ -2459,14 +2467,14 @@ class Simulation:
                         proj.ammo_name)
                     execute_payload(
                         self.gmap, self.edit_queue, self.units, fy, fx,
-                        payload, self.rng, events=self.tick_events,
+                        payload, self.draws, events=self.tick_events,
                         kind="grenade", owner_id=proj.owner_id,
                         approach=(unit_fixed.shr_trunc(proj.start_y_q),
                                   unit_fixed.shr_trunc(proj.start_x_q)))
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
-        # inside advance() (same rng, fixed spawn order). Survivors stay.
+        # inside advance() (keyed draws, #29 P3b). Survivors stay.
         # W3: the edit queue rides along — an in-flight payload round (the
         # GL-6 40 mm) detonates at its stop through the payload executor.
         # #169: two rounds landing on one tick land TOGETHER — every round
@@ -2477,7 +2485,7 @@ class Simulation:
             landing = SimultaneousEffects()
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
-                             self.real_time, self.rng,
+                             self.real_time, self.draws,
                              events=self.tick_events,
                              queue=self.edit_queue, effects=landing):
                     survivors.append(b)
@@ -2686,7 +2694,10 @@ class Simulation:
         # In-flight kinetic rounds carry over too (W2): they are physical
         # objects mid-air, tick-counter-free (per-call budget), so the round
         # rewind cannot skew them. Empty for every shipped weapon.
-        # Rewind for the next round.
+        # Rewind for the next round. #29 P3b: the draws' clock carries on
+        # past the rewind (legacy TwoPhaseWEGO), so a round never repeats
+        # the previous one's draws.
+        self.draws.tick_base += self.tick
         self.tick = 0
         self.phase = 0
         self.real_time = 0.0

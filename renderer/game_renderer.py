@@ -335,6 +335,37 @@ class GameRenderer:
         # frame; `enabled` there is its only switch.
         self.debris = _particles.DebrisSystem(
             _particles.debris_settings_from_config(CFG))
+        # #87 -- THE MUZZLE FLAME (renderer/muzzle_flame.py): a procedural
+        # flame per shot at the barrel's tip, additive linear HDR after the
+        # units, and its sparks, the particle primitive's fourth consumer.
+        # [render.muzzle_flame] is re-read every frame; `enabled` there is
+        # its only switch.
+        from . import muzzle_flame as _mflame
+        self.muzzle_flames = _mflame.MuzzleFlames(
+            _mflame.settings_from_config(CFG))
+        self.muzzle_flame_draw = _mflame.MuzzleFlameDraw()
+        self.muzzle_sparks = _particles.MuzzleSparkSystem(
+            _particles.muzzle_spark_settings(CFG),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self._flame_pack = None          # this frame's pack (both stages)
+        # #141 -- THE TRACERS (renderer/tracers.py): a round in flight as a
+        # glowing streak at its own speed, its afterglow, and the sparks it
+        # throws off a wall. Sprites of the particle draw (their own
+        # instance: drawn after the units, with the muzzle flame).
+        # [render.tracers] is re-read every frame.
+        from . import tracers as _tracers
+        self.tracers = _tracers.Tracers(_tracers.settings_from_config(CFG))
+        self.tracer_draw = _particles.ParticleDraw(64)
+        self.impact_sparks = _particles.MuzzleSparkSystem(
+            _particles.muzzle_spark_settings(CFG, "tracers"),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self._tracer_sprites = None
+        self._tracer_speeds = _tracers.round_speeds(CFG)
+        self._tracer_solid = None        # the frame's solid mask (read-only)
+        self._flame_t_sim = 0.0          # sim seconds, (tick + alpha) / tps
+        self._flame_tile_m = 1.0
         self.shimmer = _shimmer.HeatShimmer(
             cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
         # Graphics G4 P2 -- the SHOCK FRONT (renderer/shockwave.py), the
@@ -726,6 +757,34 @@ class GameRenderer:
                 wind_fn=frame_tamed_wind, tps=tps,
                 blocked=self._ember_blocked(gmap),
                 modes=self.embers.modes())
+        # #87 -- the muzzle flame's clock (the SIM clock: a paused game
+        # holds a flash) and its sparks, queued by last frame's new flashes
+        # (compose_world), stepping with the blast sparks.
+        from . import muzzle_flame as _mflame
+        self.muzzle_flames.refresh_settings(_mflame.settings_from_config(CFG))
+        self._flame_t_sim = (int(sim_tick) + min(max(float(alpha or 0.0), 0.0),
+                                                  1.0)) / tps
+        self._flame_tile_m = float(gmap.tile_size_m)
+        self.muzzle_sparks.refresh_settings(
+            _particles.muzzle_spark_settings(CFG))
+        # #141 -- the tracers' settings and what a round can stop on, and
+        # the impact sparks, queued by last frame's arrivals
+        from . import tracers as _tracers
+        self.tracers.refresh_settings(_tracers.settings_from_config(CFG))
+        self._tracer_speeds = _tracers.round_speeds(CFG)
+        self._tracer_solid = gmap.solid
+        self.impact_sparks.refresh_settings(
+            _particles.muzzle_spark_settings(CFG, "tracers"))
+        for _sys in (self.muzzle_sparks, self.impact_sparks):
+            if not self.fire_vfx.enabled:
+                _sys.p.clear()               # no VFX clock
+                _sys.consume((), None, int(sim_tick))
+            else:
+                _sys.update(
+                    t=self.fire_vfx.clock.t_noise, effects=(), seeds_fn=None,
+                    sim_tick=int(sim_tick), wind_fn=frame_tamed_wind, tps=tps,
+                    blocked=self._ember_blocked(gmap),
+                    modes=self.embers.modes())
         # Graphics G4 P4 -- the debris: each new "blast" effect is consumed
         # once ("debris_seen"); the chips are born at the same walk's seeds,
         # step on the same VFX clock, ride the same tamed wind scaled by the
@@ -1050,8 +1109,16 @@ class GameRenderer:
         self._draw_embers(view)
         # 5. 3D units + props (+ projected shadows): the shared 3D pass --
         # ABOVE the flame.
+        self.unit_models.muzzle_poses.clear()    # #87: this frame's barrels
         drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
                                                   props)
+        # 5b. #87 -- THE MUZZLE FLAME: additive linear HDR at each firing
+        # unit's barrel tip (the pose the 3D pass just drew its gun at), OVER
+        # the units (it is at gun height), under the ceiling soot. No flash,
+        # no draw.
+        self._draw_muzzle_flames(view, units_marines, units_zombies)
+        # 5c. #141 -- THE TRACERS: the rounds in flight, the same layer
+        self._draw_tracers(view, units_marines, units_zombies)
         # 6. G1: the CEILING species layer (hot soot) -- ABOVE the units and
         # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
         if relief_on:
@@ -1069,6 +1136,11 @@ class GameRenderer:
                 # occlusion under the soot is the flame's, Erik's 0.2
                 self._draw_embers(view, stage="compensation",
                                   glow_through_ceil=gt[0])
+                # ... and the muzzle flames' (#87), the same rule
+                self._draw_muzzle_flames(view, stage="compensation",
+                                         glow_through_ceil=gt[0])
+                self._draw_tracers(view, stage="compensation",
+                                   glow_through_ceil=gt[0])
 
         # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
         # (G3 F4a: with the heat SHIMMER, the first term of the resolve's
@@ -1367,7 +1439,8 @@ class GameRenderer:
             zoom = (self.camera.zoom_px_per_tile
                     / self.world.world_px_per_tile)
             packs = []
-            for system in (self.embers, self.sparks):
+            for system in (self.embers, self.sparks, self.muzzle_sparks,
+                           self.impact_sparks):
                 if system.enabled and system.p.n:
                     packs.append(pack_sprites(
                         system.p, view, self.world.world_px_per_tile,
@@ -1383,6 +1456,133 @@ class GameRenderer:
             return 0
         ramp = self.fire_vfx.ramp
         return self.ember_draw.draw(
+            sprites, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def _draw_muzzle_flames(self, view, marines: Sequence = (),
+                            zombies: Sequence = (), stage: str = "scene",
+                            glow_through_ceil: float = 1.0) -> int:
+        """#87: THE muzzle flame's draw. ``stage`` "scene" (after the units,
+        under the soot) first turns every new launched ``"tracer"`` effect
+        into a flash of its shooter's weapon's kind, ages the live ones on
+        the sim clock, puts each on its shooter's muzzle -- the barrel tip
+        the 3D pass just drew (``unit_models.muzzle_poses``), else the
+        footprint's edge along the facing -- queues the new flashes' sparks,
+        then packs and draws; "compensation" (after the ceiling soot) re-adds
+        what the soot hid beyond ``glow_through_ceil``. A unit that is not
+        drawn (fog of war) flashes nothing. Returns the draw calls issued."""
+        from . import muzzle_flame as _mflame
+        from .fire_vfx import LUT_SIZE
+        from .unit_looks import unit_key
+        mf = self.muzzle_flames
+        if stage == "scene":
+            self._flame_pack = None
+            by_id = {unit_key(u): u for u in (*marines, *zombies)}
+
+            def weapon_of(uid):
+                u = by_id.get(uid)
+                return None if u is None else str(
+                    getattr(u, "weapon_id", "") or "")
+
+            poses = self.unit_models.muzzle_poses
+
+            def pose_of(uid):
+                p = poses.get(uid)
+                u = by_id.get(uid)
+                if p is not None or u is None:
+                    return p
+                return _mflame.fallback_pose(
+                    float(u.x), float(u.y), float(getattr(u, "footprint", 3)),
+                    float(getattr(u, "facing", math.pi / 2.0)))
+
+            mf.consume(self._effects, weapon_of, self._last_sim_tick)
+            mf.update(self._flame_t_sim, pose_of)
+            for f in mf.born_last_frame:
+                if f.shot.sparks:
+                    self.muzzle_sparks.throw(
+                        f.shot.sparks, f.pose, self._flame_tile_m,
+                        _mflame.shot_rng(mf.settings.seed + 1, f.unit,
+                                         f.tick0))
+            if mf.enabled and mf.flashes:
+                self._flame_pack = mf.pack(view, self.world.world_px_per_tile,
+                                           self._flame_tile_m)
+        pack = self._flame_pack
+        if pack is None or pack.shape[1] == 0:
+            if stage == "scene":
+                self.muzzle_flame_draw.draws_last_frame = 0
+                self.muzzle_flame_draw.flashes_last_frame = 0
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.muzzle_flame_draw.draw(
+            pack, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def _draw_tracers(self, view, marines: Sequence = (),
+                      zombies: Sequence = (), stage: str = "scene",
+                      glow_through_ceil: float = 1.0) -> int:
+        """#141: THE tracers' draw. ``stage`` "scene" (after the units,
+        under the soot) turns every new ``"tracer"`` effect into a streak
+        (its kind by the shooter's weapon, its speed the round's own, its
+        first segment from the muzzle the 3D pass just drew), ages the live
+        ones on the sim clock, queues the sparks of the streaks that just
+        reached a wall, then packs and draws them as sprites of the
+        particle draw; "compensation" re-adds what the ceiling soot hid. A
+        shooter that is not drawn (fog of war) shows no tracer."""
+        from . import muzzle_flame as _mflame
+        from .fire_vfx import LUT_SIZE
+        from .unit_looks import unit_key
+        tr = self.tracers
+        if stage == "scene":
+            self._tracer_sprites = None
+            by_id = {unit_key(u): u for u in (*marines, *zombies)}
+
+            def weapon_of(uid):
+                u = by_id.get(uid)
+                return None if u is None else str(
+                    getattr(u, "weapon_id", "") or "")
+
+            poses = self.unit_models.muzzle_poses
+
+            def start_of(uid):
+                p = poses.get(uid)
+                return None if p is None else (p[0], p[1])
+
+            tr.consume(self._effects, weapon_of=weapon_of,
+                       speed_of=self._tracer_speeds.get, start_of=start_of,
+                       solid=self._tracer_solid,
+                       tile_size_m=self._flame_tile_m,
+                       tps=1.0 / self._sim_dt, sim_tick=self._last_sim_tick)
+            tr.update(self._flame_t_sim)
+            for imp in tr.impacts_last_frame:
+                if imp.sparks:
+                    rng = _mflame.shot_rng(
+                        tr.settings.seed + int(imp.x * 64) + int(imp.y * 64),
+                        imp.unit, imp.tick0)
+                    n = int(rng.integers(max(imp.sparks // 2, 0),
+                                         imp.sparks + (imp.sparks + 1) // 2 + 1))
+                    self.impact_sparks.throw(
+                        n, (imp.x, imp.y, imp.dir_x, imp.dir_y),
+                        self._flame_tile_m, rng)
+            if tr.enabled and tr.live:
+                zoom = (self.camera.zoom_px_per_tile
+                        / self.world.world_px_per_tile)
+                self._tracer_sprites = tr.pack(
+                    view, self.world.world_px_per_tile, self._flame_tile_m,
+                    screen_px_per_world_px=zoom)
+        sprites = self._tracer_sprites
+        if sprites is None or sprites.shape[1] == 0:
+            if stage == "scene":
+                self.tracer_draw.draws_last_frame = 0
+                self.tracer_draw.sprites_last_frame = 0
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.tracer_draw.draw(
             sprites, world_px_w=self.world.world_px_w,
             world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
             lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
@@ -1654,14 +1854,12 @@ class GameRenderer:
             alpha_norm = max(0.0, 1.0 - t / max(life, 1e-6))
             kind = fx["kind"]
             if kind == "tracer":
-                a, b = fx["from"], fx["to"]
-                x1 = tile_to_world_px(a[0], wpt)
-                y1 = tile_to_world_px(a[1], wpt)
-                x2 = tile_to_world_px(b[0], wpt)
-                y2 = tile_to_world_px(b[1], wpt)
-                col = rl.Color(255, 240, 160, int(220 * alpha_norm))
-                rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
-                                1.5, col)
+                # #141: a round is drawn by THE tracers (renderer/tracers.py,
+                # _draw_tracers: a glowing streak in the linear scene); the
+                # flat display-space line that stood here is gone. The effect
+                # stays in the queue: the muzzle light, the muzzle flame and
+                # the tracers all key on it.
+                pass
             elif kind == "beam":
                 # W2 laser (LaserFiredEvent): a distinct beam — crimson core
                 # with a thin white-hot centreline, thicker than a tracer.
@@ -1889,6 +2087,8 @@ class GameRenderer:
                     "to": ev.to_tile,
                     "unit": ev.unit_id,
                     "launch": bool(getattr(ev, "launch", True)),
+                    # #87: the muzzle flame's seed and its one-per-shot key
+                    "tick0": tick0,
                     # not aged on the frame it is born (see _advance_effects)
                     "fresh": True,
                     "t": 0.0,
@@ -2478,6 +2678,8 @@ class GameRenderer:
         self.gas_relief.unload()
         self.fire_vfx.unload()
         self.ember_draw.unload()
+        self.muzzle_flame_draw.unload()
+        self.tracer_draw.unload()
         self.shimmer.unload()
         self.shockwave.unload()
         self.temperature_overlay.unload()

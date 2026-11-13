@@ -282,7 +282,10 @@ def test_jackhammer_pellet_count_and_draw_stream():
     shooter = _marine("S", 2, 8, uid=1)
     target = _marine("T", 14, 8, uid=2)
     target.current_hp = 1e9
-    rng = np.random.default_rng(SEED)
+    from simulation import draws
+    from simulation.combat import cone_q16_of_deg
+    from simulation.rng_salts import Salt
+    rng = draws.MatchDraws(SEED)
     shots, events = [], []
     fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
@@ -290,13 +293,16 @@ def test_jackhammer_pellet_count_and_draw_stream():
     tracers = [e for e in events if isinstance(e, ShotFiredEvent)]
     assert len(tracers) == 8                      # 8 pellets, 8 tracers
 
-    # Draw-for-draw: exactly 8 door-4 cone uniforms, nothing else (no
-    # cover on the approach, crit_chance 0 — the lazy-roll rule).
-    parallel = np.random.default_rng(SEED)
-    cone = math.radians(jack.spread_deg)
-    for _ in range(8):
-        parallel.uniform(-cone, cone)
-    assert rng.bit_generator.state == parallel.bit_generator.state
+    # Draw-for-draw: exactly 8 cone draws, nothing else (no cover on the
+    # approach, crit_chance 0 — the lazy-roll rule); since #29 P3b pellet k
+    # is the shooter's k-th SHOT_CONE draw of the tick, so each tracer's
+    # bearing is predicted from its own key.
+    assert rng.drawn == 8
+    cone_q = cone_q16_of_deg(jack.spread_deg)
+    offsets = [draws.cone_offset_q16(
+        draws.MatchDraws(SEED).at(Salt.SHOT_CONE, shooter.id, k), cone_q)
+        for k in range(8)]
+    assert len(set(offsets)) > 1                  # a real spread
 
 
 # ---------------------------------------------------------------------------
@@ -558,10 +564,8 @@ def test_canonical_scenario_consumes_no_rng():
     not about what the gas did, so it stays meaningful across every physics
     re-baseline. If this goes red it IS a bug, never a re-baseline.
     """
-    from field_ab_harness import SEED as AB_SEED
     sim, _ = _run_canonical_scenario()
-    fresh = np.random.default_rng(AB_SEED)
-    assert sim.rng.bit_generator.state == fresh.bit_generator.state, (
+    assert sim.draws.drawn == 0, (                # #29 P3b: no keyed draw
         "the canonical scenario drew RNG — some path consumed the stream")
 
 

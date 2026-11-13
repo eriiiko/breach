@@ -624,6 +624,11 @@ def main():
                          control_source.keys.bindings.items())
               + " | pad: left stick move (deflection = speed), right stick "
               "aim, RT fire")
+    # #202: the sound layer (audio/), presentation only. None when
+    # [sound] enabled = false; silent in a hidden window (the E2E driver).
+    from audio.game import SoundLayer, listener_tile
+    sound = SoundLayer.create(
+        CFG, sim, muted=rl.is_window_state(rl.ConfigFlags.FLAG_WINDOW_HIDDEN))
     if replay is not None:
         replay.on_seek_tick = (
             lambda s, target: _draw_seek_overlay(s.tick, target,
@@ -704,7 +709,12 @@ def main():
                     paused=sim.is_paused()),
                 _footprint_of)
         else:
-            cursor = frame_lights.cursor_lamp_spec(renderer.mouse_to_tile_float())
+            # Direct control has no cursor lamp (Erik, 2026-11-12): the
+            # possessed unit carries its own flashlight (below), and the dark
+            # is moodier lit by that alone. Every other scheme keeps it.
+            cursor = (None if control_source.camera_mode is not None
+                      else frame_lights.cursor_lamp_spec(
+                          renderer.mouse_to_tile_float()))
             if cursor is not None:
                 extra.append(cursor)
             # G7p: a unit's flashlight cone follows its synced bit
@@ -830,6 +840,8 @@ def main():
                     replay.sim.gmap.render_dirty.update(
                         changed_between(sim.gmap, replay.sim.gmap))
                     sim = replay.sim
+                    if sound is not None:
+                        sound.rebind(sim)
                 if follow is not None:
                     follow.reset()
                 light_on, lit_rows, lit_flicker = None, None, None
@@ -877,6 +889,10 @@ def main():
                             sim.turn_number, ticks_per_round, sim.tick))
                     if follow is not None:
                         follow.observe(sim.tick_events, sim_time_per_tick)
+                    if sound is not None:
+                        sound.consume_events(
+                            sim.tick_events,
+                            listener_tile(sim, control_source, renderer.camera))
                     stepped = True
                     tick_accum -= sim_time_per_tick
                     steps += 1
@@ -964,6 +980,8 @@ def main():
             # the next sim.step(); consuming here, once, lost all but the last
             # step's and re-consumed the same events every paused frame).
             renderer._advance_effects(dt)
+            if sound is not None:
+                sound.update()
 
             selected = sim.get_unit(control_source.selected_unit_id) \
                 if control_source.selected_unit_id is not None else None
@@ -1022,6 +1040,10 @@ def main():
                      f"{u.facing:.4f}" if u is not None else "none")
                   + f", camera centre ({cam.pos_tile_x + 0.5 * w:.2f}, "
                   f"{cam.pos_tile_y + 0.5 * h:.2f})")
+        if sound is not None:
+            # the sound E2E reads this line (tests/test_sound_e2e.py)
+            print(f"  sound: {sound.started} sounds started")
+            sound.close()
         renderer.shutdown()
 
 

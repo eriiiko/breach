@@ -50,9 +50,10 @@ row. ``apply_action`` orders are REFUSED at record time (v1 matches issue
 only the per-tick intents; an ``Order`` has no serializer yet): recording a
 match that places orders raises :class:`RecordingRefused`.
 
-Determinism, verified for #126 (not assumed): the only random draw in a
-match is ``Simulation(seed=)``'s ``sim.rng``; nothing outside
-``src/simulation`` reads it on the match path (bots and zombies draw nothing:
+Determinism, verified for #126 (not assumed): every random draw in a
+match is a keyed draw under ``Simulation(seed=)`` (``sim.draws``, #29 P3b;
+``sim.rng`` refuses any use in a match); nothing outside
+``src/simulation`` draws on the match path (bots and zombies draw nothing:
 ``control_bots`` / ``control_zombies`` headers; ``run_match`` passes the seed
 only). A replay spawns through the same ``Simulation.spawn_match`` +
 ``MatchRules`` path as the recorded run, so unit ids agree.

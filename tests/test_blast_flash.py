@@ -287,7 +287,7 @@ def test_a_flash_only_row_emits_one_event_and_no_field_edit():
     events = []
     n_queue = len(lit.edit_queue)
     log_before = list(getattr(lit.gmap, "blast_log", []))
-    execute_payload(lit.gmap, lit.edit_queue, lit.units, 10, 10, row, lit.rng,
+    execute_payload(lit.gmap, lit.edit_queue, lit.units, 10, 10, row, lit.draws,
                     events=events, kind="flashbang")
     assert len(lit.edit_queue) == n_queue
     assert list(getattr(lit.gmap, "blast_log", [])) == log_before

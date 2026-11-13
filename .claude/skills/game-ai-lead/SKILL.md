@@ -212,6 +212,20 @@ implementation agents and critics stay one at a time.
   file from its first finding, and was told not to read the others';
   (5) put Erik's summary and question BEFORE the critique, but expect to come
   back with the fixes that touch what he agreed, as one short list.
+- 2026-11-13 -- rung 1, 1j (the bots through the door): the pass mark FAILED
+  on the held-out seeds (win rate of the decided duels 0.27 to 0.37 in the
+  four cells; friendly fire within the lead's 1.2 x + 0.2 rule), so it goes to
+  a design session. Learned: (1) a proxy in place of the sim (capture, forward
+  every other read and write) turned "the bots decide exactly as they do" into
+  a digest test, with no edit of the bots; (2) a 40 s recorded match met no
+  masked latch, so the gate-5 break on the mask passed the fixture: a gate that
+  must fail needs a scene where its event happens -- scan seeds for it with the
+  tournament's own counts, then pin that seed; (3) `bot_tournament` workers do
+  not pin BLAS threads: 12 of them commit ~2 GB each and starve a 16 GB machine
+  (an e2e test then fails on OpenBLAS); export OPENBLAS_NUM_THREADS=1 before a
+  long run; (4) stopping a backgrounded bash loop does not stop it on Windows --
+  kill the loop's own bash process tree, or each kill advances it to the next
+  run.
 
 ## 11. Running rung 1 (for the orchestrator session)
 

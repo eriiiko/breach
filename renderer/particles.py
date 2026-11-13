@@ -67,6 +67,17 @@ stage, ``"debris"``: premultiplied alpha, lit by the light field through the
 lit-3D block (``lit3d._FIELD_SAMPLE_GLSL``), under the flame and the units.
 The ember / spark :func:`integrate` and :func:`pack_sprites` are untouched.
 
+THE MUZZLE SPARKS (the fourth consumer, :class:`MuzzleSparkSystem`; #87,
+``docs/muzzle_flame_design_2026-11-12.md`` §4). Thrown by a shot: the muzzle
+flame (``renderer/muzzle_flame.py``) queues each new flash's sparks at the
+barrel's tip, in a forward cone; from then on they are blast sparks in every
+respect (the same :func:`integrate`, :func:`pack_sprites` and draw).
+``[render.muzzle_flame.sparks]`` holds their dials, behind a refusing door.
+A second instance throws the BULLET IMPACTS' sparks back off a wall (#141,
+``renderer/tracers.py``; ``[render.tracers.sparks]``, the same dials). The
+tracers themselves are sprites of :class:`ParticleDraw` (their own instance,
+drawn after the units), packed by ``tracers.Tracers.pack``.
+
 NOT HERE: the renderer's ``_effects`` queue (tracers, explosion rings, hit
 splats) is LEGACY DISPLAY-SPACE EFFECTS, drawn after the resolve -- it is not
 a second particle system and is not migrated in G3 (design §6.1, minor 7).
@@ -783,6 +794,122 @@ class SparkSystem:
 
 
 # ---------------------------------------------------------------------------
+# The muzzle sparks (the fourth consumer) -- [render.muzzle_flame.sparks]
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MuzzleSparkSettings:
+    """Every ``[render.muzzle_flame.sparks]`` dial (#87,
+    ``docs/muzzle_flame_design_2026-11-12.md`` §4). ``drag``, ``curl``,
+    ``cool_s``, ``size_tiles``, ``min_screen_px``, ``streak_s`` and
+    ``brightness`` mean what the embers' and the blast sparks' do: they are
+    the names :func:`integrate` and :func:`pack_sprites` read. How MANY a
+    shot throws is its flame kind's ``sparks``."""
+    enabled: bool
+    cone_deg: float          # the cone's half-angle round the barrel (a normal's sigma)
+    v0_mps: float            # birth speed, METRES per second
+    v_spread: float          # the speed is v0 * (1 +- v_spread * U(-1, 1))
+    t_born_k: float
+    cool_s: float
+    life_s: float
+    life_jitter: float
+    drag: float
+    curl: float
+    size_tiles: float
+    min_screen_px: float
+    streak_s: float
+    brightness: float
+    cap: int
+    seed: int                # the cap's fair-subset draw (SparkSystem.update)
+
+
+_MUZZLE_SPARK_KINDS = {f.name: f.type for f in fields(MuzzleSparkSettings)}
+
+
+def muzzle_spark_settings(cfg, table: str = "muzzle_flame"
+                          ) -> MuzzleSparkSettings:
+    """``[render.<table>.sparks]`` -> settings, read every frame: the muzzle
+    sparks' (``table`` "muzzle_flame") or the bullet impacts' ("tracers",
+    #141 -- the same dials, thrown back off a wall). A REFUSING door
+    (``muzzle_flame.typed_row``: a missing, unknown or mistyped key raises
+    ValueError naming it)."""
+    from collections.abc import Mapping
+    from .muzzle_flame import _as_dict, typed_row
+    if isinstance(cfg, Mapping):
+        sec = cfg.get("render", {}).get(table, {}).get("sparks")
+    else:
+        sec = getattr(getattr(getattr(cfg, "render", None), table,
+                              None), "sparks", None)
+    w = f"[render.{table}.sparks]"
+    if sec is None:
+        raise ValueError(f"config.toml has no {w} section")
+    s = MuzzleSparkSettings(**typed_row(_as_dict(sec), _MUZZLE_SPARK_KINDS, w))
+    for name in ("life_s", "cool_s", "size_tiles"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"{w} {name} must be > 0")
+    for name in ("cone_deg", "v0_mps", "drag", "brightness", "streak_s",
+                 "min_screen_px", "curl"):
+        if getattr(s, name) < 0.0:
+            raise ValueError(f"{w} {name} must be >= 0")
+    for name in ("v_spread", "life_jitter"):
+        if not 0.0 <= getattr(s, name) < 1.0:
+            raise ValueError(f"{w} {name} must be in [0, 1)")
+    if s.cap < 0:
+        raise ValueError(f"{w} cap must be >= 0")
+    return s
+
+
+def muzzle_spark_spawns(n: int, pose, tile_size_m: float,
+                        settings: MuzzleSparkSettings,
+                        rng: np.random.Generator) -> dict:
+    """``n`` sparks of one shot: born AT the muzzle (``pose`` = (x, y,
+    dir x, dir y), tiles), thrown round the barrel's direction by a normal
+    angle of sigma ``cone_deg``, at ``v0_mps`` (converted once to tiles/s)
+    ``* (1 +- v_spread * u)``, at ``t_born_k``, living ``life_s * (1 +-
+    life_jitter * u)``. Returns the spawn arrays (tiles, tiles/s, K, s)."""
+    if n <= 0:
+        return {k: np.zeros(0) for k in _SPAWN_KEYS}
+    x, y, dx, dy = (float(v) for v in pose)
+    ang = (math.atan2(dy, dx)
+           + rng.normal(0.0, math.radians(settings.cone_deg), int(n)))
+    u = rng.random((2, int(n)))
+    speed = (settings.v0_mps / max(float(tile_size_m), 1e-6)
+             * (1.0 + settings.v_spread * (2.0 * u[0] - 1.0)))
+    life = settings.life_s * (1.0 + settings.life_jitter * (2.0 * u[1] - 1.0))
+    return dict(x=np.full(int(n), x), y=np.full(int(n), y),
+                vx=np.cos(ang) * speed, vy=np.sin(ang) * speed,
+                t0=np.full(int(n), float(settings.t_born_k)), life=life)
+
+
+class MuzzleSparkSystem(SparkSystem):
+    """The muzzle sparks' CPU side (#87, the particle primitive's FOURTH
+    consumer): a :class:`SparkSystem` whose spawns are QUEUED by the muzzle
+    flame (:meth:`throw`, one call per new flash) instead of read from a
+    ``"blast"`` effect. Everything else is the blast sparks': the same
+    :meth:`update` (THE motion law in substeps, the cap's fair subset), the
+    same :func:`pack_sprites`, the same draw."""
+
+    def __init__(self, settings: MuzzleSparkSettings, *, t_amb_k: float,
+                 glow_min_k: float):
+        super().__init__(settings, t_amb_k=t_amb_k, glow_min_k=glow_min_k)
+        self._queue = []
+
+    def throw(self, n: int, pose, tile_size_m: float,
+              rng: np.random.Generator) -> None:
+        """Queue ``n`` sparks from the muzzle at ``pose``; they are born at
+        the next :meth:`update`. Nothing while disabled."""
+        if self.enabled and n > 0:
+            self._queue.append(muzzle_spark_spawns(n, pose, tile_size_m,
+                                                   self.settings, rng))
+
+    def consume(self, effects, seeds_fn, sim_tick: int) -> dict:
+        out, self._queue = self._queue, []
+        if not out or not self.enabled:
+            return {k: np.zeros(0) for k in _SPAWN_KEYS}
+        return {k: np.concatenate([o[k] for o in out]) for k in _SPAWN_KEYS}
+
+
+# ---------------------------------------------------------------------------
 # The debris (the third consumer) -- [render.debris]
 # ---------------------------------------------------------------------------
 
@@ -1406,6 +1533,8 @@ __all__ = [
     "SparkSettings", "spark_settings_from_config", "spark_config_keys",
     "spark_count", "spark_rng", "spark_spawns", "SparkSystem",
     "SPARK_MAX_HOP",
+    "MuzzleSparkSettings", "muzzle_spark_settings", "muzzle_spark_spawns",
+    "MuzzleSparkSystem",
     "DebrisSettings", "debris_settings_from_config", "debris_config_keys",
     "debris_count", "debris_keys", "debris_spawns", "integrate_debris",
     "debris_weight", "pack_debris", "DebrisSystem", "DEBRIS_MAX_HOP",

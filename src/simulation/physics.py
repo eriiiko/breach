@@ -166,10 +166,10 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8,
     :class:`EditQueue`. Each tile gets ``base * mult`` where
     ``base = 0.8 * (1 - dist/radius)`` (a DISC + LINEAR falloff with
     ``amount = 0.8``) and ``mult`` is the per-tile noise multiplier drawn uniform
-    in ``[1 - noise, 1.0]`` — but the draw now happens **at flush time**, from
-    the sim's seeded ``rng``, in the queue's deterministic per-tile order, so the
-    seeded-rollout guarantee is structural (one RNG consumer) rather than a
-    per-caller convention.
+    in ``[1 - noise, 1.0]`` — but the draw happens **at flush time**, a keyed
+    draw per (tick, edit, tile) under the sim's seed (#29 P3b), so the
+    seeded-rollout guarantee is structural rather than a per-caller
+    convention.
 
     ``noise`` is the per-tile contrast knob (ch.05 §4 "explosion smoke noise too
     subtle"):

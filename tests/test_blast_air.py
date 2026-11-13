@@ -18,6 +18,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from level_loader import LevelData  # noqa: E402
 from simulation import atmosphere_fixed  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation.blast_air import ONE, disc_tiles, read_blast_air  # noqa: E402
 from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
@@ -55,7 +56,7 @@ def _soot_after(g, seed=7):
     row = PayloadDef("t", radius=R, emit_blast_smoke=True, explosive="comp_b",
                      explosive_kg=0.184, blast_soot_g=14.0)
     q = EditQueue()
-    rng = np.random.default_rng(seed)
+    rng = MatchDraws(seed)
     execute_payload(g, q, [], CH[0], CH[1], row, rng)
     q.flush(g, rng)
     return g.gas[SMOKE].astype(np.int64)

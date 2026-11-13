@@ -93,7 +93,7 @@ def _run(payload, ticks=RUN_TICKS, crate_at=CRATE_AT):
     assert g.flammable[crate_at], "crate tile must be a fuel-bearing (flammable) material"
 
     execute_payload(g, sim.edit_queue, sim.units, crate_at[0], crate_at[1],
-                    payload, sim.rng)
+                    payload, sim.draws)
     sim.set_paused(False)
     for _ in range(ticks):
         sim.set_paused(False)   # the ruleset auto-pauses at phase boundaries
@@ -116,7 +116,7 @@ def test_frag_heat_lights_an_honest_fire_on_a_fuel_tile():
 
     payload = sim.weapons_tables.payloads.by_name["frag_heat"]
     execute_payload(g, sim.edit_queue, sim.units, CRATE_AT[0], CRATE_AT[1],
-                    payload, sim.rng)
+                    payload, sim.draws)
     sim.set_paused(False)
     for _ in range(RUN_TICKS):
         sim.set_paused(False)
@@ -156,7 +156,7 @@ def test_heatless_blast_queues_no_fire_edit():
     assert TEST_CHARGE.heat_amount == 0.0
 
     execute_payload(g, sim.edit_queue, sim.units, CRATE_AT[0], CRATE_AT[1],
-                    TEST_CHARGE, sim.rng)
+                    TEST_CHARGE, sim.draws)
 
     fields_queued = {edit.field for edit, _seq in sim.edit_queue._edits}
     assert "fire" not in fields_queued, (

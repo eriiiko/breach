@@ -1568,36 +1568,54 @@ class BotCommander(BotTeam):
             self._issue(sim, mine)
 
     def order_for(self, sim, mine) -> tuple:
-        """The team's order now, as the four held fields ``(what, where,
-        until, target)`` (``unit_orders.NO_ORDER`` when the objective names
-        no place)."""
-        brain = self.brain
-        graph = unit_orders.graph_of(sim)
-        if brain.objective is None or graph is None:
-            return unit_orders.NO_ORDER
-        fp = mine[0].footprint
-        ox, oy = brain.objective
-        where = place_at(graph, oy + fp // 2, ox + fp // 2)
-        if where == unit_orders.NO_PLACE:
-            return unit_orders.NO_ORDER
-        what = unit_orders.ORDER_WHAT.index(PLAY_ORDER[brain.play])
-        t = brain.target
-        target = (int(t.id) if t is not None and t.alive
-                  and t.team != self.team else unit_orders.NO_TARGET)
-        return (what, where, unit_orders.NO_LIMIT, target)
+        """The team's order now (:func:`team_order` of this brain)."""
+        return team_order(self.brain, sim, mine, self.team)
 
     def _issue(self, sim, mine) -> None:
-        want = self.order_for(sim, mine)
-        what, where, _until, target = want
-        args = ((0, unit_orders.NO_PLACE, 0, unit_orders.NO_TARGET)
-                if what == unit_orders.ORDER_NONE else (what, where, 0,
-                                                        target))
-        for u in sorted(mine, key=lambda u: u.id):
-            if unit_orders.held(u) != want:
-                sim.order_intent(u.id, *args)
+        issue_team_order(sim, mine, self.order_for(sim, mine))
+
+
+def team_order(brain, sim, mine, team) -> tuple:
+    """The order a team's brain gives now, as the four held fields
+    ``(what, where, until, target)`` (``unit_orders.NO_ORDER`` when the
+    objective names no place): what = ``PLAY_ORDER[play]``, where =
+    ``room_graph.place_at`` of the objective body's centre tile, until told
+    otherwise, the shared target's id. The commander's rule, lifted (#195
+    1j) so the door bots' own brain writes its team's orders by the same
+    function."""
+    graph = unit_orders.graph_of(sim)
+    if brain.objective is None or graph is None:
+        return unit_orders.NO_ORDER
+    fp = mine[0].footprint
+    ox, oy = brain.objective
+    where = place_at(graph, oy + fp // 2, ox + fp // 2)
+    if where == unit_orders.NO_PLACE:
+        return unit_orders.NO_ORDER
+    what = unit_orders.ORDER_WHAT.index(PLAY_ORDER[brain.play])
+    t = brain.target
+    target = (int(t.id) if t is not None and t.alive
+              and t.team != team else unit_orders.NO_TARGET)
+    return (what, where, unit_orders.NO_LIMIT, target)
+
+
+def issue_team_order(sim, mine, want) -> int:
+    """Issue ``want`` (:func:`team_order`) through ``Simulation.
+    order_intent`` to every unit of ``mine`` (id order) that does not hold
+    it already -- issue on change only. Returns the calls made."""
+    what, where, _until, target = want
+    args = ((0, unit_orders.NO_PLACE, 0, unit_orders.NO_TARGET)
+            if what == unit_orders.ORDER_NONE else (what, where, 0,
+                                                    target))
+    n = 0
+    for u in sorted(mine, key=lambda u: u.id):
+        if unit_orders.held(u) != want:
+            sim.order_intent(u.id, *args)
+            n += 1
+    return n
 
 
 __all__ = ["BotTeam", "BotCommander", "PLAY_ORDER", "check_play_order",
+           "team_order", "issue_team_order",
            "BotSettings", "bot_settings", "TeamBrain", "FEATURES",
            "ACTIONS", "PLAYS", "Feature", "Action", "Play",
            "PositionContext", "evaluate_features", "choose_position",

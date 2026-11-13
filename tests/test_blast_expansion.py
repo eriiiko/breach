@@ -47,7 +47,7 @@ def _row(v=20.0):
 
 
 def _fire(s, v=20.0):
-    execute_payload(s.gmap, s.edit_queue, s.units, CH[0], CH[1], _row(v), s.rng)
+    execute_payload(s.gmap, s.edit_queue, s.units, CH[0], CH[1], _row(v), s.draws)
 
 
 def _bulk(g):

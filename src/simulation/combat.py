@@ -24,15 +24,14 @@ stop) go through the payload EXECUTOR
 sequences the physics entry points (``apply_explosion``,
 ``add_explosion_smoke``) byte-identically to the pre-W3 inline sites.
 
-Determinism — Phase 2:
-    ``fire_burst`` and the explosion-smoke helper accept a
-    :class:`numpy.random.Generator` (``rng`` parameter) for the bullet
-    cone offsets and smoke noise. The Simulation facade owns one
-    :class:`numpy.random.Generator` and plumbs it through these calls
-    on every tick so AI rollouts can be reproduced bit-for-bit. If you
-    invoke these helpers ad-hoc (e.g. from a test), pass an RNG with a
-    known seed — the legacy fallback to process-global ``random`` has
-    been removed.
+Determinism (#29 P3b):
+    every ``rng`` parameter below is the sim's KEYED draws
+    (:class:`simulation.draws.MatchDraws`, ``sim.draws``): each draw names
+    its site (``rng_salts.Salt``), its unit and its local index -- the k-th
+    cone draw a shooter makes this tick (``rng.next``), an in-flight round's
+    ``round_index(age, ordinal)`` -- so no draw depends on any other. An
+    ad-hoc caller (a test) passes ``draws.MatchDraws(seed)``; a numpy
+    Generator is refused at the first draw.
 """
 from __future__ import annotations
 
@@ -62,6 +61,7 @@ from simulation.orders import (
 )
 from simulation import unit_fixed
 from simulation import draws as _draws          # #29 P3e: the match draws
+from simulation.rng_salts import Salt            # #29 P3b: the draw sites
 from simulation.unit_schema import MAG_UNBOUND
 from simulation import noise as _noise          # G9p: shots are noises
 # Physics event entry points: re-exported for legacy imports; the detonation
@@ -328,6 +328,21 @@ class BulletInFlight:
         self.oy_q = self.ry_q
         self.sx_q = int(step_x_q)
         self.sy_q = int(step_y_q)
+        # #29 P3b: the round's identity for its later draws -- the draws'
+        # tick it was fired on and its ordinal among its shooter's rounds of
+        # that tick (set by fire_burst from its cone draw; None = never fired
+        # through it, and such a round refuses to roll).
+        self.spawn_tick = None
+        self.ordinal = 0
+
+    def _draw(self, rng, salt):
+        """This round's keyed draw of ``salt`` on this tick: id = its
+        shooter, index = ``round_index(age, ordinal)`` (#29 P3b)."""
+        if self.spawn_tick is None:
+            raise ValueError("BulletInFlight: a round rolls only once fired "
+                             "through fire_burst (it has no spawn tick)")
+        return rng.at(salt, self.shooter_id, _draws.round_index(
+            rng.tick - self.spawn_tick, self.ordinal))
 
     # Float VIEWS of the integer march (exact n/65536): the tracer, the
     # render-only events and the legacy onephase cover read them.
@@ -487,8 +502,8 @@ class BulletInFlight:
                     exposure = attack_resolver.cover_exposure_at(
                         gmap, self.prev_iy, self.prev_ix)
                     if (exposure < unit_fixed.FP_ONE
-                            and not attack_resolver.roll_exposure(exposure,
-                                                                  rng)):
+                            and not attack_resolver.roll_exposure(
+                                exposure, self._draw(rng, Salt.EXPOSURE))):
                         # Absorbed by the cover tile: it eats the round's wall
                         # damage, the tracer ends there, no unit packet.
                         fx.world(chew_wall, gmap, self.prev_iy, self.prev_ix,
@@ -525,7 +540,8 @@ class BulletInFlight:
             crit_chance = self.weapon.crit_chance       # quantized by the roll
             if crit_chance > 0:
                 mult = attack_resolver.arc_multiplier(self.angle_q, hit_unit)
-                if attack_resolver.roll_crit(crit_chance, mult, rng):
+                if attack_resolver.roll_crit(
+                        crit_chance, mult, self._draw(rng, Salt.SHOT_CRIT)):
                     actual_dmg = attack_resolver.scale_half_away(
                         actual_dmg, self.weapon.crit_mult)
             # FACING DETERMINES DEFENSE (onephase_wego design §9): a round
@@ -1335,12 +1351,16 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     shooter_id = getattr(shooter, "id", -1)
 
     for _ in range(n_bullets):
-        angle_q = base_q + _draws.cone_offset_q16(rng, cone_q)
+        # #29 P3b: the shooter's next cone draw this tick (its index is the
+        # round's ordinal, carried for the round's later draws)
+        d = rng.next(Salt.SHOT_CONE, shooter_id)
+        angle_q = base_q + _draws.cone_offset_q16(d, cone_q)
         # Per-bullet step vector through the kit (exact Q16 ints).
         step_x_q = unit_fixed.cos_q16(angle_q)
         step_y_q = unit_fixed.sin_q16(angle_q)
         b = BulletInFlight(shooter, shooter_id, weapon, ammo,
                            ox_q, oy_q, angle_q, step_x_q, step_y_q)
+        b.spawn_tick, b.ordinal = d.tick, d.index
         # G5p-a2 (RULED): the shooter recoils with minus the round's
         # momentum along its flight (times [impulse] recoil_mult), through
         # the slot's push effect -- no lever arm.
@@ -1446,7 +1466,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     one = unit_fixed.FP_ONE
 
     for _ in range(int(weapon.shots_per_trigger)):
-        angle_q = base_q + _draws.cone_offset_q16(rng, cone_q)
+        angle_q = base_q + _draws.cone_offset_q16(
+            rng.next(Salt.BEAM_CONE, shooter_id), cone_q)
         # #185: the beam's hit direction, its own kit step (Q16 ints)
         sx_q = unit_fixed.cos_q16(angle_q)
         sy_q = unit_fixed.sin_q16(angle_q)
@@ -2002,7 +2023,8 @@ def melee_blow(attacker, target, rng, events, weapon, effects,
     crit_chance = float(weapon.crit_chance)
     if crit_chance > 0.0:
         mult = attack_resolver.arc_multiplier(angle_q, target)
-        if attack_resolver.roll_crit(crit_chance, mult, rng):
+        d = rng.next(Salt.MELEE_CRIT, getattr(attacker, "id", -1))
+        if attack_resolver.roll_crit(crit_chance, mult, d):
             amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
 
     # #185: the blow travels striker centre -> victim centre (Q16)

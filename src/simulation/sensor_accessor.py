@@ -291,7 +291,8 @@ class EntityFieldAccessor:
         (``channels``, ``r``, ``all_units``) and ``out["vector"]`` through
         the callables ``vector_fields`` (the run file's placeholder rows);
         ``"v1"``: ``simulation.obs_spec_v1.observe_rows`` (``sim``,
-        ``context``) into ``vector`` / ``list`` / ``list_mask`` /
+        ``context``, optionally ``aims``: the action decoder's view, #195
+        1h) into ``vector`` / ``list`` / ``list_mask`` /
         ``list_uid``. The row flags are the env's. An unknown spec is
         refused by name."""
         if spec == "crop":
@@ -308,7 +309,10 @@ class EntityFieldAccessor:
             return
         if spec == "v1":
             from simulation.obs_spec_v1 import observe_rows
-            observe_rows(kw["sim"], kw["context"], units, out)
+            # ``aims`` (#195 1h): the v1 decoder's view per unit id, plain
+            # values beside the team's knowledge (absent = "none")
+            observe_rows(kw["sim"], kw["context"], units, out,
+                         aims=kw.get("aims"))
             return
         if spec == FULL_VIEW_SPEC:
             # the value network's full view (spec 5): served beside "v1" by

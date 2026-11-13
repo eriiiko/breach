@@ -21,7 +21,12 @@ WHOLE picture, the order's ``route`` (the horde's flood) and ``place``
 planes -- and with them the vector's ``air`` block (cols 58-65, the near
 window's values at the soldier's centre tile) and ``felt_temp`` (col 96,
 ``exchange.felt_temperature``, the heat row's own law) and the mate
-entries' lane pair (cols 52-53). Cols 28 and 66 read 0 until 1h.
+entries' lane pair (cols 52-53). Patch 1h (the action decoder) fills what
+the document reserves for it from the decoder's view (``observe_rows``'s
+``aims``, plain values beside the team's knowledge): the vector's ``prev``
+block (cols 71-76), the list's ``prev_aim`` (col 66) and ``on_next_tick``
+(col 28) on the aimed entry, and the near plane ``sees_target``; with no
+decoder (the ``"raw"`` action spec, the bots) they read their "none" values.
 
 Patch (c) builds THE FULL VIEW (section 5), ``FULL_VIEW_NAME = "full_v1"``:
 what the training-only VALUE network is shown beside the observation, served
@@ -90,6 +95,7 @@ from simulation.unit_orders import (NO_LIMIT, NO_PLACE, NO_TARGET,
                                     ORDER_OPENING_BASE, ORDER_WHAT, graph_of)
 from simulation.unit_schema import THROW_NO_REACH
 from simulation.weapons import FRAG_ROW, PLANT_WEAPON, fuse_ticks_from_seconds
+from simulation.action_spec_v1 import aim_vector
 
 SPEC_NAME = "v1"
 
@@ -1027,15 +1033,16 @@ def place_blocks(graph, where: int) -> np.ndarray:
 
 
 def build_windows(know: TeamKnowledge, u, ctx: ObsContext, near_f, near_u,
-                  far_f, far_u) -> None:
+                  far_f, far_u, aim_centre=None) -> None:
     """Section 3 into ``near_f`` (8, 25, 25), ``near_u`` (5, 25, 25),
     ``far_f`` (10, 25, 25) and ``far_u`` (5, 25, 25) for the living mate
     ``u`` of ``know``'s team: the crops of the map's planes with the
     soldier's own denominators (3.2, 3.3), the structure planes (3.4),
     ``watched`` from the RECORDED centres through ``vision.window_clear``
-    and ``sees_target`` 0 until 1h (3.5), the lanes plane (3.6), the far
-    unit planes from the whole picture (3.7), the order's ``route`` and
-    ``place`` planes (3.8)."""
+    and ``sees_target`` FROM every window tile TO ``aim_centre`` -- the
+    aimed entry's centre, the list's own (1h; all 0 without one) -- (3.5),
+    the lanes plane (3.6), the far unit planes from the whole picture
+    (3.7), the order's ``route`` and ``place`` planes (3.8)."""
     world = know.world
     P = world.planes
     h, w = P.shape
@@ -1060,7 +1067,12 @@ def build_windows(know: TeamKnowledge, u, ctx: ObsContext, near_f, near_u,
         watched |= vision.window_clear(world, ry, rx, y0, x0, WIN, WIN,
                                        to_window=False)
     near_u[2] = watched
-    near_u[3] = 0                       # sees_target: 1h's aim fills it
+    if aim_centre is None:              # sees_target (1h): my aim entry
+        near_u[3] = 0
+    else:
+        near_u[3] = vision.window_clear(world, int(aim_centre[1]),
+                                        int(aim_centre[0]), y0, x0, WIN, WIN,
+                                        to_window=True)
     # -- the lanes plane (3.6): a team-mate's line of fire, never mine --
     grid = know.lanes
     cell = know.lane_dials[0]
@@ -1200,9 +1212,11 @@ def _kit_values(u, weapon, melee, loadout, tick: int, ctx: ObsContext) -> tuple:
             charges, melee_cool, shove_cool)
 
 
-def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out) -> None:
+def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out,
+                 prev=None) -> None:
     """Section 1 into ``out`` (``(V,)`` float32), for the living mate ``u``
-    of ``know``'s team. The ``air`` block and ``felt_temp`` read 0 in (a)."""
+    of ``know``'s team. ``prev``: the action decoder's six decoded choices
+    of the soldier's last decision (1h), or ``None`` (cols 71-76 read -1)."""
     out[...] = 0.0
     world = know.world
     tick = know.tick
@@ -1288,7 +1302,7 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out) -> None:
         out[67] = 1.0
         out[70] = -1.0
     # -- 1.5 previous choices, the clock, the team, the order --
-    out[71:77] = -1.0
+    out[71:77] = -1.0 if prev is None else prev
     out[77] = ratio(ctx.limit_ticks - tick, ctx.limit_ticks)
     team = know.team
     teams = ctx.spec.teams
@@ -1567,9 +1581,14 @@ def _candidates(know, u):
     return mates, seen, recs, objs, doors
 
 
-def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
+def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid,
+               aimed_uid: int = -1):
     """Section 2 into ``out`` (``(E, F)`` float32), ``mask`` (``(E,)``
-    uint8) and ``uid`` (``(E,)`` int32) for the living mate ``u``."""
+    uint8) and ``uid`` (``(E,)`` int32) for the living mate ``u``.
+    ``aimed_uid`` (1h): the unit the decoder had the body aim at on the last
+    tick (-1 for none) -- its entry, if the list holds one, gets ``prev_aim``
+    (col 66) and ``on_next_tick`` (col 28). Returns that entry's centre
+    ``(x, y)`` (the record's, the list's own) or ``None``."""
     out[...] = 0.0
     mask[...] = 0
     uid[...] = -1
@@ -1692,6 +1711,31 @@ def build_list(know: TeamKnowledge, u, ctx: ObsContext, out, mask, uid) -> None:
         _door_entry(out[i], d, u, cx, cy, ctx, world.gmap, wired)
         mask[i], uid[i] = 1, DOOR_UID_BASE + ordinal
         i += 1
+
+    # -- 1h: the aimed entry (cols 66 and 28) --
+    aimed_uid = int(aimed_uid)
+    if aimed_uid < 0:
+        return None
+    units_end = caps[0] + caps[1] + caps[2]
+    hit = np.flatnonzero((mask[:units_end] != 0)
+                         & (uid[:units_end] == aimed_uid))
+    if len(hit) == 0:
+        return None
+    k = int(hit[0])
+    e = out[k]
+    e[66] = 1.0                                     # prev_aim
+    rec = know.records.get(aimed_uid) if k >= caps[0] else None
+    if rec is None:
+        return None
+    centre = (int(rec.centre[0]), int(rec.centre[1]))
+    # on_next_tick: the bots' own test (``control_bots._on_target``) with
+    # the decoder's own aim vector to the entry's centre
+    v = aim_vector(u, centre)
+    if v is not None:
+        want = atan2_q16(-v[1], v[0])
+        after = world.facing_after_turn_q16(u, v[0], v[1])
+        e[28] = float(abs(wrap_q16(want - after)) <= aimer.spread_q)
+    return centre
 
 
 # ---------------------------------------------------------------------------
@@ -1919,18 +1963,19 @@ class FullView:
     # -- the match (5.4): one vector per env per decision -------------------
     def match(self, ctx: ObsContext) -> np.ndarray:
         if self._match is None:
+            from simulation.reward_v1 import standing
             m = np.zeros(ctx.n_match, dtype=np.float32)
             teams = ctx.spec.teams
-            bars = self.picture.bars
+            # #195 1i: the team's health in bars through the reward's ONE
+            # standing (clipped at one bar); the column keeps its meaning
+            parts = standing(self.marines, self.picture.bars)
             for t in range(ctx.n_teams):
                 if t >= len(teams):
                     continue
                 n_t = int(teams[t].n)
                 mine = [u for u in self.marines if int(u.team) == t]
                 m[2 * t] = ratio(len(mine), n_t)
-                balance = sum(ratio(u.current_hp, bars.get(int(u.id), 0.0))
-                              for u in mine)
-                m[2 * t + 1] = squash(ratio(balance, n_t))
+                m[2 * t + 1] = squash(ratio(parts.h(t), n_t))
             nz = int(ctx.spec.zombies)
             awake = sum(1 for z in self.zombies if z.zombie_activated)
             k = 2 * ctx.n_teams
@@ -2197,13 +2242,16 @@ OBS_KEYS = ("vector", "list", "list_mask", "list_uid", "near_f", "near_u",
             "far_f", "far_u")
 
 
-def observe_rows(sim, ctx: ObsContext, units, out: dict) -> None:
+def observe_rows(sim, ctx: ObsContext, units, out: dict, aims=None) -> None:
     """Write :data:`OBS_KEYS` of ``out`` (the ``(U, ...)`` views) for
     ``units`` (one living mate or None per row): the map's planes read
     ONCE for the env (:class:`FieldPlanes`), one :class:`TeamKnowledge` per
     marine team of the rows, then the builders. The row flags are the env's
     (spec 4.2). With :meth:`TeamKnowledge.build`, the one place the
-    observation reads the sim."""
+    observation reads the sim. ``aims`` (1h): per unit id the action
+    decoder's ``(aimed_uid, prev)`` -- the soldier's own controller state,
+    plain values; a unit absent from it reads the "none" values."""
+    aims = aims or {}
     out["vector"][...] = 0.0
     out["list"][...] = 0.0
     out["list_mask"][...] = 0
@@ -2224,11 +2272,12 @@ def observe_rows(sim, ctx: ObsContext, units, out: dict) -> None:
         if know is None:
             know = knows[team] = TeamKnowledge.build(sim, sim.team_picture,
                                                      team, planes=planes)
-        build_vector(know, u, ctx, out["vector"][i])
-        build_list(know, u, ctx, out["list"][i], out["list_mask"][i],
-                   out["list_uid"][i])
+        aimed_uid, prev = aims.get(int(u.id), (-1, None))
+        build_vector(know, u, ctx, out["vector"][i], prev)
+        centre = build_list(know, u, ctx, out["list"][i], out["list_mask"][i],
+                            out["list_uid"][i], aimed_uid)
         build_windows(know, u, ctx, out["near_f"][i], out["near_u"][i],
-                      out["far_f"][i], out["far_u"][i])
+                      out["far_f"][i], out["far_u"][i], centre)
 
 
 def shapes(n_envs: int, n_rows: int, n_slots: int) -> dict:

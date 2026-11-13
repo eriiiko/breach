@@ -42,6 +42,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation.blast_air import blast_base_soot_g  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, fire_fixed, wall_fixed  # noqa: E402
@@ -129,7 +130,7 @@ def _twin(edits=()):
     z = Unit("Z", x=13, y=11, team=ZOMBIE_TEAM)
     m.id, z.id = 1, 2
     m.current_hp = z.current_hp = 1e9
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     return gmap, queue, [m, z], rng, []
 
 
@@ -173,7 +174,7 @@ def test_a_row_without_strength_is_byte_identical_to_prew3_triple():
             assert ua.current_hp == ub.current_hp
             assert ua.alive == ub.alive
         assert repr(ev_a) == repr(ev_b)
-        assert rng_a.bit_generator.state == rng_b.bit_generator.state
+        assert rng_a.drawn == rng_b.drawn
 
 
 # ---------------------------------------------------------------------------
@@ -235,14 +236,14 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
     lands on another slice."""
     gmap = _room(edits=[(10, 13, 1)])     # a hull tile INSIDE the disc
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
-    state_before = rng.bit_generator.state
+    rng = MatchDraws(SEED)
+    state_before = rng.drawn
 
     emit_gas(gmap, queue, 10, 11, "steam", 1.5, 4)
     queue.flush(gmap, rng)
 
     # NO RNG: the deposit is deliberately noise-free (unlike the blast cloud).
-    assert rng.bit_generator.state == state_before
+    assert rng.drawn == state_before
 
     ws = gmap.gas[STEAM]
     # Centre: weight 1.0 -> 1.5 exactly (no ceiling, D1) -> 98304 counts.
@@ -280,7 +281,7 @@ def test_gas_deposit_is_additive_with_saturation_guard():
     destroyed smoke already on the tile)."""
     gmap = _room()
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     for _ in range(2):
         emit_gas(gmap, queue, 10, 11, "teargas", 0.3, 3)
         queue.flush(gmap, rng)
@@ -305,7 +306,7 @@ def test_gas_payload_species_route_to_their_slices():
                                ("smoke_screen", STEAM)]:
         gmap = _room()
         queue = EditQueue()
-        rng = np.random.default_rng(SEED)
+        rng = MatchDraws(SEED)
         payload = t.payloads.by_name[row_name]
         execute_payload(gmap, queue, [], 10, 11, payload, rng, events=None,
                         kind="grenade")
@@ -331,7 +332,7 @@ def test_pure_gas_payload_still_emits_the_detonation_event():
     t = get_tables()
     gmap = _room()
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events = []
     execute_payload(gmap, queue, [], 10, 11, t.payloads.by_name["smoke_screen"],
                     rng, events=events, kind="grenade")
@@ -353,7 +354,7 @@ def test_incendiary_ignite_ring_max_write_never_lowers():
     # north; the centre tile is air (non-flammable -> no deposit).
     gmap = _room(edits=[(10, 12, 2), (10, 13, 2), (9, 11, 6)])
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
 
     # Pre-existing BIG fire on the furniture tile — must never lower.
     big_q = fire_fixed.quantize_scalar(0.9)

@@ -50,6 +50,13 @@ OFF = [(k, False) for k in horde.BEHAVIOUR_SWITCHES]
 # gate holds them while every behaviour is off; the next DELIBERATE re-pin
 # of the field law by another cause retires them with it.
 _STAGE1_SHIP_DEMO = dict(
+    # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
+    # Philox draws had moved this pin): re-pinned on the merged tree with
+    # Erik's bite values -- outcome and team unmoved (win 1); ticks 251 on main -> 255; the digests and the unit stream
+    # move (each marked below). SOLE CAUSE: on the merged tree with the
+    # three old [zombie] values set back in-process main's version of this
+    # test file passes whole, i.e. main's pin comes back bit for bit. The
+    # "now" values in the 2026-11-12 bite comment are the pre-merge branch's.
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
     # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
@@ -62,7 +69,9 @@ _STAGE1_SHIP_DEMO = dict(
     #     c9ff1fc86f91894febddd94d
     #   unit_stream c144ab6cb3bec1f33f143eaa1bfff97de346743f
     #     316ec412b60e65ec140e761a
-    outcome="win", team=1, ticks=254,
+    # #29 P3b re-pin (2026-11-12, keyed Philox draws): ticks 264 -> 251,
+    # outcome and team UNCHANGED (the sole-cause plugin gives 264 back).
+    outcome="win", team=1, ticks=255,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -71,8 +80,17 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was d9c4c5cef6c04f9d80eaa2b368d88782a8fa28132f7cd39a8011c230b88cecde)
-    field_digest="2e4852a4ac2077e62af6f4df06d253f1"
-                 "d48cee022632f248b7356917e3b4373b",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 22e944fe6477d16ab0367b9562c357e96c8ed0a7a2277dde8dce6b2a486e9f23)
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was cc46ec4b934902f73090aae00bef0b3f6e98f3f041948f51593bc9f86b8b8ba8)
+    field_digest="e71707b913095bb53c7ad9c7f3883466"
+                 "4d19431033c9d7d95651ea7e65422e43",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -98,8 +116,17 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 82a361e85a0334a3a18dc84e63aea8bee0755ba6ac1b0d18423ea4c9f0aeea3e)
-    tick_digest="55d714459d7db78897a9b8e830139548"
-                "86e279cde0714acc105d39231dad457c",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 87dfe255f97bdc33320a7df36fea68dbfbfcd92fc9ff1fc86f91894febddd94d)
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was ab061346257c0c5b2ec5a2bf99fbad26aa74d6661a3886119c759f1de459b05e)
+    tick_digest="5fb9a9f6b1d847cf09e2b1b21457507c"
+                "a529d4962ea730e9a71f4d7046025a62",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -125,8 +152,17 @@ _STAGE1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was fd0d6bd79fbe4fa624065eda6bc9c04bc200e8ef38d7cdd5bd77bd4e5643877e)
-    unit_stream="46dc6d4c5ad2ff73fd89e55430930884"
-                "e4119672c4c5be7c73d88e5e3eeb87f1")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was c144ab6cb3bec1f33f143eaa1bfff97de346743f316ec412b60e65ec140e761a)
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 6707d27e1ccba0eb1ce455803d552c1b4126cdd87cf55780d3c82cc5f5c24560)
+    unit_stream="fe0be81e4a8b59edd89ec8ac8c2b0f6a"
+                "57124f911504098cb9dbbc390d8b8dfc")
 _STAGE1_BOX = dict(
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
@@ -235,7 +271,7 @@ def _wander_run(monkeypatch, seed, ticks=1500):
     zs = [sim.get_unit(sim.add_unit(Unit(f"Z{i}", x=8 + 9 * i, y=12,
                                          team=ZOMBIE_TEAM)))
           for i in range(4)]
-    rng0 = sim.rng.bit_generator.state
+    rng0 = sim.draws.drawn
     track = []
     for _ in range(ticks):
         sim.step()
@@ -269,7 +305,7 @@ def test_the_wander_draws_no_random_number_and_is_a_hash_of_id_and_tick(
     _, _, t1, _ = _wander_run(monkeypatch, 1, ticks=600)
     sim, _, t2, rng0 = _wander_run(monkeypatch, 99, ticks=600)
     assert t1 == t2
-    assert sim.rng.bit_generator.state == rng0
+    assert sim.draws.drawn == rng0
     a = [horde.wander_direction(3, t) for t in range(200)]
     assert a == [horde.wander_direction(3, t) for t in range(200)]
     assert set(a) == set(horde.NEIGHBOURS)
@@ -392,13 +428,13 @@ def test_shots_and_detonations_are_noises_at_their_rows_loudness():
     w = sim.weapons_tables.weapons.by_name[u.weapon_id]
     assert w.loudness_tiles == noise.radius_tiles(w.loudness, 0.5) > 0
     _dispatch_trigger(sim.gmap, sim.units, u, u.center_tile_x(),
-                      u.center_tile_y(), 30, 6, 1, [], 0.0, sim.rng, None,
+                      u.center_tile_y(), 30, 6, 1, [], 0.0, sim.draws, None,
                       None, w, 0.0)
     assert sim.gmap.noise_log[-1] == (u.center_tile_y(), u.center_tile_x(),
                                       w.loudness_tiles)
     frag = sim.weapons_tables.payloads.by_name["frag_standard"]
     assert frag.loudness_tiles == noise.radius_tiles(frag.loudness, 0.5) > 0
-    execute_payload(sim.gmap, EditQueue(), sim.units, 10, 20, frag, sim.rng)
+    execute_payload(sim.gmap, EditQueue(), sim.units, 10, 20, frag, sim.draws)
     assert sim.gmap.noise_log[-1] == (10, 20, frag.loudness_tiles)
     with pytest.raises(KeyError, match="loudness"):
         WeaponTable({"r": dict(archetype="projectile", range_tiles=10)}, 24)

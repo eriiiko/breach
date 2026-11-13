@@ -584,6 +584,13 @@ def test_a_unit_with_no_exposure_records_as_before_and_one_with_some_does_not():
 #: 20d79396d6b267ceee64bc4f206798f7e7d56be439e4b035956f3008abc3696a; units
 #: 8c3375ebc62fd939608932221143d0f5b01da48bc24c13edbe32c08aaf75349a)
 _PRE_G4P_SHIP_DEMO = dict(
+    # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
+    # Philox draws had moved this pin): re-pinned on the merged tree with
+    # Erik's bite values -- outcome, team and ticks unmoved (draw at 7200); the digests and the unit stream
+    # move (each marked below). SOLE CAUSE: on the merged tree with the
+    # three old [zombie] values set back in-process main's version of this
+    # test file passes whole, i.e. main's pin comes back bit for bit. The
+    # "now" values in the 2026-11-12 bite comment are the pre-merge branch's.
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
     # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
@@ -607,8 +614,17 @@ _PRE_G4P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was a7f9fd78c8a13c2bf9fc38657b05eae042993affcd85bc777493724808fe2b8b)
-    field_digest="539899d7be43d79aea7e48346333c9bf"
-                 "23ea4ef7e69c9a10273d3fff25a99988",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 2db5b2eaac6dcfafdbcfd85ec91772dfe838b1fddff573e90a09eba1de6bcb08)
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was d5e0e90969e747038c0a8d7391303b21804bae0d0cc7c9bf7d4ded8c258c4174)
+    field_digest="ab8d586ee11eab6ef9e5acfc14b0bc2c"
+                 "7f179231d086cec366693382d872aedd",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -634,8 +650,17 @@ _PRE_G4P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 38fb265a937975bff666bf133f5ebc38c72be4396c32f514678b202df7424c83)
-    tick_digest="0af70dcdd7cc6349a6ed8a3f9cb9edea"
-                "5d5e82e793f6ce33115930dbc2ceb591",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 892b5eafaec42203142dd4565f8e2203f5eaa57b0197d049e2f9809c1b07d533)
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 58fd01b50f17f712913ba0148507e426a752b5e4a3d5a174565021aa54547c8e)
+    tick_digest="e5088875870e5a411959b878a9fa7e82"
+                "69e21f6fbe4f8c7eedd792ab5f82b502",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -661,8 +686,17 @@ _PRE_G4P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was befb598018c7f135c75662f49a6365e42f11d518be6d4ea097c2abc7ccfe04f0)
-    unit_stream="3cb5bd08a078ed0b9dac6a5726c7db85"
-                "010c4895881d8ee62f6135816c5489f2")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 11f23789903ddcfef78450a17ce5f9c91a267f86a46d8c5bbf4c573d96e3ee8f)
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 2519f4e1da0cb281ce420bbfeb05b9ca12706e833f165909b4aee49663e3f9c5)
+    unit_stream="7e53f712231587584210101e2ad8dbef"
+                "eb56e295a6773628998a4d720490ae85")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

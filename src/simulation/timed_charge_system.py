@@ -196,7 +196,7 @@ def sweep_timed_charges(sim) -> None:
             continue
         if c.ticks_to_fire == 0:
             execute_payload(sim.gmap, sim.edit_queue, sim.units, c.fy, c.fx,
-                            c.payload, sim.rng, events=sim.tick_events,
+                            c.payload, sim.draws, events=sim.tick_events,
                             kind=EVENT_KIND)
             c.ticks_to_fire = c.period_ticks - 1 if c.period_ticks > 0 else -1
         else:

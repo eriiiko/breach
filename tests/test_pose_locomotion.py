@@ -684,10 +684,10 @@ def test_a_throw_releases_at_the_end_of_its_wind_up(monkeypatch, ticks):
 
 
 def test_blank_reload_and_throw_clips_change_nothing(monkeypatch):
-    """PROPERTY: with the shipped rows (clip "" -- the clips are still being
-    made), reload and throw events change no pose, bit for bit; and without
-    the event classes in the sim (today) the reactions are not even looked
-    for.
+    """PROPERTY: with blank rows (clip "" -- a game without the clips, as
+    shipped until #188 filled them), reload and throw events change no pose,
+    bit for bit; and the event classes are looked up only where the sim has
+    them.
 
     BREAKS IF: a blank clip plays something, or a missing event class
     raises.
@@ -698,9 +698,12 @@ def test_blank_reload_and_throw_clips_change_nothing(monkeypatch):
     assert (r0._reload_event is None) == (not hasattr(sev, RELOAD_EVENT))
     assert (r0._throw_event is None) == (not hasattr(sev, THROW_EVENT))
     _with_standins(monkeypatch)
+    blank = dataclasses.replace(
+        SETTINGS, reload=TimedShotSettings(clip="", layers=("upper", "head")),
+        throw=TimedShotSettings(clip="", layers=("upper", "head")))
     rows = []
     for events in (False, True):
-        r = _renderer(monkeypatch)
+        r = _renderer(monkeypatch, settings=blank)
         units = [_Unit(1, 20.0, 20.0)]
         out = []
         for k in range(40):

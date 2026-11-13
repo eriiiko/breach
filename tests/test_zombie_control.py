@@ -215,6 +215,14 @@ _PRE_122_BOX = dict(
     unit_stream="3a6b230941d73d3b6f325af378ffe67b"
                 "44a86953bbb4d46736245fbf4caa31ee")
 _PRE_122_SHIP_DEMO = dict(
+    # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
+    # Philox draws had moved this pin): re-pinned on the merged tree with
+    # Erik's bite values -- outcome and team unmoved (win 0); ticks 2708 on main (2881 on
+    # the pre-merge branch) -> 2570; the digests and the unit stream
+    # move (each marked below). SOLE CAUSE: on the merged tree with the
+    # three old [zombie] values set back in-process main's version of this
+    # test file passes whole, i.e. main's pin comes back bit for bit. The
+    # "now" values in the 2026-11-12 bite comment are the pre-merge branch's.
     # #140 re-pin (2026-10-31, the wind law retires the pressure-gradient
     # push). SOLE CAUSE, verified on the same build: the #140 P1a tree
     # (78d3d78, which still reproduces the old pin: win 0 at 1528, bdc5ad3e /
@@ -416,7 +424,15 @@ _PRE_122_SHIP_DEMO = dict(
     # (1019); then the squads: units 0 (1160), 6 (1576), 7 (2615) and 5
     # (2881) to bullets -- team 0 (slots 1, 2, 3) stands.
     # (was ticks 2966)
-    outcome="win", team=0, ticks=2881,
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites: every draw
+    # keyed (seed; tick, index, salt, id) in place of one numpy stream).
+    # Outcome and team UNCHANGED (win 0); ticks 2966 -> 2708. SOLE CAUSE,
+    # verified on the same tree: tests/_p3b_sole_cause.py (main's stream
+    # words through the keyed sites) gives the P3e pin back bit for bit --
+    # outcome, ticks and all three digests; A/B over 24-72 seeds in
+    # docs/p3b_ab_2026-11-12.md.
+    # (was ticks 2966)
+    outcome="win", team=0, ticks=2570,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -451,9 +467,16 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 0afdec8bfef8943048652975d92945c2fafdf0a6751a900ccbf8a1c8702cc617)
-    # Erik's zombie bite balance re-pin (2026-11-12, see ticks above).
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136)
-    field_digest="b1b830b3f1dc44da0834018e0397e04fe14daae599e090c360475a54523b71dc",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 13168aaad034fb1f8365ac184244453d7dc8ef6168b2438b48101b492484b89d)
+    field_digest="3f82af18a8669a5dcf99ec75a8fd38f7eb7cc5f8f7d49c7fe1a42b5888b334bc",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -592,9 +615,16 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 402970f74f8e71af449d04cd8c245de8bd4a3069771ca31529506fe08a1b6dad)
-    # Erik's zombie bite balance re-pin (2026-11-12, see ticks above).
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509)
-    tick_digest="1dccdfab187dddcbc5ae483677b5afda7b58f58cd4c1033ee1f6ee22336d814f",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0)
+    tick_digest="e1a9413a03e8ab185ea66652f3d467549533a3a34bfd68ad93ee1392fb76a0cb",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -622,9 +652,16 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 537ec052b34d2e9b52887299ddf38162ae47f4efb3acc51f7df3ffb3175742ca)
-    # Erik's zombie bite balance re-pin (2026-11-12, see ticks above).
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba)
-    unit_stream="5e8cdc5ef919a4f0ae94c527c85c81c6ac582f2b84575a09afa0588fa383e537")
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64)
+    unit_stream="8548eb1e2f94f9a501953615e24ad7bdb23d2922f7a11d8c03d5389540595eae")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
@@ -649,7 +686,8 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field
     and its behaviours, then at G8p's layered bots, then at #195 1d's honest
     team picture, then at #29 P3e's integer match path, then at Erik's
-    zombie bite balance: win team 0 at tick 2881) with the same tick_digest. Breaks like the box test, on the real
+    zombie bite balance, then at #29 P3b's keyed Philox draws: win team 0
+    at tick 2570) with the same tick_digest. Breaks like the box test, on the real
     level -- and on any change of the bots (then re-pin, the bots_v1 pin of
     tests/test_bots_v1.py staying)."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))

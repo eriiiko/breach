@@ -2,8 +2,10 @@
 P1a) and THE farm measurement instrument (residency design §9.1).
 
 Steps ``rl_env.BatchedEnv`` with uniformly random action rows
-(``control_policy.random_action_rows``, a seeded generator: the trainer stub)
-until every env has finished ``--episodes`` episodes through the in-step
+(``control_policy.random_action_rows``, a seeded generator: the trainer stub;
+under ``[action] spec = "v1"`` (#195 1h) each head drawn uniformly among the
+options the served masks leave legal, the argument among ``arg_mask``'s of
+the drawn hand and aim -- :func:`legal_v1_rows`) until every env has finished ``--episodes`` episodes through the in-step
 reset, then reports:
 
 - env-ticks/s: ticks simulated by all envs / wall time, over the window after
@@ -38,13 +40,33 @@ import rl_env  # noqa: E402
 from control_policy import random_action_rows  # noqa: E402
 
 
+def _pick(rng, mask):
+    """Per leading index one option drawn uniformly among ``mask``'s ones
+    (the last axis; every row has at least one)."""
+    r = rng.random(mask.shape)
+    r[mask == 0] = -1.0
+    return r.argmax(axis=-1)
+
+
+def legal_v1_rows(rng, obs) -> np.ndarray:
+    """``(N, U, 5)`` int32: per row each head drawn uniformly among its legal
+    options in ``obs``'s masks, the argument among the realised
+    ``arg_mask`` -- the v1 trainer stub (vectorised: the driver's cost is
+    in the measurement)."""
+    from simulation.action_spec_v1 import MASK_KEYS, arg_mask
+    cols = [_pick(rng, obs[k]) for k in MASK_KEYS]
+    cols.append(_pick(rng, arg_mask(cols[3], cols[1])))
+    return np.stack(cols, axis=-1).astype(np.int32)
+
+
 def drive(env, *, episodes: int, seed: int, warmup_steps: int,
           max_steps: int | None = None, out=print) -> dict:
     """Step ``env`` with random rows until every env ended ``episodes``
     episodes (or ``max_steps``); returns the measurement."""
     rng = np.random.default_rng(seed)
     n, u, a = env.layout.n_envs, env.layout.n_rows, env.layout.n_actions
-    env.reset()
+    v1 = env.layout.action_spec == "v1"
+    obs, _ = env.reset()
     ended = np.zeros(n, dtype=np.int64)
     step_s, ticks_win = [], 0
     t_win = None
@@ -54,10 +76,20 @@ def drive(env, *, episodes: int, seed: int, warmup_steps: int,
             break
         if steps == warmup_steps:
             t_win = time.perf_counter()
-        acts = random_action_rows(rng, n * u).reshape(n, u, a)
+        if v1:
+            acts = legal_v1_rows(rng, obs)
+        else:
+            acts = random_action_rows(rng, n * u).reshape(n, u, a)
         t0 = time.perf_counter()
-        _, _, _, _, info = env.step(acts)
+        obs, rew, _, _, info = env.step(acts)
         t1 = time.perf_counter()
+        # #195 1i: a named profile's reward is (N, U, 5); every reward finite
+        if (rew.shape != (n, u) + env.layout.reward_shape_tail
+                or not np.isfinite(rew).all()):
+            raise AssertionError(f"reward {rew.shape} (finite: "
+                                 f"{bool(np.isfinite(rew).all())}) does not "
+                                 f"fit the layout's profile "
+                                 f"{env.layout.reward_profile!r}")
         steps += 1
         ended += info["ended"]
         if t_win is not None and steps > warmup_steps:
@@ -97,7 +129,10 @@ def report_lines(env, res: dict, args) -> list:
         f"decimation={r.decimation} workers={env.n_workers} "
         f"policy={r.policy!r} channels={len(r.channels)} "
         f"crop_radius={r.crop_radius} vector={len(r.vector)} "
-        f"rows={env.layout.n_rows} actions={env.layout.n_actions}",
+        f"rows={env.layout.n_rows} actions={env.layout.n_actions} "
+        f"obs={r.spec} action_spec={r.action_spec} "
+        f"full_view={env.layout.full_view} "
+        f"reward_profile={r.reward_profile}",
         f"driver: seed={args.seed} episodes>={args.episodes} per env, "
         f"warmup={args.warmup_steps} steps",
         f"steps: {res['steps']} ({res['measured_steps']} measured), "

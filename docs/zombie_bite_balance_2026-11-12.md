@@ -35,7 +35,11 @@ slot, the marine through the intent facade). Cases:
 - **shove_repeat**: as shove, and again each time the zombie is back at contact.
 - **range**: the zombie 10 m away, awake, walking in; the marine fires from tick 0.
 
-At the final values (main `321babcf` merged in):
+At the final values (main `37142802` merged in, re-run 2026-11-13). With main
+`321babcf` the table was the same except range (5.12 s and 39 rounds, both
+zombies); main has since moved the shot cone's random numbers (#29 P3b keyed
+Philox draws), and the ranged kill now takes 43 rounds (cause not separately
+proven), winner unchanged. Every contact row held to the digit:
 
 | zombie | case | winner | seconds | bites | zombie HP left | rounds |
 |---|---|---|---|---|---|---|
@@ -44,13 +48,13 @@ At the final values (main `321babcf` merged in):
 | spawned | duel | zombie | 4.46 | 3 | 5.5 | 31 |
 | spawned | shove | **zombie** | 4.67 | 3 | 7.5 | 30 |
 | spawned | shove_repeat | **zombie** | 4.88 | 3 | 10.6 | 30 |
-| spawned | range | marine | 5.12 | 0 | 0 | 39 |
+| spawned | range | marine | 5.46 | 0 | 0 | 43 |
 | turned | idle | zombie | 4.46 | 3 | 100 | 0 |
 | turned | fire_vs_standing | marine | 4.71 | 0 | 0 | 34 |
 | turned | duel | zombie | 4.46 | 3 | 5.5 | 31 |
 | turned | shove | **zombie** | 4.58 | 3 | 7.5 | 30 |
 | turned | shove_repeat | **zombie** | 4.71 | 3 | 10.7 | 30 |
-| turned | range | marine | 5.12 | 0 | 0 | 39 |
+| turned | range | marine | 5.46 | 0 | 0 | 43 |
 
 Before (60 / 1.0 s / 400): the zombie killed an idle marine in two bites in
 1.04 s, won every contact case, and a turned zombie (400 HP) could not be

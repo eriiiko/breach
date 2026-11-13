@@ -253,7 +253,7 @@ fields' row in 3.2).
 
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
-| 71..76 | `prev[h]`, h = feet direction, feet speed, aim, trigger, hand, hand argument | the previous decision's chosen option index per head; -1 until 1h's decoder writes them (1g reserves the six columns and writes -1; the previous aim entry is marked on the list, 2.2 col 66, never a position) | kind | no |
+| 71..76 | `prev[h]`, h = feet direction, feet speed, aim, trigger, hand, hand argument | the previous decision's decoded choice per head (as built, 1h: the choices after the decoder's fallbacks), -1 before the match's first decision and without a decoder (the `"raw"` action spec, the bots): feet direction 0..15, 16 = stood; feet speed 0..2, -1 when stood; aim the token index 0..17, or 18 = "a list entry" (which one is marked by col 66, never a position); trigger 0/1; hand its index; argument its index, -1 when the hand took none | kind | no |
 | 77 | `time_left` | `limit_ticks - tick` | `limit_ticks` | no |
 | 78 | `mates_alive` | living non-zombie units of my team (me included) | `n_t` of my team | no |
 | 79 | `team_ammo` | the team's rounds: for each living mate `rounds + spares * mag_size` (`TeamBrain.update`'s count, `src/control_bots.py:381-387`; untracked spares count as `magazines` full ones) | `n_t * LoadoutDef.magazines * mag_size` of the team's loadout | yes |
@@ -336,8 +336,10 @@ sighting; v2, critique minor 10), written by `_sighting`
   masks key on it; nothing reads a uid's VALUE (a unit id carries spawn
   order, and a conversion keeps it, so a seen zombie's uid equals the
   marine it was). A network input built from a uid's value is the bug.
-- **The previous aim mark** (col 66) is written by 1h's decoder (the held
-  uid); 0 in 1g.
+- **The previous aim mark** (col 66) is written by 1h's decoder (as built:
+  the entry whose `uid` is the unit the body aimed at on the last tick --
+  the previous decision's aim, or the throwing decision's while a wind-up
+  kept it; none for a token).
 
 ### 2.2 The entry (67 float32 columns; a column not applicable to the type is 0)
 
@@ -377,7 +379,7 @@ a type-0 column through `TeamKnowledge.mates`:
 | 25 | `lof_solid` | `line_of_fire.solid_in_way(sim, my centre, its centre)` (1.7) | flag (1 = something solid in the way) | no |
 | 26 | `lof_mate` | `line_of_fire.mate_in_way(my centre, its centre, my living mates, line_clear_tiles, fp)` | flag | no |
 | 27 | `ticks_to_on` | `turning.ticks_to_within(me, atan2_q16(-dy_q, dx_q) of the offset to its centre, a, w, unit_impulse.pending_dw(table, me), spread_q, cap)` (1.7; `a`, `w` = `Simulation.unit_turn_accel_q16 / unit_turn_rate_q16`, `simulation.py:1053-1065`; `spread_q = quantize(radians(weapon.spread_deg))`, the bots' `_weapon_spread_q` `control_bots.py:1188`; `cap = 4 * HALF_TURN_TICKS`) | `HALF_TURN_TICKS = ceil(PI_Q16 / w)` (the half turn at top speed; 12 ticks at the shipped dials) | yes (reads 4 at the cap) |
-| 28 | `on_next_tick` | for the entry that is my current aim target only (1h's held uid; 0 in 1g): `abs(wrap(want - Simulation.facing_after_turn_q16(me, dx_q, dy_q))) <= spread_q` (`simulation.py:1067`; the bots' `_on_target`, `control_bots.py:1180-1186`) | flag | no |
+| 28 | `on_next_tick` | for the entry that is my current aim target only (as built, 1h: the entry col 66 marks, with the decoder's own aim vector `action_spec_v1.aim_vector` to its record's centre; 0 without one): `abs(wrap(want - Simulation.facing_after_turn_q16(me, dx_q, dy_q))) <= spread_q` (`simulation.py:1067`; the bots' `_on_target`, `control_bots.py:1180-1186`) | flag | no |
 | 29 | `in_range` | squared centre distance `<= range_tiles^2` of my weapon | flag | no |
 | 30 | `in_throw_range` | `<= max_throw_range^2` (`[weapons.hand_grenade] max_throw_range` `config.toml:3312`) | flag | no |
 | 31 | `facing_on_me` | `aim_of(know, it)`'s category `== 1` | flag | no |
@@ -440,7 +442,7 @@ The mark:
 
 | pos | name | read from | divided by | squash |
 |---|---|---|---|---|
-| 66 | `prev_aim` | this entry was the previous decision's aim target (1h's held uid; 0 in 1g) | flag | no |
+| 66 | `prev_aim` | this entry is the unit the body aimed at on the last tick (as built, 1h: the decoder's `aimed_uid`; 0 for a token aim or without a decoder) | flag | no |
 
 ## 3. The two windows (design 3.4, 3.5, 4.5, 5.2)
 
@@ -553,7 +555,7 @@ soldier, on the cropped 25 x 25 (a divide of 625 cells).
 | name | what | read from |
 |---|---|---|
 | `watched` | the tiles at least one KNOWN enemy has a line of sight to | for each record of my team's picture (seen or remembered, at its recorded `centre`): `vision.window_clear(sim, ry, rx, cy - 12, cx - 12, 25, 25, to_window=False)` (`vision.py:217`: FROM the enemy's tile to each window tile), OR-ed. A known enemy's RECORDED place, never its live one (honest: the team's knowledge). |
-| `sees_target` | the tiles from which my aim target can be seen | `window_clear(sim, ty, tx, ..., to_window=True)` (FROM each window tile to the target's tile) for the entry 1h's decoder holds as my aim (its live centre if seen, its record's if remembered); all 0 with no aim entry (1g: always 0 -- CHOICE: the plane exists, with its builder, so 1h adds one line) |
+| `sees_target` | the tiles from which my aim target can be seen | `window_clear(sim, ty, tx, ..., to_window=True)` (FROM each window tile to the target's tile) for the entry 1h's decoder holds as my aim (its live centre if seen, its record's if remembered); all 0 with no aim entry (as built, 1h: the entry col 66 marks, its record's centre) |
 
 Both uint8. Cost: one window call (625 lines) per known enemy per soldier
 per decision, plus one for the target; the routine is C++ (`sight_lines`,
@@ -755,11 +757,20 @@ them adds a version of this spec (the Full view row, design 10).
 (zero for a team the level lacks) its living count / `n_t` and its
 BALANCE -- the sum over its living units of `current_hp / bars[uid]` over
 `n_t` (CHOICE: the reward's balance of design 6 is 1i's; until 1i lands
-the balance here is this health sum, the same quantity 1i's team part
-differences; 1i replaces the builder, not the column) -- then the zombies
+the balance here is this health sum; 1i replaces the builder, not the
+column) -- then the zombies
 awake / `spec.zombies`, dormant / `spec.zombies` (`zombie_activated`),
 and `time_left` (as 1.5 col 77). The soldier's own team counts (1.5 cols
 78-83) stay in its vector.
+
+(1i, 2026-11-13) The column is now built by the reward's one standing
+(`reward_v1.standing(...).h(t) / n_t`, squashed): the team's own health
+term `H_t`, each unit's health clipped at one bar -- its only change, which
+no shipped unit reaches. It is ONE term of the balance `B_t` that 1i's team
+part differences (`B_t = mb (H_t - H_enemy) + ma (A_t - A_enemy) - zb
+H_zombie`), not `B_t` itself; the value network has the living counts and
+every unit beside it, and `B_t` as a column would be a new version of the
+full view.
 
 ### 5.5 The watched-by-everyone plane (design 7.1 "the map")
 
@@ -945,7 +956,7 @@ failing old test a finding, the house rules of plan 1.4. None touches
 | gates | section 7's full view, policy-never-sees-it, the counterfactual family's case (f) (full view on vs off, every observation array), farm; `pytest tests -q`; **the budget of section 6**: the §9.1 before / after reading, in the checkpoint comment; below 70 %, the order of attack of section 6 inside this patch, and if it still fails: commit, report, stop (plan 1.7) |
 | report | the final farm numbers under `"crop"` and `"v1"`; the per-part table filled |
 
-1h then writes the columns this document reserves for it: `prev[h]` (1.5),
+1h then writes (as built, 1h) the columns this document reserves for it: `prev[h]` (1.5),
 `on_next_tick` (2.2 col 28), `prev_aim` (col 66), `sees_target` (3.5), and
 reads `list_uid` (as an equality key only, 2.1) and the gates of 1e for
 its masks. 1i reads `in_match`, `valid` and `bars`, and its trainer test
