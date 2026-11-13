@@ -2178,6 +2178,16 @@ zombie = ["worker_male", "worker_female"]
 # either list), or see every unit as him without editing anything:
 #   python art/characters/charkit/preview_in_game.py --root . --model assets/models/soma_worker_male/soma_worker_male.glb -- --level playground
 # zombie = ["soma_worker_male", "worker_male", "worker_female"]
+# Handedness (#187): the share of each role's units drawn LEFT-HANDED -- the
+# mirror image of the pose (every clip, reaction and twist mirrored; the held
+# carbine on the left hand), dealt like the looks: by ascending unit id at
+# first sight, the k-th unit of a role left-handed when round((k+1) x share)
+# > round(k x share), kept for its life. RENDER-ONLY (Erik's ruling: handedness
+# must not affect play; a handedness that matters, e.g. peeking a corner, is a
+# separate gameplay ruling). Pose layer on only, on a skeleton with
+# mirror_pairs ([render.pose.skeletons.*]); 0 = every unit right-handed, the
+# picture before #187. PLACEHOLDERS.
+left_handed = { player = 0.10, zombie = 0.10 }
 
 [render.held_props]
 # What a 3D unit holds (#184; renderer/held_props.py): a prop is its own asset
@@ -2192,6 +2202,8 @@ weapons = { k5_carbine = "carbine" }   # [weapons.*] id (the unit's loadout weap
 model = "cqb_carbine"   # assets/models/cqb_carbine (TRELLIS-normalised: long axis x, muzzle +x, up +y)
 length_m = 0.70         # the file's longest side is scaled to this
 socket = "right_hand"   # held on this socket (a grips row below)
+mirror_axis = "z"       # #187: the axis normal to the prop's own plane of symmetry (file
+                        # frame): a left-handed unit holds the mirror image, made proper
 grip = [-0.1006, -0.0749, 0.0]   # the point the hand closes on, file units: the top of the
                                  # pistol grip, under the receiver (found as local-models'
                                  # blender/attach_weapon.py finds it)
@@ -2505,6 +2517,14 @@ head  = { subtree = ["DEF-neck"] }                             # neck, head
 # spine, root-most first) turns the torso back to the facing, each bone by
 # its share of the angle (shares sum to 1). Bones of THIS skeleton: a
 # different skeleton names its own here.
+# Mirror (#187): the name rule pairing a bone with its mirror partner (each
+# token swapped for the other in the bone's name; unpaired bones mirror onto
+# themselves). Used by a left-handed unit (the mirror image of its pose,
+# [render.unit_looks] left_handed) and by mirror_of clip rows. Measured: this
+# rig's rest pose is mirror-symmetric to 1e-6 m.
+[render.pose.skeletons.quaternius_ual]
+mirror_pairs = [[".L", ".R"]]
+
 [render.pose.skeletons.quaternius_ual.twist]
 lower = "DEF-hips"
 counter = ["DEF-spine.001", "DEF-spine.002", "DEF-spine.003"]
@@ -2652,12 +2672,20 @@ rate = 1.0              # the Kimodo clips are authored at true speed
 # MEASURED (#184): Hit_Right lurches the head 0.55 m to the body's RIGHT, as
 # Hit_Left does (0.53 m) -- so a hit from the right leans the marine toward the
 # shooter; the clip wants regenerating (or a mirror of Hit_Left).
+# #187: a hit from the right plays Hit_Left_Mirror (the file's Hit_Right
+# leans the wrong way: its head goes 0.50 m to the body's right, the mirror
+# of Hit_Left 0.46 m to its left).
 hit_directions = [
   { clip = "Hit_Chest", from_deg = 0.0 },
   { clip = "Hit_Left", from_deg = 90.0 },
   { clip = "Hit_Back", from_deg = 180.0 },
-  { clip = "Hit_Right", from_deg = -90.0 },
+  { clip = "Hit_Left_Mirror", from_deg = -90.0 },
 ]
+# Mirror (#187; see the quaternius_ual table). Measured: SOMA's rest pose is
+# NOT exactly symmetric (paired joints up to 7.6 mm apart from each other's
+# reflection, bone frames up to 0.8 deg), so the mirror conjugates every bone
+# by its rest (exact for any rest; renderer/pose_clips.py MirrorRig).
+mirror_pairs = [["Left", "Right"]]
 
 # Sockets (#184): the bone a held prop hangs on ([render.held_props]).
 [render.pose.skeletons.soma.sockets]
@@ -2669,27 +2697,28 @@ Idle_Loop = "Idle"
 Walk_Loop = "Walk"
 Death01 = "Fall"
 Pistol_Idle_Loop = "Rifle_Aim_Walk"      # the aim overlay
-Pistol_Shoot = ""                        # #184: no shot one-shot -- Rifle_Shoot holds the rifle
-                                         # LEFT-handed (the right hand forward on the handguard: the
-                                         # carbine in the right palm points up off the shoulder) and is
-                                         # a held aim with no recoil (#179); a shot holds the aim overlay
+Pistol_Shoot = "Rifle_Shoot_Mirror"      # #187: the file's Rifle_Shoot holds the rifle LEFT-handed
+                                         # (#184: the right hand forward on the handguard); its mirror
+                                         # is right-handed. A held aim with ~3 deg of sway (#179)
 Punch_Jab = ""                           # no strike clip yet: a SOMA zombie's melee
 Punch_Cross = ""                         # reaction does nothing
 
 # The skeleton's own state rows (#184), keyed by its own clip names, for every
 # role on SOMA looks (a role's own row below still wins). A look lacking a clip
-# falls back as for a global row. The aiming walk is the forward walk; the
-# strafes and the backward walk take their LEGS from their own clips and the
-# torso, arms and head from the aiming walk: Rifle_Aim_Left / Rifle_Aim_Back
-# (and Rifle_Shoot) hold the rifle LEFT-handed (the right hand on the
-# handguard), which the carbine in the right hand cannot follow. Running
+# falls back as for a global row. The aiming walk is the forward walk. #187:
+# the right strafe and the backward walk play their own whole body --
+# Rifle_Aim_Right is right-handed, Rifle_Aim_Back_Mirror the right-handed
+# mirror of the left-handed Rifle_Aim_Back. The LEFT strafe keeps only its legs
+# from Rifle_Aim_Left (torso, arms and head from the aiming walk): the file's
+# left strafe is left-handed (the mirror of Rifle_Aim_Right), and its mirror
+# is a strafe to the right, so no right-handed left strafe exists yet. Running
 # carries the rifle (the Walk clip is the rifle-carry walk) over the Run legs:
 # Run's own arms pump empty-handed.
 [render.pose.skeletons.soma.states]
 walk       = { legs = "Rifle_Aim_Walk",  upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
 walk_left  = { legs = "Rifle_Aim_Left",  upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
-walk_right = { legs = "Rifle_Aim_Right", upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
-walk_back  = { legs = "Rifle_Aim_Back",  upper = "Rifle_Aim_Walk", head = "Rifle_Aim_Walk" }
+walk_right = { legs = "Rifle_Aim_Right", upper = "Rifle_Aim_Right", head = "Rifle_Aim_Right" }
+walk_back  = { legs = "Rifle_Aim_Back_Mirror", upper = "Rifle_Aim_Back_Mirror", head = "Rifle_Aim_Back_Mirror" }
 run        = { legs = "Run",             upper = "Walk",           head = "Walk" }
 sprint     = { legs = "Run",             upper = "Sprint",         head = "Sprint" }   # #188: the dash's rifle across the chest over the
                                                                                      # Run legs (every Kimodo sprint skated 31-60 % at 4.2 m/s)
@@ -2764,11 +2793,16 @@ Rifle_Aim_Walk = {}
 Rifle_Aim_Left = {}
 Rifle_Aim_Right = {}
 Rifle_Aim_Back = {}
-Rifle_Shoot = { loop = false }           # the shot one-shot: a held aim, ~3 deg of sway
+Rifle_Shoot = { loop = false }           # left-handed (#184): played only as its mirror
+# #187: mirror_of = a NEW clip, the mirror image of a clip of the file (baked
+# once at load through mirror_pairs; named unlike any clip of the file)
+Rifle_Aim_Back_Mirror = { mirror_of = "Rifle_Aim_Back" }       # right-handed back walk
+Rifle_Shoot_Mirror = { mirror_of = "Rifle_Shoot", loop = false }   # the shot one-shot, right-handed
+Hit_Left_Mirror = { mirror_of = "Hit_Left", loop = false, rate = 1.5 }   # the hit from the right
 Hit_Chest = { loop = false, rate = 1.5 } # the flinch additives, by direction (PLACEHOLDER, HUMAN-TEST)
 Hit_Back = { loop = false, rate = 1.5 }
 Hit_Left = { loop = false, rate = 1.5 }
-Hit_Right = { loop = false, rate = 1.5 }
+Hit_Right = { loop = false, rate = 1.5 } # unused since #187 (it leans the wrong way)
 Fall = { loop = false }                  # dead (dormant: dead units are not drawn); keeps its travel
 Get_Up = { loop = false }                # registered: knockdown is #149; keeps its travel
 Zombie_Hunch_Walk = {}

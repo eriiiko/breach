@@ -467,8 +467,15 @@ def _draw(r, units, k):
 # (-y) = from behind, south (+y) = from the front).
 _Q = 1 << 16
 _TRAVEL = {"west": (-_Q, 0), "east": (_Q, 0), "north": (0, -_Q), "south": (0, _Q)}
-_FROM = {"west": "Hit_Right", "east": "Hit_Left", "north": "Hit_Back",
-         "south": "Hit_Chest"}
+# the side each travel hits from, as the hit_directions row's from_deg
+# (#187: which clip a row plays is data -- the right one is a mirror clip)
+_FROM = {"west": -90.0, "east": 90.0, "north": 180.0, "south": 0.0}
+
+
+def _row_clip(from_deg):
+    """The SOMA hit_directions row's clip for a side."""
+    rows = pose_settings(CFG).playback["soma"].hit_directions
+    return next(clip for clip, frm in rows if abs(np.degrees(frm) - from_deg) < 1e-6)
 
 
 def _react_clip(monkeypatch, evs, units=None):
@@ -501,7 +508,7 @@ def test_a_hit_flinches_from_the_side_its_travel_came_from(monkeypatch, travel):
     the left plays the right flinch), or the vector is dropped on the way
     to the pose layer.
     """
-    assert _hit_clip(monkeypatch, _TRAVEL[travel]) == _FROM[travel]
+    assert _hit_clip(monkeypatch, _TRAVEL[travel]) == _row_clip(_FROM[travel])
 
 
 def test_a_hit_without_a_direction_flinches_from_the_front(monkeypatch):
@@ -511,7 +518,7 @@ def test_a_hit_without_a_direction_flinches_from_the_front(monkeypatch):
     BREAKS IF: an unknown direction picks an arbitrary row, or a guess
     (the attacker's position) comes back as a fallback."""
     units = [_Unit(1, 20.0, 20.0), _Unit(3, 10.0, 20.0)]     # attacker on its left
-    assert _hit_clip(monkeypatch, (0, 0), attacker=3, units=units) == "Hit_Chest"
+    assert _hit_clip(monkeypatch, (0, 0), attacker=3, units=units) == _row_clip(0.0)
 
 
 def test_the_direction_is_the_events_not_a_guess(monkeypatch):
@@ -526,7 +533,7 @@ def test_the_direction_is_the_events_not_a_guess(monkeypatch):
     units = [_Unit(1, 20.0, 20.0), _Unit(2, 30.0, 20.0)]    # thrower on its right
     blast = ExplosionEvent(pos=(28, 21), radius=3, kind="grenade")
     assert _hit_clip(monkeypatch, _TRAVEL["east"], source="explosion", attacker=2,
-                     extra=[blast], units=units) == "Hit_Left"
+                     extra=[blast], units=units) == _row_clip(90.0)
 
 
 @pytest.mark.parametrize("travel", sorted(_TRAVEL))
@@ -547,7 +554,7 @@ def test_a_stagger_plays_along_its_push(monkeypatch, travel):
     _draw(r, units, 1)
     ps = r._anim[1].pose
     rig = r._pose.rig(ps.look)
-    assert rig.bank.names[ps.flinch_clip] == _FROM[travel]
+    assert rig.bank.names[ps.flinch_clip] == _row_clip(_FROM[travel])
     assert ps.flinch_peak == SETTINGS.stagger.weight
     assert ps.flinch_ramps == (SETTINGS.stagger.ramp_in_s, SETTINGS.stagger.ramp_out_s)
     assert np.array_equal(ps.flinch_bones, rig.stagger_bones)

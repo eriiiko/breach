@@ -809,3 +809,70 @@ test_a_look_without_locomotion_steers_exactly_as_before`).
 
 **Waits on #183.** `ReloadEvent(unit_id, ticks)` and `ThrowEvent(unit_id, kind, ticks)` (looked
 up by name; inert until then); the reload and throw clip names and the throw's `release_s`.
+
+## 15. As built — the clip mirror and left-handed units (#187, 2026-11-11)
+
+Branch `187-clip-mirror`. Render side only: nothing on `Unit`, no sim state, no digest.
+
+**The mirror.** `renderer/pose_clips.py` `MirrorRig`: a skeleton table's `mirror_pairs`
+(SOMA `[["Left", "Right"]]`, Quaternius `[[".L", ".R"]]`) pairs each bone with its partner;
+the mirror image of a pose is `G'_j = M G_{m(j)} A_j` with `A_j = bind_{m(j)}^-1 M bind_j`
+(M: model x -> -x). Equivalently `skin'_j = M skin_{m(j)} M`, so a symmetric mesh deforms as
+the mirror image whatever the bones' rest frames. `A_{m(j)} = A_j^-1`, so mirroring twice is
+the identity and the bind pose is a fixed point.
+
+**Rest symmetry, measured.** Quaternius (`worker_male`, `space_marine`): symmetric to 1e-6 m,
+`A_j` = diag(-1, 1, 1) to 0.12 deg. SOMA (`soma_space_marine`): NOT exactly -- paired joints
+up to 7.6 mm off each other's reflection (`LeftHandMiddleEnd`), bone frames up to 0.76 deg,
+`A_j` translations up to 10 mm. Hence the conjugation by the rests (exact for any rest)
+rather than a bare reflection of local rotations. Parents are partner-consistent on all four
+looks (required by the local form; checked at load).
+
+**Two uses.**
+- A clip row `mirror_of` is a new clip baked once at load in local space,
+  `L'_j = A_p^-1 L_{m(j)} A_j` (a root's left factor M), from the source's raw keys, then its
+  own row's root-motion strip. The local bake equals the global mirror to 7.5e-7.
+- A left-handed unit (`PoseState.mirrored`) composes in the mirrored world (its travel and a
+  hit's source reflected on the way in: locomotion sectors, the twist, the flinch row all
+  follow) and its globals are mirrored after the modifiers, one einsum over the left-handed
+  rows. A right-handed row is untouched bit for bit. The held carbine moves to the partner
+  bone at the derived grip `A_R @ grip @ Z` (Z: the prop's `mirror_axis`, z for the carbine):
+  the right-hander's carbine reflected and made proper -- no configured left-hand grip.
+
+**Handedness deal.** `[render.unit_looks] left_handed = { player = 0.10, zombie = 0.10 }`
+(PLACEHOLDERS), `unit_looks.HandAssigner`: per role, by ascending unit id at first sight, the
+k-th unit left-handed when round((k+1)s) > round(ks) -- the 5th, 15th, ... at 10 %. Kept for
+life (a marine turning zombie keeps it).
+
+**The #184 findings, measured (hands' forward z in the clips' middle half, model m; the
+head's sideways swing in the hit clips; +x = the body's left).**
+
+| clip | left hand z | right hand z | hold | its mirror |
+|---|---|---|---|---|
+| Rifle_Aim_Walk | 0.65 | 0.36 | right-handed | left-handed |
+| Rifle_Aim_Right | 0.68 | 0.40 | right-handed | = a left-handed LEFT strafe |
+| Rifle_Aim_Left | 0.40 | 0.68 | left-handed | = a right-handed RIGHT strafe |
+| Rifle_Aim_Back | 0.49 | 0.81 | left-handed | right-handed back walk (travel +163 deg) |
+| Rifle_Shoot | 0.41 | 0.68 | left-handed | right-handed |
+
+Hit_Left swings the head 0.45 m to the body's right, the file's Hit_Right 0.50 m ALSO to the
+right; Hit_Left mirrored 0.46 m to the left.
+
+**What changed in the config, and the #184 workarounds.**
+- REMOVED: `Pistol_Shoot = ""` on SOMA -- the shot one-shot is back, as `Rifle_Shoot_Mirror`.
+- REMOVED: the back walk's legs-only row -- `walk_back` plays `Rifle_Aim_Back_Mirror` whole.
+- REMOVED: the right strafe's legs-only row -- `walk_right` plays `Rifle_Aim_Right` whole (it
+  was always right-handed; #184 took only its legs so every direction read alike).
+- KEPT: the LEFT strafe takes only its legs from `Rifle_Aim_Left` (upper and head from
+  `Rifle_Aim_Walk`): a mirror swaps direction AND hand, so no right-handed left strafe can be
+  made from these clips. It wants a generated clip. (A left-hander gets the opposite: its
+  left strafe whole, its right strafe legs-only.)
+- `hit_directions` -90 deg plays `Hit_Left_Mirror`; the file's `Hit_Right` is unused.
+
+**Pictures** (`tools/pose_lineup.py`, new: `clip=NAME@F` scenes, `--left-handed`): the
+left-handed lineup is the right-handed one reflected, the carbine in the left hand; the
+mirrored rifle clips aim the carbine forward from the right hand where the file's point it
+down off the right palm.
+
+**For Erik's eye.** The share (10 %), whether zombies should be dealt handedness at all, the
+right strafe's own upper body against the aiming walk's, and the shot one-shot's look.
