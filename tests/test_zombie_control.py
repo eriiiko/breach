@@ -432,7 +432,7 @@ _PRE_122_SHIP_DEMO = dict(
     # outcome, ticks and all three digests; A/B over 24-72 seeds in
     # docs/p3b_ab_2026-11-12.md.
     # (was ticks 2966)
-    outcome="win", team=0, ticks=2570,
+    outcome="win", team=0, ticks=3587,   # 183-no-fire-windup (was 2570)
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -476,7 +476,14 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 13168aaad034fb1f8365ac184244453d7dc8ef6168b2438b48101b492484b89d)
-    field_digest="3f82af18a8669a5dcf99ec75a8fd38f7eb7cc5f8f7d49c7fe1a42b5888b334bc",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. Outcome and team UNCHANGED (win 0); the match now ends at tick 3587 (was 2570) and all three digests and the unit stream move. SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was 3f82af18a8669a5dcf99ec75a8fd38f7eb7cc5f8f7d49c7fe1a42b5888b334bc)
+    field_digest="844e75966db3ad6dcff631009150465ab610507d9f07f2ade4488fefc4031996",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -624,7 +631,14 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0)
-    tick_digest="e1a9413a03e8ab185ea66652f3d467549533a3a34bfd68ad93ee1392fb76a0cb",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. (see above) SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was e1a9413a03e8ab185ea66652f3d467549533a3a34bfd68ad93ee1392fb76a0cb)
+    tick_digest="023ce63049a51e798ff875bf3feff99e0c15161e4befb931985eaf990aae4ad4",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -661,7 +675,14 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64)
-    unit_stream="8548eb1e2f94f9a501953615e24ad7bdb23d2922f7a11d8c03d5389540595eae")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. (see above) SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was 8548eb1e2f94f9a501953615e24ad7bdb23d2922f7a11d8c03d5389540595eae)
+    unit_stream="24be741f269c1bb45df119e5dc2882a48dcc52c1b7220b160374e169df80b7f1")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
@@ -686,8 +707,8 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field
     and its behaviours, then at G8p's layered bots, then at #195 1d's honest
     team picture, then at #29 P3e's integer match path, then at Erik's
-    zombie bite balance, then at #29 P3b's keyed Philox draws: win team 0
-    at tick 2570) with the same tick_digest. Breaks like the box test, on the real
+    zombie bite balance, then at #29 P3b's keyed Philox draws, then at the
+    no-fire wind-up: win team 0 at tick 3587) with the same tick_digest. Breaks like the box test, on the real
     level -- and on any change of the bots (then re-pin, the bots_v1 pin of
     tests/test_bots_v1.py staying)."""
     level = level_loader.load("ship_demo", str(ROOT / "levels"))

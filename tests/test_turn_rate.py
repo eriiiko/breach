@@ -390,8 +390,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was 73bbb0a449d658c042f67029682f78d844faf0964fd807d8f7cd1c6c32c77803)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was ef60a0ea6e438cde1e00f80bed76ec1686d9ea7babea1070db5b395967935bc6)
-    tick_digest="a1b321c222d20602c11f030502d3ce52"
-                "11ecb40a5838a1a363dfc7d6fd8b6b49",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. Outcome, team, ticks and field_digest UNCHANGED; tick_digest and the unit stream move. SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was a1b321c222d20602c11f030502d3ce5211ecb40a5838a1a363dfc7d6fd8b6b49)
+    tick_digest="c2e450179897bf84c64359fdb083aea1"
+                "7b15afecf5a269d9e171fe9764901c92",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -426,8 +433,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was 6778d0617e32108d426335322dafa459ee7fd3414e7c3481558a92339db5bfba)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was ef36d0c528f1d6b28e4c8c97a65ec9d75974f9864e4c4571e5c1181b743095c0)
-    unit_stream="437379b562166943fb36a552afc7c2ed"
-                "51696a358f1f6678ca056683e9adb102")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. (see above) SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was 437379b562166943fb36a552afc7c2ed51696a358f1f6678ca056683e9adb102)
+    unit_stream="241da4af595b428da8076d8430d440cb"
+                "55e7725aa15060a5b928e3a6ac6b07b4")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

@@ -635,8 +635,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 3d21436d8858106d5d9f26c57829d7b5b9e6de232d0bd2492e7a841c749d4bb8)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 1775613f19c56ce58fb53975fa1ad64ce472ccb59073b404578eaff67c99ed93)
-    tick_digest="7cbd7ba684584080bd09ee0568198de2"
-                "abfc5d154613c37da1508a45ba5d2fc0",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. Outcome, team, ticks and field_digest UNCHANGED; tick_digest and the unit stream move. SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was 7cbd7ba684584080bd09ee0568198de2abfc5d154613c37da1508a45ba5d2fc0)
+    tick_digest="6c5922242bec6a18dd09355362529a64"
+                "c921209d2f5a523a5f9cd1bc502ebce1",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -671,8 +678,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 7e4d0161cf924be4dfe170b52d7d2386b77c59c984a5a27bdea519d2431ffdcb)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 27cefe3132431e8d06ca4838afe4b4d48219ea21403d53c2d300fdecfdf8643b)
-    unit_stream="a0ddc32f29b6bae03fa1d4f93815397b"
-                "1a0967d20633d148f54c6c0971e616ad")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw), re-measured on main af26f306 (the zombie bite
+    # balance) + the rule. (see above) SOLE CAUSE, verified on the merged tree:
+    # with verb_gates.can_fire forced True this test gives exactly main's
+    # pin. A bot holding its trigger on the tick its throw starts no
+    # longer fires on that tick.
+    # (was a0ddc32f29b6bae03fa1d4f93815397b1a0967d20633d148f54c6c0971e616ad)
+    unit_stream="5cf211a9cddd9d5e07de89f1f1ff2f6e"
+                "84e025322d55e69f06b8b68b9bb4f053")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
