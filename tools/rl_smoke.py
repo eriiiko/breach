@@ -81,8 +81,15 @@ def drive(env, *, episodes: int, seed: int, warmup_steps: int,
         else:
             acts = random_action_rows(rng, n * u).reshape(n, u, a)
         t0 = time.perf_counter()
-        obs, _, _, _, info = env.step(acts)
+        obs, rew, _, _, info = env.step(acts)
         t1 = time.perf_counter()
+        # #195 1i: a named profile's reward is (N, U, 5); every reward finite
+        if (rew.shape != (n, u) + env.layout.reward_shape_tail
+                or not np.isfinite(rew).all()):
+            raise AssertionError(f"reward {rew.shape} (finite: "
+                                 f"{bool(np.isfinite(rew).all())}) does not "
+                                 f"fit the layout's profile "
+                                 f"{env.layout.reward_profile!r}")
         steps += 1
         ended += info["ended"]
         if t_win is not None and steps > warmup_steps:
@@ -124,7 +131,8 @@ def report_lines(env, res: dict, args) -> list:
         f"crop_radius={r.crop_radius} vector={len(r.vector)} "
         f"rows={env.layout.n_rows} actions={env.layout.n_actions} "
         f"obs={r.spec} action_spec={r.action_spec} "
-        f"full_view={env.layout.full_view}",
+        f"full_view={env.layout.full_view} "
+        f"reward_profile={r.reward_profile}",
         f"driver: seed={args.seed} episodes>={args.episodes} per env, "
         f"warmup={args.warmup_steps} steps",
         f"steps: {res['steps']} ({res['measured_steps']} measured), "
