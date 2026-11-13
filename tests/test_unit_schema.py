@@ -122,29 +122,42 @@ def _check_unit(u):
             assert back == v, f"{c.name}: {v!r} -> {e!r} -> {back!r}"
 
 
-@pytest.mark.parametrize("which", ["bots_v1", "bots"])
-def test_derived_constants_and_round_trips_hold_at_every_tick(which):
-    """Properties (b) and (c), over every tick of a ship_demo match (``bots``:
-    2721 ticks, two conversions; ``bots_v1``: 264 ticks, five conversions):
-    every group-D value equals its derivation from group S (the species,
-    footprint, env profile, weapon table), and every group-S column encodes
-    to integers of its declared width that fit int64 and decode back to the
-    host value (a float column: ``encode(decode(e)) == e``). Breaks if a
-    group-D value is written after spawn (validated: conversion setting
-    ``u.mass = 0.0`` fails at the first converted tick), or an encoding loses
-    a field (validated: ``_enc_throw`` dropping ``kind`` fails the
-    round-trip)."""
-    level = _ship_demo()
-    spec = _bots_v1_spec(level) if which == "bots_v1" else None
-    seen = {"conv": 0}
+#: The conversions each match must show (a converted unit seen on some tick).
+#: Since Erik's zombie bite balance (2026-11-12: 34 a bite every 2.2 s) the
+#: ship_demo matches convert little (bots one unit, bots_v1 none -- its bites
+#: no longer kill before the frags do), so the conversions are carried by the
+#: zombie-control box (idle marines vs 3 zombies: both marines bitten to death
+#: and turned).
+_MIN_CONVERSIONS = {"bots_v1": 0, "bots": 1, "box": 2}
+
+
+@pytest.mark.parametrize("which", ["bots_v1", "bots", "box"])
+def test_derived_constants_and_round_trips_hold_at_every_tick(which, tmp_path):
+    """Properties (b) and (c), over every tick of a match (ship_demo under
+    ``bots`` and ``bots_v1``, and the zombie-control box, where both idle
+    marines are bitten to death and turn): every group-D value equals its
+    derivation from group S (the species, footprint, env profile, weapon
+    table), and every group-S column encodes to integers of its declared width
+    that fit int64 and decode back to the host value (a float column:
+    ``encode(decode(e)) == e``). Breaks if a group-D value is written after
+    spawn (validated: conversion setting ``u.mass = 0.0`` fails at the first
+    converted tick), or an encoding loses a field (validated: ``_enc_throw``
+    dropping ``kind`` fails the round-trip)."""
+    if which == "box":
+        from test_zombie_control import _box
+        level, spec = _box(tmp_path, "schema_box"), None
+    else:
+        level = _ship_demo()
+        spec = _bots_v1_spec(level) if which == "bots_v1" else None
+    converted = set()
 
     def tick(sim):
         for u in sim.units:
             _check_unit(u)
-        seen["conv"] = sum(1 for u in sim.units
-                           if u.is_zombie and u.loadout_name is not None)
+            if u.is_zombie and u.loadout_name is not None:
+                converted.add(u.id)
     run_match(level, spec, on_tick=tick)
-    assert seen["conv"] >= 2
+    assert len(converted) >= _MIN_CONVERSIONS[which]
 
 
 def test_every_intent_column_round_trips_when_set():

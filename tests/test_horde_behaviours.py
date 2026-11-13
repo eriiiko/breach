@@ -50,9 +50,28 @@ OFF = [(k, False) for k in horde.BEHAVIOUR_SWITCHES]
 # gate holds them while every behaviour is off; the next DELIBERATE re-pin
 # of the field law by another cause retires them with it.
 _STAGE1_SHIP_DEMO = dict(
+    # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
+    # Philox draws had moved this pin): re-pinned on the merged tree with
+    # Erik's bite values -- outcome and team unmoved (win 1); ticks 251 on main -> 255; the digests and the unit stream
+    # move (each marked below). SOLE CAUSE: on the merged tree with the
+    # three old [zombie] values set back in-process main's version of this
+    # test file passes whole, i.e. main's pin comes back bit for bit. The
+    # "now" values in the 2026-11-12 bite comment are the pre-merge branch's.
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 264 (now 254)
+    #   field_digest 22e944fe6477d16ab0367b9562c357e96c8ed0a7
+    #     a2277dde8dce6b2a486e9f23
+    #   tick_digest 87dfe255f97bdc33320a7df36fea68dbfbfcd92f
+    #     c9ff1fc86f91894febddd94d
+    #   unit_stream c144ab6cb3bec1f33f143eaa1bfff97de346743f
+    #     316ec412b60e65ec140e761a
     # #29 P3b re-pin (2026-11-12, keyed Philox draws): ticks 264 -> 251,
     # outcome and team UNCHANGED (the sole-cause plugin gives 264 back).
-    outcome="win", team=1, ticks=251,
+    outcome="win", team=1, ticks=255,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -68,8 +87,10 @@ _STAGE1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 22e944fe6477d16ab0367b9562c357e96c8ed0a7a2277dde8dce6b2a486e9f23)
-    field_digest="cc46ec4b934902f73090aae00bef0b3f"
-                 "6e98f3f041948f51593bc9f86b8b8ba8",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was cc46ec4b934902f73090aae00bef0b3f6e98f3f041948f51593bc9f86b8b8ba8)
+    field_digest="e71707b913095bb53c7ad9c7f3883466"
+                 "4d19431033c9d7d95651ea7e65422e43",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -102,8 +123,10 @@ _STAGE1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 87dfe255f97bdc33320a7df36fea68dbfbfcd92fc9ff1fc86f91894febddd94d)
-    tick_digest="ab061346257c0c5b2ec5a2bf99fbad26"
-                "aa74d6661a3886119c759f1de459b05e",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was ab061346257c0c5b2ec5a2bf99fbad26aa74d6661a3886119c759f1de459b05e)
+    tick_digest="5fb9a9f6b1d847cf09e2b1b21457507c"
+                "a529d4962ea730e9a71f4d7046025a62",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -136,12 +159,24 @@ _STAGE1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was c144ab6cb3bec1f33f143eaa1bfff97de346743f316ec412b60e65ec140e761a)
-    unit_stream="6707d27e1ccba0eb1ce455803d552c1b"
-                "4126cdd87cf55780d3c82cc5f5c24560")
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 6707d27e1ccba0eb1ce455803d552c1b4126cdd87cf55780d3c82cc5f5c24560)
+    unit_stream="fe0be81e4a8b59edd89ec8ac8c2b0f6a"
+                "57124f911504098cb9dbbc390d8b8dfc")
 _STAGE1_BOX = dict(
-    outcome="win", team=1, ticks=130,
-    field_digest="0fdc79f228cc2e64ca6936cf5a2ec41c"
-                 "52642adfca545cbe51324cfad2e21631",
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 130 (now 294)
+    #   field_digest 0fdc79f228cc2e64ca6936cf5a2ec41c52642adf
+    #     ca545cbe51324cfad2e21631
+    #   unit_stream 4a87a8bb9efdef78446729e66cebed58acfdda24
+    #     3deb7ba4cdff947a55fa2740
+    outcome="win", team=1, ticks=294,
+    field_digest="ca6a1f289099dad155e21f9608e506f2"
+                 "f19c481ca92ebd4efd0336aea658f15c",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -159,8 +194,8 @@ _STAGE1_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was a8f43fe1faf94900de0fb22c1b75e32d0ca991e25a69412e544a77b1b47343df)
-    unit_stream="4a87a8bb9efdef78446729e66cebed58"
-                "acfdda243deb7ba4cdff947a55fa2740")
+    unit_stream="12cb16f75ea1727bda19f2dade7dcd98"
+                "eb63e240a571e8bf4ca5f121fc2d5abf")
 
 
 def _off(monkeypatch, keep=()):

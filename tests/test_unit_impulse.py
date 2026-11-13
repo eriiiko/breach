@@ -879,7 +879,28 @@ def test_the_shove_and_stagger_events_are_render_only():
 #: 72ae1c16c1615e9573dd8b05fa099cf3753cddbc09443d4fbe74bf620a0c50c0; units
 #: b4ac3fd1c5d15dd6ad493cec70476fb1c7c40b0b90adf68c41fdf32fbb5274f7)
 _RE_PIN_1_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=240,
+    # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
+    # Philox draws had moved this pin): re-pinned on the merged tree with
+    # Erik's bite values -- outcome, team and ticks unmoved (draw at 7200); the digests and the unit stream
+    # move (each marked below). SOLE CAUSE: on the merged tree with the
+    # three old [zombie] values set back in-process main's version of this
+    # test file passes whole, i.e. main's pin comes back bit for bit. The
+    # "now" values in the 2026-11-12 bite comment are the pre-merge branch's.
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   outcome win (now draw)
+    #   team 0 (now None)
+    #   ticks 240 (now 7200)
+    #   field_digest 70033ac6533ffbfa36c78edcf794d5513a588793
+    #     196bb9858cca3d2efdddf5aa
+    #   tick_digest deeea5a31d67dcd51739dd4097c0b7e23cc1f262
+    #     c310cfb7e96b63a0cf56ef52
+    #   unit_stream 03c4178984984aa1e01aa783ec0001047d4d49f3
+    #     224fcd15502368bcc68744ba
+    outcome="draw", team=None, ticks=7200,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -895,8 +916,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 70033ac6533ffbfa36c78edcf794d5513a588793196bb9858cca3d2efdddf5aa)
-    field_digest="055c19d9cce5c0259b782b8a63129dad"
-                 "b6d67ef267f3a112ea3c4a594b64619b",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 055c19d9cce5c0259b782b8a63129dadb6d67ef267f3a112ea3c4a594b64619b)
+    field_digest="cfa02a3055a5b068d30d4d630ef740fe"
+                 "ad845cee42e6785f94ee0ddaa742fe48",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -929,8 +952,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was deeea5a31d67dcd51739dd4097c0b7e23cc1f262c310cfb7e96b63a0cf56ef52)
-    tick_digest="15e7cd1143c3d50b9f1739b1156faae8"
-                "448b1b33b4f0b8d5e88d1ae18feeb3e6",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 15e7cd1143c3d50b9f1739b1156faae8448b1b33b4f0b8d5e88d1ae18feeb3e6)
+    tick_digest="315b15b91c64134c0209ef9079e0a86f"
+                "d2c942245535ccdbae445b60d8dbe260",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -963,8 +988,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 03c4178984984aa1e01aa783ec0001047d4d49f3224fcd15502368bcc68744ba)
-    unit_stream="a06143b715c28cebfaea4f82cba76fb2"
-                "9694031ae782103849ccd997239621d3")
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was a06143b715c28cebfaea4f82cba76fb29694031ae782103849ccd997239621d3)
+    unit_stream="d6c01957a586057c8b94f3dc569aed25"
+                "6bc2f8735f895f0e1819b7fd22051459")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -985,9 +1012,19 @@ _RE_PIN_1_SHIP_DEMO = dict(
 #: 0fdc79f228cc2e64ca6936cf5a2ec41c52642adfca545cbe51324cfad2e21631; units
 #: 05bdbac7c76250b949ef35aef81fdd403bd89af88232eebe061bf753e47b1e3d)
 _RE_PIN_1_BOX = dict(
-    outcome="win", team=1, ticks=92,
-    field_digest="2a9339a53e67d28c29ff513f6942dab9"
-                 "1586f5e85c6eb552885554c16ebe4c3b",
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   ticks 92 (now 231)
+    #   field_digest 2a9339a53e67d28c29ff513f6942dab91586f5e8
+    #     5c6eb552885554c16ebe4c3b
+    #   unit_stream 85d051afa1acda1b9bc1d3a680e6373632bfdb9f
+    #     735b65bf51ec1a9bbf834238
+    outcome="win", team=1, ticks=231,
+    field_digest="2cf3e8481a3792bce622f72c0b5cc0a2"
+                 "68f19f856903a7313440ed21573faf5f",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -1005,8 +1042,8 @@ _RE_PIN_1_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
-    unit_stream="85d051afa1acda1b9bc1d3a680e63736"
-                "32bfdb9f735b65bf51ec1a9bbf834238")
+    unit_stream="3a6b230941d73d3b6f325af378ffe67b"
+                "44a86953bbb4d46736245fbf4caa31ee")
 
 _IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
                   "swy", "pvx", "pvy", "effort", "react_ticks")
