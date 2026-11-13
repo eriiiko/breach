@@ -571,14 +571,9 @@ def test_the_throw_lands_nearest_and_releases_the_trigger():
 # ---------------------------------------------------------------------------
 # On the match: the aim tracks, the wind-up keeps, the orders agree
 # ---------------------------------------------------------------------------
-def test_the_aim_at_an_entry_tracks_its_record_every_tick(recorded):
-    """Property: on every tick of a decision whose aim is list entry X (no
-    throw), the decoder's issued ``set_aim`` equals ``aim_vector`` from the
-    soldier's centre to X's record centre ON THAT TICK (the record
-    followed, never a kept list position or a frozen vector); such ticks
-    occur, and on some the record moved within the decision. Breaks if unit
-    aims become compass tokens or a position is kept."""
-    p = recorded
+def _aim_tracks(p):
+    """(checked, moved) of the aim-tracking property over one recorded door
+    match ``p`` (asserting the property on every checked tick)."""
     a = p.arrays
     D = p.ctl[0].settings.decision_ticks
     team = p.ctl[0].team
@@ -612,6 +607,32 @@ def test_the_aim_at_an_entry_tracks_its_record_every_tick(recorded):
                 checked += 1
                 first = c if first is None else first
                 moved += c != first
+    return checked, moved
+
+
+def test_the_aim_at_an_entry_tracks_its_record_every_tick(recorded,
+                                                          tmp_path):
+    """Property: on every tick of a decision whose aim is list entry X (no
+    throw), the decoder's issued ``set_aim`` equals ``aim_vector`` from the
+    soldier's centre to X's record centre ON THAT TICK (the record
+    followed, never a kept list position or a frozen vector); such ticks
+    occur, and on some the record moved within the decision. When the
+    shared recorded match holds no decision whose aimed record moved (a
+    matter of its scene: 183-no-fire-windup's rule changed it), further
+    seeds of the same spec are recorded until one does. Breaks if unit
+    aims become compass tokens or a position is kept."""
+    checked, moved = _aim_tracks(recorded)
+    seed = 2
+    while moved == 0 and seed <= 6:
+        out = tmp_path / f"s{seed}"
+        out.mkdir()
+        sink = door.RecordSink(out)
+        q = _play(recorded.lvl, recorded.spec, seed=seed, sink=sink,
+                  digests=False)
+        (f,) = sorted(out.rglob("*.npz"))
+        q.arrays, q.meta = door.read_record(f)
+        c, m = _aim_tracks(q)
+        checked, moved, seed = checked + c, moved + m, seed + 1
     assert checked > 20 and moved > 0
 
 
