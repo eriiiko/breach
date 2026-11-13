@@ -149,6 +149,16 @@ class ControlSource:
         entries (every human scheme). ``MatchObserver`` spawns the match."""
         return False
 
+    def bind_match(self, sim, spec) -> None:
+        """Called ONCE by :func:`create_match_controllers` on every
+        team-row controller right after the team rows are built (#195 1j):
+        the one way a match controller learns its match's spec (``spec``,
+        the parsed ``MatchSpec`` as played; ``sim`` spawned). A no-op for
+        every controller but the door bots, which build their observation
+        context and action tables here and refuse a level without a room
+        graph."""
+        return None
+
     def on_tick(self, sim) -> None:
         """Called by main.py right before EVERY ``sim.step()`` (#121) — the
         per-tick hook a scheme that drives units by the tick (the match
@@ -264,6 +274,24 @@ def _replay(team, recording=None) -> "ControlSource":
     return ReplayControl(recording, team)
 
 
+#: The door bots (#195 1j, ``control_bots_door``): the layered bots driven
+#: through action spec v1, the design run and its variants (design 2.7),
+#: NAMEABLE (a match.toml or a run file may put them on a side; their
+#: ``bind_match`` refuses a level without a room graph). The rows are
+#: ``control_bots_door.DOOR_VARIANTS`` (held equal at its import).
+DOOR_BOT_NAMES = ("bots_door", "bots_door_dirs8", "bots_door_every6",
+                  "bots_door_every8", "bots_door_trigger_tick",
+                  "bots_door_throw_dir")
+
+
+def _bots_door(name):
+    def factory(team: int) -> "ControlSource":
+        """A door-bots variant (``control_bots_door.create``)."""
+        from control_bots_door import create
+        return create(team, name)
+    return factory
+
+
 _MATCH_CONTROLLERS: dict = {
     "idle": IdleControl,
     "bots": _bots,
@@ -273,14 +301,18 @@ _MATCH_CONTROLLERS: dict = {
     "policy": _policy,
     "commander": _commander,
 }
+for _name in DOOR_BOT_NAMES:
+    _MATCH_CONTROLLERS[_name] = _bots_door(_name)
+del _name
 #: Registered controllers a match.toml may NOT name (they need more than a
 #: team to be built, or something only code hands them): the match door reads
 #: :func:`match_file_controllers`.
 _NOT_NAMEABLE: set = {"replay", "policy", "commander"}
 #: The controllers that drive a team THROUGH THE DOOR (the action spec,
-#: #195 1f): a team on one of them gets the bots' commander
-#: (``commander``) beside it on a level with a room graph, so its units hold
-#: orders. 1j adds its door-driven bots here by name.
+#: #195 1f) WITH NO BRAIN OF THEIR OWN: a team on one of them gets the bots'
+#: commander (``commander``) beside it on a level with a room graph, so its
+#: units hold orders. The door bots (#195 1j, ``DOOR_BOT_NAMES``) are not
+#: here: they carry their own brain and write their own orders.
 DOOR_CONTROLLERS = frozenset({"policy"})
 
 
@@ -345,6 +377,10 @@ def create_match_controllers(sim, spec, *, recording=None) -> list:
         return [create_controller("replay", None, recording=recording)]
     controllers = [create_controller(row.controller, team)
                    for team, row in enumerate(spec.teams)]
+    # #195 1j: every team-row controller learns its match (a no-op for all
+    # but the door bots, which build their observation context here)
+    for c in controllers:
+        c.bind_match(sim, spec)
     # #195 1f: a team driven through the door gets the commander (orders on
     # the room graph) -- only where an order can name a place.
     from simulation.unit_orders import graph_of
@@ -415,5 +451,6 @@ __all__ = [
     "ControlSource", "create_control_source", "quantize_stick_direction",
     "quantize_point_aim", "stick_throttle_q",
     "IdleControl", "register_controller", "registered_controllers",
+    "DOOR_CONTROLLERS", "DOOR_BOT_NAMES",
     "create_controller", "create_match_controllers", "match_file_controllers",
 ]

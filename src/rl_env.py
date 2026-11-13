@@ -834,6 +834,7 @@ class EnvRunner:
             for team, pol in self.policies.items():
                 pol.set_rows(actions[team * S:(team + 1) * S])
         k0 = N_OLD_COUNTERS
+        id_row, ci = self._id_row, self._ci
         # the old counters accumulate in float32 exactly as before #195 1i
         old = np.zeros((self.layout.n_rows, k0), dtype=np.float32)
         books = self.books
@@ -847,13 +848,9 @@ class EnvRunner:
             s.tick()
             ticks += 1
             ended = books.ended
-            if named and ended.any():
-                # a row whose records ended earns nothing more (6.6)
-                keep = old[ended].copy()
-                self._count(sim.tick_events, team_before, old)
-                old[ended] = keep
-            else:
-                self._count(sim.tick_events, team_before, old)
+            # a row whose records ended earns nothing more (6.6)
+            count_events(sim.tick_events, team_before, id_row, ci, old,
+                         frozen=ended if named and ended.any() else None)
             books.end(sim)
             if sim.tick % self.every == 0:
                 cps.append((self.k, int(sim.tick), *s.digests()))
@@ -902,43 +899,8 @@ class EnvRunner:
                     + (c32[:, k0:] * w[k0:]).sum(axis=1))
         return (counters[:, :, None] * self._G[None]).sum(axis=1)
 
-    def _row(self, uid: int, team_before: dict):
-        tr = self._id_row.get(uid)
-        if tr is None or team_before.get(uid) != tr[0]:
-            return None
-        return tr[1]
-
     def _count(self, events, team_before, counters) -> None:
-        ci = self._ci
-        for ev in events:
-            if isinstance(ev, self._hit):
-                dmg = float(ev.damage)
-                if dmg <= 0.0:
-                    continue
-                v, a = int(ev.unit_id), int(ev.attacker_id)
-                vr = self._row(v, team_before)
-                if vr is not None:
-                    counters[vr, ci["hits_taken"]] += 1.0
-                    counters[vr, ci["damage_taken"]] += dmg
-                if a >= 0 and a != v:
-                    ar = self._row(a, team_before)
-                    if ar is not None:
-                        if team_before.get(v) == team_before.get(a):
-                            counters[ar, ci["team_hits"]] += 1.0
-                        else:
-                            counters[ar, ci["hits_dealt"]] += 1.0
-                            counters[ar, ci["damage_dealt"]] += dmg
-            elif isinstance(ev, self._kill):
-                v, a = int(ev.unit_id), int(ev.attacker_id)
-                vr = self._row(v, team_before)
-                if vr is not None:
-                    counters[vr, ci[f"deaths_{ev.killed_by}"]] += 1.0
-                if a >= 0 and a != v:
-                    ar = self._row(a, team_before)
-                    if ar is not None:
-                        key = ("team_kills" if team_before.get(v)
-                               == team_before.get(a) else "kills")
-                        counters[ar, ci[key]] += 1.0
+        count_events(events, team_before, self._id_row, self._ci, counters)
 
     # -- observation ----------------------------------------------------
     def row_units(self) -> list:
@@ -998,29 +960,96 @@ class EnvRunner:
                                   all_units=sim.units, vector_fields=self._vec)
             out["valid"][...] = [u is not None for u in units]
             return
-        aims = None
-        if self.layout.action_spec == "v1":
-            aims = {}
-            for pol in self.policies.values():
-                aims.update(pol.aim_view())
-        self.accessor.observe("v1", units, out, sim=sim, context=self.ctx,
-                              aims=aims)
+        # the decoder's view (1h) from EVERY controller that has one: the
+        # policy teams and the door bots (#195 1j); a raw-action policy's
+        # view is empty, so a run without a v1 decoder reads the "none"s
+        aims = {}
+        for c in self.session.controllers:
+            view = getattr(c, "aim_view", None)
+            if view is not None:
+                aims.update(view())
+        v1_actions = self.layout.action_spec == "v1"
+        observe_v1(self.accessor, sim, self.ctx, units, out, aims,
+                   self.act_tables if v1_actions else None,
+                   self.run.decimation)
         valid, in_match = self.row_flags()
         out["valid"][...] = valid
         out["in_match"][...] = in_match
-        if self.layout.action_spec == "v1":
-            # #195 1h: the masks, at the start of the decision tick, from
-            # the list just built (one gate call per hand bit)
-            from simulation.action_spec_v1 import build_masks
-            lst = out["list"]
-            build_masks(sim, units, lst[:, :, 0], out["list_mask"],
-                        out["list_uid"], self.act_tables,
-                        self.run.decimation, out)
+        if v1_actions:
             self._list_uid = np.array(out["list_uid"], copy=True)
         if self.layout.full_keys and self.layout.full_keys[0] in out:
             from simulation.sensor_accessor import FULL_VIEW_SPEC
             self.accessor.observe(FULL_VIEW_SPEC, self.roster_units(), out,
                                   sim=sim, context=self.ctx)
+
+
+# ---------------------------------------------------------------------------
+# The two lifts (#195 1j): the env's observation and counting, as functions
+# the door bots' records call (code motion, bit for bit)
+# ---------------------------------------------------------------------------
+def observe_v1(accessor, sim, ctx, units, out, aims, tables,
+               decimation) -> None:
+    """Observation spec v1 for ``units`` (one living unit or None per row)
+    into ``out``'s ``(U, ...)`` views through the sensor accessor's door,
+    then -- with ``tables`` (action spec v1's ``ActionTables``) -- the four
+    masks at the START of the decision tick from the list just built (one
+    gate call per hand bit; ``decimation`` the decision's ticks). The row
+    flags are the caller's. ``EnvRunner.observe``'s ``"v1"`` branch."""
+    accessor.observe("v1", units, out, sim=sim, context=ctx, aims=aims)
+    if tables is not None:
+        from simulation.action_spec_v1 import build_masks
+        lst = out["list"]
+        build_masks(sim, units, lst[:, :, 0], out["list_mask"],
+                    out["list_uid"], tables, decimation, out)
+
+
+def count_events(events, team_before, id_row, ci, counters,
+                 frozen=None) -> None:
+    """Add one tick's ``events`` to the OLD per-row counters (``counters``
+    ``(U, k0)``, ``ci`` name -> column, ``id_row`` unit id -> ``(team,
+    row)``, ``team_before`` unit id -> its team at the tick's start; see
+    :data:`COUNTER_NAMES`). ``frozen`` (a ``(U,)`` bool mask) keeps those
+    rows as they were (a row whose records ended earns nothing more, #195
+    1i 6.6). ``EnvRunner._count``'s body."""
+    from simulation.events import UnitHitEvent, UnitKilledEvent
+    keep = None if frozen is None else counters[frozen].copy()
+
+    def row(uid):
+        tr = id_row.get(uid)
+        if tr is None or team_before.get(uid) != tr[0]:
+            return None
+        return tr[1]
+    for ev in events:
+        if isinstance(ev, UnitHitEvent):
+            dmg = float(ev.damage)
+            if dmg <= 0.0:
+                continue
+            v, a = int(ev.unit_id), int(ev.attacker_id)
+            vr = row(v)
+            if vr is not None:
+                counters[vr, ci["hits_taken"]] += 1.0
+                counters[vr, ci["damage_taken"]] += dmg
+            if a >= 0 and a != v:
+                ar = row(a)
+                if ar is not None:
+                    if team_before.get(v) == team_before.get(a):
+                        counters[ar, ci["team_hits"]] += 1.0
+                    else:
+                        counters[ar, ci["hits_dealt"]] += 1.0
+                        counters[ar, ci["damage_dealt"]] += dmg
+        elif isinstance(ev, UnitKilledEvent):
+            v, a = int(ev.unit_id), int(ev.attacker_id)
+            vr = row(v)
+            if vr is not None:
+                counters[vr, ci[f"deaths_{ev.killed_by}"]] += 1.0
+            if a >= 0 and a != v:
+                ar = row(a)
+                if ar is not None:
+                    key = ("team_kills" if team_before.get(v)
+                           == team_before.get(a) else "kills")
+                    counters[ar, ci[key]] += 1.0
+    if keep is not None:
+        counters[frozen] = keep
 
 
 # ---------------------------------------------------------------------------
