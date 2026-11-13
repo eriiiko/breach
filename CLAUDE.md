@@ -209,10 +209,13 @@ strategy. Every rule below serves that.
   `cpp/CMakeLists.txt`, always.
 - **Never `git add -A`** — the tree carries untracked art, notes, and
   prototypes on purpose. Stage explicit paths.
-- **Feel-adjacent changes never auto-merge.** Anything touching game feel
-  gets a HUMAN-TEST gate: built, gated, pushed, Erik plays it before merge.
-  Mechanical digest-gated changes may auto-merge on green only when
-  pre-authorized.
+- **A green patch merges; Erik decides when he wants a test first.** A patch
+  whose gates are green merges on green, gameplay and look changes included
+  (golden / pin re-baselines with written rationale as ever). A HUMAN-TEST
+  (built, gated, pushed, Erik plays or looks before merge) happens only when
+  Erik asks for one, for that patch or that kind of change (Erik, 2026-11-13:
+  "I'll decide from now on when I want a game test"; the old rule held every
+  feel-adjacent change for his play and left branches waiting on him).
 - **Credit the source**: any file implementing a published technique carries
   an author + paper citation in its header; archive the paper under
   `docs/papers/`.

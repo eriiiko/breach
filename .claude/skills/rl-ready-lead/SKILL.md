@@ -18,8 +18,8 @@ quickly." Concretely:
 - **Claude decides**: scope and order inside the milestone, how issues are
   cut, which prep patch runs first, the technical shape of levelgen, the
   match config, the bots and the replay path, what goes in this skill.
-- **Erik decides, always**: anything feel-adjacent by eye (HUMAN-TEST is
-  unchanged), the game-design calls listed in §3 when they change (objective,
+- **Erik decides, always**: anything feel-adjacent by eye (a HUMAN-TEST only
+  when he asks for one, CLAUDE.md 2026-11-13), the game-design calls listed in §3 when they change (objective,
   loadout, suits), physics-modelling calls that reach into the shared sim,
   budget (effort level, Fable vs Opus agents), and every agent-design
   question (§4) — those are deliberately AFTER this milestone.
@@ -111,9 +111,9 @@ build so both answers fit (§5).
    property tests, digest gates. New levels through `level_lib`; new
    controllers through the control seam; anything that moves a digest is a
    deliberate re-baseline with rationale.
-4. Feel-adjacent (how a match plays, how a bot behaves on screen) →
-   HUMAN-TEST; Erik plays before merge. Headless and mechanical → auto-merge
-   on green.
+4. Merge on green, feel-adjacent changes included; a HUMAN-TEST (Erik
+   plays before merge) only when he asks for one (CLAUDE.md iron rule,
+   2026-11-13).
 5. Close: post the result on the issue, update memory, amend this skill.
 
 ## 8. Run log
