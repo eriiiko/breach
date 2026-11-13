@@ -28,6 +28,15 @@ answers do not depend on N).
     C:/Users/steen/anaconda3/envs/data/python.exe tools/bot_tournament.py \\
         --levels ship_demo --seeds 1-20 --horde --workers 12
 
+THE DOOR BOTS (#195 1j, ``control_bots_door``): a match with a door team
+always runs under a process-local ``RecordSink``, so its record gains
+``rec["door"]`` (per door team: decisions, the translation's loss counts,
+throws sent and started, ``masked_sent`` -- always 0, the controller raises
+first); matches without one gain nothing. ``--records DIR`` (refused inside
+the checkout) also writes, per door team, its imitation record
+(``DIR/<level>/<c0>-<c1>__z<zombies>__s<seed>__t<team>.npz``) and, per
+match, the replay recording beside it (``...__s<seed>.replay.gz``).
+
 Death causes reuse ``bench_bot_matches.DeathLog`` (the bench's watcher); the
 team bookkeeping here is :class:`TeamLog`. Measurement only: it reads the
 sim, never writes.
@@ -136,9 +145,11 @@ def _level(name, levels_dir):
 def play(job) -> dict:
     """Run one match: ``job`` = (level, levels_dir, controllers (team 0,
     team 1), seed, time_limit_s or None, zombies or None, ``--set``
-    overrides[, the sight rule or None]). Returns its record."""
+    overrides[, the sight rule or None[, the records directory or None]]).
+    Returns its record."""
     name, levels_dir, ctrls, seed, limit, zombies, sets = job[:7]
     sight = job[7] if len(job) > 7 else None
+    records = job[8] if len(job) > 8 else None
     apply_sets(sets)
     from run_match import run_match
     level = _level(name, levels_dir)
@@ -157,8 +168,23 @@ def play(job) -> dict:
         tlog(sim)
         dlog(sim)
         watch.sim = sim
+    sink = None
+    import control_bots_door
+    if any(c in control_bots_door.DOOR_VARIANTS for c in ctrls):
+        # #195 1j: a door team's stats (and, with --records, its records)
+        sink = control_bots_door.RecordSink(records)
     t0 = time.perf_counter()
-    o = run_match(level, spec, seed=seed, on_tick=watch)
+    control_bots_door.install_sink(sink)
+    try:
+        o = run_match(level, spec, seed=seed, on_tick=watch,
+                      record=sink is not None and sink.records)
+    finally:
+        control_bots_door.install_sink(None)
+    door = None
+    if sink is not None:
+        door = sink.close(watch.sim, o.result,
+                          (o.field_digest, o.tick_digest), seed=seed,
+                          recording=o.recording)
     wall = time.perf_counter() - t0
     sim = watch.sim
     survivors = Counter(u.team for u in sim.units
@@ -178,7 +204,36 @@ def play(job) -> dict:
                         "throws": {str(k): n for (tt, k), n
                                    in sorted(tlog.throws.items()) if tt == t}}
     rec["marine_deaths"] = dict(dlog.marine)
+    if door is not None:
+        rec["zombies"] = int(spec.zombies)
+        rec["door"] = door
     return rec
+
+
+def door_summary(records) -> list:
+    """Per (level, door controller, kind of match): the door stats summed
+    over the matches (``rec["door"]``), with each loss count per slot
+    decision."""
+    from control_bots_door import LOSS_BITS
+    groups = defaultdict(Counter)
+    n = Counter()
+    for r in records:
+        for team, st in (r.get("door") or {}).items():
+            kind = ("horde" if "idle" in r["controllers"]
+                    else "nohorde" if r.get("zombies") == 0 else "duel")
+            key = (r["level"], r["controllers"][int(team)], kind)
+            n[key] += 1
+            groups[key].update({k: v for k, v in st.items()
+                                if isinstance(v, (int, float))
+                                and k != "bytes"})
+    rows = []
+    for key in sorted(groups):
+        g = groups[key]
+        sd = max(g["slot_decisions"], 1)
+        rows.append({"level": key[0], "door": key[1], "kind": key[2],
+                     "matches": n[key], "totals": dict(g),
+                     "per_decision": {b: g[b] / sd for b in LOSS_BITS}})
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +342,8 @@ def _kind_name(k) -> str:
 
 
 def jobs_for(levels, levels_dir, seeds, a, b, horde, limit,
-             zombies=None, sets=(), duel=True, sight=None) -> list:
+             zombies=None, sets=(), duel=True, sight=None,
+             records=None) -> list:
     sets = tuple(sets)
     jobs = []
     for name in levels:
@@ -304,6 +360,8 @@ def jobs_for(levels, levels_dir, seeds, a, b, horde, limit,
                                  zombies, sets))
                     jobs.append((name, levels_dir, ("idle", x), seed, limit,
                                  zombies, sets))
+    if records is not None:
+        return [j + (sight, str(records)) for j in jobs]
     return [j + (sight,) for j in jobs] if sight is not None else jobs
 
 
@@ -337,11 +395,22 @@ def main(argv=None) -> int:
                     help="replace the match's sight rule (#195 1d)")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--json", default=None, help="write every match record")
+    ap.add_argument("--records", default=None, metavar="DIR",
+                    help="write the door teams' imitation records and the "
+                         "matches' replays under DIR (outside the checkout; "
+                         "#195 1j)")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.records is not None:
+        rd = Path(args.records).resolve()
+        if rd == ROOT or ROOT in rd.parents:
+            raise SystemExit(f"--records {args.records}: inside the checkout "
+                             f"({ROOT}); records live outside the repo")
+        rd.mkdir(parents=True, exist_ok=True)
     levels = [s for s in args.levels.split(",") if s]
     jobs = jobs_for(levels, args.levels_dir, _seeds(args.seeds), args.a,
                     args.b, args.horde, args.time_limit, args.zombies,
-                    args.set, duel=not args.no_duel, sight=args.sight)
+                    args.set, duel=not args.no_duel, sight=args.sight,
+                    records=args.records)
     t0 = time.perf_counter()
     records = []
     if args.workers > 1:
@@ -363,11 +432,24 @@ def main(argv=None) -> int:
                   flush=True)
     rows = summarise(records, args.a, args.b)
     print(format_rows(rows, args.a, args.b))
+    door_rows = door_summary(records)
+    for d in door_rows:
+        t = d["totals"]
+        print(f"door {d['level']:38s} {d['door']:22s} {d['kind']:7s} "
+              f"matches {d['matches']:3d} slot decisions "
+              f"{t.get('slot_decisions', 0)} masked_sent "
+              f"{t.get('masked_sent', 0)} throws sent "
+              f"{t.get('throws_sent', 0)} started "
+              f"{t.get('throws_started', 0)}")
+        print("    per decision: " + " ".join(
+            f"{k} {v:.3f}" for k, v in d["per_decision"].items()))
     print(f"{len(records)} matches in {time.perf_counter() - t0:.0f} s")
     if args.json:
-        Path(args.json).write_text(json.dumps(
-            {"args": vars(args), "rows": rows, "records": records},
-            indent=1), encoding="utf-8")
+        out = {"args": vars(args), "rows": rows, "records": records}
+        if door_rows:
+            out["door_rows"] = door_rows
+        Path(args.json).write_text(json.dumps(out, indent=1),
+                                   encoding="utf-8")
     return 0
 
 
