@@ -490,13 +490,42 @@ PYBIND11_MODULE(breach_physics, m) {
                   "water_tail", "water_tail_active", "combustion", "fire",
                   "fire_gate_open", "sweep", "sweep_light", "temperature",
                   "books_downloads", "water_tail_boil", "water_tail_evac",
-                  "stamp", "eos", "trace_tail"};
+                  "stamp", "eos", "trace_tail", "edit_queue", "edit_queue_tiles"};
               for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
                   d[names[k]] = c[k];
               return d;
           },
           "#29 P4a: how many times each resident tail stage ran (and did "
           "work) in this process.");
+    m.def("edit_queue_contrib_probe",
+          [](py::array_t<int64_t, py::array::c_style | py::array::forcecast> edits,
+             py::array_t<int64_t, py::array::c_style | py::array::forcecast> tiles,
+             py::array_t<int64_t, py::array::c_style | py::array::forcecast> env,
+             uint32_t salt) {
+              if (edits.ndim() != 2 || edits.shape(1) != breach_cuda::EDQ_EDIT_COLS ||
+                  tiles.ndim() != 2 || tiles.shape(1) != breach_cuda::EDQ_TILE_COLS ||
+                  env.ndim() != 2 || env.shape(1) != breach_cuda::EDQ_ENV_COLS)
+                  throw std::invalid_argument(
+                      "edit_queue_contrib_probe: edits (E, 16), tiles (T, 4), env (N, 4)");
+              const int n_e = (int)edits.shape(0), n_t = (int)tiles.shape(0);
+              const int n_v = (int)env.shape(0);
+              auto t = tiles.unchecked<2>();
+              for (int k = 0; k < n_t; ++k) {
+                  if (t(k, 0) < 0 || t(k, 0) >= n_e)
+                      throw std::invalid_argument("edit_queue_contrib_probe: bad edit row");
+                  const int64_t env_k = edits.at(t(k, 0), 0);
+                  if (env_k < 0 || env_k >= n_v)
+                      throw std::invalid_argument("edit_queue_contrib_probe: bad env");
+              }
+              py::array_t<int64_t> out(n_t);
+              breach_cuda::edit_queue_contrib_probe(edits.data(), n_e, tiles.data(), n_t,
+                                                    env.data(), n_v, salt,
+                                                    out.mutable_data());
+              return out;
+          },
+          py::arg("edits"), py::arg("tiles"), py::arg("env"), py::arg("salt"),
+          "#29 P4c TEST-ONLY: the device edit queue's per-tile contribution "
+          "kernel (the noise and the rounding) on host arrays.");
     m.def("resident_ignition_probe",
           [](py::array_t<int8_t, py::array::c_style | py::array::forcecast> material,
              py::array_t<int32_t, py::array::c_style | py::array::forcecast> table) {
@@ -839,6 +868,37 @@ PYBIND11_MODULE(breach_physics, m) {
     // The launch core's per-env counter block layout (cuda_resident.h), so a
     // caller of cuda_radiation_sweep_resident reads the slots by name from
     // the ONE definition rather than re-typing indices.
+    // #29 P4c: the device edit queue's tables (cuda_resident.h), so the host
+    // pack (field_edit.pack_for_device) and the runner's books fold read the
+    // ONE definition: the field ordinals (refused by the pack unless equal to
+    // FIELD_POLICY's lexicographic ranks) and the books' slots.
+    {
+        py::dict fo;
+        fo["atmosphere"] = (int)breach_cuda::EDQ_F_ATMOSPHERE;
+        fo["fire"] = (int)breach_cuda::EDQ_F_FIRE;
+        fo["gas"] = (int)breach_cuda::EDQ_F_GAS;
+        fo["gas_energy"] = (int)breach_cuda::EDQ_F_GAS_ENERGY;
+        fo["heat"] = (int)breach_cuda::EDQ_F_HEAT;
+        fo["smoke"] = (int)breach_cuda::EDQ_F_SMOKE;
+        fo["water_depth"] = (int)breach_cuda::EDQ_F_WATER_DEPTH;
+        fo["wave_source"] = (int)breach_cuda::EDQ_F_WAVE_SOURCE;
+        m.attr("EDIT_FIELD_ORDINALS") = fo;
+        py::dict bs;
+        bs["dep"] = (int)breach_cuda::EDQ_B_DEP;
+        bs["clip"] = (int)breach_cuda::EDQ_B_CLIP;
+        bs["gas_max"] = breach_cuda::EDQ_GAS_MAX;
+        bs["ge_field_edit"] = (int)breach_cuda::EDQ_B_GE_FE;
+        bs["ge_field_edit_wave"] = (int)breach_cuda::EDQ_B_GE_WAVE;
+        bs["ge_field_edit_atm"] = (int)breach_cuda::EDQ_B_GE_ATM;
+        bs["noise"] = (int)breach_cuda::EDQ_B_NOISE;
+        bs["fail"] = (int)breach_cuda::EDQ_B_FAIL;
+        bs["tiles"] = (int)breach_cuda::EDQ_B_TILES;
+        bs["slots"] = (int)breach_cuda::EDQ_SLOTS;
+        bs["edit_cols"] = breach_cuda::EDQ_EDIT_COLS;
+        bs["tile_cols"] = breach_cuda::EDQ_TILE_COLS;
+        bs["env_cols"] = breach_cuda::EDQ_ENV_COLS;
+        m.attr("EDIT_QUEUE_LAYOUT") = bs;
+    }
     m.attr("RADIATION_SWEEP_CNT_SLOTS") = breach_cuda::RADIATION_SWEEP_CNT_SLOTS;
     m.attr("RS_SLOT_BAD_EXTINCTION")    = breach_cuda::RS_SLOT_BAD_EXTINCTION;
     m.attr("RS_SLOT_BAD_AMBIENT")       = breach_cuda::RS_SLOT_BAD_AMBIENT;
@@ -4846,6 +4906,33 @@ PYBIND11_MODULE(breach_physics, m) {
            "#29 P4b: the five stamp outputs on the resident planes from the "
            "host stamps' rows (cuda_stamp.cu); #29 P5: every env's rows, the "
            "env column the batch index.")
+        // --- #29 P4c: slot 6b's FieldEdit flush on the device ----------------
+        .def("apply_edits_resident", [](const PhysicsEngine& self,
+                py::dict dev, int h, int w, int n_gases,
+                py::array_t<int64_t, py::array::c_style | py::array::forcecast> buf,
+                int n_edits, int n_tiles, uint32_t salt, int o2_idx, int n2_idx,
+                int n_env, py::object engines) {
+            const py::ssize_t need = (py::ssize_t)(n_env + 1) + (py::ssize_t)n_env * 4 +
+                                     (py::ssize_t)n_edits * 16 + (py::ssize_t)n_tiles * 4;
+            if (buf.ndim() != 1 || buf.shape(0) != need || n_edits < 0 || n_tiles < 0)
+                throw std::invalid_argument(
+                    "apply_edits_resident: buf must be the 1-D int64 record buffer "
+                    "[offsets (N+1)][env (N,4)][edits (E,16)][tiles (T,4)]");
+            ResidentFields f = resident_fields_from(dev, h, w, n_gases, 0, n_env);
+            self.apply_edits_resident(f, buf.data(), n_edits, n_tiles, salt, o2_idx,
+                                      n2_idx, resident_engines_from(engines));
+        }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("n_gases"),
+           py::arg("buf"), py::arg("n_edits"), py::arg("n_tiles"), py::arg("salt"),
+           py::arg("o2_idx"), py::arg("n2_idx"), py::arg("n_env") = 1,
+           py::arg("engines") = py::none(),
+           "#29 P4c: the device edit queue -- every env's packed FieldEdit "
+           "records (field_edit.pack_for_device) applied on the resident planes "
+           "(cuda_edit_queue.cu); the books fold into edit_queue_books at "
+           "step_tail_resident.")
+        .def_property_readonly("edit_queue_books", [](const PhysicsEngine& self) {
+            return std::vector<int64_t>(self.edit_queue_books);
+        }, "#29 P4c: the device edit queue's books of the last tick it ran "
+           "(EDIT_QUEUE_LAYOUT slots).")
         .def("upload_light_resident", [](const PhysicsEngine& self,
                 py::dict dev, int h, int w, int n_gases,
                 py::array_t<int32_t> gas_light_absorb_q16,

@@ -1370,3 +1370,57 @@ further and was not measured past 4); the medium ship and decimation 4 with the 
 is the same; not re-measured); `tools/rl_smoke.py` still reports one env per worker by default.
 The yardstick rows of the G1 reading (one env per worker, before the fix) are NOT re-measured: a
 future device-against-farm reading uses 4 envs per worker.
+
+## P4c: the device edit queue (2026-11-13)
+
+**What moved.** Slot 6b's FieldEdit flush, on the resident path: the host still enqueues and sorts
+(`EditQueue.take_ordered`), `field_edit.pack_for_device` packs that applied order (an EDIT row per edit at the
+door, a TILE row per tile of the one region walk), and `cpp/src/cuda_edit_queue.cu` applies it after the entry
+upload -- K1 (one thread per tile: the contribution in 128-bit magnitude arithmetic, the keyed Philox noise), K2
+(one thread per env, its tiles in order: masks, combines, the gas-energy seam). One pinned H2D of the records per
+tick for the whole batch; the books ride the tail's one D2H. The entry set is UNCHANGED (every field an edit
+touches has another host writer between ticks), so the win is the host's per-tile Python loop, not bus bytes.
+
+**Method.** Home Desktop (RTX 3070), fresh process per line, two runs interleaved. NOTE: another session's full
+test suite ran on the same machine throughout, so absolute numbers carry its noise. Before = a detached checkout
+of main `8a90a2ad` with its own CUDA build; after = the branch.
+
+N = 1, the medium bots match (`tools/bench_bot_matches.py --level ship_demo --seeds 1 --timing --sim-seconds 15
+--cuda --cuda-build cpp/build_cuda --resident --profile`; that match enqueues no FieldEdit in its first 15 s, so
+this is the "no overhead when idle" row):
+
+| ms per tick, mean (run 1 / run 2) | before (`8a90a2ad`) | after (P4c) |
+|---|---|---|
+| 6b FieldEdit flush | 0.001 / 0.001 | 0.002 / 0.002 |
+| 7 physics | 6.320 / 5.653 | 5.741 / 5.705 |
+| &nbsp;&nbsp;7 H2D `GameMap.from_host` | 0.461 / 0.338 | 0.351 / 0.320 |
+| &nbsp;&nbsp;7 EOS `run_substeps_resident` | 2.871 / 2.093 | 2.215 / 1.999 |
+| &nbsp;&nbsp;7 tail (resident) | 1.785 / 2.241 | 2.159 / 2.445 |
+| &nbsp;&nbsp;7 D2H `GameMap.to_host` | 0.784 / 0.650 | 0.674 / 0.649 |
+
+The edit-LOADED tick (`tools/bench_resident_scaling.py --batch-run --level ship_demo --levels-dir levels --warmup 5
+--ticks 60 --edits [--host-edits]`, ship_demo `Simulation`s, no units, entities on, every env enqueueing a
+blast-sized load each tick: a noisy smoke disc r 4, a heat disc r 3, a noisy atmosphere disc r 3, a wave_source
+tile, ~110 tiles). "host flush" = the same build with `physics_runner.set_device_edit_queue(False)`, i.e. main's
+behaviour; "device" = P4c:
+
+| batched tick, ms (run 1 / run 2) | host flush (= before) | device queue (P4c) |
+|---|---|---|
+| N = 1, tick | 7.17 / 8.72 | 7.59 / 6.32 |
+| N = 1, host per env (slots 1..6b, 9..10) | 1.844 / 1.854 | 0.689 / 0.718 |
+| N = 64, tick | 233.4 / 232.1 | 157.4 / 155.5 |
+| N = 64, slot 7 | 117.0 / 116.2 | 116.5 / 114.7 |
+| N = 64, host per env | 1.818 / 1.810 | 0.638 / 0.638 |
+| N = 64, env-ticks / s | 274 / 276 | 407 / 412 |
+
+Without edits the N = 64 tick is unchanged: before 126.2 / 121.2 ms, after 122.4 / 124.4 ms (507 / 528 vs 523 / 514
+env-ticks/s).
+
+**Bus.** Planes unchanged: entry 15 fields, 478.5 KiB / tick; exit 12 fields, 847.7 KiB / tick (both
+`cuda_resident_bus_check` and the profiler). Added: the records, one upload per edit-bearing tick -- 1.4 KiB a tick
+for the bus gate's two discs (≈ 16 B a tile + 128 B an edit + 40 B an env).
+
+**Reading.** The host's flush loop (~1.2 ms per env per tick for ~110 tiles, Python per tile) becomes the pack
+(~0.1 ms) and the device's two kernels; the device side stays inside slot 7's noise (K2 is serial per env, ~110
+tiles each, in parallel across envs). At N = 64 the edit-loaded tick is 33 % shorter (+49 % env-ticks/s); at N = 1
+the gain is within the two runs' spread under the machine's load. Idle (no edits) it costs nothing measurable.

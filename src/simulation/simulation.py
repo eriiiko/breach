@@ -2148,7 +2148,15 @@ class Simulation:
         # for this tick (a laser burn-off and a grenade cloud issued the same
         # tick both land before smoke advection). This is the single RNG consumer
         # for noise>0 edits, keyed draws (seed, tick, edit key, tile; P3b).
-        self.edit_queue.flush(self.gmap, self.draws)
+        # #29 P4c: on the resident path the DEVICE applies this flush (the
+        # device edit queue, applied by slot 7 right after its entry upload):
+        # the runner takes the queue in the same order and packs it, or
+        # flushes here on the host when the device cannot serve the tick.
+        runner = self.physics_runner
+        if runner is not None and runner.serves_edit_queue():
+            runner.serve_edit_queue(self.gmap, self.edit_queue, self.draws)
+        else:
+            self.edit_queue.flush(self.gmap, self.draws)
         return True
 
     def _step_physics(self):

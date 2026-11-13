@@ -32,6 +32,18 @@ ticks).
 
 It prints the two remaining calls with their fields and bytes per tick.
 
+#29 P4c adds the device edit queue: slot 6b's flush is applied by the device
+(``"  7 edits (resident)"``, a stage inside the window) from ONE small upload
+of records the host packed -- not a GameMap plane. So that the stage runs,
+each tick of the match enqueues a smoke and a heat disc at an open tile
+(the match itself throws no grenade in its first 40 ticks); the stage must
+sit inside the window on every such tick, and the records' bytes are
+printed beside the planes'. The entry set is unchanged by P4c: every field an
+edit touches has another host writer between ticks (the pumps and vents at
+9e, the topology seams, the temperature ignition, the end-of-tick heat
+clear), so it rides the entry upload as before, and the device applies the
+edits on top of it.
+
 BREAKS IF the entry upload carries a stamp plane on a tick the device stamp
 ran (the device stamp quietly became an upload again), the device stamp stops
 running (the stage is missing on most ticks), a resident stage regains a host
@@ -57,10 +69,12 @@ sys.path.insert(0, os.path.join(_ROOT, "tools"))
 H2D = "  7 H2D GameMap.from_host"
 D2H = "  7 D2H GameMap.to_host"
 STAMP_STAGE = "  7 stamp (resident)"
+EDITS_STAGE = "  7 edits (resident)"
 STAMP_PLANES = ("obstacles", "dyn_permeability", "dyn_wave_absorb",
                 "dyn_heat_atten_q", "dyn_light_atten_q")
 DEVICE_STAGES = (
     STAMP_STAGE,
+    EDITS_STAGE,
     "  7 water substeps (resident)",
     "  7 water tail (resident)",
     "  7 EOS run_substeps_resident",
@@ -91,12 +105,32 @@ def main() -> int:
     physics_runner.set_residency(True)
     ses = MatchSession(load_level("ship_demo"), seed=1, breach_physics=bp)
     prof = TickStageProfiler(skip=2)
+    # #29 P4c: the records' bytes per tick (the edit queue's one upload)
+    from simulation.field_edit import EditMode, Falloff, FieldEdit, Region
+    import numpy as np
+    rec_bytes = []
+    orig_buf = physics_runner._edit_buffer
+
+    def counted(packs, n_env):
+        out = orig_buf(packs, n_env)
+        rec_bytes.append(int(out[0].nbytes))
+        return out
+    physics_runner._edit_buffer = counted
+    g = ses.sim.gmap
+    ys, xs = np.nonzero(~g.solid & ~g.is_vacuum)
+    k = len(ys) // 2
     prof.install(bp, device=True)
     try:
-        for _ in range(N_TICKS):
+        for t in range(N_TICKS):
+            y, x = int(ys[(k + 37 * t) % len(ys)]), int(xs[(k + 37 * t) % len(ys)])
+            ses.sim.edit(FieldEdit("smoke", Region.DISC, (y, x, 3.0), 0.3, EditMode.ADD,
+                                   Falloff.LINEAR, noise=0.3, source_id=1))
+            ses.sim.edit(FieldEdit("heat", Region.DISC, (y, x, 2.0), 1.0, EditMode.ADD,
+                                   Falloff.LINEAR, source_id=2))
             ses.tick()
     finally:
         prof.uninstall()
+        physics_runner._edit_buffer = orig_buf
         physics_runner.set_residency(False)
 
     fails = []
@@ -135,6 +169,9 @@ def main() -> int:
             if not {"dyn_permeability", "dyn_heat_atten_q"} <= names:
                 fails.append(f"tick {tick}: no device stamp and the entry did "
                              f"not upload the host's stamp planes")
+        if EDITS_STAGE not in labels:
+            fails.append(f"tick {tick}: the device edit queue did not run "
+                         f"(this tick enqueued edits)")
     if len(prof.seq) != N_TICKS - prof.skip:
         fails.append(f"{len(prof.seq)} measured ticks of {N_TICKS - prof.skip}")
     if stamp_ticks * 2 <= len(prof.seq):
@@ -156,6 +193,10 @@ def main() -> int:
         print(f"    between them: 0 GameMap transfers on every tick")
         print(f"    device stamp on {stamp_ticks} ticks (no stamp plane uploaded), "
               f"host planes uploaded on {fallback_ticks}")
+        if rec_bytes:
+            print(f"    device edit queue: its records, 1 upload/tick, "
+                  f"{sum(rec_bytes) / len(rec_bytes) / 1024:.1f} KiB/tick "
+                  f"(not a GameMap plane)")
         s = prof.summary()
         for key, v in s["bus"].items():
             print(f"      {key:34s} {v['calls']:.2f} calls/tick "
