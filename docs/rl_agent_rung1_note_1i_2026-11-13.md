@@ -495,6 +495,143 @@ Credited cause (the reward is a consumer), the header line.
 
 ## As built
 
-(Filled by the implementer: the commits, every choice beyond this note,
-the gate's printout with its vacuity counts and the three breaks, the farm
-reading.)
+2026-11-13, branch `192-1i-reward` off main `cff35c83`, one Opus implementer.
+
+**Commits.** `900f478d` the reward module (A); `6ae5e1bd` the env (B);
+`9252800c` `tools/rl_smoke.py` (B's tool part); `e193d23a` the full view's
+balance column and obs spec 5.4 (C); `ab85a574` the tests (D); the last
+commit this section, `CLAUDE.md` and the farm reading. No C++ file, no
+digest, no golden moved; `tests/twin_manifest.toml` untouched
+(`test_twin_debt` and `test_class_p_level` green: the corpus never imports
+`reward_v1`).
+
+**The shape as built** (every name of the note exists as written, except
+where said):
+
+- `reward_v1.standing(units, bars)` takes an ITERABLE OF UNITS, not the
+  sim: the full view passes its own living marines (`FullView.marines`) and
+  so never reaches past its wall; the books pass `sim.units`.
+  `StandingParts` carries `H` / `A` per non-zombie team (`h(t)` / `a(t)`)
+  and `H_zombie`; `balance(parts, t, terms)` counts every other team present
+  as the enemy.
+- A unit's health term is `bar_ratio(hp_q, bar_q)` while ALIVE and 0 as a
+  corpse (CHOICE: a corpse that a heal took above 0 hp still counts 0 --
+  the note's "a corpse's health is 0" made independent of the hp's sign).
+  A `UnitKilledEvent` settles whatever health the unit still held (always
+  0 under `apply_packet`, which kills only at hp <= 0) with the killer's
+  credit, so the walk is exact even for a death with health left.
+- The per-event split: for each hit / kill and each marine team the
+  balance change is computed, the part cases 1-2 put on that team's rows is
+  taken, and the difference goes to `rest_t`. That is a per-EVENT
+  decomposition (exactly 0 when the event is fully credited), never "the
+  state's change minus the own parts": `d_balance` is the only number read
+  from state, and identity 2 compares the two.
+- A change of side (the turning), a unit appearing or vanishing, and an
+  out-of-tick side change all go through one `_restate` (old part out, new
+  part in, every team's rest). `begin` settles an out-of-tick hp / life /
+  bar change of a unit on its own side through the same `_settle` as the
+  walk, with no attacker.
+- The books hold per-step accumulators (`start_step`): `counters` (masked
+  by the rows' records), `raw` (unmasked: the identities), `rest`,
+  `d_balance`, `outcome` (per team, the outcome group paid to EACH of its
+  rows), `rows_ended`. Each `begin` / `end` / `finish` writes a scratch and
+  flushes it: the mask is the rows' state BEFORE the flush, so the
+  elimination's own payment reaches the row and nothing after it does.
+- `stats` counts what the walk met (overkill hits, corpse hits, turnings,
+  zombie bites on marines, uncredited hits, friendly fire, eliminations,
+  wins, clocks, posthumous credits, heals): the gate's vacuity floor.
+- **The env.** `COUNTER_NAMES` = the old generated tuple +
+  `reward_v1.BOOK_COUNTERS` (`N_OLD_COUNTERS` marks the seam). The books
+  run under every profile (one code path); under `"counters"` their terms
+  are the `"fireteam"` table (CHOICE: the info blocks `team_balance` /
+  `team_uncredited` / `team_outcome` are in balance units and need sizes;
+  the new counters themselves are term-free). **Bit for bit under
+  `"counters"`** (CHOICE, stricter than the note's "float64 throughout"):
+  the OLD counters still accumulate in a float32 array exactly as before,
+  and the weighted sum is `(old * w[:k0]).sum(1)` -- the same float32
+  reduction over the same columns as before -- plus the books' columns'
+  sum, an exact 0 unless the run weights them. Summing over the longer row
+  instead would have moved numpy's pairwise grouping and with it the float32
+  rounding. The books are float64; the step's `counters` are float64 (the
+  old columns cast exactly) and cast once at the shared-memory write.
+- The reward is computed in `EnvRunner.step` (`_reward`, a broadcast
+  against the group matrix built once per runner), not in the worker loop
+  (CHOICE: one place for both profiles; the worker copies it). The worker
+  task no longer carries `weights`.
+- Under a named profile, a row whose records ended also has its OLD
+  counters frozen for the rest of the episode (6.6's "every counter of the
+  row stays 0"); under `"counters"` the old counters are untouched.
+- `info["rows_ended"]` is bool `(N, U)` (a uint8 shared block); the three
+  team blocks are float32 `(N, T)`; all four are fresh copies.
+- **The full view**: `FullView.match`'s balance column is
+  `squash(ratio(standing(self.marines, bars).h(t), n_t))`; `n_t` stays
+  `spec.teams[t].n` as before.
+
+**The gate's printout** (in-process, float64, 1e-9; identities 1-3 on every
+decision; per scene the books' `stats`):
+
+| scene | overkill | corpse | turnings | zombie bites | uncredited | friendly fire | elim. | wins | clocks | posthumous | outside |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| zombie box | 2 | 0 | 2 | 4 | 0 | 0 | 1 | 1 | 0 | 0 | 0 |
+| three teams | 4 | 0 | 4 | 8 | 0 | 0 | 2 | 1 | 0 | 0 | 0 |
+| C4 among a pair and an enemy | 2 | 0 | 0 | 0 | 2 | 1 | 1 | 1 | 0 | 0 | 0 |
+| C4, one a side (the wipe) | 2 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 |
+| two blows on a sliver | 1 | 1 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | 1 |
+| ship_demo policy, seed 3 (40 s) | 5 | 0 | 0 | 0 | 155 | 29 | 1 | 1 | 0 | 0 | 0 |
+| ship_demo policy, seed 8 (40 s) | 5 | 0 | 0 | 0 | 84 | 38 | 1 | 1 | 0 | 2 | 0 |
+| ship_demo bots, seed 3 (whole) | 12 | 0 | 2 | 4 | 133 | 0 | 0 | 0 | 2 | 0 | 0 |
+| ship_demo bots, seed 8 (whole) | 13 | 0 | 2 | 4 | 116 | 0 | 1 | 1 | 0 | 0 | 0 |
+
+Every required event was met (each box names its own and fails as vacuous
+without it). Choices in the scenes: the "timed charge between them" of
+the note is a C4 PLANTED by one soldier (the `plant_charge_intent` row),
+so the blast is credited; ship_demo's policy matches run at a 40 s limit
+(whole policy matches on the legal-uniform sampler cost ~3 min each);
+a hit on a corpse never happened in natural play on any scene, so a box
+scripts it: two adjacent team-mates strike one enemy left at a sliver of
+its bar on the same tick (the melee slot decides against its start, so the
+second blow lands on the corpse).
+
+**The three breaks** (each a temporary edit of `reward_v1.py`, the suite's
+non-ship_demo part run, the file reverted with `git checkout`):
+
+- (i) the walk credits the event's full `d_q / bar_q`: 11 tests fail, all
+  on identity 2 (`own + rest == d_balance`) -- the overkill, corpse,
+  friendly-fire, turning and sizes unit tests, all five boxes, three sides.
+- (ii) the turning not settled into the rest: 5 fail on identity 2 -- the
+  friendly-fire and turning unit tests, the zombie and three-team boxes,
+  three sides.
+- (iii) `begin` loses the out-of-tick residual (stores the state, settles
+  nothing): 3 fail on identity 2 -- the heal unit test, the heal-between-
+  steps test, the corpse box (whose setup writes the sliver between ticks).
+  **Correction to the note:** identity 1 can NOT catch this break: it
+  telescopes over `d_balance`, which is read from state and (by the note's
+  own design) never refreshed in `begin`, so it closes whatever `begin`
+  does. Skipping `begin` outright is caught earlier still -- the walk then
+  starts from a stale hp and the check raises `RewardBooksMismatch`.
+
+**The farm** (section 5's gate), one session on the Home Desktop, the
+design's 9.1 protocol (64 envs / 16 workers, ship_demo, decimation 4, 750
+measured steps after 20 of warm-up, `tools/rl_smoke.py --max-steps 770`,
+1h's own run files with `[reward]` swapped):
+
+| run | env-ticks/s | of crop | step p50 / p95 ms |
+|---|---|---|---|
+| crop | 407.5 | 100 % | 632 / 678 |
+| v1 + full view, `"v1"` actions, `"counters"` | 357.0 | 87.6 % | 704 / 765 |
+| the same on `"fireteam"` | 361.7 | 88.8 % | 700 / 731 |
+
+Above spec 6's 70 % line; `"fireteam"` against `"counters"` +1.3 % (noise:
+both played the same 190 654 ticks -- a reward never changes the play --
+and the books run under both profiles, so the difference is only the
+group broadcast against the weighted sum). The 1h `"v1"` reading of the
+same run was 321.5 then: today's 357.0 is the same code but for the
+books, i.e. session noise of ~10 % between sessions -- why the note's
+comparison is within one session. **The books' own cost**, in-process
+(ship_demo, both teams on bots, 300 decisions, with the full suite running
+beside it): 217 us a tick (begin 45, end 172), 1.0 % of an 85 ms
+env-decision -- about 5x the note's 20-40 us estimate, still ~1 %; the
+walk's per-team Python loop and the two unit snapshots are where it goes.
+If it ever matters, the snapshot in `end` is the first thing to share
+with the next `begin` (they read the same state when no test writes
+between steps).
