@@ -665,7 +665,27 @@ def test_with_no_wind_up_the_throw_is_the_pre_g3p_same_tick_throw(monkeypatch):
 #: 435352e97169d7af477efc406cea55d8e0360556c6e830f189908468c92da09b; units
 #: a401c2ceb2db9cd87f25beaef33285e0e42740e0c06b8f2ac964037b6ad6c2f4)
 _PRE_G3P_SHIP_DEMO = dict(
-    outcome="win", team=0, ticks=259,
+    # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
+    # Philox draws had moved this pin): re-pinned on the merged tree with
+    # Erik's bite values -- outcome, team and ticks unmoved (win 1 at 240); the digests and the unit stream
+    # move (each marked below). SOLE CAUSE: on the merged tree with the
+    # three old [zombie] values set back in-process main's version of this
+    # test file passes whole, i.e. main's pin comes back bit for bit. The
+    # "now" values in the 2026-11-12 bite comment are the pre-merge branch's.
+    # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
+    # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
+    # docs/zombie_bite_balance_2026-11-12.md). SOLE CAUSE: this test passes
+    # against the OLD pin on this tree (main 321babcf merged in) with the
+    # three old [zombie] values set back in-process. Was:
+    #   team 0 (now 1)
+    #   ticks 259 (now 240)
+    #   field_digest c429d8a6a5cd69232ef602c8947e50865230450f
+    #     86a8c01e3a68e8eddaa8ac5c
+    #   tick_digest 5c010886716e4a2bc7c935c9ad5e4bfb0552abd2
+    #     a014e7241fc024dcf8fce047
+    #   unit_stream ac4f6845ea60c23d3b04c7ca0231a50cfc4d8597
+    #     547df9efd8206ac6f40109c1
+    outcome="win", team=1, ticks=240,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -681,8 +701,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was c429d8a6a5cd69232ef602c8947e50865230450f86a8c01e3a68e8eddaa8ac5c)
-    field_digest="df4662721dc33b59018e566dcf75f6d3"
-                 "e01b860f53578d676444df677e0fef77",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was df4662721dc33b59018e566dcf75f6d3e01b860f53578d676444df677e0fef77)
+    field_digest="6840efc104ff29770f92d77f73c4f9d5"
+                 "b3107a206005576c1752e8cce3f7381e",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -715,8 +737,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 5c010886716e4a2bc7c935c9ad5e4bfb0552abd2a014e7241fc024dcf8fce047)
-    tick_digest="e1add2e038e565dfe56d69e09c8c4d66"
-                "1e6885bcdb287781dfb38491bee2a336",
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was e1add2e038e565dfe56d69e09c8c4d661e6885bcdb287781dfb38491bee2a336)
+    tick_digest="37d54d7aa9b8f1abe1ef19078dad5a2f"
+                "91cbe915752d7176329b5c60ef03053a",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -749,8 +773,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was ac4f6845ea60c23d3b04c7ca0231a50cfc4d8597547df9efd8206ac6f40109c1)
-    unit_stream="572519ba48b80de7d770865a16e436ec"
-                "8736481158155bfc1fc92d3484c11a16")
+    # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
+    # (was 572519ba48b80de7d770865a16e436ec8736481158155bfc1fc92d3484c11a16)
+    unit_stream="2bd1812dc1371c7695889183cf0c6a5e"
+                "97004b58a0f5c198b12d3ae14b514f2f")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

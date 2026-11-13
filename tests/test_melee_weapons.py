@@ -467,9 +467,12 @@ def test_zombie_bite_keeps_its_shipped_path():
     hits = [e for e in sim.tick_events if isinstance(e, UnitHitEvent)]
     assert [(e.unit_id, e.source) for e in hits] == [(m.id, "melee")]
     cooldown = CFG.zombie.attack_cooldown_ticks
-    _step(sim, cooldown)                          # exactly one more bite
-    assert m.current_hp == hp0 - 2 * bite
-    assert not m.alive                            # 2 x 60 >= 100
+    n = -(-int(hp0) // int(bite))                 # bites to kill (3 x 34)
+    for k in range(2, n + 1):
+        assert m.alive                            # k - 1 bites do not kill
+        _step(sim, cooldown)                      # exactly one more bite
+        assert m.current_hp == max(0.0, hp0 - k * bite) or not m.alive
+    assert not m.alive                            # n x bite >= hp
     assert m.killed_by_zombie                     # the converting death
     from simulation.events import UnitKilledEvent
     kills = [e for e in sim.tick_events if isinstance(e, UnitKilledEvent)]

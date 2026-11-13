@@ -74,7 +74,7 @@ Points are relative to `range`, so changing `range` moves every point: a tuned c
 at the `range` it was tuned on. The fire's `[render.fire_light] gain` and the units' look were judged
 before this curve, so recheck them if one looks off.
 
-A look change is a HUMAN-TEST: Erik plays it and says so before it merges.
+A look change merges on green unless Erik asked to see it first (CLAUDE.md iron rule, 2026-11-13); in a tuning session he is already at the screen.
 
 ## Keeping this skill honest
 

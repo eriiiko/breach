@@ -679,6 +679,18 @@ noise fields on the device, the per-zombie descent as one thread per zombie,
 and the bites through the applier; the field cache's refresh rule (drop on
 `tick % N == 0` or a topology change, flood on first need) is the contract.
 
+**P3d CLOSED 2026-11-13 with no patch of its own.** Re-checked against main
+`0e166d91`: the horde walks the field on every path (no A* call in the
+zombie law, gated by `tests/test_horde_field.py`), the C++ flood equals the
+Python reference flood, the law's `math.sqrt` gates are integer squared
+compares (`ai_zombie._d2`), and the systems rows this section asked to amend
+are amended (CLAUDE.md's A* row; the Match controller registry row names the
+field law "the approved rewrite of the pre-G9p A* law, residency P3d";
+`tests/test_zombie_control.py` re-pinned at G9p). The HUMAN-TEST was G9p's,
+played by Erik with the gameplay pack. `test_horde_field`,
+`test_horde_behaviours`, `test_zombie_control` and `test_pathfinding_parity`:
+67 passed at `0e166d91`. Everything that remains is P7d's (above).
+
 ### 4.10 Zero-copy export, streams, syncs
 
 Persistent CuPy buffers exported to torch through DLPack; the engine runs on
@@ -1061,7 +1073,7 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | P10 | Linux build + container + the suite on Linux; `cuda_harness.py`'s Windows-only paths ported | digests equal to Windows | Sonnet | no |
 | **G1** | the §3 scene (no units, entities on) device vs farm, per slot, on a node | the gate factor (§3) | | Erik reads it |
 | P3a, P3c, P3e | the schema, Q16 positions, the integer match path (§7), one branch each, on main | per row | P3a Sonnet; P3c, P3e Opus | P3e only (P3c's waived, §12.1) |
-| P3b, P3d | Philox (+ FieldEdit's noise on every path), the distance field; P3b before P4c and P7a, P3d before P7d | per row | P3b Sonnet; P3d Opus | P3d |
+| P3b, P3d | Philox (+ FieldEdit's noise on every path), the distance field; P3b before P4c and P7a, P3d before P7d | per row | P3b Sonnet; P3d Opus | P3d (**both DONE: P3b merged `f55a5b89`; P3d built by #183 G9p and closed 2026-11-13 with no patch, §4.9**) |
 | P4c | the device edit queue (Class P; after P3b and P3e: integer policies, Philox noise, the phased key) | one tol-0 scene per policy row + the cross-tick overlap scene | Opus | no |
 | P6 | the device unit store + schema's device side, the Unit ↔ store bridge, slots 1 / 1b / 2b / 3 / 9 / 9b / 9c–9d / 10 as kernels, the per-env serial applier (block form) with the topology seam as device functions, the event ring, the entity export for the digest | live lockstep; the topology scene gates | Opus | no |
 | P6b | entities on the device per class with per-class scenes (airlock_demo, a heat-source + heat-trigger studio, a vent studio); the #25 gather as the accessor's device backing | live lockstep per scene | Opus | no |
@@ -1270,7 +1282,7 @@ fold itself stays DEFERRED by ruling, so the chapters are listed as owed):**
 | GameMap "topology only via destroy_wall / seal_tiles" | + their device forms, called by the applier | P6 |
 | FieldEdit | the device queue is its flush (amend, not a second row) | P4c |
 | Payload executor | + its device form | P7c |
-| A* "the only pathfinder"; zombies "WRAPPED, never rewritten" | the horde walks the field on both paths; A* is the host pathfinder | P3d |
+| A* "the only pathfinder"; zombies "WRAPPED, never rewritten" | the horde walks the field on both paths; A* is the host pathfinder | P3d (done at #183 G9p) |
 | RL-batch habits | absorbed into the batched engine row | P5 |
 | Unit "one class" | + the schema and `__slots__` | P3a |
 | Weapons | + the device table upload | P8b |

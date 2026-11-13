@@ -18,6 +18,7 @@ returns to loaded models.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence
@@ -172,7 +173,61 @@ class LookAssigner:
         return [self._look[unit_key(u)] for u in units]
 
 
-__all__ = ["LookAssigner", "look_path", "looks_table", "all_look_names",
+def handedness_table(cfg) -> Dict[str, float]:
+    """``[render.unit_looks] left_handed`` (#187): per role, the share of its
+    units drawn left-handed, in [0, 1]. Raises ValueError naming the key
+    when it is missing, a role is missing or unknown, or a share is not a
+    number in [0, 1]."""
+    section = getattr(getattr(cfg, "render", None), "unit_looks", None)
+    raw = None if section is None else getattr(section, "left_handed", None)
+    if raw is None:
+        raise ValueError("[render.unit_looks] is missing 'left_handed'")
+    d = dict(raw) if isinstance(raw, Mapping) else dict(vars(raw))
+    bad = sorted(set(d) - set(ROLES))
+    if bad:
+        raise ValueError(f"[render.unit_looks] left_handed has unknown roles {bad}")
+    out: Dict[str, float] = {}
+    for role in ROLES:
+        v = d.get(role)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0.0 <= v <= 1.0:
+            raise ValueError(f"[render.unit_looks] left_handed.{role} must be a "
+                             f"number in [0, 1], got {v!r}")
+        out[role] = float(v)
+    return out
+
+
+def _round_half_up(x: float) -> int:
+    return int(math.floor(x + 0.5))
+
+
+class HandAssigner:
+    """Deals handedness to units (#187), once per unit id, and remembers it
+    for the unit's life -- the look's deal (:class:`LookAssigner`): units
+    never seen before are dealt in ascending id, per role, and the k-th
+    unit of a role is LEFT-handed when ``round((k + 1) s) > round(k s)``
+    (``s`` its role's share), so any first n units of a role hold
+    ``round(n s)`` left-handers (a 10 % share: the 5th, the 15th, ...).
+    Render-only: reads ``id`` and ``is_zombie``, writes nothing."""
+
+    def __init__(self, shares: Mapping[str, float]) -> None:
+        self._share = {role: float(shares.get(role, 0.0)) for role in ROLES}
+        self._left: Dict[int, bool] = {}
+        self._dealt: Dict[str, int] = {role: 0 for role in ROLES}
+
+    def left_handed(self, units: Iterable) -> List[bool]:
+        """Whether each unit is left-handed, in the order given."""
+        units = list(units)
+        fresh = sorted({unit_key(u): u for u in units
+                        if unit_key(u) not in self._left}.items())
+        for uid, u in fresh:
+            role = role_of(u)
+            k, s = self._dealt[role], self._share[role]
+            self._left[uid] = _round_half_up((k + 1) * s) > _round_half_up(k * s)
+            self._dealt[role] = k + 1
+        return [self._left[unit_key(u)] for u in units]
+
+
+__all__ = ["LookAssigner", "HandAssigner", "handedness_table", "look_path", "looks_table", "all_look_names",
            "UnitShading", "unit_shading", "BODY_LIGHT_MODES",
            "BODY_LIGHT_UNIT", "BODY_LIGHT_FIELD",
            "role_of", "unit_key", "ROLES", "ROLE_PLAYER", "ROLE_ZOMBIE", "MODELS_DIR"]

@@ -21,7 +21,7 @@ all things level building -- generation etc." It is the levelgen twin of the
   department is built next, when a department is "playing", what goes in
   this skill.
 - **Erik decides, always**: anything judged by eye (how a ship FEELS to play
-  or looks; HUMAN-TEST unchanged), game-design content (which departments
+  or looks; a HUMAN-TEST only when he asks for one, CLAUDE.md 2026-11-13), game-design content (which departments
   exist, the dark list, secrets policy, the mirror policy when it changes),
   physics-modelling calls the signatures reach into (cold rooms, dust, a new
   gas row), budget (effort, Fable vs Opus agents), and the word choices that
@@ -95,8 +95,8 @@ engine stays small.
 4. Build per `autonomous-patch-workflow` and `git-workflow`: a worktree per
    branch, one writer, property tests (never pin a count of something
    designed to grow), digest gates.
-5. How a ship plays or looks -> HUMAN-TEST, Erik plays before merge.
-   Mechanical (gates, byte-identical regeneration) -> auto-merge on green.
+5. Merge on green, how a ship plays or looks included; a HUMAN-TEST only
+   when Erik asks for one (CLAUDE.md iron rule, 2026-11-13).
 6. Close: post the result on the issue, update memory, amend this skill.
 
 ## 6. Where things live
