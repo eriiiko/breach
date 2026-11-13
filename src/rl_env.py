@@ -40,6 +40,9 @@ missing key or a mistyped value (:func:`load_run`)::
     [reward]                      # a weight per counter name (absent = 0)
     kills = 1.0
     deaths_bullet = -1.0
+    # -- or (#195 1i) a named profile and overrides of ITS TERMS:
+    # profile = "fireteam"        # needs [obs] spec = "v1"
+    # zombie_bar = 0.1
 
 THE OBSERVATION (#195 1g). ``[obs] spec`` names the layout the sensor
 accessor's ``observe`` door serves (``sensor_accessor.OBS_SPECS``). Under
@@ -110,16 +113,30 @@ mask):
   ``crop`` (the frozen channels + ``material`` + unit occupancy by team),
   ``obs["vector"]`` ``(N, U, V)`` float32 (:data:`VECTOR_FIELDS`),
   ``obs["valid"]`` ``(N, U)`` bool. Placeholder rows (agent era).
-- ``reward`` ``(N, U)`` float32: the step's per-unit counters
-  (:data:`COUNTER_NAMES`, from the ticks' credited ``UnitHitEvent`` /
-  ``UnitKilledEvent``) weighted by ``[reward]``. PLACEHOLDER.
+- ``reward``: under ``[reward] profile = "counters"`` (the default, the
+  PLACEHOLDER) ``(N, U)`` float32, the step's per-unit counters
+  (:data:`COUNTER_NAMES`) weighted by ``[reward]``. Under a named profile
+  (#195 1i, ``simulation.reward_v1``: ``"fireteam"``) ``(N, U, 5)`` float32,
+  the FIVE group numbers in ``reward_v1.REWARD_GROUPS`` order (outcome,
+  own, team, friendly fire, order) for every row with ``in_match`` 1, dead
+  and turned rows included, zeros for an empty roster place and for a row
+  whose records ended -- never their sum (the trainer weights them).
 - ``terminated`` ``(N,)`` bool: the ``MatchRules`` law (fewer than two marine
-  teams alive). ``truncated`` ``(N,)`` bool: the time limit, a DRAW today --
-  PLACEHOLDER until the agent era.
+  teams alive). ``truncated`` ``(N,)`` bool: the time limit, a DRAW --
+  under ``"counters"``. Under a named profile the clock is an ENDING
+  (design 6.5): every end is ``terminated`` and ``truncated`` is False.
 - ``info``: ``tick``, ``episode``, ``episode_seed``, ``level``, ``ticks``
   (simulated this step), ``ended``, ``final_obs`` (the terminal observation
   of the envs that ended; they were reset inside the step and ``obs`` is
-  their episode k+1's tick 0), ``result``, ``counters`` and
+  their episode k+1's tick 0), ``result``, ``counters`` (``(N, U, K)``:
+  the generated old counters, then the reward books' own,
+  ``reward_v1.BOOK_COUNTERS``), the reward books' per-team blocks
+  ``team_balance`` / ``team_uncredited`` / ``team_outcome`` ``(N, T)``
+  float32 (the step's change of each team's balance read from state, its
+  uncredited rest, the outcome group paid to each of its rows; an env that
+  ended in the step: the ENDED episode's), ``rows_ended`` ``(N, U)`` bool
+  (the step a row's records ended: its team eliminated or the episode
+  over), and
   ``checkpoints``: per env the ``(episode, tick, field_digest,
   tick_digest)`` taken at the ``[replay] checkpoint_every_ticks`` cadence,
   at tick 0 and at an episode's last tick -- the recording's checkpoints, so
@@ -197,11 +214,16 @@ VECTOR_FIELDS = {
 }
 
 
-def _counter_names() -> tuple:
+def _old_counter_names() -> tuple:
     from simulation.events import CAUSE_NAMES
     return (("hits_dealt", "damage_dealt", "team_hits", "kills", "team_kills",
              "hits_taken", "damage_taken")
             + tuple(f"deaths_{c}" for c in CAUSE_NAMES))
+
+
+def _counter_names() -> tuple:
+    from simulation.reward_v1 import BOOK_COUNTERS
+    return _old_counter_names() + BOOK_COUNTERS
 
 
 #: The per-unit reward counters, generated from ``events.Cause`` (a new
@@ -211,8 +233,12 @@ def _counter_names() -> tuple:
 #: another team (marines or the horde); ``team_hits`` -- on another unit of
 #: its own team; ``kills`` / ``team_kills`` likewise for kills; its own
 #: ``hits_taken`` / ``damage_taken`` (any source, damage > 0: a heal is not a
-#: hit) and ``deaths_<cause>``. Self-hits count only as taken.
+#: hit) and ``deaths_<cause>``. Self-hits count only as taken. APPENDED
+#: after them (#195 1i): the reward books' counters
+#: (``simulation.reward_v1.BOOK_COUNTERS``), filled under every profile.
 COUNTER_NAMES = _counter_names()
+#: How many of :data:`COUNTER_NAMES` are the old (event-counted) ones.
+N_OLD_COUNTERS = len(_old_counter_names())
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +286,19 @@ class RunConfig:
     full_view: bool = True      # [obs] full_view (#195 1g (c)): serve the
                                 # value network's full view under info ("v1")
     action_spec: str = "raw"    # [action] spec (#195 1h): the action layout
+    reward_profile: str = "counters"   # [reward] profile (#195 1i)
+    reward_terms: tuple = ()    # ((term, weight), ...): the profile's table
+                                # with the run file's overrides; () under
+                                # "counters"
+
+    def terms(self) -> dict:
+        """The term weights of the books (#195 1i): the profile's table with
+        the overrides; under ``"counters"`` the ``"fireteam"`` table (the
+        books' per-team info blocks are in its balance units)."""
+        if self.reward_terms:
+            return dict(self.reward_terms)
+        from simulation.reward_v1 import PROFILES
+        return dict(PROFILES["fireteam"])
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -423,8 +462,24 @@ def parse_run(raw: dict, where: str = "run file",
                                  f"(known: {sorted(VECTOR_FIELDS)})")
         if len(set(vector)) != len(vector):
             raise ValueError(f"{where}: [obs] vector names a field twice")
+    from simulation.reward_v1 import (COUNTERS_PROFILE, REWARD_PROFILES,
+                                      profile_terms)
+    rtab = dict(raw["reward"])
+    profile = rtab.pop("profile", COUNTERS_PROFILE)
+    if not isinstance(profile, str) or profile not in REWARD_PROFILES:
+        raise ValueError(f"{where}: [reward] profile must be one of "
+                         f"{list(REWARD_PROFILES)}, got {profile!r}")
+    reward_terms = ()
+    if profile != COUNTERS_PROFILE:
+        if spec != "v1":
+            raise ValueError(f"{where}: [reward] profile {profile!r} needs "
+                             f"[obs] spec 'v1' (a dead row's pay is read "
+                             f"with in_match), got [obs] spec {spec!r}")
+        terms = profile_terms(profile, rtab, f"{where}: [reward]")
+        reward_terms = tuple(sorted(terms.items()))
+        rtab = {}
     weights = {}
-    for k, v in raw["reward"].items():
+    for k, v in rtab.items():
         if k not in COUNTER_NAMES:
             raise ValueError(f"{where}: [reward] {k!r} is not a counter "
                              f"(known: {list(COUNTER_NAMES)})")
@@ -453,7 +508,8 @@ def parse_run(raw: dict, where: str = "run file",
                      channels=channels, crop_radius=crop_radius,
                      vector=vector, reward=reward, out_dir=out_dir,
                      sight=sight, spec=spec, full_view=full_view,
-                     action_spec=action_spec)
+                     action_spec=action_spec, reward_profile=profile,
+                     reward_terms=reward_terms)
 
 
 def load_run(path) -> RunConfig:
@@ -493,6 +549,16 @@ class Layout:
     full_view: bool = False     # the value network's full view served (1g (c))
     action_spec: str = "raw"    # the action spec (#195 1h)
     n_kinds: int = 0            # K: the hand-grenade rows ("v1" actions)
+    reward_profile: str = "counters"   # [reward] profile (#195 1i)
+
+    @property
+    def reward_shape_tail(self) -> tuple:
+        """``()`` under ``"counters"`` (one weighted sum per row), ``(5,)``
+        under a named profile (one number per reward group)."""
+        if self.reward_profile == "counters":
+            return ()
+        from simulation.reward_v1 import REWARD_GROUPS
+        return (len(REWARD_GROUPS),)
 
     @property
     def n_rows(self) -> int:
@@ -576,8 +642,12 @@ class Layout:
         out.update(full)
         out.update({"final_" + k: v for k, v in full.items()})
         out.update({
-            "reward": ((n, u), np.float32),
+            "reward": ((n, u) + self.reward_shape_tail, np.float32),
             "counters": ((n, u, kk), np.float32),
+            "team_balance": ((n, self.n_teams), np.float32),
+            "team_uncredited": ((n, self.n_teams), np.float32),
+            "team_outcome": ((n, self.n_teams), np.float32),
+            "rows_ended": ((n, u), np.uint8),
             "terminated": ((n,), np.uint8),
             "truncated": ((n,), np.uint8),
             "tick": ((n,), np.int64),
@@ -611,7 +681,8 @@ def make_layout(run: RunConfig, levels: list) -> Layout:
                   crop_radius=run.crop_radius, vector=run.vector,
                   spec=run.spec,
                   full_view=bool(run.spec == "v1" and run.full_view),
-                  action_spec=run.action_spec, n_kinds=n_kinds)
+                  action_spec=run.action_spec, n_kinds=n_kinds,
+                  reward_profile=run.reward_profile)
 
 
 def load_levels(run: RunConfig) -> list:
@@ -669,6 +740,15 @@ class EnvRunner:
         self._hit, self._kill = UnitHitEvent, UnitKilledEvent
         self._vec = [VECTOR_FIELDS[v] for v in layout.vector]
         self._ci = {n: i for i, n in enumerate(layout.counters)}
+        # #195 1i: the reward books' terms and the group matrix (built
+        # once); under "counters" the per-counter weights
+        from simulation.reward_v1 import group_weights
+        self._terms = run.terms()
+        self._profile = run.reward_profile
+        self._G = (group_weights(self._terms, layout.counters)
+                   if self._profile != "counters" else None)
+        self._w = run.reward_weights()
+        self.books = None
         self.k = -1
         self.session = None
         self.seed = None
@@ -708,6 +788,10 @@ class EnvRunner:
             for u in sim.roster(t):
                 self._id_row[u.id] = (t, t * S + u.slot)
         self._limit = self.session.rules.limit_ticks(sim)
+        # #195 1i: one episode's reward books (always: one code path)
+        from simulation.reward_v1 import RewardBooks
+        self.books = RewardBooks(sim, spec, S, self._terms,
+                                 n_teams=self.layout.n_teams)
         if self.layout.spec == "v1":
             from simulation.obs_spec_v1 import ObsContext
             self.ctx = ObsContext.build(sim, spec, S,
@@ -747,35 +831,74 @@ class EnvRunner:
         else:
             for team, pol in self.policies.items():
                 pol.set_rows(actions[team * S:(team + 1) * S])
-        counters = np.zeros((self.layout.n_rows, len(self.layout.counters)),
-                            dtype=np.float32)
+        k0 = N_OLD_COUNTERS
+        # the old counters accumulate in float32 exactly as before #195 1i
+        old = np.zeros((self.layout.n_rows, k0), dtype=np.float32)
+        books = self.books
+        books.start_step()
+        named = self._profile != "counters"
         cps = []
         ticks = 0
         for _ in range(self.run.decimation):
             team_before = {u.id: int(u.team) for u in sim.units}
+            books.begin(sim)
             s.tick()
             ticks += 1
-            self._count(sim.tick_events, team_before, counters)
+            ended = books.ended
+            if named and ended.any():
+                # a row whose records ended earns nothing more (6.6)
+                keep = old[ended].copy()
+                self._count(sim.tick_events, team_before, old)
+                old[ended] = keep
+            else:
+                self._count(sim.tick_events, team_before, old)
+            books.end(sim)
             if sim.tick % self.every == 0:
                 cps.append((self.k, int(sim.tick), *s.digests()))
             if s.is_terminal():
                 break
+        terminal = s.is_terminal()
+        res = s.result() if terminal else None
+        if terminal:
+            books.finish(res)
+        counters = np.concatenate(
+            [old.astype(np.float64), books.counters], axis=1)
         out = {"counters": counters, "ticks": ticks, "checkpoints": cps,
                "ended": False, "terminated": False, "truncated": False,
-               "result": None}
-        if s.is_terminal():
+               "result": None, "reward": self._reward(old, counters),
+               "team_balance": books.d_balance.copy(),
+               "team_uncredited": books.rest.copy(),
+               "team_outcome": books.outcome.copy(),
+               "rows_ended": books.rows_ended.copy()}
+        if terminal:
             if not cps or cps[-1][1] != int(sim.tick):
                 cps.append((self.k, int(sim.tick), *s.digests()))
-            res = s.result()
             out["ended"] = True
-            out["terminated"] = len(s.rules.living_teams(sim)) < 2
-            out["truncated"] = not out["terminated"]
+            if named:                   # 6.5: the clock is an ending
+                out["terminated"] = True
+                out["truncated"] = False
+            else:
+                out["terminated"] = len(s.rules.living_teams(sim)) < 2
+                out["truncated"] = not out["terminated"]
             out["result"] = {"outcome": res.outcome, "team": res.team,
                              "ticks": res.ticks}
             rec = s.finish()
             if rec is not None:
                 self.last_recording = rec
         return out
+
+    def _reward(self, old, counters) -> np.ndarray:
+        """The step's reward (float64, cast at the shared-memory write).
+        ``"counters"``: the weighted sum, its old columns summed in float32
+        exactly as before #195 1i (the books' columns add an exact 0 unless
+        the run weights them); a named profile: ``(U, 5)``, each group the
+        counters times their term weights (a broadcast, never BLAS)."""
+        if self._G is None:
+            w, k0 = self._w, N_OLD_COUNTERS
+            c32 = counters.astype(np.float32)
+            return ((old * w[:k0]).sum(axis=1)
+                    + (c32[:, k0:] * w[k0:]).sum(axis=1))
+        return (counters[:, :, None] * self._G[None]).sum(axis=1)
 
     def _row(self, uid: int, team_before: dict):
         tr = self._id_row.get(uid)
@@ -965,8 +1088,10 @@ def _worker_main(conn, task: dict) -> None:
                 for e, r in runners.items():
                     out = r.step(a["actions"][e])
                     a["counters"][e] = out["counters"]
-                    a["reward"][e] = (out["counters"]
-                                      * task["weights"]).sum(axis=1)
+                    a["reward"][e] = out["reward"]
+                    for key in ("team_balance", "team_uncredited",
+                                "team_outcome", "rows_ended"):
+                        a[key][e] = out[key]
                     a["ticks"][e] = out["ticks"]
                     a["terminated"][e] = out["terminated"]
                     a["truncated"][e] = out["truncated"]
@@ -1381,15 +1506,13 @@ class BatchedEnv:
             self._final_rows = np.zeros(n, dtype=bool)
             blocks = np.array_split(np.arange(n), self.n_workers)
             ctx = mp.get_context("spawn")
-            weights = self.run.reward_weights()
             for w, envs in enumerate(blocks):
                 envs = [int(e) for e in envs]
                 for e in envs:
                     self._owner[e] = w
                 parent, child = ctx.Pipe()
                 task = {"run": self.run, "layout": self.layout, "envs": envs,
-                        "shm": {k: s.name for k, s in self._shm.items()},
-                        "weights": weights}
+                        "shm": {k: s.name for k, s in self._shm.items()}}
                 p = ctx.Process(target=_worker_main, args=(child, task),
                                 daemon=True, name=f"breach-farm-{w}")
                 saved = {k: os.environ.get(k) for k in WORKER_ENV}
@@ -1608,6 +1731,11 @@ class BatchedEnv:
         info["full_view"] = self._full_view()
         info["result"] = [got[e]["result"] for e in range(n)]
         info["counters"] = a["counters"].copy()
+        # #195 1i: the reward books' per-team blocks and the rows' endings
+        info["team_balance"] = a["team_balance"].copy()
+        info["team_uncredited"] = a["team_uncredited"].copy()
+        info["team_outcome"] = a["team_outcome"].copy()
+        info["rows_ended"] = a["rows_ended"].astype(bool)
         info["checkpoints"] = [got[e]["checkpoints"] for e in range(n)]
         if masked is not None:
             info["masked_choices"] = masked
@@ -1662,7 +1790,7 @@ class BatchedEnv:
 __all__ = [
     "BatchedEnv", "EnvRunner", "RunConfig", "Layout", "load_run",
     "parse_run", "make_layout", "load_levels", "episode_draw",
-    "COUNTER_NAMES", "VECTOR_FIELDS", "BACKENDS", "EPISODE_SALT",
+    "COUNTER_NAMES", "N_OLD_COUNTERS", "VECTOR_FIELDS", "BACKENDS", "EPISODE_SALT",
     "require_snapshot", "SnapshotRefused", "check_annotated_tag",
     "check_head_at_tag", "check_clean_tree", "check_module_paths",
     "check_build_id", "check_run_recorded", "check_twin_debt",
