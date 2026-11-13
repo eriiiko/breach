@@ -2720,7 +2720,8 @@ walk_left  = { legs = "Rifle_Aim_Left",  upper = "Rifle_Aim_Walk", head = "Rifle
 walk_right = { legs = "Rifle_Aim_Right", upper = "Rifle_Aim_Right", head = "Rifle_Aim_Right" }
 walk_back  = { legs = "Rifle_Aim_Back_Mirror", upper = "Rifle_Aim_Back_Mirror", head = "Rifle_Aim_Back_Mirror" }
 run        = { legs = "Run",             upper = "Walk",           head = "Walk" }
-sprint     = { legs = "Run",             upper = "Walk",           head = "Walk" }   # no sprint clip yet: one line when it comes
+sprint     = { legs = "Run",             upper = "Sprint",         head = "Sprint" }   # #188: the dash's rifle across the chest over the
+                                                                                     # Run legs (every Kimodo sprint skated 31-60 % at 4.2 m/s)
 
 # Locomotion (#184, renderer/pose_locomotion.py): a unit of a role listed here
 # is driven by its DRAWN speed. Every looping clip's stride speed is measured
@@ -2805,6 +2806,18 @@ Hit_Right = { loop = false, rate = 1.5 } # unused since #187 (it leans the wrong
 Fall = { loop = false }                  # dead (dormant: dead units are not drawn); keeps its travel
 Get_Up = { loop = false }                # registered: knockdown is #149; keeps its travel
 Zombie_Hunch_Walk = {}
+Sprint = {}                              # #188: the gameplay clips (local-models motion/pack_marine_v2.sh)
+Walk_Slow = {}                           # the slow walks: in the file, no gait uses them yet
+Rifle_Aim_Walk_Slow = {}
+Rifle_Aim_Back_Slow = {}
+Rifle_Reload = { loop = false }          # [render.pose.reload]: played over the reload's ticks
+Rifle_Reload_Walk = { loop = false }
+Throw_Overhand = { loop = false }        # [render.pose.throw]
+Throw_Underhand = { loop = false }
+Rifle_Butt_Strike = { loop = false }     # no renderer reaction yet: MeleeEvent / ShoveEvent / StaggerEvent
+Rifle_Shove = { loop = false }           # and a blinded status (#188 follow-up)
+Stagger_Back = { loop = false }
+Blinded = { loop = false }
 
 # State -> clip per layer. The renderer's state names (select_clip): today
 # idle and walk; dead is dormant, as in CLIP_MAP (firing is the fire
@@ -2924,17 +2937,21 @@ suppress = ["arm_forward", "arm_open"]
 # kind, ticks) at the start of the throw's wind-up). The reload clip plays over
 # exactly `ticks` sim ticks; the throw clip so that `release_s` (clip seconds,
 # the frame the hand lets go) lands at the end of the wind-up, the grenade's
-# release (Erik's ruling, 2026-11-10). clip "" = the reaction does nothing:
-# both clips are being generated -- the clip name is the one thing to fill in
-# (a look without the clip then does nothing; a clip no look holds is refused).
+# release (Erik's ruling, 2026-11-10). clip "" = the reaction does nothing (a
+# look without the clip then does nothing; a clip no look holds is refused).
+# #188: the SOMA marine's Kimodo clips. The reload is a generic rifle reload
+# (Erik 2026-11-11: fine for now; a carbine one, magazine under the receiver,
+# and reloads per weapon type come later). The throw is MIRRORED -- the left
+# arm throws -- so the carbine stays on the right-hand socket; Throw_Underhand
+# is in the file for a per-kind row later.
 [render.pose.reload]
-clip = ""
+clip = "Rifle_Reload"
 layers = ["upper", "head"]
 
 [render.pose.throw]
-clip = ""
+clip = "Throw_Overhand"
 layers = ["upper", "head"]
-release_s = 0.0         # PLACEHOLDER: the throw clip's release frame, clip seconds
+release_s = 1.10        # the throwing hand's peak speed (frame 33 of 90); PLACEHOLDER, HUMAN-TEST
 
 # Roles (#164; renderer/unit_looks.py ROLES, the role from is_zombie): the
 # reactions a unit of the role plays (fire = the aim hold + recoil on its own
