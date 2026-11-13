@@ -688,3 +688,244 @@ controller registry" (`bots_door` and its variants, nameable; `bind_match`),
 "Action spec" (the inverse helpers' `stride`), "Batched environment"
 (`observe_v1`, `count_events`, the decoder's view from any controller),
 "Bot tournament" (`--records`, `rec["door"]`), and the header line.
+
+## As built
+
+2026-11-13, branch `192-1j-bots-door` off main `e6a92a92`, one Opus
+implementer (the tournament run by the same).
+
+**Commits.** `77900014` the lifts (B: `team_order` / `issue_team_order`,
+`observe_v1` / `count_events`, the aims from any `aim_view`,
+`ControlSource.bind_match`, the door bots' registration, `stride`; gate 2
+re-run EQUAL there); `d8f6ea5c` `src/control_bots_door.py` and
+`tests/test_bots_door.py` (C); `8a3adaab` `tools/bot_tournament.py
+--records` (D); `b055a61b` the whole-match mask test (gate 5 (ii)'s scene);
+the last commits `CLAUDE.md`, this section and the numbers (E, F). Commit A
+(the reference dump) changed no file: `C:/tmp/breach_1j/before_<sight>.json`
+on main's code. No C++ file, no digest, no golden moved.
+
+**The shape as built** (every name of the note exists as written, except
+where said):
+
+- `IntentCapture` binds each captured call to the `Simulation` entry
+  point's own signature (defaults filled, keyword arguments as the bots
+  pass them) and normalises it as the tap does (ints, bools, the throttle
+  and the plant timer clamped). Its verbs are generated from
+  `control_policy.POLICY_KINDS`; the three refused kinds raise
+  `DoorRefused`. `__getattr__` / `__setattr__` forward to the sim.
+- `translate(SlotInput, tables, settings) -> ((5 ints), SlotLoss)`: the
+  hand is chosen FIRST (a throw decides the aim), then the aim, the
+  trigger, the feet. `SlotInput` carries the unit (read for its centre
+  tile), the tick's last captured move / aim / trigger, the latch window,
+  the slot's `list_uid` / list type column / four mask rows and the team
+  picture's record centres. The throw's point and every landing are
+  compared in Q32 tiles (centre `<< 32` plus a Q16 vector times a Q16
+  reach), exact Python ints.
+- `LOSS_BITS` (the record's `loss` uint16) are the per-DECISION rows of the
+  note's table: `feet_dir`, `throttle`, `aim_missing`, `aim_rounded`,
+  `aim_ambiguous`, `carried`, `superseded`, `hand_masked`, `throw_rounded`,
+  `trigger_throw`. Row 3 (`hold_diff_ticks` per head) is per TICK, so it is
+  a per-match stat (`hold_diff_feet_ticks` / `_aim_` / `_trigger_` over
+  `living_ticks`), not a bit. The sums beside the bits are stats too
+  (`feet_angle_q`, `carried_ticks`, `landing_q`, `throw_entry` /
+  `throw_direction`).
+- `BotsThroughDoor.handle_frame`, per tick: the ThrowEvents of the step
+  just run counted; with records the books' `end` and the old counters
+  (`count_events`, the frozen rows as the env freezes them); the capture;
+  the orders (`team_order` / `issue_team_order` when the inner brain updated
+  this tick); on `T % D == 0` the decision (observe through `observe_v1`,
+  the row flags as `EnvRunner.row_flags`, translate, `_check` = gate 1,
+  record, `set_decisions`); under `trigger_per_tick` the re-issue; the
+  decoder through a pass-through capture (`_issued_now`); the diagnostics;
+  with records the books' `begin`.
+- `RecordSink(out_dir=None)`: `None` = stats only. `close(sim, result,
+  digests, *, seed, recording=None)` writes the replay (when given) and one
+  `.npz` per registered door team, returns `{team: stats}` (with `file` and
+  `bytes` under records). A match's door teams find the sink through
+  `install_sink` / `current_sink`, read once at `bind_match`.
+- Record keys as the note's table; `arg_mask` is `arg_mask(hand, aim)` of
+  the sent row; `meta` also carries `name` (the variant), `loss_bits` and
+  `loss_totals` (the team's stats), `environment` (`rl_env.
+  environment_versions()`), `build` / `bp_build_id` (once per process).
+- `tools/bot_tournament.py`: a door match's record gains `zombies` beside
+  `door` (the summary's horde-in / horde-out split); `door_summary(records)`
+  is printed and written under `door_rows`.
+
+**CHOICES where the note is silent.**
+
+- A dead or empty row's five integers are `(0, 16, 0, 0, 0)` (stand, "where
+  I walk", release, nothing, 0): the default masks' one legal option.
+- A captured `set_flashlight` is dropped (reserved in v1; the bots never
+  call it).
+- The hold comparison (row 3) reads an absent capture as `clear_move_dir`,
+  `set_aim(0, 0)` and a released trigger.
+- `aim_missing` is a vector equal to `aim_vector` toward ANY record centre
+  of the team picture with no legal list entry for it; anything else that
+  is not a token's exact vector is `aim_rounded`.
+- `throw_rounded` is a landing not exactly on the bot's point; the summed
+  error is `isqrt(d2) >> 16` in Q16 tiles.
+- The observation for a door team on team 1 is built inside its own
+  `handle_frame`, after team 0's controller of the same tick has issued its
+  intents: those write only team 0's live intent columns, which team 1's
+  observation does not read (the records-equal-the-env gate runs the door on
+  team 0 against `idle`).
+- The books' `begin` runs at the end of the door's `handle_frame`, the env's
+  before every controller; both read only hp, life and team, which no
+  intent writes.
+- The variant names live in `control_source.DOOR_BOT_NAMES` (registered
+  lazily there, so a match.toml can name them without importing the door
+  module) and are held equal to `DOOR_VARIANTS` at that module's import.
+
+**Gates.**
+
+1. **Nothing masked is sent.** `masked_sent` = 0 and no `DoorRefused` in
+   every match of every run below (600 door matches in the design runs,
+   1000 in the variants); in the tests, the
+   recorded match's arrays re-checked (`check_actions`, `masked_choices`,
+   the realised arg mask) and a whole ship_demo match (seed 4) where
+   masked latches occur.
+2. **The free bots are untouched.** `bots` vs `bots_v1 --horde --seeds 1-4`
+   on both ships, both sights, before (main's code, `C:/tmp/breach_1j/
+   before_<sight>.json`) and after commit B: 96 records equal field for
+   field (wall time aside). `tools/match_pin_check.py` EQUAL (team 0 @
+   2708, tick `dd6fa618...`). `test_bots_v1`, `test_zombie_control`,
+   `test_orders` green unchanged.
+3. **A door-driven match replays.** Four recorded door matches (ship_demo
+   and the freighter, horde in, both sides, seed 1) replayed by
+   `run_match(replay=)`: every checkpoint matched (44/44, 41/41, 41/41,
+   81/81) and the final digests equal the records' `meta`.
+4. **The suite.** Baseline at `bf3f5870`: 6031 passed, 39 skipped, 5
+   xfailed. On the patch: 6053 passed (+22, the new file), one failure --
+   `test_control_direct_e2e`, `OpenBLAS error: Memory allocation still
+   failed` while the tournament's 12 workers had the machine's commit
+   charge; re-run alone, green, with `test_class_p_level` and
+   `test_twin_debt` (no Class-P file touched; the manifest not regenerated).
+5. **Can fail.** (i) the capture forwarding `set_trigger` to the sim:
+   `test_capture_only_every_soldier_verb_is_the_decoders` and
+   `test_the_capture_refuses_the_verbs_no_soldier_has` fail; (ii) the
+   translator sending the captured latch without reading the mask:
+   `test_a_masked_latch_is_never_sent_on_a_whole_match` stops on
+   `DoorRefused` (gate 1, raised in the controller) and
+   `test_the_latch_window_newest_legal_and_counted` fails -- on the 40 s
+   recorded match no latch happened to be masked, so the whole-match test
+   was added for this break; (iii) the throw's decision keeping the fire
+   target's aim: `test_the_throw_lands_nearest_and_releases_the_trigger`
+   fails.
+
+**The measurement** (2026-11-13, Home Desktop, 12 workers, every run in one
+session, `OPENBLAS_NUM_THREADS=1`; all-round sight; the freighter
+regenerated at the patch's head: `diff -r` against 1d's copy differs only
+in `generator_version`). 800 design matches + 1000 variant matches, 1600 of
+them with a door team; `masked_sent` 0 in all 1600.
+
+The pass mark, HELD-OUT seeds 101-130 (60 duels per cell, both sides):
+
+| cell | n | draws | bots_door wins | bots wins | **win rate of decided** | survivors door / bots | rounds per kill door / bots | FF hits per match door / bots | throws per match door / bots | ticks | wall |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ship_demo, horde in | 60 | 3 | 21 | 36 | **0.368** | 0.65 / 1.33 | 12.1 / 12.1 | 0.233 / 0.283 | 5.02 / 6.07 | 2473 | 72 s |
+| ship_demo, horde out | 60 | 3 | 18 | 39 | **0.316** | 0.50 / 1.18 | 7.7 / 7.9 | 0.200 / 0.033 | 6.32 / 4.93 | 2368 | 67 s |
+| freighter, horde in | 60 | 1 | 22 | 37 | **0.373** | 0.68 / 1.20 | 9.0 / 8.8 | 0.300 / 0.083 | 5.78 / 5.90 | 3379 | 87 s |
+| freighter, horde out | 60 | 1 | 16 | 43 | **0.271** | 0.33 / 1.35 | 7.2 / 8.1 | 0.167 / 0.200 | 5.80 / 6.20 | 2479 | 58 s |
+
+- **Win:** below 0.40 in all four cells. **FAIL.**
+- **Friendly fire** (the lead's rule), pooled over the 240 held-out duels:
+  bots_door 0.225 hits per match, bots 0.150; 0.225 <= 1.2 x 0.150 + 0.2 =
+  0.380: **PASS** (plain ratio 1.50).
+- **Nothing masked sent:** PASS (0 in every match).
+- **Verdict: the pass mark FAILS on the win rate.** Not tuned: no bot
+  weight, helper, rule or mark moved. The finding goes to a design session.
+
+Tuning seeds 1-20 (40 duels per cell), for the record: ship_demo horde in
+0.250, horde out 0.395, freighter horde in 0.432, horde out 0.179; FF pooled
+0.256 against 0.294 (PASS, ratio 0.87). Against the horde alone (`--horde`,
+both sides, held-out): ship_demo bots 51/60 wins, 2.57 survivors, bots_door
+49/60, 2.10; freighter bots 49/60, 2.48, bots_door 57/60, 3.28.
+
+The loss table (held-out, per slot decision of a living soldier, 662 766
+slot decisions in 360 matches):
+
+| row | the bots | rate / size |
+|---|---|---|
+| 1 | move bearing not a bin | 0.390 of decisions; mean error 4.47 deg |
+| 2 | throttle rounded | 0 (the bots only walk) |
+| 3 | holds differ from the issued (per living tick) | feet 0.399, aim 0.703, trigger 0.003 -- see the caveat |
+| 4 | aim at a unit not in the list | 0 |
+| 5 | look at a point no entry and not the walk | 0.389 -- almost all a STANDING bot holding fire, looking at its threat point (an instrumented ship_demo match: 296 of 311 rounded aims were `stand` + `hold_fire`) |
+| 6 | two entries on one bearing | 0.007 |
+| 7 | latch carried to the next decision | 0.0027; mean delay 2.00 ticks |
+| 8 | two latches in one window | 0.0031 |
+| 9 | latch masked at the decision tick | 0.0028 |
+| 10 | throw point rounded | 0.0028; mean landing error 0.29 tiles; family entry 1962, direction 63 |
+| 11 | trigger released on the throw's decision | 0.0004 |
+
+Throws: 2025 sent, 2024 started (a ThrowEvent).
+
+Caveat on row 3's aim figure: the bots' look along the walk is a `set_aim`
+of the move vector, the decoder's "where I walk" is `set_aim(0, 0)` (the
+game makes the travel the facing target), so every tick of a walking look
+counts as a difference although the two mean nearly the same; the feet
+figure is the bin rounding on every tick between waypoint turns.
+
+**The variants** (duels with the horde; win rate of decided, both seed
+sets; +- one standard error):
+
+| variant | tuning 1-20 (80) | held-out 101-130 (120) | pooled (200) | FF per match door / bots, held-out |
+|---|---|---|---|---|
+| `bots_door` (16 dirs, every 4, trigger per decision, nearest throw) | 0.338 | 0.371 | **0.358 +- 0.034** | 0.267 / 0.183 |
+| `bots_door_dirs8` (8 directions) | 0.351 | 0.402 | **0.381 +- 0.035** | 0.125 / 0.150 |
+| `bots_door_every6` (D = 6) | 0.329 | 0.313 | **0.320 +- 0.033** | 0.142 / 0.142 |
+| `bots_door_every8` (D = 8) | 0.205 | 0.322 | **0.275 +- 0.032** | 0.233 / 0.183 |
+| `bots_door_trigger_tick` (trigger every tick) | 0.377 | 0.397 | **0.389 +- 0.035** | 0.125 / 0.250 |
+| `bots_door_throw_dir` (throws by direction) | 0.333 | 0.319 | **0.325 +- 0.033** | 0.158 / 0.200 |
+
+What the variants say: the coarseness that costs is the DECISION RATE --
+the win rate falls with every tick added to a decision (D = 4, 6, 8: 0.358,
+0.320, 0.275, monotone); 8 directions instead of 16 cost nothing
+measurable (0.381, within noise of the design); the trigger re-issued every
+tick buys at most a few points (0.389, within one standard error); throws
+restricted to compass bearings cost a few points (0.325), and the design's
+throws land on a list entry 97 % of the time. A straight line through the
+three rates puts D = 1 near 0.48: most of the gap to 0.5 is the holds
+between decisions (row 3: path turns, waypoint arrivals, new targets wait up
+to D - 1 ticks). An extrapolation, not a measurement.
+
+**The records.** `C:/tmp/breach_1j/records/<level>/`: 600 `.npz` (one per
+door team of every design match, both seed sets) + 600 `.replay.gz`, 1200
+files, 4.0 GB in all; a record 5-14 MB (mean 7.0 MB), under the note's
+10-20 MB estimate. Not committed.
+
+**Tests** (`tests/test_bots_door.py`, 23; ~5 min, most on one module-scoped
+recorded 40 s ship_demo match): the capture is lossless (600 ticks, digests
+every tick); the capture refuses the three verbs and never reaches the tap;
+capture only (the tap's soldier verbs = the decoder's, tick for tick);
+nothing masked in the records (arrays re-checked); a masked latch is never
+sent on a whole match (seed 4, masked latches met); latches only on decision
+ticks and `set_decisions` exactly on them; the cadence of D = 6 / 8 and the
+trigger variant; feet = the nearest bin and throttle (the test's own
+minimum over every stride-th bin); the stride (1h's formula at 1, even and
+within pi/8 at 2); the aim rules (entry, ambiguous, walk, missing, rounded,
+keep); the latch window (newest legal, masked, superseded, carried); the
+throw (exhaustive nearest over both families, trigger 0, direction-only
+under the variant); the aim tracks its record every tick; the wind-up (keep
+exactly where only keep is legal, the throw's token held); the orders (no
+commander; a shadow `BotCommander` issues the same orders tick for tick);
+the records drive the game (a plain `policy` team fed the recorded actions
+plays the same digests every tick); determinism (records twice equal; no
+sink = the same digests); the tie (meta, replay to the meta digests,
+`record_format` refused); the records are the env's (an in-process
+`EnvRunner`, `policy = ["bots_door", "idle"]`, to the end of a 20 s match:
+observation, flags, masks, rewards and `rows_ended` equal array for array);
+the door box (the `use` latch on a decision tick, the door opens, the body
+goes through); the refusals.
+
+**Surprises.**
+
+- The free bots' own friendly fire in all-round duels is 0.15 to 0.29 hits
+  per match pooled, above 1d's 0.0-0.2.
+- The door team does better than the free bots against the horde alone on
+  the freighter (57/60 wins, 3.28 survivors against 49/60, 2.48).
+- `bot_tournament` workers do not pin BLAS threads: ~2 GB of commit each;
+  12 of them plus the suite exhausted the 16 GB machine's commit charge and
+  an e2e test failed on OpenBLAS (rerun green). The measurement ran with
+  `OPENBLAS_NUM_THREADS=1` exported (no effect on any result: no BLAS in the
+  sim path). Not fixed here.
