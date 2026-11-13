@@ -29,6 +29,12 @@ soldier may know.
    the checkpoint reports, and the lead decides before a design session is
    called.
 
+   **RULED (the lead, 2026-11-13; Erik may move it):** both parts. The
+   door-driven bots' friendly-fire hits per match, pooled over the held-out
+   duels, must be at most **1.2 x the free bots' rate + 0.2 hits per
+   match**; the plain ratio is printed beside it. The reason: the free
+   bots' rate is near zero, so a pure ratio would fail on one stray hit.
+
 Nothing in this note touches what the game is or what a soldier may know;
 there is no question for Erik beyond that mark.
 
@@ -527,9 +533,9 @@ the HELD-OUT seeds:
 - **win:** `a_rate` >= 0.40 (bots_door's wins over the decided duels) in
   EACH of the four cells (two ships x horde in / out) -- CHOICE: per cell,
   so one ship cannot hide the other;
-- **friendly fire:** `ff_per_match` of `bots_door` <= 1.2 x that of `bots`,
-  pooled over every held-out duel (the open question at the top; the
-  absolute reading printed beside);
+- **friendly fire:** `ff_per_match` of `bots_door` <= 1.2 x that of `bots`
+  + 0.2, pooled over every held-out duel (the lead's ruling at the top; the
+  plain ratio printed beside);
 - and the gate of section "Gates" 1 (nothing masked sent) on every match.
 
 The checkpoint comment gives per cell and seed set: the win rate of the
