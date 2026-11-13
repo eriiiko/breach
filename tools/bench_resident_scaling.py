@@ -457,10 +457,34 @@ def _parse_window(text):
     return a, b
 
 
+def _bench_edits(sim, e, tick):
+    """#29 P4c ``--edits``: env ``e``'s slot-6b FieldEdits on ``tick`` -- a
+    blast-sized load at an open tile of its own (a noisy smoke disc, a heat
+    disc, a noisy atmosphere disc, a wave_source tile; ~110 tiles), so the
+    batched tick carries every env's flush."""
+    from simulation.field_edit import EditMode, Falloff, FieldEdit, Region
+    g = sim.gmap
+    cache = g.__dict__.setdefault("_bench_open", None)
+    if cache is None:
+        import numpy as np
+        cache = np.argwhere(~g.solid & ~g.is_vacuum)
+        g._bench_open = cache
+    y, x = (int(v) for v in cache[(e * 997 + tick * 37) % len(cache)])
+    sim.edit(FieldEdit("smoke", Region.DISC, (y, x, 4.0), 0.4, EditMode.ADD,
+                       Falloff.LINEAR, noise=0.3, source_id=1))
+    sim.edit(FieldEdit("heat", Region.DISC, (y, x, 3.0), 2.0, EditMode.ADD,
+                       Falloff.LINEAR, source_id=2))
+    sim.edit(FieldEdit("atmosphere", Region.DISC, (y, x, 3.0), 0.3, EditMode.ADD,
+                       Falloff.LINEAR, noise=0.3, source_id=3))
+    sim.edit(FieldEdit("wave_source", Region.TILE, (y, x), 50.0, EditMode.ADD,
+                       source_id=4))
+
+
 def run_batch(level_name: str, levels_dir, n: int, build: Path,
               warmup: int, ticks: int, *, warmup_s: float = 0.0,
               seconds: float = 0.0, split_ticks: int = 0,
-              digest_tick: int = 0, window=None) -> dict:
+              digest_tick: int = 0, window=None, edits: bool = False,
+              host_edits: bool = False) -> dict:
     """``n`` envs of ``level_name`` (seeds 1..n) in one ResidentBatch, in THIS
     process. Times the whole batched tick, the slot-7 call (the device chain
     plus every env's entry / exit transfers: ``run_resident_batch``) and the
@@ -503,6 +527,18 @@ def run_batch(level_name: str, levels_dir, n: int, build: Path,
         return s
     sims = [fresh(e) for e in range(n)]
     batch = ResidentBatch(sims)
+    if host_edits:
+        pr.set_device_edit_queue(False)   # #29 P4c: the A/B (host flush at 6b)
+    if edits:
+        _orig_step = batch.step
+        _tick = [0]
+
+        def _step_with_edits():
+            for e, s in enumerate(batch.sims):
+                _bench_edits(s, e, _tick[0])
+            _tick[0] += 1
+            return _orig_step()
+        batch.step = _step_with_edits
     slot7 = []
     real = pr.run_resident_batch
 
@@ -595,6 +631,7 @@ def run_batch(level_name: str, levels_dir, n: int, build: Path,
            "host_rss_bytes": rss, "gpu": gpu,
            "digest_tick": digest_tick, "tick_digests": digests,
            "build_id": str(bp.build_id()),
+           "edits": bool(edits), "host_edits": bool(host_edits),
            "entities": int(sum(1 for _ in getattr(batch.sims[0], "entities", []) or []))}
     if split_ticks > 0:
         if window is not None:
@@ -754,6 +791,10 @@ def batch_sweep(args) -> int:
                "--digest-tick", str(args.digest_tick)]
         if args.window:
             cmd += ["--window", args.window]
+        if args.edits:
+            cmd += ["--edits"]
+        if args.host_edits:
+            cmd += ["--host-edits"]
         t0 = time.perf_counter()
         p = subprocess.run(cmd, capture_output=True, text=True)
         wall = time.perf_counter() - t0
@@ -819,6 +860,12 @@ def main(argv=None) -> int:
                          "the first 8 envs after this many ticks of the first "
                          "fresh start")
     ap.add_argument("--n", type=int, default=1, help="with --batch-run")
+    ap.add_argument("--edits", action="store_true",
+                    help="#29 P4c: every env enqueues a blast-sized FieldEdit load "
+                         "each tick (with --batch-run / --batch-sweep)")
+    ap.add_argument("--host-edits", action="store_true",
+                    help="#29 P4c: the device edit queue OFF (slot 6b flushes on "
+                         "the host on the resident path): the A/B")
     ap.add_argument("--level", default=None, help="with --run")
     ap.add_argument("--backend", default="resident", choices=BACKENDS)
     ap.add_argument("--warmup", type=int, default=2)
@@ -855,7 +902,8 @@ def main(argv=None) -> int:
                       args.warmup, args.ticks, warmup_s=args.warmup_s,
                       seconds=args.seconds, split_ticks=args.split_ticks,
                       digest_tick=args.digest_tick,
-                      window=_parse_window(args.window))
+                      window=_parse_window(args.window),
+                      edits=args.edits, host_edits=args.host_edits)
         print("BATCH_JSON " + json.dumps(r), flush=True)
         return 0
     if args.make is not None:

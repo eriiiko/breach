@@ -742,4 +742,76 @@ int stamp_launch_resident(
     int32_t* d_dyn_heat, int32_t* d_dyn_light,
     const int32_t* d_rows, int32_t* d_winner);
 
+// ---- the device edit queue (cuda_edit_queue.cu) — #29 P4c ------------------
+// Slot 6b's FieldEdit FLUSH on the device (residency design §4.8): the host
+// enqueues, sorts and packs exactly as the CPU flush orders its work
+// (simulation/field_edit.py pack_for_device: one EDIT row per edit at the
+// door, one TILE row per tile of its region, in the CPU's applied order); the
+// device applies every env's tiles in that order, serially per env, with the
+// per-field skip masks, the integer contribution (amount_q x weight x mult x
+// scale over den, rounded once half away), the keyed noise (Philox-4x32-10 on
+// (tick, edit key, FIELD_NOISE, tile) under the env's seed: draws.
+// noise_mult_q16's law), the per-field combines and the gas-energy seam
+// (deposit + mirror refresh), every book into the env's arena block. The
+// CPU flush (field_edit.apply_field_edit) is THE oracle.
+//
+// The field ORDINAL is the rank of the field's name in the lexicographic
+// order of field_edit.FIELD_POLICY (the pack refuses a binding whose table
+// differs). water_depth is never packed (the host flushes such a tick).
+enum : int {
+    EDQ_F_ATMOSPHERE = 0, EDQ_F_FIRE = 1, EDQ_F_GAS = 2, EDQ_F_GAS_ENERGY = 3,
+    EDQ_F_HEAT = 4, EDQ_F_SMOKE = 5, EDQ_F_WATER_DEPTH = 6, EDQ_F_WAVE_SOURCE = 7,
+    EDQ_N_FIELDS = 8,
+};
+// An EDIT row (int64): the columns of field_edit.E_*.
+constexpr int EDQ_EDIT_COLS = 16;
+enum : int {
+    EDQ_E_ENV = 0, EDQ_E_FIELD = 1, EDQ_E_SLICE = 2, EDQ_E_MODE = 3,
+    EDQ_E_AMOUNT = 4, EDQ_E_DEN = 5, EDQ_E_NOISY = 6, EDQ_E_LOW = 7,
+    EDQ_E_KEY = 8, EDQ_E_CLAMP_FLAGS = 9, EDQ_E_LO = 10, EDQ_E_HI = 11,
+    EDQ_E_O2_LO = 12, EDQ_E_O2_HI = 13, EDQ_E_N2_LO = 14, EDQ_E_N2_HI = 15,
+};
+// A TILE row (int64): [edit row (batch-global), tile r*w+c, weight_q, scale].
+constexpr int EDQ_TILE_COLS = 4;
+// The per-env scalars (int64, (N, EDQ_ENV_COLS)): the draws' tick word, the
+// Philox key (seed lo, seed hi), the seam's ambient (gas_t_amb_raw).
+constexpr int EDQ_ENV_COLS = 4;
+// The books, per env (unsigned long long slots of the arena): the trace
+// deposit / clip books per gas slice (GameMap.trace_deposit_books /
+// trace_clip_books), the gas-energy seam channels field_edit / _wave / _atm
+// (each its net and its count of non-zero deposits: the host books a channel
+// key on its first non-zero delta), the noise draws (MatchDraws.drawn), a
+// failure count (a result the host flush would refuse: an int32 store out of
+// range, an int64 energy overflow, a negative trace result) and the tiles
+// applied (not skipped).
+constexpr int EDQ_GAS_MAX = 16;
+enum : int {
+    EDQ_B_DEP = 0, EDQ_B_CLIP = EDQ_GAS_MAX,
+    EDQ_B_GE_FE = 2 * EDQ_GAS_MAX, EDQ_B_GE_FE_N, EDQ_B_GE_WAVE, EDQ_B_GE_WAVE_N,
+    EDQ_B_GE_ATM, EDQ_B_GE_ATM_N, EDQ_B_NOISE, EDQ_B_FAIL, EDQ_B_TILES,
+    EDQ_SLOTS,
+};
+// The launch core: (N, h, w) planes (gas (N, n_gases, h, w)); d_env_off
+// (N + 1) tile offsets per env; d_env (N, EDQ_ENV_COLS); d_contrib (n_tiles)
+// int64 scratch; d_books (N, EDQ_SLOTS), zeroed by the caller. is_ambient may
+// be nullptr (a space map). Launch only. Returns the launch count.
+int edit_queue_launch_resident(
+    int n_env, int h, int w, int n_gases, int o2_idx, int n2_idx,
+    int n_tiles, uint32_t salt,
+    const int64_t* d_edits, const int64_t* d_tiles,
+    const int64_t* d_env_off, const int64_t* d_env,
+    int32_t* d_gas, int32_t* d_temperature, int64_t* d_gas_energy,
+    int32_t* d_fire, int32_t* d_heat,
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_is_ambient,
+    const bool* d_thermal_solid, const bool* d_flammable,
+    int64_t* d_contrib, unsigned long long* d_books);
+// TEST-ONLY (the gate's noise / contribution check): K1 on host arrays -- the
+// contribution of every tile row (rows as above, env scalars (n_env,
+// EDQ_ENV_COLS)), so the device's noise multiplier and rounding are held to
+// draws.noise_mult_q16 and unit_fixed.div_round record by record. Allocates
+// and copies: never on the hot path.
+void edit_queue_contrib_probe(const int64_t* edits, int n_edits, const int64_t* tiles,
+                              int n_tiles, const int64_t* env, int n_env, uint32_t salt,
+                              int64_t* out);
+
 }  // namespace breach_cuda

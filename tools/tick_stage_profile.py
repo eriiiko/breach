@@ -71,6 +71,9 @@ SLOT_WRAPS = (
     ("simulation.simulation", "Simulation._run_zombie_slot", "5 zombie AI"),
     ("simulation.gamemap", "GameMap.stamp_units", "6 stamp_units"),
     ("simulation.field_edit", "EditQueue.flush", "6b FieldEdit flush"),
+    # #29 P4c: on the resident path 6b packs the queue for the device edit
+    # queue (or flushes on the host: the fallback, inside this call).
+    ("simulation.physics_runner", "PhysicsRunner.serve_edit_queue", "6b FieldEdit flush"),
     ("simulation.physics_runner", "PhysicsRunner.step", SLOT7),
     ("simulation.gamemap", "GameMap.find_burst_walls", "9b over-pressure walls"),
     ("simulation.simulation", "apply_environmental_damage", "9c unit heat damage"),
@@ -111,6 +114,8 @@ PHYSICS_WRAPS = (
     ("bp", "PhysicsEngine.upload_light_resident", "  7 light inputs (resident)", True),
     # #29 P4b: slot 6's stamp on the device (the five planes from the host's rows).
     ("bp", "PhysicsEngine.stamp_units_resident", "  7 stamp (resident)", True),
+    # #29 P4c: slot 6b's flush applied on the device (the edit queue).
+    ("bp", "PhysicsEngine.apply_edits_resident", "  7 edits (resident)", True),
     # #29 P5: the water stage is one resident driver (substeps + W5/W3).
     ("bp", "PhysicsEngine.step_water_resident", "  7 water (resident: substeps + W5/W3)", True),
     ("bp", "PhysicsEngine.run_combustion_resident", "  7 combustion (resident)", True),

@@ -647,6 +647,28 @@ noise is Philox (§4.7). P4c therefore follows P3b and P3e's FieldEdit item
 (§9). Semantics otherwise unchanged; the host never reads a field to apply
 an edit.
 
+As built (P4c, 2026-11-13, branch `29-p4c-edit-queue`): the composite key is
+realised as the record ORDER -- the host sorts exactly as the CPU flush does
+(`EditQueue.take_ordered`; `seq` already spans the previous tick's 9e because
+the queue is cleared only at a flush) and packs that order, so the device
+needs no sort and no counter; each edit row carries its `seq` as the noise
+key. Records are two-level (`field_edit.pack_for_device`): an EDIT row per
+edit (env, field ordinal, gas slice, mode, `amount_q`, den, noise low bound,
+key, clamp flags + six bounds) through the CPU's own door, and a TILE row per
+tile of its region (edit row, `r*w+c`, Q16 weight, scale) from the one region
+walk, `_iter_region` -- so the device never re-derives a region. The device
+(`cpp/src/cuda_edit_queue.cu`) runs K1 in parallel over every tile (the
+contribution in 128-bit magnitude arithmetic, the Philox noise) and K2 one
+thread per env over its tiles in order (the skip masks, combines and the
+gas-energy seam: deposit, book, mirror refresh). Books: per env in the arena,
+folded at the tail's one D2H into `edit_queue_books`, added by the runner into
+the map's trace books, gas-energy channels and `MatchDraws.drawn`. Fallback
+(the host flush at 6b, bit-identical): a `water_depth` edit (the resident
+pre-step reads it on the host) or an edit past the device's integer range.
+The entry upload set is unchanged: every field an edit touches has another
+host writer between ticks (pumps, vents, topology, ignition, the heat clear),
+so the device applies the edits on top of the uploaded planes.
+
 ### 4.9 Pathing: the distance field
 
 `pathfinding.astar` stays the host pathfinder (the bots, tools). The horde
@@ -1074,7 +1096,7 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | **G1** | the §3 scene (no units, entities on) device vs farm, per slot, on a node | the gate factor (§3) | | Erik reads it |
 | P3a, P3c, P3e | the schema, Q16 positions, the integer match path (§7), one branch each, on main | per row | P3a Sonnet; P3c, P3e Opus | P3e only (P3c's waived, §12.1) |
 | P3b, P3d | Philox (+ FieldEdit's noise on every path), the distance field; P3b before P4c and P7a, P3d before P7d | per row | P3b Sonnet; P3d Opus | P3d (**both DONE: P3b merged `f55a5b89`; P3d built by #183 G9p and closed 2026-11-13 with no patch, §4.9**) |
-| P4c | the device edit queue (Class P; after P3b and P3e: integer policies, Philox noise, the phased key) | one tol-0 scene per policy row + the cross-tick overlap scene | Opus | no |
+| P4c | the device edit queue (Class P; after P3b and P3e: integer policies, Philox noise, the phased key) | one tol-0 scene per policy row + the cross-tick overlap scene | Opus | no (**DONE 2026-11-13, §4.8 as built**) |
 | P6 | the device unit store + schema's device side, the Unit ↔ store bridge, slots 1 / 1b / 2b / 3 / 9 / 9b / 9c–9d / 10 as kernels, the per-env serial applier (block form) with the topology seam as device functions, the event ring, the entity export for the digest | live lockstep; the topology scene gates | Opus | no |
 | P6b | entities on the device per class with per-class scenes (airlock_demo, a heat-source + heat-trigger studio, a vent studio); the #25 gather as the accessor's device backing | live lockstep per scene | Opus | no |
 | P7a | shooting + sprays phase A / B on the device | live lockstep | Opus | no |
