@@ -76,12 +76,12 @@ def _shipped(name):
 
 
 def _fire(s, y, x, row, **kw):
-    execute_payload(s.gmap, s.edit_queue, s.units, y, x, row, s.rng, **kw)
+    execute_payload(s.gmap, s.edit_queue, s.units, y, x, row, s.draws, **kw)
 
 
 def _flushed(s):
     """Land the queue on the fields, with no physics after it."""
-    s.edit_queue.flush(s.gmap, s.rng)
+    s.edit_queue.flush(s.gmap, s.draws)
 
 
 def _bulk(g):
@@ -288,9 +288,9 @@ def test_the_smoke_noise_is_drawn_at_the_flush_in_row_major_order():
     clouds = []
     for _ in range(2):
         s = _sim(_room(), seed=11)
-        state = s.rng.bit_generator.state
+        state = s.draws.drawn
         _fire(s, 15, 15, _row(1.0))
-        assert s.rng.bit_generator.state == state
+        assert s.draws.drawn == state
         _flushed(s)
         clouds.append(s.gmap.gas[SMOKE].copy())
     assert np.array_equal(clouds[0], clouds[1])

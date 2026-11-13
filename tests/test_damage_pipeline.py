@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 from config import CFG  # noqa: E402
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import damage, unit_fixed  # noqa: E402
 from simulation.damage import (  # noqa: E402
     KINETIC, BLAST, HEAT, ENERGY, POISON, ASPHYX, HEAL, ELECTRIC, PSY,
@@ -460,7 +461,7 @@ def test_bullet_site_end_to_end_bit_identity():
                shooter.center_tile_x(), shooter.center_tile_y(),
                target.center_tile_x(), target.center_tile_y(),
                tick=0, shots=shots, real_time=0.0,
-               rng=np.random.default_rng(7), events=events)
+               rng=MatchDraws(7), events=events)
 
     hits = [e for e in events if isinstance(e, UnitHitEvent)]
     assert hits, "test setup must produce at least one hit"

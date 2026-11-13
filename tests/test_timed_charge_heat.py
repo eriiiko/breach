@@ -263,7 +263,7 @@ def test_the_department_rows_execute_through_the_executor(row):
     payload = sim.weapons_tables.payloads.by_name[row]
     events = []
     execute_payload(sim.gmap, sim.edit_queue, sim.units, CHARGE_AT[0],
-                    CHARGE_AT[1], payload, sim.rng, events=events,
+                    CHARGE_AT[1], payload, sim.draws, events=events,
                     kind=EVENT_KIND)
     assert any(isinstance(e, ExplosionEvent) for e in events)
     for _ in range(3):

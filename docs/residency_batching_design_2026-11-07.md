@@ -971,6 +971,54 @@ Draws: every match-path draw P3e touches goes through ONE module,
 `noise_mult_q16`), each ONE `rng.integers` call per former `rng.uniform`
 call, in the same order -- so P3b swaps the generator in one file.
 
+As built (P3b, 2026-11-12, branch `29-p3b-philox`):
+- THE salt enum: `src/simulation/rng_salts.py` (`Salt`: EPISODE and WANDER
+  moved in with their values, so the farm's episode draws and the wander are
+  bit-identical; SHOT_CONE, BEAM_CONE, EXPOSURE, SHOT_CRIT, MELEE_CRIT,
+  FIELD_NOISE -- four ASCII letters each). No salt literal in `src/`
+  (`tests/test_match_draws.py` scans the block calls).
+- The keyed draws: `draws.MatchDraws` on every sim as `sim.draws` -- key =
+  the seed (64 bits; an UNSEEDED sim keys from its entropy-seeded
+  generator, so it stays unseeded: CHOICE), counter = (tick, index, salt,
+  id), the block's `out[0]`, one block per draw. `next(salt, id)` is the
+  site-local index (the k-th draw of that (salt, id) this tick, the count
+  cleared when the tick changes); `at(salt, id, index)` names one. The
+  tick is the sim's own clock plus `tick_base`, which legacy TwoPhaseWEGO's
+  `_end_round` advances by the round's length before rewinding `sim.tick`
+  (CHOICE: otherwise every round would replay the last one's draws). An id
+  of -1 ("no unit") is the word 2^32 - 1.
+- Sites: the shot cone is the shooter's `next(SHOT_CONE, id)`; the round
+  carries that draw's tick and index (`spawn_tick`, `ordinal`), and its
+  later exposure / crit rolls are `at(EXPOSURE | SHOT_CRIT, shooter,
+  round_index(age, ordinal))`, `(age << 16) | ordinal` (refused past 16
+  bits each); the beam cone `next(BEAM_CONE, id)`; the order path's melee
+  crit `next(MELEE_CRIT, attacker)` (the melee VERB never draws: its rows
+  carry no crit). FieldEdit noise, on EVERY path: `at(FIELD_NOISE, r * w +
+  c, edit key)`, the EDIT KEY being the queue's `seq` in this flush (its
+  enqueue index, the existing deterministic tie-break; CHOICE: P4c's
+  composite key orders records exactly as `seq` does, so the device can
+  rebuild it as the rank); `apply_field_edit` refuses a noisy edit
+  without a key. Charges, timed charges, heat sources and the zombie bite
+  draw nothing (`MatchDraws.drawn`, a word counter, proves it in tests).
+- `sim.rng` is drawn from by nothing in `src/` (every former caller --
+  the slots, the ruleset's door explosives, the onephase timeline, the
+  charge / timed-charge / heat-source detonations -- passes `sim.draws`);
+  `simulation.match.spawn_match` replaces it with `draws.RefusingRng`,
+  which raises on any attribute use, naming it. The helpers refuse a numpy
+  Generator by name.
+- The C++ header `cpp/src/philox32.h` vendored verbatim (as on
+  `63-swarm-units`, upstream 6c33a3d0, recorded sha256) with its bindings,
+  so `tests/test_philox32.py`'s C++ KAT, Python == C++ sweep and Q16
+  mappings run; no C++ sim code draws yet (P4c / P7a). The paper is
+  archived (`docs/papers/salmon2011_random123_philox_sc11.pdf`).
+- SOLE CAUSE: `tests/_p3b_sole_cause.py` (a pytest plugin feeding main's
+  numpy words through the keyed sites) makes all eight pinned matches pass
+  at main's values on the branch. Re-pinned once (ship_demo seed 1: win 0
+  at 2966 -> win 0 at 2708); `GOLDEN_AGGREGATE` unmoved (its scenario draws
+  nothing). No recording format bump (no intent's meaning changed: a
+  recording re-simulates from its seed). A/B: `docs/p3b_ab_2026-11-12.md`,
+  everything within 1.6 s.e.
+
 Order: P3a, P3c and P3e before P6 (P6 needs the schema, Q16 positions and
 the integer hp / mitigation); P3b before P7a (the shot cone's draws) and
 before P4c (the noise); P3d before P7d. Each merged to main on green with

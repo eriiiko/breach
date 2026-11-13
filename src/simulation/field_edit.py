@@ -29,7 +29,10 @@ already there as ``amount_q``); every region weight is a Q16 integer (the
 LINEAR falloff ``1 - dist/radius`` exact, rounded once:
 ``unit_fixed.falloff_round``; a TILES region's integer weights over its
 ``weight_den``); the noise multiplier is an integer draw
-(``draws.noise_mult_q16``); the blast's air read a Q16 plane. Per tile the
+(``draws.noise_mult_q16`` on a KEYED draw, #29 P3b: key the sim's seed,
+counter ``(tick, edit key, Salt.FIELD_NOISE, tile)``, the edit key its
+enqueue ``seq`` in this flush, the tile ``r * w + c``); the blast's air
+read a Q16 plane. Per tile the
 contribution is ``amount_q * weight * mult * scale`` over the product of
 their denominators, rounded ONCE (half away), and combined with integer
 ``+`` / ``-`` / ``max`` and the policy's clamp in the same currency. No float
@@ -40,10 +43,11 @@ between the door and the field; the device edit queue (P4c) transcribes it.
   order. For Level-2 lockstep this order-independence is the whole determinism
   story: two grenades overlapping a tile give ``clamp(clamp(s+a)+b)`` — the
   moment a clamp / MAX is involved the result is order-dependent, so the order
-  must be fixed. ``noise > 0`` draws its per-tile multiplier from the seeded
-  ``sim.rng`` at flush time, in sorted order, so the flush is the single RNG
-  consumer (the seeded-rollout guarantee is structural, not a per-caller
-  convention).
+  must be fixed. ``noise > 0`` draws its per-tile multiplier at flush time
+  as a KEYED draw (#29 P3b, on every path): ``(tick, seq, FIELD_NOISE,
+  tile)`` under the sim's seed, so a tile's multiplier depends on nothing
+  but its edit and its place -- not on the flush order, nor on any other
+  edit's tiles.
 
 Per-field policy (dtype + default clamp + skip-mask) lives in
 :data:`FIELD_POLICY`, so consumers stop needing to know these rules: a smoke
@@ -72,6 +76,7 @@ from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 quantize helpe
 from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
 from simulation import unit_fixed as _ufx   # #29 P3e: the integer kit
 from simulation import draws as _draws      # #29 P3e: the noise draw
+from simulation.rng_salts import Salt as _Salt  # #29 P3b: its site
 from simulation import gases as _gas_ids  # #88 P2: the SMOKE id a "smoke" edit books under
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
@@ -182,7 +187,7 @@ class FieldEdit:
     falloff: Falloff = Falloff.FLAT
     channel: Optional[int] = None                # None = scalar field; 0/1/2 = R/G/B of an (h,w,3) field
     clamp: Optional[Tuple[float, float]] = None  # post-combine clamp; None = use the field policy default
-    noise: float = 0.0                           # >0 = per-tile multiplier in [1-noise, 1], drawn from sim.rng
+    noise: float = 0.0                           # >0 = per-tile multiplier in [1-noise, 1], a keyed draw (#29 P3b)
     scale: Any = dc_field(default=None, compare=False)  # optional (h, w) Q16 per-tile factor (the blast's air read, #31)
     source_id: int = 0                           # bookkeeping + stable-sort grouping (one emitter = one id)
     amount_q: Optional[int] = None               # #29 P3e: the amount already in the field's currency (else ``amount`` quantized once)
@@ -502,14 +507,15 @@ def _combine_heat_q(old: int, c: int, mode: EditMode) -> int:
     raise ValueError(f"FieldEdit: unsupported heat mode {mode!r}")  # pragma: no cover
 
 
-def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
+def apply_field_edit(gmap, edit: FieldEdit, rng, key=None) -> None:
     """Apply one :class:`FieldEdit` to ``gmap`` in place.
 
     Resolves the field array + policy (dtype, default clamp, skip-mask), then
     iterates the region in deterministic row-major order. Per surviving tile
     (one that passes the skip-mask): if ``edit.noise > 0`` draw ONE multiplier
-    from ``rng`` in ``[1 - noise, 1]`` (skipped tiles draw nothing — the RNG
-    sequence depends only on the surviving-tile order, which is deterministic),
+    in ``[1 - noise, 1]``, the keyed draw ``rng.at(Salt.FIELD_NOISE, r * w +
+    c, key)`` (#29 P3b: ``rng`` the sim's ``draws.MatchDraws``, ``key`` the
+    edit's key -- the queue's ``seq``; a noisy edit without one is refused),
     compute ``contribution = amount × weight × noise_mult``, and combine.
 
     ``heat`` goes through the Q16.16 saturating branch; every other field is
@@ -560,6 +566,9 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
         noise_q = min(_ufx.quantize_scalar(float(edit.noise)),   # p3e-door
                       _ufx.FP_ONE)
     low_q = _ufx.FP_ONE - noise_q
+    if noise_q and key is None:
+        raise ValueError("FieldEdit: a noisy edit needs its edit key (the "
+                         "queue's seq) for its keyed draws (#29 P3b)")
     tiles_int = edit.region == Region.TILES and int(edit.weight_den) > 0
     den = int(edit.weight_den) if tiles_int else _ufx.FP_ONE
     if noise_q:
@@ -638,7 +647,8 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             weight = _ufx.quantize_scalar(float(weight))  # p3e-door: float weight
         num = amount_q * int(weight)
         if noise_q:
-            num *= _draws.noise_mult_q16(rng, low_q)
+            num *= _draws.noise_mult_q16(
+                rng.at(_Salt.FIELD_NOISE, r * shape[1] + c, key), low_q)
         if edit.scale is not None:
             num *= int(edit.scale[r, c])
         contribution = _ufx.div_round(num, den)
@@ -753,9 +763,9 @@ class EditQueue:
     Across emitters the sort makes the order independent of projectile / AI /
     container iteration order — the determinism guarantee.
 
-    The flush is the SINGLE RNG consumer for ``noise > 0`` edits: it draws in
-    sorted order, so a seeded ``sim.rng`` gives the same rollout regardless of
-    how the edits were enqueued.
+    The flush is the one consumer of the noise draws (``noise > 0``): each
+    edit's are keyed by its ``seq`` (the EDIT KEY, #29 P3b), the tick and the
+    tile, so they do not depend on the flush order at all.
     """
 
     def __init__(self):
@@ -783,14 +793,14 @@ class EditQueue:
         """Apply every queued edit in stable-sorted order, then clear the queue.
 
         Deterministic regardless of enqueue order: the sort key is
-        ``(field, source_id, region, seq)``. The ``noise`` RNG draws happen here,
-        in that order, so the flush is the one RNG consumer.
+        ``(field, source_id, region, seq)``. The ``noise`` draws happen here,
+        keyed by each edit's ``seq`` (``rng`` is the sim's keyed draws).
         """
         if not self._edits:
             return
         ordered = sorted(self._edits, key=self._sort_key)
-        for edit, _seq in ordered:
-            apply_field_edit(gmap, edit, rng)
+        for edit, seq in ordered:
+            apply_field_edit(gmap, edit, rng, key=seq)
         self.clear()
 
 

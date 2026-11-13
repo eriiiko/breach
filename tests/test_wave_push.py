@@ -442,7 +442,7 @@ def _frag(sim, cy, cx):
     frag = get_tables().payload_for_ammo("grenade_frag")
     assert frag.strength > 0                     # THE generic explosion
     return execute_payload(sim.gmap, sim.edit_queue, sim.units, cy, cx,
-                           frag, sim.rng)
+                           frag, sim.draws)
 
 
 def _blast_scene(mult, n_ticks=48):

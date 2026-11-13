@@ -570,8 +570,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 841869decf00a406da93a7e35a561d81dc2d581cc090309ea33f0b957e7625ba)
-    field_digest="309590f66a864df062ccb7c9cdf92cab"
-                 "a03dfbfe8bdad86f22e435ab30b2a5be",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 309590f66a864df062ccb7c9cdf92caba03dfbfe8bdad86f22e435ab30b2a5be)
+    field_digest="d6ff90dbce559fa603805b9eaf8139bd"
+                 "5e18b34c0ac39b251894c3686140d780",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -597,8 +604,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was cdb2152bc2d764dce97483c26f70152b9017c463083d53b7275529f447e8b9b4)
-    tick_digest="3d21436d8858106d5d9f26c57829d7b5"
-                "b9e6de232d0bd2492e7a841c749d4bb8",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 3d21436d8858106d5d9f26c57829d7b5b9e6de232d0bd2492e7a841c749d4bb8)
+    tick_digest="1775613f19c56ce58fb53975fa1ad64c"
+                "e472ccb59073b404578eaff67c99ed93",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -624,8 +638,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was da9febf7321dbe971ef9e5fa7c3ed599c8453f7cc969f18aad6251dc3c07d529)
-    unit_stream="7e4d0161cf924be4dfe170b52d7d2386"
-                "b77c59c984a5a27bdea519d2431ffdcb")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 7e4d0161cf924be4dfe170b52d7d2386b77c59c984a5a27bdea519d2431ffdcb)
+    unit_stream="27cefe3132431e8d06ca4838afe4b4d4"
+                "8219ea21403d53c2d300fdecfdf8643b")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This

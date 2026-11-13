@@ -390,7 +390,15 @@ _PRE_122_SHIP_DEMO = dict(
     # #29 P3e re-pin: the integer match path moved the game -- team 1 at 2902
     # ticks becomes team 0 at 2966 (one seed; the A/B over 24-72 seeds is in
     # docs/p3e_ab_2026-11-12.md and within seed noise).
-    outcome="win", team=0, ticks=2966,
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites: every draw
+    # keyed (seed; tick, index, salt, id) in place of one numpy stream).
+    # Outcome and team UNCHANGED (win 0); ticks 2966 -> 2708. SOLE CAUSE,
+    # verified on the same tree: tests/_p3b_sole_cause.py (main's stream
+    # words through the keyed sites) gives the P3e pin back bit for bit --
+    # outcome, ticks and all three digests; A/B over 24-72 seeds in
+    # docs/p3b_ab_2026-11-12.md.
+    # (was ticks 2966)
+    outcome="win", team=0, ticks=2708,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -425,7 +433,14 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 0afdec8bfef8943048652975d92945c2fafdf0a6751a900ccbf8a1c8702cc617)
-    field_digest="5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136)
+    field_digest="13168aaad034fb1f8365ac184244453d7dc8ef6168b2438b48101b492484b89d",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -564,7 +579,14 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 402970f74f8e71af449d04cd8c245de8bd4a3069771ca31529506fe08a1b6dad)
-    tick_digest="4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509)
+    tick_digest="dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -592,7 +614,14 @@ _PRE_122_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 537ec052b34d2e9b52887299ddf38162ae47f4efb3acc51f7df3ffb3175742ca)
-    unit_stream="8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba)
+    unit_stream="d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):

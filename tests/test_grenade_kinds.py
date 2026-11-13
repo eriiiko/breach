@@ -97,7 +97,7 @@ def _add(sim, name, x, y, team=0, facing_q=0):
 
 def _flash_at(sim, fy, fx, owner=-1):
     execute_payload(sim.gmap, sim.edit_queue, sim.units, fy, fx, FLASHBANG,
-                    sim.rng, events=sim.tick_events, kind="grenade",
+                    sim.draws, events=sim.tick_events, kind="grenade",
                     owner_id=owner)
 
 
@@ -360,7 +360,7 @@ def test_a_payload_without_blind_columns_blinds_nobody():
         sim = _sim()
         u = _unit_at(sim, 16, 12, team=1, facing_q=PI_Q16)
         execute_payload(sim.gmap, sim.edit_queue, sim.units, 12, 14,
-                        TABLES.payloads.by_name[name], sim.rng,
+                        TABLES.payloads.by_name[name], sim.draws,
                         events=sim.tick_events, kind="grenade", owner_id=-1)
         assert all(s.kind != BLINDED for s in u.statuses), name
         assert TABLES.payloads.by_name[name].blind_radius_q == 0
@@ -674,8 +674,15 @@ _PRE_G3P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 49f3a5ccd6971212a2b0d11cd11d8170d7de7347f940dc091f5482459aceb302)
-    field_digest="c429d8a6a5cd69232ef602c8947e5086"
-                 "5230450f86a8c01e3a68e8eddaa8ac5c",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was c429d8a6a5cd69232ef602c8947e50865230450f86a8c01e3a68e8eddaa8ac5c)
+    field_digest="df4662721dc33b59018e566dcf75f6d3"
+                 "e01b860f53578d676444df677e0fef77",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -701,8 +708,15 @@ _PRE_G3P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 54ac125c031dc6e10fe923b4b8f1c00e58c905e309a6ea3b920d1226230db10d)
-    tick_digest="5c010886716e4a2bc7c935c9ad5e4bfb"
-                "0552abd2a014e7241fc024dcf8fce047",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 5c010886716e4a2bc7c935c9ad5e4bfb0552abd2a014e7241fc024dcf8fce047)
+    tick_digest="e1add2e038e565dfe56d69e09c8c4d66"
+                "1e6885bcdb287781dfb38491bee2a336",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -728,8 +742,15 @@ _PRE_G3P_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 20b78defd670f746e16fbf74b176cd16f55907a04d0f3353a40535179316296c)
-    unit_stream="ac4f6845ea60c23d3b04c7ca0231a50c"
-                "fc4d8597547df9efd8206ac6f40109c1")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was ac4f6845ea60c23d3b04c7ca0231a50cfc4d8597547df9efd8206ac6f40109c1)
+    unit_stream="572519ba48b80de7d770865a16e436ec"
+                "8736481158155bfc1fc92d3484c11a16")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

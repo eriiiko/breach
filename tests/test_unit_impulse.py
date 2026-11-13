@@ -336,7 +336,7 @@ def _hit_with_a_50(y_target):
     target.current_hp = 10_000.0                  # the .50 must not kill it
     lr50 = sim.weapons_tables.weapons.by_name["lr50"]
     fire_burst(sim.gmap, sim.units, shooter, 5, 20, 30, 20, sim.tick, [],
-               0.0, sim.rng, weapon=lr50, spread_deg=0.0, aim_q=0)
+               0.0, sim.draws, weapon=lr50, spread_deg=0.0, aim_q=0)
     l_after_hit = target.imp_l
     sim.step()
     return l_after_hit, target.facing_q, target.omega_q
@@ -888,8 +888,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was 187e4a6f710671ff3644584fd51b6278eaadb4bac5fbb1225bfeee7b5572de26)
-    field_digest="70033ac6533ffbfa36c78edcf794d551"
-                 "3a588793196bb9858cca3d2efdddf5aa",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 70033ac6533ffbfa36c78edcf794d5513a588793196bb9858cca3d2efdddf5aa)
+    field_digest="055c19d9cce5c0259b782b8a63129dad"
+                 "b6d67ef267f3a112ea3c4a594b64619b",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -915,8 +922,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was cf02f69aefb3d506c436070eebefa4c92e7f00016398d2ba28c1668850ea1a6c)
-    tick_digest="deeea5a31d67dcd51739dd4097c0b7e2"
-                "3cc1f262c310cfb7e96b63a0cf56ef52",
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was deeea5a31d67dcd51739dd4097c0b7e23cc1f262c310cfb7e96b63a0cf56ef52)
+    tick_digest="15e7cd1143c3d50b9f1739b1156faae8"
+                "448b1b33b4f0b8d5e88d1ae18feeb3e6",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -942,8 +956,15 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # docs/p3e_ab_2026-11-12.md: win rate, survivors, rounds per kill and the
     # blast outcomes within seed noise over 24-72 seeds.
     # (was f6453368880f8b5a2cfc3eeb62385e20d457eeb9460a90ff9e64a59525abc75a)
-    unit_stream="03c4178984984aa1e01aa783ec000104"
-                "7d4d49f3224fcd15502368bcc68744ba")
+    # #29 P3b re-pin (2026-11-12, Philox at the match draw sites): every
+    # draw is keyed Philox (seed; tick, index, salt, id) in place of one
+    # numpy stream -- WHICH random numbers are drawn moved, nothing else.
+    # SOLE CAUSE, verified on the same tree: tests/_p3b_sole_cause.py feeds
+    # main's stream words through the keyed sites and this pin's old value
+    # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
+    # (was 03c4178984984aa1e01aa783ec0001047d4d49f3224fcd15502368bcc68744ba)
+    unit_stream="a06143b715c28cebfaea4f82cba76fb2"
+                "9694031ae782103849ccd997239621d3")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This

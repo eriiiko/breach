@@ -82,8 +82,8 @@ EPISODES. Episode ``k`` of env ``e`` plays level ``levels[i]`` with match
 seed ``s``, ``(s, i) = episode_draw(run_seed, e, k, len(levels))``: ONE
 Philox-4x32-10 block keyed by the run seed, counter ``(e, k, EPISODE_SALT,
 0)`` -- a pure function of its arguments, so an env's episode sequence never
-depends on N or on when other envs end. The match's own draws stay
-``sim.rng`` seeded by ``s`` (P3b moves them to Philox). The match is the
+depends on N or on when other envs end. The match's own draws are keyed
+Philox under ``s`` (``sim.draws``, #29 P3b; ``sim.rng`` refuses any use). The match is the
 level's match.toml (``LevelData.match``) with the seed replaced and every
 team's controller set by ``[run] policy``; the horde keeps its
 ``zombie_controller``.
@@ -186,14 +186,16 @@ from pathlib import Path
 
 import numpy as np
 
+from simulation.rng_salts import Salt as _Salt   # #29 P3b: the one salt enum
+
 ROOT = Path(__file__).resolve().parent.parent
 CPU_BUILD = ROOT / "cpp" / "build" / "Release"
 DEFAULT_LEVELS_DIR = ROOT / "levels"
 
 BACKENDS = ("cpu_farm",)
-#: The Philox stream salt of the episode draw ("EPIS"); P3b's salt enum
-#: takes it over.
-EPISODE_SALT = 0x45504953
+#: The Philox stream salt of the episode draw ("EPIS"): the one salt
+#: enum's (``simulation.rng_salts.Salt.EPISODE``, #29 P3b).
+EPISODE_SALT = int(_Salt.EPISODE)
 #: The environment every farm worker starts with: ONE BLAS / OpenMP thread.
 #: Nothing per tick contracts through BLAS (the no-BLAS rule), and OpenBLAS
 #: otherwise commits a buffer per hardware thread in every process: measured

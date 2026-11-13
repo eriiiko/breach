@@ -208,7 +208,7 @@ def _die(sim, src) -> None:
     src.hp_q16 = 0
     if src.death_payload is not None:
         execute_payload(sim.gmap, sim.edit_queue, sim.units, src.fy, src.fx,
-                        src.death_payload, sim.rng, events=sim.tick_events,
+                        src.death_payload, sim.draws, events=sim.tick_events,
                         kind=EVENT_KIND)
 
 
