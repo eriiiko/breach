@@ -366,11 +366,15 @@ def masked_choices(actions, masks: dict):
 # ---------------------------------------------------------------------------
 # The inverse helpers (1j: a bot decision -> the nearest choice)
 # ---------------------------------------------------------------------------
-def _nearest_dir(dx_q: int, dy_q: int) -> int:
+def _nearest_dir(dx_q: int, dy_q: int, stride: int = 1) -> int:
     """The compass bin nearest the angle of ``(dx_q, dy_q)`` (``atan2_q16``,
-    the facing convention), ties to the bin counter-clockwise."""
+    the facing convention) among every ``stride``-th bin (1j: 2 = the eight
+    even bins), ties to the bin counter-clockwise; at ``stride = 1`` the 1h
+    formula, bit for bit."""
     a = atan2_q16(-int(dy_q), int(dx_q))
-    return ((a * 8 + (PI_Q16 >> 1)) // PI_Q16) % N_DIRS
+    s = int(stride)
+    k = (a * 8 + s * (PI_Q16 >> 1)) // (s * PI_Q16)
+    return (k * s) % N_DIRS
 
 
 def _nearest(values, v) -> int:
@@ -382,22 +386,24 @@ def _nearest(values, v) -> int:
     return best[1]
 
 
-def feet_index(dx_q, dy_q, throttle_q, tables: ActionTables) -> int:
+def feet_index(dx_q, dy_q, throttle_q, tables: ActionTables,
+               stride: int = 1) -> int:
     """The feet option nearest a move ``(dx_q, dy_q)`` at ``throttle_q``:
-    the nearest compass bin by angle and the nearest of the three
-    throttles; a cleared move (``None``) or a zero vector -> stand."""
+    the nearest compass bin by angle (among every ``stride``-th) and the
+    nearest of the three throttles; a cleared move (``None``) or a zero
+    vector -> stand."""
     if dx_q is None or (int(dx_q) == 0 and int(dy_q) == 0):
         return FEET_STAND
-    return (1 + N_SPEEDS * _nearest_dir(dx_q, dy_q)
+    return (1 + N_SPEEDS * _nearest_dir(dx_q, dy_q, stride)
             + _nearest(tables.throttles, throttle_q))
 
 
-def aim_index_for_vector(dx_q, dy_q) -> int:
-    """The nearest compass token of an aim vector; a zero vector (or
-    ``None``) -> "where I walk"."""
+def aim_index_for_vector(dx_q, dy_q, stride: int = 1) -> int:
+    """The nearest compass token of an aim vector (among every
+    ``stride``-th); a zero vector (or ``None``) -> "where I walk"."""
     if dx_q is None or (int(dx_q) == 0 and int(dy_q) == 0):
         return AIM_WALK
-    return _nearest_dir(dx_q, dy_q)
+    return _nearest_dir(dx_q, dy_q, stride)
 
 
 def aim_index_for_unit(uid, list_uid_row, list_type_row):
