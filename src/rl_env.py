@@ -259,6 +259,7 @@ class RunConfig:
     spec: str = "crop"          # [obs] spec (#195 1g): the observation layout
     full_view: bool = True      # [obs] full_view (#195 1g (c)): serve the
                                 # value network's full view under info ("v1")
+    action_spec: str = "raw"    # [action] spec (#195 1h): the action layout
 
     def reward_weights(self) -> np.ndarray:
         w = dict(self.reward)
@@ -331,10 +332,10 @@ def parse_run(raw: dict, where: str = "run file",
     vector field or counter."""
     from control_source import match_file_controllers
     from simulation.sensor_accessor import OBS_SPECS, resolve_crop_channels
-    bad = sorted(set(raw) - {"run", "obs", "reward"})
+    bad = sorted(set(raw) - {"run", "obs", "reward", "action"})
     if bad:
         raise ValueError(f"{where}: unknown table(s) {bad} (a run file "
-                         f"carries [run], [obs], [reward])")
+                         f"carries [run], [obs], [reward], [action])")
     run = _table(raw, "run", _RUN_KEYS, where)
     if not isinstance(raw.get("obs"), dict):
         raise ValueError(f"{where}: missing table [obs]")
@@ -432,11 +433,27 @@ def parse_run(raw: dict, where: str = "run file",
                              f"{v!r}")
         weights[k] = float(v)
     reward = tuple((n, weights[n]) for n in COUNTER_NAMES if n in weights)
+    action_spec = "raw"
+    if "action" in raw:
+        from simulation.action_spec_v1 import ACTION_SPECS
+        if not isinstance(raw["action"], dict):
+            raise ValueError(f"{where}: [action] must be a table")
+        act = _table(raw, "action", {"spec": False}, where)
+        action_spec = act.get("spec", "raw")
+        if (not isinstance(action_spec, str)
+                or action_spec not in ACTION_SPECS):
+            raise ValueError(f"{where}: [action] spec must be one of "
+                             f"{list(ACTION_SPECS)}, got {action_spec!r}")
+        if action_spec == "v1" and spec != "v1":
+            raise ValueError(f"{where}: [action] spec 'v1' needs [obs] spec "
+                             f"'v1' (its aim pointer indexes the v1 list), "
+                             f"got [obs] spec {spec!r}")
     return RunConfig(seed=seed, n_envs=n_envs, decimation=decimation,
                      levels=levels, policy=pol, levels_dir=levels_dir,
                      channels=channels, crop_radius=crop_radius,
                      vector=vector, reward=reward, out_dir=out_dir,
-                     sight=sight, spec=spec, full_view=full_view)
+                     sight=sight, spec=spec, full_view=full_view,
+                     action_spec=action_spec)
 
 
 def load_run(path) -> RunConfig:
@@ -474,6 +491,8 @@ class Layout:
     counters: tuple = field(default=COUNTER_NAMES)
     spec: str = "crop"          # the observation spec (#195 1g)
     full_view: bool = False     # the value network's full view served (1g (c))
+    action_spec: str = "raw"    # the action spec (#195 1h)
+    n_kinds: int = 0            # K: the hand-grenade rows ("v1" actions)
 
     @property
     def n_rows(self) -> int:
@@ -505,13 +524,31 @@ class Layout:
         return self.n_slots + ENTRIES_BEYOND_SLOTS
 
     @property
+    def head_sizes(self) -> tuple:
+        """The five heads' sizes under ``[action] spec = "v1"`` (empty
+        under ``"raw"``)."""
+        if self.action_spec != "v1":
+            return ()
+        from simulation.action_spec_v1 import head_sizes
+        return head_sizes(self.n_entries, self.n_kinds)
+
+    @property
+    def mask_keys(self) -> tuple:
+        """The action masks served in ``obs`` (``"v1"`` actions only)."""
+        if self.action_spec != "v1":
+            return ()
+        from simulation.action_spec_v1 import MASK_KEYS
+        return MASK_KEYS
+
+    @property
     def obs_keys(self) -> tuple:
         """The observation keys of the spec, in order (each has a
-        ``final_`` twin)."""
+        ``final_`` twin), and -- under ``[action] spec = "v1"`` -- the
+        action masks after them (#195 1h: what a policy is FED)."""
         if self.spec == "crop":
             return ("crop", "vector", "valid")
         from simulation.obs_spec_v1 import OBS_KEYS
-        return OBS_KEYS + ("valid", "in_match")
+        return OBS_KEYS + ("valid", "in_match") + self.mask_keys
 
     def obs_shapes(self) -> dict:
         n, u = self.n_envs, self.n_rows
@@ -522,7 +559,11 @@ class Layout:
                     "vector": ((n, u, v), np.float32),
                     "valid": ((n, u), np.uint8)}
         from simulation.obs_spec_v1 import shapes
-        return shapes(n, u, self.n_slots)
+        out = shapes(n, u, self.n_slots)
+        if self.action_spec == "v1":
+            from simulation.action_spec_v1 import mask_shapes
+            out.update(mask_shapes(n, u, self.n_entries, self.n_kinds))
+        return out
 
     def shapes(self) -> dict:
         n, u = self.n_envs, self.n_rows
@@ -560,11 +601,17 @@ def make_layout(run: RunConfig, levels: list) -> Layout:
     from control_policy import action_schema
     n_teams = max(len(lv.match.teams) for lv in levels)
     n_slots = max(max(_team_slots(lv)) for lv in levels)
+    n_kinds, n_actions = 0, len(action_schema())
+    if run.action_spec == "v1":
+        from simulation.action_spec_v1 import HEADS
+        from simulation.weapons import get_tables
+        n_kinds, n_actions = len(get_tables().hand_grenade_rows), len(HEADS)
     return Layout(n_envs=run.n_envs, n_teams=n_teams, n_slots=n_slots,
-                  n_actions=len(action_schema()), channels=run.channels,
+                  n_actions=n_actions, channels=run.channels,
                   crop_radius=run.crop_radius, vector=run.vector,
                   spec=run.spec,
-                  full_view=bool(run.spec == "v1" and run.full_view))
+                  full_view=bool(run.spec == "v1" and run.full_view),
+                  action_spec=run.action_spec, n_kinds=n_kinds)
 
 
 def load_levels(run: RunConfig) -> list:
@@ -665,6 +712,14 @@ class EnvRunner:
             from simulation.obs_spec_v1 import ObsContext
             self.ctx = ObsContext.build(sim, spec, S,
                                         n_teams=self.layout.n_teams)
+        self.act_tables = None
+        self._list_uid = None
+        if self.layout.action_spec == "v1":
+            # #195 1h: the decoder, set before any row is handed over
+            from simulation.action_spec_v1 import action_tables
+            self.act_tables = action_tables(sim, S)
+            for pol in self.policies.values():
+                pol.configure("v1", self.act_tables)
         return [(self.k, 0, *self.session.digests())]
 
     def step(self, actions) -> dict:
@@ -676,8 +731,22 @@ class EnvRunner:
         s = self.session
         sim = s.sim
         S = self.layout.n_slots
-        for team, pol in self.policies.items():
-            pol.set_rows(actions[team * S:(team + 1) * S])
+        if self.layout.action_spec == "v1":
+            # #195 1h: each policy team's (S, 5) block with the list_uid of
+            # the observation it was chosen on (this runner's last publish)
+            lu = self._list_uid
+            if lu is None:
+                raise RuntimeError(
+                    f"env {self.env}: a 'v1' action step needs the "
+                    f"observation it was chosen on -- observe() after "
+                    f"reset() and after every step()")
+            self._list_uid = None
+            for team, pol in self.policies.items():
+                pol.set_decisions(actions[team * S:(team + 1) * S],
+                                  lu[team * S:(team + 1) * S])
+        else:
+            for team, pol in self.policies.items():
+                pol.set_rows(actions[team * S:(team + 1) * S])
         counters = np.zeros((self.layout.n_rows, len(self.layout.counters)),
                             dtype=np.float32)
         cps = []
@@ -804,10 +873,25 @@ class EnvRunner:
                                   all_units=sim.units, vector_fields=self._vec)
             out["valid"][...] = [u is not None for u in units]
             return
-        self.accessor.observe("v1", units, out, sim=sim, context=self.ctx)
+        aims = None
+        if self.layout.action_spec == "v1":
+            aims = {}
+            for pol in self.policies.values():
+                aims.update(pol.aim_view())
+        self.accessor.observe("v1", units, out, sim=sim, context=self.ctx,
+                              aims=aims)
         valid, in_match = self.row_flags()
         out["valid"][...] = valid
         out["in_match"][...] = in_match
+        if self.layout.action_spec == "v1":
+            # #195 1h: the masks, at the start of the decision tick, from
+            # the list just built (one gate call per hand bit)
+            from simulation.action_spec_v1 import build_masks
+            lst = out["list"]
+            build_masks(sim, units, lst[:, :, 0], out["list_mask"],
+                        out["list_uid"], self.act_tables,
+                        self.run.decimation, out)
+            self._list_uid = np.array(out["list_uid"], copy=True)
         if self.layout.full_keys and self.layout.full_keys[0] in out:
             from simulation.sensor_accessor import FULL_VIEW_SPEC
             self.accessor.observe(FULL_VIEW_SPEC, self.roster_units(), out,
@@ -1500,6 +1584,15 @@ class BatchedEnv:
                                                       np.integer):
             raise ValueError(f"actions must be an integer {want} array, got "
                              f"{actions.shape} {actions.dtype}")
+        masked = None
+        if self.layout.action_spec == "v1":
+            # #195 1h: an index outside its head is a trainer bug, refused;
+            # a masked in-range one is decoded by its fallback and COUNTED,
+            # against the masks served with the observation it answers
+            from simulation.action_spec_v1 import check_actions, masked_choices
+            check_actions(actions, self.layout.head_sizes)
+            masked = masked_choices(actions, {k: self._a[k]
+                                              for k in self.layout.mask_keys})
         self._a["actions"][...] = actions
         got = self._broadcast({w: ("step", None)
                                for w in range(self.n_workers)})
@@ -1516,6 +1609,8 @@ class BatchedEnv:
         info["result"] = [got[e]["result"] for e in range(n)]
         info["counters"] = a["counters"].copy()
         info["checkpoints"] = [got[e]["checkpoints"] for e in range(n)]
+        if masked is not None:
+            info["masked_choices"] = masked
         return (self._obs(), a["reward"].copy(),
                 a["terminated"].astype(bool), a["truncated"].astype(bool),
                 info)
