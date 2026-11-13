@@ -634,8 +634,14 @@ _PRE_G4P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 892b5eafaec42203142dd4565f8e2203f5eaa57b0197d049e2f9809c1b07d533)
-    tick_digest="58fd01b50f17f712913ba0148507e426"
-                "a752b5e4a3d5a174565021aa54547c8e",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED; the tick_digest moves. SOLE CAUSE,
+    # verified on the same tree: with verb_gates.can_fire forced True this
+    # test gives exactly the old value. A bot holding its trigger on the
+    # tick its throw starts no longer fires on that tick.
+    # (was 58fd01b50f17f712913ba0148507e426a752b5e4a3d5a174565021aa54547c8e)
+    tick_digest="af300d48f4f8986e49cab6e625ce902a"
+                "6a999a468f11e12a5a157fef96d4eac4",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -668,8 +674,14 @@ _PRE_G4P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 11f23789903ddcfef78450a17ce5f9c91a267f86a46d8c5bbf4c573d96e3ee8f)
-    unit_stream="2519f4e1da0cb281ce420bbfeb05b9ca"
-                "12706e833f165909b4aee49663e3f9c5")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team, ticks and field_digest UNCHANGED; the unit_stream moves. SOLE CAUSE,
+    # verified on the same tree: with verb_gates.can_fire forced True this
+    # test gives exactly the old value. A bot holding its trigger on the
+    # tick its throw starts no longer fires on that tick.
+    # (was 2519f4e1da0cb281ce420bbfeb05b9ca12706e833f165909b4aee49663e3f9c5)
+    unit_stream="d3a7a5433e8fa77a6b423461ba4e9761"
+                "ab6489cb092b6a262c1193588e680e46")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(

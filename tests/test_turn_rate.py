@@ -331,8 +331,14 @@ _PRE_G1P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 86b99eae5b25be77a37cdebbd2bf05409afc8a876f2bdd47eb5805d7bbcbef64)
-    field_digest="967bc6afbfde610e94aa14389c32aa6b"
-                 "beedba0dab2ed25705f315f4177294e8",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team and ticks UNCHANGED; the field_digest moves. SOLE CAUSE,
+    # verified on the same tree: with verb_gates.can_fire forced True this
+    # test gives exactly the old value. A bot holding its trigger on the
+    # tick its throw starts no longer fires on that tick.
+    # (was 967bc6afbfde610e94aa14389c32aa6bbeedba0dab2ed25705f315f4177294e8)
+    field_digest="d12a00cc714a987962997e8afb6f3c84"
+                 "fe962ef4216cbe5bffff93977048b91c",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -365,8 +371,14 @@ _PRE_G1P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 73bbb0a449d658c042f67029682f78d844faf0964fd807d8f7cd1c6c32c77803)
-    tick_digest="ef60a0ea6e438cde1e00f80bed76ec16"
-                "86d9ea7babea1070db5b395967935bc6",
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team and ticks UNCHANGED; the tick_digest moves. SOLE CAUSE,
+    # verified on the same tree: with verb_gates.can_fire forced True this
+    # test gives exactly the old value. A bot holding its trigger on the
+    # tick its throw starts no longer fires on that tick.
+    # (was ef60a0ea6e438cde1e00f80bed76ec1686d9ea7babea1070db5b395967935bc6)
+    tick_digest="075967ef185295da9559e6918666db31"
+                "52e23bb5036b614b51560496e3697894",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -399,8 +411,14 @@ _PRE_G1P_SHIP_DEMO = dict(
     # main's stream words through the keyed sites and this pin's old value
     # comes back bit for bit; A/B in docs/p3b_ab_2026-11-12.md.
     # (was 6778d0617e32108d426335322dafa459ee7fd3414e7c3481558a92339db5bfba)
-    unit_stream="ef36d0c528f1d6b28e4c8c97a65ec9d7"
-                "5974f9864e4c4571e5c1181b743095c0")
+    # 183-no-fire-windup re-pin (2026-11-13, Erik's ruling: no firing while
+    # winding up a throw). Outcome, team and ticks UNCHANGED; the unit_stream moves. SOLE CAUSE,
+    # verified on the same tree: with verb_gates.can_fire forced True this
+    # test gives exactly the old value. A bot holding its trigger on the
+    # tick its throw starts no longer fires on that tick.
+    # (was ef36d0c528f1d6b28e4c8c97a65ec9d75974f9864e4c4571e5c1181b743095c0)
+    unit_stream="8cdd20070c396ae83774284586c62355"
+                "d2382116725d57c0dcc52acfebbd2073")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

@@ -440,9 +440,10 @@ def test_no_policy_row_carries_an_order():
 # E. recording: the kind replays; v7 is refused
 # ---------------------------------------------------------------------------
 def test_a_v7_recording_is_refused_by_its_header(tmp_path):
-    """Property: the format is v8 and a recording written as v7 is refused
-    by its header, naming the version. Breaks if the bump is missing."""
-    assert mr.FORMAT_VERSION == 8
+    """Property: the format is at least v8 (the order verb's bump; later
+    bumps keep it) and a recording written as v7 is refused by its header,
+    naming the version. Breaks if the bump is missing."""
+    assert mr.FORMAT_VERSION >= 8
     team = MatchTeam(n=1, loadout="rifleman", env_profile="default",
                      controller="idle")
     rec = mr.Recording(level="box", spec=MatchSpec(teams=(team, team), seed=1),
