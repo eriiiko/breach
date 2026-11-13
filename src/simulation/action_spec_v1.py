@@ -24,7 +24,8 @@ into its head's option table:
 THE NUMBERS come from their table rows, quantized once per match by
 :func:`action_tables` -- never a literal. THE MASKS (:func:`build_masks`)
 are built at the start of the decision tick, ONE call of the 1e gate per
-hand bit (``simulation.verb_gates``) -- never a copy of a decision. A head
+hand bit and for the trigger's hold (``simulation.verb_gates``, the trigger's
+``can_fire`` since 183-no-fire-windup) -- never a copy of a decision. A head
 left out of learning (design 8.2) is a head with exactly ONE legal option
 (:func:`heads_used`); no head is ever all-masked. The argument's mask is a
 pure function of the drawn hand and aim (:func:`arg_mask`).
@@ -285,7 +286,12 @@ def build_masks(sim, units, list_type, list_mask, list_uid,
             default_masks(out, i)
             continue
         out["mask_feet"][i] = 1
-        out["mask_trigger"][i] = 1
+        # release always legal; hold legal unless a throw's wind-up keeps the
+        # hands busy at slot 4 of EVERY tick of the decision (the gate asked
+        # for its last tick: a hold that fires on any of them is legal).
+        out["mask_trigger"][i, 0] = 1
+        out["mask_trigger"][i, 1] = verb_gates.can_fire(
+            u, last, at_tick_start=True)
         aim = out["mask_aim"][i]
         if int(u.throw_release_tick) >= last:
             # the wind-up holds the aim on every tick of the coming decision

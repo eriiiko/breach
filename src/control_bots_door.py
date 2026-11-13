@@ -339,8 +339,13 @@ def translate(si: SlotInput, tables, settings: DoorSettings) -> tuple:
     if aim is None:
         aim = _aim(si, tables, stride, mc, keep_only, move_vec, loss)
     # -- trigger -----------------------------------------------------------
+    # Released on a throw's decision (the bot releases it through its own
+    # wind-up) and wherever the mask forbids the hold: a wind-up keeps the
+    # hands busy through the whole decision (verb_gates.can_fire,
+    # 183-no-fire-windup) -- both counted as ``trigger_throw``.
     trig = 1 if si.trigger else 0
-    if hand >= A.HAND_THROW0 and trig:
+    if trig and (hand >= A.HAND_THROW0
+                 or not si.masks["mask_trigger"][1]):
         trig = 0
         loss.bits |= _BIT["trigger_throw"]
     return (feet, aim, trig, hand, arg), loss
@@ -919,16 +924,19 @@ class BotsThroughDoor(ControlSource):
 
     def _retrigger(self, sim, holds) -> None:
         """The trigger variant: the decision's feet and aim, THIS tick's
-        captured trigger, hand nothing, on the stored list_uid."""
+        captured trigger, hand nothing, on the stored list_uid. A hold the
+        decision's trigger mask forbids (a wind-up through the whole
+        decision, 183-no-fire-windup) is released, as at the decision."""
         rows5, lu = self._dec
         rows = rows5.copy()
         rows[:, 3] = 0
         rows[:, 4] = 0
+        m_trig = self._out["mask_trigger"]
         for s, u in enumerate(self._row_units(sim)):
             if u is None:
                 continue
             t = holds.get(int(u.id), {}).get("trigger")
-            rows[s, 2] = 1 if t else 0
+            rows[s, 2] = 1 if (t and m_trig[s][1]) else 0
         self.policy.set_decisions(rows, lu)
 
     def _diagnose(self, sim, holds, issued) -> None:

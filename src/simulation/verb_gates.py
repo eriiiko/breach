@@ -44,6 +44,10 @@ ignores a wind-up and a plant. ``can_reload`` and ``can_use`` carry no
 ``can_act`` term and ``tests/test_verb_gates.py`` pins that, so a later ruling
 is a deliberate test change.
 
+THE TRIGGER (183-no-fire-windup) has one gate too, ``can_fire``: the hands
+are not winding up a throw. It is read by the shooting slot (4) and the
+sprays, by the trigger mask and by the fire lanes; the flashlight has none.
+
 A new hand verb brings its gate here in the same patch -- never a mask's copy
 of the decision.
 """
@@ -181,5 +185,34 @@ def can_melee(u, tick: int, tables, *, at_tick_start: bool) -> bool:
             or tick - u.last_blow_tick >= weapon.rof_interval_ticks)
 
 
+def can_fire(u, tick: int, *, at_tick_start: bool) -> bool:
+    """FIRE (the trigger, 183-no-fire-windup; Erik's ruling 2026-11-13: "a
+    marine should not be able to fire when throwing a grenade"): the hands
+    are not winding up a throw. ONLY that term (and the 1b envelope): the
+    cadence, the magazine, ``can_act`` and the archetype stay the shooting
+    slot's own reads, so a True here never promises a round -- a False
+    promises none (the one-sided promise).
+
+    THE TICK BOUNDARY. The shooting slot (4) runs after 1b, where
+    ``_advance_throw`` releases a wind-up whose release tick has come, so on
+    the RELEASE tick the hand is free and a held trigger fires again; on the
+    tick a wind-up STARTS (1b, before slot 4) the trigger already does
+    nothing (a 0-tick wind-up releases at once and blocks nothing).
+    ``at_tick_start=False`` is slot 4's own read (the literal ``< 0``).
+    ``at_tick_start=True`` asks, from the state at the START of a tick T,
+    whether the hand will be free at slot 4 of tick ``tick`` (>= T): busy
+    only if the wind-up is still running then (``throw_release_tick >
+    tick``) and 1b will keep it (the unit able to act -- ``_advance_throw``
+    drops it otherwise). The v1 masks ask it for a decision's LAST tick (a
+    hold that fires on any tick of the decision is legal); the fire lanes
+    for the coming tick."""
+    if not _acts(u):
+        return False
+    if at_tick_start:
+        return not (composed_flags(u).can_act
+                    and u.throw_release_tick > tick)
+    return u.throw_release_tick < 0
+
+
 __all__ = ["can_throw", "can_plant", "door_in_reach", "use_door", "can_use",
-           "can_reload", "can_shove", "can_melee"]
+           "can_reload", "can_shove", "can_melee", "can_fire"]

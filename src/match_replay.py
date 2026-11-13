@@ -101,7 +101,10 @@ FORMAT_NAME = "breach-match-replay"
 #: driven through the door carries the bots' commander, whose orders are
 #: hashed unit state -- a v7 recording could not name the verb and is
 #: refused.
-FORMAT_VERSION = 8
+#: v9 (183-no-fire-windup, 2026-11-13): a held ``set_trigger`` does nothing
+#: while the unit winds up a throw (Erik's ruling: no firing while throwing)
+#: -- the same intents in a v8 recording would replay as another match.
+FORMAT_VERSION = 9
 
 #: The recordable intent kinds (the sim's entry point names) -> the type of
 #: each positional argument after the kind. "int" is a Python int (never a

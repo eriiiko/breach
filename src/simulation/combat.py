@@ -87,6 +87,9 @@ from simulation.exchange import (                                # noqa: F401
 # weapons are re-homed onto rows — same numbers, looked up by literal name at
 # the sites that used to read CFG.weapons.rifle/.grenade/.door_explosive.
 from simulation.weapons import get_tables as weapon_tables
+# The trigger's gate (183-no-fire-windup). verb_gates imports this module
+# back; it reads combat only at call time, so the cycle is import-safe.
+from simulation import verb_gates
 
 
 _CONE_Q_CACHE = {}
@@ -1013,6 +1016,13 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         if not flags.can_act:
             continue
 
+        # The hands are winding up a throw (183-no-fire-windup, Erik's
+        # ruling 2026-11-13): the trigger does nothing -- no round, no
+        # burst, no noise, no magazine spend or auto-reload. A held trigger
+        # is kept; it fires again from the release tick (verb_gates.can_fire).
+        if not verb_gates.can_fire(u, tick, at_tick_start=False):
+            continue
+
         # W2: the unit's weapon row ("" = no ranged weapon — zombie melee
         # stays on its ai_zombie path; NPC weapon rows are future work).
         weapon_id = getattr(u, "weapon_id", "")
@@ -1846,8 +1856,11 @@ def process_sprays(gmap, units, queue, events=None, effects=None):
             u.spray_target = None
             u.spray_aim_angle = None
             continue
-        if not composed_flags(u).can_act:
-            # Interruption: stop NOW, consume the order, never resume.
+        if (not composed_flags(u).can_act
+                or not verb_gates.can_fire(u, None, at_tick_start=False)):
+            # Interruption: stop NOW, consume the order, never resume. A
+            # throw's wind-up interrupts as a stun does (183-no-fire-windup:
+            # no firing while throwing; the literal read takes no tick).
             order = getattr(u, "spray_order", None)
             if order is not None and order in u.orders:
                 u.orders.remove(order)

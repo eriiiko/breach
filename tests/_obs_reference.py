@@ -446,8 +446,8 @@ def entry_list(sim, K, u, bots=None):
                 e[51] = over(m.order_until - tick, K["limit"])
         # the lane pair (spec 2.2 cols 52, 53): each owner's own lane
         cell, hw = int(CFG.bots.lane_cell), int(CFG.bots.lane_halfwidth)
-        its = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [m], team, cell, hw)
-        mine = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [u], team, cell, hw)
+        its = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [m], team, cell, hw, tick=sim.tick)
+        mine = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [u], team, cell, hw, tick=sim.tick)
         e[52] = its[cy // cell, cx // cell] == m.id
         e[53] = mine[my // cell, mx // cell] == me
         mask[i], uid[i] = 1, m.id
@@ -935,8 +935,8 @@ def full_list(sim, K, team, u, alive, bots=None):
             if m.order_until != NO_LIMIT:
                 e[51] = over(m.order_until - tick, K["limit"])
         if m.id != me:
-            its = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [m], team, cell, hw)
-            mine = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [u], team, cell, hw)
+            its = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [m], team, cell, hw, tick=sim.tick)
+            mine = tp.fire_lanes_of(sim.gmap, sim.weapons_tables, [u], team, cell, hw, tick=sim.tick)
             e[52] = its[cy // cell, cx // cell] == m.id
             e[53] = mine[my // cell, mx // cell] == me
         extra(e, m, 0)

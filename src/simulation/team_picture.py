@@ -403,7 +403,10 @@ def draw_lanes(h: int, w: int, segments, cell: int, halfwidth: int):
 def fire_lanes(sim, team: int, cell: int, halfwidth: int):
     """``team``'s fire lanes from STATE (design 4.5; read-only, no memory):
     for each living non-zombie unit of ``team`` (id order) whose
-    ``live_trigger`` is held and whose weapon row has ``range_tiles > 0``,
+    ``live_trigger`` is held, whose hands are free to fire at the coming
+    tick (``verb_gates.can_fire`` at the tick's start: a unit winding up a
+    throw draws no lane, 183-no-fire-windup) and whose weapon row has
+    ``range_tiles > 0``,
     a segment from its centre tile S along its facing (``facing_q``, the
     grid y-down) to E = S + ``range_tiles`` -- cut at the last tile before
     the first solid (or off-map) tile of a per-tile walk S -> E -- drawn
@@ -411,21 +414,25 @@ def fire_lanes(sim, team: int, cell: int, halfwidth: int):
     grid, not a line-of-fire test. The body is :func:`fire_lanes_of` over
     the sim's units (the observation hands it the team's mates, #195 1g)."""
     return fire_lanes_of(sim.gmap, sim.weapons_tables, sim.units, team,
-                         cell, halfwidth)
+                         cell, halfwidth, tick=sim.tick)
 
 
 def fire_lanes_of(gmap, weapons_tables, members, team: int, cell: int,
-                  halfwidth: int):
+                  halfwidth: int, *, tick: int):
     """:func:`fire_lanes` over an explicit unit list ``members`` (every
     unit of the team that may own a lane must be in it; the observation
-    hands it the team's mates, or one mate for its own lane)."""
+    hands it the team's mates, or one mate for its own lane). ``tick`` is
+    the coming tick (the sim's ``tick`` at the read), for the trigger's
+    gate."""
+    from simulation import verb_gates
     solid = gmap.solid
     h, w = solid.shape
     rows = weapons_tables.weapons.by_name
     segments = []
     for u in sorted(members, key=lambda u: u.id):
         if (u.team != team or not u.alive or u.is_zombie
-                or not getattr(u, "live_trigger", False)):
+                or not getattr(u, "live_trigger", False)
+                or not verb_gates.can_fire(u, tick, at_tick_start=True)):
             continue
         row = rows.get(getattr(u, "weapon_id", "") or "")
         rng = int(getattr(row, "range_tiles", 0) or 0) if row else 0

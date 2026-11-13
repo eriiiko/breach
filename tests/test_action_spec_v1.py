@@ -907,7 +907,8 @@ def test_a_recorded_v1_match_replays(tmp_path):
         r.observe(out)
     assert res["ended"]
     rec = r.last_recording
-    assert match_replay.FORMAT_VERSION == 8
+    # v9 since 183-no-fire-windup (a game rule, not the v1 spec's doing)
+    assert match_replay.FORMAT_VERSION == 9
     kinds = {k for v in rec.intents.values() for k, _ in v}
     assert "set_aim" in kinds and len(rec.checkpoints) > 3
     o = run_match(lv, replay=rec)

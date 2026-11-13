@@ -703,7 +703,8 @@ class TeamKnowledge:
             cell, hw = self.lane_dials
             self._lanes = fire_lanes_of(
                 self.world.gmap, self.world.weapons_tables,
-                list(self.mates.values()), self.team, cell, hw)
+                list(self.mates.values()), self.team, cell, hw,
+                tick=self.world.tick)
         return self._lanes
 
     def lane_of(self, uid: int):
@@ -719,7 +720,8 @@ class TeamKnowledge:
                                f"team {self.team}: its lane is out of scope")
             cell, hw = self.lane_dials
             grid = fire_lanes_of(self.world.gmap, self.world.weapons_tables,
-                                 [m], self.team, cell, hw)
+                                 [m], self.team, cell, hw,
+                                 tick=self.world.tick)
             self._lane_of[uid] = grid
         return grid
 
@@ -1844,7 +1846,7 @@ class FullView:
             cell, hw = self.lane_dials
             grid = self._lane_of[key] = fire_lanes_of(
                 self.world.gmap, self.world.weapons_tables, [m], int(team),
-                cell, hw)
+                cell, hw, tick=self.world.tick)
         return grid
 
     @property
