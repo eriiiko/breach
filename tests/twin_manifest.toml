@@ -110,6 +110,7 @@ build = [
 "src/simulation/payloads.py" = "Class T: the payload executor (slot 2's grenade detonations), built at P7c"
 "src/simulation/philox32.py" = "Class T: the vendored Philox block -- the horde's wander as a seedless hash of (id, tick) (slot 5, #183 G9p; P7d) and every keyed draw through draws.py (#29 P3b; P7a / P4c); its device twin is philox32.h"
 "src/simulation/physics.py" = "Class T: apply_explosion's wall damage (slot 2's detonations, through the payload executor), built at P7c"
+"src/simulation/poison.py" = "Class T: the poison law (#29 PX: dosed by the gas[poison] row and run in slot 9c3; a per-unit law with no order dependence), its device twin at the residency arc's P6.2"
 "src/simulation/rng_salts.py" = "Class T: the one Philox salt enum (#29 P3b), constants the device twins of draws.py / the wander read"
 "src/simulation/room_graph.py" = "setup only on the corpus: the room graph's host reads (#195 1b; place_at, 1f), imported by the bots for the commander; never called in the tick"
 "src/simulation/ruleset.py" = "Class T: MatchRules (the done kernel, P8b)"

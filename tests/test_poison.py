@@ -477,6 +477,27 @@ def test_the_conductor_keeps_hurting_after_the_cloud_is_gone():
     assert m.current_hp < hp
 
 
+def test_the_panel_shows_the_poison_while_it_is_held():
+    """Property (UI split): the side panel carries a poison line for the
+    selected unit exactly while it holds poison -- its blood level and the
+    hit points still to come (``(x0 + x1) x H``) -- as data; none for a
+    clean unit. Breaks if the line is computed in the draw, shown for a
+    clean unit, or the "to come" stops counting the depot."""
+    from ui.model import panel_state_lines, poison_text
+    sim = Simulation(_level(), seed=5, breach_physics=bp,
+                     enable_recorder=False)
+    m = Unit("M", x=8, y=8, team=0)
+    sim.add_unit(m)
+    texts = [ln.text for ln in panel_state_lines(sim, m)]
+    assert poison_text(m) is None
+    assert not [t for t in texts if t.startswith("Poison")]
+    poison.dose(m, 2 * ONE, -1)
+    assert poison_text(m) == "Poison: blood 0.00 u   to come 20.0 HP"
+    poison.tick([m], 0, None)
+    texts = [ln.text for ln in panel_state_lines(sim, m)]
+    assert any(t.startswith("Poison: blood 0.02 u") for t in texts), texts
+
+
 # ---------------------------------------------------------------------------
 # The scan: one writer, one emitter
 # ---------------------------------------------------------------------------
