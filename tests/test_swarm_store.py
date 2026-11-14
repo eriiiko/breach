@@ -58,7 +58,7 @@ def _snapshot(g, sp: str):
     cols = {c.name: swarm.swarm_column(g, sp, c.name).copy()
             for c in swarm.ROSTER}
     return (cols, dict(g.swarm_host_dirty), g.swarm_next_unit_id.copy(),
-            int(getattr(g, swarm.high_water_attr(sp))[0]))
+            int(getattr(g, swarm.high_water_attr(sp))[()]))
 
 
 def _assert_unchanged(before, after):
@@ -77,28 +77,30 @@ def _assert_unchanged(before, after):
 # ---------------------------------------------------------------------------
 
 def test_store_arrays_are_resident_and_start_empty():
-    """Every ROSTER column and each per-env scalar exists on GameMap with
-    shape (N_ENV, max_units) / (N_ENV,), the roster dtype, C-contiguous and
+    """Every ROSTER column and each per-map counter exists on GameMap with
+    shape (max_units,) / () -- PER MAP, no batch axis of its own (the P6
+    ruling: ResidentBatch supplies N) -- the roster dtype, C-contiguous and
     little-endian, starts in the empty form, and is born through residency
     (GameMap._RESIDENT_FIELD_NAMES). gmap.swarm_host_dirty has a key per
     species, all False on a fresh map, and is not itself resident.
 
-    Must break if a column is mirror-only, has the wrong dtype, or the
-    dirty flag becomes a synced array."""
+    Must break if a column is mirror-only, has the wrong dtype, grows a
+    leading env axis (a second N), or the dirty flag becomes a synced
+    array."""
     g = GameMap(_mini_level())
 
     for sp in swarm.SWARM_SPECIES:
         row = g.swarm_species.row(sp)
         hw_attr = swarm.high_water_attr(sp)
         hw_arr = getattr(g, hw_attr)
-        assert hw_arr.shape == (swarm.N_ENV,)
+        assert hw_arr.shape == ()
         assert hw_arr.dtype == np.int32
         assert np.all(hw_arr == 0)
         assert hw_attr in GameMap._RESIDENT_FIELD_NAMES
 
         for col in swarm.ROSTER:
             arr = swarm.swarm_column(g, sp, col.name)
-            assert arr.shape == (swarm.N_ENV, row.max_units)
+            assert arr.shape == (row.max_units,)
             assert arr.dtype == col.dtype
             assert arr.flags["C_CONTIGUOUS"]
             assert arr.dtype.byteorder in ("=", "<", "|"), (
@@ -107,7 +109,7 @@ def test_store_arrays_are_resident_and_start_empty():
             assert swarm.store_attr(sp, col.name) in GameMap._RESIDENT_FIELD_NAMES
 
     nid_arr = g.swarm_next_unit_id
-    assert nid_arr.shape == (swarm.N_ENV,)
+    assert nid_arr.shape == ()
     assert nid_arr.dtype == np.int32
     assert np.all(nid_arr == swarm.FIRST_UNIT_ID)
     assert swarm.NEXT_UNIT_ID_ATTR in GameMap._RESIDENT_FIELD_NAMES
@@ -134,7 +136,7 @@ def test_spawn_takes_lowest_free_slots_in_request_order():
 
     su.reclaim(sp, np.array([1, 3]))
     free_before = sorted(np.flatnonzero(
-        su.column(sp, "valid")[0] == 0).tolist())
+        su.column(sp, "valid") == 0).tolist())
     slots2 = su.spawn(sp, [0, 0, 0], [0, 0, 0], [0, 0, 0])
     assert list(slots2) == free_before[:3]
 
@@ -206,14 +208,14 @@ def test_lifecycle_matches_a_reference_model_and_invariants_hold(monkeypatch):
         assert hw == expect_hw
         assert hw >= prev_hw, "high_water decreased"
         prev_hw = hw
-        assert int(g.swarm_next_unit_id[0]) == next_id
+        assert int(g.swarm_next_unit_id[()]) == next_id
         assert next_id == swarm.FIRST_UNIT_ID + total_spawned
 
         assert swarm.check_invariants(g) == []
 
     # Final cross-check: the live store matches the reference model exactly.
-    valid = su.column(sp, "valid")[0]
-    uid_col = su.column(sp, "unit_id")[0]
+    valid = su.column(sp, "valid")
+    uid_col = su.column(sp, "unit_id")
     live_slots_actual = set(np.flatnonzero(valid == 1).tolist())
     assert live_slots_actual == set(slot_to_uid)
     for s, uid in slot_to_uid.items():
@@ -239,10 +241,10 @@ def test_reclaim_writes_the_all_zero_empty_slot_form():
     su.reclaim(sp, np.array([s]))
 
     for col in swarm.ROSTER:
-        arr = su.column(sp, col.name)[0]
+        arr = su.column(sp, col.name)
         assert int(arr[s]) == 0, f"column '{col.name}' not zeroed by reclaim"
         assert int(arr[s]) == int(arr[never_spawned_slot])
-    assert int(su.column(sp, "ai_state")[0, s]) == swarm.AI_DEAD
+    assert int(su.column(sp, "ai_state")[s]) == swarm.AI_DEAD
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +252,8 @@ def test_reclaim_writes_the_all_zero_empty_slot_form():
 # ---------------------------------------------------------------------------
 
 def test_atomic_refusal_and_bad_inputs(monkeypatch):
-    """Overfilling raises SwarmFull; bad inputs raise (out-of-grid pos, bad
-    env, unknown species, reclaim of an empty/duplicate/>=hw slot). R7:
+    """Overfilling raises SwarmFull; bad inputs raise (out-of-grid pos, an
+    env argument -- none exists, TypeError --, unknown species, reclaim of an empty/duplicate/>=hw slot). R7:
     with next_unit_id == INT32_MAX - 1, spawning 1 succeeds and the NEXT
     spawn of 1 raises; faction of 2**31 / -2**31-1 raises; a heading
     outside int32 raises; bool/float/uint64 arrays raise TypeError. In
@@ -279,9 +281,9 @@ def test_atomic_refusal_and_bad_inputs(monkeypatch):
     expect_no_write(ValueError, lambda: su.spawn(sp, [w_bound], [0], [0]))
     expect_no_write(ValueError, lambda: su.spawn(sp, [-1], [0], [0]))
 
-    # bad env.
-    expect_no_write(ValueError, lambda: su.spawn(sp, [0], [0], [0], env=1))
-    expect_no_write(ValueError, lambda: su.spawn(sp, [0], [0], [0], env=-1))
+    # No env argument: the facade writes the one map it holds (P6 ruling --
+    # the batch axis is ResidentBatch's, never a second N).
+    expect_no_write(TypeError, lambda: su.spawn(sp, [0], [0], [0], env=0))
 
     # unknown species.
     expect_no_write(ValueError, lambda: su.spawn("no_such_species", [0], [0], [0]))
@@ -314,10 +316,10 @@ def test_atomic_refusal_and_bad_inputs(monkeypatch):
 
     # R7: the id guard is `next_unit_id + k <= INT32_MAX`, checked before
     # any write -- spawning at the boundary succeeds once, then refuses.
-    g.swarm_next_unit_id[0] = swarm.INT32_MAX - 1
+    g.swarm_next_unit_id[()] = swarm.INT32_MAX - 1
     boundary_slots = su.spawn(sp, [0], [0], [0])
-    assert int(su.column(sp, "unit_id")[0, boundary_slots[0]]) == swarm.INT32_MAX - 1
-    assert int(g.swarm_next_unit_id[0]) == swarm.INT32_MAX
+    assert int(su.column(sp, "unit_id")[boundary_slots[0]]) == swarm.INT32_MAX - 1
+    assert int(g.swarm_next_unit_id[()]) == swarm.INT32_MAX
     expect_no_write(ValueError, lambda: su.spawn(sp, [0], [0], [0]))
 
 
@@ -359,7 +361,7 @@ def test_heading_is_canonical_and_wrap_is_idempotent():
     su = swarm.SwarmUnits(g)
     sp = swarm.SWARM_SPECIES[0]
     slots = su.spawn(sp, [0] * len(inputs), [0] * len(inputs), inputs)
-    stored = su.column(sp, "heading")[0]
+    stored = su.column(sp, "heading")
     for slot, h in zip(slots, inputs):
         assert int(stored[slot]) == swarm_fixed.wrap_heading_q16(h)
 
@@ -432,19 +434,19 @@ def test_check_invariants_is_not_vacuous(monkeypatch):
     assert swarm.check_invariants(g) == [], "the uncorrupted fixture must be clean"
 
     def col(gmap, name):
-        return swarm.swarm_column(gmap, sp, name)[0]
+        return swarm.swarm_column(gmap, sp, name)
 
     # next_unit_id != FIRST with every high_water == 0.
     g2 = fresh_store()
     for c in swarm.ROSTER:
         col(g2, c.name)[:] = 0
-    getattr(g2, swarm.high_water_attr(sp))[0] = 0
-    g2.swarm_next_unit_id[0] = 5
+    getattr(g2, swarm.high_water_attr(sp))[()] = 0
+    g2.swarm_next_unit_id[()] = 5
     assert swarm.check_invariants(g2) != []
 
     # next_unit_id == FIRST with high_water > 0.
     g3 = fresh_store()
-    g3.swarm_next_unit_id[0] = swarm.FIRST_UNIT_ID
+    g3.swarm_next_unit_id[()] = swarm.FIRST_UNIT_ID
     assert swarm.check_invariants(g3) != []
 
     # a duplicate live unit_id.
@@ -454,7 +456,7 @@ def test_check_invariants_is_not_vacuous(monkeypatch):
 
     # a live unit_id >= next_unit_id.
     g5 = fresh_store()
-    col(g5, "unit_id")[0] = int(g5.swarm_next_unit_id[0]) + 5
+    col(g5, "unit_id")[0] = int(g5.swarm_next_unit_id[()]) + 5
     assert swarm.check_invariants(g5) != []
 
     # a non-zero freed/never-spawned slot.
@@ -484,7 +486,7 @@ def test_check_invariants_is_not_vacuous(monkeypatch):
 
     # high_water > capacity (max_units).
     g11 = fresh_store()
-    getattr(g11, swarm.high_water_attr(sp))[0] = 999
+    getattr(g11, swarm.high_water_attr(sp))[()] = 999
     assert swarm.check_invariants(g11) != []
 
 

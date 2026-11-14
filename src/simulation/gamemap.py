@@ -271,6 +271,9 @@ class GameMap:
     # _RESIDENT_SYNCED puts them in the DEFAULT to_host() set: a defaulted
     # to_host() would overwrite host writes with stale device data (the resident
     # tick already forbids a defaulted to_host(), physics_runner._step_resident).
+    # The arrays are PER MAP (a column (max_units,), the counters 0-d); a
+    # ResidentBatch stacks them to (N, max_units) / (N,) like every resident
+    # field -- the batch axis is ResidentBatch's (P6 ruling, 2026-11-14).
     _RESIDENT_SYNCED = _RESIDENT_SYNCED + SWARM_RESIDENT_NAMES
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 

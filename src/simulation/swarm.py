@@ -2,7 +2,8 @@
 
 Executes ``docs/architecture/engine/17_swarm_units.md`` (BLESSED) §2, §6, §7
 and §9b's "shared foundation" row. Per-species SoA arrays on GameMap, born
-``(N_ENV, max_units)`` through the residency path, with a lifecycle facade
+per map (a column ``(max_units,)``, the counters 0-d) through the residency
+path, with a lifecycle facade
 (:class:`SwarmUnits`), a strict species table re-bound through one explicit
 reload seam (:func:`reload_species`), and a presence-gated ``SWARM_SECT_V1``
 section the digest hashes and the recorder mirrors raw.
@@ -36,10 +37,10 @@ from simulation import swarm_fixed
 # Constants
 # ---------------------------------------------------------------------------
 
-# The RL-batch §A rule-1 batch axis, and the codebase's FIRST batch-axis
-# constant (no other N exists in the code). The one N until the RL arc's B1
-# turns it into a construction parameter -- never a second N.
-N_ENV = 1
+# NO batch axis here (Erik's P6 ruling, docs/unit_design_2026-11-14.md §6.3,
+# 2026-11-14): the store declares PER-MAP arrays and the batch axis is
+# ResidentBatch's (it stacks every GameMap._RESIDENT_FIELD_NAMES entry to
+# (N,) + shape); a farm env is one GameMap. Never a second N.
 
 # The species set is CLOSED IN CODE and APPEND-ONLY (a species cannot exist
 # without a kernel, which is code, so the SET lives in code and the NUMBERS
@@ -89,7 +90,7 @@ _SPECIES_NAME_RE = re.compile(r"^[a-z][a-z0-9]*\Z")
 _COLUMN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*\Z")
 
 # A column named "high_water" would alias `swarm_<species>_high_water` (the
-# per-env scalar) -- reserved so `check_store_names` can catch it.
+# per-map 0-d counter) -- reserved so `check_store_names` can catch it.
 RESERVED_COLUMNS = ("high_water",)
 
 NEXT_UNIT_ID_ATTR = "swarm_next_unit_id"
@@ -171,7 +172,7 @@ SWARM_RESIDENT_NAMES = tuple(
 # different capacities. Deferred to P3/P6: speed/radius/thresholds/food dials.
 SPECIES_FIELDS = (
     Field("max_units", KIND_INT, minimum=1, maximum=1 << 20,
-          doc="slots per env (fork 2b); LOAD-TIME only"),
+          doc="slots per map (fork 2b); LOAD-TIME only"),
     Field("hp_max", KIND_REAL_Q16, minimum=2 ** -16, maximum=32767.0,
           doc="hit points at spawn; HOT (applies from the next tick)"),
 )
@@ -328,21 +329,22 @@ def allocate_swarm_store(gmap, cfg=CFG) -> None:
     1. ``gmap.swarm_species = SwarmSpeciesTable.from_config(cfg)`` -- the
        load-time validation (raises on error), the same role as
        ``self.materials`` / ``self.gases``.
-    2. ``gmap.swarm_next_unit_id`` -- shape (N_ENV,) int32, FIRST_UNIT_ID.
-    3. Per species: ``swarm_<sp>_high_water`` (N_ENV,) int32, and every
-       ROSTER column at (N_ENV, max_units), the roster dtype.
+    2. ``gmap.swarm_next_unit_id`` -- a 0-d int32 array, FIRST_UNIT_ID.
+    3. Per species: ``swarm_<sp>_high_water`` a 0-d int32 array, and every
+       ROSTER column at (max_units,), the roster dtype. Per map: a batch
+       stacks them to (N,) / (N, max_units) (ResidentBatch).
     4. ``gmap.swarm_host_dirty`` -- a plain dict, NOT resident/digested.
 
     Allocation draws no RNG. Runs on every level and every reset."""
     gmap.swarm_species = SwarmSpeciesTable.from_config(cfg)
-    gmap.swarm_next_unit_id = np.full((N_ENV,), FIRST_UNIT_ID, dtype=np.int32)
+    gmap.swarm_next_unit_id = np.array(FIRST_UNIT_ID, dtype=np.int32)
     for sp in SWARM_SPECIES:
         row = gmap.swarm_species.row(sp)
         setattr(gmap, high_water_attr(sp),
-                np.zeros((N_ENV,), dtype=np.int32))
+                np.zeros((), dtype=np.int32))
         for col in ROSTER:
             setattr(gmap, store_attr(sp, col.name),
-                    np.zeros((N_ENV, row.max_units), dtype=col.dtype))
+                    np.zeros((row.max_units,), dtype=col.dtype))
     gmap.swarm_host_dirty = {sp: False for sp in SWARM_SPECIES}
 
 
@@ -369,12 +371,12 @@ def swarm_column(gmap, species: str, col: str):
 
 def check_invariants(gmap) -> list:
     """Human-readable violations of the lifecycle invariants (empty ==
-    every invariant holds). Per env and species:
+    every invariant holds). Per species (the map's one store):
 
     1. ``0 <= high_water <= max_units``.
     2. ``FIRST_UNIT_ID <= next_unit_id <= INT32_MAX``, and
        ``next_unit_id == FIRST_UNIT_ID`` iff every species' ``high_water
-       == 0`` in that env.
+       == 0``.
     3. ``valid in {0, 1}`` everywhere.
     4. Every slot with ``valid == 0`` (freed or never spawned), at ANY
        index, is all-zero in every column.
@@ -382,103 +384,101 @@ def check_invariants(gmap) -> list:
        ``FIRST_UNIT_ID <= unit_id < next_unit_id``, has ``ai_state`` in
        ``{AI_RUN, AI_EAT, AI_COMA}``, and has heading in
        ``(-PI_Q16, PI_Q16]``.
-    6. Live ``unit_id``\\ s are unique across ALL species in the env (the
-       shared id space).
+    6. Live ``unit_id``\\ s are unique across ALL species (the shared id
+       space).
     """
     violations = []
     species_table = getattr(gmap, "swarm_species", None)
     if species_table is None:
         return violations
 
-    next_unit_id_arr = gmap.swarm_next_unit_id
-    for e in range(N_ENV):
-        nid = int(next_unit_id_arr[e])
-        if not (FIRST_UNIT_ID <= nid <= INT32_MAX):
+    nid = int(gmap.swarm_next_unit_id)
+    if not (FIRST_UNIT_ID <= nid <= INT32_MAX):
+        violations.append(
+            f"next_unit_id {nid} outside "
+            f"[{FIRST_UNIT_ID}, {INT32_MAX}]")
+
+    hw_by_species = {}
+    for sp in SWARM_SPECIES:
+        hw_by_species[sp] = int(getattr(gmap, high_water_attr(sp)))
+    any_spawned = any(hw > 0 for hw in hw_by_species.values())
+    if (nid == FIRST_UNIT_ID) == any_spawned:
+        violations.append(
+            f"next_unit_id == FIRST_UNIT_ID must hold iff "
+            f"every species' high_water == 0 (nid={nid}, "
+            f"high_water={hw_by_species})")
+
+    seen_ids: dict = {}
+    for sp in SWARM_SPECIES:
+        row = species_table.row(sp)
+        hw = hw_by_species[sp]
+        if not (0 <= hw <= row.max_units):
             violations.append(
-                f"env {e}: next_unit_id {nid} outside "
-                f"[{FIRST_UNIT_ID}, {INT32_MAX}]")
+                f"species {sp}: high_water {hw} outside "
+                f"[0, {row.max_units}]")
 
-        hw_by_species = {}
-        for sp in SWARM_SPECIES:
-            hw_by_species[sp] = int(getattr(gmap, high_water_attr(sp))[e])
-        any_spawned = any(hw > 0 for hw in hw_by_species.values())
-        if (nid == FIRST_UNIT_ID) == any_spawned:
+        valid_arr = swarm_column(gmap, sp, "valid")
+        bad_valid = ~np.isin(valid_arr, (0, 1))
+        if bad_valid.any():
             violations.append(
-                f"env {e}: next_unit_id == FIRST_UNIT_ID must hold iff "
-                f"every species' high_water == 0 (nid={nid}, "
-                f"high_water={hw_by_species})")
+                f"species {sp}: 'valid' has "
+                f"{int(bad_valid.sum())} value(s) outside {{0,1}}")
 
-        seen_ids: dict = {}
-        for sp in SWARM_SPECIES:
-            row = species_table.row(sp)
-            hw = hw_by_species[sp]
-            if not (0 <= hw <= row.max_units):
+        is_valid = valid_arr == 1
+        empty_mask = ~is_valid
+        if empty_mask.any():
+            for c in ROSTER:
+                col_arr = swarm_column(gmap, sp, c.name)
+                nz = empty_mask & (col_arr != 0)
+                if nz.any():
+                    bad = int(np.flatnonzero(nz)[0])
+                    violations.append(
+                        f"species {sp}: column '{c.name}' "
+                        f"nonzero at empty slot {bad} "
+                        f"({int(nz.sum())} such slot(s))")
+
+        live_idx = np.flatnonzero(is_valid)
+        if live_idx.size:
+            out_of_hw = live_idx[live_idx >= hw]
+            if out_of_hw.size:
                 violations.append(
-                    f"env {e} species {sp}: high_water {hw} outside "
-                    f"[0, {row.max_units}]")
+                    f"species {sp}: {out_of_hw.size} live "
+                    f"slot(s) >= high_water {hw} (e.g. "
+                    f"{int(out_of_hw[0])})")
 
-            valid_arr = swarm_column(gmap, sp, "valid")[e]
-            bad_valid = ~np.isin(valid_arr, (0, 1))
-            if bad_valid.any():
+            uid_arr = swarm_column(gmap, sp, "unit_id")
+            live_uid = uid_arr[live_idx].astype(np.int64)
+            bad_uid = (live_uid < FIRST_UNIT_ID) | (live_uid >= nid)
+            if bad_uid.any():
                 violations.append(
-                    f"env {e} species {sp}: 'valid' has "
-                    f"{int(bad_valid.sum())} value(s) outside {{0,1}}")
+                    f"species {sp}: {int(bad_uid.sum())} live "
+                    f"unit_id(s) outside [{FIRST_UNIT_ID}, {nid})")
 
-            is_valid = valid_arr == 1
-            empty_mask = ~is_valid
-            if empty_mask.any():
-                for c in ROSTER:
-                    col_arr = swarm_column(gmap, sp, c.name)[e]
-                    nz = empty_mask & (col_arr != 0)
-                    if nz.any():
-                        bad = int(np.flatnonzero(nz)[0])
-                        violations.append(
-                            f"env {e} species {sp}: column '{c.name}' "
-                            f"nonzero at empty slot {bad} "
-                            f"({int(nz.sum())} such slot(s))")
+            ai_arr = swarm_column(gmap, sp, "ai_state")
+            bad_state = ~np.isin(ai_arr[live_idx], (AI_RUN, AI_EAT, AI_COMA))
+            if bad_state.any():
+                violations.append(
+                    f"species {sp}: {int(bad_state.sum())} live "
+                    f"slot(s) with ai_state outside "
+                    f"{{RUN, EAT, COMA}}")
 
-            live_idx = np.flatnonzero(is_valid)
-            if live_idx.size:
-                out_of_hw = live_idx[live_idx >= hw]
-                if out_of_hw.size:
+            heading_arr = swarm_column(gmap, sp, "heading")
+            live_heading = heading_arr[live_idx].astype(np.int64)
+            bad_heading = ((live_heading <= -swarm_fixed.PI_Q16)
+                           | (live_heading > swarm_fixed.PI_Q16))
+            if bad_heading.any():
+                violations.append(
+                    f"species {sp}: {int(bad_heading.sum())} "
+                    f"live heading(s) outside "
+                    f"(-{swarm_fixed.PI_Q16}, {swarm_fixed.PI_Q16}]")
+
+            for uid in live_uid.tolist():
+                if uid in seen_ids:
                     violations.append(
-                        f"env {e} species {sp}: {out_of_hw.size} live "
-                        f"slot(s) >= high_water {hw} (e.g. "
-                        f"{int(out_of_hw[0])})")
-
-                uid_arr = swarm_column(gmap, sp, "unit_id")[e]
-                live_uid = uid_arr[live_idx].astype(np.int64)
-                bad_uid = (live_uid < FIRST_UNIT_ID) | (live_uid >= nid)
-                if bad_uid.any():
-                    violations.append(
-                        f"env {e} species {sp}: {int(bad_uid.sum())} live "
-                        f"unit_id(s) outside [{FIRST_UNIT_ID}, {nid})")
-
-                ai_arr = swarm_column(gmap, sp, "ai_state")[e]
-                bad_state = ~np.isin(ai_arr[live_idx], (AI_RUN, AI_EAT, AI_COMA))
-                if bad_state.any():
-                    violations.append(
-                        f"env {e} species {sp}: {int(bad_state.sum())} live "
-                        f"slot(s) with ai_state outside "
-                        f"{{RUN, EAT, COMA}}")
-
-                heading_arr = swarm_column(gmap, sp, "heading")[e]
-                live_heading = heading_arr[live_idx].astype(np.int64)
-                bad_heading = ((live_heading <= -swarm_fixed.PI_Q16)
-                               | (live_heading > swarm_fixed.PI_Q16))
-                if bad_heading.any():
-                    violations.append(
-                        f"env {e} species {sp}: {int(bad_heading.sum())} "
-                        f"live heading(s) outside "
-                        f"(-{swarm_fixed.PI_Q16}, {swarm_fixed.PI_Q16}]")
-
-                for uid in live_uid.tolist():
-                    if uid in seen_ids:
-                        violations.append(
-                            f"env {e}: duplicate live unit_id {uid} "
-                            f"(species {seen_ids[uid]!r} and {sp!r})")
-                    else:
-                        seen_ids[uid] = sp
+                        f"duplicate live unit_id {uid} "
+                        f"(species {seen_ids[uid]!r} and {sp!r})")
+                else:
+                    seen_ids[uid] = sp
     return violations
 
 
@@ -491,7 +491,7 @@ SWARM_SECT_PREAMBLE = b"SWARM_SECT_V1\n"
 
 
 def swarm_present(gmap) -> bool:
-    """"Present" (§5.1): at least one spawn ever succeeded this run (env 0).
+    """"Present" (§5.1): at least one spawn ever succeeded this run.
 
     Monotone within a run (``high_water`` never decreases): a run whose
     larvae have all died still hashes its section."""
@@ -500,19 +500,15 @@ def swarm_present(gmap) -> bool:
         return False
     for sp in SWARM_SPECIES:
         hw_arr = getattr(gmap, high_water_attr(sp), None)
-        if hw_arr is not None and int(hw_arr[0]) > 0:
+        if hw_arr is not None and int(hw_arr) > 0:
             return True
     return False
 
 
 def swarm_carrier(gmap) -> dict:
-    """The ``__swarm__`` snapshot value -- copies, never views, of env 0
-    only (R6: multi-env is the RL arc's B1 decision, kept out of the bytes
-    on purpose so "env k with seed s == an N=1 run with seed s" stays
-    reachable)."""
-    if N_ENV != 1:
-        raise NotImplementedError(
-            "multi-env swarm section is the RL arc's B1 decision")
+    """The ``__swarm__`` snapshot value -- copies, never views, of the ONE
+    map it is given. A batch env is its own GameMap, so "env k with seed s
+    == an N=1 run with seed s" holds by construction (R6)."""
 
     species_table = getattr(gmap, "swarm_species", None)
     if species_table is None:
@@ -520,16 +516,16 @@ def swarm_carrier(gmap) -> dict:
         return {"present": False, "next_unit_id": FIRST_UNIT_ID,
                 "blocks": {}, "species_hash": ""}
 
-    next_unit_id = int(gmap.swarm_next_unit_id[0])
+    next_unit_id = int(gmap.swarm_next_unit_id)
     blocks = {}
     for sp in SWARM_SPECIES:
-        hw = int(getattr(gmap, high_water_attr(sp))[0])
+        hw = int(getattr(gmap, high_water_attr(sp)))
         if hw <= 0:
             continue   # omitted: keeps "adding a species never bumps
                        # another species' digest" true when it never spawns
         columns = {}
         for c in ROSTER:
-            columns[c.name] = swarm_column(gmap, sp, c.name)[0, :hw].copy()
+            columns[c.name] = swarm_column(gmap, sp, c.name)[:hw].copy()
         blocks[sp] = {"high_water": hw, "columns": columns}
 
     return {
@@ -703,7 +699,7 @@ class SwarmUnits:
         self.gmap = gmap
 
     def spawn(self, species: str, pos_x_q, pos_y_q, heading_q, *,
-              faction=FACTION_NONE, env: int = 0):
+              faction=FACTION_NONE):
         """The k-th request takes the k-th lowest free slot (§2.2).
 
         Draws NO randomness -- callers own randomness and pass explicit Q16
@@ -713,15 +709,10 @@ class SwarmUnits:
         """
         gmap = self.gmap
 
-        # 1. species / env.
+        # 1. species.
         if species not in SWARM_SPECIES:
             raise ValueError(
                 f"unknown swarm species {species!r} (known: {SWARM_SPECIES})")
-        if isinstance(env, bool) or not isinstance(env, (int, np.integer)):
-            raise ValueError(f"spawn: env must be a plain int, got {env!r}")
-        env = int(env)
-        if not (0 <= env < N_ENV):
-            raise ValueError(f"spawn: env {env} outside [0, {N_ENV})")
 
         # 2. dtype/shape ingress -> int64 arrays, then k = the common length.
         pos_x64 = _ingress_int64("pos_x_q", pos_x_q)
@@ -754,19 +745,19 @@ class SwarmUnits:
             raise ValueError("spawn: faction outside the int32 range")
 
         next_unit_id_arr = gmap.swarm_next_unit_id
-        nid0 = int(next_unit_id_arr[env])
+        nid0 = int(next_unit_id_arr)
         if nid0 + k > INT32_MAX:
             raise ValueError(
                 f"spawn: next_unit_id {nid0} + {k} would exceed INT32_MAX "
                 f"({INT32_MAX})")
 
         # 4. capacity -- atomic refusal, never a partial fill.
-        valid_col = swarm_column(gmap, species, "valid")[env]
+        valid_col = swarm_column(gmap, species, "valid")
         free_slots = np.flatnonzero(valid_col == 0)
         if k > free_slots.size:
             raise SwarmFull(
                 f"spawn: {k} requested but only {free_slots.size} free "
-                f"slot(s) in species {species!r} env {env}")
+                f"slot(s) in species {species!r}")
         slots = free_slots[:k]   # already ascending (flatnonzero order)
 
         # --- writes: every check above passed, so nothing below may fail.
@@ -774,24 +765,24 @@ class SwarmUnits:
         row = gmap.swarm_species.row(species)
         wrapped_heading = swarm_fixed.wrap_heading_q16(heading64)
 
-        swarm_column(gmap, species, "pos_x")[env, slots] = pos_x64
-        swarm_column(gmap, species, "pos_y")[env, slots] = pos_y64
-        swarm_column(gmap, species, "heading")[env, slots] = wrapped_heading
-        swarm_column(gmap, species, "hp")[env, slots] = row.hp_max_q
-        swarm_column(gmap, species, "ai_state")[env, slots] = AI_RUN
-        swarm_column(gmap, species, "dist_walked")[env, slots] = 0
-        swarm_column(gmap, species, "unit_id")[env, slots] = ids
-        swarm_column(gmap, species, "faction")[env, slots] = faction64
-        swarm_column(gmap, species, "valid")[env, slots] = 1
+        swarm_column(gmap, species, "pos_x")[slots] = pos_x64
+        swarm_column(gmap, species, "pos_y")[slots] = pos_y64
+        swarm_column(gmap, species, "heading")[slots] = wrapped_heading
+        swarm_column(gmap, species, "hp")[slots] = row.hp_max_q
+        swarm_column(gmap, species, "ai_state")[slots] = AI_RUN
+        swarm_column(gmap, species, "dist_walked")[slots] = 0
+        swarm_column(gmap, species, "unit_id")[slots] = ids
+        swarm_column(gmap, species, "faction")[slots] = faction64
+        swarm_column(gmap, species, "valid")[slots] = 1
 
-        next_unit_id_arr[env] = nid0 + k
+        next_unit_id_arr[...] = nid0 + k   # in place (the residency guard)
         hw_arr = getattr(gmap, high_water_attr(species))
-        hw_arr[env] = max(int(hw_arr[env]), int(slots.max()) + 1)
+        hw_arr[...] = max(int(hw_arr), int(slots.max()) + 1)
         gmap.swarm_host_dirty[species] = True
 
         return slots.astype(np.int64)
 
-    def reclaim(self, species: str, slots, *, env: int = 0):
+    def reclaim(self, species: str, slots):
         """Write the empty-slot form (every column zero) at each slot
         (§2.5). ``high_water``/``next_unit_id`` are unchanged. Validation
         (atomic, before any write): ``slots`` must be an integer array-like
@@ -802,11 +793,6 @@ class SwarmUnits:
         if species not in SWARM_SPECIES:
             raise ValueError(
                 f"unknown swarm species {species!r} (known: {SWARM_SPECIES})")
-        if isinstance(env, bool) or not isinstance(env, (int, np.integer)):
-            raise ValueError(f"reclaim: env must be a plain int, got {env!r}")
-        env = int(env)
-        if not (0 <= env < N_ENV):
-            raise ValueError(f"reclaim: env {env} outside [0, {N_ENV})")
 
         arr = np.asarray(slots)
         if arr.dtype == np.bool_ or arr.dtype.kind not in ("i", "u"):
@@ -817,14 +803,14 @@ class SwarmUnits:
         if slots64.size == 0:
             return
 
-        hw = int(getattr(gmap, high_water_attr(species))[env])
+        hw = int(getattr(gmap, high_water_attr(species)))
         if np.unique(slots64).size != slots64.size:
             raise ValueError(
                 f"reclaim: duplicate slot indices {slots64.tolist()}")
         if np.any((slots64 < 0) | (slots64 >= hw)):
             raise ValueError(
                 f"reclaim: slot index outside [0, high_water={hw})")
-        valid_col = swarm_column(gmap, species, "valid")[env]
+        valid_col = swarm_column(gmap, species, "valid")
         empty = valid_col[slots64] == 0
         if empty.any():
             raise ValueError(
@@ -833,15 +819,15 @@ class SwarmUnits:
                 f"caller bug")
 
         for c in ROSTER:
-            swarm_column(gmap, species, c.name)[env, slots64] = 0
+            swarm_column(gmap, species, c.name)[slots64] = 0
         gmap.swarm_host_dirty[species] = True
 
-    def live_count(self, species: str, env: int = 0) -> int:
-        valid = swarm_column(self.gmap, species, "valid")[env]
+    def live_count(self, species: str) -> int:
+        valid = swarm_column(self.gmap, species, "valid")
         return int(valid.sum())
 
-    def high_water(self, species: str, env: int = 0) -> int:
-        return int(getattr(self.gmap, high_water_attr(species))[env])
+    def high_water(self, species: str) -> int:
+        return int(getattr(self.gmap, high_water_attr(species)))
 
     def present(self) -> bool:
         return swarm_present(self.gmap)

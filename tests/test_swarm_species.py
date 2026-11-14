@@ -179,29 +179,29 @@ def test_hot_reload_through_the_seam_only(monkeypatch):
                      enable_recorder=False)
 
     slots_a = sim.swarm.spawn(sp, [0], [0], [0])
-    hp_a = int(sim.swarm.column(sp, "hp")[0, slots_a[0]])
+    hp_a = int(sim.swarm.column(sp, "hp")[slots_a[0]])
 
     old_hash = sim.gmap.swarm_species.hash
     monkeypatch.setattr(CFG, "swarm", _full_valid_cfg(hp_max=2.0))
 
     # spawn B WITHOUT calling the seam -- must still see the OLD hp.
     slots_b = sim.swarm.spawn(sp, [0], [0], [0])
-    hp_b = int(sim.swarm.column(sp, "hp")[0, slots_b[0]])
+    hp_b = int(sim.swarm.column(sp, "hp")[slots_b[0]])
     assert hp_b == hp_a, "a reader must never reload lazily"
     assert sim.gmap.swarm_species.hash == old_hash
 
-    pos_before = sim.swarm.column(sp, "pos_x")[0].copy()
-    hp_col_before = sim.swarm.column(sp, "hp")[0].copy()
+    pos_before = sim.swarm.column(sp, "pos_x").copy()
+    hp_col_before = sim.swarm.column(sp, "hp").copy()
 
     sim.on_config_reload()   # Simulation.on_config_reload() returns None
     assert sim.gmap.swarm_species.hash != old_hash, (
         "the hash must change once the reload installs the new table")
     # A reload rewrites NO array -- every existing slot's hp is untouched.
-    assert np.array_equal(sim.swarm.column(sp, "pos_x")[0], pos_before)
-    assert np.array_equal(sim.swarm.column(sp, "hp")[0], hp_col_before)
+    assert np.array_equal(sim.swarm.column(sp, "pos_x"), pos_before)
+    assert np.array_equal(sim.swarm.column(sp, "hp"), hp_col_before)
 
     slots_c = sim.swarm.spawn(sp, [0], [0], [0])
-    hp_c = int(sim.swarm.column(sp, "hp")[0, slots_c[0]])
+    hp_c = int(sim.swarm.column(sp, "hp")[slots_c[0]])
     from simulation import swarm_fixed
     assert hp_c == swarm_fixed.quantize_scalar(2.0)
     assert hp_c != hp_a
@@ -318,7 +318,7 @@ def test_rejected_reload_keeps_the_prior_table(monkeypatch, capsys):
                      enable_recorder=False)
     slots = sim.swarm.spawn(sp, [0], [0], [0])
     before_table = sim.gmap.swarm_species
-    before_hp = int(sim.swarm.column(sp, "hp")[0, slots[0]])
+    before_hp = int(sim.swarm.column(sp, "hp")[slots[0]])
 
     bad_rows = {s: _valid_row() for s in swarm.SWARM_SPECIES}
     bad_rows[sp]["hp_max"] = math.nan
@@ -333,7 +333,7 @@ def test_rejected_reload_keeps_the_prior_table(monkeypatch, capsys):
 
     assert sim.gmap.swarm_species is before_table   # same object
     assert sim.gmap.swarm_species.hash == before_table.hash
-    assert int(sim.swarm.column(sp, "hp")[0, slots[0]]) == before_hp
+    assert int(sim.swarm.column(sp, "hp")[slots[0]]) == before_hp
 
     # the underlying seam target's bool contract (§4.3): False on rejection.
     assert swarm.reload_species(sim.gmap, CFG) is False

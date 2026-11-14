@@ -241,7 +241,7 @@ def test_capacity_moves_nothing(monkeypatch):
 
     baseline = tick_digest(snap_big)
     hw = su_big.high_water(sp)
-    su_big.column(sp, "pos_x")[0, hw + 5] = 999999
+    su_big.column(sp, "pos_x")[hw + 5] = 999999
     snap_big2 = _mini_snapshot()
     snap_big2[SWARM_DIGEST_KEY] = swarm.swarm_carrier(g_big)
     assert tick_digest(snap_big2) == baseline
@@ -400,14 +400,27 @@ def test_integer_rendering_numpy_scalars_vs_python_ints_encode_identically():
 
 
 # ---------------------------------------------------------------------------
-# T11 — (R6) env-0 only
+# T11 — (R6, re-cut by the P6 ruling 2026-11-14) one map, one section
 # ---------------------------------------------------------------------------
 
-def test_multi_env_raises_instead_of_silently_folding(monkeypatch):
-    """With swarm.N_ENV monkeypatched to 2, swarm_carrier raises
-    NotImplementedError instead of encoding. Must break if the carrier or
-    encoder silently loops or folds envs (B1's decision)."""
-    g = GameMap(_mini_level())
-    monkeypatch.setattr(swarm, "N_ENV", 2)
-    with pytest.raises(NotImplementedError):
-        swarm.swarm_carrier(g)
+def test_carrier_encodes_only_the_map_it_is_given():
+    """The batch axis is ResidentBatch's (one GameMap per env), so the
+    carrier encodes exactly the map it is handed: spawning and reclaiming in
+    one map leaves another map's carrier absent and its section bytes equal
+    to an untouched map's, while the spawning map's carrier is present.
+    Must break if the store or the carrier grows a shared or batch-wide
+    state (a second N) that lets one env's swarm reach another env's bytes."""
+    g_quiet = GameMap(_mini_level())
+    g_busy = GameMap(_mini_level())
+    g_fresh = GameMap(_mini_level())
+    sp = swarm.SWARM_SPECIES[0]
+    su = swarm.SwarmUnits(g_busy)
+    slots = su.spawn(sp, [0, 1 << 16, 2 << 16], [0, 0, 0], [0, 100, -100])
+    su.reclaim(sp, slots[:1])
+
+    quiet = swarm.swarm_carrier(g_quiet)
+    fresh = swarm.swarm_carrier(g_fresh)
+    busy = swarm.swarm_carrier(g_busy)
+    assert busy["present"] and not quiet["present"]
+    assert swarm.swarm_section_bytes(quiet) == swarm.swarm_section_bytes(fresh)
+    assert swarm.swarm_section_bytes(busy) != swarm.swarm_section_bytes(quiet)

@@ -32,7 +32,7 @@ coordinating: the on-disk format is what offline tools depend on.
     Arc #63 P2 (ADDITIVE, presence-gated — a swarm-free session's .npz is
     byte-identical to the frozen schema above; engine/17 §6/§7):
         swarm_<species>_<col> (T, wmax) at the ROSTER dtype VERBATIM (no
-                             dequantize, no cast), env 0 only, wmax =
+                             dequantize, no cast), the one map, wmax =
                              min(swarm_units_cap, max recorded high_water)
         swarm_<species>_high_water (T,) int32
         swarm_next_unit_id   (T,) int32 — shared across species
@@ -123,7 +123,7 @@ class PhysicsRecorder:
 
         # arc #63 P2 (engine/17 §6/§7): swarm per-unit ring family — a
         # SEPARATE ring family from the grid `fields` rings above, allocated
-        # LAZILY at the first tick a swarm is present (env 0 only). Staying
+        # LAZILY at the first tick a swarm is present (the one map). Staying
         # None keeps a swarm-free session's dump byte-identical to pre-P2
         # (the entity/signal precedent, §7).
         self.swarm_units_cap = swarm_units_cap
@@ -298,7 +298,7 @@ class PhysicsRecorder:
 
         # arc #63 P2 (engine/17 §6/§7): the swarm per-unit ring family — a
         # SEPARATE ring family from the grid `fields` rings, allocated
-        # lazily at the first present tick, env 0 only. Values are raw, at
+        # lazily at the first present tick, the one map. Values are raw, at
         # the ROSTER dtype (no dequantize, no cast).
         if swarm is not None and swarm.get("present"):
             if self._swarm_rings is None:
