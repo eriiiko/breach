@@ -214,10 +214,10 @@ ROWS: tuple[TableRow, ...] = (
              1 << 40, "... prone"),
     # -- the turning law's class dials (the TURN hook's class values) -------
     TableRow("turn_rate_class_q16", 1,
-             lambda src: src.sim._marine_turn_rate_q16, 1, 1 << 18,
+             lambda src: src.sim._marine_turn_rate_q16, 1, 1 << 18,  # traits-class: the device tables upload the CLASS value; the kernel applies TURN through unit_lib::scaled
              "[marine] turn_rate_deg_per_s per tick, Q16 radians"),
     TableRow("turn_accel_class_q16", 1,
-             lambda src: src.sim._marine_turn_accel_q16, 1, 1 << 18,
+             lambda src: src.sim._marine_turn_accel_q16, 1, 1 << 18,  # traits-class: as above
              "[marine] turn_accel_rad_per_s2 per tick^2, Q16 radians"),
     # -- stability (the HOLD hook's class value: exchange._stability_for) ---
     TableRow("stability_zombie_q16", 1, _stability_zombie, 0, 1 << 20,
