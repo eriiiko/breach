@@ -63,7 +63,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import math
 
 import numpy as np
 
@@ -72,7 +71,7 @@ from control_source import ControlSource, quantize_stick_direction
 from pathfinding import astar
 from simulation.factions import ZOMBIE_TEAM
 from simulation.intents import FP_ONE
-from simulation.stats import effective_vitality
+from simulation import unit_traits
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
 from simulation.weapons import FRAG_ROW, fuse_ticks_from_seconds
@@ -197,7 +196,7 @@ class BotTeamV1(ControlSource):
         self._state: dict = {}
         self._last_tick = None
         self._passable = None     # (tick, footprint, bool grid)
-        self._spread_q = {}       # weapon id -> spread_deg in Q16.16 rad
+        self._spread_q = {}       # (weapon id, hook) -> the cone, Q16.16 rad
 
     # ------------------------------------------------------------------
     def handle_frame(self, sim, renderer=None) -> None:
@@ -280,13 +279,17 @@ class BotTeamV1(ControlSource):
         return abs(wrap_q16(want - after)) <= self._weapon_spread_q(u)
 
     def _weapon_spread_q(self, u) -> int:
+        """``u``'s aimed shot cone (#29 U1: THE SPREAD accessor,
+        ``unit_traits.shot_cone_q16`` -- the law's own cone, hook included;
+        cached per (weapon, hook), 0 with no weapon)."""
         weapon_id = getattr(u, "weapon_id", "")
-        q = self._spread_q.get(weapon_id)
+        key = (weapon_id, unit_traits.hook(u, unit_traits.SPREAD))
+        q = self._spread_q.get(key)
         if q is None:
-            deg = (float(weapon_tables().weapons.by_name[weapon_id].spread_deg)
-                   if weapon_id else 0.0)
-            q = quantize_scalar(math.radians(deg))
-            self._spread_q[weapon_id] = q
+            q = (unit_traits.shot_cone_q16(
+                u, weapon_tables().weapons.by_name[weapon_id])
+                if weapon_id else 0)
+            self._spread_q[key] = q
         return q
 
     def _teammate_on_line(self, u, target, mine) -> bool:
@@ -366,7 +369,10 @@ class BotTeamV1(ControlSource):
     # ------------------------------------------------------------------
     def _falling_back(self, u, mine) -> bool:
         s = self.settings
-        if not u.current_hp < s.fallback_hp_frac * effective_vitality(u):
+        # #29 U1: the full health is the HP accessor's (the class hp times
+        # the hook), its Q16 viewed as a float on the hp's own grid
+        if not u.current_hp < s.fallback_hp_frac * (
+                unit_traits.max_hp_q(u) / unit_traits.ONE):
             return False
         r2 = s.fallback_r * s.fallback_r
         uc = _centre(u)

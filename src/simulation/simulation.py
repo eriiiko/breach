@@ -57,6 +57,7 @@ added; the snapshot contract is forward-compatible.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from numbers import Integral
 from typing import List, Optional
 
@@ -135,6 +136,7 @@ from simulation import turning
 from simulation import unit_fixed
 from simulation import unit_impulse
 from simulation import unit_orders
+from simulation import unit_traits
 from simulation import verb_gates
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
@@ -550,16 +552,18 @@ class Simulation:
     # ------------------------------------------------------------------
     # Unit management
     # ------------------------------------------------------------------
-    def add_unit(self, unit, position=None) -> int:
+    def add_unit(self, unit, position=None, *, hooks=None) -> int:
         """Register ``unit`` with the sim, assign it a stable id.
 
         ``position`` is optional — if provided as ``(x, y)`` in
         physics-tile coords, the unit is teleported there before its
         first tick. Otherwise the unit keeps its constructor-set position.
 
-        Re-samples the unit's BaseStats using ``self.rng`` so that spawns
-        are deterministic when the Simulation was constructed with a seed.
-        This overwrites the random-seeded stats drawn at Unit construction.
+        Re-assigns the unit's predefined BaseStats (the species means), then
+        COMPILES it (#29 U1, ``unit_traits.compile_unit``: the hook block --
+        all ONE bar the sheet overrides ``hooks``, ``{hook name: Q16 int}`` --
+        and ``mass_g``) and sets its hp to its full health
+        (``unit_traits.max_hp_q``).
         """
         if position is not None:
             x, y = position
@@ -573,9 +577,12 @@ class Simulation:
         base_stats, mass, base_speed = predefined_unit_attributes(species)
         unit.base_stats = base_stats
         unit.mass = mass
-        unit_impulse.bind_mass(unit)          # G5p-a2: body + kit, grams
         unit.base_speed = base_speed
-        unit.current_hp = float(base_stats.vitality)
+        # #29 U1: THE compile step -- the hooks (unit_traits.compile_unit,
+        # their only writer) and mass_g (body + kit, grams, G5p-a2) -- then
+        # the full health of the class times the HP hook.
+        unit_traits.compile_unit(self, unit, hooks)
+        unit.hp_q = unit_traits.max_hp_q(unit)
 
         unit.id = self._next_unit_id
         self._next_unit_id += 1
@@ -691,11 +698,14 @@ class Simulation:
             reqs.clear()
         update_zombies_tick(self.gmap, units, self.tick,
                             events=self.tick_events,
-                            shamble_ticks=self.speed_table.zombie_shamble_ticks,
+                            # the class cadences, handed to the zombie walk's
+                            # default_speed with each zombie's own WALK / SPRINT
+                            # hook (ai_zombie._walk, #29 U1)
+                            shamble_ticks=self.speed_table.zombie_shamble_ticks,  # traits-class: WALK
                             settings=self.horde_settings,
                             state=self.horde_state, noises=noises,
                             doors=self._doors,
-                            sprint_ticks=self.speed_table.zombie_sprint_ticks)
+                            sprint_ticks=self.speed_table.zombie_sprint_ticks)  # traits-class: SPRINT
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -1059,17 +1069,23 @@ class Simulation:
 
     def unit_turn_rate_q16(self, u) -> int:
         """The top turning speed of unit ``u`` in Q16.16 radians per tick
-        (G1p's cap; the turning law's ``w``). Read per unit: today every unit
-        -- a zombie too, a copy of the unit it infected -- has the marine
-        row's (``[marine] turn_rate_deg_per_s``); later a stat (dexterity,
-        armour weight) -- a change here, never at the callers."""
-        return self._marine_turn_rate_q16
+        (G1p's cap; the turning law's ``w``): THE accessor of the TURN hook
+        (#29 U1) -- the class value, the marine row's ``[marine]
+        turn_rate_deg_per_s`` (every unit's: a zombie too, a copy of the
+        unit it infected), times ``u``'s TURN hook, rounded once. The law,
+        the predictor, the bots and the observation read it; never the
+        cached class value. int64: w < 2^18 x 2^19."""
+        return unit_traits.scaled(u, unit_traits.TURN,
+                                  self._marine_turn_rate_q16)
 
     def unit_turn_accel_q16(self, u) -> int:
         """The own angular acceleration of unit ``u`` in Q16.16 radians per
         tick^2 (G5p-a1, the turning law's ``a``; ``[marine]
-        turn_accel_rad_per_s2``), read per unit as the top speed is."""
-        return self._marine_turn_accel_q16
+        turn_accel_rad_per_s2``) times its TURN hook, read per unit as the
+        top speed is (#29 U1; the compile door refuses a hook that takes the
+        law past its trial bound). int64: a < 2^18 x 2^19."""
+        return unit_traits.scaled(u, unit_traits.TURN,
+                                  self._marine_turn_accel_q16)
 
     def facing_after_turn_q16(self, u, dx_q: int, dy_q: int) -> int:
         """The facing (Q16.16 radians) ``u`` has after this tick's turn
@@ -1415,8 +1431,9 @@ class Simulation:
         # winding up, planting (#193), none of that kind, stunned / paralysed.
         if not verb_gates.can_throw(self, u, throw.kind):
             return
-        ticks = self.weapons_tables.weapons.by_name[
-            "hand_grenade"].throw_windup_ticks
+        # #29 U1: the unit's own wind-up, the HANDLING hook's accessor
+        ticks = unit_traits.throw_windup_ticks(
+            u, self.weapons_tables.weapons.by_name)
         self.tick_events.append(ThrowEvent(unit_id=int(u.id),
                                            kind=int(throw.kind),
                                            ticks=int(ticks)))
@@ -1463,7 +1480,8 @@ class Simulation:
         # busy, no charge carried, stunned / paralysed.
         if not verb_gates.can_plant(self, u):
             return
-        ticks = self.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks
+        # #29 U1: the unit's own plant, the HANDLING hook's accessor
+        ticks = unit_traits.plant_ticks(u, self.weapons_tables.weapons.by_name)
         self.tick_events.append(PlantEvent(unit_id=int(u.id),
                                            ticks=int(ticks)))
         u.plant_done_tick = self.tick + ticks
@@ -1652,9 +1670,11 @@ class Simulation:
                     tile_path = []
                     cx, cy = current_x, current_y
                     speed = _ticks_per_tile(move_orders[0].order_type)
+                    mo_type = move_orders[0].order_type     # #29 U1
 
                     for mo in move_orders:
                         speed = _ticks_per_tile(mo.order_type)
+                        mo_type = mo.order_type
                         if HAS_PATHFINDING:
                             segment = astar(cx, cy, mo.target_fx, mo.target_fy,
                                             is_blocked, w, h)
@@ -1682,7 +1702,13 @@ class Simulation:
                             samples = footprint_samples(
                                 gmap, tile_y, tile_x, fp,
                                 effort_scale_q16=unit_impulse.effort_scale_q16(
-                                    unit_impulse.table_for(gmap), u))
+                                    unit_impulse.table_for(gmap), u),
+                                # #29 U1: a sprint order is the full speed,
+                                # every other order the walk
+                                speed_hook_q16=unit_traits.hook(
+                                    u, unit_traits.SPRINT
+                                    if mo_type == ORDER_SPRINT
+                                    else unit_traits.WALK))
                             step_ticks = default_speed(samples, speed)
                             for st in range(step_ticks):
                                 frac = (st + 1) / step_ticks
@@ -2630,15 +2656,19 @@ class Simulation:
             samples = footprint_samples(
                 self.gmap, u.tile_y, u.tile_x, fp,
                 effort_scale_q16=unit_impulse.effort_scale_q16(
-                    self.impulse_table, u))
+                    self.impulse_table, u),
+                speed_hook_q16=unit_traits.hook(u, unit_traits.WALK))
             # G1p-c: the walk and the full speed (Q16 ticks per tile), each
-            # reduced by terrain, wind and effort, then the direction rule and
-            # the throttle as ONE exact rational, rounded once to Q16.
+            # reduced by terrain, wind and effort -- and (#29 U1) the unit's
+            # own WALK / SPRINT hook -- then the direction rule and the
+            # throttle as ONE exact rational, rounded once to Q16.
             table = self.speed_table
             cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
             v_q = move_speed_q16(
-                default_speed(samples, table.walk_cost_q),
-                default_speed(samples, table.full_cost_q),
+                default_speed(samples, table.walk_cost_q),  # traits-class: WALK
+                default_speed(_dc_replace(samples, speed_hook_q16=(
+                    unit_traits.hook(u, unit_traits.SPRINT))),
+                    table.full_cost_q),  # traits-class: SPRINT, the samples' hook
                 table.side_q, table.back_q, move_dir.throttle_q, cos_q)
             wdx, wdy = unit_impulse.walk_step_q(move_dir, v_q)
         unit_impulse.move(self.gmap, u, wdx, wdy)

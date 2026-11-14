@@ -60,6 +60,7 @@ from simulation.orders import (
     MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
+from simulation import unit_traits
 from simulation import draws as _draws          # #29 P3e: the match draws
 from simulation.rng_salts import Salt            # #29 P3b: the draw sites
 from simulation.unit_schema import MAG_UNBOUND
@@ -891,7 +892,8 @@ def reload_begin(u, weapon, tick, events=None):
     """Start a reload NOW: the magazine in the gun is DISCARDED with every
     round still in it (``current_mag = 0``; rounds are never moved between
     magazines), one spare is consumed when spares are counted, and the stall
-    runs ``weapon.reload_ticks`` from ``tick``; the full magazine is in the
+    runs the unit's ``unit_traits.reload_ticks`` (the row's ``reload_ticks``
+    times its HANDLING hook, #29 U1) from ``tick``; the full magazine is in the
     gun when it ends (:func:`mag_settle`). With no spare left nothing starts
     and the unit is dry (``current_mag`` 0, none pending). True when a reload
     started. The caller has settled the magazine and checked its own
@@ -908,10 +910,12 @@ def reload_begin(u, weapon, tick, events=None):
         return False
     if spare > 0:
         u.spare_mags = spare - 1
-    u.reload_done_tick = tick + int(weapon.reload_ticks)
+    # #29 U1: the unit's own stall, the HANDLING hook's accessor
+    stall = unit_traits.reload_ticks(u, weapon)
+    u.reload_done_tick = tick + stall
     if events is not None:
         events.append(ReloadEvent(unit_id=int(getattr(u, "id", -1)),
-                                  ticks=int(weapon.reload_ticks)))
+                                  ticks=int(stall)))
     return True
 
 
@@ -1104,7 +1108,9 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         # SNAP cone. The owed P3 can_aim consumer (W3): ONE clean gate at
         # cone selection; with no statuses it is a dead path (FLAGS_DEFAULT
         # has can_aim True), bit-identical to pre-W3.
-        spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
+        # #29 U1: the class cone's ONE selection (the SPREAD hook enters at
+        # the draw, fire_burst / fire_beam -> unit_traits.cone_q16).
+        spread = unit_traits.cone_deg_of(weapon, flags.can_aim)
         if weapon.archetype == "spray":
             # SPRAY branch of the archetype dispatch (W4): arm the burst —
             # the deposits themselves ride process_sprays in this same
@@ -1189,7 +1195,7 @@ def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
     # #29 P3e: in integers, the unit's own Q16 facing.
     aim_q = -int(u.facing_q)
 
-    spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
+    spread = unit_traits.cone_deg_of(weapon, flags.can_aim)     # #29 U1
 
     if weapon.archetype == "melee":
         return   # out of scope (design §9) — the deferred melee arc owns it
@@ -1267,8 +1273,8 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
                           best_enemy.center_tile_x(),
                           best_enemy.center_tile_y(),
                           tick, shots, real_time, rng, events, bullets,
-                          weapon, weapon.spread_snap_deg, queue,
-                          effects=effects)
+                          weapon, unit_traits.cone_deg_of(weapon, False),
+                          queue, effects=effects)
         mag_spend(u, weapon, tick, events=events)
         u.last_fire_tick = tick
 
@@ -1319,8 +1325,10 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     if ammo is None:
         ammo = tables.ammo_for_weapon(weapon)
     if spread_deg is None:
-        spread_deg = weapon.spread_deg
-    cone_q = cone_q16_of_deg(spread_deg)
+        spread_deg = unit_traits.cone_deg_of(weapon)
+    # #29 U1: the shooter's cone, THE SPREAD accessor (the class cone's door
+    # times its hook)
+    cone_q = unit_traits.cone_q16(shooter, spread_deg)
     n_bullets = weapon.shots_per_trigger
     # The bullet march decides hits -> current_hp -> kills, i.e. it FEEDS
     # SYNCED STATE: its trig is the deterministic integer kit (Q2-lift) and,
@@ -1438,8 +1446,8 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     if ammo is None:
         ammo = tables.ammo_for_weapon(weapon)
     if spread_deg is None:
-        spread_deg = weapon.spread_deg
-    cone_q = cone_q16_of_deg(spread_deg)
+        spread_deg = unit_traits.cone_deg_of(weapon)
+    cone_q = unit_traits.cone_q16(shooter, spread_deg)     # #29 U1: SPREAD
     # FREE-AIM SEAM (free_aim_shooting_design §4a): see fire_burst — aim_q is
     # the march-convention (screen y-down) Q16.16 bearing; None = tile-derived
     # (WEGO), provided = march straight from it (the facing is the turning
@@ -1648,7 +1656,8 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
     cos_q = unit_fixed.cos_q16(angle_q)
     sin_q = unit_fixed.sin_q16(angle_q)
     # Cone cosine through the kit, the half-angle at its door.
-    c_q = unit_fixed.cos_q16(cone_q16_of_deg(cone_half_angle_degrees))
+    # a spray JET's cone, not a shot cone: no SPREAD hook (#29 U1)
+    c_q = unit_fixed.cos_q16(cone_q16_of_deg(cone_half_angle_degrees))  # traits-class: a jet
     c_sq = c_q * c_q                                   # Q32.32, exact int
 
     for y in range(max(0, ay - r), min(h - 1, ay + r) + 1):
@@ -2019,19 +2028,24 @@ def melee_blow(attacker, target, rng, events, weapon, effects,
     angle_q = unit_fixed.atan2_q16((fy2 - fy1) << unit_fixed.FP_SHIFT,
                                    (fx2 - fx1) << unit_fixed.FP_SHIFT)
 
-    amount = int(weapon.melee_damage)
+    crit_mult = None
     crit_chance = float(weapon.crit_chance)
     if crit_chance > 0.0:
         mult = attack_resolver.arc_multiplier(angle_q, target)
         d = rng.next(Salt.MELEE_CRIT, getattr(attacker, "id", -1))
         if attack_resolver.roll_crit(crit_chance, mult, d):
-            amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
+            crit_mult = weapon.crit_mult
+    # #29 U1: THE STRIKE accessor -- the row's melee_damage (a crit applied
+    # on whole points, as before) times the striker's hook, in Q16.
+    amount_q = unit_traits.strike_damage_q(attacker, weapon,
+                                           crit_mult=crit_mult)
 
     # #185: the blow travels striker centre -> victim centre (Q16)
     from simulation.unit_impulse import centre_q
     (ax_q, ay_q), (tx_q, ty_q) = centre_q(attacker), centre_q(target)
     fx.hit(target,
-           DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
+           DamagePacket(amount=unit_fixed.dequantize_scalar(amount_q),  # p3e-view
+                        amount_q=amount_q, dtype=weapon.melee_dtype_id,
                         attacker_id=getattr(attacker, "id", -1),
                         dir_x_q=tx_q - ax_q, dir_y_q=ty_q - ay_q),
            events, source="melee")
@@ -2107,7 +2121,9 @@ def process_melee_intents(units, tick, tables, impulse_table, events=None,
             continue
         u.last_blow_tick = int(tick)
         melee_blow(u, target, None, events, weapon, fx, snap_facing=False)
-        j_q = impulse_table.melee_push_q.get(weapon.name, 0)
+        # #29 U1: THE PUSH accessor (the row's impulse times the striker's
+        # hook)
+        j_q = unit_traits.push_impulse_q(impulse_table, u, weapon)
         if j_q:
             cx, cy = unit_impulse.centre_q(u)
             tx, ty = unit_impulse.centre_q(target)

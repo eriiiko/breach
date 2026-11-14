@@ -44,7 +44,7 @@ from simulation.events import ShotFiredEvent  # noqa: E402
 from simulation.match import MatchSpec, MatchTeam, SpawnRoom  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
-from simulation.stats import effective_vitality  # noqa: E402
+from simulation import unit_traits  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
 W, H = 60, 40
@@ -280,7 +280,7 @@ def test_a_lone_wounded_bot_falls_back_and_a_healthy_one_does_not(tmp_path):
         sim, units = _sim(lvl, spots)
         bot = units[0]
         if wounded:
-            bot.current_hp = 0.3 * effective_vitality(bot)
+            bot.hp_q = unit_traits.max_hp_q(bot) * 3 // 10
         d0 = _dist(bot, home)
         _run(sim, [BotTeam(0)], 96)
         return d0 - _dist(bot, home)
