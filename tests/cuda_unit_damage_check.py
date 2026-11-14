@@ -995,8 +995,8 @@ def part_padding():
         with ShadowLockstep(drivers, [slot], n_units=U, check_alone=False) as ls:
             for _ in range(LANE_TICKS):
                 rep = ls.tick()[slot.label]
-                if rep.coverage.sum() == 0:
-                    continue
+                if rep.coverage.sum() == 0 or rep.events.sum() == 0:
+                    continue                  # the first tick it acts AND emits
                 clean = np.stack(ls._pre[k])
                 inp = ls.last_inputs[slot.label]
                 dirty = clean.copy()
