@@ -2204,17 +2204,9 @@ class Simulation:
     def _step_post_physics(self, destroyed) -> None:
         """Slots 9 .. 10, given slot 7's burn-through walls."""
         sim_time_per_tick = 1.0 / float(self._tps)
-        # 9. Process fire burn-through walls. A6: the door-event split keys
-        # on BOTH door materials — legacy painted MAT_DOOR and the entity
-        # door's MAT_DOOR_CLOSED (a6 doors design §1).
-        for (yy, xx) in destroyed:
-            mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
-                                                      and 0 <= xx < self.gmap.material.shape[1]) else -1
-            self.gmap.destroy_wall(yy, xx)
-            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
-                self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
-            else:
-                self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+        # 9. Process fire burn-through walls (a named call since #29 P6.1, so
+        # the slot has a profiler label; the body is unchanged).
+        self._burn_through_walls(destroyed)
 
         # 9b. Over-pressure wall failure (ch.04 §5) — the emergent pressure
         # relief valve. After physics settles, any wall holding a differential
@@ -2396,6 +2388,49 @@ class Simulation:
                                  self.units, entities=self.entities,
                                  signals=self._digest_signals())
 
+        # The tick-end clears (a named call since #29 P6.1, so they have a
+        # profiler label; the body is unchanged).
+        self._clear_tick_buffers()
+
+        # 10. Advance tick (the clock itself — not WEGO policy, stays here
+        # unconditionally so a future ContinuousRealtime ruleset still
+        # ticks) + route phase-boundary/round-end/auto-pause through the
+        # ruleset (control-modularity P1, §3a). Verbatim body in
+        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
+        self.tick += 1
+        self.real_time += sim_time_per_tick
+
+        # 10'. An order whose tick has come is cleared (#195 1f) -- right
+        # after the advance, so between ticks a held order has time left.
+        unit_orders.expire(self)
+
+        self.ruleset.on_tick_end(self)
+
+        # 11. The team picture (#195 1d; a match only): each marine team's
+        # records of what it sees at the tick the next controllers run at --
+        # after the tick advance and on_tick_end, so a conversion this step
+        # made is seen. Once per tick, never on demand.
+        if self.team_picture is not None:
+            self.team_picture.update(self)
+
+    def _burn_through_walls(self, destroyed) -> None:
+        """Slot 9: process slot 7's fire burn-through walls. A6: the
+        door-event split keys on BOTH door materials — legacy painted
+        MAT_DOOR and the entity door's MAT_DOOR_CLOSED (a6 doors design
+        §1)."""
+        for (yy, xx) in destroyed:
+            mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
+                                                      and 0 <= xx < self.gmap.material.shape[1]) else -1
+            self.gmap.destroy_wall(yy, xx)
+            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
+                self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
+            else:
+                self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+
+    def _clear_tick_buffers(self) -> None:
+        """The tick-end clears: the per-tick deposit planes, the deposit
+        credit and the expired shot tracers -- after every reader of the
+        tick, before the tick advance."""
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit
         # buffer, not a cross-tick accumulator; it is wiped once both readers
@@ -2450,27 +2485,6 @@ class Simulation:
         if self.shots:
             self.shots = [s for s in self.shots if
                           self.real_time - s.time < s.duration]
-
-        # 10. Advance tick (the clock itself — not WEGO policy, stays here
-        # unconditionally so a future ContinuousRealtime ruleset still
-        # ticks) + route phase-boundary/round-end/auto-pause through the
-        # ruleset (control-modularity P1, §3a). Verbatim body in
-        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
-        self.tick += 1
-        self.real_time += sim_time_per_tick
-
-        # 10'. An order whose tick has come is cleared (#195 1f) -- right
-        # after the advance, so between ticks a held order has time left.
-        unit_orders.expire(self)
-
-        self.ruleset.on_tick_end(self)
-
-        # 11. The team picture (#195 1d; a match only): each marine team's
-        # records of what it sees at the tick the next controllers run at --
-        # after the tick advance and on_tick_end, so a conversion this step
-        # made is seen. Once per tick, never on demand.
-        if self.team_picture is not None:
-            self.team_picture.update(self)
 
     # ------------------------------------------------------------------
     # Tick-step helpers

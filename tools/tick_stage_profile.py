@@ -61,11 +61,18 @@ SLOT_WRAPS = (
     ("simulation.gamemap", "GameMap.reset_trace_books", "1 events + round head"),
     ("simulation.ruleset", "ContinuousRealtime.on_round_start", "1 events + round head"),
     ("simulation.ruleset", "TwoPhaseWEGO.on_round_start", "1 events + round head"),
+    # #29 P6.1 (design 4.4b decision 5): every slot has a label -- a twin row
+    # names its slot by one (1a, 1b', 1c, 4a, 9, 9e(d'), the tick-end clears,
+    # 10', 11 had none; their time used to land in "(rest of step)").
+    ("simulation.unit_impulse", "integrate_all", "1a integrate + turn"),
     ("simulation.simulation", "Simulation._consume_direct_intents", "1b intents"),
+    ("simulation.unit_orders", "apply_requests", "1b' orders"),
+    ("simulation.exposure", "decay_units", "1c exposure decay"),
     ("simulation.simulation", "Simulation._update_projectiles", "2 projectiles"),
     ("simulation.simulation", "tick_statuses", "2b statuses"),
     ("simulation.simulation", "Simulation._update_player_movement", "3 movement"),
     ("simulation.simulation", "process_shooting", "4 shooting"),
+    ("simulation.simulation", "process_melee_intents", "4a melee"),
     ("simulation.simulation", "process_sprays", "4b sprays"),
     ("simulation.simultaneous", "SimultaneousEffects.resolve", "4c resolve"),
     ("simulation.simulation", "Simulation._run_zombie_slot", "5 zombie AI"),
@@ -75,6 +82,7 @@ SLOT_WRAPS = (
     # queue (or flushes on the host: the fallback, inside this call).
     ("simulation.physics_runner", "PhysicsRunner.serve_edit_queue", "6b FieldEdit flush"),
     ("simulation.physics_runner", "PhysicsRunner.step", SLOT7),
+    ("simulation.simulation", "Simulation._burn_through_walls", "9 burn-through walls"),
     ("simulation.gamemap", "GameMap.find_burst_walls", "9b over-pressure walls"),
     ("simulation.simulation", "apply_environmental_damage", "9c unit heat damage"),
     ("simulation.simulation", "apply_wind_force", "9c2 wind on units"),
@@ -89,9 +97,13 @@ SLOT_WRAPS = (
     ("simulation.simulation", "sweep_vents", "9e entities"),
     ("simulation.simulation", "sweep_doors", "9e entities"),
     ("simulation.simulation", "sweep_timed_charges", "9e entities"),
+    ("simulation.charges", "tick", "9e(d') planted charges"),
     ("simulation.simulation", "sweep_heat_sources", "9e entities"),
+    ("simulation.simulation", "Simulation._clear_tick_buffers", "tick-end clears"),
+    ("simulation.unit_orders", "expire", "10' order expiry"),
     ("simulation.ruleset", "ContinuousRealtime.on_tick_end", "10 tick end (ruleset)"),
     ("simulation.ruleset", "TwoPhaseWEGO.on_tick_end", "10 tick end (ruleset)"),
+    ("simulation.team_picture", "TeamPicture.update", "11 team picture"),
 )
 
 # (module or "bp", qualified name, label, device): the stages of slot 7.

@@ -37,6 +37,7 @@ const char* breach_build_id();
 #include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
 #include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin + backend flag
 #include "cuda_resident_tick.h"    // #29 P4a: the resident tick's drivers (stage counters)
+#include "cuda_unit_store.h"       // #29 P6.1: the device unit store (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -598,6 +599,57 @@ PYBIND11_MODULE(breach_physics, m) {
           "#29 P5 TEST-ONLY: end the capture; returns {segments, nodes, sync_points}.");
     m.def("resident_capture_abort", &breach_cuda::resident_capture_abort,
           "#29 P5 TEST-ONLY: end a capture a failed tick left open.");
+
+    // #29 P6.1: THE DEVICE UNIT STORE (cuda_unit_store.h; Class T -- the
+    // played tick never calls it). One (N, U, W) int64 buffer allocated at
+    // construction, copied on the tick stream through pinned staging, and the
+    // pilot kernel (slot 1c, exposure decay). The Python driver is
+    // simulation.unit_store.DeviceStore, which checks unit_store_layout()
+    // against the schema before it builds one.
+    m.def("unit_store_layout", []() {
+              py::dict d;
+              d["width"] = breach_cuda::unit_store_width();
+              d["fingerprint"] = std::string(breach_cuda::unit_store_fingerprint());
+              d["valid"] = breach_cuda::unit_store_valid_col();
+              d["exposure"] = breach_cuda::unit_store_exposure_col();
+              d["exposure_width"] = breach_cuda::unit_store_exposure_width();
+              return d;
+          },
+          "#29 P6.1: the compiled unit store layout (unit_store_layout.h): "
+          "{width, fingerprint, valid, exposure, exposure_width}.");
+    py::class_<breach_cuda::UnitStoreDevice>(m, "UnitStoreBuffer",
+            "#29 P6.1: the (N, U, W) int64 device unit store (Class T).")
+        .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("n_units"),
+             py::arg("width"))
+        .def_property_readonly("shape", [](const breach_cuda::UnitStoreDevice& s) {
+            return py::make_tuple(s.n_env(), s.n_units(), s.width());
+        })
+        .def_property_readonly("ptr", &breach_cuda::UnitStoreDevice::device_ptr)
+        .def("upload", [](breach_cuda::UnitStoreDevice& s,
+                          py::array_t<int64_t, py::array::c_style> rows) {
+                 if (rows.ndim() != 3 || rows.shape(0) != s.n_env() ||
+                     rows.shape(1) != s.n_units() || rows.shape(2) != s.width())
+                     throw std::invalid_argument(
+                         "UnitStoreBuffer.upload: rows must be (n_env, n_units, width) "
+                         "C-contiguous int64");
+                 s.upload(rows.data());
+             }, py::arg("rows"),
+             "Copy (N, U, W) int64 rows into the device store (tick stream).")
+        .def("download", [](breach_cuda::UnitStoreDevice& s) {
+                 py::array_t<int64_t> out({(py::ssize_t)s.n_env(),
+                                           (py::ssize_t)s.n_units(),
+                                           (py::ssize_t)s.width()});
+                 s.download(out.mutable_data());
+                 return out;
+             },
+             "The device store as a fresh (N, U, W) int64 array.")
+        .def("exposure_decay", [](breach_cuda::UnitStoreDevice& s, int64_t decay_q) {
+                 py::array_t<int64_t> cov((py::ssize_t)s.n_env());
+                 s.exposure_decay(decay_q, cov.mutable_data());
+                 return cov;
+             }, py::arg("decay_q"),
+             "Slot 1c on the device (exposure.decay_step on every valid row); "
+             "returns, per env, the rows whose exposure block changed.");
 
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
