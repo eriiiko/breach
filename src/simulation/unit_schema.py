@@ -510,6 +510,15 @@ COLUMNS: tuple[Column, ...] = (
        width=lambda: 4 * status_capacity()),
     _c("exposure", KIND_BLOCK, "health", _exposure_default, _enc_block,
        _dec_block, width=_exposure_width),
+    # poison (#29 PX; simulation.poison, the ONE writer): the depot and the
+    # blood (Q16 units) and the unit credited with the latest dose
+    _c("poison_x0", KIND_Q16, "health", 0,
+       note="the poison depot, Q16 units (simulation.poison)"),
+    _c("poison_x1", KIND_Q16, "health", 0,
+       note="the poison in the blood, Q16 units (simulation.poison)"),
+    _c("poison_src", KIND_INT, "health", -1,
+       note="the unit credited with the latest dose; -1 = the environment "
+            "or none"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",

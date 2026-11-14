@@ -75,6 +75,7 @@ from typing import Callable, Optional, Sequence
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
 from simulation import gas_fixed
+from simulation import poison
 from simulation import unit_fixed as _unit_fixed
 from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
@@ -670,33 +671,30 @@ def apply_teargas_blind(units, gmap):
 
 
 def apply_poison_dose(units, gmap, ticks_per_second, events=None):
-    """The ``gas[poison]`` coupling row (mechanics/05 §1, W3): footprint-max
-    poison density at or above ``poison_min_density`` emits ONE POISON
-    :class:`DamagePacket` per tick through the mechanics/06 pipeline.
+    """The ``gas[poison]`` coupling row (mechanics/05 §1, W3; #29 PX): the
+    footprint-max poison density at or above ``poison_min_density`` gives the
+    unit a DOSE of the poison law (:func:`simulation.poison.dose`), which
+    hurts later, as it leaves the blood (``poison.tick``, run right after
+    this row in slot 9c3). The row never emits a packet itself.
 
-    The per-tick amount KEEPS THE HEAT ROW'S IDIOM exactly — a door-3
-    float64 chain on the door-1 field read and door-2 constants, quantized
-    once at the HP boundary::
+    The dose per tick, in Q16 units of poison, is ONE rational rounded once
+    (#29 P3e's idiom: the dial quantized once at the poison door, the density
+    in the trace currency)::
 
-        density = dequantize_trace(density_q)          # exact 2^-TRACE_SHIFT
-        amount  = poison_dps * density * (1 / tps)     # pure IEEE * (door 3)
-        applied = dequantize(quantize(mitigated))      # apply_packet's
-                                                       # quantize_hp_delta:
-                                                       # round-half-away onto
-                                                       # the Q16.16 grid
+        dose_q = round(gas_q * density_q / (TRACE_ONE * tps))
 
-    so the applied delta is the integer-rounded (half away from zero)
-    Q16.16 count of ``resist_mult[POISON] × poison_dps × density / tps`` —
-    e.g. a marine (resist 1.0) in full density at 24 tps takes exactly
-    0.25 HP/tick (16384 counts), 6 HP/s.
+    with ``gas_q`` the ``[damage.poison] gas_units_per_second`` -- 0.6 units
+    a second at full density, which at ``hp_per_unit`` 10 keeps the TOTAL
+    harm of breathing the gas what the deleted ``[exchange] poison_dps`` (6
+    HP a second) gave; only its timing changed
+    (``docs/poison_law_design_2026-11-14.md`` §4).
 
-    LAZY EMISSION for the immune: a unit whose ``resist_mult[POISON]`` is
-    exactly 0 (the zombie — they don't breathe; the future robot) draws NO
-    packet at all, mirroring the lazy-roll rule: a packet that cannot matter
-    is not emitted, so a horde standing in gas emits no 0-damage event spam
-    (and takes 0 damage — poison is not the anti-horde answer; fire is).
-    Resistances BETWEEN 0 and 1 still flow through the pipeline normally.
-    Source string ``"poison_gas"``; gas deaths never convert (only melee).
+    The immune breathe nothing: a unit whose ``resist_mult[POISON]`` is
+    exactly 0 (the zombie -- they don't breathe; the future robot) takes no
+    dose, and the dose door refuses a zombie itself. Resistances BETWEEN 0
+    and 1 act on the damage (``apply_packet``'s mitigation, at the law's
+    packet). ``events`` is unused (the law emits); kept for the row's call
+    shape.
     """
     slice_ = gmap.gas[GAS_POISON]
     if not bool(slice_.any()):
@@ -704,10 +702,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     cfg = CFG.exchange
     thresh_q = gas_fixed.quantize_trace_scalar(
         float(cfg.poison_min_density))   # #88 A1; p3e-door
-    # #29 P3e: the dose in Q16 integers -- dps quantized once (the door), the
-    # density in the trace currency, ONE rational rounded once:
-    #     amount_q = round(dps_q * density_q / (TRACE_ONE * tps))
-    dps_q = _unit_fixed.quantize_scalar(float(cfg.poison_dps))   # p3e-door
+    gas_q = poison.get_settings().gas_q
     den = int(gas_fixed.TRACE_ONE) * int(ticks_per_second)
     for u in units:
         if not u.alive:
@@ -718,11 +713,12 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
             continue
         if mitigation_for(u).resist_q[POISON] == 0:
             continue                        # immune: no packet, no event (lazy)
-        amount_q = _unit_fixed.div_round(dps_q * int(density_q), den)
+        dose_q = _unit_fixed.div_round(gas_q * int(density_q), den)
         # CREDIT (#123): the claimant of THIS tick's poison deposit on the
         # densest footprint tile (the first one, in footprint order — the
         # tile reduce_max read): a miasma jet's sprayer, a gas payload's
-        # owner. A cloud that only lingers is the environment's.
+        # owner. A cloud that only lingers is the environment's. The dose
+        # carries it (poison_src); the law's later packets credit it.
         attacker = NO_ATTACKER
         sh, sw = slice_.shape
         for (tx, ty) in tiles:
@@ -730,11 +726,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
                     and int(slice_[ty, tx]) == density_q):
                 attacker = tick_credit(gmap).attacker_at(GAS_POISON, ty, tx)
                 break
-        apply_packet(u,
-                     DamagePacket(amount=_unit_fixed.dequantize_scalar(amount_q),
-                                  dtype=POISON, attacker_id=attacker,
-                                  indirect=True, amount_q=amount_q),
-                     events, source="poison_gas")
+        poison.dose(u, dose_q, attacker)
 
 
 # ---------------------------------------------------------------------------
@@ -834,12 +826,14 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
         reduction="max",
         response=apply_poison_dose,
         note=(
-            "Poison -> POISON DoT packets (mechanics/05 §1, W3): footprint-"
-            "max density vs poison_min_density -> one packet/tick of "
-            "poison_dps x density / tps through the mechanics/06 pipeline "
-            "(zombie resist_mult[POISON]=0 -> immune, lazily skipped). Runs "
-            "at Simulation.step 9c3 directly after the teargas row. Lazy: "
-            "all-zero plane early-outs; no RNG."
+            "Poison -> a DOSE of the poison law (#29 PX, simulation.poison): "
+            "footprint-max density vs poison_min_density -> poison.dose of "
+            "[damage.poison] gas_units_per_second x density / tps (zombie "
+            "resist_mult[POISON]=0 -> immune, no dose); the law's own "
+            "poison.tick, right after this row, emits the POISON packets as "
+            "the poison leaves the blood. Runs at Simulation.step 9c3 "
+            "directly after the teargas row. Lazy: all-zero plane "
+            "early-outs; no RNG."
         ),
     ),
 )

@@ -149,7 +149,8 @@ def _unit_on(g, x=5, y=5):
 
 def reader_exchange_gates():
     """src/simulation/exchange.py::apply_teargas_blind / apply_poison_dose --
-    gated by their REAL-UNIT law (A1); the poison amount is float-identical."""
+    gated by their REAL-UNIT law (A1); the poison dose (#29 PX) is the
+    pre-#88 currency's exactly."""
     from simulation.exchange import apply_poison_dose, apply_teargas_blind
     from simulation.status import BLINDED
     tps = int(CFG.clock.ticks_per_second)
@@ -170,27 +171,33 @@ def reader_exchange_gates():
             else:
                 events = []
                 apply_poison_dose([u], g, tps, events=events)
-                fired = u.current_hp < 1000.0
+                # #29 PX: the row doses the poison law (no damage here)
+                fired = u.poison_x0 > 0
                 if fired:
-                    want = unit_fixed.quantize_hp_delta(
-                        float(CFG.exchange.poison_dps) * (s / gas_fixed.TRACE_ONE) / tps)
-                    assert 1000.0 - u.current_hp == want, s
+                    want = unit_fixed.div_round(
+                        _poison_gas_q() * s, gas_fixed.TRACE_ONE * tps)
+                    assert u.poison_x0 == want, s
             assert fired == (s >= th), (GAS_NAMES[gas_id], s, th)
             assert fired >= prev, "the gate is not monotone in S"
             prev = fired
             checked += 1
-    # the poison amount on S_old << k is float-identical to the pre-#88 law
+    # the poison dose on S_old << k is the dose of the pre-#88 currency's
+    # density, exactly (the same rational: the lift cancels)
     for s_old in (_PO, _PO + 1, OLD_ONE, 3 * OLD_ONE):
         g = _box_gmap(16, 16)
         u = _unit_on(g)
         for (tx, ty) in u.occupied_tiles():
             g.gas[POISON][ty, tx] = trace_lift(s_old)
         apply_poison_dose([u], g, tps, events=[])
-        want = unit_fixed.quantize_hp_delta(
-            float(CFG.exchange.poison_dps) * (s_old / 65536.0) * (1.0 / tps))
-        assert 1000.0 - u.current_hp == want, s_old
+        want = unit_fixed.div_round(_poison_gas_q() * s_old, 65536 * tps)
+        assert u.poison_x0 == want, s_old
         checked += 1
     return checked
+
+
+def _poison_gas_q():
+    from simulation import poison
+    return poison.get_settings().gas_q
 
 
 def reader_fire_beam():

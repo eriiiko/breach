@@ -54,6 +54,9 @@ HANDLING   a reload's, a throw wind-up's, a plant's ticks   :func:`reload_
                                                             throw_windup_
                                                             ticks`, :func:`
                                                             plant_ticks`
+TOX_ONSET  the poison depot's per-tick fraction             ``poison.onset_q``
+TOX_DECAY  the poison blood's per-tick fraction             ``poison.decay_q``
+TOX_HARM   the poison's hit points per unit                 ``poison.harm_q``
 =========  ===============================================  ==================
 
 A new hook is a row of :data:`HOOKS` (APPENDED: the block's order is the
@@ -108,13 +111,22 @@ HOOKS: tuple[Hook, ...] = (
          "unit_traits.cone_q16"),
     Hook("HANDLING", "the ticks of a reload, a throw's wind-up and a plant",
          "unit_traits.reload_ticks / throw_windup_ticks / plant_ticks"),
+    # #29 PX: the poison law's three per-unit rates (vitality, #199)
+    Hook("TOX_ONSET", "the poison law's per-tick fraction of the depot that "
+         "reaches the blood ([damage.poison] onset_seconds)",
+         "poison.onset_q"),
+    Hook("TOX_DECAY", "the poison law's per-tick fraction of the blood that "
+         "leaves it ([damage.poison] decay_seconds)", "poison.decay_q"),
+    Hook("TOX_HARM", "the hit points a unit of poison takes as it leaves "
+         "the blood ([damage.poison] hp_per_unit)", "poison.harm_q"),
 )
 N_HOOKS = len(HOOKS)
 HOOK_INDEX = {h.name: i for i, h in enumerate(HOOKS)}
 (HP, WALK, SPRINT, TURN, HOLD, STRIKE, PUSH, SPREAD,
- HANDLING) = range(N_HOOKS)
+ HANDLING, TOX_ONSET, TOX_DECAY, TOX_HARM) = range(N_HOOKS)
 assert tuple(HOOK_INDEX) == ("HP", "WALK", "SPRINT", "TURN", "HOLD",
-                             "STRIKE", "PUSH", "SPREAD", "HANDLING")
+                             "STRIKE", "PUSH", "SPREAD", "HANDLING",
+                             "TOX_ONSET", "TOX_DECAY", "TOX_HARM")
 
 
 def neutral_block() -> list:

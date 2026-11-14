@@ -80,6 +80,7 @@ from simulation.simultaneous import SimultaneousEffects
 from simulation import exposure
 from simulation import horde
 from simulation import noise
+from simulation import poison
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -368,6 +369,8 @@ class Simulation:
         # The focus-fire law's dials (G4p, [damage.exposure] + [zombie]
         # expose_resist), quantized once through their refusing door.
         self.exposure_settings = exposure.rebuild_settings()
+        # The poison law's dials (#29 PX, [damage.poison]), the same.
+        self.poison_settings = poison.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -2267,16 +2270,22 @@ class Simulation:
         # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
         # planes at each living unit's footprint: teargas above threshold
         # applies BLINDED (snap-cone fire from next tick — the step-2b
-        # trigger-position semantics); poison above threshold emits one
-        # POISON packet per tick through the mechanics/06 pipeline (zombies
-        # immune). WITHIN-TICK EXCHANGE ORDER (documented contract): heat
-        # (9c), wind (9c2), teargas, poison. Lazy: an all-zero plane is one
-        # integer .any() and out — every gas-free trajectory (the canonical
-        # golden included) is bit-identical to pre-W3. No RNG.
+        # trigger-position semantics); poison above threshold gives a DOSE
+        # of the poison law (#29 PX, poison.dose; zombies immune).
+        # WITHIN-TICK EXCHANGE ORDER (documented contract): heat (9c), wind
+        # (9c2), teargas, poison. Lazy: an all-zero plane is one integer
+        # .any() and out — every gas-free trajectory (the canonical golden
+        # included) is bit-identical to pre-W3. No RNG.
         if self.physics_runner is not None:
             apply_teargas_blind(self.units, self.gmap)
             apply_poison_dose(self.units, self.gmap, self._tps,
                               events=self.tick_events)
+        # 9c3'. The poison law (#29 PX, simulation.poison): every living unit
+        # holding poison moves depot -> blood -> out, and what leaves the
+        # blood hurts as one POISON packet (credited to its dose). Outside
+        # the physics guard: a level dosed by any row keeps draining. Dormant
+        # (two int reads per unit) while nobody holds poison.
+        poison.tick(self.units, self.tick, self.tick_events)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver

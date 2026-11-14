@@ -43,6 +43,7 @@ from config import CFG
 from simulation import exposure as _exposure
 from simulation import horde as _horde
 from simulation import noise as _noise
+from simulation import poison as _poison
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
 from simulation import unit_orders as _unit_orders
@@ -446,6 +447,8 @@ def convert_marines_to_zombies(units):
             # #195 1f: nor an order (cleared at death too; a zombie takes
             # none).
             _unit_orders.clear(u)
+            # #29 PX: nor poison (cleared at death too; a zombie holds none).
+            _poison.clear(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

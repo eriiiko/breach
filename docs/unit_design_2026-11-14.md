@@ -357,8 +357,11 @@ count field under the body, decaying each tick, converting through the
 existing conversion door at a threshold (a second converting path beside
 `killed_by_zombie`); the law deliberately runs on the dead and is zeroed at
 conversion. Its column arrives WITH its law, in the larva behaviour patch
-after P6: a column needs no reservation (section 9). Whether a zombie's
-corpse can rise again is Erik's call then.
+after P6: a column needs no reservation (section 9). RULED (Erik,
+2026-11-14): any corpse, a zombie's included, can rise again, any number of
+times, each time a new infestation reaches the threshold; and a corpse can be
+destroyed beyond rising by damage of any kind (an integrity of its own). The
+poison patch's design is `docs/poison_law_design_2026-11-14.md`.
 
 ---
 
