@@ -33,6 +33,10 @@ N = 1 with its harness-free twin, then N = 2 and 8 (env e: layout variant e %
 counts differ, so padding rows ride along); env i of N == env i alone. Every
 branch is COUNTED (the census) and must be above 0.
 
+PART PADDING -- padding rows (valid 0) filled with copies of live walking and
+pushed rows come back untouched, and the valid rows equal a run with all-zero
+padding (the scenes' padding is all zeros, which no branch would move).
+
 PART DOORWAY -- the P6.2 doorway jet (prone bodies in wind, pushed against
 the walls) at N = 1 with its twin, and N = 2.
 
@@ -642,6 +646,48 @@ def part_doorway():
                  DOOR_TICKS, min_share=0.3, census=cen2)
 
 
+def part_padding():
+    """A padding row (valid 0) is never touched, whatever it holds: two box
+    envs after 120 ticks, U two rows past the larger, the padding rows filled
+    with copies of LIVE walking / pushed rows (valid cleared); the kernel's
+    valid rows equal a run with all-zero padding, the padding rows come back
+    as they went, and the coverage counts only valid rows."""
+    drivers = [BoxDriver(variant=e, n0=5 + e, n1=4, seed=3 + e) for e in range(2)]
+    for _ in range(120):
+        for d in drivers:
+            d.tick()
+    U = max(len(d.sim.units) for d in drivers) + 2
+    clean = np.stack([unit_store.pack(d.sim.units, U) for d in drivers])
+    lay = unit_store.layout()
+    dirty = clean.copy()
+    for e, d in enumerate(drivers):
+        live = [r for r in range(len(d.sim.units)) if clean[e, r, lay.valid]]
+        for i, r in enumerate(range(len(d.sim.units), U)):
+            dirty[e, r] = clean[e, live[(3 * i + e) % len(live)]]
+            dirty[e, r, lay.valid] = 0
+    from cuda_unit_lockstep import capture, gather
+    names = tuple("field:" + f for f in unit_kernels.MOVEMENT_FIELDS)
+    inp = gather(names, [capture(names, d.sim) for d in drivers])
+    st = unit_store.DeviceStore(2, U, tables=unit_tables.values_batch(
+        [d.sim for d in drivers]))
+    st.upload(clean)
+    cov_clean = unit_kernels.movement(st, inp.fields)
+    got_clean = st.download()
+    st.upload(dirty)
+    cov_dirty = unit_kernels.movement(st, inp.fields)
+    got_dirty = st.download()
+    valid = clean[:, :, lay.valid].astype(bool)
+    if not np.array_equal(got_dirty[valid], got_clean[valid]):
+        fail("padding: the valid rows differ when the padding rows hold live rows")
+    if not np.array_equal(got_dirty[~valid], dirty[~valid]):
+        fail("padding: a padding row was written")
+    if not np.array_equal(cov_dirty, cov_clean) or not cov_clean.any():
+        fail(f"padding: coverage {cov_dirty.tolist()} vs {cov_clean.tolist()}")
+    print(f"padding: N=2, U={U}, {int((~valid).sum())} padding rows holding live rows "
+          f"left untouched; valid rows equal the clean run (coverage "
+          f"{cov_clean.tolist()})")
+
+
 # ---------------------------------------------------------------------------
 # PART CHAINED
 # ---------------------------------------------------------------------------
@@ -707,7 +753,7 @@ def part_chained():
 # ---------------------------------------------------------------------------
 # main / bench
 # ---------------------------------------------------------------------------
-PARTS = ("lib", "ship", "box", "batch", "doorway", "chained")
+PARTS = ("lib", "ship", "box", "batch", "padding", "doorway", "chained")
 
 
 def main(parts=None) -> int:
@@ -717,7 +763,8 @@ def main(parts=None) -> int:
     parts = parts or os.environ.get("UNIT_MOVEMENT_PARTS", ",".join(PARTS)).split(",")
     t0 = time.perf_counter()
     fns = {"lib": part_lib, "ship": part_ship, "box": part_box, "batch": part_batch,
-           "doorway": part_doorway, "chained": part_chained}
+           "padding": part_padding, "doorway": part_doorway,
+           "chained": part_chained}
     for p in parts:
         try:
             if p not in fns:
