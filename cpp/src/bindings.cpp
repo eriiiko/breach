@@ -762,6 +762,37 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("store"), py::arg("tables"), py::arg("op"), py::arg("a0") = 0,
               py::arg("a1") = 0, py::arg("a2") = 0, py::arg("a3") = 0,
               "#29 P6.2 TEST-ONLY: the device unit library on the store's rows.");
+        // #29 P6.2m: slot 3, movement (cuda_unit_movement.cu).
+        m.def("unit_movement",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t material,
+                 int h, int w) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_movement(s, t, material, h, w, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("material"), py::arg("h"),
+              py::arg("w"),
+              "#29 P6.2m: slot 3 (Simulation._update_player_movement, the continuous "
+              "path) on the device store; `material` is a device pointer to the (N, h, w) "
+              "int8 GameMap.material planes.");
+        m.def("unit_movement_probe",
+              [](int op, py::array_t<int64_t, py::array::c_style> args,
+                 py::array_t<int8_t, py::array::c_style> material,
+                 py::array_t<int64_t, py::array::c_style> mobility) {
+                  if (args.ndim() != 2 || args.shape(1) != breach_cuda::UNIT_MOVEMENT_PROBE_ARGS)
+                      throw std::invalid_argument("unit_movement_probe: args must be (n, 6) int64");
+                  if (material.ndim() != 2 || mobility.ndim() != 1)
+                      throw std::invalid_argument(
+                          "unit_movement_probe: material (h, w) int8, mobility (n_mat,) int64");
+                  const int n = (int)args.shape(0);
+                  py::array_t<int64_t> out({(py::ssize_t)n,
+                                            (py::ssize_t)breach_cuda::UNIT_MOVEMENT_PROBE_OUT});
+                  breach_cuda::unit_movement_probe(
+                      op, args.data(), n, material.data(), (int)material.shape(0),
+                      (int)material.shape(1), mobility.data(), (int)mobility.shape(0),
+                      out.mutable_data());
+                  return out;
+              }, py::arg("op"), py::arg("args"), py::arg("material"), py::arg("mobility"),
+              "#29 P6.2m TEST-ONLY: the walk's library functions on synthetic rows.");
     }
 
     m.def("eos_mg_build_parity",
@@ -2322,6 +2353,12 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("a"), py::arg("b"),
           "fixed_point.h mul_q16_round_q: a * b / 65536 rounded half away "
           "from zero (128-bit product).");
+    // #29 P6.2m: movement.half_up's twin (the slot-3 kernel's rounding),
+    // gated by tests/test_unit_impulse_twins.py.
+    m.def("fp_half_up",
+          [](int64_t num, int64_t den) { return fixedpoint::half_up_q(num, den); },
+          py::arg("num"), py::arg("den"),
+          "fixed_point.h half_up_q: (num + den // 2) // den, floor divisions, den > 0.");
 
     // FUEL-FRACTION AXIS (2026-07-30): the load-time reciprocal bake itself,
     // exposed so Python can be GATED against it rather than trusted to

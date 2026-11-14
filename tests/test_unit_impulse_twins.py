@@ -135,3 +135,28 @@ def test_p62_mul_q16_round_is_the_exact_product_rounded_once():
             want = mul_q16_round(a, b)
             if abs(want) < 2 ** 62:
                 assert bp.fp_mul_q16_round(a, b) == want, (a, b)
+
+
+# ---------------------------------------------------------------------------
+# #29 P6.2m: the slot-3 kernel's kit twin (fixed_point.h half_up_q).
+# ---------------------------------------------------------------------------
+from simulation.movement import half_up  # noqa: E402
+
+
+def test_p62m_half_up_is_movements_floor_rounding():
+    """Property: ``half_up_q`` is ``movement.half_up`` -- ``(num + den // 2)
+    // den`` with Python's FLOOR divisions -- for every sign of ``num``, odd
+    and even ``den > 0``, the exact halves and the magnitudes the slot-3
+    kernel forms (a Q16 cost times 64 tiles times 1000 times ONE, < 2^58).
+    Breaks if a division truncates toward zero where Python floors (a
+    negative numerator), or the half is taken as ``(den + 1) // 2``."""
+    nums = _INTS + [2 ** 58, -(2 ** 58), 5, -5, 6, -6, 7, -7, 1, -1, 0]
+    dens = [1, 2, 3, 4, 5, 7, 1000, 65536, 65537, 3 * 2 ** 40 + 1, 2 ** 58]
+    for n in nums:
+        for d in dens:
+            if abs(n) + d < 2 ** 62:
+                assert bp.fp_half_up(n, d) == half_up(n, d), (n, d)
+    for d in (2, 4, 1000):                  # the exact halves round UP
+        for q in (-3, 0, 3):
+            n = q * d + d // 2
+            assert bp.fp_half_up(n, d) == half_up(n, d) == q + 1, (n, d)

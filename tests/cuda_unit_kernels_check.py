@@ -11,7 +11,8 @@ kernels are ``simulation.unit_kernels`` (C++ ``cpp/src/cuda_unit_*.cu`` over
 PART TABLES -- every uploaded table value read back from the device equals the
 reference object's own value (the impulse table, the turning dials, the
 stabilities, the status registry, the exposure decay, the class hp, the
-zombie team, the gas planes), per env of a batch whose maps differ in tile
+zombie team, the gas planes; since P6.2m slot 3's speed table, effort edge and
+mobility column), per env of a batch whose maps differ in tile
 size (the impulse table is per map).
 
 PART LIB -- the device unit library on synthetic rows over their whole range:
@@ -451,6 +452,15 @@ def part_tables():
             "hp_class_zombie_q": unit_traits.class_hp_q(True),
             "zombie_team": ZOMBIE_TEAM, "gas_o2": O2, "gas_n2": INERT_N2,
         }
+        # #29 P6.2m: slot 3's rows (the speed table per map, the effort edge,
+        # the map's own materials table's mobility column).
+        sp = sim.speed_table
+        want.update({
+            "speed_walk_cost_q": sp.walk_cost_q, "speed_full_cost_q": sp.full_cost_q,
+            "speed_side_q": sp.side_q, "speed_back_q": sp.back_q,
+            "impulse_effort_edge_q": t.effort_edge_q,
+            "material_mobility": tuple(int(m) for m in sim.gmap.materials.mobility),
+        })
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")

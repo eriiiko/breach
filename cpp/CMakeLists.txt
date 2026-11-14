@@ -137,6 +137,8 @@ if(BREACH_CUDA)
         src/cuda_unit_orders.cu     # slots 1b', 10'
         src/cuda_unit_conversion.cu # slot 10's ruleset tail
         src/cuda_unit_lib_probe.cu  # TEST-ONLY: the unit library on synthetic rows
+        src/cuda_unit_movement.cu   # #29 P6.2m: slot 3 (the continuous path)
+        src/cuda_unit_movement_probe.cu  # TEST-ONLY: the walk's library functions
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
