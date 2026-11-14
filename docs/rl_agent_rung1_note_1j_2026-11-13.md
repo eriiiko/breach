@@ -889,6 +889,17 @@ three rates puts D = 1 near 0.48: most of the gap to 0.5 is the holds
 between decisions (row 3: path turns, waypoint arrivals, new targets wait up
 to D - 1 ticks). An extrapolation, not a measurement.
 
+**CORRECTION (the lead, 2026-11-14).** The 0.48 is wrong: it takes the drop
+per 2 ticks as the drop per tick. The least-squares line through the three
+pooled rates is `-0.021 +- 0.012` per tick, so D = 2 comes to 0.40 +- 0.05
+and D = 1 to 0.42 +- 0.06. Still an extrapolation; neither was run.
+
+**RULING (Erik, 2026-11-14; design document 13.1).** The decision rate stays
+at 4 ticks and is not raised; the gate is closed with the missed mark as a
+recorded finding ("I'd say we've already passed this test actually"); the
+free bots are not slowed; from rung 3 on a learned team is measured against
+the free bots and against `bots_door`.
+
 **The records.** `C:/tmp/breach_1j/records/<level>/`: 600 `.npz` (one per
 door team of every design match, both seed sets) + 600 `.replay.gz`, 1200
 files, 4.0 GB in all; a record 5-14 MB (mean 7.0 MB), under the note's

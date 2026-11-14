@@ -86,16 +86,19 @@ are in no fixed order: take them by motivation.
   | **1j** | **The bots through the door,** and their play saved as records for imitation. | see below | no |
 
 - **The gate that matters: the bots through the door.** Drive the layered bots through action spec v1 at the agent's decision rate, each of their decisions translated to the nearest choice, and play them against the unconstrained bots in the tournament. If they lose badly, the action space or the decision rate is too coarse, and we learn it before any training. The same run yields the bots' play as (observation, choice) records, ready for imitation.
+- **Outcome (2026-11-13 / 14).** All ten patches merged. The bots through the door won 0.27 to 0.37 of the decided duels on held-out seeds against the lead's mark of 0.40; the cost is reaction between decisions, not the choices. Erik, 2026-11-14: the test counts as passed, the rate stays at 4 ticks, the free bots stay as they are (design document 13.1). Rung 1 is closed.
 - **Erik decides.** Nothing by eye. Step (ii) of 1d changes what the layered bots know (no more word of deaths nobody saw) and where they see fire lanes, so their play may shift; Erik blessed that in advance (2026-11-11), and the tournament gives the numbers. Everything else changes no behaviour of the game.
 
 ### Rung 2. First light
 
 - **Goal.** A learning curve that rises, and a learned soldier Erik can watch.
 - **Built.** The trainer (rule 8), network v1 (section 5), the trainer's own tests (identical choice probabilities at collection and at training; a masked choice never sampled; a known toy task solved), a checkpoint store, the rating against a fixed pool, the export of a training episode as a replay.
-- **Tasks, in order.**
-  - **Shooting range:** one soldier, standing targets, one room. Minutes of training.
+- **Tasks, in order** (re-ordered 2026-11-14, Erik: "I lean on copying first too"; design document 13.3).
+  - **Copying the bots:** network v1 learns to predict the door bots' recorded choice from the recorded observation (rung 1's records; no game runs while it trains). The first test of the network, its masks and its pointer heads, and the first network-driven fireteam to watch.
+  - **Shooting range:** one soldier, standing targets, one room. Minutes of training. The trainer's first proof, from scratch, without the memory.
   - **Duel:** one against one first-generation bot, random rooms. About an hour.
-  - **Experiment:** does copying the bots first (imitation on rung 1's records) shorten the path? Erik's ruling in the residency design (12.3) wants the bots to bootstrap early training.
+  - **Experiment:** the duel from the copied network against the duel from scratch: does copying shorten the path, or leave habits to unlearn? Erik's ruling in the residency design (12.3) wants the bots to bootstrap early training.
+- **Waits for** the residency arc's P6 (the unit code, #29) before any training run (Erik, 2026-11-14); the trainer's design document does not.
 - **Erik's note for the trainer's design (2026-11-11).** The trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so that one run can later be spread over Erik's three PCs on Tailscale. Until then the three PCs run three experiments at once and share saved networks as opponents.
 - **Gate.** On rooms it has never seen, the soldier wins more than half its duels against the first-generation bot, and the replay shows it aiming, firing and moving on purpose.
 - **Lesson document.** The trainer, line by line.
@@ -108,7 +111,7 @@ are in no fixed order: take them by motivation.
   - The team display: sight shared and nothing more, against sight plus readable intentions (each team-mate's target, "am I in a team-mate's line of fire").
   - Friendly fire: credited team hits per match, against the bots' own number.
   - The decision rate: 4, 6 and 8 ticks.
-- **Gate.** On held-out ships the fireteam beats the layered bots in more than half of the decided matches, with no more friendly-fire hits per match than the bots.
+- **Gate.** On held-out ships the fireteam beats the layered bots in more than half of the decided matches, with no more friendly-fire hits per match than the bots. The result against the bots through the door (`bots_door`, the equal-reaction opponent) is printed beside it (2026-11-14, design document 13.1): beating those and not the free bots means a reflex gap, and the decision rate is then re-opened.
 - **Erik decides.** How it plays, by eye, in replays: this is the first rung with feel in it.
 
 ### Rung 4. Orders

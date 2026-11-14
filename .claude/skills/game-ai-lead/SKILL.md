@@ -107,8 +107,18 @@ from the survey. The ones most often needed:
 | 2026-11-11 | **Erik's note for rung 2:** the trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so one run can later be spread over his three PCs on Tailscale; until then the three PCs run three experiments at once and share saved networks as opponents. (Roadmap, rung 2.) |
 | 2026-11-11 | **The critique** (four lenses, one Opus critic at a time; design document section 12): no blocker, 23 major points, all fixed on paper as version 2. Eight of the fixes changed sections Erik had agreed (section 12.3): sight as a match setting; records that outlive an unseen death; the physics planes' true scales; "whom it aims at" from the facing; a throw's aim held through the wind-up; "the play" dropped; masks from the real gates; the map shown through walls. **Erik: "yes i agree".** Rung 1 was re-cut into ten patches, 1a to 1j (roadmap); **"i dont need to look at 1d, i bless it all ready now"**. |
 
+| 2026-11-14 | **The decision rate stays at 4 ticks; rung 1 is closed** (design document 13.1). 1j was bots against the same bots behind the door, no network; the door team won 0.27 to 0.37 against a 0.40 mark, and the cost is reaction, not the choices. Erik: "making a decision 6 times per second is quite a lot. I don't think we shall increase it"; "if we focus too much on acting every tick, we miss what we're trying to build here: intelligent agents that can learn how to do smart moves"; "I'd say we've already passed this test actually". The free bots are not slowed; from rung 3 a learned team is measured against the free bots (the gate) and `bots_door` (beside it). Sixteen directions stay (the lead's; 8 "looks a little not so nice"). |
+| 2026-11-14 | **Rung 2 starts by copying the bots** (design document 13.3; Erik: "I lean on copying first too"), then the shooting range and the duel from reward, the duel run from the copy and from scratch. **No training run before the residency arc's P6 is through** (the unit code is moving). |
+
 ## 6. Open
 
+- **Rung 1 is CLOSED (2026-11-14). Rung 2 is next and has no design yet:**
+  the trainer's design document (copying step, PPO, the stored decision, the
+  boundary between collecting and learning) and its lesson are the lead's to
+  write; training itself waits for P6 (#29). Two questions the unit design
+  (`docs/unit_design_2026-11-14.md` 3 and 9) hands this role for the next
+  observation spec version: are a soldier's own and its team-mates' hooks
+  shown, and fixed slot blocks for statuses and items.
 - **Rung 0 is CLOSED** (Erik, 2026-11-11: "yes i agree" to the eight changes of
   design document 12.3; merged the same evening). **Rung 1 is live:** ten
   patches, 1a to 1j (roadmap). Erik blessed 1d's step (ii) in advance: it
@@ -227,6 +237,20 @@ implementation agents and critics stay one at a time.
   long run; (4) stopping a backgrounded bash loop does not stop it on Windows --
   kill the loop's own bash process tree, or each kill advances it to the next
   run.
+
+- 2026-11-14 -- the design session after rung 1 (branch `192-rung2-cadence`,
+  documents only; egregore did not connect). Learned: (1) Erik read "the bots
+  through the door won 36 %" as "trained agents already beat the bots 36 % of
+  the time": a result must say WHO played WHOM and that no network exists,
+  before any number; "the door" is our word, not his; (2) recompute a handed-on
+  number before building on it: the 1j note's "0.48 at one decision per tick"
+  was the drop per 2 ticks taken as the drop per tick (the line gives 0.42
+  +- 0.06), which changes how much a faster rate would buy; (3) a pass mark
+  set before any measurement is a guess: say so when it is set, so that
+  missing it by 4 points is read as a finding and not as a failure; (4) the
+  question that settled it was a game question (how fast should a marine
+  react), which Erik answered from what the game is for, without the options
+  table.
 
 ## 11. Running rung 1 (for the orchestrator session)
 

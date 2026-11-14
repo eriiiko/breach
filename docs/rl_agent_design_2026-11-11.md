@@ -27,7 +27,7 @@ The plan around it: `docs/rl_agent_roadmap_2026-11-11.md`. The reasons:
 ## 1. Frame and rate (AGREED with the action space, Erik 2026-11-11; the window's frame is settled with section 3)
 
 - **Frame: north up, centred on the soldier.** Positions in the list are offsets from the soldier along the map's own axes, and the map window does not turn with it. The soldier's facing is one of its own features. Reason: the ships' walls run along the map's axes, so a window that never rotates keeps every wall straight for the network, and a rotated window would have to be resampled and blurred. It is also the frame of the human's north-up camera.
-- **Rate: one decision every 4 ticks** (six a second, 167 ms; OpenAI Five's reaction time was 167 to 267 ms, Honor of Kings acts every 133 ms). Between decisions the choices are held, and the decoder (2.2) keeps issuing verbs on every tick. The rate is one of rung 3's experiments (4, 6, 8 ticks).
+- **Rate: one decision every 4 ticks** (six a second, 167 ms; OpenAI Five's reaction time was 167 to 267 ms, Honor of Kings acts every 133 ms). Between decisions the choices are held, and the decoder (2.2) keeps issuing verbs on every tick. The rate is one of rung 3's experiments (4, 6, 8 ticks). **Confirmed after rung 1's measurement (Erik, 2026-11-14): the rate is not raised; section 13.1.**
 
 ## 2. Action spec v1 (AGREED, Erik 2026-11-11: "your action space is blessed")
 
@@ -921,3 +921,103 @@ pace with collecting (rung 2, the trainer's design).
 6. **"The play" is dropped** from the team's counts; the order carries it (4.4).
 7. **The masks follow the game's real gates,** including two that look like oversights in the game (section 11).
 8. **The map and the physics fields are shown through walls,** as the bots and the screen have them; only units, grenades and charges obey sight (3.1). This was true of the design before and is now said.
+
+## 13. Amendments after rung 1
+
+### 13.1 The decision rate stays at 4 ticks; rung 1 is closed (AGREED, Erik 2026-11-14)
+
+**What rung 1 measured** (patch 1j, `docs/rl_agent_rung1_note_1j_2026-11-13.md`,
+"As built"). No network was involved. The layered bots played their free
+twins; one team's commands had to pass through action spec v1 (five choices,
+one decision every 4 ticks, held in between). Equal play is 0.50 of decided
+matches; the lead's pass mark was 0.40.
+
+| | result |
+|---|---|
+| held-out seeds, four cells | 0.368, 0.316, 0.373, 0.271 |
+| a decision every 4 / 6 / 8 ticks (200 duels each) | 0.358 / 0.320 / 0.275, each +- 0.033 |
+| 8 directions instead of 16 | 0.381 (within noise) |
+| the trigger re-issued every tick | 0.389 (within one standard error) |
+| against the horde alone | as good as the free bots (the freighter: better) |
+| anything masked sent | 0 in 1600 matches |
+
+**A correction.** The note says a straight line through the three rates puts
+one decision per tick "near 0.48". The least-squares line is
+`-0.021 +- 0.012` per tick, which gives **0.40 +- 0.05 at 2 ticks and
+0.42 +- 0.06 at 1 tick** (the note took the drop per 2 ticks as the drop per
+tick). Neither rate was run. So the bots' loss through the door is about 14
+points at 4 ticks, of which a faster rate would buy back 4 to 6 by
+extrapolation.
+
+**What the finding is.** The choices themselves cost nothing measurable. What
+costs is reaction: a soldier behind the door answers anything new 0 to 3
+ticks (up to 125 ms) later than a bot that acts on every tick. Which wait
+costs most (a new enemy, the trigger, a turn in the path) was not separated.
+Whether a LEARNED soldier loses what the bots lose is unknown: the bots were
+written to act every tick, and a soldier that learns at this rate can
+anticipate. Only training answers it.
+
+**Erik's ruling, 2026-11-14.** "I think making a decision 6 times per second
+is quite a lot. I don't think we shall increase it." "If we focus too much on
+acting every tick, we miss what we're trying to build here: intelligent
+agents that can learn how to do smart moves." On the result: "bots vs
+handicapped bots: I'd expect every game to be determined by that reaction
+speed. I'm surprised that we reach 36 %, and I'd say we've already passed
+this test actually."
+
+So:
+
+1. **Section 1's rate stands: one decision every 4 ticks.** It is not raised.
+   The rate remains one of rung 3's experiments (4, 6, 8 ticks), as written.
+2. **Rung 1's gate is closed.** The missed 0.40 mark is a recorded finding,
+   not a blocker. The mark was the lead's guess at "not helpless", set before
+   any measurement; the measurement says the door is not helpless.
+3. **The free bots are not slowed.** The bots through the door (`bots_door`)
+   are the equal-reaction opponent, so both exist.
+4. **Two yardsticks from rung 3 on.** The gate stays "beat the free layered
+   bots in more than half of the decided matches"; the result against
+   `bots_door` is printed beside it. A team that beats the door bots and not
+   the free ones has a reflex gap, and this section is then re-opened.
+5. **Not taken, and why:** a faster rate (the farm about 15 % slower at 2
+   ticks and 34 % at 1 by the measured step times, an estimate; two to four
+   times the learning work per game second; no surveyed system decides 24
+   times a second); an early decision on an event, and more game-side
+   reflexes between decisions (each a new spec version; the second touches
+   the ruling that the soldier pulls its own trigger). They stay on the list
+   for the day item 4 re-opens the section.
+
+### 13.2 Sixteen directions stay (the lead's; told to Erik 2026-11-14, his to veto)
+
+Erik asked whether 8 directions would make the network's job easier. A head
+of 25 options against 49 is no real saving for a network, and nothing
+measured says 8 learns faster; 16 is what the spec, its tests and the 600
+records are built on, and Erik's eye prefers it ("16 is very smooth, 8 you'll
+see that it looks a little not so nice"). Eight is the same table with every
+second direction switched off (`stride`), so it stays a cheap experiment if
+walking turns out slow to learn.
+
+### 13.3 Rung 2 starts by copying the bots (AGREED, Erik 2026-11-14: "I lean on copying first too")
+
+The first network is trained to predict the door bots' recorded choice from
+the recorded observation (imitation), before any learning from reward. The
+reasons: it is the simplest first test of network v1, its masks and its
+pointer heads (a network that cannot copy has a fault that reward learning
+would hide); no game runs while it trains; and it gives a network-driven
+fireteam to watch early. At best it plays like `bots_door`. Reward training
+then starts from the copied network AND from scratch, side by side, so that
+"does copying help or hurt" stays the experiment the roadmap asked for. The
+known risk: the bots' choices depend on their inner state (a planned path, a
+committed position), which the observation does not show, so the copy will
+be imperfect, and habits may have to be unlearned.
+
+The records (`C:/tmp/breach_1j/records`, 600 matches at 4 ticks, 16
+directions, observation spec v1) are cheap to make again (about ten minutes
+of tournament) and are not precious: a new observation spec version, or a
+change of how the bots play, means recording again.
+
+**Training does not start yet** (Erik, 2026-11-14): the unit code is being
+changed by the residency arc's P6 (#29, `docs/unit_design_2026-11-14.md`).
+That design asks two things of the next observation spec version (its
+sections 3 and 9): whether a soldier is shown its own and its team-mates'
+hooks, and fixed slot blocks for statuses and items so that a table row no
+longer changes a layout. Both are open, the lead's to propose.
