@@ -22,6 +22,8 @@ function               slot (the reference law)              inputs
 :func:`expire_orders`  10'  ``unit_orders.expire``           the ticks
 :func:`convert_zombies` 10 (ruleset tail) ``ai_zombie.       --
                        convert_marines_to_zombies``
+:func:`movement`       3    ``Simulation._update_player_      the material
+                       movement`` (continuous path)          plane
 :func:`status_tick`    2b   ``status.tick_statuses``         the ring
 :func:`heat_damage`    9c   ``exchange.apply_environmental_  the ring, planes,
                        damage``                              the claims
@@ -172,6 +174,46 @@ def convert_zombies(store) -> np.ndarray:
                  store.bp.unit_convert_zombies(store.buffer, store.tables))
 
 
+#: The planes slot 3 reads, by ``GameMap`` field name (#29 P6.2m).
+MOVEMENT_FIELDS = ("material",)
+
+
+def movement(store, fields: dict) -> np.ndarray:
+    """Slot 3 (#29 P6.2m), the CONTINUOUS path's ``Simulation.
+    _update_player_movement``: every valid living row's MOVE_DIR walk and
+    pushed velocity as one displacement (the slide rule against
+    ``GameMap.is_passable_block``), a held-no-aim walker's facing target, a
+    pushed row by its pushed velocity alone. ``fields["material"]`` is a
+    DEVICE array ``(N, h, w)`` int8 -- the resident ``GameMap.material``
+    planes, as ``ResidentBatch.buffers`` holds them; the mobility column is
+    the tables' ``material_mobility`` row. The host-only side (the momentum
+    books' WALL entries, the legacy WEGO path step's ``path_tick_offset``)
+    is the caller's."""
+    n = store.shape[0]
+    a = fields.get("material")
+    if a is None:
+        raise ValueError("unit kernel movement: field 'material' missing")
+    if np.dtype(a.dtype) != np.dtype(np.int8):
+        raise ValueError(f"unit kernel movement: field 'material' is {a.dtype}, "
+                         f"the resident field is int8")
+    if a.ndim != 3 or int(a.shape[0]) != n:
+        raise ValueError(f"unit kernel movement: field 'material' is {a.shape}, "
+                         f"not ({n}, h, w)")
+    _, h, w = (int(x) for x in a.shape)
+    return _done(store, "movement", store.bp.unit_movement(
+        store.buffer, store.tables, int(a.data.ptr), h, w))
+
+
+def movement_probe(bp, op: int, args, material=None, mobility=None) -> np.ndarray:
+    """TEST-ONLY: the walk's library functions on synthetic rows (see
+    ``cuda_unit_kernels.h``, ``unit_movement_probe``): ``args`` ``(M, 6)``
+    int64 -> ``(M, 4)`` int64, column 3 the bad flag."""
+    args = np.ascontiguousarray(args, dtype=np.int64).reshape(-1, 6)
+    mat = np.ascontiguousarray(
+        material if material is not None else np.zeros((1, 1)), dtype=np.int8)
+    mob = np.ascontiguousarray(
+        mobility if mobility is not None else np.zeros(1), dtype=np.int64)
+    return bp.unit_movement_probe(int(op), args, mat, mob)
 # ---------------------------------------------------------------------------
 # #29 P6.3: the slots that hurt
 # ---------------------------------------------------------------------------
@@ -326,6 +368,7 @@ def lib_probe(store, op: int, a0=0, a1=0, a2=0, a3=0):
 __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
            "exposure_decay", "integrate_turn", "WIND_FIELDS", "wind_impulse",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",
-           "convert_zombies", "lib_probe", "CLAIM_WIDTH", "claims_of",
+           "convert_zombies", "lib_probe", "MOVEMENT_FIELDS", "movement",
+           "movement_probe", "CLAIM_WIDTH", "claims_of",
            "pad_claims", "status_tick", "HEAT_FIELDS", "GAS_FIELDS",
            "heat_damage", "gas_rows", "PROBE_PACKET", "damage_probe"]

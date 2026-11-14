@@ -326,3 +326,154 @@ inline void unit_finish(UnitStoreDevice& store, const UnitKernelCounts& out, con
 }
 
 }  // namespace breach_cuda
+
+// ============================================================================
+// #29 P6.2m -- the walk's shared functions (the footprint walk, the speed
+// reduction, the direction rule, the walk ban): slot 3 is their first user;
+// the zombie walk (slot 5) and the onephase / WEGO walkers read the same
+// Python functions, so they live here, not in the slot TU.
+// ============================================================================
+namespace breach_cuda {
+namespace unit_lib {
+
+//: The proved ranges of the walk (cuda_unit_movement.cu's header): a
+//: footprint of at most FOOTPRINT_MAX^2 tiles, a Q16 tick cost of at most
+//: COST_MAX after each reduction step, a hook at most HOOK_OPERAND_MAX.
+constexpr int64_t FOOTPRINT_MAX = 8;
+constexpr int64_t COST_MAX = (int64_t)1 << 29;
+constexpr int64_t HOOK_OPERAND_MAX = (int64_t)1 << 20;
+//: movement.MOBILITY_ONE.
+constexpr int64_t MOBILITY_ONE = 1000;
+
+// Unit.tile_x / tile_y: int(x) of a Q16 position (truncation toward zero).
+__device__ __forceinline__ int64_t tile_of(int64_t q) {
+    return fixedpoint::shr_trunc_q(q, 16);
+}
+
+// unit_impulse.walk_allowed: no walk while the reaction delay runs.
+__device__ __forceinline__ bool walk_allowed(const int64_t* row) {
+    return row[UNIT_COL_REACT_TICKS] == 0;
+}
+
+// unit_impulse.effort_scale_q16: ONE up to the slow edge e0, linear down to
+// half at an effort of ONE, half above (floored; every operand non-negative
+// on the division's branch).
+__device__ __forceinline__ int64_t effort_scale_q16(int64_t e, int64_t e0) {
+    if (e <= e0) return ONE;
+    if (e >= ONE) return ONE / 2;
+    return ONE - ((ONE / 2) * (e - e0)) / (ONE - e0);
+}
+
+// The terrain a walk reads: an env's material plane (GameMap.material, int8,
+// the resident field) projected through the materials table's mobility
+// column (the device tables' material_mobility row).
+struct MobilityMap {
+    const int8_t* mat;      // (h, w) of this env
+    int h, w;
+    const int64_t* mob;     // the mobility column, n_mat entries
+    int n_mat;
+};
+
+// A material id outside the table: Python's numpy index wraps a negative id
+// and raises past the end; the kernel refuses both (*bad).
+__device__ __forceinline__ int64_t mobility_at(const MobilityMap& m, int64_t y, int64_t x,
+                                               bool* bad) {
+    const int id = (int)m.mat[(size_t)y * m.w + (size_t)x];
+    if (id < 0 || id >= m.n_mat) {
+        *bad = true;
+        return 0;
+    }
+    return m.mob[id];
+}
+
+// GameMap.is_passable_block: the fp x fp block at (fy, fx) in bounds and every
+// tile's mobility > 0 (every tile read, so a bad id refuses as numpy would).
+__device__ inline bool passable_block(const MobilityMap& m, int64_t fy, int64_t fx,
+                                      int64_t fp, bool* bad) {
+    if (fy < 0 || fx < 0 || fy + fp > m.h || fx + fp > m.w) return false;
+    bool all = true;
+    for (int64_t y = fy; y < fy + fp; ++y)
+        for (int64_t x = fx; x < fx + fp; ++x)
+            if (!(mobility_at(m, y, x, bad) > 0)) all = false;
+    return all;
+}
+
+// GameMap.footprint_mobility reduced as default_speed reduces it: the tile
+// count n and the mobility sum over the block clamped to the map. A block
+// whose clamped stop is negative (numpy would count from the end) refuses.
+__device__ inline void footprint_mobility(const MobilityMap& m, int64_t fy, int64_t fx,
+                                          int64_t fp, int64_t* n, int64_t* total,
+                                          bool* bad) {
+    const int64_t y0 = fy > 0 ? fy : 0, x0 = fx > 0 ? fx : 0;
+    const int64_t y1 = (fy + fp) < m.h ? (fy + fp) : m.h;
+    const int64_t x1 = (fx + fp) < m.w ? (fx + fp) : m.w;
+    *n = 0;
+    *total = 0;
+    if (y1 < 0 || x1 < 0) {
+        *bad = true;
+        return;
+    }
+    for (int64_t y = y0; y < y1; ++y)
+        for (int64_t x = x0; x < x1; ++x) {
+            *total += mobility_at(m, y, x, bad);
+            *n += 1;
+        }
+}
+
+// movement.default_speed over (n, total): the class cost (Q16 ticks per
+// tile) times n * MOBILITY_ONE over the mobility sum, the speed hook inside
+// that one rounding (skipped at ONE), then the effort scale (skipped at ONE),
+// at least 1. Python raises on a sum <= 0, a hook or scale <= 0 (*bad); a
+// cost past COST_MAX leaves the proved range (*bad).
+__device__ inline int64_t default_speed_q(int64_t n, int64_t total, int64_t speed_class,
+                                          int64_t hook_q16, int64_t scale_q16, bool* bad) {
+    if (total <= 0 || n < 1 || n > FOOTPRINT_MAX * FOOTPRINT_MAX || speed_class < 0 ||
+        speed_class > COST_MAX || hook_q16 <= 0 || hook_q16 > HOOK_OPERAND_MAX ||
+        scale_q16 <= 0) {
+        *bad = true;
+        return 0;
+    }
+    int64_t cost;
+    if (hook_q16 == ONE) {
+        cost = fixedpoint::half_up_q(speed_class * n * MOBILITY_ONE, total);
+    } else {
+        cost = fixedpoint::half_up_q(speed_class * n * MOBILITY_ONE * ONE, total * hook_q16);
+    }
+    if (cost > COST_MAX) {
+        *bad = true;
+        return 0;
+    }
+    if (scale_q16 != ONE) cost = fixedpoint::half_up_q(cost * ONE, scale_q16);
+    if (cost > COST_MAX) {
+        *bad = true;
+        return 0;
+    }
+    return cost >= 1 ? cost : 1;
+}
+
+// movement.move_speed_q16 -- THE direction rule and the throttle: the exact
+// rational (F * Cf + t * c+ * (Cw - Cf)) / (Cw * Cf), F = f(theta) in Q32,
+// rounded half up ONCE to Q16 tiles per tick. Python refuses a throttle
+// outside [0, ONE], a cos outside [-ONE, ONE], a cost below 1 (*bad); a cost
+// past COST_MAX or a direction factor outside [0, ONE] leaves the proved range
+// (*bad).
+__device__ inline int64_t move_speed_q16(int64_t cw, int64_t cf, int64_t side, int64_t back,
+                                         int64_t t, int64_t c, bool* bad) {
+    if (t < 0 || t > ONE || c < -ONE || c > ONE || cw < 1 || cf < 1 || cw > COST_MAX ||
+        cf > COST_MAX || side < 0 || side > ONE || back < 0 || back > ONE) {
+        *bad = true;
+        return 0;
+    }
+    int64_t f32, c_plus;
+    if (c >= 0) {
+        f32 = side * ONE + (ONE - side) * c;
+        c_plus = c;
+    } else {
+        f32 = side * ONE + (side - back) * c;
+        c_plus = 0;
+    }
+    return fixedpoint::half_up_q(f32 * cf + t * c_plus * (cw - cf), cw * cf);
+}
+
+}  // namespace unit_lib
+}  // namespace breach_cuda

@@ -106,6 +106,30 @@ void unit_lib_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, int 
                     int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t* out,
                     const UnitKernelCounts& counts);
 
+// ---- #29 P6.2m: slot 3, movement (cuda_unit_movement.cu) ------------------------
+// Slot 3 on the CONTINUOUS path (Simulation._update_player_movement: the
+// MOVE_DIR walk + the pushed velocity as one displacement, the slide rule, a
+// held-no-aim walker's facing target; a pushed row moves by pv alone) on every
+// valid LIVING row. `material` is a device pointer to the (N, h, w) int8
+// GameMap.material planes (the resident field, as ResidentBatch holds it); the
+// mobility column is the tables' material_mobility row.
+void unit_movement(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                   std::uintptr_t material, int h, int w, const UnitKernelCounts& out);
+
+// TEST-ONLY (cuda_unit_movement_probe.cu): the walk's library functions on
+// synthetic rows. `args` is (n_rows, UNIT_MOVEMENT_PROBE_ARGS) int64 host, `out`
+// (n_rows, UNIT_MOVEMENT_PROBE_OUT) int64 host; out[.., 3] = bad. op 0
+// default_speed_q(n, total, class, hook, scale) -> out[0]; op 1
+// move_speed_q16(cw, cf, side, back, t, cos) -> out[0]; op 2
+// effort_scale_q16(e, e0) -> out[0]; op 3 facing_cos_q16(dx, dy, facing) ->
+// out[0]; op 4 over `material` (h, w) int8 and `mobility` (n_mat,) int64 host:
+// passable_block(fy, fx, fp) -> out[0], footprint_mobility -> out[1] n, out[2]
+// total.
+constexpr int UNIT_MOVEMENT_PROBE_ARGS = 6;
+constexpr int UNIT_MOVEMENT_PROBE_OUT = 4;
+void unit_movement_probe(int op, const int64_t* args, int n_rows, const int8_t* material,
+                         int h, int w, const int64_t* mobility, int n_mat, int64_t* out);
+
 // ---- #29 P6.3: the slots that hurt (the device apply_packet, the event ring) ----
 // Their kernels append UnitHit / UnitKilled records to `ring` (begun by the
 // caller at the tick's start) in the reference's emission order; `dropped`

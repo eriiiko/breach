@@ -58,6 +58,11 @@ PART BATCH -- the fire / gas / status scenes at N = 2 and 8 with different
 unit counts per env (padding rows): env i of the batch == env i alone, rows
 and rings.
 
+PART PADDING -- per slot, padding rows filled with copies of live rows (valid
+cleared): untouched, silent, the valid rows, the ring and the coverage equal
+the all-zero-padding run (live scenes leave padding all zero, so a kernel
+writing one would not show there).
+
 PART OVERFLOW -- a ring too small for a tick's events: the kernel's dropped
 count == the events past the capacity, nothing written past it, the records
 within it the host's first ones, and the Python face refuses the run by name.
@@ -968,6 +973,68 @@ def part_batch():
 
 
 # ---------------------------------------------------------------------------
+# PART PADDING
+# ---------------------------------------------------------------------------
+PAD_SCENES = (("status", SLOT_2B), ("fire", SLOT_9C), ("gas", SLOT_9C3))
+
+
+def part_padding():
+    """A padding row (valid 0) is never touched and emits nothing, whatever it
+    holds: per slot, two envs of its scene shadowed with U two rows past the
+    larger, and on the first tick the slot acts, its entry rows re-run with
+    the padding rows filled with copies of LIVE rows (valid cleared): the valid
+    rows and the ring equal the clean run's, the padding rows come back as they
+    went, the coverage counts only valid rows. (Live scenes leave padding all
+    zero, so a kernel writing one would not show there.)"""
+    lay = unit_store.layout()
+    for kind, slot in PAD_SCENES:
+        drivers = [LaneDriver(kind, variant=e) for e in range(2)]
+        U = max(len(d.sim.units) for d in drivers) + 2
+        k = 0
+        done = False
+        with ShadowLockstep(drivers, [slot], n_units=U, check_alone=False) as ls:
+            for _ in range(LANE_TICKS):
+                rep = ls.tick()[slot.label]
+                if rep.coverage.sum() == 0:
+                    continue
+                clean = np.stack(ls._pre[k])
+                inp = ls.last_inputs[slot.label]
+                dirty = clean.copy()
+                for e in range(2):
+                    live = [r for r in range(U) if clean[e, r, lay.valid]]
+                    for i, r in enumerate(r for r in range(U) if not clean[e, r, lay.valid]):
+                        dirty[e, r] = clean[e, live[(3 * i + e) % len(live)]]
+                        dirty[e, r, lay.valid] = 0
+                runs = []
+                for rows in (clean, dirty):
+                    ls.store.upload(rows)
+                    ls.ring.begin()
+                    cov = np.asarray(slot.call(ls.store, inp, ls.ring))
+                    runs.append((cov, ls.store.download(), ls.ring.records()))
+                valid = clean[:, :, lay.valid].astype(bool)
+                (c0, g0, r0), (c1, g1, r1) = runs
+                if not np.array_equal(g1[valid], g0[valid]):
+                    fail(f"padding [{slot.label}]: the valid rows differ when the "
+                         f"padding rows hold live rows")
+                if not np.array_equal(g1[~valid], dirty[~valid]):
+                    fail(f"padding [{slot.label}]: a padding row was written")
+                if r1 != r0:
+                    fail(f"padding [{slot.label}]: the ring differs (a padding row "
+                         f"emitted)")
+                if not np.array_equal(c1, c0):
+                    fail(f"padding [{slot.label}]: coverage {c1.tolist()} vs "
+                         f"{c0.tolist()}")
+                print(f"padding [{slot.label}]: tick {rep.tick}, N=2, U={U}, "
+                      f"{int((~valid).sum())} padding rows holding live rows left "
+                      f"untouched and silent; valid rows and ring equal the clean "
+                      f"run (coverage {c0.tolist()}, {sum(len(x) for x in r0)} events)")
+                done = True
+                break
+        if not done:
+            fail(f"padding [{slot.label}]: the slot never acted (vacuous)")
+
+
+# ---------------------------------------------------------------------------
 # PART OVERFLOW
 # ---------------------------------------------------------------------------
 def part_overflow():
@@ -1083,7 +1150,7 @@ def part_chained():
 # ---------------------------------------------------------------------------
 # main / bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "apply", "scenes", "batch", "overflow", "chained")
+PARTS = ("tables", "apply", "scenes", "batch", "padding", "overflow", "chained")
 
 
 def main(parts=None) -> int:
@@ -1095,7 +1162,7 @@ def main(parts=None) -> int:
     for p in parts:
         try:
             {"tables": part_tables, "apply": part_apply, "scenes": part_scenes,
-             "batch": part_batch,
+             "batch": part_batch, "padding": part_padding,
              "overflow": part_overflow, "chained": part_chained}[p]()
         except Exception as ex:          # a part's crash fails it, the rest run
             import traceback

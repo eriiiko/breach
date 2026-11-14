@@ -165,6 +165,15 @@ def _n_species():
     return len(_species())
 
 
+def _n_materials():
+    from simulation.materials import MATERIAL_NAMES
+    return len(MATERIAL_NAMES)
+
+
+def _material_mobility(src):
+    """The mobility column of the env's own materials table (``GameMap.
+    materials``: what ``is_passable_block`` / ``footprint_mobility`` read)."""
+    return tuple(int(m) for m in src.sim.gmap.materials.mobility)
 # -- #29 P6.3's sources -----------------------------------------------------------
 def _n_dtypes():
     from simulation.damage import N_DAMAGE_TYPES
@@ -333,6 +342,28 @@ ROWS: tuple[TableRow, ...] = (
              "the O2 bulk plane's index in GameMap.gas"),
     TableRow("gas_n2", 1, _gas_index("INERT_N2"), 0, 255,
              "the inert N2 bulk plane's index in GameMap.gas"),
+    # -- #29 P6.2m: slot 3, movement (the walk) -------------------------------
+    # The [speeds] table quantized for the map (sim.speed_table, the object
+    # Simulation._step_move_dir reads): the marine's walk / full speed as Q16
+    # ticks per tile (the WALK / SPRINT hooks' class values; the kernel applies
+    # the hooks inside default_speed's rounding) and the direction factors.
+    TableRow("speed_walk_cost_q", 1,
+             lambda src: src.sim.speed_table.walk_cost_q, ONE + 1, 1 << 26,  # traits-class: the device tables upload the CLASS cost; the kernel applies WALK inside default_speed
+             "[speeds] marine_walk_mps as Q16 ticks per tile"),
+    TableRow("speed_full_cost_q", 1,
+             lambda src: src.sim.speed_table.full_cost_q, ONE + 1, 1 << 26,  # traits-class: as above, SPRINT
+             "[speeds] marine_full_mps as Q16 ticks per tile"),
+    TableRow("speed_side_q", 1, lambda src: src.sim.speed_table.side_q, 1, ONE,
+             "[speeds] sideways_frac, Q16"),
+    TableRow("speed_back_q", 1, lambda src: src.sim.speed_table.back_q, 1, ONE,
+             "[speeds] backward_frac, Q16"),
+    TableRow("impulse_effort_edge_q", 1, _IMP("effort_edge_q"), 0, ONE,
+             "the effort's slow edge k_slow / k_hold (effort_scale_q16)"),
+    TableRow("material_mobility", _n_materials, _material_mobility,
+             -(1 << 20), 1 << 20,
+             "per material id: the materials table's mobility column (milli-"
+             "units; > 0 enterable), the one GameMap.is_passable_block and "
+             "footprint_mobility project GameMap.material through"),
     # == #29 P6.3: the damage pipeline (damage.apply_packet) and the slots 2b,
     # 9c, 9c3 on it. Every value from the object the reference law reads. ====
     # -- mitigation (damage.mitigation_for: the zombie state's, else the

@@ -62,8 +62,8 @@ constexpr int64_t AMOUNT_MAX = (int64_t)1 << 46;
 constexpr int64_t EXPOSURE_MAX = (int64_t)1 << 40;
 constexpr int64_t EXPOSE_MAX = (int64_t)1 << 40;
 constexpr int64_t AP_MAX = (int64_t)1 << 40;
-//: The largest footprint a reduction walks.
-constexpr int64_t FOOTPRINT_MAX = 64;
+//: The largest footprint a reduction walks: the unit library's FOOTPRINT_MAX
+//: (cuda_unit_lib.cuh, P6.2m), the one bound.
 
 // ---- the event sinks ------------------------------------------------------------
 struct EventSink {
@@ -276,7 +276,7 @@ struct Footprint {
     int64_t ax, ay, fp;
 };
 __device__ inline Footprint footprint_of(const int64_t* row, bool* bad) {
-    Footprint f{row[UNIT_COL_X_Q] / 65536, row[UNIT_COL_Y_Q] / 65536, row[UNIT_COL_FOOTPRINT]};
+    Footprint f{tile_of(row[UNIT_COL_X_Q]), tile_of(row[UNIT_COL_Y_Q]), row[UNIT_COL_FOOTPRINT]};
     if (f.fp < 1 || f.fp > FOOTPRINT_MAX) *bad = true;
     return f;
 }

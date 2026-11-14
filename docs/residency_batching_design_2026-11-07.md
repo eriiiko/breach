@@ -818,6 +818,50 @@ landed as re-checked; no decision moved. One line each:
   `gamemap.py` with Class-P twins (a change there needs the stamp through
   those). Eleven modules left `[not_twinned]`.
 
+**As built (P6.2m, 2026-11-14).** Slot 3 landed as cut, beside P6.3; no
+decision moved. One line each:
+- THE CONTINUOUS PATH ONLY: the kernel is `Simulation._update_player_movement`
+  as the continuous ruleset runs it (`cpp/src/cuda_unit_movement.cu`,
+  `unit_kernels.movement`). OnePhaseWEGO's slot 3 (`_displace_pushed` + its
+  timeline) and TwoPhaseWEGO's path branch are legacy and not ported; the WEGO
+  path step after the loop is a no-op on the continuous path (`move_path` is
+  empty) bar its `path_tick_offset` bump, which is REFERENCE_ONLY.
+- THE FIELD INPUT is `field:material`, the GameMap's own int8 plane (already a
+  resident entry field, so P6.4's topology seam and P8b feed it unchanged),
+  projected through a new table row `material_mobility` -- the materials
+  table's mobility column, the projection `is_passable_block` and
+  `footprint_mobility` both make. No derived plane: both of slot 3's readers project
+  `material`, and the GameMap holds no mobility plane.
+- THE TABLE ROWS (one block, appended): `speed_walk_cost_q`, `speed_full_cost_q`
+  (the WALK / SPRINT hooks' class values, from `sim.speed_table`),
+  `speed_side_q`, `speed_back_q`, `impulse_effort_edge_q`, `material_mobility`
+  (per map: two maps of different tile size carry different costs); T = 61.
+- THE LIBRARY gained the walk (`tile_of`, `walk_allowed`, `effort_scale_q16`,
+  `MobilityMap`, `passable_block`, `footprint_mobility`, `default_speed_q`,
+  `move_speed_q16`): the zombie walk and the legacy walkers read the same
+  Python functions. The displacement (`unit_impulse.move`) stays in the slot
+  TU (slot 3 is the one displacement loop). The kit gained `half_up_q`
+  (`movement.half_up`, floor divisions; `bp.fp_half_up`).
+- WIDTHS: a footprint of at most 8 x 8, a Q16 cost of at most 2^29 after each
+  reduction step and a hook operand of at most 2^20 keep the speed's numerator
+  below 2^62; a move component or a walk speed past 2^31, a pushed velocity past
+  2^40 or more than 64 substeps FAULTS the row. A material id outside the table
+  faults (numpy would wrap a negative id); a footprint block whose clamped stop
+  is negative faults (numpy would count from the end). No fault in any scene.
+- THE HOST-ONLY SIDE in the chained form: the momentum books' WALL entries
+  (the pv `move` zeroes, REFERENCE_ONLY) and the `path_tick_offset` bump.
+- THE GATES (`tests/cuda_unit_movement_check.py`, wrapper
+  `tests/test_cuda_unit_movement.py`, kept apart from P6.2's script so P6.3
+  could append beside it): LIB (the walk's functions on synthetic rows over
+  the proved range, a TEST-ONLY probe `cuda_unit_movement_probe.cu`); ship_demo's
+  bots match with WALK / SPRINT / TURN hooks; a movement box built for the gate
+  (walls, furniture, scripted pushes from the map's own impulse table,
+  statuses, an idle horde, a dead unit) where a census counts every branch;
+  batches N = 2 / 8 whose envs differ in map, tile size and tables; PADDING
+  (the scenes' padding rows are all zeros, which no branch would move, so a
+  part fills them with live rows); the doorway jet; CHAINED slot 3 on the ship
+  and the box. Every gate broken once (the patch's report).
+
 **As built (P6.3, 2026-11-14).** The device `apply_packet`, the event ring
 and slots 2b, 9c, 9c3 landed as cut; no decision moved. One line each:
 - THE DAMAGE PIPELINE is `cpp/src/cuda_unit_damage.cuh`, beside the unit
