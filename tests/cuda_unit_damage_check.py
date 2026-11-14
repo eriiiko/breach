@@ -218,6 +218,9 @@ class LaneDriver:
         from simulation import Simulation
         from simulation.ruleset import ContinuousRealtime
         self.kind, self.variant, self.k = kind, variant, 0
+        # the batch's envs differ in their fires, clouds and doses too (so a
+        # kernel fed another env's planes or tables shows)
+        self.scale = (4 + variant % 3) / 4.0
         sim = Simulation(_lanes(), seed=20261114 + variant, breach_physics=bp,
                          enable_recorder=False, ruleset=ContinuousRealtime())
         sim.set_paused(False)
@@ -288,19 +291,19 @@ class LaneDriver:
         if self.k == 0:
             place(w["F"], quantize_scalar(0.0))
             sim.set_aim(w["F"].id, ONE, 0)
-        sim.set_trigger(w["F"].id, (self.k // 40) % 2 == 0)   # bursts
+        sim.set_trigger(w["F"].id, ((self.k + 7 * self.variant) // 40) % 2 == 0)
         if w["VA"].alive:
             self._doom(w["VA"])
-            self._heat(self._foot(w["VA"]), 0.15)
+            self._heat(self._foot(w["VA"]), 0.15 * self.scale)
         if w["PA"].alive and self.k % 3 == 0:
-            self._heat(self._foot(w["PA"]), 0.05)
+            self._heat(self._foot(w["PA"]), 0.05 * self.scale)
         if w["ZD"].alive and self.k % 2 == 0:
-            self._heat(self._foot(w["ZD"]), 0.08)
+            self._heat(self._foot(w["ZD"]), 0.08 * self.scale)
         # the hot wall: the hull row under lane C, beside WC
         top_c = LANE_TOPS[2]
         wall = [(top_c + 7, x) for x in range(10, 17)]
         if self.k < WALL_TICKS:
-            self._heat(wall, WALL_HEAT)
+            self._heat(wall, WALL_HEAT * self.scale)
 
     # -- gas -------------------------------------------------------------------
     def _setup_gas(self):
@@ -319,7 +322,7 @@ class LaneDriver:
         sim, w, k = self.sim, self.who, self.k
         a, b, c, d = (t + 2 for t in LANE_TOPS)
         if k % 12 == 0 and k < 240:
-            self._gas("teargas", a + 1, 9, 1.0, 1)
+            self._gas("teargas", a + 1, 9, 1.0 * self.scale, 1)
         if w["WA"].alive:
             dx = 1.0 if (k // 70) % 2 == 0 else -1.0
             mv = quantize_stick_direction(dx, 0.0, 0.0)
@@ -327,13 +330,13 @@ class LaneDriver:
         if w["VB"].alive:
             self._doom(w["VB"])
             if k % 6 == 0:
-                self._gas("poison", b + 1, 15, 3.0, 2, owner=w["OB"].id)
+                self._gas("poison", b + 1, 15, 3.0 * self.scale, 2, owner=w["OB"].id)
         if k == 0 and w["RC"].alive:
             from simulation import poison
             poison.dose(w["RC"], 20000, -1)          # one dose, then it drains
         if k % 8 == 0:
-            self._gas("poison", c + 1, 28, 3.0, 1)                 # CD's cloud
-            self._gas("poison", d + 1, 15, 3.0, 2)                 # ZD's cloud
+            self._gas("poison", c + 1, 28, 3.0 * self.scale, 1)    # CD's cloud
+            self._gas("poison", d + 1, 15, 3.0 * self.scale, 2)    # ZD's cloud
 
     # -- status ------------------------------------------------------------------
     def _setup_status(self):
@@ -367,7 +370,7 @@ class LaneDriver:
         if db.alive:
             self._doom(db)
             if k == 5:
-                S.apply_status(db, S.BURNING, 1.5, 200, w["SB"].id)
+                S.apply_status(db, S.BURNING, 1.5 * self.scale, 200, w["SB"].id)
                 S.apply_status(db, S.STUNNED, 0, 400, None)
         if zc.alive and k == 5:
             S.apply_status(zc, S.BURNING, 0.5, 300, None)          # x4: 2 HP a tick
