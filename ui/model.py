@@ -809,6 +809,20 @@ def charge_text(unit, timer_s=None) -> str:
     return f"C4 (X): {n}   timer {int(timer_s)} s (5)"
 
 
+def poison_text(unit):
+    """The poison line of ``unit`` (#29 PX, pure): its blood level in units
+    and the hit points still to come from all the poison it holds (depot and
+    blood, before mitigation) -- ``"Poison: blood 0.42 u   to come 7.3 HP"``
+    -- or ``None`` while it holds none. Reads the unit through the law's own
+    reads (``poison.holds`` / ``pending_harm_q``), mutates nothing."""
+    from simulation import poison
+    if not poison.holds(unit):
+        return None
+    blood = int(unit.poison_x1) / 65536.0
+    to_come = poison.pending_harm_q(unit) / 65536.0
+    return f"Poison: blood {blood:.2f} u   to come {to_come:.1f} HP"
+
+
 def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
                       current_mode=None, grenade_kind=None,
                       charge_timer_s=None) -> list:
@@ -862,6 +876,9 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
             f"HP: {int(selected_unit.current_hp)}/"
             f"{int(unit_traits.max_hp_q(selected_unit) / unit_traits.ONE)}",
             13, None, 16))
+        poisoned = poison_text(selected_unit)
+        if poisoned is not None:
+            lines.append(PanelLine(poisoned, 13, (170, 230, 90, 255), 16))
         if continuous:
             ammo = ammo_text(selected_unit, sim.get_tick(),
                              sim.weapons_tables.weapons.by_name)
@@ -893,7 +910,7 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
 
 
 __all__ = [
-    "PanelLine", "ammo_text", "charge_text", "grenade_text",
+    "PanelLine", "ammo_text", "charge_text", "grenade_text", "poison_text",
     "panel_state_lines",
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",

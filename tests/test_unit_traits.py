@@ -648,6 +648,10 @@ CLASS_READERS = {
                ("unit_traits.py", "weapons.py")),
     "HANDLING": (r"(?<!unit_traits)\.(reload|throw_windup|plant)_ticks\b",
                  ("unit_traits.py", "weapons.py")),
+    # #29 PX: the poison law's class rates (the accessors live in poison.py)
+    "TOX_ONSET": (r"\.class_onset_q\b", ("poison.py",)),
+    "TOX_DECAY": (r"\.class_decay_q\b", ("poison.py",)),
+    "TOX_HARM": (r"\.class_harm_q\b", ("poison.py",)),
 }
 #: Lines of an allowed-file exception that ARE the accessor (the accessor
 #: lives beside its class value): ``def`` lines and the accessor bodies.

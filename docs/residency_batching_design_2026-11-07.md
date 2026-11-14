@@ -641,10 +641,12 @@ starts.
 **As built (P6.1, 2026-11-14).** The store, the bridge, the header, the
 buffer, the harness, the labels and the pilot kernel landed as decided; no
 decision moved. One line each:
-- The layout is `simulation/unit_store.layout()`: 76 columns, W = 174 on the
-  shipped config (the widths read config tables: the status block 4 x 16,
-  the exposure block 9, the traits block 9, the hand-grenade rows), then
-  `valid`; a sha256 fingerprint of the layout's text rides in the generated
+- The layout is `simulation/unit_store.layout()`: 79 columns, W = 180 on the
+  shipped config after the poison patch's merge (76 / 174 before it: the
+  patch added three columns and three hooks, and the header was regenerated
+  at the merge, as the rule says; the widths read config tables: the status
+  block 4 x 16, the exposure block 9, the traits block 12, the hand-grenade
+  rows 6), then `valid`; a sha256 fingerprint of the layout's text rides in the generated
   header and the driver refuses a compiled module whose fingerprint is not
   the schema's (a header regenerated without a rebuild).
 - `pack` / `unpack` are `encode_unit` / `decode_into` and nothing else;
