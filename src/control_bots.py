@@ -75,6 +75,7 @@ from simulation.sensor_accessor import Channel, EntityFieldAccessor
 from simulation.team_picture import fire_lanes
 from simulation.turning import wrap_q16
 from simulation.unit_fixed import atan2_q16, quantize_scalar
+from simulation import unit_traits
 from simulation.unit_impulse import shove_target
 from simulation import unit_orders
 from simulation.weapons import FRAG_ROW, fuse_ticks_from_seconds
@@ -1186,13 +1187,16 @@ class BotTeam(ControlSource):
         return abs(wrap_q16(want - after)) <= self._weapon_spread_q(u)
 
     def _weapon_spread_q(self, u) -> int:
-        import math
+        """``u``'s aimed shot cone (#29 U1: THE SPREAD accessor,
+        ``unit_traits.shot_cone_q16`` -- the law's own cone, hook included;
+        cached per (weapon, hook), 0 with no weapon)."""
         weapon = self.weapon_of(u)
-        key = weapon.name if weapon is not None else ""
+        key = (weapon.name if weapon is not None else "",
+               unit_traits.hook(u, unit_traits.SPREAD))
         q = self._spread_q.get(key)
         if q is None:
-            deg = float(weapon.spread_deg) if weapon is not None else 0.0
-            q = quantize_scalar(math.radians(deg))
+            q = (unit_traits.shot_cone_q16(u, weapon) if weapon is not None
+                 else 0)
             self._spread_q[key] = q
         return q
 

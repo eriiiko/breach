@@ -415,6 +415,16 @@ def _exposure_width():
     return N_DAMAGE_TYPES
 
 
+def _traits_default():
+    from simulation.unit_traits import neutral_block
+    return neutral_block()
+
+
+def _traits_width():
+    from simulation.unit_traits import N_HOOKS
+    return N_HOOKS
+
+
 def _grenade_width():
     from simulation.weapons import get_tables
     return len(get_tables().hand_grenade_rows)
@@ -468,6 +478,13 @@ COLUMNS: tuple[Column, ...] = (
     _c("magazines", KIND_INT, "kit", 0),
     _c("footprint", KIND_INT, "kit", 3),
     _c("mass_g", KIND_INT, "kit", 0, note="body + kit, integer grams"),
+    # traits (#29 U1): the hook block, Q16 multipliers on class values
+    # (simulation.unit_traits.HOOKS order), all ONE = neutral = absent from
+    # the digest; written only by unit_traits.compile_unit at spawn, kept
+    # by a conversion
+    _c("traits", KIND_BLOCK, "traits", _traits_default, _enc_block,
+       _dec_block, width=_traits_width,
+       note="Q16 hooks, unit_traits.HOOKS order; ONE = neutral"),
     # position
     # Q16 tiles (#29 P3c): `x` / `y` are their read-only float views;
     # written only through Unit.set_pos_q (Unit.set_pos the float door)
