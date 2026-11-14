@@ -129,6 +129,12 @@ if(BREACH_CUDA)
         # Like every .cu it is on the determinism floor through the target-wide
         # CUDA options below (--fmad=false, -Xcompiler /fp:strict); pure integer.
         src/cuda_unit_store.cu
+        # #29 P6.3: the event ring (Class T), and the slots that hurt over the
+        # device damage pipeline (cuda_unit_damage.cuh); pure integer, on the
+        # same target-wide CUDA determinism floor.
+        src/cuda_unit_events.cu     # the event ring
+        src/cuda_unit_status.cu     # slot 2b
+        src/cuda_unit_exchange.cu   # slots 9c, 9c3
         # #29 P6.2: the unit slot kernels, one TU per slot family over the device
         # unit library (cuda_unit_lib.cuh); Class T, pure integer, on the same
         # target-wide CUDA determinism floor.

@@ -13,6 +13,11 @@
 //                            slot 10'  unit_orders.expire
 //   cuda_unit_conversion.cu  slot 10 (ruleset tail) ai_zombie.convert_marines_to_zombies
 //   cuda_unit_lib_probe.cu   TEST-ONLY: the device unit library on synthetic rows
+//   cuda_unit_status.cu      slot 2b   status.tick_statuses           (#29 P6.3)
+//   cuda_unit_exchange.cu    slot 9c   exchange.apply_environmental_damage
+//                            slot 9c3  apply_teargas_blind + apply_poison_dose
+//                                      + poison.tick (one kernel)    (#29 P6.3)
+//   (the device damage pipeline they share: cuda_unit_damage.cuh)
 //
 // Every kernel is born (N, U): bgrid(U, N), one thread per row, blockIdx.y the
 // env (cuda_unit_lib.cuh's unit_row rebases), a padding row (valid 0) skipped,
@@ -30,6 +35,7 @@
 #include <cstdint>
 
 #include "cuda_unit_store.h"
+#include "cuda_unit_events.h"     // #29 P6.3: the event ring
 
 namespace breach_cuda {
 
@@ -98,5 +104,48 @@ constexpr int UNIT_LIB_PROBE_K = 16;
 void unit_lib_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, int op,
                     int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t* out,
                     const UnitKernelCounts& counts);
+
+// ---- #29 P6.3: the slots that hurt (the device apply_packet, the event ring) ----
+// Their kernels append UnitHit / UnitKilled records to `ring` (begun by the
+// caller at the tick's start) in the reference's emission order; `dropped`
+// (N,) is each env's ring overflow after the kernel (the Python face refuses
+// a run that dropped one). `refused` also counts, for slot 9c3, the poison
+// doses clipped at the body's store (poison.SATURATION's hits).
+struct UnitDamageCounts : UnitKernelCounts {
+    int64_t* dropped = nullptr;    // (N,) events the ring could not hold
+};
+
+// The planes the damage slots read: device pointers to (N, ...) arrays in the
+// resident fields' dtypes -- heat (N, h, w) int32 (Q16 heat units),
+// rad_flux_sweep (N, h, w) int64 (the sweep's fine currency), gas (N, G, h, w)
+// int32 (the trace planes in the TRACE currency).
+struct UnitDamagePlanes {
+    std::uintptr_t heat = 0;
+    std::uintptr_t rad_flux = 0;
+    std::uintptr_t gas = 0;
+    int n_gases = 0;
+    int h = 0;
+    int w = 0;
+};
+
+// Slot 2b (status.tick_statuses): every valid LIVING row's statuses swept,
+// their damage over time applied, counted down.
+void unit_status_tick(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                      UnitEventRing& ring, const UnitDamageCounts& out);
+
+// Slot 9c (exchange.apply_environmental_damage). `claims` is (N, n_claims, 4)
+// int64 host rows (channel, y, x, attacker) -- damage.TickCredit, channel
+// unit_events::UNIT_CREDIT_HEAT for the heat buffer, padded with
+// UNIT_CREDIT_PAD -- staged through the store's input slot 1.
+void unit_heat_damage(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                      UnitEventRing& ring, const UnitDamagePlanes& planes,
+                      const int64_t* claims, int n_claims, const UnitDamageCounts& out);
+
+// Slot 9c3 (exchange.apply_teargas_blind, exchange.apply_poison_dose,
+// poison.tick, fused per row); the claims as for 9c (a gas slice's channel is
+// its index).
+void unit_gas_rows(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                   UnitEventRing& ring, const UnitDamagePlanes& planes,
+                   const int64_t* claims, int n_claims, const UnitDamageCounts& out);
 
 }  // namespace breach_cuda

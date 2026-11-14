@@ -165,6 +165,90 @@ def _n_species():
     return len(_species())
 
 
+# -- #29 P6.3's sources -----------------------------------------------------------
+def _n_dtypes():
+    from simulation.damage import N_DAMAGE_TYPES
+    return int(N_DAMAGE_TYPES)
+
+
+def _zombie_mitigation():
+    from simulation.species import ZOMBIE_MITIGATION
+    return ZOMBIE_MITIGATION
+
+
+def _per_species(f):
+    out = []
+    for s in _species().values():
+        out.extend(int(x) for x in f(s))
+    return tuple(out)
+
+
+def _per_profile(f):
+    out = []
+    for p in _profiles().values():
+        out.extend(int(x) for x in f(p))
+    return tuple(out)
+
+
+def _expo():
+    from simulation import exposure
+    return exposure.get_settings()
+
+
+def _resist_of(env):
+    """exposure.resist_for's non-zombie read of an environment profile."""
+    from simulation.exposure import NO_RESIST
+    return tuple(getattr(env, "expose_resist", NO_RESIST) or NO_RESIST)
+
+
+def _status_causes(src):
+    from simulation.events import CAUSE_NAMES
+    return tuple(-1 if r.dtype is None else CAUSE_NAMES.index(r.name)
+                 for r in _status_registry())
+
+
+def _cfg():
+    from config import CFG
+    return CFG
+
+
+def _heat_dials_q():
+    from simulation import exchange
+    return exchange.heat_dials_q(exchange.heat_dials(_cfg()))
+
+
+def _heat_fine_bits(src):
+    from simulation import optics_fixed
+    return int(optics_fixed.sweep_fine_bits(src.sim.gmap))
+
+
+def _trace_q(v):
+    from simulation import gas_fixed
+    return int(gas_fixed.quantize_trace_scalar(float(v)))
+
+
+def _poison_mod():
+    from simulation import poison
+    return poison
+
+
+def _poison():
+    return _poison_mod().get_settings()
+
+
+def _poison_dose_den(src):
+    from simulation import gas_fixed
+    return int(gas_fixed.TRACE_ONE) * int(src.sim._tps)
+
+
+def _footprint_rowmajor(src):
+    for s in _species().values():
+        want = tuple((dx, dy) for dy in range(3) for dx in range(3))
+        if tuple(tuple(o) for o in s.default_offsets) != want:
+            return 0          # refused by the row's range (lo = hi = 1)
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # The rows
 # ---------------------------------------------------------------------------
@@ -249,6 +333,109 @@ ROWS: tuple[TableRow, ...] = (
              "the O2 bulk plane's index in GameMap.gas"),
     TableRow("gas_n2", 1, _gas_index("INERT_N2"), 0, 255,
              "the inert N2 bulk plane's index in GameMap.gas"),
+    # == #29 P6.3: the damage pipeline (damage.apply_packet) and the slots 2b,
+    # 9c, 9c3 on it. Every value from the object the reference law reads. ====
+    # -- mitigation (damage.mitigation_for: the zombie state's, else the
+    #    species'), Q16 per damage type --------------------------------------
+    TableRow("mitig_armor_zombie_q", lambda: _n_dtypes(),
+             lambda src: _zombie_mitigation().armor_q, 0, 1 << 40,
+             "species.ZOMBIE_MITIGATION.armor_q"),
+    TableRow("mitig_resist_zombie_q", lambda: _n_dtypes(),
+             lambda src: _zombie_mitigation().resist_q, 0, 1 << 20,
+             "species.ZOMBIE_MITIGATION.resist_q (<= 16: the product fits)"),
+    TableRow("mitig_armor_species_q", lambda: _n_species() * _n_dtypes(),
+             lambda src: _per_species(lambda s: s.mitigation.armor_q), 0,
+             1 << 40, "per species (species_id's index) x damage type"),
+    TableRow("mitig_resist_species_q", lambda: _n_species() * _n_dtypes(),
+             lambda src: _per_species(lambda s: s.mitigation.resist_q), 0,
+             1 << 20, "per species x damage type"),
+    # -- exposure (simulation.exposure: scale_q, raise_amount, the cap) -----
+    TableRow("expose_k_q", 1, lambda src: _expo().k_q, 0, 1 << 22,
+             "[damage.exposure] k_expose, Q16"),
+    TableRow("expose_x_max_q", 1, lambda src: _expo().x_max_q, 0, 1 << 40,
+             "[damage.exposure] x_max, Q16"),
+    TableRow("expose_resist_zombie_q", lambda: _n_dtypes(),
+             lambda src: tuple(_expo().zombie_resist), 0, ONE,
+             "[zombie] expose_resist (exposure.resist_for on is_zombie)"),
+    TableRow("expose_resist_profile_q", lambda: _n_profiles() * _n_dtypes(),
+             lambda src: _per_profile(lambda p: _resist_of(p)), 0, ONE,
+             "per [env_profiles.*] row x damage type"),
+    TableRow("expose_resist_species_q", lambda: _n_species() * _n_dtypes(),
+             lambda src: _per_species(lambda s: _resist_of(s.environment)), 0,
+             ONE, "per species x damage type (a unit with no env profile)"),
+    # -- the status registry's damage over time (status.tick_statuses) -------
+    TableRow("status_dtype", _n_kinds,
+             lambda src: tuple(-1 if r.dtype is None else int(r.dtype)
+                               for r in _status_registry()), -1, 63,
+             "per kind: the DoT / HoT damage type, -1 = none"),
+    TableRow("status_cause", _n_kinds, _status_causes, -1, 63,
+             "per kind: its cause's index in events.CAUSE_NAMES (an emitting "
+             "row's name), -1 = no emission"),
+    # -- the heat row (exchange.apply_environmental_damage / felt_temperature_q)
+    TableRow("heat_gain_q", 1, lambda src: _heat_dials_q()[0], 0, 1 << 36,
+             "flux_to_temp * absorption * (1 - reflectivity), Q16"),
+    TableRow("heat_ambient_q", 1, lambda src: _heat_dials_q()[1],
+             -(1 << 40), 1 << 40, "[combat] heat_ambient_ref, Q16"),
+    TableRow("heat_overtemp_q", 1,
+             lambda src: _q(_cfg().combat.heat_overtemp_scale), 0, 1 << 31,
+             "[combat] heat_overtemp_scale, Q16"),
+    TableRow("heat_temp_max_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_q(p.temperature_max),)),
+             -(1 << 40), 1 << 40, "per [env_profiles.*] row: temperature_max"),
+    TableRow("heat_temp_max_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_q(s.environment.temperature_max),)),
+             -(1 << 40), 1 << 40, "per species: its environment's"),
+    TableRow("heat_rate_profile_q", _n_profiles,
+             lambda src: _per_profile(
+                 lambda p: (_q(p.environmental_damage_rate),)), 0, 1 << 31,
+             "per [env_profiles.*] row: environmental_damage_rate"),
+    TableRow("heat_rate_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_q(s.environment.environmental_damage_rate),)),
+             0, 1 << 31, "per species: its environment's"),
+    TableRow("heat_tps", 1, lambda src: int(src.sim._tps), 1, 1 << 16,
+             "the sim's ticks per second (the row's dt)"),
+    TableRow("heat_fine_bits", 1, _heat_fine_bits, 0, 40,
+             "optics_fixed.sweep_fine_bits(gmap): rad_flux_sweep's currency "
+             "(per map)"),
+    # -- the gas rows (exchange.apply_teargas_blind / apply_poison_dose) ----
+    TableRow("gas_teargas", 1, _gas_index("TEARGAS"), 0, 255,
+             "the teargas trace plane's index in GameMap.gas"),
+    TableRow("gas_poison", 1, _gas_index("POISON"), 0, 255,
+             "the poison trace plane's index (also its credit channel)"),
+    TableRow("teargas_thresh_q", 1,
+             lambda src: _trace_q(_cfg().exchange.teargas_blind_density), 1,
+             (1 << 31) - 1, "[exchange] teargas_blind_density, TRACE currency"),
+    TableRow("teargas_blind_ticks", 1,
+             lambda src: int(_cfg().exchange.teargas_blind_ticks), 1, 1 << 20,
+             "[exchange] teargas_blind_seconds in ticks"),
+    TableRow("poison_thresh_q", 1,
+             lambda src: _trace_q(_cfg().exchange.poison_min_density), 1,
+             (1 << 31) - 1, "[exchange] poison_min_density, TRACE currency"),
+    TableRow("poison_gas_q", 1, lambda src: _poison().gas_q, 0,
+             (1 << 31) - 1, "[damage.poison] gas_units_per_second, Q16"),
+    TableRow("poison_dose_den", 1, _poison_dose_den, 1, 1 << 40,
+             "TRACE_ONE x ticks per second (the dose's one rational)"),
+    # -- the poison law (simulation.poison) ----------------------------------
+    TableRow("poison_onset_class_q", 1,
+             lambda src: _poison().class_onset_q, 1, ONE,  # traits-class: the device tables upload the CLASS value; the kernel applies TOX_ONSET through unit_lib::scaled
+             "a_onset, Q16 per tick"),
+    TableRow("poison_decay_class_q", 1,
+             lambda src: _poison().class_decay_q, 1, ONE,  # traits-class: as above (TOX_DECAY)
+             "a_decay, Q16 per tick"),
+    TableRow("poison_harm_class_q", 1,
+             lambda src: _poison().class_harm_q, 1, 1 << 28,  # traits-class: as above (TOX_HARM)
+             "hp_per_unit, Q16 (the door: < 4096 points)"),
+    TableRow("poison_x_max", 1, lambda src: _poison_mod().X_MAX, 1,
+             (1 << 31) - 1, "poison.X_MAX: the body's store"),
+    TableRow("poison_flush_q", 1, lambda src: _poison_mod().FLUSH_Q, 0, ONE,
+             "poison.FLUSH_Q"),
+    # -- the footprint the device walks ---------------------------------------
+    TableRow("footprint_rowmajor", 1, _footprint_rowmajor, 1, 1,
+             "1 = every species' default offsets are the footprint square in "
+             "row-major order (unit_schema._d_offsets for every footprint), "
+             "the tile order a kernel's reduction walks; refused otherwise"),
 )
 
 ROW_BY_NAME = {r.name: r for r in ROWS}

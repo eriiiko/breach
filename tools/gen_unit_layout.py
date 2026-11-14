@@ -1,6 +1,6 @@
-"""Generate the device unit store's checked-in headers (#29 P6.1, P6.2).
+"""Generate the device unit store's checked-in headers (#29 P6.1, P6.2, P6.3).
 
-Two generated, checked-in headers (the light table's and the edit ordinals'
+Three generated, checked-in headers (the light table's and the edit ordinals'
 precedent), one command:
 
 - ``cpp/src/unit_store_layout.h`` -- the store's ROW layout (residency design
@@ -10,10 +10,15 @@ precedent), one command:
 - ``cpp/src/unit_tables_layout.h`` -- the unit kernels' DEVICE TABLES (§4.11:
   every table value a kernel reads, one row of ``simulation.unit_tables.ROWS``
   each; plus the hooks' and the status kinds' indices), from
-  ``simulation.unit_tables.header_text``.
+  ``simulation.unit_tables.header_text``;
+- ``cpp/src/unit_events_layout.h`` -- the EVENT RING's record layout and the
+  vocabulary its kernels name (#29 P6.3, §4.5: the event kinds, the causes,
+  the damage types, the heat credit channel), from
+  ``simulation.unit_events.header_text``.
 
-``tests/test_unit_store.py`` / ``tests/test_unit_tables.py`` refuse a stale
-copy. A schema column or a table row added, removed or re-widened (a config
+``tests/test_unit_store.py`` / ``tests/test_unit_tables.py`` /
+``tests/test_unit_events.py`` refuse a stale copy. A schema column or a
+table row added, removed or re-widened (a config
 row that changes a block's or a table's width included -- a hand-grenade row,
 a status kind, a damage type, a hook, an env profile) means: run this with
 ``--write``, commit the headers, rebuild cpp/build_cuda (the device store
@@ -39,9 +44,9 @@ def main(argv=None) -> int:
     ap.add_argument("--write", action="store_true",
                     help="rewrite the headers (default: check only)")
     args = ap.parse_args(argv)
-    from simulation import unit_store, unit_tables
+    from simulation import unit_events, unit_store, unit_tables
     stale = 0
-    for mod in (unit_store, unit_tables):
+    for mod in (unit_store, unit_tables, unit_events):
         path = ROOT / mod.HEADER_REL
         text = mod.header_text()
         lay = mod.layout()

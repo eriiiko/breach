@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "6ddab4269a53d45578490fd3f3afa44e2cab1deec9d0cd9a71a1dab8b5fec87c";
-constexpr int UNIT_TABLES_W = 45;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "c32a26dc96a7b4bed68add486f653c985817433b02c2438748547676cd1846b0";
+constexpr int UNIT_TABLES_W = 150;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -68,6 +68,72 @@ constexpr int UNIT_TAB_GAS_O2 = 43;
 constexpr int UNIT_TAB_GAS_O2_W = 1;
 constexpr int UNIT_TAB_GAS_N2 = 44;
 constexpr int UNIT_TAB_GAS_N2_W = 1;
+constexpr int UNIT_TAB_MITIG_ARMOR_ZOMBIE_Q = 45;
+constexpr int UNIT_TAB_MITIG_ARMOR_ZOMBIE_Q_W = 9;
+constexpr int UNIT_TAB_MITIG_RESIST_ZOMBIE_Q = 54;
+constexpr int UNIT_TAB_MITIG_RESIST_ZOMBIE_Q_W = 9;
+constexpr int UNIT_TAB_MITIG_ARMOR_SPECIES_Q = 63;
+constexpr int UNIT_TAB_MITIG_ARMOR_SPECIES_Q_W = 9;
+constexpr int UNIT_TAB_MITIG_RESIST_SPECIES_Q = 72;
+constexpr int UNIT_TAB_MITIG_RESIST_SPECIES_Q_W = 9;
+constexpr int UNIT_TAB_EXPOSE_K_Q = 81;
+constexpr int UNIT_TAB_EXPOSE_K_Q_W = 1;
+constexpr int UNIT_TAB_EXPOSE_X_MAX_Q = 82;
+constexpr int UNIT_TAB_EXPOSE_X_MAX_Q_W = 1;
+constexpr int UNIT_TAB_EXPOSE_RESIST_ZOMBIE_Q = 83;
+constexpr int UNIT_TAB_EXPOSE_RESIST_ZOMBIE_Q_W = 9;
+constexpr int UNIT_TAB_EXPOSE_RESIST_PROFILE_Q = 92;
+constexpr int UNIT_TAB_EXPOSE_RESIST_PROFILE_Q_W = 9;
+constexpr int UNIT_TAB_EXPOSE_RESIST_SPECIES_Q = 101;
+constexpr int UNIT_TAB_EXPOSE_RESIST_SPECIES_Q_W = 9;
+constexpr int UNIT_TAB_STATUS_DTYPE = 110;
+constexpr int UNIT_TAB_STATUS_DTYPE_W = 9;
+constexpr int UNIT_TAB_STATUS_CAUSE = 119;
+constexpr int UNIT_TAB_STATUS_CAUSE_W = 9;
+constexpr int UNIT_TAB_HEAT_GAIN_Q = 128;
+constexpr int UNIT_TAB_HEAT_GAIN_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_AMBIENT_Q = 129;
+constexpr int UNIT_TAB_HEAT_AMBIENT_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_OVERTEMP_Q = 130;
+constexpr int UNIT_TAB_HEAT_OVERTEMP_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_TEMP_MAX_PROFILE_Q = 131;
+constexpr int UNIT_TAB_HEAT_TEMP_MAX_PROFILE_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_TEMP_MAX_SPECIES_Q = 132;
+constexpr int UNIT_TAB_HEAT_TEMP_MAX_SPECIES_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_RATE_PROFILE_Q = 133;
+constexpr int UNIT_TAB_HEAT_RATE_PROFILE_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_RATE_SPECIES_Q = 134;
+constexpr int UNIT_TAB_HEAT_RATE_SPECIES_Q_W = 1;
+constexpr int UNIT_TAB_HEAT_TPS = 135;
+constexpr int UNIT_TAB_HEAT_TPS_W = 1;
+constexpr int UNIT_TAB_HEAT_FINE_BITS = 136;
+constexpr int UNIT_TAB_HEAT_FINE_BITS_W = 1;
+constexpr int UNIT_TAB_GAS_TEARGAS = 137;
+constexpr int UNIT_TAB_GAS_TEARGAS_W = 1;
+constexpr int UNIT_TAB_GAS_POISON = 138;
+constexpr int UNIT_TAB_GAS_POISON_W = 1;
+constexpr int UNIT_TAB_TEARGAS_THRESH_Q = 139;
+constexpr int UNIT_TAB_TEARGAS_THRESH_Q_W = 1;
+constexpr int UNIT_TAB_TEARGAS_BLIND_TICKS = 140;
+constexpr int UNIT_TAB_TEARGAS_BLIND_TICKS_W = 1;
+constexpr int UNIT_TAB_POISON_THRESH_Q = 141;
+constexpr int UNIT_TAB_POISON_THRESH_Q_W = 1;
+constexpr int UNIT_TAB_POISON_GAS_Q = 142;
+constexpr int UNIT_TAB_POISON_GAS_Q_W = 1;
+constexpr int UNIT_TAB_POISON_DOSE_DEN = 143;
+constexpr int UNIT_TAB_POISON_DOSE_DEN_W = 1;
+constexpr int UNIT_TAB_POISON_ONSET_CLASS_Q = 144;
+constexpr int UNIT_TAB_POISON_ONSET_CLASS_Q_W = 1;
+constexpr int UNIT_TAB_POISON_DECAY_CLASS_Q = 145;
+constexpr int UNIT_TAB_POISON_DECAY_CLASS_Q_W = 1;
+constexpr int UNIT_TAB_POISON_HARM_CLASS_Q = 146;
+constexpr int UNIT_TAB_POISON_HARM_CLASS_Q_W = 1;
+constexpr int UNIT_TAB_POISON_X_MAX = 147;
+constexpr int UNIT_TAB_POISON_X_MAX_W = 1;
+constexpr int UNIT_TAB_POISON_FLUSH_Q = 148;
+constexpr int UNIT_TAB_POISON_FLUSH_Q_W = 1;
+constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR = 149;
+constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;
