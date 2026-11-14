@@ -121,6 +121,7 @@ build = [
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
 "src/simulation/status.py" = "Class T: slot 2b, built from P6"
+"src/simulation/swarm.py" = "setup only on the corpus: the swarm store (arc #63 P2) -- its allocation at GameMap construction and the presence-gated __swarm__ carrier; no swarm law runs in the tick yet (the larva kernel, P3, arrives as its own Class-P twin row)"
 "src/simulation/team_picture.py" = "the team picture (#195 1d, conductor slot 11, a match only): host-side match memory, never synced or hashed; the device's own arrays at the residency arc's later stage (RL agent design 9)"
 "src/simulation/turning.py" = "Class T: slot 1a's turning law (every unit's facing, G5p-a1; the bots read its predictor outside step) and slot 3's direction rule (theta, G1p-c), built from P6"
 "src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge); Class T at P6b"
