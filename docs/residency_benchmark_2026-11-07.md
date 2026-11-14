@@ -1454,3 +1454,23 @@ input's staging (~0.03 ms); 9c2's six plane reads per footprint tile add ~0.02 m
 the round trip ~0.83 ms, most of it the 1.1 MB store copied twice through pinned memory. Per slot per env-tick that
 is ~5 µs at N = 64 -- the cost the device backend pays only at the checkpoint cadence, since in the resident tick
 the store will stay on the device and one sync will serve a whole chain of slots (the chained gate's form).
+
+## P6.2m: slot 3, movement (2026-11-14)
+
+**What.** The slot-3 kernel (`unit_kernels.movement`, the continuous path's `_update_player_movement`) over the
+`(N, U, W)` store, the `(N, T)` device tables and the `(N, h, w)` int8 `material` planes. Class T: nothing in the
+played tick calls it, so nothing above moves.
+
+**Method.** `tests/cuda_unit_movement_check.py`'s `bench()`, P6.2's method unchanged: three fresh processes, Home
+Desktop (RTX 3070), ship_demo's bots match after 300 ticks (12 units, W = 180, the hooks of the gate) replicated to N
+envs, the material plane that tick's as a CuPy `(N, h, w)` array; medians of 200 repetitions, per row the three
+processes' medians. ANOTHER AGENT (P6.3) WAS BUILDING AND TESTING ON THE SAME MACHINE during the runs, so the numbers
+may sit a little high.
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 3 movement | 0.199, 0.198, 0.172 / 0.151, 0.151, 0.135 | 0.246, 0.247, 0.219 / 0.167, 0.167, 0.155 | 0.872, 0.843, 0.868 / 0.311, 0.310, 0.310 |
+
+**Reading.** As P6.2's kernels: the call is its stream sync (~0.15 ms) plus a few microseconds; the footprint walk
+(up to three passability blocks of nine tiles per substep) does not show at these sizes. At N = 64 the call is
+~0.31 ms, the round trip ~0.86 ms, dominated by the store's two pinned copies.
