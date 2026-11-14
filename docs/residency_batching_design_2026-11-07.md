@@ -550,6 +550,145 @@ One line each:
   recorded; P3a's precedent for a digest redefinition). ship_demo bots
   match: 51.66 s -> 51.24 s (medians of three, noise).
 
+#### 4.4b Amendment 2026-11-14: P6 re-planned against the code at `43115fec`
+
+Written by the lead after the unit design session
+(`docs/unit_design_2026-11-14.md`) from a slot-by-slot inventory of the tick
+as it stands (`docs/residency_p6_slot_inventory_2026-11-14.md`, every
+statement with `file:line`). §4.3's table and §9's P6 row are from
+2026-11-07; since then the tick gained slots 1a (impulse + turn), 1b'
+(orders), 1c (exposure), 4a (melee), 10' (order expiry) and 11 (the team
+picture), planted charges in 9e, and the unit design adds the `traits` block
+and the poison law (slot 9c3). This amendment replaces the P6 row. The
+design's "P6b" (entities on the device) keeps its name and follows.
+
+**Decisions (the lead's; each is the simplest form the inventory allows).**
+
+1. **The store is one array `(N, U, W)` of int64**, row-major: a unit is a
+   row of W integers, the schema's group-S columns in schema order, each at
+   its encoded width (the `encode_unit` / `decode_into` hooks P3a left for
+   this), then `valid`. int64 throughout: the impulse accumulators exceed
+   int32, and at U of tens the bytes do not matter (about 2 KB a unit). The
+   column offsets reach C++ as a GENERATED, checked-in header
+   (`cpp/src/unit_store_layout.h`, written by `tools/gen_unit_layout.py
+   --write`, held equal to the schema by a test: the light table's and the
+   edit ordinals' precedent). A new schema column is: regenerate, commit.
+2. **Row r is the r-th unit of `sim.units`**, which is id (spawn) order: the
+   order every reference loop walks. `(team, slot)` are columns, not the row
+   order (§4.4's "(team, slot)" is withdrawn: the inventory could not show
+   the two orders always agree, and the laws are written in id order). U is
+   fixed when the store is built (a match spawns once; a unit is never
+   removed); a batch pads to the largest U with `valid = 0`.
+3. **The store is not part of the played resident tick.** The unit kernels
+   are Class T (training only, §6; ruling §12.6), so `run_resident_batch`'s
+   entry and exit sets, the bus gate and the played `--resident` game are
+   untouched by P6. The store is owned by its own driver
+   (`simulation/unit_store.py`: the layout, `pack`, `unpack`, the device
+   buffer on the tick stream), which the gates use now and the `device`
+   backend uses from P8b.
+4. **Two gates carry the port, both on live matches, both tol 0:**
+   - IDENTITY: every tick, `unpack(pack(units))` leaves every group-S
+     attribute equal, the unit digest computed from the ROWS equals the
+     reference's, and a device round trip returns the rows bit for bit; in a
+     batch, env i's rows are env i's alone.
+   - SHADOW LOCKSTEP, per slot: the reference plays the whole tick in Python
+     as always. Around a ported slot k the harness packs the units (and
+     uploads the fields slot k reads), runs the device kernel, lets the host
+     run slot k, packs again and compares rows, events and written fields
+     with the device's. The device never drives the game, so a divergence
+     names its slot and its tick, and the played game cannot be affected.
+     A third form, CHAINED (several device slots in a row, unpacked back and
+     played on, digests equal to the reference match), arrives when two
+     adjacent slots are ported.
+   Each gate must see its slot DO something: per slot a coverage counter of
+   the rows it changed, and scenes with non-neutral hooks for every slot
+   that reads one (the unit design's critique 1.6).
+5. **Every slot gets a profiler label** (`tools/tick_stage_profile.py` has
+   none for 1a, 1b', 1c, 4a, 9, 9e(d'), the tick-end clears, 10', 11), since
+   a twin-manifest row names its slot by label.
+
+**The cut.** Patches after P6.1 touch different kernels over one harness and
+may run side by side; each is re-checked against the inventory when it
+starts.
+
+| patch | builds | gate |
+|---|---|---|
+| P6.1 | the store (decisions 1 to 3), the bridge, the generated layout header, the device buffer and its upload / download on the tick stream, the shadow-lockstep harness, the missing profiler labels, and ONE pilot kernel end to end: slot 1c, exposure decay (a per-unit law with one table scalar, no field read, no event) with its Class-T twin row | IDENTITY on the pinned matches at N = 1 and in a batch; SHADOW LOCKSTEP of 1c with its coverage counter > 0; each validated by breaking it |
+| P6.2 | the per-unit kernels that emit no synced event: 1a (impulse integration, the turn; the hooks' device accessors), 3 (movement: the footprint samples, the speed table, the walk ban), 1b' and 10' (orders: apply, expire), the tick-end conversion; the device table upload (§4.11) for the tables they read | SHADOW LOCKSTEP per slot, non-neutral hook scenes included |
+| P6.3 | the device `apply_packet` (mitigation, the exposure scale and landing, the hit points, the kill) and the EVENT RING (§4.5); on them 2b (statuses), 9c (heat), 9c2 (wind), 9c3 (the gas rows and the poison law), with the tick's credit claims as a per-slot table | SHADOW LOCKSTEP per slot, events compared in emission order |
+| P6.4 | the per-env serial applier (block form, §4.3) and the topology seam as device functions; 9 (burn-through), the tick-end clears, the `done` kernel, the entity export for the digest; 1b's per-unit verbs (reload, shove, the latches) -- its appends to the projectile and charge tables go with P7b | SHADOW LOCKSTEP; the topology scenes |
+
+**What each later patch must know** (the inventory's Part D and E):
+
+- Order-free as the code stands: 1a, 1b', 1c, 2b, 3, the phase-A decisions
+  of 4 / 4a / 4b, 9c, 9c2, 9c3, 10', the conversion. Order-dependent: 1b's
+  appends, 2 (grenades serial and immediate), 4c, 5 pass 3, 6's refill, 9 /
+  9b, 9e.
+- Slot 9b (over-pressure walls) is switched off (§12.7) and gets no kernel.
+- Reference debts to settle before the patch that meets them, each a small
+  reference change of its own: on the continuous path `sim.projectiles` is
+  never pruned (a detonated grenade stays in the list), so the list has no
+  bound (before P7b); `melee_intent` does not mark its unit possessed while
+  slot 1b consumes latches only for possessed units (before P6.4's 1b);
+  a `Projectile` has no spawn ordinal, though §4.3 assumes one (P7b).
+- Host structures without a schema or a capacity that need both before their
+  slot is ported: projectiles, bullets in flight, the noise log, the blast
+  log, the credit claims, the recorded effects of `SimultaneousEffects`
+  (P7a to P7c); the planted charges have both.
+- Slot 11 (the team picture) is observation-side and not synced; its device
+  form belongs to P8b with the observation.
+
+**As built (P6.1, 2026-11-14).** The store, the bridge, the header, the
+buffer, the harness, the labels and the pilot kernel landed as decided; no
+decision moved. One line each:
+- The layout is `simulation/unit_store.layout()`: 79 columns, W = 180 on the
+  shipped config after the poison patch's merge (76 / 174 before it: the
+  patch added three columns and three hooks, and the header was regenerated
+  at the merge, as the rule says; the widths read config tables: the status
+  block 4 x 16, the exposure block 9, the traits block 12, the hand-grenade
+  rows 6), then `valid`; a sha256 fingerprint of the layout's text rides in the generated
+  header and the driver refuses a compiled module whose fingerprint is not
+  the schema's (a header regenerated without a rebuild).
+- `pack` / `unpack` are `encode_unit` / `decode_into` and nothing else;
+  `unpack` lands a row on its own unit or on a BLANK one (`blank_units`: the
+  schema defaults and no constructor, so the group-D attributes stay unset --
+  the identity gate proves the rows alone carry group S). The digest read
+  from a row (`record_from_row`) evaluates the one `digest_of` column (the
+  turn) on a view of the decoded row.
+- The device buffer is a C++ object (`UnitStoreDevice`, bound as
+  `bp.UnitStoreBuffer`), not a CuPy array: the driver needs no CuPy, frees
+  the memory when dropped, and stages through ONE pinned buffer guarded by an
+  event (a second upload waits for the first copy to have read it). Its
+  download and the kernel's coverage read are host syncs on the tick stream
+  -- allowed because nothing in the played tick calls the store.
+- The kernel `k_exposure_decay` reads no life state, because `decay_units`
+  reads none (the brief said "skip dead rows as `decay_units` does": the code
+  does not skip them; a dead unit's block is zeroed at its death, so the two
+  agree in play and the kernel follows the code). Its product is the kit's
+  `mul128_shr`, exact for every int64 exposure; `decay_q` is refused outside
+  [0, 65536].
+- The harness hooks the slot's `tick_stage_profile` callables (so a slot is
+  named once, by the label a twin row uses), packs at the first entry and at
+  every exit, runs the kernel once over the batch after every env ticked, and
+  also runs each env alone through an N = 1 store; a slot that did not run in
+  an env raises.
+- Slot 9's burn-through loop and the tick-end clears were inline code in
+  `_step_post_physics`; they became `Simulation._burn_through_walls` and
+  `_clear_tick_buffers` (code motion, so the profiler can wrap them). The new
+  labels: `1a integrate + turn`, `1b' orders`, `1c exposure decay`,
+  `4a melee`, `9 burn-through walls`, `9e(d') planted charges`,
+  `tick-end clears`, `10' order expiry`, `11 team picture`. The twin
+  manifest's generated files moved for no existing twin.
+- The scene for the shadow lockstep needs no test config: the shipped
+  `[damage.exposure]` (k_expose 1, a 3-tick half life) raises exposure in
+  ship_demo's bots match from tick ~437 (the kernel changes rows on 23 of 700
+  ticks) and in the focus-fire bench's arena from the first volley (93 to
+  98 % of env-ticks).
+- The first Class-T row, `exposure_decay`: its generated files are
+  `exposure.py` alone (the label's trace), which therefore left
+  `[not_twinned]`; its debt can never block a merge (Class-T files are not
+  Class-P paths) and blocks only the device training door.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
@@ -1098,6 +1237,7 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | P3b, P3d | Philox (+ FieldEdit's noise on every path), the distance field; P3b before P4c and P7a, P3d before P7d | per row | P3b Sonnet; P3d Opus | P3d (**both DONE: P3b merged `f55a5b89`; P3d built by #183 G9p and closed 2026-11-13 with no patch, §4.9**) |
 | P4c | the device edit queue (Class P; after P3b and P3e: integer policies, Philox noise, the phased key) | one tol-0 scene per policy row + the cross-tick overlap scene | Opus | no (**DONE 2026-11-13, §4.8 as built**) |
 | P6 | the device unit store + schema's device side, the Unit ↔ store bridge, slots 1 / 1b / 2b / 3 / 9 / 9b / 9c–9d / 10 as kernels, the per-env serial applier (block form) with the topology seam as device functions, the event ring, the entity export for the digest | live lockstep; the topology scene gates | Opus | no |
+| | **RE-PLANNED 2026-11-14 into P6.1 to P6.4: §4.4b replaces the row above** (the unit design `docs/unit_design_2026-11-14.md` first: U1 the hooks, PX the poison law) | per patch, §4.4b | Opus | no |
 | P6b | entities on the device per class with per-class scenes (airlock_demo, a heat-source + heat-trigger studio, a vent studio); the #25 gather as the accessor's device backing | live lockstep per scene | Opus | no |
 | P7a | shooting + sprays phase A / B on the device | live lockstep | Opus | no |
 | P7b | projectiles and grenades in flight; fuse-outs | live lockstep | Opus | no |
