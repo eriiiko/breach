@@ -1011,8 +1011,10 @@ committed position), which the observation does not show, so the copy will
 be imperfect, and habits may have to be unlearned.
 
 The records (`C:/tmp/breach_1j/records`, 600 matches at 4 ticks, 16
-directions, observation spec v1) are cheap to make again (about ten minutes
-of tournament) and are not precious: a new observation spec version, or a
+directions, observation spec v1) are cheap to make again (about an hour of
+tournament on 12 workers: 600 door matches at about 65 s each by the 1j
+note's walls; this line first said "about ten minutes", which was wrong,
+corrected the same day) and are not precious: a new observation spec version, or a
 change of how the bots play, means recording again.
 
 **Training does not start yet** (Erik, 2026-11-14): the unit code is being
@@ -1021,3 +1023,7 @@ That design asks two things of the next observation spec version (its
 sections 3 and 9): whether a soldier is shown its own and its team-mates'
 hooks, and fixed slot blocks for statuses and items so that a table row no
 longer changes a layout. Both are open, the lead's to propose.
+
+**Rung 2's own design** (the trainer, the copying step, the range and the
+duel, the experiment, the patches) is `docs/rl_agent_rung2_design_2026-11-14.md`,
+PROPOSED the same day.

@@ -99,6 +99,7 @@ are in no fixed order: take them by motivation.
   - **Duel:** one against one first-generation bot, random rooms. About an hour.
   - **Experiment:** the duel from the copied network against the duel from scratch: does copying shorten the path, or leave habits to unlearn? Erik's ruling in the residency design (12.3) wants the bots to bootstrap early training.
 - **Waits for** the residency arc's P6 (the unit code, #29) before any training run (Erik, 2026-11-14); the trainer's design document does not.
+- **The design** of this rung: `docs/rl_agent_rung2_design_2026-11-14.md` (PROPOSED 2026-11-14; nine patches, 2a to 2i).
 - **Erik's note for the trainer's design (2026-11-11).** The trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so that one run can later be spread over Erik's three PCs on Tailscale. Until then the three PCs run three experiments at once and share saved networks as opponents.
 - **Gate.** On rooms it has never seen, the soldier wins more than half its duels against the first-generation bot, and the replay shows it aiming, firing and moving on purpose.
 - **Lesson document.** The trainer, line by line.
@@ -197,6 +198,14 @@ Rough run costs on the Home Desktop farm, small ship, at decimation 4:
 
 One Berzelius node runs the farm about ten times faster (residency design 2.4).
 These are estimates from other people's tasks; our first runs replace them.
+
+**Note, 2026-11-14.** The farm figures above (3 000 and 1 000 decisions a
+second) were set before observation spec v1 and before the gameplay pack made
+a tick heavier. Measured on 2026-11-13 with spec v1, the full view and the
+fireteam reward, the medium ship gives 362 match-ticks a second, about 720
+soldier decisions a second with both teams learning; the small ship has not
+been measured again (about 2 300 by the old ratio). At 720 a second the
+fireteam row above is 1.6 to 16 days. See the rung 2 design, section 9.
 
 ## 6. Open questions, parked at the rung that needs them
 

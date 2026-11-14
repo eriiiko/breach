@@ -112,13 +112,24 @@ from the survey. The ones most often needed:
 
 ## 6. Open
 
-- **Rung 1 is CLOSED (2026-11-14). Rung 2 is next and has no design yet:**
-  the trainer's design document (copying step, PPO, the stored decision, the
-  boundary between collecting and learning) and its lesson are the lead's to
-  write; training itself waits for P6 (#29). Two questions the unit design
-  (`docs/unit_design_2026-11-14.md` 3 and 9) hands this role for the next
-  observation spec version: are a soldier's own and its team-mates' hooks
-  shown, and fixed slot blocks for statuses and items.
+- **Rung 1 is CLOSED (2026-11-14). Rung 2's design is PROPOSED**
+  (`docs/rl_agent_rung2_design_2026-11-14.md`, written 2026-11-14, not yet
+  agreed, not yet critiqued): a top-level `agents/` folder, one "choosing"
+  module used when acting, learning and copying, the copy with a 2 % floor,
+  PPO's starting numbers, the collector / learner hand-over, training rooms,
+  the range, the duel, the copy-against-scratch experiment in three repeats,
+  nine patches 2a to 2i. Next: Erik's yes or vetoes, then the critique (one
+  Opus critic at a time), then a handoff plan as for rung 1. 2a to 2c touch
+  no game file and no farm; whether they are built while P6 runs is Erik's
+  call. Every run with the game waits for P6 (#29). The lesson document
+  ("the trainer, line by line") is written from patch 2b's code. The two
+  questions the unit design (`docs/unit_design_2026-11-14.md` 3 and 9) hands
+  this role (hooks shown; fixed slot blocks for statuses and items) are
+  parked in that document's section 11 with their trigger.
+- **The farm is slower than the roadmap planned with:** about 720 soldier
+  decisions a second on the medium ship with spec v1 (measured 2026-11-13),
+  against 1 000 planned; a fireteam run there is 1.6 to 16 days. Rung 3
+  starts on the small ship; re-measure it first.
 - **Rung 0 is CLOSED** (Erik, 2026-11-11: "yes i agree" to the eight changes of
   design document 12.3; merged the same evening). **Rung 1 is live:** ten
   patches, 1a to 1j (roadmap). Erik blessed 1d's step (ii) in advance: it
@@ -153,7 +164,9 @@ from the survey. The ones most often needed:
   2, agreed; its critique in `docs/rl_agent_design_2026-11-11_critique/`);
   `docs/rl_agent_rung1_plan_2026-11-11.md` (rung 1's handoff plan);
   `docs/rl_lesson_0_learning_from_reward_2026-11-11.md` (rung 0's lesson:
-  PPO in plain words; rung 2's lesson goes through the trainer). Earlier:
+  PPO in plain words; rung 2's lesson goes through the trainer);
+  `docs/rl_agent_rung2_design_2026-11-14.md` (rung 2: the trainer, the
+  copying step, the tasks, the patches). Earlier:
   `docs/research/rl_litsearch_2026-07-20.md`, `docs/roadmap_2026-07-30_rl_push.md`.
 - **Code seams:** `src/rl_env.py` (`BatchedEnv`), `src/control_policy.py`
   (the `policy` controller, `VERB_RULES`), `src/match_replay.py`
@@ -251,6 +264,16 @@ implementation agents and critics stay one at a time.
   question that settled it was a game question (how fast should a marine
   react), which Erik answered from what the game is for, without the options
   table.
+- 2026-11-14, later -- rung 2's design written (same branch, documents only).
+  Learned: (1) my own "about ten minutes to record again" of that morning
+  was an unchecked number (the 1j note's walls give about an hour): the
+  recompute rule holds for my own figures within one session; (2) size the
+  data before designing around it: one decision is 63 KB with the full view,
+  so memory, not theory, sets the batch on a 16 GB PC, the copy's records are
+  45 GB unpacked, and a run spread over three PCs has to move observations
+  that Tailscale's relay will not carry; (3) the planning figures in a
+  roadmap go stale when the interface they were set before is built: read
+  the latest measured farm number, not the roadmap's.
 
 ## 11. Running rung 1 (for the orchestrator session)
 
