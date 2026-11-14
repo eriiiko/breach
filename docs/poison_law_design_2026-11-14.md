@@ -223,3 +223,90 @@ of times, each time a new infestation reaches the threshold ("each larva can
 infest infinitely many times"). A corpse can be DESTROYED beyond rising by
 damage of any kind, whether or not it was a zombie when it fell: a corpse has
 an integrity of its own.
+
+---
+
+## As built (2026-11-14, patch PX, branch `29-px-poison`)
+
+What differs from the design above, and why:
+
+- **The flush is the tail's only.** Section 2 flushes every level at or below
+  `FLUSH_Q`. Built literally, that empties the blood EVERY tick while its
+  inflow is below 1/64 unit (one tick of full gas is 0.025 units = 1638
+  counts; a one-unit depot moves 683 counts a tick), so the decay stage
+  vanished and the damage simply followed the depot; and a fringe-gas breath
+  below 1/64 unit was flushed out of the depot the tick it arrived. As built,
+  the DEPOT is never flushed (it drains at least one count a tick) and the
+  BLOOD is flushed at or below `FLUSH_Q` only once the depot is empty
+  (`step(x1, a_decay, flush=(x0 == 0))`). A level still returns to exactly 0
+  and the unit hashes as never poisoned. The final flush tick charges up to
+  0.16 HP at once (it is the largest single tick of a small dose's curve: the
+  bench's 0.2-density 2 s row shows its 1 s window as the "peak").
+  `tests/test_poison.py::test_a_fed_level_is_never_flushed` holds it.
+- **The bound.** `X_MAX = 2^31 - 1` counts (32 767 units) caps the body IN ALL
+  (`x0 + x1`), not the depot alone: with the depot capped alone the blood
+  reaches about five times the cap at steady state. A dose past it is clipped
+  and counted (`poison.SATURATION`, a diagnostic); never reached in play.
+- **The door's bounds** (the int64 argument): `hp_per_unit` in (0, 8192)
+  (`H_q x 8 x X_MAX < 2^63` at the traits' largest hook),
+  `gas_units_per_second` in [0, 65536), each time at least one tick. The
+  fractions are the authored float's exact rational, rounded once
+  (`poison.fraction_q`; 683 and 137).
+- **The resist-0 gate stays in the gas row** (the zombie, the future robot:
+  no dose); the dose door refuses a zombie and a corpse itself. Resistances
+  between 0 and 1 act on the damage, through `apply_packet`'s mitigation.
+- **Where.** The gas row doses inside the physics guard as before; the law
+  (`poison.tick`, slot 9c3') runs outside it and outside the row's lazy
+  early-out, so a dosed unit keeps draining after the plane is empty.
+- **The hooks.** See the patch report: `TOX_ONSET`, `TOX_DECAY`, `TOX_HARM`
+  are read through `poison.onset_q` / `decay_q` / `harm_q`.
+- **The panel line** (`ui.model.poison_text`): "Poison: blood 0.42 u   to
+  come 7.3 HP" (the blood level, and `(x0 + x1) x H` still to come).
+
+### The bench (`tools/bench_poison.py`, the first values, 24 tps)
+
+One dose of one unit (a bite): lost by 5 / 10 / 30 / 60 s = 0.99 / 2.63 /
+7.20 / 9.35 HP, total 10.000; peak 0.333 HP/s at 7.9 s; dormant after 92.6 s;
+2222 hit events.
+
+N seconds in gas, then out (HP lost by 5 / 10 / 30 / 60 s, law vs the pre-PX
+law's closed form 6 HP/s x density while in the gas):
+
+| density | N s | 5 s | 10 s | 30 s | 60 s | total | peak HP/s @ s | events | dormant s |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.0 | 2 | 0.8 / 12 | 2.8 / 12 | 8.5 / 12 | 11.2 / 12 | 12.0 | 0.40 @ 8.9 | 2333 | 97.2 |
+| 1.0 | 5 | 1.1 / 30 | 5.4 / 30 | 20.5 / 30 | 27.9 / 30 | 30.0 | 0.99 @ 11.1 | 2809 | 117.0 |
+| 1.0 | 10 | 1.1 / 30 | 6.6 / 60 | 38.5 / 60 | 55.2 / 60 | 60.0 | 1.92 @ 14.6 | 3204 | 133.5 |
+| 1.0 | 17 | 1.1 / 30 | 6.6 / 60 | 57.6 / 102 | 92.1 / 102 | 102.0 | 3.01 @ 20.1 | 3551 | 148.0 |
+| 1.0 | 30 | 1.1 / 30 | 6.6 / 60 | 69.9 / 180 | 154.2 / 180 | 180.0 | 4.38 @ 31.7 | 4008 | 167.0 |
+| 0.5 | 2 | 0.4 / 6 | 1.4 / 6 | 4.2 / 6 | 5.6 / 6 | 6.0 | 0.20 @ 9.2 | 2001 | 83.4 |
+| 0.5 | 5 | 0.6 / 15 | 2.7 / 15 | 10.3 / 15 | 13.9 / 15 | 15.0 | 0.49 @ 10.8 | 2477 | 103.2 |
+| 0.5 | 10 | 0.6 / 15 | 3.3 / 30 | 19.2 / 30 | 27.6 / 30 | 30.0 | 0.96 @ 14.4 | 2872 | 119.7 |
+| 0.5 | 17 | 0.6 / 15 | 3.3 / 30 | 28.8 / 51 | 46.0 / 51 | 51.0 | 1.50 @ 20.0 | 3220 | 134.2 |
+| 0.5 | 30 | 0.6 / 15 | 3.3 / 30 | 34.9 / 90 | 77.1 / 90 | 90.0 | 2.19 @ 31.6 | 3677 | 153.2 |
+| 0.2 | 2 | 0.2 / 2 | 0.5 / 2 | 1.7 / 2 | 2.2 / 2 | 2.4 | 0.16 @ 65.0 (the flush) | 1561 | 65.0 |
+| 0.2 | 5 | 0.2 / 6 | 1.1 / 6 | 4.1 / 6 | 5.6 / 6 | 6.0 | 0.20 @ 10.7 | 2039 | 85.0 |
+| 0.2 | 10 | 0.2 / 6 | 1.3 / 12 | 7.7 / 12 | 11.0 / 12 | 12.0 | 0.38 @ 14.4 | 2435 | 101.5 |
+| 0.2 | 17 | 0.2 / 6 | 1.3 / 12 | 11.5 / 20 | 18.4 / 20 | 20.4 | 0.60 @ 19.8 | 2782 | 115.9 |
+| 0.2 | 30 | 0.2 / 6 | 1.3 / 12 | 14.0 / 36 | 30.9 / 36 | 36.0 | 0.88 @ 31.6 | 3240 | 135.0 |
+
+Staying in the gas (100 HP marine): density 1.0 dies after 36.6 s (pre-PX
+16.7 s), lethal exposure 16.71 s; 0.5: 55.7 s (33.3), lethal 33.38 s; 0.2:
+107.0 s (83.3), lethal 83.29 s. (The design estimated ~41 s for full gas.)
+
+Match scene (ship_demo, both teams idle, no horde; T0-0 throws one poison
+grenade at its squad's centre, 3.5 tiles, at 1 s; 120 s). HP lost by 10 / 30 /
+60 / 120 s, PX vs main `43115fec`:
+
+| marine | 10 s | 30 s | 60 s | 120 s |
+|---|---|---|---|---|
+| T0-0 | 0.3 / 4.8 | 7.1 / 20.3 | 24.8 / 38.8 | 54.9 / 64.6 |
+| T0-1 | 0.8 / 10.7 | 12.7 / 32.3 | 36.9 / 54.4 | 73.0 / 84.1 |
+| T0-2 | 0.8 / 10.8 | 12.6 / 31.1 | 33.7 / 47.3 | 54.8 / 56.8 |
+| T0-3 | 1.7 / 20.6 | 21.9 / 50.6 | 53.2 / 72.6 | 89.3 / 99.3 |
+
+Nobody dies in 120 s on either tree (the idle squad stands in the cloud).
+POISON hit events in 120 s: 11 300 (PX) vs 10 528 (main); in the first 60 s
+5540 on both (one per unit per tick while in the gas on main, while holding
+poison on PX). Every packet of the scene is credited to T0-0 (the grenade's
+owner claims the cloud's deposit), indirectly.
