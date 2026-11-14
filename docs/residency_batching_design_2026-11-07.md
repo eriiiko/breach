@@ -638,6 +638,55 @@ starts.
 - Slot 11 (the team picture) is observation-side and not synced; its device
   form belongs to P8b with the observation.
 
+**As built (P6.1, 2026-11-14).** The store, the bridge, the header, the
+buffer, the harness, the labels and the pilot kernel landed as decided; no
+decision moved. One line each:
+- The layout is `simulation/unit_store.layout()`: 76 columns, W = 174 on the
+  shipped config (the widths read config tables: the status block 4 x 16,
+  the exposure block 9, the traits block 9, the hand-grenade rows), then
+  `valid`; a sha256 fingerprint of the layout's text rides in the generated
+  header and the driver refuses a compiled module whose fingerprint is not
+  the schema's (a header regenerated without a rebuild).
+- `pack` / `unpack` are `encode_unit` / `decode_into` and nothing else;
+  `unpack` lands a row on its own unit or on a BLANK one (`blank_units`: the
+  schema defaults and no constructor, so the group-D attributes stay unset --
+  the identity gate proves the rows alone carry group S). The digest read
+  from a row (`record_from_row`) evaluates the one `digest_of` column (the
+  turn) on a view of the decoded row.
+- The device buffer is a C++ object (`UnitStoreDevice`, bound as
+  `bp.UnitStoreBuffer`), not a CuPy array: the driver needs no CuPy, frees
+  the memory when dropped, and stages through ONE pinned buffer guarded by an
+  event (a second upload waits for the first copy to have read it). Its
+  download and the kernel's coverage read are host syncs on the tick stream
+  -- allowed because nothing in the played tick calls the store.
+- The kernel `k_exposure_decay` reads no life state, because `decay_units`
+  reads none (the brief said "skip dead rows as `decay_units` does": the code
+  does not skip them; a dead unit's block is zeroed at its death, so the two
+  agree in play and the kernel follows the code). Its product is the kit's
+  `mul128_shr`, exact for every int64 exposure; `decay_q` is refused outside
+  [0, 65536].
+- The harness hooks the slot's `tick_stage_profile` callables (so a slot is
+  named once, by the label a twin row uses), packs at the first entry and at
+  every exit, runs the kernel once over the batch after every env ticked, and
+  also runs each env alone through an N = 1 store; a slot that did not run in
+  an env raises.
+- Slot 9's burn-through loop and the tick-end clears were inline code in
+  `_step_post_physics`; they became `Simulation._burn_through_walls` and
+  `_clear_tick_buffers` (code motion, so the profiler can wrap them). The new
+  labels: `1a integrate + turn`, `1b' orders`, `1c exposure decay`,
+  `4a melee`, `9 burn-through walls`, `9e(d') planted charges`,
+  `tick-end clears`, `10' order expiry`, `11 team picture`. The twin
+  manifest's generated files moved for no existing twin.
+- The scene for the shadow lockstep needs no test config: the shipped
+  `[damage.exposure]` (k_expose 1, a 3-tick half life) raises exposure in
+  ship_demo's bots match from tick ~437 (the kernel changes rows on 23 of 700
+  ticks) and in the focus-fire bench's arena from the first volley (93 to
+  98 % of env-ticks).
+- The first Class-T row, `exposure_decay`: its generated files are
+  `exposure.py` alone (the label's trace), which therefore left
+  `[not_twinned]`; its debt can never block a merge (Class-T files are not
+  Class-P paths) and blocks only the device training door.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
