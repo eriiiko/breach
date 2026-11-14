@@ -2017,21 +2017,33 @@ class Simulation:
         for the human player's planning UI. AI training rollouts ignore
         pause (they never call set_paused).
 
-        Tick ordering — load-bearing! Matches the legacy
-        ``Game._process_tick`` (game.py:1696-1747), with the status pass
-        (2b) added at the top of the unit-simulation section (P3):
-          1. Clear tick_events (this tick is a fresh slate)
-          1c. Exposure decays (G4p)
-          2. Update projectiles (advance position, detonate)
-          2b. Tick unit statuses (durations count down; DoT/HoT emit)
-          3. Update player movement (read precomputed path)
-          4. Process shooting (auto-fire on move, fire orders)
-          5. Zombie AI
-          6. Re-stamp obstacles (so physics sees the new unit positions)
-          7. Physics step (atmosphere, smoke, fire)
-          8. Door explosives at phase boundary or end of round
-          9. Process burn-through walls (fire destroyed)
-         10. Increment tick + auto-pause check
+        Tick ordering — load-bearing! The numbered slots, each a call
+        below with its own comment (the P6 slot inventory,
+        ``docs/residency_p6_slot_inventory_2026-11-14.md``, is the long form):
+          1.   Clear tick_events; the ruleset's round-clock head
+          1a.  Impulse integration + the turn (every living unit)
+          1b.  Direct-control intents (the possessed units' latches)
+          1b'. The commander's orders written onto their units
+          1c.  Exposure decays
+          2.   Projectiles: grenades (move, detonate), then rounds in flight
+          2b.  Unit statuses tick (durations count down; DoT/HoT emit)
+          3.   Movement (the displacement loop)      } or the ruleset's
+          4.   Shooting, phase A                     } ``drive_units``
+          4a.  Melee blows, phase A
+          4b.  Spray deposits
+          4c.  The attack slot's phase B (``resolve``)
+          5.   Zombie AI (the horde field)
+          6.   Re-stamp obstacles; 6b. flush the field-edit queue
+          7.   Physics step
+          9.   Burn-through walls; 9b. over-pressure walls
+          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose;
+               9c3'. the poison law; 9d. temperature ignition
+          9e.  Entities (signals, pumps, vents, doors, timed and planted
+               charges, heat sources); recorder snapshot; tick-end clears
+         10.   Tick advance; 10'. orders expire; the ruleset's tick end
+               (conversion; WEGO's phase / round boundary and door
+               explosives; on the continuous path, spent grenades dropped)
+         11.   The team picture (a match only)
         """
         if not self._step_pre_physics():
             return
@@ -2230,9 +2242,11 @@ class Simulation:
         # 9c. Unit heat damage (engine/06 §4, proposal §4.2/§6 step 4a). The
         # SECOND consumer of the per-tick `heat` deposit (the C++ heat ->
         # temperature conversion inside physics_runner.step() is the first):
-        # each living unit samples the already-occluded `heat` buffer at its
-        # footprint and takes radiant damage if the felt temperature pushes
-        # past its tolerance band. Runs AFTER physics fills `heat`, BEFORE the
+        # each living unit reads, per footprint tile, the larger of the `heat`
+        # deposit buffer and the radiation sensor `rad_flux_sweep`
+        # (exchange.felt_temperature), takes the hottest tile, and takes
+        # radiant damage if the felt temperature pushes past its tolerance
+        # band. Runs AFTER physics fills `heat`, BEFORE the
         # recorder snapshot (so the snapshot captures post-damage HP) and BEFORE
         # the end-of-tick heat clear below — its existence is precisely what
         # makes wiping `heat` correct (a reader finally consumes it).

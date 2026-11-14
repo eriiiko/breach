@@ -689,10 +689,11 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
       temp``) RE-ARMS. Because the write is gated on ``fire == 0``, this path can
       never lower an existing, larger fire (the old ``max`` guarantee, kept) and
       never re-floors a declining one (the smolder fix).
-    - **Second, additive ignition path.** This runs ALONGSIDE the existing
-      cellular fire spread/ignition — it does not replace it. With no sim heat
-      sources wired yet, ``temperature`` is ~0, so this path is DORMANT in-game
-      (no behaviour change) until fire/beams emit heat — the intended safe seam.
+    - **The only spread path.** The cellular fire spread is DELETED
+      (fire_design_proposal §1): radiation -> heat -> temperature -> this
+      ignition is the SOLE way fire spreads tile to tile (the conductor's
+      slot 9d). Where nothing is hot, ``temperature`` stays at ambient and
+      this path ignites nothing.
     - **Deterministic.** Fixed row-major traversal (vectorised, order-independent
       anyway — a pure gather that writes each tile from frozen inputs), no RNG.
 
@@ -978,9 +979,10 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
 
     ``shots`` is a list the caller owns; new :class:`Shot` tracer events are
     appended to it. ``real_time`` is the wall-clock seconds since the round
-    started (tracer fade-out). ``rng`` is the simulation's
-    :class:`numpy.random.Generator` (cone/exposure/crit draws — all lazy,
-    fixed order). ``bullets`` is the sim's in-flight list
+    started (tracer fade-out). ``rng`` is the simulation's keyed
+    draws, ``sim.draws`` (:class:`~simulation.draws.MatchDraws`, Philox;
+    the cone / exposure / crit draws, each keyed by shooter and round, the
+    exposure and crit lazy -- #29 P3b). ``bullets`` is the sim's in-flight list
     (``Simulation.bullets``): rounds slower than their range persist there
     and continue next tick (``None`` = same-tick only — every shipped
     small-arm resolves same-tick; tests exercising flight pass a list). If
@@ -1763,12 +1765,12 @@ def start_spray_burst(u, weapon, fire_order, tick, effects=None):
 
     Called from :func:`process_shooting` once every gate has passed
     (cadence, mag, range, LOS, the stationary rule). The burst state lives
-    ON THE UNIT (``spray_ticks_left`` / ``spray_target`` / ``spray_order``)
-    and is deliberately NOT in the synced digest surface — the
-    ``last_fire_tick`` / mag-state precedent: a deterministic derivation of
-    synced inputs (orders + tick) whose divergence would surface in the
-    hashed field/hp stream one tick later. Facing snaps to the aim bearing
-    (the fire_burst rule — kit trig, unit y-up convention).
+    ON THE UNIT: ``spray_ticks_left`` / ``spray_target`` / ``spray_aim_angle``
+    are unit-schema columns, hashed in the unit digest while they differ
+    from their defaults (#29 P3a); ``spray_order`` is REFERENCE_ONLY (the
+    WEGO fire order the burst rides). Facing turns toward the aim bearing (a
+    recorded ``face`` target; the fire_burst rule — kit trig, unit y-up
+    convention).
     """
     u.spray_ticks_left = int(weapon.burst_ticks)
     # #29 P3e: the target as a Q16 point (the order's tile, quantized once).
@@ -1785,8 +1787,9 @@ def start_spray_burst_directional(u, weapon, tick, aim_q):
     """Arm a spray burst aimed along a FREE-AIM bearing (design §4c): the cone
     bearing is ``u.facing`` (passed as the march-convention ``aim_angle``), NOT
     a target tile. Stores the bearing (Q16, #29 P3e) as ``spray_aim_angle`` —
-    derived state (the ``last_fire_tick`` precedent, not in the digest surface)
-    that :func:`process_sprays` feeds :func:`deposit_spray_cone`. ``spray_target``
+    a unit-schema column hashed while set (#29 P3a), as are
+    ``spray_ticks_left`` and ``spray_target`` -- that :func:`process_sprays`
+    feeds :func:`deposit_spray_cone`. ``spray_target``
     is kept for the RENDER-ONLY :class:`SprayJetEvent` only (a nominal tile one
     range along the bearing); the cone geometry uses ``spray_aim_angle``.
     ``facing`` is left as the AIM intent set it — never re-derived."""
