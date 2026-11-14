@@ -58,6 +58,19 @@ slot's entry, stacked -- the shape ``ResidentBatch.buffers`` holds, so the
 device backend passes its own). A new input kind is a row of :data:`INPUTS`
 (a capture function of the sim) or a ``field:<GameMap attribute>``.
 
+EVENTS (#29 P6.3): a slot whose kernel emits (``DeviceSlot(...,
+events=True)``: the slots that hurt, over the device ``apply_packet``) is
+handed an :class:`simulation.unit_events.EventRing` the harness begins before
+the kernel -- ``run(store, ring)``, or ``run(store, inputs, ring)`` with inputs
+-- and the harness compares the RING with the events the host appended to
+``sim.tick_events`` during the slot (from its first entry to its last exit),
+record for record, in order (``unit_events.record_of``: the kind, the unit,
+the Q16 damage, the cause, the attacker, the direction): the first difference
+is named as (tick, env, event index, field); the alone run's ring must equal
+the batch's env i. ``TickReport.events`` / ``host_events`` are the two counts.
+The claims of the tick's credit (``damage.TickCredit``) are the input
+``credit_claims`` (``unit_kernels.claims_of`` / ``pad_claims``).
+
 ``DeviceSlot.columns`` limits the compare to named columns (default: the
 whole row). A label naming several callables is hooked on each: the first
 entry in a tick packs the start rows and captures the inputs, every exit
@@ -70,7 +83,11 @@ slot's by: capture its inputs, pack, upload, run every slot's kernel in a row
 (no host pack between), download, ``unpack`` onto the units, then the
 caller's ``host_side(sim, pre_rows, post_rows)`` (what the skipped host slots
 did that is not unit state: clearing the request table, a converted unit's
-name); every other slot's by nothing. Any other sim (the reference match in
+name); every other slot's by nothing. When a chained slot emits, the chain's
+ring records are appended to ``sim.tick_events`` as host events
+(``unit_events.event_of``) right after the unpack -- where the first slot's
+host callable would have appended them -- so the match's per-tick unit digest
+(which hashes them) stays on the reference's path. Any other sim (the reference match in
 the same process) runs the original callables. The match plays on; the gate
 compares its per-tick unit hash and field digest with an untouched reference.
 
@@ -85,7 +102,7 @@ from typing import Callable
 
 import numpy as np
 
-from simulation import unit_kernels, unit_store, unit_tables
+from simulation import unit_events, unit_kernels, unit_store, unit_tables
 
 
 # ---------------------------------------------------------------------------
@@ -102,15 +119,21 @@ def _capture_requests(sim):
     return unit_kernels.requests_of(sim)
 
 
+def _capture_claims(sim):
+    return unit_kernels.claims_of(sim)
+
+
 #: name -> (kind, capture function of the sim at the slot's entry). kind
 #: "tick" gathers to ``SlotInputs.tick``; "table" to ``SlotInputs.tables``
 #: (an ``(R, C)`` int64 per env, padded across envs by ``pad``).
 INPUTS: dict = {
     "tick": ("tick", _capture_tick),
     "order_requests": ("table", _capture_requests),
+    "credit_claims": ("table", _capture_claims),     # #29 P6.3
 }
 #: How a table input pads across envs (default: zeros).
-PADS: dict = {"order_requests": unit_kernels.pad_requests}
+PADS: dict = {"order_requests": unit_kernels.pad_requests,
+              "credit_claims": unit_kernels.pad_claims}
 
 
 @dataclass
@@ -177,16 +200,22 @@ class DeviceSlot:
     that label's ``SLOT_WRAPS`` rows), ``run(store[, inputs]) -> coverage
     (N,)`` -- the device kernel over the uploaded store, returning per env
     the rows it changed --, the compared ``columns`` (default all) and the
-    ``inputs`` it reads (names of :data:`INPUTS` or ``field:<name>``)."""
+    ``inputs`` it reads (names of :data:`INPUTS` or ``field:<name>``);
+    ``events``: the kernel appends to an event ring, handed as the last
+    argument and compared with the host's events (#29 P6.3)."""
     label: str
     run: Callable
     columns: tuple = ()
     inputs: tuple = ()
+    events: bool = False
 
-    def call(self, store, inputs: SlotInputs | None):
+    def call(self, store, inputs: SlotInputs | None, ring=None):
+        args = [store]
         if self.inputs:
-            return self.run(store, inputs)
-        return self.run(store)
+            args.append(inputs)
+        if self.events:
+            args.append(ring)
+        return self.run(*args)
 
 
 @dataclass
@@ -197,6 +226,8 @@ class TickReport:
     equal: bool
     first_diff: tuple | None = None   # (tick, env, unit id, column)
     label: str = ""                   # the slot's label
+    events: np.ndarray | None = None       # (N,) the ring's records (events slots)
+    host_events: np.ndarray | None = None  # (N,) the host's events in the slot
 
 
 @dataclass
@@ -256,7 +287,8 @@ class ShadowLockstep:
     report (each with its ``label``), ``divergences`` every difference."""
 
     def __init__(self, drivers, slot, bp=None,
-                 check_alone: bool = True, n_units: int | None = None):
+                 check_alone: bool = True, n_units: int | None = None,
+                 e_max: int = unit_events.E_MAX):
         self.drivers = list(drivers)
         self.slots = list(slot) if isinstance(slot, (list, tuple)) else [slot]
         self.multi = isinstance(slot, (list, tuple))
@@ -274,6 +306,11 @@ class ShadowLockstep:
         self.alone = (unit_store.DeviceStore(1, self.U, bp=bp,
                                              tables=self.tables[:1])
                       if check_alone and self.N > 1 else None)
+        emits = any(s.events for s in self.slots)
+        self.ring = (unit_events.EventRing(self.N, self.U, e_max, bp=bp)
+                     if emits else None)
+        self.alone_ring = (unit_events.EventRing(1, self.U, e_max, bp=bp)
+                           if emits and self.alone is not None else None)
         self.layout = unit_store.layout()
         self._masks = [self._column_mask(s.columns) for s in self.slots]
         self._orig = []
@@ -288,6 +325,8 @@ class ShadowLockstep:
         self._pre = [[None] * self.N for _ in range(k)]
         self._post = [[None] * self.N for _ in range(k)]
         self._inp = [[None] * self.N for _ in range(k)]
+        self._ev0 = [[None] * self.N for _ in range(k)]
+        self._evs = [[None] * self.N for _ in range(k)]
 
     # -- the hook ------------------------------------------------------------
     def _column_mask(self, names):
@@ -313,10 +352,14 @@ class ShadowLockstep:
                     if ls._pre[__k][e] is None:
                         ls._pre[__k][e] = unit_store.pack(sim.units, ls.U)
                         ls._inp[__k][e] = capture(ls.slots[__k].inputs, sim)
+                        ls._ev0[__k][e] = (sim.tick_events,
+                                           len(sim.tick_events))
                     try:
                         return __orig(*a, **kw)
                     finally:
                         ls._post[__k][e] = unit_store.pack(sim.units, ls.U)
+                        evl, n0 = ls._ev0[__k][e]
+                        ls._evs[__k][e] = list(evl[n0:])
                 hooked.__wrapped__ = orig
                 setattr(cont, attr, hooked)
                 self._orig.append((cont, attr, orig))
@@ -364,16 +407,29 @@ class ShadowLockstep:
         inputs = gather(slot.inputs, self._inp[k]) if slot.inputs else None
         self.last_inputs[slot.label] = inputs
         self.store.upload(pre)
-        coverage = np.asarray(slot.call(self.store, inputs), dtype=np.int64)
+        if slot.events:
+            self.ring.begin()
+        coverage = np.asarray(slot.call(self.store, inputs, self.ring),
+                              dtype=np.int64)
         got = self.store.download()
         host_changed = np.array([int((pre[e] != post[e]).any(axis=1).sum())
                                  for e in range(self.N)], dtype=np.int64)
         first = self._first_diff(tick, got, post, self._masks[k])
+        ring_recs = host_n = None
+        if slot.events:
+            ring_recs = self.ring.records()
+            host_n = np.array([len(self._evs[k][e]) for e in range(self.N)],
+                              dtype=np.int64)
+            if first is None:
+                first = self._first_event_diff(tick, k, ring_recs)
         if first is None and self.alone is not None:
             for e in range(self.N):
                 self.alone.upload_tables(self.tables[e:e + 1])
                 self.alone.upload(pre[e:e + 1])
-                slot.call(self.alone, None if inputs is None else inputs.env(e))
+                if slot.events:
+                    self.alone_ring.begin()
+                slot.call(self.alone, None if inputs is None else inputs.env(e),
+                          self.alone_ring)
                 one = self.alone.download()[0]
                 if not np.array_equal(one, got[e]):
                     r, col = np.argwhere(one != got[e])[0]
@@ -382,6 +438,12 @@ class ShadowLockstep:
                                        "ALONE " + self.layout.column_at(int(col)),
                                        int(one[r, col]), int(got[e, r, col]))
                     break
+                if slot.events:
+                    alone_recs = self.alone_ring.records()[0]
+                    if alone_recs != ring_recs[e]:
+                        first = Divergence(tick, e, -1, "ALONE event ring",
+                                           len(alone_recs), len(ring_recs[e]))
+                        break
         if first is not None:
             first.label = slot.label
             self.divergences.append(first)
@@ -390,9 +452,37 @@ class ShadowLockstep:
                          first_diff=None if first is None else (
                              first.tick, first.env, first.unit_id,
                              first.column),
-                         label=slot.label)
+                         label=slot.label,
+                         events=None if ring_recs is None else np.array(
+                             [len(r) for r in ring_recs], dtype=np.int64),
+                         host_events=host_n)
         self.reports.append(rep)
         return rep
+
+    def _first_event_diff(self, tick, k, ring_recs):
+        """The first difference between the host's events of slot ``k`` and
+        the ring, per env, record for record in order: (tick, env, event
+        index, field) as a :class:`Divergence` (unit_id the host's event's)."""
+        for e in range(self.N):
+            host = self._evs[k][e]
+            dev = ring_recs[e]
+            for i in range(max(len(host), len(dev))):
+                if i >= len(host):
+                    return Divergence(tick, e, dev[i][1], f"event[{i}] (extra "
+                                      f"on the device)", 0, dev[i][0])
+                try:
+                    h = unit_events.record_of(host[i])
+                except ValueError as ex:
+                    return Divergence(tick, e, getattr(host[i], "unit_id", -1),
+                                      f"event[{i}] {ex}", 0, 0)
+                if i >= len(dev):
+                    return Divergence(tick, e, h[1], f"event[{i}] (missing on "
+                                      f"the device)", h[0], 0)
+                for f, name in enumerate(unit_events.FIELDS):
+                    if h[f] != dev[i][f]:
+                        return Divergence(tick, e, h[1], f"event[{i}].{name}",
+                                          h[f], dev[i][f])
+        return None
 
     def _first_diff(self, tick, got, want, mask):
         diff = got != want
@@ -426,14 +516,18 @@ class ChainedSlots:
     ``(U, W)`` rows before and after the kernels). ``coverage`` collects
     each tick's per-slot coverage."""
 
-    def __init__(self, driver, slots, host_side=None, bp=None):
+    def __init__(self, driver, slots, host_side=None, bp=None,
+                 e_max: int = unit_events.E_MAX):
         self.driver = driver
         self.slots = list(slots)
         self.host_side = host_side
         self.U = len(driver.sim.units)
         self.store = build_store([driver.sim], self.U, bp=bp)
+        self.ring = (unit_events.EventRing(1, self.U, e_max, bp=bp)
+                     if any(s.events for s in self.slots) else None)
         self._orig = []
         self.coverage: list = []          # per run: [per-slot (1,) arrays]
+        self.events: list = []            # per run: the ring's records
         self.runs = 0
 
     def _run_chain(self):
@@ -444,10 +538,16 @@ class ChainedSlots:
         inputs = gather(names, [capture(names, sim)]) if names else None
         pre = unit_store.pack(sim.units, self.U)
         self.store.upload(pre[None])
-        covs = [np.asarray(s.call(self.store, inputs), dtype=np.int64)
+        if self.ring is not None:
+            self.ring.begin()
+        covs = [np.asarray(s.call(self.store, inputs, self.ring), dtype=np.int64)
                 for s in self.slots]
         post = self.store.download()[0]
         unit_store.unpack(post, sim.units)
+        if self.ring is not None:
+            recs = self.ring.records()[0]
+            sim.tick_events.extend(unit_events.event_of(r) for r in recs)
+            self.events.append(recs)
         if self.host_side is not None:
             self.host_side(sim, pre, post)
         self.coverage.append(covs)
@@ -457,10 +557,12 @@ class ChainedSlots:
         ch = self
         sim = self.driver.sim
         for i, s in enumerate(self.slots):
-            for cont, attr in slot_callables(s.label):
+            for j, (cont, attr) in enumerate(slot_callables(s.label)):
                 orig = getattr(cont, attr)
 
-                def replaced(*a, __orig=orig, __first=(i == 0), **k):
+                # the chain runs at the FIRST callable of the first slot (a
+                # label may name several, #29 P6.3's "9c3 gas rows")
+                def replaced(*a, __orig=orig, __first=(i == 0 and j == 0), **k):
                     if not _is_for(sim, a):
                         return __orig(*a, **k)
                     if __first:

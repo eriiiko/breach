@@ -461,6 +461,8 @@ def part_tables():
             "impulse_effort_edge_q": t.effort_edge_q,
             "material_mobility": tuple(int(m) for m in sim.gmap.materials.mobility),
         })
+        from cuda_unit_damage_check import table_reference   # #29 P6.3's rows
+        want.update(table_reference(sim))
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")

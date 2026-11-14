@@ -795,6 +795,113 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P6.2m TEST-ONLY: the walk's library functions on synthetic rows.");
     }
 
+    // #29 P6.3: THE EVENT RING (cuda_unit_events.h; Class T) and the slots
+    // that hurt over the device damage pipeline (cuda_unit_kernels.h): 2b,
+    // 9c, 9c3. Each slot returns (coverage, faults, refused, dropped) as four
+    // (N,) int64 arrays; the Python face is simulation.unit_kernels (which
+    // refuses faults and dropped events), the ring's simulation.unit_events.
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitEventRing;
+        using breach_cuda::UnitDamageCounts;
+        m.def("unit_events_layout", []() {
+                  py::dict d;
+                  d["width"] = breach_cuda::unit_events_width();
+                  d["row_cap"] = breach_cuda::unit_events_row_cap();
+                  d["fingerprint"] = std::string(breach_cuda::unit_events_fingerprint());
+                  return d;
+              },
+              "#29 P6.3: the compiled event ring layout (unit_events_layout.h): "
+              "{width, row_cap, fingerprint}.");
+        py::class_<UnitEventRing>(m, "UnitEventRingBuffer",
+                "#29 P6.3: the per-env device event ring (N, E_max, F) int64 (Class T).")
+            .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("n_units"),
+                 py::arg("e_max"))
+            .def_property_readonly("shape", [](const UnitEventRing& r) {
+                return py::make_tuple(r.n_env(), r.e_max(), breach_cuda::unit_events_width());
+            })
+            .def("begin", &UnitEventRing::begin, "Empty every env's ring (tick stream).")
+            .def("download", [](UnitEventRing& r) {
+                     py::array_t<int64_t> recs({(py::ssize_t)r.n_env(), (py::ssize_t)r.e_max(),
+                                                (py::ssize_t)breach_cuda::unit_events_width()});
+                     py::array_t<int64_t> cnt(r.n_env()), drp(r.n_env());
+                     r.download(recs.mutable_data(), cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(recs, cnt, drp);
+                 },
+                 "(records (N, E_max, F), counts (N,), dropped (N,)) int64.");
+        struct Cnt4 {
+            py::array_t<int64_t> cov, flt, ref, drp;
+            explicit Cnt4(int n) : cov(n), flt(n), ref(n), drp(n) {}
+            UnitDamageCounts view() {
+                UnitDamageCounts c;
+                c.coverage = cov.mutable_data();
+                c.faults = flt.mutable_data();
+                c.refused = ref.mutable_data();
+                c.dropped = drp.mutable_data();
+                return c;
+            }
+            py::tuple out() { return py::make_tuple(cov, flt, ref, drp); }
+        };
+        auto claims_of = [](const UnitStoreDevice& s, py::array_t<int64_t, py::array::c_style>& c,
+                            const char* who) {
+            if (c.ndim() != 3 || c.shape(0) != s.n_env() || c.shape(2) != 4)
+                throw std::invalid_argument(std::string(who) +
+                                            ": claims must be (n_env, n_claims, 4) int64");
+            return (int)c.shape(1);
+        };
+        m.def("unit_status_tick",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring) {
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_status_tick(s, t, ring, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"),
+              "#29 P6.3: slot 2b (status.tick_statuses) on the device store.");
+        m.def("unit_heat_damage",
+              [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                          std::uintptr_t heat, std::uintptr_t rad_flux, int h, int w,
+                          py::array_t<int64_t, py::array::c_style> claims) {
+                  const int nc = claims_of(s, claims, "unit_heat_damage");
+                  breach_cuda::UnitDamagePlanes p;
+                  p.heat = heat; p.rad_flux = rad_flux; p.h = h; p.w = w;
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_heat_damage(s, t, ring, p, claims.data(), nc, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("heat"),
+              py::arg("rad_flux"), py::arg("h"), py::arg("w"), py::arg("claims"),
+              "#29 P6.3: slot 9c (exchange.apply_environmental_damage) on the device store.");
+        m.def("unit_gas_rows",
+              [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                          std::uintptr_t gas, int n_gases, int h, int w,
+                          py::array_t<int64_t, py::array::c_style> claims) {
+                  const int nc = claims_of(s, claims, "unit_gas_rows");
+                  breach_cuda::UnitDamagePlanes p;
+                  p.gas = gas; p.n_gases = n_gases; p.h = h; p.w = w;
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_gas_rows(s, t, ring, p, claims.data(), nc, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("gas"),
+              py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("claims"),
+              "#29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, poison.tick) on "
+              "the device store.");
+        m.def("unit_damage_probe",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 py::array_t<int64_t, py::array::c_style> packets) {
+                  if (packets.ndim() != 3 || packets.shape(0) != s.n_env() ||
+                      packets.shape(1) != s.n_units() ||
+                      packets.shape(2) != breach_cuda::UNIT_DAMAGE_PROBE_W)
+                      throw std::invalid_argument(
+                          "unit_damage_probe: packets must be (n_env, n_units, 10) int64");
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(), (py::ssize_t)s.n_units(),
+                                            (py::ssize_t)2});
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_damage_probe(s, t, ring, packets.data(), out.mutable_data(),
+                                                 c.view());
+                  return py::make_tuple(out, c.cov, c.flt, c.ref, c.drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("packets"),
+              "#29 P6.3 TEST-ONLY: the device apply_packet on the store's rows.");
+    }
+
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
              py::array_t<int32_t> pstar, py::array_t<int32_t> div_u,

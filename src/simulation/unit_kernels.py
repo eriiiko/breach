@@ -24,7 +24,21 @@ function               slot (the reference law)              inputs
                        convert_marines_to_zombies``
 :func:`movement`       3    ``Simulation._update_player_      the material
                        movement`` (continuous path)          plane
+:func:`status_tick`    2b   ``status.tick_statuses``         the ring
+:func:`heat_damage`    9c   ``exchange.apply_environmental_  the ring, planes,
+                       damage``                              the claims
+:func:`gas_rows`       9c3  ``apply_teargas_blind``,         the ring, planes,
+                       ``apply_poison_dose``, ``poison.tick`` the claims
 =====================  ====================================  ===============
+
+#29 P6.3: the slots that hurt run the device ``damage.apply_packet``
+(``cpp/src/cuda_unit_damage.cuh``) and append their UnitHit / UnitKilled
+records to an :class:`simulation.unit_events.EventRing` (begun by the caller
+at the tick's start) in the reference's emission order; each REFUSES a run
+whose events the ring could not hold (:class:`simulation.unit_events.
+UnitEventOverflow`, naming the kernel and the env) as it refuses a fault. The
+credit claims (``damage.TickCredit``) reach them as a per-tick table
+(:func:`claims_of`, :func:`pad_claims`).
 
 A NEW SLOT KERNEL is: its law's table values as rows of
 ``simulation.unit_tables`` (regenerate the header), a free function in its
@@ -39,6 +53,8 @@ NOT PART OF THE PLAYED TICK: Class T, training only.
 from __future__ import annotations
 
 import numpy as np
+
+from simulation.unit_events import CREDIT_HEAT, CREDIT_PAD, UnitEventOverflow
 
 #: The order requests' row: (uid, what, where, until, target); uid -1 = none.
 REQUEST_WIDTH = 5
@@ -198,6 +214,147 @@ def movement_probe(bp, op: int, args, material=None, mobility=None) -> np.ndarra
     mob = np.ascontiguousarray(
         mobility if mobility is not None else np.zeros(1), dtype=np.int64)
     return bp.unit_movement_probe(int(op), args, mat, mob)
+# ---------------------------------------------------------------------------
+# #29 P6.3: the slots that hurt
+# ---------------------------------------------------------------------------
+#: A claims row: (channel, y, x, attacker); channel CREDIT_HEAT for the heat
+#: buffer, a gas slice's index for a gas deposit.
+CLAIM_WIDTH = 4
+
+
+def claims_of(sim) -> np.ndarray:
+    """``sim.gmap.damage_credit`` (``damage.TickCredit``: ``(channel, y, x)
+    -> attacker``, every key once -- the first claim of the tick) as ``(R,
+    4)`` int64 rows ``(channel, y, x, attacker)``, sorted; the heat channel
+    as :data:`simulation.unit_events.CREDIT_HEAT`."""
+    from simulation.damage import CREDIT_HEAT as HOST_HEAT
+    tc = getattr(sim.gmap, "damage_credit", None)
+    owner = getattr(tc, "_owner", None) or {}
+    rows = []
+    for (ch, y, x), a in owner.items():
+        if ch == HOST_HEAT:
+            code = CREDIT_HEAT
+        else:
+            code = int(ch)
+            if code < 0:
+                raise ValueError(f"unit kernels: a credit channel {ch!r} the "
+                                 f"claims table cannot hold")
+        rows.append((code, int(y), int(x), int(a)))
+    rows.sort()
+    return np.array(rows, dtype=np.int64).reshape(len(rows), CLAIM_WIDTH)
+
+
+def pad_claims(per_env) -> np.ndarray:
+    """N envs' ``(R_e, 4)`` claims as one ``(N, max(1, R), 4)`` array, the
+    short envs padded with rows that match no tile (channel CREDIT_PAD)."""
+    per_env = [np.asarray(r, dtype=np.int64).reshape(-1, CLAIM_WIDTH)
+               for r in per_env]
+    R = max([1] + [r.shape[0] for r in per_env])
+    out = np.full((len(per_env), R, CLAIM_WIDTH), -1, dtype=np.int64)
+    out[:, :, 0] = CREDIT_PAD
+    for e, r in enumerate(per_env):
+        out[e, :r.shape[0]] = r
+    return out
+
+
+def _done_events(store, name: str, counts) -> np.ndarray:
+    cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in counts)
+    cov = _done(store, name, (cov, flt, ref))
+    store.last_dropped = drp
+    if drp.any():
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise UnitEventOverflow(
+            f"unit kernel {name}: {int(drp.sum())} event(s) in env(s) {envs} "
+            f"did not fit the event ring (its E_max, or a row's staging): "
+            f"nothing was written past the capacity")
+    return cov
+
+
+def _check_planes(name, store, fields, want):
+    n = store.shape[0]
+    for k, dt in want.items():
+        a = fields.get(k)
+        if a is None:
+            raise ValueError(f"unit kernel {name}: field {k!r} missing")
+        if np.dtype(a.dtype) != np.dtype(dt):
+            raise ValueError(f"unit kernel {name}: field {k!r} is {a.dtype}, "
+                             f"the resident field is {np.dtype(dt)}")
+        if int(a.shape[0]) != n:
+            raise ValueError(f"unit kernel {name}: field {k!r} has "
+                             f"{a.shape[0]} envs, the store {n}")
+
+
+def _check_ring(name, store, ring):
+    if ring is None:
+        raise ValueError(f"unit kernel {name}: an EventRing is required")
+    if ring.shape[0] != store.shape[0] or ring.n_units != store.shape[1]:
+        raise ValueError(f"unit kernel {name}: the ring is for ({ring.shape[0]} "
+                         f"envs, {ring.n_units} rows), the store "
+                         f"{store.shape[:2]}")
+
+
+def status_tick(store, ring) -> np.ndarray:
+    """Slot 2b: ``status.tick_statuses`` on every valid living row (the
+    sweep, each damage-over-time status's packet, the countdown); events to
+    ``ring``."""
+    _check_ring("status_tick", store, ring)
+    return _done_events(store, "status_tick", store.bp.unit_status_tick(
+        store.buffer, store.tables, ring.buffer))
+
+
+#: The planes slot 9c reads, by ``GameMap`` field name.
+HEAT_FIELDS = ("heat", "rad_flux_sweep")
+#: The planes slot 9c3 reads.
+GAS_FIELDS = ("gas",)
+
+
+def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
+    """Slot 9c: the heat row on every valid living row. ``fields``: ``heat``
+    ``(N, h, w)`` int32 and ``rad_flux_sweep`` ``(N, h, w)`` int64 DEVICE
+    arrays (``ResidentBatch.buffers`` as they are); ``claims`` ``(N, R, 4)``
+    (:func:`pad_claims`)."""
+    _check_ring("heat_damage", store, ring)
+    _check_planes("heat_damage", store, fields,
+                  {"heat": np.int32, "rad_flux_sweep": np.int64})
+    _, h, w = (int(x) for x in fields["heat"].shape)
+    if tuple(int(x) for x in fields["rad_flux_sweep"].shape) != \
+            (store.shape[0], h, w):
+        raise ValueError("unit kernel heat_damage: rad_flux_sweep's shape is "
+                         "not heat's")
+    c = np.ascontiguousarray(claims, dtype=np.int64)
+    return _done_events(store, "heat_damage", store.bp.unit_heat_damage(
+        store.buffer, store.tables, ring.buffer, int(fields["heat"].data.ptr),
+        int(fields["rad_flux_sweep"].data.ptr), h, w, c))
+
+
+def gas_rows(store, ring, fields: dict, claims) -> np.ndarray:
+    """Slot 9c3: the teargas row, the poison row's dose and the poison law,
+    fused per row (each unit's three steps read only the planes and its own
+    row). ``fields``: ``gas`` ``(N, G, h, w)`` int32 DEVICE array;
+    ``claims`` as for :func:`heat_damage`. ``store.last_refused`` holds the
+    doses clipped at the body's store (poison.SATURATION's hits)."""
+    _check_ring("gas_rows", store, ring)
+    _check_planes("gas_rows", store, fields, {"gas": np.int32})
+    _, n_gases, h, w = (int(x) for x in fields["gas"].shape)
+    c = np.ascontiguousarray(claims, dtype=np.int64)
+    return _done_events(store, "gas_rows", store.bp.unit_gas_rows(
+        store.buffer, store.tables, ring.buffer, int(fields["gas"].data.ptr),
+        n_gases, h, w, c))
+
+
+#: A probe packet row (TEST-ONLY :func:`damage_probe`).
+PROBE_PACKET = ("amount_q", "dtype", "attacker", "indirect", "expose",
+                "dir_x_q", "dir_y_q", "ap_q", "cause", "mark_killed_by_zombie")
+
+
+def damage_probe(store, ring, packets):
+    """TEST-ONLY: the device ``damage.apply_packet`` on the store's rows, one
+    packet per row (``(N, U, 10)`` int64, :data:`PROBE_PACKET`); returns
+    ``(out (N, U, 2): applied damage, killed; coverage, faults, refused,
+    dropped)`` -- unrefused, so a gate can count faults."""
+    _check_ring("damage_probe", store, ring)
+    a = np.ascontiguousarray(packets, dtype=np.int64)
+    return store.bp.unit_damage_probe(store.buffer, store.tables, ring.buffer, a)
 
 
 def lib_probe(store, op: int, a0=0, a1=0, a2=0, a3=0):
@@ -212,4 +369,6 @@ __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
            "exposure_decay", "integrate_turn", "WIND_FIELDS", "wind_impulse",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",
            "convert_zombies", "lib_probe", "MOVEMENT_FIELDS", "movement",
-           "movement_probe"]
+           "movement_probe", "CLAIM_WIDTH", "claims_of",
+           "pad_claims", "status_tick", "HEAT_FIELDS", "GAS_FIELDS",
+           "heat_damage", "gas_rows", "PROBE_PACKET", "damage_probe"]

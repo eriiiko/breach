@@ -862,6 +862,75 @@ decision moved. One line each:
   part fills them with live rows); the doorway jet; CHAINED slot 3 on the ship
   and the box. Every gate broken once (the patch's report).
 
+**As built (P6.3, 2026-11-14).** The device `apply_packet`, the event ring
+and slots 2b, 9c, 9c3 landed as cut; no decision moved. One line each:
+- THE DAMAGE PIPELINE is `cpp/src/cuda_unit_damage.cuh`, beside the unit
+  library: `apply_packet(row, tab, packet, sink, changed, &killed, &bad)`
+  returns the applied Q16 damage and is `damage.apply_packet` integer for
+  integer (mitigation through `mul_q16_round_q`; the exposure scale in 128
+  bits; the hp; the kill on alive -> dead only; the death clears of
+  `exposure.on_death`, `unit_impulse.clear`, `horde.clear`,
+  `unit_orders.clear`, `poison.clear` and the conversion flag when the packet
+  marks it; the exposure raise at once -- these slots own no attack slot).
+  It takes ANY row and any sink, so P6.4 / P7's serial applier hands it the
+  target's row and the env's ring. A packet or row operand past its proved
+  range (|amount| 2^46, exposure 2^40, expose / AP 2^40) writes nothing and
+  faults the row. `recent_attackers` (REFERENCE_ONLY, WEGO's idle stance) has
+  no device form. Its gate beyond the scenes: a TEST-ONLY probe kernel runs it
+  on synthetic rows, packets and tables (non-dyadic resists, armor and AP,
+  corpses, the conversion flag, heals, every cause) against the Python.
+- THE EVENT RING (§4.5) is `simulation/unit_events.py` (the one field table:
+  `kind, unit_id, damage_q, cause, attacker_id, dir_x_q, dir_y_q` -- the
+  digest's `_event_record` plus the render-only direction, so a record is
+  the host event bit for bit) with the generated `cpp/src/unit_events_layout.h`
+  (which also carries the kinds, causes, damage types and the claims' channel
+  codes) and `cpp/src/cuda_unit_events.{h,cu}` (`UnitEventRing`). ORDER: a
+  per-row kernel writes each row's events into that row's staging (at most
+  `row_cap()` = the status block + 1, 2b's worst case) and one thread per env
+  then appends the staged rows in row order -- the reference's emission order
+  (id order per slot; the law's order within a unit) whatever the thread
+  schedule. CAPACITY `E_max` (default 1024 per env per tick); past it, or past
+  a row's staging, nothing is written, the env's dropped count rises and the
+  Python face refuses the run (`UnitEventOverflow`). ExplosionEvent is not in
+  the ring yet: it joins with its producer (P7c).
+- THE HARNESS: `DeviceSlot(..., events=True)` hands the kernel a ring the
+  harness begins and compares it, record for record, with the events the host
+  appended to `sim.tick_events` from the slot's first entry to its last exit
+  (the first difference as tick, env, event index, field; the alone run's ring
+  must equal the batch's env i); `ChainedSlots` appends the ring's records to
+  `sim.tick_events` as host events where the first slot would have, and the
+  chain now runs at the first CALLABLE of the first slot (a label may name
+  several). The credit claims are the table input `credit_claims`
+  (`unit_kernels.claims_of`: `(channel, y, x, attacker)`, the heat buffer -1,
+  a gas slice its index; every key once, as the dict holds it).
+- THE SLOTS: 2b is `cuda_unit_status.cu` (the sweep, each DoT status's packet
+  while the unit lives, the countdown -- every status counts down even after
+  a death mid-list, as the Python does); 9c and 9c3 are `cuda_unit_exchange.cu`.
+  9c3's label names three callables (`apply_teargas_blind`,
+  `apply_poison_dose`, `poison.tick`); each unit's three steps read only the
+  planes and its own row, so ONE kernel runs them per row in that order (the
+  doses clipped at the body's store are counted in `refused`). The rows'
+  all-zero-plane early-outs need no device form: the thresholds are table
+  rows refused below one count. The device runs the gas rows whether or not
+  the sim has a physics runner (the host gates the teargas and dose rows on
+  one; every scene has one). A kernel works on a LOCAL copy of its row and
+  writes it back whole or not at all (`finish_row`).
+- THE TABLES gained 33 rows (T 150): mitigation (zombie and per species),
+  exposure (k, cap, resists), the status registry's DoT type and cause, the
+  heat row's dials and per-profile / per-species band and rate, the tick rate
+  and the sweep's fine bits (per map), the gas planes' indices, thresholds and
+  the blind's ticks, the poison law's class values, `X_MAX`, `FLUSH_Q`, and
+  `footprint_rowmajor` (refuses a species whose default footprint is not the
+  row-major square the kernels walk).
+- THE GATES (`tests/cuda_unit_damage_check.py`, wrapper
+  `tests/test_cuda_unit_damage.py`): part APPLY; scenes ship (ship_demo bots,
+  seed 1, 500 ticks), fire, gas, status (four-lane levels with fixtures
+  written between ticks: units about to die carry an order, exposure, an
+  impulse, poison and a status; DoT statuses through `status.apply_status`,
+  since no shipped trigger applies one), each with hooks and an unhooked-twin
+  check; batches N = 2 and 8 with padding; the overflow; chained 2b alone and
+  9c + 9c2 + 9c3. Every gate was broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
