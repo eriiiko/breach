@@ -1271,6 +1271,11 @@ class Simulation:
         if u is None:
             return
         u.pending_melee = True
+        # Possessed like every other hand verb (#29 reference debt): slot 1b
+        # consumes none of melee's state (4a does), so this only makes
+        # possession mean "the unit has issued a hand verb", with no
+        # exception for the device port of slot 1b (P6.4) to model.
+        self._possessed_ids.add(unit_id)
 
     def set_flashlight(self, unit_id: int, off: bool) -> None:
         """FLASHLIGHT (gameplay pack G7p): hold ``unit_id``'s flashlight bit

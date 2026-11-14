@@ -278,6 +278,17 @@ class ContinuousRealtime(Ruleset):
         # class docstring): idempotent, so running it each tick is immediate
         # conversion, not a per-tick storm.
         convert_marines_to_zombies(sim.units)
+        # A grenade slot 2 detonated leaves the list (#29 reference debt, the
+        # P6 slot inventory's Part E): inert since its blast (slot 2 skips
+        # it, the team picture and the observation filter it, the renderer
+        # draws none), so dropping it changes no trajectory and bounds the
+        # list by the grenades in flight -- the bound the device form needs
+        # (P7b). OnePhaseWEGO does the same at its round boundary,
+        # TwoPhaseWEGO at its round end. In place: one list for the sim's
+        # life. Before slot 11, which reads the list.
+        if any(p.detonated for p in sim.projectiles):
+            sim.projectiles[:] = [p for p in sim.projectiles
+                                  if not p.detonated]
 
     def validate_and_cost(self, sim, unit, order) -> bool:
         # No AP, no phase. The caller (apply_action) has already gated alive /
