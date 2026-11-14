@@ -689,6 +689,50 @@ decision moved. One line each:
   `[not_twinned]`; its debt can never block a merge (Class-T files are not
   Class-P paths) and blocks only the device training door.
 
+**Re-check at P6.2's start (2026-11-14, the lead; it amends the cut above).**
+"Patches after P6.1 ... may run side by side" does not hold for P6.2 and P6.3
+as cut: read against P6.1 as built, both need the same shared layer, and two
+agents would build each part twice. The shared layer, built ONCE, in P6.2,
+each part with a real user in that patch:
+
+1. **The device tables (§4.11)**: every table value a unit kernel reads, taken
+   from the SAME validated objects the reference laws read (the impulse
+   table, the speed table, the turning dials, the status registry, the
+   species' class values, the environment profiles), through a column schema
+   with generated offsets, uploaded when the store is built. Per env where
+   the table is quantized per map.
+2. **The harness's slot inputs**: `DeviceSlot.run(store)` sees only the rows.
+   A slot also reads things that are not unit rows: field planes, the tick,
+   a per-tick host table (the order requests). The harness captures them per
+   env when the slot is entered and hands them to the kernel. A field reaches
+   a kernel as a device pointer to an `(N, h, w)` plane in the resident
+   field's own dtype and currency, so the device backend (P8b) can hand it
+   `ResidentBatch`'s buffers unchanged.
+3. **The device unit library**: the functions several slots share, as one
+   `__device__` header over the generated layout: the status block (the
+   composed flags, apply, the sweep), the hook accessor (`round(class value x
+   hook)`, skipped at ONE), the life gate.
+4. **Where a kernel lives**: `UnitStoreDevice` stays the buffer and its
+   copies. A slot's kernel is a free function in its slot family's own TU
+   over the store's pointer; the store class gains no method per slot.
+   Kit-level integer helpers that `unit_fixed.py` holds (`mul_q16_round`,
+   `div_round`) get their twin in `fixed_point.h` beside the three already
+   there, held equal by `tests/test_unit_impulse_twins.py`; a law (the turn,
+   the integration) is never kit code.
+
+The cut from here:
+
+| patch | builds | runs |
+|---|---|---|
+| P6.2 | the shared layer (1 to 4) and its first users: the unit impulse law's two slots, 1a (integrate + turn) and 9c2 (the wind's impulse; it emits no event, so it moves here from P6.3), 1b' and 10' (orders), the tick-end conversion; the CHAINED gate on the two adjacent pairs it creates (1b' + 1c, 10' + conversion) | first, alone among the kernel patches |
+| P6.2m | slot 3, movement (the footprint samples, the speed table, the direction rule, the walk ban, the slide rule) | after P6.2, beside P6.3 |
+| P6.3 | as above, without 9c2: the device `apply_packet`, the event ring, 2b, 9c, 9c3 (teargas, the poison law) | after P6.2, beside P6.2m |
+| P6.4 | as above | after P6.3 |
+
+The two reference debts (the projectile list never pruned; `melee_intent`'s
+possession) and the stale docstrings of the inventory's Part E are one small
+reference patch run beside P6.2 (`29-ref-debts`).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
