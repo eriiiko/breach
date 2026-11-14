@@ -826,6 +826,101 @@ FP_HD inline int64_t effort_step_q(int64_t d) {
     return d >= 0 ? ((d + 7) >> 3) : -(((-d) + 7) >> 3);
 }
 
+// ---- the unit kernels' kit twins (#29 P6.2) ---------------------------------
+//
+// The C twins of `unit_fixed.isqrt` / `isqrt_ceil` / `div_round` /
+// `mul_q16_round` that the device unit kernels (cuda_unit_lib.cuh and the slot
+// TUs) need, held equal to Python by tests/test_unit_impulse_twins.py through
+// the fp_* bindings. Kit code only: a rounding or a root, never a law.
+//
+// umul64_wide: the full 128-bit product of two uint64 as (hi, lo). Three
+// branches, as mul128_shr above: the device's __umul64hi, a host __int128,
+// MSVC's _umul128.
+#if defined(__CUDA_ARCH__)
+FP_HD inline void umul64_wide(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+    *lo = (uint64_t)((unsigned long long)a * (unsigned long long)b);
+    *hi = (uint64_t)__umul64hi((unsigned long long)a, (unsigned long long)b);
+}
+#elif defined(__SIZEOF_INT128__)
+FP_HD inline void umul64_wide(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+    const unsigned __int128 p = (unsigned __int128)a * (unsigned __int128)b;
+    *lo = (uint64_t)p;
+    *hi = (uint64_t)(p >> 64);
+}
+#elif defined(_MSC_VER)
+} // namespace fixedpoint
+#include <intrin.h>
+namespace fixedpoint {
+FP_HD inline void umul64_wide(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+    unsigned long long h;
+    *lo = (uint64_t)_umul128((unsigned long long)a, (unsigned long long)b, &h);
+    *hi = (uint64_t)h;
+}
+#endif
+
+// isqrt_u64_q: floor(sqrt(x)) of ANY uint64, exact (the digit recurrence of
+// sqrt_q16 below, 32 fixed trips, with no int32 clamp: the root of a uint64
+// is below 2^32). The twin of unit_fixed.isqrt for every radicand < 2^64.
+FP_HD inline uint64_t isqrt_u64_q(uint64_t x) {
+    uint64_t res = 0;
+    uint64_t bit = (uint64_t)1 << 62;
+    for (int k = 0; k < 32; ++k) {
+        const uint64_t t = res + bit;
+        res >>= 1;
+        if (x >= t) {
+            x -= t;
+            res += bit;
+        }
+        bit >>= 2;
+    }
+    return res;
+}
+
+// isqrt_q: unit_fixed.isqrt of an int64 (a negative radicand is 0, as Python's
+// guard makes it).
+FP_HD inline int64_t isqrt_q(int64_t n) {
+    return n > 0 ? (int64_t)isqrt_u64_q((uint64_t)n) : 0;
+}
+
+// isqrt_ceil_q: unit_fixed.isqrt_ceil -- the floor root, plus one unless it
+// is exact.
+FP_HD inline int64_t isqrt_ceil_q(int64_t n) {
+    const int64_t r = isqrt_q(n);
+    return (r * r < n) ? r + 1 : r;
+}
+
+// div_round_q: unit_fixed.div_round -- n / d rounded half AWAY from zero,
+// d != 0. floor((2|n| + d) / 2d) == q + (2r >= d) with q, r the quotient and
+// remainder of |n| / d, so the form below is exact for every int64 n
+// (INT64_MIN included: the magnitude is taken in uint64) and d != 0.
+FP_HD inline int64_t div_round_q(int64_t n, int64_t d) {
+    // The signs are combined, never negated in int64 (INT64_MIN has no
+    // int64 negation); the magnitudes are uint64.
+    const bool neg = (n < 0) != (d < 0);
+    const uint64_t an = n < 0 ? (uint64_t)0 - (uint64_t)n : (uint64_t)n;
+    const uint64_t ud = d < 0 ? (uint64_t)0 - (uint64_t)d : (uint64_t)d;
+    uint64_t q = an / ud;
+    const uint64_t r = an % ud;
+    if (r >= ud - r) ++q;              // 2r >= d without overflow
+    return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
+}
+
+// mul_q16_round_q: unit_fixed.mul_q16_round -- a * b / 65536 rounded half
+// away from zero, the product formed in 128 bits so it is exact whenever the
+// RESULT fits int64 (the hook accessors' contract, unit_traits: every
+// class value x HOOK_MAX is far below 2^63).
+FP_HD inline int64_t mul_q16_round_q(int64_t a, int64_t b) {
+    const bool neg = (a < 0) != (b < 0);
+    const uint64_t ua = a < 0 ? (uint64_t)0 - (uint64_t)a : (uint64_t)a;
+    const uint64_t ub = b < 0 ? (uint64_t)0 - (uint64_t)b : (uint64_t)b;
+    uint64_t hi, lo;
+    umul64_wide(ua, ub, &hi, &lo);
+    const uint64_t lo2 = lo + 32768u;   // + half of 2^16, with the carry
+    if (lo2 < lo) ++hi;
+    const uint64_t q = (hi << 48) | (lo2 >> 16);
+    return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
+}
+
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------
 //
 // n = ceil(a_real / b_real), computed entirely in integer from the Q16.16

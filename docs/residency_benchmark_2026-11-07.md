@@ -1424,3 +1424,33 @@ for the bus gate's two discs (≈ 16 B a tile + 128 B an edit + 40 B an env).
 (~0.1 ms) and the device's two kernels; the device side stays inside slot 7's noise (K2 is serial per env, ~110
 tiles each, in parallel across envs). At N = 64 the edit-loaded tick is 33 % shorter (+49 % env-ticks/s); at N = 1
 the gain is within the two runs' spread under the machine's load. Idle (no edits) it costs nothing measurable.
+
+## P6.2: the unit kernels (2026-11-14)
+
+**What.** The device unit store's first five slot kernels beside the moved pilot (1a integrate + turn, 9c2 the
+wind's impulse, 1b' orders, 10' order expiry, the tick-end conversion, 1c exposure decay), each a free function over
+the `(N, U, W)` store and the `(N, T)` device tables (`simulation/unit_kernels.py`). Class T: nothing in the played
+tick calls them, so nothing above moves.
+
+**Method.** `tests/cuda_unit_kernels_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070). The rows:
+ship_demo's bots match after 300 ticks with the order schedule (12 units, W = 180), replicated to N envs; 9c2's
+planes are that tick's gas / wind / solid as CuPy `(N, ...)` arrays. "upload + kernel + download" is the whole
+host round trip of a store (pinned staging both ways); "kernel call" is the binding alone -- the counts' memset, the
+launch, the 3 x N counts' D2H and the stream sync (the sync is the floor: the kernels themselves are a few
+microseconds at these sizes). Medians of 200 repetitions; per row the three processes' medians. Short runs, so they
+sit in the driver's boosted window (the P2 caveat above).
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 1a integrate_turn | 0.190, 0.191, 0.191 / 0.142, 0.143, 0.143 | 0.237, 0.237, 0.198 / 0.159, 0.158, 0.135 | 0.827, 0.866, 0.815 / 0.289, 0.301, 0.286 |
+| 9c2 wind_impulse | 0.211, 0.228, 0.227 / 0.164, 0.165, 0.164 | 0.250, 0.255, 0.212 / 0.172, 0.176, 0.149 | 0.862, 0.875, 0.823 / 0.313, 0.320, 0.295 |
+| 1b' apply_orders | 0.217, 0.217, 0.217 / 0.170, 0.169, 0.170 | 0.230, 0.264, 0.220 / 0.168, 0.184, 0.158 | 0.840, 0.876, 0.835 / 0.309, 0.325, 0.308 |
+| 1c exposure_decay | 0.189, 0.189, 0.190 / 0.142, 0.142, 0.142 | 0.204, 0.237, 0.196 / 0.142, 0.157, 0.134 | 0.819, 0.852, 0.817 / 0.289, 0.301, 0.288 |
+| 10' expire_orders | 0.217, 0.217, 0.215 / 0.170, 0.170, 0.168 | 0.231, 0.265, 0.221 / 0.169, 0.186, 0.159 | 0.864, 0.847, 0.839 / 0.322, 0.312, 0.310 |
+| 10 convert_zombies | 0.189, 0.190, 0.151 / 0.142, 0.142, 0.117 | 0.206, 0.237, 0.192 / 0.143, 0.157, 0.130 | 0.853, 0.828, 0.816 / 0.302, 0.291, 0.288 |
+
+**Reading.** Every kernel call costs its sync (~0.14 ms) plus, for the two with a host input (1b' / 10'), the
+input's staging (~0.03 ms); 9c2's six plane reads per footprint tile add ~0.02 ms. At N = 64 the call is ~0.3 ms and
+the round trip ~0.83 ms, most of it the 1.1 MB store copied twice through pinned memory. Per slot per env-tick that
+is ~5 µs at N = 64 -- the cost the device backend pays only at the checkpoint cadence, since in the resident tick
+the store will stay on the device and one sync will serve a whole chain of slots (the chained gate's form).

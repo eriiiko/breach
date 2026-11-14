@@ -1,17 +1,23 @@
-"""Generate the device unit store's checked-in row layout header (#29 P6.1).
+"""Generate the device unit store's checked-in headers (#29 P6.1, P6.2).
 
-Residency design §4.4b decision 1: a unit is a row of W int64 -- the unit
-schema's group-S columns in schema order at their encoded widths, then
-`valid` -- and the column offsets reach C++ as a GENERATED, checked-in header,
-``cpp/src/unit_store_layout.h`` (the light table's and the edit ordinals'
-precedent). The text comes from ``simulation.unit_store.header_text`` (the one
-derivation); ``tests/test_unit_store.py`` refuses a stale copy.
+Two generated, checked-in headers (the light table's and the edit ordinals'
+precedent), one command:
 
-A schema column added, removed or re-widened (a config row that changes a
-block's width included -- a hand-grenade row, a status kind, a damage type, a
-hook) means: run this with ``--write``, commit the header, rebuild
-cpp/build_cuda (the device store refuses a compiled layout whose fingerprint
-is not the schema's).
+- ``cpp/src/unit_store_layout.h`` -- the store's ROW layout (residency design
+  §4.4b decision 1: a unit is a row of W int64, the unit schema's group-S
+  columns in schema order at their encoded widths, then `valid`), from
+  ``simulation.unit_store.header_text``;
+- ``cpp/src/unit_tables_layout.h`` -- the unit kernels' DEVICE TABLES (§4.11:
+  every table value a kernel reads, one row of ``simulation.unit_tables.ROWS``
+  each; plus the hooks' and the status kinds' indices), from
+  ``simulation.unit_tables.header_text``.
+
+``tests/test_unit_store.py`` / ``tests/test_unit_tables.py`` refuse a stale
+copy. A schema column or a table row added, removed or re-widened (a config
+row that changes a block's or a table's width included -- a hand-grenade row,
+a status kind, a damage type, a hook, an env profile) means: run this with
+``--write``, commit the headers, rebuild cpp/build_cuda (the device store
+refuses a compiled layout whose fingerprint is not the schema's).
 
     C:/Users/steen/anaconda3/envs/data/python.exe tools/gen_unit_layout.py          # check (exit 1 when stale)
     C:/Users/steen/anaconda3/envs/data/python.exe tools/gen_unit_layout.py --write  # regenerate
@@ -31,24 +37,27 @@ for _p in (ROOT, ROOT / "src"):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--write", action="store_true",
-                    help="rewrite the header (default: check only)")
+                    help="rewrite the headers (default: check only)")
     args = ap.parse_args(argv)
-    from simulation import unit_store
-    path = ROOT / unit_store.HEADER_REL
-    text = unit_store.header_text()
-    old = path.read_text(encoding="utf-8") if path.is_file() else None
-    if old == text:
-        print(f"{unit_store.HEADER_REL} is current "
-              f"(W {unit_store.layout().width})")
-        return 0
-    if not args.write:
-        print(f"STALE: {unit_store.HEADER_REL} differs from the schema; run "
-              f"`{unit_store.GENERATOR}` and commit")
-        return 1
-    path.write_text(text, encoding="utf-8", newline="\n")
-    print(f"wrote {unit_store.HEADER_REL} (W {unit_store.layout().width}, "
-          f"{unit_store.layout().fingerprint[:12]})")
-    return 0
+    from simulation import unit_store, unit_tables
+    stale = 0
+    for mod in (unit_store, unit_tables):
+        path = ROOT / mod.HEADER_REL
+        text = mod.header_text()
+        lay = mod.layout()
+        old = path.read_text(encoding="utf-8") if path.is_file() else None
+        if old == text:
+            print(f"{mod.HEADER_REL} is current (W {lay.width})")
+            continue
+        if not args.write:
+            print(f"STALE: {mod.HEADER_REL} differs from its schema; run "
+                  f"`{mod.GENERATOR}` and commit")
+            stale += 1
+            continue
+        path.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {mod.HEADER_REL} (W {lay.width}, "
+              f"{lay.fingerprint[:12]})")
+    return 1 if stale else 0
 
 
 if __name__ == "__main__":

@@ -701,6 +701,123 @@ decision moved. One line each:
   `[not_twinned]`; its debt can never block a merge (Class-T files are not
   Class-P paths) and blocks only the device training door.
 
+**Re-check at P6.2's start (2026-11-14, the lead; it amends the cut above).**
+"Patches after P6.1 ... may run side by side" does not hold for P6.2 and P6.3
+as cut: read against P6.1 as built, both need the same shared layer, and two
+agents would build each part twice. The shared layer, built ONCE, in P6.2,
+each part with a real user in that patch:
+
+1. **The device tables (§4.11)**: every table value a unit kernel reads, taken
+   from the SAME validated objects the reference laws read (the impulse
+   table, the speed table, the turning dials, the status registry, the
+   species' class values, the environment profiles), through a column schema
+   with generated offsets, uploaded when the store is built. Per env where
+   the table is quantized per map.
+2. **The harness's slot inputs**: `DeviceSlot.run(store)` sees only the rows.
+   A slot also reads things that are not unit rows: field planes, the tick,
+   a per-tick host table (the order requests). The harness captures them per
+   env when the slot is entered and hands them to the kernel. A field reaches
+   a kernel as a device pointer to an `(N, h, w)` plane in the resident
+   field's own dtype and currency, so the device backend (P8b) can hand it
+   `ResidentBatch`'s buffers unchanged.
+3. **The device unit library**: the functions several slots share, as one
+   `__device__` header over the generated layout: the status block (the
+   composed flags, apply, the sweep), the hook accessor (`round(class value x
+   hook)`, skipped at ONE), the life gate.
+4. **Where a kernel lives**: `UnitStoreDevice` stays the buffer and its
+   copies. A slot's kernel is a free function in its slot family's own TU
+   over the store's pointer; the store class gains no method per slot.
+   Kit-level integer helpers that `unit_fixed.py` holds (`mul_q16_round`,
+   `div_round`) get their twin in `fixed_point.h` beside the three already
+   there, held equal by `tests/test_unit_impulse_twins.py`; a law (the turn,
+   the integration) is never kit code.
+
+The cut from here:
+
+| patch | builds | runs |
+|---|---|---|
+| P6.2 | the shared layer (1 to 4) and its first users: the unit impulse law's two slots, 1a (integrate + turn) and 9c2 (the wind's impulse; it emits no event, so it moves here from P6.3), 1b' and 10' (orders), the tick-end conversion; the CHAINED gate on the two adjacent pairs it creates (1b' + 1c, 10' + conversion) | first, alone among the kernel patches |
+| P6.2m | slot 3, movement (the footprint samples, the speed table, the direction rule, the walk ban, the slide rule) | after P6.2, beside P6.3 |
+| P6.3 | as above, without 9c2: the device `apply_packet`, the event ring, 2b, 9c, 9c3 (teargas, the poison law) | after P6.2, beside P6.2m |
+| P6.4 | as above | after P6.3 |
+
+The two reference debts (the projectile list never pruned; `melee_intent`'s
+possession) and the stale docstrings of the inventory's Part E are one small
+reference patch run beside P6.2 (`29-ref-debts`).
+
+**As built (P6.2, 2026-11-14).** The shared layer and its five first users
+landed as re-checked; no decision moved. One line each:
+- THE DEVICE TABLES are `simulation/unit_tables.py`: `ROWS`, each a
+  `TableRow(name, width, value(src), lo, hi)` whose `value` reads the
+  reference's own object (`sim.impulse_table`, the sim's turning class dials,
+  the status registry, `exposure.get_settings()`, `unit_traits.class_hp_q`,
+  the species / env-profile stabilities, `ZOMBIE_TEAM`, the gas indices) and
+  whose `lo` .. `hi` is the range the kernels were proved for (refused by
+  name at `values`); 25 rows, T = 45 on the shipped config. One vector per env
+  (`(N, T)`; the impulse table is per map); the generated
+  `cpp/src/unit_tables_layout.h` (written by the same `gen_unit_layout.py`
+  as the store's) carries the offsets, each hook's index and each status
+  kind's id, all in a fingerprint the store checks. The tables are uploaded
+  when the store is built (`DeviceStore(..., tables=)`), a separate
+  `UnitTablesDevice`.
+- THE SLOT INPUTS: `DeviceSlot(label, run, columns, inputs)`; an input is a
+  row of `cuda_unit_lockstep.INPUTS` (`tick`, `order_requests`) or
+  `field:<GameMap attribute>`, captured per env at the slot's FIRST entry in
+  a tick and gathered into a `SlotInputs` (`.tick (N,)`, `.tables[name]
+  (N, R, C)`, `.fields[name]` a CuPy `(N, ...)` array in the resident
+  field's dtype); `run(store)` without inputs (P6.1's form) or `run(store,
+  inputs)`. A field reaches a kernel as a device pointer (the binding takes
+  `uintptr`s and the shape), so P8b passes `ResidentBatch.buffers` as they are.
+  The per-tick host table is staged through the store's `stage_input` slots.
+  `ShadowLockstep` takes one slot or a list (one match shadows all six).
+- THE DEVICE UNIT LIBRARY is `cpp/src/cuda_unit_lib.cuh`; its gate is a
+  TEST-ONLY probe TU (`cuda_unit_lib_probe.cu`) running each function on
+  synthetic rows.
+- WHERE A KERNEL LIVES: `UnitStoreDevice` keeps the buffer, the copies, the
+  per-env COUNTS (coverage / faults / refused, a 3 x N device array every
+  kernel writes) and the input staging; P6.1's `exposure_decay` method left
+  it. Each slot is a free function in its family's TU (`cuda_unit_exposure.cu`
+  1c, `cuda_unit_impulse.cu` 1a + 9c2, `cuda_unit_orders.cu` 1b' + 10',
+  `cuda_unit_conversion.cu` the conversion), declared in `cuda_unit_kernels.h`,
+  bound one `bp.unit_*` function each returning the three counts, and faced
+  in Python by `simulation/unit_kernels.py` (which refuses a fault). The kit
+  gained `isqrt_q` / `isqrt_u64_q` (exact over int64 / uint64: `sqrt_q16`
+  clamps at int32), `isqrt_ceil_q`, `div_round_q`, `mul_q16_round_q` (a
+  128-bit product through `umul64_wide`); every `.cu` is on the target-wide
+  CUDA determinism floor (confirmed in CMakeLists: `--fmad=false`,
+  `-Xcompiler /fp:strict`), no per-source list needed.
+- WIDTHS: Python's unbounded ints meet int64 in three places. The wind load
+  `W = N * v2` reaches 2^80 and is formed in 128 bits, its impulse
+  `((W >> 16) * k) >> 16` too (a result past int64 FAULTS); the projection
+  `j * v / n` is the exact split `j = q n + r` (`|v| <= n`, so `r v < 2^63`).
+  The demand's components are clamped at 2^30 before their square, exactly
+  (past it the effort saturates whatever the rest). Every other square is of
+  components the tables' doors and the V_MAX clamp bound; a state operand past
+  2^31 in a squared 2-vector (2^15 tiles a tick) faults the row instead of
+  wrapping. No fault occurred in any scene.
+- THE CONVERSION's slot is the label `10 tick end (ruleset)`
+  (`ContinuousRealtime.on_tick_end`: `convert_marines_to_zombies`, then --
+  since the reference-debts patch merged mid-P6.2 -- dropping the detonated
+  grenades from `sim.projectiles`), so no nested label was added. Its
+  host-only side (the name's "Z-" prefix, the momentum books, the grenade
+  prune: a host table until P7b) has no device form; the chained harness does
+  it after the unpack.
+- THE GATES (`tests/cuda_unit_kernels_check.py`, wrapper
+  `tests/test_cuda_unit_kernels.py`): the tables read back equal the
+  reference objects over two maps of different tile size; the library on
+  synthetic rows; the six slots shadowed together on ship_demo's bots match
+  with TURN / HOLD / HP hooks on two thirds of the marines and an order
+  schedule (500 ticks, twin equal every tick); slots 1a + 9c2 on the doorway
+  jet scene (knockdowns, prone bodies in wind) at N = 1, 2, 8; 1b' / 10' / 1c
+  on ship batches with extra idle units, the conversion / 10' / 1a on box
+  matches where a horde bites idle marines, N = 2, 8; the chained pairs 1b' +
+  1c and 10' + conversion. Every gate was broken once (the patch's report).
+- The corpus traces no conversion (no zombie kills a marine in 300 ticks), so
+  the conversion twin's generated files are `ai_zombie.py`, `ruleset.py` and
+  `unit.py` only; `integrate_turn` and `wind_impulse` share `unit.py` /
+  `gamemap.py` with Class-P twins (a change there needs the stamp through
+  those). Eleven modules left `[not_twinned]`.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

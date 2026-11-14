@@ -80,7 +80,6 @@ build = [
 "src/simulation/__init__.py" = "setup only: the package import"
 "src/simulation/action_registry.py" = "setup only: the verb registry (its device table is Class T, P8b)"
 "src/simulation/action_spec_v1.py" = "Class T: the action spec's masks and tables, host-side (#195 1h)"
-"src/simulation/ai_zombie.py" = "Class T: the horde (slot 5 + 10), built at P7d"
 "src/simulation/attack_resolver.py" = "Class T: the cover exposure a shot reads (slot 4's phase A), built at P7a"
 "src/simulation/atmosphere_fixed.py" = "Class T: slot 9b's over-pressure walls (the applier's topology), built from P6"
 "src/simulation/blast_air.py" = "Class T: a charge's air read (slot 2's detonations, through the payload executor), built at P7c"
@@ -93,7 +92,6 @@ build = [
 "src/simulation/entities/schema.py" = "setup only: the entity schema (Class T, P6b)"
 "src/simulation/entities/vents.py" = "setup only: the vent entity rows (Class T, P6b)"
 "src/simulation/events.py" = "Class T: the tick's event rows (slots 2 / 4 / 5: hits, kills, render-only shots and reloads), built with their producers from P7a"
-"src/simulation/exchange.py" = "Class T: the coupling rows (slots 3, 9c-9c3), built from P6"
 "src/simulation/factions.py" = "setup only"
 "src/simulation/generation.py" = "setup only"
 "src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source); Class T at P6b"
@@ -104,7 +102,6 @@ build = [
 "src/simulation/match.py" = "setup only: spawn_match (the bank compile, P8a)"
 "src/simulation/match_session.py" = "the host loop (MatchSession): the farm's session, never a twin"
 "src/simulation/materials.py" = "setup only: the materials table (its upload is Class P)"
-"src/simulation/movement.py" = "Class T: slot 3, built from P6"
 "src/simulation/noise.py" = "Class T: the noise log (#183 G9p: emitted by slots 2 / 4 / 5 / 9e, drained by slot 5), built with the horde at P7d"
 "src/simulation/obs_spec_v1.py" = "the observation spec v1 (#195 1g; outside step, the env's observe through the sensor accessor): never a twin -- the device observation is P8b's gather"
 "src/simulation/payloads.py" = "Class T: the payload executor (slot 2's grenade detonations), built at P7c"
@@ -113,23 +110,15 @@ build = [
 "src/simulation/poison.py" = "Class T: the poison law (#29 PX: dosed by the gas[poison] row and run in slot 9c3; a per-unit law with no order dependence), its device twin at the residency arc's P6.2"
 "src/simulation/rng_salts.py" = "Class T: the one Philox salt enum (#29 P3b), constants the device twins of draws.py / the wander read"
 "src/simulation/room_graph.py" = "setup only on the corpus: the room graph's host reads (#195 1b; place_at, 1f), imported by the bots for the commander; never called in the tick"
-"src/simulation/ruleset.py" = "Class T: MatchRules (the done kernel, P8b)"
 "src/simulation/sensor_accessor.py" = "the bots' controller side (outside step, #183 G8p): the position features read fire / smoke / pressure / temperature through EntityFieldAccessor.sample_many; never a twin (the sensors' resident gather is its own later backing)"
 "src/simulation/signal_bus.py" = "setup only on the corpus; Class T at P6b"
-"src/simulation/simulation.py" = "the conductor: its slots are Class T, built from P6 (the device tick mirrors the slot order)"
 "src/simulation/simultaneous.py" = "Class T: phase A / B, built at P7a"
 "src/simulation/speeds.py" = "setup only: the [speeds] door and its per-map quantization (Simulation.speed_table; the table is an upload with slot 3 and the horde, Class T, P6 / P7d)"
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
-"src/simulation/status.py" = "Class T: slot 2b, built from P6"
 "src/simulation/team_picture.py" = "the team picture (#195 1d, conductor slot 11, a match only): host-side match memory, never synced or hashed; the device's own arrays at the residency arc's later stage (RL agent design 9)"
-"src/simulation/turning.py" = "Class T: slot 1a's turning law (every unit's facing, G5p-a1; the bots read its predictor outside step) and slot 3's direction rule (theta, G1p-c), built from P6"
 "src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge); Class T at P6b"
-"src/simulation/unit_fixed.py" = "Class T: built from P6"
 "src/simulation/unit_schema.py" = "setup only on the corpus: the unit schema (#29 P3a: Unit.__slots__, the column defaults at construction, the digest record); the device unit store's column table from P6"
-"src/simulation/unit_impulse.py" = "Class T: the unit impulse law (G5p-a2: slot 1a's integration before the turn, slot 1b's shove, slot 2 / 4c's pushes and recoil, slot 3's displacement), built from P6"
-"src/simulation/unit_orders.py" = "Class T: the order (#195 1f), applied at slot 1b', expired at slot 10; information only until rung 4; a device column at the residency arc's P6"
-"src/simulation/unit_traits.py" = "Class T: the hooks' accessors (#29 U1: the compile step at spawn, setup only; the accessors read in slots 1a / 1b / 2 / 3 / 4 / 5 and by the bots and the observation outside step), device accessors from P6.2"
 "src/simulation/vent_system.py" = "Class T: the vent kernels (slot 9e), built at P6b"
 "src/simulation/verb_gates.py" = "Class T: the hand verbs' gates, read at slots 1b and 4a (#195 1e); the device's at the residency arc's P6"
 "src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step); its many-tiles routine (#195 1c) is PhysicsEngine.sight_rays / sight_window, cpp/src/sight_lines.cpp, a host call in both modules"
@@ -142,7 +131,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_water.cu"]
 slots = ["7 water (cpu/per-call)"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -187,7 +176,7 @@ device = [
 ]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call)"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.cpp",
@@ -226,7 +215,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_bulk_transport.cu"]
 slots = ["7 EOS run_substeps (cpu/per-call) / trace tail"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.cpp",
@@ -261,7 +250,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_kick_compression.cu"]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call) / div_source"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -298,7 +287,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_kick_compression.cu"]
 slots = ["7 EOS run_substeps (cpu/per-call) / energy flux"]
 level = true
-level_at = "7117cb033cb22f9bca2659ea7f6ad9a55b8d1bc8"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/bulk_transport.h",
     "cpp/src/eos_solver.cpp",
@@ -314,7 +303,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_radiation_sweep.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 step_tail (ripple+fire+temp+sweep) / sweep"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -351,7 +340,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_temperature.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 step_tail (ripple+fire+temp+sweep) / temperature"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -386,7 +375,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_fire.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 step_tail (ripple+fire+temp+sweep) / fire"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -426,7 +415,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_combustion.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 combustion (host)"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/combustion.cpp",
     "cpp/src/combustion.h",
@@ -456,7 +445,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_stamp.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["6 stamp_units"]
 level = true
-level_at = "67f262beb57e6419f481cd62e315015a1b42d2a4"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -502,7 +491,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_edit_queue.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h", "cpp/src/philox32.h"]
 slots = ["6b FieldEdit flush"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/field_edit.py",
 ]
@@ -518,7 +507,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_water_tail.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 water (cpu/per-call)"]
 level = true
-level_at = "0eab4fbcfd1d524c699420ba125723083dd5b4fe"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -549,20 +538,126 @@ files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
 # #29 P6.1: THE FIRST CLASS-T TWIN -- slot 1c (exposure.decay_units /
 # decay_step) on the device unit store (simulation/unit_store.py's
 # DeviceStore, an (N, U, W) int64 buffer in the generated layout
-# cpp/src/unit_store_layout.h): k_exposure_decay (cuda_unit_store.cu), one
-# thread per unit row, born (N, U). Training only: the played --cuda /
+# cpp/src/unit_store_layout.h): k_exposure_decay (cuda_unit_exposure.cu since
+# P6.2, a free function over the store; its decay the device tables'
+# exposure_decay_q), one thread per unit row, born (N, U). Every unit kernel
+# twin's device list carries the shared layer (the store, the tables, the
+# unit library, the generated headers, the Python driver). Training only: the played --cuda /
 # --resident tick never runs it (the store is not in run_resident_batch's
 # sets), so its debt never blocks a merge (test_class_p_level reads Class-P
 # rows only) -- it blocks the device training door (rl_env.require_snapshot
 # refuses while tools/twin_debt.py reports any debt). Gate:
 # tests/cuda_unit_store_check.py (the shadow lockstep of slot 1c through
-# tests/cuda_unit_lockstep.py, single and batched).
+# tests/cuda_unit_lockstep.py, single and batched) and, since P6.2,
+# tests/cuda_unit_kernels_check.py (1c shadowed beside the other slots and
+# CHAINED after 1b').
 class = "T"
 kind = "resident launch core"
-device = ["cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/unit_store_layout.h", "src/simulation/unit_store.py"]
+device = ["cpp/src/cuda_unit_exposure.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["1c exposure decay"]
 level = true
-level_at = "5ef40befda3cd144811c0b0cc7620ee4ed89d5c3"
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/exposure.py",
+]
+
+[twins.integrate_turn]
+# #29 P6.2, CLASS T: slot 1a (unit_impulse.integrate_all: the linear law, then omega += dw and
+# turning.step; the TURN and HOLD hooks through the unit library) on the device unit store, a free function in
+# cpp/src/cuda_unit_impulse.cu over the device unit library. Training only; its debt
+# blocks the device training door, never a merge. Gate:
+# tests/cuda_unit_kernels_check.py (the shadow lockstep, single and batched,
+# non-neutral hooks; the chained pairs 1b' + 1c and 10' + conversion).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_impulse.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["1a integrate + turn"]
+level = true
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/exchange.py",
+    "src/simulation/movement.py",
+    "src/simulation/simulation.py",
+    "src/simulation/status.py",
+    "src/simulation/turning.py",
+    "src/simulation/unit.py",
+    "src/simulation/unit_fixed.py",
+    "src/simulation/unit_impulse.py",
+    "src/simulation/unit_traits.py",
+]
+
+[twins.wind_impulse]
+# #29 P6.2, CLASS T: slot 9c2 (exchange.apply_wind_force: GameMap.footprint_wind over the
+# gas / wind / solid planes, unit_impulse.add_wind; the planes are slot
+# inputs in the resident fields' dtypes) on the device unit store, a free function in
+# cpp/src/cuda_unit_impulse.cu over the device unit library. Training only; its debt
+# blocks the device training door, never a merge. Gate:
+# tests/cuda_unit_kernels_check.py (the shadow lockstep, single and batched,
+# non-neutral hooks; the chained pairs 1b' + 1c and 10' + conversion).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_impulse.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["9c2 wind on units"]
+level = true
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/exchange.py",
+    "src/simulation/gamemap.py",
+    "src/simulation/status.py",
+    "src/simulation/unit.py",
+    "src/simulation/unit_fixed.py",
+    "src/simulation/unit_impulse.py",
+]
+
+[twins.order_apply]
+# #29 P6.2, CLASS T: slot 1b' (unit_orders.apply_requests; the request table a per-tick host
+# input) on the device unit store, a free function in
+# cpp/src/cuda_unit_orders.cu over the device unit library. Training only; its debt
+# blocks the device training door, never a merge. Gate:
+# tests/cuda_unit_kernels_check.py (the shadow lockstep, single and batched,
+# non-neutral hooks; the chained pairs 1b' + 1c and 10' + conversion).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_orders.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["1b' orders"]
+level = true
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/unit_orders.py",
+]
+
+[twins.order_expiry]
+# #29 P6.2, CLASS T: slot 10' (unit_orders.expire; the tick a slot input) on the device unit store, a free function in
+# cpp/src/cuda_unit_orders.cu over the device unit library. Training only; its debt
+# blocks the device training door, never a merge. Gate:
+# tests/cuda_unit_kernels_check.py (the shadow lockstep, single and batched,
+# non-neutral hooks; the chained pairs 1b' + 1c and 10' + conversion).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_orders.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["10' order expiry"]
+level = true
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/unit_orders.py",
+]
+
+[twins.zombie_conversion]
+# #29 P6.2, CLASS T: slot 10's ruleset tail (ContinuousRealtime.on_tick_end ->
+# ai_zombie.convert_marines_to_zombies; the HP hook through the unit
+# library) on the device unit store, a free function in
+# cpp/src/cuda_unit_conversion.cu over the device unit library. Training only; its debt
+# blocks the device training door, never a merge. Gate:
+# tests/cuda_unit_kernels_check.py (the shadow lockstep, single and batched,
+# non-neutral hooks; the chained pairs 1b' + 1c and 10' + conversion).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_conversion.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["10 tick end (ruleset)"]
+level = true
+level_at = "f96d33e624209d39e49a7f94c3007ea6ef36a7ed"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/ai_zombie.py",
+    "src/simulation/ruleset.py",
+    "src/simulation/unit.py",
 ]
