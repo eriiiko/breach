@@ -46,10 +46,11 @@ decay stage, and emptied the depot of every fringe-gas dose; the flush is
 for the tail only.)
 
 INT64 BOUND (the door holds it): ``x0 + x1 <= X_MAX = 2^31 - 1``, so ``x * a
-<= 2^31 x 2^16 = 2^47``; ``m1 <= X_MAX`` and ``H_q x hook <= 2^29`` (``H <
-8192`` points at the hook's ``8 ONE``), so ``m1 x H_q < 2^60``; the gas dose
-``gus_q x density_q < 2^32 x 2^31 = 2^63`` (``gas_units_per_second < 65 536``,
-``density_q <= TRACE_CELL_MAX``).
+<= 2^31 x 2^16 = 2^47``; ``m1 <= X_MAX < 2^31`` and the hooked harm ``H_q x
+8 < 2^31`` (``H < 4096`` points, the traits' largest hook ``8 ONE``), so
+``m1 x harm < 2^62`` and the half-away rounding's doubling stays below 2^63;
+the gas dose ``gas_q x density_q < 2^31 x 2^31 = 2^62``
+(``gas_units_per_second < 32 768``, ``density_q <= TRACE_CELL_MAX``).
 
 ``damage_q`` goes through ``damage.apply_packet`` as ONE packet of type POISON
 per tick (credited to ``poison_src``, ``indirect=True``, cause
@@ -68,8 +69,10 @@ POISON packet from them (``tests/test_poison.py`` scans ``src/``).
 
 PER-UNIT RATES: the three accessors :func:`onset_q`, :func:`decay_q`,
 :func:`harm_q` are the only readers of the class values (the law, the panel,
-the bench); the unit traits' hooks ``TOX_ONSET`` / ``TOX_DECAY`` /
-``TOX_HARM`` scale them (design section 3; all ``ONE`` until #199).
+the bench; ``tests/test_unit_traits.py`` scans for another): the class value
+times the unit traits' hook ``TOX_ONSET`` / ``TOX_DECAY`` / ``TOX_HARM``
+(``unit_traits.scaled``, the identity at ONE; design section 3; all ``ONE``
+until #199), each fraction kept at most ONE.
 
 Integer only, no random draw. The dials are construction-bound
 (:func:`rebuild_settings`, called by ``Simulation.__init__``; the exposure
@@ -81,7 +84,7 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
-from simulation import unit_fixed
+from simulation import unit_fixed, unit_traits
 from simulation.damage import POISON, DamagePacket, apply_packet
 from simulation.events import NO_ATTACKER, attacker_value
 
@@ -99,10 +102,10 @@ X_MAX = (1 << 31) - 1
 #: at the first values): the flush that brings every level to exactly 0.
 FLUSH_Q = ONE // 64
 #: The largest ``hp_per_unit`` (points) the int64 bound admits at the traits'
-#: largest hook (8 ONE): ``H_q x 8 < 2^32``.
-HP_PER_UNIT_MAX = 8192.0
-#: The largest ``gas_units_per_second``: ``gus_q < 2^32``.
-GAS_UNITS_MAX = 65536.0
+#: largest hook (8 ONE): ``H_q x 8 < 2^31``.
+HP_PER_UNIT_MAX = 4096.0
+#: The largest ``gas_units_per_second``: ``gas_q < 2^31``.
+GAS_UNITS_MAX = 32768.0
 
 #: Doses clipped at :data:`X_MAX`: ``{"hits": n, "dropped_q": counts}`` -- a
 #: diagnostic, never hashed (the counted refusal of the bound).
@@ -136,16 +139,16 @@ def fraction_q(seconds: float, tps: int) -> int:
 class PoisonSettings:
     """The ``[damage.poison]`` dials, quantized once."""
     tps: int
-    onset_q: int        # a_onset, Q16 fraction of the depot moved per tick
-    decay_q: int        # a_decay, Q16 fraction of the blood leaving per tick
-    harm_q: int         # H, Q16 hit points per unit of poison leaving the blood
+    class_onset_q: int  # a_onset, Q16 fraction of the depot moved per tick
+    class_decay_q: int  # a_decay, Q16 fraction of the blood leaving per tick
+    class_harm_q: int   # H, Q16 hit points per unit of poison leaving the blood
     gas_q: int          # Q16 units of poison per second at full gas density
 
 
 def settings_from_config(cfg) -> PoisonSettings:
     """THE refusing door of ``[damage.poison]``: a missing or unknown key, a
     value that is not a number, a time constant below one tick, ``hp_per_unit``
-    not in (0, 8192) or ``gas_units_per_second`` not in [0, 65536) (the int64
+    not in (0, 4096) or ``gas_units_per_second`` not in [0, 32768) (the int64
     bound of the module docstring) is refused naming the key."""
     sec = getattr(getattr(cfg, "damage", None), "poison", None)
     if sec is None:
@@ -177,9 +180,9 @@ def settings_from_config(cfg) -> PoisonSettings:
             f"{cols['gas_units_per_second']!r})")
     return PoisonSettings(
         tps=tps,
-        onset_q=fraction_q(v["onset_seconds"], tps),
-        decay_q=fraction_q(v["decay_seconds"], tps),
-        harm_q=unit_fixed.quantize_scalar(v["hp_per_unit"]),
+        class_onset_q=fraction_q(v["onset_seconds"], tps),
+        class_decay_q=fraction_q(v["decay_seconds"], tps),
+        class_harm_q=unit_fixed.quantize_scalar(v["hp_per_unit"]),
         gas_q=unit_fixed.quantize_scalar(v["gas_units_per_second"]))
 
 
@@ -206,38 +209,35 @@ def rebuild_settings(cfg=None) -> PoisonSettings:
 # ---------------------------------------------------------------------------
 # The accessors (one per hooked value; design section 3)
 # ---------------------------------------------------------------------------
-def _hooked_fraction(u, hook_name: str, class_q: int) -> int:
-    """A per-tick fraction after ``u``'s hook, kept within ``[0, ONE]`` (a
-    fraction above one would move more than the level holds)."""
-    q = _hooked(u, hook_name, class_q)
+def _fraction(q: int) -> int:
+    """A per-tick fraction kept at most ONE (a fraction above one would move
+    more than the level holds; reached only at a hook above ``ONE / a``)."""
     return ONE if q > ONE else q
-
-
-def _hooked(u, hook_name: str, class_q: int) -> int:
-    """``class_q`` times ``u``'s hook ``hook_name``. PENDING U1: the class
-    value itself (every hook is ONE until #199)."""
-    return class_q
 
 
 def onset_q(u, s: PoisonSettings | None = None) -> int:
     """THE per-tick fraction of ``u``'s depot that reaches the blood (Q16):
-    ``a_onset`` times its ``TOX_ONSET`` hook, at most ONE."""
+    ``a_onset`` times its ``TOX_ONSET`` hook (``unit_traits.scaled``: one
+    rounding, the identity at ONE), at most ONE. int64: ONE x 8 ONE."""
     s = s or get_settings()
-    return _hooked_fraction(u, "TOX_ONSET", s.onset_q)
+    return _fraction(unit_traits.scaled(u, unit_traits.TOX_ONSET,
+                                        s.class_onset_q))
 
 
 def decay_q(u, s: PoisonSettings | None = None) -> int:
     """THE per-tick fraction of ``u``'s blood that leaves it (Q16):
     ``a_decay`` times its ``TOX_DECAY`` hook, at most ONE."""
     s = s or get_settings()
-    return _hooked_fraction(u, "TOX_DECAY", s.decay_q)
+    return _fraction(unit_traits.scaled(u, unit_traits.TOX_DECAY,
+                                        s.class_decay_q))
 
 
 def harm_q(u, s: PoisonSettings | None = None) -> int:
     """THE hit points ``u`` loses per unit of poison leaving its blood (Q16):
-    ``hp_per_unit`` times its ``TOX_HARM`` hook. int64: <= 2^29 (the door)."""
+    ``hp_per_unit`` times its ``TOX_HARM`` hook. int64: ``H_q < 2^28`` (the
+    door) x ``HOOK_MAX = 2^19`` < 2^47."""
     s = s or get_settings()
-    return _hooked(u, "TOX_HARM", s.harm_q)
+    return unit_traits.scaled(u, unit_traits.TOX_HARM, s.class_harm_q)
 
 
 # ---------------------------------------------------------------------------

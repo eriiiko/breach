@@ -35,8 +35,9 @@ Unit class foundation additions (2026-05-21):
 - ``awakened`` / hidden stat fields — data only; behaviour deferred (spec §13).
 - ``facing`` changed from str to float radians (0=East CCW, π/2=North).
   ``facing_compass()`` converts to "N"/"NE"/"E"/... for sprite lookup.
-- ``hp`` renamed to ``current_hp``. ``max_hp`` removed; use
-  ``effective_vitality(unit)`` from simulation.stats instead.
+- ``hp`` renamed to ``current_hp``. ``max_hp`` removed; the full health is
+  ``unit_traits.max_hp_q(unit)`` (#29 U1: the class's ``hp`` times the HP
+  hook).
 - ``occupied_tiles()`` / ``occupies()`` — spec §6 interface for collision,
   LOS, hit-detection, stamp_units.
 """
@@ -267,11 +268,13 @@ class Unit:
         from simulation import unit_impulse as _unit_impulse
         _unit_impulse.init_state(self)
 
-        # ---- HP: current_hp from sampled vitality ------------------------
-        # max_hp is removed; use effective_vitality(unit) from stats module.
-        # A float that is ALWAYS an exact n/65536 (asserted at every write by
-        # the property below; hashed as its Q16 count, #29 P3a).
-        self.current_hp = float(self.base_stats.vitality)
+        # ---- HP: the full health of the unit's class ---------------------
+        # #29 U1: ``unit_traits.max_hp_q`` -- ``[marine] hp`` / ``[zombie] hp``
+        # on is_zombie, times the HP hook (the schema default, ONE, here;
+        # Simulation.add_unit compiles the hooks and sets it again). The
+        # species' vitality is sheet input, never read by the tick.
+        from simulation import unit_traits as _unit_traits
+        self.hp_q = _unit_traits.max_hp_q(self)
 
         # ---- Legacy fields: kept unchanged --------------------------------
 

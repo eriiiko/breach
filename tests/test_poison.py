@@ -98,28 +98,28 @@ def test_the_door_quantizes_once_and_refuses_by_name():
     """Property: ``[damage.poison]`` is read through a refusing door: the
     first values give the design's fractions (683, 137 at 24 tps) and H = 10
     points exactly; a missing or unknown key, a non-number, a time below one
-    tick, ``hp_per_unit`` outside (0, 8192) and ``gas_units_per_second``
-    outside [0, 65536) are refused naming the key. Breaks if a dial is read
+    tick, ``hp_per_unit`` outside (0, 4096) and ``gas_units_per_second``
+    outside [0, 32768) are refused naming the key. Breaks if a dial is read
     raw, the fraction is taken through a float division or exponential, or
     a bound of the int64 argument is dropped."""
     s = poison.settings_from_config(_cfg())
-    assert (s.onset_q, s.decay_q, s.harm_q) == (683, 137, 10 * ONE)
+    assert (s.class_onset_q, s.class_decay_q, s.class_harm_q) == (683, 137, 10 * ONE)
     assert s.gas_q == unit_fixed.quantize_scalar(0.6)
     for over, key in ((dict(onset_seconds=None), "onset_seconds"),
                       (dict(bogus=1.0), "bogus"),
                       (dict(decay_seconds="20"), "decay_seconds"),
                       (dict(onset_seconds=0.03), "onset_seconds"),
                       (dict(hp_per_unit=0.0), "hp_per_unit"),
-                      (dict(hp_per_unit=8192.0), "hp_per_unit"),
+                      (dict(hp_per_unit=4096.0), "hp_per_unit"),
                       (dict(gas_units_per_second=-0.1),
                        "gas_units_per_second"),
-                      (dict(gas_units_per_second=65536.0),
+                      (dict(gas_units_per_second=32768.0),
                        "gas_units_per_second")):
         with pytest.raises(ValueError, match=key):
             poison.settings_from_config(_cfg(**over))
     # The shipped config passes and IS the first values.
     live = poison.settings_from_config(CFG)
-    assert (live.onset_q, live.decay_q, live.harm_q) == (683, 137, 10 * ONE)
+    assert (live.class_onset_q, live.class_decay_q, live.class_harm_q) == (683, 137, 10 * ONE)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ def test_the_total_harm_of_a_dose_is_h_times_the_dose():
         dmg, _blood, _u, n = _run_dose(dose_q)
         assert n is not None
         hits = sum(1 for d in dmg if d)
-        want = dose_q * S.harm_q / ONE
+        want = dose_q * S.class_harm_q / ONE
         assert abs(sum(dmg) - want) <= 0.5 * hits, dose_q
     # Other times, the same total (the times set WHEN, not HOW MUCH).
     fast = poison.settings_from_config(_cfg(onset_seconds=1.0,
@@ -168,9 +168,9 @@ def test_the_total_harm_of_a_dose_is_h_times_the_dose():
     while poison.holds(u):
         _m0, m1 = poison.advance(u, fast)
         m1s += m1
-        total += unit_fixed.mul_q16_round(m1, fast.harm_q)
+        total += unit_fixed.mul_q16_round(m1, fast.class_harm_q)
     assert m1s == 3 * ONE
-    assert abs(total - 3 * ONE * fast.harm_q / ONE) <= 0.5 * 24 * 60
+    assert abs(total - 3 * ONE * fast.class_harm_q / ONE) <= 0.5 * 24 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ def test_one_dose_rises_peaks_once_and_decays():
     while the depot still feeds the blood."""
     dmg, blood, _u, n = _run_dose(ONE)
     peak = max(range(len(blood)), key=lambda i: blood[i]) + 1
-    want = _closed_form_peak_tick(S.onset_q, S.decay_q)
+    want = _closed_form_peak_tick(S.class_onset_q, S.class_decay_q)
     assert abs(peak - want) <= 2, (peak, want)
     assert 7.5 <= want / TPS <= 8.5
     i = blood.index(max(blood))
@@ -210,7 +210,7 @@ def test_one_dose_rises_peaks_once_and_decays():
     j = body.index(max(body))
     assert all(body[k] <= body[k + 1] for k in range(j))
     assert all(body[k] >= body[k + 1] for k in range(j, len(body) - 1))
-    assert dmg[-1] <= poison.FLUSH_Q * S.harm_q // ONE + 1
+    assert dmg[-1] <= poison.FLUSH_Q * S.class_harm_q // ONE + 1
     # The peak rate is the design's ~0.33 HP a second for one bite.
     assert 0.30 <= max(body) * TPS / ONE <= 0.36
 
@@ -231,7 +231,7 @@ def test_a_fed_level_is_never_flushed():
         poison.tick([u], t, None)
         first.append(h0 - u.hp_q)
     assert u.poison_x1 > poison.FLUSH_Q          # the blood builds up
-    assert first[0] < poison.FLUSH_Q // 2 * S.harm_q // ONE // 10
+    assert first[0] < poison.FLUSH_Q // 2 * S.class_harm_q // ONE // 10
 
 
 def test_a_level_returns_to_exactly_zero_and_hashes_as_never_poisoned():
@@ -410,7 +410,7 @@ def test_steady_gas_hurts_at_h_times_the_breathing_rate():
         h0 = u.hp_q
         poison.tick([u], t, None)
         curve.append(h0 - u.hp_q)
-    want = (S.harm_q / ONE) * (S.gas_q / ONE) * density     # HP per second
+    want = (S.class_harm_q / ONE) * (S.gas_q / ONE) * density     # HP per second
     got = sum(curve[-24 * 10:]) / ONE / 10
     assert abs(got - want) <= 0.01 * want, (got, want)
     g2 = GameMap(_level())
@@ -475,6 +475,45 @@ def test_the_conductor_keeps_hurting_after_the_cloud_is_gone():
         sim.step()
         assert not sim.gmap.gas[GAS_POISON].any()
     assert m.current_hp < hp
+
+
+@pytest.mark.parametrize("name", ("TOX_ONSET", "TOX_DECAY", "TOX_HARM"))
+def test_each_poison_hook_is_live_and_exact(name):
+    """Property (the unit traits' rule, design section 3): a unit compiled
+    with its ``TOX_*`` hook at ``h`` has the accessor's value
+    ``round(class x h)`` (one rounding, the identity at ONE; a fraction kept
+    at most ONE) while the other two stay the class's, and the LAW runs on
+    it: 90 ticks of one dose leave exactly the levels and hit points a
+    reference run of the law with those three numbers leaves. Breaks if the
+    law reads the class value past the accessor, or the accessor drops the
+    hook."""
+    from simulation import unit_traits as ut
+    cls = {"TOX_ONSET": S.class_onset_q, "TOX_DECAY": S.class_decay_q,
+           "TOX_HARM": S.class_harm_q}
+    sim = Simulation(_level(), seed=5, breach_physics=bp,
+                     enable_recorder=False)
+    for h in (ut.HOOK_MIN, 3 * ONE // 4, ONE, 5 * ONE // 4, ut.HOOK_MAX):
+        u = sim.get_unit(sim.add_unit(Unit("M", x=8, y=8, team=0),
+                                      hooks={name: h}))
+        u.current_hp = 100000.0
+        want = {k: (v if (k != name or h == ONE)
+                    else unit_fixed.mul_q16_round(v, h))
+                for k, v in cls.items()}
+        for k in ("TOX_ONSET", "TOX_DECAY"):
+            want[k] = min(ONE, want[k])
+        assert (poison.onset_q(u), poison.decay_q(u), poison.harm_q(u)) == \
+            (want["TOX_ONSET"], want["TOX_DECAY"], want["TOX_HARM"]), h
+        poison.dose(u, 3 * ONE, -1)
+        x0, x1, hp = 3 * ONE, 0, u.hp_q
+        for t in range(90):
+            poison.tick([u], t, None)
+            m0 = poison.step(x0, want["TOX_ONSET"], flush=False)
+            x0 -= m0
+            x1 += m0
+            m1 = poison.step(x1, want["TOX_DECAY"], flush=(x0 == 0))
+            x1 -= m1
+            hp -= unit_fixed.mul_q16_round(m1, want["TOX_HARM"])
+            assert (u.poison_x0, u.poison_x1, u.hp_q) == (x0, x1, hp), (h, t)
 
 
 def test_the_panel_shows_the_poison_while_it_is_held():

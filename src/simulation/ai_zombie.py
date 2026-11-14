@@ -47,6 +47,8 @@ from simulation import poison as _poison
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
 from simulation import unit_orders as _unit_orders
+from simulation import unit_traits as _unit_traits
+from simulation import unit_fixed as _unit_fixed
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.factions import ZOMBIE_TEAM
 from simulation.unit_schema import SPEED_FROM_TABLE
@@ -136,16 +138,19 @@ def _bash(gmap, z, ny, nx, tile, tick, flags, settings, events) -> None:
 
 
 def _walk(gmap, z, get_field, state, tick, flags, settings, events,
-          base_ticks) -> str:
+          base_ticks, gait=_unit_traits.WALK) -> str:
     """One tick of a zombie's walk at ``base_ticks`` per tile (terrain- and
-    effort-scaled) on the field ``get_field()`` returns -- asked for only
+    effort-scaled, and by the zombie's own ``gait`` hook: ``WALK`` for the
+    shamble or a ``speed_ticks_per_tile`` override, ``SPRINT`` for the
+    sprint, #29 U1) on the field ``get_field()`` returns -- asked for only
     when the stride clock is due, so a field is flooded on the tick a step
     first needs it: ``"step"``, ``"bash"``, ``"wait"`` (no move open) or
     ``"clock"`` (its stride clock still running)."""
     samples = footprint_samples(
         gmap, z.tile_y, z.tile_x, z.footprint,
         effort_scale_q16=_unit_impulse.effort_scale_q16(
-            _unit_impulse.table_for(gmap), z))
+            _unit_impulse.table_for(gmap), z),
+        speed_hook_q16=_unit_traits.hook(z, gait))
     step_ticks = default_speed(samples, base_ticks)
     z.zombie_move_accumulator += 1
     if z.zombie_move_accumulator < step_ticks:
@@ -302,8 +307,13 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                     # #185: the bite travels biter centre -> prey centre.
                     zx_q, zy_q = _unit_impulse.centre_q(z)
                     px_q, py_q = _unit_impulse.centre_q(nearest)
+                    # #29 U1: the bite's damage is the STRIKE accessor's
+                    # ([zombie] melee_damage times the biter's hook).
+                    bite_q = _unit_traits.strike_damage_q(z)
                     apply_packet(nearest,
-                                 DamagePacket(amount=CFG.zombie.melee_damage,
+                                 DamagePacket(amount=_unit_fixed.dequantize_scalar(
+                                     bite_q),                    # p3e-view
+                                              amount_q=bite_q,
                                               dtype=KINETIC,
                                               attacker_id=getattr(z, "id",
                                                                   -1),
@@ -317,16 +327,19 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
             if not flags.can_move or not _unit_impulse.walk_allowed(z):
                 continue
             base = z.speed_ticks_per_tile
+            gait = _unit_traits.WALK            # #29 U1: the walk's hook
             if base == SPEED_FROM_TABLE:
                 if settings.sprint and _sees_prey(gmap, z, players,
                                                   settings.sprint_r2):
                     if sprint_ticks is None:
-                        sprint_ticks = _speed_table(gmap).zombie_sprint_ticks
+                        sprint_ticks = _speed_table(
+                            gmap).zombie_sprint_ticks  # traits-class: _walk
                     base = sprint_ticks
+                    gait = _unit_traits.SPRINT
                 else:
                     if shamble_ticks is None:
                         shamble_ticks = _speed_table(
-                            gmap).zombie_shamble_ticks
+                            gmap).zombie_shamble_ticks  # traits-class: _walk
                     base = shamble_ticks
             fp = z.footprint
 
@@ -340,7 +353,7 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
                     f = state.prey_field(gmap, _fp, players, fearless=True)
                 return f
             _walk(gmap, z, prey_field, state, tick, flags, settings, events,
-                  base)
+                  base, gait)
             continue
 
         if z.zombie_noise_ticks > 0:
@@ -360,7 +373,8 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
             base = z.speed_ticks_per_tile
             if base == SPEED_FROM_TABLE:
                 if shamble_ticks is None:
-                    shamble_ticks = _speed_table(gmap).zombie_shamble_ticks
+                    shamble_ticks = _speed_table(
+                        gmap).zombie_shamble_ticks      # traits-class: _walk
                 base = shamble_ticks
             got = _walk(gmap, z, lambda: field, state, tick, flags, settings,
                         events, base)
@@ -415,7 +429,10 @@ def convert_marines_to_zombies(units):
             u.team = ZOMBIE_TEAM
             u.is_zombie = True
             u.alive = True
-            u.current_hp = float(CFG.zombie.hp)
+            # #29 U1: the zombie class's full health times the unit's HP
+            # hook; the hook block is KEPT (the row is the same unit, its
+            # body keeps its traits -- never re-compiled here).
+            u.hp_q = _unit_traits.max_hp_q(u)
             # G4p: a zombie starts with no exposure (its death zeroed it
             # already; this is the conversion's own rule).
             _exposure.clear(u)

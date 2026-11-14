@@ -138,8 +138,8 @@ def table_one_dose(units=1.0):
     c = run_gas(0.0, 0, tps, hp=1e6, dose_q=int(round(units * 65536)))
     pk, at = c.peak(tps)
     s = poison.get_settings()
-    print(f"\n1. ONE DOSE of {units:g} unit(s)  (a_onset {s.onset_q}, a_decay "
-          f"{s.decay_q}, H {s.harm_q / 65536:g} HP/unit)")
+    print(f"\n1. ONE DOSE of {units:g} unit(s)  (a_onset {s.class_onset_q}, a_decay "
+          f"{s.class_decay_q}, H {s.class_harm_q / 65536:g} HP/unit)")
     print("   lost by " + "  ".join(f"{m:>3d}s {c.by(m, tps):6.2f}"
                                     for m in MARKS_S)
           + f"   total {c.total():.3f} HP")

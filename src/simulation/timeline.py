@@ -155,10 +155,14 @@ def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     """
     base = base_ticks_per_tile(gmap)
     from simulation import unit_impulse
+    from simulation import unit_traits
     samples = footprint_samples(
         gmap, fy, fx, unit.footprint,
         effort_scale_q16=unit_impulse.effort_scale_q16(
-            unit_impulse.table_for(gmap), unit))   # G5p-a2, at compile time
+            unit_impulse.table_for(gmap), unit),   # G5p-a2, at compile time
+        # #29 U1: onephase's base is the FULL speed (v1's Move folds the
+        # old Sprint in): the SPRINT hook
+        speed_hook_q16=unit_traits.hook(unit, unit_traits.SPRINT))
     terrain = default_speed(samples, base)
     pct = speed_pct(order_type, reversing)
     if pct >= 1.0:
@@ -178,7 +182,10 @@ def spread_deg_for(weapon, order_type, reversing=False, overwatch=False,
     snap cone first — a blinded marine does not get to aim, whatever the
     situation multiplier says.
     """
-    base = float(weapon.spread_deg if can_aim else weapon.spread_snap_deg)
+    from simulation.unit_traits import cone_deg_of
+    # #29 U1: the class cone's ONE selection; the shooter's SPREAD hook
+    # enters at the draw (combat.fire_burst / fire_beam -> unit_traits.cone_q16)
+    base = float(cone_deg_of(weapon, can_aim))
     if order_type == ORDER_MOVE_SHOOT:
         base *= float(CFG.onephase.spread_reverse_mult if reversing
                       else CFG.onephase.spread_move_shoot_mult)

@@ -247,9 +247,9 @@ What differs from the design above, and why:
   (`x0 + x1`), not the depot alone: with the depot capped alone the blood
   reaches about five times the cap at steady state. A dose past it is clipped
   and counted (`poison.SATURATION`, a diagnostic); never reached in play.
-- **The door's bounds** (the int64 argument): `hp_per_unit` in (0, 8192)
-  (`H_q x 8 x X_MAX < 2^63` at the traits' largest hook),
-  `gas_units_per_second` in [0, 65536), each time at least one tick. The
+- **The door's bounds** (the int64 argument): `hp_per_unit` in (0, 4096)
+  (`2 x X_MAX x H_q x 8 < 2^63` at the traits' largest hook),
+  `gas_units_per_second` in [0, 32768), each time at least one tick. The
   fractions are the authored float's exact rational, rounded once
   (`poison.fraction_q`; 683 and 137).
 - **The resist-0 gate stays in the gas row** (the zombie, the future robot:
@@ -258,8 +258,14 @@ What differs from the design above, and why:
 - **Where.** The gas row doses inside the physics guard as before; the law
   (`poison.tick`, slot 9c3') runs outside it and outside the row's lazy
   early-out, so a dosed unit keeps draining after the plane is empty.
-- **The hooks.** See the patch report: `TOX_ONSET`, `TOX_DECAY`, `TOX_HARM`
-  are read through `poison.onset_q` / `decay_q` / `harm_q`.
+- **The hooks.** `TOX_ONSET`, `TOX_DECAY`, `TOX_HARM` are rows 10-12 of
+  `unit_traits.HOOKS` (appended after U1's nine), read only through
+  `poison.onset_q` / `decay_q` / `harm_q` (`unit_traits.scaled`: the identity
+  at ONE; a fraction kept at most ONE). The class values are the settings'
+  `class_onset_q` / `class_decay_q` / `class_harm_q`, which U1's scan holds
+  to `poison.py`. The int64 bound made `hp_per_unit < 4096` and
+  `gas_units_per_second < 32768` (the half-away rounding doubles its
+  numerator).
 - **The panel line** (`ui.model.poison_text`): "Poison: blood 0.42 u   to
   come 7.3 HP" (the blood level, and `(x0 + x1) x H` still to come).
 
