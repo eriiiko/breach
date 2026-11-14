@@ -631,6 +631,18 @@ starts.
   bound (before P7b); `melee_intent` does not mark its unit possessed while
   slot 1b consumes latches only for possessed units (before P6.4's 1b);
   a `Projectile` has no spawn ordinal, though §4.3 assumes one (P7b).
+  **Settled 2026-11-14 (the reference-debts patch):** the continuous ruleset
+  (`ContinuousRealtime.on_tick_end`, slot 10, so `MatchRules` too) drops a
+  detonated grenade from `sim.projectiles`, so on the continuous path the list
+  holds only grenades in flight (the two WEGO prunes unchanged). Possession
+  carries no state: a living marine outside `_possessed_ids` holds nothing
+  slot 1b consumes or drops (no held trigger, no throw / plant / use / reload
+  / shove latch, no wind-up, no plant under way: every writer of those
+  columns possesses its unit, `tests/test_possession_carries_nothing.py`),
+  and `melee_intent` now possesses its unit like every other hand verb. So
+  P6.4 may port 1b as "every living marine consumes its own columns" with no
+  possession column; the drop branch only ever acts on the dead and the
+  turned. The spawn ordinal stays open (P7b).
 - Host structures without a schema or a capacity that need both before their
   slot is ported: projectiles, bullets in flight, the noise log, the blast
   log, the credit claims, the recorded effects of `SimultaneousEffects`
