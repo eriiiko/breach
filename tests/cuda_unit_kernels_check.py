@@ -727,7 +727,7 @@ def part_batch():
         if len({len(d.sim.units) for d in drivers}) < 2:
             fail(f"ship batch N={n}: every env has the same unit count (no padding)")
     for n in (2, 8):
-        drivers = [BoxDriver(n_marines=2 + e % 2, n_zombies=3 + e % 3, seed=1 + e)
+        drivers = [BoxDriver(n_marines=2 + e % 2, n_zombies=2 + e % 3, seed=1 + e)
                    for e in range(n)]
         conv = {"n": 0}
 

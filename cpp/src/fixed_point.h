@@ -894,13 +894,15 @@ FP_HD inline int64_t isqrt_ceil_q(int64_t n) {
 // remainder of |n| / d, so the form below is exact for every int64 n
 // (INT64_MIN included: the magnitude is taken in uint64) and d != 0.
 FP_HD inline int64_t div_round_q(int64_t n, int64_t d) {
-    if (d < 0) { n = -n; d = -d; }     // d == INT64_MIN is outside the contract
+    // The signs are combined, never negated in int64 (INT64_MIN has no
+    // int64 negation); the magnitudes are uint64.
+    const bool neg = (n < 0) != (d < 0);
     const uint64_t an = n < 0 ? (uint64_t)0 - (uint64_t)n : (uint64_t)n;
-    const uint64_t ud = (uint64_t)d;
+    const uint64_t ud = d < 0 ? (uint64_t)0 - (uint64_t)d : (uint64_t)d;
     uint64_t q = an / ud;
     const uint64_t r = an % ud;
     if (r >= ud - r) ++q;              // 2r >= d without overflow
-    return n < 0 ? -(int64_t)q : (int64_t)q;
+    return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
 }
 
 // mul_q16_round_q: unit_fixed.mul_q16_round -- a * b / 65536 rounded half
@@ -916,7 +918,7 @@ FP_HD inline int64_t mul_q16_round_q(int64_t a, int64_t b) {
     const uint64_t lo2 = lo + 32768u;   // + half of 2^16, with the carry
     if (lo2 < lo) ++hi;
     const uint64_t q = (hi << 48) | (lo2 >> 16);
-    return neg ? -(int64_t)q : (int64_t)q;
+    return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
 }
 
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------
