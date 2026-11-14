@@ -17,7 +17,9 @@ PART 1b -- THE KERNEL ON SYNTHETIC ROWS: the exposure kernel against
 ``exposure.decay_step`` over the whole int64 range (0, negatives, 1, values
 near 2^63) at eight decays, on valid rows, while padding rows (valid 0)
 carrying the same garbage come back untouched; the coverage counter equals
-the rows the law changed; a decay outside [0, 65536] is refused.
+the rows the law changed (since P6.2 the decay is a device-table row,
+set per run here; a decay outside [0, 65536] is refused at the tables
+door, tests/test_unit_tables.py).
 
 PART 2 -- SHADOW LOCKSTEP, N = 1, ship_demo's bots match (seed 1, the horde,
 the shipped ``[damage.exposure]``: k_expose 1, a 3-tick half life -- the
