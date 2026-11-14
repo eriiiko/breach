@@ -60,10 +60,10 @@ def _marine(hp=100000.0, uid=1, team=0, x=8, y=8):
 
 
 def _fill(gmap, u, density):
-    q = gas_fixed.quantize_trace_scalar(density)
+    q_trace = gas_fixed.quantize_trace_scalar(density)
     for (tx, ty) in u.occupied_tiles():
-        gmap.gas[GAS_POISON][ty, tx] = q
-    return q
+        gmap.gas[GAS_POISON][ty, tx] = q_trace
+    return q_trace
 
 
 def _run_dose(dose_q, max_ticks=24 * 900):
@@ -387,9 +387,9 @@ def test_the_gas_dose_is_linear_in_density_and_gated():
     thresh = float(CFG.exchange.poison_min_density)
     g = GameMap(_level())
     u = _marine()
-    q = gas_fixed.quantize_trace_scalar(thresh) - 1
+    q_trace = gas_fixed.quantize_trace_scalar(thresh) - 1
     for (tx, ty) in u.occupied_tiles():
-        g.gas[GAS_POISON][ty, tx] = q
+        g.gas[GAS_POISON][ty, tx] = q_trace
     apply_poison_dose([u], g, TPS, events=None)
     assert not poison.holds(u) and u.poison_src == -1
 

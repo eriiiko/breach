@@ -106,7 +106,7 @@ def run_gas(density, gas_ticks, tps, hp=MARINE_HP, max_ticks=None,
     from simulation.gases import POISON as GAS_POISON
     g = GameMap(_level())
     u = _marine(hp)
-    q = gas_fixed.quantize_trace_scalar(density) if density else 0
+    q_trace = gas_fixed.quantize_trace_scalar(density) if density else 0
     tiles = u.occupied_tiles()
     if dose_q:
         poison.dose(u, dose_q, -1)
@@ -116,7 +116,7 @@ def run_gas(density, gas_ticks, tps, hp=MARINE_HP, max_ticks=None,
     while t < limit:
         on = t < gas_ticks
         for (tx, ty) in tiles:
-            g.gas[GAS_POISON][ty, tx] = q if on else 0
+            g.gas[GAS_POISON][ty, tx] = q_trace if on else 0
         events = []
         h0 = u.hp_q
         apply_poison_dose([u], g, tps, events=events)
