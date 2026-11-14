@@ -21,9 +21,18 @@ from __future__ import annotations
 
 import numpy as np
 
+# #88 (main) split gas_fixed into trace / bulk / q16 names and DELETED the
+# ambiguous FP_* / quantize* ones; the swarm scale is plain Q16.16, so this
+# module re-exports the q16 family under the names its callers already use
+# (merge of origin/main, 2026-11-14 -- docs/swarm_merge_main_2026-11-14.md).
 from simulation.gas_fixed import (  # noqa: F401  re-export — survey §E flag 6: no 7th copy
-    FP_SHIFT, FP_ONE, FP_ONE_F, quantize, quantize_scalar, dequantize, dequantize_f32,
+    Q16_SHIFT, Q16_ONE, quantize_q16_scalar, dequantize_q16,
 )
+
+FP_SHIFT = Q16_SHIFT                    # 16
+FP_ONE = Q16_ONE                        # 65536
+quantize_scalar = quantize_q16_scalar   # round-half-away, fixedpoint::quantize's twin
+dequantize = dequantize_q16             # exact /2^16, float64
 
 # The kit's narrowed Q16.16 pi (cpp/src/fixed_point.h:900-903): round(pi*2^16)
 # checked against the Q.30 pipeline's own narrow-consistency static_assert

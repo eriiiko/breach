@@ -124,7 +124,7 @@ field_list = "defined by the entity registry at the recorded content-hash"
 # folds into tick_digest ONLY when the snapshot's presence carrier says
 # present == true, so a swarm-free digest is byte-identical to the stream
 # without this section and NO golden regenerates for it. `version` above
-# stays 5; the section carries its own version in its hashed SWARM_SECT_V1
+# does not move (5 when written, 7 since #88); the section carries its own version in its hashed SWARM_SECT_V1
 # preamble (a future roster change bumps it loudly without touching
 # swarm-free bytes).
 [swarm_section]
