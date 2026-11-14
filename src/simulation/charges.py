@@ -122,10 +122,13 @@ def tick(sim) -> None:
     """Fire every charge whose scheduled moment has arrived, and forget spent
     ones.
 
-    Runs at the head of the ruleset's unit simulation, so a charge that blows
-    on tick T has already reshaped the world — blown the door, vented the room
-    — before anybody moves through it that tick. That ordering is what makes
-    the §12 breach opening read the way it is supposed to.
+    Exactly one driver per path: on the continuous path the conductor's slot
+    9e(d'), after the door sweep and before the heat sources (so the blast
+    meets this tick's door state and is in ``gmap.blast_log`` when the
+    sources read it; its field edits land at the next 6b flush); where the
+    ruleset ``drives_units`` (OnePhaseWEGO) the head of its timeline, so a
+    charge that blows on tick T has reshaped the world before anybody moves
+    through it that tick (the §12 breach opening).
     """
     for charge in list(sim.planted_charges):
         if charge.due(sim.tick):
