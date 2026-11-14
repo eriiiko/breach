@@ -250,8 +250,7 @@ def run_scene(seconds=120, throw_at_s=1.0, on_tick=None):
 def table_scene(seconds=120, throw_at_s=1.0):
     tps = _tps()
     squad, lost_at, death, hits, dist, marks = run_scene(seconds, throw_at_s)
-    print(f"
-3. MATCH SCENE: ship_demo, idle teams, no horde; slot 0 throws "
+    print(f"\n3. MATCH SCENE: ship_demo, idle teams, no horde; slot 0 throws "
           f"one poison grenade at its squad's centre ({dist:.1f} tiles) at "
           f"{throw_at_s:g} s; {seconds} s")
     for u in squad:
