@@ -262,13 +262,16 @@ def test_the_speed_hook_composes_inside_default_speeds_rounding():
             max(1, half_up(c * 9 * MOBILITY_ONE * ONE, sum(mob) * h))
 
 
-def _zombie_scene(gait_hook):
+def _zombie_scene(gait, gait_hook):
+    """A prey and two activated zombies: one neutral, one with ``gait``'s
+    hook at ``gait_hook`` (its other speed hook neutral, so a site that
+    takes the wrong gait's hook reads ONE)."""
     sim = _sim()
     _add(sim, "prey", 50, 20)
     zs = []
     for k, h in enumerate((ONE, gait_hook)):
         z = _add(sim, f"z{k}", 8, 12 + 16 * k, team=ZOMBIE_TEAM,
-                 hooks={"WALK": h, "SPRINT": h})
+                 hooks={gait: h})
         z.zombie_activated = True
         zs.append(z)
     return sim, zs
@@ -284,7 +287,7 @@ def test_walk_and_sprint_on_the_zombie_walk(h):
     from simulation.horde import horde_settings
     for sprint in (False, True):
         settings = horde_settings(CFG)
-        sim, (z0, z1) = _zombie_scene(h)
+        sim, (z0, z1) = _zombie_scene("SPRINT" if sprint else "WALK", h)
         sim.horde_settings = replace(settings, sprint=sprint,
                                      sprint_r2=10 ** 6 if sprint else 0)
         t = sim.speed_table
@@ -515,7 +518,8 @@ def test_spread_in_every_cone_and_its_predictors(h):
     import control_bots
     import control_bots_v1
     tables = combat.weapon_tables()
-    for wid, blinded in (("k5_carbine", False), ("k5_carbine", True),
+    # p12_whisper: its aimed and snap cones differ (2.5 / 5.0 degrees)
+    for wid, blinded in (("p12_whisper", False), ("p12_whisper", True),
                          ("lance_3", False)):
         sim = _sim()
         s = _add(sim, "s", 20, 20, hooks={"SPREAD": h})
