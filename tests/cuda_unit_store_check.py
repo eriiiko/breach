@@ -62,7 +62,7 @@ if str(_ROOT / "tools") not in sys.path:
 
 import level_loader  # noqa: E402
 from cuda_unit_lockstep import DeviceSlot, ShadowLockstep  # noqa: E402
-from simulation import exposure, unit_store  # noqa: E402
+from simulation import exposure, unit_kernels, unit_store, unit_tables  # noqa: E402
 
 FAILS: list = []
 SHIP_TICKS = int(os.environ.get("UNIT_STORE_SHIP_TICKS", "700"))
@@ -75,9 +75,10 @@ def fail(msg):
 
 
 def exposure_slot():
+    # #29 P6.2: the kernel is a free function; its decay is the device
+    # tables' exposure_decay_q (the harness uploads the envs' tables).
     return DeviceSlot(label="1c exposure decay",
-                      run=lambda store: store.exposure_decay(
-                          exposure.get_settings().decay_q))
+                      run=unit_kernels.exposure_decay)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +111,7 @@ def part1_round_trip(ship_units):
         print("part1 width refusal:", str(e)[:80])
 
 
-def part1b_kernel_on_synthetic_rows():
+def part1b_kernel_on_synthetic_rows(table_vec):
     """The kernel against ``exposure.decay_step`` over the whole int64 range
     (zero, negative, one, values near 2^63) and every decay in a sweep, on
     VALID rows; PADDING rows (valid 0) carry the same garbage and must come
@@ -121,6 +122,7 @@ def part1b_kernel_on_synthetic_rows():
     ex = lay.column("exposure")
     n, U = 3, 64
     st = unit_store.DeviceStore(n, U)
+    dq = unit_tables.layout().column("exposure_decay_q").offset
     special = np.array([0, 1, -1, 2, 65535, 65536, 65537, 2 ** 31,
                         np.iinfo(np.int64).max, np.iinfo(np.int64).min,
                         np.iinfo(np.int64).max - 1], dtype=np.int64)
@@ -148,8 +150,11 @@ def part1b_kernel_on_synthetic_rows():
                             row_changed = True
                         want[e, r, ex.offset + t] = nx
                 changed[e] += int(row_changed)
+        tab = np.tile(table_vec, (n, 1))
+        tab[:, dq] = decay_q              # synthetic decays (P6.2: a table row)
+        st.upload_tables(tab)
         st.upload(a)
-        cov = st.exposure_decay(decay_q)
+        cov = unit_kernels.exposure_decay(st)
         got = st.download()
         if not np.array_equal(got, want):
             e, r, c = np.argwhere(got != want)[0].tolist()
@@ -161,14 +166,9 @@ def part1b_kernel_on_synthetic_rows():
             fail(f"part1b decay_q={decay_q}: coverage {cov.tolist()} != "
                  f"{changed.tolist()}")
             return
-    for bad in (-1, 65537):
-        try:
-            st.exposure_decay(bad)
-            fail(f"part1b: decay_q {bad} was accepted")
-        except ValueError:
-            pass
     print("part1b: the kernel equals exposure.decay_step over the int64 "
-          "range at 8 decays; padding rows untouched; bad decay refused")
+          "range at 8 decays; padding rows untouched (a decay outside "
+          "[0, 65536] is refused at the tables door: tests/test_unit_tables.py)")
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ def part2_ship_lockstep():
     print(f"TIMING pack per tick ({len(hooked.sim.units)} units): median "
           f"{1e3 * float(np.median(t_pack)):.3f} ms; unpack (into blank "
           f"units) median {1e3 * float(np.median(t_unpack)):.3f} ms")
-    return hooked.sim.units
+    return hooked.sim
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +301,7 @@ def part3_batch(n_env):
         for _ in range(50):
             t0 = time.perf_counter()
             ls.store.upload(pre)
-            ls.store.exposure_decay(exposure.get_settings().decay_q)
+            unit_kernels.exposure_decay(ls.store)
             ls.store.download()
             t_dev.append(time.perf_counter() - t0)
     total = n_env * len(ls.reports)
@@ -321,16 +321,18 @@ def main() -> int:
     if not getattr(bp, "HAS_CUDA", False):
         print("UNIT_STORE_RESULT: FAIL (not the CUDA build)")
         return 1
-    ship_units = part2_ship_lockstep()
+    ship_sim = part2_ship_lockstep()
+    ship_units = ship_sim.units
     part1_round_trip(ship_units)
-    part1b_kernel_on_synthetic_rows()
-    st = unit_store.DeviceStore(1, len(ship_units))
+    part1b_kernel_on_synthetic_rows(unit_tables.values(ship_sim))
+    st = unit_store.DeviceStore(1, len(ship_units),
+                                tables=unit_tables.values_batch([ship_sim]))
     rows = unit_store.pack_batch([ship_units])
     ts = []
     for _ in range(50):
         t0 = time.perf_counter()
         st.upload(rows)
-        st.exposure_decay(exposure.get_settings().decay_q)
+        unit_kernels.exposure_decay(st)
         st.download()
         ts.append(time.perf_counter() - t0)
     print(f"TIMING device step N=1 U={len(ship_units)}: upload + kernel + "

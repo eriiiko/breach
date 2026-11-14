@@ -27,7 +27,9 @@ Three parts, one module:
 - **The device buffer** (:class:`DeviceStore`): ONE ``(N, U, W)`` int64 device
   buffer allocated once (``breach_physics.UnitStoreBuffer``, the CUDA build
   only), uploaded and downloaded on THE tick stream through pinned staging,
-  and the pilot kernel (slot 1c, exposure decay; ``cpp/src/cuda_unit_store.cu``).
+  with the envs' DEVICE TABLES beside it (``breach_physics.UnitTablesBuffer``,
+  ``simulation.unit_tables``, P6.2). The slot kernels are free functions
+  over it (``simulation.unit_kernels``; C++ ``cpp/src/cuda_unit_kernels.h``).
 
 NOT PART OF THE PLAYED TICK (decision 3): nothing in ``Simulation.step``,
 ``ResidentBatch`` or ``PhysicsRunner.run_resident_batch`` calls this module;
@@ -345,17 +347,24 @@ class LayoutMismatch(RuntimeError):
 class DeviceStore:
     """THE ``(N, U, W)`` int64 device unit store, allocated ONCE (never per
     tick), on the CUDA build's tick stream: :meth:`upload` / :meth:`download`
-    stage through pinned host memory (async copies), and the slot kernels run
-    on it in place. Refuses a compiled module whose layout fingerprint is
-    not the schema's (a header regenerated without a rebuild, or the reverse)."""
+    stage through pinned host memory (async copies), and the slot kernels
+    (``simulation.unit_kernels``, P6.2) run on it in place. ``tables``
+    (``(N, T)``: ``simulation.unit_tables.values_batch`` of the envs' sims)
+    are the device tables those kernels read, uploaded here once
+    (:meth:`upload_tables` replaces them); a store built without them serves
+    copies only. Refuses a compiled module whose store or tables fingerprint
+    is not the schema's (a header regenerated without a rebuild, or the
+    reverse)."""
 
-    def __init__(self, n_env: int, n_units: int, bp=None):
+    def __init__(self, n_env: int, n_units: int, bp=None, tables=None):
         if bp is None:
             import breach_physics as bp
         if not getattr(bp, "HAS_CUDA", False):
             raise RuntimeError("unit store: the device store needs the CUDA "
                                "build (breach_physics.HAS_CUDA)")
+        from simulation import unit_tables
         lay = layout()
+        tlay = unit_tables.layout()
         compiled = bp.unit_store_layout()
         if compiled["fingerprint"] != lay.fingerprint \
                 or int(compiled["width"]) != lay.width:
@@ -364,17 +373,57 @@ class DeviceStore:
                 f"{compiled['fingerprint'][:12]}) is not the schema's (W "
                 f"{lay.width}, {lay.fingerprint[:12]}): run `{GENERATOR}` "
                 f"and rebuild cpp/build_cuda")
+        if compiled.get("tables_fingerprint") != tlay.fingerprint \
+                or int(compiled.get("tables_width", -1)) != tlay.width:
+            raise LayoutMismatch(
+                f"unit store: the compiled device tables (T "
+                f"{compiled.get('tables_width')}) are not "
+                f"simulation.unit_tables' (T {tlay.width}, "
+                f"{tlay.fingerprint[:12]}): run `{GENERATOR}` and rebuild "
+                f"cpp/build_cuda")
         if int(n_env) < 1 or int(n_units) < 1:
             raise ValueError(f"unit store: n_env {n_env} and n_units "
                              f"{n_units} must be >= 1")
+        self.bp = bp
         self.layout = lay
         self.shape = (int(n_env), int(n_units), lay.width)
         self._buf = bp.UnitStoreBuffer(int(n_env), int(n_units), lay.width)
+        self._tab = None
+        self.last_refused = np.zeros(int(n_env), dtype=np.int64)
+        if tables is not None:
+            self.upload_tables(tables)
 
     @property
     def device_ptr(self) -> int:
         """The buffer's device address (a CuPy view's ``UnownedMemory``)."""
         return int(self._buf.ptr)
+
+    @property
+    def buffer(self):
+        """The bound ``UnitStoreBuffer`` (what a slot kernel takes)."""
+        return self._buf
+
+    @property
+    def tables(self):
+        """The bound ``UnitTablesBuffer`` (refused before tables were
+        uploaded)."""
+        if self._tab is None:
+            raise RuntimeError("unit store: no device tables were uploaded "
+                               "(DeviceStore(..., tables=unit_tables."
+                               "values_batch(sims)))")
+        return self._tab
+
+    def upload_tables(self, tables) -> None:
+        """Upload ``(N, T)`` int64 device tables (one vector per env)."""
+        from simulation import unit_tables
+        a = np.ascontiguousarray(tables, dtype=np.int64)
+        want = (self.shape[0], unit_tables.layout().width)
+        if a.shape != want:
+            raise ValueError(f"unit store: tables must be {want} int64, got "
+                             f"{a.shape}")
+        if self._tab is None:
+            self._tab = self.bp.UnitTablesBuffer(want[0], want[1])
+        self._tab.upload(a)
 
     def upload(self, rows) -> None:
         """Copy ``rows`` (``(N, U, W)`` int64) into the device store."""
@@ -387,11 +436,6 @@ class DeviceStore:
     def download(self) -> np.ndarray:
         """The device store as a fresh ``(N, U, W)`` int64 array."""
         return self._buf.download()
-
-    def exposure_decay(self, decay_q: int) -> np.ndarray:
-        """Slot 1c on the device (``exposure.decay_step`` on every valid row's
-        exposure block); returns, per env, the rows whose block changed."""
-        return self._buf.exposure_decay(int(decay_q))
 
 
 __all__ = ["VALID", "HEADER_REL", "GENERATOR", "StoreColumn", "Layout",

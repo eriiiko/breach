@@ -38,6 +38,7 @@ const char* breach_build_id();
 #include "cuda_radiation_sweep.h"  // ray-engine-v2 P4: the sweep's CUDA twin + backend flag
 #include "cuda_resident_tick.h"    // #29 P4a: the resident tick's drivers (stage counters)
 #include "cuda_unit_store.h"       // #29 P6.1: the device unit store (Class T)
+#include "cuda_unit_kernels.h"     // #29 P6.2: the unit slot kernels (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -613,9 +614,12 @@ PYBIND11_MODULE(breach_physics, m) {
               d["valid"] = breach_cuda::unit_store_valid_col();
               d["exposure"] = breach_cuda::unit_store_exposure_col();
               d["exposure_width"] = breach_cuda::unit_store_exposure_width();
+              d["tables_width"] = breach_cuda::unit_tables_width();
+              d["tables_fingerprint"] = std::string(breach_cuda::unit_tables_fingerprint());
               return d;
           },
-          "#29 P6.1: the compiled unit store layout (unit_store_layout.h): "
+          "#29 P6.1 / P6.2: the compiled unit store and tables layouts "
+          "(unit_store_layout.h, unit_tables_layout.h): "
           "{width, fingerprint, valid, exposure, exposure_width}.");
     py::class_<breach_cuda::UnitStoreDevice>(m, "UnitStoreBuffer",
             "#29 P6.1: the (N, U, W) int64 device unit store (Class T).")
@@ -643,13 +647,122 @@ PYBIND11_MODULE(breach_physics, m) {
                  return out;
              },
              "The device store as a fresh (N, U, W) int64 array.")
-        .def("exposure_decay", [](breach_cuda::UnitStoreDevice& s, int64_t decay_q) {
-                 py::array_t<int64_t> cov((py::ssize_t)s.n_env());
-                 s.exposure_decay(decay_q, cov.mutable_data());
-                 return cov;
-             }, py::arg("decay_q"),
-             "Slot 1c on the device (exposure.decay_step on every valid row); "
-             "returns, per env, the rows whose exposure block changed.");
+        ;
+    // #29 P6.2: THE DEVICE TABLES (cuda_unit_store.h; Class T): one (N, T)
+    // int64 buffer, an env's vector the rows of simulation.unit_tables,
+    // uploaded when the store is built.
+    py::class_<breach_cuda::UnitTablesDevice>(m, "UnitTablesBuffer",
+            "#29 P6.2: the (N, T) int64 device tables of the unit kernels (Class T).")
+        .def(py::init<int, int>(), py::arg("n_env"), py::arg("width"))
+        .def_property_readonly("shape", [](const breach_cuda::UnitTablesDevice& t) {
+            return py::make_tuple(t.n_env(), t.width());
+        })
+        .def("upload", [](breach_cuda::UnitTablesDevice& t,
+                          py::array_t<int64_t, py::array::c_style> rows) {
+                 if (rows.ndim() != 2 || rows.shape(0) != t.n_env() ||
+                     rows.shape(1) != t.width())
+                     throw std::invalid_argument(
+                         "UnitTablesBuffer.upload: rows must be (n_env, width) "
+                         "C-contiguous int64");
+                 t.upload(rows.data());
+             }, py::arg("rows"))
+        .def("download", [](breach_cuda::UnitTablesDevice& t) {
+                 py::array_t<int64_t> out({(py::ssize_t)t.n_env(), (py::ssize_t)t.width()});
+                 t.download(out.mutable_data());
+                 return out;
+             });
+    // #29 P6.2: THE UNIT SLOT KERNELS (cuda_unit_kernels.h; Class T), one
+    // free function per slot over (store, tables[, inputs]); each returns the
+    // per-env counts (coverage, faults, refused) as three (N,) int64 arrays.
+    // The Python face is simulation.unit_kernels (which refuses faults).
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitKernelCounts;
+        struct Cnt {
+            py::array_t<int64_t> cov, flt, ref;
+            explicit Cnt(int n) : cov(n), flt(n), ref(n) {}
+            UnitKernelCounts view() {
+                UnitKernelCounts c;
+                c.coverage = cov.mutable_data();
+                c.faults = flt.mutable_data();
+                c.refused = ref.mutable_data();
+                return c;
+            }
+            py::tuple out() { return py::make_tuple(cov, flt, ref); }
+        };
+        m.def("unit_exposure_decay",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_exposure_decay(s, t, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"),
+              "#29 P6.2: slot 1c (exposure.decay_units) on the device store.");
+        m.def("unit_integrate_turn",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_integrate_turn(s, t, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"),
+              "#29 P6.2: slot 1a (unit_impulse.integrate_all) on the device store.");
+        m.def("unit_wind_impulse",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t gas,
+                 std::uintptr_t wind_x, std::uintptr_t wind_y, std::uintptr_t solid,
+                 int n_gases, int h, int w) {
+                  breach_cuda::UnitFieldPlanes p;
+                  p.gas = gas; p.wind_x = wind_x; p.wind_y = wind_y; p.solid = solid;
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_wind_impulse(s, t, p, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("gas"), py::arg("wind_x"),
+              py::arg("wind_y"), py::arg("solid"), py::arg("n_gases"), py::arg("h"),
+              py::arg("w"),
+              "#29 P6.2: slot 9c2 (exchange.apply_wind_force) on the device store; the "
+              "planes are device pointers to (N, ...) arrays in the resident dtypes.");
+        m.def("unit_apply_orders",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<int64_t, py::array::c_style> req) {
+                  if (req.ndim() != 3 || req.shape(0) != s.n_env() || req.shape(2) != 5 ||
+                      req.shape(1) < 1)
+                      throw std::invalid_argument(
+                          "unit_apply_orders: requests must be (n_env, n_req >= 1, 5) int64");
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_apply_orders(s, t, req.data(), (int)req.shape(1), c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("requests"),
+              "#29 P6.2: slot 1b' (unit_orders.apply_requests) on the device store.");
+        m.def("unit_expire_orders",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<int64_t, py::array::c_style> ticks) {
+                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env())
+                      throw std::invalid_argument("unit_expire_orders: ticks must be (n_env,)");
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_expire_orders(s, t, ticks.data(), c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"), py::arg("ticks"),
+              "#29 P6.2: slot 10' (unit_orders.expire) on the device store.");
+        m.def("unit_convert_zombies",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t) {
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_convert_zombies(s, t, c.view());
+                  return c.out();
+              }, py::arg("store"), py::arg("tables"),
+              "#29 P6.2: slot 10's ruleset tail (convert_marines_to_zombies) on the "
+              "device store.");
+        m.def("unit_lib_probe",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, int op, int64_t a0,
+                 int64_t a1, int64_t a2, int64_t a3) {
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(), (py::ssize_t)s.n_units(),
+                                            (py::ssize_t)breach_cuda::UNIT_LIB_PROBE_K});
+                  Cnt c(s.n_env());
+                  breach_cuda::unit_lib_probe(s, t, op, a0, a1, a2, a3, out.mutable_data(),
+                                              c.view());
+                  return py::make_tuple(out, c.cov, c.flt, c.ref);
+              }, py::arg("store"), py::arg("tables"), py::arg("op"), py::arg("a0") = 0,
+              py::arg("a1") = 0, py::arg("a2") = 0, py::arg("a3") = 0,
+              "#29 P6.2 TEST-ONLY: the device unit library on the store's rows.");
+    }
 
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
@@ -2185,6 +2298,30 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("x"),
           "fixed_point.h sqrt_q16: floor(sqrt(x)) of an int64, fixed 32 "
           "trips (clamped at INT32_MAX).");
+    // #29 P6.2: the device unit kernels' kit twins (unit_fixed.isqrt /
+    // isqrt_ceil / div_round / mul_q16_round), gated by
+    // tests/test_unit_impulse_twins.py.
+    m.def("fp_isqrt",
+          [](int64_t n) { return fixedpoint::isqrt_q(n); },
+          py::arg("n"),
+          "fixed_point.h isqrt_q: floor(sqrt(n)) of an int64, exact (0 for n <= 0).");
+    m.def("fp_isqrt_u64",
+          [](uint64_t n) { return fixedpoint::isqrt_u64_q(n); },
+          py::arg("n"),
+          "fixed_point.h isqrt_u64_q: floor(sqrt(n)) of any uint64, exact.");
+    m.def("fp_isqrt_ceil",
+          [](int64_t n) { return fixedpoint::isqrt_ceil_q(n); },
+          py::arg("n"),
+          "fixed_point.h isqrt_ceil_q: ceil(sqrt(n)) of an int64.");
+    m.def("fp_div_round",
+          [](int64_t n, int64_t d) { return fixedpoint::div_round_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h div_round_q: n / d rounded half away from zero.");
+    m.def("fp_mul_q16_round",
+          [](int64_t a, int64_t b) { return fixedpoint::mul_q16_round_q(a, b); },
+          py::arg("a"), py::arg("b"),
+          "fixed_point.h mul_q16_round_q: a * b / 65536 rounded half away "
+          "from zero (128-bit product).");
 
     // FUEL-FRACTION AXIS (2026-07-30): the load-time reciprocal bake itself,
     // exposed so Python can be GATED against it rather than trusted to
