@@ -464,6 +464,6 @@ that builds them):
 
 | lens | verdict | findings and resolution |
 |---|---|---|
-| 1. determinism and residency fit | | |
+| 1. determinism and residency fit | SOUND WITH FIXES (on v1) | `docs/unit_design_critique_1_2026-11-14.md`; resolved in v2 after the round |
 | 2. systems reuse and scope | | |
 | 3. durability: the game's planned systems and the agents | | |
