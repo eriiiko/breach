@@ -245,7 +245,8 @@ class LaneDriver:
 
     def _doom(self, u):
         """Fixtures on a unit about to die (written between ticks): an order,
-        exposure, an impulse and (without poison of its own) a depot."""
+        exposure, an impulse, (without poison of its own) a depot, and (with
+        none) a status -- so its death has every clear to make."""
         from simulation import poison
         if not u.alive:
             return
@@ -255,6 +256,9 @@ class LaneDriver:
         u.imp_x += 2000
         if not (u.poison_x0 or u.poison_x1):
             poison.dose(u, 3000, -1)
+        if not u.statuses:
+            from simulation import status as S
+            S.apply_status(u, S.IMMOBILIZED, 0, 1000, None)
 
     # -- fire ----------------------------------------------------------------
     def _setup_fire(self):
@@ -409,6 +413,8 @@ class Probe:
                 for r in range(pre.shape[0]):
                     if not pre[r, lay.valid]:
                         continue
+                    if pre[r, cols["life_state"]] == 0 and post[r, cols["life_state"]] == 1:
+                        self._death_holdings(lay, lab, pre[r])
                     if lab == "9c3 gas rows":
                         if (pre[r, cols["poison_x0"]] or pre[r, cols["poison_x1"]]) \
                                 and post[r, cols["poison_x0"]] == 0 \
@@ -432,6 +438,27 @@ class Probe:
                             ev.unit_id for ev in ls._evs[k][e]
                             if type(ev).__name__ == "UnitHitEvent"}:
                         self._heat_probe(ls, k, e, r, pre, cols)
+
+    #: What a death clears, by the columns that held it.
+    HOLDINGS = {
+        "exposure": ("exposure",),
+        "poison": ("poison_x0", "poison_x1"),
+        "an order": ("order_what",),
+        "an impulse": ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
+                       "swy", "pvx", "pvy", "effort", "react_ticks"),
+    }
+
+    def _death_holdings(self, lay, lab, row):
+        """A unit that died in slot ``lab``: which death clears had something
+        to clear (and whether it held statuses, which a death freezes)."""
+        for what, names in self.HOLDINGS.items():
+            for n in names:
+                c = lay.column(n)
+                if np.any(row[c.offset:c.offset + c.width] != 0):
+                    self.c[(lab, f"died holding {what}")] += 1
+                    break
+        if row[lay.column("statuses").offset] >= 0:
+            self.c[(lab, "died holding statuses")] += 1
 
     def _heat_probe(self, ls, k, e, r, pre, cols):
         """Whether row r's hottest exposure was the radiation sensor."""
@@ -672,6 +699,11 @@ def _scene_facts(kind, pr, out):
         for cause in ("burning", "poisoned", "suffocating", "regen"):
             if not c.get((SLOT_2B.label, "UnitHitEvent", cause)):
                 fail(f"scene status: no {cause} hit (vacuous)")
+    slot = {"fire": SLOT_9C.label, "gas": SLOT_9C3.label,
+            "status": SLOT_2B.label}.get(kind)
+    if slot is not None:                 # a death with every clear to make
+        need += [(slot, f"died holding {w}") for w in
+                 ("exposure", "poison", "an order", "an impulse", "statuses")]
     for key in need:
         if not c.get(key):
             fail(f"scene {kind}: no {'/'.join(key)} (vacuous)")
@@ -778,7 +810,7 @@ def part_overflow():
 # ---------------------------------------------------------------------------
 # PART CHAINED
 # ---------------------------------------------------------------------------
-def _chained(name, make, slots, ticks, cov_label):
+def _chained(name, make, slots, ticks, cov_label, need_events=True):
     twin = make()
     ref = make()
     t0 = time.perf_counter()
@@ -802,7 +834,7 @@ def _chained(name, make, slots, ticks, cov_label):
           f"{n_ev} ring events appended; {time.perf_counter() - t0:.0f} s)")
     if ch.runs != n:
         fail(f"{name}: the chain ran {ch.runs} times in {n} ticks")
-    if acted == 0 or n_ev == 0:
+    if acted == 0 or (need_events and n_ev == 0):
         fail(f"{name}: [{cov_label}] never acted or no event was appended (vacuous)")
 
 
@@ -811,7 +843,7 @@ def part_chained():
         _chained("chained 2b (status lanes)", lambda: LaneDriver("status"),
                  [SLOT_2B], LANE_TICKS, SLOT_2B.label)
         _chained("chained 2b (ship)", lambda: ShipDriver(), [SLOT_2B], SHIP_TICKS,
-                 SLOT_2B.label)
+                 SLOT_2B.label, need_events=False)      # no DoT in ship_demo
     if "9c" in CHAINS:
         for kind in ("fire", "gas"):
             _chained(f"chained 9c + 9c2 + 9c3 ({kind} lanes)",
