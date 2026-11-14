@@ -29,10 +29,12 @@ Run:
     C:/Users/steen/anaconda3/python.exe main.py
     C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
     C:/Users/steen/anaconda3/python.exe main.py --control wego       # explicit default
+    C:/Users/steen/anaconda3/python.exe main.py --control direct     # play one marine: pad or keyboard + mouse (G1p)
+    C:/Users/steen/anaconda3/python.exe main.py --level smoke_light_studio --control gamepad --warp 4.5   # frozen frame
+    C:/Users/steen/anaconda3/python.exe main.py --replay m.replay.gz --seek 600   # watch a recorded match (#127)
 """
 from __future__ import annotations
 
-import math
 import sys
 import time
 from pathlib import Path
@@ -60,21 +62,21 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+import numpy as np
 import pyray as rl
 
 import breach_physics as bp
 from config import CFG
 from level_loader import load as load_level
-from level_lights import (light_source_params, monotonic_total_tick,
-                          partition_lights)
+from level_lights import monotonic_total_tick, partition_lights
 from renderer import GameRenderer
-from renderer.fire_lights import FireLightSelector
-from renderer.frame_lights import build_frame_light_sources, build_light_source
+from renderer import frame_lights
 from renderer.game_renderer import RenderConfig
 from renderer.static_props import placements_from_entities
 from simulation import Simulation
 from simulation.unit import Unit
 from control_source import create_control_source
+from renderer.tile_art import changed_between
 # The OnePhaseWEGO interface (onephase_wego design §16). Imported
 # unconditionally — ui.model is pure/headless and ui.draw only needs the pyray
 # already loaded above — and used only when that ruleset is running.
@@ -150,7 +152,7 @@ def _parse_control_flag() -> str:
     control_modularity design §3b: the ``ControlSource`` seam). Defaults to
     ``"wego"`` — today's WEGO planning input, unchanged behavior. See
     ``control_source.create_control_source`` for the set of valid names
-    (only ``"wego"`` exists until P3 adds ``GamepadDirect``).
+    (``wego``, ``direct`` and its alias ``gamepad``, ``onephase``, ``match``).
     """
     if "--control" not in sys.argv:
         return "wego"
@@ -160,6 +162,108 @@ def _parse_control_flag() -> str:
     except IndexError:
         raise SystemExit("--control requires a name, e.g. --control wego")
     return name
+
+
+def _parse_warp_flag() -> float:
+    """``--warp SECONDS`` -- step the sim that far on the sim clock BEFORE the
+    first frame, then leave it PAUSED (#12 smoke-light studio, 2026-10-04).
+
+    The still picture comes from determinism, not a saved snapshot: the same
+    level stepped to the same tick is the same field on every launch, so a
+    render or light dial changed between launches is judged on the identical
+    scene. Under ``--control gamepad`` (no pause key) the frame then stays
+    frozen; under ``wego`` Space resumes as usual. Returns 0.0 when absent.
+    """
+    if "--warp" not in sys.argv:
+        return 0.0
+    i = sys.argv.index("--warp")
+    try:
+        s = float(sys.argv[i + 1])
+    except (IndexError, ValueError):
+        raise SystemExit("--warp requires seconds of sim time, e.g. --warp 4.5")
+    if not (s >= 0.0) or s == float("inf"):
+        raise SystemExit(f"--warp must be a finite number >= 0, got {s}")
+    return s
+
+
+def _parse_replay_flag():
+    """``--replay PATH [--seek TICK]`` -- play a RECORDED match in the window
+    by re-simulation (#127; the recording is ``tools/run_match.py --record``'s,
+    #126). THE only playback path. The level, the match spec and the seed
+    come from the recording's header: ``--level`` is not needed (it is
+    refused if it names another level), and ``--control`` / ``--warp`` /
+    ``--res`` are REFUSED (the replay is the match's one controller,
+    ``--seek`` is its warp, and a resampled grid is another match).
+    ``--seek TICK`` fast-forwards to that tick before the first frame
+    (without drawing) and is where Backspace rewinds to; it is clamped to
+    the recording's end. Returns ``(path, seek_tick)``, or None when
+    ``--replay`` is absent (``--seek`` alone is refused)."""
+    seek = 0
+    if "--seek" in sys.argv:
+        i = sys.argv.index("--seek")
+        try:
+            seek = int(sys.argv[i + 1])
+        except (IndexError, ValueError):
+            raise SystemExit("--seek requires a tick, e.g. --seek 600")
+        if seek < 0:
+            raise SystemExit(f"--seek must be a tick >= 0, got {seek}")
+    if "--replay" not in sys.argv:
+        if "--seek" in sys.argv:
+            raise SystemExit("--seek only goes with --replay PATH")
+        return None
+    i = sys.argv.index("--replay")
+    try:
+        path = Path(sys.argv[i + 1])
+    except IndexError:
+        raise SystemExit("--replay requires a recording, e.g. "
+                         "--replay m.replay.gz")
+    if str(path).startswith("--") or not path.is_file():
+        raise SystemExit(f"--replay: no recording at {str(path)!r}")
+    for flag, why in (("--control", "the replay is the match's one "
+                                    "controller"),
+                      ("--warp", "use --seek TICK"),
+                      ("--res", "a resampled grid is another match")):
+        if flag in sys.argv:
+            raise SystemExit(f"--replay refuses {flag}: {why}")
+    return path, seek
+
+
+def _draw_replay_hud(rows, map_px_w: int) -> None:
+    """The replay HUD (#127): ``ReplayObserver.hud_lines`` rows, top right
+    of the map, on a dark plate. Display-space UI after the resolve."""
+    colours = {"title": rl.Color(255, 255, 255, 255),
+               "info": rl.Color(200, 200, 200, 255),
+               "ok": rl.Color(110, 220, 120, 255),
+               "bad": rl.Color(255, 70, 60, 255)}
+    size, pad, gap = 20, 10, 4
+    width = max(rl.measure_text(t, size) for t, _ in rows) + 2 * pad
+    height = len(rows) * (size + gap) - gap + 2 * pad
+    # Top right of the map: the tile inspector owns the top left.
+    x0 = max(0, map_px_w - width - 8)
+    y0 = 8
+    rl.draw_rectangle(x0, y0, width, height, rl.Color(0, 0, 0, 170))
+    for n, (text, kind) in enumerate(rows):
+        rl.draw_text(text, x0 + pad, y0 + pad + n * (size + gap), size,
+                     colours[kind])
+
+
+def _draw_seek_overlay(tick: int, target: int, screen_w: int,
+                       screen_h: int) -> None:
+    """#128: one frame of "seeking tick N / M" while a replay fast-forwards
+    undrawn, so the window is pumped (and does not look frozen). The world
+    is not drawn: the seek's sim is mid-flight."""
+    rl.begin_drawing()
+    rl.clear_background(rl.Color(0, 0, 0, 255))
+    text = f"seeking tick {int(tick)} / {int(target)}"
+    size = 28
+    w = rl.measure_text(text, size)
+    rl.draw_text(text, max(0, (screen_w - w) // 2), screen_h // 2 - size // 2,
+                 size, rl.Color(220, 220, 220, 255))
+    rl.end_drawing()
+
+
+#: A replay's seek pumps the window every this many sim ticks (#128).
+SEEK_DRAW_EVERY_TICKS = 12
 
 
 def _parse_debug_flag() -> bool:
@@ -256,6 +360,11 @@ def _upscale_level(level, factor: int):
     if level.air_init_q is not None:
         level.air_init_q = np.repeat(
             np.repeat(level.air_init_q, factor, axis=0), factor, axis=1)
+    # temp_init.npy (vocabulary E.2 row 4): temperature is intensive too, so
+    # nearest-neighbour replication keeps every seeded tile's temperature.
+    if getattr(level, "temp_init_q", None) is not None:
+        level.temp_init_q = np.repeat(
+            np.repeat(level.temp_init_q, factor, axis=0), factor, axis=1)
     # Drop any explicit art-align px_per_tile so the renderer recomputes it
     # from the new (denser) grid shape — otherwise the art would stretch.
     level.art_px_per_tile = None
@@ -276,7 +385,7 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         selected = (sim.get_unit(control_source.selected_unit_id)
                     if control_source.selected_unit_id is not None else None)
         # NOTE: the flashlight cones are NOT drawn as sectors here. They are
-        # already real ray-traced light sources in the frame's source list, and
+        # already real light (cone emitters on the radiation sweep), and
         # drawing a translucent wedge on top of the light they cast doubled the
         # cone and read as a UI overlay rather than as a torch (Erik, 2nd play
         # session: "the half cones … flashlights already kind of show this, and
@@ -287,16 +396,16 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
         ui_draw.draw_cover(sim, world_px_per_tile)
         # An overwatch cone is not a "view" indicator, it is the player's own
         # target-control dial (§9), so it stays.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
-        ui_draw.draw_marks(sim, 0, world_px_per_tile)
+        ui_draw.draw_marks(sim, sim.player_team, world_px_per_tile)
         ui_draw.draw_selected_marker(selected, world_px_per_tile)
 
         # EVERY marine's plan stays on screen (Erik: "i'd like everything to
         # stay on screen"), the unselected ones muted. Drawn first so the
         # selected marine's plan lands on top at full strength — you can read
         # the whole assault at once without losing which one you are steering.
-        for u in sim.marines():
+        for u in sim.controlled_units():
             if selected is not None and u.id == selected.id:
                 continue
             ui_draw.draw_plan_overlay(ui.plan_overlay(sim, u),
@@ -312,8 +421,31 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
 def main():
     # 1. Load level + build the simulation. --level overrides config for
     # one launch (playground / test maps); default = [display] level.
-    level_name = (_parse_level_override()
-                  or getattr(CFG.display, "level", "playground"))
+    # --replay (#127): the level comes from the recording's header.
+    replay_args = _parse_replay_flag()
+    recording = None
+    if replay_args is not None:
+        # match_replay's checkpoint digest is the determinism gates' one
+        # snapshot, which lives in tests/ (field_ab_harness): put it on the
+        # path as tools/run_match.py does -- never a second digest.
+        if str(ROOT / "tests") not in sys.path:
+            sys.path.append(str(ROOT / "tests"))
+        import match_replay
+        from control_match import replay_level_name
+        replay_path, seek_tick = replay_args
+        try:
+            recording = match_replay.read_recording(replay_path)
+            level_name = replay_level_name(recording,
+                                           _parse_level_override())
+        except match_replay.ReplayRefused as e:
+            raise SystemExit(f"--replay: {e}")
+        print(f"Replaying {replay_path}: level {recording.level}, seed "
+              f"{recording.seed}, {recording.end_tick} ticks, "
+              f"{len(recording.checkpoints)} checkpoints, recorded on "
+              f"{recording.build}")
+    else:
+        level_name = (_parse_level_override()
+                      or getattr(CFG.display, "level", "playground"))
     print(f"Loading level: {level_name}")
     level = load_level(level_name)
     res_factor = _parse_res_factor()
@@ -331,12 +463,33 @@ def main():
     # starts paused (plan first); `--control gamepad` -> ContinuousRealtime,
     # starts running. Byte-identical to the pre-P3 default under `wego`.
     debug_mode = _parse_debug_flag()
-    control_source = create_control_source(_parse_control_flag(),
-                                           debug=debug_mode)
 
-    sim = Simulation(level, seed=42, breach_physics=bp,
-                     enable_recorder=True,
-                     ruleset=control_source.initial_ruleset())
+    def _new_sim(lvl, seed, ruleset):
+        # THE one constructor; a replay's backward seek rebuilds through it.
+        # A replay allocates no field recorder (its ~650 MB ring would be
+        # held twice across a rebuild; the recording re-simulates anything
+        # the ring could dump, and the dump key is not polled in a replay).
+        return Simulation(lvl, seed=seed, breach_physics=bp,
+                          enable_recorder=recording is None,
+                          ruleset=ruleset)
+
+    replay = None
+    if recording is not None:
+        from control_match import ReplayObserver
+        try:
+            replay = ReplayObserver(
+                level, recording, seek_tick=seek_tick,
+                make_sim=lambda seed, rules: _new_sim(
+                    load_level(level_name), seed, rules))
+        except match_replay.ReplayRefused as e:
+            raise SystemExit(f"--replay: {e}")
+        control_source = replay
+    else:
+        control_source = create_control_source(_parse_control_flag(),
+                                               debug=debug_mode, level=level)
+
+    sim = _new_sim(level, control_source.initial_seed(42),
+                   control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
     # Is the turn-formula redesign driving? The renderer/HUD branches below key
     # off the RULESET rather than the flag name, so the two halves of the
@@ -352,13 +505,16 @@ def main():
     # ----- Spawn units from level.toml [[spawn]] entries. Zero spawns is
     # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
     # marines()/zombies() handle empty rosters).
-    if not level.spawns:
+    # (`--control match` spawns its match.toml instead, #121.)
+    if control_source.spawn_units(sim, level):
+        pass
+    elif not level.spawns:
         print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
               f"running as a unit-free physics sandbox")
-    for s in level.spawns:
-        sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
-                          footprint=s.footprint))
-    if level.spawns:
+    else:
+        for s in level.spawns:
+            sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
+                              footprint=s.footprint))
         print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
@@ -404,10 +560,16 @@ def main():
               f"WASD/arrows pan")
         if debug_mode:
             print(f"  --debug ON: the diagnostic keys are re-armed "
-                  f"(F1-F10, T/V/M/L/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
+                  f"(F1-F10, T/V/M/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
         else:
             print(f"  (no diagnostic keys in game mode — relaunch with "
                   f"--debug to re-arm them)")
+    elif replay is not None:
+        print(f"  REPLAY: Space pause/resume | Backspace restart"
+              f"{f' at tick {replay.seek_tick}' if replay.seek_tick else ''}"
+              f" (re-simulated) | [display] sim_speed sets the pace | "
+              f"WASD/arrows pan | Q/E or wheel zoom | C cycle camera "
+              f"(action -> units -> free)")
     else:
         print(f"  WASD/arrows pan | Q/E or wheel zoom | "
               f"Space resume | Tab phase | Bksp undo | Ctrl+R reload")
@@ -433,19 +595,62 @@ def main():
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
-    renderer.lighting.set_ambient((0.10, 0.10, 0.13))
-
+    # #128: the follow camera of a watched match (--replay / --control
+    # match): renderer/follow_camera.py decides, this loop only feeds it the
+    # tick's events, the C key and the player's pans.
+    from control_match import MatchObserver
+    follow = None
+    if isinstance(control_source, MatchObserver):
+        from renderer.follow_camera import FollowCamera, follow_settings
+        try:
+            follow = FollowCamera(follow_settings(CFG))
+        except ValueError as e:
+            raise SystemExit(f"config.toml: {e}")
+        print(f"  camera: {follow.target} (C cycles action -> units -> "
+              f"free; a pan frees it)")
+    # G1p: the camera of direct control -- [display] camera_mode, the follow
+    # camera LOCKED on the possessed marine ("centred": north-up, the marine
+    # in the centre), never camera code in the control source.
+    possessed_cam = None
+    if control_source.camera_mode is not None:
+        from renderer.follow_camera import CENTRED, FollowCamera, follow_settings
+        if control_source.camera_mode == CENTRED:
+            try:
+                possessed_cam = FollowCamera(follow_settings(CFG))
+            except ValueError as e:
+                raise SystemExit(f"config.toml: {e}")
+        print(f"  DIRECT: camera {control_source.camera_mode} | keys "
+              + " ".join(f"{a}={b.name}" for a, b in
+                         control_source.keys.bindings.items())
+              + " | pad: left stick move (deflection = speed), right stick "
+              "aim, RT fire")
+    # #202: the sound layer (audio/), presentation only. None when
+    # [sound] enabled = false; silent in a hidden window (the E2E driver).
+    from audio.game import SoundLayer, listener_tile
+    sound = SoundLayer.create(
+        CFG, sim, muted=rl.is_window_state(rl.ConfigFlags.FLAG_WINDOW_HIDDEN))
+    if replay is not None:
+        replay.on_seek_tick = (
+            lambda s, target: _draw_seek_overlay(s.tick, target,
+                                                 screen_w, screen_h)
+            if s.tick % SEEK_DRAW_EVERY_TICKS == 0 else None)
     # Level lights (P4): the [[light]] entities from level.toml (the old
     # hardcoded emergency lamps now live in the vessel/playground tomls).
-    # Static sources are compiled structs built ONCE here; beacons are
-    # rebuilt per frame from the SIM tick (they freeze with the sim —
-    # src/level_lights.py owns the math; this stays a thin setattr loop).
+    # Beacons turn with the SIM tick (they freeze with the sim —
+    # src/level_lights.py owns the math).
     sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
+    # Playback speed (#4 tuning aid, 2026-10-04): 1.0 real time, 0.25 = quarter
+    # speed. Render pacing only; refused outside (0, 4].
+    sim_speed = float(getattr(CFG.display, "sim_speed", 1.0))
+    if not (0.0 < sim_speed <= 4.0):
+        raise SystemExit(f"[display] sim_speed must be in (0, 4], got {sim_speed}")
     ticks_per_round = int(CFG.clock.ticks_per_round)
 
-    # The LightSource setattr builder + the per-frame statics/beacons/fire
-    # assembly are extracted into renderer/frame_lights.py so main.py and
-    # tools/lighting_demo.py build the SAME list with no drift (B2 P1).
+    # ray-engine-v2 P6b: THE ONE ASSEMBLY (renderer/frame_lights.py). Every
+    # light is enumerated once as a spec, and the engine gets their
+    # CONE-EMITTER rows once per sim tick (the sweep lights the world). The
+    # flat term is the small [render.lighting] floor; the ambient light is the
+    # SKY below.
     lights_in, lights_off = partition_lights(level.lights,
                                              level.width, level.height)
     if lights_off:
@@ -454,21 +659,18 @@ def main():
         skipped = ", ".join(f"({l.x:g}, {l.y:g})" for l in lights_off)
         print(f"  WARNING: {len(lights_off)} [[light]] entries off-grid "
               f"for {level.width}x{level.height} — skipped: {skipped}")
-    static_lights = [
-        build_light_source(bp, light_source_params(e, 0, sim_time_per_tick))
-        for e in lights_in if e.kind != "beacon"
-    ]
-    beacon_lights = [e for e in lights_in if e.kind == "beacon"]
     if level.lights:
-        print(f"  Lights: {len(static_lights)} static + "
-              f"{len(beacon_lights)} beacon from level.toml")
-
-    # Fire light sources (Fire & Heat Beauty B1): the brightest-K hot tiles
-    # become omni ray-traced lights each frame, colour + intensity from the
-    # renderer's shared black-body ramp. RENDER-ONLY — they never write the
-    # synced heat channel (see renderer/fire_lights.py). Built once from
-    # [render.fire_lights]; queried per frame in the sources block below.
-    fire_light_selector = FireLightSelector.from_config(CFG)
+        n_beacon = sum(1 for e in lights_in if e.kind == "beacon")
+        print(f"  Lights: {len(lights_in) - n_beacon} static + "
+              f"{n_beacon} beacon from level.toml")
+    # P6b: THE SKY -- the light ring's per-ordinate RGB from the level's boundary
+    # type ([light.sky.<boundary>]): space is dark, a planetside ("ambient")
+    # boundary is open sky. None = the dark ring.
+    light_sky = frame_lights.sky_for_level(getattr(level, "boundary", "space"), CFG, bp)
+    light_fine_bits = int(bp.L_FINE_BITS)
+    print(f"  Light: sweep; sky "
+          f"{'dark' if light_sky is None else 'lit'} "
+          f"(boundary '{getattr(level, 'boundary', 'space')}')")
 
     # Entity registry (entity design §3b): apply the dev tuning overlay
     # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
@@ -482,9 +684,121 @@ def main():
     except OSError as exc:
         print(f"  WARNING: entity_registry.json export failed: {exc}")
 
+    # ray-engine-v2 P6b: the per-tick light assembly -- every light as a spec,
+    # once (frame_lights.frame_light_specs). The render-sourced lights (the
+    # onephase flashlights at their lens, WEGO's cursor lamp, the W6 transient
+    # emitters) are the caller's tail, exactly as before P6b.
+    from simulation.blast_expansion import open_mask as _blast_open_mask
+
+    def _footprint_of(uid):
+        u = sim.get_unit(uid)
+        return int(getattr(u, "footprint", 3)) if u is not None else 3
+
+    def assemble_lights():
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round, sim.tick)
+        extra = []
+        if onephase:
+            # §8 removes the CURSOR flashlight outright: marines carry them, and
+            # the light is the expression of their facing cone.
+            extra += frame_lights.flashlight_specs(
+                ui.flashlight_cones(
+                    sim, team=sim.player_team,
+                    mode=control_source.flashlight_mode,
+                    selected_unit_id=control_source.selected_unit_id,
+                    cursor_tile=renderer.mouse_to_tile(),
+                    paused=sim.is_paused()),
+                _footprint_of)
+        else:
+            # Direct control has no cursor lamp (Erik, 2026-11-12): the
+            # possessed unit carries its own flashlight (below), and the dark
+            # is moodier lit by that alone. Every other scheme keeps it.
+            cursor = (None if control_source.camera_mode is not None
+                      else frame_lights.cursor_lamp_spec(
+                          renderer.mouse_to_tile_float()))
+            if cursor is not None:
+                extra.append(cursor)
+            # G7p: a unit's flashlight cone follows its synced bit
+            # (Unit.flashlight_on, Simulation.set_flashlight): direct control
+            # lights the possessed unit, a watched match every living marine
+            # -- the SAME assembly as onephase's (flashlight_specs), never a
+            # second one. Other control sources have no unit light.
+            extra += frame_lights.flashlight_specs(
+                ui.carried_flashlight_cones(
+                    sim,
+                    possessed_id=(control_source.selected_unit_id
+                                  if control_source.camera_mode is not None
+                                  else None),
+                    watching=follow is not None),
+                _footprint_of)
+        # W6 transient emitters: flame/miasma jets + plasma bolts + (#33) the
+        # bullets' muzzle flashes + (G4 P5) the blasts' row flashes, aged on
+        # the sim clock at this tick, from the renderer's own live effect
+        # queue — render-side only.
+        extra += frame_lights.transient_specs(
+            renderer.transient_light_specs(
+                _footprint_of, sim_tick=total,
+                open_mask=lambda: _blast_open_mask(sim.gmap)))
+        return frame_lights.frame_light_specs(
+            beacons_in, total_tick=total, sim_time_per_tick=sim_time_per_tick,
+            extra=extra)
+
+    # A static lamp never changes, and a roof-light shape is many of them
+    # (#177: 1560 on a large ship, 11 ms a tick through Python): their rows
+    # are built once.
+    statics_in = [e for e in lights_in if e.kind != "beacon"]
+    beacons_in = [e for e in lights_in if e.kind == "beacon"]
+    static_rows = []
+
+    def cone_rows_now():
+        grid_h, grid_w = sim.gmap.solid.shape
+        if not static_rows:
+            static_rows.append(frame_lights.cone_rows(
+                frame_lights.frame_light_specs(
+                    statics_in, total_tick=0,
+                    sim_time_per_tick=sim_time_per_tick).specs,
+                grid_w, grid_h, light_fine_bits))
+        return np.ascontiguousarray(np.vstack([
+            static_rows[0],
+            frame_lights.cone_rows(assemble_lights().specs, grid_w, grid_h,
+                                   light_fine_bits)]))
+
+    # Graphics G3 F4b: THE FIRE'S ROOM LIGHT -- the renderer's per-burning-
+    # tile multiplier on the sweep's thermal light emission (the fire's light
+    # gain x its flicker, G3 adjustment round), as (n, 3) int64 rows through
+    # the door (frame_lights.emit_mult_rows), or None. Render state handed
+    # with the cone rows; it scales light only, never heat.
+    def flicker_rows_now():
+        grid_h, grid_w = sim.gmap.solid.shape
+        return renderer.fire_light_rows(grid_w, grid_h)
+
+    def _same_rows(a, b):
+        if a is None or b is None:
+            return a is None and b is None
+        return np.array_equal(a, b)
+
+    # --warp: step to the requested sim time before the first frame, then
+    # hold paused (the paused path relights on the frozen state).
+    warp_s = _parse_warp_flag()
+    if warp_s > 0.0:
+        n_warp = int(round(warp_s / sim_time_per_tick))
+        for _ in range(n_warp):
+            sim.set_paused(False)
+            control_source.on_tick(sim)
+            sim.step()
+        sim.set_paused(True)
+        print(f"  --warp {warp_s:g} s: stepped {n_warp} ticks, paused")
+    # --seek (#127): fast-forward the replay before the first frame.
+    if replay is not None and replay.seek_tick > 0:
+        sim = replay.seek(replay.seek_tick)
+    replay_gen = replay.generation if replay is not None else None
+
     # 3. Main loop.
     last_time = time.perf_counter()
     tick_accum = 0.0
+    light_on = None          # P6b: is the sweep's light currently requested?
+    lit_rows = None          # the cone rows the current light field was computed from
+    lit_flicker = None       # G3 F4b: the flicker rows it was computed from
+    last_relight = 0.0
 
     try:
         while not renderer.should_close():
@@ -498,114 +812,142 @@ def main():
             # through under --debug; zoom is a view control, not a diagnostic,
             # so it stays live either way — with Q/E released, since Q is the
             # weapon swap there.
-            if control_source.wants_renderer_toggles:
+            # G1p: a scheme that owns the camera keys (direct control, whose
+            # movement keys are data) keeps the diagnostic toggles but not the
+            # Q/E zoom or the WASD / arrow pan.
+            owns_keys = control_source.owns_camera_keys
+            if control_source.wants_renderer_toggles and not owns_keys:
                 renderer.poll_toggles()
+            elif control_source.wants_renderer_toggles:
+                renderer.poll_debug_toggles()
+                renderer.poll_camera_zoom(allow_qe=False)
             else:
                 renderer.poll_camera_zoom(allow_qe=False)
-            renderer.update_camera(dt)
+            panned = False if owns_keys else renderer.update_camera(dt)
+            if follow is not None:
+                if panned:
+                    follow.manual_pan()
+                if rl.is_key_pressed(rl.KeyboardKey.KEY_C):
+                    follow.cycle(sim.units)
+                    print(f"  camera: {follow.label(sim.units)}")
             control_source.handle_frame(sim, renderer)
+            # #127: a replay seek / restart. A rebuilt sim is handed to the
+            # renderer (the tiles the old one changed repatch through the
+            # wall seam), and the light is re-requested on it.
+            if replay is not None and replay.generation != replay_gen:
+                replay_gen = replay.generation
+                if replay.sim is not sim:
+                    replay.sim.gmap.render_dirty.update(
+                        changed_between(sim.gmap, replay.sim.gmap))
+                    sim = replay.sim
+                    if sound is not None:
+                        sound.rebind(sim)
+                if follow is not None:
+                    follow.reset()
+                light_on, lit_rows, lit_flicker = None, None, None
+                # the seek's wall time is not playback time
+                tick_accum = 0.0
+                last_time = time.perf_counter()
+
+            # ----- ray-engine-v2 P6b: the light -----
+            # The radiation sweep lights the world: the game REQUESTS light
+            # while the lighting pass shows (F4), and the cone rows ride each
+            # sim tick.
+            new_light = bool(renderer.show_lighting)
+            if new_light != light_on:
+                if not new_light:
+                    sim.set_light(False)
+                light_on, lit_rows = new_light, None
 
             # ----- Tick the simulation while not paused -----
+            stepped = False
             if not sim.is_paused():
-                tick_accum += dt
+                # [display] sim_speed: wall-clock pacing ONLY (slow motion for
+                # tuning) -- every tick is the same tick, so the sim and its
+                # determinism are untouched.
+                tick_accum += dt * sim_speed
                 # Cap the per-frame catch-up to avoid spirals if a
                 # background pause stalls the loop.
                 max_catch_up = 5
                 steps = 0
                 while tick_accum >= sim_time_per_tick and steps < max_catch_up:
+                    if new_light:
+                        # the ONE assembly, once per sim tick, for the engine
+                        # (G3 F4b: + the fire's light flicker rows)
+                        lit_rows = cone_rows_now()
+                        lit_flicker = flicker_rows_now()
+                        sim.set_light(True, lit_rows, light_sky, lit_flicker)
+                    control_source.on_tick(sim)
                     sim.step()
+                    # Every step's events, before the next step clears them
+                    # (G4 #75, critique S3: a detonation in an earlier step of
+                    # a slow frame was lost), stamped on the clock the
+                    # renderer's upload_state reads.
+                    renderer.consume_events(
+                        sim.tick_events,
+                        sim_tick=monotonic_total_tick(
+                            sim.turn_number, ticks_per_round, sim.tick))
+                    if follow is not None:
+                        follow.observe(sim.tick_events, sim_time_per_tick)
+                    if sound is not None:
+                        sound.consume_events(
+                            sim.tick_events,
+                            listener_tile(sim, control_source, renderer.camera))
+                    stepped = True
                     tick_accum -= sim_time_per_tick
                     steps += 1
                     # Sim may auto-pause mid-batch (phase boundary).
                     if sim.is_paused():
                         break
+            # PAUSED (planning): nothing ticks, so the light is RELIT on the
+            # current state whenever its emitters moved (the cursor lamp, a
+            # planning flashlight aimed at the cursor) -- and at 4 Hz anyway, so
+            # a dev-key edit made while paused shows up. The relight writes only
+            # the three light planes (PhysicsRunner.relight).
+            # G3 F4b: a paused fire whose flame IDLES ([render.fire_vfx]
+            # idle_when_paused) keeps flickering -- relit at the TICK rate
+            # whenever its flicker rows moved (a 4 Hz relight would step the
+            # flicker visibly; the cost is a running tick's sweep). With the
+            # idle off the rows stop changing and the 4 Hz cadence is back.
+            if new_light and not stepped and sim.is_paused():
+                rows = cone_rows_now()
+                flick = flicker_rows_now()
+                t_now = time.perf_counter()
+                flicker_due = (not _same_rows(flick, lit_flicker)
+                               and t_now - last_relight >= sim_time_per_tick)
+                if (lit_rows is None or not np.array_equal(rows, lit_rows)
+                        or flicker_due or t_now - last_relight > 0.25):
+                    sim.set_light(True, rows, light_sky, flick)
+                    sim.relight()
+                    lit_rows, lit_flicker, last_relight = rows, flick, t_now
 
-            # ----- Lights: level statics + beacons + fire (shared assembly) --
-            # The statics/beacons/fire assembly lives in renderer/frame_lights.py
-            # so main.py and tools/lighting_demo.py build the SAME per-frame list
-            # with no drift (B2 P1). NOT an entity system — it only assembles
-            # LightSource params from today's suppliers (level [[light]] rows
-            # incl. the beacon, B1 fire tiles). total_tick = the MONOTONIC sim
-            # tick on the SIM clock: beacons freeze on pause + replay exactly
-            # (P4 §2.2), never the wall-clock frame dt. The mouse flashlight + W6
-            # transient emitters stay caller-side below (they differ per caller).
+            # total_tick = the MONOTONIC sim tick on the SIM clock: beacons
+            # freeze on pause + replay exactly (P4 §2.2), and it is the P3 smoke
+            # detail clock too (replays render identical smoke).
             total_tick = monotonic_total_tick(
                 sim.turn_number, ticks_per_round, sim.tick)
-            frame = build_frame_light_sources(
-                bp, static_lights, beacon_lights,
-                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
-                fire_selector=fire_light_selector,
-                temperature_field=sim.gmap.temperature,
-                blackbody_ramp=renderer.blackbody_ramp,
-                show_fire_lights=renderer.show_fire_lights)
-            sources = frame.sources
-            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
-                                          fire_light_selector.max_lights)
-            # Flashlights. §8 removes the CURSOR flashlight outright: marines
-            # carry them, and the light is the expression of their facing
-            # cone. Under any other ruleset the shipped cursor lamp is
-            # untouched.
-            if onephase:
-                for cone in ui.flashlight_cones(
-                        sim, team=0, mode=control_source.flashlight_mode,
-                        selected_unit_id=control_source.selected_unit_id,
-                        cursor_tile=renderer.mouse_to_tile(),
-                        paused=sim.is_paused()):
-                    src = bp.LightSource()
-                    src.x = float(cone.x)
-                    src.y = float(cone.y)
-                    src.max_range = int(cone.range_tiles)
-                    src.intensity = 2.5
-                    # A cone, not an omni lamp: the raylib-side spread is the
-                    # full angle, and the sim never sees any of this (§8 —
-                    # flashlights are render-only in v1).
-                    src.angle_spread = math.radians(cone.half_deg * 2.0)
-                    # Ray bearings are screen-convention (y down); Unit.facing
-                    # is y-up — the standard one negation.
-                    src.angle_center = -float(cone.facing)
-                    src.color = (1.0, 1.0, 0.95)
-                    src.jitter = 0.0
-                    sources.append(src)
-            else:
-                mouse_f = renderer.mouse_to_tile_float()
-                if mouse_f is not None:
-                    src = bp.LightSource()
-                    src.x = float(mouse_f[0])
-                    src.y = float(mouse_f[1])
-                    src.max_range = 25
-                    src.intensity = 2.5
-                    src.angle_spread = 6.283
-                    # Flashlight — cool white (profile: flashlight).
-                    src.color = (1.0, 1.0, 0.95)
-                    src.jitter = 0.0
-                    sources.append(src)
 
-            # W6 transient emitters: flame/miasma jets + plasma bolts. The
-            # renderer derives light specs from its own live effect queue
-            # (SprayJetEvent / ProjectileGlowEvent visuals) — render-side
-            # only, one frame behind the sim tick, never written back.
-            for spec in renderer.transient_light_specs():
-                src = bp.LightSource()
-                src.x = float(spec["x"])
-                src.y = float(spec["y"])
-                src.max_range = int(spec["max_range"])
-                src.intensity = float(spec["intensity"])
-                src.angle_spread = 6.283
-                src.color = spec["color"]
-                src.jitter = 0.0
-                sources.append(src)
+            # #128: the follow camera moves after the ticks, before the draw.
+            if follow is not None:
+                follow.apply(renderer.camera, sim.units, dt)
+            if possessed_cam is not None:
+                possessed_cam.lock(control_source.selected_unit_id)
+                possessed_cam.apply(renderer.camera, sim.units, dt)
 
             # ----- Upload + draw -----
-            # total_tick (the MONOTONIC sim clock computed above) is the P3 smoke
-            # detail clock too — the advected-noise crossfade rides the sim tick,
-            # not wall time, so replays/spectators render identical smoke.
-            renderer.upload_state(sim.gmap, light_sources=sources,
-                                  sim_tick=total_tick)
+            # alpha = the sub-tick fraction of the accumulator (graphics G3
+            # §13.3): the flame VFX runs on (tick + alpha) / tps. A pure read
+            # of this loop's own pacing state; the renderer clamps it to
+            # [0, 1). paused = the sim clock stopped (the flame may idle).
+            renderer.upload_state(sim.gmap, sim_tick=total_tick,
+                                  light_serial=sim.light_serial if new_light else None,
+                                  alpha=tick_accum / sim_time_per_tick,
+                                  paused=sim.is_paused())
             renderer.begin_frame()
 
             # Fog of war (§8) is visibility GATING: an enemy the team cannot
             # see is simply not drawn. The sim keeps simulating it in full.
-            zombies = (ui.drawable_enemies(sim, 0) if onephase
+            zombies = (ui.drawable_enemies(sim, sim.player_team) if onephase
                        else sim.zombies())
             renderer.compose_world(
                 units_marines=sim.marines(),
@@ -617,6 +959,9 @@ def main():
                 orders_phase2=None if onephase else sim.orders_for_phase(1),
                 current_phase=control_source.planning_phase,
                 doors=sim._doors,   # A6 dev door draw (render-read only)
+                # #193: planted charges' blinking markers (render-read only).
+                charges=sim.planted_charges,
+                charge_tick=sim.tick,
                 # Props & vegetation arc #60 P3: loaded prop entities flow
                 # loader -> sim -> renderer as placement records; zero cost
                 # when the level has none (design §4.3).
@@ -630,11 +975,13 @@ def main():
             renderer.blit_world_to_screen()
             renderer.draw_debug_hud(sim.gmap)
 
-            # Pull tick events into the renderer's effect queue, then age
-            # the queue. tick_events is cleared by the next sim.step(),
-            # so we MUST consume here every frame.
-            renderer.consume_events(sim.tick_events)
+            # Age the effect queue once per frame. Tick events were pulled
+            # into it after every sim step above (tick_events is cleared by
+            # the next sim.step(); consuming here, once, lost all but the last
+            # step's and re-consumed the same events every paused frame).
             renderer._advance_effects(dt)
+            if sound is not None:
+                sound.update()
 
             selected = sim.get_unit(control_source.selected_unit_id) \
                 if control_source.selected_unit_id is not None else None
@@ -643,6 +990,10 @@ def main():
                 selected_unit=selected,
                 planning_phase=control_source.planning_phase,
                 current_mode=control_source.current_mode,
+                grenade_kind=getattr(control_source,
+                                     "selected_grenade_kind", None),
+                charge_timer_s=getattr(control_source,
+                                       "charge_timer_s", None),
             )
             # Screen-space HUD (§16): hotbar, round banner, planning clock,
             # and the DS3 menu when it is open. After the panel so the menu
@@ -665,8 +1016,34 @@ def main():
                     ui_draw.draw_ds3_menu(
                         ui.ds3_menu(sim, selected, control_source.menu_page),
                         screen_w, screen_h)
+            if follow is not None:
+                _draw_replay_hud(control_source.hud_lines(
+                    sim, cam=follow.hud_line(sim.units)), map_px_w)
+            renderer.update_light_curve_panel(dt)
             renderer.end_frame()
     finally:
+        if follow is not None:
+            cam = renderer.camera
+            w, h = cam.visible_tiles()
+            # the E2E reads this line (tests/test_follow_camera.py)
+            print(f"  camera at centre ({cam.pos_tile_x + 0.5 * w:.2f}, "
+                  f"{cam.pos_tile_y + 0.5 * h:.2f}) pos ({cam.pos_tile_x:.2f}, "
+                  f"{cam.pos_tile_y:.2f}) {follow.hud_line(sim.units)}")
+        if possessed_cam is not None:
+            u = sim.get_unit(control_source.selected_unit_id) \
+                if control_source.selected_unit_id is not None else None
+            cam = renderer.camera
+            w, h = cam.visible_tiles()
+            # the G1p E2E reads this line (tests/test_control_direct_e2e.py)
+            print(f"  direct: device {control_source.active}, unit "
+                  + (f"{u.name} at ({u.x:.4f}, {u.y:.4f}) facing "
+                     f"{u.facing:.4f}" if u is not None else "none")
+                  + f", camera centre ({cam.pos_tile_x + 0.5 * w:.2f}, "
+                  f"{cam.pos_tile_y + 0.5 * h:.2f})")
+        if sound is not None:
+            # the sound E2E reads this line (tests/test_sound_e2e.py)
+            print(f"  sound: {sound.started} sounds started")
+            sound.close()
         renderer.shutdown()
 
 

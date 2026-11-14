@@ -22,7 +22,7 @@ design + T2's bench must lead with sealed/vented ship rooms"):
     states —
       "closed" — no gap; the hull ring is intact (a fully sealed room);
       "open"   — the gap is present FROM TICK 0 (pre-Simulation tilemap
-                 surgery: the vent tiles carry the v2 SPACE(9) code directly,
+                 surgery: the vent tiles carry the SPACE code (SPACE_CODE) directly,
                  the exact idiom fire_timing_harness.build_level uses for its
                  sky ring — GameMap reads them as real vacuum at load since
                  boundary != "ambient");
@@ -72,7 +72,7 @@ for _p in (ROOT, ROOT / "src",
 
 import breach_physics as bp                       # noqa: E402
 from config import CFG                            # noqa: E402
-from level_loader import LevelData                # noqa: E402
+from level_loader import LEVEL_FORMAT_VERSION, LevelData  # noqa: E402
 from simulation import Simulation                 # noqa: E402
 from simulation import fire_fixed                 # noqa: E402
 from simulation.gases import O2, INERT_N2         # noqa: E402
@@ -137,7 +137,7 @@ def build_room_level(interior_w, interior_h, tile_size_m, *,
     ``[materials.<name>]`` name string.
 
     ``vent_open_at_build``: True -> the vent tiles (see
-    :func:`vent_tile_coords`) carry the v2 SPACE(9) code directly in the
+    :func:`vent_tile_coords`) carry the SPACE code (SPACE_CODE) directly in the
     returned tilemap (pre-Simulation tilemap surgery — the vent is open from
     tick 0). False -> the hull ring is left fully intact at build time; a
     caller wanting a MID-RUN breach converts those same tiles later via
@@ -162,7 +162,7 @@ def build_room_level(interior_w, interior_h, tile_size_m, *,
                                          vent_width, vent_side):
             tm[fy, fx] = SPACE
     return LevelData(
-        name="fire_room_bench", version="2", path=Path("."),
+        name="fire_room_bench", version=LEVEL_FORMAT_VERSION, path=Path("."),
         tilemap=tm, tile_size_m=float(tile_size_m), diffuse_path=Path("."),
         boundary="space",   # SHIP-style: no planetside sky ring (the default)
     )

@@ -61,7 +61,8 @@ namespace breach_cuda {
 // passed as scalar kernel args.
 //
 // n_o2 / n_total / wind_x / wind_y / is_wall / is_vacuum / flammable are
-// READ-ONLY; atmosphere is read-only + vestigial (unread). temperature is now
+// READ-ONLY; atmosphere is READ-ONLY and, since issue #7, the PRESSURE FACTOR's
+// input (uploaded when non-null; nullptr -> g == FP_ONE). temperature is now
 // READ-ONLY through this pass too — the plume->T shim that used to write it
 // (P3) is deleted (P-R2 — docs/radiation_raycaster_extinction_ruling_2026-07-
 // 31.md A2); P-R4's radiation pass is the next writer, through rad_net[].
@@ -71,9 +72,10 @@ namespace breach_cuda {
 // deferred.
 std::vector<std::pair<int, int>> fire_step(
     int32_t* fire,             // Q16.16 (h,w) — in/out (intensity, [0,1])
-    const int32_t* atmosphere, // Q16.16 (h,w) — read-only + VESTIGIAL (EOS P4:
-                               //   the CPU step keeps it for ABI parity but no
-                               //   longer reads it — never uploaded/returned here)
+    const int32_t* atmosphere, // Q16.16 atm (h,w) — read-only: the materialized
+                               //   pressure P, the #7 pressure factor's input
+                               //   (open-neighbour mean, VERBATIM the CPU gather).
+                               //   Uploaded, never returned. nullptr -> g == 1
     const int32_t* n_o2,       // Q16.16 (h,w) — read-only (continuous-O2 law: the
                                //   mole-fraction NUMERATOR, real bulk-O2 density)
     const int32_t* n_total,    // Q16.16 (h,w) — read-only (continuous-O2 law: the
@@ -110,6 +112,19 @@ std::vector<std::pair<int, int>> fire_step(
     // VERBATIM as the CPU load-time block does; `<= 0` means the ceiling is OFF
     // (INV_C = 0). See FireParams::I_cap_per_avail.
     float I_cap_per_avail,
+    // R1 O2f-RENORMALIZATION (fire session #12, docs/fire_3c_design_2026-09-01
+    // .md "Ruling R1"): the SUSTAIN span's upper reference is now o2_frac_amb
+    // (ambient), NOT o2_frac_full (pure O2, above — which stays live on the
+    // DEMAND side, cuda_combustion.cu, unchanged). o2f_cap is the NEW clamp
+    // ceiling (o2f is no longer bounded to [0,1] — enrichment above ambient can
+    // register, up to this cap). See FireParams::o2_frac_amb / o2f_cap.
+    float o2_frac_amb, float o2f_cap,
+    // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01
+    // .md "Ruling R3"): hotf_cap is the ceiling on the UNCAPPED-AT-1 hotf ramp
+    // (the SAME (T-T_ext)/T_span ramp as `hot`, but read only by the wall-burn
+    // term below — `hot` itself is unchanged and stays capped at 1 for the
+    // sustain gate). See FireParams::hotf_cap / fire_simulation.cpp.
+    float hotf_cap,
     // FUEL-FRACTION AXIS (2026-07-30) — OPTIONAL read-only int64 (h,w) plane:
     // per tile, the make_recip reciprocal of that tile's MATERIAL's full-health
     // hp (GameMap.fuel_recip). The fuel term becomes
@@ -125,7 +140,15 @@ std::vector<std::pair<int, int>> fire_step(
     // nullptr -> the `fire_T_ext` scalar above, i.e. the pre-derivation law
     // bit-for-bit (nothing allocated or copied in that case). The CPU twin
     // takes the identical nullable plane; tol 0 between them.
-    const int32_t* fire_T_ext_plane = nullptr);
+    const int32_t* fire_T_ext_plane = nullptr,
+    // THE PRESSURE FACTOR's edges (issue #7) — FireParams::p_ext_q / p_full_q,
+    // Q16.16 atm. The host bakes the span reciprocal with the SAME
+    // o2_pressure::bake the CPU step uses and the kernel evaluates the SAME
+    // FP_HD o2_pressure::factor. Defaults 0 / 0 == dormant (g == FP_ONE),
+    // matching the FireParams defaults, so a caller that omits them runs the
+    // pre-#7 law bit-for-bit; the live caller (PhysicsEngine::step_tail)
+    // passes the bound values.
+    int32_t p_ext_q = 0, int32_t p_full_q = 0);
 
 // Backend selection (S6 gate + integration). When true, PhysicsEngine::step_tail
 // runs the fire step on the GPU instead of the CPU FireSimulation::step. Defaults

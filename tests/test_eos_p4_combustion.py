@@ -87,6 +87,13 @@ from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MaterialTable  # n
 from simulation.gases import O2, INERT_N2, SMOKE, STEAM  # noqa: E402
 from simulation import fire_fixed, gas_fixed                    # noqa: E402
 
+# Issue #7 (fixed 2026-09-23, branch 7-vacuum-kills-fire): the O2 fraction law
+# is now multiplied by a PRESSURE factor (0 below 0.1 atm, 1 above 0.5 atm),
+# so a vented room's fire dies. `test_e2e_2_breach_vents_o2_and_kills_fire`
+# passes for its stated reason and its strict #7 marker is gone.
+# `test_payoff_orderings_perturbation_robust` is restated to
+# `flooded <= vented < sealed` by Erik's ruling (see its docstring).
+
 SEED_TICK_DT = 1.0 / 24.0
 _TBL = MaterialTable.from_config()
 IGN_WOOD_Q16 = int(_TBL.ignition_temp_q16[MAT_WOOD])
@@ -218,18 +225,27 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     fire[cy, cx] = fire_fixed.quantize_scalar(0.6)
     # Open-air ring around the fuel tile, ambient O2/N2.
     open_air = ~solid
-    gas[O2][open_air] = gas_fixed.quantize_scalar(0.21)
-    gas[INERT_N2][open_air] = gas_fixed.quantize_scalar(0.79)
+    gas[O2][open_air] = gas_fixed.quantize_bulk_scalar(0.21)
+    gas[INERT_N2][open_air] = gas_fixed.quantize_bulk_scalar(0.79)
 
     comb = bp.CombustionSolver()
     comb.burn_rate = 2.0
     comb.o2_thresh_burn = 0.02
-    comb.H_fuel = 4.0
+    comb.H_FUEL_M = 4.0
     comb.soot_yield = 0.3
 
-    total0 = (int(gas[O2].astype(np.int64).sum())
-              + int(gas[INERT_N2].astype(np.int64).sum())
-              + int(gas[SMOKE].astype(np.int64).sum()))
+    # In ONE currency (#88): the bulk pair lifted into the trace currency
+    # (trace_from_bulk, exact) plus the smoke plane as it is -- the soot mint
+    # takes `soot` bulk counts and adds trace_from_bulk(soot) trace counts, so
+    # a raw three-plane sum would rise at TRACE_FINE_BITS > 0 with nothing
+    # minted (the C1 class of mixed-currency oracle).
+    def _total(gas):
+        bulk = (int(gas[O2].astype(np.int64).sum())
+                + int(gas[INERT_N2].astype(np.int64).sum()))
+        return (int(gas_fixed.trace_from_bulk(bulk))
+                + int(gas[SMOKE].astype(np.int64).sum()))
+
+    total0 = _total(gas)
     assert total0 > 0, "test setup produced no O2/N2 mass — vacuous"
 
     any_burn = False
@@ -237,12 +253,10 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
         comb.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire,
                   flammable, solid, is_vacuum, ignition_temp_q16,
                   SEED_TICK_DT, 1.0, 0.05)
-        total = (int(gas[O2].astype(np.int64).sum())
-                 + int(gas[INERT_N2].astype(np.int64).sum())
-                 + int(gas[SMOKE].astype(np.int64).sum()))
+        total = _total(gas)
         assert total == total0, (
             f"combustion transaction leaked/fabricated mass: {total} != {total0}")
-        if int(gas[SMOKE].sum()) > 0:
+        if int(gas[SMOKE].astype(np.int64).sum()) > 0:
             any_burn = True
     assert any_burn, "the scenario never actually burned — the gate is vacuous"
 
@@ -272,7 +286,7 @@ def test_trace_decay_credits_nothing_to_inert_n2():
     from simulation.gases import TEARGAS
     gmap.gases.diffusion[TEARGAS] = 0.0
     interior = (~gmap.solid) & (~gmap.is_vacuum)
-    gmap.gas[TEARGAS][interior] = gas_fixed.quantize_scalar(0.5)
+    gmap.gas[TEARGAS][interior] = gas_fixed.quantize_trace_scalar(0.5)
     assert np.all(gmap.wind_x == 0) and np.all(gmap.wind_y == 0)
 
     trace0 = int(gmap.gas[TEARGAS].astype(np.int64).sum())
@@ -308,9 +322,9 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
     reaches the format ceiling in this extreme scenario), so this test
     intentionally does NOT assert a tight peak bound — only that reaching
     the ceiling now SATURATES instead of wrapping through it."""
-    def _run(H_fuel, burn_rate):
+    def _run(H_FUEL_M, burn_rate):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
-        pr = _runner(H_fuel=H_fuel, burn_rate=burn_rate)
+        pr = _runner(H_FUEL_M=H_FUEL_M, burn_rate=burn_rate)
         _ignite(gmap, (4, 4), intensity=0.8, temp_mult=3.0)
         peak = 0.0
         trough = 0.0
@@ -342,10 +356,25 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
         f"{peak_disabled} game >= {SPIKE_CEILING}). P-R4 removed its driver by "
         f"retiring the painter's air deposit — a peak this high means something "
         f"is feeding one-way energy into air cells again")
-    assert peak_default < SPIKE_CEILING, (
+    # R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01.md
+    # "Ruling R3") RE-ANCHOR: this scene's own `temp_mult=3.0` ignition (an
+    # already-extreme torture value, on top of this test's own burn_rate=1.0
+    # override — deliberately NOT the shipped 0.00965) now also rides hotf,
+    # which at the seeded T (900 game, ignition_temp*3) reads ~4.44 off wood's
+    # own fire_T_ext_plane value (100) — a real, LEGITIMATE amplification of
+    # this already-torture scenario's demand, not a reopened one-way-energy
+    # loop: measured peak_default 7803.6 game, occurring at tick 3 and NEVER
+    # rising further through tick 600 (re-checked) — a bounded transient
+    # spike, comfortably under T_MAX_PHYS (16000) and the format ceiling, that
+    # then decays to a ~413-415 game equilibrium. SPIKE_CEILING_HOT carries
+    # margin above the measured value while staying far below any genuine
+    # runaway signature (which would keep climbing, not plateau at tick 3).
+    SPIKE_CEILING_HOT = 9000.0
+    assert peak_default < SPIKE_CEILING_HOT, (
         f"the P3 thermal runaway is BACK with combustion enabled "
-        f"(peak={peak_default} game). Combustion's gas-side H_fuel deposit is a "
-        f"BURN-SITE term, not a room-wide paint — it must not reopen the loop")
+        f"(peak={peak_default} game >= {SPIKE_CEILING_HOT}). Combustion's "
+        f"gas-side H_fuel deposit is a BURN-SITE term, not a room-wide paint "
+        f"— it must not reopen the loop")
     # eos-p3fix-thermal-ceiling: no wraparound garbage (the fixed half of
     # the bug). T_MIN is -289 (EOSSolver default); a generous floor below
     # that (any legitimate T_MIN-floored cooling stays well above -1000)
@@ -417,15 +446,33 @@ def test_e2e_1_sealed_room_fire_self_starves():
     monotonic decline, not noise or a plateau), the decline is SUBSTANTIAL
     (>=15% off peak by t=2000 — comfortably below the measured 23.2%, so
     immune to small dial drift, while still requiring more than a rounding-
-    level wobble), fuel is barely touched (self-STARVING, not burn-through —
-    kept from the old bound), mass is never fabricated (kept, a hard
+    level wobble), FUEL STILL REMAINS (self-STARVING, not burn-through — bound
+    re-derived 2026-09-12 from "barely touched" >90% to ">20% left", because
+    `wall_damage` 0.36 is now a blessed dial and burn duration is a live feel
+    axis; see the assertion's own note), mass is never fabricated (kept, a hard
     integer invariant regardless of dials), and pressure shows a real,
     reproducible rise above ambient (threshold re-derived to 2%, comfortably
     below the measured 2.52%, in place of the old 5% that no longer clears
     in-budget). The post-flame ember-signature assertions are DROPPED: they
     describe a phase (flame actually dead) this horizon no longer reaches;
     the full flame->ember->re-ignite->char-out->quiet lifecycle stays gated
-    in tests/test_eos_p5_1_stoich.py, which owns that story now."""
+    in tests/test_eos_p5_1_stoich.py, which owns that story now.
+
+    R3 RE-MEASURE (fire session #12, 2026-09-06, docs/fire_3c_design_2026-
+    09-01.md "Ruling R3"): hot-burns-faster draws harder as the flame heats,
+    which measurably speeds up BOTH the growth and the eventual starve —
+    peak moved 0.713 -> 0.883 (t~=558 -> t~=184), and the decline this time
+    reaches FULL EXTINCTION well inside the 2000-tick budget (fire_hist[-1]
+    == 0.0, a >=15% decline holds trivially now) — the phase the pre-R3
+    note above says "this horizon no longer reaches" is reachable again.
+    The assertions below are left permissive (>=15%, not ==100%) so a
+    Phase-4 taste pass moving the dials further doesn't need to touch this
+    test; only the pressure threshold below needed re-deriving; peak
+    pressure moved 2.52% -> 0.66% above ambient (R3's burn_rate/wall_damage
+    re-size trades off against hotf's boost at these particular dials/seed —
+    net LOWER heat output before the faster starve caps it), so the old 2%
+    floor no longer clears — re-derived to 0.3%, comfortably below the
+    measured 0.66%."""
     gmap = _sealed_room(hh=15, wood_at=(7, 7))
     pr = _runner()
     # smoke_emission zeroing REMOVED at P-S1 — the field/mechanism it
@@ -467,11 +514,32 @@ def test_e2e_1_sealed_room_fire_self_starves():
     assert decline >= 0.15, (
         f"self-starve decline too small ({decline:.1%} off peak {peak:.3f}) "
         f"— expected >=15% by tick {TICKS} (measured 23.2% at these dials)")
-    # ... with fuel barely touched (self-STARVING, not burn-through).
+    # ... with FUEL STILL REMAINING (self-STARVING, not burn-through).
+    #
+    # PROPERTY PROTECTED: the fire's decline is caused by its LOCAL O2 running
+    # out, not by its fuel running out -- so there must still be fuel in the
+    # tile when the flame has demonstrably starved.
+    # WHAT MUST BREAK IT: a fire that consumes its tile to zero hp within the
+    # horizon (burn-through), which would make the decline above a fuel-
+    # exhaustion signature instead of an oxygen one.
+    #
+    # RE-DERIVED 2026-09-12 (fire session #12). The old bound was
+    # `> 0.9 * wall_hp0` -- "fuel barely touched" -- which pinned a quantity
+    # the session deliberately moved: `wall_damage` 0.027 -> 0.36 is now a
+    # BLESSED dial (Erik 2026-09-12, ruling R-E in
+    # docs/ray_engine_v2_survey_2026-09-12.md), and burn duration is a live
+    # feel axis that Phase 4 will move again. Pinning 90% made this test a
+    # brake on an intended design change rather than a guard on the mechanism,
+    # which is exactly what CLAUDE.md's property-not-snapshot rule forbids.
+    # Measured at the blessed dials: 60.00 -> 25.83, i.e. 43.0% remaining.
+    # The bound is set at 20% -- comfortably below the measurement so ordinary
+    # dial drift cannot trip it, and far enough above zero that a genuine
+    # burn-through still fails loudly.
     wall_hp_final = float(gmap.wall_hp[7, 7]) / 65536.0
-    assert wall_hp_final > 0.9 * wall_hp0, (
+    assert wall_hp_final > 0.20 * wall_hp0, (
         f"the wall burned through instead of starving "
-        f"(wall_hp {wall_hp0:.2f} -> {wall_hp_final:.2f})")
+        f"(wall_hp {wall_hp0:.2f} -> {wall_hp_final:.2f}, "
+        f"{wall_hp_final / wall_hp0:.1%} left; expected >20%)")
     # No mass fabrication: the bulk O2+N2 pair never exceeds its start.
     # P-T0 (design §2.6) deleted the decay->inert_N2 credit (decisions #12
     # v2.1, now retired doctrine) — combustion can now only ever REMOVE mass
@@ -480,10 +548,12 @@ def test_e2e_1_sealed_room_fire_self_starves():
         f"O2+N2 exceeded its starting total "
         f"(max {max(mass_hist)} > start {total0}) — mass fabricated")
     # A real, reproducible pressure rise above ambient during the burn
-    # (threshold re-derived: see docstring — the old 5% needs ~5000+ ticks
-    # to clear at the shipped k_die, well past this test's budget).
+    # (threshold re-derived: see docstring — R3 (fire session #12, docs/
+    # fire_3c_design_2026-09-01.md "Ruling R3") moved the measured peak to
+    # 0.66% above ambient, so the prior 2% floor no longer clears; 0.3%
+    # carries margin below that).
     p_peak = max(p_hist)
-    assert p_peak > ambient_p * 1.02, (
+    assert p_peak > ambient_p * 1.003, (
         f"no visible pressure rise during the burn (peak {p_peak:.3f} vs "
         f"ambient {ambient_p:.3f})")
 
@@ -553,7 +623,7 @@ def test_e2e_3_o2_rich_pocket_intensifies_burn():
             # headroom (design §8 P1 note), leaving N_total/N2 untouched
             # (the spike is EXTRA O2, not a species swap).
             for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_scalar(3.0)
+                gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_bulk_scalar(3.0)
         _ignite(gmap, (4, 4), intensity=0.3, temp_mult=1.05)
         peak = 0.0
         for _ in range(15):
@@ -595,7 +665,7 @@ def test_e2e_4_inert_flood_smothers_fire():
             for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 y, x = 4 + dy, 4 + dx
                 gmap.gas[O2][y, x] = 0
-                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_scalar(4.0)
+                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_bulk_scalar(4.0)
         for _ in range(ticks):
             _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
         return float(gmap.fire[4, 4]) / 65536.0
@@ -619,7 +689,7 @@ def _digest_after(ticks):
     pr = _runner()
     _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
     for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-        gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_scalar(2.0)
+        gmap.gas[O2][4 + dy, 4 + dx] = gas_fixed.quantize_bulk_scalar(2.0)
     h = hashlib.sha256()
     for _ in range(ticks):
         pr.step(gmap, SEED_TICK_DT)
@@ -678,18 +748,11 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
         if perturb_absorb is not None:
             pr.eos.absorb_strength = perturb_absorb
         _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
-        # P-R4 re-anchor (ruling amendment 5 D2): run the burner at the arc's
-        # BLESSED cool_shift (9), not the shipped 5. This test is about O2
-        # DIFFERENTIATION — sealed vs vented vs flooded must die at different
-        # times BECAUSE of oxygen. At the shipped cool_shift the burner's one
-        # loss channel is a 1.33 s e-fold, which under the retired painter's
-        # 1600-scale free energy did not matter and now does: every arm dies
-        # THERMALLY at ~34 ticks before the oxygen difference can register
-        # (measured 34/34/35 — the ordering did not break, it was ERASED). The
-        # P-R5 joint tune owns that dial (ruling §4: "cool_shift may drift up —
-        # radiation is now explicit"); this test owns the O2 axis, so it pins
-        # the dial the rest of the arc measures at.
-        gmap.cool_shift[4, 4] = 9
+        # (A P-R4 pin of `gmap.cool_shift[4, 4] = 9` stood here, keeping the
+        # burner from dying THERMALLY before the O2 axis registered. T5b step 7
+        # deleted the cool_shift plane (thermal v2 R1), so there is nothing left
+        # to pin; the write was that deletion's one missed consumer and raised
+        # AttributeError. Removed after Erik's M3 play test, 2026-09-23.)
         if vent:
             gmap.solid[0, 4] = False
             gmap.dyn_permeability[0, 4] = 1.0
@@ -698,7 +761,7 @@ def _payoff_intensities(perturb_absorb=None, ticks=400):
             for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 y, x = 4 + dy, 4 + dx
                 gmap.gas[O2][y, x] = 0
-                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_scalar(4.0)
+                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_bulk_scalar(4.0)
         for _ in range(ticks):
             _step_tick(pr, gmap)
         return float(gmap.fire[4, 4]) / 65536.0
@@ -731,14 +794,23 @@ def test_payoff_orderings_perturbation_robust():
     (5% relative) is a comfortably-loose gate on top of that measurement,
     not a re-derivation of a real bound — it exists so a REAL regression back
     toward chaos still trips the test, not to pin the current bit-exactness
-    (which the underlying physics doesn't promise, only delivers here)."""
+    (which the underlying physics doesn't promise, only delivers here).
+
+    RESTATE (#7, Erik's ruling 2026-09-24): `flooded <= vented < sealed`.
+    Under #7's pressure factor this 7x7 room's breach takes it below 0.1 atm on
+    tick 1, so the vented arm loses all O2 availability as instantly as the
+    flooded one (whose neighbours are set to O2 = 0) and the two arms are
+    bit-identical (0.0870 at t = 400). Venting never suffocates FASTER than a
+    flood and always beats a sealed room — that is the property; "venting is
+    gradual" was an assumption of the pre-#7 law. Breaks if a vented room
+    out-suffocates a flood, or if venting stops starving the fire."""
     base = _payoff_intensities()
     pert = _payoff_intensities(perturb_absorb=8.0 * (1.0 + 1e-5))
 
     for name, (s, v, f) in (("baseline", base), ("perturbed", pert)):
-        assert f < v < s, (
+        assert f <= v < s, (
             f"{name}: payoff ordering broken (flooded={f:.4f}, vented="
-            f"{v:.4f}, sealed={s:.4f}) — expected flooded < vented < sealed")
+            f"{v:.4f}, sealed={s:.4f}) — expected flooded <= vented < sealed")
     for arm, b, p in zip(("sealed", "vented", "flooded"), base, pert):
         window = max(0.005, 0.05 * b)   # 5% relative (min 0.005) — see
                                          # docstring: measured 0.0 diff

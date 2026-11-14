@@ -187,7 +187,9 @@ class WEGOPlanningInput(ControlSource):
                                           + (1 if wheel > 0 else -1)) % 3)
 
         # ---- Mouse clicks (planning-only) ----
-        if sim.is_paused() and rl.is_mouse_button_pressed(
+        if renderer.pointer_captured():
+            pass
+        elif sim.is_paused() and rl.is_mouse_button_pressed(
                 rl.MouseButton.MOUSE_BUTTON_LEFT):
             self._handle_left_click(sim, renderer)
         elif sim.is_paused() and rl.is_mouse_button_pressed(
@@ -205,7 +207,7 @@ class WEGOPlanningInput(ControlSource):
 
         # Try to select a marine first.
         for u in sim.units:
-            if (u.alive and u.team == 0 and
+            if (u.alive and u.team == sim.player_team and
                     u.tile_x <= fx < u.tile_x + u.footprint
                     and u.tile_y <= fy < u.tile_y + u.footprint):
                 self.selected_unit_id = u.id

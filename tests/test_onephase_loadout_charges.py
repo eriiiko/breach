@@ -20,6 +20,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import charges as C  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation.materials import MAT_AIR  # noqa: E402
@@ -68,7 +69,8 @@ def test_a_marine_spawns_with_a_primary_and_a_secondary():
     sim = _sim()
     u = _marine(sim)
     assert len(u.loadout) == 2
-    assert u.loadout[0] == CFG.marine.weapon
+    # #119: the primary is the default [loadouts.*] row's weapon.
+    assert u.loadout[0] == getattr(CFG.loadouts, CFG.marine.loadout).weapon
     assert u.loadout[1] == CFG.marine.secondary
     assert u.weapon_id == u.loadout[0], "weapon_id mirrors the active slot"
 
@@ -82,7 +84,7 @@ def test_a_marine_spawns_with_the_configured_belt():
 
 def test_zombies_carry_no_loadout():
     sim = _sim()
-    z = Unit("z", x=20.0, y=20.0, team=1)
+    z = Unit("z", x=20.0, y=20.0, team=ZOMBIE_TEAM)
     sim.add_unit(z)
     assert z.loadout == [] and z.belt == []
 
@@ -110,7 +112,7 @@ def test_a_belt_item_in_hand_does_not_fire_like_a_gun():
     u = _marine(sim)
     u.loadout = ["hand_grenade", "k5_carbine"]
     u.weapon_id = "hand_grenade"
-    z = Unit("z", x=20.0, y=10.0, team=1)
+    z = Unit("z", x=20.0, y=10.0, team=ZOMBIE_TEAM)
     sim.add_unit(z)
     z.current_hp = 10_000
     hp0 = z.current_hp

@@ -67,9 +67,9 @@ def _build_and_seed(seed):
     sim = Simulation(_level(_tm(), _ents()), seed=seed, breach_physics=None,
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sim.gmap.gas[SMOKE][ry, rx] = 25000
-    sim.gmap.gas[POISON][ry, rx] = 18000
-    sim.gmap.gas[STEAM][ry, rx] = 9000
+    sim.gmap.gas[SMOKE][ry, rx] = 25000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[POISON][ry, rx] = 18000  # raw trace counts: scale-free (#88)
+    sim.gmap.gas[STEAM][ry, rx] = 9000  # raw trace counts: scale-free (#88)
     sim.gmap.temperature[:, :] = 3000
     return sim
 
@@ -125,7 +125,7 @@ def test_ordinal_order_independent_of_authoring_file_order():
     for sim in (sim_a, sim_b):
         ry, rx = ([v for v in sim._vents if v.role == "return"][0].aperture_y,
                   [v for v in sim._vents if v.role == "return"][0].aperture_x)
-        sim.gmap.gas[SMOKE][ry, rx] = 20000
+        sim.gmap.gas[SMOKE][ry, rx] = 20000  # raw trace counts: scale-free (#88)
 
     for _ in range(60):
         _step(sim_a)

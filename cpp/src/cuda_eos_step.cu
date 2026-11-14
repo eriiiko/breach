@@ -134,23 +134,26 @@ EOSHostPrestage eos_host_prestage(
         const float* dyn_permeability,
         int h, int w, float dt,
         bool ambient_mode,
-        const bool* thermal_solid) {
+        const bool* thermal_solid,
+        bool host_scans) {
     EOSHostPrestage pre;
     const int n = h * w;
     // THERMAL-MASS AXIS: the same nullptr -> `solid` fallback step()'s `ts`
     // fold uses. VELOCITY-CLAMP (P-V1, D4): the cap2 fold below reads it.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
 
-    // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
-    // per-substep bulk reset accumulates into it on device, copied back later.
-    if (ambient_mode) {
-        if ((int)solver.boundary_flux_.size() != n_gases)
-            solver.boundary_flux_.assign(n_gases, 0);
-        else
-            std::fill(solver.boundary_flux_.begin(), solver.boundary_flux_.end(), (int64_t)0);
-    } else if (!solver.boundary_flux_.empty()) {
-        solver.boundary_flux_.clear();
-    }
+    // The boundary_flux rail (spec §5) + the smoke-transport-v2 trace books
+    // (#12, design §3): the CPU twin's reset block, VERBATIM (EOSSolver::step) —
+    // sized n_gases on EVERY map and zeroed each tick, the three sibling trace
+    // books with it. (Before P2a this path cleared the rail to EMPTY on a space
+    // map while the CPU returned n_gases zeros; the two now agree.) The bulk
+    // slots fill from the device rail below (ambient maps), the trace slots from
+    // the device trace counters; the once-per-tick trace tail adds on the host.
+    solver.ensure_trace_books(n_gases);
+    std::fill(solver.boundary_flux_.begin(), solver.boundary_flux_.end(), (int64_t)0);
+    std::fill(solver.trace_wipe_sum_.begin(), solver.trace_wipe_sum_.end(), (int64_t)0);
+    std::fill(solver.trace_sink_sum_.begin(), solver.trace_sink_sum_.end(), (int64_t)0);
+    std::fill(solver.trace_decay_sum_.begin(), solver.trace_decay_sum_.end(), (int64_t)0);
 
     // ---- step 0: P_prev := P (pure copy) ---------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -160,55 +163,25 @@ EOSHostPrestage eos_host_prestage(
         solver.dbg_T_pre_advect = temperature[solver.dbg_probe_idx];
 
     // ---- per-tick scalar constants (step()'s folds, verbatim) ------------
-    const q16 n_floor_q = quantize((double)solver.N_FLOOR_SOLVER);
-    // FLOORED AT 1 COUNT — the CPU twin's A7 fix, verbatim (eos_solver.cpp:278).
-    // Divisor of the c_LOCAL ratio at :165 and, via pre.t_amb_q (:258), the
-    // resident path's too. Must stay bit-identical to the CPU fold.
-    const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
-    // P-E1: the recovery T_MIN clamp fold — the SAME `quantize((double)T_MIN)`
-    // expression step() performs, hoisted here so BOTH GPU dispatch paths read
-    // one transcription (design §2.1.5).
-    pre.t_min_q = quantize((double)solver.T_MIN);
-    // s_eos_q: fold of S_EOS, verbatim CPU twin (eos_solver.cpp:290). At the
-    // frozen identity (65536) the t_abs product below has zero low bits, so
-    // the SAR is exact truncation — see eos_solver.cpp's comment for the
-    // off-identity T<0 flooring convention.
-    const q16 s_eos_q   = quantize((double)solver.S_EOS);
-    // D-3 RELEASE-LIVE GUARD (design §4, docs/tabs_compression_work_design_
-    // 2026-08-20.md): the byte-identical companion to EOSSolver::step's own
-    // guard (eos_solver.cpp, beside its s_eos_q fold) — step 4c's t_abs =
-    // T + t_amb_q form is honest only while S_EOS == 1 AND
-    // T_MIN > -T_AMB_K; assert() is dead in Release, so this is a plain,
-    // always-compiled, once-per-tick check on this dispatch path too.
-    if (s_eos_q != FP_ONE || pre.t_min_q <= -(int64_t)t_amb_q) {
-        throw std::runtime_error(
-            "T_abs compression work requires S_EOS==1 and T_MIN > -T_AMB_K; "
-            "see docs/tabs_compression_work_design_2026-08-20.md D-3");
+    // #29 P5: folded by eos_prestage_scalars (pure code motion — the device
+    // pre-stage reads the SAME struct).
+    {
+        const EOSHostPrestage sc = eos_prestage_scalars(solver, dt,
+                                                        gas_conservative, n_gases);
+        pre = sc;
     }
-    const q16 c_q       = quantize((double)solver.C);
-    // VELOCITY-CLAMP (P-V1, D2v2/v2.4): u_max_q fold — the CPU twin's rail
-    // (eos_solver.cpp:384), missing here pre-P-V1 (the kick never needed it
-    // on this backend until the per-cell cap plane).
-    const q16 u_max_q   = quantize((double)solver.U_MAX);
-    const double gamma_d = (double)solver.adiabatic_index;
-    const double dt_d    = (double)dt;
-    const q16 dt_q       = quantize(dt_d);
-    const double dx_d    = std::max((double)solver.dx, 1e-6);
-    const q16 inv_2dx_q  = quantize(1.0 / (2.0 * dx_d));
-    const double K_d = (double)solver.c_max * (double)solver.c_max / gamma_d;
-    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
-    const int64_t Kdt_raw = mul128_shr_host(K_raw, (int64_t)dt_q, 16);
+    const q16 t_amb_q   = pre.t_amb_q;
+    const q16 s_eos_q   = pre.s_eos_q;
+    const q16 c_amb_q   = pre.c_amb_q;
+    const int64_t c_amb2_q32 = pre.c_amb2_q32;   // Q32.32
+    const int64_t u_max2_q32 = pre.u_max2_q32;   // Q32.32
+    const int64_t ratio_umax = pre.ratio_umax;
 
     // ---- c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB) (step()'s scan, verbatim) --
-    const q16 c_amb_q = quantize((double)solver.c_max);
     // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² fold, SAME scan, SAME
     // tick-entry T basis as c_LOCAL — the eos_solver.cpp scan's TWIN
-    // transcription (design's "TWO transcription sites, no third").
-    const int64_t c_amb2_q32 = (int64_t)c_amb_q * (int64_t)c_amb_q;   // Q32.32
-    const int64_t u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;   // Q32.32
-    const double ru = (double)u_max_q / (double)c_amb_q;
-    const int64_t ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
-
+    // transcription (design's "TWO transcription sites, no third"; #29 P5's
+    // device pre-stage, K_pre_scan, is this loop's device twin).
     pre.cap2.assign(n, 0);
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
@@ -241,6 +214,14 @@ EOSHostPrestage eos_host_prestage(
         if (rad > max_rad) max_rad = rad;
     }
     const q16 max_u = sqrt_q16(max_rad);
+    // #29 P4a: the scalars the n_sub fold reads (the per-tick folds and the
+    // conservative list came from eos_prestage_scalars above).
+    pre.max_u     = max_u;
+    pre.c_local_q = c_local_q;
+    const q16 n_floor_q  = pre.n_floor_q;
+    const q16 inv_2dx_q  = pre.inv_2dx_q;
+    const int64_t Kdt_raw = pre.kdt_raw;
+    if (!host_scans) return pre;   // the resident path scans the device gas
     // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
     {
@@ -276,29 +257,15 @@ EOSHostPrestage eos_host_prestage(
             if (du > max_du_raw) max_du_raw = du;
         }
     }
-    int64_t u_est_raw = (int64_t)max_u + max_du_raw + 1;   // +1 count eps
-    // D7 (VELOCITY-CLAMP, P-V1): the clip widens to max(c_LOCAL, U_MAX) —
-    // verbatim the CPU twin's fold (eos_solver.cpp) — stored |u| may now
-    // reach U_MAX on hot cells even though c_LOCAL is folded from entry-T.
-    const int64_t u_est_cap = ((int64_t)c_local_q > (int64_t)u_max_q)
-        ? (int64_t)c_local_q : (int64_t)u_max_q;
-    if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
-    const q16 cfl_dx_q = quantize((double)solver.CFL_ADV * dx_d);
-    const int64_t numer_wide = mul128_shr_host((int64_t)dt_q, u_est_raw, 16);
-    int n_sub = std::max(1, ceil_div(
-        (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), cfl_dx_q));
-    if (n_sub > solver.N_SUB_MAX) n_sub = solver.N_SUB_MAX;
-    solver.dbg_last_n_sub = n_sub;
-    const double dt_s_d = dt_d / (double)n_sub;
-    // dt_s_q: the CPU re-quantizes the SAME double each substep — one fold
-    // here is the identical value (the proven P6.2 host fold).
-    const q16 dt_s_q = quantize(dt_s_d);
+    // #29 P4a: the fold moved VERBATIM into eos_prestage_finish (below).
+    eos_prestage_finish(solver, pre, max_du_raw);
 
     // ---- donor-cell face-coefficient cache (step()'s hoist, verbatim) ----
     pre.coeffE.assign(n, 0);
     pre.coeffS.assign(n, 0);
     {
-        const q16 dts_q_c = quantize(dt_s_d);
+        // == quantize(dt_d / n_sub), the fold's own dt_s_q (one expression).
+        const q16 dts_q_c = pre.dt_s_q;
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
@@ -316,19 +283,88 @@ EOSHostPrestage eos_host_prestage(
         }
     }
 
-    // Conservative-plane index list (the CPU's gi order preserved; the
-    // planes are independent — disjoint N, read-only wind/coeffs).
+    // (The conservative-plane index list and the per-tick scalars were filled
+    // above, before the host scan, for both callers.)
+    return pre;
+}
+
+// #29 P5: the scalar folds alone (header). Moved VERBATIM out of
+// eos_host_prestage's head; every expression and its order kept.
+EOSHostPrestage eos_prestage_scalars(const EOSSolver& solver, float dt,
+                                     const bool* gas_conservative, int n_gases) {
+    EOSHostPrestage pre;
+    const q16 n_floor_q = quantize((double)solver.N_FLOOR_SOLVER);
+    // FLOORED AT 1 COUNT — the CPU twin's A7 fix, verbatim (eos_solver.cpp:278).
+    // Divisor of the c_LOCAL ratio and, via pre.t_amb_q, the resident path's
+    // too. Must stay bit-identical to the CPU fold.
+    const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
+    // P-E1: the recovery T_MIN clamp fold — the SAME `quantize((double)T_MIN)`
+    // expression step() performs (design §2.1.5).
+    pre.t_min_q = quantize((double)solver.T_MIN);
+    // s_eos_q: fold of S_EOS, verbatim CPU twin (eos_solver.cpp:290).
+    const q16 s_eos_q   = quantize((double)solver.S_EOS);
+    // D-3 RELEASE-LIVE GUARD (docs/tabs_compression_work_design_2026-08-20.md
+    // §4): step 4c's t_abs = T + t_amb_q form is honest only while S_EOS == 1
+    // AND T_MIN > -T_AMB_K; a plain, always-compiled, once-per-tick check.
+    if (s_eos_q != FP_ONE || pre.t_min_q <= -(int64_t)t_amb_q) {
+        throw std::runtime_error(
+            "T_abs compression work requires S_EOS==1 and T_MIN > -T_AMB_K; "
+            "see docs/tabs_compression_work_design_2026-08-20.md D-3");
+    }
+    const q16 c_q       = quantize((double)solver.C);
+    // VELOCITY-CLAMP (P-V1, D2v2/v2.4): u_max_q fold — the CPU twin's rail.
+    const q16 u_max_q   = quantize((double)solver.U_MAX);
+    const double gamma_d = (double)solver.adiabatic_index;
+    const double dt_d    = (double)dt;
+    const q16 dt_q       = quantize(dt_d);
+    const double dx_d    = std::max((double)solver.dx, 1e-6);
+    const q16 inv_2dx_q  = quantize(1.0 / (2.0 * dx_d));
+    const double K_d = (double)solver.c_max * (double)solver.c_max / gamma_d;
+    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
+    const int64_t Kdt_raw = mul128_shr_host(K_raw, (int64_t)dt_q, 16);
+    // The c_LOCAL / cap² scan's scalars (VELOCITY-CLAMP P-V1, D2v2).
+    const q16 c_amb_q = quantize((double)solver.c_max);
+    pre.c_amb_q    = c_amb_q;
+    pre.c_amb2_q32 = (int64_t)c_amb_q * (int64_t)c_amb_q;   // Q32.32
+    pre.u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;   // Q32.32
+    const double ru = (double)u_max_q / (double)c_amb_q;
+    pre.ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
+    pre.kdt_raw   = Kdt_raw;
+    pre.n_floor_q = n_floor_q;
+    pre.u_max_q   = u_max_q;
+    pre.cfl_dx_q  = quantize((double)solver.CFL_ADV * dx_d);
+    pre.dt_q      = dt_q;
+    pre.dt_d      = dt_d;
     for (int gi = 0; gi < n_gases; ++gi)
         if (gas_conservative[gi]) pre.cons.push_back(gi);
-
     pre.t_amb_q   = t_amb_q;
     pre.s_eos_q   = s_eos_q;
     pre.c_q       = c_q;
     pre.inv_2dx_q = inv_2dx_q;
-    pre.c_local_q = c_local_q;
-    pre.n_sub     = n_sub;
-    pre.dt_s_q    = dt_s_q;
     return pre;
+}
+
+// #29 P4a: the n_sub fold (step()'s, verbatim — moved out of the pre-stage so
+// the host scan and the resident device scan feed ONE transcription).
+void eos_prestage_finish(const EOSSolver& solver, EOSHostPrestage& pre,
+                         int64_t max_du_raw) {
+    int64_t u_est_raw = (int64_t)pre.max_u + max_du_raw + 1;   // +1 count eps
+    // D7 (VELOCITY-CLAMP, P-V1): the clip widens to max(c_LOCAL, U_MAX) —
+    // verbatim the CPU twin's fold (eos_solver.cpp) — stored |u| may now
+    // reach U_MAX on hot cells even though c_LOCAL is folded from entry-T.
+    const int64_t u_est_cap = ((int64_t)pre.c_local_q > (int64_t)pre.u_max_q)
+        ? (int64_t)pre.c_local_q : (int64_t)pre.u_max_q;
+    if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
+    const int64_t numer_wide = mul128_shr_host((int64_t)pre.dt_q, u_est_raw, 16);
+    int n_sub = std::max(1, ceil_div(
+        (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), pre.cfl_dx_q));
+    if (n_sub > solver.N_SUB_MAX) n_sub = solver.N_SUB_MAX;
+    solver.dbg_last_n_sub = n_sub;
+    const double dt_s_d = pre.dt_d / (double)n_sub;
+    // dt_s_q: the CPU re-quantizes the SAME double each substep — one fold
+    // here is the identical value (the proven P6.2 host fold).
+    pre.n_sub  = n_sub;
+    pre.dt_s_q = quantize(dt_s_d);
 }
 
 long long eos_step_cuda_calls() { return g_eos_step_cuda_calls; }
@@ -450,6 +486,42 @@ void eos_step_cuda(
         std::vector<int32_t*> d_gas(cons.size());
         for (size_t k = 0; k < cons.size(); ++k)
             d_gas[k] = (int32_t*)dev_alloc(nb);
+        // Smoke transport v2 (#12, design §5): the LIVE trace planes. A plane
+        // that is all zero at tick entry stays all zero with zero counters
+        // through the whole step (stage 3b prices phi = floordiv(dq*0, N) = 0),
+        // so it is never uploaded — the CPU's host-scan skip, an optimisation
+        // only. Each live plane rides the device for the whole substep loop
+        // (one H2D here, one D2H after it, BEFORE digest_bulk_flux).
+        std::vector<int> trace_gi;
+        for (int gi = 0; gi < n_gases; ++gi) {
+            if (gas_conservative[gi]) continue;
+            const int32_t* S = gas + (size_t)gi * n;
+            for (int i = 0; i < n; ++i) {
+                if (S[i] != 0) { trace_gi.push_back(gi); break; }
+            }
+        }
+        const int n_trace = (int)trace_gi.size();
+        std::vector<int32_t*> d_trace(n_trace, nullptr);
+        for (int k = 0; k < n_trace; ++k)
+            d_trace[k] = (int32_t*)dev_alloc(nb);
+        int32_t* d_spre = n_trace ? (int32_t*)dev_alloc(nb) : nullptr;
+        // [0, n_trace) vent, [n_trace, 2*n_trace) wipe — unsigned long long
+        // atomicAdd slots, memset 0 here (per-tick semantics, the e-counters' idiom).
+        // #88 P2, APPENDED (never inserted -- the P5c slot precedent):
+        // [2*n_trace, 3*n_trace) stage 3b's saturation CLIP, [3*n_trace,
+        // 4*n_trace) its NEGATIVE-net hits. Both >= 0; zeroed here per call and
+        // ADDED to the solver's books at D2H (the books' per-tick reset is
+        // PhysicsRunner's -- W5/W3 write them before this step runs).
+        constexpr int TRACE_CNT_BLOCKS = 4;
+        unsigned long long* d_tcnt = nullptr;
+        if (n_trace) {
+            d_tcnt = (unsigned long long*)dev_alloc(
+                TRACE_CNT_BLOCKS * (size_t)n_trace * sizeof(unsigned long long));
+            cuda_check(cudaMemset(d_tcnt, 0,
+                                  TRACE_CNT_BLOCKS * (size_t)n_trace
+                                      * sizeof(unsigned long long)),
+                       "memset trace counters");
+        }
         // P-E1 per-plane host side-tables the energy entry reads.
         std::vector<int32_t> n_amb_cons(cons.size(), 0);
         std::vector<unsigned long long*> rail_ptrs(cons.size(), nullptr);
@@ -470,6 +542,9 @@ void eos_step_cuda(
         for (size_t k = 0; k < cons.size(); ++k)
             cuda_check(cudaMemcpy(d_gas[k], gas + (size_t)cons[k] * n, nb,
                                   cudaMemcpyHostToDevice), "H2D gas plane");
+        for (int k = 0; k < n_trace; ++k)
+            cuda_check(cudaMemcpy(d_trace[k], gas + (size_t)trace_gi[k] * n, nb,
+                                  cudaMemcpyHostToDevice), "H2D trace plane");
 
         // BC: upload the ambient ring mask (device) + allocate the per-plane
         // int64 boundary_flux rail (zeroed once; the bulk clamp atomicAdds into
@@ -516,7 +591,13 @@ void eos_step_cuda(
                 d_e, d_nbulk, d_dqsum_e, d_dqsum_s,
                 d_dq_e, d_dq_s, d_scale, d_ecnt,
                 d_amb, n_amb_cons.data(),
-                d_rail ? rail_ptrs.data() : nullptr);
+                d_rail ? rail_ptrs.data() : nullptr,
+                // smoke transport v2 (#12) stages 3b/3c: the trace rides these
+                // very faces (vent -> boundary_flux_'s trace slots, wipe beside).
+                n_trace ? d_trace.data() : nullptr, n_trace, d_spre,
+                d_tcnt, d_tcnt ? d_tcnt + n_trace : nullptr,
+                d_tcnt ? d_tcnt + 2 * n_trace : nullptr,     // #88 P2 clip
+                d_tcnt ? d_tcnt + 3 * n_trace : nullptr);    // #88 P2 neg hits
             // -- f. zero u on solid: subsumed by the advection kernel (the
             //    proven P6.2 argument; nothing above re-touches u). --------
         }
@@ -532,6 +613,26 @@ void eos_step_cuda(
         for (size_t k = 0; k < cons.size(); ++k)
             cuda_check(cudaMemcpy(gas + (size_t)cons[k] * n, d_gas[k], nb,
                                   cudaMemcpyDeviceToHost), "D2H gas plane");
+        // Smoke transport v2 (#12): the trace planes and their counters back
+        // BEFORE digest_bulk_flux below (it hashes every gas plane from host
+        // memory). The counters equal the CPU's sequential sums (integer
+        // atomicAdd is order-free); boundary_flux_ was zeroed at entry, so these
+        // are plain stores into the trace slots (the bulk slots are the rail's).
+        if (n_trace) {
+            for (int k = 0; k < n_trace; ++k)
+                cuda_check(cudaMemcpy(gas + (size_t)trace_gi[k] * n, d_trace[k], nb,
+                                      cudaMemcpyDeviceToHost), "D2H trace plane");
+            std::vector<unsigned long long> tc(TRACE_CNT_BLOCKS * (size_t)n_trace, 0);
+            cuda_check(cudaMemcpy(tc.data(), d_tcnt,
+                                  tc.size() * sizeof(unsigned long long),
+                                  cudaMemcpyDeviceToHost), "D2H trace counters");
+            for (int k = 0; k < n_trace; ++k) {
+                solver.boundary_flux_[trace_gi[k]]  = (int64_t)tc[k];
+                solver.trace_wipe_sum_[trace_gi[k]] = (int64_t)tc[n_trace + k];
+                solver.trace_clip_sum_[trace_gi[k]] += (int64_t)tc[2 * n_trace + k];
+                solver.trace_neg_hits_[trace_gi[k]] += (int64_t)tc[3 * n_trace + k];
+            }
+        }
         // BC: copy the accumulated per-plane rail back into the solver's rail
         // (byte-identical to the CPU: integer sums are order-free, so the
         // device atomicAdd total == the CPU sequential sum).
@@ -600,6 +701,14 @@ void eos_step_cuda(
             const q16 dux = mul_q16((q16)(fe - fw), inv_2dx_q);
             const q16 duy = mul_q16((q16)(fs - fn), inv_2dx_q);
             div_u[i] = dux + duy;
+        }
+    }
+    // #31: the blast's divergence source, EOSSolver::step's own lines.
+    if ((int)solver.div_source.size() == n) {
+        for (int i = 0; i < n; ++i) {
+            if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;
+            div_u[i] = fixedpoint::sat_add_q16_i64(div_u[i],
+                                                   -(int64_t)solver.div_source[i]);
         }
     }
 

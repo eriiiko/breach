@@ -61,13 +61,19 @@ FP_ONE = 65536
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
     # arc #54 P-G1a: `t_work_clamp` left the signature with step 4c (D11).
-    n_floor_solver=1e-3, t_min=-289.0,
+    n_floor_solver=1e-3, t_min=-292.0,
     t_max_phys=16000.0, u_max=1000.0,
 )
-# The ambient K the derived k_ke is folded from — the reference's default and
-# EOSSolver::T_AMB_K's default, kept explicit here because THIS module's
-# oracle re-derives the constant from it.
-T_AMB_K = 290.0
+# The ambient K the derived k_ke is folded from — explicit test parameter fed
+# to BOTH the Python oracle (_k_ke_q32 below) and the actual solver call, so
+# it need not track EOSSolver::T_AMB_K's compiled-in struct default (still
+# 290.0f, unchanged — C++ default values are comment-only under G12, issue
+# #12, docs/fire_g12_one_map_patch_2026-08-31.md); kept at the config's live
+# eos_t_amb_k (293.0) for realism. t_min likewise mirrors config's T_MIN
+# (-292.0), though this kernel does not rail T_MIN at the deposit site (see
+# the module docstring) so neither value is load-bearing for the identity
+# under test.
+T_AMB_K = 293.0
 
 
 def _q(x):

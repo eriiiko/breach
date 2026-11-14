@@ -29,14 +29,16 @@ always been. No RNG is drawn here; the executor draws its own, in queue order.
 from __future__ import annotations
 
 from simulation.payloads import execute_payload
+from simulation.unit_schema import CHARGE_CAPACITY
 
 
 class PlantedCharge:
     """One charge sitting on a tile, waiting for its moment."""
 
-    __slots__ = ("x", "y", "det_tick", "ammo_name", "owner_id", "live")
+    __slots__ = ("x", "y", "det_tick", "ammo_name", "owner_id", "live",
+                 "approach")
 
-    def __init__(self, x, y, ammo_name, owner_id, det_tick=None):
+    def __init__(self, x, y, ammo_name, owner_id, det_tick=None, approach=None):
         self.x = int(x)
         self.y = int(y)
         self.ammo_name = str(ammo_name)
@@ -45,6 +47,9 @@ class PlantedCharge:
         #: for a Detonate order.
         self.det_tick = None if det_tick is None else int(det_tick)
         self.live = True
+        #: The tile the planter stood on (#31): the side a charge on a tile
+        #: that holds delivers on.
+        self.approach = approach
 
     def due(self, tick: int) -> bool:
         return self.live and self.det_tick is not None and tick >= self.det_tick
@@ -55,20 +60,36 @@ class PlantedCharge:
                 f"{when}, live={self.live})")
 
 
-def plant(sim, unit, order) -> PlantedCharge:
+def place(sim, charge) -> bool:
+    """THE door into ``sim.planted_charges`` (#29 P3a, the unit schema's
+    ``CHARGE_SCHEMA`` table): append ``charge`` unless the sim already holds
+    ``unit_schema.CHARGE_CAPACITY`` live charges, in which case it is
+    REFUSED -- nothing is planted -- and counted in
+    ``sim.charges_refused``. True when placed. No shipped scenario or test
+    reaches the capacity (``tests/test_unit_schema.py``)."""
+    live = sum(1 for c in sim.planted_charges if c.live)
+    if live >= CHARGE_CAPACITY:
+        sim.charges_refused = getattr(sim, "charges_refused", 0) + 1
+        return False
+    sim.planted_charges.append(charge)
+    return True
+
+
+def plant(sim, unit, order):
     """Bring a charge into existence at the completion of a planting step.
 
     Called when the channeled ``plant_charge`` step RETIRES — see the module
     docstring: an interrupted plant leaves nothing behind, which is the point
-    of the action being channeled in the first place.
+    of the action being channeled in the first place. ``None`` when the
+    charge table is full (:func:`place` refused it).
     """
     charge = PlantedCharge(
         order.target_fx, order.target_fy,
         getattr(order, "ammo_name", None) or "demo_breach",
         getattr(unit, "id", -1),
-        det_tick=getattr(order, "det_tick", None))
-    sim.planted_charges.append(charge)
-    return charge
+        det_tick=getattr(order, "det_tick", None),
+        approach=(unit.center_tile_y(), unit.center_tile_x()))
+    return charge if place(sim, charge) else None
 
 
 def fire(sim, charge) -> None:
@@ -78,8 +99,9 @@ def fire(sim, charge) -> None:
     charge.live = False
     payload = sim.weapons_tables.payload_for_ammo(charge.ammo_name)
     execute_payload(sim.gmap, sim.edit_queue, sim.units, charge.y, charge.x,
-                    payload, sim.rng, events=sim.tick_events,
-                    kind="door_explosive")
+                    payload, sim.draws, events=sim.tick_events,
+                    kind="door_explosive", owner_id=charge.owner_id,
+                    approach=charge.approach)
 
 
 def detonate_owned(sim, unit) -> int:
@@ -112,4 +134,5 @@ def tick(sim) -> None:
         sim.planted_charges = [c for c in sim.planted_charges if c.live]
 
 
-__all__ = ["PlantedCharge", "detonate_owned", "fire", "plant", "tick"]
+__all__ = ["PlantedCharge", "detonate_owned", "fire", "place", "plant",
+           "tick"]

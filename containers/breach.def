@@ -1,0 +1,107 @@
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+# ===========================================================================
+# Breach on Linux, as an Apptainer image (#29 P10, residency design §8): the
+# CUDA 12.4 devel toolchain (the Windows build's toolkit version; 12.4+ has
+# the conditional graph nodes P9 wants), the build deps, the Python env from
+# containers/breach_env.sh (the ML stack through the ml-stack skill's
+# ml_stack.py: ONE version set), and the repo built by cpp/build_linux.sh at
+# ONE commit. `apptainer test` plays the pinned ship_demo match on CPU, CUDA
+# and CUDA resident and requires the pin of tests/test_zombie_control.py.
+#
+# Build (from anywhere; REPO is a git checkout -- a shallow clone of the tag
+# keeps the image small; ML_STACK the skill's folder, ml_stack.py + .txt):
+#
+#   git clone --depth 1 --branch <tag> file://<breach checkout> /tmp/breach-src
+#   apptainer build --notest \
+#       --build-arg REPO=/tmp/breach-src \
+#       --build-arg COMMIT=<tag or sha> \
+#       --build-arg ML_STACK=<skills>/ml-stack \
+#       breach.sif containers/breach.def
+#   apptainer test --nv breach.sif         # the pinned match, three backends
+#   # under WSL2 --nv binds nothing usable; bind the WSL driver stubs instead:
+#   APPTAINERENV_LD_LIBRARY_PATH=/usr/lib/wsl/lib \
+#       apptainer test --nv --bind /usr/lib/wsl:/usr/lib/wsl breach.sif
+#   apptainer run  --nv breach.sif tools/run_match.py --level ship_demo
+#
+# The image holds the code at COMMIT and its build: `breach_physics.build_id()`
+# is that commit (the repo is a real git checkout inside, so the build id and
+# rl_env.require_snapshot work as on a PC). No GPU is needed to BUILD (nvcc
+# compiles for 75 80 86 89 90, the CMakeLists default); `--nv` to run. Build
+# with `--notest`: apptainer would run %test right after %post, without a GPU,
+# and the GPU gates would fail the build; `apptainer test --nv` runs them.
+# ===========================================================================
+
+%arguments
+    REPO=./breach-src
+    COMMIT=HEAD
+    ML_STACK=./ml-stack
+
+%files
+    {{ REPO }} /opt/breach-src
+    {{ ML_STACK }}/ml_stack.py /opt/ml-stack/ml_stack.py
+    {{ ML_STACK }}/ml_stack.txt /opt/ml-stack/ml_stack.txt
+
+%environment
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    export BREACH_PYTHON=/opt/micromamba/envs/breach/bin/python
+    export PATH=/opt/micromamba/envs/breach/bin:/usr/local/cuda/bin:$PATH
+    export LC_ALL=C.UTF-8
+    # The image is read-only at run time: CuPy's kernel cache goes to tmp.
+    export CUPY_CACHE_DIR="${TMPDIR:-/tmp}/cupy-cache-$(id -u)"
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -q
+    apt-get install -y -q --no-install-recommends \
+        build-essential ninja-build git pkg-config \
+        curl ca-certificates bzip2
+    rm -rf /var/lib/apt/lists/*
+
+    # The repo at COMMIT, a git checkout (the build id reads it).
+    git config --global --add safe.directory '*'
+    git clone -q /opt/breach-src /opt/breach
+    git -C /opt/breach checkout -q --detach "{{ COMMIT }}"
+    rm -rf /opt/breach-src
+
+    # The env: micromamba, the base packages, the ML stack (no device at
+    # build time: ml_stack.py's GPU gates run in %test).
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    bash /opt/breach/containers/breach_env.sh /opt/ml-stack --no-gpu
+
+    # CMake from pip into the env: jammy's 3.22 cannot set CUDA's C++20
+    # dialect (CMAKE_CUDA_STANDARD 20 needs a newer one; the PCs run 3.28 / 4.x).
+    /opt/micromamba/envs/breach/bin/python -m pip install -q \
+        --root-user-action=ignore "cmake>=3.28,<5"
+    export PATH=/opt/micromamba/envs/breach/bin:$PATH
+
+    # Both modules, as on any Linux box.
+    cd /opt/breach
+    BREACH_PYTHON=/opt/micromamba/envs/breach/bin/python cpp/build_linux.sh
+    test "$(git -C /opt/breach status --porcelain --untracked-files=no)" = "" \
+        || { echo "the checkout is not clean after the build"; exit 1; }
+
+%test
+    set -eu
+    cd /opt/breach
+    PY=/opt/micromamba/envs/breach/bin/python
+    "$PY" /opt/ml-stack/ml_stack.py verify
+    for b in cpu cuda resident; do
+        "$PY" tools/match_pin_check.py --backend "$b"
+    done
+
+%runscript
+    cd /opt/breach
+    if [ $# -eq 0 ]; then
+        for b in cpu cuda resident; do
+            /opt/micromamba/envs/breach/bin/python tools/match_pin_check.py --backend "$b" || exit 1
+        done
+    else
+        exec /opt/micromamba/envs/breach/bin/python "$@"
+    fi
+
+%labels
+    org.breach.patch "#29 P10"
+    org.breach.commit {{ COMMIT }}

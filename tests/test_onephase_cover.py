@@ -26,6 +26,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation import vision as V  # noqa: E402
 from simulation.cover_system import (  # noqa: E402
@@ -35,6 +36,8 @@ from simulation.entities import REGISTRY  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO, TwoPhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 
 class _Inst:
@@ -76,7 +79,7 @@ def _marine(sim, x, y, name="m"):
 
 
 def _zombie(sim, x, y, name="z", hp=10_000):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     sim.add_unit(u)
     u.current_hp = hp
     return u
@@ -249,8 +252,8 @@ def test_cover_position_matters_not_a_stat():
     hp0 = z.current_hp
     _shoot(sim, m, z, ticks=12)
     assert z.current_hp == hp0
-    z.x, z.y = 20.0, 28.0                    # step clear of the crate's row
-    m.facing = 0.0
+    z.set_pos(20.0, 28.0)                    # step clear of the crate's row
+    _place_facing(m, _q_rad(0.0))
     sim.apply_action(m.id, O.Order(O.ORDER_SHOOT, z.tile_x, z.tile_y, 0,
                                    target_unit_id=z.id))
     _run(sim, 24)
@@ -297,7 +300,7 @@ def test_the_shipped_statistical_path_is_untouched():
 def test_an_ordinary_crate_does_not_block_line_of_sight():
     sim = _sim([_Inst(0, "crate", x=12, y=20, width_m=2.0, height_m=4.0)])
     m = _marine(sim, 4.0, 20.0)
-    m.facing = 0.0                            # look east, down the crate line
+    _place_facing(m, _q_rad(0.0))  # look east, down the crate line
     z = _zombie(sim, 20.0, 20.0)
     assert V.can_see(sim, m, z) is True
     assert z.id in sim.visible_enemy_ids(0)
@@ -307,7 +310,7 @@ def test_a_full_height_barricade_does_block_it():
     sim = _sim([_Inst(0, "barricade", x=12, y=16, width_m=2.0, height_m=12.0,
                       blocks_los=True)])
     m = _marine(sim, 4.0, 20.0)
-    m.facing = 0.0
+    _place_facing(m, _q_rad(0.0))
     z = _zombie(sim, 20.0, 20.0)
     assert V.can_see(sim, m, z) is False
 
@@ -316,7 +319,7 @@ def test_a_destroyed_barricade_stops_occluding():
     sim = _sim([_Inst(0, "barricade", x=12, y=16, width_m=2.0, height_m=12.0,
                       blocks_los=True)])
     m = _marine(sim, 4.0, 20.0)
-    m.facing = 0.0
+    _place_facing(m, _q_rad(0.0))
     z = _zombie(sim, 20.0, 20.0)
     assert V.can_see(sim, m, z) is False
     sim.cover[0].alive = False
@@ -374,11 +377,11 @@ def test_a_shot_from_behind_hits_harder():
     front = _sim()
     fm = _marine(front, 20.0, 4.0, name="shooter")
     fz = _zombie(front, 20.0, 20.0)
-    fz.facing = -3.14159 / 2          # facing SOUTH, away from the shooter...
+    _place_facing(fz, _q_rad(-3.14159 / 2))  # facing SOUTH, away from the shooter...
     back = _sim()
     bm = _marine(back, 20.0, 4.0, name="shooter")
     bz = _zombie(back, 20.0, 20.0)
-    bz.facing = 3.14159 / 2           # ...vs facing NORTH, into the shooter
+    _place_facing(bz, _q_rad(3.14159 / 2))  # ...vs facing NORTH, into the shooter
 
     _shoot(front, fm, fz, ticks=12)
     _shoot(back, bm, bz, ticks=12)

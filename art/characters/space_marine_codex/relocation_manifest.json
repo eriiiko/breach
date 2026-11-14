@@ -1,0 +1,129 @@
+{
+  "date": "2026-10-05",
+  "display_name": "Space Marine (Codex)",
+  "from": "art/characters/space_marine",
+  "to": "art/characters/space_marine_codex",
+  "approved_pre_migration_commit": "3e65755",
+  "binary_hashes": {
+    "experiments/compressed_cloth/baseline_front.png": "2aafe24597ee90b1705f26e4acb7b044c60c9151bf07f91cf8dfc4dc9f5767ae",
+    "experiments/compressed_cloth/baseline_side.png": "e73bc6aabe11c9e898e45ad7a5aae043d878023cb680e71a5f676e78d8d0c248",
+    "experiments/compressed_cloth/candidate_1.blend": "2fe47e510bf1faac6a811ec646f5c67d0c7b8d93188af3ed42f0474e59701b19",
+    "experiments/compressed_cloth/candidate_1_front.png": "a3f56b03bb62166b94e6b4747e1fb33c2f810044b90968faa40b6dd42cf96ba7",
+    "experiments/compressed_cloth/candidate_1_side.png": "c08758ff972a9e54022601850c7f343fadc78dc87ce7a7f67ddaaa3b5ff83132",
+    "experiments/compressed_cloth/candidate_2.blend": "2f91fc46166c1d5e5fe231b44a8c499ff76b11670637ceebe3183082d5ae8413",
+    "experiments/compressed_cloth/candidate_2_front.png": "2706f76c0c2489b7291496046f483df303824ffc15ad894503e77b851e505400",
+    "experiments/compressed_cloth/candidate_2_side.png": "ea4658375b076ff96f8f97b70c02ba9a4ef808e9e45f9df6bdf02dec4495d278",
+    "experiments/compressed_cloth/comparison.png": "9bb263b14083449512e41c395489dcb6e289e3e6d631e563ee9b169bbf5cffe7",
+    "previews/back.png": "9b877897c343be6fe2462e348b2095c56b6036b9bd2cac393bd38a08c02812e5",
+    "previews/closeup.png": "eb8e7cd3017d700eb37167801ea836e95f7b8320f70c401844cc6c08c2255384",
+    "previews/contact_sheet.png": "7c84afe9c2a1bae2b05ebd52124ebf82dac1954c9777104a3dafaf7cfbcc1a48",
+    "previews/details.png": "c1073a1827fd301acd0f135adc46379567b576af82195656d0307e1579674716",
+    "previews/elevated.png": "8b0cea490fcecb241774f992fc612e043be23760004e5883de4c83c394d87143",
+    "previews/front.png": "a4df1cd6903e5d313544ff4dabf3b05c14c851d91ca4d960dddd75821a3cc29f",
+    "previews/hero.png": "0339a0ac269aada3fcf264ab6f52ce3158c8270b90065cff6869a0c691173143",
+    "previews/side.png": "4192349e87b970ebcb69159196495a875764e059156af15ff7e2bc0728f605c6",
+    "source/space_marine.blend": "75b74ff12e5d8073ca8e10253c57d21b8a5de31b28390773244f64db3c3140e9",
+    "variants/head_v2/previews/comparison_heads.png": "ef5fc058e5c007bcb723394ce651c04386d4be3d459c8d3468b953fc986842fb",
+    "variants/head_v2/previews/final/approved_v1_back.png": "91fb7e24b3c82a7ef88fde2abd7bed767ab7b2079151bb8823c5a5e67ec6bac0",
+    "variants/head_v2/previews/final/approved_v1_front.png": "c7309ba6b96d32886e4307b5b4458e1105dbb976fdd22ea3e16c8ccc6a000911",
+    "variants/head_v2/previews/final/approved_v1_hero.png": "a07dcd69f3ab48633942f468880a1c528dd7cec936bc2186ee684fae339f0538",
+    "variants/head_v2/previews/final/approved_v1_side.png": "54390922db4aea94ab9b924501afdc9d0ea1b4f57e24ee44750a63cd03fee1db",
+    "variants/head_v2/previews/final/head_v2_back.png": "4808eac5be6e8f2015eecd3f182378428222e14f6c88ad606e7d5244ea410490",
+    "variants/head_v2/previews/final/head_v2_front.png": "68b8bccefddf68894971737fb6132b3bd1623f691f6b78c3d4ba65be89be2e0e",
+    "variants/head_v2/previews/final/head_v2_full_hero.png": "12c96bb4f6b4563b2f19720e8bdec32c19f506d65496ebf0688a068086c14a90",
+    "variants/head_v2/previews/final/head_v2_hero.png": "5ebf54198e56110dbd93c94d9ce47ae85f87fa6b3c7b7172f1f318c501e33d12",
+    "variants/head_v2/previews/final/head_v2_side.png": "5b94021e8d98ec7df90ab5b2f5f74e4ff548ee98462afc3202dc479333976d0a",
+    "variants/head_v2/previews/reference_heads.png": "4d7389dac97c8453553c5d1de17adf8a383a73ceb57fa6b30814d6b7b7d1167a",
+    "variants/head_v2/previews/review_1/approved_v1_back.png": "9636315d25e384c79b5825322c8145ab5a7635f65f86c467843713940867b32a",
+    "variants/head_v2/previews/review_1/approved_v1_front.png": "6610ba3e056c52a4c7edc0dd41b352e3fd73cfeda3a0f8a96845a928675ddf65",
+    "variants/head_v2/previews/review_1/approved_v1_hero.png": "7b270c535e6c9e940dc826429f7c4a7664e8eb2b2c066d80aa002ee97ff9fb51",
+    "variants/head_v2/previews/review_1/approved_v1_side.png": "f171e7d98c4f4f0e903d9ea6293f4453294d2cce76177e61395b26e173fdc819",
+    "variants/head_v2/previews/review_1/head_v2_back.png": "a48534fc190822192def3c2bfd0747cdc7014902a88f228cb3e55396a364da1c",
+    "variants/head_v2/previews/review_1/head_v2_front.png": "a8febeb1728bc0b30e723b04a1430f2868669aa1bc1957d3dfca430d7a10bfc8",
+    "variants/head_v2/previews/review_1/head_v2_full_hero.png": "d4c8e13b5588fa5c37cda2a8293775c667a3ea5931539c5a492b7bd2937aa5a3",
+    "variants/head_v2/previews/review_1/head_v2_hero.png": "146007e1b1fc41fe1085a3cc065b239fe0061e2757c8412e9f74f7aad37dfc89",
+    "variants/head_v2/previews/review_1/head_v2_side.png": "190d9f725feb141d5edf58a51576c643c4241a452be9c8df295600e35a8cd607",
+    "variants/head_v2/source/space_marine_codex_head_v2.blend": "28cd621070de9b18a700b43a277abd9e7a4fdf84becb23b469dbf539dd94cca0",
+    "versions/approved_v1/space_marine_codex_approved_v1.blend": "75b74ff12e5d8073ca8e10253c57d21b8a5de31b28390773244f64db3c3140e9"
+  },
+  "original_text_hashes": {
+    "README.md": "a6baab63057867bfa48092ce78a2de5c8c9b7195806d2565e0b39c50f20a0867",
+    "experiments/compressed_cloth/README.md": "de383c857755c5daeac34c0473a89b05760d8088d07355dc14c2efba85650b56",
+    "experiments/compressed_cloth/baseline_files.json": "52dced2f2fdc72d319809d1b7cbb3b47a78da32ed59c818989aee8fa8173196b",
+    "experiments/compressed_cloth/candidate_1_metrics.json": "290190d9e4947ade80e8e32ff0bf156e6f0979f7c2693c5be2c5d4430241c496",
+    "experiments/compressed_cloth/candidate_2_metrics.json": "e9422a25379de8ed8e2bb3efef4086d87313f0f6ebeb6dff3f9300e620ec8779",
+    "experiments/compressed_cloth/cloth_authoring.py": "ee932865b2c002d49fbb1255aa20a0c5bbc30e537af304b01b4e64c01a053755",
+    "experiments/compressed_cloth/index.html": "1d8f050f25bf3995e925650f41e84cb4f5ee116b63ed2a4b6a01afb57afe374a",
+    "experiments/compressed_cloth/inspect_study.py": "a4528db44917d5c566e253e1639ab1a92c78f2e7c03ba25df9f6a2d55bf7cdeb",
+    "experiments/compressed_cloth/make_comparison.py": "0134e27e9a5ec0d76e6186cdc61b8503f9f8b6a7265d445b7174998cf121cc4e",
+    "experiments/compressed_cloth/reopened_validation.json": "14bc8e660422a4716e2da5894a5e616aedabd80d3ab5f750ce49951d7f354558",
+    "experiments/compressed_cloth/study_cloth.py": "222ed5f1ef90a263669b11cdd81d2966c12204f520a917667a37927d667d5073",
+    "previews/index.html": "6f17dc35e444528c85f0c57d54a314d1125d0cd0c91a1f36b8e7fc882ed19441",
+    "previews/render_manifest.json": "1442b6aa00748fb0922e64ef176b4e566aa2173e6f768ca2f8a1dfedac580dad",
+    "scripts/build_space_marine.py": "0e293274c4d93eb239a0f37a092abb4533bd68c54c97069df612aa4cbcb88b19",
+    "scripts/inspect_space_marine.py": "5d81545d8c322e999b37a069e5860b99427da5f9794fe7ebbb953288b6d865ef",
+    "scripts/make_contact_sheet.py": "85b40da58c82aa5dfd6505e169113f900cfe70c49cc62b0eafbe0237bc2f9c61",
+    "scripts/render_space_marine.py": "8a2d643a252b021b956f07935e352891b6123d29ed705d863d577066d5f0c5bb",
+    "source/model_stats.json": "1813c59a9548b091bdc534d5149865edc9517c360aa54a0c63d5be70ba3c8987",
+    "source/validation.json": "093e2978e8264b8049f622f0340ded63fcda63e54b11a24a98afa1c132e60d2f",
+    "variants/head_v2/README.md": "4d42ae00968fd4f879835ebc94202ea0db6a514cfb23fdfc4f6cc89a8815edb1",
+    "variants/head_v2/previews/final/render_manifest.json": "db7a1d36f252e4bbbb9cef488159cb72686370e183f0fddbe8dad82d7b0da270",
+    "variants/head_v2/previews/index.html": "079ce7134e34bc29648292d38c594f4b9473452900084b162054401c33cd83fe",
+    "variants/head_v2/previews/package_validation.json": "0d8525b8921c6d999ad8c3b0f73e54ae1222ab938239ad90fedc8d32d75ff61f",
+    "variants/head_v2/previews/review_1/render_manifest.json": "5004ad3cf56d592f83761f4e614e570e14d5e476b987310550bcf4384648c8e4",
+    "variants/head_v2/scripts/head_variant.py": "d8b162d03a0df85fcd11e46f2782b67f9fa5f0444bb3c6f700b9c41caad752cd",
+    "variants/head_v2/scripts/make_gallery.py": "85eefb63a53a2d2cfc9c3175e6b387041171c78c175e344112d1641addf1a9a0",
+    "variants/head_v2/source/preservation_fingerprints.json": "f46c06e7352d144846a74f29cb98a7269cf902b61ef70fc04d69ee8aff918c79",
+    "variants/head_v2/source/validation.json": "4a252f986821a4686cc5d94811a3fc6a7772569a93d4500f516f2c5100285d27",
+    "versions/approved_v1/README.md": "24fdd688852d4df52b6dd6023e593b2f755335e68a61df4a2cc30f38959ced7f",
+    "versions/approved_v1/manifest.json": "3789002c255f2500f618fef4e31fcefc5e6f4baa710590605ce62f7fe819e655"
+  },
+  "purpose": "Namespace relocation and active text path/display updates only. Historical hash maps remain recorded beside current text hashes in the existing preservation manifests. No Blender file or rendered image is rewritten.",
+  "updated_text_files": {
+    "README.md": {
+      "before": "a6baab63057867bfa48092ce78a2de5c8c9b7195806d2565e0b39c50f20a0867",
+      "after": "9221f4fd986345425383db71d76a6fc0b12b286b2ef9ee5d5e0acdc6b37e5509"
+    },
+    "experiments/compressed_cloth/README.md": {
+      "before": "de383c857755c5daeac34c0473a89b05760d8088d07355dc14c2efba85650b56",
+      "after": "62c289a36436cb7c6aebba26a2b379af785905c8c5d5ab62610472c7f2c4e07b"
+    },
+    "experiments/compressed_cloth/baseline_files.json": {
+      "before": "52dced2f2fdc72d319809d1b7cbb3b47a78da32ed59c818989aee8fa8173196b",
+      "after": "e561ad46ac764c9ab2153ee713cbbe1ec17e115dea42dc04fa23166855a58dc4"
+    },
+    "previews/index.html": {
+      "before": "6f17dc35e444528c85f0c57d54a314d1125d0cd0c91a1f36b8e7fc882ed19441",
+      "after": "4746b1b96e83fa323cd2bb5c3e00daf13626c82013dd78f2fb0c8573209fd46f"
+    },
+    "scripts/build_space_marine.py": {
+      "before": "0e293274c4d93eb239a0f37a092abb4533bd68c54c97069df612aa4cbcb88b19",
+      "after": "9f60074648ad884521af97037e0178c7b1b100650670dad8ca6c8d6d0324f07c"
+    },
+    "variants/head_v2/README.md": {
+      "before": "4d42ae00968fd4f879835ebc94202ea0db6a514cfb23fdfc4f6cc89a8815edb1",
+      "after": "1fd9e898f7a498022e56df7088f4ff4a120920bb8836a870b8a0bb253f644962"
+    },
+    "versions/approved_v1/README.md": {
+      "before": "24fdd688852d4df52b6dd6023e593b2f755335e68a61df4a2cc30f38959ced7f",
+      "after": "7b897907e4ca9e412496af3fc677e133b4bc34ae7149a00676a98395f811339e"
+    },
+    "versions/approved_v1/manifest.json": {
+      "before": "3789002c255f2500f618fef4e31fcefc5e6f4baa710590605ce62f7fe819e655",
+      "after": "9b15146608f69793fedf593727f5d478f1db827cf522bcbaee28e03afb7f05aa"
+    }
+  },
+  "verification": {
+    "unchanged_binary_files": 40,
+    "changed_binary_files": [],
+    "gallery_local_references": {
+      "experiments/compressed_cloth/index.html": 22,
+      "previews/index.html": 22,
+      "variants/head_v2/previews/index.html": 28
+    },
+    "missing_gallery_targets": [],
+    "python_files_syntax_checked": 10,
+    "main_baseline": "ef9d39c",
+    "main_art_path_collisions": []
+  }
+}

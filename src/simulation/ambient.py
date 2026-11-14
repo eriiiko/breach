@@ -8,9 +8,11 @@ B3, pins the ring) must agree to the LSB — so the derivation lives here, once.
 **N-primary (critique 2026-07-19).** The EOS materializes pressure every tick as
 ``p* = C · N_total · (T + T_AMB_K)`` through TRUNCATING q16 multiplies
 (`eos_solver.cpp:463-476`). Every reachable ``p*`` is therefore a multiple of
-``round(T_AMB_K)`` raw counts (~290), so ``quantize(1.0 atm) == 65536`` has *no*
-integer ``N_total`` preimage: "derive N from a target P" is ill-posed for ~289/290
-of dial values. We go the well-posed direction instead:
+``round(T_AMB_K)`` raw counts (~293, G12 — issue #12,
+docs/fire_g12_one_map_patch_2026-08-31.md; was ~290 under ruling 6), so
+``quantize(1.0 atm) == 65536`` has *no* integer ``N_total`` preimage: "derive N
+from a target P" is ill-posed for ~292/293 of dial values. We go the
+well-posed direction instead:
 
   * ``N_total := quantize(p_amb)`` — the N planes are primary;
   * split into O2 / inert-N2 by ``o2_frac`` (round-half-up + exact complement, the
@@ -19,9 +21,11 @@ of dial values. We go the well-posed direction instead:
     to the ambient N, so the ring pin and the interior materialized pressure agree.
 
 At the Earth-normal defaults (p_amb=1.0, o2_frac=0.21) this yields N_total=65536,
-O2=13763, N2=51773, and an effective pin of **65540 raw (1.000061 atm)** — NOT 65536.
-That 4-count offset is the quantization lattice, not an error; it is what keeps a
-sealed planetside room's interior trajectory flat (spec §6 gate 1).
+O2=13763, N2=51773, and an effective pin of **65632 raw (1.001465 atm)** under
+G12's eos_t_amb_k=293 — NOT 65536 (was 65540 raw / 1.000061 atm under ruling
+6's 290). That 96-count offset is the quantization lattice, not an error; it
+is what keeps a sealed planetside room's interior trajectory flat (spec §6
+gate 1).
 
 Pure integer, no libm, deterministic cross-machine.
 """
@@ -32,7 +36,7 @@ from dataclasses import dataclass
 import temperature_scale
 from simulation import gas_fixed as _gas_fx
 
-FP_ONE = _gas_fx.FP_ONE                  # 65536
+FP_ONE = _gas_fx.Q16_ONE                 # 65536 (a Q16 fraction's 1.0)
 
 # Pinned EOS constants (docs/eos_refactor_decisions.md 2026-07-10). Source of
 # truth is [physics.temperature_scale] (eos_t_amb_k / the derived C property)
@@ -109,8 +113,8 @@ def effective_pin(n_total_q: int,
                   t_amb_k: float = DEFAULT_T_AMB_K) -> int:
     """``p*(N_total, ΔT=0)`` through the sim's own truncating chain
     (`eos_solver.cpp:469-475`). Returns the raw Q16.16 pin the physics uses."""
-    c_q = _gas_fx.quantize_scalar(c)
-    t_amb_q = _gas_fx.quantize_scalar(t_amb_k)      # t_abs at ΔT (temperature) == 0
+    c_q = _gas_fx.quantize_q16_scalar(c)
+    t_amb_q = _gas_fx.quantize_q16_scalar(t_amb_k)      # t_abs at ΔT (temperature) == 0
     cn = _mul_q16(c_q, int(n_total_q))
     p = _mul_q16(cn, t_amb_q)
     return 0 if p < 0 else p                          # the EOS floor (pstar < 0 -> 0)
@@ -147,8 +151,8 @@ def derive_ambient(p_amb: float = DEFAULT_P_AMB,
                    c: float = DEFAULT_C,
                    t_amb_k: float = DEFAULT_T_AMB_K) -> AmbientConfig:
     """Build an :class:`AmbientConfig` from the authored dials (N-primary)."""
-    n_total = int(_gas_fx.quantize_scalar(p_amb))
-    o2_frac_q = int(_gas_fx.quantize_scalar(o2_frac))
+    n_total = int(_gas_fx.quantize_bulk_scalar(p_amb))      # a bulk N count
+    o2_frac_q = int(_gas_fx.quantize_q16_scalar(o2_frac))   # a Q16 fraction
     o2 = (n_total * o2_frac_q + (1 << 15)) >> 16        # round-half-up (seed idiom)
     n2 = n_total - o2                                     # exact complement, no LSB leak
     pin = effective_pin(n_total, c, t_amb_k)

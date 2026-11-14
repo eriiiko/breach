@@ -29,6 +29,11 @@ Adding a coupling is O(one row).
 
 ## 1. The read side: fields → units
 
+> **2026-10-31 (#140): the `P | grad` impulse-push row below is SUPERSEDED by the wind law** — the
+> `wind | max` row (`exchange.apply_wind_knockdown`): dynamic pressure `q = ½ρv²` at the footprint,
+> nothing below 39 Pa, a cadence scale to 245 Pa, KNOCKED_DOWN above; no displacement, `mass` unread
+> (`docs/wind_on_units_design_2026-10-31.md`). "Big light units fly" no longer holds.
+
 Each coupling is a row:
 
 ```

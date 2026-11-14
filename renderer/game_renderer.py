@@ -1,7 +1,7 @@
 """GameRenderer: thin orchestrator over core/lighting/overlays/world_composite.
 
 Public API (used by main.py):
-    renderer.upload_state(gmap, light_sources)
+    renderer.upload_state(gmap, sim_tick=..., light_serial=...)
     renderer.begin_frame()
     renderer.compose_world(...)        # everything in world space, inside RT
     renderer.blit_world_to_screen()    # camera blit from RT to map area
@@ -14,6 +14,7 @@ State flow:
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
@@ -30,15 +31,19 @@ from . import core
 from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .cold_overlay import ColdFieldOverlay
+from .fire_vfx import FireVFXPass
+from .fire_vfx import read_only as fire_vfx_read_only
 from .gas_detail import GasDetailPass, tame_wind
 from .gas_medium import GasMediumOverlay
+from .gas_relief import GasReliefPass
 from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
+from .tile_art import TileArtSeam, patch_block
 from .static_props import (DEFAULT_TILE_SIZE_M, StaticPropRenderer,
                            SwaySettings)
 from .overlays import (
-    FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
+    FieldOverlay, GlowOverlay, HeatFieldOverlay,
     WaterFieldOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
@@ -64,17 +69,31 @@ class RenderConfig:
     grid_w: int            # physics grid width in tiles
     grid_h: int            # physics grid height in tiles
     world_px_per_tile: float = 24.0   # world RT resolution (independent of zoom)
-    # Phase-0 3D marines (docs/anim_phase0_impl_2026-07-20.md): render-only,
-    # default OFF. When True, GameRenderer loads a rigged glTF and draws units
-    # as animated 3D bodies at the unit-draw slot instead of the 2D sprites;
-    # when False the sprite path is byte-for-byte unchanged. Feel-gated. The J
-    # key flips it live (poll_toggles) once the model is loaded.
-    use_3d_units: bool = False
+    # 3D units (docs/anim_phase0_impl_2026-07-20.md): render-only, and the
+    # normal unit look since #33 (2026-10-04, Erik) -- GameRenderer loads the
+    # rigged unit model and draws units as animated 3D bodies at the unit-draw
+    # slot. No key toggles it. False (or a model that fails to load) leaves
+    # the 2D sprite path, byte-for-byte unchanged.
+    use_3d_units: bool = True
 
 
 # ---------------------------------------------------------------------------
 # Fire & Heat Beauty B2 P5 (design §7 P5): the active render-state cluster
 # ---------------------------------------------------------------------------
+
+def _trace_floats(gmap) -> np.ndarray:
+    """THE renderer's one trace dequantize (#88, critique C9): the
+    ``(N_TRACE_GASES, h, w)`` float32 block of real trace densities, through the
+    trace currency's own helper (``gas_fixed.dequantize_trace_f32``). Every
+    render site that draws a trace plane slices THIS (the legacy smoke overlay,
+    the relief and medium inputs, the speckle's soot and steam) -- never a
+    second dequantize, never a bulk name. Fresh float copies, never written
+    back. It is the call site the reader-invariance test drives, and the single
+    place a resident gather later swaps in."""
+    from simulation import gas_fixed
+    from simulation.gases import N_TRACE_GASES
+    return gas_fixed.dequantize_trace_f32(gmap.gas[:N_TRACE_GASES])
+
 
 def render_state_lines(*, legacy_smoke_on: bool, detail_enabled: bool,
                        speckle_mode: str, effect_gas_floor: float
@@ -154,23 +173,11 @@ class GameRenderer:
 
         # Level textures + lighting + overlays
         self.textures = core.load_level_textures(level_data)
-        self.raycaster = breach_physics.Raycaster()
-        # Smoke optics: decoupled per-channel Beer-Lambert absorption + a
-        # SEPARATE additive scatter/glow budget (ch.05 §6.1 §6). Bound from
-        # the [smoke] config section so the look is tunable live (F5 reload).
-        #   transmission:  trans_c = exp(-absorption[c] * density * absorb_scale)
-        #   scatter/glow:  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density
-        # Dialing smoke_absorb_scale DOWN gives the long-beam "flashlight travels
-        # far through smoke and still glows" look (the beam survives deep smoke
-        # because exp(-tau) never hits 0). Defaults approximate the shipped look.
-        smoke_cfg = getattr(CFG, "smoke", None)
-        self.raycaster.smoke_absorption_rgb = tuple(
-            getattr(smoke_cfg, "smoke_absorption", (1.0, 1.0, 1.0)))
-        self.raycaster.smoke_scatter_albedo = tuple(
-            getattr(smoke_cfg, "smoke_scatter_albedo", (1.0, 1.0, 1.0)))
-        self.raycaster.smoke_absorb_scale = float(
-            getattr(smoke_cfg, "smoke_absorb_scale", 1.4))
-        self.lighting = LightingPass(self.raycaster, cfg.grid_h, cfg.grid_w)
+        # Ray-engine-v2 P6c: LightingPass is a pure CONSUMER of the one light
+        # accessor (simulation.light_field) -- the C++ Raycaster that used to be
+        # built here (and held the [smoke] optics dials for the render march) is
+        # deleted; the gas medium reads [smoke] from config itself.
+        self.lighting = LightingPass(cfg.grid_h, cfg.grid_w)
         # [art.align] (level format v2 §1.3): bind the level's explicit art
         # alignment so draw_lit_world samples the art through the transform
         # (art pixel offset_px lands on grid (0,0); px_per_tile art pixels
@@ -187,6 +194,21 @@ class GameRenderer:
         _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap,
                                                    level_data.version)
         self.lighting.set_vacuum_mask(vacuum_mask)
+        # #9 wall-destruction render seam (renderer/tile_art.py): the CPU copy
+        # of the uploaded vacuum mask (patched per changed tile, re-uploaded
+        # only when a drained tile changed it), the drained-but-unapplied tile
+        # patches, and the static art layers' PRISTINE pixels, read back from
+        # the GPU once HERE, at load: on the largest shipped art (playground,
+        # 6400x4480 diffuse + normal) the readback costs ~0.2 s, which would
+        # otherwise be a hitch on the frame the first wall breaks.
+        self._vacuum_mask = np.array(vacuum_mask, dtype=bool, copy=True)
+        self.tile_art = TileArtSeam()
+        self._pending_tile_patches: list = []
+        self._pristine_art: dict = {}
+        for _name in ("diffuse", "normal", "height"):
+            _tex = getattr(self.textures, _name, None)
+            if _tex:
+                self._pristine_pixels(_name, _tex)
         # BC render tint (boundary_conditions_spec_2026-07-19 B5) — RENDER-ONLY,
         # determinism-EXEMPT: it never reads or writes any synced sim field, so
         # it cannot perturb a golden/lockstep. On a planetside `boundary ==
@@ -207,19 +229,19 @@ class GameRenderer:
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
                                           tint=(190, 195, 210), max_alpha=180,
                                           gamma=_LEGACY_SMOKE_GAMMA)
-        self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
-        # God-ray / lit-smoke glow (ch.05): additive shaft from the ray march's
-        # smoke_glow output. LEGACY (pre-B2) path — the new gas medium below
-        # folds occlusion + inscatter into ONE premultiplied layer instead.
+        # God-ray / lit-smoke glow (ch.05): additive shaft from the in-scattered
+        # glow (the sweep's, through LightingPass). LEGACY (pre-B2) path — the
+        # new gas medium below folds occlusion + inscatter into ONE
+        # premultiplied layer instead.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         # Fire & Heat Beauty B2 P2 — the physical gas-medium pass (the heart of
         # B2). ONE premultiplied-over layer per frame: alpha = Beer-Lambert
-        # extinction over the five trace gases (k_s from the SAME GasTable optics
-        # the ray march sums, scaled by the Raycaster's shared smoke_absorb_scale
-        # base × the relative plume_k_scale), RGB = ACES(glow_gain·smoke_glow) —
-        # the ray march's inscatter. Supersedes the flat smoke_overlay + additive
-        # glow_overlay pair (kept behind legacy_smoke_on). RENDER-ONLY: reads
-        # gmap.gas + gmap.smoke_glow, writes only its own texture.
+        # extinction over the five trace gases (k_s IS the light channels' own
+        # GasTable.light_absorb_q16, no render-side scale -- #12 handle 2),
+        # RGB = ACES(glow_gain·glow), the in-scattered glow (the sweep's
+        # light_glow through LightingPass). Supersedes the flat smoke_overlay +
+        # additive glow_overlay pair (kept behind legacy_smoke_on). RENDER-ONLY:
+        # reads gmap.gas + the glow, writes only its own texture.
         self.gas_medium = GasMediumOverlay.from_config(
             cfg.grid_h, cfg.grid_w, CFG)
         # Fire & Heat Beauty B2 P3 — the sub-tile detail shader for the gas
@@ -230,16 +252,31 @@ class GameRenderer:
         # density_proxy, writes only its own textures. sim_dt is the crossfade
         # clock's tick length (the noise rides the sim tick, never wall time).
         self.gas_detail = GasDetailPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # Graphics G1 -- the smoke RELIEF (renderer/gas_relief.py): smoke seen
+        # from above as a lit height field, in the gas medium's slot, in two
+        # species layers (floor haze under the units, ceiling soot above
+        # them). [render.gas_relief] is re-read every frame (Ctrl+R live);
+        # enabled = false falls back to the B2 erosion look above.
+        self.gas_relief = GasReliefPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        # Graphics G5: the light curve editor, None unless
+        # [render.light_curve] panel is on.
+        self.curve_panel = None
+        self._curve_hist = None
+        self._curve_hist_age = 0.0
+        # G2: the smoke cast shadow's inputs this frame (_smoke_cast_inputs)
+        self._smoke_cast = (None, (1.0, 1.0), (0.0, 0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 0.0))
         self._sim_dt = 1.0 / float(getattr(
             getattr(CFG, "clock", None), "ticks_per_second", 24))
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
-        # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
-        # black-body glow over gmap.temperature (engine/06). Built from the
-        # shared black-body primitive ([render.blackbody]) — temperature ->
-        # pseudo-Kelvin -> chroma * T⁴ intensity, ACES tone-mapped. This
-        # supersedes the old 5-stop ramp + temp_display_max knob. RENDER-ONLY —
-        # never mutates the field. Toggled with T (default from
-        # [render] blackbody_overlay_on).
+        # The black-body HEAT LAYER (Fire & Heat Beauty B1): the glow of
+        # every hot tile over gmap.temperature, from the shared black-body
+        # primitive ([render.blackbody]) -- temperature -> pseudo-Kelvin ->
+        # chroma * intensity, ACES-shaped display colour (G0's named
+        # exception, kept by G3 F3's hue gate); drawn by the fire's one
+        # shader in compose_world's display stage. RENDER-ONLY -- never
+        # mutates the field. Toggled with T (default from [render]
+        # blackbody_overlay_on).
         self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
             cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
@@ -250,6 +287,108 @@ class GameRenderer:
         # heat pass on the SAME toggle (show_temperature / T key). Placeholder
         # constants, explicitly provisional (renderer/cold_overlay.py).
         self.cold_overlay = ColdFieldOverlay(cfg.grid_h, cfg.grid_w)
+        # Graphics G3 "Fire", F1 -- the FLAME VFX substrate
+        # (renderer/fire_vfx.py, docs/g3_fire_design_2026-10-23.md): a
+        # render-only 2D fluid per tile column fed by `fire`, the burning
+        # tile's temperature and the frame's ONE tamed wind; whole-map field
+        # RTs, the per-tile source textures, the blackbody GPU LUT, the
+        # active region and the sim-clock substeps; since F3 it DRAWS the
+        # flame and the heat layer (shaders/fire_glow.fs) in the linear
+        # scene, with the A/B law on F3 and its debug views on F11.
+        # [render.fire_vfx] is re-read every frame (Ctrl+R live).
+        from temperature_scale import load as _load_tscale
+        from .fire_vfx_ref import CanonicalScales
+        self.fire_vfx = FireVFXPass.from_config(
+            cfg.grid_h, cfg.grid_w, CFG, self.blackbody_ramp)
+        self._fire_scales = CanonicalScales(tscale=_load_tscale(CFG),
+                                            ramp=self.blackbody_ramp)
+        # Graphics G3 F4a -- EMBERS, the first consumer of THE particle
+        # primitive (renderer/particles.py): spawned on the CPU from the
+        # flame VFX's per-tick sources, riding the frame's one tamed wind +
+        # curl noise on the VFX clock, cooling down the one ramp, drawn as
+        # additive linear-HDR sprites after the flame, under the units.
+        # And HEAT SHIMMER (renderer/heat_shimmer.py), the first term of the
+        # resolve's DISTORTION BLOCK. [render.embers] / [render.shimmer] are
+        # re-read every frame (Ctrl+R live); Shift+F3 / Ctrl+F3 toggle them.
+        from . import particles as _particles
+        from . import heat_shimmer as _shimmer
+        _es = _particles.settings_from_config(CFG)
+        self.embers = _particles.EmberSystem(
+            _es, t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self.ember_draw = _particles.ParticleDraw(_es.cap)
+        self._ember_sprites = None       # this frame's pack (both stages)
+        # Graphics G4 P3 -- SPARKS, the particle primitive's second consumer:
+        # thrown by each "blast" effect from its walk's seeds, riding the
+        # embers' law, drawn in the embers' draw (one sprite array per
+        # stage). [render.sparks] is re-read every frame; `enabled` there is
+        # its only switch.
+        self.sparks = _particles.SparkSystem(
+            _particles.spark_settings_from_config(CFG),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        # Graphics G4 P4 -- DEBRIS, the particle primitive's third consumer:
+        # dark chips thrown by each "blast" effect from its walk's seeds,
+        # dragged by the tamed wind x the tile's gas density, stopped by
+        # ground friction and walls, drawn in the particle draw's
+        # premultiplied "debris" stage. [render.debris] is re-read every
+        # frame; `enabled` there is its only switch.
+        self.debris = _particles.DebrisSystem(
+            _particles.debris_settings_from_config(CFG))
+        # #87 -- THE MUZZLE FLAME (renderer/muzzle_flame.py): a procedural
+        # flame per shot at the barrel's tip, additive linear HDR after the
+        # units, and its sparks, the particle primitive's fourth consumer.
+        # [render.muzzle_flame] is re-read every frame; `enabled` there is
+        # its only switch.
+        from . import muzzle_flame as _mflame
+        self.muzzle_flames = _mflame.MuzzleFlames(
+            _mflame.settings_from_config(CFG))
+        self.muzzle_flame_draw = _mflame.MuzzleFlameDraw()
+        self.muzzle_sparks = _particles.MuzzleSparkSystem(
+            _particles.muzzle_spark_settings(CFG),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self._flame_pack = None          # this frame's pack (both stages)
+        # #141 -- THE TRACERS (renderer/tracers.py): a round in flight as a
+        # glowing streak at its own speed, its afterglow, and the sparks it
+        # throws off a wall. Sprites of the particle draw (their own
+        # instance: drawn after the units, with the muzzle flame).
+        # [render.tracers] is re-read every frame.
+        from . import tracers as _tracers
+        self.tracers = _tracers.Tracers(_tracers.settings_from_config(CFG))
+        self.tracer_draw = _particles.ParticleDraw(64)
+        self.impact_sparks = _particles.MuzzleSparkSystem(
+            _particles.muzzle_spark_settings(CFG, "tracers"),
+            t_amb_k=self._fire_scales.t_amb_k,
+            glow_min_k=self._fire_scales.glow_min_k)
+        self._tracer_sprites = None
+        self._tracer_speeds = _tracers.round_speeds(CFG)
+        self._tracer_solid = None        # the frame's solid mask (read-only)
+        self._flame_t_sim = 0.0          # sim seconds, (tick + alpha) / tps
+        self._flame_tile_m = 1.0
+        self.shimmer = _shimmer.HeatShimmer(
+            cfg.grid_h, cfg.grid_w, _shimmer.settings_from_config(CFG))
+        # Graphics G4 P2 -- the SHOCK FRONT (renderer/shockwave.py), the
+        # distortion block's second term: a ring per detonation ("blast"
+        # effect), riding the canonical Blast reach walk so walls clip it, on
+        # the sim clock. [render.shockwave] is re-read every frame (F5);
+        # `enabled` there is its only switch.
+        from . import shockwave as _shockwave
+        self.shockwave = _shockwave.Shockwave(
+            cfg.grid_h, cfg.grid_w, _shockwave.settings_from_config(CFG))
+        # Graphics G3 F4b -- the fire's ROOM-LIGHT FLICKER
+        # (renderer/fire_flicker.py; design 6.3, RULED D): a per-tick,
+        # per-burning-tile multiplier on the sweep's thermal LIGHT emission,
+        # from the flame's own puffing and a per-tile turbulence on the VFX
+        # clock -- times the fire's light GAIN (G3 adjustment round, design
+        # 17: [render.fire_light] gain, applied with the flicker on or off).
+        # Read by the game's per-tick light assembly (fire_light_rows);
+        # [render.flicker] / [render.fire_light] re-read every frame, Alt+F3
+        # toggles the flicker. Render state: no heat, no digest.
+        from . import fire_flicker as _flicker
+        _fs = _flicker.settings_from_config(CFG)
+        self.fire_flicker = _flicker.FireFlicker(
+            _fs, _flicker.fire_light_from_config(CFG, _fs))
         # Fire & Heat Beauty B2 P4 — dirty-Planck speckle (renderer/speckle.py).
         # A CPU-side, pyray-free field that mottles the black-body overlay's
         # intensity at PACK TIME (the intensity_mod seam) so the flame reads as
@@ -307,18 +446,14 @@ class GameRenderer:
         # old vs new in one session. RENDER-ONLY.
         self.legacy_smoke_on = bool(getattr(
             getattr(CFG, "render", None), "legacy_smoke_on", False))
-        # Fire & Heat Beauty B1 (human-test A/B): the flat-orange FireOverlay is
-        # demoted to default-OFF so the physical black-body overlay (T) is the
-        # blessed look Erik compares against. Toggle F3 on live to A/B. Default
-        # from [render] fire_overlay_on so the shipped default can be set from
-        # config after the feel-check without a code change.
-        self.show_fire = bool(getattr(
-            getattr(CFG, "render", None), "fire_overlay_on", False))
+        # (The legacy flat-orange FireOverlay, B1's F3 A/B, is deleted at
+        # graphics G3 F3: the flame VFX is the fire's look; F3 now cycles the
+        # flame's A/B law, hover_readout still reads `fire`.)
         self.show_lighting = True
         self.show_normal_map = True
         self.normal_y_flipped = False
         self.srgb_decode = True
-        self.show_debug_coords = False
+        self.show_debug_coords = True   # tile-inspector HUD on by default (Erik 2026-09-01, #53); F6 hides
         # Pressure colormap — default from [render] pressure_overlay_on (Fire &
         # Heat Beauty B1, Erik 2026-07-21: OFF by default so it doesn't wash out
         # the fire/heat view; still one keypress away). Toggle with F7.
@@ -334,12 +469,6 @@ class GameRenderer:
         # ramp is the #8 cold-blast instrument, one config flip away).
         self.show_cold = bool(getattr(
             getattr(CFG, "render", None), "cold_overlay_on", False))
-        # Fire light sources (B1 §3) — live A/B gate for the ray-traced fire
-        # glow, seeded from [render.fire_lights] enabled; toggle with L. main.py
-        # skips the fire-light cast when this is off. RENDER-ONLY.
-        self.show_fire_lights = bool(getattr(
-            getattr(getattr(CFG, "render", None), "fire_lights", None),
-            "enabled", True))
         # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
         # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
         # identical whether it's on or off. Toggle with O to disable the water
@@ -348,13 +477,6 @@ class GameRenderer:
 
         # Frame timing
         self.last_frame_ms = 0.0
-        self.last_raycast_ms = 0.0
-        # Fire-light HUD counter (Fire & Heat Beauty B1): kept count, NMS peak
-        # count, and the cap — so a tuning session SEES when the brightest-K cap
-        # truncates (no silent caps). Set each frame from main.py's sources block.
-        self.fire_light_count = 0
-        self.fire_light_peaks = 0
-        self.fire_light_cap = 0
         # Render-animation epoch: the water overlay's ambient sines take a
         # seconds clock; epoch-relative keeps the float32 sine phases small.
         # Wall-clock (animates through pause) — render-only, determinism-
@@ -367,31 +489,36 @@ class GameRenderer:
         # by consume_events, advanced by _advance_effects, drawn by
         # _draw_effects_world.
         self._effects: list = []
+        # The sim tick of the last upload_state: a "blast" effect consumed
+        # without an explicit tick is stamped with it (G4, #75).
+        self._last_sim_tick: int = 0
+        # Graphics G4 P5: the blast flashes on/off (a look shot's `hide =
+        # ["flash"]`; no key). Off = no blast flash light at all.
+        self.blast_flash_on: bool = True
 
-        # S2b render FLOAT BRIDGE scratch: gmap.gas is int32 Q16.16, but the C++
-        # raycaster gas optics are float — dequantize the (N,h,w) planes into this
-        # reused float32 buffer each frame the cast runs (allocated lazily on first
-        # use; resized if the grid shape changes).
-        self._gas_render_f = None
-
-        self.lighting.set_ambient((0.18, 0.18, 0.22))
+        # ray-engine-v2 P6b/P6c: THE LIGHT is the radiation sweep's light
+        # channels, read through the one accessor (simulation.light_field) and
+        # uploaded once per sim tick; the caller (main.py) requests it. (P6b's
+        # F11 A/B against the old render march is gone with the march, P6c.)
+        self._light_serial_seen = None       # the Simulation.light_serial last uploaded
+        self.last_light_ms = 0.0             # the read + pack + upload time
 
         # Unit sprites — loaded once, unloaded in shutdown().
         self.sprites = UnitSprites()
         self.sprites.load()
 
-        # Phase-0 3D marines (render-only, toggle-gated). The 2D sprite path
-        # above is always loaded (the toggle can flip live, and it's the
-        # fallback if the model fails to load). The model + its clips are loaded
-        # ONLY when use_3d_units, so the sprite-only path pays no load cost. The
-        # top-down Camera3D is framed to the world RT once. Per-unit animation
-        # state lives inside UnitModelRenderer (keyed by unit.id) — never on Unit.
+        # 3D units (render-only). The 2D sprite path above is always loaded:
+        # it is the fallback if the model fails to load. The model + its clips
+        # are loaded ONLY when use_3d_units, so a sprite-only caller pays no
+        # load cost. The top-down Camera3D is framed to the world RT once.
+        # Per-unit animation state lives inside UnitModelRenderer (keyed by
+        # unit.id) — never on Unit.
         self.unit_models = UnitModelRenderer()
         # Props & vegetation arc #60 P3 (design §4.3 F2): the top-down
         # Camera3D is built UNCONDITIONALLY now — it is the ONE camera every
-        # 3D-in-world-RT consumer shares (marines when toggled on, props
-        # whenever a level has any), no longer gated on use_3d_units. Only
-        # the (expensive) rigged-model LOAD stays behind the toggle.
+        # 3D-in-world-RT consumer shares (units, and props whenever a level
+        # has any), no longer gated on use_3d_units. Only the (expensive)
+        # rigged-model LOAD stays behind the flag.
         self._world_cam3d = UnitModelRenderer.make_camera(
             self.world.world_px_w, self.world.world_px_h)
         if self.cfg.use_3d_units:
@@ -430,66 +557,71 @@ class GameRenderer:
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
-    def upload_state(self, gmap, light_sources: Optional[List] = None,
-                     sim_tick: int = 0) -> None:
-        t_start = time.perf_counter()
+    def upload_state(self, gmap, sim_tick: int = 0,
+                     light_serial: Optional[int] = None, *,
+                     alpha: Optional[float] = None,
+                     paused: bool = False) -> None:
+        """Read the sim into the render layers (dequantize at the render
+        read; nothing is written back).
 
-        # Light field. Occlusion is the per-channel DYNAMIC attenuation field
-        # (ch.03 §units, ch.02 §static×dynamic): pass `gmap.dyn_light_atten`
-        # (h, w, 3) = static material attenuation MAX'd with stamped-unit
-        # opacity, rebuilt each tick in `stamp_units`. Opaque walls/units
-        # ([1,1,1]) block exactly like the old wall hard-stop; glass transmits.
-        # Away from units it equals the static field, so behaviour matches S2;
-        # over a unit footprint it restores the pre-S2 unit shadow.
-        if self.show_lighting and light_sources:
-            t_ray = time.perf_counter()
-            # Pass gmap.heat (Q16.16 deposit) and gmap.smoke_glow (god-ray
-            # glow) so the march writes both Slice-4 outputs in-place. The cast
-            # still lives here in the renderer; it moves into the sim in S5.
-            # Multi-gas coloured optics (engine/05 §6.2): pass the full (N,h,w)
-            # gas array + the per-gas absorption/scatter tables so the march sums
-            # all gases density-weighted per channel (poison greens the beam,
-            # smoke dims it, mixing falls out of the sum). `gmap.smoke` is
-            # just the smoke slice of `gmap.gas`.
-            # S2b: gmap.gas is int32 Q16.16 — DEQUANTIZE the (N,h,w) array to
-            # float32 density for the render cast (the C++ raycaster's gas optics
-            # are float; render-only FLOAT BRIDGE, one source of truth = the int
-            # field). Reused scratch to avoid a per-frame alloc.
-            from simulation import gas_fixed
-            if (self._gas_render_f is None
-                    or self._gas_render_f.shape != gmap.gas.shape):
-                self._gas_render_f = np.empty(gmap.gas.shape, dtype=np.float32)
-            np.multiply(gmap.gas, 1.0 / gas_fixed.FP_ONE_F,
-                        out=self._gas_render_f, casting="unsafe")
-            self.lighting.compute_light_field(
-                light_sources, self._gas_render_f,
-                gmap.gases.absorption, gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                heat=gmap.heat, smoke_glow=gmap.smoke_glow,
-                heat_atten=gmap.heat_atten,
-            )
-            self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
+        ``alpha`` (graphics G3, design §13.3) is the sub-tick fraction of the
+        caller's tick accumulator (``tick_accum / sim_time_per_tick``): the
+        flame VFX's clock is ``(sim_tick + alpha) / tps``, clamped to [0, 1)
+        there and never stepping back. ``paused`` is whether the sim clock is
+        stopped this frame (the flame then idles on wall time when
+        ``[render.fire_vfx] idle_when_paused``). Both are pure reads of the
+        caller's loop state: no sim state, no determinism."""
+        t_start = time.perf_counter()
+        self._last_sim_tick = int(sim_tick)
+
+        # #9: THE topology -> render seam. Drain the tiles every topology
+        # writer marked (GameMap.on_tile_changed) into patches, read from the
+        # tiles' state now; compose_world applies them. One path, every cause.
+        self._pending_tile_patches.extend(self.tile_art.consume(gmap))
+
+        # ray-engine-v2 P6b/P6c: THE LIGHT FIELD is the radiation sweep's, read
+        # through the ONE accessor (simulation.light_field) and uploaded only
+        # when it changed (`light_serial`: a light-carrying tick or a relight --
+        # once per sim tick; None re-reads every frame). The ship shader, the 3D
+        # units and the water pass read the textures. No producer is called here.
+        if self.show_lighting:
+            if light_serial is None or light_serial != self._light_serial_seen:
+                from simulation import light_field
+                t_l = time.perf_counter()
+                self.lighting.consume_light_view(light_field.read_light(gmap))
+                self._light_serial_seen = light_serial
+                self.last_light_ms = (time.perf_counter() - t_l) * 1000
         else:
-            self.lighting.light_rgb.fill(0)
-            self.lighting.light_map.fill(0)
-            self.lighting.light_dx.fill(0)
-            self.lighting.light_dy.fill(0)
-            self.lighting.packed_a.fill(0)
-            self.lighting.packed_b.fill(0)
-            # No cast this frame -> no deposits. Clear the glow so a stale shaft
-            # doesn't linger (heat is sim-owned; left to the sim's cleanup).
-            gmap.smoke_glow.fill(0)
-            core.update_rgba16f_texture(self.lighting.light_tex_a,
-                                        self.lighting.packed_a)
-            core.update_rgba16f_texture(self.lighting.light_tex_b,
-                                        self.lighting.packed_b)
-            self.last_raycast_ms = 0.0
+            self.lighting.clear_light()
+            self._light_serial_seen = None    # re-read when the light returns
+
+        # The in-scattered GLOW the smoke medium draws: the sweep's light_glow,
+        # through the accessor, calibrated by LightingPass.
+        glow_field = self.lighting.glow_rgb
+
+        # THE TAMED WIND of this frame (gas_detail.tame_wind, THE wind seam;
+        # graphics G3 design §13.13): computed ONCE, with the relief's dials,
+        # the first time a consumer asks -- the relief, the props' sway, the
+        # flame VFX -- and every consumer takes this one array. Never a
+        # second tame_wind call with other dials. Nobody asks -> not computed.
+        tps = 1.0 / self._sim_dt
+        _wind = []
+
+        def frame_tamed_wind():
+            if not _wind:
+                gd = self.gas_detail
+                _wind.append(tame_wind(gmap.wind_x, gmap.wind_y,
+                                       tile_size_m=gmap.tile_size_m,
+                                       ticks_per_second=tps,
+                                       v_ref=gd.wind_v_ref,
+                                       v_sens=gd.wind_v_sens))
+            return _wind[0]
 
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
         # glow_overlay pair with ONE premultiplied-over layer — alpha = Beer-
         # Lambert occlusion over the five trace gases, RGB = ACES-tone-mapped
-        # inscatter (gmap.smoke_glow). The legacy pair is kept behind
+        # inscatter (the glow above). The legacy pair is kept behind
         # legacy_smoke_on for the live A/B (F9). Only the ACTIVE path's texture
         # is refreshed; a toggle shows the other path on the next frame.
         if self.show_smoke:
@@ -497,40 +629,60 @@ class GameRenderer:
             # the render overlays (render-only FLOAT BRIDGE; one source of truth
             # = the int field). Recomputed each frame so the overlay is correct
             # even when show_lighting (hence the cast) is off.
-            from simulation import gas_fixed
-            from simulation.gases import N_TRACE_GASES
+            from simulation.gases import SMOKE as _SMOKE
+            self.gas_relief.refresh_settings(CFG)
             if self.legacy_smoke_on:
-                self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
-                self.glow_overlay.update(gmap.smoke_glow)
+                self.smoke_overlay.update(_trace_floats(gmap)[_SMOKE])
+                self.glow_overlay.update(glow_field)
+            elif self.gas_relief.enabled:
+                # G1 relief: both species groups' tile inputs, the TAMED wind
+                # (gas_detail.tame_wind, THE wind seam) and the temperature
+                # for the boil clock. The B2 medium texture is not packed:
+                # nothing draws it while the relief is on.
+                trace = _trace_floats(gmap)
+                gm, gd = self.gas_medium, self.gas_detail
+                tamed = frame_tamed_wind()
+                from .blackbody import TEMP_SCALE
+                self.gas_relief.update(
+                    trace, glow_field, gmap.gases, tamed,
+                    np.asarray(gmap.temperature, dtype=np.float32) / TEMP_SCALE,
+                    self.lighting.light_rgb,
+                    sim_tick=int(sim_tick), ticks_per_second=tps,
+                    cycle_seconds=gd.cycle_seconds, adv_gain=gd.adv_gain,
+                    tau_curve_a=gm.tau_curve_a, tau_curve_b=gm.tau_curve_b,
+                    glow_gain=gm.glow_gain,
+                    effect_gas_floor=gm.effect_gas_floor,
+                    heat_brightness=self._heat_brightness(gmap))
             else:
                 # k_s (per-gas mean extinction) is read from gmap.gases — the
-                # SAME optics table the ray march sums — and scaled by the
-                # Raycaster's smoke_absorb_scale (the shared base), so plume body
-                # and god-rays track by construction (single source of scale).
-                trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
-                self.gas_medium.update(
-                    trace, gmap.smoke_glow, gmap.gases,
-                    base_absorb_scale=float(self.raycaster.smoke_absorb_scale))
-                # P3 detail: upload the TAMED wind (raw -grad(P) is fire-spiked +
-                # unusable as a velocity — see gas_detail.py) + the P2 density
-                # solidity, and advance the crossfade phase on the SIM clock
-                # (sim_tick, never wall time — replays render identically). Only
-                # when the pass is enabled (else the plain P2 layer draws).
+                # SAME optics table the light channels use — and scaled by
+                # [smoke] smoke_absorb_scale (the shared base, held by the
+                # overlay), so plume body and god-rays track by construction
+                # (single source of scale).
+                trace = _trace_floats(gmap)
+                self.gas_medium.update(trace, glow_field, gmap.gases)
+                # P3 detail: upload the TAMED wind (the m/s velocity planes on
+                # the honest tiles/tick scale, smoothed + saturated — see
+                # gas_detail.py, #51) + the P2 density solidity, and advance the
+                # crossfade phase on the SIM clock (sim_tick, never wall time —
+                # replays render identically). Only when the pass is enabled
+                # (else the plain P2 layer draws).
                 if self.gas_detail.enabled:
                     self.gas_detail.update(
                         self.gas_medium.density_proxy, gmap.wind_x, gmap.wind_y,
-                        sim_tick=int(sim_tick), sim_dt=self._sim_dt)
+                        sim_tick=int(sim_tick), sim_dt=self._sim_dt,
+                        tile_size_m=gmap.tile_size_m)
         # Props & vegetation arc #60 P4 — WIND SWAY input. The TAMED wind
         # (gas_detail.tame_wind: smooth -> direction -> saturating speed) is
         # the ONE render-side wind product; props sample it per prop at draw
-        # time. Raw gmap.wind_x/y is fire-spiked -grad(P) and never reaches a
-        # prop. Computed here because upload_state is where the renderer reads
+        # time. Raw gmap.wind_x/y (m/s, spiked at blast/fire cells) never
+        # reaches a prop. Taken here because upload_state is where the renderer reads
         # the sim (dequantize-at-the-render-read; nothing is written back), and
-        # ONLY when the level actually placed props — the smoke path keeps its
-        # own call inside GasDetailPass.update, so a prop-free ship is exactly
-        # as expensive as it was before this patch.
+        # ONLY when the level actually placed props. G3 §13.13: it is the
+        # frame's ONE tamed wind (the relief's dials, which equal the props'
+        # former default dials), not a second call.
         if self._props_seen and self.prop_renderer.ready:
-            self._prop_wind = tame_wind(gmap.wind_x, gmap.wind_y)
+            self._prop_wind = frame_tamed_wind()
             self._prop_clock_s = float(sim_tick) * self._sim_dt
             # P4r2 (Erik's vented-room ruling 2026-09-07): sway is a momentum
             # flux, not a velocity — an evacuated room's fast residual gas
@@ -542,25 +694,175 @@ class GameRenderer:
             self._prop_gas_bulk_fn = gmap.gas_bulk_n_at
             self._prop_n_ambient_q = float(gmap.ambient_seed()[0])
 
-        # Fire still gets the vacuum mask: combustion requires oxygen, so
-        # fire physically cannot exist in vacuum. Keep this until the fire
-        # sim is taught to extinguish at vacuum tiles directly.
-        if self.show_fire:
-            # S3a: gmap.fire is int32 Q16.16 — dequantize to real [0,1] for the
-            # overlay (render-only boundary).
+        # Graphics G3 F1 -- the flame VFX substrate: clock, per-tick sources,
+        # active region, uploads and this frame's pass plan (CPU). The
+        # passes run in compose_world, before the scene RT is bound.
+        # RENDER-ONLY: every sim array goes in through a writeable=False view
+        # of a dequantized copy or of the mask itself.
+        self.fire_vfx.refresh_settings(CFG)
+        if self.fire_vfx.enabled:
             from simulation import fire_fixed
-            fire_real = fire_fixed.dequantize_f32(gmap.fire)
-            fire_view = np.where(gmap.is_vacuum, 0.0, fire_real)
-            self.fire_overlay.update(fire_view)
+            from .blackbody import TEMP_SCALE
+            self.fire_vfx.upload_lut(self.blackbody_ramp)
+            self.fire_vfx.update(
+                fire=fire_fixed.dequantize_f32(gmap.fire),
+                t_game=np.asarray(gmap.temperature, dtype=np.float32)
+                / TEMP_SCALE,
+                solid=gmap.solid, flammable=gmap.flammable,
+                vacuum=gmap.is_vacuum, wind_fn=frame_tamed_wind,
+                sim_tick=int(sim_tick), alpha=alpha, paused=bool(paused),
+                tps=tps, tile_size_m=gmap.tile_size_m,
+                scales=self._fire_scales)
+        # Graphics G3 F4a -- the embers step on the flame's VFX clock and
+        # spawn from its current per-tick sources (CPU, never a GPU
+        # readback); no fire -> no source -> no ember.
+        from . import particles as _particles
+        self.embers.refresh_settings(_particles.settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.embers.p.clear()            # no VFX clock, no sources
+        else:
+            pack = self.fire_vfx.pack
+            d = self.fire_vfx.settings.dials
+            self.embers.update(
+                t=self.fire_vfx.clock.t_noise,
+                sources=pack.sources if pack is not None else None,
+                origin=((pack.window[1], pack.window[0])
+                        if pack is not None else (0, 0)),
+                s0=d.s0, strip_frac=d.strip_frac, wind_fn=frame_tamed_wind,
+                tps=tps, blocked=self._ember_blocked(gmap))
+        # Graphics G4 P3 -- the sparks: each new "blast" effect is consumed
+        # once ("sparks_seen") and throws its sparks from the canonical walk's
+        # seeds over the open mask; they step on the same VFX clock, ride the
+        # same tamed wind and curl field, and die in the same walls.
+        self.sparks.refresh_settings(
+            _particles.spark_settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.sparks.p.clear()            # no VFX clock
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["sparks_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_s, walk_seeds as _walk_seeds)
+            _mask_cache = []
+
+            def _spark_seeds(fy, fx, approach):
+                if not _mask_cache:
+                    _mask_cache.append(np.asarray(_open_mask_s(gmap), bool))
+                return _walk_seeds(_mask_cache[0], fy, fx, approach)
+
+            self.sparks.update(
+                t=self.fire_vfx.clock.t_noise, effects=self._effects,
+                seeds_fn=_spark_seeds, sim_tick=int(sim_tick),
+                wind_fn=frame_tamed_wind, tps=tps,
+                blocked=self._ember_blocked(gmap),
+                modes=self.embers.modes())
+        # #87 -- the muzzle flame's clock (the SIM clock: a paused game
+        # holds a flash) and its sparks, queued by last frame's new flashes
+        # (compose_world), stepping with the blast sparks.
+        from . import muzzle_flame as _mflame
+        self.muzzle_flames.refresh_settings(_mflame.settings_from_config(CFG))
+        self._flame_t_sim = (int(sim_tick) + min(max(float(alpha or 0.0), 0.0),
+                                                  1.0)) / tps
+        self._flame_tile_m = float(gmap.tile_size_m)
+        self.muzzle_sparks.refresh_settings(
+            _particles.muzzle_spark_settings(CFG))
+        # #141 -- the tracers' settings and what a round can stop on, and
+        # the impact sparks, queued by last frame's arrivals
+        from . import tracers as _tracers
+        self.tracers.refresh_settings(_tracers.settings_from_config(CFG))
+        self._tracer_speeds = _tracers.round_speeds(CFG)
+        self._tracer_solid = gmap.solid
+        self.impact_sparks.refresh_settings(
+            _particles.muzzle_spark_settings(CFG, "tracers"))
+        for _sys in (self.muzzle_sparks, self.impact_sparks):
+            if not self.fire_vfx.enabled:
+                _sys.p.clear()               # no VFX clock
+                _sys.consume((), None, int(sim_tick))
+            else:
+                _sys.update(
+                    t=self.fire_vfx.clock.t_noise, effects=(), seeds_fn=None,
+                    sim_tick=int(sim_tick), wind_fn=frame_tamed_wind, tps=tps,
+                    blocked=self._ember_blocked(gmap),
+                    modes=self.embers.modes())
+        # Graphics G4 P4 -- the debris: each new "blast" effect is consumed
+        # once ("debris_seen"); the chips are born at the same walk's seeds,
+        # step on the same VFX clock, ride the same tamed wind scaled by the
+        # tile's gas density (the prop sway's read, static_props
+        # .gas_frac_at_tiles: 0 in vacuum) and stop at walls.
+        self.debris.refresh_settings(
+            _particles.debris_settings_from_config(CFG))
+        if not self.fire_vfx.enabled:
+            self.debris.p.clear()            # no VFX clock
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["debris_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_d, walk_seeds as _walk_seeds_d)
+            from .static_props import gas_frac_at_tiles as _gas_frac
+            _dmask = []
+
+            def _debris_seeds(fy, fx, approach):
+                if not _dmask:
+                    _dmask.append(np.asarray(_open_mask_d(gmap), bool))
+                return _walk_seeds_d(_dmask[0], fy, fx, approach)
+
+            _n_amb = float(gmap.ambient_seed()[0])
+
+            def _debris_density(iy, ix):
+                return _gas_frac(gmap.gas_bulk_n_at, _n_amb, iy, ix)
+
+            self.debris.update(
+                t=self.fire_vfx.clock.t_noise, effects=self._effects,
+                seeds_fn=_debris_seeds, sim_tick=int(sim_tick),
+                wind_fn=frame_tamed_wind, tps=tps,
+                density_fn=_debris_density,
+                blocked=self._ember_blocked(gmap))
+        # Graphics G3 F4b -- the room-light flicker's dials and the fire's
+        # light gain (their rows are computed per sim tick by
+        # fire_light_rows, not per frame).
+        from . import fire_flicker as _flicker
+        _fs = _flicker.settings_from_config(CFG)
+        self.fire_flicker.refresh_settings(
+            _fs, _flicker.fire_light_from_config(CFG, _fs))
+        # ... and the heat shimmer's per-tile hot-gas strength + the wind it
+        # is advected by (re-packed only when the temperature changed).
+        from . import heat_shimmer as _shimmer
+        self.shimmer.refresh_settings(_shimmer.settings_from_config(CFG))
+        if self.shimmer.enabled:
+            from .blackbody import TEMP_SCALE
+            t_game = fire_vfx_read_only(gmap.temperature)
+            self.shimmer.update(
+                t_kelvin_fn=lambda: self._fire_scales.to_kelvin(
+                    np.asarray(t_game, dtype=np.float64) / TEMP_SCALE),
+                t_game=t_game, solid=gmap.solid, vacuum=gmap.is_vacuum,
+                wind_fn=frame_tamed_wind, tps=tps,
+                t_noise=self.fire_vfx.clock.t_noise,
+                zoom_px_per_tile=self.camera.zoom_px_per_tile,
+                sim_tick=int(sim_tick), paused=bool(paused))
+        # ... and the shock front: a ring for each new "blast" effect (its
+        # distance plane from the canonical walk over the open mask), aged on
+        # the sim clock (tick + alpha) / tps, held while paused.
+        from . import shockwave as _shockwave
+        self.shockwave.refresh_settings(_shockwave.settings_from_config(CFG))
+        from simulation.blast_expansion import open_mask as _open_mask
+        self.shockwave.update(
+            effects=self._effects, mask_fn=lambda: _open_mask(gmap),
+            sim_tick=int(sim_tick), alpha=alpha, paused=bool(paused),
+            tps=tps, zoom_px_per_tile=self.camera.zoom_px_per_tile)
+
         # Pressure colormap: refresh the per-tile texture from the current
         # atmosphere + wave_p fields. Skipped when toggled off to save the
         # numpy work.
         if self.show_pressure:
             self.pressure_overlay.update(gmap)
-        # Debug temperature overlay: refresh the black-body texture from the
-        # Q16.16 temperature field. Skipped when toggled off to save the work.
+        # The heat layer: refresh its texture from the Q16.16 temperature
+        # field (and its below-the-smoke share from _heat_brightness, once
+        # per sim tick). Skipped when toggled off.
         # Render-only — gmap.temperature is read, never written.
         if self.show_temperature:
+            self._heat_brightness(gmap)
             # Fire & Heat Beauty B2 P4 — dirty-Planck speckle. Modulate the
             # black-body intensity at PACK TIME with the moving mottle. In `soot`
             # mode the amplitude is seeded by the REAL local soot density (smoke,
@@ -571,10 +873,9 @@ class GameRenderer:
             # dequantized into fresh float copies, never written.
             speckle_mod = None
             if self.speckle.mode != "off":
-                from simulation import gas_fixed
                 from simulation.gases import SMOKE, STEAM
-                soot = gas_fixed.dequantize_f32(gmap.gas[SMOKE])
-                steam = gas_fixed.dequantize_f32(gmap.gas[STEAM])
+                trace = _trace_floats(gmap)
+                soot, steam = trace[SMOKE], trace[STEAM]
                 speckle_mod = self.speckle.modulation(
                     soot, steam, sim_tick=int(sim_tick))
             self.temperature_overlay.update(gmap.temperature, speckle_mod)
@@ -643,13 +944,41 @@ class GameRenderer:
                       current_phase: int = 0,
                       doors: Sequence = (),
                       props: Sequence = (),
-                      overlay_fn=None) -> None:
-        """Draw every world-space layer into the world RT.
+                      overlay_fn=None,
+                      charges: Sequence = (),
+                      charge_tick: int = 0) -> None:
+        """Draw every world-space layer into the world render targets.
 
-        Order: lit ship (diffuse + normal + light), smoke, fire, units,
-        projectiles, waypoints, visual effects, grid. Each is drawn at
-        world-pixel coordinates inside the RT — no camera math; the RT
-        IS the world.
+        Two stages (graphics arc G0 P1, renderer/world_composite.py):
+
+        * (graphics G2) first, outside the scene RT: the smoke relief's CAST
+          PRODUCT (both species layers' occlusion + height), read below by
+          the floor and the 3D pass (the smoke's cast shadow) and by the
+          heat layer (glow-through).
+        * SCENE -- linear HDR into the RGBA16F scene RT, bottom to top: lit
+          ship (diffuse + normal + light, shadowed by the smoke), the water
+          (the floor's surface), the FLOOR smoke layer (steam, teargas,
+          poison: haze lying on the floor and the water), the FLAME (G3 F3,
+          an emitter cover), the 3D units + props (+ their projected
+          shadows) in one shared 3D pass, the CEILING smoke layer (soot,
+          above the units), the flame's COMPENSATION (the soot hides it by
+          glow_through_ceiling only). No layer here tone-maps or encodes.
+        * ``world.resolve()`` -- the ONE ACES + gamma encode + dither, into
+          the RGBA8 display RT.
+        * DISPLAY -- authored display-sRGB colours, blended in display space:
+          the debug/legacy colormaps (legacy smoke + glow, pressure,
+          cold), the black-body HEAT layer (G0's named
+          display-space exception, kept by G3 F3's hue gate; drawn THROUGH
+          the smoke over it (G2) and under the flame's cover (G3), so it
+          sits above the ceiling soot but only glows through where the soot
+          is thin), the dev doors, waypoints, sprite units
+          (the 2D fallback), projectiles, effects, the grid, then
+          ``overlay_fn``.
+          These sit ABOVE the 3D units now (before G0, doors, waypoints and
+          the debug maps were drawn under them).
+
+        Each is drawn at world-pixel coordinates inside the RT — no camera
+        math; the RT IS the world.
 
         Clear color is fully transparent so vacuum/breach areas (where the
         shader discards) show through to the screen-fixed background.
@@ -666,7 +995,40 @@ class GameRenderer:
         ``renderer.static_props.placements_from_entities(sim.entities, ...)``.
         Drawn in the SAME shared 3D pass as the units (one batch flush, one
         depth buffer); zero cost when empty.
+
+        ``charges`` (#193) is the sim's ``planted_charges`` (read-only) and
+        ``charge_tick`` the sim tick: each live charge with a timer is drawn
+        as a blinking floor marker with its seconds left (display stage,
+        beside the doors).
+
+        ``overlay_fn(world_px_per_tile)`` draws in the DISPLAY stage: it is
+        for UI in authored colours. Lit 3D geometry goes in through
+        ``props`` (it must reach the scene RT, before the tone-map).
         """
+        # #9: re-blit the tiles whose topology changed (drained in
+        # upload_state) before the lit ship samples the art.
+        if self._pending_tile_patches:
+            self._apply_tile_patches()
+
+        # Graphics G5: this frame's light curve, for the floor and the 3D pass.
+        self.lighting.set_light_curve(self._frame_light_curve())
+
+        # 0. Graphics G2: the relief's CAST PRODUCT (occlusion + height per
+        # texel, both species layers), rendered into its own target BEFORE the
+        # scene RT is bound; the floor, the 3D units and props (the smoke's
+        # cast shadow) and the heat layer (glow-through) read it below.
+        relief_on = (self.show_smoke and not self.legacy_smoke_on
+                     and self.gas_relief.enabled)
+        # Graphics G3 F1: the flame VFX's substeps (its own targets, so
+        # outside the scene RT too). No fire -> no passes.
+        if self.fire_vfx.enabled:
+            self.fire_vfx.simulate()
+        self.gas_relief.render_product(self.lighting, relief_on,
+                                       tile_rect=self._relief_view_rect())
+        self._smoke_cast = self._smoke_cast_inputs(relief_on)
+        self.lighting.set_smoke_shadow(*self._smoke_cast)
+
+        # ================= SCENE: linear HDR (RGBA16F) =================
         self.world.begin(clear_color=(0, 0, 0, 0))
 
         # 1. Lit ship — covers the entire world RT
@@ -678,44 +1040,133 @@ class GameRenderer:
                 world_px_h=self.world.world_px_h,
             )
 
-        # 2. Smoke + fire overlays — stretched to world RT bounds.
-        # Smoke is packed with PREMULTIPLIED alpha (see FieldOverlay.update),
-        # so we draw it with BLEND_ALPHA_PREMULTIPLY for correct Porter-Duff
-        # compositing — preserves the destination alpha (ship stays opaque)
-        # instead of Raylib's default BLEND_ALPHA which reduces dest alpha
-        # when src alpha < 1.
-        if self.show_smoke:
-            if self.legacy_smoke_on:
-                # LEGACY (pre-B2) A/B path: flat premultiplied smoke + a separate
-                # additive god-ray glow. Two draws, two blend modes.
-                rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
-                self._draw_overlay_to_world(self.smoke_overlay.tex)
-                rl.end_blend_mode()
-                # GlowOverlay.draw sets its own RGB-only additive blend (dstA is
-                # never written, else vacuum tiles saturate opaque under the
-                # premultiplied blit — overlays._begin_additive_rgb_only_blend).
-                self.glow_overlay.draw(
+        # 2. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
+        # Fresnel/GGX/refraction pass, ON the floor, under the floor haze and
+        # the units (G2: the water is the floor's surface, the haze lies on
+        # it; the lit ship beneath is the floor sample). It binds the
+        # lighting pass's light textures + the level diffuse and draws
+        # premultiplied, linear; the shader emits alpha 0 on dry tiles so
+        # this is a no-op with no standing water (dormant-safe).
+        # Off-by-toggle (V).
+        if self.show_water and self.textures.diffuse:
+            self.water_pass.draw(
+                self.textures.diffuse,
+                self.lighting.light_tex_a, self.lighting.light_tex_b,
+                world_px_w=self.world.world_px_w,
+                world_px_h=self.world.world_px_h,
+                anim_t=time.perf_counter() - self._anim_t0)
+        # 3. B2 physical gas medium: ONE premult-over layer (C = inscatter +
+        # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
+        # composite in a single BLEND_ALPHA_PREMULTIPLY draw — no double-
+        # count, and the real per-tile alpha leaves vacuum tiles untouched (no
+        # additive alpha-saturation hazard). P3: when the detail shader is
+        # enabled the layer is drawn THROUGH it (bicubic + advected-noise
+        # wisps), same premult blend; enabled=false bypasses the shader for the
+        # plain P2 draw. Both own their blend. (The LEGACY smoke A/B path is a
+        # display-referred grey and draws after the resolve, below.)
+        if relief_on:
+            # G1: the FLOOR species layer (steam, teargas, poison, fuel
+            # vapour) -- on the water (G2), below the units, so marines wade
+            # in it.
+            self.gas_relief.draw("floor", self.lighting,
+                                 self.world.world_px_w, self.world.world_px_h,
+                                 tile_rect=self._relief_view_rect())
+        elif self.show_smoke and not self.legacy_smoke_on:
+            if self.gas_detail.enabled:
+                self.gas_detail.draw(
+                    self.gas_medium.tex,
                     0, 0, self.world.world_px_w, self.world.world_px_h)
             else:
-                # B2 physical gas medium: ONE premult-over layer (C = inscatter +
-                # T·bg). Occlusion (alpha) and inscatter (RGB) composite in a
-                # single BLEND_ALPHA_PREMULTIPLY draw — no double-count, and the
-                # real per-tile alpha leaves vacuum tiles untouched (no additive
-                # alpha-saturation hazard). P3: when the detail shader is enabled
-                # the layer is drawn THROUGH it (bicubic + advected-noise wisps),
-                # same premult blend; enabled=false bypasses the shader for the
-                # plain P2 draw (byte-for-byte the P2 look). Both own their blend.
-                if self.gas_detail.enabled:
-                    self.gas_detail.draw(
-                        self.gas_medium.tex,
-                        0, 0, self.world.world_px_w, self.world.world_px_h)
-                else:
-                    self.gas_medium.draw(
-                        0, 0, self.world.world_px_w, self.world.world_px_h)
-        if self.show_fire:
-            rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
-            self._draw_overlay_to_world(self.fire_overlay.tex)
+                self.gas_medium.draw(
+                    0, 0, self.world.world_px_w, self.world.world_px_h)
+        # 3b. Graphics G4 P4 -- DEBRIS: the particle draw's premultiplied
+        # "debris" stage, chips lit by the light field (the props' read),
+        # lying on the floor: after the floor smoke group, under the flame,
+        # the units and the ceiling soot. No chip, no draw.
+        self._draw_debris(self._relief_view_rect())
+        # 4. Graphics G3 F3 -- the FLAME (shaders/fire_glow.fs through
+        # fire_vfx.draw_glow), in the linear scene as an emitter cover with
+        # opacity tied to its emission (design §3.5, §13.4), UNDER the units
+        # and the ceiling soot (§13.7). Drawn on its active boxes ∩ the view
+        # only; no fire -> no draw.
+        view = self._relief_view_rect()
+        fx = self.fire_vfx
+        fx.glow_draws_last_frame = 0
+        from .fire_vfx import clip_rects
+        from .gas_relief import glow_through_weights
+        gt = glow_through_weights(self.gas_relief.settings,
+                                  self._smoke_cast[0] is not None)
+        glow_kw = dict(world_px_w=self.world.world_px_w,
+                       world_px_h=self.world.world_px_h,
+                       heat=self.temperature_overlay,
+                       smoke_cast=self._smoke_cast, glow_through=gt)
+        flame_rects = fx.flame_rects(view)
+        fx.draw_glow("flame", flame_rects, **glow_kw)
+        # 4b. Graphics G3 F4a -- EMBERS (THE particle primitive): additive
+        # linear-HDR sparks over the flame, under the units, clipped to the
+        # view; coloured only through the blackbody GPU LUT. No ember, no
+        # draw. (G4 P3: the SPARKS ride the same draw, one sprite array.)
+        self._draw_embers(view)
+        # 5. 3D units + props (+ projected shadows): the shared 3D pass --
+        # ABOVE the flame.
+        self.unit_models.muzzle_poses.clear()    # #87: this frame's barrels
+        drew_units_3d = self._draw_units_3d_world(units_marines, units_zombies,
+                                                  props)
+        # 5b. #87 -- THE MUZZLE FLAME: additive linear HDR at each firing
+        # unit's barrel tip (the pose the 3D pass just drew its gun at), OVER
+        # the units (it is at gun height), under the ceiling soot. No flash,
+        # no draw.
+        self._draw_muzzle_flames(view, units_marines, units_zombies)
+        # 5c. #141 -- THE TRACERS: the rounds in flight, the same layer
+        self._draw_tracers(view, units_marines, units_zombies)
+        # 6. G1: the CEILING species layer (hot soot) -- ABOVE the units and
+        # props (Erik's ruling 2, 2026-10-18), still in the linear scene.
+        if relief_on:
+            self.gas_relief.draw("ceiling", self.lighting,
+                                 self.world.world_px_w, self.world.world_px_h,
+                                 tile_rect=self._relief_view_rect())
+            # 7. COMPENSATION (§13.7): the soot just hid the flame below it
+            # by its full alpha; add back alpha_ceil * (1 -
+            # glow_through_ceiling) of it, so the net occlusion is Erik's
+            # glow_through_ceiling (0.2) -- a fire never goes dark under its
+            # own smoke.
+            if gt[0] < 1.0 and self._smoke_cast[0] is not None:
+                fx.draw_glow("compensation", flame_rects, **glow_kw)
+                # ... and the embers' own compensation (G3 F4a): their net
+                # occlusion under the soot is the flame's, Erik's 0.2
+                self._draw_embers(view, stage="compensation",
+                                  glow_through_ceil=gt[0])
+                # ... and the muzzle flames' (#87), the same rule
+                self._draw_muzzle_flames(view, stage="compensation",
+                                         glow_through_ceil=gt[0])
+                self._draw_tracers(view, stage="compensation",
+                                   glow_through_ceil=gt[0])
+
+        # ======= the ONE tone-map: ACES + encode + dither (resolve) =======
+        # (G3 F4a: with the heat SHIMMER, the first term of the resolve's
+        # distortion block, and G4 P2's SHOCK FRONT, its second -- never a
+        # second pass over the scene.)
+        self.world.resolve(encode_srgb=self.lighting.srgb_decode,
+                           shimmer=self.shimmer, shock=self.shockwave)
+
+        # ============ DISPLAY: authored sRGB colours (RGBA8) ============
+        # 6. Debug / legacy colormaps. Their colours are display values (a
+        # flat grey smoke, a red-blue pressure ramp), so they blend over the
+        # tone-mapped picture exactly as they did over the old 8-bit world.
+        if self.show_smoke and self.legacy_smoke_on:
+            # LEGACY (pre-B2) A/B path: flat premultiplied smoke + a separate
+            # additive god-ray glow. Two draws, two blend modes. Smoke is packed
+            # PREMULTIPLIED (FieldOverlay.update), drawn with
+            # BLEND_ALPHA_PREMULTIPLY so the ship's destination alpha stays
+            # opaque.
+            rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+            self._draw_overlay_to_world(self.smoke_overlay.tex)
             rl.end_blend_mode()
+            # GlowOverlay.draw sets its own RGB-only additive blend (dstA is
+            # never written, else vacuum tiles saturate opaque under the
+            # premultiplied blit — overlays._begin_additive_rgb_only_blend).
+            self.glow_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
         # Pressure colormap (white shockwave + coloured radiating bands at
         # explosions). Off-by-toggle F7. The overlay was updated in
         # upload_state alongside smoke/fire to keep all per-frame work in
@@ -724,47 +1175,51 @@ class GameRenderer:
             self.pressure_overlay.draw_into_world_rt(
                 self.world.world_px_w, self.world.world_px_h
             )
-        # Debug temperature overlay (engine/06): additive black-body ramp over
-        # gmap.temperature. Drawn AFTER the field overlays but BEFORE units so
-        # units stay readable on top of the heat glow. Off-by-toggle (T).
-        if self.show_temperature:
-            # Cold tier FIRST (P-W2, D-7): alpha-blended UNDER the additive
-            # heat pass, same toggle. T_rel is never both cold and hot at once
-            # per pixel, so "under" is about draw order, not overlap — this
-            # pass paints sub-ambient cells blue before the heat pass adds its
-            # (zero, for those same cells) emissive contribution on top.
-            if self.show_cold:
-                self.cold_overlay.draw(
-                    0, 0, self.world.world_px_w, self.world.world_px_h)
-            self.temperature_overlay.draw(
+        # Cold tier (P-W2, D-7): the diverging blue ramp, same toggle as the
+        # heat, drawn UNDER it (as before G0). T_rel is never both cold and hot
+        # at once per pixel, so "under" is about draw order, not overlap.
+        if self.show_temperature and self.show_cold:
+            self.cold_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
-        # Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
-        # Fresnel/GGX/refraction pass, in the slot the CPU WaterFieldOverlay
-        # used to draw (after the field overlays, before units — the squad
-        # reads over the water; the lit ship beneath is the floor sample). It
-        # binds the lighting pass's light textures + the level diffuse and
-        # draws premultiplied; the shader emits alpha 0 on dry tiles so this is
-        # a no-op with no standing water (dormant-safe). Off-by-toggle (V).
-        if self.show_water and self.textures.diffuse:
-            self.water_pass.draw(
-                self.textures.diffuse,
-                self.lighting.light_tex_a, self.lighting.light_tex_b,
-                world_px_w=self.world.world_px_w,
-                world_px_h=self.world.world_px_h,
-                anim_t=time.perf_counter() - self._anim_t0)
+        # Black-body heat (engine/06) -- the LEGACY HEAT LAYER, display space
+        # (graphics G0's one named exception to the one-tone-map rule,
+        # blackbody.pack_emissive_rgba): its look was tuned as a display
+        # colour added on screen. G3 F3 measured its move into the linear
+        # scene failing the hue gate (design §13.8; tools/fire_look_gate.py)
+        # and kept it here -- the FALLBACK. ADDITIVE, RGB-only, above the
+        # water and the 3D units, through THE fire's one shader: dimmed by
+        # the smoke over it (G2's glow-through, the cast product) and
+        # covered by the flame over its burning tile (glow * (1 - eps):
+        # nothing counted twice). Toggle (T).
+        if self.show_temperature and self.temperature_overlay.rect is not None:
+            fx.draw_glow("heat", clip_rects([self.temperature_overlay.rect],
+                                            view), **glow_kw)
 
-        # 2b. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
+        # Graphics G3 F1: the flame VFX's DEBUG view (F11 / [render.fire_vfx]
+        # debug_view): its sources or its R field + the active boxes, display
+        # space like the debug colormaps above. Off = nothing drawn.
+        if self.fire_vfx.enabled:
+            self.fire_vfx.draw_debug(self.world.world_px_w,
+                                     self.world.world_px_h)
+
+        # 7. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
         # closed door tiles get a flat amber fill, open spans a thin
         # outline (something to aim the O key at), destroyed doors
         # nothing. Render-read only — `doors` is the sim's DoorRuntime
         # list (span/state/alive); no overlay system, no field writes.
         if doors:
             self._draw_doors_world(doors)
+        # 7b. Planted charges (#193): a blinking marker + the seconds left on
+        # each live charge's tile. Render-read only.
+        if charges:
+            self._draw_charges_world(charges, charge_tick)
 
-        # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
+        # 8. Waypoints, sprite units (the 2D fallback when the 3D pass did not
+        # draw the units), projectiles, effects, grid — world-pixel space.
         if orders_phase1 or orders_phase2:
             self._draw_orders_world(orders_phase1, orders_phase2, current_phase)
-        self._draw_units_world(units_marines, units_zombies, props)
+        if not drew_units_3d:
+            self._draw_unit_sprites_world(units_marines, units_zombies)
         if projectiles:
             self._draw_projectiles_world(projectiles)
         # Visual effects (tracers, explosions, hit splats) — driven by
@@ -775,13 +1230,76 @@ class GameRenderer:
 
         # World-space overlay hook. A control scheme with its own interface
         # (OnePhaseWEGO's ui/ package — teal paths, holograms, cones, marks)
-        # draws here, INSIDE the world RT, so the camera transforms it exactly
-        # like everything else. ``None`` (every shipped caller) costs one
-        # falsy check, and the renderer never learns what the callback draws.
+        # draws here, INSIDE the world RT (display stage), so the camera
+        # transforms it exactly like everything else. ``None`` (every shipped
+        # caller) costs one falsy check, and the renderer never learns what
+        # the callback draws.
         if overlay_fn is not None:
             overlay_fn(self.world.world_px_per_tile)
 
         self.world.end()
+
+    def _apply_tile_patches(self) -> None:
+        """#9: apply the drained tile patches (renderer/tile_art.py): the
+        vacuum-mask texel of each tile, then each tile's rect of every static
+        art layer (diffuse, normal, floor height) re-blitted from the donor's
+        PRISTINE pixels. Render-only; runs only on frames after a topology
+        change."""
+        patches, self._pending_tile_patches = self._pending_tile_patches, []
+        mask = self._vacuum_mask
+        mask_changed = False
+        for p in patches:
+            fy, fx = p.tile
+            if (0 <= fy < mask.shape[0] and 0 <= fx < mask.shape[1]
+                    and bool(mask[fy, fx]) != p.vacuum):
+                mask[fy, fx] = p.vacuum
+                mask_changed = True
+        if mask_changed:
+            self.lighting.set_vacuum_mask(mask)
+        diffuse = self.textures.diffuse
+        if not diffuse:
+            return
+        art_align = self.lighting.art_align
+        for name in ("diffuse", "normal", "height"):
+            tex = getattr(self.textures, name, None)
+            if not tex:
+                continue
+            pristine = self._pristine_pixels(name, tex)
+            if pristine is None:
+                continue
+            for p in patches:
+                blit = patch_block(pristine, p, self.cfg.grid_h,
+                                   self.cfg.grid_w, art_align,
+                                   int(diffuse.width), int(diffuse.height))
+                if blit is None:
+                    continue
+                (x, y, w, h), px = blit
+                rl.update_texture_rec(tex, rl.Rectangle(x, y, w, h),
+                                      rl.ffi.cast("void *",
+                                                  rl.ffi.from_buffer(px)))
+
+    def _pristine_pixels(self, name: str, tex) -> Optional[np.ndarray]:
+        """The layer's load-time pixels as (H, W, bytes-per-pixel) uint8, read
+        back from the GPU once, at load, before any patch (in the texture's own format, so a patch
+        uploads in that format). ``None`` for a format with no whole-byte
+        pixel (compressed) -- that layer is then never patched."""
+        if name in self._pristine_art:
+            return self._pristine_art[name]
+        img = rl.load_image_from_texture(tex)
+        try:
+            w, h = int(img.width), int(img.height)
+            size = int(rl.get_pixel_data_size(w, h, img.format))
+            arr = None
+            if w > 0 and h > 0 and size % (w * h) == 0:
+                bpp = size // (w * h)
+                buf = rl.ffi.buffer(rl.ffi.cast("unsigned char *", img.data),
+                                    size)
+                arr = np.frombuffer(buf, dtype=np.uint8).reshape(
+                    h, w, bpp).copy()
+        finally:
+            rl.unload_image(img)
+        self._pristine_art[name] = arr
+        return arr
 
     # A6 dev door colors (render-only; the tileset's amber door reads).
     _DOOR_CLOSED_FILL = (208, 168, 62, 210)     # amber panel
@@ -810,6 +1328,40 @@ class GameRenderer:
                         x, y, side, side,
                         rl.Color(*self._DOOR_OPEN_OUTLINE))
 
+    def _draw_charges_world(self, charges: Sequence, tick: int) -> None:
+        """A planted charge (#193) as a small red square on its tile that
+        blinks on the SIM clock (twice a second, four times in the last five
+        seconds; a paused game holds it), with the whole seconds left above
+        it. Reads ``x``, ``y``, ``det_tick`` and ``live`` and writes
+        nothing; a remote charge (no timer) shows a steady marker."""
+        from config import CFG
+        tps = int(CFG.clock.ticks_per_second)
+        wpt = self.world.world_px_per_tile
+        side = max(4, int(1.2 * wpt))
+        for c in charges:
+            if not getattr(c, "live", False):
+                continue
+            cx = int((c.x + 0.5) * wpt)
+            cy = int((c.y + 0.5) * wpt)
+            det = getattr(c, "det_tick", None)
+            left = None if det is None else max(0, int(det) - int(tick))
+            on = True
+            if left is not None:
+                half = max(1, tps // (4 if left < 5 * tps else 2))
+                on = (left // half) % 2 == 0
+            col = (rl.Color(255, 40, 30, 255) if on
+                   else rl.Color(90, 20, 15, 255))
+            rl.draw_rectangle(cx - side // 2, cy - side // 2, side, side, col)
+            rl.draw_rectangle_lines(cx - side // 2, cy - side // 2, side,
+                                    side, rl.Color(20, 10, 5, 255))
+            if left is not None:
+                secs = -(-left // tps)
+                size = max(10, int(1.5 * wpt))
+                text = str(secs)
+                w = rl.measure_text(text, size)
+                rl.draw_text(text, cx - w // 2, cy - side // 2 - size - 2,
+                             size, rl.Color(255, 230, 200, 255))
+
     def _draw_overlay_to_world(self, field_tex: rl.Texture) -> None:
         """Stretch a physics-resolution texture across the full world RT."""
         src = rl.Rectangle(0, 0, float(field_tex.width), float(field_tex.height))
@@ -817,25 +1369,287 @@ class GameRenderer:
                            float(self.world.world_px_h))
         rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
-    def _draw_units_world(self, marines: Sequence, zombies: Sequence,
-                          props: Sequence = ()) -> None:
+    def _heat_brightness(self, gmap) -> np.ndarray:
+        """Graphics G2: how strongly each tile glows from BELOW the smoke,
+        in [0, 1]: the glow's brightness share (``blackbody.glow_share``,
+        without the speckle mottle -- G3 F3 named it) times the share of it
+        below the smoke (``gas_relief.glow_below_fraction``), on this tick's
+        temperature -- computed here, not read from the overlay, so the
+        relief's own-light cut neither lags a tick nor depends on the T
+        toggle. Also hands the heat layer its body share."""
+        import zlib
+        from .blackbody import glow_share
+        from .gas_relief import glow_below_fraction
+        ov = self.temperature_overlay
+        body = self._body_mask(gmap)
+        # ~1 ms of numpy on 48 x 48: redone only when the temperature or the
+        # bodies changed (once per sim tick), not every rendered frame.
+        key = (zlib.crc32(np.ascontiguousarray(gmap.temperature).view(np.uint8)),
+               zlib.crc32(np.packbits(body)), id(ov.ramp))
+        if key != getattr(self, "_heat_below_key", None):
+            bright = glow_share(ov.ramp, gmap.temperature)
+            # Only the glow BELOW the smoke (a body's, beyond the hot gas
+            # around it; see glow_below_fraction) is hidden by the smoke and
+            # kept off its top; a hot gas tile's own light is the gas's (#95).
+            frac = glow_below_fraction(bright, body)
+            ov.set_below_fraction(frac)
+            self._heat_below_key = key
+            self._heat_below = bright * frac
+        return self._heat_below
+
+    @staticmethod
+    def _body_mask(gmap) -> np.ndarray:
+        """Graphics G2: BODY tiles (solid or thermal solid) -- what burns
+        or glows UNDER the smoke, as opposed to the gas it fills."""
+        return (np.asarray(gmap.solid, dtype=bool)
+                | np.asarray(gmap.thermal_solid, dtype=bool))
+
+    def _smoke_cast_inputs(self, relief_on: bool):
+        """Graphics G2: ``(product texture or None, grid, cast, cast2)`` --
+        what every receiver of the smoke's cast shadow is handed this frame
+        (the floor through LightingPass, the 3D units and props through
+        LightFieldCtx). None when the relief drew nothing."""
+        from .gas_relief import cast_uniforms
+        gr = self.gas_relief
+        live = bool(relief_on and gr.product_live)
+        cast, cast2 = cast_uniforms(gr.settings, live)
+        return (gr.product_texture if live else None,
+                (float(gr.w), float(gr.h)), cast, cast2)
+
+    @staticmethod
+    def _ember_blocked(gmap) -> np.ndarray:
+        """Where an ember dies on entry: solid tiles and vacuum (read
+        only; a fresh mask, nothing written back)."""
+        return np.asarray(gmap.solid, bool) | np.asarray(gmap.is_vacuum, bool)
+
+    def _draw_embers(self, view, stage: str = "scene",
+                     glow_through_ceil: float = 1.0) -> int:
+        """Draw THE particle primitive's sprites into the scene RT -- the
+        embers (G3 F4a) and the sparks (G4 P3), concatenated into ONE sprite
+        array and ONE draw per stage: ``stage`` "scene" (after the flame,
+        under the units and the soot) packs and draws; "compensation" (after
+        the ceiling soot) re-adds what the soot hid beyond
+        ``glow_through_ceil``, as the flame's compensation does. A frame
+        with no spark draws exactly the embers' array. Returns the draw
+        calls issued (0: no particle in view, or both off)."""
+        from .particles import pack_sprites
+        from .fire_vfx import LUT_SIZE
+        if stage == "scene":
+            self._ember_sprites = None
+            zoom = (self.camera.zoom_px_per_tile
+                    / self.world.world_px_per_tile)
+            packs = []
+            for system in (self.embers, self.sparks, self.muzzle_sparks,
+                           self.impact_sparks):
+                if system.enabled and system.p.n:
+                    packs.append(pack_sprites(
+                        system.p, view, self.world.world_px_per_tile,
+                        system.settings, screen_px_per_world_px=zoom))
+            if not packs:
+                self.ember_draw.draws_last_frame = 0
+                self.ember_draw.sprites_last_frame = 0
+                return 0
+            self._ember_sprites = (packs[0] if len(packs) == 1
+                                   else np.concatenate(packs, axis=1))
+        sprites = self._ember_sprites
+        if sprites is None:
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.ember_draw.draw(
+            sprites, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def _draw_muzzle_flames(self, view, marines: Sequence = (),
+                            zombies: Sequence = (), stage: str = "scene",
+                            glow_through_ceil: float = 1.0) -> int:
+        """#87: THE muzzle flame's draw. ``stage`` "scene" (after the units,
+        under the soot) first turns every new launched ``"tracer"`` effect
+        into a flash of its shooter's weapon's kind, ages the live ones on
+        the sim clock, puts each on its shooter's muzzle -- the barrel tip
+        the 3D pass just drew (``unit_models.muzzle_poses``), else the
+        footprint's edge along the facing -- queues the new flashes' sparks,
+        then packs and draws; "compensation" (after the ceiling soot) re-adds
+        what the soot hid beyond ``glow_through_ceil``. A unit that is not
+        drawn (fog of war) flashes nothing. Returns the draw calls issued."""
+        from . import muzzle_flame as _mflame
+        from .fire_vfx import LUT_SIZE
+        from .unit_looks import unit_key
+        mf = self.muzzle_flames
+        if stage == "scene":
+            self._flame_pack = None
+            by_id = {unit_key(u): u for u in (*marines, *zombies)}
+
+            def weapon_of(uid):
+                u = by_id.get(uid)
+                return None if u is None else str(
+                    getattr(u, "weapon_id", "") or "")
+
+            poses = self.unit_models.muzzle_poses
+
+            def pose_of(uid):
+                p = poses.get(uid)
+                u = by_id.get(uid)
+                if p is not None or u is None:
+                    return p
+                return _mflame.fallback_pose(
+                    float(u.x), float(u.y), float(getattr(u, "footprint", 3)),
+                    float(getattr(u, "facing", math.pi / 2.0)))
+
+            mf.consume(self._effects, weapon_of, self._last_sim_tick)
+            mf.update(self._flame_t_sim, pose_of)
+            for f in mf.born_last_frame:
+                if f.shot.sparks:
+                    self.muzzle_sparks.throw(
+                        f.shot.sparks, f.pose, self._flame_tile_m,
+                        _mflame.shot_rng(mf.settings.seed + 1, f.unit,
+                                         f.tick0))
+            if mf.enabled and mf.flashes:
+                self._flame_pack = mf.pack(view, self.world.world_px_per_tile,
+                                           self._flame_tile_m)
+        pack = self._flame_pack
+        if pack is None or pack.shape[1] == 0:
+            if stage == "scene":
+                self.muzzle_flame_draw.draws_last_frame = 0
+                self.muzzle_flame_draw.flashes_last_frame = 0
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.muzzle_flame_draw.draw(
+            pack, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def _draw_tracers(self, view, marines: Sequence = (),
+                      zombies: Sequence = (), stage: str = "scene",
+                      glow_through_ceil: float = 1.0) -> int:
+        """#141: THE tracers' draw. ``stage`` "scene" (after the units,
+        under the soot) turns every new ``"tracer"`` effect into a streak
+        (its kind by the shooter's weapon, its speed the round's own, its
+        first segment from the muzzle the 3D pass just drew), ages the live
+        ones on the sim clock, queues the sparks of the streaks that just
+        reached a wall, then packs and draws them as sprites of the
+        particle draw; "compensation" re-adds what the ceiling soot hid. A
+        shooter that is not drawn (fog of war) shows no tracer."""
+        from . import muzzle_flame as _mflame
+        from .fire_vfx import LUT_SIZE
+        from .unit_looks import unit_key
+        tr = self.tracers
+        if stage == "scene":
+            self._tracer_sprites = None
+            by_id = {unit_key(u): u for u in (*marines, *zombies)}
+
+            def weapon_of(uid):
+                u = by_id.get(uid)
+                return None if u is None else str(
+                    getattr(u, "weapon_id", "") or "")
+
+            poses = self.unit_models.muzzle_poses
+
+            def start_of(uid):
+                p = poses.get(uid)
+                return None if p is None else (p[0], p[1])
+
+            tr.consume(self._effects, weapon_of=weapon_of,
+                       speed_of=self._tracer_speeds.get, start_of=start_of,
+                       solid=self._tracer_solid,
+                       tile_size_m=self._flame_tile_m,
+                       tps=1.0 / self._sim_dt, sim_tick=self._last_sim_tick)
+            tr.update(self._flame_t_sim)
+            for imp in tr.impacts_last_frame:
+                if imp.sparks:
+                    rng = _mflame.shot_rng(
+                        tr.settings.seed + int(imp.x * 64) + int(imp.y * 64),
+                        imp.unit, imp.tick0)
+                    n = int(rng.integers(max(imp.sparks // 2, 0),
+                                         imp.sparks + (imp.sparks + 1) // 2 + 1))
+                    self.impact_sparks.throw(
+                        n, (imp.x, imp.y, imp.dir_x, imp.dir_y),
+                        self._flame_tile_m, rng)
+            if tr.enabled and tr.live:
+                zoom = (self.camera.zoom_px_per_tile
+                        / self.world.world_px_per_tile)
+                self._tracer_sprites = tr.pack(
+                    view, self.world.world_px_per_tile, self._flame_tile_m,
+                    screen_px_per_world_px=zoom)
+        sprites = self._tracer_sprites
+        if sprites is None or sprites.shape[1] == 0:
+            if stage == "scene":
+                self.tracer_draw.draws_last_frame = 0
+                self.tracer_draw.sprites_last_frame = 0
+            return 0
+        ramp = self.fire_vfx.ramp
+        return self.tracer_draw.draw(
+            sprites, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h, lut_tex=self.fire_vfx.lut_tex,
+            lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
+            stage=stage, smoke_cover=self._smoke_cast[0],
+            glow_through_ceil=glow_through_ceil)
+
+    def _draw_debris(self, view) -> int:
+        """Draw the debris chips (G4 P4) into the scene RT through the
+        particle draw's ``"debris"`` stage: premultiplied, lit by the light
+        field (``_light_field_ctx``), clipped to ``view``. Returns the draw
+        calls issued (0: no chip in view, or the debris off)."""
+        from .particles import pack_debris
+        ds = self.debris
+        if not ds.enabled or ds.p.n == 0:
+            self.ember_draw.debris_draws_last_frame = 0
+            self.ember_draw.debris_sprites_last_frame = 0
+            return 0
+        sprites = pack_debris(ds.p, view, self.world.world_px_per_tile,
+                              ds.settings)
+        return self.ember_draw.draw_debris(sprites,
+                                           light=self._light_field_ctx(),
+                                           albedo=ds.settings.albedo)
+
+    def _relief_view_rect(self):
+        """The camera's view in tiles, plus a margin, for the relief pass
+        (graphics G1): its shader costs per world-RT pixel, so it draws only
+        what the one viewport can show. The margin covers a pan between this
+        compose and the blit."""
+        cam = self.camera
+        vw, vh = cam.visible_tiles()
+        m = 2.0
+        return (cam.pos_tile_x - m, cam.pos_tile_y - m,
+                cam.pos_tile_x + vw + m, cam.pos_tile_y + vh + m)
+
+    def _light_field_ctx(self):
+        """THE ship's light field for a lit draw (``lit3d.LightFieldCtx``):
+        light_tex_a/b, world dims, ambient / exposure / normal-y sign, the
+        smoke cast product and the light curve -- single source of truth =
+        self.lighting. The 3D units and props (P1) and the debris stage
+        (G4 P4) take this one context."""
+        from renderer.lit3d import LightFieldCtx
+        return LightFieldCtx(
+            tex_a=self.lighting.light_tex_a,
+            tex_b=self.lighting.light_tex_b,
+            world_px_w=float(self.world.world_px_w),
+            world_px_h=float(self.world.world_px_h),
+            ambient=self.lighting.ambient,
+            light_gain=self.lighting.light_gain,
+            normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+            smoke_cover=self._smoke_cast[0],
+            smoke_grid=self._smoke_cast[1],
+            smoke_cast=self._smoke_cast[2],
+            smoke_cast2=self._smoke_cast[3],
+            curve=self.lighting.curve_uniforms,
+        )
+
+    def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,
+                             props: Sequence = ()) -> bool:
+        """The SCENE-stage unit/prop draw: the shared 3D pass (lit 3D units,
+        props, projected shadows), linear HDR into the scene RT. Returns True
+        when the 3D units were drawn -- False means the caller draws the 2D
+        sprite fallback (:meth:`_draw_unit_sprites_world`) in the display
+        stage (graphics G0 P1 split the old ``_draw_units_world``)."""
         wpt = self.world.world_px_per_tile
         lmap = self.lighting.light_map
         H, W = lmap.shape
-        # Same ambient floor the lit-ship shader uses (lighting.fs does
-        # diffuse * (ambient + incoming_rgb * ndotl)). light_map is the
-        # render-side scalar brightness (max over the RGB channels). Without
-        # this, units in unlit rooms are pitch-black while the ship around
-        # them still shows a faint ambient baseline — visually mismatched.
         amb = self.lighting.ambient
-        amb_floor = (amb[0] + amb[1] + amb[2]) / 3.0
-        def light_at(u):
-            # Sample at the unit's center tile (footprint // 2 offset).
-            fp = int(getattr(u, "footprint", 3))
-            cx = int(u.x) + fp // 2
-            cy = int(u.y) + fp // 2
-            base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
-            return amb_floor + base
 
         # Patch 0 — per-channel RGB provider for the 3D marines. Sample the SAME
         # baked RGB light field the ship shader reads (self.lighting.light_rgb,
@@ -858,10 +1672,11 @@ class GameRenderer:
                         min(1.0, amb[2] + float(inc[2]) * gain))
             return (min(1.0, amb[0]), min(1.0, amb[1]), min(1.0, amb[2]))
 
-        # Phase-0 3D marines: when toggled on AND the model loaded, draw units as
+        # 3D units: when use_3d_units AND the model loaded, draw units as
         # animated 3D bodies (nested begin_mode_3d inside the already-open world
-        # RT) and skip the sprite path entirely. Marines green, zombies red — the
-        # same read as the sprite tints. light_at keeps the local-light dimming.
+        # RT) and skip the sprite path entirely. Each unit's model comes from
+        # [render.unit_looks] (#33), untinted; the sprite fallback below keeps
+        # its green/red tints. light_at keeps the local-light dimming.
         # If the model failed to load, draw_units no-ops and we fall through to
         # the unchanged sprite path below. This branch is the ONLY change to the
         # unit-draw slot; with use_3d_units False it is never entered.
@@ -889,27 +1704,29 @@ class GameRenderer:
             # the ship beside it. light_rgb_fn stays as the flat CPU
             # fallback for marines (shader off / not compiled). normal_y_sign
             # follows the ship's H-toggle.
-            from renderer.lit3d import LightFieldCtx
-            light_ctx = LightFieldCtx(
-                tex_a=self.lighting.light_tex_a,
-                tex_b=self.lighting.light_tex_b,
-                world_px_w=float(self.world.world_px_w),
-                world_px_h=float(self.world.world_px_h),
-                ambient=self.lighting.ambient,
-                light_gain=self.lighting.light_gain,
-                normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
-            )
+            light_ctx = self._light_field_ctx()
             rl.begin_mode_3d(self._world_cam3d)
             try:
                 if draw_units_3d:
+                    # #33: untinted -- teams are told apart by model and
+                    # texture ([render.unit_looks]), Erik's ruling.
+                    # #33 projected shadows read the accessor's LightView
+                    # (kept by LightingPass) in the ship shader's units:
+                    # light units x sweep_gain x master_gain.
+                    shadow_exposure = (self.lighting.sweep_gain
+                                       * self.lighting.light_gain)
                     self.unit_models.draw_units(
                         marines, wpt, clock, self._world_cam3d,
-                        base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at,
-                        light_ctx=light_ctx, open_mode_3d=False)
+                        light_rgb_fn=light_rgb_at,
+                        light_ctx=light_ctx, open_mode_3d=False,
+                        light_view=self.lighting.light_view,
+                        light_exposure=shadow_exposure)
                     self.unit_models.draw_units(
                         zombies, wpt, clock, self._world_cam3d,
-                        base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
-                        light_ctx=light_ctx, open_mode_3d=False)
+                        light_rgb_fn=light_rgb_at,
+                        light_ctx=light_ctx, open_mode_3d=False,
+                        light_view=self.lighting.light_view,
+                        light_exposure=shadow_exposure)
                 if draw_props_3d:
                     # P4: sway on the SIM clock + the tamed wind sampled per
                     # prop inside draw_props (one lookup each, no sim cost).
@@ -921,8 +1738,30 @@ class GameRenderer:
                         n_ambient_q=self._prop_n_ambient_q)
             finally:
                 rl.end_mode_3d()
-            if draw_units_3d:
-                return
+        return draw_units_3d
+
+    def _draw_unit_sprites_world(self, marines: Sequence,
+                                 zombies: Sequence) -> None:
+        """The DISPLAY-stage 2D sprite fallback (no 3D units): sprites in
+        authored sRGB, dimmed by the CPU light scalar, drawn after the
+        resolve."""
+        wpt = self.world.world_px_per_tile
+        lmap = self.lighting.light_map
+        H, W = lmap.shape
+        # Same ambient floor the lit-ship shader uses (lighting.fs does
+        # diffuse * (ambient + incoming_rgb * ndotl)). light_map is the
+        # render-side scalar brightness (max over the RGB channels). Without
+        # this, units in unlit rooms are pitch-black while the ship around
+        # them still shows a faint ambient baseline — visually mismatched.
+        amb = self.lighting.ambient
+        amb_floor = (amb[0] + amb[1] + amb[2]) / 3.0
+        def light_at(u):
+            # Sample at the unit's center tile (footprint // 2 offset).
+            fp = int(getattr(u, "footprint", 3))
+            cx = int(u.x) + fp // 2
+            cy = int(u.y) + fp // 2
+            base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
+            return amb_floor + base
 
         for m in marines:
             if not getattr(m, "alive", True):
@@ -1015,14 +1854,12 @@ class GameRenderer:
             alpha_norm = max(0.0, 1.0 - t / max(life, 1e-6))
             kind = fx["kind"]
             if kind == "tracer":
-                a, b = fx["from"], fx["to"]
-                x1 = tile_to_world_px(a[0], wpt)
-                y1 = tile_to_world_px(a[1], wpt)
-                x2 = tile_to_world_px(b[0], wpt)
-                y2 = tile_to_world_px(b[1], wpt)
-                col = rl.Color(255, 240, 160, int(220 * alpha_norm))
-                rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
-                                1.5, col)
+                # #141: a round is drawn by THE tracers (renderer/tracers.py,
+                # _draw_tracers: a glowing streak in the linear scene); the
+                # flat display-space line that stood here is gone. The effect
+                # stays in the queue: the muzzle light, the muzzle flame and
+                # the tracers all key on it.
+                pass
             elif kind == "beam":
                 # W2 laser (LaserFiredEvent): a distinct beam — crimson core
                 # with a thin white-hot centreline, thicker than a tracer.
@@ -1039,20 +1876,6 @@ class GameRenderer:
                                 3.0, outer)
                 rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
                                 1.0, core)
-            elif kind == "explosion":
-                pos = fx["pos"]
-                radius = fx["radius"]
-                cx = tile_to_world_px(pos[0] + 0.5, wpt)
-                cy = tile_to_world_px(pos[1] + 0.5, wpt)
-                # Expanding ring then fading flash.
-                grow = 1.0 - alpha_norm    # 0 -> 1 as effect ages
-                r_wpx = (0.3 + grow * radius) * wpt
-                ring = rl.Color(255, 200, 100, int(220 * alpha_norm))
-                rl.draw_circle_lines(int(cx), int(cy), r_wpx, ring)
-                # Inner flash on first frames.
-                if alpha_norm > 0.6:
-                    flash = rl.Color(255, 255, 220, int(180 * (alpha_norm - 0.6) / 0.4))
-                    rl.draw_circle(int(cx), int(cy), 0.5 * radius * wpt, flash)
             elif kind == "hit":
                 pos = fx["pos"]
                 cx = tile_to_world_px(pos[0] + 0.5, wpt)
@@ -1115,18 +1938,72 @@ class GameRenderer:
                 rl.draw_circle(int(cx), int(cy), max(3.0, 0.55 * wpt), halo)
                 rl.draw_circle(int(cx), int(cy), max(1.5, 0.22 * wpt), core)
 
-    def transient_light_specs(self) -> list:
+    def fire_light_rows(self, grid_w: int, grid_h: int):
+        """Graphics G3 F4b + the adjustment round: THE FIRE'S ROOM LIGHT --
+        its gain times its flicker -- for the sweep's next light computation:
+        (n, 3) int64 emission-multiplier rows ``(y, x, mult_q)``
+        (renderer/fire_flicker.py through the door
+        ``frame_lights.emit_mult_rows``), for ``Simulation.set_light(...,
+        emit_mult=)`` -- or None (the flicker off at gain 1, the flame VFX
+        off, or nothing burning: the sweep then runs exactly as before F4b).
+        Pure read of the flame pass's CPU state: its last per-tick burning
+        tiles and cluster puffing (never a GPU readback) at its VFX clock
+        ``t_noise``. Render state: it scales light only; heat never reads it,
+        nothing digests it."""
+        fx = self.fire_vfx
+        if not fx.enabled:
+            # no VFX clock and a stale pack: the flicker rides the flame
+            self.fire_flicker.last_n = 0
+            return None
+        return self.fire_flicker.rows(fx.pack, fx.clock.t_noise,
+                                      fx.settings.dials, grid_w, grid_h)
+
+    def blast_flash_light_specs(self, sim_tick: int, open_mask) -> list:
+        """Graphics G4 P5 (#75): the live blast flashes as transient-light
+        dicts (``frame_lights.blast_flash_lights``, the pure part), aged on the
+        SIM clock ``(sim_tick - tick0) / tps`` (design §6 S1: the light is
+        assembled once per sim tick, so there is no sub-tick alpha; paused, the
+        same tick relit holds the same flash). ``open_mask`` is the map's
+        ``blast_expansion.open_mask`` or a callable returning it (asked only
+        while a flash lives). Uncapped: :meth:`transient_light_specs` caps it
+        with the muzzle flashes; lighting_demo calls this directly."""
+        if not self.blast_flash_on:
+            return []
+        from . import frame_lights as _fl
+        tick, dt = int(sim_tick), float(self._sim_dt)
+        return _fl.blast_flash_lights(
+            self._effects,
+            lambda fx: (tick - int(fx.get("tick0", tick))) * dt,
+            open_mask)
+
+    def transient_light_specs(self, footprint_of=None, sim_tick=None,
+                              open_mask=None) -> list:
         """Light sources implied by the LIVE jet/glow effects (W6) — the
         'transient light emitter' half of the spray/plasma visuals.
 
         Returns plain dicts (x, y, max_range, intensity, color) in TILE
-        coordinates; main.py converts them to ``bp.LightSource`` and appends
-        them to the frame's source list (the renderer stays free of the
-        physics module, and the sim is never touched — lights are a pure
-        function of the renderer's own effect queue). A flame jet lights
+        coordinates; main.py turns them into cone-emitter specs
+        (renderer/frame_lights.py ``transient_specs``, the one assembly) for the
+        sweep (the renderer stays free of the physics module, and the sim is
+        never touched — lights are a pure function of the renderer's own
+        effect queue; ``max_range`` is ignored, a sweep has no range). A flame jet lights
         from ~1/3 down the cone axis in warm orange; a miasma jet barely
         glows (faint sickly green); a plasma bolt carries a small warm
         light with it. Intensities fade with the effect's remaining life.
+
+        #33: a bullet's MUZZLE FLASH rides the same queue -- a fresh
+        ``"tracer"`` that left the barrel lights a short warm lamp just outside
+        its shooter's footprint (``frame_lights.muzzle_flash_lights``, the pure
+        part, with ``[render.muzzle_flash]`` read here every call so F5 retunes
+        it). ``footprint_of(unit_id)`` gives a shooter's footprint in tiles;
+        None = no muzzle flashes (a caller without the sim).
+
+        G4 P5: a detonation's FLASH rides it too -- the blast effects' row
+        flashes (:meth:`blast_flash_light_specs`) at ``sim_tick`` (the
+        monotonic tick the light is assembled for) over ``open_mask`` (the
+        map's open mask, or a callable); None for either = no blast flashes.
+        The muzzle and blast flashes share ONE cap
+        (``frame_lights.cap_transient_group``: the muzzle flashes dim first).
         """
         import math as _m
         specs = []
@@ -1163,9 +2040,17 @@ class GameRenderer:
                     "intensity": 1.2 * alpha,
                     "color": (1.0, 0.65, 0.35),
                 })
+        from . import frame_lights as _fl
+        muzzle = (_fl.muzzle_flash_lights(
+            self._effects, _fl.muzzle_flash_settings(CFG), footprint_of)
+            if footprint_of is not None else [])
+        blast = (self.blast_flash_light_specs(sim_tick, open_mask)
+                 if sim_tick is not None and open_mask is not None else [])
+        specs += _fl.cap_transient_group(muzzle, blast)
         return specs
 
-    def consume_events(self, events: Sequence) -> None:
+    def consume_events(self, events: Sequence,
+                       sim_tick: Optional[int] = None) -> None:
         """Read simulation tick events, spawn matching visual effects.
 
         Called once per frame after compose_world (or before — order
@@ -1177,18 +2062,35 @@ class GameRenderer:
         :class:`ExplosionEvent`, :class:`UnitHitEvent`. Unknown event
         types are ignored — additive design lets the sim emit new
         events without breaking older renderers.
+
+        ``sim_tick`` is the tick the events arrived on, on the SAME clock the
+        caller hands ``upload_state`` (main.py: the monotonic total tick); an
+        :class:`ExplosionEvent` becomes a ``"blast"`` effect stamped with it
+        (``tick0``), so the explosion look ages on the sim clock (G4 design
+        §6 S1). None stamps the last ``upload_state`` tick. Call it after
+        EVERY sim step: ``Simulation.step`` clears ``tick_events``.
         """
+        tick0 = self._last_sim_tick if sim_tick is None else int(sim_tick)
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
             SprayJetEvent, ProjectileGlowEvent,
         )
+        # #162/#163: the pose layer's per-unit event queues (fire, flinch; a
+        # no-op with [render.pose] off).
+        self.unit_models.queue_events(events)
         for ev in events:
             if isinstance(ev, ShotFiredEvent):
                 self._effects.append({
                     "kind": "tracer",
                     "from": ev.from_tile,
                     "to": ev.to_tile,
+                    "unit": ev.unit_id,
+                    "launch": bool(getattr(ev, "launch", True)),
+                    # #87: the muzzle flame's seed and its one-per-shot key
+                    "tick0": tick0,
+                    # not aged on the frame it is born (see _advance_effects)
+                    "fresh": True,
                     "t": 0.0,
                     "life": 0.18,    # ~5 frames @ 30 FPS
                 })
@@ -1223,12 +2125,35 @@ class GameRenderer:
                     "life": 0.12,
                 })
             elif isinstance(ev, ExplosionEvent):
+                # G4 (#75): the explosion look's cue. The legacy ring is
+                # deleted; the shock front, sparks, debris and flash read it
+                # (P2-P5). The look ages on the sim clock from tick0; the
+                # effect lives `life` wall seconds AND until `sim_until` (the
+                # tick its flash falls below 1 %: a paused or slowed game keeps
+                # it, a long flashbang is never cut at the wall-clock life).
+                flash = float(getattr(ev, "flash", 0.0))
+                decay = float(getattr(ev, "flash_decay_s", 0.3))
+                sim_until = tick0
+                if flash > 0.0 and decay > 0.0:
+                    sim_until = tick0 + 1 + int(math.ceil(
+                        math.log(100.0) * decay / self._sim_dt))
                 self._effects.append({
-                    "kind": "explosion",
+                    "kind": "blast",
                     "pos": ev.pos,
                     "radius": ev.radius,
+                    "kind_name": ev.kind,
+                    "strength": float(getattr(ev, "strength", 0.0)),
+                    "flash": flash,
+                    "flash_decay_s": decay,
+                    "flash_color": tuple(getattr(ev, "flash_color",
+                                                 (1.0, 1.0, 1.0))),
+                    "approach": getattr(ev, "approach", None),
+                    "tick0": tick0,
+                    "sim_until": sim_until,
+                    # not aged on the frame it is born (see _advance_effects)
+                    "fresh": True,
                     "t": 0.0,
-                    "life": 0.6,
+                    "life": 3.0,
                 })
             elif isinstance(ev, UnitHitEvent):
                 # We don't know the unit's position from the event alone —
@@ -1238,10 +2163,24 @@ class GameRenderer:
                 pass
 
     def _advance_effects(self, dt: float) -> None:
-        """Tick effect lifetimes; drop expired entries."""
+        """Tick effect lifetimes; drop expired entries.
+
+        An effect marked ``fresh`` (a tracer, #33) is not aged on the frame it
+        was born: events are consumed AFTER this frame's sim ticks assembled
+        their lights, so aging it now would let a slow frame (dt > the muzzle
+        flash's duration) expire the flash before any tick ever lit it. It is
+        aged from the next frame on, after the next ticks have seen it at t=0.
+        """
         for fx in self._effects:
+            if fx.pop("fresh", False):
+                continue
             fx["t"] += dt
-        self._effects = [fx for fx in self._effects if fx["t"] < fx["life"]]
+        # a "blast" effect also lives on the SIM clock until its flash is out
+        # (G4 P5: `sim_until`, the last tick it lights anything)
+        tick = self._last_sim_tick
+        self._effects = [fx for fx in self._effects
+                         if fx["t"] < fx["life"]
+                         or fx.get("sim_until", -1) >= tick]
 
     def _draw_grid_world(self) -> None:
         wpt = self.world.world_px_per_tile
@@ -1296,7 +2235,9 @@ class GameRenderer:
 
     def draw_panel(self, sim=None, selected_unit=None,
                    planning_phase: int = 0,
-                   current_mode: Optional[int] = None) -> None:
+                   current_mode: Optional[int] = None,
+                   grenade_kind: Optional[int] = None,
+                   charge_timer_s: Optional[int] = None) -> None:
         """Right-side info panel. ``sim`` may be ``None`` for the demo;
         when provided we show turn/phase/tick state and (optionally) the
         selected unit's HP / inventory / orders summary."""
@@ -1311,62 +2252,22 @@ class GameRenderer:
         y += 22
 
         # ----- Game state (if a Simulation was passed) -----
+        # The block's text is DATA (ui.model.panel_state_lines: a turn-based
+        # ruleset's round / phase / AP, or under ContinuousRealtime the tick
+        # and the unit's magazine); this only draws it.
         if sim is not None:
-            paused = sim.is_paused()
-            state_label = "PAUSED — planning" if paused else "EXECUTING"
-            state_color = (255, 220, 120, 255) if paused else (120, 255, 120, 255)
-            draw_text(state_label, x, y, 16, color=state_color)
-            y += 22
-            draw_text(f"Round {getattr(sim, 'turn_number', 1)}   "
-                      f"Phase {sim.get_phase() + 1}/2", x, y, 14)
-            y += 18
-            draw_text(f"Tick {sim.get_tick()} / "
-                      f"{sim._ticks_per_round}", x, y, 13,
-                      color=(180, 180, 200, 255))
-            y += 18
-            n_events = len(getattr(sim, "tick_events", []))
-            draw_text(f"Tick events: {n_events}", x, y, 12,
-                      color=(150, 150, 180, 255))
-            y += 18
-            if paused:
-                draw_text(f"Planning phase {planning_phase + 1}",
-                          x, y, 12, color=(200, 200, 120, 255))
-                y += 16
-            y += 6
-
-            # Selected unit summary.
-            if selected_unit is not None and getattr(selected_unit, "alive", False):
-                draw_text(f"Selected: {selected_unit.name}", x, y, 14,
-                          color=(120, 220, 255, 255))
-                y += 18
-                # W6: the equipped weapon row — the weapon-cycle key's (N)
-                # on-screen feedback during Erik's tuning session.
-                weapon_id = getattr(selected_unit, "weapon_id", "")
-                if weapon_id:
-                    draw_text(f"Weapon: {weapon_id}  (N cycles)", x, y, 13,
-                              color=(255, 200, 120, 255))
-                    y += 16
-                from simulation.stats import effective_vitality
-                draw_text(f"HP: {int(selected_unit.current_hp)}/{int(effective_vitality(selected_unit))}",
-                          x, y, 13)
-                y += 16
-                draw_text(f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
-                          x, y, 13)
-                y += 16
-                draw_text(f"Grenades: {selected_unit.has_grenade}   "
-                          f"Charges: {selected_unit.has_explosive}",
-                          x, y, 12)
-                y += 18
-                n_orders = len(selected_unit.orders)
-                draw_text(f"Queued orders: {n_orders}",
-                          x, y, 12, color=(180, 180, 180, 255))
-                y += 18
-            if current_mode is not None:
-                from simulation.orders import ORDER_NAMES
-                mode_name = ORDER_NAMES.get(current_mode, str(current_mode))
-                draw_text(f"Mode: {mode_name}", x, y, 13,
-                          color=(255, 200, 120, 255))
-                y += 22
+            from ui.model import panel_state_lines
+            for line in panel_state_lines(sim, selected_unit,
+                                          planning_phase, current_mode,
+                                          grenade_kind=grenade_kind,
+                                          charge_timer_s=charge_timer_s):
+                if line.text:
+                    if line.color is None:
+                        draw_text(line.text, x, y, line.size)
+                    else:
+                        draw_text(line.text, x, y, line.size,
+                                  color=line.color)
+                y += line.advance
 
         draw_text(f"FPS: {rl.get_fps()}", x, y, 14)
         y += 18
@@ -1380,36 +2281,41 @@ class GameRenderer:
         frame_ms = 1000.0 / max(1, rl.get_fps())
         draw_text(f"Frame:   {frame_ms:.1f} ms (smoothed)", x, y, 14)
         y += 18
-        draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
+        # The light's render-side cost: the per-tick read + pack + upload (the
+        # sweep itself runs inside the sim tick).
+        draw_text(f"Light: sweep ({self.last_light_ms:.1f} ms up)",
+                  x, y, 14, color=(180, 255, 180, 255))
         y += 18
         # Upload = the light-cast + overlay-texture-build slice INSIDE
         # upload_state (a SUBSET of "Frame:" above, not the whole frame).
         # Renamed from the old, misleading "Frame:" label this line used to
         # carry (it never included compose_world/draw/blit/sim.step).
         draw_text(f"Upload:  {self.last_frame_ms:.1f} ms", x, y, 14)
-        y += 18
-        # Fire-light counter (B1 §3): kept / NMS-peaks, flag when the cap bites.
-        capped = self.fire_light_count < self.fire_light_peaks
-        fl_color = (255, 200, 120, 255) if capped else (180, 200, 180, 255)
-        fl_txt = (f"Fire lights: {self.fire_light_count}/{self.fire_light_peaks}"
-                  f"  cap {self.fire_light_cap}" + ("  CAP!" if capped else ""))
-        draw_text(fl_txt, x, y, 14, color=fl_color)
         y += 28
         draw_text("Toggles:", x, y, 14, color=(180, 200, 255, 255))
         y += 20
         for label, on in [
             ("F1 grid",        self.show_grid),
             ("F2 smoke",       self.show_smoke),
-            ("F3 fire",        self.show_fire),
+            (f"F3 flame: {self.fire_vfx.emission}",
+             self.fire_vfx.emission != "off"),
+            (f"Shift+F3 embers: {'on' if self.embers.enabled else 'off'}",
+             self.embers.enabled),
+            (f"Ctrl+F3 shimmer: {'on' if self.shimmer.enabled else 'off'}",
+             self.shimmer.enabled),
+            (f"Alt+F3 light flicker: "
+             f"{'on' if self.fire_flicker.enabled else 'off'}"
+             f" (fire light x{self.fire_flicker.gain:g}, "
+             f"{self.fire_flicker.last_n} tiles, "
+             f"{self.fire_flicker.last_ms:.2f} ms)",
+             self.fire_flicker.enabled),
             ("F4 light",       self.show_lighting),
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
+            ("F11 flame debug", self.fire_vfx.debug_view != 0),
             ("T  temperature", self.show_temperature),
-            ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
-            ("M  3D units",    self.cfg.use_3d_units),
-            ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
         ]:
@@ -1459,17 +2365,6 @@ class GameRenderer:
                   color=(140, 140, 160, 255))
         y += 14
 
-    def set_fire_light_stats(self, count: int, peaks: int, cap: int) -> None:
-        """Record this frame's fire-light counts for the debug HUD (B1 §3).
-
-        ``count`` = lights actually emitted (<= cap), ``peaks`` = NMS peaks
-        before the cap, ``cap`` = max_lights. count < peaks means the cap
-        truncated — surfaced on the HUD so tuning sessions see saturation.
-        """
-        self.fire_light_count = int(count)
-        self.fire_light_peaks = int(peaks)
-        self.fire_light_cap = int(cap)
-
     # ---- input ----------------------------------------------------------
 
     def poll_toggles(self) -> None:
@@ -1486,7 +2381,7 @@ class GameRenderer:
         self.poll_camera_zoom()
 
     def poll_debug_toggles(self) -> None:
-        """The diagnostic/graphical toggles (F1-F10, T/L/V/M/B/H/G, brackets).
+        """The diagnostic/graphical toggles (F1-F10, T/V/M/B/H/G, brackets).
 
         Every key here is a development affordance, not a game binding — which
         is exactly why §17 evicts them from game mode.
@@ -1495,8 +2390,32 @@ class GameRenderer:
             self.show_grid = not self.show_grid
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F2):
             self.show_smoke = not self.show_smoke
+        # F3: the flame's A/B (graphics G3 F3, design §1 decision 3) -- A
+        # "mask" (glow by temperature only) -> B "thickness" (temperature +
+        # flame thickness) -> off -> A. (F3 was the legacy flat-orange fire
+        # overlay, deleted with it.)
+        # Graphics G3 F4a (HUMAN-TEST 2): Shift+F3 toggles the EMBERS,
+        # Ctrl+F3 the heat SHIMMER, Alt+F3 (F4b) the room-light FLICKER --
+        # every fire toggle on the F3 key.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F3):
-            self.show_fire = not self.show_fire
+            shift = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT)
+                     or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT))
+            ctrl = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_CONTROL)
+                    or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_CONTROL))
+            alt = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_ALT)
+                   or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_ALT))
+            if alt:
+                # G3 F4b (HUMAN-TEST 2): Alt+F3 toggles the fire's room-light
+                # flicker
+                print(f"[flicker] -> "
+                      f"{'on' if self.fire_flicker.toggle() else 'off'}")
+            elif shift:
+                print(f"[embers] -> {'on' if self.embers.toggle() else 'off'}")
+            elif ctrl:
+                print(f"[shimmer] -> {'on' if self.shimmer.toggle() else 'off'}")
+            else:
+                print(f"[fire_vfx] flame law -> "
+                      f"{self.fire_vfx.cycle_emission()}")
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F4):
             self.show_lighting = not self.show_lighting
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F5):
@@ -1511,19 +2430,24 @@ class GameRenderer:
         # taken by the physics-recorder dump in input_handler.py — F9 is free.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F9):
             self.legacy_smoke_on = not self.legacy_smoke_on
+        # F11: the flame VFX debug views (graphics G3 F1/F2) -- off ->
+        # sources -> flame R -> flame T_vfx -> velocity u -> pressure p ->
+        # off, each with the active boxes outlined. (F11 was free: F1-F7 +
+        # F9/F10 are here, F8 is the recorder dump.)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F11):
+            from .fire_vfx import DEBUG_VIEWS
+            mode = self.fire_vfx.cycle_debug_view()
+            print(f"[fire_vfx] debug view -> {DEBUG_VIEWS[mode]}")
         # F10: dirty-Planck speckle A/B (Fire & Heat Beauty B2 P4) — cycles the
         # black-body flame mottle off -> noise -> soot so Erik picks by eye in the
         # studio. (Keymap audited: in-game F1-F7 + F9 are poll_toggles, F8 is the
-        # input_handler recorder dump — F10/F11/F12 are all free; F10 is the next
+        # input_handler recorder dump — F10/F11/F12 were free; F10 is the next
         # after F9's legacy-smoke A/B.) Prints the new mode for the console log.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
             print(f"[speckle] mode -> {self.speckle.cycle_mode()}")
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
-        # L: fire light sources (B1) — A/B the ray-traced fire glow live.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_L):
-            self.show_fire_lights = not self.show_fire_lights
         # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.
@@ -1532,22 +2456,16 @@ class GameRenderer:
         # toggle. See input_handler.py.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_V):
             self.show_water = not self.show_water
-        # J: flip the Phase-0 3D marines live (render-only, feel gate). Lazy-load
-        # the rigged model the first time it turns on, so a sprite-only session
-        # never pays the load cost. If the model fails to load, draw_units
-        # no-ops and the sprite path stays in effect. The shared top-down
-        # camera (self._world_cam3d) is built unconditionally at construction
-        # (props & vegetation #60 P3, design §4.3 F2) — nothing to build here.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_M):
-            self.cfg.use_3d_units = not self.cfg.use_3d_units
-            if self.cfg.use_3d_units and not self.unit_models.ready:
-                self.unit_models.load()
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
-            self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
             self.normal_y_flipped = not self.normal_y_flipped
             self.lighting.set_normal_y_sign(-1.0 if self.normal_y_flipped else 1.0)
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_G):
+        # F10 (was G — #59: G is ORDER_GRENADE in input_handler, and this
+        # debug block runs unconditionally, so every grenade selection also
+        # flipped gamma decode; B/bilinear had the same latent collision with
+        # ORDER_EXPLOSIVE — resolved wholesale at the #53 controls review, and
+        # B itself was retired at #59: bilinear is now `[render.lighting]
+        # bilinear` in config.toml, read once at LightingPass construction).
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
             self.srgb_decode = not self.srgb_decode
             self.lighting.set_srgb_decode(self.srgb_decode)
         # Adjust light Z (vertical incidence) live: [ = lower (grazing),
@@ -1586,10 +2504,69 @@ class GameRenderer:
             self.camera.set_zoom(self.camera.zoom_px_per_tile + zoom_step * 0.4)
         # Mouse wheel zoom
         wheel = rl.get_mouse_wheel_move()
-        if wheel != 0:
+        if wheel != 0 and not self.pointer_captured():
             self.camera.set_zoom(self.camera.zoom_px_per_tile + wheel * zoom_step)
 
-    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> None:
+    # ---- the light curve and its editor (graphics G5, #64) ---------------
+
+    def _frame_light_curve(self):
+        """This frame's curve: the panel's edit while it is open, else the
+        config's. ``panel = true`` + Ctrl+R opens it; a reload that changed
+        the table starts the edit again from the file."""
+        from renderer.light_curve import light_curve_settings
+        from ui.light_curve_panel import CurvePanel
+        curve = light_curve_settings(CFG)
+        if not curve.panel:
+            self.curve_panel = None
+            return curve
+        if self.curve_panel is None or self.curve_panel.base != curve:
+            self.curve_panel = CurvePanel(curve)
+        return self.curve_panel.curve
+
+    def pointer_captured(self) -> bool:
+        """The mouse is on the light curve panel: the game ignores its clicks
+        and its wheel."""
+        panel = self.curve_panel
+        if panel is None:
+            return False
+        from ui.light_curve_panel import panel_layout
+        return panel.captures(panel_layout(rl.get_screen_width()),
+                              rl.get_mouse_x(), rl.get_mouse_y())
+
+    def update_light_curve_panel(self, dt: float) -> None:
+        """The panel's frame: mouse in, histogram refreshed, drawn. Called
+        after the HUD. No panel, no cost."""
+        panel = self.curve_panel
+        if panel is None:
+            return
+        from renderer.light_curve import light_histogram, write_settings
+        from ui.draw import draw_light_curve_panel
+        from ui.light_curve_panel import panel_layout
+        layout = panel_layout(rl.get_screen_width())
+        mx, my = rl.get_mouse_x(), rl.get_mouse_y()
+        left = rl.MouseButton.MOUSE_BUTTON_LEFT
+        if rl.is_mouse_button_pressed(left):
+            if panel.press(layout, mx, my) == "save":
+                write_settings(CFG._path, panel.curve)
+                panel.mark_saved()
+        elif rl.is_mouse_button_down(left):
+            panel.move(layout, mx, my)
+        else:
+            panel.release()
+        if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_RIGHT):
+            panel.right_press(layout, mx, my)
+        self._curve_hist_age += dt
+        if self._curve_hist is None or self._curve_hist_age >= 0.25:
+            self._curve_hist_age = 0.0
+            light = (np.asarray(self.lighting.packed_a[..., :3],
+                                dtype=np.float32)
+                     * self.lighting.light_gain)
+            self._curve_hist = light_histogram(light, panel.curve.range)
+        draw_light_curve_panel(panel, layout, self._curve_hist)
+
+    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> bool:
+        """WASD / arrows pan (Shift x3). Returns True when the player panned
+        this frame -- the follow camera (#128) then drops to free."""
         K = rl.KeyboardKey
         dx = dy = 0.0
         if rl.is_key_down(K.KEY_A) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
@@ -1597,11 +2574,12 @@ class GameRenderer:
         if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):    dy -= 1
         if rl.is_key_down(K.KEY_S) or rl.is_key_down(K.KEY_DOWN):  dy += 1
         if dx == 0 and dy == 0:
-            return
+            return False
         speed = pan_speed_tiles_per_s
         if rl.is_key_down(K.KEY_LEFT_SHIFT) or rl.is_key_down(K.KEY_RIGHT_SHIFT):
             speed *= 3
         self.camera.pan(dx * speed * dt, dy * speed * dt)
+        return True
 
     # ---- coordinate conversions -----------------------------------------
 
@@ -1652,9 +2630,15 @@ class GameRenderer:
                     mat = "vacuum"
                 else:
                     mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
-                blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
-                tag = "BLOCKED" if blocked else "walkable"
-                text = f"tile ({cx}, {cy}) | {mat} | {tag}"
+                # Walking and air are separate axes (#134: a grille is
+                # mobility 0 but open to gas; a legacy door the reverse), so
+                # the label reads walkability from MOBILITY (is_passable, the
+                # A* / movement predicate) and flow from `solid`.
+                walk = bool(gmap.is_passable(cy, cx)
+                            and not gmap.is_vacuum[cy, cx])
+                tag = "walkable" if walk else "BLOCKED"
+                flow = "sealed" if gmap.solid[cy, cx] else "air"
+                text = f"tile ({cx}, {cy}) | {mat} | {tag} | {flow}"
                 # hover_readout wants (tx, ty) in the same order this HUD
                 # already computes cursor coords in.
                 readout = pack_hover_readout(
@@ -1688,11 +2672,17 @@ class GameRenderer:
         rl.unload_texture(self.lighting.light_tex_b)
         rl.unload_texture(self.lighting.vacuum_tex)
         rl.unload_texture(self.smoke_overlay.tex)
-        rl.unload_texture(self.fire_overlay.tex)
         rl.unload_texture(self.glow_overlay.tex)
         rl.unload_texture(self.gas_medium.tex)
         self.gas_detail.unload()
-        rl.unload_texture(self.temperature_overlay.tex)
+        self.gas_relief.unload()
+        self.fire_vfx.unload()
+        self.ember_draw.unload()
+        self.muzzle_flame_draw.unload()
+        self.tracer_draw.unload()
+        self.shimmer.unload()
+        self.shockwave.unload()
+        self.temperature_overlay.unload()
         rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()

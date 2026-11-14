@@ -16,7 +16,7 @@ instruction to define it concretely):
     the hull ring and the true-vacuum band/breach itself), sampled once per
     tick (tick 0 = post-construction, pre-step).
 
-    The BASELINE leg (k2=0, shipped k_drag) is run for TICKS ticks; Nhalf :=
+    The BASELINE leg (k2=0, k_drag = GATE_K_DRAG) is run for TICKS ticks; Nhalf :=
     N0 - 0.5*(N0 - Nfinal) where N0/Nfinal are the baseline's own tick-0/
     tick-TICKS values. tick_50 for ANY leg (baseline or otherwise) is the
     first tick at which that leg's OWN N_total trace is <= Nhalf (Nhalf is
@@ -104,6 +104,14 @@ TICKS = 120
 SWEEP_K2 = (0.25, 0.5, 1.0)          # design §6 leg 2's set
 QUAD_NEG_CONTROL_K2 = 10.0           # design §6 leg 3
 LIN_NEG_CONTROL_KDRAG = 10.0         # design §6 leg 4 (k2=0)
+# The linear dial every other leg runs at. PINNED HERE, not read from
+# config.toml (#4, 2026-10-06): the bands below were MEASURED at k_drag =
+# 0.5, and leg 5's ratios divide by the baseline's linear-drag heat, which
+# scales with k_drag. When Erik moved the shipped k_drag to 0.01 the
+# baseline's heat fell ~50x and leg 5 read 3446x for a k2 property that had
+# not changed. The gate is about k2 at a fixed k1; which k1 ships is not
+# its business.
+GATE_K_DRAG = 0.5
 BOUND_RATIO = 1.5                    # design §6's shared bound, all legs
 # RESTATED arc #54 P-G3, 2026-08-30: leg 4's own crossing ratio moved from
 # ~1.60x (pre-arc) to a measured 1.4706x -- the honest energy books (stored
@@ -133,9 +141,31 @@ def _build_scenario():
     assert g.is_vacuum.any(), "scenario must have vacuum to vent into"
 
     q = atmosphere_fixed.quantize_scalar
-    g.temperature[10:16, 10:16] += q(5000.0)
+    # gas-energy conservation arc #54, design §2.7 last row (P-G0): both
+    # patches are open interior air (material 4, inside the [3:45,3:45]
+    # carve), so their temperature seeds go through the seam primitive that
+    # keeps gas_energy in sync -- not a raw `temperature[...] =` write
+    # (CLAUDE.md "Gas temperature is a mirror"; issue #4 finding, 2026-09-30:
+    # a bare write here evaporates on the first runner.step, since
+    # GameMap.__init__ already derived gas_energy from the pre-seed (N, T)
+    # and nothing re-derives it afterward -- measured, the +5000 patch read
+    # -236.5 and the +15500 patch read -23.6 after one tick).
+    g.seed_gas_temperature((slice(10, 16), slice(10, 16)),
+                           g.temperature[10:16, 10:16] + q(5000.0))
+    # The O2 top-up is a bare bulk-`gas` write too (more Dalton mass, same
+    # cells) -- gamemap.py::reseed_gas_energy's own docstring names exactly
+    # this case ("a scenario builder that just wrote bulk `gas` ... directly
+    # and needs the stored energy brought back into agreement"): left
+    # un-reseeded, gas_energy here still reflects the SMALLER pre-O2 N at
+    # the patch's T, so the mirror recomputed next tick divides that same
+    # energy by the NEW, larger N and reads far colder than 5000 (measured:
+    # implied ~768 K immediately, before any tick even runs). Reseed this
+    # sub-selection so its energy matches the N now sitting there at the
+    # patch's already-seeded temperature.
     g.gas[O2, 11:14, 11:14] += q(4.0)
-    g.temperature[30:36, 30:36] += q(15500.0)
+    g.reseed_gas_energy((slice(11, 14), slice(11, 14)))
+    g.seed_gas_temperature((slice(30, 36), slice(30, 36)),
+                           g.temperature[30:36, 30:36] + q(15500.0))
     return g
 
 
@@ -222,7 +252,7 @@ def legs():
     """Runs every leg ONCE (module-scoped) -- baseline + the k2 sweep + both
     negative controls -- and derives the shared 50%-equalization threshold
     from the baseline leg alone (design §6 leg 1)."""
-    baseline = _run_leg(TICKS, k_drag2=0.0)
+    baseline = _run_leg(TICKS, k_drag2=0.0, k_drag=GATE_K_DRAG)
     N0 = baseline["n_trace"][0]
     Nfinal = baseline["n_trace"][-1]
     Nhalf = N0 - 0.5 * (N0 - Nfinal)
@@ -233,12 +263,12 @@ def legs():
 
     sweep = {}
     for k2 in SWEEP_K2:
-        r = _run_leg(TICKS, k_drag2=k2)
+        r = _run_leg(TICKS, k_drag2=k2, k_drag=GATE_K_DRAG)
         r["tick50"] = _tick_50(r["n_trace"], Nhalf)
         r["ratio"] = (r["tick50"] / tick50_base) if r["tick50"] > 0 else float("inf")
         sweep[k2] = r
 
-    quad = _run_leg(TICKS, k_drag2=QUAD_NEG_CONTROL_K2)
+    quad = _run_leg(TICKS, k_drag2=QUAD_NEG_CONTROL_K2, k_drag=GATE_K_DRAG)
     quad["tick50"] = _tick_50(quad["n_trace"], Nhalf)
     quad["ratio"] = (quad["tick50"] / tick50_base) if quad["tick50"] > 0 else float("inf")
 
@@ -252,10 +282,10 @@ def legs():
 
 
 # ---------------------------------------------------------------------------
-# Leg 1 -- regression fence at shipped dials (k2=0)
+# Leg 1 -- regression fence at the gate's pinned k_drag (k2=0)
 # ---------------------------------------------------------------------------
 def test_leg1_regression_fence_baseline_capture(legs):
-    """Design §6 leg 1: k2=0 at shipped dials (k_drag=0.5) -- capture the
+    """Design §6 leg 1: k2=0 at the gate's pinned k_drag (GATE_K_DRAG = 0.5) -- capture the
     50%-equalization profile. Establishes Nhalf/tick50_base; every other
     leg's bound is a RATIO to this same-run number, never a frozen N."""
     b = legs["baseline"]
@@ -395,7 +425,7 @@ def test_leg5_blast_heat_watch(legs):
     # be clipped at all, which is the point (D5) -- the T_MAX_PHYS rail is
     # the once-per-tick recovery's, and `t_max_phys_hits` is still reported.
     assert b["e_heat_sum"] > 0, (
-        "baseline (k_drag=0.5 shipped, k2=0) must already show some linear "
+        "baseline (k_drag=GATE_K_DRAG, k2=0) must already show some linear "
         "drag heat deposit -- else the ratios below are meaningless")
 
     ratio_dep_k2_1 = k2_1["e_heat_sum"] / b["e_heat_sum"]
@@ -430,3 +460,53 @@ def test_leg5_blast_heat_watch(legs):
         f"worst-tick int64 headroom margin {margin:.2f}x is below the 10x "
         "safety pin -- design §5's overflow bound is getting close, "
         "re-measure before P3 sweeps larger k2")
+
+
+# ---------------------------------------------------------------------------
+# Scenario-seeding property -- the blast must still BE a blast after tick 1.
+# Independent of the `legs` fixture (a single tick, not a TICKS-tick sweep).
+# ---------------------------------------------------------------------------
+def test_the_seeded_blast_survives_the_first_tick():
+    """The five legs above all assume ``_build_scenario`` actually produces a
+    HOT blast venting into vacuum. Since arc #54 P-G1b, a gas cell's
+    ``temperature`` is a MIRROR re-derived from the stored ``gas_energy``
+    once per tick (CLAUDE.md 'Gas temperature is a mirror') -- so if the
+    scenario's seeding writes ``temperature``/``gas`` directly instead of
+    through the ``GameMap.seed_gas_temperature`` / ``reseed_gas_energy``
+    seam, ``GameMap.__init__``'s pre-seed ``gas_energy`` (the ambient state,
+    derived before the seeding writes ran) is what the first tick's recovery
+    actually reads back -- the seeded heat never reached the stored truth,
+    so it evaporates on tick 1 and every leg above would silently be
+    measuring a breach-only decompression of an ambient-temperature room,
+    not a blast.
+
+    BREAKS ON: reverting ``_build_scenario`` to seed with bare
+    ``g.temperature[sel] += ...`` / ``g.gas[gas, sel] += ...`` writes instead
+    of the seam (the P-G1b vacuity this test exists to catch -- issue #4,
+    2026-09-30). Measured under that reversion: the +5000 patch reads -236.5
+    and the +15500 patch reads -23.6 after exactly one tick, both far below
+    ambient, let alone the thresholds below.
+
+    Thresholds are deliberately loose (well under the seeded deltas of 5000
+    / 15500): a single tick already expands and cools each patch some (the
+    face-flux energy step spreads heat toward cooler neighbours, and the
+    neck is already venting), so this pins SURVIVAL, not an exact value --
+    never a snapshot.
+    """
+    g = _build_scenario()
+    runner = PhysicsRunner(bp)
+    runner.eos.dx = float(g.tile_size_m)
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+    runner.step(g, dt)
+
+    q = atmosphere_fixed.quantize_scalar
+    t1 = g.temperature[12, 12] / FP_ONE
+    t2 = g.temperature[32, 32] / FP_ONE
+    print(f"\nseed-survival after 1 tick: temperature[12,12]={t1:.2f} "
+          f"(>4000 required), temperature[32,32]={t2:.2f} (>10000 required)")
+    assert g.temperature[12, 12] > q(4000.0), (
+        f"the +5000 patch's mirror read {t1:.2f} after one tick -- the "
+        "seed did not survive (vacuous scenario seeding)")
+    assert g.temperature[32, 32] > q(10000.0), (
+        f"the +15500 patch's mirror read {t2:.2f} after one tick -- the "
+        "seed did not survive (vacuous scenario seeding)")

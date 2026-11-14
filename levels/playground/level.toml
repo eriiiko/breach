@@ -14,11 +14,11 @@
 # Launch:  C:/Users/steen/anaconda3/python.exe main.py --level playground
 # (or set [display] level = "playground" in config.toml)
 
-version = "2"
+version = "3"
 name = "Playground"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py):
-#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, 9=SPACE
+# v3 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, -1=SPACE
 tilemap = "tilemap.csv"
 
 # Same physical scale as the ship.
@@ -244,3 +244,30 @@ px_per_tile = [64.00, 64.00]
 tileset = "art/tilesets/greybox"
 px_per_tile = 64
 seed = 0
+
+[[spawn_room]]
+team = 0
+x = 4
+y = 40
+w = 14
+h = 13
+max_per_team = 9
+placement = "formation"
+
+[[spawn_room]]
+team = 1
+x = 4
+y = 4
+w = 14
+h = 13
+max_per_team = 9
+placement = "formation"
+
+[[spawn_room]]
+team = 255
+x = 83
+y = 49
+w = 13
+h = 17
+max_per_team = 9
+placement = "formation"

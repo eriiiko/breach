@@ -29,6 +29,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.combat import Projectile
 from simulation.orders import (  # noqa: E402
     ORDER_GRENADE, ORDER_MOVE, ORDER_MOVE_ATTACK, ORDER_MOVE_COVER,
@@ -131,9 +132,13 @@ def test_seam_does_not_snap_positions():
     the boundary stays exactly where it was."""
     sim = _sim()
     u = _marine(sim, x=4.37, y=6.82)
+    x0, y0 = u.x, u.y
     _run(sim, sim.ticks_per_round)
-    assert u.x == pytest.approx(4.37)
-    assert u.y == pytest.approx(6.82)
+    # #29 P3c: the spawn's float door puts 4.37 / 6.82 on the Q16 grid
+    # (4.3699951..., within 2^-17 tiles); the seam must keep THAT exactly.
+    assert (u.x, u.y) == (x0, y0)
+    assert u.x == pytest.approx(4.37, abs=2 ** -17)
+    assert u.y == pytest.approx(6.82, abs=2 ** -17)
 
 
 def test_two_phase_wego_still_snaps_positions():
@@ -274,7 +279,7 @@ def test_orders_are_accepted_with_zero_ap():
 def test_is_terminal_is_one_side_eliminated_not_round_complete():
     sim = _sim()
     _marine(sim)
-    z = Unit("z", x=12.0, y=12.0, team=1)
+    z = Unit("z", x=12.0, y=12.0, team=ZOMBIE_TEAM)
     sim.add_unit(z)
     _run(sim, sim.ticks_per_round + 1)
     assert not sim.is_terminal(), "a completed round is not an episode end"

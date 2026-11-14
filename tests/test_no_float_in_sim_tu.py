@@ -44,15 +44,26 @@ ROOT = Path(__file__).resolve().parent.parent
 CPP_SRC = ROOT / "cpp" / "src"
 
 # The simulation solver translation units the migration must drive to integer.
-# (Render-only TUs like raycaster.cpp and the pure-glue bindings.cpp are NOT in
-# scope — they are not part of the synced lockstep state.)
+# (The pure-glue bindings.cpp is NOT in scope — it is not part of the synced
+# lockstep state. raycaster.cpp was never on this ratchet, though it wrote the
+# synced `rad_net` from P-R4 (2026-08-01) until T6 and sat on the /fp:strict
+# list; ray-engine-v2 P6c deleted it. eos_solver.cpp / combustion.cpp /
+# bulk_transport.cpp / sky_exchange.cpp are strict but unscanned — a
+# pre-existing gap, listed honestly rather than closed here. So
+# "every sim TU" is not what SIM_TUS covers; each entry is a statement about
+# that TU alone. Ray-engine-v2 P1 adds radiation_sweep.cpp at a HARD 0/0/0 and
+# emissive_table.cpp at its documented floor.)
 SIM_TUS = (
     "atmosphere_solver.cpp",
-    "smoke_dynamics.cpp",
+    # (smoke_dynamics.cpp DELETED, smoke transport v2 #12: the trace planes
+    #  ride the bulk face flux in bulk_transport.cpp -- itself still in the
+    #  strict-but-unscanned gap named above.)
     "fire_simulation.cpp",
     "water_solver.cpp",
     "temperature_solver.cpp",
     "physics_engine.cpp",
+    "radiation_sweep.cpp",
+    "emissive_table.cpp",
 )
 
 # Whole-word ``float`` / ``double`` (so "floating" / "doubled" in prose don't
@@ -324,13 +335,60 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # P-S1 touches carries a `float` token), so it is intentionally NOT tightened
 # here to avoid mis-attributing someone else's earlier decrease to this one.
 # `fp:fast` unchanged (0).
+# R1 (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-01.md "Ruling
+# R1"): fire_simulation.cpp `double` 16 -> 17. ONE new load-time boundary cast,
+# `const q16 o2f_cap_q = fp::quantize((double)p.o2f_cap);` — the SAME documented
+# exception category as every other config-constant precompute in this block
+# (`x_ext_q`, `recip_x_span`, etc.): a load-time double-then-quantize scalar,
+# NOT per-cell arithmetic. `float`/`fp:fast` unchanged.
+# R3 (fire session #12, 2026-09-06, docs/fire_3c_design_2026-09-01.md "Ruling
+# R3"): fire_simulation.cpp `double` 17 -> 18. ONE new load-time boundary cast,
+# `const q16 hotf_cap_q = fp::quantize((double)p.hotf_cap);` — the SAME
+# documented exception category (a load-time double-then-quantize config
+# scalar, not per-cell arithmetic); the destruction-loop's hotf recompute
+# (T_i/T_ext_i/clamp0cap_q) reuses already-quantized q16/recip values and adds
+# no new `(double)`/`float` token. `float`/`fp:fast` unchanged.
+# Ray-engine-v2 P1 (2026-09-16, docs/ray_engine_v2_design_v3_2026-09-15.md
+# §8.1): radiation_sweep.cpp is PURE INTEGER and pinned at 0/0/0 — a HARD gate
+# from birth. This ratchet counts LINES CONTAINING THE WORD, comments included,
+# so 0/0/0 forbids the two type names even in prose there. emissive_table.cpp
+# holds the E° bake moved out of raycaster.cpp: the ONE place the E° map
+# touches a real number (the load-time `(double)k4 * rad_scale` boundary
+# multiply, door 2, the pre-existing audited chain) — its `double` lines are
+# that bake's declarations, the dial-integrality check and the comment lines
+# that explain them, recorded at their actual count. `float` 0, `fp:fast` 0.
+# Ray-engine-v2 P6c (2026-09-29): physics_engine.cpp `float` 68 -> 53. The
+# render march's float dyn_light_atten stamp is DELETED from stamp_units (its
+# static `light_atten` input, the three per-row atten_{r,g,b} inputs, the
+# per-cell pointer and three channel locals: 58 -> 53 at the file), and the
+# recorded 68 was already 10 stale-low before this patch -- tightened to the
+# real count so the ratchet stays sharp. `double` / `fp:fast` unchanged.
+# Smoke transport v2 (#12, 2026-10-04): smoke_dynamics.cpp is DELETED with the
+# semi-Lagrangian smoke step (its row goes with it). physics_engine.cpp `float`
+# 53 -> 51 and `double` 28 -> 20: the SL dispatch's d_smoke line, the decay
+# dial local and the decay fold left with the trace loop (the tail's
+# arithmetic lives in bulk_transport.cpp now); `double` was 7 stale-high
+# before this patch. fire_simulation.cpp `float` 6 -> 5: no line of this
+# patch -- it was 1 stale-high. Both tightened to their real counts so the
+# ratchet stays sharp.
+# Smoke transport v2 P2b (#12, 2026-10-04): physics_engine.cpp `float` 51 -> 54.
+# The resident trace tail's seam, PhysicsEngine::run_trace_tail_resident, takes
+# the per-gas config columns `const float* gas_diffusion, const float*
+# gas_decay` and `float sim_time` (the SAME pass-through parameter types
+# run_substeps carries for the CPU tail) and forwards the device permeability
+# as `reinterpret_cast<const float*>` (run_substeps_resident's line, once
+# more): three LINES of interface types, NO float arithmetic -- every fold of
+# those dials happens in bulk_transport.cpp (/fp:strict, trace_diffusion_dd_q /
+# trace_decay::frac_q), shared by both backends. The CUDA-S4a precedent above.
+# Net over the arc: the deleted SL dispatch's lines (53 -> 51 at P1) and these.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
-    "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 16, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 5,  "double": 18, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 54, "double": 20, "fp:fast": 1},
+    "radiation_sweep.cpp":    {"float": 0,  "double": 0,  "fp:fast": 0},
+    "emissive_table.cpp":     {"float": 0,  "double": 8,  "fp:fast": 0},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the

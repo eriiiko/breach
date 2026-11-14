@@ -110,9 +110,9 @@ def test_cycle_exact_conservation_all_slices():
     # Nonzero trace gas in and around the doorway: all 7 slices must move
     # by the same exact rule (pure-primitive cycling — no physics step, so
     # per-slice exactness holds for traces too).
-    g.gas[SMOKE][6, 6] = 12345
-    g.gas[POISON][6, 6] = 7777
-    g.gas[POISON][5, 6] = 999
+    g.gas[SMOKE][6, 6] = 12345  # raw trace counts: scale-free (#88)
+    g.gas[POISON][6, 6] = 7777  # raw trace counts: scale-free (#88)
+    g.gas[POISON][5, 6] = 999  # raw trace counts: scale-free (#88)
     totals0 = _slice_totals(g)
 
     for cycle in range(100):
@@ -183,7 +183,7 @@ def test_full_tick_cycle_conservation_bulk_only():
 def test_remainder_placement_nsew():
     g = _make_gmap()
     _make_solid(g, 6, 5)                    # kill the W receiver -> k=3
-    g.gas[POISON][6, 6] = 7                 # n=7, k=3 -> q=2, r=1
+    g.gas[POISON][6, 6] = 7                 # n=7, k=3 -> q=2, r=1 -- raw trace counts: scale-free (#88)
     g.seal_tiles([(6, 6)], MAT_DOOR)
     # Shares [3, 2, 2] in receiver order N (5,6), S (7,6), E (6,7).
     assert int(g.gas[POISON][5, 6]) == 3
@@ -200,9 +200,9 @@ def test_multi_tile_span_permutation_invariance():
     results = []
     for order in (span, list(reversed(span)), [span[1], span[2], span[0]]):
         g = _make_gmap()
-        g.gas[POISON][6, 6] = 101
-        g.gas[POISON][6, 7] = 202
-        g.gas[POISON][6, 8] = 303
+        g.gas[POISON][6, 6] = 101  # raw trace counts: scale-free (#88)
+        g.gas[POISON][6, 7] = 202  # raw trace counts: scale-free (#88)
+        g.gas[POISON][6, 8] = 303  # raw trace counts: scale-free (#88)
         totals0 = _slice_totals(g)
         g.seal_tiles(order, MAT_DOOR)
         assert _slice_totals(g) == totals0
@@ -384,7 +384,7 @@ def test_unseal_cascade_with_zero_donor():
     _make_solid(g, 5, 6)
     _make_solid(g, 7, 6)                        # donors: E (6,7), W (6,5)
     g.gas[POISON][6, 7] = 0
-    g.gas[POISON][6, 5] = 10
+    g.gas[POISON][6, 5] = 10  # raw trace counts: scale-free (#88)
     totals0 = _slice_totals(g)
     g.unseal_tiles([(6, 6)])
     # target = 10 // 3 = 3; balanced take clamps at the zero donor and the
@@ -432,7 +432,7 @@ def test_freed_refill_touches_no_gas():
 # ---------------------------------------------------------------------------
 def test_determinism_identical_script_two_maps():
     def script(g):
-        g.gas[POISON][5, 5] = 4321
+        g.gas[POISON][5, 5] = 4321  # raw trace counts: scale-free (#88)
         g.seal_tiles([(5, 5), (5, 6)], MAT_DOOR)
         g.unseal_tiles([(5, 5)])
         g.seal_tiles([(7, 7)], MAT_DOOR)

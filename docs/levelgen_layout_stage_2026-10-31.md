@@ -1,0 +1,716 @@
+# Levelgen: the layout stage (stage 1.5) -- from a resolved recipe graph to rectangles
+
+> **Status**: design, **revision 2** (2026-10-31 night, lead
+> `level-design-lead`, Claude alone; Erik on a break). Revision 1's
+> adversarial critique (`levelgen_layout_stage_2026-10-31_critique.md`,
+> Opus, 20 findings, 2 blockers, every number recomputed from `SIZES`) is
+> folded in. Revision 2 is NOT re-critiqued; Erik may call one. A
+> computational-method design, the lead's call under the mandate; every
+> game-feel consequence is in §10 for Erik's veto. Serves #136 / #133 inside
+> milestone 11 (#131). Design only: no code.
+>
+> **BUILT 2026-11-06** (`tools/ship_layout.py`): the last section, "As
+> built", lists what exists, the measured failure rates and fifteen
+> deviations; where it and §2-§13 disagree, it holds.
+>
+> **What revision 2 changed.** The skeleton gained a **LOBBY** at the band
+> end of each wing (the slab's twin at the other end): every cross-structure
+> edge now lands on an axiom room the grammar declares, so the layout adds
+> no edge and picks no room. **Bounded steel voids are allowed** (the hull
+> interior is steel; a gap is a thick wall, invisible to every gate), which
+> is where the slack between hull-fixed rectangles and recipe size RANGES
+> goes. The flank pair's narrow leg runs along the hull from the slab to the
+> lobby, entered from above into both. The spawn slab spans the wing's
+> height. Engineering is entered by a mirrored pair of airlocks from the two
+> lobbies (vestibules on engineering's side), never from the passageway, so
+> bots always meet through the main cell; an axis-to-axis cell crossing is a
+> bulkhead or a breakable wall (airlock parity). The band's cuts are
+> conditioned on the lobby and the ring. Two rng streams. A worked example
+> with the real numbers (medium and large). The retreat loop is realised on
+> a department's entry edge (two stubs); the recipe doc is amended for it
+> and for `attach` / `exit` room keys and the quarters' stub range.
+>
+> **Amends** (dated lines land in the named documents in the same patch):
+> recipe doc rev 2 §1.1 / §1.5 (the contact graph is the DECLARED edges),
+> §1.3 (flank pair hubs = slab and lobby; retreat loop = two stubs on an
+> entry edge), §3.1 (stub `along = [14, 24]`), §3.2 (`attach`, `exit`),
+> §5.1 (constructive skeleton instead of a weighted slicing treemap; no swap
+> move); archetype doc §1 (`on` classes, axiom rows, `sizes`).
+>
+> Reads: the recipe doc, the research digest strand (b) (B6, B7), v0.1 §5
+> and `tools/gen_ship.py` (`plan_graph`, `embed`, `_airlock`, `validate`).
+
+## 0. The problem in one paragraph
+
+Stage 1 (the grammar) produces a GRAPH: rooms with size ranges and shape
+hints, declared edges by kind, departments with a gradient wish, cycle types
+with legs. Stage 2 (`embed`) stamps rooms that already carry `x, y, w, h`.
+Today `plan_graph` fills the gap the other way round: rectangles first,
+edges chosen FROM the geometry. The layout stage turns the grammar's graph
+into rectangles inside a rigid hull such that every DECLARED edge is a
+shared wall long enough for its opening, the ship is mirrored, and
+`validate` passes. The research pass's answer for ships is **subdivision,
+not search**. This document makes it concrete as a CONSTRUCTIVE guillotine
+layout: a fixed skeleton whose rooms are the archetype's axiom, a small set
+of placement primitives, elastic extents with bounded steel voids, one
+bounded repair, and reroll.
+
+## 1. Contract
+
+**Input** (from the grammar + resolver, the QUOTIENT half: left wing + axis
+band): the size preset (`SIZES`: W, H, band range, section range); the
+graph: `Room`s with `kind`, `shape` hint, size ranges, `width` class,
+`attach`, resolved tags (`dept`, `cell`, `exit`, `hull_door`, ...), their
+department's `placement`, `entry`, `toward`; `Edge`s `(a, b, kind)`; the
+cycle-type applications (type, legs, the rooms each leg made); the spawn
+request and the spawn exits count. The axiom rooms (§2) are IN the graph,
+with their roles.
+
+**Output**: a `ShipGraph` exactly as `embed` consumes it: `Room`s with
+`x, y, w, h`, `kind`, `tags`, `mirror`; `Edge`s with `at` set for every
+edge; the graph's `hull` and `mirror_x`. `embed`, `validate` and
+`generate`'s retry loop are UNCHANGED; `plan_graph` stays the recipe-less
+producer (`ship_demo` byte-identical).
+
+**Guarantee**: every declared edge is a contact of length >= its opening
+plus the layout's clearance (one tile each side: `DOOR_W` + 2 = 6,
+`AIRLOCK_W` + 2 = 7, `GLASS_W` + 2 = 4; the clearance is the LAYOUT's
+convention, as `plan_graph`'s candidate filter is today, not
+`_opening_tiles`', which has none); every room is inside the hull and
+within its size range (soft maxima only where §3 says so); the half is laid
+out once and reflected; the layout adds no edge, picks no room, drops no
+application: a miss is `_Reject`. **Not guaranteed**: that a draw fits.
+Area, the airlock's vestibule depth, a vent or hull-door site and the
+symmetry gate can all reject, and a rejection rerolls (L8).
+
+## 2. The skeleton IS the axiom (L3)
+
+The freighter SKELETON is code in the layout stage; the archetype file
+NAMES it (`skeleton = "freighter"`) and lists its axiom DEPARTMENTS; the
+skeleton's own rooms and edges below come with it (*[archetype rev 2]*,
+critique 17; a new skeleton is layout code first, a new ship kind on an
+existing skeleton is a file). The skeleton supplies these quotient
+rooms with fixed roles; the layout maps each role to a primitive and fails
+loudly on an unknown role:
+
+| Axiom role | Node | Where | Size |
+|---|---|---|---|
+| `slab` | the spawn room, `kind = "spawn"` | the outer end of the wing, spanning the wing's full height (minus a hull strip when one is applied) | x: `_extent(c)` + 0..2 as today; formation centred |
+| `passageway` | ONE `wide` corridor, `shape = "corridor"` | along x from the slab to the lobby, at a y drawn inside the slab's range (§6) | across: the archetype's range |
+| `lobby` | ONE `wide` room | the band end of the wing, spanning the wing's height (minus the strip) | x: the archetype's range (default 8-10) |
+| `section[i]` | axis-band rooms, `kind = "section"`, self-twins | along y in the band | conditioned cuts (§5) |
+| the horde | `zombie` tag on the MAIN-cell section nearest the centre, never an `own`-cell one | | |
+
+```
+ hull
+ +----------------------------------------------------------------+
+ |  S  | dept row A (upper)       : dept     |  L  |               |
+ |  L  +--------------------------------------+  O  |  axis band   |
+ |  A  |      wing passageway (one wide room) |  B  |  (sections)  |
+ |  B  +--------------------------------------+  B  |               |
+ |     | dept row B (lower)       : dept     |  Y  |               |
+ +----------------------------------------------------------------+
+```
+
+Declared axiom edges: slab-passageway (door), passageway-lobby (door),
+lobby-section (door, to a MAIN-cell section the lobby faces), and the
+engineering entry: lobby-engine room (airlock pair, a mirrored PAIR, one
+per wing, vestibule carved on ENGINEERING's side). The departments' entry
+edges are stub-passageway. Spawn exits (§7) and cycle types (§4) add
+edges the GRAMMAR declares on these roles; the layout only realises them.
+
+Two rules the skeleton guarantees for the bots (#142, airlocks not yet
+walkable): the lobby always faces a main-cell section, so the two wings
+meet through the main cell with no airlock on the way; and the layout runs
+a "bot-walkable between spawns" A* with airlock outer doors CLOSED as its
+own acceptance, before `validate`.
+
+The skeleton is the archetype's; a station fragment or a cavern (#145) has
+another or none.
+
+## 3. Placement primitives and elastic extents
+
+Seven operations, all guillotine cuts of a rectangle; walls one tile;
+"contact of n" = a shared wall run of >= n tiles.
+
+| Primitive | Does | Used for |
+|---|---|---|
+| **strip** | a corridor of `across` from one side of a rectangle, running `along` | passageway, a stub, a hull strip |
+| **pack** | fills one long side of a strip with a 1D sequence of rooms, each room's `along` drawn in its range, walls between; every room touches the strip along its whole `along` | rooms off a stub |
+| **end room** | the room at a strip's far end, its wall across the strip's end; width >= the strip's `across` + 2 so the door fits, centred on the strip; the pack sides' last rooms (or steel) fill the corners | the mess at the end of the stub |
+| **behind** | splits a room's slab perpendicular to the strip: parent nearest the strip, the child behind it, contact = the parent's `along` (>= 6) | galley behind the mess, a pocket, a secret annex |
+| **two-stub** | two parallel stubs in one department rectangle, each with its own door on the passageway, the end room spanning both; the gap between the stubs is a packed room if >= 6 wide, else steel | the retreat loop (§4.1) |
+| **hull strip** | a corridor of `across` along the hull wall over the slab, row A and the lobby, which all lose `across` + 1 of height | the flank pair's narrow leg (§4.2) |
+| **ring** | an even ring of rooms around a hub section inside the band (§4.4) | the maintenance ring |
+
+**Elastic extents (critique 1).** The hull fixes the skeleton; recipes give
+ranges. Where slack goes, in order:
+
+1. a strip's `along` and a pack side's depth absorb slack WITHIN their
+   ranges (a department rectangle's depth is the row's; the stub's `along`
+   is the row depth minus the end room);
+2. a pack side has ONE depth = `max(w_min)` over its rooms; each room is
+   deepened up to its `w_max`; what remains behind a shallower room is
+   **steel** (a thick back wall);
+3. the row's x-slack goes between departments as thick walls, at most
+   `VOID_MAX` (3) tiles each; more slack than that rerolls the draw ("sum
+   of maxima < length" is a reroll too);
+4. a department too shallow for its row keeps its rooms at their maxima
+   and the rest of the depth is steel against the hull.
+
+Steel voids are legal: `embed` fills the hull interior with steel and stamps
+air only in rooms (critique 17), so a void is no compartment, no vent, no
+gate's business. They are kept BOUNDED (`VOID_MAX`, and only at the hull
+side or between departments) because a thick wall breaches and conducts
+differently and reads oddly on the map; a 1-3 tile service space does not.
+
+Rules the primitives keep: a room never below its minimum; a `narrow` strip
+entered only through its long sides; a declared contact >= its opening + 2;
+an undeclared touch is a blank wall (B7 (i)); a `hull_door` room is placed
+as a back room against the hull with a run >= its door and never under the
+hull strip, pre-checked (`hull_door_site`'s rule) so a miss is `_Reject`,
+not `GraphSchemaError`.
+
+## 4. The department packer
+
+For a `wing` department the packer gets its rectangle (x-extent from the
+row packing §6, depth = the row's) and lays out, in this order:
+
+1. **the stub** (`entry`): a strip of `across` (drawn) from the passageway
+   side inward; its x-position in the rectangle is CENTRED unless the
+   department has an `exit` room (then the stub sits so that room lands at
+   the slab end, §7) or the rectangle is narrow (then flush with one side
+   and the stub packs ONE side: x-demand `across + depth + 1`); its
+   passageway end gets the entry door, `at` centred on the stub;
+2. **the end room** (`attach = "end"`, at most one) at the stub's far end;
+   the stub's `along` = row depth minus the end room's `h` minus 1, drawn
+   so both stay in range (else reroll);
+3. **pack** the `attach = "side"` rooms (the default) on the stub's one or
+   two sides in recipe order, required first, then rolled optionals;
+   `count` instances alternate sides starting with the slab side; each
+   room's `along` drawn in its range so the side's sum fits the stub's
+   `along` exactly (midpoints scaled, jittered, floored at minima; walls
+   between; a last gap < 6 is steel);
+4. **behind** rooms (`attach = "behind:<room>"`) split their parent's
+   slab; the side's depth must be >= parent `w_min` + 1 + child `w_min`
+   (the loader checks it against the preset's row depth);
+5. **declared edges**: every `(a, b, kind)` is a contact of >= opening + 2
+   by construction (a packed room touches its stub along its whole
+   `along` >= 6; a behind room touches its parent along >= 6); `at` is
+   drawn inside the run minus one tile each side.
+
+For an `own`-cell wing department (the hard profile's armory) the entry is
+an airlock pair: the stub is room `a` (its `along` >= 9 =
+`VESTIBULE_D + 1 + FORMATION_FOOTPRINT` always holds for a stub) and its
+`across` must be >= 7; the loader refuses an `own` department whose stub
+range cannot.
+
+**Loader twin.** The recipe loader runs this packer's arithmetic at the
+recipe's MINIMA against the smallest allowed preset: two-bin packing of the
+side rooms (not the rev-2 perimeter sum, which is necessary only), the end
+room against the row depth, the behind depths. A recipe that cannot pack is
+refused by name and size.
+
+### 4.1 Retreat loop (edge_to_cycle on a department's entry edge)
+
+The grammar replaces passageway-stub by passageway-stub_1-END and
+passageway-stub_2-END, where END is the department's end room (the mess)
+and stub_2 is a new corridor twin of the stub; the department's side rooms
+keep their edges to stub_1 (= the authored `entry`) or are reassigned to
+stub_2 by the grammar's application (alternating). The layout's `two-stub`
+realises it: both stubs with their own passageway door, the end room
+spanning both. x-demand `2·across + 2·depth + gap + 4`. A department without
+an end room cannot take the loop (the grammar's precondition).
+
+### 4.2 Flank pair (edge_to_cycle on slab-lobby)
+
+The hubs are the slab and the lobby. The `wide` leg is the passageway
+(one room, the axiom's). The `narrow` leg is a **hull strip** of `across` =
+3 along row A's hull wall from above the slab to above the lobby; the slab,
+row A's departments and the lobby lose 4 tiles of height; the strip is
+entered from its long side by a door DOWN into the slab (contact = the
+slab's x-extent >= 8) and a door DOWN into the lobby (contact = the lobby's
+x-extent >= 8). Both anchors are axiom rooms: nothing is picked. `light`
+dim; `fuel` refused. Row A's depth after the strip must still take its
+departments (checked before the cut; else reroll).
+
+### 4.3 Airlock bypass (parallel on lobby-engine room)
+
+The lobby's band wall is shared with engineering's hub section. The axiom
+edge is the airlock pair (vestibule carved on engineering's side, so the
+lobby needs no depth); the bypass adds a `breakable` run on the SAME wall.
+Wall demand along y: `1 + AIRLOCK_W + 1 + 1 + DOOR_W + 1 = 13` (one steel
+tile each side of the outer door for the airlock's wall mounts, one tile
+clearance each side of the breakable; critique 8), plus the two `at`s set
+explicitly and non-overlapping: the airlock centred on the hub's y-range,
+the breakable toward the slab-side end. The lobby spans the wing height
+(>= 24 on medium), so the demand is on the HUB SECTION's height (§5).
+Until `CELL_CROSSING_KINDS` gains `breakable` (recipe doc §5.2) the row
+cannot be stamped; it is a prerequisite patch. *(DONE 2026-11-06 `86629b2`: the pair builds; an overlap or a missing mount / clearance tile is a `GraphSchemaError`.)*
+
+### 4.4 Maintenance ring (ring on the engine room)
+
+Inside the band: `wm` is split as ring depth (6) + 1 + hub + 1 + ring depth
+(6): **`wm >= 20`**, so only the large preset can draw it, and the `wm` draw
+is CONDITIONED on the application (drawn from `[20, band_w.hi]` even). The
+hub section's height is extended by 7 fore and aft for the fore and aft
+ring rooms, which sit ON the axis (self-twins). The two side columns are
+split into 1 or 2 rooms each along y, so the ring has 4 or 6 rooms (**`rooms
+> 6` is refused in v1**); the side rooms are a mirror PAIR inside the band
+(the band is laid out once and reflected like the wing; axis rooms are
+self-twins, side rooms twins). Numbering: r_1 = fore, clockwise. The hub
+joins the odd-numbered ring rooms by doors; ring neighbours join by one kind
+per application. **The lobbies' engineering airlocks then land on the ring
+SIDE rooms** (the grammar's application rewrites the lobby-hub edge to
+lobby-r_side when it applies the ring; both are engineering's cell, so L5
+holds). The hub is then 6-10 wide: a closet-sized engine room (§10).
+
+### 4.5 Pocket (leaf)
+
+A `behind` room or a packed side room with its one door; a one-exit slab is
+a pocket by construction.
+
+### 4.6 Duct link
+
+No geometry. `_build_vents` needs a steel wall site per (room, role); a
+miss is `_Reject` today and stays one.
+
+## 5. The band packer: conditioned cuts (critique 5)
+
+In order: (1) pin the lobby-facing interval: the main-cell section the
+lobbies face spans at least the lobby's y-centre ± 4 (a 6-tile contact is
+then guaranteed; the lobby's whole height touches the band, so the cut
+just must not split the contact into two short runs); (2) pin the
+engineering hub section: height >= 13 when the bypass may be applied, and
+the ring's fore/aft extension when the ring is; (3) split the remaining
+y-ranges with `_split_1d` at `MIN_SECTION` into the remaining `k` sections;
+(4) tag `zombie` on the main-cell section nearest the centre (never the
+hub; `check_request`'s capacity rule is re-derived for this packer on the
+recipe path). An axis-to-axis cell crossing (the hub's fore and aft walls to
+main sections) is a **bulkhead or a breakable wall**: an axis-axis opening
+is centred, never drawn, and must be of EVEN width (`DOOR_W` 4, `GLASS_W`
+2); `AIRLOCK_W` = 5 cannot be mirrored on an even grid, so the loader
+refuses an airlock on an axis-axis edge by name (critique 6). Engineering's
+cell is entered only through the lobbies' airlock pair.
+
+## 6. Rows: assignment, packing, the passageway
+
+- **Row depth**: the wing's height minus the passageway's `across` minus 2
+  walls, split at the passageway's y; the passageway's y is drawn so that
+  each row's depth >= the maximum of its departments' minimum depth demand
+  (stub `along_min` + end room `h_min` + 1, or the side rooms' `along`
+  packing, whichever is larger), and so that the slab keeps >= 7 tiles on
+  each side of the passageway door for exits (§7). With a hull strip, row A
+  is 4 shallower; "equal depth" is NOT a rule.
+- **Assignment**: departments in gradient order (`toward = "spawn"` first,
+  `"axis"` last, the rest in recipe order; ties in file order) are dealt to
+  rows alternately starting with row A, then moved by first-fit if a row's
+  minimum x-demand overflows its length. The archetype's loader requires
+  >= 2 wing departments at minimum count so neither row is empty.
+- **Row length** = wing air width − slab − 1 − lobby − 1. Each department's
+  x-extent is drawn in its demand range (`across + 2·depth + 2`, or the
+  one-sided `across + depth + 1`, or two-stub) so the row's sum plus
+  `VOID_MAX` walls fits exactly; midpoints scaled, jittered, floored at
+  minima; voids between departments <= 3; a department's slab-end wall is
+  the slab's inner wall (exits, §7) and its lobby-end wall the lobby's
+  (blank).
+
+## 7. Spawn exits (the archetype parameter, Erik's 1-3, default 2)
+
+Exits are declared by the GRAMMAR on roles: 1 = slab-passageway; 2 = plus
+slab-`exit` room of row A's first department; 3 = plus row B's. A
+department recipe marks at most one side room `exit = true` (the loader
+refuses a second); the packer pins that room at the slab end of the slab
+side of the stub, so it touches the slab along its `w` (>= 6). If the first
+department of a row has no `exit` room, that exit is not available and the
+grammar draws from the exits the ship can realise (never adds a door to a
+bunk). A hull-strip door into the slab counts as an exit when the flank
+pair is applied. Contact arithmetic: the slab spans the wing height, so
+with the passageway at y_p the slab offers >= 7 tiles above and below it
+by the §6 draw rule.
+
+## 8. Repair, then reroll (L8)
+
+Constructive placement makes every declared edge a contact by construction
+except the cross-structure ones, where jitter can leave a run short: the
+slab-exit contacts, the strip's two doors, the lobby-section contact and
+the bypass wall. ONE bounded repair pass, Merrell's wall slide restricted
+to our cuts: slide the nearest guillotine cut by up to `REPAIR_SLIDE` (3)
+tiles toward lengthening the short run, if every room on both sides stays
+>= its minimum and no other declared contact drops below its opening + 2;
+on the half, before reflection. No swap move (identities carry the
+gradient order and the `exit` pin; amendment to the recipe doc §5.1). Still
+short: `_Reject`; the attempt rerolls under `MAX_ATTEMPTS`; never re-enter
+the grammar.
+
+## 9. Worked example (the numbers, critique 2)
+
+Constants: `BAND` 3, `DOOR_W` 4, `AIRLOCK_W` 5, `MIN_ROOM` 6, formation
+pitch 5 / gap 2, `max_per_team` 6 (c = 2, r = 3: slab x 8-10).
+
+| | medium (100 × 70) | large (160 × 110) |
+|---|---|---|
+| interior air w / h | 92 / 58-62 | 152 / 98-102 |
+| band `wm` (recipe path) | 12-14 (conditioned 20-22 is impossible: **no ring on medium**) | 14-22; 20-22 with a ring |
+| wing air width `(92 − wm)/2 − 1` | 38-39 | 64-68 |
+| slab x / lobby x | 8-10 / 8-10 | 8-10 / 8-10 |
+| **row length** | 16-21 | 42-50 |
+| passageway `across` | 6-8 | 6-8 |
+| **row depth** `(h − across − 2)/2` | 24-27 | 44-47 |
+| one-sided department x-demand (`6 + 6..8 + 1`) | 13-15: **one department per row** | |
+| two-sided (`6 + 2·(6..8) + 2`) | 20-24: fits only at the row's top | 20-24: **two per row** |
+| crew quarters depth (stub 14-24 + mess 9-12 + 1) | 24-37: fits at the bottom of its ranges | fits |
+
+So a **medium** freighter carries two departments per wing (quarters +
+cargo, each mostly one-sided), a **large** one four; the **small** preset is
+not a recipe ship (it stays `plan_graph`'s arena; archetype doc `sizes`).
+The quarters' stub range is amended to `along = [14, 24]` so the department
+fits a medium row (recipe doc §3.1; revision 1's `[20, 24]` could not).
+
+## 10. Feel consequences for Erik (vetoable)
+
+- Every freighter wing: slab -- one wide passageway -- lobby, departments as
+  side streets. Variety is in the departments, their order, the stubs, the
+  cycle types and the band. A second skeleton is another archetype.
+- The spawn room spans the wing's height: a long room with the formation
+  centred (not today's compact slab).
+- The narrow flank runs along the HULL between the two big rooms: breaching
+  it from outside is breaching the shortcut.
+- Medium ships are small inside: two departments per wing; large ships are
+  the full freighter. Recipe ships are medium and large only.
+- With a ring, the engine room is a 6-10 wide closet in a ring of service
+  rooms; without one it is a whole band section.
+- Thick steel walls (1-3 tiles) appear behind back rooms and between
+  departments.
+- Long rooms (a 50-tile passageway) are lit by ONE lamp of range 16 today:
+  their ends are dark until the per-length lamp rule lands (§11).
+
+## 11. Costs
+
+| Piece | Where | Size |
+|---|---|---|
+| skeleton (axiom roles), seven primitives, elastic extents, row packer, department packer, band packer, exits | new `tools/ship_layout.py` (stage 1.5), pure, seeded, integer geometry | ~800 lines + property tests (per primitive: declared contacts realised with clearance, minima kept, inside the rectangle, voids bounded; the mirror; the reroll; the bot A*) |
+| cycle-type realisations §4.1-4.5 | same module, one function per `move` | ~250 lines |
+| repair pass | same module | ~80 lines |
+| the recipe path's `check_request` (skeleton arithmetic, zombie capacity) and the loader's feasibility twin (§4) | `ship_layout.py`, called by the loader | ~100 lines (a coupling: the loader imports the layout's arithmetic, never a copy) |
+| `generate(recipe=)`: grammar (own stream) -> resolver -> layout -> `embed` -> `validate`; `ShipPlan` carries the recipe hash; schema errors on the recipe path are bugs, site misses are `_Reject` | `tools/gen_ship.py` | small; `ship_demo` byte-identical gate |
+| prerequisites from other patches | `CELL_CROSSING_KINDS` + `breakable` (recipe doc §5.2; DONE 2026-11-06 `86629b2`, with §4.3's bypass arithmetic in `ShipGraph._check_bypass`); the grammar executor (archetype doc §7); the recipe loader + resolver (the implementing chat) | |
+| stage-2 extension: lamps per length (one lamp per 12 tiles of a room's long side, centred on each span) | `embed`'s lights | small; a feel item (§10). **DONE 2026-11-06 `86629b2`**: the opt-in room tag `lamp_span` (`gen_ship._room_lamps`, `LAMP_SPAN = 12`; nothing sets it yet) -- as built: `ceil(long / span)` EQUAL spans rather than 12-tile chunks plus a remainder, so a room's lamps are symmetric about its centre and a twin's are the reflection |
+
+**Determinism (critique 14).** Two streams: the GRAMMAR draws once from
+`SeedSequence([seed, 0])` (so the resolved graph is the (recipe hash, seed)
+function the recipe doc promises); layout + `embed` draw from
+`SeedSequence([seed, 1, attempt])` per attempt, as `generate` does today
+(the recipe-less path keeps `SeedSequence([seed, attempt])` untouched).
+Ordered draw list, one stream, per attempt: insets; `wm` (conditioned);
+passageway `across`; lobby x; slab x jitter; band cuts (pinned, then
+`_split_1d`); passageway y; row assignment first-fit (deterministic, no
+draw); per row in A, B order: department x-extents (scaled midpoints, one
+jitter draw per department in gradient order), void split; per department
+in that order: stub `across`, stub x (if free), end room `h`, side rooms'
+`along` (one jitter per room in recipe order), behind splits, every `at`
+(in edge order `(a, b)`); hull strip door `at`s; bypass `at`s; ring side
+splits. No set iteration; the mirror is a reflection.
+
+## 12. Open
+
+- The lobby's x range: archetype field (draft 8-10) or derived from the
+  wing (10 %)? Draft: a field.
+- Whether a medium ship should drop the lobby to buy a second department
+  per row (then the engineering airlock needs another anchor). Draft: no;
+  medium is the two-department ship.
+- Hull silhouettes (research Q1): v1 keeps the rectangle with insets; the
+  skeleton takes a LIST of hull rectangles from day one so a notched hull
+  later means more rows, not a rewrite.
+
+## 13. Build-session amendments (2026-11-06, the lead, before any layout code)
+
+Revision 2 was never re-critiqued. The lead re-ran its arithmetic against
+`gen_ship`'s constants before briefing the implementation and found two
+blockers and four gaps. Each amendment below REPLACES the named text; where
+this section and §2-§12 disagree, this section holds. They are
+computational-method calls (the lead's); the two with a feel consequence are
+marked for Erik.
+
+**A1. The engineering airlocks carve their vestibules on the LOBBY's side
+(replaces §2 "vestibule carved on ENGINEERING's side", §4.3, §4.4).**
+`_airlock` takes `VESTIBULE_D + 1` = 6 tiles of room `a` from the shared wall
+and needs 3 more in front of the inner door. Two mirrored airlocks carved
+into one hub from both sides need a hub `6 + 3 + 6` = 15 wide: a medium band
+of 12-14 cannot hold them (the carves collide at 12, and at 14 the gap
+between the inner doors is 2, less than a footprint). With a ring it is
+worse: the airlock lands on a ring side room 6 deep, which can never hold a
+9-deep carve. So the edge is `(a = lobby, b = engine room or ring side
+room)`: the vestibule stands in the lobby against the band wall, its inner
+door facing the wing. Consequences: the lobby's x range is **9-11** (9 =
+`VESTIBULE_D + 1 + FORMATION_FOOTPRINT`; the archetype draft's 8-10 is
+amended); the band needs no width for it, so medium keeps `wm` 12-14; the
+ring's side rooms stay 6 deep. The airlock's `at` is placed as far aft along
+the shared run as its mounts allow, so the lobby floor aft of the vestibule
+is as small as possible; what remains there is a dead nook, 3-5 wide, and is
+legal (it is the airlock's approach, not a corridor). *Feel, for Erik: each
+lobby has an airlock box standing in its aft corner.*
+
+**A2. Axis departments: the block, and rooms beyond the hub (fills a gap in
+§5).** An axis department's rooms are band sections. Its `entry` is the hub.
+Further rooms carry `attach = "fore"` or `attach = "aft"`, at most one of
+each in v1 (the loader refuses a second by name): a section directly fore or
+aft of the hub, joined to it by its declared edge as a centred, even-width
+opening. The department's sections form one BLOCK, placed at the band's aft
+end (engines are aft). Band order, fore to aft: the main-cell sections, then
+the block. Consecutive sections of one cell are joined by a centred `door`
+(an axiom edge the skeleton declares); the boundary between the last main
+section and the block is a `bulkhead`. When the ring is applied, the block
+is the ring's rectangle plus the fore / aft rooms beyond the ring's fore /
+aft rooms, and the application rewrites `hub-X` to `r_fore-X` / `r_aft-X`
+(as it rewrites the lobby edge). The `band.sections` count includes the
+block's sections. v1's engineering is hub + one aft room (the fuel bunker);
+a fore room does not fit a medium band beside the pinned main section and
+the hub (8 + 1 + 13 + 1 + 8 > the 24-26 tiles aft of the centre pin), so it
+is not in the v1 recipe.
+
+**A3. The hull strip picks its row (replaces §4.2 "along row A's hull
+wall").** The flank pair's narrow leg runs along the hull of row A or of row
+B: the first, in that order, whose departments still pack at their minima
+with the row 4 shallower. On a medium ship the quarters need the full 24 of
+depth, so the strip runs over the cargo row. Neither fits: `_Reject`.
+
+**A4. Skeleton draws are conditioned on the departments (extends §6, §11).**
+The slab's jitter, the lobby's x, `wm`, the insets and the passageway's
+`across` and y are drawn from the sub-range the departments' minimum demands
+leave feasible, wherever that bound is closed-form (it is for all six); the
+attempt is rejected only when a feasible sub-range is empty. Without this a
+medium ship rerolls most attempts: two-sided crew quarters need a row of 20,
+which only `wm` 12 + slab 8 + lobby 9 gives. The draw ORDER of §11 is
+unchanged; only the ranges narrow. Medium skeletons therefore vary little in
+x; their variety is the departments, the cycles, the exits and the band.
+
+**A5. The grammar asks the layout before it returns (extends the archetype
+doc §2).** After the last phase the executor calls the layout's minima
+feasibility on the whole quotient graph (the loader twin of §4, the same
+arithmetic, per size); an infeasible graph is a `GrammarReject`, which costs
+one cheap grammar attempt instead of `MAX_ATTEMPTS` layout attempts.
+`G_MAX` becomes 16.
+
+**A6. Recipes are authored depth-elastic (extends §3 rule 4, §9).** A row is
+24-27 deep on medium and 44-47 on large, so a wing department's ranges must
+span that: stub `along` + end room `h` + 1 covering 24 at the bottom and 47
+at the top, with enough side rooms (`count` ranges) to fill a 34-long stub.
+Hull-side steel stays bounded by `VOID_MAX` like every other void; a
+department that cannot reach the hull on a size is refused for that size by
+the loader twin, not padded with a thick hull. The shipped department files'
+size and count ranges are tuned by the layout patch against the
+failure-rate gate (they are placeholders, like the presets), each change a
+dated line in the recipe doc. *Feel, for Erik: on a large ship a department
+is a long side street, up to ten rooms off one stub.*
+
+**A7. Row assignment is the GRAMMAR's (2026-11-06, the lead; replaces §6's
+"then moved by first-fit").** Wing departments in gradient order (`toward =
+"spawn"` first, `"axis"` last, ties in file order) are dealt to rows
+alternately starting with row A; each wing department instance carries
+`(row, position)` in the quotient graph, `position` counting from the slab
+end. There is no first-fit move: a row that cannot pack is infeasible and
+the layout rejects it. This makes "first in its row" a graph fact, so the
+grammar declares the spawn-exit edges (`slab - <exit room of a row's first
+department>`, §7) itself. Built in `tools/ship_grammar.py` (`_rows`).
+
+## Systems
+
+**(a) Existing canonical systems this design uses**: Level generators
+(`embed` / `validate` / `generate` unchanged; `Room`, `Edge`, `ShipGraph`
+as the output; `_spawn_grid` / `_extent`; `_airlock` with `a` =
+engineering's section; `hull_door_site`'s rule pre-checked; `EDGE_KINDS`
+widths; `_split_1d`); Spawn rooms (the slab is the `[[spawn_room]]`,
+placement unchanged); Determinism gates (`ship_demo` byte-identical); the
+Recipe library, Resolver, Fixtures (recipe doc) and the Archetype recipe
+(archetype doc) as the input.
+
+**(b) New systems this design creates** (draft rules, into CLAUDE.md when
+the code exists):
+
+- **Layout stage** -- `A recipe ship's geometry is produced ONLY by
+  tools/ship_layout.py (stage 1.5): the archetype's axiom rooms as a fixed
+  skeleton, seven guillotine primitives, elastic extents with bounded steel
+  voids, one wall-slide repair, then reroll; it emits the ShipGraph embed
+  consumes, adds no edge, picks no room and never stamps a tile. A new way
+  to place a room is a primitive here, never a search or a second
+  layouter.`
+- **Declared-edge contact** -- `The layout realises every DECLARED edge as
+  a contact of its opening plus one tile each side and forbids no
+  undeclared touch; the grammar's invariants run on declared edges.`
+- **Axis parity** -- `An opening between two axis (self-twin) rooms is
+  centred and even-width; an axis-axis cell crossing is a bulkhead or a
+  breakable wall, never an airlock.`
+
+## As built (2026-11-06, branch `136-ship-layout`)
+
+`tools/ship_layout.py` holds the freighter skeleton's graph side (the grammar
+patch's) and now its geometry; `gen_ship.generate(seed, size, recipe=,
+profile=)` runs grammar -> layout -> `embed` -> `validate` -> the archetype's
+gates. `plan_graph`, `embed`, `validate` and the recipe-less `generate` are
+unchanged in behaviour (`levels/ship_demo` regenerates identically). No
+level is committed by this patch.
+
+**What exists.**
+
+- `layout(q, rng) -> Layout` (`graph`: the `ShipGraph`; `ids`: quotient id
+  -> (room id, twin id); `params`: the skeleton draws). Every room one
+  rectangle inside the hull and inside its size range; every declared edge
+  a shared wall >= its opening + 2 with its `at`; the left wing laid out
+  once and reflected; each wing its own copy of every wing duct
+  (`<name>_m`); `lamp_span = gen_ship.LAMP_SPAN` on every room.
+- The primitives: `pack` (a 1D run), `pack_department` (strip, pack, end
+  room, behind, two-stub) on the packer's model (`Dept`, `Stub`, `Side`,
+  `End`, `Kid`), `dept_configs` / `dept_front` (a department's arrangements
+  with their EXACT feasible x-extents and depths); the band packer and the
+  ring; the hull strip.
+- Feasibility: `layout_feasibility(size, graph=)` (exact; the grammar's A5
+  call site) and `(size, archetype=, profile=)` (the loader's demand test at
+  the minima), `maxima_warning`, `department_feasibility` (the recipe
+  loader's twin), `skeleton_options` (every skeleton draw that packs: A4).
+- The recipe path's `check_request` (before any draw) and `acceptance`
+  (after `validate`): the bot-walkable A* between the slabs with every
+  airlock's outer door closed, then the `[validation]` gates.
+
+**Deviations from §2-§13, each with its reason** (the guarantees of §1 hold;
+these are geometry and number calls):
+
+1. **Every draw is conditioned on exact feasible sets; §8's wall-slide
+   repair is not built.** A department arrangement's x-extents (a bit set)
+   and depth range are enumerated in closed form, a row is a sum set, a
+   skeleton draw is feasible when both rows fit its length and share its
+   height and the band fits; each draw is uniform over the values that
+   leave a feasible completion (A4, extended from the six skeleton draws to
+   every draw). `layout_feasibility` on a graph asks whether that set is
+   empty, so a graph the grammar returns ALWAYS packs: over the
+   measurement below, no layout attempt was rejected for a short contact or
+   a room that did not fit -- the repair would have nothing to repair. What
+   still rejects an attempt is stage 2 (a hazard or heat source with no
+   floor site, a vent with no wall site) and the gates.
+2. **A `behind` room stands in the department's END ZONE (replaces §3
+   "behind", §4 step 4).** Rev 2 split the parent's slab away from the
+   stub, which makes the column `parent w_min + 1 + child w_min` = 13 deep
+   instead of 6: +7 of row length. A medium row is at most 20 = 6 + (6 + 1)
+   + (6 + 1), a two-column department at its minima, so that never fits,
+   and a large row fits it once. As built: a SIDE room's behind child sits
+   past its parent's hull-end wall, in the corner of the end zone beside
+   the end room (the parent is the last room of an outer column; one such
+   corner per outer column, so at most two per department); the END room's
+   behind child sits beside it in a free corner, or stacked behind it
+   against the hull, exactly as wide. It costs no row length. Topology is
+   unchanged: the child is reached only through its parent.
+3. **The end room spans the department (replaces §3 "end room": `across +
+   2` wide, centred, steel corners).** A centred 9-12 wide mess in a 20-30
+   long department leaves corners of 4-10 by 9+ tiles of steel. As built
+   the end room covers every stub's end and reaches the department's two
+   edges, unless a corner holds a behind room. End rooms' `w` ranges are
+   therefore wide (recipe doc as-built).
+4. **Voids: four kinds, each at most `VOID_MAX` = 3, none adjacent to
+   another (replaces §3 rules 2-4).** Between two departments of a row; at
+   a column's far end (none under a corner child); beyond a slot room
+   toward the hull; between two stubs with no column between them. NOT
+   built: steel behind a shallower side room (a column has one depth and
+   every room of it is that deep), a pad beside a stub, corner voids beside
+   the end room. Reason, seen in the first pictures: rev 2's voids add up
+   across a boundary (3 behind a room + the wall + 3 between departments +
+   3 beside the next stub = 10 tiles of steel). The gate: no 5 x 5 block of
+   steel anywhere inside the hull.
+5. **A row holds one or two departments and fills exactly; a lone
+   department cannot fill a large row.** Its x-extent is at most 8 + 2 * (12
+   + 1) = 34; a large row is 41-49. Three wing departments (dealt 2 + 1 by
+   A7) are therefore infeasible on large: the freighter's armory is `[1,
+   1]` there (recipe doc as-built, flagged for Erik).
+6. **Rows are of unequal depth by draw** (§6 said so; §9's table and A6's
+   "24-27 / 44-47" assumed equal rows). The passageway's y is drawn from
+   the exact set of splits: on medium the quarters take 23-37 and the cargo
+   hold 18-30 of the wing's 54 (50 under the strip).
+7. **A3 as built: the strip takes the first row, A then B, that has no
+   hull-door room and still packs 4 shallower.** A3's own example ("on a
+   medium ship ... the strip runs over the cargo row") is impossible: the
+   hold's hull door needs the hull (§3). On a freighter the strip runs over
+   the quarters' row, or the draw is refused.
+8. **The lobby's openings.** The airlock is aft-most (A1); with a bypass
+   the breakable is at the FORE end of the lobby-hub run (§4.3's "toward
+   the slab-side end" names a direction that wall does not have). The
+   strip's door into the lobby is at the lobby's slab end when the strip is
+   aft, clear of the vestibule's nook.
+9. **A promoted department (§4).** The first room of each column is at
+   least `PROMOTED_CLEAR + opening + 2` = 12 long and every opening onto
+   the stub is cut beyond the vestibule; the stub is 7-8 across. At 8 a
+   one-tile slot of floor is left beside the vestibule (a unit cannot enter
+   it; it belongs to the stub's compartment).
+10. **An exit room carrying a hazard or a heat source is at least 7 deep**
+    (`EXIT_SITE_W`): it has doors in two facing walls (its stub's and the
+    slab's) and `gen_ship._floor_site` keeps 3 tiles off both. Before this,
+    a medbay whose pharmacy took a spawn exit rejected every attempt on the
+    o2 store's floor site.
+11. **The zombie section** (§5 step 4) is the aft-most main section and is
+    at least as tall as its horde needs at the drawn band width
+    (`zombie_height`); the main sections are cut by `_split_1d` at
+    `MIN_SECTION` on the range less that excess.
+12. **The loader twin (§4, archetype §6) is a DEMAND test, not the exact
+    packing** (archetype doc as-built): at minimum counts a large row
+    cannot be filled, which the grammar's count draw fixes.
+13. **Draw order** (§11): as the module docstring lists it -- insets, band
+    width, passageway across, lobby x, slab x (the six conditioned skeleton
+    draws, in §11's order); then the band (block heights, the main
+    sections' cuts, the ring's side split), the rows' arrangements and the
+    passageway's y, per row the x-extents and voids, per department its
+    across and column depths, end-zone depth, room lengths, end-room reach;
+    then every `at` in the quotient graph's edge order. The band is drawn
+    before the rows (§11 lists it there too).
+14. **Two small stage-2 additions, both inert for v1 ships**:
+    `gen_ship._room_lamps` emits NO lamp for a `light` tag of level 0 (the
+    `dark` preset on the fuel bunker; the level format refuses a
+    zero-intensity `[[light]]`, so no recipe ship could be loaded); and
+    `PALETTE` gains kindling (the diffuse drew it black, like vacuum).
+15. **Not built from §5 / §12**: the loader's refusal of an airlock on an
+    axis-axis edge by name (the layout rejects an odd-width axis opening;
+    no shipped recipe declares one); the hull as a LIST of rectangles (one
+    rectangle with insets).
+
+**Feel consequences, for Erik** (beyond §10's list): the squad stands at
+the FORE end of its slab, not its middle (the slab spans the wing and the
+`formation` rule fills a room's grid from its first row; centring needs a
+placement value or a spawn box, a stage-2 change this patch does not make);
+a large freighter always has an armory; a medium one has no pockets; a
+medium department holds at most one hidden / behind room besides the
+galley; large rooms are long when a department has few of them (a bunk
+room up to 12 x 16, a hold up to 30 x 24).
+
+**Measured** (100 seeds per size x profile, `zombies` 4, `max_per_team` 6,
+work desktop; "ships" = seeds that produced a ship within `G_MAX` x
+`MAX_ATTEMPTS`; `g` / `a` = the grammar / layout attempt that passed, 0 =
+the first):
+
+| size | profile | ships | mean g | mean a | s/ship | rooms | spawn distance |
+|---|---|---|---|---|---|---|---|
+| medium | easy | 100/100 | 0.06 | 0.00 | 0.14 | 25..39 | 84..133 |
+| medium | standard | 100/100 | 0.49 | 0.01 | 0.16 | 28..41 | 84..137 |
+| medium | hard | 100/100 | 0.89 | 0.11 | 0.18 | 29..40 | 84..133 |
+| large | easy | 100/100 | 0.03 | 0.00 | 0.34 | 46..67 | 142..221 |
+| large | standard | 100/100 | 0.11 | 0.00 | 0.32 | 50..75 | 142..237 |
+| large | hard | 100/100 | 0.78 | 0.00 | 0.33 | 58..81 | 142..203 |
+
+The 600 ships cost 12 rejected layout attempts, every one a stage-2 site
+miss (`vents: no wall site` 11, all medium hard; `heat_source: no clear floor
+tile` 1); none was a packing or contact failure, none a `[validation]`
+range. Grammar attempts refused by `layout_feasibility` are the `g` column
+(about 12 ms each).
+
+**As built 2026-11-06 (#134, branch `134-grille`): the spine breathes.**
+The freighter skeleton's four spine edges (`slab-passageway`,
+`passageway-lobby`, `lobby-section`, `section-section`) are `vented_door` --
+a door with a grille in each jamb (vocabulary §0.4, the 2026-11-06
+addition) -- the lead's content call, Erik may veto (revert: `"door"` on
+those four lines of `ship_layout.FREIGHTER.edges`). Department entries,
+the flank strip's doors and everything inside departments stay `door`. The
+vented door is a door to the layout: over 100 seeds x 2 sizes x 3 profiles
+the vented and the plain spine give the same grammar and layout attempts
+and the same rooms, 600 of 600, no plan lost.
+
+**What is left.** LevelSpec and the `[levelgen]` table in level.toml, banks,
+`mutate` and per-department layout streams (archetype doc §5, §8); a
+second skeleton; the slab's formation placement; the first shipped recipe
+levels (the next patch) and Erik's play-test of them (HUMAN-TEST: how a
+recipe ship feels is not judged here).

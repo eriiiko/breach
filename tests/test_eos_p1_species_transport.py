@@ -119,8 +119,8 @@ def test_ambient_o2_n2_split_on_open_air():
     interior = (~g.solid) & (~g.is_vacuum)
     assert interior.any()
 
-    expect_o2 = gas_fixed.quantize_scalar(0.21)
-    expect_n2 = gas_fixed.quantize_scalar(0.79)
+    expect_o2 = gas_fixed.quantize_bulk_scalar(0.21)
+    expect_n2 = gas_fixed.quantize_bulk_scalar(0.79)
     assert np.all(g.gas[O2][interior] == expect_o2)
     assert np.all(g.gas[INERT_N2][interior] == expect_n2)
 
@@ -146,7 +146,7 @@ def test_reload_material_table_preserves_running_gas_state():
     # Perturb the running state away from ambient (a combustion event, say).
     g.gas[O2][y0, x0] = 12345
     g.gas[INERT_N2][y0, x0] = 54321
-    g.gas[POISON][y0, x0] = 999
+    g.gas[POISON][y0, x0] = 999  # raw trace counts: scale-free (#88)
     gas_before = g.gas.copy()
 
     g.reload_material_table()
@@ -238,8 +238,8 @@ def test_bulk_flux_transport_moves_mass_downwind():
     is_vacuum = np.zeros((h, w), dtype=bool)
     perm = np.where(solid, 0.0, 1.0).astype(np.float32)
 
-    gas[O2][8:14, 4:8] = gas_fixed.quantize_scalar(1.0)
-    gas[INERT_N2][~solid] = gas_fixed.quantize_scalar(0.5)   # uniform ambient-ish
+    gas[O2][8:14, 4:8] = gas_fixed.quantize_bulk_scalar(1.0)
+    gas[INERT_N2][~solid] = gas_fixed.quantize_bulk_scalar(0.5)   # uniform ambient-ish
 
     wind_x = np.full((h, w), atmosphere_fixed.quantize_scalar(4.0), dtype=np.int32)
     wind_y = np.zeros((h, w), dtype=np.int32)
@@ -283,8 +283,8 @@ def test_bulk_flux_transport_never_goes_negative_under_high_cfl_stress():
     gas = np.zeros((7, h, w), dtype=np.int32)
     gas_conservative = np.array([False] * 5 + [True, True], dtype=bool)
     interior = ~solid
-    gas[O2][interior] = gas_fixed.quantize(0.05 + 0.4 * rng.random(int(interior.sum())))
-    gas[INERT_N2][interior] = gas_fixed.quantize(0.05 + 0.4 * rng.random(int(interior.sum())))
+    gas[O2][interior] = gas_fixed.quantize_bulk(0.05 + 0.4 * rng.random(int(interior.sum())))
+    gas[INERT_N2][interior] = gas_fixed.quantize_bulk(0.05 + 0.4 * rng.random(int(interior.sum())))
 
     v_max = atmosphere_fixed.quantize_scalar(30.0)   # a large, aggressive wind
     yy, xx = np.mgrid[0:h, 0:w]

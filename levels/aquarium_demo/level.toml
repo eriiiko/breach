@@ -7,10 +7,10 @@
 # water_init.npy is EDITOR-AUTHORED (map_editor WATER mode, F7):
 # int32 Q16.16 metres, shape == tilemap. Re-bake art after CSV edits:
 #   python tools/bake_level_art.py aquarium_demo
-version = "2"
+version = "3"
 name = "Aquarium Demo"
 
-# v2 codes ARE canon material ids (src/simulation/materials.py)
+# v3 codes ARE canon material ids (src/simulation/materials.py)
 tilemap = "tilemap.csv"
 
 tile_size_m = 0.333

@@ -63,7 +63,7 @@ def _sim_ambient():
     assert g.is_ambient.any(), "ambient routing expected"
     g.fire[10, 6] = fire_fixed.quantize_scalar(0.9)
     g.fire[10, 7] = fire_fixed.quantize_scalar(0.6)
-    g.smoke[14:20, 6:18] = gas_fixed.quantize_scalar(0.4)
+    g.smoke[14:20, 6:18] = gas_fixed.quantize_trace_scalar(0.4)
     g.temperature[5, 5] = 400 * FP_ONE                 # a warm wood tile
     sim.add_unit(Unit("M1", x=16, y=16, team=0))
     sim.set_paused(False)

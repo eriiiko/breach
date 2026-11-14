@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Female worker — scripted Blender model (Claude)</title>
+<style>
+  :root { color-scheme: dark; --bg: #1c1e22; --panel: #26292f; --ink: #e6e3dc; --dim: #9aa0a8; --line: #3a3e46; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 1500px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 36px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+  p { color: var(--dim); margin: 4px 0 12px; max-width: 80ch; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption { padding: 8px 12px; color: var(--dim); font-size: 13px; }
+  .pair { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  code { background: var(--panel); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Female worker — scripted Blender model</h1>
+  <p>Built from Python alone on the shared character kit (<code>scripts/build.py</code>, Blender 4.5.10 LTS, Cycles), from a palette, a
+     dimensions table and head/hair specs in <code>scripts/worker.py</code>. Character only, no props. See <code>PROVENANCE.md</code>.</p>
+
+  <h2>Reference sheet vs model</h2>
+  <p>Top: the reference. Bottom: the model re-shot with orthographic cameras in the sheet's own framing.
+     Silhouette IoU front 0.933, side 0.949, back 0.933.</p>
+  <figure><img src="sheet_vs_reference.png" alt="Reference sheet above the model's re-shoot"><figcaption>Reference (Erik) above the model</figcaption></figure>
+  <h2>Silhouette overlay</h2>
+  <figure><img src="sheet_overlay.png" alt="Silhouette overlay"><figcaption>Grey both, red reference only, blue model only</figcaption></figure>
+
+  <h2>Turnaround</h2>
+  <figure><img src="turnaround.png" alt="Front, side, back, three-quarter"><figcaption>Orthographic front, side, back, three-quarter</figcaption></figure>
+
+  <h2>Studio views</h2>
+  <div class="grid">
+    <figure><img src="hero.jpg" alt="Three-quarter front"><figcaption>Three-quarter front</figcaption></figure>
+    <figure><img src="hero_back.jpg" alt="Three-quarter back"><figcaption>Three-quarter back</figcaption></figure>
+    <figure><img src="torso.jpg" alt="Torso"><figcaption>Collar, zip, zipped and flapped chest pockets, hip pockets, belt loops, cuffs, dirt layer</figcaption></figure>
+    <figure><img src="torso_back.jpg" alt="Back"><figcaption>Back yoke, centre seam and darts, pointed back pockets, cargo pockets</figcaption></figure>
+    <figure><img src="head.jpg" alt="Head"><figcaption>Head close-up</figcaption></figure>
+    <figure><img src="head_side.jpg" alt="Head in profile"><figcaption>Head in profile</figcaption></figure>
+    <figure><img src="legs.jpg" alt="Legs and boots"><figcaption>Knee patches, cargo pockets, laced work boots</figcaption></figure>
+    <figure><img src="elevated.jpg" alt="Elevated view"><figcaption>Elevated</figcaption></figure>
+    <figure><img src="top.jpg" alt="Top-down"><figcaption>Straight down (the game camera)</figcaption></figure>
+  </div>
+
+  <h2>Palette variant</h2>
+  <p>The same model with only palette and dirt parameters changed (<code>--variant white_clean</code>): darker skin and hair, white coverall,
+     dirt strength 0. Further variants in <code>worker.py::VARIANTS</code>: white, blue, green, red.</p>
+  <div class="pair">
+    <figure><img src="hero.jpg" alt="Default palette"><figcaption>Default palette, dirt 0.9</figcaption></figure>
+    <figure><img src="white_clean_hero.jpg" alt="White, clean variant"><figcaption>white_clean variant</figcaption></figure>
+  </div>
+</main>
+</body>
+</html>

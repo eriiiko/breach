@@ -100,10 +100,13 @@ def test_sway_settings_defaults_are_a_gentle_visible_motion():
     # floor is EXACTLY 0. Sway must be a signal that the air is really moving;
     # a decorative breeze in a sealed hull is the bug this ruling removed.
     assert s.idle_wind == 0.0
-    # wind_ref IS gas_detail's saturation ceiling: the largest value tame_wind
-    # can return maps to full sway, so the normalized fraction lands in 0..1.
+    # Full sway must be REACHABLE: wind_ref is a tamed speed at or below
+    # gas_detail's saturation ceiling (the largest value tame_wind returns).
+    # Breaks if wind_ref is set above the ceiling (no wind could ever bend a
+    # prop fully). Since #51 it is no longer EQUAL to the ceiling (0.08 vs
+    # 1.4): full sway arrives at ~1.4 m/s of air.
     from renderer.gas_detail import WIND_V_REF
-    assert s.wind_ref == WIND_V_REF
+    assert 0.0 < s.wind_ref <= WIND_V_REF
 
 
 def test_sway_settings_from_config_reads_the_render_props_section():

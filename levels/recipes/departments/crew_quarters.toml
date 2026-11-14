@@ -1,0 +1,103 @@
+# Department (scale 3): CREW QUARTERS -- vocabulary B.1; the worked example of
+# docs/levelgen_cycle_types_and_recipes_2026-10-31.md rev 2.1 §3.1, VERBATIM
+# except the depth-elastic ranges (stub `along`, bunk `count`) the layout doc's
+# §13 A6 asks for, recorded in that doc's "As built" (2026-11-06), and the
+# ventilation of vocabulary §0.6 item 5 (2026-11-06, #124: air in through the
+# bunks and the mess, out through the heads) -- the doc is the spec: a change
+# here is a dated amendment there. Loaded, refused by name and resolved by
+# tools/levelgen_recipes.py.
+[department]
+name = "crew_quarters"
+placement = "wing"              # wing = a mirror pair, one per wing | axis = one, on the mirror line
+cell = "main"                   # main = the accommodation cell (both wings + the spine band, v1's one big cell) | own = its own cell (L5 on every boundary edge)
+entry = "stub"                  # the room that joins the ship's spine
+toward = "spawn"                # spawn | axis: the gradient it wants (vocabulary §0.3)
+wish_near = ["medbay"]
+wish_far = ["engineering"]
+
+[[room]]
+id = "stub"
+shape = "corridor"              # room | corridor | vestibule
+required = true
+width = "wide"
+size = { across = [6, 8], along = [10, 40] }   # corridors: (across, along); the layout stage rotates. Depth-elastic (layout §13 A6): along + the mess's h + 1 spans a 20-deep medium row to a 61-deep one
+# no vent: the corridor is what the supplied air crosses on its way to the heads (§0.6 item 5)
+
+[[room]]
+id = "bunk"
+shape = "room"
+count = [2, 4]                  # instances; a required room has count [1, 1]. At most 4: a medium wing has 54 tiles of depth for both rows; a large row fills with fewer, longer rooms (h up to 16)
+size = { w = [6, 12], h = [6, 16] }           # rooms: (x, y) extents in tiles
+fuel = "furniture"              # a fuel class (§3.4)
+light = "dim"
+vent = { duct = "quarters", roles = ["supply"] }
+
+[[room]]
+id = "heads"
+required = true
+exit = true                     # [layout rev 2] may carry a spawn exit when this department is first in its row
+size = { w = [6, 12], h = [6, 16] }
+vent = { duct = "quarters", roles = ["return"] }   # the quarters' only return: the toilets are extracted (§0.6, Erik 2026-11-06)
+
+[[room]]
+id = "mess"
+required = true
+attach = "end"                  # [layout rev 2] the room at the stub's far end (default attach = "side"); it spans the department (and both stubs of a retreat loop), hence w up to 30
+size = { w = [9, 30], h = [9, 20] }
+fuel = "furniture"
+vent = { duct = "quarters", roles = ["supply"] }
+
+[[room]]
+id = "galley"                   # the kitchen
+p = 0.7                         # optional room, probability of presence
+size = { w = [6, 16], h = [6, 16] }
+fixture = "galley"              # §3.3: a stove on from tick 0 (Erik's ruling), kindling
+attach = "behind:mess"          # [layout rev 2] split off the mess's far side
+vent = { duct = "galley", roles = ["supply", "return"] }
+
+[[room]]
+id = "laundry"
+p = 0.3
+size = { w = [6, 12], h = [6, 16] }
+
+[[edge]]
+a = "stub"
+b = "bunk"
+kind = "open"                   # every bunk instance; the quarters breathe as one compartment
+
+[[edge]]
+a = "stub"
+b = "mess"
+kind = "open"
+
+[[edge]]
+a = "stub"
+b = "heads"
+kind = "vented_door"            # grilles in the jambs: the heads is one air volume with the stub, so its return takes the quarters' supplied air (§0.6)
+
+[[edge]]
+a = "mess"
+b = "galley"
+kind = "door"
+
+[[edge]]
+a = "stub"
+b = "laundry"
+kind = "door"
+
+[[duct]]
+name = "quarters"
+filter = "derelict"             # passes teargas: gas in the heads is extracted and comes out of the bunks' supplies, over the sleepers
+
+[[duct]]
+name = "galley"
+filter = "derelict"             # its shut-off is #49
+
+[secret]
+kind = "breakable"
+host = "bunk"
+weight = 1                      # a weight in the SHIP's secret draw (the archetype's budget), not a probability
+
+[physics]
+temp = "ambient"                # a [temps.*] preset or "ambient"; resolves to the temp tag (temp_init.npy EXISTS)
+pressure = "ambient"            # a [pressures.*] preset or "ambient"; resolves per room into air_init.npy (EXISTS: pressure only)

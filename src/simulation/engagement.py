@@ -143,7 +143,7 @@ def ambush_groups(sim) -> dict:
     """
     groups: dict = {}
     for u in sim.units:
-        if u.team != 0 or not u.alive:
+        if u.is_zombie or not u.alive:
             continue
         plan = getattr(u, "plan", None)
         if plan is None:

@@ -40,6 +40,7 @@
 // Plain C++ declaration header (no CUDA types) so the .cpp TUs can include
 // it; cuda_bulk_transport.cu provides the definitions. Compiled only when
 // BREACH_CUDA.
+#include <cstddef>
 #include <cstdint>
 
 namespace breach_cuda {
@@ -86,6 +87,23 @@ void bulk_flux_transport(
     int h, int w,
     float dt);
 
+// #29 P5: the batch the device launchers run over (design §4.2): every plane
+// (N, h, w), the gas planes the env's (n_gases, h, w) block (stride gs), the
+// books per env (cstride: the energy counters, rstride: the rail, tstride:
+// the trace books), `es` the per-env fold-table rows and `sub` this
+// substep's index (an env whose n_sub <= sub does nothing). The default is
+// the unbatched launch (N = 1, no mask), byte for byte the pre-P5 path.
+struct EnvSub;
+struct BulkBatch {
+    int n_env = 1;
+    size_t gs = 0;          // gas-plane env stride; 0 = h·w (one plane per env)
+    size_t cstride = 0;     // energy-counter env stride
+    size_t rstride = 0;     // rail env stride
+    size_t tstride = 0;     // trace-book env stride
+    const EnvSub* es = nullptr;
+    int sub = 0;
+};
+
 // ---- EOS P6.5: device-pointer launcher for the chained eos.step dispatch ---
 // One full B1..B5 chain for ONE conservative plane on caller-owned DEVICE
 // buffers (the P6.5 orchestrator keeps u/T/gas device-resident across the
@@ -117,7 +135,8 @@ void bulk_flux_plane_device(
     int h, int w,
     const bool* d_is_ambient = nullptr, int32_t n_amb = 0,
     unsigned long long* d_rail = nullptr,
-    int64_t* d_dqsum_e = nullptr, int64_t* d_dqsum_s = nullptr);
+    int64_t* d_dqsum_e = nullptr, int64_t* d_dqsum_s = nullptr,
+    const BulkBatch& bb = BulkBatch{});
 
 // ===========================================================================
 // P-E1 — energy-conservative thermal transport, DEVICE twin (energy-books
@@ -140,6 +159,27 @@ void bulk_flux_plane_device(
 //                always 0) [3] n_active_flux [4] n_bulk_active_sum
 //                [5] e_transport_net (arc #54 §2.8's closure-identity term).
 //
+// Smoke transport v2 (#12, docs/smoke_transport_design_2026-10-04.md §2.1/§5):
+// stages 3b / 3c — the TRACE planes ride the same faces, priced at the donor's
+// trace-per-air ratio (bulk_transport.cpp stages 3b/3c, THE oracle). Stage 3b
+// runs between stage 3 and stage 4's d_nb memset (d_nb is still the pre-flux N),
+// stage 3c after stage 4's re-accumulation (d_nb is the post-flux N).
+// d_trace_planes : host array of `n_trace` DEVICE pointers, one per LIVE trace
+//                  plane (the caller decides liveness by a host scan; an
+//                  all-zero plane stays all-zero with zero counters, so the
+//                  skip is an optimisation only). Mutated in place.
+// d_spre         : one h*w int32 device scratch plane (the S_pre snapshot).
+// d_tvent/d_twipe: n_trace unsigned-long-long device slots EACH, ACCUMULATED
+//                  into (caller memsets per tick): vent = what a donor prices
+//                  onto a vacuum / ring receiver, wipe = the N_EPS wipe.
+// d_tclip/d_tneg: #88 P2, n_trace slots EACH, ACCUMULATED like the two above:
+//                  stage 3b's counted saturation (fixedpoint::trace_add_sat,
+//                  once per cell on the net) -- the excess it could not store,
+//                  and the cells whose net went negative. Both >= 0.
+// n_trace == 0 (or any nullptr) -> the trace stages do not run. The chained
+// path hands its LIVE planes (host scan); the RESIDENT path (P2b) hands EVERY
+// trace plane of its resident gas block (no host scan, RL habits §A).
+//
 // arc #54 (gas-energy conservation, design §2.7 row 1): `d_gas_energy` is now
 // the LIVE conserved field this pass MOVES — priced off it directly
 // (`price_face`, the exact `floordiv(dq*E,N)` split, bulk_transport.cpp),
@@ -159,7 +199,14 @@ void bulk_flux_energy_transport_device(
     unsigned long long* d_ecnt,
     const bool* d_is_ambient = nullptr,
     const int32_t* n_amb_cons = nullptr,
-    unsigned long long* const* d_rail = nullptr);
+    unsigned long long* const* d_rail = nullptr,
+    int32_t* const* d_trace_planes = nullptr, int n_trace = 0,
+    int32_t* d_spre = nullptr,
+    unsigned long long* d_tvent = nullptr,
+    unsigned long long* d_twipe = nullptr,
+    unsigned long long* d_tclip = nullptr,
+    unsigned long long* d_tneg = nullptr,
+    const BulkBatch& bb = BulkBatch{});
 
 // Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
 // dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU

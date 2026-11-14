@@ -113,8 +113,8 @@ def test_cold_tile_has_no_glow():
 
 def test_hot_extreme_saturates_intensity():
     r = BlackbodyRamp()
-    # T_MAX_PHYS = 16000 game units -> kelvin ~= 32293, well past kelvin_ref;
-    # intensity clamps to intensity_max.
+    # T_MAX_PHYS = 16000 game units -> kelvin ~= 16293 (G12: was ~32293 under
+    # the ×3 map), well past kelvin_ref; intensity clamps to intensity_max.
     _rgb, i = r.light_color(16000.0)
     assert np.isclose(i, r.intensity_max)
 
@@ -183,7 +183,7 @@ def test_from_config_missing_section_uses_defaults():
         pass
     r = BlackbodyRamp.from_config(_NS())
     assert r.kelvin_ambient == 293.0
-    assert r.k_temp_to_kelvin == 3.0
+    assert r.k_temp_to_kelvin == 1.0  # G12: 3.0 -> 1.0
     assert r.lut_size == 256
 
 
@@ -211,13 +211,12 @@ def test_pack_cold_is_transparent():
 
 def test_pack_warm_tile_is_warm_and_visible():
     r = BlackbodyRamp()
-    # A hot flame-zone tile (~1500 game units -> ~4793 K under the 293+3*T
-    # map): visible, warm (R >= B), and the peak hue channel saturates to 255
-    # (brightness lives in alpha). Kept comfortably below the ~6600 K point
-    # where the Tanner Helland fit tips blue-white (test_chroma_desaturates_
-    # with_temperature) — 3000 game units crossed that line once
-    # k_temp_to_kelvin moved 2.0 -> 3.0 (temperature_scale_unification_
-    # design_2026-08-13), which isn't what this test is checking.
+    # A hot flame-zone tile (~1500 game units -> ~1793 K under the G12 293+T
+    # map, was ~4793 K under the old 293+3*T map): visible, warm (R >= B), and
+    # the peak hue channel saturates to 255 (brightness lives in alpha). Kept
+    # comfortably below the ~6600 K point where the Tanner Helland fit tips
+    # blue-white (test_chroma_desaturates_with_temperature), which isn't what
+    # this test is checking.
     packed = pack_emissive_rgba(r, _field([[1500]]))
     px = packed[0, 0]
     assert px[3] > 0                        # visible
@@ -233,6 +232,23 @@ def test_pack_brightness_monotone_in_temperature():
     packed = pack_emissive_rgba(r, _field([temps]))
     alpha = packed[0, :, 3].astype(np.int32)
     assert np.all(np.diff(alpha) >= 0), f"alpha not monotone: {alpha.tolist()}"
+
+
+def test_pack_shapes_its_display_colour_with_the_resolves_curve():
+    """Property (graphics G0, the legacy heat layer's named exception): the
+    heat overlay adds ``max_alpha/255 * ACES(emissive)`` on screen, with
+    ACES = the world resolve's own curve (``blackbody.aces_curve``, the CPU
+    twin of shaders/world_resolve.fs). Breaks if the heat layer's curve and
+    the world's tone-map drift apart, or the pack stops being that display
+    colour (hue in RGB, brightness in alpha)."""
+    aces_curve = blackbody.aces_curve
+    r = BlackbodyRamp()
+    temps = _field([[900, 1500, 2500], [4000, 9000, 12000]])
+    packed = pack_emissive_rgba(r, temps).astype(np.float64)
+    shown = packed[..., :3] / 255.0 * packed[..., 3:4] / 255.0
+    rgb, inten = r.chroma_intensity(temps)
+    want = (220.0 / 255.0) * aces_curve(rgb * inten[..., None])
+    assert np.allclose(shown, want, atol=2.5 / 255.0)
 
 
 def test_pack_does_not_mutate_field():

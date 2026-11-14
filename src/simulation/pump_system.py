@@ -14,7 +14,9 @@ The per-tick quantum ΔN and the D11 band-skip assert are computed ONCE at load
 (:func:`build_pumps`), the door-2 rule (quantize-once, no float in the synced
 path). Post-EOS the pump is a gas-MASS feed: at standard temperature the EOS
 calibration ``p* = C·N·T`` gives ``C·T_amb == 1`` (config echoes the pinned
-DEFAULT_C = 1/290, DEFAULT_T_AMB_K = 290), so a pressure quantum ΔP atm and its
+DEFAULT_C = 1/293, DEFAULT_T_AMB_K = 293 under G12 — issue #12,
+docs/fire_g12_one_map_patch_2026-08-31.md; was 1/290, 290 under ruling 6), so
+a pressure quantum ΔP atm and its
 gas-mass quantum ΔN coincide numerically — but they are derived separately so a
 future non-unit C·T stays honest.
 
@@ -59,11 +61,15 @@ class PumpRuntime:
 
     __slots__ = ("inst", "at_target_slot", "inject_slots", "extract_slots",
                  "port_y", "port_x", "target_atm", "band", "release",
-                 "delta_n_q", "at_target", "alive")
+                 "delta_n_q", "at_target", "alive", "source")
 
     def __init__(self, inst, at_target_slot, inject_slots, extract_slots,
-                 port_y, port_x, target_atm, band, delta_n_q):
+                 port_y, port_x, target_atm, band, delta_n_q, source=None):
         self.inst = inst
+        # #133: the SOURCE tile (y, x) of a feed = "transfer" pump, None for
+        # an "external" one (inject mints, extract destroys -- pre-#133).
+        self.source = None if source is None else (int(source[0]),
+                                                   int(source[1]))
         self.at_target_slot = (None if at_target_slot is None
                                else int(at_target_slot))
         self.inject_slots = list(inject_slots)
@@ -107,7 +113,20 @@ class PumpRuntime:
         gmap = sim.gmap
         inject = aggregate_input(bus, self.inject_slots, INPUT_HELD) != 0
         extract = aggregate_input(bus, self.extract_slots, INPUT_HELD) != 0
-        if extract:                        # extract beats inject (safe state)
+        if self.source is not None:
+            # feed = "transfer" (#133): a MOVE between the port and the source
+            # tile through the conservative primitive -- nothing minted or
+            # destroyed, trace and energy travel with the air.
+            sy, sx = self.source
+            if extract:                    # extract beats inject (safe state)
+                gmap.transfer_gas_n(self.port_y, self.port_x, sy, sx,
+                                    self.delta_n_q)
+            elif inject:
+                gmap.transfer_gas_n(sy, sx, self.port_y, self.port_x,
+                                    self.delta_n_q)
+        elif extract:                      # extract beats inject (safe state)
+            # delta_n_q of AIR; the trace it takes (priced by air, #88 P0) is
+            # destroyed, unbooked -- ACCEPTED GAP G6, issue #98.
             gmap.extract_gas_n(self.port_y, self.port_x, self.delta_n_q)
         elif inject:
             gmap.inject_gas_n(self.port_y, self.port_x, self.delta_n_q)
@@ -142,7 +161,7 @@ def _delta_n_quantum(rate_atm_per_s, tps):
     ct = float(DEFAULT_C) * float(DEFAULT_T_AMB_K)         # == 1.0 at defaults
     delta_n_mass = delta_p_atm / ct if ct > 0 else delta_p_atm
     return (_atm_fx.quantize_scalar(delta_p_atm),
-            _gas_fx.quantize_scalar(delta_n_mass))
+            _gas_fx.quantize_bulk_scalar(delta_n_mass))     # a bulk N count
 
 
 def build_pumps(sim) -> list:
@@ -193,6 +212,19 @@ def build_pumps(sim) -> list:
                 f"pump '{e.id}': port tile ({port_y}, {port_x}) is out of the "
                 f"{h}x{w} grid — check x/y + port_dx/port_dy (base tiles, "
                 f"scaled by res_factor {rf})")
+        source = None
+        if e.fields.get("feed", "external") == "transfer":
+            sdx, sdy = int(e.fields["source_dx"]), int(e.fields["source_dy"])
+            source = (rf * (by + sdy), rf * (bx + sdx))
+            if not (0 <= source[0] < h and 0 <= source[1] < w):
+                raise ValueError(
+                    f"pump '{e.id}': source tile {source} is out of the "
+                    f"{h}x{w} grid — check x/y + source_dx/source_dy")
+            if source == (port_y, port_x):
+                raise ValueError(
+                    f"pump '{e.id}': feed = \"transfer\" needs a source tile "
+                    f"distinct from the port ({port_y}, {port_x}) — set "
+                    f"source_dx/source_dy")
         band = int(e.fields["hysteresis_band"])
         target_atm = int(e.fields["target_atm"])
         delta_p_atm_q, delta_n_q = _delta_n_quantum(e.fields["rate"], tps)
@@ -212,7 +244,7 @@ def build_pumps(sim) -> list:
             e, at_slot,
             input_slots.get((ordinal, "inject"), []),
             input_slots.get((ordinal, "extract"), []),
-            port_y, port_x, target_atm, band, delta_n_q)
+            port_y, port_x, target_atm, band, delta_n_q, source)
         _replace_entity(sim.entities, e, rt)
         pumps.append(rt)
     return pumps

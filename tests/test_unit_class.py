@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import numpy as np
 import pytest
 
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.generation import predefined_unit_attributes
 from simulation.species import HUMAN, get_species, GENERATED_STAT_NAMES, N_GENERATED_STATS
 from simulation.stats import (
@@ -36,6 +37,8 @@ from simulation.stats import (
     is_stat_player_visible,
 )
 from simulation.unit import Unit, LifeState
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +180,10 @@ def test_unit_facing_is_float():
     """Facing must be a float (radians), not a string."""
     u = Unit("test", 5, 5)
     assert isinstance(u.facing, float)
-    # Default spawn = π/2 (North).
-    assert abs(u.facing - math.pi / 2) < 1e-9
+    # Default spawn = North: quantize(pi/2) in the facing's Q16 radians
+    # (G5p-a1), within the kit's quantum of pi/2.
+    assert u.facing == u.facing_q / 65536 and u.facing_q == 102944
+    assert abs(u.facing - math.pi / 2) < 1.0 / 65536
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +256,7 @@ _CARDINAL_CASES = [
 def test_facing_compass_cardinals(radians, expected):
     """facing_compass() returns the correct compass label for cardinal angles."""
     u = Unit("test", 5, 5)
-    u.facing = radians
+    _place_facing(u, _q_rad(radians))
     assert u.facing_compass() == expected, (
         f"facing={radians:.4f} rad → expected '{expected}', "
         f"got '{u.facing_compass()}'"
@@ -269,7 +274,7 @@ def test_facing_compass_full_rotation():
     u = Unit("test", 5, 5)
     seen = set()
     for deg in range(0, 360, 10):
-        u.facing = math.radians(deg)
+        _place_facing(u, _q_rad(math.radians(deg)))
         seen.add(u.facing_compass())
     assert seen == {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}, (
         f"Not all 8 directions seen: {seen}"
@@ -364,9 +369,9 @@ def test_alive_setter_restore():
 def test_faction_id_matches_team():
     """faction_id should equal the team argument at construction."""
     marine = Unit("M", 5, 5, team=0)
-    zombie = Unit("Z", 5, 5, team=1)
+    zombie = Unit("Z", 5, 5, team=ZOMBIE_TEAM)
     assert marine.faction_id == 0
-    assert zombie.faction_id == 1
+    assert zombie.faction_id == ZOMBIE_TEAM
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +390,7 @@ def test_inventory_stub_present():
 def test_has_grenade_and_explosive_intact():
     """Legacy has_grenade / has_explosive booleans still exist on Unit."""
     marine = Unit("M", 5, 5, team=0)
-    zombie = Unit("Z", 5, 5, team=1)
+    zombie = Unit("Z", 5, 5, team=ZOMBIE_TEAM)
     # Marines get starting loadout; zombies start with none.
     assert marine.has_grenade >= 0
     assert marine.has_explosive >= 0

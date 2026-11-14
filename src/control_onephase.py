@@ -197,7 +197,9 @@ class OnePhaseWEGOInput(ControlSource):
                 self._nudge_dial(dial, 0.25 if wheel > 0 else -0.25)
 
         # ---- mouse ----
-        if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
+        if renderer.pointer_captured():
+            pass
+        elif rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
             self._left_click(sim, renderer)
         elif rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_RIGHT):
             shift = (rl.is_key_down(K.KEY_LEFT_SHIFT) or
@@ -208,7 +210,7 @@ class OnePhaseWEGOInput(ControlSource):
     # Selection + arming
     # ------------------------------------------------------------------
     def _cycle_selection(self, sim) -> None:
-        marines = [u for u in sim.units if u.team == 0 and u.alive]
+        marines = sim.controlled_units()
         if not marines:
             self.selected_unit_id = None
             return
@@ -293,7 +295,7 @@ class OnePhaseWEGOInput(ControlSource):
         # it is standing on — misclicking your own squadmate should not spend
         # a grenade.
         for u in sim.units:
-            if (u.alive and u.team == 0
+            if (u.alive and u.team == sim.player_team
                     and u.tile_x <= fx < u.tile_x + u.footprint
                     and u.tile_y <= fy < u.tile_y + u.footprint):
                 self.selected_unit_id = u.id
@@ -389,7 +391,7 @@ def _footprint_anchor(sim, unit, tile):
 
 def _enemy_at(sim, fx, fy):
     for u in sim.units:
-        if (u.alive and u.team != 0
+        if (u.alive and u.team != sim.player_team
                 and u.tile_x <= fx < u.tile_x + u.footprint
                 and u.tile_y <= fy < u.tile_y + u.footprint):
             return u

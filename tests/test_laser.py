@@ -37,8 +37,10 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation import Simulation  # noqa: E402
-from simulation import unit_fixed, wall_fixed  # noqa: E402
+from simulation import gas_fixed, unit_fixed, wall_fixed  # noqa: E402
 from simulation.combat import BEAM_MIN_ENERGY_Q16, fire_beam  # noqa: E402
 from simulation.events import LaserFiredEvent, UnitHitEvent  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
@@ -69,7 +71,7 @@ def _room(h=20, w=30, edits=()):
 
 
 def _zombie(x, y, name="Z"):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     u.current_hp = 1e9
     return u
 
@@ -91,7 +93,7 @@ def _fire(gmap, units, shooter, fx2, fy2, events, spread_deg=0.0, rng=None):
     weapon, ammo = _lance()
     fire_beam(gmap, units, shooter, 3, 9, fx2, fy2,
               tick=0, shots=[], real_time=0.0,
-              rng=rng if rng is not None else np.random.default_rng(SEED),
+              rng=rng if rng is not None else MatchDraws(SEED),
               events=events, weapon=weapon, ammo=ammo, spread_deg=spread_deg)
 
 
@@ -128,7 +130,7 @@ def test_gas_cloud_halves_beam_energy_exact_q16():
     """One white-smoke tile on the path, density chosen so the per-tile
     transmission is EXACTLY 32768/65536 (one half). Hand chain:
       energy = 25 << 16 = 1638400
-      term   = (absorb_q * density_q) >> 16 == 32768   (asserted)
+      term   = (absorb_q * density_trace_q) >> TRACE_SHIFT == 32768   (asserted)
       trans  = 65536 - 32768 = 32768
       energy = (1638400 * 32768) >> 16 = 819200        (12.5 real)
       amount = (819200 + 32768) >> 16 = 13             (round half away)
@@ -138,11 +140,13 @@ def test_gas_cloud_halves_beam_energy_exact_q16():
     assert absorb_q > 0
     # Smallest density whose absorb product lands in the ==32768 window
     # (ceil division; window width 65536 >= absorb_q guarantees a member).
-    density_q = -((-(32768 << 16)) // absorb_q)
-    term = (absorb_q * density_q) >> 16
+    # (#88: the density is a TRACE plane, so the product's shift is the trace
+    # currency's own, TRACE_SHIFT; the coefficient stays Q16 per real unit.)
+    density_trace_q = -((-(32768 << gas_fixed.TRACE_SHIFT)) // absorb_q)
+    term = gas_fixed.trace_density_shr(absorb_q * density_trace_q)
     assert term == 32768, "chosen density must halve exactly"
-    assert density_q < 2**31                          # int32-safe
-    gmap.gas[STEAM, 9, 6] = density_q           # on the march row
+    assert density_trace_q < 2**31                          # int32-safe
+    gmap.gas[STEAM, 9, 6] = density_trace_q           # on the march row
 
     shooter = Unit("S", x=2, y=8, team=0)
     za = _zombie(10, 8, "ZA")
@@ -171,8 +175,8 @@ def test_beam_dies_in_dense_cloud_before_the_target():
     gmap = _room()
     absorb_q = int(gmap.gases.beam_absorb_q16[SMOKE])
     # density with (absorb * d) >> 16 >= ONE  ->  trans <= 0  ->  energy 0.
-    density_q = -((-(FP_ONE << 16)) // absorb_q) + 1
-    gmap.gas[SMOKE, 9, 7] = density_q
+    density_trace_q = -((-(FP_ONE << gas_fixed.TRACE_SHIFT)) // absorb_q) + 1
+    gmap.gas[SMOKE, 9, 7] = density_trace_q
     east_wall_hp = int(gmap.wall_hp[9, 29])
 
     shooter = Unit("S", x=2, y=8, team=0)
@@ -220,7 +224,7 @@ def test_laser_dormant_when_nobody_carries_one():
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=2, y=8, team=0)
-    z = Unit("Z", x=14, y=8, team=1)
+    z = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     m_id = sim.add_unit(m)
     sim.add_unit(z)
     assert m.weapon_id == "k5_carbine"                # ...but nobody fires it
@@ -242,7 +246,7 @@ def test_lance3_fires_through_the_order_flow():
     sim = Simulation(_level(), seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m = Unit("M", x=2, y=8, team=0)
-    z = Unit("Z", x=14, y=8, team=1)
+    z = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     m_id = sim.add_unit(m)
     sim.add_unit(z)
     m.weapon_id = "lance_3"

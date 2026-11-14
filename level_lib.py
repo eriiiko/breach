@@ -10,7 +10,10 @@ writeback for ``level.toml``.
 Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]``,
 ``[water]``, ``[[entity]]`` (A3), ``[[wire]]`` (B1) and — since Arc C9 —
 ``[art.bare]``/``[art.align]``/``[bake]`` (the baker's writeback, ported off
-its original bespoke line-targeted regex upsert); the writer is
+its original bespoke line-targeted regex upsert), ``[[spawn_room]]`` (#119)
+and ``[levelgen]`` (#136, a generated level's LevelSpec), ``[[room]]`` /
+``[[opening]]`` (#195 1b, the room graph; its ``rooms.npy`` beside it is
+written by :func:`write_rooms_npy`); the writer is
 family-generic. On save every existing table of a replaced
 family is removed and the new block is written at the position of the first
 one (or appended at EOF); every byte OUTSIDE the managed tables — comments,
@@ -48,6 +51,8 @@ import level_loader
 WATER_FILENAME = "water_init.npy"
 ZONES_FILENAME = level_loader.ZONES_FILENAME    # "zones.npy" — one source
 AIR_INIT_FILENAME = level_loader.AIR_INIT_FILENAME  # "air_init.npy" (A9)
+TEMP_INIT_FILENAME = level_loader.TEMP_INIT_FILENAME  # "temp_init.npy" (E.2)
+ROOMS_FILENAME = level_loader.ROOMS_FILENAME  # "rooms.npy" (#195 1b)
 
 _TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
 
@@ -96,6 +101,20 @@ MANAGED_FAMILIES = {
     "art.bare": ManagedFamily("art.bare", array=False),
     "art.align": ManagedFamily("art.align", array=False),
     "bake": ManagedFamily("bake", array=False),
+    # #119 P2: a match's spawn rooms (one per team, the level's decision).
+    # The `spawn` header regex needs `]]` right after the name, so it never
+    # matches `[[spawn_room]]` (and vice versa).
+    "spawn_room": ManagedFamily("spawn_room", array=True),
+    # #136: a generated level's LevelSpec + realised factors, one table
+    # (gen_ship's recipe path only). Its inline `cycles` table keeps the
+    # family one header long, so the span rule above holds.
+    "levelgen": ManagedFamily("levelgen", array=False),
+    # #195 1b: the room graph's fixed part -- the generator's rooms and the
+    # walkable openings between them (rooms.npy, the tile -> room map, sits
+    # beside level.toml: write_rooms_npy). The `room` header regex needs
+    # `[[` right before the name, so it never matches `[[spawn_room]]`.
+    "room": ManagedFamily("room", array=True),
+    "opening": ManagedFamily("opening", array=True),
 }
 
 
@@ -135,11 +154,140 @@ def format_spawn_lines(spawns, nl: str = "\n") -> list:
     return lines
 
 
+def format_spawn_room_lines(rooms, nl: str = "\n") -> list:
+    """The managed [[spawn_room]] block (#119 P2) — one table per room
+    (team/x/y/w/h/max_per_team/placement, all written), blank line between.
+    Each room is checked by the loader's own schema door first, so the
+    writer can never write a room its loader refuses on schema grounds (the
+    grid checks need the tilemap and stay the loader's)."""
+    from simulation.match import spawn_room_from_dict
+    lines = []
+    for i, r in enumerate(rooms):
+        row = {"team": r.team, "x": r.x, "y": r.y, "w": r.w, "h": r.h,
+               "max_per_team": r.max_per_team, "placement": r.placement}
+        spawn_room_from_dict(row, f"spawn room #{i} (writer)")
+        if i:
+            lines.append(nl)
+        lines.append(f"[[spawn_room]]{nl}")
+        for k, v in row.items():
+            lines.append(f"{k} = {_fmt_value(v)}{nl}")
+    return lines
+
+
+_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def format_levelgen_lines(record, nl: str = "\n") -> list:
+    """The managed ``[levelgen]`` table (#136, archetype doc §5.1): a
+    ``level_loader.LevelgenRecord`` (or its ``as_dict()``), every key in
+    ``LEVELGEN_KEYS`` order, ``cycles`` as an inline table. The record goes
+    through the loader's own door (``level_loader.parse_levelgen``) first, so
+    the writer never writes a table its loader refuses."""
+    d = record.as_dict() if hasattr(record, "as_dict") else dict(record)
+    rec = level_loader.parse_levelgen(d, "[levelgen] (writer)")
+    lines = [f"[levelgen]{nl}"]
+    for k, v in rec.as_dict().items():
+        if isinstance(v, dict):
+            items = ", ".join(
+                f"{n if _BARE_KEY_RE.fullmatch(n) else _fmt_value(n)} = "
+                f"{_fmt_value(c)}" for n, c in v.items())
+            text = "{ " + items + " }" if items else "{}"
+        else:
+            text = _fmt_value(list(v) if isinstance(v, tuple) else v)
+        lines.append(f"{k} = {text}{nl}")
+    return lines
+
+
+def write_levelgen(toml_path, record, write_bak: bool = False):
+    """Rewrite the ``[levelgen]`` table as ONE managed block (#136); ``None``
+    removes it. The :func:`write_managed_blocks` contract (every other byte
+    preserved). Returns the .bak path, or None."""
+    return write_managed_blocks(
+        toml_path,
+        {"levelgen": lambda nl: ([] if record is None
+                                 else format_levelgen_lines(record, nl))},
+        write_bak=write_bak)
+
+
+def _room_graph_door(rooms, openings, grid):
+    """Every room graph goes through the loader's own door
+    (``level_loader.parse_room_graph``) before a byte is written, so the
+    writer never writes a graph its loader refuses."""
+    g = np.asarray(grid)
+    return level_loader.parse_room_graph(
+        [r.as_dict() if hasattr(r, "as_dict") else dict(r) for r in rooms],
+        [o.as_dict() if hasattr(o, "as_dict") else dict(o)
+         for o in openings],
+        g, g.shape, "room graph (writer)")
+
+
+def format_room_lines(rooms, nl: str = "\n") -> list:
+    """The managed ``[[room]]`` block (#195 1b): one table per room
+    (``level_loader.ROOM_KEYS``, all written), blank line between."""
+    lines = []
+    for i, r in enumerate(rooms):
+        d = r.as_dict() if hasattr(r, "as_dict") else dict(r)
+        if i:
+            lines.append(nl)
+        lines.append(f"[[room]]{nl}")
+        for k in level_loader.ROOM_KEYS:
+            lines.append(f"{k} = {_fmt_value(d[k])}{nl}")
+    return lines
+
+
+def format_opening_lines(openings, nl: str = "\n") -> list:
+    """The managed ``[[opening]]`` block (#195 1b): one table per opening
+    (``level_loader.OPENING_KEYS``), in id order, blank line between."""
+    lines = []
+    for i, o in enumerate(openings):
+        d = o.as_dict() if hasattr(o, "as_dict") else dict(o)
+        if i:
+            lines.append(nl)
+        lines.append(f"[[opening]]{nl}")
+        for k in level_loader.OPENING_KEYS:
+            lines.append(f"{k} = {_fmt_value(d[k])}{nl}")
+    return lines
+
+
+def room_graph_blocks(rooms, openings, grid) -> dict:
+    """The ``[[room]]`` and ``[[opening]]`` replacements for
+    :func:`write_managed_blocks` (so a caller writing other families too
+    lands them in ONE atomic write), after the loader's door has accepted
+    ``(rooms, openings, grid)``; the rows come out in the door's order."""
+    rg = _room_graph_door(rooms, openings, grid)
+    return {"room": lambda nl: format_room_lines(rg.rooms, nl),
+            "opening": lambda nl: format_opening_lines(rg.openings, nl)}
+
+
+def write_rooms_npy(level_dir, grid, rooms, openings=()) -> Path:
+    """Write ``rooms.npy`` (#195 1b): THE ONE WRITER of the tile -> room
+    map (int32, a room id or -1, the tilemap's shape), found by the loader
+    by PRESENCE. The graph it belongs to goes through the loader's door
+    first. Returns the path."""
+    rg = _room_graph_door(rooms, openings, grid)
+    npy_path = Path(level_dir) / ROOMS_FILENAME
+    np.save(npy_path, np.ascontiguousarray(rg.grid))
+    return npy_path
+
+
+def write_room_graph(level_dir, rooms, openings, grid,
+                     write_bak: bool = False):
+    """Write a level's whole room graph: the ``[[room]]`` / ``[[opening]]``
+    managed blocks (the :func:`write_managed_blocks` contract) and
+    ``rooms.npy``. Returns the .bak path, or None."""
+    level_dir = Path(level_dir)
+    bak = write_managed_blocks(level_dir / "level.toml",
+                               room_graph_blocks(rooms, openings, grid),
+                               write_bak=write_bak)
+    write_rooms_npy(level_dir, grid, rooms, openings)
+    return bak
+
+
 def format_light_lines(lights, nl: str = "\n") -> list:
     """The managed [[light]] block as ``nl``-terminated lines — schema per
     level_loader.LightEntry / engine/15 §2.2 (color back to 0-255 ints;
-    period_s/beam_deg/phase written for beacons only — static lights take
-    the loader defaults)."""
+    period_s/beam_deg/phase written for beacons only, beam_deg/phase for
+    spots — static lights take the loader defaults)."""
     lines = []
     for i, l in enumerate(lights):
         if i:
@@ -153,6 +301,9 @@ def format_light_lines(lights, nl: str = "\n") -> list:
         lines.append(f'kind = "{l.kind}"{nl}')
         if l.kind == "beacon":
             lines.append(f"period_s = {_fmt_coord(l.period_s)}{nl}")
+            lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
+            lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
+        elif l.kind == "spot":
             lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
             lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
     return lines
@@ -375,6 +526,75 @@ def write_spawns(toml_path, spawns, write_bak: bool = True):
         write_bak=write_bak)
 
 
+def write_spawn_rooms(toml_path, rooms, write_bak: bool = False):
+    """Rewrite the ``[[spawn_room]]`` array-of-tables as ONE managed block
+    (#119 P2) — the :func:`write_managed_blocks` contract (every other byte
+    preserved). Returns the .bak path, or None."""
+    return write_managed_blocks(
+        toml_path,
+        {"spawn_room": lambda nl: format_spawn_room_lines(rooms, nl)},
+        write_bak=write_bak)
+
+
+MATCH_HEADER = (
+    "# Match config (#119 P2) -- written by level_lib.write_match; never",
+    "# hand-edit. [[team]] row i is team i; units spawn in the level's",
+    "# [[spawn_room]] for their team (level.toml).",
+)
+
+
+def format_match_text(spec) -> str:
+    """A :class:`simulation.match.MatchSpec` -> match.toml text (LF)."""
+    lines = [f"{c}\n" for c in MATCH_HEADER]
+    lines += [
+        f"objective = {_fmt_value(spec.objective)}\n",
+        f"seed = {int(spec.seed)}\n",
+        f"time_limit_s = {_fmt_coord(spec.time_limit_s)}\n",
+        f"zombies = {int(spec.zombies)}\n",
+    ]
+    # #122: written only when it is not the default, so every match file that
+    # never named a zombie controller keeps its bytes.
+    from simulation.match import DEFAULT_ZOMBIE_CONTROLLER
+    zctrl = getattr(spec, "zombie_controller", DEFAULT_ZOMBIE_CONTROLLER)
+    if zctrl != DEFAULT_ZOMBIE_CONTROLLER:
+        lines.append(f"zombie_controller = {_fmt_value(zctrl)}\n")
+    # #195 1a: the same rule for the sight key.
+    from simulation.match import DEFAULT_SIGHT
+    sight = getattr(spec, "sight", DEFAULT_SIGHT)
+    if sight != DEFAULT_SIGHT:
+        lines.append(f"sight = {_fmt_value(sight)}\n")
+    for t in spec.teams:
+        lines += [
+            "\n", "[[team]]\n",
+            f"n = {int(t.n)}\n",
+            f"loadout = {_fmt_value(t.loadout)}\n",
+            f"env_profile = {_fmt_value(t.env_profile)}\n",
+            f"controller = {_fmt_value(t.controller)}\n",
+        ]
+    return "".join(lines)
+
+
+def write_match(level_dir, spec) -> Path:
+    """Write ``levels/<level>/match.toml`` (#119 P2) — the ONE match writer.
+    The text is parsed back through the loader's own door
+    (``simulation.match.parse_match``) against the level's ``[[spawn_room]]``
+    entries BEFORE anything touches disk, so the writer refuses exactly what
+    the loader would (unknown objective / loadout / profile / controller, n
+    over a room's max_per_team, ...). Atomic write; returns the path."""
+    import tomllib
+    from simulation.match import parse_match, parse_spawn_rooms
+    level_dir = Path(level_dir)
+    toml_path = level_dir / "level.toml"
+    with open(toml_path, "rb") as f:
+        rooms = parse_spawn_rooms(tomllib.load(f).get("spawn_room"),
+                                  str(toml_path))
+    text = format_match_text(spec)
+    path = level_dir / level_loader.MATCH_FILENAME
+    parse_match(tomllib.loads(text), rooms, f"{path} (writer)")
+    _atomic_write_bytes(path, text.encode("utf-8"))
+    return path
+
+
 def write_lights(toml_path, lights, write_bak: bool = True):
     """Rewrite the ``[[light]]`` array-of-tables as ONE managed block —
     see :func:`write_managed_blocks` for the byte-preservation and .bak
@@ -495,6 +715,55 @@ def write_air_init_npy(level_dir, air_q, *, npy_bak: bool = True):
     return nbak, True
 
 
+def write_temp_init_npy(level_dir, temp_q, *, npy_bak: bool = True):
+    """Write (or, on ``None``/empty/all-zero, delete) ``temp_init.npy`` --
+    int32 Q16.16 game degrees above ambient, the file IS the field
+    (levelgen vocabulary E.2 row 4; the air_init.npy presence pattern, no
+    toml key). THE ONE WRITER of the file.
+
+    THE DELETE RULE follows zones/water, not air: 0 MEANS ambient, which is
+    exactly what an absent file seeds, so an all-zero grid deletes the file
+    (a level never carries a dormant temp_init.npy). The .npy carries its
+    OWN once-per-session pre-session .bak (``npy_bak`` True on the session's
+    first save), mirroring :func:`write_air_init_npy`. Returns
+    ``(npy_bak_path | None, has_temp)``.
+
+    The caller may pass any integer-dtype grid; values are range-checked
+    against the loader's own door (non-negative -- sub-ambient is a parked
+    physics ruling -- and at most ``[physics.thermal] T_MAX_PHYS``) and
+    stored as int32, so this writer never writes a file its loader refuses.
+    """
+    level_dir = Path(level_dir)
+    npy_path = level_dir / TEMP_INIT_FILENAME
+    t = None if temp_q is None else np.asarray(temp_q)
+    has_temp = t is not None and t.size > 0 and bool(t.any())
+    if has_temp:
+        if not np.issubdtype(t.dtype, np.integer):
+            raise ValueError(
+                f"temperature grid must be integer Q16.16 game degrees above "
+                f"ambient (stored int32), got dtype {t.dtype}")
+        if int(t.min()) < 0:
+            raise ValueError(
+                f"temperature grid contains sub-ambient values (min = "
+                f"{int(t.min())} raw Q16.16) -- the loader refuses them "
+                f"(a parked physics ruling, vocabulary Part F item 3)")
+        t_max_q = level_loader._temp_init_max_q()
+        if int(t.max()) > t_max_q:
+            raise ValueError(
+                f"temperature grid max {int(t.max())} raw Q16.16 is above "
+                f"[physics.thermal] T_MAX_PHYS ({t_max_q} raw)")
+        t = np.ascontiguousarray(t.astype(np.int32))
+    nbak = None
+    if npy_bak and npy_path.is_file():
+        nbak = Path(str(npy_path) + ".bak")
+        nbak.write_bytes(npy_path.read_bytes())
+    if has_temp:
+        np.save(npy_path, t)
+    elif npy_path.is_file():
+        npy_path.unlink()
+    return nbak, has_temp
+
+
 _BOUNDARY_LINE_RE = re.compile(
     r'^\s*boundary\s*=\s*"(space|ambient)"\s*(#.*)?$')
 
@@ -545,6 +814,118 @@ def write_boundary_field(toml_path, boundary: str, *,
         bak.write_bytes(original)
     _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
     return bak
+
+
+_VERSION_LINE_RE = re.compile(r'^\s*version\s*=\s*"([^"]*)"\s*(#.*)?$')
+
+
+def write_version_field(toml_path, version: str, *, write_bak: bool = False):
+    """Set the top-level ``version`` scalar of an EXISTING level.toml — the
+    format-migration tools' version bump (``tools/migrate_tilemap_v3.py``).
+
+    Like :func:`write_boundary_field` (a bare top-level key, not a managed
+    table): exactly ONE ``version = "..."`` line must exist and is replaced in
+    place, keeping any trailing comment; every other byte is untouched, the
+    same atomic temp + ``os.replace`` write. ``version`` must be a format the
+    loader knows (:data:`level_loader.SUPPORTED_VERSIONS` or a legacy one).
+    Returns the ``.bak`` path, or ``None``."""
+    version = str(version)
+    known = (set(level_loader.SUPPORTED_VERSIONS)
+             | set(level_loader.LEGACY_VERSIONS))
+    if version not in known:
+        raise ValueError(f"version must be one of {sorted(known)}, "
+                         f"got {version!r}")
+    toml_path = Path(toml_path)
+    original = toml_path.read_bytes()
+    text = original.decode("utf-8")
+    out = text.splitlines(keepends=True)
+    # Top level only: the lines before the first table header.
+    top = next((i for i, line in enumerate(out)
+                if _TABLE_HEADER_RE.match(line)), len(out))
+    hits = [i for i, line in enumerate(out[:top])
+            if _VERSION_LINE_RE.match(line)]
+    if len(hits) != 1:
+        raise ValueError(f"{toml_path}: expected exactly one top-level "
+                         f"'version = \"...\"' line, found {len(hits)}")
+    i = hits[0]
+    line = out[i]
+    body = line.rstrip("\r\n")
+    ending = line[len(body):]
+    m = _VERSION_LINE_RE.match(body)
+    out[i] = body[:m.start(1)] + version + body[m.end(1):] + ending
+    bak = None
+    if write_bak:
+        bak = Path(str(toml_path) + ".bak")
+        bak.write_bytes(original)
+    _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
+    return bak
+
+
+def rewrite_header_comments(toml_path, fix, *, write_bak: bool = False):
+    """Apply ``fix(str) -> str`` to every COMMENT line (``#`` first) above
+    level.toml's first table header — the format migrations' legend update
+    (a v2 file's "9=SPACE" legend must not survive into v3). Nothing else is
+    touched: non-comment lines, everything from the first table on, newline
+    style. Same atomic write. Returns the number of lines changed (no write
+    when 0) and the ``.bak`` path or ``None``."""
+    toml_path = Path(toml_path)
+    original = toml_path.read_bytes()
+    out = original.decode("utf-8").splitlines(keepends=True)
+    changed = 0
+    for i, line in enumerate(out):
+        if _TABLE_HEADER_RE.match(line):
+            break
+        if not line.lstrip().startswith("#"):
+            continue
+        body = line.rstrip("\r\n")
+        new = fix(body)
+        if new != body:
+            out[i] = new + line[len(body):]
+            changed += 1
+    bak = None
+    if changed:
+        if write_bak:
+            bak = Path(str(toml_path) + ".bak")
+            bak.write_bytes(original)
+        _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
+    return changed, bak
+
+
+def write_level_header(level_dir, *, name: str, tile_size_m: float,
+                       tilemap_rel: str = "tilemap.csv",
+                       diffuse_rel: str = "diffuse.png",
+                       normal_rel=None,
+                       comment_lines=()) -> Path:
+    """Create a NEW level folder's ``level.toml`` holding only the scalar
+    header (``version``/``name``/``tilemap``/``tile_size_m``/``diffuse``,
+    plus ``normal`` when ``normal_rel`` is given),
+    preceded by ``comment_lines`` (each written as ``# <line>``).
+
+    The one-writer home for the "new level" scaffold that generators used to
+    hand-roll (#31 P5): a generator calls this ONCE, then fills the managed
+    families through :func:`write_managed_blocks` and the ``boundary`` scalar
+    through :func:`write_boundary_field`. LF line endings, UTF-8, the same
+    atomic temp + ``os.replace`` write as every other writer here. Refuses to
+    overwrite an existing level.toml (a generator that regenerates clears its
+    own folder first). Returns the path written."""
+    level_dir = Path(level_dir)
+    toml_path = level_dir / "level.toml"
+    if toml_path.exists():
+        raise ValueError(f"{toml_path} already exists — write_level_header "
+                         f"only scaffolds a NEW level")
+    lines = [f"# {c}".rstrip() + "\n" for c in comment_lines]
+    lines += [
+        f'version = "{level_loader.LEVEL_FORMAT_VERSION}"\n',
+        f"name = {_fmt_value(str(name))}\n",
+        "\n",
+        f"tilemap = {_fmt_value(str(tilemap_rel))}\n",
+        f"tile_size_m = {_fmt_coord(tile_size_m)}\n",
+        f"diffuse = {_fmt_value(str(diffuse_rel))}\n",
+    ]
+    if normal_rel is not None:
+        lines.append(f"normal = {_fmt_value(str(normal_rel))}\n")
+    _atomic_write_bytes(toml_path, "".join(lines).encode("utf-8"))
+    return toml_path
 
 
 def write_tilemap_csv(level_dir, grid, *, tilemap_rel: str = "tilemap.csv",

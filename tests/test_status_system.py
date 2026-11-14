@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 from config import CFG  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import unit_fixed  # noqa: E402
 from simulation.damage import ASPHYX, HEAL, HEAT, POISON  # noqa: E402
 from simulation.events import UnitHitEvent, UnitKilledEvent  # noqa: E402
@@ -50,7 +51,7 @@ def _marine(name="M", x=2, y=2):
 
 
 def _zombie(name="Z", x=6, y=6):
-    return Unit(name, x=x, y=y, team=1)
+    return Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +450,7 @@ def test_e2e_can_act_suppression_blocks_marine_fire_order():
     def build():
         sim = _tiny_sim()
         m = Unit("M1", x=2, y=6, team=0)
-        z = Unit("Z1", x=10, y=6, team=1)
+        z = Unit("Z1", x=10, y=6, team=ZOMBIE_TEAM)
         sim.add_unit(m)
         sim.add_unit(z)
         ok = sim.apply_action(m.id, Order(ORDER_FIRE, z.tile_x, z.tile_y,
@@ -477,7 +478,7 @@ def test_e2e_can_act_suppression_blocks_zombie_melee():
     def build():
         sim = _tiny_sim()
         m = Unit("M1", x=5, y=5, team=0)
-        z = Unit("Z1", x=7, y=5, team=1)    # centers 2 apart -> adjacent
+        z = Unit("Z1", x=7, y=5, team=ZOMBIE_TEAM)    # centers 2 apart -> adjacent
         sim.add_unit(m)
         sim.add_unit(z)
         return sim, m, z
@@ -496,23 +497,27 @@ def test_e2e_can_act_suppression_blocks_zombie_melee():
 def test_e2e_can_move_suppression_freezes_zombie_walk():
     """can_move == False on the zombie: it stands (stride clock paused)
     while the control zombie closes distance over the same ticks."""
+    # G1p-c: the zombie's cadence is the [speeds] shamble on the map's tile
+    # (1 m here: tens of ticks per tile), so run past one stride.
+    n = _tiny_sim().speed_table.zombie_shamble_ticks + 4
+
     def build(immobilize):
         sim = _tiny_sim()
         m = Unit("M1", x=2, y=5, team=0)
-        z = Unit("Z1", x=11, y=5, team=1)   # far, but LOS + trigger radius
+        z = Unit("Z1", x=11, y=5, team=ZOMBIE_TEAM)   # far, but LOS + trigger radius
         sim.add_unit(m)
         sim.add_unit(z)
         if immobilize:
-            apply_status(z, IMMOBILIZED, magnitude=0.0, duration_ticks=25)
+            apply_status(z, IMMOBILIZED, magnitude=0.0, duration_ticks=n + 5)
         return sim, z, (z.x, z.y)
 
     sim, z, start = build(immobilize=False)
-    _step(sim, 20)
+    _step(sim, n)
     assert (z.x, z.y) != start, \
         "control zombie must walk (validates pathfinding is live)"
 
     sim, z, start = build(immobilize=True)
-    _step(sim, 20)
+    _step(sim, n)
     assert (z.x, z.y) == start, "immobilized zombie never moved"
     assert z.zombie_activated, "perception is deliberately ungated"
 
@@ -548,14 +553,18 @@ def test_unit_record_carries_canonical_status_serialization():
 
     u = _marine()
     u.id = 0
-    assert _unit_record(u)["statuses"] == []
+    # #29 P3a: the record is the unit schema's -- no statuses, no key; else
+    # the fixed block, rows in list order, padded with (-1, 0, 0, -1).
+    from simulation.unit_schema import status_capacity
+    assert "statuses" not in _unit_record(u)
     apply_status(u, BURNING, magnitude=1.5, duration_ticks=4, source_id=2)
     apply_status(u, KNOCKED_DOWN, magnitude=0.0, duration_ticks=2)
     rec = _unit_record(u)
-    assert rec["statuses"] == serialize_statuses(u) == [
+    assert serialize_statuses(u) == [
         [BURNING, 98304, 4, 2],
         [KNOCKED_DOWN, 0, 2, -1],
     ]
+    assert rec["statuses"] == (BURNING, 98304, 4, 2, KNOCKED_DOWN, 0, 2, -1)         + (-1, 0, 0, -1) * (status_capacity() - 2)
 
 
 def test_unit_state_hash_sensitive_to_statuses():

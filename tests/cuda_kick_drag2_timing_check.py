@@ -116,7 +116,7 @@ def bench_cpu_tick(n_ticks=60):
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
     n_floor_solver=1e-3, u_max=1000.0,
-    k_drag=0.0, t_amb_k=290.0,
+    k_drag=0.0, t_amb_k=293.0,  # G12: config's eos_t_amb_k, 290 -> 293 (issue #12)
 )
 
 
@@ -127,7 +127,7 @@ def _make_windy_field(h=160, w=160):
     # arc #54: the field the kick's KE brackets debit/credit now — a plausible
     # ambient-ish magnitude (N~1 raw-count worth of air at T_AMB_K), timing
     # only, no correctness claim.
-    gas_energy = np.full((h, w), FP_ONE * FP_ONE * 290, dtype=np.int64)
+    gas_energy = np.full((h, w), FP_ONE * FP_ONE * 293, dtype=np.int64)  # G12: 290 -> 293
     p_new = _quantize(rng.random((h, w)) * 0.4 - 0.2).astype(np.int32)
     gas = np.zeros((3, h, w), dtype=np.int32)
     gas[0] = _quantize(0.21)

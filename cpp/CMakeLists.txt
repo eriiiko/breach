@@ -57,15 +57,24 @@ endif()
 
 # CUDA-S0: enable the CUDA language + toolkit only when requested.
 if(BREACH_CUDA)
+    # The default arch list MUST be set before enable_language(CUDA): under
+    # CMP0104 enable_language itself defines CMAKE_CUDA_ARCHITECTURES (nvcc's
+    # own default, 52) when it is unset, so a check after it never fires --
+    # found by #29 P10, whose first Linux build came out sm_52 (the Windows
+    # scripts always pass a list, which hid it).
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND
+       NOT DEFINED ENV{CUDAARCHS})
+        # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic,
+        # 80 A100 and 90 Hopper (Berzelius, #29 P10 / design §8). One fatbin
+        # runs on every machine. The Windows build_cuda*.bat scripts pass
+        # their own 75;86;89 (the PCs need nothing else); cpp/build_linux.sh
+        # takes this default.
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
+    endif()
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
     set(CMAKE_CUDA_STANDARD 20)            # signed-shift (SAR) portability floor
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # 86 Ampere (desktop 3070), 89 Ada (Lenovo), 75 Turing opportunistic.
-        # One fatbin runs on all three machines.
-        set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
-    endif()
     message(STATUS "BREACH_CUDA=ON: archs ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
@@ -75,16 +84,20 @@ find_package(pybind11 REQUIRED)
 # The physics module
 set(BREACH_SOURCES
     src/atmosphere_solver.cpp
-    src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/temperature_solver.cpp
-    src/raycaster.cpp
+    # (raycaster.cpp -- the old render march -- DELETED at ray-engine-v2 P6c;
+    #  the radiation sweep's light channels light the game since P6b.)
     src/water_solver.cpp
     src/bulk_transport.cpp
     src/sky_exchange.cpp
     src/eos_solver.cpp
     src/combustion.cpp
+    src/emissive_table.cpp   # ray-engine-v2 P1: the E° bake, out of line (strict)
+    src/radiation_sweep.cpp  # ray-engine-v2 P1: the radiation sweep (integer)
     src/physics_engine.cpp
+    src/horde_field.cpp      # #183 G9p: the horde's distance field (host reference; device P7d)
+    src/sight_lines.cpp      # #195 1c: has_los's walk for many tiles (a host call, both modules)
     src/bindings.cpp
 )
 if(BREACH_CUDA)
@@ -92,9 +105,13 @@ if(BREACH_CUDA)
         src/cuda_hello.cu          # S0 hello-world kernel
         src/cuda_spike.cu          # S8a residency spike (raw device pointer in)
         src/cuda_temperature.cu    # S1 temperature solver
-        src/cuda_raycaster.cu      # S2 raycaster march (heat bit-identical)
+        # (S2 cuda_raycaster.cu DELETED at ray-engine-v2 P4 -- its heat march
+        #  died with cast_fire_heat at T6; cuda_radiation_sweep.cu below is
+        #  the radiative transport's GPU path now.)
         src/cuda_water.cu          # S3 water solver (pipe model, bit-identical)
-        src/cuda_smoke.cu          # S4a smoke solver (diffusion + SL advection)
+        # (S4a cuda_smoke.cu DELETED at smoke transport v2 P2b, #12 -- the trace
+        #  planes ride the bulk flux in cuda_bulk_transport.cu, which also holds
+        #  the resident trace tail.)
         src/cuda_fire.cu           # S6 fire solver (logistic + plume + smoke scatter + burn)
         src/cuda_sl_advection.cu   # EOS P6.2 fused 3-field SL advection (u self + gas T)
         src/cuda_bulk_transport.cu # EOS P6.1 bulk donor-cell flux (water K3-K8 pattern)
@@ -102,13 +119,46 @@ if(BREACH_CUDA)
         src/cuda_mg_solve.cu       # EOS P6.3 multigrid pressure solve (RB-GS + fused tail)
         src/cuda_eos_step.cu       # EOS P6.5 chained full-eos.step dispatch (the big flip)
         src/cuda_eos_resident.cu   # S8a Path A: fully device-resident EOS tick + device MG build
-        src/cuda_combustion.cu)    # EOS P6.9b two-gather combustion (closes P6)
+        src/cuda_combustion.cu     # EOS P6.9b two-gather combustion (closes P6)
+        src/cuda_water_tail.cu     # #29 P4a: the W5/W3 water tail on the device
+        src/cuda_stamp.cu          # #29 P4b: the stamp kernel (slot 6's five planes)
+        src/cuda_edit_queue.cu     # #29 P4c: the device edit queue (slot 6b's FieldEdit flush)
+        src/cuda_resident_tick.cu  # #29 P4a: the resident tick's drivers (the brackets gone)
+        # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
+        # pure integer; it takes the target-wide determinism device flags
+        # below (--fmad=false, no fast math, the strict host floor) like
+        # every other .cu, which is all an integer kernel needs.
+        src/cuda_radiation_sweep.cu)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
 endif()
 
+# The build id (#29 P1b, residency design §6 / §13 b.16): ONE generated TU,
+# `generated/build_id.cpp` in this build dir, defining breach_build_id() =
+# git HEAD's SHA (+ "-dirty" for a modified tracked file), exposed as
+# `breach_physics.build_id()` -- the compiled module's provenance, read by
+# rl_env.require_snapshot and tools/cuda_green.py (match_replay.build_id()
+# stays THE git-describe helper). Generated at BUILD time, never at configure:
+# the target below always runs (cmake -P cpp/gen_build_id.cmake) and rewrites
+# the TU only when its text changes, so an incremental build can never carry
+# a stale id and an unchanged commit recompiles nothing. Not a sim TU (one
+# string, no arithmetic): it keeps the global flags, off the /fp:strict list.
+find_package(Git QUIET)
+set(BREACH_BUILD_ID_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_id.cpp")
+add_custom_target(breach_build_id ALL
+    COMMAND "${CMAKE_COMMAND}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DREPO_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "-DOUT=${BREACH_BUILD_ID_CPP}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/gen_build_id.cmake"
+    BYPRODUCTS "${BREACH_BUILD_ID_CPP}"
+    COMMENT "breach build id (git HEAD at build time)"
+    VERBATIM)
+list(APPEND BREACH_SOURCES "${BREACH_BUILD_ID_CPP}")
+
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
+add_dependencies(breach_physics breach_build_id)
 
 if(BREACH_CUDA)
     set_target_properties(breach_physics PROPERTIES
@@ -145,15 +195,9 @@ endif()
 # here for consistency). The wave_solver.cpp and the pure-glue bindings.cpp are
 # NOT sim state and keep the global /fp:fast for speed.
 #
-# raycaster.cpp WAS in that render-only /fp:fast set, but the pure-density
-# redesign (engine/08, CUDA-S2) makes its directional march deposit `heat` — a
-# Q16.16 SYNCED gameplay field (feeds temperature -> unit damage). For the CUDA
-# heat bit-identity gate (CPU reference must match the GPU's --fmad=false /fp:strict
-# device math) the CPU heat path needs the SAME determinism floor: no FMA
-# contraction, no reordering. So raycaster.cpp moves onto /fp:strict here. The
-# render channels (light_rgb/dir/smoke_glow) ride along — they are float and a
-# sub-ULP shift is cosmetically irrelevant (feel-gated). The CPU render-cast loses
-# some fast-math speed, but the raycaster's perf answer is the GPU port itself.
+# raycaster.cpp WAS on this list (from CUDA-S2, when its march deposited the
+# synced `heat` field) until ray-engine-v2 P6c deleted the file with the old
+# render march; its radiative job is the radiation sweep's below.
 #
 # These are PER-SOURCE COMPILE_OPTIONS, which CMake appends AFTER the global
 # /fp:fast from add_compile_options() above; MSVC honours the LAST /fp: switch on
@@ -175,7 +219,6 @@ endif()
 # "/fp:strict" there. Verified by digest: goldens unmoved (A3 gate).
 set_source_files_properties(
     src/atmosphere_solver.cpp
-    src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/water_solver.cpp
     src/bulk_transport.cpp
@@ -184,7 +227,17 @@ set_source_files_properties(
     src/combustion.cpp
     src/temperature_solver.cpp
     src/physics_engine.cpp
-    src/raycaster.cpp
+    # Ray-engine-v2 P1 (design v3 §8.1): the sweep TU (pure integer, pinned
+    # 0/0/0 on the ratchet) and the E° bake TU — the bake's `k4 * scale + 0.5`
+    # is a multiply feeding an add that /fp:fast may contract (critique 3
+    # §5a); a header-inline bake would have compiled under bindings.cpp's
+    # /fp:fast, so the body is out of line here on the floor.
+    src/emissive_table.cpp
+    src/radiation_sweep.cpp
+    # #183 G9p: the horde field (pure integer BFS; a sim TU, so on the floor).
+    src/horde_field.cpp
+    # #195 1c: the sight routine for many tiles (pure integer; a sim TU, so on the floor).
+    src/sight_lines.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)

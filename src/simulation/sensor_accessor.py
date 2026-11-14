@@ -34,10 +34,38 @@ per-level field snapshot is cached; nothing combat can mutate is memoized.
 
 No sensor consumes this until B3; the class + the channel enum + the interface
 are the B1 deliverable (the seam), per the patch breakdown (§10).
+
+**The observation crop (#29 P1a, residency design §4.5).** ``crop`` is the
+accessor's third method: a per-unit ``(U, C, 2r+1, 2r+1)`` float32 window of
+the frozen channels (any subset, in the caller's order) plus the crop-only
+planes :data:`CROP_EXTRA_CHANNELS` (``material`` and unit occupancy by team,
+relative to the observing unit). It is a READ-SIDE product like a render read:
+each plane is dequantized ONCE at the read through its Q16 boundary module
+(:func:`_crop_plane`), never written back, never inside the sim path. This is
+the CPU backing; #25's gather kernel is its device backing (P8b). ``light``
+is refused until #81 separates light's inputs (ACCEPTED GAP).
+
+**The observation door (#195 1g).** ``observe(spec, units, out, **kw)`` is
+THE one way an observation layout is served: it dispatches by spec name
+(:data:`OBS_SPECS`) into the caller's ``(U, ...)`` views -- ``"crop"`` the
+placeholder rows above (the crop plus the run file's vector fields),
+``"v1"`` ``simulation.obs_spec_v1`` (the spec as code: the soldier's vector,
+the list). The env calls only this; a new layout is a new spec name here,
+never an edit of one a trained network uses.
 """
 from __future__ import annotations
 
 from enum import Enum
+
+import numpy as np
+
+#: The observation specs ``observe`` serves, by name (``[obs] spec``).
+OBS_SPECS = ("crop", "v1")
+#: The value network's full view (#195 1g (c), obs spec v1 section 5):
+#: ``observe`` serves it beside ``"v1"`` into ``info["full_view"]``'s
+#: buffers; it is NOT in :data:`OBS_SPECS`, so no run file can name it as
+#: the policy's observation.
+FULL_VIEW_SPEC = "full_v1"
 
 
 class Channel(Enum):
@@ -64,6 +92,74 @@ CHANNEL_ORDER = (
     Channel.PRESSURE, Channel.SMOKE, Channel.WATER_DEPTH, Channel.TEMPERATURE,
     Channel.FIRE, Channel.O2, Channel.SOLID,
 )
+
+#: The crop's planes beyond the frozen field channels (#29 P1a): the tile
+#: material id, and occupancy by team RELATIVE TO THE OBSERVING UNIT -- 1.0
+#: on every footprint tile of a living unit of its own team (itself
+#: included), of another marine team, or of the horde; 0.0 elsewhere.
+CROP_EXTRA_CHANNELS = ("material", "units_own", "units_enemy",
+                       "units_zombie")
+#: Planes the crop refuses by name, with the reason.
+CROP_REFUSED_CHANNELS = {
+    "light": "light is not sim-pure until #81 (Light as Game State) "
+             "separates its inputs -- ACCEPTED GAP: no light channel in "
+             "observations",
+}
+_UNIT_PLANES = ("units_own", "units_enemy", "units_zombie")
+
+
+def crop_channel_names() -> tuple:
+    """Every plane name ``crop`` accepts: the frozen channels in
+    ``CHANNEL_ORDER``, then :data:`CROP_EXTRA_CHANNELS`."""
+    return tuple(c.value for c in CHANNEL_ORDER) + CROP_EXTRA_CHANNELS
+
+
+def resolve_crop_channels(channels) -> tuple:
+    """Plane names (``Channel`` members or their strings) -> a tuple of
+    names, refusing an unknown, a refused (``light``) or a repeated one by
+    name."""
+    known = crop_channel_names()
+    out = []
+    for c in channels:
+        name = c.value if isinstance(c, Channel) else c
+        if not isinstance(name, str):
+            raise ValueError(f"crop channel {c!r} is not a name")
+        if name in CROP_REFUSED_CHANNELS:
+            raise ValueError(f"crop channel {name!r} is refused: "
+                             f"{CROP_REFUSED_CHANNELS[name]}")
+        if name not in known:
+            raise ValueError(f"unknown crop channel {name!r} (known: "
+                             f"{list(known)})")
+        if name in out:
+            raise ValueError(f"crop channel {name!r} named twice")
+        out.append(name)
+    return tuple(out)
+
+
+def _crop_plane(gmap, name: str):
+    """One field plane as float32 real units, dequantized ONCE through its
+    Q16 boundary module (the read-side bridge; nothing is written back)."""
+    from simulation import (atmosphere_fixed, fire_fixed, gas_fixed,
+                            water_fixed)
+    from simulation.gases import O2, SMOKE
+    if name == "pressure":
+        return atmosphere_fixed.dequantize_f32(gmap.atmosphere)
+    if name == "smoke":
+        # the trace currency's own helper (#88), never a bulk name
+        return gas_fixed.dequantize_trace_f32(gmap.gas[SMOKE])
+    if name == "water_depth":
+        return water_fixed.dequantize_f32(gmap.water_depth)
+    if name == "temperature":
+        return gas_fixed.dequantize_q16(gmap.temperature).astype(np.float32)
+    if name == "fire":
+        return fire_fixed.dequantize_f32(gmap.fire)
+    if name == "o2":
+        return gas_fixed.dequantize_bulk_f32(gmap.gas[O2])
+    if name == "solid":
+        return np.asarray(gmap.solid, dtype=np.float32)
+    if name == "material":
+        return np.asarray(gmap.material, dtype=np.float32)
+    raise KeyError(f"no crop plane {name!r}")
 
 
 class SiteIndex:
@@ -128,8 +224,13 @@ class EntityFieldAccessor:
         if channel is Channel.PRESSURE:
             return g.atmosphere
         if channel is Channel.SMOKE:
+            # The smoke plane is in the TRACE currency (#88); the sensor signal
+            # contract and every authored KIND_Q16 threshold are Q16, so the
+            # channel converts HERE, once, where both `sample` and `area` see
+            # it (critique A7). Floor: invariant on S_old << TRACE_FINE_BITS.
+            from simulation import gas_fixed
             from simulation.gases import SMOKE
-            return g.gas[SMOKE]
+            return gas_fixed.trace_to_q16(g.gas[SMOKE])
         if channel is Channel.WATER_DEPTH:
             return g.water_depth
         if channel is Channel.TEMPERATURE:
@@ -150,6 +251,15 @@ class EntityFieldAccessor:
         ``solid`` channel returns 0/1 (its mask is boolean on the mirror).
         """
         return int(self._channel_array(channel)[int(fy), int(fx)])
+
+    def sample_many(self, channel: Channel, fys, fxs) -> np.ndarray:
+        """:meth:`sample` at many tiles at once (#183 G8p, the bots' position
+        features): an int64 array of the Q16.16 values at ``(fys[i],
+        fxs[i])``, the channel converted once per call. No dequantize."""
+        arr = self._channel_array(channel)
+        return np.asarray(arr[np.asarray(fys, dtype=np.int64),
+                              np.asarray(fxs, dtype=np.int64)],
+                          dtype=np.int64)
 
     def area(self, channel: Channel, disc_tiles) -> tuple:
         """Integer ``(sum, n)`` over a disc, masked to currently NON-SOLID
@@ -173,3 +283,112 @@ class EntityFieldAccessor:
             total += int(arr[fy, fx])
             n += 1
         return total, n
+
+    def observe(self, spec: str, units, out: dict, **kw) -> None:
+        """THE observation door (#195 1g): write the layout ``spec`` names
+        for ``units`` (one unit or ``None`` per row) into ``out``'s
+        ``(U, ...)`` views. ``"crop"``: ``out["crop"]`` through :meth:`crop`
+        (``channels``, ``r``, ``all_units``) and ``out["vector"]`` through
+        the callables ``vector_fields`` (the run file's placeholder rows);
+        ``"v1"``: ``simulation.obs_spec_v1.observe_rows`` (``sim``,
+        ``context``, optionally ``aims``: the action decoder's view, #195
+        1h) into ``vector`` / ``list`` / ``list_mask`` /
+        ``list_uid``. The row flags are the env's. An unknown spec is
+        refused by name."""
+        if spec == "crop":
+            out["crop"][...] = self.crop(units, kw["channels"], kw["r"],
+                                         all_units=kw.get("all_units"))
+            vec = out.get("vector")
+            if vec is not None:
+                vec[...] = 0.0
+                fns = tuple(kw.get("vector_fields", ()))
+                for i, u in enumerate(units):
+                    if u is not None:
+                        for j, f in enumerate(fns):
+                            vec[i, j] = f(u)
+            return
+        if spec == "v1":
+            from simulation.obs_spec_v1 import observe_rows
+            # ``aims`` (#195 1h): the v1 decoder's view per unit id, plain
+            # values beside the team's knowledge (absent = "none")
+            observe_rows(kw["sim"], kw["context"], units, out,
+                         aims=kw.get("aims"))
+            return
+        if spec == FULL_VIEW_SPEC:
+            # the value network's full view (spec 5): served beside "v1" by
+            # this door into the farm's OWN buffers (info["full_view"]),
+            # never a run-file spec -- ``units`` are the rows' ROSTER units
+            from simulation.obs_spec_v1 import observe_full_rows
+            observe_full_rows(kw["sim"], kw["context"], units, out)
+            return
+        raise ValueError(f"unknown observation spec {spec!r} (known: "
+                         f"{list(OBS_SPECS)} and the full view "
+                         f"{FULL_VIEW_SPEC!r})")
+
+    def crop(self, units, channels, r: int, *, all_units=None):
+        """The observation crop (#29 P1a): ``(U, C, 2r+1, 2r+1)`` float32,
+        row ``i`` the window centred on ``units[i]``'s centre tile
+        (``center_tile_y/x``), plane ``c`` the ``channels[c]`` (a frozen
+        channel or a :data:`CROP_EXTRA_CHANNELS` name; see
+        :func:`resolve_crop_channels`). A ``None`` unit is an all-zero row;
+        cells outside the grid are zero. The unit planes read every living
+        unit of ``all_units`` (default: the observed ``units``) by its
+        footprint (``offsets`` from ``tile_x/y``), relative to each observer's
+        team. Each field plane is dequantized once per call, at the read."""
+        names = resolve_crop_channels(channels)
+        r = int(r)
+        if r < 0:
+            raise ValueError(f"crop radius must be >= 0, got {r}")
+        k = 2 * r + 1
+        units = list(units)
+        out = np.zeros((len(units), len(names), k, k), dtype=np.float32)
+        if not units or not names:
+            return out
+        g = self._gmap
+        h, w = g.material.shape
+        planes = {n: _crop_plane(g, n) for n in names
+                  if n not in _UNIT_PLANES}
+        team_at = zombie_at = None
+        if any(n in _UNIT_PLANES for n in names):
+            # team id per tile (-1 empty) and the horde mask, living units only
+            team_at = np.full((h, w), -1, dtype=np.int32)
+            zombie_at = np.zeros((h, w), dtype=bool)
+            if all_units is None:
+                pop = [u for u in units if u is not None]
+            else:
+                pop = list(all_units)
+            for u in pop:
+                if u is None or not u.alive:
+                    continue
+                x0, y0 = u.tile_x, u.tile_y
+                for dx, dy in u.offsets:
+                    x, y = x0 + int(dx), y0 + int(dy)
+                    if 0 <= x < w and 0 <= y < h:
+                        if u.is_zombie:
+                            zombie_at[y, x] = True
+                        else:
+                            team_at[y, x] = int(u.team)
+        for i, u in enumerate(units):
+            if u is None:
+                continue
+            cy, cx = u.center_tile_y(), u.center_tile_x()
+            y0, x0 = cy - r, cx - r
+            sy0, sy1 = max(y0, 0), min(y0 + k, h)
+            sx0, sx1 = max(x0, 0), min(x0 + k, w)
+            if sy0 >= sy1 or sx0 >= sx1:
+                continue
+            dy0, dy1 = sy0 - y0, sy1 - y0
+            dx0, dx1 = sx0 - x0, sx1 - x0
+            for c, name in enumerate(names):
+                dst = out[i, c, dy0:dy1, dx0:dx1]
+                if name in planes:
+                    dst[...] = planes[name][sy0:sy1, sx0:sx1]
+                    continue
+                tw = team_at[sy0:sy1, sx0:sx1]
+                if name == "units_own":
+                    dst[...] = tw == int(u.team)
+                elif name == "units_enemy":
+                    dst[...] = (tw >= 0) & (tw != int(u.team))
+                else:
+                    dst[...] = zombie_at[sy0:sy1, sx0:sx1]
+        return out

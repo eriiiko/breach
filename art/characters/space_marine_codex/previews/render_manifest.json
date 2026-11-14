@@ -1,0 +1,64 @@
+{
+  "source_blend": "space_marine.blend",
+  "source_sha256": "75b74ff12e5d8073ca8e10253c57d21b8a5de31b28390773244f64db3c3140e9",
+  "blender_version": "4.5.10 LTS",
+  "engine": "Cycles",
+  "views": [
+    {
+      "view": "hero",
+      "image": "hero.png",
+      "width": 1600,
+      "height": 2000,
+      "samples": 160,
+      "camera": "Camera / hero"
+    },
+    {
+      "view": "front",
+      "image": "front.png",
+      "width": 1600,
+      "height": 2000,
+      "samples": 160,
+      "camera": "Camera / front"
+    },
+    {
+      "view": "side",
+      "image": "side.png",
+      "width": 1600,
+      "height": 2000,
+      "samples": 160,
+      "camera": "Camera / side"
+    },
+    {
+      "view": "back",
+      "image": "back.png",
+      "width": 1600,
+      "height": 2000,
+      "samples": 160,
+      "camera": "Camera / back"
+    },
+    {
+      "view": "closeup",
+      "image": "closeup.png",
+      "width": 1800,
+      "height": 1600,
+      "samples": 160,
+      "camera": "Camera / closeup"
+    },
+    {
+      "view": "elevated",
+      "image": "elevated.png",
+      "width": 1600,
+      "height": 2000,
+      "samples": 160,
+      "camera": "Camera / elevated"
+    },
+    {
+      "view": "details",
+      "image": "details.png",
+      "width": 1600,
+      "height": 2000,
+      "samples": 160,
+      "camera": "Camera / details"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# Match config (#119 P2) -- written by level_lib.write_match; never
+# hand-edit. [[team]] row i is team i; units spawn in the level's
+# [[spawn_room]] for their team (level.toml).
+objective = "eliminate"
+seed = 1
+time_limit_s = 60.0
+zombies = 5
+
+[[team]]
+n = 4
+loadout = "rifleman"
+env_profile = "default"
+controller = "bots"
+
+[[team]]
+n = 4
+loadout = "rifleman"
+env_profile = "default"
+controller = "bots"

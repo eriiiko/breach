@@ -10,9 +10,10 @@ combat.apply_environmental_damage. This tool dumps exactly that, per tick, at
 the damage call's entry:
 
   - blake2b hash of the live `gmap.heat` + EVERY nonzero cell (ty, tx, raw)
-  - hashes of the occlusion inputs the ray march read (heat_atten,
-    dyn_light_atten, solid) — discriminates "march inputs differ" from
-    "march output differs"
+  - hashes of the occlusion inputs the heat path reads (heat_atten,
+    dyn_heat_atten_q -- the sweep's stamped heat extinction since the render
+    march and its float dyn_light_atten were deleted, ray-engine-v2 P6c --
+    and solid) — discriminates "inputs differ" from "output differs"
   - per living unit: footprint tiles, peak_raw (recomputed identically to
     combat), hp BEFORE and AFTER the damage apply (float.hex() — exact bits)
 
@@ -84,7 +85,7 @@ def main() -> int:
             f"tick={t}\tlive_heat_hash={_arr_hash(heat)}"
             f"\tnonzero={int((heat != 0).sum())}"
             f"\theat_atten={_arr_hash(gmap.heat_atten)}"
-            f"\tdyn_light_atten={_arr_hash(gmap.dyn_light_atten)}"
+            f"\tdyn_heat_atten_q={_arr_hash(gmap.dyn_heat_atten_q)}"
             f"\tsolid={_arr_hash(gmap.solid)}"
         )
         for (ty, tx) in np.argwhere(heat != 0):  # C order == row-major sorted

@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import numpy as np
+import pytest
 
 from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff, EditQueue,
@@ -46,12 +47,12 @@ from simulation import fire_fixed    # S3a: fire Q16.16 helpers
 # ---------------------------------------------------------------------------
 # S2b: smoke is int32 Q16.16 — the "gas" field-edit dtype combines in real
 # density, stores quantized. Helpers to author/read smoke in density units.
-def _smoke_q(v):
-    return gas_fixed.quantize_scalar(v)
+def _smoke_trace_q(v):
+    return gas_fixed.quantize_trace_scalar(v)      # the TRACE currency (#88)
 
 
 def _smoke_d(q):
-    return float(q) / gas_fixed.FP_ONE_F
+    return float(gas_fixed.dequantize_trace(q))
 
 
 # S2c: atmosphere is int32 Q16.16 — the "atmosphere" field-edit dtype combines in
@@ -116,7 +117,8 @@ class _GMapStub:
 
 
 def _rng(seed=0):
-    return np.random.default_rng(seed)
+    from simulation.draws import MatchDraws   # #29 P3b: the keyed draws
+    return MatchDraws(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +130,7 @@ def test_mode_add():
     # "smoke" (an unaffected float-combine field; wide clamp to keep the
     # original unclamped-value assertion honest).
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(1.0)
+    g.smoke[5, 5] = _smoke_trace_q(1.0)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 0.25,
                                   EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     assert abs(_smoke_d(g.smoke[5, 5]) - 1.25) < 1e-4
@@ -136,7 +138,7 @@ def test_mode_add():
 
 def test_mode_remove_clamps_to_floor():
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(0.3)
+    g.smoke[5, 5] = _smoke_trace_q(0.3)
     # REMOVE a large amount -> clamped to the smoke policy floor (0).
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 10.0,
                                   EditMode.REMOVE, clamp=(0.0, 1.0)), _rng())
@@ -165,7 +167,7 @@ def test_region_tile():
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (3, 4), 1.0,
                                   EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     assert _smoke_d(g.smoke[3, 4]) == 1.0
-    assert _smoke_d(g.smoke.sum()) == 1.0  # only that one tile
+    assert _smoke_d(g.smoke.astype(np.int64).sum()) == 1.0  # only that one tile
 
 
 def test_region_disc_flat():
@@ -184,7 +186,7 @@ def test_region_rect():
     apply_field_edit(g, FieldEdit("smoke", Region.RECT, (2, 3, 4, 6), 1.0,
                                   EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     # The inclusive box [2..4] x [3..6] = 3 rows x 4 cols = 12 tiles.
-    assert _smoke_d(g.smoke.sum()) == 12.0
+    assert _smoke_d(g.smoke.astype(np.int64).sum()) == 12.0
     assert _smoke_d(g.smoke[2, 3]) == 1.0
     assert _smoke_d(g.smoke[4, 6]) == 1.0
     assert _smoke_d(g.smoke[1, 3]) == 0.0  # outside
@@ -196,7 +198,7 @@ def test_region_beam():
     apply_field_edit(g, FieldEdit("smoke", Region.BEAM, (5, 1, 5, 9, 0.0),
                                   1.0, EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     row = g.smoke[5, 1:10]
-    assert np.all(row == _smoke_q(1.0)), f"beam centre row not fully covered: {row}"
+    assert np.all(row == _smoke_trace_q(1.0)), f"beam centre row not fully covered: {row}"
     # Nothing off the beam line.
     assert _smoke_d(g.smoke[4, 5]) == 0.0
     assert _smoke_d(g.smoke[6, 5]) == 0.0
@@ -229,20 +231,36 @@ def test_linear_falloff_weights():
 
 
 def test_clamp_ceiling():
+    """PROPERTY: an edit's OWN clamp overrides the field policy's default --
+    the clamp mechanism itself. Exercised on ``fire`` (a bounded field), not
+    on a trace plane: since smoke transport v2 D1 no trace edit carries a
+    ceiling.
+
+    BREAKS IF: an explicit FieldEdit.clamp stops being applied."""
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(0.8)
-    apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 0.9,
-                                  EditMode.ADD, clamp=(0.0, 1.0)), _rng())
-    assert abs(_smoke_d(g.smoke[5, 5]) - 1.0) < 1e-4  # 0.8 + 0.9 -> clamped to 1
+    g.fire[5, 5] = _fire_q(0.3)
+    apply_field_edit(g, FieldEdit("fire", Region.TILE, (5, 5), 0.4,
+                                  EditMode.ADD, clamp=(0.0, 0.5)), _rng())
+    assert abs(_fire_d(g.fire[5, 5]) - 0.5) < 1e-4    # 0.3 + 0.4 -> clamped to 0.5
 
 
 def test_policy_default_clamp_applied():
-    # A smoke edit with NO explicit clamp still gets the policy [0,1] ceiling.
+    """PROPERTY (smoke transport v2, design §11 D1, Erik's ruling 2026-10-04:
+    "I want smoke adding to be additive"): a trace edit with no explicit
+    clamp gets the policy's TRACE_CLAMP -- an ADD adds exactly its amount on
+    top of whatever the tile holds (no ceiling at 1), and a REMOVE bottoms
+    out at 0 (the floor stays).
+
+    BREAKS IF: the smoke / gas policy goes back to a [0, 1] ceiling (which
+    cut a compressed tile's existing smoke on every deposit)."""
     g = _GMapStub()
-    g.smoke[5, 5] = _smoke_q(0.8)
+    g.smoke[5, 5] = _smoke_trace_q(0.8)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 5.0,
                                   EditMode.ADD), _rng())
-    assert abs(_smoke_d(g.smoke[5, 5]) - 1.0) < 1e-4
+    assert abs(_smoke_d(g.smoke[5, 5]) - 5.8) < 1e-4
+    apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 100.0,
+                                  EditMode.REMOVE), _rng())
+    assert int(g.smoke[5, 5]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -321,22 +339,20 @@ def test_heat_field_edit_saturates_on_overlap():
 # ---------------------------------------------------------------------------
 # Channel path (RGB field)
 # ---------------------------------------------------------------------------
-def test_channel_write():
+def test_a_policy_without_an_integer_currency_is_refused():
+    """#29 P3e: every write through FieldEdit is integer in its field's
+    currency; a policy whose dtype has none (the old float fields -- no
+    shipped field is one) is REFUSED, never combined in floats. Breaks if a
+    float combine path returns."""
+    import pytest
     g = _GMapStub()
-    # No policy entry for light_rgb -> would raise; use a registered float field
-    # instead is not possible (all float policies are scalar). Register-free path:
-    # the channel path is exercised by writing a known (h,w,3) field that HAS a
-    # policy. None of the shipped policies are (h,w,3); so we assert the channel
-    # arg is honoured on a manually-policied field via monkeypatch-free route:
-    # skip if no (h,w,3) policy exists. (Kept as a guard for when one is added.)
     from simulation.field_edit import FIELD_POLICY, _FieldPolicy
     FIELD_POLICY["light_rgb"] = _FieldPolicy("float", None, None)
     try:
-        apply_field_edit(g, FieldEdit("light_rgb", Region.TILE, (5, 5), 0.5,
-                                      EditMode.ADD, channel=1), _rng())
-        assert abs(float(g.light_rgb[5, 5, 1]) - 0.5) < 1e-6
-        assert float(g.light_rgb[5, 5, 0]) == 0.0
-        assert float(g.light_rgb[5, 5, 2]) == 0.0
+        with pytest.raises(ValueError, match="no currency"):
+            apply_field_edit(g, FieldEdit("light_rgb", Region.TILE, (5, 5),
+                                          0.5, EditMode.ADD, channel=1),
+                             _rng())
     finally:
         del FIELD_POLICY["light_rgb"]
 
@@ -392,42 +408,40 @@ def test_noise_draw_deterministic_for_fixed_seed():
     assert not np.array_equal(g1.smoke, g3.smoke), "noise ignored the seed"
 
 
-class _CountingRng:
-    """Wraps a Generator, counting uniform() calls — to prove the skip-mask
-    veto runs BEFORE the RNG draw (a skipped tile consumes no random value)."""
-    def __init__(self, seed):
-        self._g = np.random.default_rng(seed)
-        self.draws = 0
-
-    def uniform(self, lo, hi):
-        self.draws += 1
-        return self._g.uniform(lo, hi)
-
-
 def test_skipped_tile_draws_no_noise():
-    # A noisy smoke disc: the number of RNG draws must equal the number of
+    # A noisy smoke disc: the number of draws must equal the number of
     # SURVIVING (non-skipped) tiles, not the full region tile count. So masking
     # one interior tile solid must drop the draw count by exactly one — proving
-    # the skip-mask veto precedes the draw (skipped tiles consume no randomness).
+    # the skip-mask veto precedes the draw (skipped tiles draw nothing). And,
+    # since #29 P3b, every OTHER tile keeps its value: a tile's draw is keyed
+    # by (tick, edit key, tile), not by its place in a stream.
     e = FieldEdit("smoke", Region.DISC, (6, 6, 4.0), 0.8, EditMode.ADD,
                   Falloff.LINEAR, clamp=(0.0, 1.0), noise=0.85, source_id=1)
 
     g_clean = _GMapStub()
-    rng_clean = _CountingRng(seed=3)
-    apply_field_edit(g_clean, e, rng_clean)
-    n_survivors = int((g_clean.smoke > 0).sum())
+    rng_clean = _rng(seed=3)
+    apply_field_edit(g_clean, e, rng_clean, key=0)
+    n_survivors = int(np.count_nonzero(g_clean.smoke > 0))
     # Every surviving tile drew exactly once (LINEAR weight > 0 inside the disc).
-    assert rng_clean.draws == n_survivors, \
-        f"draws {rng_clean.draws} != surviving tiles {n_survivors}"
+    assert rng_clean.drawn == n_survivors,         f"draws {rng_clean.drawn} != surviving tiles {n_survivors}"
 
     g_solid = _GMapStub()
     g_solid.solid[5, 5] = True  # one interior disc tile masked out
-    rng_solid = _CountingRng(seed=3)
-    apply_field_edit(g_solid, e, rng_solid)
+    rng_solid = _rng(seed=3)
+    apply_field_edit(g_solid, e, rng_solid, key=0)
     assert float(g_solid.smoke[5, 5]) == 0.0
-    # Exactly one fewer draw — the skipped tile consumed no RNG value.
-    assert rng_solid.draws == rng_clean.draws - 1, \
-        f"masking a solid tile changed draw count by {rng_clean.draws - rng_solid.draws}, expected 1"
+    # Exactly one fewer draw — the skipped tile drew nothing.
+    assert rng_solid.drawn == rng_clean.drawn - 1,         f"masking a solid tile changed draw count by {rng_clean.drawn - rng_solid.drawn}, expected 1"
+    keep = np.ones(g_clean.smoke.shape, dtype=bool)
+    keep[5, 5] = False
+    assert np.array_equal(g_clean.smoke[keep], g_solid.smoke[keep])
+
+
+def test_a_noisy_edit_needs_its_edit_key():
+    """apply_field_edit refuses a noisy edit without its key (#29 P3b)."""
+    e = FieldEdit("smoke", Region.TILE, (2, 2), 0.5, noise=0.5, source_id=1)
+    with pytest.raises(ValueError, match="edit key"):
+        apply_field_edit(_GMapStub(), e, _rng(1))
 
 
 # ---------------------------------------------------------------------------
@@ -446,44 +460,48 @@ def _open_gmap(h=24, w=24):
 
 
 def test_add_explosion_smoke_equivalence():
-    """The migrated add_explosion_smoke deposit == the legacy inline formula."""
+    """The migrated add_explosion_smoke deposit == THE integer law written by
+    hand (#29 P3e): the amount quantized once into the trace currency, the
+    DISC's LINEAR weight ``falloff_round`` on the Q16 radius, one integer
+    noise draw per surviving tile in row-major order, the product rounded
+    once (half away) -- on the same seed, bit for bit."""
     from simulation.physics import add_explosion_smoke
-    import math
+    from simulation import draws, unit_fixed as ufx
 
     radius, noise, seed = 8, 0.85, 11
     cy, cx = 12, 12
+    one = ufx.FP_ONE
 
-    # Reference: the exact legacy inline loop (row-major draw order), in float
-    # density, then QUANTIZED per-cell exactly as the "gas" field-edit combine
-    # does (S2b: smoke is int32 Q16.16). The combine accumulates in real density
-    # and re-quantizes each ADD, so the reference quantizes the running value at
-    # each step too (a single deposit per tile here, so one quantize at the end
-    # is equivalent).
-    ref_f = _open_gmap()
-    ref_f.smoke = np.zeros(ref_f.smoke.shape, dtype=np.float64)
-    rng_ref = np.random.default_rng(seed)
-    low = 1.0 - noise
-    h, w = ref_f.material.shape
+    ref = _open_gmap()
+    ref_q = np.zeros(ref.smoke.shape, dtype=np.int64)
+    from simulation.draws import MatchDraws
+    from simulation.rng_salts import Salt
+    rng_ref = MatchDraws(seed)
+    amount_q = gas_fixed.quantize_trace_scalar(0.8)
+    low_q = one - ufx.quantize_scalar(noise)
+    r_q = radius * one
+    h, w = ref.material.shape
     for ddy in range(-radius, radius + 1):
         for ddx in range(-radius, radius + 1):
             ny, nx = cy + ddy, cx + ddx
-            if 0 <= ny < h and 0 <= nx < w and not ref_f.solid[ny, nx]:
-                dist = math.sqrt(ddy ** 2 + ddx ** 2)
-                if dist < radius:
-                    base = 0.8 * (1 - dist / radius)
-                    mult = float(rng_ref.uniform(low, 1.0))
-                    ref_f.smoke[ny, nx] = min(1.0, ref_f.smoke[ny, nx] + base * mult)
-    ref_q = gas_fixed.quantize(ref_f.smoke)
+            if 0 <= ny < h and 0 <= nx < w and not ref.solid[ny, nx]:
+                d2 = (ddy * ddy + ddx * ddx) << 32
+                if d2 < r_q * r_q:
+                    wgt = ufx.falloff_round(one, d2, r_q * r_q)
+                    # keyed: (tick 0, edit key = the edit's seq 0, tile)
+                    mult = draws.noise_mult_q16(
+                        rng_ref.at(Salt.FIELD_NOISE, ny * w + nx, 0), low_q)
+                    ref_q[ny, nx] += ufx.div_round(amount_q * wgt * mult,
+                                                   one * one)
 
-    # Migrated path through the queue, same seed (int32 Q16.16 field).
     got = _open_gmap()
     got.smoke[:] = 0
     q = EditQueue()
     add_explosion_smoke(got, q, cy, cx, radius, noise=noise)
-    q.flush(got, np.random.default_rng(seed))
+    q.flush(got, _rng(seed))
 
     assert np.array_equal(ref_q, got.smoke), \
-        "migrated add_explosion_smoke diverged from the legacy quantized deposit"
+        "migrated add_explosion_smoke diverged from the integer law"
 
 
 def test_apply_explosion_atmosphere_equivalence():
@@ -507,8 +525,8 @@ def test_apply_explosion_atmosphere_equivalence():
     h, w = ref.material.shape
     o2_0 = ref.gas[O2].copy()
     n2_0 = ref.gas[INERT_N2].copy()
-    ref_o2 = gas_fixed.dequantize(ref.gas[O2])
-    ref_n2 = gas_fixed.dequantize(ref.gas[INERT_N2])
+    ref_o2 = gas_fixed.dequantize_bulk(ref.gas[O2])
+    ref_n2 = gas_fixed.dequantize_bulk(ref.gas[INERT_N2])
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny, nx = cy + dy, cx + dx
@@ -522,10 +540,10 @@ def test_apply_explosion_atmosphere_equivalence():
     got = _open_gmap()
     q = EditQueue()
     apply_explosion(got, q, cy, cx, radius, pressure, wall_damage)
-    q.flush(got, np.random.default_rng(0))
+    q.flush(got, _rng(0))
 
-    got_o2 = gas_fixed.dequantize(got.gas[O2])
-    got_n2 = gas_fixed.dequantize(got.gas[INERT_N2])
+    got_o2 = gas_fixed.dequantize_bulk(got.gas[O2])
+    got_n2 = gas_fixed.dequantize_bulk(got.gas[INERT_N2])
     assert np.allclose(ref_o2, got_o2, atol=1e-4), \
         "migrated apply_explosion O2 deposit diverged from the 21% split"
     assert np.allclose(ref_n2, got_n2, atol=1e-4), \

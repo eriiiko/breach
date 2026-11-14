@@ -28,9 +28,8 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools"):
         sys.path.insert(0, str(_p))
 
 import air_paint  # noqa: E402
+from level_loader import SPACE_CODE  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
-
-SPACE_CODE = 9
 SOLID = frozenset({MAT_HULL})
 
 

@@ -89,7 +89,7 @@ def test_generator_is_byte_deterministic(tmp_path):
 # ---------------------------------------------------------------------------
 def test_studio_loads_headless():
     lvl = load("fire_studio")
-    assert lvl.version == "2"
+    assert lvl.version == "3"
     assert lvl.tilemap.shape == (32, 48), f"shape={lvl.tilemap.shape}"
     assert lvl.diffuse_path.exists()
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)

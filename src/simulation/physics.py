@@ -27,17 +27,21 @@ import math
 
 from config import CFG
 from simulation.gamemap import MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED
+from simulation.materials import MAT_GRILLE
 
 # Materials the blast's structural wall damage applies to (A6 critique B1:
 # MAT_DOOR_CLOSED joins, or closed entity doors are blast-proof and the
 # breach charge no-ops on them). Steel/glass/furniture being excluded is a
 # PRE-EXISTING wart of this tuple — flagged for arc close, deliberately NOT
-# changed here (a6 doors design §1).
-_BLAST_WALL_MATERIALS = (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED)
+# changed here (a6 doors design §1). #134: the GRILLE joins -- a blast opens
+# a grating (it is a gas tile, so `destroy_wall` books its N as for a crate).
+_BLAST_WALL_MATERIALS = (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED,
+                         MAT_GRILLE)
 from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff,
 )
 from simulation import wall_fixed   # S3b: wall_hp Q16.16 quantize helpers
+from simulation import unit_fixed   # #29 P3e: the integer falloff
 
 # source_id namespace for explosion-issued edits (engine/13 stable-sort key).
 # Distinct ids keep an explosion's field families grouped + ordered in the flush
@@ -46,8 +50,10 @@ _SRC_EXPLOSION = 1
 _SRC_EXPLOSION_SMOKE = 2
 
 # A "set this tile to 0" REMOVE needs an amount large enough to drive any
-# in-range value below the clamp floor; smoke lives in [0, 1] so 1.0 suffices,
-# but we use a generous margin to be unambiguous (clamp catches the rest).
+# in-range value below the clamp floor. Smoke has no ceiling since smoke
+# transport v2 (a compressed tile can exceed 1), but the whole map's smoke
+# stays far below 1e6, so this margin still clears any tile (the policy's
+# floor-0 clamp catches the rest).
 _SMOKE_CLEAR_AMOUNT = 1e6
 
 
@@ -65,8 +71,12 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
       (the propagating shockwave) and a direct ``atmosphere`` boost (the
       sustained wind that drives smoke) — both ADD edits.
     - Enqueues a smoke-clear (REMOVE-to-0) over the inner 40 percent of the radius.
-    - Enqueues an ``fire = max(...)`` ignite (MAX edit) over flammable tiles
-      inside 70 percent of the radius.
+
+    Ignition is not a direct effect here: a fire is started by delivering heat
+    (CLAUDE.md "Starting a fire"), never by writing ``fire`` alone — a payload
+    that should ignite carries ``heat_amount``/``heat_radius`` (or an
+    ``ignite_radius`` ring), and ``apply_temperature_ignition`` lights any tile
+    that heat brings at or above its own ``ignition_temp`` (#79).
 
     The deposits are not applied here — they land when the Simulation flushes the
     queue (before the solvers), in deterministic stable-sorted order. ``queue``
@@ -82,44 +92,51 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
     # tiles). The field policy supplies the skip-mask (solid) and we add vacuum
     # explicitly to mirror the legacy ``not is_vacuum`` guard.
     queue.enqueue(FieldEdit(
+        # p3e-door: the row's radius and pressure (the flush quantizes once)
         field="atmosphere", region=Region.DISC, coords=(fy, fx, float(radius)),
         amount=float(pressure), mode=EditMode.ADD, falloff=Falloff.LINEAR,
         source_id=_SRC_EXPLOSION,
     ))
 
     # Smoke clear over the inner 40 percent — a REMOVE-to-0 (large amount, the
-    # smoke policy's [0, 1] clamp drives it to exactly 0). FLAT so every inner
-    # tile is fully cleared, matching the old ``smoke[...] = 0.0``.
-    inner = float(radius) * 0.4
+    # smoke policy's floor-0 TRACE_CLAMP drives it to exactly 0). FLAT so every
+    # inner tile is fully cleared, matching the old ``smoke[...] = 0.0``.
+    # #29 P3e: the inner radius is 2/5 of the radius on the Q16 grid (one
+    # rounding), handed to the DISC as its exact float view.
+    inner = unit_fixed.dequantize_scalar(
+        unit_fixed.div_round(int(radius) * 2 * unit_fixed.FP_ONE, 5))
     if inner > 0.0:
         queue.enqueue(FieldEdit(
             field="smoke", region=Region.DISC, coords=(fy, fx, inner),
             amount=_SMOKE_CLEAR_AMOUNT, mode=EditMode.REMOVE, falloff=Falloff.FLAT,
-            clamp=(0.0, 1.0), source_id=_SRC_EXPLOSION,
+            source_id=_SRC_EXPLOSION,   # policy TRACE_CLAMP: floor 0
         ))
 
+    # #29 P3e: the falloff in integers. Membership ``d2 <= r^2``; the wall
+    # decrement ``wall_damage * (1 - dist/radius)`` in Q16 and the wave
+    # amount ``pressure * falloff * kw / 16`` in the temperature's Q16, each
+    # the real value rounded ONCE (unit_fixed.falloff_round, exact).
+    r = int(radius)
+    r2 = r * r
+    wall_q = wall_fixed.quantize_scalar(float(wall_damage))   # p3e-door
+    press_q = unit_fixed.quantize_scalar(float(pressure))     # p3e-door
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny, nx = fy + dy, fx + dx
             if 0 <= ny < h and 0 <= nx < w:
-                dist = math.sqrt(dy * dy + dx * dx)
-                if dist <= radius:
-                    falloff = 1.0 - (dist / radius)
+                d2 = dy * dy + dx * dx
+                if d2 <= r2:
                     # --- Structural wall damage (immediate, NOT a FieldEdit) ---
-                    # S3b: wall_hp is int32 Q16.16 — quantize the (float) blast
-                    # decrement into the same Q16.16 domain before subtracting.
                     if gmap.material[ny, nx] in _BLAST_WALL_MATERIALS:
-                        gmap.wall_hp[ny, nx] -= wall_fixed.quantize_scalar(
-                            float(wall_damage) * float(falloff))
+                        gmap.wall_hp[ny, nx] -= unit_fixed.falloff_round(
+                            wall_q, d2, r2)
                         if gmap.wall_hp[ny, nx] <= 0:
                             gmap.destroy_wall(ny, nx)
                     if not gmap.solid[ny, nx] and not gmap.is_vacuum[ny, nx]:
                         # Smoothed 3x3 deposit into wave_source (shockwave). The
                         # per-tile stencil spread is not a single region, so we
                         # enqueue the 9 weighted TILE ADDs here — their `seq`
-                        # preserves the exact original summation order
-                        # (bit-identical float accumulation through the flush).
-                        amount = pressure * falloff
+                        # preserves the original summation order.
                         for ky, kx, kw in [
                                 (0, 0, 4),
                                 (-1, 0, 2), (1, 0, 2), (0, -1, 2), (0, 1, 2),
@@ -128,38 +145,31 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                             if (0 <= sy < h and 0 <= sx < w
                                     and not gmap.solid[sy, sx]
                                     and not gmap.is_vacuum[sy, sx]):
+                                a_q = unit_fixed.div_round(
+                                    unit_fixed.falloff_round(
+                                        press_q * kw, d2, r2), 16)
                                 queue.enqueue(FieldEdit(
                                     field="wave_source", region=Region.TILE,
                                     coords=(sy, sx),
-                                    amount=amount * kw / 16.0,
+                                    amount=unit_fixed.dequantize_scalar(a_q),
+                                    amount_q=a_q,
                                     mode=EditMode.ADD,
                                     source_id=_SRC_EXPLOSION,
                                 ))
-                    # Ignite flammable tiles within 70 percent of the radius. The
-                    # MEMBERSHIP radius (0.7 r) differs from the FALLOFF radius
-                    # (full r), so this is a per-tile MAX edit with the
-                    # pre-computed ``0.5 * falloff`` amount rather than one DISC
-                    # edit (which would couple the two radii). The fire policy's
-                    # non-flammable skip-mask + [0, 1] clamp are applied at flush.
-                    if gmap.flammable[ny, nx] and dist <= radius * 0.7:
-                        queue.enqueue(FieldEdit(
-                            field="fire", region=Region.TILE, coords=(ny, nx),
-                            amount=0.5 * falloff, mode=EditMode.MAX,
-                            clamp=(0.0, 1.0), source_id=_SRC_EXPLOSION,
-                        ))
 
 
-def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None):
+def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None, amount=0.8,
+                        scale=None, amount_q=None):
     """Enqueue a noisy smoke disc into ``gmap.smoke`` (engine/13 ADD edit).
 
     Behaviour-preserving migration of the legacy inline deposit onto the
     :class:`EditQueue`. Each tile gets ``base * mult`` where
     ``base = 0.8 * (1 - dist/radius)`` (a DISC + LINEAR falloff with
     ``amount = 0.8``) and ``mult`` is the per-tile noise multiplier drawn uniform
-    in ``[1 - noise, 1.0]`` — but the draw now happens **at flush time**, from
-    the sim's seeded ``rng``, in the queue's deterministic per-tile order, so the
-    seeded-rollout guarantee is structural (one RNG consumer) rather than a
-    per-caller convention.
+    in ``[1 - noise, 1.0]`` — but the draw happens **at flush time**, a keyed
+    draw per (tick, edit, tile) under the sim's seed (#29 P3b), so the
+    seeded-rollout guarantee is structural rather than a per-caller
+    convention.
 
     ``noise`` is the per-tile contrast knob (ch.05 §4 "explosion smoke noise too
     subtle"):
@@ -173,9 +183,11 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None):
     When ``noise`` is ``None`` it is read from ``CFG.physics.explosion_smoke_noise``
     so the look is config-tunable; callers (e.g. the demo dial) may override it.
 
-    The smoke policy supplies the skip-mask (``solid``) and the [0, 1] clamp, so
-    a deposited tile reproduces the old ``min(1, smoke + base*mult)`` and a solid
-    tile is skipped (and draws no RNG — the per-tile draw order matches the
+    The smoke policy supplies the skip-mask (``solid``) and the floor-0
+    TRACE_CLAMP, so a deposited tile gets exactly ``smoke + base*mult`` (times
+    ``scale`` when given, the blast's air read, #31) (no
+    ceiling since smoke transport v2 D1 -- the old ``min(1, ...)`` cut smoke
+    already on the tile) and a solid tile is skipped (and draws no RNG — the per-tile draw order matches the
     legacy nested-loop order, keeping the deposit bit-identical for a fixed seed).
     """
     if noise is None:
@@ -184,6 +196,7 @@ def add_explosion_smoke(gmap, queue, fy, fx, radius, noise=None):
     noise = min(1.0, max(0.0, noise))
     queue.enqueue(FieldEdit(
         field="smoke", region=Region.DISC, coords=(fy, fx, float(radius)),
-        amount=0.8, mode=EditMode.ADD, falloff=Falloff.LINEAR,
-        clamp=(0.0, 1.0), noise=noise, source_id=_SRC_EXPLOSION_SMOKE,
+        amount=float(amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
+        noise=noise, scale=scale, amount_q=amount_q,
+        source_id=_SRC_EXPLOSION_SMOKE,   # policy TRACE_CLAMP (D1)
     ))

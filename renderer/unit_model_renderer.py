@@ -2,21 +2,44 @@
 
 Phase 0 (docs/anim_phase0_impl_2026-07-20.md): a rigged glTF humanoid drawn on
 top of the existing 2D top-down world, driven READ-ONLY off sim state, behind
-``RenderConfig.use_3d_units`` (default OFF). No model/animation state ever lands
+``RenderConfig.use_3d_units`` (default ON since #33). No model/animation state ever lands
 on ``Unit`` — per-unit animation phase lives here, keyed by ``unit.id`` — so this
 never enters the synced sim/digest and is auto-skipped in headless ML training
 (which never builds a GameRenderer).
 
-Asset: Quaternius "Universal Animation Library" (CC0), a rigged character + a
-portion of the animation set, one glTF holding the mesh and all 46 clips. See
-``assets/models/marine/LICENSE.txt``.
+Assets: the scripted characters (#33) -- each one skinned mesh generated through
+``charkit/gameready.py`` on the Quaternius "Universal Animation Library" (CC0)
+skeleton with its 46 clips converted to the character's own rest pose; one .glb
+holds mesh, texture and clips. WHICH model a unit is drawn with is data:
+``[render.unit_looks]`` in config.toml (players the space marine, zombies the
+workers), dealt and kept per unit id by ``renderer/unit_looks.py`` -- render-
+only, never on ``Unit``. All looks share the marine's scale and the one lit
+shader. See each ``assets/models/<name>/LICENSE.txt``. The library's own mannequin
+(``assets/models/marine/``) is no longer drawn: it is the skeleton and clip
+SOURCE the game-ready step reads.
 
-Skinning: CPU (``update_model_animation``) — this pyray/raylib 6.1-dev binding
-exposes no ``UpdateModelAnimationBoneMatrices`` GPU helper. The shared model is
-re-skinned to each unit's pose immediately before its ``DrawModelEx``; soft
-ceiling ~20 animated units in CPython. The GPU-skinning upgrade (compute bone
-matrices + a skinning vertex shader) is a self-contained change INSIDE this
-module — ``_draw_one`` is the swap seam — so nothing outside changes.
+Skinning: CPU (``update_model_animation``). The shared model is re-skinned to
+each unit's pose immediately before its ``DrawModelEx``; soft ceiling ~20
+animated units in CPython. The bindings in use (a raylib 6.x build where this
+was written, 5.5.0.4 on the home desktop) name a clip's frame count and frame
+poses differently (read through :func:`anim_frame_count`, #80, and
+``pose_skinner.anim_pose_fields``). GPU skinning IS available on 5.5 (each
+mesh carries ``boneMatrices``, uploaded by ``DrawMesh`` to a shader that
+declares them; measured in the design's §4.5), but nothing here uses it yet:
+that is W13.2, a second ``pose_skinner.Skinner`` behind ``_draw_one``'s seam,
+and it needs the lit and shadow vertex shaders to skin.
+
+Pose layer (M13, #162; ``[render.pose] enabled``, default OFF): with it on,
+each unit's pose is composed by ``renderer/pose_layer.py`` (sub-frame clips,
+legs / upper / head layers over bone masks, crossfades) in ONE batch per look
+per ``draw_units`` call, and ``pose_skinner.CpuInjectSkinner`` puts it on the
+mesh. With it off nothing of it is built or imported, and ``_draw_one``
+plays the look's own clip at an integer frame exactly as before. #163: the
+sim's events reach the layer per unit (``queue_events``, each acted on
+once): a launched shot holds the aim overlay and retriggers the recoil, a
+hit plays the flinch additive; and each unit's travel relative to its
+facing (the position delta) steers the aim-vs-travel twist, so the legs
+walk along the travel while the torso keeps the facing.
 
 Coordinate mapping: the top-down camera + world-px mapping now live in
 ``renderer/lit3d.py`` (the shared lit-3D-in-world-RT seam, extracted 2026-09
@@ -36,16 +59,32 @@ from typing import Callable, Dict, Optional, Sequence
 
 import pyray as rl
 
-from .lit3d import LightFieldCtx, make_camera
-from .marine_shader import MARINE_NORMAL_MAP_FILENAME, load_marine_shader
+from config import CFG
+
+from .lit3d import (LightFieldCtx, bind_smoke_cover_map, make_camera,
+                    set_light_curve_uniforms)
+from .marine_shader import (MARINE_NORMAL_MAP_FILENAME, UNIT_NORMAL_Y_SIGN,
+                            load_marine_shader)
+from .unit_looks import (BODY_LIGHT_UNIT, ROLES, LookAssigner, all_look_names,
+                         look_path, looks_table, role_of, unit_key, unit_shading)
+from .unit_shadow import (NO_SHADOW, ShadowCast, ShadowPainter, UnitLight,
+                          read_unit_light, shadow_cast, smooth_shadow,
+                          unit_shadow_settings)
 
 # ---------------------------------------------------------------------------
 # Asset + tunables
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).parent.parent
-_MODEL_PATH = (_REPO_ROOT / "assets" / "models" / "marine"
-               / "AnimationLibrary_Godot_Standard.gltf")
+# Which model each unit is drawn with is DATA: config.toml [render.unit_looks]
+# (renderer/unit_looks.py). The space marine is the SCALE REFERENCE: every look
+# is scaled by his native height, so he is drawn _SCALE_TILES_TALL tiles tall
+# and every other look at its own true height relative to him.
+_SCALE_REFERENCE = "space_marine"
+_MODEL_PATH = look_path(_SCALE_REFERENCE)
+# Tools only (charkit/preview_in_game.py --model): a model file that every
+# unit is drawn with instead of the table. None in the game.
+_MODEL_OVERRIDE: Optional[Path] = None
 
 # Data-driven state -> clip-name map (the extension point for limp/wounded/…).
 # Keep it a TABLE, not if-chains: future stances add a key + a clip, nothing
@@ -58,8 +97,9 @@ CLIP_MAP: Dict[str, str] = {
     "dead": "Death01",          # dormant in Phase 0 (dead units are skipped)
 }
 
-# How many tiles the model's native height represents — the single feel knob
-# for on-screen size. Uniform scale, so the top-down footprint scales with it.
+# How many tiles the SPACE MARINE's native height represents — the single feel
+# knob for on-screen size; every look shares his scale (see _SCALE_REFERENCE).
+# Uniform scale, so the top-down footprint scales with it.
 _SCALE_TILES_TALL = 6.0
 # Keyframe playback rate for the wall-clock animation advance (clips are ~30fps).
 _ANIM_FPS = 30.0
@@ -73,10 +113,57 @@ _MOVE_EPS_TILES = 0.01
 # Blob shadow: radius as a fraction of the footprint, and its RGBA.
 _SHADOW_RADIUS_FRAC = 0.32       # of footprint side, in world px
 _SHADOW_COLOR = (0, 0, 0, 90)
+# Projected shadow (#33): the time constant of the per-unit low-pass on the
+# shadow vector -- a turn of the light fades the shadow through faint rather
+# than snapping it across the unit. Render feel, not a setting.
+_SHADOW_SMOOTH_TAU_S = 0.12
+# #114: the read of a unit with no light view (lighting off): dark.
+_NO_LIGHT = UnitLight(0.0, 0.0, 0.0, 0.0)
 # Prune a unit's anim state once it has gone unseen this many seconds.
 _STALE_SECONDS = 1.0
 # _CAM_HEIGHT and LightFieldCtx moved to renderer/lit3d.py (P1 extraction,
 # #60); imported above and re-exported here for import-compat.
+
+# The raylib bindings in use name a clip's frame count differently: raylib 5.5
+# (the home desktop's pyray 5.5.0.4) ``ModelAnimation.frameCount``, raylib 6.x
+# ``keyframeCount``. Read in this order, first present wins.
+_FRAME_COUNT_FIELDS = ("frameCount", "keyframeCount")
+
+
+def anim_frame_count(anim) -> int:
+    """A clip's frame count under EITHER raylib binding -- the ONE read of it
+    (#80: reading 6.x's ``keyframeCount`` crashed the 3D marines on 5.5).
+    Raises AttributeError naming both fields when the struct has neither."""
+    for name in _FRAME_COUNT_FIELDS:
+        try:
+            return int(getattr(anim, name))
+        except AttributeError:
+            continue
+    raise AttributeError(f"ModelAnimation carries none of {_FRAME_COUNT_FIELDS}")
+
+
+def pose_layer_enabled(cfg) -> bool:
+    """``[render.pose] enabled`` -- the ONE switch of the pose layer (#162),
+    read when the renderer loads. Raises ValueError when the section or the
+    key is missing or not a bool (a typo must not silently pick a path).
+    Everything else of the table is read by ``pose_layer.pose_settings``,
+    only when this is true."""
+    section = getattr(getattr(cfg, "render", None), "pose", None)
+    if section is None:
+        raise ValueError("config.toml has no [render.pose] section")
+    value = getattr(section, "enabled", None)
+    if not isinstance(value, bool):
+        raise ValueError(f"[render.pose] enabled must be a bool, got {value!r}")
+    return value
+
+
+# #184: the render-only events the reload and throw reactions read, looked up
+# BY NAME in simulation.events -- the gameplay pack (#183) adds them; until
+# then both reactions are inert. ReloadEvent(unit_id, ticks): a reload starts,
+# lasting `ticks`; ThrowEvent(unit_id, kind, ticks): a throw's wind-up starts,
+# lasting `ticks` (the grenade leaves at its end).
+RELOAD_EVENT = "ReloadEvent"
+THROW_EVENT = "ThrowEvent"
 
 
 @dataclass
@@ -88,159 +175,632 @@ class _UnitAnimState:
     last_y: float = 0.0
     last_seen: float = 0.0       # wall-clock of last draw (for pruning)
     initialised: bool = False
+    shadow: Optional[ShadowCast] = None   # projected shadow, low-passed (#33)
+    pose: Optional[object] = None         # pose_layer.PoseState (#162; pose layer on)
+
+
+@dataclass
+class _Look:
+    """One loaded unit look: a skinned model, its clips, its own clip-name ->
+    index map and native (bind-pose bounding-box) height. Renderer-side only."""
+    name: str
+    path: Path
+    model: object
+    anims: object                         # cffi array of ModelAnimation
+    n_anims: int
+    clip_index: Dict[str, int]
+    native_height: float
+    normal_tex: object = None             # P2 normal map (ROUGHNESS slot)
+
+
+@dataclass
+class _HeldModel:
+    """#184: one loaded held-prop model (a look-like record, so the looks'
+    normal-map bind serves it): its file's longest side in file units."""
+    name: str
+    path: Path
+    model: object
+    extent: float
+    normal_tex: object = None
+
+
+@dataclass
+class _HeldProps:
+    """#184: the ``[render.held_props]`` settings, the loaded models (by
+    model name) and the grip matrices built so far (by (prop, socket); #187:
+    a left-hander's mirrored grip by (prop, socket, look))."""
+    settings: object
+    models: Dict[str, _HeldModel]
+    grips: Dict[tuple, object] = None
+
+    def __post_init__(self) -> None:
+        if self.grips is None:
+            self.grips = {}
+
+
+def _np_matrix(m) -> "np.ndarray":
+    """A raylib Matrix as a 4x4 (column vectors): field ``m{4c + r}`` is
+    row r, column c."""
+    import numpy as np
+    return np.array([[getattr(m, f"m{4 * c + r}") for c in range(4)] for r in range(4)],
+                    dtype=np.float64)
+
+
+def _set_rl_matrix(m, a) -> None:
+    """Write a 4x4 (column vectors) into a raylib Matrix in place."""
+    for r in range(4):
+        for c in range(4):
+            setattr(m, f"m{4 * c + r}", float(a[r][c]))
 
 
 class UnitModelRenderer:
-    """Owns the shared skinned model, its clips, and per-unit anim state."""
+    """Owns the loaded unit looks (one per model named in
+    ``[render.unit_looks]``), the ONE shared lit shader, which look each unit
+    is drawn with (a ``unit_looks.LookAssigner``, keyed by unit id) and the
+    per-unit anim state. Nothing here is ever written to a ``Unit``."""
 
     def __init__(self) -> None:
-        self.model: Optional[rl.Model] = None
-        self._anims = None                    # cffi array of ModelAnimation
-        self._n_anims = 0
-        self._clip_index: Dict[str, int] = {}  # clip-name -> anim index
-        self._native_height = 1.83            # overwritten at load (bbox)
+        self._looks: Dict[str, _Look] = {}     # loaded looks, in load order
+        self._resolve: Dict[str, _Look] = {}   # every table name -> a loaded look
+        self._assigner: Optional[LookAssigner] = None
+        self._scale_height = 1.83              # the scale reference's height
         self._loaded = False
         self._anim: Dict[int, _UnitAnimState] = {}
         self._last_clock: Optional[float] = None
-        # P1 lit marine shader (set up in load() once the GL context exists).
-        # None in the Patch-0 fallback path (flat per-channel CPU RGB tint);
-        # when present, _draw_one lets the shader sample the light field per-
-        # fragment and skips the CPU tint (avoids double-darkening).
+        self._dt = 0.0                   # the current frame's wall-clock step
+        # P1 lit marine shader (set up in load() once the GL context exists),
+        # SHARED by every look. None in the Patch-0 fallback path (flat per-
+        # channel CPU RGB tint); when present, _draw_one lets the shader sample
+        # the light field per-fragment and skips the CPU tint.
         self._shader = None
         self._marine_shader = None       # MarineShader wrapper (locs + setters)
-        self._field_bound = False        # light textures wired into map slots
-        self._normal_tex = None          # P2 marine normal map (ROUGHNESS slot)
+        # #33 projected shadows: the flat shader + single-darkening draw.
+        self._shadow_painter: Optional[ShadowPainter] = None
+        # #162 pose layer + its skinner: built in load() only when
+        # [render.pose] enabled; None = the clip player as before.
+        self._pose = None
+        self._hands = None               # #187: unit_looks.HandAssigner (pose layer on)
+        self._skinner = None
+        self._delivered: Dict[int, object] = {}   # the last event batch (#163)
+        self._shot_event = self._hit_event = None
+        # #184: reload / throw (by name), #185: the stagger, one sim tick in
+        # seconds, and the held props (pose layer on only)
+        self._stagger_event = self._reload_event = self._throw_event = None
+        self._tick_s = 1.0 / 24.0
+        self._held = None
+        # #87: where each unit's muzzle is THIS frame (unit key -> (x, y,
+        # dir x, dir y) in tiles, on the floor plane), written by _draw_one
+        # for every unit drawn holding a prop; the muzzle flame reads it
+        self.muzzle_poses: Dict[int, tuple] = {}
+
+    @property
+    def model(self):
+        """The first loaded look's model (None before load) -- compat for
+        callers that only ask whether a model is there."""
+        first = next(iter(self._looks.values()), None)
+        return first.model if first is not None else None
 
     # ------------------------------------------------------------------
     # Load / unload  (mirror UnitSprites.load(): needs a live GL context)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _table() -> Dict[str, list]:
+        """The role -> look-name table: ``[render.unit_looks]``, or every role
+        drawn with ``_MODEL_OVERRIDE`` when a tool has set it."""
+        if _MODEL_OVERRIDE is not None:
+            name = Path(_MODEL_OVERRIDE).stem
+            return {role: [name] for role in ROLES}
+        return looks_table(CFG)
+
+    @staticmethod
+    def _path_of(name: str) -> Path:
+        if _MODEL_OVERRIDE is not None:
+            return Path(_MODEL_OVERRIDE)
+        return look_path(name)
+
     def load(self) -> None:
-        """Load the rigged model + all animation clips once. Must run after
-        init_window (OpenGL context required), exactly like UnitSprites.load().
-        Failures are logged and leave the renderer inert (draw_units no-ops)."""
+        """Load every look the table names (model + all its clips) once. Must
+        run after init_window (OpenGL context required), exactly like
+        UnitSprites.load(). A look whose file is missing or fails to load is
+        drawn as the first look that did load (said once, here); if none
+        loads the renderer stays inert (draw_units no-ops -> sprites)."""
         if not rl.is_window_ready():
             print("[unit_model] WARN: no GL context; 3D units disabled")
             return
-        path = str(_MODEL_PATH.resolve())
-        if not _MODEL_PATH.is_file():
-            print(f"[unit_model] WARN: model not found: {path}; 3D units disabled")
-            return
         try:
-            self.model = rl.load_model(path)
+            table = self._table()
+        except ValueError as exc:
+            print(f"[unit_model] WARN: {exc}; 3D units disabled")
+            return
+        names = all_look_names(table)
+        for name in names:
+            look = self._load_look(name, self._path_of(name))
+            if look is not None:
+                self._looks[name] = look
+        if not self._looks:
+            print("[unit_model] WARN: no unit look loaded; 3D units disabled")
+            return
+        first = next(iter(self._looks.values()))
+        for name in names:
+            if name not in self._looks:
+                print(f"[unit_model] WARN: look {name!r} did not load; its "
+                      f"units are drawn as {first.name!r}")
+            self._resolve[name] = self._looks.get(name, first)
+        self._assigner = LookAssigner(table)
+        self._scale_height = self._reference_height(first)
+        self._loaded = True
+        self._setup_marine_shader()
+        self._shadow_painter = ShadowPainter(rl)
+        self._setup_pose()
+
+    def _setup_pose(self, skinner=None) -> None:
+        """#162: build the pose layer over every loaded look -- only when
+        ``[render.pose] enabled``; otherwise nothing of it is imported or
+        built and the draw path is the clip player as before. A refused
+        setting, a look whose skeleton no mask table fits, or a look whose
+        raylib bone table differs from the pose layer's raises: the layer
+        was asked for, so it never silently falls back. ``skinner`` defaults
+        to the CPU-inject skinner (tests pass their own)."""
+        if not pose_layer_enabled(CFG):
+            return
+        from .pose_layer import NO_CLIP, PoseConfigError, PoseLayer, pose_settings
+        from .pose_skinner import CpuInjectSkinner
+        # #163: the events the reactions read (render-side import, as in
+        # GameRenderer.consume_events) and the hit causes checked against
+        # the sim's closed cause vocabulary
+        from simulation import events as sim_events
+        from simulation.events import (CAUSE_NAMES, ShotFiredEvent, StaggerEvent,
+                                       UnitHitEvent)
+        settings = pose_settings(CFG)
+        if settings.hit is not None:
+            unknown = sorted(set(settings.hit.causes) - set(CAUSE_NAMES))
+            if unknown:
+                raise PoseConfigError(f"[render.pose.hit] causes {unknown} are not "
+                                      f"damage causes {CAUSE_NAMES}")
+        if settings.melee is not None:          # #164
+            unknown = sorted(set(settings.melee.causes) - set(CAUSE_NAMES))
+            if unknown:
+                raise PoseConfigError(f"[render.pose.melee] causes {unknown} are not "
+                                      f"damage causes {CAUSE_NAMES}")
+        if set(settings.roles) != set(ROLES):
+            raise PoseConfigError(f"[render.pose.roles] must hold exactly the roles "
+                                  f"{list(ROLES)}, got {sorted(settings.roles)}")
+        self._shot_event, self._hit_event = ShotFiredEvent, UnitHitEvent
+        self._stagger_event = StaggerEvent          # #185: the push reaction
+        # #184: the reload / throw events, BY NAME -- the gameplay pack (#183)
+        # adds them; until then the two reactions are inert
+        self._reload_event = getattr(sim_events, RELOAD_EVENT, None)
+        self._throw_event = getattr(sim_events, THROW_EVENT, None)
+        self._tick_s = 1.0 / float(CFG.clock.ticks_per_second)
+        pose = PoseLayer(settings)
+        skinner = skinner if skinner is not None else CpuInjectSkinner(rl)
+        for look in self._looks.values():
+            rig = pose.add_look(look.name, look.path)
+            skinner.prepare(look.name, look.model, look.anims[0],
+                            rig.bank.skeleton.names)
+            print(f"[unit_model] pose layer: {look.name} {rig.bank.n_clips} clips, "
+                  f"{rig.bank.skeleton.n_bones} bones, masks "
+                  f"[render.pose.skeletons.{rig.skeleton_table}]"
+                  + (" + locomotion" if rig.locomotion is not None else ""))
+        for key, attr in (("reload", "reload_clip"), ("throw", "throw_clip")):
+            ts = getattr(settings, key)
+            if ts is not None and ts.clip and all(
+                    getattr(pose.rig(n), attr) == NO_CLIP for n in pose.looks):
+                raise PoseConfigError(f"[render.pose.{key}] clip {ts.clip!r} is a clip "
+                                      "of no loaded look")
+        for warning in pose.warnings:
+            print(f"[unit_model] WARN: pose layer: {warning}")
+        self._pose = pose
+        # #187: who is drawn left-handed (render-only, dealt by unit id)
+        from .unit_looks import HandAssigner, handedness_table
+        self._hands = HandAssigner(handedness_table(CFG))
+        self._skinner = skinner
+        self._setup_held_props(settings)
+
+    def _setup_held_props(self, pose_settings_=None) -> None:
+        """#184: load every held prop ``[render.held_props]`` names (pose
+        layer on only: the socket is a bone of the composed pose). A prop's
+        model gets the units' ONE lit shader, its own normal map moved to
+        the shader's slot (as a look's) and its row's gloss as the albedo's
+        alpha. A refused setting raises; a socket no skeleton table names is
+        refused (a typo would hold nothing); a model that fails to load is
+        said once and its units hold nothing."""
+        from .held_props import HeldPropConfigError, held_prop_settings, model_extent
+        settings = held_prop_settings(CFG)
+        known = {s for pb in (pose_settings_.playback.values() if pose_settings_ else ())
+                 for s in pb.sockets}
+        for prop in settings.props.values():
+            bad = [s for s in prop.grips if s not in known]
+            if bad:
+                raise HeldPropConfigError(
+                    f"[render.held_props.props.{prop.name}] grips {bad} are sockets of no "
+                    f"[render.pose.skeletons.*.sockets] table {sorted(known)}")
+        models: Dict[str, _HeldModel] = {}
+        for prop in settings.props.values():
+            if prop.model in models:
+                continue
+            path = look_path(prop.model)
+            if not path.is_file():
+                print(f"[unit_model] WARN: held prop model not found: {path}")
+                continue
+            try:
+                model = rl.load_model(str(path.resolve()))
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[unit_model] WARN: could not load held prop {path}: {exc}")
+                continue
+            if model is None or not getattr(model, "meshCount", 0):
+                print(f"[unit_model] WARN: held prop {path} has no mesh; not drawn")
+                continue
+            hm = _HeldModel(name=prop.model, path=path, model=model,
+                            extent=model_extent(path))
+            if self._shader is not None:
+                for mi in self._live_materials(model):
+                    model.materials[mi].shader = self._shader
+                self._bind_normal_map(hm)
+            self._gloss_albedo(hm, prop.gloss)
+            models[prop.model] = hm
+            print(f"[unit_model] held prop {prop.name}: {path.name}, "
+                  f"{prop.length_m} m on {prop.socket!r}")
+        self._held = _HeldProps(settings=settings, models=models)
+
+    def _gloss_albedo(self, hm: "_HeldModel", gloss: float) -> None:
+        """#184: a prop's albedo with ``gloss`` as its alpha (the lit
+        shader's gloss mask, #33), mipmapped and trilinear (a prop is drawn a
+        few dozen pixels long)."""
+        MM = rl.MaterialMapIndex
+        g = int(round(255 * gloss))
+        for mi in self._live_materials(hm.model):
+            maps = hm.model.materials[mi].maps
+            old = maps[MM.MATERIAL_MAP_ALBEDO].texture
+            if old.id <= 1:
+                continue
+            try:
+                img = rl.load_image_from_texture(old)
+                mask = rl.gen_image_color(img.width, img.height, rl.Color(g, g, g, 255))
+                rl.image_alpha_mask(img, mask)
+                rl.unload_image(mask)
+                new = rl.load_texture_from_image(img)
+                rl.unload_image(img)
+                if new.id == 0:
+                    continue
+                rl.gen_texture_mipmaps(new)
+                rl.set_texture_filter(new, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+                rl.unload_texture(old)
+                maps[MM.MATERIAL_MAP_ALBEDO].texture = new
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[unit_model] WARN: {hm.name}: could not set the gloss: {exc}")
+
+    def _held_prop_of(self, u, look: "_Look", pose_row):
+        """#184: ``(held model, grip matrix, hand bone, prop row)`` of the
+        prop unit ``u`` holds, or None (no weapon prop, no socket on its
+        skeleton, no pose)."""
+        if self._held is None or pose_row is None:
+            return None
+        prop = self._held.settings.prop_for(str(getattr(u, "weapon_id", "") or ""))
+        if prop is None:
+            return None
+        hm = self._held.models.get(prop.model)
+        st = self._anim.get(unit_key(u))
+        if hm is None or st is None or st.pose is None:
+            return None
+        bone = self._pose.socket_bone(st.pose, prop.name, prop.socket)
+        if bone < 0:
+            return None
+        socket = st.pose.prop_sockets.get(prop.name, prop.socket)
+        if socket not in prop.grips:
+            return None
+        key = (prop.name, socket)
+        grip = self._held.grips.get(key)
+        if grip is None:
+            from .held_props import grip_matrix
+            grip = self._held.grips[key] = grip_matrix(prop, socket, hm.extent)
+        if st.pose.mirrored:
+            # #187: a left-hander holds the mirror image on the partner bone
+            # (the grip a constant per look and socket)
+            mkey = (prop.name, socket, look.name)
+            mgrip = self._held.grips.get(mkey)
+            if mgrip is None:
+                from .held_props import mirrored_grip
+                mgrip = self._held.grips[mkey] = mirrored_grip(
+                    self._pose.mirror_conj(look.name, bone), grip, prop.mirror_axis)
+            return hm, mgrip, self._pose.held_bone(st.pose, bone), prop
+        return hm, grip, bone, prop
+
+    def queue_events(self, events: Sequence) -> None:
+        """#162: hand the frame's sim events to the pose layer, one queue per
+        unit (``event.unit_id``); the next draw acts on them (#163: a
+        launched shot -> the fire reaction, a hit -> the flinch; #185: a
+        stagger -> the push reaction). A no-op with the pose layer off.
+
+        The game hands over ``sim.tick_events`` EVERY frame, and that list
+        is only cleared by the next sim step -- at 60 fps and 24 ticks/s
+        most frames see the previous frame's list again. An event object
+        delivered by the previous call is therefore not queued twice (it is
+        the same object; the previous batch is held, so its ids cannot be
+        reused by new events).
+
+        #164: a hit of one of ``[render.pose.melee] causes`` is ALSO queued
+        on its ATTACKER (``attacker_id``), whose melee reaction plays it."""
+        if self._pose is None:
+            return
+        now = self._last_clock if self._last_clock is not None else 0.0
+        seen = self._delivered
+        self._delivered = {id(ev): ev for ev in events}
+        melee = self._pose.settings.melee
+        for ev in events:
+            if seen.get(id(ev)) is ev:
+                continue
+            uid = getattr(ev, "unit_id", None)
+            if uid is not None:
+                self._pose.queue_event(int(uid), ev, now)
+            if melee is not None and isinstance(ev, self._hit_event) \
+                    and ev.source in melee.causes and ev.attacker_id >= 0 \
+                    and ev.attacker_id != uid:
+                self._pose.queue_event(int(ev.attacker_id), ev, now)
+
+    @staticmethod
+    def _source_angle(u, dir_x_q: int, dir_y_q: int) -> Optional[float]:
+        """#185: the side a hit or a push CAME FROM, relative to unit ``u``'s
+        facing (radians, + = its left, the sim's convention: 0 = +x,
+        counter-clockwise, world y down), from the sim's own direction of
+        travel (``dir_x_q``, ``dir_y_q``: Q16, x right, y down) -- the source
+        side is minus that vector, so a round travelling +x came from the
+        unit's -x side. None for (0, 0): no direction (the reaction then
+        plays as from the front). Render-side float, read only."""
+        if not dir_x_q and not dir_y_q:
+            return None
+        sx, sy = -float(dir_x_q), -float(dir_y_q)
+        rel = math.atan2(-sy, sx) - float(getattr(u, "facing", math.pi / 2.0))
+        return _YAW_SIGN * ((rel + math.pi) % (2.0 * math.pi) - math.pi)
+
+    def _react(self, ps, uid: int, role: str, u=None) -> None:
+        """#163: act on the unit's queued events (oldest first): a round that
+        left its barrel fires, a hit flinches (the layer filters the
+        cause). #164: only the reactions the unit's ROLE plays
+        (``[render.pose.roles]``), and a melee hit this unit DEALT strikes.
+        #184: a hit carries the direction it came from (relative to ``u``'s
+        facing) -- #185: read from the sim's own vector on the event, never
+        guessed; a reload / a throw's wind-up plays its one-shot over the
+        event's ticks (the event classes are looked up by name: inert until
+        the sim defines them). #185: a stagger plays the push reaction from
+        the side its push came from. Other events are dropped."""
+        allowed = self._pose.settings.roles[role].reactions
+        melee = self._pose.settings.melee
+        for ev in self._pose.take_events(uid):
+            if isinstance(ev, self._shot_event):
+                if ev.launch and "fire" in allowed:
+                    self._pose.fire(ps)
+            elif isinstance(ev, self._hit_event):
+                if ev.unit_id == uid and "hit" in allowed:
+                    self._pose.hit(ps, ev.damage, ev.source,
+                                   None if u is None else self._source_angle(
+                                       u, ev.dir_x_q, ev.dir_y_q))
+                if ev.attacker_id == uid and "melee" in allowed and melee is not None \
+                        and ev.source in melee.causes:
+                    self._pose.melee(ps)
+            elif isinstance(ev, self._stagger_event):
+                if ev.unit_id == uid and "stagger" in allowed:
+                    self._pose.stagger(ps, None if u is None else self._source_angle(
+                        u, ev.dir_x_q, ev.dir_y_q))
+            elif self._reload_event is not None and isinstance(ev, self._reload_event):
+                if ev.unit_id == uid and "reload" in allowed:
+                    self._pose.reload(ps, float(ev.ticks) * self._tick_s)
+            elif self._throw_event is not None and isinstance(ev, self._throw_event):
+                if ev.unit_id == uid and "throw" in allowed:
+                    self._pose.throw(ps, float(ev.ticks) * self._tick_s)
+
+    def _load_look(self, name: str, path: Path) -> Optional[_Look]:
+        """Load one look; None (with one warning) if missing, unloadable or
+        not rigged."""
+        if not path.is_file():
+            print(f"[unit_model] WARN: model not found: {path}")
+            return None
+        spath = str(path.resolve())
+        try:
+            model = rl.load_model(spath)
             n_ptr = rl.ffi.new("int *", 0)
-            self._anims = rl.load_model_animations(path, n_ptr)
-            self._n_anims = int(n_ptr[0])
-            # Build the clip-name -> index map.
-            for i in range(self._n_anims):
-                nm = self._anims[i].name
-                name = rl.ffi.string(nm).decode("utf-8", "replace") if nm else f"clip{i}"
-                self._clip_index[name] = i
-            # Native height for the size scale (top-down ortho => uniform scale).
-            bb = rl.get_model_bounding_box(self.model)
-            self._native_height = max(1e-3, bb.max.y - bb.min.y)
-            rigged = (self._n_anims > 0
-                      and any(self.model.meshes[i].boneCount > 0
-                              for i in range(self.model.meshCount)))
+            anims = rl.load_model_animations(spath, n_ptr)
+            n_anims = int(n_ptr[0])
+            clip_index: Dict[str, int] = {}
+            for i in range(n_anims):
+                nm = anims[i].name
+                clip = (rl.ffi.string(nm).decode("utf-8", "replace") if nm
+                        else f"clip{i}")
+                clip_index[clip] = i
+            bb = rl.get_model_bounding_box(model)
+            native_height = max(1e-3, bb.max.y - bb.min.y)
+            rigged = (n_anims > 0
+                      and any(model.meshes[i].boneCount > 0
+                              for i in range(model.meshCount)))
+            print(f"[unit_model] loaded {name}: {spath} clips={n_anims} "
+                  f"native_height={native_height:.3f} rigged={rigged}")
             if not rigged:
-                print("[unit_model] WARN: model is not rigged (no bones/clips)")
-            self._loaded = rigged
-            print(f"[unit_model] loaded {path}: clips={self._n_anims} "
-                  f"native_height={self._native_height:.3f} rigged={rigged}")
-            if self._loaded:
-                self._setup_marine_shader()
+                print(f"[unit_model] WARN: {name} is not rigged (no bones/clips)")
+                if n_anims:
+                    rl.unload_model_animations(anims, n_anims)
+                rl.unload_model(model)
+                return None
+            return _Look(name=name, path=path, model=model, anims=anims,
+                         n_anims=n_anims, clip_index=clip_index,
+                         native_height=native_height)
         except Exception as exc:  # pragma: no cover - defensive, mirrors sprites
-            print(f"[unit_model] WARN: could not load model: {exc}")
-            self._loaded = False
+            print(f"[unit_model] WARN: could not load {name} ({spath}): {exc}")
+            return None
+
+    def _reference_height(self, first: _Look) -> float:
+        """The ONE native height every look is scaled by: the space marine's
+        (``_MODEL_PATH``), so he is drawn exactly ``_SCALE_TILES_TALL`` tiles
+        tall as before #33 and every other look at its own true height
+        relative to him. Measured from his file even when he is not a loaded
+        look (a preview of another model); the first loaded look's own height
+        if even that fails."""
+        ref = self._looks.get(_SCALE_REFERENCE)
+        height = None
+        if ref is not None and ref.path.resolve() == _MODEL_PATH.resolve():
+            height = ref.native_height
+        else:
+            try:
+                if _MODEL_PATH.is_file():
+                    m = rl.load_model(str(_MODEL_PATH.resolve()))
+                    bb = rl.get_model_bounding_box(m)
+                    height = max(1e-3, bb.max.y - bb.min.y)
+                    rl.unload_model(m)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[unit_model] WARN: could not measure {_MODEL_PATH}: {exc}")
+        if height is None:
+            height = first.native_height
+            print(f"[unit_model] WARN: scale reference {_SCALE_REFERENCE!r} "
+                  f"unavailable; scaling by {first.name!r}")
+        print(f"[unit_model] scale: {_SCALE_REFERENCE} native_height="
+              f"{height:.3f} = {_SCALE_TILES_TALL} tiles; drawn tiles tall: "
+              + ", ".join(f"{lk.name} {_SCALE_TILES_TALL * lk.native_height / height:.2f}"
+                          for lk in self._looks.values()))
+        return height
+
+    @staticmethod
+    def _live_materials(model):
+        """Material indices the meshes use -- every one but 0 (raylib's glTF
+        loader keeps its own default material there and no mesh uses it)."""
+        return range(1, model.materialCount)
 
     def _setup_marine_shader(self) -> None:
-        """P1: compile the lit-marine shader and assign it to the mesh
-        materials (1 and 2 — material 0 is dead; verified in
-        scratchpad/introspect_model.py). Light-field textures are bound to the
-        material MAP slots and per-frame uniforms pushed in draw_units. On a
-        compile failure we leave self._shader None so _draw_one falls back to
-        the Patch-0 flat CPU RGB tint (graceful degrade, never a black marine).
+        """P1: compile the ONE lit-marine shader and assign it to every look's
+        mesh materials. Light-field textures are bound to the material MAP
+        slots and per-frame uniforms pushed in draw_units. On a compile failure
+        self._shader stays None so _draw_one falls back to the Patch-0 flat CPU
+        RGB tint (graceful degrade, never a black unit).
         """
         try:
             ms = load_marine_shader()
             if ms.shader.id == 0:
                 print("[unit_model] WARN: marine shader failed to compile; "
                       "falling back to flat RGB tint")
+                self._opaque_albedos()
                 return
-            for mi in range(self.model.materialCount):
-                # meshMaterial maps mesh -> material; skip the dead material 0.
-                if mi == 0:
-                    continue
-                self.model.materials[mi].shader = ms.shader
+            for look in self._looks.values():
+                for mi in self._live_materials(look.model):
+                    look.model.materials[mi].shader = ms.shader
+                self._bind_normal_map(look)
             self._marine_shader = ms
             self._shader = ms.shader
-            self._bind_normal_map(ms)
-            print(f"[unit_model] marine lit shader ready (id={ms.shader.id})")
+            print(f"[unit_model] lit unit shader ready (id={ms.shader.id}, "
+                  f"shared by {len(self._looks)} looks)")
         except Exception as exc:  # pragma: no cover - defensive
             print(f"[unit_model] WARN: marine shader setup failed: {exc}")
             self._shader = None
             self._marine_shader = None
+            self._opaque_albedos()
 
-    def _bind_normal_map(self, ms) -> None:
-        """P2: bind the marine normal map into the ROUGHNESS(3) material slot —
+    def _opaque_albedos(self) -> None:
+        """Without the lit shader raylib's default one draws the albedo's
+        alpha as coverage -- but since #33 that alpha is the GLOSS mask, so a
+        matte texel would be see-through. Re-upload each look's albedo without
+        its alpha channel (RGB only: sampled alpha reads 1), so the fallback
+        path draws the model opaque like the lit one."""
+        MM = rl.MaterialMapIndex
+        for look in self._looks.values():
+            for mi in self._live_materials(look.model):
+                maps = look.model.materials[mi].maps
+                old = maps[MM.MATERIAL_MAP_ALBEDO].texture
+                if old.id <= 1:          # raylib's default 1x1 white
+                    continue
+                try:
+                    img = rl.load_image_from_texture(old)
+                    rl.image_format(img, rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8)
+                    new = rl.load_texture_from_image(img)
+                    rl.unload_image(img)
+                    if new.id == 0:
+                        continue
+                    rl.unload_texture(old)
+                    maps[MM.MATERIAL_MAP_ALBEDO].texture = new
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(f"[unit_model] WARN: {look.name}: could not drop the "
+                          f"gloss alpha for the fallback path: {exc}")
+
+    def _bind_normal_map(self, look: _Look) -> None:
+        """P2: bind the look's normal map into the ROUGHNESS(3) material slot —
         a FREE slot (light textures own METALNESS=1 / NORMAL=2). Static, so bind
         ONCE here; draw_units only rewrites slots 1/2 per frame and never touches
-        3. This is the clean drop-in seam: a future real normal-mapped marine
-        asset replaces marine_normal_PLACEHOLDER.png with NO code change. If the
-        file is missing the path is inert (no texture -> DrawMesh binds nothing
-        to unit 3; the shader's guard + flat-default keep N unchanged).
+        3. #33: the map is the one baked into the look's own .glb (raylib's
+        glTF loader puts it in the NORMAL slot, which the light field takes
+        over every frame, so it is moved here first and owned by the look).
+        A .glb without one takes a marine_normal_PLACEHOLDER.png next to it;
+        without either a 1x1 FLAT normal is bound (0.5,0.5,1 -> tangent +Z),
+        never raylib's default WHITE (which would perturb N when the guard is
+        on), so the path stays inert.
         """
-        path = _MODEL_PATH.parent / MARINE_NORMAL_MAP_FILENAME
+        MM = rl.MaterialMapIndex
+        path = look.path.parent / MARINE_NORMAL_MAP_FILENAME
         try:
-            if path.is_file():
+            own = None
+            for mi in self._live_materials(look.model):
+                t = look.model.materials[mi].maps[MM.MATERIAL_MAP_NORMAL].texture
+                if t.id > 1:             # 0 none, 1 raylib's default white
+                    own = t
+                    break
+            if own is not None:
+                tex = rl.Texture(own.id, own.width, own.height, own.mipmaps,
+                                 own.format)
+                # Mipmapped + trilinear: a unit is drawn a few dozen pixels
+                # tall, and a point-sampled 1024 map would sparkle in the
+                # highlight as the model moves.
+                rl.gen_texture_mipmaps(tex)
+                rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+            elif path.is_file():
                 tex = rl.load_texture(str(path.resolve()))
             else:
-                # No asset: bind a 1x1 FLAT-normal (0.5,0.5,1 -> tangent +Z) so
-                # the slot is never raylib's default WHITE (which would perturb N
-                # when the guard is on). Keeps the path truly inert with no asset.
-                print(f"[unit_model] note: no marine normal map at {path}; "
-                      "binding flat-normal fallback (P2 inert until asset added)")
                 fimg = rl.gen_image_color(1, 1, rl.Color(128, 128, 255, 255))
                 tex = rl.load_texture_from_image(fimg)
                 rl.unload_image(fimg)
             if tex.id == 0:
-                print("[unit_model] WARN: marine normal map failed to load")
+                print(f"[unit_model] WARN: {look.name} normal map failed to load")
                 return
-            # Bilinear + wrap so the tiling detail-normal reads smoothly.
-            rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
-            rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_REPEAT)
-            MM = rl.MaterialMapIndex
-            for mi in range(self.model.materialCount):
-                if mi == 0:
-                    continue  # dead material (matches shader assignment)
-                self.model.materials[mi].maps[
+            if own is None:
+                # Bilinear + wrap so a tiling detail-normal reads smoothly.
+                rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+                rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_REPEAT)
+            for mi in self._live_materials(look.model):
+                look.model.materials[mi].maps[
                     MM.MATERIAL_MAP_ROUGHNESS].texture = tex
-            self._normal_tex = tex
-            print(f"[unit_model] marine normal map bound (id={tex.id}, "
-                  "ROUGHNESS slot -> texture3)")
+            look.normal_tex = tex
         except Exception as exc:  # pragma: no cover - defensive
-            print(f"[unit_model] WARN: marine normal map bind failed: {exc}")
-            self._normal_tex = None
+            print(f"[unit_model] WARN: {look.name} normal map bind failed: {exc}")
+            look.normal_tex = None
 
     def unload(self) -> None:
-        """Free the model + animation clips + marine shader."""
-        if self._anims is not None and self._n_anims:
-            rl.unload_model_animations(self._anims, self._n_anims)
-        if self._normal_tex is not None:
-            rl.unload_texture(self._normal_tex)
+        """Free every look (model + clips + normal map) and the shared shader,
+        once (raylib's UnloadModel frees only material maps, never a shader or
+        texture a material points at -- so sharing the shader is safe)."""
+        for look in self._looks.values():
+            if look.anims is not None and look.n_anims:
+                rl.unload_model_animations(look.anims, look.n_anims)
+            if look.normal_tex is not None:
+                rl.unload_texture(look.normal_tex)
+            rl.unload_model(look.model)
         if self._marine_shader is not None:
             rl.unload_shader(self._marine_shader.shader)
-        if self.model is not None:
-            rl.unload_model(self.model)
-        self.model = None
-        self._anims = None
-        self._n_anims = 0
-        self._clip_index.clear()
+        if self._shadow_painter is not None:
+            self._shadow_painter.unload()
+            self._shadow_painter = None
+        if self._skinner is not None:
+            self._skinner.release()
+        if self._held is not None:          # #184: the held props, once each
+            for hm in self._held.models.values():
+                if hm.normal_tex is not None:
+                    rl.unload_texture(hm.normal_tex)
+                rl.unload_model(hm.model)
+            self._held = None
+        self._pose = None
+        self._hands = None
+        self._skinner = None
+        self._looks.clear()
+        self._resolve.clear()
+        self._assigner = None
         self._anim.clear()
         self._loaded = False
         self._shader = None
         self._marine_shader = None
-        self._normal_tex = None
 
     @property
     def ready(self) -> bool:
@@ -278,7 +838,8 @@ class UnitModelRenderer:
                    base_tint=(255, 255, 255, 255),
                    light_rgb_fn: Optional[Callable[[object], tuple]] = None,
                    light_ctx: Optional[LightFieldCtx] = None,
-                   open_mode_3d: bool = True) -> None:
+                   open_mode_3d: bool = True,
+                   light_view=None, light_exposure: float = 1.0) -> None:
         """Draw every alive unit as an animated 3D body inside the world RT.
 
         Nests ``begin_mode_3d`` in the already-open world RT. Per unit: infer
@@ -294,8 +855,9 @@ class UnitModelRenderer:
 
         ``clock`` is the renderer's wall-clock (self._anim_t0-relative is fine);
         the per-unit phase advances by the real delta so it animates through
-        pause — render-only, determinism-irrelevant. ``base_tint`` colours the
-        group (marines vs zombies).
+        pause — render-only, determinism-irrelevant. ``base_tint`` multiplies
+        the draw colour; the game passes none since #33 (Erik's ruling: teams
+        are told apart by model and texture, not tint).
 
         ``light_rgb_fn(unit) -> (r, g, b)`` returns a per-channel brightness
         multiplier in [0, 1] sampled from the SAME baked RGB light field the
@@ -310,16 +872,40 @@ class UnitModelRenderer:
         its own grazing key). When the shader is live and light_ctx is given,
         the CPU tint above is skipped (the field sample replaces it).
 
+        ``light_view`` (#33) is the light accessor's ``LightView`` (the one
+        ``LightingPass`` last consumed) and ``light_exposure`` the factor that
+        takes its light units to the ship shader's (sweep_gain x master_gain).
+        With them, and ``[render.unit_shadow] enabled``, each unit casts a
+        sharp projected shadow (``renderer/unit_shadow.py``): its skinned model
+        once more, flattened onto the floor away from the light, faded by how
+        bright and how one-sided the light around it is. None = no shadows.
+
+        #114: with ``[render.unit_shading] body_light = "unit"`` the SAME
+        per-unit read also lights the unit's whole body (the lit shader's
+        per-unit uniforms, set just before its draw), instead of each
+        fragment reading the field tile under it -- one read per unit per
+        frame serves both. None = the body gets the ambient floor only.
+
         No-op (leaving the sprite path's world untouched) if the model failed
         to load — the toggle can be on with the asset missing and nothing breaks.
         """
-        if not self._loaded or self.model is None:
+        if not self._loaded or not self._looks:
             return
-        dt = 0.0 if self._last_clock is None else max(0.0, clock - self._last_clock)
-        self._last_clock = clock
+        dt = self._frame_dt(clock)
 
-        scale = (_SCALE_TILES_TALL * wpt) / self._native_height
+        # ONE scale for every look (the marine's), so heights stay true.
+        scale = (_SCALE_TILES_TALL * wpt) / self._scale_height
         shadow_r = _SHADOW_RADIUS_FRAC * (3.0 * wpt)  # footprint side ~3 tiles
+        alive = [u for u in units if getattr(u, "alive", True)]
+        names = self._assigner.looks_for(alive)
+        # #33: [render.unit_shading], read live (Ctrl+R retunes it); a missing
+        # or mistyped key raises here rather than drawing a silent default.
+        shading = unit_shading(CFG)
+        # #33: [render.unit_shadow], read live too (raises naming a bad key).
+        shadow_cfg = unit_shadow_settings(CFG)
+        shadows_on = (shadow_cfg.enabled and light_view is not None
+                      and self._shadow_painter is not None
+                      and self._shadow_painter.ready)
 
         # P1: wire the ship's light field into the marine material + push the
         # per-frame scalar uniforms ONCE (SetShaderValue self-enables the
@@ -329,63 +915,189 @@ class UnitModelRenderer:
         if self._shader is not None and self._marine_shader is not None \
                 and light_ctx is not None:
             MM = rl.MaterialMapIndex
-            for mi in range(self.model.materialCount):
-                if mi == 0:
-                    continue
-                mat = self.model.materials[mi]
-                mat.maps[MM.MATERIAL_MAP_METALNESS].texture = light_ctx.tex_a
-                mat.maps[MM.MATERIAL_MAP_NORMAL].texture = light_ctx.tex_b
+            mats = []
+            # #184: the held props are drawn with the same shader and slots
+            held = [] if self._held is None else [hm.model for hm in self._held.models.values()]
+            for model in [lk.model for lk in self._looks.values()] + held:
+                for mi in self._live_materials(model):
+                    mat = model.materials[mi]
+                    mat.maps[MM.MATERIAL_MAP_METALNESS].texture = light_ctx.tex_a
+                    mat.maps[MM.MATERIAL_MAP_NORMAL].texture = light_ctx.tex_b
+                    mats.append(mat)
+            # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
+            bind_smoke_cover_map(self._shader, mats, light_ctx)
+            set_light_curve_uniforms(self._shader, light_ctx.curve)
             self._marine_shader.set_frame_uniforms(
                 light_ctx.ambient, light_ctx.light_gain,
                 light_ctx.world_px_w, light_ctx.world_px_h,
-                normal_y_sign=light_ctx.normal_y_sign,
+                normal_y_sign=UNIT_NORMAL_Y_SIGN * light_ctx.normal_y_sign,
                 view_dir=(0.0, 1.0, 0.0))
+            # #33: rim tint, the gloss highlight and each look's own normal
+            # map, all from [render.unit_shading].
+            ms = self._marine_shader
+            ms.set_rim_albedo(shading.rim_albedo)
+            ms.set_gloss(shading.gloss_strength, shading.gloss_shininess)
+            ms.set_use_normal(shading.normal_map)
+            ms.set_normal_strength(shading.normal_strength)
+            ms.set_light_shape(shading.light_height, shading.wrap)   # #114
+        # #114: the body lit from the unit's own light read (or, "field",
+        # from the tile under each fragment, the A/B).
+        body_from_unit = (shading.body_light == BODY_LIGHT_UNIT
+                          and self._marine_shader is not None
+                          and light_ctx is not None)
+        if self._marine_shader is not None:
+            self._marine_shader.set_body_light(body_from_unit)
+
+        # #162: with the pose layer on, every unit's pose is composed first,
+        # one batch per look; None = the clip player inside _draw_one.
+        pose_rows = (self._pose_prepass(alive, names, dt, clock)
+                     if self._pose is not None else None)
 
         if open_mode_3d:
             rl.begin_mode_3d(camera3d)
         try:
-            for u in units:
-                if not getattr(u, "alive", True):
-                    continue  # Phase 0 parity: dead units skipped (sprite path)
-                self._draw_one(u, wpt, dt, clock, scale, shadow_r,
-                               base_tint, light_rgb_fn)
+            # Phase 0 parity: dead units skipped (sprite path).
+            for i, (u, name) in enumerate(zip(alive, names)):
+                cast = NO_SHADOW
+                # ONE light read per unit, for its shadow and its body.
+                light = _NO_LIGHT
+                if light_view is not None and (shadows_on or body_from_unit):
+                    fp = int(getattr(u, "footprint", 3))
+                    light = read_unit_light(light_view, int(u.x), int(u.y), fp,
+                                            light_exposure)
+                if shadows_on:
+                    cast = shadow_cast(light, shadow_cfg)
+                if body_from_unit:
+                    self._marine_shader.set_unit_light(light)
+                self._draw_one(u, self._resolve[name], wpt, dt, clock, scale,
+                               shadow_r if shading.blob_shadow else 0.0,
+                               base_tint, light_rgb_fn,
+                               cast if shadows_on else None,
+                               pose_row=None if pose_rows is None else pose_rows[i])
         finally:
             if open_mode_3d:
                 rl.end_mode_3d()
 
         self._prune(clock)
 
-    def _draw_one(self, u, wpt: float, dt: float, clock: float, scale: float,
-                  shadow_r: float, base_tint, light_rgb_fn) -> None:
-        """Draw a single unit. THE SWAP SEAM: a future GPU-skinning path
-        replaces the update_model_animation + DrawModelEx pair here without
-        touching anything else."""
-        uid = int(getattr(u, "id", id(u)))
+    def _pose_prepass(self, alive: Sequence, names: Sequence[str], dt: float,
+                      clock: float) -> list:
+        """#162: per unit (read-only): infer motion, pick the state, drive its
+        PoseState; then ONE batched compose per look. Returns each unit's
+        global-TRS row, in ``alive`` order. #163: before driving, the unit's
+        queued events become reactions (fire, flinch) and its travel this
+        frame, relative to its facing, steers the aim-vs-travel twist."""
+        groups: Dict[str, list] = {}
+        m_per_tile = self._scale_height / _SCALE_TILES_TALL    # #184: drawn tile, model m
+        left = self._hands.left_handed(alive)                  # #187
+        for i, (u, name) in enumerate(zip(alive, names)):
+            look = self._resolve[name]
+            st = self._state_for(u)
+            travel = self._relative_travel(u, st)
+            moved_m = math.hypot(float(u.x) - st.last_x,
+                                 float(u.y) - st.last_y) * m_per_tile
+            moving = self._infer_motion(u, st, clock)
+            state = self.select_clip(u, moving)
+            role = role_of(u)
+            if st.pose is None or st.pose.look != look.name:
+                st.pose = self._pose.new_state(look.name, state, role, left[i])
+            # #164 posture; #179: the look's skeleton may carry its own amount
+            self._pose.set_posture(st.pose, unit_key(u),
+                                   self._pose.role_posture(look.name, role))
+            self._react(st.pose, unit_key(u), role, u)
+            # #163 the twist; #184: on a locomotion skeleton the gait, the
+            # direction and the derived rates from the drawn speed
+            state = self._pose.locomote(st.pose, state, moved_m, travel, moving, dt,
+                                        role, self._tick_s)
+            self._pose.drive(st.pose, state, dt, role)   # #179: role state rows
+            groups.setdefault(look.name, []).append((i, st.pose))
+        rows = [None] * len(alive)
+        for look_name, members in groups.items():
+            batch = self._pose.compose(look_name, [ps for _, ps in members])   # + the layer's modifiers
+            for j, (i, _) in enumerate(members):
+                rows[i] = batch.global_trs[j]
+        return rows
+
+    def _state_for(self, u) -> _UnitAnimState:
+        """The unit's renderer-side anim state, created on first sight."""
+        uid = unit_key(u)
         st = self._anim.get(uid)
         if st is None:
             st = _UnitAnimState(last_x=float(u.x), last_y=float(u.y))
             self._anim[uid] = st
+        return st
 
-        # --- motion inference (no velocity field on Unit) ---------------
+    @staticmethod
+    def _relative_travel(u, st: _UnitAnimState) -> Optional[float]:
+        """#163: the direction the unit moved since the last draw RELATIVE to
+        its facing, as the model-space yaw the lower body would turn by
+        (radians, in (-pi, pi]); None below the motion threshold. Read
+        before ``_infer_motion`` moves the remembered position on. Facing
+        and travel share the sim's convention (0 = +x, counter-clockwise,
+        world y down), so the travel angle is ``atan2(-dy, dx)``."""
+        dx = float(u.x) - st.last_x
+        dy = float(u.y) - st.last_y
+        if abs(dx) + abs(dy) <= _MOVE_EPS_TILES:
+            return None
+        facing = float(getattr(u, "facing", math.pi / 2.0))
+        rel = math.atan2(-dy, dx) - facing
+        rel = (rel + math.pi) % (2.0 * math.pi) - math.pi
+        return _YAW_SIGN * rel
+
+    @staticmethod
+    def _infer_motion(u, st: _UnitAnimState, clock: float) -> bool:
+        """Motion inference (no velocity field on Unit): moved since the last
+        draw, or a non-empty move_path. Updates the remembered position."""
         moved = (abs(float(u.x) - st.last_x) + abs(float(u.y) - st.last_y)
                  > _MOVE_EPS_TILES)
         has_path = bool(getattr(u, "move_path", None))
-        moving = moved or has_path
         st.last_x, st.last_y = float(u.x), float(u.y)
         st.last_seen = clock
+        return moved or has_path
 
-        # --- clip selection + wall-clock advance ------------------------
-        clip = self.select_clip(u, moving)
-        if clip != st.clip:
-            st.clip = clip
-            st.phase = 0.0
-        anim_idx = self._clip_index.get(CLIP_MAP.get(clip, ""),
-                                        self._clip_index.get(CLIP_MAP["idle"], 0))
-        anim = self._anims[anim_idx]
-        n_keys = max(1, anim.keyframeCount)
-        st.phase += dt * _ANIM_FPS
-        frame = int(st.phase) % n_keys
-        rl.update_model_animation(self.model, anim, frame)  # CPU skin (swap seam)
+    def _frame_dt(self, clock: float) -> float:
+        """The wall-clock step the animation advances by in the frame drawn
+        at ``clock``. Every draw_units call of ONE frame (the game makes two:
+        players, then zombies, with the same clock) gets the same step; it
+        changes only when the clock moves on. (Before this, the second call
+        of a frame always got 0, so the zombies never animated.)"""
+        if self._last_clock is None:
+            self._dt = 0.0
+        elif clock != self._last_clock:
+            self._dt = max(0.0, clock - self._last_clock)
+        self._last_clock = clock
+        return self._dt
+
+    def _draw_one(self, u, look: _Look, wpt: float, dt: float, clock: float,
+                  scale: float, shadow_r: float, base_tint,
+                  light_rgb_fn, shadow: Optional[ShadowCast] = None,
+                  pose_row=None) -> None:
+        """Draw a single unit with its look. THE SWAP SEAM: a future GPU-
+        skinning path replaces the skinning call + DrawModelEx pair here
+        without touching anything else. ``shadow`` (#33) is this frame's
+        projected-shadow target (None = projected shadows off); it is low-
+        passed per unit and drawn from the SAME skinned pose as the body.
+        ``pose_row`` (#162) is the unit's composed global pose (pose layer
+        on, motion already inferred by ``_pose_prepass``); None = the clip
+        player below, exactly as before the pose layer."""
+        st = self._state_for(u)
+
+        if pose_row is not None:
+            self._skinner.apply(look.name, look.model, pose_row)   # #162
+        else:
+            moving = self._infer_motion(u, st, clock)
+            # --- clip selection + wall-clock advance --------------------
+            clip = self.select_clip(u, moving)
+            if clip != st.clip:
+                st.clip = clip
+                st.phase = 0.0
+            anim_idx = look.clip_index.get(CLIP_MAP.get(clip, ""),
+                                           look.clip_index.get(CLIP_MAP["idle"], 0))
+            anim = look.anims[anim_idx]
+            n_keys = max(1, anim_frame_count(anim))
+            st.phase += dt * _ANIM_FPS
+            frame = int(st.phase) % n_keys
+            rl.update_model_animation(look.model, anim, frame)  # CPU skin (swap seam)
 
         # --- transform: world-px centre, yaw = facing, matched scale ----
         fp = float(getattr(u, "footprint", 3))
@@ -393,14 +1105,47 @@ class UnitModelRenderer:
         cy = (float(u.y) + fp / 2.0) * wpt
         facing = float(getattr(u, "facing", math.pi / 2.0))
         yaw = _YAW_SIGN * math.degrees(facing) + _YAW_OFFSET_DEG
+        # #184: the prop in the unit's hand -- body @ hand bone @ grip, its
+        # world matrix written into the prop model's own transform, so the
+        # body's draw and shadow calls draw it unchanged at the origin
+        held = self._held_prop_of(u, look, pose_row)
+        if held is not None:
+            from .held_props import body_matrix, prop_world
+            hm, grip, bone, prop = held
+            body = body_matrix(cx, cy, yaw, scale, _np_matrix(look.model.transform))
+            world = prop_world(body, pose_row[bone], grip)
+            _set_rl_matrix(hm.model.transform, world)
+            # #87: the barrel tip of the prop as it is drawn this frame
+            from .muzzle_flame import muzzle_pose_from_matrix
+            mp = muzzle_pose_from_matrix(world, prop.muzzle, wpt)
+            if mp is not None:
+                self.muzzle_poses[unit_key(u)] = mp
+
+        # Projected shadow (#33) first, from the pose just skinned (no second
+        # skinning). Its fixed far depth keeps it off every body, whichever
+        # unit is drawn first, and darkens each floor pixel once.
+        if shadow is None:
+            st.shadow = None
+        else:
+            st.shadow = smooth_shadow(st.shadow, shadow, dt, _SHADOW_SMOOTH_TAU_S)
+            if st.shadow.alpha > 0.0:
+                self._shadow_painter.draw(
+                    look.model, self._live_materials(look.model), st.shadow,
+                    rl.Vector3(cx, 0.0, cy), yaw, scale)
+                if held is not None:                       # #184: the prop's shadow
+                    self._shadow_painter.draw(
+                        held[0].model, self._live_materials(held[0].model), st.shadow,
+                        rl.Vector3(0.0, 0.0, 0.0), 0.0, 1.0)
 
         # Blob shadow first (on the floor, under the model — reads great
         # top-down, no shadow maps). A thin filled disc via a short cylinder.
-        sr, sg, sb, sa = _SHADOW_COLOR
-        rl.draw_cylinder(rl.Vector3(cx, 0.5, cy), shadow_r, shadow_r, 1.0, 16,
-                         rl.Color(sr, sg, sb, sa))
+        # shadow_r 0 = [render.unit_shading] blob_shadow off (#33).
+        if shadow_r > 0.0:
+            sr, sg, sb, sa = _SHADOW_COLOR
+            rl.draw_cylinder(rl.Vector3(cx, 0.5, cy), shadow_r, shadow_r, 1.0,
+                             16, rl.Color(sr, sg, sb, sa))
 
-        # Tint: group base colour, per-CHANNEL modulated by the local baked RGB
+        # Tint: base colour (white unless a caller passes one), per-CHANNEL modulated by the local baked RGB
         # light (Patch 0 — colour + occlusion parity with the ship: a red lamp
         # reddens the marine, an unlit room darkens it). Replaces the old flat
         # grey scalar multiply. When the P1 lit shader is active it samples the
@@ -412,10 +1157,14 @@ class UnitModelRenderer:
             br = int(br * max(0.0, min(1.0, mr)))
             bg = int(bg * max(0.0, min(1.0, mg)))
             bb2 = int(bb2 * max(0.0, min(1.0, mb)))
-        rl.draw_model_ex(self.model, rl.Vector3(cx, 0.0, cy),
+        rl.draw_model_ex(look.model, rl.Vector3(cx, 0.0, cy),
                          rl.Vector3(0.0, 1.0, 0.0), yaw,
                          rl.Vector3(scale, scale, scale),
                          rl.Color(br, bg, bb2, ba))
+        if held is not None:     # #184: same shader, same per-unit light uniforms
+            rl.draw_model_ex(held[0].model, rl.Vector3(0.0, 0.0, 0.0),
+                             rl.Vector3(0.0, 1.0, 0.0), 0.0,
+                             rl.Vector3(1.0, 1.0, 1.0), rl.Color(br, bg, bb2, ba))
 
     def _prune(self, clock: float) -> None:
         """Drop anim state for units unseen for _STALE_SECONDS (dead/despawned)."""
@@ -423,6 +1172,9 @@ class UnitModelRenderer:
                  if clock - st.last_seen > _STALE_SECONDS]
         for uid in stale:
             del self._anim[uid]
+        if self._pose is not None:
+            self._pose.prune_events(self._anim, clock, _STALE_SECONDS)
 
 
-__all__ = ["UnitModelRenderer", "CLIP_MAP"]
+__all__ = ["UnitModelRenderer", "CLIP_MAP", "anim_frame_count",
+           "pose_layer_enabled"]

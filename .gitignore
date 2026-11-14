@@ -13,8 +13,9 @@
 __pycache__/
 *.pyc
 
-# Claude Code
-.claude/
+# Claude Code: local settings and worktrees stay out; project skills are tracked
+.claude/*
+!.claude/skills/
 
 # C++ build artifacts
 cpp/build/
@@ -24,6 +25,11 @@ cpp/build-clangd/
 prototypes/raylib_cpp/build/
 *.exe
 *.obj
+
+# Class-P stamp (#29 P1b): written by tools/cuda_green.py on a green CUDA
+# suite run in THIS checkout, read by tests/test_class_p_level.py -- local
+# proof about HEAD, never committed
+.cuda_green
 
 # X-ARCH per-machine digest recordings (CUDA arc) — machine-specific artifacts
 tests/digest_*.txt
@@ -38,6 +44,10 @@ debug_*.npz
 
 # Phase-0 3D-marine load-verify output (throwaway render)
 prototypes/anim_marine_verify_out.png
+
+# Look shots (graphics G0 P3: tools/lighting_demo.py --shots) — per-commit
+# before/after renders, regenerated on demand, never committed
+scratchpad/look/
 
 # AI tools (large repos + models, re-clone with setup script)
 # Ignore the specific AI sub-repos and model dirs; leave tools/*.py / *.toml tracked.
@@ -72,3 +82,7 @@ levels/_editor_scratch/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Prop packs (assets/models/props/<pack>/, each with its license file): large binaries
+# moved between machines by disk, never committed (#175, Erik 2026-11-07)
+assets/models/props/

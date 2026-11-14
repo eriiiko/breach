@@ -89,7 +89,7 @@ def test_return_vent_guard_is_a_counted_noop(guard_flag):
                      enable_recorder=False)
     v = sim._vents[0]                      # return
     fy, fx = v.aperture_y, v.aperture_x
-    sim.gmap.gas[SMOKE][fy, fx] = 20000
+    sim.gmap.gas[SMOKE][fy, fx] = 20000  # raw trace counts: scale-free (#88)
     if guard_flag == "water_depth":
         sim.gmap.water_depth[fy, fx] = 100
     else:
@@ -157,7 +157,7 @@ def test_flooded_guard_threshold_matches_seal_tiles_convention():
     v = sim._vents[0]
     fy, fx = v.aperture_y, v.aperture_x
     sim.gmap.water_depth[fy, fx] = 1        # the smallest possible non-zero depth
-    sim.gmap.gas[SMOKE][fy, fx] = 5000
+    sim.gmap.gas[SMOKE][fy, fx] = 5000  # raw trace counts: scale-free (#88)
     before = _snapshot(sim.gmap)
     for _ in range(20):
         _step(sim)
@@ -196,7 +196,7 @@ def test_vent_with_dangling_duct_builds_but_never_sweeps():
     assert sim._vents[0].duct is None
     assert sim._ducts == []
     fy, fx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sim.gmap.gas[SMOKE][fy, fx] = 12345
+    sim.gmap.gas[SMOKE][fy, fx] = 12345  # raw trace counts: scale-free (#88)
     before = _snapshot(sim.gmap)
     for _ in range(20):
         _step(sim)
@@ -219,7 +219,7 @@ def test_orphan_vent_alongside_a_real_duct_stays_inert():
     orphan_rt = next(v for v in sim._vents if v.inst.id == "vorphan")
     assert orphan_rt.duct is None
     fy, fx = orphan_rt.aperture_y, orphan_rt.aperture_x
-    sim.gmap.gas[SMOKE][fy, fx] = 7777
+    sim.gmap.gas[SMOKE][fy, fx] = 7777  # raw trace counts: scale-free (#88)
     before_orphan = int(sim.gmap.gas[SMOKE][fy, fx])
     for _ in range(30):
         _step(sim)

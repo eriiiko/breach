@@ -40,6 +40,16 @@
 // device kit). The launch barriers give the Pass-A-before-Pass-B ordering the
 // CPU's loop order gives for free.
 //
+// #71 (residency arc #29 P2, 2026-11-07): the twin is back ON the arc #54 gas
+// energy seam — until then it took no `gas_energy`, so on a burning scene it
+// deposited the fire's heat into `temperature` while the CPU step landed it in
+// the conserved field (and refreshed the donor's mirror), 6 cells apart on
+// tick 0 and the whole field by tick 1. The launch body is now the
+// N-shaped `combustion_launch_resident` (cuda_resident.h); this wrapper
+// allocates, uploads, calls it and downloads. Live gate:
+// tests/cuda_combustion_burn_check.py (burning scenes through the real tick,
+// only the combustion backend flipped, every field and book at tol 0).
+//
 // The rail counters (heat_floor_hits / t_max_phys_hits) are now PER-CELL (design
 // §3) and are accumulated with device atomicAdd — a plain integer count is
 // order-free, so the total is bit-identical to the CPU regardless of thread
@@ -71,7 +81,10 @@ void combustion_step(
     const bool* flammable, const bool* solid, const bool* is_vacuum,
     const int32_t* ignition_temp_q16,
     int h, int w, float dt, float c_v, float n_floor_heat,
-    float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
+    float burn_rate, float o2_thresh_burn,
+    // T5a: the gas-side yield is SPLIT (H_fuel = H_FUEL_M * 2^H_FUEL_SHIFT),
+    // the shape H_BED_M/H_BED_SHIFT below already has.
+    float H_FUEL_M, int H_FUEL_SHIFT, float soot_yield,
     float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
     int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
     // P-E2b (energy-books arc, design §2.2/§2.5): the energy-sum twin of
@@ -110,7 +123,56 @@ void combustion_step(
     // the shipped 4-face draw on both backends. See combustion.h.
     int draw_r = 1,
     const float* dyn_permeability = nullptr,
-    int max_claimants = 4);
+    int max_claimants = 4,
+    // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-09-01
+    // .md "Ruling R3"): the demand-side hotf ramp, VERBATIM the CPU law
+    // (combustion.cpp) — fire_T_ext is the FALLBACK scalar, fire_T_span the
+    // GLOBAL ramp width (both mirror FireParams' own fields, one config
+    // source of truth), hotf_cap the ceiling (uncapped-at-1, unlike `hot`).
+    // fire_T_ext_plane is the SAME nullable per-material T_ext plane
+    // FireSimulation/cuda_fire.cu read (GameMap.fire_T_ext_plane); nullptr ->
+    // the fire_T_ext scalar fallback, i.e. the pre-R3-plane law bit-for-bit.
+    float fire_T_ext = 350.0f,
+    float fire_T_span = 180.0f,
+    float hotf_cap = 10.0f,
+    const int32_t* fire_T_ext_plane = nullptr,
+    // R14's FUEL HALF (thermal model v2, T5b): the nullable per-material fuel
+    // EXCHANGE RATE plane, `GameMap.fuel_per_o2_plane` -- the twin of
+    // combustion.h's parameter of the same name, which carries the rationale.
+    // nullptr -> the `fuel_per_o2` scalar fallback, pre-R14 bit-for-bit.
+    const int32_t* fuel_per_o2_plane = nullptr,
+    // THE PRESSURE FACTOR (issue #7): the materialized pressure plane
+    // (`atmosphere`, Q16.16 atm, READ) and the two edges (CombustionSolver::
+    // p_ext_q / p_full_q). The claim gate's o2f_j is multiplied by the SAME
+    // FP_HD o2_pressure::factor the CPU pass calls, at the same air cell j.
+    // nullptr / 0 / 0 -> g == FP_ONE, the pre-#7 law bit-for-bit.
+    const int32_t* atmosphere = nullptr,
+    int32_t p_ext_q = 0, int32_t p_full_q = 0,
+    // #88 P2: the soot mint's books (the CPU CombustionSolver::step's
+    // trace_mint / trace_clip / trace_neg twins), ADDED to (+=), nullable.
+    // On device an APPENDED unsigned-long-long block of 3 slots beside
+    // d_dep_drop -- [0] mint attempted, [1] saturation clip, [2] negative
+    // hits -- all >= 0, zeroed per call.
+    int64_t* trace_mint = nullptr, int64_t* trace_clip = nullptr,
+    int64_t* trace_neg = nullptr,
+    // #71 (residency arc #29 P2): THE GAS ENERGY SEAM — the twin of the CPU
+    // step's `gas_energy` / `is_ambient` / `t_amb_q` (combustion.h carries the
+    // law: the donor's energy leaves with its O2, the products land on the
+    // flame through the railed seam, every channel booked). gas_energy is
+    // (h, w) int64, IN/OUT; nullptr keeps the pre-#54 T-form deposit (the
+    // direct-binding path, still bit-identical to the CPU step without it).
+    int64_t* gas_energy = nullptr,
+    const bool* is_ambient = nullptr,
+    int32_t t_amb_q = 0,
+    // The energy books, ADDED to (+=), nullable: COMB_E_BOOKS int64 in the
+    // order of the CombustionSolver members — e_comb_draw_sum,
+    // e_comb_mint_sum, e_comb_deliver_sum, e_soot_shed_sum, e_ts_products_sum,
+    // e_comb_export_sum, e_comb_heat_sum, e_comb_rail_sum,
+    // e_comb_solid_heat_sum.
+    int64_t* e_books = nullptr);
+
+// The length of `combustion_step`'s e_books array.
+constexpr int COMB_E_BOOKS = 9;
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

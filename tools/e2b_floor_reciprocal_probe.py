@@ -116,8 +116,14 @@ def pass1_dT(deposit_q: int, n_raw_q: int, floor_q: int,
 
 
 def main() -> int:
-    c_v = 1.0
-    recip_cv = bp.fp_make_recip(c_v)   # 1/c_v, the load-time reciprocal
+    # T5b (report_t2.md D3 site 19): the SHIPPED gas heat capacity, not the 1.0
+    # placeholder this probe was written against. The wide chain's operands grow
+    # by 1/c_v = 130x here, so a probe run at 1.0 is no longer probing the
+    # engine's own arithmetic. Read from config so it cannot go stale again.
+    from config import CFG
+    c_v = float(getattr(CFG.physics.thermal, "c_v", 1.0))
+    c_v_q = int(round(c_v * FP_ONE))
+    recip_cv = bp.fp_make_recip(c_v_q / FP_ONE)  # 1/c_v_q, the ONE representation
 
     # A representative aggregate deposit: the P-E1 as-built's measured
     # heat_tick (~330/tick at a hot adjacent I=0.8 fire, the eos-p3fix-

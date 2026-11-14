@@ -1,0 +1,75 @@
+# Department (scale 3): CARGO HOLD -- vocabulary B.4, cut to v1 by the
+# archetype doc §7.1 (2026-11-06): the stub, the main hold at its end against
+# the hull with the closed cargo door to space, side bays open onto the stub,
+# an optional sealed hazmat bay, a secret annex behind a bay. Left out: cold
+# storage (the sub-ambient physics session), livestock pens (props, a straw
+# row), bays opening onto the hold (a side room touches only its stub). Every
+# value names a preset or a config row; sizes and counts are PLACEHOLDERS the
+# layout patch tunes against its failure-rate gate (layout doc §13 A6).
+[department]
+name = "cargo_hold"
+placement = "wing"
+cell = "main"
+entry = "stub"
+toward = "axis"                 # the stores buffer between engineering and the quarters (B.4)
+wish_near = ["engineering"]
+wish_far = ["crew_quarters"]
+
+[[room]]
+id = "stub"
+shape = "corridor"
+required = true
+width = "wide"
+size = { across = [6, 8], along = [8, 40] }   # from 8: a one- or two-bay hold is 18 deep, what a medium wing leaves beside deep quarters
+
+[[room]]
+id = "main_hold"                # the largest room in the wing
+required = true
+attach = "end"                  # at the stub's far end, against the hull
+hull_door = true                # the closed cargo door to space: the department's depressurisation valve (D7)
+size = { w = [10, 30], h = [9, 24] }   # spans the department (the largest room in the wing); a deep hold fills a large row behind few bays
+fuel = "furniture"              # container rows: the cover geometry
+light = "dim"                   # low, pooled
+vent = { duct = "cargo", roles = ["supply", "return"] }   # the hold compartment's supply + return
+
+[[room]]
+id = "bay"
+count = [1, 4]                  # at most 4: a medium wing has 54 tiles of depth for both rows (two rooms per side per 13)
+size = { w = [6, 12], h = [6, 18] }
+fuel = "furniture"
+light = "dim"
+
+[[room]]
+id = "hazmat_bay"
+p = 0.3
+size = { w = [6, 12], h = [6, 16] }
+fixture = "hazmat"              # a heat-triggered fuel_gas release: a solvent store that finds a flame later
+light = "dim"                   # sealed (a door), no vent
+
+[[edge]]
+a = "stub"
+b = "main_hold"
+kind = "open"                   # stub, bays and hold breathe as one compartment: the hull door vents it whole
+
+[[edge]]
+a = "stub"
+b = "bay"
+kind = "open"                   # every bay instance
+
+[[edge]]
+a = "stub"
+b = "hazmat_bay"
+kind = "door"                   # gas-tight: a sealed box
+
+[[duct]]
+name = "cargo"
+filter = "derelict"             # cargo spaces ventilated separately (D2)
+
+[secret]
+kind = "breakable"
+host = "bay"                    # the annex goes behind a bay
+weight = 1
+
+[physics]
+temp = "ambient"
+pressure = "ambient"

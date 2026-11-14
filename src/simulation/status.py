@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from simulation import unit_fixed
+from simulation.unit_schema import STATUS_STACK_CAP
 from simulation.damage import (
     ASPHYX, HEAL, HEAT, POISON, DamagePacket, apply_packet,
 )
@@ -123,9 +124,9 @@ class StatusKindDef:
 # arrive from the applying TRIGGER (door-2 config), never from these rows —
 # the rows carry only structure (flags, stacking, damage type), so there are
 # deliberately NO standard-value numbers to tune here (P5 audit). Where the
-# trigger numbers live: KNOCKED_DOWN reads ``[exchange]``
-# knockdown_dv_threshold / knockdown_getup_seconds (config.toml — the one
-# shipped trigger); BURNING / POISONED / SUFFOCATING durations + per-tick
+# trigger numbers live: KNOCKED_DOWN is the unit impulse law's
+# (``[impulse]``, simulation/unit_impulse.py: shove, hits, wind, blast) for
+# ``[exchange] knockdown_getup_seconds``; BURNING / POISONED / SUFFOCATING durations + per-tick
 # magnitudes land in config WITH their coupling rows (fire / gas / O2-water —
 # designed, next wave); REGEN's with the first heal item/ability.
 STATUS_REGISTRY: tuple[StatusKindDef, ...] = (
@@ -152,6 +153,13 @@ STATUS_REGISTRY: tuple[StatusKindDef, ...] = (
 
 assert all(row.kind == i for i, row in enumerate(STATUS_REGISTRY)), \
     "STATUS_REGISTRY must be indexed by kind (table order)"
+
+# #123: a DoT/HoT row's name IS the cause its packets carry, so every
+# emitting row must be a row of the closed cause vocabulary (events.Cause).
+from simulation.events import CAUSE_NAMES as _CAUSE_NAMES  # noqa: E402
+assert all(row.name in _CAUSE_NAMES for row in STATUS_REGISTRY
+           if row.dtype is not None), \
+    "every emitting status row's name must be a simulation.events.Cause"
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +203,15 @@ class ComposedFlags:
 FLAGS_DEFAULT = ComposedFlags()
 
 
-def composed_flags(unit) -> ComposedFlags:
+def survives_sweep(st) -> bool:
+    """Whether the status ``st`` is still in the unit's list after the NEXT
+    status sweep: ``tick_statuses`` removes what the previous pass zeroed
+    (``remaining_ticks`` 0) before it counts down. THE one statement of that
+    rule (the sweep and ``composed_flags(after_sweep=True)`` both read it)."""
+    return st.remaining_ticks > 0
+
+
+def composed_flags(unit, *, after_sweep: bool = False) -> ComposedFlags:
     """Compose the behavior flags over ``unit``'s active statuses.
 
     AND across suppressions (any active status that declares
@@ -203,6 +219,11 @@ def composed_flags(unit) -> ComposedFlags:
     ``is_prone``. With no statuses this is the all-True default — the
     consumers' checks are then dead paths, bit-identical to pre-status
     behavior (the P3 wiring contract).
+
+    ``after_sweep=True`` (#195 1e) composes over the statuses that survive
+    the coming sweep only (:func:`survives_sweep`): the flags slot 4a sees
+    when it runs after this tick's 2b, read at the START of the tick
+    (``verb_gates.can_melee``). A read, not a state change.
     """
     statuses = getattr(unit, "statuses", None)
     if not statuses:
@@ -210,12 +231,21 @@ def composed_flags(unit) -> ComposedFlags:
     can_move = can_act = can_aim = True
     is_prone = False
     for st in statuses:
+        if after_sweep and not survives_sweep(st):
+            continue
         row = STATUS_REGISTRY[st.kind]
         can_move = can_move and row.can_move
         can_act = can_act and row.can_act
         can_aim = can_aim and row.can_aim
         is_prone = is_prone or row.is_prone
     return ComposedFlags(can_move, can_act, can_aim, is_prone)
+
+
+#: Applications of a ``STACK_STACK`` kind refused at the stack cap
+#: (``unit_schema.STATUS_STACK_CAP``), by kind -- a diagnostic counter (not
+#: synced state: the refusal itself is, through the statuses it left alone).
+#: No shipped scenario or test reaches the cap (``tests/test_unit_schema.py``).
+OVERFLOW_REFUSED: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -234,14 +264,19 @@ def apply_status(unit, kind: int, magnitude: float, duration_ticks: int,
     Stacking (mechanics/06 §4, per-kind data):
       - ``refresh``: one instance — re-application overwrites its magnitude,
         duration, and source (timer reset).
-      - ``stack``:   instances coexist — always appends; each ticks and
-        expires independently (dose accumulation).
+      - ``stack``:   instances coexist — appends; each ticks and expires
+        independently (dose accumulation). CAPPED (#29 P3a, the unit
+        schema's fixed status block): a unit already holding
+        ``unit_schema.STATUS_STACK_CAP`` instances of the kind REFUSES the
+        new one (nothing changes; counted in :data:`OVERFLOW_REFUSED`, by
+        kind) and ``None`` is returned.
       - ``max``:     one instance — keeps ``max(magnitude)`` and
         ``max(remaining_ticks)`` component-wise; the source updates only
         when the new magnitude is strictly greater (the stronger burn's
         cause gets the attribution).
 
-    Returns the created/updated :class:`StatusEffect`. List positions are
+    Returns the created/updated :class:`StatusEffect` (``None`` when the
+    stack cap refused it). List positions are
     stable (an existing instance refreshes IN PLACE), so P0's list order is
     the application order of first contact — deterministic.
     """
@@ -271,6 +306,11 @@ def apply_status(unit, kind: int, magnitude: float, duration_ticks: int,
                     st.source_id = source_id
                 st.remaining_ticks = max(st.remaining_ticks, duration)
             return st
+    else:
+        held = sum(1 for st in statuses if st.kind == kind)
+        if held >= STATUS_STACK_CAP:      # the fixed block's door (#29 P3a)
+            OVERFLOW_REFUSED[kind] = OVERFLOW_REFUSED.get(kind, 0) + 1
+            return None
 
     st = StatusEffect(kind=kind, magnitude_q16=mag_q16,
                       remaining_ticks=duration, source_id=source_id)
@@ -306,18 +346,19 @@ def tick_statuses(units, events=None) -> None:
         if not statuses:
             continue
         # (a) Sweep what the previous pass zeroed — flags released now.
-        statuses[:] = [st for st in statuses if st.remaining_ticks > 0]
+        statuses[:] = [st for st in statuses if survives_sweep(st)]
         # (b) + (c) Emit, then count down, in list order.
         for st in statuses:
             row = STATUS_REGISTRY[st.kind]
             if row.dtype is not None and st.magnitude_q16 != 0 and u.alive:
-                amount = unit_fixed.dequantize_scalar(st.magnitude_q16)
+                amount_q = int(st.magnitude_q16)   # #29 P3e: the Q16 itself
                 if row.dtype == HEAL:
-                    amount = -amount    # heal = negative-direction damage
+                    amount_q = -amount_q  # heal = negative-direction damage
                 apply_packet(
                     u,
-                    DamagePacket(amount=amount, dtype=row.dtype,
-                                 source_id=st.source_id),
+                    DamagePacket(amount=unit_fixed.dequantize_scalar(amount_q),
+                                 dtype=row.dtype, attacker_id=st.source_id,
+                                 amount_q=amount_q),
                     events, source=row.name)
             st.remaining_ticks -= 1
 
@@ -345,6 +386,6 @@ __all__ = [
     "N_STATUS_KINDS",
     "STACK_REFRESH", "STACK_STACK", "STACK_MAX",
     "StatusKindDef", "STATUS_REGISTRY", "StatusEffect",
-    "ComposedFlags", "FLAGS_DEFAULT", "composed_flags",
+    "ComposedFlags", "FLAGS_DEFAULT", "composed_flags", "survives_sweep",
     "apply_status", "tick_statuses", "serialize_statuses",
 ]

@@ -48,7 +48,7 @@ CONSTS = dict(
     # arc #54 P-G1a (MECHANICAL): `t_work_clamp` left the kick reference's
     # signature with step 4c (design D11) -- the property under test here (the
     # velocity clamp's exact rad > cap2 rescale) is untouched.
-    n_floor_solver=1e-3, t_min=-289.0,
+    n_floor_solver=1e-3, t_min=-292.0,  # G12: config's T_MIN, -289 -> -292 (issue #12)
     t_max_phys=16000.0, u_max=1000.0,
 )
 
@@ -184,7 +184,7 @@ def test_gate2_cap_locality_hot_cell_does_not_raise_a_remote_cap():
     state with a fire-range hot region and assert a remote COOL region's
     kick still obeys the AMBIENT cap — the hot cell may not leak into it."""
     h = w = 20
-    t_amb_k = 290.0
+    t_amb_k = 293.0  # G12: config's eos_t_amb_k, 290 -> 293 (issue #12)
     s_eos_q = int(_q(1.0))       # S_EOS frozen at identity (design v2.2 D-A)
     t_amb_q = max(1, int(_q(t_amb_k)))
     c_amb_q = int(_q(CONSTS["c_max"]))

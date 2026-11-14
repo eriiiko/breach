@@ -22,6 +22,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 pytest.importorskip("pyray", reason="control layer needs the raylib binding")
 
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
@@ -83,6 +84,9 @@ class FakeRenderer:
     def __init__(self, tile=(0, 0)):
         self.tile = tile
 
+    def pointer_captured(self):
+        return False
+
     def mouse_to_tile(self):
         return self.tile
 
@@ -116,7 +120,7 @@ def _marine(sim, x=8.0, y=8.0, name="m"):
 
 
 def _zombie(sim, x=20.0, y=8.0, name="z"):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     sim.add_unit(u)
     return u
 

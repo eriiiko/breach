@@ -1,10 +1,15 @@
-"""philox32 (arc #63 P1) -- vendoring gate for the Philox-4x32-10 RNG package.
+"""philox32 -- vendoring gate for the Philox-4x32-10 RNG package.
 
-P1 adopts github.com/eriiiko/philox32 (MIT, commit 6c33a3d0737e1f9f64b7dd84b
-dbda02fbbc863d2) as breach's second sanctioned raw-draw source (chapter 14
-door 4, amended by docs/architecture/engine/17_swarm_units.md §3). No sim
-call site uses it yet -- this file is the proof the vendored copies are
-correct and agree with each other, not a behavior test.
+Vendored from branch ``63-swarm-units`` (arc #63 P1) by #29 P1a (the
+pure-Python twin, ``src/simulation/philox32.py``: the farm's per-episode seed
+function ``rl_env.episode_draw``); the C++ header (``cpp/src/philox32.h``) and
+its binding came with the match-path draws (#29 P3b, ``simulation/draws.py``),
+so the binding legs below run on every build that has them (and skip on an
+older module).
+
+Source: github.com/eriiiko/philox32 (MIT, commit 6c33a3d0737e1f9f64b7dd84b
+dbda02fbbc863d2), adopted as breach's second sanctioned raw-draw source
+(chapter 14 door 4, amended by docs/architecture/engine/17_swarm_units.md §3).
 
 Properties protected, one per test class/function below:
 
@@ -14,18 +19,23 @@ Properties protected, one per test class/function below:
   (b) the vendored C++ header (cpp/src/philox32.h), called through the
       breach_physics binding, reproduces the same KAT vectors -- breaks if
       the C++ port (or the pybind11 glue) diverges from the algorithm.
+      (Skips while the binding is absent.)
   (c) Python and C++ agree over a large seeded sweep of counters/keys,
       including the 32-bit edge words -- breaks if the two languages
       disagree anywhere the KAT vectors (only 3 points) don't cover; this is
       the property the whole vendoring exercise exists to buy (cross-machine
-      bit-identity, engine/14 §2).
+      bit-identity, engine/14 §2). (Skips while the binding is absent.)
   (d) the Q16 output mappings (uniform_q16, angle_q16, below) agree Python
       vs C++ -- breaks if a mapping is re-derived instead of shared, or if
-      one side rounds/truncates differently.
+      one side rounds/truncates differently. (Skips while the binding is
+      absent.)
   (e) the vendored file bodies (below their added header comment) still hash
-      to the value recorded in that header -- breaks the moment either
-      vendored file is hand-edited without re-vendoring (the iron rule:
-      "never hand-edit, update by re-vendoring").
+      to the value recorded in that header -- breaks the moment a vendored
+      file is hand-edited without re-vendoring (the iron rule: "never
+      hand-edit, update by re-vendoring"). The body is hashed with its line
+      endings normalised to LF (upstream is LF; ``core.autocrlf`` may check a
+      .py out as CRLF on Windows), and the header is checked only once it is
+      vendored.
 
 Fewer, stronger tests: KAT vectors and the drift hash are oracles (not
 mocks); the cross-language sweep is the actual property this patch buys.
@@ -48,13 +58,15 @@ from simulation import philox32 as pytwin  # noqa: E402  (path setup above)
 
 try:
     import breach_physics as bp
-except ImportError as exc:  # pragma: no cover - build missing
-    pytest.skip(f"breach_physics extension not built: {exc}",
-                allow_module_level=True)
+except ImportError:  # pragma: no cover - build missing
+    bp = None
 
-if not hasattr(bp, "philox32_4x32_10"):  # pragma: no cover - stale build
-    pytest.skip("breach_physics built without philox32_4x32_10 "
-                "(rebuild cpp/ after arc #63 P1)", allow_module_level=True)
+#: The C++ binding (#29 P3b): a module built before it skips these legs;
+#: the Python twin's run always.
+needs_binding = pytest.mark.skipif(
+    bp is None or not hasattr(bp, "philox32_4x32_10"),
+    reason="breach_physics has no philox32_4x32_10 binding (a module built "
+           "before #29 P3b)")
 
 KAT_PATH = ROOT / "tests" / "data" / "philox4x32_10_kat.txt"
 PHILOX32_H = ROOT / "cpp" / "src" / "philox32.h"
@@ -113,6 +125,7 @@ def test_python_twin_matches_kat_vector(ctr, key, expected):
     assert pytwin.philox32_4x32_10(ctr, key) == expected
 
 
+@needs_binding
 # ---------------------------------------------------------------------------
 # (b) C++ (via the binding) vs KAT.
 # ---------------------------------------------------------------------------
@@ -152,6 +165,7 @@ def _random_sweep_cases(n: int, seed: int):
 SWEEP_CASES = _random_sweep_cases(n=4000, seed=0xC0FFEE)
 
 
+@needs_binding
 def test_python_matches_cpp_over_random_and_edge_sweep():
     """Python and the shipped C++ agree bit-for-bit over a large seeded sweep
     of (ctr, key) pairs, including every combination of 32-bit edge words (0,
@@ -172,6 +186,7 @@ def test_python_matches_cpp_over_random_and_edge_sweep():
         f"{mismatches[0]}")
 
 
+@needs_binding
 def test_python_matches_cpp_vectorised_numpy_path():
     """The vectorised C++ path (philox32_4x32_10_np, a thin loop over the
     same scalar block function) agrees with the vectorised numpy Python twin
@@ -185,6 +200,7 @@ def test_python_matches_cpp_vectorised_numpy_path():
     assert np.array_equal(py_out, np.asarray(cpp_out))
 
 
+@needs_binding
 # ---------------------------------------------------------------------------
 # (d) Q16 output mappings agree Python vs C++.
 # ---------------------------------------------------------------------------
@@ -216,7 +232,7 @@ def _recorded_hash_and_body(path: Path) -> tuple[str, bytes]:
     marker_idx = text.index(MARKER)
     header = text[: marker_idx + len(MARKER)]
     body_start = len(header.encode("utf-8"))
-    body = raw[body_start:]
+    body = raw[body_start:].replace(b"\r\n", b"\n")
     hash_line = next(
         l for l in header.splitlines()
         if "SHA-256 of the vendored file" in l)
@@ -224,7 +240,11 @@ def _recorded_hash_and_body(path: Path) -> tuple[str, bytes]:
     return recorded, body
 
 
-@pytest.mark.parametrize("path", [PHILOX32_H, PHILOX32_PY])
+@pytest.mark.parametrize("path", [
+    pytest.param(PHILOX32_H, marks=pytest.mark.skipif(
+        not PHILOX32_H.exists(),
+        reason="cpp/src/philox32.h is not vendored yet (#29 P3b)")),
+    PHILOX32_PY])
 def test_vendored_body_matches_its_recorded_hash(path):
     """The vendored file's body (everything below the added header comment's
     marker line) still hashes to the SHA-256 recorded in that header. This is

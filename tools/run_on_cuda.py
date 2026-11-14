@@ -22,11 +22,12 @@ Usage (the CUDA build must exist first — run ``cpp/build_cuda.bat``):
 
 Equivalent shortcut: ``python main.py --cuda`` (main.py routes --cuda here).
 
-The GPU surface: 4 field solvers (temperature, water, smoke, fire) dispatch
-inside PhysicsEngine::step, plus the raycaster (the fire->heat ray cast in
-PhysicsRunner.cast_fire_heat; set_raycaster_backend, CUDA-S2 live). The cast's
-synced `heat` output is bit-identical CPU<->GPU (the S2 gate); the light
-channels it also produces are render-only / deterministic-exempt.
+The GPU surface: 3 field solvers (temperature, water, fire) dispatch
+inside PhysicsEngine::step (the per-call smoke solver is gone: the trace planes
+ride the EOS bulk flux, smoke transport v2 #12), plus the radiation sweep (step 2b of step_tail;
+set_radiation_backend, ray-engine-v2 P4 — it replaced the CUDA-S2 raycaster
+flag, deleted with cuda_raycaster.{cu,h}). The sweep's four planes are
+bit-identical CPU<->GPU (tests/cuda_radiation_sweep_check.py).
 EOS P6.0: the wave/atmosphere backends are RETIRED (their CPU solvers were
 replaced by the compressible EOS solve in P3), and the remaining kernels are
 STALE until their P6 ports land — see tests/cuda_harness.py
@@ -34,7 +35,6 @@ EOS_P6_PENDING_KERNELS. This tool is unusable during that window.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -51,6 +51,7 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 from cuda_harness import cuda_dll_dir as _cuda_dll_dir  # noqa: E402
 from cuda_harness import cuda_pyd as _cuda_pyd  # noqa: E402
+from cuda_harness import register_cuda_runtime  # noqa: E402
 
 
 def setup_cuda_import() -> None:
@@ -65,15 +66,15 @@ def setup_cuda_import() -> None:
     pyd = _cuda_pyd()
     if pyd is None:
         raise SystemExit(
-            "CUDA build not found at cpp/build_cuda/breach_physics*.pyd.\n"
-            "Build it first:  cpp/build_cuda.bat\n"
+            "CUDA build not found at cpp/build_cuda/breach_physics*.pyd (.so).\n"
+            "Build it first:  cpp/build_cuda.bat (Linux: cpp/build_linux.sh cuda)\n"
             "(The CPU game still runs with:  python main.py)")
     dll = _cuda_dll_dir()
     if dll is None:
         raise SystemExit(
-            "CUDA runtime DLLs (cudart64_*.dll) not found. Set CUDA_PATH or "
-            "install the CUDA Toolkit v12.4.")
-    os.add_dll_directory(str(dll))
+            "CUDA runtime (cudart64_*.dll / libcudart.so*) not found. Set "
+            "CUDA_PATH or install the CUDA Toolkit v12.4.")
+    register_cuda_runtime(dll)
     # CUDA build first; then repo root + src so the game's own modules import.
     sys.path.insert(0, str(ROOT / "src"))
     sys.path.insert(0, str(ROOT))
@@ -81,9 +82,10 @@ def setup_cuda_import() -> None:
 
 
 # The live-dispatched GPU backends. The first four are field solvers
-# (PhysicsEngine::step); the fifth — the raycaster (the fire->heat ray cast in
-# PhysicsRunner.cast_fire_heat) — is live-wired (CUDA-S2 live). cast_fire_heat
-# reads the raycaster flag per tick (heat bit-identical).
+# (PhysicsEngine::step); the fifth — the radiation sweep (step 2b of
+# PhysicsEngine::step_tail, ray-engine-v2 P4) — is read per tick by step_tail
+# (bit-identical, tests/cuda_radiation_sweep_check.py); the last is the
+# combustion pass (PhysicsRunner._run_combustion's CUDA branch, #71).
 # EOS P6.0: set_wave_backend / set_atmos_backend RETIRED (cuda_wave.cu /
 # cuda_atmosphere.cu deleted — their CPU solvers were replaced by the EOS solve
 # in P3; docs/eos_p6_gpu_alignment_review.md §1.11). NOTE the remaining kernels
@@ -92,9 +94,8 @@ def setup_cuda_import() -> None:
 _BACKEND_SETTERS = (
     "set_temperature_backend",
     "set_water_backend",
-    "set_smoke_backend",
     "set_fire_backend",
-    "set_raycaster_backend",
+    "set_radiation_backend",
     # EOS P6.5: the four EOS kernel-surface flags below are now LIVE-DISPATCHED
     # — PhysicsEngine::run_substeps routes the whole eos.step tick to the
     # chained GPU orchestration (cuda_eos_step.cu) when ALL FOUR are on
@@ -105,6 +106,12 @@ _BACKEND_SETTERS = (
     "set_sl_advection_backend",      # EOS P6.2
     "set_mg_solve_backend",          # EOS P6.3
     "set_kick_compression_backend",  # EOS P6.4
+    # The combustion pass (cuda_combustion.cu). Left out until #71: the twin
+    # predated arc #54's gas energy seam and parted from CombustionSolver on
+    # every burning scene. Level since residency arc #29 P2 -- gate
+    # tests/cuda_combustion_burn_check.py (burning scenes through the real
+    # tick, only this backend flipped, every array and book at tol 0).
+    "set_combustion_backend",
 )
 
 
@@ -136,7 +143,8 @@ def main() -> None:
     # S8a Path B: --resident turns on GPU field residency (default OFF). The
     # per-call backends above stay on (EOS + combustion + fire + temperature run
     # bracketed via their per-call GPU path inside the resident tick); the water
-    # substep loop + the smoke trace loop run resident on persistent device
+    # substep loop, the whole EOS stage (the trace planes riding its substeps)
+    # and the once-per-tick trace tail run resident on persistent device
     # buffers, killing the substep-/plane-MULTIPLIED transfer tax. The runner
     # lazily puts each GameMap into residency mode on its first resident tick, so
     # no game-loop change is needed here.
@@ -144,7 +152,7 @@ def main() -> None:
         from simulation import physics_runner
         physics_runner.set_residency(True)
         print("[run_on_cuda] GPU field RESIDENCY on (--resident): water substeps "
-              "+ smoke traces resident; EOS/combustion/tail bracketed.")
+              "+ EOS + trace tail resident; combustion/tail bracketed.")
     # Hand off to the real game entry (no duplication of the loop). main.main()
     # imports the already-loaded CUDA breach_physics from sys.modules and reads
     # --res itself.

@@ -13,12 +13,13 @@ What is locked here:
     tile draws exactly one exposure uniform; a failed roll ABSORBS the shot
     into the cover tile (wall-damage chew, tracer ends there, no packet);
     a flanking approach (no cover on the entry tile) draws NOTHING — the
-    RNG stream position is asserted bit-identical to cone-draws-only;
+    draw count is asserted equal to cone-draws-only (#29 P3b: keyed draws,
+    each predicted from its own key);
   - LAZY-DRAW STREAM STABILITY: a scripted k5 firefight (crit 0, no cover)
-    is bit-identical — endpoints, hp, events, and the generator state — to
-    a replica of the PRE-W2 march algorithm run on a parallel generator;
+    is bit-identical — endpoints, hp, events, and the draw count — to
+    a replica of the PRE-W2 march algorithm run on a parallel MatchDraws;
   - CRIT VS FACING: crit% = crit_chance x arc multiplier (front/flank/
-    behind), predicted draw-for-draw against a parallel generator; the
+    behind), predicted draw-for-draw from each draw's key; the
     amount scales by crit_mult in exact ints; facing is deterministic
     (same seed => same facing, same events);
   - WALL CHEW: missed shots deposit ammo wall_damage on the stopping solid
@@ -44,6 +45,9 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.draws import MatchDraws, round_index  # noqa: E402 (#29 P3b)
+from simulation.rng_salts import Salt  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import unit_fixed, wall_fixed  # noqa: E402
 from simulation import weapons as weapons_mod  # noqa: E402
@@ -58,6 +62,8 @@ from simulation.orders import (  # noqa: E402
 )
 from simulation.unit import Unit  # noqa: E402
 from simulation.weapons import AmmoDef, WeaponDef  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 
 SEED = 20260705
 
@@ -104,6 +110,18 @@ def _marine(x, y, name="M", team=0):
     return u
 
 
+def _k5_five_round_burst():
+    """The shipped carbine row (its round, cone, range, speed) with the
+    five-round burst it had before gameplay pack G2p made it a one-round,
+    12-per-second weapon: these tests are about the march's burst machinery
+    (same-tick resolution, one cone draw per bullet), which a tuned rate must
+    not move, so the burst size is the test's own arrangement."""
+    import copy
+    row = copy.copy(weapons_mod.get_tables().weapons.by_name["k5_carbine"])
+    row.shots_per_trigger = 5
+    return row
+
+
 def _hits(events):
     return [e for e in events if isinstance(e, UnitHitEvent)]
 
@@ -122,11 +140,11 @@ def test_k5_resolves_same_tick_and_bullets_list_stays_empty():
     shooter = _marine(2, 8, "S")
     target = _marine(14, 8, "T")
     shooter.id, target.id = 1, 2
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events, bullets = [], [], []
     fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
-               bullets=bullets)
+               bullets=bullets, weapon=_k5_five_round_burst())
     assert bullets == []                      # resolved in the firing tick
     assert len(_hits(events)) == 5            # k5 burst, 12 tiles, 3 deg cone
     assert len(_tracers(events)) == 5
@@ -140,7 +158,7 @@ def test_slow_round_persists_in_flight_across_ticks():
     target = _marine(14, 8, "T")     # footprint x in [14,16] — 11 steps away
     shooter.id, target.id = 1, 2
     w, a = _test_weapon(speed=2.0, range_tiles=20, damage=10)
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events, bullets = [], [], []
     fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
@@ -176,7 +194,7 @@ def test_fractional_speed_budget_carries():
     shooter = _marine(2, 8, "S")
     shooter.id = 1
     w, a = _test_weapon(speed=2.5, range_tiles=18, damage=10)
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events, bullets = [], [], []
     fire_burst(gmap, [shooter], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
@@ -268,7 +286,7 @@ def test_fire_order_aims_and_move_attack_snaps():
     sim2 = Simulation(_level(), seed=SEED, breach_physics=bp,
                       enable_recorder=False)
     shooter2 = Unit("S", x=2, y=8, team=0)
-    zombie = Unit("Z", x=14, y=8, team=1)
+    zombie = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     s2_id = sim2.add_unit(shooter2)
     sim2.add_unit(zombie)
     sim2.weapons_tables.weapons.by_name[w.name] = w
@@ -278,12 +296,14 @@ def test_fire_order_aims_and_move_attack_snaps():
         # Zero-length Move & Attack (terrain-passable — own tile).
         assert sim2.apply_action(s2_id, Order(ORDER_MOVE_ATTACK, target_fx=2,
                                               target_fy=8, phase=0))
-        # Predict the first snap draw on a parallel generator: the sim's rng
+        # Predict the first snap draw from its key: the sim's draws
         # is fresh-seeded; the burst is its first consumer this tick.
-        parallel = np.random.default_rng(SEED)
-        cone = math.radians(25.0)
-        first_draw = float(parallel.uniform(-cone, cone))
-        assert abs(first_draw) > 1e-3         # comfortably off-axis
+        # #29 P3b: the shooter's first SHOT_CONE draw of tick 0, by its key
+        from simulation import draws
+        first_draw = draws.cone_offset_q16(
+            MatchDraws(SEED).at(Salt.SHOT_CONE, s2_id, 0),
+            unit_fixed.quantize_scalar(math.radians(25.0)))
+        assert abs(first_draw) > 65            # comfortably off-axis (Q16)
         sim2.set_paused(False)
         sim2.step()
         snapped = _tracers(sim2.tick_events)
@@ -318,19 +338,20 @@ def test_exposure_roll_pass_and_fail_with_absorption_chew():
         if exposure is None:
             from simulation.attack_resolver import cover_exposure_at
             exposure = cover_exposure_at(gmap, 9, 13)
-            assert exposure == float(np.float32(0.55))
+            assert exposure == unit_fixed.quantize_scalar(
+                float(np.float32(0.55)))       # Q16 since #29 P3e
         hp_before = int(gmap.wall_hp[9, 13])
-        rng = np.random.default_rng(seed)
-        parallel = np.random.default_rng(seed)
-        cone = math.radians(0.0)
-        float(parallel.uniform(-cone, cone))          # the cone draw
-        connects = float(parallel.uniform(0.0, 1.0)) < exposure
+        rng = MatchDraws(seed)
+        # #29 P3b: the round's exposure draw, keyed (tick 0, its index
+        # round_index(age 0, ordinal 0), EXPOSURE, its shooter)
+        connects = (MatchDraws(seed).at(
+            Salt.EXPOSURE, 1, round_index(0, 0)).word() >> 16) < exposure
         shots, events = [], []
         fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                    tick=0, shots=shots, real_time=0.0, rng=rng,
                    events=events, weapon=w, ammo=a, spread_deg=0.0)
-        # The march consumed exactly cone + exposure draws — no more.
-        assert rng.bit_generator.state == parallel.bit_generator.state
+        # The march drew exactly cone + exposure — no more.
+        assert rng.drawn == 2
         hits = _hits(events)
         tracer = _tracers(events)[0]
         if connects:
@@ -357,15 +378,12 @@ def test_directional_bypass_flank_draws_nothing():
     target = _marine(14, 8, "T")        # footprint y in [8,10]
     shooter.id, target.id = 1, 2
     w, a = _test_weapon(speed=96.0, range_tiles=30, damage=10, wall_damage=2)
-    rng = np.random.default_rng(SEED)
-    parallel = np.random.default_rng(SEED)
-    cone = math.radians(0.0)
-    float(parallel.uniform(-cone, cone))              # cone draw ONLY
+    rng = MatchDraws(SEED)
     shots, events = [], []
     fire_burst(gmap, [shooter, target], shooter, 15, 19, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
                weapon=w, ammo=a, spread_deg=0.0)
-    assert rng.bit_generator.state == parallel.bit_generator.state
+    assert rng.drawn == 1                             # the cone draw ONLY
     hits = _hits(events)
     assert len(hits) == 1 and hits[0].unit_id == 2    # full-exposure connect
     assert int(gmap.wall_hp[9, 13]) == wall_fixed.quantize_scalar(30.0)
@@ -374,22 +392,25 @@ def test_directional_bypass_flank_draws_nothing():
 # ---------------------------------------------------------------------------
 # Lazy-draw stream stability: bit-identical to the PRE-W2 march
 # ---------------------------------------------------------------------------
-def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng):
+def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng,
+                         k5):
     """The shipped (pre-W2) fire_burst algorithm, verbatim: k5 row numbers,
     one cone draw per bullet, kit-trig steps, the same stop rules — computing
     endpoints + hit targets WITHOUT mutating anything. The W2 march must
     reproduce this bit-for-bit when no cover intervenes and crit_chance == 0
-    (the lazy-roll rule)."""
-    tables = weapons_mod.get_tables()
-    k5 = tables.weapons.by_name["k5_carbine"]
-    cone = math.radians(k5.spread_deg)
-    base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+    (the lazy-roll rule). #29 P3e: the cone draw is the integer one
+    (``draws.cone_offset_q16``, one raw step), the angle Q16."""
+    from simulation import draws
+    cone_q = unit_fixed.quantize_scalar(math.radians(k5.spread_deg))
+    base_q = unit_fixed.quantize_scalar(
+        unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1))
     h, w = gmap.material.shape
     out = []
     for _ in range(k5.shots_per_trigger):
-        angle = base_angle + float(rng.uniform(-cone, cone))
-        step_x = unit_fixed.cos_rad(angle)
-        step_y = unit_fixed.sin_rad(angle)
+        angle_q = base_q + draws.cone_offset_q16(
+            rng.next(Salt.SHOT_CONE, shooter.id), cone_q)   # #29 P3b
+        step_x = unit_fixed.cos_q16(angle_q) / 65536.0
+        step_y = unit_fixed.sin_q16(angle_q) / 65536.0
         rx, ry = float(fx1), float(fy1)
         hit_unit = None
         for _step in range(int(k5.range_tiles)):
@@ -414,28 +435,39 @@ def _prew2_burst_replica(gmap, units, shooter, fx1, fy1, fx2, fy2, rng):
     return out
 
 
-def test_lazy_draws_k5_bit_identical_to_prew2_firefight():
+def test_lazy_draws_k5_bit_identical_to_prew2_firefight(monkeypatch):
     """A scripted k5 burst on a zombie (crit 0, no cover): endpoints, hp
     deltas, event stream, and the generator END STATE all equal the pre-W2
-    replica on a parallel generator — the ONLY consumers are the 5 cone
-    draws (the lazy-roll rule made structural)."""
+    replica on a parallel MatchDraws — the ONLY consumers are the 5 cone
+    draws (the lazy-roll rule made structural).
+
+    The focus-fire law is dormant here (``k_expose = 0``, #183 G4p): the
+    replica's hp is the bare site rule per bullet, and a one-pass burst with
+    the law live raises the target's exposure between its rounds."""
+    from dataclasses import replace
+    from simulation import exposure
+    monkeypatch.setattr(exposure, "_SETTINGS",
+                        replace(exposure.get_settings(), k_q=0))
     gmap = _room()
     shooter = _marine(2, 8, "S")
-    zombie = Unit("Z", x=14, y=8, team=1)
+    zombie = Unit("Z", x=14, y=8, team=ZOMBIE_TEAM)
     zombie.current_hp = 1e9
     shooter.id, zombie.id = 1, 2
     units = [shooter, zombie]
 
-    rng = np.random.default_rng(SEED)
-    parallel = np.random.default_rng(SEED)
-    replica = _prew2_burst_replica(gmap, units, shooter, 3, 9, 15, 9, parallel)
+    rng = MatchDraws(SEED)
+    parallel = MatchDraws(SEED)
+    k5 = _k5_five_round_burst()
+    replica = _prew2_burst_replica(gmap, units, shooter, 3, 9, 15, 9, parallel,
+                                   k5)
 
     shots, events = [], []
     fire_burst(gmap, units, shooter, 3, 9, 15, 9,
-               tick=0, shots=shots, real_time=0.0, rng=rng, events=events)
+               tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
+               weapon=k5)
 
-    # Stream: exactly the 5 cone draws, nothing else (crit 0, no cover).
-    assert rng.bit_generator.state == parallel.bit_generator.state
+    # Draws: exactly the 5 cone draws, nothing else (crit 0, no cover).
+    assert rng.drawn == parallel.drawn == 5
     # Endpoints bitwise equal, hit-for-hit.
     tracers = _tracers(events)
     assert len(tracers) == len(replica) == 5
@@ -452,8 +484,9 @@ def test_lazy_draws_k5_bit_identical_to_prew2_firefight():
     for _ in range(n_hits_replica):
         expected_hp -= per_bullet
     assert zombie.current_hp == expected_hp
-    # Firing set the shooter's facing to the aim bearing (kit, y-up).
-    assert shooter.facing == unit_fixed.atan2_rad(-(9 - 9), 15 - 3) == 0.0
+    # Firing made the aim bearing the shooter's facing TARGET (kit, y-up;
+    # G5p-a1: the turning law turns it there, the facing is not written).
+    assert shooter.facing_target_q == unit_fixed.atan2_q16(0, 12 << 16) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +494,7 @@ def test_lazy_draws_k5_bit_identical_to_prew2_firefight():
 # ---------------------------------------------------------------------------
 def test_crit_arc_multipliers_predicted_draw_for_draw():
     """crit_chance 0.15: front x1 (p=.15), flank x2 (p=.3), behind x4 (p=.6)
-    — each seed's crit predicted on a parallel generator; a crit doubles the
+    — each seed's crit predicted from its draw's key; a crit doubles the
     packet amount (scale_half_away(10, 2.0) == 20) before mitigation."""
     w, a = _test_weapon(speed=96.0, range_tiles=30, damage=10,
                         crit=0.15, crit_mult=2.0)
@@ -477,17 +510,19 @@ def test_crit_arc_multipliers_predicted_draw_for_draw():
             shooter = _marine(2, 8, "S")
             target = _marine(14, 8, "T")
             shooter.id, target.id = 1, 2
-            target.facing = facing
-            rng = np.random.default_rng(seed)
-            parallel = np.random.default_rng(seed)
-            cone = math.radians(0.0)
-            float(parallel.uniform(-cone, cone))            # cone draw
-            crit = float(parallel.uniform(0.0, 1.0)) < 0.15 * mult
+            _place_facing(target, _q_rad(facing))
+            rng = MatchDraws(seed)
+            p_q = unit_fixed.mul_q16_round(unit_fixed.quantize_scalar(0.15),
+                                           unit_fixed.quantize_scalar(mult))
+            # #29 P3b: the round's crit draw, keyed by its shooter and
+            # round_index(age 0, ordinal 0)
+            crit = (MatchDraws(seed).at(
+                Salt.SHOT_CRIT, 1, round_index(0, 0)).word() >> 16) < p_q
             shots, events = [], []
             fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                        tick=0, shots=shots, real_time=0.0, rng=rng,
                        events=events, weapon=w, ammo=a, spread_deg=0.0)
-            assert rng.bit_generator.state == parallel.bit_generator.state
+            assert rng.drawn == 2                   # cone + crit
             hits = _hits(events)
             assert len(hits) == 1
             expected = 20.0 if crit else 10.0
@@ -506,14 +541,12 @@ def test_crit_chance_zero_draws_nothing():
     target = _marine(14, 8, "T")
     shooter.id, target.id = 1, 2
     w, a = _test_weapon(speed=96.0, range_tiles=30, damage=10, crit=0.0)
-    rng = np.random.default_rng(SEED)
-    parallel = np.random.default_rng(SEED)
-    float(parallel.uniform(-math.radians(0.0), math.radians(0.0)))
+    rng = MatchDraws(SEED)
     shots, events = [], []
     fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
                weapon=w, ammo=a, spread_deg=0.0)
-    assert rng.bit_generator.state == parallel.bit_generator.state
+    assert rng.drawn == 1                             # the cone draw only
     assert _hits(events)[0].damage == 10.0
 
 
@@ -527,8 +560,8 @@ def test_facing_determinism_same_seed_same_firefight():
         shooter = _marine(2, 8, "S")
         target = _marine(14, 8, "T")
         shooter.id, target.id = 1, 2
-        target.facing = 0.0                    # behind: p = .6
-        rng = np.random.default_rng(7)
+        _place_facing(target, _q_rad(0.0))  # behind: p = .6
+        rng = MatchDraws(7)
         shots, events = [], []
         fire_burst(gmap, [shooter, target], shooter, 3, 9, 15, 9,
                    tick=0, shots=shots, real_time=0.0, rng=rng,
@@ -550,7 +583,7 @@ def test_missed_shots_chew_the_stopping_wall():
     shooter.id = 1
     w, a = _test_weapon(speed=96.0, range_tiles=40, damage=10,
                         wall_damage=2, shots=5)
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     shots, events = [], []
     fire_burst(gmap, [shooter], shooter, 3, 9, 22, 9,
                tick=0, shots=shots, real_time=0.0, rng=rng, events=events,
@@ -566,12 +599,12 @@ def test_chew_destroys_furniture_so_it_stops_being_cover():
     furniture tile converts it to air — the crate stops being cover."""
     from simulation.attack_resolver import cover_exposure_at
     gmap = _room(edits=[(9, 13, MAT_FURNITURE)])
-    assert cover_exposure_at(gmap, 9, 13) < 1.0
+    assert cover_exposure_at(gmap, 9, 13) < unit_fixed.FP_ONE   # Q16 (P3e)
     chew_wall(gmap, 9, 13, 40)              # > the crate's 30 HP
     assert int(gmap.material[9, 13]) == MAT_AIR
     assert not bool(gmap.solid[9, 13])
     assert not bool(gmap.is_vacuum[9, 13])
-    assert cover_exposure_at(gmap, 9, 13) == 1.0          # concealment gone
+    assert cover_exposure_at(gmap, 9, 13) == unit_fixed.FP_ONE  # concealment gone
 
 
 def test_marching_round_requires_positive_speed():
@@ -580,7 +613,7 @@ def test_marching_round_requires_positive_speed():
     w, a = _test_weapon(speed=0.0)
     a.speed_q16 = 0
     with pytest.raises(ValueError, match="speed_tiles_per_tick"):
-        BulletInFlight(None, -1, w, a, 3, 9, 0.0, 1.0, 0.0)
+        BulletInFlight(None, -1, w, a, 3 << 16, 9 << 16, 0, 1 << 16, 0)
 
 
 if __name__ == "__main__":

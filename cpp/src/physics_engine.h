@@ -20,14 +20,85 @@
 #include <vector>
 
 #include "atmosphere_solver.h"
-#include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
-#include "raycaster.h"
 #include "water_solver.h"
 #include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
 #include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
 #include "combustion.h"       // EOS refactor P4: combustion on real O2
+#include "emissive_table.h"   // ray-engine-v2: THE E° table, one owner
+#include "radiation_sweep.h"  // ray-engine-v2: the radiation sweep (LIVE since T5b)
+
+// ---- #29 P4a: THE RESIDENT TICK'S DEVICE FIELDS -----------------------------
+// The raw device addresses of GameMap's resident CuPy buffers (uintptr_t so
+// this header stays CUDA-free; 0 == absent), as the resident drivers read
+// them (cuda_resident_tick.h). Built by the binding from GameMap.device_ptrs()
+// (+ the runner's device `before` plane), with the grid and the two depths.
+struct ResidentFields {
+    std::uintptr_t atmosphere = 0, wave_p = 0, wind_x = 0, wind_y = 0,
+        temperature = 0, heat = 0, fire = 0, wall_hp = 0, water_depth = 0,
+        gas = 0, gas_energy = 0, dem_acc = 0,
+        rad_net_sweep = 0, rad_flux_sweep = 0, rad_amb_sweep = 0, rad_fluence = 0,
+        light_q = 0, light_flux_q = 0, light_glow = 0,
+        solid = 0, is_vacuum = 0, is_ambient = 0, flammable = 0,
+        thermal_solid = 0, heat_inv_shift = 0, face_shift = 0,
+        dyn_permeability = 0, heat_atten_q = 0, dyn_heat_atten_q = 0,
+        light_atten_q = 0, dyn_light_atten_q = 0,
+        fuel_recip = 0, fire_T_ext_plane = 0, fuel_per_o2_plane = 0,
+        material = 0, water_before = 0,
+        // #29 P4b: the stamp kernel's static inputs and its two outputs no
+        // other device stage reads (the other three are named above).
+        permeability = 0, wave_absorb = 0, obstacles = 0, dyn_wave_absorb = 0,
+        // #29 P5: the water substeps' planes and the ambient sponge statics
+        // (the EOS stage), so every slot-7 stage reads one struct.
+        flow_vx = 0, flow_vy = 0, floor_height = 0,
+        sponge_sigma = 0, sponge_udamp = 0;
+    int h = 0, w = 0, n_gases = 0;
+    // #29 P5: the batch's env count — every address above is the batch's
+    // (N, ...) buffer (env 0's, the envs contiguous). 1 = the played game.
+    int n_env = 1;
+    int acc_depth = 0;   // dem_acc's declared depth (max_claimants)
+};
+
+// The host scalars and tables the resident drivers read — the SAME values the
+// host path hands step_water_tail / CombustionSolver.step / step_tail.
+struct ResidentTickArgs {
+    float sim_time = 0.0f;
+    int32_t t_amb_q = 0;                    // T_AMB_K raw (the seam's offset)
+    bool ambient = false;                   // an ambient map (the ring is live)
+    const bool* gas_conservative = nullptr; // (n_gases,)
+    // the water tail
+    int steam_idx = 0;
+    double ceiling_h = 0.0, flood_eps = 0.0, ratio_cap = 1.0;
+    double boil_rate = 0.0, boil_p_thresh = 0.0, steam_yield = 0.0;
+    // combustion
+    int o2_idx = 0, inert_n2_idx = 0, black_smoke_idx = 0, draw_r = 1;
+    const int32_t* ignition_table = nullptr;   // (n_materials,) int32
+    int n_materials = 0;
+    // the tail (fire, the sweep, temperature)
+    int32_t k_leak_q = 0;
+    int64_t rad_amb_vacuum_q = -1;
+    const int32_t* gas_heat_absorb_q16 = nullptr;    // (n_gases,)
+    const int32_t* gas_light_absorb_q16 = nullptr;   // (n_gases, 3)
+    const int32_t* gas_light_glow_q16 = nullptr;     // (n_gases, 3)
+    // the light inputs (read only while light is requested)
+    const int64_t* light_cones = nullptr;
+    int n_light_cones = 0;
+    const int64_t* light_sky = nullptr;
+    const int64_t* light_emit_mult = nullptr;
+    int n_light_emit_mult = 0;
+    // #29 P5: the water substeps (the host path's step_water arguments) and
+    // the per-env live mask ((N,) uint8; nullptr = every env).
+    int water_n_sub = 0;
+    float water_wdt = 0.0f, tilt_x = 0.0f, tilt_y = 0.0f;
+    const uint8_t* water_active = nullptr;
+    // #29 P5: the EOS stage (the ring's per-gas reservoir and P_amb, ambient
+    // maps only) and the trace tail's per-gas columns.
+    const int32_t* n_amb = nullptr;
+    int32_t p_amb = 0;
+    const float* gas_diffusion = nullptr;   // (n_gases,)
+    const float* gas_decay = nullptr;       // (n_gases,)
+};
 
 class PhysicsEngine {
 public:
@@ -38,13 +109,50 @@ public:
     // paths it fronted are asserted unreachable in run_substeps below (D7 +
     // the P3 GPU-guard task).
     AtmosphereSolver  atmos;
-    SmokeDynamics     smoke;
+    // (SmokeDynamics `smoke` DELETED — smoke transport v2, #12: the trace
+    //  planes ride the bulk face flux; see run_substeps.)
     FireSimulation    fire;
     TemperatureSolver temperature;
-    Raycaster         raycaster;
     WaterSolver       water;
     EOSSolver         eos;   // EOS refactor P3
     CombustionSolver  combustion;   // EOS refactor P4
+    // Ray-engine-v2 (design v3 §2.6, §11): THE E° table's ONLY owner (the old
+    // Raycaster's vestigial copy of the same bake went with the class at P6c),
+    // and the radiation sweep that runs as step 2b of step_tail, LIVE since
+    // T5b.
+    EmissiveTable     emissive;
+    RadiationSweep    radiation;
+    // Ray-engine-v2 P6a: THE LIGHT EMISSION TABLE L° (checked in, emissive_
+    // table.h -- one table, one currency, no dial) and THE REQUEST. Light is
+    // REQUESTED, never always on (design v3 §7.1: "headless training simply
+    // does not request the light channels"): step_tail runs the sweep's light
+    // group only while `light_requested`, and only then touches the light
+    // planes. Default OFF, so the live game and every golden are unmoved until
+    // P6b's renderer asks for it.
+    LightEmissionTable light_emission;
+    bool               light_requested = false;
+    // Ray-engine-v2 P6d (design v3 §2.4; docs/ray_engine_v2_p6d_light_
+    // transport_setting_brief_2026-09-29.md decision 1): the light channels'
+    // TRANSPORT is a permanent SETTING, not a literal. "shear for heat, step
+    // for light" was Erik's original per-channel choice, not physics -- the
+    // sweep already carries both as a parameter on light (gate 18), so P6d
+    // turns the ONE place that used to hardcode it (run_sweep_) into a read
+    // of this member. Bound ONCE by PhysicsRunner from `[light] transport`
+    // (config door 2: exactly "step" or "shear"); run_sweep_ reads it at the
+    // one sweep invocation, both step_tail and relight(), both backends (the
+    // CUDA twin's light walk is already topological for either value).
+    // Default TRANSPORT_STEP, so an engine nobody configures is unmoved.
+    // Heat's own transport is NOT this member -- it stays TRANSPORT_SHEAR,
+    // a literal at run_sweep_'s two RadiationSweep::run / radiation_sweep_
+    // step call sites; that choice is not this patch's to make configurable.
+    int                light_transport = RadiationSweep::TRANSPORT_STEP;
+    // #29 P4a: HEADLESS — set by the headless runners (tools/run_match.py's
+    // MatchSession, rl_env), never by main.py. The W6a ripple is render-only
+    // (ripple / ripple_v feed nothing back and are outside the digest), so a
+    // headless engine skips it on every path: step_tail does not call
+    // step_ripple, and the resident tick neither runs it nor downloads
+    // water_depth for it. Default false: every windowed run is unmoved.
+    bool               headless = false;
 
     // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
     // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
@@ -58,6 +166,31 @@ public:
     // EOS P3: reused scratch for the bulk-N sum (O2+N2) step_tail hands to
     // TemperatureSolver::step as the real Pass-1 heat-deposit divisor.
     mutable std::vector<int32_t> n_bulk_;
+
+    // ---- ray-engine-v2 P5b (design v3 §2.8 / §6.3): THE GAS CURRENCY ------
+    // The three integers the temperature fold's Pass 1 divides a gas deposit
+    // by, derived from the fold's OWN two dials (`temperature.c_v`,
+    // `temperature.n_floor_heat`) by the SAME kit calls TemperatureSolver::
+    // step() makes at its top and in Pass 1:
+    //     n_floor_q = quantize(n_floor_heat)                 the N floor
+    //     c_v_q     = quantize(c_v > 0 ? c_v : 1)           c_v's ONE integer form
+    //     recip_cv  = make_recip(c_v_q / 65536)             its exact inverse, Q.32
+    // step_tail hands n_floor_q / recip_cv to the radiation sweep (both
+    // backends), whose Fleck pre-pass prices every absorbing gas cell's L in
+    // them — so the gas arm and the fold cannot disagree about what one heat
+    // count is worth in a gas cell. Here rather than in temperature_solver.cpp
+    // because the fold is not this patch's to touch (P5c owns its gas branch);
+    // tests/test_radiation_sweep_gas_fleck.py holds these three to the fold's
+    // own gas deposit, bit for bit, at the shipped dials and at another pair.
+    // Out of line in this /fp:strict TU: quantize and make_recip are real
+    // arithmetic, and a header-inline copy would compile under bindings.cpp's
+    // /fp:fast.
+    struct GasCapacityQ {
+        int32_t n_floor_q;
+        int32_t c_v_q;
+        int64_t recip_cv;
+    };
+    GasCapacityQ gas_capacity_q() const;
 
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
@@ -116,19 +249,17 @@ public:
         // six medium tests key on, instead of the FLOW mask `solid` above.
         // GameMap.thermal_solid; equals `solid` on any furniture-free map.
         const bool* thermal_solid,
-        // COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift
-        // (GameMap.cool_shift) the temperature pass's Pass 3 reads instead of
-        // the single global COOL_SHIFT. REQUIRED here (not defaulted) for the
-        // same reason `thermal_solid` is: the live engine must never silently
-        // fall back to the global. Uniform == the old global on the shipped
-        // config, so this is byte-identical on arrival.
-        const int32_t* cool_shift_grid,
+        // T5b step 7 / thermal model v2 R1: `const int32_t* cool_shift_grid`
+        // was a REQUIRED parameter here. Pass 3 is deleted on both backends,
+        // so the plane has no reader and the parameter is gone. Removing a
+        // required positional argument is a hard compile error at every call
+        // site, which is the point: nothing can silently keep passing it.
         // FUEL-FRACTION AXIS (2026-07-30): the per-tile `make_recip` reciprocal
         // of each tile's material's full-health hp (GameMap.fuel_recip), which
         // the fire logistic's fuel term F = clamp01(wall_hp/hp_full) reads
         // instead of the single global [physics.fire] fuel_ref (== WOOD's hp).
-        // REQUIRED here (not defaulted) for the same reason `thermal_solid` and
-        // `cool_shift_grid` are: the live engine must never silently fall back
+        // REQUIRED here (not defaulted) for the same reason `thermal_solid`
+        // is: the live engine must never silently fall back
         // to the global. A uniform plane == the old global, so this is
         // byte-identical on arrival for any map whose fuel is wood.
         const int64_t* fuel_recip,
@@ -155,7 +286,7 @@ public:
         // of the tick. step_tail hands it straight through to the temperature
         // pass, which folds it (BEFORE the heat deposit) through each tile's own
         // heat_inv_shift. nullptr -> no fold, byte-identical to pre-P-R4.
-        const int32_t* rad_net = nullptr,
+        const int64_t* rad_net = nullptr,   // P3a-1: int64 (design v3 row 26/35)
         // arc #54 P-G1b (design §2.7 row 3): the CONSERVED gas energy field,
         // handed straight through to TemperatureSolver::step so its Pass-1
         // deposit and Pass-2 conduction land in the books instead of in the
@@ -163,9 +294,158 @@ public:
         // `t_amb_q` is T_AMB_K in raw Q16.16 counts — the SAME fold EOSSolver
         // does, passed in rather than re-derived so the two cannot drift.
         int64_t* gas_energy = nullptr,
-        int32_t t_amb_q = 0) const;
+        int32_t t_amb_q = 0,
+        // ---- ray-engine-v2 (design v3 §11, orchestrator override row 35):
+        // THE SWEEP, LIVE since T5b. Step "2b" — between the fire step and
+        // the temperature pass — runs RadiationSweep::run (shear, S16) on the
+        // live temperature / extinction / capacity planes into the four
+        // int64 planes below, which the temperature fold, the Pass-1 clamp
+        // and unit heat damage now read (the old cast that used to fill a
+        // separate set of planes is deleted, T6). With the radiation backend
+        // on (P4, set_radiation_backend) the same step runs the sweep's CUDA
+        // twin instead, bit-identical (cuda_radiation_sweep.h).
+        //   heat_atten_q / dyn_heat_atten_q : int32 Q16 (h, w), the extinction
+        //                                     planes (GameMap, optics_fixed.py)
+        //   rad_net_sweep / rad_flux_sweep / rad_amb_sweep / rad_fluence :
+        //                                     int64 (h, w), accumulated (the
+        //                                     sweep's own run() zeroes them
+        //                                     each tick before its first
+        //                                     ordinate — not the conductor)
+        //   k_leak_q                        : [physics.radiation] k_leak, Q16
+        //   rad_amb_vacuum_q                : the EMISSIVE LEVEL a VACUUM cell
+        //        radiates against (thermal model v2 R3), in the E° table's own
+        //        units. Every other cell — interior air, solids, and the
+        //        ambient ring, which IS room-temperature air — takes E°[0]; the
+        //        select happens in RadiationSweep::derive_ambient from the
+        //        `is_vacuum` plane already in scope, so nothing is authored and
+        //        no material column or level-data field is added.
+        //        NEGATIVE means E°[0], i.e. space at room temperature — thermal
+        //        v2 R4, the shipped v1 answer, which makes the plane UNIFORM
+        //        and the sweep bit-identical to the scalar era. Bound by
+        //        PhysicsRunner from [physics.radiation] vacuum_ambient_K.
+        // ALL SIX PLANES must be non-null for the sweep to run (dormancy by
+        // branch, the tree's idiom); the pybind binding makes them REQUIRED
+        // and noconvert, so the live runner cannot omit them. The temperature
+        // pass always receives rad_fluence / e_table too, so the maximum-
+        // principle clamp is LIVE on the same call (design v3 P3) — only a
+        // direct caller that omits them gets the pre-flip no-clamp path.
+        const int32_t* heat_atten_q = nullptr,
+        const int32_t* dyn_heat_atten_q = nullptr,
+        int64_t* rad_net_sweep = nullptr,
+        int64_t* rad_flux_sweep = nullptr,
+        int64_t* rad_amb_sweep = nullptr,
+        int64_t* rad_fluence = nullptr,
+        int32_t k_leak_q = 0,
+        int64_t rad_amb_vacuum_q = -1,
+        // ray-engine-v2 P5a (design v3 §6.3): SMOKE ABSORBS HEAT. The per-gas
+        // [gases.*] heat_absorb column in Q16 (GasTable.heat_absorb_q16,
+        // n_gases entries). With it the sweep (both backends) reads the smoke
+        // term on every gas cell from `gas` above and the bulk sum `n_bulk_`
+        // this function already builds — the SAME N the fold divides by and
+        // the N_EPS floor keys on. The pybind binding makes it REQUIRED
+        // (noconvert); null here is the pre-P5a sweep. Every shipped value is
+        // 0.0, so no gas plane is read and the live game does not move.
+        const int32_t* gas_heat_absorb_q16 = nullptr,
+        // ---- ray-engine-v2 P6a: THE LIGHT CHANNELS (radiation_sweep.h's
+        // LightChannels), read only while `light_requested`. Then all five
+        // planes are REQUIRED (std::invalid_argument otherwise -- a request
+        // that silently computes nothing is the failure this makes loud):
+        //   light_atten_q / dyn_light_atten_q : int32 Q16 (h, w, 3), the
+        //        material / stamped light extinction (GameMap, optics_fixed)
+        //   light_q / light_flux_q / light_glow : int64 (h, w, 3) / (h, w, 2) /
+        //        (h, w, 3), OVERWRITTEN by the sweep (it zeroes them itself)
+        //   gas_light_absorb_q16 / gas_light_glow_q16 : int32 (n_gases, 3), the
+        //        smoke term's columns (GasTable), both or neither -- they read
+        //        the gas group above (gas_heat_absorb_q16 given)
+        // With the request off every one of them is ignored and the light
+        // planes keep whatever they held.
+        const int32_t* light_atten_q = nullptr,
+        const int32_t* dyn_light_atten_q = nullptr,
+        int64_t* light_q = nullptr,
+        int64_t* light_flux_q = nullptr,
+        int64_t* light_glow = nullptr,
+        const int32_t* gas_light_absorb_q16 = nullptr,
+        const int32_t* gas_light_glow_q16 = nullptr,
+        // ---- ray-engine-v2 P6b: THE CONE EMITTERS and THE SKY (radiation_
+        // sweep.h LightChannels.cones / .sky), read only while light is
+        // requested; both optional:
+        //   light_cones   : (n_light_cones, CONE_ROW_WIDTH) int64 rows (y, x, r,
+        //                   g, b, center_q, spread_q) -- the frame-lights
+        //                   assembly's output row (renderer/frame_lights.py)
+        //   light_sky     : (16, 3) int64, the virtual ring's per-ordinate
+        //                   outflow (nullptr: the dark ring)
+        const int64_t* light_cones = nullptr,
+        int n_light_cones = 0,
+        const int64_t* light_sky = nullptr,
+        // ---- graphics G3 F4b: THE FIRE'S LIGHT FLICKER (radiation_sweep.h
+        // LightChannels.emit_mult), read only while light is requested;
+        // optional: (n_light_emit_mult, EMIT_MULT_ROW_WIDTH) int64 rows (y, x,
+        // mult_q) -- a Q16 factor on that cell's THERMAL light emission
+        // (renderer/fire_flicker.py via renderer/frame_lights.py). Render
+        // state: heat never reads it, nothing digests it.
+        const int64_t* light_emit_mult = nullptr,
+        int n_light_emit_mult = 0) const;
+
+    // --- ray-engine-v2 P6b: RELIGHT -------------------------------------
+    // The light field recomputed on the CURRENT state WITHOUT a tick: the
+    // game's light rides the tick (step_tail, light_requested), so while the
+    // sim is PAUSED nothing would move it -- the cursor lamp would freeze
+    // where the last tick left it and the first paused frame after load would
+    // be dark. relight() runs the one sweep invocation (run_sweep_, the same
+    // as step 2b) with the light group, writing the caller's three light
+    // planes and landing the sweep's HEAT outputs in this engine's own scratch
+    // (relight_rad_) -- no plane a tick reads is written, so a relight between
+    // ticks moves no synced integer (tests/test_light_field.py holds it). The
+    // sweep's observable telemetry (Fleck plane, stream extremes, light books)
+    // then describes the relight, as it would any run. The arguments are
+    // step_tail's sweep inputs; the bulk sum is built here, into its own
+    // scratch. Render-only use (the renderer's pause path); RL and headless
+    // runs never call it.
+    void relight(
+        const int32_t* temperature,
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        const int32_t* heat_inv_shift, const bool* thermal_solid,
+        const bool* is_vacuum,
+        const int32_t* gas, const bool* gas_conservative, int n_gases, int h, int w,
+        int32_t t_amb_q, int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16,
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult = nullptr, int n_light_emit_mult = 0) const;
+
+private:
+    // P6b: THE ONE SWEEP INVOCATION (step 2b's body, moved verbatim): step_tail
+    // calls it with with_light = light_requested, relight() with true.
+    void run_sweep_(
+        const int32_t* temperature,
+        const int32_t* heat_atten_q, const int32_t* dyn_heat_atten_q,
+        const int32_t* heat_inv_shift, const bool* thermal_solid,
+        const bool* is_vacuum,
+        const int32_t* gas, int n_gases, const int32_t* n_bulk, int h, int w,
+        int32_t t_amb_q, int32_t k_leak_q, int64_t rad_amb_vacuum_q,
+        const int32_t* gas_heat_absorb_q16,
+        int64_t* rad_net_sweep, int64_t* rad_flux_sweep,
+        int64_t* rad_amb_sweep, int64_t* rad_fluence,
+        bool with_light,
+        const int32_t* light_atten_q, const int32_t* dyn_light_atten_q,
+        int64_t* light_q, int64_t* light_flux_q, int64_t* light_glow,
+        const int32_t* gas_light_absorb_q16, const int32_t* gas_light_glow_q16,
+        const int64_t* light_cones, int n_light_cones,
+        const int64_t* light_sky,
+        const int64_t* light_emit_mult = nullptr, int n_light_emit_mult = 0) const;
+    // relight()'s own scratch: the bulk sum and the four heat outputs it
+    // discards (never a tick's plane)
+    mutable std::vector<int32_t> relight_n_bulk_;
+    mutable std::vector<int64_t> relight_rad_;
+
+public:
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
+    // (HISTORICAL banner: the loop below describes the pre-P3 shape; read the
+    //  P3 and smoke-transport-v2 blocks further down for what runs today.)
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
     // into C++ — the loop that runs BETWEEN the water/fire-heat steps (still
     // Python, before) and step_tail (already C++, after). It advances the
@@ -181,7 +461,8 @@ public:
     //     (double)atmos.max_dt())); the double ceil was already correctly-rounded
     //     (cross-platform deterministic) but the integer form removes the last
     //     double from the substep-count path so a CUDA kernel matches the CPU
-    //     exactly. n_smoke is likewise integer via fixedpoint::smoke_cliff_count.
+    //     exactly. (n_smoke was likewise integer via fixedpoint::smoke_cliff_count
+    //     — that kit and the whole SL smoke step are DELETED, smoke transport v2.)
     //   * `dt_actual` and `dt_smoke` stay DOUBLE until the solver-call boundary:
     //     dt_actual = (double)sim_time / n; dt_smoke = (double)sim_time / n_smoke.
     //     They are cast to float ONLY when passed to the solvers — matching
@@ -226,11 +507,13 @@ public:
     // n_smoke-substepped semi-Lagrangian loop for the two CONSERVATIVE gas
     // planes (bulk O2/N2 now move ONCE PER EOS SUBSTEP, inside eos.step, via
     // bulk_flux_transport — not once per tick as P1 shipped it). The 5 TRACE
-    // planes still ride the per-gas SmokeDynamics::step, but now ONCE per
-    // tick (design §3.2 step 4b: "traces advect ONCE per tick on the final
-    // velocity") on the solver's post-correction `wind_x`/`wind_y` — the
-    // n_smoke CFL-floor substep loop AND the decoupled sink_hop BFS loop are
-    // BOTH DELETED (sink_hop + its BFS machinery, decisions.md #3; native
+    // planes rode the per-gas SmokeDynamics::step ONCE per tick from P3 until
+    // smoke transport v2 (#12, docs/smoke_transport_design_2026-10-04.md),
+    // which DELETED it: they now ride the bulk face flux inside every EOS
+    // substep (stages 3b/3c) plus a once-per-tick trace_tail (stranded
+    // zeroing, conservative Jacobi diffusion, ceil decay) run here after the
+    // dispatch. (Historical, P3:) the n_smoke CFL-floor substep loop AND the
+    // decoupled sink_hop BFS loop are BOTH DELETED (sink_hop + its BFS machinery, decisions.md #3; native
     // venting replaces it). `wave_p` is REPURPOSED as `P_prev` (the design's
     // own "keep the old name, change the meaning" pattern, already applied
     // to `atmosphere`->P — see eos_solver.h); `wave_v`/`wave_source` are
@@ -275,10 +558,12 @@ public:
         int32_t p_amb = 0,
         const int32_t* sponge_sigma = nullptr,
         const int32_t* sponge_udamp = nullptr,
-        // S8a Path B: when false, the EOS step runs but the once-per-tick TRACE
-        // smoke loop (+ decay) is SKIPPED — the resident path runs those traces
-        // itself on device (trace_smoke_resident) so the 5 per-plane per-call
-        // transfers are gone. Default true == the exact prior behaviour.
+        // S8a Path B, redefined by smoke transport v2 (#12, design §5):
+        // `do_traces` means "the once-per-tick trace TAIL (stranded zeroing,
+        // diffusion, decay) runs on the HOST". false skips it — the resident
+        // path runs it on device (run_trace_tail_resident, P2b) and never
+        // comes through here. The trace ADVECTION is inside the EOS
+        // step on every path. Default true.
         bool do_traces = true,
         // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md
         // §4 item 1): the per-medium THERMAL mask (GameMap.thermal_solid),
@@ -288,46 +573,67 @@ public:
         // path -> byte-identical to before this patch.
         const bool* thermal_solid = nullptr);
 
-    // --- S8a Path A: the fully device-resident EOS stage -----------------
-    // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.1.) The resident sibling of
-    // run_substeps' EOS dispatch: host mirrors feed the shared pre-stage (all
-    // reductions — tick-entry state) + telemetry; the device pointers are the
-    // persistent CuPy resident fields (uintptr_t so this header stays
-    // CUDA-free; 0 == nullptr for the ambient statics). NO trace loop (the
-    // runner drives trace_smoke_resident, as in Path B). Declared on every
-    // build; the body THROWS on a non-CUDA build, and on a CUDA build throws
-    // unless eos_step_backend_is_cuda() (no CPU fallback for device
-    // pointers). Bit-identity gate: tests/cuda_s8a_check.py PART 1a/1b/1c.
-    void run_substeps_resident(
-        int32_t* p_prev,
-        const int32_t* atmosphere,
-        const int32_t* wind_x, const int32_t* wind_y,
-        const int32_t* temperature,
-        const bool* solid, const bool* is_vacuum,
-        const float* dyn_permeability, const float* dyn_wave_absorb,
-        const int32_t* gas, int n_gases, const bool* gas_conservative,
-        int h, int w, float sim_time,
-        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
-        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
-        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
-        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
-        std::uintptr_t d_dyn_permeability,
-        std::uintptr_t d_is_ambient,
-        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
-        // THERMAL-MASS AXIS, P-EOS: the mask on the MIRROR (for the shared host
-        // occlusion predicate — all pre-stage reductions read the mirror) plus
-        // its DEVICE copy (what the SL/compression kernels read). 0/nullptr ->
-        // the legacy path. The device copy MUST ride the per-tick from_host
-        // upload: unlike the sponge grids this mask is not static.
-        const bool* thermal_solid = nullptr,
-        std::uintptr_t d_thermal_solid = 0,
-        // arc #54 §2.2 (P-G2): the conserved gas energy field's PERSISTENT
-        // device buffer (GameMap's resident `gas_energy`, (h,w) int64). No
-        // host-mirror parameter is needed here — nothing in the resident
-        // pre-stage reduces over it (unlike thermal_solid's cap2 fold); the
-        // caller's from_host/to_host round-trips the mirror around this call.
-        std::uintptr_t d_gas_energy = 0);
+    // --- #29 P5: THE BATCHED RESIDENT TICK (cuda_resident_tick.h has the whole
+    // contract; docs/residency_batching_design_2026-11-07.md §4.2) ------------
+    // Slot 7 of N homogeneous envs on their (N, h, w) device buffers (f.n_env
+    // = N, the addresses env 0's), in the CPU tick's order: the water stage
+    // (substeps + W5 / W3, masked per env), the EOS stage (the device pre-stage,
+    // both masked substep loops to the batch's max n_sub, MG per env, kick,
+    // store, energy flux; returns max(n_sub), the one counted per-tick host
+    // read), the trace tail, combustion, [the sky bracket, ambient N = 1 only:
+    // the runner's], then the tail (bulk sum, fire, the sweep, temperature),
+    // which ends with the ONE books D2H and folds env e's books into engs[e],
+    // returning each env's burn-through list (row-major). `engs` is the batch's
+    // N engines (this engine == engs[0], the config); empty = {this} (N = 1,
+    // the played `--cuda --resident` game — the same code path). The light
+    // inputs (upload_light_resident) are N = 1 only (render state, until #81).
+    // Declared on every build; the bodies throw on a non-CUDA build. Gates:
+    // tests/cuda_s8a_check.py (N = 1 == CPU, tol 0) and
+    // tests/cuda_batch_invariance_check.py (env i of N == env i alone).
+    using ResidentEngineList = std::vector<const PhysicsEngine*>;
+    void step_water_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                             const ResidentEngineList& engs = {}) const;
+    int run_substeps_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                              const ResidentEngineList& engs = {}) const;
+    void run_trace_tail_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                                 const ResidentEngineList& engs = {}) const;
+    void run_combustion_resident(const ResidentFields& f, const ResidentTickArgs& a,
+                                 const ResidentEngineList& engs = {}) const;
+    void upload_light_resident(const ResidentFields& f,
+                               const ResidentTickArgs& a) const;
+    // #29 P4b: slot 6's stamp on the device -- the five stamp outputs
+    // (obstacles, dyn_permeability, dyn_wave_absorb, dyn_heat_atten_q,
+    // dyn_light_atten_q) rebuilt from `rows`, an (n_rows, 9) int32 matrix
+    // [env, y, x, perm bits, wabsorb bits, heat_q, l0, l1, l2] the hosts'
+    // stamps built (cuda_resident.h STAMP_ROW_COLS; env = the batch index).
+    void stamp_units_resident(const ResidentFields& f, const int32_t* rows,
+                              int n_rows, const ResidentEngineList& engs = {}) const;
+    // #29 P4c: slot 6b's FieldEdit flush on the device (the device edit queue,
+    // cuda_edit_queue.cu) from every env's packed records -- `buf` the one
+    // int64 buffer of cuda_resident_tick.h's resident_edits. Its books fold
+    // into each env's `edit_queue_books` at step_tail_resident.
+    void apply_edits_resident(const ResidentFields& f, const int64_t* buf,
+                              int n_edits, int n_tiles, uint32_t salt,
+                              int o2_idx, int n2_idx,
+                              const ResidentEngineList& engs = {}) const;
+    std::vector<std::vector<std::pair<int, int>>> step_tail_resident(
+        const ResidentFields& f, const ResidentTickArgs& a,
+        const ResidentEngineList& engs = {}) const;
+    // The last resident sweep's Fleck plane into this->radiation, ON DEMAND
+    // (gates and tools; the resident tick never downloads it per tick).
+    void sync_resident_fleck_plane(int h, int w) const;
+
+    // --- #29 P4a: the W6a ripple, step_tail's step 1 as its own entry -------
+    // The dormancy guard (skip unless water_depth or ripple is non-zero
+    // anywhere) and the WaterSolver::step_ripple call, moved VERBATIM out of
+    // step_tail, which now calls this unless `headless`. The resident tick
+    // calls it on the host mirror after its exit download (ripple is
+    // render-only: nothing in the tick reads it, so its place after the fire
+    // and temperature passes changes no other field).
+    void step_ripple(float* ripple, float* ripple_v,
+                     const int32_t* water_depth, const int32_t* atmosphere,
+                     const int32_t* p_prev, const bool* solid,
+                     int h, int w, float sim_time) const;
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
@@ -455,6 +761,10 @@ public:
     // solids). PER-CALL reset, the EOSSolver counter idiom; int64, in the
     // gas_energy Q32 currency.
     mutable int64_t e_water_evac_export_sum = 0;
+    // #29 P4c: the device edit queue's books of the LAST tick it ran
+    // (cuda_resident.h EDQ_SLOTS, ASSIGNED at the books fold): the runner adds
+    // them into the map's trace books, gas-energy channels and draw count.
+    mutable std::vector<int64_t> edit_queue_books;
 
     // --- stamp_units: the per-tick dynamic-field rebuild --------------------
     // Moves GameMap.stamp_units' FIELD REBUILD (gamemap.py:485-589) into C++ —
@@ -466,14 +776,12 @@ public:
     //        obstacles[i]        = (permeability[i] <= 0.0f)   // walls only
     //        dyn_permeability[i] = permeability[i]             // copy
     //        dyn_wave_absorb[i]  = wave_absorb[i]              // copy
-    //        dyn_light_atten[i]  = light_atten[i]              // copy (×3 chan)
     //   b. Stamp each living unit's footprint over the flat stamp rows. Python
     //      builds one row per (living-unit, in-bounds footprint-tile) — the unit
     //      iteration + occupied_tiles() + the `u.alive` filter + the bounds
     //      check all stay Python (CPU actors); C++ just applies the combine ops:
     //        dyn_permeability[idx] = min(perm[r], permeability[idx])   // MIN
     //        dyn_wave_absorb[idx]  = max(dyn_wave_absorb[idx], wabs[r]) // MAX
-    //        dyn_light_atten[idx]  = max(., atten_{r,g,b}[r]) per-channel // MAX
     //      where idx = ys[r]*w + xs[r]. The defaults (unit_permeability 0.5,
     //      unit_wave_absorb 0.5, light_atten {1,1,1}) are applied PYTHON-side per
     //      unit before flattening (matches the getattr-or-default contract).
@@ -483,20 +791,43 @@ public:
     // the engine's re-fetched field pointers stay valid.
     //
     //   permeability, wave_absorb : float (h, w) — static material baselines (read)
-    //   light_atten               : float (h, w, 3) — static attenuation (read)
     //   dyn_permeability, dyn_wave_absorb : float (h, w) — dynamic targets (write)
-    //   dyn_light_atten           : float (h, w, 3) — dynamic target (write)
     //   obstacles                 : bool (h, w) — solid mask (write, walls only)
     //   ys, xs                    : int32 (n_stamp,) — footprint tile (row, col)
     //   perm, wabsorb             : float (n_stamp,) — per-row unit values
-    //   atten_r, atten_g, atten_b : float (n_stamp,) — per-row unit opacity (RGB)
+    // Ray-engine-v2 P1 (design v3 §3, §6.2): the FOURTH dynamic output, the
+    // integer heat-extinction plane the radiation sweep reads —
+    //        dyn_heat_atten_q[i]   = heat_atten_q[i]                  // copy (Q16)
+    //        dyn_heat_atten_q[idx] = max(., heat_q[r])                // MAX
+    // every dynamic stamp is a MAX, never a sum (a <= d <= ONE, §2.3):
+    //   heat_atten_q              : int32 Q16 (h, w) — static material extinction (read)
+    //   dyn_heat_atten_q          : int32 Q16 (h, w) — dynamic target (write)
+    //   heat_q                    : int32 Q16 (n_stamp,) — per-row unit extinction
+    //                               (unit.heat_atten, default 1.0 = an opaque body,
+    //                               quantized Python-side by optics_fixed)
+    // Ray-engine-v2 P6a (design v3 §4.1, §5): the FIFTH dynamic output, the
+    // INTEGER light-extinction twin the sweep's light channels read, per
+    // channel exactly as the heat plane:
+    //        dyn_light_atten_q[i]   = light_atten_q[i]                (copy, x3)
+    //        dyn_light_atten_q[idx] = max(., light_q_rows[r][c])      (MAX, x3)
+    //   light_atten_q             : int32 Q16 (h, w, 3) — static material extinction (read)
+    //   dyn_light_atten_q         : int32 Q16 (h, w, 3) — dynamic target (write)
+    //   light_q_rows              : int32 Q16 (n_stamp, 3) — per-row unit light
+    //                               extinction (unit.light_atten, default {1,1,1}
+    //                               = an opaque body, quantized Python-side by
+    //                               optics_fixed)
+    // (The float dyn_light_atten plane and its light_atten / atten_{r,g,b}
+    // inputs were the old render march's; they went with it at P6c. The light
+    // stamp is this integer twin alone.)
     void stamp_units(
         const float* permeability, const float* wave_absorb,
-        const float* light_atten,
-        float* dyn_permeability, float* dyn_wave_absorb, float* dyn_light_atten,
+        float* dyn_permeability, float* dyn_wave_absorb,
         bool* obstacles,
         const int32_t* ys, const int32_t* xs,
         const float* perm, const float* wabsorb,
-        const float* atten_r, const float* atten_g, const float* atten_b,
-        int n_stamp, int h, int w) const;
+        const int32_t* heat_atten_q, int32_t* dyn_heat_atten_q,
+        const int32_t* heat_q,
+        int n_stamp, int h, int w,
+        const int32_t* light_atten_q = nullptr, int32_t* dyn_light_atten_q = nullptr,
+        const int32_t* light_q_rows = nullptr) const;
 };

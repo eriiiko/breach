@@ -44,7 +44,7 @@ from level_lib import (LevelHandle, MANAGED_FAMILIES,  # noqa: E402
                        WATER_FILENAME, format_light_lines,
                        format_spawn_lines, open_level, water_block_format,
                        write_managed_blocks, write_water_npy)
-from level_loader import LightEntry, SpawnEntry  # noqa: E402
+from level_loader import LightEntry, SpawnEntry, ZOMBIE_TEAM  # noqa: E402
 
 ALL_LEVELS = sorted(p.parent.name
                     for p in (ROOT / "levels").glob("*/level.toml"))
@@ -75,7 +75,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
 
 
 PREFIX = ("# hand comment stays\n"
-          'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+          'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
           'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n\n')
 SUFFIX = ('[art.bare]\n# baked by the P2 baker\n'
           'diffuse = "diffuse.png"\n\n'
@@ -175,7 +175,7 @@ def test_empty_block_removes_family_and_absent_family_untouched(tmp_path):
 def test_crlf_preserved(tmp_path):
     d = _mini_level(tmp_path)
     toml = d / "level.toml"
-    toml.write_bytes(b'version = "2"\r\nname = "T"\r\n')
+    toml.write_bytes(b'version = "3"\r\nname = "T"\r\n')
     write_managed_blocks(
         toml, {"spawn": lambda nl: format_spawn_lines(
             [SpawnEntry("A", 0, 1.0, 2.0)], nl)})
@@ -204,7 +204,7 @@ def test_editor_save_shape_round_trips_through_loader(tmp_path):
     assert handle.data.spawns == [] and handle.data.lights == []
 
     spawns = [SpawnEntry("marine_1", 0, 2.0, 3.0),
-              SpawnEntry("zombie_1", 1, 6.0, 4.0, footprint=5)]
+              SpawnEntry("zombie_1", ZOMBIE_TEAM, 6.0, 4.0, footprint=5)]
     lights = [LightEntry(x=3.5, y=2.5, color=(1.0, 0.0, 0.0),
                          kind="beacon", period_s=1.5, phase=0.5)]
     depth = np.zeros((6, 8), np.int32)

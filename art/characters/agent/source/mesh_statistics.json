@@ -1,0 +1,25 @@
+{
+  "agent": {
+    "objects": 66,
+    "vertices": 1855,
+    "triangles_base": 3418,
+    "triangles_evaluated": 7658
+  },
+  "duffel_placeholder": {
+    "objects": 8,
+    "vertices": 160,
+    "triangles_base": 234,
+    "triangles_evaluated": 2072
+  },
+  "weapon_placeholder": {
+    "objects": 9,
+    "vertices": 72,
+    "triangles_base": 108,
+    "triangles_evaluated": 1692
+  },
+  "unit": "metres",
+  "height": 1.86,
+  "rigged": false,
+  "UVs_authored": false,
+  "runtime_export": false
+}

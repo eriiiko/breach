@@ -100,7 +100,31 @@ struct EOSHostPrestage {
     std::vector<int64_t> cap2;
     // Conservative-plane index list (the CPU's gi order preserved).
     std::vector<int> cons;
+    // #29 P4a: the scan inputs eos_prestage_finish folds into n_sub, kept so
+    // the resident path can run the Dalton + K·|∇P|·dt/N̂ scan on the DEVICE
+    // (the water tail writes gas and dyn_permeability there first) and hand
+    // its max back. The host path runs the same finish on its host scan.
+    int32_t max_u     = 0;   // sqrt_q16(max|u|²) over tick-entry wind
+    int64_t kdt_raw   = 0;   // (K·2^16)·dt, 128-bit staged
+    int32_t n_floor_q = 0;   // quantize(N_FLOOR_SOLVER)
+    int32_t u_max_q   = 0;   // quantize(U_MAX)
+    int32_t cfl_dx_q  = 0;   // quantize(CFL_ADV · dx)
+    int32_t dt_q      = 0;   // quantize(dt)
+    double  dt_d      = 0.0; // dt in double (the dt/n_sub split)
+    // #29 P5: the c_LOCAL / cap² scan's own scalars, kept so the DEVICE
+    // pre-stage (cuda_eos_resident.cu) runs the identical per-cell fold.
+    int32_t c_amb_q    = 0;  // quantize(c_max)
+    int64_t c_amb2_q32 = 0;  // c_amb_q² (Q32.32)
+    int64_t u_max2_q32 = 0;  // u_max_q² (Q32.32)
+    int64_t ratio_umax = 0;  // (u_max/c_amb)²·2^16 + 1 — the cap's saturation ratio
 };
+
+// #29 P5: the pre-stage's SCALAR folds alone (no plane read, no book reset,
+// no p_prev copy) — the part eos_host_prestage computes before its scans,
+// factored (pure code motion) so the batched device pre-stage folds the same
+// constants once per config. Throws the D-3 release-live guard as before.
+EOSHostPrestage eos_prestage_scalars(const EOSSolver& solver, float dt,
+                                     const bool* gas_conservative, int n_gases);
 
 EOSHostPrestage eos_host_prestage(
     const EOSSolver& solver,
@@ -116,7 +140,25 @@ EOSHostPrestage eos_host_prestage(
     // THERMAL-MASS AXIS, P-EOS: the per-medium THERMAL mask, mirroring
     // EOSSolver::step's `ts` fold (nullptr -> `solid`, today's behaviour).
     // VELOCITY-CLAMP (P-V1, D4): also gates the cap2 fold's ts->ambient rule.
-    const bool* thermal_solid = nullptr);
+    const bool* thermal_solid = nullptr,
+    // #29 P4a: true (the per-call path, and every caller before P4a) runs the
+    // Dalton + K·|∇P|·dt/N̂ scan, the n_sub fold and the donor-cell
+    // coeffE/coeffS cache on the HOST, as always. false stops after the
+    // scalar folds, cap2 / c_LOCAL and max|u| (all read tick-entry wind and
+    // temperature, which nothing before the EOS writes on the device) and
+    // leaves n_sub, dt_s_q, coeffE and coeffS to the caller: the resident
+    // path scans the DEVICE gas (eos_step_resident) and calls
+    // eos_prestage_finish with its max. `gas` and `dyn_permeability` are then
+    // not read (they may be stale on the mirror).
+    bool host_scans = true);
+
+// #29 P4a: the n_sub fold, from the scan's max K·|∇P|·dt/N̂ (Q16 raw, >= 0):
+// u_est = max|u| + max_du + 1, clipped at max(c_LOCAL, U_MAX); n_sub =
+// clamp(ceil_div(dt·u_est, CFL·dx), 1, N_SUB_MAX); dt_s_q = quantize(dt/n_sub).
+// Sets pre.n_sub / pre.dt_s_q and solver.dbg_last_n_sub. ONE transcription:
+// eos_host_prestage's host scan and the resident device scan both call it.
+void eos_prestage_finish(const EOSSolver& solver, EOSHostPrestage& pre,
+                         int64_t max_du_raw);
 
 // True iff EVERY kernel surface the chained dispatch needs is flagged for
 // the GPU (review §4 is silent on a master flag, so the four per-kernel

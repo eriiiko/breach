@@ -1,5 +1,6 @@
 #include "fire_simulation.h"
 #include "fixed_point.h"
+#include "o2_pressure_factor.h"   // issue #7: the O2 law's pressure factor g(p)
 #include <algorithm>
 #include <cstdint>
 
@@ -11,6 +12,10 @@
 //   declines ~linearly with O2 volume fraction below ambient (the linear law).
 //   (Extinction-limit ~13-16 vol-% O2: Beyler, SFPE Handbook, flammability
 //   limits.) Both archived under docs/papers/.
+// Issue #7 (Erik's ruling 2026-09-23) multiplies that fraction factor by a
+// PRESSURE factor g(p), zero below 0.1 atm, one above 0.5 atm, linear between —
+// the law and its literature (Harper et al. 2016 / Hirsch et al. 2006, NASA
+// WSTF; He, Wang & Fang 2021 on thin cellulose) are in o2_pressure_factor.h.
 
 // Neighbor offsets: 4-connected (the open-neighbour pressure mean + smoke spread).
 static constexpr int D4[][2] = {{-1,0},{1,0},{0,-1},{0,1}};
@@ -26,6 +31,16 @@ namespace fp = fixedpoint;
 static inline q16 clamp01_q(q16 v) {
     if (v < 0) return 0;
     if (v > fp::FP_ONE) return fp::FP_ONE;
+    return v;
+}
+
+// Integer clamp to [0, cap] (R1 renormalized o2f — the enrichment ceiling is a
+// CONFIG dial, not FP_ONE, so this is a small generalization of clamp01_q
+// above, not a replacement for it: everything else in this file still wants
+// the plain [0,1] clamp).
+static inline q16 clamp0cap_q(q16 v, q16 cap) {
+    if (v < 0) return 0;
+    if (v > cap) return cap;
     return v;
 }
 
@@ -54,7 +69,7 @@ static inline q16 clamp01_q(q16 v) {
 
 std::vector<std::pair<int, int>> FireSimulation::step(
     q16* fire,                    // S3b: Q16.16 int32 (was float)
-    const q16* atmosphere,        // S2c: Q16.16 int32 == P (EOS P3: read-only, plume only)
+    const q16* atmosphere,        // Q16.16 atm == P, read-only: the #7 pressure factor's input
     const q16* n_o2,               // EOS P4: Q16.16 int32 real O2 density (fraction numerator)
     const q16* n_total,            // continuous-O2 law: Q16.16 int32 real N_total (fraction denom)
     int32_t* smoke,               // S2b: Q16.16
@@ -77,6 +92,10 @@ std::vector<std::pair<int, int>> FireSimulation::step(
 ) const {
     const int n = h * w;
     const auto& p = params;
+    // smoke transport v2 (#12): the last use of `smoke` here (the [0, 1]
+    // clamp) is deleted; the parameter stays for signature back-compat (the
+    // `obstacles` idiom of run_substeps).
+    (void)smoke;
 
     // Early exit if no fire (mirrors the old behaviour). max_fire is an ORDER-FREE
     // integer max reduction; the threshold is a pinned Q16.16 compare.
@@ -122,6 +141,11 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const q16 INV_C = (p.I_cap_per_avail > 0.0f)
         ? fp::quantize(1.0 / (double)p.I_cap_per_avail) : (q16)0;
     const q16 wall_damage_q = fp::quantize((double)p.wall_damage);
+    // R3 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R3"):
+    // the ceiling on the destruction/demand-side hotf ramp (see the wall-burn
+    // site below and combustion.cpp's demand site). Same load-time idiom as
+    // o2f_cap_q above.
+    const q16 hotf_cap_q    = fp::quantize((double)p.hotf_cap);
 
     // Load-time reciprocals for the config-constant divides (make_recip/recip_mul).
     // FUEL-FRACTION AXIS (2026-07-30): the FALLBACK fuel normaliser, used only
@@ -132,18 +156,23 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // (hp 30) at once. Uniform plane == this scalar -> byte-identical.
     const int64_t recip_fuel_ref  = fp::make_recip((double)p.fuel_ref);       // fallback 1/hp
     const int64_t recip_T_span    = fp::make_recip((double)p.fire_T_span);    // hot ramp
-    // Continuous-O2 law span: o2f = clamp01((X - X_ext) / (X_full - X_ext)).
+    // Continuous-O2 law span, R1 RENORMALIZATION (fire session #12, docs/
+    // fire_3c_design_2026-09-01.md "Ruling R1"):
+    //   o2f = clamp((X - X_ext) / (X_amb - X_ext), 0, o2f_cap)
     // recip_x_span is the load-time reciprocal of the span (like recip_T_span);
-    // X_ext = 0 gives span == X_full (Erik's pure-proportional X/X_full, NOT
-    // degenerate). X_span <= 0 (X_full <= X_ext, a misconfig) -> a step at X_ext.
-    // FULL-RESPONSE REFERENCE SPLIT (2026-07-30, FireParams::o2_frac_full): the
-    // upper end is the PURE-O2 reference, NOT o2_frac_amb. Normalizing by ambient
-    // made ambient the ceiling (clamp01), so locally elevated O2 could never
-    // register. o2_frac_amb is no longer read here.
+    // X_ext = 0 gives span == X_amb (pure-proportional X/X_amb, NOT degenerate).
+    // X_span <= 0 (X_amb <= X_ext, a misconfig) -> a step at X_ext. The upper
+    // end is now the AMBIENT reference o2_frac_amb, NOT the pure-O2 reference
+    // o2_frac_full (R1 supersedes the 2026-07-30 FULL-RESPONSE REFERENCE SPLIT
+    // for the SUSTAIN law only — o2_frac_full stays live on the DEMAND side,
+    // combustion.cpp's o2f_j, unchanged): ambient air now reads o2f == 1.0 by
+    // construction, and the clamp's upper edge is the NEW o2f_cap dial (not
+    // FP_ONE) so enrichment above ambient can still register, bounded.
     const q16 x_ext_q             = fp::quantize((double)p.o2_frac_ext);
-    const double  x_span          = (double)p.o2_frac_full - (double)p.o2_frac_ext;
+    const double  x_span          = (double)p.o2_frac_amb - (double)p.o2_frac_ext;
     const bool    x_degenerate    = (x_span <= 0.0);
     const int64_t recip_x_span    = x_degenerate ? 0 : fp::make_recip(x_span);
+    const q16 o2f_cap_q           = fp::quantize((double)p.o2f_cap);
     // Mole-fraction divide floor: den = max(Σn_total, X_N_FLOOR). Guards the
     // per-cell reciprocal_q16 (undefined at denom <= 0, spurious at {1,2}) AND
     // makes a near-vacuum cell (open-neighbour total gas < 1% of one ambient
@@ -152,6 +181,13 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // note) -> Σ >> this floor, so it never engages for a real burn. Same value
     // host + device (the fraction division must be bit-identical CPU<->CUDA).
     const q16 X_N_FLOOR           = fp::quantize(0.01);   // 655 counts
+    // THE PRESSURE FACTOR (issue #7, o2_pressure_factor.h): the two edges are
+    // already Q16.16 atm (PhysicsRunner quantized them at load); the span
+    // reciprocal is hoisted here ONCE per step with the kit's integer
+    // reciprocal_q16, the same place the fraction law hoists its own span.
+    // p_ext_q == p_full_q == 0 (the struct default) -> dormant, g == FP_ONE.
+    const o2_pressure::Factor pf  = o2_pressure::bake(p.p_ext_q, p.p_full_q);
+    const bool p_on               = (atmosphere != nullptr);
 
     // --- Per-tile signed-logistic FEEDBACK (fire_design_proposal §2 + §5) ---
     // Spread is gone (radiation -> heat -> temperature -> ignition handles it);
@@ -190,14 +226,22 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // n_o2 mean: invariant under thermal expansion, so hot thin gas at
         // ambient composition burns (closes the density trap; design §2.1).
         // No open neighbour -> both sums 0 -> den floors -> X = 0.
+        // Issue #7: the SAME loop, the SAME open-neighbour predicate, also sums
+        // the materialized pressure P over those cells, so the pressure factor
+        // and the fraction read one parcel of air (brief §3.2). int64, exact,
+        // order-free; the count is the open-neighbour count (0..4).
         int64_t sum_o2 = 0;
         int64_t sum_tot = 0;
+        int64_t sum_p = 0;
+        int64_t n_open = 0;
         for (const auto& d : D4) {
             int ny = y + d[0], nx = x + d[1];
             int ni = ny * w + nx;
             if (in_bounds(ny, nx, h, w) && !is_wall[ni] && !is_vacuum[ni]) {
                 sum_o2  += (int64_t)n_o2[ni];      // exact, order-free
                 sum_tot += (int64_t)n_total[ni];   // exact, order-free
+                if (p_on) sum_p += (int64_t)atmosphere[ni];   // exact, order-free
+                ++n_open;
             }
         }
         // X = Σn_o2 / max(Σn_total, floor), ONE per-cell reciprocal_q16 divide
@@ -214,12 +258,7 @@ std::vector<std::pair<int, int>> FireSimulation::step(
                           + fp::mul_wide(wind_y[i], wind_y[i]);
         const q16 W = fp::sqrt_q16(rad);
 
-        // Gates. o2f is LINEAR in X (the continuous-O2 law), clamped to [0,1]:
-        // X <= X_ext -> 0 (extinction), X >= X_full -> 1 (pure O2). Ambient air
-        // (X = 0.21) lands at (0.21-0.13)/(1-0.13) = 0.092, leaving headroom for
-        // locally enriched O2. The degenerate span (X_full <= X_ext misconfig)
-        // falls back to a step at X_ext. Same clamp/recip_mul idiom as `hot`.
-        // `hot` reads THIS TILE'S OWN extinction temperature (ruling A3
+        // Gates. `hot` reads THIS TILE'S OWN extinction temperature (ruling A3
         // ride-along, 2026-07-31): per tile from the `fire_T_ext_plane` when
         // supplied — that material's `ignition_temp - ignition_to_ext_delta`,
         // quantized at LOAD in GameMap.fire_T_ext_plane — else the scalar
@@ -228,10 +267,25 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // recip_mul + a clamp: the sim path keeps its no-divide contract.
         const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
         const q16 hot = clamp01_q(fp::recip_mul(T - T_ext_i, recip_T_span));
+        // o2f is LINEAR in X (the continuous-O2 law), R1 RENORMALIZED: X <= X_ext
+        // -> 0 (extinction), X == X_amb -> 1 (ambient, by construction — NOT the
+        // old pure-O2-normalized 0.092), clamped at the NEW o2f_cap ceiling (not
+        // FP_ONE) so locally enriched O2 above ambient can still register,
+        // bounded. The degenerate span (X_amb <= X_ext misconfig) falls back to a
+        // step at X_ext (0 or the cap, since "full response" now means the cap).
         const q16 o2f = x_degenerate
-            ? ((X < x_ext_q) ? (q16)0 : (q16)fp::FP_ONE)
-            : clamp01_q(fp::recip_mul(X - x_ext_q, recip_x_span));
-        const q16 avail = fp::mul_q16(F, o2f);
+            ? ((X < x_ext_q) ? (q16)0 : o2f_cap_q)
+            : clamp0cap_q(fp::recip_mul(X - x_ext_q, recip_x_span), o2f_cap_q);
+        // THE PRESSURE FACTOR (issue #7): g of the open-neighbour MEAN pressure
+        // (mean_round — the kit's order-free integer mean; no open neighbour ->
+        // mean 0, where X is already 0). It multiplies o2f through ONE mul_q16:
+        // at p >= p_full g == FP_ONE exactly and mul_q16(o2f, FP_ONE) == o2f, so
+        // there the law is the pre-#7 law bit for bit. No atmosphere plane ->
+        // g == FP_ONE (the pre-#7 law).
+        const q16 p_nbr = p_on ? fp::mean_round(sum_p, n_open) : (q16)0;
+        const q16 g = p_on ? o2_pressure::factor(pf, p_nbr) : (q16)fp::FP_ONE;
+        const q16 o2f_p = fp::mul_q16(o2f, g);
+        const q16 avail = fp::mul_q16(F, o2f_p);
 
         // Signed logistic update, fanned + stripped by wind. PINNED MULTIPLY ORDER
         // (master plan §2.4 / plan §5.2 — the chained-truncation association hazard):
@@ -265,11 +319,16 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         grow = fp::mul_q16(grow, gap);             // * gap   (signed)
         grow = fp::mul_q16(grow, wind_fan);        // * (1 + k_wind_fan*W)
 
-        //   die = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1 - I) * I
-        //   (UNCHANGED by P-R3 — same terms, same order, same operands.)
-        const q16 one_minus_ah = (q16)fp::FP_ONE - avail_hot;   // (1 - avail*hot)
+        //   die = k_die * max(0, 1 - avail*hot) * I  +  k_wind_strip * W * (1 - I) * I
+        //   R1 DIE-TERM SIGN FIX: avail*hot can now exceed 1 (O2 enrichment above
+        //   ambient, since o2f is no longer clamped to [0,1] — see o2f above), which
+        //   would flip (1 - avail*hot) NEGATIVE — an ANTI-DEATH term (die going
+        //   negative would ADD to I). max(0, .) floors it at zero: enrichment can
+        //   only help a fire through grow/I_cap, never subtract from die.
+        const q16 one_minus_ah_raw = (q16)fp::FP_ONE - avail_hot;    // (1 - avail*hot), SIGNED
+        const q16 one_minus_ah = std::max((q16)0, one_minus_ah_raw); // R1: floored at 0
         q16 die_a = k_die_q;                       // k_die
-        die_a = fp::mul_q16(die_a, one_minus_ah);  // * (1 - avail*hot)
+        die_a = fp::mul_q16(die_a, one_minus_ah);  // * max(0, 1 - avail*hot)
         die_a = fp::mul_q16(die_a, I);             // * I
         q16 die_b = k_wind_strip_q;                // k_wind_strip
         die_b = fp::mul_q16(die_b, W);             // * W
@@ -307,26 +366,49 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // wall_hp -= wall_damage * dt * fire[i] (all positive Q16.16). The depletion is
     // fractional (< 1 HP/tick) so wall_hp NEEDS the Q16.16 fraction. ROUND-TO-NEAREST
     // the depletion (an unbiased sink off the fuel store). wall_hp <= 0 -> destroyed.
+    //
+    // R4 (Erik's ruling 2026-09-06, docs/fire_3c_r3_report_2026-09-06.md §6.2):
+    // fire may not destroy non-flammable tiles — the DEPLETION is now flammable-
+    // gated like the destroy decision below it always was. Before R4 a
+    // non-flammable tile (incl. the canonical A/B scenario's air-tile "ghost"
+    // fire) quietly paid wall_damage*dt*I into hp it could never lose.
     std::vector<std::pair<int, int>> destroyed;
     for (int i = 0; i < n; ++i) {
-        if (fire[i] > 0) {
-            const q16 wd = fp::mul_q16(wall_damage_q, dt_q);    // wall_damage*dt
+        if (fire[i] > 0 && flammable[i]) {
+            // R3 hot-burns-faster (fire session #12, docs/fire_3c_design_2026-
+            // 09-01.md "Ruling R3"): destruction now rides `hotf` — the SAME
+            // (T - T_ext)/T_span ramp as `hot` above, but capped at hotf_cap
+            // instead of 1, so a saturated fire destroys its own fuel bed
+            // FASTER, not just draws O2 faster (combustion.cpp's demand-side
+            // twin reads the identical law). Recomputed HERE rather than
+            // threaded from the sustain loop above (locality — this loop reads
+            // the same planes anyway). `hot`'s clamp01_q gate above is
+            // UNCHANGED — this is a separate, uncapped-at-1 read of the ramp.
+            const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+            const q16 T_i = temp_is_identity
+                ? temperature[i]
+                : fp::recip_mul(temperature[i], recip_temp_scale);
+            const q16 hotf = clamp0cap_q(fp::recip_mul(T_i - T_ext_i, recip_T_span),
+                                         hotf_cap_q);
+            const q16 wd = fp::mul_q16(fp::mul_q16(wall_damage_q, dt_q), hotf);
+                                                                 // wall_damage*dt*hotf
             const int64_t wide = fp::mul_wide(wd, fire[i]);     // * I (wide for round)
             const q16 dmg = fp::narrow_round(wide);             // >= 0 (positive depletion)
             wall_hp[i] -= dmg;
-            if (wall_hp[i] <= 0 && flammable[i] && is_wall[i]) {
+            if (wall_hp[i] <= 0 && is_wall[i]) {     // flammable[i] holds (loop gate)
                 destroyed.push_back({i / w, i % w});
                 fire[i] = 0;
             }
         }
     }
 
-    // --- Final clamp (fire and smoke only — atmosphere is unclamped) ---
-    // fire clamps to [0, FP_ONE] (Q16.16 [0,1]); smoke clamps the same.
+    // --- Final clamp (fire only — atmosphere is unclamped) ---
+    // fire clamps to [0, FP_ONE] (Q16.16 [0,1]). The SMOKE clamp that stood
+    // here is DELETED (smoke transport v2, #12, design §2.4): it cut every
+    // compressed tile back to 1 each tick, silently undoing the trace's
+    // conservation. No trace plane is clamped anywhere outside a reader.
     for (int i = 0; i < n; ++i) {
         fire[i] = clamp01_q(fire[i]);
-        if (smoke[i] < 0) smoke[i] = 0;
-        else if (smoke[i] > fp::FP_ONE) smoke[i] = fp::FP_ONE;
     }
 
     return destroyed;

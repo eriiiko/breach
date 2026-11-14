@@ -121,7 +121,7 @@ def _floor_tile_mask(lvl) -> np.ndarray:
 
     Floor = ``MAT_AIR`` (material id 0) AND NOT vacuum — i.e. the walkable
     interior, the design doc's ``MAT_AIR`` / ``mobility > 0`` floor (SPACE
-    code 9 is MAT_AIR + vacuum, the outside, and is excluded)."""
+    code ``level_loader.SPACE_CODE`` is MAT_AIR + vacuum, the outside, and is excluded)."""
     from simulation.materials import MAT_AIR
     material, is_vacuum = materials_from_tilemap(lvl.tilemap, lvl.version)
     return (material == MAT_AIR) & (~is_vacuum)

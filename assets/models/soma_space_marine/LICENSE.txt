@@ -1,0 +1,31 @@
+Breach -- The space marine on the SOMA skeleton (game file for the pose layer)
+=====================================================================
+
+FILES
+  soma_space_marine.glb one skinned mesh (albedo + normal embedded, gloss in the albedo's alpha),
+                     the 30-joint SOMA skeleton, 27 animation clips. Body only: the carbine and
+                     any other prop attach to a bone in the pose layer.
+
+MESH AND TEXTURES
+  The mesh and textures of assets/models/space_marine/space_marine.glb: procedural geometry made by
+  this repository's scripts, no third-party geometry or textures. See assets/models/space_marine/LICENSE.txt.
+
+SKELETON AND ANIMATIONS
+  Generated with NVIDIA Kimodo (model Kimodo-SOMA-RP-v1.2, https://github.com/nv-tlabs/kimodo) on the
+  SOMA skeleton, under the NVIDIA Open Model License; see
+  docs/animation_milestones_design_2026-11-02.md section 8. Weights come from Kimodo's skinned SOMA
+  body. Built by local-models: blender/retarget_soma.py, tools/pack_clips.py, tools/soma30.py
+  (the whole file: motion/pack_marine_v2.sh).
+
+CLIP SOURCES (clip list, sample)
+  Idle agent_idle s1 / Walk rifle_carry_walk s0 / Run agent_run s1 / Rifle_Aim_Walk rifle_aim_walk s1 (v3) /
+  Rifle_Aim_Right rifle_aim_strafe_right s0 / Rifle_Aim_Left the same clip mirrored /
+  Rifle_Aim_Back rifle_aim_back s1 / Rifle_Shoot rifle_shoot_steady s2 / Hit_Chest hit_chest_front s0 /
+  Hit_Back hit_back s0 / Hit_Left hit_left s0 / Hit_Right hit_right s0 / Fall B6_knocked_down s0 /
+  Get_Up B7_get_up s0 / Zombie_Hunch_Walk B2_hunched_walk_keyframed s1 /
+  (#188, prompts motion/clips_soldier_gameplay_v1.json) Sprint rifle_dash s1 / Walk_Slow rifle_walk_slow s1 /
+  Rifle_Aim_Walk_Slow rifle_aim_walk_slow s1 / Rifle_Aim_Back_Slow rifle_aim_back_slow s1 /
+  Rifle_Reload rifle_reload_stand s0 / Rifle_Reload_Walk rifle_reload_walk s1 /
+  Throw_Overhand rifle_throw_overhand s2 mirrored / Throw_Underhand rifle_lob_underhand s1 mirrored /
+  Rifle_Butt_Strike rifle_butt_strike s0 / Rifle_Shove rifle_shove s1 / Stagger_Back rifle_stagger_back s0 /
+  Blinded rifle_blinded s0

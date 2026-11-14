@@ -88,6 +88,36 @@ def atan2_rad(y: float, x: float) -> float:
     return dequantize_scalar(b.atan2_q16(quantize_scalar(y), quantize_scalar(x)))
 
 
+def atan2_q16(y_q: int, x_q: int) -> int:
+    """The kit's ``atan2_q16`` on Q16.16 ints, Q16.16 radians out -- the
+    integer form of :func:`atan2_rad` (``atan2_rad(dequantize(y_q),
+    dequantize(x_q)) == dequantize_scalar(atan2_q16(y_q, x_q))`` exactly,
+    since quantizing an exact n/65536 double gives n back). The turn-rate
+    law (``simulation/turning.py``) works in this currency."""
+    return int(_kit().atan2_q16(int(y_q), int(x_q)))
+
+
+def atan2_q16_of(y: float, x: float) -> int:
+    """:func:`atan2_rad` with the Q16.16 radians left as the integer (the
+    turning law's currency, G5p-a1): ``quantize_scalar(atan2_rad(y, x))``
+    exactly."""
+    return atan2_q16(quantize_scalar(y), quantize_scalar(x))
+
+
+def cos_q16(angle_q: int) -> int:
+    """The kit's ``cos_q16`` on a Q16.16 radian int, Q16.16 out -- the
+    integer form of :func:`cos_rad` (G1p-c: the speed law's direction
+    factor, ``movement.facing_cos_q16``)."""
+    return int(_kit().cos_q16(int(angle_q)))
+
+
+def sin_q16(angle_q: int) -> int:
+    """The kit's ``sin_q16`` on a Q16.16 radian int, Q16.16 out -- the
+    integer form of :func:`sin_rad` (G3p: the direction a throw leaves the
+    hand, the facing's unit vector)."""
+    return int(_kit().sin_q16(int(angle_q)))
+
+
 def sin_rad(angle: float) -> float:
     """Deterministic sin of ``angle`` (radians): quantize -> sin_q16 ->
     dequantize. Exact n/65536 double in [-1.0, 1.0]. Accuracy pinned for
@@ -102,6 +132,55 @@ def cos_rad(angle: float) -> float:
     return dequantize_scalar(b.cos_q16(quantize_scalar(angle)))
 
 
+# ---------------------------------------------------------------------------
+# Integer helpers of the unit impulse law (gameplay pack G5p-a2; critique B,
+# M2). Each has a ``fixed_point.h`` twin, held equal by
+# ``tests/test_unit_impulse_twins.py`` (gate G15): Python's ``//`` FLOORS,
+# C / CUDA ``/`` truncates toward zero, so the law names its rounding here and
+# never writes a bare ``//`` on a signed value.
+# ---------------------------------------------------------------------------
+def div_trunc(n: int, d: int) -> int:
+    """``n / d`` rounded toward ZERO -- exactly C's (and CUDA's) integer
+    ``/`` (``fixed_point.h::div_trunc_q``). ``d`` must not be 0."""
+    n, d = int(n), int(d)
+    q = abs(n) // abs(d)
+    return q if (n >= 0) == (d > 0) else -q
+
+
+def shr_trunc(n: int, k: int = FP_SHIFT) -> int:
+    """``n / 2**k`` rounded toward ZERO (a sign-symmetric shift: a mirrored
+    input gives the mirrored output to the count; ``fixed_point.h::
+    shr_trunc_q``). ``>>`` alone floors a negative value."""
+    n = int(n)
+    return n >> k if n >= 0 else -((-n) >> k)
+
+
+def isqrt(n: int) -> int:
+    """``floor(sqrt(n))`` of a non-negative integer, exact (``math.isqrt``)
+    -- the twin of the kit's fixed-iteration ``sqrt_q16`` for every radicand
+    below 2^62 (the law's squares are below 1.4e11). A negative radicand
+    is 0, as the kit's guard makes it."""
+    n = int(n)
+    return math.isqrt(n) if n > 0 else 0
+
+
+def isqrt_ceil(n: int) -> int:
+    """``ceil(sqrt(n))`` of a non-negative integer: the floor root, plus one
+    unless it is exact (so a vector scaled by ``limit / isqrt_ceil(|v|^2)``
+    never comes out longer than ``limit``)."""
+    r = isqrt(n)
+    return r + 1 if r * r < int(n) else r
+
+
+def effort_step(d: int) -> int:
+    """One step of the effort low-pass toward its input, ``d / 8`` rounded
+    AWAY from zero: ``sign(d) * ((|d| + 7) >> 3)`` -- never 0 for a
+    non-zero ``d`` and never past it, so the filter reaches its input
+    exactly (critique A, B2; ``fixed_point.h::effort_step_q``)."""
+    d = int(d)
+    return (d + 7) >> 3 if d >= 0 else -((-d + 7) >> 3)
+
+
 def quantize_hp_delta(dmg: float) -> float:
     """Snap a damage delta to the Q16.16 grid: ``dequantize(quantize(dmg))``.
 
@@ -114,3 +193,65 @@ def quantize_hp_delta(dmg: float) -> float:
     Pure Python float64 (the quantize twin) — no compiled module needed.
     """
     return dequantize_scalar(quantize_scalar(dmg))
+
+
+# ---------------------------------------------------------------------------
+# The match path's integer arithmetic (#29 P3e). Pure Python ints; each one
+# names its rounding, and each is EXACT -- the real-number result rounded
+# once, never a float in between -- so a device port is a transcription
+# (``fixed_point.h`` gains the twins with P6 / P7). Held to a
+# high-precision reference by ``tests/test_p3e_integer_kit.py``.
+# ---------------------------------------------------------------------------
+def div_round(n: int, d: int) -> int:
+    """``n / d`` rounded half AWAY from zero (``d != 0``): the
+    ``quantize_scalar`` rounding of a rational, in integers."""
+    n, d = int(n), int(d)
+    if d < 0:
+        n, d = -n, -d
+    q = (2 * abs(n) + d) // (2 * d)
+    return q if n >= 0 else -q
+
+
+def mul_q16_round(a: int, b: int) -> int:
+    """``a * b / 65536`` rounded half away from zero (a Q16 product)."""
+    return div_round(int(a) * int(b), FP_ONE)
+
+
+def ceil_div(n: int, d: int) -> int:
+    """``ceil(n / d)`` for ``d > 0``."""
+    return -((-int(n)) // int(d))
+
+
+def _sqrt_ratio_ceil(y: int, z: int) -> int:
+    """``ceil(sqrt(y / z))`` for ``y >= 0``, ``z > 0``: the least ``k`` with
+    ``k^2 z >= y``, i.e. ``isqrt_ceil(ceil(y / z))`` (``k^2`` is an integer)."""
+    return isqrt_ceil(ceil_div(y, z))
+
+
+def falloff_floor(v: int, d2: int, r2: int) -> int:
+    """``floor(v * (1 - sqrt(d2 / r2)))`` for ``v >= 0``, ``d2 >= 0``,
+    ``r2 > 0``, EXACT, and 0 past the radius (``d2 >= r2``): the linear
+    falloff of a blast's damage (``int(max_damage * falloff)``).
+
+    ``floor(v - x) = v - ceil(x)`` with ``x = sqrt(v^2 d2 / r2)``, and
+    ``ceil(x)`` is :func:`_sqrt_ratio_ceil`."""
+    v, d2, r2 = int(v), int(d2), int(r2)
+    if v <= 0 or d2 >= r2:
+        return 0
+    return v - _sqrt_ratio_ceil(v * v * d2, r2)
+
+
+def falloff_round(v: int, d2: int, r2: int) -> int:
+    """``v * (1 - sqrt(d2 / r2))`` rounded half UP (= half away: the value
+    is >= 0), EXACT, and 0 past the radius: the linear falloff of a blast's
+    wall damage (``quantize(wall_damage * falloff)``) and of every LINEAR
+    deposit weight.
+
+    ``floor(v - x + 1/2) = v - ceil(x - 1/2)``; ``ceil(x - 1/2)`` is the
+    least ``k`` with ``2k + 1 >= 2x``, i.e. ``m // 2`` for ``m`` the least
+    integer with ``m^2 r2 >= 4 v^2 d2``."""
+    v, d2, r2 = int(v), int(d2), int(r2)
+    if v <= 0 or d2 >= r2:
+        return 0
+    m = _sqrt_ratio_ceil(4 * v * v * d2, r2)
+    return v - (m // 2)

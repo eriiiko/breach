@@ -1,0 +1,466 @@
+"""GATE 9 and the WIRING of the shadow sweep (ray-engine-v2 P1, design v3 §2.9
+gate 9, §3 "goldens unmoved at P1", §11 "is P1 wired?").
+
+The goldens themselves are asserted unmoved by the tests that own them
+(tests/test_w6_armory.py against GOLDEN_AGGREGATE, the per-field goldens);
+this file adds the two conditions the design says must be CHECKED rather than
+believed, plus the proof that the sweep is live:
+
+  * the shadow sweep's three-term identity holds on the live engine EVERY
+    tick and its Φ plane is non-zero on every cell (the ambient ring lights
+    the grid even when nothing radiates);
+  * and, since P2a (design row 38), the four planes SURVIVE the tick — the
+    conductor's four `fill(0)` lines are gone and `RadiationSweep::run`
+    zeroes its own outputs instead, so the render-time tile inspector reads
+    real numbers; the second tick must therefore OVERWRITE, not accumulate.
+
+T6 (issue #12): this file used to ALSO check the old fire-plane cast's own
+int32 `rad_net` for a wrap (the pre-fold ledger identity `Σ rad_net +
+Σ rad_amb == 0`) side by side with the sweep, since both ran every tick
+during the transition. The old cast (`cast_fire_heat` /
+`Raycaster.cast_from_fire_plane`) is deleted, so those checks are gone with
+it — `gmap.rad_net`/`rad_amb` are never written by anything any more (kept
+as GameMap fields only because `PhysicsEngine.step_tail` still takes
+`rad_net` as a required-but-internally-unused argument; see report_t6.md).
+
+Since P3a-1 this file also owns the LOUDNESS gate for the three LIVE planes
+(`rad_net` / `rad_amb` / `rad_flux`), which widened to int64 with the whole
+path in one commit. A widening that misses one binding is worse than no
+widening: pybind11 would hand that binding a truncated int32 copy and the
+fold's heat would vanish with no error anywhere. The tests at the bottom of
+this file make each surviving binding refuse a narrow plane (T6 deletes the
+two that used to cover `Raycaster.cast_from_fire_plane` and its CUDA twin,
+since both are gone).
+
+Run:
+    C:/Users/steen/anaconda3/python.exe -m pytest tests/test_radiation_sweep_shadow_wiring.py -q
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release", ROOT / "tests"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import breach_physics as bp  # noqa: E402
+from field_ab_harness import default_scenario_sim  # noqa: E402
+from level_loader import load as load_level  # noqa: E402
+from simulation import Simulation, fire_fixed  # noqa: E402
+from simulation.materials import MAT_WOOD, MaterialTable  # noqa: E402
+
+# T6 (issue #12): INT32_LIMIT / INT32_MAX (the old int32-wrap bound and the
+# old rad_flux ceiling) are deleted along with the tests that read them.
+_SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluence")
+
+
+def _sweep_dials(sim):
+    """(t_amb_q, k_leak_q) exactly as PhysicsRunner hands them to step 2b — read
+    off the runner, never hardcoded, so a dial change cannot make the direct-run
+    comparison below silently compare two different laws."""
+    runner = sim.physics_runner
+    return int(runner._eos_t_amb_raw()), int(runner.k_leak_q)
+
+
+def _watch_physics(sim):
+    """Wrap the runner's step so every per-tick sweep plane is read right
+    after the physics tail and before the conductor wipes it."""
+    runner = sim.physics_runner
+    orig = runner.step
+    seen = {"sweep_identity": [], "sweep_nonzero_ticks": 0,
+            "fluence_min": None, "fluence_max": 0, "ticks": 0}
+
+    def wrapped(gmap, sim_time, tick=0):
+        out = orig(gmap, sim_time, tick=tick)
+        s = (int(gmap.rad_net_sweep.sum()) + int(gmap.rad_flux_sweep.sum())
+             + int(gmap.rad_amb_sweep.sum()))
+        seen["sweep_identity"].append(s)
+        seen["sweep_nonzero_ticks"] += int(bool(np.any(gmap.rad_net_sweep != 0)))
+        fmin, fmax = int(gmap.rad_fluence.min()), int(gmap.rad_fluence.max())
+        seen["fluence_min"] = fmin if seen["fluence_min"] is None else min(seen["fluence_min"], fmin)
+        seen["fluence_max"] = max(seen["fluence_max"], fmax)
+        seen["ticks"] += 1
+        return out
+
+    runner.step = wrapped
+    return seen
+
+
+def _ambient_fluence_s16(sim):
+    """16 x amb_m: what every cell's Φ is when nothing radiates (design §2.3)."""
+    e0 = int(np.asarray(sim.physics_runner.engine.emissive.table())[0])
+    return 16 * ((e0 * 4096) >> 16)
+
+
+def test_ab_default_scenario_the_sweep_runs_every_tick_and_only_its_smoke_radiates():
+    """PROPERTY (design §3 condition (i), critique 3 §6c): over 40 ticks of the
+    A/B default scenario the shadow sweep's three-term identity holds every
+    tick and Phi is never below the ambient fluence 16*amb_m anywhere (step 2b
+    ran). The scene's SOLIDS are radiatively inert -- the FINDING this test
+    records: its seeded fire delivers no heat, per CLAUDE.md's "Starting a
+    fire" row, so no thermal solid ever leaves ambient -- which is measured
+    directly: with the smoke term zeroed on this world's gas table, Phi is
+    EXACTLY 16*amb_m on every cell every tick.
+
+    P5c (issue #12): with the SHIPPED smoke coefficient the scene is no longer
+    inert as a whole -- it seeds smoke at 0.6 over its interior, and the EOS
+    answering its hull breach moves that smoke's temperature from tick 0 (the
+    ghost fire and the wave source do not: measured, without the breach no gas
+    cell leaves ambient before the fold), so the smoke exchanges radiation and
+    Phi leaves ambient (asserted: the smoke term is live in the canonical
+    scenario, which is also why GOLDEN_AGGREGATE moved at P5c). Until P5c this
+    test asserted Phi == ambient with the shipped table, true only while every
+    heat_absorb was 0.0.
+
+    T6 (issue #12): this test used to ALSO check the old cast's own pre-fold
+    ledger identity (Sum rad_net + Sum rad_amb == 0) and its int32 wrap bound
+    side by side with the sweep, since both ran every tick during the
+    transition. The old cast (cast_fire_heat / Raycaster.cast_from_fire_plane)
+    is deleted, and that half of the test with it; the sweep-only property
+    here is unchanged by the deletion (the sweep never depended on the old
+    cast).
+
+    BREAKS IF: step 2b is not wired (Phi would be zero), a sweep term stops
+    being booked, a thermal solid of this fireless scene starts radiating, or
+    the smoke term stops reaching the live sweep.
+    """
+    from simulation.gases import SMOKE
+    amb = None
+    for smoke_live in (False, True):
+        sim = default_scenario_sim()
+        if not smoke_live:
+            hq = sim.gmap.gases.heat_absorb_q16.copy()
+            hq[SMOKE] = 0
+            sim.gmap.gases.heat_absorb_q16 = np.ascontiguousarray(hq)
+        seen = _watch_physics(sim)
+        for _ in range(40):
+            sim.set_paused(False)
+            sim.step()
+        assert seen["ticks"] == 40
+        assert all(v == 0 for v in seen["sweep_identity"]), seen["sweep_identity"][:5]
+        amb = _ambient_fluence_s16(sim)
+        assert seen["fluence_min"] == amb, (seen["fluence_min"], amb)
+        if smoke_live:
+            assert seen["fluence_max"] > amb, "the shipped smoke never radiated: vacuous"
+        else:
+            assert seen["fluence_max"] == amb, (seen["fluence_max"], amb)
+    print(f"\nA/B default scenario, 40 ticks: the solids are inert (Phi == 16*amb_m == "
+          f"{amb} everywhere with the smoke term zeroed); with the shipped smoke Phi "
+          f"reaches {seen['fluence_max']}")
+
+
+def _playground_with_a_hot_wood_tile():
+    lvl = load_level("playground")
+    sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
+    g = sim.gmap
+    ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
+    assert len(ys) > 0, "the level carries no wood tile"
+    pick = None
+    for y, x in zip(ys, xs):
+        if 0 < y < g.material.shape[0] - 1 and 0 < x < g.material.shape[1] - 1:
+            if not g.thermal_solid[y, x + 1] or not g.thermal_solid[y + 1, x]:
+                pick = (int(y), int(x))
+                break
+    assert pick is not None, "no wood tile with an air neighbour"
+    y, x = pick
+    # A thermal SOLID's temperature is its own truth (the mirror rule is about
+    # gas cells); a fire is started by delivering heat -- both, so the tile is
+    # burning AND hot, as CLAUDE.md's "Starting a fire" row requires.
+    g.temperature[y, x] = 1263 << 16
+    g.fire[y, x] = fire_fixed.quantize_scalar(0.8)
+    return sim, (y, x)
+
+
+def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
+    """PROPERTY: on a shipped level, one physics tick after a wood tile is
+    heated to the crate plateau (1263 game) and lit, the shadow sweep books a
+    NEGATIVE rad_net_sweep on that tile (it radiates), a POSITIVE one on some
+    other cell (it absorbs), Phi exceeds the ambient fluence somewhere, and
+    the three-term identity is exact — read directly after PhysicsRunner.step,
+    before the conductor's wipe.
+
+    T6 (issue #12): this test used to ALSO check the old cast's own ledger
+    (its rad_net non-zero and its identity exact) NON-vacuously on this same
+    hot scene. The old cast (cast_fire_heat) is deleted, and that half with
+    it; the sweep-only property here is unchanged.
+
+    BREAKS IF: the sweep is not wired into step_tail, reads the wrong
+    temperature plane, or the extinction planes are not projected from the
+    material table (a wood tile with a == 0 would neither emit nor absorb).
+    """
+    sim, (y, x) = _playground_with_a_hot_wood_tile()
+    g = sim.gmap
+    # The dynamic plane's resting state equals the static plane (d == a with
+    # no bodies), so the invariant 0 <= a <= d holds for a direct physics call
+    # even before the conductor's first stamp; the stamp is still run here to
+    # mirror the conductor's slot order.
+    # T5b: wood's `heat_atten` is its real emissivity now (0.90, Incropera
+    # A.11), not the placeholder 1.0, so the pin is "the tile's static and
+    # dynamic planes agree and both carry the SHIPPED wood value" -- the
+    # property the test needs (extinction projected from the material table)
+    # rather than the number the table happened to hold.
+    a_wood_q = int(MaterialTable.from_config().heat_atten_q16[MAT_WOOD])
+    assert a_wood_q > 0, "wood must absorb something or this scene is vacuous"
+    assert g.heat_atten_q[y, x] == a_wood_q and g.dyn_heat_atten_q[y, x] == a_wood_q
+    assert np.all(g.dyn_heat_atten_q >= g.heat_atten_q)
+    g.stamp_units(sim.units)
+    assert g.dyn_heat_atten_q[y, x] == a_wood_q
+    sim.physics_runner.step(g, 1.0 / 24.0, tick=0)
+    rn, rf, ra = g.rad_net_sweep, g.rad_flux_sweep, g.rad_amb_sweep
+    amb = _ambient_fluence_s16(sim)
+    assert rn[y, x] < 0, "the hot wood tile must radiate (rad_net_sweep < 0)"
+    assert int(rn.max()) > 0, "some cell must absorb (rad_net_sweep > 0)"
+    assert int(rn.sum()) + int(rf.sum()) + int(ra.sum()) == 0
+    assert np.all(g.rad_fluence > 0) and int(g.rad_fluence.max()) > amb
+    print(f"\nplayground level: hot wood at ({y},{x}) rad_net_sweep={int(rn[y, x])}, "
+          f"max absorber {int(rn.max())}, sweep identity exact")
+
+
+def test_shadow_planes_survive_the_tick_and_hold_the_sweep_s_own_values():
+    """PROPERTY (P2a, design row 38): after Simulation.step RETURNS, the four
+    shadow planes still hold THIS tick's sweep output — the conductor no longer
+    wipes them, because the sweep zeroes them itself at its own start. That is
+    what lets the renderer's tile inspector show Φ, `f` and E°⁻¹(Φ) at render
+    time; while the wipe lived in the conductor, Φ was 0 by then and the rows
+    were dead. Nothing digested changes: none of the four is in DIGEST_FIELDS
+    or SIM_FIELDS.
+
+    Asserted against the values read MID-tick (right after PhysicsRunner.step),
+    so "still there" means equal to what the sweep actually wrote, not merely
+    non-zero.
+
+    BREAKS IF: a `fill(0)` for these planes comes back into Simulation.step, or
+    run() stops writing them.
+    """
+    sim, _ = _playground_with_a_hot_wood_tile()
+    g = sim.gmap
+    mid = {}
+
+    runner = sim.physics_runner
+    orig = runner.step
+
+    def wrapped(gmap, sim_time, tick=0):
+        out = orig(gmap, sim_time, tick=tick)
+        for name in _SWEEP_PLANES:
+            mid[name] = getattr(gmap, name).copy()
+        return out
+
+    runner.step = wrapped
+    sim.set_paused(False)
+    sim.step()
+    assert mid, "the physics tail did not run"
+    assert int(mid["rad_fluence"].min()) > 0 and np.any(mid["rad_net_sweep"] != 0)
+    for name in _SWEEP_PLANES:
+        plane = getattr(g, name)
+        assert plane.dtype == np.int64 and plane.shape == g.temperature.shape
+        assert np.array_equal(plane, mid[name]), (
+            f"{name} was altered between the physics tail and the end of the tick "
+            f"(the conductor must NOT wipe it any more)")
+    print(f"\nafter Simulation.step: Phi min = {int(g.rad_fluence.min())}, "
+          f"max = {int(g.rad_fluence.max())}; rad_net_sweep extremes "
+          f"{int(g.rad_net_sweep.min())} / {int(g.rad_net_sweep.max())} — all still "
+          f"readable at render time")
+
+
+def test_a_second_tick_overwrites_the_planes_and_does_not_accumulate():
+    """PROPERTY (P2a, the non-vacuous half): because nothing wipes the planes
+    between ticks any more, the sweep MUST overwrite them. After two ticks each
+    plane equals what ONE direct RadiationSweep.run on that tick's own inputs
+    produces — not twice it. This is the exact bug the patch would have caused
+    had run() kept accumulating into whatever the caller left behind.
+
+    BREAKS IF: run()'s own zeroing is dropped (every plane would then be the sum
+    of two ticks, which the `2 *` comparison below detects), or the sweep starts
+    reading state that survives a tick.
+    """
+    sim, (y, x) = _playground_with_a_hot_wood_tile()
+    g = sim.gmap
+    sim.set_paused(False)
+    sim.step()
+    after_one = {n: getattr(g, n).copy() for n in _SWEEP_PLANES}
+    # tick 2: snapshot the sweep's INPUTS as the physics tail sees them, then
+    # let the tick finish and compare against a single direct run on them.
+    # P5c: taken at step_tail ENTRY (the engine proxy idiom), not at the
+    # runner's: the SMOKE term is live, so the gas planes and the gas
+    # temperatures the EOS and combustion move earlier in the tick are sweep
+    # inputs now -- a runner-entry snapshot was exact only while no gas cell
+    # absorbed. The direct run gets the smoke term and the fold's currency
+    # exactly as step_tail hands them.
+    grabbed = {}
+    runner = sim.physics_runner
+    eng = runner.engine
+
+    class _Capture:
+        def __getattr__(self, name):
+            return getattr(eng, name)
+
+        def step_tail(self, *args, **kwargs):
+            grabbed["inputs"] = (g.temperature.copy(), g.heat_atten_q.copy(),
+                                 g.dyn_heat_atten_q.copy(), g.heat_inv_shift.copy(),
+                                 g.thermal_solid.copy(), g.gas.copy(),
+                                 np.asarray(kwargs["gas_heat_absorb_q16"]).copy())
+            return eng.step_tail(*args, **kwargs)
+
+    runner.engine = _Capture()
+    try:
+        sim.step()
+    finally:
+        runner.engine = eng
+    assert "inputs" in grabbed
+    T, a_q, d_q, his, ts, gas, hq = grabbed["inputs"]
+    h, w = T.shape
+    one = [np.zeros((h, w), dtype=np.int64) for _ in range(4)]
+    t_amb_q, k_leak_q = _sweep_dials(sim)
+    sweep = bp.RadiationSweep()
+    # thermal v2 R3: reproduce the conductor's own derivation — the per-cell
+    # ambient it hands the sweep, from the SAME is_vacuum plane and the SAME
+    # runner dial. `None` here would pass only while the dial is at its R4
+    # default, so the test would go silently vacuous the day a cold sky ships.
+    amb_lvl = sweep.derive_ambient(g.is_vacuum, eng.emissive,
+                                   int(runner.rad_amb_vacuum_q))
+    n_bulk = sum(gas[gi].astype(np.int64)
+                 for gi in np.flatnonzero(g.gases.conservative)).astype(np.int32)
+    n_floor_q, _c_v_q, recip_cv = eng.gas_capacity_q()
+    sweep.run(T, a_q, d_q, his, ts, eng.emissive, amb_lvl, t_amb_q, k_leak_q,
+              bp.RadiationSweep.SHEAR, 16, *one, gas=np.ascontiguousarray(gas),
+              heat_absorb_q16=np.ascontiguousarray(hq),
+              n_bulk=np.ascontiguousarray(n_bulk), n_floor_q=int(n_floor_q),
+              recip_cv=int(recip_cv))
+    for name, expect in zip(_SWEEP_PLANES, one):
+        got = getattr(g, name)
+        assert np.array_equal(got, expect), (
+            f"{name} after tick 2 is not one tick's worth of sweep")
+        if np.any(after_one[name] != 0):
+            assert not np.array_equal(got, after_one[name] + expect), (
+                f"{name} accumulated across ticks (run() lost its own zeroing)")
+    print(f"\ntick 2 overwrites: Phi max = {int(g.rad_fluence.max())} equals a single "
+          f"direct run on the same inputs; tick-1 values were not added to")
+
+
+def test_stale_caller_cannot_hand_step_tail_a_narrow_plane():
+    """PROPERTY (critique 3 §6a, made loud): PhysicsEngine.step_tail REFUSES an
+    int32 array where an int64 shadow plane is expected (TypeError), and
+    refuses to run without the six radiation arguments at all — a stale
+    caller cannot write into a silently widened temporary. NOTE: without
+    `noconvert`, pybind11's convert pass would still perform the SAFE int32 ->
+    int64 cast into a discarded copy; the loud failure comes from the
+    `.noconvert()` on those arguments, not from the absence of forcecast.
+
+    BREAKS IF: the binding regains a default or loses noconvert on those args.
+    """
+    sim = default_scenario_sim()
+    g = sim.gmap
+    eng = sim.physics_runner.engine
+    common = dict(ripple=g.ripple, ripple_v=g.ripple_v, water_depth=g.water_depth,
+                  wave_p=g.wave_p, solid=g.solid, fire=g.fire, atmosphere=g.atmosphere,
+                  smoke=g.smoke, wall_hp=g.wall_hp, temperature=g.temperature,
+                  wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
+                  flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
+                  face_shift=g.face_shift, thermal_solid=g.thermal_solid,
+                  fuel_recip=g.fuel_recip,
+                  fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
+                  gas_conservative=g.gases.conservative,
+                  o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0,
+                  # P5a: the smoke term's (required) table, present so the
+                  # second refusal below is about the narrow plane alone
+                  gas_heat_absorb_q16=g.gases.heat_absorb_q16)
+    with pytest.raises(TypeError):
+        eng.step_tail(**common)                                   # the six args missing
+    narrow = np.zeros(g.temperature.shape, dtype=np.int32)
+    with pytest.raises(TypeError):
+        eng.step_tail(**common, heat_atten_q=g.heat_atten_q,
+                      dyn_heat_atten_q=g.dyn_heat_atten_q,
+                      rad_net_sweep=narrow, rad_flux_sweep=g.rad_flux_sweep,
+                      rad_amb_sweep=g.rad_amb_sweep, rad_fluence=g.rad_fluence,
+                      k_leak_q=0)
+
+
+def test_the_three_live_planes_are_int64_and_the_engine_refuses_a_narrow_one():
+    """PROPERTY (ray-engine-v2 P3a-1, design rows 26/35/36): the three LIVE
+    radiation planes are int64, and `PhysicsEngine.step_tail` REFUSES an int32
+    `rad_net` with a TypeError rather than folding a silently widened
+    temporary.
+
+    WHY THIS ONE NEEDS ITS OWN TEST rather than riding the shadow-plane test
+    above: `step_tail` takes `rad_net` as a NULLABLE `py::object` (None -> no
+    fold), and `.noconvert()` on a `py::object` argument is INERT -- there is
+    no overload pass to annotate, and the lambda's `.cast<py::array_t<...>>()`
+    runs py::array_t's default forcecast directly. The loudness here is an
+    explicit dtype check in the binding, not an arg annotation, so a test that
+    only covered the noconvert'd shadow planes would not have covered it.
+
+    BREAKS IF: any of the three planes is allocated narrow again, or the
+    binding's isinstance check is dropped (whereupon a stale int32 caller goes
+    back to writing into a discarded copy -- silently).
+    """
+    sim = default_scenario_sim()
+    g = sim.gmap
+    for name in ("rad_net", "rad_amb", "rad_flux"):
+        assert getattr(g, name).dtype == np.int64, name
+
+    eng = sim.physics_runner.engine
+    common = dict(ripple=g.ripple, ripple_v=g.ripple_v, water_depth=g.water_depth,
+                  wave_p=g.wave_p, solid=g.solid, fire=g.fire, atmosphere=g.atmosphere,
+                  smoke=g.smoke, wall_hp=g.wall_hp, temperature=g.temperature,
+                  wind_x=g.wind_x, wind_y=g.wind_y, is_vacuum=g.is_vacuum,
+                  flammable=g.flammable, heat=g.heat, heat_inv_shift=g.heat_inv_shift,
+                  face_shift=g.face_shift, thermal_solid=g.thermal_solid,
+                  fuel_recip=g.fuel_recip,
+                  fire_T_ext_plane=g.fire_T_ext_plane, gas=g.gas,
+                  gas_conservative=g.gases.conservative,
+                  o2_idx=int(g.gases.name_to_id["o2"]), sim_time=1.0 / 24.0,
+                  heat_atten_q=g.heat_atten_q, dyn_heat_atten_q=g.dyn_heat_atten_q,
+                  rad_net_sweep=g.rad_net_sweep, rad_flux_sweep=g.rad_flux_sweep,
+                  rad_amb_sweep=g.rad_amb_sweep, rad_fluence=g.rad_fluence,
+                  gas_heat_absorb_q16=g.gases.heat_absorb_q16,   # P5a (required)
+                  k_leak_q=0)
+    narrow = np.zeros(g.temperature.shape, dtype=np.int32)
+    with pytest.raises(TypeError):
+        eng.step_tail(**common, rad_net=narrow)
+    # NON-VACUITY: the identical call with the int64 plane must NOT raise, or
+    # the refusal above would be passing for some unrelated reason.
+    eng.step_tail(**common, rad_net=g.rad_net)
+
+
+def test_the_temperature_folds_direct_binding_refuses_a_narrow_rad_net():
+    """PROPERTY (P3a-1): the direct fold binding (`TemperatureSolver.step`)
+    refuses an int32 `rad_net` plane where an int64 one is expected.
+
+    T6 (issue #12): this test used to also cover the OTHER three widened
+    bindings — the CPU emission cast (`Raycaster.cast_from_fire_plane`), its
+    CUDA twin (`cuda_raycaster_cast_from_fire_plane`), and the sweep-plane
+    coverage in the test above (`step_tail`'s `rad_net_sweep` et al.) — under
+    the framing "together, ALL FOUR bindings that touch these planes". The
+    old cast's two bindings are deleted with it; `step_tail`'s coverage lives
+    on in the test above (`test_the_three_live_planes_are_int64_and_the_
+    engine_refuses_a_narrow_one`). This is the one survivor of the original
+    four, renamed to say so.
+
+    `TemperatureSolver.step` is the py::object idiom (`.noconvert()` is inert
+    on a `py::object` argument) and is loud by an explicit dtype check.
+
+    BREAKS IF: `TemperatureSolver.step` loses its `rad_net` dtype check, or
+    the plane argument is widened back down.
+    """
+    sim = default_scenario_sim()
+    g = sim.gmap
+    narrow = np.zeros(g.temperature.shape, dtype=np.int32)
+
+    solver = bp.TemperatureSolver()
+    wide = np.zeros(g.temperature.shape, dtype=np.int64)
+    with pytest.raises(TypeError):
+        solver.step(g.temperature.copy(), g.heat, g.heat_inv_shift, g.face_shift,
+                    g.solid, g.is_vacuum, g.atmosphere,
+                    thermal_solid=g.thermal_solid, rad_net=narrow)
+    solver.step(g.temperature.copy(), g.heat, g.heat_inv_shift, g.face_shift,
+                g.solid, g.is_vacuum, g.atmosphere,
+                thermal_solid=g.thermal_solid, rad_net=wide)   # NON-VACUITY
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-s"]))

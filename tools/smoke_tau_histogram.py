@@ -54,11 +54,13 @@ def read_dials():
     smoke = getattr(CFG, "smoke", None)
     gm = getattr(getattr(CFG, "render", None), "gas_medium", None)
     soot = getattr(getattr(CFG, "gases", None), "smoke", None)
-    base = float(getattr(smoke, "smoke_absorb_scale", 1.4))
-    k_scale = float(getattr(gm, "plume_k_scale", 1.0))
+    # #12 handle 2 (2026-10-04): the plume's opacity IS the light engine's
+    # extinction -- k_soot = mean of soot's light column, no render scale.
+    from simulation.gases import GasTable, SMOKE
+    base, k_scale = 1.0, 1.0
     curve_a = float(getattr(gm, "tau_curve_a", 1.0))
     curve_b = float(getattr(gm, "tau_curve_b", 1.0))
-    k_soot = float(np.mean(getattr(soot, "absorption", [0.88, 0.90, 0.93])))
+    k_soot = float(np.mean(GasTable.from_config().light_absorb_q16[SMOKE]) / 65536.0)
     return base, k_scale, curve_a, curve_b, k_soot
 
 

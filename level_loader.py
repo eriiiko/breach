@@ -8,6 +8,9 @@ A "level" lives at levels/<name>/ and contains:
   - emissive_mask.png  : pixels that glow (optional)
   - emissive_bloom.png : blurred halos (optional)
   - wall_mask.png   : overrides CSV-derived walls (optional)
+  - air_init.npy    : initial atmosphere, int32 Q16.16 atm (optional)
+  - temp_init.npy   : initial temperature, int32 Q16.16 game degrees above
+                      ambient (optional; additive to format v3, no bump)
 
 The CSV is the source of truth for physics. Art assets are for rendering only.
 
@@ -51,13 +54,43 @@ from simulation.entities import (  # noqa: E402
     REGISTRY as ENTITY_REGISTRY, all_signals, effective_defaults,
     field_value_error,
 )
+# Team ints (#119): the legacy zombie code in level data and its one mapping.
+from simulation.factions import (  # noqa: E402,F401
+    LEGACY_ZOMBIE_TEAM, ZOMBIE_TEAM, team_from_level,
+)
+# Spawn rooms + the match config (#119 P2): import-light (stdlib + factions);
+# the match door's table checks import their tables lazily.
+from simulation.match import (  # noqa: E402
+    FORMATION_FOOTPRINT, MatchSpec, SpawnRoom, parse_match, parse_spawn_rooms,
+    placement_cells,
+)
+
+#: The match config's file, beside level.toml (#119 P2).
+MATCH_FILENAME = "match.toml"
 
 
-SUPPORTED_VERSIONS = {"1", "2"}
+#: The level format this loader reads (level format v3, 2026-10-29, Erik's
+#: ruling "rows suffice; design for 127 materials"). Every writer stamps it.
+LEVEL_FORMAT_VERSION = "3"
+#: Formats :func:`load` reads. "1" (the legacy generator vocabulary, 0 = space)
+#: is unambiguous and still decodes bit-exactly; no shipped level uses it.
+SUPPORTED_VERSIONS = {"1", LEVEL_FORMAT_VERSION}
+#: Formats :func:`load` REFUSES, naming the tool that migrates each one
+#: (``materials_from_tilemap`` still decodes them, for the migration tools):
+#: v2's SPACE code 9 is a material id in v3, so a v2 file is never guessed at.
+LEGACY_VERSIONS = {
+    "2": "tools/migrate_tilemap_v3.py",
+}
 
-# v2 CSV vocabulary (level format v2 §1.1): codes ARE canon material ids from
-# ``simulation.materials``, plus exactly ONE reserved non-material code:
-SPACE_CODE = 9   # SPACE — MAT_AIR + is_vacuum (the one thing that isn't a material)
+# v3 CSV vocabulary: codes ARE canon material ids from ``simulation.materials``
+# (rows, unbounded up to the int8 material plane's MATERIAL_ID_MAX), plus
+# exactly ONE reserved non-material code OUTSIDE the id range:
+SPACE_CODE = -1  # SPACE — MAT_AIR + is_vacuum (the one thing that isn't a material)
+#: v2's space code — it sat INSIDE the id range (== MAT_FOLIAGE), which is why
+#: v3 exists. Read only by the v2 branch of :func:`materials_from_tilemap`.
+V2_SPACE_CODE = 9
+#: The largest material id the int8 ``gmap.material`` plane can hold.
+MATERIAL_ID_MAX = int(np.iinfo(np.int8).max)
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -101,19 +134,22 @@ def tile_to_art_px(tile_x: float, tile_y: float,
 class SpawnEntry:
     """One unit spawn declared in level.toml. Fed to Simulation.add_unit."""
     name: str
-    team: int           # 0 = marine, 1 = zombie
+    team: int           # RUNTIME team: 0.. marine teams, ZOMBIE_TEAM zombies
     x: float            # physics-tile x (top-left of footprint)
     y: float            # physics-tile y
     footprint: int = 3  # side length of unit's square footprint in tiles
 
 
-LIGHT_KINDS = ("static", "beacon")
+# "spot" (2026-10-04, the smoke-light studio): a beacon that never turns --
+# a fixed cone aimed at `phase` (a fraction of a turn, screen convention:
+# 0 east, 0.25 south, 0.5 west, 0.75 north), `beam_deg` wide.
+LIGHT_KINDS = ("static", "beacon", "spot")
 
 # [[light]] keys the loader REJECTS outright (P4 design §2.2, critique M2):
-# level lights are RENDER-ONLY — `heat` is the one synced ray output (a leak
-# would silently diverge interactive sessions from their headless replays,
-# since goldens never run the render light pass) and `jitter` pulls C++ RNG.
-# src/level_lights.py hard-pins both to 0.0; the schema never carries them.
+# level lights never write synced state (`heat`) and never draw random
+# numbers (`jitter`). The schema never carries them, and since ray-engine-v2
+# P6c neither does the light's one output row (the sweep's cone emitter, which
+# has no field for either).
 _LIGHT_FORBIDDEN_KEYS = ("heat", "jitter")
 
 
@@ -122,17 +158,23 @@ class LightEntry:
     """One ``[[light]]`` entity declared in level.toml (engine/15 §2.2, P4).
 
     Render-only in P4 (Erik's locked call 2026-07-07): consumed by main.py
-    as raycaster ``LightSource`` parameters via :mod:`level_lights`; never
+    as a :class:`level_lights.LightSpec` and from it the radiation sweep's
+    cone-emitter row (renderer/frame_lights.py, ray-engine-v2 P6b); never
     enters synced sim state. Values are render-local floats — no Q16.16
-    snap (same class as ``light_rgb``; the sim-side migration note lives in
-    engine/15 §2.2). Beacons freeze with the sim: their facing angle is a
-    pure function of the sim tick (:func:`level_lights.beacon_angle`).
+    snap (the one quantization is the cone row's door; the sim-side
+    migration note lives in engine/15 §2.2). Beacons freeze with the sim:
+    their facing angle is a pure function of the sim tick
+    (:func:`level_lights.beacon_angle`).
+
+    ``range`` is still PARSED and validated (level data is not migrated),
+    but NOTHING READS IT since ray-engine-v2 P6c: a sweep has no reach —
+    the light ignores it (P6c brief decision 9).
     """
     x: float                # tile coords (tile centers at .5)
     y: float
     color: tuple            # (r, g, b) 0-1 floats (toml carries 0-255 ints)
     intensity: float = 1.0
-    range: float = 12.0     # tiles
+    range: float = 12.0     # tiles -- parsed, IGNORED since P6c (a sweep has no range)
     kind: str = "static"    # "static" | "beacon"
     period_s: float = 2.0   # beacon: seconds per full rotation
     beam_deg: float = 30.0  # beacon: cone width in degrees
@@ -148,8 +190,8 @@ def _parse_light_entry(entry, index: int, toml_path) -> LightEntry:
     """
     hint = ("Required fields: pos = [x, y] (tile floats), color = [r, g, b] "
             "(0-255 ints). Optional: intensity (> 0), range (tiles, > 0), "
-            "kind ('static' | 'beacon'), period_s (> 0), beam_deg (0-360], "
-            "phase (fraction of a turn).")
+            "kind ('static' | 'beacon' | 'spot'), period_s (> 0), "
+            "beam_deg (0-360], phase (fraction of a turn; a spot's aim).")
 
     def err(msg: str) -> ValueError:
         return ValueError(
@@ -740,6 +782,83 @@ def _parse_air_init_grid(base: Path, tilemap: np.ndarray):
     return air_q
 
 
+# ---- temp_init.npy (levelgen vocabulary E.2 row 4) -------------------------
+# The optional initial-TEMPERATURE grid, beside level.toml, discovered by
+# PRESENCE like air_init.npy (the file IS the field; no toml key): int32
+# Q16.16 GAME DEGREES ABOVE AMBIENT -- T_game, the unit of the solver's own
+# `temperature` plane (src/temperature_scale.py: 0 == ambient). Additive to
+# level format v3: an optional file read by presence needs no version bump
+# (zones.npy and air_init.npy joined the format the same way).
+TEMP_INIT_FILENAME = "temp_init.npy"
+
+
+def _temp_init_max_q() -> int:
+    """The largest seed the door accepts: ``[physics.thermal] T_MAX_PHYS``
+    (the solvers' physical-maximum rail, bound in PhysicsRunner from the
+    same key), quantized once through the Q16 kit. A seed above it would
+    rail on tick 1 -- a counted rail hit authored into the level."""
+    from simulation.gas_fixed import quantize_q16_scalar
+    t_max = 16000.0
+    try:
+        from config import CFG
+        thermal = getattr(getattr(CFG, "physics", None), "thermal", None)
+        if thermal is not None:
+            t_max = float(getattr(thermal, "T_MAX_PHYS", t_max))
+    except Exception:                     # config optional at load time
+        pass
+    return int(quantize_q16_scalar(t_max))
+
+
+def _parse_temp_init_grid(base: Path, tilemap: np.ndarray):
+    """Load the optional ``temp_init.npy`` initial-temperature seed.
+
+    Returns the int32 Q16.16 grid (game degrees above ambient, shape ==
+    tilemap), or None when the file is absent. Unlike air_init, an all-zero
+    grid MEANS "nothing here" (0 is ambient, which is what an absent file
+    seeds), so the two are the same level: dormancy by value as well as by
+    absence.
+
+    Refused (ValueError, path-bearing) when: unreadable, dtype is not int32,
+    shape != tilemap, any value < 0, any value > T_MAX_PHYS. Sub-ambient is
+    refused because it is a PARKED PHYSICS RULING (levelgen vocabulary Part F
+    item 3): solids carry a low rail at ambient and the emission table starts
+    there, so a cold room needs Erik's ruling before the format may carry it.
+    The tile-class rule (non-zero only on accountable gas cells and thermal
+    solids) needs the final stamped material grid and is GameMap's door.
+    """
+    t_path = base / TEMP_INIT_FILENAME
+    if not t_path.is_file():
+        return None                   # no temp_init.npy -- dormancy
+    try:
+        t_q = np.load(t_path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"temp_init.npy is not a readable .npy array: {t_path}: {e}")
+    if t_q.dtype != np.int32:
+        raise ValueError(
+            f"temp_init.npy must be dtype int32 (Q16.16 game degrees above "
+            f"ambient), got {t_q.dtype}: {t_path}")
+    if t_q.shape != tilemap.shape:
+        raise ValueError(
+            f"temp_init.npy shape {t_q.shape} != tilemap shape "
+            f"{tilemap.shape}: {t_path}")
+    lo = int(t_q.min(initial=0))
+    if lo < 0:
+        raise ValueError(
+            f"temp_init.npy contains sub-ambient temperatures (min = {lo} raw "
+            f"Q16.16): sub-ambient is not in the level format -- solids rail "
+            f"at ambient and the emission table starts there, a physics "
+            f"ruling parked for Erik's session (levelgen vocabulary Part F "
+            f"item 3): {t_path}")
+    hi, t_max_q = int(t_q.max(initial=0)), _temp_init_max_q()
+    if hi > t_max_q:
+        raise ValueError(
+            f"temp_init.npy contains {hi} raw Q16.16, above the solvers' "
+            f"physical maximum [physics.thermal] T_MAX_PHYS ({t_max_q} raw): "
+            f"{t_path}")
+    return t_q
+
+
 def _parse_boundary(raw: dict, toml_path) -> str:
     """Parse the top-level ``boundary`` field.
 
@@ -769,7 +888,9 @@ def _parse_ambient(raw: dict, toml_path, boundary: str, tilemap: np.ndarray):
     would reject the gate-calibrated σ — ambient.py); ``sponge_u_damp ∈
     [0, FP_ONE)``. An ambient map with no SPACE-code ring warns (legal but
     ring-dormant). The effective pin is derived N-primary through the sim's own
-    p* chain (65540 raw at defaults) and echoed in the __main__ load summary."""
+    p* chain (65632 raw at defaults under G12 -- issue #12,
+    docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 pre-G12) and echoed
+    in the __main__ load summary."""
     tbl = raw.get("ambient")
     if boundary != BOUNDARY_AMBIENT:
         if tbl is not None:
@@ -1000,6 +1121,13 @@ class LevelData:
     # open-air tiles; values on solid or SPACE tiles are IGNORED (the
     # pinned solid-tile rule — see the seed block's docstring/comment).
     air_init_q: Optional[np.ndarray] = None
+    # ---- temp_init.npy initial-temperature seed (vocabulary E.2 row 4) ---
+    # int32 Q16.16 game degrees above ambient, shape == tilemap, values in
+    # [0, T_MAX_PHYS] -- or None when the folder carries no temp_init.npy.
+    # GameMap.__init__ seeds it AFTER the air seed: gas cells through
+    # seed_gas_temperature (mirror + energy together), thermal solids on
+    # their own `temperature` truth; non-zero anywhere else is refused.
+    temp_init_q: Optional[np.ndarray] = None
     # ---- boundary mode (A9 hook; BC build gives it semantics) ------------
     # "space" (default — the vacuum ring) | "ambient" (planetside). A
     # top-level scalar key, so level_lib's managed-block writer round-trips
@@ -1009,8 +1137,10 @@ class LevelData:
     # ---- ambient dials (BC build; boundary_conditions_spec_2026-07-19) ---
     # AmbientConfig on planetside maps (Earth-normal defaults when [ambient]
     # is absent), None on space maps. Carries the derived N-primary split +
-    # the effective pin (65540 raw at defaults) that GameMap seeds and B3
-    # pins. Defaulted tail: synthetic LevelData(...) in tests stays valid.
+    # the effective pin (65632 raw at defaults under G12, issue #12,
+    # docs/fire_g12_one_map_patch_2026-08-31.md; was 65540 pre-G12) that
+    # GameMap seeds and B3 pins. Defaulted tail: synthetic LevelData(...) in
+    # tests stays valid.
     ambient: Optional["object"] = None
     # ---- --res base-resolution recovery (A6, S1 — a6 doors design §3) ----
     # `_upscale_level` (main.py) divides tile_size_m by the factor BEFORE
@@ -1023,6 +1153,26 @@ class LevelData:
     # base resolution and replicate their tile sets by res_factor.
     res_factor: int = 1
     tile_size_m_base: Optional[float] = None
+    # ---- match foundation (#119 P2) --------------------------------------
+    # `spawn_rooms`: the level's [[spawn_room]] entries (one per team, ZOMBIE_
+    # TEAM included) — WHERE a match's teams stand (the level's decision).
+    # `match`: levels/<name>/match.toml parsed and validated against them,
+    # or None when the folder carries no match file. Neither is read by the
+    # game's own spawn path ([[spawn]]); `main.py --res` does not scale them
+    # (only the headless runner reads them, at base resolution).
+    spawn_rooms: list = field(default_factory=list)  # list[SpawnRoom]
+    match: Optional[MatchSpec] = None
+    # ---- [levelgen] (#136, archetype doc §5.1) ---------------------------
+    # A generated level's LevelSpec + realised factors (LevelgenRecord), or
+    # None (every hand-made level and v1 ship). Provenance only: nothing in
+    # the game reads it.
+    levelgen: Optional["LevelgenRecord"] = None
+    # ---- the room graph (#195 1b) -----------------------------------------
+    # [[room]] + [[opening]] + rooms.npy (RoomGraph), or None (hand-made
+    # levels, ships generated before 1b). At BASE resolution, like
+    # spawn_rooms: `--res` does not scale it. Its changing part (passable
+    # now, rooms joined now) is simulation.room_graph's, never stored.
+    rooms: Optional["RoomGraph"] = None
 
     @property
     def height(self) -> int:
@@ -1048,6 +1198,13 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         raw = tomllib.load(f)
 
     version = str(raw.get("version", "")).strip()
+    if version in LEGACY_VERSIONS:
+        raise ValueError(
+            f"{toml_path}: level format v{version} is no longer read (the "
+            f"tilemap CSV vocabulary changed in v{LEVEL_FORMAT_VERSION}: SPACE "
+            f"is {SPACE_CODE}, no longer {V2_SPACE_CODE}). Migrate it with "
+            f"{LEGACY_VERSIONS[version]}"
+        )
     if version not in SUPPORTED_VERSIONS:
         raise ValueError(
             f"Unsupported level.toml version '{version}'. "
@@ -1188,7 +1345,14 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         try:
             spawns.append(SpawnEntry(
                 name=str(entry["name"]),
-                team=int(entry["team"]),
+                # THE legacy-team door (#119): level files written before
+                # teams were ints say `team = 1` for a zombie; it loads as
+                # ZOMBIE_TEAM (factions.team_from_level), so no level file is
+                # edited. The writer (level_lib) writes the runtime int back,
+                # so a re-saved file says ZOMBIE_TEAM (255), which loads the
+                # same. Consequence: a [[spawn]] cannot place a marine on team
+                # 1 -- marine teams come from the match config (#119 P2).
+                team=team_from_level(entry["team"]),
                 x=float(entry["x"]),
                 y=float(entry["y"]),
                 footprint=int(entry.get("footprint", 3)),
@@ -1198,6 +1362,12 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
                 f"Invalid [[spawn]] entry #{i} in {toml_path}: {e}. "
                 f"Required fields: name (str), team (int), x (float), y (float)."
             )
+
+    # ---- [[spawn_room]] + match.toml (#119 P2) ----------------------------
+    spawn_rooms = _parse_spawn_rooms(raw, toml_path, tilemap, version)
+    match = _parse_match_file(base, spawn_rooms)
+    levelgen = _parse_levelgen(raw, toml_path)
+    rooms = _parse_room_graph(raw, base, toml_path, tilemap)
 
     # ---- [[light]] entities (engine/15 §2.2, P4) -------------------------
     lights_raw = raw.get("light", [])
@@ -1236,6 +1406,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
 
     # ---- air_init.npy + boundary + ambient dials (A9 + BC build) ---------
     air_init_q = _parse_air_init_grid(base, tilemap)
+    temp_init_q = _parse_temp_init_grid(base, tilemap)
     boundary = _parse_boundary(raw, toml_path)
     ambient = _parse_ambient(raw, toml_path, boundary, tilemap)
 
@@ -1272,23 +1443,394 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         wire_specs=wire_specs,
         zone_grid=zone_grid,
         air_init_q=air_init_q,
+        temp_init_q=temp_init_q,
         boundary=boundary,
         ambient=ambient,
+        spawn_rooms=spawn_rooms,
+        match=match,
+        levelgen=levelgen,
+        rooms=rooms,
     )
+
+
+def _parse_spawn_rooms(raw: dict, toml_path, tilemap: np.ndarray,
+                       version: str) -> list:
+    """``[[spawn_room]]`` -> validated rooms (#119 P2): the schema checks
+    (``simulation.match.spawn_room_from_dict``) plus the grid's — the room
+    inside the map, and every footprint of its ``max_per_team`` placement
+    cells on open interior floor (air, not vacuum), so a match can never
+    spawn a unit into a wall."""
+    rooms = parse_spawn_rooms(raw.get("spawn_room"), str(toml_path))
+    if not rooms:
+        return rooms
+    h, w = tilemap.shape
+    mat, vac = materials_from_tilemap(tilemap, version)
+    for r in rooms:
+        where = f"[[spawn_room]] team {r.team} in {toml_path}"
+        if r.x + r.w > w or r.y + r.h > h:
+            raise ValueError(f"{where}: room ({r.x},{r.y}) {r.w}x{r.h} "
+                             f"leaves the {w}x{h} map")
+        for cx, cy in placement_cells(r, r.max_per_team):
+            fp = FORMATION_FOOTPRINT
+            foot = (slice(cy, cy + fp), slice(cx, cx + fp))
+            if (mat[foot] != 0).any() or vac[foot].any():
+                raise ValueError(f"{where}: placement cell ({cx},{cy}) is "
+                                 f"not open interior floor")
+    return rooms
+
+
+# ---------------------------------------------------------------------------
+# [levelgen] -- the generated level's LevelSpec + realised factors (#136)
+# ---------------------------------------------------------------------------
+
+#: The LevelSpec (archetype doc §5.1): every input of the generator. A
+#: recipe ship is a pure function of these (``gen_ship.generate_from_spec``).
+LEVELGEN_INPUT_KEYS = ("archetype", "recipe_hash", "generator_version", "size",
+                       "profile", "max_per_team", "zombies_base", "level_seed")
+#: What the generator REALISED from them (archetype doc §5.1): the attempts
+#: ``(g, a)``, then the ship's factors. ``departments``, ``cycles``,
+#: ``secrets`` and ``spawn_exits`` count the QUOTIENT (one wing + the axis
+#: band: the recipe's own units); ``cells``, ``rooms`` and
+#: ``spawn_distance`` the whole ship, as the ``[validation]`` gates do.
+LEVELGEN_REALISED_KEYS = ("g", "a", "departments", "cycles", "cells",
+                          "secrets", "spawn_exits", "zombies", "rooms",
+                          "spawn_distance")
+LEVELGEN_KEYS = LEVELGEN_INPUT_KEYS + LEVELGEN_REALISED_KEYS
+_HEX64_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class LevelgenRecord:
+    """level.toml's ``[levelgen]`` table (#136, archetype doc §5.1): a
+    GENERATED level's LevelSpec (``LEVELGEN_INPUT_KEYS``) and its realised
+    factors (``LEVELGEN_REALISED_KEYS``). Written by ``level_lib`` (the one
+    writer) only on gen_ship's recipe path; a level without the table has
+    ``LevelData.levelgen = None``. Read by nothing in the game: it is the
+    level's provenance (regenerate, banks, RL factor analysis).
+
+    ``departments``: the department instances, quotient order (gradient
+    order; the axis department first). ``cycles``: cycle type -> its
+    applications, for every cycle type the archetype names (0 included).
+    ``generator_version``: ``git describe --always --dirty`` at write time,
+    or ``"unknown"``."""
+    archetype: str
+    recipe_hash: str
+    generator_version: str
+    size: str
+    profile: str
+    max_per_team: int
+    zombies_base: int
+    level_seed: int
+    g: int
+    a: int
+    departments: tuple
+    cycles: dict
+    cells: int
+    secrets: int
+    spawn_exits: int
+    zombies: int
+    rooms: int
+    spawn_distance: int
+
+    def as_dict(self) -> dict:
+        """Key -> value in file order (``LEVELGEN_KEYS``)."""
+        return {k: getattr(self, k) for k in LEVELGEN_KEYS}
+
+
+def parse_levelgen(tbl, where: str) -> LevelgenRecord:
+    """THE ``[levelgen]`` door: a raw table -> a :class:`LevelgenRecord`, or
+    ValueError naming the key: an unknown key, a missing one (every input and
+    every realised factor is written), a mistyped value. ``level_lib``'s
+    writer passes every record through here before it touches disk."""
+    if not isinstance(tbl, dict):
+        raise ValueError(f"[levelgen] in {where} must be a table")
+    unknown = sorted(set(tbl) - set(LEVELGEN_KEYS))
+    if unknown:
+        raise ValueError(f"[levelgen] in {where}: unknown key(s) {unknown} "
+                         f"(it carries {list(LEVELGEN_KEYS)})")
+    for k in LEVELGEN_KEYS:
+        if k not in tbl:
+            kind = "input" if k in LEVELGEN_INPUT_KEYS else "realised factor"
+            raise ValueError(f"[levelgen] in {where}: missing {kind} '{k}'")
+
+    def text(k):
+        v = tbl[k]
+        if not isinstance(v, str) or not v:
+            raise ValueError(f"[levelgen].{k} in {where} must be a non-empty "
+                             f"string (got {v!r})")
+        return v
+
+    def count(k, v=None, label=None):
+        v = tbl[k] if v is None else v
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(f"[levelgen].{label or k} in {where} must be an "
+                             f"integer >= 0 (got {v!r})")
+        return int(v)
+
+    rh = text("recipe_hash")
+    if not _HEX64_RE.fullmatch(rh):
+        raise ValueError(f"[levelgen].recipe_hash in {where} must be 64 "
+                         f"lowercase hex digits (a sha256; got {rh!r})")
+    if count("max_per_team") < 1:
+        raise ValueError(f"[levelgen].max_per_team in {where} must be >= 1")
+    depts = tbl["departments"]
+    if (not isinstance(depts, (list, tuple)) or not depts
+            or not all(isinstance(d, str) and d for d in depts)):
+        raise ValueError(f"[levelgen].departments in {where} must be a "
+                         f"non-empty list of department names (got {depts!r})")
+    cyc = tbl["cycles"]
+    if not isinstance(cyc, dict):
+        raise ValueError(f"[levelgen].cycles in {where} must be a table of "
+                         f"cycle type = applications (got {cyc!r})")
+    cycles = {str(k): count("cycles", v, f"cycles.{k}")
+              for k, v in cyc.items()}
+    return LevelgenRecord(
+        archetype=text("archetype"), recipe_hash=rh,
+        generator_version=text("generator_version"), size=text("size"),
+        profile=text("profile"), max_per_team=count("max_per_team"),
+        zombies_base=count("zombies_base"), level_seed=count("level_seed"),
+        g=count("g"), a=count("a"), departments=tuple(depts), cycles=cycles,
+        cells=count("cells"), secrets=count("secrets"),
+        spawn_exits=count("spawn_exits"), zombies=count("zombies"),
+        rooms=count("rooms"), spawn_distance=count("spawn_distance"))
+
+
+def _parse_levelgen(raw: dict, toml_path) -> Optional[LevelgenRecord]:
+    """``[levelgen]`` -> a record, or None when the level has none (every
+    hand-made level, and gen_ship's v1 ships)."""
+    if "levelgen" not in raw:
+        return None
+    return parse_levelgen(raw["levelgen"], str(toml_path))
+
+
+# ---------------------------------------------------------------------------
+# [[room]] + [[opening]] + rooms.npy -- the room graph (#195 1b)
+# ---------------------------------------------------------------------------
+
+#: The tile -> room map beside level.toml, found by PRESENCE (the zones.npy /
+#: air_init.npy pattern): int32, the tilemap's shape, a room id or -1.
+ROOMS_FILENAME = "rooms.npy"
+ROOM_KEYS = ("id", "x", "y", "w", "h", "kind")
+OPENING_KEYS = ("id", "a", "b", "kind", "x", "y", "w", "h")
+
+
+@dataclass(frozen=True)
+class RoomRecord:
+    """One ``[[room]]`` row: the generator's room id and its AIR rectangle
+    (``x, y, w, h`` in tiles) and kind."""
+    id: int
+    x: int
+    y: int
+    w: int
+    h: int
+    kind: str
+
+    def as_dict(self) -> dict:
+        return {k: getattr(self, k) for k in ROOM_KEYS}
+
+
+@dataclass(frozen=True)
+class OpeningRecord:
+    """One ``[[opening]]`` row: a way between rooms ``a < b`` that a unit
+    can walk now or later (a door of any sort, an open edge, an airlock, a
+    breakable wall), ``kind`` the generator's edge kind and ``x, y, w, h``
+    the rectangle of its tiles. ``id`` is the row's RANK under
+    :func:`opening_order_key`, never a counter."""
+    id: int
+    a: int
+    b: int
+    kind: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+    def as_dict(self) -> dict:
+        return {k: getattr(self, k) for k in OPENING_KEYS}
+
+    @property
+    def tiles(self) -> tuple:
+        """The opening's ``(y, x)`` tiles, row-major."""
+        return tuple((y, x) for y in range(self.y, self.y + self.h)
+                     for x in range(self.x, self.x + self.w))
+
+
+def opening_order_key(a: int, b: int, x: int, y: int) -> tuple:
+    """THE order of a level's openings (design 5.7): (lower room id, higher
+    room id, first tile row-major). An opening's id is its rank under it."""
+    return (min(a, b), max(a, b), y, x)
+
+
+@dataclass(frozen=True, eq=False)
+class RoomGraph:
+    """``LevelData.rooms``: the FIXED part of the ship's room graph -- the
+    rooms, the openings between them and the tile -> room map (``grid``,
+    int32, read-only, -1 outside every room). Identity-hashed (a cache key
+    of :mod:`simulation.room_graph`). What is passable NOW is never stored:
+    ``simulation.room_graph`` works it out from the map."""
+    rooms: tuple
+    openings: tuple
+    grid: np.ndarray
+
+
+def _rg_int(v, where: str, k: str) -> int:
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"{where}: '{k}' must be an integer (got {v!r})")
+    return int(v)
+
+
+def _rg_rows(rows, family: str, keys: tuple, where: str) -> list:
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError(f"[[{family}]] in {where} must be an array of "
+                         f"tables (spell it [[{family}]])")
+    out = []
+    for i, row in enumerate(rows):
+        w = f"[[{family}]] #{i} in {where}"
+        if not isinstance(row, dict):
+            raise ValueError(f"{w} must be a table")
+        unknown = sorted(set(row) - set(keys))
+        if unknown:
+            raise ValueError(f"{w}: unknown key(s) {unknown} (it carries "
+                             f"{list(keys)})")
+        for k in keys:
+            if k not in row:
+                raise ValueError(f"{w}: missing key '{k}'")
+        if not isinstance(row["kind"], str) or not row["kind"]:
+            raise ValueError(f"{w}: 'kind' must be a non-empty string "
+                             f"(got {row['kind']!r})")
+        out.append((w, {k: (row[k] if k == "kind" else _rg_int(row[k], w, k))
+                        for k in keys}))
+    return out
+
+
+def _rg_rect(w: str, d: dict, shape: tuple, what: str) -> None:
+    h_map, w_map = shape
+    if d["w"] < 1 or d["h"] < 1:
+        raise ValueError(f"{w}: {what} has an empty rectangle "
+                         f"({d['w']}x{d['h']})")
+    if (d["x"] < 0 or d["y"] < 0 or d["x"] + d["w"] > w_map
+            or d["y"] + d["h"] > h_map):
+        raise ValueError(f"{w}: {what} ({d['x']},{d['y']}) {d['w']}x"
+                         f"{d['h']} leaves the {w_map}x{h_map} map")
+
+
+def parse_room_graph(room_rows, opening_rows, grid, shape: tuple,
+                     where: str) -> RoomGraph:
+    """THE room-graph door (#195 1b): the raw ``[[room]]`` / ``[[opening]]``
+    rows and the ``rooms.npy`` grid -> a :class:`RoomGraph`, or ValueError
+    naming what is wrong: an unknown or missing key, a mistyped value, a room
+    outside the map (or ids not 0..n-1 in row order), an opening outside the
+    map, naming a room that does not exist, with ``a >= b`` or with an id
+    that is not its rank under :func:`opening_order_key`, a grid that is not
+    int32 of the map's ``shape`` or holds a value that is neither -1 nor a
+    room id. ``level_lib``'s writer runs every graph through here first."""
+    rooms = []
+    for i, (w, d) in enumerate(_rg_rows(room_rows, "room", ROOM_KEYS,
+                                        where)):
+        if d["id"] != i:
+            raise ValueError(f"{w}: id {d['id']} (room rows are ids 0..n-1 "
+                             f"in order)")
+        _rg_rect(w, d, shape, f"room {d['id']}")
+        rooms.append(RoomRecord(**d))
+    n = len(rooms)
+    if not rooms:
+        raise ValueError(f"room graph in {where}: no [[room]] rows")
+    parsed = []
+    for w, d in _rg_rows(opening_rows, "opening", OPENING_KEYS, where):
+        for k in ("a", "b"):
+            if not 0 <= d[k] < n:
+                raise ValueError(f"{w}: '{k}' names room {d[k]}, which does "
+                                 f"not exist (rooms 0..{n - 1})")
+        if d["a"] >= d["b"]:
+            raise ValueError(f"{w}: a = {d['a']} must be below b = {d['b']}")
+        _rg_rect(w, d, shape, f"opening {d['id']}")
+        parsed.append((w, d))
+    ranked = sorted(parsed, key=lambda wd: opening_order_key(
+        wd[1]["a"], wd[1]["b"], wd[1]["x"], wd[1]["y"]))
+    for rank, (w, d) in enumerate(ranked):
+        if d["id"] != rank:
+            raise ValueError(f"{w}: id {d['id']} is not its rank {rank} "
+                             f"under (lower room, higher room, first tile "
+                             f"row-major)")
+    openings = tuple(OpeningRecord(**d) for _w, d in ranked)
+    g = np.asarray(grid)
+    if g.dtype != np.int32:
+        raise ValueError(f"{ROOMS_FILENAME} in {where} must be dtype int32 "
+                         f"(got {g.dtype})")
+    if g.shape != tuple(shape):
+        raise ValueError(f"{ROOMS_FILENAME} in {where}: shape {g.shape} != "
+                         f"the map's {tuple(shape)}")
+    if g.size and (int(g.min()) < -1 or int(g.max()) >= n):
+        raise ValueError(f"{ROOMS_FILENAME} in {where}: values "
+                         f"{int(g.min())}..{int(g.max())} leave -1..{n - 1} "
+                         f"(-1 or a room id)")
+    g = np.array(g, dtype=np.int32, copy=True)
+    g.setflags(write=False)
+    return RoomGraph(rooms=tuple(rooms), openings=openings, grid=g)
+
+
+def _parse_room_graph(raw: dict, base: Path, toml_path,
+                      tilemap: np.ndarray) -> Optional[RoomGraph]:
+    """The level's room graph, or None when it carries none (every hand-made
+    level, and every ship generated before #195 1b). The three parts come
+    together or not at all: rows without ``rooms.npy`` (or the reverse), or
+    ``[[opening]]`` rows without ``[[room]]`` rows, are refused by name."""
+    npy = base / ROOMS_FILENAME
+    has_rows, has_open = "room" in raw, "opening" in raw
+    if not (has_rows or has_open or npy.is_file()):
+        return None
+    if not has_rows:
+        raise ValueError(f"{toml_path}: a room graph without [[room]] rows "
+                         f"(found {'[[opening]] rows' if has_open else ''}"
+                         f"{' and ' if has_open and npy.is_file() else ''}"
+                         f"{ROOMS_FILENAME if npy.is_file() else ''})")
+    if not npy.is_file():
+        raise ValueError(f"{toml_path}: [[room]] rows without "
+                         f"{ROOMS_FILENAME} beside it")
+    try:
+        grid = np.load(npy, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{ROOMS_FILENAME} is not a readable .npy array: "
+                         f"{npy}: {e}")
+    return parse_room_graph(raw.get("room"), raw.get("opening"), grid,
+                            tilemap.shape, str(toml_path))
+
+
+def _parse_match_file(base: Path, spawn_rooms: list):
+    """``levels/<name>/match.toml`` -> a validated :class:`MatchSpec`, or
+    None when the level has no match file (#119 P2)."""
+    path = base / MATCH_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"{path}: {e}") from None
+    return parse_match(raw, spawn_rooms, str(path))
 
 
 def materials_from_tilemap(tilemap: np.ndarray, version: str):
     """Translate CSV tile values into material grid + vacuum mask.
 
-    Returns (material, is_vacuum) — both (H, W) numpy arrays. ``version`` is
-    the level.toml format version (``LevelData.version``); the CSV *vocabulary*
-    depends on it, so callers must thread it through.
+    Returns (material, is_vacuum) — both (H, W) numpy arrays, material int8.
+    ``version`` is the level.toml format version (``LevelData.version``); the
+    CSV *vocabulary* depends on it, so callers must thread it through.
 
-    **version "2" (canon, level format v2 §1.1): codes ARE material ids** from
-    :mod:`simulation.materials` — read literally, no translation — plus exactly
-    one reserved non-material code, :data:`SPACE_CODE` (9) = outer space
-    (MAT_AIR + ``is_vacuum``). Any other value is a hard ValueError: a v2 CSV
-    never carries silent garbage.
+    **version "3" (canon, 2026-10-29): codes ARE material ids** from
+    :mod:`simulation.materials` — read literally, no translation, any id up to
+    :data:`MATERIAL_ID_MAX` (the int8 plane) — plus exactly one reserved
+    non-material code OUTSIDE the id range, :data:`SPACE_CODE` (-1) = outer
+    space (MAT_AIR + ``is_vacuum``; -1 is never written into the material
+    plane). Any other value is a hard ValueError: a CSV never carries silent
+    garbage.
+
+    **version "2" (legacy; read only by** ``tools/migrate_tilemap_v3.py`` **and
+    hand-built in-memory LevelData)** — the same, except SPACE is
+    :data:`V2_SPACE_CODE` (9), which collides with ``MAT_FOLIAGE``.
+    :func:`load` refuses a v2 level on disk.
 
     **version "1" (legacy generator vocabulary)** — kept bit-exact for old
     levels; codes are distinct from material ids:
@@ -1303,7 +1845,8 @@ def materials_from_tilemap(tilemap: np.ndarray, version: str):
 
     ``tools/migrate_tilemap_v2.py`` converts a v1 level in place (0->9, 1->1,
     3->3, 2/4..8->0 — code 2 was the generator's *floor*, retired as the
-    "generator floor vs MAT_WOOD wall" landmine).
+    "generator floor vs MAT_WOOD wall" landmine); ``tools/migrate_tilemap_v3.py``
+    then converts v2 -> v3 (9 -> -1).
     """
     from simulation.materials import (
         MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MATERIAL_NAMES,
@@ -1316,21 +1859,27 @@ def materials_from_tilemap(tilemap: np.ndarray, version: str):
         material[tilemap == 3] = MAT_DOOR
         is_vacuum = (tilemap == 0)
         return material, is_vacuum
-    if version == "2":
-        allowed = set(MATERIAL_NAMES) | {SPACE_CODE}
+    if version in ("2", "3"):
+        space = V2_SPACE_CODE if version == "2" else SPACE_CODE
+        ids = {int(m) for m in MATERIAL_NAMES}
+        over = sorted(m for m in ids if not 0 <= m <= MATERIAL_ID_MAX)
+        if over:
+            raise ValueError(
+                f"material ids {over} do not fit the int8 material plane "
+                f"(0..{MATERIAL_ID_MAX})")
+        allowed = ids | {space}
         bad = sorted(int(c) for c in np.unique(tilemap) if int(c) not in allowed)
         if bad:
             raise ValueError(
-                f"v2 tilemap contains unknown codes {bad}; valid codes are "
-                f"material ids {sorted(MATERIAL_NAMES)} + {SPACE_CODE} (SPACE)"
+                f"v{version} tilemap contains unknown codes {bad}; valid codes "
+                f"are material ids {sorted(ids)} + {space} (SPACE)"
             )
-        is_vacuum = (tilemap == SPACE_CODE)
-        material = tilemap.astype(np.int8, copy=True)
-        material[is_vacuum] = MAT_AIR
+        is_vacuum = (tilemap == space)
+        material = np.where(is_vacuum, MAT_AIR, tilemap).astype(np.int8)
         return material, is_vacuum
     raise ValueError(
         f"materials_from_tilemap: unsupported tilemap version {version!r}; "
-        f"supported: {sorted(SUPPORTED_VERSIONS)}"
+        f"supported: {sorted(SUPPORTED_VERSIONS | set(LEGACY_VERSIONS))}"
     )
 
 

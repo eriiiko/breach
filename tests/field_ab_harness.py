@@ -46,7 +46,7 @@ from simulation import fire_fixed    # S3a: fire Q16.16 quantize helper
 from simulation.entities.serialize import (  # A4: entity presence carrier
     ENTITY_DIGEST_KEY, entity_carrier, require_entity_carrier,
 )
-from simulation.status import serialize_statuses  # P3: __unit_status__ payload
+from simulation import unit_schema  # #29 P3a: the unit record + its bytes
 from simulation.unit import Unit
 from simulation import swarm_fixed          # arc #63 P2: heading Q16.16 helper
 from simulation.swarm import (              # arc #63 P2: swarm presence carrier
@@ -61,20 +61,15 @@ SEED = 20260615
 # per-unit / per-event reporting instead of an opaque "hashes differ".
 UNIT_DIGEST_KEY = "__unit_state__"
 
-# The synced (lockstep-critical) unit fields the digest captures, per unit, in a
-# STABLE id-sorted order. These are the fields a desync would corrupt: position
-# (tile + float), HP, life status, faction, and the footprint offsets (a stamp
-# slip would change occupancy). P3 adds the status/condition list (mechanics/06
-# §4 — durations, magnitudes, and the flags they suppress are synced state; a
-# status desync would silently fork movement/attack suppression and DoT damage).
-# RENDER-only / AI-scratch fields (orders' contents, zombie_path, accumulators)
-# are intentionally excluded — they are not part of the synced determinism
-# contract and may legitimately differ.
-SYNCED_UNIT_FIELDS = (
-    "tile_x", "tile_y", "x", "y", "current_hp",
-    "alive", "life_state", "faction", "offsets",
-    "facing", "ap", "n_orders", "statuses",
-)
+# The synced unit state the digest captures is THE UNIT SCHEMA's group S
+# (#29 P3a, ``simulation.unit_schema.COLUMNS``): every column under its key,
+# hashed always (id, life_state, x_q, y_q, facing, current_hp) or only while it
+# differs from its default (absence-transparent). WEGO's ``ap`` / ``n_orders``
+# and the derived ``tile_x`` / ``tile_y`` / ``alive`` / ``faction`` /
+# ``offsets`` left the record at P3a. Kept as the record's key tuple for
+# readers that list them.
+from simulation.unit_schema import COLUMNS as _UNIT_COLUMNS  # noqa: E402
+SYNCED_UNIT_FIELDS = tuple(c.key for c in _UNIT_COLUMNS)
 
 # Every field the physics writes — the sim state a structural refactor must
 # preserve bit-for-bit. `gas` is (N,h,w) and covers `smoke` (a view into
@@ -82,13 +77,26 @@ SYNCED_UNIT_FIELDS = (
 # is_vacuum / wall_hp catch any topology-path change. `ignition_armed` is the
 # edge-trigger arm bool (combat.apply_temperature_ignition) — synced state, so it
 # must ride the snapshot (field_digest v2 hashes it). Render-only buffers
-# (light_rgb, light_dir, smoke_glow) are intentionally EXCLUDED — they are not
-# sim state and may legitimately differ between machines/builds.
+# (light_rgb, light_dir) are intentionally EXCLUDED — they are not sim state and
+# may legitimately differ between machines/builds. (The float
+# `dyn_light_atten` stamp output and the `smoke_glow` buffer rode here / were
+# excluded here until ray-engine-v2 P6c deleted both with the render march.)
 SIM_FIELDS = (
     "atmosphere", "wave_p", "wave_v", "wave_source", "wind_x", "wind_y",
     "gas", "fire", "water_depth", "flow_vx", "flow_vy",
     "heat", "temperature", "ripple", "ripple_v",
-    "dyn_permeability", "dyn_wave_absorb", "obstacles", "dyn_light_atten",
+    "dyn_permeability", "dyn_wave_absorb", "obstacles",
+    # Ray-engine-v2 P1 (design v3 §3, §8.3): the two Q16 extinction planes the
+    # radiation sweep reads — `heat_atten_q` (static projection) and
+    # `dyn_heat_atten_q` (the fourth stamp_units output). SIM_FIELDS only:
+    # `dyn_heat_atten_q` enters DIGEST_FIELDS at P3 (row 28), never before.
+    "heat_atten_q", "dyn_heat_atten_q",
+    # Ray-engine-v2 P6a (design v3 §8.3; the P6a brief, decision 7): the two Q16
+    # LIGHT extinction planes the sweep's light channels read, beside the heat
+    # ones -- `light_atten_q` (static projection) and `dyn_light_atten_q` (the
+    # fifth stamp_units output; since P6c the only dynamic light plane).
+    # SIM_FIELDS only: nothing light-side enters DIGEST_FIELDS before P7.
+    "light_atten_q", "dyn_light_atten_q",
     "wall_hp", "material", "is_vacuum", "ignition_armed",
     # P-R4 D1 (digest spec v3): the combustion demand accumulator —
     # persistent synced state (see tests/field_digest.py).
@@ -97,6 +105,9 @@ SIM_FIELDS = (
     # the int64 conserved-energy field — synced state now (mirror-derived
     # this patch; the stored writer-fed truth from P-G1a on).
     "gas_energy",
+    # #31: the blast's pending divergence source (tests/field_digest.py
+    # DIGEST_SECTIONS hashes it while non-zero).
+    "div_source",
 )
 
 
@@ -124,7 +135,7 @@ def default_scenario_sim() -> Simulation:
     # S2b: smoke is int32 Q16.16 — quantize the seed (a raw `= 0.6` would store 0
     # counts ~ no smoke). 0.6 density -> 0.6*65536 = 39322 counts. This exercises
     # the integer-SL advection + diffusion + venting on a real cloud.
-    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)  # smoke transport (gas[SMOKE] view)
+    g.smoke[interior] = gas_fixed.quantize_trace_scalar(0.6)  # smoke transport (gas[SMOKE] view)
     # S3a: fire is int32 Q16.16 — quantize the seed (a raw `= 0.8` would store 0
     # counts ~ no fire, leaving the fire feedback + its smoke emission DORMANT).
     # 0.8 intensity -> 0.8*65536 = 52429 counts. This exercises the fire feedback
@@ -189,59 +200,34 @@ def _snapshot(gmap, fields):
 # These helpers capture that state per tick alongside the field snapshot.
 
 
-def _unit_faction(u):
-    """Stable faction identifier. ``faction_id`` is the spec field; fall back to
-    ``team`` (its alias) so the digest works on bare Unit objects too."""
-    return int(getattr(u, "faction_id", getattr(u, "team", -1)))
-
-
 def _unit_record(u):
-    """A canonical, JSON-ish dict of one unit's synced state.
+    """One unit's synced record: THE schema's (#29 P3a,
+    ``simulation.unit_schema.digest_record``) -- every group-S column's
+    integer encoding under its key, the positions as their Q16 ints
+    ``x_q`` / ``y_q`` (#29 P3c), the hp as its exact Q16 count, the status block fixed-width, the
+    intents with a presence flag, each column only while it differs from its
+    default bar the *always* ones. Built by ``getattr``, so a stand-in object
+    records its defaults."""
+    return unit_schema.digest_record(u)
 
-    Floats are rounded into a fixed-point integer (1e-9 quantum) so the record
-    serializes byte-stably and the digest is reproducible across runs on the
-    same machine — without that, float repr() noise could perturb the hash.
-    """
-    def q(v):
-        # Quantize a float to a stable integer (avoids repr/format drift).
-        return int(round(float(v) * 1_000_000_000))
 
-    life = getattr(u, "life_state", None)
-    life_repr = getattr(life, "value", str(life))   # enum -> its .value string
-    return {
-        "id":         int(getattr(u, "id", -1)),
-        "tile_x":     int(u.tile_x),
-        "tile_y":     int(u.tile_y),
-        "x":          q(u.x),
-        "y":          q(u.y),
-        "current_hp": q(getattr(u, "current_hp", 0.0)),
-        "alive":      bool(u.alive),
-        "life_state": str(life_repr),
-        "faction":    _unit_faction(u),
-        "offsets":    [[int(dx), int(dy)] for (dx, dy) in getattr(u, "offsets", ())],
-        # Sim-derived synced state beyond the core: facing (drives LOS/shot
-        # direction), action points (gate synced actions), and the count of
-        # remaining orders (a divergence in order-consumption shows here). A
-        # full per-order serialization is a future extension if needed.
-        "facing":     q(getattr(u, "facing", 0.0)),
-        "ap":         [int(a) for a in getattr(u, "ap", ())],
-        "n_orders":   len(getattr(u, "orders", ())),
-        # P3: the status/condition list (mechanics/06 §4) — canonical
-        # serialization owned by simulation.status: [[kind, magnitude_q16,
-        # remaining_ticks, source_id], ...] in LIST order (the P0 sync
-        # order), all plain ints. Statuses suppress movement/attacks and
-        # emit DoT packets, so a status desync IS an hp/position desync
-        # waiting one tick downstream — hashed at the source instead.
-        "statuses":   serialize_statuses(u),
-    }
+def _charge_records(sim):
+    """#193: the live planted charges (``sim.planted_charges``, plant order)
+    as their ``unit_schema.CHARGE_SCHEMA`` integer rows (#29 P3a: the ammo
+    row as its index, a remote charge's det_tick and a missing approach as
+    their sentinels) -- synced state the conductor fires at slot 9e."""
+    return [unit_schema.charge_record(c)
+            for c in getattr(sim, "planted_charges", ()) or ()
+            if getattr(c, "live", False)]
 
 
 def _event_record(ev):
     """Canonical tuple for one synced tick event. We key off the class name +
-    its public scalar fields (unit_id, damage, source / killed_by). Only the
-    SYNCED combat events (UnitHitEvent / UnitKilledEvent) carry HP-relevant
-    state, but any event with a ``unit_id`` is recorded in emission order so a
-    divergent kill/hit stream is caught."""
+    its public scalar fields (unit_id, damage, source / killed_by, and since
+    #123 attacker_id). Only the SYNCED combat events (UnitHitEvent /
+    UnitKilledEvent) carry HP-relevant state, but any event with a
+    ``unit_id`` is recorded in emission order so a divergent kill/hit stream
+    is caught."""
     kind = type(ev).__name__
     return {
         "kind":      kind,
@@ -249,12 +235,22 @@ def _event_record(ev):
         "damage":    getattr(ev, "damage", None),
         "source":    getattr(ev, "source", None),
         "killed_by": getattr(ev, "killed_by", None),
+        "attacker_id": getattr(ev, "attacker_id", None),
     }
 
 
 # Only events that touch synced unit life/HP belong in the determinism digest.
 # (ShotFiredEvent / ExplosionEvent / Door|WallDestroyed are render/topology
 # signals; the topology ones already show up in the gmap fields.)
+#
+# #123 CREDITED EVENTS: both types carry ``attacker_id`` (the unit credited
+# with the hit / kill, -1 = the environment) and it IS HASHED, as the cause
+# string is. Deliberately not an unhashed sibling: the credit is what reward
+# design will read per unit, so a desync in WHO is credited is a desync of
+# the training signal and must fail the lockstep like a desync in hp. The
+# record's new key moves the unit hash of exactly the ticks that carry a hit
+# or a kill and nothing else; the canonical golden scenario has none in its
+# 30 ticks, so GOLDEN_AGGREGATE did not move (1ff07369..., verified).
 _SYNCED_EVENT_TYPES = ("UnitHitEvent", "UnitKilledEvent")
 
 
@@ -275,8 +271,15 @@ def _capture_unit_state(sim):
         _event_record(ev) for ev in sim.tick_events
         if type(ev).__name__ in _SYNCED_EVENT_TYPES
     ]
-    payload = {"units": unit_records, "events": event_records}
-    blob = repr(payload).encode("utf-8")   # repr of nested int/str/bool == stable
+    # #29 P3a: the units as the schema's ``name|int64`` rows under the
+    # UNIT_SECT_V2 preamble (simulation.entities.serialize's encoding), then
+    # the events' canonical repr, then -- ABSENCE-TRANSPARENT, only while a
+    # charge lies on the floor -- the charges' CHARGE_SECT_V1 rows.
+    blob = (unit_schema.unit_section_bytes(unit_records)
+            + repr(event_records).encode("utf-8"))
+    charges = _charge_records(sim)
+    if charges:
+        blob += unit_schema.charge_section_bytes(charges)
     digest = hashlib.sha256(blob).hexdigest()
     return {"units": unit_records, "events": event_records, "hash": digest}
 
@@ -325,23 +328,32 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
     for _ in range(n_steps):
         sim.set_paused(False)
         sim.step()
-        snap = _snapshot(sim.gmap, fields)
-        if capture_units:
-            snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
-        ents = _sim_entities(sim)
-        # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
-        # the live bus rows for a wired sim — the ONLY case that folds signals.
-        digest_signals = getattr(sim, "_digest_signals", None)
-        signals = digest_signals() if callable(digest_signals) else ()
-        snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
-        require_entity_carrier(ents, snap)   # the A4 strict presence rule
-        # arc #63 P2: the swarm presence carrier — ALWAYS written (present ==
-        # False on the canonical scenario, which spawns no swarm units), the
-        # same strict-presence idiom as the entity carrier above.
-        snap[SWARM_DIGEST_KEY] = swarm_carrier(sim.gmap)
-        require_swarm_carrier(sim.gmap, snap)
-        traj.append(snap)
+        traj.append(capture_snapshot(sim, fields, capture_units=capture_units))
     return traj
+
+
+def capture_snapshot(sim, fields=SIM_FIELDS, capture_units=True):
+    """ONE tick's snapshot of ``sim`` as it stands — the gmap fields, the
+    synced unit state (UNIT_DIGEST_KEY) and the strict entity presence
+    carrier (ENTITY_DIGEST_KEY): what :func:`capture_trajectory` records per
+    tick and what ``tick_digest`` hashes. Public so a caller that owns its own
+    loop (``tools/run_match.py``, #119 P2) digests the same snapshot."""
+    snap = _snapshot(sim.gmap, fields)
+    if capture_units:
+        snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
+    ents = _sim_entities(sim)
+    # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
+    # the live bus rows for a wired sim — the ONLY case that folds signals.
+    digest_signals = getattr(sim, "_digest_signals", None)
+    signals = digest_signals() if callable(digest_signals) else ()
+    snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
+    require_entity_carrier(ents, snap)   # the A4 strict presence rule
+    # arc #63 P2: the swarm presence carrier — ALWAYS written (present ==
+    # False on the canonical scenario, which spawns no swarm units), the
+    # same strict-presence idiom as the entity carrier above.
+    snap[SWARM_DIGEST_KEY] = swarm_carrier(sim.gmap)
+    require_swarm_carrier(sim.gmap, snap)
+    return snap
 
 
 def _diff_unit_state(t, ua, ub):
@@ -616,7 +628,12 @@ if __name__ == "__main__":
     # Q16.48-style multiply chain), and flips wall_hp to int32 Q16.16 too. Assert the
     # dtype + bit-identity run-to-run (np.array_equal is exact on int32). This is the
     # S3b P1 gate; the discrete extinguish-flip + burn-through determinism is in
-    # tests/test_s3b_fire_determinism.py, the logistic feel-A/B in _s3b_firestorm_feel.py.
+    # tests/test_s3b_fire_determinism.py. (The logistic feel-A/B harnesses
+    # _s3_firestorm_feelcheck.py / _s3b_firestorm_feel.py and their float
+    # goldens were RETIRED 2026-09-12: untouched since 2026-06-27, they
+    # predated the Q16.16 migration, the EOS refactor, arc #54 and R1-R4,
+    # and their fixtures seeded fire on ambient wood so post-R3 they ran
+    # inert. Erik's ruling: retire rather than recapture.)
     assert a[-1]["fire"].dtype == np.int32, \
         f"fire should be int32 Q16.16 (S3b), got {a[-1]['fire'].dtype}"
     assert a[-1]["wall_hp"].dtype == np.int32, \

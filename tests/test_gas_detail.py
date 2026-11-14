@@ -4,9 +4,10 @@ those are what break silently — so the uniform/texture packing, the
 Q16.16->tiles/tick wind dequantization, the noise-bake determinism + tiling, and
 the two-layer crossfade phase math are all pinned here WITHOUT a GL context.
 
-The one that matters most (critique finding): a KNOWN wind_x Q16.16 value must
-map to the EXPECTED RG-float advection in tiles/tick, or the advection is
-invisibly wrong and reads as a shader bug.
+The one that matters most (#51): a KNOWN wind_x Q16.16 value -- the EOS
+velocity in METRES PER SECOND -- must map to the EXPECTED RG-float advection
+in tiles/tick (v / tile_size_m / ticks_per_second, then the taming), or the
+advection is invisibly wrong and reads as a shader bug.
 
 Run:
     conda run -n data python -m pytest tests/test_gas_detail.py -q
@@ -27,31 +28,51 @@ import pytest
 from renderer.advected_noise import (
     bake_fbm_rgba, bake_jitter_rgba, advection_phase, layer_ages_weight,
 )
-from renderer.gas_detail import GasDetailPass, WIND_V_REF, tame_wind
+from renderer.gas_detail import (GasDetailPass, WIND_V_REF, tame_wind,
+                                 wind_tiles_per_tick)
 from simulation.atmosphere_fixed import quantize as wind_quantize
 
 TPS = 24.0
 SIM_DT = 1.0 / TPS
-V_REF, V_SENS = 0.08, 0.5          # the pass's wind-taming defaults
+TILE_M = 0.333
+CONV = dict(tile_size_m=TILE_M, ticks_per_second=TPS)   # the two scales
+V_REF, V_SENS = 0.08, 0.0625       # test dials, tiles/tick (not the defaults)
 
 
-def _tamed_speed(dq_speed, v_ref=V_REF, v_sens=V_SENS):
-    return v_ref * (1.0 - np.exp(-dq_speed / v_sens))
+def _tiles_per_tick(v_ms):
+    return v_ms / (TILE_M * TPS)
+
+
+def _tamed_speed(v_ms, v_ref=V_REF, v_sens=V_SENS):
+    return v_ref * (1.0 - np.exp(-_tiles_per_tick(v_ms) / v_sens))
 
 
 # ---------------------------------------------------------------------------
-# WIND UNITS — the raw -grad(P) is fire-spiked + unusable as a velocity (the
-# critique's premise was empirically wrong; module header). The pass TAMES it:
-# smooth -> direction -> saturating small speed. On a UNIFORM field the 3x3
-# box-smooth is identity, so the tamed velocity is exact and assertable.
+# WIND UNITS (#51) — the planes are the EOS velocity in m/s; the honest scale
+# is tiles/tick = v / tile_size_m / tps. The pass then TAMES it: smooth ->
+# direction -> saturating speed. On a UNIFORM field the 3x3 box-smooth is
+# identity, so the tamed velocity is exact and assertable.
 # ---------------------------------------------------------------------------
+def test_honest_conversion_is_metres_per_second_over_tile_and_tick():
+    """Property (#51): 1 m/s is 1 / (tile_size_m * tps) tiles per tick, with
+    both scales taken from the caller. Breaks if the legacy advection_rate
+    reading (or any constant standing in for a level's tile or the clock)
+    comes back: halving the tile must double the tiles/tick."""
+    q = np.full((3, 3), int(wind_quantize(1.0)), np.int32)
+    ux, uy = wind_tiles_per_tick(q, -q, **CONV)
+    assert float(ux[1, 1]) == pytest.approx(1.0 / (TILE_M * TPS), rel=1e-6)
+    assert float(uy[1, 1]) == pytest.approx(-1.0 / (TILE_M * TPS), rel=1e-6)
+    ux2, _ = wind_tiles_per_tick(q, q, tile_size_m=TILE_M / 2,
+                                 ticks_per_second=TPS)
+    assert float(ux2[1, 1]) == pytest.approx(2.0 * float(ux[1, 1]), rel=1e-6)
+
 def test_uniform_wind_tamed_to_expected_velocity():
-    dq = 0.4                                       # dequantized raw |wind|
+    dq = 0.4                                       # |wind|, m/s
     q = int(wind_quantize(dq))
     wx = np.full((6, 6), q, dtype=np.int32)
     wy = np.zeros((6, 6), dtype=np.int32)
     dyn = GasDetailPass.pack_dynamics(wx, wy, np.zeros((6, 6), np.float32),
-                                      v_ref=V_REF, v_sens=V_SENS)
+                                      **CONV, v_ref=V_REF, v_sens=V_SENS)
     assert dyn.dtype == np.float16
     vmag = _tamed_speed(dq)                         # direction (1,0)
     assert float(dyn[3, 3, 0]) == pytest.approx(vmag, abs=2e-3)
@@ -63,7 +84,7 @@ def test_wind_direction_sign_preserved():
     wx = np.full((6, 6), q(-0.3), dtype=np.int32)
     wy = np.full((6, 6), q(0.5), dtype=np.int32)
     dyn = GasDetailPass.pack_dynamics(wx, wy, np.zeros((6, 6), np.float32),
-                                      v_ref=V_REF, v_sens=V_SENS)
+                                      **CONV, v_ref=V_REF, v_sens=V_SENS)
     # a negative x-gradient / positive y-gradient advects the noise that way.
     assert float(dyn[3, 3, 0]) < 0.0 and float(dyn[3, 3, 1]) > 0.0
     # direction matches the (normalized) wind vector.
@@ -74,13 +95,14 @@ def test_wind_direction_sign_preserved():
 
 def test_wind_magnitude_saturates_and_is_bounded():
     # The tamed speed rises monotonically toward v_ref and NEVER exceeds it —
-    # this is what bounds the fire-spiked cells so they can't shear the noise.
+    # this is what bounds the blast/fire-spiked cells (m/s) so they can't
+    # shear the noise.
     prev = -1.0
     for dq in (0.01, 0.1, 1.0, 100.0, 1000.0):
         q = int(wind_quantize(dq))
         dyn = GasDetailPass.pack_dynamics(
             np.full((5, 5), q, np.int32), np.zeros((5, 5), np.int32),
-            np.zeros((5, 5), np.float32), v_ref=V_REF, v_sens=V_SENS)
+            np.zeros((5, 5), np.float32), **CONV, v_ref=V_REF, v_sens=V_SENS)
         mag = np.hypot(dyn[..., 0].astype(np.float64),
                        dyn[..., 1].astype(np.float64))
         assert mag.max() <= V_REF + 1e-3           # bounded by v_ref
@@ -92,13 +114,14 @@ def test_wind_magnitude_saturates_and_is_bounded():
 
 
 def test_small_wind_is_approximately_linear():
-    # For |wind| << v_sens the saturating curve is ~linear: v ~ v_ref*|w|/v_sens.
-    dq = 0.01
+    # For |u| << v_sens the saturating curve is ~linear: v ~ v_ref*|u|/v_sens.
+    dq = 0.01                                      # m/s
     q = int(wind_quantize(dq))
     dyn = GasDetailPass.pack_dynamics(
         np.full((5, 5), q, np.int32), np.zeros((5, 5), np.int32),
-        np.zeros((5, 5), np.float32), v_ref=V_REF, v_sens=V_SENS)
-    assert float(dyn[2, 2, 0]) == pytest.approx(V_REF * dq / V_SENS, rel=5e-2)
+        np.zeros((5, 5), np.float32), **CONV, v_ref=V_REF, v_sens=V_SENS)
+    assert float(dyn[2, 2, 0]) == pytest.approx(
+        V_REF * _tiles_per_tick(dq) / V_SENS, rel=5e-2)
 
 
 def test_dynamics_layout_b_density_a_zero():
@@ -106,7 +129,7 @@ def test_dynamics_layout_b_density_a_zero():
     wy = np.full((3, 5), int(wind_quantize(-0.2)), dtype=np.int32)
     density = np.linspace(0, 1, 15, dtype=np.float32).reshape(3, 5)
     dyn = GasDetailPass.pack_dynamics(wx, wy, density,
-                                      v_ref=V_REF, v_sens=V_SENS)
+                                      **CONV, v_ref=V_REF, v_sens=V_SENS)
     assert dyn.shape == (3, 5, 4)
     # B carries the density solidity verbatim; A is zero.
     assert np.allclose(dyn[..., 2].astype(np.float32), density, atol=1e-3)
@@ -116,10 +139,15 @@ def test_dynamics_layout_b_density_a_zero():
 def test_zero_wind_gives_zero_advection():
     dyn = GasDetailPass.pack_dynamics(
         np.zeros((4, 4), np.int32), np.zeros((4, 4), np.int32),
-        np.full((4, 4), 0.5, np.float32), v_ref=V_REF, v_sens=V_SENS)
+        np.full((4, 4), 0.5, np.float32), **CONV, v_ref=V_REF, v_sens=V_SENS)
     assert np.all(dyn[..., 0] == 0.0) and np.all(dyn[..., 1] == 0.0)
     # density still carried (the layer breathes via the crossfade, not wind).
     assert np.allclose(dyn[..., 2].astype(np.float32), 0.5, atol=1e-3)
+
+
+def _default_vsens():
+    from renderer.gas_detail import WIND_V_SENS
+    return WIND_V_SENS
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +158,10 @@ def test_zero_wind_gives_zero_advection():
 def test_tame_wind_shape_and_units():
     wx = np.full((4, 7), int(wind_quantize(0.3)), dtype=np.int32)
     wy = np.zeros((4, 7), dtype=np.int32)
-    tamed = tame_wind(wx, wy)
+    tamed = tame_wind(wx, wy, **CONV)
     assert tamed.shape == (4, 7, 2) and tamed.dtype == np.float32
-    assert float(tamed[2, 3, 0]) == pytest.approx(_tamed_speed(0.3), abs=2e-3)
+    assert float(tamed[2, 3, 0]) == pytest.approx(
+        _tamed_speed(0.3, WIND_V_REF, _default_vsens()), abs=2e-3)
 
 
 def test_tame_wind_smooths_a_spike_into_its_neighbourhood():
@@ -141,8 +170,8 @@ def test_tame_wind_smooths_a_spike_into_its_neighbourhood():
     NEIGHBOURS have picked up flow — a coherent direction, not a delta."""
     wx = np.zeros((9, 9), dtype=np.int32)
     wy = np.zeros((9, 9), dtype=np.int32)
-    wx[4, 4] = int(wind_quantize(500.0))       # a plume cell's raw -grad(P)
-    tamed = tame_wind(wx, wy)
+    wx[4, 4] = int(wind_quantize(500.0))       # a blast cell at the m/s cap
+    tamed = tame_wind(wx, wy, **CONV)
     peak = float(tamed[4, 4, 0])
     # Gain-limited: never above the saturation ceiling, spike or no spike.
     assert np.abs(tamed).max() <= WIND_V_REF + 1e-6
@@ -157,7 +186,7 @@ def test_tame_wind_is_monotone_and_bounded_over_five_decades():
     prev = -1.0
     for dq in (0.001, 0.01, 0.1, 1.0, 10.0, 1000.0):
         tamed = tame_wind(np.full((5, 5), int(wind_quantize(dq)), np.int32),
-                          np.zeros((5, 5), np.int32))
+                          np.zeros((5, 5), np.int32), **CONV)
         v = float(tamed[2, 2, 0])
         assert 0.0 <= v <= WIND_V_REF + 1e-9
         assert v >= prev - 1e-9
@@ -168,7 +197,7 @@ def test_tame_wind_is_monotone_and_bounded_over_five_decades():
 def test_tame_wind_preserves_direction():
     wx = np.full((6, 6), int(wind_quantize(-0.3)), dtype=np.int32)
     wy = np.full((6, 6), int(wind_quantize(0.5)), dtype=np.int32)
-    tamed = tame_wind(wx, wy)
+    tamed = tame_wind(wx, wy, **CONV)
     assert float(tamed[3, 3, 0]) < 0.0 < float(tamed[3, 3, 1])
     assert float(tamed[3, 3, 1]) / float(tamed[3, 3, 0]) == \
         pytest.approx(0.5 / -0.3, rel=1e-2)
@@ -180,8 +209,9 @@ def test_pack_dynamics_consumes_tame_wind_rather_than_forking_it():
     rng = np.random.default_rng(7)
     wx = rng.integers(-3 << 16, 3 << 16, size=(8, 6)).astype(np.int32)
     wy = rng.integers(-3 << 16, 3 << 16, size=(8, 6)).astype(np.int32)
-    dyn = GasDetailPass.pack_dynamics(wx, wy, np.zeros((8, 6), np.float32))
-    tamed = tame_wind(wx, wy)
+    dyn = GasDetailPass.pack_dynamics(wx, wy, np.zeros((8, 6), np.float32),
+                                      **CONV)
+    tamed = tame_wind(wx, wy, **CONV)
     # float16 round-trip is the only difference.
     assert np.allclose(dyn[..., 0].astype(np.float32), tamed[..., 0], atol=1e-3)
     assert np.allclose(dyn[..., 1].astype(np.float32), tamed[..., 1], atol=1e-3)

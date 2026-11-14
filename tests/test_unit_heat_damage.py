@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -40,6 +41,7 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import unit_fixed  # noqa: E402
 from simulation.combat import apply_environmental_damage, HEAT_SCALE  # noqa: E402
@@ -69,16 +71,52 @@ def _expected_marine_dmg_raw(phi, tps):
     return 1.0 * (1.0 + float(cmb.heat_overtemp_scale) * over) * (1.0 / tps)
 
 
+def _q(v):
+    return unit_fixed.quantize_scalar(float(v))
+
+
+def _expected_marine_dmg_q(phi, tps, mult_q=1 << 16):
+    """THE row's law in Q16 (#29 P3e), written by hand: the gain and the
+    dials quantized once, every product / quotient the real value rounded
+    once (half away) -- for a default-human marine (temperature_max 60,
+    environmental_damage_rate 1.0); ``mult_q`` a resist (the zombie's)."""
+    cmb = CFG.combat
+    one = 1 << 16
+    peak = int(round(phi * HEAT_SCALE))
+    gain_q = _q(float(cmb.heat_flux_to_temp) * float(cmb.unit_absorption)
+                * (1.0 - float(cmb.unit_reflectivity)))
+    t_q = _q(cmb.heat_ambient_ref) + unit_fixed.mul_q16_round(gain_q, peak)
+    over_q = t_q - _q(60.0)
+    if over_q <= 0:
+        return 0
+    k_q = _q(cmb.heat_overtemp_scale)
+    dmg_q = unit_fixed.div_round(
+        _q(1.0) * (one + unit_fixed.mul_q16_round(k_q, over_q)), one * tps)
+    return unit_fixed.mul_q16_round(dmg_q, mult_q)
+
+
 def _expected_marine_dmg(phi, tps):
-    """The APPLIED per-tick HP loss: the §4.2 model snapped to the Q16.16 grid
-    (Q2-lift — combat.py quantizes every damage delta before it touches HP;
-    change vs the raw model <= 1/131072 ~= 7.6e-6, the documented contract)."""
-    return unit_fixed.quantize_hp_delta(_expected_marine_dmg_raw(phi, tps))
+    """The APPLIED per-tick HP loss: the integer law's Q16 count as HP. It
+    stays within 1e-4 (relative) of the float model above -- the Q16
+    quantization of the dials, the documented #29 P3e re-baseline (held by
+    ``test_the_integer_law_tracks_the_float_model``)."""
+    return _expected_marine_dmg_q(phi, tps) / 65536.0
+
+
+def test_the_integer_law_tracks_the_float_model():
+    """PROPERTY (#29 P3e): over the fixtures' flux range the integer row is
+    the float model to within 1e-4 relative + one Q16 count. BREAKS IF a
+    dial is quantized to a coarser grid or a rounding is dropped."""
+    for phi in (phi_of(2.5), phi_of(3.0), phi_of(5.0), phi_of(10.0),
+                phi_of(20.0), 1.0, 20.0, 50.0, 200.0):
+        for tps in (12, 24):
+            raw = _expected_marine_dmg_raw(round(phi * HEAT_SCALE) / HEAT_SCALE, tps)
+            got = _expected_marine_dmg(phi, tps)
+            assert abs(got - raw) <= 1e-4 * raw + 1.0 / 65536, (phi, tps)
 
 
 def _place(unit, x, y):
-    unit.x = float(x)
-    unit.y = float(y)
+    unit.set_pos(float(x), float(y))
     return unit
 
 
@@ -87,6 +125,26 @@ def _inject(stub, unit, phi):
     raw = int(round(phi * HEAT_SCALE))
     for (tx, ty) in unit.occupied_tiles():
         stub.heat[ty, tx] = raw
+
+
+# T5b step 6: PHI NOW HAS A PHYSICAL MEANING, so this module's fixtures state
+# irradiance in kW/m2 instead of bare `phi` numbers.
+#
+# `phi` is the body's absorbed energy per tick in heat counts, so
+#     irradiance = phi * 65536 * J_per_count * ticks_per_second / A_rad
+#                = phi * 224.8 kW/m2
+# with J_per_count = 0.4759 J (R13's pin) and A_rad = 4*0.333*2.5 = 3.33 m2.
+# Before the flip `phi` came off the retired cast's FITTED emission scale
+# (2419x the derived one), so the fixture values below meant nothing physical
+# and "phi ~ 1 is a faint warmth" was simply the old scale's arithmetic.
+# Under the derived currency phi = 1 is 225 kW/m2 -- five times the flux inside
+# a compartment fire -- which is why the old `warm room` fixture now cooks.
+KW_M2_PER_PHI = 224.775
+
+
+def phi_of(kw_m2):
+    """Irradiance in kW/m2 -> the `phi` this module injects."""
+    return float(kw_m2) / KW_M2_PER_PHI
 
 
 # ---------------------------------------------------------------------------
@@ -120,24 +178,53 @@ def test_cold_tile_zero_damage():
 
 
 def test_warm_room_survivable():
-    """A faint warmth (within the tolerance band) does no damage."""
+    """PROPERTY (T5b step 6): the burn band is anchored on the LITERATURE.
+    2.5 kW/m2 -- the standard human pain / firefighter-exposure threshold --
+    sits exactly at the edge of the survivable band, so 1 kW/m2 (bright
+    sunshine) does nothing and 5 kW/m2 (blistering in ~30 s) hurts.
+
+    This REPLACES "phi ~ 1 is a faint warmth", which was the retired cast's
+    FITTED scale talking: under the derived currency phi = 1 is 225 kW/m2.
+    `heat_flux_to_temp` is derived from this anchor (config.toml [combat]), so
+    the test and the dial cannot drift apart -- and stating the fixture in
+    kW/m2 means a future re-derivation moves the dial, not this file.
+
+    BREAKS IF: the anchor moves, or `heat_flux_to_temp` stops being derived
+    from it.
+    """
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
     m.current_hp = 100.0
-    # Phi ~1: T_felt ~26 < temperature_max (60) -> over <= 0.
-    _inject(stub, m, 1.0)
+    _inject(stub, m, phi_of(1.0))       # 1 kW/m2 -- bright sunshine
 
     apply_environmental_damage([m], stub, ticks_per_second=24)
 
-    assert _expected_marine_dmg(1.0, 24) == 0.0
+    assert _expected_marine_dmg(phi_of(1.0), 24) == 0.0
     assert m.current_hp == 100.0
+    # The anchor itself: 2.5 kW/m2 is the band EDGE, so the marine takes the
+    # BASE rate there and nothing more -- `over` is 0, so the ramp contributes
+    # nothing and the damage is exactly `environmental_damage_rate`, 1 HP/s,
+    # i.e. 100 s to incapacitate. That is the right shape for a threshold the
+    # literature describes as "pain in ~10 s, injury over tens of seconds".
+    assert _expected_marine_dmg(phi_of(2.5), 24) * 24 == pytest.approx(1.0, abs=0.01)
+    # Just below it, nothing at all -- the edge is real, not a region.
+    assert _expected_marine_dmg(phi_of(2.4), 24) == 0.0
+    # The literature band, stated so a reader sees what the dial buys:
+    #   5 kW/m2 blistering in ~30 s, 10 severe pain / 2nd-degree in ~10 s,
+    #   20 untenable. Damage must be monotone and reach lethal rates.
+    d5 = _expected_marine_dmg(phi_of(5.0), 24) * 24
+    d10 = _expected_marine_dmg(phi_of(10.0), 24) * 24
+    d20 = _expected_marine_dmg(phi_of(20.0), 24) * 24
+    assert 0.0 < d5 < d10 < d20
+    assert d10 > 5.0, f"10 kW/m2 should be clearly lethal over ~15 s, got {d10} HP/s"
+    assert d5 < 5.0, f"5 kW/m2 should be survivable for tens of seconds, got {d5} HP/s"
 
 
 def test_zombie_takes_fire_multiplier_more():
     """A zombie takes exactly zombie.fire_damage_multiplier x a marine's hit."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    z = _place(Unit("Z1", x=20, y=20, team=1), 20, 20)
+    z = _place(Unit("Z1", x=20, y=20, team=ZOMBIE_TEAM), 20, 20)
     base_hp = 1000.0
     m.current_hp = z.current_hp = base_hp  # avoid death, isolate the per-tick amount
     phi = 50.0
@@ -151,10 +238,11 @@ def test_zombie_takes_fire_multiplier_more():
     assert marine_dmg > 0.0
     # Exact applied deltas (Q2-lift): each snapped to the Q16.16 grid AFTER
     # the zombie multiplier, mirroring combat.py's operation order — sharp.
-    raw = _expected_marine_dmg_raw(phi, 24)
     mult = float(CFG.zombie.fire_damage_multiplier)
-    assert abs(marine_dmg - unit_fixed.quantize_hp_delta(raw)) < 1e-9
-    assert abs(zombie_dmg - unit_fixed.quantize_hp_delta(raw * mult)) < 1e-9
+    # #29 P3e: the marine's Q16 damage, the zombie's its resist product
+    # rounded once (mitigate_q).
+    assert marine_dmg == _expected_marine_dmg_q(phi, 24) / 65536.0
+    assert zombie_dmg == _expected_marine_dmg_q(phi, 24, _q(mult)) / 65536.0
     ratio = zombie_dmg / marine_dmg
     # The two INDEPENDENT Q16.16 snaps (Q2-lift) perturb the exact multiplier
     # ratio by up to (|dz| + mult*|dm|)/marine ~= (1+mult)*(0.5/65536)/marine
@@ -197,7 +285,9 @@ def test_heat_death_sets_source_and_no_conversion():
     killed_by_zombie (a burned corpse must not convert)."""
     stub = _HeatStub(40, 40)
     m = _place(Unit("M1", x=10, y=10, team=0), 10, 10)
-    m.current_hp = 0.01  # one strong tick kills it
+    # One strong tick kills it. #29 P3a: an hp is an exact n/65536 (the
+    # setter refuses anything else), so 1/128, not the old 0.01.
+    m.current_hp = 1.0 / 128
     _inject(stub, m, 200.0)
     events = []
 

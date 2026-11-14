@@ -43,12 +43,41 @@ def test_fixture_is_two_room_with_door():
     assert crates == [(7, 7)]
     # The two rooms are otherwise disjoint: flood-fill from the left room
     # with the door SEALED must not reach the right room.
-    from scipy import ndimage
     blocked = tm.copy()
     blocked[6, mid] = 1
-    lab, n = ndimage.label(blocked != 1)
+    lab, n = _label4(blocked != 1)
     assert n >= 2, "sealing the door must disconnect the rooms"
     assert lab[7, 3] != lab[7, 20], "rooms connect around the partition?!"
+
+
+def _label4(mask):
+    """4-connected component labelling, numpy only.
+
+    This used scipy.ndimage.label. breach has exactly one scipy call in its whole
+    test suite, and the shared conda env ships a scipy built against numpy 1.x that
+    raises ImportError under numpy 2 -- so the one call was turning a green suite
+    red for a reason that has nothing to do with breach. Fifteen lines here make the
+    project scipy-free instead, which is also one fewer thing to keep in step across
+    machines.
+    """
+    lab = np.zeros(mask.shape, np.int32)
+    cur = 0
+    h, w = mask.shape
+    for sy in range(h):
+        for sx in range(w):
+            if not mask[sy, sx] or lab[sy, sx]:
+                continue
+            cur += 1
+            stack = [(sy, sx)]
+            lab[sy, sx] = cur
+            while stack:
+                y, x = stack.pop()
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not lab[ny, nx]:
+                        lab[ny, nx] = cur
+                        stack.append((ny, nx))
+    return lab, cur
 
 
 def test_bench_runs_and_is_deterministic():

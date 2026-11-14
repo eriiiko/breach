@@ -5,6 +5,7 @@
 // ============================================================================
 #include "cuda_water.h"
 #include "cuda_resident.h" // S8a STEP B: water_launch_resident (shared launch core)
+#include "cuda_batch.cuh"  // #29 P5: the (N, h, w) launch shape
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, recip_mul,
                            // scale_mag, make_recip, tan_poly, FP_ONE, FP_SHIFT
 #include "cuda_fixedpoint_device.cuh"  // shared device 128-bit + reciprocal kit
@@ -61,8 +62,12 @@ __global__ void water_surface(const int32_t* __restrict__ depth,
                               int head_on, q16 kp_q,
                               q16 tan_tx, q16 tan_ty,
                               double cx, double cy, double dx_d,
-                              int32_t* __restrict__ surface, int h, int w) {
+                              int32_t* __restrict__ surface, int h, int w,
+                              const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;   // #29 P5: a dormant env does nothing
     const int n = h * w;
+    depth = bptr(depth, n); floor_height = bptr(floor_height, n);
+    atm_p = bptr(atm_p, n); surface = bptr(surface, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -95,8 +100,12 @@ __global__ void water_velocity(const int32_t* __restrict__ surface,
                                int32_t* __restrict__ vy_io,
                                const bool* __restrict__ solid,
                                q16 g_dt_q, q16 damp_dt_q, q16 v_max_q,
-                               int64_t recip_two_dx, int h, int w) {
+                               int64_t recip_two_dx, int h, int w,
+                               const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
     const int n = h * w;
+    surface = bptr(surface, n); vx_io = bptr(vx_io, n); vy_io = bptr(vy_io, n);
+    solid = bptr(solid, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i]) {
@@ -135,8 +144,12 @@ __global__ void water_flux(const int32_t* __restrict__ vx,
                           const int32_t* __restrict__ depth,
                           const bool* __restrict__ solid,
                           int64_t* __restrict__ fx,
-                          int64_t* __restrict__ fy, int h, int w) {
+                          int64_t* __restrict__ fy, int h, int w,
+                          const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
     const int n = h * w;
+    vx = bptr(vx, n); vy = bptr(vy, n); depth = bptr(depth, n);
+    solid = bptr(solid, n); fx = bptr(fx, n); fy = bptr(fy, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -165,7 +178,11 @@ __global__ void water_dq(const int64_t* __restrict__ fx,
                         const int64_t* __restrict__ fy,
                         q16 dt_over_dx_q,
                         int32_t* __restrict__ dq_e,
-                        int32_t* __restrict__ dq_s, int n) {
+                        int32_t* __restrict__ dq_s, int n,
+                        const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
+    fx = bptr(fx, (size_t)n); fy = bptr(fy, (size_t)n);
+    dq_e = bptr(dq_e, (size_t)n); dq_s = bptr(dq_s, (size_t)n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         dq_e[i] = (fx[i] != 0) ? flux_to_dq_dev(fx[i], dt_over_dx_q) : 0;
@@ -180,8 +197,12 @@ __global__ void water_dq(const int64_t* __restrict__ fx,
 __global__ void water_scale(const int32_t* __restrict__ dq_e,
                            const int32_t* __restrict__ dq_s,
                            const int32_t* __restrict__ depth,
-                           int32_t* __restrict__ scale_q, int h, int w) {
+                           int32_t* __restrict__ scale_q, int h, int w,
+                           const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
     const int n = h * w;
+    dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n); depth = bptr(depth, n);
+    scale_q = bptr(scale_q, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -206,8 +227,11 @@ __global__ void water_scale(const int32_t* __restrict__ dq_e,
 __global__ void water_scale_apply(int32_t* __restrict__ dq_e,
                                  int32_t* __restrict__ dq_s,
                                  const int32_t* __restrict__ scale_q,
-                                 int h, int w) {
+                                 int h, int w,
+                                 const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
     const int n = h * w;
+    dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n); scale_q = bptr(scale_q, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -224,8 +248,11 @@ __global__ void water_scale_apply(int32_t* __restrict__ dq_e,
 // (scaled) dq_e/dq_s; writes its own depth in place.
 __global__ void water_diverge(int32_t* __restrict__ depth,
                              const int32_t* __restrict__ dq_e,
-                             const int32_t* __restrict__ dq_s, int h, int w) {
+                             const int32_t* __restrict__ dq_s, int h, int w,
+                             const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
     const int n = h * w;
+    depth = bptr(depth, n); dq_e = bptr(dq_e, n); dq_s = bptr(dq_s, n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         const int y = i / w;
@@ -243,7 +270,10 @@ __global__ void water_diverge(int32_t* __restrict__ depth,
 // depth = max(depth, 0); 0 on solid; snap to 0 below depth_eps.
 __global__ void water_clamp(int32_t* __restrict__ depth,
                            const bool* __restrict__ solid,
-                           q16 depth_eps_q, int n) {
+                           q16 depth_eps_q, int n,
+                           const uint8_t* __restrict__ active) {
+    if (env_off(active)) return;
+    depth = bptr(depth, (size_t)n); solid = bptr(solid, (size_t)n);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         q16 d = max(depth[i], (q16)0);
@@ -268,7 +298,8 @@ void water_launch_resident(
     int32_t* d_surface, int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
     int64_t* d_fx, int64_t* d_fy,
     int h, int w, float dt, float tilt_x, float tilt_y,
-    float g, float damping, float dx, float k_p, float v_max, float depth_eps) {
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps,
+    int n_env, const uint8_t* d_active) {
     const int n = h * w;
     if (n <= 0) return;
 
@@ -300,36 +331,39 @@ void water_launch_resident(
     const bool head_on = (k_p != 0.0f);
     const q16 kp_q = quantize((double)k_p);
 
+    // #29 P5: (N, h, w) on the tick stream; a dormant env (d_active) does
+    // nothing in any kernel.
     const int block = 256;
-    const int grid = (n + block - 1) / block;
+    const dim3 grid = bgrid(n, n_env, block);
+    cudaStream_t st = tstream();
 
     // K1 surface
-    water_surface<<<grid, block>>>(d_depth, d_floor, (d_floor != nullptr),
+    water_surface<<<grid, block, 0, st>>>(d_depth, d_floor, (d_floor != nullptr),
                                    d_atm, head_on ? 1 : 0, kp_q,
                                    tan_tx, tan_ty, cx, cy, dx_d,
-                                   d_surface, h, w);
+                                   d_surface, h, w, d_active);
     cuda_check(cudaGetLastError(), "surface launch");
     // K2 velocity (in-place on d_vx/d_vy)
-    water_velocity<<<grid, block>>>(d_surface, d_vx, d_vy, d_solid,
-                                    g_dt_q, damp_dt_q, v_max_q, recip_two_dx, h, w);
+    water_velocity<<<grid, block, 0, st>>>(d_surface, d_vx, d_vy, d_solid,
+                                    g_dt_q, damp_dt_q, v_max_q, recip_two_dx, h, w, d_active);
     cuda_check(cudaGetLastError(), "velocity launch");
     // K3 flux
-    water_flux<<<grid, block>>>(d_vx, d_vy, d_depth, d_solid, d_fx, d_fy, h, w);
+    water_flux<<<grid, block, 0, st>>>(d_vx, d_vy, d_depth, d_solid, d_fx, d_fy, h, w, d_active);
     cuda_check(cudaGetLastError(), "flux launch");
     // K4 dq
-    water_dq<<<grid, block>>>(d_fx, d_fy, dt_over_dx_q, d_dq_e, d_dq_s, n);
+    water_dq<<<grid, block, 0, st>>>(d_fx, d_fy, dt_over_dx_q, d_dq_e, d_dq_s, n, d_active);
     cuda_check(cudaGetLastError(), "dq launch");
     // K5 scale
-    water_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_depth, d_scale, h, w);
+    water_scale<<<grid, block, 0, st>>>(d_dq_e, d_dq_s, d_depth, d_scale, h, w, d_active);
     cuda_check(cudaGetLastError(), "scale launch");
     // K6 scale-apply (in-place on d_dq_e/d_dq_s)
-    water_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
+    water_scale_apply<<<grid, block, 0, st>>>(d_dq_e, d_dq_s, d_scale, h, w, d_active);
     cuda_check(cudaGetLastError(), "scale-apply launch");
     // K7 diverge (in-place on d_depth)
-    water_diverge<<<grid, block>>>(d_depth, d_dq_e, d_dq_s, h, w);
+    water_diverge<<<grid, block, 0, st>>>(d_depth, d_dq_e, d_dq_s, h, w, d_active);
     cuda_check(cudaGetLastError(), "diverge launch");
     // K8 clamp (in-place on d_depth)
-    water_clamp<<<grid, block>>>(d_depth, d_solid, depth_eps_q, n);
+    water_clamp<<<grid, block, 0, st>>>(d_depth, d_solid, depth_eps_q, n, d_active);
     cuda_check(cudaGetLastError(), "clamp launch");
     // NO sync — stream order guarantees K1<K2<...<K8; the caller owns the one
     // cudaDeviceSynchronize before its D2H (per-call) or tick-end (resident).
@@ -343,7 +377,7 @@ void water_launch_resident(
 // transfer tax water_step pays today).
 namespace {
 struct WaterResidentScratch {
-    int h = 0, w = 0;
+    int n_env = 0, h = 0, w = 0;
     int32_t *surface = nullptr, *dq_e = nullptr, *dq_s = nullptr, *scale = nullptr;
     int64_t *fx = nullptr, *fy = nullptr;
     void free_all() {
@@ -356,11 +390,11 @@ struct WaterResidentScratch {
         surface = dq_e = dq_s = scale = nullptr;
         fx = fy = nullptr;
     }
-    void ensure(int H, int W) {
-        if (H == h && W == w && surface) return;
+    void ensure(int N, int H, int W) {
+        if (N == n_env && H == h && W == w && surface) return;
         free_all();
-        h = H; w = W;
-        const size_t n = (size_t)H * W;
+        n_env = N; h = H; w = W;
+        const size_t n = (size_t)N * H * W;
         cuda_check(cudaMalloc(&surface, n * sizeof(int32_t)), "res malloc surface");
         cuda_check(cudaMalloc(&dq_e, n * sizeof(int32_t)), "res malloc dq_e");
         cuda_check(cudaMalloc(&dq_s, n * sizeof(int32_t)), "res malloc dq_s");
@@ -376,19 +410,22 @@ void water_substeps_resident(
     int32_t* d_depth, int32_t* d_vx, int32_t* d_vy,
     const int32_t* d_floor, const int32_t* d_atm, const bool* d_solid,
     int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
-    float g, float damping, float dx, float k_p, float v_max, float depth_eps) {
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps,
+    int n_env, const uint8_t* d_active) {
     const int n = h * w;
     if (n <= 0 || n_sub <= 0) return;
-    g_water_res.ensure(h, w);
+    // #29 P5: the batch's N envs on the tick stream, NO sync (the tick's one
+    // books D2H at the end of the chain is the stream's sync point).
+    g_water_res.ensure(n_env, h, w);
     for (int s = 0; s < n_sub; ++s) {
         water_launch_resident(d_depth, d_vx, d_vy, d_floor, d_atm, d_solid,
                               g_water_res.surface, g_water_res.dq_e,
                               g_water_res.dq_s, g_water_res.scale,
                               g_water_res.fx, g_water_res.fy,
                               h, w, wdt, tilt_x, tilt_y,
-                              g, damping, dx, k_p, v_max, depth_eps);
+                              g, damping, dx, k_p, v_max, depth_eps,
+                              n_env, d_active);
     }
-    cuda_check(cudaDeviceSynchronize(), "water_substeps_resident sync");
 }
 
 void water_step(

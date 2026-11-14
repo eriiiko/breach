@@ -250,13 +250,40 @@ def test_burnout_when_wall_hp_runs_out():
     # starved once it does). max_ticks re-derived with margin; this scene's
     # step is a bare 3x3 FireSimulation.step call (~0.02s for 5000 ticks),
     # so the larger budget costs nothing measurable.
+    #
+    # RE-DERIVED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R1"): this fixture's `atm=1.0, o2=None` idiom
+    # reads X == 1.0 (n_o2 == n_total == atm), which under the renormalized
+    # sustain law clamps at the NEW o2f_cap == 5.0 (was o2f == 1.0 pre-R1,
+    # since X=1.0 pure-O2-normalized to o2_frac_full==1.0 saturated at
+    # exactly 1). That much bigger `avail` — combined with the R1 I_cap_
+    # per_avail re-size (14.0 -> 0.95, the closed-form value re-derived from
+    # the b1 open-control bench's MEASURED plateau availability, config.toml's
+    # own comment) — lets the fire coast on a much smaller F for much longer
+    # before dying: measured DIES at tick 10834 (wall_hp still 0.52 — an
+    # I_min snap-extinguish, not burn-through). max_ticks re-derived with
+    # margin.
+    #
+    # RE-DERIVED AGAIN (R3, fire session #12, 2026-09-06, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R3"): destruction is now wall_damage*dt*I*hotf, and
+    # this scene supplies NO per-tile fire_T_ext_plane (a bare FireSimulation.
+    # step call), so hotf falls back to the FALLBACK SCALAR fire_T_ext (350,
+    # config default) rather than wood's own per-material plane value (100).
+    # At T=500, fire_T_span=180: hotf = (500-350)/180 = 0.833 — combined with
+    # the wall_damage re-size (0.03 -> 0.01448, f_ref=2.0717), the effective
+    # destruction rate is ~0.4x of pre-R3's, so burnout takes ~2.5x longer:
+    # measured DIES at tick 27591 (wall_hp still deep in fractional-LSB
+    # territory — again an I_min snap-extinguish, not burn-through). max_ticks
+    # re-derived with margin; this scene's step is still a bare 3x3
+    # FireSimulation.step call (cheap), so the larger budget costs nothing
+    # measurable.
     fs = _params_runner()
     sc = _FeedbackScene(I=0.6, T=500.0, wall_hp=3.0, atm=1.0, wind=0.0)
     # Make it a real wall so burn-through can fire if hp hits 0.
     sc.solid[1, 1] = True
     hp0 = float(sc.wall_hp[1, 1])
     last = 0.6
-    for _ in range(6000):
+    for _ in range(35000):
         last = sc.step(fs)
         if last == 0.0:
             break
@@ -270,10 +297,22 @@ def test_burnout_when_wall_hp_runs_out():
 def test_wind_fans_a_big_fire():
     # Same well-fed big fire, with vs without wind. The (1 + k_wind_fan*W) factor
     # means the windy one grows MORE per step (a firestorm forming).
+    #
+    # RE-DERIVED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R1"): this fixture's `atm=1.0, o2=None` idiom
+    # reads X == 1.0, which under the renormalized sustain law clamps at the
+    # NEW o2f_cap == 5.0 (was o2f == 1.0 pre-R1) — combined with the R1
+    # I_cap_per_avail re-size (14.0 -> 0.95, the closed-form value, config.
+    # toml's own comment), growth is now so fast BOTH scenes saturate at
+    # I==1.0 within 3-4 ticks, erasing the comparison by tick 5 (measured:
+    # calm 0.96/windy 1.0 at tick 3, both 1.0 from tick 4 on). Compare
+    # EARLIER in the ramp instead, before saturation swallows the signal — 2
+    # ticks, where windy is still measurably ahead (measured: calm 0.827 vs
+    # windy 0.951 at tick 2).
     fs = _params_runner()
     calm = _FeedbackScene(I=0.6, T=500.0, wall_hp=60.0, atm=1.0, wind=0.0)
     windy = _FeedbackScene(I=0.6, T=500.0, wall_hp=60.0, atm=1.0, wind=1.0)
-    for _ in range(5):
+    for _ in range(2):
         calm.step(fs)
         windy.step(fs)
     assert windy.fire[1, 1] > calm.fire[1, 1], (
@@ -314,6 +353,19 @@ def test_wind_blows_out_a_small_fire():
     # assertion, not a design call: is k_wind_strip meant to be 0 (the
     # blow-out crossover intentionally retired), or is this a dial that
     # should have moved with the rest of the 9016cd7 promotion?
+    #
+    # RE-DERIVED (R1, fire session #12, 2026-09-01, docs/fire_3c_design_
+    # 2026-09-01.md "Ruling R1"): this fixture's `atm=1.0, o2=None` idiom
+    # reads X == 1.0, which under the renormalized sustain law clamps at the
+    # NEW o2f_cap == 5.0 (was o2f == 1.0 pre-R1) — combined with the R1
+    # I_cap_per_avail re-size (14.0 -> 0.95, the closed-form value, config.
+    # toml's own comment), BOTH scenes now settle to a much higher,
+    # closer-together equilibrium than before (calm ~0.250, windy ~0.257 by
+    # tick 1000). The OLD 1.1x margin no longer holds at steady state; windy
+    # is still STRICTLY, measurably ahead of calm throughout the run (ratio
+    # ~1.03 at tick 1000) — that structural fact (fan, not blow-out) is what
+    # this test guards, so the margin is re-derived to the new measured
+    # steady-state ratio (~1.03x) rather than loosened arbitrarily.
     fs = _params_runner()
     assert float(fs.params.k_wind_strip) == 0.0, (
         "k_wind_strip is no longer 0 — the blow-out mechanism may be back; "
@@ -324,7 +376,7 @@ def test_wind_blows_out_a_small_fire():
     for _ in range(1000):
         i_calm = calm.step(fs)
         i_windy = windy.step(fs)
-    assert i_windy > i_calm * 1.1, (
+    assert i_windy > i_calm * 1.02, (
         f"with k_wind_strip dormant, wind should FAN this scene (not blow it "
         f"out) — expected windy strictly ahead of calm (windy={i_windy:.4f}, "
         f"calm={i_calm:.4f})")
@@ -383,7 +435,7 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
         # O2-suction transient that otherwise dominates early (see module
         # note above).
         for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            gmap.gas[O2][cy + dy, cx + dx] = gas_fixed.quantize_scalar(2.0)
+            gmap.gas[O2][cy + dy, cx + dx] = gas_fixed.quantize_bulk_scalar(2.0)
         _step_tick(pr, gmap)
         if t >= OUTWARD_FROM:
             out_n = -float(gmap.wind_y[cy - 1, cx])
@@ -456,11 +508,9 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     #     exchange radiates against the emitter's OWN temperature, so a
     #     synthetically-lit ice-cold tile emits E[0] and correctly heats nothing.
     #     In play a burning tile sits at the ~440 game plateau (P-R4 gate f).
-    #  2. the pair runs at the arc's blessed cool_shift 9 rather than the shipped
-    #     5 — see the same note in tests/test_fire_heat_source.py. P-R5 owns that
-    #     dial; this test owns the spread PATH.
-    g.cool_shift[50, 14] = 9
-    g.cool_shift[50, 16] = 9
+    #  2. T5b step 7: the pair used to run at the arc's blessed cool_shift 9
+    #     rather than the shipped 5. Pass 3 is DELETED (R1), so there is no
+    #     ambient decay to set -- the target's only loss is the sweep itself.
     sim.set_paused(False)
 
     near_peak = 0
@@ -474,9 +524,22 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     assert near_peak > 0, (
         "the near air-separated target never warmed - radiation is not "
         "spreading heat at all")
-    assert near_peak / 65536.0 > 100.0, (
-        f"the near target only reached {near_peak / 65536.0:.1f} game - far "
-        f"below the ~183 the frozen dials deliver")
+    # T5b step 6 (THE FLIP): the `> 100 game` anchor is RETIRED with the law it
+    # measured. It came from P-F1a's frozen dials on the old cast, whose
+    # emission scale was FITTED and is 2419x the derived one (report_p2b.md).
+    # On the sweep, at the derived scale, this scene's near target reaches
+    # 0.1 game -- and that is the PHYSICS, not a regression: a 443-game (736 K)
+    # surface radiating across one air cell delivers ~12 kW to a 154 kg block
+    # of wood with a 249.5 kJ/K heat capacity, i.e. 0.05 K/s. Real fire spread
+    # to heavy timber takes minutes of 10-20 kW/m2, which is design v2 R6's
+    # accepted gap ("thick structure barely auto-ignites") arriving as a number.
+    # What this test protects -- radiation is the ONLY spread path and it does
+    # not leap gaps -- is the near/far CONTRAST, and that is asserted instead.
+    assert near_peak > 4 * int(g.temperature[50, 40]) + 1, (
+        f"the near (air-separated) target, at {near_peak / 65536.0:.3f} game, "
+        f"is not clearly warmer than the far one at "
+        f"{int(g.temperature[50, 40]) / 65536.0:.3f} -- radiation is not "
+        f"reaching across the gap at all")
     # The far tile, with no heat reaching it, stayed cold and unlit -> the old
     # gap-leaping cellular stencil is gone, and the >= grid-diagonal emission
     # rays (v7 rule 4) have NOT quietly become a new one.
@@ -543,10 +606,31 @@ def test_conservative_default_does_not_firestorm_wood_room():
     assert n_wood >= 20
     sim.set_paused(False)
     counts = []
-    for _ in range(5):
-        # hold the seed lit (S3a: integer max on the Q16.16 field)
+    # R3 + HORIZON REPAIR (2026-09-12, fire session #12 sweep) — the twin of
+    # test_fire_heat_source.py::test_lone_fire_does_not_firestorm_in_a_couple_
+    # ticks, same room, same fault, see that test for the full account.
+    #
+    # In short: holding `fire` lit without writing `temperature` produces an
+    # INERT fire after R3 (demand rides `hotf`; wood's fire_T_ext is 100 and
+    # the tile sat at ambient 0). Measured before this fix: peak temperature
+    # anywhere on the map was 0.0. And five ticks is 0.2 s, far too short to
+    # distinguish a gentle fire from a dead one. A negative assertion over an
+    # inert fixture cannot fail, so this could never have caught the 14-tile
+    # flashover of 2026-09-06 — the very thing it exists to catch.
+    for _ in range(200):
+        # hold the seed lit (S3a: integer max on the Q16.16 field) AND hot
         g.fire[y0, x0] = max(int(g.fire[y0, x0]), FIRE_Q(0.8))
+        g.temperature[y0, x0] = max(int(g.temperature[y0, x0]), FIRE_Q(300.0))
         sim.step()
         counts.append(int((g.fire > FIRE_001_Q).sum()))
+    # NON-VACUOUSNESS: the fire must actually have burned.
+    assert int(g.temperature.max()) > FIRE_Q(100.0), (
+        "the seeded fire never heated anything — this fixture is inert and the "
+        "no-firestorm bound below would pass vacuously (check the temperature "
+        "seed against R3's hotf ramp)")
+    # PROPERTY: the SHIPPED [physics.fire] defaults are conservative — one lit
+    # tile does not engulf a wood room. WHAT MUST BREAK IT: a dial or law
+    # change that extends radiative reach far enough to ignite most of a room.
     assert max(counts) < n_wood // 2, (
-        f"a lone fire firestormed the wood room too fast: {counts} of {n_wood}")
+        f"a lone fire firestormed the wood room: {max(counts)} of {n_wood} "
+        f"alight (counts over 200 ticks: {counts[::20]})")

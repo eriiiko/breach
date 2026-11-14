@@ -78,7 +78,7 @@ def _write_png(path: Path, w: int = 8, h: int = 6) -> None:
                      + chunk(b"IEND", b""))
 
 
-BASE_TOML = ('version = "2"\nname = "Wet"\ntilemap = "tilemap.csv"\n'
+BASE_TOML = ('version = "3"\nname = "Wet"\ntilemap = "tilemap.csv"\n'
              'tile_size_m = 0.333\ndiffuse = "diffuse.png"\n\n')
 
 # 8x6 v2 grid: SPACE border, hull ring, 4x2 air interior — every mask class
@@ -242,7 +242,7 @@ def test_seed_masks_solid_and_vacuum_with_counted_warning():
     g = _grid()
     depth = np.full(g.shape, int(water_fixed.quantize(0.5)), dtype=np.int32)
     lvl = LevelData(
-        name="broken_water", version="2", path=Path("."), tilemap=g,
+        name="broken_water", version="3", path=Path("."), tilemap=g,
         tile_size_m=0.333, diffuse_path=Path("."), water_depth_q=depth)
     with pytest.warns(RuntimeWarning) as rec:
         gmap = GameMap(lvl)
@@ -262,7 +262,7 @@ def test_seed_masks_solid_and_vacuum_with_counted_warning():
 def test_clean_seed_does_not_warn(recwarn):
     g = _grid()
     lvl = LevelData(
-        name="clean_water", version="2", path=Path("."), tilemap=g,
+        name="clean_water", version="3", path=Path("."), tilemap=g,
         tile_size_m=0.333, diffuse_path=Path("."),
         water_depth_q=_interior_depth(g, 1.0))
     GameMap(lvl)
@@ -276,7 +276,7 @@ def test_hot_reload_does_not_reflood_a_drained_tank():
     re-flood a tank the player drained."""
     g = _grid()
     lvl = LevelData(
-        name="reflood_guard", version="2", path=Path("."), tilemap=g,
+        name="reflood_guard", version="3", path=Path("."), tilemap=g,
         tile_size_m=0.333, diffuse_path=Path("."),
         water_depth_q=_interior_depth(g, 1.0))
     gmap = GameMap(lvl)
@@ -397,7 +397,7 @@ def test_format_water_lines_schema():
 
 def test_write_water_managed_block_preserves_other_bytes(tmp_path):
     prefix = ("# hand comment stays\n"
-              'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n'
+              'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n'
               "tile_size_m = 0.333\n\n")
     spawn_tbl = '[[spawn]]\nname = "Alpha"\nteam = 0\nx = 3\ny = 4\n\n'
     suffix = ('[bake]\ntileset = "x"\npx_per_tile = 8\nseed = 0\n')
@@ -432,7 +432,7 @@ def test_write_water_all_dry_removes_block_and_file(tmp_path):
     d = tmp_path / "lvl"
     d.mkdir()
     (d / "level.toml").write_text(
-        'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n',
+        'version = "3"\nname = "T"\ntilemap = "tilemap.csv"\n',
         encoding="utf-8", newline="\n")
     depth = np.zeros((4, 4), dtype=np.int32)
     depth[2, 2] = int(water_fixed.quantize(1.0))
@@ -459,7 +459,7 @@ def test_write_water_npy_bak_once_per_session(tmp_path):
     — the same contract as the toml .bak, on water_init.npy's own file."""
     d = tmp_path / "lvl"
     d.mkdir()
-    (d / "level.toml").write_text('version = "2"\n', encoding="utf-8",
+    (d / "level.toml").write_text('version = "3"\n', encoding="utf-8",
                                   newline="\n")
     pre = np.full((3, 3), int(water_fixed.quantize(0.4)), dtype=np.int32)
     np.save(d / WATER_FILENAME, pre)              # pre-session state
@@ -503,7 +503,7 @@ def test_aquarium_demo_level_loads_wet_and_safe():
     GameMap mask (glass-bounded => at-rest, tested bit-exactly in
     test_level_water_physics.py)."""
     lvl = load("aquarium_demo")
-    assert lvl.version == "2"
+    assert lvl.version == "3"
     assert lvl.water_depth_q is not None
     depth_q = lvl.water_depth_q
     wet = depth_q > 0

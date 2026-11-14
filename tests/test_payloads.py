@@ -3,22 +3,22 @@
 What is locked here:
 
   - BYTE-IDENTITY REPLICA (the load-bearing behaviour-preservation proof):
-    executing ``frag_standard`` / ``breach_focus`` through
+    executing a row WITHOUT ``strength`` through
     :func:`execute_payload` reproduces the pre-W3 inline detonation triple
     (apply_explosion -> apply_blast_damage -> add_explosion_smoke ->
     ExplosionEvent) BIT-FOR-BIT — every field array, every unit hp, the
-    event stream, and the RNG end-state;
-  - FULL-SIM DORMANCY (the W2 replica-test pattern): a scripted round with
-    ONLY shipped weapons (a frag grenade + a door charge — no gas, no
-    launcher, no C4) on the W3 code is bit-identical, tick for tick, to a
-    twin sim whose executor is rebound to the verbatim pre-W3 site body —
-    fields, unit hp, synced events, and the generator end-state;
+    event stream, and the RNG end-state (this single-detonation replica is
+    the W3 dormancy gate; the former FULL-SIM, tick-for-tick twin gate ended
+    its job with W3 and pinned the shipped rows' values, so it was deleted
+    per Erik's 2026-10-03 "tests must never break on retuning a config row"
+    ruling);
   - PAYLOAD ROW SHARING: hand-grenade rounds and 40 mm rounds reference THE
     SAME payload row objects (one definition of frag/smoke/tear/poison, two
     deliveries);
   - GAS DEPOSIT EXACTNESS: hand-computed Q16.16 expectations for the radial
-    linear falloff, the [0,1] saturation clamp, the solid skip, slice
-    targeting per species, additivity, and the NO-RNG guarantee;
+    linear falloff, NO ceiling (smoke transport v2 D1: a deposit adds
+    exactly its amount), the solid skip, slice targeting per species,
+    additivity, and the NO-RNG guarantee;
   - INCENDIARY IGNITE RING: fire = max(fire, intensity x falloff) — never
     lowers an existing fire, skips non-flammable tiles;
   - C4 DET-SLOT: the demolition_c4 numbers through the shipped
@@ -41,6 +41,9 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.blast_air import blast_base_soot_g  # noqa: E402
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import gas_fixed, fire_fixed, wall_fixed  # noqa: E402
 from simulation.events import ExplosionEvent, UnitHitEvent  # noqa: E402
@@ -52,12 +55,13 @@ from simulation.gases import (  # noqa: E402
     STEAM,
 )
 from simulation.orders import (  # noqa: E402
-    DET_START_PHASE1, ORDER_EXPLOSIVE, ORDER_GRENADE, Order,
+    DET_START_PHASE1, ORDER_EXPLOSIVE, Order,
 )
-from simulation.payloads import emit_gas, execute_payload, ignite_ring  # noqa: E402
+from simulation.payloads import (blast_smoke_peak, emit_gas,  # noqa: E402
+                                 execute_payload, ignite_ring)
 from simulation.physics import add_explosion_smoke, apply_explosion  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
-from simulation.weapons import get_tables  # noqa: E402
+from simulation.weapons import PayloadTable, get_tables  # noqa: E402
 
 SEED = 20260705
 
@@ -101,7 +105,13 @@ def _prew3_site_replica(gmap, queue, units, fy, fx, payload, rng, events=None,
                     payload.wall_damage)
     apply_blast_damage(units, fx, fy, radius, payload.unit_damage,
                        events=events)
-    add_explosion_smoke(gmap, queue, fy, fx, radius)
+    # RESTATED at #12 handle 3 (2026-10-04): the disc's peak is no longer the
+    # fixed 0.8 but the charge's physical soot (blast_smoke_peak). RESTATED at
+    # #31: the soot is blast_base_soot_g, [blast_air]'s floor and look dial on
+    # it. The air read is 1 in this room, so it adds no scale to replicate.
+    peak = blast_smoke_peak(gmap, fy, fx, radius, blast_base_soot_g(payload))
+    if peak > 0.0:
+        add_explosion_smoke(gmap, queue, fy, fx, radius, amount=peak)
     if events is not None:
         events.append(ExplosionEvent(pos=(fx, fy), radius=radius, kind=kind))
 
@@ -117,25 +127,35 @@ def _twin(edits=()):
     gmap = _room(edits=edits)
     queue = EditQueue()
     m = Unit("M", x=8, y=8, team=0)
-    z = Unit("Z", x=13, y=11, team=1)
+    z = Unit("Z", x=13, y=11, team=ZOMBIE_TEAM)
     m.id, z.id = 1, 2
     m.current_hp = z.current_hp = 1e9
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     return gmap, queue, [m, z], rng, []
 
 
-def test_frag_and_breach_byte_identical_to_prew3_triple():
-    """THE REPLICA GATE: for both shipped payload rows the executor's world
-    is indistinguishable from the pre-W3 inline site — fields, hp, events,
-    and the generator end-state (the smoke noise draws at flush)."""
-    tables = get_tables()
+def test_a_row_without_strength_is_byte_identical_to_prew3_triple():
+    """THE REPLICA GATE, re-pinned at #31: `frag_standard` and `breach_focus` are
+    generic explosions now (tests/test_explosion.py), so the gate moved to what it
+    protects, the executor's path for a row WITHOUT `strength`. Property: its world
+    is indistinguishable from the pre-W3 inline site — fields, hp, events, and the
+    generator end-state (the smoke noise draws at flush). Breaks if the generic
+    path takes over a legacy row or the legacy sequence is reordered. The two rows
+    are the test's own, the two old rows' shapes, so no retune moves them."""
+    table = PayloadTable({
+        "open_frag": dict(radius=2, pressure=0.0, wall_damage=200, unit_damage=60,
+                          emit_blast_smoke=True, explosive="comp_b",
+                          explosive_kg=0.184),
+        "door_charge": dict(radius=3, pressure=5.0, wall_damage=500,
+                            unit_damage=60, emit_blast_smoke=True,
+                            explosive="c4", explosive_kg=0.25)})
     cases = [
-        ("frag_standard", "grenade", 10, 11, ()),          # open-floor frag
-        ("breach_focus", "door_explosive", 9, 12,
+        ("open_frag", "grenade", 10, 11, ()),               # open-floor frag
+        ("door_charge", "door_explosive", 9, 12,
          ((9, 12, 2),)),                                    # charge ON a wood wall
     ]
     for payload_name, kind, fy, fx, edits in cases:
-        payload = tables.payloads.by_name[payload_name]
+        payload = table.by_name[payload_name]
 
         g_a, q_a, units_a, rng_a, ev_a = _twin(edits)
         _prew3_site_replica(g_a, q_a, units_a, fy, fx, payload, rng_a,
@@ -154,70 +174,7 @@ def test_frag_and_breach_byte_identical_to_prew3_triple():
             assert ua.current_hp == ub.current_hp
             assert ua.alive == ub.alive
         assert repr(ev_a) == repr(ev_b)
-        assert rng_a.bit_generator.state == rng_b.bit_generator.state
-
-
-def test_shipped_weapons_full_run_bit_identical_to_prew3():
-    """FULL-SIM DORMANCY (the W2 replica pattern): a scripted round throwing
-    a frag grenade + firing a door charge — and NOTHING W3-new — is
-    bit-identical, tick for tick, between the live W3 code and a twin whose
-    executor is rebound to the verbatim pre-W3 site body. Fields, unit hp,
-    synced events, RNG end-state."""
-    import simulation.combat as combat_mod
-    import simulation.simulation as sim_mod
-
-    def build():
-        sim = Simulation(_level(edits=((9, 12, 2),)), seed=SEED,
-                         breach_physics=bp, enable_recorder=False)
-        m = Unit("M", x=3, y=3, team=0)
-        z = Unit("Z", x=16, y=16, team=1)
-        mid = sim.add_unit(m)
-        sim.add_unit(z)
-        assert sim.apply_action(mid, Order(
-            ORDER_GRENADE, target_fx=11, target_fy=10, phase=0,
-            grenade_fuse=0.5))
-        assert sim.apply_action(mid, Order(
-            ORDER_EXPLOSIVE, target_fx=12, target_fy=9, phase=0,
-            det_slot=DET_START_PHASE1))
-        sim.spawn_projectiles_from_grenade_orders()
-        sim.set_paused(False)
-        return sim
-
-    def run(sim, n=20):
-        traj = []
-        for _ in range(n):
-            sim.set_paused(False)
-            sim.step()
-            snap = {f: np.copy(getattr(sim.gmap, f)) for f in _FIELDS}
-            snap["__events__"] = repr(sim.tick_events)
-            snap["__hp__"] = tuple(u.current_hp for u in sim.units)
-            snap["__alive__"] = tuple(u.alive for u in sim.units)
-            traj.append(snap)
-        return traj, sim.rng.bit_generator.state
-
-    # The W3 path (the live executor).
-    traj_new, rng_new_state = run(build())
-
-    # The pre-W3 twin: rebind BOTH detonation sites' executor binding to the
-    # verbatim inline-site replica (the bare-name import contract).
-    saved_sim, saved_combat = sim_mod.execute_payload, combat_mod.execute_payload
-    sim_mod.execute_payload = _prew3_site_replica
-    combat_mod.execute_payload = _prew3_site_replica
-    try:
-        traj_old, rng_old_state = run(build())
-    finally:
-        sim_mod.execute_payload = saved_sim
-        combat_mod.execute_payload = saved_combat
-
-    assert len(traj_new) == len(traj_old)
-    for t, (sn, so) in enumerate(zip(traj_new, traj_old)):
-        for f in _FIELDS:
-            assert np.array_equal(sn[f], so[f]), \
-                f"tick {t}: field '{f}' diverged from the pre-W3 replica"
-        assert sn["__events__"] == so["__events__"], f"tick {t}: events diverged"
-        assert sn["__hp__"] == so["__hp__"], f"tick {t}: hp diverged"
-        assert sn["__alive__"] == so["__alive__"], f"tick {t}: life diverged"
-    assert rng_new_state == rng_old_state, "RNG stream moved vs pre-W3"
+        assert rng_a.drawn == rng_b.drawn
 
 
 # ---------------------------------------------------------------------------
@@ -240,8 +197,9 @@ def test_hand_and_40mm_rounds_share_the_same_payload_row_objects():
 def test_c4_and_gl6_rows_load_with_their_standard_values():
     t = get_tables()
     c4 = t.payload_for_ammo("demo_c4")
-    assert (c4.radius, c4.pressure, c4.wall_damage, c4.unit_damage) == \
-        (8, 25.0, 800, 150)
+    # #31: a generic explosion keeps its direct damage; its pressure is gone.
+    assert (c4.radius, c4.wall_damage, c4.unit_damage) == (8, 800, 150)
+    assert c4.strength > 0
     assert c4.clear_smoke is True and c4.emit_blast_smoke is True
     gl6 = t.weapons.by_name["gl6_revolver"]
     assert gl6.archetype == "projectile" and gl6.ammo_family == "40mm"
@@ -267,31 +225,43 @@ def _disc_weight(dy, dx, radius):
 
 
 def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
-    """Hand-computed per-tile expectations for smoke_screen (amount 1.5,
-    radius 4): centre saturates to FP_ONE (the [0,1] clamp), every in-disc
-    tile holds quantize(min(1, 1.5 x (1 - d/4))), solid tiles are skipped,
-    the ring d >= 4 is untouched, and ONLY the steam slice moves."""
+    """PROPERTY: hand-computed per-tile expectations for a smoke_screen-shaped
+    deposit (amount 1.5, radius 4): every in-disc tile holds exactly
+    quantize(1.5 x (1 - d/4)) -- the centre 1.5, NOT cut to 1 (smoke
+    transport v2, design §11 D1, Erik 2026-10-04: deposits are additive) --
+    solid tiles are skipped, the ring d >= 4 is untouched, and ONLY the
+    steam slice moves.
+
+    BREAKS IF: the deposit is clamped to [0, 1] again, enters walls, or
+    lands on another slice."""
     gmap = _room(edits=[(10, 13, 1)])     # a hull tile INSIDE the disc
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
-    state_before = rng.bit_generator.state
+    rng = MatchDraws(SEED)
+    state_before = rng.drawn
 
     emit_gas(gmap, queue, 10, 11, "steam", 1.5, 4)
     queue.flush(gmap, rng)
 
     # NO RNG: the deposit is deliberately noise-free (unlike the blast cloud).
-    assert rng.bit_generator.state == state_before
+    assert rng.drawn == state_before
 
     ws = gmap.gas[STEAM]
-    # Centre: weight 1.0 -> 1.5 clamps to 1.0 -> FP_ONE counts exactly.
-    assert int(ws[10, 11]) == gas_fixed.FP_ONE
-    # On-axis d=2: weight 0.5 -> 0.75 -> 49152 counts exactly (hand: .75*2^16).
-    assert int(ws[10, 9]) == 49152
-    # Diagonal d=sqrt(5) (dy=1,dx=2): the float falloff chain, quantized once.
+    # Centre: weight 1.0 -> 1.5 exactly (no ceiling, D1) -> 98304 counts.
+    assert int(ws[10, 11]) == gas_fixed.quantize_trace_scalar(1.5)
+    # On-axis d=2: weight 0.5 -> 0.75 exactly (hand: .75 * TRACE_ONE, #88).
+    assert int(ws[10, 9]) == gas_fixed.quantize_trace_scalar(0.75) == (3 * gas_fixed.TRACE_ONE) // 4
+    # Diagonal d=sqrt(5) (dy=1,dx=2): #29 P3e -- the DISC weight is the Q16
+    # integer falloff_round(1 - sqrt(5)/4), the product with the amount (in
+    # the trace currency) rounded once; within a Q16 weight step (2^-17
+    # relative) of the float chain.
+    from simulation import unit_fixed as ufx
+    wq = ufx.falloff_round(ufx.FP_ONE, 5 << 32, (4 << 16) ** 2)
+    want = ufx.div_round(gas_fixed.quantize_trace_scalar(1.5) * wq, ufx.FP_ONE)
+    assert int(ws[11, 13]) == want
     w = _disc_weight(1, 2, 4.0)
-    assert int(ws[11, 13]) == gas_fixed.quantize_scalar(1.5 * w)
-    # d=3 on-axis: weight 0.25 -> 0.375 -> 24576 counts.
-    assert int(ws[13, 11]) == 24576
+    assert abs(want - gas_fixed.quantize_trace_scalar(1.5 * w)) <=         gas_fixed.quantize_trace_scalar(1.5) / (1 << 17) + 1
+    # d=3 on-axis: weight 0.25 -> 0.375 exactly (3/8 of TRACE_ONE).
+    assert int(ws[13, 11]) == (3 * gas_fixed.TRACE_ONE) // 8
     # The solid tile inside the disc: SKIPPED (gas does not enter walls).
     assert int(ws[10, 13]) == 0
     # Outside the strict disc (d=4 exactly on-axis): untouched.
@@ -304,24 +274,27 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
 
 
 def test_gas_deposit_is_additive_with_saturation_guard():
-    """Two identical deposits: unsaturated tiles double exactly; the core
-    stays clamped at FP_ONE (the saturation guard)."""
+    """PROPERTY: two identical deposits add exactly -- below 1 and above it
+    alike: nothing saturates a trace tile (smoke transport v2 D1).
+
+    BREAKS IF: a ceiling returns at the deposit (the old saturation guard
+    destroyed smoke already on the tile)."""
     gmap = _room()
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     for _ in range(2):
         emit_gas(gmap, queue, 10, 11, "teargas", 0.3, 3)
         queue.flush(gmap, rng)
     tg = gmap.gas[GAS_TEARGAS]
     # Centre: 2 x 0.3 = 0.6 (below clamp) -> quantize(0.3)+combine(0.3) —
-    # the combine dequantizes exactly (n/65536), so twice = quantize(0.6).
-    assert int(tg[10, 11]) == gas_fixed.quantize_scalar(0.6)
-    # Saturation: a 1.5-amount deposit twice stays clamped at FP_ONE.
+    # the combine dequantizes exactly (n/TRACE_ONE), so twice = quantize(0.6).
+    assert int(tg[10, 11]) == gas_fixed.quantize_trace_scalar(0.6)
+    # Above 1: a 1.5-amount deposit twice holds 3.0 at its centre.
     gmap2 = _room()
     for _ in range(2):
         emit_gas(gmap2, queue, 10, 11, "poison", 1.5, 3)
         queue.flush(gmap2, rng)
-    assert int(gmap2.gas[GAS_POISON][10, 11]) == gas_fixed.FP_ONE
+    assert int(gmap2.gas[GAS_POISON][10, 11]) == gas_fixed.quantize_trace_scalar(3.0)
 
 
 def test_gas_payload_species_route_to_their_slices():
@@ -333,7 +306,7 @@ def test_gas_payload_species_route_to_their_slices():
                                ("smoke_screen", STEAM)]:
         gmap = _room()
         queue = EditQueue()
-        rng = np.random.default_rng(SEED)
+        rng = MatchDraws(SEED)
         payload = t.payloads.by_name[row_name]
         execute_payload(gmap, queue, [], 10, 11, payload, rng, events=None,
                         kind="grenade")
@@ -359,7 +332,7 @@ def test_pure_gas_payload_still_emits_the_detonation_event():
     t = get_tables()
     gmap = _room()
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     events = []
     execute_payload(gmap, queue, [], 10, 11, t.payloads.by_name["smoke_screen"],
                     rng, events=events, kind="grenade")
@@ -381,7 +354,7 @@ def test_incendiary_ignite_ring_max_write_never_lowers():
     # north; the centre tile is air (non-flammable -> no deposit).
     gmap = _room(edits=[(10, 12, 2), (10, 13, 2), (9, 11, 6)])
     queue = EditQueue()
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
 
     # Pre-existing BIG fire on the furniture tile — must never lower.
     big_q = fire_fixed.quantize_scalar(0.9)
@@ -418,10 +391,11 @@ def test_c4_det_slot_detonation_with_demolition_numbers():
     m = Unit("M", x=5, y=9, team=0)      # centre (6, 10) -> dist 6 from (0,10)
     mid = sim.add_unit(m)
     m.current_hp = 1e9
+    carried = m.has_explosive            # the loadout's count (#193: 1)
     assert sim.apply_action(mid, Order(
         ORDER_EXPLOSIVE, target_fx=0, target_fy=10, phase=0,
         det_slot=DET_START_PHASE1, ammo_name="demo_c4"))
-    assert m.has_explosive == 1          # the shipped count pool decremented
+    assert m.has_explosive == carried - 1  # the shipped count pool decremented
 
     hp_before = m.current_hp
     sim.set_paused(False)
@@ -438,7 +412,11 @@ def test_c4_det_slot_detonation_with_demolition_numbers():
     hits = [e for e in sim.tick_events if isinstance(e, UnitHitEvent)
             and e.source == "explosion"]
     assert len(hits) == 1 and hits[0].damage == 37.0
-    assert m.current_hp == hp_before - 37.0
+    # #31: the row carries heat now (strength 12, 120 MJ), so the same tick
+    # also lands a credited heat hit. The packet stays exactly 37; every HP
+    # lost is on an event.
+    assert m.current_hp == hp_before - sum(
+        e.damage for e in sim.tick_events if isinstance(e, UnitHitEvent))
     ex = _explosions(sim.tick_events)
     assert len(ex) == 1 and ex[0].kind == "door_explosive" and ex[0].radius == 8
 
@@ -446,3 +424,20 @@ def test_c4_det_slot_detonation_with_demolition_numbers():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_an_explosion_event_built_the_old_way_keeps_its_fields_and_repr():
+    """G4 #75 (design §6 N3): the event's look fields (strength, flash,
+    flash_decay_s, flash_color, approach) DEFAULT to what a row without strength
+    or flash fills, so a three-argument construction equals one that names those
+    defaults, repr included (the replica gate above compares reprs), and the
+    original fields read as before. BREAKS IF: a new field loses its default, or
+    a default stops being the no-strength / no-flash value."""
+    old = ExplosionEvent(pos=(3, 4), radius=2, kind="grenade")
+    full = ExplosionEvent(pos=(3, 4), radius=2, kind="grenade", strength=0.0,
+                          flash=0.0, flash_decay_s=0.3,
+                          flash_color=(1.0, 1.0, 1.0), approach=None)
+    assert old == full and repr(old) == repr(full)
+    assert (old.pos, old.radius, old.kind) == ((3, 4), 2, "grenade")
+    assert old.strength == 0.0 and old.flash == 0.0 and old.approach is None
+    assert isinstance(old.flash_color, tuple)

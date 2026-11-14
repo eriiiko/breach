@@ -19,6 +19,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
         sys.path.insert(0, str(_p))
 
 from level_loader import load as load_level  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
@@ -48,7 +49,7 @@ def test_the_level_loads(level):
 
 def test_it_fields_both_sides(level):
     marines = [s for s in level.spawns if s.team == 0]
-    zombies = [s for s in level.spawns if s.team == 1]
+    zombies = [s for s in level.spawns if s.team == ZOMBIE_TEAM]
     assert len(marines) == 4
     assert len(zombies) == 5
 
@@ -58,7 +59,7 @@ def test_round_one_is_a_planning_round_not_a_brawl(level):
     the player gets to plan before anything happens."""
     sim = _sim(level)
     marines = [u for u in sim.units if u.team == 0]
-    zombies = [u for u in sim.units if u.team == 1]
+    zombies = [u for u in sim.units if u.team == ZOMBIE_TEAM]
     closest = min(abs(m.x - z.x) + abs(m.y - z.y)
                   for m in marines for z in zombies)
     assert closest > 40
@@ -101,7 +102,7 @@ def test_the_bulkhead_actually_separates_the_rooms(level):
     """A marine must not simply be able to walk around the door."""
     sim = _sim(level)
     marine = next(u for u in sim.units if u.team == 0)
-    zombie = next(u for u in sim.units if u.team == 1)
+    zombie = next(u for u in sim.units if u.team == ZOMBIE_TEAM)
     assert not sim.gmap.has_los(marine.center_tile_y(), marine.center_tile_x(),
                                 zombie.center_tile_y(), zombie.center_tile_x())
 

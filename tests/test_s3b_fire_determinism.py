@@ -1,18 +1,22 @@
 """S3b fire DISCRETE-OUTPUT determinism + overflow stress (the fire-specific gates).
 
-The S3b integer logistic makes two DISCRETE control-flow outputs that drive synced
-state and MUST be bit-deterministic (plan §5.3, §6):
+The S3b integer logistic makes DISCRETE control-flow outputs that drive synced state
+and MUST be bit-deterministic (plan §5.3, §6) — the EXTINGUISH FLIP
+(`I_next < I_min -> 0`) and the BURN-THROUGH LIST (`wall_hp <= 0 -> destroyed`,
+which drives `destroy_wall`, a topology change). Both are integer compares on
+integer fields, so bit-identical by construction.
 
-  * the EXTINGUISH FLIP — `I_next < I_min -> 0` snaps a fire out; a 1-LSB slip would
-    flip it on a different tick on a peer -> desync (the renderer's fire on/off).
-  * the BURN-THROUGH LIST — `wall_hp <= 0 -> destroyed` drives `destroy_wall` (a
-    topology change). The (y,x) list + the tick it lands on must be identical.
+WHAT THIS FILE STILL GATES (2026-09-12): the SHOCKWAVE-FANNED firestorm overflow
+stress — a grenade wave driven through a blaze at the worst-case W = |wind| via
+sqrt_q16, so the logistic chain and the int64 radicand are exercised without an
+int64->int32 narrow overflow — and the cross-config self-match, which also proves
+different configs produce different fields.
 
-Both are integer compares on integer fields -> bit-identical by construction. These
-tests assert that empirically across an ignite -> firestorm -> starve -> extinguish
-trajectory (run twice, same seed), AND drive a SHOCKWAVE-FANNED firestorm (a grenade
-wave through a blaze, the worst-case W = |wind| via sqrt_q16) so the logistic chain +
-the int64 radicand are exercised without an int64->int32 narrow overflow.
+The run-twice trajectory gate that used to assert the two discrete outputs directly
+was RETIRED — see the note above `test_shockwave_fanned_firestorm_no_overflow` for
+why (its burn-through claim was vacuous, and never was anything else). Run-to-run
+field determinism is covered by GOLDEN_AGGREGATE, the A/B harness and the field
+digests.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_s3b_fire_determinism.py -q
@@ -36,17 +40,6 @@ from simulation import fire_fixed, wave_fixed, atmosphere_fixed, wall_fixed  # n
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 SEED = 31337
-# RESTATE (fire-family triage, 2026-08-30, dial promotion 9016cd7: k_die
-# 2.0->0.008 slows the whole decay tail ~250x): 90 ticks no longer reaches
-# the extinguish flip (measured: still 9 lit cells, mean intensity 0.90->
-# ~0.80 by tick 90 — barely moved). Measured directly: the trajectory DOES
-# still fully extinguish, at tick 5571 (~2.6s of wall-clock for one run of
-# this harness) — re-derived with ~11% margin. The bit-identical-run-to-run
-# property itself is unaffected either way (it is checked every tick, 0..
-# TICKS-1, regardless of when/whether extinguish happens); only the "a real
-# extinguish flip was actually exercised" non-vacuity check needed the
-# longer horizon.
-TICKS = 6200
 SY, SX = 8, 8
 
 
@@ -71,57 +64,24 @@ def _make_sim() -> Simulation:
     return sim
 
 
-def _run_trajectory():
-    """Ignite -> firestorm (held + wind-fanned) -> starve -> extinguish. Returns the
-    per-tick fire-field snapshots, the per-tick destroyed-wall lists, and the
-    per-tick lit-cell counts."""
-    sim = _make_sim()
-    g = sim.gmap
-    seed_q = fire_fixed.quantize_scalar(0.9)
-    wind_q = atmosphere_fixed.quantize_scalar(2.0)
-    fire_snaps = []
-    destroyed_per_tick = []
-    lit = []
-    hold_until = 30
-    for t in range(TICKS):
-        if t < hold_until:
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    g.fire[SY + dy, SX + dx] = max(int(g.fire[SY + dy, SX + dx]), seed_q)
-        if 5 <= t < hold_until:
-            g.wind_x[:] = wind_q
-        if t == 5:
-            g.wave_source[SY, SX + 5] = wave_fixed.quantize_scalar(8.0)
-        # Snapshot the destroyed-wall list this tick (the burn-through control output).
-        solid_before = g.solid.copy()
-        sim.set_paused(False)
-        sim.step()
-        # Walls that became non-solid this tick (burn-through or breach).
-        newly = np.argwhere(solid_before & (~g.solid))
-        destroyed_per_tick.append([tuple(int(v) for v in yx) for yx in newly])
-        fire_snaps.append(g.fire.copy())          # int32 Q16.16 (exact compare)
-        lit.append(int((g.fire > fire_fixed.quantize_scalar(0.01)).sum()))
-    return fire_snaps, destroyed_per_tick, lit
-
-
-def test_fire_field_and_burnthrough_list_bit_identical_run_twice():
-    """The extinguish-flip tick AND the burn-through destroyed-tile list are
-    bit-identical across two runs of the ignite->firestorm->starve->extinguish
-    trajectory (the discrete-output determinism gate)."""
-    fa, da, la = _run_trajectory()
-    fb, db, lb = _run_trajectory()
-    assert len(fa) == len(fb) == TICKS
-    for t in range(TICKS):
-        assert np.array_equal(fa[t], fb[t]), (
-            f"fire field diverged run-to-run at tick {t} (discrete logistic desync)")
-        assert da[t] == db[t], (
-            f"burn-through destroyed-tile list diverged at tick {t}: {da[t]} != {db[t]}")
-    assert la == lb, "lit-cell trajectory diverged run-to-run"
-    # The trajectory MUST actually exercise the discrete events (ignite then later a
-    # full extinguish), else the gate is vacuous.
-    assert max(la) > 1, f"the firestorm never spread (peak lit {max(la)}) — not a real trajectory"
-    assert la[-1] == 0, f"the fire never extinguished (final lit {la[-1]}) — no extinguish flip exercised"
-
+# RETIRED 2026-09-12 (Erik's ruling, fire session #12 fixture sweep):
+# `_run_trajectory` and `test_fire_field_and_burnthrough_list_bit_identical_
+# run_twice` are gone. Its headline claim -- "the burn-through destroyed-tile
+# list is bit-identical run-to-run" -- was VACUOUS: measured over the full
+# 6200-tick run, ZERO burn-throughs and ZERO tiles destroyed, so the assertion
+# compared two empty lists 6200 times. Its own non-vacuity guard (`max(la) > 1`)
+# also passed on the 3x3 seed alone, peak lit being exactly 9 -- the fire never
+# spread at all.
+#
+# NOT an R3 regression: seeding temperature (the fix applied elsewhere in this
+# sweep) does not restore it -- still zero destroyed, still peak 9. The scenario
+# has never produced the event it asserted on. Its one real half, run-to-run
+# fire-field self-match, is covered far better by GOLDEN_AGGREGATE, the A/B
+# harness and the field digests, and it cost 7.4 s of the suite -- 97% of this
+# file's runtime -- to assert it.
+#
+# The two gates below are KEPT: both work, neither is vacuous, and together they
+# cost 0.24 s.
 
 def test_shockwave_fanned_firestorm_no_overflow():
     """Drive a grenade shockwave through a blaze (the worst-case W = |wind| via
@@ -231,7 +191,21 @@ def test_cross_config_self_match():
     # Erik, 2026-08-18: "maximum intensity in 5 ticks is NOT what i want, but we
     # are not at tuning yet, we need to make sure all the systems WORK before
     # tuning." Recorded on the post-pressure retune list (docs/TODO.md item 3).
-    window = dict(ticks=10, seed_i=0.1)
+    #
+    # WINDOW RE-DERIVED AGAIN (R1, fire session #12, 2026-09-01, docs/fire_3c_
+    # design_2026-09-01.md "Ruling R1"): this scene's `atm=1.0` idiom reads
+    # X == 1.0, which under the renormalized sustain law clamps at the NEW
+    # o2f_cap == 5.0 (was o2f == 1.0 pre-R1) — combined with the R1
+    # I_cap_per_avail re-size (14.0 -> 0.95, the closed-form value, config.
+    # toml's own comment), saturation is now even faster: at the old window
+    # (seed 0.1 @ 10 ticks) all three configs are already pegged at the cap
+    # by tick 5 (measured). Measured saturation at the NEW law, centre cell,
+    # X = 1.0: seed 0.02 -> configs still clearly separated (not saturated)
+    # through tick 2 (measured tick-2 values 6376/5061/48984); the fastest
+    # config (dt=1/12) is already capped by tick 3. Same repair policy as
+    # before: shrink the seed/window, do NOT feed it ambient air
+    # (that would make this partly an O2 test).
+    window = dict(ticks=2, seed_i=0.02)
     results = []
     for cfg in configs:
         a = _drive_isolated_fire(**cfg, **window)

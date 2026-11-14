@@ -1,0 +1,19 @@
+{
+  "saved_file_reopened": true,
+  "independent_character_bag_weapon": true,
+  "no_rig_introduced": true,
+  "vertical_camera": [
+    0.0,
+    0.0,
+    -1.0
+  ],
+  "surface_emission_disabled": true,
+  "review_renders_present": [
+    "front",
+    "side",
+    "back",
+    "three_quarter",
+    "top_down_vertical",
+    "top_down_tilted_readability"
+  ]
+}

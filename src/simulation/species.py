@@ -192,7 +192,7 @@ HUMAN = SpeciesDef(
 # foundation decision above), so this is the STATE'S profile overlay rather
 # than a species field: damage.mitigation_for selects it on ``unit.is_zombie``
 # at damage time — exactly the predicate the dissolved special case used, so
-# construction with team=1, end-of-round conversion, and direct flag flips
+# construction with team=ZOMBIE_TEAM, conversion, and direct flag flips
 # all behave as before. resist_mult[HEAT] REPLACES the old
 # ``if u.is_zombie: dmg *= CFG.zombie.fire_damage_multiplier`` branch in the
 # heat response (a vulnerability is just a resistance above 1); the shipped
@@ -226,7 +226,8 @@ ZOMBIE_MITIGATION = build_mitigation(resist_mult={
 # species, so the zombie's `stability` is selected on ``unit.is_zombie`` at
 # exchange time (exchange._stability_for) instead of living on a species
 # EnvironmentProfile. 0.9 = shamblers topple a little easier than a braced
-# marine (effective knockdown threshold = knockdown_dv_threshold * 0.9).
+# marine (they go down at 0.9x the wind speed: the unit impulse law floors a
+# unit at an effort of stability^2 = 0.81 of its hold, G5p).
 # STANDARD VALUE for Erik to tune (mechanics/06 §8) — since P5 SOURCED from
 # ``[zombie] stability`` in config.toml (feel comment + range there), read
 # ONCE at module import, snapped onto the Q16.16 grid at definition (door 2;

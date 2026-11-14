@@ -7,9 +7,12 @@ backstop; these tests lock the data layer itself):
   - the three tables load from the real config.toml (rows present, columns
     typed as authored);
   - re-home equivalence LITERALS: k5_carbine == the old [weapons.rifle]
-    numbers (10 / 5 / 3.0 / 90 / 1 + the cadence derivation), frag_standard ==
-    the old grenade blast (5 / 10.0 / 200 / 60), breach_focus == the old door
-    charge (3 / 5.0 / 500 / 60), hand_grenade == the old fuse/throw knobs;
+    numbers (10 / 5 / 3.0 / 90 / 1 + the cadence derivation), breach_focus ==
+    the old door charge (3 / 5.0 / 500 / 60), hand_grenade == the old
+    fuse/throw knobs. ``frag_standard`` is Erik's live tunable (shared by the
+    hand grenade and the 40 mm round) and is retuned often, so only its
+    STRUCTURAL resolution is gated (2026-10-03 ruling: tests must never break
+    on retuning a config row) — never its column values;
   - the grenade travel-speed representation: the Projectile-consumed
     travel_speed_tiles_per_second is EXACTLY the old 30.0, and the W2
     data-of-record speed_tiles_per_tick is exactly consistent with it at the
@@ -37,6 +40,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import CFG, ticks_from_seconds  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.weapons import (  # noqa: E402
     WEAPON_ARCHETYPES, WeaponsTables, get_tables,
 )
@@ -64,7 +68,11 @@ def test_archetypes_are_the_closed_six():
 # ---------------------------------------------------------------------------
 # Re-home equivalence: the literal old numbers, bit-for-bit
 # ---------------------------------------------------------------------------
-def test_k5_carbine_equals_the_old_rifle():
+def test_k5_carbine_keeps_the_old_rifle_but_its_rate():
+    """The re-homed k5 keeps the old rifle's round, cone, range and cost; its
+    RATE and MAGAZINE are gameplay pack G2p's (Erik, 2026-11-10: one round
+    per pull, 12 a second, 30 to the magazine), which a re-tune of the rate
+    is free to move again but a re-homing mistake in the rest would break."""
     t = get_tables()
     k5 = t.weapons.by_name["k5_carbine"]
     round_556 = t.ammo.by_name["rifle_556_standard"]
@@ -72,49 +80,49 @@ def test_k5_carbine_equals_the_old_rifle():
     assert k5.ammo_family == "rifle_556" == round_556.family
     assert round_556.damage == 10                  # was damage_per_bullet
     assert round_556.dtype == "kinetic"
-    assert k5.shots_per_trigger == 5               # was bullets_per_burst
+    assert k5.shots_per_trigger == 1               # was bullets_per_burst 5 (G2p)
     assert k5.spread_deg == 3.0                    # was cone_half_angle_degrees
     assert k5.spread_snap_deg == 3.0               # single cone until W2
     assert k5.range_tiles == 90
     assert k5.ap_cost == 1
-    # The cadence derivation moved onto the row — same helper, same input
-    # (0.16666667 s, the old burst_interval_seconds), same integer out.
+    # The cadence derivation lives on the row — one helper, the row's own
+    # seconds in, an integer out; 1/12 s is two ticks at the shipped 24 tps.
     tps = CFG.clock.ticks_per_second
-    assert k5.rof_interval_seconds == 0.16666667
-    assert k5.rof_interval_ticks == ticks_from_seconds(0.16666667, tps)
+    assert k5.rof_interval_ticks == ticks_from_seconds(
+        k5.rof_interval_seconds, tps)
+    assert tps != 24 or k5.rof_interval_ticks == 2
+    assert k5.mag_size > 0 and k5.reload_ticks > 0   # tracked since G2p
 
 
-def test_frag_standard_equals_the_old_grenade_blast():
+def test_grenade_frag_ammo_resolves_to_a_payload_row():
+    """Structural property only: [ammo.grenade_frag] resolves to a payload
+    row that EXISTS in the payload table (the W1 re-home wiring). It never
+    pins frag_standard's column values — Erik keeps retuning that row (it is
+    shared by the hand grenade and the 40 mm round), and a test pinning
+    tunable values broke on every retune (2026-10-03 ruling). Breaks if the
+    ammo->payload cross-ref wiring is removed or mis-resolved, not if the row's
+    numbers change."""
     t = get_tables()
     frag = t.payloads.by_name["frag_standard"]
-    assert frag.radius == 5                        # was blast_radius
-    assert frag.pressure == 10.0
-    assert frag.wall_damage == 200
-    assert frag.unit_damage == 60
-    # W3 smoke boolean split (the W1 finding of record): BOTH true — the
-    # inner clear (data-of-record, inside apply_explosion in v1) AND the
-    # live add_explosion_smoke gate.
-    assert frag.clear_smoke is True
-    assert frag.emit_blast_smoke is True
-    assert frag.gas_species == "" and frag.gas_amount == 0.0
-    # ...and the grenade round resolves to it.
     assert t.payload_for_ammo("grenade_frag") is frag
 
 
-def test_breach_focus_equals_the_old_door_explosive():
+def test_breach_focus_keeps_the_old_door_explosive_reach():
+    """Re-pinned at #31: the door charge is a generic explosion, so its pressure
+    is gone and it is a strength row; its reach and wall damage are the old
+    charge's, and `unit_damage` is 0 so the row does not hurt its planter."""
     t = get_tables()
     breach = t.payloads.by_name["breach_focus"]
     assert breach.radius == 3
-    assert breach.pressure == 5.0
+    assert breach.strength > 0
     assert breach.wall_damage == 500
-    assert breach.unit_damage == 60
+    assert breach.unit_damage == 0
     # "rest zero/empty" — the unlisted columns default.
     assert breach.gas_species == "" and breach.gas_amount == 0.0
     assert breach.gas_radius == 0
     assert breach.ignite_radius == 0.0 and breach.ignite_intensity == 0.0
     # W3 smoke boolean split (the W1 finding of record): the door charge
-    # carries BOTH booleans true, or it silently loses its smoke the day the
-    # executor takes over (mechanics/03 §8 — this was the whole warning).
+    # carries BOTH booleans true; the strength door now requires the second.
     assert breach.clear_smoke is True
     assert breach.emit_blast_smoke is True
     assert t.payload_for_ammo("demo_breach") is breach
@@ -159,7 +167,8 @@ def test_breach_charge_row():
 # ---------------------------------------------------------------------------
 # Validation is loud (dict-built minimal configs — the GasTable test path)
 # ---------------------------------------------------------------------------
-_WEAPON_OK = {"archetype": "projectile", "ammo_family": "f"}
+_WEAPON_OK = {"archetype": "projectile", "ammo_family": "f",
+              "loudness": 10.0}   # G9p: required on a row that fires
 _AMMO_OK = {"family": "f", "dtype": "kinetic"}
 
 
@@ -222,6 +231,10 @@ def test_bad_dtype_rejected():
 def test_missing_required_columns_are_loud():
     with pytest.raises(KeyError, match="archetype"):
         _build({"w": {"ammo_family": "none"}}, {}, {})
+    # G9p: a row that fires is a noise -- its loudness is required.
+    with pytest.raises(KeyError, match="loudness"):
+        _build({"w": {"archetype": "hitscan", "ammo_family": "f"}},
+               {"a": {"family": "f", "dtype": "kinetic"}}, {})
     with pytest.raises(KeyError, match="family"):
         _build({"w": dict(_WEAPON_OK)}, {"a": {"dtype": "kinetic"}}, {})
 
@@ -231,7 +244,7 @@ def test_missing_required_columns_are_loud():
 # ---------------------------------------------------------------------------
 def test_unit_weapon_id():
     marine = Unit("M1", x=5, y=5, team=0)
-    zombie = Unit("Z1", x=8, y=8, team=1)
+    zombie = Unit("Z1", x=8, y=8, team=ZOMBIE_TEAM)
     assert marine.weapon_id == "k5_carbine"
     assert zombie.weapon_id == ""
 
@@ -241,7 +254,8 @@ def test_unit_weapon_id():
 # ---------------------------------------------------------------------------
 def test_lance_3_row_equals_the_armory():
     """mechanics/03 §6: hitscan, cell_laser, 0.1°/0.1°, range 60, 1 @ 0.5 s,
-    crit 0 (HITSCAN does not crit in v1), mass 4.1, loudness 0.1."""
+    crit 0 (HITSCAN does not crit in v1), mass 4.1, loudness 0.1 (x 30 m
+    since G9p: 3 m of hearing radius)."""
     t = get_tables()
     lance = t.weapons.by_name["lance_3"]
     cell = t.ammo.by_name["cell_laser_standard"]
@@ -255,7 +269,7 @@ def test_lance_3_row_equals_the_armory():
         0.5, CFG.clock.ticks_per_second)
     assert lance.crit_chance == 0.0
     assert lance.mass_kg == 4.1
-    assert lance.loudness == 0.1
+    assert lance.loudness == 3.0
     assert cell.damage == 25
     assert cell.dtype == "energy"
     assert cell.ap == 0

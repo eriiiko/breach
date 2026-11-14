@@ -50,7 +50,7 @@ from config import CFG
 from simulation import charges, engagement
 from simulation.action_registry import ActionDef
 from simulation.combat import Projectile, mag_gate, mag_spend, _dispatch_trigger
-from simulation.movement import FootprintSamples, default_speed
+from simulation.movement import default_speed, footprint_samples
 from simulation.orders import (
     ORDER_AMBUSH, ORDER_DETONATE, ORDER_EXPLOSIVE, ORDER_GRENADE, ORDER_HOLD,
     ORDER_MARK, ORDER_MOVE, ORDER_MOVE_SHOOT, ORDER_OVERWATCH, ORDER_SHOOT,
@@ -58,7 +58,9 @@ from simulation.orders import (
 )
 from simulation.status import composed_flags
 from simulation.weapons import FIRE_ORDER_ARCHETYPES
+from simulation import turning as _turning
 from simulation import unit_fixed
+from simulation.unit_schema import MAG_UNBOUND
 
 try:
     from pathfinding import astar
@@ -152,8 +154,11 @@ def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     the weapon table's meter->tile derivation.
     """
     base = base_ticks_per_tile(gmap)
-    samples = FootprintSamples(
-        mobility=gmap.footprint_mobility(fy, fx, unit.footprint))
+    from simulation import unit_impulse
+    samples = footprint_samples(
+        gmap, fy, fx, unit.footprint,
+        effort_scale_q16=unit_impulse.effort_scale_q16(
+            unit_impulse.table_for(gmap), unit))   # G5p-a2, at compile time
     terrain = default_speed(samples, base)
     pct = speed_pct(order_type, reversing)
     if pct >= 1.0:
@@ -482,7 +487,7 @@ def drive_units(sim) -> None:
     charges.tick(sim)
 
     for u in sim.units:
-        if u.team == 0 and u.alive:
+        if not u.is_zombie and u.alive:
             _advance_movement(sim, u)
     # Ambush barriers are evaluated ONCE, between the passes: every member's
     # readiness is read from the same post-movement world, so a group whose
@@ -490,7 +495,7 @@ def drive_units(sim) -> None:
     # and not in an order that depends on where a unit sits in the roster.
     engagement.update_ambush(sim)
     for u in sim.units:
-        if u.team == 0 and u.alive:
+        if not u.is_zombie and u.alive:
             _resolve_action(sim, u)
 
 
@@ -541,7 +546,9 @@ def _advance_movement(sim, unit) -> None:
         # schedule after it does not shift.
         return
     unit.face_towards(nx, ny)
-    unit.x, unit.y = nx, ny
+    # #29 P3c: the compiled path's interpolated position, quantized ONCE at
+    # the float door (its (st + 1) / step_ticks fractions are off the grid).
+    unit.set_pos(nx, ny)
 
 
 def occupied_by_unit(sim, unit, nx: float, ny: float) -> bool:
@@ -631,7 +638,7 @@ def _ambush_tick(sim, unit, step) -> None:
     """
     if not engagement.ambush_may_fire(sim, unit, step):
         return
-    target = _shot_target(sim, step)
+    target = _shot_target(sim, unit, step)
     if target is not None and _fire_at(sim, unit, target):
         step.fired_ticks += 1
 
@@ -707,7 +714,7 @@ def _shoot_tick(sim, unit, step) -> None:
     and archetype dispatch are the shipped combat path verbatim; the only
     OnePhaseWEGO-specific input is the situational spread (§7).
     """
-    target = _shot_target(sim, step)
+    target = _shot_target(sim, unit, step)
     if target is None:
         return
     if _fire_at(sim, unit, target, order_type=step.order_type,
@@ -759,20 +766,21 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
     # (§9). ``sim.cover`` is passed even when empty — it is the LIST, not its
     # contents, that selects the model.
     _dispatch_trigger(sim.gmap, sim.units, unit, ux, uy, tx, ty, sim.tick,
-                      sim.shots, sim.real_time, sim.rng, sim.tick_events,
+                      sim.shots, sim.real_time, sim.draws, sim.tick_events,
                       sim.bullets, weapon, spread, sim.edit_queue,
                       cover=sim.cover, facing_defense=True)
-    mag_spend(unit, weapon, sim.tick)
+    mag_spend(unit, weapon, sim.tick, events=sim.tick_events)
     unit.last_fire_tick = sim.tick
     return True
 
 
-def _shot_target(sim, step):
+def _shot_target(sim, unit, step):
     tid = getattr(step.order, "target_unit_id", None)
     if tid is None:
         return None
     target = sim.get_unit(tid)
-    if target is None or not target.alive or target.team == 0:
+    # An enemy of the SHOOTER (#119): any other team, not "not team 0".
+    if target is None or not target.alive or target.team == unit.team:
         return None
     return target
 
@@ -814,7 +822,7 @@ def swap_weapon(sim, unit, step) -> None:
         return
     unit.active_slot = 1 - int(getattr(unit, "active_slot", 0))
     unit.weapon_id = loadout[unit.active_slot]
-    unit.current_mag = None
+    unit.current_mag = MAG_UNBOUND
     unit.reload_done_tick = -1
     unit.spray_ticks_left = 0
     unit.spray_order = None
@@ -842,7 +850,9 @@ def set_overwatch(sim, unit, step) -> None:
                    float(half)))
     unit.overwatch_facing = facing
     unit.overwatch_half_deg = half
-    unit.facing = facing
+    # The overwatch bearing is the facing TARGET (G5p-a1: the turning law
+    # turns the unit there; nothing writes a facing directly).
+    _turning.set_target(unit, unit_fixed.quantize_scalar(facing))
 
 
 def throw_grenade(sim, unit, step) -> None:
@@ -867,6 +877,7 @@ def throw_grenade(sim, unit, step) -> None:
                       else 2.0),
         thrown_tick=sim.tick,
         ammo_name=(getattr(order, "ammo_name", None) or "grenade_frag"),
+        owner_id=getattr(unit, "id", -1),
     )
     sim.projectiles.append(proj)
 

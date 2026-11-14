@@ -44,7 +44,8 @@ def _clear_air_anchor(g: GameMap, footprint: int = 3):
 
 def test_unit_is_soft_body_not_obstacle():
     """(a) unit tiles NOT in obstacles, (b) dyn_permeability == partial value,
-    (c) dyn_light_atten still opaque (shadow unchanged)."""
+    (c) dyn_light_atten_q still opaque (shadow unchanged; the float twin this
+    read until P6c went with the render march)."""
     g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     u = Unit("U1", x=ax, y=ay, team=0)
@@ -62,8 +63,8 @@ def test_unit_is_soft_body_not_obstacle():
         assert g.dyn_permeability[ty, tx] == expected_perm, \
             f"unit tile ({tx},{ty}) perm {g.dyn_permeability[ty, tx]} != {expected_perm}"
         # (c) still casts a solid (opaque) shadow.
-        assert np.array_equal(g.dyn_light_atten[ty, tx], [1.0, 1.0, 1.0]), \
-            f"unit tile ({tx},{ty}) shadow changed: {g.dyn_light_atten[ty, tx]}"
+        assert np.all(g.dyn_light_atten_q[ty, tx] == 65536), \
+            f"unit tile ({tx},{ty}) shadow changed: {g.dyn_light_atten_q[ty, tx]}"
 
     # obstacles is now walls-only == solid set.
     assert np.array_equal(g.obstacles, g.solid), \

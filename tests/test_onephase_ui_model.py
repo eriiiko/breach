@@ -21,10 +21,13 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
+from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation import orders as O  # noqa: E402
 from simulation.ruleset import OnePhaseWEGO, TwoPhaseWEGO  # noqa: E402
 from simulation.simulation import Simulation  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.turning import place as _place_facing  # noqa: E402
+from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
 import ui  # noqa: E402
 
 TPS = CFG.clock.ticks_per_second
@@ -55,7 +58,7 @@ def _marine(sim, x=6.0, y=6.0, name="m"):
 
 
 def _zombie(sim, x=20.0, y=6.0, name="z"):
-    u = Unit(name, x=x, y=y, team=1)
+    u = Unit(name, x=x, y=y, team=ZOMBIE_TEAM)
     sim.add_unit(u)
     return u
 
@@ -424,7 +427,7 @@ def test_the_clock_counts_down_and_expires(monkeypatch):
 def test_an_unseen_enemy_is_not_drawable():
     sim = _sim()
     m = _marine(sim, 6.0, 6.0)
-    m.facing = 0.0                              # looking east
+    _place_facing(m, _q_rad(0.0))  # looking east
     behind = _zombie(sim, 6.0, 30.0, name="behind")
     ahead = _zombie(sim, 24.0, 6.0, name="ahead")
     drawable = {u.id for u in ui.drawable_enemies(sim, 0)}
@@ -455,7 +458,7 @@ def test_both_flashlight_variants_exist():
 def test_during_planning_the_flashlight_aims_at_the_cursor():
     sim = _sim()
     u = _marine(sim, 6.0, 6.0)
-    u.facing = 0.0
+    _place_facing(u, _q_rad(0.0))
     aimed = ui.flashlight_cones(sim, 0, cursor_tile=(7, 30), paused=True)[0]
     assert aimed.facing != pytest.approx(0.0)
     free = ui.flashlight_cones(sim, 0, cursor_tile=(7, 30), paused=False)[0]

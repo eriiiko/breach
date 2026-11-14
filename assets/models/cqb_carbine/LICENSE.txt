@@ -1,0 +1,24 @@
+Breach -- CQB carbine game model (#160)
+=======================================
+
+FILES
+  cqb_carbine.glb    textured carbine: one mesh, 40,000 faces, 2048 px base colour, metallic-roughness
+                     and normal maps embedded. No skeleton; it is a prop attached to a hand bone.
+                     Units: TRELLIS-normalised (longest side 1.0, long axis X, muzzle +X, up +Z);
+                     scale to the weapon's length (0.70 m) when attaching.
+
+ORIGIN (generated locally, 2026-11-02, Erik's pick)
+  1. Concept: SDXL 1.0 base text-to-image (the middle gun of three, art/weapons/cqb_carbine/
+     origin_sdxl_three_rifles.png), cleaned into a side-view render with FLUX.1 Kontext [dev]
+     (art/weapons/cqb_carbine/concept.png; a fake watermark painted out).
+  2. 3D: TRELLIS.2 (Microsoft, MIT licence) image-to-3D in ComfyUI, remeshed, decimated to
+     40k faces, UV-unwrapped, PBR textures baked; base colour decoded once with gamma 2.2
+     (the bake encodes sRGB twice).
+  No third-party geometry or textures. Tools and the procedure: the local-models repository
+  (comfy/trellis2.py, blender/swap_basecolor.py) and the game-asset-pipeline skill.
+
+LICENCES OF THE TOOLS
+  SDXL 1.0: CreativeML Open RAIL++-M (outputs may be used commercially).
+  FLUX.1 Kontext [dev]: FLUX.1 [dev] Non-Commercial License; it claims no ownership of outputs
+  and permits their commercial use (the model itself is not distributed with Breach).
+  TRELLIS.2: MIT.

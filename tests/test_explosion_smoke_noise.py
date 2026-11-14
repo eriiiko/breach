@@ -33,6 +33,7 @@ import numpy as np
 import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
+from simulation.draws import MatchDraws  # #29 P3b: the keyed draws
 from simulation.physics import add_explosion_smoke
 from simulation.field_edit import EditQueue
 from simulation import gas_fixed   # S2b: smoke is int32 Q16.16
@@ -74,7 +75,7 @@ def _deposit(noise: float, radius: int = 8):
     sim = _make_sim()
     g = sim.gmap
     g.smoke[:] = 0
-    rng = np.random.default_rng(SEED)
+    rng = MatchDraws(SEED)
     h, w = g.material.shape
     cy, cx = h // 2, w // 2
     # engine/13: the deposit is now an enqueued FieldEdit; the per-tile noise
@@ -85,7 +86,7 @@ def _deposit(noise: float, radius: int = 8):
     queue.flush(g, rng)
     # S2b: smoke is int32 Q16.16 — DEQUANTIZE to real density for the noise
     # multiplier reconstruction (deposit/base) and the texture stats below.
-    smoke = gas_fixed.dequantize(g.smoke)
+    smoke = gas_fixed.dequantize_trace(g.smoke)
 
     # Reconstruct base per tile to recover the noise multiplier deposit/base.
     yy, xx = np.indices((h, w))

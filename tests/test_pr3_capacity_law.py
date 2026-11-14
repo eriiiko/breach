@@ -32,6 +32,18 @@ These tests drive the C++ ``FireSimulation.step`` in isolation with ``hot``
 pinned to 1 and ``F`` pinned to 1 (the pattern ``test_fuel_fraction_axis.py``
 established), so the ONLY moving part is the capacity law itself.
 
+R1 O2f-RENORMALIZATION (fire session #12, 2026-09-01, docs/fire_3c_design_
+2026-09-01.md "Ruling R1") moves what ``avail = F*o2f`` (i.e. ``a`` above, with
+F pinned to 1) READS: ``o2f`` is renormalized to ``o2_frac_amb`` (0.21) instead
+of ``o2_frac_full`` (1.0), and its clamp's upper edge is the NEW ``o2f_cap``
+(5.0) instead of 1.0 — so ambient air (X = 0.21) now reads ``a == 1.0``
+EXACTLY (was 0.092), and the whole [X_ext, X_amb] span (0.13..0.21, just 0.08
+wide) carries the range ``a`` used to sweep out over [X_ext, X_full]
+(0.13..1.0, 0.87 wide). This file's own ``_o2f`` helper and every scene below
+are re-derived against that new span — this is a PROBE-LAW change, not a
+capacity-law change: ``I_eq = c*(a - r*(1-a))`` and ``sustain <=> a >
+r/(1+r)`` are UNCHANGED shapes, just fed a differently-scaled ``a``.
+
 Run:
     C:/Users/steen/miniconda3/envs/data/python.exe -m pytest tests/test_pr3_capacity_law.py -q
 """
@@ -66,7 +78,15 @@ K_GROW = 3.5
 K_DIE = 0.035
 C_CAP = 2.53
 R = K_DIE / K_GROW                     # 0.010
-X_EXT, X_FULL = 0.13, 1.0              # the shipped continuous-O2 span
+X_EXT, X_FULL = 0.13, 1.0              # X_FULL: the DEMAND-side (combustion)
+                                        # reference — unread by this file's
+                                        # scenes (FireSimulation.step only)
+# R1 (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling R1"): the
+# SUSTAIN law's span upper reference, and the new clamp ceiling on it. Set
+# explicitly on every `_make()` sim below (not left to the struct default) so
+# this file states its own contract rather than riding a compiled default.
+X_AMB = 0.21
+O2F_CAP = 5.0
 
 # Q16.16 truncation margin. Every multiply in the pinned left-fold truncates
 # toward -inf, and near the fixed point the per-tick delta is a handful of
@@ -75,9 +95,11 @@ X_EXT, X_FULL = 0.13, 1.0              # the shipped continuous-O2 span
 TOL_REL = 0.04
 
 
-def _o2f(X):
-    """The continuous-O2 law in plain float (Peatross & Beyler linear form)."""
-    return min(1.0, max(0.0, (X - X_EXT) / (X_FULL - X_EXT)))
+def _o2f(X, x_amb=X_AMB, cap=O2F_CAP):
+    """The SUSTAIN continuous-O2 law in plain float (Peatross & Beyler linear
+    form), R1-renormalized: anchored on x_amb (not x_full), capped at `cap`
+    (not 1.0)."""
+    return min(cap, max(0.0, (X - X_EXT) / (x_amb - X_EXT)))
 
 
 def _I_eq(a, c=C_CAP, r=R):
@@ -85,7 +107,8 @@ def _I_eq(a, c=C_CAP, r=R):
     return c * (a - r * (1.0 - a))
 
 
-def _make(c=C_CAP, k_grow=K_GROW, k_die=K_DIE, I_min=0.0):
+def _make(c=C_CAP, k_grow=K_GROW, k_die=K_DIE, I_min=0.0, o2_frac_amb=X_AMB,
+          o2f_cap=O2F_CAP):
     """A FireSimulation with everything EXCEPT the capacity law pinned inert:
     no wind, no wall damage, no smoke, temp_scale identity."""
     sim = bp.FireSimulation()
@@ -97,7 +120,9 @@ def _make(c=C_CAP, k_grow=K_GROW, k_die=K_DIE, I_min=0.0):
     p.fire_T_span = 150.0
     p.fuel_ref = 60.0
     p.o2_frac_ext = X_EXT
-    p.o2_frac_full = X_FULL
+    p.o2_frac_full = X_FULL             # DEMAND-side reference; unread here
+    p.o2_frac_amb = float(o2_frac_amb)  # R1: the SUSTAIN law's live reference
+    p.o2f_cap = float(o2f_cap)          # R1: the NEW sustain clamp ceiling
     p.I_min = float(I_min)
     p.k_wind_fan = 0.0
     p.k_wind_strip = 0.0
@@ -160,10 +185,22 @@ def _drive(X, I0=0.12, ticks=6000, sim=None):
 #   X = 0.21 (ambient) -> a = 0.09195 -> I_eq 0.2100
 #   X = 0.25           -> a = 0.13793 -> I_eq 0.3275
 #   X = 0.30           -> a = 0.19540 -> I_eq 0.4746
+#
+# R1 RE-DERIVATION (fire session #12, 2026-09-01, docs/fire_3c_design_2026-09-
+# 01.md "Ruling R1"): `a` is renormalized to o2_frac_amb, so ambient (X=0.21)
+# now reads a == 1.0 EXACTLY, and I_eq(a=1.0, c=2.53) = 2.53 — saturated at
+# the [0,1] clamp, not a genuine (unclamped) fixed point to gate on. The whole
+# unclamped range this test wants to sample now lives BELOW ambient (X in
+# [0.13, 0.21), a in [0, 1)), not at/above it. Three equally-spaced `a` rows
+# in that band, mirroring the ORIGINAL row shape (three points, increasing a,
+# increasing I_eq, all comfortably unsaturated at c=2.53):
+#   a = 0.15 -> X = 0.142 -> I_eq 0.35800
+#   a = 0.25 -> X = 0.150 -> I_eq 0.61353
+#   a = 0.35 -> X = 0.158 -> I_eq 0.86906
 _ROWS = [
-    pytest.param(0.21, 0.09195, 0.2100, id="ambient"),
-    pytest.param(0.25, 0.13793, 0.3275, id="enriched-0.25"),
-    pytest.param(0.30, 0.19540, 0.4746, id="enriched-0.30"),
+    pytest.param(0.142, 0.15, 0.35800, id="a-0.15"),
+    pytest.param(0.150, 0.25, 0.61353, id="a-0.25"),
+    pytest.param(0.158, 0.35, 0.86906, id="a-0.35"),
 ]
 
 
@@ -197,10 +234,18 @@ def test_the_fixed_point_is_approached_from_ABOVE_too():
     """A fire started ABOVE its capacity must SHRINK to it — the signed `gap`
     path (``gap < 0`` -> ``grow < 0``). This is the branch the ruling calls out
     as riding the existing signed-delta machinery: nothing special is needed,
-    but if the subtract were done unsigned the fire would grow instead."""
-    a = _o2f(0.21)
+    but if the subtract were done unsigned the fire would grow instead.
+
+    R1 RE-ANCHOR (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling
+    R1"): X = 0.21 (ambient) now reads a == 1.0 exactly, giving I_eq(c=2.53) =
+    2.53 — an ALREADY-saturated target, so a fire started at I0=0.90 there
+    would simply keep climbing to the [0,1] clamp (never approaching from
+    above at all). Re-anchored at one of the new unclamped rows (X=0.150,
+    a=0.25, I_eq=0.61353) with I0 started comfortably above that target."""
+    X = 0.150
+    a = _o2f(X)
     pred = _I_eq(a)
-    got = _drive(0.21, I0=0.90)
+    got = _drive(X, I0=0.90)
     assert got < 0.90, "a fire above its capacity must shrink"
     assert abs(got - pred) / pred <= TOL_REL, (
         f"from above: settled {got:.6f} vs predicted {pred:.6f}")
@@ -209,43 +254,62 @@ def test_the_fixed_point_is_approached_from_ABOVE_too():
 def test_size_and_death_are_decoupled():
     """The POINT of the law, asserted directly: changing `c` moves the fire's
     SIZE and leaves the sustain threshold alone; changing `r` moves the
-    threshold. Under the old law one number did both."""
-    a = _o2f(0.21)
-    small = _drive(0.21, sim=_make(c=1.0))
-    big = _drive(0.21, sim=_make(c=5.0))
+    threshold. Under the old law one number did both.
+
+    R1 RE-ANCHOR (fire session #12, docs/fire_3c_design_2026-09-01.md "Ruling
+    R1"): X = 0.21 (ambient) now reads a == 1.0, at which BOTH c=1.0 (I_eq=1.0)
+    and c=5.0 (I_eq=5.0) are already saturated at the [0,1] clamp — the two
+    sizes would read identically (both 1.0), which would prove nothing. One of
+    the new unclamped rows (X=0.142, a=0.15) keeps both c values genuinely
+    unsaturated (I_eq 0.1415 / 0.7075) so the size comparison is real."""
+    X = 0.142
+    a = _o2f(X)
+    small = _drive(X, sim=_make(c=1.0))
+    big = _drive(X, sim=_make(c=5.0))
     assert abs(small - _I_eq(a, c=1.0)) / _I_eq(a, c=1.0) <= TOL_REL
     assert abs(big - _I_eq(a, c=5.0)) / _I_eq(a, c=5.0) <= TOL_REL
     assert big > small * 4.5, "size must scale ~linearly with c"
     # Both still sustain: the threshold a > r/(1+r) = 0.0099 is untouched by c,
-    # and ambient air's a = 0.092 clears it by 9.3x (the ruling's headroom row).
+    # and this X's a = 0.15 clears it by 15x.
     assert small > 0.0 and big > 0.0
 
 
 def test_sustain_threshold_sits_at_r_over_one_plus_r():
     """``a > r/(1+r)`` is the sustain condition — the SAME shape as the old law,
     but `r` is now free to sit at the physical limits (0.010) instead of being
-    dragged up to the operating point to hold the fire small."""
+    dragged up to the operating point to hold the fire small.
+
+    R1 RE-DERIVATION (fire session #12, docs/fire_3c_design_2026-09-01.md
+    "Ruling R1"): `a` is renormalized against o2_frac_amb (span 0.13..0.21,
+    0.08 wide) instead of o2_frac_full (span 0.13..1.0, 0.87 wide) — same
+    a_thresh, but a MUCH smaller X floor (the whole span the old ``+0.02`` /
+    ``-0.004`` probe offsets were calibrated against shrank ~11x, so they are
+    re-derived to ``+0.002`` / ``-0.0005``, proportionally similar probes into
+    the new, much narrower span)."""
     a_thresh = R / (1.0 + R)                       # 0.009901
-    x_thresh = X_EXT + a_thresh * (X_FULL - X_EXT)  # 0.138614 — the LIVE X floor
-    assert abs(x_thresh - 0.1386) < 1e-3
+    x_thresh = X_EXT + a_thresh * (X_AMB - X_EXT)   # 0.130792 — the LIVE X floor
+    assert abs(x_thresh - 0.130792) < 1e-5
     # Above the threshold -> a live fire that parks at its (small) capacity.
-    above = _drive(x_thresh + 0.02, I0=0.05, ticks=6000)
-    a_above = _o2f(x_thresh + 0.02)
+    above = _drive(x_thresh + 0.002, I0=0.05, ticks=6000)
+    a_above = _o2f(x_thresh + 0.002)
     assert above > 0.0
     # NB an ABSOLUTE tolerance here, not the 4% relative one used at the three
     # gate availabilities: the truncation shortfall is a fixed handful of Q16
     # counts, so its RELATIVE share grows as I_eq shrinks, and this point sits
-    # deliberately just above the wall at I_eq = 0.059 (vs 0.21-0.47 there).
+    # deliberately just above the wall at I_eq = 0.064 (vs 0.36-0.87 in the
+    # main _ROWS gate).
     assert 0.0 < above <= _I_eq(a_above)
     assert _I_eq(a_above) - above < 0.008
     # Below it -> no fixed point exists and the fire decays away (here with the
     # snap-extinguish floor OFF, so the decay itself is what is asserted)...
-    below = _drive(x_thresh - 0.004, I0=0.05, ticks=3000)
+    below = _drive(x_thresh - 0.0005, I0=0.05, ticks=3000)
     assert below < 0.05 * 0.05, f"below the threshold I must collapse, got {below}"
     # ...and with the shipped I_min it snaps out outright. THE HEADLINE: this
-    # X floor is 0.1386, not the old law's 0.1944 — so `o2_frac_ext` = 0.13
-    # (Peatross-Beyler) is REACHABLE again instead of being dead code.
-    assert _drive(x_thresh - 0.004, I0=0.05, ticks=3000,
+    # X floor is 0.1308, not the old (pre-R1) law's 0.1944 — so `o2_frac_ext`
+    # = 0.13 (Peatross-Beyler) is REACHABLE again instead of being dead code,
+    # now even closer to the physical limit than the pre-R1 capacity law
+    # (P-R3) already put it.
+    assert _drive(x_thresh - 0.0005, I0=0.05, ticks=3000,
                   sim=_make(I_min=0.02)) == 0.0
     assert x_thresh < 0.1944, "the logistic wall must no longer bite first"
 
@@ -260,17 +324,26 @@ def test_seed_vicinity_net_growth_clears_the_q16_quantum():
     net must clear >= 2 counts/tick.
 
     Derived (ruling A3): dt*k_grow*seed*(a - seed/c)*65536 ~= 51 counts of
-    growth, ~40 counts NET of the die term."""
+    growth, ~40 counts NET of the die term.
+
+    R1 RE-DERIVATION (fire session #12, docs/fire_3c_design_2026-09-01.md
+    "Ruling R1"): `a` at X=0.21 (ambient) is now 1.0 exactly (renormalized to
+    o2_frac_amb, was 0.092 against o2_frac_full) — a much bigger `a`, so the
+    net growth here is now ~1092 counts/tick, not ~40 (still comfortably clear
+    of the Q16 quantum — if anything, less at risk of it than before). The die
+    term is also re-derived with the R1 sign-fix floor `max(0, 1-a)` (at
+    a==1.0 exactly this is 0 either way, but the formula now matches the
+    solver's actual shape for any future a > 1 edit of this scene)."""
     sim = _make()
-    st = _scene(0.21, 0.12)                    # seed 0.12, a = 0.092
+    st = _scene(0.21, 0.12)                    # seed 0.12, a = 1.0 (R1: ambient)
     before = int(st["fire"][1, 1])
     _step(sim, st)
     net = int(st["fire"][1, 1]) - before
     assert net >= 2, f"net growth {net} counts/tick is at/below the Q16 quantum"
-    # And the derived value, to a couple of counts (this IS the ruling's ~40).
+    # And the derived value, to a couple of counts (this IS the ruling's ~1092).
     a, seed = _o2f(0.21), 0.12
     grow = K_GROW * seed * (a - seed / C_CAP)
-    die = K_DIE * (1.0 - a) * seed
+    die = K_DIE * max(0.0, 1.0 - a) * seed      # R1 die-term sign-fix floor
     want = (grow - die) / 24.0 * ONE
     assert abs(net - want) <= 3, f"net {net} counts vs derived {want:.1f}"
 

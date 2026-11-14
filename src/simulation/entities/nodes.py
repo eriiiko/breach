@@ -186,6 +186,10 @@ class filter(Entity):
 # load-time assert (ΔN_per_tick_atm < 2·band) read the same constant.
 PUMP_DEFAULT_BAND_Q16 = 3277
 
+# The pump's feed kinds (#133 interior airlock): "external" mints / destroys
+# (the pre-#133 behaviour, the default); "transfer" moves air port <-> source.
+PUMP_FEEDS = ("external", "transfer")
+
 
 @register
 class pump(Entity):
@@ -225,6 +229,22 @@ class pump(Entity):
                   "atm) — the anti-chatter Schmitt band; ΔN_per_tick_atm must "
                   "be < 2·band or the port tile can jump the band and "
                   "at_target never latches (airlock deadlock, D11)"),
+        Field("feed", KIND_ENUM, default="external",
+              choices=PUMP_FEEDS,
+              doc="where the pumped gas comes from / goes to. \"external\" "
+                  "(the default, every pre-#133 pump): inject MINTS air at "
+                  "the port, extract DESTROYS it -- the ship's reservoir / "
+                  "space. \"transfer\": the pump MOVES air between the "
+                  "port and its SOURCE tile (source_dx/source_dy) -- inject "
+                  "source -> port, extract port -> source; nothing is "
+                  "created or lost (the interior airlock, #133)"),
+        Field("source_dx", KIND_INT, default=0,
+              doc="SOURCE tile COL offset from the mount (base tiles), read "
+                  "only when feed = \"transfer\": the open-air tile on the "
+                  "far side of the wall the pump moves gas to and from"),
+        Field("source_dy", KIND_INT, default=0,
+              doc="SOURCE tile ROW offset from the mount (base tiles), read "
+                  "only when feed = \"transfer\""),
     )
     SIGNALS = (Signal("at_target",
                       "1 while the port pressure is within the hysteresis band "

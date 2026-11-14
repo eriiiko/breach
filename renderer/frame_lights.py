@@ -1,12 +1,11 @@
-"""Per-frame raycaster ``LightSource`` assembly — shared by the game + harness.
+"""The ONE light assembly -- shared by the game + harness (B2 P1; P6b: cone rows).
 
 Fire & Heat Beauty arc, beat B2 patch P1 (design
 docs/fire_b2_smoke_honesty_design_2026-07-21.md §2). This module deduplicates
 the ONE thing main.py and tools/lighting_demo.py must not let drift apart: the
-per-frame assembly of the raycaster light-source list from whatever supplies
-lights today — the levels-w1 ``[[light]]`` rows (static lamps + the rotating
-beacon; see :mod:`level_lights`) and the B1 fire tiles
-(:class:`renderer.fire_lights.FireLightSelector`).
+per-tick assembly of the light list from whatever supplies lights today — the
+levels-w1 ``[[light]]`` rows (static lamps + the rotating beacon; see
+:mod:`level_lights`) plus the caller's render-sourced lights.
 
 **NOT an entity system** (Erik's explicit concern, 2026-07-22): this creates
 ZERO entity machinery. Lamps/beacons are NOT entities today — they predate the
@@ -18,117 +17,485 @@ lamp/beacon entity here.
 Deliberately importable WITHOUT the renderer package touching this module's
 consumers: it takes the compiled ``breach_physics`` module as an argument
 (never imports it) and imports only :mod:`level_lights` (plain math on plain
-data), so the assembly is headless-testable in isolation. The RENDERER never
-writes sim fields; this only READS a temperature field to select fire lights.
+data), so the assembly is headless-testable in isolation. It never writes sim
+fields.
 
-The caller-specific tail — the mouse flashlight and the W6 transient emitters —
-stays in each caller (they differ: main.py's flashlight is fixed, the harness's
-is slider-driven), matching the pre-extraction seam (main.py's sources block was
-lines ~313-407; the flashlight/transient appends followed it). This helper
-covers exactly the shared, drift-critical core: level statics + beacons + fire.
+RAY-ENGINE-V2 P6b/P6c (design v3 §4.1, §4.4; docs/ray_engine_v2_p6b_lit_world_
+brief_2026-09-25.md §1.3): THE OUTPUT ROW CHANGED, THE SEAM SURVIVED. Every
+light the game shows is enumerated ONCE as a :class:`level_lights.LightSpec`
+(:func:`frame_light_specs` -- the level's lamps and beacons, plus the caller's
+render-sourced specs: the onephase flashlights at their lens
+(:func:`flashlight_specs`), WEGO's cursor lamp (:func:`cursor_lamp_spec`), the
+W6 transient emitters (:func:`transient_specs`)), and that ONE list becomes
+:func:`cone_rows` -- THE SWEEP'S CONE-EMITTER ROWS (y, x, r, g, b, center_q,
+spread_q), int64, handed to the engine once per sim tick
+(``Simulation.set_light``). (The old render march's ``bp.LightSource`` row and
+the brightest-K fire lights, P6b's F11 A/B, were deleted with the march at P6c.)
+
+The fire's light is NOT a row: every burning cell emits through L°[T] in the
+sweep itself (design §7.3). :func:`sky_for_level` is the sky's door (the light
+ring's per-ordinate RGB from the level's boundary type). :data:`EMITTER_INPUTS`
+names where every light type's inputs come from -- sim or render state --
+because ``light_q`` is not sim-pure until P7 separates them.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
-from level_lights import light_source_params, monotonic_total_tick, partition_lights
+import numpy as np
 
-
-def build_light_source(bp, params: dict):
-    """``dict`` -> ``bp.LightSource`` via setattr.
-
-    ``bp.LightSource`` is a pybind class with only ``py::init<>()`` — it takes
-    no keyword constructor (``bp.LightSource(**params)`` would raise), so every
-    caller maps the param dict onto a fresh struct with a setattr loop. Factored
-    here so main.py's setup path and the per-frame assembly below share one
-    copy. Every key must be a bound attribute name (writing an unbound name onto
-    the pybind class raises AttributeError).
-    """
-    src = bp.LightSource()
-    for key, val in params.items():
-        setattr(src, key, val)
-    return src
+from level_lights import (LightSpec, light_spec, monotonic_total_tick,
+                          partition_lights)
 
 
-def build_static_light_sources(bp, lights, grid_w: int, grid_h: int,
-                               sim_time_per_tick: float):
-    """Level ``[[light]]`` rows -> (compiled statics, beacon entries, off-grid).
+# ===========================================================================
+# ray-engine-v2 P6b: THE SPECS, THE CONE ROWS, THE SKY
+# ===========================================================================
+#: Where every light type's INPUTS come from (P6b brief decision 1). "sim":
+#: level data, config, or synced sim state -- replay-exact. "render": UI /
+#: control-source / renderer state -- the reason ``light_q`` is not sim-pure
+#: until P7 separates them. Every light the old path showed has a form
+#: here (tests/test_frame_lights_cones.py holds the map to the assembly).
+EMITTER_INPUTS = {
+    "lamp":       ("sim",    "level [[light]] row (position, colour, intensity)"),
+    "beacon":     ("sim",    "level [[light]] row + the monotonic sim tick (facing)"),
+    "spot":       ("sim",    "level [[light]] row (position, colour, intensity, aim, beam)"),
+    "flashlight": ("render", "unit position + facing + the unit's flashlight bit "
+                             "(sim, G7p: Unit.flashlight_on, a synced hold verb; off = "
+                             "no cone) + the flashlight mode and selected unit "
+                             "(control-source state; direct control: the possessed "
+                             "unit, a watched match: every living marine) + the "
+                             "planning aim at the cursor while paused (mouse)"),
+    "cursor":     ("render", "the mouse position (WEGO's cursor lamp)"),
+    "transient":  ("render", "the renderer's W6 effect queue (sim events, aged and "
+                             "faded on the wall clock) -- the jets, the plasma bolts "
+                             "and (#33) the bullets' muzzle flashes"),
+    "blast_flash": ("render", "sim event (the ExplosionEvent's row flash columns, "
+                              "G4 P5), render envelope on the sim clock: "
+                              "flash * exp(-age / flash_decay_s), age = "
+                              "(tick - tick0) / tps, at the blast walk's seed "
+                              "cells (blast_flash_lights)"),
+    "fire":       ("sim",    "temperature -- the sweep's own thermal emission "
+                             "a_c * L°[T], never a row; its LIGHT (never its heat) "
+                             "is scaled per burning tile by the render-state "
+                             "flicker (graphics G3 F4b: renderer/fire_flicker.py "
+                             "through emit_mult_rows)"),
+    "sky":        ("sim",    "the level's boundary type + [light.sky] config (the ring)"),
+}
 
-    Called ONCE at setup (never per frame): partitions the level's
-    :class:`level_loader.LightEntry` list against the physics grid, builds the
-    non-beacon lights into compiled ``bp.LightSource`` structs (their params are
-    tick-independent, so ``total_tick=0``), and returns the beacon entries
-    unbuilt (their facing angle is a per-frame function of the sim tick — see
-    :func:`build_frame_light_sources`). ``off_grid`` is the skipped list so the
-    caller can warn ONCE at load (never per frame). Mirrors main.py's original
-    setup block verbatim.
-    """
-    lights_in, lights_off = partition_lights(lights, grid_w, grid_h)
-    static = [
-        build_light_source(bp, light_source_params(e, 0, sim_time_per_tick))
-        for e in lights_in if e.kind != "beacon"
-    ]
-    beacons = [e for e in lights_in if e.kind == "beacon"]
-    return static, beacons, lights_off
+CONE_TURN = 65536            # one turn in Q16 turns == RadiationSweep.CONE_TURN
+OMNI_EPS = 0.01              # spread >= 2*pi - eps is omni (the old march's cone test, kept)
+LIGHT_CONE_BUDGET = 1 << 44  # == RadiationSweep.LIGHT_CONE_BUDGET (the sweep's door:
+#   per channel, what ALL cones put in ONE ordinate; an omni lamp is charged 1/16, #173)
+LIGHT_SKY_MAX = 1 << 40      # == RadiationSweep.LIGHT_SKY_MAX
+LIGHT_EMIT_MULT_MAX = 16 << 16  # == RadiationSweep.LIGHT_EMIT_MULT_MAX (16 ONE, Q16: the fire's
+#   light gain x its flicker; the int64 headroom argument is radiation_sweep.h's)
+
+# The shipped flashlight / cursor-lamp numbers (moved verbatim from main.py).
+FLASHLIGHT_INTENSITY = 2.5
+FLASHLIGHT_COLOR = (1.0, 1.0, 0.95)
+CURSOR_INTENSITY = 2.5
+CURSOR_COLOR = (1.0, 1.0, 0.95)
+
+
+def flashlight_lens(cx: float, cy: float, angle: float, footprint: int):
+    """The tile a flashlight's light leaves from: the first cell OUTSIDE its
+    carrier's square footprint along the beam (Chebyshev distance
+    footprint // 2 + 1 from the centre tile). The body is stamped light-opaque
+    (units block light), so a lens inside it lights nothing past the body --
+    which is exactly what the old march did with the centre-tile source (its
+    rays died in the carrier's own cell). Returns the lens tile's (x, y)."""
+    dx, dy = math.cos(angle), math.sin(angle)
+    m = max(abs(dx), abs(dy))
+    off = int(footprint) // 2 + 1
+    return int(cx) + int(round(dx / m * off)), int(cy) + int(round(dy / m * off))
+
+
+def flashlight_specs(cones, footprint_of) -> list:
+    """The onephase flashlights (``ui.flashlight_cones``) as specs: a cone of
+    the facing half-angle x 2, centred on the facing (screen convention: the
+    one negation of Unit.facing's y-up), at the LENS outside the carrier's
+    footprint (:func:`flashlight_lens`). ``footprint_of(unit_id)`` returns the
+    carrier's footprint in tiles (``cone.range_tiles`` is not read: a sweep has
+    no range). RENDER-sourced (control-source state)."""
+    out = []
+    for cone in cones:
+        angle = -float(cone.facing)
+        lx, ly = flashlight_lens(cone.x, cone.y, angle, footprint_of(cone.unit_id))
+        out.append(LightSpec(x=lx + 0.5, y=ly + 0.5, color=FLASHLIGHT_COLOR,
+                             intensity=FLASHLIGHT_INTENSITY, angle_center=angle,
+                             angle_spread=math.radians(float(cone.half_deg) * 2.0),
+                             kind="flashlight", source="render"))
+    return out
+
+
+def cursor_lamp_spec(mouse_tile_f) -> Optional[LightSpec]:
+    """WEGO's cursor lamp: an omni lamp at the mouse (None off the map).
+    RENDER-sourced."""
+    if mouse_tile_f is None:
+        return None
+    return LightSpec(x=float(mouse_tile_f[0]), y=float(mouse_tile_f[1]),
+                     color=CURSOR_COLOR, intensity=CURSOR_INTENSITY,
+                     angle_spread=6.283, kind="cursor", source="render")
+
+
+def transient_specs(transients) -> list:
+    """The W6 transient emitters (``GameRenderer.transient_light_specs()``
+    dicts: x, y, intensity, color; their ``max_range`` is not read -- a sweep
+    has no range) as omni specs. RENDER-sourced."""
+    return [LightSpec(x=float(t["x"]), y=float(t["y"]), color=tuple(t["color"]),
+                      intensity=float(t["intensity"]), angle_spread=6.283,
+                      kind="transient", source="render") for t in transients]
+
+
+#: The most light (in light units, per channel) all TRANSIENT flashes of one
+#: frame -- the muzzle flashes (#33) and the blast flashes (G4 P5) TOGETHER --
+#: may carry: HALF the sweep's cone budget. LIGHT_CONE_BUDGET = 2^44 at
+#: L_FINE_BITS = 37 counts per light unit = 128 light units IN ONE ORDINATE, and
+#: a flash is omni, 1/16 of it in each (#173): 64 x 16. So a battle far beyond
+#: any shipped match (85 full muzzle flashes at once, or a flashbang beside a
+#: firefight) dims its flashes instead of tripping the sweep's door, and the
+#: other half is left to the lamps, flashlights and jets (gen_ship's lamp budget
+#: is derived from this number). ONE group cap (design §6 B1, renamed from
+#: MUZZLE_FLASH_MAX_TOTAL, value kept): :func:`cap_transient_group` scales the
+#: muzzle flashes down first, the blast flashes last.
+TRANSIENT_MAX_TOTAL = 1024.0
+
+
+@dataclass(frozen=True)
+class MuzzleFlash:
+    """``[render.muzzle_flash]`` (#33): the light a bullet's shot gives off at
+    the muzzle. ``intensity`` 0 = no flash at all (the game before #33)."""
+    intensity: float          # peak strength, light units (the flashlight is 2.5)
+    duration_s: float         # wall-clock seconds from full strength to dark
+    color: tuple              # RGB, each in [0, 1]
+
+
+def muzzle_flash_settings(cfg) -> MuzzleFlash:
+    """The ``[render.muzzle_flash]`` settings of a loaded config (``CFG``).
+    Raises ValueError naming the key when the section or a key is missing or
+    out of range -- a flash that silently fell back to a default would hide a
+    typo in config.toml."""
+    section = getattr(getattr(cfg, "render", None), "muzzle_flash", None)
+    if section is None:
+        raise ValueError("config.toml has no [render.muzzle_flash] section")
+    for key in ("intensity", "duration_s", "color"):
+        if not hasattr(section, key):
+            raise ValueError(f"[render.muzzle_flash] is missing {key!r}")
+    intensity = float(section.intensity)
+    duration_s = float(section.duration_s)
+    color = tuple(float(c) for c in section.color)
+    if not (math.isfinite(intensity) and intensity >= 0.0):
+        raise ValueError(f"[render.muzzle_flash] intensity must be >= 0, got {intensity!r}")
+    if not (math.isfinite(duration_s) and duration_s > 0.0):
+        raise ValueError(f"[render.muzzle_flash] duration_s must be > 0, got {duration_s!r}")
+    if len(color) != 3 or any(not (0.0 <= c <= 1.0) for c in color):
+        raise ValueError(f"[render.muzzle_flash] color must be 3 numbers in [0, 1], "
+                         f"got {section.color!r}")
+    return MuzzleFlash(intensity=intensity, duration_s=duration_s, color=color)
+
+
+def muzzle_flash_lights(effects, flash: MuzzleFlash, footprint_of) -> list:
+    """The muzzle flashes implied by the renderer's live ``"tracer"`` effects
+    (#33), as transient-light dicts (x, y, max_range, intensity, color -- the
+    :func:`transient_specs` input; ``max_range`` is not read). PURE: effects
+    in, dicts out.
+
+    A tracer that left the barrel (``launch``) and is younger than
+    ``flash.duration_s`` lights an omni lamp at its MUZZLE: the first cell
+    outside the shooter's footprint along the shot (:func:`flashlight_lens` --
+    the body is stamped light-opaque, so a lamp inside it would light nothing),
+    fading linearly from ``intensity`` to 0 over the duration. One flash per
+    shooter: the bullets of one burst leave the same muzzle together, so the
+    freshest tracer of each shooter sets it (a burst is not N lamps summed --
+    and the frame's cone budget scales with the shooters, not the bullets).
+    ``footprint_of(unit_id)`` gives the shooter's footprint in tiles. A flash
+    lives no longer than its tracer effect (the queue drops it at its life).
+    A volley whose flashes would together pass :data:`TRANSIENT_MAX_TOTAL`
+    is scaled down as a whole to it (alone; beside blast flashes the group
+    cap :func:`cap_transient_group` dims them further)."""
+    if flash.intensity <= 0.0:
+        return []
+    best = {}
+    for fx in effects:
+        if fx.get("kind") != "tracer" or not fx.get("launch", True):
+            continue
+        alpha = 1.0 - float(fx["t"]) / flash.duration_s
+        if alpha <= 0.0:
+            continue
+        uid = fx.get("unit")
+        if uid not in best or alpha > best[uid][0]:
+            best[uid] = (alpha, fx)
+    out = []
+    for uid, (alpha, fx) in best.items():
+        (x0, y0), (x1, y1) = fx["from"], fx["to"]
+        dx, dy = float(x1) - float(x0), float(y1) - float(y0)
+        if math.hypot(dx, dy) <= 1e-9:
+            continue
+        lx, ly = flashlight_lens(x0, y0, math.atan2(dy, dx), footprint_of(uid))
+        out.append({"x": lx + 0.5, "y": ly + 0.5, "max_range": 0,
+                    "intensity": flash.intensity * alpha, "color": flash.color})
+    total = sum(d["intensity"] for d in out) * max(flash.color)
+    if total > TRANSIENT_MAX_TOTAL:
+        k = TRANSIENT_MAX_TOTAL / total
+        for d in out:
+            d["intensity"] *= k
+    return out
+
+
+#: A blast flash below this share of its peak is dropped (design §3.5): at
+#: exp(-age / decay) that is ln(100) = 4.6 e-folds after the detonation.
+BLAST_FLASH_CUTOFF = 0.01
+
+
+def blast_flash_cells(mask, fy: int, fx: int, approach=None) -> list:
+    """Where a blast's flash leaves from (design §3.5 + §6 N5): the blast walk's
+    own seeds (``blast_expansion.walk_seeds``, the cells the sparks are born
+    at) and, when the centre is open (its one seed), its open 4-neighbours
+    too, so an omni flash is a small disc of up to five cells, not one cell's
+    star. A centre still solid (a charge on a wall) keeps the seed rule's
+    answer alone: the approach side, else every open 4-neighbour -- never a
+    cell inside the wall. ``mask`` is ``blast_expansion.open_mask`` of the
+    map. Sorted (y, x) tiles."""
+    from simulation.blast_expansion import walk_seeds
+    mask = np.asarray(mask, bool)
+    fy, fx = int(fy), int(fx)
+    seeds = walk_seeds(mask, fy, fx, approach)
+    cells = set(seeds)
+    h, w = mask.shape
+    if seeds == [(fy, fx)]:
+        for y, x in ((fy - 1, fx), (fy + 1, fx), (fy, fx - 1), (fy, fx + 1)):
+            if 0 <= y < h and 0 <= x < w and mask[y, x]:
+                cells.add((y, x))
+    return sorted(cells)
+
+
+def blast_flash_lights(effects, sim_t_of, open_mask) -> list:
+    """The blast flashes implied by the renderer's live ``"blast"`` effects
+    (G4 P5, #75; design §3.5 as amended by §6 B1, S1, N2, N5), as
+    transient-light dicts (x, y, max_range, intensity, color -- the
+    :func:`transient_specs` input). PURE: effects in, dicts out.
+
+    A blast effect whose row carries ``flash > 0`` lights
+    ``flash * exp(-age / flash_decay_s)`` light units -- the full ``flash`` at
+    age 0, dropped below :data:`BLAST_FLASH_CUTOFF` of it -- split equally
+    over :func:`blast_flash_cells` at their tile centres (+0.5), each an omni
+    lamp in ``flash_color``. ``sim_t_of(effect)`` is the effect's age in SIM
+    seconds, ``(tick - tick0 + alpha) / tps`` from the caller (S1: paused it
+    holds, a look shot reproduces). ``open_mask`` is the map's
+    ``blast_expansion.open_mask`` or a zero-argument callable returning it,
+    asked only when a flash is live. Not capped here: the group cap with the
+    muzzle flashes is :func:`cap_transient_group`."""
+    out = []
+    mask = None
+    for fx in effects:
+        if fx.get("kind") != "blast":
+            continue
+        peak = float(fx.get("flash", 0.0))
+        if not peak > 0.0:
+            continue
+        decay = float(fx.get("flash_decay_s", 0.3))
+        age = max(float(sim_t_of(fx)), 0.0)
+        k = math.exp(-age / decay) if decay > 0.0 else 0.0
+        if k < BLAST_FLASH_CUTOFF:
+            continue
+        if mask is None:
+            mask = open_mask() if callable(open_mask) else open_mask
+        px, py = fx["pos"]
+        cells = blast_flash_cells(mask, int(py), int(px), fx.get("approach"))
+        if not cells:
+            continue
+        each = peak * k / len(cells)
+        color = tuple(float(c) for c in fx.get("flash_color", (1.0, 1.0, 1.0)))
+        for (y, x) in cells:
+            out.append({"x": x + 0.5, "y": y + 0.5, "max_range": 0,
+                        "intensity": each, "color": color})
+    return out
+
+
+def _transient_total(lights) -> float:
+    """The light a set of transient dicts carries in its brightest channel
+    (the muzzle flash cap's measure)."""
+    return sum(float(d["intensity"]) * max(d["color"]) for d in lights)
+
+
+def cap_transient_group(muzzle, blast) -> list:
+    """THE ONE TRANSIENT CAP (design §6 B1): the muzzle flashes and the blast
+    flashes of one frame together carry at most :data:`TRANSIENT_MAX_TOTAL`
+    light units in their brightest channel. The muzzle flashes give way first
+    (scaled down as a group, to zero if the blasts alone fill the cap), the
+    blast flashes last (scaled to the cap only when they alone pass it).
+    Returns ``muzzle + blast`` (new dicts where scaled; never drops a light)."""
+    t_b = _transient_total(blast)
+    t_m = _transient_total(muzzle)
+    k_b = 1.0 if t_b <= TRANSIENT_MAX_TOTAL else TRANSIENT_MAX_TOTAL / t_b
+    room = max(TRANSIENT_MAX_TOTAL - t_b * k_b, 0.0)
+    k_m = 1.0 if t_m <= room else (room / t_m if t_m > 0.0 else 0.0)
+
+    def _scaled(ds, k):
+        if k == 1.0:
+            return list(ds)
+        return [{**d, "intensity": float(d["intensity"]) * k} for d in ds]
+    return _scaled(muzzle, k_m) + _scaled(blast, k_b)
 
 
 @dataclass
-class FrameLights:
-    """The per-frame assembly result.
-
-    ``sources`` is the compiled ``bp.LightSource`` list (order: statics,
-    beacons, fire) for :meth:`GameRenderer.upload_state`. ``fire_count`` /
-    ``fire_peaks`` feed the HUD light counter via
-    :meth:`GameRenderer.set_fire_light_stats` (count < peaks == the brightest-K
-    cap truncated; surfaced so tuning sessions see saturation — no silent caps).
-    """
-    sources: list
-    fire_count: int
-    fire_peaks: int
+class FrameLightSpecs:
+    """One assembly: every light as a spec."""
+    specs: list
 
 
-def build_frame_light_sources(bp, static_lights: Sequence, beacon_lights: Sequence,
-                              *, total_tick: int, sim_time_per_tick: float,
-                              fire_selector=None, temperature_field=None,
-                              blackbody_ramp=None,
-                              show_fire_lights: bool = False) -> FrameLights:
-    """Assemble the per-frame light-source list (statics + beacons + fire).
+def frame_light_specs(lights_in: Sequence, *, total_tick: int, sim_time_per_tick: float,
+                      extra: Sequence = ()) -> FrameLightSpecs:
+    """THE ASSEMBLY (P6b): every light the game shows, once, as specs.
 
-    Order is fixed and MUST match the pre-extraction main.py block: the prebuilt
-    ``static_lights`` first (a fresh list copy — callers keep their originals),
-    then each beacon rebuilt from the MONOTONIC sim tick (``total_tick``, on the
-    SIM clock — beacons freeze on pause and replay exactly; never wall dt), then
-    the brightest-K fire lights when ``show_fire_lights`` is set.
+    ``lights_in`` are the level's in-grid ``[[light]]`` entries (statics first,
+    then beacons), each through :func:`level_lights.light_spec` at the
+    MONOTONIC sim tick; ``extra`` the caller's render-sourced specs
+    (flashlights, the cursor lamp, the W6 transients). A fire is never a spec:
+    the sweep's fire light is its own thermal emission."""
+    statics = [e for e in lights_in if e.kind != "beacon"]
+    beacons = [e for e in lights_in if e.kind == "beacon"]
+    specs = [light_spec(e, 0, sim_time_per_tick) for e in statics]
+    specs += [light_spec(e, total_tick, sim_time_per_tick) for e in beacons]
+    specs += list(extra)
+    return FrameLightSpecs(specs=specs)
 
-    ``fire_selector`` is a :class:`renderer.fire_lights.FireLightSelector`;
-    ``temperature_field`` (read, never written) and ``blackbody_ramp`` are its
-    inputs. When fire lights are off (or no selector), the fire contribution is
-    empty and ``fire_count``/``fire_peaks`` are 0.
 
-    The mouse flashlight and W6 transient emitters are appended by each CALLER
-    afterward (they differ per caller) — see the module docstring.
-    """
-    sources: List = list(static_lights)
-
-    for e in beacon_lights:
-        sources.append(build_light_source(
-            bp, light_source_params(e, total_tick, sim_time_per_tick)))
-
-    if show_fire_lights and fire_selector is not None:
-        fire_params, fire_peaks = fire_selector.select(
-            temperature_field, blackbody_ramp)
+def spec_cone_row(spec: LightSpec, grid_w: int, grid_h: int, fine_bits: int):
+    """One spec -> its cone-emitter row [y, x, r, g, b, center_q, spread_q], or
+    None when its cell is off the grid. THE DOOR from render floats to the
+    sweep's integers (a render-side quantization, once): the cell is the floor
+    of the position; rgb = intensity x colour in L°'s currency (2^fine_bits
+    per light unit, rounded, never negative); the angles in Q16 turns, the
+    centre reduced mod one turn, a spread >= 2*pi - OMNI_EPS omni (the old
+    march's test)."""
+    x, y = int(math.floor(spec.x)), int(math.floor(spec.y))
+    if not (0 <= x < grid_w and 0 <= y < grid_h):
+        return None
+    scale = float(1 << int(fine_bits))
+    rgb = [max(0, int(round(max(0.0, float(spec.intensity) * float(c)) * scale)))
+           for c in spec.color]
+    center = int(round(float(spec.angle_center) / math.tau * CONE_TURN)) % CONE_TURN
+    if float(spec.angle_spread) >= math.tau - OMNI_EPS:
+        spread = CONE_TURN
     else:
-        fire_params, fire_peaks = [], 0
-    sources += [build_light_source(bp, p) for p in fire_params]
+        spread = max(0, min(CONE_TURN, int(round(float(spec.angle_spread)
+                                                 / math.tau * CONE_TURN))))
+    return [y, x, rgb[0], rgb[1], rgb[2], center, spread]
 
-    return FrameLights(sources=sources, fire_count=len(fire_params),
-                       fire_peaks=int(fire_peaks))
+
+def cone_rows(specs: Sequence, grid_w: int, grid_h: int, fine_bits: int) -> np.ndarray:
+    """THE OUTPUT ROW: every spec as a cone-emitter row, (n, 7) int64, for
+    ``Simulation.set_light`` (the engine reads it once per tick). Off-grid
+    specs are skipped (the ``partition_lights`` rule). The cone budget is the
+    sweep's own door, one place (#173): what it charges is each cone's
+    projection per ordinate, and that projection has ONE implementation."""
+    rows = []
+    for s in specs:
+        r = spec_cone_row(s, grid_w, grid_h, fine_bits)
+        if r is not None:
+            rows.append(r)
+    a = np.asarray(rows, dtype=np.int64).reshape(len(rows), 7)
+    return np.ascontiguousarray(a)
+
+
+def emit_mult_rows(ys, xs, mult, grid_w: int, grid_h: int) -> np.ndarray:
+    """THE FIRE'S LIGHT FLICKER's door (graphics G3 F4b; design §6.3, RULED
+    D): per-tile float multipliers -> the sweep's EMISSION-MULTIPLIER rows
+    ``(y, x, mult_q)``, (n, 3) int64 for ``Simulation.set_light(...,
+    emit_mult=)``. The render-side quantization, once: mult_q = round(mult x
+    2^16), clamped to the sweep's door [0, LIGHT_EMIT_MULT_MAX] (a non-finite
+    value is ONE: no flicker rather than a refusal mid-tick). Off-grid tiles
+    are skipped (the ``partition_lights`` rule) and a tile named twice keeps
+    its FIRST row (the door refuses duplicates by name, so the assembly never
+    hands it one). Render state like the cone rows: it scales the cell's
+    THERMAL light emission only -- heat never reads it, nothing digests it."""
+    ys = np.asarray(ys, dtype=np.int64).ravel()
+    xs = np.asarray(xs, dtype=np.int64).ravel()
+    m = np.asarray(mult, dtype=np.float64).ravel()
+    if not (ys.size == xs.size == m.size):
+        raise ValueError("emit_mult_rows: ys, xs and mult must have one entry per tile")
+    ok = (ys >= 0) & (ys < int(grid_h)) & (xs >= 0) & (xs < int(grid_w))
+    ys, xs, m = ys[ok], xs[ok], m[ok]
+    m = np.where(np.isfinite(m), m, 1.0)
+    q = np.clip(np.rint(m * float(1 << 16)), 0, LIGHT_EMIT_MULT_MAX).astype(np.int64)
+    _, first = np.unique(ys * int(grid_w) + xs, return_index=True)
+    first.sort()
+    rows = np.stack([ys[first], xs[first], q[first]], axis=1) if first.size         else np.zeros((0, 3), dtype=np.int64)
+    return np.ascontiguousarray(rows.astype(np.int64))
+
+
+def sky_for_level(boundary: str, cfg, bp, n_ordinates: int = 16):
+    """THE SKY's door (P6b brief §1.4; design §2.7): the light ring's per-
+    ordinate RGB, (n_ordinates, 3) int64 in L°'s currency, from the level's
+    BOUNDARY TYPE and ``[light.sky.<boundary>]`` -- or None (the dark ring)
+    when the type has no table or its sky is all zero. Space is dark; an
+    ``ambient`` (planetside) boundary is open air: ``overcast`` is the
+    IRRADIANCE a clear boundary cell receives from a uniform sky, in light
+    units, split evenly over the ordinates (a uniform sky then carries exactly
+    that into every clear cell); an optional SUN adds ``sun`` light units of
+    irradiance travelling along ``sun_bearing_deg`` (screen convention: 0 =
+    toward +x, 90 = toward +y) inside ``sun_spread_deg``, projected onto the
+    ordinates by the engine's own ``RadiationSweep.cone_emission`` (the ONE
+    projection)."""
+    sky_cfg = getattr(getattr(cfg, "light", None), "sky", None)
+    t = getattr(sky_cfg, str(boundary), None)
+    if t is None:
+        return None
+    scale = float(1 << int(bp.L_FINE_BITS))
+
+    def _rgb(name):
+        v = [float(c) for c in getattr(t, name, (0.0, 0.0, 0.0))]
+        if len(v) != 3 or any((not math.isfinite(c)) or c < 0.0 for c in v):
+            raise ValueError(f"[light.sky.{boundary}] {name} must be 3 "
+                             f"non-negative numbers")
+        return v
+
+    over = _rgb("overcast")
+    sky = np.zeros((n_ordinates, 3), dtype=np.int64)
+    for c in range(3):
+        sky[:, c] = int(round(over[c] / n_ordinates * scale))
+    sun = _rgb("sun")
+    if any(v > 0.0 for v in sun):
+        bearing = float(getattr(t, "sun_bearing_deg", 0.0))
+        spread = float(getattr(t, "sun_spread_deg", 10.0))
+        center_q = int(round(bearing / 360.0 * CONE_TURN)) % CONE_TURN
+        spread_q = max(0, min(CONE_TURN, int(round(spread / 360.0 * CONE_TURN))))
+        sun_q = [int(round(v * scale)) for v in sun]
+        sky += np.asarray(bp.RadiationSweep.cone_emission(sun_q, center_q, spread_q,
+                                                          n_ordinates), dtype=np.int64)
+    if np.any(sky > LIGHT_SKY_MAX):
+        raise ValueError(f"[light.sky.{boundary}]: a per-ordinate sky value passes "
+                         f"LIGHT_SKY_MAX ({LIGHT_SKY_MAX})")
+    if not np.any(sky):
+        return None
+    return np.ascontiguousarray(sky)
 
 
 __all__ = [
-    "build_light_source",
-    "build_static_light_sources",
-    "build_frame_light_sources",
-    "FrameLights",
+    "EMITTER_INPUTS",
+    "FrameLightSpecs",
+    "frame_light_specs",
+    "flashlight_lens",
+    "flashlight_specs",
+    "cursor_lamp_spec",
+    "transient_specs",
+    "MuzzleFlash",
+    "muzzle_flash_settings",
+    "muzzle_flash_lights",
+    "TRANSIENT_MAX_TOTAL",
+    "BLAST_FLASH_CUTOFF",
+    "blast_flash_cells",
+    "blast_flash_lights",
+    "cap_transient_group",
+    "spec_cone_row",
+    "cone_rows",
+    "LIGHT_EMIT_MULT_MAX",
+    "emit_mult_rows",
+    "sky_for_level",
+    "monotonic_total_tick",
+    "partition_lights",
 ]
