@@ -578,7 +578,11 @@ def run_lockstep(name, drivers, slots, ticks, twins=None, min_events=None,
 # ---------------------------------------------------------------------------
 # PART TABLES
 # ---------------------------------------------------------------------------
-def part_tables():
+def table_reference(sim) -> dict:
+    """The P6.3 device-table rows' values read from the reference objects
+    themselves (what ``unit_tables.values`` must equal): also merged into
+    tests/cuda_unit_kernels_check.py's table check, which refuses a row with
+    no reference value."""
     from config import CFG
     from simulation import exchange, exposure, gas_fixed, gases, optics_fixed, poison
     from simulation.events import CAUSE_NAMES
@@ -586,6 +590,52 @@ def part_tables():
     from simulation.species import SPECIES_REGISTRY, ZOMBIE_MITIGATION
     from simulation.status import STATUS_REGISTRY
     from simulation.unit_fixed import quantize_scalar as qs
+    profs = list(get_tables().env_profiles.by_name.values())
+    specs = list(SPECIES_REGISTRY.values())
+    es = exposure.get_settings()
+    ps = poison.get_settings()
+    gain, amb = exchange.heat_dials_q(exchange.heat_dials(CFG))
+    flat = lambda f, xs: tuple(int(v) for x in xs for v in f(x))  # noqa: E731
+    return {
+        "mitig_armor_zombie_q": tuple(ZOMBIE_MITIGATION.armor_q),
+        "mitig_resist_zombie_q": tuple(ZOMBIE_MITIGATION.resist_q),
+        "mitig_armor_species_q": flat(lambda s: s.mitigation.armor_q, specs),
+        "mitig_resist_species_q": flat(lambda s: s.mitigation.resist_q, specs),
+        "expose_k_q": es.k_q, "expose_x_max_q": es.x_max_q,
+        "expose_resist_zombie_q": tuple(es.zombie_resist),
+        "expose_resist_profile_q": flat(lambda p: p.expose_resist, profs),
+        "expose_resist_species_q": flat(lambda s: s.environment.expose_resist, specs),
+        "status_dtype": tuple(-1 if r.dtype is None else r.dtype
+                              for r in STATUS_REGISTRY),
+        "status_cause": tuple(-1 if r.dtype is None else CAUSE_NAMES.index(r.name)
+                              for r in STATUS_REGISTRY),
+        "heat_gain_q": gain, "heat_ambient_q": amb,
+        "heat_overtemp_q": qs(float(CFG.combat.heat_overtemp_scale)),
+        "heat_temp_max_profile_q": tuple(qs(p.temperature_max) for p in profs),
+        "heat_temp_max_species_q": tuple(qs(s.environment.temperature_max)
+                                         for s in specs),
+        "heat_rate_profile_q": tuple(qs(p.environmental_damage_rate) for p in profs),
+        "heat_rate_species_q": tuple(qs(s.environment.environmental_damage_rate)
+                                     for s in specs),
+        "heat_tps": sim._tps,
+        "heat_fine_bits": optics_fixed.sweep_fine_bits(sim.gmap),
+        "gas_teargas": gases.TEARGAS, "gas_poison": gases.POISON,
+        "teargas_thresh_q": gas_fixed.quantize_trace_scalar(
+            float(CFG.exchange.teargas_blind_density)),
+        "teargas_blind_ticks": int(CFG.exchange.teargas_blind_ticks),
+        "poison_thresh_q": gas_fixed.quantize_trace_scalar(
+            float(CFG.exchange.poison_min_density)),
+        "poison_gas_q": ps.gas_q,
+        "poison_dose_den": int(gas_fixed.TRACE_ONE) * int(sim._tps),
+        "poison_onset_class_q": ps.class_onset_q,  # traits-class: the table check
+        "poison_decay_class_q": ps.class_decay_q,  # traits-class: the table check
+        "poison_harm_class_q": ps.class_harm_q,  # traits-class: the table check
+        "poison_x_max": poison.X_MAX, "poison_flush_q": poison.FLUSH_Q,
+        "footprint_rowmajor": 1,
+    }
+
+
+def part_tables():
     a = LaneDriver("fire", hooks=False)
     b = ShipDriver(hooks=False)
     sims = [a.sim, b.sim]
@@ -594,52 +644,9 @@ def part_tables():
     got = st.tables.download()
     if not np.array_equal(got, tab):
         fail("tables: the device tables differ from the uploaded ones")
-    profs = list(get_tables().env_profiles.by_name.values())
-    specs = list(SPECIES_REGISTRY.values())
-    es = exposure.get_settings()
-    ps = poison.get_settings()
-    gain, amb = exchange.heat_dials_q(exchange.heat_dials(CFG))
     n = 0
     for e, sim in enumerate(sims):
-        flat = lambda f, xs: tuple(int(v) for x in xs for v in f(x))  # noqa: E731
-        want = {
-            "mitig_armor_zombie_q": tuple(ZOMBIE_MITIGATION.armor_q),
-            "mitig_resist_zombie_q": tuple(ZOMBIE_MITIGATION.resist_q),
-            "mitig_armor_species_q": flat(lambda s: s.mitigation.armor_q, specs),
-            "mitig_resist_species_q": flat(lambda s: s.mitigation.resist_q, specs),
-            "expose_k_q": es.k_q, "expose_x_max_q": es.x_max_q,
-            "expose_resist_zombie_q": tuple(es.zombie_resist),
-            "expose_resist_profile_q": flat(lambda p: p.expose_resist, profs),
-            "expose_resist_species_q": flat(lambda s: s.environment.expose_resist, specs),
-            "status_dtype": tuple(-1 if r.dtype is None else r.dtype
-                                  for r in STATUS_REGISTRY),
-            "status_cause": tuple(-1 if r.dtype is None else CAUSE_NAMES.index(r.name)
-                                  for r in STATUS_REGISTRY),
-            "heat_gain_q": gain, "heat_ambient_q": amb,
-            "heat_overtemp_q": qs(float(CFG.combat.heat_overtemp_scale)),
-            "heat_temp_max_profile_q": tuple(qs(p.temperature_max) for p in profs),
-            "heat_temp_max_species_q": tuple(qs(s.environment.temperature_max)
-                                             for s in specs),
-            "heat_rate_profile_q": tuple(qs(p.environmental_damage_rate) for p in profs),
-            "heat_rate_species_q": tuple(qs(s.environment.environmental_damage_rate)
-                                         for s in specs),
-            "heat_tps": sim._tps,
-            "heat_fine_bits": optics_fixed.sweep_fine_bits(sim.gmap),
-            "gas_teargas": gases.TEARGAS, "gas_poison": gases.POISON,
-            "teargas_thresh_q": gas_fixed.quantize_trace_scalar(
-                float(CFG.exchange.teargas_blind_density)),
-            "teargas_blind_ticks": int(CFG.exchange.teargas_blind_ticks),
-            "poison_thresh_q": gas_fixed.quantize_trace_scalar(
-                float(CFG.exchange.poison_min_density)),
-            "poison_gas_q": ps.gas_q,
-            "poison_dose_den": int(gas_fixed.TRACE_ONE) * int(sim._tps),
-            "poison_onset_class_q": ps.class_onset_q,  # traits-class: the table check
-            "poison_decay_class_q": ps.class_decay_q,  # traits-class: the table check
-            "poison_harm_class_q": ps.class_harm_q,  # traits-class: the table check
-            "poison_x_max": poison.X_MAX, "poison_flush_q": poison.FLUSH_Q,
-            "footprint_rowmajor": 1,
-        }
-        for k, v in want.items():
+        for k, v in table_reference(sim).items():
             dv = unit_tables.read(got[e], k)
             n += 1
             as_t = lambda x: tuple(x) if isinstance(x, (tuple, list)) else (x,)  # noqa: E731

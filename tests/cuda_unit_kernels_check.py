@@ -451,6 +451,8 @@ def part_tables():
             "hp_class_zombie_q": unit_traits.class_hp_q(True),
             "zombie_team": ZOMBIE_TEAM, "gas_o2": O2, "gas_n2": INERT_N2,
         }
+        from cuda_unit_damage_check import table_reference   # #29 P6.3's rows
+        want.update(table_reference(sim))
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")
