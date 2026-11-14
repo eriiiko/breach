@@ -921,6 +921,14 @@ FP_HD inline int64_t mul_q16_round_q(int64_t a, int64_t b) {
     return neg ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
 }
 
+// half_up_q (#29 P6.2m): movement.half_up -- (num + den // 2) // den with
+// Python's FLOOR divisions, den > 0 (the movement-cadence rounding the speed
+// reduction and the direction rule use; mobility design §3). The caller keeps
+// num + den / 2 inside int64 (the slot-3 kernel's proved ranges).
+FP_HD inline int64_t half_up_q(int64_t num, int64_t den) {
+    return floordiv_q(num + floordiv_q(den, 2), den);
+}
+
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------
 //
 // n = ceil(a_real / b_real), computed entirely in integer from the Q16.16
