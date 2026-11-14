@@ -55,7 +55,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from simulation import turning, unit_fixed
+from simulation import turning, unit_fixed, unit_traits
 from simulation.unit_fixed import (FP_ONE as ONE, div_trunc, effort_step,
                                    isqrt, isqrt_ceil, shr_trunc)
 
@@ -595,10 +595,14 @@ def _clamp_vmax(x: int, y: int):
 
 
 def stability_q16(u) -> int:
-    """``u``'s knockdown stability in Q16: the wind law's own read (the
-    zombie state's overlay, else the env profile's), quantized."""
+    """``u``'s knockdown stability in Q16: THE accessor of the HOLD hook
+    (#29 U1) -- the class value, the wind law's own read (the zombie state's
+    overlay, else the env profile's) quantized, times ``u``'s HOLD hook,
+    rounded once. Its one reader is the law (the fall limit, the effort
+    knockdown). int64: a stability <= 2^20 Q16 x 2^19."""
     from simulation.exchange import _stability_for
-    return unit_fixed.quantize_scalar(_stability_for(u))
+    return unit_traits.scaled(u, unit_traits.HOLD,
+                              unit_fixed.quantize_scalar(_stability_for(u)))
 
 
 def pending_dw(table: ImpulseTable, u) -> int:
@@ -908,7 +912,8 @@ def shove(table: ImpulseTable, units, u, tick: int, events=None) -> bool:
         return False
     f = u.facing_q
     sx, sy = unit_fixed.cos_q16(f), -unit_fixed.sin_q16(f)   # world y down
-    jx, jy = along_q(table.shove_q, sx, sy)
+    # #29 U1: THE PUSH accessor (the shove's impulse times the shover's hook)
+    jx, jy = along_q(unit_traits.push_impulse_q(table, u), sx, sy)
     ux, uy = centre_q(u)
     tx, ty = centre_q(t)
     add(table, t, jx, jy, lever_q(tx, ty, ux, uy, sx, sy))

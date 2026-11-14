@@ -851,7 +851,7 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
     lines.append(PanelLine("", 12, None, 6))
 
     if selected_unit is not None and getattr(selected_unit, "alive", False):
-        from simulation.stats import effective_vitality
+        from simulation import unit_traits
         lines.append(PanelLine(f"Selected: {selected_unit.name}", 14,
                                (120, 220, 255, 255), 18))
         weapon_id = getattr(selected_unit, "weapon_id", "")
@@ -860,7 +860,8 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
                                    (255, 200, 120, 255), 16))
         lines.append(PanelLine(
             f"HP: {int(selected_unit.current_hp)}/"
-            f"{int(effective_vitality(selected_unit))}", 13, None, 16))
+            f"{int(unit_traits.max_hp_q(selected_unit) / unit_traits.ONE)}",
+            13, None, 16))
         if continuous:
             ammo = ammo_text(selected_unit, sim.get_tick(),
                              sim.weapons_tables.weapons.by_name)
