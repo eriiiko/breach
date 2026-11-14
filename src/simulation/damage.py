@@ -458,6 +458,10 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         if hasattr(unit, "order_what"):
             from simulation import unit_orders
             unit_orders.clear(unit)
+        # #29 PX: nor poison (the law runs on the living).
+        if hasattr(unit, "poison_x0"):
+            from simulation import poison
+            poison.clear(unit)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:
