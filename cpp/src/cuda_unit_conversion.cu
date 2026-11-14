@@ -12,9 +12,10 @@
 // turn (turning.settle), of its push (unit_impulse.clear), of its noise and
 // anchor (horde.clear), of its order (unit_orders.clear) and of poison
 // (poison.clear); zombie_activated is set and killed_by_zombie cleared. The
-// `traits` block is KEPT. What has no device form (reference-only): the name's
-// "Z-" prefix and the momentum books -- the slot's host side, done by its
-// owner after the download.
+// `traits` block is KEPT. What has no device form: the name's "Z-" prefix
+// and the momentum books (reference-only), and on_tick_end's prune of the
+// detonated grenades from sim.projectiles (a host table until P7b) -- the
+// slot's host side, done by its owner after the download.
 //
 // CLASS T (training only): nothing in the played tick calls this TU.
 // ============================================================================

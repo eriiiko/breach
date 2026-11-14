@@ -805,12 +805,18 @@ def _orders_host_side(sim, pre, post):
 
 
 def _conversion_host_side(sim, pre, post):
+    """What ContinuousRealtime.on_tick_end does that is not unit rows: a
+    converted unit's name and momentum books, and (since #29's reference
+    debts, main 31e43965) dropping the detonated grenades from
+    ``sim.projectiles`` -- a host table until P7b."""
     lay = unit_store.layout()
     z = lay.column("is_zombie").offset
     for r, u in enumerate(sim.units):
         if not pre[r, z] and post[r, z]:
             u.name = f"Z-{u.name}"
             u.impulse_books = [0] * 8
+    if any(p.detonated for p in sim.projectiles):
+        sim.projectiles[:] = [p for p in sim.projectiles if not p.detonated]
 
 
 def part_chained():

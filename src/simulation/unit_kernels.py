@@ -149,8 +149,9 @@ def expire_orders(store, ticks) -> np.ndarray:
 
 def convert_zombies(store) -> np.ndarray:
     """Slot 10's ruleset tail: every row killed by a zombie rises as one.
-    The host side (the name's "Z-" prefix, the momentum books) is the
-    caller's."""
+    The host side (the name's "Z-" prefix, the momentum books, and
+    ``ContinuousRealtime.on_tick_end``'s prune of detonated grenades from
+    ``sim.projectiles``) is the caller's."""
     return _done(store, "convert_zombies",
                  store.bp.unit_convert_zombies(store.buffer, store.tables))
 

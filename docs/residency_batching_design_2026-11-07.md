@@ -795,11 +795,13 @@ landed as re-checked; no decision moved. One line each:
   components the tables' doors and the V_MAX clamp bound; a state operand past
   2^31 in a squared 2-vector (2^15 tiles a tick) faults the row instead of
   wrapping. No fault occurred in any scene.
-- THE CONVERSION's slot is the label `10 tick end (ruleset)` (on the
-  continuous path `ContinuousRealtime.on_tick_end` is exactly
-  `convert_marines_to_zombies`), so no nested label was added. Its host-only
-  side (the name's "Z-" prefix, the momentum books) has no device form; the
-  chained harness does it after the unpack.
+- THE CONVERSION's slot is the label `10 tick end (ruleset)`
+  (`ContinuousRealtime.on_tick_end`: `convert_marines_to_zombies`, then --
+  since the reference-debts patch merged mid-P6.2 -- dropping the detonated
+  grenades from `sim.projectiles`), so no nested label was added. Its
+  host-only side (the name's "Z-" prefix, the momentum books, the grenade
+  prune: a host table until P7b) has no device form; the chained harness does
+  it after the unpack.
 - THE GATES (`tests/cuda_unit_kernels_check.py`, wrapper
   `tests/test_cuda_unit_kernels.py`): the tables read back equal the
   reference objects over two maps of different tile size; the library on
