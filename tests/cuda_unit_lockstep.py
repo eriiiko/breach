@@ -45,6 +45,9 @@ THE API the later P6 patches extend::
             rep = ls.tick()                        # a TickReport
     ls.reports, ls.divergences
 
+    with ShadowLockstep(drivers, [slot_a, slot_b]) as ls:   # several slots:
+        reps = ls.tick()                           # {label: TickReport}
+
 ``run(store)`` when the slot declares no inputs (P6.1's form), else
 ``run(store, inputs)`` with a :class:`SlotInputs`: ``inputs.tick`` ``(N,)``
 int64 (each env's ``sim.tick`` at the slot's entry), ``inputs.tables[name]``

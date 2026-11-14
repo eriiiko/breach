@@ -733,6 +733,77 @@ The two reference debts (the projectile list never pruned; `melee_intent`'s
 possession) and the stale docstrings of the inventory's Part E are one small
 reference patch run beside P6.2 (`29-ref-debts`).
 
+**As built (P6.2, 2026-11-14).** The shared layer and its five first users
+landed as re-checked; no decision moved. One line each:
+- THE DEVICE TABLES are `simulation/unit_tables.py`: `ROWS`, each a
+  `TableRow(name, width, value(src), lo, hi)` whose `value` reads the
+  reference's own object (`sim.impulse_table`, the sim's turning class dials,
+  the status registry, `exposure.get_settings()`, `unit_traits.class_hp_q`,
+  the species / env-profile stabilities, `ZOMBIE_TEAM`, the gas indices) and
+  whose `lo` .. `hi` is the range the kernels were proved for (refused by
+  name at `values`); 25 rows, T = 45 on the shipped config. One vector per env
+  (`(N, T)`; the impulse table is per map); the generated
+  `cpp/src/unit_tables_layout.h` (written by the same `gen_unit_layout.py`
+  as the store's) carries the offsets, each hook's index and each status
+  kind's id, all in a fingerprint the store checks. The tables are uploaded
+  when the store is built (`DeviceStore(..., tables=)`), a separate
+  `UnitTablesDevice`.
+- THE SLOT INPUTS: `DeviceSlot(label, run, columns, inputs)`; an input is a
+  row of `cuda_unit_lockstep.INPUTS` (`tick`, `order_requests`) or
+  `field:<GameMap attribute>`, captured per env at the slot's FIRST entry in
+  a tick and gathered into a `SlotInputs` (`.tick (N,)`, `.tables[name]
+  (N, R, C)`, `.fields[name]` a CuPy `(N, ...)` array in the resident
+  field's dtype); `run(store)` without inputs (P6.1's form) or `run(store,
+  inputs)`. A field reaches a kernel as a device pointer (the binding takes
+  `uintptr`s and the shape), so P8b passes `ResidentBatch.buffers` as they are.
+  The per-tick host table is staged through the store's `stage_input` slots.
+  `ShadowLockstep` takes one slot or a list (one match shadows all six).
+- THE DEVICE UNIT LIBRARY is `cpp/src/cuda_unit_lib.cuh`; its gate is a
+  TEST-ONLY probe TU (`cuda_unit_lib_probe.cu`) running each function on
+  synthetic rows.
+- WHERE A KERNEL LIVES: `UnitStoreDevice` keeps the buffer, the copies, the
+  per-env COUNTS (coverage / faults / refused, a 3 x N device array every
+  kernel writes) and the input staging; P6.1's `exposure_decay` method left
+  it. Each slot is a free function in its family's TU (`cuda_unit_exposure.cu`
+  1c, `cuda_unit_impulse.cu` 1a + 9c2, `cuda_unit_orders.cu` 1b' + 10',
+  `cuda_unit_conversion.cu` the conversion), declared in `cuda_unit_kernels.h`,
+  bound one `bp.unit_*` function each returning the three counts, and faced
+  in Python by `simulation/unit_kernels.py` (which refuses a fault). The kit
+  gained `isqrt_q` / `isqrt_u64_q` (exact over int64 / uint64: `sqrt_q16`
+  clamps at int32), `isqrt_ceil_q`, `div_round_q`, `mul_q16_round_q` (a
+  128-bit product through `umul64_wide`); every `.cu` is on the target-wide
+  CUDA determinism floor (confirmed in CMakeLists: `--fmad=false`,
+  `-Xcompiler /fp:strict`), no per-source list needed.
+- WIDTHS: Python's unbounded ints meet int64 in three places. The wind load
+  `W = N * v2` reaches 2^80 and is formed in 128 bits, its impulse
+  `((W >> 16) * k) >> 16` too (a result past int64 FAULTS); the projection
+  `j * v / n` is the exact split `j = q n + r` (`|v| <= n`, so `r v < 2^63`).
+  The demand's components are clamped at 2^30 before their square, exactly
+  (past it the effort saturates whatever the rest). Every other square is of
+  components the tables' doors and the V_MAX clamp bound; a state operand past
+  2^31 in a squared 2-vector (2^15 tiles a tick) faults the row instead of
+  wrapping. No fault occurred in any scene.
+- THE CONVERSION's slot is the label `10 tick end (ruleset)` (on the
+  continuous path `ContinuousRealtime.on_tick_end` is exactly
+  `convert_marines_to_zombies`), so no nested label was added. Its host-only
+  side (the name's "Z-" prefix, the momentum books) has no device form; the
+  chained harness does it after the unpack.
+- THE GATES (`tests/cuda_unit_kernels_check.py`, wrapper
+  `tests/test_cuda_unit_kernels.py`): the tables read back equal the
+  reference objects over two maps of different tile size; the library on
+  synthetic rows; the six slots shadowed together on ship_demo's bots match
+  with TURN / HOLD / HP hooks on two thirds of the marines and an order
+  schedule (500 ticks, twin equal every tick); slots 1a + 9c2 on the doorway
+  jet scene (knockdowns, prone bodies in wind) at N = 1, 2, 8; 1b' / 10' / 1c
+  on ship batches with extra idle units, the conversion / 10' / 1a on box
+  matches where a horde bites idle marines, N = 2, 8; the chained pairs 1b' +
+  1c and 10' + conversion. Every gate was broken once (the patch's report).
+- The corpus traces no conversion (no zombie kills a marine in 300 ticks), so
+  the conversion twin's generated files are `ai_zombie.py`, `ruleset.py` and
+  `unit.py` only; `integrate_turn` and `wind_impulse` share `unit.py` /
+  `gamemap.py` with Class-P twins (a change there needs the stamp through
+  those). Eleven modules left `[not_twinned]`.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

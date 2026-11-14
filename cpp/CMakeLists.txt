@@ -124,7 +124,8 @@ if(BREACH_CUDA)
         src/cuda_stamp.cu          # #29 P4b: the stamp kernel (slot 6's five planes)
         src/cuda_edit_queue.cu     # #29 P4c: the device edit queue (slot 6b's FieldEdit flush)
         src/cuda_resident_tick.cu  # #29 P4a: the resident tick's drivers (the brackets gone)
-        # #29 P6.1: the device unit store + its pilot kernel (slot 1c), Class T.
+        # #29 P6.1: the device unit store (P6.2: + the device tables, the counts,
+        # the input staging; its slot-1c kernel moved to cuda_unit_exposure.cu), Class T.
         # Like every .cu it is on the determinism floor through the target-wide
         # CUDA options below (--fmad=false, -Xcompiler /fp:strict); pure integer.
         src/cuda_unit_store.cu

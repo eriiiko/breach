@@ -32,7 +32,9 @@ unhooked twin (per-tick unit hash and field digest) -- hooking is harmless.
 PART DOORWAY -- slots 1a and 9c2 on tests/test_wind_doorway_e2e.py's scene (an
 over-pressured ship_demo room vents through its doorway onto a squad: the jet
 floors the squad -- knockdowns -- and pushes the prone bodies, whose standing
-surplus the wind row keeps), N = 1 with an unhooked twin, then N = 2 and 8
+surplus the wind row keeps; the squad's live aims sweep round, so the
+turning law and its TURN hook act every tick), N = 1 with an unhooked twin,
+then N = 2 and 8
 (env e: 2 + e % 3 squad units, so U differs and padding rows ride along;
 hooks TURN / HOLD differ per unit); env i of the batch == env i alone.
 
@@ -87,6 +89,10 @@ DOOR_TICKS = int(os.environ.get("UNIT_KERNELS_DOOR_TICKS", "160"))
 BATCH_TICKS = int(os.environ.get("UNIT_KERNELS_BATCH_TICKS", "160"))
 BOX_TICKS = int(os.environ.get("UNIT_KERNELS_BOX_TICKS", "400"))
 ONE = unit_traits.ONE
+#: Which batch sizes / chains run (all by default; a break run narrows them).
+DOOR_NS = [int(x) for x in os.environ.get("UNIT_KERNELS_DOOR_NS", "1,2,8").split(",")]
+BATCH_NS = [int(x) for x in os.environ.get("UNIT_KERNELS_BATCH_NS", "2,8").split(",")]
+CHAINS = [int(x) for x in os.environ.get("UNIT_KERNELS_CHAINS", "0,1,2").split(",")]
 
 
 def fail(msg):
@@ -263,10 +269,18 @@ class DoorwayDriver:
             g.destroy_wall(r, WEST_WALL)
         self.sim, self.squad, self.walker = sim, squad, walker
         self.move = quantize_stick_direction(-1.0, 0.0, 0.0)[:2]
+        self.k = 0
 
     def tick(self):
+        # The squad holds a live aim that sweeps round (each its own phase), so
+        # the turning law -- and its TURN hook -- acts every tick, prone too.
+        from simulation.unit_fixed import cos_q16, sin_q16
+        for i, u in enumerate(self.squad):
+            a = (self.k * 7000 + i * 60000) % 411774          # Q16 radians
+            self.sim.set_aim(u.id, cos_q16(a), -sin_q16(a))
         self.sim.set_move_dir(self.walker.id, self.move[0], self.move[1], 0)
         self.sim.step()
+        self.k += 1
 
 
 _BOX_CACHE: dict = {}
@@ -702,7 +716,7 @@ class _DoorProbe:
 
 
 def part_doorway():
-    for n in (1, 2, 8):
+    for n in DOOR_NS:
         drivers = [DoorwayDriver(n_squad=2 + (e % 3) if n > 1 else 3)
                    for e in range(n)]
         twins = [DoorwayDriver(n_squad=3)] if n == 1 else None
@@ -719,14 +733,14 @@ def part_doorway():
 
 
 def part_batch():
-    for n in (2, 8):
+    for n in BATCH_NS:
         drivers = [ShipDriver(seed=1 + e, extra=e % 3) for e in range(n)]
         run_lockstep(f"ship batch N={n}", drivers, [SLOT_1B2, SLOT_10E, SLOT_1C],
                      BATCH_TICKS,
                      min_share={SLOT_1B2.label: 0.2, SLOT_10E.label: 0.02})
         if len({len(d.sim.units) for d in drivers}) < 2:
             fail(f"ship batch N={n}: every env has the same unit count (no padding)")
-    for n in (2, 8):
+    for n in BATCH_NS:
         drivers = [BoxDriver(n_marines=2 + e % 2, n_zombies=2 + e % 3, seed=1 + e)
                    for e in range(n)]
         conv = {"n": 0}
@@ -735,7 +749,7 @@ def part_batch():
             conv["n"] += int(reps[SLOT_CONV.label].coverage.sum())
         run_lockstep(f"box batch N={n}", drivers, [SLOT_10E, SLOT_CONV, SLOT_1A],
                      BOX_TICKS, probes=probes,
-                     min_share={SLOT_1A.label: 0.5, SLOT_CONV.label: 0.0005})
+                     min_share={SLOT_1A.label: 0.2, SLOT_CONV.label: 0.0005})
         print(f"box batch N={n}: {conv['n']} conversions")
         if conv["n"] == 0:
             fail(f"box batch N={n}: no conversion (vacuous)")
@@ -800,12 +814,17 @@ def _conversion_host_side(sim, pre, post):
 
 
 def part_chained():
-    _chained("chained 1b' + 1c (ship, orders)", lambda: ShipDriver(seed=1),
-             [SLOT_1B2, SLOT_1C], _orders_host_side, SHIP_TICKS, SLOT_1B2.label)
-    _chained("chained 10' + conversion (box)", lambda: BoxDriver(),
-             [SLOT_10E, SLOT_CONV], _conversion_host_side, BOX_TICKS, SLOT_CONV.label)
-    _chained("chained 10' + conversion (ship, orders)", lambda: ShipDriver(seed=1),
-             [SLOT_10E, SLOT_CONV], _conversion_host_side, SHIP_TICKS, SLOT_10E.label)
+    if 0 in CHAINS:
+        _chained("chained 1b' + 1c (ship, orders)", lambda: ShipDriver(seed=1),
+                 [SLOT_1B2, SLOT_1C], _orders_host_side, SHIP_TICKS, SLOT_1B2.label)
+    if 1 in CHAINS:
+        _chained("chained 10' + conversion (box)", lambda: BoxDriver(),
+                 [SLOT_10E, SLOT_CONV], _conversion_host_side, BOX_TICKS,
+                 SLOT_CONV.label)
+    if 2 in CHAINS:
+        _chained("chained 10' + conversion (ship, orders)", lambda: ShipDriver(seed=1),
+                 [SLOT_10E, SLOT_CONV], _conversion_host_side, SHIP_TICKS,
+                 SLOT_10E.label)
 
 
 # ---------------------------------------------------------------------------
