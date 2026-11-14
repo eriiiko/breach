@@ -12,9 +12,13 @@ PX (a throwaway checkout with this file copied in) and on the PX tree, then
 every tick and every field digest identical on every scenario without poison
 gas = the law is dormant there.
 
-``scripted_poison`` (every kind, the poison grenade included: the scenario of
-``_p3a_sole_cause``) is the one scenario EXPECTED to differ; it is run so the
-report can name its first difference and the poison hits on each tree.
+``scripted_poison`` (every kind, the thrower handed one poison grenade at its
+feet: its kit carries none, so ``_p3a_sole_cause``'s own scenario throws no
+poison) turned out EQUAL too: the arena is built with no air, and a cloud in
+it deposits nothing. ``ship_demo_poison`` (the bench's match scene: a poison
+grenade thrown into a squad's room on ship_demo) is the scenario EXPECTED to
+differ; it is run so the report can name its first difference and the poison
+hits on each tree.
 
     <py> tests/_px_sole_cause.py OUT.pkl [scenario ...]
     <py> tests/_px_sole_cause.py --compare A.pkl B.pkl
@@ -76,6 +80,10 @@ def scenario_scripted_arena(n_ticks=420, with_poison=False):
     add("Z", 50, 50, ZOMBIE_TEAM, 0)
     one = 1 << 16
     kinds = get_tables().hand_grenade_rows
+    if with_poison:
+        # The thrower's kit carries no poison grenade (a throw of a kind it
+        # lacks is ignored): hand it one, so the cloud is real.
+        f.grenade_counts[kinds.index(POISON_ROW)] += 1
     tape = p3a._Tape()
     for t in range(n_ticks):
         if t < 60 and t % 3 == 0:
@@ -88,7 +96,9 @@ def scenario_scripted_arena(n_ticks=420, with_poison=False):
             sim.set_flashlight(s.id, False)
         for k in range(len(kinds)):
             if t == 12 + 30 * k and (with_poison or kinds[k] != POISON_ROW):
-                sim.throw_grenade_intent(f.id, 0, one, 24, 5 * one, k)
+                # the poison grenade at the thrower's feet: a unit in the cloud
+                reach = one if kinds[k] == POISON_ROW else 5 * one
+                sim.throw_grenade_intent(f.id, 0, one, 24, reach, k)
         if t == 110:
             sim.throw_grenade_intent(f.id, 0, -one, 20, 9 * one, 0)
         if t == 30:
@@ -114,12 +124,31 @@ def scenario_scripted_arena(n_ticks=420, with_poison=False):
     return tape, ("scripted", int(sim.tick))
 
 
+def scenario_ship_demo_poison(seconds=60):
+    """The bench's match scene (``tools/bench_poison.py::run_scene``): a
+    poison grenade thrown into a squad's room on ship_demo (real air; the
+    scripted arena above has none, so a cloud there deposits nothing)."""
+    import bench_poison
+    tape = p3a._Tape()
+
+    def on_tick(sim):
+        tape(sim)
+        for ev in sim.tick_events:
+            if type(ev).__name__ == "UnitHitEvent" and ev.source == "poison_gas":
+                tape.cov["poison_hits"] += 1
+    _sq, _lost, death, hits, _d, _m = bench_poison.run_scene(seconds,
+                                                             on_tick=on_tick)
+    tape.cov["deaths"] = len(death)
+    return tape, ("ship_demo_poison", hits)
+
+
 SCENARIOS = {
     "ship_demo": p3a.scenario_ship_demo,
     "ship_demo_bots_v1": p3a.scenario_ship_demo_bots_v1,
     "box_conversions": p3a.scenario_box_conversions,
     "scripted_no_poison": lambda: scenario_scripted_arena(with_poison=False),
     "scripted_poison": lambda: scenario_scripted_arena(with_poison=True),
+    "ship_demo_poison": scenario_ship_demo_poison,
 }
 
 

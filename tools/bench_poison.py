@@ -190,9 +190,13 @@ def _lethal_exposure(density, tps):
     return lo
 
 
-def table_scene(seconds=120, throw_at_s=1.0):
+def run_scene(seconds=120, throw_at_s=1.0, on_tick=None):
     """ship_demo, both teams idle, no horde: team 0's slot 0 throws one
-    poison grenade into its own squad's room."""
+    poison grenade (handed to it: the rifleman carries none) at its own
+    squad's centre at ``throw_at_s``. ``on_tick(sim)`` after every tick (the
+    sole-cause driver's tape). Returns the squad, its starting hp, the hp
+    lost by each mark, the death ticks, the POISON hit events and the
+    throw's distance."""
     import breach_physics as bp
     import level_loader
     from simulation.events import UnitHitEvent, UnitKilledEvent
@@ -229,6 +233,8 @@ def table_scene(seconds=120, throw_at_s=1.0):
             sim.throw_grenade_intent(thrower.id, ux, uy, 24,
                                      int(dist * 65536), kind)
         session.tick()
+        if on_tick is not None:
+            on_tick(sim)
         for e in sim.tick_events:
             if isinstance(e, UnitHitEvent) and e.source == "poison_gas":
                 hits += 1
@@ -238,7 +244,14 @@ def table_scene(seconds=120, throw_at_s=1.0):
             if sim.tick == m * tps:
                 for u in squad:
                     lost_at[u.id][m] = hp0[u.id] - max(0.0, u.current_hp)
-    print(f"\n3. MATCH SCENE: ship_demo, idle teams, no horde; slot 0 throws "
+    return squad, lost_at, death, hits, dist, marks
+
+
+def table_scene(seconds=120, throw_at_s=1.0):
+    tps = _tps()
+    squad, lost_at, death, hits, dist, marks = run_scene(seconds, throw_at_s)
+    print(f"
+3. MATCH SCENE: ship_demo, idle teams, no horde; slot 0 throws "
           f"one poison grenade at its squad's centre ({dist:.1f} tiles) at "
           f"{throw_at_s:g} s; {seconds} s")
     for u in squad:
