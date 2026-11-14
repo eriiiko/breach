@@ -1454,3 +1454,31 @@ input's staging (~0.03 ms); 9c2's six plane reads per footprint tile add ~0.02 m
 the round trip ~0.83 ms, most of it the 1.1 MB store copied twice through pinned memory. Per slot per env-tick that
 is ~5 µs at N = 64 -- the cost the device backend pays only at the checkpoint cadence, since in the resident tick
 the store will stay on the device and one sync will serve a whole chain of slots (the chained gate's form).
+
+## P6.3: damage on the device (2026-11-14)
+
+**What.** The device `apply_packet` and the event ring with their first three slot kernels (2b status_tick, 9c
+heat_damage, 9c3 gas_rows -- the teargas row, the poison dose and the poison law in one kernel), each a free
+function over the `(N, U, W)` store, the `(N, T)` device tables and an `(N, E_max, F)` event ring
+(`simulation/unit_kernels.py`, `simulation/unit_events.py`). Class T: nothing in the played tick calls them.
+
+**Method.** `tests/cuda_unit_damage_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), WITH
+ANOTHER AGENT'S BUILDS AND GATES ON THE SAME MACHINE (P6.2m), so the spread is wider than P6.2's. The rows: the gas
+scene after 40 ticks (6 units, W = 180), replicated to N envs; 9c / 9c3 read that tick's heat / rad_flux_sweep / gas as
+CuPy `(N, ...)` arrays and its claims table. "upload + kernel + download" is the store's upload and the ring's begin,
+the kernel call, then the store's AND the whole ring's download (E_max = 1024 records of 7 int64 per env: 57 KB per
+env, 3.7 MB at N = 64); "kernel call" is the binding alone -- the counts' memset, the claims' staging (9c / 9c3), the
+launch, the ring's per-env gather, the counts' D2H and sync, the dropped counts' D2H and sync. Medians of 200
+repetitions; per row the three processes' medians.
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 2b status_tick | 0.413, 0.446, 0.468 / 0.200, 0.260, 0.268 | 0.525, 0.551, 0.606 / 0.209, 0.276, 0.300 | 1.825, 1.876, 1.960 / 0.289, 0.375, 0.379 |
+| 9c heat_damage | 0.508, 0.604, 0.554 / 0.298, 0.414, 0.355 | 0.631, 0.667, 0.822 / 0.312, 0.394, 0.442 | 1.994, 2.106, 2.054 / 0.376, 0.572, 0.453 |
+| 9c3 gas_rows | 0.462, 0.595, 0.562 / 0.294, 0.422, 0.372 | 0.647, 0.745, 0.778 / 0.328, 0.481, 0.433 | 1.948, 2.166, 2.255 / 0.382, 0.557, 0.538 |
+
+**Reading.** A damage slot's call is P6.2's ~0.14 ms sync plus a second sync for the dropped counts (~0.06 ms) and,
+for 9c / 9c3, the claims' staging; the gather (one thread per env) is a few microseconds at these U. The round trip
+grows with the ring's full download (3.7 MB at N = 64), which the device backend never does per tick: it reads the
+counts and only the records it hashes or rewards. Folding the dropped counts into the counts' D2H (one sync per
+slot) is the obvious saving when a chain of slots runs in the resident tick.
