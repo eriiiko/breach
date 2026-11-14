@@ -17,6 +17,16 @@ reference object's value (mitigation, exposure, the status registry's DoT
 columns, the heat row's dials and bands, the gas rows' thresholds, the poison
 law's class values), per env of a batch of two maps.
 
+PART APPLY -- the device apply_packet (a TEST-ONLY probe kernel, one packet
+per row) on SYNTHETIC rows, packets and tables against damage.apply_packet:
+random mitigation tables (non-dyadic resists, armor and its penetration),
+exposure settings and resists, living and dead rows, marines and zombies with
+every clearable column set, packets of every damage type and cause (heals,
+zero and negative amounts, expose, the conversion flag, a direction); the
+rows, the applied damage, the kill flag and the ring's events equal; padding
+rows untouched; an out-of-range packet faults and leaves its row and events
+alone -- the branches no shipped scene reaches.
+
 PART SCENES -- the SHADOW LOCKSTEP of the three slots together, every tick:
 rows equal, events equal in emission order, each kernel's coverage == the rows
 its host slot changed, the ring's count == the host's events of the slot; the
@@ -642,6 +652,212 @@ def part_tables():
 
 
 # ---------------------------------------------------------------------------
+# PART APPLY
+# ---------------------------------------------------------------------------
+def part_apply(trials=int(os.environ.get("UNIT_DAMAGE_APPLY_TRIALS", "8"))):
+    """The device apply_packet on SYNTHETIC rows, packets and tables against
+    damage.apply_packet: random mitigation tables (non-dyadic resists, armor),
+    exposure settings and resists, rows (living and dead, marines and
+    zombies, every clearable column non-zero), packets over every damage type
+    (heals, negative and zero amounts, armor penetration, expose, the
+    conversion flag, a direction, every cause). Rows, the applied damage, the
+    kill flag and each row's events (the ring, gathered in row order) equal
+    the reference's; padding rows untouched; out-of-range packets FAULT
+    (counted, the row and its events left alone)."""
+    from types import SimpleNamespace
+    from simulation import damage, exposure, unit_fixed
+    from simulation.damage import (N_DAMAGE_TYPES, DamagePacket,
+                                   MitigationProfile, apply_packet)
+    from simulation.events import CAUSE_NAMES
+    rng = np.random.default_rng(6303)
+    base = LaneDriver("status", hooks=False)
+    for _ in range(3):
+        base.tick()
+    units0 = base.sim.units
+    lay = unit_store.layout()
+    tlay = unit_tables.layout()
+    n, U = 3, 24
+    tab0 = unit_tables.values(base.sim)
+    col = lambda name: lay.column(name)  # noqa: E731
+    cl_names = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",
+                "pvx", "pvy", "effort", "react_ticks", "zombie_noise_y",
+                "zombie_noise_x", "zombie_noise_ticks", "zombie_anchor_y",
+                "zombie_anchor_x", "order_what", "order_where", "order_until",
+                "order_target", "poison_x0", "poison_x1", "poison_src")
+    sp_mod = damage._species()
+    saved_zm = sp_mod.ZOMBIE_MITIGATION
+    saved_set = exposure._SETTINGS
+    checks = kills = heals = faults_seen = 0
+    try:
+        for trial in range(trials):
+            # -- random tables, one per env ------------------------------------
+            tabs = np.tile(tab0, (n, 1))
+            envs = []
+            for e in range(n):
+                t = tabs[e]
+
+                def put(name, vals):
+                    c = tlay.column(name)
+                    t[c.offset:c.offset + c.width] = vals
+                armor_z = rng.integers(0, 3 * ONE, N_DAMAGE_TYPES)
+                res_z = rng.integers(0, 8 * ONE, N_DAMAGE_TYPES)
+                armor_s = rng.integers(0, 3 * ONE, N_DAMAGE_TYPES)
+                res_s = rng.integers(0, 8 * ONE, N_DAMAGE_TYPES)
+                xr_z = rng.integers(0, ONE + 1, N_DAMAGE_TYPES)
+                xr_p = rng.integers(0, ONE + 1, N_DAMAGE_TYPES)
+                xr_s = rng.integers(0, ONE + 1, N_DAMAGE_TYPES)
+                k_q = int(rng.choice([0, ONE // 3, ONE, 3 * ONE]))
+                x_max = int(rng.integers(ONE, 8 * ONE))
+                put("mitig_armor_zombie_q", armor_z)
+                put("mitig_resist_zombie_q", res_z)
+                put("mitig_armor_species_q", armor_s)
+                put("mitig_resist_species_q", res_s)
+                put("expose_resist_zombie_q", xr_z)
+                put("expose_resist_profile_q", xr_p)
+                put("expose_resist_species_q", xr_s)
+                put("expose_k_q", [k_q])
+                put("expose_x_max_q", [x_max])
+                q2f = lambda a: tuple(float(x) / 65536.0 for x in a)  # noqa: E731
+                envs.append(dict(
+                    zm=MitigationProfile(armor=q2f(armor_z), resist_mult=q2f(res_z)),
+                    sm=MitigationProfile(armor=q2f(armor_s), resist_mult=q2f(res_s)),
+                    xr_p=tuple(int(x) for x in xr_p), xr_s=tuple(int(x) for x in xr_s),
+                    settings=exposure.ExposureSettings(
+                        half_life_ticks=3, decay_q=1, k_q=k_q, x_max_q=x_max,
+                        zombie_resist=tuple(int(x) for x in xr_z))))
+            # -- random rows ------------------------------------------------------
+            rows = np.zeros((n, U, lay.width), dtype=np.int64)
+            for e in range(n):
+                for r in range(U):
+                    src = units0[r % len(units0)]
+                    row = unit_store.pack([src])[0]
+                    row[col("id").offset] = r + 1
+                    row[col("is_zombie").offset] = int(rng.random() < 0.3)
+                    row[col("life_state").offset] = int(rng.random() < 0.15)
+                    row[col("env_profile_name").offset] = int(rng.choice([-1, 0]))
+                    row[col("current_hp").offset] = int(rng.choice(
+                        [1, ONE, 5 * ONE, 100 * ONE, -3 * ONE, int(rng.integers(1, 200 * ONE))]))
+                    ex = col("exposure")
+                    row[ex.offset:ex.offset + ex.width] = rng.choice(
+                        [0, 0, 1, 5000, ONE, 3 * ONE, int(rng.integers(0, 1 << 20))],
+                        ex.width)
+                    for name in cl_names:
+                        if rng.random() < 0.6:
+                            row[col(name).offset] = int(rng.integers(-50, 50000))
+                    if row[col("poison_x0").offset] < 0:
+                        row[col("poison_x0").offset] = 7
+                    row[col("killed_by_zombie").offset] = 0
+                    row[lay.valid] = int(rng.random() < 0.85)
+                    if not row[lay.valid]:
+                        row[:] = rng.integers(-1000, 1000, lay.width)
+                        row[lay.valid] = 0
+                    rows[e, r] = row
+            # -- random packets -----------------------------------------------------
+            pk = np.zeros((n, U, len(unit_kernels.PROBE_PACKET)), dtype=np.int64)
+            for e in range(n):
+                for r in range(U):
+                    pk[e, r] = (
+                        int(rng.choice([0, ONE, -ONE, 7, 12345, int(rng.integers(-50 * ONE, 300 * ONE))])),
+                        int(rng.integers(0, N_DAMAGE_TYPES)),
+                        int(rng.integers(-3, 40)),
+                        int(rng.random() < 0.5),
+                        int(rng.choice([0, 0, 1000, ONE, int(rng.integers(0, 1 << 18))])),
+                        int(rng.integers(-5 * ONE, 5 * ONE)),
+                        int(rng.integers(-5 * ONE, 5 * ONE)),
+                        int(rng.choice([0, 0, ONE // 2, int(rng.integers(0, 4 * ONE))])),
+                        int(rng.integers(0, len(CAUSE_NAMES))),
+                        int(rng.random() < 0.3))
+            # a few out-of-range packets: they must FAULT
+            bad_rows = [(e, r) for e in range(n) for r in range(U)
+                        if rows[e, r, lay.valid] and (e * U + r) % 11 == 5]
+            for (e, r) in bad_rows:
+                pk[e, r, 0] = (1 << 46) + 1
+            # -- the device ---------------------------------------------------------
+            st = unit_store.DeviceStore(n, U, tables=tabs)
+            ring = unit_events.EventRing(n, U)
+            st.upload(rows)
+            ring.begin()
+            out, cov, flt, ref, drp = unit_kernels.damage_probe(st, ring, pk)
+            got = st.download()
+            recs = ring.records()
+            # -- the reference ------------------------------------------------------
+            want = rows.copy()
+            for e in range(n):
+                sp_mod.ZOMBIE_MITIGATION = envs[e]["zm"]
+                exposure._SETTINGS = envs[e]["settings"]
+                host_events = []
+                want_cov = 0
+                for r in range(U):
+                    if not rows[e, r, lay.valid]:
+                        continue
+                    if (e, r) in bad_rows:
+                        if int(out[e, r, 0]) or int(out[e, r, 1]):
+                            fail("apply: a faulted row reported a result")
+                        continue
+                    u = unit_store.blank_units(1)[0]
+                    unit_store.unpack(rows[e, r:r + 1], [u])
+                    u.mitigation = envs[e]["sm"]
+                    u.environment = SimpleNamespace(
+                        expose_resist=envs[e]["xr_p"] if u.env_profile_name else envs[e]["xr_s"])
+                    u.impulse_books = [0] * 8
+                    p = pk[e, r]
+                    evs = []
+                    alive0 = u.alive
+                    dmg = apply_packet(u, DamagePacket(
+                        amount=unit_fixed.dequantize_scalar(int(p[0])), dtype=int(p[1]),
+                        attacker_id=int(p[2]), indirect=bool(p[3]), expose=int(p[4]),
+                        dir_x_q=int(p[5]), dir_y_q=int(p[6]),
+                        ap=float(p[7]) / 65536.0, amount_q=int(p[0])),
+                        evs, source=CAUSE_NAMES[int(p[8])],
+                        mark_killed_by_zombie=bool(p[9]))
+                    host_events.extend(evs)
+                    want[e, r] = unit_store.pack([u], 1)[0]
+                    want[e, r, lay.valid] = 1
+                    if not np.array_equal(want[e, r], rows[e, r]):
+                        want_cov += 1
+                    dmg_q = unit_fixed.quantize_scalar(dmg)
+                    killed = int(alive0 and not u.alive)
+                    if (int(out[e, r, 0]), int(out[e, r, 1])) != (dmg_q, killed):
+                        fail(f"apply trial {trial} env {e} row {r}: device (dmg, killed) "
+                             f"{tuple(int(x) for x in out[e, r])} != ({dmg_q}, {killed})")
+                        return
+                    kills += killed
+                    heals += int(dmg_q < 0)
+                    checks += 1
+                if int(cov[e]) != want_cov:
+                    fail(f"apply trial {trial} env {e}: coverage {int(cov[e])} != {want_cov}")
+                hrec = [unit_events.record_of(x) for x in host_events]
+                if hrec != recs[e]:
+                    i = next((i for i, (a, b) in enumerate(zip(hrec, recs[e])) if a != b),
+                             min(len(hrec), len(recs[e])))
+                    fail(f"apply trial {trial} env {e}: ring event {i} "
+                         f"{recs[e][i] if i < len(recs[e]) else None} != host "
+                         f"{hrec[i] if i < len(hrec) else None}")
+                    return
+                if int(flt[e]) != sum(1 for (ee, _r) in bad_rows if ee == e):
+                    fail(f"apply trial {trial} env {e}: faults {int(flt[e])} != the "
+                         f"out-of-range packets")
+                faults_seen += int(flt[e])
+            if not np.array_equal(got, want):
+                e, r, c = np.argwhere(got != want)[0].tolist()
+                fail(f"apply trial {trial}: env {e} row {r} {lay.column_at(c)}: device "
+                     f"{got[e, r, c]} != {want[e, r, c]}")
+                return
+            if drp.any():
+                fail("apply: the ring dropped events")
+            del st, ring
+    finally:
+        sp_mod.ZOMBIE_MITIGATION = saved_zm
+        exposure._SETTINGS = saved_set
+    print(f"apply: {checks} packets on synthetic rows equal damage.apply_packet (rows, "
+          f"the applied damage, the kill, the ring's events in row order; {kills} kills, "
+          f"{heals} heals, {faults_seen} out-of-range packets faulted and left alone; "
+          f"padding rows untouched)")
+    if kills == 0 or heals == 0 or faults_seen == 0:
+        fail("apply: no kill, heal or fault on the synthetic rows (vacuous)")
+
+
+# ---------------------------------------------------------------------------
 # PART SCENES / BATCH
 # ---------------------------------------------------------------------------
 def _scene(kind, **kw):
@@ -857,7 +1073,7 @@ def part_chained():
 # ---------------------------------------------------------------------------
 # main / bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "scenes", "batch", "overflow", "chained")
+PARTS = ("tables", "apply", "scenes", "batch", "overflow", "chained")
 
 
 def main(parts=None) -> int:
@@ -868,7 +1084,8 @@ def main(parts=None) -> int:
     t0 = time.perf_counter()
     for p in parts:
         try:
-            {"tables": part_tables, "scenes": part_scenes, "batch": part_batch,
+            {"tables": part_tables, "apply": part_apply, "scenes": part_scenes,
+             "batch": part_batch,
              "overflow": part_overflow, "chained": part_chained}[p]()
         except Exception as ex:          # a part's crash fails it, the rest run
             import traceback

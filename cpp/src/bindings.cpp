@@ -853,6 +853,22 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("claims"),
               "#29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, poison.tick) on "
               "the device store.");
+        m.def("unit_damage_probe",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
+                 py::array_t<int64_t, py::array::c_style> packets) {
+                  if (packets.ndim() != 3 || packets.shape(0) != s.n_env() ||
+                      packets.shape(1) != s.n_units() ||
+                      packets.shape(2) != breach_cuda::UNIT_DAMAGE_PROBE_W)
+                      throw std::invalid_argument(
+                          "unit_damage_probe: packets must be (n_env, n_units, 10) int64");
+                  py::array_t<int64_t> out({(py::ssize_t)s.n_env(), (py::ssize_t)s.n_units(),
+                                            (py::ssize_t)2});
+                  Cnt4 c(s.n_env());
+                  breach_cuda::unit_damage_probe(s, t, ring, packets.data(), out.mutable_data(),
+                                                 c.view());
+                  return py::make_tuple(out, c.cov, c.flt, c.ref, c.drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("packets"),
+              "#29 P6.3 TEST-ONLY: the device apply_packet on the store's rows.");
     }
 
     m.def("eos_mg_build_parity",

@@ -300,6 +300,21 @@ def gas_rows(store, ring, fields: dict, claims) -> np.ndarray:
         n_gases, h, w, c))
 
 
+#: A probe packet row (TEST-ONLY :func:`damage_probe`).
+PROBE_PACKET = ("amount_q", "dtype", "attacker", "indirect", "expose",
+                "dir_x_q", "dir_y_q", "ap_q", "cause", "mark_killed_by_zombie")
+
+
+def damage_probe(store, ring, packets):
+    """TEST-ONLY: the device ``damage.apply_packet`` on the store's rows, one
+    packet per row (``(N, U, 10)`` int64, :data:`PROBE_PACKET`); returns
+    ``(out (N, U, 2): applied damage, killed; coverage, faults, refused,
+    dropped)`` -- unrefused, so a gate can count faults."""
+    _check_ring("damage_probe", store, ring)
+    a = np.ascontiguousarray(packets, dtype=np.int64)
+    return store.bp.unit_damage_probe(store.buffer, store.tables, ring.buffer, a)
+
+
 def lib_probe(store, op: int, a0=0, a1=0, a2=0, a3=0):
     """TEST-ONLY: the device unit library on the store's rows (see
     ``cuda_unit_kernels.h``); returns ``(out (N, U, K), coverage, faults,
@@ -313,4 +328,4 @@ __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",
            "convert_zombies", "lib_probe", "CLAIM_WIDTH", "claims_of",
            "pad_claims", "status_tick", "HEAT_FIELDS", "GAS_FIELDS",
-           "heat_damage", "gas_rows"]
+           "heat_damage", "gas_rows", "PROBE_PACKET", "damage_probe"]

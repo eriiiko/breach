@@ -18,6 +18,7 @@
 //                            slot 9c3  apply_teargas_blind + apply_poison_dose
 //                                      + poison.tick (one kernel)    (#29 P6.3)
 //   (the device damage pipeline they share: cuda_unit_damage.cuh)
+//   cuda_unit_damage_probe.cu TEST-ONLY: apply_packet on synthetic rows (#29 P6.3)
 //
 // Every kernel is born (N, U): bgrid(U, N), one thread per row, blockIdx.y the
 // env (cuda_unit_lib.cuh's unit_row rebases), a padding row (valid 0) skipped,
@@ -147,5 +148,15 @@ void unit_heat_damage(UnitStoreDevice& store, const UnitTablesDevice& tables,
 void unit_gas_rows(UnitStoreDevice& store, const UnitTablesDevice& tables,
                    UnitEventRing& ring, const UnitDamagePlanes& planes,
                    const int64_t* claims, int n_claims, const UnitDamageCounts& out);
+
+// TEST-ONLY (cuda_unit_damage_probe.cu): the device apply_packet on the
+// store's rows, one packet per row: `packets` is (N, U, UNIT_DAMAGE_PROBE_W)
+// int64 host rows (amount_q, dtype, attacker, indirect, expose, dir_x_q,
+// dir_y_q, ap_q, cause, mark_killed_by_zombie); `out` (N, U, 2) int64 host:
+// the applied damage and the kill flag (0 for a faulted or padding row).
+constexpr int UNIT_DAMAGE_PROBE_W = 10;
+void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                       UnitEventRing& ring, const int64_t* packets, int64_t* out,
+                       const UnitDamageCounts& counts);
 
 }  // namespace breach_cuda
