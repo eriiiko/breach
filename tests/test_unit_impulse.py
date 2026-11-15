@@ -1113,6 +1113,6 @@ def test_g11_every_position_stays_on_the_q16_grid_in_the_pinned_match():
         for u in sim.units:
             assert (u.x * 65536).is_integer() and (u.y * 65536).is_integer()
         seen["n"] += 1
-    run_match(level_loader.load("ship_demo", str(ROOT / "levels")),
-              on_tick=hook)
+    import _pinned_matches      # the shared play of this match (#205)
+    _pinned_matches.watch("bots", hook)
     assert seen["n"] > 200
