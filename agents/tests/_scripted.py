@@ -72,3 +72,37 @@ class ScriptTask(Task):
             rows_end[4:6] = True
         state["clock"] = clock + 1
         return r, deaths, rows_end, False
+
+
+class NoisyTask(ScriptTask):
+    """The scripted task with masks that change at every decision (random
+    feet, hand and trigger options; a random set of aimable entries; a
+    throw sometimes being wound up), so that masks taken from another step
+    differ from the ones the choice was drawn under."""
+
+    def observe(self, e, state, obs, full, valid, rng):
+        super().observe(e, state, obs, full, valid, rng)
+        from agents import fake
+        from simulation import action_spec_v1 as A
+        tp = fake._type_pos()
+        E = obs["list_mask"].shape[1]
+        for i in np.flatnonzero(valid):
+            obs["mask_feet"][i] = rng.uniform(size=obs["mask_feet"].shape[1]) < 0.5
+            obs["mask_feet"][i, A.FEET_STAND] = 1
+            obs["mask_trigger"][i] = 1
+            obs["mask_trigger"][i, 1] = rng.uniform() < 0.5
+            pos = rng.permutation(E)[:int(rng.integers(1, 6))]
+            obs["list_mask"][i] = 0
+            obs["list_mask"][i, pos] = 1
+            obs["list"][i, pos, tp] = 1
+            aim = obs["mask_aim"][i]
+            aim[...] = 0
+            if rng.uniform() < 0.15:
+                aim[A.AIM_KEEP] = 1
+            else:
+                aim[:A.AIM_KEEP] = 1
+                aim[A.AIM_TOKENS + pos] = 1
+            hand = obs["mask_hand"][i]
+            hand[...] = rng.uniform(size=hand.shape[0]) < 0.5
+            hand[A.HAND_NOTHING] = 1
+            hand[A.HAND_FLASHLIGHT] = 0
