@@ -677,6 +677,7 @@ def run_shadow(name, drivers, ticks, census=None, twins=None, probe=None, slots=
     per-slot count of env-ticks on which the slot acted."""
     slots = slots or SLOTS
     acts = Counter()
+    writes = {}
     n = 0
     dev = ot.DeviceTable(GT, len(drivers))
     t0 = time.perf_counter()
@@ -695,6 +696,9 @@ def run_shadow(name, drivers, ticks, census=None, twins=None, probe=None, slots=
                 fail(f"{name} [1b] tick {r1.tick}: coverage {r1.coverage.tolist()} != "
                      f"host-changed {r1.host_changed.tolist()}")
                 return acts, n
+            for lab, rep in reps.items():
+                for ws in rep.write_set or ():
+                    writes.setdefault(lab, set()).update(ws)
             for e in range(len(drivers)):
                 for lab, rep in reps.items():
                     hl = rep.host_lists or {}
@@ -740,6 +744,10 @@ def run_shadow(name, drivers, ticks, census=None, twins=None, probe=None, slots=
           f"{' (env i == env i alone)' if len(drivers) > 1 else ''}"
           f"{' (the unhooked twin equal)' if twins is not None else ''}; "
           f"env-ticks acted: {dict(acts)} ({time.perf_counter() - t0:.0f} s)")
+    for lab, w in writes.items():
+        if w:
+            print(f"  [{lab}] host-only writes seen (the PAYLOAD law's, P7c.1's): "
+                  f"{sorted(w)}")
     return acts, n
 
 
