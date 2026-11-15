@@ -1027,3 +1027,61 @@ longer changes a layout. Both are open, the lead's to propose.
 **Rung 2's own design** (the trainer, the copying step, the range and the
 duel, the experiment, the patches) is `docs/rl_agent_rung2_design_2026-11-14.md`,
 PROPOSED the same day.
+
+### 13.4 A feet choice that names a spot: parked as an experiment (Erik's idea, 2026-11-15)
+
+Erik asked whether a soldier would learn to move more easily if it named a
+place to go to (the game finding the path) and a place or target to look at,
+in place of one of 16 walking directions. His words: "I don't really want to
+change the design this late - but unless this question has a clear answer in
+litterature - i'd like to test it at some point, later down the line when we
+have a working agent."
+
+**What v1 already has of it.** The look half: the aim choice points at a
+unit in the list (2.2), with 16 compass directions for looking at a place.
+The knowledge half: the route to the order's place is shown to the soldier
+as a compass and a plane (3.5), so it never has to learn path finding, only
+to follow it. What v1 leaves out, on purpose (2.6, "a route autopilot"), is
+the game doing the walking.
+
+**What the literature says** (the survey's Part B, plus one recalled source
+marked as such). No paper compares the two on one task. The pattern:
+
+- Where the unit is a piece moved from above, the systems name a place:
+  AlphaStar a cell of a 256 x 256 grid, OpenAI Five a cell of a 9 x 9 grid
+  of offsets around the hero, chosen again 7.5 times a second.
+- Where the unit's own footwork is the skill, they name a direction:
+  capture the flag, hide-and-seek, SMAC (four directions), the 2024
+  Counter-Strike movement model (16 directions).
+- For going far, a named goal with a planner under it learns from far fewer
+  samples than low-level steps (navigation research, e.g. Chaplot et al.
+  2020; RECALLED, not in our survey), and the 2026 EA result in the survey
+  found learning with no layer above the soldier losing to the layered form.
+
+So the literature's answer is "a place for the far decision, a direction for
+the near one". That is the ladder's shape: the commander's order names a
+room (5.1), the soldier steers.
+
+**For it, in Breach.** Random directions six times a second cancel out, so
+an untrained soldier jitters on the spot, while random spots give real
+walks: exploring is easier. (Starting from the copy removes most of that.)
+And the bots themselves think in destinations (`choose_position`, then A*),
+so their records would teach a spot head directly.
+
+**Against it.** In a firefight the path is the decision: which side of the
+crate, whether to cross a mate's fire lane, backing off while facing the
+enemy. A path finder makes those choices for the soldier unless the spot is
+one or two tiles away, and then it is a direction with a length. The head
+grows from 49 options to hundreds. A route per soldier per decision costs
+farm time, and the graphics-card backend would need a path kernel.
+
+**The experiment, when rung 2's duel learns.** A second action spec beside
+v1 in which the feet head picks a cell of a small grid of offsets around the
+soldier (OpenAI Five's form) and the decoder walks the first step of the
+route there each tick. It lives in the decoder: no game verb, no recording
+format and no observation changes. The same network is trained on the range
+and the duel with each spec, three runs each, and compared on decisions to
+reach the pass mark and on what Erik sees. Records for the copy are made
+again with the bots' destination as the choice. It moves earlier only if
+rung 2 shows the signal for it: a soldier that aims and fires but cannot
+learn to cross a room.

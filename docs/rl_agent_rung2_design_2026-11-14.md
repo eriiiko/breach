@@ -6,6 +6,13 @@ veto. Not yet critiqued. Nothing is built from a section that is not AGREED.
 Documents only: written while the residency arc's P6 (#29) is changing the
 unit code, so no number in it comes from a new run.
 
+**Read by Erik, 2026-11-15:** "i read through rung2 document and im very
+impressed"; no veto, one question (what "earns it" means, answered in
+section 0), one decision (all building waits for P6, section 10) and one
+idea parked as an experiment (a feet choice that names a spot, design 13.4).
+The critique follows; its fixes that touch what he read come back to him as
+one short list.
+
 It continues `docs/rl_agent_design_2026-11-11.md` (cited as "design x.y"),
 whose sections 6, 7, 8 and 13 it builds on and does not repeat, and
 `docs/rl_agent_roadmap_2026-11-11.md` (rung 2). The method is explained in
@@ -41,6 +48,19 @@ a game file. Steps 1 and 3 touch no game file and use no farm.
 **Rung 2's networks are throwaway.** They exist to prove the machinery and
 to answer the copying question. Nothing trained here is carried to rung 3
 unless it earns it.
+
+**What "earns it" means** (Erik asked, 2026-11-15). Rung 3 needs a network
+to start from. The candidates are: nothing, the copied network, and the
+best duel network of rung 2. By default rung 3 does not start from the duel
+network, because a soldier that has only ever fought alone against one bot
+has learned nothing about team-mates, fire lanes or a team reward, and may
+have habits that hurt there. It is used only if a measurement says so: the
+first stretch of rung 3's training is run from each candidate, three times
+each, and the duel network is kept only if its runs are clearly ahead of the
+others' (their spread does not overlap) at the same number of decisions. It
+must also come from a tagged run and fit the specs rung 3 uses. If it is not
+ahead, it is thrown away and nothing is lost, because nothing was built on
+it.
 
 ## 1. Where the code lives and what it may touch (PROPOSED)
 
@@ -449,9 +469,14 @@ its boundary and its own gate, as in rung 1.
 | 2i | the experiment (6); the gate; Erik watches | no | yes, on three PCs |
 
 2a, 2b and 2c touch no game file and use no farm, so they do not collide
-with P6's files or its timings. Whether they are built while P6 runs is
-Erik's call (one implementation agent at a time across sessions). 2d to 2i
-wait for P6.
+with P6's files or its timings. Whether they are built while P6 runs was
+Erik's call (one implementation agent at a time across sessions).
+
+**DECIDED (Erik, 2026-11-15): every patch waits for P6.** "P6 is nearly
+done btw. I will let you know when it finish, we might as well wait for it
+to finnish i think, now that we've waited so long." So 2a starts on his word
+that P6 is through, on the unit code as P6 leaves it. The time until then is
+used for the critique and the handoff plan, which are documents.
 
 ## 11. Not in rung 2
 
@@ -464,6 +489,9 @@ Each has a rung or a trigger.
 - Other optimisers, a classification-style value loss, a wider or deeper
   network: after the duel learns; half and double the width first (design
   8.3).
+- **A feet choice that names a spot** in place of a direction (Erik's idea,
+  2026-11-15): an experiment after the duel learns, as a new action spec
+  beside v1. Design 13.4 holds the reasoning and the test.
 - **Observation spec v2.** The unit design (`docs/unit_design_2026-11-14.md`
   3 and 9) asks whether a soldier is shown its own and its team-mates' hooks,
   and for fixed slot blocks so that a new status or grenade row no longer
@@ -486,7 +514,8 @@ Each has a rung or a trigger.
 
 ## 13. What Erik decides
 
-- Whether 2a to 2c may be built while P6 runs (section 10).
+- Whether 2a to 2c may be built while P6 runs (section 10): decided
+  2026-11-15, they wait.
 - The tags for runs whose networks are kept (4.7).
 - The second half of the gate, by eye (0).
 
