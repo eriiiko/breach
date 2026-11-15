@@ -156,3 +156,82 @@ hashes nothing then. `DIGEST_SPEC_VERSION` stays at main's 7.
 Pushed `63-swarm-units` to origin with this note's commit on top.
 `.cuda_green` is untracked and local; after this docs-only commit it no longer
 names HEAD, and the next CUDA gate re-stamps.
+
+## 6. Post-merge follow-ons (Erik's P6 ruling, 2026-11-14)
+
+The P6 unit-design session (`docs/unit_design_2026-11-14.md` §6, branch
+`29-p6-unit-design`) ruled on the overlaps §2 left for Erik: two stores, ONE
+batch axis, ONE source of draws, and the unit/swarm boundary. Two follow-ons
+were done on this branch. The P3 kernel was **not** started: it waits until
+the last P6 patch merges on main.
+
+**A. `6e6906ef`: the swarm store's `N_ENV` axis is dropped.** Every ROSTER
+column is now `(max_units,)` per map, and `high_water` / `next_unit_id` are
+0-d. `ResidentBatch` stacks them to `(N, max_units)` / `(N,)` like every
+resident field. `swarm.N_ENV` is deleted. The facade lost its `env`
+argument. `check_invariants` lost its env loop. `swarm_carrier` encodes the
+one map it is given, so the `N_ENV == 1` raise is gone. Recorder,
+digest-spec and gamemap wording were updated, and so were the CLAUDE.md
+Swarm store row (its last sentence is now "the batch axis is
+`ResidentBatch`'s; never a second N") and the Swarm digest section row.
+- **SWARM_SECT_V1 bytes are unchanged.** A scratch script compared the
+  `swarm_section_bytes` sha256 of the A/B swarm fixture (and after a further
+  reclaim + spawn), plus its 3-tick `tick_digest` stream, at `88b0206f`
+  (before) and at the working tree of `6e6906ef` (after). All 5 hashes are
+  identical. The script is not committed.
+- **New CUDA gate:** `tests/cuda_swarm_batch_check.py` + wrapper
+  `tests/test_cuda_swarm_batch.py`. A `ResidentBatch` of 3 ship_demo sims is
+  checked for four properties: (1) every swarm buffer is `(N,) + map shape`
+  with no inner env axis; (2) slice e == env e; (3) a spawn into env 1 plus
+  env 1's own `from_host` moves no other env's slice or carrier; (4) env 0's
+  `tick_digest` is equal over 8 batched ticks with and without a swarm in env
+  1. PASS. A mutation check (a `(1,)`-shaped `high_water`) fails property 1,
+  as it should.
+- Tests updated as properties: T12 asserts per-map shapes, T16 asserts that
+  the facade refuses an `env` argument, and T11 is re-cut as
+  `test_carrier_encodes_only_the_map_it_is_given`. Swarm + philox: 47
+  passed. Swarm, philox, resident-batch, rl_env, digest and recorder
+  selection: 156 passed. CUDA batch invariance + the new swarm batch gate: 2
+  passed.
+
+**B. `a04b4071`: `docs/swarm_P3_impl.md` v3.** It opens with a new section
+"v3", which takes precedence over any stale passage, and a changelog line
+naming the P6 decision. Contents:
+- the batch axis: kernels born `(N, max_units)`, `blockIdx.y` = env, on the
+  tick stream;
+- the draws: two `rng_salts.Salt` members (`TUMB`, `WALT`) passed as launch
+  arguments, the key `sim.draws.key`, the clock `sim.draws.tick`.
+  `StreamSalt`, `philox_streams`, `match_key`, `PhiloxClock` and
+  `total_tick` are withdrawn;
+- the boundary audit: P3 reads only `temperature` and `solid`, never a unit
+  column, and the death event stays swarm-side. The bite and corpse records
+  are out of scope, with a pointer to P6 §6.4. "Larvae don't see units" is
+  an ACCEPTED GAP;
+- a `[twins.swarm_larva]` Class-P row with cuda_green;
+- per-env counters in the books arena.
+
+§4 is rewritten for main's resident tick. A `resident_swarm` stage runs
+inside `resident_tail` before the ONE books D2H, so there is no third host
+sync, and F5's uploads are gone. §6 is rewritten for MatchDraws. §9's
+anchors are refreshed at `6e6906ef`; they must be re-derived after P6, which
+moves `simulation.py`, `bindings.cpp`, the build files and
+`resident_batch.py`. The other sections are corrected inline.
+
+**Tests at the final code HEAD:** see §6.1.
+
+### 6.1 Results at `a04b4071`
+
+- **Full suite** (`pytest tests -q`, conda `data`, Home Desktop, 51 min):
+  **6150 passed, 1 failed, 2 skipped, 5 xfailed.** The one failure is
+  `test_class_p_level.py::test_a_class_p_change_merges_only_with_a_green_stamp_at_head`,
+  which is expected until the stamp names HEAD, since `gamemap.py` is Class
+  P. Main's known `test_generator_is_byte_deterministic` failure passed
+  again. (A first run of this suite at `6e6906ef` died at 92 % when the
+  session ended. It was re-run here in full.)
+- **CUDA module** rebuilt at `a04b4071` (build_id == HEAD).
+  **`tools/cuda_green.py`: green, 44 passed, 6114 deselected** (the 43 at the
+  merge plus the new swarm batch gate). It wrote `.cuda_green = a04b4071…`,
+  and `test_class_p_level.py` then passed (5/5).
+- This note's own commit is docs-only. The stamp is re-taken on it before
+  the push (see the final report).
+- **Goldens:** none moved, and nothing was re-baselined.
