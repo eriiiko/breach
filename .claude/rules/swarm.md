@@ -2,6 +2,9 @@
 paths:
   - "src/simulation/swarm.py"
   - "src/simulation/swarm_fixed.py"
+  - "src/simulation/swarm_*.py"
+  - "cpp/src/swarm*"
+  - "tools/gen_swarm_layout.py"
   - "tests/*swarm*.py"
 ---
 
@@ -29,12 +32,37 @@ two sides meet only through FIELDS.
 ## Swarm facade
 - The only Python-side writer of the store; the sim-side writers are the swarm kernels and their CPU twins. Never index `gmap.swarm_*` to write from gameplay, tools or tests.
 - Spawn takes explicit Q16 values and draws nothing: callers own randomness. Overflow is `SwarmFull`, never a capacity clamp or a partial fill.
-- Every host write sets the species' host-dirty flag in the same call, so the device upload sees it: a new writer that skips it leaves the device stale.
+- Every host write sets the species' host-dirty flag in the same call, so the device upload sees it: a new writer that skips it leaves the device stale. The swarm step SETS it after every host-path launch (the host store moved) and the resident entry upload CONSUMES it (`physics_runner._resident_upload`).
 
 ## Swarm species table
 - A swarm tunable is a `Field` row + a `SPECIES_RELOAD` class + a TOML value under `[swarm.<species>]`, validated strictly at load and on every reload (an unknown key or species is an error) and quantized once at ingress through `swarm_fixed`.
 - Installed only at GameMap construction and by the Config reload seam; every consumer reads `gmap.swarm_species` and never reloads. An invalid reload is rejected loudly and the prior table stays in force. The table hash is provenance, never digested.
 - Every value a swarm kernel reads is a row of this table, read from the validated table object (the Device tables discipline): never a law constant passed as a kernel argument.
+- A temperature row is authored in KELVIN (`SPECIES_UNITS`) and converted through `temperature_scale` at the table's load only: never a game-dT literal, never a conversion in a reader. A cross-field invariant the kernel relies on is a `SPECIES_RULES` entry (never tuning taste), checked at load (hard error), at reload (rejected loudly) and at every launch on the exact launch ints.
+- The field set is one tuple shared by every species (ACCEPTED GAP until a second species splits it into shared + per-species sets).
+
+## Swarm step
+- `PhysicsEngine::step_swarm` (host path) and `resident_swarm` (the resident tail's LAST stage, after temperature, before the books D2H) are THE only orchestration of swarm species: dormancy (nothing present in any env: no copy, no launch, no counter), the launch, the (species, env, slot) death compaction. Python only gathers (`swarm.engine_args`: arrays, pointers, env words; it transfers and launches nothing) and turns rows into events: never host-side swarm tick logic.
+- The extent of every loop, launch and compaction is the HOST `high_water` in the launch block; the device copies of `high_water` / `next_unit_id` are never read, so they are neither uploaded nor downloaded.
+- The draws reach the runner by `PhysicsRunner.bind_draws(sim.draws)` at reset, never a step argument (both tick paths must see them). The death events enter the tick as the first statement of `Simulation._step_post_physics`.
+- A new swarm stage adds no third host sync: its records ride the tail's one books read, its counters are a region of the books arena.
+
+## Swarm species laws
+- A species is a `SWARM_SPECIES` entry + a species row + ONE FP_HD per-slot law (`cpp/src/swarm_<sp>.h`) + its entries + ONE `SPECIES_LAWS` line: the CPU twin, the per-call kernel and the resident core are loops around that one law, never a copy. There is no Python copy of a law: the C++ CPU entry is the reference.
+- A law writes only its own slot's columns and its own record; every field and table row is read-only; no atomics in a law (the resident counters are order-free sums outside it). A law whose result depends on order is an applier effect kind (Swarm store), never a walk here.
+- A law's draws are the draw table in its header: one block per (salt, unit) per tick, `draw_index` 0, a new purpose a new `Salt` member.
+- The CPU loop counts every branch of a law (`bp.swarm_branch_tally`); every scene that runs the CPU twin declares the branches it must take, and a new branch arrives with a scene that takes it.
+- Gate: `tests/cuda_swarm_check.py` (the three loops byte-identical with live-looking padding, the facade lockstep, the three sim paths) and `tests/cuda_batch_invariance_check.py` LEG B (swarm-bearing envs). The twin is `[twins.swarm_larva]`, Class P.
+
+## Swarm shared kit
+- Every species senses through `head_sweep` with a field reader and moves through `probe_move`: out of the grid and solid are BLOCKED, never clamped, never a reading; no sliding; a step stays under one tile (the no-tunnelling rule) so a move never skips a tile.
+- No `std::` helper in an FP_HD function (nvcc runs without relaxed constexpr). The sim-law headers and the swarm TUs hold no `float` / `double` line, not even a comment (`tests/test_no_float_in_sim_tu.py`). `bindings.cpp` reaches the law only through out-of-line entries in strict TUs.
+
+## Swarm kernel tables
+- A new value a swarm kernel reads is ONE row of `swarm_tables.ROWS` (read from the species row, the launch context or `Salt`, with the range the law's arithmetic was proved for), then `tools/gen_swarm_layout.py --write`, commit, rebuild both modules. C++ reads offsets ONLY from the generated header; `bind_draws` refuses a module whose fingerprint differs. Never `tools/gen_unit_layout.py` (the unit store's).
+
+## Swarm death events
+- A death is emitted from the slot's PRE-ZERO values in (species, env, slot) order. It is not in the synced event digest: a sim-side consumer acts at the emission point, and if one ever reads the event the type joins the digest in that patch.
 
 ## Swarm heading law
 - Every heading write, kit-derived or drawn, passes `wrap_heading_q16`. Its period is `2·PI_Q16`, deliberately NOT `philox32.TWO_PI_Q16` (the draw range): draw, then wrap; never unify the two constants.

@@ -744,18 +744,31 @@ class CouplingRow:
         Name into :data:`REDUCTIONS` — the footprint reduction the row's
         physical read uses. ``None`` marks a shipped response that predates
         the field read and does its own sampling (see the row's ``note``).
-    response : callable
+    response : callable or None
         The response implementation. P1: the shipped functions, invoked at
         their legacy tick positions with their legacy signatures; the
         uniform ``response(sample, unit.profile)`` shape arrives with the
-        named EXCHANGE-READ slot (a later patch).
+        named EXCHANGE-READ slot (a later patch). ``None`` (arc #63 P3): the
+        row is executed outside Python, in a swarm species kernel.
     note : str
         Honest wiring status — what the row does TODAY vs the chapter row.
+    consumer : str
+        ``"unit"`` (the CPU-unit exchange: a callable ``response``) or
+        ``"swarm:<species>"`` (arc #63 P3: ``response`` is None and the row
+        is executed IN that species' kernel, the last stage of slot 7). The
+        future EXCHANGE-READ executor iterates only ``consumer == "unit"``
+        rows.
+    reads : tuple
+        For a swarm row: the species-table fields (``swarm.SPECIES_FIELDS``
+        names) its numbers come from (tests/test_swarm_species.py ties them
+        to the kernel's table rows).
     """
     field: str
     reduction: Optional[str]
-    response: Callable
+    response: Optional[Callable] = None
     note: str = ""
+    consumer: str = "unit"
+    reads: tuple = ()
 
 
 #: THE COUPLING TABLE (mechanics/05 §1) — ordered; it GROWS, one row per new
@@ -835,6 +848,29 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "directly after the teargas row. Lazy: all-zero plane "
             "early-outs; no RNG."
         ),
+    ),
+    # arc #63 P3 (docs/swarm_P3_impl.md §8): the larva's rows -- executed IN
+    # the larva kernel (cpp/src/swarm_larva.h) as the last stage of slot 7,
+    # through the RAW own-tile reader (exchange.reduce_center over a one-tile
+    # footprint), so within a tick they run BEFORE the unit rows above.
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_prefer",),
+        note=("Thermotaxis head sweep (arc #63 P3): own tile + two sweep points one tile "
+              "ahead at +-sweep_angle; comfort |T - T_prefer| steers the tumble rate and "
+              "side (cpp/src/swarm_larva.h)."),
+    ),
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_lethal_hot",),
+        note=("Contact/ambient heat kill (fork 7b): felt T > T_lethal_hot -> DEAD, post-move, "
+              "any state. Deliberately NOT the heat|max unit row: a marine and a larva in the "
+              "same hot room are damaged by different laws."),
+    ),
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_ctmin", "T_coma_exit"),
+        note="Chill coma with hysteresis: enter below T_ctmin, exit above T_coma_exit.",
     ),
 )
 

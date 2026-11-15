@@ -917,6 +917,18 @@ void PhysicsEngine::apply_edits_resident(const ResidentFields& f, const int64_t*
 #endif
 }
 
+// arc #63 P3 (docs/swarm_P3_impl.md §4.4): the host path's swarm step --
+// the routing only; the body is the shared swarm TU's.
+std::vector<int32_t> PhysicsEngine::step_swarm(const std::vector<swarm::SpeciesStep>& packs,
+                                               const int32_t* T, const bool* solid,
+                                               int h, int w, const uint32_t* env,
+                                               int n_env) const {
+    std::vector<int32_t> rows;
+    swarm::step_all(packs.data(), (int)packs.size(), T, solid, h, w, env, n_env,
+                    swarm_scratch_, rows);
+    return rows;
+}
+
 std::vector<std::vector<std::pair<int, int>>> PhysicsEngine::step_tail_resident(
         const ResidentFields& f, const ResidentTickArgs& a,
         const ResidentEngineList& engs) const {

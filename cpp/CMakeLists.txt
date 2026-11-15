@@ -98,6 +98,8 @@ set(BREACH_SOURCES
     src/physics_engine.cpp
     src/horde_field.cpp      # #183 G9p: the horde's distance field (host reference; device P7d)
     src/sight_lines.cpp      # #195 1c: has_los's walk for many tiles (a host call, both modules)
+    src/swarm.cpp            # arc #63 P3: the swarm step's host side (registry, step_all)
+    src/swarm_larva.cpp      # arc #63 P3: the larva law's CPU entry (THE reference)
     src/bindings.cpp
 )
 if(BREACH_CUDA)
@@ -160,7 +162,13 @@ if(BREACH_CUDA)
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
         # every other .cu, which is all an integer kernel needs.
-        src/cuda_radiation_sweep.cu)
+        src/cuda_radiation_sweep.cu
+        # arc #63 P3: the swarm step's device side, the larva law's CUDA
+        # entries (per-call + resident core) and the TEST-ONLY resident probe;
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/swarm.cu
+        src/swarm_larva.cu
+        src/swarm_probe.cu)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -270,6 +278,10 @@ set_source_files_properties(
     src/horde_field.cpp
     # #195 1c: the sight routine for many tiles (pure integer; a sim TU, so on the floor).
     src/sight_lines.cpp
+    # arc #63 P3: the swarm step and the larva law's CPU entry (pure integer;
+    # sim TUs, so on the floor; pinned 0/0/0 on the float ratchet).
+    src/swarm.cpp
+    src/swarm_larva.cpp
     PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)

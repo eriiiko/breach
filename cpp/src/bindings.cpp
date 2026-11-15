@@ -2,6 +2,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <array>
+#include <cstring>   // arc #63 P3: std::memcpy (the swarm death rows)
+#include <string>
 #include "atmosphere_solver.h"
 #include "fire_simulation.h"
 #include "temperature_solver.h"
@@ -16,6 +18,8 @@
 #include "horde_field.h"   // #183 G9p: the horde's distance field (host reference)
 #include "sight_lines.h"   // #195 1c: has_los's walk for many tiles (host call)
 #include "philox32.h"      // #29 P3b: the vendored Philox-4x32-10 (KAT / twin gate)
+#include "swarm_larva.h"   // arc #63 P3: the swarm step (registry, constants, branch names)
+#include "swarm_tables_layout.h"  // arc #63 P3: the swarm kernels' table offsets + fingerprint
 
 // #29 P1b: the build id, defined in the GENERATED TU <build dir>/generated/
 // build_id.cpp that cpp/gen_build_id.cmake writes at BUILD time (git HEAD's
@@ -111,6 +115,146 @@ static PhysicsEngine::ResidentEngineList resident_engines_from(const py::object&
     PhysicsEngine::ResidentEngineList out;
     if (engines.is_none()) return out;
     for (py::handle h : engines) out.push_back(h.cast<PhysicsEngine*>());
+    return out;
+}
+
+// ---- arc #63 P3 (docs/swarm_P3_impl.md §10): the swarm bindings' ARGUMENT
+// DISCIPLINE -- every array argument is checked for its exact dtype, C order
+// and shape (and writability when the law writes it) BEFORE anything runs,
+// and a mismatch raises TypeError / ValueError. Never forcecast: a converted
+// IN/OUT column would be a temporary copy whose writes are lost. The law is
+// reached only through out-of-line entries in strict TUs (this TU is
+// /fp:fast and never calls an FP_HD law function inline).
+static void* swarm_arr(const py::handle& o, const std::string& what, const py::dtype& dt,
+                       const std::vector<py::ssize_t>& shape, bool writable) {
+    if (!py::isinstance<py::array>(o))
+        throw py::type_error(what + ": must be a numpy array");
+    py::array a = py::reinterpret_borrow<py::array>(o);
+    if (!a.dtype().equal(dt))
+        throw py::type_error(what + ": dtype must be " + std::string(py::str(dt)) + ", got " +
+                             std::string(py::str(a.dtype())));
+    if (!(a.flags() & py::array::c_style))
+        throw py::value_error(what + ": must be C-contiguous");
+    if (a.ndim() != (py::ssize_t)shape.size())
+        throw py::value_error(what + ": expected " + std::to_string(shape.size()) +
+                              " dimensions, got " + std::to_string(a.ndim()));
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (shape[i] >= 0 && a.shape((py::ssize_t)i) != shape[i])
+            throw py::value_error(what + ": axis " + std::to_string(i) + " must be " +
+                                  std::to_string(shape[i]) + ", got " +
+                                  std::to_string(a.shape((py::ssize_t)i)));
+    }
+    if (writable && !a.writeable()) throw py::value_error(what + ": must be writeable");
+    return writable ? a.mutable_data() : const_cast<void*>(a.data());
+}
+
+static py::ssize_t swarm_dim(const py::handle& o, const std::string& what, int axis, int ndim) {
+    if (!py::isinstance<py::array>(o)) throw py::type_error(what + ": must be a numpy array");
+    py::array a = py::reinterpret_borrow<py::array>(o);
+    if (a.ndim() != ndim)
+        throw py::value_error(what + ": expected " + std::to_string(ndim) + " dimensions");
+    return a.shape(axis);
+}
+
+static const py::dtype& swarm_col_dtype(int c) {
+    static const py::dtype i32 = py::dtype::of<int32_t>();
+    static const py::dtype u32 = py::dtype::of<uint32_t>();
+    static const py::dtype u8 = py::dtype::of<uint8_t>();
+    return c == 5 ? u32 : (c == 8 ? u8 : i32);   // swarm.ROSTER: dist_walked, valid
+}
+
+static const char* const SWARM_COL_NAMES[swarm::N_COLUMNS] = {
+    "pos_x", "pos_y", "heading", "hp", "ai_state", "dist_walked", "unit_id", "faction",
+    "valid"};
+
+static swarm::StoreView swarm_store_from(const py::sequence& cols, py::ssize_t n_env,
+                                         py::ssize_t max_units, const std::string& who) {
+    if ((int)py::len(cols) != swarm::N_COLUMNS)
+        throw py::value_error(who + ": columns must be the 9 ROSTER columns in order");
+    void* p[swarm::N_COLUMNS];
+    for (int c = 0; c < swarm::N_COLUMNS; ++c)
+        p[c] = swarm_arr(cols[c], who + " column " + SWARM_COL_NAMES[c], swarm_col_dtype(c),
+                         {n_env, max_units}, true);
+    swarm::StoreView st;
+    st.pos_x = static_cast<int32_t*>(p[0]);
+    st.pos_y = static_cast<int32_t*>(p[1]);
+    st.heading = static_cast<int32_t*>(p[2]);
+    st.hp = static_cast<int32_t*>(p[3]);
+    st.ai_state = static_cast<int32_t*>(p[4]);
+    st.dist_walked = static_cast<uint32_t*>(p[5]);
+    st.unit_id = static_cast<int32_t*>(p[6]);
+    st.faction = static_cast<int32_t*>(p[7]);
+    st.valid = static_cast<uint8_t*>(p[8]);
+    return st;
+}
+
+static const int32_t* swarm_hw_from(const py::handle& o, py::ssize_t n_env, int max_units,
+                                    const std::string& who) {
+    const int32_t* hw = static_cast<const int32_t*>(
+        swarm_arr(o, who + " high_water", py::dtype::of<int32_t>(), {n_env}, false));
+    for (py::ssize_t e = 0; e < n_env; ++e) {
+        if (hw[e] < 0 || hw[e] > max_units)
+            throw py::value_error(who + ": high_water[" + std::to_string(e) + "] = " +
+                                  std::to_string(hw[e]) + " outside [0, max_units]");
+    }
+    return hw;
+}
+
+static int swarm_law_from(const std::string& species) {
+    const int law = swarm::species_law_index(species.c_str());
+    if (law < 0) throw py::value_error("unknown swarm species '" + species + "'");
+    return law;
+}
+
+// One direct law call's inputs (swarm_species_step and its CUDA twins).
+struct SwarmDirect {
+    swarm::LawIO L;
+    std::vector<uint32_t> launch;
+    int law = -1;
+};
+
+static SwarmDirect swarm_direct_from(const std::string& species, const py::sequence& columns,
+                                     const py::object& high_water, const py::object& temperature,
+                                     const py::object& solid, const py::object& env,
+                                     const py::object& tables, const py::object& death_rec,
+                                     const std::string& who) {
+    SwarmDirect d;
+    d.law = swarm_law_from(species);
+    if ((int)py::len(columns) != swarm::N_COLUMNS)
+        throw py::value_error(who + ": columns must be the 9 ROSTER columns in order");
+    const py::ssize_t n_env = swarm_dim(columns[0], who + " column pos_x", 0, 2);
+    const py::ssize_t max_units = swarm_dim(columns[0], who + " column pos_x", 1, 2);
+    const py::ssize_t h = swarm_dim(temperature, who + " temperature", 1, 3);
+    const py::ssize_t w = swarm_dim(temperature, who + " temperature", 2, 3);
+    const int tw = swarm::SPECIES_LAWS[d.law].table_width;
+    d.L.io.st = swarm_store_from(columns, n_env, max_units, who);
+    const int32_t* hw = swarm_hw_from(high_water, n_env, (int)max_units, who);
+    d.L.io.T = static_cast<const int32_t*>(swarm_arr(temperature, who + " temperature",
+        py::dtype::of<int32_t>(), {n_env, h, w}, false));
+    d.L.io.solid = static_cast<const bool*>(swarm_arr(solid, who + " solid",
+        py::dtype::of<bool>(), {n_env, h, w}, false));
+    const uint32_t* ev = static_cast<const uint32_t*>(swarm_arr(env, who + " env",
+        py::dtype::of<uint32_t>(), {n_env, swarm::ENV_WORDS}, false));
+    d.L.io.tables = static_cast<const int64_t*>(swarm_arr(tables, who + " tables",
+        py::dtype::of<int64_t>(), {n_env, tw}, false));
+    d.L.io.death = static_cast<int32_t*>(swarm_arr(death_rec, who + " death_rec",
+        py::dtype::of<int32_t>(), {n_env, max_units, swarm::DEATH_WORDS}, true));
+    d.launch.assign((size_t)n_env * swarm::LAUNCH_FIXED_WORDS, 0u);
+    swarm::compose_launch(ev, hw, (int)n_env, d.launch.data());
+    d.L.io.max_units = (int)max_units;
+    d.L.io.h = (int)h;
+    d.L.io.w = (int)w;
+    d.L.io.launch = d.launch.data();
+    d.L.io.table_width = tw;
+    d.L.n_env = (int)n_env;
+    d.L.launch_host = d.launch.data();
+    return d;
+}
+
+static py::array_t<int32_t> swarm_rows_array(const std::vector<int32_t>& rows) {
+    const py::ssize_t n = (py::ssize_t)(rows.size() / swarm::ROW_WORDS);
+    py::array_t<int32_t> out(std::vector<py::ssize_t>{n, (py::ssize_t)swarm::ROW_WORDS});
+    if (n > 0) std::memcpy(out.mutable_data(), rows.data(), rows.size() * sizeof(int32_t));
     return out;
 }
 
@@ -493,7 +637,8 @@ PYBIND11_MODULE(breach_physics, m) {
                   "water_tail", "water_tail_active", "combustion", "fire",
                   "fire_gate_open", "sweep", "sweep_light", "temperature",
                   "books_downloads", "water_tail_boil", "water_tail_evac",
-                  "stamp", "eos", "trace_tail", "edit_queue", "edit_queue_tiles"};
+                  "stamp", "eos", "trace_tail", "edit_queue", "edit_queue_tiles",
+                  "swarm", "swarm_present"};   // arc #63 P3: [16], [17]
               for (int k = 0; k < breach_cuda::RESIDENT_STAGE_COUNTERS; ++k)
                   d[names[k]] = c[k];
               return d;
@@ -2494,6 +2639,142 @@ PYBIND11_MODULE(breach_physics, m) {
           "philox32 (arc #63 P1): (w * n) >> 32 -- Lemire multiply-shift integer "
           "in [0, n), never % or float.");
     m.attr("PHILOX32_TWO_PI_Q16") = PHILOX32_TWO_PI_Q16;
+
+    // ---- arc #63 P3 (docs/swarm_P3_impl.md §10): the swarm step ----------
+    // The law is reached through the registry's out-of-line entries (strict
+    // TUs and .cu); the argument discipline is swarm_arr's (above).
+    {
+        py::dict c;
+        c["AI_DEAD"] = swarm::AI_DEAD; c["AI_RUN"] = swarm::AI_RUN;
+        c["AI_EAT"] = swarm::AI_EAT; c["AI_COMA"] = swarm::AI_COMA;
+        c["FIRST_UNIT_ID"] = swarm::FIRST_UNIT_ID;
+        c["PI_Q16"] = swarm::PI_Q16;
+        c["HEADING_PERIOD_Q16"] = swarm::HEADING_PERIOD_Q16;
+        c["N_COLUMNS"] = swarm::N_COLUMNS;
+        c["ENV_TICK"] = (int)swarm::ENV_TICK; c["ENV_SEED_LO"] = (int)swarm::ENV_SEED_LO;
+        c["ENV_SEED_HI"] = (int)swarm::ENV_SEED_HI; c["ENV_WORDS"] = (int)swarm::ENV_WORDS;
+        c["LAUNCH_TICK"] = (int)swarm::LAUNCH_TICK; c["LAUNCH_SEED_LO"] = (int)swarm::LAUNCH_SEED_LO;
+        c["LAUNCH_SEED_HI"] = (int)swarm::LAUNCH_SEED_HI; c["LAUNCH_HW"] = (int)swarm::LAUNCH_HW;
+        c["LAUNCH_FIXED_WORDS"] = (int)swarm::LAUNCH_FIXED_WORDS;
+        c["DEATH_UNIT_ID"] = (int)swarm::DEATH_UNIT_ID; c["DEATH_POS_X"] = (int)swarm::DEATH_POS_X;
+        c["DEATH_POS_Y"] = (int)swarm::DEATH_POS_Y; c["DEATH_HEADING"] = (int)swarm::DEATH_HEADING;
+        c["DEATH_WORDS"] = (int)swarm::DEATH_WORDS;
+        c["ROW_SPECIES"] = (int)swarm::ROW_SPECIES; c["ROW_ENV"] = (int)swarm::ROW_ENV;
+        c["ROW_SLOT"] = (int)swarm::ROW_SLOT; c["ROW_UNIT_ID"] = (int)swarm::ROW_UNIT_ID;
+        c["ROW_POS_X"] = (int)swarm::ROW_POS_X; c["ROW_POS_Y"] = (int)swarm::ROW_POS_Y;
+        c["ROW_HEADING"] = (int)swarm::ROW_HEADING; c["ROW_WORDS"] = (int)swarm::ROW_WORDS;
+        c["SWEEP_DIST_Q16"] = swarm::SWEEP_DIST_Q16;
+        c["SWARM_CNT_SLOTS"] = (int)swarm::SWARM_CNT_SLOTS;
+        py::dict sizes;
+        sizes["pos_x"] = (int)sizeof(swarm::pos_x_t); sizes["pos_y"] = (int)sizeof(swarm::pos_y_t);
+        sizes["heading"] = (int)sizeof(swarm::heading_t); sizes["hp"] = (int)sizeof(swarm::hp_t);
+        sizes["ai_state"] = (int)sizeof(swarm::ai_state_t);
+        sizes["dist_walked"] = (int)sizeof(swarm::dist_walked_t);
+        sizes["unit_id"] = (int)sizeof(swarm::unit_id_t); sizes["faction"] = (int)sizeof(swarm::faction_t);
+        sizes["valid"] = (int)sizeof(swarm::valid_t);
+        c["ROSTER_SIZES"] = sizes;
+        m.attr("SWARM_CONSTANTS") = c;
+        py::list laws;
+        for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
+            py::dict d;
+            d["name"] = swarm::SPECIES_LAWS[i].name;
+            d["table_width"] = swarm::SPECIES_LAWS[i].table_width;
+            d["field"] = swarm::SPECIES_LAWS[i].field;
+            d["field_reduction"] = swarm::SPECIES_LAWS[i].field_reduction;
+            py::list br;
+            for (int k = 0; k < swarm::SPECIES_LAWS[i].n_branches; ++k)
+                br.append(swarm::SPECIES_LAWS[i].branch_names[k]);
+            d["branches"] = py::tuple(br);
+            laws.append(d);
+        }
+        m.attr("SWARM_SPECIES_LAWS") = laws;
+        m.attr("SWARM_TABLES_FINGERPRINT") = swarm_tables::SWARM_TABLES_FINGERPRINT;
+        py::list lb;
+        for (int k = 0; k < swarm::LARVA_BR_COUNT; ++k) lb.append(swarm::SWARM_LARVA_BRANCH_NAMES[k]);
+        m.attr("SWARM_LARVA_BRANCHES") = py::tuple(lb);
+    }
+    m.def("swarm_species_step",
+          [](const std::string& species, py::sequence columns, py::object high_water,
+             py::object temperature, py::object solid, py::object env, py::object tables,
+             py::object death_rec) {
+              SwarmDirect d = swarm_direct_from(species, columns, high_water, temperature,
+                                                solid, env, tables, death_rec,
+                                                "swarm_species_step");
+              return swarm::run_cpu(d.law, d.L);
+          },
+          py::arg("species"), py::arg("columns"), py::arg("high_water"),
+          py::arg("temperature"), py::arg("solid"), py::arg("env"), py::arg("tables"),
+          py::arg("death_rec"),
+          "arc #63 P3: the species law's CPU entry (THE reference) on caller arrays: "
+          "columns = the 9 ROSTER columns (n_env, max_units) in place; high_water "
+          "(n_env,) int32; temperature (n_env, h, w) int32; solid (n_env, h, w) bool; "
+          "env (n_env, ENV_WORDS) uint32; tables (n_env, T_sp) int64; death_rec "
+          "(n_env, max_units, DEATH_WORDS) int32 (only [0, hw[e]) written). Returns "
+          "the death count.");
+    m.def("swarm_larva_felt_T",
+          [](py::object T, int32_t x_q, int32_t y_q) {
+              const py::ssize_t h = swarm_dim(T, "swarm_larva_felt_T T", 0, 2);
+              const py::ssize_t w = swarm_dim(T, "swarm_larva_felt_T T", 1, 2);
+              const int32_t* t = static_cast<const int32_t*>(swarm_arr(
+                  T, "swarm_larva_felt_T T", py::dtype::of<int32_t>(), {h, w}, false));
+              return swarm::felt_tile_host(t, (int)h, (int)w, x_q, y_q);
+          },
+          py::arg("T"), py::arg("x_q"), py::arg("y_q"),
+          "arc #63 P3: the larva's RAW reader (ruling 11): T[y >> 16, x >> 16]; "
+          "ValueError outside the grid.");
+    m.def("swarm_wrap_heading_q16",
+          [](int64_t h) { return swarm::wrap_heading_q16_host(h); }, py::arg("h"),
+          "arc #63 P3: the C++ twin of swarm_fixed.wrap_heading_q16 (int64 in).");
+    m.def("swarm_cpu_calls", &swarm::swarm_cpu_calls,
+          "arc #63 P3: how many CPU swarm law calls with work ran in this process.");
+    m.def("swarm_branch_tally",
+          [](bool reset, const std::string& species) {
+              const int law = swarm_law_from(species);
+              const swarm::SpeciesLaw& sl = swarm::SPECIES_LAWS[law];
+              py::dict d;
+              for (int k = 0; k < sl.n_branches; ++k) {
+                  d[sl.branch_names[k]] = (unsigned long long)sl.tally[k];
+                  if (reset) sl.tally[k] = 0;
+              }
+              return d;
+          },
+          py::arg("reset") = false, py::arg("species") = "larva",
+          "arc #63 P3 (v4.7 G-d): the CPU loop's per-branch counts of the species "
+          "law (the counts BEFORE the reset when reset=True). The device never counts.");
+#ifdef BREACH_HAS_CUDA
+    m.def("set_swarm_backend", &swarm::set_swarm_backend, py::arg("use_cuda"),
+          "arc #63 P3: run the host-path swarm step on the per-call CUDA wrapper.");
+    m.def("get_swarm_backend", &swarm::get_swarm_backend);
+    m.def("swarm_cuda_calls", &swarm::swarm_cuda_calls,
+          "arc #63 P3: how many per-call CUDA swarm law calls with work ran.");
+    m.def("cuda_swarm_species_step",
+          [](const std::string& species, py::sequence columns, py::object high_water,
+             py::object temperature, py::object solid, py::object env, py::object tables,
+             py::object death_rec) {
+              SwarmDirect d = swarm_direct_from(species, columns, high_water, temperature,
+                                                solid, env, tables, death_rec,
+                                                "cuda_swarm_species_step");
+              return swarm::run_cuda_percall(d.law, d.L);
+          },
+          py::arg("species"), py::arg("columns"), py::arg("high_water"),
+          py::arg("temperature"), py::arg("solid"), py::arg("env"), py::arg("tables"),
+          py::arg("death_rec"),
+          "arc #63 P3: swarm_species_step on the per-call CUDA wrapper.");
+    m.def("cuda_swarm_resident_probe",
+          [](const std::string& species, py::sequence columns, py::object high_water,
+             py::object temperature, py::object solid, py::object env, py::object tables,
+             py::object death_rec) {
+              SwarmDirect d = swarm_direct_from(species, columns, high_water, temperature,
+                                                solid, env, tables, death_rec,
+                                                "cuda_swarm_resident_probe");
+              return swarm::resident_probe(d.law, d.L);
+          },
+          py::arg("species"), py::arg("columns"), py::arg("high_water"),
+          py::arg("temperature"), py::arg("solid"), py::arg("env"), py::arg("tables"),
+          py::arg("death_rec"),
+          "arc #63 P3 TEST-ONLY (v4.7 G-b): the RESIDENT launch core on device copies "
+          "of the caller's arrays, padding included, copied back whole.");
+#endif
 
     // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
     // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
@@ -4815,6 +5096,60 @@ PYBIND11_MODULE(breach_physics, m) {
         // `temperature` is the one numpy array, extracted both const (the fire
         // read) and mutable (the temperature-solver write). Returns the (y, x)
         // burn-through list exactly as FireSimulation.step does.
+        // arc #63 P3 (docs/swarm_P3_impl.md §4.4, §10): THE SWARM STEP on the
+        // host path, the last stage of slot 7 (swarm.engine_args builds the
+        // arguments). packs: one per registry species, in registry order.
+        .def("step_swarm", [](const PhysicsEngine& self, py::sequence packs,
+                              py::object temperature, py::object solid, py::object env,
+                              py::dict host_dirty) {
+            if ((int)py::len(packs) != swarm::N_SPECIES_LAWS)
+                throw py::value_error("step_swarm: one pack per swarm species, registry order");
+            const py::ssize_t h = swarm_dim(temperature, "step_swarm temperature", 1, 3);
+            const py::ssize_t w = swarm_dim(temperature, "step_swarm temperature", 2, 3);
+            const py::ssize_t n_env = swarm_dim(temperature, "step_swarm temperature", 0, 3);
+            const int32_t* T = static_cast<const int32_t*>(swarm_arr(temperature,
+                "step_swarm temperature", py::dtype::of<int32_t>(), {n_env, h, w}, false));
+            const bool* sol = static_cast<const bool*>(swarm_arr(solid, "step_swarm solid",
+                py::dtype::of<bool>(), {n_env, h, w}, false));
+            const uint32_t* ev = static_cast<const uint32_t*>(swarm_arr(env, "step_swarm env",
+                py::dtype::of<uint32_t>(), {n_env, swarm::ENV_WORDS}, false));
+            std::vector<swarm::SpeciesStep> steps((size_t)swarm::N_SPECIES_LAWS);
+            std::vector<uint8_t> dirty((size_t)swarm::N_SPECIES_LAWS, 0);
+            for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
+                py::handle pk = packs[i];
+                const std::string name = py::str(pk.attr("species"));
+                const std::string who = "step_swarm pack '" + name + "'";
+                if (name != swarm::SPECIES_LAWS[i].name)
+                    throw py::value_error("step_swarm: pack " + std::to_string(i) + " is '" +
+                                          name + "', the registry's is '" +
+                                          swarm::SPECIES_LAWS[i].name + "'");
+                py::sequence cols = pk.attr("columns");
+                if ((int)py::len(cols) != swarm::N_COLUMNS)
+                    throw py::value_error(who + ": 9 ROSTER columns");
+                const py::ssize_t mu = swarm_dim(cols[0], who + " column pos_x", 1, 2);
+                swarm::SpeciesStep& sp = steps[(size_t)i];
+                sp.law = i;
+                sp.st = swarm_store_from(cols, n_env, mu, who);
+                sp.max_units = (int)mu;
+                sp.hw = swarm_hw_from(pk.attr("high_water"), n_env, (int)mu, who);
+                sp.table_width = swarm::SPECIES_LAWS[i].table_width;
+                sp.tables = static_cast<const int64_t*>(swarm_arr(pk.attr("tables"),
+                    who + " tables", py::dtype::of<int64_t>(), {n_env, sp.table_width}, false));
+                if (!host_dirty.contains(name.c_str()))
+                    throw py::value_error("step_swarm: host_dirty has no '" + name + "'");
+                dirty[(size_t)i] = py::bool_(host_dirty[name.c_str()]) ? 1 : 0;
+                sp.host_dirty = &dirty[(size_t)i];
+            }
+            std::vector<int32_t> rows = self.step_swarm(steps, T, sol, (int)h, (int)w, ev,
+                                                        (int)n_env);
+            for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i)
+                host_dirty[swarm::SPECIES_LAWS[i].name] = py::bool_(dirty[(size_t)i] != 0);
+            return swarm_rows_array(rows);
+        }, py::arg("packs"), py::arg("temperature"), py::arg("solid"), py::arg("env"),
+           py::arg("host_dirty"),
+           "arc #63 P3: the host-path swarm step; returns the death rows "
+           "(n, ROW_WORDS) int32 in (species, env, slot) order ((0, ROW_WORDS) when "
+           "dormant), and sets host_dirty[sp] after a launch.")
         .def("step_tail", [](const PhysicsEngine& self,
                              // ripple group
                              py::array_t<float> ripple,
@@ -5483,7 +5818,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<int32_t> gas_heat_absorb_q16,
                 py::array_t<int32_t> gas_light_absorb_q16,
                 py::array_t<int32_t> gas_light_glow_q16,
-                int n_env, py::object engines) {
+                int n_env, py::object engines, py::object swarm_args) {
             auto gc = gas_conservative.unchecked<1>();
             auto ha = gas_heat_absorb_q16.unchecked<1>();
             auto la = gas_light_absorb_q16.unchecked<2>();
@@ -5500,15 +5835,69 @@ PYBIND11_MODULE(breach_physics, m) {
             a.gas_heat_absorb_q16 = ha.data(0);
             a.gas_light_absorb_q16 = la.data(0, 0);
             a.gas_light_glow_q16 = lg.data(0, 0);
-            return self.step_tail_resident(f, a, resident_engines_from(engines));
+            if (swarm_args.is_none())
+                return py::object(py::cast(self.step_tail_resident(
+                    f, a, resident_engines_from(engines))));
+            // arc #63 P3 (§4.4): the swarm block -- every registry species'
+            // resident pack (device column addresses, host hw and rows) and
+            // the (N, ENV_WORDS) env words; the stage itself decides dormancy.
+            py::dict sw = swarm_args.cast<py::dict>();
+            py::sequence packs = sw["packs"];
+            if ((int)py::len(packs) != swarm::N_SPECIES_LAWS)
+                throw py::value_error("step_tail_resident swarm: one pack per species");
+            const py::ssize_t N = n_env;
+            std::vector<swarm::ResidentSpecies> sps((size_t)swarm::N_SPECIES_LAWS);
+            for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
+                py::handle pk = packs[i];
+                const std::string name = py::str(pk.attr("species"));
+                const std::string who = "step_tail_resident swarm pack '" + name + "'";
+                if (name != swarm::SPECIES_LAWS[i].name)
+                    throw py::value_error(who + ": registry order");
+                py::sequence ptrs = pk.attr("ptrs");
+                if ((int)py::len(ptrs) != swarm::N_COLUMNS)
+                    throw py::value_error(who + ": 9 column addresses");
+                std::uintptr_t pp[swarm::N_COLUMNS];
+                for (int c = 0; c < swarm::N_COLUMNS; ++c) pp[c] = ptrs[c].cast<std::uintptr_t>();
+                swarm::ResidentSpecies& r = sps[(size_t)i];
+                r.law = i;
+                r.st.pos_x = reinterpret_cast<int32_t*>(pp[0]);
+                r.st.pos_y = reinterpret_cast<int32_t*>(pp[1]);
+                r.st.heading = reinterpret_cast<int32_t*>(pp[2]);
+                r.st.hp = reinterpret_cast<int32_t*>(pp[3]);
+                r.st.ai_state = reinterpret_cast<int32_t*>(pp[4]);
+                r.st.dist_walked = reinterpret_cast<uint32_t*>(pp[5]);
+                r.st.unit_id = reinterpret_cast<int32_t*>(pp[6]);
+                r.st.faction = reinterpret_cast<int32_t*>(pp[7]);
+                r.st.valid = reinterpret_cast<uint8_t*>(pp[8]);
+                r.max_units = pk.attr("max_units").cast<int>();
+                r.hw = swarm_hw_from(pk.attr("high_water"), N, r.max_units, who);
+                r.table_width = swarm::SPECIES_LAWS[i].table_width;
+                r.tables = static_cast<const int64_t*>(swarm_arr(pk.attr("tables"),
+                    who + " tables", py::dtype::of<int64_t>(), {N, r.table_width}, false));
+            }
+            a.swarm_env = static_cast<const uint32_t*>(swarm_arr(sw["env"],
+                "step_tail_resident swarm env", py::dtype::of<uint32_t>(),
+                {N, swarm::ENV_WORDS}, false));
+            a.swarm_species = sps.data();
+            a.n_swarm_species = (int)sps.size();
+            std::vector<std::vector<int32_t>> rows;
+            a.swarm_rows = &rows;
+            auto destroyed = self.step_tail_resident(f, a, resident_engines_from(engines));
+            py::list per_env;
+            for (py::ssize_t e = 0; e < N; ++e)
+                per_env.append(swarm_rows_array(
+                    (size_t)e < rows.size() ? rows[(size_t)e] : std::vector<int32_t>()));
+            return py::object(py::make_tuple(py::cast(destroyed), per_env));
         }, py::arg("dev"), py::arg("h"), py::arg("w"), py::arg("gas_conservative"),
            py::arg("o2_idx"), py::arg("sim_time"), py::arg("ambient"),
            py::arg("t_amb_q"), py::arg("k_leak_q"), py::arg("rad_amb_vacuum_q"),
            py::arg("gas_heat_absorb_q16"), py::arg("gas_light_absorb_q16"),
            py::arg("gas_light_glow_q16"), py::arg("n_env") = 1,
-           py::arg("engines") = py::none(),
+           py::arg("engines") = py::none(), py::arg("swarm") = py::none(),
            "#29 P5: the tail + the ONE books D2H; returns each env's "
-           "burn-through list (a list of N lists, row-major).")
+           "burn-through list (a list of N lists, row-major). arc #63 P3: with "
+           "swarm= (swarm.engine_args(..., resident=True)) the swarm stage runs "
+           "last and the return is (burn-through lists, per-env death rows).")
         .def("sync_resident_fleck_plane", &PhysicsEngine::sync_resident_fleck_plane,
              py::arg("h"), py::arg("w"),
              "#29 P4a: copy the last resident sweep's Fleck plane into "

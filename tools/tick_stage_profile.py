@@ -121,6 +121,10 @@ PHYSICS_WRAPS = (
     ("simulation.physics_runner", "PhysicsRunner._run_combustion", "  7 combustion (host)", True),
     ("simulation.physics_runner", "PhysicsRunner._run_sky_exchange", "  7 sky exchange (host)", False),
     ("bp", "PhysicsEngine.step_tail", "  7 step_tail (ripple+fire+temp+sweep)", True),
+    # arc #63 P3: the swarm step, the last stage of slot 7 on the host path.
+    # (its ingress gather under the same label, so the twin ledger traces it)
+    ("simulation.swarm", "engine_args", "  7 step_swarm", True),
+    ("bp", "PhysicsEngine.step_swarm", "  7 step_swarm", True),
     # #29 P4a: the resident tick's device stages (the brackets gone): the
     # entry-phase light upload, the water tail, combustion, the tail (fire +
     # sweep + temperature, ending with the books D2H), the sky bracket's host

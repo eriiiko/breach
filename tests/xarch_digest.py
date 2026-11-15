@@ -37,6 +37,8 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=30)
     ap.add_argument("--write", action="store_true",
                     help="also write digest_<host>_<backend>_<arch>.txt")
+    ap.add_argument("--scenario", choices=("canonical", "swarm"), default="canonical",
+                    help="arc #63 P3: 'swarm' digests swarm_thermal_scenario_sim")
     args = ap.parse_args()
 
     import breach_physics as bp
@@ -48,7 +50,11 @@ def main() -> int:
     arch = "gpu" if getattr(bp, "HAS_CUDA", False) else "cpu"
     host = platform.node()
 
-    traj = capture_trajectory(n_steps=args.steps)
+    if args.scenario == "swarm":
+        from field_ab_harness import swarm_thermal_scenario_sim
+        traj = capture_trajectory(make_sim=swarm_thermal_scenario_sim, n_steps=args.steps)
+    else:
+        traj = capture_trajectory(n_steps=args.steps)
     digest = trajectory_digest(traj)
 
     line = f"{host}\t{backend}\t{arch}\tspec_v{DIGEST_SPEC_VERSION}\tsteps={args.steps}\t{digest}"
@@ -59,6 +65,14 @@ def main() -> int:
     if carrier is not None and carrier["n_entities"] > 0:
         line += (f"\tents={carrier['n_entities']},esect_v1,"
                  f"reg={carrier['registry_hash'][:12]}")
+    # arc #63 P3: a swarm-present artifact records its section's presence,
+    # each species' hw and the species table hash (provenance, never hashed).
+    from simulation.swarm import SWARM_DIGEST_KEY
+    swc = traj[-1].get(SWARM_DIGEST_KEY) if traj else None
+    if args.scenario == "swarm" and swc is not None and swc.get("present"):
+        for sp, block in swc["blocks"].items():
+            line += (f"\tswarm={sp}:hw{int(block['high_water'])},ssect_v1,"
+                     f"sp={swc['species_hash'][:12]}")
     print(line)
     if args.write:
         out = ROOT / "tests" / f"digest_{host}_{backend}_{arch}.txt"

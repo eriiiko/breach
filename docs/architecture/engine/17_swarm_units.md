@@ -134,6 +134,11 @@ the `mul128_shr_signed` portability trick).
   salt names the purpose (tumble / turn / eat / spawn) and is kept in ONE
   enum in breach; the unit id lives in the counter, per Random123's own
   guidance (per-element indices belong in the counter).
+  *As built (P3, 2026-11-15): this IS the Match draws layout -- key =
+  `sim.draws.key`, counter tick = `sim.draws.tick` (the sim tick plus the
+  legacy WEGO round base, monotone under TwoPhase), the salts members of
+  `rng_salts.Salt` (`SWARM_TUMBLE`, `SWARM_WALL_TURN`); see
+  `docs/swarm_P3_impl.md` §6.*
 - **`draw_index` is never stored**: it is local to `(unit, salt, tick)`,
   restarts at 0 each tick, and is assigned by static code position. A unit
   consuming a variable number of draws per tick is therefore safe by
@@ -155,6 +160,10 @@ The kit is also the owed deterministic sampler from the stats redesign (the
 Ada/LAPACK incident): the spawn-stat work adopts it, not a second sampler.
 
 ## 4. Pilot behavior: larvae
+
+> **As built (P3, 2026-11-15):** the larva law is `cpp/src/swarm_larva.h`
+> (`docs/swarm_P3_impl.md` §3.5 is the exact integer sequence), run by the
+> CPU twin, the per-call kernel and the resident core.
 
 > **SUPERSEDED on sensing (2026-09-24):** the temporal `T_prev` tumble law in
 > §4 and §4.1 below is replaced by the spatial grad(T) head-sweep ruled in the
@@ -195,7 +204,8 @@ Per tick, per valid unit (critique M3):
 2. If moving: `step = mul_q16(speed, dt_q16)` (validated < 1 tile at load);
    `target = pos + (cos_q16(heading)·step, sin_q16(heading)·step)`.
 3. Probe `tile(target)`, coordinates clamped to the grid (**out-of-grid
-   reads as solid**). Vacuum tiles are walkable (v1 larvae don't breathe —
+   reads as solid**). *As built (P3): no clamp -- a target out of the grid
+   is BLOCKED before any read (a clamp would read the edge tile's solidity).* Vacuum tiles are walkable (v1 larvae don't breathe —
    stated, not accidental). Diagonal corner-cutting between two orthogonally
    solid tiles is **accepted** for soft-bodied larvae (documented choice).
 4. If probe is solid: position unchanged this tick; draw a new heading
@@ -206,6 +216,10 @@ Per tick, per valid unit (critique M3):
 6. Apply heat damage from `T_now` (fork 7b law); write `T_prev = T_now`.
 
 ## 5. Tick integration & orchestration
+
+> **As built (P3, 2026-11-15):** `PhysicsEngine::step_swarm` on the host path
+> (after `step_tail`), `resident_swarm` as the last stage of `resident_tail`
+> on the resident path (before the books D2H; no third host sync).
 
 **Placement (critique B3, settled): the swarm-unit step runs at the END of the
 physics chain inside slot 7** — the last stage of `PhysicsEngine`'s
@@ -253,7 +267,9 @@ line and no mid-tick transfer.
 - **Recorder:** per-larva arrays additive + presence-gated, int32 idiom, raw
   Q16 (no casts); recorded extent `[0, high_water)` with a config cap.
 - **Save/load:** swarm-unit arrays + section scalars + the species-table hash
-  join the (designed, unbuilt) 02 save contract.
+  join the (designed, unbuilt) 02 save contract. *P3: the draws' clock
+  depends on `tick` and `MatchDraws.tick_base`, so a save carries both, or a
+  restored WEGO match replays round 0's counters.*
 
 ## 7. Lifecycle & world-coupling scope (v1)
 

@@ -5481,6 +5481,21 @@ swarm_units_cap = 1024
 # (applied by Simulation.on_config_reload from the next tick) unless marked.
 max_units = 8192    # LOAD-TIME: slots per env (fork 2b). A Ctrl+R edit applies at the next reset/level load.
 hp_max    = 1.0     # hit points at spawn. Placeholder: v1 kills by threshold (fork 7b), hp is roster state for future targeting.
+# --- arc #63 P3: the larva law (docs/swarm_P3_impl.md). All HOT (Ctrl+R ->
+# Simulation.on_config_reload, applied from the next tick). Temperatures are
+# KELVIN, converted through [physics.temperature_scale] at load (immune to the
+# k_temp_to_kelvin scale). Rates are per SECOND. Speed is metres per second.
+speed_mps         = 0.2      # PLACEHOLDER (P4). A slow crawl: 40 ticks per 0.333 m tile at 24 tps, well inside speed*dt < 1 tile. Real larva size (hence a size-scaled speed) still to be given by Erik
+T_prefer          = 303.15   # 30 C (ruling 3): comfort = |T - T_prefer|
+T_lethal_hot      = 323.15   # 50 C (ruling 4): instant death above, post-move, any state
+T_ctmin           = 283.15   # 10 C (ruling 5): chill-coma onset (enter below)
+T_coma_exit       = 285.15   # 12 C (ruling 5): recovery (exit above); 2 K hysteresis
+tumble_rate_base  = 0.1      # PLACEHOLDER (P4). 1/s: mean run 10 s when no sweep side is worse (larval runs ~5-20 s)
+tumble_rate_alarm = 1.0      # PLACEHOLDER (P4). 1/s: mean run 1 s when BOTH sweep points are worse than here
+turn_bias         = 0.8      # PLACEHOLDER (P4). P(turn toward the better side); Luo 2010: turns biased toward favourable
+turn_min          = 0.5236   # PLACEHOLDER (P4). rad (30 deg): smallest tumble/wall turn
+turn_max          = 2.0944   # PLACEHOLDER (P4). rad (120 deg): largest turn (larval turns span ~30-120 deg)
+sweep_angle       = 0.7854   # PLACEHOLDER (P4). rad (45 deg): sweep points one tile ahead at +-45 deg (the diagonal-ahead tiles); 1 tile = a field-grid sampling distance, not a body length
 
 # =============================================================================
 # SOUND (#202; design docs/sound/playback_layer_design_2026-11-12.md). The

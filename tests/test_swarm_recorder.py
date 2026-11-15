@@ -41,9 +41,11 @@ def _mini_level() -> LevelData:
 
 
 def _swarm_cfg_namespace(**overrides) -> Namespace:
-    base = {"max_units": overrides.pop("max_units", 8192),
-            "hp_max": overrides.pop("hp_max", 1.0)}
-    return Namespace({sp: dict(base) for sp in swarm.SWARM_SPECIES})
+    # arc #63 P3 (F7): a thin call into the testkit -- full repo rows, so the
+    # rows grow with SPECIES_FIELDS; P2's explicit values kept as overrides.
+    import _swarm_testkit as testkit
+    return testkit.swarm_namespace(max_units=overrides.pop("max_units", 8192),
+                                   hp_max=overrides.pop("hp_max", 1.0))
 
 
 def test_swarm_free_dump_has_no_swarm_key(tmp_path, monkeypatch):

@@ -160,6 +160,12 @@ amends the rule file, never this line's length.
 | Swarm facade | `swarm.SwarmUnits` (`sim.swarm`) | The only Python-side writer of the swarm store; gameplay, tools and tests never write `gmap.swarm_*` directly |
 | Swarm species table | `swarm.SPECIES_FIELDS` + `[swarm.<species>]` | A swarm tunable is a `Field` row + a reload class + a TOML value; every consumer reads `gmap.swarm_species` |
 | Swarm heading law | `swarm_fixed.wrap_heading_q16` (`src/simulation/swarm_fixed.py`) | Every swarm heading write is canonical through this one wrap; draw, then wrap |
+| Swarm step | `PhysicsEngine::step_swarm` (`cpp/src/swarm.cpp`) + `resident_swarm` (`cpp/src/cuda_resident_tick.cu`) | THE only orchestration of swarm species, the last stage of slot 7 on every path; Python only gathers (`swarm.engine_args`) |
+| Swarm species laws | `swarm::SPECIES_LAWS` (`cpp/src/swarm.cpp`) + `cpp/src/swarm_larva.h` | A species is ONE FP_HD per-slot law run by three loops (CPU twin, per-call, resident), never a copy |
+| Swarm shared kit | `cpp/src/swarm.h` + `cpp/src/swarm_launch.cuh` | Every species senses through `head_sweep` and moves through `probe_move`; a blocked point is never a reading |
+| Swarm species rules | `swarm.SPECIES_RULES` / `SPECIES_UNITS` (`src/simulation/swarm.py`) | An invariant a swarm kernel relies on is a rule checked at load, reload and every launch, never taste |
+| Swarm kernel tables | `src/simulation/swarm_tables.py` + generated `cpp/src/swarm_tables_layout.h` | Every value a swarm kernel reads is ONE row (`tools/gen_swarm_layout.py`); never a law constant as an argument |
+| Swarm death events | `events.SwarmUnitDiedEvent` + `swarm.death_events` | A swarm death reaches the game as this event; renderers read it, never the freed slot |
 
 ### Determinism gates
 

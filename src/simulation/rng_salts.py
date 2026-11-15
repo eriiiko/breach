@@ -20,7 +20,12 @@ Members (values are their four letters as one big-endian word):
 * ``SHOT_CRIT`` ("CRIT") -- a round's crit roll on connect (slots 2, 4);
 * ``MELEE_CRIT`` ("MELC") -- the order path's melee crit roll (slot 4);
 * ``FIELD_NOISE`` ("NOIS") -- a FieldEdit's per-tile noise multiplier, at
-  the queue's flush (slot 6b), on EVERY path.
+  the queue's flush (slot 6b), on EVERY path;
+* ``SWARM_TUMBLE`` ("TUMB") -- a RUN larva's tumble block (arc #63 P3,
+  docs/swarm_P3_impl.md §3.5 L5): the decision, the turn side, the turn
+  magnitude, keyed on the swarm unit's id (slot 7's swarm stage);
+* ``SWARM_WALL_TURN`` ("WALT") -- a blocked larva's wall-turn block (P3
+  §3.5 L6): the turn side and magnitude.
 """
 from __future__ import annotations
 
@@ -45,6 +50,8 @@ class Salt(IntEnum):
     SHOT_CRIT = 0x43524954      # "CRIT"
     MELEE_CRIT = 0x4D454C43     # "MELC"
     FIELD_NOISE = 0x4E4F4953    # "NOIS"
+    SWARM_TUMBLE = 0x54554D42   # "TUMB" (arc #63 P3)
+    SWARM_WALL_TURN = 0x57414C54  # "WALT" (arc #63 P3)
 
 
 __all__ = ["Salt"]

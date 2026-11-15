@@ -746,6 +746,52 @@ def build_perfield_lines(traj) -> list[str]:
     return lines
 
 
+# arc #63 P3 (docs/swarm_P3_impl.md §11 "The thermal scenario + xarch", R20):
+# the swarm thermal scenario's per-tick swarm section, beside its fields.
+SWARM_N_STEPS = 60
+
+
+def build_swarm_lines(traj) -> list[str]:
+    """Per tick, for each species present in that tick's ``__swarm__``
+    carrier: one ``<tick>\t__swarm__.<sp>.<col>\t<blake2b>`` line per ROSTER
+    column (the column's bytes over [0, hw)) and one ``__swarm__.scalars``
+    line (next_unit_id and each species' hw). Absent carrier: no line."""
+    from simulation.swarm import ROSTER, SWARM_DIGEST_KEY, SWARM_SPECIES
+    lines: list[str] = []
+    for t, snap in enumerate(traj):
+        car = snap.get(SWARM_DIGEST_KEY)
+        if not car or not car.get("present"):
+            continue
+        for sp in SWARM_SPECIES:
+            block = car["blocks"].get(sp)
+            if block is None:
+                continue
+            for c in ROSTER:
+                h = hashlib.blake2b(np.ascontiguousarray(block["columns"][c.name]).tobytes(),
+                                    digest_size=32).hexdigest()
+                lines.append(f"{t}\t__swarm__.{sp}.{c.name}\t{h}")
+        scal = [f"nid={int(car['next_unit_id'])}"] + [
+            f"{sp}.hw={int(car['blocks'][sp]['high_water'])}"
+            for sp in SWARM_SPECIES if sp in car["blocks"]]
+        lines.append(f"{t}\t__swarm__.scalars\t{','.join(scal)}")
+    return lines
+
+
+def interleave_by_tick(field_lines: list[str], swarm_lines: list[str]) -> list[str]:
+    """Per tick, the field lines first and then the swarm lines, so
+    first_divergence reports a FIELD divergence before its swarm consequence."""
+    by_tick: dict = {}
+    for ln in field_lines:
+        by_tick.setdefault(int(ln.split("\t", 1)[0]), ([], []))[0].append(ln)
+    for ln in swarm_lines:
+        by_tick.setdefault(int(ln.split("\t", 1)[0]), ([], []))[1].append(ln)
+    out: list[str] = []
+    for t in sorted(by_tick):
+        out.extend(by_tick[t][0])
+        out.extend(by_tick[t][1])
+    return out
+
+
 def first_divergence(lines_a: list[str], lines_b: list[str]):
     """Return the first (line_index, a_line, b_line) where two perfield dumps
     differ, or None if identical. Files share a fixed order so index lines up."""
@@ -813,6 +859,28 @@ def main() -> int:
             tick = la.split('\t', 1)[0]
             field = la.split('\t')[1] if '\t' in la else '?'
             print(f"      => first diverging (field, tick) = ({field}, tick {tick})")
+
+    # arc #63 P3: the swarm thermal scenario (the canonical block above is
+    # unchanged; GOLDEN_AGGREGATE is the swarm-free canonical's).
+    from field_ab_harness import swarm_thermal_scenario_sim
+    straj = capture_trajectory(make_sim=swarm_thermal_scenario_sim, n_steps=SWARM_N_STEPS)
+    slines = interleave_by_tick(build_perfield_lines(straj), build_swarm_lines(straj))
+    sout = ROOT / "tests" / f"_xarch_swarm_{host}.txt"
+    sheader = [
+        "# X-ARCH swarm thermal scenario: per-tick fields then __swarm__ columns",
+        f"# host={host}",
+        f"# pyd={pyd}",
+        f"# spec_v={DIGEST_SPEC_VERSION}  n_steps={SWARM_N_STEPS}",
+        "# columns: tick<TAB>field<TAB>blake2b256",
+    ]
+    sout.write_text("\n".join(sheader + slines) + "\n", encoding="utf-8")
+    print(f"\nswarm scenario      = {sout} ({len(slines)} lines)")
+    for other in sorted(p for p in (ROOT / "tests").glob("_xarch_swarm_*.txt")
+                        if p.name != sout.name):
+        ol = [ln for ln in other.read_text(encoding="utf-8").splitlines()
+              if ln and not ln.startswith("#")]
+        d = first_divergence(slines, ol)
+        print(f"  {other.name}: " + ("IDENTICAL" if d is None else f"FIRST DIVERGENCE {d}"))
     return 0
 
 
