@@ -112,23 +112,25 @@ from the survey. The ones most often needed:
 
 ## 6. Open
 
-- **Rung 1 is CLOSED (2026-11-14). Rung 2's design is PROPOSED**
-  (`docs/rl_agent_rung2_design_2026-11-14.md`, written 2026-11-14, not yet
-  agreed, not yet critiqued): a top-level `agents/` folder, one "choosing"
-  module used when acting, learning and copying, the copy with a 2 % floor,
-  PPO's starting numbers, the collector / learner hand-over, training rooms,
-  the range, the duel, the copy-against-scratch experiment in three repeats,
-  nine patches 2a to 2i. Erik read it on 2026-11-15 ("very impressed", no
-  veto). Next: the critique (one Opus critic at a time, verdicts in
-  `docs/rl_agent_rung2_design_2026-11-14_critique/`), its fixes back to
-  Erik as one short list, then a handoff plan as for rung 1. **Every patch
+- **Rung 1 is CLOSED (2026-11-14). Rung 2's design is at VERSION 2**
+  (`docs/rl_agent_rung2_design_2026-11-14.md`): Erik read version 1 on
+  2026-11-15 ("very impressed", no veto); four critics the same day (1
+  blocker, 33 major, 50 minor; verdicts in
+  `docs/rl_agent_rung2_design_2026-11-14_critique/`, the log in the
+  design's section 15); every blocker and major folded in. Its section 13
+  lists what changed in what he read (the gate has numbers and a cap on
+  running out the clock; no floor on the copy's hand; a first real run
+  early; eleven patches 2a to 2k, four touching a game file; the times are
+  days, not hours) and his one decision (how his by-eye half of the gate is
+  run). Next: his answer, then a handoff plan as for rung 1. **Every patch
   waits for P6 (Erik, 2026-11-15); 2a starts on his word that P6 is
   through.** His idea of a feet choice that names a spot is parked as an
-  experiment after the duel learns (design 13.4). The lesson document
-  ("the trainer, line by line") is written from patch 2b's code. The two
-  questions the unit design (`docs/unit_design_2026-11-14.md` 3 and 9) hands
-  this role (hooks shown; fixed slot blocks for statuses and items) are
-  parked in that document's section 11 with their trigger.
+  experiment after the duel learns (design 13.4, protocol amended by the
+  critique). The lesson document ("the trainer, line by line") is the
+  lead's, written from the code of patches 2b and 2d. The two questions the
+  unit design (`docs/unit_design_2026-11-14.md` 3 and 9) hands this role
+  (hooks shown; fixed slot blocks for statuses and items) are parked in
+  that document's section 11 with their trigger.
 - **The farm is slower than the roadmap planned with:** about 720 soldier
   decisions a second on the medium ship with spec v1 (measured 2026-11-13),
   against 1 000 planned; a fireteam run there is 1.6 to 16 days. Rung 3
@@ -277,6 +279,30 @@ implementation agents and critics stay one at a time.
   that Tailscale's relay will not carry; (3) the planning figures in a
   roadmap go stale when the interface they were set before is built: read
   the latest measured farm number, not the roadmap's.
+
+- 2026-11-15 -- rung 2's design read by Erik and critiqued (same branch,
+  documents only). Learned: (1) the four lenses for a TRAINER design: is
+  every named game thing real (code read line by line on main); would a
+  trainer built exactly so learn correctly; can each measure and experiment
+  fail and mean what it says; does it fit the cards, the PCs and the patch
+  sizes. 280 to 420 thousand tokens and 10 to 17 minutes each on Opus, one
+  at a time, each verdict committed before the next spawned; (2) the
+  measures were the weakest part and I had not seen it: one held-back set
+  used for the curve, for choosing and for the exam; a gate with no number
+  of duels and no rule on a fail; "decided" hiding the draws. Write the
+  three room lists, the reading rule and the fail table BEFORE the method;
+  (3) a floor or a default that sounds harmless must be multiplied out per
+  decision per match (2 % over seven hand options at six decisions a second
+  is a C4 at the soldier's feet in two duels of three); (4) a test task
+  must be checked against the trainer's own limits (a memory task of 20
+  decisions against stretches of 16 cannot pass); (5) count LEARNING
+  soldiers when estimating speed: a small room with one learner is not
+  faster per learning decision than a ship with eight; (6) "touches no game
+  file" was wrong for four patches: check each patch against what the door
+  code allows before writing the table; (7) Erik's side question (name a
+  spot to walk to) got a parked experiment with its reasoning in the design
+  (13.4), not a design change: say what the literature does and does not
+  settle, and what the design already has of the idea.
 
 ## 11. Running rung 1 (for the orchestrator session)
 

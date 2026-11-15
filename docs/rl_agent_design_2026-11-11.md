@@ -1085,3 +1085,23 @@ reach the pass mark and on what Erik sees. Records for the copy are made
 again with the bots' destination as the choice. It moves earlier only if
 rung 2 shows the signal for it: a soldier that aims and fires but cannot
 learn to cross a room.
+
+**The test as written above is not fair** (critique of the rung 2 design,
+lens 3, M12, 2026-11-15): the two layouts differ in more than "a spot or a
+direction". Before it is run, the protocol becomes:
+
+- **Both arms from nothing,** never from a copy: the spot copy would be the
+  better copy (the bots think in destinations), so the arms would differ in
+  their start.
+- **A third arm that separates steering from naming:** the spot decoder
+  re-steers every tick, while v1 holds one direction for four ticks, and
+  rung 1 found that reacting between decisions is the control panel's main
+  cost. So either v1 with the held direction re-steered each tick, or the
+  spot layout with its route frozen for the decision's four ticks.
+- **The push toward variety scaled to each head's size,** as rung 2's
+  trainer does (rung 2 design 4.4): 49 options against hundreds are not
+  explored alike under one weight.
+- **The task is the duel,** plus a crossing task if one exists by then. The
+  range barely asks for movement.
+- **The outcome rule of rung 2's experiment** (rung 2 design 6): one
+  deciding number named beforehand, and "not separated" said plainly.

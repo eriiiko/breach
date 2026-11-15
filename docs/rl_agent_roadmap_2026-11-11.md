@@ -99,7 +99,7 @@ are in no fixed order: take them by motivation.
   - **Duel:** one against one first-generation bot, random rooms. About an hour.
   - **Experiment:** the duel from the copied network against the duel from scratch: does copying shorten the path, or leave habits to unlearn? Erik's ruling in the residency design (12.3) wants the bots to bootstrap early training.
 - **Waits for** the residency arc's P6 (the unit code, #29) before any training run (Erik, 2026-11-14); the trainer's design document does not.
-- **The design** of this rung: `docs/rl_agent_rung2_design_2026-11-14.md` (PROPOSED 2026-11-14; nine patches, 2a to 2i).
+- **The design** of this rung: `docs/rl_agent_rung2_design_2026-11-14.md` (version 2 of 2026-11-15, after its critique; eleven patches, 2a to 2k; its sections 0 and 7.4 give the gate below its numbers: 200 duels on rooms used for nothing else, a limit on running out the clock, Erik's eye before the win rate).
 - **Erik's note for the trainer's design (2026-11-11).** The trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so that one run can later be spread over Erik's three PCs on Tailscale. Until then the three PCs run three experiments at once and share saved networks as opponents.
 - **Gate.** On rooms it has never seen, the soldier wins more than half its duels against the first-generation bot, and the replay shows it aiming, firing and moving on purpose.
 - **Lesson document.** The trainer, line by line.
@@ -206,6 +206,19 @@ fireteam reward, the medium ship gives 362 match-ticks a second, about 720
 soldier decisions a second with both teams learning; the small ship has not
 been measured again (about 2 300 by the old ratio). At 720 a second the
 fireteam row above is 1.6 to 16 days. See the rung 2 design, section 9.
+
+**Corrected, 2026-11-15** (the rung 2 design's critique, lenses 1 and 4).
+The sentence above applied the medium ship's figure to a row that is about
+the SMALL ship. By the measured small / medium ratio (2.76) the small ship
+gives about 2 000 soldier decisions a second, so the fireteam row is 14
+hours to 6 days, close to the table. On the medium ship it would be 1.6 to
+16 days. The first two rows are too short for another reason: a range or
+duel match has one learning soldier where a ship's has eight, and much of a
+tick's cost does not shrink with the room, so the training rooms give about
+320 to 1 320 learning decisions a second (estimate; most likely about 730).
+The range is then 8 minutes to 8 hours and the duel 1.3 to 90 hours, about 6
+hours at ten million decisions. The first real run of rung 2 (patch 2c)
+measures it.
 
 ## 6. Open questions, parked at the rung that needs them
 
