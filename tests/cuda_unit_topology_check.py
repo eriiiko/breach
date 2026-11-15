@@ -947,7 +947,7 @@ def bench(reps: int = 100) -> int:
     hull = [tuple(int(v) for v in t) for t in zip(*np.nonzero(g.material == MAT_HULL))]
     pool = wood + hull
     pre = _planes(g)
-    print("TIMING (median ms): applier = stage + walk + books D2H; clears = launch")
+    print("TIMING (median ms): applier = stage + walk + books D2H; clears = launch + device sync")
     print(f"{'N':>4} {'destroys/env':>13} {'applier ms':>11}")
     for n in (1, 8, 64):
         st = unit_store.DeviceStore(n, 1, bp=bp,
