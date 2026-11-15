@@ -850,7 +850,7 @@ def _ammo_impulse(attr):
 def _cone_q(attr):
     def f(src):
         from simulation.combat import cone_q16_of_deg
-        return tuple(int(cone_q16_of_deg(getattr(w, attr)))
+        return tuple(int(cone_q16_of_deg(getattr(w, attr)))  # traits-class: the CLASS cone the table uploads; SPREAD is the kernel's
                      for w in _weapon_rows(src))
     return f
 
@@ -889,10 +889,10 @@ _SHOOT_ROWS: tuple = (
              "per weapons-table row: range_tiles at the level's tile size (a "
              "round's remaining_steps; a spray's nominal target)"),
     TableRow("weapon_cone_aim_q", _n_weapons, _cone_q("spread_deg"), 0, 205887,  # traits-class: the device tables upload the CLASS value; the kernel applies SPREAD through unit_lib::scaled
-             "per weapons-table row: combat.cone_q16_of_deg(spread_deg), the "
+             "per weapons-table row: the combat cone door of spread_deg, the "
              "class cone when the shooter can aim (Q16 radians, <= PI)"),
     TableRow("weapon_cone_snap_q", _n_weapons, _cone_q("spread_snap_deg"), 0,  # traits-class: as above
-             205887, "per weapons-table row: cone_q16_of_deg(spread_snap_deg), "
+             205887, "per weapons-table row: the cone door of spread_snap_deg, "
              "the class cone when its statuses forbid aiming"),
     TableRow("weapon_ammo", _n_weapons, _weapon_ammo, -1, 1 << 16,
              "per weapons-table row: ammo_for_weapon's row (-1 none)"),
