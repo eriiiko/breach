@@ -244,6 +244,35 @@ always 0; a second team that does not learn and is paid the opposite.
 - A task that will not pass is a FINDING: stop and report. The threshold,
   the task and the trainer's numbers are not bent to turn it green.
 
+**Amended after the build (the lead, 2026-11-15).** The implementer stopped
+on three tasks that did not pass and changed nothing, as asked. What each
+finding was and what the lead decided, the pass line (0.8) and every trainer
+number untouched:
+
+- **Scale:** a fault of the trainer as this note had it (section 5's
+  amendment). The task did its job.
+- **Argument:** a fault of the task, found in three steps (each measured,
+  the numbers in `agents/tasks.py`). A cue named the verb wanted, which made
+  the task one of learning answers of unequal worth from a near-even start;
+  the answer that pays sooner then crowds the other out before the cue is
+  read ("nothing", which needs no argument; then plant, whose one argument
+  is learnt first). Two seeds of the last cue form passed and the third sat
+  at "always plant" for 300 rounds. The task now does what its row in design
+  8 says and no more: the hand's mask, as in the game, allows "nothing" and
+  one verb that takes an argument, and the pay is for using it with the
+  right argument for that verb and the aim chosen. The crowding-out itself
+  is how this kind of trainer behaves from nothing; it is why rung 2 starts
+  from the copy, and it goes into the plan's as-built and the checkpoint for
+  Erik.
+- **Weights, teams:** eight directions on the tasks' small farm (8 matches x
+  32 decisions = 256 a learning step, where a real piece has 2 048) gave a
+  cue's right answer about 3.5 samples a step. Four directions give about
+  13, as many as the pointer task's one answer. What the two tasks protect
+  does not depend on the number of directions.
+- **The farm's size and the budgets** are the test's, fixed in
+  `agents/tests/test_tasks.py` from one measured run each. Each task still
+  has to FAIL with its trap put in.
+
 ## 10. Gates
 
 1. `agents/tests` green on the processor (the quick tests in seconds, the

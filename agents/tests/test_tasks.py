@@ -26,9 +26,10 @@ pytestmark = pytest.mark.tasks
 SEEDS = (0, 1, 2)
 #: The rounds each task must pass within, also the run's planned rounds (the
 #: step size falls to zero over them). Fixed before the gate run from one
-#: measured run each on seed 0 at this very budget: pointer passed in 37
-#: rounds, argument in 176, weights in 85, scale in 92, teams in 123.
-BUDGET = {"pointer": 150, "argument": 300, "weights": 300, "scale": 300,
+#: measured run each on seed 0: pointer passed in 37 rounds, argument in 45,
+#: weights in 85, scale in 92, teams in 123 (argument measured at a budget
+#: of 300, the others at these).
+BUDGET = {"pointer": 150, "argument": 150, "weights": 300, "scale": 300,
           "teams": 300}
 _RANDOM = {}
 

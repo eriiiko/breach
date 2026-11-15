@@ -124,59 +124,61 @@ class PointerTask(_Base):
 
 
 class ArgumentTask(_Base):
-    """A cue names the hand verb wanted, a plant or the first throw (four
-    verbs are legal: nothing and reload too); the argument's right value
-    depends on the verb AND the aim just chosen (a plant: timer 1; a throw:
-    "onto" at an entry, reach 3 at a token). "own" pays half for the RIGHT
-    verb and the other half when its argument is right too; a wrong verb
-    pays nothing. The trigger has one legal option on most decisions (a
-    head unused there), and the argument does not count whenever "nothing"
-    or "reload" is drawn.
+    """At every decision the hand's mask allows "nothing" and ONE verb that
+    takes an argument, a plant or the first throw, drawn by the task; the
+    argument's right value depends on that verb AND on the aim just chosen
+    (a plant: timer 1; a throw: "onto" at an entry, reach 3 at a token).
+    "own" pays half for using the verb and the other half when its argument
+    is right too; "nothing" pays nothing. The trigger has one legal option
+    on most decisions (a head unused there), and the argument does not
+    count whenever "nothing" is drawn.
 
-    NO VERB IS PAID WITHOUT ITS ARGUMENT (2b's findings; both forms below
-    were measured and dropped). The first form paid the argument's half
-    whatever the verb, so "always nothing" earned 0.667 against a random
-    player's 0.44 with no cue read, and the policy sat there for good. The
-    second paid only a right verb but still asked for "nothing" on a third
-    of the decisions: a verb that needs no argument is paid in full by the
-    verb alone, so from a near-even start the policy first fell to it
-    whatever the cue (by round 60 "nothing" was chosen on 96 % of its own
-    cues and plant and throw on 10 % of theirs) and took 300 rounds to come
-    back, ending at 0.75 of the way. That fall is how this kind of trainer
-    behaves from nothing wherever doing nothing is safe -- the reason rung 2
-    starts from the copy -- and not one of the traps this task is for."""
+    THE MASK SAYS WHICH VERB, NOT A CUE (2b's findings; three forms with a
+    cue were measured and dropped). A cue made the task one of learning two
+    answers of unequal worth from a near-even start, and that is where this
+    kind of trainer is weak whatever its code: the answer that pays sooner
+    crowds the other out before the cue is read.
 
-    WANTED = (A.HAND_PLANT, A.HAND_THROW0)
-    HANDS = (A.HAND_NOTHING, A.HAND_RELOAD, A.HAND_PLANT, A.HAND_THROW0)
+    - Half paid for any right argument, "nothing" (no argument) always
+      right: "always nothing" earned 0.667 with no cue read, and the policy
+      sat there for good.
+    - Only a right verb paid, "nothing" still asked for on a third of the
+      decisions: by round 60 it was chosen on 96 % of its own cues and the
+      other two verbs on 10 % of theirs; 0.75 of the way after 400 rounds.
+    - Only plant and throw asked for: plant's one argument is learnt first,
+      plant then pays double, and throw fell to 3 % of its own cues by round
+      60. Two seeds came back and passed (176 and 123 rounds); the third sat
+      at "always plant" (0.47) for 300 rounds.
+
+    None of that is one of the traps this task is for, so the task no
+    longer leans on it: the masks, as in the game, say what the hand may do,
+    and the task asks what its row in design 8 asks. The crowding-out is
+    recorded in the plan's as-built for 2b (it is why rung 2 starts from the
+    copy, and what to look for when a verb dies out in a real run)."""
+
+    VERBS = (A.HAND_PLANT, A.HAND_THROW0)
 
     def __init__(self, k: int = 3, p_trigger_unused: float = 0.8):
         super().__init__(name="argument", match_len=7, best=1.0)
         self.k = k
         self.p_unused = p_trigger_unused
 
-    def bind(self, sizes):
-        super().bind(sizes)
-        self.cue = numeric_columns(sizes.vector, sizes.vector_kinds,
-                                   len(self.WANTED))
-        return self
-
     def start(self, e, rng):
-        return {"want": np.zeros(self.n_teams * self.n_slots, dtype=int)}
+        return {"verb": np.zeros(self.n_teams * self.n_slots, dtype=int)}
 
     def observe(self, e, state, obs, full, valid, rng):
         E = obs["list_mask"].shape[1]
         tp = fake._type_pos()
         for i in np.flatnonzero(valid):
-            w = int(rng.integers(len(self.WANTED)))
-            state["want"][i] = self.WANTED[w]
-            _onehot(obs, i, self.cue, w)
+            verb = self.VERBS[int(rng.integers(len(self.VERBS)))]
+            state["verb"][i] = verb
             pos = rng.permutation(E)[:self.k]
             obs["list_mask"][i] = 0
             obs["list_mask"][i, pos] = 1
             obs["list"][i, pos, tp] = O.TYPE_SEEN
             refresh_aim(obs, i)
             obs["mask_hand"][i] = 0
-            obs["mask_hand"][i, list(self.HANDS)] = 1
+            obs["mask_hand"][i, [A.HAND_NOTHING, verb]] = 1
             obs["mask_trigger"][i] = 1
             if rng.uniform() < self.p_unused:
                 obs["mask_trigger"][i, 1] = 0
@@ -192,11 +194,10 @@ class ArgumentTask(_Base):
     def pay(self, e, state, actions, valid, rng):
         u = len(valid)
         hand, aim, arg = actions[:, 3], actions[:, 1], actions[:, 4]
-        want = self.right_arg(hand, aim)
-        arg_ok = (want < 0) | (arg == want)
+        arg_ok = arg == self.right_arg(hand, aim)
+        used = valid & (hand == state["verb"])
         r = np.zeros((u, len(REWARD_GROUPS)))
-        verb_ok = hand == state["want"]
-        r[:, G_OWN] = np.where(valid & verb_ok, 0.5 + 0.5 * arg_ok, 0.0)
+        r[:, G_OWN] = np.where(used, 0.5 + 0.5 * arg_ok, 0.0)
         return r, np.zeros(u, bool), np.zeros(u, bool), False
 
 
@@ -287,8 +288,21 @@ class ScaleTask(_Base):
 class TeamTask(_Base):
     """Team 0 learns (one soldier; three empty roster places), team 1 is on
     the bots (four soldiers, shown the same cue); "own" pays the learner 1
-    for walking the cued way and every soldier of team 1 the opposite.
-    Four directions, for the reason given at :class:`WeightTask`."""
+    for walking the cued way and every soldier of team 1 the opposite, ten
+    times over. Four directions, for the reason given at
+    :class:`WeightTask`.
+
+    TEN TIMES OVER, so that the trap can be told (2b's finding). Team 1's
+    rows are not driven by the trainer, so their pay has nothing to do with
+    what it drew for them: stored and graded, they are noise, not a wrong
+    lesson. At the learner's own size (four rows of -1 beside one of +1)
+    that noise only slowed the trap run: 0.75 of the way in 300 rounds,
+    against a clean pass in 123 -- too near the line to call the trap
+    caught. A trainer that never reads those rows cannot see their size."""
+
+    #: How many times the learner's pay each soldier of team 1 is paid,
+    #: with the opposite sign.
+    OPPOSITE = 10.0
 
     def __init__(self, n_dirs: int = 4):
         super().__init__(name="teams", n_teams=2, n_slots=4,
@@ -328,7 +342,8 @@ class TeamTask(_Base):
         r = np.zeros((u, len(REWARD_GROUPS)))
         r[0, G_OWN] = 1.0 if right else 0.0
         r[self.n_slots:, G_OWN] = np.where(valid[self.n_slots:],
-                                           -1.0 if right else 0.0, 0.0)
+                                           -self.OPPOSITE if right else 0.0,
+                                           0.0)
         return r, np.zeros(u, bool), np.zeros(u, bool), False
 
 
