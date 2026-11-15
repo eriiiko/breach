@@ -45,7 +45,10 @@ A TASK (:class:`Task`) decides what a match is: who stands in the roster,
 what each living row is shown and allowed (written over the scenery and the
 game-like masks), what each step pays, who dies, whose records end, when
 the match is over. A match also ends on its clock (``Task.match_len``
-decisions): an ending, as under every named profile.
+decisions): an ending, as under every named profile, and -- as in the game
+-- the time left is shown in the soldier's vector (``time_left``) and the
+full view's match block, so that ending is one the value network can see
+coming.
 
 The stand-in also keeps its OWN books of what the learning teams (the teams
 on ``policy``) were paid, per group, over the decisions of their living
@@ -169,6 +172,11 @@ class StandIn:
                 self.learning[t * S:(t + 1) * S] = True
         self.paid = np.zeros(len(REWARD_GROUPS))
         self.paid_decisions = 0
+        # where the game shows the time left (by name, from its tables)
+        self._time_col = next(f.pos for f in O.VECTOR_COLUMNS
+                              if f.name == "time_left")
+        self._time_full = next(f.pos for f in O.full_match_columns(T)
+                               if f.name == "time_left")
 
     # -- plumbing ---------------------------------------------------------
     @property
@@ -227,6 +235,12 @@ class StandIn:
                 self.in_match[e].reshape((-1,) + (1,) * (v.ndim - 2)),
                 v[e], 0)
         self.task.observe(e, self.state[e], obs, full, valid, self.rng)
+        # the clock, as the game shows it (design 6.5: the time left is in
+        # the soldier's vector and the full view's match block, so a match
+        # ending on its clock is a real ending)
+        left = 1.0 - self.clock[e] / float(self.task.match_len)
+        obs["vector"][:, self._time_col] = left
+        full["full_match"][:, self._time_full] = left
         # the full view is built for the rows in the match only
         for k in self._full_keys:
             full[k][~self.in_match[e]] = 0

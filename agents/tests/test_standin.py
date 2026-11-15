@@ -201,3 +201,27 @@ def test_team_rows_are_views_of_one_teams_rows():
     assert part["vector"][0, 0, task.col] == mark(0, 0, 4)
     with pytest.raises(ValueError):
         env.team_rows(obs, 3)
+
+
+def test_the_clock_is_shown_as_the_game_shows_it():
+    """Protects: the time left of a match is in the soldier's vector
+    (``time_left``) and in the full view's match block, as the game serves
+    it: 1 at a match's first decision, falling every decision, back to 1
+    after the in-step restart -- so the stand-in's clock ending is one a
+    value network can see coming (design 6.5).
+    Breaks when: the stand-in ends matches on a clock it does not show (no
+    value network can then be right at a match's end, and every grade near
+    the end carries that error)."""
+    from simulation import obs_spec_v1 as O
+    env, task = _env()
+    col = next(f.pos for f in O.VECTOR_COLUMNS if f.name == "time_left")
+    fcol = next(f.pos for f in O.full_match_columns(env.layout.n_teams)
+                if f.name == "time_left")
+    obs, info = env.reset()
+    seen = [float(obs["vector"][0, 0, col])]
+    assert float(info["full_view"]["full_match"][0, 0, fcol]) == seen[0] == 1.0
+    for _ in range(MATCH):
+        obs, _, _, _, info = env.step(_default(env, obs))
+        seen.append(float(obs["vector"][0, 0, col]))
+    assert seen[:MATCH] == sorted(seen[:MATCH], reverse=True)
+    assert len(set(seen[:MATCH])) == MATCH and seen[MATCH] == 1.0
