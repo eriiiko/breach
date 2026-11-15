@@ -291,7 +291,7 @@ def _hand_fuse(attr):
 
 def _plant_class_ticks(src):
     from simulation.weapons import PLANT_WEAPON
-    return int(src.sim.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks)
+    return int(src.sim.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks)  # traits-class: the device tables upload the CLASS value; the kernel applies HANDLING through unit_lib::handling_ticks
 
 
 def _charge_capacity(src):
@@ -523,11 +523,11 @@ ROWS: tuple[TableRow, ...] = (
              lambda src: tuple(int(w.mag_size) for w in _weapon_rows(src)),
              0, 1 << 20, "per weapons-table row: mag_size (0 = untracked)"),
     TableRow("weapon_reload_ticks", _n_weapons,
-             lambda src: tuple(int(w.reload_ticks) for w in _weapon_rows(src)),
+             lambda src: tuple(int(w.reload_ticks) for w in _weapon_rows(src)),  # traits-class: the device tables upload the CLASS value; the kernel applies HANDLING through unit_lib::handling_ticks
              0, 1 << 16, "per weapons-table row: the class reload stall, ticks "
              "(the HANDLING hook's operand: x 2^19 < 2^35)"),
     TableRow("hand_windup_class_ticks", 1,
-             lambda src: int(_hand_row(src).throw_windup_ticks), 0, 1 << 16,
+             lambda src: int(_hand_row(src).throw_windup_ticks), 0, 1 << 16,  # traits-class: the device tables upload the CLASS value; the kernel applies HANDLING through unit_lib::handling_ticks
              "[weapons.hand_grenade] throw_windup_ticks (HANDLING's operand)"),
     TableRow("hand_max_reach_q", 1,
              lambda src: int(_hand_row(src).max_throw_range) << 16, 0, 1 << 26,
