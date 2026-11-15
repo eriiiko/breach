@@ -69,7 +69,7 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## Fixed-point kits
 - The only sim arithmetic, CPU and device: never re-derive a shift, a round or a reciprocal.
-- The match path's Python integer helpers live in `src/simulation/unit_fixed.py`, each the exact real result rounded once. Their device twins are `FP_HD` in `cpp/src/fixed_point.h`, bound as `bp.fp_*`, held equal to Python by `tests/test_unit_impulse_twins.py`. The falloffs have no device twin yet (P7).
+- The match path's Python integer helpers live in `src/simulation/unit_fixed.py`, each the exact real result rounded once. Their device twins are `FP_HD` in `cpp/src/fixed_point.h`, bound as `bp.fp_*`, held equal to Python by `tests/test_unit_impulse_twins.py` (the falloffs by `tests/test_unit_kit_twins.py`). A twin refuses outside the range it was proved for (the falloffs return -1) and its device caller FAULTS; a change to a helper lands in Python first, then its twin, in one patch.
 - Kit code is a rounding or a root, never a law (a law lives in the Device unit library or its slot's TU).
 
 ## Material / gas tables

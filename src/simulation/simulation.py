@@ -68,7 +68,7 @@ from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
 from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
-    apply_temperature_ignition,
+    apply_temperature_ignition, ignition_params,
     process_shooting, process_sprays, process_melee_intents,
     Projectile,
     mag_settle, reload_begin,
@@ -2318,15 +2318,14 @@ class Simulation:
         # dormant. Slotted alongside the unit-heat-damage consumer (§6 step 4),
         # after the temperature passes, before the end-of-tick heat clear.
         if self.physics_runner is not None:
-            fire_cfg = getattr(CFG.physics, "fire", None)
-            ignition_seed = float(getattr(fire_cfg, "ignition_seed", 0.1))
             # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.4):
             # ignition and sustain read ONE law — a tile ignites only where the
             # local O2 MOLE FRACTION X exceeds the extinction limit X_ext, the
             # same o2_frac_ext the fire logistic uses. (Retires the old absolute
             # o2_threshold gate so ignition cannot seed a tile the next fire step
-            # would immediately suffocate.)
-            o2_frac_ext = float(getattr(fire_cfg, "o2_frac_ext", 0.13))
+            # would immediately suffocate.) combat.ignition_params is the one
+            # read of the two dials (the device tables read it too, #29 P7.0a).
+            o2_frac_ext, ignition_seed = ignition_params(CFG)
             apply_temperature_ignition(self.gmap, o2_frac_ext, ignition_seed)
 
         # 9e. Entities — the SPLIT GATE (Arc B impl doc §2b, D2). Two

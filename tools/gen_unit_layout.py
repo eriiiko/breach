@@ -21,6 +21,9 @@ precedent), one command:
 - ``cpp/src/applier_layout.h`` -- the PER-ENV SERIAL APPLIER's effect record,
   kinds, book channels and the topology seam's / tick-end clears' planes
   (#29 P6.4b, §4.3), from ``simulation.applier.header_text``.
+- ``cpp/src/unit_draws_layout.h`` -- the DEVICE DRAWS' vocabulary (#29 P7.0a,
+  4.4c decision 5: the salts, the key row, the one site per ``.next`` salt),
+  from ``simulation.unit_draws.header_text``.
 - ``cpp/src/object_tables_layout.h`` -- the OBJECT TABLES' row layouts (#29
   P7.0b, §4.4c decision 3: the planted charges first; a table is a schema
   of ``simulation.unit_schema.OBJECT_TABLES``), from
@@ -56,10 +59,11 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     from simulation import unit_events, unit_requests, unit_store, unit_tables
     from simulation import applier          # #29 P6.4b
+    from simulation import unit_draws       # #29 P7.0a: the salts, the .next sites
     from simulation import object_tables    # #29 P7.0b
     stale = 0
     for mod in (unit_store, unit_tables, unit_events, unit_requests, applier,
-                object_tables):
+                unit_draws, object_tables):
         path = ROOT / mod.HEADER_REL
         text = mod.header_text()
         lay = mod.layout()
