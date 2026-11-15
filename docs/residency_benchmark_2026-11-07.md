@@ -1626,3 +1626,33 @@ timed). Medians of 200 repetitions, ms.
 env). The Python face's append checks the overflow by downloading the whole table, which is most of its cost; a
 device slot (P7b) appends inside its own kernel and the device backend reads only the overflow counts, so neither
 floor is per tick on the training path.
+
+## P7a.2: slot 4's shooting, slot 2''s march and its landing (2026-11-15)
+
+**What.** Slot 4's shooting (`cpp/src/cuda_unit_shooting.cu`'s `unit_shooting`: one thread per row, the gates, the
+burst, THE MARCH of each round in its firing tick, the records, rounds and noises staged per row and gathered) and
+slot 2' (`unit_rounds`: one thread per env marching its table of rounds, then the compaction; its landing is the
+applier's RESOLVE stage). Class T.
+
+**Method.** `tests/cuda_unit_shooting_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the P7b
+agent's full pytest suite ran on the same machine (the card at 0 % just before, 74 % just after). The rows: the
+shooting scene (34 units, 1/3 m tiles) at its fourth tick, every `last_fire_tick` cleared so every trigger-holding
+shooter fires (K5s, a PDW, shotguns, an LR-50, a P12), replicated to N envs; the table of rounds for slot 2' is the 7
+rounds that tick's shots left flying (K5 rounds with up to ~270 tiles of range left). "4 shooting" is
+`unit_kernels.shooting`: the two input stagings, the kernel, three gathers, the counts' D2H and the three lists'
+dropped counts. "2' march" is `unit_kernels.rounds_march` (the kernel, the compaction, the counts, the dropped
+counts); "2' landing" is `unit_kernels.resolve` on the march's records. Uploads outside the timing. Medians of 50
+repetitions, ms.
+
+| N | 4 shooting (34 rows / env) | 2' march (7 rounds / env) | 2' landing |
+|---|---|---|---|
+| 1 | 3.349 | 3.893 | 0.309 |
+| 8 | 3.099 | 3.594 | 0.298 |
+| 64 | 3.209 | 3.684 | 0.339 |
+
+**Reading.** Flat in N (the envs run in parallel blocks) but ten times the call floor of the earlier unit slots: the
+cost is THE MARCH's serial walk inside one thread -- per step a scan of every row of the env for the first footprint
+holding the tile (a K5 round marches up to 96 steps a tick, so ~3 000 row reads per round), and slot 2' walks its
+rounds one after another in ONE thread per env. The landing is at the walk's floor, as 4c was. If the device tick
+(P7e) needs it, the march's per-step row scan can read a per-env occupancy plane built once per slot (the stamp's
+own data), which keeps "the first row in row order" as the minimum row index per tile; not done here.
