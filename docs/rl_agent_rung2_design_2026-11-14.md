@@ -437,6 +437,28 @@ second: the range is trained without it.
   link and the packed size are measured before anything is built for it.
 - **Until then, as Erik said:** three PCs run three experiments and share
   saved networks.
+- **Using several PCs for ONE run (Erik, 2026-11-15: "we can gain a lot by
+  running on more than one computer - we should really try to exploit
+  that").** The hand-over above already allows the simple form: every PC
+  collects with the same weights, sends its packed batch to the one PC that
+  learns, and gets the new weights back. Nothing is learned from old play,
+  so no correction is needed; the price is waiting for the slowest PC and
+  for the link. A PC's share of a round is 20 to 50 MB packed (estimate) and
+  the weights back are 6 MB. On a home network that is nothing; over the
+  internet it depends on the upload speed, and through Tailscale's relay it
+  does not work. The gain is at most the sum of the farms, about 2.5 times
+  with all three. Where it pays: rung 3, whose runs are days. In rung 2 the
+  work is many separate runs (repeats, sweeps), which three PCs already
+  share with no new code. So: the links are measured early (a file of 50 MB
+  sent each way between each pair of PCs), and the spread-out run is built
+  for rung 3 if they carry it.
+- **A PC given to training.** A running farm takes every thread of its PC,
+  for hours to days. The lead's choice is the work desktop: the same
+  processor as the home desktop, the larger card memory (12 GB, the only
+  card that takes a full piece at once), and the home desktop stays free for
+  building, the game's own checks and watching replays. Against it: it also
+  serves the shared memory (egregore) and the art pipeline. Erik's to
+  decide.
 
 ### 4.7 Saving, and which code a run used
 
@@ -716,6 +738,11 @@ moved the policy; the count of masked choices sent on driven rows (must stay
   **before he is told the win rate**. His verdict is written into the rung's
   note in his words, then the number is added. For the experiment's "what
   does B do that A does not", replays are shown without saying which arm.
+- **AGREED as a first try (Erik, 2026-11-15):** "Let's commit to watch those
+  8 replays, and then evaluate how it was (also the watching part), what was
+  useful, what to change to next evaluation." So after the first gate
+  reading the procedure itself is reviewed with him, and this paragraph is
+  amended.
 
 ### 7.5 When something fails
 
@@ -879,6 +906,12 @@ Each has a rung or a trigger.
 - **A feet choice that names a spot** in place of a direction (Erik's idea,
   2026-11-15): an experiment after the duel learns, as a new action spec
   beside v1. Design 13.4 holds the reasoning and the test.
+- **Teams larger than four, up to 20 against 20** (Erik asked, 2026-11-15):
+  the design is not sized by the team; design 13.5 says what is fixed and
+  the road there.
+- **A memory of stored moments** in place of, or beside, the running memory
+  (Erik's idea, 2026-11-15): design 13.6; first tested on the made-up memory
+  tasks, then at rung 8.
 - **Observation spec v2.** The unit design (`docs/unit_design_2026-11-14.md`
   3 and 9) asks whether a soldier is shown its own and its team-mates' hooks,
   and for fixed slot blocks so that a new status or grenade row no longer
@@ -927,7 +960,9 @@ Each has a rung or a trigger.
 **His to decide:**
 
 - **How his own half of the gate is run** (7.4): eight replays picked by a
-  rule written beforehand, watched before he is told the win rate.
+  rule written beforehand, watched before he is told the win rate. DECIDED
+  2026-11-15: yes, as a first try, reviewed afterwards.
+- **Which PC is given to training** (4.6): asked 2026-11-15.
 - The tags for runs whose networks are kept (4.7).
 - When P6 is through (10).
 

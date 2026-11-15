@@ -1105,3 +1105,110 @@ direction". Before it is run, the protocol becomes:
   range barely asks for movement.
 - **The outcome rule of rung 2's experiment** (rung 2 design 6): one
   deciding number named beforehand, and "not separated" said plainly.
+
+### 13.5 Team size is not fixed; what is, and the road to 20 against 20 (Erik asked, 2026-11-15)
+
+Erik: "do we have to set the team size? ... i start to be interested in what
+happens if we're like 20 agents vs 20 ... can we design this so that it's
+flexible to team size?"
+
+**It is flexible already, and stays so.** A team's size is a number in the
+match file (`n`, up to what the level's spawn room holds). Every soldier
+runs the same network, and that network reads a list of whatever length
+(rung 2 design, section 2): nothing in it is sized by the team.
+
+**What is fixed today, in observation spec v1:**
+
+| thing | limit | at 20 against 20 |
+|---|---|---|
+| team-mates in a soldier's list | team size minus one | 19: fine |
+| enemies in sight in the list | the 16 nearest | the rest appear only as counts in the far map |
+| last-seen records in the list | 8 | the same |
+| the value network's list | 64 entries, never dropping a marine | 40 marines plus doors and objects: fits, tightly, without a horde |
+| the levels | spawn rooms sized for 6 | new ships with rooms for 20 |
+
+**The advice: the fireteam of four stays the unit that learns to fight;
+a bigger force is several fireteams under a commander.** Real armies are
+built that way (a fireteam of about 4; a section or squad of 8 to 13, which
+is two or three fireteams; a platoon of 30 to 40), and for the same reason
+we would meet: one soldier among twenty cannot tell what its own choices did
+to the team's result. So:
+
+- Rung 3 trains four against four, as planned.
+- From rung 3 on, matches of mixed sizes (2 to 8 a side) are part of
+  training, so that the network does not fit one size. Networks that read a
+  list are known to carry over between team sizes, and a path from few to
+  many is a known way to reach many (RECALLED, not in our survey: SMACv2's
+  random team sizes; Long et al. 2020).
+- 20 against 20 is five fireteams a side. It needs: ships with rooms for 20;
+  a decision whether 16 listed enemies are enough (else a next observation
+  spec); the commander (rung 6) to give the fireteams different jobs; and
+  the "team" share of the reward counted per fireteam, not per side. Each is
+  a design line when its rung comes. The farm does not get worse with size:
+  a big match costs more but gives more learning decisions.
+- A first look costs little and needs no learning: the layered bots, 20
+  against 20, on a ship made for it, in the tournament. It shows the farm's
+  speed at that size and whether the game holds up. It is a tournament run
+  and a generator setting, so it waits for Erik's word.
+
+### 13.6 A memory of stored moments: parked, with its plan (Erik's idea, 2026-11-15)
+
+Erik: "how about storing only one state per second, or per 2 seconds even
+... what about non homogenous spacing? so storing frames either when
+something happens - or every second and then every 10 seconds further back
+... humans only remember what matters ... feels like something to look into
+after the agents know how to play".
+
+**What network v1 has:** a small running memory (a GRU) that is updated at
+every decision. The critique of the rung 2 design found its limit: what it
+can LEARN to keep is as long as the stretch it is trained on, 2.7 seconds at
+the starting value (rung 2 design 4.5).
+
+**What the game already does for the soldier:** the team picture is a
+hand-built memory of exactly this kind. It keeps a record of each enemy as
+last seen (where, moving how, how long ago) and shows the records in the
+list. That is why little learned memory is expected to matter while sight is
+all-round.
+
+**Erik's idea, as a design:** a diary of a few slots beside the list. Each
+slot is a short summary of one past moment with its age. Slots are kept at
+growing distances back (1, 2, 4, 8, ... seconds: seven slots cover a duel)
+and at events (I was hit, an enemy came into or left sight, a mate died, a
+door opened, my order changed). The network reads the slots the way it reads
+units, by attention.
+
+**Why it is attractive here:**
+
+- The diary is an input like any other. Learning needs no replayed
+  stretches and has no limit of 2.7 seconds: the hardest and most
+  fault-prone part of the trainer (rung 2 design 4.5) would not be needed
+  for it.
+- Reading is easy to learn; choosing what to WRITE is the hard research
+  problem. A fixed schedule plus fixed events writes without learning, and
+  the network learns only which slots matter now. "Remember what matters"
+  is then learned on the reading side first.
+- It lives in the trainer and the network's controller, not in the game, and
+  costs a few kilobytes per stored decision.
+
+**The stages, each a question that can be answered:**
+
+1. Slots hold a hand-built summary (the soldier's own numbers and its
+   nearest list entries); fixed spacing and events; read by attention.
+2. Slots hold what the network itself made of the moment.
+3. The network learns what to keep when the diary is full, and how slots
+   refer to each other (the "linking").
+
+**What the literature has** (RECALLED, not in our survey; to be read before
+this is designed): memories read by attention in place of a running memory
+(transformers for RL, Parisotto et al. 2019); summaries first, details on
+demand (Lampinen et al. 2021); slow and fast memories together (the capture
+the flag agents); stored episodes with learned reading (Wayne et al. 2018).
+None is the standard choice in the team-game systems we surveyed, which all
+use a running memory.
+
+**When.** After the agents play, as Erik says. Its first test is cheap and
+needs no game: the made-up memory tasks of the rung 2 trainer, with the cue
+24 and 100 decisions back, where the running memory fails by construction.
+Its real test is the first task that needs memory: the sight cone and
+hearing (rung 8), where "where did the enemy go" matters. The same idea
+would fit Civulator, where a turn is a natural moment to store.
