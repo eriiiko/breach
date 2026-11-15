@@ -352,14 +352,23 @@ def random_score(task_cls, weights, n_envs: int = 64, steps: int = 64,
     return paid / n
 
 
-def run_task(task_cls, seed: int, max_rounds: int, *, n_envs: int = 64,
-             decisions: int = 32, threads: int = 4, random=None,
-             trap=None, on_round=None) -> dict:
+#: The stand-in farm the tasks run on: matches, and decisions per match per
+#: round (256 learning decisions a round with one learner per match). The
+#: trainer's numbers are the design's; this is only the farm's size, kept
+#: small because on the processor the time per learning step grows with the
+#: piece and the step size fixes how far one step goes.
+TASK_ENVS = 8
+TASK_DECISIONS = 32
+
+
+def run_task(task_cls, seed: int, max_rounds: int, *,
+             n_envs: int = TASK_ENVS, decisions: int = TASK_DECISIONS,
+             threads: int = 4, random=None, on_round=None) -> dict:
     """Train on ``task_cls`` from seed ``seed`` until the mean over the
     last :data:`PASS_WINDOW` rounds reaches the pass line, or
-    ``max_rounds``. ``trap(trainer)`` puts a fault in before the first
-    round (the tests' own); ``random`` a measured random score (else
-    measured here). Returns the scores, the rounds used and the verdict."""
+    ``max_rounds`` (also the run's planned rounds). ``random`` a measured
+    random score (else measured here). Returns the scores, the rounds used
+    and the verdict."""
     torch.set_num_threads(threads)
     settings = Settings(planned_rounds=max_rounds, decisions=decisions)
     w = np.asarray(settings.weights)
@@ -369,8 +378,6 @@ def run_task(task_cls, seed: int, max_rounds: int, *, n_envs: int = 64,
     env = make_env(task, n_envs, seed)
     soldier, value = networks(env, seed)
     trainer = Trainer(env, soldier, value, settings, seed=seed)
-    if trap is not None:
-        trap(trainer)
     line = random + PASS_SHARE * (task.best - random)
     scores = []
     passed = False
@@ -396,5 +403,6 @@ def run_task(task_cls, seed: int, max_rounds: int, *, n_envs: int = 64,
 
 __all__ = ["PASS_SHARE", "PASS_WINDOW", "numeric_columns", "refresh_aim",
            "PointerTask", "ArgumentTask", "WeightTask", "ScaleTask",
-           "TeamTask", "TASKS", "make_env", "networks", "score",
+           "TeamTask", "TASKS", "TASK_ENVS", "TASK_DECISIONS", "make_env",
+           "networks", "score",
            "random_score", "run_task"]
