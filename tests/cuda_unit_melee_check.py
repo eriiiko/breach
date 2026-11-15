@@ -223,8 +223,17 @@ class MeleeDriver:
         self.sim = sim
         self.who = {}
         self.strikers = []
+        # bystanders: AFTER the groups, or BEFORE them for odd variants, so the
+        # batch's envs record their blows on other rows (a list of env 0 is
+        # not env 1's)
+        if variant % 2:
+            self._bystanders()
         self._setup()
-        for i in range(variant % 4):                    # bystanders
+        if not variant % 2:
+            self._bystanders()
+
+    def _bystanders(self):
+        for i in range(self.variant % 4):
             self._add(f"by{i}", 30 + 4 * i, 22, facing=NORTH, latch=False)
 
     def _add(self, name, x, y, team=0, facing=EAST, hooks=None, hp=10000.0,
@@ -253,7 +262,8 @@ class MeleeDriver:
     def _setup(self):
         a = self._add
         # G1: a hooked marine against a zombie (two blows kill it)
-        a("A", 3, 3, facing=EAST, hooks=STRIKE_PUSH)
+        a("A", 3, 3, facing=EAST,
+          hooks=(STRIKE_PUSH, STRIKE_PUSH_2, None)[self.variant % 3])
         z1 = a("Z1", 6, 3, facing=WEST, latch=False)
         self._kill(z1, zombie=True)
         z1.current_hp = 40.0
@@ -876,6 +886,8 @@ class ResolveWorld:
         g.material[2, 30] = MAT_FURNITURE
         g.on_tile_changed(2, 30)
         assert int(g.material[1, 30]) == MAT_HULL
+        # a wood tile at hp 0 that no chew of no damage may destroy
+        g.wall_hp[24, 9] = 0
         # exposure fixtures (the landing's reads)
         self.w["T"].exposure[0] = ONE // 4
         self.w["T2"].exposure[0] = ONE // 3
@@ -904,7 +916,7 @@ def _status(tgt, kind=None, dur=4, src="A"):
 
     def f(W, fx):
         fx.status(W.w[tgt], STUNNED if kind is None else kind, magnitude=0,
-                  duration_ticks=dur, source_id=W.w[src].id)
+                  duration_ticks=dur, source_id=None if src is None else W.w[src].id)
     return f
 
 
@@ -980,6 +992,29 @@ def _run_list(tag, items, census, *, reverse=False, expect_payload=False):
     return ok, (post_rows, host_ev, post_planes)
 
 
+class _armored:
+    """Every species' kinetic armor at 3 points for the block (the units the
+    world builds stamp it; the device tables read it): no shipped profile
+    has armor, so the AP door is otherwise unobservable."""
+
+    def __enter__(self):
+        from dataclasses import replace
+        from simulation import species as S
+        self.saved = dict(S.SPECIES_REGISTRY)
+        for k, sd in self.saved.items():
+            armor = list(sd.mitigation.armor)
+            armor[0] = 3.0
+            S.SPECIES_REGISTRY[k] = replace(sd, mitigation=replace(
+                sd.mitigation, armor=tuple(armor)))
+        return self
+
+    def __exit__(self, *exc):
+        from simulation import species as S
+        S.SPECIES_REGISTRY.clear()
+        S.SPECIES_REGISTRY.update(self.saved)
+        return False
+
+
 def _at_once(items):
     """The same list applied AT ONCE (no landing): what the landing must
     differ from."""
@@ -1009,6 +1044,8 @@ def part_resolve():
         _status("T2", dur=6), _push("T2", 3 * ONE, -2 * ONE, lever=ONE // 3,
                                     twist=ONE * 3 // 2),
         _push("T2", -ONE, ONE, lever=-5 * ONE),         # the lever clamped
+        _status("T2", dur=2, src=None),                 # a source of None
+        _hit("B", "T2", 1, expose=3 * ONE),             # the raises pass x_max: the cap
         _hit("C", "T2", 4, ap=2.5),                     # the AP door
         _hit("C", "T2", 3, dtype=HEAL, cause="regen"),  # HEAL: the identity
         _hit("M", "E", 50), _hit("E", "M", 50),         # a mutual kill
@@ -1019,9 +1056,16 @@ def part_resolve():
         fail("resolve: the landing gave the same result as applying at once (vacuous)")
     else:
         census["the landing's result differs from at once"] += 1
+    # 1b. the AP door against armor (no shipped profile has any: a fixture)
+    with _armored():
+        ok &= _run_list("armor", [_hit("A", "T2", 6, ap=1.25), _hit("B", "T2", 2),
+                                  _hit("C", "T2", 9, ap=9.0)], census)[0]
+        census["armor: a packet's AP against a non-zero armor"] += 1
     # 2. CHEW: a wall chewed to zero and destroyed, air and dead damage no-ops
-    chew = [_chew(24, 6, 25.0), _chew(24, 6, 35.0), _chew(24, 6, 10.0),  # 60 hp: to 0
-            _chew(10, 10, 50.0), _chew(24, 7, 0.0), _chew(24, 8, 12.5)]
+    chew = [_chew(24, 6, 25.0), _chew(24, 6, 35.0),       # 60 hp wood: to exactly 0
+            _chew(10, 10, 50.0),                          # air: a no-op
+            _chew(24, 9, 0.0),                            # no damage: a no-op (hp 0)
+            _chew(24, 8, 12.5)]                           # a quantized partial chew
     ok &= _run_list("chew", chew, census)[0]
     # 3. the order: a kill's credit and a breach chain, forward vs reversed
     W0 = ResolveWorld()
@@ -1080,6 +1124,7 @@ def part_resolve():
             census[f"{what} refused at the record function"] += 1
     print("resolve: " + "; ".join(f"{k} = {v}" for k, v in sorted(census.items())))
     need = ("kind HIT", "kind STATUS", "kind PUSH", "kind CHEW",
+            "armor: a packet's AP against a non-zero armor",
             "the landing's result differs from at once",
             "forward != reversed (ring and planes)", "PAYLOAD refused by name at the apply",
             "FACE refused at the record function", "world call refused at the record function")
