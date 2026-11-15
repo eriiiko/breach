@@ -109,6 +109,19 @@ calling function's name: slot 4c's ``resolve`` is the conductor's, not slot
 empties the host's list once the device has applied it, and refuses by name
 a later chained callable that finds the host appended to it in between.
 
+#29 P7b: the OBJECT TABLES are lists too (``grenades``: ``sim.projectiles``,
+``charges``: ``sim.planted_charges``, each through ``object_tables.records``;
+the device list a ``DeviceTable``): staged as inputs, compared as outputs and,
+in the chained form, LANDED back onto the host list in place
+(``ListDef.land``). ``payloads`` is a LOGGED list: the ``execute_payload``
+calls at the P7b call sites (:data:`PAYLOAD_SITES`, a tap installed while a
+slot names it), emptied at the slot's first entry (``ListDef.mark``),
+recorded through ``applier.record_of``; the chained form replays the device's
+records through the host's call (:func:`payload_call`). Output lists are kept
+per name. ``DeviceSlot(skip_ok=True)``: a slot the conductor gates off
+(``charges.tick`` while no charge lies) is compared, in an env where it did
+not run, as a run on the state the tick ended with that must change nothing.
+
 EVENTS keep only SYNCED events: the host's render-only events (MeleeEvent,
 ShotFired, SprayJet, ...: outside every digest, no device form) are dropped
 before the ring is compared (``unit_events.is_synced``).
