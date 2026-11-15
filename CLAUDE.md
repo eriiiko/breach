@@ -81,6 +81,7 @@ strategy. Every rule below serves that.
 | `sight.md` | vision / cover / line of fire, sight for many tiles |
 | `match.md` | match config, spawn, controllers, replay, MatchSession, control, team picture, order, room graph, main.py |
 | `rl-agent.md` | batched env, observation spec, full view, action spec, reward, training snapshot |
+| `agents.md` | the trainer's side in `agents/`: network spec, choosing |
 | `bots.md` | bot layers, position features, door bots, tournament |
 | `render-core.md` | tone-map, look shots, wall seam, lighting, light curve, frame lights, inspector, ping-pong, BLAS, UI, blackbody |
 | `render-effects.md` | gas medium, smoke relief + cast, tamed wind, FireVFX, particles, distortion, shock, muzzle flame, tracers, fire light |
@@ -249,6 +250,8 @@ amends the rule file, never this line's length.
 | Reward profile | `src/simulation/reward_v1.py` + `[reward] profile` | A reward is a named table of term weights; the env returns groups, never their sum |
 | Bots through the door | `src/control_bots_door.py` | The layered bots driven through action spec v1 (the imitation teacher); never a second table |
 | Training snapshot | `rl_env.require_snapshot` + `write_run_manifest` | A training run's code is an annotated tag at HEAD in its own checkout |
+| Network spec | `agents/spec.py` + `agents/network.py` + `agents/sizes.py` | A network is a named spec in `agents/`, meeting the game only through an observation and an action spec, at any team size; its record names all three and any other layout refuses it |
+| Choosing | `agents/choosing.py` | The chances under the masks, the draw, the probability of given choices and which heads counted are ONE module, used when acting, learning from reward and copying |
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
 | Room graph | `level_loader.RoomGraph` + `src/simulation/room_graph.py` | ONE map from tile to room and ONE list of openings; never a second |

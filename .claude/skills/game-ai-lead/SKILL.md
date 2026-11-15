@@ -121,10 +121,12 @@ from the survey. The ones most often needed:
   lists what changed in what he read (the gate has numbers and a cap on
   running out the clock; no floor on the copy's hand; a first real run
   early; eleven patches 2a to 2k, four touching a game file; the times are
-  days, not hours) and his one decision (how his by-eye half of the gate is
-  run). Next: his answer, then a handoff plan as for rung 1. **Every patch
-  waits for P6 (Erik, 2026-11-15); 2a starts on his word that P6 is
-  through.** His idea of a feet choice that names a spot is parked as an
+  days, not hours); his by-eye half of the gate is agreed as a first try
+  (design 7.4). **The patches are being run from
+  `docs/rl_agent_rung2_plan_2026-11-15.md`** (the orchestrator's contract:
+  one Opus implementer at a time, the lead reads 2a and 2b line by line,
+  a checkpoint on #195 after every merge); which patch is live is in
+  memory (`project_rl_agent_design_session.md`, top). His idea of a feet choice that names a spot is parked as an
   experiment after the duel learns (design 13.4, protocol amended by the
   critique). The lesson document ("the trainer, line by line") is the
   lead's, written from the code of patches 2b and 2d. The two questions the
@@ -303,6 +305,20 @@ implementation agents and critics stay one at a time.
   spot to walk to) got a parked experiment with its reasoning in the design
   (13.4), not a design change: say what the literature does and does not
   settle, and what the design already has of the idea.
+- **2026-11-15, patch 2a (network + choosing).** One Opus agent, about
+  2 h 15 min (48 min of it the game's suite), 290 thousand tokens, green
+  first time. What the next patch should know: (1) the agent's tests feed
+  MADE-UP inputs, so the lead ran a few REAL decisions through the
+  full-width networks at the boundary (a one-worker `BatchedEnv`, 30
+  decisions): do this for every patch whose tests cannot see the game;
+  (2) the line-by-line read found what no test could: count planes fed raw
+  beside squashed inputs. Read the inputs' ranges, not only the shapes;
+  (3) on Windows `CUDA_VISIBLE_DEVICES=""` does NOT hide the card; use
+  `-1`; (4) two of the agent's own on-purpose faults were no-ops its first
+  tests passed (a constant shift before a LayerNorm; a filter doubled by
+  the maths): "break it once" must be a fault that changes the output;
+  (5) small fixes after the report are cheaper done by the lead in the
+  finished agent's worktree than by resuming the agent.
 
 ## 11. Running rung 1 (for the orchestrator session)
 
