@@ -1441,6 +1441,74 @@ kinds, slot 4a and slot 4c; no decision moved. One line each:
   staged list walked); CHAINED 4a + 4c; SHIP 500 ticks. Every gate broken once
   (the patch's report).
 
+**As built (P7.0a, 2026-11-15).** P7.0 was cut in two side by side: P7.0a
+(this: items 1 and 4, the kit and slot 9d) and P7.0b (the table module with
+the charge pilot, slot 2's split). Decisions 5 and 6 landed as written; one
+line each:
+- THE DEVICE DRAWS are `cpp/src/cuda_unit_draws.cuh` (`unit_draws_dev`):
+  `draw_key(keys, e)` reads env e's row of an `(N, 3)` int64 input (seed lo,
+  seed hi, tick word: `unit_draws.draw_key(sim)`, i.e. `sim.draws.key` and
+  `sim.draws.tick & 0xFFFFFFFF`, the WEGO base included, captured at the
+  slot's entry; a later slot stages it like any table input); `draw_at(key,
+  salt, ident, index)`; `DrawSite` + `draw_next(key, site)` (the count in the
+  thread); `cone_offset_q16(word, cone_q)`, `roll_q16(word, p_q)`. Out of
+  the Python's domain (id, index, a key word, a cone past 2^31 - 1, where
+  the 64-bit product would overflow) is `bad`, the caller's fault. The salts
+  are `unit_draws::SALT_*` in the generated `cpp/src/unit_draws_layout.h`
+  (`src/simulation/unit_draws.py`, a sixth header of
+  `tools/gen_unit_layout.py`, fingerprint `bp.unit_draws_layout()`), which
+  also records `NEXT_SITES` (SHOT_CONE `fire_burst`, BEAM_CONE `fire_beam`,
+  MELEE_CRIT `melee_blow`, all `combat.py`); an AST scan of `src/` fails
+  `tests/test_unit_draws.py` on a second site.
+- THE DEVICE SIGHT is `cpp/src/cuda_unit_sight.cuh`: `unit_sight::has_los(
+  solid, screen, h, w, fy1, fx1, fy2, fx2, &bad)`, `screen == nullptr` the
+  physical form; one env's `(h, w)` bool planes, the caller rebases. An end
+  past +-2^30 is `bad`.
+- THE FALLOFFS are `FP_HD` `falloff_floor_q` / `falloff_round_q` in
+  `fixed_point.h` beside the P6.2 kit twins (a 128-bit numerator, a 128 / 64
+  restoring ceil division, the uint64 ceil root), bound as
+  `bp.fp_falloff_*`; proved for v < 2^31 and 0 <= d2 < r2 < 2^63 (the
+  callers: v = 65536 with Q32 distances for the deposit weights, a blast's
+  Q16 damage), -1 outside. The P7.0 row's "squared-distance tests" were left
+  out on the lead's brief (no distance helper until a caller needs one).
+- SLOT 9d is `cpp/src/cuda_unit_ignition.cu` (`unit_kernels.ignition(store,
+  fields)`, the nine `IGNITION_FIELDS` planes, `fire` and `ignition_armed`
+  in place, coverage = cells changed): one thread per cell, a non-flammable
+  cell returns first. Six table rows (T 732): `ign_temp_q` per material
+  (`materials.ignition_temp_q16`), `ign_x_ext_q` / `ign_seed_q` (through
+  `combat.ignition_params`, now the conductor's one read of the two dials),
+  `ign_x_n_floor_q` (`combat.IGNITION_X_N_FLOOR`, the literal named),
+  `ign_gas_o2` / `ign_gas_n2` (the map's gas table). The store is taken for
+  the tables and the counts only; the kernel reads no row.
+- THE HARNESS: the chained form's `_is_for` also recognises a callable
+  handed the sim's GameMap (9d's only sim argument); without it the host law
+  ran beside the device's, unseen because 9d is idempotent on its own
+  output, so the chained gate now counts the host law's calls.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): 9d reads NO pressure
+  factor -- `apply_temperature_ignition` gates on the mole fraction alone,
+  while the fire's sustain multiplies `o2_pressure_factor.h`'s g(p) -- so its
+  twin does not either (the brief asked for the factor; porting it would
+  change the game); the fraction's floor was a literal in the law (named
+  now, value unchanged); ship_demo never ignites (0 cells in 300 ticks:
+  nothing gets hot); the ignition scene's no-O2 cases all come through the
+  fraction's floor (a pumped pocket): vitiated air at full density is not
+  built.
+- THE GATES (`tests/cuda_unit_kit_check.py`, wrapper
+  `tests/test_cuda_unit_kit.py`; CPU `tests/test_unit_draws.py`,
+  `tests/test_unit_kit_twins.py`): TABLES; DRAWS (4 envs: seed 0, 2^32 + k,
+  2^64 - 1, a tick past 2^32, a WEGO base; 4096 rows each over every salt
+  and raw words, the range ends; two .next sites per row; batch == alone;
+  7 domain flags); SIGHT (ship_demo, playground, my_ship, test_level with
+  grilles stamped through `on_tile_changed`, one batch padded to the largest
+  map; 48 000 pairs x 2 forms); FALLOFF (60 000 triples, device and CPU);
+  LAW (9d's kernel on 320 random synthetic map pairs against the law on a
+  stand-in map: four deliberate breaks -- the threshold's equality, a
+  vacuum neighbour counted, the floor, the fraction's scale -- stayed green
+  on every scene, which never puts a tile exactly at its threshold, gas in
+  a vacuum tile or a fraction a count from X_ext); SCENES (the ignition scene, space and planetside, an 11-branch census;
+  ship_demo 300 ticks with none); BATCH N = 2 / 8; CHAINED 9c + 9c2 + 9c3 +
+  9d. Every gate broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
