@@ -784,35 +784,98 @@ def unit_section_bytes(records) -> bytes:
 # The planted charges' table (#193; ``charges.PlantedCharge``)
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class ChargeColumn:
+class TableColumn:
+    """One column of an OBJECT TABLE (#29 P7.0b, design 4.4c decision 3: a
+    host list of world objects -- the planted charges today -- as rows of
+    int64): ``name`` the object's attribute, ``encode`` its value to an int
+    (or a tuple of ``width`` ints), ``decode`` back (the inverse:
+    ``simulation.object_tables.unpack`` rebuilds the objects from it)."""
     name: str
     encode: Callable[[Any], Any]
     width: int = 1
+    decode: Callable[[Any], Any] = None
+
+    def __post_init__(self):
+        if self.decode is None:
+            object.__setattr__(self, "decode", _dec_identity)
+
+
+#: The planted charges' columns were declared under this name first (#193).
+ChargeColumn = TableColumn
+
+
+@dataclass(frozen=True)
+class ObjectTable:
+    """An object table's schema (#29 P7.0b): EVERY fact of the table lives
+    here, none in ``simulation.object_tables`` (the one module over them).
+    ``name`` (the generated header's ``OBJ_<NAME>_*`` names), ``columns``
+    (row order), ``capacity`` (rows per env: past it nothing is written,
+    the overflow is counted and refused by name), ``live`` (the column whose
+    0 marks a row DEAD: the stable compaction drops it), ``build`` (the
+    decoded attributes as a dict -> a fresh host object: unpack's
+    constructor)."""
+    name: str
+    columns: tuple
+    capacity: int
+    live: str
+    build: Callable[[dict], Any]
 
 
 def _enc_approach(v):
     return (NO_TILE, NO_TILE) if v is None else (int(v[0]), int(v[1]))
 
 
-CHARGE_SCHEMA: tuple[ChargeColumn, ...] = (
-    ChargeColumn("x", _enc_int),
-    ChargeColumn("y", _enc_int),
-    ChargeColumn("det_tick", _enc_sentinel(NO_TIMER)),
-    ChargeColumn("ammo_name", _AM_E),
-    ChargeColumn("owner_id", _enc_int),
-    ChargeColumn("approach", _enc_approach, width=2),
-    ChargeColumn("live", _enc_bool),
+def _dec_approach(e):
+    return None if tuple(e) == (NO_TILE, NO_TILE) else (int(e[0]), int(e[1]))
+
+
+CHARGE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("x", _enc_int),
+    TableColumn("y", _enc_int),
+    TableColumn("det_tick", _enc_sentinel(NO_TIMER),
+                decode=lambda e: None if e == NO_TIMER else e),
+    TableColumn("ammo_name", _AM_E, decode=_AM_D),
+    TableColumn("owner_id", _enc_int),
+    TableColumn("approach", _enc_approach, width=2, decode=_dec_approach),
+    TableColumn("live", _enc_bool, decode=_dec_bool),
 )
+
+
+def _build_charge(attrs: dict):
+    from simulation.charges import PlantedCharge
+    c = PlantedCharge(attrs["x"], attrs["y"], attrs["ammo_name"],
+                      attrs["owner_id"], det_tick=attrs["det_tick"],
+                      approach=attrs["approach"])
+    c.live = attrs["live"]
+    return c
+
+
+#: THE planted-charge table (``Simulation.planted_charges``), the object
+#: tables' pilot: its capacity is :data:`CHARGE_CAPACITY` (the same bound
+#: ``charges.place`` refuses at, there counted over LIVE charges).
+CHARGE_TABLE = ObjectTable(name="charge", columns=CHARGE_SCHEMA,
+                           capacity=CHARGE_CAPACITY, live="live",
+                           build=_build_charge)
+#: Every object table, in the generated header's order. A new table (the
+#: grenades, the rounds, the blast sources, an entity class) is a schema here
+#: and a row of this tuple: ``tools/gen_unit_layout.py --write``, commit,
+#: rebuild ``cpp/build_cuda``.
+OBJECT_TABLES: tuple[ObjectTable, ...] = (CHARGE_TABLE,)
+
+
+def table_record(table: ObjectTable, obj) -> tuple:
+    """One host object as its integer row (flat, ``table.columns`` order)."""
+    out = []
+    for col in table.columns:
+        v = col.encode(getattr(obj, col.name))
+        out.extend(v if isinstance(v, tuple) else (v,))
+    return tuple(out)
 
 
 def charge_record(c) -> tuple:
     """One planted charge as its integer row (flat, :data:`CHARGE_SCHEMA`
     order)."""
-    out = []
-    for col in CHARGE_SCHEMA:
-        v = col.encode(getattr(c, col.name))
-        out.extend(v if isinstance(v, tuple) else (v,))
-    return tuple(out)
+    return table_record(CHARGE_TABLE, c)
 
 
 def charge_section_bytes(rows) -> bytes:
@@ -828,4 +891,6 @@ __all__ = [
     "apply_defaults", "encode_unit", "decode_into", "digest_record",
     "record_bytes", "unit_section_bytes", "CHARGE_SCHEMA", "charge_record",
     "charge_section_bytes", "TABLES", "table_row", "column_width",
+    "TableColumn", "ChargeColumn", "ObjectTable", "CHARGE_TABLE",
+    "OBJECT_TABLES", "table_record",
 ]
