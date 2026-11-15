@@ -167,6 +167,7 @@ amends the rule file, never this line's length.
 | Class P / Class T + the twin ledger | `tests/twin_manifest.toml` + `tools/twin_debt.py` + `tools/cuda_green.py` | Every device twin is a manifest row; a Class-P change merges only with `.cuda_green` == HEAD |
 | Ingress lint + float ratchet | `tests/test_ingress_lint.py`, `tests/test_no_float_in_sim_tu.py` | The four number-doors + counts-only-go-down; exceptions carry `ingress-exempt:` with why |
 | Test conventions | `tests/` | `test_*` collected, `_*` harness; properties, never snapshots; GL checks in a subprocess |
+| Pinned match plays | `tests/_pinned_matches.py` (`watch`, `pinned_play`, `WHICH`) | The two pinned ship_demo matches (`bots`, `bots_v1`) are played ONCE per pytest process and shared (#205): a test that only WATCHES one of them hangs its observer on `watch(which, on_tick)`, never a fresh `run_match`; a test that changes the match in any way (monkeypatch, spec, seed, level, a mutated unit) plays its own. Observers never write to a view. Self-checking: the bots_v1 G8p pin and the ship_demo controller pin compare the shared play's outcome and per-tick unit stream with their pins |
 
 ### Render / UI
 
