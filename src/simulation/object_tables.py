@@ -399,6 +399,28 @@ class DeviceTable:
         dropped, the rest in order, the freed rows zeroed)."""
         self._buf.compact()
 
+    def stage_lists(self, per_env) -> None:
+        """#29 P7a.2 (the harness's list face): set every env's table from
+        its ``(R_e, W)`` host records (:func:`records` of the env's list);
+        more than the capacity is refused by name."""
+        n, cap, w = self.shape
+        rows = np.zeros(self.shape, dtype=np.int64)
+        counts = np.zeros(n, dtype=np.int64)
+        for e, r in enumerate(per_env):
+            r = np.asarray(r, dtype=np.int64).reshape(-1, w)
+            if r.shape[0] > cap:
+                raise ObjectTableOverflow(
+                    f"object table {self.name!r}: {r.shape[0]} objects in env "
+                    f"{e} do not fit its capacity {cap}")
+            rows[e, :r.shape[0]] = r
+            counts[e] = r.shape[0]
+        self.upload(rows, counts)
+
+    def begin(self) -> None:
+        """Every env's table emptied (the harness's output-only list)."""
+        self.upload(np.zeros(self.shape, dtype=np.int64),
+                    np.zeros(self.shape[0], dtype=np.int64))
+
     def records(self) -> list:
         """Per env, its rows as int tuples (list order)."""
         rows, counts, _ = self.download()

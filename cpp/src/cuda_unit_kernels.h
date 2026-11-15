@@ -293,4 +293,39 @@ void unit_kit_falloff_probe(const int64_t* args, int n, int64_t* out);
 // The compiled draws vocabulary's fingerprint (unit_draws_layout.h).
 const char* unit_draws_fingerprint();
 
+// ---- #29 P7a.2: slot 4's shooting and slot 2''s rounds (cuda_unit_shooting.cu) -----
+//   cuda_unit_shooting.cu     slot 4    combat.process_shooting (the continuous
+//                                       path: _directional_fire, fire_burst,
+//                                       start_spray_burst_directional)
+//                             slot 2'   Simulation._march_rounds (phase A)
+//   THE MARCH both call: cuda_unit_march.cuh (combat.BulletInFlight.advance)
+//
+// unit_shooting: every valid row holding the trigger that the gates let fire
+// writes its own row at once (the magazine, last_fire_tick, a spray's burst)
+// and RECORDS per round its recoil PUSH then the march's records in
+// `effects`' list, APPENDS each round still flying to `rounds` and its shot's
+// noise to `noise` -- all three per-row staging gathered per env in row
+// order after what each holds. A hitscan trigger is REFUSED (out.refused).
+// unit_rounds: per env ONE thread marches every round of `rounds` in order,
+// its records appended to `effects`' list directly, a finished round's live
+// column 0; `compact` then drops the finished (the probe keeps them).
+// `ticks` (N,) each env's sim.tick (input slot 0), `keys` (N, 3) its draw key
+// (unit_draws.draw_key, input slot 1); the planes as (N, h, w) device arrays.
+class ObjectTable;
+struct ShootPlanes {
+    std::uintptr_t solid = 0;         // bool (GameMap.solid)
+    std::uintptr_t material = 0;      // int8 (GameMap.material)
+    int h = 0, w = 0;
+};
+struct UnitShootCounts : UnitDamageCounts {
+    int64_t* rounds_lost = nullptr;   // (N,) rounds past the round table's capacity
+    int64_t* noise_lost = nullptr;    // (N,) noises past the noise list's capacity
+};
+void unit_shooting(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                   ObjectTable& rounds, ObjectTable& noise, const int64_t* ticks,
+                   const int64_t* keys, const ShootPlanes& p, const UnitShootCounts& out);
+void unit_rounds(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                 ObjectTable& rounds, const int64_t* ticks, const int64_t* keys,
+                 const ShootPlanes& p, bool compact, const UnitShootCounts& out);
+
 }  // namespace breach_cuda

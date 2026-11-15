@@ -771,3 +771,174 @@ __all__ += ["IGNITION_FIELDS", "ignition", "KIT_DRAW_ARGS", "KIT_DRAW_OUT",
 __all__ += ["walk_effects", "resolve", "melee"]
 __all__ += ["WALL_WIDTH", "walls_of", "pad_walls", "apply_effects",
             "burn_through", "tick_end_clears", "topology_probe"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P7a.2: slot 4's shooting and slot 2''s rounds (cpp/src/cuda_unit_shooting.cu
+# over THE MARCH, cpp/src/cuda_unit_march.cuh)
+# ---------------------------------------------------------------------------
+#: The planes the march reads (GameMap fields, in their own dtypes).
+SHOOT_FIELDS = ("solid", "material")
+
+
+class ShotRefused(RuntimeError):
+    """#29 P7a.2: a state the device shooting does not port (named): a hitscan
+    trigger (the beam), a ruleset that is not continuous, a unit holding WEGO
+    orders, a WEGO draws tick base, a round under physical cover."""
+
+
+def shooting_door(sim) -> None:
+    """THE DOOR of the device shooting (design 4.4c scope: the continuous path
+    only): refuses by name a sim whose ruleset is not ``ContinuousRealtime``
+    (or drives the units: OnePhaseWEGO), a unit holding WEGO ``orders`` (the
+    targeted / auto-fire branches), and a draws tick base (the legacy WEGO
+    rewind: the device's spawn tick is ``sim.tick``). A round under physical
+    cover is refused by the round table's encoder."""
+    from simulation.ruleset import ContinuousRealtime
+    rs = getattr(sim, "ruleset", None)
+    if not isinstance(rs, ContinuousRealtime) or getattr(rs, "drives_units", False):
+        raise ShotRefused(f"device shooting: the ruleset {type(rs).__name__} is not "
+                          f"the continuous path")
+    for u in sim.units:
+        if getattr(u, "orders", None):
+            raise ShotRefused(f"device shooting: unit {u.id} holds WEGO orders (the "
+                              f"targeted / auto-fire branches are not ported)")
+    if int(getattr(sim.draws, "tick_base", 0)) != 0:
+        raise ShotRefused("device shooting: the draws carry a WEGO tick base")
+
+
+def _shoot_planes(name, store, fields):
+    n = store.shape[0]
+    s, m = fields.get("solid"), fields.get("material")
+    if s is None or m is None:
+        raise ValueError(f"unit kernel {name}: fields 'solid' and 'material' needed")
+    if np.dtype(s.dtype) != np.bool_ or np.dtype(m.dtype) != np.int8:
+        raise ValueError(f"unit kernel {name}: solid must be bool, material int8")
+    if s.ndim != 3 or tuple(s.shape) != tuple(m.shape) or int(s.shape[0]) != n:
+        raise ValueError(f"unit kernel {name}: solid / material must be one "
+                         f"(N, h, w), got {s.shape} / {m.shape}")
+    if not (s.flags.c_contiguous and m.flags.c_contiguous):
+        raise ValueError(f"unit kernel {name}: a plane is not C-contiguous")
+    return int(s.data.ptr), int(m.data.ptr), int(s.shape[1]), int(s.shape[2])
+
+
+def _shoot_refusals(name, store, effects, drp, tables):
+    from simulation import applier
+    from simulation.object_tables import ObjectTableOverflow
+    store.last_dropped = drp
+    if np.asarray(drp).any():
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise applier.EffectOverflow(
+            f"unit kernel {name}: {int(np.asarray(drp).sum())} effect record(s) in "
+            f"env(s) {envs} did not fit the effect list (its cap, or a row's "
+            f"staging of {effects.row_cap})")
+    for tname, lost in tables:
+        lost = np.asarray(lost, dtype=np.int64)
+        if lost.any():
+            e = int(np.nonzero(lost)[0][0])
+            raise ObjectTableOverflow(
+                f"unit kernel {name}: object table {tname!r}: env {e} lost "
+                f"{int(lost[e])} row(s) past its capacity")
+
+
+def shooting(store, effects, rounds, noise, ticks, keys, fields) -> np.ndarray:
+    """Slot 4's shooting (``combat.process_shooting`` on the continuous path:
+    ``_directional_fire``, ``fire_burst``, ``start_spray_burst_directional``):
+    every valid row holding the trigger that its gates let fire writes its
+    own row (the magazine, ``last_fire_tick``, a spray's burst) and APPENDS,
+    gathered per env in row order after what each holds, its records to
+    ``effects`` (a :class:`simulation.applier.DeviceApplier`: per round the
+    recoil PUSH, then THE MARCH's records), each round still flying to
+    ``rounds`` and its noise to ``noise`` (:class:`simulation.object_tables.
+    DeviceTable` s of ``unit_schema.ROUND_TABLE`` / ``NOISE_TABLE``).
+    ``ticks`` ``(N,)`` each env's ``sim.tick``, ``keys`` ``(N, 3)`` its
+    ``unit_draws.draw_key``; ``fields`` the :data:`SHOOT_FIELDS` planes as
+    device arrays ``(N, h, w)``. Refuses a fault (:class:`UnitKernelFault`), a
+    hitscan trigger (:class:`ShotRefused`: the beam is not ported), an
+    overflow of any list (``EffectOverflow`` / ``ObjectTableOverflow``)."""
+    solid, mat, h, w = _shoot_planes("shooting", store, fields)
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    k = np.ascontiguousarray(keys, dtype=np.int64).reshape(-1, 3)
+    cov, flt, ref, drp, rl, nl = (np.asarray(c, dtype=np.int64) for c in
+                                  store.bp.unit_shooting(
+                                      store.buffer, store.tables, effects.buffer,
+                                      rounds.buffer, noise.buffer, t, k, solid, mat,
+                                      h, w))
+    cov = _done(store, "shooting", (cov, flt, ref))
+    if ref.any():
+        envs = [int(e) for e in np.nonzero(ref)[0]]
+        raise ShotRefused(f"unit kernel shooting: {int(ref.sum())} hitscan trigger(s) "
+                          f"in env(s) {envs}: the beam (combat.fire_beam) has no device "
+                          f"form (P7a.2 did not build it)")
+    _shoot_refusals("shooting", store, effects, drp,
+                    (("round", rl), ("noise", nl)))
+    return cov
+
+
+def rounds_march(store, effects, rounds, ticks, keys, fields, compact=True) -> np.ndarray:
+    """Slot 2''s phase A (``Simulation._march_rounds``): per env every round
+    of ``rounds`` marched in table order against the rows and planes as they
+    stand, its records APPENDED to ``effects``' list (a serial producer),
+    a finished round's live column 0 and, with ``compact``, dropped (the
+    stable compaction: the survivors in order). The landing is
+    :func:`resolve` on the same list. Returns the coverage (always 0: the
+    march writes no row). Refuses a fault, an overflow."""
+    solid, mat, h, w = _shoot_planes("rounds", store, fields)
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    k = np.ascontiguousarray(keys, dtype=np.int64).reshape(-1, 3)
+    cov, flt, ref, drp, rl = (np.asarray(c, dtype=np.int64) for c in
+                              store.bp.unit_rounds(
+                                  store.buffer, store.tables, effects.buffer,
+                                  rounds.buffer, t, k, solid, mat, h, w,
+                                  bool(compact)))
+    cov = _done(store, "rounds", (cov, flt, ref))
+    _shoot_refusals("rounds", store, effects, drp, (("round", rl),))
+    return cov
+
+
+def rounds_of(sim) -> np.ndarray:
+    """The round table's ONE record function over ``sim.bullets`` (``(R, W)``
+    int64), behind :func:`shooting_door`."""
+    from simulation import object_tables, unit_schema
+    shooting_door(sim)
+    recs = object_tables.records(unit_schema.ROUND_TABLE, sim.bullets)
+    return np.array(recs, dtype=np.int64).reshape(
+        len(recs), object_tables.table_layout(unit_schema.ROUND_TABLE).width)
+
+
+def rounds_to_host(sim, records) -> list:
+    """The round table's rows back as ``BulletInFlight`` s (the schema's
+    decode and constructor), each round's ``shooter`` bound by its id to the
+    unit of ``sim.units`` (a converted shooter is the same object)."""
+    from simulation import object_tables, unit_schema
+    recs = np.asarray(records, dtype=np.int64).reshape(
+        -1, object_tables.table_layout(unit_schema.ROUND_TABLE).width)
+    out = object_tables.unpack(unit_schema.ROUND_TABLE, recs, recs.shape[0])
+    by_id = {u.id: u for u in sim.units}
+    for b in out:
+        b.shooter = by_id.get(b.shooter_id)
+    return out
+
+
+def noise_of(sim) -> np.ndarray:
+    """The noise list's ONE record function over ``sim.gmap.noise_log``."""
+    from simulation import object_tables, unit_schema
+    recs = object_tables.records(unit_schema.NOISE_TABLE, sim.gmap.noise_log)
+    return np.array(recs, dtype=np.int64).reshape(
+        len(recs), object_tables.table_layout(unit_schema.NOISE_TABLE).width)
+
+
+__all__ += ["SHOOT_FIELDS", "ShotRefused", "shooting_door", "shooting",
+            "rounds_march", "rounds_of", "rounds_to_host", "noise_of"]
+
+
+def round_row_cap() -> int:
+    """The round table's per-row staging for slot 4 (a shooter appends at
+    most its burst's rounds): the largest ``shots_per_trigger`` of the
+    weapon table (at least one)."""
+    from simulation.weapons import get_tables
+    return max([1] + [int(w.shots_per_trigger)
+                      for w in get_tables().weapons.by_name.values()])
+
+
+__all__ += ["round_row_cap"]

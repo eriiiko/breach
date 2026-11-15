@@ -794,10 +794,18 @@ class TableColumn:
     encode: Callable[[Any], Any]
     width: int = 1
     decode: Callable[[Any], Any] = None
+    #: #29 P7a.2: how the value is READ from a host object (default: the
+    #: attribute ``name``) -- a log's tuples have no attributes, and a list
+    #: whose every member is live by construction (the rounds in flight)
+    #: has no live attribute to read.
+    get: Callable[[Any], Any] = None
 
     def __post_init__(self):
         if self.decode is None:
             object.__setattr__(self, "decode", _dec_identity)
+
+    def value_of(self, obj):
+        return self.get(obj) if self.get is not None else getattr(obj, self.name)
 
 
 #: The planted charges' columns were declared under this name first (#193).
@@ -863,11 +871,161 @@ CHARGE_TABLE = ObjectTable(name="charge", columns=CHARGE_SCHEMA,
 OBJECT_TABLES: tuple[ObjectTable, ...] = (CHARGE_TABLE,)
 
 
+# ---------------------------------------------------------------------------
+# #29 P7a.2: the ROUNDS IN FLIGHT (``Simulation.bullets``, ``combat.
+# BulletInFlight``) and the NOISE LOG (``GameMap.noise_log``, ``noise.emit``)
+# ---------------------------------------------------------------------------
+#: Rows per env of the round table: storage, sized above the most rounds the
+#: gate scenes and ship_demo's bots match hold at once (a K5 at 1/3 m tiles
+#: lives up to three ticks; a shotgun's eight pellets per trigger).
+ROUND_CAPACITY = 128
+#: Rows per env of the noise list: it is drained at slot 5's head; between two
+#: drains it holds a shot per shooter, a detonation per payload, a bash per
+#: zombie (the 9e / bash noises cross into the next tick).
+NOISE_CAPACITY = 64
+
+
+def _payload_names():
+    from simulation.weapons import get_tables
+    return tuple(get_tables().payloads.by_name)
+
+
+def _enc_weapon_row(v):
+    return table_row("weapons", v.name)
+
+
+def _dec_weapon_row(e):
+    from simulation.weapons import get_tables
+    return get_tables().weapons.by_name[table_name("weapons", e)]
+
+
+def _enc_ammo_row(v):
+    return table_row("ammo", v.name)
+
+
+def _dec_ammo_row(e):
+    from simulation.weapons import get_tables
+    return get_tables().ammo.by_name[table_name("ammo", e)]
+
+
+def _enc_payload_row(v):
+    if v is None:
+        return NO_ROW
+    names = _payload_names()
+    if v.name not in names:
+        raise ValueError(f"unit schema: payload {v.name!r} is no row of the "
+                         f"payload table")
+    return names.index(v.name)
+
+
+def _dec_payload_row(e):
+    if e == NO_ROW:
+        return None
+    from simulation.weapons import get_tables
+    return get_tables().payloads.by_name[_payload_names()[e]]
+
+
+def _enc_spawn_tick(v):
+    if v is None:
+        raise ValueError("unit schema: a round in flight with no spawn tick "
+                         "(never fired through combat.fire_burst) has no row")
+    return _enc_int(v)
+
+
+def _enc_no_cover(v):
+    # physical cover (OnePhaseWEGO's march_cover) is WEGO-only: the device
+    # march is the continuous path's and refuses a round carrying it
+    if v is not None:
+        raise ValueError("unit schema: a round carrying physical cover "
+                         "(march_cover, OnePhaseWEGO) has no device row")
+    return 0
+
+
+def _enc_no_facing_defense(v):
+    if v:
+        raise ValueError("unit schema: a round under the facing defense "
+                         "(march_facing_defense, OnePhaseWEGO) has no device row")
+    return 0
+
+
+def _always_live(_obj):
+    return True
+
+
+def _build_round(attrs: dict):
+    from simulation.combat import BulletInFlight
+    b = BulletInFlight(None, attrs["shooter_id"], attrs["weapon"], attrs["ammo"],
+                       attrs["ox_q"], attrs["oy_q"], attrs["angle_q"],
+                       attrs["sx_q"], attrs["sy_q"])
+    for k in ("rx_q", "ry_q", "prev_ix", "prev_iy", "remaining_steps",
+              "speed_q16", "budget_q16", "spawn_tick", "ordinal"):
+        setattr(b, k, attrs[k])
+    b.payload = attrs["payload"]
+    return b
+
+
+#: THE round table (``Simulation.bullets``): every value a round carries
+#: across ticks, its object references as rows (the shooter by its id -- a
+#: converted shooter keeps it --, the weapon / ammo by their schema rows, the
+#: payload by its ``[payloads.*]`` row). Every member of the host list flies
+#: (the list is replaced by the survivors each tick), so ``live`` reads True;
+#: the device marks a finished round 0 and compacts it away. ``unpack``
+#: leaves ``shooter`` None: ``unit_kernels.rounds_to_host`` binds it by id.
+ROUND_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("shooter_id", _enc_int),
+    TableColumn("weapon", _enc_weapon_row, decode=_dec_weapon_row),
+    TableColumn("ammo", _enc_ammo_row, decode=_dec_ammo_row),
+    TableColumn("payload", _enc_payload_row, decode=_dec_payload_row),
+    TableColumn("angle_q", _enc_int),
+    TableColumn("rx_q", _enc_int),
+    TableColumn("ry_q", _enc_int),
+    TableColumn("prev_ix", _enc_int),
+    TableColumn("prev_iy", _enc_int),
+    TableColumn("remaining_steps", _enc_int),
+    TableColumn("speed_q16", _enc_int),
+    TableColumn("budget_q16", _enc_int),
+    TableColumn("ox_q", _enc_int),
+    TableColumn("oy_q", _enc_int),
+    TableColumn("sx_q", _enc_int),
+    TableColumn("sy_q", _enc_int),
+    TableColumn("spawn_tick", _enc_spawn_tick),
+    TableColumn("ordinal", _enc_int),
+    TableColumn("march_cover", _enc_no_cover, decode=lambda e: None),
+    TableColumn("march_facing_defense", _enc_no_facing_defense,
+                decode=lambda e: False),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+ROUND_TABLE = ObjectTable(name="round", columns=ROUND_SCHEMA,
+                          capacity=ROUND_CAPACITY, live="live",
+                          build=_build_round)
+
+
+def _build_noise(attrs: dict):
+    return (attrs["fy"], attrs["fx"], attrs["radius"])
+
+
+#: THE noise list (``GameMap.noise_log``): ``noise.emit``'s ``(fy, fx,
+#: radius)`` tuples in emission order (hearing ties to the earlier noise).
+#: Every logged noise is live; it persists across the tick boundary and is
+#: drained at slot 5's head (design 4.4c decision 4).
+NOISE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("fy", _enc_int, get=lambda n: n[0]),
+    TableColumn("fx", _enc_int, get=lambda n: n[1]),
+    TableColumn("radius", _enc_int, get=lambda n: n[2]),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+NOISE_TABLE = ObjectTable(name="noise", columns=NOISE_SCHEMA,
+                          capacity=NOISE_CAPACITY, live="live",
+                          build=_build_noise)
+
+OBJECT_TABLES = OBJECT_TABLES + (ROUND_TABLE, NOISE_TABLE)   # #29 P7a.2
+
+
 def table_record(table: ObjectTable, obj) -> tuple:
     """One host object as its integer row (flat, ``table.columns`` order)."""
     out = []
     for col in table.columns:
-        v = col.encode(getattr(obj, col.name))
+        v = col.encode(col.value_of(obj))
         out.extend(v if isinstance(v, tuple) else (v,))
     return tuple(out)
 
@@ -893,4 +1051,6 @@ __all__ = [
     "charge_section_bytes", "TABLES", "table_row", "column_width",
     "TableColumn", "ChargeColumn", "ObjectTable", "CHARGE_TABLE",
     "OBJECT_TABLES", "table_record",
+    "ROUND_CAPACITY", "NOISE_CAPACITY", "ROUND_SCHEMA", "ROUND_TABLE",
+    "NOISE_SCHEMA", "NOISE_TABLE",
 ]
