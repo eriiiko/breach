@@ -1047,7 +1047,7 @@ def part_resolve():
         _status("T2", dur=2, src=None),                 # a source of None
         _hit("B", "T2", 1, expose=3 * ONE),             # the raises pass x_max: the cap
         _hit("C", "T2", 4, ap=2.5),                     # the AP door
-        _hit("C", "T2", 3, dtype=HEAL, cause="regen"),  # HEAL: the identity
+        _hit("C", "T2", -3, dtype=HEAL, cause="regen"), # HEAL (a negative amount): the identity
         _hit("M", "E", 50), _hit("E", "M", 50),         # a mutual kill
     ]
     ok, (rows_l, ev_l, _p) = _run_list("landing", landing, census)
