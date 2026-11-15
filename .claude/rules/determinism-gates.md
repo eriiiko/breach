@@ -17,6 +17,9 @@ the suite as `pytest tests -q` with this machine's breach env (`docs/dev_setup.m
 - A membership or dtype change, or a change of a field's integer currency (`trace_fine_bits`), is a version bump + all goldens regenerated in the same commit.
 - A plane that is zero nearly always is a `DIGEST_SECTIONS` row instead (hashed while non-zero behind its own preamble, absence-transparent), so no version bump and no golden moves.
 
+## Ingress lint + float ratchet
+- `SIM_HEADERS` (`tests/test_no_float_in_sim_tu.py`) holds the sim-law headers a TU scan cannot see at 0/0/0: a law compiled inline from a header joins it with its patch.
+
 ## Test conventions
 - `test_*` is collected, `_*` is a harness. Tests assert properties, never snapshots, while systems land; feel regressions compare in real dequantized units.
 - GL checks run as a `gl_*_check.py` script in a subprocess with a hidden window + a `test_*` wrapper (the `cuda_*` convention), never a GL context inside pytest.
