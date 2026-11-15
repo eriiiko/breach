@@ -365,7 +365,11 @@ copied.
 - **The value targets are rescaled** per output, in the form that leaves the
   network's real-unit outputs unchanged when the scale moves (PopArt). The
   order: grade with the scale as it was while collecting; then update the
-  scale with this batch's targets; then learn. A floor under the spread, so
+  scale with this batch's targets; then learn. The scale's first move, on a
+  fresh network, leaves the outputs to move with it (amended 2026-11-15 from
+  patch 2b's "scale" task: there is nothing learnt to keep, and keeping it
+  cost thousands of steps; the reason is in `agents/value_scale.py`). A floor
+  under the spread, so
   that a group that is always zero (friendly fire and order, in rung 2) does
   not divide by nothing. All five outputs learn in rung 2, the weight-0 ones
   too: rung 3 needs them, and they cost little.

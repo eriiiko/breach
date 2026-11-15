@@ -344,3 +344,26 @@ def test_the_weight_count_is_printed_and_every_weight_is_in_the_table(sizes6,
             print(f"\n[weights] {label}: {total:,} (design 8: the soldier "
                   f"1 to 2 million, the value network about 1.1 million)",
                   end="")
+
+
+@pytest.mark.parametrize("make", [reduced, v1])
+def test_a_fresh_network_gives_every_legal_option_nearly_the_same_chance(
+        sizes6, rng, make):
+    """Protects: a near-even first policy (note 2b, 6) -- a fresh soldier's
+    network, at reduced and at full width, gives every counted head a
+    variety above 0.99 of the most it could be on every made-up row, so no
+    legal option starts favoured before any learning.
+    Breaks when: the heads' last layers start at PyTorch's default scale
+    (the 2a network: shares down to 0.97 on some rows), or one head (the
+    aim's or the hand's question, which point at vectors) is left out of
+    the scaling."""
+    torch.manual_seed(7)
+    net = network.SoldierNet(make(False), sizes6).eval()
+    obs = fake.make_obs(sizes6, 256, rng, p_invalid=0.0, p_windup=0.0)
+    with torch.no_grad():
+        out, _ = net(_t(obs))
+        d = C.draw(out, C.masks_of(obs), torch.Generator().manual_seed(1))
+    for h, head in enumerate(A.HEADS):
+        counted = d.used[:, h]
+        assert counted.any(), head
+        assert float(d.variety[counted, h].min()) > 0.99, head
