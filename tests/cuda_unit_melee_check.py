@@ -146,7 +146,7 @@ def _run_4c(st, inp, ring, lists):
 
 def _conductor(sim, args, kw, caller):
     """Slot 4c is the conductor's resolve (``Simulation._step_pre_physics``),
-    never slot 2's landing (``_update_projectiles``: P7a.2's stage)."""
+    never the rounds' landing (slot 2', ``_update_rounds``: P7a.2's stage)."""
     return caller == "_step_pre_physics"
 
 

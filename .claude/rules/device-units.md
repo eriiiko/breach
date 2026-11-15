@@ -14,6 +14,10 @@ paths:
   - "cpp/src/applier_layout.h"
   - "cpp/src/cuda_applier.*"
   - "cpp/src/cuda_topology*"
+  - "src/simulation/object_tables.py"
+  - "cpp/src/object_tables_layout.h"
+  - "cpp/src/cuda_object_table.*"
+  - "tests/cuda_object_table_check.py"
 ---
 
 # Device units: the store, its tables, its library, what kernels emit
@@ -34,7 +38,7 @@ system here is Class T: NOT part of the played tick until the `device` backend
 - A slot that writes the map declares its FIELD OUTPUTS (`DeviceSlot(..., outputs=("field:<attr>", "book:<name>"), host_only=((attr, reason), ...))`): every declared plane is compared bit for bit, every book against the host's delta. Never a hand-rolled plane compare.
 - The WRITE-SET gate fails on any GameMap attribute the host slot changed that is neither an output nor host-only with its reason: a plane the device forgot cannot pass silently. Arrays that are the same object (`obstacles` is `solid` until the first stamp) count as one; an object attribute is traced through an `OBJECT_PROBES` row.
 - An input the conductor hands the slot as an argument (slot 7's burn-through list) is an `ARG_INPUTS` row, never a sim attribute invented for the test.
-- A host LIST a slot reads or writes (the attack slot's effects; P7's tables and logs) is declared like a field (`inputs=("list:<name>",)` / `outputs=("list:<name>",)`) through ONE record function per list (a `LISTS` row), never a hand-rolled compare. A label whose callables also run outside the slot narrows itself with `DeviceSlot(select=...)` (slot 4c's resolve is the conductor's, not slot 2's landing).
+- A host LIST a slot reads or writes (the attack slot's effects; P7's tables and logs) is declared like a field (`inputs=("list:<name>",)` / `outputs=("list:<name>",)`) through ONE record function per list (a `LISTS` row), never a hand-rolled compare. A label whose callables also run outside the slot narrows itself with `DeviceSlot(select=...)` (slot 4c's resolve is the conductor's, not slot 2''s landing in `_update_rounds`).
 - The ring is compared on SYNCED events only (`unit_events.is_synced`): a slot's render-only events have no device form and are dropped before the compare.
 
 ## Device tables
@@ -73,6 +77,14 @@ system here is Class T: NOT part of the played tick until the `device` backend
 - It is the Event ring's class generalised (`UnitRecordList`): ONE staging, ONE gather per env in row order, never a second gather, so the reference's order holds. An order-dependent decision over the list (which plant a full charge table refuses) is ONE thread per env walking it in list order after the gather.
 - Fields and kinds are one Python table with a generated, fingerprint-checked header: a new kind or field is a row, regenerate, commit, rebuild. Capacity as the ring's (`UnitRequestOverflow`).
 - Shadowed with `DeviceSlot(..., requests=True)`; the chained form applies the list through `apply_to_host` (each plant still offered to `charges.place`, which must agree).
+
+## Object tables
+- A host list of world objects a device slot reads or writes (the planted charges; the grenades and rounds in flight, `gmap.expansions`, each entity class as their patches land) is ONE table on `src/simulation/object_tables.py`: an `ObjectTable` schema in `unit_schema.OBJECT_TABLES` (columns with encode AND decode, capacity, live column, constructor). Every table fact is in the schema, none in the module: a new table is a schema row, `tools/gen_unit_layout.py --write`, commit, rebuild `cpp/build_cuda`. Never a second table generator, buffer class or compaction.
+- Row i is the i-th object of the host list (its order is every reference loop's order); rows past the count are padding and never read. An object reference becomes an id or a row index, a variable-length member a span into a side table.
+- The device table IS a record list (`ObjectTable : UnitRecordList`): a serial per-env producer appends through `emit_record`, a per-row kernel through the list's staging and its ONE gather (row order), both after what the table holds. The only shrink is the stable compaction (rows whose live column is 0 dropped, the rest in order), which keeps the reference's "survivors, then this tick's appends".
+- CAPACITY: past it nothing is written, the env's overflow count rises and the Python face refuses the run naming the table and the env (`ObjectTableOverflow`). A table's capacity is storage; a law's own bound (`charges.place`'s live-charge refusal) stays the law's.
+- A table is held by its IDENTITY gate (`tests/cuda_object_table_check.py` for the charges: `unpack(pack(list))`, the round trip, the append and the compaction against the host's own list on live scenes, env i of N == env i alone).
+- ACCEPTED GAP: the charge table's slot (9e(d'), `charges.tick`) and the plant request's append are P7b's; until then the table has no producer in a slot.
 
 ## Per-env serial applier
 - THE device form of every order-dependent law that writes the map or another unit's row (§4.3, design 4.4c decision 1): ONE block per env, thread 0 walking that env's effect records in list order, each effect a device function (the Device topology seam for the planes; the Device unit library and damage pipeline for the rows; the env's ring through `env_sink`) writing in place and booking its per-env channels. A new order-dependent writer is an effect KIND here, never a second walker, a second list or a per-producer kernel.

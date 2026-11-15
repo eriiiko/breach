@@ -68,7 +68,10 @@ SLOT_WRAPS = (
     ("simulation.simulation", "Simulation._consume_direct_intents", "1b intents"),
     ("simulation.unit_orders", "apply_requests", "1b' orders"),
     ("simulation.exposure", "decay_units", "1c exposure decay"),
-    ("simulation.simulation", "Simulation._update_projectiles", "2 projectiles"),
+    # #29 P7.0b: slot 2 split in two calls (the device port takes them one
+    # at a time: the rounds P7a.2, the grenades P7b).
+    ("simulation.simulation", "Simulation._update_grenades", "2 grenades"),
+    ("simulation.simulation", "Simulation._update_rounds", "2' rounds"),
     ("simulation.simulation", "tick_statuses", "2b statuses"),
     ("simulation.simulation", "Simulation._update_player_movement", "3 movement"),
     ("simulation.simulation", "process_shooting", "4 shooting"),

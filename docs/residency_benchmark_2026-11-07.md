@@ -1605,3 +1605,24 @@ repetitions.
 **Reading.** Flat in N and in the plane size: the call is its host sync (the counts' D2H); 64 envs x 7 000 cells
 is 0.45 M threads of a few loads each, below the launch floor. The device backend downloads no counts per tick, so
 9d inside the device tick is a launch's worth.
+
+## P7.0b: the object tables, the charge table's append and compaction (2026-11-15)
+
+**Method.** `tests/cuda_object_table_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); nothing else on the
+card (the P7.0a agent's gates were not running; one CPU pytest of three small files ran beside it). The charge table
+(W 8, capacity 32) holds 16 live rows per env; one call appends 16 more (every other one dead), then the stable
+compaction runs. "append" is `DeviceTable.append`: the records' H2D, the one-thread-per-env kernel through the
+record list's `emit_record`, the sync, and the overflow check (a download of the table, counts and overflow counts).
+"compact" is `DeviceTable.compact` and one download. The start state is re-uploaded before each repetition (not
+timed). Medians of 200 repetitions, ms.
+
+| op | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| append (H2D + kernel + overflow check) | 0.233 | 0.242 | 0.218 |
+| compact (kernel + D2H) | 0.212 | 0.217 | 0.170 |
+| append + compact | 0.445 | 0.459 | 0.389 |
+
+**Reading.** Flat in N: both are at the call's floor (a launch and a host sync each; the table itself is 2 KiB per
+env). The Python face's append checks the overflow by downloading the whole table, which is most of its cost; a
+device slot (P7b) appends inside its own kernel and the device backend reads only the overflow counts, so neither
+floor is per tick on the training path.

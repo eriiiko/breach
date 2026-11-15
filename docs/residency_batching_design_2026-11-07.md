@@ -1509,6 +1509,60 @@ line each:
   ship_demo 300 ticks with none); BATCH N = 2 / 8; CHAINED 9c + 9c2 + 9c3 +
   9d. Every gate broken once (the patch's report).
 
+**As built (P7.0b, 2026-11-15).** Items 2 and 3 of the P7.0 row (the table
+module with the charge table as its pilot; the reference's slot 2 split); the
+kit and slot 9d are P7.0a's. No decision moved. One line each:
+- THE TABLE MODULE is `src/simulation/object_tables.py`; every table fact is a
+  schema in `unit_schema.OBJECT_TABLES` (`ObjectTable(name, columns, capacity,
+  live, build)`, columns `TableColumn(name, encode, width, decode)`, the old
+  `ChargeColumn` its alias; `CHARGE_TABLE` the pilot, `CHARGE_SCHEMA` unchanged
+  in content so `charge_record` and the digest are byte-identical). A new table
+  is a schema and a row of that tuple, then `tools/gen_unit_layout.py --write`
+  (the sixth header, `cpp/src/object_tables_layout.h`: `OBJ_<T>_W / _CAP /
+  _LIVE / _COL_<C>`, one fingerprint over every table).
+- THE BRIDGE: `records(table, objs)` (the one record function), `pack(table,
+  objs) -> (rows (cap, W), count)` (refuses past the capacity naming the table,
+  and the env in `pack_batch`), `unpack(table, rows, count) -> objects` (the
+  schema's decode and constructor; rows past the count never read); the host
+  reference of the two list operations `append_rows` / `compact_rows`.
+- THE DEVICE BUFFER: `DeviceTable(table, n_env, n_units=1, row_cap=1)` over
+  `breach_physics.ObjectTableBuffer`, C++ `ObjectTable : UnitRecordList`
+  (`cpp/src/cuda_object_table.{h,cu}`): the rows ARE the record list's
+  records, the count its count, the overflow its dropped count, so a serial
+  producer appends through `emit_record` and a per-row kernel through the
+  list's staging and its one gather, and pybind registers it as a
+  `UnitRecordListBuffer`. Its own operations: `upload(rows, counts)`,
+  `append(recs, n)` (host-staged, one thread per env, then the overflow check:
+  `ObjectTableOverflow` naming the table, the env and the rows lost),
+  `compact()` (one thread per env, stable, the freed rows zeroed), `download()`.
+- CHOICES where this section was silent: the table's capacity is STORAGE
+  (`CHARGE_CAPACITY` rows); `charges.place`'s refusal at that many LIVE charges
+  stays the law's own; the compaction is serial per env (W 8, cap 32: a scan
+  is cheaper than a prefix sum); the live column is a schema fact (the charge
+  table's own `live`), the grenades will declare theirs as an encoded column.
+- SLOT 2 is two conductor calls, `Simulation._update_grenades` (label "2
+  grenades") then `Simulation._update_rounds` (slot 2', label "2' rounds"),
+  each one call line with its ordering comment; the harness wraps slots
+  through the same `SLOT_WRAPS`. Sole cause EQUAL on all four
+  `tests/_p3a_sole_cause.py` scenarios (ship_demo 2570 ticks, bots_v1 7200,
+  the box 231, the scripted arena 420 with every grenade kind and a held
+  trigger), every unit record and field digest identical.
+- WHAT THE REFERENCE SHOWED (nothing changed): the profiler label "4c resolve"
+  still also times the rounds' landing resolve (now called from
+  `_update_rounds`; the harness's `select` by caller is unaffected); the
+  planted charges are in no digest-visible order other than list order, and
+  the list holds dead charges only between `charges.fire` and the prune inside
+  the same `charges.tick` call on the continuous path (`detonate_owned`, WEGO
+  only, can leave them to the next tick).
+- THE GATES (`tests/cuda_object_table_check.py`, wrapper
+  `tests/test_cuda_object_table.py`; CPU `tests/test_object_tables.py`,
+  `tests/test_slot2_split.py`): TABLES (fingerprint, a mismatched module
+  refused); TRIP (random rows bit for bit); APPEND (three ordered appends, an
+  overflow refused and counted, nothing written); COMPACT (eight patterns);
+  SCENE (P6.4a's verb scene variants 0 and 3 and a charge scene, N = 4, 160
+  ticks: identity, round trip, the tick's append, the compaction, env i alone;
+  an eleven-branch census). Every gate broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

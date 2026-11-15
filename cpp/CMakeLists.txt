@@ -165,6 +165,10 @@ if(BREACH_CUDA)
         # Class T, pure integer, on the same target-wide CUDA determinism floor.
         src/cuda_unit_ignition.cu   # slot 9d
         src/cuda_unit_kit_probe.cu  # TEST-ONLY: draws, sight, falloffs on synthetic inputs
+        # #29 P7.0b: the device object tables (the record list's buffers with an
+        # upload, an ordered append and a stable compaction); Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_object_table.cu    # the object tables (the charge table first)
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
