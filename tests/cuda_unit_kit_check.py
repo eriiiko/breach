@@ -41,8 +41,8 @@ PART SCENES -- the SHADOW LOCKSTEP of slot 9d on an ignition scene built for
 the gate (wood heated on a schedule so tiles ignite on many ticks; a burning
 tile cooled so it re-arms; a hot armed tile lit by hand; a hot fuel-less tile;
 a hot tile walled in with no open neighbour; a hot tile beside a pocket pumped
-to near vacuum; a tile beside space) with a CENSUS of the law's branches,
-each required; and ship_demo's bots match, where ignition never happens (0
+to near vacuum; a tile beside space; a tile on the grid edge) with a CENSUS
+of the law's eleven branches, each required; and ship_demo's bots match, where ignition never happens (0
 cells changed in 300 ticks). Coverage == the cells the host changed.
 
 PART BATCH -- N = 2 and 8 ignition scenes that differ in layout (partition
@@ -51,7 +51,8 @@ i alone, fields and write set.
 
 PART CHAINED -- slots 9c, 9c2, 9c3 and 9d replaced by the device's in a twin
 ignition match: per-tick unit hash and field digest equal an untouched
-reference (fire and ignition_armed written back), 9d acting on many ticks.
+reference (fire and ignition_armed written back), 9d acting on many ticks,
+the host law run 0 times in the twin and every tick in the reference.
 
 PROPERTY: the device draws are MatchDraws / cone_offset_q16 / roll_q16 word
 for word per env; the device has_los is GameMap.has_los in both forms; the
@@ -691,10 +692,28 @@ def part_batch():
 
 
 def part_chained():
-    from cuda_unit_damage_check import SLOT_9C, SLOT_9C2, SLOT_9C3, _same
+    from cuda_unit_damage_check import SLOT_9C, SLOT_9C2, SLOT_9C3
+    from simulation import simulation as sim_mod
     twin, ref = IgnitionScene(4), IgnitionScene(4)
     slots = [SLOT_9C, SLOT_9C2, SLOT_9C3, SLOT_9D]
     t0 = time.perf_counter()
+    # the host law must NOT run in the twin (the device replaced it) and must
+    # run in the reference: count the original's calls per map underneath
+    calls = {"twin": 0, "ref": 0}
+    orig = sim_mod.apply_temperature_ignition
+
+    def counted(gmap, *a, **kw):
+        calls["twin" if gmap is twin.sim.gmap else "ref"] += 1
+        return orig(gmap, *a, **kw)
+    sim_mod.apply_temperature_ignition = counted
+    try:
+        _chain_run(twin, ref, slots, calls, t0)
+    finally:
+        sim_mod.apply_temperature_ignition = orig
+
+
+def _chain_run(twin, ref, slots, calls, t0):
+    from cuda_unit_damage_check import _same
     n = 0
     with ChainedSlots(twin, slots, bp=bp) as ch:
         for _ in range(CHAIN_TICKS):
@@ -716,6 +735,9 @@ def part_chained():
         fail(f"chained: the chain ran {ch.runs} times in {n} ticks")
     if acted < 5:
         fail(f"chained: [9d] acted on only {acted} ticks (vacuous)")
+    if calls["twin"] != 0 or calls["ref"] != n:
+        fail(f"chained: the host law ran {calls['twin']} times in the twin (want 0) and "
+             f"{calls['ref']} in the reference (want {n})")
 
 
 # ---------------------------------------------------------------------------
