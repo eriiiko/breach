@@ -1604,3 +1604,22 @@ timed). Medians of 200 repetitions, ms.
 env). The Python face's append checks the overflow by downloading the whole table, which is most of its cost; a
 device slot (P7b) appends inside its own kernel and the device backend reads only the overflow counts, so neither
 floor is per tick on the training path.
+
+## P7b: the grenades and the planted charges on their tables (2026-11-15)
+
+**Method.** `tests/cuda_unit_objects_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); one other agent's
+full CPU suite (`pytest tests`) was running beside it, which may hold CUDA subprocess gates of its own on the card.
+The grenade table holds 16 grenades in flight per env (4 fusing out on the timed tick: 4 PAYLOAD records), the
+charge table 16 charges (4 due: 4 PAYLOAD records, then the prune). Each timed call is the Python face:
+the tick's H2D, the kernels (grenades: the wide flight + the serial fuse pass; charges: the serial pass + the
+compaction), the counts' D2H and the effect list's dropped count. The start state is re-staged before each
+repetition (not timed). Medians of 200 repetitions, ms.
+
+| slot | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| 2 grenades (16 in flight, 4 fuse out) | 0.151 | 0.173 | 0.175 |
+| 9e(d') charges.tick (16, 4 due, + prune) | 0.166 | 0.171 | 0.174 |
+
+**Reading.** Flat in N: both slots are at the call's floor (two launches and one host sync for the counts); a
+table is a few KiB per env. On the device tick (P7e) the counts stay on the device and neither floor is per
+tick.
