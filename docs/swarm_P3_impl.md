@@ -5,6 +5,10 @@
 > 2026-11-15). The hold is lifted; the build starts with §13 step 0's probes.
 > See "v4" below, which wins over every later passage.
 >
+> **BUILT 2026-11-15** on `63-p3-larva-kernel`: the probes, the deviations,
+> the mutation table and the gate results are the "As built (P3)" section at the
+> end of this doc.
+>
 > **v3, 2026-11-14: revised for Erik's P6 unit-design ruling**
 > (`docs/unit_design_2026-11-14.md` §6: two stores, ONE batch axis, ONE
 > source of draws, the unit/swarm boundary) and for the merge of main
@@ -2505,3 +2509,191 @@ patches read above their MAX target (the 4×4 corner held at 70 °C reads ≈ 88
 °C), and a patch's influence on the pair-mean decays within ~3 tiles — which
 is why the strip, not a corner, is the §12 forcing. Everything here is HEAD
 physics and is re-run at the refresh pass.
+
+---
+
+## As built (P3, 2026-11-15, branch `63-p3-larva-kernel`)
+
+Built by one Opus implementation agent from `d3573f7f`, against v4 of this
+doc. Erik's rulings and the accepted gaps were not re-opened.
+
+### §13 step 0: probes A1 and A4 on the merged code (`d3573f7f`, k = 1.0)
+
+- **A1 (the vent).** 16 x 16 room, 0.333 m, one breach tile, 400 ticks.
+  t = 1: 158 of 196 interior cells below 283.15 K (t = 0: 51); t = 5: 191;
+  t = 25: all 196, mean T_game -210; from t = 125 the room sits near the floor
+  (mean -278, min -286, about 7 K absolute) with mean N about 1 % of ambient,
+  never 0; from t = 200 cells with N < 1 raw count are wiped to T = 0 (20 C):
+  13 at t = 200, 43 at t = 399. F1 stands on the merged code: venting puts the
+  larvae into coma within a tick or two and keeps them there; wiped cells wake
+  them (ACCEPTED GAP, §0).
+- **A4 (the first-look calibration), §12's forcing.** Warm-up (240 ticks):
+  bulk mean **22.10 C**, bulk cells below 10 C **0.8 %**; window (1440 ticks):
+  23.17 C, 0.0 %, above 50 C 0.10 %. Row-12 RAW time-means, cols 1..12: 50 42
+  37 18 29 18 30 16 29 18 30 17 C; pair-means cols 1-2 / 3-4 / 5-6 / 7-8:
+  46.1 / 27.2 / 23.6 / 23.2 C; 4 of 748 interior cells have a time-mean below
+  10 C (166 on HEAD `ea4c58f`). **Assertion 1 passes (22.1 C in [15, 30] C)
+  and assertion 2 passes (0.8 % < 20 %): no §12 stop.** The A2 column pattern
+  is still visible (odd/even columns about 30 / 17 C as time-means) but no
+  longer reaches the coma threshold.
+
+### What was built (per section)
+
+- **§3, §3.6 (the law and its loops).** `cpp/src/swarm.h` (the kit: twins,
+  wrap, `tile_of`, `TileReader`, `head_sweep`, `side_preference`,
+  `turn_heading`, `probe_move`, the store / launch / registry types,
+  `host_loop`), `cpp/src/swarm_larva.h` (the law L0-L8 verbatim, the draw
+  table in its header, `larva_params_from_table` through the generated
+  offsets, the `LARVA_BR_*` tally), `swarm.cpp` (registry, `step_all`,
+  compaction, counted wrappers, out-of-line entries), `swarm_larva.cpp` (the
+  CPU entry, branch names), `swarm_launch.cuh` (kernel, `percall`,
+  `resident`), `swarm.cu` (per-call staging, the resident per-species
+  staging and record D2H), `swarm_larva.cu`, `swarm_probe.cu` (TEST-ONLY).
+- **v4.3 (tables).** `src/simulation/swarm_tables.py` (13 larva rows),
+  `tools/gen_swarm_layout.py`, generated `cpp/src/swarm_tables_layout.h`;
+  `PhysicsRunner.bind_draws` refuses a module whose fingerprint differs.
+- **§4, v4.4 (plumbing).** `PhysicsEngine::step_swarm`; `resident_swarm` as
+  the resident tail's last stage before the books D2H (arena region `swm`,
+  `RESIDENT_STAGE_COUNTERS` 16 -> 18); `bind_draws` at reset; the death
+  events as the first statement of `_step_post_physics`; the dirty-gated
+  entry upload and the present-gated exit download of the store;
+  `resident_batch.py` untouched.
+- **§5 (species).** Eleven `SPECIES_FIELDS` rows, `SPECIES_UNITS` (Kelvin;
+  the stored ints at k = 1 are 665190, 1975910, -645530, -514458 as v4.1
+  computed), two-pass `from_config`, `SpeciesContext`, `SPECIES_RULES` R1-R4
+  at load / reload / launch; `config.toml` rows.
+- **§6, §7, §8.** `Salt.SWARM_TUMBLE` ("TUMB"), `Salt.SWARM_WALL_TURN`
+  ("WALT"); `SwarmUnitDiedEvent`; `CouplingRow.consumer` / `reads`, the three
+  larva rows, the 9c comment.
+- **§10.** The bindings with the argument discipline (`swarm_arr`: exact
+  dtype, C order, shape, writability, before anything runs); the stub
+  regenerated from the CUDA build.
+- **§11, v4.7.** The testkit; the P2 fixtures through it; T22 tightened;
+  `test_swarm_larva_law.py` (T-P3-1..14 + the every-branch fuzz scene),
+  `test_swarm_larva_sensing.py` (T-P3-15..17), `test_swarm_constants.py`
+  (T-P3-18, 19, 21, 31), `test_swarm_tables.py`, T-P3-22..25 in
+  `test_swarm_species.py`, `test_swarm_tick.py` (T-P3-26..28, 30, 32, 34..37),
+  `cuda_swarm_check.py` + `test_cuda_swarm.py` (PART 1, 2, 2b, 3), LEG B of
+  `cuda_batch_invariance_check.py` (PART 2c), the float ratchet
+  (`swarm.cpp` / `swarm_larva.cpp` at 0/0/0, `SIM_HEADERS`), the thermal
+  scenario, the xarch lines. T-P3-29 is P2's T8, unchanged and green.
+- **§12.** `tools/swarm_larva_first_look.py` -> `docs/swarm_P3_first_look.png`:
+  both assertions pass (22.1 C; 0.8 %), zero kernel / RAW-reader mismatches
+  in both runs; deaths law 65 / ablated 88 of 200 in 120 s.
+- **§16 / v4.8.** Six CLAUDE.md index lines; `.claude/rules/swarm.md`
+  sections (paths extended to `cpp/src/swarm*`, `src/simulation/swarm_*.py`,
+  `tools/gen_swarm_layout.py`); the coupling amendment in `units.md`, the
+  ratchet line in `determinism-gates.md`.
+- **v4.6.** `[twins.swarm_larva]` (Class P) with v4.6's `device` list, its
+  `[cpp_stages]` row, the `7 step_swarm` profiler label (wrapping both
+  `swarm.engine_args` and `PhysicsEngine.step_swarm`, so the trace sees the
+  dormant gather), `set_swarm_backend` in `_BACKEND_SETTERS`.
+- **§9 doc routing.** Chapter 17 as-built lines (counter, law, no clamp,
+  placement, save); chapter 14's door-4 amendment. §17's papers: the PDFs
+  could not be fetched (Europe PMC refused the automated request);
+  `docs/papers/README_swarm_2026-09.md` holds the citations.
+
+### Deviations from the doc, each with its reason
+
+1. **`sweep_angle_q`'s ceiling is `quantize(pi / 2)` = 102944, not
+   `PI_Q16 // 2` = 102943**: the field's own maximum (`math.pi / 2`)
+   quantizes to 102944, so `PI_Q16 / 2` would refuse the field's legal
+   maximum. The trig band is not at risk (|a| < 1.5 PI_Q16 + 1, inside +-4 pi).
+2. **`high_water` / `next_unit_id` are neither uploaded nor downloaded** on
+   the resident path (§4.4 said "uploaded with the store"). No kernel reads
+   their device copies (V6: the extent rides the launch block), and a lone
+   map's device copy is `(1,)` (`enable_residency`'s `ascontiguousarray`
+   promotes a 0-d array) so the upload raised a shape mismatch.
+3. **Stage counters:** [16] counts swarm-stage calls that pass the dormancy
+   check, [17] species cores launched (v4.4 said [16] calls, [17] calls with
+   a present env): with the binding always handing the block in, a
+   swarm-free resident tick must move neither (PART 2b's swarm-free leg).
+4. **`step_tail_resident` returns `(destroyed, per-env rows)` only when
+   `swarm=` is given**; without it, the old return (any other caller keeps
+   working).
+5. **The fingerprint is checked at `bind_draws`** (every reset, before any
+   gather) rather than inside `engine_args`, which has no module handle.
+6. **`SPECIES_KERNELS` / `KERNEL_PARAMS` / `DERIVED_WORDS` are not built**
+   (v4.3 replaced them by table rows); `bp.SWARM_SPECIES_LAWS` entries are
+   `{name, table_width, field, field_reduction, branches}`, and T-P3-18 /
+   T-P3-22 tie the coupling rows' `reads` to the table rows instead.
+7. **A batch death row's `ROW_ENV` is its batch index** (an env alone's is
+   0), so LEG B compares the death EVENTS (which carry no env) and asserts
+   each env's rows name that env.
+8. **LEG B grew from N = 3 to N = 4** to hold a swarm-free env beside three
+   swarm-bearing ones (G-a's "one env swarm-free" and "env 0 unforced").
+9. **The swarm stage's device counters** are integer `atomicAdd`s into the
+   arena (deaths, live slots stepped): an order-free sum outside the law; the
+   fold cross-checks the deaths counter against the records that reached the
+   host and raises on a mismatch (what makes mutant M6 red).
+10. **`swarm.py` left `[not_twinned]`** (the trace now puts it in the
+    `swarm_larva`, `eos` and `div_source` files); `swarm_larva.py` joined
+    `[not_twinned]` as setup-only on the corpus (its rules run at load).
+11. **The stub diff is wider than P3's**: the committed stub was stale against
+    the merged P6 symbols and written by an older pybind11-stubgen.
+12. **Mutant 8 is red in the header gate and the law tests, not in PART 1**:
+    all three loops compile the same generated header, so they agree with
+    each other under a swapped offset; the CPU law tests (explicit table
+    values) see the swap.
+13. `PhysicsEngine::step_swarm`'s definition sits before
+    `step_tail_resident` in `physics_engine.cpp`, not right after `step_tail`.
+
+### G-c: the mutation table (each mutant a scratch edit, reverted, never committed)
+
+Every mutant was applied as a scratch edit by a throwaway driver, the module
+it touches rebuilt (CPU incremental, or `cpp/build_cuda.bat`), the gate(s) it
+must break run, and the edit reverted with `git checkout`; both modules were
+rebuilt from the clean sources afterwards. Every mutant went red; no scene
+had to be improved.
+
+| # | gate it must break | mutant | red produced |
+|---|---|---|---|
+| M1 | PART 2c (LEG B), G-a | the law reads env 0's `T` / `solid` for every env (`plane = 0`) | LEG B: env 1 tick 0, every swarm column and the swarm section / death events differ from env 1 alone |
+| M2 | PART 1 | the kernel's bound is the capacity, not `hw[e]` (`swarm_launch.cuh`) | PART 1: the resident core touched live-looking padding (the probe's record / counter cross-check raised in env 1) |
+| M2b | T-P3-8 / 14 | the CPU loop's bound is the capacity | `test_swarm_larva_law.py`, first red `test_death_writes_the_empty_form_and_records_every_slot_below_hw` (a record written beyond hw) |
+| M3 | T-P3-8 / 14 | the `valid` check is dropped (L0) | `test_swarm_larva_law.py`, first red `test_every_write_keeps_the_store_valid` (an empty slot processed) |
+| M4 | T-P3-7 | the kill reads the pre-move tile | `test_kill_reads_the_post_move_tile_in_every_state` |
+| M5 | T-P3-21, tables | the two salt rows swapped (`swarm_tables.py`) | `test_the_swarm_salts_are_salt_members`, `test_every_row_reads_the_reference_objects` |
+| M6 | PART 2b | the resident records are never copied host-ward | PART 2b: "the device counted 4 deaths but the records that reached the host hold 0" |
+| M7 | T-P3-35 | `host_dirty` is not set after a host-path launch | `test_the_host_path_marks_the_store_dirty_after_a_launch` |
+| M8 | the fingerprint / header gate | `T_CTMIN_Q` and `T_COMA_EXIT_Q` offsets swapped in the header | `test_the_generated_header_is_current`; after a rebuild, `test_coma_hysteresis_both_halves` (PART 1 cannot see it: the three loops compile the one header, deviation 12) |
+| M9 | T-P3-19, T-P3-3 | `wrap_heading_q16` with C's truncating `%` | `test_the_heading_wrap_twin`, `test_every_write_keeps_the_store_valid` |
+| M10 | T-P3-27 | the env tick word is `sim.tick` instead of `draws.tick` | `test_the_draws_clock_survives_the_wego_round_rewind` |
+| M11 | dormancy (T-P3-26 / 34 / 35) | `step_all`'s dormancy return and per-species skip removed | `test_the_host_path_marks_the_store_dirty_after_a_launch` (the swarm-free map marked dirty), `test_engine_presence_spans_every_env` |
+| M12 | T-P3-37 (write set) | the law writes `temperature` at a death tile | `test_the_host_swarm_step_writes_only_the_swarm_store` |
+| M13 | the branch tally (G-d) | `side_preference` never returns "equal comfort" | `test_every_law_branch_is_taken_by_the_fuzz_scene` |
+| M14 | the fingerprint check | two rows moved in `swarm_tables.ROWS` without `--write` | `test_swarm_tables.py` (the header is stale; the compiled fingerprint differs) |
+| M15 | PART 1 / PART 2 | the per-call wrapper does not copy `dist_walked` back | PART 1: `dist_walked` differs CPU / per-call (the resident core equal) |
+
+### G-d, G-e and the gates
+
+- **G-d (branches).** Every one of the 23 `LARVA_BR_*` branches is taken by
+  the CPU fuzz scene (`test_every_law_branch_is_taken_by_the_fuzz_scene`) and
+  again by PART 1 + PART 2 of the CUDA gate; every CPU scene asserts its own
+  declared branches.
+- **G-a / G-b.** PART 1 (200 cases, 172 with work): per-env fields with
+  rotated lethal / comfortable / cold classes, live-looking padding in every
+  case, byte identity of the CPU entry, the per-call wrapper and the resident
+  core. LEG B: swarm outcomes per env deaths [0, 8, 0, 0], coma larva-ticks
+  [0, 0, 52, 0], every env equal to itself alone every tick.
+- **The 3-part CUDA gate** (`tests/cuda_swarm_check.py`): PASS. PART 2's
+  transitions: tumble 148, wall 19, RUN -> COMA 33, COMA held in band 1089,
+  RUN held in band 1182, COMA -> RUN 33, kills 75, slot reuse 1. PART 2b:
+  deaths 7, comas 19, wall hits 9, store uploads exactly at ticks 0, 40, 90;
+  the swarm-free resident leg moved no swarm counter. PART 3: the golden.
+- **No golden moved.** `_xarch_perfield_digest.py`: matches golden = True;
+  the swarm thermal scenario's lines are `tests/_xarch_swarm_DESKTOP-0E98HUV.txt`
+  (`xarch_digest.py --scenario swarm --steps 60`: `0fc7c6e4...`,
+  `swarm=larva:hw24,ssect_v1`).
+- **Full suite** (`pytest tests -q`, both modules built from the final code):
+  6403 passed, 2 skipped, 5 xfailed, 1 failed in 1:21:49 -- the one failure
+  is `test_class_p_level`'s stamp check, which `tools/cuda_green.py` answers.
+  It ran on the code of the final commit; only this section and the twin
+  manifest's `level_at` lines changed after it.
+- **The dormant cost.** On ship_demo the swarm-free gather + step costs about
+  40 us per tick (a 25 ms tick).
+- **G-e.** `tools/cuda_green.py` runs at the patch's last commit (the
+  `--mark-level` commit: `swarm_larva` and every twin the patch's edits of
+  `physics_engine.*`, `cuda_resident_tick.h`, `physics_runner.py`,
+  `simulation.py` and `exchange.py` put in debt); its stamp is the merge's
+  evidence.
