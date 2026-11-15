@@ -1122,23 +1122,28 @@ and the tick-end clears. No decision moved. One line each:
 Written by the lead after P6 merged, from a second inventory
 (`docs/residency_p7_inventory_2026-11-15.md`: the host state the remaining
 slots own, the laws they share, the device side as it stands, a sharing
-matrix; every statement with `file:line`). §9's rows P6b and P7a to P7d are
-from 2026-11-07 and one line each. The inventory shows that none of them is
-one patch and that they are not independent: `execute_payload` is called from
-four places (grenades, payload rounds at the resolve, charges, a heat source's
-death); the recorded effects of `SimultaneousEffects` are shared by five slots;
-shooting marches its rounds on the tick they are fired, so it shares the march
-and the table of rounds with slot 2; line of sight is read by sprays, the
-horde, the motion sensors and every flash; the noise log is written by three
-slots and drained by a fourth. This amendment replaces those five rows.
+matrix; every statement with `file:line`). Version 2, after one critique
+(`docs/residency_p7_replan_critique_2026-11-15.md`: SOUND WITH FIXES, nine
+majors and fifteen minors, all folded in below). §9's rows P6b and P7a to P7d
+are from 2026-11-07 and one line each. The inventory shows that none of them
+is one patch and that they are not independent: `execute_payload` is called
+from four places (grenades, payload rounds at the resolve, charges, a heat
+source's death); the recorded effects of `SimultaneousEffects` are shared by
+five slots; shooting marches its rounds on the tick they are fired, so it
+shares the march and the table of rounds with slot 2; line of sight is read by
+sprays, the horde, the motion sensors and every flash; the noise log is
+written by three slots and drained by a fourth. This amendment replaces those
+five rows.
 
 **Scope: the continuous path only.** The device twins port what a continuous
 match runs (WEGO is legacy, ruling 2026-10-31). Not ported, each named so the
-device backend can refuse it by name: slot 4's targeted-fire and auto-fire
+device door can refuse it by name: slot 4's targeted-fire and auto-fire
 branches (the `orders` branches, with their float range test),
-`start_spray_burst` (the WEGO form), physical cover and its chew
-(OnePhaseWEGO), the timeline's own melee draw. A run whose ruleset is not
-continuous is refused at the device door.
+`start_spray_burst` (the WEGO form), the FACE effect (its only producers are
+those branches), physical cover and its chew (OnePhaseWEGO), the order path's
+melee crit, and slot 9b (switched off, §12.7). The device door refuses a run
+whose ruleset is not continuous, a unit holding WEGO `orders`, and
+`burst_enabled`: the ruleset check alone proves neither of the last two.
 
 **Decisions (the lead's; each the simplest form the inventory allows).**
 
@@ -1146,72 +1151,109 @@ continuous is refused at the device door.
    is the per-env serial applier's own input, widened: a per-env record list
    built on `UnitRecordList` (per-row producers stage per row and ONE gather
    per env appends in row order, which is the reference's record order:
-   shooters by id x rounds, then melee by id, then sprayers by id; a serial
-   producer appends directly), walked by the one applier kernel. The applier's
-   reach grows from the 27 planes to the unit store, the device tables, the
-   event ring (through `env_sink`, which has no caller today), the claims and
-   the logs of decision 4. The record's fields and kinds stay ONE Python table
-   with a generated header. Kinds arrive with their first producer: HIT,
-   STATUS, FACE, PUSH, CHEW (P7a.1), SEAL / UNSEAL / the door's destruction
-   (P6b.1), SPRAY_CELLS (P7a.3), PAYLOAD (recorded from P7b on, its function
-   P7c), BITE and BASH (P7d). Never a second list and never a second walker:
-   slot 2's landing, slot 4c, slot 5's pass 3 and slot 9e are STAGES of the
-   same kernel over the same record.
-2. **The exposure landing is a mode of the device `apply_packet`.** Inside a
-   resolve the raises and zeroings are held per target in per-env scratch and
-   land together at the end of the walk (`landing.land()`); outside one they
-   land at once, as today. One packet law, two modes; the mode is the stage's,
-   never the caller's guess. `exchange.apply_blast_damage` takes no landing in
-   the reference, so a payload inside a resolve keeps its immediate form
-   (reported to Erik as a finding, not changed).
+   shooters by id x rounds with each round's recoil before its own records,
+   then melee by id, then sprayers by id; a serial producer appends
+   directly), walked by the one applier kernel. The applier's reach grows from
+   the 27 planes to the unit store, the device tables, the event ring (through
+   `env_sink`, which has no caller today), the claims and the logs of decision
+   4. The record's fields and kinds stay ONE Python table with a generated
+   header, owned by P7a.1. Kinds: HIT, STATUS, PUSH, CHEW and PAYLOAD are
+   defined by P7a.1 (PAYLOAD as a record only: the applier refuses to APPLY it
+   by name until P7c.1 gives it its function, so P7a.2 and P7b can both record
+   it); SPRAY_CELLS arrives with P7a.3 and carries a SPAN into a per-env cell
+   buffer that phase A fills against the walls standing at the slot's start
+   (its own capacity, counted and refused by name); the walk never recomputes
+   a cone, because an earlier CHEW in the same resolve may have removed a
+   wall. Never a second list and never a second walker: slot 2's landing and
+   slot 4c are stages that walk the record; slot 9e and slot 5's pass 3 are
+   stages of the SAME kernel that walk the entity tables and the zombie rows
+   in the reference's order and apply AT ONCE, as the reference does (a bash
+   changes the map the next zombie reads; a door's sweep changes the gas the
+   next door reads).
+2. **The exposure landing is a mode of the device `apply_packet`, chosen per
+   (stage, kind).** A HIT inside a resolve stage holds its raises and zeroings
+   per target in per-env scratch, and they land together at the end of the
+   walk (`landing.land()`: raises skip a unit dead at the landing, then the
+   dead are zeroed). Every other packet lands at once: the statuses, the
+   couplings, the bite, and a PAYLOAD's blast packets in whichever stage they
+   occur (`exchange.apply_blast_damage` takes no landing in the reference; a
+   finding for Erik, not changed). One packet law, two modes; a caller never
+   picks the mode.
 3. **What flies and what is placed are TABLES with a schema and a capacity:**
-   the rounds in flight, the grenades in flight, the planted charges (their
-   schema exists) and each entity class. Each is built with the unit store's
+   the planted charges (their schema exists), the grenades in flight, the
+   rounds in flight, the multi-tick blast sources (`gmap.expansions`) and each
+   entity class. Each is built with ONE table module over the unit store's
    machinery (schema rows, `tools/gen_unit_layout.py`, `pack` / `unpack`, an
-   IDENTITY gate), never a second generator. Row order is the host list's
-   order, kept by a stable compaction; an object reference (shooter, weapon,
-   ammo, payload, duct) becomes an id or a table row index; a variable-length
-   member (a door's span and per-tile hp, a duct's slots) is a span into a side
-   table, as `door_spans` already is. None of the host lists has a bound today
-   except the charges: each table gets a capacity sized from the largest count
-   its gate scenes and the bots' matches reach, and a full table is counted
-   and refused by name, like the ring.
-4. **The per-tick logs are per-env ordered lists:** `noise_log`, `blast_log`
-   and the credit claims. The noise log's order is load-bearing (hearing ties
-   to the earlier noise): slot order, within slot 4 the shooter's id order
-   (the gather), within a resolve the applier's walk. The claims keep "first
-   claim wins" by being read first match first (`credit_at` already scans so).
-   Each list arrives with its first writer (noise: P7a.2; claims: P7a.3;
-   blast log: P7c) and is cleared with the tick-end clears.
+   append, a stable compaction, an IDENTITY gate), never a second generator.
+   P7.0 builds the module with the charge table as its pilot; every later
+   table is a client. Row order is the host list's order, kept by the stable
+   compaction (survivors, then this tick's appends: the order every reference
+   loop walks); an object reference (shooter, weapon, ammo, payload, duct)
+   becomes an id or a table row index; a variable-length member (a door's
+   span and per-tile hp, a duct's slots) is a span into a side table, as
+   `door_spans` already is. None of the host lists has a bound today except
+   the charges: each table gets a capacity sized from the largest count its
+   gate scenes and the bots' matches reach, and a full table is counted and
+   refused by name, like the ring.
+4. **The logs are per-env ordered lists, each with its own life.** The CREDIT
+   CLAIMS and the BLAST LOG are per tick and go with the tick-end clears. The
+   NOISE LOG is not: nothing clears it at tick end, it is drained at the head
+   of slot 5, and a bash's or a 9e detonation's noise is heard on the NEXT
+   tick. So the noise list persists across the tick boundary, is drained at
+   the slot-5 stage's head and cleared only at env reset (added to §4.6's
+   list). Its order is load-bearing (hearing ties to the earlier noise): slot
+   order, within slot 4 the shooter's id order (the gather), within a stage
+   the walk. The claims keep "first claim wins" by being read first match
+   first (`credit_at` already scans so). Each list arrives with its first
+   writer (noise: P7a.2; claims: P7a.3; blast log: P7c.1).
 5. **Draws.** The device forms of `MatchDraws.at` and `.next`, `cone_offset_q16`
    and `roll_q16`, over the vendored Philox, with the `Salt` members reaching
    C++ as generated constants. `.next` counts per `(salt, id)` within a tick in
    a host dict; its device form is a counter local to the row's thread, which
-   is exact only while every `.next` user of one salt sits in ONE kernel per
-   tick. The kit patch proves that from the call sites and the generated table
-   carries it, so a second site for a `.next` salt fails a test instead of
+   is exact while every `.next` user of one salt sits in ONE kernel per tick.
+   That holds today (SHOT_CONE and BEAM_CONE: one shooter's draws in slot 4;
+   MELEE_CRIT only on the order path). The kit's generated table carries the
+   one site per `.next` salt, so a second site fails a test instead of
    silently restarting the count.
-6. **Sight is a device library function:** `has_los` integer for integer over
-   `solid` and `sight_screen`, held equal on random pairs over real maps.
-   `sight_screen` is a slot input until P8b makes it resident. The bulk form
-   (`rays_clear`, the observation's) stays P8b's.
+6. **Sight is a device library function in both of `has_los`'s forms:** the
+   sight form over `solid` and `sight_screen`, and `physical=True` over
+   `solid` alone (the spray cone's), each integer for integer and held equal
+   on random pairs over real maps. `sight_screen` is a slot input until P7e
+   makes it resident. The bulk form (`rays_clear`, the observation's) stays
+   P8b's.
 7. **The edit door moves to the device in three steps.** (a) P7a.3: device
    producers append EDIT and TILE rows through device forms of the door's
-   quantization and the region walk for the regions they use, gated AT THE
-   DOOR: the rows a device producer wrote equal `pack_for_device` of the edits
-   the host producer enqueued, in the producer's own order. (b) P7c and P6b.2 /
-   P6b.3 add their regions (DISC, TILES, the falloff weights) the same way.
-   (c) P7e: the per-env sort `(field, source, region, seq)` and K1 / K2 fed
-   from device-built buffers. A device producer is always an effect function
-   of the serial applier, so `seq` is a plain per-env counter: no atomic. Until
-   (c) the played edit queue (Class P) is untouched.
+   quantization and the region walk for the regions they use. (b) P7c.1 and
+   P7c.2 add their regions (DISC, TILES, the falloff weights) the same way;
+   P6b.4 the heat source's. Pumps and vents enqueue no edit. (c) P7e: the
+   per-env sort `(field, source, region, seq)` and K1 / K2 fed from
+   device-built buffers. Three rules hold throughout:
+   - `seq` is a per-env counter, plain because a device producer is always an
+     effect function of the serial applier. It RESETS AT THE 6b FLUSH, never
+     at tick end or the tick head (one window runs from the previous tick's
+     9e to this tick's 6b), and is cleared at env reset. It is also the noise
+     key, so for a noisy edit its absolute value matters, not only the order.
+   - Until (c) a producer is gated AT THE DOOR: its rows equal
+     `pack_for_device` of the edits the host producer enqueued, with `seq` and
+     the edit-row indices rebased to the producer's first edit. That is exact
+     for noise-free edits (a spray's carry none). A noisy edit's absolute key
+     is compared only on ticks where the window's base is known (the producer
+     is the window's first, or the base is a harness input); a tick on which
+     host and device producers interleave inside one walk is refused by the
+     gate by name, never compared loosely.
+   - Until (c) a CHAINED run lands a device producer's edits through the
+     host's own enqueue, replayed from the device's records, which must
+     reproduce the device's rows (the request list's `apply_to_host`
+     pattern). The played edit queue (Class P) is untouched until (c).
 8. **The harness learns lists.** A host list a slot reads or writes (the
    effects, the tables of decision 3, the logs of decision 4, the edit rows) is
    declared like a field, as an input or an output, through ONE record function
    per list; never a hand-rolled compare. The ring keeps only synced events:
    the harness drops render-only events before comparing (slots 4 to 4c emit
-   several), and ExplosionEvent joins with P7c as the Event ring's rule says.
-   `ChainedSlots` stays N = 1; batch invariance stays the shadow's.
+   several). ExplosionEvent is render-only, read by no law, and does not fit
+   the ring's record: it gets NO device form, and P7c.1 corrects the Event
+   ring's rule, which still promises it one. `ChainedSlots` stays N = 1; batch
+   invariance stays the shadow's.
 9. **Every patch builds its own scenes and counts its branches.** The shipped
    levels and bots take few of these paths: no level holds a spray, a hitscan
    weapon, a payload round or a heat source; no bot plants or throws smoke;
@@ -1221,70 +1263,77 @@ continuous is refused at the device door.
    with a census of the Python law's branches, each required to be taken, and
    the branches a scene cannot reach named with the reason.
 
-**The cut.** Eleven patches in six stages, two side by side (the Home
-Desktop's limit). Each is re-checked against the inventory when it starts and
-merges main before its final gates.
+**The cut.** Thirteen patches, two side by side (the Home Desktop's limit). A
+free slot takes the next patch whose needs are merged; the stages below are
+the order that follows from the needs. Each patch is re-checked against the
+inventory when it starts and merges main before its final gates. Two patches
+side by side both regenerate the generated headers (`unit_tables_layout.h`,
+`applier_layout.h`): the second to merge regenerates after merging main and
+rebuilds, as P6.4a and P6.4b did.
 
 | stage | patch | builds | needs |
 |---|---|---|---|
-| 1 | P7.0 the kit | library only, no slot: the draws (decision 5), sight (6), the falloffs (`falloff_round` / `falloff_floor`), the squared-distance tests; each held equal to its Python on synthetic inputs through test-only probes | |
-| 1 | P7a.1 the effect list | decisions 1, 2 and 8; kinds HIT / STATUS / FACE / PUSH / CHEW (`chew_wall` over the topology seam); slot 4a (melee: `can_melee`, the arc target, the melee rows) as the first producer; slot 4c as the first stage | |
-| 2 | P7a.2 shooting | slot 4's `_directional_fire` (burst; the beam as a stretch that may ship as its own patch), the cone draws, the weapon / ammo rows, THE MARCH as a library function, the table of rounds, recoil and push, the noise list; slot 2's rounds in flight (the same march, a landing stage) | P7.0, P7a.1 |
-| 2 | P7b grenades and charges | the table of grenades (the throw request becomes an append), flight, the fuse-out as a PAYLOAD record; the planted-charge table (the plant request becomes an append), `charges.tick`, the slot-10 prune. Detonations are RECORDS here, compared with the host's `execute_payload` calls; their function is P7c's | P7a.1 |
-| 3 | P7a.3 sprays | slot 4b (the cone over sight), SPRAY_CELLS, the edit door step (a), the claims list | P7.0, P7a.1 |
-| 3 | P6b.1 doors | the entity table machinery (decision 3) with the door table; `seal_tiles` / `unseal_tiles` / `can_seal_tiles` in the topology seam (the refusal path; the float planes as bit patterns); the gas-N primitives (`inject` / `extract` / `transfer`, over the gas energy seam's shared rows) as device functions; 9e(c) and the door sweep; the use request becomes a table write | P7a.1 |
-| 4 | P7c payloads | `execute_payload` as the PAYLOAD effect function with every sub-step (the disc and its wall damage, blast damage, the flash, the reach walk, the air read, the `div_source` writer, the deposits through the edit door, bulk gas, ignition, the noise, the blast log, the claims), the fan-out over the block's threads, ExplosionEvent; the detonation scene | P7.0, P7a.2, P7a.3, P7b, P6b.1 |
-| 4 | P6b.2 the bus and the air movers | the signal bus, sensors (motion sensors over sight), logic nodes (predicates as codes), pumps, ducts and vents (ledgers in int64 with a named refusal past range) | P7.0, P6b.1, P7a.3 |
-| 5 | P7d the horde | the flood kernel (one block per env and field), the masks, the cache's refresh rule, the zombie pass, BITE and BASH, the wander hash | P7.0, P7a.2, P6b.1 |
-| 5 | P6b.3 timed charges and heat sources | the two entity classes that detonate, the heat source's chain within one tick, its per-tick deposit; slot 9e CHAINED whole; the entity and signal sections of the digest exported from the tables | P7c, P6b.2 |
-| 6 | P7e the device tick | the conductor: every slot's kernel in the reference's order for N envs with no host slot between them (the host writes only the action latches); the edit door step (c); the remaining tick-end pieces; profiler labels per sub-slot. Gate: recorded matches replayed through it, digests equal at every tick, N = 1 and in a batch | all |
+| 1 | P7.0 the foundations | the kit, library only, each function held equal to its Python on synthetic inputs through test-only probes: the draws (decision 5), sight (6), the falloffs (`falloff_round` / `falloff_floor`), the squared-distance tests. The table module (decision 3) with the planted-charge table as its pilot. The reference's slot 2 split into two named calls (grenades, rounds) with two profiler labels and a sole-cause proof, so two later patches can each port one. Slot 9d (ignition from temperature: a per-cell law, order-free), which no row of the old plan named | |
+| 1 | P7a.1 the effect list | decisions 1, 2 and 8; kinds HIT / STATUS / PUSH / CHEW (`chew_wall` over the topology seam) and the PAYLOAD record; slot 4a (melee: `can_melee`, the arc target, the melee rows) as the first producer; slot 4c as the first stage | |
+| 2 | P7a.2 shooting | slot 4's `_directional_fire`: the burst, `start_spray_burst_directional` and its noise, and the beam as a stretch that may ship as its own patch; the cone draws; the weapon and ammo rows, the per-material cover exposure and the zombie bullet multiplier; THE MARCH as a library function; the table of rounds; recoil and push; the noise list; slot 2's rounds (the same march, a landing stage). A payload round's stop is recorded and refused at the apply until P7c.1 | P7.0, P7a.1 |
+| 2 | P7b grenades and charges | the table of grenades (the throw request becomes an append), flight, the fuse-out as a PAYLOAD record; `charges.tick` over the charge table (the plant request becomes an append); the slot-10 prune. Detonations are RECORDS here, compared with the host's `execute_payload` calls | P7.0, P7a.1 |
+| 3 | P7a.3 sprays | slot 4b (the cone over physical sight, the cell buffer), SPRAY_CELLS, the edit door step (a), the claims list | P7.0, P7a.1 |
+| 3 | P6b.1 doors | the door table (the first entity table: ordinal order, the span and hp side tables, its rows of the entity section); `seal_tiles` / `unseal_tiles` / `can_seal_tiles` in the topology seam (the refusal path; the float planes as bit patterns); the gas-N primitives (`inject` / `extract` / `transfer`, over the gas energy seam's shared rows) and `_aperture_blocked` as device functions; the door sweep with its occupancy test and external destruction; the use request becomes a table write | P7.0, P7a.1 |
+| 4 | P7c.1 payloads, the disc path | `execute_payload` as the PAYLOAD effect function for rows with `strength = 0`: the disc and its wall damage (serial on thread 0, row-major), the wave edits, blast damage, the flash, `emit_gas`, `ignite_ring`, `deposit_heat` (the DISC region at the edit door), the noise, the blast log, the claims | P7.0, P7a.2, P7a.3, P7b |
+| 4 | P6b.2 vents | ducts and vents (bus-independent): the ledgers in int64 with floor division through the kit and a named refusal past the proved range | P6b.1 |
+| 5 | P7c.2 payloads, the strength path | rows with `strength > 0` (the shipped frag is one): the reach walk, the air read, `start_source` / `start_expansion` with the blast-source table and the device form of `take_source_plane` (so `div_source` is no longer uploaded), `deposit_over_tiles` with linear weights, the fan-out over the block's threads, bulk gas; the detonation scene | P7c.1, P6b.1 |
+| 5 | P6b.3 signals | the signal bus, the sensors (motion sensors over sight; field sensors through a device form of the accessor's raw `sample`), the logic nodes (predicates as codes), the pumps, and 9e(c) (the doors' inputs from the bus) | P7.0, P6b.1 |
+| 6 | P7d the horde | the flood as a fan-out of the stage's block, run when the walk first needs a field, from the live map; the masks; the cache with §4.9's refresh rule, including the ticks that return before `begin_tick` (no prey, or an empty request set) and leave it standing; passes 1 and 2 wide; pass 3 serial in id order with the bite and the bash applied at once; the wander hash; the match's zombie request set as a host latch | P7.0, P7a.1, P7a.2, P6b.1 |
+| 6 | P6b.4 timed charges and heat sources | the two entity classes that detonate; the heat source's chain within one tick (a loop over a growing list, bounded by the first discs plus the source count) and its per-tick deposit; slot 9e CHAINED whole; the entity and signal sections of the digest exported from the tables | P7c.2, P6b.2, P6b.3 |
+| 7 | P7e the device tick | the conductor: every slot's kernel in the reference's order for N envs with no host slot between them (the host writes only the latches: actions and the zombie request set); every plane a device slot reads or writes resident between slots (`applier.non_resident_planes()` empty: `sight_screen`, `heat_atten`, `light_atten`, the radiation planes); the edit door step (c); the remaining tick-end pieces; profiler labels per sub-slot. Gate: recorded matches replayed through it, digests equal at every tick, N = 1 and in a batch | all |
 
-P7e is the input of G2 and of P8b; it is re-cut when P7c has merged, together
-with the P8 re-plan (P8b grew when rung 1 of #192 built the observation, the
-masks and the reward in host Python: that re-plan is with Erik).
+P7e is the input of G2 and of P8b; it is re-cut when P7c.2 has merged,
+together with the P8 re-plan (P8b grew when rung 1 of #192 built the
+observation, the masks and the reward in host Python: that re-plan is with
+Erik).
 
-**What each patch must know** (the inventory's Parts B, D and F):
+**What each patch must know** (the inventory's Parts B, D and F, checked by
+the critique):
 
-- Grenade flight is assumed order-free (the detonations are what is serial):
-  P7b verifies that `Projectile.update_position` reads no map state before it
-  relies on it. Slot 2's order stays: every grenade, detonations in list
-  order, THEN the rounds' phase A against the state the grenades left.
+- Grenade flight reads no map state, so it is order-free; the detonations are
+  what is serial. Slot 2's order stays: every grenade, detonations in list
+  order, THEN the rounds' phase A against the state the grenades left, then
+  the landing.
 - The march's first hit is the first unit in LIST order whose footprint holds
   the tile, and the shooter is excluded by object identity: on the device,
-  row order and the shooter's id.
+  row order and the shooter's id (a converted shooter keeps its id).
 - `apply_explosion`'s loop reads `solid` after earlier tiles of the same disc
-  were destroyed: the disc stays serial on thread 0, row-major (§4.3).
-- A heat source's death appends a blast that the same loop then reads: the
-  chain is a loop over a growing list on the device too, bounded by the
-  source count.
-- The horde's field cache lives across ticks and is flooded on first need by
-  whichever zombie asks first; the contract is §4.9's refresh rule, and P7d
-  shows on a scene that "flood at the stage's head when any zombie will ask"
-  is equal to it, or keeps the lazy form.
+  were destroyed: the disc stays serial.
+- Slot 5's bash is applied at once and the zombies after it read the live
+  map for their step, their own bash, their fear and their sight, and the
+  lazy flood is built from the live map on first need. So pass 3 is never a
+  wide decide with a deferred apply, and the flood is never moved to the
+  stage's head.
 - Float conversions on the payload path (`float(wall_damage)`, the heat and
   soot products, `_source_q`, the DISC radii, `blast_air_settings()` per call)
-  are quantized per call in the reference: each becomes a Device tables row
-  read from the same validated object, and a product that cannot be a row is
-  reported before it is ported.
+  and the heat source's float per-tick deposit are quantized per call in the
+  reference: each becomes a Device tables row read from the same validated
+  object, and a product that cannot be a row is reported before it is ported.
 - Duct ledgers and the filter mean are unbounded Python integers with floor
-  semantics on negatives: int64 on the device, floor division through the
-  kit, a named refusal past the proved range.
-- Rounds and grenades in flight, `gmap.expansions` and the edit queue across
-  ticks are in no digest. The tables' IDENTITY and shadow gates cover the
-  twins; adding them to the digest would move every golden and is not part of
-  this port (a finding for Erik).
+  semantics on negatives: int64 on the device, a named refusal past the
+  proved range.
+- State that crosses ticks and is in no digest: rounds and grenades in
+  flight, `gmap.expansions`, the edit queue's window, the noise log, the horde
+  cache. The tables' IDENTITY and shadow gates cover the twins; adding any of
+  them to the digest would move every golden and is not part of this port (a
+  finding for Erik).
 
 **Systems (additions to §13).** New, each with its ONE index line and its
-constraints in `.claude/rules/device-units.md` when it is built: the tables of
-decision 3 (one row per table: rounds, grenades, charges, entity classes), the
-device draws, the device sight function, the device edit door. Changed, each
-amending its rule section: the Per-env serial applier (its reach, its
-producers, its stages), the Device unit library (the march, the falloffs), the
-Device topology seam (seal / unseal, the gas-N primitives), the Event ring
-(ExplosionEvent), the Request list (throw, plant and use become table writes
-and leave it). Used as they are: Match draws, Verb gates, Weapons, Payload
-executor, FieldEdit, Horde field, Entity system, Trace currency, Gas energy
-seam.
+constraints in `.claude/rules/device-units.md` when it is built: the device
+table module and each table on it (charges, grenades, rounds, blast sources,
+the entity classes), the device draws, the device sight function, the device
+edit door. Changed, each amending its rule section: the Per-env serial
+applier (its reach, its producers, its stages), the Device unit library (the
+march, the falloffs), the Device topology seam (seal / unseal, the gas-N
+primitives), the Event ring (no ExplosionEvent), the Request list (throw,
+plant and use become table writes and leave it). Used as they are: Match
+draws, Verb gates, Weapons, Payload executor, FieldEdit, Horde field, Noise,
+Entity system, Trace currency, Gas energy seam.
 
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
@@ -1848,7 +1897,7 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | close | the first `train/*` tag on main (Erik); CLAUDE.md rows + amendments (§13 b, c); skills amended; #29 / #77 / #24 / #25 / #71 closed; Roadmap #46 | | | |
 
 **Re-planned 2026-11-15:** the rows P6b and P7a to P7d above are replaced by
-§4.4c's cut (eleven patches in six stages, P7.0 to P7e), written from
+§4.4c's cut (thirteen patches, P7.0 to P7e), written from
 `docs/residency_p7_inventory_2026-11-15.md` after P6 merged.
 
 ### 9.1 The farm measurement protocol (P1a)
