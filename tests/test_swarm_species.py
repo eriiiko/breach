@@ -41,9 +41,12 @@ def _mini_level() -> LevelData:
 
 
 def _valid_row(**overrides) -> dict:
+    """arc #63 P3 (F7): the species' FULL repo row (testkit), P2's explicit
+    max_units / hp_max kept as overrides -- rows grow with SPECIES_FIELDS."""
+    import _swarm_testkit as testkit
     row = {"max_units": 64, "hp_max": 1.0}
     row.update(overrides)
-    return row
+    return testkit.species_row(swarm.SWARM_SPECIES[0], **row)
 
 
 def _swarm_cfg(rows_by_species: dict) -> Namespace:
@@ -71,47 +74,50 @@ def test_strict_schema_rejects_every_named_shape_of_bad_config(monkeypatch):
 
     Must break under a Namespace pass-through with no schema, a lax
     KIND_REAL_Q16 branch, or a drifted row class."""
+    import re
+    import _swarm_testkit as testkit
     sp0 = swarm.SWARM_SPECIES[0]
 
-    def expect_reject(cfg_swarm):
-        cfg = Namespace({})
-        cfg.swarm = cfg_swarm
-        with pytest.raises(ValueError):
-            swarm.SwarmSpeciesTable.from_config(cfg)
+    # arc #63 P3 (R10, L2-M4): every case runs on a FULL config wrapper
+    # (swarm + physics.temperature_scale, testkit.cfg_with) and asserts the
+    # rejection names ITS OWN reason, so a lax branch can never hide behind
+    # an unrelated error (the Kelvin conversion's missing-scale error).
+    def expect_reject(cfg_swarm, token):
+        with pytest.raises(ValueError, match=re.escape(token)):
+            swarm.SwarmSpeciesTable.from_config(testkit.cfg_with(cfg_swarm))
+
+    # the positive case: the full valid config passes.
+    swarm.SwarmSpeciesTable.from_config(testkit.cfg_with(_full_valid_cfg()))
 
     # a missing [swarm] entirely.
-    cfg_missing = Namespace({})
-    with pytest.raises(ValueError):
-        swarm.SwarmSpeciesTable.from_config(cfg_missing)
+    with pytest.raises(ValueError, match=re.escape("[swarm] missing")):
+        swarm.SwarmSpeciesTable.from_config(testkit.cfg_with(None))
 
     # a missing species row.
     if len(swarm.SWARM_SPECIES) > 0:
         rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
         del rows[sp0]
-        expect_reject(_swarm_cfg(rows))
+        expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}] missing")
 
     # an unknown species under [swarm].
     rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
     rows["totally_unknown_species"] = _valid_row()
-    expect_reject(_swarm_cfg(rows))
+    expect_reject(_swarm_cfg(rows), "[swarm].totally_unknown_species")
 
     # a non-table key directly under [swarm].
     cfg_bad = Namespace({sp: _valid_row() for sp in swarm.SWARM_SPECIES})
     setattr(cfg_bad, sp0, 5)   # overwrite the table with a scalar
-    cfg_wrap = Namespace({})
-    cfg_wrap.swarm = cfg_bad
-    with pytest.raises(ValueError):
-        swarm.SwarmSpeciesTable.from_config(cfg_wrap)
+    expect_reject(cfg_bad, f"[swarm].{sp0} must be a table")
 
     # an unknown key in a row.
     rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
     rows[sp0]["unknown_key_xyz"] = 1
-    expect_reject(_swarm_cfg(rows))
+    expect_reject(_swarm_cfg(rows), "unknown_key_xyz")
 
     # a missing key in a row.
     rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
     del rows[sp0]["hp_max"]
-    expect_reject(_swarm_cfg(rows))
+    expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].hp_max missing")
 
     # per-field wrong type / out-of-bounds / NaN-inf / bool.
     for f in swarm.SPECIES_FIELDS:
@@ -119,28 +125,28 @@ def test_strict_schema_rejects_every_named_shape_of_bad_config(monkeypatch):
             for bad in (True, 1.5, "x"):
                 rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
                 rows[sp0][f.name] = bad
-                expect_reject(_swarm_cfg(rows))
+                expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].{f.name}")
             if f.minimum is not None:
                 rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
                 rows[sp0][f.name] = int(f.minimum) - 1
-                expect_reject(_swarm_cfg(rows))
+                expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].{f.name}")
             if f.maximum is not None:
                 rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
                 rows[sp0][f.name] = int(f.maximum) + 1
-                expect_reject(_swarm_cfg(rows))
+                expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].{f.name}")
         elif f.kind == KIND_REAL_Q16:
             for bad in (True, "x", math.nan, math.inf, -math.inf):
                 rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
                 rows[sp0][f.name] = bad
-                expect_reject(_swarm_cfg(rows))
+                expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].{f.name}")
             if f.minimum is not None:
                 rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
                 rows[sp0][f.name] = float(f.minimum) - 1.0
-                expect_reject(_swarm_cfg(rows))
+                expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].{f.name}")
             if f.maximum is not None:
                 rows = {sp: _valid_row() for sp in swarm.SWARM_SPECIES}
                 rows[sp0][f.name] = float(f.maximum) + 1.0
-                expect_reject(_swarm_cfg(rows))
+                expect_reject(_swarm_cfg(rows), f"[swarm.{sp0}].{f.name}")
 
     # the import-time assertions' properties, re-derived as a live check:
     assert set(swarm.SPECIES_RELOAD) == {f.name for f in swarm.SPECIES_FIELDS}
