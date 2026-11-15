@@ -185,6 +185,46 @@ def swarm_scenario_sim() -> Simulation:
     return sim
 
 
+def swarm_thermal_scenario_sim() -> Simulation:
+    """The swarm THERMAL fixture (arc #63 P3, docs/swarm_P3_impl.md §11 "The
+    thermal scenario"; NO RNG). P2's ``swarm_scenario_sim`` must keep its
+    fields equal to the default scenario's (P2 T8), so it cannot carry the
+    forcing a larva lockstep needs; this one does: ``_scenario_level`` (16 x
+    16, 1.0 m tiles), a hot patch (rows 2-5 x cols 2-5, 363.15 K) and a cold
+    patch (rows 10-13 x cols 2-5, 268.15 K) seeded ONCE through
+    ``gmap.seed_gas_temperature`` (the sanctioned door), and 24 larvae at
+    fixed raw-Q16 poses: 4 in the hot patch, 4 in the cold patch, 4 wall
+    larvae heading into the east hull, 12 spread over rows 7-12 x cols 6-13
+    with headings k * PI_Q16 / 6. Returns an unpaused sim."""
+    import temperature_scale
+    sim = Simulation(_scenario_level(), seed=SEED, breach_physics=bp,
+                     enable_recorder=False)
+    g = sim.gmap
+    ts = temperature_scale.load()
+    g.seed_gas_temperature((slice(2, 6), slice(2, 6)),
+                           swarm_fixed.quantize_scalar(ts.from_kelvin(363.15)))
+    g.seed_gas_temperature((slice(10, 14), slice(2, 6)),
+                           swarm_fixed.quantize_scalar(ts.from_kelvin(268.15)))
+    one, half = swarm_fixed.FP_ONE, swarm_fixed.FP_ONE >> 1
+    xs, ys, hs = [], [], []
+    for k, (tx, ty) in enumerate(((2, 2), (5, 3), (3, 5), (4, 4))):        # hot
+        xs.append((tx << 16) + half); ys.append((ty << 16) + half); hs.append(k * 30000)
+    for k, (tx, ty) in enumerate(((2, 10), (5, 11), (3, 13), (4, 12))):    # cold
+        xs.append((tx << 16) + half); ys.append((ty << 16) + half); hs.append(-k * 30000)
+    for ty in (6, 8, 10, 12):                                              # wall
+        xs.append((15 << 16) - 200); ys.append((ty << 16) + 32768); hs.append(0)
+    k = 0
+    for ty in range(7, 13, 2):                                             # spread
+        for tx in range(6, 14, 2):
+            xs.append((tx << 16) + half + 1000 * k); ys.append((ty << 16) + half)
+            hs.append(swarm_fixed.wrap_heading_q16(k * swarm_fixed.PI_Q16 // 6))
+            k += 1
+    del one
+    sim.swarm.spawn("larva", xs, ys, hs)
+    sim.set_paused(False)
+    return sim
+
+
 def _snapshot(gmap, fields):
     return {name: np.copy(getattr(gmap, name))
             for name in fields if hasattr(gmap, name)}

@@ -344,3 +344,178 @@ def test_rejected_reload_keeps_the_prior_table(monkeypatch, capsys):
     # the underlying seam target's bool contract (§4.3): False on rejection.
     assert swarm.reload_species(sim.gmap, CFG) is False
     assert sim.gmap.swarm_species is before_table
+
+
+# ---------------------------------------------------------------------------
+# arc #63 P3 (docs/swarm_P3_impl.md §11 T-P3-22..25): the larva rows, the
+# coupling rows, the Kelvin conversion and the species rules.
+# ---------------------------------------------------------------------------
+
+def test_swarm_coupling_rows_cannot_drift_from_the_kernel():
+    """T-P3-22: every COUPLING_TABLE row whose consumer is not "unit" names
+    "swarm:<sp>" for a SWARM_SPECIES member, has no Python response, a
+    reduction in the vocabulary, reads only species-table fields whose
+    stored ints are rows of that species' kernel table, and senses through
+    the registry's (field, field_reduction); every species has a row. Every
+    "unit" row keeps a callable response.
+
+    Must break on a renamed field or species, a row reading a number the
+    kernel does not take, or a reduction label that is not the kernel's
+    reader."""
+    from simulation import exchange, swarm_tables
+    by_name = {d["name"]: d for d in bp.SWARM_SPECIES_LAWS}
+    field_names = {f.name for f in swarm.SPECIES_FIELDS}
+    covered = set()
+    for row in exchange.COUPLING_TABLE:
+        if row.consumer == "unit":
+            assert callable(row.response)
+            continue
+        assert row.consumer.startswith("swarm:")
+        sp = row.consumer.split(":", 1)[1]
+        assert sp in swarm.SWARM_SPECIES
+        assert row.response is None
+        assert row.reduction in exchange.REDUCTIONS
+        assert set(row.reads) <= field_names
+        kernel_rows = {r.name for r in swarm_tables.ROWS[sp]}
+        assert {f"{r}_q" for r in row.reads} <= kernel_rows, row.reads
+        assert (row.field, row.reduction) == (by_name[sp]["field"],
+                                              by_name[sp]["field_reduction"])
+        covered.add(sp)
+    assert covered == set(swarm.SWARM_SPECIES)
+
+
+def test_kelvin_rows_convert_through_the_scale_in_force():
+    """T-P3-23: for every SPECIES_UNITS kelvin row, to_kelvin(dequantize(the
+    stored int)) equals the authored Kelvin within k / 2^17 K.
+
+    Must break on a missing from_kelvin, a double conversion, or the unit
+    applied to the wrong field."""
+    import temperature_scale
+    from simulation import swarm_fixed
+    ts = temperature_scale.load()
+    table = swarm.SwarmSpeciesTable.from_config(CFG)
+    for sp in swarm.SWARM_SPECIES:
+        row = table.row(sp)
+        authored = vars(getattr(CFG.swarm, sp))
+        for name, unit in swarm.SPECIES_UNITS.items():
+            assert unit == "kelvin"
+            stored = getattr(row, f"{name}_q")
+            back = ts.to_kelvin(swarm_fixed.dequantize(stored))
+            assert abs(back - float(authored[name])) <= ts.k_temp_to_kelvin / 2 ** 17, name
+
+
+def test_scale_immunity_and_the_reload_seam(monkeypatch, capsys):
+    """T-P3-24: under a monkeypatched k_temp_to_kelvin (phi_exp kept so
+    phi_exp * k == 1) a fresh GameMap stores different game ints for the
+    kelvin rows but the same Kelvin; on a running sim the seam changes
+    .hash, prints one "replay comparability ends here" line, and the next
+    tick's launch uses the new ints (a larva on a tile lethal under one scale
+    and not the other dies only after the reload); a phi_exp breaking the
+    product makes the reload print one RELOAD REJECTED line and keeps the
+    table.
+
+    Must break on a cached conversion, a conversion outside the seam, a hash
+    over authored text, or an AssertionError escaping the seam."""
+    import temperature_scale
+    from simulation import swarm_fixed
+    from simulation.events import SwarmUnitDiedEvent
+    tsc = CFG.physics.temperature_scale
+    k0 = float(tsc.k_temp_to_kelvin)
+    lv = _mini_level()
+    g_a = GameMap(lv)
+    sim = Simulation(lv, seed=4, breach_physics=bp, enable_recorder=False)
+    ts_a = temperature_scale.load()
+    # a patch at 20 game counts: 313 K under k = 1 (safe), 353 K under k = 3 (lethal)
+    sim.gmap.seed_gas_temperature((slice(2, 6), slice(2, 6)), 20 * swarm_fixed.FP_ONE)
+    sim.swarm.spawn("larva", [(4 << 16) + 9], [(4 << 16) + 9], [0])
+    sim.set_paused(False)
+    sim.step()
+    assert sim.swarm.live_count("larva") == 1
+    k1 = 3.0 * k0
+    monkeypatch.setattr(tsc, "k_temp_to_kelvin", k1)
+    monkeypatch.setattr(tsc, "phi_exp", float(tsc.phi_exp) / 3.0)
+    g_b = GameMap(lv)
+    ts_b = temperature_scale.load()
+    for name in swarm.SPECIES_UNITS:
+        qa = getattr(g_a.swarm_species.row("larva"), f"{name}_q")
+        qb = getattr(g_b.swarm_species.row("larva"), f"{name}_q")
+        assert qa != qb
+        assert abs(ts_a.to_kelvin(swarm_fixed.dequantize(qa))
+                   - ts_b.to_kelvin(swarm_fixed.dequantize(qb))) <= k1 / 2 ** 16
+    old = sim.gmap.swarm_species.hash
+    capsys.readouterr()
+    sim.on_config_reload()
+    out = capsys.readouterr().out
+    assert sim.gmap.swarm_species.hash != old
+    assert sum("replay comparability ends here" in ln for ln in out.splitlines()) == 1
+    sim.set_paused(False)
+    sim.step()
+    assert any(isinstance(e, SwarmUnitDiedEvent) for e in sim.tick_events)
+    table = sim.gmap.swarm_species
+    monkeypatch.setattr(tsc, "phi_exp", 1.0)       # phi_exp * k = 3: refused
+    capsys.readouterr()
+    assert swarm.reload_species(sim.gmap, CFG) is False
+    out = capsys.readouterr().out
+    assert sum("RELOAD REJECTED" in ln for ln in out.splitlines()) == 1
+    assert sim.gmap.swarm_species is table
+
+
+# One config per species rule that violates ONLY that rule (a new rule needs
+# its case here, or the coverage assertion below names it).
+_RULE_BREAKERS = {
+    "no_tunnelling": {"speed_mps": 100.0},
+    "tumble_probability": {"tumble_rate_base": 2.0, "tumble_rate_alarm": 1.0},
+    "coma_hysteresis": {"T_ctmin": 283.15, "T_coma_exit": 283.15},
+    "turn_range": {"turn_min": 1.0, "turn_max": 0.5},
+}
+
+
+def test_species_rules_hold_at_load_reload_and_launch(monkeypatch, capsys):
+    """T-P3-25: for every species and every SPECIES_RULES entry, a config
+    violating only that rule raises ValueError naming the rule at
+    GameMap(...), and through sim.on_config_reload() prints exactly one
+    RELOAD REJECTED line and keeps the table object; R1 is also broken by a
+    small tile_size_m alone. At launch: with a swarm present, a tick length
+    that breaks R1 makes the next sim.step() raise RuntimeError naming
+    no_tunnelling, while the same change on a swarm-free sim steps cleanly.
+
+    Must break if a rule is not wired to an installer or to the launch, or
+    the launch checks a swarm-free map."""
+    import _swarm_testkit as testkit
+    for sp in swarm.SWARM_SPECIES:
+        names = [r.name for r in swarm.SPECIES_RULES[sp]]
+        missing = set(names) - set(_RULE_BREAKERS)
+        assert not missing, f"rule(s) without a breaking case: {missing}"
+        for name in names:
+            monkeypatch.setattr(CFG, "swarm", testkit.swarm_namespace(**_RULE_BREAKERS[name]))
+            with pytest.raises(ValueError, match=name):
+                GameMap(_mini_level())
+            monkeypatch.setattr(CFG, "swarm", testkit.swarm_namespace())
+            sim = Simulation(_mini_level(), seed=1, breach_physics=None, enable_recorder=False)
+            table = sim.gmap.swarm_species
+            monkeypatch.setattr(CFG, "swarm", testkit.swarm_namespace(**_RULE_BREAKERS[name]))
+            capsys.readouterr()
+            sim.on_config_reload()
+            lines = [ln for ln in capsys.readouterr().out.splitlines() if "RELOAD REJECTED" in ln]
+            assert len(lines) == 1 and name in lines[0]
+            assert sim.gmap.swarm_species is table
+    monkeypatch.setattr(CFG, "swarm", testkit.swarm_namespace())
+    tiny = _mini_level()
+    tiny.tile_size_m = 0.002
+    with pytest.raises(ValueError, match="no_tunnelling"):
+        GameMap(tiny)
+
+    # launch: 23.8 m/s on 1 m tiles is just inside R1 at 24 tps, outside at 20.
+    monkeypatch.setattr(CFG, "swarm", testkit.swarm_namespace(speed_mps=23.8))
+    sim = Simulation(_mini_level(), seed=1, breach_physics=bp, enable_recorder=False)
+    sim.swarm.spawn("larva", [(3 << 16)], [(3 << 16)], [0])
+    sim.set_paused(False)
+    sim.step()
+    sim._tps = 20
+    with pytest.raises(RuntimeError, match="no_tunnelling"):
+        sim.set_paused(False)
+        sim.step()
+    free = Simulation(_mini_level(), seed=1, breach_physics=bp, enable_recorder=False)
+    free._tps = 20
+    free.set_paused(False)
+    free.step()
