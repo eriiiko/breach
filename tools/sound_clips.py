@@ -10,6 +10,8 @@ samples:
   trim(x, sr)          leading silence and dead tail removed, tail faded
   squeeze_silence(x)   every silence shortened (a reload spread too long)
   normalize(x)         peak to a fixed level
+  make_loop(x, sr)     a seamless loop: the tail crossfaded onto the head
+  normalize_rms(x)     a steady loop to a fixed loudness (peak-capped)
   layer(body, head)    a dry crack laid over a body-and-tail sample
   write_wav / read_wav 16-bit PCM through the stdlib
 
@@ -159,6 +161,47 @@ def normalize(x: np.ndarray, peak: float = PEAK) -> np.ndarray:
     x = np.asarray(x, dtype=np.float32)
     pk = float(np.abs(x).max()) if x.size else 0.0
     return x if pk <= 0.0 else (x * (peak / pk)).astype(np.float32)
+
+
+LOOP_RMS_DB = -20.0    # a loop's loudness after normalize_rms (dBFS RMS)
+
+
+def make_loop(x: np.ndarray, sr: int, crossfade_ms: float = 1000.0) -> np.ndarray:
+    """A clip that loops without a seam (#202 S2): its last `crossfade_ms`
+    are faded out OVER its first ones (equal power: the clips are noise-like,
+    uncorrelated across the seam), and the result is that much shorter. The
+    sample after its last is its first, and the first is what followed the
+    last before the fade -- so playing it end to end is continuous."""
+    x = np.asarray(x, dtype=np.float32)
+    n = len(x)
+    L = int(round(sr * crossfade_ms / 1000.0))
+    if L <= 0 or 2 * L > n:
+        raise ValueError(f"a {n * 1000.0 / sr:.0f} ms clip cannot take a "
+                         f"{crossfade_ms:.0f} ms loop crossfade")
+    t = (np.arange(L, dtype=np.float64) + 0.5) / L
+    fin = np.sin(0.5 * np.pi * t).astype(np.float32)
+    fout = np.cos(0.5 * np.pi * t).astype(np.float32)
+    if x.ndim == 2:
+        fin, fout = fin[:, None], fout[:, None]
+    y = np.array(x[: n - L], copy=True)
+    y[:L] = x[:L] * fin + x[n - L:] * fout
+    return y
+
+
+def normalize_rms(x: np.ndarray, rms_db: float = LOOP_RMS_DB,
+                  peak: float = PEAK) -> np.ndarray:
+    """A steady sound to a fixed RMS level, never above `peak`: two loops
+    at the same cue gain then sound about equally loud, whatever level the
+    generator gave them."""
+    x = np.asarray(x, dtype=np.float32)
+    rms = float(np.sqrt(np.mean(np.square(x, dtype=np.float64)))) if x.size else 0.0
+    if rms <= 0.0:
+        return x
+    k = 10.0 ** (rms_db / 20.0) / rms
+    pk = float(np.abs(x).max()) * k
+    if pk > peak:
+        k *= peak / pk
+    return (x * k).astype(np.float32)
 
 
 def _match_channels(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
