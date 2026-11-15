@@ -238,7 +238,9 @@ strategy. Every rule below serves that.
   and fails breach imports with a misleading ModuleNotFoundError.
 - **pytest: always `pytest tests -q`** — never bare `pytest` from repo root.
   The fast tier for work in progress is `pytest tests -q -m "not slow"`
-  (~5 min); the full suite stays the gate before a merge (the Suite timing row).
+  (~5 min); narrower still, `python tools/affected_tests.py --run [-- -m "not slow"]`
+  runs only the test files your change can reach (the Affected tests row); the
+  full suite stays the gate before a merge (the Suite timing row).
 - C++/CUDA: `cpp/` via CMake; per-machine build scripts `cpp/build_*.bat`,
   on Linux `cpp/build_linux.sh` (both modules; the container
   `containers/breach.def` builds with it) (which one where:
@@ -344,6 +346,7 @@ One line per system built for reuse. Long form + entry points:
 | Ingress lint + float ratchet | `tests/test_ingress_lint.py`, `test_no_float_in_sim_tu.py` | The four number-doors + counts-only-go-down; exceptions carry `ingress-exempt:` with why |
 | Test conventions | `tests/` | `test_*` collected, `_*` harness, property gates preferred over goldens while systems land; feel regressions compare in real dequantized units; GL checks run as a `gl_*_check.py` script in a subprocess with a hidden window + a `test_*` wrapper (the `cuda_*` convention), never a GL context inside pytest (G3 F1) |
 | Suite timing | `tools/suite_timing.py` (the tables, `--write-slow`) + `tests/_suite_kinds.py` (THE classifier: a test's kind, `is_device`) + the GENERATED `tests/slow_tests.txt` + `tests/conftest.py` (the `slow` mark, the xdist `device` group) (#205, `docs/test_suite_timing_2026-11-15.md`) | A test is `slow` ONLY by measurement: the list is regenerated from a full run's `--durations=0` output, never a hand-set mark; `-m "not slow"` is the WIP tier and NEVER the merge gate (the full suite, all determinism gates, stays it). Under pytest-xdist (`-n N --dist loadgroup`) every test that drives the GPU or opens a window joins ONE group (`is_device`: a CUDA harness call, the E2E driver, a GL check, main.py as argv, a pyray import), so no two run at once; a new kind of device launch is a pattern there, never a hand mark on a test. A plain run keeps collection order and reads no source |
+| Affected tests | `tools/affected_tests.py` (`select`, `closure`; `--run [-- pytest args]`) + `tests/test_affected_tests.py` | THE change-based WIP tier (#205): a test file runs when its dependency closure -- its transitive in-repo imports, the scripts it launches in a subprocess, the native module for `cpp/` -- holds a changed file; a data file reaches the tests whose closure names its top directory. Read from the source, never a hand mark. It may over-select, never under-select: anything the closure cannot see (conftest, pyproject, a deleted .py, an unnamed data path) runs the FULL suite. Combines with `-m "not slow"`; NEVER the merge gate (the full suite stays it) |
 
 ### Render / UI
 
