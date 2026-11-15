@@ -124,6 +124,38 @@ if(BREACH_CUDA)
         src/cuda_stamp.cu          # #29 P4b: the stamp kernel (slot 6's five planes)
         src/cuda_edit_queue.cu     # #29 P4c: the device edit queue (slot 6b's FieldEdit flush)
         src/cuda_resident_tick.cu  # #29 P4a: the resident tick's drivers (the brackets gone)
+        # #29 P6.1: the device unit store (P6.2: + the device tables, the counts,
+        # the input staging; its slot-1c kernel moved to cuda_unit_exposure.cu), Class T.
+        # Like every .cu it is on the determinism floor through the target-wide
+        # CUDA options below (--fmad=false, -Xcompiler /fp:strict); pure integer.
+        src/cuda_unit_store.cu
+        # #29 P6.3: the event ring (Class T), and the slots that hurt over the
+        # device damage pipeline (cuda_unit_damage.cuh); pure integer, on the
+        # same target-wide CUDA determinism floor.
+        src/cuda_unit_events.cu     # the event ring
+        src/cuda_unit_status.cu     # slot 2b
+        src/cuda_unit_exchange.cu   # slots 9c, 9c3
+        src/cuda_unit_damage_probe.cu # TEST-ONLY: apply_packet on synthetic rows
+        # #29 P6.2: the unit slot kernels, one TU per slot family over the device
+        # unit library (cuda_unit_lib.cuh); Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_unit_exposure.cu   # slot 1c
+        src/cuda_unit_impulse.cu    # slots 1a, 9c2
+        src/cuda_unit_orders.cu     # slots 1b', 10'
+        src/cuda_unit_conversion.cu # slot 10's ruleset tail
+        src/cuda_unit_lib_probe.cu  # TEST-ONLY: the unit library on synthetic rows
+        src/cuda_unit_movement.cu   # #29 P6.2m: slot 3 (the continuous path)
+        src/cuda_unit_movement_probe.cu  # TEST-ONLY: the walk's library functions
+        # #29 P6.4a: slot 1b's hand verbs (the request list: cuda_unit_events.cu's
+        # record list), the done kernel; Class T, pure integer.
+        src/cuda_unit_verbs.cu      # slot 1b
+        src/cuda_unit_done.cu       # the done kernel (MatchRules)
+        src/cuda_unit_verbs_probe.cu # TEST-ONLY: the gates on synthetic rows
+        # #29 P6.4b: the per-env serial applier over the topology seam as device
+        # functions (cuda_topology.cuh), and the tick-end clears; Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_applier.cu         # slot 9 (burn-through), the tick-end clears
+        src/cuda_topology_probe.cu  # TEST-ONLY: on_tile_changed on fixture maps
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

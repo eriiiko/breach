@@ -1,5 +1,13 @@
 # Units
 
+> **OUTDATED (Erik, 2026-11-14): "extremely outdated -- only thing we can take
+> from it are the ideas and concepts".** What a unit is, and how it is stored,
+> is `docs/unit_design_2026-11-14.md`; the code's one table is
+> `src/simulation/unit_schema.py`. This chapter describes float positions, a
+> removed stat sampler and a modifier engine that was never built. Read it for
+> its ideas only: base against effective values, the hidden stats, mass and
+> size, the environment profile, equipment, body-part damage.
+
 **Depends on:** [State & Ownership](../engine/02_state_and_ownership.md), [Material System](../engine/03_material_system.md).
 
 > **Naming note (2026-07-19):** units are deliberately **NOT entities** in the

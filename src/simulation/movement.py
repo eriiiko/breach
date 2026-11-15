@@ -63,9 +63,14 @@ class FootprintSamples:
       :data:`SCALE_ONE` = no slowdown, the default). Since G5p-b it carries
       the wind's slowing too: the wind is a force on that law, so #140's
       ``wind_scale_q16`` member is gone. The planned ``water_depth`` speed
-      row is the next member of this kind.
+      row is the next member of this kind;
+    * the walker's own SPEED HOOK for the class this reduction is of --
+      ``speed_hook_q16``, its ``WALK`` or ``SPRINT`` hook (#29 U1,
+      ``simulation.unit_traits``; :data:`SCALE_ONE` = neutral, the default):
+      a factor on the SPEED, so it divides the cost, inside the mobility
+      reduction's one rounding.
 
-    :func:`default_speed` composes both and stays pure. Built in ``src/`` only
+    :func:`default_speed` composes them and stays pure. Built in ``src/`` only
     by :func:`footprint_samples` (tests may build their own).
     """
 
@@ -74,10 +79,14 @@ class FootprintSamples:
     #: (``unit_impulse.effort_scale_q16``; ``SCALE_ONE`` = the feet are not
     #: working against anything: shots, recoil, a shove, the wind).
     effort_scale_q16: int = SCALE_ONE
+    #: #29 U1: the walker's WALK or SPRINT hook (``unit_traits.hook``) for the
+    #: class cost this sample set reduces (``SCALE_ONE`` = neutral).
+    speed_hook_q16: int = SCALE_ONE
 
 
 def footprint_samples(gmap, fy, fx, fp,
-                      effort_scale_q16: int = SCALE_ONE) -> FootprintSamples:
+                      effort_scale_q16: int = SCALE_ONE,
+                      speed_hook_q16: int = SCALE_ONE) -> FootprintSamples:
     """THE :class:`FootprintSamples` builder (#140, design §2.2): the terrain
     mobility under the ``fp`` x ``fp`` footprint anchored at ``(fy, fx)``
     (``GameMap.footprint_mobility``) and the walker's effort scale.
@@ -94,10 +103,17 @@ def footprint_samples(gmap, fy, fx, fp,
     stay a struct of numbers). Since G5p-b the wind slows a walker through
     it (the wind is a force on the impulse law, entered at slot 9c2): the
     builder reads no wind of its own.
+
+    ``speed_hook_q16`` (#29 U1) is the walker's own WALK or SPRINT hook
+    (``unit_traits.hook(u, unit_traits.WALK)`` / ``SPRINT``) for the class
+    cost the samples will reduce, passed by every caller in ``src/``
+    (``tests/test_unit_traits.py`` scans for one that does not); a caller
+    reducing both costs builds the second set with ``dataclasses.replace``.
     """
     return FootprintSamples(
         mobility=gmap.footprint_mobility(fy, fx, fp),
-        effort_scale_q16=int(effort_scale_q16))
+        effort_scale_q16=int(effort_scale_q16),
+        speed_hook_q16=int(speed_hook_q16))
 
 
 def half_up(num: int, den: int) -> int:
@@ -156,7 +172,20 @@ def default_speed(footprint_samples: FootprintSamples, speed_class: int) -> int:
     if total <= 0:
         raise ValueError("default_speed: footprint has non-positive total mobility "
                          "(should have been gated by is_passable_block)")
-    cost = half_up(int(speed_class) * n * MOBILITY_ONE, total)
+    # #29 U1: the walker's speed hook (WALK / SPRINT) divides the cost INSIDE
+    # this one rounding -- half_up(class * n * 1000 * ONE, total * hook) --
+    # skipped at SCALE_ONE (half_up(a ONE, b ONE) == half_up(a, b) anyway).
+    # int64: a Q16 cost <= 2^24 x 9 x 1000 x 2^16 < 2^54; total * hook <=
+    # 2^14 x 2^19.
+    hook = int(getattr(footprint_samples, "speed_hook_q16", SCALE_ONE))
+    if hook == SCALE_ONE:
+        cost = half_up(int(speed_class) * n * MOBILITY_ONE, total)
+    else:
+        if hook <= 0:
+            raise ValueError(f"default_speed: speed_hook_q16 must be > 0, "
+                             f"got {hook}")
+        cost = half_up(int(speed_class) * n * MOBILITY_ONE * SCALE_ONE,
+                       total * hook)
     for name in ("effort_scale_q16",):
         # G5p-a2's effort (the wind's slowing too, since G5p-b): half_up,
         # skipped at SCALE_ONE so the unscaled path is bit-identical.

@@ -111,4 +111,43 @@ FP_HD inline void deposit_railed(int64_t* gas_energy, int32_t* temperature,
     temperature[i] = t;
 }
 
+// ---- #29 P6.4b: the seam's STRUCTURAL rows, shared by every device caller --
+// (the device edit queue's mirror refresh, cuda_edit_queue.cu; the device
+// topology seam, cuda_topology.cuh). Each is GameMap's own primitive integer
+// for integer; the books are the caller's (it adds the returned delta to its
+// named channel).
+
+// GameMap.gas_energy_refresh_cell's mirror on an ACCOUNTABLE cell: 0 below
+// N_EPS_RAW, else floordiv(E, N) - T_AMB SATURATED to int32 (the structural
+// saturation the Python twin writes instead of numpy's OverflowError; the
+// unsaturated `mirror_q` above is the solver's read, whose recovery rails
+// keep it in range).
+FP_HD inline int32_t mirror_sat_q(int64_t e, int64_t n_raw, int64_t t_amb_q) {
+    if (n_raw < N_EPS_RAW) return 0;
+    int64_t t = fixedpoint::floordiv_q(e, n_raw) - t_amb_q;
+    if (t > 2147483647LL) t = 2147483647LL;
+    else if (t < -2147483648LL) t = -2147483648LL;
+    return (int32_t)t;
+}
+
+// GameMap.gas_energy_retire: the cell's stored energy leaves the books (the
+// cell is leaving the accountable set); returns the retired E (the caller
+// books -E when E != 0).
+FP_HD inline int64_t retire(int64_t* gas_energy, int i) {
+    const int64_t e = gas_energy[i];
+    if (e != 0) gas_energy[i] = 0;
+    return e;
+}
+
+// GameMap.gas_energy_born_at_ambient on a cell that IS accountable: E := N *
+// T_AMB, the mirror 0; returns the booked delta (N * T_AMB - E_old).
+FP_HD inline int64_t born_at_ambient(int64_t* gas_energy, int32_t* temperature, int i,
+                                     int64_t n_raw, int64_t t_amb_q) {
+    const int64_t e_new = n_raw * t_amb_q;
+    const int64_t de = e_new - gas_energy[i];
+    gas_energy[i] = e_new;
+    temperature[i] = 0;
+    return de;
+}
+
 }  // namespace gas_energy

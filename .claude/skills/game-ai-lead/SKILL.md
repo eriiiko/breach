@@ -107,8 +107,34 @@ from the survey. The ones most often needed:
 | 2026-11-11 | **Erik's note for rung 2:** the trainer keeps collecting and learning behind a boundary, with a weights version on every batch, so one run can later be spread over his three PCs on Tailscale; until then the three PCs run three experiments at once and share saved networks as opponents. (Roadmap, rung 2.) |
 | 2026-11-11 | **The critique** (four lenses, one Opus critic at a time; design document section 12): no blocker, 23 major points, all fixed on paper as version 2. Eight of the fixes changed sections Erik had agreed (section 12.3): sight as a match setting; records that outlive an unseen death; the physics planes' true scales; "whom it aims at" from the facing; a throw's aim held through the wind-up; "the play" dropped; masks from the real gates; the map shown through walls. **Erik: "yes i agree".** Rung 1 was re-cut into ten patches, 1a to 1j (roadmap); **"i dont need to look at 1d, i bless it all ready now"**. |
 
+| 2026-11-14 | **The decision rate stays at 4 ticks; rung 1 is closed** (design document 13.1). 1j was bots against the same bots behind the door, no network; the door team won 0.27 to 0.37 against a 0.40 mark, and the cost is reaction, not the choices. Erik: "making a decision 6 times per second is quite a lot. I don't think we shall increase it"; "if we focus too much on acting every tick, we miss what we're trying to build here: intelligent agents that can learn how to do smart moves"; "I'd say we've already passed this test actually". The free bots are not slowed; from rung 3 a learned team is measured against the free bots (the gate) and `bots_door` (beside it). Sixteen directions stay (the lead's; 8 "looks a little not so nice"). |
+| 2026-11-14 | **Rung 2 starts by copying the bots** (design document 13.3; Erik: "I lean on copying first too"), then the shooting range and the duel from reward, the duel run from the copy and from scratch. **No training run before the residency arc's P6 is through** (the unit code is moving). |
+
 ## 6. Open
 
+- **Rung 1 is CLOSED (2026-11-14). Rung 2's design is at VERSION 2**
+  (`docs/rl_agent_rung2_design_2026-11-14.md`): Erik read version 1 on
+  2026-11-15 ("very impressed", no veto); four critics the same day (1
+  blocker, 33 major, 50 minor; verdicts in
+  `docs/rl_agent_rung2_design_2026-11-14_critique/`, the log in the
+  design's section 15); every blocker and major folded in. Its section 13
+  lists what changed in what he read (the gate has numbers and a cap on
+  running out the clock; no floor on the copy's hand; a first real run
+  early; eleven patches 2a to 2k, four touching a game file; the times are
+  days, not hours) and his one decision (how his by-eye half of the gate is
+  run). Next: his answer, then a handoff plan as for rung 1. **Every patch
+  waits for P6 (Erik, 2026-11-15); 2a starts on his word that P6 is
+  through.** His idea of a feet choice that names a spot is parked as an
+  experiment after the duel learns (design 13.4, protocol amended by the
+  critique). The lesson document ("the trainer, line by line") is the
+  lead's, written from the code of patches 2b and 2d. The two questions the
+  unit design (`docs/unit_design_2026-11-14.md` 3 and 9) hands this role
+  (hooks shown; fixed slot blocks for statuses and items) are parked in
+  that document's section 11 with their trigger.
+- **The farm is slower than the roadmap planned with:** about 720 soldier
+  decisions a second on the medium ship with spec v1 (measured 2026-11-13),
+  against 1 000 planned; a fireteam run there is 1.6 to 16 days. Rung 3
+  starts on the small ship; re-measure it first.
 - **Rung 0 is CLOSED** (Erik, 2026-11-11: "yes i agree" to the eight changes of
   design document 12.3; merged the same evening). **Rung 1 is live:** ten
   patches, 1a to 1j (roadmap). Erik blessed 1d's step (ii) in advance: it
@@ -143,7 +169,9 @@ from the survey. The ones most often needed:
   2, agreed; its critique in `docs/rl_agent_design_2026-11-11_critique/`);
   `docs/rl_agent_rung1_plan_2026-11-11.md` (rung 1's handoff plan);
   `docs/rl_lesson_0_learning_from_reward_2026-11-11.md` (rung 0's lesson:
-  PPO in plain words; rung 2's lesson goes through the trainer). Earlier:
+  PPO in plain words; rung 2's lesson goes through the trainer);
+  `docs/rl_agent_rung2_design_2026-11-14.md` (rung 2: the trainer, the
+  copying step, the tasks, the patches). Earlier:
   `docs/research/rl_litsearch_2026-07-20.md`, `docs/roadmap_2026-07-30_rl_push.md`.
 - **Code seams:** `src/rl_env.py` (`BatchedEnv`), `src/control_policy.py`
   (the `policy` controller, `VERB_RULES`), `src/match_replay.py`
@@ -227,6 +255,54 @@ implementation agents and critics stay one at a time.
   long run; (4) stopping a backgrounded bash loop does not stop it on Windows --
   kill the loop's own bash process tree, or each kill advances it to the next
   run.
+
+- 2026-11-14 -- the design session after rung 1 (branch `192-rung2-cadence`,
+  documents only; egregore did not connect). Learned: (1) Erik read "the bots
+  through the door won 36 %" as "trained agents already beat the bots 36 % of
+  the time": a result must say WHO played WHOM and that no network exists,
+  before any number; "the door" is our word, not his; (2) recompute a handed-on
+  number before building on it: the 1j note's "0.48 at one decision per tick"
+  was the drop per 2 ticks taken as the drop per tick (the line gives 0.42
+  +- 0.06), which changes how much a faster rate would buy; (3) a pass mark
+  set before any measurement is a guess: say so when it is set, so that
+  missing it by 4 points is read as a finding and not as a failure; (4) the
+  question that settled it was a game question (how fast should a marine
+  react), which Erik answered from what the game is for, without the options
+  table.
+- 2026-11-14, later -- rung 2's design written (same branch, documents only).
+  Learned: (1) my own "about ten minutes to record again" of that morning
+  was an unchecked number (the 1j note's walls give about an hour): the
+  recompute rule holds for my own figures within one session; (2) size the
+  data before designing around it: one decision is 63 KB with the full view,
+  so memory, not theory, sets the batch on a 16 GB PC, the copy's records are
+  45 GB unpacked, and a run spread over three PCs has to move observations
+  that Tailscale's relay will not carry; (3) the planning figures in a
+  roadmap go stale when the interface they were set before is built: read
+  the latest measured farm number, not the roadmap's.
+
+- 2026-11-15 -- rung 2's design read by Erik and critiqued (same branch,
+  documents only). Learned: (1) the four lenses for a TRAINER design: is
+  every named game thing real (code read line by line on main); would a
+  trainer built exactly so learn correctly; can each measure and experiment
+  fail and mean what it says; does it fit the cards, the PCs and the patch
+  sizes. 280 to 420 thousand tokens and 10 to 17 minutes each on Opus, one
+  at a time, each verdict committed before the next spawned; (2) the
+  measures were the weakest part and I had not seen it: one held-back set
+  used for the curve, for choosing and for the exam; a gate with no number
+  of duels and no rule on a fail; "decided" hiding the draws. Write the
+  three room lists, the reading rule and the fail table BEFORE the method;
+  (3) a floor or a default that sounds harmless must be multiplied out per
+  decision per match (2 % over seven hand options at six decisions a second
+  is a C4 at the soldier's feet in two duels of three); (4) a test task
+  must be checked against the trainer's own limits (a memory task of 20
+  decisions against stretches of 16 cannot pass); (5) count LEARNING
+  soldiers when estimating speed: a small room with one learner is not
+  faster per learning decision than a ship with eight; (6) "touches no game
+  file" was wrong for four patches: check each patch against what the door
+  code allows before writing the table; (7) Erik's side question (name a
+  spot to walk to) got a parked experiment with its reasoning in the design
+  (13.4), not a design change: say what the literature does and does not
+  settle, and what the design already has of the idea.
 
 ## 11. Running rung 1 (for the orchestrator session)
 

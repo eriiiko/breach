@@ -8,7 +8,7 @@ Covers:
 - occupied_tiles() returns 9 tiles for a default human (3x3 footprint)
 - occupied_tiles() returns 16 for footprint=4
 - facing_compass() returns expected string for each cardinal radian
-- effective_vitality(unit) returns unit.base_stats.vitality (identity stub)
+- a unit's full health is its class's (unit_traits.max_hp_q, #29 U1)
 - is_stat_player_visible(IMAGINATION, unit) = False unless unit.awakened
 - is_stat_player_visible(WILL_ORIENTATION, unit) = always False
 
@@ -31,11 +31,8 @@ import pytest
 from simulation.factions import ZOMBIE_TEAM  # noqa: E402
 from simulation.generation import predefined_unit_attributes
 from simulation.species import HUMAN, get_species, GENERATED_STAT_NAMES, N_GENERATED_STATS
-from simulation.stats import (
-    BaseStats, StatId,
-    effective_vitality, effective_strength, effective_agility,
-    is_stat_player_visible,
-)
+from simulation.stats import BaseStats, StatId, is_stat_player_visible
+from simulation import unit_traits
 from simulation.unit import Unit, LifeState
 from simulation.turning import place as _place_facing  # noqa: E402
 from simulation.unit_fixed import quantize_scalar as _q_rad  # noqa: E402
@@ -171,9 +168,9 @@ def test_unit_has_no_hp_attribute():
 
 
 def test_unit_has_no_max_hp_attribute():
-    """max_hp was removed — effective_vitality() replaces it."""
+    """max_hp was removed — ``unit_traits.max_hp_q(unit)`` replaces it."""
     u = Unit("test", 5, 5)
-    assert not hasattr(u, "max_hp"), "max_hp should not exist; use effective_vitality()"
+    assert not hasattr(u, "max_hp"), "max_hp should not exist; use unit_traits.max_hp_q()"
 
 
 def test_unit_facing_is_float():
@@ -282,23 +279,18 @@ def test_facing_compass_full_rotation():
 
 
 # ---------------------------------------------------------------------------
-# Stat accessors
+# Full health (#29 U1: the stat-identity stubs were deleted with the
+# ``effective_*`` seam they pinned)
 # ---------------------------------------------------------------------------
 
-def test_effective_vitality_identity():
-    """effective_vitality returns base_stats.vitality (modifier-stub identity)."""
-    u = Unit("test", 5, 5)
-    assert effective_vitality(u) == u.base_stats.vitality
-
-
-def test_effective_strength_identity():
-    u = Unit("test", 5, 5)
-    assert effective_strength(u) == u.base_stats.strength
-
-
-def test_effective_agility_identity():
-    u = Unit("test", 5, 5)
-    assert effective_agility(u) == u.base_stats.agility
+def test_a_constructed_unit_starts_at_its_full_health():
+    """Property: a unit starts at its class's full health
+    (``unit_traits.max_hp_q``), the same for a marine and a zombie built
+    directly. Breaks if the constructor reads another notion of full health
+    (the species' vitality, say) whose value differs from the class row."""
+    for team in (0, ZOMBIE_TEAM):
+        u = Unit("test", 5, 5, team=team)
+        assert u.hp_q == unit_traits.max_hp_q(u)
 
 
 # ---------------------------------------------------------------------------

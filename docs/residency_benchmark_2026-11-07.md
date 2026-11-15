@@ -1424,3 +1424,135 @@ for the bus gate's two discs (≈ 16 B a tile + 128 B an edit + 40 B an env).
 (~0.1 ms) and the device's two kernels; the device side stays inside slot 7's noise (K2 is serial per env, ~110
 tiles each, in parallel across envs). At N = 64 the edit-loaded tick is 33 % shorter (+49 % env-ticks/s); at N = 1
 the gain is within the two runs' spread under the machine's load. Idle (no edits) it costs nothing measurable.
+
+## P6.2: the unit kernels (2026-11-14)
+
+**What.** The device unit store's first five slot kernels beside the moved pilot (1a integrate + turn, 9c2 the
+wind's impulse, 1b' orders, 10' order expiry, the tick-end conversion, 1c exposure decay), each a free function over
+the `(N, U, W)` store and the `(N, T)` device tables (`simulation/unit_kernels.py`). Class T: nothing in the played
+tick calls them, so nothing above moves.
+
+**Method.** `tests/cuda_unit_kernels_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070). The rows:
+ship_demo's bots match after 300 ticks with the order schedule (12 units, W = 180), replicated to N envs; 9c2's
+planes are that tick's gas / wind / solid as CuPy `(N, ...)` arrays. "upload + kernel + download" is the whole
+host round trip of a store (pinned staging both ways); "kernel call" is the binding alone -- the counts' memset, the
+launch, the 3 x N counts' D2H and the stream sync (the sync is the floor: the kernels themselves are a few
+microseconds at these sizes). Medians of 200 repetitions; per row the three processes' medians. Short runs, so they
+sit in the driver's boosted window (the P2 caveat above).
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 1a integrate_turn | 0.190, 0.191, 0.191 / 0.142, 0.143, 0.143 | 0.237, 0.237, 0.198 / 0.159, 0.158, 0.135 | 0.827, 0.866, 0.815 / 0.289, 0.301, 0.286 |
+| 9c2 wind_impulse | 0.211, 0.228, 0.227 / 0.164, 0.165, 0.164 | 0.250, 0.255, 0.212 / 0.172, 0.176, 0.149 | 0.862, 0.875, 0.823 / 0.313, 0.320, 0.295 |
+| 1b' apply_orders | 0.217, 0.217, 0.217 / 0.170, 0.169, 0.170 | 0.230, 0.264, 0.220 / 0.168, 0.184, 0.158 | 0.840, 0.876, 0.835 / 0.309, 0.325, 0.308 |
+| 1c exposure_decay | 0.189, 0.189, 0.190 / 0.142, 0.142, 0.142 | 0.204, 0.237, 0.196 / 0.142, 0.157, 0.134 | 0.819, 0.852, 0.817 / 0.289, 0.301, 0.288 |
+| 10' expire_orders | 0.217, 0.217, 0.215 / 0.170, 0.170, 0.168 | 0.231, 0.265, 0.221 / 0.169, 0.186, 0.159 | 0.864, 0.847, 0.839 / 0.322, 0.312, 0.310 |
+| 10 convert_zombies | 0.189, 0.190, 0.151 / 0.142, 0.142, 0.117 | 0.206, 0.237, 0.192 / 0.143, 0.157, 0.130 | 0.853, 0.828, 0.816 / 0.302, 0.291, 0.288 |
+
+**Reading.** Every kernel call costs its sync (~0.14 ms) plus, for the two with a host input (1b' / 10'), the
+input's staging (~0.03 ms); 9c2's six plane reads per footprint tile add ~0.02 ms. At N = 64 the call is ~0.3 ms and
+the round trip ~0.83 ms, most of it the 1.1 MB store copied twice through pinned memory. Per slot per env-tick that
+is ~5 µs at N = 64 -- the cost the device backend pays only at the checkpoint cadence, since in the resident tick
+the store will stay on the device and one sync will serve a whole chain of slots (the chained gate's form).
+
+## P6.2m: slot 3, movement (2026-11-14)
+
+**What.** The slot-3 kernel (`unit_kernels.movement`, the continuous path's `_update_player_movement`) over the
+`(N, U, W)` store, the `(N, T)` device tables and the `(N, h, w)` int8 `material` planes. Class T: nothing in the
+played tick calls it, so nothing above moves.
+
+**Method.** `tests/cuda_unit_movement_check.py`'s `bench()`, P6.2's method unchanged: three fresh processes, Home
+Desktop (RTX 3070), ship_demo's bots match after 300 ticks (12 units, W = 180, the hooks of the gate) replicated to N
+envs, the material plane that tick's as a CuPy `(N, h, w)` array; medians of 200 repetitions, per row the three
+processes' medians. ANOTHER AGENT (P6.3) WAS BUILDING AND TESTING ON THE SAME MACHINE during the runs, so the numbers
+may sit a little high.
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 3 movement | 0.199, 0.198, 0.172 / 0.151, 0.151, 0.135 | 0.246, 0.247, 0.219 / 0.167, 0.167, 0.155 | 0.872, 0.843, 0.868 / 0.311, 0.310, 0.310 |
+
+**Reading.** As P6.2's kernels: the call is its stream sync (~0.15 ms) plus a few microseconds; the footprint walk
+(up to three passability blocks of nine tiles per substep) does not show at these sizes. At N = 64 the call is
+~0.31 ms, the round trip ~0.86 ms, dominated by the store's two pinned copies.
+
+## P6.3: damage on the device (2026-11-14)
+
+**What.** The device `apply_packet` and the event ring with their first three slot kernels (2b status_tick, 9c
+heat_damage, 9c3 gas_rows -- the teargas row, the poison dose and the poison law in one kernel), each a free
+function over the `(N, U, W)` store, the `(N, T)` device tables and an `(N, E_max, F)` event ring
+(`simulation/unit_kernels.py`, `simulation/unit_events.py`). Class T: nothing in the played tick calls them.
+
+**Method.** `tests/cuda_unit_damage_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), WITH
+ANOTHER AGENT'S BUILDS AND GATES ON THE SAME MACHINE (P6.2m), so the spread is wider than P6.2's. The rows: the gas
+scene after 40 ticks (6 units, W = 180), replicated to N envs; 9c / 9c3 read that tick's heat / rad_flux_sweep / gas as
+CuPy `(N, ...)` arrays and its claims table. "upload + kernel + download" is the store's upload and the ring's begin,
+the kernel call, then the store's AND the whole ring's download (E_max = 1024 records of 7 int64 per env: 57 KB per
+env, 3.7 MB at N = 64); "kernel call" is the binding alone -- the counts' memset, the claims' staging (9c / 9c3), the
+launch, the ring's per-env gather, the counts' D2H and sync, the dropped counts' D2H and sync. Medians of 200
+repetitions; per row the three processes' medians.
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 2b status_tick | 0.413, 0.446, 0.468 / 0.200, 0.260, 0.268 | 0.525, 0.551, 0.606 / 0.209, 0.276, 0.300 | 1.825, 1.876, 1.960 / 0.289, 0.375, 0.379 |
+| 9c heat_damage | 0.508, 0.604, 0.554 / 0.298, 0.414, 0.355 | 0.631, 0.667, 0.822 / 0.312, 0.394, 0.442 | 1.994, 2.106, 2.054 / 0.376, 0.572, 0.453 |
+| 9c3 gas_rows | 0.462, 0.595, 0.562 / 0.294, 0.422, 0.372 | 0.647, 0.745, 0.778 / 0.328, 0.481, 0.433 | 1.948, 2.166, 2.255 / 0.382, 0.557, 0.538 |
+
+**Reading.** A damage slot's call is P6.2's ~0.14 ms sync plus a second sync for the dropped counts (~0.06 ms) and,
+for 9c / 9c3, the claims' staging; the gather (one thread per env) is a few microseconds at these U. The round trip
+grows with the ring's full download (3.7 MB at N = 64), which the device backend never does per tick: it reads the
+counts and only the records it hashes or rewards. Folding the dropped counts into the counts' D2H (one sync per
+slot) is the obvious saving when a chain of slots runs in the resident tick.
+
+## P6.4a: slot 1b's hand verbs and the done kernel (2026-11-15)
+
+**What.** Slot 1b (`unit_kernels.verbs`: the per-row kernel, the shove's per-target sum, the request list's per-env
+gather, the per-env plant pass) and the done kernel (`unit_kernels.match_done`: one thread per env over its rows),
+free functions over the `(N, U, W)` store, the `(N, T)` device tables and, for 1b, an `(N, R_max, F)` request list
+(`simulation/unit_requests.py`, R_max 256, F 13). Class T: nothing in the played tick calls them.
+
+**Method.** `tests/cuda_unit_verbs_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), WITH THE
+P6.4b AGENT'S BUILDS AND GATES ON THE SAME MACHINE. The rows: the verb scene's entry rows at its busiest tick (k = 2:
+seven shoves, four uses, eight reloads, a throw, a plant; 43 units, W = 180), replicated to N envs, with that tick's
+door spans and live-charge count. "upload + kernel + download" is the store's upload, the call (for 1b the list's
+begin too), then the store's AND the whole request list's download (both rows; 26 KB per env); "kernel call" is the
+binding alone -- for 1b the three inputs' staging, the counts' memset, two row launches, the gather, the plant pass,
+the counts' D2H and sync, the dropped counts' D2H and sync; for the done kernel the ticks' staging, one launch, the
+`(N, 4)` D2H and sync. Medians of 200 repetitions; per row the three processes' medians.
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 1b verbs | 0.622, 0.526, 0.645 / 0.422, 0.367, 0.431 | 0.714, 0.828, 0.836 / 0.420, 0.474, 0.485 | 3.430, 3.379, 3.454 / 1.019, 0.994, 1.031 |
+| done match_done | 0.346, 0.435, 0.433 / 0.191, 0.224, 0.223 | 0.537, 0.544, 0.570 / 0.250, 0.248, 0.255 | 3.407, 3.390, 3.481 / 0.843, 0.822, 0.825 |
+
+**Reading.** Slot 1b's call is four launches and two syncs (~0.4 ms) at small N; at N = 64 it grows to ~1 ms, the
+serial per-env passes (the gather and the plant pass, one thread per env walking 43 rows) and the per-row kernel's
+O(U) shove scan being the parts that scale. The done kernel's ~0.8 ms at N = 64 is its one-thread-per-env O(U^2)
+team count plus the sync: a block reduction per env (or a team bitset) is the saving when it runs every tick. The round
+trips are dominated by the store's 3.9 MB download at N = 64, which the device backend never does per tick.
+
+## P6.4b: the per-env serial applier and the tick-end clears (2026-11-15)
+
+**What.** The per-env serial applier (`cpp/src/cuda_applier.cu`: one block per env, thread 0 walking the env's
+DESTROY_WALL effects through the topology seam's device functions, `cpp/src/cuda_topology.cuh`) and the tick-end
+clears (one `(N, h, w)` launch zeroing heat, rad_net, rad_amb, rad_flux). Class T: nothing in the played tick calls
+them.
+
+**Method.** `tests/cuda_unit_topology_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), with
+another agent's builds and gates on the same machine (P6.4a). The planes: the gate's fire scene (30 x 40, the 27
+topology planes per env) replicated to N envs, re-copied from a pristine device copy before every repetition (outside
+the timing). "applier" is `unit_kernels.apply_effects`: the list's pinned staging and H2D, the books' memset, the walk
+of k destroys per env (the scene's wood then hull tiles, in row-major order), the books' D2H and sync; "clears" is the
+launch plus a device sync. Medians of 100 repetitions; per cell the three processes' medians.
+
+| N | 1 destroy / env (ms) | 8 / env | 64 / env | the clears |
+|---|---|---|---|---|
+| 1 | 0.293, 0.288, 0.289 | 0.293, 0.317, 0.313 | 0.519, 0.509, 0.530 | 0.038, 0.067, 0.053 |
+| 8 | 0.268, 0.301, 0.302 | 0.301, 0.334, 0.335 | 0.531, 0.562, 0.561 | 0.039, 0.067, 0.053 |
+| 64 | 0.421, 0.455, 0.458 | 0.460, 0.486, 0.488 | 0.773, 0.806, 0.807 | 0.040, 0.067, 0.067 |
+
+**Reading.** The floor (~0.29 ms) is the call's two host syncs (the stage's event wait, the books' D2H) and the
+staging; the walk itself is ~3.5 us per destroy on one thread (64 destroys add ~0.23 ms at every N, the envs' walks
+running in parallel blocks). A tick's burn-throughs are a handful (the fire scene: at most 3 per env per tick), so the
+serial walk is far below the §4.3 share; the fan-out the design reserves is for P7c's thousands of deposit records,
+not for destroys. At N = 64 the extra ~0.15 ms is the larger list's staging and the books' copy. In the device backend
+the books come down only at checkpoint cadence (§5.10), which removes the floor's second sync.

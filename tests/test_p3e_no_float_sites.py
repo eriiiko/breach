@@ -57,6 +57,15 @@ SITES = [
     ("exchange.py", "felt_temperature_q"),
     ("exchange.py", "apply_environmental_damage"),
     ("exchange.py", "apply_poison_dose"),
+    # (h) the poison law (#29 PX)
+    ("poison.py", "fraction_q"),
+    ("poison.py", "step"),
+    ("poison.py", "dose"),
+    ("poison.py", "advance"),
+    ("poison.py", "tick"),
+    ("poison.py", "onset_q"),
+    ("poison.py", "decay_q"),
+    ("poison.py", "harm_q"),
     # (f) FieldEdit and the stamp refill
     ("field_edit.py", "_iter_region"),
     ("field_edit.py", "apply_field_edit"),
