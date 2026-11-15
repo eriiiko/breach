@@ -57,6 +57,7 @@ added; the snapshot contract is forward-compatible.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from numbers import Integral
 from typing import List, Optional
 
@@ -79,6 +80,7 @@ from simulation.simultaneous import SimultaneousEffects
 from simulation import exposure
 from simulation import horde
 from simulation import noise
+from simulation import poison
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -135,6 +137,7 @@ from simulation import turning
 from simulation import unit_fixed
 from simulation import unit_impulse
 from simulation import unit_orders
+from simulation import unit_traits
 from simulation import verb_gates
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
@@ -366,6 +369,8 @@ class Simulation:
         # The focus-fire law's dials (G4p, [damage.exposure] + [zombie]
         # expose_resist), quantized once through their refusing door.
         self.exposure_settings = exposure.rebuild_settings()
+        # The poison law's dials (#29 PX, [damage.poison]), the same.
+        self.poison_settings = poison.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -550,16 +555,18 @@ class Simulation:
     # ------------------------------------------------------------------
     # Unit management
     # ------------------------------------------------------------------
-    def add_unit(self, unit, position=None) -> int:
+    def add_unit(self, unit, position=None, *, hooks=None) -> int:
         """Register ``unit`` with the sim, assign it a stable id.
 
         ``position`` is optional — if provided as ``(x, y)`` in
         physics-tile coords, the unit is teleported there before its
         first tick. Otherwise the unit keeps its constructor-set position.
 
-        Re-samples the unit's BaseStats using ``self.rng`` so that spawns
-        are deterministic when the Simulation was constructed with a seed.
-        This overwrites the random-seeded stats drawn at Unit construction.
+        Re-assigns the unit's predefined BaseStats (the species means), then
+        COMPILES it (#29 U1, ``unit_traits.compile_unit``: the hook block --
+        all ONE bar the sheet overrides ``hooks``, ``{hook name: Q16 int}`` --
+        and ``mass_g``) and sets its hp to its full health
+        (``unit_traits.max_hp_q``).
         """
         if position is not None:
             x, y = position
@@ -573,9 +580,12 @@ class Simulation:
         base_stats, mass, base_speed = predefined_unit_attributes(species)
         unit.base_stats = base_stats
         unit.mass = mass
-        unit_impulse.bind_mass(unit)          # G5p-a2: body + kit, grams
         unit.base_speed = base_speed
-        unit.current_hp = float(base_stats.vitality)
+        # #29 U1: THE compile step -- the hooks (unit_traits.compile_unit,
+        # their only writer) and mass_g (body + kit, grams, G5p-a2) -- then
+        # the full health of the class times the HP hook.
+        unit_traits.compile_unit(self, unit, hooks)
+        unit.hp_q = unit_traits.max_hp_q(unit)
 
         unit.id = self._next_unit_id
         self._next_unit_id += 1
@@ -691,11 +701,14 @@ class Simulation:
             reqs.clear()
         update_zombies_tick(self.gmap, units, self.tick,
                             events=self.tick_events,
-                            shamble_ticks=self.speed_table.zombie_shamble_ticks,
+                            # the class cadences, handed to the zombie walk's
+                            # default_speed with each zombie's own WALK / SPRINT
+                            # hook (ai_zombie._walk, #29 U1)
+                            shamble_ticks=self.speed_table.zombie_shamble_ticks,  # traits-class: WALK
                             settings=self.horde_settings,
                             state=self.horde_state, noises=noises,
                             doors=self._doors,
-                            sprint_ticks=self.speed_table.zombie_sprint_ticks)
+                            sprint_ticks=self.speed_table.zombie_sprint_ticks)  # traits-class: SPRINT
 
     def controlled_units(self) -> list:
         """The living units of :attr:`player_team` — the human's squad."""
@@ -1059,17 +1072,23 @@ class Simulation:
 
     def unit_turn_rate_q16(self, u) -> int:
         """The top turning speed of unit ``u`` in Q16.16 radians per tick
-        (G1p's cap; the turning law's ``w``). Read per unit: today every unit
-        -- a zombie too, a copy of the unit it infected -- has the marine
-        row's (``[marine] turn_rate_deg_per_s``); later a stat (dexterity,
-        armour weight) -- a change here, never at the callers."""
-        return self._marine_turn_rate_q16
+        (G1p's cap; the turning law's ``w``): THE accessor of the TURN hook
+        (#29 U1) -- the class value, the marine row's ``[marine]
+        turn_rate_deg_per_s`` (every unit's: a zombie too, a copy of the
+        unit it infected), times ``u``'s TURN hook, rounded once. The law,
+        the predictor, the bots and the observation read it; never the
+        cached class value. int64: w < 2^18 x 2^19."""
+        return unit_traits.scaled(u, unit_traits.TURN,
+                                  self._marine_turn_rate_q16)
 
     def unit_turn_accel_q16(self, u) -> int:
         """The own angular acceleration of unit ``u`` in Q16.16 radians per
         tick^2 (G5p-a1, the turning law's ``a``; ``[marine]
-        turn_accel_rad_per_s2``), read per unit as the top speed is."""
-        return self._marine_turn_accel_q16
+        turn_accel_rad_per_s2``) times its TURN hook, read per unit as the
+        top speed is (#29 U1; the compile door refuses a hook that takes the
+        law past its trial bound). int64: a < 2^18 x 2^19."""
+        return unit_traits.scaled(u, unit_traits.TURN,
+                                  self._marine_turn_accel_q16)
 
     def facing_after_turn_q16(self, u, dx_q: int, dy_q: int) -> int:
         """The facing (Q16.16 radians) ``u`` has after this tick's turn
@@ -1252,6 +1271,11 @@ class Simulation:
         if u is None:
             return
         u.pending_melee = True
+        # Possessed like every other hand verb (#29 reference debt): slot 1b
+        # consumes none of melee's state (4a does), so this only makes
+        # possession mean "the unit has issued a hand verb", with no
+        # exception for the device port of slot 1b (P6.4) to model.
+        self._possessed_ids.add(unit_id)
 
     def set_flashlight(self, unit_id: int, off: bool) -> None:
         """FLASHLIGHT (gameplay pack G7p): hold ``unit_id``'s flashlight bit
@@ -1415,8 +1439,9 @@ class Simulation:
         # winding up, planting (#193), none of that kind, stunned / paralysed.
         if not verb_gates.can_throw(self, u, throw.kind):
             return
-        ticks = self.weapons_tables.weapons.by_name[
-            "hand_grenade"].throw_windup_ticks
+        # #29 U1: the unit's own wind-up, the HANDLING hook's accessor
+        ticks = unit_traits.throw_windup_ticks(
+            u, self.weapons_tables.weapons.by_name)
         self.tick_events.append(ThrowEvent(unit_id=int(u.id),
                                            kind=int(throw.kind),
                                            ticks=int(ticks)))
@@ -1463,7 +1488,8 @@ class Simulation:
         # busy, no charge carried, stunned / paralysed.
         if not verb_gates.can_plant(self, u):
             return
-        ticks = self.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks
+        # #29 U1: the unit's own plant, the HANDLING hook's accessor
+        ticks = unit_traits.plant_ticks(u, self.weapons_tables.weapons.by_name)
         self.tick_events.append(PlantEvent(unit_id=int(u.id),
                                            ticks=int(ticks)))
         u.plant_done_tick = self.tick + ticks
@@ -1652,9 +1678,11 @@ class Simulation:
                     tile_path = []
                     cx, cy = current_x, current_y
                     speed = _ticks_per_tile(move_orders[0].order_type)
+                    mo_type = move_orders[0].order_type     # #29 U1
 
                     for mo in move_orders:
                         speed = _ticks_per_tile(mo.order_type)
+                        mo_type = mo.order_type
                         if HAS_PATHFINDING:
                             segment = astar(cx, cy, mo.target_fx, mo.target_fy,
                                             is_blocked, w, h)
@@ -1682,7 +1710,13 @@ class Simulation:
                             samples = footprint_samples(
                                 gmap, tile_y, tile_x, fp,
                                 effort_scale_q16=unit_impulse.effort_scale_q16(
-                                    unit_impulse.table_for(gmap), u))
+                                    unit_impulse.table_for(gmap), u),
+                                # #29 U1: a sprint order is the full speed,
+                                # every other order the walk
+                                speed_hook_q16=unit_traits.hook(
+                                    u, unit_traits.SPRINT
+                                    if mo_type == ORDER_SPRINT
+                                    else unit_traits.WALK))
                             step_ticks = default_speed(samples, speed)
                             for st in range(step_ticks):
                                 frac = (st + 1) / step_ticks
@@ -1988,21 +2022,33 @@ class Simulation:
         for the human player's planning UI. AI training rollouts ignore
         pause (they never call set_paused).
 
-        Tick ordering — load-bearing! Matches the legacy
-        ``Game._process_tick`` (game.py:1696-1747), with the status pass
-        (2b) added at the top of the unit-simulation section (P3):
-          1. Clear tick_events (this tick is a fresh slate)
-          1c. Exposure decays (G4p)
-          2. Update projectiles (advance position, detonate)
-          2b. Tick unit statuses (durations count down; DoT/HoT emit)
-          3. Update player movement (read precomputed path)
-          4. Process shooting (auto-fire on move, fire orders)
-          5. Zombie AI
-          6. Re-stamp obstacles (so physics sees the new unit positions)
-          7. Physics step (atmosphere, smoke, fire)
-          8. Door explosives at phase boundary or end of round
-          9. Process burn-through walls (fire destroyed)
-         10. Increment tick + auto-pause check
+        Tick ordering — load-bearing! The numbered slots, each a call
+        below with its own comment (the P6 slot inventory,
+        ``docs/residency_p6_slot_inventory_2026-11-14.md``, is the long form):
+          1.   Clear tick_events; the ruleset's round-clock head
+          1a.  Impulse integration + the turn (every living unit)
+          1b.  Direct-control intents (the possessed units' latches)
+          1b'. The commander's orders written onto their units
+          1c.  Exposure decays
+          2.   Projectiles: grenades (move, detonate), then rounds in flight
+          2b.  Unit statuses tick (durations count down; DoT/HoT emit)
+          3.   Movement (the displacement loop)      } or the ruleset's
+          4.   Shooting, phase A                     } ``drive_units``
+          4a.  Melee blows, phase A
+          4b.  Spray deposits
+          4c.  The attack slot's phase B (``resolve``)
+          5.   Zombie AI (the horde field)
+          6.   Re-stamp obstacles; 6b. flush the field-edit queue
+          7.   Physics step
+          9.   Burn-through walls; 9b. over-pressure walls
+          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose;
+               9c3'. the poison law; 9d. temperature ignition
+          9e.  Entities (signals, pumps, vents, doors, timed and planted
+               charges, heat sources); recorder snapshot; tick-end clears
+         10.   Tick advance; 10'. orders expire; the ruleset's tick end
+               (conversion; WEGO's phase / round boundary and door
+               explosives; on the continuous path, spent grenades dropped)
+         11.   The team picture (a match only)
         """
         if not self._step_pre_physics():
             return
@@ -2148,7 +2194,15 @@ class Simulation:
         # for this tick (a laser burn-off and a grenade cloud issued the same
         # tick both land before smoke advection). This is the single RNG consumer
         # for noise>0 edits, keyed draws (seed, tick, edit key, tile; P3b).
-        self.edit_queue.flush(self.gmap, self.draws)
+        # #29 P4c: on the resident path the DEVICE applies this flush (the
+        # device edit queue, applied by slot 7 right after its entry upload):
+        # the runner takes the queue in the same order and packs it, or
+        # flushes here on the host when the device cannot serve the tick.
+        runner = self.physics_runner
+        if runner is not None and runner.serves_edit_queue():
+            runner.serve_edit_queue(self.gmap, self.edit_queue, self.draws)
+        else:
+            self.edit_queue.flush(self.gmap, self.draws)
         return True
 
     def _step_physics(self):
@@ -2170,17 +2224,9 @@ class Simulation:
     def _step_post_physics(self, destroyed) -> None:
         """Slots 9 .. 10, given slot 7's burn-through walls."""
         sim_time_per_tick = 1.0 / float(self._tps)
-        # 9. Process fire burn-through walls. A6: the door-event split keys
-        # on BOTH door materials — legacy painted MAT_DOOR and the entity
-        # door's MAT_DOOR_CLOSED (a6 doors design §1).
-        for (yy, xx) in destroyed:
-            mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
-                                                      and 0 <= xx < self.gmap.material.shape[1]) else -1
-            self.gmap.destroy_wall(yy, xx)
-            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
-                self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
-            else:
-                self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+        # 9. Process fire burn-through walls (a named call since #29 P6.1, so
+        # the slot has a profiler label; the body is unchanged).
+        self._burn_through_walls(destroyed)
 
         # 9b. Over-pressure wall failure (ch.04 §5) — the emergent pressure
         # relief valve. After physics settles, any wall holding a differential
@@ -2201,9 +2247,11 @@ class Simulation:
         # 9c. Unit heat damage (engine/06 §4, proposal §4.2/§6 step 4a). The
         # SECOND consumer of the per-tick `heat` deposit (the C++ heat ->
         # temperature conversion inside physics_runner.step() is the first):
-        # each living unit samples the already-occluded `heat` buffer at its
-        # footprint and takes radiant damage if the felt temperature pushes
-        # past its tolerance band. Runs AFTER physics fills `heat`, BEFORE the
+        # each living unit reads, per footprint tile, the larger of the `heat`
+        # deposit buffer and the radiation sensor `rad_flux_sweep`
+        # (exchange.felt_temperature), takes the hottest tile, and takes
+        # radiant damage if the felt temperature pushes past its tolerance
+        # band. Runs AFTER physics fills `heat`, BEFORE the
         # recorder snapshot (so the snapshot captures post-damage HP) and BEFORE
         # the end-of-tick heat clear below — its existence is precisely what
         # makes wiping `heat` correct (a reader finally consumes it).
@@ -2233,16 +2281,22 @@ class Simulation:
         # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
         # planes at each living unit's footprint: teargas above threshold
         # applies BLINDED (snap-cone fire from next tick — the step-2b
-        # trigger-position semantics); poison above threshold emits one
-        # POISON packet per tick through the mechanics/06 pipeline (zombies
-        # immune). WITHIN-TICK EXCHANGE ORDER (documented contract): heat
-        # (9c), wind (9c2), teargas, poison. Lazy: an all-zero plane is one
-        # integer .any() and out — every gas-free trajectory (the canonical
-        # golden included) is bit-identical to pre-W3. No RNG.
+        # trigger-position semantics); poison above threshold gives a DOSE
+        # of the poison law (#29 PX, poison.dose; zombies immune).
+        # WITHIN-TICK EXCHANGE ORDER (documented contract): heat (9c), wind
+        # (9c2), teargas, poison. Lazy: an all-zero plane is one integer
+        # .any() and out — every gas-free trajectory (the canonical golden
+        # included) is bit-identical to pre-W3. No RNG.
         if self.physics_runner is not None:
             apply_teargas_blind(self.units, self.gmap)
             apply_poison_dose(self.units, self.gmap, self._tps,
                               events=self.tick_events)
+        # 9c3'. The poison law (#29 PX, simulation.poison): every living unit
+        # holding poison moves depot -> blood -> out, and what leaves the
+        # blood hurts as one POISON packet (credited to its dose). Outside
+        # the physics guard: a level dosed by any row keeps draining. Dormant
+        # (two int reads per unit) while nobody holds poison.
+        poison.tick(self.units, self.tick, self.tick_events)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver
@@ -2362,6 +2416,49 @@ class Simulation:
                                  self.units, entities=self.entities,
                                  signals=self._digest_signals())
 
+        # The tick-end clears (a named call since #29 P6.1, so they have a
+        # profiler label; the body is unchanged).
+        self._clear_tick_buffers()
+
+        # 10. Advance tick (the clock itself — not WEGO policy, stays here
+        # unconditionally so a future ContinuousRealtime ruleset still
+        # ticks) + route phase-boundary/round-end/auto-pause through the
+        # ruleset (control-modularity P1, §3a). Verbatim body in
+        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
+        self.tick += 1
+        self.real_time += sim_time_per_tick
+
+        # 10'. An order whose tick has come is cleared (#195 1f) -- right
+        # after the advance, so between ticks a held order has time left.
+        unit_orders.expire(self)
+
+        self.ruleset.on_tick_end(self)
+
+        # 11. The team picture (#195 1d; a match only): each marine team's
+        # records of what it sees at the tick the next controllers run at --
+        # after the tick advance and on_tick_end, so a conversion this step
+        # made is seen. Once per tick, never on demand.
+        if self.team_picture is not None:
+            self.team_picture.update(self)
+
+    def _burn_through_walls(self, destroyed) -> None:
+        """Slot 9: process slot 7's fire burn-through walls. A6: the
+        door-event split keys on BOTH door materials — legacy painted
+        MAT_DOOR and the entity door's MAT_DOOR_CLOSED (a6 doors design
+        §1)."""
+        for (yy, xx) in destroyed:
+            mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
+                                                      and 0 <= xx < self.gmap.material.shape[1]) else -1
+            self.gmap.destroy_wall(yy, xx)
+            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
+                self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
+            else:
+                self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+
+    def _clear_tick_buffers(self) -> None:
+        """The tick-end clears: the per-tick deposit planes, the deposit
+        credit and the expired shot tracers -- after every reader of the
+        tick, before the tick advance."""
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit
         # buffer, not a cross-tick accumulator; it is wiped once both readers
@@ -2416,27 +2513,6 @@ class Simulation:
         if self.shots:
             self.shots = [s for s in self.shots if
                           self.real_time - s.time < s.duration]
-
-        # 10. Advance tick (the clock itself — not WEGO policy, stays here
-        # unconditionally so a future ContinuousRealtime ruleset still
-        # ticks) + route phase-boundary/round-end/auto-pause through the
-        # ruleset (control-modularity P1, §3a). Verbatim body in
-        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
-        self.tick += 1
-        self.real_time += sim_time_per_tick
-
-        # 10'. An order whose tick has come is cleared (#195 1f) -- right
-        # after the advance, so between ticks a held order has time left.
-        unit_orders.expire(self)
-
-        self.ruleset.on_tick_end(self)
-
-        # 11. The team picture (#195 1d; a match only): each marine team's
-        # records of what it sees at the tick the next controllers run at --
-        # after the tick advance and on_tick_end, so a conversion this step
-        # made is seen. Once per tick, never on demand.
-        if self.team_picture is not None:
-            self.team_picture.update(self)
 
     # ------------------------------------------------------------------
     # Tick-step helpers
@@ -2622,15 +2698,19 @@ class Simulation:
             samples = footprint_samples(
                 self.gmap, u.tile_y, u.tile_x, fp,
                 effort_scale_q16=unit_impulse.effort_scale_q16(
-                    self.impulse_table, u))
+                    self.impulse_table, u),
+                speed_hook_q16=unit_traits.hook(u, unit_traits.WALK))
             # G1p-c: the walk and the full speed (Q16 ticks per tile), each
-            # reduced by terrain, wind and effort, then the direction rule and
-            # the throttle as ONE exact rational, rounded once to Q16.
+            # reduced by terrain, wind and effort -- and (#29 U1) the unit's
+            # own WALK / SPRINT hook -- then the direction rule and the
+            # throttle as ONE exact rational, rounded once to Q16.
             table = self.speed_table
             cos_q = facing_cos_q16(move_dir.dx_q, move_dir.dy_q, u.facing_q)
             v_q = move_speed_q16(
-                default_speed(samples, table.walk_cost_q),
-                default_speed(samples, table.full_cost_q),
+                default_speed(samples, table.walk_cost_q),  # traits-class: WALK
+                default_speed(_dc_replace(samples, speed_hook_q16=(
+                    unit_traits.hook(u, unit_traits.SPRINT))),
+                    table.full_cost_q),  # traits-class: SPRINT, the samples' hook
                 table.side_q, table.back_q, move_dir.throttle_q, cos_q)
             wdx, wdy = unit_impulse.walk_step_q(move_dir, v_q)
         unit_impulse.move(self.gmap, u, wdx, wdy)

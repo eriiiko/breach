@@ -11,10 +11,10 @@ What is locked here:
     coupling row applies refresh-stacked BLINDED above the density
     threshold; a blinded unit's AIMED fire order draws from the SNAP cone
     (predicted draw-for-draw on a parallel generator);
-  - POISON DoT: exact per-tick amounts (the heat row's idiom — dps x
-    density / tps, quantized round-half-away at the HP boundary), the
-    threshold edge (one count below = nothing), and ZOMBIE IMMUNITY
-    (resist 0 -> no packet, no event, 0 damage — lazy emission);
+  - POISON DOSE (#29 PX): the row doses the poison law (exactly
+    gas_units_per_second x density / tps, one rational rounded once) and
+    emits nothing itself; the threshold edge (one count below = nothing),
+    and ZOMBIE IMMUNITY (no dose, no event, 0 damage);
   - DORMANCY: gas-free planes cost one .any() and change nothing; the rows
     draw no RNG ever.
 
@@ -265,16 +265,23 @@ def test_teargas_blinds_through_the_simulation_tick():
 
 
 # ---------------------------------------------------------------------------
-# Poison DoT — exact per-tick amounts, threshold edge, zombie immunity
+# Poison dose (#29 PX: the row doses the poison law; it emits no packet)
 # ---------------------------------------------------------------------------
-def test_poison_dose_exact_per_tick_amounts():
-    """The heat row's idiom, pinned: applied = quantize_hp_delta(
-    poison_dps x dequantize_trace(density_q) x (1 / tps)) — round-half-away onto
-    the Q16.16 grid. Full density at the standard values (dps 6, 24 tps)
-    is EXACTLY 0.25 HP/tick (16384 counts): 6 HP/s."""
-    tps = int(CFG.clock.ticks_per_second)
-    dps = float(CFG.exchange.poison_dps)
+def _dose_q(density_q, tps):
+    from simulation import poison
+    return unit_fixed.div_round(poison.get_settings().gas_q * int(density_q),
+                                int(gas_fixed.TRACE_ONE) * int(tps))
 
+
+def test_poison_dose_exact_per_tick_amounts():
+    """Property (#29 PX): the gas row gives the poison law a DOSE of exactly
+    ``round(gas_units_per_second x density / tps)`` Q16 units (one rational
+    rounded once, the P3e idiom), linear in density, and emits NO packet of
+    its own (the law hurts later). Breaks if the row returns to direct
+    damage or the dose is rounded twice. (Was the pre-PX exact per-tick
+    damage pin, 0.25 HP a tick at full density; the TOTAL harm a dose
+    carries is the same 6 HP a second: 0.6 units x 10 HP.)"""
+    tps = int(CFG.clock.ticks_per_second)
     for density in (1.0, 0.5):
         gmap = _room()
         u = Unit("M", x=8, y=8, team=0)
@@ -283,30 +290,23 @@ def test_poison_dose_exact_per_tick_amounts():
         q = _fill_footprint(gmap.gas[GAS_POISON], u, density)
         events = []
         apply_poison_dose([u], gmap, tps, events=events)
-        expected = unit_fixed.quantize_hp_delta(
-            dps * float(gas_fixed.dequantize_trace(q)) * (1.0 / tps))
-        assert u.current_hp == 1000.0 - expected
-        hits = [e for e in events if isinstance(e, UnitHitEvent)]
-        assert len(hits) == 1
-        assert hits[0].damage == expected
-        assert hits[0].source == "poison_gas"
-
-    # The standard-value anchor: full density = exactly 0.25 HP per tick.
-    assert unit_fixed.quantize_hp_delta(dps * 1.0 * (1.0 / tps)) == 0.25
-
-    # Three ticks accumulate exactly 3x (integer-grid deltas sum exactly).
+        assert u.current_hp == 1000.0                 # no damage at the row
+        assert events == []
+        assert u.poison_x0 == _dose_q(q, tps) > 0
+        assert u.poison_x1 == 0
+    # Three ticks accumulate exactly 3x in the depot.
     gmap = _room()
     u = Unit("M", x=8, y=8, team=0)
-    u.current_hp = 1000.0
-    _fill_footprint(gmap.gas[GAS_POISON], u, 1.0)
+    q = _fill_footprint(gmap.gas[GAS_POISON], u, 1.0)
     for _ in range(3):
         apply_poison_dose([u], gmap, tps, events=None)
-    assert u.current_hp == 1000.0 - 3 * 0.25
+    assert u.poison_x0 == 3 * _dose_q(q, tps)
 
 
 def test_poison_threshold_edge():
-    """One count below quantize(poison_min_density): NOTHING (no packet, no
-    event). At the threshold exactly: the packet lands."""
+    """Property: one count below quantize(poison_min_density) doses NOTHING
+    (no write at all); at the threshold exactly the dose lands. Breaks if
+    the gate moves or the row writes a zero dose."""
     tps = int(CFG.clock.ticks_per_second)
     thresh_trace_q = gas_fixed.quantize_trace_scalar(float(CFG.exchange.poison_min_density))
 
@@ -315,41 +315,38 @@ def test_poison_threshold_edge():
     u.current_hp = 1000.0
     for (tx, ty) in u.occupied_tiles():
         gmap.gas[GAS_POISON][ty, tx] = thresh_trace_q - 1
-    events = []
-    apply_poison_dose([u], gmap, tps, events=events)
-    assert u.current_hp == 1000.0 and events == []
+    apply_poison_dose([u], gmap, tps, events=None)
+    assert u.poison_x0 == 0 and u.poison_src == -1
 
     for (tx, ty) in u.occupied_tiles():
         gmap.gas[GAS_POISON][ty, tx] = thresh_trace_q
-    apply_poison_dose([u], gmap, tps, events=events)
-    expected = unit_fixed.quantize_hp_delta(
-        float(CFG.exchange.poison_dps) * float(gas_fixed.dequantize_trace(thresh_trace_q))
-        * (1.0 / tps))
-    assert expected > 0
-    assert u.current_hp == 1000.0 - expected
-    assert len(events) == 1
+    apply_poison_dose([u], gmap, tps, events=None)
+    assert u.poison_x0 == _dose_q(thresh_trace_q, tps) > 0
 
 
 def test_zombie_poison_immunity_zero_damage_no_events():
-    """resist_mult[POISON] = 0 on the zombie overlay: a zombie parked in
-    FULL-density poison takes 0 damage and draws NO packet at all (lazy
-    emission — no 0-damage event spam on a horde standing in gas)."""
+    """Property: a zombie parked in FULL-density poison takes no dose, holds
+    no poison, takes 0 damage and draws no event; a marine in the SAME
+    cloud is dosed. Breaks if the zombie gate goes from the row or the
+    dose door."""
+    from simulation import poison
     tps = int(CFG.clock.ticks_per_second)
     gmap = _room()
     z = Unit("Z", x=8, y=8, team=ZOMBIE_TEAM)
     z.id = 7
     z.current_hp = 400.0
-    _fill_footprint(gmap.gas[GAS_POISON], z, 1.0)
+    q = _fill_footprint(gmap.gas[GAS_POISON], z, 1.0)
     events = []
     for _ in range(10):
         apply_poison_dose([z], gmap, tps, events=events)
+        poison.tick([z], 0, events)
     assert z.current_hp == 400.0
     assert events == []
-    # The marine control in the SAME cloud takes the exact dose.
+    assert z.poison_x0 == z.poison_x1 == 0
     m = Unit("M", x=8, y=8, team=0)
     m.current_hp = 1000.0
     apply_poison_dose([m], gmap, tps, events=events)
-    assert m.current_hp == 1000.0 - 0.25
+    assert m.poison_x0 == _dose_q(q, tps)
 
 
 def test_poison_drains_a_marine_through_the_simulation():

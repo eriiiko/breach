@@ -205,7 +205,7 @@ bool upload_if_changed(std::vector<T>& cache, DevBuf& dev, const T* src, size_t 
 constexpr int DESTROYED_HEAD = 64;
 struct ArenaLayout {
     size_t wt, comb, temp, sweep, kick, flux, ecnt, rail, tcnt, ttail, pre, nsub,
-           fire_cnt, fire_gate, end;
+           fire_cnt, fire_gate, edq, end;
     explicit ArenaLayout(int N = 1) {
         const size_t n = (size_t)(N > 0 ? N : 1);
         wt    = 0;
@@ -222,7 +222,8 @@ struct ArenaLayout {
         nsub  = pre   + n * EOS_PRE_SLOTS;
         fire_cnt  = nsub + 1;
         fire_gate = fire_cnt + (n + 1) / 2;   // (N,) int
-        end       = fire_gate + (n + 1) / 2;  // (N,) int32
+        edq       = fire_gate + (n + 1) / 2;  // (N,) int32
+        end       = edq + n * EDQ_SLOTS;      // #29 P4c: the edit queue's books
     }
 };
 
@@ -260,6 +261,8 @@ struct ResidentTickState {
     PinBuf water_active_h;
     DevBuf stamp_rows, stamp_winner;   // #29 P4b
     PinBuf stamp_rows_h;               // its pinned staging copy (async H2D)
+    DevBuf edq_buf, edq_contrib;       // #29 P4c: the edit queue's records + scratch
+    PinBuf edq_h;                      // its pinned staging copy (async H2D)
     DevBuf tt_scal, tt_s0;             // #29 P5: the trace tail's folds + snapshot
     std::vector<int32_t> tt_scal_c;
     DevBuf dlist;                      // (N, h, w) destroyed-wall lists
@@ -278,6 +281,7 @@ struct ResidentTickState {
     bool eos_rail = false;
     bool tt_ran = false;
     std::vector<int> tt_trace_gi;
+    bool edq_ran = false;              // #29 P4c: the edit queue ran this tick
     // this tick's light inputs (resident_upload_light)
     bool light_uploaded = false;
     bool l_cones = false, l_sky = false, l_emult = false;
@@ -521,6 +525,102 @@ void resident_stamp(const EngineList& engs, const ResidentFields& f,
         P<int32_t>(f.dyn_light_atten_q), d_rows,
         S.stamp_winner.get<int32_t>((size_t)f.n_env * n));
     ++g_counts[11];
+}
+
+// ---------------------------------------------------------------------------
+// #29 P4c: the edit queue (slot 6b's FieldEdit flush), every env's records in
+// one upload, the books into the arena (folded by resident_tail)
+// ---------------------------------------------------------------------------
+void resident_edits(const EngineList& engs, const ResidentFields& f,
+                    const int64_t* buf, int n_edits, int n_tiles,
+                    uint32_t salt, int o2_idx, int n2_idx) {
+    check_batch(engs, f, "resident_edits");
+    ResidentTickState& S = g_rt;
+    S.key(f.n_env, f.h, f.w);
+    const int n = f.h * f.w, N = f.n_env;
+    if (n <= 0) return;
+    if (n_edits < 0 || n_tiles < 0 || buf == nullptr)
+        throw std::invalid_argument("resident_edits: bad records");
+    if (f.n_gases <= 0 || f.n_gases > EDQ_GAS_MAX)
+        throw std::invalid_argument("resident_edits: n_gases outside [1, EDQ_GAS_MAX]");
+    if (o2_idx < 0 || o2_idx >= f.n_gases || n2_idx < 0 || n2_idx >= f.n_gases)
+        throw std::invalid_argument("resident_edits: a bulk gas index outside the block");
+    if (!f.gas || !f.temperature || !f.gas_energy || !f.fire || !f.heat || !f.solid ||
+        !f.is_vacuum || !f.thermal_solid || !f.flammable)
+        throw std::invalid_argument("resident_edits: a plane the queue writes or reads "
+                                    "is not resident");
+    // THE DOOR (the stamp's idiom): every row inside the batch and its grid, each
+    // env's tiles contiguous and belonging to that env's edits, every field one the
+    // device serves -- an illegal record is refused here, never an out-of-bounds
+    // write on the device.
+    const int64_t* off = buf;
+    const int64_t* edits = buf + (N + 1) + (size_t)N * EDQ_ENV_COLS;
+    const int64_t* tiles = edits + (size_t)n_edits * EDQ_EDIT_COLS;
+    if (off[0] != 0 || off[N] != n_tiles)
+        throw std::invalid_argument("resident_edits: the env offsets do not span the tiles");
+    for (int e = 0; e < N; ++e) {
+        if (off[e + 1] < off[e])
+            throw std::invalid_argument("resident_edits: the env offsets decrease");
+    }
+    for (int k = 0; k < n_edits; ++k) {
+        const int64_t* er = edits + (size_t)k * EDQ_EDIT_COLS;
+        const int64_t fld = er[EDQ_E_FIELD];
+        if (er[EDQ_E_ENV] < 0 || er[EDQ_E_ENV] >= N)
+            throw std::invalid_argument("resident_edits: an edit's env outside the batch");
+        if (fld < 0 || fld >= EDQ_N_FIELDS || fld == EDQ_F_WATER_DEPTH)
+            throw std::invalid_argument("resident_edits: a field the device does not serve");
+        if ((fld == EDQ_F_GAS || fld == EDQ_F_SMOKE) &&
+            (er[EDQ_E_SLICE] < 0 || er[EDQ_E_SLICE] >= f.n_gases))
+            throw std::invalid_argument("resident_edits: a gas slice outside the block");
+        if (er[EDQ_E_MODE] < 0 || er[EDQ_E_MODE] > 2)
+            throw std::invalid_argument("resident_edits: an unknown mode");
+        if (er[EDQ_E_DEN] <= 0 || er[EDQ_E_DEN] >= (int64_t(1) << 62))
+            throw std::invalid_argument("resident_edits: a denominator outside (0, 2^62)");
+        if (er[EDQ_E_NOISY] && (er[EDQ_E_LOW] < 0 || er[EDQ_E_LOW] > 65536))
+            throw std::invalid_argument("resident_edits: a noise low bound outside [0, ONE]");
+    }
+    for (int e = 0; e < N; ++e) {
+        for (int64_t t = off[e]; t < off[e + 1]; ++t) {
+            const int64_t* tr = tiles + (size_t)t * EDQ_TILE_COLS;
+            if (tr[0] < 0 || tr[0] >= n_edits || tr[1] < 0 || tr[1] >= n ||
+                edits[(size_t)tr[0] * EDQ_EDIT_COLS + EDQ_E_ENV] != e)
+                throw std::invalid_argument("resident_edits: a tile outside its env's "
+                                            "edits or grid");
+        }
+    }
+    cudaStream_t st = tstream();
+    unsigned long long* arena = S.arena_dev();
+    cuda_check(cudaMemsetAsync(arena + S.L.edq, 0,
+                               (size_t)N * EDQ_SLOTS * sizeof(unsigned long long), st),
+               "memset edit books");
+    const size_t count = (size_t)(N + 1) + (size_t)N * EDQ_ENV_COLS +
+                         (size_t)n_edits * EDQ_EDIT_COLS + (size_t)n_tiles * EDQ_TILE_COLS;
+    // Sized with headroom so a steady-state tick never re-allocates (a
+    // cudaMalloc would break the stream capture): 64 Ki words, 4 Ki tiles.
+    const size_t cap = count > (size_t)65536 ? count : (size_t)65536;
+    int64_t* d = S.edq_buf.get<int64_t>(cap);
+    // Staged through PINNED memory (async on the tick stream); rewritten at the
+    // next tick's entry, after this tick's books D2H completed the copy.
+    int64_t* h = S.edq_h.get<int64_t>(cap);
+    std::memcpy(h, buf, count * sizeof(int64_t));
+    cuda_check(cudaMemcpyAsync(d, h, count * sizeof(int64_t), cudaMemcpyHostToDevice, st),
+               "H2D edit records");
+    const int64_t* d_off = d;
+    const int64_t* d_env = d + (N + 1);
+    const int64_t* d_edits = d_env + (size_t)N * EDQ_ENV_COLS;
+    const int64_t* d_tiles = d_edits + (size_t)n_edits * EDQ_EDIT_COLS;
+    edit_queue_launch_resident(
+        N, f.h, f.w, f.n_gases, o2_idx, n2_idx, n_tiles, salt,
+        d_edits, d_tiles, d_off, d_env,
+        P<int32_t>(f.gas), P<int32_t>(f.temperature), P<int64_t>(f.gas_energy),
+        P<int32_t>(f.fire), P<int32_t>(f.heat),
+        P<const bool>(f.solid), P<const bool>(f.is_vacuum),
+        f.is_ambient ? P<const bool>(f.is_ambient) : nullptr,
+        P<const bool>(f.thermal_solid), P<const bool>(f.flammable),
+        S.edq_contrib.get<int64_t>((size_t)(n_tiles > 4096 ? n_tiles : 4096)),
+        arena + S.L.edq);
+    S.edq_ran = true;
+    ++g_counts[14];
 }
 
 // ---------------------------------------------------------------------------
@@ -966,6 +1066,8 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
     tick_sync_point("books");   // the tick's one books read
     ++g_counts[8];
     const unsigned long long* hu = reinterpret_cast<const unsigned long long*>(hb);
+    const bool edq_ran = S.edq_ran;   // #29 P4c (cleared before any fold can throw)
+    S.edq_ran = false;
 
     for (int e = 0; e < N; ++e) {
         const PhysicsEngine& E = *engs[(size_t)e];
@@ -1150,6 +1252,22 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
             t.e_rad_floor_drop_sum      += tb(14);
             t.e_solid_low_rail_sum      += tb(15);
             t.e_dep_floor_drop_sum      += tb(16);
+        }
+
+        // ---- #29 P4c: the edit queue's books, ASSIGNED (the runner adds them
+        //      into the map's trace books, gas-energy channels and draws) ----
+        if (edq_ran) {
+            const int64_t* eb = reinterpret_cast<const int64_t*>(
+                hu + S.L.edq + (size_t)e * EDQ_SLOTS);
+            if (eb[EDQ_B_FAIL] != 0) {
+                std::ostringstream os;
+                os << "device edit queue: env " << e << ": " << eb[EDQ_B_FAIL]
+                   << " edit result(s) left their field's range (an int32 store, an "
+                      "int64 energy, a negative trace) -- the host flush raises here";
+                throw std::runtime_error(os.str());
+            }
+            E.edit_queue_books.assign(eb, eb + EDQ_SLOTS);
+            g_counts[15] += eb[EDQ_B_TILES];
         }
 
         // ---- the destroyed walls (row-major, the per-call's sort) --------

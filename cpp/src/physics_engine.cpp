@@ -902,6 +902,21 @@ void PhysicsEngine::stamp_units_resident(const ResidentFields& f,
 #endif
 }
 
+void PhysicsEngine::apply_edits_resident(const ResidentFields& f, const int64_t* buf,
+                                         int n_edits, int n_tiles, uint32_t salt,
+                                         int o2_idx, int n2_idx,
+                                         const ResidentEngineList& engs) const {
+#ifdef BREACH_HAS_CUDA
+    breach_cuda::resident_edits(batch_of(this, engs, f.n_env, "apply_edits_resident"),
+                                f, buf, n_edits, n_tiles, salt, o2_idx, n2_idx);
+#else
+    (void)f; (void)buf; (void)n_edits; (void)n_tiles; (void)salt; (void)o2_idx;
+    (void)n2_idx; (void)engs;
+    throw std::runtime_error(
+        "apply_edits_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
+}
+
 std::vector<std::vector<std::pair<int, int>>> PhysicsEngine::step_tail_resident(
         const ResidentFields& f, const ResidentTickArgs& a,
         const ResidentEngineList& engs) const {

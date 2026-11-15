@@ -165,3 +165,17 @@ The extreme black pole, expressed as entities/enemies:
 - Will-orientation drift — only with a genuinely good mechanic and a campaign layer.
 - Manifestation / white-pole effects.
 - Exact awakening-trigger conditions and what awakening unlocks mechanically.
+
+---
+
+## 7. Addendum 2026-11-14 (the unit design session)
+
+- The fields now have a shape to act through: `docs/unit_design_2026-11-14.md`
+  sections 4 and 5. Will and imagination are gains of the stress system
+  (#200); "what a unit is shown" is a kind of unit state of its own
+  (perception conditions).
+- Erik's ideas of that day -- tunnel vision under heavy stress, Grays and
+  magicians making a unit see zombies that are not there so that it fires at
+  nothing, illusions with an AI of their own that only the spelled unit sees
+  -- are recorded with a first sketch in issue #204.
+

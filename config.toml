@@ -4068,7 +4068,7 @@ ap = 0
 # 36-tick burst against transport/diffusion: 0.35/tick at dist 1 paints the
 # near cone to lethal density (the [0,1] clamp saturates) in ~3-4 ticks and
 # HOLDS it there while the vent is open. Damage rides the W3 gas[poison]
-# exchange row (poison_dps x density; zombies immune — they don't breathe);
+# exchange row (a dose of the poison law, [damage.poison]; zombies immune);
 # NO blindness: poison is not teargas (no can_aim coupling on this species).
 # STANDARD VALUE — interesting range 0.1 (a creeping haze) .. 1.0 (an
 # instant wall of chlorine).
@@ -4933,6 +4933,37 @@ half_life_seconds = 0.125   # 3 ticks at 24 tps
 k_expose = 1.0
 x_max = 2.5
 
+# =============================================================================
+# [damage.poison] -- the POISON LAW (#29 PX; src/simulation/poison.py;
+# docs/poison_law_design_2026-11-14.md). A unit holds two amounts of poison,
+# the DEPOT (entered, not yet in the blood) and the BLOOD; poison moves depot
+# -> blood -> out and hurts AS IT LEAVES the blood, so one dose rises, peaks
+# and decays, and its total harm is hp_per_unit x dose whatever the times are
+# (the dose sets HOW MUCH, the two times WHEN). One unit of poison = one larva
+# bite (Erik). Every poisoning enters through poison.dose (today the
+# gas[poison] row; zombies take none). Construction-bound (a new Simulation
+# reads it); each value quantized once (the times as exact per-tick fractions).
+# The law and the first three values are Erik's (2026-11-14); ALL FOUR are
+# PLACEHOLDERS for tuning on tools/bench_poison.py ("as consequential as
+# possible without dominating the game"). At these values one bite takes 10 HP
+# in all, hurts most ~8 s after it (0.33 HP/s) and is 95 % done after ~65 s.
+[damage.poison]
+# onset_seconds -- how quickly a dose reaches the blood (the depot's time
+# constant). Shorter = the harm starts sooner and peaks higher. >= 1 tick.
+onset_seconds = 4.0
+# decay_seconds -- how quickly the blood clears (the blood's time constant).
+# Longer = a lower, longer tail of harm. >= 1 tick.
+decay_seconds = 20.0
+# hp_per_unit -- the hit points ONE unit of poison takes in total (charged as
+# it leaves the blood, through the damage pipeline's mitigation). < 8192.
+hp_per_unit = 10.0
+# gas_units_per_second -- units of poison breathed per second at FULL poison
+# gas density (linear in the footprint-max density, nothing below
+# [exchange] poison_min_density). 0.6 x 10 HP keeps the total harm of the
+# deleted [exchange] poison_dps = 6 (only the timing changed): ten seconds in
+# full gas is 60 HP, whenever the unit leaves the cloud.
+gas_units_per_second = 0.6
+
 [zombie]
 # A TURNED marine's hit points (a spawned zombie has the human vitality, 100).
 # Erik, 2026-11-12 (the zombie bite balance, docs/zombie_bite_balance_2026-11-12.md):
@@ -5428,14 +5459,10 @@ teargas_blind_density = 0.15
 teargas_blind_seconds = 1.0
 # poison_min_density — footprint-max poison density below which no dose
 # accumulates (the cloud's harmless fringe). Interesting range 0.02 .. 0.2.
+# What a dose does is the poison law's ([damage.poison]; #29 PX deleted
+# `poison_dps`, its gas_units_per_second x hp_per_unit = 6 HP a second keeps
+# the total harm).
 poison_min_density = 0.05
-# poison_dps — POISON damage per second at FULL density (1.0); the per-tick
-# packet scales linearly with the footprint-max density (dps * density / tps
-# through the mechanics/06 pipeline -> marine resist 1.0, zombie resist 0.0:
-# they don't breathe — and poison must NOT become the anti-horde cheese;
-# fire is the answer). Interesting range ~2 (a lingering hazard) .. 20
-# (a death sentence to stand in).
-poison_dps = 6.0
 
 [recorder]
 # Physics ring-buffer length in seconds. config.py derives the integer slot

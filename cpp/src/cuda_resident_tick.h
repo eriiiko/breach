@@ -143,6 +143,20 @@ void resident_upload_light(const PhysicsEngine& eng, const ResidentFields& f,
 void resident_stamp(const EngineList& engs, const ResidentFields& f,
                     const int32_t* rows, int n_rows);
 
+// #29 P4c: slot 6b's FieldEdit flush on the resident planes (f.gas,
+// f.temperature, f.gas_energy, f.fire, f.heat; the masks f.solid,
+// f.is_vacuum, f.is_ambient, f.thermal_solid, f.flammable read) from the
+// hosts' packed records of EVERY env, ONE int64 buffer and one H2D:
+//   [env tile offsets (N + 1)] [env scalars (N, EDQ_ENV_COLS)]
+//   [edit rows (n_edits, EDQ_EDIT_COLS)] [tile rows (n_tiles, EDQ_TILE_COLS)]
+// (cuda_resident.h; field_edit.pack_for_device), refused at this door when a
+// row leaves its env, grid or table. The books land in the arena and are
+// folded by resident_tail into each env's engine (edit_queue_books). Called
+// at the tick's entry, after the entry upload.
+void resident_edits(const EngineList& engs, const ResidentFields& f,
+                    const int64_t* buf, int n_edits, int n_tiles,
+                    uint32_t salt, int o2_idx, int n2_idx);
+
 // The bulk sum, fire, the sweep and temperature; then the ONE books D2H (every
 // stage's books, every env) and the folds into each env's engine; returns
 // each env's destroyed walls (row-major).
@@ -161,7 +175,9 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
 // knows the device ran the stage (a silently host "device run" would make a
 // bit-identity gate vacuous).
 // [12] EOS stage calls, [13] trace-tail calls (#29 P5).
-constexpr int RESIDENT_STAGE_COUNTERS = 14;
+// [14] edit-queue ticks (#29 P4c: the device applied slot 6b's flush), [15]
+// edit-queue tiles applied (not skipped by their policy's mask).
+constexpr int RESIDENT_STAGE_COUNTERS = 16;
 void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]);
 
 // The sweep's Fleck plane ON DEMAND: the per-call twin copies it into the

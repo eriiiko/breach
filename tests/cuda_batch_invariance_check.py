@@ -31,6 +31,13 @@ LEG B, real simulations: ship_demo's Simulation (no match, no units, its
 entities on -- vents, ducts, doors), N = 3, seeds 1 / 2 / 3; env 1 takes a
 blast source at tick 4, env 2 a wall breach at tick 6.
 
+#29 P4c: every env of both legs also carries its OWN slot-6b FieldEdits
+(smoke and heat discs with noise keyed by its seed, an atmosphere rect, a
+wave_source tile, a fire MAX on the wood -- place and amount from its seed,
+none on every third tick of its own phase), flushed by the device edit queue
+in the batch: one records upload for every env, books per env. Breaks also if
+a record lands in another env's planes or an env's books fold into another.
+
 Run through tests/test_cuda_batch_invariance.py (the cuda_harness subprocess).
 """
 from __future__ import annotations
@@ -57,7 +64,7 @@ class RawWorld:
     edits and the unit stamp before slot 7, the burn-through walls and the
     end-of-tick heat clear after it (s8a's _one_tick, split)."""
 
-    def __init__(self, runner, g, dt, events=None):
+    def __init__(self, runner, g, dt, events=None, edit_seed=None):
         self.physics_runner = runner
         self.gmap = g
         self._tps = int(round(1.0 / dt))
@@ -65,6 +72,16 @@ class RawWorld:
         self.paused = False
         self.t = 0
         self.events = events or {}   # tick -> ("pre" | "late", (y, x)) or ("source", ...)
+        # #29 P4c: slot 6b -- this env's own FieldEdits (they differ per env:
+        # place, amount, noise key = the env's seed, which ticks carry them),
+        # flushed as Simulation's 6b does: the device queue on the resident
+        # path, the host flush otherwise.
+        self.edit_seed = edit_seed
+        if edit_seed is not None:
+            from simulation.draws import MatchDraws
+            from simulation.field_edit import EditQueue
+            self.edit_queue = EditQueue()
+            self.draws = MatchDraws(int(edit_seed), clock=lambda: self.t)
 
     def _step_pre_physics(self):
         ev = self.events.get(self.t)
@@ -81,6 +98,14 @@ class RawWorld:
         self.gmap.stamp_units([])
         if late is not None:
             self.gmap.destroy_wall(*late)
+        if self.edit_seed is not None:
+            for e in _env_edits(self.gmap, self.edit_seed, self.t):
+                self.edit_queue.enqueue(e)
+            r = self.physics_runner
+            if r.serves_edit_queue():
+                r.serve_edit_queue(self.gmap, self.edit_queue, self.draws)
+            else:
+                self.edit_queue.flush(self.gmap, self.draws)
         return True
 
     def _step_post_physics(self, destroyed):
@@ -93,6 +118,30 @@ class RawWorld:
         self._step_pre_physics()
         destroyed = self.physics_runner.step(self.gmap, self._dt)
         self._step_post_physics(destroyed)
+
+
+def _env_edits(g, seed, t):
+    """#29 P4c: an env's slot-6b FieldEdits on tick t -- they DIFFER per env
+    (the place and amount from its seed; the noise keyed by its seed) and an
+    env has none on every third tick of its own phase, so a batch tick mixes
+    envs with and without a queue."""
+    from simulation.field_edit import EditMode, Falloff, FieldEdit, Region
+    if (t + seed) % 3 == 0:
+        return []
+    y = 20 + (seed * 7 + t) % 25
+    x = 20 + (seed * 13 + 2 * t) % 25
+    a = 0.2 + 0.05 * (seed % 5)
+    return [
+        FieldEdit("smoke", Region.DISC, (y, x, 3.0), a, EditMode.ADD, Falloff.LINEAR,
+                  noise=0.4, source_id=1),
+        FieldEdit("heat", Region.DISC, (y + 2, x - 2, 2.5), 3.0 * a, EditMode.ADD,
+                  Falloff.LINEAR, noise=0.2, source_id=2),
+        FieldEdit("atmosphere", Region.RECT, (y - 2, x - 3, y - 1, x + 3), a,
+                  EditMode.ADD, source_id=3),
+        FieldEdit("wave_source", Region.TILE, (y, x + 4), 40.0 * a, EditMode.ADD,
+                  source_id=4),
+        FieldEdit("fire", Region.RECT, (46, 49, 49, 51), 0.5, EditMode.MAX, source_id=5),
+    ]
 
 
 def _perturb(g, seed):
@@ -182,7 +231,7 @@ def make_world(template, seed, events=False):
             ev[12] = ("wall", (6, 6))
             ev[20] = ("late", (46, 50))
     _perturb(g, seed)
-    return RawWorld(runner, g, dt, ev)
+    return RawWorld(runner, g, dt, ev, edit_seed=seed)
 
 
 TEMPLATES = ("blast", "calm", "pool", "smoke")
@@ -317,6 +366,21 @@ def _ship_events(sim, e, t):
     from simulation import gas_fixed
     from simulation.blast_expansion import add_source
     g = sim.gmap
+    # #29 P4c: each env's own FieldEdits at an open tile of its own choosing
+    from simulation.field_edit import EditMode, Falloff, FieldEdit, Region
+    if (t + e) % 3 != 0:
+        ys, xs = np.nonzero(~g.solid & ~g.is_vacuum)
+        k = (len(ys) * (e + 1)) // 5
+        y, x = int(ys[k]), int(xs[k])
+        a = 0.2 + 0.1 * e
+        sim.edit(FieldEdit("smoke", Region.DISC, (y, x, 3.0), a, EditMode.ADD,
+                           Falloff.LINEAR, noise=0.4, source_id=1))
+        sim.edit(FieldEdit("heat", Region.DISC, (y, x, 2.0), 3.0 * a, EditMode.ADD,
+                           Falloff.LINEAR, noise=0.3, source_id=2))
+        sim.edit(FieldEdit("atmosphere", Region.RECT, (y - 1, x - 2, y + 1, x + 2), a,
+                           EditMode.ADD, source_id=3))
+        sim.edit(FieldEdit("wave_source", Region.TILE, (y, x), 40.0 * a, EditMode.ADD,
+                           source_id=4))
     if e == 1 and t == 4:
         ys, xs = np.nonzero(~g.solid & ~g.is_vacuum)
         k = len(ys) // 2

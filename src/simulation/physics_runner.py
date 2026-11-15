@@ -47,6 +47,21 @@ def set_residency(on: bool) -> None:
     _RESIDENCY_ENABLED = bool(on)
 
 
+# #29 P4c: THE DEVICE EDIT QUEUE (residency design §4.8). On the resident path
+# slot 6b's FieldEdit flush is applied by the device (PhysicsRunner.
+# serve_edit_queue packs it, run_resident_batch applies it after the entry
+# upload). Process-global, default ON; off = the host flush at 6b on the
+# resident path too (the A/B the gates and the benchmark use -- never a play
+# setting).
+_DEVICE_EDIT_QUEUE = True
+
+
+def set_device_edit_queue(on: bool) -> None:
+    """Serve slot 6b's flush on the device on the resident path (default ON)."""
+    global _DEVICE_EDIT_QUEUE
+    _DEVICE_EDIT_QUEUE = bool(on)
+
+
 # (residency_enabled() DELETED - audit Patch A / A9, 2026-08-04: an accessor
 # with no caller anywhere. The _RESIDENCY_ENABLED global it read is live and
 # is set by set_residency() above and read directly at the dispatch site.)
@@ -801,6 +816,14 @@ class PhysicsRunner:
         # uploaded the host's planes instead (no rows, see take_stamp_rows).
         self.stamp_device_ticks = 0
         self.stamp_upload_ticks = 0
+        # #29 P4c: the device edit queue -- this tick's packed flush (None: the
+        # host flushed, or nothing was queued), and telemetry for the gates:
+        # ticks the device served, ticks that fell back to the host flush
+        # (with the last reason).
+        self._edit_pack = None
+        self.edit_device_ticks = 0
+        self.edit_host_ticks = 0
+        self.edit_fallback_reason = None
         # W5 steam gas index: which gmap.gas slice the flash-boil puff lands
         # in. Resolved BY NAME from the gas table ONCE, on the first
         # _step_water call (never hardcode the slice index) — the same lazy
@@ -899,6 +922,68 @@ class PhysicsRunner:
             return self._step_resident(gmap, sim_time, tick=tick)
         return self._step_host(gmap, sim_time, tick=tick)
 
+    # ------------------------------------------------------------------
+    # #29 P4c: THE DEVICE EDIT QUEUE (slot 6b's flush on the resident path)
+    # ------------------------------------------------------------------
+    def serves_edit_queue(self) -> bool:
+        """True when this tick's slot 7 runs resident and the device edit
+        queue is on: slot 6b hands its queue to :meth:`serve_edit_queue`
+        instead of flushing on the host."""
+        return bool(_DEVICE_EDIT_QUEUE and _RESIDENCY_ENABLED
+                    and getattr(self.bp, "HAS_CUDA", False))
+
+    def serve_edit_queue(self, gmap, queue, rng) -> None:
+        """Slot 6b on the resident path: take the queue in the flush's applied
+        order and PACK it for the device (field_edit.pack_for_device), to be
+        applied by the resident tick right after its entry upload. A tick the
+        device cannot serve is flushed HERE on the host, exactly as the CPU
+        path does (the fallback; ``edit_fallback_reason`` names why). The
+        host's refusals (a malformed edit) raise here on either branch."""
+        from simulation import field_edit as _fe
+        ordered = queue.take_ordered()
+        if not ordered:
+            return
+        if self._edit_pack is not None:          # defensive: an unapplied pack
+            self._flush_pack_on_host(gmap)
+        _check_edit_tables(self.bp)
+        pack, reason = _fe.pack_for_device(gmap, ordered, rng)
+        if pack is None:
+            _fe.apply_ordered(gmap, ordered, rng)
+            self.edit_host_ticks += 1
+            self.edit_fallback_reason = reason
+            return
+        self._edit_pack = pack
+
+    def _flush_pack_on_host(self, gmap):
+        """Apply a pending pack's edits on the host (a tick whose slot 7 did
+        not run resident after all: the pack's own ordered list, the flush)."""
+        from simulation import field_edit as _fe
+        pack, self._edit_pack = self._edit_pack, None
+        _fe.apply_ordered(gmap, pack.ordered, pack.rng)
+        self.edit_host_ticks += 1
+
+    def _fold_edit_books(self, gmap, pack):
+        """Add the device edit queue's books of this tick (the engine's
+        ``edit_queue_books``, folded at the tail's ONE books D2H) into the
+        map's books, as the host flush writes them: the per-gas trace deposit
+        / clip books, the gas-energy seam channels (a channel key appears on
+        its first non-zero deposit, as ``_gas_energy_book`` adds it) and the
+        draws' word count."""
+        lay = self.bp.EDIT_QUEUE_LAYOUT
+        b = list(self.engine.edit_queue_books)
+        dep, clip = lay["dep"], lay["clip"]
+        for g in range(int(gmap.gas.shape[0])):
+            gmap.trace_deposit_books[g] += int(b[dep + g])
+            gmap.trace_clip_books[g] += int(b[clip + g])
+        for ch, slot in (("field_edit", lay["ge_field_edit"]),
+                         ("field_edit_wave", lay["ge_field_edit_wave"]),
+                         ("field_edit_atm", lay["ge_field_edit_atm"])):
+            if int(b[slot + 1]):
+                gmap.gas_energy_books[ch] = (gmap.gas_energy_books.get(ch, 0)
+                                             + int(b[slot]))
+        if pack.rng is not None and hasattr(pack.rng, "drawn"):
+            pack.rng.drawn += int(b[lay["noise"]])
+
     def _physics_head(self, gmap, sim_time):
         """#29 P5: the head of :meth:`step` every path runs before slot 7's
         solvers (pure code motion, so a batch runs it per env): the blast
@@ -934,6 +1019,8 @@ class PhysicsRunner:
 
     def _step_host(self, gmap, sim_time, tick=0):
         """The CPU / per-call tick (everything in :meth:`step` after the head)."""
+        if self._edit_pack is not None:          # #29 P4c: never left unapplied
+            self._flush_pack_on_host(gmap)
 
         # T6 (issue #12): the K2 fire-heat cast (cast_fire_heat) that used to
         # run here, FIRST, before the atmosphere/smoke loop and the
@@ -1963,6 +2050,10 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
     device_stamp = all(c["stamp_rows"] is not None for c in ctxs)
     for r, g, c in zip(runners, gmaps, ctxs):
         r._resident_upload(g, c, not device_stamp)
+    # #29 P4c: each env's packed slot-6b flush (None: it flushed on the host).
+    packs = [r._edit_pack for r in runners]
+    for r in runners:
+        r._edit_pack = None
 
     h, w = g0._h, g0._w
     n_gases = int(g0.gas.shape[0])
@@ -2001,6 +2092,16 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
     else:
         for r in runners:
             r.stamp_upload_ticks += 1
+
+    # 6b on the device (#29 P4c): every env's packed flush in ONE upload, applied
+    # in each env's CPU order on the planes the entry upload just wrote.
+    if any(p is not None for p in packs):
+        buf, n_edits, n_tiles = _edit_buffer(packs, n_env)
+        from simulation.rng_salts import Salt
+        e0.apply_edits_resident(
+            dev, h, w, n_gases, buf, n_edits, n_tiles, int(Salt.FIELD_NOISE),
+            int(g0.gases.name_to_id["o2"]), int(g0.gases.name_to_id["inert_n2"]),
+            n_env=n_env, engines=engines)
 
     # 3a. water: the substep loop, then the W5/W3 tail, masked per env.
     active = [not c["water_dormant"] for c in ctxs]
@@ -2050,7 +2151,61 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
     if _TICK_CAPTURE is not None:
         _TICK_CAPTURE.end()
 
+    # The edit queue's books (folded into each engine at the tail's D2H) into
+    # each env's map, as the host flush writes them (#29 P4c).
+    for r, g, p in zip(runners, gmaps, packs):
+        if p is not None:
+            r._fold_edit_books(g, p)
+            r.edit_device_ticks += 1
+
     # 4-5. THE EXIT DOWNLOAD per env, then its host-side tail.
     for r, g, c in zip(runners, gmaps, ctxs):
         r._resident_finish(g, c)
     return [list(d) for d in destroyed]
+
+
+def _check_edit_tables(bp) -> None:
+    """#29 P4c: the device's field-ordinal table must be field_edit's (the
+    lexicographic ranks of FIELD_POLICY) -- refused by name otherwise, so a
+    policy added on one side alone cannot apply to the wrong field."""
+    from simulation import field_edit as _fe
+    dev = dict(getattr(bp, "EDIT_FIELD_ORDINALS", {}))
+    if dev != _fe.DEVICE_FIELD_ORDINALS:
+        raise RuntimeError(
+            "device edit queue: the CUDA build's EDIT_FIELD_ORDINALS "
+            f"{dev} differ from field_edit.DEVICE_FIELD_ORDINALS "
+            f"{_fe.DEVICE_FIELD_ORDINALS} (rebuild, or add the policy to "
+            "cpp/src/cuda_resident.h and cuda_edit_queue.cu)")
+
+
+def _edit_buffer(packs, n_env):
+    """#29 P4c: every env's pack as the ONE int64 record buffer the device
+    queue reads (cuda_resident_tick.h resident_edits): [env tile offsets
+    (N + 1)] [env scalars (N, 4)] [edit rows] [tile rows], each env's rows in
+    its own applied order, the edit rows' env column and the tile rows' edit
+    index made batch-global. Returns (buf, n_edits, n_tiles)."""
+    from simulation import field_edit as _fe
+    offs = np.zeros(n_env + 1, dtype=np.int64)
+    env = np.zeros((n_env, 4), dtype=np.int64)
+    edits, tiles = [], []
+    e_base = 0
+    for e, p in enumerate(packs):
+        n_t = 0
+        if p is not None:
+            er = p.edits.copy()
+            er[:, _fe.E_ENV] = e
+            tr = p.tiles.copy()
+            tr[:, 0] += e_base
+            edits.append(er)
+            tiles.append(tr)
+            e_base += er.shape[0]
+            n_t = tr.shape[0]
+            env[e] = (p.tick_word, p.key[0], p.key[1], p.t_amb_raw)
+        offs[e + 1] = offs[e] + n_t
+    er = (np.concatenate(edits) if edits
+          else np.zeros((0, _fe.EDIT_COLS), dtype=np.int64))
+    tr = (np.concatenate(tiles) if tiles
+          else np.zeros((0, _fe.TILE_COLS), dtype=np.int64))
+    buf = np.ascontiguousarray(np.concatenate(
+        [offs, env.ravel(), er.ravel(), tr.ravel()]).astype(np.int64, copy=False))
+    return buf, int(er.shape[0]), int(tr.shape[0])

@@ -22,6 +22,7 @@ from simulation import (atmosphere_fixed, combat, fire_fixed, gas_fixed,
                         horde, optics_fixed, room_graph, vision)
 from simulation import team_picture as tp
 from simulation import unit_impulse as ui
+from simulation import unit_traits as ut     # #29 U1: the accessors
 from simulation.damage import KINETIC, POISON, mitigation_for
 from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
 from simulation.events import CAUSE_NAMES
@@ -87,15 +88,15 @@ def constants(sim, spec, n_slots):
     return dict(
         S=int(n_slots), L=int(ref.range_tiles),
         v_ref=(FP_ONE * FP_ONE) // sim.speed_table.full_cost_q,
-        ref_rof=ref.rof_interval_ticks, ref_spread=ref.spread_deg,
+        ref_rof=ref.rof_interval_ticks,
+        ref_cone=quantize_scalar(math.radians(ref.spread_deg)),
         melee_arc=tables.weapons.by_name[ref_lo.melee].melee_arc_half_q,
         limit=MatchRules.from_spec(spec).limit_ticks(sim),
         memory=tp.memory_ticks(tp.picture_settings(CFG), float(tps)),
         tps=tps, hand=tuple(tables.hand_grenade_rows),
         objs=tuple(tables.hand_grenade_rows) + tuple(tables.charge_rows),
         frag_r=tables.payload_for_ammo(FRAG_ROW).radius,
-        throw_r=hand.max_throw_range, windup=hand.throw_windup_ticks,
-        plant=c4.plant_ticks,
+        throw_r=hand.max_throw_range,
         c4_fuse=fuse_ticks_from_seconds(c4.fuse_max_seconds, tps),
         hand_fuse=fuse_ticks_from_seconds(hand.fuse_max_seconds, tps),
         scale=[max(1, s) for s in scale], half_turn=-(-PI_Q16 // w),
@@ -137,7 +138,7 @@ def cone_of(sim, K, u):
         return K["melee_arc"]
     w = weapon(sim, u)
     if w is not None and w.range_tiles > 0:
-        return quantize_scalar(math.radians(w.spread_deg))
+        return ut.shot_cone_q16(u, w)
     m = sim.weapons_tables.weapons.by_name.get(u.melee_id or "")
     return m.melee_arc_half_q if m is not None else K["melee_arc"]
 
@@ -242,7 +243,7 @@ def vector(sim, K, u):
             v[25] = squash(over(spares, max(1, lo.magazines if lo else 0)))
         v[27] = reloading
         if reloading:
-            v[28] = over(u.reload_done_tick - tick, w.reload_ticks)
+            v[28] = over(u.reload_done_tick - tick, ut.reload_ticks(u, w))
     for k, name in enumerate(K["hand"]):
         n = lo.grenades.get(name, 0) if lo else 0
         if n > 0:
@@ -250,7 +251,8 @@ def vector(sim, K, u):
             v[30 + 2 * k] = 1.0
     if u.throw_release_tick >= 0:
         v[41] = 1.0
-        v[42] = over(u.throw_release_tick - tick, K["windup"])
+        v[42] = over(u.throw_release_tick - tick, ut.throw_windup_ticks(
+            u, sim.weapons_tables.weapons.by_name))
         v[43] = u.throw_kind
     else:
         v[43] = -1.0
@@ -258,7 +260,8 @@ def vector(sim, K, u):
     v[45] = bool(lo and lo.charge)
     if u.plant_done_tick >= 0:
         v[46] = 1.0
-        v[47] = over(u.plant_done_tick - tick, K["plant"])
+        v[47] = over(u.plant_done_tick - tick, ut.plant_ticks(
+            u, sim.weapons_tables.weapons.by_name))
         v[48] = over(u.plant_fuse_ticks, K["c4_fuse"])
     if melee is not None and u.last_blow_tick >= 0:
         r = melee.rof_interval_ticks
@@ -272,7 +275,7 @@ def vector(sim, K, u):
     if w is not None:
         v[54] = squash(over(w.range_tiles, L))
         v[55] = squash(over(w.rof_interval_ticks, K["ref_rof"]))
-        v[56] = squash(over(w.spread_deg, K["ref_spread"]))
+        v[56] = squash(over(ut.shot_cone_q16(u, w), K["ref_cone"]))
     v[57] = bool(u.live_trigger)
     cx0, cy0 = centre(u)
     v[58:66] = [squash(x) for x in air_at(sim, u, cy0, cx0)]
@@ -358,16 +361,18 @@ def unit_cols(e, it, sim, K, tick):
     st = combat.mag_status(it, w, tick) if w else None
     if st and st[2]:
         e[13] = 1.0
-        e[14] = over(it.reload_done_tick - tick, w.reload_ticks)
+        e[14] = over(it.reload_done_tick - tick, ut.reload_ticks(it, w))
     if it.throw_release_tick >= 0:
         e[15] = 1.0
-        e[16] = over(it.throw_release_tick - tick, K["windup"])
+        e[16] = over(it.throw_release_tick - tick, ut.throw_windup_ticks(
+            it, sim.weapons_tables.weapons.by_name))
         e[17] = it.throw_kind
     else:
         e[17] = -1.0
     if it.plant_done_tick >= 0:
         e[18] = 1.0
-        e[19] = over(it.plant_done_tick - tick, K["plant"])
+        e[19] = over(it.plant_done_tick - tick, ut.plant_ticks(
+            it, sim.weapons_tables.weapons.by_name))
         e[20] = over(it.plant_fuse_ticks, K["c4_fuse"])
     fl = composed_flags(it)
     e[21], e[22], e[23] = not fl.can_act, not fl.can_aim, fl.is_prone
@@ -398,7 +403,7 @@ def entry_list(sim, K, u, bots=None):
     if bots is None:
         bots = BotTeam(team)
     w = weapon(sim, u)
-    spread_q = quantize_scalar(math.radians(w.spread_deg)) if w else 0
+    spread_q = ut.shot_cone_q16(u, w) if w else 0
     my_where = u.order_where if u.order_what else NO_PLACE
     n_t = K["spec"].teams[team].n
     a, wq = sim.unit_turn_accel_q16(u), sim.unit_turn_rate_q16(u)
@@ -878,7 +883,7 @@ def full_list(sim, K, team, u, alive, bots=None):
     if bots is None:
         bots = BotTeam(team)
     w = weapon(sim, u)
-    spread_q = quantize_scalar(math.radians(w.spread_deg)) if w else 0
+    spread_q = ut.shot_cone_q16(u, w) if w else 0
     my_where = u.order_where if u.order_what else NO_PLACE
     n_t = K["spec"].teams[team].n
     a, wq = sim.unit_turn_accel_q16(u), sim.unit_turn_rate_q16(u)
