@@ -1556,3 +1556,30 @@ running in parallel blocks). A tick's burn-throughs are a handful (the fire scen
 serial walk is far below the §4.3 share; the fan-out the design reserves is for P7c's thousands of deposit records,
 not for destroys. At N = 64 the extra ~0.15 ms is the larger list's staging and the books' copy. In the device backend
 the books come down only at checkpoint cadence (§5.10), which removes the floor's second sync.
+
+## P7a.1: the effect list, slot 4a and the resolve stage (2026-11-15)
+
+**What.** Slot 4a (`cpp/src/cuda_unit_melee.cu`: one thread per row, the blow staged per row and gathered per env
+onto the effect list) and the applier's RESOLVE stage (`cpp/src/cuda_applier.cu`: one block per env, thread 0
+walking HIT / STATUS / PUSH records through the device `apply_packet` with the exposure landing, the library's
+`impulse_add`, `apply_status`). Class T.
+
+**Method.** `tests/cuda_unit_melee_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the swarm
+session's topology gate ran on the same card (31 % utilisation seen beside it). The rows: the melee scene's 27 units
+after three ticks, every row latched (most refuse at a gate: the scene's latch refusals), replicated to N envs.
+"4a" is `unit_kernels.melee`: the tick's input staging, the kernel, the gather, the counts' D2H and sync, the list's
+dropped count's D2H. "resolve" is `unit_kernels.resolve` over k synthetic records per env (HIT with an expose,
+STATUS, PUSH with a lever, cycling over the rows): the walk, the landing, the books', coverage's and the ring's
+dropped count's D2H. The list's host staging is outside the timing. Medians of 50 repetitions.
+
+| N | 4a (27 rows / env) | resolve, 1 effect / env | 8 / env | 64 / env |
+|---|---|---|---|---|
+| 1 | 0.316 | 0.286 | 0.333 | 0.523 |
+| 8 | 0.249 | 0.361 | 0.443 | 0.464 |
+| 64 | 0.319 | 0.471 | 0.542 | 0.560 |
+
+**Reading.** Both are at the call's floor (its host syncs: the counts, the books, the ring's dropped count), as
+P6.4b's walk was; 64 unit effects add ~0.2 ms on one thread at N = 1 (~3.7 us per record, a HIT's packet law and
+its ring append being the bulk) and less in a batch, the envs' walks running in parallel blocks. A melee tick
+records at most three effects per striker, a shooting tick (P7a.2) a few per round: the serial walk stays far below
+§4.3's share. The device backend downloads none of the counts per tick.

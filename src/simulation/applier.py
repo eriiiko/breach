@@ -52,14 +52,99 @@ import numpy as np
 HEADER_REL = "cpp/src/applier_layout.h"
 GENERATOR = "tools/gen_unit_layout.py --write"
 
+#: #29 P7a.1 -- THE EFFECT LIST (residency design 4.4c, decision 1): the
+#: record is the kind, then ARG_SLOTS int64 whose meaning is the kind's own
+#: (:data:`KIND_FIELDS`); C++ reads a kind's field as ``APPLIER_<KIND>_<FIELD>``
+#: (its column), never a bare slot number.
+ARG_SLOTS = 10
 #: An effect record's fields, in order.
-FIELDS = ("kind", "y", "x", "arg")
+FIELDS = ("kind",) + tuple(f"a{i}" for i in range(ARG_SLOTS))
 F = len(FIELDS)
-#: The effect kinds (code = position + 1; 0 = no record).
-KINDS = ("DESTROY_WALL",)
-KIND_DESTROY_WALL = 1
+#: The effect kinds (code = position + 1; 0 = no record) and each kind's
+#: fields, in the order they occupy the arg slots. Every value is what the
+#: reference's call receives at that point, already in its integer currency:
+#:
+#: - DESTROY_WALL ``GameMap.destroy_wall(y, x)`` (slot 9's burn-through; P6b's
+#:   door deaths);
+#: - HIT ``damage.apply_packet(units[row], packet, sim.tick_events,
+#:   source=cause)``: the packet at its door (``DamagePacket.q()``, the AP
+#:   quantized as ``mitigate_q`` quantizes it, the attacker normalized, the
+#:   cause's index in ``events.CAUSE_NAMES``); in a stage that LANDS
+#:   (:data:`STAGES`) with the slot's exposure landing;
+#: - STATUS ``status.apply_status`` if the unit is alive at its turn (the
+#:   magnitude quantized as ``apply_status`` quantizes it; source -1 = None);
+#: - PUSH ``unit_impulse.add(sim.impulse_table, units[row], ...)`` if alive;
+#: - CHEW ``combat.chew_wall(gmap, y, x, wall_damage)``: ``live`` 0 when
+#:   ``wall_damage <= 0`` (a no-op), ``damage_q`` the per-call
+#:   ``wall_fixed.quantize_scalar(float(wall_damage))``;
+#: - PAYLOAD ``payloads.execute_payload(gmap, queue, units, y, x, payload,
+#:   rng, events=sim.tick_events, kind=..., owner_id=owner, approach=...)``:
+#:   a RECORD ONLY -- the applier refuses to apply it, by name, until P7c.1
+#:   gives it its function (``payload`` the row's index in
+#:   ``sim.weapons_tables.payloads``, ``kind`` its index in
+#:   :data:`PAYLOAD_KINDS`, ``has_approach`` 0 for ``approach=None``).
+#:
+#: There is no FACE kind: its only producers are slot 4's WEGO branches
+#: (design 4.4c scope); a host FACE effect is refused by name.
+KIND_FIELDS: tuple = (
+    ("DESTROY_WALL", ("y", "x")),
+    ("HIT", ("row", "amount_q", "dtype", "attacker", "indirect", "expose",
+             "dir_x_q", "dir_y_q", "ap_q", "cause")),
+    ("STATUS", ("row", "status", "magnitude_q", "duration", "source")),
+    ("PUSH", ("row", "jx_q", "jy_q", "lever_q", "twist_q16")),
+    ("CHEW", ("y", "x", "damage_q", "live")),
+    ("PAYLOAD", ("y", "x", "payload", "owner", "approach_y", "approach_x",
+                 "has_approach", "kind")),
+)
+KINDS = tuple(k for k, _f in KIND_FIELDS)
+KIND_DESTROY_WALL, KIND_HIT, KIND_STATUS, KIND_PUSH, KIND_CHEW, \
+    KIND_PAYLOAD = range(1, 7)
+#: The kinds the applier refuses to APPLY (counted in the ``refused`` book,
+#: the run refused by name): a record with no device function yet.
+UNAPPLIED_KINDS = ("PAYLOAD",)
+#: ``execute_payload``'s ``kind`` values (its render-only ExplosionEvent
+#: label), as a PAYLOAD record's ``kind`` index; another is refused by name.
+PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
+                 "timed_charge", "heat_source")
+#: The STAGES of the one applier kernel (decision 1: one walker, several
+#: stages): (name, lands) -- ``lands`` True when a HIT in that stage holds
+#: its exposure raises and zeroings for the walk's end (decision 2: the mode
+#: is per (stage, kind); every other packet lands at once).
+#:   TOPOLOGY  slot 9's burn-through list (DESTROY_WALL only today);
+#:   RESOLVE   slot 4c, ``SimultaneousEffects.resolve`` of the attack slot.
+STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True))
+STAGE_NAMES = tuple(s for s, _l in STAGES)
+STAGE_TOPOLOGY, STAGE_RESOLVE = 0, 1
+#: The most effects ONE ROW of a per-row producer stages in one launch: slot
+#: 4a's blow is a HIT, a STATUS and a PUSH. A later producer that stages more
+#: raises it (a row here, regenerate).
+ROW_CAP = 3
 #: The default list capacity per env per launch.
 E_CAP = 256
+
+
+assert all(len(fs) <= ARG_SLOTS for _k, fs in KIND_FIELDS),     "applier: a kind has more fields than the record's arg slots"
+
+
+def kind_field(kind: str, name: str) -> int:
+    """The record column of ``kind``'s field ``name``."""
+    for k, fs in KIND_FIELDS:
+        if k == kind:
+            return 1 + fs.index(name)
+    raise KeyError(f"applier: no kind {kind!r}")
+
+
+def make_record(kind: str, /, **values) -> tuple:
+    """One record of ``kind`` from its named fields (every field required)."""
+    fs = dict(KIND_FIELDS)[kind]
+    if set(values) != set(fs):
+        raise ValueError(f"applier: a {kind} record has the fields {fs}, not "
+                         f"{tuple(sorted(values))}")
+    rec = [0] * F
+    rec[0] = KINDS.index(kind) + 1
+    for i, n in enumerate(fs):
+        rec[1 + i] = int(values[n])
+    return tuple(rec)
 
 
 @dataclass(frozen=True)
@@ -93,6 +178,9 @@ BOOKS: tuple = (
     BookRow("dropped", None, "effects past the list's capacity (refused)"),
     BookRow("faults", None, "effects whose operands left the proved range "
             "(nothing written; refused)"),
+    BookRow("refused", None, "#29 P7a.1: records of a kind with no device "
+            "function yet (UNAPPLIED_KINDS: PAYLOAD until P7c.1), never "
+            "applied; the run is refused by name"),
 )
 BOOK_NAMES = tuple(b.name for b in BOOKS)
 N_BOOKS = len(BOOKS)
@@ -152,6 +240,12 @@ class ApplierFault(RuntimeError):
     """An effect's operands left the range the applier was proved for."""
 
 
+class EffectRefused(RuntimeError):
+    """#29 P7a.1: an effect of a kind the applier cannot apply yet (a PAYLOAD
+    record until P7c.1), or a host effect with no device kind (FACE, a cover
+    chew, a spray's cells, any other world call)."""
+
+
 def non_resident_planes() -> tuple:
     """The planes the topology seam writes that are NOT resident fields today
     (P8b must hold them on the device)."""
@@ -171,6 +265,9 @@ class Layout:
     planes: tuple
     clears: tuple
     fingerprint: str
+    kind_fields: tuple = ()
+    stages: tuple = ()
+    row_cap: int = ROW_CAP
 
     @property
     def width(self) -> int:
@@ -194,7 +291,8 @@ def layout() -> Layout:
                     for i, (n, d) in enumerate(CLEAR_PLANES))
     lay = Layout(fields=FIELDS, kinds=KINDS, books=BOOK_NAMES, planes=PLANES,
                  clears=CLEAR_PLANES,
-                 fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest())
+                 fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest(),
+                 kind_fields=KIND_FIELDS, stages=STAGES, row_cap=ROW_CAP)
     _LAYOUT_CACHE[key] = lay
     return lay
 
@@ -206,9 +304,11 @@ def header_text(lay: Layout | None = None) -> str:
         "#pragma once",
         "// ==========================================================================",
         "// GENERATED by tools/gen_unit_layout.py from src/simulation/applier.py",
-        "// (#29 P6.4b, residency design 4.3 / 4.4b) -- NEVER EDIT BY HAND.",
-        "// The per-env serial applier: an effect record of APPLIER_F int64,",
-        "// its kinds; the per-env book channels; the topology seam's planes",
+        "// (#29 P6.4b / P7a.1, residency design 4.3 / 4.4b / 4.4c) -- NEVER EDIT",
+        "// BY HAND. The per-env serial applier: an effect record of APPLIER_F",
+        "// int64 (the kind, then the kind's own fields: APPLIER_<KIND>_<FIELD> is",
+        "// a field's column), its kinds, its stages; the per-env book channels;",
+        "// the topology seam's planes",
         "// (the order of the launch's pointer table) and the tick-end clears'",
         "// planes. A new kind / book / plane: a row of simulation/applier.py,",
         f"// then `{GENERATOR}` and commit; tests/test_applier_layout.py",
@@ -220,14 +320,31 @@ def header_text(lay: Layout | None = None) -> str:
         "",
         f'constexpr const char* APPLIER_FINGERPRINT = "{lay.fingerprint}";',
         f"constexpr int APPLIER_F = {lay.width};",
+        f"constexpr int APPLIER_ROW_CAP = {lay.row_cap};",
         "",
-        "// An effect record's fields.",
+        "// An effect record's fields (the kind, then the arg slots).",
     ]
     for i, n in enumerate(lay.fields):
         lines.append(f"constexpr int APPLIER_FX_{n.upper()} = {i};")
     lines += ["", "// The effect kinds (0 = no record)."]
     for i, n in enumerate(lay.kinds):
         lines.append(f"constexpr int64_t APPLIER_KIND_{n.upper()} = {i + 1};")
+    lines.append(f"constexpr int APPLIER_N_KINDS = {len(lay.kinds)};")
+    lines += ["", "// Each kind's fields: their record column."]
+    for n, fs in lay.kind_fields:
+        for i, f in enumerate(fs):
+            lines.append(f"constexpr int APPLIER_{n.upper()}_{f.upper()} = {1 + i};")
+    lines += ["", "// The stages of the one walker; _LANDS: a HIT in the stage holds its",
+              "// exposure raises and zeroings for the walk's end (the landing)."]
+    for i, (n, l) in enumerate(lay.stages):
+        lines.append(f"constexpr int APPLIER_STAGE_{n.upper()} = {i};")
+        lines.append(f"constexpr bool APPLIER_STAGE_{n.upper()}_LANDS = "
+                     f"{'true' if l else 'false'};")
+    lines.append(f"constexpr int APPLIER_N_STAGES = {len(lay.stages)};")
+    lines += ["", "// execute_payload's kind values (a PAYLOAD record's kind index)."]
+    for i, n in enumerate(PAYLOAD_KINDS):
+        lines.append(f"constexpr int64_t APPLIER_PAYLOAD_KIND_{n.upper()} = {i};")
+    lines.append(f"constexpr int APPLIER_N_PAYLOAD_KINDS = {len(PAYLOAD_KINDS)};")
     lines += ["", "// The per-env book channels."]
     for i, n in enumerate(lay.books):
         lines.append(f"constexpr int APPLIER_BOOK_{n.upper()} = {i};")
@@ -277,17 +394,155 @@ def pack(per_env, cap: int = E_CAP):
 
 
 # ---------------------------------------------------------------------------
+# #29 P7a.1: the host's effects as records (the effect list's ONE record
+# function, decision 8: what the shadow harness compares and feeds)
+# ---------------------------------------------------------------------------
+def _unwrap(fn):
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+    return fn
+
+
+def _row_of(sim, unit) -> int:
+    for r, u in enumerate(sim.units):
+        if u is unit:
+            return r
+    raise EffectRefused(f"applier: an effect names a unit that is not in "
+                        f"sim.units ({getattr(unit, 'id', None)!r})")
+
+
+def payload_index(sim, payload) -> int:
+    """A ``[payloads.*]`` row's index in ``sim.weapons_tables.payloads``."""
+    names = list(sim.weapons_tables.payloads.by_name)
+    name = getattr(payload, "name", None)
+    if name not in names or sim.weapons_tables.payloads.by_name[name] is not payload:
+        raise EffectRefused(f"applier: payload {name!r} is not a row of the "
+                            f"sim's payload table")
+    return names.index(name)
+
+
+def record_of(sim, eff) -> tuple:
+    """ONE host effect of ``simulation.simultaneous.SimultaneousEffects``'s
+    pending list as its device record (:data:`KIND_FIELDS`). A ``_WORLD``
+    call is recognised by its function: ``combat.chew_wall`` is CHEW,
+    ``payloads.execute_payload`` is PAYLOAD; FACE (WEGO-only), a cover chew,
+    a spray's cells and any other call are refused by name
+    (:class:`EffectRefused`), as is an effect whose objects are not ``sim``'s
+    own (another map, another impulse table, another event list)."""
+    from simulation import combat, payloads, simultaneous, unit_fixed, wall_fixed
+    from simulation.events import (CAUSE_NAMES, NO_ATTACKER, attacker_value,
+                                   cause_value)
+    kind = eff[0]
+    if kind == simultaneous._HIT:
+        _, unit, packet, events, source = eff
+        if events is not sim.tick_events:
+            raise EffectRefused("applier: a HIT whose events are not the sim's "
+                                "tick_events has no device form")
+        return make_record(
+            "HIT", row=_row_of(sim, unit), amount_q=int(packet.q()),
+            dtype=int(packet.dtype),
+            attacker=attacker_value(getattr(packet, "attacker_id", NO_ATTACKER)),
+            indirect=int(bool(getattr(packet, "indirect", False))),
+            expose=int(getattr(packet, "expose", 0) or 0),
+            dir_x_q=int(getattr(packet, "dir_x_q", 0)),
+            dir_y_q=int(getattr(packet, "dir_y_q", 0)),
+            ap_q=unit_fixed.quantize_scalar(float(packet.ap)),   # p3e-door: mitigate_q's
+            cause=CAUSE_NAMES.index(cause_value(source)))
+    if kind == simultaneous._STATUS:
+        _, unit, skind, magnitude, duration, source_id = eff
+        return make_record(
+            "STATUS", row=_row_of(sim, unit), status=int(skind),
+            magnitude_q=unit_fixed.quantize_scalar(float(magnitude)),  # p3e-door: apply_status's
+            duration=int(duration),
+            source=-1 if source_id is None else int(source_id))
+    if kind == simultaneous._PUSH:
+        _, table, unit, jx, jy, lever, twist = eff
+        if table is not sim.impulse_table:
+            raise EffectRefused("applier: a PUSH through another impulse table "
+                                "than the sim's has no device form")
+        return make_record("PUSH", row=_row_of(sim, unit), jx_q=jx, jy_q=jy,
+                           lever_q=lever, twist_q16=twist)
+    if kind == simultaneous._FACE:
+        raise EffectRefused("applier: FACE has no device kind (its producers "
+                            "are slot 4's WEGO branches, design 4.4c scope)")
+    if kind != simultaneous._WORLD:
+        raise EffectRefused(f"applier: no effect kind {kind!r}")
+    _, fn, args, kwargs = eff
+    f = _unwrap(fn)
+    if f is _unwrap(combat.chew_wall):
+        gmap, iy, ix, wall_damage = args
+        if kwargs or gmap is not sim.gmap:
+            raise EffectRefused("applier: a chew_wall on another map / with "
+                                "keywords has no device form")
+        live = wall_damage > 0
+        return make_record(
+            "CHEW", y=int(iy), x=int(ix),
+            damage_q=(wall_fixed.quantize_scalar(float(wall_damage))  # p3e-door: chew_wall's
+                      if live else 0),
+            live=int(live))
+    if f is _unwrap(payloads.execute_payload):
+        gmap, queue, units, fy, fx, payload = args[:6]
+        if gmap is not sim.gmap or queue is not sim.edit_queue or units is not sim.units \
+                or kwargs.get("events", None) is not sim.tick_events:
+            raise EffectRefused("applier: an execute_payload on another sim's "
+                                "map / queue / units / events has no device form")
+        pk = kwargs.get("kind", "explosion")
+        if pk not in PAYLOAD_KINDS:
+            raise EffectRefused(f"applier: payload kind {pk!r} is not one of "
+                                f"{PAYLOAD_KINDS}")
+        appr = kwargs.get("approach", None)
+        return make_record(
+            "PAYLOAD", y=int(fy), x=int(fx), payload=payload_index(sim, payload),
+            owner=int(kwargs.get("owner_id", NO_ATTACKER)),
+            approach_y=-1 if appr is None else int(appr[0]),
+            approach_x=-1 if appr is None else int(appr[1]),
+            has_approach=int(appr is not None), kind=PAYLOAD_KINDS.index(pk))
+    raise EffectRefused(f"applier: the world call {getattr(f, '__qualname__', f)!r} "
+                        f"has no device kind (CHEW is combat.chew_wall, PAYLOAD "
+                        f"payloads.execute_payload)")
+
+
+def records_of(sim, pending) -> np.ndarray:
+    """A host pending list as ``(R, F)`` int64 records, in its order."""
+    recs = [record_of(sim, e) for e in pending]
+    return np.array(recs, dtype=np.int64).reshape(len(recs), F)
+
+
+def effects_of(args, kwargs):
+    """The ``SimultaneousEffects`` a slot callable was handed: ``self`` of
+    ``resolve`` or the ``effects=`` of an attack slot's walk."""
+    from simulation.simultaneous import SimultaneousEffects
+    for a in tuple(args) + tuple(kwargs.values()):
+        if isinstance(a, SimultaneousEffects):
+            return a
+    raise EffectRefused("applier: the slot callable was handed no "
+                        "SimultaneousEffects")
+
+
+# ---------------------------------------------------------------------------
 # The device applier
 # ---------------------------------------------------------------------------
 class DeviceApplier:
-    """THE per-env effect list ``(N, cap, F)`` and book channels ``(N,
-    N_BOOKS)`` on the tick stream (``breach_physics.FieldApplierBuffer``, the
-    CUDA build only). :meth:`stage` uploads a packed list; the launch
-    (``simulation.unit_kernels.apply_effects``) zeroes the books, walks every
-    env's list and downloads the books. Refuses a compiled module whose
-    applier layout is not this table's."""
+    """THE per-env EFFECT LIST ``(N, cap, F)`` -- an instance of the record
+    list (``UnitRecordList``: per-row staging and ONE gather per env, so a
+    per-row producer's records land in row order; #29 P7a.1) -- and the book
+    channels ``(N, N_BOOKS)``, on the tick stream
+    (``breach_physics.FieldApplierBuffer``, the CUDA build only).
 
-    def __init__(self, n_env: int, cap: int = E_CAP, bp=None):
+    Producers APPEND: :meth:`stage` sets every env's list from host records
+    (the first ``cap`` kept, the rest counted as dropped: the host staging the
+    gates use, and a chained run's host-made records); a device producer
+    (slot 4a, ``simulation.unit_kernels.melee``) stages per row and gathers
+    after whatever the list holds, so several producers continue one list
+    before it is walked. :meth:`begin` empties it. The walk
+    (``unit_kernels.apply_effects`` / ``resolve``, one kernel, a STAGE
+    argument) zeroes the books, walks every env's list and downloads them.
+    ``n_units`` is the store's row count (the staging's), ``row_cap`` a row's
+    staging. Refuses a compiled module whose applier layout is not this
+    table's."""
+
+    def __init__(self, n_env: int, cap: int = E_CAP, bp=None, n_units: int = 1,
+                 row_cap: int = ROW_CAP):
         if bp is None:
             import breach_physics as bp
         if not getattr(bp, "HAS_CUDA", False):
@@ -295,10 +550,7 @@ class DeviceApplier:
                                "build (breach_physics.HAS_CUDA)")
         lay = layout()
         compiled = bp.applier_layout()
-        if compiled["fingerprint"] != lay.fingerprint \
-                or int(compiled["f"]) != lay.width \
-                or int(compiled["n_books"]) != N_BOOKS \
-                or int(compiled["n_planes"]) != N_PLANES:
+        if compiled["fingerprint"] != lay.fingerprint                 or int(compiled["f"]) != lay.width                 or int(compiled["n_books"]) != N_BOOKS                 or int(compiled["n_planes"]) != N_PLANES:
             raise ValueError(
                 f"applier: the compiled layout ({compiled['fingerprint'][:12]}) "
                 f"is not simulation.applier's ({lay.fingerprint[:12]}): run "
@@ -306,13 +558,26 @@ class DeviceApplier:
         self.bp = bp
         self.n_env = int(n_env)
         self.cap = int(cap)
-        self._buf = bp.FieldApplierBuffer(self.n_env, self.cap)
+        self.n_units = int(n_units)
+        self.row_cap = int(row_cap)
+        self._buf = bp.FieldApplierBuffer(self.n_env, self.cap, self.n_units,
+                                          self.row_cap)
 
     @property
     def buffer(self):
         return self._buf
 
+    @property
+    def shape(self):
+        return (self.n_env, self.cap, F)
+
+    def begin(self) -> None:
+        """Empty every env's list (counts, dropped, the staging)."""
+        self._buf.begin()
+
     def stage(self, recs, counts) -> None:
+        """Set every env's list from a packed host list (:func:`pack`):
+        ``counts`` the REQUESTED counts (past ``cap`` counted as dropped)."""
         recs = np.ascontiguousarray(recs, dtype=np.int64)
         counts = np.ascontiguousarray(counts, dtype=np.int64).reshape(-1)
         if recs.shape != (self.n_env, self.cap, F) or counts.shape != (self.n_env,):
@@ -320,6 +585,20 @@ class DeviceApplier:
                              f"{F}) with ({self.n_env},) counts, not "
                              f"{recs.shape} / {counts.shape}")
         self._buf.stage(recs, counts)
+
+    def stage_lists(self, per_env) -> None:
+        """:meth:`stage` of N envs' ``(R_e, F)`` record arrays."""
+        self.stage(*pack(per_env, self.cap))
+
+    def download(self):
+        """``(records (N, cap, F), counts (N,), dropped (N,))`` int64."""
+        return self._buf.download()
+
+    def records(self) -> list:
+        """Per env, its records as a list of int tuples (list order)."""
+        recs, counts, _dropped = self.download()
+        return [[tuple(int(x) for x in recs[e, i]) for i in range(int(counts[e]))]
+                for e in range(recs.shape[0])]
 
 
 def books_dict(books) -> dict:
@@ -339,7 +618,12 @@ def host_book(gmap, ref: str) -> int:
 __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "KIND_DESTROY_WALL", "E_CAP", "BookRow", "BOOKS", "BOOK_NAMES",
            "N_BOOKS", "PLANES", "PLANE_NAMES", "N_PLANES", "CLEAR_PLANES",
-           "CLEAR_NAMES", "EffectOverflow", "ApplierFault",
+           "CLEAR_NAMES", "EffectOverflow", "ApplierFault", "EffectRefused",
+           "ARG_SLOTS", "KIND_FIELDS", "KIND_HIT", "KIND_STATUS", "KIND_PUSH",
+           "KIND_CHEW", "KIND_PAYLOAD", "UNAPPLIED_KINDS", "PAYLOAD_KINDS",
+           "STAGES", "STAGE_NAMES", "STAGE_TOPOLOGY", "STAGE_RESOLVE", "ROW_CAP",
+           "kind_field", "make_record", "record_of", "records_of", "effects_of",
+           "payload_index",
            "non_resident_planes", "Layout", "layout", "header_text",
            "destroy_records", "pack", "DeviceApplier", "books_dict",
            "host_book"]

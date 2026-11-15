@@ -5,18 +5,31 @@
 // row). See src/simulation/applier.py (the ONE table; GENERATED
 // cpp/src/applier_layout.h) and cpp/src/cuda_topology.cuh (the topology seam
 // as device functions).
+// #29 P7a.1 -- THE EFFECT LIST (design 4.4c, decisions 1, 2): the list is an
+// instance of the record list (UnitRecordList: per-row staging and ONE gather
+// per env in row order, so a per-row producer's records land in the
+// reference's order; a serial producer appends directly); the applier's reach
+// grows from the planes to the unit store, the device tables and the event
+// ring (env_sink); one kernel walks it in a STAGE (APPLIER_STAGE_*), and a HIT
+// in a stage that LANDS uses the exposure landing (cuda_unit_damage.cuh).
 // ============================================================================
 //
-// FieldApplier: the per-env EFFECT LIST (N, cap, APPLIER_F) int64 with a
-// REQUESTED count per env (which may exceed cap: the first cap are applied,
-// the rest counted in the env's `dropped` book) and the per-env BOOK channels
-// (N, APPLIER_N_BOOKS) int64. stage() copies a host list through pinned memory
-// on the tick stream.
+// FieldApplier: the per-env EFFECT LIST (a UnitRecordList of APPLIER_F-wide
+// records, `cap` per env, `row_cap` staged per row of an `n_units`-row store)
+// and the per-env BOOK channels (N, APPLIER_N_BOOKS) int64, plus the walk's
+// scratch (the exposure landing, (N, cap, LANDING_W); the rows a walk
+// changed). stage() SETS every env's list from host records (the first cap
+// kept, the rest counted as dropped); a device producer appends after
+// whatever the list holds (its gather continues the list); begin() empties it.
 //
 // applier_run: ONE BLOCK per env (grid (1, N), blockIdx.y the env -- the bgrid
 // convention), thread 0 walking the env's effects in list order (the
-// reference's order), each effect a device function of the topology seam
-// writing the env's planes in place and its books. The other threads of the
+// reference's order), each effect a device function: DESTROY_WALL and CHEW
+// over the topology seam (the env's planes, in place, and its books); HIT
+// (apply_packet on the target's row, its events through the env's ring --
+// the landing in a stage that lands), STATUS (apply_status if alive), PUSH
+// (impulse_add if alive) on the store; PAYLOAD refused (counted in the
+// `refused` book: no device function until P7c.1). The other threads of the
 // block are idle today: the fan-out of an effect's tile set over them, with a
 // barrier between effects, arrives with its first user (P7c's deposits).
 // The books are zeroed before and downloaded after (a stream sync: allowed,
@@ -33,38 +46,47 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "applier_layout.h"     // GENERATED: the record, books, planes
-#include "cuda_unit_store.h"    // UnitTablesDevice
+#include "applier_layout.h"     // GENERATED: the record, kinds, stages, books, planes
+#include "cuda_unit_events.h"   // UnitRecordList, UnitEventRing
+#include "cuda_unit_store.h"    // UnitStoreDevice, UnitTablesDevice
 
 namespace breach_cuda {
 
 class FieldApplier {
 public:
-    // Refuses n_env < 1 or cap < 1.
-    FieldApplier(int n_env, int cap);
+    // Refuses n_env < 1, cap < 1, n_units < 1 or row_cap < 1.
+    FieldApplier(int n_env, int cap, int n_units, int row_cap);
     ~FieldApplier();
     FieldApplier(const FieldApplier&) = delete;
     FieldApplier& operator=(const FieldApplier&) = delete;
 
-    int n_env() const { return n_env_; }
-    int cap() const { return cap_; }
-    int64_t* recs_dev() { return d_recs_; }       // (N, cap, F)
-    int64_t* counts_dev() { return d_cnt_; }      // (N,)
-    int64_t* books_dev() { return d_books_; }     // (N, N_BOOKS)
+    int n_env() const { return list_.n_env(); }
+    int cap() const { return list_.cap(); }
+    int n_units() const { return list_.n_units(); }
+    int row_cap() const { return list_.row_cap(); }
+    UnitRecordList& list() { return list_; }       // THE effect list
+    int64_t* books_dev() { return d_books_; }      // (N, N_BOOKS)
+    int64_t* landing_dev() { return d_land_; }     // (N, cap, LANDING_W)
 
-    // A packed list (N * cap * F int64) and the requested counts (N int64)
-    // to the device (pinned staging, async on the tick stream).
+    // Empty every env's list (counts, dropped, the staging).
+    void begin() { list_.begin(); }
+    // SET every env's list: `recs` (N * cap * F int64, each env's first cap
+    // records) and the REQUESTED counts (N int64; past cap counted in the
+    // list's dropped). Pinned staging, async on the tick stream.
     void stage(const int64_t* recs, const int64_t* counts);
     // The books (N * N_BOOKS int64) to host memory; returns once landed.
     void download_books(int64_t* host);
+    // The rows a walk changed: a (N, U) byte scratch grown to `n` rows.
+    uint8_t* touched(int n_units);
 
 private:
-    int n_env_ = 0, cap_ = 0;
-    int64_t* d_recs_ = nullptr;
-    int64_t* d_cnt_ = nullptr;
+    UnitRecordList list_;
     int64_t* d_books_ = nullptr;
-    int64_t* h_stage_ = nullptr;       // pinned: recs then counts
+    int64_t* d_land_ = nullptr;
+    int64_t* h_stage_ = nullptr;       // pinned: recs, then counts, then dropped
     int64_t* h_books_ = nullptr;       // pinned
+    uint8_t* d_touched_ = nullptr;
+    size_t touched_cap_ = 0;
     void* staged_ = nullptr;           // cudaEvent_t: the last stage copy
 };
 
@@ -78,10 +100,20 @@ struct ApplierPlanes {
     int w = 0;
 };
 
-// The applier over every env's staged list; `books_out` (N * N_BOOKS int64
-// host) receives the books.
-void applier_run(FieldApplier& a, const UnitTablesDevice& tables, const ApplierPlanes& planes,
-                 int64_t* books_out);
+// What applier_run returns besides the books: per env the rows the walk
+// changed and the ring's dropped events (N int64 each, host).
+struct ApplierOut {
+    int64_t* books = nullptr;       // N * N_BOOKS
+    int64_t* coverage = nullptr;    // N
+    int64_t* ring_dropped = nullptr;   // N (may be null)
+};
+
+// The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
+// the store's rows and the env's planes; `ring` (may be null: a HIT then
+// faults) receives the events.
+void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
+                 const ApplierPlanes& planes, int stage, UnitEventRing* ring,
+                 const ApplierOut& out);
 
 // The tick-end clears: `ptr` the device addresses of the (N, h, w) planes in
 // APPLIER_CLEAR_* order; `active` a device pointer to (N,) uint8 (nullptr: all).
@@ -93,9 +125,9 @@ void tick_end_clears(int n_env, int h, int w,
 const char* applier_fingerprint();
 
 // TEST-ONLY (cuda_topology_probe.cu): the staged list's records read as
-// (y, x, new material in `arg`): `material = m; on_tile_changed` per record,
-// serially per env; the books into `books_out` (applied = records done,
-// faults = a record out of the grid or the table).
+// (y, x, new material) in their first three arg slots: `material = m;
+// on_tile_changed` per record, serially per env; the books into `books_out`
+// (applied = records done, faults = a record out of the grid or the table).
 void topology_probe_tile_changed(FieldApplier& a, const UnitTablesDevice& tables,
                                  const ApplierPlanes& planes, int64_t* books_out);
 

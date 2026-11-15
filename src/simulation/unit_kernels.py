@@ -502,41 +502,116 @@ def _plane_ptrs(name, n_env, fields):
     return ptrs, n_gases, h, w
 
 
-def apply_effects(store, dev_applier, fields: dict, per_env) -> dict:
-    """THE PER-ENV SERIAL APPLIER: each env's effect records (``per_env``, a
-    list of ``(R_e, applier.F)`` int64, :func:`simulation.applier.
-    destroy_records`) walked in order on the env's planes -- ``fields`` maps
-    every ``applier.PLANES`` name to a DEVICE array ``(N, ...)`` in the
-    GameMap field's dtype (``ResidentBatch.buffers`` as they are), written IN
-    PLACE -- through the topology seam's device functions, over the store's
-    device tables. Returns the books ``{name: (N,) int64}``. Refuses (after
-    the run: the first ``cap`` effects ARE applied) a run that dropped effects
-    past the list's capacity (:class:`simulation.applier.EffectOverflow`) or
-    faulted (:class:`simulation.applier.ApplierFault`), naming the envs."""
+def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None):
+    """THE PER-ENV SERIAL APPLIER's walk (#29 P6.4b; P7a.1: one kernel, a
+    STAGE argument): every env's effect list (``dev_applier``, a
+    :class:`simulation.applier.DeviceApplier` -- staged from the host, or
+    appended by a device producer, or both) walked in order, each effect a
+    device function: DESTROY_WALL / CHEW over the topology seam on the env's
+    planes -- ``fields`` maps every ``applier.PLANES`` name to a DEVICE array
+    ``(N, ...)`` in the GameMap field's dtype (``ResidentBatch.buffers`` as
+    they are), written IN PLACE --, HIT / STATUS / PUSH on the store's rows
+    (a HIT's events into ``ring``, a :class:`simulation.unit_events.
+    EventRing`; in a stage that lands, with the exposure landing). Returns
+    ``(coverage, books)``: the rows the walk changed per env and the books
+    ``{name: (N,) int64}``. Refuses (after the run: the first ``cap`` effects
+    ARE applied) a run that dropped effects (:class:`simulation.applier.
+    EffectOverflow`), dropped events (``UnitEventOverflow``), met a record it
+    may not apply (:class:`simulation.applier.EffectRefused`: a PAYLOAD until
+    P7c.1) or faulted (:class:`simulation.applier.ApplierFault`), naming the
+    kernel and the envs."""
     from simulation import applier
     n = store.shape[0]
+    name = f"applier[{applier.STAGE_NAMES[stage]}]"
     if dev_applier.n_env != n:
-        raise ValueError(f"unit kernel apply_effects: the applier is for "
+        raise ValueError(f"unit kernel {name}: the applier is for "
                          f"{dev_applier.n_env} envs, the store {n}")
-    ptrs, n_gases, h, w = _plane_ptrs("apply_effects", n, fields)
-    recs, counts = applier.pack(per_env, dev_applier.cap)
-    dev_applier.stage(recs, counts)
-    books = applier.books_dict(store.bp.applier_run(
-        dev_applier.buffer, store.tables, ptrs, n_gases, h, w))
+    if ring is not None:
+        _check_ring(name, store, ring)
+    ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
+    b, cov, rdrop = store.bp.applier_run(
+        dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
+        int(stage), None if ring is None else ring.buffer)
+    books = applier.books_dict(b)
+    cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books
+    store.last_coverage = cov
     if books["dropped"].any():
         envs = [int(e) for e in np.nonzero(books["dropped"])[0]]
         raise applier.EffectOverflow(
-            f"unit kernel apply_effects: {int(books['dropped'].sum())} effect(s) "
+            f"unit kernel {name}: {int(books['dropped'].sum())} effect(s) "
             f"in env(s) {envs} did not fit the applier's list (cap "
-            f"{dev_applier.cap}): the first {dev_applier.cap} were applied")
+            f"{dev_applier.cap}, or a row's staging): the first {dev_applier.cap} "
+            f"were applied")
+    if np.asarray(rdrop).any():
+        envs = [int(e) for e in np.nonzero(np.asarray(rdrop))[0]]
+        raise UnitEventOverflow(
+            f"unit kernel {name}: {int(np.asarray(rdrop).sum())} event(s) in "
+            f"env(s) {envs} did not fit the event ring")
+    if books["refused"].any():
+        envs = [int(e) for e in np.nonzero(books["refused"])[0]]
+        raise applier.EffectRefused(
+            f"unit kernel {name}: {int(books['refused'].sum())} record(s) in "
+            f"env(s) {envs} of a kind with no device function yet "
+            f"({', '.join(applier.UNAPPLIED_KINDS)}: execute_payload arrives with "
+            f"P7c.1): not applied")
     if books["faults"].any():
         envs = [int(e) for e in np.nonzero(books["faults"])[0]]
         raise applier.ApplierFault(
-            f"unit kernel apply_effects: {int(books['faults'].sum())} effect(s) "
-            f"in env(s) {envs} left the range the topology seam was proved for "
+            f"unit kernel {name}: {int(books['faults'].sum())} effect(s) "
+            f"in env(s) {envs} left the range the applier was proved for "
             f"(nothing written for them)")
+    return cov, books
+
+
+def apply_effects(store, dev_applier, fields: dict, per_env,
+                  stage: int | None = None, ring=None) -> dict:
+    """The effect lists ``per_env`` (a list of ``(R_e, applier.F)`` int64,
+    e.g. :func:`simulation.applier.destroy_records`) STAGED from the host
+    into ``dev_applier`` and walked (:func:`walk_effects`, default stage
+    TOPOLOGY). Returns the books (``store.last_coverage`` the rows changed)."""
+    from simulation import applier
+    dev_applier.stage_lists(per_env)
+    _cov, books = walk_effects(store, dev_applier, fields,
+                               applier.STAGE_TOPOLOGY if stage is None else stage,
+                               ring)
     return books
+
+
+def resolve(store, dev_applier, fields: dict, ring) -> tuple:
+    """Slot 4c (``SimultaneousEffects.resolve`` of the attack slot): the
+    effect list as the producers left it, walked in the RESOLVE stage (the
+    HITs with the exposure landing). Returns ``(coverage, books)``."""
+    from simulation import applier
+    return walk_effects(store, dev_applier, fields, applier.STAGE_RESOLVE, ring)
+
+
+def melee(store, dev_applier, ticks) -> np.ndarray:
+    """Slot 4a (``combat.process_melee_intents``, the melee verb): every
+    valid row's latch consumed; a striker that can (``verb_gates.can_melee``)
+    and finds a target in its arc writes ``last_blow_tick`` and APPENDS its
+    blow (HIT, STATUS, PUSH) to ``dev_applier``'s effect list, gathered per
+    env in row order after what the list holds. ``ticks`` ``(N,)`` each
+    env's ``sim.tick``. Refuses a run whose records did not fit (the list's
+    cap or a row's staging: :class:`simulation.applier.EffectOverflow`) as it
+    refuses a fault."""
+    from simulation import applier
+    if dev_applier.n_env != store.shape[0] or dev_applier.n_units != store.shape[1]:
+        raise ValueError(f"unit kernel melee: the effect list is for "
+                         f"({dev_applier.n_env} envs, {dev_applier.n_units} rows), "
+                         f"the store {store.shape[:2]}")
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_melee(
+        store.buffer, store.tables, dev_applier.buffer, t))
+    cov = _done(store, "melee", (cov, flt, ref))
+    store.last_dropped = drp
+    if drp.any():
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise applier.EffectOverflow(
+            f"unit kernel melee: {int(drp.sum())} effect record(s) in env(s) "
+            f"{envs} did not fit the effect list (its cap, or a row's staging "
+            f"of {dev_applier.row_cap}): nothing was written past the capacity")
+    return cov
 
 
 def burn_through(store, dev_applier, fields: dict, walls) -> tuple:
@@ -595,7 +670,7 @@ def topology_probe(store, dev_applier, fields: dict, per_env) -> dict:
     for r in per_env:
         r = np.asarray(r, dtype=np.int64).reshape(-1, 3)
         out = np.zeros((r.shape[0], applier.F), dtype=np.int64)
-        out[:, 1:4] = r
+        out[:, 1:4] = r          # the first three arg slots: (y, x, m)
         recs_in.append(out)
     recs, counts = applier.pack(recs_in, dev_applier.cap)
     dev_applier.stage(recs, counts)
@@ -603,5 +678,6 @@ def topology_probe(store, dev_applier, fields: dict, per_env) -> dict:
         dev_applier.buffer, store.tables, ptrs, n_gases, h, w))
 
 
+__all__ += ["walk_effects", "resolve", "melee"]
 __all__ += ["WALL_WIDTH", "walls_of", "pad_walls", "apply_effects",
             "burn_through", "tick_end_clears", "topology_probe"]

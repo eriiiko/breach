@@ -277,11 +277,6 @@ __device__ inline void reload(int64_t* loc, const int64_t* tab, int64_t tick, bo
     loc[UNIT_COL_RELOAD_DONE_TICK] = tick + stall;
 }
 
-// unit_impulse.centre_q: the footprint's centre, Q16 tiles.
-__device__ __forceinline__ int64_t centre_q(int64_t pos_q, int64_t fp) {
-    return pos_q + (fp << 15);
-}
-
 // unit_impulse.shove_target: among the env's OTHER living rows (any team),
 // the adjacent one within the shove's cone whose bearing is nearest the
 // facing, ties to the lower id; -1 = none. Reads the slot-start rows (1b
@@ -346,20 +341,8 @@ __device__ inline void stage_shove(const int64_t* loc, const int64_t* tr, const 
     const int64_t tx = centre_q(tr[UNIT_COL_X_Q], tfp), ty = centre_q(tr[UNIT_COL_Y_Q], tfp);
     const int64_t lever = fixedpoint::shr_trunc_q((tx - ux) * sy - (ty - uy) * sx, 16);
     int64_t dl = 0;
-    if (lever != 0) {                                  // unit_impulse.add: `if lever:`
-        const int64_t rb = tab[UNIT_TAB_IMPULSE_R_BODY_Q];
-        const int64_t lev = lever > rb ? rb : (lever < -rb ? -rb : lever);
-        if (lev != 0) {
-            const uint64_t ax = (uint64_t)(jx < 0 ? -jx : jx), ay = (uint64_t)(jy < 0 ? -jy : jy);
-            uint64_t h1, l1, h2, l2;
-            fixedpoint::umul64_wide(ax, ax, &h1, &l1);
-            fixedpoint::umul64_wide(ay, ay, &h2, &l2);
-            uint64_t lo = l1 + l2;
-            const uint64_t hi = h1 + h2 + (lo < l1 ? 1u : 0u);
-            const int64_t mag = (int64_t)fixedpoint::isqrt_u128_q(hi, lo);
-            dl = fixedpoint::shr_trunc_q(mag * lev, 16);
-        }
-    }
+    if (lever != 0)                                    // unit_impulse.add: `if lever:`
+        dl = angular_q(tab, jx, jy, lever, ONE, bad);  // the library's (P7a.1)
     sc[SC_TARGET] = t;
     sc[SC_JX] = jx;
     sc[SC_JY] = jy;

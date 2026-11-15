@@ -40,7 +40,7 @@ __global__ void k_probe_tile_changed(const int64_t* recs, const int64_t* counts,
     const int64_t k = counts[e] < (int64_t)cap ? counts[e] : (int64_t)cap;
     for (int64_t j = 0; j < k; ++j) {
         const int64_t* r = recs + ((size_t)e * cap + (size_t)j) * APPLIER_F;
-        const int64_t y = r[APPLIER_FX_Y], x = r[APPLIER_FX_X], m = r[APPLIER_FX_ARG];
+        const int64_t y = r[APPLIER_FX_A0], x = r[APPLIER_FX_A1], m = r[APPLIER_FX_A2];
         if (y < 0 || y >= h || x < 0 || x >= w || m < 0 || m >= M) {
             B[APPLIER_BOOK_FAULTS] += 1;
             continue;
@@ -60,7 +60,7 @@ void topology_probe_tile_changed(FieldApplier& a, const UnitTablesDevice& tables
     cudaMemsetAsync(a.books_dev(), 0, (size_t)a.n_env() * APPLIER_N_BOOKS * sizeof(int64_t),
                     tstream());
     k_probe_tile_changed<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(
-        a.recs_dev(), a.counts_dev(), a.cap(), P, planes.h, planes.w, planes.n_gases,
+        a.list().records_dev(), a.list().count_dev(), a.cap(), P, planes.h, planes.w, planes.n_gases,
         tables.values(), a.books_dev());
     const cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

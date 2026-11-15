@@ -1335,6 +1335,112 @@ plant and use become table writes and leave it). Used as they are: Match
 draws, Verb gates, Weapons, Payload executor, FieldEdit, Horde field, Noise,
 Entity system, Trace currency, Gas energy seam.
 
+**As built (P7a.1, 2026-11-15).** Decisions 1, 2 and 8 landed as cut for the
+kinds, slot 4a and slot 4c; no decision moved. One line each:
+- THE EFFECT LIST is the applier's record widened: `kind` then ten arg slots
+  whose meaning is the kind's own (`applier.KIND_FIELDS`, the header's
+  `APPLIER_<KIND>_<FIELD>` columns): DESTROY_WALL `(y, x)`; HIT `(row,
+  amount_q, dtype, attacker, indirect, expose, dir_x_q, dir_y_q, ap_q, cause)`
+  (the packet at its door: `q()`, the AP quantized as `mitigate_q` does, the
+  attacker normalized, the cause's index); STATUS `(row, status, magnitude_q,
+  duration, source)`; PUSH `(row, jx_q, jy_q, lever_q, twist_q16)`; CHEW `(y,
+  x, damage_q, live)` (`live` 0 for `wall_damage <= 0`, the damage quantized
+  per call in the record); PAYLOAD `(y, x, payload, owner, approach_y,
+  approach_x, has_approach, kind)` (`payload` the row's index in
+  `sim.weapons_tables.payloads`, `kind` its index in `PAYLOAD_KINDS`).
+  `ROW_CAP` 3 (4a's blow), `E_CAP` 256; the books gained `refused`.
+- THE LIST IS A RECORD LIST: `FieldApplier` holds a `UnitRecordList` (width
+  F, `n_units` rows of staging, `row_cap`), so a per-row producer stages per
+  row and the one gather appends per env in row order AFTER what the list
+  holds (an append continues it: the `append` gate stages two records and
+  requires 4a's after them); `stage()` sets the list from host records (the
+  first `cap`, the rest counted as dropped: the old semantics);
+  `begin()` empties it. Python: `DeviceApplier(n_env, cap, n_units=,
+  row_cap=)` with `stage_lists` / `begin` / `records`.
+- ONE KERNEL, A STAGE ARGUMENT: `applier_run(applier, store, tables, planes,
+  stage, ring)` (stages `TOPOLOGY` = slot 9, `RESOLVE` = slot 4c; a stage
+  `LANDS` or not), returning the books, the coverage (the rows the walk
+  changed, flagged per row and counted once; a row changed and changed back
+  counts) and the ring's dropped count. Python: `unit_kernels.walk_effects`
+  (THE refusals: `EffectOverflow`, `UnitEventOverflow`, `EffectRefused`,
+  `ApplierFault`, in that order), `apply_effects` (host lists staged, default
+  TOPOLOGY: slot 9 unchanged), `resolve` (the list as the producers left it).
+- THE REACH: the store's rows (an effect's `row` outside the env's rows or on
+  a padding row FAULTS), the env's device tables, the env's ring through
+  `env_sink` (its first caller; a HIT with no ring faults). The planes stay
+  required by every stage.
+- THE LANDING is `ExposureLanding`'s own two LISTS per env (scratch `(N, cap,
+  4)` beside the list: a raise `(row, dtype, add)` per slot, a death's row in
+  the fourth column), not per-target sums: `land()` exactly (raises in record
+  order, each `min(x_max, x + add)`, skipped for a unit dead at the landing;
+  then the dead zeroed). `apply_packet` gained an overload taking an
+  `ExposureLanding*` and the row index; the old seven-argument form IS the
+  overload with null and is unchanged bit for bit (P6.3 / P6.4b gates green).
+- THE KINDS' FUNCTIONS: HIT `apply_packet` (landing in RESOLVE); STATUS
+  `apply_status` if alive (a stack-cap refusal changes nothing; a bad kind or
+  duration faults); PUSH `impulse_add` if alive -- `unit_impulse.add` with its
+  `angular_q` (the lever clamped per input, the magnitude's square in 128
+  bits, the twist), MOVED to the unit library from the verbs TU's
+  `stage_shove`, which now calls it; CHEW `chew_wall` (air and `live` 0
+  no-ops; a tile outside the grid FAULTS where numpy would wrap or raise; the
+  new hp outside int32 FAULTS; `destroy_wall` at `<= 0` through the seam);
+  PAYLOAD counted in `refused`, never applied.
+- SLOT 4a is `cpp/src/cuda_unit_melee.cu` (`unit_kernels.melee`): the latch
+  consumed, `can_melee` (both moments in the library, the probe's columns
+  13 / 14), `melee_arc_target` and `melee_adjacent` (the square footprints of
+  `footprint_rowmajor`), `last_blow_tick` at once, the blow staged as HIT /
+  STATUS / PUSH. A striker whose melee row has a crit FAULTS (the loadouts
+  door refuses one; `melee_blow` would draw); a melee row without a dtype
+  faults; the push is refused past 2^46. Eight table rows (T 716):
+  `weapon_melee_damage_q`, `_dtype`, `_status_kind`, `_status_ticks`,
+  `_arc_half_q`, `weapon_rof_ticks`, `weapon_melee_crit`,
+  `weapon_melee_push_q` (per map: the impulse table's).
+- THE ONE RECORD FUNCTION: `applier.record_of` / `records_of` (a world call
+  recognised by its unwrapped function; FACE, a cover chew, a spray's cells,
+  any other call, and an effect on another sim's map / table / events refused
+  by name, `EffectRefused`); `applier.effects_of` finds a slot callable's
+  `SimultaneousEffects`.
+- THE HARNESS: `LISTS` (name -> host object, record function, consume,
+  device list, field names); `inputs=` / `outputs=("list:effects",)`; an input
+  list staged before the kernel, an output-only one begun; outputs compared
+  record for record (`list[i].KIND.field`), the alone run's list too;
+  `DeviceSlot.select(sim, args, kw, caller)` (4c is the conductor's resolve,
+  `_step_pre_physics`); the ring compared on `unit_events.is_synced` events;
+  `ChainedSlots` stages its lists at the chain's entry, empties the host's
+  list after the kernels, and refuses by name a later chained callable that
+  finds the host appended to it in between (4b's records would be lost).
+- TWO CLASS-T TWINS, `melee` (slot 4a) and `resolve` (slot 4c). The corpus
+  never strikes and its 4c resolves record no hit in 300 ticks, so `melee`'s
+  traced files are `combat.py`, `simultaneous.py` and `resolve`'s
+  `exposure.py`, `simultaneous.py`: a change to `damage.py` or
+  `combat.chew_wall` does NOT put `resolve` in debt (the thin-trace gap
+  again); the effect-list gate is the guard. `combat.py` and
+  `simultaneous.py` left `[not_twinned]`.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): the profiler label "4c
+  resolve" wraps `SimultaneousEffects.resolve` itself, so it also times slot
+  2's landing resolve (`_update_projectiles`) -- the harness narrows by caller,
+  the profiler still adds both under 4c; `melee_blow` computes the screen-
+  convention `angle_q` on the verb path, where nothing reads it (no crit); no
+  melee row a loadout may carry is without a status, so "a blow without a
+  status" is unreachable; ship_demo's bots never strike (4a acted on 0 of 500
+  ticks); melee packets carry no `expose`, so the landing's raises come from
+  rounds (ship_demo: 4 raises landed, 4 PUSHes with a recoil lever); the
+  landing's skip of a raise for a unit dead at the landing cannot change a
+  result today (every unit dead there died inside the slot through a HIT and
+  is zeroed after the raises: its deliberate break stays green) -- it bites
+  first when a PAYLOAD's blast kills in immediate mode inside a resolve
+  (P7c.1 must gate it); a HEAL packet heals only with a negative amount.
+- THE GATES (`tests/cuda_unit_melee_check.py`, wrapper
+  `tests/test_cuda_unit_melee.py`; CPU `tests/test_applier_layout.py`):
+  TABLES; LIB (synthetic rows, both answers of each gate); KNIFE; SCENE (the
+  melee scene, 4a + 4c shadowed, a census of 32 branches each required,
+  four named unreachable); RESOLVE (the landing's result different from at
+  once, CHEW to zero, forward / reversed differ in ring and planes, PAYLOAD
+  refused, FACE refused); BATCH N = 2 / 8 (layout, seed, unit count, fields;
+  4a also beside ship_demo); PADDING; OVERFLOW (append, list, staging, a
+  staged list walked); CHAINED 4a + 4c; SHIP 500 ticks. Every gate broken once
+  (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

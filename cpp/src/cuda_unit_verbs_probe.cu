@@ -40,6 +40,16 @@ __global__ void k_verbs_probe(int64_t* store, int n_units, const int64_t* tables
     o[10] = handling_ticks(row, base);
     o[11] = shove_cooled(row, tab, tick) ? 1 : 0;
     o[12] = can_act(row, tab, &bad) ? 1 : 0;
+    // #29 P7a.1: the melee verb's gate (both moments), target, adjacency
+    o[13] = can_melee(row, tab, tick, false, &bad) ? 1 : 0;
+    o[14] = can_melee(row, tab, tick, true, &bad) ? 1 : 0;
+    const int64_t mr = melee_row(row, &bad);
+    o[16] = mr >= 0 ? melee_arc_target(store, n_units, r, row, tab, mr, &bad) : -2;
+    o[17] = -1;
+    if (base >= 0 && base < n_units) {
+        const int64_t* other = unit_row(store, n_units, (int)base);
+        if (row_valid(other)) o[17] = melee_adjacent(row, other, &bad) ? 1 : 0;
+    }
     o[15] = bad ? 1 : 0;
 }
 

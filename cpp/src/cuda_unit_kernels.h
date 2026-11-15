@@ -218,9 +218,26 @@ void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
 // [2] can_plant(tick), [3] can_reload(tick), [4] can_shove(tick), [5..8]
 // mag_status (tracked, rounds, spares -1 = untracked, reloading), [9]
 // magazines_carried, [10] handling_ticks(base), [11] shove_cooled(tick),
-// [12] can_act, [15] bad; a padding row's out row zero.
-constexpr int UNIT_VERBS_PROBE_K = 16;
+// [12] can_act, [15] bad; #29 P7a.1: [13] can_melee(tick, at_tick_start
+// false), [14] can_melee(tick, true), [16] melee_arc_target (a row, -1 none;
+// -2 the row holds no melee row), [17] melee_adjacent to row `base` (-1 when
+// `base` is not a valid row); a padding row's out row zero.
+constexpr int UNIT_VERBS_PROBE_K = 18;
 void unit_verbs_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, int64_t kind,
                       int64_t tick, int64_t base, int64_t* out);
+
+// ---- #29 P7a.1: slot 4a, the melee verb (the effect list's first producer) --------
+//   cuda_unit_melee.cu        slot 4a   combat.process_melee_intents
+//
+// Every valid row holding a melee latch consumes it; one that can strike
+// (verb_gates.can_melee) and finds a target in its arc (melee_arc_target)
+// writes last_blow_tick and RECORDS its blow -- a HIT, the row's STATUS, a
+// PUSH -- in `effects`' list (cuda_applier.h's FieldApplier: per-row staging
+// gathered per env in row order AFTER whatever the list holds). `ticks` (N,)
+// each env's sim.tick (input slot 0). out.dropped = records the list (or a
+// row's staging) could not hold.
+class FieldApplier;
+void unit_melee(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                const int64_t* ticks, const UnitDamageCounts& out);
 
 }  // namespace breach_cuda
