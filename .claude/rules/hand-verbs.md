@@ -1,0 +1,52 @@
+---
+paths:
+  - "src/simulation/verb_gates.py"
+  - "src/simulation/charges.py"
+  - "src/simulation/flash_blind.py"
+  - "src/simulation/combat.py"
+  - "src/simulation/weapons.py"
+  - "src/simulation/loadouts.py"
+  - "src/simulation/simulation.py"
+  - "src/control_direct.py"
+---
+
+# Hand verbs: reload, throw, blind, strike, light, plant, and their gates
+
+Fires on contact with these files. CLAUDE.md's index says what each system is
+and who must use it; this file holds the constraints the code cannot say.
+
+## Magazines
+- A reload DISCARDS the magazine in the gun with every round in it and loads a full one: rounds are never moved between magazines. `magazines` is the total carried, the one in the gun included; 0 or absent = untracked = the infinite auto-reload. The count belongs to the loadout's OWN weapon.
+- The law is these functions and nothing else (the gate, spend and the verb all call `reload_begin` / `mag_settle`); a weapon with `mag_size` 0 touches none of the state. A stall is never interrupted and does not stop movement. HUDs read `mag_status`, never the fields.
+- `_reload` asks `verb_gates.can_reload` FIRST and writes nothing when it says no; the lazy settle is the next trigger pull's or `mag_status`'s.
+- A reload that STARTS appends ONE render-only `ReloadEvent`, from `reload_begin` alone. Bots do not call the verb (they auto-reload).
+
+## Grenade kinds
+- A new grenade is a hand-grenade `[ammo.*]` row APPENDED to the family (the throw verb's `kind` is its index in config order, frag = 0), never a verb. The door (`loadouts._grenade_counts`) refuses an unknown or non-hand-grenade row and a negative or non-integer count by name. `Unit.has_grenade` is the FRAG slot.
+- The fuse is INTEGER ticks, converted once at the caller (`weapons.fuse_ticks_from_seconds`). THE WIND-UP: the grenade leaves the hand after the unit's throw wind-up, along the facing it has THEN; the count is spent when it LEAVES; a unit that dies or is stunned in the wind-up throws nothing and keeps its count.
+- Whether a throw would start is `verb_gates.can_throw`. The selected kind is CONTROL state (`DirectControl.grenade_kind`), never sim state.
+
+## Flash blinding
+- Through the `blind_*` columns (door `weapons._blind_columns`), applied by `apply_flash_blind` from `execute_payload`: never a per-grenade check. Every living unit of ANY team, the thrower included, in range with `GameMap.has_los`; a wall protects fully; a longer blinding is never shortened. Integer, no draw.
+- ACCEPTED GAP: the blinded player's screen is not whited out and an agent's observation is not masked (the obs door is P8b's).
+
+## Melee verb
+- A blow is a melee-archetype weapon ROW named by the loadout, never a branch. Slot 4a consumes every latch and records on the SAME `attack_effects` as the shots, decided against the slot-start state; hit, stun and push all land at 4c.
+- It strikes the ENEMY (another team, zombies included, never a teammate) adjacent and nearest its facing within the row's arc, ties to the lower id. The blow is `melee_blow`, the order path's own, with no facing snap (the arc is the aim). A whiff spends no cadence; the latch is consumed either way. A zombie's bite stays its own law.
+- Integer, no draw: the loadouts door refuses a melee row with `crit_chance > 0`. Slot 4a asks `verb_gates.can_melee(..., at_tick_start=False)`. Bots do not call it.
+
+## Flashlight bit
+- ON by default; `set_flashlight` takes the OFF sense, so a zero policy row never darkens a unit; hashed ONLY while off.
+- NOTHING in the sim reads it (light as game state is #81): the frame-light assembly draws a cone from it, and `carried_flashlight_cones` is the ONE choice of who is lit. A new unit light is a cone of that assembly, never a second path.
+
+## Planted charge
+- A planted charge is a `charges.PlantedCharge` and nothing else: never a timed_charge entity, a projectile or a second payload path. It fires through `charges.tick` with exactly ONE driver per path: the conductor's slot 9e on the continuous path, OnePhaseWEGO's timeline where the ruleset `drives_units`.
+- The verb clamps its integer fuse to the plant row's range and the tap records the clamped value. Whether a plant would start is `verb_gates.can_plant`; a throw and a melee blow cannot start during a plant; death or a stun cancels it (nothing planted, count kept). The charge hurts everyone in range, the planter included, and credits the planter.
+- The table holds `CHARGE_CAPACITY` live charges; a plant into a full one is refused and counted at THE door `charges.place`. Live charges hashed only while one exists (`CHARGE_SCHEMA` rows). Integer, no draw. Bots do not plant.
+- ACCEPTED GAPS: the planter may walk during its plant; under TwoPhaseWEGO (legacy) `det_tick` does not follow the round rewind.
+
+## Verb gates
+- Whether a hand verb would act if issued now is ONE pure read per verb (no write, settle, event, draw, noise or cool-down), called by the verb at its consumption and by the policy's masks at the START of the tick: a mask never carries its own copy of a decision. A new hand verb brings its gate in the same patch.
+- Possession is no term, and the TARGET is never a term. Gates are EXACT at both moments except for events that can only FORBID, so gate False at tick start ⇒ the verb does nothing (the one-sided promise); gate True may still do nothing. `can_plant` reads a wind-up as busy only if `throw_release_tick > tick`; `can_throw` is decided before the advances; `can_melee` takes the moment as a required keyword.
+- THE TWO OVERSIGHTS ARE KEPT (design 11, Erik's to rule on): a stunned unit can reload and open a door, and a reload ignores a wind-up and a plant. They are pinned by tests, so a ruling is a deliberate test change.
+- No gate for the trigger or the flashlight. `door_in_reach` is the use verb's own geometry per door.
