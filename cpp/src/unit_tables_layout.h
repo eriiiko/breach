@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "755d1d87c6473a1d7781ce64b025e429d23c435ea8814d1fc7d4a305a43217e6";
-constexpr int UNIT_TABLES_W = 166;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "e7fc2f3ae3b0988366deec124d4ffe9f3ca643eb23ed945a733364eebd3d51d4";
+constexpr int UNIT_TABLES_W = 515;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -146,6 +146,56 @@ constexpr int UNIT_TAB_POISON_FLUSH_Q = 164;
 constexpr int UNIT_TAB_POISON_FLUSH_Q_W = 1;
 constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR = 165;
 constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR_W = 1;
+constexpr int UNIT_TAB_TOPO_MAT_AIR = 166;
+constexpr int UNIT_TAB_TOPO_MAT_AIR_W = 1;
+constexpr int UNIT_TAB_TOPO_MAT_HULL = 167;
+constexpr int UNIT_TAB_TOPO_MAT_HULL_W = 1;
+constexpr int UNIT_TAB_TOPO_BOUNDARY_AMBIENT = 168;
+constexpr int UNIT_TAB_TOPO_BOUNDARY_AMBIENT_W = 1;
+constexpr int UNIT_TAB_TOPO_AMB_N_TOTAL_Q = 169;
+constexpr int UNIT_TAB_TOPO_AMB_N_TOTAL_Q_W = 1;
+constexpr int UNIT_TAB_TOPO_AMB_O2_Q = 170;
+constexpr int UNIT_TAB_TOPO_AMB_O2_Q_W = 1;
+constexpr int UNIT_TAB_TOPO_AMB_PIN_Q = 171;
+constexpr int UNIT_TAB_TOPO_AMB_PIN_Q_W = 1;
+constexpr int UNIT_TAB_TOPO_T_AMB_Q = 172;
+constexpr int UNIT_TAB_TOPO_T_AMB_Q_W = 1;
+constexpr int UNIT_TAB_MAT_LIGHT_ATTEN_BITS = 173;
+constexpr int UNIT_TAB_MAT_LIGHT_ATTEN_BITS_W = 33;
+constexpr int UNIT_TAB_MAT_HEAT_ATTEN_BITS = 206;
+constexpr int UNIT_TAB_MAT_HEAT_ATTEN_BITS_W = 11;
+constexpr int UNIT_TAB_MAT_HEAT_ATTEN_Q = 217;
+constexpr int UNIT_TAB_MAT_HEAT_ATTEN_Q_W = 11;
+constexpr int UNIT_TAB_MAT_LIGHT_ATTEN_Q = 228;
+constexpr int UNIT_TAB_MAT_LIGHT_ATTEN_Q_W = 33;
+constexpr int UNIT_TAB_MAT_FLAMMABLE = 261;
+constexpr int UNIT_TAB_MAT_FLAMMABLE_W = 11;
+constexpr int UNIT_TAB_MAT_WALL_HP_Q = 272;
+constexpr int UNIT_TAB_MAT_WALL_HP_Q_W = 11;
+constexpr int UNIT_TAB_MAT_CONDUCTIVITY_BITS = 283;
+constexpr int UNIT_TAB_MAT_CONDUCTIVITY_BITS_W = 11;
+constexpr int UNIT_TAB_MAT_HEAT_INV_SHIFT = 294;
+constexpr int UNIT_TAB_MAT_HEAT_INV_SHIFT_W = 11;
+constexpr int UNIT_TAB_MAT_THERMAL_SOLID = 305;
+constexpr int UNIT_TAB_MAT_THERMAL_SOLID_W = 11;
+constexpr int UNIT_TAB_MAT_FUEL_RECIP = 316;
+constexpr int UNIT_TAB_MAT_FUEL_RECIP_W = 11;
+constexpr int UNIT_TAB_MAT_FIRE_T_EXT_Q = 327;
+constexpr int UNIT_TAB_MAT_FIRE_T_EXT_Q_W = 11;
+constexpr int UNIT_TAB_MAT_FUEL_PER_O2_Q = 338;
+constexpr int UNIT_TAB_MAT_FUEL_PER_O2_Q_W = 11;
+constexpr int UNIT_TAB_MAT_FACE_SHIFT = 349;
+constexpr int UNIT_TAB_MAT_FACE_SHIFT_W = 121;
+constexpr int UNIT_TAB_MAT_NO_FACE = 470;
+constexpr int UNIT_TAB_MAT_NO_FACE_W = 1;
+constexpr int UNIT_TAB_MAT_PERMEABILITY_BITS = 471;
+constexpr int UNIT_TAB_MAT_PERMEABILITY_BITS_W = 11;
+constexpr int UNIT_TAB_MAT_WAVE_ABSORB_BITS = 482;
+constexpr int UNIT_TAB_MAT_WAVE_ABSORB_BITS_W = 11;
+constexpr int UNIT_TAB_MAT_SOLID = 493;
+constexpr int UNIT_TAB_MAT_SOLID_W = 11;
+constexpr int UNIT_TAB_MAT_BLOCKS_SIGHT = 504;
+constexpr int UNIT_TAB_MAT_BLOCKS_SIGHT_W = 11;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

@@ -467,7 +467,135 @@ ROWS: tuple[TableRow, ...] = (
              "1 = every species' default offsets are the footprint square in "
              "row-major order (unit_schema._d_offsets for every footprint), "
              "the tile order a kernel's reduction walks; refused otherwise"),
+)  # (#29 P6.4b's block is appended to ROWS below, after its sources)
+
+
+# == #29 P6.4b: the topology seam (cpp/src/cuda_topology.cuh: on_tile_changed,
+# destroy_wall) -- every value from the env's own GameMap (its materials table,
+# its ambient seed, its boundary), per map. A float-valued plane's value is the
+# float32's exact bit pattern (the one numpy stores), never re-derived. ======
+_I32_MIN, _I32_MAX = -(2 ** 31), 2 ** 31 - 1
+
+
+def _mats(src):
+    return src.sim.gmap.materials
+
+
+def _per_mat(f):
+    """Per material id: ``f(table, i)``, an int (or a tuple, flattened)."""
+    def g(src):
+        tbl = _mats(src)
+        out = []
+        for i in range(_n_materials()):
+            v = f(tbl, i)
+            out.extend(v if isinstance(v, tuple) else (v,))
+        return tuple(out)
+    return g
+
+
+def _f32_bits(x) -> int:
+    """The int32 bit pattern of ``x`` stored into a float32 plane."""
+    return int(np.array([x], dtype=np.float32).view(np.int32)[0])
+
+
+def _wall_hp_q(tbl, i):
+    from simulation import wall_fixed
+    return int(wall_fixed.quantize_scalar(float(tbl.hp[i])))
+
+
+def _mat_solid(tbl, i):
+    # on_tile_changed: solid = (the float32 permeability plane <= 0.0)
+    return int(bool(np.float32(float(tbl.permeability[i])) <= 0.0))
+
+
+def _mat_id(name):
+    def f(src):
+        from simulation import materials
+        return int(getattr(materials, name))
+    return f
+
+
+def _ambient_seed(k):
+    def f(src):
+        return int(src.sim.gmap.ambient_seed()[k])
+    return f
+
+
+_TOPO_ROWS: tuple = (
+    TableRow("topo_mat_air", 1, _mat_id("MAT_AIR"), 0, 127,
+             "materials.MAT_AIR: destroy_wall's gate and its new material"),
+    TableRow("topo_mat_hull", 1, _mat_id("MAT_HULL"), 0, 127,
+             "materials.MAT_HULL: the edge-hull breach"),
+    TableRow("topo_boundary_ambient", 1,
+             lambda src: int(src.sim.gmap._boundary == "ambient"), 0, 1,
+             "1 = the map's breach mask is is_ambient (planetside), 0 = "
+             "is_vacuum (space)"),
+    TableRow("topo_amb_n_total_q", 1, _ambient_seed(0), 1, _I32_MAX,
+             "GameMap.ambient_seed()'s n_total_q: the destruction seed's "
+             "constant total (an int32 gas store)"),
+    TableRow("topo_amb_o2_q", 1, _ambient_seed(1), 0, _I32_MAX,
+             "ambient_seed()'s o2_q: the composition fallback"),
+    TableRow("topo_amb_pin_q", 1, _ambient_seed(3), 0, _I32_MAX,
+             "ambient_seed()'s pin_q: a destroyed tile's atmosphere"),
+    TableRow("topo_t_amb_q", 1, lambda src: int(src.sim.gmap.gas_t_amb_raw()),
+             1, _I32_MAX, "GameMap.gas_t_amb_raw(): T_AMB_K raw (the mint)"),
+    TableRow("mat_light_atten_bits", lambda: 3 * _n_materials(),
+             _per_mat(lambda t, i: tuple(_f32_bits(t.light_atten[i][c])
+                                         for c in range(3))),
+             _I32_MIN, _I32_MAX, "per material x channel: light_atten's "
+             "float32 bits"),
+    TableRow("mat_heat_atten_bits", _n_materials,
+             _per_mat(lambda t, i: _f32_bits(float(t.heat_atten[i]))),
+             _I32_MIN, _I32_MAX, "per material: heat_atten's float32 bits"),
+    TableRow("mat_heat_atten_q", _n_materials,
+             _per_mat(lambda t, i: int(t.heat_atten_q16[i])), 0, ONE,
+             "per material: heat_atten_q16"),
+    TableRow("mat_light_atten_q", lambda: 3 * _n_materials(),
+             _per_mat(lambda t, i: tuple(int(t.light_atten_q16[i][c])
+                                         for c in range(3))), 0, ONE,
+             "per material x channel: light_atten_q16"),
+    TableRow("mat_flammable", _n_materials,
+             _per_mat(lambda t, i: int(bool(t.flammable[i]))), 0, 1,
+             "per material: flammable"),
+    TableRow("mat_wall_hp_q", _n_materials, _per_mat(_wall_hp_q), _I32_MIN,
+             _I32_MAX, "per material: wall_fixed.quantize_scalar(hp)"),
+    TableRow("mat_conductivity_bits", _n_materials,
+             _per_mat(lambda t, i: _f32_bits(float(t.conductivity[i]))),
+             _I32_MIN, _I32_MAX, "per material: conductivity's float32 bits"),
+    TableRow("mat_heat_inv_shift", _n_materials,
+             _per_mat(lambda t, i: int(t.heat_inv_shift[i])), -64, 64,
+             "per material: heat_inv_shift"),
+    TableRow("mat_thermal_solid", _n_materials,
+             _per_mat(lambda t, i: int(bool(t.thermal_solid[i]))), 0, 1,
+             "per material: thermal_solid"),
+    TableRow("mat_fuel_recip", _n_materials,
+             _per_mat(lambda t, i: int(t.fuel_recip[i])), 0, I64_MAX,
+             "per material: fuel_recip (an int64 plane)"),
+    TableRow("mat_fire_t_ext_q", _n_materials,
+             _per_mat(lambda t, i: int(t.fire_T_ext_q16[i])), _I32_MIN,
+             _I32_MAX, "per material: fire_T_ext_q16"),
+    TableRow("mat_fuel_per_o2_q", _n_materials,
+             _per_mat(lambda t, i: int(t.fuel_per_o2_q16[i])), _I32_MIN,
+             _I32_MAX, "per material: fuel_per_o2_q16"),
+    TableRow("mat_face_shift", lambda: _n_materials() ** 2,
+             _per_mat(lambda t, i: tuple(int(t.face_shift_table[i][j])
+                                         for j in range(_n_materials()))),
+             _I32_MIN, _I32_MAX, "face_shift_table[i][j], row-major"),
+    TableRow("mat_no_face", 1, lambda src: int(_mats(src).no_face), _I32_MIN,
+             _I32_MAX, "materials.no_face (the grid edge's face)"),
+    TableRow("mat_permeability_bits", _n_materials,
+             _per_mat(lambda t, i: _f32_bits(float(t.permeability[i]))),
+             _I32_MIN, _I32_MAX, "per material: permeability's float32 bits"),
+    TableRow("mat_wave_absorb_bits", _n_materials,
+             _per_mat(lambda t, i: _f32_bits(float(t.wave_absorb[i]))),
+             _I32_MIN, _I32_MAX, "per material: wave_absorb's float32 bits"),
+    TableRow("mat_solid", _n_materials, _per_mat(_mat_solid), 0, 1,
+             "per material: the solid predicate on its float32 permeability"),
+    TableRow("mat_blocks_sight", _n_materials,
+             _per_mat(lambda t, i: int(bool(t.blocks_sight[i]))), 0, 1,
+             "per material: blocks_sight (the sight screen, when not solid)"),
 )
+ROWS = ROWS + _TOPO_ROWS
 
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"

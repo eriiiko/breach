@@ -39,6 +39,7 @@ const char* breach_build_id();
 #include "cuda_resident_tick.h"    // #29 P4a: the resident tick's drivers (stage counters)
 #include "cuda_unit_store.h"       // #29 P6.1: the device unit store (Class T)
 #include "cuda_unit_kernels.h"     // #29 P6.2: the unit slot kernels (Class T)
+#include "cuda_applier.h"          // #29 P6.4b: the per-env serial applier (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -900,6 +901,87 @@ PYBIND11_MODULE(breach_physics, m) {
                   return py::make_tuple(out, c.cov, c.flt, c.ref, c.drp);
               }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("packets"),
               "#29 P6.3 TEST-ONLY: the device apply_packet on the store's rows.");
+    }
+
+    // #29 P6.4b: THE PER-ENV SERIAL APPLIER and THE TICK-END CLEARS
+    // (cuda_applier.h; Class T). The planes are device addresses of the
+    // (N, ...) arrays in applier_layout.h's order; the Python face is
+    // simulation.unit_kernels (apply_effects / tick_end_clears), the list's
+    // simulation.applier.DeviceApplier.
+    {
+        using breach_cuda::FieldApplier;
+        using breach_cuda::UnitTablesDevice;
+        m.def("applier_layout", []() {
+                  py::dict d;
+                  d["fingerprint"] = std::string(breach_cuda::applier_fingerprint());
+                  d["f"] = applier::APPLIER_F;
+                  d["n_books"] = applier::APPLIER_N_BOOKS;
+                  d["n_planes"] = applier::APPLIER_N_PLANES;
+                  d["n_clears"] = applier::APPLIER_N_CLEARS;
+                  return d;
+              },
+              "#29 P6.4b: the compiled applier layout (applier_layout.h).");
+        py::class_<FieldApplier>(m, "FieldApplierBuffer",
+                "#29 P6.4b: the per-env effect list (N, cap, F) and book channels (Class T).")
+            .def(py::init<int, int>(), py::arg("n_env"), py::arg("cap"))
+            .def_property_readonly("shape", [](const FieldApplier& a) {
+                return py::make_tuple(a.n_env(), a.cap(), applier::APPLIER_F);
+            })
+            .def("stage", [](FieldApplier& a, py::array_t<int64_t, py::array::c_style> recs,
+                             py::array_t<int64_t, py::array::c_style> counts) {
+                     if (recs.ndim() != 3 || recs.shape(0) != a.n_env() ||
+                         recs.shape(1) != a.cap() || recs.shape(2) != applier::APPLIER_F ||
+                         counts.ndim() != 1 || counts.shape(0) != a.n_env())
+                         throw std::invalid_argument(
+                             "FieldApplierBuffer.stage: recs (n_env, cap, F), counts (n_env,)");
+                     a.stage(recs.data(), counts.data());
+                 }, py::arg("recs"), py::arg("counts"));
+        m.def("applier_run",
+              [](FieldApplier& a, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  py::array_t<int64_t> books({(py::ssize_t)a.n_env(),
+                                              (py::ssize_t)applier::APPLIER_N_BOOKS});
+                  breach_cuda::applier_run(a, t, p, books.mutable_data());
+                  return books;
+              }, py::arg("applier"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
+              py::arg("h"), py::arg("w"),
+              "#29 P6.4b: the per-env serial applier over the staged lists; returns the "
+              "books (N, N_BOOKS) int64.");
+        m.def("tick_end_clears",
+              [](int n_env, int h, int w, py::array_t<uint64_t, py::array::c_style> ptrs,
+                 std::uintptr_t active) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_CLEARS)
+                      throw std::invalid_argument("tick_end_clears: ptrs must be (N_CLEARS,)");
+                  std::uintptr_t p[applier::APPLIER_N_CLEARS];
+                  for (int k = 0; k < applier::APPLIER_N_CLEARS; ++k)
+                      p[k] = (std::uintptr_t)ptrs.data()[k];
+                  breach_cuda::tick_end_clears(n_env, h, w, p, active);
+              }, py::arg("n_env"), py::arg("h"), py::arg("w"), py::arg("ptrs"),
+              py::arg("active"),
+              "#29 P6.4b: the tick-end clears on the (N, h, w) planes (tick stream).");
+        m.def("topology_probe_tile_changed",
+              [](FieldApplier& a, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument(
+                          "topology_probe_tile_changed: ptrs must be (N_PLANES,) uint64");
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  py::array_t<int64_t> books({(py::ssize_t)a.n_env(),
+                                              (py::ssize_t)applier::APPLIER_N_BOOKS});
+                  breach_cuda::topology_probe_tile_changed(a, t, p, books.mutable_data());
+                  return books;
+              }, py::arg("applier"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
+              py::arg("h"), py::arg("w"),
+              "#29 P6.4b TEST-ONLY: material = m; on_tile_changed, per staged record.");
     }
 
     m.def("eos_mg_build_parity",

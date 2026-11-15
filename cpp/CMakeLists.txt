@@ -146,6 +146,11 @@ if(BREACH_CUDA)
         src/cuda_unit_lib_probe.cu  # TEST-ONLY: the unit library on synthetic rows
         src/cuda_unit_movement.cu   # #29 P6.2m: slot 3 (the continuous path)
         src/cuda_unit_movement_probe.cu  # TEST-ONLY: the walk's library functions
+        # #29 P6.4b: the per-env serial applier over the topology seam as device
+        # functions (cuda_topology.cuh), and the tick-end clears; Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_applier.cu         # slot 9 (burn-through), the tick-end clears
+        src/cuda_topology_probe.cu  # TEST-ONLY: on_tile_changed on fixture maps
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
