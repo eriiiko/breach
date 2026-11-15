@@ -678,6 +678,96 @@ def topology_probe(store, dev_applier, fields: dict, per_env) -> dict:
         dev_applier.buffer, store.tables, ptrs, n_gases, h, w))
 
 
+# ---------------------------------------------------------------------------
+# #29 P7.0a: slot 9d (ignition from temperature) and the kit's probes
+# ---------------------------------------------------------------------------
+#: The planes slot 9d reads and writes, by GameMap field name, with their
+#: dtypes (``fire`` and ``ignition_armed`` written in place).
+IGNITION_FIELDS = (("temperature", np.int32), ("material", np.int8),
+                   ("flammable", np.bool_), ("wall_hp", np.int32),
+                   ("solid", np.bool_), ("is_vacuum", np.bool_),
+                   ("gas", np.int32), ("fire", np.int32),
+                   ("ignition_armed", np.bool_))
+
+
+def ignition(store, fields: dict) -> np.ndarray:
+    """Slot 9d (``combat.apply_temperature_ignition``): the per-cell law on
+    every env's planes -- a flammable tile below its threshold re-arms; a
+    hot, fuelled, armed, unlit one whose open neighbours' O2 fraction
+    exceeds ``o2_frac_ext`` is seeded; a hot burning one disarms.
+    ``fields`` maps each :data:`IGNITION_FIELDS` name to a DEVICE array
+    ``(N, h, w)`` (``gas`` ``(N, G, h, w)``) in its dtype, C-contiguous
+    (``ResidentBatch.buffers`` as they are); ``fire`` and ``ignition_armed``
+    are written IN PLACE. The dials are the store's tables (the ``ign_*``
+    rows). Returns the cells changed per env; refuses a run in which a
+    cell's material or a gas index left the tables
+    (:class:`UnitKernelFault`)."""
+    n = store.shape[0]
+    _check_planes("ignition", store, fields, dict(IGNITION_FIELDS))
+    g = fields["gas"]
+    if g.ndim != 4:
+        raise ValueError(f"unit kernel ignition: field 'gas' is {g.shape}, not (N, G, h, w)")
+    _, n_gases, h, w = (int(x) for x in g.shape)
+    ptrs = np.zeros(len(IGNITION_FIELDS), dtype=np.uint64)
+    for k, (name, _dt) in enumerate(IGNITION_FIELDS):
+        a = fields[name]
+        want = (n, n_gases, h, w) if name == "gas" else (n, h, w)
+        if tuple(int(x) for x in a.shape) != want:
+            raise ValueError(f"unit kernel ignition: field {name!r} is {a.shape}, "
+                             f"not {want}")
+        if not a.flags.c_contiguous:
+            raise ValueError(f"unit kernel ignition: field {name!r} is not C-contiguous")
+        ptrs[k] = int(a.data.ptr)
+    return _done(store, "ignition",
+                 store.bp.unit_ignition(store.buffer, store.tables, ptrs, n_gases, h, w))
+
+
+#: The draws probe's argument row and output columns (TEST-ONLY).
+KIT_DRAW_ARGS = ("salt", "ident", "index", "cone_q", "p_q", "salt2")
+KIT_DRAW_OUT = ("word", "cone", "roll", "bad", "a0", "b0", "a1", "b1", "a2", "b2")
+
+
+def kit_draws_probe(bp, keys, args) -> np.ndarray:
+    """TEST-ONLY: the device draws (``cpp/src/cuda_unit_draws.cuh``) --
+    ``keys`` ``(N, 3)`` (``unit_draws.draw_keys``), ``args`` ``(N, R, 6)``
+    (:data:`KIT_DRAW_ARGS`) -> ``(N, R, 10)`` (:data:`KIT_DRAW_OUT`)."""
+    from simulation import unit_draws
+    unit_draws.check_compiled(bp)
+    return np.asarray(bp.unit_kit_draws_probe(
+        np.ascontiguousarray(keys, dtype=np.int64),
+        np.ascontiguousarray(args, dtype=np.int64)))
+
+
+def kit_sight_probe(bp, solid, screen, pairs) -> np.ndarray:
+    """TEST-ONLY: the device ``has_los`` (``cpp/src/cuda_unit_sight.cuh``)
+    over DEVICE ``(N, h, w)`` bool planes ``solid`` / ``screen`` (the
+    ``sight_screen``) for ``pairs`` ``(N, R, 4)`` (fy1, fx1, fy2, fx2) ->
+    ``(N, R, 3)``: sight, physical, bad."""
+    for nm, a in (("solid", solid), ("screen", screen)):
+        if np.dtype(a.dtype) != np.dtype(np.bool_) or a.ndim != 3 \
+                or not a.flags.c_contiguous:
+            raise ValueError(f"kit_sight_probe: {nm} must be a C-contiguous "
+                             f"(N, h, w) bool device array")
+    if tuple(solid.shape) != tuple(screen.shape):
+        raise ValueError("kit_sight_probe: solid and screen differ in shape")
+    n, h, w = (int(x) for x in solid.shape)
+    return np.asarray(bp.unit_kit_sight_probe(
+        int(solid.data.ptr), int(screen.data.ptr), n, h, w,
+        np.ascontiguousarray(pairs, dtype=np.int64)))
+
+
+def kit_falloff_probe(bp, args) -> np.ndarray:
+    """TEST-ONLY: ``falloff_floor_q`` / ``falloff_round_q`` on the device for
+    ``args`` ``(n, 3)`` (v, d2, r2) -> ``(n, 2)`` (-1 outside the proved
+    range)."""
+    return np.asarray(bp.unit_kit_falloff_probe(
+        np.ascontiguousarray(args, dtype=np.int64).reshape(-1, 3)))
+
+
+__all__ += ["IGNITION_FIELDS", "ignition", "KIT_DRAW_ARGS", "KIT_DRAW_OUT",
+            "kit_draws_probe", "kit_sight_probe", "kit_falloff_probe"]
+
+
 __all__ += ["walk_effects", "resolve", "melee"]
 __all__ += ["WALL_WIDTH", "walls_of", "pad_walls", "apply_effects",
             "burn_through", "tick_end_clears", "topology_probe"]
