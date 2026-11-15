@@ -150,7 +150,10 @@ Q16 constant), and **`philox32_below(w, n)` (Lemire multiply-shift) is the
 integer-in-`[0, n)` door for Philox draws — never `w % n`, never through
 float** — the same reason `.integers()` is PCG64's door: a modulo or a float
 pass would reintroduce exactly the implementation-defined step this chapter
-exists to close.
+exists to close. *As built (#29 P3b, arc #63 P3): the ONE enum is
+`rng_salts.Salt` and the key and clock are `draws.MatchDraws` (`sim.draws`:
+key = the seed, tick = the sim tick plus the WEGO round base); the larva law
+draws through it (`docs/swarm_P3_impl.md` §6).*
 
 ## 4. The banned list
 
