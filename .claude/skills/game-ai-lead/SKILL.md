@@ -319,6 +319,30 @@ implementation agents and critics stay one at a time.
   the maths): "break it once" must be a fault that changes the output;
   (5) small fixes after the report are cheaper done by the lead in the
   finished agent's worktree than by resuming the agent.
+- **2026-11-15, patch 2b (trainer core).** One Opus agent, about 6.5 h and
+  450 thousand tokens, most of the hours spent waiting on task runs on the
+  processor; it built everything and stopped on three tasks that did not
+  pass, changing nothing (right). The lead then spent about four hours of
+  runs deciding them. What the next patch should know: (1) a made-up task
+  written only as a sentence in a note gets a first guess at its size; SIZE
+  IT IN THE NOTE (how many samples of each right answer a learning step
+  sees: about 13 learnt in 40 to 90 rounds, 3.5 did not in 500) and say the
+  farm; (2) a task must test its trap and nothing else: three forms of one
+  task failed on a trait of the trainer (the sooner-paying answer crowds
+  the other out) that its trap had nothing to do with; a mask or a single
+  answer keeps that out; (3) when a task fails, COUNT ITS PARTS APART
+  before changing anything (one run with the verb's and the argument's
+  accuracy printed separately told in 12 minutes what three reruns had
+  not); (4) "each trap must fail its task" needs a margin, not only a
+  FAIL: one trap ended at 0.75 of the way under a 0.8 line; (5) measure a
+  budget at the budget (the step size falls over the planned rounds, so a
+  run planned for 400 rounds is not a run planned for 150); (6) run the
+  task gate as three processes of four threads; the whole gate is about
+  1.5 h, so launch it once, after one seed of every task has passed; (7)
+  the brief's rule "never an easier task" made the permission system
+  refuse the agent's own shrink of a task, which was the right outcome:
+  such a change is the lead's, with the measurement beside it, and Erik is
+  told.
 
 ## 11. Running rung 1 (for the orchestrator session)
 

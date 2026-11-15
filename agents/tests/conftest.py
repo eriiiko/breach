@@ -20,6 +20,12 @@ for _p in (ROOT, ROOT / "src"):
 torch.set_num_threads(4)
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "tasks: the made-up tasks (minutes each); the quick tests "
+        "alone: pytest agents/tests -q -m \"not tasks\"")
+
+
 @pytest.fixture
 def rng():
     return np.random.default_rng(20261115)
