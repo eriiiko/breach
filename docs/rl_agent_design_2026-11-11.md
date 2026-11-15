@@ -27,7 +27,7 @@ The plan around it: `docs/rl_agent_roadmap_2026-11-11.md`. The reasons:
 ## 1. Frame and rate (AGREED with the action space, Erik 2026-11-11; the window's frame is settled with section 3)
 
 - **Frame: north up, centred on the soldier.** Positions in the list are offsets from the soldier along the map's own axes, and the map window does not turn with it. The soldier's facing is one of its own features. Reason: the ships' walls run along the map's axes, so a window that never rotates keeps every wall straight for the network, and a rotated window would have to be resampled and blurred. It is also the frame of the human's north-up camera.
-- **Rate: one decision every 4 ticks** (six a second, 167 ms; OpenAI Five's reaction time was 167 to 267 ms, Honor of Kings acts every 133 ms). Between decisions the choices are held, and the decoder (2.2) keeps issuing verbs on every tick. The rate is one of rung 3's experiments (4, 6, 8 ticks).
+- **Rate: one decision every 4 ticks** (six a second, 167 ms; OpenAI Five's reaction time was 167 to 267 ms, Honor of Kings acts every 133 ms). Between decisions the choices are held, and the decoder (2.2) keeps issuing verbs on every tick. The rate is one of rung 3's experiments (4, 6, 8 ticks). **Confirmed after rung 1's measurement (Erik, 2026-11-14): the rate is not raised; section 13.1.**
 
 ## 2. Action spec v1 (AGREED, Erik 2026-11-11: "your action space is blessed")
 
@@ -921,3 +921,294 @@ pace with collecting (rung 2, the trainer's design).
 6. **"The play" is dropped** from the team's counts; the order carries it (4.4).
 7. **The masks follow the game's real gates,** including two that look like oversights in the game (section 11).
 8. **The map and the physics fields are shown through walls,** as the bots and the screen have them; only units, grenades and charges obey sight (3.1). This was true of the design before and is now said.
+
+## 13. Amendments after rung 1
+
+### 13.1 The decision rate stays at 4 ticks; rung 1 is closed (AGREED, Erik 2026-11-14)
+
+**What rung 1 measured** (patch 1j, `docs/rl_agent_rung1_note_1j_2026-11-13.md`,
+"As built"). No network was involved. The layered bots played their free
+twins; one team's commands had to pass through action spec v1 (five choices,
+one decision every 4 ticks, held in between). Equal play is 0.50 of decided
+matches; the lead's pass mark was 0.40.
+
+| | result |
+|---|---|
+| held-out seeds, four cells | 0.368, 0.316, 0.373, 0.271 |
+| a decision every 4 / 6 / 8 ticks (200 duels each) | 0.358 / 0.320 / 0.275, each +- 0.033 |
+| 8 directions instead of 16 | 0.381 (within noise) |
+| the trigger re-issued every tick | 0.389 (within one standard error) |
+| against the horde alone | as good as the free bots (the freighter: better) |
+| anything masked sent | 0 in 1600 matches |
+
+**A correction.** The note says a straight line through the three rates puts
+one decision per tick "near 0.48". The least-squares line is
+`-0.021 +- 0.012` per tick, which gives **0.40 +- 0.05 at 2 ticks and
+0.42 +- 0.06 at 1 tick** (the note took the drop per 2 ticks as the drop per
+tick). Neither rate was run. So the bots' loss through the door is about 14
+points at 4 ticks, of which a faster rate would buy back 4 to 6 by
+extrapolation.
+
+**What the finding is.** The choices themselves cost nothing measurable. What
+costs is reaction: a soldier behind the door answers anything new 0 to 3
+ticks (up to 125 ms) later than a bot that acts on every tick. Which wait
+costs most (a new enemy, the trigger, a turn in the path) was not separated.
+Whether a LEARNED soldier loses what the bots lose is unknown: the bots were
+written to act every tick, and a soldier that learns at this rate can
+anticipate. Only training answers it.
+
+**Erik's ruling, 2026-11-14.** "I think making a decision 6 times per second
+is quite a lot. I don't think we shall increase it." "If we focus too much on
+acting every tick, we miss what we're trying to build here: intelligent
+agents that can learn how to do smart moves." On the result: "bots vs
+handicapped bots: I'd expect every game to be determined by that reaction
+speed. I'm surprised that we reach 36 %, and I'd say we've already passed
+this test actually."
+
+So:
+
+1. **Section 1's rate stands: one decision every 4 ticks.** It is not raised.
+   The rate remains one of rung 3's experiments (4, 6, 8 ticks), as written.
+2. **Rung 1's gate is closed.** The missed 0.40 mark is a recorded finding,
+   not a blocker. The mark was the lead's guess at "not helpless", set before
+   any measurement; the measurement says the door is not helpless.
+3. **The free bots are not slowed.** The bots through the door (`bots_door`)
+   are the equal-reaction opponent, so both exist.
+4. **Two yardsticks from rung 3 on.** The gate stays "beat the free layered
+   bots in more than half of the decided matches"; the result against
+   `bots_door` is printed beside it. A team that beats the door bots and not
+   the free ones has a reflex gap, and this section is then re-opened.
+5. **Not taken, and why:** a faster rate (the farm about 15 % slower at 2
+   ticks and 34 % at 1 by the measured step times, an estimate; two to four
+   times the learning work per game second; no surveyed system decides 24
+   times a second); an early decision on an event, and more game-side
+   reflexes between decisions (each a new spec version; the second touches
+   the ruling that the soldier pulls its own trigger). They stay on the list
+   for the day item 4 re-opens the section.
+
+### 13.2 Sixteen directions stay (the lead's; told to Erik 2026-11-14, his to veto)
+
+Erik asked whether 8 directions would make the network's job easier. A head
+of 25 options against 49 is no real saving for a network, and nothing
+measured says 8 learns faster; 16 is what the spec, its tests and the 600
+records are built on, and Erik's eye prefers it ("16 is very smooth, 8 you'll
+see that it looks a little not so nice"). Eight is the same table with every
+second direction switched off (`stride`), so it stays a cheap experiment if
+walking turns out slow to learn.
+
+### 13.3 Rung 2 starts by copying the bots (AGREED, Erik 2026-11-14: "I lean on copying first too")
+
+The first network is trained to predict the door bots' recorded choice from
+the recorded observation (imitation), before any learning from reward. The
+reasons: it is the simplest first test of network v1, its masks and its
+pointer heads (a network that cannot copy has a fault that reward learning
+would hide); no game runs while it trains; and it gives a network-driven
+fireteam to watch early. At best it plays like `bots_door`. Reward training
+then starts from the copied network AND from scratch, side by side, so that
+"does copying help or hurt" stays the experiment the roadmap asked for. The
+known risk: the bots' choices depend on their inner state (a planned path, a
+committed position), which the observation does not show, so the copy will
+be imperfect, and habits may have to be unlearned.
+
+The records (`C:/tmp/breach_1j/records`, 600 matches at 4 ticks, 16
+directions, observation spec v1) are cheap to make again (about an hour of
+tournament on 12 workers: 600 door matches at about 65 s each by the 1j
+note's walls; this line first said "about ten minutes", which was wrong,
+corrected the same day) and are not precious: a new observation spec version, or a
+change of how the bots play, means recording again.
+
+**Training does not start yet** (Erik, 2026-11-14): the unit code is being
+changed by the residency arc's P6 (#29, `docs/unit_design_2026-11-14.md`).
+That design asks two things of the next observation spec version (its
+sections 3 and 9): whether a soldier is shown its own and its team-mates'
+hooks, and fixed slot blocks for statuses and items so that a table row no
+longer changes a layout. Both are open, the lead's to propose.
+
+**Rung 2's own design** (the trainer, the copying step, the range and the
+duel, the experiment, the patches) is `docs/rl_agent_rung2_design_2026-11-14.md`,
+PROPOSED the same day.
+
+### 13.4 A feet choice that names a spot: parked as an experiment (Erik's idea, 2026-11-15)
+
+Erik asked whether a soldier would learn to move more easily if it named a
+place to go to (the game finding the path) and a place or target to look at,
+in place of one of 16 walking directions. His words: "I don't really want to
+change the design this late - but unless this question has a clear answer in
+litterature - i'd like to test it at some point, later down the line when we
+have a working agent."
+
+**What v1 already has of it.** The look half: the aim choice points at a
+unit in the list (2.2), with 16 compass directions for looking at a place.
+The knowledge half: the route to the order's place is shown to the soldier
+as a compass and a plane (3.5), so it never has to learn path finding, only
+to follow it. What v1 leaves out, on purpose (2.6, "a route autopilot"), is
+the game doing the walking.
+
+**What the literature says** (the survey's Part B, plus one recalled source
+marked as such). No paper compares the two on one task. The pattern:
+
+- Where the unit is a piece moved from above, the systems name a place:
+  AlphaStar a cell of a 256 x 256 grid, OpenAI Five a cell of a 9 x 9 grid
+  of offsets around the hero, chosen again 7.5 times a second.
+- Where the unit's own footwork is the skill, they name a direction:
+  capture the flag, hide-and-seek, SMAC (four directions), the 2024
+  Counter-Strike movement model (16 directions).
+- For going far, a named goal with a planner under it learns from far fewer
+  samples than low-level steps (navigation research, e.g. Chaplot et al.
+  2020; RECALLED, not in our survey), and the 2026 EA result in the survey
+  found learning with no layer above the soldier losing to the layered form.
+
+So the literature's answer is "a place for the far decision, a direction for
+the near one". That is the ladder's shape: the commander's order names a
+room (5.1), the soldier steers.
+
+**For it, in Breach.** Random directions six times a second cancel out, so
+an untrained soldier jitters on the spot, while random spots give real
+walks: exploring is easier. (Starting from the copy removes most of that.)
+And the bots themselves think in destinations (`choose_position`, then A*),
+so their records would teach a spot head directly.
+
+**Against it.** In a firefight the path is the decision: which side of the
+crate, whether to cross a mate's fire lane, backing off while facing the
+enemy. A path finder makes those choices for the soldier unless the spot is
+one or two tiles away, and then it is a direction with a length. The head
+grows from 49 options to hundreds. A route per soldier per decision costs
+farm time, and the graphics-card backend would need a path kernel.
+
+**The experiment, when rung 2's duel learns.** A second action spec beside
+v1 in which the feet head picks a cell of a small grid of offsets around the
+soldier (OpenAI Five's form) and the decoder walks the first step of the
+route there each tick. It lives in the decoder: no game verb, no recording
+format and no observation changes. The same network is trained on the range
+and the duel with each spec, three runs each, and compared on decisions to
+reach the pass mark and on what Erik sees. Records for the copy are made
+again with the bots' destination as the choice. It moves earlier only if
+rung 2 shows the signal for it: a soldier that aims and fires but cannot
+learn to cross a room.
+
+**The test as written above is not fair** (critique of the rung 2 design,
+lens 3, M12, 2026-11-15): the two layouts differ in more than "a spot or a
+direction". Before it is run, the protocol becomes:
+
+- **Both arms from nothing,** never from a copy: the spot copy would be the
+  better copy (the bots think in destinations), so the arms would differ in
+  their start.
+- **A third arm that separates steering from naming:** the spot decoder
+  re-steers every tick, while v1 holds one direction for four ticks, and
+  rung 1 found that reacting between decisions is the control panel's main
+  cost. So either v1 with the held direction re-steered each tick, or the
+  spot layout with its route frozen for the decision's four ticks.
+- **The push toward variety scaled to each head's size,** as rung 2's
+  trainer does (rung 2 design 4.4): 49 options against hundreds are not
+  explored alike under one weight.
+- **The task is the duel,** plus a crossing task if one exists by then. The
+  range barely asks for movement.
+- **The outcome rule of rung 2's experiment** (rung 2 design 6): one
+  deciding number named beforehand, and "not separated" said plainly.
+
+### 13.5 Team size is not fixed; what is, and the road to 20 against 20 (Erik asked, 2026-11-15)
+
+Erik: "do we have to set the team size? ... i start to be interested in what
+happens if we're like 20 agents vs 20 ... can we design this so that it's
+flexible to team size?"
+
+**It is flexible already, and stays so.** A team's size is a number in the
+match file (`n`, up to what the level's spawn room holds). Every soldier
+runs the same network, and that network reads a list of whatever length
+(rung 2 design, section 2): nothing in it is sized by the team.
+
+**What is fixed today, in observation spec v1:**
+
+| thing | limit | at 20 against 20 |
+|---|---|---|
+| team-mates in a soldier's list | team size minus one | 19: fine |
+| enemies in sight in the list | the 16 nearest | the rest appear only as counts in the far map |
+| last-seen records in the list | 8 | the same |
+| the value network's list | 64 entries, never dropping a marine | 40 marines plus doors and objects: fits, tightly, without a horde |
+| the levels | spawn rooms sized for 6 | new ships with rooms for 20 |
+
+**The advice: the fireteam of four stays the unit that learns to fight;
+a bigger force is several fireteams under a commander.** Real armies are
+built that way (a fireteam of about 4; a section or squad of 8 to 13, which
+is two or three fireteams; a platoon of 30 to 40), and for the same reason
+we would meet: one soldier among twenty cannot tell what its own choices did
+to the team's result. So:
+
+- Rung 3 trains four against four, as planned.
+- From rung 3 on, matches of mixed sizes (2 to 8 a side) are part of
+  training, so that the network does not fit one size. Networks that read a
+  list are known to carry over between team sizes, and a path from few to
+  many is a known way to reach many (RECALLED, not in our survey: SMACv2's
+  random team sizes; Long et al. 2020).
+- 20 against 20 is five fireteams a side. It needs: ships with rooms for 20;
+  a decision whether 16 listed enemies are enough (else a next observation
+  spec); the commander (rung 6) to give the fireteams different jobs; and
+  the "team" share of the reward counted per fireteam, not per side. Each is
+  a design line when its rung comes. The farm does not get worse with size:
+  a big match costs more but gives more learning decisions.
+- A first look costs little and needs no learning: the layered bots, 20
+  against 20, on a ship made for it, in the tournament. It shows the farm's
+  speed at that size and whether the game holds up. It is a tournament run
+  and a generator setting, so it waits for Erik's word.
+
+### 13.6 A memory of stored moments: parked, with its plan (Erik's idea, 2026-11-15)
+
+Erik: "how about storing only one state per second, or per 2 seconds even
+... what about non homogenous spacing? so storing frames either when
+something happens - or every second and then every 10 seconds further back
+... humans only remember what matters ... feels like something to look into
+after the agents know how to play".
+
+**What network v1 has:** a small running memory (a GRU) that is updated at
+every decision. The critique of the rung 2 design found its limit: what it
+can LEARN to keep is as long as the stretch it is trained on, 2.7 seconds at
+the starting value (rung 2 design 4.5).
+
+**What the game already does for the soldier:** the team picture is a
+hand-built memory of exactly this kind. It keeps a record of each enemy as
+last seen (where, moving how, how long ago) and shows the records in the
+list. That is why little learned memory is expected to matter while sight is
+all-round.
+
+**Erik's idea, as a design:** a diary of a few slots beside the list. Each
+slot is a short summary of one past moment with its age. Slots are kept at
+growing distances back (1, 2, 4, 8, ... seconds: seven slots cover a duel)
+and at events (I was hit, an enemy came into or left sight, a mate died, a
+door opened, my order changed). The network reads the slots the way it reads
+units, by attention.
+
+**Why it is attractive here:**
+
+- The diary is an input like any other. Learning needs no replayed
+  stretches and has no limit of 2.7 seconds: the hardest and most
+  fault-prone part of the trainer (rung 2 design 4.5) would not be needed
+  for it.
+- Reading is easy to learn; choosing what to WRITE is the hard research
+  problem. A fixed schedule plus fixed events writes without learning, and
+  the network learns only which slots matter now. "Remember what matters"
+  is then learned on the reading side first.
+- It lives in the trainer and the network's controller, not in the game, and
+  costs a few kilobytes per stored decision.
+
+**The stages, each a question that can be answered:**
+
+1. Slots hold a hand-built summary (the soldier's own numbers and its
+   nearest list entries); fixed spacing and events; read by attention.
+2. Slots hold what the network itself made of the moment.
+3. The network learns what to keep when the diary is full, and how slots
+   refer to each other (the "linking").
+
+**What the literature has** (RECALLED, not in our survey; to be read before
+this is designed): memories read by attention in place of a running memory
+(transformers for RL, Parisotto et al. 2019); summaries first, details on
+demand (Lampinen et al. 2021); slow and fast memories together (the capture
+the flag agents); stored episodes with learned reading (Wayne et al. 2018).
+None is the standard choice in the team-game systems we surveyed, which all
+use a running memory.
+
+**When.** After the agents play, as Erik says. Its first test is cheap and
+needs no game: the made-up memory tasks of the rung 2 trainer, with the cue
+24 and 100 decisions back, where the running memory fails by construction.
+Its real test is the first task that needs memory: the sight cone and
+hearing (rung 8), where "where did the enemy go" matters. The same idea
+would fit Civulator, where a turn is a natural moment to store.
