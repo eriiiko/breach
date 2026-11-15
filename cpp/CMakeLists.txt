@@ -160,6 +160,10 @@ if(BREACH_CUDA)
         # producer; the list and its resolve stage are cuda_applier.cu's);
         # Class T, pure integer, on the same target-wide CUDA determinism floor.
         src/cuda_unit_melee.cu      # slot 4a
+        # #29 P7.0b: the device object tables (the record list's buffers with an
+        # upload, an ordered append and a stable compaction); Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_object_table.cu    # the object tables (the charge table first)
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

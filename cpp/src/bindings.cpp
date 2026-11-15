@@ -40,6 +40,7 @@ const char* breach_build_id();
 #include "cuda_unit_store.h"       // #29 P6.1: the device unit store (Class T)
 #include "cuda_unit_kernels.h"     // #29 P6.2: the unit slot kernels (Class T)
 #include "cuda_applier.h"          // #29 P6.4b: the per-env serial applier (Class T)
+#include "cuda_object_table.h"     // #29 P7.0b: the device object tables (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -987,6 +988,62 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("store"), py::arg("tables"), py::arg("kind"), py::arg("tick"),
               py::arg("base"),
               "#29 P6.4a TEST-ONLY: the hand verbs' gates on the store's rows.");
+    }
+
+    // #29 P7.0b: THE OBJECT TABLES (cuda_object_table.h; Class T): a table
+    // IS a record list (registered as a UnitRecordListBuffer, so a kernel
+    // appending to it takes it), with the upload, the ordered host append and
+    // the stable compaction. The Python face is simulation.object_tables.
+    {
+        using breach_cuda::ObjectTable;
+        using breach_cuda::UnitRecordList;
+        m.def("object_tables_layout", []() {
+                  py::dict d;
+                  d["fingerprint"] = std::string(breach_cuda::object_tables_fingerprint());
+                  return d;
+              },
+              "#29 P7.0b: the compiled object tables layout (object_tables_layout.h): "
+              "{fingerprint}.");
+        py::class_<ObjectTable, UnitRecordList>(m, "ObjectTableBuffer",
+                "#29 P7.0b: a per-env device object table (N, cap, width) int64 with "
+                "counts and overflow counts (Class T).")
+            .def(py::init<int, int, int, int, int, int>(), py::arg("n_env"), py::arg("cap"),
+                 py::arg("width"), py::arg("live"), py::arg("n_units") = 1,
+                 py::arg("row_cap") = 1)
+            .def_property_readonly("live", &ObjectTable::live_col)
+            .def("upload", [](ObjectTable& t, py::array_t<int64_t, py::array::c_style> rows,
+                              py::array_t<int64_t, py::array::c_style> counts) {
+                     if (rows.ndim() != 3 || rows.shape(0) != t.n_env() ||
+                         rows.shape(1) != t.cap() || rows.shape(2) != t.width() ||
+                         counts.ndim() != 1 || counts.shape(0) != t.n_env())
+                         throw std::invalid_argument(
+                             "ObjectTableBuffer.upload: rows (n_env, cap, width) and counts "
+                             "(n_env,) int64");
+                     for (int e = 0; e < t.n_env(); ++e)
+                         if (counts.at(e) < 0 || counts.at(e) > t.cap())
+                             throw std::invalid_argument(
+                                 "ObjectTableBuffer.upload: a count outside 0 .. cap");
+                     t.upload(rows.data(), counts.data());
+                 }, py::arg("rows"), py::arg("counts"),
+                 "Set every env's rows and count; the overflow counts back to 0.")
+            .def("append", [](ObjectTable& t, py::array_t<int64_t, py::array::c_style> recs,
+                              py::array_t<int64_t, py::array::c_style> n) {
+                     if (recs.ndim() != 3 || recs.shape(0) != t.n_env() ||
+                         recs.shape(2) != t.width() || n.ndim() != 1 ||
+                         n.shape(0) != t.n_env())
+                         throw std::invalid_argument(
+                             "ObjectTableBuffer.append: recs (n_env, k, width) and n (n_env,) "
+                             "int64");
+                     const int k = (int)recs.shape(1);
+                     for (int e = 0; e < t.n_env(); ++e)
+                         if (n.at(e) < 0 || n.at(e) > k)
+                             throw std::invalid_argument(
+                                 "ObjectTableBuffer.append: a count outside 0 .. k");
+                     t.append_host(recs.data(), n.data(), k);
+                 }, py::arg("recs"), py::arg("n"),
+                 "Append each env's first n[e] records in order (past cap: counted).")
+            .def("compact", [](ObjectTable& t) { t.compact(); },
+                 "The stable compaction of every env (rows whose live column is 0 dropped).");
     }
 
     // #29 P6.4b: THE PER-ENV SERIAL APPLIER and THE TICK-END CLEARS

@@ -2107,8 +2107,14 @@ class Simulation:
         # hits up to last tick, decayed exactly once since.
         exposure.decay_units(self.units)
 
-        # 2. Update projectiles.
-        self._update_projectiles()
+        # 2. Projectiles (#29 P7.0b: two calls, so the device port can take
+        # them one at a time). FIRST the grenades: every grenade flies, and
+        # each that fuses out detonates AT ONCE, in list (spawn) order ...
+        self._update_grenades()
+        # 2'. ... THEN the in-flight rounds: each marches against the state
+        # the grenades left and records its hit / chew / detonation; the
+        # landing resolves them together, in list order.
+        self._update_rounds()
 
         # 2b. Tick unit statuses/conditions (mechanics/06 §4) — the TOP of
         # the unit-simulation section, per the ch. 05 §4 pipeline (phase 3:
@@ -2517,11 +2523,11 @@ class Simulation:
     # ------------------------------------------------------------------
     # Tick-step helpers
     # ------------------------------------------------------------------
-    def _update_projectiles(self) -> None:
-        """Tick all projectiles: grenades first (the shipped slot semantics,
-        unchanged), then in-flight kinetic rounds (W2 unified march — tick
-        slot 2, BEFORE movement, preserving the causal pipeline ordering of
-        mechanics/03 §2). Fixed traversal order = spawn order, both lists."""
+    def _update_grenades(self) -> None:
+        """Slot 2: the grenades in flight (``self.projectiles``), BEFORE the
+        rounds (slot 2', :meth:`_update_rounds`) and before movement
+        (mechanics/03 §2). Spawn order; a fuse-out detonates at once through
+        the payload executor, so each sees the previous one's blast."""
         for proj in self.projectiles:
             if proj.detonated:
                 continue
@@ -2548,6 +2554,10 @@ class Simulation:
                         approach=(unit_fixed.shr_trunc(proj.start_y_q),
                                   unit_fixed.shr_trunc(proj.start_x_q)))
 
+    def _update_rounds(self) -> None:
+        """Slot 2': the in-flight kinetic rounds (``self.bullets``; the W2
+        unified march), AFTER the grenades (slot 2) and before movement.
+        Spawn order; survivors stay."""
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
         # inside advance() (keyed draws, #29 P3b). Survivors stay.
