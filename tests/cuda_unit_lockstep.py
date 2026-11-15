@@ -109,6 +109,19 @@ calling function's name: slot 4c's ``resolve`` is the conductor's, not slot
 empties the host's list once the device has applied it, and refuses by name
 a later chained callable that finds the host appended to it in between.
 
+#29 P7b: the OBJECT TABLES are lists too (``grenades``: ``sim.projectiles``,
+``charges``: ``sim.planted_charges``, each through ``object_tables.records``;
+the device list a ``DeviceTable``): staged as inputs, compared as outputs and,
+in the chained form, LANDED back onto the host list in place
+(``ListDef.land``). ``payloads`` is a LOGGED list: the ``execute_payload``
+calls at the P7b call sites (:data:`PAYLOAD_SITES`, a tap installed while a
+slot names it), emptied at the slot's first entry (``ListDef.mark``),
+recorded through ``applier.record_of``; the chained form replays the device's
+records through the host's call (:func:`payload_call`). Output lists are kept
+per name. ``DeviceSlot(skip_ok=True)``: a slot the conductor gates off
+(``charges.tick`` while no charge lies) is compared, in an env where it did
+not run, as a run on the state the tick ended with that must change nothing.
+
 EVENTS keep only SYNCED events: the host's render-only events (MeleeEvent,
 ShotFired, SprayJet, ...: outside every digest, no device form) are dropped
 before the ring is compared (``unit_events.is_synced``).
@@ -225,12 +238,20 @@ class ListDef:
     function -- the object's current content as ``(R, F)`` int64 device
     records, in its order; ``consume(obj)`` empties it (the chained form,
     once the device applied it); ``device(n_env, n_units, cap, bp)`` the
-    device list; ``fields(rec)`` names a record's fields for a report."""
+    device list; ``fields(rec)`` names a record's fields for a report.
+    #29 P7b: ``mark(sim)`` (optional) runs at the slot's first entry each
+    tick, before the host slot (a log of what the slot does, such as the
+    PAYLOAD calls, starts empty there); ``land(sim, obj, recs)`` (optional)
+    is the chained form's write-back of the device's records onto the host
+    in place of ``consume`` (an OBJECT TABLE's list rebuilt from the
+    device's rows; a PAYLOAD record replayed through the host's call)."""
     host: Callable
     records: Callable
     consume: Callable
     device: Callable
     fields: Callable
+    mark: Callable | None = None
+    land: Callable | None = None
 
 
 def _effects_host(sim, args, kw):
@@ -261,10 +282,143 @@ def _effects_fields(rec):
     return name, ("kind",) + fs
 
 
+# -- #29 P7b: the OBJECT TABLES' host lists (``Simulation.projectiles``,
+# ``Simulation.planted_charges``) and the PAYLOAD calls of the grenade and
+# charge slots (``execute_payload`` at its two P7b call sites, recorded by a
+# tap while a slot naming ``list:payloads`` runs) --------------------------
+def _table_list(attr, table_name):
+    def _schema():
+        from simulation import unit_schema
+        return {t.name: t for t in unit_schema.OBJECT_TABLES}[table_name]
+
+    def host(sim, args, kw):
+        return getattr(sim, attr)
+
+    def records(sim, obj):
+        from simulation import object_tables
+        t = _schema()
+        w = object_tables.table_layout(t).width
+        return np.array(object_tables.records(t, obj),
+                        dtype=np.int64).reshape(-1, w)
+
+    def consume(obj):
+        raise RuntimeError(f"lockstep: the {table_name!r} table is landed, "
+                           f"never consumed")
+
+    def device(n_env, n_units, cap, bp):
+        from simulation import object_tables
+        return object_tables.DeviceTable(_schema(), n_env, bp=bp)
+
+    def fields(rec):
+        from simulation import object_tables
+        return table_name, tuple(
+            c.name if c.width == 1 else f"{c.name}[{j}]"
+            for c in object_tables.table_layout(_schema()).columns
+            for j in range(c.width))
+
+    def land(sim, obj, recs):
+        # the host list becomes the device's rows, IN PLACE (one list object
+        # for the sim's life, as the slot-10 prune keeps it)
+        from simulation import object_tables
+        t = _schema()
+        w = object_tables.table_layout(t).width
+        rows = np.array(recs, dtype=np.int64).reshape(-1, w)
+        getattr(sim, attr)[:] = object_tables.unpack(t, rows, rows.shape[0])
+
+    return ListDef(host, records, consume, device, fields, None, land)
+
+
+#: The PAYLOAD tap's log: id(gmap) -> the execute_payload calls (as
+#: SimultaneousEffects world effects) since the slot's mark.
+_PAYLOAD_LOG: dict = {}
+#: The P7b call sites of execute_payload: the modules whose global the tap
+#: wraps (slot 2's grenades; charges.fire, slot 9e(d')).
+PAYLOAD_SITES = ("simulation.simulation", "simulation.charges")
+
+
+def install_payload_tap() -> list:
+    """Wrap ``execute_payload`` at :data:`PAYLOAD_SITES`: a call on a marked
+    map is logged (then made). Returns ``(module, attr, original)`` rows for
+    the uninstall. Reads only."""
+    from simulation import simultaneous
+    out = []
+    for name in PAYLOAD_SITES:
+        mod = importlib.import_module(name)
+        orig = mod.execute_payload
+
+        def tapped(*a, __o=orig, **kw):
+            log = _PAYLOAD_LOG.get(id(a[0])) if a else None
+            if log is not None:
+                log.append((simultaneous._WORLD, __o, tuple(a), dict(kw)))
+            return __o(*a, **kw)
+        tapped.__wrapped__ = orig
+        mod.execute_payload = tapped
+        out.append((mod, "execute_payload", orig))
+    return out
+
+
+def _payloads_host(sim, args, kw):
+    return _PAYLOAD_LOG.setdefault(id(sim.gmap), [])
+
+
+def _payloads_mark(sim):
+    _PAYLOAD_LOG[id(sim.gmap)] = []
+
+
+def _payloads_records(sim, obj):
+    from simulation import applier
+    return applier.records_of(sim, obj)
+
+
+def applier_width() -> int:
+    from simulation import applier
+    return applier.F
+
+
+def payload_call(sim, rec):
+    """A PAYLOAD record as the host call it records: ``(args, kwargs)`` of
+    ``payloads.execute_payload`` on ``sim`` (the inverse of
+    ``applier.record_of``'s PAYLOAD branch)."""
+    from simulation import applier
+    r = [int(x) for x in rec]
+    if r[0] != applier.KIND_PAYLOAD:
+        raise RuntimeError(f"lockstep: a kind {r[0]} record on the PAYLOAD list")
+    f = {n: r[applier.kind_field("PAYLOAD", n)]
+         for n in dict(applier.KIND_FIELDS)["PAYLOAD"]}
+    names = list(sim.weapons_tables.payloads.by_name)
+    args = (sim.gmap, sim.edit_queue, sim.units, f["y"], f["x"],
+            sim.weapons_tables.payloads.by_name[names[f["payload"]]], sim.draws)
+    kw = dict(events=sim.tick_events, kind=applier.PAYLOAD_KINDS[f["kind"]],
+              owner_id=f["owner"],
+              approach=((f["approach_y"], f["approach_x"]) if f["has_approach"]
+                        else None))
+    return args, kw
+
+
+def _payloads_land(sim, obj, recs):
+    """The device's PAYLOAD records replayed IN ORDER through the host's
+    ``execute_payload`` (the request list's ``apply_to_host`` pattern): each
+    call rebuilt from its record, which must reproduce the record."""
+    from simulation import applier, payloads, simultaneous
+    for r in recs:
+        args, kw = payload_call(sim, r)
+        again = applier.record_of(sim, (simultaneous._WORLD,
+                                        payloads.execute_payload, args, kw))
+        if tuple(again) != tuple(int(x) for x in r):
+            raise RuntimeError(f"lockstep: a replayed PAYLOAD {again} is not "
+                               f"its record {tuple(r)}")
+        payloads.execute_payload(*args, **kw)
+
+
 #: name -> ListDef.
 LISTS: dict = {
     "effects": ListDef(_effects_host, _effects_records, _effects_consume,
                        _effects_device, _effects_fields),
+    "grenades": _table_list("projectiles", "grenade"),          # #29 P7b
+    "charges": _table_list("planted_charges", "charge"),        # #29 P7b
+    "payloads": ListDef(_payloads_host, _payloads_records,      # #29 P7b
+                        lambda obj: obj.clear(), _effects_device,
+                        _effects_fields, _payloads_mark, _payloads_land),
 }
 
 # ---------------------------------------------------------------------------
@@ -508,6 +662,12 @@ class DeviceSlot:
     # #29 P7a.1: which calls of the label's callables are this slot's
     # (sim, args, kwargs, caller function name) -> bool; None = every call.
     select: Callable | None = None
+    # #29 P7b: the conductor may gate the slot off (charges.tick runs only
+    # while a charge is planted): an env where it did not run is compared as
+    # the slot run on the state the tick ended with, which must change
+    # nothing (its inputs, rows, lists, books captured then; its device run
+    # must leave every output as it found it). False: not running raises.
+    skip_ok: bool = False
 
     def call(self, store, inputs: SlotInputs | None, ring=None, req=None,
              lists=None):
@@ -737,6 +897,9 @@ class ShadowLockstep:
                         if sl.outputs:
                             ls._bk0[__k][e] = host_books(sim, sl.book_outputs)
                             ls._ws0[__k][e] = gmap_state(sim.gmap)
+                        for ln in sl.list_names:            # #29 P7b
+                            if LISTS[ln].mark is not None:
+                                LISTS[ln].mark(sim)
                     if ls.slots[__k].requests:
                         ls._req_k = __k
                     try:
@@ -746,9 +909,12 @@ class ShadowLockstep:
                         ls._post[__k][e] = unit_store.pack(sim.units, ls.U)
                         evl, n0 = ls._ev0[__k][e]
                         ls._evs[__k][e] = list(evl[n0:])
-                        for ln in sl.list_outputs:
+                        lout = {}
+                        for ln in sl.list_outputs:          # #29 P7b: per name
                             ld = LISTS[ln]
-                            ls._lout[__k][e] = ld.records(sim, ld.host(sim, a, kw))
+                            lout[ln] = ld.records(sim, ld.host(sim, a, kw))
+                        if lout:
+                            ls._lout[__k][e] = lout
                         if sl.outputs:
                             ls._fpost[__k][e] = {
                                 f: np.array(getattr(sim.gmap, f), copy=True)
@@ -760,6 +926,8 @@ class ShadowLockstep:
                 self._orig.append((cont, attr, orig))
         if any(s.requests for s in self.slots):
             self._install_requests()
+        if any("payloads" in s.list_names for s in self.slots):   # #29 P7b
+            self._orig.extend(install_payload_tap())
         return self
 
     def _install_requests(self):
@@ -843,6 +1011,8 @@ class ShadowLockstep:
             finally:
                 self._env = None
             for k, slot in enumerate(self.slots):
+                if self._pre[k][e] is None and slot.skip_ok:     # #29 P7b
+                    self._fill_skipped(k, slot, e, d.sim)
                 if self._pre[k][e] is None:
                     raise RuntimeError(
                         f"lockstep: slot {slot.label!r} did not run in env "
@@ -852,6 +1022,27 @@ class ShadowLockstep:
         for k, slot in enumerate(self.slots):
             out[slot.label] = self._compare(k, slot, tick)
         return out if self.multi else out[self.slot.label]
+
+    def _fill_skipped(self, k, slot, e, sim):
+        """#29 P7b: env ``e`` did not run the gated slot ``k`` this tick: its
+        entry and exit are the state the tick ended with (a run that must
+        change nothing)."""
+        rows = unit_store.pack(sim.units, self.U)
+        self._pre[k][e] = rows
+        self._post[k][e] = rows.copy()
+        self._inp[k][e] = capture(slot.capture_names, sim)
+        self._evs[k][e] = []
+        lout = {ln: LISTS[ln].records(sim, LISTS[ln].host(sim, (), {}))
+                for ln in slot.list_outputs if LISTS[ln].mark is None}
+        lout.update({ln: np.zeros((0, applier_width()), dtype=np.int64)
+                     for ln in slot.list_outputs if LISTS[ln].mark is not None})
+        if lout:
+            self._lout[k][e] = lout
+        if slot.outputs:
+            self._fpost[k][e] = {f: np.array(getattr(sim.gmap, f), copy=True)
+                                 for f in slot.field_outputs}
+            self._bk0[k][e] = self._bk1[k][e] = host_books(sim, slot.book_outputs)
+            self._ws0[k][e] = self._ws1[k][e] = gmap_state(sim.gmap)
 
     def _compare(self, k, slot, tick) -> TickReport:
         pre = np.stack(self._pre[k])
@@ -888,7 +1079,7 @@ class ShadowLockstep:
         dev_lists = host_lists = None
         if slot.list_outputs:
             dev_lists = {n: self.dev_lists[n].records() for n in slot.list_outputs}
-            host_lists = {n: [[tuple(int(x) for x in r) for r in self._lout[k][e]]
+            host_lists = {n: [[tuple(int(x) for x in r) for r in self._lout[k][e][n]]
                               for e in range(self.N)] for n in slot.list_outputs}
             if first is None:
                 first = self._first_list_diff(tick, slot, dev_lists, host_lists)
@@ -1209,11 +1400,15 @@ class ChainedSlots:
         # #29 P7a.1: the device applied the host's list: empty it, and refuse
         # a later chained callable that finds the host appended in between
         self._consumed = []
+        landed = {n: d.records()[0] for n, d in self.dev_lists.items()}
         for n, obj in hosts.items():
+            if LISTS[n].land is not None:     # #29 P7b: the device's rows written back
+                LISTS[n].land(sim, obj, landed[n])
+                continue
             LISTS[n].consume(obj)
             self._consumed.append((n, obj))
         if self.dev_lists:
-            self.lists.append({n: d.records()[0] for n, d in self.dev_lists.items()})
+            self.lists.append(landed)
         if self.host_side is not None:
             self.host_side(sim, pre, post)
         self.coverage.append(covs)
@@ -1268,6 +1463,7 @@ __all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture",
            "gather", "DeviceSlot", "TickReport", "Divergence",
            "slot_callables", "build_store", "ShadowLockstep", "ChainedSlots"]
 __all__ += ["LIST_PREFIX", "ListDef", "LISTS"]
+__all__ += ["PAYLOAD_SITES", "install_payload_tap", "payload_call"]
 __all__ += ["ARG_INPUTS", "BOOK_PREFIX", "ALIASES", "book_ref", "host_books",
             "OBJECT_PROBES", "gmap_state", "changed_attrs",
             "write_set_violations", "split_result", "first_field_diff"]

@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "fa59edb4017587e46368018c0776314b289e9eec06ba003d457544c59bb511e3";
-constexpr int OBJECT_TABLES_N = 1;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "07868470669bdc84ca0c6e01aad1066a81e22533ddaf6467cba6615d2f5923d4";
+constexpr int OBJECT_TABLES_N = 2;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -35,5 +35,40 @@ constexpr int OBJ_CHARGE_COL_APPROACH = 5;
 constexpr int OBJ_CHARGE_COL_APPROACH_W = 2;
 constexpr int OBJ_CHARGE_COL_LIVE = 7;
 constexpr int OBJ_CHARGE_COL_LIVE_W = 1;
+
+// table 'grenade': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_GRENADE = 1;
+constexpr int OBJ_GRENADE_W = 14;
+constexpr int OBJ_GRENADE_CAP = 64;
+constexpr int OBJ_GRENADE_LIVE = 13;
+constexpr int OBJ_GRENADE_COL_PROJ_TYPE = 0;
+constexpr int OBJ_GRENADE_COL_PROJ_TYPE_W = 1;
+constexpr int OBJ_GRENADE_COL_OWNER_ID = 1;
+constexpr int OBJ_GRENADE_COL_OWNER_ID_W = 1;
+constexpr int OBJ_GRENADE_COL_START_X_Q = 2;
+constexpr int OBJ_GRENADE_COL_START_X_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_START_Y_Q = 3;
+constexpr int OBJ_GRENADE_COL_START_Y_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_TARGET_X_Q = 4;
+constexpr int OBJ_GRENADE_COL_TARGET_X_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_TARGET_Y_Q = 5;
+constexpr int OBJ_GRENADE_COL_TARGET_Y_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_POS_X_Q = 6;
+constexpr int OBJ_GRENADE_COL_POS_X_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_POS_Y_Q = 7;
+constexpr int OBJ_GRENADE_COL_POS_Y_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_FUSE_SECONDS = 8;
+constexpr int OBJ_GRENADE_COL_FUSE_SECONDS_W = 1;
+constexpr int OBJ_GRENADE_COL_FUSE_TICKS = 9;
+constexpr int OBJ_GRENADE_COL_FUSE_TICKS_W = 1;
+constexpr int OBJ_GRENADE_COL_THROWN_TICK = 10;
+constexpr int OBJ_GRENADE_COL_THROWN_TICK_W = 1;
+constexpr int OBJ_GRENADE_COL_AMMO_NAME = 11;
+constexpr int OBJ_GRENADE_COL_AMMO_NAME_W = 1;
+constexpr int OBJ_GRENADE_COL_TRAVEL_SPEED_Q = 12;
+constexpr int OBJ_GRENADE_COL_TRAVEL_SPEED_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_DETONATED = 13;
+constexpr int OBJ_GRENADE_COL_DETONATED_W = 1;
 
 }  // namespace object_tables
