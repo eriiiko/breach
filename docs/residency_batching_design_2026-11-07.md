@@ -1424,7 +1424,12 @@ kinds, slot 4a and slot 4c; no decision moved. One line each:
   melee row a loadout may carry is without a status, so "a blow without a
   status" is unreachable; ship_demo's bots never strike (4a acted on 0 of 500
   ticks); melee packets carry no `expose`, so the landing's raises come from
-  rounds (ship_demo: 4 raises landed, 4 PUSHes with a recoil lever).
+  rounds (ship_demo: 4 raises landed, 4 PUSHes with a recoil lever); the
+  landing's skip of a raise for a unit dead at the landing cannot change a
+  result today (every unit dead there died inside the slot through a HIT and
+  is zeroed after the raises: its deliberate break stays green) -- it bites
+  first when a PAYLOAD's blast kills in immediate mode inside a resolve
+  (P7c.1 must gate it); a HEAL packet heals only with a negative amount.
 - THE GATES (`tests/cuda_unit_melee_check.py`, wrapper
   `tests/test_cuda_unit_melee.py`; CPU `tests/test_applier_layout.py`):
   TABLES; LIB (synthetic rows, both answers of each gate); KNIFE; SCENE (the

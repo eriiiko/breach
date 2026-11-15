@@ -467,6 +467,8 @@ def part_tables():
         want.update(verbs_reference(sim))                     # #29 P6.4a's rows
         from cuda_unit_topology_check import table_reference as topo_reference
         want.update(topo_reference(sim))                     # #29 P6.4b's rows
+        from cuda_unit_melee_check import table_reference as melee_reference
+        want.update(melee_reference(sim))                    # #29 P7a.1's rows
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")
