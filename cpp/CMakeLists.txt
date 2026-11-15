@@ -156,6 +156,10 @@ if(BREACH_CUDA)
         # integer, on the same target-wide CUDA determinism floor.
         src/cuda_applier.cu         # slot 9 (burn-through), the tick-end clears
         src/cuda_topology_probe.cu  # TEST-ONLY: on_tile_changed on fixture maps
+        # #29 P7a.1: slot 4a, the melee verb (the effect list's first device
+        # producer; the list and its resolve stage are cuda_applier.cu's);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_melee.cu      # slot 4a
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

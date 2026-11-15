@@ -682,3 +682,186 @@ __device__ inline bool can_shove(const int64_t* row, const int64_t* tab, int64_t
 
 }  // namespace unit_lib
 }  // namespace breach_cuda
+
+// ============================================================================
+// #29 P7a.1 -- THE PUSH and THE MELEE VERB'S GATE AND TARGET: the impulse add
+// (unit_impulse.add with its angular part angular_q -- slot 1b's shove and
+// the serial applier's PUSH effect both need it), the footprint centre
+// (unit_impulse.centre_q), verb_gates.can_melee in both of its moments (slot
+// 4a's own read and the tick-start read P8b's mask kernel calls), the
+// adjacency predicate (combat.melee_adjacent) and the arc target
+// (combat.melee_arc_target). Integer for integer the Python; held equal on
+// synthetic rows by the verbs probe (cuda_unit_verbs_probe.cu).
+// ============================================================================
+namespace breach_cuda {
+namespace unit_lib {
+
+// unit_impulse.centre_q on one axis: the footprint's centre, Q16 tiles.
+__device__ __forceinline__ int64_t centre_q(int64_t pos_q, int64_t fp) {
+    return pos_q + (fp << 15);
+}
+
+__device__ __forceinline__ bool add_i64(int64_t a, int64_t b, int64_t* out) {
+    if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) return false;
+    *out = a + b;
+    return true;
+}
+
+// unit_impulse.angular_q: the lever CLAMPED to the body radius (per input),
+// times the push's magnitude (isqrt of the squared magnitude, taken in 128
+// bits), times twist_q16 (skipped at ONE), each product truncated toward
+// zero. Python's integers are unbounded: a product past int64 sets *bad.
+__device__ inline int64_t angular_q(const int64_t* tab, int64_t jx, int64_t jy, int64_t lever,
+                                    int64_t twist_q16, bool* bad) {
+    const int64_t rb = tab[UNIT_TAB_IMPULSE_R_BODY_Q];
+    const int64_t lev = lever > rb ? rb : (lever < -rb ? -rb : lever);
+    if (lev == 0) return 0;
+    if (jx == INT64_MIN || jy == INT64_MIN) {
+        *bad = true;
+        return 0;
+    }
+    const uint64_t ax = (uint64_t)(jx < 0 ? -jx : jx), ay = (uint64_t)(jy < 0 ? -jy : jy);
+    uint64_t h1, l1, h2, l2;
+    fixedpoint::umul64_wide(ax, ax, &h1, &l1);
+    fixedpoint::umul64_wide(ay, ay, &h2, &l2);
+    const uint64_t lo = l1 + l2;
+    const uint64_t hi = h1 + h2 + (lo < l1 ? 1u : 0u);
+    const uint64_t mag = fixedpoint::isqrt_u128_q(hi, lo);
+    const int64_t alev = lev < 0 ? -lev : lev;
+    if (mag > (uint64_t)(INT64_MAX / alev)) {
+        *bad = true;
+        return 0;
+    }
+    int64_t l_q = fixedpoint::shr_trunc_q((int64_t)mag * lev, 16);
+    if (twist_q16 != ONE) {
+        const int64_t at = twist_q16 < 0 ? -twist_q16 : twist_q16;
+        const int64_t al = l_q < 0 ? -l_q : l_q;
+        if (twist_q16 == INT64_MIN || (at != 0 && al > INT64_MAX / at)) {
+            *bad = true;
+            return 0;
+        }
+        l_q = fixedpoint::shr_trunc_q(l_q * twist_q16, 16);
+    }
+    return l_q;
+}
+
+// unit_impulse.add on a row: the linear impulse into imp_x / imp_y and, when
+// the lever is non-zero, its angular part into imp_l. Every operand is read
+// and every sum checked before the first write (all or nothing). The
+// REFERENCE_ONLY momentum books' IN entries have no device form.
+__device__ inline void impulse_add(int64_t* row, const int64_t* tab, int64_t jx, int64_t jy,
+                                   int64_t lever, int64_t twist_q16, bool& changed, bool* bad) {
+    int64_t ix, iy, il = row[UNIT_COL_IMP_L];
+    if (!add_i64(row[UNIT_COL_IMP_X], jx, &ix) || !add_i64(row[UNIT_COL_IMP_Y], jy, &iy)) {
+        *bad = true;
+        return;
+    }
+    if (lever != 0) {
+        bool b = false;
+        const int64_t dl = angular_q(tab, jx, jy, lever, twist_q16, &b);
+        if (b || !add_i64(il, dl, &il)) {
+            *bad = true;
+            return;
+        }
+    }
+    put(row, UNIT_COL_IMP_X, ix, changed);
+    put(row, UNIT_COL_IMP_Y, iy, changed);
+    put(row, UNIT_COL_IMP_L, il, changed);
+}
+
+// The melee row a unit holds: its weapons-table index, -1 for none
+// (melee_id ""); an index past the table sets *bad.
+__device__ __forceinline__ int64_t melee_row(const int64_t* row, bool* bad) {
+    const int64_t m = row[UNIT_COL_MELEE_ID];
+    if (m == NO_ROW) return -1;
+    if (m < 0 || m >= UNIT_TAB_WEAPON_ROF_TICKS_W) {
+        *bad = true;
+        return -1;
+    }
+    return m;
+}
+
+// verb_gates.can_melee: a melee row, able to act, no wind-up, no plant, the
+// row's cadence run. at_tick_start false is slot 4a's own read (the verb);
+// true the same decision read at the start of the tick (the mask: the
+// statuses after the coming sweep; a wind-up / plant that slot 1b keeps only
+// while not past and the unit can still act).
+__device__ inline bool can_melee(const int64_t* row, const int64_t* tab, int64_t tick,
+                                 bool at_tick_start, bool* bad) {
+    if (!acts(row)) return false;
+    const int64_t m = melee_row(row, bad);
+    if (m < 0) return false;
+    if (at_tick_start) {
+        if (!composed_flags(row, tab, true, bad).can_act) return false;
+        const bool holds = composed_flags(row, tab, false, bad).can_act;
+        if (holds && (row[UNIT_COL_THROW_RELEASE_TICK] > tick ||
+                      row[UNIT_COL_PLANT_DONE_TICK] > tick))
+            return false;
+    } else {
+        if (!composed_flags(row, tab, false, bad).can_act ||
+            row[UNIT_COL_THROW_RELEASE_TICK] >= 0 || row[UNIT_COL_PLANT_DONE_TICK] >= 0)
+            return false;
+    }
+    const int64_t last = row[UNIT_COL_LAST_BLOW_TICK];
+    return last < 0 || tick - last >= tab[UNIT_TAB_WEAPON_ROF_TICKS + m];
+}
+
+// combat.melee_adjacent for the row-major square footprints (the tables'
+// footprint_rowmajor row): some occupied tile of one within Chebyshev 1 of
+// some occupied tile of the other -- the two anchor squares, one dilated by
+// one, intersect. A footprint outside [1, FOOTPRINT_MAX] sets *bad.
+__device__ inline bool melee_adjacent(const int64_t* a, const int64_t* t, bool* bad) {
+    const int64_t fa = a[UNIT_COL_FOOTPRINT], ft = t[UNIT_COL_FOOTPRINT];
+    if (fa < 1 || fa > FOOTPRINT_MAX || ft < 1 || ft > FOOTPRINT_MAX) {
+        *bad = true;
+        return false;
+    }
+    const int64_t ax = tile_of(a[UNIT_COL_X_Q]), ay = tile_of(a[UNIT_COL_Y_Q]);
+    const int64_t tx = tile_of(t[UNIT_COL_X_Q]), ty = tile_of(t[UNIT_COL_Y_Q]);
+    return ax - tx <= ft && tx - ax <= fa && ay - ty <= ft && ty - ay <= fa;
+}
+
+// combat.melee_arc_target: among the env's OTHER living valid rows of a
+// different team that are melee_adjacent to row r (`loc` its slot-start
+// copy) and whose bearing from r's centre lies within the melee row m's
+// half-arc of r's facing, the one nearest that facing, ties to the lower id;
+// a centre that coincides counts as dead ahead. -1 = none. Reads the
+// slot-start rows (slot 4a writes no position, footprint, team, life state
+// or id).
+__device__ inline int melee_arc_target(int64_t* store, int n_units, int r, const int64_t* loc,
+                                       const int64_t* tab, int64_t m, bool* bad) {
+    const int64_t fp = loc[UNIT_COL_FOOTPRINT];
+    const int64_t cx = centre_q(loc[UNIT_COL_X_Q], fp), cy = centre_q(loc[UNIT_COL_Y_Q], fp);
+    const int64_t facing = loc[UNIT_COL_FACING_Q];
+    const int64_t arc = tab[UNIT_TAB_WEAPON_MELEE_ARC_HALF_Q + m];
+    int best = -1;
+    int64_t best_off = 0, best_id = 0;
+    for (int t = 0; t < n_units; ++t) {
+        if (t == r) continue;
+        const int64_t* tr = unit_row(store, n_units, t);
+        if (!row_valid(tr) || !row_alive(tr) || tr[UNIT_COL_TEAM] == loc[UNIT_COL_TEAM]) continue;
+        if (!melee_adjacent(loc, tr, bad)) continue;
+        const int64_t dx = centre_q(tr[UNIT_COL_X_Q], tr[UNIT_COL_FOOTPRINT]) - cx;
+        const int64_t dy = centre_q(tr[UNIT_COL_Y_Q], tr[UNIT_COL_FOOTPRINT]) - cy;
+        int64_t off = 0;
+        if (dx != 0 || dy != 0) {
+            if (!fits_i32(-dy) || !fits_i32(dx)) {
+                *bad = true;
+                return -1;
+            }
+            off = wrap_q16(fixedpoint::atan2_q16((q16)(-dy), (q16)dx) - facing);
+            if (off < 0) off = -off;
+        }
+        if (off > arc) continue;
+        const int64_t id = tr[UNIT_COL_ID];
+        if (best < 0 || off < best_off || (off == best_off && id < best_id)) {
+            best = t;
+            best_off = off;
+            best_id = id;
+        }
+    }
+    return best;
+}
+
+}  // namespace unit_lib
+}  // namespace breach_cuda

@@ -997,6 +997,9 @@ PYBIND11_MODULE(breach_physics, m) {
     {
         using breach_cuda::FieldApplier;
         using breach_cuda::UnitTablesDevice;
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitEventRing;
+        using UnitRecordListT = breach_cuda::UnitRecordList;
         m.def("applier_layout", []() {
                   py::dict d;
                   d["fingerprint"] = std::string(breach_cuda::applier_fingerprint());
@@ -1008,11 +1011,24 @@ PYBIND11_MODULE(breach_physics, m) {
               },
               "#29 P6.4b: the compiled applier layout (applier_layout.h).");
         py::class_<FieldApplier>(m, "FieldApplierBuffer",
-                "#29 P6.4b: the per-env effect list (N, cap, F) and book channels (Class T).")
-            .def(py::init<int, int>(), py::arg("n_env"), py::arg("cap"))
-            .def_property_readonly("shape", [](const FieldApplier& a) {
+                "#29 P6.4b / P7a.1: the per-env EFFECT LIST (N, cap, F) -- a record list "
+                "with per-row staging for an n_units-row store -- and book channels (Class T).")
+            .def(py::init<int, int, int, int>(), py::arg("n_env"), py::arg("cap"),
+                 py::arg("n_units") = 1, py::arg("row_cap") = applier::APPLIER_ROW_CAP)
+            .def_property_readonly("shape", [](FieldApplier& a) {
                 return py::make_tuple(a.n_env(), a.cap(), applier::APPLIER_F);
             })
+            .def("begin", [](FieldApplier& a) { a.begin(); },
+                 "Empty every env's list (tick stream).")
+            .def("download", [](FieldApplier& a) {
+                     UnitRecordListT& l = a.list();
+                     py::array_t<int64_t> recs({(py::ssize_t)l.n_env(), (py::ssize_t)l.cap(),
+                                                (py::ssize_t)l.width()});
+                     py::array_t<int64_t> cnt(l.n_env()), drp(l.n_env());
+                     l.download(recs.mutable_data(), cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(recs, cnt, drp);
+                 },
+                 "(records (N, cap, F), counts (N,), dropped (N,)) int64.")
             .def("stage", [](FieldApplier& a, py::array_t<int64_t, py::array::c_style> recs,
                              py::array_t<int64_t, py::array::c_style> counts) {
                      if (recs.ndim() != 3 || recs.shape(0) != a.n_env() ||
@@ -1023,22 +1039,49 @@ PYBIND11_MODULE(breach_physics, m) {
                      a.stage(recs.data(), counts.data());
                  }, py::arg("recs"), py::arg("counts"));
         m.def("applier_run",
-              [](FieldApplier& a, const UnitTablesDevice& t,
-                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w) {
+              [](FieldApplier& a, UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
+                 int stage, py::object ring) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   breach_cuda::ApplierPlanes p;
                   for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
                       p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
                   p.n_gases = n_gases; p.h = h; p.w = w;
+                  UnitEventRing* rp = ring.is_none() ? nullptr : ring.cast<UnitEventRing*>();
                   py::array_t<int64_t> books({(py::ssize_t)a.n_env(),
                                               (py::ssize_t)applier::APPLIER_N_BOOKS});
-                  breach_cuda::applier_run(a, t, p, books.mutable_data());
-                  return books;
-              }, py::arg("applier"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
-              py::arg("h"), py::arg("w"),
-              "#29 P6.4b: the per-env serial applier over the staged lists; returns the "
-              "books (N, N_BOOKS) int64.");
+                  py::array_t<int64_t> cov(a.n_env()), drp(a.n_env());
+                  breach_cuda::ApplierOut o;
+                  o.books = books.mutable_data();
+                  o.coverage = cov.mutable_data();
+                  o.ring_dropped = drp.mutable_data();
+                  breach_cuda::applier_run(a, s, t, p, stage, rp, o);
+                  return py::make_tuple(books, cov, drp);
+              }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
+              py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("stage"),
+              py::arg("ring") = py::none(),
+              "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
+              "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
+              "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");
+        m.def("unit_melee",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+                 py::array_t<int64_t, py::array::c_style> ticks) {
+                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env())
+                      throw std::invalid_argument("unit_melee: ticks must be (n_env,)");
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  breach_cuda::UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_melee(s, t, a, ticks.data(), c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("ticks"),
+              "#29 P7a.1: slot 4a (combat.process_melee_intents) on the device store, its "
+              "blows appended to the effect list; returns (coverage, faults, refused, "
+              "dropped records).");
         m.def("tick_end_clears",
               [](int n_env, int h, int w, py::array_t<uint64_t, py::array::c_style> ptrs,
                  std::uintptr_t active) {

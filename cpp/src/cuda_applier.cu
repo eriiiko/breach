@@ -1,13 +1,19 @@
 // ============================================================================
 // #29 P6.4b -- THE PER-ENV SERIAL APPLIER (slot 9's burn-through) and THE
 // TICK-END CLEARS on the device. See cuda_applier.h; residency design §4.3.
+// #29 P7a.1 -- THE EFFECT LIST and its STAGES (design 4.4c, decisions 1, 2):
+// the list is a UnitRecordList; the walk reaches the unit store, the device
+// tables and the event ring; slot 4c (RESOLVE) is its first stage over unit
+// effects, with the exposure landing.
 //
 // k_applier: one BLOCK per env (blockIdx.y), thread 0 walking the env's
 // effect list in order -- serial, because the reference is: destroy_wall's
 // breach rule reads the tiles an earlier destroy of the same walk changed,
-// and its membership diff and seed read the planes the previous effect wrote.
-// Each effect is a device function of the topology seam (cuda_topology.cuh)
-// writing the env's planes in place and its book channels.
+// its membership diff and seed read the planes the previous effect wrote; a
+// HIT reads the hp an earlier HIT left (the first packet to zero is the
+// kill); a STATUS or PUSH acts only on a unit still alive at its turn; a
+// CHEW reads the wall an earlier CHEW left. Each effect is a device function
+// writing the env's planes / rows in place and its book channels.
 //
 // k_tick_end_clears: one thread per cell, (N, h, w) (bgrid), a masked env
 // (`active` 0: the reference clears only with a physics runner) untouched.
@@ -17,11 +23,13 @@
 #include "cuda_applier.h"
 #include "cuda_batch.cuh"          // tstream, benv, bptr, bgrid, env_off
 #include "cuda_topology.cuh"       // the topology seam
+#include "cuda_unit_damage.cuh"    // apply_packet, the landing, the sinks, the library
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
 
 #include <cstring>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 
@@ -39,34 +47,150 @@ inline void ap_check(cudaError_t e, const char* what) {
     }
 }
 
+// What the walk reaches besides the planes.
+struct WalkUnits {
+    int64_t* store;          // (N, U, W)
+    int n_units;
+    UnitRingView ring;       // ring.ring == nullptr: no ring (a HIT faults)
+    int64_t* landing;        // (N, cap, LANDING_W)
+    uint8_t* touched;        // (N, U)
+    unsigned long long* cnt; // the store's counts (coverage)
+};
+
+// The row of an effect's `row` field, or nullptr (out of the env's rows or a
+// padding row: never a target).
+__device__ __forceinline__ int64_t* effect_row(const WalkUnits& U, int64_t r) {
+    if (r < 0 || r >= U.n_units) return nullptr;
+    int64_t* row = unit_lib::unit_row(U.store, U.n_units, (int)r);
+    return unit_lib::row_valid(row) ? row : nullptr;
+}
+
 // The applier: one block per env, thread 0 the walk (the block's other
 // threads are the fan-out's, idle until P7c gives an effect a tile set).
-__global__ void k_applier(const int64_t* recs, const int64_t* counts, int cap,
-                          topo::PlanePtrs P, int h, int w, int n_gases,
-                          const int64_t* tables, int64_t* books) {
+__global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
+                          const unsigned long long* dropped, int cap, topo::PlanePtrs P, int h,
+                          int w, int n_gases, const int64_t* tables, int64_t* books,
+                          WalkUnits U) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = benv();
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
     int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
     const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
-    const int64_t requested = counts[e];
-    const int64_t k = requested < (int64_t)cap ? requested : (int64_t)cap;
-    if (requested > (int64_t)cap) B[APPLIER_BOOK_DROPPED] += requested - (int64_t)cap;
+    const int64_t n = counts[e];
+    const int64_t k = n < (int64_t)cap ? n : (int64_t)cap;
+    B[APPLIER_BOOK_DROPPED] += (int64_t)dropped[e];
     const int64_t* L = recs + (size_t)e * cap * APPLIER_F;
+    // the stage's mode for a HIT (decision 2: per (stage, kind))
+    const bool lands = (stage == APPLIER_STAGE_RESOLVE) ? APPLIER_STAGE_RESOLVE_LANDS
+                                                        : APPLIER_STAGE_TOPOLOGY_LANDS;
+    unit_lib::ExposureLanding land;
+    land.buf = U.landing + (size_t)e * cap * unit_lib::LANDING_W;
+    land.cap = cap;
+    uint8_t* touched = U.touched + (size_t)e * U.n_units;
+    for (int r = 0; r < U.n_units; ++r) touched[r] = 0;
+    unit_lib::EventSink sink{nullptr, 0, nullptr, nullptr};
+    if (U.ring.ring != nullptr) sink = unit_lib::env_sink(U.ring);
     for (int64_t j = 0; j < k; ++j) {
         const int64_t* r = L + (size_t)j * APPLIER_F;
         const int64_t kind = r[APPLIER_FX_KIND];
         if (kind == APPLIER_KIND_DESTROY_WALL) {
-            const int64_t y = r[APPLIER_FX_Y], x = r[APPLIER_FX_X];
+            const int64_t y = r[APPLIER_DESTROY_WALL_Y], x = r[APPLIER_DESTROY_WALL_X];
             // out of the grid: destroy_wall's silent return (never an int cast
             // of a coordinate that does not fit)
             if (y < 0 || y >= h || x < 0 || x >= w) continue;
             if (topo::destroy_wall(E, tab, (int)y, (int)x, B))
                 B[APPLIER_BOOK_APPLIED] += 1;
+        } else if (kind == APPLIER_KIND_HIT) {
+            const int64_t ri = r[APPLIER_HIT_ROW];
+            int64_t* row = effect_row(U, ri);
+            if (row == nullptr || U.ring.ring == nullptr) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            unit_lib::Packet p;
+            p.amount_q = r[APPLIER_HIT_AMOUNT_Q];
+            p.dtype = r[APPLIER_HIT_DTYPE];
+            p.attacker = r[APPLIER_HIT_ATTACKER];
+            p.indirect = r[APPLIER_HIT_INDIRECT] != 0;
+            p.expose = r[APPLIER_HIT_EXPOSE];
+            p.dir_x_q = r[APPLIER_HIT_DIR_X_Q];
+            p.dir_y_q = r[APPLIER_HIT_DIR_Y_Q];
+            p.ap_q = r[APPLIER_HIT_AP_Q];
+            p.cause = r[APPLIER_HIT_CAUSE];
+            p.mark_killed_by_zombie = false;
+            bool changed = false, killed = false, bad = false;
+            unit_lib::apply_packet(row, tab, p, sink, changed, &killed, &bad,
+                                   lands ? &land : nullptr, ri);
+            if (bad) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            B[APPLIER_BOOK_APPLIED] += 1;
+            if (changed) touched[ri] = 1;
+        } else if (kind == APPLIER_KIND_STATUS) {
+            const int64_t ri = r[APPLIER_STATUS_ROW];
+            int64_t* row = effect_row(U, ri);
+            if (row == nullptr) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            if (!unit_lib::row_alive(row)) continue;      // statuses freeze on corpses
+            bool changed = false;
+            const int res = unit_lib::apply_status(
+                row, tab, r[APPLIER_STATUS_STATUS], r[APPLIER_STATUS_MAGNITUDE_Q],
+                r[APPLIER_STATUS_DURATION], r[APPLIER_STATUS_SOURCE], changed);
+            if (res == unit_lib::APPLY_BAD) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            B[APPLIER_BOOK_APPLIED] += 1;                  // a stack-cap refusal changes nothing
+            if (changed) touched[ri] = 1;
+        } else if (kind == APPLIER_KIND_PUSH) {
+            const int64_t ri = r[APPLIER_PUSH_ROW];
+            int64_t* row = effect_row(U, ri);
+            if (row == nullptr) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            if (!unit_lib::row_alive(row)) continue;      // a corpse takes no push
+            bool changed = false, bad = false;
+            unit_lib::impulse_add(row, tab, r[APPLIER_PUSH_JX_Q], r[APPLIER_PUSH_JY_Q],
+                                  r[APPLIER_PUSH_LEVER_Q], r[APPLIER_PUSH_TWIST_Q16], changed,
+                                  &bad);
+            if (bad) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            B[APPLIER_BOOK_APPLIED] += 1;
+            if (changed) touched[ri] = 1;
+        } else if (kind == APPLIER_KIND_CHEW) {
+            // combat.chew_wall: a no-op for wall_damage <= 0 and on air; the
+            // wall's hp less the per-call quantized damage, destroy_wall at <= 0
+            if (r[APPLIER_CHEW_LIVE] == 0) continue;
+            const int64_t y = r[APPLIER_CHEW_Y], x = r[APPLIER_CHEW_X];
+            if (y < 0 || y >= h || x < 0 || x >= w) {     // numpy would wrap or raise
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            const int i = (int)y * w + (int)x;
+            if ((int64_t)E.material[i] == tab[unit_tables::UNIT_TAB_TOPO_MAT_AIR]) continue;
+            const int64_t hp = (int64_t)E.wall_hp[i] - r[APPLIER_CHEW_DAMAGE_Q];
+            if (hp < -2147483648LL || hp > 2147483647LL) {   // int32's range
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            E.wall_hp[i] = (int32_t)hp;
+            B[APPLIER_BOOK_APPLIED] += 1;
+            if (hp <= 0) topo::destroy_wall(E, tab, (int)y, (int)x, B);
+        } else if (kind == APPLIER_KIND_PAYLOAD) {
+            B[APPLIER_BOOK_REFUSED] += 1;                  // no device function until P7c.1
         } else {
-            B[APPLIER_BOOK_FAULTS] += 1;      // an unknown kind: never packed
+            B[APPLIER_BOOK_FAULTS] += 1;                   // an unknown kind: never packed
         }
     }
+    if (lands) unit_lib::land_exposure(land, U.store, U.n_units, tab, touched);
+    for (int r = 0; r < U.n_units; ++r)
+        if (touched[r]) unit_lib::count_changed(U.cnt);
 }
 
 __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_t* rad_amb,
@@ -83,27 +207,28 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
+static_assert(APPLIER_N_STAGES == 2, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
-FieldApplier::FieldApplier(int n_env, int cap) : n_env_(n_env), cap_(cap) {
-    if (n_env < 1 || cap < 1)
-        throw std::invalid_argument("FieldApplierBuffer: n_env and cap must be >= 1");
+FieldApplier::FieldApplier(int n_env, int cap, int n_units, int row_cap)
+    : list_(n_env, n_units, cap, APPLIER_F, row_cap) {
     const size_t nr = (size_t)n_env * cap * APPLIER_F;
     const size_t nb = (size_t)n_env * APPLIER_N_BOOKS;
-    ap_check(cudaMalloc(reinterpret_cast<void**>(&d_recs_), nr * sizeof(int64_t)), "malloc recs");
-    ap_check(cudaMalloc(reinterpret_cast<void**>(&d_cnt_), n_env * sizeof(int64_t)), "malloc counts");
+    const size_t nl = (size_t)n_env * cap * unit_lib::LANDING_W;
     ap_check(cudaMalloc(reinterpret_cast<void**>(&d_books_), nb * sizeof(int64_t)), "malloc books");
-    ap_check(cudaMallocHost(reinterpret_cast<void**>(&h_stage_), (nr + n_env) * sizeof(int64_t)),
+    ap_check(cudaMalloc(reinterpret_cast<void**>(&d_land_), nl * sizeof(int64_t)), "malloc landing");
+    ap_check(cudaMallocHost(reinterpret_cast<void**>(&h_stage_), (nr + 2 * (size_t)n_env) *
+                                                                     sizeof(int64_t)),
              "malloc pinned stage");
     ap_check(cudaMallocHost(reinterpret_cast<void**>(&h_books_), nb * sizeof(int64_t)),
              "malloc pinned books");
     cudaEvent_t ev = nullptr;
     ap_check(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "event");
     staged_ = ev;
-    ap_check(cudaMemsetAsync(d_recs_, 0, nr * sizeof(int64_t), tstream()), "zero recs");
-    ap_check(cudaMemsetAsync(d_cnt_, 0, n_env * sizeof(int64_t), tstream()), "zero counts");
     ap_check(cudaMemsetAsync(d_books_, 0, nb * sizeof(int64_t), tstream()), "zero books");
+    ap_check(cudaMemsetAsync(d_land_, 0, nl * sizeof(int64_t), tstream()), "zero landing");
+    touched(n_units);
     ap_check(cudaEventRecord(ev, tstream()), "record zero");
 }
 
@@ -111,54 +236,101 @@ FieldApplier::~FieldApplier() {
     if (staged_) cudaEventSynchronize(static_cast<cudaEvent_t>(staged_));
     cudaStreamSynchronize(tstream());
     if (staged_) cudaEventDestroy(static_cast<cudaEvent_t>(staged_));
-    if (d_recs_) cudaFree(d_recs_);
-    if (d_cnt_) cudaFree(d_cnt_);
     if (d_books_) cudaFree(d_books_);
+    if (d_land_) cudaFree(d_land_);
+    if (d_touched_) cudaFree(d_touched_);
     if (h_stage_) cudaFreeHost(h_stage_);
     if (h_books_) cudaFreeHost(h_books_);
 }
 
+uint8_t* FieldApplier::touched(int n_units) {
+    const size_t want = (size_t)n_env() * (size_t)(n_units > 0 ? n_units : 1);
+    if (want > touched_cap_) {
+        cudaStreamSynchronize(tstream());
+        if (d_touched_) cudaFree(d_touched_);
+        d_touched_ = nullptr;
+        ap_check(cudaMalloc(reinterpret_cast<void**>(&d_touched_), want), "malloc touched");
+        touched_cap_ = want;
+    }
+    return d_touched_;
+}
+
 void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
-    const size_t nr = (size_t)n_env_ * cap_ * APPLIER_F;
+    const int n = n_env(), c = cap();
+    const size_t nr = (size_t)n * c * APPLIER_F;
     // the pinned buffer is free once the previous stage copy read it
     ap_check(cudaEventSynchronize(static_cast<cudaEvent_t>(staged_)), "stage wait");
     std::memcpy(h_stage_, recs, nr * sizeof(int64_t));
-    std::memcpy(h_stage_ + nr, counts, (size_t)n_env_ * sizeof(int64_t));
-    ap_check(cudaMemcpyAsync(d_recs_, h_stage_, nr * sizeof(int64_t), cudaMemcpyHostToDevice,
-                             tstream()), "H2D recs");
-    ap_check(cudaMemcpyAsync(d_cnt_, h_stage_ + nr, (size_t)n_env_ * sizeof(int64_t),
+    int64_t* cnt = h_stage_ + nr;
+    unsigned long long* drp = reinterpret_cast<unsigned long long*>(h_stage_ + nr + n);
+    for (int e = 0; e < n; ++e) {
+        const int64_t req = counts[e] < 0 ? 0 : counts[e];
+        cnt[e] = req < (int64_t)c ? req : (int64_t)c;
+        drp[e] = (unsigned long long)(req - cnt[e]);
+    }
+    list_.begin();                            // the staging counts to 0
+    ap_check(cudaMemcpyAsync(list_.records_dev(), h_stage_, nr * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, tstream()), "H2D recs");
+    ap_check(cudaMemcpyAsync(list_.count_dev(), cnt, (size_t)n * sizeof(int64_t),
                              cudaMemcpyHostToDevice, tstream()), "H2D counts");
+    ap_check(cudaMemcpyAsync(list_.dropped_dev(), drp, (size_t)n * sizeof(unsigned long long),
+                             cudaMemcpyHostToDevice, tstream()), "H2D dropped");
     ap_check(cudaEventRecord(static_cast<cudaEvent_t>(staged_), tstream()), "record stage");
 }
 
 void FieldApplier::download_books(int64_t* host) {
-    const size_t nb = (size_t)n_env_ * APPLIER_N_BOOKS;
+    const size_t nb = (size_t)n_env() * APPLIER_N_BOOKS;
     ap_check(cudaMemcpyAsync(h_books_, d_books_, nb * sizeof(int64_t), cudaMemcpyDeviceToHost,
                              tstream()), "D2H books");
     ap_check(cudaStreamSynchronize(tstream()), "books sync");
     std::memcpy(host, h_books_, nb * sizeof(int64_t));
 }
 
-void applier_run(FieldApplier& a, const UnitTablesDevice& tables, const ApplierPlanes& planes,
-                 int64_t* books_out) {
-    if (tables.n_env() != a.n_env())
-        throw std::invalid_argument("applier_run: the tables are for another env count");
+void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
+                 const ApplierPlanes& planes, int stage, UnitEventRing* ring,
+                 const ApplierOut& out) {
+    if (tables.n_env() != a.n_env() || store.n_env() != a.n_env())
+        throw std::invalid_argument("applier_run: the tables / store are for another env count");
+    if (stage < 0 || stage >= APPLIER_N_STAGES)
+        throw std::invalid_argument("applier_run: no such stage");
     if (planes.h < 1 || planes.w < 1 || planes.n_gases < 1)
         throw std::invalid_argument("applier_run: the planes' shape is empty");
+    if (ring != nullptr && (ring->n_env() != store.n_env() || ring->n_units() != store.n_units()))
+        throw std::invalid_argument("applier_run: the event ring is for another store");
     topo::PlanePtrs P;
     for (int k = 0; k < APPLIER_N_PLANES; ++k) {
         if (planes.ptr[k] == 0)
             throw std::invalid_argument("applier_run: a plane pointer is null");
         P.p[k] = (unsigned long long)planes.ptr[k];
     }
+    WalkUnits U;
+    U.store = store.rows();
+    U.n_units = store.n_units();
+    U.ring = ring != nullptr ? ring_view(*ring) : UnitRingView{};
+    U.landing = a.landing_dev();
+    U.touched = a.touched(store.n_units());
+    U.cnt = store.counts_dev();
     ap_check(cudaMemsetAsync(a.books_dev(), 0,
                              (size_t)a.n_env() * APPLIER_N_BOOKS * sizeof(int64_t), tstream()),
              "zero books");
+    store.begin_counts();
+    UnitRecordList& L = a.list();
     k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(
-        a.recs_dev(), a.counts_dev(), a.cap(), P, planes.h, planes.w, planes.n_gases,
-        tables.values(), a.books_dev());
+        stage, L.records_dev(), L.count_dev(), L.dropped_dev(), L.cap(), P, planes.h, planes.w,
+        planes.n_gases, tables.values(), a.books_dev(), U);
     ap_check(cudaGetLastError(), "applier launch");
-    a.download_books(books_out);
+    a.download_books(out.books);
+    std::unique_ptr<int64_t[]> f(new int64_t[(size_t)a.n_env()]);
+    std::unique_ptr<int64_t[]> rf(new int64_t[(size_t)a.n_env()]);
+    std::unique_ptr<int64_t[]> cv(new int64_t[(size_t)a.n_env()]);
+    store.end_counts(out.coverage != nullptr ? out.coverage : cv.get(), f.get(), rf.get());
+    if (out.ring_dropped != nullptr) {
+        if (ring != nullptr) {
+            ring->download(nullptr, nullptr, out.ring_dropped);
+        } else {
+            for (int e = 0; e < a.n_env(); ++e) out.ring_dropped[e] = 0;
+        }
+    }
 }
 
 void tick_end_clears(int n_env, int h, int w,

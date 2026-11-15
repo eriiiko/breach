@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "7e6d77f0b7392a0614cf5d9803b0ac5fd3b67b61fe2ab4c4b19e07e322e57ddd";
-constexpr int UNIT_TABLES_W = 564;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "68073cd22c07c9dcedb139009279902577d17d3af072c99fd27ad3ba60d3386a";
+constexpr int UNIT_TABLES_W = 716;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -222,6 +222,22 @@ constexpr int UNIT_TAB_MAT_SOLID = 542;
 constexpr int UNIT_TAB_MAT_SOLID_W = 11;
 constexpr int UNIT_TAB_MAT_BLOCKS_SIGHT = 553;
 constexpr int UNIT_TAB_MAT_BLOCKS_SIGHT_W = 11;
+constexpr int UNIT_TAB_WEAPON_MELEE_DAMAGE_Q = 564;
+constexpr int UNIT_TAB_WEAPON_MELEE_DAMAGE_Q_W = 19;
+constexpr int UNIT_TAB_WEAPON_MELEE_DTYPE = 583;
+constexpr int UNIT_TAB_WEAPON_MELEE_DTYPE_W = 19;
+constexpr int UNIT_TAB_WEAPON_MELEE_STATUS_KIND = 602;
+constexpr int UNIT_TAB_WEAPON_MELEE_STATUS_KIND_W = 19;
+constexpr int UNIT_TAB_WEAPON_MELEE_STATUS_TICKS = 621;
+constexpr int UNIT_TAB_WEAPON_MELEE_STATUS_TICKS_W = 19;
+constexpr int UNIT_TAB_WEAPON_MELEE_ARC_HALF_Q = 640;
+constexpr int UNIT_TAB_WEAPON_MELEE_ARC_HALF_Q_W = 19;
+constexpr int UNIT_TAB_WEAPON_ROF_TICKS = 659;
+constexpr int UNIT_TAB_WEAPON_ROF_TICKS_W = 19;
+constexpr int UNIT_TAB_WEAPON_MELEE_CRIT = 678;
+constexpr int UNIT_TAB_WEAPON_MELEE_CRIT_W = 19;
+constexpr int UNIT_TAB_WEAPON_MELEE_PUSH_Q = 697;
+constexpr int UNIT_TAB_WEAPON_MELEE_PUSH_Q_W = 19;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

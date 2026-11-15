@@ -682,6 +682,55 @@ _TOPO_ROWS: tuple = (
 )
 ROWS = ROWS + _TOPO_ROWS
 
+
+# == #29 P7a.1: slot 4a, the melee verb (combat.process_melee_intents /
+# melee_arc_target / melee_blow; verb_gates.can_melee) -- per weapons-table
+# row (the schema's order, the melee_id column's index), from the sim's own
+# WeaponDef rows (WeaponTable derived every one of these once, at load) and
+# the impulse table (per map). ==============================================
+def _melee_col(f):
+    return lambda src: tuple(int(f(w)) for w in _weapon_rows(src))
+
+
+def _melee_push(src):
+    tab = src.impulse.melee_push_q  # traits-class: the device tables upload the CLASS value; the kernel applies PUSH through unit_lib::scaled
+    return tuple(int(tab.get(w.name, 0)) for w in _weapon_rows(src))
+
+
+_MELEE_ROWS: tuple = (
+    TableRow("weapon_melee_damage_q", _n_weapons,
+             _melee_col(lambda w: int(w.melee_damage) << 16), 0, 1 << 24,  # traits-class: the device tables upload the CLASS value; the kernel applies STRIKE through unit_lib::scaled
+             "per weapons-table row: unit_traits.strike_damage_q's base, "
+             "melee_damage << 16 (no crit: the loadouts door refuses one on a "
+             "melee row; x the STRIKE hook <= 2^19 < 2^43)"),
+    TableRow("weapon_melee_dtype", _n_weapons,
+             _melee_col(lambda w: -1 if w.melee_dtype_id is None
+                        else w.melee_dtype_id), -1, 63,
+             "per weapons-table row: melee_dtype_id (-1 none)"),
+    TableRow("weapon_melee_status_kind", _n_weapons,
+             _melee_col(lambda w: -1 if w.status_kind_id is None
+                        else w.status_kind_id), -1, 63,
+             "per weapons-table row: the delivery-site status kind (-1 none)"),
+    TableRow("weapon_melee_status_ticks", _n_weapons,
+             _melee_col(lambda w: w.status_ticks), 0, 1 << 24,
+             "per weapons-table row: the status's derived duration, ticks"),
+    TableRow("weapon_melee_arc_half_q", _n_weapons,
+             _melee_col(lambda w: w.melee_arc_half_q), 0, 205887,
+             "per weapons-table row: melee_arc_half_q, Q16 radians (<= PI)"),
+    TableRow("weapon_rof_ticks", _n_weapons,
+             _melee_col(lambda w: w.rof_interval_ticks), 0, 1 << 30,
+             "per weapons-table row: rof_interval_ticks (can_melee's cadence)"),
+    TableRow("weapon_melee_crit", _n_weapons,
+             _melee_col(lambda w: float(w.crit_chance) > 0.0), 0, 1,  # p3e-door: a flag, the sign of the row's crit_chance
+             "per weapons-table row: 1 when crit_chance > 0 (melee_blow would "
+             "draw: the verb's device form refuses such a striker by name)"),
+    TableRow("weapon_melee_push_q", _n_weapons, _melee_push, 0, 1 << 40,
+             "per weapons-table row: the impulse table's melee_push_q (0 none), "
+             "Q16 gram-tiles/tick (x the PUSH hook <= 2^19; the push is refused "
+             "past 2^46 so its axis split stays inside int64)"),
+)
+ROWS = ROWS + _MELEE_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 
