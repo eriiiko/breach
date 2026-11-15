@@ -21,6 +21,8 @@ loudly in the embedding (never clamped).
 
 KIND PLANES (a code plane, e.g. ``door``: none / open / closed) are read as
 one channel per code beside "none"; every other plane is one channel.
+A COUNT plane (units per block, the one input the game serves unsquashed)
+is named in ``Window.count_planes`` and squashed inside the network.
 """
 from __future__ import annotations
 
@@ -66,6 +68,7 @@ class Window:
     f_planes: tuple
     u_planes: tuple          # ((name, codes), ...)
     side: int
+    count_planes: tuple = () # the byte planes that are COUNTS (squashed inside)
 
     @property
     def channels(self) -> int:
@@ -176,7 +179,8 @@ def _window(f_planes, u_planes) -> Window:
             us.append((name, tuple(PLANE_CODES[name])))
         else:
             us.append((name, ()))
-    return Window(tuple(f_planes), tuple(us), O.WIN)
+    counts = tuple(n for n in u_planes if O.PLANE_COLUMNS[n][0] == O.COUNT)
+    return Window(tuple(f_planes), tuple(us), O.WIN, counts)
 
 
 def sizes_for(n_slots: int, n_teams: int = 2, n_kinds: int | None = None) -> Sizes:

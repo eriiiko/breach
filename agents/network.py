@@ -229,12 +229,17 @@ def window_planes(window, f, u, extra=None):
     """The served window (``f`` float16, ``u`` uint8, both ``(N, C, W,
     W)``) as one float32 stack: the float planes, then per byte plane one
     channel (its number) or one channel per code; then ``extra`` (a
-    ``uint8`` ``(N, W, W)`` plane) if given."""
+    ``uint8`` ``(N, W, W)`` plane) if given. A COUNT plane is read as
+    ``log(1 + count)``: the game squashes every ratio at its door (design
+    8.3) but serves a count raw, and a horde in one block would otherwise
+    stand tens of times above the flags beside it."""
     chans = [f.to(torch.float32)]
-    for i, (_, codes) in enumerate(window.u_planes):
+    for i, (name, codes) in enumerate(window.u_planes):
         p = u[:, i]
         if codes:
             chans += [(p == c).to(torch.float32).unsqueeze(1) for c in codes]
+        elif name in window.count_planes:
+            chans.append(torch.log1p(p.to(torch.float32)).unsqueeze(1))
         else:
             chans.append(p.to(torch.float32).unsqueeze(1))
     if extra is not None:

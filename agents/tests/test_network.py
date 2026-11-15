@@ -259,6 +259,33 @@ def test_the_windows_are_taken_only_in_the_served_number_formats(sizes6, rng):
             val(_t(obs, network.VALUE_OBS_KEYS), badf)
 
 
+def test_a_count_plane_is_squashed_and_still_tells_counts_apart(sizes6):
+    """Protects: whatever byte a plane serves, no channel the map readers
+    get from it stands far above the flags beside it (a count is read
+    through a fixed squash), and a count plane still reads a larger count
+    as larger.
+    Breaks when: a count plane is fed raw (a horde of 30 in one block is 30
+    beside flags of 1), or the squash flattens two counts into one."""
+    for window in (sizes6.near, sizes6.far):
+        w, nf = window.side, len(window.f_planes)
+        f = torch.zeros(1, nf, w, w, dtype=torch.float16)
+        seen = {}
+        for v in (1, 2, 30, 255):
+            u = torch.full((1, len(window.u_planes), w, w), v,
+                           dtype=torch.uint8)
+            x = network.window_planes(window, f, u)[:, nf:]
+            ch = 0
+            for name, codes in window.u_planes:
+                n_ch = max(1, len(codes))
+                if name in window.count_planes:
+                    seen.setdefault(name, []).append(float(x[0, ch].max()))
+                ch += n_ch
+        for name, vals in seen.items():
+            assert vals == sorted(set(vals)), name      # strictly growing
+            assert vals[-1] < 8.0, name                 # 255 units: still small
+    assert sizes6.far.count_planes, "the far window serves count planes"
+
+
 def test_a_kind_past_its_table_fails_loudly(sizes6, rng):
     """Protects: a kind column's value outside its table's rows is an
     error, never clamped or read as another kind.

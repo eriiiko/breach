@@ -191,6 +191,44 @@ million weights, the exact form of the attention, how earlier choices are
 fed to later heads): design 8 first; then the simplest form that meets it;
 each such choice one line in the report.
 
+### As built (2a, 2026-11-15)
+
+- **Weights, full width:** the soldier 1 770 480 (1 375 728 with the memory
+  off), the value network 1 174 701. The design said about 1.55 and 1.1
+  million; the soldier's extra is in the heads (each has its own hidden
+  layer of 128: 258 000 against 135 000) and the entry readers. Inside the
+  1 to 2 million asked for; the counts do not depend on S. Reduced width:
+  132 372 and 95 793.
+- **Card memory of one learning step** (both networks, stretches of 16,
+  RTX 3070, measured by `python -m agents.print_network --card`): 512
+  decisions 1 350 MiB at 32 bits and 1 071 MiB at 16; 2 048 decisions 5 334
+  and 4 206 MiB. So about 2.6 MB a decision (the design's estimate was
+  2.35): lumps of 512 stand, and a piece of 2 048 in one go does not fit an
+  8 GB card beside a desktop.
+- **Tests:** 32 properties in `agents/tests` (5 s on the processor); the
+  game's suite green with its one new scan test (6 287 passed).
+- **A real check at the boundary (the lead's, not a test):** 30 decisions of
+  a one-worker farm on `ship_demo` (S = 6, two teams) read by the
+  full-width networks and answered through `draw`: every kind code inside
+  its table, no masked choice counted, the value network finite. Zombies did
+  not come into sight in those decisions, so their codes are still unseen
+  by a real run.
+- **Found by the lead's read and fixed:** the far window's count planes
+  (units per block) were fed raw; they are read as log(1 + count).
+- **Where the design was silent:** kinds are embedded per column from their
+  game table (four code columns without a table get a capacity of 8 rows);
+  one entry reader per game entry type (five, no spare); the chosen aim is
+  told to the later heads as its key vector, the chosen verb as its learned
+  vector; the explore chance is part of the chances (draw, probability and
+  variety all use the mix); PyTorch's default initialisation.
+- **Handed to later notes.** 2b: decide the initial scale of the heads' last
+  layers (a near-even first policy), and feed the stand-in environment the
+  game's real value ranges. 2d: the record of what a network fits holds the
+  NUMBER of rows of each kind table, not their names, so a row inserted
+  without changing the count is not caught; a new weapon or loadout row
+  refuses every saved network (honest, but say it). On Windows the card is
+  hidden with `CUDA_VISIBLE_DEVICES=-1`, not an empty value.
+
 ## 5. What each later note must settle
 
 - **2b:** the stored decision's layout by name and number format; the exact
