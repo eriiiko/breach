@@ -900,8 +900,15 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
     ResidentTickState& S = g_rt;
     S.swarm_ran.clear();
     if (a.swarm_species == nullptr || a.n_swarm_species <= 0) return;
-    ++g_counts[16];
     const int N = f.n_env;
+    // D14: dormant (no species present in any env) -- no memset, no copy, no
+    // launch, and no counter moves.
+    bool present = false;
+    for (int i = 0; i < a.n_swarm_species && !present; ++i)
+        for (int e = 0; e < N; ++e)
+            if (a.swarm_species[i].hw[e] > 0) { present = true; break; }
+    if (!present) return;
+    ++g_counts[16];
     cudaStream_t st = tstream();
     unsigned long long* cnt = S.arena_dev() + S.L.swm;
     cuda_check(cudaMemsetAsync(cnt, 0, (size_t)N * swarm::SWARM_CNT_SLOTS * 8, st),
@@ -917,11 +924,12 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
             cnt, static_cast<void*>(st));
         if (launched > 0) {
             any = true;
+            ++g_counts[17];
             S.swarm_ran.push_back(ResidentTickState::SwarmRan{
                 sp.law, sp.max_units, std::vector<int32_t>(sp.hw, sp.hw + N)});
         }
     }
-    if (any) ++g_counts[17];
+    (void)any;
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,8 +1353,9 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
                     ++deaths;
                 }
             }
-            const long long counted = (long long)hu[S.L.swm + (size_t)e * swarm::SWARM_CNT_SLOTS +
-                                                    swarm::SWARM_CNT_DEATHS];
+            const long long counted = swarm_ran.empty() ? 0 :
+                (long long)hu[S.L.swm + (size_t)e * swarm::SWARM_CNT_SLOTS +
+                              swarm::SWARM_CNT_DEATHS];
             if (counted != deaths) {
                 std::ostringstream os;
                 os << "resident swarm: env " << e << ": the device counted " << counted

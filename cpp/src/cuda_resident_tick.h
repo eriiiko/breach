@@ -186,8 +186,8 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
 // [12] EOS stage calls, [13] trace-tail calls (#29 P5).
 // [14] edit-queue ticks (#29 P4c: the device applied slot 6b's flush), [15]
 // edit-queue tiles applied (not skipped by their policy's mask).
-// [16] swarm stage calls (arc #63 P3: a swarm block was handed in), [17]
-// swarm stage calls with a present env (a species' core launched).
+// [16] swarm stage calls that found a present env (arc #63 P3: past the
+// stage's dormancy check), [17] swarm species cores launched.
 constexpr int RESIDENT_STAGE_COUNTERS = 18;
 void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]);
 

@@ -1224,16 +1224,15 @@ def resident_entry_names(gmap) -> tuple:
     """The swarm names the resident ENTRY upload carries this tick, and the
     species they belong to: every species whose host store was written since
     the device last saw it (``swarm_host_dirty``: a facade spawn / reclaim,
-    or a host-path tick), its columns, its ``high_water`` and the shared
-    ``next_unit_id`` (host-authoritative, D16: uploaded, never downloaded).
-    The caller clears the flags it consumed after the upload."""
+    or a host-path tick) -- its ROSTER columns. ``high_water`` and
+    ``next_unit_id`` are host-authoritative (D16) and no kernel reads their
+    device copies (V6: the extent rides the launch block), so they are
+    neither uploaded nor downloaded. The caller clears the flags it consumed
+    after the upload."""
     dirty = tuple(sp for sp in SWARM_SPECIES if gmap.swarm_host_dirty.get(sp))
     if not dirty:
         return (), ()
-    names = [store_attr(sp, c.name) for sp in dirty for c in ROSTER]
-    names += [high_water_attr(sp) for sp in dirty]
-    names.append(NEXT_UNIT_ID_ATTR)
-    return tuple(names), dirty
+    return tuple(store_attr(sp, c.name) for sp in dirty for c in ROSTER), dirty
 
 
 def resident_exit_names(gmap) -> tuple:

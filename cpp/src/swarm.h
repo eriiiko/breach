@@ -351,7 +351,7 @@ long long swarm_cuda_calls();
 void set_swarm_backend(bool use_cuda);
 bool get_swarm_backend();
 
-// Out of line in a strict TU, for the binding (bindings.cpp is /fp:fast and
+// Out of line in a strict TU, for the binding (bindings.cpp keeps the global fast-math flag and
 // never calls an FP_HD law function inline).
 int32_t wrap_heading_q16_host(int64_t h);
 int32_t felt_tile_host(const int32_t* T, int h, int w, int32_t x_q, int32_t y_q);
