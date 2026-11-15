@@ -146,9 +146,13 @@ def test_batched_heads_used_and_arg_mask_equal_the_games(sizes6, rng):
 def test_a_head_that_did_not_count_adds_nothing(sizes6, rng):
     """Protects: a head that did not count (one legal option) adds nothing
     to the decision's probability or to the variety, and receives no
-    learning signal at all (zero gradient), whatever its raw outputs.
+    learning signal at all (zero gradient), whatever its raw outputs; the
+    decision's probability equals an independent sum over the heads the
+    GAME's ``heads_used`` counts, each under the game's own masks.
     Breaks when: an unused head is graded (its log-probability or entropy
-    summed in, e.g. by dropping the `used` filter)."""
+    summed in). Held twice over in the module (a head with one legal option
+    has log-probability 0, and the `used` filter), so it takes both a
+    dropped filter and a head read under the wrong mask to break it."""
     n = 512
     obs = fake.make_obs(sizes6, n, rng)
     masks = C.masks_of(obs)
@@ -160,6 +164,21 @@ def test_a_head_that_did_not_count_adds_nothing(sizes6, rng):
                        torch.zeros_like(d.logp_heads[~d.used]))
     assert torch.equal(d.variety[~d.used], torch.zeros_like(d.variety[~d.used]))
     torch.testing.assert_close(d.logp, d.logp_heads.sum(-1))
+    # the independent reference: the game's masks, arg mask and heads_used
+    a = d.actions.numpy()
+    game_arg = A.arg_mask(a[:, 3], a[:, 1])
+    game_used = A.heads_used(obs, game_arg)
+    logits = [out.t["feet"], out.t["aim"], out.t["trigger"][a[:, 1]],
+              out.t["hand"][a[:, 1]], out.t["arg"][a[:, 3]]]
+    ms = [obs[k] for k in A.MASK_KEYS] + [game_arg]
+    ref = torch.zeros(n)
+    for h, head in enumerate(A.HEADS):
+        m = torch.as_tensor(ms[h] != 0)
+        lp = torch.log_softmax(logits[h].detach().masked_fill(~m, -np.inf), -1)
+        lp = lp.gather(1, d.actions[:, h:h + 1])[:, 0]
+        ref += torch.where(torch.as_tensor(game_used[head]), lp,
+                           torch.zeros_like(lp))
+    torch.testing.assert_close(d.logp.detach(), ref, rtol=0, atol=1e-5)
     (d.logp.sum() + d.variety.sum()).backward()
     # the per-row outputs (feet, aim): an unused row's gets no gradient
     for head, key in ((0, "feet"), (1, "aim")):
@@ -171,6 +190,9 @@ def test_a_head_that_did_not_count_adds_nothing(sizes6, rng):
     with torch.no_grad():
         out.t["feet"][~d.used[:, 0]] += 100 * torch.randn(
             int((~d.used[:, 0]).sum()), out.t["feet"].shape[1], generator=gen)
+        # hand "nothing": its argument never counts
+        out.t["arg"][A.HAND_NOTHING] += 100 * torch.randn(
+            out.t["arg"].shape[1], generator=gen)
     after = C.evaluate(out, masks, d.actions)
     assert torch.equal(before.logp, after.logp)
     assert torch.equal(before.variety, after.variety)
