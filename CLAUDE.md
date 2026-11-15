@@ -255,6 +255,8 @@ amends the rule file, never this line's length.
 | Training snapshot | `rl_env.require_snapshot` + `write_run_manifest` | A training run's code is an annotated tag at HEAD in its own checkout |
 | Network spec | `agents/spec.py` + `agents/network.py` + `agents/sizes.py` | A network is a named spec in `agents/`, meeting the game only through an observation and an action spec, at any team size; its record names all three and any other layout refuses it |
 | Choosing | `agents/choosing.py` | The chances under the masks, the draw, the probability of given choices and which heads counted are ONE module, used when acting, learning from reward and copying |
+| Stored decision and batch | `agents/batch.py` | Only rows of a learning team are stored; what is kept per decision is ONE layout, copied from the environment's arrays, time first |
+| Trainer | `agents/trainer.py` + `agents/collector.py` + `agents/learner.py` + `agents/grading.py` + `agents/value_scale.py` | Touches the game only through `BatchedEnv`; a collector and a learner with one hand-over each way; every round runs the live check |
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
 | Room graph | `level_loader.RoomGraph` + `src/simulation/room_graph.py` | ONE map from tile to room and ONE list of openings; never a second |
