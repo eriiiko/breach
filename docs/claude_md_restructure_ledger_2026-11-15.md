@@ -178,3 +178,5 @@ never-build-a-second, change-together, rulings with dates, accepted gaps, debts,
 | 165 | E2E driver | 973 | 118 | determinism-gates.md | 260 | C (flag list) |
 
 **Totals:** 165 rows; 249921 bytes of rows became 26274 bytes of index lines + 106760 bytes of rule sections; 28 rows need no rule section. Plus the dated header log (~12 KB), dropped whole (git log holds it).
+
+**Rows that arrived on main during the conversion:** #202 S2 (63976f9e) amended Sound layer (the loops: their constraints added to `audio.md`, "loops play from state" to the index line) and Sound samples (`--loop`: C, the code says it).
