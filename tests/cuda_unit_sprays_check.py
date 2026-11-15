@@ -30,7 +30,7 @@ a spray into a wood wall (occluded tiles), a sprayer killed by a fixture
 mid-burst, a sprayer killed by a melee blow in the tick it deposits, a burst
 that ends by its tick count, a stunned sprayer (the interruption), a heavy
 Dragon whose box the grid edge clips, an enemy the jets' claims credit with
-its death (slot 9c), and a carbine whose rounds destroy a kindling wall at
+its death (slot 9c), and a carbine whose rounds destroy a glass wall at
 the resolve BEFORE a spray whose cells hold it. Slots 4b and 4c SHADOWED:
 4b's rows, its SPRAY_CELLS records and the cell buffer equal the host's; 4c
 fed the host's list: rows, ring, planes, books, the door's rows (equal to
@@ -164,17 +164,17 @@ SH, SW = 40, 64
 
 def _spray_level(variant):
     """A hull box in space (1 m tiles), interior air; a wood wall in front of
-    the wall-sprayer, a kindling wall the carbine chews; odd variants an extra
+    the wall-sprayer, a glass wall the carbine chews; odd variants an extra
     furniture block, the walls' rows move with the variant."""
     from level_loader import LevelData
     from simulation.materials import (MAT_AIR, MAT_FURNITURE, MAT_HULL,
-                                      MAT_KINDLING, MAT_WOOD)
+                                      MAT_GLASS, MAT_WOOD)
     dy = variant % 3
     tm = np.full((SH, SW), SPACE, dtype=np.int32)
     tm[1:SH - 1, 1:SW - 1] = MAT_HULL
     tm[2:SH - 2, 2:SW - 2] = MAT_AIR
     tm[10 + dy:17 + dy, 9] = MAT_WOOD                 # G2: the wall in D's cone
-    tm[29 + dy:34 + dy, 27] = MAT_KINDLING            # G6: the wall K chews, in H's cone
+    tm[29 + dy:34 + dy, 27] = MAT_GLASS               # G6: the glass K chews, in H's cone
     if variant % 2:
         tm[22:25, 44:48] = MAT_FURNITURE
     return LevelData(name=f"p7a3_spray{variant}", version="3", path=Path("."),
@@ -240,7 +240,7 @@ class SprayDriver:
         a("M", 25, 12, team=1, facing=WEST, weapon="k5_carbine")
         # G4: a burst that ends by its count (one trigger only)
         a("G", 40, 4, facing=SOUTH)
-        # G6: a carbine chewing the kindling wall, a Dragon whose cone holds it
+        # G6: a carbine chewing the glass wall, a Dragon whose cone holds it
         a("K", 31, 30, facing=WEST, weapon="k5_carbine", hose=True)
         a("H", 20, 30, facing=EAST, hose=True)
         # G7: a sprayer stunned mid-burst (the interruption)
@@ -263,6 +263,14 @@ class SprayDriver:
             apply_status(w["I"], STUNNED, 0, 3)
         if w["M"].alive:
             sim.melee_intent(w["M"].id)
+        if k == 2:
+            # G6: the glass's hp down to one count, so the carbine's next chew
+            # destroys it at the resolve, BEFORE H's spray record (a fixture of
+            # the wall's own hp: a topology value, not a FieldEdit field)
+            dy = self.variant % 3
+            for y in range(29 + dy, 34 + dy):
+                if sim.gmap.wall_hp[y, 27] > 0:
+                    sim.gmap.wall_hp[y, 27] = 1
 
     def tick(self):
         self._before()
@@ -657,7 +665,7 @@ def part_cone():
         args, ref = _cone_queries(rng, g, CONE_QUERIES)
         solid = cp.asarray(np.ascontiguousarray(g.solid[None]))
         box_max = (2 * 60 + 1) ** 2
-        cells, meta = unit_kernels.spray_cone_probe(bp, solid, args[None], box_max, 4096)
+        cells, meta = unit_kernels.spray_cone_probe(bp, solid, args[None], box_max, 6400)
         sight = Counter()
         orig = g.has_los
 
@@ -792,7 +800,7 @@ def part_padding():
     sim = drv.sim
     U = len(sim.units)
     lay = unit_store.layout()
-    vcol = lay.column("valid").offset
+    vcol = lay.valid
     tl = lay.column("spray_ticks_left").offset
     rows = np.zeros((U + 4, lay.width), dtype=np.int64)
     rows[:U] = cap["rows"]
@@ -1032,7 +1040,7 @@ def bench(reps: int = 50) -> int:
         fx = applier.DeviceApplier(n, 256, n_units=U)
         cells = attack_lists.cell_buffer(n)
         solid = cp.asarray(np.ascontiguousarray(np.repeat(cap["solid"][None], n, axis=0)))
-        bm = unit_kernels.spray_box_max(st)
+        bm = unit_kernels.spray_box_max(st, *cap["solid"].shape)
         ts = []
         for _ in range(reps):
             st.upload(rows)

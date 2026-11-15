@@ -934,14 +934,15 @@ class SpraySlotRefused(RuntimeError):
 SPRAY_FIELDS = (("solid", np.bool_),)
 
 
-def spray_box_max(store) -> int:
-    """The largest cone box any env's tables allow: ``(2 r + 1)^2`` of the
-    largest ``spray_range_tiles`` row (the launch's scratch per env)."""
+def spray_box_max(store, h: int, w: int) -> int:
+    """The largest cone box any env's tables allow on an ``(h, w)`` grid:
+    ``(2 r + 1)^2`` of the largest ``spray_range_tiles`` row, never more than
+    the grid (the box is clipped to it) -- the launch's scratch per env."""
     from simulation import unit_tables
     c = unit_tables.layout().column("spray_range_tiles")
     tab = np.asarray(store.tables.download(), dtype=np.int64)
     r = int(tab[:, c.offset:c.offset + c.width].max()) if tab.size else 0
-    return (2 * r + 1) ** 2
+    return min((2 * r + 1) ** 2, int(h) * int(w))
 
 
 def sprays(store, dev_applier, cells, fields: dict, box_max: int | None = None):
@@ -965,7 +966,7 @@ def sprays(store, dev_applier, cells, fields: dict, box_max: int | None = None):
         raise ValueError("unit kernel sprays: the effect list / cell buffer env count "
                          "is not the store's")
     _, h, w = (int(x) for x in s.shape)
-    bm = int(box_max) if box_max is not None else spray_box_max(store)
+    bm = int(box_max) if box_max is not None else spray_box_max(store, h, w)
     cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_sprays(
         store.buffer, store.tables, dev_applier.buffer, cells.buffer, int(s.data.ptr),
         h, w, max(1, bm)))

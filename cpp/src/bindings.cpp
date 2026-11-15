@@ -955,7 +955,13 @@ PYBIND11_MODULE(breach_physics, m) {
                                  "UnitRecordListBuffer.upload: a count outside 0 .. cap");
                      r.upload(recs.data(), counts.data());
                  }, py::arg("recs"), py::arg("counts"),
-                 "#29 P7a.3: set every env's list and count; dropped and staging to 0.");
+                 "#29 P7a.3: set every env's list and count; dropped and staging to 0.")
+            .def("counts", [](UnitRecordList& r) {
+                     py::array_t<int64_t> cnt(r.n_env()), drp(r.n_env());
+                     r.download(nullptr, cnt.mutable_data(), drp.mutable_data());
+                     return py::make_tuple(cnt, drp);
+                 },
+                 "#29 P7a.3: (counts (N,), dropped (N,)) int64 alone (no record copy).");
         m.def("unit_verbs",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
                  py::array_t<int64_t, py::array::c_style> ticks,

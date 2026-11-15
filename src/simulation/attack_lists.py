@@ -161,7 +161,7 @@ class DeviceRecordList:
 
     def check(self, what: str = "") -> None:
         """Refuse by name an env whose list dropped records."""
-        _r, _c, drp = self.download()
+        _c, drp = self._buf.counts()
         bad = [e for e in range(self.n_env) if int(drp[e])]
         if bad:
             raise ListOverflow(f"{self.name}{' ' + what if what else ''}: env {bad[0]} "

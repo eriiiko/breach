@@ -474,6 +474,8 @@ def part_tables():
 
         from cuda_unit_kit_check import table_reference as kit_reference
         want.update(kit_reference(sim))                      # #29 P7.0a's rows
+        from cuda_unit_sprays_check import table_reference as sprays_reference
+        want.update(sprays_reference(sim))                   # #29 P7a.3's rows
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")

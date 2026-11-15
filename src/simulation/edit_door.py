@@ -193,7 +193,7 @@ class DeviceEditDoor:
         """Refuse by name an env whose EDIT or TILE rows overflowed."""
         for name, lst, cap in (("EDIT rows", self._buf.edits, self.edit_cap),
                                ("TILE rows", self._buf.tiles, self.tile_cap)):
-            _r, _c, drp = lst.download()
+            _c, drp = lst.counts()
             bad = [e for e in range(self.n_env) if int(drp[e])]
             if bad:
                 raise DoorOverflow(f"the edit door's {name}{' ' + what if what else ''}: "

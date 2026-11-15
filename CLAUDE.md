@@ -73,7 +73,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, device topology seam |
+| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
 | `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
@@ -158,6 +158,9 @@ amends the rule file, never this line's length.
 | Object tables | `src/simulation/object_tables.py` + `unit_schema.OBJECT_TABLES` + generated `cpp/src/object_tables_layout.h` + `cpp/src/cuda_object_table.{h,cu}` | What flies and what is placed (charges first; grenades, rounds, blast sources, entity classes next) as device rows: a new table is a schema there, never a second table mechanism |
 | Grenade and charge slots | `unit_schema.GRENADE_TABLE` + `cpp/src/cuda_unit_objects.cu` + `unit_kernels.table_appends` / `grenades` / `charges_tick` / `prune_grenades` | THE device form of the grenades in flight and the planted charges: slot 1b's throws and plants become table rows, slot 2 and `charges.tick` record every detonation as a PAYLOAD effect; never a second table or detonation path |
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
+| Spray slot | `cpp/src/cuda_unit_sprays.cu` + `cpp/src/cuda_unit_spray.cuh` + `unit_kernels.sprays` | THE device form of slot 4b: the cone over the physical device sight into the cell buffer, one SPRAY_CELLS effect per sprayer; never a second cone walk |
+| Device edit door | `src/simulation/edit_door.py` + `cpp/src/cuda_edit_door.{h,cuh,cu}` | THE way a device producer hands a FieldEdit (the queue's EDIT / TILE rows through device forms of the door and the region walk); never a producer's own row writer |
+| Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
 
 ### Determinism gates
 
