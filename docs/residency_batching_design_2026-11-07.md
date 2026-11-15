@@ -616,7 +616,7 @@ starts.
 | P6.1 | the store (decisions 1 to 3), the bridge, the generated layout header, the device buffer and its upload / download on the tick stream, the shadow-lockstep harness, the missing profiler labels, and ONE pilot kernel end to end: slot 1c, exposure decay (a per-unit law with one table scalar, no field read, no event) with its Class-T twin row | IDENTITY on the pinned matches at N = 1 and in a batch; SHADOW LOCKSTEP of 1c with its coverage counter > 0; each validated by breaking it |
 | P6.2 | the per-unit kernels that emit no synced event: 1a (impulse integration, the turn; the hooks' device accessors), 3 (movement: the footprint samples, the speed table, the walk ban), 1b' and 10' (orders: apply, expire), the tick-end conversion; the device table upload (§4.11) for the tables they read | SHADOW LOCKSTEP per slot, non-neutral hook scenes included |
 | P6.3 | the device `apply_packet` (mitigation, the exposure scale and landing, the hit points, the kill) and the EVENT RING (§4.5); on them 2b (statuses), 9c (heat), 9c2 (wind), 9c3 (the gas rows and the poison law), with the tick's credit claims as a per-slot table | SHADOW LOCKSTEP per slot, events compared in emission order |
-| P6.4 | the per-env serial applier (block form, §4.3) and the topology seam as device functions; 9 (burn-through), the tick-end clears, the `done` kernel, the entity export for the digest; 1b's per-unit verbs (reload, shove, the latches) -- its appends to the projectile and charge tables go with P7b | SHADOW LOCKSTEP; the topology scenes |
+| P6.4 | the per-env serial applier (block form, §4.3) and the topology seam as device functions; 9 (burn-through), the tick-end clears, the `done` kernel; 1b's per-unit verbs (reload, shove, the latches) -- its appends to the projectile and charge tables go with P7b. (The entity export for the digest moved to P6b, where the entity SoA it exports first exists: the lead's ruling, 2026-11-15.) Cut in two patches run side by side: P6.4a (1b's verbs, the `done` kernel) and P6.4b (the field side) | SHADOW LOCKSTEP; the topology scenes |
 
 **What each later patch must know** (the inventory's Part D and E):
 
@@ -930,6 +930,103 @@ and slots 2b, 9c, 9c3 landed as cut; no decision moved. One line each:
   since no shipped trigger applies one), each with hooks and an unhooked-twin
   check; batches N = 2 and 8 with padding; the overflow; chained 2b alone and
   9c + 9c2 + 9c3. Every gate was broken once (the patch's report).
+
+**As built (P6.4b, 2026-11-15).** P6.4 was cut in two patches run side by
+side: P6.4a (slot 1b's verbs, the `done` kernel) and P6.4b, the FIELD side:
+the per-env serial applier, the topology seam as device functions, slot 9
+and the tick-end clears. No decision moved. One line each:
+- THE APPLIER is `simulation/applier.py`, ONE table with generated offsets
+  (`cpp/src/applier_layout.h`, the fourth header `gen_unit_layout.py` writes,
+  fingerprint-checked by `DeviceApplier`): an effect RECORD `(kind, y, x,
+  arg)`, its kinds (DESTROY_WALL today), the per-env BOOK channels (each naming
+  the host quantity it twins: `n_destruction_seed_sum`, the gas energy seam's
+  `retire` / `mint` / `destroy_seed`, the solid books' `destroy_wall`,
+  `_tile_serial` as `tiles_changed`; plus `applied`, `dropped`, `faults`), the
+  27 PLANES the topology seam touches (the launch's pointer table, each in the
+  GameMap field's own dtype) and the 4 CLEAR_PLANES. `cpp/src/cuda_applier.cu`:
+  `FieldApplier` (`bp.FieldApplierBuffer`: the list `(N, cap, F)` with each
+  env's REQUESTED count, the books `(N, B)`, pinned staging), `k_applier` on a
+  `(1, N)` grid of 32-thread blocks with thread 0 the walk. Past `cap` the
+  first `cap` effects are applied and the rest counted; the Python face
+  (`unit_kernels.apply_effects` / `burn_through`) refuses the run by name
+  (`EffectOverflow`, `ApplierFault`). THE FAN-OUT of an effect's tile set
+  over the block's threads is NOT built: it arrives with its first user (P7c's
+  deposits), the block shape kept so it lands without moving the kernel. No
+  device-side append either (the producers are P6b / P7): the slot-9 list is
+  staged from the host input.
+- THE TOPOLOGY SEAM is `cpp/src/cuda_topology.cuh` (namespace `topo`):
+  `env_view` (one env's typed pointers, rebased as `bptr` does),
+  `accountable`, `refresh_cell`, `solid_books_cell` (the engine's
+  `conduction::cell_capacity_q`, already `FP_HD`), `patch_face_shift`,
+  `on_tile_changed`, `destroy_wall`. Every operand is read before the first
+  write, so an effect is all or nothing; a fault (a donor's negative gas, the
+  composition's product past 64 bits, a solid book past int64 -- Python's ints
+  would hold them) writes nothing. The gas energy seam's structural rows went
+  into `gas_energy.h` (`mirror_sat_q`, `retire`, `born_at_ambient`) and the
+  device edit queue's mirror refresh now calls `mirror_sat_q` (its private
+  copy deleted) -- so the patch touched a Class-P file (cuda_green at HEAD).
+- THE TABLE ROWS: 25 (T 515): `topo_mat_air` / `_hull`, the boundary, the
+  ambient seed's three values, `T_AMB`, and per material every value
+  `on_tile_changed` patches (the float planes' values as float32 bit patterns,
+  the face table M x M, `no_face`, the solid predicate on the float32
+  permeability, `blocks_sight`), read from the env's own `GameMap.materials`.
+- NOT RESIDENT TODAY (P8b must hold them): `sight_screen`, `heat_atten`,
+  `light_atten` (the seam writes them) and `rad_net`, `rad_amb`, `rad_flux`
+  (the clears zero them; nothing has written them since T6).
+- DROPPED ON THE DEVICE (host-only, no device form): `render_dirty`,
+  `_sky_mask_dirty`, `_tile_serial` itself (booked as `tiles_changed`), the
+  solid books' sink into the solver's `e_solid_seam_sum` (the chained harness
+  books through `_solid_energy_book`), the render-only Wall / Door
+  DestroyedEvent, the lazily filled `_gas_t_amb_raw_cache`; the clears' credit
+  claims (their device form is the claims table, P7) and the shot tracers'
+  expiry (render).
+- THE HARNESS: a slot declares FIELD OUTPUTS (`outputs=("field:..",
+  "book:..")`, `host_only=((attr, reason), ...)`); the output fields are
+  captured at the entry like inputs and written by the kernel in place; after
+  the host slot every declared plane is compared bit for bit (floats by their
+  bits) naming (tick, env, field, tile), every book against the host's delta
+  over the slot, the alone run against the batch's env. THE WRITE-SET GATE
+  diffs every GameMap array, scalar, dict key, set, list and object probe
+  (`damage_credit`) across the host slot and fails on a change that is neither
+  an output nor host-only; arrays that are the same object (`obstacles` IS
+  `solid` until the first stamp) count as one. An input read from the slot
+  callable's ARGUMENTS is an `ARG_INPUTS` row (`burn_walls`: slot 7's list, in
+  its order). `ChainedSlots` writes the outputs back and hands `books` /
+  `inputs` to the host side.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `destroy_wall` never
+  takes `on_tile_changed`'s membership RETIRE (air is never less accountable
+  than what it replaced), so a TEST-ONLY probe (`cuda_topology_probe.cu`:
+  `material = m; on_tile_changed`) drives both directions; the donor
+  predicate's `not is_vacuum` can never bite (a non-solid vacuum or ambient
+  neighbour makes the tile a breach first), so only `not solid` shows, and
+  only on a solid tile holding gas (a seam fixture); the explicit `T = 0` is
+  load-bearing only on a breach of a hot GAS tile (elsewhere the membership
+  diff or the seed's refresh already wrote 0); no shipped door is flammable,
+  so the fire scene appends its doors to slot 7's list.
+- `seal_tiles` / `unseal_tiles` are NOT built: left to P6b with their only
+  callers, the doors (their refusals -- SealBlocked, the int32 pre-check --
+  need a device refusal path, and their write set reaches non-topology planes:
+  `wave_p`, the wind and flow planes, the float `ripple` pair, the trace
+  saturation's books).
+- THE ENTITY EXPORT for the digest moved to P6b (the lead's ruling): its
+  entity SoA first exists there.
+- TWO CLASS-T TWINS, `burn_through` (slot 9) and `tick_end_clears`. The corpus
+  burns no wall (ship_demo: 0 burn-throughs in 500 ticks), so
+  `burn_through`'s traced files are `simulation.py` alone: a change to
+  `gamemap.py`'s seam does NOT put it in debt (the P6.2 conversion twin's
+  thin-trace gap again); the topology gate is the guard until a corpus burns.
+- THE GATES (`tests/cuda_unit_topology_check.py`, wrapper
+  `tests/test_cuda_unit_topology.py`; `tests/test_applier_layout.py` CPU):
+  TABLES; SEAM (three fixture maps -- space 1/3 m, planetside 1/2 m, space
+  1 m -- each list forward and reversed, the two orders required to differ;
+  every branch counted non-zero; the energy, mass and solid books closing on
+  the DEVICE's planes as on the host's; the probe); SCENES (two fire scenes,
+  ship_demo's bots match: 0 burn-throughs in 500 ticks, the clears acting on
+  one tick); BATCH N = 2 / 8 (layout, tile size, boundary, seed, schedule
+  differ; an env with no event beside one with events on most ticks);
+  PADDING (empty envs, the clears' mask); OVERFLOW; CHAINED 9 (space,
+  planetside) and the clears, digests + every topology plane + the books
+  equal every tick. Every gate broken once (the patch's report).
 
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
