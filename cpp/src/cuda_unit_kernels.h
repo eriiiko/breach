@@ -183,4 +183,44 @@ void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
                        UnitEventRing& ring, const int64_t* packets, int64_t* out,
                        const UnitDamageCounts& counts);
 
+// ---- #29 P6.4a: slot 1b's hand verbs, the done kernel -----------------------------
+//   cuda_unit_verbs.cu        slot 1b   Simulation._consume_direct_intents
+//   cuda_unit_done.cu         (after the tick) MatchRules.is_terminal / result
+//   cuda_unit_verbs_probe.cu  TEST-ONLY: the gates on synthetic rows
+//
+// Slot 1b (the continuous path's _consume_direct_intents): every valid row --
+// a dead or turned row drops its trigger, wind-up and plant; a living marine
+// consumes its own latches (throw, plant, use, reload, shove) and advances its
+// wind-up and plant. What is not a write to the unit's own row is a REQUEST
+// record in `requests` (a UnitRecordList at unit_requests_layout.h's width and
+// row cap, begun by the caller; a thrown grenade, a laid charge -- accepted or
+// refused at the charge table's capacity by a per-env pass in list order -- a
+// flipped door), or a shove's impulse summed onto the target's row. `ticks`
+// (N,) each env's sim.tick at the slot; `spans` (N, n_spans, 3) the live doors'
+// span tiles (ordinal, ty, tx), ordinal -1 a pad; `live` (N,) each env's live
+// planted charges at the slot -- staged through the store's input slots 0, 1,
+// 2. out.refused = plants refused at the capacity; out.dropped = requests the
+// list could not hold.
+void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
+                const int64_t* ticks, const int64_t* spans, int n_spans, const int64_t* live,
+                const UnitDamageCounts& out);
+
+// The done kernel: per env (terminal, outcome, winner team, living marine
+// teams) into `out` (N, UNIT_DONE_W) int64 host; `ticks` (N,) each env's
+// sim.tick after the step (staged through input slot 0).
+constexpr int UNIT_DONE_W = 4;
+constexpr int64_t UNIT_DONE_NONE = 0, UNIT_DONE_WIN = 1, UNIT_DONE_DRAW = 2;
+void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                     const int64_t* ticks, int64_t* out);
+
+// TEST-ONLY (cuda_unit_verbs_probe.cu): the gates on the store's rows -> out
+// (N, U, UNIT_VERBS_PROBE_K) int64 host: [0] acts, [1] can_throw(kind),
+// [2] can_plant(tick), [3] can_reload(tick), [4] can_shove(tick), [5..8]
+// mag_status (tracked, rounds, spares -1 = untracked, reloading), [9]
+// magazines_carried, [10] handling_ticks(base), [11] shove_cooled(tick),
+// [12] can_act, [15] bad; a padding row's out row zero.
+constexpr int UNIT_VERBS_PROBE_K = 16;
+void unit_verbs_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, int64_t kind,
+                      int64_t tick, int64_t base, int64_t* out);
+
 }  // namespace breach_cuda

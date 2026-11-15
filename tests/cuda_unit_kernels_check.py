@@ -463,6 +463,8 @@ def part_tables():
         })
         from cuda_unit_damage_check import table_reference   # #29 P6.3's rows
         want.update(table_reference(sim))
+        from cuda_unit_verbs_check import table_reference as verbs_reference
+        want.update(verbs_reference(sim))                     # #29 P6.4a's rows
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")

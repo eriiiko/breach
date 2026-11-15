@@ -14,7 +14,10 @@ precedent), one command:
 - ``cpp/src/unit_events_layout.h`` -- the EVENT RING's record layout and the
   vocabulary its kernels name (#29 P6.3, §4.5: the event kinds, the causes,
   the damage types, the heat credit channel), from
-  ``simulation.unit_events.header_text``.
+  ``simulation.unit_events.header_text``;
+- ``cpp/src/unit_requests_layout.h`` -- the REQUEST LIST's record layout (#29
+  P6.4a: what a kernel does that is not a row write -- a grenade thrown, a
+  charge planted, a door flipped), from ``simulation.unit_requests.header_text``.
 
 ``tests/test_unit_store.py`` / ``tests/test_unit_tables.py`` /
 ``tests/test_unit_events.py`` refuse a stale copy. A schema column or a
@@ -44,9 +47,9 @@ def main(argv=None) -> int:
     ap.add_argument("--write", action="store_true",
                     help="rewrite the headers (default: check only)")
     args = ap.parse_args(argv)
-    from simulation import unit_events, unit_store, unit_tables
+    from simulation import unit_events, unit_requests, unit_store, unit_tables
     stale = 0
-    for mod in (unit_store, unit_tables, unit_events):
+    for mod in (unit_store, unit_tables, unit_events, unit_requests):
         path = ROOT / mod.HEADER_REL
         text = mod.header_text()
         lay = mod.layout()

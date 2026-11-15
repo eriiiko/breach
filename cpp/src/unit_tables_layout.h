@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "755d1d87c6473a1d7781ce64b025e429d23c435ea8814d1fc7d4a305a43217e6";
-constexpr int UNIT_TABLES_W = 166;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "31f7aa6542a91017b8a2aa8321570c6010fab7df513382daa7c9c8199c5f9e9b";
+constexpr int UNIT_TABLES_W = 215;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -146,6 +146,32 @@ constexpr int UNIT_TAB_POISON_FLUSH_Q = 164;
 constexpr int UNIT_TAB_POISON_FLUSH_Q_W = 1;
 constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR = 165;
 constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR_W = 1;
+constexpr int UNIT_TAB_WEAPON_MAG_SIZE = 166;
+constexpr int UNIT_TAB_WEAPON_MAG_SIZE_W = 19;
+constexpr int UNIT_TAB_WEAPON_RELOAD_TICKS = 185;
+constexpr int UNIT_TAB_WEAPON_RELOAD_TICKS_W = 19;
+constexpr int UNIT_TAB_HAND_WINDUP_CLASS_TICKS = 204;
+constexpr int UNIT_TAB_HAND_WINDUP_CLASS_TICKS_W = 1;
+constexpr int UNIT_TAB_HAND_MAX_REACH_Q = 205;
+constexpr int UNIT_TAB_HAND_MAX_REACH_Q_W = 1;
+constexpr int UNIT_TAB_HAND_FUSE_LO_TICKS = 206;
+constexpr int UNIT_TAB_HAND_FUSE_LO_TICKS_W = 1;
+constexpr int UNIT_TAB_HAND_FUSE_HI_TICKS = 207;
+constexpr int UNIT_TAB_HAND_FUSE_HI_TICKS_W = 1;
+constexpr int UNIT_TAB_PLANT_CLASS_TICKS = 208;
+constexpr int UNIT_TAB_PLANT_CLASS_TICKS_W = 1;
+constexpr int UNIT_TAB_CHARGE_CAPACITY = 209;
+constexpr int UNIT_TAB_CHARGE_CAPACITY_W = 1;
+constexpr int UNIT_TAB_SHOVE_Q = 210;
+constexpr int UNIT_TAB_SHOVE_Q_W = 1;
+constexpr int UNIT_TAB_SHOVE_CONE_Q = 211;
+constexpr int UNIT_TAB_SHOVE_CONE_Q_W = 1;
+constexpr int UNIT_TAB_SHOVE_COOLDOWN_TICKS = 212;
+constexpr int UNIT_TAB_SHOVE_COOLDOWN_TICKS_W = 1;
+constexpr int UNIT_TAB_IMPULSE_R_BODY_Q = 213;
+constexpr int UNIT_TAB_IMPULSE_R_BODY_Q_W = 1;
+constexpr int UNIT_TAB_MATCH_LIMIT_TICKS = 214;
+constexpr int UNIT_TAB_MATCH_LIMIT_TICKS_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;
