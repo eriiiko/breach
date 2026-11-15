@@ -1,12 +1,26 @@
 # Swarm units P3 — implementation doc: the larva behaviour kernel + CPU twin
 
+> **v4, 2026-11-15: refreshed against main after P6** (main `a20711f2`
+> merged at `5f0f189b`) and the residency arc's handover (issue #63,
+> 2026-11-15). The hold is lifted; the build starts with §13 step 0's probes.
+> See "v4" below, which wins over every later passage.
+>
 > **v3, 2026-11-14: revised for Erik's P6 unit-design ruling**
 > (`docs/unit_design_2026-11-14.md` §6: two stores, ONE batch axis, ONE
 > source of draws, the unit/swarm boundary) and for the merge of main
 > (`12a38642`) into this branch. Build is PAUSED until the last P6 patch
 > merges on main; then §13 step 0's refresh pass runs. See "v3" below.
 >
-> Changelog: **v3** (2026-11-14): the P6 ruling. The batch axis is
+> Changelog: **v4** (2026-11-15): P6 complete on main. Every kernel value
+> is a table row with a generated, fingerprinted header (the device-tables
+> discipline); the draws reach the runner by a binding at reset and the
+> death events enter at the head of `_step_post_physics` (P6 split the tick);
+> the write-set gate is borrowed from the shadow lockstep harness, the
+> harness itself does not fit; the twin row's `device` list is corrected; the
+> handover's gate lessons are requirements (fields differ per env, live
+> padding, every gate broken once, branches counted, cuda_green); v3's effect
+> records are withdrawn (fields only); §4.7 and §9 are rewritten at
+> `5f0f189b`; an Opus builder is recommended (v4.9). **v3** (2026-11-14): the P6 ruling. The batch axis is
 > ResidentBatch's (store per map since `6e6906ef`; kernels `(N,
 > max_units)`, `blockIdx.y` = env). The draws are `rng_salts.Salt` +
 > `MatchDraws` (StreamSalt / match_key / total_tick withdrawn). The boundary
@@ -28,16 +42,351 @@
 > (`docs/swarm_units_patch_plan_2026-09-10.md`, re-planned 2026-09-24). Takes
 > the P2 hand-off (`docs/swarm_P2_impl.md` §9) as its contract.
 >
-> **Model tiers:** this doc = Opus; the build = Sonnet, oracle-gated. The feel
-> test is P4, not P3.
+> **Model tiers:** this doc = Opus; the build = Sonnet, oracle-gated (ruling
+> 10). *(v4.9 recommends Opus for the build; Erik's call.)* The feel test is
+> P4, not P3.
 >
 > **P3 in one sentence:** one FP_HD per-slot larva law (head-sweep thermotaxis
 > on the own-tile temperature, threshold heat kill, chill-coma hysteresis,
 > wall-probe movement, Philox draws) run by three loops (CPU twin, per-call
 > CUDA, resident CUDA) that a new `PhysicsEngine::step_swarm` orchestrates as
 > the last stage of slot 7 on every backend, fed by Kelvin-authored species
-> rows and host-derived launch words, emitting (species, env, slot)-ordered
+> rows and host-derived words (v4: all of them table rows, v4.3), emitting (species, env, slot)-ordered
 > death events — and a 3-part CUDA gate that proves the loops byte-identical.
+
+## v4: P6 complete on main, the residency handover, i.e. what changed
+
+Main `a20711f2` (the residency arc's P6 through P6.4b at `7eae5ecc`, #206's
+rules homes, #29's design 4.4c documents) was merged into this branch at
+`5f0f189b` (`docs/swarm_merge_main_2026-11-15.md`). The residency arc's
+handover (issue #63, comment of 2026-11-15, "Handover from the residency
+arc") lifts the hold on the kernel. **Where a later passage, v3 included,
+disagrees with this section, this section wins.** Re-derived at `5f0f189b`:
+§4.7 and §9 are rewritten, §10's anchors are corrected in place, and §8's,
+§11's, §13's and §16's stale statements are marked *[v4]* and point here.
+The rulings (Erik's rulings table, v3 items 1-3 and 5) stand.
+
+### v4.1 Scope (unchanged in substance)
+
+P3 is temperature only: the raw own-tile `temperature` read (ruling 11), the
+head sweep (ruling 2), the tumble and the wall turn, heat death above 50 °C
+(323.15 K, ruling 4), chill coma below 10 °C (283.15 K) with waking above
+12 °C (285.15 K, ruling 5), and the death event (ruling 8). The Kelvin rows
+store 665190, 1975910, −645530 and −514458 at main's `k_temp_to_kelvin =
+1.0` (`config.toml:915`), re-computed at `5f0f189b`.
+
+**Out of P3, as the next patches (in this order):**
+
+1. **The bite** (handover §3; `docs/unit_design_2026-11-14.md` §6 and
+   §7.4). The swarm kernel adds each bite's dose to a per-tile BITE-DOSE
+   plane (an integer sum per tile, so thread order does not matter; no
+   record, no queue). ONE new coupling row in `exchange.py` at slot 9c3,
+   beside the gas rows, puts the sum under a living non-zombie unit's
+   footprint into `poison.dose` in the same tick. Its device row lands in
+   `cpp/src/cuda_unit_exchange.cu` in the same patch (the plane a declared
+   slot input of `tests/cuda_unit_lockstep.py`), or the Class-T twin is left
+   in debt, and the patch says which. Credit: the environment (`attacker_id`
+   −1) with its own `events.Cause` row, added in the same patch. Erik's first
+   numbers (2026-11-14): one bite = 1 unit of poison = 10 HP in total, onset
+   4 s, decay 20 s, no ceiling; rate and dose are larva table rows. Zombies
+   take no poison.
+2. **Corpse infestation** (handover §4): one level per corpse, raised by the
+   swarm's per-tile COUNT plane under the corpse's footprint, decaying, and
+   converting at a threshold through the existing conversion door; any
+   corpse can rise, any number of times; a corpse-integrity pool can destroy
+   it. The columns arrive with the law as `unit_schema.py` rows, and the
+   device store is regenerated (`tools/gen_unit_layout.py --write`).
+
+**Correction of v3 item 4.** v3 described the bite and the corpse as effect
+RECORDS in a per-game queue, applied unit-side through
+`status.apply_status(POISONED)` and the conversion. The unit design's
+version 2 dropped that channel (§7.4, critique 1.7 and 2.5): **the two stores
+meet through per-tile fields and nothing else**, and the bite enters through
+`poison.dose`, not a status. v3 item 4's record sentences, §0's last-but-two
+"Out" bullet and §7's "Boundary" bullet are superseded by this paragraph. The
+P3 audit itself stands: P3 reads `temperature` and `solid` only, writes only
+its species' columns and its own records, and its death event stays
+swarm-side. **ACCEPTED GAP (v3, kept):** larvae do not see units in P3. A
+later law reads the units' slot-6 occupancy stamp, never a unit column.
+
+**No order-dependent write in P3 (handover §5).** Every slot writes only its
+own nine columns and its own four record words; `temperature`, `solid`, the
+table rows and the env words are read-only; the death rows are compacted in
+(species, env, slot) order by the host from per-slot records, not by any
+device walk. So P3 adds no effect kind to the per-env serial applier
+(`src/simulation/applier.py`). The first swarm law that needs order (larvae
+eating a corpse or a wall) is an applier effect kind, never a walker or a
+queue of its own, and a change of a tile's material goes through the device
+topology seam (`cpp/src/cuda_topology.cuh`).
+
+### v4.2 What main built, and what P3 takes from it
+
+| main system (handover §2) | P3 |
+|---|---|
+| Unit store, unit library, event ring, request list, applier, topology seam | Not used: two stores (Erik, 2026-11-14). The swarm death event is a host `tick_events` entry built from compacted records (§7), not a record of the unit event ring, whose record is the unit event's. |
+| Device tables (`src/simulation/unit_tables.py`) | Its DISCIPLINE is adopted: every value the larva kernel reads is a table row, v4.3. Its module and its generator are not shared. |
+| Shadow lockstep (`tests/cuda_unit_lockstep.py`) | Its WRITE-SET gate is reused; the harness itself does not fit, v4.5. |
+| Twin ledger, Class P | `[twins.swarm_larva]`, corrected in v4.6. |
+| Rules homes (#206) | The swarm rows are CLAUDE.md index lines since the merge, and their constraints are `.claude/rules/swarm.md`. P3's new systems follow that form (v4.8). |
+
+### v4.3 Every value the kernel reads is a table row
+
+This replaces v2's eight-word `SwarmLarvaParams` argument, the three
+`LAUNCH_FIXED_WORDS + i` derived words, the two salt launch arguments, the
+`LARVA_PARAM_NAMES` / `LARVA_DERIVED_NAMES` arrays and the name-identity half
+of T-P3-18 (§3.1, §3.4, §3.6, §5.4, §10).
+
+- **`src/simulation/swarm_tables.py`** (new; imports `swarm_fixed`,
+  `rng_salts` and the species-table types only). Per species, `ROWS[sp]` is a
+  tuple of `TableRow(name, read, lo, hi)`. `read(src)` takes its value from
+  the SAME validated object the CPU reference reads, never re-derived from
+  config: `src.row` = the species row in `gmap.swarm_species`, `src.ctx` =
+  `swarm.launch_context(gmap, sim_time)` (the tick actually stepped, the
+  map's tile size), and `rng_salts.Salt`. `lo`..`hi` is the range the
+  kernel's integer arithmetic was proved for; a value outside it is refused
+  by name at packing (`ValueError` naming species, row and value).
+- **The larva rows, in this order:** `T_prefer_q`, `T_lethal_hot_q`,
+  `T_ctmin_q`, `T_coma_exit_q` (each `[INT32_MIN, INT32_MAX]`: the comfort
+  is formed in int64 by `abs64`); `turn_bias_q` `[0, FP_ONE]`; `turn_min_q`,
+  `turn_max_q` `[0, PI_Q16]`; `sweep_angle_q` `[1, PI_Q16 / 2]` (the trig
+  kit's band, §3.3); `step_q` `[1, FP_ONE − 1]` (§3.4's formula, the
+  no-tunnelling proof); `p_base_q`, `p_alarm_q` `[0, FP_ONE]` (§3.4);
+  `salt_tumble`, `salt_wall_turn` `[0, 2³² − 1]` (`int(Salt.SWARM_TUMBLE)`,
+  `int(Salt.SWARM_WALL_TURN)`, §6). The cross-field invariants stay
+  `SPECIES_RULES` R1-R4 (§5.3), run on the same ints before packing.
+- **One env's rows are one int64 vector of width `T_sp`; a batch is `(N,
+  T_sp)`**, one row per env, because `step_q` depends on the map's tile size.
+  It is packed per launch (`dt` is the tick being stepped) by
+  `swarm_tables.values_batch(gmaps, sim_time)` and staged with the env words
+  on the tick stream.
+- **C++ reads offsets ONLY from the generated, checked-in
+  `cpp/src/swarm_tables_layout.h`** (`SWARM_LARVA_T_PREFER_Q`, …,
+  `SWARM_LARVA_WIDTH`, and `SWARM_TABLES_FINGERPRINT`, a hash of the names,
+  order and ranges), written by **`tools/gen_swarm_layout.py --write`**. The
+  swarm has its own generator: `tools/gen_unit_layout.py` is the unit
+  store's and the residency arc keeps editing it (handover §7). The module
+  exports the compiled fingerprint; `swarm.engine_args` refuses a module
+  whose fingerprint is not Python's (by name, at the first gather);
+  `tests/test_swarm_tables.py` refuses a stale header. A new value a swarm
+  kernel reads is: one row, `--write`, commit, rebuild both modules.
+- **In the law:** `larva_params_from_table(const int64_t* tab)` (FP_HD,
+  `swarm_larva.h`) narrows each row to int32 through the generated offsets;
+  the kernel signature carries ONE pointer to the `(N, T_sp)` rows and the
+  `(N, ENV_WORDS)` env words. **No law constant is a kernel argument.**
+  `SWEEP_DIST_Q16` stays a compile-time constant of the law (ruling 2: "one
+  tile ahead" is the law, not a tunable). The env words (`sim.draws.tick`
+  masked, `sim.draws.key`) and `high_water` are per-env STATE, not table
+  values: they stay the env-word block and the hw column, as the edit queue
+  carries its env scalars.
+- **Tests:** T-P3-18 becomes "the compiled `SWARM_TABLES_FINGERPRINT` equals
+  `swarm_tables.fingerprint()`, `bp.SWARM_SPECIES_LAWS` names equal
+  `SWARM_SPECIES` in order, and each entry's `field` / `field_reduction`
+  equals the larva's"; T-P3-36 gains "a row value outside its range is
+  refused by name and nothing is launched"; T-P3-21's spy reads the salt
+  rows. `tests/test_swarm_tables.py` holds: the header is current; every row
+  reads from the species table, the launch context or `Salt` (a changed
+  config value moves the row only after the table re-binds through the
+  reload seam); every row's range is inside int32 (or the uint32 salt
+  range); and the R1-R4 boundary cases are inside the rows' ranges.
+
+### v4.4 Plumbing on main's tick (supersedes v3 §4.7's Python lines)
+
+- **The draws reach the runner by a binding, not an argument.** P6 moved the
+  physics call into `Simulation._step_physics` (`simulation.py:2220-2234`),
+  and `ResidentBatch.step` (`resident_batch.py:117-138`) bypasses it: it
+  calls `_step_pre_physics`, `run_resident_batch` and `_step_post_physics`.
+  A `step(..., draws=)` argument would need a plumbing line in each path.
+  Instead, `_reset_internal` binds the sim's own `MatchDraws` once, on the
+  line after `bind_physics_engine` (`simulation.py:543`):
+  `self.physics_runner.bind_draws(self.draws)`. The runner reads
+  `draws.tick` and `draws.key` when it gathers, so TwoPhase's rewind and
+  `tick_base` (`simulation.py:2793`) are seen as they are. A reset builds a
+  fresh runner and fresh draws together. A runner with a swarm present and
+  no bound draws raises `ValueError` at the gather.
+- **The death events enter the tick** as the FIRST statement of
+  `Simulation._step_post_physics` (`simulation.py:2236`):
+  `self.tick_events.extend(swarm.death_events(self.physics_runner.swarm_death_rows))`
+  (guarded by `self.physics_runner is not None`). It is the one place both
+  paths pass after slot 7 and before slot 9's `WallDestroyedEvent`s.
+- **Host path:** `PhysicsRunner._step_host` (`physics_runner.py:1020`), ONE
+  statement after `self.engine.step_tail(...)` (`:1142`) and before `return
+  destroyed` (`:1256`): `self.swarm_death_rows =
+  self.engine.step_swarm(**swarm.engine_args([gmap], [self._draws],
+  sim_time, resident=False))`.
+- **Resident path:** `run_resident_batch` (`physics_runner.py:2013`) passes
+  `swarm=swarm.engine_args(gmaps, [r._draws for r in runners], sim_time,
+  resident=True)` into `e0.step_tail_resident(...)` (`:2146`), whose return
+  gains the per-env death rows; each runner's `swarm_death_rows` is set from
+  them. The swarm names join `_resident_entry_names` (`:1638`) when
+  `swarm_host_dirty` is set and `_resident_exit_names` (`:1653`) when a
+  swarm is present; `run_resident_batch` clears the flags it consumed.
+- **Device:** `resident_swarm` runs inside `resident_tail`
+  (`cuda_resident_tick.cu:885`) after the temperature stage (`:1039`) and
+  before `tick_sync_point("books")` (`:1066`): no third host sync. Its
+  per-env counters are a new `ArenaLayout` region (`swm`, `N ·
+  SWARM_CNT_SLOTS`, appended after `edq`, `:206-228`); its records'
+  `[0, hw[e])` extents ride the tail's one D2H, as the destroyed-wall heads
+  do. `RESIDENT_STAGE_COUNTERS` (`cuda_resident_tick.h:180`) grows from 16 to
+  18: [16] swarm stage calls, [17] calls with a present env.
+  `ResidentTickArgs` (`physics_engine.h:65`) gains the swarm block;
+  `PhysicsEngine::step_tail_resident` (`physics_engine.cpp:920`) passes it
+  through.
+
+### v4.5 The shadow lockstep harness and P3
+
+`tests/cuda_unit_lockstep.py` does not fit P3's slot, for three reasons. (a)
+It compares UNIT ROWS (`unit_store.pack` of `sim.units` on the slot's entry
+and exit, a `DeviceStore`); swarm state is not unit rows. (b) Its device never
+drives the game (a Class-T shadow); the larva kernel is Class P and drives the
+played resident tick, so its lockstep is the played paths against each other
+(PART 2b: CPU world, per-call world, resident world) and the batch against
+each env alone (PART 2c). (c) The swarm reference is the C++ CPU loop inside
+`step_swarm`, not a Python host callable the harness can wrap.
+
+What P3 takes from it: **the write-set gate.** New test T-P3-37 (CPU build)
+wraps the host-path `step_swarm` in `cuda_unit_lockstep.gmap_state` /
+`changed_attrs` (imported, never copied; the module imports on the CPU build)
+on `swarm_thermal_scenario_sim` for 60 ticks: every changed GameMap attribute
+is a swarm store column of a present species or `swarm_host_dirty:<sp>`.
+Breaks if the kernel writes any field, a counter it must not (`high_water`,
+`swarm_next_unit_id`: death leaves both), or another species' store.
+
+### v4.6 The twin manifest row (corrects v3 item 5)
+
+```toml
+[twins.swarm_larva]
+class = "P"
+kind = "resident launch core"
+device = ["cpp/src/swarm.h", "cpp/src/swarm_larva.h", "cpp/src/swarm_launch.cuh",
+          "cpp/src/swarm.cu", "cpp/src/swarm_larva.cu", "cpp/src/swarm_tables_layout.h",
+          "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu",
+          "cpp/src/cuda_resident_tick.h", "cpp/src/philox32.h"]
+slots = ["7 step_swarm"]
+```
+
+- v3's list omitted `swarm.h` and `swarm_larva.h`. They hold the FP_HD law the
+  device compiles, and `[class_p] build` covers only `cpp/src/*.cu`, `*.cuh`
+  and `cuda_*.h`: unlisted, a change to them could reach the played device
+  path without a stamp. The generated layout header is listed for the same
+  reason.
+- The label: `tools/tick_stage_profile.py` gains `("bp",
+  "PhysicsEngine.step_swarm", "  7 step_swarm", True)` beside the
+  `step_tail` row (`:123`); `[cpp_stages]` gains `"7 step_swarm" =
+  ["cpp/src/swarm.cpp", "cpp/src/swarm_larva.cpp",
+  "cpp/src/physics_engine.cpp"]`.
+- `files` is generated (`tools/twin_manifest_gen.py`). The corpus (ship_demo)
+  carries no larvae, so the trace sees only the dormant gather (`swarm.py`,
+  `swarm_tables.py`), never the law: the row's level rests on its `device`
+  list and its `[cpp_stages]` row, which are hand-kept, so the patch states
+  both complete. `swarm.py` leaves `[not_twinned]` only if the trace puts it
+  in the row's `files`; otherwise its reason line is updated.
+- Class P: `tools/cuda_green.py` green at HEAD before the merge, and
+  `tools/twin_debt.py --mark-level swarm_larva` in the last commit (plus any
+  twin the patch's edits of `cuda_resident_tick.*`, `physics_runner.py` or
+  `simulation.py` put in debt, after the same green run).
+
+### v4.7 Gate requirements from P6 (handover §6), added to §11
+
+Each is a requirement of the patch, checked by the reviewer.
+
+- **G-a: the batch scenes differ per env in the FIELDS.** PART 1 draws every
+  env's `T` and `solid` independently, and includes cases where env e's lethal
+  and cold tiles are env e+1's comfortable ones. PART 2c gives each env a
+  different temperature forcing (a hot seed under env 1's larvae, a cold seed
+  under env 2's, env 0 unforced) and a different wall state (a wall destroyed
+  mid-run in one env only), and asserts that the per-env outcomes differ
+  (death and coma counts per env), so a kernel reading env 0's planes for
+  every env fails.
+- **G-b: padding is filled with live-looking rows.** Wherever a gate owns
+  padding, it holds rows that would act if processed: `valid = 1`, an in-grid
+  position on a lethal or a cold tile, a canonical heading, `AI_RUN`, a
+  plausible `unit_id`. That is the slots in `[hw[e], max_e hw[e])` of a short
+  env, the slots `≥ hw[e]` up to capacity, the record slots `≥ hw[e]`, and a
+  forcer whose `valid = 0` slots below `hw[e]` keep every other column live.
+  Each must come out byte-unchanged and produce no death row. The sim-path
+  stores are zero beyond `hw` by the store's law, so the resident launch core
+  is also driven directly on gate-owned device arrays by a TEST-ONLY probe
+  (`cuda_swarm_resident_probe`, `cpp/src/swarm_probe.cu`, the
+  `cuda_unit_*_probe.cu` pattern): PART 1 runs every case through the CPU
+  entry, the per-call wrapper and the resident core, with live-looking
+  padding.
+- **G-c: every gate is broken once on purpose.** The patch's as-built (in
+  this doc) carries a mutation table: one row per gate (PART 1, 2, 2b, 2c,
+  T-P3-26's dormancy, T-P3-37's write set, the branch tally, the fingerprint
+  check), each mutant applied as a scratch edit, the red it produced, and the
+  edit reverted, never committed. At least: (1) the kernel reads env 0's
+  `T` / `solid` for every env; (2) the bound is `max_e hw[e]` or capacity
+  instead of `hw[e]`; (3) the `valid` check is dropped; (4) the kill reads
+  the pre-move tile; (5) the two salt rows are swapped; (6) the resident
+  records are copied after `tick_sync_point("books")`, or not at all; (7)
+  `host_dirty` is not set after a host-path launch; (8) two adjacent table
+  offsets are swapped in the header (refused by the fingerprint; with the
+  fingerprint regenerated, PART 1 red); (9) `wrap_heading_q16` uses C's
+  truncating `%`; (10) the env tick word is `sim.tick` instead of
+  `draws.tick` (T-P3-27). A mutant that stays green means the scene is
+  improved until it goes red, and the table says what changed.
+- **G-d: the law's branches are counted, and each must be taken.** P3 has no
+  Python law (D1: the C++ CPU entry is the reference), so the counted
+  branches are the C++ law's: an enum `LARVA_BR_*` in `swarm_larva.h`, its
+  names exported as `bp.SWARM_LARVA_BRANCHES`. The branches: slot invalid;
+  COMA held; COMA→RUN; RUN→COMA; alarm on; alarm off; preference PLUS,
+  MINUS, NONE by equal comfort, NONE by both blocked; sweep point blocked by
+  solid; sweep point off the grid; tumble taken; tumble not taken; turn side
+  by the coin (no preference); turn toward the preferred side; turn away
+  from it; probe blocked by solid; probe blocked by the grid edge; moved;
+  died; survived; `wrap_heading_q16`'s negative-remainder branch. The shared
+  law takes a `uint64_t* tally` that the CPU loop passes as a process-global
+  tally (`bp.swarm_branch_tally(reset=True)`); the per-call and resident
+  kernels pass `nullptr`, so device code never touches it and bit identity is
+  unaffected. Every scene that runs the CPU twin (PART 1's fuzz, PART 2's
+  lockstep, PART 2b's CPU world, the thermal scenario) declares the branches
+  it must take and asserts each count `> 0`; PART 1 and PART 2 together take
+  every branch. Breaks when a forcer or a scene stops reaching a branch.
+- **G-e: `tools/cuda_green.py` green at HEAD** (v4.6).
+
+### v4.8 Other statements main made stale
+
+- **F9 is fixed on main:** `set_combustion_backend` is in `_BACKEND_SETTERS`
+  (`tools/run_on_cuda.py:114`). §13 step 15 appends `"set_swarm_backend",`
+  after it.
+- **§11's three `test_exchange_reductions.py` rewrites are done on main**
+  (`test_coupling_table_registers_the_shipped_rows` and its two neighbours,
+  `:270-322`, look rows up by field through `_row`). They survive the larva
+  rows unchanged, since none reads `temperature`, and so does
+  `test_wave_push.py:582-584`. P3 changes only `CouplingRow`
+  (`exchange.py:736`): `response: Optional[Callable] = None`, plus `consumer`
+  and `reads` (§8). T-P3-22 adds the swarm-row property. Those three rows of
+  the pre-existing-change table are withdrawn.
+- **CLAUDE.md (#206):** §16 (b)'s drafts are not CLAUDE.md rows any more.
+  Each new system gets ONE index line in CLAUDE.md's Sim core table, and its
+  constraints go to a section of `.claude/rules/swarm.md` (the rule file the
+  merge created), with that file's `paths:` gaining `cpp/src/swarm*`,
+  `src/simulation/swarm_*.py` and `tools/gen_swarm_layout.py` in the same
+  patch, once they exist. The amendments §16 lists go to the rule files
+  (the Coupling table's to `.claude/rules/units.md`, the swarm rows' to
+  `swarm.md`, the float ratchet's `SIM_HEADERS` to a new "Ingress lint +
+  float ratchet" section of `.claude/rules/determinism-gates.md`, whose
+  index row exists), never to an index line's length.
+- **Not re-run at this refresh:** Appendix A1 (the vent) and A4 (the
+  first-look calibration). They stay §13 step 0, the builder's first step,
+  before the patch branch is cut; §12's assertion-2 rule (stop and take it
+  to Erik if it still fails) stands.
+
+### v4.9 Builder tier (a recommendation; ruling 10 is Erik's)
+
+Ruling 10 says the build is Sonnet, oracle-gated. **This refresh recommends
+Opus**, and the choice is Erik's. The CPU==CUDA gate at tol 0 proves the three loops
+agree, but the CPU reference is new C++ written by the same builder, with no
+older oracle; its correctness rests on the property and statistical tests,
+which need judgement to keep non-vacuous (G-c, G-d). The patch also composes
+across systems that the residency arc keeps editing: the resident tail and
+its books arena under the two-sync rule, the entry and exit lists, the
+bindings, the build files, a generated table header with a fingerprint, the
+species table, the coupling table, the tick events and the twin ledger. That
+is more cross-system composition than an oracle-gated port. Critics on Opus,
+one at a time, as before.
+
+---
 
 ## v3: the P6 ruling (2026-11-14) and the merged main, i.e. what changed
 
@@ -79,7 +428,8 @@ rewritten in place are §4 and §6. The others are corrected inline or marked
    comment (§8) only documents the order. The death event stays swarm-side.
    **ACCEPTED GAP (v3):** larvae do not see units (no occupancy read). When
    they should, they read the units' per-tile occupancy field, never a unit
-   column. **Out of scope** (designed with their behaviour patch, after P6;
+   column. *[v4: the effect-record channel below is withdrawn: fields only,
+   v4.1.]* **Out of scope** (designed with their behaviour patch, after P6;
    see the P6 doc §6.4): the bite record (applied unit-side through
    `status.apply_status(POISONED)`), the corpse-infestation record (applied
    unit-side through the zombie conversion), and a unit-hurts-larvae record.
@@ -108,7 +458,7 @@ exists (`rng_salts.Salt`). Ruling 7's k 3 → 1: done on main
 (`k_temp_to_kelvin = 1.0`, `config.toml:915`), so the Kelvin rows convert
 at k = 1.
 
-**Build status (v3):** fire-12 has merged (ruling 13's first condition).
+**Build status (v3):** *[v4: P6 has merged; the hold is lifted.]* fire-12 has merged (ruling 13's first condition).
 Erik's coordinator ruling of 2026-11-14 holds the build until the **last P6
 patch merges on main**, because P6 edits `simulation.py`, `bindings.cpp`,
 the build files and `resident_batch.py`, and only one implementation agent
@@ -141,11 +491,11 @@ refresh pass re-derives every anchor.
 
 | # | Plan/chapter/P2 said | P3 does | Why (evidence) |
 |---|---|---|---|
-| V1 | "`SwarmSolver` in PhysicsEngine" (plan row P3); "last stage of PhysicsEngine's orchestration" (ch. §5) | **v1's runner-only `_run_swarm` is WITHDRAWN (R1).** The orchestration is a `PhysicsEngine` METHOD, `step_swarm`, whose body is `swarm::step_all` in the shared swarm TU; there is no `SwarmSolver` member class (the step has no tunables to own; its one piece of state is a record scratch member). PhysicsRunner calls it in ONE line after `step_tail` on both tick paths. | CLAUDE.md "PhysicsRunner / PhysicsEngine" ("new C++ orchestration lands in PhysicsEngine, not Python glue") and Erik's §A rule 2 ("no new host-side tick logic"). A method is the `step_tail` / `run_substeps_resident` idiom (the latter forwards to `breach_cuda::eos_step_resident`, `physics_engine.cpp:607`). Forwarding keeps the `physics_engine.{h,cpp}` hunks at ~25 lines in spans fire-12 does not edit (§9). Chapter §5 is then true as written. |
+| V1 | "`SwarmSolver` in PhysicsEngine" (plan row P3); "last stage of PhysicsEngine's orchestration" (ch. §5) | **v1's runner-only `_run_swarm` is WITHDRAWN (R1).** The orchestration is a `PhysicsEngine` METHOD, `step_swarm`, whose body is `swarm::step_all` in the shared swarm TU; there is no `SwarmSolver` member class (the step has no tunables to own; its one piece of state is a record scratch member). PhysicsRunner calls it in ONE line after `step_tail` on both tick paths. | CLAUDE.md "PhysicsRunner / PhysicsEngine" ("new C++ orchestration lands in PhysicsEngine, not Python glue") and Erik's §A rule 2 ("no new host-side tick logic"). A method is the `step_tail` / `run_substeps_resident` idiom (the latter forwards to `breach_cuda::resident_eos`, v4: `physics_engine.cpp:836-847`). Forwarding keeps the `physics_engine.{h,cpp}` hunks at ~25 lines in spans fire-12 does not edit (§9). Chapter §5 is then true as written. |
 | V2 | "species-table H2D keyed on hash" (P2 §9) | Species params passed **by value** as a kernel argument (an 8-word POD), re-read from `gmap.swarm_species` by the Python gatherer at every launch. | Meets P2's purpose (no flag; a reload reaches the device from the next tick) with no device copy to go stale and no cache key to get wrong. |
 | V3 | "the P1 salt enum" (task) | *[v3: superseded, see "v3"]* ~~Created in P3: `philox_streams.py` + `philox_streams.h`.~~ **v3: two members of main's `rng_salts.Salt` (§6).** | No salt enum exists (grep `salt` over `src/`, `cpp/`, `tests/`: only philox32's own API names; confirmed by Lens 1). Chapter 14's amendment requires ONE breach-wide enum. |
 | V4 | Chapter §4.1 step 3: "coordinates clamped to the grid (out-of-grid reads as solid)" | Bounds-check before any read; out-of-grid = blocked; no clamp for the solid decision. | A clamp would make an out-of-grid target read the edge tile's solidity, contradicting "out-of-grid reads as solid" whenever the edge tile is open. Routed to ch.17 §4.1 step 3 (§9b). |
-| V5 | Philox counter `tick` = `sim.tick` (implied, ch.17 §3 + the ch.14 door-4 amendment) | *[v3: superseded, see "v3"]* ~~Counter tick = `Simulation.total_tick`.~~ **v3: the counter tick is `sim.draws.tick` (`tick + tick_base`, monotone under TwoPhase; §6).** | Under the default `TwoPhaseWEGO`, `sim.tick` rewinds to 0 every round (`simulation.py:1846`, `ruleset.py:115-121`); keying Philox on it would replay every larva's draw sequence every round. Routed to ch.17 §3, the ch.14 amendment and the CLAUDE.md "Deterministic RNG" row (§9b). |
+| V5 | Philox counter `tick` = `sim.tick` (implied, ch.17 §3 + the ch.14 door-4 amendment) | *[v3: superseded, see "v3"]* ~~Counter tick = `Simulation.total_tick`.~~ **v3: the counter tick is `sim.draws.tick` (`tick + tick_base`, monotone under TwoPhase; §6).** | Under the default `TwoPhaseWEGO`, `sim.tick` rewinds to 0 every round (`simulation.py:1846`, `ruleset.py:115-121`; v4: `:2794`, `:117-125`); keying Philox on it would replay every larva's draw sequence every round. Routed to ch.17 §3, the ch.14 amendment and the CLAUDE.md "Deterministic RNG" row (§9b). |
 | V6 | P2 §9: "the kernel/twin loop runs over `[0, high_water)`" with the device keeping its own `high_water` copy | The loop bound is the **host** `high_water[e]`, carried per env in the launch block; the device copies of `swarm_<sp>_high_water` / `swarm_next_unit_id` are never read by any kernel. | One source for the mask, the launch extent and the compaction, so a missed dirty flag can never turn stale records into phantom deaths (L1-M1, R2). |
 | V7 | P2 §9 R9: "P3's upload consumes `swarm_host_dirty[sp]` … and clears it" | Kept, and extended: the engine also SETS the flag after every host-path launch (CPU twin or per-call CUDA wrote the host store, so any device copy is stale). | Makes a CPU tick followed by a resident tick (a `set_residency` toggle) upload before it launches. |
 
@@ -174,6 +524,8 @@ refresh pass re-derives every anchor.
   `sim.draws` (§6; v3);
 - species rows, `SPECIES_UNITS` (Kelvin), per-species `SPECIES_RULES`,
   `SPECIES_KERNELS`, the ingress gatherer `swarm.engine_args` (§4.3, §5);
+  *(v4)* the kernel's table rows (`swarm_tables.py`), their generated header
+  and its generator (v4.3);
 - the death event (§7);
 - the larva coupling rows in the ONE `COUPLING_TABLE` (additive `CouplingRow`
   extension) + the 9c comment (§8);
@@ -206,7 +558,8 @@ refresh pass re-derives every anchor.
   `MatchDraws`' integer seed, §6.)*
 - **ACCEPTED GAP (v3):** larvae do not see units. A later law reads the
   units' per-tile occupancy field, never a unit column (v3 item 4);
-- the effect records across the unit/swarm boundary (bite →
+- *[v4: superseded by v4.1 -- the bite is a per-tile plane into
+  `poison.dose`, the corpse a count plane; fields only.]* the effect records across the unit/swarm boundary (bite →
   `status.apply_status(POISONED)`, corpse infestation → the zombie
   conversion, a unit hurting larvae): designed with their behaviour patch
   after P6 (v3 item 4; `docs/unit_design_2026-11-14.md` §6.4);
@@ -223,19 +576,20 @@ Both backends are gated bit-identical, so one answer covers both.
 
 - **`is_vacuum` tiles (SPACE outside the hull, and breach tiles joined to
   space):** `TemperatureSolver` Pass 0 wipes every non-thermal-solid vacuum
-  cell to `temperature = 0` each tick (`temperature_solver.cpp:141-171`). 0 is
+  cell to `temperature = 0` each tick (`temperature_solver.cpp:141-171`; v4:
+  `:166-177`). 0 is
   the ambient reference: `to_kelvin(0) = kelvin_ambient = 293 K` (19.85 °C) on
   HEAD and on fire-12. A larva on a SPACE tile reads 20 °C: no coma, no death.
 - **Interior gas that a breach is emptying (not flagged `is_vacuum`):** the
   expanding gas cools adiabatically and the recovery floors it at `T_MIN`
-  (`eos_solver.cpp:1661-1667`; `config.toml:617` `T_MIN = -289.0` on HEAD,
+  (`eos_solver.cpp:1661-1667`, v4: `:1691`; `config.toml:617` `T_MIN = -289.0` on HEAD,
   `-292.0` ≙ 1 K on fire-12). Probe (Appendix A1, 16×16 room, one breach tile):
   the room interior falls below 10 °C within **one tick** (173 of 196 cells at
   t = 0) and sits at the floor (mean T_game ≈ −270) from t ≈ 25 on; the
   residual gas **never fully leaves** (mean N ≈ 1.6 % of ambient after 400
   ticks, because at the floor p ≈ 0 drives no outflow). Cells whose bulk N
   drops below 1 raw count are wiped to T = 0 by the recovery
-  (`eos_solver.cpp:1654-1659`) and read 20 °C; the probe shows such cells
+  (`eos_solver.cpp:1654-1659`, v4: `:1679-1685`) and read 20 °C; the probe shows such cells
   toggling (8 → 2 → 0 → 15) as the residue sloshes.
 - **So: yes — venting a room puts its larvae into coma within about a second,
   and keeps them there** while the thin frozen residue remains; larvae on
@@ -259,13 +613,13 @@ it persists.
 
 **F3 — `sim.tick` is round-local under `TwoPhaseWEGO`** (V5):
 `_end_round` sets `self.tick = 0` and `turn_number += 1`
-(`simulation.py:1846-1849`); the base ruleset defines
+(`simulation.py:1846-1849`; v4: `:2794-2797`, beside `draws.tick_base += tick` at `:2793`); the base ruleset defines
 `round_index = turn_number - 1`, `round_tick = sim.tick`
-(`ruleset.py:111-121`) *[v3: the conclusion, a `total_tick`, is superseded by `MatchDraws.tick_base` (§6); the facts stand]*; `OnePhaseWEGO` is free-running (`round_index = tick
-// tpr`, `round_tick = tick % tpr`, `ruleset.py:369-378`), and
+(`ruleset.py:111-121`; v4: `:117-125`) *[v3: the conclusion, a `total_tick`, is superseded by `MatchDraws.tick_base` (§6); the facts stand]*; `OnePhaseWEGO` is free-running (`round_index = tick
+// tpr`, `round_tick = tick % tpr`, `ruleset.py:369-378`; v4: `:442-448`), and
 ContinuousRealtime keeps `turn_number == 1`. So `round_index *
 ticks_per_round + round_tick` is monotone and gap-free under all three
-(Lens 1 checked). `level_lights.monotonic_total_tick` (`level_lights.py:55-65`)
+(Lens 1 checked). `level_lights.monotonic_total_tick` (`level_lights.py:55-65`; v4: `:125`)
 is a second, ruleset-blind definition that double-counts under OnePhase —
 recorded for its own issue; P3 does not touch it (R6).
 
@@ -280,7 +634,7 @@ bullet to `rl_env_arc_proposal_2026-08-27.md` §B2.
 
 **F6 — Float ratchet.** `test_no_float_in_sim_tu.py` counts LINES containing
 the words `float`/`double` (comments included) per file listed in `SIM_TUS`
-and fails if a count rises (`:378-396`); it scans no header anywhere (Lens 1
+and fails if a count rises (`:378-396`; v4: `test_no_new_float_in_sim_tus`, `:436`); it scans no header anywhere (still true at v4) (Lens 1
 L1-m1, Lens 2 L2-M5). The whole larva law is FP_HD-inline in headers, so P3
 adds a `SIM_HEADERS` list held at 0/0/0 (R11): **no line of `swarm.h`,
 `swarm_larva.h`, `swarm_launch.cuh`, `swarm.cpp` or
@@ -294,14 +648,14 @@ comment**; the new `physics_engine.{h,cpp}` hunks add no such line either.
 rows every valid-path P2 test would fail on "missing key". Fixed in P3 by the
 testkit (§11); T22's message-matching is tightened at the same time (R10).
 
-**F8 — The coupling-table tests pin a set designed to grow**
+**F8** *[v4: obsolete. Main rewrote the three tests as properties (`test_exchange_reductions.py:270-322`), and `test_wave_push.py`'s check is now `:582-584`; v4.8]* **— The coupling-table tests pin a set designed to grow**
 (`test_exchange_reductions.py:266-267` pins the exact field list, `:275, :291`
 unpack exactly five rows). `test_wave_push.py:426-430` pins index 2 only and
 survives an append (v1 misstated it). The pinning is a finding; P3 rewrites
 those three tests as properties (R7) — a listed pre-existing-test change —
 and appends the larva rows to the ONE `COUPLING_TABLE` (§8).
 
-**F9 — `tools/run_on_cuda.py::_BACKEND_SETTERS` omits
+**F9** *[v4: fixed on main, `run_on_cuda.py:114`; v4.8]* **— `tools/run_on_cuda.py::_BACKEND_SETTERS` omits
 `set_combustion_backend`** (`:92-108`), so `--cuda` never runs combustion on
 the GPU. Finding in another system; P3 only appends its own setter.
 
@@ -387,16 +741,18 @@ includes EAT so both backends provably agree.
 **D10 — Rates are authored per second, turned into per-tick probabilities by
 integer multiply.** `p = (rate_q * dt_q) >> 16` — first-order Poisson, exact
 enough for `rate·dt ≪ 1`; no `expm1` (banned by the ingress lint). House
-rule: per-second tunables are tick-rate independent (`config.toml:80-82`).
+rule: per-second tunables are tick-rate independent (v4: `config.toml:84-85`).
 
 **D11 — Speed is authored in m/s (meters-first).** The marine precedent:
 `move_speed_mps`, derived per level through `tile_size_m`
-(`config.toml:28-40`, `timeline.py:118-139`). A tiles/s speed would triple on
+(v4: `config.toml:28-40`, `timeline.py:120-140`; main's continuous path now
+authors every unit speed as a `[speeds]` row in m/s, `src/simulation/speeds.py`,
+the same principle). A tiles/s speed would triple on
 the 1.0 m/tile test levels. Per-tick step in tiles:
 `step_q = (((speed_mps_q * inv_tile_q) >> 16) * dt_q) >> 16`.
 
 **D12 — Displacements round sign-symmetrically.** Sweep offsets and moves use
-`narrow_round_signed(mul_wide(trig, len))` (`fixed_point.h:146-151`) —
+`narrow_round_signed(mul_wide(trig, len))` (v4: `fixed_point.h:148-150`) —
 `mul_q16`'s floor would bias every walk by −0.5 raw count per axis per tick.
 
 **D13 — The Philox key is the match seed's SeedSequence entropy (R5).** *[v3: superseded. The key is `sim.draws.key`, §6.]*
@@ -441,10 +797,10 @@ before the books D2H (§4).
 
 ## 3. The exact per-tick integer sequence (THIS is the twin spec)
 
-All values are the store's native types (ROSTER, `swarm.py:64-74`). "Q16" =
+All values are the store's native types (ROSTER, v4: `swarm.py:65-75`). "Q16" =
 int32 Q16.16. `FP_ONE = 65536`. Arithmetic in int64 wherever stated.
 **No `std::` helper appears in any `FP_HD` function** — nvcc runs without
-`--expt-relaxed-constexpr` (`CMakeLists.txt:125-135`), so `std::min/max/
+`--expt-relaxed-constexpr` (v4: the CUDA options, `CMakeLists.txt:207-217`), so `std::min/max/
 clamp/abs` are not callable from device code; write hand-written ternaries,
 as `fixed_point.h` does (R15).
 
@@ -458,11 +814,11 @@ as `fixed_point.h` does (R15).
 | `HEADING_PERIOD_Q16` | `2 * (int64_t)PI_Q16` = 411774 | `swarm_fixed.HEADING_PERIOD_Q16` |
 | `N_COLUMNS` + roster C types | 9; `int32_t` ×5, `uint32_t dist_walked`, `int32_t` ×2, `uint8_t valid` (ROSTER order), each with a `static_assert(sizeof)` | `len(ROSTER)`, `ROSTER` dtype itemsizes |
 | `ENV_TICK, ENV_SEED_LO, ENV_SEED_HI, ENV_WORDS` | 0, 1, 2, 3 (the `(N, ENV_WORDS)` uint32 block Python passes; v3: per env `(sim.draws.tick & M32, *sim.draws.key)`) | `swarm.ENV_*` |
-| `LAUNCH_TICK, LAUNCH_SEED_LO, LAUNCH_SEED_HI, LAUNCH_HW, LAUNCH_FIXED_WORDS` | 0, 1, 2, 3, 4 (C++-internal per-env launch block; derived words follow at `LAUNCH_FIXED_WORDS + i`) | — (C++ only; exported in `SWARM_CONSTANTS` for inspection) |
+| `LAUNCH_TICK, LAUNCH_SEED_LO, LAUNCH_SEED_HI, LAUNCH_HW, LAUNCH_FIXED_WORDS` | 0, 1, 2, 3, 4 (C++-internal per-env launch block; *[v4: no derived words follow; they are table rows, v4.3]*) | — (C++ only; exported in `SWARM_CONSTANTS` for inspection) |
 | `DEATH_UNIT_ID, DEATH_POS_X, DEATH_POS_Y, DEATH_HEADING, DEATH_WORDS` | 0, 1, 2, 3, 4 (per-slot record) | `swarm.DEATH_*` |
 | `ROW_SPECIES, ROW_ENV, ROW_SLOT, ROW_UNIT_ID, ROW_POS_X, ROW_POS_Y, ROW_HEADING, ROW_WORDS` | 0 … 6, 7 (compacted death row) | `swarm.ROW_*` |
 | `SPECIES_LAWS[i].name / param_names / derived_names / field reductions` | registry, §3.6 | `SWARM_SPECIES[i]`, `SPECIES_KERNELS[sp].params / .derived`, the `COUPLING_TABLE` swarm rows |
-| *(v3)* the two salts | NOT C++ constants: `uint32_t salt_tumble, salt_wall_turn` launch arguments | `int(rng_salts.Salt.SWARM_TUMBLE)`, `int(Salt.SWARM_WALL_TURN)` (§6) |
+| *(v3; v4: table rows `salt_tumble`, `salt_wall_turn`, v4.3)* the two salts | NOT C++ constants: ~~`uint32_t salt_tumble, salt_wall_turn` launch arguments~~ | `int(rng_salts.Salt.SWARM_TUMBLE)`, `int(Salt.SWARM_WALL_TURN)` (§6) |
 | `SWEEP_DIST_Q16` (in `swarm_larva.h`) | `fixedpoint::FP_ONE` | — (C++ only; no Python consumer, R14) |
 
 **Heading wrap (C++ twin of `swarm_fixed.wrap_heading_q16`, floor-mod in
@@ -571,7 +927,7 @@ FP_HD inline Probe probe_move(const bool* solid, int h, int w,
 unrolled blocks, PLUS then MINUS.)
 
 **No-tunnelling proof.** `|cos_q16|, |sin_q16| <= FP_ONE` (kit contract,
-`fixed_point.h:987-988`), so `|dx|, |dy| <= step_q < FP_ONE` (rule R1). The
+v4: `fixed_point.h:1248-1255`), so `|dx|, |dy| <= step_q < FP_ONE` (rule R1). The
 target tile differs from the own tile by at most one per axis: it is the own
 tile or one of its 8 neighbours, and it is the tile probed. A move can never
 skip a tile. Corner-cutting between two orthogonally solid tiles is accepted
@@ -580,6 +936,10 @@ therefore only ever enters open tiles; it can stand on a solid tile only if the
 tile became solid under it (§0 gap).
 
 ### 3.4 Launch words (host-derived, D15)
+
+*[v4: `step_q`, `p_base_q`, `p_alarm_q` keep these formulas but are TABLE
+ROWS read by `swarm_tables.py` with proved ranges (v4.3); the launch block
+keeps only the tick, the key words and `hw`.]*
 
 Per species and env the engine composes the launch block (§4.4) from the
 Python-provided words. For the larva:
@@ -680,6 +1040,11 @@ Integers come only through `philox32_uniform_q16` and `philox32_below` —
 never `%`, never float (chapter 14 door 4).
 
 ### 3.6 The species-law registry and the three loops
+
+*[v4: `SwarmLarvaParams` is built in the law from the `(N, T_sp)` table rows
+by `larva_params_from_table` through the generated offsets; the by-value POD
+argument, `LARVA_PARAM_NAMES` and `LARVA_DERIVED_NAMES` are withdrawn
+(v4.3). The law also takes the CPU-only branch tally (v4.7 G-d).]*
 
 **Per-species law file (`swarm_larva.h`):**
 
@@ -919,32 +1284,38 @@ live in the books arena, folded at the tail's ONE D2H. The two host syncs
 are unchanged. The played N = 1 tick and a `ResidentBatch` of N take one
 code path.
 
-### 4.7 The exact Python lines (anchors at `6e6906ef`; re-derived after P6)
+### 4.7 The exact Python lines (v4: re-derived at `5f0f189b`)
 
 ```python
+# simulation.py, Simulation._reset_internal, the line after
+# self.gmap.bind_physics_engine(self.physics_runner.engine) (:543):
+            self.physics_runner.bind_draws(self.draws)   # arc #63 P3: the swarm's draws
+
+# simulation.py, Simulation._step_post_physics (:2236), its FIRST statement
+# (both tick paths pass here after slot 7, before slot 9's events):
+        if self.physics_runner is not None:   # arc #63 P3 (docs/swarm_P3_impl.md §7)
+            self.tick_events.extend(swarm.death_events(self.physics_runner.swarm_death_rows))
+
 # physics_runner.py, PhysicsRunner._step_host, before `return destroyed` (:1256):
         # arc #63 P3 (docs/swarm_P3_impl.md §4): the swarm step, the LAST stage of slot 7.
         self.swarm_death_rows = self.engine.step_swarm(
-            **swarm.engine_args([gmap], [draws], sim_time, resident=False))
+            **swarm.engine_args([gmap], [self._draws], sim_time, resident=False))
 
 # physics_runner.py, run_resident_batch (:2013): the per-env swarm args join the
-# step_tail_resident call (:2141-2145); its return gains the per-env death rows:
+# step_tail_resident call (:2146); its return gains the per-env death rows:
     destroyed, swarm_rows = e0.step_tail_resident(..., swarm=swarm.engine_args(
         gmaps, [r._draws for r in runners], sim_time, resident=True))
     for r, rows in zip(runners, swarm_rows):
         r.swarm_death_rows = rows
 ```
 
-`PhysicsRunner.step(gmap, sim_time, tick=0)` (`:906`) gains `draws=None`,
-which it stores as `self._draws` for this tick before dispatching (one
-attribute, so `run_resident_batch` reads every env's draws without a
-signature change across the batch driver). `Simulation` passes
-`draws=self.draws` in its physics call (`simulation.py:2186`) and, on the
-next line, extends `tick_events` with `swarm.death_events(
-self.physics_runner.swarm_death_rows)` (§7). `ResidentBatch.step` calls
-`r._physics_head` per env and then `run_resident_batch`, so it sets
-`r._draws = s.draws` per env first (`resident_batch.py`, one line in its
-step loop).
+`PhysicsRunner.bind_draws(draws)` stores the sim's `MatchDraws` as
+`self._draws` (initialised to `None` in `__init__`); a gather with a swarm
+present and `_draws is None` raises `ValueError`. **v3's `step(...,
+draws=None)` argument, its `simulation.py` call change and its
+`resident_batch.py` line are withdrawn** (v4.4: `ResidentBatch.step` never
+calls `Simulation._step_physics`, so the binding is the one plumbing that
+serves both paths). `resident_batch.py` is not edited.
 
 ---
 
@@ -1002,7 +1373,7 @@ load-bearing for T22):
    `ts = temperature_scale.load(cfg)` loaded once (lazily, on the first kelvin
    field); **a `RuntimeError` or `AssertionError` from `temperature_scale.load`**
    (the migration guards raise the first, `_assert_invariants` the second when
-   `phi_exp·k ≠ 1`, `temperature_scale.py:102-113`; R17) is re-raised as
+   `phi_exp·k ≠ 1`, v4: `temperature_scale.py:102-121`; R17) is re-raised as
    `ValueError("[swarm.<sp>].<key> = <v> K: cannot convert through
    [physics.temperature_scale]: <e>")`, so a Ctrl+R with a broken scale is
    rejected by the seam, never a crash; then `q` must lie in
@@ -1017,7 +1388,7 @@ stored game-ΔT integers are *derived* from the scale in force. Under HEAD's
 k = 3 the defaults store T_prefer 221730, T_lethal_hot 658637, T_ctmin
 −215177, T_coma_exit −171486 (Lens 1 reproduced them); under fire-12's k = 1
 they store 665190, 1975910, −645530, −514458 — the same Kelvin (re-check at the
-refresh pass). The hash covers stored values (`swarm.py:228-244`), so a scale
+refresh pass). The hash covers stored values (v4: `swarm._species_table_hash`, `swarm.py:229`), so a scale
 change changes `.hash`.
 
 **Reload through the ONE seam:** Ctrl+R → `CFG.reload()` →
@@ -1077,8 +1448,8 @@ Callers (the only two installers, plus the launch):
   `RuntimeError` (unreachable unless the tick length or tile size changed
   after load).
 
-`GameMap.__init__` sets `tile_size_m` (`gamemap.py:666`) before
-`allocate_swarm_store(self)` (`:845`), so the context exists at load.
+`GameMap.__init__` sets `tile_size_m` (v4: `gamemap.py:818`) before
+`allocate_swarm_store(self)` (v4: `:1011`, the last statement of `__init__`), so the context exists at load.
 
 With the defaults on a 0.333 m level at 24 tps: `speed_mps_q = 13107`,
 `inv_tile_q = 196805`, `dt_q = 2731`, `v_q = 39360`, `step_q = 1640`
@@ -1129,7 +1500,7 @@ asserts `bp.SWARM_SPECIES_LAWS` equals these, in `SWARM_SPECIES` order.
 The C++ POD is `SwarmLarvaParams` (§3.6), built on the host from the 8 words
 by `larva_params_from_words` and passed to the kernel by value (V2).
 
-### 5.5 `config.toml` — appended to `[swarm.larva]` (after `hp_max`, EOF, `:2451`)
+### 5.5 `config.toml` — appended to `[swarm.larva]` (after `hp_max`, v4: `:5483`; main's `[sound]` block follows)
 
 ```toml
 # --- arc #63 P3: the larva law (docs/swarm_P3_impl.md). All HOT (Ctrl+R ->
@@ -1177,16 +1548,16 @@ refused by `tests/test_match_draws.py`'s scan.
 
 **Key.** `sim.draws.key = (seed & 0xFFFFFFFF, seed >> 32)`: the sim's seed,
 64 bits, through `MatchDraws`' own seed door (`draws._seed64`). An unseeded
-sim keys once from its entropy-seeded generator at reset (`simulation.py:314`).
+sim keys once from its entropy-seeded generator at reset (v4: `simulation.py:317-320`).
 Nothing is drawn from `sim.rng`, which a match replaces with `RefusingRng`.
 v2's spawned-`SeedSequence` refusal (R5) is moot, because the key is the
 integer seed.
 
 **Clock.** The counter tick is `sim.draws.tick` = the sim's `tick` + the
 legacy WEGO round base `tick_base`, which the round end advances
-(`simulation.py:2721`). It is therefore monotone under `TwoPhaseWEGO`, which
+(v4: `simulation.py:2793`). It is therefore monotone under `TwoPhaseWEGO`, which
 was v2's whole reason for `total_tick` (F3), without a second clock. It is
-masked to uint32 at ingress, as the edit queue does (`field_edit.py:1003`).
+masked to uint32 at ingress, as the edit queue does (`field_edit.py:1003`, unchanged at v4).
 
 **Counter.** `(tick, draw_index, salt, unit_id)`. `draw_index` is 0 for both
 blocks (one block per (salt, unit) per tick; a later need for more words of
@@ -1250,8 +1621,7 @@ class SwarmUnitDiedEvent:
 
 ## 8. The larva coupling rows — in the ONE coupling table (R7)
 
-**`CouplingRow` extended additively** (`exchange.py:661-684`; fire-12 edits
-this file only at `:296-317`):
+**`CouplingRow` extended additively** (v4: `exchange.py:736-760`):
 
 ```python
 @dataclass(frozen=True)
@@ -1270,7 +1640,7 @@ last stage of slot 7; **the future EXCHANGE-READ executor iterates only rows
 with `consumer == "unit"`**. Every existing row constructs with keywords, so
 the change is behaviour-neutral for them.
 
-Three rows appended to `COUPLING_TABLE` (before its closing `)` at `:759`; the
+Three rows appended to `COUPLING_TABLE` (v4: before its closing `)` at `:839`; the
 indices `simulation.py` comments cite, `[0]`…`[4]`, are unchanged):
 
 ```python
@@ -1296,11 +1666,12 @@ indices `simulation.py` comments cite, `[0]`…`[4]`, are unchanged):
 ```
 
 No new names in `__all__`. T-P3-22 ties each swarm row to the kernel (§11).
-Three pre-existing tests in `test_exchange_reductions.py` are rewritten as
-properties (§11 "Pre-existing test changes").
+*[v4: the three `test_exchange_reductions.py` rewrites are already done on
+main and survive these rows unchanged (v4.8).]*
 
-**The 9c comment amendment** (`simulation.py:1458-1468`, chapter §5): append
-one line to the block, before `if self.physics_runner is not None:`:
+**The 9c comment amendment** (v4: the 9c block in `_step_post_physics`,
+`simulation.py:2259-2276`, chapter §5): append one line to the block, before
+its `if self.physics_runner is not None:`:
 
 ```python
         # Swarm units (arc #63 P3; the consumer="swarm:*" rows of exchange.COUPLING_TABLE) were already judged IN slot 7 (the swarm step is physics' last stage), so within a tick larva heat/coma happen BEFORE this unit row.
@@ -1311,42 +1682,46 @@ still one sentence, still in that block.)
 
 ---
 
-## 9. Files touched (anchors refreshed against the merged code)
+## 9. Files touched (v4: anchors at `5f0f189b`)
 
-> **v3:** v2's table measured merge-friendliness against fire-12, which has
-> since merged, so that column is gone. The anchors below are at `6e6906ef`
-> (main `12a38642` merged plus the N_ENV drop). **P6 edits `simulation.py`,
-> `bindings.cpp`, the build files and `resident_batch.py`, so the refresh
-> pass (§13 step 0) re-derives every anchor after the last P6 patch has
-> merged and main has been merged here.**
+> **v4:** re-derived after the last P6 patch and the merge of main
+> (`docs/swarm_merge_main_2026-11-15.md`). The residency arc keeps editing
+> `bindings.cpp`, `cpp/CMakeLists.txt`, `tests/twin_manifest.toml` and the
+> resident tick (handover §7): the builder merges main before starting if it
+> has moved, re-checks these anchors, and keeps P3's code in its own TUs and
+> modules.
 
-| file | P3 footprint (anchors at `6e6906ef`) |
+| file | P3 footprint (anchors at `5f0f189b`) |
 |---|---|
-| `cpp/src/swarm.h`, `swarm.cpp`, `swarm.cu`, `swarm_launch.cuh`, `swarm_larva.{h,cpp,cu}` | new (no `philox_streams.h`: §6) |
-| `src/simulation/swarm_larva.py` | new (no `philox_streams.py`: §6) |
-| `src/simulation/rng_salts.py` | two `Salt` members + their docstring lines (§6) |
-| `cpp/src/physics_engine.h` | `#include "swarm.h"`; the `step_swarm` declaration + `swarm_records_` member beside `step_tail`; `ResidentTickArgs` (`:65`) gains the swarm block (§4.4) |
-| `cpp/src/physics_engine.cpp` | `PhysicsEngine::step_swarm` forwarding definition after `step_tail` (`:56`); `step_tail_resident` (`:920`) passes the swarm args through and returns the rows |
-| `cpp/src/cuda_resident_tick.{h,cu}` | `resident_swarm` declared; called in `resident_tail` (`.cu:885`) after temperature, before `tick_sync_point("books")` (`:1066`); two `RESIDENT_STAGE_COUNTERS` slots; the arena region (§4.4) |
-| `src/simulation/physics_runner.py` | import beside `:28-30`; `step` (`:906`) gains `draws=None`; one statement before `_step_host`'s `return destroyed` (`:1256`); `run_resident_batch` (`:2013`) passes the swarm args into `step_tail_resident` (`:2141`) and adds the swarm names to the entry list when `host_dirty` and to the exit list when present (`_resident_entry_names` `:1638`, `_resident_exit_names` `:1653`) |
-| `src/simulation/resident_batch.py` | `step`: `r._draws = s.draws` per env before `run_resident_batch` (§4.7) |
-| `src/simulation/simulation.py` | the physics call (`:2186`) gains `draws=self.draws`, plus one `tick_events.extend(death_events(...))` line; the 9c comment (`:2221` block, §8). No `_philox_key`, no `total_tick` (§6) |
-| `src/simulation/swarm.py` | §4.3, §5, §7, R16 (per-map store since `6e6906ef`) |
+| `cpp/src/swarm.h`, `swarm.cpp`, `swarm.cu`, `swarm_launch.cuh`, `swarm_larva.{h,cpp,cu}` | new |
+| `cpp/src/swarm_tables_layout.h` | new, GENERATED by `tools/gen_swarm_layout.py --write` (v4.3) |
+| `cpp/src/swarm_probe.cu` | new, TEST-ONLY: the resident launch core on gate-owned arrays (v4.7 G-b) |
+| `tools/gen_swarm_layout.py` | new (v4.3) |
+| `src/simulation/swarm_larva.py`, `src/simulation/swarm_tables.py` | new (§5.4, v4.3) |
+| `src/simulation/rng_salts.py` | two `Salt` members + their docstring lines (`class Salt` at `:38`; §6) |
+| `cpp/src/physics_engine.h` | `#include "swarm.h"`; the `step_swarm` declaration + `swarm_records_` member beside `step_tail` (`:232`); `ResidentTickArgs` (`:65`) gains the swarm block |
+| `cpp/src/physics_engine.cpp` | `PhysicsEngine::step_swarm` forwarding definition after `step_tail` (`:56`); `step_tail_resident` (`:920`) passes the swarm block through and returns the rows |
+| `cpp/src/cuda_resident_tick.{h,cu}` | `resident_swarm` declared beside `resident_tail` (`.h:163`); called in `resident_tail` (`.cu:885`) after the temperature stage (`:1039`), before `tick_sync_point("books")` (`:1066`); `ArenaLayout` region `swm` after `edq` (`:206-228`); `RESIDENT_STAGE_COUNTERS` 16 -> 18 (`.h:180`) |
+| `src/simulation/physics_runner.py` | import beside `:26-30`; `bind_draws` + `self._draws = None` (beside `step`, `:906`); one statement before `_step_host`'s `return destroyed` (`:1256`); `run_resident_batch` (`:2013`) passes the swarm args into `step_tail_resident` (`:2146`); the swarm names in `_resident_entry_names` (`:1638`) when dirty and `_resident_exit_names` (`:1653`) when present |
+| `src/simulation/resident_batch.py` | not edited (v4.4) |
+| `src/simulation/simulation.py` | the `bind_draws` line after `:543`; the events line as the first statement of `_step_post_physics` (`:2236`); the 9c comment in the 9c block (`:2259-2276`, §8) |
+| `src/simulation/swarm.py` | §4.3, §5, §7, R16 (`check_invariants` at `:372`) |
 | `src/simulation/events.py` | `SwarmUnitDiedEvent` + `__all__` (`:385`) |
-| `src/simulation/exchange.py` | `CouplingRow` (`:744`); 3 rows before `COUPLING_TABLE`'s closing `)` (`:845`) |
-| `cpp/CMakeLists.txt` | `src/swarm.cpp` + `src/swarm_larva.cpp` in the source list (beside `:99-100`); `src/swarm.cu` + `src/swarm_larva.cu` in the CUDA list (beside `:125`); both C++ TUs on the strict list (`:220-241`) |
-| `cpp/src/bindings.cpp` | `#include "swarm_larva.h"` beside the philox include; the §10 module block after the philox block (~`:1966-2031`); `.def("step_swarm", …)` in `py::class_<PhysicsEngine>` (`:4139`); `step_tail_resident`'s lambda (`:4972`) takes `swarm=` |
-| `stubs/breach_physics.pyi` | regenerated from the CUDA build (main's stub is CUDA-generated, `dev_setup.md:273`) |
-| `config.toml` | rows appended to `[swarm.larva]` (`:5450`) |
-| `tests/twin_manifest.toml` | `[twins.swarm_larva]`, a `[cpp_stages]` row, `swarm.py` out of `[not_twinned]` (v3 item 5) |
+| `src/simulation/exchange.py` | `CouplingRow` (`:736`); 3 rows before `COUPLING_TABLE`'s closing `)` (`:839`) |
+| `cpp/CMakeLists.txt` | `src/swarm.cpp` + `src/swarm_larva.cpp` in the source list (beside `:99-100`); `src/swarm.cu`, `src/swarm_larva.cu`, `src/swarm_probe.cu` in the CUDA `list(APPEND BREACH_SOURCES ...)` block (`:102-162`); both C++ TUs on the strict list (`set_source_files_properties`, `:252-273`) |
+| `cpp/src/bindings.cpp` | `#include "swarm_larva.h"` beside the philox include (`:18`); the §10 module block after the philox block (`:2433-2496`); `.def("step_swarm", ...)` in `py::class_<PhysicsEngine>` (`:4646`) beside `step_tail` (`:4818`); `step_tail_resident`'s lambda (`:5479`) takes `swarm=` |
+| `stubs/breach_physics.pyi` | regenerated from the CUDA build (`docs/dev_setup.md:272-276`) |
+| `config.toml` | rows appended to `[swarm.larva]` after `hp_max` (`:5483`) |
+| `tests/twin_manifest.toml` | `[twins.swarm_larva]` (v4.6), a `[cpp_stages]` row (`:62-75`), `swarm.py`'s `[not_twinned]` line (`:117`) moved or re-reasoned |
+| `tools/tick_stage_profile.py` | the `"  7 step_swarm"` label beside `step_tail`'s (`:123`) |
 | `tests/test_no_float_in_sim_tu.py` | `SIM_TUS` (`:56`), `BASELINE` (`:384`), `MIGRATED_FLOOR_TUS` (`:402`), `SIM_HEADERS` + its test before `if __name__` (`:514`) |
-| `tools/run_on_cuda.py` | `"set_swarm_backend",` appended to `_BACKEND_SETTERS` (after `:114`) |
-| `tests/field_ab_harness.py` | `swarm_thermal_scenario_sim` after `swarm_scenario_sim` |
+| `tools/run_on_cuda.py` | `"set_swarm_backend",` appended to `_BACKEND_SETTERS` after `:114` |
+| `tests/field_ab_harness.py` | `swarm_thermal_scenario_sim` after `swarm_scenario_sim` (`:157`) |
 | `tests/_xarch_perfield_digest.py` | `build_swarm_lines` after `build_perfield_lines` (`:723`); a block in `main()` (`:760`) |
 | `tests/xarch_digest.py` | `--scenario` + suffix |
-| `tests/test_exchange_reductions.py` | the three coupling-table tests rewritten as properties (R7) |
-| `tests/cuda_batch_invariance_check.py` | LEG B gains swarm-bearing envs (§11 PART 2c) |
-| `CLAUDE.md` | §16 rows + amendments |
+| `tests/cuda_batch_invariance_check.py` | LEG B (`leg_b`, `:402`) gains swarm-bearing envs (PART 2c, v4.7 G-a) |
+| `tests/test_exchange_reductions.py` | not edited (v4.8) |
+| `CLAUDE.md`, `.claude/rules/swarm.md` (+ `units.md`, `determinism-gates.md`) | index lines and rule sections (v4.8) |
 
 **Doc routing (R21):**
 
@@ -1370,18 +1745,22 @@ compiled `/fp:fast`, so it never calls an `FP_HD` law function inline; every
 binding reaches the law through an out-of-line entry defined in a strict TU
 (`swarm.cpp`, `swarm_larva.cpp`) or a `.cu`.
 
-After HEAD `:1493`, a block tagged `// arc #63 P3 (docs/swarm_P3_impl.md §10)`:
+After the philox block (v4: `bindings.cpp:2433-2496`), a block tagged `// arc #63 P3 (docs/swarm_P3_impl.md §10)`:
 
 **Both builds:**
 
 - `swarm_species_step(species: str, columns: tuple[9 arrays], high_water,
-  temperature, solid, env, params, derived, death_rec) -> int` — the CPU entry
+  temperature, solid, env, params, derived, death_rec) -> int` *[v4: `params,
+  derived` are ONE `tables` argument, the `(n_env, T_sp)` int64 rows, v4.3]* — the CPU entry
   through the registry (`run_cpu`); composes the launch block with the same
   helper as `step_all`; returns the death count.
 - `swarm_larva_felt_T(T, x_q, y_q) -> int` — `swarm_larva_felt_T_host` (the RAW
   reader); `ValueError` if `(x_q, y_q)` is out of grid.
 - `swarm_wrap_heading_q16(h: int) -> int` — out-of-line in `swarm.cpp` (int64 in).
 - `swarm_cpu_calls() -> int`.
+- *(v4)* `swarm_branch_tally(reset: bool = False) -> dict` (the CPU loop's
+  branch counts, names from `SWARM_LARVA_BRANCHES`, v4.7 G-d);
+  `m.attr("SWARM_TABLES_FINGERPRINT")`, `m.attr("SWARM_LARVA_BRANCHES")`.
 - `m.attr("SWARM_CONSTANTS")` = dict of every §3.1 constant + the roster type
   sizes; *(v3: no `PHILOX_SALTS`. The salts are launch arguments from
   `rng_salts.Salt`, §6)*;
@@ -1395,8 +1774,11 @@ After HEAD `:1493`, a block tagged `// arc #63 P3 (docs/swarm_P3_impl.md §10)`:
   per-call GPU (`run_cuda_percall`).
 - `swarm_cuda_calls() -> int` (v3: the resident stage reports through the
   existing resident stage counters, §4.5).
+- *(v4)* `cuda_swarm_resident_probe(...)`: TEST-ONLY, the resident launch
+  core on caller-owned device arrays `(N, max_units)` with per-env `hw`
+  (`cpp/src/swarm_probe.cu`, v4.7 G-b).
 
-**PhysicsEngine method** (after HEAD `:3540`):
+**PhysicsEngine method** (v4: beside `step_tail`'s `.def`, `bindings.cpp:4818`):
 `.def("step_swarm", …, py::arg("packs"), py::arg("temperature"),
 py::arg("solid"), py::arg("env"), py::arg("host_dirty"), py::arg("resident"),
 py::arg("d_temperature") = 0, py::arg("d_solid") = 0)` → returns an
@@ -1425,6 +1807,15 @@ symbols.
 ---
 
 ## 11. Verification plan (tests are written from this list)
+
+> **v4:** the gate requirements G-a to G-e (v4.7) apply to every gate below,
+> and v4.3's table rows replace `params` / `derived` in every direct-binding
+> call. New test **T-P3-37** (write set, v4.5): on `swarm_thermal_scenario_sim`
+> for 60 CPU ticks, every GameMap attribute the host-path `step_swarm`
+> changes is a present species' store column or `swarm_host_dirty:<sp>`
+> (`cuda_unit_lockstep.gmap_state` / `changed_attrs`, imported). New
+> **`tests/test_swarm_tables.py`** (v4.3). PART 1 also runs every case
+> through `cuda_swarm_resident_probe` (G-b).
 
 **The standard.** Each test names the property it protects and the change that
 must break it. Loops run over `ROSTER`, `SWARM_SPECIES`, `SPECIES_FIELDS`,
@@ -1459,9 +1850,9 @@ the real `swarm.check_invariants`, never a re-derived copy.
 |---|---|---|---|
 | the four P2 fixture helpers (`test_swarm_species.py:43-55`, `test_swarm_digest.py:47-50`, `test_swarm_recorder.py:43-46`, `test_swarm_store.py:46-50`) | become thin calls into the testkit, keeping their explicit `max_units=64/8192`, `hp_max=1.0` as overrides (L2-M4) | a P2 test's rows grow with `SPECIES_FIELDS` and never depend on a P4 placeholder | a new required field has no repo value, or a P2 test starts reading a tunable it does not set |
 | T22 (`test_swarm_species.py` strict schema) | every rejection case asserts `match=re.escape(f"[swarm.{sp0}].{f.name}")` (structural cases match their own token: `"[swarm] missing"`, `"[swarm].totally_unknown_species"`, `f"[swarm].{sp0} must be a table"`, `"unknown_key_xyz"`, `f"[swarm.{sp0}].hp_max missing"`); configs come from `testkit.swarm_cfg()`; one positive case: the full valid cfg passes `from_config` | the strict schema rejects each bad shape FOR ITS OWN REASON | a Namespace pass-through, a lax `KIND_REAL_Q16` branch, a dropped bounds check — each previously masked by the Kelvin conversion's missing-scale `ValueError` (L2-M4) |
-| `test_exchange_reductions.py::test_coupling_table_registers_the_shipped_rows_in_order` | → the five shipped unit rows (found by `response` identity) all have `consumer == "unit"` and appear in the relative order heat < blast < push < teargas < poison; the table is a tuple of `CouplingRow` | registration and chapter order of the shipped rows, with the table free to grow | a shipped row is dropped, reordered, or loses its consumer |
-| `…::test_coupling_table_reductions_name_the_vocabulary` | → every row's `reduction` is in `REDUCTIONS`, or `None` with a non-empty `note`; the shipped rows keep their reductions (heat max, blast None, push grad, teargas max, poison max), looked up by `response`, not by position | the reduction vocabulary and the shipped rows' reads | a reduction name leaves the vocabulary, or a shipped row's reduction changes |
-| `…::test_coupling_table_responses_are_the_shipped_implementations` | → each shipped response function is the `response` of exactly one `"unit"` row; every `"unit"` row's response is callable; every non-unit row has `response is None` and `consumer == f"swarm:{sp}"` for some `sp in SWARM_SPECIES`; the `combat` re-exports resolve to the same objects | the executor contract (unit rows run in Python, swarm rows in-kernel) | a response is wrapped/replaced, a swarm row gains a Python response, or a consumer names no species |
+| *[v4: WITHDRAWN, done on main, v4.8]* `test_exchange_reductions.py::test_coupling_table_registers_the_shipped_rows_in_order` | → the five shipped unit rows (found by `response` identity) all have `consumer == "unit"` and appear in the relative order heat < blast < push < teargas < poison; the table is a tuple of `CouplingRow` | registration and chapter order of the shipped rows, with the table free to grow | a shipped row is dropped, reordered, or loses its consumer |
+| *[v4: WITHDRAWN, v4.8]* `…::test_coupling_table_reductions_name_the_vocabulary` | → every row's `reduction` is in `REDUCTIONS`, or `None` with a non-empty `note`; the shipped rows keep their reductions (heat max, blast None, push grad, teargas max, poison max), looked up by `response`, not by position | the reduction vocabulary and the shipped rows' reads | a reduction name leaves the vocabulary, or a shipped row's reduction changes |
+| *[v4: WITHDRAWN, v4.8]* `…::test_coupling_table_responses_are_the_shipped_implementations` | → each shipped response function is the `response` of exactly one `"unit"` row; every `"unit"` row's response is callable; every non-unit row has `response is None` and `consumer == f"swarm:{sp}"` for some `sp in SWARM_SPECIES`; the `combat` re-exports resolve to the same objects | the executor contract (unit rows run in Python, swarm rows in-kernel) | a response is wrapped/replaced, a swarm row gains a Python response, or a consumer names no species |
 
 ### `tests/test_swarm_larva_law.py` (CPU build)
 
@@ -1520,6 +1911,11 @@ the real `swarm.check_invariants`, never a re-derived copy.
 | T-P3-36 | **Binding argument discipline:** for `swarm_species_step` and `engine.step_swarm`, a column with the wrong dtype, a non-contiguous column, a wrong shape, or packs out of registry order each raise `TypeError`/`ValueError` and leave every input array byte-identical. | `forcecast` silently copying an IN/OUT array |
 
 ### The 3-part CUDA gate — `tests/cuda_swarm_check.py` + `tests/test_cuda_swarm.py`
+
+*[v4: PART 1 runs the CPU entry, the per-call wrapper AND the resident core
+(`cuda_swarm_resident_probe`), every env's fields drawn independently (G-a),
+padding live-looking (G-b); every CPU-run scene asserts its declared branch
+tallies (G-d); the mutation table (G-c) is in the as-built.]*
 
 Cloned from `cuda_fire_check.py` / `test_cuda_p68_fire.py` (subprocess via
 `cuda_harness.run_cuda_script`, `skipif not cuda_harness.cuda_available("swarm")`,
@@ -1659,7 +2055,8 @@ code at the refresh pass before building the tool.**
   `sim.edit(...)`, each a `FieldEdit(field="wave_source", region=Region.RECT,
   …)` (the `wave_source` policy's target is the temperature energy deposit,
   booked through `gas_energy_deposit(..., "field_edit_wave")` on an accountable
-  gas cell, `field_edit.py:641-662`):
+  gas cell; v4: the policy row is `field_edit.py:273`, its target `:604-605`;
+  re-check the booking path at step 0):
   - **warm strip** rows 5–22 × cols 1–2: `amount=ts.from_kelvin(313.15)`,
     `mode=EditMode.MAX` (a 40 °C hold along the west wall — a gradient band
     larvae can find from the bulk);
@@ -1715,13 +2112,38 @@ code at the refresh pass before building the tool.**
 
 ---
 
-## 13. Build brief (ordered; a Sonnet implementer executes this without re-deriving)
+## 13. Build brief (ordered; the implementer executes this without re-deriving; tier: ruling 10 says Sonnet, v4.9 recommends Opus)
+
+> **v4 deltas** (each step below reads with these):
+> - **Step 0** shrinks: the anchors (§4.7, §9, §10) and the Kelvin ints
+>   (v4.1) are re-derived at `5f0f189b`. Still to do: merge main again if it
+>   moved (and re-check §9); re-run Appendix A1 and A4 on the merged code and
+>   update §12's numbers (assertion 2's stop-and-ask rule stands); take the
+>   red baseline; commit; cut `63-p3-larva-kernel`.
+> - **New step 1b:** `src/simulation/swarm_tables.py`,
+>   `tools/gen_swarm_layout.py`, the generated `cpp/src/swarm_tables_layout.h`
+>   (v4.3), before the C++ law that reads it.
+> - **Steps 2-5:** the law reads the table rows through the generated offsets
+>   (no params POD argument, no salt arguments); the branch-tally enum and
+>   pointer (G-d); `cpp/src/swarm_probe.cu` (G-b).
+> - **Steps 12-13:** v4.4's plumbing (`bind_draws`; the events line at the
+>   head of `_step_post_physics`; `resident_batch.py` untouched); the arena
+>   region and counters 16 -> 18.
+> - **Step 16:** + T-P3-37, `tests/test_swarm_tables.py`, the G-a / G-b /
+>   G-d scene requirements.
+> - **Step 18b:** v4.6's row (with `swarm.h`, `swarm_larva.h` and the
+>   layout header in `device`), the `tick_stage_profile.py` label, the
+>   `[cpp_stages]` row.
+> - **Step 19:** + the mutation table (G-c) written into this doc's as-built,
+>   every mutant reverted.
+> - **Step 21:** CLAUDE.md index lines and rule sections per v4.8 (and
+>   `.claude/rules/swarm.md`'s `paths:` extended), not §16 (b)'s long rows.
 
 Python: `C:/Users/steen/anaconda3/envs/data/python.exe` (v3; F10 obsolete). Build the
 CPU `.pyd` (`cpp/build/Release`) and the CUDA `.pyd` (`cpp/build_cuda.bat`).
 Stage explicit paths only; never `git add -A`.
 
-0. **Refresh pass (v3: after the LAST P6 patch merges on main and main is
+0. *[v4: shrunk, see the v4 deltas above.]* **Refresh pass (v3: after the LAST P6 patch merges on main and main is
    merged into the arc branch — not before):** re-derive every file:line
    anchor in §4.7, §8, §9, §10 against the merged code (P6 moves
    `simulation.py`, `bindings.cpp`, the build files, `resident_batch.py`);
@@ -1777,8 +2199,7 @@ Stage explicit paths only; never `git add -A`.
     (v3: no `_philox_key`, no `total_tick`.)
 14. `config.toml` (§5.5).
 15. `tools/run_on_cuda.py`: `"set_swarm_backend",` appended to
-    `_BACKEND_SETTERS` (after `:107`). Do not add the combustion setter (F9 is
-    reported, not fixed here).
+    `_BACKEND_SETTERS` (v4: after `:114`; main added the combustion setter, F9).
 16. Tests (§11): `tests/_swarm_testkit.py` + the pre-existing test changes;
     `test_swarm_larva_law.py`, `test_swarm_larva_sensing.py`,
     `test_swarm_constants.py`, `test_swarm_tick.py`, additions to
@@ -1813,8 +2234,8 @@ fire-12 hunk region (§9). `COUPLING_TABLE`'s existing rows and
 
 ## 14. For Erik
 
-- **No open build-blocking question** (E1 ruled RAW, 2026-09-24). The build is
-  paused until fire-12 merges (ruling 13).
+- **No open build-blocking question** (E1 ruled RAW, 2026-09-24). *(v4: the
+  hold is lifted; P6 has merged.)*
 - **Your question — does venting put them into coma?** Yes (§1 F1): within
   ~1 s, and they stay comatose while the frozen residual gas remains; SPACE
   tiles and hard-vacuum cells read 20 °C (they wake there, and flap on cells
@@ -1898,7 +2319,16 @@ fire-12 hunk region (§9). `COUPLING_TABLE`'s existing rows and
   `level_lights.monotonic_total_tick`, and (v3) any unit column, the unit
   schema or `Unit`.
 
-**(b) New systems P3 creates — DRAFT one-line CLAUDE.md rules** (written at
+*(v4 additions to (a):)* **Device tables** — its discipline, not its module
+(v4.3). **Shadow lockstep harness** — its write-set helpers only (v4.5).
+**Class P / Class T + the twin ledger** — v4.6. **Per-env serial applier** —
+not used, no order-dependent write (v4.1). **Poison** and the 9c3 device rows
+— not used in P3; the bite patch's (v4.1).
+
+**(b) New systems P3 creates — DRAFT rules** *[v4: each becomes ONE index
+line in CLAUDE.md's Sim core table plus a section of
+`.claude/rules/swarm.md` holding its constraints, v4.8; the long text below
+is the material for the rule section, not an index line]* (written at
 implementation, pointing at the real code, appended after "Swarm heading law"):
 
 - *[v3: WITHDRAWN, together with the next draft. The clock and salts are main's Match draws.]* ~~**Absolute tick** — `Simulation.total_tick` (`round_index * ticks_per_round
@@ -1947,6 +2377,13 @@ implementation, pointing at the real code, appended after "Swarm heading law"):
   launch-word names, the host derive). A rule protects an invariant the kernel
   relies on, never tuning taste; launch words are derived on the host so the
   rules check exactly what the kernel consumes.
+- *(v4)* **Swarm kernel tables** — `src/simulation/swarm_tables.py` + the
+  generated `cpp/src/swarm_tables_layout.h` (`tools/gen_swarm_layout.py`).
+  Every value a swarm kernel reads is ONE row, read from the validated object
+  the CPU reference reads (the species row, the launch context, `Salt`),
+  with the range its arithmetic was proved for; C++ reads offsets only from
+  the generated header, whose fingerprint the module carries; never a law
+  constant as a kernel argument, never `tools/gen_unit_layout.py`.
 - **Swarm death events** — `events.SwarmUnitDiedEvent`, built from per-slot
   records that `step_all` compacts in (species, env, slot) order. Renderers
   read the event, never the freed slot; a sim-side consumer (P6 food) acts at
