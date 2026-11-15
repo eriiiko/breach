@@ -256,7 +256,8 @@ class VerbDriver:
         for i in range(variant % 3):                     # bystanders
             self._add(f"B{i}", 70 + 4 * i, 30, facing=NORTH)
         if variant % 2:                                  # a pre-filled charge table
-            self._top_up(10)
+            from simulation.unit_schema import CHARGE_CAPACITY
+            self._top_up(CHARGE_CAPACITY if variant == 3 else 10)   # 3: full
         for _ in range(variant):                         # a tick offset
             sim.step()
             sim.set_paused(False)
@@ -310,7 +311,7 @@ class VerbDriver:
             a(f"d{i}", 2 + 4 * i, 8, facing=NORTH)
         self.who["d2"].grenade_counts[2] = 1
         for i in range(7):                                # planters
-            a(f"p{i}", 2 + 4 * i, 14, facing=NORTH, hooks=(None, H2, None)[i % 3])
+            a(f"p{i}", 2 + 4 * i, 14, facing=NORTH, hooks=(None, H2, None, None, None, None, H2)[i])  # p4, p5 alike: one tick
         a("u0", 29, dy0, facing=EAST)                     # beside door 0
         a("u0b", 29, dy0 + 3, facing=EAST)
         a("u1", 10, 19, facing=EAST)                      # no door in reach
@@ -753,6 +754,10 @@ def run_lockstep(name, drivers, slots, ticks, census=None, n_units=None):
                     for e in rep.requests:
                         for r in e:
                             kinds[unit_requests.KINDS[r[0] - 1]] += 1
+                        acc = [r[12] for r in e if r[0] == unit_requests.KIND_PLANT]
+                        if any(a and not b for a, b in zip(acc, acc[1:])):
+                            kinds["two plants on one tick: the first placed, the "
+                                  "second refused"] += 1
             if not ok:
                 break
     total = n * len(drivers)
@@ -995,7 +1000,8 @@ def part_scenes():
             if not census.c.get(k):
                 fail(f"scene verbs: the branch {k!r} was never taken (vacuous)")
         if refused == 0 or not kinds.get("throw") or not kinds.get("plant") \
-                or not kinds.get("use"):
+                or not kinds.get("use") or not kinds.get(
+                    "two plants on one tick: the first placed, the second refused"):
             fail(f"scene verbs: requests {dict(kinds)}, {refused} refused (vacuous)")
         if not cov.get(SLOT_1B.label):
             fail("scene verbs: the kernel never changed a row (vacuous)")

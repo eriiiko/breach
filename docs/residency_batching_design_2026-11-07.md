@@ -931,6 +931,95 @@ and slots 2b, 9c, 9c3 landed as cut; no decision moved. One line each:
   check; batches N = 2 and 8 with padding; the overflow; chained 2b alone and
   9c + 9c2 + 9c3. Every gate was broken once (the patch's report).
 
+**As built (P6.4a, 2026-11-15).** P6.4 was cut in two patches run side by
+side: P6.4a the UNIT side (slot 1b's per-unit verbs, the `done` kernel), P6.4b
+the serial applier, the topology seam, slot 9 and the tick-end clears. P6.4a
+landed as cut; no decision moved. One line each:
+- SLOT 1b is `cpp/src/cuda_unit_verbs.cu` (`unit_kernels.verbs`), the
+  continuous path's `_consume_direct_intents` integer for integer: the drop
+  branch (a dead or turned row releases a held trigger, a wind-up, a plant),
+  then per living marine throw (latch, `can_throw`, the HANDLING wind-up, a
+  0-tick wind-up releasing at once; the advance: dropped when the unit cannot
+  act, released along the facing on its tick), plant (latch, `can_plant`, the
+  advance, the charge on the last tick), use, reload (`can_reload`,
+  `mag_settle`, `reload_begin`), shove (`can_shove`, `shove_target`, the PUSH
+  impulse). NO POSSESSION COLUMN (§4.4b "Settled 2026-11-14"): every scene's
+  rows are equal with the host still gating on `_possessed_ids`; no scene
+  showed a difference a possession column would remove.
+- THE GATES' DEVICE FORMS live in the unit library (`cuda_unit_lib.cuh`'s P6.4a
+  block, so P8b's mask kernel calls them): `acts`, `can_act`, `handling_ticks`,
+  `can_throw`, `can_plant`, `weapon_row`, `magazines_carried`, `mag_status`,
+  `can_reload`, `shove_cooled`, `can_shove`. `magazines_carried` compares the
+  encoded weapon indices: the schema decodes "no row" to `""`, never `None`
+  (`Unit.__init__` writes `""` too), and `""` is not `None` in the Python's
+  test, so a weapon in the hands with no loadout weapon carries 0 magazines.
+- THE REQUEST LIST (§4.3's "a throw appends a projectile; USE toggles
+  `want_open`"): what slot 1b does that is not a row write is a REQUEST record
+  of `simulation/unit_requests.py`'s one field table (`kind, unit_id, tick,
+  tile_x, tile_y, target_x_q, target_y_q, ticks, item, approach_y,
+  approach_x, door, accepted`; kinds throw / plant / use; the generated
+  `cpp/src/unit_requests_layout.h`, fingerprint-checked), every value the
+  reference computes at that point (a throw: its start tile, Q16 target, the
+  clamped fuse, thrown tick, kind, owner; a plant: its tile, ammo row, owner,
+  `det_tick`, approach, accepted; a use: the door's ordinal in `sim._doors`,
+  the door spans a per-tick table input `door_spans`). The list is the event
+  ring's own class GENERALISED (`UnitRecordList`: any record width and row cap,
+  the one staging and the one gather; `UnitEventRing` is now an instance), so
+  per-row staging gathered per env in row (= id) order is the reference's
+  order (slot 2 detonates in it; `charges.place` counts in it). Capacity
+  `R_MAX` 256 per env per tick, row cap 3 (one of each kind); past it counted
+  and refused by name (`UnitRequestOverflow`).
+- THE ORDER-DEPENDENT DECISION (which plant a full table refuses) is ONE thread
+  per env walking the gathered list against the live-charge count (the scalar
+  input `charges_live`): an accepted plant spends its planter's `has_explosive`,
+  a refused one is counted in `refused` (== the host's `charges_refused`).
+- THE SHOVE writes another row: each shover stages (target row, jx, jy,
+  angular) in a per-row scratch, a second kernel lets each target sum the
+  pushes aimed at it in shover-row order (`unit_impulse.add`: integer sums of
+  per-input terms, the lever clamped per input) and counts each row once.
+  The angular term squares an impulse of up to 2^35 (ship_demo's 1/3 m tiles
+  put the shove at 2^29.6, times the PUSH hook): the kit gained
+  `isqrt_u128_q` (`bp.fp_isqrt_u128`, held equal to `unit_fixed.isqrt` by
+  `tests/test_unit_impulse_twins.py`).
+- THE DONE KERNEL is `cpp/src/cuda_unit_done.cu` (`unit_kernels.match_done`):
+  per env (terminal, outcome none / win / draw, winner team, living marine
+  teams) from the rows, the tick after the step and the table row
+  `match_limit_ticks` (`MatchRules.limit_ticks`; 0 = no match). It is not a
+  slot: its gate compares it at the harness's tick end with the session's
+  `MatchRules`; its twin row names slot "10 tick end (ruleset)" (§4.3 places
+  it there; the traced files carry `ruleset.py`). No profiler label was added.
+- THE TABLES gained 13 rows (T 215): `weapon_mag_size`, `weapon_reload_ticks`
+  (per weapons-table row, the schema's order, refused if the sim's table
+  differs), `hand_windup_class_ticks`, `hand_max_reach_q`,
+  `hand_fuse_lo_ticks` / `hi`, `plant_class_ticks`, `charge_capacity`,
+  `shove_q`, `shove_cone_q`, `shove_cooldown_ticks`, `impulse_r_body_q`,
+  `match_limit_ticks`.
+- THE HARNESS: `DeviceSlot(..., requests=True)` hands the kernel a begun
+  `RequestList` and records, while the host slot runs and in the host's order,
+  each grenade `_release_grenade` appended, each charge offered to
+  `charges.place` with its answer, each door `_direct_use` flipped (read through
+  `verb_gates.use_door`); compared record for record, the alone run's list
+  equal to the batch's env i. A new input kind "scalar" (`SlotInputs.scalars`).
+  `ChainedSlots` turns the list into the host's objects
+  (`unit_requests.apply_to_host`: the projectiles appended, each plant offered
+  to `charges.place`, which must agree with the record, the doors flipped).
+  The render-only `ThrowEvent` / `PlantEvent` / `ReloadEvent` / `ShoveEvent`
+  have no device form (outside every digest); the chained 1b alone keeps the
+  REFERENCE_ONLY momentum books' IN entries, the four-slot chain does not.
+- THE GATES (`tests/cuda_unit_verbs_check.py`, wrapper
+  `tests/test_cuda_unit_verbs.py`): TABLES; LIB (the gates on synthetic rows,
+  both answers of each); scenes ship (ship_demo bots, seed 1, 500 ticks,
+  HANDLING / PUSH hooks), verbs (a three-room level, an interior, a hull and a
+  dead door, a scripted schedule; a census of the host's own decisions counts
+  51 branches, any at 0 fails, and two planters at a full table on one
+  tick) and zero (the class wind-up and plant patched to
+  0 on the sim's rows); batches N = 2 / 8 (verb variants differing in layout,
+  seed, unit count, tick offset and charge table, beside ship_demo); PADDING
+  (copies of rows holding latches); OVERFLOW; CHAINED 1b alone and 1a + 1b +
+  1b' + 1c on ship and verbs; DONE (elimination, a limit draw, a fallen team,
+  a batch ending on five different ticks). Every gate broken once (the
+  patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
