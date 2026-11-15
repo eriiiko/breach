@@ -24,7 +24,9 @@ THE SOLDIER (:class:`SoldierNet`), part by part (design 8.1):
   vector and the learned vectors of the fixed tokens); the trigger and the
   hand told the chosen aim (its vector); the hand by pointing at a learned
   vector per verb (design 2.5); the argument last, told the aim and the
-  verb.
+  verb. Every head's last layer starts a hundred times smaller than
+  PyTorch's default (:data:`FIRST_HEAD_SCALE`), so a fresh network gives
+  every legal option nearly the same chance (note 2b, 6).
 
 A normalising layer (LayerNorm) follows each reader and precedes each
 attention layer; no dropout; nothing reads another row of the batch.
@@ -63,6 +65,9 @@ SOLDIER_KEYS = ("vector", "list", "list_mask", "near_f", "near_u", "far_f",
 #: What the value network reads of ``obs`` and of ``info["full_view"]``.
 VALUE_OBS_KEYS = ("vector", "near_f", "near_u", "far_f", "far_u")
 VALUE_FULL_KEYS = ("full_list", "full_mask", "full_match", FULL_PLANE)
+#: The heads' last layers start this share of PyTorch's default (a
+#: near-even first policy; rung 2 note 2b, section 6).
+FIRST_HEAD_SCALE = 0.01
 
 
 def served_formats(sizes: Sizes) -> dict:
@@ -376,6 +381,15 @@ class SoldierNet(nn.Module):
         self.verbs = nn.Parameter(torch.randn(n_hands, w) / math.sqrt(w))
         self.arg_head = _mlp(core + 2 * w, hh, n_arg)
         self.scale = math.sqrt(w)
+        # A near-even first policy (rung 2 note 2b, 6): the last layer of
+        # every head starts FIRST_HEAD_SCALE times PyTorch's default, so
+        # every legal option starts near the same chance.
+        with torch.no_grad():
+            for mlp in (self.feet_head, self.aim_query, self.trigger_head,
+                        self.hand_query, self.arg_head):
+                last = mlp[-1]
+                last.weight.mul_(FIRST_HEAD_SCALE)
+                last.bias.mul_(FIRST_HEAD_SCALE)
 
     # -- state --------------------------------------------------------------
     def initial_state(self, n: int, device=None):
@@ -488,6 +502,7 @@ class ValueNet(nn.Module):
 
 
 __all__ = ["SOLDIER_KEYS", "VALUE_OBS_KEYS", "VALUE_FULL_KEYS",
+           "FIRST_HEAD_SCALE",
            "served_formats", "as_tensors", "KindTable", "Attention",
            "AttentionLayer", "EntryReaders", "MapReader", "window_planes",
            "Body", "HeadOutputs", "SoldierNet", "ValueNet"]
