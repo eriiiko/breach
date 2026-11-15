@@ -1583,3 +1583,25 @@ P6.4b's walk was; 64 unit effects add ~0.2 ms on one thread at N = 1 (~3.7 us pe
 its ring append being the bulk) and less in a batch, the envs' walks running in parallel blocks. A melee tick
 records at most three effects per striker, a shooting tick (P7a.2) a few per round: the serial walk stays far below
 §4.3's share. The device backend downloads none of the counts per tick.
+
+## P7.0a: slot 9d, ignition from temperature (2026-11-15)
+
+**What.** Slot 9d (`cpp/src/cuda_unit_ignition.cu`: one thread per cell, born `(N, h, w)`, the re-arm, the seed over
+the open neighbours' O2 fraction, the disarm, `fire` and `ignition_armed` in place). Class T. The kit beside it
+(device draws, sight, falloffs) is a library with no slot of its own and is not timed.
+
+**Method.** `tests/cuda_unit_kit_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the P7.0b
+session's CUDA build ran on the CPU (the card idle, 0 % seen just before). "9d" is `unit_kernels.ignition`: the
+launch, the counts' D2H and the stream sync. Planes: ship_demo's (70 x 100, 86 flammable tiles, nothing hot) and the
+gate's ignition scene after 30 ticks (30 x 40, mid-burn), replicated to N envs as device arrays. Medians of 100
+repetitions.
+
+| N | ship_demo 70 x 100 | ignition scene 30 x 40 |
+|---|---|---|
+| 1 | 0.127 | 0.119 |
+| 8 | 0.115 | 0.124 |
+| 64 | 0.125 | 0.118 |
+
+**Reading.** Flat in N and in the plane size: the call is its host sync (the counts' D2H); 64 envs x 7 000 cells
+is 0.45 M threads of a few loads each, below the launch floor. The device backend downloads no counts per tick, so
+9d inside the device tick is a launch's worth.
