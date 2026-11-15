@@ -172,6 +172,155 @@ PADS: dict = {"order_requests": unit_kernels.pad_requests,
               "door_spans": _pad_door_spans}
 
 
+# #29 P6.4b: inputs read from the slot callable's ARGUMENTS (a slot whose
+# input is handed to it by the conductor, not held on the sim).
+def _capture_walls(sim, args, kw):
+    # Simulation._burn_through_walls(self, destroyed): slot 7's list, in order
+    destroyed = args[1] if len(args) > 1 else kw.get("destroyed", ())
+    return unit_kernels.walls_of(destroyed)
+
+
+#: name -> (kind, capture function of (sim, args, kwargs) at the slot's entry).
+ARG_INPUTS: dict = {
+    "burn_walls": ("table", _capture_walls),
+}
+PADS["burn_walls"] = unit_kernels.pad_walls
+
+# ---------------------------------------------------------------------------
+# #29 P6.4b: field outputs, books, the write-set gate
+# ---------------------------------------------------------------------------
+BOOK_PREFIX = "book:"
+
+
+def book_ref(name: str) -> str:
+    """The host quantity a book output twins (``simulation.applier.BOOKS``)."""
+    from simulation import applier
+    for b in applier.BOOKS:
+        if b.name == name:
+            if b.host is None:
+                raise ValueError(f"lockstep: book {name!r} has no host twin")
+            return b.host
+    raise ValueError(f"lockstep: no book {name!r} (simulation.applier.BOOKS)")
+
+
+def host_books(sim, names) -> dict:
+    from simulation import applier
+    return {n: applier.host_book(sim.gmap, book_ref(n)) for n in names}
+
+
+_SCALARS = (bool, int, float, str, type(None), np.integer, np.floating, np.bool_)
+#: GameMap attributes that hold objects, probed by a function of the object
+#: (its synced content), so the write-set gate sees them.
+OBJECT_PROBES = {
+    "damage_credit": lambda o: dict(getattr(o, "_owner", {}) or {}),
+}
+
+
+def gmap_state(gmap) -> dict:
+    """What the WRITE-SET gate compares across a host slot: every ndarray
+    attribute of the GameMap (a copy), every scalar, every dict (per key, its
+    scalar values), set, list and tuple (a copy), and the object probes. Not
+    traced: other objects (the material / gas tables, the engine binding, the
+    level), which no structural seam writes."""
+    out = {}
+    ptrs: dict = {}
+    for k, v in vars(gmap).items():
+        if k == "_dev":            # residency's device mirror (not host state)
+            continue
+        if isinstance(v, np.ndarray):
+            out[k] = v.copy()
+            ptrs.setdefault((v.__array_interface__["data"][0], v.shape,
+                             v.dtype.str), []).append(k)
+        elif isinstance(v, _SCALARS):
+            out[k] = v
+        elif isinstance(v, dict):
+            for kk, vv in v.items():
+                if isinstance(vv, _SCALARS + (tuple,)):
+                    out[f"{k}:{kk}"] = vv
+        elif isinstance(v, (set, frozenset)):
+            out[k] = frozenset(v)
+        elif isinstance(v, (list, tuple)):
+            out[k] = list(v)
+        elif k in OBJECT_PROBES:
+            out[k] = OBJECT_PROBES[k](v)
+    # ALIASES: attributes that are the SAME array (e.g. `obstacles` is
+    # `solid` until the first stamp_units): a write to one is a write to all
+    # of them, covered when any of them is declared.
+    out[ALIASES] = {n: frozenset(g) - {n} for g in ptrs.values() if len(g) > 1
+                    for n in g}
+    return out
+
+
+ALIASES = "__aliases__"
+
+
+def changed_attrs(pre: dict, post: dict) -> list:
+    """The names whose value differs between two :func:`gmap_state` s
+    (an added or removed key included)."""
+    out = []
+    for k in sorted((set(pre) | set(post)) - {ALIASES}):
+        a, b = pre.get(k, None), post.get(k, None)
+        if (k in pre) != (k in post):
+            out.append(k)
+        elif isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+            if not (isinstance(a, np.ndarray) and isinstance(b, np.ndarray)
+                    and a.shape == b.shape and a.dtype == b.dtype
+                    and np.array_equal(a, b)):
+                out.append(k)
+        elif a != b:
+            out.append(k)
+    return out
+
+
+def write_set_violations(slot, changed, aliases=None) -> list:
+    """The changed names that are neither an output of ``slot`` nor host-only
+    (a dict key ``attr:key`` is covered by ``attr:key`` or by ``attr``; an
+    array by any attribute that is the same array, ``aliases`` from
+    :func:`gmap_state`)."""
+    allowed = set(slot.field_outputs)
+    allowed |= {book_ref(b) for b in slot.book_outputs}
+    allowed |= {h for h, _why in slot.host_only}
+    aliases = aliases or {}
+    out = []
+    for c in changed:
+        if c in allowed or c.split(":", 1)[0] in allowed:
+            continue
+        if aliases.get(c, frozenset()) & allowed:
+            continue
+        out.append(c)
+    return out
+
+
+def _num(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return v
+
+
+def split_result(res):
+    """A slot run's result: ``coverage`` or ``(coverage, books)``."""
+    if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], dict):
+        return np.asarray(res[0], dtype=np.int64), res[1]
+    return np.asarray(res, dtype=np.int64), None
+
+
+def first_field_diff(name, got, want):
+    """The first differing element of two ``(N, ...)`` arrays as ``(env,
+    index tuple, host, device)`` or None."""
+    if got.shape != want.shape or got.dtype != want.dtype:
+        return (0, ("shape/dtype",), f"{want.shape} {want.dtype}",
+                f"{got.shape} {got.dtype}")
+    if got.dtype.kind == "f":        # bit for bit (a -0.0 is not a 0.0)
+        got = got.view(np.dtype(f"u{got.dtype.itemsize}"))
+        want = want.view(np.dtype(f"u{want.dtype.itemsize}"))
+    d = got != want
+    if not d.any():
+        return None
+    idx = tuple(int(x) for x in np.argwhere(d)[0])
+    return (idx[0], idx[1:], want[idx], got[idx])
+
+
 @dataclass
 class SlotInputs:
     """What a slot reads besides the rows, gathered over the batch."""
@@ -194,17 +343,21 @@ class SlotInputs:
             scalars={k: v[e:e + 1].copy() for k, v in self.scalars.items()})
 
 
-def capture(names, sim) -> dict:
-    """One env's raw inputs at this moment: ``{name: value}``."""
+def capture(names, sim, args=(), kw=None) -> dict:
+    """One env's raw inputs at this moment: ``{name: value}`` (``args`` /
+    ``kw``: the slot callable's arguments, for an :data:`ARG_INPUTS` row)."""
     out = {}
     for n in names:
         if n.startswith(FIELD_PREFIX):
             out[n] = np.array(getattr(sim.gmap, n[len(FIELD_PREFIX):]),
                               copy=True)
+        elif n in ARG_INPUTS:
+            out[n] = ARG_INPUTS[n][1](sim, tuple(args), dict(kw or {}))
         else:
             if n not in INPUTS:
                 raise ValueError(f"lockstep: no slot input {n!r} (known: "
-                                 f"{sorted(INPUTS)} or field:<name>)")
+                                 f"{sorted(INPUTS) + sorted(ARG_INPUTS)} or "
+                                 f"field:<name>)")
             out[n] = INPUTS[n][1](sim)
     return out
 
@@ -220,9 +373,9 @@ def gather(names, per_env) -> SlotInputs:
             key = n[len(FIELD_PREFIX):]
             inp._host_fields[key] = host
             inp.fields[key] = cp.asarray(host)
-        elif INPUTS[n][0] == "tick":
+        elif n in INPUTS and INPUTS[n][0] == "tick":
             inp.tick = np.array(vals, dtype=np.int64)
-        elif INPUTS[n][0] == "scalar":
+        elif n in INPUTS and INPUTS[n][0] == "scalar":
             inp.scalars[n] = np.array(vals, dtype=np.int64)
         else:
             pad = PADS.get(n)
@@ -254,16 +407,45 @@ class DeviceSlot:
     inputs: tuple = ()
     events: bool = False
     requests: bool = False
+    # #29 P6.4b -- FIELD OUTPUTS: what the slot writes besides unit rows:
+    # "field:<GameMap attribute>" (the kernel writes the input's DEVICE array
+    # in place; captured at the entry like an input) and "book:<name>" (a
+    # simulation.applier.BOOKS row: the kernel returns its per-env value,
+    # compared with the host's delta over the slot). `host_only`: (GameMap
+    # attribute or "attr:key", reason) pairs the slot writes on the host with
+    # no device form. With outputs declared, the WRITE-SET gate runs: every
+    # GameMap attribute the host slot changed must be an output or host-only.
+    outputs: tuple = ()
+    host_only: tuple = ()
 
     def call(self, store, inputs: SlotInputs | None, ring=None, req=None):
         args = [store]
-        if self.inputs:
+        if self.inputs or self.outputs:
             args.append(inputs)
         if self.events:
             args.append(ring)
         if self.requests:
             args.append(req)
         return self.run(*args)
+
+    @property
+    def field_outputs(self) -> tuple:
+        return tuple(o[len(FIELD_PREFIX):] for o in self.outputs
+                     if o.startswith(FIELD_PREFIX))
+
+    @property
+    def book_outputs(self) -> tuple:
+        return tuple(o[len(BOOK_PREFIX):] for o in self.outputs
+                     if o.startswith(BOOK_PREFIX))
+
+    @property
+    def capture_names(self) -> tuple:
+        """The inputs, then the output fields not already inputs."""
+        names = list(self.inputs)
+        for f in self.field_outputs:
+            if FIELD_PREFIX + f not in names:
+                names.append(FIELD_PREFIX + f)
+        return tuple(names)
 
 
 @dataclass
@@ -278,6 +460,9 @@ class TickReport:
     host_events: np.ndarray | None = None  # (N,) the host's events in the slot
     requests: list | None = None           # per env: the device's request records
     host_requests: list | None = None      # per env: the host's (P6.4a)
+    books: dict | None = None              # #29 P6.4b: the device's {name: (N,)}
+    host_books: dict | None = None         # the host's delta over the slot
+    write_set: list | None = None          # per env: the attributes the host changed
 
 
 @dataclass
@@ -389,6 +574,13 @@ class ShadowLockstep:
         self._evs = [[None] * self.N for _ in range(k)]
         self._reqs = [[[] for _ in range(self.N)] for _ in range(k)]   # P6.4a
         self._req_k = None          # the requests slot running now (its index)
+        # #29 P6.4b: the field outputs' host values at the exit, the books
+        # at the entry / exit, the write-set snapshots
+        self._fpost = [[None] * self.N for _ in range(k)]
+        self._bk0 = [[None] * self.N for _ in range(k)]
+        self._bk1 = [[None] * self.N for _ in range(k)]
+        self._ws0 = [[None] * self.N for _ in range(k)]
+        self._ws1 = [[None] * self.N for _ in range(k)]
 
     # -- the hook ------------------------------------------------------------
     def _column_mask(self, names):
@@ -411,11 +603,15 @@ class ShadowLockstep:
                     if e is None:
                         return __orig(*a, **kw)
                     sim = ls.drivers[e].sim
+                    sl = ls.slots[__k]
                     if ls._pre[__k][e] is None:
                         ls._pre[__k][e] = unit_store.pack(sim.units, ls.U)
-                        ls._inp[__k][e] = capture(ls.slots[__k].inputs, sim)
+                        ls._inp[__k][e] = capture(sl.capture_names, sim, a, kw)
                         ls._ev0[__k][e] = (sim.tick_events,
                                            len(sim.tick_events))
+                        if sl.outputs:
+                            ls._bk0[__k][e] = host_books(sim, sl.book_outputs)
+                            ls._ws0[__k][e] = gmap_state(sim.gmap)
                     if ls.slots[__k].requests:
                         ls._req_k = __k
                     try:
@@ -425,6 +621,12 @@ class ShadowLockstep:
                         ls._post[__k][e] = unit_store.pack(sim.units, ls.U)
                         evl, n0 = ls._ev0[__k][e]
                         ls._evs[__k][e] = list(evl[n0:])
+                        if sl.outputs:
+                            ls._fpost[__k][e] = {
+                                f: np.array(getattr(sim.gmap, f), copy=True)
+                                for f in sl.field_outputs}
+                            ls._bk1[__k][e] = host_books(sim, sl.book_outputs)
+                            ls._ws1[__k][e] = gmap_state(sim.gmap)
                 hooked.__wrapped__ = orig
                 setattr(cont, attr, hooked)
                 self._orig.append((cont, attr, orig))
@@ -526,15 +728,16 @@ class ShadowLockstep:
     def _compare(self, k, slot, tick) -> TickReport:
         pre = np.stack(self._pre[k])
         post = np.stack(self._post[k])
-        inputs = gather(slot.inputs, self._inp[k]) if slot.inputs else None
+        names = slot.capture_names
+        inputs = gather(names, self._inp[k]) if names else None
         self.last_inputs[slot.label] = inputs
         self.store.upload(pre)
         if slot.events:
             self.ring.begin()
         if slot.requests:
             self.req.begin()
-        coverage = np.asarray(slot.call(self.store, inputs, self.ring, self.req),
-                              dtype=np.int64)
+        coverage, books = split_result(slot.call(self.store, inputs, self.ring,
+                                                 self.req))
         got = self.store.download()
         host_changed = np.array([int((pre[e] != post[e]).any(axis=1).sum())
                                  for e in range(self.N)], dtype=np.int64)
@@ -551,6 +754,18 @@ class ShadowLockstep:
             req_recs = self.req.records()
             if first is None:
                 first = self._first_request_diff(tick, k, req_recs)
+        # #29 P6.4b: the field outputs, the books, the write set
+        dev_fields = hb = ws = None
+        if slot.outputs:
+            dev_fields = {f: inputs.fields[f].get() for f in slot.field_outputs}
+            hb = {b: np.array([self._bk1[k][e][b] - self._bk0[k][e][b]
+                               for e in range(self.N)], dtype=np.int64)
+                  for b in slot.book_outputs}
+            ws = [changed_attrs(self._ws0[k][e], self._ws1[k][e])
+                  for e in range(self.N)]
+            if first is None:
+                first = self._first_output_diff(tick, k, slot, dev_fields,
+                                                books, hb, ws)
         if first is None and self.alone is not None:
             for e in range(self.N):
                 self.alone.upload_tables(self.tables[e:e + 1])
@@ -559,13 +774,34 @@ class ShadowLockstep:
                     self.alone_ring.begin()
                 if slot.requests:
                     self.alone_req.begin()
-                slot.call(self.alone, None if inputs is None else inputs.env(e),
-                          self.alone_ring, self.alone_req)
+                ie = None if inputs is None else inputs.env(e)
+                _cov1, books1 = split_result(slot.call(self.alone, ie,
+                                                       self.alone_ring,
+                                                       self.alone_req))
                 if slot.requests and self.alone_req.records()[0] != req_recs[e]:
                     first = Divergence(tick, e, -1, "ALONE request list",
                                        len(self.alone_req.records()[0]),
                                        len(req_recs[e]))
                     break
+                if slot.outputs:
+                    for f in slot.field_outputs:
+                        fd = first_field_diff(f, ie.fields[f].get(),
+                                              dev_fields[f][e:e + 1])
+                        if fd is not None:
+                            first = Divergence(tick, e, -1, f"ALONE field {f}"
+                                               f"{tuple(fd[1])}", _num(fd[2]),
+                                               _num(fd[3]))
+                            break
+                    if first is not None:
+                        break
+                    for b in slot.book_outputs:
+                        if int(books1[b][0]) != int(books[b][e]):
+                            first = Divergence(tick, e, -1, f"ALONE book {b}",
+                                               int(books[b][e]),
+                                               int(books1[b][0]))
+                            break
+                    if first is not None:
+                        break
                 one = self.alone.download()[0]
                 if not np.array_equal(one, got[e]):
                     r, col = np.argwhere(one != got[e])[0]
@@ -594,7 +830,8 @@ class ShadowLockstep:
                          host_events=host_n,
                          requests=None if req_recs is None else req_recs,
                          host_requests=None if req_recs is None else [
-                             list(self._reqs[k][e]) for e in range(self.N)])
+                             list(self._reqs[k][e]) for e in range(self.N)],
+                         books=books, host_books=hb, write_set=ws)
         self.reports.append(rep)
         return rep
 
@@ -619,6 +856,33 @@ class ShadowLockstep:
                         return Divergence(tick, e, host[i][1],
                                           f"request[{i}].{name}", host[i][f],
                                           dev[i][f])
+        return None
+
+    def _first_output_diff(self, tick, k, slot, dev_fields, books, hb, ws):
+        """#29 P6.4b: the first difference in a slot's field outputs (tick,
+        env, field, tile), its books (the device's value against the host's
+        delta over the slot) or its write set (a GameMap attribute the host
+        changed that is neither an output nor host-only)."""
+        for f in slot.field_outputs:
+            want = np.stack([self._fpost[k][e][f] for e in range(self.N)])
+            fd = first_field_diff(f, dev_fields[f], want)
+            if fd is not None:
+                return Divergence(tick, fd[0], -1, f"field {f} {tuple(fd[1])}",
+                                  _num(fd[2]), _num(fd[3]))
+        if slot.book_outputs and books is None:
+            return Divergence(tick, 0, -1, "books (the kernel returned none)",
+                              0, 0)
+        for b in slot.book_outputs:
+            for e in range(self.N):
+                if int(books[b][e]) != int(hb[b][e]):
+                    return Divergence(tick, e, -1, f"book {b}", int(hb[b][e]),
+                                      int(books[b][e]))
+        for e in range(self.N):
+            bad = write_set_violations(slot, ws[e], self._ws0[k][e].get(ALIASES))
+            if bad:
+                return Divergence(tick, e, -1, f"write-set: {bad} changed on "
+                                  f"the host, neither an output nor host-only",
+                                  0, 0)
         return None
 
     def _first_event_diff(self, tick, k, ring_recs):
@@ -695,23 +959,37 @@ class ChainedSlots:
         self.events: list = []            # per run: the ring's records
         self.requests: list = []          # per run: the request list (P6.4a)
         self.runs = 0
+        self.books: dict = {}             # #29 P6.4b: the last run's books
+        self.inputs = None                # the last run's captured inputs
 
-    def _run_chain(self):
+    def _run_chain(self, args=(), kw=None):
         sim = self.driver.sim
         names = []
         for s in self.slots:
-            names.extend(n for n in s.inputs if n not in names)
-        inputs = gather(names, [capture(names, sim)]) if names else None
+            names.extend(n for n in s.capture_names if n not in names)
+        inputs = (gather(names, [capture(names, sim, args, kw)]) if names
+                  else None)
         pre = unit_store.pack(sim.units, self.U)
         self.store.upload(pre[None])
         if self.ring is not None:
             self.ring.begin()
         if self.req is not None:
             self.req.begin()
-        covs = [np.asarray(s.call(self.store, inputs, self.ring, self.req),
-                           dtype=np.int64) for s in self.slots]
+        covs, books = [], {}
+        for s in self.slots:
+            c, b = split_result(s.call(self.store, inputs, self.ring, self.req))
+            covs.append(c)
+            if b is not None:
+                books.update({n: int(v[0]) for n, v in b.items()})
         post = self.store.download()[0]
         unit_store.unpack(post, sim.units)
+        # #29 P6.4b: the device's field outputs written back into the
+        # GameMap IN PLACE (the books are the host side's to land:
+        # ``self.books``; the entry's inputs are ``self.inputs``)
+        for s in self.slots:
+            for f in s.field_outputs:
+                getattr(sim.gmap, f)[...] = inputs.fields[f].get()[0]
+        self.books, self.inputs = books, inputs
         if self.ring is not None:
             recs = self.ring.records()[0]
             sim.tick_events.extend(unit_events.event_of(r) for r in recs)
@@ -739,7 +1017,7 @@ class ChainedSlots:
                     if not _is_for(sim, a):
                         return __orig(*a, **k)
                     if __first:
-                        ch._run_chain()
+                        ch._run_chain(a, k)
                     return None
                 replaced.__wrapped__ = orig
                 setattr(cont, attr, replaced)
@@ -762,3 +1040,6 @@ class ChainedSlots:
 __all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture",
            "gather", "DeviceSlot", "TickReport", "Divergence",
            "slot_callables", "build_store", "ShadowLockstep", "ChainedSlots"]
+__all__ += ["ARG_INPUTS", "BOOK_PREFIX", "ALIASES", "book_ref", "host_books",
+            "OBJECT_PROBES", "gmap_state", "changed_attrs",
+            "write_set_violations", "split_result", "first_field_diff"]

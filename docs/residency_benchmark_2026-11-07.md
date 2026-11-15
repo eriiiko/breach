@@ -1529,3 +1529,30 @@ serial per-env passes (the gather and the plant pass, one thread per env walking
 O(U) shove scan being the parts that scale. The done kernel's ~0.8 ms at N = 64 is its one-thread-per-env O(U^2)
 team count plus the sync: a block reduction per env (or a team bitset) is the saving when it runs every tick. The round
 trips are dominated by the store's 3.9 MB download at N = 64, which the device backend never does per tick.
+
+## P6.4b: the per-env serial applier and the tick-end clears (2026-11-15)
+
+**What.** The per-env serial applier (`cpp/src/cuda_applier.cu`: one block per env, thread 0 walking the env's
+DESTROY_WALL effects through the topology seam's device functions, `cpp/src/cuda_topology.cuh`) and the tick-end
+clears (one `(N, h, w)` launch zeroing heat, rad_net, rad_amb, rad_flux). Class T: nothing in the played tick calls
+them.
+
+**Method.** `tests/cuda_unit_topology_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), with
+another agent's builds and gates on the same machine (P6.4a). The planes: the gate's fire scene (30 x 40, the 27
+topology planes per env) replicated to N envs, re-copied from a pristine device copy before every repetition (outside
+the timing). "applier" is `unit_kernels.apply_effects`: the list's pinned staging and H2D, the books' memset, the walk
+of k destroys per env (the scene's wood then hull tiles, in row-major order), the books' D2H and sync; "clears" is the
+launch plus a device sync. Medians of 100 repetitions; per cell the three processes' medians.
+
+| N | 1 destroy / env (ms) | 8 / env | 64 / env | the clears |
+|---|---|---|---|---|
+| 1 | 0.293, 0.288, 0.289 | 0.293, 0.317, 0.313 | 0.519, 0.509, 0.530 | 0.038, 0.067, 0.053 |
+| 8 | 0.268, 0.301, 0.302 | 0.301, 0.334, 0.335 | 0.531, 0.562, 0.561 | 0.039, 0.067, 0.053 |
+| 64 | 0.421, 0.455, 0.458 | 0.460, 0.486, 0.488 | 0.773, 0.806, 0.807 | 0.040, 0.067, 0.067 |
+
+**Reading.** The floor (~0.29 ms) is the call's two host syncs (the stage's event wait, the books' D2H) and the
+staging; the walk itself is ~3.5 us per destroy on one thread (64 destroys add ~0.23 ms at every N, the envs' walks
+running in parallel blocks). A tick's burn-throughs are a handful (the fire scene: at most 3 per env per tick), so the
+serial walk is far below the §4.3 share; the fan-out the design reserves is for P7c's thousands of deposit records,
+not for destroys. At N = 64 the extra ~0.15 ms is the larger list's staging and the books' copy. In the device backend
+the books come down only at checkpoint cadence (§5.10), which removes the floor's second sync.

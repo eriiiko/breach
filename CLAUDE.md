@@ -73,7 +73,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list |
+| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, device topology seam |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
 | `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
@@ -151,6 +151,8 @@ amends the rule file, never this line's length.
 | Device unit library | `cpp/src/cuda_unit_lib.cuh` + `cpp/src/cuda_unit_damage.cuh` | THE `__device__` functions unit kernels share, incl. the one device `apply_packet`; never a copy in a slot TU |
 | Event ring | `src/simulation/unit_events.py` + `cpp/src/cuda_unit_events.*` | What a device unit kernel emits, as records in the reference's emission order |
 | Request list | `src/simulation/unit_requests.py` + `UnitRecordList` | What a device unit kernel does that is not a row write, as records in the reference's order |
+| Per-env serial applier | `src/simulation/applier.py` + generated `cpp/src/applier_layout.h` + `cpp/src/cuda_applier.{h,cu}` | THE device form of every order-dependent law that writes the map: one block per env walking its effect records in the reference's order; never a second walker |
+| Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
 
 ### Determinism gates
 

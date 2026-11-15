@@ -49,6 +49,7 @@
 #include <string>
 
 #include "cuda_batch.cuh"   // the tick stream
+#include "gas_energy.h"     // the seam's mirror (#29 P6.4b: shared, not copied)
 #include "philox32.h"       // Salmon et al. SC'11 (vendored; host + device)
 
 namespace breach_cuda {
@@ -114,13 +115,6 @@ __device__ inline int64_t div_round_i64(int64_t n, int64_t d) {
     const unsigned long long q = (2ULL * a + (unsigned long long)d) /
                                  (2ULL * (unsigned long long)d);
     return n >= 0 ? (int64_t)q : -(int64_t)q;
-}
-
-// Python's floor division for a positive divisor.
-__device__ inline int64_t floordiv_i64(int64_t a, int64_t b) {
-    int64_t q = a / b;
-    if ((a % b) != 0 && a < 0) q -= 1;
-    return q;
 }
 
 // Checked int64 arithmetic: false on overflow (numpy's int64 store raises).
@@ -219,15 +213,12 @@ struct EnvView {
     __device__ int64_t bulk_n(int i) const {
         return (int64_t)g(o2, i) + (int64_t)g(n2, i);
     }
-    // GameMap.gas_energy_refresh_cell on an accountable cell.
+    // GameMap.gas_energy_refresh_cell on an accountable cell (the seam's one
+    // saturating mirror, gas_energy.h -- shared with the topology seam since
+    // #29 P6.4b).
     __device__ void refresh(int i) const {
-        const int64_t nn = bulk_n(i);
-        int32_t* tp = temperature + cell0 + i;
-        if (nn < 1) { *tp = 0; return; }
-        int64_t t = floordiv_i64(gas_energy[cell0 + i], nn) - t_amb;
-        if (t > I32_MAX) t = I32_MAX;
-        else if (t < I32_MIN) t = I32_MIN;
-        *tp = (int32_t)t;
+        temperature[cell0 + i] =
+            gas_energy::mirror_sat_q(gas_energy[cell0 + i], bulk_n(i), t_amb);
     }
     // GameMap.gas_energy_deposit on an accountable cell: nothing on de == 0
     // (no book, no refresh); else E += de, the channel books it, the mirror

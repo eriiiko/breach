@@ -29,6 +29,9 @@ paths:
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
 
+## GameMap
+- `GameMap.destroy_wall` and `GameMap.on_tile_changed` have a device twin, `cpp/src/cuda_topology.cuh` (the Device topology seam, `.claude/rules/device-units.md`): a change to either, or to the gas energy primitives they call, lands there in the SAME patch. The twin ledger does not catch it (the corpus burns no wall); `tests/cuda_unit_topology_check.py` does.
+
 ## FieldEdit
 - The only way to write a continuous field: never `gmap.<field>[...] +=` inline.
 - The `gas_energy` row is a DUAL WRITE (store + mirror, through the seam), vetoed by the accountable set. The `gas` policy REFUSES a conservative slice: bulk N is what `gas_energy` is denominated against (arc #54).

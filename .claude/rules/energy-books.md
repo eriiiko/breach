@@ -25,6 +25,7 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## Gas energy seam
 - EVERY change of gas N or gas heat goes through the seam: MOVED mass carries its source's `T_abs`, MINTED mass (no gas donor) is born at ambient.
+- The seam's device structural rows (the saturating mirror, retire, born at ambient) live in `cpp/src/gas_energy.h`, shared by every device caller (the device edit queue, the Device topology seam): never a private copy in a TU.
 - Each call BOOKS its net effect into a named `gas_energy_books` channel (`diag_*` = energy crossing the books' boundary, excluded from `gas_energy_seam_net()`). A writer that skips the seam is invisible to the closure identity, which is the whole failure mode arc #54 exists to close.
 
 ## Gas temperature is a mirror

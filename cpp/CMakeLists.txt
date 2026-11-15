@@ -151,6 +151,11 @@ if(BREACH_CUDA)
         src/cuda_unit_verbs.cu      # slot 1b
         src/cuda_unit_done.cu       # the done kernel (MatchRules)
         src/cuda_unit_verbs_probe.cu # TEST-ONLY: the gates on synthetic rows
+        # #29 P6.4b: the per-env serial applier over the topology seam as device
+        # functions (cuda_topology.cuh), and the tick-end clears; Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_applier.cu         # slot 9 (burn-through), the tick-end clears
+        src/cuda_topology_probe.cu  # TEST-ONLY: on_tile_changed on fixture maps
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

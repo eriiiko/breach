@@ -441,3 +441,167 @@ __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
            "movement_probe", "CLAIM_WIDTH", "claims_of",
            "pad_claims", "status_tick", "HEAT_FIELDS", "GAS_FIELDS",
            "heat_damage", "gas_rows", "PROBE_PACKET", "damage_probe"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P6.4b: the per-env serial applier (slot 9's burn-through) and the
+# tick-end clears -- the FIELD side: their outputs are planes and books
+# ---------------------------------------------------------------------------
+#: A burn-through list's row: (y, x, valid); a padding row is valid 0.
+WALL_WIDTH = 3
+
+
+def walls_of(destroyed) -> np.ndarray:
+    """Slot 9's input -- slot 7's burn-through list, in its order -- as
+    ``(R, 3)`` int64 rows ``(y, x, 1)``."""
+    rows = [(int(y), int(x), 1) for (y, x) in destroyed]
+    return np.array(rows, dtype=np.int64).reshape(len(rows), WALL_WIDTH)
+
+
+def pad_walls(per_env) -> np.ndarray:
+    """N envs' ``(R_e, 3)`` wall rows as one ``(N, max(1, R), 3)`` array, the
+    short envs padded with ``valid = 0`` rows."""
+    per_env = [np.asarray(r, dtype=np.int64).reshape(-1, WALL_WIDTH)
+               for r in per_env]
+    R = max([1] + [r.shape[0] for r in per_env])
+    out = np.zeros((len(per_env), R, WALL_WIDTH), dtype=np.int64)
+    for e, r in enumerate(per_env):
+        out[e, :r.shape[0]] = r
+    return out
+
+
+def _plane_ptrs(name, n_env, fields):
+    """The topology planes' device addresses in ``applier.PLANES`` order,
+    checked (dtype, env count, one (h, w), the per-cell width), and the
+    shape ``(n_gases, h, w)``."""
+    from simulation import applier
+    g = fields.get("gas")
+    if g is None:
+        raise ValueError(f"unit kernel {name}: field 'gas' missing")
+    if g.ndim != 4:
+        raise ValueError(f"unit kernel {name}: field 'gas' is {g.shape}, "
+                         f"not (N, G, h, w)")
+    _, n_gases, h, w = (int(x) for x in g.shape)
+    ptrs = np.zeros(applier.N_PLANES, dtype=np.uint64)
+    for k, (pname, dt, cw) in enumerate(applier.PLANES):
+        a = fields.get(pname)
+        if a is None:
+            raise ValueError(f"unit kernel {name}: field {pname!r} missing")
+        if np.dtype(a.dtype) != np.dtype(dt):
+            raise ValueError(f"unit kernel {name}: field {pname!r} is {a.dtype}, "
+                             f"the GameMap field is {np.dtype(dt)}")
+        want = ((n_env, n_gases, h, w) if cw == "G" else
+                (n_env, h, w) if cw == 1 else (n_env, h, w, int(cw)))
+        if tuple(int(x) for x in a.shape) != want:
+            raise ValueError(f"unit kernel {name}: field {pname!r} is {a.shape}, "
+                             f"not {want}")
+        if not a.flags.c_contiguous:
+            raise ValueError(f"unit kernel {name}: field {pname!r} is not "
+                             f"C-contiguous")
+        ptrs[k] = int(a.data.ptr)
+    return ptrs, n_gases, h, w
+
+
+def apply_effects(store, dev_applier, fields: dict, per_env) -> dict:
+    """THE PER-ENV SERIAL APPLIER: each env's effect records (``per_env``, a
+    list of ``(R_e, applier.F)`` int64, :func:`simulation.applier.
+    destroy_records`) walked in order on the env's planes -- ``fields`` maps
+    every ``applier.PLANES`` name to a DEVICE array ``(N, ...)`` in the
+    GameMap field's dtype (``ResidentBatch.buffers`` as they are), written IN
+    PLACE -- through the topology seam's device functions, over the store's
+    device tables. Returns the books ``{name: (N,) int64}``. Refuses (after
+    the run: the first ``cap`` effects ARE applied) a run that dropped effects
+    past the list's capacity (:class:`simulation.applier.EffectOverflow`) or
+    faulted (:class:`simulation.applier.ApplierFault`), naming the envs."""
+    from simulation import applier
+    n = store.shape[0]
+    if dev_applier.n_env != n:
+        raise ValueError(f"unit kernel apply_effects: the applier is for "
+                         f"{dev_applier.n_env} envs, the store {n}")
+    ptrs, n_gases, h, w = _plane_ptrs("apply_effects", n, fields)
+    recs, counts = applier.pack(per_env, dev_applier.cap)
+    dev_applier.stage(recs, counts)
+    books = applier.books_dict(store.bp.applier_run(
+        dev_applier.buffer, store.tables, ptrs, n_gases, h, w))
+    store.last_books = books
+    if books["dropped"].any():
+        envs = [int(e) for e in np.nonzero(books["dropped"])[0]]
+        raise applier.EffectOverflow(
+            f"unit kernel apply_effects: {int(books['dropped'].sum())} effect(s) "
+            f"in env(s) {envs} did not fit the applier's list (cap "
+            f"{dev_applier.cap}): the first {dev_applier.cap} were applied")
+    if books["faults"].any():
+        envs = [int(e) for e in np.nonzero(books["faults"])[0]]
+        raise applier.ApplierFault(
+            f"unit kernel apply_effects: {int(books['faults'].sum())} effect(s) "
+            f"in env(s) {envs} left the range the topology seam was proved for "
+            f"(nothing written for them)")
+    return books
+
+
+def burn_through(store, dev_applier, fields: dict, walls) -> tuple:
+    """Slot 9 (``Simulation._burn_through_walls``): each env's burn-through
+    list (``walls`` ``(N, R, 3)``, :func:`pad_walls`) as DESTROY_WALL
+    effects through :func:`apply_effects`. Returns ``(coverage, books)``:
+    coverage the destroys that acted per env. The host-only side (the render
+    marks, the sky mask's flag, ``_tile_serial``, the solid books' sink, the
+    render-only Wall / DoorDestroyedEvent) is the caller's."""
+    from simulation import applier
+    w = np.asarray(walls, dtype=np.int64)
+    per_env = [applier.destroy_records(w[e][w[e, :, 2] != 0][:, :2])
+               for e in range(w.shape[0])]
+    books = apply_effects(store, dev_applier, fields, per_env)
+    return books["applied"].copy(), books
+
+
+def tick_end_clears(bp, fields: dict, active=None) -> None:
+    """The tick-end clears (``Simulation._clear_tick_buffers``' planes,
+    ``applier.CLEAR_PLANES``) zeroed in place on every env whose ``active``
+    byte is set (default: all; the reference clears only with a physics
+    runner). ``fields`` maps each clear plane to a DEVICE ``(N, h, w)``
+    array; ``active`` a DEVICE ``(N,)`` uint8 array or None."""
+    from simulation import applier
+    ptrs = np.zeros(len(applier.CLEAR_PLANES), dtype=np.uint64)
+    shape = None
+    for k, (pname, dt) in enumerate(applier.CLEAR_PLANES):
+        a = fields.get(pname)
+        if a is None:
+            raise ValueError(f"unit kernel tick_end_clears: field {pname!r} missing")
+        if np.dtype(a.dtype) != np.dtype(dt) or a.ndim != 3:
+            raise ValueError(f"unit kernel tick_end_clears: field {pname!r} is "
+                             f"{a.dtype} {a.shape}, not (N, h, w) {np.dtype(dt)}")
+        if shape is None:
+            shape = tuple(int(x) for x in a.shape)
+        elif tuple(int(x) for x in a.shape) != shape:
+            raise ValueError("unit kernel tick_end_clears: the planes' shapes differ")
+        ptrs[k] = int(a.data.ptr)
+    n, h, w = shape
+    act = 0
+    if active is not None:
+        if np.dtype(active.dtype) != np.dtype(np.uint8) or tuple(active.shape) != (n,):
+            raise ValueError("unit kernel tick_end_clears: active must be (N,) uint8")
+        act = int(active.data.ptr)
+    bp.tick_end_clears(n, h, w, ptrs, act)
+
+
+def topology_probe(store, dev_applier, fields: dict, per_env) -> dict:
+    """TEST-ONLY: ``material[y, x] = m; on_tile_changed(y, x)`` on the device
+    for each env's ``(y, x, m)`` rows (``cpp/src/cuda_topology_probe.cu``),
+    on the planes in place; returns the books, unrefused."""
+    from simulation import applier
+    n = store.shape[0]
+    ptrs, n_gases, h, w = _plane_ptrs("topology_probe", n, fields)
+    recs_in = []
+    for r in per_env:
+        r = np.asarray(r, dtype=np.int64).reshape(-1, 3)
+        out = np.zeros((r.shape[0], applier.F), dtype=np.int64)
+        out[:, 1:4] = r
+        recs_in.append(out)
+    recs, counts = applier.pack(recs_in, dev_applier.cap)
+    dev_applier.stage(recs, counts)
+    return applier.books_dict(store.bp.topology_probe_tile_changed(
+        dev_applier.buffer, store.tables, ptrs, n_gases, h, w))
+
+
+__all__ += ["WALL_WIDTH", "walls_of", "pad_walls", "apply_effects",
+            "burn_through", "tick_end_clears", "topology_probe"]
