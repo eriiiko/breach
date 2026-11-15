@@ -1529,6 +1529,7 @@ serial per-env passes (the gather and the plant pass, one thread per env walking
 O(U) shove scan being the parts that scale. The done kernel's ~0.8 ms at N = 64 is its one-thread-per-env O(U^2)
 team count plus the sync: a block reduction per env (or a team bitset) is the saving when it runs every tick. The round
 trips are dominated by the store's 3.9 MB download at N = 64, which the device backend never does per tick.
+
 ## P6.4b: the per-env serial applier and the tick-end clears (2026-11-15)
 
 **What.** The per-env serial applier (`cpp/src/cuda_applier.cu`: one block per env, thread 0 walking the env's

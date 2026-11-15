@@ -987,6 +987,8 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("store"), py::arg("tables"), py::arg("kind"), py::arg("tick"),
               py::arg("base"),
               "#29 P6.4a TEST-ONLY: the hand verbs' gates on the store's rows.");
+    }
+
     // #29 P6.4b: THE PER-ENV SERIAL APPLIER and THE TICK-END CLEARS
     // (cuda_applier.h; Class T). The planes are device addresses of the
     // (N, ...) arrays in applier_layout.h's order; the Python face is

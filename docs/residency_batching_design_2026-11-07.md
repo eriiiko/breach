@@ -1019,6 +1019,7 @@ landed as cut; no decision moved. One line each:
   1b' + 1c on ship and verbs; DONE (elimination, a limit draw, a fallen team,
   a batch ending on five different ticks). Every gate broken once (the
   patch's report).
+
 **As built (P6.4b, 2026-11-15).** P6.4 was cut in two patches run side by
 side: P6.4a (slot 1b's verbs, the `done` kernel) and P6.4b, the FIELD side:
 the per-env serial applier, the topology seam as device functions, slot 9
