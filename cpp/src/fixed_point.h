@@ -876,6 +876,21 @@ FP_HD inline uint64_t isqrt_u64_q(uint64_t x) {
     return res;
 }
 
+// isqrt_u128_q (#29 P6.4a): floor(sqrt(hi * 2^64 + lo)) of ANY 128-bit
+// radicand, exact -- the root (below 2^64) built bit by bit from the top, each
+// trial squared in 128 bits (umul64_wide). The twin of unit_fixed.isqrt past
+// uint64 (the shove's lever term squares an impulse of up to 2^35).
+FP_HD inline uint64_t isqrt_u128_q(uint64_t hi, uint64_t lo) {
+    uint64_t r = 0;
+    for (int b = 63; b >= 0; --b) {
+        const uint64_t t = r | ((uint64_t)1 << b);
+        uint64_t ph, pl;
+        umul64_wide(t, t, &ph, &pl);
+        if (ph < hi || (ph == hi && pl <= lo)) r = t;
+    }
+    return r;
+}
+
 // isqrt_q: unit_fixed.isqrt of an int64 (a negative radicand is 0, as Python's
 // guard makes it).
 FP_HD inline int64_t isqrt_q(int64_t n) {

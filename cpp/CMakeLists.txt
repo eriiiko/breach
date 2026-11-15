@@ -146,6 +146,11 @@ if(BREACH_CUDA)
         src/cuda_unit_lib_probe.cu  # TEST-ONLY: the unit library on synthetic rows
         src/cuda_unit_movement.cu   # #29 P6.2m: slot 3 (the continuous path)
         src/cuda_unit_movement_probe.cu  # TEST-ONLY: the walk's library functions
+        # #29 P6.4a: slot 1b's hand verbs (the request list: cuda_unit_events.cu's
+        # record list), the done kernel; Class T, pure integer.
+        src/cuda_unit_verbs.cu      # slot 1b
+        src/cuda_unit_done.cu       # the done kernel (MatchRules)
+        src/cuda_unit_verbs_probe.cu # TEST-ONLY: the gates on synthetic rows
         # #29 P6.4b: the per-env serial applier over the topology seam as device
         # functions (cuda_topology.cuh), and the tick-end clears; Class T, pure
         # integer, on the same target-wide CUDA determinism floor.

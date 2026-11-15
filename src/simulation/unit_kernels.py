@@ -365,7 +365,76 @@ def lib_probe(store, op: int, a0=0, a1=0, a2=0, a3=0):
                                    int(a0), int(a1), int(a2), int(a3))
 
 
+# ---------------------------------------------------------------------------
+# #29 P6.4a: slot 1b's hand verbs and the done kernel
+# ---------------------------------------------------------------------------
+def _check_requests(name, store, requests):
+    if requests is None:
+        raise ValueError(f"unit kernel {name}: a RequestList is required")
+    if requests.shape[0] != store.shape[0] or requests.n_units != store.shape[1]:
+        raise ValueError(f"unit kernel {name}: the request list is for "
+                         f"({requests.shape[0]} envs, {requests.n_units} rows), the "
+                         f"store {store.shape[:2]}")
+
+
+def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
+    """Slot 1b (``Simulation._consume_direct_intents``, the continuous path):
+    a dead or turned row drops its trigger, wind-up and plant; every living
+    marine consumes its own latches (throw, plant, use, reload, shove) and
+    advances its wind-up and plant. ``requests`` a begun
+    :class:`simulation.unit_requests.RequestList` (the grenades released, the
+    charges laid -- accepted or refused at the capacity --, the doors flipped,
+    in id order); ``ticks`` ``(N,)`` each env's ``sim.tick``;
+    ``door_spans`` ``(N, R, 3)`` (``unit_requests.pad_door_spans``);
+    ``charges_live`` ``(N,)`` the live planted charges. ``store.last_refused``
+    holds the plants refused at ``CHARGE_CAPACITY``. REFUSES a run whose
+    requests the list could not hold (:class:`simulation.unit_requests.
+    UnitRequestOverflow`, naming the kernel and the env) as it refuses a
+    fault."""
+    from simulation.unit_requests import UnitRequestOverflow
+    _check_requests("verbs", store, requests)
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    s = np.ascontiguousarray(door_spans, dtype=np.int64)
+    lv = np.ascontiguousarray(charges_live, dtype=np.int64).reshape(-1)
+    cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_verbs(
+        store.buffer, store.tables, requests.buffer, t, s, lv))
+    cov = _done(store, "verbs", (cov, flt, ref))
+    store.last_dropped = drp
+    if drp.any():
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise UnitRequestOverflow(
+            f"unit kernel verbs: {int(drp.sum())} request(s) in env(s) {envs} "
+            f"did not fit the request list (its R_max, or a row's staging): "
+            f"nothing was written past the capacity")
+    return cov
+
+
+#: The done kernel's columns.
+DONE_COLUMNS = ("terminal", "outcome", "winner", "living_teams")
+DONE_NONE, DONE_WIN, DONE_DRAW = 0, 1, 2
+
+
+def match_done(store, ticks) -> np.ndarray:
+    """The done kernel (``MatchRules.is_terminal`` / ``living_teams`` /
+    ``result``) on every env: ``(N, 4)`` int64 :data:`DONE_COLUMNS` -- the
+    outcome :data:`DONE_NONE` while not terminal, :data:`DONE_WIN` (the
+    winner the last marine team standing) or :data:`DONE_DRAW`; ``ticks``
+    ``(N,)`` each env's ``sim.tick`` after the step; the limit is the tables'
+    ``match_limit_ticks`` (0: the sim plays no match, no limit)."""
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    return np.asarray(store.bp.unit_match_done(store.buffer, store.tables, t))
+
+
+def verbs_probe(store, kind=0, tick=0, base=0) -> np.ndarray:
+    """TEST-ONLY: the hand verbs' gates on the store's rows (see
+    ``cuda_unit_kernels.h``, ``unit_verbs_probe``) -> ``(N, U, 16)``."""
+    return np.asarray(store.bp.unit_verbs_probe(store.buffer, store.tables,
+                                                int(kind), int(tick), int(base)))
+
+
 __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
+           "verbs", "DONE_COLUMNS", "DONE_NONE", "DONE_WIN", "DONE_DRAW",
+           "match_done", "verbs_probe",
            "exposure_decay", "integrate_turn", "WIND_FIELDS", "wind_impulse",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",
            "convert_zombies", "lib_probe", "MOVEMENT_FIELDS", "movement",

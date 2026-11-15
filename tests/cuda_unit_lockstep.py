@@ -58,6 +58,23 @@ slot's entry, stacked -- the shape ``ResidentBatch.buffers`` holds, so the
 device backend passes its own). A new input kind is a row of :data:`INPUTS`
 (a capture function of the sim) or a ``field:<GameMap attribute>``.
 
+REQUESTS (#29 P6.4a): a slot whose kernel does something that is not a row
+write (``DeviceSlot(..., requests=True)``: slot 1b -- a grenade released, a
+charge laid, a door flipped) is handed a ``simulation.unit_requests.
+RequestList`` the harness begins before the kernel (after the ring in the
+call: ``run(store[, inputs][, ring], requests)``); while the host slot runs the
+harness records, in the host's order, each grenade ``Simulation.
+_release_grenade`` appended, each charge offered to ``charges.place`` with its
+answer and each door ``Simulation._direct_use`` flipped (read through the
+verb's own ``verb_gates.use_door``), as request records, and compares them
+with the device's list record for record (the first difference as (tick, env,
+request index, field)); the alone run's list must equal the batch's env i.
+In the CHAINED form the list is turned into the host's objects
+(``unit_requests.apply_to_host``: the projectiles appended, each charge
+offered to ``charges.place`` -- whose answer must be the record's -- and the
+doors flipped) right after the unpack. Inputs ``door_spans`` (a table) and
+``charges_live`` (a SCALAR input: ``SlotInputs.scalars[name]``, ``(N,)``).
+
 EVENTS (#29 P6.3): a slot whose kernel emits (``DeviceSlot(...,
 events=True)``: the slots that hurt, over the device ``apply_packet``) is
 handed an :class:`simulation.unit_events.EventRing` the harness begins before
@@ -123,17 +140,36 @@ def _capture_claims(sim):
     return unit_kernels.claims_of(sim)
 
 
+def _capture_door_spans(sim):                      # #29 P6.4a
+    from simulation import unit_requests
+    return unit_requests.door_spans(sim)
+
+
+def _capture_charges_live(sim):                    # #29 P6.4a
+    from simulation import unit_requests
+    return unit_requests.charges_live(sim)
+
+
+def _pad_door_spans(vals):
+    from simulation import unit_requests
+    return unit_requests.pad_door_spans(vals)
+
+
 #: name -> (kind, capture function of the sim at the slot's entry). kind
 #: "tick" gathers to ``SlotInputs.tick``; "table" to ``SlotInputs.tables``
-#: (an ``(R, C)`` int64 per env, padded across envs by ``pad``).
+#: (an ``(R, C)`` int64 per env, padded across envs by ``pad``); "scalar"
+#: (#29 P6.4a) to ``SlotInputs.scalars[name]`` (an ``(N,)`` int64).
 INPUTS: dict = {
     "tick": ("tick", _capture_tick),
     "order_requests": ("table", _capture_requests),
     "credit_claims": ("table", _capture_claims),     # #29 P6.3
+    "door_spans": ("table", _capture_door_spans),    # #29 P6.4a
+    "charges_live": ("scalar", _capture_charges_live),   # #29 P6.4a
 }
 #: How a table input pads across envs (default: zeros).
 PADS: dict = {"order_requests": unit_kernels.pad_requests,
-              "credit_claims": unit_kernels.pad_claims}
+              "credit_claims": unit_kernels.pad_claims,
+              "door_spans": _pad_door_spans}
 
 
 # #29 P6.4b: inputs read from the slot callable's ARGUMENTS (a slot whose
@@ -292,6 +328,7 @@ class SlotInputs:
     tables: dict = field(default_factory=dict)  # name -> (N, R, C) int64
     fields: dict = field(default_factory=dict)  # name -> device (N, ...)
     _host_fields: dict = field(default_factory=dict)   # name -> np (N, ...)
+    scalars: dict = field(default_factory=dict)  # name -> (N,) int64 (P6.4a)
 
     def env(self, e: int) -> "SlotInputs":
         """Env ``e``'s inputs alone (an N = 1 batch)."""
@@ -302,7 +339,8 @@ class SlotInputs:
                     for k, v in self.tables.items()},
             fields={k: cp.ascontiguousarray(cp.asarray(v[e:e + 1]))
                     for k, v in self._host_fields.items()},
-            _host_fields={k: v[e:e + 1] for k, v in self._host_fields.items()})
+            _host_fields={k: v[e:e + 1] for k, v in self._host_fields.items()},
+            scalars={k: v[e:e + 1].copy() for k, v in self.scalars.items()})
 
 
 def capture(names, sim, args=(), kw=None) -> dict:
@@ -337,6 +375,8 @@ def gather(names, per_env) -> SlotInputs:
             inp.fields[key] = cp.asarray(host)
         elif n in INPUTS and INPUTS[n][0] == "tick":
             inp.tick = np.array(vals, dtype=np.int64)
+        elif n in INPUTS and INPUTS[n][0] == "scalar":
+            inp.scalars[n] = np.array(vals, dtype=np.int64)
         else:
             pad = PADS.get(n)
             if pad is not None:
@@ -355,12 +395,18 @@ class DeviceSlot:
     the rows it changed --, the compared ``columns`` (default all) and the
     ``inputs`` it reads (names of :data:`INPUTS` or ``field:<name>``);
     ``events``: the kernel appends to an event ring, handed as the last
-    argument and compared with the host's events (#29 P6.3)."""
+    argument and compared with the host's events (#29 P6.3); ``requests``:
+    the kernel appends to a request list (``unit_requests.RequestList``),
+    handed after the ring and compared with what the host did in the slot --
+    the grenades released, the charges offered to ``charges.place`` (placed
+    or refused), the doors flipped -- record for record, in order (#29
+    P6.4a)."""
     label: str
     run: Callable
     columns: tuple = ()
     inputs: tuple = ()
     events: bool = False
+    requests: bool = False
     # #29 P6.4b -- FIELD OUTPUTS: what the slot writes besides unit rows:
     # "field:<GameMap attribute>" (the kernel writes the input's DEVICE array
     # in place; captured at the entry like an input) and "book:<name>" (a
@@ -372,12 +418,14 @@ class DeviceSlot:
     outputs: tuple = ()
     host_only: tuple = ()
 
-    def call(self, store, inputs: SlotInputs | None, ring=None):
+    def call(self, store, inputs: SlotInputs | None, ring=None, req=None):
         args = [store]
         if self.inputs or self.outputs:
             args.append(inputs)
         if self.events:
             args.append(ring)
+        if self.requests:
+            args.append(req)
         return self.run(*args)
 
     @property
@@ -410,6 +458,8 @@ class TickReport:
     label: str = ""                   # the slot's label
     events: np.ndarray | None = None       # (N,) the ring's records (events slots)
     host_events: np.ndarray | None = None  # (N,) the host's events in the slot
+    requests: list | None = None           # per env: the device's request records
+    host_requests: list | None = None      # per env: the host's (P6.4a)
     books: dict | None = None              # #29 P6.4b: the device's {name: (N,)}
     host_books: dict | None = None         # the host's delta over the slot
     write_set: list | None = None          # per env: the attributes the host changed
@@ -473,7 +523,9 @@ class ShadowLockstep:
 
     def __init__(self, drivers, slot, bp=None,
                  check_alone: bool = True, n_units: int | None = None,
-                 e_max: int = unit_events.E_MAX):
+                 e_max: int = unit_events.E_MAX, r_max: int | None = None):
+        if r_max is None:
+            from simulation.unit_requests import R_MAX as r_max
         self.drivers = list(drivers)
         self.slots = list(slot) if isinstance(slot, (list, tuple)) else [slot]
         self.multi = isinstance(slot, (list, tuple))
@@ -496,6 +548,14 @@ class ShadowLockstep:
                      if emits else None)
         self.alone_ring = (unit_events.EventRing(1, self.U, e_max, bp=bp)
                            if emits and self.alone is not None else None)
+        # #29 P6.4a: a slot that makes requests gets a request list (and the
+        # host's own requests are captured while it runs: _install_requests)
+        from simulation import unit_requests
+        asks = any(s.requests for s in self.slots)
+        self.req = (unit_requests.RequestList(self.N, self.U, r_max, bp=bp)
+                    if asks else None)
+        self.alone_req = (unit_requests.RequestList(1, self.U, r_max, bp=bp)
+                          if asks and self.alone is not None else None)
         self.layout = unit_store.layout()
         self._masks = [self._column_mask(s.columns) for s in self.slots]
         self._orig = []
@@ -512,6 +572,8 @@ class ShadowLockstep:
         self._inp = [[None] * self.N for _ in range(k)]
         self._ev0 = [[None] * self.N for _ in range(k)]
         self._evs = [[None] * self.N for _ in range(k)]
+        self._reqs = [[[] for _ in range(self.N)] for _ in range(k)]   # P6.4a
+        self._req_k = None          # the requests slot running now (its index)
         # #29 P6.4b: the field outputs' host values at the exit, the books
         # at the entry / exit, the write-set snapshots
         self._fpost = [[None] * self.N for _ in range(k)]
@@ -550,9 +612,12 @@ class ShadowLockstep:
                         if sl.outputs:
                             ls._bk0[__k][e] = host_books(sim, sl.book_outputs)
                             ls._ws0[__k][e] = gmap_state(sim.gmap)
+                    if ls.slots[__k].requests:
+                        ls._req_k = __k
                     try:
                         return __orig(*a, **kw)
                     finally:
+                        ls._req_k = None
                         ls._post[__k][e] = unit_store.pack(sim.units, ls.U)
                         evl, n0 = ls._ev0[__k][e]
                         ls._evs[__k][e] = list(evl[n0:])
@@ -565,7 +630,64 @@ class ShadowLockstep:
                 hooked.__wrapped__ = orig
                 setattr(cont, attr, hooked)
                 self._orig.append((cont, attr, orig))
+        if any(s.requests for s in self.slots):
+            self._install_requests()
         return self
+
+    def _install_requests(self):
+        """#29 P6.4a: while a requests slot runs, record what the HOST does
+        that a request record stands for, in the order it does it: each
+        grenade ``Simulation._release_grenade`` appends, each charge offered
+        to ``charges.place`` (with its answer), each door
+        ``Simulation._direct_use`` flips (the door read first through the
+        verb's own pure scan, ``verb_gates.use_door``). Reads only."""
+        from simulation import charges, unit_requests, verb_gates
+        from simulation.simulation import Simulation
+        ls = self
+
+        def _sink():
+            if ls._env is None or ls._req_k is None:
+                return None
+            return ls._reqs[ls._req_k][ls._env]
+
+        orig_rel = Simulation._release_grenade
+
+        def release(sim, u, *a, __o=orig_rel, **kw):
+            n0 = len(sim.projectiles)
+            out = __o(sim, u, *a, **kw)
+            s = _sink()
+            if s is not None and len(sim.projectiles) > n0:
+                s.append(unit_requests.throw_record(sim, sim.projectiles[-1]))
+            return out
+        release.__wrapped__ = orig_rel
+        Simulation._release_grenade = release
+        self._orig.append((Simulation, "_release_grenade", orig_rel))
+
+        orig_place = charges.place
+
+        def place(sim, charge, __o=orig_place):
+            ok = __o(sim, charge)
+            s = _sink()
+            if s is not None:
+                s.append(unit_requests.plant_record(charge, sim.tick, ok))
+            return ok
+        place.__wrapped__ = orig_place
+        charges.place = place
+        self._orig.append((charges, "place", orig_place))
+
+        orig_use = Simulation._direct_use
+
+        def use(sim, u, __o=orig_use):
+            s = _sink()
+            door = verb_gates.use_door(sim, u) if s is not None else None
+            out = __o(sim, u)
+            if s is not None and door is not None:
+                s.append(unit_requests.use_record(u.id, sim.tick,
+                                                  sim._doors.index(door)))
+            return out
+        use.__wrapped__ = orig_use
+        Simulation._direct_use = use
+        self._orig.append((Simulation, "_direct_use", orig_use))
 
     def uninstall(self):
         for cont, attr, orig in reversed(self._orig):
@@ -612,7 +734,10 @@ class ShadowLockstep:
         self.store.upload(pre)
         if slot.events:
             self.ring.begin()
-        coverage, books = split_result(slot.call(self.store, inputs, self.ring))
+        if slot.requests:
+            self.req.begin()
+        coverage, books = split_result(slot.call(self.store, inputs, self.ring,
+                                                 self.req))
         got = self.store.download()
         host_changed = np.array([int((pre[e] != post[e]).any(axis=1).sum())
                                  for e in range(self.N)], dtype=np.int64)
@@ -624,6 +749,11 @@ class ShadowLockstep:
                               dtype=np.int64)
             if first is None:
                 first = self._first_event_diff(tick, k, ring_recs)
+        req_recs = None
+        if slot.requests:
+            req_recs = self.req.records()
+            if first is None:
+                first = self._first_request_diff(tick, k, req_recs)
         # #29 P6.4b: the field outputs, the books, the write set
         dev_fields = hb = ws = None
         if slot.outputs:
@@ -642,9 +772,17 @@ class ShadowLockstep:
                 self.alone.upload(pre[e:e + 1])
                 if slot.events:
                     self.alone_ring.begin()
+                if slot.requests:
+                    self.alone_req.begin()
                 ie = None if inputs is None else inputs.env(e)
                 _cov1, books1 = split_result(slot.call(self.alone, ie,
-                                                       self.alone_ring))
+                                                       self.alone_ring,
+                                                       self.alone_req))
+                if slot.requests and self.alone_req.records()[0] != req_recs[e]:
+                    first = Divergence(tick, e, -1, "ALONE request list",
+                                       len(self.alone_req.records()[0]),
+                                       len(req_recs[e]))
+                    break
                 if slot.outputs:
                     for f in slot.field_outputs:
                         fd = first_field_diff(f, ie.fields[f].get(),
@@ -689,10 +827,36 @@ class ShadowLockstep:
                          label=slot.label,
                          events=None if ring_recs is None else np.array(
                              [len(r) for r in ring_recs], dtype=np.int64),
-                         host_events=host_n, books=books, host_books=hb,
-                         write_set=ws)
+                         host_events=host_n,
+                         requests=None if req_recs is None else req_recs,
+                         host_requests=None if req_recs is None else [
+                             list(self._reqs[k][e]) for e in range(self.N)],
+                         books=books, host_books=hb, write_set=ws)
         self.reports.append(rep)
         return rep
+
+    def _first_request_diff(self, tick, k, req_recs):
+        """#29 P6.4a: the first difference between the host's requests of
+        slot ``k`` (captured in the order the host made them) and the
+        device's list, per env, record for record: (tick, env, request
+        index, field) as a :class:`Divergence`."""
+        from simulation import unit_requests
+        for e in range(self.N):
+            host = self._reqs[k][e]
+            dev = req_recs[e]
+            for i in range(max(len(host), len(dev))):
+                if i >= len(host):
+                    return Divergence(tick, e, dev[i][1], f"request[{i}] (extra on "
+                                      f"the device)", 0, dev[i][0])
+                if i >= len(dev):
+                    return Divergence(tick, e, host[i][1], f"request[{i}] (missing "
+                                      f"on the device)", host[i][0], 0)
+                for f, name in enumerate(unit_requests.FIELDS):
+                    if host[i][f] != dev[i][f]:
+                        return Divergence(tick, e, host[i][1],
+                                          f"request[{i}].{name}", host[i][f],
+                                          dev[i][f])
+        return None
 
     def _first_output_diff(self, tick, k, slot, dev_fields, books, hb, ws):
         """#29 P6.4b: the first difference in a slot's field outputs (tick,
@@ -787,9 +951,13 @@ class ChainedSlots:
         self.store = build_store([driver.sim], self.U, bp=bp)
         self.ring = (unit_events.EventRing(1, self.U, e_max, bp=bp)
                      if any(s.events for s in self.slots) else None)
+        from simulation import unit_requests
+        self.req = (unit_requests.RequestList(1, self.U, bp=bp)
+                    if any(s.requests for s in self.slots) else None)
         self._orig = []
         self.coverage: list = []          # per run: [per-slot (1,) arrays]
         self.events: list = []            # per run: the ring's records
+        self.requests: list = []          # per run: the request list (P6.4a)
         self.runs = 0
         self.books: dict = {}             # #29 P6.4b: the last run's books
         self.inputs = None                # the last run's captured inputs
@@ -805,9 +973,11 @@ class ChainedSlots:
         self.store.upload(pre[None])
         if self.ring is not None:
             self.ring.begin()
+        if self.req is not None:
+            self.req.begin()
         covs, books = [], {}
         for s in self.slots:
-            c, b = split_result(s.call(self.store, inputs, self.ring))
+            c, b = split_result(s.call(self.store, inputs, self.ring, self.req))
             covs.append(c)
             if b is not None:
                 books.update({n: int(v[0]) for n, v in b.items()})
@@ -824,6 +994,11 @@ class ChainedSlots:
             recs = self.ring.records()[0]
             sim.tick_events.extend(unit_events.event_of(r) for r in recs)
             self.events.append(recs)
+        if self.req is not None:          # #29 P6.4a: the host's objects
+            from simulation import unit_requests
+            rq = self.req.records()[0]
+            unit_requests.apply_to_host(sim, rq)
+            self.requests.append(rq)
         if self.host_side is not None:
             self.host_side(sim, pre, post)
         self.coverage.append(covs)

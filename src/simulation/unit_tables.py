@@ -258,6 +258,57 @@ def _footprint_rowmajor(src):
     return 1
 
 
+# -- #29 P6.4a's sources (slot 1b's verbs, the done kernel) -----------------------
+def _weapon_rows(src):
+    """The sim's weapon rows in the unit schema's ``weapons`` table order (a
+    ``weapon_id`` / ``magazines_weapon`` column's row index); refused when the
+    sim's tables do not hold exactly those names in that order."""
+    from simulation.unit_schema import TABLES
+    names = tuple(TABLES["weapons"]())
+    rows = src.sim.weapons_tables.weapons.by_name
+    if tuple(rows) != names:
+        raise ValueError("unit tables: the sim's weapon rows are not the unit "
+                         "schema's weapons table")
+    return [rows[n] for n in names]
+
+
+def _n_weapons():
+    from simulation.unit_schema import TABLES
+    return len(TABLES["weapons"]())
+
+
+def _hand_row(src):
+    return src.sim.weapons_tables.weapons.by_name["hand_grenade"]
+
+
+def _hand_fuse(attr):
+    def f(src):
+        from simulation.weapons import fuse_ticks_from_seconds
+        return int(fuse_ticks_from_seconds(getattr(_hand_row(src), attr),
+                                           src.sim._tps))
+    return f
+
+
+def _plant_class_ticks(src):
+    from simulation.weapons import PLANT_WEAPON
+    return int(src.sim.weapons_tables.weapons.by_name[PLANT_WEAPON].plant_ticks)  # traits-class: the device tables upload the CLASS value; the kernel applies HANDLING through unit_lib::handling_ticks
+
+
+def _charge_capacity(src):
+    from simulation.unit_schema import CHARGE_CAPACITY
+    return int(CHARGE_CAPACITY)
+
+
+def _match_limit_ticks(src):
+    """``MatchRules.limit_ticks`` of the sim's ruleset; 0 when the sim plays
+    no match (its ruleset has no time limit)."""
+    from simulation.ruleset import MatchRules
+    rules = getattr(src.sim, "ruleset", None)
+    if not isinstance(rules, MatchRules):
+        return 0
+    return int(rules.limit_ticks(src.sim))
+
+
 # ---------------------------------------------------------------------------
 # The rows
 # ---------------------------------------------------------------------------
@@ -467,6 +518,40 @@ ROWS: tuple[TableRow, ...] = (
              "1 = every species' default offsets are the footprint square in "
              "row-major order (unit_schema._d_offsets for every footprint), "
              "the tile order a kernel's reduction walks; refused otherwise"),
+    # -- #29 P6.4a: slot 1b's verbs and the done kernel -----------------------
+    TableRow("weapon_mag_size", _n_weapons,
+             lambda src: tuple(int(w.mag_size) for w in _weapon_rows(src)),
+             0, 1 << 20, "per weapons-table row: mag_size (0 = untracked)"),
+    TableRow("weapon_reload_ticks", _n_weapons,
+             lambda src: tuple(int(w.reload_ticks) for w in _weapon_rows(src)),  # traits-class: the device tables upload the CLASS value; the kernel applies HANDLING through unit_lib::handling_ticks
+             0, 1 << 16, "per weapons-table row: the class reload stall, ticks "
+             "(the HANDLING hook's operand: x 2^19 < 2^35)"),
+    TableRow("hand_windup_class_ticks", 1,
+             lambda src: int(_hand_row(src).throw_windup_ticks), 0, 1 << 16,  # traits-class: the device tables upload the CLASS value; the kernel applies HANDLING through unit_lib::handling_ticks
+             "[weapons.hand_grenade] throw_windup_ticks (HANDLING's operand)"),
+    TableRow("hand_max_reach_q", 1,
+             lambda src: int(_hand_row(src).max_throw_range) << 16, 0, 1 << 26,
+             "int(max_throw_range) << 16: the throw's reach clamp, Q16 tiles"),
+    TableRow("hand_fuse_lo_ticks", 1, _hand_fuse("fuse_min_seconds"), 0,
+             1 << 24, "the hand grenade's fuse range, ticks (the sim's tps)"),
+    TableRow("hand_fuse_hi_ticks", 1, _hand_fuse("fuse_max_seconds"), 0,
+             1 << 24, "the hand grenade's fuse range, ticks"),
+    TableRow("plant_class_ticks", 1, _plant_class_ticks, 0, 1 << 16,
+             "the plant row's (weapons.PLANT_WEAPON) plant_ticks"),
+    TableRow("charge_capacity", 1, _charge_capacity, 1, 1 << 10,
+             "unit_schema.CHARGE_CAPACITY: live charges a sim holds"),
+    TableRow("shove_q", 1, _IMP("shove_q"), 0, 1 << 32,
+             "the shove's impulse, Q16 gram-tiles/tick (x the PUSH hook <= "
+             "8 ONE < 2^35: its axis split below 2^51, its squared magnitude "
+             "taken in 128 bits)"),
+    TableRow("shove_cone_q", 1, _IMP("shove_cone_q"), 0, 205887,
+             "the shove's half-angle, Q16 radians (<= PI)"),
+    TableRow("shove_cooldown_ticks", 1, _IMP("shove_cooldown_ticks"), 1,
+             1 << 20, "the shove's cooldown, ticks"),
+    TableRow("impulse_r_body_q", 1, _IMP("r_body_q"), 0, 1 << 20,
+             "the body radius every lever is clamped to, Q16 tiles"),
+    TableRow("match_limit_ticks", 1, _match_limit_ticks, 0, 1 << 40,
+             "MatchRules.limit_ticks (0 = the sim plays no match)"),
 )  # (#29 P6.4b's block is appended to ROWS below, after its sources)
 
 
