@@ -140,6 +140,18 @@ the new scale. All five outputs learn, the weight-0 ones too. The value loss
 is the mean squared error of the normalised estimates over the value rows,
 summed over the outputs.
 
+**Amended after the build (the lead, 2026-11-15): the scale's FIRST move
+skips step (3).** As first written, the "scale" task stayed at a random
+player's score: the first move goes from (mean 0, spread 1) to the batch's
+own (there about 690 and 540), and keeping a fresh network's outputs through
+that divides its last layer by 540 and puts its bias far from 0. Adam moves a
+weight about one step size per step whatever the gradient, so the network
+needed thousands of steps to climb back, and the always-0 groups got the
+reverse (their weights times 100). A fresh network has learnt nothing worth
+keeping; left alone, its output (near 0 in normalised units) reads as the
+batch's mean. Every later move is corrected as above. Design 4.3 carries the
+same sentence. For 2d: the scale is saved and loaded with its value network.
+
 ## 6. The update
 
 Design 4.4's numbers. Said exactly:
@@ -148,7 +160,9 @@ Design 4.4's numbers. Said exactly:
   decisions into **pieces** of 2 048; a piece is worked through in **lumps**
   of 512 whose gradients are added so that the step is the step of the
   piece's mean loss (the piece's grade statistics are taken before its first
-  lump: they need no network).
+  lump: they need no network). Amended after the build: a pass is cut into
+  the fewest near-equal pieces of at most 2 048, never a short last one (a
+  step from three left-over decisions is as long as any other under Adam).
 - **The soldier's loss** on the policy rows: the clipped objective on the
   JOINT ratio (the stored and the recomputed probability of the whole
   decision, `choosing.evaluate` under the stored masks), clip 0.2; minus

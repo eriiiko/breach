@@ -24,10 +24,12 @@ from agents.value_scale import ValueScale
 pytestmark = pytest.mark.tasks
 
 SEEDS = (0, 1, 2)
-#: The rounds each task must pass within (fixed before the gate run, from
-#: one measured run each, with room to spare).
-BUDGET = {"pointer": 150, "argument": 400, "weights": 600, "scale": 300,
-          "teams": 600}
+#: The rounds each task must pass within, also the run's planned rounds (the
+#: step size falls to zero over them). Fixed before the gate run from one
+#: measured run each on seed 0 at this very budget: pointer passed in 37
+#: rounds, argument in 176, weights in 85, scale in 92, teams in 123.
+BUDGET = {"pointer": 150, "argument": 300, "weights": 300, "scale": 300,
+          "teams": 300}
 _RANDOM = {}
 
 

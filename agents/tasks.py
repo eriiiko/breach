@@ -5,7 +5,7 @@ one of the trainer's own traps, and the runner that scores them.
 | task | the trainer fails it if |
 |---|---|
 | :class:`PointerTask`: point at the list entry that carries a flag; the list is shuffled at every decision | the pointer follows a place in the list and not the entry |
-| :class:`ArgumentTask`: the legal arguments depend on the hand verb and the aim just chosen; the trigger is unused on most decisions | a choice is graded that did not count, or the masks at learning differ from those at acting |
+| :class:`ArgumentTask`: the legal arguments depend on the hand verb and the aim just chosen; the trigger is unused on most decisions, the argument whenever the verb takes none | a choice is graded that did not count, or the masks at learning differ from those at acting |
 | :class:`WeightTask`: the reward comes in the "own" group, the opposite in "team" (weight 0) | the weights are applied to the wrong group |
 | :class:`ScaleTask`: rewards a hundred times larger than usual, on top of a large offset the value network must learn, beside "outcome", always 0 | the rescaling of the value targets is wrong |
 | :class:`TeamTask`: a second team in the match that does not learn, paid the opposite of the learner | the trainer stores or grades rows it does not drive |
@@ -124,14 +124,29 @@ class PointerTask(_Base):
 
 
 class ArgumentTask(_Base):
-    """A cue names the hand verb wanted (nothing, plant, the first throw);
-    the argument's right value depends on the verb AND the aim just chosen
-    (a plant: timer 1; a throw: "onto" at an entry, reach 3 at a token).
-    "own" pays half for the verb and half for a right argument (a verb
-    without an argument has it right). The trigger has one legal option on
-    most decisions (a head unused there)."""
+    """A cue names the hand verb wanted, a plant or the first throw (four
+    verbs are legal: nothing and reload too); the argument's right value
+    depends on the verb AND the aim just chosen (a plant: timer 1; a throw:
+    "onto" at an entry, reach 3 at a token). "own" pays half for the RIGHT
+    verb and the other half when its argument is right too; a wrong verb
+    pays nothing. The trigger has one legal option on most decisions (a
+    head unused there), and the argument does not count whenever "nothing"
+    or "reload" is drawn.
 
-    WANTED = (A.HAND_NOTHING, A.HAND_PLANT, A.HAND_THROW0)
+    NO VERB IS PAID WITHOUT ITS ARGUMENT (2b's findings; both forms below
+    were measured and dropped). The first form paid the argument's half
+    whatever the verb, so "always nothing" earned 0.667 against a random
+    player's 0.44 with no cue read, and the policy sat there for good. The
+    second paid only a right verb but still asked for "nothing" on a third
+    of the decisions: a verb that needs no argument is paid in full by the
+    verb alone, so from a near-even start the policy first fell to it
+    whatever the cue (by round 60 "nothing" was chosen on 96 % of its own
+    cues and plant and throw on 10 % of theirs) and took 300 rounds to come
+    back, ending at 0.75 of the way. That fall is how this kind of trainer
+    behaves from nothing wherever doing nothing is safe -- the reason rung 2
+    starts from the copy -- and not one of the traps this task is for."""
+
+    WANTED = (A.HAND_PLANT, A.HAND_THROW0)
     HANDS = (A.HAND_NOTHING, A.HAND_RELOAD, A.HAND_PLANT, A.HAND_THROW0)
 
     def __init__(self, k: int = 3, p_trigger_unused: float = 0.8):
@@ -141,7 +156,8 @@ class ArgumentTask(_Base):
 
     def bind(self, sizes):
         super().bind(sizes)
-        self.cue = numeric_columns(sizes.vector, sizes.vector_kinds, 3)
+        self.cue = numeric_columns(sizes.vector, sizes.vector_kinds,
+                                   len(self.WANTED))
         return self
 
     def start(self, e, rng):
@@ -179,16 +195,24 @@ class ArgumentTask(_Base):
         want = self.right_arg(hand, aim)
         arg_ok = (want < 0) | (arg == want)
         r = np.zeros((u, len(REWARD_GROUPS)))
-        r[:, G_OWN] = np.where(valid, 0.5 * (hand == state["want"])
-                               + 0.5 * arg_ok, 0.0)
+        verb_ok = hand == state["want"]
+        r[:, G_OWN] = np.where(valid & verb_ok, 0.5 + 0.5 * arg_ok, 0.0)
         return r, np.zeros(u, bool), np.zeros(u, bool), False
 
 
 class WeightTask(_Base):
-    """A cue names one of eight directions; "own" pays 1 for walking that
-    way, "team" (weight 0) pays the opposite (-1)."""
+    """A cue names one of four directions; "own" pays 1 for walking that
+    way, "team" (weight 0) pays the opposite (-1).
 
-    def __init__(self, n_dirs: int = 8):
+    Four, not eight (2b's finding): the tasks' farm gives one learning step
+    256 decisions, where a real piece has 2 048. With eight cues and nine
+    legal options a cue's right answer is drawn about 3.5 times per step,
+    too few to grade it (0.48 of the way after 2 000 steps); with four it
+    is drawn about 13 times, as often as the pointer task's one answer.
+    What the task protects (which group the weights land on) does not
+    depend on the number of directions."""
+
+    def __init__(self, n_dirs: int = 4):
         super().__init__(name="weights", match_len=7, best=1.0)
         self.n_dirs = n_dirs
 
@@ -263,9 +287,10 @@ class ScaleTask(_Base):
 class TeamTask(_Base):
     """Team 0 learns (one soldier; three empty roster places), team 1 is on
     the bots (four soldiers, shown the same cue); "own" pays the learner 1
-    for walking the cued way and every soldier of team 1 the opposite."""
+    for walking the cued way and every soldier of team 1 the opposite.
+    Four directions, for the reason given at :class:`WeightTask`."""
 
-    def __init__(self, n_dirs: int = 8):
+    def __init__(self, n_dirs: int = 4):
         super().__init__(name="teams", n_teams=2, n_slots=4,
                          controllers=("policy", "bots"), match_len=7,
                          best=1.0)

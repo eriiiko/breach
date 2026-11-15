@@ -13,7 +13,8 @@ ONE ROUND OF LEARNING, top to bottom (:meth:`Learner.learn`):
    (:class:`agents.value_scale.ValueScale`).
 3. **Learn**, on the targets normalised with the new scale:
    ``passes`` passes; each pass cuts a fresh shuffle of the round's value
-   rows into PIECES of ``piece`` decisions; a piece is worked through in
+   rows into the fewest near-equal PIECES of at most ``piece`` decisions
+   (:func:`cut_pieces`: never a short last one); a piece is worked through in
    LUMPS of ``lump`` decisions whose gradients are added up, so that the
    step is the step of the piece's MEAN loss. Per piece:
 
@@ -76,6 +77,18 @@ def one_arithmetic() -> None:
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cudnn.benchmark = False
+
+
+def cut_pieces(order, piece: int) -> list:
+    """A pass's shuffled rows cut into the FEWEST pieces of at most
+    ``piece`` rows, of near-equal size (they differ by one row at most).
+    Never a short last piece: under Adam a step taken from a handful of
+    decisions is as long as one taken from two thousand, and its grades,
+    brought to a common size over three rows, are noise."""
+    n = len(order)
+    if n == 0:
+        return []
+    return np.array_split(order, -(-n // int(piece)))
 
 
 def live_check(d_logp_heads, s_logp_heads, d_used, s_used, d_arg, s_arg,
@@ -210,8 +223,7 @@ class Learner:
         order_rows = np.flatnonzero(value_rows)
         for p in range(s.passes):
             order = self.rng.permutation(order_rows)
-            for k, start in enumerate(range(0, len(order), s.piece)):
-                piece = order[start:start + s.piece]
+            for k, piece in enumerate(cut_pieces(order, s.piece)):
                 checking = (p == 0 and k == 0)
                 pol = piece[policy_rows[piece]]
                 n_pol, n_val = len(pol), len(piece)
@@ -327,4 +339,5 @@ class Learner:
         return float(err.detach().mean())
 
 
-__all__ = ["LiveCheckFailed", "one_arithmetic", "live_check", "Learner"]
+__all__ = ["LiveCheckFailed", "one_arithmetic", "cut_pieces", "live_check",
+           "Learner"]

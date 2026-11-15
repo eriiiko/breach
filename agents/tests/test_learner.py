@@ -156,6 +156,25 @@ def test_lumps_add_up_to_the_step_of_the_pieces_mean_loss():
             torch.testing.assert_close(p, q, rtol=0, atol=2e-6, msg=k)
 
 
+@pytest.mark.parametrize("n, piece", [(1, 8), (8, 8), (9, 8), (17, 8),
+                                      (4099, 2048), (49152, 2048)])
+def test_a_pass_is_cut_into_near_equal_pieces_never_a_short_last_one(n, piece):
+    """Protects: a pass's rows are cut into the fewest pieces of at most
+    ``piece`` rows, every row in exactly one, the sizes one row apart at
+    most -- so no step is ever taken from a handful of left-over decisions
+    (9 rows in pieces of 8 are 5 + 4, not 8 + 1).
+    Breaks when: the pass is cut at fixed multiples of ``piece`` (a last
+    piece of 1 to 3 rows then takes a full Adam step on noise), a row is
+    dropped or repeated, or a piece exceeds the limit."""
+    order = np.random.default_rng(n).permutation(n)
+    pieces = learner_mod.cut_pieces(order, piece)
+    sizes = [len(p) for p in pieces]
+    assert len(pieces) == -(-n // piece)
+    assert max(sizes) <= piece and max(sizes) - min(sizes) <= 1
+    assert np.array_equal(np.sort(np.concatenate(pieces)), np.arange(n))
+    assert learner_mod.cut_pieces(order[:0], piece) == []
+
+
 def test_each_network_has_its_own_optimiser_and_its_own_clip(monkeypatch):
     """Protects: two optimisers over disjoint parameters, each covering its
     network entirely, and each gradient cut to the limit by itself (a spike
