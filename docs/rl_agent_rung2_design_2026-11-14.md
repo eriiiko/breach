@@ -459,6 +459,13 @@ second: the range is trained without it.
   building, the game's own checks and watching replays. Against it: it also
   serves the shared memory (egregore) and the art pipeline. Erik's to
   decide.
+- **DECIDED (Erik, 2026-11-15):** the work desktop is given to training;
+  egregore moves off it first, to the home desktop or the laptop, decided
+  before training starts ("i suspect home desktop since it is also always
+  on"); and the home desktop is set up for training as well ("we will train
+  a lot in the months to come, i say we set up both"). The plan
+  (`docs/rl_agent_rung2_plan_2026-11-15.md`, section 3) says what "set up"
+  means.
 
 ### 4.7 Saving, and which code a run used
 
@@ -962,7 +969,9 @@ Each has a rung or a trigger.
 - **How his own half of the gate is run** (7.4): eight replays picked by a
   rule written beforehand, watched before he is told the win rate. DECIDED
   2026-11-15: yes, as a first try, reviewed afterwards.
-- **Which PC is given to training** (4.6): asked 2026-11-15.
+- **Which PC is given to training** (4.6): DECIDED 2026-11-15, the work
+  desktop, with the home desktop set up too. Still his: where egregore
+  moves, before training starts.
 - The tags for runs whose networks are kept (4.7).
 - When P6 is through (10).
 
