@@ -51,10 +51,9 @@ So patch 2a starts when P6.4b (the last patch of the residency arc's P6,
    and the grading and update code line by line against the design.
 7. **After each merge:** a checkpoint in plain words for Erik; memory
    (`project_rl_agent_design_session.md`); one dated line in
-   `game-ai-lead`'s run log if something was learned. The checkpoint goes
-   on #195 once Erik has said so for rung 2 (a GitHub write needs his word
-   in the session; asked 2026-11-15, not yet answered). Until then it is
-   given to him in the chat and kept in the patch's note.
+   `game-ai-lead`'s run log if something was learned. The checkpoint is
+   posted as a comment on #195 (Erik, 2026-11-15: "yes post the checkpoints
+   on #195"; the first, for the design, is issuecomment-6889058559).
 8. **When to stop and ask.** A question about what the game is, what a
    soldier may know, or anything by eye goes to Erik, one question at a
    time. A gate that fails twice, or a note that would contradict the
