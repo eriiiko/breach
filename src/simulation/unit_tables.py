@@ -731,6 +731,56 @@ _MELEE_ROWS: tuple = (
 )
 ROWS = ROWS + _MELEE_ROWS
 
+
+# == #29 P7.0a: slot 9d, ignition from temperature (combat.
+# apply_temperature_ignition) -- the per-material threshold from the env's own
+# materials table, the gas indices from its own gas table, the two dials
+# through combat.ignition_params (the conductor's one read) and the fraction's
+# floor from combat.IGNITION_X_N_FLOOR, each quantized as the law does per
+# call (fire_fixed.quantize_scalar). =========================================
+_I62 = 1 << 62
+
+
+def _ign_q(f):
+    def g(src):
+        from simulation import fire_fixed
+        return int(fire_fixed.quantize_scalar(float(f())))
+    return g
+
+
+def _ign_params():
+    from simulation import combat
+    return combat.ignition_params(_cfg())
+
+
+def _ign_floor():
+    from simulation import combat
+    return combat.IGNITION_X_N_FLOOR
+
+
+def _ign_gas(name):
+    return lambda src: int(src.sim.gmap.gases.name_to_id[name])
+
+
+_IGNITION_ROWS: tuple = (
+    TableRow("ign_temp_q", _n_materials,
+             _per_mat(lambda t, i: int(t.ignition_temp_q16[i])), -_I62, _I62,
+             "per material: ignition_temp_q16 (int64; compared with the int32 "
+             "temperature widened)"),
+    TableRow("ign_x_ext_q", 1, _ign_q(lambda: _ign_params()[0]), -_I62, _I62,
+             "quantize(o2_frac_ext): the O2 mole fraction the tile must exceed"),
+    TableRow("ign_seed_q", 1, _ign_q(lambda: _ign_params()[1]), _I32_MIN, _I32_MAX,
+             "quantize(ignition_seed): the fire a seeded tile gets (int32 plane)"),
+    TableRow("ign_x_n_floor_q", 1, _ign_q(_ign_floor), 1, _I32_MAX,
+             "quantize(IGNITION_X_N_FLOOR): the fraction's denominator floor "
+             "(> 0: the divide is always defined)"),
+    TableRow("ign_gas_o2", 1, _ign_gas("o2"), 0, 255,
+             "the map's gases.name_to_id['o2'] (the plane the law reads)"),
+    TableRow("ign_gas_n2", 1, _ign_gas("inert_n2"), 0, 255,
+             "the map's gases.name_to_id['inert_n2']"),
+)
+ROWS = ROWS + _IGNITION_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 

@@ -1113,6 +1113,85 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P6.4b TEST-ONLY: material = m; on_tile_changed, per staged record.");
     }
 
+    // #29 P7.0a: slot 9d (cuda_unit_ignition.cu) and the kit's TEST-ONLY probes
+    // (cuda_unit_kit_probe.cu: the device draws, sight, the falloffs); Class T.
+    // The Python faces are simulation.unit_kernels (ignition, kit_*_probe) and
+    // simulation.unit_draws (the draws vocabulary's fingerprint).
+    {
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        m.def("unit_draws_layout", []() {
+                  py::dict d;
+                  d["fingerprint"] = std::string(breach_cuda::unit_draws_fingerprint());
+                  return d;
+              },
+              "#29 P7.0a: the compiled draws vocabulary (unit_draws_layout.h): {fingerprint}.");
+        m.def("unit_ignition",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t,
+                 py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != 9)
+                      throw std::invalid_argument("unit_ignition: ptrs must be (9,) uint64");
+                  const uint64_t* q = ptrs.data();
+                  breach_cuda::IgnitionPlanes p;
+                  p.temperature = (std::uintptr_t)q[0]; p.material = (std::uintptr_t)q[1];
+                  p.flammable = (std::uintptr_t)q[2]; p.wall_hp = (std::uintptr_t)q[3];
+                  p.solid = (std::uintptr_t)q[4]; p.is_vacuum = (std::uintptr_t)q[5];
+                  p.gas = (std::uintptr_t)q[6]; p.fire = (std::uintptr_t)q[7];
+                  p.armed = (std::uintptr_t)q[8];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env());
+                  breach_cuda::UnitKernelCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  breach_cuda::unit_ignition(s, t, p, c);
+                  return py::make_tuple(cov, flt, ref);
+              }, py::arg("store"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7.0a: slot 9d (combat.apply_temperature_ignition) on (N, h, w) planes "
+              "(temperature, material, flammable, wall_hp, solid, is_vacuum, gas, fire, "
+              "ignition_armed); fire and armed in place. Returns (coverage, faults, refused).");
+        m.def("unit_kit_draws_probe",
+              [](py::array_t<int64_t, py::array::c_style> keys,
+                 py::array_t<int64_t, py::array::c_style> args) {
+                  if (keys.ndim() != 2 || keys.shape(1) != 3 || args.ndim() != 3 ||
+                      args.shape(0) != keys.shape(0) ||
+                      args.shape(2) != breach_cuda::UNIT_KIT_DRAW_ARGS)
+                      throw std::invalid_argument(
+                          "unit_kit_draws_probe: keys (N, 3), args (N, R, 6) int64");
+                  const int n = (int)args.shape(0), r = (int)args.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)n, (py::ssize_t)r,
+                                            (py::ssize_t)breach_cuda::UNIT_KIT_DRAW_OUT});
+                  breach_cuda::unit_kit_draws_probe(keys.data(), n, args.data(), r,
+                                                    out.mutable_data());
+                  return out;
+              }, py::arg("keys"), py::arg("args"),
+              "#29 P7.0a TEST-ONLY: the device draws on synthetic (key, salt, id, index).");
+        m.def("unit_kit_sight_probe",
+              [](std::uintptr_t solid, std::uintptr_t screen, int n_env, int h, int w,
+                 py::array_t<int64_t, py::array::c_style> pairs) {
+                  if (pairs.ndim() != 3 || pairs.shape(0) != n_env || pairs.shape(2) != 4)
+                      throw std::invalid_argument("unit_kit_sight_probe: pairs (N, R, 4) int64");
+                  const int r = (int)pairs.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)n_env, (py::ssize_t)r, (py::ssize_t)3});
+                  breach_cuda::unit_kit_sight_probe(solid, screen, n_env, h, w, pairs.data(), r,
+                                                    out.mutable_data());
+                  return out;
+              }, py::arg("solid"), py::arg("screen"), py::arg("n_env"), py::arg("h"),
+              py::arg("w"), py::arg("pairs"),
+              "#29 P7.0a TEST-ONLY: the device has_los (both forms) on random pairs.");
+        m.def("unit_kit_falloff_probe",
+              [](py::array_t<int64_t, py::array::c_style> args) {
+                  if (args.ndim() != 2 || args.shape(1) != 3)
+                      throw std::invalid_argument("unit_kit_falloff_probe: args (n, 3) int64");
+                  const int n = (int)args.shape(0);
+                  py::array_t<int64_t> out({(py::ssize_t)n, (py::ssize_t)2});
+                  breach_cuda::unit_kit_falloff_probe(args.data(), n, out.mutable_data());
+                  return out;
+              }, py::arg("args"),
+              "#29 P7.0a TEST-ONLY: falloff_floor_q / falloff_round_q on the device.");
+    }
+
     m.def("eos_mg_build_parity",
           [](const EOSSolver& solver,
              py::array_t<int32_t> pstar, py::array_t<int32_t> div_u,
@@ -2683,6 +2762,16 @@ PYBIND11_MODULE(breach_physics, m) {
           [](uint64_t hi, uint64_t lo) { return fixedpoint::isqrt_u128_q(hi, lo); },
           py::arg("hi"), py::arg("lo"),
           "fixed_point.h isqrt_u128_q: floor(sqrt(hi * 2^64 + lo)), exact.");
+    // #29 P7.0a: unit_fixed.falloff_floor / falloff_round (-1 outside the
+    // proved range), gated by tests/test_unit_kit_twins.py.
+    m.def("fp_falloff_floor",
+          [](int64_t v, int64_t d2, int64_t r2) { return fixedpoint::falloff_floor_q(v, d2, r2); },
+          py::arg("v"), py::arg("d2"), py::arg("r2"),
+          "fixed_point.h falloff_floor_q: floor(v (1 - sqrt(d2 / r2))), -1 refused.");
+    m.def("fp_falloff_round",
+          [](int64_t v, int64_t d2, int64_t r2) { return fixedpoint::falloff_round_q(v, d2, r2); },
+          py::arg("v"), py::arg("d2"), py::arg("r2"),
+          "fixed_point.h falloff_round_q: v (1 - sqrt(d2 / r2)) half up, -1 refused.");
 
     // FUEL-FRACTION AXIS (2026-07-30): the load-time reciprocal bake itself,
     // exposed so Python can be GATED against it rather than trusted to

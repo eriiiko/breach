@@ -160,6 +160,11 @@ if(BREACH_CUDA)
         # producer; the list and its resolve stage are cuda_applier.cu's);
         # Class T, pure integer, on the same target-wide CUDA determinism floor.
         src/cuda_unit_melee.cu      # slot 4a
+        # #29 P7.0a: slot 9d (ignition from temperature, a per-cell kernel) and
+        # the kit's TEST-ONLY probe (the device draws, sight, the falloffs);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_ignition.cu   # slot 9d
+        src/cuda_unit_kit_probe.cu  # TEST-ONLY: draws, sight, falloffs on synthetic inputs
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
