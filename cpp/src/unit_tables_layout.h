@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "e4ad88a9430e1c330f4ca541fe8413859e5c32cc066c164ae4e07ae2c12a6e22";
-constexpr int UNIT_TABLES_W = 772;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "cd88d55207e2b4aa2870e28ea5fae7fe5495ebb6aa1e41b7170ac1745e19f872";
+constexpr int UNIT_TABLES_W = 912;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -262,6 +262,28 @@ constexpr int UNIT_TAB_IGN_GAS_O2 = 770;
 constexpr int UNIT_TAB_IGN_GAS_O2_W = 1;
 constexpr int UNIT_TAB_IGN_GAS_N2 = 771;
 constexpr int UNIT_TAB_IGN_GAS_N2_W = 1;
+constexpr int UNIT_TAB_SPRAY_RANGE_TILES = 772;
+constexpr int UNIT_TAB_SPRAY_RANGE_TILES_W = 19;
+constexpr int UNIT_TAB_SPRAY_CONE_HALF_Q = 791;
+constexpr int UNIT_TAB_SPRAY_CONE_HALF_Q_W = 19;
+constexpr int UNIT_TAB_SPRAY_HAS_AMMO = 810;
+constexpr int UNIT_TAB_SPRAY_HAS_AMMO_W = 19;
+constexpr int UNIT_TAB_SPRAY_HEAT_Q = 829;
+constexpr int UNIT_TAB_SPRAY_HEAT_Q_W = 19;
+constexpr int UNIT_TAB_SPRAY_GAS_Q = 848;
+constexpr int UNIT_TAB_SPRAY_GAS_Q_W = 19;
+constexpr int UNIT_TAB_SPRAY_GAS_ID = 867;
+constexpr int UNIT_TAB_SPRAY_GAS_ID_W = 19;
+constexpr int UNIT_TAB_SPRAY_SRC_HEAT = 886;
+constexpr int UNIT_TAB_SPRAY_SRC_HEAT_W = 1;
+constexpr int UNIT_TAB_SPRAY_SRC_GAS = 887;
+constexpr int UNIT_TAB_SPRAY_SRC_GAS_W = 1;
+constexpr int UNIT_TAB_EDIT_CLAMP_FLAGS = 888;
+constexpr int UNIT_TAB_EDIT_CLAMP_FLAGS_W = 8;
+constexpr int UNIT_TAB_EDIT_CLAMP_LO = 896;
+constexpr int UNIT_TAB_EDIT_CLAMP_LO_W = 8;
+constexpr int UNIT_TAB_EDIT_CLAMP_HI = 904;
+constexpr int UNIT_TAB_EDIT_CLAMP_HI_W = 8;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

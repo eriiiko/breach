@@ -421,6 +421,179 @@ LISTS: dict = {
                         _effects_fields, _payloads_mark, _payloads_land),
 }
 
+
+# -- #29 P7a.3: THE CELL BUFFER (the spray cells the effect list's SPRAY_CELLS
+# spans point into), THE DEVICE EDIT DOOR's rows (the edits the host's
+# producer enqueued in the slot, gated at the door: decision 7) and THE CLAIMS
+# LIST (every TickCredit.claim of the slot, recorded by a tap) ---------------
+def _cells_records(sim, obj):
+    from simulation import attack_lists
+    return attack_lists.cells_of(sim, obj._pending)
+
+
+def _cells_device(n_env, n_units, cap, bp):
+    from simulation import attack_lists
+    return attack_lists.cell_buffer(n_env, bp=bp)
+
+
+#: id(gmap) -> the queue's length at the slot's mark (the producer's first edit).
+_EDIT_MARK: dict = {}
+#: The spray producer's edit sources (combat._SRC_SPRAY_HEAT / _GAS): an edit
+#: of another source inside the walk is an interleave, refused by name.
+DOOR_SOURCES = None
+
+
+def _door_sources():
+    from simulation import combat
+    return {int(combat._SRC_SPRAY_HEAT), int(combat._SRC_SPRAY_GAS)}
+
+
+def door_combined(edits, tiles):
+    """The door's rows as ONE record per edit: its EDIT row, its tile count,
+    then its tile row (a TILE edit holds at most one; zeros when none)."""
+    from simulation import edit_door
+    out = []
+    edits = np.asarray(edits, dtype=np.int64).reshape(-1, edit_door.EDIT_COLS)
+    tiles = np.asarray(tiles, dtype=np.int64).reshape(-1, edit_door.TILE_COLS)
+    for k in range(edits.shape[0]):
+        tk = tiles[tiles[:, 0] == k]
+        if tk.shape[0] > 1:
+            raise RuntimeError("lockstep: a door edit with several tile rows (only "
+                               "TILE edits reach the door today)")
+        t = list(tk[0]) if tk.shape[0] else [0] * edit_door.TILE_COLS
+        out.append(tuple(int(x) for x in edits[k]) + (int(tk.shape[0]),)
+                   + tuple(int(x) for x in t))
+    return np.array(out, dtype=np.int64).reshape(len(out), edit_door.EDIT_COLS + 1
+                                                  + edit_door.TILE_COLS)
+
+
+def door_split(recs):
+    """The inverse of :func:`door_combined`: ``(edits, tiles)``."""
+    from simulation import edit_door
+    E = edit_door.EDIT_COLS
+    r = np.asarray(recs, dtype=np.int64).reshape(-1, E + 1 + edit_door.TILE_COLS)
+    tiles = r[r[:, E] > 0][:, E + 1:]
+    return r[:, :E].copy(), tiles.copy()
+
+
+def _edits_mark(sim):
+    _EDIT_MARK[id(sim.gmap)] = len(sim.edit_queue._edits)
+
+
+def _edits_records(sim, obj):
+    from simulation import edit_door
+    n0 = _EDIT_MARK.get(id(sim.gmap), 0)
+    e, t = edit_door.door_rows(sim.gmap, obj._edits[n0:], _door_sources())
+    return door_combined(e, t)
+
+
+class DoorList:
+    """The device edit door as a harness list (its rows combined per edit)."""
+
+    def __init__(self, n_env, bp=None):
+        from simulation import edit_door
+        self.door = edit_door.DeviceEditDoor(n_env, bp=bp)
+        self.n_env = n_env
+
+    @property
+    def buffer(self):
+        return self.door.buffer
+
+    def begin(self):
+        self.door.begin()
+
+    def set_seq(self, seq):
+        self.door.set_seq(seq)
+
+    def check(self, what=""):
+        self.door.check(what)
+
+    def records(self):
+        return [[tuple(int(x) for x in r) for r in door_combined(e, t)]
+                for e, t in self.door.rows()]
+
+
+def _edits_device(n_env, n_units, cap, bp):
+    return DoorList(n_env, bp=bp)
+
+
+def _edits_land(sim, obj, recs):
+    from simulation import edit_door
+    e, t = door_split(recs)
+    edit_door.replay(sim, e, t)
+
+
+def _edits_fields(rec):
+    from simulation import edit_door, field_edit as fe
+    names = ("env", "field", "slice", "mode", "amount_q", "den", "noisy", "low",
+             "key", "clamp_flags", "lo", "hi", "o2_lo", "o2_hi", "n2_lo", "n2_hi")
+    assert len(names) == fe.EDIT_COLS
+    return "edit", names + ("source_id", "region", "n_tiles", "t.edit", "t.tile",
+                            "t.weight", "t.scale")
+
+
+#: id(TickCredit) -> the claims of the marked slot, every call in order.
+_CLAIM_LOG: dict = {}
+
+
+def install_claims_tap() -> list:
+    """Wrap ``damage.TickCredit.claim``: a claim on a marked TickCredit is
+    logged per tile, as the device's claims list holds it ((channel, y, x,
+    attacker); the environment's never), then made. Reads only."""
+    from simulation import damage
+    from simulation.events import NO_ATTACKER, attacker_value
+    from simulation.unit_events import CREDIT_HEAT
+    orig = damage.TickCredit.claim
+
+    def claim(self, channel, tiles, attacker_id, __o=orig):
+        log = _CLAIM_LOG.get(id(self))
+        if log is not None:
+            a = attacker_value(attacker_id)
+            if a != NO_ATTACKER:
+                ch = CREDIT_HEAT if channel == damage.CREDIT_HEAT else int(channel)
+                for (y, x) in tiles:
+                    log.append((ch, int(y), int(x), int(a)))
+        return __o(self, channel, tiles, attacker_id)
+    claim.__wrapped__ = orig
+    damage.TickCredit.claim = claim
+    return [(damage.TickCredit, "claim", orig)]
+
+
+def _claims_host(sim, args, kw):
+    from simulation.damage import tick_credit
+    return _CLAIM_LOG.setdefault(id(tick_credit(sim.gmap)), [])
+
+
+def _claims_mark(sim):
+    from simulation.damage import tick_credit
+    _CLAIM_LOG[id(tick_credit(sim.gmap))] = []
+
+
+def _claims_records(sim, obj):
+    return np.array(obj, dtype=np.int64).reshape(len(obj), 4)
+
+
+def _claims_device(n_env, n_units, cap, bp):
+    from simulation import attack_lists
+    return attack_lists.claims_list(n_env, bp=bp)
+
+
+def _claims_land(sim, obj, recs):
+    from simulation import attack_lists
+    attack_lists.replay_claims(sim.gmap, recs)
+
+
+LISTS["spray_cells"] = ListDef(_effects_host, _cells_records, lambda obj: None,
+                               _cells_device, lambda rec: ("cell", ("y", "x", "div")))
+LISTS["edits"] = ListDef(lambda sim, a, k: sim.edit_queue, _edits_records,
+                         lambda obj: None, _edits_device, _edits_fields,
+                         _edits_mark, _edits_land)
+LISTS["claims"] = ListDef(_claims_host, _claims_records, lambda obj: obj.clear(),
+                          _claims_device,
+                          lambda rec: ("claim", ("channel", "y", "x", "attacker")),
+                          _claims_mark, _claims_land)
+INPUTS["edit_seq"] = ("scalar", lambda sim: int(sim.edit_queue._seq))
+
 # ---------------------------------------------------------------------------
 # #29 P6.4b: field outputs, books, the write-set gate
 # ---------------------------------------------------------------------------
@@ -928,6 +1101,8 @@ class ShadowLockstep:
             self._install_requests()
         if any("payloads" in s.list_names for s in self.slots):   # #29 P7b
             self._orig.extend(install_payload_tap())
+        if any("claims" in s.list_names for s in self.slots):     # #29 P7a.3
+            self._orig.extend(install_claims_tap())
         return self
 
     def _install_requests(self):
@@ -1464,6 +1639,7 @@ __all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture",
            "slot_callables", "build_store", "ShadowLockstep", "ChainedSlots"]
 __all__ += ["LIST_PREFIX", "ListDef", "LISTS"]
 __all__ += ["PAYLOAD_SITES", "install_payload_tap", "payload_call"]
+__all__ += ["install_claims_tap", "door_combined", "door_split", "DoorList"]
 __all__ += ["ARG_INPUTS", "BOOK_PREFIX", "ALIASES", "book_ref", "host_books",
             "OBJECT_PROBES", "gmap_state", "changed_attrs",
             "write_set_violations", "split_result", "first_field_diff"]

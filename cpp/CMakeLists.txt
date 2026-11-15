@@ -173,6 +173,11 @@ if(BREACH_CUDA)
         # 1b's appends, slot 2's flight and fuse-out, charges.tick); Class T,
         # pure integer, on the same target-wide CUDA determinism floor.
         src/cuda_unit_objects.cu    # slot 1b appends, slot 2 grenades, 9e(d')
+        # #29 P7a.3: slot 4b (the sprays: the cone over the physical sight, the
+        # cell buffer) and the device edit door's buffers (step (a)); Class T,
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_sprays.cu     # slot 4b, the cone's TEST-ONLY probe
+        src/cuda_edit_door.cu       # the device edit door (step (a))
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

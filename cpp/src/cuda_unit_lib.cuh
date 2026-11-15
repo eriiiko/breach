@@ -865,3 +865,19 @@ __device__ inline int melee_arc_target(int64_t* store, int n_units, int r, const
 
 }  // namespace unit_lib
 }  // namespace breach_cuda
+
+// ============================================================================
+// #29 P7a.3 -- a SERIAL per-env producer's sink on a record list: env e's
+// list itself (the cell buffer, the claims list, the edit door's rows, the
+// effect list when one thread per env appends). P7b's two private copies
+// (cuda_unit_objects.cu env_list_sink, cuda_object_table.cu table_sink) are
+// this function and may fold onto it.
+// ============================================================================
+namespace breach_cuda {
+namespace unit_lib {
+__device__ __forceinline__ RecordSink list_env_sink(const RecordListView& v, int e) {
+    return RecordSink{v.recs + (size_t)e * v.cap * v.width, v.cap, v.count + e, v.dropped + e,
+                      v.width};
+}
+}  // namespace unit_lib
+}  // namespace breach_cuda

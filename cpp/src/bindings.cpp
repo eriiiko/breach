@@ -41,6 +41,7 @@ const char* breach_build_id();
 #include "cuda_unit_kernels.h"     // #29 P6.2: the unit slot kernels (Class T)
 #include "cuda_applier.h"          // #29 P6.4b: the per-env serial applier (Class T)
 #include "cuda_object_table.h"     // #29 P7.0b: the device object tables (Class T)
+#include "cuda_edit_door.h"        // #29 P7a.3: the device edit door (Class T)
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -939,7 +940,22 @@ PYBIND11_MODULE(breach_physics, m) {
                      r.download(recs.mutable_data(), cnt.mutable_data(), drp.mutable_data());
                      return py::make_tuple(recs, cnt, drp);
                  },
-                 "(records (N, cap, width), counts (N,), dropped (N,)) int64.");
+                 "(records (N, cap, width), counts (N,), dropped (N,)) int64.")
+            .def("upload", [](UnitRecordList& r, py::array_t<int64_t, py::array::c_style> recs,
+                              py::array_t<int64_t, py::array::c_style> counts) {
+                     if (recs.ndim() != 3 || recs.shape(0) != r.n_env() ||
+                         recs.shape(1) != r.cap() || recs.shape(2) != r.width() ||
+                         counts.ndim() != 1 || counts.shape(0) != r.n_env())
+                         throw std::invalid_argument(
+                             "UnitRecordListBuffer.upload: recs (n_env, cap, width) and counts "
+                             "(n_env,) int64");
+                     for (int e = 0; e < r.n_env(); ++e)
+                         if (counts.at(e) < 0 || counts.at(e) > r.cap())
+                             throw std::invalid_argument(
+                                 "UnitRecordListBuffer.upload: a count outside 0 .. cap");
+                     r.upload(recs.data(), counts.data());
+                 }, py::arg("recs"), py::arg("counts"),
+                 "#29 P7a.3: set every env's list and count; dropped and staging to 0.");
         m.def("unit_verbs",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
                  py::array_t<int64_t, py::array::c_style> ticks,
@@ -1102,6 +1118,85 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P7b: charges.tick -- the due charges as PAYLOAD records, then the prune.");
     }
 
+    // #29 P7a.3: SLOT 4b (the sprays), THE CELL BUFFER and THE CLAIMS LIST
+    // (record lists: UnitRecordListBuffer), THE DEVICE EDIT DOOR
+    // (cuda_edit_door.h), the cone's TEST-ONLY probe (cuda_unit_kernels.h;
+    // Class T). The Python faces: simulation.unit_kernels (sprays,
+    // spray_cone_probe), simulation.attack_lists, simulation.edit_door.
+    {
+        using breach_cuda::EditDoor;
+        using breach_cuda::FieldApplier;
+        using breach_cuda::UnitRecordList;
+        using breach_cuda::UnitStoreDevice;
+        using breach_cuda::UnitTablesDevice;
+        m.def("edit_door_layout", []() {
+                  py::dict d;
+                  d["edit_cols"] = breach_cuda::EDIT_DOOR_COLS;
+                  d["packed_cols"] = breach_cuda::EDQ_EDIT_COLS;
+                  d["tile_cols"] = breach_cuda::EDQ_TILE_COLS;
+                  d["src_col"] = breach_cuda::EDIT_DOOR_SRC;
+                  d["region_col"] = breach_cuda::EDIT_DOOR_REGION;
+                  return d;
+              },
+              "#29 P7a.3: the compiled edit door rows: {edit_cols, packed_cols, tile_cols, "
+              "src_col, region_col}.");
+        py::class_<EditDoor>(m, "EditDoorBuffer",
+                "#29 P7a.3: the device edit door's per-env EDIT and TILE rows and seq "
+                "counters (Class T).")
+            .def(py::init<int, int, int>(), py::arg("n_env"), py::arg("edit_cap"),
+                 py::arg("tile_cap"))
+            .def("begin", [](EditDoor& d) { d.begin(); },
+                 "The 6b flush's reset: every env's rows empty, its seq 0.")
+            .def("set_seq", [](EditDoor& d, py::array_t<int64_t, py::array::c_style> seq) {
+                     if (seq.ndim() != 1 || seq.shape(0) != d.n_env())
+                         throw std::invalid_argument("EditDoorBuffer.set_seq: (n_env,) int64");
+                     d.set_seq(seq.data());
+                 }, py::arg("seq"))
+            .def("seq", [](EditDoor& d) {
+                     py::array_t<int64_t> out(d.n_env());
+                     d.download_seq(out.mutable_data());
+                     return out;
+                 })
+            .def_property_readonly("edits", [](EditDoor& d) -> UnitRecordList& {
+                     return d.edits(); }, py::return_value_policy::reference_internal)
+            .def_property_readonly("tiles", [](EditDoor& d) -> UnitRecordList& {
+                     return d.tiles(); }, py::return_value_policy::reference_internal);
+        m.def("unit_sprays",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+                 UnitRecordList& cells, std::uintptr_t solid, int h, int w, int64_t box_max) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  breach_cuda::UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_sprays(s, t, a, cells, solid, h, w, box_max, c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("cells"),
+              py::arg("solid"), py::arg("h"), py::arg("w"), py::arg("box_max"),
+              "#29 P7a.3: slot 4b (combat.process_sprays) on the device store; returns "
+              "(coverage, faults, refused WEGO bursts, dropped records + cells).");
+        m.def("unit_spray_cone_probe",
+              [](std::uintptr_t solid, int n_env, int h, int w,
+                 py::array_t<int64_t, py::array::c_style> args, int64_t box_max, int max_out) {
+                  if (args.ndim() != 3 || args.shape(0) != n_env || args.shape(2) != 8)
+                      throw std::invalid_argument(
+                          "unit_spray_cone_probe: args must be (n_env, n_rows, 8) int64");
+                  const int n_rows = (int)args.shape(1);
+                  py::array_t<int64_t> out({(py::ssize_t)n_env, (py::ssize_t)n_rows,
+                                            (py::ssize_t)max_out, (py::ssize_t)3});
+                  py::array_t<int64_t> meta({(py::ssize_t)n_env, (py::ssize_t)n_rows,
+                                             (py::ssize_t)2});
+                  breach_cuda::unit_spray_cone_probe(solid, n_env, h, w, args.data(), n_rows,
+                                                     box_max, max_out, out.mutable_data(),
+                                                     meta.mutable_data());
+                  return py::make_tuple(out, meta);
+              }, py::arg("solid"), py::arg("n_env"), py::arg("h"), py::arg("w"),
+              py::arg("args"), py::arg("box_max"), py::arg("max_out"),
+              "#29 P7a.3 TEST-ONLY: combat.spray_cone_tiles' device form on synthetic cones.");
+    }
+
     // #29 P6.4b: THE PER-ENV SERIAL APPLIER and THE TICK-END CLEARS
     // (cuda_applier.h; Class T). The planes are device addresses of the
     // (N, ...) arrays in applier_layout.h's order; the Python face is
@@ -1154,7 +1249,8 @@ PYBIND11_MODULE(breach_physics, m) {
         m.def("applier_run",
               [](FieldApplier& a, UnitStoreDevice& s, const UnitTablesDevice& t,
                  py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
-                 int stage, py::object ring) {
+                 int stage, py::object ring, py::object cells, py::object door,
+                 py::object claims) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   breach_cuda::ApplierPlanes p;
@@ -1169,11 +1265,17 @@ PYBIND11_MODULE(breach_physics, m) {
                   o.books = books.mutable_data();
                   o.coverage = cov.mutable_data();
                   o.ring_dropped = drp.mutable_data();
-                  breach_cuda::applier_run(a, s, t, p, stage, rp, o);
+                  breach_cuda::ApplierLists L;      // #29 P7a.3: the walk's lists
+                  L.cells = cells.is_none() ? nullptr : cells.cast<breach_cuda::UnitRecordList*>();
+                  L.door = door.is_none() ? nullptr : door.cast<breach_cuda::EditDoor*>();
+                  L.claims = claims.is_none() ? nullptr
+                                              : claims.cast<breach_cuda::UnitRecordList*>();
+                  breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
               py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("stage"),
-              py::arg("ring") = py::none(),
+              py::arg("ring") = py::none(), py::arg("cells") = py::none(),
+              py::arg("door") = py::none(), py::arg("claims") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");

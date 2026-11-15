@@ -108,12 +108,26 @@ struct ApplierOut {
     int64_t* ring_dropped = nullptr;   // N (may be null)
 };
 
+// #29 P7a.3: the walk's further reach -- the per-env lists an effect reads
+// or writes besides the planes, the rows and the ring: THE CELL BUFFER a
+// SPRAY_CELLS record's span points into (cuda_unit_spray.cuh, (y, x, div)
+// rows), THE DEVICE EDIT DOOR its edits go through (cuda_edit_door.h) and
+// THE CLAIMS LIST its credit claims are appended to (damage.TickCredit's
+// rows (channel, y, x, attacker): credit_at's table). Any may be null: an
+// effect that needs a missing one FAULTS.
+class EditDoor;
+struct ApplierLists {
+    UnitRecordList* cells = nullptr;
+    EditDoor* door = nullptr;
+    UnitRecordList* claims = nullptr;
+};
+
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
 // the store's rows and the env's planes; `ring` (may be null: a HIT then
-// faults) receives the events.
+// faults) receives the events; `lists` (may be null) the walk's lists.
 void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
                  const ApplierPlanes& planes, int stage, UnitEventRing* ring,
-                 const ApplierOut& out);
+                 const ApplierOut& out, const ApplierLists* lists = nullptr);
 
 // The tick-end clears: `ptr` the device addresses of the (N, h, w) planes in
 // APPLIER_CLEAR_* order; `active` a device pointer to (N,) uint8 (nullptr: all).
