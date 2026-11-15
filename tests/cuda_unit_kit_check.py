@@ -37,6 +37,12 @@ CPU twin (``bp.fp_falloff_*``) against ``unit_fixed`` over the callers'
 ranges and the range ends (v 2^31 - 1, d2 = r2 - 1, r2 up to 2^62); outside
 the proved range (v >= 2^31, d2 < 0) the twin refuses (-1).
 
+PART LAW -- slot 9d's kernel on random synthetic planes (8 envs x 40 trials)
+against ``apply_temperature_ignition`` on a stand-in map holding the same
+planes: temperatures AT the threshold and one either side, fuel -1 / 0 / 1,
+gas in vacuum tiles, open-neighbour sums below the fraction's floor, O2
+fractions a count either side of X_ext -- the edges no scene reaches.
+
 PART SCENES -- the SHADOW LOCKSTEP of slot 9d on an ignition scene built for
 the gate (wood heated on a schedule so tiles ignite on many ticks; a burning
 tile cooled so it re-arms; a hot armed tile lit by hand; a hot fuel-less tile;
@@ -741,9 +747,121 @@ def _chain_run(twin, ref, slots, calls, t0):
 
 
 # ---------------------------------------------------------------------------
+# PART LAW: slot 9d's kernel against the Python law on synthetic planes
+# ---------------------------------------------------------------------------
+class _Gases:
+    def __init__(self, names):
+        self.name_to_id = {n: i for i, n in enumerate(names)}
+
+
+class _Mats:
+    def __init__(self, thr):
+        self.ignition_temp_q16 = thr
+
+
+class _LawMap:
+    """A GameMap stand-in holding exactly what apply_temperature_ignition
+    reads and writes (the test_continuous_o2_law precedent)."""
+
+    def __init__(self, planes, thr, gases):
+        for k, v in planes.items():
+            setattr(self, k, v)
+        self.materials = _Mats(thr)
+        self.gases = gases
+
+
+def _law_planes(rng, h, w, n_gases, thr, o2i, n2i, x_ext_q, floor_q):
+    """Random planes straddling every edge of the law: temperatures at the
+    threshold and one either side, fuel -1 / 0 / 1, armed / unarmed, lit /
+    unlit, gas in VACUUM tiles, open-neighbour sums below the floor, O2
+    fractions one count either side of X_ext."""
+    n_mat = len(thr)
+    mat = rng.integers(0, n_mat, size=(h, w)).astype(np.int8)
+    t_thr = thr[mat.astype(np.int64)]
+    dt = rng.choice([-1, 0, 1, -5000, 5000, -(1 << 20), 1 << 20], size=(h, w))
+    temp = np.clip(t_thr + dt, -(1 << 31), (1 << 31) - 1).astype(np.int32)
+    flam = rng.random((h, w)) < 0.6
+    wall_hp = rng.choice([-1, 0, 1, 70000], size=(h, w)).astype(np.int32)
+    solid = rng.random((h, w)) < 0.25
+    vac = (~solid) & (rng.random((h, w)) < 0.15)
+    fire = np.where(rng.random((h, w)) < 0.3, rng.integers(1, 90000, size=(h, w)),
+                    0).astype(np.int32)
+    armed = rng.random((h, w)) < 0.7
+    gas = rng.integers(0, 4000, size=(n_gases, h, w)).astype(np.int32)
+    tot = rng.choice([0, 100, floor_q - 1, floor_q, floor_q + 1, 30000, 70000], size=(h, w))
+    # an O2 share giving X one count either side of X_ext (or anywhere)
+    share = np.where(rng.random((h, w)) < 0.5, (x_ext_q + rng.integers(-2, 3, size=(h, w))),
+                     rng.integers(0, 65537, size=(h, w)))
+    o2 = (tot * share) // 65536
+    gas[o2i] = o2.astype(np.int32)
+    gas[n2i] = (tot - o2).astype(np.int32)
+    return dict(temperature=temp, material=mat, flammable=flam, wall_hp=wall_hp,
+                solid=solid, is_vacuum=vac, gas=gas, fire=fire, ignition_armed=armed)
+
+
+def part_law():
+    """Slot 9d's kernel on random synthetic planes (8 envs x 40 trials of 24 x
+    32, every edge of the law straddled) against apply_temperature_ignition
+    run on a stand-in map holding the same planes; the env's tables are the
+    ignition scene's (the real dials)."""
+    import cupy as cp
+    from config import CFG
+    from simulation import combat
+    sim = IgnitionScene(0).sim
+    tab = unit_tables.values(sim)
+    thr = np.asarray(unit_tables.read(tab, "ign_temp_q"), dtype=np.int64)
+    o2i, n2i = (int(unit_tables.read(tab, k)) for k in ("ign_gas_o2", "ign_gas_n2"))
+    x_ext_q = int(unit_tables.read(tab, "ign_x_ext_q"))
+    floor_q = int(unit_tables.read(tab, "ign_x_n_floor_q"))
+    names = [None] * sim.gmap.gas.shape[0]
+    for k, i in sim.gmap.gases.name_to_id.items():
+        names[i] = k
+    gases = _Gases(names)
+    o2_frac_ext, seed = combat.ignition_params(CFG)
+    rng = np.random.default_rng(9070)
+    N, h, w, G = 8, 24, 32, sim.gmap.gas.shape[0]
+    st = unit_store.DeviceStore(N, 1, bp=bp, tables=np.tile(tab, (N, 1)))
+    trials = int(os.environ.get("UNIT_KIT_LAW_TRIALS", "40"))
+    seen = dict(changed=0, seeded=0, rearmed=0, disarmed=0, at_threshold=0,
+                vac_with_gas=0)
+    bad = 0
+    for trial in range(trials):
+        envs = [_law_planes(rng, h, w, G, thr, o2i, n2i, x_ext_q, floor_q) for _ in range(N)]
+        dev = {k: cp.asarray(np.ascontiguousarray(np.stack([e[k] for e in envs])))
+               for k, _ in unit_kernels.IGNITION_FIELDS}
+        cov = unit_kernels.ignition(st, dev)
+        got_f, got_a = dev["fire"].get(), dev["ignition_armed"].get()
+        for e, pl in enumerate(envs):
+            m = _LawMap({k: v.copy() for k, v in pl.items()}, thr, gases)
+            combat.apply_temperature_ignition(m, o2_frac_ext, seed)
+            ch = (m.fire != pl["fire"]) | (m.ignition_armed != pl["ignition_armed"])
+            if not (np.array_equal(got_f[e], m.fire)
+                    and np.array_equal(got_a[e], m.ignition_armed)) or int(cov[e]) != int(ch.sum()):
+                bad += 1
+                if bad <= 3:
+                    d = np.argwhere((got_f[e] != m.fire) | (got_a[e] != m.ignition_armed))
+                    fail(f"law trial {trial} env {e}: device != python at {d[:3].tolist()} "
+                         f"(coverage {int(cov[e])} vs {int(ch.sum())})")
+                continue
+            seen["changed"] += int(ch.sum())
+            seen["seeded"] += int(((m.fire != pl["fire"])).sum())
+            seen["rearmed"] += int((m.ignition_armed & ~pl["ignition_armed"]).sum())
+            seen["disarmed"] += int((~m.ignition_armed & pl["ignition_armed"]).sum())
+            seen["at_threshold"] += int((pl["flammable"]
+                                         & (pl["temperature"].astype(np.int64)
+                                            == thr[pl["material"].astype(np.int64)])).sum())
+            seen["vac_with_gas"] += int((pl["is_vacuum"] & (pl["gas"][o2i] > 0)).sum())
+    for k, v in seen.items():
+        if v == 0:
+            fail(f"law: no {k} (vacuous)")
+    print(f"law: {trials} trials x {N} envs of {h} x {w} random planes (every edge "
+          f"straddled), {bad} differences; {seen}")
+
+
+# ---------------------------------------------------------------------------
 # main / bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "draws", "sight", "falloff", "scenes", "batch", "chained")
+PARTS = ("tables", "draws", "sight", "falloff", "law", "scenes", "batch", "chained")
 
 
 def main(parts=None) -> int:
@@ -755,7 +873,7 @@ def main(parts=None) -> int:
     for p in parts:
         try:
             {"tables": part_tables, "draws": part_draws, "sight": part_sight,
-             "falloff": part_falloff, "scenes": part_scenes, "batch": part_batch,
+             "falloff": part_falloff, "law": part_law, "scenes": part_scenes, "batch": part_batch,
              "chained": part_chained}[p]()
         except Exception as ex:          # a part's crash fails it, the rest run
             import traceback
