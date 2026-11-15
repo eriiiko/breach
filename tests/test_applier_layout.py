@@ -107,3 +107,118 @@ def test_a_list_past_its_capacity_keeps_its_first_entries_and_its_count():
     assert np.array_equal(out[1, :3], recs[:3]) and not out[1, 3].any()
     assert not out[2].any()
     assert (recs[:, 0] == applier.KIND_DESTROY_WALL).all()
+
+
+# ---------------------------------------------------------------------------
+# #29 P7a.1: the effect list's kinds and its ONE record function
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def ship_sim():
+    import level_loader
+    from simulation import Simulation
+    from simulation.unit import Unit
+    level = level_loader.load("ship_demo", str(ROOT / "levels"))
+    sim = Simulation(level, seed=1, breach_physics=bp, enable_recorder=False)
+    for i in range(2):
+        sim.add_unit(Unit(f"U{i}", x=10.0 + 4 * i, y=10.0, team=i))
+    return sim
+
+
+def test_every_kind_fits_the_record_and_names_its_fields_once():
+    """Property: each kind's fields fit the record's arg slots, are unique
+    within the kind, and ``kind_field`` / ``make_record`` place them where the
+    generated header says (column 1 + position). Breaks if a kind grows past
+    ARG_SLOTS without widening the record, or the two placements disagree."""
+    text = applier.header_text()
+    for kind, fields in applier.KIND_FIELDS:
+        assert len(fields) <= applier.ARG_SLOTS, kind
+        assert len(set(fields)) == len(fields), kind
+        vals = {f: 100 + i for i, f in enumerate(fields)}
+        rec = applier.make_record(kind, **vals)
+        assert rec[0] == applier.KINDS.index(kind) + 1
+        for f in fields:
+            col = applier.kind_field(kind, f)
+            assert rec[col] == vals[f]
+            assert f"APPLIER_{kind}_{f.upper()} = {col};" in text
+    with pytest.raises(ValueError):
+        applier.make_record("HIT", row=0)
+
+
+def test_the_unapplied_kinds_and_the_stages_are_rows_of_the_table():
+    """Property: every kind the applier refuses to apply is a kind of the
+    table, every stage has a landing mode, and the resolve stage lands its
+    HITs while the topology stage does not (decision 2: the mode is per
+    (stage, kind)). Breaks if a refused kind is renamed away from the table,
+    or the resolve stage stops landing."""
+    for k in applier.UNAPPLIED_KINDS:
+        assert k in applier.KINDS
+    modes = dict(applier.STAGES)
+    assert modes["RESOLVE"] is True and modes["TOPOLOGY"] is False
+    assert applier.STAGE_NAMES.index("RESOLVE") == applier.STAGE_RESOLVE
+
+
+def test_the_host_effects_become_records_carrying_what_each_call_receives(ship_sim):
+    """Property: ``record_of`` turns each SimultaneousEffects entry into the
+    record of the call it stands for -- a HIT's packet at its door (Q16
+    amount, AP quantized, the attacker normalized, the cause's index), a
+    STATUS's quantized magnitude and None source as -1, a PUSH's five
+    integers, ``chew_wall`` as CHEW with its per-call quantized damage (and
+    ``live`` 0 for no damage), ``execute_payload`` as PAYLOAD -- and refuses by
+    name FACE, any other world call and an effect on another sim's objects.
+    Breaks if a field is dropped, re-quantized differently from the
+    reference's door, or a world call is recognised by anything but its
+    function."""
+    from simulation import combat, payloads, unit_fixed, wall_fixed
+    from simulation.damage import DamagePacket
+    from simulation.events import CAUSE_NAMES
+    from simulation.simultaneous import SimultaneousEffects
+    sim = ship_sim
+    a, t = sim.units[0], sim.units[1]
+    fx = SimultaneousEffects()
+    fx.hit(t, DamagePacket(amount=7.25, dtype=2, attacker_id=a.id, ap=1.5,
+                           expose=12345, dir_x_q=-3, dir_y_q=4),
+           sim.tick_events, source="laser")
+    fx.status(t, 2, magnitude=0.5, duration_ticks=9, source_id=None)
+    fx.push(sim.impulse_table, t, 11, -12, 13, 70000)
+    fx.world(combat.chew_wall, sim.gmap, 3, 4, 12.3)
+    fx.world(combat.chew_wall, sim.gmap, 3, 4, 0)
+    payload = next(iter(sim.weapons_tables.payloads.by_name.values()))
+    fx.world(payloads.execute_payload, sim.gmap, sim.edit_queue, sim.units, 5, 6,
+             payload, sim.draws, events=sim.tick_events, kind="grenade",
+             owner_id=a.id, approach=None)
+    recs = [tuple(int(x) for x in r) for r in applier.records_of(sim, fx._pending)]
+    f = applier.kind_field
+    hit = recs[0]
+    assert hit[0] == applier.KIND_HIT and hit[f("HIT", "row")] == 1
+    assert hit[f("HIT", "amount_q")] == unit_fixed.quantize_scalar(7.25)
+    assert hit[f("HIT", "ap_q")] == unit_fixed.quantize_scalar(1.5)
+    assert hit[f("HIT", "cause")] == CAUSE_NAMES.index("laser")
+    assert (hit[f("HIT", "expose")], hit[f("HIT", "dir_x_q")]) == (12345, -3)
+    st = recs[1]
+    assert st[f("STATUS", "magnitude_q")] == unit_fixed.quantize_scalar(0.5)
+    assert st[f("STATUS", "source")] == -1 and st[f("STATUS", "duration")] == 9
+    assert recs[2][1:6] == (1, 11, -12, 13, 70000)
+    assert recs[3][f("CHEW", "damage_q")] == wall_fixed.quantize_scalar(12.3)
+    assert recs[3][f("CHEW", "live")] == 1 and recs[4][f("CHEW", "live")] == 0
+    pl = recs[5]
+    assert pl[0] == applier.KIND_PAYLOAD and pl[f("PAYLOAD", "has_approach")] == 0
+    assert pl[f("PAYLOAD", "kind")] == applier.PAYLOAD_KINDS.index("grenade")
+    for make in (lambda fx: fx.face(a, 3), lambda fx: fx.world(print, 1),
+                 lambda fx: fx.hit(t, DamagePacket(amount=1.0, dtype=0), [],
+                                   source="bullet")):
+        bad = SimultaneousEffects()
+        make(bad)
+        with pytest.raises(applier.EffectRefused):
+            applier.records_of(sim, bad._pending)
+
+
+def test_only_synced_events_count_as_ring_events():
+    """Property: ``unit_events.is_synced`` holds exactly for the event types
+    the ring holds (the hashed unit hit / kill), so the shadow harness drops
+    the render-only ones (MeleeEvent, ShotFired, ...) and nothing else.
+    Breaks if a synced type is dropped or a render-only one compared."""
+    from simulation import unit_events
+    from simulation.events import MeleeEvent, UnitHitEvent, UnitKilledEvent
+    assert unit_events.is_synced(UnitHitEvent(unit_id=1, damage=1.0, source="melee"))
+    assert unit_events.is_synced(UnitKilledEvent(unit_id=1, killed_by="melee"))
+    assert not unit_events.is_synced(MeleeEvent(unit_id=1, target_id=2, ticks=3))

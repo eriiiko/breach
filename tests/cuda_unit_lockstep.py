@@ -88,6 +88,31 @@ the batch's env i. ``TickReport.events`` / ``host_events`` are the two counts.
 The claims of the tick's credit (``damage.TickCredit``) are the input
 ``credit_claims`` (``unit_kernels.claims_of`` / ``pad_claims``).
 
+LISTS (#29 P7a.1, design 4.4c decision 8): a host LIST a slot reads or writes
+(today the attack slot's effects, ``SimultaneousEffects``' pending list) is
+declared like a field -- ``inputs=("list:effects",)`` and / or
+``outputs=("list:effects",)`` -- through ONE record function per list
+(:data:`LISTS`: ``simulation.applier.records_of`` for the effects). The
+harness owns the device list (a ``simulation.applier.DeviceApplier`` per
+name, the alone run's beside it) and hands the slot ``lists`` (a dict, the
+call's last argument): an INPUT list is staged from the host's records at
+the slot's entry (so slot 4c is fed the host's list), an output-only list
+begun empty; an OUTPUT list is downloaded after the kernel and compared with
+the host's records at the slot's exit, record for record and field for
+field (the first difference as (tick, env, effect index, kind.field)); the
+alone run's list must equal the batch's env i. A host effect with no device
+kind (FACE, a cover chew, a spray's cells) is refused by name at the record
+function. ``DeviceSlot.select(sim, args, kwargs, caller)`` keeps only the
+calls of the label's callables that belong to the slot (``caller`` the
+calling function's name: slot 4c's ``resolve`` is the conductor's, not slot
+2's landing). The CHAINED form stages a chain's input lists at its entry,
+empties the host's list once the device has applied it, and refuses by name
+a later chained callable that finds the host appended to it in between.
+
+EVENTS keep only SYNCED events: the host's render-only events (MeleeEvent,
+ShotFired, SprayJet, ...: outside every digest, no device form) are dropped
+before the ring is compared (``unit_events.is_synced``).
+
 ``DeviceSlot.columns`` limits the compare to named columns (default: the
 whole row). A label naming several callables is hooked on each: the first
 entry in a tick packs the start rows and captures the inputs, every exit
@@ -114,6 +139,7 @@ scripts inside the CUDA subprocess.
 from __future__ import annotations
 
 import importlib
+import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -185,6 +211,61 @@ ARG_INPUTS: dict = {
     "burn_walls": ("table", _capture_walls),
 }
 PADS["burn_walls"] = unit_kernels.pad_walls
+
+# ---------------------------------------------------------------------------
+# #29 P7a.1: host LISTS (decision 8), declared like a field
+# ---------------------------------------------------------------------------
+LIST_PREFIX = "list:"
+
+
+@dataclass(frozen=True)
+class ListDef:
+    """One host list the harness knows: ``host(sim, args, kw)`` the host
+    object a slot callable was handed; ``records(sim, obj)`` its ONE record
+    function -- the object's current content as ``(R, F)`` int64 device
+    records, in its order; ``consume(obj)`` empties it (the chained form,
+    once the device applied it); ``device(n_env, n_units, cap, bp)`` the
+    device list; ``fields(rec)`` names a record's fields for a report."""
+    host: Callable
+    records: Callable
+    consume: Callable
+    device: Callable
+    fields: Callable
+
+
+def _effects_host(sim, args, kw):
+    from simulation import applier
+    return applier.effects_of(args, kw or {})
+
+
+def _effects_records(sim, obj):
+    from simulation import applier
+    return applier.records_of(sim, obj._pending)
+
+
+def _effects_consume(obj):
+    obj._pending.clear()
+
+
+def _effects_device(n_env, n_units, cap, bp):
+    from simulation import applier
+    return applier.DeviceApplier(n_env, cap, bp=bp, n_units=n_units)
+
+
+def _effects_fields(rec):
+    from simulation import applier
+    k = int(rec[0])
+    if not 1 <= k <= len(applier.KINDS):
+        return f"kind {k}", ("kind",) + tuple(f"a{i}" for i in range(applier.ARG_SLOTS))
+    name, fs = applier.KIND_FIELDS[k - 1]
+    return name, ("kind",) + fs
+
+
+#: name -> ListDef.
+LISTS: dict = {
+    "effects": ListDef(_effects_host, _effects_records, _effects_consume,
+                       _effects_device, _effects_fields),
+}
 
 # ---------------------------------------------------------------------------
 # #29 P6.4b: field outputs, books, the write-set gate
@@ -329,6 +410,7 @@ class SlotInputs:
     fields: dict = field(default_factory=dict)  # name -> device (N, ...)
     _host_fields: dict = field(default_factory=dict)   # name -> np (N, ...)
     scalars: dict = field(default_factory=dict)  # name -> (N,) int64 (P6.4a)
+    lists: dict = field(default_factory=dict)    # name -> [N x (R_e, F)] (P7a.1)
 
     def env(self, e: int) -> "SlotInputs":
         """Env ``e``'s inputs alone (an N = 1 batch)."""
@@ -340,7 +422,8 @@ class SlotInputs:
             fields={k: cp.ascontiguousarray(cp.asarray(v[e:e + 1]))
                     for k, v in self._host_fields.items()},
             _host_fields={k: v[e:e + 1] for k, v in self._host_fields.items()},
-            scalars={k: v[e:e + 1].copy() for k, v in self.scalars.items()})
+            scalars={k: v[e:e + 1].copy() for k, v in self.scalars.items()},
+            lists={k: v[e:e + 1] for k, v in self.lists.items()})
 
 
 def capture(names, sim, args=(), kw=None) -> dict:
@@ -351,6 +434,9 @@ def capture(names, sim, args=(), kw=None) -> dict:
         if n.startswith(FIELD_PREFIX):
             out[n] = np.array(getattr(sim.gmap, n[len(FIELD_PREFIX):]),
                               copy=True)
+        elif n.startswith(LIST_PREFIX):
+            ld = LISTS[n[len(LIST_PREFIX):]]
+            out[n] = ld.records(sim, ld.host(sim, tuple(args), dict(kw or {})))
         elif n in ARG_INPUTS:
             out[n] = ARG_INPUTS[n][1](sim, tuple(args), dict(kw or {}))
         else:
@@ -373,6 +459,8 @@ def gather(names, per_env) -> SlotInputs:
             key = n[len(FIELD_PREFIX):]
             inp._host_fields[key] = host
             inp.fields[key] = cp.asarray(host)
+        elif n.startswith(LIST_PREFIX):
+            inp.lists[n[len(LIST_PREFIX):]] = list(vals)
         elif n in INPUTS and INPUTS[n][0] == "tick":
             inp.tick = np.array(vals, dtype=np.int64)
         elif n in INPUTS and INPUTS[n][0] == "scalar":
@@ -417,8 +505,12 @@ class DeviceSlot:
     # GameMap attribute the host slot changed must be an output or host-only.
     outputs: tuple = ()
     host_only: tuple = ()
+    # #29 P7a.1: which calls of the label's callables are this slot's
+    # (sim, args, kwargs, caller function name) -> bool; None = every call.
+    select: Callable | None = None
 
-    def call(self, store, inputs: SlotInputs | None, ring=None, req=None):
+    def call(self, store, inputs: SlotInputs | None, ring=None, req=None,
+             lists=None):
         args = [store]
         if self.inputs or self.outputs:
             args.append(inputs)
@@ -426,7 +518,26 @@ class DeviceSlot:
             args.append(ring)
         if self.requests:
             args.append(req)
+        if self.list_names:
+            args.append(lists)
         return self.run(*args)
+
+    @property
+    def list_inputs(self) -> tuple:
+        return tuple(i[len(LIST_PREFIX):] for i in self.inputs
+                     if i.startswith(LIST_PREFIX))
+
+    @property
+    def list_outputs(self) -> tuple:
+        return tuple(o[len(LIST_PREFIX):] for o in self.outputs
+                     if o.startswith(LIST_PREFIX))
+
+    @property
+    def list_names(self) -> tuple:
+        return tuple(dict.fromkeys(self.list_inputs + self.list_outputs))
+
+    def selects(self, sim, args, kw, caller) -> bool:
+        return self.select is None or bool(self.select(sim, args, kw, caller))
 
     @property
     def field_outputs(self) -> tuple:
@@ -463,6 +574,8 @@ class TickReport:
     books: dict | None = None              # #29 P6.4b: the device's {name: (N,)}
     host_books: dict | None = None         # the host's delta over the slot
     write_set: list | None = None          # per env: the attributes the host changed
+    lists: dict | None = None              # #29 P7a.1: {name: per env device records}
+    host_lists: dict | None = None         # {name: per env host records at the exit}
 
 
 @dataclass
@@ -523,7 +636,8 @@ class ShadowLockstep:
 
     def __init__(self, drivers, slot, bp=None,
                  check_alone: bool = True, n_units: int | None = None,
-                 e_max: int = unit_events.E_MAX, r_max: int | None = None):
+                 e_max: int = unit_events.E_MAX, r_max: int | None = None,
+                 list_cap: int | None = None):
         if r_max is None:
             from simulation.unit_requests import R_MAX as r_max
         self.drivers = list(drivers)
@@ -556,6 +670,13 @@ class ShadowLockstep:
                     if asks else None)
         self.alone_req = (unit_requests.RequestList(1, self.U, r_max, bp=bp)
                           if asks and self.alone is not None else None)
+        # #29 P7a.1: the device lists (one per declared name, the alone run's)
+        from simulation import applier
+        cap = int(list_cap) if list_cap is not None else applier.E_CAP
+        names = dict.fromkeys(n for s in self.slots for n in s.list_names)
+        self.dev_lists = {n: LISTS[n].device(self.N, self.U, cap, bp) for n in names}
+        self.alone_lists = ({n: LISTS[n].device(1, self.U, cap, bp) for n in names}
+                            if self.alone is not None else {})
         self.layout = unit_store.layout()
         self._masks = [self._column_mask(s.columns) for s in self.slots]
         self._orig = []
@@ -581,6 +702,8 @@ class ShadowLockstep:
         self._bk1 = [[None] * self.N for _ in range(k)]
         self._ws0 = [[None] * self.N for _ in range(k)]
         self._ws1 = [[None] * self.N for _ in range(k)]
+        # #29 P7a.1: the output lists' host records at the exit
+        self._lout = [[None] * self.N for _ in range(k)]
 
     # -- the hook ------------------------------------------------------------
     def _column_mask(self, names):
@@ -604,6 +727,8 @@ class ShadowLockstep:
                         return __orig(*a, **kw)
                     sim = ls.drivers[e].sim
                     sl = ls.slots[__k]
+                    if not sl.selects(sim, a, kw, sys._getframe(1).f_code.co_name):
+                        return __orig(*a, **kw)
                     if ls._pre[__k][e] is None:
                         ls._pre[__k][e] = unit_store.pack(sim.units, ls.U)
                         ls._inp[__k][e] = capture(sl.capture_names, sim, a, kw)
@@ -621,6 +746,9 @@ class ShadowLockstep:
                         ls._post[__k][e] = unit_store.pack(sim.units, ls.U)
                         evl, n0 = ls._ev0[__k][e]
                         ls._evs[__k][e] = list(evl[n0:])
+                        for ln in sl.list_outputs:
+                            ld = LISTS[ln]
+                            ls._lout[__k][e] = ld.records(sim, ld.host(sim, a, kw))
                         if sl.outputs:
                             ls._fpost[__k][e] = {
                                 f: np.array(getattr(sim.gmap, f), copy=True)
@@ -736,8 +864,9 @@ class ShadowLockstep:
             self.ring.begin()
         if slot.requests:
             self.req.begin()
+        self._stage_lists(slot, self.dev_lists, inputs)
         coverage, books = split_result(slot.call(self.store, inputs, self.ring,
-                                                 self.req))
+                                                 self.req, self.dev_lists))
         got = self.store.download()
         host_changed = np.array([int((pre[e] != post[e]).any(axis=1).sum())
                                  for e in range(self.N)], dtype=np.int64)
@@ -745,8 +874,9 @@ class ShadowLockstep:
         ring_recs = host_n = None
         if slot.events:
             ring_recs = self.ring.records()
-            host_n = np.array([len(self._evs[k][e]) for e in range(self.N)],
-                              dtype=np.int64)
+            host_n = np.array([len([v for v in self._evs[k][e]
+                                    if unit_events.is_synced(v)])
+                               for e in range(self.N)], dtype=np.int64)
             if first is None:
                 first = self._first_event_diff(tick, k, ring_recs)
         req_recs = None
@@ -754,6 +884,14 @@ class ShadowLockstep:
             req_recs = self.req.records()
             if first is None:
                 first = self._first_request_diff(tick, k, req_recs)
+        # #29 P7a.1: the output lists, record for record
+        dev_lists = host_lists = None
+        if slot.list_outputs:
+            dev_lists = {n: self.dev_lists[n].records() for n in slot.list_outputs}
+            host_lists = {n: [[tuple(int(x) for x in r) for r in self._lout[k][e]]
+                              for e in range(self.N)] for n in slot.list_outputs}
+            if first is None:
+                first = self._first_list_diff(tick, slot, dev_lists, host_lists)
         # #29 P6.4b: the field outputs, the books, the write set
         dev_fields = hb = ws = None
         if slot.outputs:
@@ -775,9 +913,19 @@ class ShadowLockstep:
                 if slot.requests:
                     self.alone_req.begin()
                 ie = None if inputs is None else inputs.env(e)
+                self._stage_lists(slot, self.alone_lists, ie)
                 _cov1, books1 = split_result(slot.call(self.alone, ie,
                                                        self.alone_ring,
-                                                       self.alone_req))
+                                                       self.alone_req,
+                                                       self.alone_lists))
+                for n in slot.list_outputs:
+                    if self.alone_lists[n].records()[0] != dev_lists[n][e]:
+                        first = Divergence(tick, e, -1, f"ALONE list {n}",
+                                           len(self.alone_lists[n].records()[0]),
+                                           len(dev_lists[n][e]))
+                        break
+                if first is not None:
+                    break
                 if slot.requests and self.alone_req.records()[0] != req_recs[e]:
                     first = Divergence(tick, e, -1, "ALONE request list",
                                        len(self.alone_req.records()[0]),
@@ -831,9 +979,45 @@ class ShadowLockstep:
                          requests=None if req_recs is None else req_recs,
                          host_requests=None if req_recs is None else [
                              list(self._reqs[k][e]) for e in range(self.N)],
-                         books=books, host_books=hb, write_set=ws)
+                         books=books, host_books=hb, write_set=ws,
+                         lists=dev_lists, host_lists=host_lists)
         self.reports.append(rep)
         return rep
+
+    @staticmethod
+    def _stage_lists(slot, devs, inputs):
+        """#29 P7a.1: every list the slot names, on the device before its
+        kernel: an input list staged from the host's records at the entry,
+        an output-only list begun empty."""
+        for n in slot.list_names:
+            if n in slot.list_inputs:
+                devs[n].stage_lists(inputs.lists[n])
+            else:
+                devs[n].begin()
+
+    def _first_list_diff(self, tick, slot, dev_lists, host_lists):
+        """#29 P7a.1: the first difference between the host's output list at
+        the slot's exit and the device's, per env, record for record: (tick,
+        env, index, kind.field) as a :class:`Divergence`."""
+        for n in slot.list_outputs:
+            ld = LISTS[n]
+            for e in range(self.N):
+                host, dev = host_lists[n][e], dev_lists[n][e]
+                for i in range(max(len(host), len(dev))):
+                    if i >= len(host):
+                        return Divergence(tick, e, -1, f"{n}[{i}] (extra on the "
+                                          f"device: {ld.fields(dev[i])[0]})", 0, dev[i][0])
+                    if i >= len(dev):
+                        return Divergence(tick, e, -1, f"{n}[{i}] (missing on the "
+                                          f"device: {ld.fields(host[i])[0]})", host[i][0], 0)
+                    if host[i] != dev[i]:
+                        kname, names = ld.fields(host[i])
+                        for f, (a, b) in enumerate(zip(host[i], dev[i])):
+                            if a != b:
+                                fname = names[f] if f < len(names) else f"a{f - 1}"
+                                return Divergence(tick, e, -1, f"{n}[{i}].{kname}."
+                                                  f"{fname}", a, b)
+        return None
 
     def _first_request_diff(self, tick, k, req_recs):
         """#29 P6.4a: the first difference between the host's requests of
@@ -890,7 +1074,9 @@ class ShadowLockstep:
         the ring, per env, record for record in order: (tick, env, event
         index, field) as a :class:`Divergence` (unit_id the host's event's)."""
         for e in range(self.N):
-            host = self._evs[k][e]
+            # #29 P7a.1: the ring keeps only synced events; the host's
+            # render-only ones (MeleeEvent, ShotFired, ...) are dropped here
+            host = [v for v in self._evs[k][e] if unit_events.is_synced(v)]
             dev = ring_recs[e]
             for i in range(max(len(host), len(dev))):
                 if i >= len(host):
@@ -943,7 +1129,7 @@ class ChainedSlots:
     each tick's per-slot coverage."""
 
     def __init__(self, driver, slots, host_side=None, bp=None,
-                 e_max: int = unit_events.E_MAX):
+                 e_max: int = unit_events.E_MAX, list_cap: int | None = None):
         self.driver = driver
         self.slots = list(slots)
         self.host_side = host_side
@@ -954,6 +1140,13 @@ class ChainedSlots:
         from simulation import unit_requests
         self.req = (unit_requests.RequestList(1, self.U, bp=bp)
                     if any(s.requests for s in self.slots) else None)
+        # #29 P7a.1: the chain's device lists and the host objects it consumed
+        from simulation import applier
+        cap = int(list_cap) if list_cap is not None else applier.E_CAP
+        names = dict.fromkeys(n for s in self.slots for n in s.list_names)
+        self.dev_lists = {n: LISTS[n].device(1, self.U, cap, bp) for n in names}
+        self.lists: list = []             # per run: {name: the device's records}
+        self._consumed: list = []         # host list objects this tick's chain took
         self._orig = []
         self.coverage: list = []          # per run: [per-slot (1,) arrays]
         self.events: list = []            # per run: the ring's records
@@ -975,9 +1168,21 @@ class ChainedSlots:
             self.ring.begin()
         if self.req is not None:
             self.req.begin()
+        # #29 P7a.1: the chain's lists -- an input list staged from the host's
+        # records at the chain's entry (once: a later slot continues the
+        # device's list), an output-only one begun empty
+        hosts = {}
+        for n in self.dev_lists:
+            ins = any(n in s.list_inputs for s in self.slots)
+            if ins:
+                self.dev_lists[n].stage_lists(inputs.lists[n])
+            else:
+                self.dev_lists[n].begin()
+            hosts[n] = LISTS[n].host(sim, tuple(args), dict(kw or {}))
         covs, books = [], {}
         for s in self.slots:
-            c, b = split_result(s.call(self.store, inputs, self.ring, self.req))
+            c, b = split_result(s.call(self.store, inputs, self.ring, self.req,
+                                       self.dev_lists))
             covs.append(c)
             if b is not None:
                 books.update({n: int(v[0]) for n, v in b.items()})
@@ -999,6 +1204,14 @@ class ChainedSlots:
             rq = self.req.records()[0]
             unit_requests.apply_to_host(sim, rq)
             self.requests.append(rq)
+        # #29 P7a.1: the device applied the host's list: empty it, and refuse
+        # a later chained callable that finds the host appended in between
+        self._consumed = []
+        for n, obj in hosts.items():
+            LISTS[n].consume(obj)
+            self._consumed.append((n, obj))
+        if self.dev_lists:
+            self.lists.append({n: d.records()[0] for n, d in self.dev_lists.items()})
         if self.host_side is not None:
             self.host_side(sim, pre, post)
         self.coverage.append(covs)
@@ -1013,9 +1226,21 @@ class ChainedSlots:
 
                 # the chain runs at the FIRST callable of the first slot (a
                 # label may name several, #29 P6.3's "9c3 gas rows")
-                def replaced(*a, __orig=orig, __first=(i == 0 and j == 0), **k):
-                    if not _is_for(sim, a):
+                def replaced(*a, __orig=orig, __first=(i == 0 and j == 0),
+                             __s=s, **k):
+                    held = [(n, o) for n, o in ch._consumed
+                            if any(x is o for x in tuple(a) + tuple(k.values()))]
+                    if not (_is_for(sim, a) or held):
                         return __orig(*a, **k)
+                    if not __s.selects(sim, a, k, sys._getframe(1).f_code.co_name):
+                        return __orig(*a, **k)
+                    for n, o in held:
+                        recs = LISTS[n].records(sim, o)
+                        if len(recs):
+                            raise RuntimeError(
+                                f"chained: the host appended {len(recs)} record(s) "
+                                f"to list {n!r} between the chain and "
+                                f"{__s.label!r}: they would never be applied")
                     if __first:
                         ch._run_chain(a, k)
                     return None
@@ -1040,6 +1265,7 @@ class ChainedSlots:
 __all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture",
            "gather", "DeviceSlot", "TickReport", "Divergence",
            "slot_callables", "build_store", "ShadowLockstep", "ChainedSlots"]
+__all__ += ["LIST_PREFIX", "ListDef", "LISTS"]
 __all__ += ["ARG_INPUTS", "BOOK_PREFIX", "ALIASES", "book_ref", "host_books",
             "OBJECT_PROBES", "gmap_state", "changed_attrs",
             "write_set_violations", "split_result", "first_field_diff"]

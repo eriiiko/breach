@@ -134,7 +134,7 @@ def kind_field(kind: str, name: str) -> int:
     raise KeyError(f"applier: no kind {kind!r}")
 
 
-def make_record(kind: str, **values) -> tuple:
+def make_record(kind: str, /, **values) -> tuple:
     """One record of ``kind`` from its named fields (every field required)."""
     fs = dict(KIND_FIELDS)[kind]
     if set(values) != set(fs):
