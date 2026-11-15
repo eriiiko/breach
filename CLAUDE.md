@@ -155,6 +155,8 @@ amends the rule file, never this line's length.
 | Per-env serial applier | `src/simulation/applier.py` + generated `cpp/src/applier_layout.h` + `cpp/src/cuda_applier.{h,cu}` | THE device form of every order-dependent law that writes the map: one block per env walking its effect records in the reference's order; never a second walker |
 | Device draws | `cpp/src/cuda_unit_draws.cuh` + `src/simulation/unit_draws.py` + generated `cpp/src/unit_draws_layout.h` | THE device `MatchDraws.at` / `.next` and the outcome maps; every device draw goes through it, its salt a generated constant |
 | Device sight | `cpp/src/cuda_unit_sight.cuh` | THE device `GameMap.has_los` in both forms; every device kernel that asks a line goes through it, never its own walk |
+| The march (device) | `cpp/src/cuda_unit_march.cuh` | THE device `BulletInFlight.advance`: slot 4's shooting and slot 2''s rounds both call it on a round-table row, never a copy |
+| Noise list (device) | `unit_schema.NOISE_TABLE` on the object tables | THE device form of `GameMap.noise_log`: a device producer of a noise appends to it in the reference's emission order, never a second log |
 | Object tables | `src/simulation/object_tables.py` + `unit_schema.OBJECT_TABLES` + generated `cpp/src/object_tables_layout.h` + `cpp/src/cuda_object_table.{h,cu}` | What flies and what is placed (charges first; grenades, rounds, blast sources, entity classes next) as device rows: a new table is a schema there, never a second table mechanism |
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
 
