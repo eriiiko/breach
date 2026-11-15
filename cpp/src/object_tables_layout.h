@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "9218d8dae7742be426c391052a09da1d174695500a8e35ca4f12a6874c2ca0b4";
-constexpr int OBJECT_TABLES_N = 3;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "8a8b2db473e1def8c468d78543b091ac57f77263cb7f3c27d28ff85a462c8b1a";
+constexpr int OBJECT_TABLES_N = 4;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -36,9 +36,44 @@ constexpr int OBJ_CHARGE_COL_APPROACH_W = 2;
 constexpr int OBJ_CHARGE_COL_LIVE = 7;
 constexpr int OBJ_CHARGE_COL_LIVE_W = 1;
 
+// table 'grenade': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_GRENADE = 1;
+constexpr int OBJ_GRENADE_W = 14;
+constexpr int OBJ_GRENADE_CAP = 64;
+constexpr int OBJ_GRENADE_LIVE = 13;
+constexpr int OBJ_GRENADE_COL_PROJ_TYPE = 0;
+constexpr int OBJ_GRENADE_COL_PROJ_TYPE_W = 1;
+constexpr int OBJ_GRENADE_COL_OWNER_ID = 1;
+constexpr int OBJ_GRENADE_COL_OWNER_ID_W = 1;
+constexpr int OBJ_GRENADE_COL_START_X_Q = 2;
+constexpr int OBJ_GRENADE_COL_START_X_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_START_Y_Q = 3;
+constexpr int OBJ_GRENADE_COL_START_Y_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_TARGET_X_Q = 4;
+constexpr int OBJ_GRENADE_COL_TARGET_X_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_TARGET_Y_Q = 5;
+constexpr int OBJ_GRENADE_COL_TARGET_Y_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_POS_X_Q = 6;
+constexpr int OBJ_GRENADE_COL_POS_X_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_POS_Y_Q = 7;
+constexpr int OBJ_GRENADE_COL_POS_Y_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_FUSE_SECONDS = 8;
+constexpr int OBJ_GRENADE_COL_FUSE_SECONDS_W = 1;
+constexpr int OBJ_GRENADE_COL_FUSE_TICKS = 9;
+constexpr int OBJ_GRENADE_COL_FUSE_TICKS_W = 1;
+constexpr int OBJ_GRENADE_COL_THROWN_TICK = 10;
+constexpr int OBJ_GRENADE_COL_THROWN_TICK_W = 1;
+constexpr int OBJ_GRENADE_COL_AMMO_NAME = 11;
+constexpr int OBJ_GRENADE_COL_AMMO_NAME_W = 1;
+constexpr int OBJ_GRENADE_COL_TRAVEL_SPEED_Q = 12;
+constexpr int OBJ_GRENADE_COL_TRAVEL_SPEED_Q_W = 1;
+constexpr int OBJ_GRENADE_COL_DETONATED = 13;
+constexpr int OBJ_GRENADE_COL_DETONATED_W = 1;
+
 // table 'round': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
-constexpr int OBJ_ROUND = 1;
+constexpr int OBJ_ROUND = 2;
 constexpr int OBJ_ROUND_W = 21;
 constexpr int OBJ_ROUND_CAP = 128;
 constexpr int OBJ_ROUND_LIVE = 20;
@@ -87,7 +122,7 @@ constexpr int OBJ_ROUND_COL_LIVE_W = 1;
 
 // table 'noise': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
-constexpr int OBJ_NOISE = 2;
+constexpr int OBJ_NOISE = 3;
 constexpr int OBJ_NOISE_W = 4;
 constexpr int OBJ_NOISE_CAP = 64;
 constexpr int OBJ_NOISE_LIVE = 3;

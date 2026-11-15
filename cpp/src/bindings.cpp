@@ -1046,6 +1046,62 @@ PYBIND11_MODULE(breach_physics, m) {
                  "The stable compaction of every env (rows whose live column is 0 dropped).");
     }
 
+    // #29 P7b: THE GRENADES AND THE PLANTED CHARGES on their object tables
+    // (cuda_unit_kernels.h, cuda_unit_objects.cu; Class T). Each returns
+    // (changed, faults, refused, dropped effect records) per env; the Python
+    // face is simulation.unit_kernels (table_appends / grenades /
+    // charges_tick / prune_grenades).
+    {
+        using breach_cuda::FieldApplier;
+        using breach_cuda::ObjectTable;
+        using breach_cuda::ObjectSlotCounts;
+        using breach_cuda::UnitRecordList;
+        using breach_cuda::UnitTablesDevice;
+        auto counts = [](int n, ObjectSlotCounts& c) {
+            py::array_t<int64_t> ch(n), fl(n), rf(n), dr(n);
+            c.changed = ch.mutable_data();
+            c.faults = fl.mutable_data();
+            c.refused = rf.mutable_data();
+            c.dropped = dr.mutable_data();
+            return py::make_tuple(ch, fl, rf, dr);
+        };
+        auto check_ticks = [](const py::array_t<int64_t, py::array::c_style>& t, int n,
+                              const char* who) {
+            if (t.ndim() != 1 || t.shape(0) != n)
+                throw std::invalid_argument(std::string(who) + ": ticks must be (n_env,)");
+        };
+        m.def("unit_table_appends",
+              [counts](const UnitTablesDevice& t, UnitRecordList& req, ObjectTable& gr,
+                       ObjectTable& ch) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_table_appends(t, req, gr, ch, c);
+                  return out;
+              }, py::arg("tables"), py::arg("requests"), py::arg("grenades"), py::arg("charges"),
+              "#29 P7b: slot 1b's THROW requests appended to the grenade table, its "
+              "accepted plants to the charge table, in request-list order.");
+        m.def("unit_grenades",
+              [counts, check_ticks](const UnitTablesDevice& t, ObjectTable& gr, FieldApplier& a,
+                                    py::array_t<int64_t, py::array::c_style> ticks) {
+                  check_ticks(ticks, t.n_env(), "unit_grenades");
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_grenades(t, gr, a.list(), ticks.data(), c);
+                  return out;
+              }, py::arg("tables"), py::arg("grenades"), py::arg("effects"), py::arg("ticks"),
+              "#29 P7b: slot 2's grenades -- the flight, the fuse-outs as PAYLOAD records.");
+        m.def("unit_charges_tick",
+              [counts, check_ticks](const UnitTablesDevice& t, ObjectTable& ch, FieldApplier& a,
+                                    py::array_t<int64_t, py::array::c_style> ticks) {
+                  check_ticks(ticks, t.n_env(), "unit_charges_tick");
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_charges_tick(t, ch, a.list(), ticks.data(), c);
+                  return out;
+              }, py::arg("tables"), py::arg("charges"), py::arg("effects"), py::arg("ticks"),
+              "#29 P7b: charges.tick -- the due charges as PAYLOAD records, then the prune.");
+    }
+
     // #29 P6.4b: THE PER-ENV SERIAL APPLIER and THE TICK-END CLEARS
     // (cuda_applier.h; Class T). The planes are device addresses of the
     // (N, ...) arrays in applier_layout.h's order; the Python face is

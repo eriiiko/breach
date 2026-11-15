@@ -158,6 +158,7 @@ amends the rule file, never this line's length.
 | The march (device) | `cpp/src/cuda_unit_march.cuh` | THE device `BulletInFlight.advance`: slot 4's shooting and slot 2''s rounds both call it on a round-table row, never a copy |
 | Noise list (device) | `unit_schema.NOISE_TABLE` on the object tables | THE device form of `GameMap.noise_log`: a device producer of a noise appends to it in the reference's emission order, never a second log |
 | Object tables | `src/simulation/object_tables.py` + `unit_schema.OBJECT_TABLES` + generated `cpp/src/object_tables_layout.h` + `cpp/src/cuda_object_table.{h,cu}` | What flies and what is placed (charges first; grenades, rounds, blast sources, entity classes next) as device rows: a new table is a schema there, never a second table mechanism |
+| Grenade and charge slots | `unit_schema.GRENADE_TABLE` + `cpp/src/cuda_unit_objects.cu` + `unit_kernels.table_appends` / `grenades` / `charges_tick` / `prune_grenades` | THE device form of the grenades in flight and the planted charges: slot 1b's throws and plants become table rows, slot 2 and `charges.tick` record every detonation as a PAYLOAD effect; never a second table or detonation path |
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
 
 ### Determinism gates

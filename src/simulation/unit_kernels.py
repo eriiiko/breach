@@ -942,3 +942,120 @@ def round_row_cap() -> int:
 
 
 __all__ += ["round_row_cap"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P7b: the grenades and the planted charges on their object tables
+# (``simulation.object_tables.DeviceTable`` over ``unit_schema.GRENADE_TABLE``
+# / ``CHARGE_TABLE``); what they detonate is a PAYLOAD record in the effect
+# list (``simulation.applier.DeviceApplier``), applied by nobody until P7c.1
+# ---------------------------------------------------------------------------
+class ObjectSlotRefused(RuntimeError):
+    """#29 P7b: what the grenade / charge slots' device door refuses by name:
+    the WEGO forms (a grenade of the order path, whose fuse is float
+    ``fuse_seconds``; ``charges.detonate_owned``, the Detonate order of a
+    ruleset that ``drives_units``)."""
+
+
+def refuse_wego(sims) -> None:
+    """THE DEVICE DOOR of the grenade and charge slots (design 4.4c scope:
+    the continuous path only): refuses by name a sim whose ruleset
+    ``drives_units`` (OnePhaseWEGO: its timeline drives ``charges.tick`` and
+    ``charges.detonate_owned``, the Detonate order, which has no device
+    form) and a grenade of the WEGO order path (no integer fuse)."""
+    for e, sim in enumerate(sims):
+        rules = getattr(sim, "ruleset", None)
+        if getattr(rules, "drives_units", False):
+            raise ObjectSlotRefused(
+                f"object slots: env {e}'s ruleset {type(rules).__name__} drives "
+                f"the units (charges.detonate_owned, the WEGO Detonate order, "
+                f"and its timeline's charges.tick have no device form)")
+        for p in getattr(sim, "projectiles", ()):
+            if p.fuse_ticks is None:
+                raise ObjectSlotRefused(
+                    f"object slots: env {e} holds a grenade of the WEGO order "
+                    f"path (fuse_seconds {p.fuse_seconds!r}, no integer fuse)")
+
+
+def _object_done(name, counts, tables=()):
+    ch, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in counts)
+    if flt.any():
+        envs = [int(e) for e in np.nonzero(flt)[0]]
+        raise UnitKernelFault(
+            f"unit kernel {name}: {int(flt.sum())} row(s) in env(s) {envs} left "
+            f"the range the kernel was proved for (left as they were, nothing "
+            f"recorded for them)")
+    if ref.any():
+        envs = [int(e) for e in np.nonzero(ref)[0]]
+        raise ObjectSlotRefused(
+            f"unit kernel {name}: {int(ref.sum())} grenade(s) of the WEGO order "
+            f"path in env(s) {envs} (a float fuse_seconds, no integer fuse): "
+            f"not flown")
+    if drp.any():
+        from simulation import applier
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise applier.EffectOverflow(
+            f"unit kernel {name}: {int(drp.sum())} PAYLOAD record(s) in env(s) "
+            f"{envs} did not fit the effect list: nothing was written past its "
+            f"capacity")
+    for t in tables:
+        t.check(name)
+    return ch
+
+
+def _check_tables(name, store, *tables):
+    for t in tables:
+        if t.shape[0] != store.shape[0]:
+            raise ValueError(f"unit kernel {name}: the {t.name!r} table is for "
+                             f"{t.shape[0]} envs, the store {store.shape[0]}")
+
+
+def table_appends(store, requests, grenades, charges) -> np.ndarray:
+    """Slot 1b's table writes (after :func:`verbs` filled ``requests``): each
+    THROW request appended to ``grenades`` (the ``Projectile``
+    ``Simulation._release_grenade`` appends), each ACCEPTED plant to
+    ``charges`` (the ``PlantedCharge`` ``charges.place`` appends), per env in
+    request-list order (= the host's: id order). Returns the rows appended per
+    env; refuses a fault and a table overflow (``ObjectTableOverflow``, naming
+    the table and the env)."""
+    _check_tables("table_appends", store, grenades, charges)
+    return _object_done("table_appends", store.bp.unit_table_appends(
+        store.tables, requests.buffer, grenades.buffer, charges.buffer),
+        (grenades, charges))
+
+
+def grenades(store, table, dev_applier, ticks) -> np.ndarray:
+    """Slot 2's grenades (``Simulation._update_grenades``): every live row
+    flies (``Projectile.update_position``, wide), a row whose fuse ran out is
+    marked detonated and -- its proj_type ORDER_GRENADE -- its detonation
+    APPENDED to ``dev_applier``'s effect list as a PAYLOAD record
+    (``execute_payload``'s call, ``applier.record_of``'s fields), in row
+    order after what the list holds. ``ticks`` ``(N,)`` each env's
+    ``sim.tick``. Returns the rows changed per env; refuses a fault, a WEGO
+    grenade (:class:`ObjectSlotRefused`) and an effect-list overflow."""
+    _check_tables("grenades", store, table)
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    return _object_done("grenades", store.bp.unit_grenades(
+        store.tables, table.buffer, dev_applier.buffer, t))
+
+
+def charges_tick(store, table, dev_applier, ticks) -> np.ndarray:
+    """Slot 9e(d') ``charges.tick``: every live charge whose det_tick has
+    come is marked dead and its detonation APPENDED to ``dev_applier``'s
+    effect list as a PAYLOAD record (kind ``door_explosive``) in row order;
+    then the table's stable compaction (the prune). Returns the charges fired
+    per env; refuses a fault and an effect-list overflow."""
+    _check_tables("charges_tick", store, table)
+    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    return _object_done("charges_tick", store.bp.unit_charges_tick(
+        store.tables, table.buffer, dev_applier.buffer, t))
+
+
+def prune_grenades(table) -> None:
+    """Slot 10's grenade prune (``ContinuousRealtime.on_tick_end``): the
+    detonated grenades leave the table -- its stable compaction."""
+    table.compact()
+
+
+__all__ += ["ObjectSlotRefused", "refuse_wego", "table_appends", "grenades",
+            "charges_tick", "prune_grenades"]
