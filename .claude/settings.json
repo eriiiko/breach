@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/path_rules.py",
+            "timeout": 20,
+            "statusMessage": "path-rules hook"
+          }
+        ]
+      }
+    ]
+  }
+}
