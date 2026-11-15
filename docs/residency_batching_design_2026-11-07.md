@@ -1697,7 +1697,8 @@ and 7(a) landed as written. One line each:
   named unreachable; 4b + 4c shadowed: rows, records, cells, ring, planes,
   books, door rows, claims); BATCH N = 2 / 8; PADDING; OVERFLOW (cells, effect
   list, claims, door); REFUSE (WEGO burst, interleave, a span outside the
-  buffer, a walk without its lists); CHAINED 4b + 4c; SHIP 500 ticks. Every
+  buffer, a walk without its lists); SEQ (a window base of 1234: the keys are
+  absolute); CHAINED 4b + 4c; SHIP 500 ticks. Every
   gate broken once (the patch's report).
 
 ### 4.5 Actions, observations, rewards, terminals, the event ring

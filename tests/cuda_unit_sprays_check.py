@@ -197,6 +197,9 @@ class SprayDriver:
                          ruleset=ContinuousRealtime())
         sim.set_paused(False)
         self.sim = sim
+        # the ids start past the rows (a unit's id is never its row index here:
+        # a record field written from the row index instead of the id is seen)
+        sim._next_unit_id += 3 + variant
         self.who = {}
         self.hosing = []
         if variant % 2:
@@ -919,6 +922,61 @@ def part_refuse():
         print("refuse: a SPRAY_CELLS walked without the cell buffer / door / claims faults")
 
 
+def part_seq():
+    """The door's keys are ABSOLUTE: a window whose base is not 0 (slot 2's or
+    the previous tick's 9e edits before the walk) keys the device's rows from
+    that base -- the SPRAY_CELLS records of a scene tick walked with the base
+    1234 against ``_enqueue_spray_cells`` replayed into a queue whose seq is
+    1234 (the rows through ``door_rows``, the claims folded)."""
+    import cupy as cp
+    from types import SimpleNamespace
+    from simulation import combat, unit_events
+    from simulation.field_edit import EditQueue
+    drv, cap = _scene_state()
+    sim = drv.sim
+    base = 1234
+    st, fx, cells, _ = _run_sprays([sim], [cap["rows"]], [cap["recs"]], [cap["solid"]])
+    planes = {n: cp.asarray(np.ascontiguousarray(np.array(getattr(sim.gmap, n))[None]))
+              for n in applier.PLANE_NAMES}
+    door = edit_door.DeviceEditDoor(1)
+    claims = attack_lists.claims_list(1)
+    door.begin()
+    claims.begin()
+    door.set_seq(np.array([base]))
+    ring = unit_events.EventRing(1, len(sim.units))
+    ring.begin()
+    st.upload(cap["post_rows"][None])
+    sprays = np.array([r for r in cap["post_recs"] if r[0] == applier.KIND_SPRAY_CELLS])
+    fx.stage_lists([sprays])
+    cells.stage_lists([cap["post_cells"]])
+    unit_kernels.resolve(st, fx, planes, ring,
+                         unit_kernels.WalkLists(cells=cells, door=door, claims=claims))
+    q = EditQueue()
+    q._seq = base
+    stand = SimpleNamespace()
+    F = dict(applier.KIND_FIELDS)["SPRAY_CELLS"]
+    for r in sprays:
+        f = {n: int(r[applier.kind_field("SPRAY_CELLS", n)]) for n in F}
+        cl = [tuple(int(v) for v in c)
+              for c in cap["post_cells"][f["start"]:f["start"] + f["count"]]]
+        combat._enqueue_spray_cells(stand, q, f["owner"], f["heat_q"],
+                                    None if f["gas_id"] < 0 else f["gas_id"], f["gas_q"], cl)
+    he, ht = edit_door.door_rows(sim.gmap, q._edits, {5, 6})
+    de, dt = door.rows()[0]
+    if not (np.array_equal(he, de) and np.array_equal(ht, dt)):
+        fail(f"seq: the door's rows from base {base} differ from the host's "
+             f"(keys device {de[:3, 8].tolist()} host {he[:3, 8].tolist()})")
+    hc = np.array(attack_lists.claim_rows(stand.damage_credit), dtype=np.int64).reshape(-1, 4)
+    dc = attack_lists.first_claims(np.array(claims.records()[0], dtype=np.int64))
+    if not np.array_equal(hc, dc):
+        fail("seq: the claims list folded differs from the host's TickCredit")
+    if int(door.seq()[0]) != base + len(he):
+        fail(f"seq: the door's counter ended at {int(door.seq()[0])}, not {base + len(he)}")
+    print(f"seq: {len(sprays)} SPRAY_CELLS walked from the window base {base}: {len(he)} door "
+          f"rows keyed {base} .. {base + len(he) - 1} equal the host's, {len(hc)} claims, the "
+          f"counter at {int(door.seq()[0])}")
+
+
 # ---------------------------------------------------------------------------
 # PART CHAINED
 # ---------------------------------------------------------------------------
@@ -1006,8 +1064,8 @@ def part_chained():
 # ---------------------------------------------------------------------------
 # Main, bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "cone", "scene", "batch", "padding", "overflow", "refuse", "chained",
-         "ship")
+PARTS = ("tables", "cone", "scene", "batch", "padding", "overflow", "refuse", "seq",
+         "chained", "ship")
 
 
 def main(parts=None) -> int:
