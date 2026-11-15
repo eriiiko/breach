@@ -13,9 +13,13 @@
 __pycache__/
 *.pyc
 
-# Claude Code: local settings and worktrees stay out; project skills are tracked
+# Claude Code: local settings and worktrees stay out; project skills, path rules,
+# the path-rules hook and the shared settings are tracked (#206)
 .claude/*
 !.claude/skills/
+!.claude/rules/
+!.claude/hooks/
+!.claude/settings.json
 
 # C++ build artifacts
 cpp/build/
