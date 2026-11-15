@@ -363,6 +363,7 @@ def seam_level(boundary, ts):
         if m != MAT_AIR:
             tm[16, 3 + 2 * i] = m
     tm[19, 14:17] = MAT_GRILLE                   # a gas tile among gas tiles
+    tm[1, 31] = MAT_GRILLE                       # a hot gas tile in the hull, by space
     return _level(tm, f"p64b_seam_{boundary}", ts, boundary)
 
 
@@ -371,7 +372,7 @@ def seam_list():
     every = [(16, 3 + 2 * i) for i, m in enumerate(sorted(MATERIAL_NAMES)) if m != MAT_AIR]
     return ([(5, 5), (4, 10), (SH - 1, 15), (SH - 1, 16), (1, 20), (1, 24), (2, 24),
              (9, 5), (-1, 3), (2, 28), (12, 5), (12, 9), (12, 11), (SH, 2), (8, 20)]
-            + every + [(19, 15), (3, SW), (5, 5)])
+            + every + [(19, 15), (3, SW), (1, 31), (5, 5)])
 
 
 def seam_prep(sim, variant=0):
@@ -399,6 +400,12 @@ def seam_prep(sim, variant=0):
         g.gas[O2][y, x] = o2 + variant
         g.gas[INERT_N2][y, x] = n2
     g.reseed_gas_energy(np.s_[3:6, 9:12])
+    # stray gas on a SOLID neighbour of the slab's centre: the donor predicate
+    # must not read it (a non-solid vacuum / ambient neighbour would make the
+    # tile a breach, so a solid tile holding gas is the one way the predicate
+    # shows); it is outside the books and no destroy touches it
+    g.gas[O2][4, 5] = 5000
+    g.gas[INERT_N2][4, 5] = 20000
     # the furniture by the breach holds gas
     g.gas[O2][2, 28] = 14000
     g.gas[INERT_N2][2, 28] = 52000
@@ -440,6 +447,8 @@ def census_one(g, t, done, counts):
     if breach:
         if int(g.gas[O2][y, x]) + int(g.gas[INERT_N2][y, x]) > 0:
             counts["evacuation"] += 1
+        if g.gas_is_accountable(y, x) and int(g.temperature[y, x]) != 0:
+            counts["breach_hot_gas"] += 1      # only the explicit T = 0 cools it
         return
     don = [n for n in nbs if not g.solid[n] and not g.is_vacuum[n]]
     so = sum(int(g.gas[O2][n]) for n in don)
@@ -541,7 +550,8 @@ def _probe_run(tag, boundary, ts, counts):
 
 SEAM_MAPS = (("space", 1.0 / 3.0), ("ambient", 0.5), ("space", 1.0))
 SEAM_NEED = ("fallback", "unequal_donors", "rounding", "edge_hull", "exposes",
-             "chain", "negative_seed", "evacuation", "burning", "thermal_hot",
+             "chain", "negative_seed", "evacuation", "breach_hot_gas", "burning",
+             "thermal_hot",
              "noop_oob", "noop_air", "map_space", "map_ambient", "retire", "born",
              "no_membership_change", "ts_0.333", "ts_0.500", "ts_1.000")
 
