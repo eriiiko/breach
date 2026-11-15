@@ -118,10 +118,13 @@ from the survey. The ones most often needed:
   module used when acting, learning and copying, the copy with a 2 % floor,
   PPO's starting numbers, the collector / learner hand-over, training rooms,
   the range, the duel, the copy-against-scratch experiment in three repeats,
-  nine patches 2a to 2i. Next: Erik's yes or vetoes, then the critique (one
-  Opus critic at a time), then a handoff plan as for rung 1. 2a to 2c touch
-  no game file and no farm; whether they are built while P6 runs is Erik's
-  call. Every run with the game waits for P6 (#29). The lesson document
+  nine patches 2a to 2i. Erik read it on 2026-11-15 ("very impressed", no
+  veto). Next: the critique (one Opus critic at a time, verdicts in
+  `docs/rl_agent_rung2_design_2026-11-14_critique/`), its fixes back to
+  Erik as one short list, then a handoff plan as for rung 1. **Every patch
+  waits for P6 (Erik, 2026-11-15); 2a starts on his word that P6 is
+  through.** His idea of a feet choice that names a spot is parked as an
+  experiment after the duel learns (design 13.4). The lesson document
   ("the trainer, line by line") is written from patch 2b's code. The two
   questions the unit design (`docs/unit_design_2026-11-14.md` 3 and 9) hands
   this role (hooks shown; fixed slot blocks for statuses and items) are
