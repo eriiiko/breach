@@ -1563,6 +1563,102 @@ kit and slot 9d are P7.0a's. No decision moved. One line each:
   ticks: identity, round trip, the tick's append, the compaction, env i alone;
   an eleven-branch census). Every gate broken once (the patch's report).
 
+**As built (P7a.2, 2026-11-15).** Slot 4's shooting on the continuous path,
+slot 2''s rounds, THE MARCH they share, the table of rounds and the noise list.
+Decisions 1, 3, 4, 5 and 8 landed as cut; the beam was NOT built (below). One
+line each:
+- THE MARCH is `cpp/src/cuda_unit_march.cuh`: `unit_march::march(const
+  MarchMap& m, int64_t* rd, RecordSink& fx, bool* bad) -> still_flying`, `m`
+  the env's rows, tables, `solid` / `material` planes, draw key and tick, `rd`
+  ONE round-table row read and written in place, `fx` the sink its records go
+  to (CHEW; or HIT then PUSH; then a payload round's PAYLOAD, kind `shell`).
+  Beside it `round_draw` (`draw_at(salt, shooter id, round_index(tick -
+  spawn_tick, ordinal))`), `arc_multiplier`, `list_env_sink`. The first hit is
+  the first valid row in row order holding the tile, the shooter excluded by
+  id, the dead skipped. Proved: positions within 2^40, steps within 2^24, a
+  speed in (0, 2^30], an age / ordinal within 16 bits; outside, a fault.
+- THE TABLE OF ROUNDS is `unit_schema.ROUND_TABLE` (W 21, capacity 128):
+  `shooter_id`, `weapon`, `ammo` (schema rows), `payload` (the payload table's
+  row, -1 none), `angle_q`, `rx_q`, `ry_q`, `prev_ix`, `prev_iy`,
+  `remaining_steps`, `speed_q16`, `budget_q16`, `ox_q`, `oy_q`, `sx_q`, `sy_q`,
+  `spawn_tick`, `ordinal`, `march_cover` / `march_facing_defense` (always 0:
+  the encoder refuses a WEGO round by name), `live` (1 on the host).
+  `unit_kernels.rounds_of` is its record function (behind `shooting_door`),
+  `rounds_to_host` its way back (the shooter bound by id). The schema's
+  `TableColumn` gained `get` (how a value is read when it is no attribute).
+- THE NOISE LIST is `unit_schema.NOISE_TABLE` (W 4: `fy`, `fx`, `radius`,
+  `live`; capacity 64) on the same machinery, `unit_kernels.noise_of`; it is
+  staged from the host's log at the slot's entry and appended to (decision 4:
+  it is drained at slot 5, P7d's stage).
+- SLOT 4 is `cpp/src/cuda_unit_shooting.cu`'s `unit_shooting`
+  (`unit_kernels.shooting(store, effects, rounds, noise, ticks, keys,
+  fields)`): one thread per row; the gates (alive, not a zombie, can act, a
+  weapon, the trigger, the cadence, `mag_settle`); melee / lobbed / placed
+  rows end there; a spray arms its burst on the row and makes its noise; a
+  projectile makes its noise and fires its burst (per round the SHOT_CONE
+  `.next` draw, the kit step, the recoil PUSH, THE MARCH, the round appended
+  when it flies); `mag_spend` and `last_fire_tick` at once. Effects, rounds
+  and noises each staged per row and gathered per env in row order onto what
+  the list holds. A hitscan trigger is REFUSED (`unit_kernels.ShotRefused`).
+- SLOT 2' is `unit_rounds` (`unit_kernels.rounds_march(..., compact=True)`):
+  ONE thread per env marches the table in order, its records appended to the
+  effect list directly; finished rounds compacted. The LANDING is the
+  applier's RESOLVE stage (`unit_kernels.resolve`): the same law and landing
+  as 4c, so no new stage; `applier.STAGES` says so.
+- THE REFERENCE, touched as a pure refactor (pins and golden unchanged):
+  `Simulation._update_rounds` is now `_march_rounds(landing)` (phase A, called
+  every tick, `self.bullets = survivors` set before the resolve, which reads no
+  list) then `landing.resolve()`; the profiler label "2' rounds" moved to
+  `_march_rounds` (the landing is timed under "4c resolve", as it already was).
+- THE ROWS (32, T 1211): per weapons-table row `weapon_archetype` (codes
+  `unit_tables.ARCHETYPE_CODES`, in the header and the fingerprint),
+  `_shots_per_trigger`, `_range_tiles`, `_cone_aim_q` / `_cone_snap_q` (the
+  class cones; SPREAD applied in the kernel), `_ammo`, `_crit_on`,
+  `_crit_chance_q`, `_crit_mult_q`, `_loudness_tiles`, `_burst_ticks`; per ammo
+  row `ammo_speed_q16`, `_damage`, `_dtype`, `_ap_q`, `_expose_q`,
+  `_wall_live`, `_wall_damage_q`, `_payload`, `_push_q`, `_recoil_q`; scalars
+  `impulse_twist_q16`, `zombie_bullet_mult_q`, `crit_front / flank /
+  behind_mult_q`; the arc halves per profile and per species; per material
+  `mat_cover_exposure_q`. Every per-call float door of the reference (the
+  zombie multiplier, `crit_chance`, `crit_mult`, `wall_damage`, `ap`) is one
+  row quantized as the law quantizes it; no product needed reporting.
+- THE LIBRARY gained the magazine law (`mag_settle`, `reload_begin`), moved
+  from the verbs TU, which now calls it. `applier.ROW_CAP` went 3 -> 32 (four
+  records a round, eight pellets).
+- THE HARNESS: the input `draw_key`; the lists `rounds` and `noise` (object
+  tables; `ListDef.land` writes a device list back onto the host in the
+  chained form); `DeviceSlot.name` (two slots on one label: 4c and 2''s
+  landing); the caller test skips the harness's own wrappers; an output list's
+  host records are kept per list (a slot with two output lists overwrote the
+  first: fixed).
+- THE BEAM was not built: it is not the march (no budget, no first-hit stop:
+  every unit on the line is skewered once, a per-beam set of rows; the energy
+  attenuated per tile by the trace-gas Beer-Lambert over the `gas` planes, a new
+  plane input with `gases.beam_absorb_q16` rows and the trace currency's shift;
+  HITs of cause laser, no push; the BEAM_CONE `.next` site). It is a second
+  device function beside the march with its own scene; the shipped beams are
+  `lance_3` and `lance_5`, which the device refuses by name.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `combat` reads the
+  PROCESS-WIDE weapon tables (`weapons.get_tables()`, rebuilt by every new
+  `Simulation` at its own tile size) while each sim keeps its own
+  `weapons_tables`: two sims of two tile sizes in one process shoot with the
+  last one's ranges (a finding for Erik; the device reads each sim's own, so a
+  batch must share a tile size); slot 1b drops a dead unit's trigger, so a
+  corpse holding the trigger reaches slot 4 only when it died after 1b (a round
+  landing at 2', a grenade at 2, a DoT at 2b); a payload round's PAYLOAD
+  record cannot be applied until P7c.1, so the payload scene shadows the march
+  slots and not the landing; ship_demo's bots pulled the trigger 6 times in
+  500 ticks (6 hits, no kill, no round outliving its tick).
+- THE GATES (`tests/cuda_unit_shooting_check.py`, wrapper
+  `tests/test_cuda_unit_shooting.py`): TABLES (3 envs, two tile sizes); MARCH
+  (24 x 16 envs x 12 synthetic rounds over random maps of every material, a
+  23-branch census); SCENE (1/3 m tiles, 2' + landing + 4 + 4c shadowed, a
+  46-branch census); SCENEB (payload rounds, a spray, a budget-starved bolt, 7
+  branches); BATCH N = 2 / 8; PADDING; OVERFLOW (the effect list, a row's
+  staging, the round table, the noise list); REFUSE (5 named refusals);
+  CHAINED (2' + landing; 4 + 4a + 4c; the host law run 0 times); SHIP 500
+  ticks. Every gate broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
