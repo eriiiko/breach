@@ -1502,3 +1502,30 @@ for 9c / 9c3, the claims' staging; the gather (one thread per env) is a few micr
 grows with the ring's full download (3.7 MB at N = 64), which the device backend never does per tick: it reads the
 counts and only the records it hashes or rewards. Folding the dropped counts into the counts' D2H (one sync per
 slot) is the obvious saving when a chain of slots runs in the resident tick.
+
+## P6.4a: slot 1b's hand verbs and the done kernel (2026-11-15)
+
+**What.** Slot 1b (`unit_kernels.verbs`: the per-row kernel, the shove's per-target sum, the request list's per-env
+gather, the per-env plant pass) and the done kernel (`unit_kernels.match_done`: one thread per env over its rows),
+free functions over the `(N, U, W)` store, the `(N, T)` device tables and, for 1b, an `(N, R_max, F)` request list
+(`simulation/unit_requests.py`, R_max 256, F 13). Class T: nothing in the played tick calls them.
+
+**Method.** `tests/cuda_unit_verbs_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), WITH THE
+P6.4b AGENT'S BUILDS AND GATES ON THE SAME MACHINE. The rows: the verb scene's entry rows at its busiest tick (k = 2:
+seven shoves, four uses, eight reloads, a throw, a plant; 43 units, W = 180), replicated to N envs, with that tick's
+door spans and live-charge count. "upload + kernel + download" is the store's upload, the call (for 1b the list's
+begin too), then the store's AND the whole request list's download (both rows; 26 KB per env); "kernel call" is the
+binding alone -- for 1b the three inputs' staging, the counts' memset, two row launches, the gather, the plant pass,
+the counts' D2H and sync, the dropped counts' D2H and sync; for the done kernel the ticks' staging, one launch, the
+`(N, 4)` D2H and sync. Medians of 200 repetitions; per row the three processes' medians.
+
+| kernel | N = 1: round trip / call (ms) | N = 8 | N = 64 |
+|---|---|---|---|
+| 1b verbs | 0.622, 0.526, 0.645 / 0.422, 0.367, 0.431 | 0.714, 0.828, 0.836 / 0.420, 0.474, 0.485 | 3.430, 3.379, 3.454 / 1.019, 0.994, 1.031 |
+| done match_done | 0.346, 0.435, 0.433 / 0.191, 0.224, 0.223 | 0.537, 0.544, 0.570 / 0.250, 0.248, 0.255 | 3.407, 3.390, 3.481 / 0.843, 0.822, 0.825 |
+
+**Reading.** Slot 1b's call is four launches and two syncs (~0.4 ms) at small N; at N = 64 it grows to ~1 ms, the
+serial per-env passes (the gather and the plant pass, one thread per env walking 43 rows) and the per-row kernel's
+O(U) shove scan being the parts that scale. The done kernel's ~0.8 ms at N = 64 is its one-thread-per-env O(U^2)
+team count plus the sync: a block reduction per env (or a team bitset) is the saving when it runs every tick. The round
+trips are dominated by the store's 3.9 MB download at N = 64, which the device backend never does per tick.
