@@ -85,7 +85,6 @@ build = [
 "src/simulation/blast_air.py" = "Class T: a charge's air read (slot 2's detonations, through the payload executor), built at P7c"
 "src/simulation/combat.py" = "Class T: slots 4 / 4b / 9d, built from P7a"
 "src/simulation/cover_system.py" = "setup only"
-"src/simulation/damage.py" = "Class T: the packet door and credit; its device form is P6.3's apply_packet (cpp/src/cuda_unit_damage.cuh, the status_tick / heat_damage / gas_rows twins), traced into a twin's files only where the corpus lands a packet under its slot (it lands none in 2b / 9c / 9c3); the attack slots' appliers from P6.4 / P7"
 "src/simulation/draws.py" = "Class T: THE keyed draws (#29 P3b: Philox on (seed; tick, index, salt, id)) -- the shot / beam cones and the rolls (slots 2 / 4, built at P7a) and the FieldEdit noise (slot 6b, the device edit queue, P4c); its device twin is philox32.h on the same layout"
 "src/simulation/door_system.py" = "setup only on the corpus (no door); Class T at P6b"
 "src/simulation/entities/registry.py" = "setup only: the entity registry (Class T, P6b)"
