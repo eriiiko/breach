@@ -28,6 +28,8 @@ from config import CFG
 from simulation import atmosphere_fixed   # #7: the pressure field's Q16 door (atm)
 from simulation.blast_expansion import take_source_plane   # #31: the blast's source
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
+from simulation import swarm as _swarm   # arc #63 P3: the swarm step's ingress + names
+from simulation import swarm_tables as _swarm_tables   # arc #63 P3: the tables' fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +826,14 @@ class PhysicsRunner:
         self.edit_device_ticks = 0
         self.edit_host_ticks = 0
         self.edit_fallback_reason = None
+        # arc #63 P3 (docs/swarm_P3_impl.md §4.7): the sim's MatchDraws, bound
+        # at reset (bind_draws) -- the swarm step reads draws.tick / draws.key
+        # when it gathers, so TwoPhase's round base is seen as it is; this
+        # tick's swarm death rows (both paths; (0, ROW_WORDS) when none); and,
+        # for the gates, how many resident entry uploads carried a swarm store.
+        self._draws = None
+        self.swarm_death_rows = _swarm.empty_death_rows()
+        self.swarm_store_uploads = 0
         # W5 steam gas index: which gmap.gas slice the flash-boil puff lands
         # in. Resolved BY NAME from the gas table ONCE, on the first
         # _step_water call (never hardcode the slice index) — the same lazy
@@ -902,6 +912,16 @@ class PhysicsRunner:
                                      gmap.gases.conservative, float(sim_time),
                                      "PhysicsRunner.step")
         self._trace_dt_checked = key
+
+    def bind_draws(self, draws) -> None:
+        """arc #63 P3 (§4.7): bind the sim's own ``MatchDraws`` (once, at
+        reset; a reset builds a fresh runner and fresh draws together). The
+        swarm step reads its tick and key at every gather; a gather with a
+        swarm present and no bound draws raises ``ValueError``. Refuses a
+        compiled module whose swarm tables fingerprint is not
+        ``swarm_tables.fingerprint()`` (by name), before any gather."""
+        _swarm_tables.check_compiled(self.bp)
+        self._draws = draws
 
     def step(self, gmap, sim_time, tick=0):
         """Advance all physics by ``sim_time`` seconds.
@@ -1253,6 +1273,9 @@ class PhysicsRunner:
 
         if self.engine.light_requested:
             self.light_serial += 1          # P6b: a new light field for the renderer
+        # arc #63 P3 (docs/swarm_P3_impl.md §4): the swarm step, the LAST stage of slot 7.
+        self.swarm_death_rows = self.engine.step_swarm(
+            **_swarm.engine_args([gmap], [self._draws], sim_time, resident=False))
         return destroyed
 
     # ------------------------------------------------------------------
@@ -1564,14 +1587,22 @@ class PhysicsRunner:
 
     def _resident_upload(self, gmap, ctx, upload_stamp):
         """THE ENTRY UPLOAD for ONE env (into its slice of the batch)."""
+        swarm_dirty = _swarm.resident_entry_names(gmap)[1]   # arc #63 P3
         gmap.from_host(self._resident_entry_names(
             gmap, ctx["water_dormant"], ctx["light"], upload_stamp))
+        if swarm_dirty:
+            # arc #63 P3 (§4.4): the dirty swarm stores just went up; the
+            # flags this upload consumed are cleared (R9).
+            self.swarm_store_uploads += 1
+            for sp in swarm_dirty:
+                gmap.swarm_host_dirty[sp] = False
 
     def _resident_finish(self, gmap, ctx):
         """THE EXIT DOWNLOAD for ONE env, then its host-side tail."""
         water_dormant = ctx["water_dormant"]
         headless = ctx["headless"]
-        gmap.to_host(self._resident_exit_names(water_dormant, ctx["light"], headless))
+        gmap.to_host(self._resident_exit_names(water_dormant, ctx["light"], headless,
+                                               gmap=gmap))
         if not water_dormant:
             # The host twin of the device `before` plane: the tail ended with
             # before := water_depth, and nothing after it in slot 7 writes
@@ -1648,9 +1679,12 @@ class PhysicsRunner:
             gmap._res_tile_serial = gmap._tile_serial
         if not water_dormant:
             names.extend(("water_depth", "flow_vx", "flow_vy"))
+        # arc #63 P3 (§4.4): a swarm store goes up only when the host wrote it
+        # since the device last saw it (gmap.swarm_host_dirty).
+        names.extend(_swarm.resident_entry_names(gmap)[0])
         return names
 
-    def _resident_exit_names(self, water_dormant, light, headless):
+    def _resident_exit_names(self, water_dormant, light, headless, gmap=None):
         names = list(self._RESIDENT_EXIT_ALWAYS)
         if not headless:
             names.extend(self._RESIDENT_EXIT_RENDER)
@@ -1658,6 +1692,10 @@ class PhysicsRunner:
             names.extend(("light_q", "light_flux_q", "light_glow"))
         if not water_dormant:
             names.extend(("water_depth", "flow_vx", "flow_vy", "dyn_permeability"))
+        if gmap is not None:
+            # arc #63 P3 (§4.4): every present species' columns come down every
+            # tick (the digest and the recorder read the mirror).
+            names.extend(_swarm.resident_exit_names(gmap))
         return names
 
     # ------------------------------------------------------------------
@@ -2142,12 +2180,17 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
             g0.to_host(["gas"])
             r0._sky_exchange_apply(g0, sky)
             g0.from_host(["gas"])
-    # 3f. THE TAIL (bulk sum, fire, the sweep, temperature) + the ONE books D2H.
-    destroyed = e0.step_tail_resident(
+    # 3f. THE TAIL (bulk sum, fire, the sweep, temperature, and -- arc #63 P3 --
+    # the swarm stage last) + the ONE books D2H; the swarm's death rows per env.
+    destroyed, swarm_rows = e0.step_tail_resident(
         dev, h, w, cons, r0._o2_idx, sim_time,
         ambient, t_amb, int(r0.k_leak_q), int(r0.rad_amb_vacuum_q),
         g0.gases.heat_absorb_q16, g0.gases.light_absorb_q16,
-        g0.gases.light_glow_q16, n_env=n_env, engines=engines)
+        g0.gases.light_glow_q16, n_env=n_env, engines=engines,
+        swarm=_swarm.engine_args(gmaps, [r._draws for r in runners], sim_time,
+                                 resident=True))
+    for r, rows in zip(runners, swarm_rows):
+        r.swarm_death_rows = rows
     if _TICK_CAPTURE is not None:
         _TICK_CAPTURE.end()
 

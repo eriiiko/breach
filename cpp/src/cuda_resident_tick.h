@@ -163,6 +163,15 @@ void resident_edits(const EngineList& engs, const ResidentFields& f,
 std::vector<std::vector<std::pair<int, int>>> resident_tail(
     const EngineList& engs, const ResidentFields& f, const ResidentTickArgs& a);
 
+// arc #63 P3 (docs/swarm_P3_impl.md §4.4): the swarm stage, called by
+// resident_tail after temperature and before its books D2H (no third host
+// sync): every species present in some env (a.swarm_species) launched over
+// (ceil(max_e hw[e] / 256), N) on the tick stream; per-env counters in the
+// books arena; the records' [0, hw[e]) extents ride the tail's one read and
+// fold into a.swarm_rows per env.
+void resident_swarm(const EngineList& engs, const ResidentFields& f,
+                    const ResidentTickArgs& a);
+
 // Telemetry for the gates (the eos_resident_calls idiom): how many times each
 // resident stage ran in this process, and how many of those did real work —
 // [0] water tail calls, [1] water-tail ticks that boiled or evacuated a cell,
@@ -177,7 +186,9 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
 // [12] EOS stage calls, [13] trace-tail calls (#29 P5).
 // [14] edit-queue ticks (#29 P4c: the device applied slot 6b's flush), [15]
 // edit-queue tiles applied (not skipped by their policy's mask).
-constexpr int RESIDENT_STAGE_COUNTERS = 16;
+// [16] swarm stage calls (arc #63 P3: a swarm block was handed in), [17]
+// swarm stage calls with a present env (a species' core launched).
+constexpr int RESIDENT_STAGE_COUNTERS = 18;
 void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]);
 
 // The sweep's Fleck plane ON DEMAND: the per-call twin copies it into the

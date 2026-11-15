@@ -382,6 +382,23 @@ class WallDestroyedEvent:
     pos: tuple                      # (fy, fx)
 
 
+@dataclass
+class SwarmUnitDiedEvent:
+    """A swarm unit died this tick (arc #63 P3, engine/17 §7). Carries the
+    PRE-ZERO values of its slot -- the post-move position and the heading it
+    moved along -- because the slot itself is already the all-zero freed form.
+    Renderers read this event, never the freed slot. Emitted in
+    (SWARM_SPECIES order, env, ascending slot) order. Not in the synced event
+    digest (field_ab_harness._SYNCED_EVENT_TYPES is unchanged): its content is
+    gated CPU==GPU by tests/cuda_swarm_check.py, and cross-machine it is a
+    pure function of the previous tick's digested swarm section."""
+    species: str
+    unit_id: int
+    pos_x_q: int      # Q16.16 tile units, raw
+    pos_y_q: int
+    heading_q: int    # Q16.16 radians, canonical (-PI_Q16, PI_Q16]
+
+
 __all__ = [
     "Cause",
     "CAUSE_NAMES",
@@ -403,4 +420,5 @@ __all__ = [
     "UnitKilledEvent",
     "DoorDestroyedEvent",
     "WallDestroyedEvent",
+    "SwarmUnitDiedEvent",
 ]

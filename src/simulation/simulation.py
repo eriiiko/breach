@@ -111,6 +111,7 @@ from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
 from simulation.swarm import SwarmUnits, reload_species  # arc #63 P2
+from simulation.swarm import death_events as swarm_death_events  # arc #63 P3
 from simulation.timed_charge_system import (build_timed_charges,
                                             sweep_timed_charges)
 from simulation.heat_source_system import (build_heat_sources,
@@ -542,6 +543,7 @@ class Simulation:
             # path (the runner owns the engine). A bare GameMap with no engine
             # bound falls back to the Python reference path automatically.
             self.gmap.bind_physics_engine(self.physics_runner.engine)
+            self.physics_runner.bind_draws(self.draws)   # arc #63 P3: the swarm's draws
             self._apply_light()             # P6b: the renderer's light survives a reset
         else:
             self.physics_runner = None
@@ -2235,6 +2237,10 @@ class Simulation:
 
     def _step_post_physics(self, destroyed) -> None:
         """Slots 9 .. 10, given slot 7's burn-through walls."""
+        # arc #63 P3 (docs/swarm_P3_impl.md §7): slot 7's swarm deaths enter the
+        # tick here -- both tick paths pass after slot 7, before slot 9's events.
+        if self.physics_runner is not None:
+            self.tick_events.extend(swarm_death_events(self.physics_runner.swarm_death_rows))
         sim_time_per_tick = 1.0 / float(self._tps)
         # 9. Process fire burn-through walls (a named call since #29 P6.1, so
         # the slot has a profiler label; the body is unchanged).
@@ -2269,6 +2275,9 @@ class Simulation:
         # makes wiping `heat` correct (a reader finally consumes it).
         # This is the `heat | max` coupling row (mechanics/05 §1;
         # exchange.COUPLING_TABLE[0]) at its legacy pipeline position.
+        # Swarm units (arc #63 P3; the consumer="swarm:*" rows of exchange.COUPLING_TABLE)
+        # were already judged IN slot 7 (the swarm step is physics' last stage), so
+        # within a tick larva heat/coma happen BEFORE this unit row.
         if self.physics_runner is not None:
             apply_environmental_damage(
                 self.units, self.gmap, self._tps,
