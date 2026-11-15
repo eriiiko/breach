@@ -160,3 +160,28 @@ def test_p62m_half_up_is_movements_floor_rounding():
         for q in (-3, 0, 3):
             n = q * d + d // 2
             assert bp.fp_half_up(n, d) == half_up(n, d) == q + 1, (n, d)
+
+
+# ---------------------------------------------------------------------------
+# #29 P6.4a: unit_fixed.isqrt past uint64 (fixed_point.h isqrt_u128_q; the
+# shove's lever term squares an impulse of up to 2^35).
+# ---------------------------------------------------------------------------
+def test_p64a_isqrt_u128_is_exact_over_128_bits():
+    """Property: ``isqrt_u128_q(hi, lo)`` is ``unit_fixed.isqrt`` (the floor
+    root) of ``hi * 2^64 + lo`` for ANY 128-bit radicand: perfect squares and
+    their neighbours at every bit length (the off-by-one edges a root gets
+    wrong), the shove's sums of two squared impulses up to 2^35, both ends.
+    Breaks if a trial square is taken in 64 bits, the compare is strict, or
+    the bit walk starts below bit 63."""
+    rng = np.random.default_rng(6404)
+    vals = [0, 1, 2, 3, 2 ** 64 - 1, 2 ** 64, 2 ** 64 + 1, 2 ** 128 - 1]
+    for k in range(1, 64):
+        r = 2 ** k
+        vals += [r * r - 1, r * r, r * r + 1, (r - 1) * (r - 1)]
+    for _ in range(400):
+        jx = int(rng.integers(-(2 ** 35), 2 ** 35))
+        jy = int(rng.integers(-(2 ** 35), 2 ** 35))
+        vals.append(jx * jx + jy * jy)
+        vals.append(int(rng.integers(0, 2 ** 62)) * int(rng.integers(0, 2 ** 62)))
+    for n in vals:
+        assert bp.fp_isqrt_u128(n >> 64, n & (2 ** 64 - 1)) == isqrt(n), n

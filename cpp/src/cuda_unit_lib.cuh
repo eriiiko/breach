@@ -477,3 +477,208 @@ __device__ inline int64_t move_speed_q16(int64_t cw, int64_t cf, int64_t side, i
 
 }  // namespace unit_lib
 }  // namespace breach_cuda
+
+// ============================================================================
+// #29 P6.4a -- THE HAND VERBS' GATES (verb_gates.py) and what they read: the
+// 1b envelope (acts), the HANDLING durations (unit_traits._handling), the
+// magazine as mag_status reads it (combat.magazines_carried / mag_status),
+// the shove's cooldown (unit_impulse.shove_cooled). Slot 1b is their first
+// user; P8b's mask kernel calls the same functions at the tick's start. And
+// the RECORD LIST's view and row sink (cuda_unit_events.h's UnitRecordList:
+// the request list of slot 1b; the event ring is the other instance).
+// ============================================================================
+namespace breach_cuda {
+
+// What a kernel needs of a record list (built on the host from a
+// UnitRecordList): any record width / row cap.
+struct RecordListView {
+    int64_t* recs = nullptr;                // (N, cap, width)
+    int64_t* count = nullptr;               // (N,)
+    unsigned long long* dropped = nullptr;  // (N,)
+    int64_t* stage = nullptr;               // (N, U, row_cap, width)
+    int64_t* stage_count = nullptr;         // (N, U)
+    int cap = 0, width = 0, row_cap = 0;
+};
+
+inline RecordListView list_view(UnitRecordList& l) {
+    RecordListView v;
+    v.recs = l.records_dev();
+    v.count = l.count_dev();
+    v.dropped = l.dropped_dev();
+    v.stage = l.stage_dev();
+    v.stage_count = l.stage_count_dev();
+    v.cap = l.cap();
+    v.width = l.width();
+    v.row_cap = l.row_cap();
+    return v;
+}
+
+namespace unit_lib {
+
+// A record sink of any width: a row's staging (gathered in row order) or the
+// env's list itself (a serial per-env producer).
+struct RecordSink {
+    int64_t* recs;
+    int64_t cap;
+    int64_t* count;
+    unsigned long long* dropped;
+    int width;
+};
+__device__ __forceinline__ RecordSink list_row_sink(const RecordListView& v, int n_units, int r) {
+    const size_t rr = (size_t)benv() * n_units + r;
+    return RecordSink{v.stage + rr * (size_t)v.row_cap * v.width, v.row_cap,
+                      v.stage_count + rr, v.dropped + benv(), v.width};
+}
+// Append one record (width int64); past the capacity: dropped and counted.
+__device__ inline void emit_record(RecordSink& s, const int64_t* rec) {
+    const int64_t n = *s.count;
+    if (n >= s.cap) {
+        atomicAdd(s.dropped, 1ULL);
+        return;
+    }
+    int64_t* d = s.recs + n * s.width;
+    for (int f = 0; f < s.width; ++f) d[f] = rec[f];
+    *s.count = n + 1;
+}
+
+//: unit_schema's sentinels and combat.SPARES_UNTRACKED.
+constexpr int64_t MAG_UNBOUND = -1;
+constexpr int64_t SPARES_UNTRACKED = -1;
+constexpr int64_t NO_ROW = -1;
+constexpr int64_t NO_PLANT = -1;
+constexpr int64_t THROW_NO_REACH = -2147483648LL;
+//: The proved range of a tick and of a duration added to it (a tick plus a
+//: HANDLING-scaled duration stays far inside int64).
+constexpr int64_t TICK_MAX = (int64_t)1 << 40;
+
+// verb_gates._acts: the 1b envelope's unit terms -- living and not a zombie.
+__device__ __forceinline__ bool acts(const int64_t* row) {
+    return row_alive(row) && row[UNIT_COL_IS_ZOMBIE] == 0;
+}
+
+// The statuses' can_act (composed_flags, not after the sweep).
+__device__ __forceinline__ bool can_act(const int64_t* row, const int64_t* tab, bool* bad) {
+    return composed_flags(row, tab, false, bad).can_act;
+}
+
+// unit_traits._handling: a duration's class ticks times the HANDLING hook,
+// at least one tick when the class value is (a class value <= 0 is itself).
+__device__ __forceinline__ int64_t handling_ticks(const int64_t* row, int64_t base) {
+    if (base <= 0) return base;
+    const int64_t t = scaled(row, UNIT_HOOK_HANDLING, base);
+    return t >= 1 ? t : 1;
+}
+
+// verb_gates.can_throw for hand-grenade kind `kind`: not winding up, not
+// planting, one of the kind carried, able to act. A kind outside the family
+// sets *bad (the Python refuses it by name).
+__device__ inline bool can_throw(const int64_t* row, const int64_t* tab, int64_t kind,
+                                 bool* bad) {
+    if (kind < 0 || kind >= UNIT_COL_GRENADE_COUNTS_W) {
+        *bad = true;
+        return false;
+    }
+    return acts(row) && row[UNIT_COL_THROW_RELEASE_TICK] < 0 &&
+           row[UNIT_COL_PLANT_DONE_TICK] < 0 && row[UNIT_COL_GRENADE_COUNTS + kind] > 0 &&
+           can_act(row, tab, bad);
+}
+
+// verb_gates.can_plant at `tick`: not planting, no wind-up still running at
+// the plant's consumption (throw_release_tick <= tick), a charge carried, able
+// to act.
+__device__ inline bool can_plant(const int64_t* row, const int64_t* tab, int64_t tick,
+                                 bool* bad) {
+    return acts(row) && row[UNIT_COL_PLANT_DONE_TICK] < 0 &&
+           row[UNIT_COL_THROW_RELEASE_TICK] <= tick && row[UNIT_COL_HAS_EXPLOSIVE] > 0 &&
+           row[UNIT_COL_CHARGE_AMMO] != NO_ROW && can_act(row, tab, bad);
+}
+
+// The weapon row the unit holds: its weapons-table index, or -1 for none
+// (weapon_id ""); an index past the table sets *bad (no such row).
+__device__ __forceinline__ int64_t weapon_row(const int64_t* row, bool* bad) {
+    const int64_t w = row[UNIT_COL_WEAPON_ID];
+    if (w == NO_ROW) return -1;
+    if (w < 0 || w >= UNIT_TAB_WEAPON_MAG_SIZE_W) {
+        *bad = true;
+        return -1;
+    }
+    return w;
+}
+
+// combat.magazines_carried: the loadout's magazine count when it belongs to
+// the weapon in the hands (magazines_weapon), else 0. The column decodes "no
+// row" to "" (never None: Unit.__init__ writes "" too), and "" is not None
+// in the Python's test, so a weapon in the hands with no loadout weapon is
+// "another weapon": the encoded indices compare as the names do.
+__device__ __forceinline__ int64_t magazines_carried(const int64_t* row) {
+    const int64_t total = row[UNIT_COL_MAGAZINES];
+    if (total > 0 && row[UNIT_COL_WEAPON_ID] != row[UNIT_COL_MAGAZINES_WEAPON]) return 0;
+    return total;
+}
+
+// combat.mag_status: the magazine as mag_settle would leave it at `tick`,
+// without writing. tracked false = untracked (no weapon row or mag_size 0,
+// Python's None); spares -1 = untracked spares (Python's None).
+struct MagStatus {
+    bool tracked;
+    int64_t rounds, spares;
+    bool reloading;
+};
+__device__ inline MagStatus mag_status(const int64_t* row, const int64_t* tab, int64_t tick,
+                                       bool* bad) {
+    MagStatus m{false, 0, -1, false};
+    const int64_t w = weapon_row(row, bad);
+    if (w < 0) return m;
+    const int64_t full = tab[UNIT_TAB_WEAPON_MAG_SIZE + w];
+    if (full <= 0) return m;
+    m.tracked = true;
+    if (row[UNIT_COL_CURRENT_MAG] == MAG_UNBOUND) {
+        const int64_t total = magazines_carried(row);
+        m.rounds = full;
+        m.spares = total <= 0 ? -1 : total - 1;
+        return m;
+    }
+    const int64_t spare = row[UNIT_COL_SPARE_MAGS];
+    m.spares = spare < 0 ? -1 : spare;
+    const int64_t done = row[UNIT_COL_RELOAD_DONE_TICK];
+    if (done >= 0) {
+        if (tick < done) {
+            m.rounds = row[UNIT_COL_CURRENT_MAG];
+            m.reloading = true;
+        } else {
+            m.rounds = full;
+        }
+        return m;
+    }
+    m.rounds = row[UNIT_COL_CURRENT_MAG];
+    return m;
+}
+
+// verb_gates.can_reload: a tracked magazine, no stall running, not full, a
+// spare (counted or untracked). No can_act, wind-up or plant term (the
+// oversight, kept).
+__device__ inline bool can_reload(const int64_t* row, const int64_t* tab, int64_t tick,
+                                  bool* bad) {
+    if (!acts(row)) return false;
+    const MagStatus m = mag_status(row, tab, tick, bad);
+    if (!m.tracked) return false;
+    const int64_t full = tab[UNIT_TAB_WEAPON_MAG_SIZE + row[UNIT_COL_WEAPON_ID]];
+    return !m.reloading && m.rounds < full && m.spares != 0;
+}
+
+// unit_impulse.shove_cooled: the shove's cooldown has run at `tick`.
+__device__ __forceinline__ bool shove_cooled(const int64_t* row, const int64_t* tab,
+                                             int64_t tick) {
+    const int64_t last = row[UNIT_COL_LAST_SHOVE_TICK];
+    return !(last >= 0 && tick - last < tab[UNIT_TAB_SHOVE_COOLDOWN_TICKS]);
+}
+
+// verb_gates.can_shove: able to act and off cooldown (whoever is in reach
+// is no term).
+__device__ inline bool can_shove(const int64_t* row, const int64_t* tab, int64_t tick,
+                                 bool* bad) {
+    return acts(row) && can_act(row, tab, bad) && shove_cooled(row, tab, tick);
+}
+
+}  // namespace unit_lib
+}  // namespace breach_cuda
