@@ -731,6 +731,90 @@ _MELEE_ROWS: tuple = (
 )
 ROWS = ROWS + _MELEE_ROWS
 
+
+# == #29 P7b: the grenades in flight and the planted charges (slot 1b's
+# appends, slot 2's flight and fuse-out, charges.tick): the flight law's
+# constants as combat.Projectile reads them, the throw's kind -> round, and
+# every round's payload row (a PAYLOAD record's ``payload``). ==============
+def _n_hand_kinds():
+    from simulation.weapons import get_tables
+    return len(get_tables().hand_grenade_rows)
+
+
+def _ammo_rows(src):
+    """The sim's ammo rows in the unit schema's ``ammo`` table order (an
+    ``ammo_name`` column's row index); refused when they differ."""
+    from simulation.unit_schema import TABLES
+    names = tuple(TABLES["ammo"]())
+    rows = src.sim.weapons_tables.ammo.by_name
+    if tuple(rows) != names:
+        raise ValueError("unit tables: the sim's ammo rows are not the unit "
+                         "schema's ammo table")
+    return [rows[n] for n in names]
+
+
+def _n_ammo():
+    from simulation.unit_schema import TABLES
+    return len(TABLES["ammo"]())
+
+
+def _hand_ammo_rows(src):
+    from simulation.unit_schema import table_row
+    return tuple(table_row("ammo", n) for n in src.sim.weapons_tables.hand_grenade_rows)
+
+
+def _hand_speed_q(src):
+    # combat.Projectile's door: weapon_tables() (the module's own table
+    # object), the round's travel speed quantized once
+    from simulation import combat, unit_fixed
+    by = combat.weapon_tables().ammo.by_name
+    return tuple(unit_fixed.quantize_scalar(  # p3e-door: Projectile's travel_speed_q
+        float(by[n].travel_speed_tiles_per_second))
+        for n in src.sim.weapons_tables.hand_grenade_rows)
+
+
+def _ammo_payload_rows(src):
+    names = list(src.sim.weapons_tables.payloads.by_name)
+    return tuple(names.index(a.payload) if a.payload else -1
+                 for a in _ammo_rows(src))
+
+
+def _flight_eps(src):
+    from simulation import combat
+    return int(combat._FLIGHT_EPS_Q)
+
+
+def _order_grenade(src):
+    from simulation.orders import ORDER_GRENADE
+    return int(ORDER_GRENADE)
+
+
+def _clock_tps(src):
+    from config import CFG
+    return int(CFG.clock.ticks_per_second)
+
+
+_OBJECT_ROWS: tuple = (
+    TableRow("clock_tps", 1, _clock_tps, 1, 256,
+             "[clock] ticks_per_second as Projectile.update_position reads "
+             "it (CFG, per call); <= 256 keeps tps x dist < 2^35"),
+    TableRow("grenade_flight_eps_q", 1, _flight_eps, 0, 1 << 20,
+             "combat._FLIGHT_EPS_Q: a flight shorter than this lands at once"),
+    TableRow("order_grenade", 1, _order_grenade, 0, 1 << 20,
+             "orders.ORDER_GRENADE: the proj_type whose fuse-out detonates"),
+    TableRow("hand_grenade_ammo_row", _n_hand_kinds, _hand_ammo_rows, 0, 1 << 20,
+             "per throw kind (hand_grenade_rows order): its [ammo.*] row's "
+             "index in the unit schema's ammo table (a grenade's ammo_name)"),
+    TableRow("hand_grenade_speed_q", _n_hand_kinds, _hand_speed_q, 0, 1 << 24,
+             "per throw kind: Projectile.travel_speed_q of its round, Q16 "
+             "tiles per second"),
+    TableRow("ammo_payload_row", _n_ammo, _ammo_payload_rows, -1, 1 << 20,
+             "per [ammo.*] row (the schema's order): its payload's index in "
+             "sim.weapons_tables.payloads (payload_for_ammo; -1 none: a "
+             "fuse-out of it is refused as payload_for_ammo raises)"),
+)
+ROWS = ROWS + _OBJECT_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 

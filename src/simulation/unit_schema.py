@@ -856,11 +856,99 @@ def _build_charge(attrs: dict):
 CHARGE_TABLE = ObjectTable(name="charge", columns=CHARGE_SCHEMA,
                            capacity=CHARGE_CAPACITY, live="live",
                            build=_build_charge)
+# ---------------------------------------------------------------------------
+# #29 P7b: the grenades in flight (``Simulation.projectiles``,
+# ``combat.Projectile``)
+# ---------------------------------------------------------------------------
+#: Grenades in flight a sim's device table holds at once: STORAGE (the
+#: reference list has no bound). A unit releases at most one grenade a tick
+#: and the hand grenade's fuse is at most a few seconds, so a match holds a
+#: handful; the P7b gate scenes reach 13. Past it the device append is
+#: refused by name (``object_tables.ObjectTableOverflow``).
+GRENADE_CAPACITY = 64
+
+
+def _enc_fuse_ticks(v):
+    """``fuse_ticks``: the integer fuse, ``NO_TIMER`` for ``None`` (the WEGO
+    order path, whose fuse is ``fuse_seconds``); a fuse equal to the
+    sentinel itself is refused (it would decode as ``None``)."""
+    if v is None:
+        return NO_TIMER
+    v = _enc_int(v)
+    if v == NO_TIMER:
+        raise ValueError(f"unit schema: a grenade fuse of {v} ticks is the "
+                         f"NO_TIMER sentinel")
+    return v
+
+
+def _enc_q16_exact(v):
+    """A float attribute that must be an exact Q16 value (``fuse_seconds``:
+    0.0 on the continuous throw), as its Q16 integer; refused otherwise."""
+    from simulation import unit_fixed
+    q = unit_fixed.quantize_scalar(float(v))          # p3e-door: exact or refused
+    if unit_fixed.dequantize_scalar(q) != float(v):
+        raise ValueError(f"unit schema: {v!r} is not an exact Q16 value")
+    return q
+
+
+def _dec_q16(e):
+    from simulation import unit_fixed
+    return unit_fixed.dequantize_scalar(int(e))
+
+
+GRENADE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("proj_type", _enc_int),
+    TableColumn("owner_id", _enc_int),
+    TableColumn("start_x_q", _enc_int),
+    TableColumn("start_y_q", _enc_int),
+    TableColumn("target_x_q", _enc_int),
+    TableColumn("target_y_q", _enc_int),
+    TableColumn("pos_x_q", _enc_int),
+    TableColumn("pos_y_q", _enc_int),
+    TableColumn("fuse_seconds", _enc_q16_exact, decode=_dec_q16),
+    TableColumn("fuse_ticks", _enc_fuse_ticks,
+                decode=lambda e: None if e == NO_TIMER else e),
+    TableColumn("thrown_tick", _enc_int),
+    TableColumn("ammo_name", _AM_E, decode=_AM_D),
+    TableColumn("travel_speed_q", _enc_int),
+    # THE LIVE COLUMN, encoded: 1 while the grenade flies, 0 once slot 2
+    # detonated it (the host's ``detonated``); the slot-10 prune is the
+    # table's stable compaction over it.
+    TableColumn("detonated", lambda v: 0 if v else 1,
+                decode=lambda e: not e),
+)
+
+
+def _build_grenade(attrs: dict):
+    from simulation import unit_fixed
+    from simulation.combat import Projectile
+    dq = unit_fixed.dequantize_scalar
+    p = Projectile(attrs["proj_type"], dq(attrs["start_x_q"]),
+                   dq(attrs["start_y_q"]), dq(attrs["target_x_q"]),
+                   dq(attrs["target_y_q"]), attrs["fuse_seconds"],
+                   attrs["thrown_tick"], ammo_name=attrs["ammo_name"],
+                   owner_id=attrs["owner_id"], fuse_ticks=attrs["fuse_ticks"])
+    if p.travel_speed_q != attrs["travel_speed_q"]:
+        raise ValueError(f"unit schema: a grenade row's travel_speed_q "
+                         f"{attrs['travel_speed_q']} is not its round's "
+                         f"({p.travel_speed_q}, {attrs['ammo_name']!r})")
+    p.pos_x_q, p.pos_y_q = attrs["pos_x_q"], attrs["pos_y_q"]
+    p.detonated = attrs["detonated"]
+    return p
+
+
+#: THE grenade table (``Simulation.projectiles``, #29 P7b): row i the i-th
+#: grenade of the list; slot 1b's throws append, slot 2 flies and fuses them
+#: (a fuse-out a PAYLOAD record), slot 10's prune compacts.
+GRENADE_TABLE = ObjectTable(name="grenade", columns=GRENADE_SCHEMA,
+                            capacity=GRENADE_CAPACITY, live="detonated",
+                            build=_build_grenade)
+
 #: Every object table, in the generated header's order. A new table (the
-#: grenades, the rounds, the blast sources, an entity class) is a schema here
-#: and a row of this tuple: ``tools/gen_unit_layout.py --write``, commit,
-#: rebuild ``cpp/build_cuda``.
-OBJECT_TABLES: tuple[ObjectTable, ...] = (CHARGE_TABLE,)
+#: rounds, the blast sources, an entity class) is a schema here and a row of
+#: this tuple: ``tools/gen_unit_layout.py --write``, commit, rebuild
+#: ``cpp/build_cuda``.
+OBJECT_TABLES: tuple[ObjectTable, ...] = (CHARGE_TABLE, GRENADE_TABLE)
 
 
 def table_record(table: ObjectTable, obj) -> tuple:
@@ -892,5 +980,6 @@ __all__ = [
     "record_bytes", "unit_section_bytes", "CHARGE_SCHEMA", "charge_record",
     "charge_section_bytes", "TABLES", "table_row", "column_width",
     "TableColumn", "ChargeColumn", "ObjectTable", "CHARGE_TABLE",
-    "OBJECT_TABLES", "table_record",
+    "OBJECT_TABLES", "table_record", "GRENADE_CAPACITY", "GRENADE_SCHEMA",
+    "GRENADE_TABLE",
 ]

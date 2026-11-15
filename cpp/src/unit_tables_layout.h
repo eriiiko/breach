@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "68073cd22c07c9dcedb139009279902577d17d3af072c99fd27ad3ba60d3386a";
-constexpr int UNIT_TABLES_W = 716;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "37eeb6170181e9caa3b181b70027eaeebe72d39e32fac31f86b1b890412b2589";
+constexpr int UNIT_TABLES_W = 756;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -238,6 +238,18 @@ constexpr int UNIT_TAB_WEAPON_MELEE_CRIT = 678;
 constexpr int UNIT_TAB_WEAPON_MELEE_CRIT_W = 19;
 constexpr int UNIT_TAB_WEAPON_MELEE_PUSH_Q = 697;
 constexpr int UNIT_TAB_WEAPON_MELEE_PUSH_Q_W = 19;
+constexpr int UNIT_TAB_CLOCK_TPS = 716;
+constexpr int UNIT_TAB_CLOCK_TPS_W = 1;
+constexpr int UNIT_TAB_GRENADE_FLIGHT_EPS_Q = 717;
+constexpr int UNIT_TAB_GRENADE_FLIGHT_EPS_Q_W = 1;
+constexpr int UNIT_TAB_ORDER_GRENADE = 718;
+constexpr int UNIT_TAB_ORDER_GRENADE_W = 1;
+constexpr int UNIT_TAB_HAND_GRENADE_AMMO_ROW = 719;
+constexpr int UNIT_TAB_HAND_GRENADE_AMMO_ROW_W = 6;
+constexpr int UNIT_TAB_HAND_GRENADE_SPEED_Q = 725;
+constexpr int UNIT_TAB_HAND_GRENADE_SPEED_Q_W = 6;
+constexpr int UNIT_TAB_AMMO_PAYLOAD_ROW = 731;
+constexpr int UNIT_TAB_AMMO_PAYLOAD_ROW_W = 25;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

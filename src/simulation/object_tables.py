@@ -405,6 +405,32 @@ class DeviceTable:
         return [[tuple(int(x) for x in rows[e, i])
                  for i in range(int(counts[e]))] for e in range(rows.shape[0])]
 
+    def stage_lists(self, per_env) -> None:
+        """#29 P7b: set every env's table from its host records (``(R_e, W)``
+        each, :func:`records` of the host list), the record lists' face (the
+        shadow harness stages an input list through it). More than the
+        capacity is refused by name, naming the env."""
+        per_env = [np.asarray(r, dtype=np.int64).reshape(-1, self.shape[2])
+                   for r in per_env]
+        if len(per_env) != self.shape[0]:
+            raise ValueError(f"object table {self.name!r}: {len(per_env)} envs "
+                             f"staged, the table holds {self.shape[0]}")
+        rows = np.zeros(self.shape, dtype=np.int64)
+        counts = np.zeros(self.shape[0], dtype=np.int64)
+        for e, r in enumerate(per_env):
+            if r.shape[0] > self.shape[1]:
+                raise ObjectTableOverflow(
+                    f"object table {self.name!r}: {r.shape[0]} objects in env "
+                    f"{e} do not fit its capacity {self.shape[1]}")
+            rows[e, :r.shape[0]] = r
+            counts[e] = r.shape[0]
+        self.upload(rows, counts)
+
+    def begin(self) -> None:
+        """#29 P7b: every env's table empty (the record lists' face)."""
+        self.upload(np.zeros(self.shape, dtype=np.int64),
+                    np.zeros(self.shape[0], dtype=np.int64))
+
 
 __all__ = ["HEADER_REL", "GENERATOR", "ObjectTableOverflow", "TableLayout",
            "Layout", "table_layout", "layout", "header_text", "records",

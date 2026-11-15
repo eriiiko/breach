@@ -240,4 +240,37 @@ class FieldApplier;
 void unit_melee(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
                 const int64_t* ticks, const UnitDamageCounts& out);
 
+// ---- #29 P7b: the grenades and the planted charges on their object tables -------
+//   cuda_unit_objects.cu      slot 1b's appends, slot 2 "2 grenades",
+//                             slot 9e(d') charges.tick (and its prune)
+//
+// No unit row is read or written: the slots' state is the grenade and charge
+// tables (cuda_object_table.h) and what they record goes to the effect list
+// (`effects`: a FieldApplier's list, PAYLOAD records in the reference's
+// order). The per-env counts: `changed` rows the call changed or appended,
+// `faults` rows whose operands left the proved range (left as they were,
+// nothing recorded), `refused` grenades of the WEGO order path (a float
+// fuse: out of scope, left as they were), `dropped` effect records the list
+// could not hold (a table's own overflow is its record list's count).
+class ObjectTable;
+struct ObjectSlotCounts {
+    int64_t* changed = nullptr;
+    int64_t* faults = nullptr;
+    int64_t* refused = nullptr;
+    int64_t* dropped = nullptr;
+};
+// Slot 1b's THROW requests appended to `grenades`, its ACCEPTED plants to
+// `charges`, one thread per env in request-list order (after unit_verbs).
+void unit_table_appends(const UnitTablesDevice& tables, UnitRecordList& requests,
+                        ObjectTable& grenades, ObjectTable& charges, const ObjectSlotCounts& out);
+// Slot 2's grenades: the flight per row (wide), the fuse-outs' PAYLOAD records
+// in row order. `ticks` (N,) each env's sim.tick.
+void unit_grenades(const UnitTablesDevice& tables, ObjectTable& grenades, UnitRecordList& effects,
+                   const int64_t* ticks, const ObjectSlotCounts& out);
+// Slot 9e(d') charges.tick: the due charges' PAYLOAD records in row order,
+// then the table's stable compaction.
+void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,
+                       UnitRecordList& effects, const int64_t* ticks,
+                       const ObjectSlotCounts& out);
+
 }  // namespace breach_cuda

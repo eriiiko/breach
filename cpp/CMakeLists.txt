@@ -164,6 +164,10 @@ if(BREACH_CUDA)
         # upload, an ordered append and a stable compaction); Class T, pure
         # integer, on the same target-wide CUDA determinism floor.
         src/cuda_object_table.cu    # the object tables (the charge table first)
+        # #29 P7b: the grenades and the planted charges on their tables (slot
+        # 1b's appends, slot 2's flight and fuse-out, charges.tick); Class T,
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_objects.cu    # slot 1b appends, slot 2 grenades, 9e(d')
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
