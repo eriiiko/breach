@@ -81,6 +81,10 @@ def part_tables():
         @staticmethod
         def object_tables_layout():
             return {"fingerprint": "0" * 64}
+
+        @staticmethod
+        def ObjectTableBuffer(*a):         # what a refusal must never reach
+            return object()
     try:
         ot.DeviceTable(T, 1, bp=Fake)
         fail("a DeviceTable accepted a module with another fingerprint")
