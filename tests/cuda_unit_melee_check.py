@@ -1020,7 +1020,7 @@ def part_resolve():
     else:
         census["the landing's result differs from at once"] += 1
     # 2. CHEW: a wall chewed to zero and destroyed, air and dead damage no-ops
-    chew = [_chew(24, 6, 25.0), _chew(24, 6, 40.0), _chew(24, 6, 10.0),  # 60 hp wood
+    chew = [_chew(24, 6, 25.0), _chew(24, 6, 35.0), _chew(24, 6, 10.0),  # 60 hp: to 0
             _chew(10, 10, 50.0), _chew(24, 7, 0.0), _chew(24, 8, 12.5)]
     ok &= _run_list("chew", chew, census)[0]
     # 3. the order: a kill's credit and a breach chain, forward vs reversed
@@ -1207,6 +1207,19 @@ def part_overflow():
         want = full.records()[0]
         if len(want) < 3:
             continue
+        # the APPEND: a producer continues the list (slot 4's records first)
+        lead = [applier.make_record("CHEW", y=24, x=5, damage_q=ONE, live=1),
+                applier.make_record("PUSH", row=0, jx_q=ONE, jy_q=0, lever_q=0,
+                                    twist_q16=ONE)]
+        cont = applier.DeviceApplier(1, applier.E_CAP, n_units=U)
+        st.upload(held["pre"][None])
+        cont.stage_lists([np.array(lead)])
+        unit_kernels.melee(st, cont, np.array([held["tick"]]))
+        if cont.records()[0] != [tuple(r) for r in lead] + want:
+            fail("append: 4a did not continue the staged list (its records after the "
+                 "staged ones, in order)")
+        else:
+            tested.add("append")
         # the list's capacity
         cap = 2
         small = applier.DeviceApplier(1, cap, n_units=U)
@@ -1254,7 +1267,7 @@ def part_overflow():
               f"{len(want) - cap} counted), through a staging of 2 per row, and a staged "
               f"list of {len(want)} walked with capacity {cap} -- each refused by name")
         break
-    for t in ("list", "staging", "walk"):
+    for t in ("append", "list", "staging", "walk"):
         if t not in tested:
             fail(f"overflow: the {t} overflow was never tested (vacuous)")
 
