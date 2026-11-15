@@ -1,7 +1,7 @@
 # Sound playback layer — design (2026-11-12)
 
-> **Status: S1 BUILT 2026-11-12 (tracker #202), HUMAN-TEST owed; as-built notes in
-> section 12.** Originally a proposal: The audition tool
+> **Status: S1 MERGED 2026-11-13; S2 (loops) BUILT 2026-11-13, HUMAN-TEST
+> owed (tracker #202); as-built notes in sections 12 and 13.** Originally a proposal: The audition tool
 > (`tools/sound_audition.py`, branch `sound-audition`) proved the carbine's
 > choke scheme by ear; this is the layer that puts sounds in the game.
 > Companion: `README.md` (the parked pressure-field idea — this layer is its
@@ -256,3 +256,47 @@ Every patch is feel-adjacent, so none auto-merges.
   shortened to 60 ms): 2.4 s, the bolt snapping at 1.8 s of the 2 s reload.
   If `reload_seconds` is retuned the sample no longer fits; a reload cue timed
   to the event's ticks is a later refinement.
+
+## 13. As built (S2, the loops, 2026-11-13)
+
+- **Cue keys:** a loop cue is `loop = true`, `reach` in metres (a loop has no
+  weapon or payload row, so `"loudness"` is refused), optional `gain` and
+  `max_emitters` (1..16, default 4); the one-shot keys (`choke`,
+  `choke_fade_ms`, `pitch_jitter`, `gain_jitter`) are refused on a loop and
+  `max_emitters` on a one-shot. A loop cue in a binding is refused.
+- **`[sound.loops]`** (new, required): `vent`, `fire_small`, `fire_large` name
+  the loop cue each emitter kind plays (`""` = silent); `ramp_ms` (150) is the
+  ramp of every loop gain change; `fire_small_full_m2`, `fire_large_from_m2`,
+  `fire_large_full_m2` are the fire pair's law. Section 3's
+  `[sound.cues.vent_fan] reach_m` became the common `reach`.
+- **Vents:** a vent sounds while RUNNING -- alive, wired to a duct and
+  `q_circ > 0` -- at its APERTURE tile (where its air comes and goes). Only
+  the cue's `max_emitters` (4) loudest at the listener play; one entering the
+  loudest takes the place of the quietest, which ramps out.
+- **The fire pair (`audio.model.fire_gains`):** the amount is the burning AREA
+  heard at the listener -- each burning tile's area times its fire level
+  (`gmap.fire`, dequantized at the read) times `acoustics` at that tile under
+  the cue's own reach. The crackle rises linearly to full at
+  `fire_small_full_m2` (0.3 m2, about three 0.333 m tiles burning beside you);
+  the roar comes in from `fire_large_from_m2` (1.5) and is full at
+  `fire_large_full_m2` (10). One voice per cue for the whole fire, panned to
+  the heard-weighted mean of where it burns. All PLACEHOLDERS, Erik's to tune.
+- **Playback:** loops are raylib MUSIC streams (`looping`: the wrap is sample
+  accurate; a Sound restarted at its end would leave a gap), as many per file
+  as its cues may play at once, loaded up front; a loop starts at gain 0 at a
+  random offset into its file (two vents never in phase) and every gain change
+  is a linear ramp over `ramp_ms`. Loops do NOT share the one-shots' voice
+  pool (section 6 said loops are never stolen; they now cannot be): each loop
+  cue holds at most `max_emitters` voices.
+- **Paused:** every loop ramps to 0 and keeps playing silently; resume brings
+  the same voices back (no restart).
+- **Samples:** `tools/sound_audition.py --export SRC DST --loop MS` --
+  `sound_clips.make_loop` (the tail crossfaded onto the head, equal power, the
+  sample that much shorter) and `normalize_rms` (-20 dBFS RMS, peak-capped),
+  MONO (a loop is placed by the pan; it also halves the file). The three loops
+  are 6.1 MB.
+- **Listener per frame:** `SoundLayer.update(listener, paused)` now takes the
+  listener; one-shots still keep the gain and pan they started with.
+- **E2E:** main.py prints `sound loops: N started, M at most at once`;
+  `tests/test_sound_e2e.py` runs `fire_smoke_studio` (two vents, a fire lit at
+  0.5 s) and `door_test` (none).

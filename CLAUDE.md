@@ -201,7 +201,7 @@ amends the rule file, never this line's length.
 | Prop generator | `renderer/propgen.py` | THE procedural prop / vegetation geometry; new flora = a generator fn + `PALETTES` row |
 | Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props; no prop render state on a sim entity |
 | UI split | `ui/model.py` (pure) / `ui/draw.py` (dumb) | Decisions in model as data; draw decides nothing |
-| Sound layer | `audio/model.py` / `audio/device.py` / `audio/game.py` + `[sound]` | THE only audio path, presentation only; a sound is a cue row + a binding row |
+| Sound layer | `audio/model.py` / `audio/device.py` / `audio/game.py` + `[sound]` | THE only audio path, presentation only; a sound is a cue row + a binding row; loops play from state |
 | Sound samples | `tools/sound_audition.py --export` → `assets/sounds/` | Every sample is exported from a generated clip and sourced in `assets/sounds/SOURCES.md`; never hand-cut |
 
 ### Gameplay

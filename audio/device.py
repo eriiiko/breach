@@ -7,7 +7,16 @@ per `update` call (per frame -- raylib's simple playback has no per-sample
 ramp; design doc section 9).
 
 raylib 5.5's `SetSoundPan` takes 0..1 with 1.0 = LEFT; the model's pan is
--1 left .. +1 right, converted here and nowhere else.
+-1 left .. +1 right, converted here and nowhere else (`_rl_pan`; music
+streams share the convention: both set the stream's pan).
+
+LOOPS (S2) play as raylib MUSIC streams (`looping`, sample-accurate wrap --
+a Sound restarted on its end leaves a gap): each loop file gets as many
+streams as the loop cues naming it may play at once, loaded up front. A
+loop starts at gain 0 and every gain change is a linear ramp over
+`[sound.loops] ramp_ms`, stepped once per `update`; a stopped loop ramps to
+0 and only then stops. Every playing stream is fed once per `update`
+(`UpdateMusicStream`), so `update` must run every frame.
 """
 from __future__ import annotations
 
@@ -16,7 +25,8 @@ from typing import Dict, List, Optional, Sequence
 
 import pyray as rl
 
-from audio.model import Command, SoundSettings, Start, Stop, sample_seconds
+from audio.model import (Command, LoopSet, LoopStart, SoundSettings, Start, Stop,
+                         sample_seconds)
 
 ALIASES_PER_FILE = 8
 
@@ -31,6 +41,22 @@ class _Playing:
         self.fade_s = 0.0
 
 
+def _rl_pan(pan: float) -> float:
+    return 0.5 - 0.5 * pan
+
+
+class _Loop:
+    __slots__ = ("music", "file", "gain", "target", "pan", "stopping")
+
+    def __init__(self, music, file: str, target: float, pan: float):
+        self.music = music
+        self.file = file
+        self.gain = 0.0
+        self.target = target
+        self.pan = pan
+        self.stopping = False
+
+
 class SoundDevice:
     def __init__(self, settings: SoundSettings, root: Path, *, muted: bool = False):
         self.settings = settings
@@ -39,13 +65,33 @@ class SoundDevice:
         self._pools: Dict[str, List] = {}
         self._turn: Dict[str, int] = {}
         self._playing: Dict[int, _Playing] = {}
+        self._loop_pools: Dict[str, List] = {}      # file -> idle music streams
+        self._loops: Dict[int, _Loop] = {}
+        self._ramp_s = settings.loops.ramp_ms / 1000.0
+        self._last_update: Optional[float] = None
         rl.init_audio_device()
         if not rl.is_audio_device_ready():
             print("  sound: no audio device -- the game runs silent")
             return
         self.ready = True
         rl.set_master_volume(0.0 if muted else settings.master)
+        n_streams: Dict[str, int] = {}
+        for c in settings.cues.values():
+            if c.loop:
+                for f in c.files:
+                    n_streams[f] = n_streams.get(f, 0) + c.max_emitters
+        for f, n in sorted(n_streams.items()):
+            path = root / f
+            pool = []
+            for _ in range(n):
+                m = rl.load_music_stream(str(path))
+                m.looping = True
+                pool.append(m)
+            self._loop_pools[f] = pool
+            self.durations[f] = sample_seconds(path)
         for f in settings.files():
+            if f in n_streams:
+                continue
             path = root / f
             first = rl.load_sound(str(path))
             self._pools[f] = [first] + [rl.load_sound_alias(first)
@@ -68,9 +114,31 @@ class SoundDevice:
                         del self._playing[k]
                 rl.set_sound_volume(snd, c.gain)
                 rl.set_sound_pitch(snd, c.pitch)
-                rl.set_sound_pan(snd, 0.5 - 0.5 * c.pan)
+                rl.set_sound_pan(snd, _rl_pan(c.pan))
                 rl.play_sound(snd)
                 self._playing[c.voice] = _Playing(snd, c.gain)
+            elif isinstance(c, LoopStart):
+                pool = self._loop_pools.get(c.file)
+                if not pool:                    # more than the cue's cap: not played
+                    continue
+                m = pool.pop()
+                rl.set_music_volume(m, 0.0)
+                rl.set_music_pan(m, _rl_pan(c.pan))
+                rl.play_music_stream(m)
+                if c.offset_s > 0.0:
+                    rl.seek_music_stream(m, c.offset_s)
+                self._loops[c.voice] = _Loop(m, c.file, c.gain, c.pan)
+            elif isinstance(c, LoopSet):
+                lp = self._loops.get(c.voice)
+                if lp is not None and not lp.stopping:
+                    lp.target = c.gain
+                    if c.gain > 0.0:            # a silenced loop keeps its place
+                        lp.pan = c.pan
+                        rl.set_music_pan(lp.music, _rl_pan(c.pan))
+            elif isinstance(c, Stop) and c.voice in self._loops:
+                lp = self._loops[c.voice]
+                lp.target = 0.0
+                lp.stopping = True
             elif isinstance(c, Stop):
                 p = self._playing.get(c.voice)
                 if p is None:
@@ -86,6 +154,22 @@ class SoundDevice:
         """Advance the fades; forget what finished. Once per frame."""
         if not self.ready:
             return
+        dt = 0.0 if self._last_update is None else max(0.0, now - self._last_update)
+        self._last_update = now
+        step = 1.0 if self._ramp_s <= 0.0 else dt / self._ramp_s
+        for k in list(self._loops):
+            lp = self._loops[k]
+            if lp.gain < lp.target:
+                lp.gain = min(lp.target, lp.gain + step)
+            elif lp.gain > lp.target:
+                lp.gain = max(lp.target, lp.gain - step)
+            if lp.stopping and lp.gain <= 0.0:
+                rl.stop_music_stream(lp.music)
+                self._loop_pools[lp.file].append(lp.music)
+                del self._loops[k]
+                continue
+            rl.set_music_volume(lp.music, lp.gain)
+            rl.update_music_stream(lp.music)
         for k in list(self._playing):
             p = self._playing[k]
             if not rl.is_sound_playing(p.sound):
@@ -101,8 +185,18 @@ class SoundDevice:
     def playing(self) -> int:
         return len(self._playing)
 
+    def loops_playing(self) -> int:
+        return len(self._loops)
+
     def close(self) -> None:
         if self.ready:
+            for lp in self._loops.values():
+                rl.stop_music_stream(lp.music)
+                self._loop_pools[lp.file].append(lp.music)
+            self._loops.clear()
+            for pool in self._loop_pools.values():
+                for m in pool:
+                    rl.unload_music_stream(m)
             for pool in self._pools.values():
                 for alias in pool[1:]:
                     rl.unload_sound_alias(alias)

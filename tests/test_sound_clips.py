@@ -7,7 +7,12 @@ Properties held (each names the change that must break it):
   - nothing of a clip is dropped: an early echo stays inside its shot, and
     separate shots become separate samples;
   - the choke law is a monotone fade that reaches exactly 0, and a voice
-    that was never choked is never faded.
+    that was never choked is never faded;
+  - a loop made by `make_loop` has no seam: played end to end it jumps no
+    more at the wrap than the clip does anywhere else (breaks if the
+    crossfade is dropped, reversed, or the tail left in after it);
+  - `normalize_rms` puts a steady clip at its RMS target and never above
+    the peak level.
 """
 from __future__ import annotations
 
@@ -129,3 +134,46 @@ def test_wav_round_trip(tmp_path):
     y, sr = sc.read_wav(tmp_path / "a.wav")
     assert sr == SR and y.shape == x.shape
     assert np.abs(y - np.clip(x, -1, 1)).max() < 1.0 / 16000.0
+
+
+# -- loops (#202 S2) -----------------------------------------------------------
+
+def _tone(ms: float) -> np.ndarray:
+    t = np.arange(int(SR * ms / 1000.0)) / SR
+    return (0.5 * np.sin(2 * np.pi * 113.7 * t)).astype(np.float32)   # no whole period
+
+
+def _max_step(x: np.ndarray) -> float:
+    return float(np.abs(np.diff(x.astype(np.float64))).max())
+
+
+def test_a_made_loop_has_no_seam():
+    x = _tone(3000.0)
+    assert abs(float(x[-1]) - float(x[0])) > 5 * _max_step(x)      # the raw clip clicks
+    y = sc.make_loop(x, SR, 500.0)
+    twice = np.concatenate([y, y])
+    assert _max_step(twice) <= _max_step(x) * 1.05
+    assert len(y) == len(x) - int(round(SR * 0.5))
+
+
+def test_a_stereo_clip_loops_per_channel():
+    x = np.stack([_tone(2000.0), -_tone(2000.0)], axis=1)
+    y = sc.make_loop(x, SR, 300.0)
+    assert y.shape[1] == 2
+    assert np.allclose(y[:, 0], -y[:, 1])
+
+
+def test_a_crossfade_longer_than_half_the_clip_is_refused():
+    with pytest.raises(ValueError):
+        sc.make_loop(_tone(500.0), SR, 300.0)
+
+
+def test_normalize_rms_hits_its_target_under_the_peak():
+    x = _tone(1000.0) * 0.01
+    y = sc.normalize_rms(x, rms_db=-20.0)
+    rms_db = 20 * np.log10(np.sqrt(np.mean(y.astype(np.float64) ** 2)))
+    assert abs(rms_db - -20.0) < 0.05
+    spiky = np.zeros(SR, dtype=np.float32)
+    spiky[100] = 0.5
+    z = sc.normalize_rms(spiky, rms_db=-20.0)
+    assert float(np.abs(z).max()) <= sc.PEAK + 1e-6

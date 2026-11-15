@@ -16,6 +16,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - Decisions are the model's, as data (`Start` / `Stop` commands); the device decides nothing. A sound is a CUE row and a BINDING row: never a file name or a per-weapon branch in code; an unbound weapon or payload is silent.
 - Every voice's gain comes from `acoustics`: a new propagation effect is a term there, never a second path. `reach = "loudness"` is a STOPGAP (Erik, 2026-11-12: loudness is a source level, not a distance; #201).
 - raylib 5.5's pan runs 1.0 = left: converted in the device and nowhere else.
+- LOOPS (S2) play from STATE once a frame (`SoundModel.update_loops`), never from an event. `[sound.loops]` names each emitter kind's loop cue; the fire is ONE pair of voices for the whole fire (`model.fire_gains` over the burning area heard), never a voice per tile. A new looping emitter kind is a slot there and a `World` read, never a second loop path. Loops are music streams outside the one-shot pool; paused, they ramp to 0 and resume as the same voices.
 - ACCEPTED GAPS (v1): no occlusion; a one-shot keeps the gain and pan it started with; fades are stepped per frame.
 
 ## Sound samples
