@@ -76,7 +76,8 @@ import numpy as np
 
 from simulation import (atmosphere_fixed, combat, exchange, fire_fixed,
                         gas_fixed, horde, line_of_fire, room_graph, turning,
-                        unit_impulse, unit_schema, verb_gates, vision)
+                        unit_impulse, unit_schema, unit_traits, verb_gates,
+                        vision)
 from simulation.damage import KINETIC, POISON, mitigation_for
 from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
 from simulation.events import CAUSE_NAMES
@@ -433,7 +434,7 @@ class ObsContext:
     l_ref: int                   # L_ref, tiles
     v_ref_q: int                 # Q16 tiles per tick
     ref_rof_ticks: int
-    ref_spread_deg: float
+    ref_cone_q: int              # the reference kit's aimed cone, Q16 rad
     ref_melee_arc_q: int
     limit_ticks: int
     memory_ticks: int
@@ -442,8 +443,6 @@ class ObsContext:
     charge_rows: tuple
     frag_radius: int
     max_throw_range: int
-    throw_windup_ticks: int
-    plant_ticks: int
     c4_fuse_max_ticks: int
     hand_fuse_max_ticks: int
     status_scale: tuple
@@ -509,14 +508,16 @@ class ObsContext:
                 f"hand-grenade rows, the table has "
                 f"{len(tables.hand_grenade_rows)}: a new spec version")
         tps = int(sim._tps)
-        w = turning.turn_rate_q16(CFG)
+        w = turning.turn_rate_q16(CFG)   # traits-class: the reference half turn
         it = sim.impulse_table
         return ObsContext(
             spec=spec, n_slots=int(n_slots),
             l_ref=int(ref.range_tiles),
-            v_ref_q=(FP_ONE * FP_ONE) // int(sim.speed_table.full_cost_q),
+            v_ref_q=(FP_ONE * FP_ONE) // int(
+                sim.speed_table.full_cost_q),  # traits-class: the reference speed
             ref_rof_ticks=int(ref.rof_interval_ticks),
-            ref_spread_deg=float(ref.spread_deg),
+            # the reference kit's CLASS cone (a denominator, never a unit's)
+            ref_cone_q=combat.cone_q16_of_deg(ref.spread_deg),  # traits-class: ref
             ref_melee_arc_q=int(butt.melee_arc_half_q),
             limit_ticks=int(MatchRules.from_spec(spec).limit_ticks(sim)),
             memory_ticks=int(tp.memory_ticks(tp.picture_settings(CFG),
@@ -526,8 +527,6 @@ class ObsContext:
             charge_rows=tuple(tables.charge_rows),
             frag_radius=int(tables.payload_for_ammo(FRAG_ROW).radius),
             max_throw_range=int(hand.max_throw_range),
-            throw_windup_ticks=int(hand.throw_windup_ticks),
-            plant_ticks=int(c4.plant_ticks),
             c4_fuse_max_ticks=fuse_ticks_from_seconds(c4.fuse_max_seconds, tps),
             hand_fuse_max_ticks=fuse_ticks_from_seconds(hand.fuse_max_seconds,
                                                         tps),
@@ -737,7 +736,7 @@ def _cone_of(rows, ctx: ObsContext, u) -> int:
     if u.is_zombie:
         return ctx.ref_melee_arc_q
     if row is not None and int(row.range_tiles) > 0:
-        return quantize_scalar(math.radians(float(row.spread_deg)))
+        return unit_traits.shot_cone_q16(u, row)      # #29 U1: SPREAD
     if melee is not None:
         return int(melee.melee_arc_half_q)
     return ctx.ref_melee_arc_q
@@ -1192,7 +1191,7 @@ def _kit_values(u, weapon, melee, loadout, tick: int, ctx: ObsContext) -> tuple:
         reloading = float(rel)
         if rel:
             reload_left = ratio(int(u.reload_done_tick) - tick,
-                                weapon.reload_ticks)
+                                unit_traits.reload_ticks(u, weapon))
     counts = loadout.grenades if loadout is not None else {}
     grenades = []
     for k, row in enumerate(ctx.hand_rows):
@@ -1257,7 +1256,8 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out,
     winding = int(u.throw_release_tick) >= 0
     out[41] = float(winding)
     if winding:
-        out[42] = ratio(int(u.throw_release_tick) - tick, ctx.throw_windup_ticks)
+        out[42] = ratio(int(u.throw_release_tick) - tick,
+                        unit_traits.throw_windup_ticks(u, rows))
         out[43] = float(int(u.throw_kind))
     else:
         out[43] = -1.0
@@ -1266,7 +1266,8 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out,
     planting = int(u.plant_done_tick) >= 0
     out[46] = float(planting)
     if planting:
-        out[47] = ratio(int(u.plant_done_tick) - tick, ctx.plant_ticks)
+        out[47] = ratio(int(u.plant_done_tick) - tick,
+                        unit_traits.plant_ticks(u, rows))
         out[48] = ratio(int(u.plant_fuse_ticks), ctx.c4_fuse_max_ticks)
     out[49] = kit[7]
     out[50] = float(bool(getattr(u, "melee_id", "")))
@@ -1276,7 +1277,10 @@ def build_vector(know: TeamKnowledge, u, ctx: ObsContext, out,
     if weapon is not None:
         out[54] = squash(ratio(weapon.range_tiles, ctx.l_ref))
         out[55] = squash(ratio(weapon.rof_interval_ticks, ctx.ref_rof_ticks))
-        out[56] = squash(ratio(weapon.spread_deg, ctx.ref_spread_deg))
+        # #29 U1: the soldier's own cone (THE SPREAD accessor) over the
+        # reference kit's, both through the cone door
+        out[56] = squash(ratio(unit_traits.shot_cone_q16(u, weapon),
+                               ctx.ref_cone_q))
     out[57] = float(bool(getattr(u, "live_trigger", False)))
     # -- 1.3 the air where it stands: the near window's value at the centre
     # tile (the same plane builders, 3.2) and the heat row's own felt
@@ -1403,16 +1407,19 @@ def _unit_columns(e, it, ctx, tick, rows):
     st = combat.mag_status(it, w, tick) if w is not None else None
     if st is not None and st[2]:
         e[13] = 1.0
-        e[14] = ratio(int(it.reload_done_tick) - tick, w.reload_ticks)
+        e[14] = ratio(int(it.reload_done_tick) - tick,
+                      unit_traits.reload_ticks(it, w))
     if int(it.throw_release_tick) >= 0:
         e[15] = 1.0
-        e[16] = ratio(int(it.throw_release_tick) - tick, ctx.throw_windup_ticks)
+        e[16] = ratio(int(it.throw_release_tick) - tick,
+                      unit_traits.throw_windup_ticks(it, rows))
         e[17] = float(int(it.throw_kind))
     else:
         e[17] = -1.0
     if int(it.plant_done_tick) >= 0:
         e[18] = 1.0
-        e[19] = ratio(int(it.plant_done_tick) - tick, ctx.plant_ticks)
+        e[19] = ratio(int(it.plant_done_tick) - tick,
+                      unit_traits.plant_ticks(it, rows))
         e[20] = ratio(int(it.plant_fuse_ticks), ctx.c4_fuse_max_ticks)
     fl = composed_flags(it)
     e[21] = float(not fl.can_act)
@@ -1442,7 +1449,7 @@ class _Aimer:
         return _Aimer(
             range2=(int(my_weapon.range_tiles) ** 2 if my_weapon is not None
                     else -1),
-            spread_q=(quantize_scalar(math.radians(float(my_weapon.spread_deg)))
+            spread_q=(unit_traits.shot_cone_q16(u, my_weapon)   # #29 U1
                       if my_weapon is not None else 0),
             throw2=ctx.max_throw_range ** 2, frag2=ctx.frag_radius ** 2,
             a=world.unit_turn_accel_q16(u), w=world.unit_turn_rate_q16(u),

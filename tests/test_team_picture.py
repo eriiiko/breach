@@ -528,11 +528,12 @@ def test_bars_are_the_spawn_hp_and_the_turning_hp(tmp_path, monkeypatch):
     it exists (its spawn: an enemy first seen wounded reads its true ratio)
     and ``[zombie] hp`` once it has turned. Breaks if the bar is taken at
     the first sighting or never re-taken at the conversion."""
-    from simulation.stats import effective_vitality
+    from simulation import unit_traits
     sim, (me, foe) = _scene(tmp_path, "bars", [(0, 10, 20), (1, 40, 20)],
                             wall_x=30)
     pic = sim.team_picture
-    assert pic.bars[foe.id] == float(foe.current_hp) == effective_vitality(foe)
+    assert pic.bars[foe.id] == float(foe.current_hp) == (
+        unit_traits.max_hp_q(foe) / unit_traits.ONE)
     _hit_in_next_step(monkeypatch, sim, foe, 30, -1)   # wounded, unseen
     sim.step()
     assert foe.current_hp < pic.bars[foe.id]           # the bar stays

@@ -1,5 +1,11 @@
 # Canonical-systems survey — 2026-08-22
 
+> **Historical capture (note added 2026-11-15, #206).** Superseded as the
+> long form of the canonical systems: CLAUDE.md's index (one line per system)
+> and the region rule files in `.claude/rules/` are the live rules, and git
+> history plus the design docs hold the as-built. Kept for its parallel-
+> implementation flags and as the state of the tree on 2026-08-22; not updated.
+
 Two read-only survey agents walked the repo (sim/engine side + render/tools/
 gameplay side) to build the canonical-systems inventory for the rules-first
 CLAUDE.md restructure. This capture doc holds the FULL survey; CLAUDE.md

@@ -13,6 +13,19 @@ Properties held (each names the change that must break it):
   - the voice pool never exceeds its cap and gives way quietest-first;
   - the door refuses a bad row by name;
   - the shipped config passes its own door and every file it names exists.
+LOOPS (#202 S2):
+  - a vent sounds only within its cue's reach and at most `max_emitters`
+    vents sound, the loudest at the listener (breaks if the cap is dropped
+    or the choice is not by gain);
+  - a loop that keeps sounding is never restarted (LoopSet, no new start),
+    and one that leaves earshot is stopped with the ramp, not cut;
+  - paused, every loop goes to 0 and none is stopped or started, so the
+    same voices come back on resume;
+  - the whole fire is ONE voice per fire cue however many tiles burn, the
+    crackle grows with the burning area heard and saturates, the roar is
+    silent below its threshold and full above its top; nothing burning in
+    earshot = no fire voice;
+  - the fire pans to the side it burns on.
 """
 from __future__ import annotations
 
@@ -63,6 +76,11 @@ class World:
         return self.loud.get(p, 0.0)
 
 
+LOOPS = {"vent": "fan", "fire_small": "crackle", "fire_large": "roar",
+         "ramp_ms": 150.0, "fire_small_full_m2": 0.5, "fire_large_from_m2": 1.5,
+         "fire_large_full_m2": 10.0}
+
+
 def _cfg(**over):
     sound = {
         "enabled": True, "master": 0.8, "max_voices": 4, "pan_width_m": 12.0,
@@ -71,7 +89,13 @@ def _cfg(**over):
                      "choke": "emitter", "choke_fade_ms": 12.0},
             "boom": {"files": ["boom.wav"], "reach": "loudness"},
             "click": {"files": ["click.wav"], "reach": 5.0},
+            "fan": {"files": ["fan.wav"], "reach": 8.0, "loop": True, "max_emitters": 2},
+            "crackle": {"files": ["crackle.wav"], "reach": 15.0, "loop": True,
+                        "max_emitters": 1},
+            "roar": {"files": ["roar.wav"], "reach": 30.0, "loop": True,
+                     "max_emitters": 1},
         },
+        "loops": dict(LOOPS),
         "bindings": {"shot": {"carbine": "shot"}, "reload": {"carbine": "click"},
                      "explosion": {"frag": "boom"}},
     }
@@ -237,6 +261,16 @@ def test_the_model_is_repeatable():
     (lambda s: s["cues"]["shot"].update(reach="far"), "reach"),
     (lambda s: s["cues"]["shot"].update(choke="all"), "choke"),
     (lambda s: s["cues"]["shot"].update(loop=True), "loop"),
+    (lambda s: s["cues"]["fan"].update(reach="loudness"), "loop"),
+    (lambda s: s["cues"]["fan"].update(choke="emitter"), "choke"),
+    (lambda s: s["cues"]["click"].update(max_emitters=2), "max_emitters"),
+    (lambda s: s["cues"]["fan"].update(max_emitters=0), "max_emitters"),
+    (lambda s: s.pop("loops"), "loops"),
+    (lambda s: s["loops"].update(vent="click"), "not a loop cue"),
+    (lambda s: s["loops"].update(fire_small="nope"), "nope"),
+    (lambda s: s["loops"].pop("ramp_ms"), "ramp_ms"),
+    (lambda s: s["loops"].update(fire_large_full_m2=1.0), "fire_large_full_m2"),
+    (lambda s: s["bindings"]["reload"].update(carbine="fan"), "loop cue"),
     (lambda s: s["bindings"]["shot"].update(carbine="nope"), "nope"),
     (lambda s: s["bindings"].update(footstep={}), "footstep"),
 ])
@@ -265,3 +299,150 @@ def test_the_shipped_config_passes_its_door_against_the_real_tables():
                           weapon_ids=weapons, payload_ids=payloads)
     for f in s.files():
         assert am.sample_seconds(ROOT / "assets" / "sounds" / f) > 0.05
+
+
+# -- loops (#202 S2) -----------------------------------------------------------
+
+class LoopWorld(World):
+    def __init__(self, vents=(), fire=()):
+        super().__init__({})
+        self._vents = list(vents)            # (key, x, y) tiles
+        self._fire = list(fire)              # (x, y, level) tiles
+
+    def vents(self):
+        return self._vents
+
+    def fire_near(self, x, y, r):
+        f = [t for t in self._fire if abs(t[0] - x) <= r and abs(t[1] - y) <= r]
+        return ([t[0] for t in f], [t[1] for t in f], [t[2] for t in f])
+
+
+def _loop_model(**over):
+    s = am.sound_settings(_cfg(**over))
+    return am.SoundModel(s, {"fan.wav": 20.0, "crackle.wav": 20.0, "roar.wav": 10.0})
+
+
+def _kinds(cmds, kind):
+    return [c for c in cmds if isinstance(c, kind)]
+
+
+def _m(metres):
+    return metres / TILE_M
+
+
+def test_a_vent_sounds_only_within_its_reach():
+    m = _loop_model()
+    far = m.update_loops(LoopWorld([("v", _m(8.5), 0.0)]), (0.0, 0.0), False)
+    assert far == []
+    near = m.update_loops(LoopWorld([("v", _m(7.5), 0.0)]), (0.0, 0.0), False)
+    (st,) = _kinds(near, am.LoopStart)
+    assert st.file == "fan.wav" and 0.0 < st.gain < 1.0 and st.pan > 0.0
+
+
+def test_only_the_loudest_vents_sound_up_to_the_cap():
+    m = _loop_model()                                   # fan max_emitters = 2
+    w = LoopWorld([("a", _m(6.0), 0.0), ("b", _m(1.0), 0.0), ("c", _m(3.0), 0.0)])
+    cmds = m.update_loops(w, (0.0, 0.0), False)
+    assert len(_kinds(cmds, am.LoopStart)) == 2
+    assert {k[1] for k in m.loops} == {"b", "c"}
+    # "a" walks right up to the listener: it takes the place of the quieter "c"
+    w2 = LoopWorld([("a", _m(0.5), 0.0), ("b", _m(1.0), 0.0), ("c", _m(3.0), 0.0)])
+    voice_c = m.loops[("fan", "c")]
+    cmds = m.update_loops(w2, (0.0, 0.0), False)
+    stops = _kinds(cmds, am.Stop)
+    assert [c.voice for c in stops] == [voice_c] and stops[0].fade_ms == LOOPS["ramp_ms"]
+    assert {k[1] for k in m.loops} == {"a", "b"}
+
+
+def test_a_sounding_loop_is_never_restarted():
+    m = _loop_model()
+    w = LoopWorld([("v", _m(2.0), 0.0)], fire=[(_m(1.0), 0.0, 1.0)])
+    first = m.update_loops(w, (0.0, 0.0), False)
+    voices = {c.voice for c in _kinds(first, am.LoopStart)}
+    assert len(voices) == 2                        # the vent and the crackle
+    for _ in range(10):
+        cmds = m.update_loops(w, (0.0, 0.0), False)
+        assert not _kinds(cmds, am.LoopStart) and not _kinds(cmds, am.Stop)
+        assert {c.voice for c in _kinds(cmds, am.LoopSet)} == voices
+
+
+def test_two_vents_never_start_in_phase():
+    m = _loop_model()
+    cmds = m.update_loops(LoopWorld([("a", 1.0, 0.0), ("b", -1.0, 0.0)]), (0.0, 0.0), False)
+    a, b = _kinds(cmds, am.LoopStart)
+    assert a.offset_s != b.offset_s and 0.0 <= a.offset_s <= 20.0
+
+
+def test_paused_loops_fall_silent_and_come_back_as_the_same_voices():
+    m = _loop_model()
+    w = LoopWorld([("v", _m(2.0), 0.0)], fire=[(_m(1.0), 0.0, 1.0)])
+    m.update_loops(w, (0.0, 0.0), False)
+    before = dict(m.loops)
+    paused = m.update_loops(w, (0.0, 0.0), True)
+    assert paused and all(isinstance(c, am.LoopSet) and c.gain == 0.0 for c in paused)
+    resumed = m.update_loops(w, (0.0, 0.0), False)
+    assert m.loops == before and not _kinds(resumed, am.LoopStart)
+    assert all(c.gain > 0.0 for c in _kinds(resumed, am.LoopSet))
+
+
+def _fire_gains(m, tiles):
+    cmds = m.update_loops(LoopWorld(fire=tiles), (0.0, 0.0), False)
+    g = {"crackle.wav": 0.0, "roar.wav": 0.0}
+    for c in _kinds(cmds, am.LoopStart):
+        g[c.file] = c.gain
+    by_voice = {v: k[0] for k, v in m.loops.items()}
+    for c in _kinds(cmds, am.LoopSet):
+        g[by_voice[c.voice] + ".wav"] = c.gain
+    return g, cmds
+
+
+def test_the_whole_fire_is_one_voice_per_fire_cue():
+    m = _loop_model()
+    tiles = [(x * 0.5, y * 0.5, 1.0) for x in range(-20, 21) for y in range(-20, 21)]
+    _, cmds = _fire_gains(m, tiles)
+    assert sorted(c.file for c in _kinds(cmds, am.LoopStart)) == ["crackle.wav", "roar.wav"]
+    assert len(m.loops) == 2
+
+
+def test_the_fire_pair_follows_the_burning_area():
+    area_tile = TILE_M * TILE_M
+    crackle, roar = [], []
+    for n in (1, 2, 4, 8, 40, 400, 4000):          # tiles burning right at the listener
+        g, _ = _fire_gains(_loop_model(), [(0.0, 0.0, 1.0)] * n)
+        crackle.append(g["crackle.wav"])
+        roar.append(g["roar.wav"])
+        if n * area_tile < LOOPS["fire_large_from_m2"]:
+            assert g["roar.wav"] == 0.0
+        if n * area_tile >= LOOPS["fire_large_full_m2"]:
+            assert g["roar.wav"] == 1.0
+    assert all(b >= a for a, b in zip(crackle, crackle[1:])) and crackle[0] > 0.0
+    assert crackle[-1] == 1.0
+    assert all(b >= a for a, b in zip(roar, roar[1:]))
+    # a weaker fire (a lower fire level) is heard as less of one
+    weak, _ = _fire_gains(_loop_model(), [(0.0, 0.0, 0.25)] * 2)
+    full, _ = _fire_gains(_loop_model(), [(0.0, 0.0, 1.0)] * 2)
+    assert 0.0 < weak["crackle.wav"] < full["crackle.wav"]
+
+
+def test_a_fire_out_of_earshot_or_out_makes_no_sound():
+    m = _loop_model()
+    assert m.update_loops(LoopWorld(fire=[(_m(40.0), 0.0, 1.0)]), (0.0, 0.0), False) == []
+    m.update_loops(LoopWorld(fire=[(0.0, 0.0, 1.0)]), (0.0, 0.0), False)
+    assert len(m.loops) == 1                        # the crackle; one tile is no roar
+    cmds = m.update_loops(LoopWorld(), (0.0, 0.0), False)
+    assert len(_kinds(cmds, am.Stop)) == 1 and m.loops == {}
+
+
+def test_the_fire_pans_to_where_it_burns():
+    m = _loop_model()
+    cmds = m.update_loops(LoopWorld(fire=[(-_m(3.0), 0.0, 1.0)] * 4), (0.0, 0.0), False)
+    assert _kinds(cmds, am.LoopStart)[0].pan < 0.0
+    m = _loop_model()
+    cmds = m.update_loops(LoopWorld(fire=[(_m(3.0), 0.0, 1.0)] * 4), (0.0, 0.0), False)
+    assert _kinds(cmds, am.LoopStart)[0].pan > 0.0
+
+
+def test_a_silent_slot_plays_nothing():
+    m = _loop_model(loops=dict(LOOPS, vent="", fire_small="", fire_large=""))
+    w = LoopWorld([("v", 0.0, 0.0)], fire=[(0.0, 0.0, 1.0)] * 100)
+    assert m.update_loops(w, (0.0, 0.0), False) == []

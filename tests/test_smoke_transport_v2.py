@@ -446,8 +446,10 @@ def test_v8_thin_poison_decays_to_zero_in_bounded_time():
 def test_v9_poison_dose_and_teargas_blind_are_defined_at_density_two():
     """PROPERTY (V9): conserved trace can exceed 1 in a compressed pocket;
     the gameplay readers stay well defined there — the poison dose is
-    linear (density 2 doses twice density 1, to the HP grid) and teargas
-    BLINDED fires at 2 as at any density above its threshold.
+    linear (density 2 doses twice density 1, to within the one rounding;
+    since #29 PX the row gives the poison law a DOSE, ``poison_x0``, not
+    damage) and teargas BLINDED fires at 2 as at any density above its
+    threshold.
 
     BREAKS IF: a reader starts assuming density <= 1 (a clamp, a lookup
     table indexed by density, a saturating curve).
@@ -468,11 +470,11 @@ def test_v9_poison_dose_and_teargas_blind_are_defined_at_density_two():
             g.gas[POISON][ty, tx] = q_trace
             g.gas[TEARGAS][ty, tx] = q_trace
         apply_poison_dose([u], g, tps, events=[])
-        dose[density] = 1000.0 - u.current_hp
+        dose[density] = u.poison_x0
         apply_teargas_blind([u], g)
         assert any(s.kind == BLINDED for s in u.statuses), density
-    assert dose[2.0] == unit_fixed.quantize_hp_delta(2.0 * dose[1.0])
-    assert dose[2.0] > dose[1.0] > 0.0
+    assert abs(dose[2.0] - 2 * dose[1.0]) <= 1
+    assert dose[2.0] > dose[1.0] > 0
 
 
 # ---------------------------------------------------------------------------
