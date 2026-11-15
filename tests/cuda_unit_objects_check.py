@@ -563,8 +563,12 @@ def _synthetic(rng, sim, n, tick):
             p.target_x_q, p.target_y_q = p.start_x_q, p.start_y_q
         elif case == 2:                                 # one below the epsilon
             p.target_x_q, p.target_y_q = p.start_x_q + eps - 1, p.start_y_q
-        elif case == 3:                                 # at the epsilon
+        elif case == 3:                                 # at the epsilon, at release
+            # (elapsed 0: only the epsilon test lands it; one tick later the
+            # arrival test would too)
             p.target_x_q, p.target_y_q = p.start_x_q + eps, p.start_y_q
+            p.thrown_tick = tick
+            p.fuse_ticks = 5
         elif case == 4:                                 # arrives exactly now
             # a 3-4-5 flight of length 5k with 5k x tps == elapsed x speed
             # (k integral: the speed is a multiple of 5 x tps for 30 tiles/s

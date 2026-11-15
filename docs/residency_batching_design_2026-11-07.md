@@ -1495,6 +1495,64 @@ kit and slot 9d are P7.0a's. No decision moved. One line each:
   ticks: identity, round trip, the tick's append, the compaction, env i alone;
   an eleven-branch census). Every gate broken once (the patch's report).
 
+**As built (P7b, 2026-11-15).** The cut table's P7b row; no decision moved.
+One line each:
+- THE GRENADE TABLE is `unit_schema.GRENADE_TABLE` (capacity 64, storage):
+  `proj_type, owner_id, start_x_q, start_y_q, target_x_q, target_y_q,
+  pos_x_q, pos_y_q, fuse_seconds` (an exact Q16, refused otherwise),
+  `fuse_ticks` (`NO_TIMER` for the WEGO order path's None; a real fuse equal
+  to the sentinel refused), `thrown_tick, ammo_name` (the ammo table's row),
+  `travel_speed_q`, and the live column `detonated` ENCODED (1 while it
+  flies). `build` is the `Projectile` constructor plus the position and the
+  flag, refusing a row whose speed is not its round's.
+- SIX TABLE ROWS (T 756): `clock_tps` (CFG, as `update_position` reads it),
+  `grenade_flight_eps_q`, `order_grenade`, `hand_grenade_ammo_row` and
+  `hand_grenade_speed_q` per throw kind, `ammo_payload_row` per ammo row
+  (`payload_for_ammo`'s index, -1 none).
+- THE KERNELS, `cpp/src/cuda_unit_objects.cu`, faces in `unit_kernels`:
+  `table_appends(store, requests, grenades, charges)` (after `verbs`: one
+  thread per env walks the request list; a THROW appends the
+  `_release_grenade` Projectile, an ACCEPTED plant the `charges.place`
+  charge); `grenades(store, table, effects, ticks)` (the flight one thread per
+  row; the fuse-outs one thread per env in row order, each lob's detonation a
+  PAYLOAD record `(target tile, ammo_payload_row[ammo], owner, the start tile
+  as the approach, has_approach 1, kind grenade)`); `charges_tick(store,
+  table, effects, ticks)` (serial in row order, PAYLOAD `(y, x, payload,
+  owner, approach or -1, has_approach, kind door_explosive)`, then the
+  compaction); `prune_grenades(table)` (slot 10: the compaction). Counts per
+  env: changed, faults, refused (a WEGO grenade), dropped (effect records).
+  The device door `refuse_wego(sims)` refuses a ruleset that `drives_units`
+  (`detonate_owned`) and a grenade with no integer fuse, by name.
+- CHOICES where this section was silent: the throw / plant records STAY in
+  the request list as the transport (the plant's capacity pass and the
+  shadow read it) and the append is a per-env pass after it, not a second
+  staging; the fuse-outs are flagged by the wide kernel in a scratch and
+  recorded by a serial pass (the effect list's row staging is unit rows);
+  the charge kernel compacts inside the same call (`charges.tick`'s prune).
+- THE HARNESS: `LISTS` rows `grenades` / `charges` (an object table over the
+  host list: staged, compared, LANDED back in place by the chained form,
+  never consumed) and `payloads` (`execute_payload` at its two P7b call sites
+  through a tap; `ListDef.mark` empties the log at the slot's entry; the
+  chained form replays each device record through the host's call, which
+  must reproduce it); output lists kept PER NAME (one slot may output
+  several; until now the last overwrote the others); `DeviceSlot(skip_ok=
+  True)` for a slot the conductor gates off (`charges.tick` runs only while a
+  charge lies).
+- WHAT P7c.1 INHERITS: the PAYLOAD record of both call sites as above; the
+  host-only writes the shadow saw inside slot 2 and 9e(d') (see the patch
+  report), every one the payload law's; the blast's own events (UnitHit /
+  UnitKilled, the flash's blindings) in those slots, which no ring compares
+  yet; the noise, claims and blast log of each call.
+- THE GATES (`tests/cuda_unit_objects_check.py`, wrapper
+  `tests/test_cuda_unit_objects.py`; CPU `tests/test_grenade_table.py`):
+  TABLES; FLIGHT (synthetic full tables against `_update_grenades`, its
+  `execute_payload` recorded); SCENE (the grenade scene: every kind, six
+  fuse-outs of different kinds on one tick, a release on a fuse-out tick, a
+  zero flight, a 0-tick fuse, two charges firing on one tick, a full charge
+  table refusing a plant; 1b + appends, 2, 9e(d'), 10 shadowed; a census);
+  BATCH N = 2 / 8; PADDING; OVERFLOW (each table and the effect list);
+  REFUSE; CHAINED (1b + 1b' + 1c + 2, and 9e(d')); SHIP 500 ticks.
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
