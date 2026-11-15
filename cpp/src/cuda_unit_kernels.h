@@ -273,4 +273,57 @@ void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,
                        UnitRecordList& effects, const int64_t* ticks,
                        const ObjectSlotCounts& out);
 
+// ---- #29 P7.0a: slot 9d (cuda_unit_ignition.cu), the kit's probes ----------------
+//   cuda_unit_ignition.cu     slot 9d   combat.apply_temperature_ignition
+//   cuda_unit_kit_probe.cu    TEST-ONLY: the device draws (cuda_unit_draws.cuh),
+//                             sight (cuda_unit_sight.cuh), the falloffs
+//                             (fixed_point.h) on synthetic inputs
+//
+// Slot 9d: a per-cell kernel born (N, h, w); the planes are device pointers to
+// (N, ...) arrays in the GameMap fields' dtypes (see the TU); fire and armed
+// written in place. out.coverage = cells changed; out.faults = cells whose
+// material or a gas index left the tables.
+struct IgnitionPlanes {
+    std::uintptr_t temperature = 0;   // int32
+    std::uintptr_t material = 0;      // int8
+    std::uintptr_t flammable = 0;     // bool
+    std::uintptr_t wall_hp = 0;       // int32
+    std::uintptr_t solid = 0;         // bool
+    std::uintptr_t is_vacuum = 0;     // bool
+    std::uintptr_t gas = 0;           // (N, G, h, w) int32
+    std::uintptr_t fire = 0;          // int32, written
+    std::uintptr_t armed = 0;         // bool (ignition_armed), written
+    int n_gases = 0;
+    int h = 0;
+    int w = 0;
+};
+void unit_ignition(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                   const IgnitionPlanes& planes, const UnitKernelCounts& out);
+
+// TEST-ONLY draws: `keys` (n_env, 3) int64 host (unit_draws.draw_key rows),
+// `args` (n_env, n_rows, UNIT_KIT_DRAW_ARGS) int64 host (salt, ident, index,
+// cone_q, p_q, salt2); thread (e, r) -> out (n_env, n_rows, UNIT_KIT_DRAW_OUT)
+// int64 host: [0] draw_at(salt, ident, index), [1] cone_offset_q16 of it,
+// [2] roll_q16 of it, [3] bad, [4..9] the .next words of site A = (salt,
+// ident) and site B = (salt2, ident) interleaved A0 B0 A1 B1 A2 B2.
+constexpr int UNIT_KIT_DRAW_ARGS = 6;
+constexpr int UNIT_KIT_DRAW_OUT = 10;
+void unit_kit_draws_probe(const int64_t* keys, int n_env, const int64_t* args, int n_rows,
+                          int64_t* out);
+
+// TEST-ONLY sight: `solid` / `screen` device pointers to (n_env, h, w) bool
+// planes; `pairs` (n_env, n_rows, 4) int64 host (fy1, fx1, fy2, fx2) -> out
+// (n_env, n_rows, 3) int64 host: [0] has_los (sight), [1] has_los(physical),
+// [2] bad.
+void unit_kit_sight_probe(std::uintptr_t solid, std::uintptr_t screen, int n_env, int h, int w,
+                          const int64_t* pairs, int n_rows, int64_t* out);
+
+// TEST-ONLY falloffs: `args` (n, 3) int64 host (v, d2, r2) -> out (n, 2)
+// int64 host: falloff_floor_q, falloff_round_q (FALLOFF_REFUSED outside the
+// proved range).
+void unit_kit_falloff_probe(const int64_t* args, int n, int64_t* out);
+
+// The compiled draws vocabulary's fingerprint (unit_draws_layout.h).
+const char* unit_draws_fingerprint();
+
 }  // namespace breach_cuda

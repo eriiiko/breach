@@ -1303,10 +1303,12 @@ class ShadowLockstep:
 # CHAINED
 # ---------------------------------------------------------------------------
 def _is_for(sim, args) -> bool:
-    """Whether a slot callable's arguments name ``sim`` (the sim itself, or
-    its unit list)."""
+    """Whether a slot callable's arguments name ``sim`` (the sim itself, its
+    unit list, or -- #29 P7.0a, slot 9d's ``apply_temperature_ignition(gmap,
+    ...)`` -- its GameMap)."""
     for a in args:
-        if a is sim or a is getattr(sim, "units", None):
+        if a is sim or a is getattr(sim, "units", None) \
+                or a is getattr(sim, "gmap", None):
             return True
     return False
 

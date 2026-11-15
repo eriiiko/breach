@@ -7,6 +7,7 @@ paths:
   - "src/simulation/unit_events.py"
   - "src/simulation/unit_requests.py"
   - "src/simulation/unit_kernels.py"
+  - "src/simulation/unit_draws.py"
   - "tests/cuda_unit_*.py"
   - "tools/gen_unit_layout.py"
   - "src/simulation/applier.py"
@@ -55,6 +56,17 @@ system here is Class T: NOT part of the played tick until the `device` backend
 - THE DEVICE DAMAGE PIPELINE `cpp/src/cuda_unit_damage.cuh`: `apply_packet` is `damage.apply_packet` integer for integer, on any row it is handed, its events through the sink it is given, all or nothing. Every slot that hurts calls it: never a second packet law in a slot TU. Its `felt_temperature_q` is the heat row's and, from P8b, the observation's one read.
 - The exposure landing is a MODE of that one `apply_packet` (an `ExposureLanding` handed in, landed by `land_exposure` at the walk's end), chosen by the CALLER per (stage, kind): a HIT in a stage that lands (`applier.STAGES`), never a packet's own choice and never a second packet law. Every other caller keeps the immediate form; a blast packet inside a resolve is immediate (the reference's `exchange.apply_blast_damage`).
 - `impulse_add` / `angular_q` are THE device `unit_impulse.add` (the shove and the applier's PUSH both call them); `can_melee`, `melee_adjacent`, `melee_arc_target` are the melee verb's, also P8b's mask kernel's.
+- The falloffs (`falloff_floor_q` / `falloff_round_q`) are `FP_HD` kit twins in `cpp/src/fixed_point.h` (the Fixed-point kits' rule): a deposit weight, a blast's damage or its wall damage on the device calls them, never a re-derived root; a -1 is a FAULT. The kit's probes are `cpp/src/cuda_unit_kit_probe.cu` (draws, sight, falloffs), gated by `tests/cuda_unit_kit_check.py`.
+
+## Device draws
+- EVERY random number a device kernel draws is `cpp/src/cuda_unit_draws.cuh` over the vendored `philox32.h`: `draw_at` is `MatchDraws.at`, `draw_next` on a `DrawSite` is `.next`, `cone_offset_q16` / `roll_q16` the maps. Never a second block layout, never a curand stream, never a salt typed by hand: a salt is the generated `unit_draws::SALT_*`, so a new `Salt` member means `tools/gen_unit_layout.py --write`, commit, rebuild.
+- The key and the tick reach a kernel as ONE per-env row (`unit_draws.draw_key`: `sim.draws.key` and `sim.draws.tick` wrapped to 32 bits, the WEGO base included), staged as a kernel input per env: never a kernel argument per draw, never `sim.tick` read alone.
+- `.next`'s count is LOCAL TO THE ROW'S THREAD, exact only while every `.next` user of one salt sits in ONE kernel per tick: `unit_draws.NEXT_SITES` records the one `src/` site of each such salt and `tests/test_unit_draws.py` fails on a second. A second site needs the count moved off the thread (a design change), never a second counter.
+- An operand outside the Python's domain (an id outside [-1, 2^32 - 1), an index outside [0, 2^32), a cone past `CONE_MAX`) sets `bad`: the caller FAULTS.
+
+## Device sight
+- EVERY line a device kernel asks is `unit_sight::has_los` (`cpp/src/cuda_unit_sight.cuh`): the sight form over `solid` and `sight_screen`, `physical` (a null screen) over `solid` alone. It is `GameMap.has_los` step for step: an arithmetic change lands in `has_los` first (the Sight rule), then here and in `sight_lines.cpp`, in one patch.
+- `sight_screen` is a slot INPUT plane until the device tick makes it resident (`applier.non_resident_planes()`); the bulk form (`rays_clear`, the observation's) stays `sight_lines.cpp`'s until P8b, never a second device walk.
 
 ## Event ring
 - What a device kernel emits is a RECORD of exactly `field_ab_harness._event_record`'s fields plus the render-only direction (`event_of(record_of(ev))` is the host event bit for bit), in a per-env ring per tick, in the reference's EMISSION ORDER: a per-row kernel stages per row and ONE gather per env appends in row (= id) order, never the thread order; a serial per-env producer appends directly (`env_sink`).

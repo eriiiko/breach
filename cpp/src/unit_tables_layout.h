@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "37eeb6170181e9caa3b181b70027eaeebe72d39e32fac31f86b1b890412b2589";
-constexpr int UNIT_TABLES_W = 756;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "e4ad88a9430e1c330f4ca541fe8413859e5c32cc066c164ae4e07ae2c12a6e22";
+constexpr int UNIT_TABLES_W = 772;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -250,6 +250,18 @@ constexpr int UNIT_TAB_HAND_GRENADE_SPEED_Q = 725;
 constexpr int UNIT_TAB_HAND_GRENADE_SPEED_Q_W = 6;
 constexpr int UNIT_TAB_AMMO_PAYLOAD_ROW = 731;
 constexpr int UNIT_TAB_AMMO_PAYLOAD_ROW_W = 25;
+constexpr int UNIT_TAB_IGN_TEMP_Q = 756;
+constexpr int UNIT_TAB_IGN_TEMP_Q_W = 11;
+constexpr int UNIT_TAB_IGN_X_EXT_Q = 767;
+constexpr int UNIT_TAB_IGN_X_EXT_Q_W = 1;
+constexpr int UNIT_TAB_IGN_SEED_Q = 768;
+constexpr int UNIT_TAB_IGN_SEED_Q_W = 1;
+constexpr int UNIT_TAB_IGN_X_N_FLOOR_Q = 769;
+constexpr int UNIT_TAB_IGN_X_N_FLOOR_Q_W = 1;
+constexpr int UNIT_TAB_IGN_GAS_O2 = 770;
+constexpr int UNIT_TAB_IGN_GAS_O2_W = 1;
+constexpr int UNIT_TAB_IGN_GAS_N2 = 771;
+constexpr int UNIT_TAB_IGN_GAS_N2_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

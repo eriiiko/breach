@@ -160,6 +160,11 @@ if(BREACH_CUDA)
         # producer; the list and its resolve stage are cuda_applier.cu's);
         # Class T, pure integer, on the same target-wide CUDA determinism floor.
         src/cuda_unit_melee.cu      # slot 4a
+        # #29 P7.0a: slot 9d (ignition from temperature, a per-cell kernel) and
+        # the kit's TEST-ONLY probe (the device draws, sight, the falloffs);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_ignition.cu   # slot 9d
+        src/cuda_unit_kit_probe.cu  # TEST-ONLY: draws, sight, falloffs on synthetic inputs
         # #29 P7.0b: the device object tables (the record list's buffers with an
         # upload, an ordered append and a stable compaction); Class T, pure
         # integer, on the same target-wide CUDA determinism floor.
