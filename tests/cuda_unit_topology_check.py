@@ -254,16 +254,16 @@ def _closure(tag, pre: dict, post: dict, books: dict, e: int = 0):
     seam = int(books["ge_retire"][e] + books["ge_mint"][e] + books["ge_destroy_seed"][e])
     ok = True
     if de != seam:
-        fail(f"{tag}: Δ Σ_accountable gas_energy {de} != the seam's channels {seam}")
+        fail(f"{tag}: d sum_accountable gas_energy {de} != the seam's channels {seam}")
         ok = False
     dn = n_sum(post) - n_sum(pre)
     if dn != int(books["n_destruction_seed"][e]):
-        fail(f"{tag}: Δ Σ bulk N {dn} != n_destruction_seed "
+        fail(f"{tag}: d sum bulk N {dn} != n_destruction_seed "
              f"{int(books['n_destruction_seed'][e])}")
         ok = False
     ds = s_sum(post) - s_sum(pre)
     if ds != int(books["solid_destroy_wall"][e]):
-        fail(f"{tag}: Δ Σ solid books {ds} != solid_destroy_wall "
+        fail(f"{tag}: d sum solid books {ds} != solid_destroy_wall "
              f"{int(books['solid_destroy_wall'][e])}")
         ok = False
     return ok
