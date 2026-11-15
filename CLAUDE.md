@@ -154,6 +154,7 @@ amends the rule file, never this line's length.
 | Request list | `src/simulation/unit_requests.py` + `UnitRecordList` | What a device unit kernel does that is not a row write, as records in the reference's order |
 | Per-env serial applier | `src/simulation/applier.py` + generated `cpp/src/applier_layout.h` + `cpp/src/cuda_applier.{h,cu}` | THE device form of every order-dependent law that writes the map: one block per env walking its effect records in the reference's order; never a second walker |
 | Object tables | `src/simulation/object_tables.py` + `unit_schema.OBJECT_TABLES` + generated `cpp/src/object_tables_layout.h` + `cpp/src/cuda_object_table.{h,cu}` | What flies and what is placed (charges first; grenades, rounds, blast sources, entity classes next) as device rows: a new table is a schema there, never a second table mechanism |
+| Grenade and charge slots | `unit_schema.GRENADE_TABLE` + `cpp/src/cuda_unit_objects.cu` + `unit_kernels.table_appends` / `grenades` / `charges_tick` / `prune_grenades` | THE device form of the grenades in flight and the planted charges: slot 1b's throws and plants become table rows, slot 2 and `charges.tick` record every detonation as a PAYLOAD effect; never a second table or detonation path |
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
 
 ### Determinism gates
