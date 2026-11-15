@@ -170,3 +170,24 @@ file, what was dropped and where it lives instead.
 - `docs/canonical_systems_survey_2026-08-22.md` becomes a dated historical
   capture: a header note says it is superseded by the index + `.claude/rules/`
   and CLAUDE.md stops calling it the long form.
+
+## As built (2026-11-15, after Erik's yes)
+
+- 22 rule files, not 19: `combat.md` came out at 13.5 KB and `units.md` at
+  12 KB, so they split by file region into `combat.md`, `hand-verbs.md`,
+  `sight.md` and `units.md`, `horde.md` (touching `vision.py` now loads 2.5 KB,
+  not 13.5).
+- `CLAUDE.md` 269 685 → ~34 700 bytes (index 26 KB for 165 lines; the region
+  table 2.6 KB). Above the 30 KB aim: the index lines average 160 bytes, and
+  cutting further would drop "who must use it" clauses.
+- `.claude/rules/` ~120 KB in all, 1.5–10 KB per file. The rows' 250 KB became
+  26 KB of index + 107 KB of rule sections; 28 rows need no section.
+- The ledger: `docs/claude_md_restructure_ledger_2026-11-15.md`.
+- Tests: `tests/test_claude_rules_paths.py` (every named path exists; every
+  `paths:` glob matches a tracked file; every rule section is an index row;
+  the region table equals the rule files; each broken once by hand and seen
+  red), `tests/test_path_rules_hook.py` (perfusio's, HOOK path adjusted).
+- Probes: the hook's pipe test (injects once, then silent); `claude -p`
+  rooted in the main checkout with the hook reading a worktree file
+  (PRESENT, quoted the Unit store bullet); `claude -p` rooted in the worktree
+  (native injection, quoted `horde.md`).
