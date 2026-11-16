@@ -113,7 +113,7 @@ ONE = 65536
 PI_Q16 = 205887
 SPACE = level_loader.SPACE_CODE
 EAST, WEST, SOUTH, NORTH = 0, PI_Q16, -PI_Q16 // 2, PI_Q16 // 2
-PROBE_TRIALS = int(os.environ.get("UNIT_PAYLOADS_PROBE_TRIALS", "60"))
+PROBE_TRIALS = int(os.environ.get("UNIT_PAYLOADS_PROBE_TRIALS", "150"))   # #29 P7c.2: 36 rows
 SCENE_TICKS = int(os.environ.get("UNIT_PAYLOADS_SCENE_TICKS", "90"))
 BATCH_TICKS = int(os.environ.get("UNIT_PAYLOADS_BATCH_TICKS", "60"))
 BATCH_NS = [int(x) for x in os.environ.get("UNIT_PAYLOADS_BATCH_NS", "2,8").split(",")]
@@ -206,6 +206,7 @@ VARIANTS = {
     # outlives its tick by many ticks, a frag that blinds, a bulk dump that
     # overruns its rails
     "payloads.quad_src_tile": dict(expansion_m3=4000.0),
+    "payloads.quad_src_r5": dict(expansion_m3=1.0e6, expansion_ticks=3),
     "payloads.div_40": dict(expansion_ticks=40),
     "payloads.div_80": dict(expansion_ticks=7, expansion_radius=5.5),
     "payloads.frag_standard": dict(blind_radius=5.0, blind_radius_q=5 * ONE,
@@ -1032,6 +1033,13 @@ def _payload_call(sim, rng, names, k):
             d = [(-1, 0), (1, 0), (0, -1), (0, 1), (1, 1), (-1, 1)][int(rng.integers(6))]
             k = int(rng.choice([1, 1, 3]))
             appr = None if rng.random() < 0.2 else (fy + k * d[0], fx + k * d[1])
+    if pl.explosive and not pl.strength > 0:
+        # a REFERENCE FINDING (#29 P7c.2, not changed): blast_air.disc_tiles
+        # raises on a centre more than its radius above or left of the grid
+        # (its ogrid empties while the solid slice does not); such a centre is
+        # kept within the reach the reference serves
+        rr = int(np.ceil(max(float(max(pl.radius, pl.heat_radius)), 1.0)))
+        fy, fx = max(fy, -rr), max(fx, -rr)
     args = (sim.gmap, sim.edit_queue, sim.units, fy, fx, pl, sim.draws)
     return ("payload", args, dict(events=sim.tick_events, kind=kind, owner_id=owner,
                                   approach=appr))
@@ -1841,8 +1849,8 @@ def part_overflow():
     share_tables(sims)
     with Rows(VARIANTS):
         names = ["plasma_splash_large", "studio_smoke", "incendiary_splash", "div_40",
-                 "frag_standard"]
-        recs = [_recs_for(sims[0], names, rng, 5)]
+                 "frag_standard", "div_80", "div_40_puff"]
+        recs = [_recs_for(sims[0], names, rng, 7)]
         full = _device_walk(sims, recs, applier.STAGE_DETONATE)
         sizes = dict(edits=len(full["door"].rows()[0][0]), tiles=len(full["door"].rows()[0][1]),
                      claims=len(full["claims"].records()[0]),
@@ -2209,9 +2217,9 @@ def _walk_census(c, sim, q, ref):
         c["walk: a centre off the grid"] += 1
     if inside and g.is_vacuum[fy, fx]:
         c["walk: a centre in vacuum"] += 1
-    if cells and any(cy in (0, h - 1) or cx in (0, w - 1)
-                     for cy, cx in (divmod(t, w) for t in cells)):
-        c["walk: reaches the map edge"] += 1
+    Rb = max(1, int(np.ceil(np.sqrt(r2))))
+    if cells and (fy - Rb < 0 or fx - Rb < 0 or fy + Rb > h - 1 or fx + Rb > w - 1):
+        c["walk: its box clipped by the map edge"] += 1
     depth = bx.reach_depth(mask, fy, fx, r2, appr)
     if any(d > abs(y - fy) + abs(x - fx) + 2 for (y, x), d in depth.items()):
         c["walk: the long way round (a gap)"] += 1
@@ -2237,7 +2245,8 @@ def _walk_census(c, sim, q, ref):
 WALK_BRANCHES = (
     "walk: the open centre seeds", "walk: no seed", "walk: every open neighbour seeds",
     "walk: the approach tile seeds", "walk: the neighbour nearest the approach seeds",
-    "walk: a centre off the grid", "walk: a centre in vacuum", "walk: reaches the map edge",
+    "walk: a centre off the grid", "walk: a centre in vacuum",
+    "walk: its box clipped by the map edge",
     "walk: the long way round (a gap)", "walk: a wall stops it",
     "walk: through a grille (open)",
     "air: every tile 1", "air: a scale plane", "air: heat below 1",
