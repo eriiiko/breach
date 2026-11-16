@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "cab203a352554031996fd14863487151b08bbdc49947b50b469b45b80fc8823a";
-constexpr int UNIT_TABLES_W = 1391;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "0f67db1ed159cdf535866bd3a795af5bdc8f3286ea67dc8c7de20bf8aefee70e";
+constexpr int UNIT_TABLES_W = 1414;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -346,6 +346,16 @@ constexpr int UNIT_TAB_ARC_BEHIND_HALF_SPECIES_Q = 1379;
 constexpr int UNIT_TAB_ARC_BEHIND_HALF_SPECIES_Q_W = 1;
 constexpr int UNIT_TAB_MAT_COVER_EXPOSURE_Q = 1380;
 constexpr int UNIT_TAB_MAT_COVER_EXPOSURE_Q_W = 11;
+constexpr int UNIT_TAB_DOOR_MAT_CLOSED = 1391;
+constexpr int UNIT_TAB_DOOR_MAT_CLOSED_W = 1;
+constexpr int UNIT_TAB_SEAL_MAT_OK = 1392;
+constexpr int UNIT_TAB_SEAL_MAT_OK_W = 11;
+constexpr int UNIT_TAB_GAS_TRACE = 1403;
+constexpr int UNIT_TAB_GAS_TRACE_W = 7;
+constexpr int UNIT_TAB_INJECT_O2_FRAC_Q = 1410;
+constexpr int UNIT_TAB_INJECT_O2_FRAC_Q_W = 1;
+constexpr int UNIT_TAB_DOOR_STATES = 1411;
+constexpr int UNIT_TAB_DOOR_STATES_W = 3;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

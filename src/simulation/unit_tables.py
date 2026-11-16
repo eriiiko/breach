@@ -1192,6 +1192,61 @@ def wall_q(v) -> int:
 
 ROWS = ROWS + _SHOOT_ROWS
 
+
+# == #29 P6b.1: the doors (door_system.sweep_doors), seal / unseal /
+# can_seal_tiles and the gas-N primitives in the Device topology seam --
+# each read from the sim's own map (its materials and gas tables) or the
+# constant the reference reads ==================================================
+def _n_gases():
+    from simulation.gases import N_GASES
+    return int(N_GASES)
+
+
+def _seal_mat_ok(tbl, i):
+    # _seal_blockers' check 3: refused when float(permeability[mid]) > 0.0
+    # (on the TABLE's own value, not the float32 plane's: the solid predicate
+    # `mat_solid` is the plane's); 1 = a material seal_tiles accepts
+    return int(not float(tbl.permeability[i]) > 0.0)
+
+
+def _gas_trace(src):
+    # GameMap._trace_slice: a slice that is not conservative (trace currency,
+    # the counted saturation)
+    cons = src.sim.gmap.gases.conservative
+    return tuple(int(not bool(cons[g])) for g in range(_n_gases()))
+
+
+def _inject_o2_frac_q(src):
+    from simulation import gas_fixed
+    from simulation.gamemap import GameMap
+    return int(gas_fixed.quantize_q16_scalar(GameMap.INJECT_O2_FRACTION))
+
+
+def _door_states(src):
+    from simulation.entities import door as door_schema
+    return (int(door_schema.DOOR_CLOSED), int(door_schema.DOOR_OPEN),
+            int(door_schema.DOOR_DESTROYED))
+
+
+_DOOR_ROWS: tuple = (
+    TableRow("door_mat_closed", 1, _mat_id("MAT_DOOR_CLOSED"), 0, 127,
+             "materials.MAT_DOOR_CLOSED: a closed door's material (the sweep's "
+             "external-destruction test and the seal's material)"),
+    TableRow("seal_mat_ok", _n_materials, _per_mat(_seal_mat_ok), 0, 1,
+             "per material: 1 = not (float(permeability) > 0.0), the material "
+             "seal_tiles accepts (its float compare made once, here)"),
+    TableRow("gas_trace", _n_gases, _gas_trace, 0, 1,
+             "per gas slice: 1 = a trace slice (not conservative: the counted "
+             "saturation; no energy)"),
+    TableRow("inject_o2_frac_q", 1, _inject_o2_frac_q, 0, ONE,
+             "quantize_q16_scalar(GameMap.INJECT_O2_FRACTION): inject_gas_n's "
+             "fixed O2 share"),
+    TableRow("door_states", 3, _door_states, 0, 2,
+             "entities.door's DOOR_CLOSED, DOOR_OPEN, DOOR_DESTROYED (the door "
+             "table's state codes)"),
+)
+ROWS = ROWS + _DOOR_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 

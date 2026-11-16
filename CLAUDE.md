@@ -73,7 +73,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam |
+| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
 | `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
@@ -163,6 +163,7 @@ amends the rule file, never this line's length.
 | Spray slot | `cpp/src/cuda_unit_sprays.cu` + `cpp/src/cuda_unit_spray.cuh` + `unit_kernels.sprays` | THE device form of slot 4b: the cone over the physical device sight into the cell buffer, one SPRAY_CELLS effect per sprayer; never a second cone walk |
 | Device edit door | `src/simulation/edit_door.py` + `cpp/src/cuda_edit_door.{h,cuh,cu}` | THE way a device producer hands a FieldEdit (the queue's EDIT / TILE rows through device forms of the door and the region walk); never a producer's own row writer |
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
+| Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 
 ### Determinism gates
 

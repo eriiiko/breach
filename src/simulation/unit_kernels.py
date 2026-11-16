@@ -1182,3 +1182,172 @@ def spray_cone_probe(bp, solid, args, box_max: int, max_out: int):
 
 __all__ += ["WalkLists", "SpraySlotRefused", "SPRAY_FIELDS", "spray_box_max",
             "sprays", "spray_cone_probe"]
+# #29 P6b.1: THE DOORS -- the door table (unit_schema.DOOR_TABLE, the first
+# entity table) and its tile side table, slot 1b's USE as a table write, slot
+# 9e(d)'s sweep as the applier's DOORS stage, and the seam's TEST-ONLY probe
+# (seal / unseal / can_seal, the gas-N primitives, _aperture_blocked)
+# ---------------------------------------------------------------------------
+class DoorTableMismatch(RuntimeError):
+    """Door rows that are not the sim's doors (another count, ordinal or span)."""
+
+
+def _door_rows(recs, width) -> np.ndarray:
+    return np.asarray(recs, dtype=np.int64).reshape(-1, width)
+
+
+def doors_of(sim) -> np.ndarray:
+    """THE record function of the door table: ``sim._doors`` (ordinal order)
+    as ``(D, W)`` int64 rows (``object_tables.records``)."""
+    from simulation import object_tables, unit_schema
+    t = unit_schema.DOOR_TABLE
+    return _door_rows(object_tables.records(t, getattr(sim, "_doors", ()) or ()),
+                      object_tables.table_layout(t).width)
+
+
+def door_tiles_of(sim) -> np.ndarray:
+    """THE record function of the door tile side table: every door's span
+    tiles with their hp, in door order, each row-major, as ``(S, W)`` int64."""
+    from simulation import object_tables, unit_schema
+    return _door_rows(object_tables.side_records(
+        unit_schema.DOOR_TABLE, getattr(sim, "_doors", ()) or (), "tiles"),
+        object_tables.table_layout(unit_schema.DOOR_TILE_TABLE).width)
+
+
+def door_objects(door_recs, tile_recs) -> list:
+    """The door table's rows (and its side table's) as ``unit_schema.DoorRow``
+    objects (``object_tables.unpack`` over the schema)."""
+    from simulation import object_tables, unit_schema
+    d = _door_rows(door_recs, object_tables.table_layout(unit_schema.DOOR_TABLE).width)
+    s = _door_rows(tile_recs, object_tables.table_layout(unit_schema.DOOR_TILE_TABLE).width)
+    return object_tables.unpack(unit_schema.DOOR_TABLE, d, d.shape[0],
+                                sides={"tiles": (s, s.shape[0])})
+
+
+def doors_to_host(sim, door_recs, tile_recs) -> None:
+    """The device's door rows LANDED on the sim's own runtimes in place (the
+    chained form): each ``sim._doors[k]`` takes row k's ``alive``,
+    ``state``, ``want_open`` and ``hp``; a row whose ordinal or span is not
+    that door's -- or another door count -- is refused by name
+    (:class:`DoorTableMismatch`)."""
+    rows = door_objects(door_recs, tile_recs)
+    doors = list(getattr(sim, "_doors", ()) or ())
+    if len(rows) != len(doors):
+        raise DoorTableMismatch(f"doors: {len(rows)} device rows for {len(doors)} doors")
+    for k, (d, r) in enumerate(zip(doors, rows)):
+        if int(d.ordinal) != r.ordinal or [tuple(t) for t in d.span] != r.span:
+            raise DoorTableMismatch(f"doors: row {k} (ordinal {r.ordinal}) is not door "
+                                    f"{d.id!r} (ordinal {d.ordinal})")
+    for d, r in zip(doors, rows):
+        d.alive, d.state, d.want_open = r.alive, int(r.state), r.want_open
+        d.hp = [int(v) for v in r.hp]
+
+
+def door_entity_rows(door_rec, tile_recs) -> tuple:
+    """A door row's part of ENTITY_SECT_V1 (``entities/serialize``): the free
+    ``alive`` row, then ``door.runtime_digest_rows`` -- ``state``,
+    ``want_open``, ``hp_<i>`` per span tile -- as ``(name, int)`` pairs, read
+    from the table (``tile_recs`` the env's whole tile side table)."""
+    from simulation import object_tables, unit_schema
+    tl = object_tables.table_layout(unit_schema.DOOR_TILE_TABLE)
+    v = object_tables.row_values(unit_schema.DOOR_TABLE, door_rec)
+    tiles = _door_rows(tile_recs, tl.width)
+    a, n = int(v["tile_start"]), int(v["tile_count"])
+    hp_col = tl.column("hp").offset
+    rows = [("alive", int(v["alive"])), ("state", int(v["state"])),
+            ("want_open", int(v["want_open"]))]
+    rows.extend((f"hp_{i}", int(tiles[a + i, hp_col])) for i in range(n))
+    return tuple(rows)
+
+
+def door_tables(n_env: int, bp=None):
+    """The device door table and its tile side table for ``n_env`` envs
+    (``object_tables.DeviceTable`` each)."""
+    from simulation import object_tables, unit_schema
+    return (object_tables.DeviceTable(unit_schema.DOOR_TABLE, n_env, bp=bp),
+            object_tables.DeviceTable(unit_schema.DOOR_TILE_TABLE, n_env, bp=bp))
+
+
+def door_uses(store, requests, doors) -> np.ndarray:
+    """Slot 1b's USE as a TABLE WRITE (after :func:`verbs` filled
+    ``requests``): each USE record flips ``want_open`` on the door table's row
+    ``door`` (``Simulation._direct_use`` / ``unit_requests.apply_to_host``),
+    per env in request-list order. Returns the flips per env; refuses a
+    record naming a row outside the env's table (:class:`UnitKernelFault`)."""
+    _check_tables("door_uses", store, doors)
+    ch, flt, _ref, _drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_door_uses(
+        store.tables, requests.buffer, doors.buffer))
+    if flt.any():
+        envs = [int(e) for e in np.nonzero(flt)[0]]
+        raise UnitKernelFault(
+            f"unit kernel door_uses: {int(flt.sum())} USE record(s) in env(s) {envs} "
+            f"name a door outside the env's door table (nothing written for them)")
+    return ch
+
+
+def sweep_doors(store, dev_applier, fields: dict, doors, tiles) -> tuple:
+    """Slot 9e(d)'s door sweep (``door_system.sweep_doors``) as the applier's
+    DOORS stage: every env's door table walked in row (= ordinal) order on its
+    planes (``fields`` as :func:`walk_effects`' -- every ``applier.PLANES``
+    name, written IN PLACE) and its unit rows (the occupancy), the door and
+    tile tables written in place. Returns ``(coverage, books)``: coverage the
+    door transitions per env (open, close, death: the ``applied`` book).
+    Refuses a fault by name (:class:`simulation.applier.ApplierFault`: the
+    reference would have raised, or an operand left the proved range)."""
+    from simulation import applier
+    n = store.shape[0]
+    name = "applier[DOORS]"
+    if dev_applier.n_env != n:
+        raise ValueError(f"unit kernel {name}: the applier is for {dev_applier.n_env} "
+                         f"envs, the store {n}")
+    _check_tables(name, store, doors, tiles)
+    ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
+    b, _cov, _rdrop = store.bp.applier_run(
+        dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
+        int(applier.STAGE_DOORS), None, door_table=doors.buffer,
+        door_tiles=tiles.buffer)
+    books = applier.books_dict(b)
+    store.last_books = books
+    if books["faults"].any():
+        envs = [int(e) for e in np.nonzero(books["faults"])[0]]
+        raise applier.ApplierFault(
+            f"unit kernel {name}: {int(books['faults'].sum())} door(s) in env(s) {envs} "
+            f"faulted (a seal / unseal the reference would raise on, a span "
+            f"outside its table or the grid, or an operand past the proved range)")
+    return books["applied"].copy(), books
+
+
+#: TEST-ONLY seam probe op codes (cpp/src/cuda_topology_probe.cu).
+SEAM_OPS = {"seal": 1, "unseal": 2, "can_seal": 3, "inject": 4, "extract": 5,
+            "transfer": 6, "aperture": 7}
+
+
+def seam_probe(store, fields: dict, per_env_ops, per_env_tiles) -> tuple:
+    """TEST-ONLY: per env its ops (rows of 8 int64: the op code of
+    :data:`SEAM_OPS` then its arguments) walked serially on the planes in
+    place (``cpp/src/cuda_topology_probe.cu``); a span is ``(start, count)``
+    rows of the env's tile list (``per_env_tiles``, ``(T, 2)`` each).
+    Returns ``(results, books)``: per env a ``(K_e, 9)`` array (refusal code,
+    value, the per-slice withdrawal) and the books ``{name: (N,)}``,
+    unrefused."""
+    from simulation import applier
+    n = store.shape[0]
+    ptrs, n_gases, h, w = _plane_ptrs("seam_probe", n, fields)
+    ops = [np.asarray(o, dtype=np.int64).reshape(-1, 8) for o in per_env_ops]
+    tl = [np.asarray(t, dtype=np.int64).reshape(-1, 2) for t in per_env_tiles]
+    K = max([1] + [o.shape[0] for o in ops])
+    T = max([1] + [t.shape[0] for t in tl])
+    O = np.zeros((n, K, 8), dtype=np.int64)
+    TT = np.zeros((n, T, 2), dtype=np.int64)
+    cnt = np.zeros(n, dtype=np.int64)
+    for e in range(n):
+        O[e, :ops[e].shape[0]] = ops[e]
+        TT[e, :tl[e].shape[0]] = tl[e]
+        cnt[e] = ops[e].shape[0]
+    res, books = store.bp.topology_probe_seam(store.tables, ptrs, n_gases, h, w, O, cnt, TT)
+    res = np.asarray(res)
+    return [res[e, :cnt[e]].copy() for e in range(n)], applier.books_dict(books)
+
+
+__all__ += ["DoorTableMismatch", "doors_of", "door_tiles_of", "door_objects",
+            "doors_to_host", "door_entity_rows", "door_tables", "door_uses",
+            "sweep_doors", "SEAM_OPS", "seam_probe"]
