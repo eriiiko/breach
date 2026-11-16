@@ -292,6 +292,10 @@ class DoorScene:
             self.u4.set_pos_q(13 * ONE, y0 * ONE)   # out: the retried close succeeds
         if k == 16:
             self._use(self.u4, self.u5)             # two uses of D0 in one tick
+        if k == 18:                                 # a round chews the closed D2: its
+            from simulation import combat           # hp copied at the open, restamped
+            hp = int(sim.gmap.wall_hp[11, 32])      # at the close
+            combat.chew_wall(sim.gmap, 11, 32, hp / ONE / 4)
         if k == 20:
             self._use(self.u1, self.u2)             # D1 closes, D2 opens: one tick
         if k == 25:
@@ -836,6 +840,8 @@ class Census:
                     if d.want_open:
                         c["sweep: closed + want_open: opens"] += 1
                         changes.append(d)
+                        if [int(g.wall_hp[t]) for t in d.span] != list(d.hp):
+                            c["sweep: an open copies an hp the door did not hold"] += 1
                     else:
                         c["sweep: closed, latch closed: idle"] += 1
                 elif d.want_open:
@@ -849,6 +855,11 @@ class Census:
                     else:
                         c["sweep: open + latch closed: closes"] += 1
                         changes.append(d)
+                        from simulation import wall_fixed
+                        full = int(wall_fixed.quantize_scalar(
+                            float(g.materials.hp[MAT_DOOR_CLOSED])))
+                        if any(int(v) != full for v in d.hp):
+                            c["sweep: a close restamps an hp unlike the table's"] += 1
                         if any(not u.alive and any((ty, tx) in d._span_set
                                                    for tx, ty in u.occupied_tiles())
                                for u in sim.units):
@@ -922,6 +933,8 @@ NEED = (
     "sweep: open, latch open: idle", "sweep: close blocked by a living unit in the span",
     "sweep: close refused by can_seal", "sweep: open + latch closed: closes",
     "sweep: closes over a corpse", "sweep: two doors change on one tick",
+    "sweep: an open copies an hp the door did not hold",
+    "sweep: a close restamps an hp unlike the table's",
     "seal: a tile with no receiver (gas-free)", "seal: a receiver on the breach ring",
     "seal: a tile takes the close-T mean",
     "seal: a tile keeps its air T (no thermal neighbour)",
