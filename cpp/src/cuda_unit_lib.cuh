@@ -879,6 +879,10 @@ __device__ __forceinline__ RecordSink list_env_sink(const RecordListView& v, int
     return RecordSink{v.recs + (size_t)e * v.cap * v.width, v.cap, v.count + e, v.dropped + e,
                       v.width};
 }
+}  // namespace unit_lib
+}  // namespace breach_cuda
+
+// ============================================================================
 // #29 P7a.2 -- THE MAGAZINE LAW (combat.mag_settle / reload_begin): slot 1b's
 // manual reload and slot 4's trigger (mag_gate / mag_spend) both run it, so
 // it lives here. Integer for integer the Python on the weapon row `w` the

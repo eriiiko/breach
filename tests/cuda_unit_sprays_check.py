@@ -1061,11 +1061,69 @@ def part_chained():
         fail("chained 4b + 4c: vacuous")
 
 
+def part_chained_all():
+    """#29 P7a.2 merged: slots 4 (shooting, which ARMS the spray bursts), 4a,
+    4b and 4c ALL on the device in the running spray scene, chained (slot 2' and
+    the rest of the tick on the host): the unit hash and field digest equal an
+    untouched reference every tick; the host spray law run 0 times."""
+    from cuda_unit_shooting_check import SLOT_4, SLOT_4A
+    from simulation import combat
+    twin, ref = SprayDriver(), SprayDriver()
+    calls = Counter()
+    o_cone, o_enq, o_start = (combat.spray_cone_tiles, combat._enqueue_spray_cells,
+                              combat.start_spray_burst_directional)
+
+    def cone(gmap, *a, **k):
+        if gmap is twin.sim.gmap:
+            calls["spray_cone_tiles"] += 1
+        return o_cone(gmap, *a, **k)
+
+    def enq(gmap, *a, **k):
+        if gmap is twin.sim.gmap:
+            calls["_enqueue_spray_cells"] += 1
+        return o_enq(gmap, *a, **k)
+    enq.__wrapped__ = o_enq
+
+    def start(u, *a, **k):
+        if any(u is v for v in twin.sim.units):
+            calls["start_spray_burst_directional"] += 1
+        return o_start(u, *a, **k)
+    combat.spray_cone_tiles, combat._enqueue_spray_cells = cone, enq
+    combat.start_spray_burst_directional = start
+    t0 = time.perf_counter()
+    n = 0
+    holder = {}
+    try:
+        ch = ChainedSlots(twin, [SLOT_4, SLOT_4A, SLOT_4B, SLOT_4C],
+                          host_side=lambda s, p, q: holder["hs"](s, p, q))
+        holder["hs"] = _host_side(ch)
+        with ch:
+            for _ in range(CHAIN_TICKS):
+                twin.tick()
+                ref.tick()
+                n += 1
+                if _unit_hash(twin.sim) != _unit_hash(ref.sim) or                         _field_digest(twin.sim) != _field_digest(ref.sim):
+                    fail(f"chained 4 + 4a + 4b + 4c: the twin left the reference at tick "
+                         f"{twin.sim.tick}")
+                    break
+    finally:
+        combat.spray_cone_tiles, combat._enqueue_spray_cells = o_cone, o_enq
+        combat.start_spray_burst_directional = o_start
+    recs = Counter(applier.KINDS[r[0] - 1] for x in ch.lists for r in x["effects"])
+    print(f"chained 4 + 4a + 4b + 4c (sprays): {n} ticks, the twin equal to the reference "
+          f"every tick ({ch.runs} chain runs; records walked {dict(recs)}); host spray law "
+          f"calls in the twin {dict(calls) or 0} ({time.perf_counter() - t0:.0f} s)")
+    if calls:
+        fail(f"chained all: the host spray law ran in the twin {dict(calls)}")
+    if ch.runs != n or not recs.get("SPRAY_CELLS") or not recs.get("HIT"):
+        fail("chained 4 + 4a + 4b + 4c: vacuous")
+
+
 # ---------------------------------------------------------------------------
 # Main, bench
 # ---------------------------------------------------------------------------
 PARTS = ("tables", "cone", "scene", "batch", "padding", "overflow", "refuse", "seq",
-         "chained", "ship")
+         "chained", "chained_all", "ship")
 
 
 def main(parts=None) -> int:
