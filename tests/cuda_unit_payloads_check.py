@@ -1274,6 +1274,8 @@ def _scene_level(variant, tile_m=1.0):
     tm[10, 86:97] = MAT_HULL
     tm[4:11, 86] = MAT_HULL
     tm[4:11, 96] = MAT_HULL
+    tm[14:29, 82] = MAT_STEEL                    # a wall (no blast breaks steel) with one gap (y 27): a blast
+    tm[27, 82] = MAT_AIR                         # stopped by it, one around it
     return LevelData(name=f"p7c1_scene{variant}", version="3", path=Path("."),
                      tilemap=tm, tile_size_m=tile_m, diffuse_path=Path("."),
                      boundary="space")
@@ -1392,7 +1394,8 @@ class PayloadScene:
             g.gas[INERT_N2][sl] = (g.gas[INERT_N2][sl].astype(np.int64) + mv).astype(np.int32)
         if k == s + 8 and self.set in STRENGTH_SETS:   # Z6: the scripted charges
             for (x, y, am) in ((88, 35, "demo_c4"), (90, 23, "demo_c4"), (91, 7, "demo_breach"),
-                               (90, 33, "demo_breach"), (89, 7, "demo_c4")):
+                               (90, 33, "demo_breach"), (89, 7, "demo_c4"),
+                               (80, 18, "demo_c4"), (80, 25, "demo_c4")):
                 self._lay(am, x, y, sim.tick + 2 + (x % 3), w["T0"].id)
         if k == 0:                                     # a topology fixture: the blast
             g = sim.gmap                               # walls of the long wall weak
