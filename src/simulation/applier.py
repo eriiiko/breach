@@ -116,33 +116,18 @@ UNAPPLIED_KINDS: tuple = ()
 #: #29 P7c.1: the payload rows the PAYLOAD function refuses, by code (the
 #: Device tables row ``payload_refuse``, ``unit_tables``): each counted in
 #: the ``refused`` book, nothing written, the run refused by name. Code 0 is
-#: a row the function applies (``strength = 0``, no bulk gas, no explosive:
-#: the disc path). The first that holds wins, in this order.
-PAYLOAD_REFUSALS: tuple = (
-    (1, "strength", "a strength row (the generic explosion: the reach walk, the "
-                    "air read, start_source, deposit_over_tiles) is P7c.2's"),
-    (2, "bulk_gas", "a bulk-gas row (inject_bulk_gas through the gas-N "
-                    "primitives) is P7c.2's"),
-    (3, "explosive", "a row with an explosive reads the air (read_blast_air "
-                     "over its disc) and lays the noisy blast smoke scaled by "
-                     "it (add_explosion_smoke): the air read is P7c.2's"),
-    (4, "expansion", "a row with expansion_m3 starts a multi-tick source "
-                     "(start_expansion, div_source): P7c.2's"),
-)
+#: a row the function applies. #29 P7c.2: EMPTY -- the strength path (the
+#: reach walk, the air read, start_source, deposit_over_tiles), bulk gas, the
+#: explosive rows' air read and smoke, and the multi-tick source
+#: (start_expansion, the blast-source table) all have their device form, so
+#: every row is applied; the mechanism stays for a future row the function
+#: cannot serve (a code here, its test in :func:`payload_refusal`).
+PAYLOAD_REFUSALS: tuple = ()
 
 
 def payload_refusal(payload) -> int:
     """The refusal code of a ``[payloads.*]`` row (:data:`PAYLOAD_REFUSALS`;
-    0 = the PAYLOAD function applies it), read from the row exactly as
-    ``execute_payload`` branches on it."""
-    if getattr(payload, "strength", 0.0) > 0.0:
-        return 1
-    if getattr(payload, "bulk_gas", ""):
-        return 2
-    if getattr(payload, "explosive", ""):
-        return 3
-    if getattr(payload, "expansion_m3", 0.0) > 0.0:
-        return 4
+    0 = the PAYLOAD function applies it). #29 P7c.2: every row is applied."""
     return 0
 
 
@@ -180,10 +165,17 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:             ``charges_tick``), walked right after their kernel, where the
 #:             reference calls ``execute_payload`` at once; no HIT is ever on
 #:             its list, and a blast's packets land at once in every stage.
+#:   SOURCES   #29 P7c.2: slot 7's head, ``blast_expansion.take_source_plane``
+#:             -- the pending ``div_source`` plane handed out (the stage's
+#:             SOURCE OUT plane, ``source_taken`` 1 when it held a source) and
+#:             zeroed, then the blast-source TABLE (``unit_schema.SOURCE_TABLE``)
+#:             walked in row order, each source added at once (saturating,
+#:             counted), its ticks counted down, the dead dropped by the span
+#:             compaction; the effect list is not read.
 STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("VENTS", False),
-                 ("DOORS", False), ("DETONATE", False))
+                 ("DOORS", False), ("DETONATE", False), ("SOURCES", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE = 0, 1, 2, 3, 4
+STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE,     STAGE_SOURCES = 0, 1, 2, 3, 4, 5
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
 #: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
 #: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
@@ -305,6 +297,25 @@ BOOKS = BOOKS + (
     BookRow("ledger_refused", None,
             "ducts refused at their sweep's head: a ledger outside the proved "
             "range (nothing of the duct written; LedgerRangeRefused)"),
+    # #29 P7c.2: the strength path's divergence source (add_source's counted
+    # saturation), bulk gas (inject_bulk_gas' seam channels and its named
+    # overflow refusal) and the SOURCES stage's hand-out.
+    BookRow("div_source_sat_hits", "div_source_sat_hits",
+            "add_source's saturations at S_MAX_Q (start_source, start_expansion, "
+            "take_source_plane)"),
+    BookRow("div_source_cut_q", "div_source_cut_q",
+            "add_source's cut Q16 above S_MAX_Q"),
+    BookRow("ge_payload_bulk_gas", "gas_energy_books:payload_bulk_gas",
+            "inject_bulk_gas' deposits (inject_gas_n_vec at bulk_temp + T_AMB)"),
+    BookRow("ge_payload_bulk_gas_rail", "gas_energy_books:payload_bulk_gas_rail",
+            "inject_bulk_gas' rail clamps"),
+    BookRow("bulk_refused", None,
+            "bulk-gas deposits refused: a tile whose bulk slice would pass int32 "
+            "(the reference raises OverflowError; the device writes none of the "
+            "deposit and the run is refused by name, BulkGasOverflow)"),
+    BookRow("source_taken", None,
+            "the SOURCES stage: 1 when the pending plane held a source "
+            "(take_source_plane returned a plane, not None)"),
 ) + tuple(BookRow(f"trace_clip_{g}", f"trace_clip_books:{g}",
                   f"the counted trace saturation's clip on gas slice {g} "
                   f"(trace_store_sat / trace_add_sat)")
@@ -355,6 +366,9 @@ PLANES: tuple = (
     ("ripple", "float32", 1),
     ("ripple_v", "float32", 1),
     ("water_depth", "int32", 1),
+    # #29 P7c.2: the blast's pending divergence source (add_source's plane,
+    # Q16 1/s), written by the strength path and the SOURCES stage.
+    ("div_source", "int32", 1),
 )
 PLANE_NAMES = tuple(p[0] for p in PLANES)
 #: #29 P6b.1: the topology seam's REFUSALS (seal_tiles / unseal_tiles /
@@ -405,6 +419,12 @@ class LedgerRangeRefused(RuntimeError):
     was proved for (``cpp/src/cuda_unit_vents.cuh``, design 4.4c "As built
     (P6b.2)"): the duct is refused BY NAME at the head of its sweep and
     nothing of it is written (its vents, its ledgers, the map)."""
+
+
+class BulkGasOverflow(RuntimeError):
+    """#29 P7c.2: a bulk-gas deposit (``payloads.inject_bulk_gas``) whose slice
+    would pass int32 on a tile: the reference raises OverflowError mid-loop;
+    the device writes none of the deposit and the run is refused by name."""
 
 
 class EffectRefused(RuntimeError):
@@ -832,7 +852,7 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "KIND_CHEW", "KIND_PAYLOAD", "UNAPPLIED_KINDS", "PAYLOAD_KINDS",
            "STAGES", "STAGE_NAMES", "STAGE_TOPOLOGY", "STAGE_RESOLVE", "ROW_CAP",
            "STAGE_DETONATE", "PAYLOAD_REFUSALS", "payload_refusal",
-           "payload_refusal_reason",
+           "payload_refusal_reason", "STAGE_SOURCES", "BulkGasOverflow",
            "kind_field", "make_record", "record_of", "records_of", "effects_of",
            "payload_index", "KIND_SPRAY_CELLS", "records_and_cells_of",
            "non_resident_planes", "Layout", "layout", "header_text",

@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "bd6f71cb66dd3ba67443e915cb35431e389a38a7f2949ff7bb0e06b5dd9e6dfa";
-constexpr int UNIT_TABLES_W = 2247;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "5ef821756047a6b059122357ca24e533cd45272b550092b31a45313e882aa68c";
+constexpr int UNIT_TABLES_W = 2798;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -412,25 +412,65 @@ constexpr int UNIT_TAB_BLAST_DAMAGE_THRESHOLD = 2204;
 constexpr int UNIT_TAB_BLAST_DAMAGE_THRESHOLD_W = 1;
 constexpr int UNIT_TAB_FLASH_FRONT_Q16 = 2205;
 constexpr int UNIT_TAB_FLASH_FRONT_Q16_W = 1;
-constexpr int UNIT_TAB_DOOR_MAT_CLOSED = 2206;
+constexpr int UNIT_TAB_PAYLOAD_GENERIC = 2206;
+constexpr int UNIT_TAB_PAYLOAD_GENERIC_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_AIR_MODE = 2242;
+constexpr int UNIT_TAB_PAYLOAD_AIR_MODE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_AIR_DISC_R = 2278;
+constexpr int UNIT_TAB_PAYLOAD_AIR_DISC_R_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_R2 = 2314;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_R2_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_SOURCE_R2 = 2350;
+constexpr int UNIT_TAB_PAYLOAD_SOURCE_R2_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_SOURCE_TOTAL_Q = 2386;
+constexpr int UNIT_TAB_PAYLOAD_SOURCE_TOTAL_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_EXPANSION_LIVE = 2422;
+constexpr int UNIT_TAB_PAYLOAD_EXPANSION_LIVE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_EXPANSION_TICKS = 2458;
+constexpr int UNIT_TAB_PAYLOAD_EXPANSION_TICKS_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_SMOKE_LIVE = 2494;
+constexpr int UNIT_TAB_PAYLOAD_SMOKE_LIVE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_SOOT_UNITS_Q = 2530;
+constexpr int UNIT_TAB_PAYLOAD_SOOT_UNITS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_BASE_Q = 2566;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_BASE_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BULK_SLICE = 2602;
+constexpr int UNIT_TAB_PAYLOAD_BULK_SLICE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BULK_Q = 2638;
+constexpr int UNIT_TAB_PAYLOAD_BULK_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BULK_RADIUS_Q = 2674;
+constexpr int UNIT_TAB_PAYLOAD_BULK_RADIUS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BULK_TEMP_Q = 2710;
+constexpr int UNIT_TAB_PAYLOAD_BULK_TEMP_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_SRC_EXPLOSION_SMOKE = 2746;
+constexpr int UNIT_TAB_PAYLOAD_SRC_EXPLOSION_SMOKE_W = 1;
+constexpr int UNIT_TAB_BLAST_SMOKE_NOISE_Q = 2747;
+constexpr int UNIT_TAB_BLAST_SMOKE_NOISE_Q_W = 1;
+constexpr int UNIT_TAB_BLAST_AIR_Q = 2748;
+constexpr int UNIT_TAB_BLAST_AIR_Q_W = 6;
+constexpr int UNIT_TAB_BLAST_S_MAX_Q = 2754;
+constexpr int UNIT_TAB_BLAST_S_MAX_Q_W = 1;
+constexpr int UNIT_TAB_BULK_T_RAILS = 2755;
+constexpr int UNIT_TAB_BULK_T_RAILS_W = 2;
+constexpr int UNIT_TAB_DOOR_MAT_CLOSED = 2757;
 constexpr int UNIT_TAB_DOOR_MAT_CLOSED_W = 1;
-constexpr int UNIT_TAB_SEAL_MAT_OK = 2207;
+constexpr int UNIT_TAB_SEAL_MAT_OK = 2758;
 constexpr int UNIT_TAB_SEAL_MAT_OK_W = 11;
-constexpr int UNIT_TAB_GAS_TRACE = 2218;
+constexpr int UNIT_TAB_GAS_TRACE = 2769;
 constexpr int UNIT_TAB_GAS_TRACE_W = 7;
-constexpr int UNIT_TAB_INJECT_O2_FRAC_Q = 2225;
+constexpr int UNIT_TAB_INJECT_O2_FRAC_Q = 2776;
 constexpr int UNIT_TAB_INJECT_O2_FRAC_Q_W = 1;
-constexpr int UNIT_TAB_DOOR_STATES = 2226;
+constexpr int UNIT_TAB_DOOR_STATES = 2777;
 constexpr int UNIT_TAB_DOOR_STATES_W = 3;
-constexpr int UNIT_TAB_VENT_FILTER_EFF_Q = 2229;
+constexpr int UNIT_TAB_VENT_FILTER_EFF_Q = 2780;
 constexpr int UNIT_TAB_VENT_FILTER_EFF_Q_W = 10;
-constexpr int UNIT_TAB_VENT_TRACE_IDS = 2239;
+constexpr int UNIT_TAB_VENT_TRACE_IDS = 2790;
 constexpr int UNIT_TAB_VENT_TRACE_IDS_W = 5;
-constexpr int UNIT_TAB_VENT_T_MIN_Q = 2244;
+constexpr int UNIT_TAB_VENT_T_MIN_Q = 2795;
 constexpr int UNIT_TAB_VENT_T_MIN_Q_W = 1;
-constexpr int UNIT_TAB_VENT_T_MAX_Q = 2245;
+constexpr int UNIT_TAB_VENT_T_MAX_Q = 2796;
 constexpr int UNIT_TAB_VENT_T_MAX_Q_W = 1;
-constexpr int UNIT_TAB_VENT_N_EPS = 2246;
+constexpr int UNIT_TAB_VENT_N_EPS = 2797;
 constexpr int UNIT_TAB_VENT_N_EPS_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).

@@ -28,7 +28,8 @@
 #include "cuda_unit_vents.cuh"     // #29 P6b.2: the vent circulation sweep
 #include "cuda_unit_damage.cuh"    // apply_packet, the landing, the sinks, the library
 #include "cuda_unit_spray.cuh"     // #29 P7a.3: SPRAY_CELLS (the edit door, the claims)
-#include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path)
+#include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path); P7c.2: every row
+#include "cuda_unit_blast.cuh"     // #29 P7c.2: the walks' scratch, the SOURCES stage
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
@@ -78,6 +79,15 @@ struct WalkTables {
     int64_t* vents = nullptr;          // (N, vent cap, OBJ_VENT_W)
     const int64_t* n_vents = nullptr;  // (N,)
     int vent_cap = 0;
+    // #29 P7c.2: the SOURCES stage's blast-source table and tile table (and
+    // its hand-out plane, (N, h, w); null: none)
+    int64_t* sources = nullptr;
+    int64_t* n_sources = nullptr;
+    int source_cap = 0;
+    int64_t* stiles = nullptr;
+    int64_t* n_stiles = nullptr;
+    int stile_cap = 0;
+    int32_t* source_out = nullptr;
 };
 
 // #29 P7a.3: the walk's lists (ApplierLists' device views; has_* false when
@@ -85,11 +95,18 @@ struct WalkTables {
 struct WalkLists {
     bool has_cells = false, has_door = false, has_claims = false;
     bool has_noise = false, has_blast = false;      // #29 P7c.1
+    bool has_sources = false;                       // #29 P7c.2
     RecordListView cells;
     edit_door::DoorView door;
     RecordListView claims;
     RecordListView noise;                           // #29 P7c.1: the noise list
     RecordListView blast;                           // #29 P7c.1: the blast log
+    RecordListView sources;                         // #29 P7c.2: the blast sources
+    RecordListView source_tiles;                    //   and their tile side table
+    // #29 P7c.2: the walks' scratch base ((h * w) cells per env, see
+    // FieldApplier::walk_scratch)
+    uint8_t* walk = nullptr;
+    int walk_cells = 0;
 };
 
 // The row of an effect's `row` field, or nullptr (out of the env's rows or a
@@ -123,6 +140,18 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
                      X.n_vents[e], B);
         return;
     }
+    if (stage == APPLIER_STAGE_SOURCES) {
+        // #29 P7c.2: slot 7's head, take_source_plane over the blast-source
+        // TABLE (decision 1: a stage of the one walker, each source at once)
+        if (!unit_blast::take_sources(
+                E, tab, X.source_out != nullptr ? X.source_out + (size_t)e * E.n : nullptr,
+                X.sources + (size_t)e * X.source_cap * object_tables::OBJ_SOURCE_W,
+                X.n_sources + e,
+                X.stiles + (size_t)e * X.stile_cap * object_tables::OBJ_SOURCE_TILE_W,
+                X.n_stiles + e, B))
+            B[APPLIER_BOOK_FAULTS] += 1;
+        return;
+    }
     if (stage == APPLIER_STAGE_DOORS) {
         // #29 P6b.1: slot 9e(d)'s door sweep walks the door TABLE, not the
         // effect list (decision 1: a stage of the one walker over an entity
@@ -151,6 +180,18 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
     for (int r = 0; r < U.n_units; ++r) touched[r] = 0;
     unit_lib::EventSink sink{nullptr, 0, nullptr, nullptr};
     if (U.ring.ring != nullptr) sink = unit_lib::env_sink(U.ring);
+    // #29 P7c.2: the env's walk scratch (the mark bytes, then the int32 lists)
+    unit_blast::Scratch scratch{};
+    const bool has_scratch = WL.walk != nullptr && WL.walk_cells >= h * w;
+    if (has_scratch) {
+        const size_t nc = (size_t)WL.walk_cells, N = gridDim.y;
+        uint8_t* base = WL.walk;
+        scratch.mark = base + (size_t)e * nc;
+        int32_t* lists = reinterpret_cast<int32_t*>(base + ((N * nc + 7) & ~(size_t)7));
+        scratch.queue = lists + ((size_t)0 * N + e) * nc;
+        scratch.heat = lists + ((size_t)1 * N + e) * nc;
+        scratch.src = lists + ((size_t)2 * N + e) * nc;
+    }
     for (int64_t j = 0; j < k; ++j) {
         const int64_t* r = L + (size_t)j * APPLIER_F;
         const int64_t kind = r[APPLIER_FX_KIND];
@@ -259,7 +300,7 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         } else if (kind == APPLIER_KIND_PAYLOAD) {
             // #29 P7c.1: payloads.execute_payload, the disc path
             // (cuda_unit_payload.cuh); a refused row writes nothing
-            unit_lib::RecordSink cs{}, ns{}, bs{};
+            unit_lib::RecordSink cs{}, ns{}, bs{}, ss{}, ts{};
             unit_payload::PayloadReach R;
             R.store = U.store;
             R.n_units = U.n_units;
@@ -272,9 +313,18 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
             R.claims = WL.has_claims ? &cs : nullptr;
             R.noise = WL.has_noise ? &ns : nullptr;
             R.blast = WL.has_blast ? &bs : nullptr;
+            R.scratch = has_scratch ? &scratch : nullptr;      // #29 P7c.2
+            if (WL.has_sources) {
+                ss = unit_lib::list_env_sink(WL.sources, e);
+                ts = unit_lib::list_env_sink(WL.source_tiles, e);
+                R.sources = &ss;
+                R.source_tiles = &ts;
+            }
             const int res = unit_payload::apply_payload(r, E, tab, e, R, B);
             if (res == unit_payload::PAYLOAD_REFUSED) {
                 B[APPLIER_BOOK_REFUSED] += 1;
+            } else if (res == unit_payload::PAYLOAD_BULK_REFUSED) {
+                B[APPLIER_BOOK_BULK_REFUSED] += 1;
             } else if (res == unit_payload::PAYLOAD_FAULT) {
                 B[APPLIER_BOOK_FAULTS] += 1;
             } else {
@@ -303,7 +353,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 5, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 6, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -335,6 +385,7 @@ FieldApplier::~FieldApplier() {
     if (d_books_) cudaFree(d_books_);
     if (d_land_) cudaFree(d_land_);
     if (d_touched_) cudaFree(d_touched_);
+    if (d_walk_) cudaFree(d_walk_);
     if (h_stage_) cudaFreeHost(h_stage_);
     if (h_books_) cudaFreeHost(h_books_);
 }
@@ -349,6 +400,21 @@ uint8_t* FieldApplier::touched(int n_units) {
         touched_cap_ = want;
     }
     return d_touched_;
+}
+
+void* FieldApplier::walk_scratch(int n_cells) {
+    if (n_cells > walk_cells_) {
+        cudaStreamSynchronize(tstream());
+        if (d_walk_) cudaFree(d_walk_);
+        d_walk_ = nullptr;
+        const size_t N = (size_t)n_env(), nc = (size_t)n_cells;
+        const size_t marks = (N * nc + 7) & ~(size_t)7;
+        const size_t bytes = marks + 3 * N * nc * sizeof(int32_t);
+        ap_check(cudaMalloc(&d_walk_, bytes), "malloc walk scratch");
+        ap_check(cudaMemsetAsync(d_walk_, 0, bytes, tstream()), "zero walk scratch");
+        walk_cells_ = n_cells;
+    }
+    return d_walk_;
 }
 
 void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
@@ -450,7 +516,24 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
             WL.has_blast = true;
             WL.blast = list_view(*lists->blast_log);
         }
+        // #29 P7c.2: the blast-source table and its tile table (both or none)
+        if ((lists->source_table == nullptr) != (lists->source_tiles == nullptr))
+            throw std::invalid_argument("applier_run: the blast-source table and its tile "
+                                        "table come together");
+        if (lists->source_table != nullptr) {
+            if (lists->source_table->n_env() != n || lists->source_tiles->n_env() != n ||
+                lists->source_table->width() != object_tables::OBJ_SOURCE_W ||
+                lists->source_tiles->width() != object_tables::OBJ_SOURCE_TILE_W)
+                throw std::invalid_argument("applier_run: the blast-source tables are not the "
+                                            "source / source tile layouts for these envs");
+            WL.has_sources = true;
+            WL.sources = list_view(*lists->source_table);
+            WL.source_tiles = list_view(*lists->source_tiles);
+        }
     }
+    // #29 P7c.2: every walk has its scratch (h * w cells per env)
+    WL.walk = static_cast<uint8_t*>(a.walk_scratch(planes.h * planes.w));
+    WL.walk_cells = a.walk_cells();
     WalkTables X;
     if (stage == APPLIER_STAGE_DOORS) {
         ObjectTable* doors = lists != nullptr ? lists->door_table : nullptr;
@@ -487,6 +570,18 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
         X.vents = vts->records_dev();
         X.n_vents = vts->count_dev();
         X.vent_cap = vts->cap();
+    }
+    if (stage == APPLIER_STAGE_SOURCES) {
+        if (lists == nullptr || lists->source_table == nullptr)
+            throw std::invalid_argument("applier_run: the SOURCES stage needs the blast-source "
+                                        "table and its tile table");
+        X.sources = lists->source_table->records_dev();
+        X.n_sources = lists->source_table->count_dev();
+        X.source_cap = lists->source_table->cap();
+        X.stiles = lists->source_tiles->records_dev();
+        X.n_stiles = lists->source_tiles->count_dev();
+        X.stile_cap = lists->source_tiles->cap();
+        X.source_out = reinterpret_cast<int32_t*>(lists->source_out);
     }
     UnitRecordList& L = a.list();
     k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(

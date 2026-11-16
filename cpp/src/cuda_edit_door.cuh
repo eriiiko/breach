@@ -165,6 +165,133 @@ __device__ inline bool door_disc_edit(const DoorView& D, int e, int field, int64
     return true;
 }
 
+// #29 P7c.2 -- the NOISE and the SCALE at the door, and the TILES form.
+//
+// A noisy edit (FieldEdit.noise > 0: the blast smoke) is the EDIT row's
+// `noisy` 1 and `low` ONE - noise_q (noise_q = min(quantize_scalar(noise),
+// ONE), the caller's table row), its denominator times ONE; the draw itself
+// is the flush's (keyed by the row's key = seq). A SCALED edit (FieldEdit.scale,
+// the blast's air read: a per-tile Q16 factor) is its denominator times ONE
+// and each TILE row's scale column the tile's factor (1 when unscaled). Both
+// as field_edit._edit_door / pack_for_device form them.
+constexpr int64_t REGION_TILES = 4;     // field_edit.Region.TILES
+
+// The EDIT row of a noisy / scaled edit (TILE rows are the caller's).
+__device__ inline void door_edit_row(int64_t* row, int field, int64_t slice, int64_t mode,
+                                     int64_t amount_q, int64_t den, int64_t noise_q,
+                                     int64_t key, int64_t clamp_flags, int64_t clamp_lo,
+                                     int64_t clamp_hi, int64_t source, int64_t region) {
+    for (int k = 0; k < EDIT_DOOR_COLS; ++k) row[k] = 0;
+    row[EDQ_E_ENV] = 0;
+    row[EDQ_E_FIELD] = field;
+    row[EDQ_E_SLICE] = slice;
+    row[EDQ_E_MODE] = mode;
+    row[EDQ_E_AMOUNT] = amount_q;
+    row[EDQ_E_DEN] = den;
+    row[EDQ_E_NOISY] = noise_q > 0 ? 1 : 0;
+    row[EDQ_E_LOW] = ONE_Q16 - noise_q;
+    row[EDQ_E_KEY] = key;
+    row[EDQ_E_CLAMP_FLAGS] = clamp_flags;
+    row[EDQ_E_LO] = clamp_lo;
+    row[EDQ_E_HI] = clamp_hi;
+    row[EDIT_DOOR_SRC] = source;
+    row[EDIT_DOOR_REGION] = region;
+}
+
+// One DISC edit with its noise and scale (add_explosion_smoke): as
+// door_disc_edit, the noise_q and `scale(i)` (the tile's Q16 factor; only
+// read when has_scale) folded in as the pack does. False (nothing written)
+// when a weight leaves the kit's range.
+template <class ScaleFn>
+__device__ inline bool door_disc_edit_ns(const DoorView& D, int e, int field, int64_t slice,
+                                         int64_t mode, int64_t amount_q, int64_t source,
+                                         int64_t cy, int64_t cx, int64_t r_q, int64_t falloff,
+                                         int64_t clamp_flags, int64_t clamp_lo,
+                                         int64_t clamp_hi, int64_t noise_q, bool has_scale,
+                                         ScaleFn scale, int h, int w) {
+    RecordSink es = unit_lib::list_env_sink(D.edits, e);
+    RecordSink ts = unit_lib::list_env_sink(D.tiles, e);
+    const int64_t idx = *es.count;
+    int64_t den = ONE_Q16;
+    if (noise_q > 0) den *= ONE_Q16;
+    if (has_scale) den *= ONE_Q16;
+    int64_t row[EDIT_DOOR_COLS];
+    door_edit_row(row, field, slice, mode, amount_q, den, noise_q, D.seq[e], clamp_flags,
+                  clamp_lo, clamp_hi, source, REGION_DISC);
+    row[EDIT_DOOR_ARG + 0] = cy;
+    row[EDIT_DOOR_ARG + 1] = cx;
+    row[EDIT_DOOR_ARG + 2] = r_q;
+    row[EDIT_DOOR_ARG + 3] = falloff;
+    unit_lib::emit_record(es, row);
+    D.seq[e] += 1;
+    const DiscBox b = disc_box(cy, cx, r_q, h, w);
+    for (int64_t r = b.r0; r <= b.r1; ++r) {
+        const int64_t dr = r - cy;
+        for (int64_t c = b.c0; c <= b.c1; ++c) {
+            const int64_t dc = c - cx;
+            const int64_t d2 = (dr * dr + dc * dc) << 32;
+            if (!(d2 < b.r2)) continue;
+            int64_t wq = ONE_Q16;
+            if (falloff == FALLOFF_LINEAR) {
+                wq = fixedpoint::falloff_round_q(ONE_Q16, d2, b.r2);
+                if (wq < 0) return false;
+            }
+            const int i = (int)(r * (int64_t)w + c);
+            const int64_t t[EDQ_TILE_COLS] = {idx, (int64_t)i, wq,
+                                              has_scale ? scale(i) : 1};
+            unit_lib::emit_record(ts, t);
+        }
+    }
+    return true;
+}
+
+// THE FIXED-TOTAL TILE DEPOSIT's door (payloads.deposit_over_tiles): ONE
+// FieldEdit of region TILES -- `n` walked tiles (cell indices, row-major,
+// every one in the grid), their integer weights `weight(k)` over `den_w`
+// (FieldEdit.weight_den, their sum), the total's amount_q, the field policy's
+// clamp, the noise and the scale (`scale(k)` of the k-th tile, read only when
+// has_scale) -- as pack_for_device writes it: the EDIT row (den = den_w x ONE
+// per noise and scale; the region's arguments (n, has_scale, 0, 0)) and one
+// TILE row per tile in order (idx, tile, weight, scale or 1).
+template <class WeightFn, class ScaleFn>
+__device__ inline void door_tiles_edit(const DoorView& D, int e, const int64_t* tab, int field,
+                                       int64_t slice, int64_t mode, int64_t amount_q,
+                                       int64_t source, const int32_t* tiles, int n,
+                                       int64_t den_w, int64_t noise_q, bool has_scale,
+                                       WeightFn weight, ScaleFn scale) {
+    RecordSink es = unit_lib::list_env_sink(D.edits, e);
+    RecordSink ts = unit_lib::list_env_sink(D.tiles, e);
+    const int64_t idx = *es.count;
+    int64_t den = den_w;
+    if (noise_q > 0) den *= ONE_Q16;
+    if (has_scale) den *= ONE_Q16;
+    int64_t row[EDIT_DOOR_COLS];
+    door_edit_row(row, field, slice, mode, amount_q, den, noise_q, D.seq[e],
+                  tab[unit_tables::UNIT_TAB_EDIT_CLAMP_FLAGS + field],
+                  tab[unit_tables::UNIT_TAB_EDIT_CLAMP_LO + field],
+                  tab[unit_tables::UNIT_TAB_EDIT_CLAMP_HI + field], source, REGION_TILES);
+    row[EDIT_DOOR_ARG + 0] = n;
+    row[EDIT_DOOR_ARG + 1] = has_scale ? 1 : 0;
+    unit_lib::emit_record(es, row);
+    D.seq[e] += 1;
+    for (int k = 0; k < n; ++k) {
+        const int64_t t[EDQ_TILE_COLS] = {idx, (int64_t)tiles[k], weight(k),
+                                          has_scale ? scale(k) : 1};
+        unit_lib::emit_record(ts, t);
+    }
+}
+
+// payloads._claim_tiles of a walked list (cell indices, in order).
+__device__ inline void tiles_claims(RecordSink& cs, int64_t channel, const int32_t* tiles,
+                                    int n, int64_t attacker, int w) {
+    if (attacker == -1) return;
+    for (int k = 0; k < n; ++k) {
+        const int64_t rec[4] = {channel, (int64_t)(tiles[k] / w), (int64_t)(tiles[k] % w),
+                                attacker};
+        unit_lib::emit_record(cs, rec);
+    }
+}
+
 // payloads._claim_disc: TickCredit.claim of the DISC's tiles (FLAT
 // membership, row-major) for `attacker` (the environment's: nothing).
 __device__ inline void disc_claims(RecordSink& cs, int64_t channel, int64_t cy, int64_t cx,

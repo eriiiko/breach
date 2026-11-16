@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "136313215927c2d1305e8c39f04da76af4ee1c9224b7a62627ddc4e5620049c9";
-constexpr int OBJECT_TABLES_N = 9;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "ab17764caf41d79730ed583574bd32eae9efd87b70d0bdf243e7396db7180f8b";
+constexpr int OBJECT_TABLES_N = 11;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -247,5 +247,35 @@ constexpr int OBJ_VENT_COL_ALIVE = 9;
 constexpr int OBJ_VENT_COL_ALIVE_W = 1;
 constexpr int OBJ_VENT_COL_LIVE = 10;
 constexpr int OBJ_VENT_COL_LIVE_W = 1;
+
+// table 'source_tile': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_SOURCE_TILE = 9;
+constexpr int OBJ_SOURCE_TILE_W = 3;
+constexpr int OBJ_SOURCE_TILE_CAP = 2048;
+constexpr int OBJ_SOURCE_TILE_LIVE = 2;
+constexpr int OBJ_SOURCE_TILE_COL_Y = 0;
+constexpr int OBJ_SOURCE_TILE_COL_Y_W = 1;
+constexpr int OBJ_SOURCE_TILE_COL_X = 1;
+constexpr int OBJ_SOURCE_TILE_COL_X_W = 1;
+constexpr int OBJ_SOURCE_TILE_COL_LIVE = 2;
+constexpr int OBJ_SOURCE_TILE_COL_LIVE_W = 1;
+
+// table 'source': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_SOURCE = 10;
+constexpr int OBJ_SOURCE_W = 5;
+constexpr int OBJ_SOURCE_CAP = 32;
+constexpr int OBJ_SOURCE_LIVE = 4;
+constexpr int OBJ_SOURCE_COL_S_Q = 0;
+constexpr int OBJ_SOURCE_COL_S_Q_W = 1;
+constexpr int OBJ_SOURCE_COL_TICKS = 1;
+constexpr int OBJ_SOURCE_COL_TICKS_W = 1;
+constexpr int OBJ_SOURCE_COL_TILE_START = 2;
+constexpr int OBJ_SOURCE_COL_TILE_START_W = 1;
+constexpr int OBJ_SOURCE_COL_TILE_COUNT = 3;
+constexpr int OBJ_SOURCE_COL_TILE_COUNT_W = 1;
+constexpr int OBJ_SOURCE_COL_LIVE = 4;
+constexpr int OBJ_SOURCE_COL_LIVE_W = 1;
 
 }  // namespace object_tables

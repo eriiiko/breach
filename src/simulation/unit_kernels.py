@@ -503,7 +503,7 @@ def _plane_ptrs(name, n_env, fields):
 
 
 def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
-                 lists=None, refused_ok: bool = False):
+                 lists=None, refused_ok: bool = False, source_out=None):
     """THE PER-ENV SERIAL APPLIER's walk (#29 P6.4b; P7a.1: one kernel, a
     STAGE argument): every env's effect list (``dev_applier``, a
     :class:`simulation.applier.DeviceApplier` -- staged from the host, or
@@ -542,7 +542,8 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
     ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
     wl = lists if lists is not None else WalkLists()
     for nm, obj in (("cells", wl.cells), ("door", wl.door), ("claims", wl.claims),
-                    ("noise", wl.noise), ("blast_log", wl.blast_log)):
+                    ("noise", wl.noise), ("blast_log", wl.blast_log),
+                    ("sources", wl.sources), ("source_tiles", wl.source_tiles)):
         ne = None if obj is None else getattr(obj, "n_env", None)
         if obj is not None and ne is None:
             ne = obj.shape[0]                    # an object table (#29 P7c.1)
@@ -556,7 +557,10 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         None if wl.door is None else wl.door.buffer,
         None if wl.claims is None else wl.claims.buffer,
         None if wl.noise is None else wl.noise.buffer,
-        None if wl.blast_log is None else wl.blast_log.buffer)
+        None if wl.blast_log is None else wl.blast_log.buffer,
+        source_table=None if wl.sources is None else wl.sources.buffer,
+        source_tiles=None if wl.source_tiles is None else wl.source_tiles.buffer,
+        source_out=_source_out_ptr(name, n, h, w, source_out))
     books = applier.books_dict(b)
     cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books
@@ -579,6 +583,13 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
             f"unit kernel {name}: {int(books['refused'].sum())} record(s) in "
             f"env(s) {envs} refused, not applied: "
             + payload_refusals(store, dev_applier, envs))
+    if books["bulk_refused"].any():           # #29 P7c.2
+        envs = [int(e) for e in np.nonzero(books["bulk_refused"])[0]]
+        raise applier.BulkGasOverflow(
+            f"unit kernel {name}: {int(books['bulk_refused'].sum())} bulk-gas "
+            f"deposit(s) in env(s) {envs} refused: a tile's bulk slice would pass "
+            f"int32 (inject_bulk_gas raises OverflowError; nothing of the deposit "
+            f"written)")
     if books["faults"].any():
         envs = [int(e) for e in np.nonzero(books["faults"])[0]]
         raise applier.ApplierFault(
@@ -589,10 +600,80 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         wl.door.check(name)
     if wl.claims is not None:
         wl.claims.check(name)
-    for t in (wl.noise, wl.blast_log):          # #29 P7c.1
+    for t in (wl.noise, wl.blast_log, wl.sources, wl.source_tiles):   # #29 P7c.1 / .2
         if t is not None:
             t.check(name)
     return cov, books
+
+
+def _source_out_ptr(name, n, h, w, out) -> int:
+    """#29 P7c.2: the SOURCES stage's hand-out plane, a device ``(N, h, w)``
+    int32 array (or None: 0)."""
+    if out is None:
+        return 0
+    if (tuple(int(x) for x in out.shape) != (n, h, w) or np.dtype(out.dtype) != np.int32
+            or not out.flags.c_contiguous):
+        raise ValueError(f"unit kernel {name}: the source hand-out must be a C-contiguous "
+                         f"({n}, {h}, {w}) int32 device array, not {out.shape} {out.dtype}")
+    return int(out.data.ptr)
+
+
+def take_sources(store, dev_applier, fields: dict, lists, source_out=None) -> tuple:
+    """#29 P7c.2: slot 7's head on the device, ``blast_expansion.
+    take_source_plane`` for every env -- the SOURCES stage of the one applier:
+    each env's pending ``div_source`` plane (``fields``) handed out into
+    ``source_out`` (a device ``(N, h, w)`` int32 array, or None) and zeroed,
+    then the blast-source table (``lists.sources`` / ``lists.source_tiles``)
+    added in row order, counted down and compacted. Returns ``(taken (N,)
+    bool: the reference returned a plane, not None; books)``."""
+    from simulation import applier
+    _cov, books = walk_effects(store, dev_applier, fields, applier.STAGE_SOURCES, None,
+                               lists, source_out=source_out)
+    return books["source_taken"].astype(bool), books
+
+
+def sources_of(sim) -> np.ndarray:
+    """#29 P7c.2: the blast-source table's ONE record function over
+    ``sim.gmap.expansions``."""
+    from simulation import object_tables, unit_schema
+    recs = object_tables.records(unit_schema.SOURCE_TABLE, sim.gmap.expansions)
+    return np.array(recs, dtype=np.int64).reshape(
+        len(recs), object_tables.table_layout(unit_schema.SOURCE_TABLE).width)
+
+
+def source_tiles_of(sim) -> np.ndarray:
+    """#29 P7c.2: the source tile side table's ONE record function (every
+    source's walked tiles in list order)."""
+    from simulation import object_tables, unit_schema
+    recs = object_tables.side_records(unit_schema.SOURCE_TABLE, sim.gmap.expansions, "tiles")
+    return np.array(recs, dtype=np.int64).reshape(
+        len(recs), object_tables.table_layout(unit_schema.SOURCE_TILE_TABLE).width)
+
+
+def sources_to_host(sim, recs, tile_recs) -> None:
+    """#29 P7c.2: the device's blast-source rows as ``sim.gmap.expansions``
+    (IN PLACE: one list object for the map's life), through the schema's
+    decode (``object_tables.unpack`` with the side table)."""
+    from simulation import object_tables, unit_schema
+    lay = object_tables.table_layout(unit_schema.SOURCE_TABLE)
+    tlay = object_tables.table_layout(unit_schema.SOURCE_TILE_TABLE)
+    rows = np.asarray(recs, dtype=np.int64).reshape(-1, lay.width)
+    trows = np.asarray(tile_recs, dtype=np.int64).reshape(-1, tlay.width)
+    sim.gmap.expansions[:] = object_tables.unpack(
+        unit_schema.SOURCE_TABLE, rows, rows.shape[0],
+        sides={"tiles": (trows, trows.shape[0])})
+
+
+def source_tables(n_env: int, bp=None):
+    """#29 P7c.2: an env batch's blast-source table and its tile side table
+    (device)."""
+    from simulation import object_tables, unit_schema
+    return (object_tables.DeviceTable(unit_schema.SOURCE_TABLE, n_env, bp=bp),
+            object_tables.DeviceTable(unit_schema.SOURCE_TILE_TABLE, n_env, bp=bp))
+
+
+__all__ += ["take_sources", "sources_of", "source_tiles_of", "sources_to_host",
+            "source_tables"]
 
 
 def payload_refusals(store, dev_applier, envs) -> str:
@@ -1155,11 +1236,16 @@ class WalkLists:
     (``attack_lists.claims_list``)."""
 
     def __init__(self, cells=None, door=None, claims=None, noise=None,
-                 blast_log=None):
+                 blast_log=None, sources=None, source_tiles=None):
         self.cells, self.door, self.claims = cells, door, claims
         # #29 P7c.1: THE NOISE LIST and THE BLAST LOG (object tables) a
         # PAYLOAD record appends to
         self.noise, self.blast_log = noise, blast_log
+        # #29 P7c.2: THE BLAST-SOURCE TABLE and its tile side table (object
+        # tables, ``unit_schema.SOURCE_TABLE`` / ``SOURCE_TILE_TABLE``): a
+        # comparison row's later ticks (start_expansion), walked by the
+        # SOURCES stage (take_source_plane)
+        self.sources, self.source_tiles = sources, source_tiles
 
 
 class SpraySlotRefused(RuntimeError):

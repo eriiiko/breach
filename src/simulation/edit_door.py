@@ -58,6 +58,12 @@ EDIT_CAP = 8192
 TILE_CAP = 8192
 
 
+#: The keyed draws the host pack is handed for a noisy edit's rows (the EDIT
+#: and TILE rows do not depend on them: only the flush draws).
+from simulation.draws import MatchDraws as _MatchDraws  # noqa: E402
+_ROWS_DRAWS = _MatchDraws(0)
+
+
 class DoorInterleave(RuntimeError):
     """A host producer's edit inside a walk whose device producer's rows are
     gated (decision 7: refused by name, never compared loosely)."""
@@ -76,8 +82,12 @@ def region_args(edit) -> tuple:
         return (int(edit.coords[0]), int(edit.coords[1]),
                 int(_fe._ufx.quantize_scalar(float(edit.coords[2]))),  # p3e-door: _iter_region's
                 int(edit.falloff))
+    if edit.region == _fe.Region.TILES:
+        # #29 P7c.2: the fixed-total deposit -- its tile count and whether it
+        # is scaled (the TILE rows carry the tiles, weights and factors)
+        return (len(edit.coords), 0 if edit.scale is None else 1, 0, 0)
     raise DoorInterleave(f"edit door: a {_fe.Region(edit.region).name} edit has no "
-                         f"device form at the door (TILE and DISC do)")
+                         f"device form at the door (TILE, DISC and TILES do)")
 
 
 def door_rows(gmap, edits_seq, owned_sources=None):
@@ -97,7 +107,9 @@ def door_rows(gmap, edits_seq, owned_sources=None):
                     f"inside the walk of the producers {sorted(owned_sources)}: "
                     f"host and device producers interleave (decision 7 refuses "
                     f"such a tick)")
-    pack, reason = _fe.pack_for_device(gmap, pairs, None)
+    # #29 P7c.2: a noisy edit (the blast smoke) packs only beside the keyed
+    # draws; the rows never read them (the draw is the flush's), so any seed
+    pack, reason = _fe.pack_for_device(gmap, pairs, _ROWS_DRAWS)
     if pack is None:
         raise DoorInterleave(f"edit door: the host pack refuses the tick ({reason})")
     edits = np.zeros((pack.edits.shape[0], EDIT_COLS), dtype=np.int64)
@@ -124,18 +136,51 @@ def _clamp_row(pol):
     return flags, lo, hi
 
 
+def _unscaled_den(r) -> tuple:
+    """#29 P7c.2: an EDIT row's denominator less its noise's and its scale's
+    ONE factors, and whether it is scaled: ``(den, scaled)``. A DISC's base
+    is ONE, so its scale is what is left; a TILES row names it (arg 1)."""
+    one = int(_fe._ufx.FP_ONE)
+    den = r[_fe.E_DEN]
+    if r[_fe.E_NOISY]:
+        if den % one:
+            raise DoorInterleave(f"edit door: a noisy device row {r} whose den is not a "
+                                 f"multiple of ONE")
+        den //= one
+    if r[REGION_COL] == int(_fe.Region.TILES):
+        scaled = bool(r[ARG_COL + 1])
+    else:
+        scaled = den == one * one
+    if scaled:
+        if den % one:
+            raise DoorInterleave(f"edit door: a scaled device row {r} whose den is not a "
+                                 f"multiple of ONE")
+        den //= one
+    return den, scaled
+
+
 def edit_of(gmap, row, tiles) -> tuple:
     """A device EDIT row (and its TILE rows) as the host FieldEdit it stands
     for and its seq: the inverse of :func:`door_rows` for the forms the device
-    door writes (a TILE or -- #29 P7c.1 -- a DISC edit, no noise, no scale, a
-    clamp equal to its field policy's: the replayed edit carries none, which
-    the door quantizes to the same row). Anything else is refused by name."""
+    door writes (a TILE or -- #29 P7c.1 -- a DISC edit, a clamp equal to its
+    field policy's: the replayed edit carries none, which the door quantizes
+    to the same row; #29 P7c.2 -- a TILES edit, and a DISC or TILES edit with
+    its noise (rebuilt from the row's low bound) and its scale (a plane of ONE
+    with each TILE row's factor at its tile)). Anything else is refused by
+    name."""
     r = [int(x) for x in row]
     field = _FIELD_OF_ORDINAL.get(r[_fe.E_FIELD])
     region = r[REGION_COL]
-    if field is None or region not in (int(_fe.Region.TILE), int(_fe.Region.DISC)) \
-            or r[_fe.E_NOISY] or r[_fe.E_DEN] != int(_fe._ufx.FP_ONE):
+    one = int(_fe._ufx.FP_ONE)
+    if field is None or region not in (int(_fe.Region.TILE), int(_fe.Region.DISC),
+                                       int(_fe.Region.TILES)):
         raise DoorInterleave(f"edit door: a device row {r} the door does not write")
+    den, scaled = _unscaled_den(r)
+    if region != int(_fe.Region.TILES) and den != one:
+        raise DoorInterleave(f"edit door: a device row {r} the door does not write")
+    if region == int(_fe.Region.TILE) and (r[_fe.E_NOISY] or scaled):
+        raise DoorInterleave(f"edit door: a noisy or scaled TILE row {r} (the door "
+                             f"writes none)")
     pol = _fe._policy(field)
     if (r[_fe.E_CLAMP_FLAGS], r[_fe.E_LO], r[_fe.E_HI]) != _clamp_row(pol) \
             or any(r[_fe.E_O2_LO:_fe.E_N2_HI + 1]):
@@ -144,9 +189,22 @@ def edit_of(gmap, row, tiles) -> tuple:
     t = [tuple(int(x) for x in tr) for tr in tiles]
     w = int(gmap._w)
     a = r[ARG_COL:ARG_COL + ARG_COLS]
+    scale = None
+    if scaled:
+        scale = np.full((int(gmap._h), w), one, dtype=np.int64)
+        for tr in t:
+            y, x = divmod(tr[1], w)
+            scale[y, x] = tr[3]
+    weight_den = 0
     if region == int(_fe.Region.DISC):
         coords = (a[0], a[1], _fe._ufx.dequantize_scalar(a[2]))
         falloff = _fe.Falloff(a[3])
+    elif region == int(_fe.Region.TILES):
+        if len(t) != a[0]:
+            raise DoorInterleave(f"edit door: a TILES edit naming {a[0]} tiles with "
+                                 f"{len(t)} tile rows")
+        coords = tuple((tr[1] // w, tr[1] % w, tr[2]) for tr in t)
+        falloff, weight_den = _fe.Falloff.FLAT, den
     else:
         if len(t) != 1:
             raise DoorInterleave(f"edit door: a TILE edit with {len(t)} tile rows "
@@ -159,11 +217,15 @@ def edit_of(gmap, row, tiles) -> tuple:
         amount = float(gas_fixed.dequantize_trace(a_q))
     else:
         amount = _fe._ufx.dequantize_scalar(a_q)
+    noise = 0.0
+    if r[_fe.E_NOISY]:
+        noise = _fe._ufx.dequantize_scalar(one - r[_fe.E_LOW])   # p3e-view: re-quantized exactly
     edit = _fe.FieldEdit(field=field, region=_fe.Region(region), coords=coords,
                          falloff=falloff,
                          amount=amount, amount_q=a_q, mode=_fe.EditMode(r[_fe.E_MODE]),
                          channel=(r[_fe.E_SLICE] if field == "gas" else None),
-                         source_id=r[SRC_COL])
+                         source_id=r[SRC_COL], noise=noise, scale=scale,
+                         weight_den=weight_den)
     return edit, r[_fe.E_KEY]
 
 

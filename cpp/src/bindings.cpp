@@ -1268,7 +1268,8 @@ PYBIND11_MODULE(breach_physics, m) {
                  int stage, py::object ring, py::object cells, py::object door,
                  py::object claims, py::object noise, py::object blast_log,
                  py::object door_table, py::object door_tiles, py::object duct_table,
-                 py::object vent_table) {
+                 py::object vent_table, py::object source_table, py::object source_tiles,
+                 std::uintptr_t source_out) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   // #29 P6b.1: the DOORS stage's door table and tile table
@@ -1306,6 +1307,12 @@ PYBIND11_MODULE(breach_physics, m) {
                                      ? nullptr : duct_table.cast<breach_cuda::ObjectTable*>();
                   L.vent_table = vent_table.is_none()
                                      ? nullptr : vent_table.cast<breach_cuda::ObjectTable*>();
+                  // #29 P7c.2: the blast-source tables and the SOURCES hand-out
+                  L.source_table = source_table.is_none()
+                                       ? nullptr : source_table.cast<breach_cuda::ObjectTable*>();
+                  L.source_tiles = source_tiles.is_none()
+                                       ? nullptr : source_tiles.cast<breach_cuda::ObjectTable*>();
+                  L.source_out = source_out;
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
@@ -1315,6 +1322,8 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("noise") = py::none(), py::arg("blast_log") = py::none(),
               py::arg("door_table") = py::none(), py::arg("door_tiles") = py::none(),
               py::arg("duct_table") = py::none(), py::arg("vent_table") = py::none(),
+              py::arg("source_table") = py::none(), py::arg("source_tiles") = py::none(),
+              py::arg("source_out") = (std::uintptr_t)0,
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");

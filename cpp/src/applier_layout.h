@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "4191a9b9e48292d59ae730a375b6c973301643580e816db9933bfe81e4aa0cab";
+constexpr const char* APPLIER_FINGERPRINT = "e327704a11d6324d0642544cc0db8c3522d9513808e1c8751c6887d8f80034b9";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -96,7 +96,9 @@ constexpr int APPLIER_STAGE_DOORS = 3;
 constexpr bool APPLIER_STAGE_DOORS_LANDS = false;
 constexpr int APPLIER_STAGE_DETONATE = 4;
 constexpr bool APPLIER_STAGE_DETONATE_LANDS = false;
-constexpr int APPLIER_N_STAGES = 5;
+constexpr int APPLIER_STAGE_SOURCES = 5;
+constexpr bool APPLIER_STAGE_SOURCES_LANDS = false;
+constexpr int APPLIER_N_STAGES = 6;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;
@@ -134,14 +136,20 @@ constexpr int APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_TO = 22;
 constexpr int APPLIER_BOOK_GE_PUMP_INJECT_VEC = 23;
 constexpr int APPLIER_BOOK_GE_PUMP_RAIL = 24;
 constexpr int APPLIER_BOOK_LEDGER_REFUSED = 25;
-constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 26;
-constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 27;
-constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 28;
-constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 29;
-constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 30;
-constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 31;
-constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 32;
-constexpr int APPLIER_N_BOOKS = 33;
+constexpr int APPLIER_BOOK_DIV_SOURCE_SAT_HITS = 26;
+constexpr int APPLIER_BOOK_DIV_SOURCE_CUT_Q = 27;
+constexpr int APPLIER_BOOK_GE_PAYLOAD_BULK_GAS = 28;
+constexpr int APPLIER_BOOK_GE_PAYLOAD_BULK_GAS_RAIL = 29;
+constexpr int APPLIER_BOOK_BULK_REFUSED = 30;
+constexpr int APPLIER_BOOK_SOURCE_TAKEN = 31;
+constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 32;
+constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 33;
+constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 34;
+constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 35;
+constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 36;
+constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 37;
+constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 38;
+constexpr int APPLIER_N_BOOKS = 39;
 
 // The topology seam's planes: the launch's pointer table order.
 constexpr int APPLIER_PLANE_MATERIAL = 0;
@@ -179,7 +187,8 @@ constexpr int APPLIER_PLANE_FLOW_VY = 31;
 constexpr int APPLIER_PLANE_RIPPLE = 32;
 constexpr int APPLIER_PLANE_RIPPLE_V = 33;
 constexpr int APPLIER_PLANE_WATER_DEPTH = 34;
-constexpr int APPLIER_N_PLANES = 35;
+constexpr int APPLIER_PLANE_DIV_SOURCE = 35;
+constexpr int APPLIER_N_PLANES = 36;
 
 // The tick-end clears' planes (their element size in bytes).
 constexpr int APPLIER_CLEAR_HEAT = 0;

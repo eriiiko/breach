@@ -104,6 +104,9 @@ struct TopoEnv {
     uint32_t* ripple;           // float32 bits
     uint32_t* ripple_v;         // float32 bits
     int32_t* water_depth;
+    // #29 P7c.2: the blast's pending divergence source (Q16 1/s; the strength
+    // path's start_source / start_expansion and the SOURCES stage write it).
+    int32_t* div_source;
 
     __device__ int32_t& g(int slice, int i) const { return gas[(size_t)slice * n + i]; }
     __device__ int64_t bulk(int i) const { return (int64_t)g(o2, i) + (int64_t)g(n2, i); }
@@ -157,6 +160,7 @@ __device__ inline TopoEnv env_view(const PlanePtrs& P, int env, int h, int w, in
     E.ripple = env_plane<uint32_t>(P, APPLIER_PLANE_RIPPLE, env, n);
     E.ripple_v = env_plane<uint32_t>(P, APPLIER_PLANE_RIPPLE_V, env, n);
     E.water_depth = env_plane<int32_t>(P, APPLIER_PLANE_WATER_DEPTH, env, n);
+    E.div_source = env_plane<int32_t>(P, APPLIER_PLANE_DIV_SOURCE, env, n);
     return E;
 }
 
