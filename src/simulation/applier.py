@@ -163,14 +163,20 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:   RESOLVE   slot 4c, ``SimultaneousEffects.resolve`` of the attack slot;
 #:             #29 P7a.2: also slot 2''s landing (``Simulation._update_rounds``'
 #:             own resolve: the same law, the same landing, so the same stage).
+#:   DOORS     #29 P6b.1: slot 9e(d)'s door sweep -- the stage walks the
+#:             door TABLE (``unit_schema.DOOR_TABLE`` and its tile side
+#:             table), not the effect list, in row (= ordinal) order, each door
+#:             applied at once (a door's seal changes the gas the next door
+#:             reads); the effect list is not read.
 #:   DETONATE  #29 P7c.1: the PAYLOAD records slot 2's grenade fuse-outs and
 #:             slot 9e(d')'s charges append (``unit_kernels.grenades`` /
 #:             ``charges_tick``), walked right after their kernel, where the
 #:             reference calls ``execute_payload`` at once; no HIT is ever on
 #:             its list, and a blast's packets land at once in every stage.
-STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("DETONATE", False))
+STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("DOORS", False),
+                 ("DETONATE", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_DETONATE = 0, 1, 2
+STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_DOORS, STAGE_DETONATE = 0, 1, 2, 3
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
 #: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
 #: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
@@ -242,6 +248,51 @@ BOOKS: tuple = (
             "refused payload row (PAYLOAD_REFUSALS), never applied; the run "
             "is refused by name"),
 )
+
+
+def _n_gases() -> int:
+    from simulation.gases import N_GASES
+    return int(N_GASES)
+
+
+#: #29 P6b.1: the books of seal / unseal (the door sweep) and of the gas-N
+#: primitives (the pumps' and vents' from P6b.2 / P6b.3): each the seam
+#: channel it twins, a diagnostic channel the same (``diag_*``: energy that
+#: crossed the books' boundary, outside ``gas_energy_seam_net``), and the
+#: counted trace saturation per gas slice (``trace_clip_books[g]``).
+BOOKS = BOOKS + (
+    BookRow("ge_seal", "gas_energy_books:seal",
+            "seal_tiles' moves (the evacuated bulk carrying the tile's T_abs)"),
+    BookRow("ge_diag_seal_from", "gas_energy_books:diag_seal_from_nonacct",
+            "a seal move from a non-accountable tile (a sealed breach)"),
+    BookRow("ge_diag_seal_to", "gas_energy_books:diag_seal_to_nonacct",
+            "a seal move to a non-accountable receiver (vacuum, ambient)"),
+    BookRow("ge_unseal", "gas_energy_books:unseal",
+            "unseal_tiles' withdrawals (each donor's share at its own T_abs)"),
+    BookRow("ge_diag_unseal_from", "gas_energy_books:diag_unseal_from_nonacct",
+            "an unseal withdrawal from a non-accountable donor (an ambient ring)"),
+    BookRow("ge_diag_unseal_to", "gas_energy_books:diag_unseal_to_nonacct",
+            "an unseal withdrawal into a non-accountable tile"),
+    BookRow("solid_seal", "solid_energy_books:seal",
+            "the solid books' seal channel (a sealed thermal solid born)"),
+    BookRow("solid_unseal", "solid_energy_books:unseal",
+            "the solid books' unseal channel (an opened thermal solid retired)"),
+    BookRow("ge_pump_inject", "gas_energy_books:pump_inject",
+            "inject_gas_n's mint (born at ambient)"),
+    BookRow("ge_pump_extract", "gas_energy_books:pump_extract",
+            "extract_gas_n(_vec)'s withdrawal at the cell's T_abs"),
+    BookRow("ge_pump_transfer", "gas_energy_books:pump_transfer",
+            "transfer_gas_n's move at the donor's T_abs"),
+    BookRow("ge_diag_pump_transfer_from",
+            "gas_energy_books:diag_pump_transfer_from_nonacct",
+            "a transfer from a non-accountable tile"),
+    BookRow("ge_diag_pump_transfer_to",
+            "gas_energy_books:diag_pump_transfer_to_nonacct",
+            "a transfer to a non-accountable tile"),
+) + tuple(BookRow(f"trace_clip_{g}", f"trace_clip_books:{g}",
+                  f"the counted trace saturation's clip on gas slice {g} "
+                  f"(trace_store_sat / trace_add_sat)")
+          for g in range(_n_gases()))
 BOOK_NAMES = tuple(b.name for b in BOOKS)
 N_BOOKS = len(BOOKS)
 
@@ -276,8 +327,40 @@ PLANES: tuple = (
     ("fuel_recip", "int64", 1),
     ("fire_T_ext_plane", "int32", 1),
     ("fuel_per_o2_plane", "int32", 1),
+    # #29 P6b.1: seal_tiles' solver-owned planes (set to their solid steady
+    # state on a sealed tile; unseal writes wave_p), the float ripple pair
+    # (written as the bit pattern of 0.0), and the water depth (the seal's
+    # water rule and _aperture_blocked read it; nothing here writes it).
+    ("wave_p", "int32", 1),
+    ("wind_x", "int32", 1),
+    ("wind_y", "int32", 1),
+    ("flow_vx", "int32", 1),
+    ("flow_vy", "int32", 1),
+    ("ripple", "float32", 1),
+    ("ripple_v", "float32", 1),
+    ("water_depth", "int32", 1),
 )
 PLANE_NAMES = tuple(p[0] for p in PLANES)
+#: #29 P6b.1: the topology seam's REFUSALS (seal_tiles / unseal_tiles /
+#: can_seal_tiles and the gas-N primitives): every exception the Python
+#: raises before it mutates, as a code (0 = done), in ``_seal_blockers``'
+#: order; the device function writes NOTHING when it refuses. ``fault`` is an
+#: operand past the range the device was proved for (Python's ints would hold
+#: it); ``span_too_long`` a span past the device's bound (no Python twin).
+SEAM_REFUSALS: tuple = (
+    ("out_of_bounds", "ValueError: a tile outside the grid"),
+    ("already_solid", "ValueError: seal_tiles over a solid tile"),
+    ("unknown_material", "ValueError: a material id outside the table"),
+    ("material_not_solid", "ValueError: a material whose permeability > 0.0"),
+    ("standing_water", "SealBlocked: a span tile holds standing water"),
+    ("sealed_pocket", "SealBlocked: a gas-holding tile with no receiver"),
+    ("overflow", "OverflowError: a bulk store past int32"),
+    ("duplicate_tile", "ValueError: a span names a tile twice"),
+    ("not_solid", "ValueError: unseal_tiles over an open tile"),
+    ("span_too_long", "a span longer than the device's bound (DOOR_TILE_CAPACITY)"),
+    ("fault", "an operand past the device's proved range"),
+)
+SEAM_REFUSAL_NAMES = tuple(n for n, _w in SEAM_REFUSALS)
 N_PLANES = len(PLANES)
 
 #: The tick-end clears' planes (Simulation._clear_tick_buffers, with a
@@ -338,7 +421,8 @@ _LAYOUT_CACHE: dict = {}
 
 
 def layout() -> Layout:
-    key = (FIELDS, KINDS, BOOK_NAMES, PLANES, CLEAR_PLANES)
+    key = (FIELDS, KINDS, BOOK_NAMES, PLANES, CLEAR_PLANES, STAGES,
+           SEAM_REFUSAL_NAMES)
     hit = _LAYOUT_CACHE.get(key)
     if hit is not None:
         return hit
@@ -349,6 +433,10 @@ def layout() -> Layout:
                     for i, (n, d, c) in enumerate(PLANES))
     text += "".join(f"clear:{i}:{n}:{d}\n"
                     for i, (n, d) in enumerate(CLEAR_PLANES))
+    text += "".join(f"stage:{i}:{n}:{int(lands)}\n"
+                    for i, (n, lands) in enumerate(STAGES))
+    text += "".join(f"refusal:{i + 1}:{n}\n"
+                    for i, n in enumerate(SEAM_REFUSAL_NAMES))
     lay = Layout(fields=FIELDS, kinds=KINDS, books=BOOK_NAMES, planes=PLANES,
                  clears=CLEAR_PLANES,
                  fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest(),
@@ -419,6 +507,10 @@ def header_text(lay: Layout | None = None) -> str:
         lines.append(f"constexpr int APPLIER_CLEAR_{n.upper()}_BYTES = "
                      f"{np.dtype(d).itemsize};")
     lines.append(f"constexpr int APPLIER_N_CLEARS = {len(lay.clears)};")
+    lines += ["", "// #29 P6b.1: the topology seam's refusal codes (0 = done)."]
+    for i, n in enumerate(SEAM_REFUSAL_NAMES):
+        lines.append(f"constexpr int64_t APPLIER_SEAM_{n.upper()} = {i + 1};")
+    lines.append(f"constexpr int APPLIER_N_SEAM_REFUSALS = {len(SEAM_REFUSAL_NAMES)};")
     lines += ["", "}  // namespace applier", ""]
     return "\n".join(lines)
 
@@ -697,10 +789,14 @@ def books_dict(books) -> dict:
 
 
 def host_book(gmap, ref: str) -> int:
-    """The host quantity a book twins (``attr`` or ``attr:key``)."""
+    """The host quantity a book twins (``attr`` or ``attr:key``; #29 P6b.1: a
+    LIST attribute's ``key`` is an index, ``trace_clip_books:g``)."""
     if ":" in ref:
         attr, key = ref.split(":", 1)
-        return int(getattr(gmap, attr).get(key, 0))
+        obj = getattr(gmap, attr)
+        if isinstance(obj, (list, tuple)):
+            return int(obj[int(key)])
+        return int(obj.get(key, 0))
     return int(getattr(gmap, ref))
 
 
@@ -717,4 +813,4 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "payload_index", "KIND_SPRAY_CELLS", "records_and_cells_of",
            "non_resident_planes", "Layout", "layout", "header_text",
            "destroy_records", "pack", "DeviceApplier", "books_dict",
-           "host_book"]
+           "host_book", "STAGE_DOORS", "SEAM_REFUSALS", "SEAM_REFUSAL_NAMES"]

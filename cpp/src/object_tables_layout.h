@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "90e842d591faa831cd6363fb06b3bd53a75a7b6f1899e5d3b382fa63d06e1099";
-constexpr int OBJECT_TABLES_N = 5;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "a02d7d11ebcbb71cfc2679ad97b255439e3adf4d7dc7dcb0c2ee4287eae7fb55";
+constexpr int OBJECT_TABLES_N = 7;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -151,5 +151,41 @@ constexpr int OBJ_BLAST_COL_WALL_Q = 3;
 constexpr int OBJ_BLAST_COL_WALL_Q_W = 1;
 constexpr int OBJ_BLAST_COL_LIVE = 4;
 constexpr int OBJ_BLAST_COL_LIVE_W = 1;
+
+// table 'door_tile': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_DOOR_TILE = 5;
+constexpr int OBJ_DOOR_TILE_W = 4;
+constexpr int OBJ_DOOR_TILE_CAP = 256;
+constexpr int OBJ_DOOR_TILE_LIVE = 3;
+constexpr int OBJ_DOOR_TILE_COL_TY = 0;
+constexpr int OBJ_DOOR_TILE_COL_TY_W = 1;
+constexpr int OBJ_DOOR_TILE_COL_TX = 1;
+constexpr int OBJ_DOOR_TILE_COL_TX_W = 1;
+constexpr int OBJ_DOOR_TILE_COL_HP = 2;
+constexpr int OBJ_DOOR_TILE_COL_HP_W = 1;
+constexpr int OBJ_DOOR_TILE_COL_LIVE = 3;
+constexpr int OBJ_DOOR_TILE_COL_LIVE_W = 1;
+
+// table 'door': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_DOOR = 6;
+constexpr int OBJ_DOOR_W = 7;
+constexpr int OBJ_DOOR_CAP = 32;
+constexpr int OBJ_DOOR_LIVE = 6;
+constexpr int OBJ_DOOR_COL_ORDINAL = 0;
+constexpr int OBJ_DOOR_COL_ORDINAL_W = 1;
+constexpr int OBJ_DOOR_COL_ALIVE = 1;
+constexpr int OBJ_DOOR_COL_ALIVE_W = 1;
+constexpr int OBJ_DOOR_COL_STATE = 2;
+constexpr int OBJ_DOOR_COL_STATE_W = 1;
+constexpr int OBJ_DOOR_COL_WANT_OPEN = 3;
+constexpr int OBJ_DOOR_COL_WANT_OPEN_W = 1;
+constexpr int OBJ_DOOR_COL_TILE_START = 4;
+constexpr int OBJ_DOOR_COL_TILE_START_W = 1;
+constexpr int OBJ_DOOR_COL_TILE_COUNT = 5;
+constexpr int OBJ_DOOR_COL_TILE_COUNT_W = 1;
+constexpr int OBJ_DOOR_COL_LIVE = 6;
+constexpr int OBJ_DOOR_COL_LIVE_W = 1;
 
 }  // namespace object_tables

@@ -1122,6 +1122,15 @@ PYBIND11_MODULE(breach_physics, m) {
                   return out;
               }, py::arg("tables"), py::arg("charges"), py::arg("effects"), py::arg("ticks"),
               "#29 P7b: charges.tick -- the due charges as PAYLOAD records, then the prune.");
+        m.def("unit_door_uses",
+              [counts](const UnitTablesDevice& t, UnitRecordList& req, ObjectTable& doors) {
+                  ObjectSlotCounts c;
+                  py::tuple out = counts(t.n_env(), c);
+                  breach_cuda::unit_door_uses(t, req, doors, c);
+                  return out;
+              }, py::arg("tables"), py::arg("requests"), py::arg("doors"),
+              "#29 P6b.1: slot 1b's USE requests flip the door table's want_open, in "
+              "request-list order; returns (changed, faults, refused, dropped).");
     }
 
     // #29 P7a.3: SLOT 4b (the sprays), THE CELL BUFFER and THE CLAIMS LIST
@@ -1257,9 +1266,15 @@ PYBIND11_MODULE(breach_physics, m) {
               [](FieldApplier& a, UnitStoreDevice& s, const UnitTablesDevice& t,
                  py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
                  int stage, py::object ring, py::object cells, py::object door,
-                 py::object claims, py::object noise, py::object blast_log) {
+                 py::object claims, py::object noise, py::object blast_log,
+                 py::object door_table, py::object door_tiles) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
+                  // #29 P6b.1: the DOORS stage's door table and tile table
+                  breach_cuda::ObjectTable* dp =
+                      door_table.is_none() ? nullptr : door_table.cast<breach_cuda::ObjectTable*>();
+                  breach_cuda::ObjectTable* tp =
+                      door_tiles.is_none() ? nullptr : door_tiles.cast<breach_cuda::ObjectTable*>();
                   breach_cuda::ApplierPlanes p;
                   for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
                       p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
@@ -1283,6 +1298,8 @@ PYBIND11_MODULE(breach_physics, m) {
                   L.blast_log = blast_log.is_none()
                                     ? nullptr
                                     : blast_log.cast<breach_cuda::UnitRecordList*>();
+                  L.door_table = dp;                // #29 P6b.1: the DOORS stage
+                  L.door_tiles = tp;
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
@@ -1290,6 +1307,7 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("ring") = py::none(), py::arg("cells") = py::none(),
               py::arg("door") = py::none(), py::arg("claims") = py::none(),
               py::arg("noise") = py::none(), py::arg("blast_log") = py::none(),
+              py::arg("door_table") = py::none(), py::arg("door_tiles") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");
@@ -1398,6 +1416,40 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("applier"), py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"),
               py::arg("h"), py::arg("w"),
               "#29 P6.4b TEST-ONLY: material = m; on_tile_changed, per staged record.");
+        // #29 P6b.1 TEST-ONLY: the seam's seal / unseal / can_seal, the gas-N
+        // primitives and _aperture_blocked (cuda_topology_probe.cu).
+        m.def("topology_probe_seam",
+              [](const UnitTablesDevice& t, py::array_t<uint64_t, py::array::c_style> ptrs,
+                 int n_gases, int h, int w, py::array_t<int64_t, py::array::c_style> ops,
+                 py::array_t<int64_t, py::array::c_style> n_ops,
+                 py::array_t<int64_t, py::array::c_style> tiles) {
+                  if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
+                      throw std::invalid_argument("topology_probe_seam: ptrs must be (N_PLANES,)");
+                  const int n = t.n_env();
+                  if (ops.ndim() != 3 || ops.shape(0) != n || ops.shape(2) != 8 ||
+                      n_ops.ndim() != 1 || n_ops.shape(0) != n || tiles.ndim() != 3 ||
+                      tiles.shape(0) != n || tiles.shape(2) != 2)
+                      throw std::invalid_argument(
+                          "topology_probe_seam: ops (N, K, 8), n_ops (N,), tiles (N, T, 2)");
+                  for (int e = 0; e < n; ++e)
+                      if (n_ops.data()[e] < 0 || n_ops.data()[e] > ops.shape(1))
+                          throw std::invalid_argument("topology_probe_seam: n_ops outside 0..K");
+                  breach_cuda::ApplierPlanes p;
+                  for (int k = 0; k < applier::APPLIER_N_PLANES; ++k)
+                      p.ptr[k] = (std::uintptr_t)ptrs.data()[k];
+                  p.n_gases = n_gases; p.h = h; p.w = w;
+                  const int k_cap = (int)ops.shape(1), t_cap = (int)tiles.shape(1);
+                  py::array_t<int64_t> res({(py::ssize_t)n, (py::ssize_t)k_cap, (py::ssize_t)9});
+                  py::array_t<int64_t> books({(py::ssize_t)n,
+                                              (py::ssize_t)applier::APPLIER_N_BOOKS});
+                  breach_cuda::topology_probe_seam(t, p, ops.data(), n_ops.data(), k_cap,
+                                                   tiles.data(), t_cap, res.mutable_data(),
+                                                   books.mutable_data());
+                  return py::make_tuple(res, books);
+              }, py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"), py::arg("h"),
+              py::arg("w"), py::arg("ops"), py::arg("n_ops"), py::arg("tiles"),
+              "#29 P6b.1 TEST-ONLY: seal / unseal / can_seal / inject / extract / transfer "
+              "/ _aperture_blocked per op; returns (results (N, K, 9), books).");
     }
 
     // #29 P7.0a: slot 9d (cuda_unit_ignition.cu) and the kit's TEST-ONLY probes

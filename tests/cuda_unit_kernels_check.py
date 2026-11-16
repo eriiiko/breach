@@ -480,6 +480,8 @@ def part_tables():
         want.update(shoot_reference(sim))                    # #29 P7a.2's rows
         from cuda_unit_payloads_check import table_reference as pay_reference
         want.update(pay_reference(sim))                      # #29 P7c.1's rows
+        from cuda_unit_doors_check import table_reference as doors_reference
+        want.update(doors_reference(sim))                    # #29 P6b.1's rows
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")

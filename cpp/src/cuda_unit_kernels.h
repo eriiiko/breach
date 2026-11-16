@@ -273,6 +273,17 @@ void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,
                        UnitRecordList& effects, const int64_t* ticks,
                        const ObjectSlotCounts& out);
 
+// ---- #29 P6b.1: the doors (cuda_unit_doors.cu) ------------------------------------
+//   cuda_unit_doors.cu        slot 1b   the USE request as a door-table write
+//   (the 9e(d) sweep is the applier's DOORS stage: cuda_applier.cu over
+//   cuda_unit_doors.cuh; seal / unseal / the gas-N primitives are the
+//   topology seam's, cuda_topology.cuh)
+//
+// Slot 1b's USE records flip the door table's want_open, one thread per env
+// in request-list order (after unit_verbs). Counts: changed (flips), faults.
+void unit_door_uses(const UnitTablesDevice& tables, UnitRecordList& requests, ObjectTable& doors,
+                    const ObjectSlotCounts& out);
+
 // ---- #29 P7.0a: slot 9d (cuda_unit_ignition.cu), the kit's probes ----------------
 //   cuda_unit_ignition.cu     slot 9d   combat.apply_temperature_ignition
 //   cuda_unit_kit_probe.cu    TEST-ONLY: the device draws (cuda_unit_draws.cuh),

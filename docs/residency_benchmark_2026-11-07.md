@@ -1722,3 +1722,29 @@ timing. "own" is the shipped row; "r 6" the same row with its disc, gas, heat an
 plasma rows' 2-3 tile discs with their wave stencils are the dearest). A 6-tile disc costs ~3.5-4 ms whatever the
 row: the serial thread-0 walk of the disc and its wave stencil (9 TILE edits per open tile, each a door row and its
 tile row) dominates. P7c.2's fan-out over the block's threads is where that cost goes if the device tick needs it.
+## P6b.1: the door sweep, seal / unseal and the use write (2026-11-16)
+
+**What.** Slot 9e(d)'s door sweep as the applier's DOORS stage (`cpp/src/cuda_applier.cu` over
+`cpp/src/cuda_unit_doors.cuh` and the topology seam's `seal_tiles` / `unseal_tiles` / `can_seal`), on the door table
+and its tile side table. Class T.
+
+**Method.** `tests/cuda_unit_doors_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the P7a.3
+agent's full pytest suite ran on the same machine (a CUDA gate subprocess of its own on the card; the card at 1 %
+just before, 44 % just after). The door scene (variant 0, 40 x 64 tiles, 8 doors, 19 span tiles) at its fourth tick,
+replicated to N envs. "idle" is `unit_kernels.sweep_doors` with every latch agreeing with its door (no transition);
+"4 doors change" flips the latch of four doors (two open, two close: `unseal_tiles` and `seal_tiles` run, the close
+behind the occupancy test and `can_seal`). Each timed call is the Python face: the plane pointers' checks, the
+launch, the books' D2H. "seal + unseal" is the TEST-ONLY probe sealing and reopening a 3-tile span per env (its op
+staging, the launch, the results' and books' D2H: an upper bound on the seam functions themselves). The tables and
+the planes are re-staged before each repetition (not timed). Medians of 200 repetitions, ms.
+
+| op | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| 9e(d) sweep, idle (8 doors) | 0.303 | 0.303 | 0.478 |
+| 9e(d) sweep, 4 doors change | 0.586 | 0.546 | 0.713 |
+| seal + unseal of a 3-tile span (probe) | 0.503 | 0.494 | 1.098 |
+
+**Reading.** At the call's floor up to N = 8 (one launch, one book download); the rise at N = 64 is the books'
+and the probe's per-call host staging, not the walk (one thread per env walks a few doors). A door change costs a
+quarter of a millisecond more than the idle walk: the seal and unseal are serial in the env's thread, a few tiles
+each. On the device tick (P7e) the books stay on the device and the floor is not per slot.

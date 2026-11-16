@@ -182,6 +182,11 @@ if(BREACH_CUDA)
         # (cuda_unit_march.cuh); Class T, pure integer, on the same target-wide
         # CUDA determinism floor.
         src/cuda_unit_shooting.cu   # slots 4 (shooting) and 2' (rounds)
+        # #29 P6b.1: the doors -- slot 1b's USE as a door-table write (the 9e(d)
+        # sweep is the applier's DOORS stage, cuda_applier.cu; seal / unseal and
+        # the gas-N primitives are the topology seam's); Class T, pure integer,
+        # on the same target-wide CUDA determinism floor.
+        src/cuda_unit_doors.cu      # slot 1b's door-table write
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
