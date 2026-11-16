@@ -42,10 +42,8 @@ public:
 
     int live_col() const { return live_; }
 
-    // Set every env's table from host memory: rows (N * cap * width) and
-    // counts (N, each in 0 .. cap: the caller checks); overflow and staging
-    // counts back to 0. Returns once the copies landed.
-    void upload(const int64_t* rows, const int64_t* counts);
+    // upload(): the record list's own (UnitRecordList::upload, #29 P7a.3):
+    // every env set from host memory, overflow and staging counts back to 0.
     // Append, per env e, its first n[e] of `recs` (N * k * width; n[e] <= k:
     // the caller checks) in order after what the table holds: ONE thread per
     // env through the record list's sink. Past cap: not written, counted.

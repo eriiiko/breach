@@ -1645,6 +1645,26 @@ repetition (not timed). Medians of 200 repetitions, ms.
 **Reading.** Flat in N: both slots are at the call's floor (two launches and one host sync for the counts); a
 table is a few KiB per env. On the device tick (P7e) the counts stay on the device and neither floor is per
 tick.
+
+## P7a.3: slot 4b, the sprays, and the SPRAY_CELLS apply (2026-11-16)
+
+**Method.** `tests/cuda_unit_sprays_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); the other agent of
+the night (P7a.2) was building and running its CUDA gates beside it, so the card and the CPU were shared. The spray
+scene's tick 5 (12 units, 8 sprayers depositing: Dragon-7s, a Miasma Vent, a Dragon-9 heavy at 20 tiles, 1 m tiles,
+a 40 x 64 grid) copied into N envs. 4b: the Python face (the store's tick H2D is outside the timing; the kernel --
+one block per env, 128 threads splitting each cone's box --, the counts' D2H). SPRAY_CELLS: the resolve stage walking
+the tick's 8 SPRAY_CELLS records over 154 cells per env (308 door edits and 308 claims per env), incl. the books', the
+coverage's and the door / claims lists' overflow-count downloads. Medians of 50 repetitions, ms.
+
+| op | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| 4b sprays (8 sprayers per env) | 0.681 | 0.705 | 0.658 |
+| SPRAY_CELLS apply (154 cells per env) | 0.850 | 0.838 | 0.942 |
+
+**Reading.** Flat in N: both are at the call's floor (a launch and the host syncs for the counts). The first draft
+of the apply read the door's and the claims list's overflow by downloading the whole lists (41.8 ms at N = 64:
+~110 MB of rows); the record list's `counts()` reads only the counts and dropped counts, which took it to the floor.
+On the device tick (P7e) none of these counts comes down per tick.
 ## P7a.2: slot 4's shooting, slot 2''s march and its landing (2026-11-15)
 
 **What.** Slot 4's shooting (`cpp/src/cuda_unit_shooting.cu`'s `unit_shooting`: one thread per row, the gates, the

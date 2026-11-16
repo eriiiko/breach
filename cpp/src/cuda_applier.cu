@@ -24,6 +24,7 @@
 #include "cuda_batch.cuh"          // tstream, benv, bptr, bgrid, env_off
 #include "cuda_topology.cuh"       // the topology seam
 #include "cuda_unit_damage.cuh"    // apply_packet, the landing, the sinks, the library
+#include "cuda_unit_spray.cuh"     // #29 P7a.3: SPRAY_CELLS (the edit door, the claims)
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
@@ -57,6 +58,15 @@ struct WalkUnits {
     unsigned long long* cnt; // the store's counts (coverage)
 };
 
+// #29 P7a.3: the walk's lists (ApplierLists' device views; has_* false when
+// the caller handed none: an effect needing it FAULTS).
+struct WalkLists {
+    bool has_cells = false, has_door = false, has_claims = false;
+    RecordListView cells;
+    edit_door::DoorView door;
+    RecordListView claims;
+};
+
 // The row of an effect's `row` field, or nullptr (out of the env's rows or a
 // padding row: never a target).
 __device__ __forceinline__ int64_t* effect_row(const WalkUnits& U, int64_t r) {
@@ -70,7 +80,7 @@ __device__ __forceinline__ int64_t* effect_row(const WalkUnits& U, int64_t r) {
 __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
                           const unsigned long long* dropped, int cap, topo::PlanePtrs P, int h,
                           int w, int n_gases, const int64_t* tables, int64_t* books,
-                          WalkUnits U) {
+                          WalkUnits U, WalkLists WL) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = benv();
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
@@ -182,6 +192,19 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
             E.wall_hp[i] = (int32_t)hp;
             B[APPLIER_BOOK_APPLIED] += 1;
             if (hp <= 0) topo::destroy_wall(E, tab, (int)y, (int)x, B);
+        } else if (kind == APPLIER_KIND_SPRAY_CELLS) {
+            // #29 P7a.3: combat._enqueue_spray_cells -- the edits through the
+            // door, the claims onto the claims list (cuda_unit_spray.cuh)
+            if (!WL.has_cells || !WL.has_door || !WL.has_claims) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            unit_lib::RecordSink cs = unit_lib::list_env_sink(WL.claims, e);
+            if (!unit_spray::apply_spray_cells(r, WL.cells, e, WL.door, cs, tab, h, w, n_gases)) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                continue;
+            }
+            B[APPLIER_BOOK_APPLIED] += 1;
         } else if (kind == APPLIER_KIND_PAYLOAD) {
             B[APPLIER_BOOK_REFUSED] += 1;                  // no device function until P7c.1
         } else {
@@ -288,7 +311,7 @@ void FieldApplier::download_books(int64_t* host) {
 
 void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
                  const ApplierPlanes& planes, int stage, UnitEventRing* ring,
-                 const ApplierOut& out) {
+                 const ApplierOut& out, const ApplierLists* lists) {
     if (tables.n_env() != a.n_env() || store.n_env() != a.n_env())
         throw std::invalid_argument("applier_run: the tables / store are for another env count");
     if (stage < 0 || stage >= APPLIER_N_STAGES)
@@ -314,10 +337,36 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
                              (size_t)a.n_env() * APPLIER_N_BOOKS * sizeof(int64_t), tstream()),
              "zero books");
     store.begin_counts();
+    WalkLists WL;
+    if (lists != nullptr) {
+        const int n = a.n_env();
+        if (lists->cells != nullptr) {
+            if (lists->cells->n_env() != n || lists->cells->width() != unit_spray::CELL_W)
+                throw std::invalid_argument("applier_run: the cell buffer is for another env "
+                                            "count or not (y, x, div) wide");
+            WL.has_cells = true;
+            WL.cells = list_view(*lists->cells);
+        }
+        if (lists->door != nullptr) {
+            if (lists->door->n_env() != n)
+                throw std::invalid_argument("applier_run: the edit door is for another env count");
+            WL.has_door = true;
+            WL.door.edits = list_view(lists->door->edits());
+            WL.door.tiles = list_view(lists->door->tiles());
+            WL.door.seq = lists->door->seq_dev();
+        }
+        if (lists->claims != nullptr) {
+            if (lists->claims->n_env() != n || lists->claims->width() != 4)
+                throw std::invalid_argument("applier_run: the claims list is for another env "
+                                            "count or not (channel, y, x, attacker) wide");
+            WL.has_claims = true;
+            WL.claims = list_view(*lists->claims);
+        }
+    }
     UnitRecordList& L = a.list();
     k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(
         stage, L.records_dev(), L.count_dev(), L.dropped_dev(), L.cap(), P, planes.h, planes.w,
-        planes.n_gases, tables.values(), a.books_dev(), U);
+        planes.n_gases, tables.values(), a.books_dev(), U, WL);
     ap_check(cudaGetLastError(), "applier launch");
     a.download_books(out.books);
     std::unique_ptr<int64_t[]> f(new int64_t[(size_t)a.n_env()]);

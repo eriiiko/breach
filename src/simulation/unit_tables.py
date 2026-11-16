@@ -865,6 +865,137 @@ _IGNITION_ROWS: tuple = (
 ROWS = ROWS + _IGNITION_ROWS
 
 
+# == #29 P7a.3: slot 4b, the sprays (combat.process_sprays / deposit_spray_cone
+# / spray_cone_tiles), per weapons-table row from the sim's own WeaponDef rows
+# and the round each fires (WeaponsTables.ammo_for_weapon), each quantized by
+# the function the law quantizes it with per call (unit_fixed.quantize_scalar,
+# gas_fixed.quantize_trace_scalar, combat.cone_q16_of_deg); the spray's two
+# edit source ids (combat._SRC_SPRAY_*); and THE DEVICE EDIT DOOR's policy
+# clamps per field ordinal (field_edit._clamp_q of FIELD_POLICY's pair, in the
+# field's currency, as field_edit._edit_door forms them). ===================
+def _spray_ammo(src):
+    """Per weapons-table row: the round ``ammo_for_weapon`` resolves (None
+    when it raises: a melee row's ``ammo_family = "none"``)."""
+    tabs = src.sim.weapons_tables
+    out = []
+    for w in _weapon_rows(src):
+        try:
+            out.append(tabs.ammo_for_weapon(w))
+        except KeyError:
+            out.append(None)
+    return out
+
+
+def _spray_gas_ids(src):
+    """Per weapons-table row: the gas slice of its round's ``gas_species`` in
+    the map's own gas table (-1 none). A CONSERVATIVE slice is refused by
+    name here: the "gas" policy refuses it at the flush (bulk N is what
+    gas_energy is denominated against), so no device row carries one."""
+    gases = src.sim.gmap.gases
+    out = []
+    for a in _spray_ammo(src):
+        if a is None or not a.gas_species:
+            out.append(-1)
+            continue
+        gid = int(gases.name_to_id[a.gas_species])
+        if bool(gases.conservative[gid]):
+            raise ValueError(f"unit tables: the round {a.name!r} sprays the "
+                             f"CONSERVATIVE gas {a.gas_species!r} (the gas policy "
+                             f"refuses it)")
+        out.append(gid)
+    return tuple(out)
+
+
+def _spray_cone_half(src):
+    from simulation import combat
+    return tuple(combat.cone_q16_of_deg(w.cone_half_angle_degrees)  # traits-class: a jet's cone, no SPREAD hook (as the law reads it)
+                 for w in _weapon_rows(src))
+
+
+def _spray_src(name):
+    def g(src):
+        from simulation import combat
+        return int(getattr(combat, name))
+    return g
+
+
+def _edit_clamps(src):
+    """Per field ordinal (field_edit.DEVICE_FIELD_ORDINALS): (flags, lo, hi)
+    of the policy's default clamp in the field's currency -- flags bit 0 a
+    lower bound, bit 1 an upper (pack_for_device's first pair); 0 for an
+    unbounded side."""
+    from simulation import field_edit as fe
+    out = []
+    for name in sorted(fe.FIELD_POLICY):
+        pol = fe.FIELD_POLICY[name]
+        pair = fe._clamp_q(pol.clamp, fe._CURRENCY[pol.dtype])
+        flags = lo = hi = 0
+        if pair is not None:
+            if pair[0] is not None:
+                flags |= 1
+                lo = int(pair[0])
+            if pair[1] is not None:
+                flags |= 2
+                hi = int(pair[1])
+        out.append((flags, lo, hi))
+    return out
+
+
+def _n_fields():
+    from simulation import field_edit as fe
+    return len(fe.FIELD_POLICY)
+
+
+_SPRAY_ROWS: tuple = (
+    TableRow("spray_range_tiles", _n_weapons,
+             _melee_col(lambda w: w.range_tiles), 0, 1 << 14,
+             "per weapons-table row: range_tiles (the cone's integer range; <= "
+             "2^14 keeps dot_q^2 and dist_sq * c_q^2 inside int64)"),
+    TableRow("spray_cone_half_q", _n_weapons, _spray_cone_half, 0, 102944,
+             "per weapons-table row: cone_q16_of_deg(cone_half_angle_degrees), "  # traits-class: a jet's cone, no SPREAD hook (the law reads the class value)
+             "Q16 radians (< 90 degrees: the dot_q >= 0 gate loses nothing)"),
+    TableRow("spray_has_ammo", _n_weapons,
+             lambda src: tuple(int(a is not None) for a in _spray_ammo(src)), 0, 1,
+             "per weapons-table row: 1 when ammo_for_weapon resolves a round "
+             "(a burst on a row without one faults: the law would raise)"),
+    TableRow("spray_heat_q", _n_weapons,
+             lambda src: tuple(0 if a is None else unit_fixed.quantize_scalar(
+                 float(a.heat_deposit)) for a in _spray_ammo(src)),  # p3e-door: deposit_spray_cone's
+             0, 1 << 48,
+             "per weapons-table row: quantize_scalar(ammo.heat_deposit), Q16 heat "
+             "per tick at d = 0"),
+    TableRow("spray_gas_q", _n_weapons,
+             lambda src: tuple(0 if a is None else _trace_q(a.gas_amount)
+                               for a in _spray_ammo(src)),
+             0, 1 << 48,
+             "per weapons-table row: quantize_trace_scalar(ammo.gas_amount), the "
+             "trace currency per tick at d = 0"),
+    TableRow("spray_gas_id", _n_weapons, _spray_gas_ids, -1, 255,
+             "per weapons-table row: the map's gas slice of the round's "
+             "gas_species (-1 none; a conservative slice refused at the read)"),
+    TableRow("spray_src_heat", 1, _spray_src("_SRC_SPRAY_HEAT"), 0, 1 << 20,
+             "combat._SRC_SPRAY_HEAT: a spray heat edit's source_id"),
+    TableRow("spray_src_gas", 1, _spray_src("_SRC_SPRAY_GAS"), 0, 1 << 20,
+             "combat._SRC_SPRAY_GAS: a spray gas edit's source_id"),
+    TableRow("edit_clamp_flags", _n_fields,
+             lambda src: tuple(c[0] for c in _edit_clamps(src)), 0, 3,
+             "per field ordinal: the policy clamp's bounds present (bit 0 lo, "
+             "bit 1 hi), the device edit door's EDIT row column"),
+    TableRow("edit_clamp_lo", _n_fields,
+             lambda src: tuple(c[1] for c in _edit_clamps(src)), I64_MIN, I64_MAX,
+             "per field ordinal: the policy clamp's lower bound in counts (0 none)"),
+    TableRow("edit_clamp_hi", _n_fields,
+             lambda src: tuple(c[2] for c in _edit_clamps(src)), I64_MIN, I64_MAX,
+             "per field ordinal: the policy clamp's upper bound in counts (0 none)"),
+)
+
+
+def _trace_q(v) -> int:
+    from simulation import gas_fixed
+    return int(gas_fixed.quantize_trace_scalar(float(v)))  # p3e-door: deposit_spray_cone's
+
+
+ROWS = ROWS + _SPRAY_ROWS
 # == #29 P7a.2: slot 4's shooting and slot 2''s rounds (combat._directional_fire,
 # fire_burst, BulletInFlight.advance, start_spray_burst_directional,
 # attack_resolver's exposure / crit rolls) -- per weapons-table row and per

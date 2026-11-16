@@ -1716,6 +1716,87 @@ line each:
   CHAINED (2' + landing; 4 + 4a + 4c; the host law run 0 times); SHIP 500
   ticks. Every gate broken once (the patch's report).
 
+**As built (P7a.3, 2026-11-16).** The cut table's P7a.3 row; decisions 1, 4
+and 7(a) landed as written. One line each:
+- SLOT 4b is `cpp/src/cuda_unit_sprays.cu` (`unit_kernels.sprays(store,
+  effects, cells, {"solid": ...})`): ONE block per env, thread 0 walking the
+  rows in id order (a dead or interrupted burst cleared; a live one's cone,
+  then the countdown at once), the block's threads splitting each cone's box
+  (`decide_box`), thread 0 emitting it in row-major order (`emit_box`). Counts:
+  changed, faults, refused (a WEGO burst: no aim angle), dropped (records +
+  cells).
+- THE CONE is `cpp/src/cuda_unit_spray.cuh` (`cone_from` / `cone_params`,
+  `cone_tile`, `box_size`): `spray_cone_tiles` integer for integer over the
+  PHYSICAL `unit_sight::has_los`; proved for a range <= 2^14 and an apex
+  within +-2^20. The launch's scratch is one box per env, `min((2 r_max +
+  1)^2, h w)` (`unit_kernels.spray_box_max`). TEST-ONLY probe
+  `unit_kernels.spray_cone_probe` (the same decide / emit pair).
+- THE CELL BUFFER is a record list of `(y, x, div)` (`attack_lists.cell_buffer`,
+  cap 4096 per env per tick, storage); SPRAY_CELLS `(owner, heat_q, gas_id,
+  gas_q, start, count)` holds a span into it (`applier.record_of` recognises
+  `_enqueue_spray_cells` and appends its cells: `records_and_cells_of`).
+- SPRAY_CELLS AT THE RESOLVE is `unit_spray::apply_spray_cells`, a branch of
+  the one `k_applier` (any stage; all operands checked before the first
+  write). The walk's further reach is ONE optional argument, `ApplierLists` /
+  `unit_kernels.WalkLists(cells, door, claims)`; a SPRAY_CELLS without them
+  faults.
+- THE DEVICE EDIT DOOR (step (a)) is `cpp/src/cuda_edit_door.{h,cuh,cu}` +
+  `edit_door.DeviceEditDoor`: per env the EDIT rows (pack_for_device's 16
+  columns, then `source_id` and `region`, the sort key step (c) needs), the
+  TILE rows (edit index local to the env's list) and `seq` (reset by `begin`,
+  set by `set_seq`). `door_tile_edit` is `_edit_door` + `_iter_region`'s TILE
+  for an edit with `amount_q`, FLAT, no noise, no scale, the policy clamp (the
+  tables' `edit_clamp_*` rows per field ordinal). Host reference
+  `edit_door.door_rows`; chained landing `edit_door.replay` (each row through
+  `EditQueue.enqueue` at its key, then re-packed and compared). E_ENV is 0, as
+  in the pack.
+- THE CLAIMS LIST is a record list of `(channel, y, x, attacker)`
+  (`attack_lists.claims_list`, cap 8192), every claim in order (duplicates
+  kept, the environment's dropped): `credit_at`'s table as it stands. Host
+  side: `claim_rows`, `first_claims`, `replay_claims`.
+- ELEVEN TABLE ROWS (T 772 -> 912): `spray_range_tiles`, `spray_cone_half_q`
+  (`cone_q16_of_deg`), `spray_has_ammo`, `spray_heat_q`, `spray_gas_q`
+  (`quantize_trace_scalar`), `spray_gas_id` (per map; a conservative slice
+  refused at the read), `spray_src_heat`, `spray_src_gas`, `edit_clamp_flags`,
+  `edit_clamp_lo`, `edit_clamp_hi`. `burst_ticks` is NOT a row: 4b never reads
+  it (the burst's start, slot 4, is P7a.2's).
+- THE RECORD LIST gained `upload` (moved up from the object tables, which
+  inherit it) and `counts()` (counts and dropped without the records), and the
+  unit library `list_env_sink` (a serial producer's sink; P7b's two private
+  copies may fold onto it).
+- THE HARNESS: `LISTS` rows `spray_cells` (the effect list's cells),
+  `edits` (the queue's edits since the slot's mark, through `door_rows`, an
+  edit of another source refused as an interleave; landed by `replay`),
+  `claims` (every `TickCredit.claim` of the slot through a tap; landed by
+  `replay_claims`); the scalar input `edit_seq` (the window's base: the
+  device's keys are ABSOLUTE in the shadow and the chained run).
+- CHOICES where this section was silent: 4b is one serial block per env with a
+  block-wide box (not a per-row producer: its cells are variable-length and the
+  record must follow them); the device door writes E_ENV 0 like the pack; the
+  claims list keeps every claim (the reader's first-match is the reference's
+  first-claim-wins, so the writer needs no lookup); the CELL / CLAIM / EDIT
+  capacities are storage sized from the Dragon-9 heavy at 60 tiles.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `_enqueue_spray_cells`
+  reads no map state, so an earlier CHEW of the walk changes no edit or claim
+  (gated: the scene's carbine destroys a glass tile a later spray's cells
+  hold); `process_sprays` reads the process-wide `combat.weapon_tables()`
+  while the rows read `sim.weapons_tables` (one object per match; two sims of
+  different tile sizes in one process would see another sim's range -- an
+  accepted gap, the batch gates keep one tile size); every shipped spray cone
+  yields at least a wall face (zero cells unreachable on the shipped rows);
+  ship_demo's bots never spray (0 deposits in 500 ticks).
+- THE GATES (`tests/cuda_unit_sprays_check.py`, wrapper
+  `tests/test_cuda_unit_sprays.py`; CPU `tests/test_spray_device_records.py`):
+  TABLES; CONE (6000 synthetic cones over four maps, set, order and divisors);
+  SCENE (every shipped spray, a census of 20 branches each required, three
+  named unreachable; 4b + 4c shadowed: rows, records, cells, ring, planes,
+  books, door rows, claims); BATCH N = 2 / 8; PADDING; OVERFLOW (cells, effect
+  list, claims, door); REFUSE (WEGO burst, interleave, a span outside the
+  buffer, a walk without its lists); SEQ (a window base of 1234: the keys are
+  absolute); CHAINED 4b + 4c, and 4 + 4a + 4b + 4c (P7a.2's slot 4 arming the
+  bursts; merged in at 97098c7a); SHIP 500 ticks. Every
+  gate broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are
