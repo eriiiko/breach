@@ -503,7 +503,7 @@ def _plane_ptrs(name, n_env, fields):
 
 
 def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
-                 lists=None):
+                 lists=None, refused_ok: bool = False):
     """THE PER-ENV SERIAL APPLIER's walk (#29 P6.4b; P7a.1: one kernel, a
     STAGE argument): every env's effect list (``dev_applier``, a
     :class:`simulation.applier.DeviceApplier` -- staged from the host, or
@@ -524,7 +524,13 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
     reach, a :class:`WalkLists` (the cell buffer a SPRAY_CELLS span points
     into, the device edit door, the claims list); a SPRAY_CELLS record with
     none faults. Their overflows are refused by name after the walk
-    (``attack_lists.ListOverflow``, ``edit_door.DoorOverflow``)."""
+    (``attack_lists.ListOverflow``, ``edit_door.DoorOverflow``). #29 P7c.1:
+    a PAYLOAD record is applied (``cpp/src/cuda_unit_payload.cuh``) and needs
+    every list of ``lists`` (the door, the claims, ``noise``, ``blast_log``)
+    and the ring, or it faults; a PAYLOAD of a refused payload row
+    (``applier.PAYLOAD_REFUSALS``) writes nothing and is refused by name
+    unless ``refused_ok`` (a chained run that replays those rows on the
+    host)."""
     from simulation import applier
     n = store.shape[0]
     name = f"applier[{applier.STAGE_NAMES[stage]}]"
@@ -535,16 +541,22 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         _check_ring(name, store, ring)
     ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
     wl = lists if lists is not None else WalkLists()
-    for nm, obj in (("cells", wl.cells), ("door", wl.door), ("claims", wl.claims)):
-        if obj is not None and obj.n_env != n:
-            raise ValueError(f"unit kernel {name}: the {nm} list is for {obj.n_env} "
+    for nm, obj in (("cells", wl.cells), ("door", wl.door), ("claims", wl.claims),
+                    ("noise", wl.noise), ("blast_log", wl.blast_log)):
+        ne = None if obj is None else getattr(obj, "n_env", None)
+        if obj is not None and ne is None:
+            ne = obj.shape[0]                    # an object table (#29 P7c.1)
+        if obj is not None and ne != n:
+            raise ValueError(f"unit kernel {name}: the {nm} list is for {ne} "
                              f"envs, the store {n}")
     b, cov, rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
         int(stage), None if ring is None else ring.buffer,
         None if wl.cells is None else wl.cells.buffer,
         None if wl.door is None else wl.door.buffer,
-        None if wl.claims is None else wl.claims.buffer)
+        None if wl.claims is None else wl.claims.buffer,
+        None if wl.noise is None else wl.noise.buffer,
+        None if wl.blast_log is None else wl.blast_log.buffer)
     books = applier.books_dict(b)
     cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books
@@ -561,13 +573,12 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         raise UnitEventOverflow(
             f"unit kernel {name}: {int(np.asarray(rdrop).sum())} event(s) in "
             f"env(s) {envs} did not fit the event ring")
-    if books["refused"].any():
+    if books["refused"].any() and not refused_ok:
         envs = [int(e) for e in np.nonzero(books["refused"])[0]]
         raise applier.EffectRefused(
             f"unit kernel {name}: {int(books['refused'].sum())} record(s) in "
-            f"env(s) {envs} of a kind with no device function yet "
-            f"({', '.join(applier.UNAPPLIED_KINDS)}: execute_payload arrives with "
-            f"P7c.1): not applied")
+            f"env(s) {envs} refused, not applied: "
+            + payload_refusals(store, dev_applier, envs))
     if books["faults"].any():
         envs = [int(e) for e in np.nonzero(books["faults"])[0]]
         raise applier.ApplierFault(
@@ -578,7 +589,37 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         wl.door.check(name)
     if wl.claims is not None:
         wl.claims.check(name)
+    for t in (wl.noise, wl.blast_log):          # #29 P7c.1
+        if t is not None:
+            t.check(name)
     return cov, books
+
+
+def payload_refusals(store, dev_applier, envs) -> str:
+    """#29 P7c.1: the refused PAYLOAD records of ``envs`` named (the payload
+    row and why: ``applier.PAYLOAD_REFUSALS`` through the env's
+    ``payload_refuse`` table row)."""
+    from simulation import applier, unit_tables
+    recs, counts, _d = dev_applier.download()
+    tab = np.asarray(store.tables.download(), dtype=np.int64)
+    col = unit_tables.layout().column("payload_refuse")
+    from simulation.weapons import get_tables
+    names = list(get_tables().payloads.by_name)
+    pc = applier.kind_field("PAYLOAD", "payload")
+    out = []
+    for e in envs:
+        for i in range(min(int(counts[e]), recs.shape[1])):
+            r = recs[e, i]
+            if int(r[0]) != applier.KIND_PAYLOAD:
+                continue
+            p = int(r[pc])
+            if not 0 <= p < col.width:
+                continue
+            code = int(tab[e, col.offset + p])
+            if code:
+                out.append(f"env {e}: PAYLOAD payloads.{names[p]} -- "
+                           f"{applier.payload_refusal_reason(code)}")
+    return "; ".join(out) if out else "PAYLOAD records of refused rows"
 
 
 def apply_effects(store, dev_applier, fields: dict, per_env,
@@ -604,6 +645,18 @@ def resolve(store, dev_applier, fields: dict, ring, lists=None) -> tuple:
     from simulation import applier
     return walk_effects(store, dev_applier, fields, applier.STAGE_RESOLVE, ring,
                         lists)
+
+
+def detonate(store, dev_applier, fields: dict, ring, lists, refused_ok: bool = False):
+    """#29 P7c.1: the PAYLOAD records slot 2's grenades / slot 9e(d')'s
+    charges appended (:func:`grenades` / :func:`charges_tick`), walked in the
+    DETONATE stage right after their kernel -- where the reference calls
+    ``execute_payload`` at once: ``lists`` a :class:`WalkLists` with the
+    door, the claims, the noise list and the blast log. Returns
+    ``(coverage, books)``."""
+    from simulation import applier
+    return walk_effects(store, dev_applier, fields, applier.STAGE_DETONATE, ring,
+                        lists, refused_ok=refused_ok)
 
 
 def melee(store, dev_applier, ticks) -> np.ndarray:
@@ -940,6 +993,15 @@ def rounds_to_host(sim, records) -> list:
     return out
 
 
+def blast_log_of(sim) -> np.ndarray:
+    """#29 P7c.1: the blast log's ONE record function over
+    ``sim.gmap.blast_log``."""
+    from simulation import object_tables, unit_schema
+    recs = object_tables.records(unit_schema.BLAST_LOG_TABLE, sim.gmap.blast_log)
+    return np.array(recs, dtype=np.int64).reshape(
+        len(recs), object_tables.table_layout(unit_schema.BLAST_LOG_TABLE).width)
+
+
 def noise_of(sim) -> np.ndarray:
     """The noise list's ONE record function over ``sim.gmap.noise_log``."""
     from simulation import object_tables, unit_schema
@@ -949,7 +1011,8 @@ def noise_of(sim) -> np.ndarray:
 
 
 __all__ += ["SHOOT_FIELDS", "ShotRefused", "shooting_door", "shooting",
-            "rounds_march", "rounds_of", "rounds_to_host", "noise_of"]
+            "rounds_march", "rounds_of", "rounds_to_host", "noise_of",
+            "blast_log_of", "detonate", "payload_refusals"]
 
 
 def round_row_cap() -> int:
@@ -1091,8 +1154,12 @@ class WalkLists:
     (``edit_door.DeviceEditDoor``), ``claims`` THE CLAIMS LIST
     (``attack_lists.claims_list``)."""
 
-    def __init__(self, cells=None, door=None, claims=None):
+    def __init__(self, cells=None, door=None, claims=None, noise=None,
+                 blast_log=None):
         self.cells, self.door, self.claims = cells, door, claims
+        # #29 P7c.1: THE NOISE LIST and THE BLAST LOG (object tables) a
+        # PAYLOAD record appends to
+        self.noise, self.blast_log = noise, blast_log
 
 
 class SpraySlotRefused(RuntimeError):

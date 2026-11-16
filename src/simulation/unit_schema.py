@@ -1108,6 +1108,32 @@ NOISE_TABLE = ObjectTable(name="noise", columns=NOISE_SCHEMA,
 
 OBJECT_TABLES = OBJECT_TABLES + (ROUND_TABLE, NOISE_TABLE)   # #29 P7a.2
 
+#: #29 P7c.1: rows per env of the blast log: storage, above the most discs one
+#: tick detonates in the gate scenes (it lives one tick, emptied at slot 9e).
+BLAST_LOG_CAPACITY = 64
+
+
+def _build_blast(attrs: dict):
+    return (attrs["fy"], attrs["fx"], attrs["radius"], attrs["wall_q"])
+
+
+#: #29 P7c.1: THE blast log (``GameMap.blast_log``): every ``radius > 0``
+#: detonation's ``(fy, fx, radius, wall_damage_q)``, in call order, appended
+#: only by ``execute_payload`` and drained at slot 9e (the heat sources read
+#: it, P6b.4). Every logged disc is live; the list lives one tick.
+BLAST_LOG_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("fy", _enc_int, get=lambda b: b[0]),
+    TableColumn("fx", _enc_int, get=lambda b: b[1]),
+    TableColumn("radius", _enc_int, get=lambda b: b[2]),
+    TableColumn("wall_q", _enc_int, get=lambda b: b[3]),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+BLAST_LOG_TABLE = ObjectTable(name="blast", columns=BLAST_LOG_SCHEMA,
+                              capacity=BLAST_LOG_CAPACITY, live="live",
+                              build=_build_blast)
+
+OBJECT_TABLES = OBJECT_TABLES + (BLAST_LOG_TABLE,)          # #29 P7c.1
+
 
 def table_record(table: ObjectTable, obj) -> tuple:
     """One host object as its integer row (flat, ``table.columns`` order)."""
@@ -1141,5 +1167,5 @@ __all__ = [
     "OBJECT_TABLES", "table_record",
     "ROUND_CAPACITY", "NOISE_CAPACITY", "ROUND_SCHEMA", "ROUND_TABLE",
     "NOISE_SCHEMA", "NOISE_TABLE", "GRENADE_CAPACITY", "GRENADE_SCHEMA",
-    "GRENADE_TABLE",
+    "GRENADE_TABLE", "BLAST_LOG_CAPACITY", "BLAST_LOG_SCHEMA", "BLAST_LOG_TABLE",
 ]

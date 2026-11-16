@@ -1142,6 +1142,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   d["tile_cols"] = breach_cuda::EDQ_TILE_COLS;
                   d["src_col"] = breach_cuda::EDIT_DOOR_SRC;
                   d["region_col"] = breach_cuda::EDIT_DOOR_REGION;
+                  d["arg_col"] = breach_cuda::EDIT_DOOR_ARG;            // #29 P7c.1
                   return d;
               },
               "#29 P7a.3: the compiled edit door rows: {edit_cols, packed_cols, tile_cols, "
@@ -1256,7 +1257,7 @@ PYBIND11_MODULE(breach_physics, m) {
               [](FieldApplier& a, UnitStoreDevice& s, const UnitTablesDevice& t,
                  py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
                  int stage, py::object ring, py::object cells, py::object door,
-                 py::object claims) {
+                 py::object claims, py::object noise, py::object blast_log) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   breach_cuda::ApplierPlanes p;
@@ -1276,12 +1277,19 @@ PYBIND11_MODULE(breach_physics, m) {
                   L.door = door.is_none() ? nullptr : door.cast<breach_cuda::EditDoor*>();
                   L.claims = claims.is_none() ? nullptr
                                               : claims.cast<breach_cuda::UnitRecordList*>();
+                  // #29 P7c.1: the noise list and the blast log
+                  L.noise = noise.is_none() ? nullptr
+                                            : noise.cast<breach_cuda::UnitRecordList*>();
+                  L.blast_log = blast_log.is_none()
+                                    ? nullptr
+                                    : blast_log.cast<breach_cuda::UnitRecordList*>();
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
               py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("stage"),
               py::arg("ring") = py::none(), py::arg("cells") = py::none(),
               py::arg("door") = py::none(), py::arg("claims") = py::none(),
+              py::arg("noise") = py::none(), py::arg("blast_log") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");

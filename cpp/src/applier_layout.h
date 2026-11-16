@@ -90,7 +90,9 @@ constexpr int APPLIER_STAGE_TOPOLOGY = 0;
 constexpr bool APPLIER_STAGE_TOPOLOGY_LANDS = false;
 constexpr int APPLIER_STAGE_RESOLVE = 1;
 constexpr bool APPLIER_STAGE_RESOLVE_LANDS = true;
-constexpr int APPLIER_N_STAGES = 2;
+constexpr int APPLIER_STAGE_DETONATE = 2;
+constexpr bool APPLIER_STAGE_DETONATE_LANDS = false;
+constexpr int APPLIER_N_STAGES = 3;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;

@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "cab203a352554031996fd14863487151b08bbdc49947b50b469b45b80fc8823a";
-constexpr int UNIT_TABLES_W = 1391;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "9373ed5d96d9c9a77fd7fa2b186b57cd05f0ad78abb2a5d4e61974a783ff64b0";
+constexpr int UNIT_TABLES_W = 2206;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -346,6 +346,72 @@ constexpr int UNIT_TAB_ARC_BEHIND_HALF_SPECIES_Q = 1379;
 constexpr int UNIT_TAB_ARC_BEHIND_HALF_SPECIES_Q_W = 1;
 constexpr int UNIT_TAB_MAT_COVER_EXPOSURE_Q = 1380;
 constexpr int UNIT_TAB_MAT_COVER_EXPOSURE_Q_W = 11;
+constexpr int UNIT_TAB_PAYLOAD_REFUSE = 1391;
+constexpr int UNIT_TAB_PAYLOAD_REFUSE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_RADIUS = 1427;
+constexpr int UNIT_TAB_PAYLOAD_RADIUS_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_RADIUS_Q = 1463;
+constexpr int UNIT_TAB_PAYLOAD_RADIUS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_ATM_Q = 1499;
+constexpr int UNIT_TAB_PAYLOAD_ATM_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_PRESS_Q = 1535;
+constexpr int UNIT_TAB_PAYLOAD_PRESS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_WALL_Q = 1571;
+constexpr int UNIT_TAB_PAYLOAD_WALL_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_INNER_Q = 1607;
+constexpr int UNIT_TAB_PAYLOAD_INNER_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BLAST_LIVE = 1643;
+constexpr int UNIT_TAB_PAYLOAD_BLAST_LIVE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_UNIT_DAMAGE = 1679;
+constexpr int UNIT_TAB_PAYLOAD_UNIT_DAMAGE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_LOUDNESS_TILES = 1715;
+constexpr int UNIT_TAB_PAYLOAD_LOUDNESS_TILES_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BLIND_RADIUS_Q = 1751;
+constexpr int UNIT_TAB_PAYLOAD_BLIND_RADIUS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BLIND_TICKS = 1787;
+constexpr int UNIT_TAB_PAYLOAD_BLIND_TICKS_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_BLIND_AWAY_Q = 1823;
+constexpr int UNIT_TAB_PAYLOAD_BLIND_AWAY_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_GAS_ID = 1859;
+constexpr int UNIT_TAB_PAYLOAD_GAS_ID_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_GAS_Q = 1895;
+constexpr int UNIT_TAB_PAYLOAD_GAS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_GAS_RADIUS_Q = 1931;
+constexpr int UNIT_TAB_PAYLOAD_GAS_RADIUS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_LIVE = 1967;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_LIVE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_RADIUS_Q = 2003;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_RADIUS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_Q = 2039;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_LIVE = 2075;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_LIVE_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_Q = 2111;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_RADIUS_Q = 2147;
+constexpr int UNIT_TAB_PAYLOAD_HEAT_RADIUS_Q_W = 36;
+constexpr int UNIT_TAB_PAYLOAD_SRC_EXPLOSION = 2183;
+constexpr int UNIT_TAB_PAYLOAD_SRC_EXPLOSION_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_SRC_GAS = 2184;
+constexpr int UNIT_TAB_PAYLOAD_SRC_GAS_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_SRC_IGNITE = 2185;
+constexpr int UNIT_TAB_PAYLOAD_SRC_IGNITE_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_SRC_HEAT = 2186;
+constexpr int UNIT_TAB_PAYLOAD_SRC_HEAT_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_SMOKE_SLICE = 2187;
+constexpr int UNIT_TAB_PAYLOAD_SMOKE_SLICE_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_SMOKE_CLEAR_Q = 2188;
+constexpr int UNIT_TAB_PAYLOAD_SMOKE_CLEAR_Q_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_HEAT_Q = 2189;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_HEAT_Q_W = 1;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_CLAMP = 2190;
+constexpr int UNIT_TAB_PAYLOAD_IGNITE_CLAMP_W = 3;
+constexpr int UNIT_TAB_BLAST_WALL_MAT = 2193;
+constexpr int UNIT_TAB_BLAST_WALL_MAT_W = 11;
+constexpr int UNIT_TAB_BLAST_DAMAGE_THRESHOLD = 2204;
+constexpr int UNIT_TAB_BLAST_DAMAGE_THRESHOLD_W = 1;
+constexpr int UNIT_TAB_FLASH_FRONT_Q16 = 2205;
+constexpr int UNIT_TAB_FLASH_FRONT_Q16_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

@@ -28,8 +28,9 @@
 // over the topology seam (the env's planes, in place, and its books); HIT
 // (apply_packet on the target's row, its events through the env's ring --
 // the landing in a stage that lands), STATUS (apply_status if alive), PUSH
-// (impulse_add if alive) on the store; PAYLOAD refused (counted in the
-// `refused` book: no device function until P7c.1). The other threads of the
+// (impulse_add if alive) on the store; PAYLOAD (#29 P7c.1) through
+// cuda_unit_payload.cuh, a refused payload row counted in the `refused` book
+// and written nowhere. The other threads of the
 // block are idle today: the fan-out of an effect's tile set over them, with a
 // barrier between effects, arrives with its first user (P7c's deposits).
 // The books are zeroed before and downloaded after (a stream sync: allowed,
@@ -120,6 +121,10 @@ struct ApplierLists {
     UnitRecordList* cells = nullptr;
     EditDoor* door = nullptr;
     UnitRecordList* claims = nullptr;
+    // #29 P7c.1: what a PAYLOAD appends besides edits and claims -- THE NOISE
+    // LIST (noise.emit) and THE BLAST LOG (GameMap.blast_log), object tables
+    UnitRecordList* noise = nullptr;
+    UnitRecordList* blast_log = nullptr;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on

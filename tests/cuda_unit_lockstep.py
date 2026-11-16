@@ -504,36 +504,45 @@ DOOR_SOURCES = None
 
 
 def _door_sources():
-    from simulation import combat
-    return {int(combat._SRC_SPRAY_HEAT), int(combat._SRC_SPRAY_GAS)}
+    """The device producers' edit sources: the spray's (combat._SRC_SPRAY_*)
+    and, #29 P7c.1, the payload function's (physics._SRC_EXPLOSION,
+    payloads._SRC_PAYLOAD_GAS / _IGNITE / _HEAT). An edit of any other source
+    inside a gated walk is an interleave, refused by name."""
+    from simulation import combat, payloads, physics
+    return {int(combat._SRC_SPRAY_HEAT), int(combat._SRC_SPRAY_GAS),
+            int(physics._SRC_EXPLOSION), int(payloads._SRC_PAYLOAD_GAS),
+            int(payloads._SRC_PAYLOAD_IGNITE), int(payloads._SRC_PAYLOAD_HEAT)}
+
+
+#: The tags of a combined door record (#29 P7c.1: a DISC edit has many tile
+#: rows, so each edit is its EDIT record followed by one record per tile row).
+DOOR_TAG_EDIT, DOOR_TAG_TILE = 0, 1
 
 
 def door_combined(edits, tiles):
-    """The door's rows as ONE record per edit: its EDIT row, its tile count,
-    then its tile row (a TILE edit holds at most one; zeros when none)."""
+    """The door's rows as ONE record list: per edit, in order, its EDIT row
+    (tag 0, the row) then each of its tile rows in their order (tag 1, the
+    TILE row, zero-padded to the EDIT row's width)."""
     from simulation import edit_door
+    E, T = edit_door.EDIT_COLS, edit_door.TILE_COLS
     out = []
-    edits = np.asarray(edits, dtype=np.int64).reshape(-1, edit_door.EDIT_COLS)
-    tiles = np.asarray(tiles, dtype=np.int64).reshape(-1, edit_door.TILE_COLS)
+    edits = np.asarray(edits, dtype=np.int64).reshape(-1, E)
+    tiles = np.asarray(tiles, dtype=np.int64).reshape(-1, T)
     for k in range(edits.shape[0]):
-        tk = tiles[tiles[:, 0] == k]
-        if tk.shape[0] > 1:
-            raise RuntimeError("lockstep: a door edit with several tile rows (only "
-                               "TILE edits reach the door today)")
-        t = list(tk[0]) if tk.shape[0] else [0] * edit_door.TILE_COLS
-        out.append(tuple(int(x) for x in edits[k]) + (int(tk.shape[0]),)
-                   + tuple(int(x) for x in t))
-    return np.array(out, dtype=np.int64).reshape(len(out), edit_door.EDIT_COLS + 1
-                                                  + edit_door.TILE_COLS)
+        out.append((DOOR_TAG_EDIT,) + tuple(int(x) for x in edits[k]))
+        for t in tiles[tiles[:, 0] == k]:
+            out.append((DOOR_TAG_TILE,) + tuple(int(x) for x in t) + (0,) * (E - T))
+    return np.array(out, dtype=np.int64).reshape(len(out), 1 + E)
 
 
 def door_split(recs):
     """The inverse of :func:`door_combined`: ``(edits, tiles)``."""
     from simulation import edit_door
-    E = edit_door.EDIT_COLS
-    r = np.asarray(recs, dtype=np.int64).reshape(-1, E + 1 + edit_door.TILE_COLS)
-    tiles = r[r[:, E] > 0][:, E + 1:]
-    return r[:, :E].copy(), tiles.copy()
+    E, T = edit_door.EDIT_COLS, edit_door.TILE_COLS
+    r = np.asarray(recs, dtype=np.int64).reshape(-1, 1 + E)
+    edits = r[r[:, 0] == DOOR_TAG_EDIT][:, 1:]
+    tiles = r[r[:, 0] == DOOR_TAG_TILE][:, 1:1 + T]
+    return edits.copy(), tiles.copy()
 
 
 def _edits_mark(sim):
@@ -585,11 +594,14 @@ def _edits_land(sim, obj, recs):
 
 def _edits_fields(rec):
     from simulation import edit_door, field_edit as fe
+    if int(rec[0]) == DOOR_TAG_TILE:
+        return "tile", ("tag", "t.edit", "t.tile", "t.weight", "t.scale") + tuple(
+            f"pad{i}" for i in range(edit_door.EDIT_COLS - edit_door.TILE_COLS))
     names = ("env", "field", "slice", "mode", "amount_q", "den", "noisy", "low",
              "key", "clamp_flags", "lo", "hi", "o2_lo", "o2_hi", "n2_lo", "n2_hi")
     assert len(names) == fe.EDIT_COLS
-    return "edit", names + ("source_id", "region", "n_tiles", "t.edit", "t.tile",
-                            "t.weight", "t.scale")
+    return "edit", ("tag",) + names + ("source_id", "region", "arg0", "arg1", "arg2",
+                                       "arg3")
 
 
 #: id(TickCredit) -> the claims of the marked slot, every call in order.
@@ -653,6 +665,61 @@ LISTS["claims"] = ListDef(_claims_host, _claims_records, lambda obj: obj.clear()
                           lambda rec: ("claim", ("channel", "y", "x", "attacker")),
                           _claims_mark, _claims_land)
 INPUTS["edit_seq"] = ("scalar", lambda sim: int(sim.edit_queue._seq))
+
+
+# -- #29 P7c.1: THE BLAST LOG (GameMap.blast_log, an object table) and the
+# DETONATIONS (the PAYLOAD calls of slot 2 / 9e(d') as the device APPLIES
+# them: the payloads list's records, consumed -- never replayed -- by the
+# chained form, so the host's execute_payload runs 0 times there) ---------
+def _blast_records(sim, obj):
+    return unit_kernels.blast_log_of(sim)
+
+
+def _blast_device(n_env, n_units, cap, bp):
+    from simulation import object_tables, unit_schema
+    return object_tables.DeviceTable(unit_schema.BLAST_LOG_TABLE, n_env, n_units=n_units,
+                                     row_cap=1, bp=bp)
+
+
+def _blast_land(sim, obj, recs):
+    sim.gmap.blast_log[:] = [tuple(int(x) for x in r[:4]) for r in recs]
+
+
+LISTS["blast_log"] = ListDef(_noise_host, _blast_records, _no_consume, _blast_device,
+                             _table_fields("blast"), None, _blast_land)
+#: A chained run's PAYLOAD records of refused rows (applier.PAYLOAD_REFUSALS)
+#: replayed on the host (the ship's frag): set by a gate, empty otherwise.
+REPLAY_REFUSED: dict = {"on": False}
+
+
+def _detonations_land(sim, obj, recs):
+    """The chained form's landing of the detonations: the device applied
+    every record of a row it ports, so nothing is replayed; a record of a
+    REFUSED row is replayed through the host's call only when the gate asks
+    (``REPLAY_REFUSED``) and only alone in its walk (a refused row between
+    applied ones would land out of order: refused by name)."""
+    from simulation import applier
+    obj.clear()
+    if not len(recs):
+        return
+    pc = applier.kind_field("PAYLOAD", "payload")
+    names = list(sim.weapons_tables.payloads.by_name)
+    codes = [applier.payload_refusal(sim.weapons_tables.payloads.by_name[names[int(r[pc])]])
+             for r in recs]
+    if not any(codes):
+        return
+    if not REPLAY_REFUSED["on"]:
+        raise RuntimeError(f"lockstep: a refused PAYLOAD row in a chained walk: "
+                           f"{[names[int(r[pc])] for r, c in zip(recs, codes) if c]}")
+    if not all(codes):
+        raise RuntimeError("lockstep: refused and applied PAYLOAD records in one walk "
+                           "(the replay would land out of order)")
+    _payloads_land(sim, obj, recs)
+
+
+LISTS["detonations"] = ListDef(_payloads_host, _payloads_records, lambda obj: obj.clear(),
+                               _effects_device, _effects_fields, _payloads_mark,
+                               _detonations_land)
 
 # ---------------------------------------------------------------------------
 # #29 P6.4b: field outputs, books, the write-set gate
@@ -1718,7 +1785,8 @@ __all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture",
            "slot_callables", "build_store", "ShadowLockstep", "ChainedSlots"]
 __all__ += ["LIST_PREFIX", "ListDef", "LISTS"]
 __all__ += ["PAYLOAD_SITES", "install_payload_tap", "payload_call"]
-__all__ += ["install_claims_tap", "door_combined", "door_split", "DoorList"]
+__all__ += ["install_claims_tap", "door_combined", "door_split", "DoorList",
+            "DOOR_TAG_EDIT", "DOOR_TAG_TILE", "REPLAY_REFUSED"]
 __all__ += ["ARG_INPUTS", "BOOK_PREFIX", "ALIASES", "book_ref", "host_books",
             "OBJECT_PROBES", "gmap_state", "changed_attrs",
             "write_set_violations", "split_result", "first_field_diff"]

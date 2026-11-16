@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "8a8b2db473e1def8c468d78543b091ac57f77263cb7f3c27d28ff85a462c8b1a";
-constexpr int OBJECT_TABLES_N = 4;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "90e842d591faa831cd6363fb06b3bd53a75a7b6f1899e5d3b382fa63d06e1099";
+constexpr int OBJECT_TABLES_N = 5;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -134,5 +134,22 @@ constexpr int OBJ_NOISE_COL_RADIUS = 2;
 constexpr int OBJ_NOISE_COL_RADIUS_W = 1;
 constexpr int OBJ_NOISE_COL_LIVE = 3;
 constexpr int OBJ_NOISE_COL_LIVE_W = 1;
+
+// table 'blast': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_BLAST = 4;
+constexpr int OBJ_BLAST_W = 5;
+constexpr int OBJ_BLAST_CAP = 64;
+constexpr int OBJ_BLAST_LIVE = 4;
+constexpr int OBJ_BLAST_COL_FY = 0;
+constexpr int OBJ_BLAST_COL_FY_W = 1;
+constexpr int OBJ_BLAST_COL_FX = 1;
+constexpr int OBJ_BLAST_COL_FX_W = 1;
+constexpr int OBJ_BLAST_COL_RADIUS = 2;
+constexpr int OBJ_BLAST_COL_RADIUS_W = 1;
+constexpr int OBJ_BLAST_COL_WALL_Q = 3;
+constexpr int OBJ_BLAST_COL_WALL_Q_W = 1;
+constexpr int OBJ_BLAST_COL_LIVE = 4;
+constexpr int OBJ_BLAST_COL_LIVE_W = 1;
 
 }  // namespace object_tables

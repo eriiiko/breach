@@ -145,6 +145,10 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius,
 # config.toml has the incident). Left as it stands for ignite_ring's rows.
 IGNITE_HEAT = 2840.0
 
+#: The ignition ring's flame clamp (the fire policy's own [0, 1]), named so the
+#: device's table row reads its one source (#29 P7c.1; value unchanged).
+IGNITE_CLAMP = (0.0, 1.0)
+
 
 def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
                 ignite_heat=IGNITE_HEAT, owner_id=NO_ATTACKER):
@@ -193,7 +197,7 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
     queue.enqueue(FieldEdit(
         field="fire", region=Region.DISC, coords=(fy, fx, float(ignite_radius)),
         amount=float(ignite_intensity), mode=EditMode.MAX,
-        falloff=Falloff.LINEAR, clamp=(0.0, 1.0),
+        falloff=Falloff.LINEAR, clamp=IGNITE_CLAMP,
         source_id=_SRC_PAYLOAD_IGNITE,
     ))
     if ignite_heat > 0.0:
