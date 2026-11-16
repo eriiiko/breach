@@ -45,6 +45,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - Trace is priced by air (#88 P0): the extraction split runs over the bulk planes only and each trace plane leaves at the cell's `S/N_bulk`. The pump destroys what it takes, unbooked (ACCEPTED GAP, #88 G6, #98).
 - Energy-aware (arc #54): the primitives carry `ΔN·T_abs` through the gas energy seam (extract at the cell's own `T_abs`, inject at the deposit's). The vent plenum ledger stays RELATIVE and converts here (`E = e + n·T_AMB`).
 - A pump's `feed` is `"external"` (creates / destroys at its port) or `"transfer"` (#133: moves air through `GameMap.transfer_gas_n` and the shared `_air_withdrawal` rule, smoke riding along, energy at the donor's T; nothing minted or lost). An interior airlock's pumps are transfer pumps.
+- The pump sweep has a device twin, the applier's PUMPS stage over `cpp/src/cuda_unit_signals.cuh` with the pump tables (`.claude/rules/device-units.md`): a change to `PumpRuntime.sweep`, its latch or a `PumpRuntime` attribute that crosses a tick lands there and in `unit_schema.PUMP_TABLE` in the SAME patch; `tests/cuda_unit_signals_check.py` is the guard.
 
 ## Vent / duct system
 - The plenum ledger is R3-counted (bulk pair + int64 raw-e), measured-delta booked, ENTITY_SECT-digested. Plenum bulk is circulating credit ONLY; a future reserve is a separate row pair.
