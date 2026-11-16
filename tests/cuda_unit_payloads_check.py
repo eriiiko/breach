@@ -1726,14 +1726,20 @@ def part_scene():
           f"pairs detonated; census: " + "; ".join(f"{k} = {v}" for k, v in sorted(c.items())))
 
 
+#: The batch's row sets: the disc path's variants, then a strength set (#29
+#: P7c.2: concurrent envs walking and reading the air in one launch).
+BATCH_SETS = ("V", "S2")
+
+
 def part_batch():
-    for n in BATCH_NS:
-        ds = [PayloadScene(v, row_set_name="V") for v in range(n)]
-        share_tables([d.sim for d in ds])
-        with row_set("V"):
-            run_lockstep(f"batch N={n}", ds, SCENE_SLOTS, BATCH_TICKS)
-        if FAILS:
-            return
+    for set_name in BATCH_SETS:
+        for n in BATCH_NS:
+            ds = [PayloadScene(v, row_set_name=set_name) for v in range(n)]
+            share_tables([d.sim for d in ds])
+            with row_set(set_name):
+                run_lockstep(f"batch [{set_name}] N={n}", ds, SCENE_SLOTS, BATCH_TICKS)
+            if FAILS:
+                return
 
 
 # ---------------------------------------------------------------------------
