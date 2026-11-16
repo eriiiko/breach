@@ -321,7 +321,9 @@ class VentScene:
         rng = np.random.default_rng(77 + variant)
         # smoke in A (hepa scrubs it to the sink), steam in A (hepa passes it);
         # smoke, poison, teargas, fuel gas in C (the fractional derelict)
+        # raw trace counts: scale-free (#88) -- the gate compares device with host
         g.gas[SMOKE][1:18, 1:21] = rng.integers(0, 1 << 26, (17, 20)).astype(np.int32)
+        # raw trace counts: scale-free (#88) -- the gate compares device with host
         g.gas[STEAM][1:18, 1:21] = rng.integers(0, 1 << 24, (17, 20)).astype(np.int32)
         for s, hi in ((SMOKE, 1 << 25), (POISON, 1 << 23), (TEARGAS, 1 << 22),
                       (FUEL_GAS, 1 << 21)):
