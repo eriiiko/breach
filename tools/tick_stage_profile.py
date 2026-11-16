@@ -96,11 +96,14 @@ SLOT_WRAPS = (
     # #29 PX: the poison law, right after the gas row (slot 9c3').
     ("simulation.poison", "tick", "9c3 gas rows"),
     ("simulation.simulation", "apply_temperature_ignition", "9d ignition"),
-    ("simulation.simulation", "Simulation._signal_emit", "9e entities"),
-    ("simulation.simulation", "sample_sensors", "9e entities"),
-    ("simulation.simulation", "sweep_logic_nodes", "9e entities"),
-    ("simulation.simulation", "Simulation._resolve_door_inputs", "9e entities"),
-    ("simulation.simulation", "sweep_pumps", "9e entities"),
+    # #29 P6b.3: slot 9e's signal sub-steps each have their own label (their
+    # device forms are the applier's EMIT, LOGIC, DOOR_INPUTS, PUMPS and SWAP
+    # stages; the harness shadows each by it).
+    ("simulation.simulation", "Simulation._signal_emit", "9e(a) signals"),
+    ("simulation.simulation", "sample_sensors", "9e(a) signals"),
+    ("simulation.simulation", "sweep_logic_nodes", "9e(b) logic"),
+    ("simulation.simulation", "Simulation._resolve_door_inputs", "9e(c) door inputs"),
+    ("simulation.simulation", "sweep_pumps", "9e(d) pumps"),
     # #29 P6b.2: the vent circulation has its own label (its device form is
     # the applier's VENTS stage; a twin row names its slot by it).
     ("simulation.simulation", "sweep_vents", "9e(d) vents"),
@@ -110,6 +113,7 @@ SLOT_WRAPS = (
     ("simulation.simulation", "sweep_timed_charges", "9e entities"),
     ("simulation.charges", "tick", "9e(d') planted charges"),
     ("simulation.simulation", "sweep_heat_sources", "9e entities"),
+    ("simulation.signal_bus", "SignalBus.swap_node_signals", "9e(e) swap"),
     ("simulation.simulation", "Simulation._clear_tick_buffers", "tick-end clears"),
     ("simulation.unit_orders", "expire", "10' order expiry"),
     ("simulation.ruleset", "ContinuousRealtime.on_tick_end", "10 tick end (ruleset)"),

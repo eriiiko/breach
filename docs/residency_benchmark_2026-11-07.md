@@ -1789,3 +1789,32 @@ book download, a stream sync) is about 0.8 ms. Over that floor the serial cost i
 and wave stencil (P7c.1's, a TILE edit per stencil cell) plus the walks and the TILES rows. A blast
 happens a few times a match, so the serial walk is not the tick's cost at these sizes; the fan-out is
 worth building only if a measured device tick (P7e) shows the C4's 3 ms on its critical path.
+
+## P6b.3: slot 9e's signals on the signal tables (2026-11-16)
+
+`tests/cuda_unit_signals_check.py bench()` (Home Desktop, RTX 3070, the only agent on the machine):
+median ms over 200 reps of ONE sub-step's launch -- the applier's EMIT / LOGIC / DOOR_INPUTS / PUMPS /
+SWAP stage over N copies of a map's signal tables, its books' download and the Python face; each rep
+re-stages the eight tables and the door table (not timed). airlock_demo: 17 bus slots, 2 sensors, 3
+nodes, 1 pump, 4 drive wires; the signal scene: 67 slots, 18 sensors (two discs, 7 motion plates), 21
+nodes (two airlock controllers), 5 pumps, 11 drive wires.
+
+| sub-step | map | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|---|
+| 9e(a) emit + sensors | airlock_demo | 0.380 | 0.383 | 0.397 |
+| 9e(b) logic | airlock_demo | 0.188 | 0.191 | 0.207 |
+| 9e(c) door inputs | airlock_demo | 0.185 | 0.189 | 0.199 |
+| 9e(d) pumps | airlock_demo | 0.298 | 0.302 | 0.351 |
+| 9e(e) swap | airlock_demo | 0.185 | 0.189 | 0.233 |
+| 9e(a) emit + sensors | the signal scene | 0.426 | 0.429 | 0.464 |
+| 9e(b) logic | the signal scene | 0.217 | 0.220 | 0.238 |
+| 9e(c) door inputs | the signal scene | 0.184 | 0.190 | 0.201 |
+| 9e(d) pumps | the signal scene | 0.317 | 0.305 | 0.331 |
+| 9e(e) swap | the signal scene | 0.204 | 0.208 | 0.234 |
+
+**Reading.** Flat in N (one block per env). The planeless stages (logic, door inputs, swap) sit on
+the per-call floor (launch, book download, a sync: about 0.19 ms); EMIT and PUMPS add the plane
+pointer table and the planes' checks (about 0.1 ms) and their own serial work (the sensors' discs and
+motion plates' sight walks, the pumps' seam calls), at most 0.05 ms on the scene. Five launches per
+tick cost about 1.3 ms here, almost all floor: P7e's device tick, with no host sync between stages,
+removes most of it; nothing here needs a fan-out.

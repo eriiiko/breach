@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "e327704a11d6324d0642544cc0db8c3522d9513808e1c8751c6887d8f80034b9";
+constexpr const char* APPLIER_FINGERPRINT = "e7fe9371c6052fab4af1a3bbd74fa89cd6e717706767359d5c4eb9ed96ad38ca";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -90,15 +90,25 @@ constexpr int APPLIER_STAGE_TOPOLOGY = 0;
 constexpr bool APPLIER_STAGE_TOPOLOGY_LANDS = false;
 constexpr int APPLIER_STAGE_RESOLVE = 1;
 constexpr bool APPLIER_STAGE_RESOLVE_LANDS = true;
-constexpr int APPLIER_STAGE_VENTS = 2;
+constexpr int APPLIER_STAGE_EMIT = 2;
+constexpr bool APPLIER_STAGE_EMIT_LANDS = false;
+constexpr int APPLIER_STAGE_LOGIC = 3;
+constexpr bool APPLIER_STAGE_LOGIC_LANDS = false;
+constexpr int APPLIER_STAGE_DOOR_INPUTS = 4;
+constexpr bool APPLIER_STAGE_DOOR_INPUTS_LANDS = false;
+constexpr int APPLIER_STAGE_PUMPS = 5;
+constexpr bool APPLIER_STAGE_PUMPS_LANDS = false;
+constexpr int APPLIER_STAGE_VENTS = 6;
 constexpr bool APPLIER_STAGE_VENTS_LANDS = false;
-constexpr int APPLIER_STAGE_DOORS = 3;
+constexpr int APPLIER_STAGE_DOORS = 7;
 constexpr bool APPLIER_STAGE_DOORS_LANDS = false;
-constexpr int APPLIER_STAGE_DETONATE = 4;
+constexpr int APPLIER_STAGE_DETONATE = 8;
 constexpr bool APPLIER_STAGE_DETONATE_LANDS = false;
-constexpr int APPLIER_STAGE_SOURCES = 5;
+constexpr int APPLIER_STAGE_SWAP = 9;
+constexpr bool APPLIER_STAGE_SWAP_LANDS = false;
+constexpr int APPLIER_STAGE_SOURCES = 10;
 constexpr bool APPLIER_STAGE_SOURCES_LANDS = false;
-constexpr int APPLIER_N_STAGES = 6;
+constexpr int APPLIER_N_STAGES = 11;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;
@@ -142,14 +152,16 @@ constexpr int APPLIER_BOOK_GE_PAYLOAD_BULK_GAS = 28;
 constexpr int APPLIER_BOOK_GE_PAYLOAD_BULK_GAS_RAIL = 29;
 constexpr int APPLIER_BOOK_BULK_REFUSED = 30;
 constexpr int APPLIER_BOOK_SOURCE_TAKEN = 31;
-constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 32;
-constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 33;
-constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 34;
-constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 35;
-constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 36;
-constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 37;
-constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 38;
-constexpr int APPLIER_N_BOOKS = 39;
+constexpr int APPLIER_BOOK_SIGNAL_REFUSED = 32;
+constexpr int APPLIER_BOOK_SIGNAL_WRITES = 33;
+constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 34;
+constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 35;
+constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 36;
+constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 37;
+constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 38;
+constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 39;
+constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 40;
+constexpr int APPLIER_N_BOOKS = 41;
 
 // The topology seam's planes: the launch's pointer table order.
 constexpr int APPLIER_PLANE_MATERIAL = 0;
@@ -214,5 +226,48 @@ constexpr int64_t APPLIER_SEAM_NOT_SOLID = 9;
 constexpr int64_t APPLIER_SEAM_SPAN_TOO_LONG = 10;
 constexpr int64_t APPLIER_SEAM_FAULT = 11;
 constexpr int APPLIER_N_SEAM_REFUSALS = 11;
+
+// #29 P6b.3: the signal tables' codes (unit_schema's SIGNAL_EMITS,
+// SENSOR_KINDS, sensor_channels(), comparators(), NODE_KINDS; the
+// airlock controller's states).
+constexpr int64_t SIGNAL_EMIT_NONE = 0;
+constexpr int64_t SIGNAL_EMIT_DOOR_OPEN = 1;
+constexpr int64_t SIGNAL_EMIT_DOOR_ALIVE = 2;
+constexpr int64_t SIGNAL_EMIT_CONSTANT = 3;
+constexpr int SIGNAL_N_EMIT = 4;
+constexpr int64_t SIGNAL_SENSOR_FIELD = 0;
+constexpr int64_t SIGNAL_SENSOR_CLOCK = 1;
+constexpr int64_t SIGNAL_SENSOR_MOTION = 2;
+constexpr int SIGNAL_N_SENSOR = 3;
+constexpr int64_t SIGNAL_CHANNEL_PRESSURE = 0;
+constexpr int64_t SIGNAL_CHANNEL_SMOKE = 1;
+constexpr int64_t SIGNAL_CHANNEL_WATER_DEPTH = 2;
+constexpr int64_t SIGNAL_CHANNEL_TEMPERATURE = 3;
+constexpr int64_t SIGNAL_CHANNEL_FIRE = 4;
+constexpr int64_t SIGNAL_CHANNEL_O2 = 5;
+constexpr int64_t SIGNAL_CHANNEL_SOLID = 6;
+constexpr int SIGNAL_N_CHANNEL = 7;
+constexpr int64_t SIGNAL_CMP_GT = 0;
+constexpr int64_t SIGNAL_CMP_GE = 1;
+constexpr int64_t SIGNAL_CMP_LT = 2;
+constexpr int64_t SIGNAL_CMP_LE = 3;
+constexpr int64_t SIGNAL_CMP_EQ = 4;
+constexpr int64_t SIGNAL_CMP_NE = 5;
+constexpr int SIGNAL_N_CMP = 6;
+constexpr int64_t SIGNAL_NODE_DECIDER = 0;
+constexpr int64_t SIGNAL_NODE_GATE_AND = 1;
+constexpr int64_t SIGNAL_NODE_GATE_OR = 2;
+constexpr int64_t SIGNAL_NODE_GATE_NOT = 3;
+constexpr int64_t SIGNAL_NODE_FILTER = 4;
+constexpr int64_t SIGNAL_NODE_AIRLOCK_CONTROLLER = 5;
+constexpr int SIGNAL_N_NODE = 6;
+constexpr int64_t SIGNAL_AIRLOCK_IDLE = 0;
+constexpr int64_t SIGNAL_AIRLOCK_CLOSING = 1;
+constexpr int64_t SIGNAL_AIRLOCK_EQUALIZE = 2;
+constexpr int64_t SIGNAL_AIRLOCK_OPEN_FAR = 3;
+constexpr int64_t SIGNAL_AIRLOCK_RESEAL = 4;
+constexpr int64_t SIGNAL_AIRLOCK_REPRESSURIZE = 5;
+constexpr int64_t SIGNAL_AIRLOCK_FAULT = 6;
+constexpr int SIGNAL_N_AIRLOCK = 7;
 
 }  // namespace applier

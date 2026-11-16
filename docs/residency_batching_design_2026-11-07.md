@@ -2188,6 +2188,80 @@ No decision moved. One line each:
   one green, every env walking env 0's scratch list, is a race no gate can force: each
   block reads its own writes back through its L1, so the outputs never mixed).
 
+**As built (P6b.3, 2026-11-16).** The cut table's P6b.3 row: the signal bus, the sensors, the logic
+nodes, 9e(c) and the pumps on the device. No decision moved. One line each:
+- THE SIGNAL TABLES (eight, on the object tables): `unit_schema.SIGNAL_TABLE` (the bus, W 8, cap
+  256: `ordinal`, `name` (`signal_names()` index), `pub`, `stg`, `node`, `emit`, `emit_ref`, `live`,
+  slot order), `SENSOR_TABLE` (W 17, cap 32, ordinal order) with its disc side table
+  `SENSOR_TILE_TABLE` (cap 1024), `NODE_TABLE` (W 37, cap 64: kind, `out`, the `in` span into
+  `NODE_IN_TABLE` (cap 256), `cmp` / `threshold` / `require_alive` / `alive_slot`, `k` / `ema`, the
+  airlock's `a_in[10]` / `a_out[9]`, `far_is_outer`, `equalize_cmd`, `interior`, `band`, `state`,
+  `dwell`), `PUMP_TABLE` (W 16, cap 16: the latch, `at_slot`, port, source, target, bands, quantum,
+  the span into `PUMP_IN_TABLE` (cap 64: inject rows then extract rows)) and `DOOR_DRIVE_TABLE` (W 4,
+  cap 64: door-table row, close flag, slot). A slot is a bus ROW index; row objects
+  `SignalRow` / `SensorRow` / `NodeRow` / `PumpRow` / `DriveRow`. Record functions
+  `unit_kernels.SIGNAL_RECORDS` (`signals_of`, `sensors_of`, `sensor_tiles_of`, `nodes_of`,
+  `node_ins_of`, `pumps_of`, `pump_ins_of`, `door_drives_of`), the way back `signals_to_host`,
+  `nodes_to_host` (a filter's ema, an airlock's state / dwell), `pumps_to_host` (at_target); the
+  load-constant tables land by being equal (`sensors_to_host`, `drives_to_host`, refused by name
+  otherwise: `SignalTableMismatch`). P6b.4's export rows: `signal_digest_rows` (==
+  `SignalBus.digest_rows`), `node_entity_rows`, `pump_entity_rows`.
+- THE CODES are ONE table, `applier._signal_codes()` (generated `SIGNAL_EMIT_*`, `SIGNAL_SENSOR_*`,
+  `SIGNAL_CHANNEL_*`, `SIGNAL_CMP_*`, `SIGNAL_NODE_*`, `SIGNAL_AIRLOCK_*`), from `unit_schema`'s
+  `SIGNAL_EMITS`, `SENSOR_KINDS`, `sensor_channels()` (the accessor's frozen `CHANNEL_ORDER`),
+  `comparators()`, `NODE_KINDS` and the airlock's state names.
+- THE STAGES (`applier.STAGES`, renumbered in 9e's order): TOPOLOGY 0, RESOLVE 1, EMIT 2, LOGIC 3,
+  DOOR_INPUTS 4, PUMPS 5, VENTS 6 (was 2), DOORS 7 (was 3), DETONATE 8 (was 4), SWAP 9, SOURCES 10
+  (was 5); `cpp/src/cuda_unit_signals.cuh` (`signals::emit`, `logic`, `door_inputs`, `pumps`, `swap`,
+  `sample_raw`, `field_value`, `motion_value`, `next_state`, `airlock`), dispatched by `k_applier` on
+  the tables (`ApplierLists.signal_table` ... `door_drives`, `ticks`; binding kwargs
+  `signal_tables=` (the eight in `uk.SIGNAL_LISTS` order) and `ticks=`). LOGIC, DOOR_INPUTS and SWAP
+  read no plane (their pointer table may be null). Python faces `unit_kernels.signals_emit(store,
+  applier, fields, lists, ticks)`, `signals_logic(store, applier, lists)`,
+  `signals_door_inputs(store, applier, lists)`, `signals_pumps(store, applier, fields, lists)`,
+  `signals_swap(store, applier, lists)` -> `(coverage, books)`, coverage the `signal_writes` book
+  (writes that changed a value). Profiler labels "9e(a) signals", "9e(b) logic", "9e(c) door
+  inputs", "9e(d) pumps", "9e(e) swap" (out of "9e entities").
+- THE SAMPLE'S DEVICE FORM is `signals::sample_raw` (the accessor's `_channel_array` cell by cell:
+  smoke through `floordiv_q` by 2^TRACE_FINE_BITS per sampled cell, never the whole plane) with
+  `field_value` (the single tile, or the area's floored mean over the currently non-solid disc
+  tiles, 0 when none). Motion plates walk the unit rows (a count, so the rows' order does not
+  change it) with `unit_sight::has_los`.
+- THE FILTER'S PROVED RANGE: |ema|, |in| <= 2^60 and 0 <= k <= 62 keep every intermediate in int64
+  (proof in the header); the LOGIC stage's head checks every filter of the env (and every slot,
+  span, interior pressure) and past it refuses the env by name (`applier.SignalRangeRefused`, book
+  `signal_refused`, host twin `unit_kernels.filter_range`), nothing written.
+- BOOKS: `signal_refused`, `signal_writes`; the pumps book through the seam's existing
+  `ge_pump_inject` / `_extract` / `_transfer` and their `diag_*` twins.
+- A PURE REFACTOR of the reference: `logic_nodes._DeciderEval` keeps its comparator TOKEN
+  (`comparator`) beside its lambda (pins and goldens equal).
+- CHOICES where this section was silent: five stages, not one (each sub-step has its own label,
+  shadow and chain); the area disc a side table (the house's variable-length rule), not a radius
+  recomputed on the device; one input side table per class with a flag for the pump's extract wires;
+  the door drives a flat table keyed by door row; a non-door `alive` emitted as a constant packed
+  at the stage's entry, and an `alive` that moves in the tick on the host only (heat source, cover)
+  or a non-door `is_open` with a `state` refused by name (`SignalTableRefused`); the clock's tick a
+  per-env launch input copied through the applier's pinned buffer; a filter range breach refuses
+  the whole env's LOGIC stage.
+- NO TWIN ROW: the corpus (ship_demo) has no bus, so no twin would trace a file (the P7c.2
+  precedent); `signal_bus.py`'s `[not_twinned]` reason names the device form and the gate.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): a motion plate's count is order-free, so the
+  per-tick `sorted(sim.units, key=id)` is not load-bearing; an EntityInstance has no `alive`, so a
+  sensor's alive is True unless a fixture sets it; airlock_demo's `[[spawn]]` builds no unit on a
+  plain `Simulation` (the gate adds the marine); `or2`-style ORs of a constant `alive` never fall.
+- THE GATES (`tests/cuda_unit_signals_check.py`, wrapper `tests/test_cuda_unit_signals.py`; CPU
+  `tests/test_signal_tables.py`): TABLES (identity, digest and entity rows, landings); SAMPLE (3 072
+  field / clock samples on four maps with randomized planes, every channel, both sides of the trace
+  floor, empty discs; 2 560 motion plates on random placements); LOGIC (3 000 steps, 21 nodes, every
+  predicate both ways at its threshold, filters k 0..40 with negative emas); AIRLOCK (6 000 steps,
+  eight controllers, all 15 transitions); REFUSAL (one past each bound refused by name, nothing
+  written; at the bound equal); SCENE (the signal scene 320 ticks in both boundaries, airlock_demo 260
+  ticks, 1b + 9e(a) (b) (c) (d) pumps + vents + doors + (e) shadowed every tick, the tables' identity
+  every tick, an unhooked twin equal; an 80-branch census, three named unreachable); BATCH N = 2 / 8
+  (an env with no bus); PADDING; OVERFLOW; CHAINED (the scene both ways and airlock_demo with every
+  9e signal sub-step, the vents and the doors on the device, the host laws run 0 times in the twin;
+  ship_demo's bots 500 ticks, the signal chains idle). Every gate broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

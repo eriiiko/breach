@@ -35,3 +35,6 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## Door table
 - `door_system.sweep_doors` (slot 9e(d)) has a device twin, the applier's DOORS stage over `cpp/src/cuda_unit_doors.cuh` (the Door table, `.claude/rules/device-units.md`): a change to the sweep, `_occupancy_clear`, the hp copy / restamp or a `DoorRuntime` attribute that crosses a tick lands there and in `unit_schema.DOOR_TABLE` in the SAME patch. The corpus has no door entity, so the twin ledger traces none of it; `tests/cuda_unit_doors_check.py` is the guard.
+
+## Entity system
+- `Simulation._signal_emit`, `_resolve_door_inputs`, `sensor_system.sample_sensors`, `logic_nodes.sweep_logic_nodes` and `SignalBus.swap_node_signals` (slot 9e (a), (b), (c), (e)) have device twins, the applier's EMIT, LOGIC, DOOR_INPUTS and SWAP stages over the signal tables (`.claude/rules/device-units.md`): a change to one of them, to `aggregate_input`, an evaluator, `EntityFieldAccessor.sample` / `.area` or to a runtime attribute that crosses a tick lands there in the SAME patch. Each sub-step has its own profiler label (`tools/tick_stage_profile.py`). The corpus has no bus; `tests/cuda_unit_signals_check.py` is the guard.

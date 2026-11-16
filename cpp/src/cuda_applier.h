@@ -86,6 +86,9 @@ public:
     // BFS queue, the heat walk, the source walk), each (N, n_cells).
     void* walk_scratch(int n_cells);
     int walk_cells() const { return walk_cells_; }
+    // #29 P6b.3: the EMIT stage's per-env tick (the clock sensor), copied
+    // from `host` (N int64) to a device buffer on the tick stream.
+    const int64_t* ticks_dev(const int64_t* host);
 
 private:
     UnitRecordList list_;
@@ -97,6 +100,8 @@ private:
     size_t touched_cap_ = 0;
     void* d_walk_ = nullptr;           // #29 P7c.2: the walks' scratch
     int walk_cells_ = 0;
+    int64_t* d_ticks_ = nullptr;       // #29 P6b.3: (N,) the EMIT stage's ticks
+    int64_t* h_ticks_ = nullptr;       // pinned
     void* staged_ = nullptr;           // cudaEvent_t: the last stage copy
 };
 
@@ -151,10 +156,26 @@ struct ApplierLists {
     ObjectTable* source_table = nullptr;
     ObjectTable* source_tiles = nullptr;
     std::uintptr_t source_out = 0;
+    // #29 P6b.3: THE SIGNAL TABLES (unit_schema.SIGNAL_TABLE, SENSOR_TABLE +
+    // SENSOR_TILE_TABLE, NODE_TABLE + NODE_IN_TABLE, PUMP_TABLE +
+    // PUMP_IN_TABLE, DOOR_DRIVE_TABLE) the signal stages (EMIT, LOGIC,
+    // DOOR_INPUTS, PUMPS, SWAP) walk -- each stage checks the ones it reads --
+    // with the door table above (EMIT reads it, DOOR_INPUTS writes want_open)
+    // and the EMIT stage's per-env tick (`ticks`: N int64 host, null: 0).
+    ObjectTable* signal_table = nullptr;
+    ObjectTable* sensor_table = nullptr;
+    ObjectTable* sensor_tiles = nullptr;
+    ObjectTable* node_table = nullptr;
+    ObjectTable* node_ins = nullptr;
+    ObjectTable* pump_table = nullptr;
+    ObjectTable* pump_ins = nullptr;
+    ObjectTable* door_drives = nullptr;
+    const int64_t* ticks = nullptr;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
-// the store's rows and the env's planes; `ring` (may be null: a HIT then
+// the store's rows and the env's planes (#29 P6b.3: the LOGIC, DOOR_INPUTS
+// and SWAP stages read no plane: their pointers may be null); `ring` (may be null: a HIT then
 // faults) receives the events; `lists` (may be null) the walk's lists.
 void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
                  const ApplierPlanes& planes, int stage, UnitEventRing* ring,

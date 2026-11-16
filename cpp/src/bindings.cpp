@@ -1270,7 +1270,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::object claims, py::object noise, py::object blast_log,
                  py::object door_table, py::object door_tiles, py::object duct_table,
                  py::object vent_table, py::object source_table, py::object source_tiles,
-                 std::uintptr_t source_out) {
+                 std::uintptr_t source_out, py::object signal_tables, py::object ticks) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   // #29 P6b.1: the DOORS stage's door table and tile table
@@ -1314,6 +1314,28 @@ PYBIND11_MODULE(breach_physics, m) {
                   L.source_tiles = source_tiles.is_none()
                                        ? nullptr : source_tiles.cast<breach_cuda::ObjectTable*>();
                   L.source_out = source_out;
+                  // #29 P6b.3: the signal tables, (signal, sensor, sensor_tile, node,
+                  // node_in, pump, pump_in, door_drive), each an ObjectTableBuffer or
+                  // None, and the EMIT stage's per-env ticks
+                  py::array_t<int64_t, py::array::c_style | py::array::forcecast> tk;
+                  if (!signal_tables.is_none()) {
+                      py::sequence seq = signal_tables.cast<py::sequence>();
+                      if (py::len(seq) != 8)
+                          throw std::invalid_argument("applier_run: signal_tables holds 8 tables");
+                      breach_cuda::ObjectTable** dst[8] = {
+                          &L.signal_table, &L.sensor_table, &L.sensor_tiles, &L.node_table,
+                          &L.node_ins, &L.pump_table, &L.pump_ins, &L.door_drives};
+                      for (int k = 0; k < 8; ++k) {
+                          py::object o2 = seq[k];
+                          *dst[k] = o2.is_none() ? nullptr : o2.cast<breach_cuda::ObjectTable*>();
+                      }
+                  }
+                  if (!ticks.is_none()) {
+                      tk = ticks.cast<py::array_t<int64_t, py::array::c_style | py::array::forcecast>>();
+                      if (tk.ndim() != 1 || tk.shape(0) != a.n_env())
+                          throw std::invalid_argument("applier_run: ticks must be (N,) int64");
+                      L.ticks = tk.data();
+                  }
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
@@ -1325,6 +1347,7 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("duct_table") = py::none(), py::arg("vent_table") = py::none(),
               py::arg("source_table") = py::none(), py::arg("source_tiles") = py::none(),
               py::arg("source_out") = (std::uintptr_t)0,
+              py::arg("signal_tables") = py::none(), py::arg("ticks") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");

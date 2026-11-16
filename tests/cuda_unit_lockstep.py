@@ -855,6 +855,38 @@ LISTS["source_tiles"] = ListDef(_sim_host, _source_tiles_records, _source_consum
                                 _door_device("source_tile"), _table_fields("source_tile"),
                                 None, _source_tiles_land)
 
+# #29 P6b.3: THE SIGNAL TABLES as lists (the bus, the sensors and their disc
+# tiles, the nodes and their inputs, the pumps and their inputs, the door
+# drives: ``unit_kernels.SIGNAL_RECORDS``). Staged as inputs, compared as
+# outputs and, in the chained form, LANDED back onto the sim's own bus and
+# runtimes (``signals_to_host``, ``nodes_to_host``, ``pumps_to_host``); the
+# load-constant tables (sensors, disc tiles, inputs, drives) land by being
+# held equal to the sim's own.
+def _signal_records(list_name):
+    def rec(sim, obj):
+        return unit_kernels.SIGNAL_RECORDS[list_name](sim)
+    return rec
+
+
+def _same_land(list_name):
+    def land(sim, obj, recs):
+        unit_kernels._same_rows(list_name, recs, unit_kernels.SIGNAL_RECORDS[list_name](sim))
+    return land
+
+
+def _signal_consume(obj):
+    raise RuntimeError("lockstep: the signal tables are landed, never consumed")
+
+
+_SIGNAL_LANDS = {
+    "signals": lambda sim, obj, recs: unit_kernels.signals_to_host(sim, recs),
+    "nodes": lambda sim, obj, recs: unit_kernels.nodes_to_host(sim, recs),
+    "pumps": lambda sim, obj, recs: unit_kernels.pumps_to_host(sim, recs),
+}
+for _ln, _tn in zip(unit_kernels.SIGNAL_LISTS, unit_kernels._SIGNAL_TABLE_NAMES):
+    LISTS[_ln] = ListDef(_sim_host, _signal_records(_ln), _signal_consume, _door_device(_tn),
+                         _wide_fields(_tn), None, _SIGNAL_LANDS.get(_ln, _same_land(_ln)))
+
 LISTS["ducts"] = ListDef(_sim_host, _ducts_records, _vent_consume, _door_device("duct"),
                          _wide_fields("duct"), None, _ducts_land)
 LISTS["vents"] = ListDef(_sim_host, _vents_records, _vent_consume, _door_device("vent"),
@@ -1771,9 +1803,13 @@ def _is_for(sim, args) -> bool:
     """Whether a slot callable's arguments name ``sim`` (the sim itself, its
     unit list, or -- #29 P7.0a, slot 9d's ``apply_temperature_ignition(gmap,
     ...)`` -- its GameMap)."""
+    bus = getattr(sim, "_signal_bus", None)
     for a in args:
         if a is sim or a is getattr(sim, "units", None) \
                 or a is getattr(sim, "gmap", None):
+            return True
+        # #29 P6b.3: slot 9e(e)'s SignalBus.swap_node_signals(bus)
+        if bus is not None and a is bus:
             return True
     return False
 

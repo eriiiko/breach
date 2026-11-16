@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "ab17764caf41d79730ed583574bd32eae9efd87b70d0bdf243e7396db7180f8b";
-constexpr int OBJECT_TABLES_N = 11;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "5e8f8db0c7abeb1a07478107a4b770b669cc538586bc1b472713c92f78ed658a";
+constexpr int OBJECT_TABLES_N = 19;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -277,5 +277,207 @@ constexpr int OBJ_SOURCE_COL_TILE_COUNT = 3;
 constexpr int OBJ_SOURCE_COL_TILE_COUNT_W = 1;
 constexpr int OBJ_SOURCE_COL_LIVE = 4;
 constexpr int OBJ_SOURCE_COL_LIVE_W = 1;
+
+// table 'signal': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_SIGNAL = 11;
+constexpr int OBJ_SIGNAL_W = 8;
+constexpr int OBJ_SIGNAL_CAP = 256;
+constexpr int OBJ_SIGNAL_LIVE = 7;
+constexpr int OBJ_SIGNAL_COL_ORDINAL = 0;
+constexpr int OBJ_SIGNAL_COL_ORDINAL_W = 1;
+constexpr int OBJ_SIGNAL_COL_NAME = 1;
+constexpr int OBJ_SIGNAL_COL_NAME_W = 1;
+constexpr int OBJ_SIGNAL_COL_PUB = 2;
+constexpr int OBJ_SIGNAL_COL_PUB_W = 1;
+constexpr int OBJ_SIGNAL_COL_STG = 3;
+constexpr int OBJ_SIGNAL_COL_STG_W = 1;
+constexpr int OBJ_SIGNAL_COL_NODE = 4;
+constexpr int OBJ_SIGNAL_COL_NODE_W = 1;
+constexpr int OBJ_SIGNAL_COL_EMIT = 5;
+constexpr int OBJ_SIGNAL_COL_EMIT_W = 1;
+constexpr int OBJ_SIGNAL_COL_EMIT_REF = 6;
+constexpr int OBJ_SIGNAL_COL_EMIT_REF_W = 1;
+constexpr int OBJ_SIGNAL_COL_LIVE = 7;
+constexpr int OBJ_SIGNAL_COL_LIVE_W = 1;
+
+// table 'sensor_tile': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_SENSOR_TILE = 12;
+constexpr int OBJ_SENSOR_TILE_W = 3;
+constexpr int OBJ_SENSOR_TILE_CAP = 1024;
+constexpr int OBJ_SENSOR_TILE_LIVE = 2;
+constexpr int OBJ_SENSOR_TILE_COL_TY = 0;
+constexpr int OBJ_SENSOR_TILE_COL_TY_W = 1;
+constexpr int OBJ_SENSOR_TILE_COL_TX = 1;
+constexpr int OBJ_SENSOR_TILE_COL_TX_W = 1;
+constexpr int OBJ_SENSOR_TILE_COL_LIVE = 2;
+constexpr int OBJ_SENSOR_TILE_COL_LIVE_W = 1;
+
+// table 'sensor': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_SENSOR = 13;
+constexpr int OBJ_SENSOR_W = 17;
+constexpr int OBJ_SENSOR_CAP = 32;
+constexpr int OBJ_SENSOR_LIVE = 16;
+constexpr int OBJ_SENSOR_COL_ORDINAL = 0;
+constexpr int OBJ_SENSOR_COL_ORDINAL_W = 1;
+constexpr int OBJ_SENSOR_COL_ALIVE = 1;
+constexpr int OBJ_SENSOR_COL_ALIVE_W = 1;
+constexpr int OBJ_SENSOR_COL_KIND = 2;
+constexpr int OBJ_SENSOR_COL_KIND_W = 1;
+constexpr int OBJ_SENSOR_COL_SLOT = 3;
+constexpr int OBJ_SENSOR_COL_SLOT_W = 1;
+constexpr int OBJ_SENSOR_COL_CHANNEL = 4;
+constexpr int OBJ_SENSOR_COL_CHANNEL_W = 1;
+constexpr int OBJ_SENSOR_COL_GAS = 5;
+constexpr int OBJ_SENSOR_COL_GAS_W = 1;
+constexpr int OBJ_SENSOR_COL_SY = 6;
+constexpr int OBJ_SENSOR_COL_SY_W = 1;
+constexpr int OBJ_SENSOR_COL_SX = 7;
+constexpr int OBJ_SENSOR_COL_SX_W = 1;
+constexpr int OBJ_SENSOR_COL_HAS_DISC = 8;
+constexpr int OBJ_SENSOR_COL_HAS_DISC_W = 1;
+constexpr int OBJ_SENSOR_COL_TILE_START = 9;
+constexpr int OBJ_SENSOR_COL_TILE_START_W = 1;
+constexpr int OBJ_SENSOR_COL_TILE_COUNT = 10;
+constexpr int OBJ_SENSOR_COL_TILE_COUNT_W = 1;
+constexpr int OBJ_SENSOR_COL_PERIOD = 11;
+constexpr int OBJ_SENSOR_COL_PERIOD_W = 1;
+constexpr int OBJ_SENSOR_COL_R2 = 12;
+constexpr int OBJ_SENSOR_COL_R2_W = 1;
+constexpr int OBJ_SENSOR_COL_NEEDS_LOS = 13;
+constexpr int OBJ_SENSOR_COL_NEEDS_LOS_W = 1;
+constexpr int OBJ_SENSOR_COL_FACTION = 14;
+constexpr int OBJ_SENSOR_COL_FACTION_W = 1;
+constexpr int OBJ_SENSOR_COL_MIN_FOOTPRINT = 15;
+constexpr int OBJ_SENSOR_COL_MIN_FOOTPRINT_W = 1;
+constexpr int OBJ_SENSOR_COL_LIVE = 16;
+constexpr int OBJ_SENSOR_COL_LIVE_W = 1;
+
+// table 'node_in': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_NODE_IN = 14;
+constexpr int OBJ_NODE_IN_W = 2;
+constexpr int OBJ_NODE_IN_CAP = 256;
+constexpr int OBJ_NODE_IN_LIVE = 1;
+constexpr int OBJ_NODE_IN_COL_SLOT = 0;
+constexpr int OBJ_NODE_IN_COL_SLOT_W = 1;
+constexpr int OBJ_NODE_IN_COL_LIVE = 1;
+constexpr int OBJ_NODE_IN_COL_LIVE_W = 1;
+
+// table 'node': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_NODE = 15;
+constexpr int OBJ_NODE_W = 37;
+constexpr int OBJ_NODE_CAP = 64;
+constexpr int OBJ_NODE_LIVE = 36;
+constexpr int OBJ_NODE_COL_ORDINAL = 0;
+constexpr int OBJ_NODE_COL_ORDINAL_W = 1;
+constexpr int OBJ_NODE_COL_KIND = 1;
+constexpr int OBJ_NODE_COL_KIND_W = 1;
+constexpr int OBJ_NODE_COL_OUT = 2;
+constexpr int OBJ_NODE_COL_OUT_W = 1;
+constexpr int OBJ_NODE_COL_IN_START = 3;
+constexpr int OBJ_NODE_COL_IN_START_W = 1;
+constexpr int OBJ_NODE_COL_IN_COUNT = 4;
+constexpr int OBJ_NODE_COL_IN_COUNT_W = 1;
+constexpr int OBJ_NODE_COL_CMP = 5;
+constexpr int OBJ_NODE_COL_CMP_W = 1;
+constexpr int OBJ_NODE_COL_THRESHOLD = 6;
+constexpr int OBJ_NODE_COL_THRESHOLD_W = 1;
+constexpr int OBJ_NODE_COL_REQUIRE_ALIVE = 7;
+constexpr int OBJ_NODE_COL_REQUIRE_ALIVE_W = 1;
+constexpr int OBJ_NODE_COL_ALIVE_SLOT = 8;
+constexpr int OBJ_NODE_COL_ALIVE_SLOT_W = 1;
+constexpr int OBJ_NODE_COL_K = 9;
+constexpr int OBJ_NODE_COL_K_W = 1;
+constexpr int OBJ_NODE_COL_EMA = 10;
+constexpr int OBJ_NODE_COL_EMA_W = 1;
+constexpr int OBJ_NODE_COL_A_IN = 11;
+constexpr int OBJ_NODE_COL_A_IN_W = 10;
+constexpr int OBJ_NODE_COL_A_OUT = 21;
+constexpr int OBJ_NODE_COL_A_OUT_W = 9;
+constexpr int OBJ_NODE_COL_FAR_IS_OUTER = 30;
+constexpr int OBJ_NODE_COL_FAR_IS_OUTER_W = 1;
+constexpr int OBJ_NODE_COL_EQUALIZE_CMD = 31;
+constexpr int OBJ_NODE_COL_EQUALIZE_CMD_W = 1;
+constexpr int OBJ_NODE_COL_INTERIOR = 32;
+constexpr int OBJ_NODE_COL_INTERIOR_W = 1;
+constexpr int OBJ_NODE_COL_BAND = 33;
+constexpr int OBJ_NODE_COL_BAND_W = 1;
+constexpr int OBJ_NODE_COL_STATE = 34;
+constexpr int OBJ_NODE_COL_STATE_W = 1;
+constexpr int OBJ_NODE_COL_DWELL = 35;
+constexpr int OBJ_NODE_COL_DWELL_W = 1;
+constexpr int OBJ_NODE_COL_LIVE = 36;
+constexpr int OBJ_NODE_COL_LIVE_W = 1;
+
+// table 'pump_in': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_PUMP_IN = 16;
+constexpr int OBJ_PUMP_IN_W = 3;
+constexpr int OBJ_PUMP_IN_CAP = 64;
+constexpr int OBJ_PUMP_IN_LIVE = 2;
+constexpr int OBJ_PUMP_IN_COL_SLOT = 0;
+constexpr int OBJ_PUMP_IN_COL_SLOT_W = 1;
+constexpr int OBJ_PUMP_IN_COL_EXTRACT = 1;
+constexpr int OBJ_PUMP_IN_COL_EXTRACT_W = 1;
+constexpr int OBJ_PUMP_IN_COL_LIVE = 2;
+constexpr int OBJ_PUMP_IN_COL_LIVE_W = 1;
+
+// table 'pump': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_PUMP = 17;
+constexpr int OBJ_PUMP_W = 16;
+constexpr int OBJ_PUMP_CAP = 16;
+constexpr int OBJ_PUMP_LIVE = 15;
+constexpr int OBJ_PUMP_COL_ORDINAL = 0;
+constexpr int OBJ_PUMP_COL_ORDINAL_W = 1;
+constexpr int OBJ_PUMP_COL_ALIVE = 1;
+constexpr int OBJ_PUMP_COL_ALIVE_W = 1;
+constexpr int OBJ_PUMP_COL_AT_TARGET = 2;
+constexpr int OBJ_PUMP_COL_AT_TARGET_W = 1;
+constexpr int OBJ_PUMP_COL_AT_SLOT = 3;
+constexpr int OBJ_PUMP_COL_AT_SLOT_W = 1;
+constexpr int OBJ_PUMP_COL_PORT_Y = 4;
+constexpr int OBJ_PUMP_COL_PORT_Y_W = 1;
+constexpr int OBJ_PUMP_COL_PORT_X = 5;
+constexpr int OBJ_PUMP_COL_PORT_X_W = 1;
+constexpr int OBJ_PUMP_COL_HAS_SOURCE = 6;
+constexpr int OBJ_PUMP_COL_HAS_SOURCE_W = 1;
+constexpr int OBJ_PUMP_COL_SRC_Y = 7;
+constexpr int OBJ_PUMP_COL_SRC_Y_W = 1;
+constexpr int OBJ_PUMP_COL_SRC_X = 8;
+constexpr int OBJ_PUMP_COL_SRC_X_W = 1;
+constexpr int OBJ_PUMP_COL_TARGET = 9;
+constexpr int OBJ_PUMP_COL_TARGET_W = 1;
+constexpr int OBJ_PUMP_COL_BAND = 10;
+constexpr int OBJ_PUMP_COL_BAND_W = 1;
+constexpr int OBJ_PUMP_COL_RELEASE = 11;
+constexpr int OBJ_PUMP_COL_RELEASE_W = 1;
+constexpr int OBJ_PUMP_COL_DELTA_N_Q = 12;
+constexpr int OBJ_PUMP_COL_DELTA_N_Q_W = 1;
+constexpr int OBJ_PUMP_COL_IN_START = 13;
+constexpr int OBJ_PUMP_COL_IN_START_W = 1;
+constexpr int OBJ_PUMP_COL_IN_COUNT = 14;
+constexpr int OBJ_PUMP_COL_IN_COUNT_W = 1;
+constexpr int OBJ_PUMP_COL_LIVE = 15;
+constexpr int OBJ_PUMP_COL_LIVE_W = 1;
+
+// table 'door_drive': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_DOOR_DRIVE = 18;
+constexpr int OBJ_DOOR_DRIVE_W = 4;
+constexpr int OBJ_DOOR_DRIVE_CAP = 64;
+constexpr int OBJ_DOOR_DRIVE_LIVE = 3;
+constexpr int OBJ_DOOR_DRIVE_COL_DOOR = 0;
+constexpr int OBJ_DOOR_DRIVE_COL_DOOR_W = 1;
+constexpr int OBJ_DOOR_DRIVE_COL_CLOSE = 1;
+constexpr int OBJ_DOOR_DRIVE_COL_CLOSE_W = 1;
+constexpr int OBJ_DOOR_DRIVE_COL_SLOT = 2;
+constexpr int OBJ_DOOR_DRIVE_COL_SLOT_W = 1;
+constexpr int OBJ_DOOR_DRIVE_COL_LIVE = 3;
+constexpr int OBJ_DOOR_DRIVE_COL_LIVE_W = 1;
 
 }  // namespace object_tables
