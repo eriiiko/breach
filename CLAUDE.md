@@ -75,7 +75,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots |
+| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
 | `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
@@ -171,6 +171,8 @@ amends the rule file, never this line's length.
 | Blast walk (device) | `cpp/src/cuda_unit_blast.cuh` | THE device `reach_tiles`, `read_blast_air`, `add_source` and `take_source_plane` (the applier's SOURCES stage); every device caller of a walk, an air read or the source goes through it, never its own walk |
 | Blast-source table | `unit_schema.SOURCE_TABLE` + `SOURCE_TILE_TABLE` | THE device form of `GameMap.expansions` (a comparison row's later ticks): appended by the PAYLOAD function, walked and span-compacted by the SOURCES stage; never a second source list |
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
+| Timed charges and heat sources | `unit_schema.TIMED_CHARGE_TABLE` / `HEAT_SOURCE_TABLE` + `cpp/src/cuda_unit_hazards.cuh` | THE device form of slot 9e(d') and 9e(d''): every detonation applied at once through the one payload function; the heat chain bounded and refused by name past the blast log |
+| Entity section export | `unit_kernels.EntityExport` + `entities/serialize.record_head` / `record_tail` | THE digest's entity and signal sections from the device tables; never a second serializer |
 | Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 
 ### Determinism gates
