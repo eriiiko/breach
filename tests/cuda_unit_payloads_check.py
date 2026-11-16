@@ -2468,9 +2468,15 @@ def part_handover(ticks=HANDOVER_TICKS):
         rows = get_tables().payloads.by_name
         stats = Counter()
         import cuda_s8a_check as s8a            # the resident path's backends
+        o_take = physics_runner.take_source_plane
+        twin_maps = {id(s.gmap) for s in twins}
+
+        def host_take(g, __o=o_take):             # the twins' head takes nothing
+            return None if id(g) in twin_maps else __o(g)
         with Rows(VARIANTS):
             physics_runner.set_residency(True)
             s8a._set_backends(True)
+            physics_runner.take_source_plane = host_take
             try:
                 bt, br = ResidentBatch(twins), ResidentBatch(refs)
                 h, w = twins[0].gmap.solid.shape
@@ -2489,7 +2495,8 @@ def part_handover(ticks=HANDOVER_TICKS):
                         source_out=out)
                     holder["taken"] = taken
                     holder["want"] = []
-                    for s in twins:                       # the host take on a copy
+                    dpl, ds, dt = pl["div_source"].get(), srcs.records(), stl.records()
+                    for e, s in enumerate(twins):         # the host take on a copy
                         class _G:
                             pass
                         gg = _G()
@@ -2497,6 +2504,14 @@ def part_handover(ticks=HANDOVER_TICKS):
                         gg.expansions = [[list(x[0]), x[1], x[2]] for x in s.gmap.expansions]
                         gg.div_source_sat_hits = gg.div_source_cut_q = 0
                         holder["want"].append(bx.take_source_plane(gg))
+                        # the TWIN's take IS the device's: its state lands on the
+                        # host and the host head takes nothing (physics_runner's
+                        # take_source_plane passes the twins by), so a slot 7 that
+                        # did not read the handed-over plane would see no source
+                        s.gmap.div_source[...] = dpl[e]
+                        unit_kernels.sources_to_host(s, ds[e], dt[e])
+                        s.gmap.div_source_sat_hits += int(_b["div_source_sat_hits"][e])
+                        s.gmap.div_source_cut_q += int(_b["div_source_cut_q"][e])
                     return int(out.data.ptr)
 
                 for t in range(ticks):
@@ -2524,6 +2539,7 @@ def part_handover(ticks=HANDOVER_TICKS):
                             fail(f"handover N={N} tick {t} env {e}: the books differ")
                             return
             finally:
+                physics_runner.take_source_plane = o_take
                 physics_runner.set_residency(False)
                 s8a._set_backends(False)
         if not stats["ticks a source was taken on the card"]:
