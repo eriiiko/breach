@@ -111,14 +111,19 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #: its exposure raises and zeroings for the walk's end (decision 2: the mode
 #: is per (stage, kind); every other packet lands at once).
 #:   TOPOLOGY  slot 9's burn-through list (DESTROY_WALL only today);
-#:   RESOLVE   slot 4c, ``SimultaneousEffects.resolve`` of the attack slot.
+#:   RESOLVE   slot 4c, ``SimultaneousEffects.resolve`` of the attack slot;
+#:             #29 P7a.2: also slot 2''s landing (``Simulation._update_rounds``'
+#:             own resolve: the same law, the same landing, so the same stage).
 STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
 STAGE_TOPOLOGY, STAGE_RESOLVE = 0, 1
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
-#: 4a's blow is a HIT, a STATUS and a PUSH. A later producer that stages more
-#: raises it (a row here, regenerate).
-ROW_CAP = 3
+#: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
+#: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
+#: a payload round's PAYLOAD, or a CHEW and a PAYLOAD) times the burst's
+#: rounds (a shotgun's eight). A later producer that stages more raises it (a
+#: row here, regenerate); past it the run is refused (EffectOverflow).
+ROW_CAP = 32
 #: The default list capacity per env per launch.
 E_CAP = 256
 

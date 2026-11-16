@@ -2565,16 +2565,26 @@ class Simulation:
         # #169: two rounds landing on one tick land TOGETHER — every round
         # marches against the slot-start state and records its hit / chew /
         # detonation; resolve() applies them in list (spawn) order.
+        # #29 P7a.2: the march is its own call (phase A, handed the landing
+        # it records on: the device port's slot), then the landing.
+        landing = SimultaneousEffects()
+        self._march_rounds(landing)
+        landing.resolve()
+
+    def _march_rounds(self, landing) -> None:
+        """Slot 2''s phase A (#29 P7a.2): every round in flight marches this
+        tick's budget against the state the grenades left, in list (spawn)
+        order, recording its hit / push / chew / detonation on ``landing``;
+        the survivors replace ``self.bullets`` (nothing in the landing reads
+        the list)."""
         if self.bullets:
             survivors = []
-            landing = SimultaneousEffects()
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
                              self.real_time, self.draws,
                              events=self.tick_events,
                              queue=self.edit_queue, effects=landing):
                     survivors.append(b)
-            landing.resolve()
             self.bullets = survivors
 
     def _update_player_movement(self) -> None:
