@@ -1859,6 +1859,9 @@ use write. No decision moved. One line each:
   tiles needs a bent span: no door has one); `_aperture_blocked` out of the grid is
   refused (numpy would wrap or raise); `inject_gas_n_vec` (the vents' deposit with its
   rails) not built: it arrives with its first device caller (P6b.2).
+- ONE CLASS-T TWIN, `doors`, slots "1b intents" and "9e(d) doors": the corpus has no
+  door entity, so the sweep alone would trace no file (the P7b precedent); its traced
+  files are 1b's, `door_system.py` stays `[not_twinned]` and the doors gate is the guard.
 - THE HARNESS: lists `doors` / `door_tiles` (the tile table lands first into a stash,
   the door table then lands both; a chain naming only the doors lands over the host's
   own tiles); the write-set gate covers a LIST attribute by its declared element books.
