@@ -1728,7 +1728,7 @@ def part_scene():
 
 #: The batch's row sets: the disc path's variants, then a strength set (#29
 #: P7c.2: concurrent envs walking and reading the air in one launch).
-BATCH_SETS = ("V", "S2")
+BATCH_SETS = ("V", "S0")   # S0: the strength rows on the grenades, by the wall that moves per env
 
 
 def part_batch():
