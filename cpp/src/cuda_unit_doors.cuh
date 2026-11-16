@@ -42,6 +42,7 @@ namespace breach_cuda {
 namespace doors {
 
 using namespace object_tables;
+using namespace unit_store;
 using namespace unit_tables;
 using namespace applier;
 

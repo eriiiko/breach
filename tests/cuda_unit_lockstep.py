@@ -482,6 +482,60 @@ LISTS: dict = {
 }
 
 # ---------------------------------------------------------------------------
+# #29 P6b.1: THE DOOR TABLE and its tile side table as lists (the first
+# entity table: ``Simulation._doors`` through ``unit_kernels.doors_of`` /
+# ``door_tiles_of``). Staged as inputs, compared as outputs and, in the
+# chained form, LANDED back onto the sim's own door runtimes in place
+# (``unit_kernels.doors_to_host``): the tile table lands first (a stash), the
+# door table then lands both (a chain naming only the doors -- slot 1b's use
+# write -- lands them over the host's own tiles).
+# ---------------------------------------------------------------------------
+_DOOR_TILE_STASH: dict = {}
+
+
+def _sim_host(sim, args, kw):
+    return sim
+
+
+def _door_device(table_name):
+    def device(n_env, n_units, cap, bp):
+        from simulation import object_tables, unit_schema
+        t = {x.name: x for x in unit_schema.OBJECT_TABLES}[table_name]
+        return object_tables.DeviceTable(t, n_env, bp=bp)
+    return device
+
+
+def _doors_records(sim, obj):
+    return unit_kernels.doors_of(sim)
+
+
+def _door_tiles_records(sim, obj):
+    return unit_kernels.door_tiles_of(sim)
+
+
+def _door_tiles_land(sim, obj, recs):
+    _DOOR_TILE_STASH[id(sim)] = [tuple(int(x) for x in r) for r in recs]
+
+
+def _doors_land(sim, obj, recs):
+    tiles = _DOOR_TILE_STASH.pop(id(sim), None)
+    if tiles is None:
+        tiles = unit_kernels.door_tiles_of(sim)
+    unit_kernels.doors_to_host(sim, recs, tiles)
+
+
+def _door_consume(obj):
+    raise RuntimeError("lockstep: the door tables are landed, never consumed")
+
+
+LISTS["doors"] = ListDef(_sim_host, _doors_records, _door_consume, _door_device("door"),
+                         _table_fields("door"), None, _doors_land)
+LISTS["door_tiles"] = ListDef(_sim_host, _door_tiles_records, _door_consume,
+                              _door_device("door_tile"), _table_fields("door_tile"), None,
+                              _door_tiles_land)
+
+
+# ---------------------------------------------------------------------------
 # #29 P6.4b: field outputs, books, the write-set gate
 # ---------------------------------------------------------------------------
 BOOK_PREFIX = "book:"
@@ -579,6 +633,10 @@ def write_set_violations(slot, changed, aliases=None) -> list:
     out = []
     for c in changed:
         if c in allowed or c.split(":", 1)[0] in allowed:
+            continue
+        # #29 P6b.1: a LIST attribute whose element books are declared
+        # (``trace_clip_books:<g>``) is covered by them (each compared)
+        if any(a.startswith(c + ":") for a in allowed):
             continue
         if aliases.get(c, frozenset()) & allowed:
             continue
