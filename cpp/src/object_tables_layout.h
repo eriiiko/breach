@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "5e8f8db0c7abeb1a07478107a4b770b669cc538586bc1b472713c92f78ed658a";
-constexpr int OBJECT_TABLES_N = 19;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "553532893bab7903779a6cb104096031f8c8a95df03bd6cfa75bb1226b614b0c";
+constexpr int OBJECT_TABLES_N = 21;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -479,5 +479,67 @@ constexpr int OBJ_DOOR_DRIVE_COL_SLOT = 2;
 constexpr int OBJ_DOOR_DRIVE_COL_SLOT_W = 1;
 constexpr int OBJ_DOOR_DRIVE_COL_LIVE = 3;
 constexpr int OBJ_DOOR_DRIVE_COL_LIVE_W = 1;
+
+// table 'timed_charge': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_TIMED_CHARGE = 19;
+constexpr int OBJ_TIMED_CHARGE_W = 13;
+constexpr int OBJ_TIMED_CHARGE_CAP = 32;
+constexpr int OBJ_TIMED_CHARGE_LIVE = 12;
+constexpr int OBJ_TIMED_CHARGE_COL_ORDINAL = 0;
+constexpr int OBJ_TIMED_CHARGE_COL_ORDINAL_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_FY = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_FY_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_FX = 2;
+constexpr int OBJ_TIMED_CHARGE_COL_FX_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_PAYLOAD = 3;
+constexpr int OBJ_TIMED_CHARGE_COL_PAYLOAD_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_PERIOD_TICKS = 4;
+constexpr int OBJ_TIMED_CHARGE_COL_PERIOD_TICKS_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_TICKS_TO_FIRE = 5;
+constexpr int OBJ_TIMED_CHARGE_COL_TICKS_TO_FIRE_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_HEAT = 6;
+constexpr int OBJ_TIMED_CHARGE_COL_HEAT_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_TRIGGER_TEMP_Q16 = 7;
+constexpr int OBJ_TIMED_CHARGE_COL_TRIGGER_TEMP_Q16_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_FUSE_TICKS = 8;
+constexpr int OBJ_TIMED_CHARGE_COL_FUSE_TICKS_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_ENABLED = 9;
+constexpr int OBJ_TIMED_CHARGE_COL_ENABLED_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_FIRED = 10;
+constexpr int OBJ_TIMED_CHARGE_COL_FIRED_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_ALIVE = 11;
+constexpr int OBJ_TIMED_CHARGE_COL_ALIVE_W = 1;
+constexpr int OBJ_TIMED_CHARGE_COL_LIVE = 12;
+constexpr int OBJ_TIMED_CHARGE_COL_LIVE_W = 1;
+
+// table 'heat_source': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_HEAT_SOURCE = 20;
+constexpr int OBJ_HEAT_SOURCE_W = 11;
+constexpr int OBJ_HEAT_SOURCE_CAP = 32;
+constexpr int OBJ_HEAT_SOURCE_LIVE = 10;
+constexpr int OBJ_HEAT_SOURCE_COL_ORDINAL = 0;
+constexpr int OBJ_HEAT_SOURCE_COL_ORDINAL_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_FY = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_FY_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_FX = 2;
+constexpr int OBJ_HEAT_SOURCE_COL_FX_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_HEAT_Q16 = 3;
+constexpr int OBJ_HEAT_SOURCE_COL_HEAT_Q16_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_HEAT_RADIUS = 4;
+constexpr int OBJ_HEAT_SOURCE_COL_HEAT_RADIUS_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_ENABLED = 5;
+constexpr int OBJ_HEAT_SOURCE_COL_ENABLED_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_HP_Q16 = 6;
+constexpr int OBJ_HEAT_SOURCE_COL_HP_Q16_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_DEATH_PAYLOAD = 7;
+constexpr int OBJ_HEAT_SOURCE_COL_DEATH_PAYLOAD_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_MAX_TEMP_Q16 = 8;
+constexpr int OBJ_HEAT_SOURCE_COL_MAX_TEMP_Q16_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_ALIVE = 9;
+constexpr int OBJ_HEAT_SOURCE_COL_ALIVE_W = 1;
+constexpr int OBJ_HEAT_SOURCE_COL_LIVE = 10;
+constexpr int OBJ_HEAT_SOURCE_COL_LIVE_W = 1;
 
 }  // namespace object_tables

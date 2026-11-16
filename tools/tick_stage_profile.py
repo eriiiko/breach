@@ -110,9 +110,12 @@ SLOT_WRAPS = (
     # #29 P6b.1: the door sweep has its own label (its device form is the
     # applier's DOORS stage; a twin row names its slot by it).
     ("simulation.simulation", "sweep_doors", "9e(d) doors"),
-    ("simulation.simulation", "sweep_timed_charges", "9e entities"),
+    # #29 P6b.4: the timed charges and the heat sources have their own labels
+    # (their device forms are the applier's TIMED_CHARGES and HEAT_SOURCES
+    # stages; the harness shadows each by it). The last "9e entities" callables.
+    ("simulation.simulation", "sweep_timed_charges", "9e(d') timed charges"),
     ("simulation.charges", "tick", "9e(d') planted charges"),
-    ("simulation.simulation", "sweep_heat_sources", "9e entities"),
+    ("simulation.simulation", "sweep_heat_sources", "9e(d'') heat sources"),
     ("simulation.signal_bus", "SignalBus.swap_node_signals", "9e(e) swap"),
     ("simulation.simulation", "Simulation._clear_tick_buffers", "tick-end clears"),
     ("simulation.unit_orders", "expire", "10' order expiry"),

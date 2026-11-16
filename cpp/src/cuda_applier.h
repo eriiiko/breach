@@ -171,6 +171,11 @@ struct ApplierLists {
     ObjectTable* pump_ins = nullptr;
     ObjectTable* door_drives = nullptr;
     const int64_t* ticks = nullptr;
+    // #29 P6b.4: the TIMED_CHARGES stage's timed-charge table and the
+    // HEAT_SOURCES stage's heat-source table (each stage also appends the
+    // PAYLOAD records it applied to the applier's own list)
+    ObjectTable* timed_table = nullptr;
+    ObjectTable* heat_table = nullptr;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
