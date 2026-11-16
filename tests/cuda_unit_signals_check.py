@@ -422,6 +422,7 @@ class SignalScene:
             E["p4"].alive = False                 # a dead pump: its latch frozen
         if k == 110 and "fir" in self.byid:
             self.byid["fir"].alive = False        # a dead sensor publishes 0
+            self.byid["smk"].alive = False        # ... and its wired alive reads 0
         if k >= 36 and "de" in E and E["de"].alive and E["de"].state == 0:
             g.destroy_wall(7, 6)                  # DE destroyed while closed
         for c, u, attr, fy, fx in (("ctrl1", self.u0, "out0", 3.0, 22.0),
