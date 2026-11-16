@@ -2321,6 +2321,44 @@ def part_walk(trials=WALK_TRIALS):
           f"census: " + "; ".join(f"{k} = {v}" for k, v in sorted(c.items())))
 
 
+def part_race():
+    """#29 P7c.2: the walk's per-env scratch under concurrency -- N = 8 envs of
+    different maps, each walking the same large strength rows at once in ONE
+    launch (every block's thread 0 walks, reads the air and deposits over its
+    own heat list at the same moment): each env equals its host. A walk that
+    shared another env's scratch would deposit over the other's tiles."""
+    from simulation.weapons import get_tables
+    rng = np.random.default_rng(8181)
+    LS_taps = LS.install_claims_tap()
+    tot = Counter()
+    try:
+        for trial in range(6):
+            sims = [_probe_sim(rng, 8800 + 10 * trial + e, (30, 40)) for e in range(8)]
+            share_tables(sims)
+            pl = get_tables().payloads.by_name
+            lists = []
+            for e, sim in enumerate(sims):
+                g = sim.gmap
+                opn = np.argwhere(~g.solid & ~g.is_vacuum)
+                items = []
+                for k in range(3):
+                    fy, fx = (int(v) for v in opn[int(rng.integers(len(opn)))])
+                    name = ("demolition_c4", "magazine_cookoff", "frag_standard")[k]
+                    items.append(("payload", (g, sim.edit_queue, sim.units, fy, fx, pl[name],
+                                              sim.draws),
+                                  dict(events=sim.tick_events, kind="grenade",
+                                       owner_id=sim.units[0].id, approach=None)))
+                lists.append(items)
+            tot.update(compare_walk(sims, lists, applier.STAGE_DETONATE, what=f"race {trial}"))
+            if FAILS:
+                return
+    finally:
+        for cont, attr, o in LS_taps:
+            setattr(cont, attr, o)
+    print(f"race: 6 launches of N = 8 envs, each walking three strength blasts at once, "
+          f"every env equal to its host ({dict(tot)})")
+
+
 # ---------------------------------------------------------------------------
 # #29 P7c.2: PART SOURCES -- take_source_plane over sources' whole lives
 # ---------------------------------------------------------------------------
@@ -2612,7 +2650,8 @@ def part_bulk():
 # ---------------------------------------------------------------------------
 # Main, bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "walk", "probe", "disc", "sources", "bulk", "scene", "batch", "padding",
+PARTS = ("tables", "walk", "probe", "race", "disc", "sources", "bulk", "scene", "batch",
+         "padding",
          "overflow", "refuse", "chained", "ship", "handover")
 
 
