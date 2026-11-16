@@ -31,6 +31,7 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## GameMap
 - `GameMap.destroy_wall` and `GameMap.on_tile_changed` have a device twin, `cpp/src/cuda_topology.cuh` (the Device topology seam, `.claude/rules/device-units.md`): a change to either, or to the gas energy primitives they call, lands there in the SAME patch. The twin ledger does not catch it (the corpus burns no wall); `tests/cuda_unit_topology_check.py` does.
+- So do `seal_tiles` / `unseal_tiles` / `can_seal_tiles` (with `_seal_blockers`' refusals), `inject_gas_n`, `extract_gas_n(_vec)`, `transfer_gas_n` (with `_air_withdrawal` and `gas_proportional_split`) and `vent_system._aperture_blocked` (#29 P6b.1): a change to one lands in the seam in the SAME patch. The corpus seals and pumps nothing; `tests/cuda_unit_doors_check.py` (part PROBE) is the guard.
 
 ## FieldEdit
 - The only way to write a continuous field: never `gmap.<field>[...] +=` inline.

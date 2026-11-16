@@ -1716,6 +1716,91 @@ line each:
   CHAINED (2' + landing; 4 + 4a + 4c; the host law run 0 times); SHIP 500
   ticks. Every gate broken once (the patch's report).
 
+**As built (P6b.1, 2026-11-16).** The cut table's P6b.1 row: the door table, seal /
+unseal / can_seal and the gas-N primitives in the topology seam, the door sweep, the
+use write. No decision moved. One line each:
+- THE DOOR TABLE is `unit_schema.DOOR_TABLE` (W 7, capacity 32): `ordinal`, `alive`,
+  `state`, `want_open`, `tile_start`, `tile_count`, `live` (always 1: a destroyed door
+  stays a row, dead by `alive`; never compacted), row k the k-th door of
+  `Simulation._doors` (ordinal order). Its span and per-tile hp are ONE side table,
+  `DOOR_TILE_TABLE` (W 4, capacity 256: `ty`, `tx`, `hp`, `live`), the doors' spans
+  concatenated in door order, each row-major -- one table, not two, because `hp[i]`
+  belongs to `span[i]` (the S4 pin). Record functions `unit_kernels.doors_of` /
+  `door_tiles_of`; `door_objects` unpacks to `unit_schema.DoorRow`; `doors_to_host`
+  lands on the sim's OWN runtimes (refusing another count, ordinal or span:
+  `DoorTableMismatch`); `door_entity_rows` reads a door's ENTITY_SECT_V1 rows (alive,
+  state, want_open, hp_i) from the table, held equal to the serializer (P6b.4's export).
+- THE OBJECT TABLES gained SIDE SPANS in the schema's terms: `unit_schema.SideSpan(name,
+  side, start, count, items, max_count)` on `ObjectTable.spans`; `object_tables.records`
+  fills `start` / `count` from the list position (`table_record(..., given=)`),
+  `side_records` is the side table's record function, `pack_sides` packs both,
+  `unpack(..., sides=)` hands `build` each object's side objects. A member past its
+  bound is refused at the encode, a list past a capacity at the pack, by name.
+- SEAL / UNSEAL / CAN_SEAL and THE GAS-N PRIMITIVES are `cpp/src/cuda_topology.cuh`'s
+  `topo::seal_tiles`, `unseal_tiles`, `can_seal`, `inject_gas_n`, `extract_gas_n_vec`
+  (its bulk sum is `extract_gas_n`), `transfer_gas_n`, `aperture_blocked`, over the
+  shared seam rows (`energy_move` is `gas_energy_move` with the call's channel and its
+  two `diag_*` twins; the counted trace saturation is the kit's `trace_add_sat`). A
+  span is `(y, x)` pairs handed row-major (an unsorted one is a fault). THE REFUSALS are
+  `applier.SEAM_REFUSALS` (generated `APPLIER_SEAM_*`): out_of_bounds, already_solid,
+  unknown_material, material_not_solid, standing_water, sealed_pocket, overflow,
+  duplicate_tile, not_solid, span_too_long (device only: past 256), fault; each writes
+  nothing. Proved range (pre-checked on every cell a call touches): gas planes >= 0,
+  |gas_energy| < 2^61, a donor's |T_abs| < 2^28, T_AMB < 2^28, a solid book in int64.
+  The ripple pair is written as 0u, the seal's `permeability > 0.0` is the
+  `seal_mat_ok` row: no float arithmetic.
+- THE PLANES grew by eight (`wave_p`, `wind_x`, `wind_y`, `flow_vx`, `flow_vy`, the
+  float `ripple` / `ripple_v`, the read-only `water_depth`); THE BOOKS by 20 (`ge_seal`,
+  `ge_unseal`, `ge_pump_inject` / `_extract` / `_transfer`, their six `diag_*` twins,
+  `solid_seal`, `solid_unseal`, `trace_clip_0..6` -- `applier.host_book` reads a LIST
+  host by index, `trace_clip_books:g`); five table rows (T 1274): `door_mat_closed`,
+  `seal_mat_ok` per material, `gas_trace` per slice, `inject_o2_frac_q` (the reference's
+  0.21 literal named `GameMap.INJECT_O2_FRACTION`, a pure refactor), `door_states`.
+- THE SWEEP is the applier's third stage, DOORS (`applier.STAGES`; `cpp/src/cuda_unit_
+  doors.cuh`'s `doors::sweep`, called by `k_applier` on the door table and the tile
+  table instead of the effect list): per door in row order, a dead door skipped; a
+  CLOSED door with a tile no longer `MAT_DOOR_CLOSED` dies whole (alive 0, DESTROYED,
+  hp 0) and its remaining closed tiles go through `topo::destroy_wall` in span order;
+  CLOSED and `want_open`: the hp copied from `wall_hp`, `topo::unseal_tiles`, OPEN; OPEN
+  and not `want_open`: no LIVING valid row's footprint square on the span (corpses
+  never block) and `topo::can_seal`, then `topo::seal_tiles(span, MAT_DOOR_CLOSED)` and
+  the hp restamped, CLOSED. Python face `unit_kernels.sweep_doors(store, applier,
+  fields, doors, tiles) -> (transitions, books)`; `applier_run` takes the two tables
+  for that stage. Its profiler label is its own, "9e(d) doors" (moved out of "9e
+  entities").
+- THE USE WRITE is a sibling of P7b's appends in the same form, `unit_kernels.door_uses`
+  (`cpp/src/cuda_unit_doors.cu`, after `verbs`): one thread per env walks the request
+  list and flips `want_open` on the row each USE names (two uses in a tick flip twice).
+- CHOICES where the design was silent: the span and hp in one side table; the use
+  write a sibling kernel, not a fourth argument of `table_appends` (its tables are not
+  the door's); a span's bound is the tile table's capacity (the seal's close-T
+  snapshot lives in a local array of that size); the unseal's donors' live T_abs is
+  checked against the range before the first write only (a donor shared by two span
+  tiles needs a bent span: no door has one); `_aperture_blocked` out of the grid is
+  refused (numpy would wrap or raise); `inject_gas_n_vec` (the vents' deposit with its
+  rails) not built: it arrives with its first device caller (P6b.2).
+- THE HARNESS: lists `doors` / `door_tiles` (the tile table lands first into a stash,
+  the door table then lands both; a chain naming only the doors lands over the host's
+  own tiles); the write-set gate covers a LIST attribute by its declared element books.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `transfer_gas_n` drains its source
+  and THEN raises on a destination past int32 (not atomic; the device refuses before
+  any write); `seal_tiles` would raise mid-mutation on a negative trace count at a
+  receiver (the device's pre-pass refuses it as a fault); a door's unseal never moves
+  the `mint` channel (a solid tile holds no gas, so born-at-ambient books 0); a seal
+  of a gas-free tile with no receiver is allowed (the pocket rule refuses only gas);
+  playground's bots match ends near tick 33 (not investigated); ship_demo's doors are
+  openings (no entity), so the sweep never runs in the corpus.
+- THE GATES (`tests/cuda_unit_doors_check.py`, wrapper `tests/test_cuda_unit_doors.py`;
+  CPU `tests/test_door_table.py`): TABLES; PROBE (1 613 ops on five shipped levels
+  and both door scenes, every refusal taken, planes / books / closure equal on both
+  sides); SCENE (the door scene, space and planetside, 1b + 9e(d) shadowed, a
+  23-branch census, two named unreachable, the identity and entity rows every
+  tick); BATCH N = 2 / 8 (door-scene variants: layout, door count, boundary, seed,
+  schedule); LEVELS (playground's match, airlock_demo, test_level, door_test);
+  PADDING; OVERFLOW; CHAINED (1b + use write and 9e(d), both variants, the host law run
+  0 times in the twin); SHIP 500 ticks (the sweep gated off). Every gate broken once
+  (the patch's report: 29 single-site breaks, all red).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

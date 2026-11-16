@@ -745,7 +745,11 @@ def _probe_map(name, sim, seen, rng, ticks=30):
     cells = open_t + [tuple(int(v) for v in t) for t in np.argwhere(g.is_vacuum)[:4]] \
         + [tuple(int(v) for v in t) for t in np.argwhere(g.is_ambient)[:4]] + solid_t[:2]
     for i, (y, x) in enumerate(cells[:40]):
-        dn = int(rng.choice([0, -5, 1, 77, 65536, 1 << 20, 1 << 26, 1 << 33]))
+        # the edges, and (every other cell) any amount: the O2 share's
+        # round-half-up is seen only on an amount whose 0.21 share has a
+        # fraction >= 1/2 (no power of two has one)
+        dn = (int(rng.choice([0, -5, 1, 3, 77, 65536, 1 << 20, 1 << 26, 1 << 33])) if i % 2
+              else int(rng.integers(1, 1 << 22)))
         P.op("inject", y, x, dn)
         P.op("extract", y, x, int(rng.choice([0, -1, 1, 999, 1 << 18, 1 << 31])))
         y2, x2 = cells[(i * 7 + 3) % len(cells)]
