@@ -2262,6 +2262,79 @@ nodes, 9e(c) and the pumps on the device. No decision moved. One line each:
   9e signal sub-step, the vents and the doors on the device, the host laws run 0 times in the twin;
   ship_demo's bots 500 ticks, the signal chains idle). Every gate broken once (the patch's report).
 
+**As built (P7d, 2026-11-16).** The cut table's P7d row: slot 5, the horde, on the device. No
+decision moved. One line each:
+- THE STAGE is the applier's HORDE stage (`applier.STAGES`: TOPOLOGY 0, RESOLVE 1, HORDE 2, then
+  9e's EMIT 3 .. SOURCES 11 -- slot 5 sits between 4c and 9e in the conductor, so the stage sits
+  between RESOLVE and EMIT and the 9e stages moved up by one, by name). `cpp/src/cuda_unit_horde.cuh`
+  (`horde_dev::stage`, called by `k_applier` with the WHOLE block, 256 threads; every other stage keeps
+  thread 0 and 32 threads): the DRAIN (the env's noise list copied to the block and emptied), the LATCH
+  and the prey (an EMPTY request set or no living prey ends the stage before `begin_tick`: the cache
+  stands), `begin_tick` (drop at `tick % field_refresh_ticks == 0`, at a serial unlike the stored one,
+  or with none stored), pass 1 (trigger, one thread per row), pass 2 (the chain iterated to its
+  fixpoint: the closure the host's sweep reaches whatever its order; then `horde.clear` of the awake),
+  pass 2b (hearing per row; the `noise_fields_max` keep and its settles on thread 0), pass 3 on thread
+  0 in row order. Python face `unit_kernels.horde(store, applier, fields, ring, noise, doors, tiles,
+  cache, latch) -> (coverage, books)`.
+- PASS 3 is a resumable walk (`horde_dev::advance` / `zombie_step`, phases START / PREY /
+  PREY_FEARLESS / NOISE): thread 0 runs the zombie until it needs a field the cache lacks, appends the
+  key (refused by name past the capacity: `applier.HordeCacheOverflow`, book `horde_refused`), the
+  block floods it, thread 0 resumes the zombie where it stopped -- the reference's lazy, live-map,
+  first-need flood. The bite is the immediate `apply_packet` (cause melee, the biter credited, the
+  conversion flag), the bash `topo::chew_wall` (moved out of the applier's CHEW, a pure refactor: both
+  call it) with its noise appended to the noise list, the wander `unit_draws_dev::seedless_word` (the
+  vendored block keyed (0, 0) on (tick, 0, SALT_WANDER, id)) and `below`.
+- THE FLOOD is `horde_dev::flood_block`: the anchor grid's passability per cell, the seeds on thread
+  0, then the frontier processed in parallel (an atomic CAS claims a cell, an atomic counter appends it
+  to the next frontier). BFS distances do not depend on the visiting order, so it equals
+  `horde_field.cpp` cell for cell; distances are int32 in the cache's global planes (not int16 in
+  shared memory: a ship map does not fit a block's shared memory, and the cache must outlive the
+  launch). The TEST-ONLY `horde_flood_probe` (`cpp/src/cuda_unit_horde.cu`) runs the same function.
+- THE CACHE (`simulation.horde_cache`, layout `applier.HORDE_*` / generated `APPLIER_HORDE_*`) is
+  device state across ticks: per env a header (`mask_built`, `has_serial`, `serial`, `floods`,
+  `n_fields`), up to `HORDE_FIELD_CAP` = 16 keys in flood order (kind PREY / PREY_FEARLESS / NOISE, fp,
+  sy, sx), an int32 distance plane per key and the three mask planes. `DeviceHordeCache` (CuPy;
+  planes allocated for the map on first use; `persistent` never resets after its first `begin`),
+  `cache_records(sim)` its ONE record function (`CacheRecords`: a header record and a record per field,
+  each with a 56-bit blake2b digest of its plane(s), the planes riding along), `to_host` the landing.
+- THE LATCH (`horde_cache.latch_of`): per env `(tick, GameMap._tile_serial, mode)` then one column per
+  unit row, mode CONDUCTOR (-1), EMPTY (0), SET (1): what the host writes; the request set never runs a
+  host slot in the tick. The device reads the topology serial from it (no device serial: the
+  `tiles_changed` book is its increment, landed on the host by a chain).
+- 21 TABLE ROWS (`horde_*`: the sim's own `HordeSettings`; `zombie_attack_cooldown_ticks`,
+  `zombie_bite_class_q` (the STRIKE hook applied in the kernel), `zombie_shamble_ticks` /
+  `zombie_sprint_ticks` (the hooks WALK / SPRINT applied inside `default_speed_q`)); BOOKS
+  `horde_floods`, `horde_bites`, `horde_bashes`, `horde_refused`.
+- THE HARNESS: lists `horde` (the cache staged from the host every call) and `horde_live` (the
+  device's own cache, never restaged), input `horde_latch`; `ChainedSlots` sums a book over its slots
+  (a 4c chew and a slot-5 bash in one chain).
+- CHOICES where the design was silent: the stage, not a separate kernel, floods (the row's "a fan-out
+  of the stage's block"), so one block serves both the walk and its floods (no per-(env, field) launch:
+  the fields are needed one at a time in the walk's order); the coverage counts a row the stage wrote,
+  so a row changed and changed back (a noise heard and settled in one slot) counts (the P7a.1
+  semantics; the gate holds coverage >= the rows the host changed); a fault stops the env's pass 3 and
+  refuses the run by name; the bench's "largest zombie count" is 256 (the store has no row cap).
+- WHAT THE REFERENCE SHOWED (nothing changed in it): there is no movement claim -- `is_passable_block`
+  reads terrain only, so two zombies wanting one tile both enter it, in row order; the prey list is
+  frozen at the slot's start, so a second bite in the tick lands on a corpse (its UnitHit, no second
+  kill) and a corpse still seeds the prey field and the sprint's sight; the slot writes no door runtime
+  (the bash is a `wall_hp` write; the door dies whole at 9e(d)'s sweep); the stride clock's `+= 1` then a
+  step's reset can leave a row unchanged across the slot; playground's bots match ends at tick 33
+  before any zombie reaches a door (P6b.1's note).
+- ONE CLASS-T TWIN, `horde` (slot "5 zombie AI"; traced: `ai_zombie.py`, `horde.py`, `noise.py`,
+  `philox32.py`, `turning.py`, `status.py`, `unit_impulse.py`, ...); `horde.py`, `noise.py` and
+  `philox32.py` left `[not_twinned]`.
+- THE GATES (`tests/cuda_unit_horde_check.py`, wrapper `tests/test_cuda_unit_horde.py`): TABLES; FLOOD
+  (273 floods: seven shipped levels x three masks x fp 1..4 x three goal sets, random maps of five
+  densities, a map changed between floods, a batch of three maps); SCENE (the horde scenes, three
+  variants, 420 ticks each, conductor and controller latches, shadowed every tick with an unhooked twin;
+  a 52-branch census, one named unreachable); CACHE (the device's own cache across 420 ticks, three
+  scenes; ship_demo's 500); LEVELS (ship_demo bots 500 ticks with an unhooked twin, playground);
+  BATCH N = 2 / 8 (a zombie-free env, env 0 not the largest); PADDING; OVERFLOW; REFUSE (the ring, the
+  noise list); CHAINED (two scenes, ship_demo 500 ticks; the host zombie law run 0 times); CHAINED ALL
+  (2' + landing | 4 + 4a + 4c + 5 | 9e(d) on the scene, the first two on ship_demo, 500 ticks). Every
+  gate broken once (the patch's report).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

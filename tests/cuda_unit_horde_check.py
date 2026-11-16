@@ -434,6 +434,18 @@ class HordeScene:
             z = add(n, x, y, ZOMBIE_TEAM)
             z.zombie_activated = awake
             z.last_melee_tick = -1000
+        # NON-NEUTRAL HOOKS on every hook the slot reads (STRIKE: the bite;
+        # WALK / SPRINT: the cadences), and one zombie on its own cadence
+        from simulation import unit_traits
+        hooks = {"Za": {"STRIKE": ONE * 3 // 2, "WALK": ONE * 3 // 4},
+                 "Zb": {"STRIKE": ONE // 2, "SPRINT": ONE * 3 // 4},
+                 "Zc": {"WALK": ONE * 5 // 4, "SPRINT": ONE * 3 // 2},
+                 "Zh": {"WALK": ONE * 7 // 8}}
+        for z in self.zombies:
+            if z.name in hooks:
+                unit_traits.compile_unit(sim, z, hooks[z.name])
+            if z.name == "Zi":
+                z.speed_ticks_per_tile = 9
         if controller is not None:
             sim.hand_zombies_to_controller()
         self.controller = controller
@@ -1290,3 +1302,112 @@ def main(parts=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1].split(",") if len(sys.argv) > 1 else None))
+
+
+# ---------------------------------------------------------------------------
+# bench
+# ---------------------------------------------------------------------------
+def _bench_sim(n_zombies):
+    """ship_demo's map (no physics, no match) with 4 marines and ``n_zombies``
+    zombies on free tiles spread over the map."""
+    from simulation import Simulation
+    from simulation.factions import ZOMBIE_TEAM
+    from simulation.ruleset import ContinuousRealtime
+    from simulation.unit import Unit
+    level = level_loader.load("ship_demo", str(_ROOT / "levels"))
+    sim = Simulation(level, seed=1, breach_physics=None, enable_recorder=False,
+                     ruleset=ContinuousRealtime())
+    g = sim.gmap
+    free = [(int(y), int(x)) for y, x in np.argwhere(horde.block_passable(
+        horde.walkable_tiles(g), 3))]
+    rng = np.random.default_rng(3)
+    pick = rng.choice(len(free), size=4 + n_zombies, replace=False)
+    for i, k in enumerate(pick):
+        y, x = free[k]
+        u = Unit(f"U{i}", x=float(x), y=float(y), team=0 if i < 4 else ZOMBIE_TEAM)
+        sim.add_unit(u)
+        if i < 4:
+            u.current_hp = 1.0e9
+    return sim
+
+
+def bench(reps: int = 50) -> int:
+    """TIMING (median ms of the HORDE stage's launch, its books' download and
+    the Python face; inputs re-staged per rep, not timed), N copies of
+    ship_demo's map: FLOOR (an empty request set: the drain only); PASSES 1 +
+    2 (every zombie dormant, the hearing and the wander off in the tables:
+    pass 3 holds the woken on their stride clock); PASS 3 (every zombie awake and due, its prey field
+    in the staged cache: the bites and the descent, no flood); PASS 3 + FLOOD
+    (the same with a fresh cache: the mask and one prey flood per env)."""
+    import cupy as cp
+    from simulation import object_tables as ot
+    from simulation.unit_events import EventRing
+    rows = []
+    for nz in (4, 32, 256):
+        sim = _bench_sim(nz)
+        U = len(sim.units)
+        # the host's own cache after one slot with every zombie awake (its prey field)
+        for u in sim.units:
+            if u.is_zombie:
+                u.zombie_activated = True
+                u.zombie_move_accumulator = 10 ** 6
+        sim._run_zombie_slot()
+        for u in sim.units:
+            if u.is_zombie:
+                u.zombie_move_accumulator = 10 ** 6
+                u.last_melee_tick = -10 ** 6
+        awake_rows = unit_store.pack(sim.units, U)
+        cache_rc = horde_cache.cache_records(sim)
+        for u in sim.units:
+            if u.is_zombie:
+                u.zombie_activated = False
+                u.zombie_move_accumulator = 0       # the woken stay on their stride clock
+        dorm_rows = unit_store.pack(sim.units, U)
+        for n in (1, 8, 64):
+            tab = unit_tables.values_batch([sim] * n)
+            quiet = tab.copy()
+            lay = unit_tables.layout()
+            for k in ("horde_wander", "horde_hearing"):
+                quiet[:, lay.column(k).offset] = 0
+            fields = {k: cp.asarray(np.repeat(np.array(getattr(sim.gmap, k))[None], n, 0))
+                      for k in applier.PLANE_NAMES}
+            ring = EventRing(n, U, bp=bp)
+            noise = ot.DeviceTable(unit_schema.NOISE_TABLE, n, bp=bp)
+            doors = ot.DeviceTable(unit_schema.DOOR_TABLE, n, bp=bp)
+            tiles = ot.DeviceTable(unit_schema.DOOR_TILE_TABLE, n, bp=bp)
+            doors.begin()
+            tiles.begin()
+            cache = horde_cache.DeviceHordeCache(n, U)
+            latch = horde_cache.latch_of(sim, U)
+            empty = latch.copy()
+            empty[2] = 0
+            timings = {}
+            for name, tb, rws, lt, staged in (
+                    ("floor (drain only)", tab, awake_rows, empty, True),
+                    ("passes 1 + 2", quiet, dorm_rows, latch, True),
+                    ("pass 3", tab, awake_rows, latch, True),
+                    ("pass 3 + one flood", tab, awake_rows, latch, False)):
+                st = unit_store.DeviceStore(n, U, bp=bp, tables=tb)
+                ts = []
+                for _ in range(reps):
+                    st.upload(np.repeat(rws[None], n, 0))
+                    ring.begin()
+                    noise.begin()
+                    if staged:
+                        cache.stage_lists([cache_rc] * n)
+                    else:
+                        cache.begin()
+                    t0 = time.perf_counter()
+                    unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles,
+                                       cache, [lt] * n)
+                    ts.append((time.perf_counter() - t0) * 1e3)
+                timings[name] = float(np.median(ts))
+            rows.append((nz, n, timings))
+            print(f"zombies {nz:3d} N {n:2d}: " + ", ".join(f"{k} {v:.3f}"
+                                                           for k, v in timings.items()))
+    print("TIMING table (median ms):")
+    for nz in (4, 32, 256):
+        for name in ("floor (drain only)", "passes 1 + 2", "pass 3", "pass 3 + one flood"):
+            vals = [t[name] for z, n, t in rows if z == nz]
+            print(f"| {name} | {nz} | " + " | ".join(f"{v:.3f}" for v in vals) + " |")
+    return 0

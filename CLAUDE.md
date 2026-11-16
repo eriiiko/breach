@@ -170,6 +170,7 @@ amends the rule file, never this line's length.
 | Blast log (device) | `unit_schema.BLAST_LOG_TABLE` on the object tables | THE device form of `GameMap.blast_log`, appended by the payload function in call order; never a second explosion hook |
 | Blast walk (device) | `cpp/src/cuda_unit_blast.cuh` | THE device `reach_tiles`, `read_blast_air`, `add_source` and `take_source_plane` (the applier's SOURCES stage); every device caller of a walk, an air read or the source goes through it, never its own walk |
 | Blast-source table | `unit_schema.SOURCE_TABLE` + `SOURCE_TILE_TABLE` | THE device form of `GameMap.expansions` (a comparison row's later ticks): appended by the PAYLOAD function, walked and span-compacted by the SOURCES stage; never a second source list |
+| Horde stage + field cache (device) | `cpp/src/cuda_unit_horde.cuh` + `src/simulation/horde_cache.py` | THE device slot 5: the applier's HORDE stage over the unit rows and ONE per-env field cache living across ticks; never a second flood, walker or cache |
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
 | Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 
