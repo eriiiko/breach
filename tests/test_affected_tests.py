@@ -123,5 +123,32 @@ def test_a_data_file_reaches_the_tests_whose_closure_names_it():
 def test_docs_reach_nothing():
     """Property: a docs-only change selects no test and not the full suite.
     Breaks if inert paths fall through to FULL."""
-    sel = at.select(["docs/test_suite_timing_2026-11-15.md", "README.md"])
+    sel = at.select(["docs/test_suite_timing_2026-11-15.md", "docs/lenovo_dev_setup.md"])
     assert not sel.full and not sel.tests
+
+
+def test_data_a_test_reads_is_never_inert():
+    """Property: a picture, golden, text list or Markdown file that a test
+    reads selects that test (or the full suite), never nothing -- the
+    committed fire texture reaches test_fire_tuning_level, slow_tests.txt
+    reaches the suite through conftest, a prototypes/ level reaches the
+    level tests, CLAUDE.md reaches whatever names it. Breaks if pictures,
+    .txt, .csv or .md come back as blanket inert (the first version did)."""
+    tracked = subprocess.run(["git", "ls-files"], cwd=at.ROOT, text=True,
+                             capture_output=True, check=True).stdout.split()
+    cases = ["tests/slow_tests.txt", "CLAUDE.md"]
+    cases += [f for f in tracked if f.startswith("prototypes/unhcr_vessel_2/")
+              and not f.endswith(".py")][:1]
+    cases += [f for f in tracked if f.endswith(".png")
+              and "fire_tuning" in f][:1]
+    for path in cases:
+        sel = at.select([path])
+        assert sel.full or sel.tests, path
+
+
+def test_a_deleted_file_runs_everything():
+    """Property: a path that no longer exists -- a removed texture, doc or
+    module -- selects the FULL suite, since a test may have named it.
+    Breaks if deletions are judged by their (vanished) readers."""
+    assert at.select(["levels/no_such_level_205.toml"]).full
+    assert at.select(["docs/no_such_doc_205.md"]).full

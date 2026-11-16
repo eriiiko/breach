@@ -46,10 +46,11 @@ NATIVE = "<native: cpp/>"
 #: directories whose files never hold anything Python reads or runs.
 _SKIP_DIRS = {".git", ".claude", "out", "scratchpad", "stubs", "__pycache__",
               "build", "build_cuda", "node_modules"}
-#: changes that reach no test.
-_INERT = re.compile(r"(^docs/|\.md$|\.txt$|\.png$|\.jpe?g$|\.JPG$|\.csv$"
-                    r"|^scratchpad/|^out/|^prototypes/|^\.claude/"
-                    r"|^\.gitignore$|^stubs/)")
+#: changes that reach no test: the docs tree and scratch output. Everything
+#: else -- a picture, a CSV, a .txt, a Markdown file -- may be read by a test
+#: (a committed texture, a golden, slow_tests.txt, CLAUDE.md and the rules,
+#: prototypes/ levels), so it goes through the naming rule below.
+_INERT = re.compile(r"(^docs/|^scratchpad/|^out/|^\.gitignore$)")
 #: changes the closure cannot see: the full suite.
 _EVERYTHING = re.compile(r"(^tests/conftest\.py$|^pyproject\.toml$"
                          r"|^pytest\.ini$|^setup\.cfg$|^pyrightconfig\.json$)")
@@ -188,24 +189,29 @@ def select(changed) -> Selection:
     """The test files ``changed`` (repo-relative posix paths) can break."""
     sel = Selection()
     for path in sorted(set(changed)):
+        if not (ROOT / path).exists():
+            sel.full = True
+            sel.why[path] = "FULL: deleted or renamed file"
+            continue
         if _INERT.search(path):
-            sel.why[path] = "inert (docs / pictures / scratch)"
+            sel.why[path] = "inert (docs / scratch)"
             continue
         if _EVERYTHING.search(path):
             sel.full = True
             sel.why[path] = "FULL: the closure cannot see this file"
             continue
         if path.endswith(".py"):
-            if not (ROOT / path).is_file():
-                sel.full = True
-                sel.why[path] = "FULL: deleted or renamed Python file"
-                continue
             hit = {t for t in test_files() if path in closure(t)}
         elif path.startswith("cpp/"):
             hit = {t for t in test_files() if NATIVE in closure(t)}
         else:
             key = path.split("/")[0]
             readers = {f for f in python_files() if key in _text(f)}
+            if not readers and path.endswith(".md"):
+                # Prose nothing names: no test reads it (a reader of the
+                # rules names .claude, of the index CLAUDE.md).
+                sel.why[path] = "inert (Markdown no Python file names)"
+                continue
             if not readers:
                 sel.full = True
                 sel.why[path] = f"FULL: no Python file names {key!r}"
