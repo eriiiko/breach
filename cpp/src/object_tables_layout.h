@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "889a1e2b2afb5de41249316defe962f2dcdd3ab1a7c60030d3ffb3e8eb659127";
-constexpr int OBJECT_TABLES_N = 6;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "1d78318555189e8a4457ff730a3aa0df674abf4772f795bfb0df7ddf54cf6280";
+constexpr int OBJECT_TABLES_N = 8;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -170,5 +170,65 @@ constexpr int OBJ_DOOR_COL_TILE_COUNT = 5;
 constexpr int OBJ_DOOR_COL_TILE_COUNT_W = 1;
 constexpr int OBJ_DOOR_COL_LIVE = 6;
 constexpr int OBJ_DOOR_COL_LIVE_W = 1;
+
+// table 'duct': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_DUCT = 6;
+constexpr int OBJ_DUCT_W = 20;
+constexpr int OBJ_DUCT_CAP = 16;
+constexpr int OBJ_DUCT_LIVE = 19;
+constexpr int OBJ_DUCT_COL_ORDINAL = 0;
+constexpr int OBJ_DUCT_COL_ORDINAL_W = 1;
+constexpr int OBJ_DUCT_COL_FILTER = 1;
+constexpr int OBJ_DUCT_COL_FILTER_W = 1;
+constexpr int OBJ_DUCT_COL_O2_RAW = 2;
+constexpr int OBJ_DUCT_COL_O2_RAW_W = 1;
+constexpr int OBJ_DUCT_COL_N2_RAW = 3;
+constexpr int OBJ_DUCT_COL_N2_RAW_W = 1;
+constexpr int OBJ_DUCT_COL_TRACE_RAW = 4;
+constexpr int OBJ_DUCT_COL_TRACE_RAW_W = 5;
+constexpr int OBJ_DUCT_COL_E_PLENUM = 9;
+constexpr int OBJ_DUCT_COL_E_PLENUM_W = 1;
+constexpr int OBJ_DUCT_COL_SINK = 10;
+constexpr int OBJ_DUCT_COL_SINK_W = 5;
+constexpr int OBJ_DUCT_COL_E_WIPE = 15;
+constexpr int OBJ_DUCT_COL_E_WIPE_W = 1;
+constexpr int OBJ_DUCT_COL_RAIL_LO_HITS = 16;
+constexpr int OBJ_DUCT_COL_RAIL_LO_HITS_W = 1;
+constexpr int OBJ_DUCT_COL_RAIL_HI_HITS = 17;
+constexpr int OBJ_DUCT_COL_RAIL_HI_HITS_W = 1;
+constexpr int OBJ_DUCT_COL_ALIVE = 18;
+constexpr int OBJ_DUCT_COL_ALIVE_W = 1;
+constexpr int OBJ_DUCT_COL_LIVE = 19;
+constexpr int OBJ_DUCT_COL_LIVE_W = 1;
+
+// table 'vent': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_VENT = 7;
+constexpr int OBJ_VENT_W = 11;
+constexpr int OBJ_VENT_CAP = 64;
+constexpr int OBJ_VENT_LIVE = 10;
+constexpr int OBJ_VENT_COL_ORDINAL = 0;
+constexpr int OBJ_VENT_COL_ORDINAL_W = 1;
+constexpr int OBJ_VENT_COL_DUCT_ORDINAL = 1;
+constexpr int OBJ_VENT_COL_DUCT_ORDINAL_W = 1;
+constexpr int OBJ_VENT_COL_ROLE = 2;
+constexpr int OBJ_VENT_COL_ROLE_W = 1;
+constexpr int OBJ_VENT_COL_APERTURE_Y = 3;
+constexpr int OBJ_VENT_COL_APERTURE_Y_W = 1;
+constexpr int OBJ_VENT_COL_APERTURE_X = 4;
+constexpr int OBJ_VENT_COL_APERTURE_X_W = 1;
+constexpr int OBJ_VENT_COL_RATE_RAW_PER_S = 5;
+constexpr int OBJ_VENT_COL_RATE_RAW_PER_S_W = 1;
+constexpr int OBJ_VENT_COL_TPS = 6;
+constexpr int OBJ_VENT_COL_TPS_W = 1;
+constexpr int OBJ_VENT_COL_ACCUM = 7;
+constexpr int OBJ_VENT_COL_ACCUM_W = 1;
+constexpr int OBJ_VENT_COL_GUARD_SKIPS = 8;
+constexpr int OBJ_VENT_COL_GUARD_SKIPS_W = 1;
+constexpr int OBJ_VENT_COL_ALIVE = 9;
+constexpr int OBJ_VENT_COL_ALIVE_W = 1;
+constexpr int OBJ_VENT_COL_LIVE = 10;
+constexpr int OBJ_VENT_COL_LIVE_W = 1;
 
 }  // namespace object_tables

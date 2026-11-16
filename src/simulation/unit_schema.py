@@ -1230,6 +1230,163 @@ DOOR_TABLE = ObjectTable(
 OBJECT_TABLES = OBJECT_TABLES + (DOOR_TILE_TABLE, DOOR_TABLE)   # #29 P6b.1
 
 
+# ---------------------------------------------------------------------------
+# #29 P6b.2: THE DUCTS AND THE VENTS (``Simulation._ducts`` / ``_vents``,
+# ``vent_system.DuctRuntime`` / ``VentRuntime``), the second and third ENTITY
+# tables: every attribute the 9e(d) circulation sweep reads or writes, ordinal
+# order each (the order the sweep walks)
+# ---------------------------------------------------------------------------
+#: Ducts a sim's device table holds: storage (nothing spawns a duct at run
+#: time; the shipped maximum is playground's 2, the gate scenes reach 5).
+DUCT_CAPACITY = 16
+#: Vents a sim's device table holds: storage (playground's 4; the gate scenes
+#: reach 12). It also bounds one duct's supply vents (the sweep's scratch).
+VENT_CAPACITY = 64
+#: The trace slots of a duct's plenum (``vent_system.N_TRACE``: steam, smoke,
+#: poison, teargas, fuel gas -- the filter columns' order).
+VENT_N_TRACE = 5
+#: A vent's role codes (``vent_system``: ``v.role == "return"`` extracts,
+#: anything else supplies).
+VENT_ROLES = ("supply", "return")
+
+
+def filter_names() -> tuple:
+    """The ``[filters.*]`` rows of config.toml, SORTED by name: a duct row's
+    ``filter`` is its name's index here, and the device tables' filter rows
+    are in this order (``unit_tables``' ``vent_filter_eff_q``)."""
+    from config import CFG
+    f = getattr(CFG, "filters", None)
+    return tuple(sorted(vars(f).keys())) if f is not None else ()
+
+
+def _enc_filter(name):
+    names = filter_names()
+    if name not in names:
+        raise ValueError(f"unit schema: a duct's filter {name!r} is not a "
+                         f"[filters.*] row ({names})")
+    return names.index(name)
+
+
+def _dec_filter(e):
+    return filter_names()[int(e)]
+
+
+def _duct_filter(d):
+    # a runtime's authored field, or a decoded row's name
+    return d.inst.fields["filter"] if hasattr(d, "inst") else d.filter
+
+
+def _enc_vec(width):
+    def enc(v):
+        v = list(v)
+        if len(v) != width:
+            raise ValueError(f"unit schema: a {width}-wide column holds {len(v)} values")
+        return tuple(_enc_int(x) for x in v)
+    return enc
+
+
+def _dec_vec(e):
+    return [int(x) for x in e]
+
+
+def _enc_role(v):
+    # vent_system._duct_sweep's test: "return" extracts, any other role supplies
+    return 1 if v == "return" else 0
+
+
+def _dec_role(e):
+    return VENT_ROLES[int(e)]
+
+
+def _vent_duct_ordinal(v):
+    # the vent's duct as that duct's ENTITY ORDINAL (-1: unwired / dangling);
+    # a decoded row carries it as is
+    if hasattr(v, "duct_ordinal"):
+        return v.duct_ordinal
+    return -1 if v.duct is None else int(v.duct.ordinal)
+
+
+class DuctRow:
+    """What the duct table holds of one duct, rebuilt by ``unpack``: the
+    plenum ledger ``DuctRuntime`` carries across ticks, its ``ordinal``, its
+    filter's name and ``alive``. ``unit_kernels.ducts_to_host`` lands it on
+    the sim's own runtimes."""
+    __slots__ = ("ordinal", "filter", "o2_raw", "n2_raw", "trace_raw", "e_plenum",
+                 "sink", "e_wipe", "rail_lo_hits", "rail_hi_hits", "alive")
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw[k])
+
+
+class VentRow:
+    """What the vent table holds of one vent (``VentRuntime``'s state and its
+    load constants), rebuilt by ``unpack``; ``unit_kernels.vents_to_host``
+    lands it on the sim's own runtimes."""
+    __slots__ = ("ordinal", "duct_ordinal", "role", "aperture_y", "aperture_x",
+                 "rate_raw_per_s", "tps", "accum", "guard_skips", "alive")
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw[k])
+
+
+def _build_duct(attrs: dict):
+    return DuctRow(**{k: attrs[k] for k in DuctRow.__slots__})
+
+
+def _build_vent(attrs: dict):
+    return VentRow(**{k: attrs[k] for k in VentRow.__slots__})
+
+
+#: THE duct table (``Simulation._ducts``, ordinal order: the order the sweep
+#: walks): ``ordinal`` (a load constant, the entity digest's key), ``filter``
+#: (the ``[filters.*]`` row's index in :func:`filter_names`), the plenum
+#: ledger (``o2_raw``, ``n2_raw``, ``trace_raw[5]``, ``e_plenum``, ``sink[5]``,
+#: ``e_wipe``, the rail hit counts: int64 here, unbounded ints in Python, the
+#: device's proved range refused by name), ``alive`` and ``live`` (always 1).
+DUCT_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("filter", _enc_filter, decode=_dec_filter, get=_duct_filter),
+    TableColumn("o2_raw", _enc_int),
+    TableColumn("n2_raw", _enc_int),
+    TableColumn("trace_raw", _enc_vec(VENT_N_TRACE), width=VENT_N_TRACE, decode=_dec_vec),
+    TableColumn("e_plenum", _enc_int),
+    TableColumn("sink", _enc_vec(VENT_N_TRACE), width=VENT_N_TRACE, decode=_dec_vec),
+    TableColumn("e_wipe", _enc_int),
+    TableColumn("rail_lo_hits", _enc_int),
+    TableColumn("rail_hi_hits", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+DUCT_TABLE = ObjectTable(name="duct", columns=DUCT_SCHEMA, capacity=DUCT_CAPACITY,
+                         live="live", build=_build_duct)
+
+#: THE vent table (``Simulation._vents``, ordinal order: within a duct the
+#: sweep walks its returns, then its supplies, each in this order):
+#: ``ordinal``, ``duct_ordinal`` (its duct's entity ordinal, -1 unwired),
+#: ``role`` (0 supply / 1 return), the aperture tile, the load constants
+#: ``rate_raw_per_s`` and ``tps``, the Bresenham ``accum``, the diagnostic
+#: ``guard_skips``, ``alive`` and ``live`` (always 1).
+VENT_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("duct_ordinal", _enc_int, get=_vent_duct_ordinal),
+    TableColumn("role", _enc_role, decode=_dec_role),
+    TableColumn("aperture_y", _enc_int),
+    TableColumn("aperture_x", _enc_int),
+    TableColumn("rate_raw_per_s", _enc_int),
+    TableColumn("tps", _enc_int),
+    TableColumn("accum", _enc_int),
+    TableColumn("guard_skips", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+VENT_TABLE = ObjectTable(name="vent", columns=VENT_SCHEMA, capacity=VENT_CAPACITY,
+                         live="live", build=_build_vent)
+
+OBJECT_TABLES = OBJECT_TABLES + (DUCT_TABLE, VENT_TABLE)   # #29 P6b.2
+
+
 def charge_record(c) -> tuple:
     """One planted charge as its integer row (flat, :data:`CHARGE_SCHEMA`
     order)."""
@@ -1257,3 +1414,6 @@ __all__ = [
 ]
 __all__ += ["SideSpan", "DOOR_CAPACITY", "DOOR_TILE_CAPACITY", "DoorRow",
             "DOOR_TILE_SCHEMA", "DOOR_TILE_TABLE", "DOOR_SCHEMA", "DOOR_TABLE"]
+__all__ += ["DUCT_CAPACITY", "VENT_CAPACITY", "VENT_N_TRACE", "VENT_ROLES",
+            "filter_names", "DuctRow", "VentRow", "DUCT_SCHEMA", "DUCT_TABLE",
+            "VENT_SCHEMA", "VENT_TABLE"]

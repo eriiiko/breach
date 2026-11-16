@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "9005c9e9cc3c8770beb56b2cf899021b52e6b7178029f7a26815fb883c4d4d19";
+constexpr const char* APPLIER_FINGERPRINT = "b0807fd6bb8c9d57e3571c86c91148256bfbac5b9398c8e23584fab429755a75";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -90,9 +90,11 @@ constexpr int APPLIER_STAGE_TOPOLOGY = 0;
 constexpr bool APPLIER_STAGE_TOPOLOGY_LANDS = false;
 constexpr int APPLIER_STAGE_RESOLVE = 1;
 constexpr bool APPLIER_STAGE_RESOLVE_LANDS = true;
-constexpr int APPLIER_STAGE_DOORS = 2;
+constexpr int APPLIER_STAGE_VENTS = 2;
+constexpr bool APPLIER_STAGE_VENTS_LANDS = false;
+constexpr int APPLIER_STAGE_DOORS = 3;
 constexpr bool APPLIER_STAGE_DOORS_LANDS = false;
-constexpr int APPLIER_N_STAGES = 3;
+constexpr int APPLIER_N_STAGES = 4;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;
@@ -127,14 +129,17 @@ constexpr int APPLIER_BOOK_GE_PUMP_EXTRACT = 19;
 constexpr int APPLIER_BOOK_GE_PUMP_TRANSFER = 20;
 constexpr int APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_FROM = 21;
 constexpr int APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_TO = 22;
-constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 23;
-constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 24;
-constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 25;
-constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 26;
-constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 27;
-constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 28;
-constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 29;
-constexpr int APPLIER_N_BOOKS = 30;
+constexpr int APPLIER_BOOK_GE_PUMP_INJECT_VEC = 23;
+constexpr int APPLIER_BOOK_GE_PUMP_RAIL = 24;
+constexpr int APPLIER_BOOK_LEDGER_REFUSED = 25;
+constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 26;
+constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 27;
+constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 28;
+constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 29;
+constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 30;
+constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 31;
+constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 32;
+constexpr int APPLIER_N_BOOKS = 33;
 
 // The topology seam's planes: the launch's pointer table order.
 constexpr int APPLIER_PLANE_MATERIAL = 0;

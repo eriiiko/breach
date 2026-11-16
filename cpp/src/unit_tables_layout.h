@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "0f67db1ed159cdf535866bd3a795af5bdc8f3286ea67dc8c7de20bf8aefee70e";
-constexpr int UNIT_TABLES_W = 1414;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "24d67fc514e07f50e3a12590529ae41fce12ffe43ed6724ee0f6029c59b18bd1";
+constexpr int UNIT_TABLES_W = 1432;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -356,6 +356,16 @@ constexpr int UNIT_TAB_INJECT_O2_FRAC_Q = 1410;
 constexpr int UNIT_TAB_INJECT_O2_FRAC_Q_W = 1;
 constexpr int UNIT_TAB_DOOR_STATES = 1411;
 constexpr int UNIT_TAB_DOOR_STATES_W = 3;
+constexpr int UNIT_TAB_VENT_FILTER_EFF_Q = 1414;
+constexpr int UNIT_TAB_VENT_FILTER_EFF_Q_W = 10;
+constexpr int UNIT_TAB_VENT_TRACE_IDS = 1424;
+constexpr int UNIT_TAB_VENT_TRACE_IDS_W = 5;
+constexpr int UNIT_TAB_VENT_T_MIN_Q = 1429;
+constexpr int UNIT_TAB_VENT_T_MIN_Q_W = 1;
+constexpr int UNIT_TAB_VENT_T_MAX_Q = 1430;
+constexpr int UNIT_TAB_VENT_T_MAX_Q_W = 1;
+constexpr int UNIT_TAB_VENT_N_EPS = 1431;
+constexpr int UNIT_TAB_VENT_N_EPS_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;

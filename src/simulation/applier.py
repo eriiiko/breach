@@ -122,14 +122,22 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:   RESOLVE   slot 4c, ``SimultaneousEffects.resolve`` of the attack slot;
 #:             #29 P7a.2: also slot 2''s landing (``Simulation._update_rounds``'
 #:             own resolve: the same law, the same landing, so the same stage).
+#:   VENTS     #29 P6b.2: slot 9e(d)'s vent circulation
+#:             (``vent_system.sweep_vents``) -- the stage walks the duct and
+#:             vent TABLES (``unit_schema.DUCT_TABLE`` / ``VENT_TABLE``), not
+#:             the effect list: ducts in row (= ordinal) order, within a duct
+#:             its returns then its supplies, each applied at once (two vents
+#:             may share a tile). It runs BEFORE the doors inside 9e(d) (pumps
+#:             -> vents -> doors), so its number is below DOORS'.
 #:   DOORS     #29 P6b.1: slot 9e(d)'s door sweep -- the stage walks the
 #:             door TABLE (``unit_schema.DOOR_TABLE`` and its tile side
 #:             table), not the effect list, in row (= ordinal) order, each door
 #:             applied at once (a door's seal changes the gas the next door
 #:             reads); the effect list is not read.
-STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("DOORS", False))
+STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("VENTS", False),
+                 ("DOORS", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_DOORS = 0, 1, 2
+STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_VENTS, STAGE_DOORS = 0, 1, 2, 3
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
 #: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
 #: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
@@ -241,6 +249,15 @@ BOOKS = BOOKS + (
     BookRow("ge_diag_pump_transfer_to",
             "gas_energy_books:diag_pump_transfer_to_nonacct",
             "a transfer to a non-accountable tile"),
+    # #29 P6b.2: the vents' deposit (inject_gas_n_vec) and the sweep's
+    # named ledger refusal.
+    BookRow("ge_pump_inject_vec", "gas_energy_books:pump_inject_vec",
+            "inject_gas_n_vec's deposit at the plenum's t_dep (+ T_AMB)"),
+    BookRow("ge_pump_rail", "gas_energy_books:pump_rail",
+            "inject_gas_n_vec's rail clamp (a counted destruction)"),
+    BookRow("ledger_refused", None,
+            "ducts refused at their sweep's head: a ledger outside the proved "
+            "range (nothing of the duct written; LedgerRangeRefused)"),
 ) + tuple(BookRow(f"trace_clip_{g}", f"trace_clip_books:{g}",
                   f"the counted trace saturation's clip on gas slice {g} "
                   f"(trace_store_sat / trace_add_sat)")
@@ -333,6 +350,14 @@ class EffectOverflow(RuntimeError):
 
 class ApplierFault(RuntimeError):
     """An effect's operands left the range the applier was proved for."""
+
+
+class LedgerRangeRefused(RuntimeError):
+    """#29 P6b.2: a duct ledger (the plenum's bulk pair, trace, sinks, energy,
+    wipe, rail hits, a vent's guard count) outside the range the vent sweep
+    was proved for (``cpp/src/cuda_unit_vents.cuh``, design 4.4c "As built
+    (P6b.2)"): the duct is refused BY NAME at the head of its sweep and
+    nothing of it is written (its vents, its ledgers, the map)."""
 
 
 class EffectRefused(RuntimeError):
@@ -763,4 +788,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "payload_index", "KIND_SPRAY_CELLS", "records_and_cells_of",
            "non_resident_planes", "Layout", "layout", "header_text",
            "destroy_records", "pack", "DeviceApplier", "books_dict",
-           "host_book", "STAGE_DOORS", "SEAM_REFUSALS", "SEAM_REFUSAL_NAMES"]
+           "host_book", "STAGE_DOORS", "SEAM_REFUSALS", "SEAM_REFUSAL_NAMES",
+           "STAGE_VENTS", "LedgerRangeRefused"]

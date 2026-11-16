@@ -126,6 +126,10 @@ struct ApplierLists {
     // its tile side table (DOOR_TILE_TABLE); null for the other stages.
     ObjectTable* door_table = nullptr;
     ObjectTable* door_tiles = nullptr;
+    // #29 P6b.2: the VENTS stage's duct table (unit_schema.DUCT_TABLE) and
+    // vent table (VENT_TABLE); null for the other stages.
+    ObjectTable* duct_table = nullptr;
+    ObjectTable* vent_table = nullptr;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on

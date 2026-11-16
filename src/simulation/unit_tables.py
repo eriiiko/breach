@@ -1247,6 +1247,66 @@ _DOOR_ROWS: tuple = (
 )
 ROWS = ROWS + _DOOR_ROWS
 
+
+# == #29 P6b.2: the vents (vent_system.sweep_vents) -- the filter table, the
+# trace slots' gas ids, the T-mix rails and the near-empty floor, each read
+# from the reference's own validated object =================================
+def _n_filter_cells():
+    from simulation import unit_schema
+    return max(1, len(unit_schema.filter_names())) * unit_schema.VENT_N_TRACE
+
+
+def _vent_filter_eff_q(src):
+    # vent_system._duct_filter_efficiency_q of every [filters.*] row, in
+    # unit_schema.filter_names() order (the duct row's `filter` index): the
+    # reference's own quantization and [0, 1] validation
+    from config import CFG
+    from simulation import unit_schema, vent_system
+    out = []
+    for name in unit_schema.filter_names():
+        out.extend(vent_system._duct_filter_efficiency_q(
+            {"filter": name}, getattr(CFG, "filters", None), f"<table row {name}>"))
+    return tuple(out) if out else (0,) * unit_schema.VENT_N_TRACE
+
+
+def _vent_trace_ids(src):
+    from simulation import vent_system
+    return tuple(int(g) for g in vent_system._TRACE_IDS)
+
+
+def _vent_rails(src):
+    # the sim's cached rails (build_vents reads them once, on a level with
+    # ducts); a duct-free sim reads the same function
+    from simulation import vent_system
+    lo, hi = src.sim._vent_t_min_q, src.sim._vent_t_max_phys_q
+    if lo is None or hi is None:
+        lo, hi = vent_system._t_rails_q()
+    return int(lo), int(hi)
+
+
+def _vent_n_eps(src):
+    from simulation import vent_system
+    return int(vent_system.N_EPS)
+
+
+_VENT_ROWS: tuple = (
+    TableRow("vent_filter_eff_q", _n_filter_cells, _vent_filter_eff_q, 0, ONE,
+             "per [filters.*] row (unit_schema.filter_names order) x trace slot: "
+             "vent_system._duct_filter_efficiency_q (a Q16 fraction of removed mass)"),
+    TableRow("vent_trace_ids", 5, _vent_trace_ids, 0, 63,
+             "vent_system._TRACE_IDS: the gas slice of each plenum trace slot"),
+    TableRow("vent_t_min_q", 1, lambda src: _vent_rails(src)[0], -(1 << 30), 1 << 30,
+             "vent_system._t_rails_q()[0]: quantize_q16_scalar([physics.eos].T_MIN), "
+             "the deposit's low rail"),
+    TableRow("vent_t_max_q", 1, lambda src: _vent_rails(src)[1], -(1 << 30), 1 << 30,
+             "vent_system._t_rails_q()[1]: quantize_q16_scalar([physics.thermal]."
+             "T_MAX_PHYS), the deposit's high rail"),
+    TableRow("vent_n_eps", 1, _vent_n_eps, 1, 1 << 20,
+             "vent_system.N_EPS: the near-empty plenum's bulk floor (the E/N "
+             "divide below it wipes the energy)"),
+)
+ROWS = ROWS + _VENT_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 
