@@ -35,10 +35,14 @@
 namespace breach_cuda {
 
 //: The device door's EDIT row: pack_for_device's 16 columns, then the sort
-//: key's source_id and region.
+//: key's source_id and region, then (#29 P7c.1) the region's four arguments
+//: (edit_door.ARG_COL): a TILE (r, c, 0, 0), a DISC (cy, cx, r_q, falloff), so
+//: the chained landing rebuilds the very edit.
 constexpr int EDIT_DOOR_SRC = EDQ_EDIT_COLS;
 constexpr int EDIT_DOOR_REGION = EDQ_EDIT_COLS + 1;
-constexpr int EDIT_DOOR_COLS = EDQ_EDIT_COLS + 2;
+constexpr int EDIT_DOOR_ARG = EDQ_EDIT_COLS + 2;
+constexpr int EDIT_DOOR_ARGS = 4;
+constexpr int EDIT_DOOR_COLS = EDQ_EDIT_COLS + 2 + EDIT_DOOR_ARGS;
 
 class EditDoor {
 public:

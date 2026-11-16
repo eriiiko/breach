@@ -41,11 +41,17 @@ import numpy as np
 
 from simulation import field_edit as _fe
 
-#: The device door's EDIT row: the packed columns, then the sort key's two.
+#: The device door's EDIT row: the packed columns, then the sort key's two,
+#: then (#29 P7c.1) the region's four arguments (:data:`ARG_COLS`): a TILE
+#: ``(r, c, 0, 0)``, a DISC ``(cy, cx, r_q, falloff)`` -- the radius as the
+#: region walk quantizes it --, so the chained landing rebuilds the very edit
+#: (its TILE rows alone cannot name a clipped disc's centre).
 PACKED_COLS = _fe.EDIT_COLS
 SRC_COL = PACKED_COLS
 REGION_COL = PACKED_COLS + 1
-EDIT_COLS = PACKED_COLS + 2
+ARG_COL = PACKED_COLS + 2
+ARG_COLS = 4
+EDIT_COLS = PACKED_COLS + 2 + ARG_COLS
 TILE_COLS = _fe.TILE_COLS
 #: Edits per env per window: STORAGE (a sprayed cell enqueues at most two).
 EDIT_CAP = 8192
@@ -59,6 +65,19 @@ class DoorInterleave(RuntimeError):
 
 class DoorOverflow(RuntimeError):
     """More edit or tile rows than the door's capacity (named: list, env)."""
+
+
+def region_args(edit) -> tuple:
+    """#29 P7c.1: the region's four arguments in the door's EDIT row (see
+    :data:`ARG_COL`); a region the device door does not write is refused."""
+    if edit.region == _fe.Region.TILE:
+        return (int(edit.coords[0]), int(edit.coords[1]), 0, 0)
+    if edit.region == _fe.Region.DISC:
+        return (int(edit.coords[0]), int(edit.coords[1]),
+                int(_fe._ufx.quantize_scalar(float(edit.coords[2]))),  # p3e-door: _iter_region's
+                int(edit.falloff))
+    raise DoorInterleave(f"edit door: a {_fe.Region(edit.region).name} edit has no "
+                         f"device form at the door (TILE and DISC do)")
 
 
 def door_rows(gmap, edits_seq, owned_sources=None):
@@ -86,36 +105,62 @@ def door_rows(gmap, edits_seq, owned_sources=None):
     for k, (e, _s) in enumerate(pairs):
         edits[k, SRC_COL] = int(e.source_id)
         edits[k, REGION_COL] = int(e.region)
+        edits[k, ARG_COL:ARG_COL + ARG_COLS] = region_args(e)
     return edits, np.asarray(pack.tiles, dtype=np.int64).reshape(-1, TILE_COLS)
 
 
 _FIELD_OF_ORDINAL = {k: n for n, k in _fe.DEVICE_FIELD_ORDINALS.items()}
 
 
+def _clamp_row(pol):
+    """The (flags, lo, hi) the door writes for the policy's own clamp."""
+    pair = _fe._clamp_q(pol.clamp, _fe._CURRENCY[pol.dtype])
+    flags = lo = hi = 0
+    if pair is not None:
+        if pair[0] is not None:
+            flags, lo = flags | 1, int(pair[0])
+        if pair[1] is not None:
+            flags, hi = flags | 2, int(pair[1])
+    return flags, lo, hi
+
+
 def edit_of(gmap, row, tiles) -> tuple:
     """A device EDIT row (and its TILE rows) as the host FieldEdit it stands
     for and its seq: the inverse of :func:`door_rows` for the forms the device
-    door writes (a TILE edit, FLAT, no noise, no scale, the policy's clamp).
-    Anything else is refused by name."""
+    door writes (a TILE or -- #29 P7c.1 -- a DISC edit, no noise, no scale, a
+    clamp equal to its field policy's: the replayed edit carries none, which
+    the door quantizes to the same row). Anything else is refused by name."""
     r = [int(x) for x in row]
     field = _FIELD_OF_ORDINAL.get(r[_fe.E_FIELD])
-    if field is None or r[REGION_COL] != int(_fe.Region.TILE) or r[_fe.E_NOISY] \
-            or r[_fe.E_DEN] != int(_fe._ufx.FP_ONE):
+    region = r[REGION_COL]
+    if field is None or region not in (int(_fe.Region.TILE), int(_fe.Region.DISC)) \
+            or r[_fe.E_NOISY] or r[_fe.E_DEN] != int(_fe._ufx.FP_ONE):
         raise DoorInterleave(f"edit door: a device row {r} the door does not write")
+    pol = _fe._policy(field)
+    if (r[_fe.E_CLAMP_FLAGS], r[_fe.E_LO], r[_fe.E_HI]) != _clamp_row(pol) \
+            or any(r[_fe.E_O2_LO:_fe.E_N2_HI + 1]):
+        raise DoorInterleave(f"edit door: a device row {r} whose clamp is not its "
+                             f"field's policy clamp (not replayed)")
     t = [tuple(int(x) for x in tr) for tr in tiles]
     w = int(gmap._w)
-    if len(t) != 1:
-        raise DoorInterleave(f"edit door: a TILE edit with {len(t)} tile rows "
-                             f"(a tile outside the grid is not replayed)")
-    y, x = divmod(t[0][1], w)
-    pol = _fe._policy(field)
+    a = r[ARG_COL:ARG_COL + ARG_COLS]
+    if region == int(_fe.Region.DISC):
+        coords = (a[0], a[1], _fe._ufx.dequantize_scalar(a[2]))
+        falloff = _fe.Falloff(a[3])
+    else:
+        if len(t) != 1:
+            raise DoorInterleave(f"edit door: a TILE edit with {len(t)} tile rows "
+                                 f"(a tile outside the grid is not replayed)")
+        y, x = divmod(t[0][1], w)
+        coords, falloff = (y, x), _fe.Falloff.FLAT
     a_q = r[_fe.E_AMOUNT]
     if pol.dtype == "gas":
         from simulation import gas_fixed
         amount = float(gas_fixed.dequantize_trace(a_q))
     else:
         amount = _fe._ufx.dequantize_scalar(a_q)
-    edit = _fe.FieldEdit(field=field, region=_fe.Region.TILE, coords=(y, x),
+    edit = _fe.FieldEdit(field=field, region=_fe.Region(region), coords=coords,
+                         falloff=falloff,
                          amount=amount, amount_q=a_q, mode=_fe.EditMode(r[_fe.E_MODE]),
                          channel=(r[_fe.E_SLICE] if field == "gas" else None),
                          source_id=r[SRC_COL])
@@ -158,8 +203,9 @@ class DeviceEditDoor:
             raise RuntimeError("edit door: the device door needs the CUDA build")
         lay = bp.edit_door_layout()
         if (int(lay["edit_cols"]), int(lay["packed_cols"]), int(lay["tile_cols"]),
-                int(lay["src_col"]), int(lay["region_col"])) != (
-                EDIT_COLS, PACKED_COLS, TILE_COLS, SRC_COL, REGION_COL):
+                int(lay["src_col"]), int(lay["region_col"]),
+                int(lay.get("arg_col", -1))) != (
+                EDIT_COLS, PACKED_COLS, TILE_COLS, SRC_COL, REGION_COL, ARG_COL):
             raise ValueError(f"edit door: the compiled rows {dict(lay)} are not "
                              f"simulation.edit_door's")
         self.bp = bp
@@ -201,6 +247,7 @@ class DeviceEditDoor:
                                    f"capacity {cap}")
 
 
-__all__ = ["PACKED_COLS", "SRC_COL", "REGION_COL", "EDIT_COLS", "TILE_COLS",
+__all__ = ["PACKED_COLS", "SRC_COL", "REGION_COL", "ARG_COL", "ARG_COLS",
+           "region_args", "EDIT_COLS", "TILE_COLS",
            "EDIT_CAP", "TILE_CAP", "DoorInterleave", "DoorOverflow", "door_rows",
            "edit_of", "replay", "DeviceEditDoor"]

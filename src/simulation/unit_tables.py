@@ -1193,6 +1193,269 @@ def wall_q(v) -> int:
 ROWS = ROWS + _SHOOT_ROWS
 
 
+# == #29 P7c.1: THE PAYLOAD FUNCTION, the disc path (payloads.execute_payload
+# for a row with strength = 0, no bulk gas, no explosive: physics.
+# apply_explosion, exchange.apply_blast_damage, flash_blind.apply_flash_blind,
+# emit_gas, ignite_ring, deposit_heat, noise.emit, the blast log). Per
+# [payloads.*] row of the sim's OWN payload table (sim.weapons_tables.
+# payloads, the object execute_payload is handed), each value quantized by
+# the function the law quantizes it with per call (unit_fixed /
+# wall_fixed.quantize_scalar, field_edit._quantize_in into the edit's field
+# currency); the edit source ids; the blast-wall materials per material id;
+# the blast damage threshold; the flash's front angle; the smoke clear's
+# amount; the ignition ring's heat and clamp. ================================
+def _n_payloads():
+    from simulation.weapons import get_tables
+    return len(get_tables().payloads.by_name)
+
+
+def _payload_rows(src):
+    """The sim's payload rows in the process table's order (a PAYLOAD
+    record's ``payload`` index is ``applier.payload_index``: the sim's own
+    table); refused when the names differ."""
+    from simulation.weapons import get_tables
+    names = tuple(get_tables().payloads.by_name)
+    rows = src.sim.weapons_tables.payloads.by_name
+    if tuple(rows) != names:
+        raise ValueError(f"unit tables: the sim's payload rows {tuple(rows)} are "
+                         f"not the payload table's {names}")
+    return tuple(rows[n] for n in names)
+
+
+def _pl(f):
+    return lambda src: tuple(int(f(p)) for p in _payload_rows(src))
+
+
+def _pl_radius(p):
+    """``int(radius)`` -- apply_explosion's ``range(-radius, radius + 1)`` and
+    the blast log's ``int(payload.radius)``; refused unless the radius is an
+    integer (``range`` raises on any other)."""
+    r = p.radius
+    if isinstance(r, bool) or int(r) != r:
+        raise ValueError(f"unit tables: payloads.{p.name}.radius {r!r} is not an "
+                         f"integer (apply_explosion's range() refuses it)")
+    return int(r)
+
+
+def _pl_q(attr):
+    def f(p):
+        return unit_fixed.quantize_scalar(float(getattr(p, attr)))  # p3e-door: the law's per-call float
+    return f
+
+
+def _pl_cur(attr, field):
+    """``field_edit._quantize_in(float(attr), currency)``: the edit door's
+    quantization of a DISC edit's float amount into its field's currency."""
+    def f(p):
+        from simulation import field_edit as fe
+        return fe._quantize_in(float(getattr(p, attr)),          # p3e-door: _edit_door's
+                               fe._CURRENCY[fe.FIELD_POLICY[field].dtype])
+    return f
+
+
+def _pl_inner(p):
+    """apply_explosion's smoke-clear radius: 2/5 of ``int(radius)`` on the Q16
+    grid, handed to the DISC as its exact float view, re-quantized by the
+    region walk (``quantize_scalar(dequantize_scalar(q)) == q``)."""
+    q = unit_fixed.div_round(int(p.radius) * 2 * unit_fixed.FP_ONE, 5)
+    return unit_fixed.quantize_scalar(unit_fixed.dequantize_scalar(q))  # p3e-door: the DISC's radius
+
+
+def _pl_wall(p):
+    from simulation import wall_fixed
+    return int(wall_fixed.quantize_scalar(float(p.wall_damage)))  # p3e-door: apply_explosion's / the blast log's
+
+
+def _pl_gas_id(src):
+    """Per payload row: the map's gas slice of ``gas_species`` (-1 none). A
+    CONSERVATIVE slice is refused by name (the gas policy refuses it at the
+    flush: no row the function applies carries one)."""
+    gases = src.sim.gmap.gases
+    out = []
+    for p in _payload_rows(src):
+        if not p.gas_species:
+            out.append(-1)
+            continue
+        gid = int(gases.name_to_id[p.gas_species])
+        if bool(gases.conservative[gid]):
+            raise ValueError(f"unit tables: payloads.{p.name} emits the CONSERVATIVE "
+                             f"gas {p.gas_species!r} through emit_gas (the gas "
+                             f"policy refuses it)")
+        out.append(gid)
+    return tuple(out)
+
+
+def _blast_walls(src):
+    from simulation import physics
+    walls = {int(m) for m in physics._BLAST_WALL_MATERIALS}
+    return tuple(int(i in walls) for i in range(_n_materials()))
+
+
+def _blast_threshold(src):
+    """``CFG.combat.blast_damage_threshold`` as apply_blast_damage compares an
+    integer damage with it (``damage >= threshold``): its ceiling (exact for
+    an integer threshold); refused when not finite."""
+    import math
+    t = float(_cfg().combat.blast_damage_threshold)
+    if not math.isfinite(t):
+        raise ValueError(f"unit tables: blast_damage_threshold {t!r} is not finite")
+    return int(math.ceil(t))
+
+
+def _src_id(mod, name):
+    def g(src):
+        import importlib
+        return int(getattr(importlib.import_module(mod), name))
+    return g
+
+
+def _ignite_heat_q(src):
+    from simulation import field_edit as fe, payloads
+    if not payloads.IGNITE_HEAT > 0.0:
+        raise ValueError("unit tables: payloads.IGNITE_HEAT <= 0 (the ring would "
+                         "enqueue no heat: the kernel always enqueues it)")
+    return fe._quantize_in(float(payloads.IGNITE_HEAT), fe._CURRENCY["heat"])  # p3e-door: _edit_door's
+
+
+def _ignite_clamp(src):
+    """(flags, lo, hi) of ignite_ring's explicit clamp in the fire currency
+    (field_edit._clamp_q, as _edit_door forms it)."""
+    from simulation import field_edit as fe, payloads
+    pair = fe._clamp_q(payloads.IGNITE_CLAMP, fe._CURRENCY["fire"])
+    flags = lo = hi = 0
+    if pair is not None:
+        if pair[0] is not None:
+            flags |= 1
+            lo = int(pair[0])
+        if pair[1] is not None:
+            flags |= 2
+            hi = int(pair[1])
+    return (flags, lo, hi)
+
+
+def _smoke_clear_q(src):
+    from simulation import field_edit as fe, physics
+    return fe._quantize_in(float(physics._SMOKE_CLEAR_AMOUNT),     # p3e-door: _edit_door's
+                           fe._CURRENCY["gas"])
+
+
+def _payload_refuse(src):
+    from simulation import applier
+    return tuple(applier.payload_refusal(p) for p in _payload_rows(src))
+
+
+def _gas_ids_smoke(src):
+    from simulation import gases
+    return int(gases.SMOKE)
+
+
+def _flash_front(src):
+    from simulation import flash_blind
+    return int(flash_blind.FRONT_Q16)
+
+
+_R_MAX = 1 << 10          # a disc radius: d2 << 32 and r_q^2 stay inside int64
+_PAYLOAD_ROWS: tuple = (
+    TableRow("payload_refuse", _n_payloads, _payload_refuse, 0, 4,
+             "per payload row: applier.payload_refusal (0 = the disc path the "
+             "PAYLOAD function applies; else refused by name, nothing written)"),
+    TableRow("payload_radius", _n_payloads, _pl(_pl_radius), 0, _R_MAX,
+             "per payload row: int(radius), the blast disc (apply_explosion's "
+             "loop, the blast log); <= 2^10"),
+    TableRow("payload_radius_q", _n_payloads, _pl(_pl_q("radius")), 0, _R_MAX << 16,
+             "per payload row: quantize_scalar(float(radius)): the atmosphere "
+             "DISC's radius and apply_blast_damage's r_q"),
+    TableRow("payload_atm_q", _n_payloads, _pl(_pl_cur("pressure", "atmosphere")),
+             -(1 << 46), 1 << 46,
+             "per payload row: the atmosphere DISC's amount, float(pressure) in "
+             "the bulk currency (_edit_door)"),
+    TableRow("payload_press_q", _n_payloads, _pl(_pl_q("pressure")), -(1 << 28), 1 << 28,
+             "per payload row: quantize_scalar(float(pressure)), the wave "
+             "stencil's (x 4 below 2^31: falloff_round's proved v)"),
+    TableRow("payload_wall_q", _n_payloads, _pl(_pl_wall), -(1 << 30), 1 << 30,
+             "per payload row: wall_fixed.quantize_scalar(float(wall_damage)): "
+             "the disc's wall damage and the blast log's"),
+    TableRow("payload_inner_q", _n_payloads, _pl(_pl_inner), 0, _R_MAX << 16,
+             "per payload row: the smoke clear's Q16 radius (2/5 of int(radius))"),
+    TableRow("payload_blast_live", _n_payloads,
+             _pl(lambda p: p.unit_damage > 0), 0, 1,
+             "per payload row: unit_damage > 0 (execute_payload's test on the "
+             "raw value)"),
+    TableRow("payload_unit_damage", _n_payloads, _pl(lambda p: int(p.unit_damage)),
+             -(1 << 20), 1 << 20,
+             "per payload row: int(unit_damage), apply_blast_damage's max_d"),
+    TableRow("payload_loudness_tiles", _n_payloads,
+             _pl(lambda p: getattr(p, "loudness_tiles", 0)), 0, 1 << 20,
+             "per payload row: loudness_tiles (noise.emit's radius; 0 = silent)"),
+    TableRow("payload_blind_radius_q", _n_payloads,
+             _pl(lambda p: getattr(p, "blind_radius_q", 0)), -(1 << 26), _R_MAX << 16,
+             "per payload row: blind_radius_q (the door's; > 0 = the flash "
+             "blinds)"),
+    TableRow("payload_blind_ticks", _n_payloads, _pl(lambda p: p.blind_ticks),
+             0, 1 << 16, "per payload row: blind_ticks (the door's)"),
+    TableRow("payload_blind_away_q", _n_payloads, _pl(lambda p: p.blind_away_q),
+             0, ONE, "per payload row: blind_away_q (the door's Q16 fraction)"),
+    TableRow("payload_gas_id", _n_payloads, _pl_gas_id, -1, 255,
+             "per payload row: emit_gas's slice (the map's gases.name_to_id of "
+             "gas_species; -1 none)"),
+    TableRow("payload_gas_q", _n_payloads, _pl(_pl_cur("gas_amount", "gas")),
+             -(1 << 46), 1 << 46,
+             "per payload row: emit_gas's DISC amount in the trace currency"),
+    TableRow("payload_gas_radius_q", _n_payloads, _pl(_pl_q("gas_radius")),
+             -(1 << 26), _R_MAX << 16,
+             "per payload row: quantize_scalar(float(gas_radius)), emit_gas's "
+             "DISC radius and its claims' disc"),
+    TableRow("payload_ignite_live", _n_payloads, _pl(lambda p: p.ignite_radius > 0),
+             0, 1, "per payload row: ignite_radius > 0 (the raw test)"),
+    TableRow("payload_ignite_radius_q", _n_payloads, _pl(_pl_q("ignite_radius")),
+             -(1 << 26), _R_MAX << 16,
+             "per payload row: quantize_scalar(float(ignite_radius)), the ring's "
+             "DISC radius (flame, heat and claims)"),
+    TableRow("payload_ignite_q", _n_payloads, _pl(_pl_cur("ignite_intensity", "fire")),
+             -(1 << 46), 1 << 46,
+             "per payload row: the ring's flame amount in the fire currency"),
+    TableRow("payload_heat_live", _n_payloads,
+             _pl(lambda p: getattr(p, "heat_amount", 0.0) > 0), 0, 1,
+             "per payload row: heat_amount > 0 (the raw test)"),
+    TableRow("payload_heat_q", _n_payloads, _pl(_pl_q("heat_amount")),
+             -(1 << 46), 1 << 46,
+             "per payload row: quantize_scalar(float(heat_amount)), deposit_heat's "
+             "amount_q (no air read on the disc path)"),
+    TableRow("payload_heat_radius_q", _n_payloads, _pl(_pl_q("heat_radius")),
+             -(1 << 26), _R_MAX << 16,
+             "per payload row: quantize_scalar(float(heat_radius)), the splash's "
+             "DISC radius and its claims' disc"),
+    TableRow("payload_src_explosion", 1, _src_id("simulation.physics", "_SRC_EXPLOSION"),
+             0, 1 << 20, "physics._SRC_EXPLOSION: apply_explosion's edits' source_id"),
+    TableRow("payload_src_gas", 1, _src_id("simulation.payloads", "_SRC_PAYLOAD_GAS"),
+             0, 1 << 20, "payloads._SRC_PAYLOAD_GAS: emit_gas's source_id"),
+    TableRow("payload_src_ignite", 1,
+             _src_id("simulation.payloads", "_SRC_PAYLOAD_IGNITE"), 0, 1 << 20,
+             "payloads._SRC_PAYLOAD_IGNITE: ignite_ring's source_id"),
+    TableRow("payload_src_heat", 1, _src_id("simulation.payloads", "_SRC_PAYLOAD_HEAT"),
+             0, 1 << 20, "payloads._SRC_PAYLOAD_HEAT: deposit_heat's source_id"),
+    TableRow("payload_smoke_slice", 1, _gas_ids_smoke, 0, 255,
+             "gases.SMOKE: the slice a 'smoke' edit names (pack_for_device's)"),
+    TableRow("payload_smoke_clear_q", 1, _smoke_clear_q, 0, 1 << 55,
+             "physics._SMOKE_CLEAR_AMOUNT in the trace currency (the clear's "
+             "REMOVE amount)"),
+    TableRow("payload_ignite_heat_q", 1, _ignite_heat_q, 1, 1 << 46,
+             "payloads.IGNITE_HEAT in the heat currency (the ring's FLAT heat)"),
+    TableRow("payload_ignite_clamp", 3, _ignite_clamp, -(1 << 46), 1 << 46,
+             "payloads.IGNITE_CLAMP as (flags, lo, hi) in the fire currency "
+             "(_clamp_q: the ring's own clamp)"),
+    TableRow("blast_wall_mat", _n_materials, _blast_walls, 0, 1,
+             "per material id: 1 when physics._BLAST_WALL_MATERIALS holds it "
+             "(only those take the disc's wall damage)"),
+    TableRow("blast_damage_threshold", 1, _blast_threshold, -(1 << 40), 1 << 40,
+             "ceil(CFG.combat.blast_damage_threshold): apply_blast_damage's "
+             "chip-damage floor (an integer damage at or above it lands)"),
+    TableRow("flash_front_q16", 1, _flash_front, 1, 205887,
+             "flash_blind.FRONT_Q16: the facing cone of the whole blinding"),
+)
+ROWS = ROWS + _PAYLOAD_ROWS
+
+
 # == #29 P6b.1: the doors (door_system.sweep_doors), seal / unseal /
 # can_seal_tiles and the gas-N primitives in the Device topology seam --
 # each read from the sim's own map (its materials and gas tables) or the

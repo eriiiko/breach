@@ -162,6 +162,8 @@ amends the rule file, never this line's length.
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
 | Spray slot | `cpp/src/cuda_unit_sprays.cu` + `cpp/src/cuda_unit_spray.cuh` + `unit_kernels.sprays` | THE device form of slot 4b: the cone over the physical device sight into the cell buffer, one SPRAY_CELLS effect per sprayer; never a second cone walk |
 | Device edit door | `src/simulation/edit_door.py` + `cpp/src/cuda_edit_door.{h,cuh,cu}` | THE way a device producer hands a FieldEdit (the queue's EDIT / TILE rows through device forms of the door and the region walk); never a producer's own row writer |
+| Payload function (device) | `cpp/src/cuda_unit_payload.cuh` | THE device `execute_payload` for a disc-path row (strength 0, no bulk gas, no explosive), a PAYLOAD effect of the applier at every call site; any other row refused by name, never a second payload law |
+| Blast log (device) | `unit_schema.BLAST_LOG_TABLE` on the object tables | THE device form of `GameMap.blast_log`, appended by the payload function in call order; never a second explosion hook |
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
 | Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 

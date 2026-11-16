@@ -27,6 +27,7 @@
 #include "cuda_unit_doors.cuh"     // #29 P6b.1: the door sweep
 #include "cuda_unit_damage.cuh"    // apply_packet, the landing, the sinks, the library
 #include "cuda_unit_spray.cuh"     // #29 P7a.3: SPRAY_CELLS (the edit door, the claims)
+#include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path)
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
@@ -75,9 +76,12 @@ struct WalkTables {
 // the caller handed none: an effect needing it FAULTS).
 struct WalkLists {
     bool has_cells = false, has_door = false, has_claims = false;
+    bool has_noise = false, has_blast = false;      // #29 P7c.1
     RecordListView cells;
     edit_door::DoorView door;
     RecordListView claims;
+    RecordListView noise;                           // #29 P7c.1: the noise list
+    RecordListView blast;                           // #29 P7c.1: the blast log
 };
 
 // The row of an effect's `row` field, or nullptr (out of the env's rows or a
@@ -117,8 +121,9 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
     B[APPLIER_BOOK_DROPPED] += (int64_t)dropped[e];
     const int64_t* L = recs + (size_t)e * cap * APPLIER_F;
     // the stage's mode for a HIT (decision 2: per (stage, kind))
-    const bool lands = (stage == APPLIER_STAGE_RESOLVE) ? APPLIER_STAGE_RESOLVE_LANDS
-                                                        : APPLIER_STAGE_TOPOLOGY_LANDS;
+    const bool lands = (stage == APPLIER_STAGE_RESOLVE)  ? APPLIER_STAGE_RESOLVE_LANDS
+                       : (stage == APPLIER_STAGE_DETONATE) ? APPLIER_STAGE_DETONATE_LANDS
+                                                           : APPLIER_STAGE_TOPOLOGY_LANDS;
     unit_lib::ExposureLanding land;
     land.buf = U.landing + (size_t)e * cap * unit_lib::LANDING_W;
     land.cap = cap;
@@ -232,7 +237,29 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
             }
             B[APPLIER_BOOK_APPLIED] += 1;
         } else if (kind == APPLIER_KIND_PAYLOAD) {
-            B[APPLIER_BOOK_REFUSED] += 1;                  // no device function until P7c.1
+            // #29 P7c.1: payloads.execute_payload, the disc path
+            // (cuda_unit_payload.cuh); a refused row writes nothing
+            unit_lib::RecordSink cs{}, ns{}, bs{};
+            unit_payload::PayloadReach R;
+            R.store = U.store;
+            R.n_units = U.n_units;
+            R.touched = touched;
+            R.sink = U.ring.ring != nullptr ? &sink : nullptr;
+            R.door = WL.has_door ? &WL.door : nullptr;
+            if (WL.has_claims) cs = unit_lib::list_env_sink(WL.claims, e);
+            if (WL.has_noise) ns = unit_lib::list_env_sink(WL.noise, e);
+            if (WL.has_blast) bs = unit_lib::list_env_sink(WL.blast, e);
+            R.claims = WL.has_claims ? &cs : nullptr;
+            R.noise = WL.has_noise ? &ns : nullptr;
+            R.blast = WL.has_blast ? &bs : nullptr;
+            const int res = unit_payload::apply_payload(r, E, tab, e, R, B);
+            if (res == unit_payload::PAYLOAD_REFUSED) {
+                B[APPLIER_BOOK_REFUSED] += 1;
+            } else if (res == unit_payload::PAYLOAD_FAULT) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+            } else {
+                B[APPLIER_BOOK_APPLIED] += 1;
+            }
         } else {
             B[APPLIER_BOOK_FAULTS] += 1;                   // an unknown kind: never packed
         }
@@ -256,7 +283,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 3, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 4, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -387,6 +414,21 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
                                             "count or not (channel, y, x, attacker) wide");
             WL.has_claims = true;
             WL.claims = list_view(*lists->claims);
+        }
+        // #29 P7c.1: the noise list and the blast log (object tables)
+        if (lists->noise != nullptr) {
+            if (lists->noise->n_env() != n || lists->noise->width() != object_tables::OBJ_NOISE_W)
+                throw std::invalid_argument("applier_run: the noise list is for another env "
+                                            "count or not the noise table's width");
+            WL.has_noise = true;
+            WL.noise = list_view(*lists->noise);
+        }
+        if (lists->blast_log != nullptr) {
+            if (lists->blast_log->n_env() != n || lists->blast_log->width() != object_tables::OBJ_BLAST_W)
+                throw std::invalid_argument("applier_run: the blast log is for another env "
+                                            "count or not the blast table's width");
+            WL.has_blast = true;
+            WL.blast = list_view(*lists->blast_log);
         }
     }
     WalkTables X;

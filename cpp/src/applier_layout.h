@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "9005c9e9cc3c8770beb56b2cf899021b52e6b7178029f7a26815fb883c4d4d19";
+constexpr const char* APPLIER_FINGERPRINT = "f2a3fe2d8642596d9d585b49794ad5a190f7f5543a2d02398866e2b5c17c84e0";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -92,7 +92,9 @@ constexpr int APPLIER_STAGE_RESOLVE = 1;
 constexpr bool APPLIER_STAGE_RESOLVE_LANDS = true;
 constexpr int APPLIER_STAGE_DOORS = 2;
 constexpr bool APPLIER_STAGE_DOORS_LANDS = false;
-constexpr int APPLIER_N_STAGES = 3;
+constexpr int APPLIER_STAGE_DETONATE = 3;
+constexpr bool APPLIER_STAGE_DETONATE_LANDS = false;
+constexpr int APPLIER_N_STAGES = 4;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;

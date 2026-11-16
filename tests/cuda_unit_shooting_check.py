@@ -1554,8 +1554,8 @@ def bench(reps: int = 50) -> int:
             t = time.perf_counter()
             try:
                 unit_kernels.resolve(st, fx, planes, ring)
-            except applier.EffectRefused:
-                pass
+            except (applier.EffectRefused, applier.ApplierFault):
+                pass       # #29 P7c.1: a payload round's PAYLOAD faults without its lists
             ts2l.append((time.perf_counter() - t) * 1e3)
         lines.append(("4 shooting", n_env, f"{U} rows", float(np.median(ts4))))
         lines.append(("2' march", n_env, f"{len(flying)} rounds", float(np.median(ts2))))

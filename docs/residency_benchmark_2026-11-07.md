@@ -1695,6 +1695,33 @@ rounds one after another in ONE thread per env. The landing is at the walk's flo
 (P7e) needs it, the march's per-step row scan can read a per-env occupancy plane built once per slot (the stamp's
 own data), which keeps "the first row in row order" as the minimum row index per tile; not done here.
 
+## P7c.1: payloads, the disc path, as the applier's PAYLOAD function (2026-11-16)
+
+**Method.** `tests/cuda_unit_payloads_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); the other agent of
+the night (P6b.1, doors) was running its full pytest suite beside it, so the card and the CPU were shared. One
+synthetic probe map (a hull box with walls of every material, 4-11 units) copied into N envs; ONE PAYLOAD record per
+env at the map's centre, walked by `unit_kernels.walk_effects` in the DETONATE stage: the kernel (one block per env,
+thread 0) and the books', coverage's and lists' count downloads; the store's upload and the lists' begin outside the
+timing. "own" is the shipped row; "r 6" the same row with its disc, gas, heat and ignite radii raised to 6 tiles
+(wall damage 10, pressure 1.0), i.e. a 113-tile disc with ~1 000 wave TILE edits. Medians of 50 repetitions, ms.
+
+| row | own N = 1 | own N = 8 | own N = 64 | r 6 N = 1 | r 6 N = 8 | r 6 N = 64 |
+|---|---|---|---|---|---|---|
+| studio_smoke | 0.783 | 0.800 | 0.984 | 3.985 | 4.024 | 4.082 |
+| smoke_screen | 0.884 | 1.077 | 1.219 | 3.900 | 3.677 | 3.738 |
+| tear_burst | 0.798 | 0.808 | 0.859 | 4.032 | 4.096 | 3.822 |
+| poison_cloud | 0.891 | 0.843 | 0.951 | 3.661 | 3.661 | 3.844 |
+| incendiary_splash | 0.890 | 0.927 | 0.973 | 3.347 | 3.338 | 3.465 |
+| studio_ignite | 0.693 | 0.744 | 0.820 | 3.535 | 3.548 | 3.678 |
+| flashbang | 0.733 | 0.745 | 0.857 | 3.341 | 3.902 | 4.281 |
+| hazmat_release | 1.187 | 0.872 | 0.896 | 3.546 | 3.669 | 3.774 |
+| plasma_splash_small | 1.125 | 1.145 | 1.182 | 3.608 | 3.856 | 4.012 |
+| plasma_splash_large | 1.518 | 1.484 | 1.555 | 3.619 | 3.614 | 3.681 |
+
+**Reading.** Flat in N (the envs are parallel blocks). The shipped rows sit near the walk's floor (0.7-1.5 ms; the
+plasma rows' 2-3 tile discs with their wave stencils are the dearest). A 6-tile disc costs ~3.5-4 ms whatever the
+row: the serial thread-0 walk of the disc and its wave stencil (9 TILE edits per open tile, each a door row and its
+tile row) dominates. P7c.2's fan-out over the block's threads is where that cost goes if the device tick needs it.
 ## P6b.1: the door sweep, seal / unseal and the use write (2026-11-16)
 
 **What.** Slot 9e(d)'s door sweep as the applier's DOORS stage (`cpp/src/cuda_applier.cu` over

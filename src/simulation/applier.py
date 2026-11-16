@@ -78,9 +78,10 @@ F = len(FIELDS)
 #:   ``wall_damage <= 0`` (a no-op), ``damage_q`` the per-call
 #:   ``wall_fixed.quantize_scalar(float(wall_damage))``;
 #: - PAYLOAD ``payloads.execute_payload(gmap, queue, units, y, x, payload,
-#:   rng, events=sim.tick_events, kind=..., owner_id=owner, approach=...)``:
-#:   a RECORD ONLY -- the applier refuses to apply it, by name, until P7c.1
-#:   gives it its function (``payload`` the row's index in
+#:   rng, events=sim.tick_events, kind=..., owner_id=owner, approach=...)``
+#:   (#29 P7c.1: applied by ``cpp/src/cuda_unit_payload.cuh`` for a row of
+#:   the disc path; a refused row, :data:`PAYLOAD_REFUSALS`, by name;
+#:   ``payload`` the row's index in
 #:   ``sim.weapons_tables.payloads``, ``kind`` its index in
 #:   :data:`PAYLOAD_KINDS`, ``has_approach`` 0 for ``approach=None``).
 #:
@@ -108,8 +109,48 @@ KINDS = tuple(k for k, _f in KIND_FIELDS)
 KIND_DESTROY_WALL, KIND_HIT, KIND_STATUS, KIND_PUSH, KIND_CHEW, \
     KIND_PAYLOAD, KIND_SPRAY_CELLS = range(1, 8)
 #: The kinds the applier refuses to APPLY (counted in the ``refused`` book,
-#: the run refused by name): a record with no device function yet.
-UNAPPLIED_KINDS = ("PAYLOAD",)
+#: the run refused by name): a record with no device function yet. #29
+#: P7c.1: none -- PAYLOAD has its function (``cpp/src/cuda_unit_payload.cuh``);
+#: what it still refuses is a payload ROW (:data:`PAYLOAD_REFUSALS`).
+UNAPPLIED_KINDS: tuple = ()
+#: #29 P7c.1: the payload rows the PAYLOAD function refuses, by code (the
+#: Device tables row ``payload_refuse``, ``unit_tables``): each counted in
+#: the ``refused`` book, nothing written, the run refused by name. Code 0 is
+#: a row the function applies (``strength = 0``, no bulk gas, no explosive:
+#: the disc path). The first that holds wins, in this order.
+PAYLOAD_REFUSALS: tuple = (
+    (1, "strength", "a strength row (the generic explosion: the reach walk, the "
+                    "air read, start_source, deposit_over_tiles) is P7c.2's"),
+    (2, "bulk_gas", "a bulk-gas row (inject_bulk_gas through the gas-N "
+                    "primitives) is P7c.2's"),
+    (3, "explosive", "a row with an explosive reads the air (read_blast_air "
+                     "over its disc) and lays the noisy blast smoke scaled by "
+                     "it (add_explosion_smoke): the air read is P7c.2's"),
+    (4, "expansion", "a row with expansion_m3 starts a multi-tick source "
+                     "(start_expansion, div_source): P7c.2's"),
+)
+
+
+def payload_refusal(payload) -> int:
+    """The refusal code of a ``[payloads.*]`` row (:data:`PAYLOAD_REFUSALS`;
+    0 = the PAYLOAD function applies it), read from the row exactly as
+    ``execute_payload`` branches on it."""
+    if getattr(payload, "strength", 0.0) > 0.0:
+        return 1
+    if getattr(payload, "bulk_gas", ""):
+        return 2
+    if getattr(payload, "explosive", ""):
+        return 3
+    if getattr(payload, "expansion_m3", 0.0) > 0.0:
+        return 4
+    return 0
+
+
+def payload_refusal_reason(code: int) -> str:
+    for c, name, why in PAYLOAD_REFUSALS:
+        if c == int(code):
+            return f"{name}: {why}"
+    return f"code {int(code)}"
 #: ``execute_payload``'s ``kind`` values (its render-only ExplosionEvent
 #: label), as a PAYLOAD record's ``kind`` index; another is refused by name.
 PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
@@ -127,9 +168,15 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:             table), not the effect list, in row (= ordinal) order, each door
 #:             applied at once (a door's seal changes the gas the next door
 #:             reads); the effect list is not read.
-STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("DOORS", False))
+#:   DETONATE  #29 P7c.1: the PAYLOAD records slot 2's grenade fuse-outs and
+#:             slot 9e(d')'s charges append (``unit_kernels.grenades`` /
+#:             ``charges_tick``), walked right after their kernel, where the
+#:             reference calls ``execute_payload`` at once; no HIT is ever on
+#:             its list, and a blast's packets land at once in every stage.
+STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("DOORS", False),
+                 ("DETONATE", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_DOORS = 0, 1, 2
+STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_DOORS, STAGE_DETONATE = 0, 1, 2, 3
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
 #: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
 #: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
@@ -197,8 +244,9 @@ BOOKS: tuple = (
     BookRow("faults", None, "effects whose operands left the proved range "
             "(nothing written; refused)"),
     BookRow("refused", None, "#29 P7a.1: records of a kind with no device "
-            "function yet (UNAPPLIED_KINDS: PAYLOAD until P7c.1), never "
-            "applied; the run is refused by name"),
+            "function yet (UNAPPLIED_KINDS); #29 P7c.1: a PAYLOAD record of a "
+            "refused payload row (PAYLOAD_REFUSALS), never applied; the run "
+            "is refused by name"),
 )
 
 
@@ -759,6 +807,8 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "ARG_SLOTS", "KIND_FIELDS", "KIND_HIT", "KIND_STATUS", "KIND_PUSH",
            "KIND_CHEW", "KIND_PAYLOAD", "UNAPPLIED_KINDS", "PAYLOAD_KINDS",
            "STAGES", "STAGE_NAMES", "STAGE_TOPOLOGY", "STAGE_RESOLVE", "ROW_CAP",
+           "STAGE_DETONATE", "PAYLOAD_REFUSALS", "payload_refusal",
+           "payload_refusal_reason",
            "kind_field", "make_record", "record_of", "records_of", "effects_of",
            "payload_index", "KIND_SPRAY_CELLS", "records_and_cells_of",
            "non_resident_planes", "Layout", "layout", "header_text",
