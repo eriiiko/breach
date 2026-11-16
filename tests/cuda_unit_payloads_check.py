@@ -292,8 +292,8 @@ def _landing(sim, args, kw, caller):
     return caller == "_update_rounds"
 
 
-DET_IN = ("tick", "edit_seq", "list:noise", "list:blast_log", "list:sources",
-          "list:source_tiles")
+DET_IN = ("tick", "edit_seq", "list:noise", "list:blast_log", "list:source_tiles",
+          "list:sources")   # the tiles land first
 SLOT_2G = DeviceSlot(label="2 grenades", run=_run_2g, events=True,
                      inputs=DET_IN + ("list:grenades",),
                      outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS
@@ -302,8 +302,8 @@ SLOT_9E = DeviceSlot(label="9e(d') planted charges", run=_run_9e, events=True,
                      skip_ok=True, inputs=DET_IN + ("list:charges",),
                      outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS
                      + ("list:charges", "list:payloads"), host_only=HOST_ONLY)
-RES_IN = ("list:effects", "edit_seq", "list:noise", "list:blast_log", "list:sources",
-          "list:source_tiles")
+RES_IN = ("list:effects", "edit_seq", "list:noise", "list:blast_log", "list:source_tiles",
+          "list:sources")   # the tiles land first
 SLOT_2L = DeviceSlot(label="4c resolve", name="2' landing", run=_run_resolve, events=True,
                      inputs=RES_IN, outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS,
                      host_only=HOST_ONLY, select=_landing)
@@ -2443,7 +2443,7 @@ def _handover_blasts(sim, e, t, rows):
     g = sim.gmap
     if t in (2, 5, 9, 15) and (t + e) % 2 == 0 or t == 3:
         opn = np.argwhere(~g.solid & ~g.is_vacuum)
-        y, x = (int(v) for v in opn[(len(opn) * (3 + e + t)) // 17])
+        y, x = (int(v) for v in opn[(len(opn) * ((3 + e + t) % 17)) // 17])
         name = ("div_40", "frag_standard", "div_80", "quad_src_tile", "div_40_puff")[
             (t + e) % 5]
         payloads.execute_payload(g, sim.edit_queue, sim.units, y, x, rows[name], sim.draws,
