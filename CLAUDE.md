@@ -162,6 +162,7 @@ amends the rule file, never this line's length.
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
 | Spray slot | `cpp/src/cuda_unit_sprays.cu` + `cpp/src/cuda_unit_spray.cuh` + `unit_kernels.sprays` | THE device form of slot 4b: the cone over the physical device sight into the cell buffer, one SPRAY_CELLS effect per sprayer; never a second cone walk |
 | Device edit door | `src/simulation/edit_door.py` + `cpp/src/cuda_edit_door.{h,cuh,cu}` | THE way a device producer hands a FieldEdit (the queue's EDIT / TILE rows through device forms of the door and the region walk); never a producer's own row writer |
+| Duct and vent tables | `unit_schema.DUCT_TABLE` / `VENT_TABLE` + `cpp/src/cuda_unit_vents.cuh` | THE device form of the ducts and vents and of slot 9e(d)'s circulation (the applier's VENTS stage); its int64 ledgers are refused by name past their proved range, never clamped |
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
 | Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 

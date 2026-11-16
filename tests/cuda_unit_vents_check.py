@@ -642,6 +642,8 @@ class Probe:
             e1 = int(pre["gas_energy"][y, x]) + (add[O2] + add[INERT_N2]) * (
                 t_dep + g.gas_t_amb_raw())
             n1 = int(pre["gas"][O2][y, x]) + int(pre["gas"][INERT_N2][y, x]) + add[O2] + add[INERT_N2]
+            if e1 % n1 != 0 and e1 < 0 and e1 // n1 - g.gas_t_amb_raw() >= t_min:
+                s["inject: a negative energy's floor, unrailed"] += 1
             if e1 % n1 != 0 and e1 < 0:
                 s["inject: a negative energy's floor"] += 1
             elif e1 % n1 != 0:
@@ -718,6 +720,14 @@ def _probe_map(name, sim, seen, rng, ticks=20):
                  hi + 5, tag="ring hot")
         P.inject(y, x, [((1 << 28) if q in (O2, INERT_N2) else 0) for q in range(N_GASES)],
                  lo - 5, tag="ring cold")
+    # the mirror's floor on a NEGATIVE energy: with the shipped rails (T_MIN >
+    # -T_AMB) a negative energy always rails low, so the floor is seen only
+    # under a rail below -T_AMB (the primitive takes any rails)
+    t_amb = g.gas_t_amb_raw()
+    for (y, x) in acct[38:40]:
+        P.inject(y, x, [((1 << 26) + int(rng.integers(0, 999)) if q in (O2, INERT_N2) else 0)
+                        for q in range(N_GASES)],
+                 -t_amb - int(rng.integers(1, 1 << 16)), -(1 << 29), hi, tag="below -T_AMB")
     a = acct[40]
     P.inject(a[0], a[1], [0] * N_GASES, 1234, tag="zero vector")
     P.inject(a[0], a[1], _vec(rng), 0, tag="t_dep 0")
@@ -763,6 +773,7 @@ def part_probe():
     n += _probe_map("vent scene (planetside)", VentScene(1).sim, seen, rng, ticks=5)
     need = ("inject: accountable (the conversion seam)", "inject: non-accountable (the T-mix)",
             "inject: a negative energy's floor", "inject: a positive energy's floor",
+            "inject: a negative energy's floor, unrailed",
             "inject: the T-mix's floor (neg)", "inject: the T-mix's floor (pos)",
             "inject: the low rail", "inject: the high rail", "inject: a trace clip",
             "inject: a zero vector (nothing written)", "inject: a bulk-free result (T untouched)",
@@ -1248,7 +1259,10 @@ def part_refusal():
 # ---------------------------------------------------------------------------
 def part_batch():
     for n in BATCH_NS:
-        drivers = [VentScene(1), VentScene(2)] if n == 2 else [VentScene(v) for v in range(n)]
+        # env 0 holds FEWER vents and ducts than the next (an env reading
+        # another's counts would walk past its own rows or stop short)
+        drivers = ([VentScene(2), VentScene(1)] if n == 2 else
+                   [VentScene(v) for v in (2, 3, 0, 1, 6, 7, 4, 5)[:n]])
         acts, _ = run_shadow(f"batch N={n}", drivers, BATCH_TICKS)
         if not acts[SLOT_VENTS.key]:
             fail(f"batch N={n}: the vent sweep never moved gas (vacuous)")

@@ -732,10 +732,20 @@ def _vent_consume(obj):
     raise RuntimeError("lockstep: the duct / vent tables are landed, never consumed")
 
 
+def _wide_fields(name):
+    # a multi-wide column's ints named one by one (trace_raw[0] ...)
+    def f(rec):
+        from simulation import object_tables
+        return name, tuple(c.name if c.width == 1 else f"{c.name}[{j}]"
+                           for c in object_tables.table_layout(name).columns
+                           for j in range(c.width))
+    return f
+
+
 LISTS["ducts"] = ListDef(_sim_host, _ducts_records, _vent_consume, _door_device("duct"),
-                         _table_fields("duct"), None, _ducts_land)
+                         _wide_fields("duct"), None, _ducts_land)
 LISTS["vents"] = ListDef(_sim_host, _vents_records, _vent_consume, _door_device("vent"),
-                         _table_fields("vent"), None, _vents_land)
+                         _wide_fields("vent"), None, _vents_land)
 
 
 # ---------------------------------------------------------------------------
