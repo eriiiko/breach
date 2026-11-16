@@ -1884,6 +1884,104 @@ use write. No decision moved. One line each:
   0 times in the twin); SHIP 500 ticks (the sweep gated off). Every gate broken once
   (the patch's report: 29 single-site breaks, all red).
 
+**As built (P7c.1, 2026-11-16).** The cut table's P7c.1 row, the disc path of
+`execute_payload`; decisions 1, 2, 4, 7(b) and 8 landed as written. One line
+each:
+- THE PAYLOAD FUNCTION is `cpp/src/cuda_unit_payload.cuh`
+  (`unit_payload::apply_payload(rec, TopoEnv, tab, e, PayloadReach, books)`),
+  the PAYLOAD branch of the one `k_applier`, thread 0, in the reference's
+  sub-step order: `apply_explosion` (the atmosphere DISC, the smoke-clear
+  DISC, the disc d2 <= r^2 walked serially in row-major order -- a blast-wall
+  material's hp less `falloff_round(wall_q, d2, r^2)`, `topo::destroy_wall`
+  at once at <= 0, then the 3x3 wave stencil's TILE edits on the planes as
+  they stand -- and the blast log's record), the noise, `apply_blast_damage`
+  (the IMMEDIATE `apply_packet` per valid living row in row order),
+  `apply_flash_blind` (`unit_sight::has_los`'s sight form, `isqrt_u64_q`,
+  `atan2_q16`, never shortened, `apply_status`), `emit_gas`, `ignite_ring`,
+  `deposit_heat` (claims, then DISC edits). ExplosionEvent has no device form.
+  Results APPLIED / FAULT / REFUSED into the `applied` / `faults` / `refused`
+  books.
+- WHICH ROWS: a row is applied when `applier.payload_refusal` is 0 (no
+  strength, no bulk gas, no explosive, no expansion) -- shipped:
+  `studio_smoke`, `smoke_screen`, `tear_burst`, `poison_cloud`,
+  `incendiary_splash`, `studio_ignite`, `flashbang`, `hazmat_release`,
+  `plasma_splash_small`, `plasma_splash_large` (10). Refused by name, nothing
+  written (`applier.PAYLOAD_REFUSALS`): strength (`frag_standard`,
+  `breach_focus`, `demolition_c4`, `magazine_cookoff`, `engine_death`), bulk
+  gas (`o2_store_rupture`, `halon_dump`), explosive -- the air read -- (the 19
+  studio / comparison rows `frag_heat`, `frag_hot_mass`, `quad_*`, `div_*`,
+  `quad_src_*`, `studio_small` / `_medium` / `_large` / `_hull`). The three
+  call sites can deliver only the first ten and the strength rows.
+- THE ROWS (33, T 2206): per payload row `payload_refuse`, `_radius`
+  (`int(radius)`, refused unless an integer), `_radius_q`, `_atm_q` (the bulk
+  currency), `_press_q`, `_wall_q`, `_inner_q` (2/5 of the radius on the Q16
+  grid), `_blast_live`, `_unit_damage`, `_loudness_tiles`, `_blind_radius_q`,
+  `_blind_ticks`, `_blind_away_q`, `_gas_id` (a conservative slice refused at
+  the read), `_gas_q`, `_gas_radius_q`, `_ignite_live`, `_ignite_radius_q`,
+  `_ignite_q`, `_heat_live`, `_heat_q`, `_heat_radius_q`; scalars the four
+  source ids, `payload_smoke_slice`, `payload_smoke_clear_q`,
+  `payload_ignite_heat_q`, `payload_ignite_clamp` (flags, lo, hi),
+  `blast_damage_threshold` (the ceiling of the CFG value), `flash_front_q16`;
+  per material `blast_wall_mat`. No product needed reporting: on the disc path
+  every float the law converts per call is a row; the soot and `heat_mj`
+  products belong to the explosive / strength rows (P7c.2).
+- THE DEVICE EDIT DOOR, step (b): `edit_door::door_disc_edit` (a DISC, FLAT
+  or LINEAR, the clamp given) and `disc_claims` (`_claim_disc`) in
+  `cpp/src/cuda_edit_door.cuh`; the EDIT row grew four REGION ARGUMENTS
+  (`edit_door.ARG_COL`: a TILE's tile, a DISC's centre, Q16 radius and
+  falloff), so the chained landing (`edit_door.edit_of` / `replay`) rebuilds a
+  clipped disc it could not from its TILE rows; `door_rows` writes them.
+- THE BLAST LOG is `unit_schema.BLAST_LOG_TABLE` (W 5, capacity 64) on the
+  object tables, `unit_kernels.blast_log_of`; THE NOISE LIST gained its second
+  producer. Both reach the walk as `WalkLists(noise=, blast_log=)` / C++
+  `ApplierLists`; a PAYLOAD without its lists or the ring FAULTS.
+- WHERE IT IS WALKED: the RESOLVE stage (slot 4c and slot 2''s landing: the
+  payload round's stop at its place in the record order) and a new stage
+  DETONATE (`applier.STAGE_DETONATE`, no landing): `unit_kernels.detonate`
+  right after `grenades` (slot 2) and `charges_tick` (slot 9e(d')). Grenade
+  flight reads no map, so all flights then every detonation in row order is
+  the reference's interleaving.
+- THE CORPSE SKIP bites for the first time: in a resolve a blast kills a unit
+  whose exposure raise is pending, and the landing skips the raise (gated: the
+  scene's set V, K's carbine and P's plasma on one victim; its break is red).
+- CHOICES where this section was silent: the explosive rows are refused (the
+  brief's "the air read" is P7c.2's), which leaves `add_explosion_smoke`
+  unbuilt: every row that reaches it carries an explosive (the row door
+  requires one for `emit_blast_smoke`) and its scale IS the air read; the
+  fan-out stays P7c.2's (the disc path is serial on thread 0); a fault after
+  the first write stops the effect as CHEW's does (the record's operands and
+  every disc wall's new hp are checked first).
+- THE HARNESS: `LISTS` rows `blast_log` and `detonations` (the payload calls
+  consumed, never replayed, so the twin's host `execute_payload` runs 0 times;
+  a refused row replayed alone only when `REPLAY_REFUSED`); the edits list
+  became one record per EDIT row then one per TILE row (a DISC has many);
+  the door's owned sources include the payload's; FIXED: the claims tap
+  consumed a generator of tiles (`_claim_disc`) so the HOOKED host claimed
+  nothing -- a hooked match differed from an unhooked one (the spray's lists
+  hid it).
+- WHAT THE REFERENCE SHOWED (nothing changed in it): a payload round carries
+  the PROCESS table's PayloadDef (`combat.weapon_tables()`) while
+  `applier.payload_index` names the sim's own row by identity, so sims built
+  one after another fail the record function unless they share one table (the
+  gates share it; one tile size); no shipped row the call sites deliver has
+  `unit_damage > 0` on the disc path (the frags are strength rows), so blast
+  damage is reached only through the gates' raised rows; no planted-charge
+  ammo carries a disc-path row (both are strength rows); `blast_damage_threshold`
+  is read from CFG per call (now a row read once per table build); ship_demo's
+  bots throw one frag (refused) in 500 ticks, so the shadow stops by name at
+  that tick (456) and the chained ship replays it on the host.
+- THE GATES (`tests/cuda_unit_payloads_check.py`, wrapper
+  `tests/test_cuda_unit_payloads.py`; CPU `tests/test_payload_device_rows.py`):
+  TABLES (1 m and 1/3 m); PROBE (120 synthetic lists on random maps, DETONATE
+  and RESOLVE, shipped then raised rows, a 32-branch census); DISC (every DISC
+  form at 8 radii and 4 centres); SCENE (five row sets: all 40 (call site,
+  shipped row) pairs, slots 2, 2''s landing, 4c and 9e(d') shadowed: rows,
+  ring, planes, books, door rows, claims, noise, blast log, payload records;
+  a 10-branch census); BATCH N = 2 / 8; PADDING; OVERFLOW (edits, tiles,
+  claims, noise, blast log, ring); REFUSE (26 rows by name, nothing written; a
+  walk without its door faults); CHAINED (2; 2' + landing; 4 + 4a + 4b + 4c;
+  9e(d'): the host `execute_payload` run 0 times in the chained slot); SHIP 500
+  ticks. Every gate broken once (the patch's report).
 **As built (P6b.2, 2026-11-16).** The cut table's P6b.2 row: the duct and vent tables,
 `inject_gas_n_vec` in the topology seam, the ledgers in int64 with a named refusal, the
 sweep. No decision moved. One line each:
@@ -1940,8 +2038,8 @@ sweep. No decision moved. One line each:
   past 2^30 (about 16 400 K above ambient): a plenum's mean temperature passes it only by a
   fixture (the extraction refuses tiles past 2^28 absolute, and the floor's upward drift is at
   most N / 64 counts a draining tick).
-- THE SWEEP is the applier's stage VENTS (2; DOORS moved to 3: the stage numbers follow the
-  conductor's pumps -> vents -> doors), `cpp/src/cuda_unit_vents.cuh`'s `vents::sweep` called
+- THE SWEEP is the applier's stage VENTS (2; at the merge with P7c.1 DOORS became 3 and
+  DETONATE 4: the 9e(d) numbers follow the conductor's pumps -> vents -> doors), `cpp/src/cuda_unit_vents.cuh`'s `vents::sweep` called
   by `k_applier` on the two tables (`ApplierLists.duct_table` / `vent_table`, `WalkTables`):
   per duct in row order the head check, the returns (dead skipped; `topo::aperture_blocked` a
   counted guard skip with the accumulator frozen; the accrual; `topo::extract_gas_n_vec` with

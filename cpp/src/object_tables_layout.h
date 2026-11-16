@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "1d78318555189e8a4457ff730a3aa0df674abf4772f795bfb0df7ddf54cf6280";
-constexpr int OBJECT_TABLES_N = 8;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "136313215927c2d1305e8c39f04da76af4ee1c9224b7a62627ddc4e5620049c9";
+constexpr int OBJECT_TABLES_N = 9;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -135,9 +135,26 @@ constexpr int OBJ_NOISE_COL_RADIUS_W = 1;
 constexpr int OBJ_NOISE_COL_LIVE = 3;
 constexpr int OBJ_NOISE_COL_LIVE_W = 1;
 
+// table 'blast': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_BLAST = 4;
+constexpr int OBJ_BLAST_W = 5;
+constexpr int OBJ_BLAST_CAP = 64;
+constexpr int OBJ_BLAST_LIVE = 4;
+constexpr int OBJ_BLAST_COL_FY = 0;
+constexpr int OBJ_BLAST_COL_FY_W = 1;
+constexpr int OBJ_BLAST_COL_FX = 1;
+constexpr int OBJ_BLAST_COL_FX_W = 1;
+constexpr int OBJ_BLAST_COL_RADIUS = 2;
+constexpr int OBJ_BLAST_COL_RADIUS_W = 1;
+constexpr int OBJ_BLAST_COL_WALL_Q = 3;
+constexpr int OBJ_BLAST_COL_WALL_Q_W = 1;
+constexpr int OBJ_BLAST_COL_LIVE = 4;
+constexpr int OBJ_BLAST_COL_LIVE_W = 1;
+
 // table 'door_tile': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
-constexpr int OBJ_DOOR_TILE = 4;
+constexpr int OBJ_DOOR_TILE = 5;
 constexpr int OBJ_DOOR_TILE_W = 4;
 constexpr int OBJ_DOOR_TILE_CAP = 256;
 constexpr int OBJ_DOOR_TILE_LIVE = 3;
@@ -152,7 +169,7 @@ constexpr int OBJ_DOOR_TILE_COL_LIVE_W = 1;
 
 // table 'door': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
-constexpr int OBJ_DOOR = 5;
+constexpr int OBJ_DOOR = 6;
 constexpr int OBJ_DOOR_W = 7;
 constexpr int OBJ_DOOR_CAP = 32;
 constexpr int OBJ_DOOR_LIVE = 6;
@@ -173,7 +190,7 @@ constexpr int OBJ_DOOR_COL_LIVE_W = 1;
 
 // table 'duct': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
-constexpr int OBJ_DUCT = 6;
+constexpr int OBJ_DUCT = 7;
 constexpr int OBJ_DUCT_W = 20;
 constexpr int OBJ_DUCT_CAP = 16;
 constexpr int OBJ_DUCT_LIVE = 19;
@@ -204,7 +221,7 @@ constexpr int OBJ_DUCT_COL_LIVE_W = 1;
 
 // table 'vent': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
-constexpr int OBJ_VENT = 7;
+constexpr int OBJ_VENT = 8;
 constexpr int OBJ_VENT_W = 11;
 constexpr int OBJ_VENT_CAP = 64;
 constexpr int OBJ_VENT_LIVE = 10;

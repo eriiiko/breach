@@ -22,6 +22,7 @@ Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
 
 ## Payload executor
+- `execute_payload` has a device twin for its disc path, `cpp/src/cuda_unit_payload.cuh` (the Payload function, `.claude/rules/device-units.md`): a change to it, `physics.apply_explosion`, `exchange.apply_blast_damage`, `flash_blind`, `emit_gas` / `ignite_ring` / `deposit_heat` or their claims lands there in the SAME PATCH. The twin ledger does not catch it (the corpus detonates almost nothing); `tests/cuda_unit_payloads_check.py` does.
 - BULK gas (O2, inert N2) enters ONLY through the `bulk_gas` / `bulk_amount` / `bulk_radius` / `bulk_temp` columns (#133 E.2): `inject_bulk_gas` calls the pump primitive `inject_gas_n_vec` per open disc tile, booked in the seam channels `payload_bulk_gas` / `payload_bulk_gas_rail`. `emit_gas` stays the TRACE path and its door refuses a conservative gas.
 
 ## Generic explosion
