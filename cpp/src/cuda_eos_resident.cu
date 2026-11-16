@@ -1032,7 +1032,8 @@ int eos_step_resident(
         const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp,
         const bool* d_thermal_solid,
         int64_t* d_gas_energy,
-        const EosBooksDev& books) {
+        const EosBooksDev& books,
+        const int32_t* d_div_source) {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f || N <= 0) return 0;   // step()'s degenerate early-out
@@ -1169,7 +1170,14 @@ int eos_step_resident(
     // has a source.
     bool any_source = false;
     for (int e = 0; e < N; ++e) any_source = any_source || div_source_host[e] != nullptr;
-    if (any_source) {
+    if (d_div_source != nullptr) {
+        // #29 P7c.2: the source produced on the card (the SOURCES stage), every
+        // env's plane (zeros where none: the subtraction of 0 is the identity)
+        cuda_check(cudaMemcpyAsync(S.div_source, d_div_source, (size_t)N * n * 4,
+                                   cudaMemcpyDeviceToDevice, stv), "D2D div_source");
+        div_source_launch_resident(S.div_u, S.div_source, d_solid, d_is_vacuum,
+                                   d_is_ambient, N, h, w);
+    } else if (any_source) {
         for (int e = 0; e < N; ++e) {
             int32_t* dst = S.div_source_h + (size_t)e * n;
             if (div_source_host[e]) std::memcpy(dst, div_source_host[e], (size_t)n * 4);

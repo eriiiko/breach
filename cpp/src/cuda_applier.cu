@@ -620,4 +620,67 @@ void tick_end_clears(int n_env, int h, int w,
 
 const char* applier_fingerprint() { return APPLIER_FINGERPRINT; }
 
+namespace {
+__global__ void k_blast_probe(topo::PlanePtrs P, int h, int w, int n_gases,
+                              const int64_t* tables, const int64_t* q, int K, int M,
+                              int64_t* out, uint8_t* walk, int walk_cells) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    const int e = benv();
+    const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
+    const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+    const size_t nc = (size_t)walk_cells, N = gridDim.y;
+    unit_blast::Scratch S;
+    S.mark = walk + (size_t)e * nc;
+    int32_t* lists = reinterpret_cast<int32_t*>(walk + ((N * nc + 7) & ~(size_t)7));
+    S.queue = lists + ((size_t)0 * N + e) * nc;
+    S.heat = lists + ((size_t)1 * N + e) * nc;
+    S.src = lists + ((size_t)2 * N + e) * nc;
+    const int W = 3 + 2 * M;
+    for (int k = 0; k < K; ++k) {
+        const int64_t* a = q + ((size_t)e * K + k) * 7;
+        int64_t* o = out + ((size_t)e * K + k) * W;
+        int n = 0;
+        if (a[6] == 0)
+            n = unit_blast::reach(E, a[0], a[1], a[2], a[3] != 0, a[4], a[5], S, S.heat);
+        else
+            n = unit_blast::disc_tiles(E, a[0], a[1], a[2], S.heat);
+        bool one = true;
+        o[1] = unit_blast::air_read(E, tab, S.heat, n, &one);
+        o[0] = n;
+        o[2] = one ? 1 : 0;
+        for (int j = 0; j < n && j < M; ++j) {
+            o[3 + j] = S.heat[j];
+            o[3 + M + j] = unit_blast::air_smoke_q(E, tab, S.heat[j]);
+        }
+    }
+}
+}  // namespace
+
+void blast_probe(FieldApplier& a, const UnitTablesDevice& tables, const ApplierPlanes& planes,
+                 const int64_t* q, int K, int M, int64_t* out) {
+    const int N = a.n_env();
+    if (tables.n_env() != N || K < 1 || M < 1)
+        throw std::invalid_argument("blast_probe: the tables are for another env count, or K / M < 1");
+    topo::PlanePtrs P;
+    for (int k = 0; k < APPLIER_N_PLANES; ++k) {
+        if (planes.ptr[k] == 0) throw std::invalid_argument("blast_probe: a plane pointer is null");
+        P.p[k] = (unsigned long long)planes.ptr[k];
+    }
+    uint8_t* walk = static_cast<uint8_t*>(a.walk_scratch(planes.h * planes.w));
+    const size_t nq = (size_t)N * K * 7, no = (size_t)N * K * (3 + 2 * M);
+    int64_t *dq = nullptr, *dout = nullptr;
+    ap_check(cudaMalloc(reinterpret_cast<void**>(&dq), nq * 8), "probe malloc q");
+    ap_check(cudaMalloc(reinterpret_cast<void**>(&dout), no * 8), "probe malloc out");
+    ap_check(cudaMemcpyAsync(dq, q, nq * 8, cudaMemcpyHostToDevice, tstream()), "probe H2D");
+    ap_check(cudaMemsetAsync(dout, 0, no * 8, tstream()), "probe zero");
+    k_blast_probe<<<dim3(1, (unsigned)N), 32, 0, tstream()>>>(
+        P, planes.h, planes.w, planes.n_gases, tables.values(), dq, K, M, dout, walk,
+        a.walk_cells());
+    ap_check(cudaGetLastError(), "blast probe launch");
+    ap_check(cudaMemcpyAsync(out, dout, no * 8, cudaMemcpyDeviceToHost, tstream()), "probe D2H");
+    ap_check(cudaStreamSynchronize(tstream()), "probe sync");
+    cudaFree(dq);
+    cudaFree(dout);
+}
+
 }  // namespace breach_cuda

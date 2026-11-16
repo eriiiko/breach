@@ -618,6 +618,19 @@ def _source_out_ptr(name, n, h, w, out) -> int:
     return int(out.data.ptr)
 
 
+def blast_probe(store, dev_applier, fields: dict, queries, max_tiles: int) -> np.ndarray:
+    """#29 P7c.2, TEST-ONLY: the device walk and air read
+    (``cpp/src/cuda_unit_blast.cuh``) per query -- ``queries`` (N, K, 7)
+    int64 ``(fy, fx, r2, has_approach, ay, ax, mode)`` (mode 0 the reach walk
+    over the open mask, 1 ``blast_air.disc_tiles`` of radius r2) -- on the
+    env's planes. Returns (N, K, 3 + 2 M): the count, the heat factor,
+    all_one, the cells (row-major index), their smoke factors."""
+    ptrs, n_gases, h, w = _plane_ptrs("blast_probe", store.shape[0], fields)
+    q = np.ascontiguousarray(queries, dtype=np.int64)
+    return np.asarray(store.bp.applier_blast_probe(dev_applier.buffer, store.tables, ptrs,
+                                                   n_gases, h, w, q, int(max_tiles)))
+
+
 def take_sources(store, dev_applier, fields: dict, lists, source_out=None) -> tuple:
     """#29 P7c.2: slot 7's head on the device, ``blast_expansion.
     take_source_plane`` for every env -- the SOURCES stage of the one applier:

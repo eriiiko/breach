@@ -39,6 +39,9 @@ C++ sim TUs go on the `/fp:strict` list in `cpp/CMakeLists.txt`, always.
 - A new resident core is born `(N, h, w)` on `tstream`, masked inside a substep loop, its books a region of the arena; gated by `cuda_s8a_check` (N = 1 == CPU, tol 0), `cuda_batch_invariance_check` (env i of N == env i alone), `cuda_prestage_parity_check` and `cuda_tick_capture_check` (the chain captures, the two syncs named).
 - ACCEPTED GAPS: the sky bracket (ambient, N = 1 only); the books come down every tick while host gameplay is in the loop; the resident path writes no `dbg_T_pre_advect`.
 
+## The device-taken blast source
+- `run_resident_batch(..., div_source_dev=)` (and `ResidentBatch.step(take_sources=)`) hands slot 7 the blast source the applier's SOURCES stage took ON THE CARD: the EOS stage then copies it device to device and does not read the engines' `eos.div_source`. The played tick passes none and uploads as before: a change there is a Class-P change (`.cuda_green` at HEAD), held by every `cuda_s8a_check` leg and `tests/cuda_unit_payloads_check.py`'s HANDOVER (device-taken == uploaded, every tick).
+
 ## Build id
 - Generated at BUILD time on every build, never at configure; the TU is rewritten only when the id changes; in the CPU and the CUDA module alike. `require_snapshot` and `tools/cuda_green.py` compare it with HEAD.
 - `match_replay.build_id()` stays THE describe helper: never a second.

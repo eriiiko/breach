@@ -169,6 +169,15 @@ void tick_end_clears(int n_env, int h, int w,
 // The compiled layout (what simulation.applier.DeviceApplier checks).
 const char* applier_fingerprint();
 
+// #29 P7c.2, TEST-ONLY: the blast's WALK and AIR READ (cuda_unit_blast.cuh)
+// on the env's planes, per env its K queries `q` (N, K, 7: fy, fx, r2,
+// has_approach, ay, ax, mode -- 0 reach_tiles over the open mask with r2, 1
+// blast_air.disc_tiles with the radius r2) serially; `out` (N, K, 3 + 2 M):
+// the tile count, the heat factor, all_one, the first M cells (row-major
+// indices), then their smoke factors. Writes no plane.
+void blast_probe(FieldApplier& a, const UnitTablesDevice& tables, const ApplierPlanes& planes,
+                 const int64_t* q, int K, int M, int64_t* out);
+
 // TEST-ONLY (cuda_topology_probe.cu): the staged list's records read as
 // (y, x, new material) in their first three arg slots: `material = m;
 // on_tile_changed` per record, serially per env; the books into `books_out`

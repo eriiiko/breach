@@ -51,7 +51,27 @@ host execute_payload run 0 times in the twin.
 PART SHIP -- ship_demo's bots match, 500 ticks: slot 2's grenades and 4c
 shadowed (a refused row named), and chained with the refused rows replayed.
 
-PROPERTY: a PAYLOAD record of a disc-path row is ``execute_payload``
+#29 P7c.2 -- THE STRENGTH PATH and every other row (the cut table's P7c.2
+row): the generic explosion's reach walk, air read, start_source and fixed-total
+TILES deposits; the explosive rows' disc air read and noisy scaled smoke; the
+comparison rows' multi-tick source (the blast-source table) and its take
+(slot 7's head, the SOURCES stage, handed to the resident EOS on the card);
+bulk gas through the gas-N seam. Added parts:
+PART WALK -- the reach walk and the air read alone (a test-only probe) on
+random and shipped maps against ``reach_tiles`` / ``disc_tiles`` /
+``read_blast_air``: the tile set AND its order, the heat factor, the smoke
+factors and the all-one test, over walls, gaps, grilles, closed doors, vacuum,
+the map edge, every seed rule, thin air and starved air.
+PART SOURCES -- ``take_source_plane`` over sources' whole lives (start, each
+tick, the last tick, overlapping sources, saturation): the hand-out, the plane,
+the table and its tile side table, the books equal every tick.
+PART HANDOVER -- the resident tick (N = 1 and 2) reading the device-taken
+source (no upload) equal to the played upload path every tick (the field
+digest), the take on the card equal to the host's.
+PART BULK -- bulk gas into open, sealed and blocked tiles, and a deposit
+past int32 refused by name with nothing of it written.
+
+PROPERTY: a PAYLOAD record of ANY payload row is ``execute_payload``
 integer for integer in every stage and at every call site; a refused row
 writes nothing and is refused by name. BREAKS IF a payload row, the disc's
 order or material filter, the wall damage, the stencil's live read, a DISC
@@ -181,6 +201,17 @@ VARIANTS = {
                                   blind_radius_q=6 * ONE + ONE // 2, blind_ticks=40,
                                   blind_away_q=0),
     "payloads.hazmat_release": dict(radius=2, pressure=0.5, wall_damage=40),
+    # #29 P7c.2: the strength path, the sources and bulk gas pushed to their
+    # edges -- a source that saturates S_MAX on one tile, a source that
+    # outlives its tick by many ticks, a frag that blinds, a bulk dump that
+    # overruns its rails
+    "payloads.quad_src_tile": dict(expansion_m3=4000.0),
+    "payloads.div_40": dict(expansion_ticks=40),
+    "payloads.div_80": dict(expansion_ticks=7, expansion_radius=5.5),
+    "payloads.frag_standard": dict(blind_radius=5.0, blind_radius_q=5 * ONE,
+                                   blind_ticks=30, blind_away_q=ONE // 3),
+    "payloads.halon_dump": dict(bulk_temp_q=6000 * ONE),
+    "payloads.o2_store_rupture": dict(bulk_amount_q=40000, bulk_temp_q=-500 * ONE),
 }
 
 
@@ -189,9 +220,13 @@ VARIANTS = {
 # ---------------------------------------------------------------------------
 PLANE_OUTPUTS = tuple("field:" + n for n in applier.PLANE_NAMES)
 BOOKS = ("n_destruction_seed", "ge_retire", "ge_mint", "ge_destroy_seed",
-         "solid_destroy_wall", "tiles_changed")
+         "solid_destroy_wall", "tiles_changed",
+         # #29 P7c.2: the source's saturation, bulk gas' seam channels
+         "div_source_sat_hits", "div_source_cut_q", "ge_payload_bulk_gas",
+         "ge_payload_bulk_gas_rail")
 BOOK_OUTPUTS = tuple("book:" + b for b in BOOKS)
-LIST_OUTPUTS = ("list:edits", "list:claims", "list:noise", "list:blast_log")
+LIST_OUTPUTS = ("list:edits", "list:claims", "list:noise", "list:blast_log",
+                "list:sources", "list:source_tiles")             # #29 P7c.2
 HOST_ONLY = (
     ("render_dirty", "the wall seam's render mark (a blast's destroy; no device form)"),
     ("_sky_mask_dirty", "the sky exchange's lazy-rebuild flag (ambient maps)"),
@@ -200,6 +235,7 @@ HOST_ONLY = (
                       "(list:claims, every claim in order)"),
     ("noise_log", "the noise list: compared as list:noise"),
     ("blast_log", "the blast log: compared as list:blast_log"),
+    ("expansions", "the blast sources: compared as list:sources / list:source_tiles"),
 )
 
 
@@ -221,7 +257,8 @@ def _walk_lists(lists, cells=False):
     return unit_kernels.WalkLists(
         cells=lists.get("spray_cells") if cells else None,
         door=lists["edits"].door, claims=lists["claims"], noise=lists["noise"],
-        blast_log=lists["blast_log"])
+        blast_log=lists["blast_log"], sources=lists.get("sources"),
+        source_tiles=lists.get("source_tiles"))
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +291,8 @@ def _landing(sim, args, kw, caller):
     return caller == "_update_rounds"
 
 
-DET_IN = ("tick", "edit_seq", "list:noise", "list:blast_log")
+DET_IN = ("tick", "edit_seq", "list:noise", "list:blast_log", "list:sources",
+          "list:source_tiles")
 SLOT_2G = DeviceSlot(label="2 grenades", run=_run_2g, events=True,
                      inputs=DET_IN + ("list:grenades",),
                      outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS
@@ -263,7 +301,8 @@ SLOT_9E = DeviceSlot(label="9e(d') planted charges", run=_run_9e, events=True,
                      skip_ok=True, inputs=DET_IN + ("list:charges",),
                      outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS
                      + ("list:charges", "list:payloads"), host_only=HOST_ONLY)
-RES_IN = ("list:effects", "edit_seq", "list:noise", "list:blast_log")
+RES_IN = ("list:effects", "edit_seq", "list:noise", "list:blast_log", "list:sources",
+          "list:source_tiles")
 SLOT_2L = DeviceSlot(label="4c resolve", name="2' landing", run=_run_resolve, events=True,
                      inputs=RES_IN, outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS,
                      host_only=HOST_ONLY, select=_landing)
@@ -362,6 +401,69 @@ def table_reference(sim) -> dict:
                                 for i in range(len(MATERIAL_NAMES))),
         "blast_damage_threshold": int(math.ceil(float(CFG.combat.blast_damage_threshold))),
         "flash_front_q16": int(flash_blind.FRONT_Q16),
+    } | strength_reference(sim)
+
+
+def strength_reference(sim) -> dict:
+    """#29 P7c.2: the strength path's rows, read from the reference objects
+    by the law's own door functions (the every-row gate reads this too)."""
+    import math
+    from config import CFG
+    from simulation import blast_air, blast_expansion as bx, physics, vent_system
+    from simulation import unit_fixed as ufx
+    from simulation.gases import smoke_units_of_soot
+    from simulation import gas_fixed
+    P = list(sim.weapons_tables.payloads.by_name.values())
+    g = sim.gmap
+    gen = [int(p.strength > 0) for p in P]
+    expl = [int(not gn and p.expansion_m3 > 0) for gn, p in zip(gen, P)]
+    ticks = [max(int(p.expansion_ticks), 1) if ex else 1 for ex, p in zip(expl, P)]
+
+    def total(p, gn, ex, tk):
+        if not (gn or ex):
+            return 0
+        dt = 1.0 / float(CFG.clock.ticks_per_second)
+        v = float(g.tile_size_m) ** 2 * float(CFG.physics.water.ceiling_h)
+        return gas_fixed.quantize_q16_scalar(p.expansion_m3 / (tk * v * dt))
+    noise = min(1.0, max(0.0, float(getattr(CFG.physics, "explosion_smoke_noise", 0.85))))
+    s = blast_air.blast_air_settings()
+    from simulation.materials import THERMAL_MASS_UNIT
+    upm = 1.0e6 / (THERMAL_MASS_UNIT * float(g.tile_size_m) ** 2
+                   * float(CFG.physics.water.ceiling_h))
+    return {
+        "payload_generic": tuple(gen),
+        "payload_air_mode": tuple(2 if gn else (1 if p.explosive else 0)
+                                  for gn, p in zip(gen, P)),
+        "payload_air_disc_r": tuple(
+            0 if gn or not p.explosive else
+            int(math.ceil(max(float(max(p.radius, p.heat_radius)), 1.0)))
+            for gn, p in zip(gen, P)),
+        "payload_heat_r2": tuple(int(p.heat_r2) if gn else 0 for gn, p in zip(gen, P)),
+        "payload_source_r2": tuple(
+            int(p.source_r2) if gn else
+            (int(math.ceil(float(p.expansion_radius) ** 2)) if ex else 0)
+            for gn, ex, p in zip(gen, expl, P)),
+        "payload_source_total_q": tuple(total(p, gn, ex, tk)
+                                        for p, gn, ex, tk in zip(P, gen, expl, ticks)),
+        "payload_expansion_live": tuple(expl),
+        "payload_expansion_ticks": tuple(ticks),
+        "payload_smoke_live": tuple(int(bool(p.emit_blast_smoke)) for p in P),
+        "payload_soot_units_q": tuple(
+            gas_fixed.quantize_trace_scalar(smoke_units_of_soot(blast_air.blast_base_soot_g(p)))
+            for p in P),
+        "payload_heat_base_q": tuple(ufx.quantize_scalar(p.heat_mj * upm) if gn else 0
+                                     for gn, p in zip(gen, P)),
+        "payload_bulk_slice": tuple(int(g.gases.name_to_id[p.bulk_gas]) if p.bulk_gas else -1
+                                    for p in P),
+        "payload_bulk_q": tuple(int(p.bulk_amount_q) for p in P),
+        "payload_bulk_radius_q": tuple(ufx.quantize_scalar(float(p.bulk_radius)) for p in P),
+        "payload_bulk_temp_q": tuple(int(p.bulk_temp_q) for p in P),
+        "payload_src_explosion_smoke": int(physics._SRC_EXPLOSION_SMOKE),
+        "blast_smoke_noise_q": (min(ufx.quantize_scalar(noise), ONE) if noise > 0 else 0),
+        "blast_air_q": (s.o2_low_q, s.o2_full_q, s.starved_smoke_q, s.detonation_share_q,
+                        s.p_ext_q, s.p_full_q),
+        "blast_s_max_q": int(bx.S_MAX_Q),
+        "bulk_t_rails": tuple(int(v) for v in vent_system._t_rails_q()),
     }
 
 
@@ -373,7 +475,8 @@ def part_tables():
     as_t = lambda x: tuple(x) if isinstance(x, (tuple, list)) else (x,)  # noqa: E731
     for e, sim in enumerate(sims):
         ref = table_reference(sim)
-        miss = [r.name for r in unit_tables._PAYLOAD_ROWS if r.name not in ref]
+        miss = [r.name for r in unit_tables._PAYLOAD_ROWS + unit_tables._STRENGTH_ROWS
+                if r.name not in ref]
         if miss:
             fail(f"tables: no reference for {miss}")
         for k, v in ref.items():
@@ -432,6 +535,27 @@ def _probe_sim(rng, k, hw=None):
     for y, x in np.argwhere(np.isin(g.material, _BLAST_WALL_MATERIALS)):
         if rng.random() < 0.7:                   # a topology value: low hp
             g.wall_hp[y, x] = int(rng.integers(1, 60 * ONE))
+    # #29 P7c.2: the air read's range -- patches of thin air (the pressure
+    # ramp) and of starved air (the O2 fraction's ramp), a vacuum pocket's
+    # neighbours, a flooded tile (bulk gas' aperture guard). Fixture writes of
+    # the gas and atmosphere planes: both sides read the same state.
+    from simulation.gases import INERT_N2, O2
+    h, w = g.solid.shape
+    for _k in range(int(rng.integers(1, 4))):
+        y0, x0 = int(rng.integers(2, h - 6)), int(rng.integers(2, w - 6))
+        sl = (slice(y0, y0 + int(rng.integers(2, 6))), slice(x0, x0 + int(rng.integers(2, 7))))
+        f = float(rng.choice([0.0, 0.05, 0.2, 0.5, 0.8]))
+        if rng.random() < 0.5:                   # starved: O2 into N2
+            o2 = g.gas[O2][sl].astype(np.int64)
+            moved = (o2 * (1.0 - f)).astype(np.int64)
+            g.gas[O2][sl] = (o2 - moved).astype(np.int32)
+            g.gas[INERT_N2][sl] = (g.gas[INERT_N2][sl].astype(np.int64) + moved).astype(np.int32)
+        else:                                    # thin: the pressure ramp
+            g.atmosphere[sl] = (g.atmosphere[sl].astype(np.int64) * f).astype(np.int32)
+    if rng.random() < 0.5:
+        ty, tx = int(rng.integers(2, h - 2)), int(rng.integers(2, w - 2))
+        if not g.solid[ty, tx]:
+            g.water_depth[ty, tx] = 1 << 14
     open_t = np.argwhere(~g.solid)
     for i in range(int(rng.integers(4, 12))):
         y, x = (int(v) for v in open_t[int(rng.integers(len(open_t)))])
@@ -499,6 +623,10 @@ class ProbeCensus:
 
         def en(q, e):
             c[f"edit: {e.field} {e.region.name}"] += 1
+            if e.noise > 0:
+                c[f"edit: {e.field} {e.region.name} noisy"] += 1
+            if e.scale is not None:
+                c[f"edit: {e.field} {e.region.name} scaled by the air read"] += 1
             return o_en(q, e)
         EditQueue.enqueue = en
         self._saved.append((EditQueue, "enqueue", o_en))
@@ -581,6 +709,70 @@ def _disc_census(c, sim, fy, fx, p):
     return order, {t: (int(g.material[t]), bool(g.solid[t])) for t in order}
 
 
+def _bulk_census_before(sim, fy, fx, p):
+    if not getattr(p, "bulk_gas", ""):
+        return None
+    from simulation.field_edit import Falloff, Region, _iter_region
+    disc = [(r, c) for r, c, _w in _iter_region(Region.DISC, (fy, fx, float(p.bulk_radius)),
+                                                 Falloff.FLAT, sim.gmap.material.shape)]
+    return disc
+
+
+def _strength_census(c, sim, fy, fx, p, approach, sat0, nexp0, bulk_disc):
+    """The strength path's decisions, read AFTER the host call (the mask the
+    walks read is the post-wall-damage one, and nothing later in the call
+    changes it): the seed rule taken, a wall stopping the walk, the air read's
+    outcome, a saturation, a later-ticks source, bulk gas' guard."""
+    from simulation import blast_air, blast_expansion as bx
+    g = sim.gmap
+    generic = p.strength > 0
+    if generic:
+        mask = bx.open_mask(g)
+        h, w = mask.shape
+        seeds = bx.walk_seeds(mask, fy, fx, approach)
+        if 0 <= fy < h and 0 <= fx < w and mask[fy, fx]:
+            c["walk: the open centre seeds"] += 1
+        elif not seeds:
+            c["walk: no seed (nothing reached)"] += 1
+        elif approach is None:
+            c["walk: every open neighbour seeds (no approach)"] += 1
+        elif (max(abs(approach[0] - fy), abs(approach[1] - fx)) == 1
+              and seeds == [(int(approach[0]), int(approach[1]))]):
+            c["walk: the approach tile seeds"] += 1
+        else:
+            c["walk: the open neighbour nearest the approach seeds"] += 1
+        tiles = bx.reach_tiles(mask, fy, fx, p.heat_r2, approach)
+        got = set(tiles)
+        R = int(np.ceil(np.sqrt(p.heat_r2)))
+        if any(0 <= y < h and 0 <= x < w and mask[y, x] and (y - fy) ** 2 + (x - fx) ** 2
+               < p.heat_r2 and (y, x) not in got
+               for y in range(fy - R, fy + R + 1) for x in range(fx - R, fx + R + 1)):
+            c["walk: an open tile in range unreached (a wall stops it)"] += 1
+        air = blast_air.read_blast_air(g, tiles)
+    elif p.explosive:
+        tiles = blast_air.disc_tiles(g, fy, fx, max(p.radius, p.heat_radius))
+        air = blast_air.read_blast_air(g, tiles)
+    else:
+        air = None
+    if air is not None:
+        c["air: every tile reads 1 (no scale plane)" if air.smoke_scale_q16 is None
+          else "air: a scale plane (thin, starved or empty air)"] += 1
+        if air.heat_scale_q16 < blast_air.ONE:
+            c["air: the heat factor below 1"] += 1
+        if tiles and any(int(g.atmosphere[t]) == 0 for t in tiles):
+            c["air: an airless tile read"] += 1
+    if int(g.div_source_sat_hits) > sat0:
+        c["source: a saturation at S_MAX (counted)"] += 1
+    if len(g.expansions) > nexp0:
+        c["expansion: later ticks on the blast-source table"] += 1
+    if bulk_disc is not None:
+        from simulation.vent_system import _aperture_blocked
+        if any(_aperture_blocked(g, r, cc) for r, cc in bulk_disc):
+            c["bulk: an aperture-blocked tile skipped"] += 1
+        if any(not _aperture_blocked(g, r, cc) for r, cc in bulk_disc):
+            c["bulk: open tiles injected"] += 1
+
+
 def _disc_after(c, sim, info):
     from simulation.materials import MAT_AIR
     from simulation.physics import _BLAST_WALL_MATERIALS
@@ -640,6 +832,7 @@ def compare_walk(sims, lists_of, stage, census=None, what="probe"):
         pre.append(dict(
             planes=_planes(sim.gmap), rows=unit_store.pack(sim.units, U),
             noise=unit_kernels.noise_of(sim), blast=unit_kernels.blast_log_of(sim),
+            src=unit_kernels.sources_of(sim), stiles=unit_kernels.source_tiles_of(sim),
             seq=int(sim.edit_queue._seq), nq=len(sim.edit_queue._edits),
             nev=len(sim.tick_events), books=_books(sim.gmap)))
         LS._CLAIM_LOG[id(tick_credit(sim.gmap))] = []
@@ -658,8 +851,12 @@ def compare_walk(sims, lists_of, stage, census=None, what="probe"):
     noise.stage_lists([p["noise"] for p in pre])
     blast = ot.DeviceTable(unit_schema.BLAST_LOG_TABLE, N)
     blast.stage_lists([p["blast"] for p in pre])
+    srcs, stiles = unit_kernels.source_tables(N)
+    srcs.stage_lists([p["src"] for p in pre])
+    stiles.stage_lists([p["stiles"] for p in pre])
     planes = _dev_planes([p["planes"] for p in pre])
-    wl = unit_kernels.WalkLists(door=door, claims=claims, noise=noise, blast_log=blast)
+    wl = unit_kernels.WalkLists(door=door, claims=claims, noise=noise, blast_log=blast,
+                                sources=srcs, source_tiles=stiles)
     _cov, books = unit_kernels.walk_effects(st, dl, planes, stage, ring, wl)
     # the host
     for e, sim in enumerate(sims):
@@ -673,6 +870,7 @@ def compare_walk(sims, lists_of, stage, census=None, what="probe"):
     dev_claims = claims.records()
     dev_noise = noise.records()
     dev_blast = blast.records()
+    dev_src, dev_stiles = srcs.records(), stiles.records()
     for e, sim in enumerate(sims):
         p = pre[e]
         want = unit_store.pack(sim.units, U)
@@ -719,6 +917,12 @@ def compare_walk(sims, lists_of, stage, census=None, what="probe"):
         if [tuple(x) for x in unit_kernels.blast_log_of(sim)] != list(dev_blast[e]):
             fail(f"{what} env {e}: the blast log differs")
             return tot
+        if [tuple(x) for x in unit_kernels.sources_of(sim)] != list(dev_src[e]) or \
+                [tuple(x) for x in unit_kernels.source_tiles_of(sim)] != list(dev_stiles[e]):
+            fail(f"{what} env {e}: the blast-source table differs (host "
+                 f"{unit_kernels.sources_of(sim).tolist()} device {list(dev_src[e])})")
+            return tot
+        tot["sources"] += len(dev_src[e]) - len(p["src"])
         tot["records"] += len(recs[e])
         tot["PAYLOAD"] += sum(1 for r in recs[e] if r[0] == applier.KIND_PAYLOAD)
         tot["events"] += len(hev)
@@ -773,9 +977,12 @@ def _resolve_counting(sim, fx, census):
         if owner_id < 0 and (payload.gas_species or payload.ignite_radius > 0
                              or payload.heat_amount > 0):
             c["claims: the environment's (none)"] += 1
+        sat0, nexp0 = int(sim.gmap.div_source_sat_hits), len(sim.gmap.expansions)
+        bulk0 = _bulk_census_before(sim, fy, fx_, payload)
         r = o_ep(gmap, queue, units, fy, fx_, payload, rng, events=events, kind=kind,
                  owner_id=owner_id, approach=approach)
         _disc_after(c, sim, info)
+        _strength_census(c, sim, fy, fx_, payload, approach, sat0, nexp0, bulk0)
         if payload.unit_damage > 0 and payload.blind_radius_q > 0:
             from simulation import flash_blind, unit_fixed
             r_t = (payload.blind_radius_q >> 16) + 1
@@ -816,6 +1023,15 @@ def _payload_call(sim, rng, names, k):
     owner = -1 if rng.random() < 0.25 else int(rng.choice(ids))
     kind = applier.PAYLOAD_KINDS[int(rng.integers(len(applier.PAYLOAD_KINDS)))]
     appr = None if rng.random() < 0.3 else (fy - 1, fx)
+    # #29 P7c.2: a charge on a wall (the walk's seed rule), from a side next to
+    # it or from a planter further off
+    if rng.random() < 0.25:
+        walls = np.argwhere(sim.gmap.solid[1:h - 1, 1:w - 1]) + 1
+        if len(walls):
+            fy, fx = (int(v) for v in walls[int(rng.integers(len(walls)))])
+            d = [(-1, 0), (1, 0), (0, -1), (0, 1), (1, 1), (-1, 1)][int(rng.integers(6))]
+            k = int(rng.choice([1, 1, 3]))
+            appr = None if rng.random() < 0.2 else (fy + k * d[0], fx + k * d[1])
     args = (sim.gmap, sim.edit_queue, sim.units, fy, fx, pl, sim.draws)
     return ("payload", args, dict(events=sim.tick_events, kind=kind, owner_id=owner,
                                   approach=appr))
@@ -851,6 +1067,20 @@ PROBE_BRANCHES = (
     "emit_gas", "ignite_ring", "deposit_heat", "claims: the environment's (none)",
     "edit: atmosphere DISC", "edit: smoke DISC", "edit: wave_source TILE",
     "edit: gas DISC", "edit: fire DISC", "edit: heat DISC",
+    # #29 P7c.2: the strength path, the air read, the source, bulk gas
+    "walk: the open centre seeds", "walk: no seed (nothing reached)",
+    "walk: every open neighbour seeds (no approach)", "walk: the approach tile seeds",
+    "walk: the open neighbour nearest the approach seeds",
+    "walk: an open tile in range unreached (a wall stops it)",
+    "air: every tile reads 1 (no scale plane)",
+    "air: a scale plane (thin, starved or empty air)", "air: the heat factor below 1",
+    "air: an airless tile read",
+    "source: a saturation at S_MAX (counted)",
+    "expansion: later ticks on the blast-source table",
+    "bulk: an aperture-blocked tile skipped", "bulk: open tiles injected",
+    "edit: smoke TILES", "edit: heat TILES", "edit: smoke TILES noisy",
+    "edit: smoke TILES scaled by the air read", "edit: smoke DISC noisy",
+    "edit: smoke DISC scaled by the air read",
 )
 PROBE_UNREACHABLE = {
     "flash: under one tick":
@@ -977,10 +1207,38 @@ ROW_SETS = {
 #: The noise-only row of set V (radius 0, nothing but its loudness).
 NOISE_ONLY = {"payloads.studio_ignite": dict(heat_amount=0.0, heat_radius=0.0)}
 
+#: #29 P7c.2: the rows P7c.1 refused (the strength path, bulk gas, the
+#: explosive rows, the comparison rows), each through every call site: the 6
+#: hand-grenade kinds and the 3 firing weapons' rounds (both shell sites) take
+#: them in turn over nine sets, the charges every row a set maps; Z6's
+#: scripted charges carry demo_c4 (a strength row) and demo_breach (a bulk-gas
+#: row).
+P7C2_ROWS = ("frag_standard", "breach_focus", "demolition_c4", "magazine_cookoff",
+             "engine_death", "frag_heat", "frag_hot_mass", "quad_tile", "quad_r3",
+             "quad_r5", "quad_slow", "div_40", "div_80", "div_40_puff", "div_40_s50",
+             "div_40_s25", "div_40_s10", "quad_src_tile", "quad_src_r5", "quad_src_slow",
+             "studio_small", "studio_medium", "studio_large", "studio_hull",
+             "o2_store_rupture", "halon_dump")
+_GRENADES = ("grenade_frag", "grenade_smoke", "grenade_tear", "grenade_poison",
+             "grenade_flash", "grenade_incendiary")
+_SHELLS = ("plasma_standard", "plasma_heavy", "40mm_frag")
+_STRENGTHS = ("frag_standard", "breach_focus", "demolition_c4", "magazine_cookoff",
+              "engine_death")
+for _k in range(9):
+    _R = P7C2_ROWS
+    _m = {a: _R[(6 * _k + i) % len(_R)] for i, a in enumerate(_GRENADES)}
+    _m.update({a: _R[(3 * _k + i) % len(_R)] for i, a in enumerate(_SHELLS)})
+    _m["demo_c4"] = _STRENGTHS[_k % len(_STRENGTHS)]
+    _m["demo_breach"] = ("o2_store_rupture", "halon_dump")[_k % 2]
+    _m["40mm_smoke"], _m["40mm_tear"] = "div_40", "div_80"     # two long sources, side by side
+    ROW_SETS[f"S{_k}"] = _m
+#: the sets whose rows carry the strength variants (VARIANTS' P7c.2 rows)
+STRENGTH_SETS = tuple(f"S{_k}" for _k in range(9))
+
 
 def row_set(name):
     ch = {f"ammo.{a}": {"payload": p} for a, p in ROW_SETS[name].items()}
-    if name == "V":
+    if name == "V" or name in STRENGTH_SETS:
         ch.update(VARIANTS)
         ch.update(NOISE_ONLY)
     return Rows(ch)
@@ -1001,6 +1259,13 @@ def _scene_level(variant, tile_m=1.0):
     tm[31, 3:54:7] = MAT_GLASS                   # non-blast solids in the discs
     tm[31, 6:54:9] = MAT_STEEL
     tm[16:19, 76] = MAT_WOOD                     # beside the corpse-skip group
+    # #29 P7c.2: a vacuum pocket (a blast in vacuum; bulk gas against a blocked
+    # aperture), a sealed room (bulk gas with nowhere to go)
+    tm[34:38, 88:94] = SPACE
+    tm[4, 86:97] = MAT_HULL
+    tm[10, 86:97] = MAT_HULL
+    tm[4:11, 86] = MAT_HULL
+    tm[4:11, 96] = MAT_HULL
     return LevelData(name=f"p7c1_scene{variant}", version="3", path=Path("."),
                      tilemap=tm, tile_size_m=tile_m, diffuse_path=Path("."),
                      boundary="space")
@@ -1033,6 +1298,7 @@ class PayloadScene:
         for i in range(variant % 3):
             self._add(f"by{i}", 40 + 3 * i, 12, facing=SOUTH, hp=1.0e6)
         self._setup()
+        self._sources_alive = 0
 
     def _add(self, name, x, y, team=0, facing=EAST, weapon="k5_carbine", hp=1.0e6):
         from simulation.turning import place
@@ -1108,6 +1374,18 @@ class PayloadScene:
         if k == s + 30:                                # the other kinds at the same spots
             for i in range(self.n_kinds):
                 self._throw(w[f"T{i}"], (i + 3) % self.n_kinds, 14, 12)
+        if k == 0:                                     # #29 P7c.2: a starved patch
+            from simulation.gases import INERT_N2, O2    # (O2 moved into N2: the
+            g = sim.gmap                                 # bulk, so the energy, kept)
+            sl = (slice(21, 25), slice(86, 96))
+            o2 = g.gas[O2][sl].astype(np.int64)
+            mv = (o2 * 9) // 10
+            g.gas[O2][sl] = (o2 - mv).astype(np.int32)
+            g.gas[INERT_N2][sl] = (g.gas[INERT_N2][sl].astype(np.int64) + mv).astype(np.int32)
+        if k == s + 8 and self.set in STRENGTH_SETS:   # Z6: the scripted charges
+            for (x, y, am) in ((88, 35, "demo_c4"), (90, 23, "demo_c4"), (91, 7, "demo_breach"),
+                               (90, 33, "demo_breach"), (89, 7, "demo_c4")):
+                self._lay(am, x, y, sim.tick + 2 + (x % 3), w["T0"].id)
         if k == 0:                                     # a topology fixture: the blast
             g = sim.gmap                               # walls of the long wall weak
             from simulation.physics import _BLAST_WALL_MATERIALS
@@ -1236,9 +1514,11 @@ class SceneCensus:
         if prev and any(id(u) in killed and abs(u.center_tile_x() - fx) <= r
                         and abs(u.center_tile_y() - fy) <= r for u in units):
             c["order: a later detonation meets a unit an earlier one killed"] += 1
+        nexp0 = len(gmap.expansions)
         res = orig(gmap, queue, units, fy, fx, payload, rng, **kw)
         gone = {(int(y), int(x)) for y, x in np.argwhere((mat0 != 0) & (gmap.material == 0))}
         dead = {id(u) for u in units if alive0.get(id(u)) and not u.alive}
+        self._strength(site, gmap, fy, fx, payload, kw.get("approach"), gone, dead, nexp0)
         prev.append((gone, dead))
         if gone:
             c["disc: walls destroyed by a blast"] += 1
@@ -1258,9 +1538,64 @@ class SceneCensus:
             c["blast log: a disc logged"] += 1
         return res
 
+    def _strength(self, site, g, fy, fx, p, approach, gone, dead, nexp0):
+        """#29 P7c.2: the strength path's situations, read after the call
+        (the walks read the post-wall-damage mask, which nothing later in the
+        call changes)."""
+        from simulation import blast_air, blast_expansion as bx
+        c = self.c
+        if p.strength > 0:
+            mask = bx.open_mask(g)
+            depth = bx.reach_depth(mask, fy, fx, p.heat_r2, approach)
+            tiles = sorted(depth)
+            if p.name == "frag_standard" and site == "grenade" and dead:
+                c["frag: the shipped frag thrown by a unit kills"] += 1
+            if any(d > abs(y - fy) + abs(x - fx) + 2 for (y, x), d in depth.items()):
+                c["walk: a tile reached the long way round (through a gap)"] += 1
+            h, w = mask.shape
+            R = int(np.ceil(np.sqrt(p.heat_r2)))
+            if any(0 <= y < h and 0 <= x < w and mask[y, x] and (y, x) not in depth
+                   and (y - fy) ** 2 + (x - fx) ** 2 < p.heat_r2
+                   for y in range(fy - R, fy + R + 1) for x in range(fx - R, fx + R + 1)):
+                c["walk: a wall stops it (an open tile in range unreached)"] += 1
+            if gone and any(t in depth for t in gone):
+                c["walk: a blast breaks its own containment (walks a tile it destroyed)"] += 1
+            if not tiles:
+                c["walk: nothing reached (a blast in vacuum)"] += 1
+            air = blast_air.read_blast_air(g, tiles)
+            if air.heat_scale_q16 < blast_air.ONE:
+                c["air: a strength blast in thin air (heat factor below 1)"] += 1
+            if air.smoke_scale_q16 is not None and any(
+                    int(air.smoke_scale_q16[t]) > blast_air.ONE for t in tiles):
+                c["air: a strength blast in starved air (more smoke)"] += 1
+            if air.smoke_scale_q16 is None:
+                c["air: a strength blast in normal air (no scale plane)"] += 1
+        elif p.explosive:
+            c["air: an explosive row reads its disc"] += 1
+        if len(g.expansions) > nexp0:
+            c["expansion: a source with later ticks started"] += 1
+        if getattr(p, "bulk_gas", ""):
+            from simulation.field_edit import Falloff, Region, _iter_region
+            from simulation.vent_system import _aperture_blocked
+            disc = [(r, cc) for r, cc, _w in _iter_region(
+                Region.DISC, (fy, fx, float(p.bulk_radius)), Falloff.FLAT, g.material.shape)]
+            if any(_aperture_blocked(g, r, cc) for r, cc in disc):
+                c["bulk: against a blocked aperture (tiles skipped)"] += 1
+            if 5 <= fy <= 9 and 87 <= fx <= 95:
+                c["bulk: into the sealed room"] += 1
+
     def after_tick(self, sim):
         from simulation.events import UnitKilledEvent
         self.tick_calls.pop(id(sim.gmap), None)
+        ex = sim.gmap.expansions
+        if len(ex) >= 2:
+            sets = [set(map(tuple, e[0])) for e in ex]
+            if any(sets[i] & sets[j] for i in range(len(sets)) for j in range(i + 1, len(sets))):
+                self.c["sources: two alive at once, overlapping"] += 1
+        live = getattr(self, "_alive_run", 0) + 1 if ex else 0
+        self._alive_run = live
+        if live >= 30:
+            self.c["sources: a source alive 30 ticks after its blast (the solver between)"] += 1
         for ev in sim.tick_events:
             if isinstance(ev, UnitKilledEvent) and ev.killed_by in ("heat", "poison_gas",
                                                                      "poisoned", "burning") \
@@ -1268,6 +1603,21 @@ class SceneCensus:
                 self.c[f"claims: a {ev.killed_by} kill credited to a payload's owner"] += 1
 
 
+#: #29 P7c.2: the strength path's situations (required in the STRENGTH sets)
+STRENGTH_BRANCHES = (
+    "frag: the shipped frag thrown by a unit kills",
+    "walk: a tile reached the long way round (through a gap)",
+    "walk: a wall stops it (an open tile in range unreached)",
+    "walk: a blast breaks its own containment (walks a tile it destroyed)",
+    "air: a strength blast in thin air (heat factor below 1)",
+    "air: a strength blast in starved air (more smoke)",
+    "air: a strength blast in normal air (no scale plane)",
+    "air: an explosive row reads its disc",
+    "expansion: a source with later ticks started",
+    "sources: two alive at once, overlapping",
+    "sources: a source alive 30 ticks after its blast (the solver between)",
+    "bulk: against a blocked aperture (tiles skipped)", "bulk: into the sealed room",
+)
 SCENE_BRANCHES = (
     "order: a later detonation's disc holds a tile an earlier one destroyed",
     "order: a later detonation meets a unit an earlier one killed",
@@ -1352,10 +1702,10 @@ def part_scene():
         if FAILS:
             return
     c = census.c
-    miss = [b for b in SCENE_BRANCHES if not c[b]]
+    miss = [b for b in SCENE_BRANCHES + STRENGTH_BRANCHES if not c[b]]
     if not any(k.startswith("claims: ") for k in c):
         miss.append("claims: a kill credited to a payload's owner")
-    want = {(s, r) for s in SITES for r in applied_rows()}
+    want = {(s, r) for s in SITES for r in applied_rows()}     # #29 P7c.2: every row
     gaps = sorted(want - census.pairs)
     if gaps:
         fail(f"scene: (call site, row) pairs never detonated {gaps}")
@@ -1378,9 +1728,10 @@ def part_batch():
 # ---------------------------------------------------------------------------
 # PADDING / OVERFLOW / REFUSE (synthetic lists through compare_walk's pieces)
 # ---------------------------------------------------------------------------
-def _device_walk(sims, recs, stage, caps=None, garbage=False):
+def _device_walk(sims, recs, stage, caps=None, garbage=False, keep=None):
     """The device side of a walk alone: returns (store, planes, books, the
-    lists) or raises what the walk raises."""
+    lists) or raises what the walk raises (``keep``, a dict, receives the
+    device state before the walk raises)."""
     caps = caps or {}
     N = len(sims)
     U = max(len(s.units) for s in sims) + (2 if garbage else 0)
@@ -1405,11 +1756,26 @@ def _device_walk(sims, recs, stage, caps=None, garbage=False):
     noise.begin()
     blast = ot.DeviceTable(unit_schema.BLAST_LOG_TABLE, N, cap=caps.get("blast"))
     blast.begin()
+    srcs = ot.DeviceTable(unit_schema.SOURCE_TABLE, N, cap=caps.get("sources"))
+    stl = ot.DeviceTable(unit_schema.SOURCE_TILE_TABLE, N, cap=caps.get("source_tiles"))
+    srcs.stage_lists([unit_kernels.sources_of(s) for s in sims])
+    stl.stage_lists([unit_kernels.source_tiles_of(s) for s in sims])
+    if garbage:                          # junk past the tables' counts
+        for t in (srcs, stl):
+            rows, cnt, _ov = t.download()
+            rows = np.array(rows, copy=True)
+            for e in range(N):
+                rows[e, int(cnt[e]):] = 5
+            t.upload(rows, cnt)
     planes = _dev_planes([_planes(s.gmap) for s in sims])
     wl = unit_kernels.WalkLists(door=None if caps.get("no_door") else door, claims=claims,
-                                noise=noise, blast_log=blast)
+                                noise=noise, blast_log=blast,
+                                sources=None if caps.get("no_sources") else srcs,
+                                source_tiles=None if caps.get("no_sources") else stl)
     out = dict(store=st, planes=planes, ring=ring, door=door, claims=claims, noise=noise,
-               blast=blast, dl=dl)
+               blast=blast, dl=dl, sources=srcs, source_tiles=stl)
+    if keep is not None:
+        keep.update(out)
     _cov, books = unit_kernels.walk_effects(st, dl, planes, stage, ring, wl)
     out["books"] = books
     return out
@@ -1433,8 +1799,9 @@ def part_padding():
     sims = [_probe_sim(rng, 7000 + e, (26, 36)) for e in range(3)]
     share_tables(sims)
     with Rows(VARIANTS):
-        names = ["plasma_splash_small", "plasma_splash_large", "studio_smoke"]
-        recs = [_recs_for(s, names, rng, 2 + e) for e, s in enumerate(sims)]
+        names = ["plasma_splash_small", "plasma_splash_large", "studio_smoke", "div_40",
+                 "frag_standard", "studio_medium", "halon_dump"]
+        recs = [_recs_for(s, names, rng, 4 + e) for e, s in enumerate(sims)]
         clean = _device_walk(sims, recs, applier.STAGE_DETONATE)
         dirty = _device_walk(sims, recs, applier.STAGE_DETONATE, garbage=True)
     U = max(len(s.units) for s in sims)
@@ -1446,7 +1813,7 @@ def part_padding():
             fail(f"padding env {e}: a valid row differs beside garbage padding rows")
         if not (b[e, n:, :lay.valid] == 7).all():
             fail(f"padding env {e}: a padding row was written")
-    for nm in ("ring", "door", "claims", "noise", "blast"):
+    for nm in ("ring", "door", "claims", "noise", "blast", "sources", "source_tiles"):
         x, y = clean[nm], dirty[nm]
         xr = x.records() if nm != "door" else [(r[0].tolist(), r[1].tolist()) for r in x.rows()]
         yr = y.records() if nm != "door" else [(r[0].tolist(), r[1].tolist()) for r in y.rows()]
@@ -1473,14 +1840,17 @@ def part_overflow():
         u.current_hp = 500.0
     share_tables(sims)
     with Rows(VARIANTS):
-        names = ["plasma_splash_large", "studio_smoke", "incendiary_splash"]
-        recs = [_recs_for(sims[0], names, rng, 3)]
+        names = ["plasma_splash_large", "studio_smoke", "incendiary_splash", "div_40",
+                 "frag_standard"]
+        recs = [_recs_for(sims[0], names, rng, 5)]
         full = _device_walk(sims, recs, applier.STAGE_DETONATE)
         sizes = dict(edits=len(full["door"].rows()[0][0]), tiles=len(full["door"].rows()[0][1]),
                      claims=len(full["claims"].records()[0]),
                      noise=len(full["noise"].records()[0]),
                      blast=len(full["blast"].records()[0]),
-                     ring=len(full["ring"].records()[0]))
+                     ring=len(full["ring"].records()[0]),
+                     sources=len(full["sources"].records()[0]),
+                     source_tiles=len(full["source_tiles"].records()[0]))
         if min(sizes.values()) < 1:
             fail(f"overflow: a list the scene never writes {sizes}")
             return
@@ -1488,7 +1858,9 @@ def part_overflow():
                         ("claims", attack_lists.ListOverflow),
                         ("noise", ot.ObjectTableOverflow),
                         ("blast", ot.ObjectTableOverflow),
-                        ("ring", unit_kernels.UnitEventOverflow)):
+                        ("ring", unit_kernels.UnitEventOverflow),
+                        ("sources", ot.ObjectTableOverflow),
+                        ("source_tiles", ot.ObjectTableOverflow)):
             try:
                 _device_walk(sims, recs, applier.STAGE_DETONATE, caps={nm: sizes[nm] - 1})
                 fail(f"overflow: the {nm} one short was not refused")
@@ -1501,63 +1873,44 @@ def part_overflow():
 
 
 def part_refuse():
+    """#29 P7c.2: REFUSE is EMPTY for the payload table -- every row is applied
+    (a property over the table, not a pinned list: a row added later is held
+    by it too), each row walked alone writes what the host writes (PART PROBE
+    compares that); and the walk's own refusals still hold by name: a PAYLOAD
+    without its door faults, a comparison row of more than one tick without
+    the blast-source tables faults, nothing written."""
+    from simulation.weapons import get_tables
     rng = np.random.default_rng(77)
     sims = [_probe_sim(rng, 9000)]
     share_tables(sims)
+    tab = get_tables().payloads.by_name
+    refused = [n for n, p in tab.items() if applier.payload_refusal(p)]
+    if refused or applier.PAYLOAD_REFUSALS:
+        fail(f"refuse: rows still refused {refused} / codes {applier.PAYLOAD_REFUSALS}")
     n = 0
-    for name, code in sorted(refused_rows().items()):
-        recs = [_recs_for(sims[0], [name], rng, 1)]
-        before = _planes(sims[0].gmap)
-        try:
-            out = _device_walk(sims, recs, applier.STAGE_DETONATE)
-            fail(f"refuse: {name} was applied")
-            continue
-        except applier.EffectRefused as ex:
-            reason = applier.PAYLOAD_REFUSALS[code - 1][1]
-            if name not in str(ex) or reason not in str(ex):
-                fail(f"refuse: the refusal of {name} names neither it nor {reason}: {ex}")
-            n += 1
-        _ = before
-    # nothing written by a refused row: the walk with refused_ok
-    recs = [_recs_for(sims[0], ["frag_standard", "o2_store_rupture", "frag_heat"], rng, 3)]
-    N, U = 1, len(sims[0].units)
-    st = unit_store.DeviceStore(N, U, tables=unit_tables.values_batch(sims))
-    rows = unit_store.pack(sims[0].units, U)[None]
-    st.upload(rows)
-    ring = unit_events.EventRing(N, U)
-    ring.begin()
-    dl = applier.DeviceApplier(N, n_units=U)
-    dl.stage_lists(recs)
-    door = edit_door.DeviceEditDoor(N)
-    door.begin()
-    claims = attack_lists.claims_list(N)
-    claims.begin()
-    noise = ot.DeviceTable(unit_schema.NOISE_TABLE, N)
-    noise.begin()
-    blast = ot.DeviceTable(unit_schema.BLAST_LOG_TABLE, N)
-    blast.begin()
-    planes = _dev_planes([_planes(sims[0].gmap)])
-    p0 = {k: v.get().copy() for k, v in planes.items()}
-    _c, books = unit_kernels.walk_effects(st, dl, planes, applier.STAGE_DETONATE, ring,
-                                          unit_kernels.WalkLists(door=door, claims=claims,
-                                                                 noise=noise, blast_log=blast),
-                                          refused_ok=True)
-    wrote = [k for k, v in planes.items() if not np.array_equal(v.get(), p0[k])]
-    if wrote or not np.array_equal(st.download(), rows) or door.rows()[0][0].size \
-            or claims.records()[0] or noise.records()[0] or blast.records()[0] \
-            or ring.records()[0] or int(books["refused"][0]) != 3:
-        fail(f"refuse: a refused row wrote something (planes {wrote}, books {books})")
-    # a PAYLOAD without its lists faults, nothing written
     with Rows(VARIANTS):
-        recs = [_recs_for(sims[0], ["plasma_splash_small"], rng, 1)]
-        try:
-            _device_walk(sims, recs, applier.STAGE_DETONATE, caps={"no_door": True})
-            fail("refuse: a PAYLOAD without the edit door was applied")
-        except applier.ApplierFault:
+        for name in tab:
+            recs = [_recs_for(sims[0], [name], rng, 1)]
+            out = _device_walk(sims, recs, applier.STAGE_DETONATE)
+            if int(out["books"]["refused"][0]) or int(out["books"]["applied"][0]) != 1:
+                fail(f"refuse: {name} was not applied ({ {k: int(v[0]) for k, v in out['books'].items() if v[0]} })")
             n += 1
-    print(f"refuse: {n - 1} refused rows each refused by name with its reason "
-          f"({sorted(set(refused_rows().values()))} codes); three refused records wrote "
-          f"nothing (refused = 3); a PAYLOAD without its door faulted")
+        for caps, what, rows in (({"no_door": True}, "the edit door", ["plasma_splash_small"]),
+                                 ({"no_sources": True}, "the blast-source tables", ["div_40"])):
+            recs = [_recs_for(sims[0], rows, rng, 1)]
+            keep = {}
+            p0 = _planes(sims[0].gmap)
+            try:
+                _device_walk(sims, recs, applier.STAGE_DETONATE, caps=caps, keep=keep)
+                fail(f"refuse: a PAYLOAD without {what} was applied")
+            except applier.ApplierFault:
+                n += 1
+            wrote = [k for k, v in keep["planes"].items() if not np.array_equal(v.get()[0], p0[k])]
+            if wrote:
+                fail(f"refuse: a PAYLOAD without {what} wrote {wrote}")
+    print(f"refuse: every one of the {len(tab)} payload rows applied (refused 0, applied 1 "
+          f"each); a PAYLOAD without its door and a multi-tick source without its tables "
+          f"faulted with nothing written ({n} checks)")
 
 
 # ---------------------------------------------------------------------------
@@ -1676,6 +2029,13 @@ def chained_run(name, slots, set_name, ticks=CHAIN_TICKS, driver=PayloadScene,
                         fail(f"chained {name}: the noise / blast log left the reference "
                              f"at tick {twin.sim.tick}")
                         break
+                    # #29 P7c.2: the blast sources, the pending plane
+                    if _sources_state(twin.sim) != _sources_state(ref.sim):
+                        fail(f"chained {name}: the blast sources left the reference at tick "
+                             f"{twin.sim.tick}")
+                        break
+                    if twin.sim.gmap.expansions:
+                        holder["src_ticks"] = holder.get("src_ticks", 0) + 1
         finally:
             for cont, attr, o in taps + saved:
                 setattr(cont, attr, o)
@@ -1686,19 +2046,35 @@ def chained_run(name, slots, set_name, ticks=CHAIN_TICKS, driver=PayloadScene,
             for r in x.get(nm, ()):
                 recs[applier.KINDS[r[0] - 1]] += 1
     print(f"chained {name}: {n} ticks, the twin equal to the reference every tick ({ch.runs} "
-          f"chain runs; records walked {dict(recs)}); host execute_payload calls in the "
-          f"twin {dict(calls) or 0} ({time.perf_counter() - t0:.0f} s)")
+          f"chain runs; records walked {dict(recs)}; ticks with a blast source alive "
+          f"{holder.get('src_ticks', 0)}); host execute_payload calls in the twin "
+          f"{dict(calls) or 0} ({time.perf_counter() - t0:.0f} s)")
     return n, ch, recs, calls
+
+
+#: The row sets the chained runs play (#29 P7c.2: the disc path's variants,
+#: then two strength sets: every P7c.2 row family, sources living 40 ticks).
+CHAIN_SETS = tuple(os.environ.get("UNIT_PAYLOADS_CHAIN_SETS", "V,S0,S4").split(","))
+
+
+def _sources_state(sim):
+    g = sim.gmap
+    return ([[list(map(tuple, e[0])), int(e[1]), int(e[2])] for e in g.expansions],
+            g.div_source.tobytes(), int(g.div_source_sat_hits), int(g.div_source_cut_q))
 
 
 def part_chained():
     from cuda_unit_shooting_check import SLOT_2R, SLOT_4, SLOT_4A
     from cuda_unit_sprays_check import SLOT_4B
-    for name, slots, set_name, site in (
-            ("2 grenades", [_det_slot(SLOT_2G)], "V", "2 grenades"),
-            ("2' + landing", [SLOT_2R, SLOT_2L], "V", "2' landing"),
-            ("4 + 4a + 4b + 4c", [SLOT_4, SLOT_4A, SLOT_4B, SLOT_4C], "V", "4c resolve"),
-            ("9e(d')", [_det_slot(SLOT_9E)], "V", "9e(d')")):
+    runs = []
+    for set_name in CHAIN_SETS:                  # #29 P7c.2: the strength sets too
+        runs += [
+            (f"2 grenades [{set_name}]", [_det_slot(SLOT_2G)], set_name, "2 grenades"),
+            (f"2' + landing [{set_name}]", [SLOT_2R, SLOT_2L], set_name, "2' landing"),
+            (f"4 + 4a + 4b + 4c [{set_name}]", [SLOT_4, SLOT_4A, SLOT_4B, SLOT_4C], set_name,
+             "4c resolve"),
+            (f"9e(d') [{set_name}]", [_det_slot(SLOT_9E)], set_name, "9e(d')")]
+    for name, slots, set_name, site in runs:
         n, ch, recs, calls = chained_run(name, slots, set_name)
         if FAILS:
             return
@@ -1718,18 +2094,20 @@ def part_ship():
     d = ShipDriver()
     share_tables([d.sim])
     census = SceneCensus()
-    try:
-        run_lockstep("ship (2 + 2' landing + 4c)", [d], [SLOT_2G, SLOT_2L, SLOT_4C],
-                     SHIP_TICKS, census)
-    except (applier.EffectRefused, edit_door.DoorInterleave) as ex:
-        # a refused row's host call (the frag: a strength row) enqueues edits the
-        # door does not own: the shadow stops there BY NAME
-        print(f"ship: the shadow stopped at tick {d.sim.tick} on a refused row: "
-              f"{type(ex).__name__}: {str(ex)[:160]}")
-    print(f"ship: detonations seen {sorted(census.pairs)}")
-    n, ch, recs, calls = chained_run("ship 2 grenades (refused rows replayed)",
+    run_lockstep("ship (2 + 2' landing + 4c)", [d], [SLOT_2G, SLOT_2L, SLOT_4C],
+                 SHIP_TICKS, census)
+    if FAILS:
+        return
+    print(f"ship: detonations seen {sorted(census.pairs)} (#29 P7c.2: the bots' frag on "
+          f"the card, the shadow to the end)")
+    if ("grenade", "frag_standard") not in census.pairs:
+        fail("ship: the bots threw no frag in the shadowed ticks (vacuous)")
+    n, ch, recs, calls = chained_run("ship 2 grenades (no replay)",
                                      [_det_slot(SLOT_2G)], None, SHIP_TICKS,
-                                     driver=ShipDriver, replay_refused=True)
+                                     driver=ShipDriver, replay_refused=False)
+    if calls.get("2 grenades"):
+        fail(f"ship: the host execute_payload ran {calls['2 grenades']} time(s) in the "
+             f"chained slot")
     pc = applier.kind_field("PAYLOAD", "payload")
     from simulation.weapons import get_tables
     names = list(get_tables().payloads.by_name)
@@ -1742,10 +2120,459 @@ def part_ship():
 
 
 # ---------------------------------------------------------------------------
+# #29 P7c.2: PART WALK -- the reach walk and the air read alone (a probe)
+# ---------------------------------------------------------------------------
+WALK_TRIALS = int(os.environ.get("UNIT_PAYLOADS_WALK_TRIALS", "24"))
+WALK_M = 512
+
+
+def _walk_queries(rng, sim, k):
+    """k queries on one map: centres open, on walls, in vacuum, on and past
+    the edge; r2 over the shipped and raised walks; every approach form."""
+    g = sim.gmap
+    h, w = g.solid.shape
+    out = []
+    solid = np.argwhere(g.solid)
+    vac = np.argwhere(g.is_vacuum)
+    opn = np.argwhere(~g.solid & ~g.is_vacuum)
+    for j in range(k):
+        roll = rng.random()
+        if roll < 0.45 and len(opn):
+            fy, fx = (int(v) for v in opn[int(rng.integers(len(opn)))])
+        elif roll < 0.75 and len(solid):
+            fy, fx = (int(v) for v in solid[int(rng.integers(len(solid)))])
+        elif roll < 0.85 and len(vac):
+            fy, fx = (int(v) for v in vac[int(rng.integers(len(vac)))])
+        else:
+            fy, fx = int(rng.integers(-2, h + 2)), int(rng.integers(-2, w + 2))
+        mode = 1 if rng.random() < 0.25 else 0
+        if mode == 0:
+            r2 = int(rng.choice([1, 2, 4, 9, 16, 25, 36, 50, 64]))
+            a = rng.random()
+            if a < 0.3:
+                appr = None
+            elif a < 0.65:
+                d = [(-1, 0), (1, 0), (0, -1), (0, 1), (1, 1), (-1, -1)][int(rng.integers(6))]
+                appr = (fy + d[0], fx + d[1])
+            else:
+                appr = (fy + int(rng.integers(-4, 5)), fx + int(rng.integers(-4, 5)))
+        else:
+            r2, appr = int(rng.integers(1, 8)), None
+        out.append((fy, fx, r2, appr, mode))
+    return out
+
+
+def _walk_ref(sim, q):
+    """(cells, heat, all_one, smoke factors) of a query by the reference."""
+    from simulation import blast_air, blast_expansion as bx
+    g = sim.gmap
+    fy, fx, r2, appr, mode = q
+    if mode == 0:
+        tiles = bx.reach_tiles(bx.open_mask(g), fy, fx, r2, appr)
+    else:
+        tiles = blast_air.disc_tiles(g, fy, fx, float(r2))
+    air = blast_air.read_blast_air(g, tiles)
+    w = g.solid.shape[1]
+    sm = [ONE if air.smoke_scale_q16 is None else int(air.smoke_scale_q16[t]) for t in tiles]
+    return [y * w + x for y, x in tiles], int(air.heat_scale_q16), air.smoke_scale_q16 is None, sm
+
+
+def _walk_census(c, sim, q, ref):
+    from simulation import blast_expansion as bx
+    g = sim.gmap
+    fy, fx, r2, appr, mode = q
+    cells, heat, one, sm = ref
+    h, w = g.solid.shape
+    if mode == 1:
+        c["disc air: read"] += 1
+        return
+    mask = bx.open_mask(g)
+    inside = 0 <= fy < h and 0 <= fx < w
+    seeds = bx.walk_seeds(mask, fy, fx, appr)
+    if inside and mask[fy, fx]:
+        c["walk: the open centre seeds"] += 1
+    elif not seeds:
+        c["walk: no seed"] += 1
+    elif appr is None:
+        c["walk: every open neighbour seeds"] += 1
+    elif len(seeds) == 1 and tuple(seeds[0]) == tuple(appr):
+        c["walk: the approach tile seeds"] += 1
+    else:
+        c["walk: the neighbour nearest the approach seeds"] += 1
+    if not inside:
+        c["walk: a centre off the grid"] += 1
+    if inside and g.is_vacuum[fy, fx]:
+        c["walk: a centre in vacuum"] += 1
+    if cells and any(cy in (0, h - 1) or cx in (0, w - 1)
+                     for cy, cx in (divmod(t, w) for t in cells)):
+        c["walk: reaches the map edge"] += 1
+    depth = bx.reach_depth(mask, fy, fx, r2, appr)
+    if any(d > abs(y - fy) + abs(x - fx) + 2 for (y, x), d in depth.items()):
+        c["walk: the long way round (a gap)"] += 1
+    R = int(np.ceil(np.sqrt(r2)))
+    if any(0 <= y < h and 0 <= x < w and mask[y, x] and (y, x) not in depth
+           and (y - fy) ** 2 + (x - fx) ** 2 < r2
+           for y in range(fy - R, fy + R + 1) for x in range(fx - R, fx + R + 1)):
+        c["walk: a wall stops it"] += 1
+    if any(g.material[divmod(t, w)] == 10 for t in cells):
+        c["walk: through a grille (open)"] += 1
+    if cells:
+        c["air: every tile 1" if one else "air: a scale plane"] += 1
+        if heat < ONE:
+            c["air: heat below 1"] += 1
+        if any(v > ONE for v in sm):
+            c["air: starved (smoke above 1)"] += 1
+        if any(v == 0 for v in sm):
+            c["air: airless (smoke 0)"] += 1
+    else:
+        c["air: no tile (1, no plane)"] += 1
+
+
+WALK_BRANCHES = (
+    "walk: the open centre seeds", "walk: no seed", "walk: every open neighbour seeds",
+    "walk: the approach tile seeds", "walk: the neighbour nearest the approach seeds",
+    "walk: a centre off the grid", "walk: a centre in vacuum", "walk: reaches the map edge",
+    "walk: the long way round (a gap)", "walk: a wall stops it",
+    "walk: through a grille (open)",
+    "air: every tile 1", "air: a scale plane", "air: heat below 1",
+    "air: starved (smoke above 1)", "air: airless (smoke 0)", "air: no tile (1, no plane)",
+    "disc air: read",
+)
+
+
+def _shipped_walk_sims():
+    from simulation import Simulation
+    from simulation.ruleset import ContinuousRealtime
+    out = []
+    for name in ("ship_demo", "airlock_demo", "playground"):
+        try:
+            lv = level_loader.load(name, str(_ROOT / "levels"))
+        except Exception as ex:               # a level that does not load is named
+            print(f"walk: level {name} not loaded ({type(ex).__name__})")
+            continue
+        out.append(Simulation(lv, seed=3, breach_physics=bp, enable_recorder=False,
+                              ruleset=ContinuousRealtime()))
+    return out
+
+
+def part_walk(trials=WALK_TRIALS):
+    rng = np.random.default_rng(4411)
+    c = Counter()
+    n = 0
+    sims = [_probe_sim(rng, 6000 + t) for t in range(trials)] + _shipped_walk_sims()
+    for k, sim in enumerate(sims):
+        qs = _walk_queries(rng, sim, 40)
+        refs = [_walk_ref(sim, q) for q in qs]
+        st = unit_store.DeviceStore(1, 1, tables=unit_tables.values_batch([sim]))
+        dl = applier.DeviceApplier(1, n_units=1)
+        planes = _dev_planes([_planes(sim.gmap)])
+        qa = np.array([[(q[0], q[1], q[2], 0 if q[3] is None else 1,
+                         0 if q[3] is None else q[3][0], 0 if q[3] is None else q[3][1], q[4])
+                        for q in qs]], dtype=np.int64)
+        out = unit_kernels.blast_probe(st, dl, planes, qa, WALK_M)[0]
+        for j, (q, ref) in enumerate(zip(qs, refs)):
+            cells, heat, one, sm = ref
+            o = out[j]
+            m = int(o[0])
+            if len(cells) > WALK_M:
+                fail(f"walk: a reference walk of {len(cells)} tiles past the probe's {WALK_M}")
+                return
+            got = [int(x) for x in o[3:3 + m]]
+            gsm = [int(x) for x in o[3 + WALK_M:3 + WALK_M + m]]
+            if m != len(cells) or got != cells:
+                fail(f"walk map {k} query {q}: device tiles {got[:12]}... ({m}) != reference "
+                     f"{cells[:12]}... ({len(cells)})")
+                return
+            if int(o[1]) != heat or bool(o[2]) != one or gsm != sm:
+                fail(f"walk map {k} query {q}: the air read differs (heat {int(o[1])} / {heat}, "
+                     f"all_one {bool(o[2])} / {one}, smoke {gsm[:6]} / {sm[:6]})")
+                return
+            _walk_census(c, sim, q, ref)
+            n += 1
+    miss = [b for b in WALK_BRANCHES if not c[b]]
+    if miss:
+        fail(f"walk: branches never taken {miss}")
+    print(f"walk: {n} walks / disc reads on {len(sims)} maps ({trials} random, the shipped "
+          f"levels) -- tile set and order, heat factor, all-one and every smoke factor equal; "
+          f"census: " + "; ".join(f"{k} = {v}" for k, v in sorted(c.items())))
+
+
+# ---------------------------------------------------------------------------
+# #29 P7c.2: PART SOURCES -- take_source_plane over sources' whole lives
+# ---------------------------------------------------------------------------
+SOURCE_TICKS = int(os.environ.get("UNIT_PAYLOADS_SOURCE_TICKS", "48"))
+SOURCE_ROWS = ("div_40", "div_80", "div_40_puff", "quad_src_tile", "quad_src_r5",
+               "quad_src_slow", "frag_standard", "demolition_c4")
+
+
+def part_sources(ticks=SOURCE_TICKS):
+    """Per tick, each env's host map detonates (sometimes) a comparison or a
+    strength row, then the DEVICE SOURCES stage runs on the map's state and
+    the host's take_source_plane on the same state: the hand-out (None as
+    zeros + taken 0), the pending plane, the blast-source table and its tile
+    table, the books equal. A census of the take's branches."""
+    from simulation import blast_expansion as bx, payloads
+    from simulation.weapons import get_tables
+    rng = np.random.default_rng(5150)
+    c = Counter()
+    n = 0
+    for trial in range(3):
+        N = (1, 2, 3)[trial]
+        hw = (28, 36)
+        sims = [_probe_sim(rng, 7700 + 10 * trial + e, hw) for e in range(N)]
+        share_tables(sims)
+        with Rows(VARIANTS):
+            t_rows = get_tables().payloads.by_name
+            for t in range(ticks):
+                for e, sim in enumerate(sims):
+                    g = sim.gmap
+                    if t < ticks - 8 and rng.random() < 0.45:
+                        opn = np.argwhere(~g.solid & ~g.is_vacuum)
+                        fy, fx = (int(v) for v in opn[int(rng.integers(len(opn)))])
+                        if rng.random() < 0.3 and g.expansions:   # on a live source's tile
+                            fy, fx = g.expansions[0][0][0]
+                        name = SOURCE_ROWS[int(rng.integers(len(SOURCE_ROWS)))]
+                        payloads.execute_payload(g, sim.edit_queue, sim.units, fy, fx,
+                                                 t_rows[name], sim.draws, approach=None)
+                    sim.edit_queue.clear()
+                pre = [dict(planes=_planes(s.gmap), src=unit_kernels.sources_of(s),
+                            stiles=unit_kernels.source_tiles_of(s), books=_books(s.gmap),
+                            nexp=len(s.gmap.expansions), any=bool(s.gmap.div_source.any()))
+                       for s in sims]
+                st = unit_store.DeviceStore(N, 1, tables=unit_tables.values_batch(sims))
+                dl = applier.DeviceApplier(N, n_units=1)
+                planes = _dev_planes([p["planes"] for p in pre])
+                srcs, stl = unit_kernels.source_tables(N)
+                srcs.stage_lists([p["src"] for p in pre])
+                stl.stage_lists([p["stiles"] for p in pre])
+                import cupy as cp
+                out = cp.full((N,) + hw, -7, dtype=np.int32)
+                taken, books = unit_kernels.take_sources(
+                    st, dl, planes, unit_kernels.WalkLists(sources=srcs, source_tiles=stl),
+                    source_out=out)
+                outh = out.get()
+                dsrc, dst = srcs.records(), stl.records()
+                for e, sim in enumerate(sims):
+                    g = sim.gmap
+                    plane = bx.take_source_plane(g)
+                    want = np.zeros(hw, np.int32) if plane is None else plane
+                    if bool(taken[e]) != (plane is not None) or not np.array_equal(outh[e], want):
+                        fail(f"sources trial {trial} tick {t} env {e}: the hand-out differs "
+                             f"(taken {bool(taken[e])}, host {'None' if plane is None else 'a plane'})")
+                        return
+                    if not np.array_equal(planes["div_source"].get()[e], g.div_source):
+                        fail(f"sources trial {trial} tick {t} env {e}: the pending plane differs")
+                        return
+                    if [tuple(x) for x in unit_kernels.sources_of(sim)] != list(dsrc[e]) or \
+                            [tuple(x) for x in unit_kernels.source_tiles_of(sim)] != list(dst[e]):
+                        fail(f"sources trial {trial} tick {t} env {e}: the table differs")
+                        return
+                    hb = _books(g)
+                    for b in ("div_source_sat_hits", "div_source_cut_q"):
+                        if int(books[b][e]) != hb[b] - pre[e]["books"][b]:
+                            fail(f"sources trial {trial} tick {t} env {e}: book {b} differs")
+                            return
+                    p = pre[e]
+                    c["take: nothing pending (None)" if not p["any"]
+                      else "take: a pending plane handed out"] += 1
+                    if p["nexp"] >= 2:
+                        c["take: two or more sources alive"] += 1
+                        ts = [set(map(tuple, x[0])) for x in g.expansions] if g.expansions else []
+                        if p["nexp"] >= 2 and len(p["stiles"]) > len(
+                                {tuple(r[:2]) for r in p["stiles"]}):
+                            c["take: sources overlapping (a tile in two)"] += 1
+                        _ = ts
+                    if len(g.expansions) < p["nexp"]:
+                        c["take: a source's last tick (dropped, its tiles compacted)"] += 1
+                    if len(g.expansions) and len(g.expansions) == p["nexp"]:
+                        c["take: every source still alive"] += 1
+                    if int(books["div_source_sat_hits"][e]):
+                        c["take: a saturation while adding"] += 1
+                    if p["nexp"] and len(g.expansions) and len(g.expansions) < p["nexp"] and \
+                            any(r[4] for r in p["src"][1:]):
+                        c["take: a survivor behind a dropped source moved down"] += 1
+                    n += 1
+    want = ("take: nothing pending (None)", "take: a pending plane handed out",
+            "take: two or more sources alive", "take: sources overlapping (a tile in two)",
+            "take: a source's last tick (dropped, its tiles compacted)",
+            "take: every source still alive", "take: a saturation while adding",
+            "take: a survivor behind a dropped source moved down")
+    miss = [b for b in want if not c[b]]
+    if miss:
+        fail(f"sources: branches never taken {miss}")
+    print(f"sources: {n} env-ticks (N = 1 / 2 / 3, {ticks} ticks each) of the SOURCES stage "
+          f"== take_source_plane (hand-out, plane, table, tile table, books); census: "
+          + "; ".join(f"{k} = {v}" for k, v in sorted(c.items())))
+
+
+# ---------------------------------------------------------------------------
+# #29 P7c.2: PART HANDOVER -- the resident EOS reads the device-taken source
+# ---------------------------------------------------------------------------
+HANDOVER_TICKS = int(os.environ.get("UNIT_PAYLOADS_HANDOVER_TICKS", "40"))
+
+
+def _handover_sim(seed):
+    from simulation import Simulation, physics_runner
+    from simulation.ruleset import ContinuousRealtime
+    physics_runner.set_residency(False)
+    sim = Simulation(level_loader.load("ship_demo", str(_ROOT / "levels")), seed=seed,
+                     breach_physics=bp, enable_recorder=False, ruleset=ContinuousRealtime())
+    sim.physics_runner.headless = True
+    sim.set_paused(False)
+    return sim
+
+
+def _handover_blasts(sim, e, t, rows):
+    from simulation import payloads
+    g = sim.gmap
+    if t in (2, 5, 9, 15) and (t + e) % 2 == 0 or t == 3:
+        opn = np.argwhere(~g.solid & ~g.is_vacuum)
+        y, x = (int(v) for v in opn[(len(opn) * (3 + e + t)) // 17])
+        name = ("div_40", "frag_standard", "div_80", "quad_src_tile", "div_40_puff")[
+            (t + e) % 5]
+        payloads.execute_payload(g, sim.edit_queue, sim.units, y, x, rows[name], sim.draws,
+                                 approach=(y - 1, x))
+
+
+def part_handover(ticks=HANDOVER_TICKS):
+    """Two resident batches of ship_demo (N = 1, then N = 2), identical blasts
+    on both: the TWIN's slot 7 reads the blast source the device SOURCES stage
+    took (handed over on the card, no upload), the REFERENCE's the played
+    upload. Every tick the device's take equals the host's and the twin's field
+    digest and books the reference's. The stage actually ran: ticks with a
+    source taken counted, required."""
+    import cupy as cp
+    from simulation import physics_runner, blast_expansion as bx
+    from simulation.resident_batch import ResidentBatch
+    from simulation.weapons import get_tables
+    for N in (1, 2):
+        twins = [_handover_sim(e + 1) for e in range(N)]
+        refs = [_handover_sim(e + 1) for e in range(N)]
+        share_tables(twins + refs)
+        rows = get_tables().payloads.by_name
+        stats = Counter()
+        with Rows(VARIANTS):
+            physics_runner.set_residency(True)
+            try:
+                bt, br = ResidentBatch(twins), ResidentBatch(refs)
+                h, w = twins[0].gmap.solid.shape
+                out = cp.zeros((N, h, w), dtype=np.int32)
+                holder = {}
+
+                def take():
+                    st = unit_store.DeviceStore(N, 1, tables=unit_tables.values_batch(twins))
+                    dl = applier.DeviceApplier(N, n_units=1)
+                    pl = _dev_planes([_planes(s.gmap) for s in twins])
+                    srcs, stl = unit_kernels.source_tables(N)
+                    srcs.stage_lists([unit_kernels.sources_of(s) for s in twins])
+                    stl.stage_lists([unit_kernels.source_tiles_of(s) for s in twins])
+                    taken, _b = unit_kernels.take_sources(
+                        st, dl, pl, unit_kernels.WalkLists(sources=srcs, source_tiles=stl),
+                        source_out=out)
+                    holder["taken"] = taken
+                    holder["want"] = []
+                    for s in twins:                       # the host take on a copy
+                        class _G:
+                            pass
+                        gg = _G()
+                        gg.div_source = s.gmap.div_source.copy()
+                        gg.expansions = [[list(x[0]), x[1], x[2]] for x in s.gmap.expansions]
+                        gg.div_source_sat_hits = gg.div_source_cut_q = 0
+                        holder["want"].append(bx.take_source_plane(gg))
+                    return int(out.data.ptr)
+
+                for t in range(ticks):
+                    for e in range(N):
+                        _handover_blasts(twins[e], e, t, rows)
+                        _handover_blasts(refs[e], e, t, rows)
+                    bt.step(take_sources=take)
+                    br.step()
+                    got = out.get()
+                    for e in range(N):
+                        want = holder["want"][e]
+                        wz = np.zeros((h, w), np.int32) if want is None else want
+                        if bool(holder["taken"][e]) != (want is not None) or \
+                                not np.array_equal(got[e], wz):
+                            fail(f"handover N={N} tick {t} env {e}: the device take differs "
+                                 f"from the host's")
+                            return
+                        if want is not None:
+                            stats["ticks a source was taken on the card"] += 1
+                        if _field_digest(twins[e]) != _field_digest(refs[e]):
+                            fail(f"handover N={N} tick {t} env {e}: the twin (device-taken "
+                                 f"source) left the reference (uploaded)")
+                            return
+                        if _books(twins[e].gmap) != _books(refs[e].gmap):
+                            fail(f"handover N={N} tick {t} env {e}: the books differ")
+                            return
+            finally:
+                physics_runner.set_residency(False)
+        if not stats["ticks a source was taken on the card"]:
+            fail(f"handover N={N}: vacuous (no source ever taken)")
+            return
+        print(f"handover N={N}: {ticks} resident ticks, the EOS reading the device-taken "
+              f"source (no upload) == the uploaded reference every tick (field digest, books); "
+              f"{dict(stats)}")
+        for s in twins + refs:
+            s.gmap.__dict__.pop("_dev", None)
+        del bt, br
+        cp.get_default_memory_pool().free_all_blocks()
+
+
+# ---------------------------------------------------------------------------
+# #29 P7c.2: PART BULK -- a deposit past int32 refused by name
+# ---------------------------------------------------------------------------
+def part_bulk():
+    """A bulk-gas deposit whose slice would pass int32 on one disc tile: the
+    reference raises OverflowError; the device refuses the run by name
+    (BulkGasOverflow) and writes nothing of the deposit. The open, sealed and
+    blocked cases are the probe's and the scene's."""
+    from simulation.gases import O2
+    rng = np.random.default_rng(91)
+    n = 0
+    for name, slice_name in (("o2_store_rupture", "o2"), ("halon_dump", "inert_n2")):
+        sim = _probe_sim(rng, 9100 + n)
+        share_tables([sim])
+        g = sim.gmap
+        opn = np.argwhere(~g.solid & ~g.is_vacuum)
+        fy, fx = (int(v) for v in opn[len(opn) // 2])
+        gid = int(g.gases.name_to_id[slice_name])
+        g.gas[gid][fy, fx] = np.int32(2 ** 31 - 10)
+        _ = O2
+        recs = [_recs_for(sim, [name], rng, 1)]
+        recs[0][:, applier.kind_field("PAYLOAD", "y")] = fy
+        recs[0][:, applier.kind_field("PAYLOAD", "x")] = fx
+        before = _planes(g)
+        keep = {}
+        try:
+            _device_walk([sim], recs, applier.STAGE_DETONATE, keep=keep)
+            fail(f"bulk: {name} past int32 was applied")
+            continue
+        except applier.BulkGasOverflow as ex:
+            if "env(s) [0]" not in str(ex):
+                fail(f"bulk: the refusal does not name the env: {ex}")
+        wrote = [k for k, v in keep["planes"].items()
+                 if not np.array_equal(v.get()[0], before[k])]
+        if wrote:
+            fail(f"bulk: a refused deposit wrote {wrote}")
+        try:
+            from simulation import payloads
+            from simulation.weapons import get_tables
+            payloads.execute_payload(g, sim.edit_queue, sim.units, fy, fx,
+                                     get_tables().payloads.by_name[name], sim.draws)
+            fail(f"bulk: the reference took {name} past int32")
+        except OverflowError:
+            n += 1
+        _ = before
+    print(f"bulk: {n} deposits past int32: the reference raises OverflowError, the device "
+          f"refuses the run by name (BulkGasOverflow)")
+
+
+# ---------------------------------------------------------------------------
 # Main, bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "probe", "disc", "scene", "batch", "padding", "overflow", "refuse",
-         "chained", "ship")
+PARTS = ("tables", "walk", "probe", "disc", "sources", "bulk", "scene", "batch", "padding",
+         "overflow", "refuse", "chained", "ship", "handover")
 
 
 def main(parts=None) -> int:
@@ -1759,7 +2586,7 @@ def main(parts=None) -> int:
     return 0 if ok else 1
 
 
-def bench(reps: int = 50) -> int:
+def bench(reps: int = 50, rows=None) -> int:
     """The TIMING table: median ms of ONE detonation's walk (the DETONATE
     stage over one PAYLOAD record per env) for each applied row at N = 1 / 8
     / 64, a small and a large radius (the row's own and its disc raised)."""
@@ -1767,10 +2594,10 @@ def bench(reps: int = 50) -> int:
     rng = np.random.default_rng(1)
     base = _probe_sim(rng, 1)
     lines = []
-    for row in applied_rows():
-        for size, attrs in (("own", {}), ("r 6", dict(radius=6, pressure=1.0,
+    for row in (rows or applied_rows()):
+        for size, attrs in (("own", {}),) + ((() if rows else (("r 6", dict(radius=6, pressure=1.0,
                                                        wall_damage=10, gas_radius=6,
-                                                       heat_radius=6.0, ignite_radius=6.0))):
+                                                       heat_radius=6.0, ignite_radius=6.0)),))):
             with Rows({f"payloads.{row}": attrs} if attrs else {}):
                 for n in (1, 8, 64):
                     sims = [base] * n
