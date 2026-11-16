@@ -618,6 +618,11 @@ def install_claims_tap() -> list:
     orig = damage.TickCredit.claim
 
     def claim(self, channel, tiles, attacker_id, __o=orig):
+        # #29 P7c.1: the tiles may be a GENERATOR (payloads._claim_disc): read
+        # once into a list, which both the log and the claim then walk (the
+        # tap consumed it before and the host claimed nothing: a hooked match
+        # that differed from an unhooked one)
+        tiles = list(tiles)
         log = _CLAIM_LOG.get(id(self))
         if log is not None:
             a = attacker_value(attacker_id)

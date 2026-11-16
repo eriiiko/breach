@@ -174,7 +174,7 @@ VARIANTS = {
     "payloads.plasma_splash_large": dict(unit_damage=40, blind_radius=8.0,
                                          blind_radius_q=8 * ONE, blind_ticks=60,
                                          blind_away_q=ONE // 4),
-    "payloads.incendiary_splash": dict(radius=4, pressure=3.0, wall_damage=900,
+    "payloads.incendiary_splash": dict(radius=4, pressure=3.0, wall_damage=5000,
                                        unit_damage=60),
     "payloads.studio_smoke": dict(radius=3, pressure=1.0, wall_damage=500,
                                   unit_damage=30, blind_radius=6.0,
@@ -230,7 +230,8 @@ def _walk_lists(lists, cells=False):
 def _run_2g(st, inp, ring, lists):
     unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick)
     lists["edits"].set_seq(inp.scalars["edit_seq"])
-    return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists))
+    return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists),
+                                 refused_ok=LS.REPLAY_REFUSED["on"])
 
 
 def _run_9e(st, inp, ring, lists):
@@ -288,9 +289,18 @@ def _field_digest(sim):
 
 
 def _queue_state(sim):
-    return [(e.field, int(e.region), tuple(e.coords) if e.region != 4 else None,
-             int(e.mode), int(e.falloff), e.amount_q, int(e.source_id), e.channel, s)
-            for e, s in sim.edit_queue._edits] + [("seq", sim.edit_queue._seq)]
+    """The pending edit queue as the device pack sees it (pack_for_device of
+    every queued edit, in enqueue order: the door's quantization and the
+    region walk, so a replayed edit that differs only in representation --
+    an amount handed as amount_q, a clamp equal to the policy's -- compares
+    equal) and the queue's seq."""
+    from simulation import field_edit as fe
+    pairs = list(sim.edit_queue._edits)
+    pack, reason = fe.pack_for_device(sim.gmap, pairs, None)
+    if pack is None:
+        return [("unpacked", reason, repr(pairs))]
+    return [pack.edits.tolist(), pack.tiles.tolist(),
+            [int(e.source_id) for e, _s in pairs], int(sim.edit_queue._seq)]
 
 
 # ---------------------------------------------------------------------------
@@ -958,14 +968,14 @@ def _scene_level(variant, tile_m=1.0):
     from level_loader import LevelData
     from simulation.materials import (MAT_AIR, MAT_DOOR_CLOSED, MAT_GLASS, MAT_GRILLE,
                                       MAT_HULL, MAT_STEEL, MAT_WOOD)
-    h, w = SH + 2 * (variant % 2), SW + 4 * (variant % 3)
+    h, w = SH, SW                                # one shape: a batch stacks the planes
     tm = np.full((h, w), SPACE, dtype=np.int32)
     tm[1:h - 1, 1:w - 1] = MAT_HULL
     tm[2:h - 2, 2:w - 2] = MAT_AIR
     dy = variant % 3
-    tm[25 + dy, 3:54] = MAT_WOOD                 # the wall the grenades' discs reach
-    tm[25 + dy, 20:24] = MAT_GRILLE
-    tm[25 + dy, 30:33] = MAT_DOOR_CLOSED
+    tm[26 + dy, 3:54] = MAT_WOOD                 # the wall the grenades' discs reach
+    tm[26 + dy, 20:24] = MAT_GRILLE
+    tm[26 + dy, 30:33] = MAT_DOOR_CLOSED
     tm[31, 3:54:7] = MAT_GLASS                   # non-blast solids in the discs
     tm[31, 6:54:9] = MAT_STEEL
     tm[16:19, 76] = MAT_WOOD                     # beside the corpse-skip group
@@ -1021,15 +1031,18 @@ class PayloadScene:
         for i in range(self.n_kinds):
             t = a(f"T{i}", 8 + 8 * i, 40, facing=NORTH, weapon="hand_grenade")
             t.grenade_counts = [6] * self.n_kinds
+            if i % 2 == 0:                       # the second wave's thrower (same spot)
+                u2 = a(f"U{i}", 8 + 8 * i, 41, facing=NORTH, weapon="hand_grenade")
+                u2.grenade_counts = [6] * self.n_kinds
             a(f"V{i}", 8 + 8 * i, 28 + dy, team=1, facing=(EAST, WEST, NORTH, SOUTH)[i % 4],
-              hp=(55.0 if i % 2 else 400.0))
+              hp=(50.0 if self.set == "V" else 400.0))
             a(f"W{i}", 9 + 8 * i, 29 + dy, team=1, facing=(SOUTH, NORTH)[i % 2], hp=3.0)
-            a(f"B{i}", 8 + 8 * i, 23 + dy, team=1, facing=SOUTH, hp=400.0)   # behind the wall
+            a(f"B{i}", 8 + 8 * i, 24 + dy, team=1, facing=SOUTH, hp=400.0)   # behind the wall
         # Z2: a round stopping in its firing tick (slot 4c)
         for j, wpn in enumerate(("sunspot", "helios", "gl6_revolver")):
             a(f"S{j}", 62, 4 + 4 * j, facing=EAST, weapon=wpn)
-            a(f"ST{j}", 64, 4 + 4 * j, team=1, facing=WEST, hp=1.0e6)
-            a(f"SW{j}", 65, 5 + 4 * j, team=1, facing=NORTH, hp=2.0)        # heat-credit victim
+            a(f"ST{j}", 63, 4 + 4 * j, team=1, facing=WEST, hp=1.0e6)       # adjacent
+            a(f"SW{j}", 64, 5 + 4 * j, team=1, facing=NORTH, hp=2.0)        # heat-credit victim
         # Z3: a round landing in slot 2''s landing (25 tiles at 1.5 t/t)
         for j, wpn in enumerate(("sunspot", "helios", "gl6_revolver")):
             a(f"F{j}", 58, 30 + 4 * j, facing=EAST, weapon=wpn)
@@ -1067,15 +1080,19 @@ class PayloadScene:
         if k == s:                                     # every kind; two pairs on one tick
             for i in range(self.n_kinds):
                 self._throw(w[f"T{i}"], i, 18, 12)
-        if k == s + 1:                                 # a second wave of the same kinds
-            for i in range(0, self.n_kinds, 2):        # lands ONE tick after: pairs differ
-                self._throw(w[f"T{i}"], i, 17, 12)
+        if k == s + 1:                                 # a second wave, the same spots,
+            for i in range(0, self.n_kinds, 2):        # landing on the first's tick
+                self._throw(w[f"U{i}"], i, 17, 13)
         if k == s + 30:                                # the other kinds at the same spots
             for i in range(self.n_kinds):
                 self._throw(w[f"T{i}"], (i + 3) % self.n_kinds, 14, 12)
-        if k == s + 2 and self.set == "V":             # two on ONE tick at one spot
-            self._throw(w["T0"], 0, 19, 12)
-            self._throw(w["T1"], 0, 12, 12)            # (T1 stands 8 east: reach 12 + 8?)
+        if k == 0:                                     # a topology fixture: the blast
+            g = sim.gmap                               # walls of the long wall weak
+            from simulation.physics import _BLAST_WALL_MATERIALS
+            for y, x in np.argwhere(np.isin(g.material, _BLAST_WALL_MATERIALS)):
+                cap = (30 if self.v % 2 == 0 else 12) * ONE      # the fields differ
+                if 3 <= y < SH - 3 and g.wall_hp[y, x] > cap:
+                    g.wall_hp[y, x] = cap
         for name in ("S0", "S1", "S2", "F0", "F1", "F2", "K", "P"):
             sim.set_trigger(w[name].id, k in (s, s + 1, s + 40) and w[name].alive)
         if k == s + 5:                                 # the charges: every applied row
@@ -1259,7 +1276,7 @@ def run_lockstep(name, drivers, slots, ticks, census=None):
     n = 0
     ok = True
     ctx = census if census is not None else _Null()
-    taps = LS.install_payload_tap() + LS.install_claims_tap()
+    taps = []                  # ShadowLockstep installs the payload and claims taps
     try:
         with ctx, ShadowLockstep(drivers, list(slots)) as ls:
             for _ in range(ticks):
@@ -1331,10 +1348,6 @@ def part_batch():
         ds = [PayloadScene(v, row_set_name="V") for v in range(n)]
         share_tables([d.sim for d in ds])
         with row_set("V"):
-            # the fields differ too: a warm room in the odd envs
-            for i, d in enumerate(ds):
-                if i % 2:
-                    d.sim.gmap.wall_hp[d.sim.gmap.wall_hp > 0] //= 2
             run_lockstep(f"batch N={n}", ds, SCENE_SLOTS, BATCH_TICKS)
         if FAILS:
             return
@@ -1355,7 +1368,7 @@ def _device_walk(sims, recs, stage, caps=None, garbage=False):
         lay = unit_store.layout()
         for e, s in enumerate(sims):
             rows[e, len(s.units):, :] = 7
-            rows[e, len(s.units):, lay.column("valid").offset] = 0
+            rows[e, len(s.units):, lay.valid] = 0
     st.upload(rows)
     ring = unit_events.EventRing(N, U, caps.get("ring", unit_events.E_MAX))
     ring.begin()
@@ -1409,7 +1422,7 @@ def part_padding():
         n = len(s.units)
         if not np.array_equal(a[e, :n], b[e, :n]):
             fail(f"padding env {e}: a valid row differs beside garbage padding rows")
-        if not (b[e, n:, :lay.column("valid").offset] == 7).all():
+        if not (b[e, n:, :lay.valid] == 7).all():
             fail(f"padding env {e}: a padding row was written")
     for nm in ("ring", "door", "claims", "noise", "blast"):
         x, y = clean[nm], dirty[nm]
@@ -1430,6 +1443,12 @@ def part_overflow():
     rng = np.random.default_rng(66)
     n_ok = 0
     sims = [_probe_sim(rng, 8000)]
+    from simulation.unit import Unit
+    h, w = sims[0].gmap.material.shape
+    for j in range(3):                       # units at the blasts (the ring's events)
+        u = Unit(f"c{j}", x=float(w // 2 + j), y=float(h // 2), team=1)
+        sims[0].add_unit(u)
+        u.current_hp = 500.0
     share_tables(sims)
     with Rows(VARIANTS):
         names = ["plasma_splash_large", "studio_smoke", "incendiary_splash"]
@@ -1556,21 +1575,44 @@ def _det_slot(base, outputs_payloads="list:detonations"):
                       outputs=outs, host_only=base.host_only, skip_ok=base.skip_ok)
 
 
+#: The host execute_payload call sites, by the slot that makes the call.
+SITE_OF = {"simulation.simulation": "2 grenades", "simulation.charges": "9e(d')",
+           "simulation.combat": "4c resolve"}
+
+
 def _count_payload_calls(twin):
+    """Count the twin's host execute_payload calls per calling slot (a payload
+    round's call is slot 2''s landing while inside _update_rounds, else 4c)."""
     import importlib
+    from simulation.simulation import Simulation
     calls = Counter()
     saved = []
-    for modname in ("simulation.simulation", "simulation.charges", "simulation.combat"):
+    state = {"landing": False}
+    for modname in SITE_OF:
         mod = importlib.import_module(modname)
         o = mod.execute_payload
 
         def ep(gmap, *a, __o=o, __m=modname, **k):
             if gmap is twin.sim.gmap:
-                calls[__m] += 1
+                site = SITE_OF[__m]
+                if site == "4c resolve" and state["landing"]:
+                    site = "2' landing"
+                calls[site] += 1
             return __o(gmap, *a, **k)
         ep.__wrapped__ = o
         mod.execute_payload = ep
         saved.append((mod, "execute_payload", o))
+    o_ur = Simulation._update_rounds
+
+    def ur(sim, __o=o_ur):
+        state["landing"] = True
+        try:
+            return __o(sim)
+        finally:
+            state["landing"] = False
+    ur.__wrapped__ = o_ur
+    Simulation._update_rounds = ur
+    saved.append((Simulation, "_update_rounds", o_ur))
     return calls, saved
 
 
@@ -1584,7 +1626,7 @@ def chained_run(name, slots, set_name, ticks=CHAIN_TICKS, driver=PayloadScene,
         holder = {}
         n = 0
         t0 = time.perf_counter()
-        taps = LS.install_payload_tap() + LS.install_claims_tap()
+        taps = []
         try:
             ch = ChainedSlots(twin, slots, host_side=lambda s, p, q: holder["hs"](s, p, q))
             holder["hs"] = _host_side(ch)
@@ -1630,16 +1672,19 @@ def chained_run(name, slots, set_name, ticks=CHAIN_TICKS, driver=PayloadScene,
 def part_chained():
     from cuda_unit_shooting_check import SLOT_2R, SLOT_4, SLOT_4A
     from cuda_unit_sprays_check import SLOT_4B
-    for name, slots, set_name in (
-            ("2 grenades", [_det_slot(SLOT_2G)], "V"),
-            ("2' + landing", [SLOT_2R, SLOT_2L], "V"),
-            ("4 + 4a + 4b + 4c", [SLOT_4, SLOT_4A, SLOT_4B, SLOT_4C], "V"),
-            ("9e(d')", [_det_slot(SLOT_9E)], "V")):
+    for name, slots, set_name, site in (
+            ("2 grenades", [_det_slot(SLOT_2G)], "V", "2 grenades"),
+            ("2' + landing", [SLOT_2R, SLOT_2L], "V", "2' landing"),
+            ("4 + 4a + 4b + 4c", [SLOT_4, SLOT_4A, SLOT_4B, SLOT_4C], "V", "4c resolve"),
+            ("9e(d')", [_det_slot(SLOT_9E)], "V", "9e(d')")):
         n, ch, recs, calls = chained_run(name, slots, set_name)
         if FAILS:
             return
-        if calls:
-            fail(f"chained {name}: the host execute_payload ran in the twin {dict(calls)}")
+        if calls[site]:
+            fail(f"chained {name}: the host execute_payload ran {calls[site]} time(s) "
+                 f"in the chained slot")
+        print(f"  host execute_payload in the chained slot ({site}): {calls[site]}; in the "
+              f"host slots around it: {dict((k, v) for k, v in calls.items() if k != site)}")
         if not recs.get("PAYLOAD"):
             fail(f"chained {name}: vacuous (no PAYLOAD walked)")
 
@@ -1652,17 +1697,26 @@ def part_ship():
     share_tables([d.sim])
     census = SceneCensus()
     try:
-        run_lockstep("ship (2 + 4c)", [d], [SLOT_2G, SLOT_4C], SHIP_TICKS, census)
-    except applier.EffectRefused as ex:
-        print(f"ship: the shadow met a refused row at tick {d.sim.tick}: {ex}")
-        FAILS[:] = [f for f in FAILS if "EffectRefused" not in f]
+        run_lockstep("ship (2 + 2' landing + 4c)", [d], [SLOT_2G, SLOT_2L, SLOT_4C],
+                     SHIP_TICKS, census)
+    except (applier.EffectRefused, edit_door.DoorInterleave) as ex:
+        # a refused row's host call (the frag: a strength row) enqueues edits the
+        # door does not own: the shadow stops there BY NAME
+        print(f"ship: the shadow stopped at tick {d.sim.tick} on a refused row: "
+              f"{type(ex).__name__}: {str(ex)[:160]}")
     print(f"ship: detonations seen {sorted(census.pairs)}")
     n, ch, recs, calls = chained_run("ship 2 grenades (refused rows replayed)",
                                      [_det_slot(SLOT_2G)], None, SHIP_TICKS,
                                      driver=ShipDriver, replay_refused=True)
-    refused_calls = {k: v for k, v in calls.items()}
-    print(f"ship: chained 500 ticks; the host execute_payload ran {refused_calls or 0} "
-          f"time(s) (each a refused row's replay)")
+    pc = applier.kind_field("PAYLOAD", "payload")
+    from simulation.weapons import get_tables
+    names = list(get_tables().payloads.by_name)
+    replayed = [names[int(r[pc])] for x in ch.lists for r in x.get("detonations", ())
+                if applier.payload_refusal(get_tables().payloads.by_name[names[int(r[pc])]])]
+    applied = sum(len(x.get("detonations", ())) for x in ch.lists) - len(replayed)
+    print(f"ship: chained {n} ticks equal; {applied} PAYLOAD record(s) applied by the device, "
+          f"{len(replayed)} refused row(s) replayed on the host {replayed}; host slot calls "
+          f"outside the chain {dict(calls) or 0}")
 
 
 # ---------------------------------------------------------------------------
