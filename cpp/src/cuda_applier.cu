@@ -30,6 +30,7 @@
 #include "cuda_unit_spray.cuh"     // #29 P7a.3: SPRAY_CELLS (the edit door, the claims)
 #include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path); P7c.2: every row
 #include "cuda_unit_blast.cuh"     // #29 P7c.2: the walks' scratch, the SOURCES stage
+#include "cuda_unit_signals.cuh"   // #29 P6b.3: the signal stages (9e a, b, c, d pumps, e)
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
@@ -88,7 +89,42 @@ struct WalkTables {
     int64_t* n_stiles = nullptr;
     int stile_cap = 0;
     int32_t* source_out = nullptr;
+    // #29 P6b.3: the signal stages' tables (rows and counts each; the door
+    // table above for EMIT / DOOR_INPUTS) and the EMIT stage's ticks
+    int64_t* sig[8] = {};
+    const int64_t* n_sig[8] = {};
+    int sig_cap[8] = {};
+    const int64_t* ticks = nullptr;
 };
+
+// #29 P6b.3: the signal tables' order in WalkTables::sig.
+enum SigTab { ST_BUS = 0, ST_SENSOR, ST_STILE, ST_NODE, ST_NIN, ST_PUMP, ST_PIN, ST_DRIVE };
+constexpr int SIG_W[8] = {object_tables::OBJ_SIGNAL_W, object_tables::OBJ_SENSOR_W,
+                          object_tables::OBJ_SENSOR_TILE_W, object_tables::OBJ_NODE_W,
+                          object_tables::OBJ_NODE_IN_W, object_tables::OBJ_PUMP_W,
+                          object_tables::OBJ_PUMP_IN_W, object_tables::OBJ_DOOR_DRIVE_W};
+
+__device__ inline signals::Tables signal_view(const WalkTables& X, int e) {
+    signals::Tables T;
+    int64_t** rows[8] = {&T.bus, &T.sensors, &T.stiles, &T.nodes, &T.nins, &T.pumps,
+                         &T.pins, &T.drives};
+    int64_t* cnts[8] = {&T.n_bus, &T.n_sensors, &T.n_stiles, &T.n_nodes, &T.n_nins,
+                        &T.n_pumps, &T.n_pins, &T.n_drives};
+    const int w[8] = {object_tables::OBJ_SIGNAL_W, object_tables::OBJ_SENSOR_W,
+                      object_tables::OBJ_SENSOR_TILE_W, object_tables::OBJ_NODE_W,
+                      object_tables::OBJ_NODE_IN_W, object_tables::OBJ_PUMP_W,
+                      object_tables::OBJ_PUMP_IN_W, object_tables::OBJ_DOOR_DRIVE_W};
+    for (int t = 0; t < 8; ++t) {
+        if (X.sig[t] == nullptr) continue;
+        *rows[t] = X.sig[t] + (size_t)e * X.sig_cap[t] * w[t];
+        *cnts[t] = X.n_sig[t][e];
+    }
+    if (X.doors != nullptr) {
+        T.doors = X.doors + (size_t)e * X.door_cap * object_tables::OBJ_DOOR_W;
+        T.n_doors = X.n_doors[e];
+    }
+    return T;
+}
 
 // #29 P7a.3: the walk's lists (ApplierLists' device views; has_* false when
 // the caller handed none: an effect needing it FAULTS).
@@ -128,6 +164,33 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
     int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
     const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+    // #29 P6b.3: slot 9e's signal sub-steps walk the signal TABLES (decision
+    // 1: stages of the one walker, each entity applied at once)
+    if (stage == APPLIER_STAGE_EMIT || stage == APPLIER_STAGE_LOGIC ||
+        stage == APPLIER_STAGE_DOOR_INPUTS || stage == APPLIER_STAGE_PUMPS ||
+        stage == APPLIER_STAGE_SWAP) {
+        const signals::Tables T = signal_view(X, e);
+        if (stage == APPLIER_STAGE_EMIT) {
+            if (n_gases != unit_tables::UNIT_TAB_GAS_TRACE_W) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                return;
+            }
+            signals::emit(E, tab, T, X.ticks != nullptr ? X.ticks[e] : 0, U.store, U.n_units, B);
+        } else if (stage == APPLIER_STAGE_LOGIC) {
+            signals::logic(T, B);
+        } else if (stage == APPLIER_STAGE_DOOR_INPUTS) {
+            signals::door_inputs(T, B);
+        } else if (stage == APPLIER_STAGE_PUMPS) {
+            if (n_gases != unit_tables::UNIT_TAB_GAS_TRACE_W) {
+                B[APPLIER_BOOK_FAULTS] += 1;
+                return;
+            }
+            signals::pumps(E, tab, T, B);
+        } else {
+            signals::swap(T, B);
+        }
+        return;
+    }
     if (stage == APPLIER_STAGE_VENTS) {
         // #29 P6b.2: slot 9e(d)'s vent circulation walks the duct and vent
         // TABLES (decision 1: a stage of the one walker, each duct at once)
@@ -353,7 +416,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 6, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 11, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -375,6 +438,10 @@ FieldApplier::FieldApplier(int n_env, int cap, int n_units, int row_cap)
     ap_check(cudaMemsetAsync(d_books_, 0, nb * sizeof(int64_t), tstream()), "zero books");
     ap_check(cudaMemsetAsync(d_land_, 0, nl * sizeof(int64_t), tstream()), "zero landing");
     touched(n_units);
+    ap_check(cudaMalloc(reinterpret_cast<void**>(&d_ticks_), (size_t)n_env * sizeof(int64_t)),
+             "malloc ticks");
+    ap_check(cudaMallocHost(reinterpret_cast<void**>(&h_ticks_), (size_t)n_env * sizeof(int64_t)),
+             "malloc pinned ticks");
     ap_check(cudaEventRecord(ev, tstream()), "record zero");
 }
 
@@ -386,6 +453,8 @@ FieldApplier::~FieldApplier() {
     if (d_land_) cudaFree(d_land_);
     if (d_touched_) cudaFree(d_touched_);
     if (d_walk_) cudaFree(d_walk_);
+    if (d_ticks_) cudaFree(d_ticks_);
+    if (h_ticks_) cudaFreeHost(h_ticks_);
     if (h_stage_) cudaFreeHost(h_stage_);
     if (h_books_) cudaFreeHost(h_books_);
 }
@@ -415,6 +484,14 @@ void* FieldApplier::walk_scratch(int n_cells) {
         walk_cells_ = n_cells;
     }
     return d_walk_;
+}
+
+const int64_t* FieldApplier::ticks_dev(const int64_t* host) {
+    ap_check(cudaStreamSynchronize(tstream()), "ticks wait");   // the pinned copy is free
+    std::memcpy(h_ticks_, host, (size_t)n_env() * sizeof(int64_t));
+    ap_check(cudaMemcpyAsync(d_ticks_, h_ticks_, (size_t)n_env() * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, tstream()), "H2D ticks");
+    return d_ticks_;
 }
 
 void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
@@ -460,8 +537,11 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
     if (ring != nullptr && (ring->n_env() != store.n_env() || ring->n_units() != store.n_units()))
         throw std::invalid_argument("applier_run: the event ring is for another store");
     topo::PlanePtrs P;
+    // #29 P6b.3: the LOGIC, DOOR_INPUTS and SWAP stages read no plane
+    const bool planeless = stage == APPLIER_STAGE_LOGIC || stage == APPLIER_STAGE_DOOR_INPUTS ||
+                           stage == APPLIER_STAGE_SWAP;
     for (int k = 0; k < APPLIER_N_PLANES; ++k) {
-        if (planes.ptr[k] == 0)
+        if (planes.ptr[k] == 0 && !planeless)
             throw std::invalid_argument("applier_run: a plane pointer is null");
         P.p[k] = (unsigned long long)planes.ptr[k];
     }
@@ -535,6 +615,53 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
     WL.walk = static_cast<uint8_t*>(a.walk_scratch(planes.h * planes.w));
     WL.walk_cells = a.walk_cells();
     WalkTables X;
+    // #29 P6b.3: the signal stages' tables (each stage checks the ones it reads)
+    const bool sig_stage = stage == APPLIER_STAGE_EMIT || stage == APPLIER_STAGE_LOGIC ||
+                           stage == APPLIER_STAGE_DOOR_INPUTS || stage == APPLIER_STAGE_PUMPS ||
+                           stage == APPLIER_STAGE_SWAP;
+    if (sig_stage) {
+        if (lists == nullptr)
+            throw std::invalid_argument("applier_run: a signal stage needs its tables");
+        ObjectTable* tabs[8] = {lists->signal_table, lists->sensor_table, lists->sensor_tiles,
+                                lists->node_table, lists->node_ins, lists->pump_table,
+                                lists->pump_ins, lists->door_drives};
+        // which tables (and whether the door table) each stage reads
+        bool need[8] = {true, false, false, false, false, false, false, false};
+        bool need_doors = false;
+        if (stage == APPLIER_STAGE_EMIT) {
+            need[ST_SENSOR] = need[ST_STILE] = true;
+            need_doors = true;
+        }
+        if (stage == APPLIER_STAGE_LOGIC) need[ST_NODE] = need[ST_NIN] = true;
+        if (stage == APPLIER_STAGE_DOOR_INPUTS) {
+            need[ST_DRIVE] = true;
+            need_doors = true;
+        }
+        if (stage == APPLIER_STAGE_PUMPS) need[ST_PUMP] = need[ST_PIN] = true;
+        for (int t = 0; t < 8; ++t) {
+            if (!need[t]) continue;
+            if (tabs[t] == nullptr)
+                throw std::invalid_argument("applier_run: a signal stage's table is missing");
+            if (tabs[t]->n_env() != a.n_env() || tabs[t]->width() != SIG_W[t])
+                throw std::invalid_argument("applier_run: a signal table is not its layout for "
+                                            "these envs");
+            X.sig[t] = tabs[t]->records_dev();
+            X.n_sig[t] = tabs[t]->count_dev();
+            X.sig_cap[t] = tabs[t]->cap();
+        }
+        if (need_doors) {
+            ObjectTable* doors = lists->door_table;
+            if (doors == nullptr || doors->n_env() != a.n_env() ||
+                doors->width() != object_tables::OBJ_DOOR_W)
+                throw std::invalid_argument("applier_run: the EMIT / DOOR_INPUTS stage needs the "
+                                            "door table");
+            X.doors = doors->records_dev();
+            X.n_doors = doors->count_dev();
+            X.door_cap = doors->cap();
+        }
+        if (stage == APPLIER_STAGE_EMIT && lists->ticks != nullptr)
+            X.ticks = a.ticks_dev(lists->ticks);
+    }
     if (stage == APPLIER_STAGE_DOORS) {
         ObjectTable* doors = lists != nullptr ? lists->door_table : nullptr;
         ObjectTable* tiles = lists != nullptr ? lists->door_tiles : nullptr;

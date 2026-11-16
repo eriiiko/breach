@@ -172,10 +172,26 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:             walked in row order, each source added at once (saturating,
 #:             counted), its ticks counted down, the dead dropped by the span
 #:             compaction; the effect list is not read.
-STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("VENTS", False),
-                 ("DOORS", False), ("DETONATE", False), ("SOURCES", False))
+#:   EMIT / LOGIC / DOOR_INPUTS / PUMPS / SWAP  #29 P6b.3: slot 9e's signal
+#:             sub-steps (a), (b), (c), (d) pumps and (e), each walking the
+#:             signal tables (``unit_schema.SIGNAL_TABLE``, ``SENSOR_TABLE``,
+#:             ``NODE_TABLE``, ``PUMP_TABLE``, ``DOOR_DRIVE_TABLE`` and their
+#:             side tables), not the effect list: (a) the bus's emits in slot
+#:             order, then the sensors in ordinal order; (b) the nodes in
+#:             ordinal order, pub -> stg; (c) the wired doors' want_open in
+#:             door order; (d) the pumps in ordinal order, BEFORE the vents,
+#:             each applied at once over the seam; (e) pub <- stg on the node
+#:             slots, after every 9e(d) actuator. Numbered in the conductor's
+#:             9e order (P6b.3 moved VENTS 2 -> 6, DOORS 3 -> 7, DETONATE
+#:             4 -> 8, SOURCES 5 -> 10).
+STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("EMIT", False),
+                 ("LOGIC", False), ("DOOR_INPUTS", False), ("PUMPS", False),
+                 ("VENTS", False), ("DOORS", False), ("DETONATE", False),
+                 ("SWAP", False), ("SOURCES", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE,     STAGE_SOURCES = 0, 1, 2, 3, 4, 5
+(STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_EMIT, STAGE_LOGIC, STAGE_DOOR_INPUTS, STAGE_PUMPS,
+ STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE, STAGE_SWAP, STAGE_SOURCES) = range(11)
+assert STAGE_NAMES[STAGE_SWAP] == "SWAP" and STAGE_NAMES[STAGE_SOURCES] == "SOURCES"
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
 #: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
 #: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
@@ -316,6 +332,14 @@ BOOKS = BOOKS + (
     BookRow("source_taken", None,
             "the SOURCES stage: 1 when the pending plane held a source "
             "(take_source_plane returned a plane, not None)"),
+    # #29 P6b.3: the signal stages' named refusal and what they wrote
+    BookRow("signal_refused", None,
+            "LOGIC stages refused at their head: a filter node's ema, input or k "
+            "outside the proved range (nothing of the env's nodes written; "
+            "SignalRangeRefused)"),
+    BookRow("signal_writes", None,
+            "the signal stages' writes that changed a value (a pub / stg slot, a "
+            "want_open, a node's ema / state / dwell, a pump's at_target)"),
 ) + tuple(BookRow(f"trace_clip_{g}", f"trace_clip_books:{g}",
                   f"the counted trace saturation's clip on gas slice {g} "
                   f"(trace_store_sat / trace_add_sat)")
@@ -427,10 +451,30 @@ class BulkGasOverflow(RuntimeError):
     the device writes none of the deposit and the run is refused by name."""
 
 
+class SignalRangeRefused(RuntimeError):
+    """#29 P6b.3: a filter node's ``ema`` (an unbounded Python int), its input
+    or its ``k`` outside the range the LOGIC stage was proved for
+    (``cpp/src/cuda_unit_signals.cuh``: |ema|, |in| <= 2^60, 0 <= k <= 62):
+    the env's LOGIC stage is refused BY NAME at its head and nothing of it is
+    written."""
+
+
 class EffectRefused(RuntimeError):
     """#29 P7a.1: an effect of a kind the applier cannot apply yet (a PAYLOAD
     record until P7c.1), or a host effect with no device kind (FACE, a cover
     chew, a spray's cells, any other world call)."""
+
+
+def _signal_codes() -> tuple:
+    """#29 P6b.3: the code groups the signal stages read, as (group, names):
+    each name's index is its code (``unit_schema``'s encoders index the same
+    tuples)."""
+    from simulation import unit_schema as us
+    from simulation.entities.actuators import AIRLOCK_STATE_NAMES
+    return (("EMIT", tuple(us.SIGNAL_EMITS)), ("SENSOR", tuple(us.SENSOR_KINDS)),
+            ("CHANNEL", us.sensor_channels()), ("CMP", us.comparators()),
+            ("NODE", tuple(us.NODE_KINDS)),
+            ("AIRLOCK", tuple(str(n) for n in AIRLOCK_STATE_NAMES)))
 
 
 def non_resident_planes() -> tuple:
@@ -466,7 +510,7 @@ _LAYOUT_CACHE: dict = {}
 
 def layout() -> Layout:
     key = (FIELDS, KINDS, BOOK_NAMES, PLANES, CLEAR_PLANES, STAGES,
-           SEAM_REFUSAL_NAMES)
+           SEAM_REFUSAL_NAMES, _signal_codes())
     hit = _LAYOUT_CACHE.get(key)
     if hit is not None:
         return hit
@@ -481,6 +525,8 @@ def layout() -> Layout:
                     for i, (n, lands) in enumerate(STAGES))
     text += "".join(f"refusal:{i + 1}:{n}\n"
                     for i, n in enumerate(SEAM_REFUSAL_NAMES))
+    text += "".join(f"signal:{grp}:{i}:{n}\n" for grp, names in _signal_codes()
+                    for i, n in enumerate(names))
     lay = Layout(fields=FIELDS, kinds=KINDS, books=BOOK_NAMES, planes=PLANES,
                  clears=CLEAR_PLANES,
                  fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest(),
@@ -555,6 +601,13 @@ def header_text(lay: Layout | None = None) -> str:
     for i, n in enumerate(SEAM_REFUSAL_NAMES):
         lines.append(f"constexpr int64_t APPLIER_SEAM_{n.upper()} = {i + 1};")
     lines.append(f"constexpr int APPLIER_N_SEAM_REFUSALS = {len(SEAM_REFUSAL_NAMES)};")
+    lines += ["", "// #29 P6b.3: the signal tables' codes (unit_schema's SIGNAL_EMITS,",
+              "// SENSOR_KINDS, sensor_channels(), comparators(), NODE_KINDS; the",
+              "// airlock controller's states)."]
+    for grp, names in _signal_codes():
+        for i, n in enumerate(names):
+            lines.append(f"constexpr int64_t SIGNAL_{grp}_{n.upper()} = {i};")
+        lines.append(f"constexpr int SIGNAL_N_{grp} = {len(names)};")
     lines += ["", "}  // namespace applier", ""]
     return "\n".join(lines)
 
@@ -859,3 +912,5 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "destroy_records", "pack", "DeviceApplier", "books_dict",
            "host_book", "STAGE_DOORS", "SEAM_REFUSALS", "SEAM_REFUSAL_NAMES",
            "STAGE_VENTS", "LedgerRangeRefused"]
+__all__ += ["STAGE_EMIT", "STAGE_LOGIC", "STAGE_DOOR_INPUTS", "STAGE_PUMPS", "STAGE_SWAP",
+            "STAGE_VENTS", "STAGE_DOORS", "SignalRangeRefused"]

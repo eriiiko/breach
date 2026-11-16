@@ -1750,3 +1750,529 @@ __all__ += ["VentTableMismatch", "ducts_of", "vents_of", "duct_objects",
             "vent_objects", "ducts_to_host", "vents_to_host", "duct_entity_rows",
             "vent_entity_rows", "vent_tables", "VENT_LEDGERS", "vent_ledger_range",
             "sweep_vents"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.3: THE SIGNALS -- the bus, the sensors, the logic nodes, the pumps
+# and the doors' wire drives as entity tables (unit_schema.SIGNAL_TABLE,
+# SENSOR_TABLE + SENSOR_TILE_TABLE, NODE_TABLE + NODE_IN_TABLE, PUMP_TABLE +
+# PUMP_IN_TABLE, DOOR_DRIVE_TABLE) and slot 9e's (a), (b), (c), (d) pumps and
+# (e) as the applier's EMIT, LOGIC, DOOR_INPUTS, PUMPS and SWAP stages
+# (cpp/src/cuda_unit_signals.cuh)
+# ---------------------------------------------------------------------------
+class SignalTableMismatch(RuntimeError):
+    """Signal-table rows that are not the sim's (another count, slot,
+    ordinal, kind or load constant)."""
+
+
+class SignalTableRefused(RuntimeError):
+    """A bus slot the device's emit cannot serve, by name: an ``is_open`` of a
+    non-door entity that carries a ``state`` (its state moves in the tick),
+    or an ``alive`` of a class whose alive moves in the tick on the host only
+    (a heat source, a cover row: P6b.4's / not ported)."""
+
+
+#: The signal tables' list names in the applier's ``signal_tables`` order.
+SIGNAL_LISTS = ("signals", "sensors", "sensor_tiles", "nodes", "node_ins", "pumps",
+                "pump_ins", "door_drives")
+_SIGNAL_TABLE_NAMES = ("signal", "sensor", "sensor_tile", "node", "node_in", "pump",
+                       "pump_in", "door_drive")
+#: Classes whose ``alive`` changes inside a tick on the host only.
+_ALIVE_MOVES = ("heat_source", "cover")
+
+
+def _rows(recs, table) -> np.ndarray:
+    from simulation import object_tables
+    return np.asarray(recs, dtype=np.int64).reshape(
+        -1, object_tables.table_layout(table).width)
+
+
+def signal_rows(sim) -> list:
+    """The bus (``sim._signal_bus``, slot order) as ``unit_schema.SignalRow``
+    objects: each slot's pub / stg, node flag and its 9e(a) emit (a door's
+    is_open / alive by its door-table row, a constant alive by its value);
+    empty without a bus. Refuses an emit the device cannot serve by name
+    (:class:`SignalTableRefused`)."""
+    from simulation import unit_schema as us
+    from simulation.signal_bus import ALIVE_NAME
+    bus = getattr(sim, "_signal_bus", None)
+    if bus is None:
+        return []
+    door_row = {int(d.ordinal): k for k, d in enumerate(getattr(sim, "_doors", ()) or ())}
+    by_ord = getattr(sim, "_entity_by_ordinal", {}) or {}
+    node = set(int(i) for i in bus._node_slots)
+    out = []
+    for idx, (o, n) in enumerate(bus.slots):
+        ent = by_ord.get(int(o))
+        emit, ref = "none", 0
+        if ent is not None and n in ("is_open", ALIVE_NAME):
+            if int(o) in door_row and ent is sim._doors[door_row[int(o)]]:
+                emit, ref = ("door_open" if n == "is_open" else "door_alive"), door_row[int(o)]
+            elif n == "is_open":
+                if hasattr(ent, "state"):
+                    raise SignalTableRefused(
+                        f"signals: slot {idx} ({o}, 'is_open') reads the state of "
+                        f"{ent.class_name!r} entity {ent.id!r}, which is not a door")
+                emit, ref = "constant", 0      # getattr(ent, "state", None) != DOOR_OPEN
+            else:
+                if ent.class_name in _ALIVE_MOVES:
+                    raise SignalTableRefused(
+                        f"signals: slot {idx} ({o}, 'alive') reads the alive of "
+                        f"{ent.class_name!r} entity {ent.id!r}, which moves on the host "
+                        f"only")
+                emit, ref = "constant", 1 if getattr(ent, "alive", True) else 0
+        out.append(us.SignalRow(ordinal=int(o), name=str(n), pub=int(bus.pub[idx]),
+                                stg=int(bus.stg[idx]), node=idx in node, emit=emit,
+                                emit_ref=int(ref)))
+    return out
+
+
+def sensor_rows(sim) -> list:
+    """``sim._sensors`` (ordinal order) as ``unit_schema.SensorRow`` objects."""
+    from simulation import sensor_system, unit_schema as us
+    from simulation.gases import O2, SMOKE
+    chans = us.sensor_channels()
+    out = []
+    for s in getattr(sim, "_sensors", ()) or ():
+        kw = dict(ordinal=int(s.inst.ordinal), alive=bool(getattr(s.inst, "alive", True)),
+                  slot=int(s.value_slot), channel=-1, gas=-1, sy=0, sx=0,
+                  has_disc=False, disc=[], period=0, r2=0, needs_los=False, faction=0,
+                  min_footprint=0)
+        if isinstance(s, sensor_system._FieldSensorRuntime):
+            ch = s.channel.value
+            kw.update(kind="field", channel=chans.index(ch),
+                      gas=SMOKE if ch == "smoke" else (O2 if ch == "o2" else -1),
+                      sy=s.sample_tile[0], sx=s.sample_tile[1],
+                      has_disc=s.disc is not None,
+                      disc=[(int(y), int(x)) for y, x in (s.disc or ())])
+        elif isinstance(s, sensor_system._ClockSensorRuntime):
+            kw.update(kind="clock", period=int(s.period))
+        elif isinstance(s, sensor_system._MotionSensorRuntime):
+            kw.update(kind="motion", sy=s.sy, sx=s.sx, r2=s.r2, needs_los=s.needs_los,
+                      faction=s.faction, min_footprint=s.min_footprint)
+        else:                              # pragma: no cover - a new sensor runtime
+            raise SignalTableRefused(f"signals: sensor runtime {type(s).__name__} has no "
+                                     f"device row")
+        out.append(us.SensorRow(**kw))
+    return out
+
+
+def node_rows(sim) -> list:
+    """``sim._logic_nodes`` (ordinal order) as ``unit_schema.NodeRow`` objects:
+    the predicate as its comparator CODE (never the lambda)."""
+    from simulation import logic_nodes as ln, unit_schema as us
+    from simulation.entities.schema import INPUT_AND
+    insts = sorted((e for e in sim.entities if ln.is_logic_node(e.class_name)),
+                   key=lambda e: int(e.ordinal))
+    nodes = list(getattr(sim, "_logic_nodes", ()) or ())
+    if len(insts) != len(nodes):
+        raise SignalTableMismatch(f"nodes: {len(nodes)} evaluators for {len(insts)} "
+                                  f"logic-node entities")
+    out = []
+    for e, n in zip(insts, nodes):
+        kw = dict(ordinal=int(e.ordinal), out=None, ins=[], cmp=0, threshold=0,
+                  require_alive=False, alive_slot=None, k=0, ema=0,
+                  a_in=[None] * len(us.AIRLOCK_INPUTS),
+                  a_out=[None] * len(us.AIRLOCK_OUTPUTS), far_is_outer=False,
+                  equalize_cmd=0, interior=False, band=0, state=0, dwell=0)
+        if isinstance(n, ln._DeciderEval):
+            kw.update(kind="decider", out=n.out_slot, ins=list(n.in_slots),
+                      cmp=us.comparators().index(n.comparator), threshold=n.threshold,
+                      require_alive=n.require_alive, alive_slot=n.alive_slot)
+        elif isinstance(n, ln._GateEval):
+            kw.update(kind="gate_and" if n.mode == INPUT_AND else "gate_or",
+                      out=n.out_slot, ins=list(n.in_slots))
+        elif isinstance(n, ln._NotEval):
+            kw.update(kind="gate_not", out=n.out_slot, ins=list(n.in_slots))
+        elif isinstance(n, ln.FilterRuntime):
+            kw.update(kind="filter", out=n.out_slot,
+                      ins=[] if n.in_slot is None else [n.in_slot], k=n.k, ema=n.ema)
+        elif isinstance(n, ln.AirlockControllerRuntime):
+            kw.update(kind="airlock_controller",
+                      a_in=[getattr(n, a) for a in us._AIRLOCK_IN_ATTR],
+                      a_out=[getattr(n, a) for a in us._AIRLOCK_OUT_ATTR],
+                      far_is_outer=n.far_is_outer, equalize_cmd=n.equalize_cmd,
+                      interior=n.interior, band=n.band, state=n.state, dwell=n.dwell)
+        else:                              # pragma: no cover - a new node class
+            raise SignalTableRefused(f"signals: node evaluator {type(n).__name__} has no "
+                                     f"device row")
+        out.append(us.NodeRow(**kw))
+    return out
+
+
+def pump_rows(sim) -> list:
+    """``sim._pumps`` (ordinal order) as ``unit_schema.PumpRow`` objects."""
+    from simulation import unit_schema as us
+    out = []
+    for p in getattr(sim, "_pumps", ()) or ():
+        src = p.source if p.source is not None else (0, 0)
+        out.append(us.PumpRow(
+            ordinal=int(p.ordinal), alive=bool(p.alive), at_target=int(p.at_target),
+            at_slot=p.at_target_slot, port_y=p.port_y, port_x=p.port_x,
+            has_source=p.source is not None, src_y=int(src[0]), src_x=int(src[1]),
+            target=p.target_atm, band=p.band, release=p.release, delta_n_q=p.delta_n_q,
+            ins=[(int(s), False) for s in p.inject_slots] +
+                [(int(s), True) for s in p.extract_slots]))
+    return out
+
+
+def drive_rows(sim) -> list:
+    """``sim._door_drives`` as ``unit_schema.DriveRow`` objects: door (= door
+    table row) order, each door's open wires then its close wires."""
+    from simulation import unit_schema as us
+    drives = getattr(sim, "_door_drives", {}) or {}
+    out = []
+    for k, d in enumerate(getattr(sim, "_doors", ()) or ()):
+        drv = drives.get(int(d.ordinal))
+        if drv is None:
+            continue
+        out += [us.DriveRow(door=k, close=False, slot=int(s)) for s in drv["open"]]
+        out += [us.DriveRow(door=k, close=True, slot=int(s)) for s in drv["close"]]
+    return out
+
+
+def _records_of(table, objs) -> np.ndarray:
+    from simulation import object_tables
+    return _rows(object_tables.records(table, objs), table)
+
+
+def _side_of(table, objs, span) -> np.ndarray:
+    from simulation import object_tables, unit_schema as us
+    side = {s.name: s.side for s in table.spans}[span]
+    return _rows(object_tables.side_records(table, objs, span),
+                 {t.name: t for t in us.OBJECT_TABLES}[side])
+
+
+def signals_of(sim) -> np.ndarray:
+    """THE record function of the bus table: ``(S, W)`` int64, slot order."""
+    from simulation import unit_schema as us
+    return _records_of(us.SIGNAL_TABLE, signal_rows(sim))
+
+
+def sensors_of(sim) -> np.ndarray:
+    """THE record function of the sensor table (ordinal order)."""
+    from simulation import unit_schema as us
+    return _records_of(us.SENSOR_TABLE, sensor_rows(sim))
+
+
+def sensor_tiles_of(sim) -> np.ndarray:
+    """THE record function of the sensor disc side table."""
+    from simulation import unit_schema as us
+    return _side_of(us.SENSOR_TABLE, sensor_rows(sim), "disc")
+
+
+def nodes_of(sim) -> np.ndarray:
+    """THE record function of the node table (ordinal order)."""
+    from simulation import unit_schema as us
+    return _records_of(us.NODE_TABLE, node_rows(sim))
+
+
+def node_ins_of(sim) -> np.ndarray:
+    """THE record function of the node input side table."""
+    from simulation import unit_schema as us
+    return _side_of(us.NODE_TABLE, node_rows(sim), "ins")
+
+
+def pumps_of(sim) -> np.ndarray:
+    """THE record function of the pump table (ordinal order)."""
+    from simulation import unit_schema as us
+    return _records_of(us.PUMP_TABLE, pump_rows(sim))
+
+
+def pump_ins_of(sim) -> np.ndarray:
+    """THE record function of the pump input side table."""
+    from simulation import unit_schema as us
+    return _side_of(us.PUMP_TABLE, pump_rows(sim), "ins")
+
+
+def door_drives_of(sim) -> np.ndarray:
+    """THE record function of the door drive table."""
+    from simulation import unit_schema as us
+    return _records_of(us.DOOR_DRIVE_TABLE, drive_rows(sim))
+
+
+#: list name -> its record function.
+SIGNAL_RECORDS = {"signals": signals_of, "sensors": sensors_of,
+                  "sensor_tiles": sensor_tiles_of, "nodes": nodes_of,
+                  "node_ins": node_ins_of, "pumps": pumps_of, "pump_ins": pump_ins_of,
+                  "door_drives": door_drives_of}
+
+
+def _unpack(table, recs, sides=None) -> list:
+    from simulation import object_tables
+    r = _rows(recs, table)
+    return object_tables.unpack(table, r, r.shape[0], sides=sides)
+
+
+def signal_objects(recs) -> list:
+    from simulation import unit_schema as us
+    return _unpack(us.SIGNAL_TABLE, recs)
+
+
+def sensor_objects(recs, tile_recs) -> list:
+    from simulation import unit_schema as us
+    t = _rows(tile_recs, us.SENSOR_TILE_TABLE)
+    return _unpack(us.SENSOR_TABLE, recs, {"disc": (t, t.shape[0])})
+
+
+def node_objects(recs, in_recs) -> list:
+    from simulation import unit_schema as us
+    t = _rows(in_recs, us.NODE_IN_TABLE)
+    return _unpack(us.NODE_TABLE, recs, {"ins": (t, t.shape[0])})
+
+
+def pump_objects(recs, in_recs) -> list:
+    from simulation import unit_schema as us
+    t = _rows(in_recs, us.PUMP_IN_TABLE)
+    return _unpack(us.PUMP_TABLE, recs, {"ins": (t, t.shape[0])})
+
+
+def drive_objects(recs) -> list:
+    from simulation import unit_schema as us
+    return _unpack(us.DOOR_DRIVE_TABLE, recs)
+
+
+def signals_to_host(sim, recs) -> None:
+    """The device's bus rows LANDED on the sim's own bus in place (pub and
+    stg); another slot table is refused by name (:class:`SignalTableMismatch`)."""
+    rows = signal_objects(recs)
+    bus = getattr(sim, "_signal_bus", None)
+    slots = () if bus is None else bus.slots
+    if [(r.ordinal, r.name) for r in rows] != [(int(o), str(n)) for o, n in slots]:
+        raise SignalTableMismatch(f"signals: {len(rows)} device rows are not the bus's "
+                                  f"{len(slots)} slots")
+    for i, r in enumerate(rows):
+        bus.pub[i] = int(r.pub)
+        bus.stg[i] = int(r.stg)
+
+
+def _same_rows(what, got, want) -> None:
+    if np.asarray(got, dtype=np.int64).tolist() != np.asarray(want, dtype=np.int64).tolist():
+        raise SignalTableMismatch(f"{what}: the device rows are not the sim's (load "
+                                  f"constants only: nothing lands)")
+
+
+def sensors_to_host(sim, recs, tile_recs=None) -> None:
+    """The sensor table holds load constants only: its rows must be the
+    sim's (refused by name otherwise); nothing lands."""
+    _same_rows("sensors", recs, sensors_of(sim))
+    if tile_recs is not None:
+        _same_rows("sensor tiles", tile_recs, sensor_tiles_of(sim))
+
+
+def nodes_to_host(sim, recs, in_recs=None) -> None:
+    """The device's node rows LANDED on the sim's own evaluators: a filter's
+    ``ema``, an airlock controller's ``state`` / ``dwell``; a row whose
+    ordinal, kind or wiring is not that node's is refused by name."""
+    from simulation import logic_nodes as ln
+    in_recs = node_ins_of(sim) if in_recs is None else in_recs
+    rows = node_objects(recs, in_recs)
+    mine = node_rows(sim)
+    if len(rows) != len(mine):
+        raise SignalTableMismatch(f"nodes: {len(rows)} device rows for {len(mine)} nodes")
+    for k, (r, m) in enumerate(zip(rows, mine)):
+        m.ema, m.state, m.dwell = r.ema, r.state, r.dwell
+        if r != m:
+            raise SignalTableMismatch(f"nodes: row {k} (ordinal {r.ordinal}) is not the "
+                                      f"sim's node (ordinal {m.ordinal})")
+    for r, n in zip(rows, sim._logic_nodes):
+        if isinstance(n, ln.FilterRuntime):
+            n.ema = int(r.ema)
+        elif isinstance(n, ln.AirlockControllerRuntime):
+            n.state, n.dwell = int(r.state), int(r.dwell)
+
+
+def pumps_to_host(sim, recs, in_recs=None) -> None:
+    """The device's pump rows LANDED on the sim's own ``PumpRuntime``s: the
+    latch ``at_target``; another row is refused by name."""
+    in_recs = pump_ins_of(sim) if in_recs is None else in_recs
+    rows = pump_objects(recs, in_recs)
+    mine = pump_rows(sim)
+    if len(rows) != len(mine):
+        raise SignalTableMismatch(f"pumps: {len(rows)} device rows for {len(mine)} pumps")
+    for k, (r, m) in enumerate(zip(rows, mine)):
+        m.at_target = r.at_target
+        if r != m:
+            raise SignalTableMismatch(f"pumps: row {k} (ordinal {r.ordinal}) is not the "
+                                      f"sim's pump (ordinal {m.ordinal})")
+    for r, p in zip(rows, sim._pumps):
+        p.at_target = int(r.at_target)
+
+
+def drives_to_host(sim, recs) -> None:
+    """The door drives are load constants: the rows must be the sim's."""
+    _same_rows("door drives", recs, door_drives_of(sim))
+
+
+def signal_digest_rows(recs) -> tuple:
+    """The ``__signals__`` payload read from the bus table: ``(ordinal, name,
+    pub)`` for every non-``alive`` slot in slot order (P6b.4's export), held
+    equal to ``SignalBus.digest_rows``."""
+    return tuple((r.ordinal, r.name, int(r.pub)) for r in signal_objects(recs)
+                 if r.name != "alive")
+
+
+def node_entity_rows(rec) -> tuple:
+    """A node row's runtime part of ENTITY_SECT_V1 after the free ``alive``
+    row (always 1: nothing kills a node): a filter's ``ema``, an airlock
+    controller's ``state`` / ``dwell``, nothing for the stateless nodes."""
+    from simulation import object_tables, unit_schema as us
+    v = object_tables.row_values(us.NODE_TABLE, rec)
+    kind = us.NODE_KINDS[int(v["kind"])]
+    rows = [("alive", 1)]
+    if kind == "filter":
+        rows.append(("ema", int(v["ema"])))
+    elif kind == "airlock_controller":
+        rows += [("state", int(v["state"])), ("dwell", int(v["dwell"]))]
+    return tuple(rows)
+
+
+def pump_entity_rows(rec) -> tuple:
+    """A pump row's part of ENTITY_SECT_V1: the free ``alive`` row, then
+    ``pump.runtime_digest_rows`` (``at_target``)."""
+    from simulation import object_tables, unit_schema as us
+    v = object_tables.row_values(us.PUMP_TABLE, rec)
+    return (("alive", int(v["alive"])), ("at_target", int(v["at_target"])))
+
+
+def signal_tables(n_env: int, bp=None) -> dict:
+    """The eight device signal tables for ``n_env`` envs, by list name
+    (:data:`SIGNAL_LISTS`; ``object_tables.DeviceTable`` each)."""
+    from simulation import object_tables, unit_schema as us
+    by = {t.name: t for t in us.OBJECT_TABLES}
+    return {ln: object_tables.DeviceTable(by[tn], n_env, bp=bp)
+            for ln, tn in zip(SIGNAL_LISTS, _SIGNAL_TABLE_NAMES)}
+
+
+#: The filter's proved range (cpp/src/cuda_unit_signals.cuh).
+FILTER_LIM, FILTER_K_MAX = 1 << 60, 62
+
+
+def filter_range(node_rec, in_recs, bus_recs) -> list:
+    """The operands of ONE node row outside the range the LOGIC stage was
+    proved for, as ``(name, value, lo, hi)`` (empty: the node may run): a
+    filter's ``k``, ``ema`` and input. The host twin of the stage's head."""
+    from simulation import object_tables, unit_schema as us
+    v = object_tables.row_values(us.NODE_TABLE, node_rec)
+    if us.NODE_KINDS[int(v["kind"])] != "filter":
+        return []
+    out = []
+    x = 0
+    if int(v["in_count"]) > 0:
+        slot = int(np.asarray(in_recs)[int(v["in_start"]), 0])
+        x = int(object_tables.row_values(us.SIGNAL_TABLE, bus_recs[slot])["pub"])
+    for name, val, lo, hi in (("k", int(v["k"]), 0, FILTER_K_MAX),
+                              ("ema", int(v["ema"]), -FILTER_LIM, FILTER_LIM),
+                              ("in", x, -FILTER_LIM, FILTER_LIM)):
+        if not lo <= val <= hi:
+            out.append((name, val, lo, hi))
+    return out
+
+
+def _signal_run(name, store, dev_applier, fields, stage, lists, ticks=None):
+    from simulation import applier
+    n = store.shape[0]
+    if dev_applier.n_env != n:
+        raise ValueError(f"unit kernel {name}: the applier is for {dev_applier.n_env} "
+                         f"envs, the store {n}")
+    tabs = [lists.get(ln) for ln in SIGNAL_LISTS]
+    _check_tables(name, store, *[t for t in tabs if t is not None])
+    doors = lists.get("doors")
+    if fields is None:                    # a stage that reads no plane
+        ptrs, n_gases, h, w = np.zeros(applier.N_PLANES, dtype=np.uint64), 1, 1, 1
+    else:
+        ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
+    tk = None if ticks is None else np.ascontiguousarray(ticks, dtype=np.int64)
+    b, _cov, _rdrop = store.bp.applier_run(
+        dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w, int(stage),
+        None, door_table=None if doors is None else doors.buffer,
+        signal_tables=[None if t is None else t.buffer for t in tabs], ticks=tk)
+    books = applier.books_dict(b)
+    store.last_books = books
+    if books["faults"].any():
+        envs = [int(e) for e in np.nonzero(books["faults"])[0]]
+        raise applier.ApplierFault(
+            f"unit kernel {name}: {int(books['faults'].sum())} fault(s) in env(s) {envs} "
+            f"(a slot, door row or span outside its table, a sample tile off the grid, a "
+            f"clock period < 1, a sight end past its range, or a pump's seam call the "
+            f"reference would raise on / past its proved range)")
+    return books["signal_writes"].copy(), books
+
+
+def signals_emit(store, dev_applier, fields: dict, lists: dict, ticks) -> tuple:
+    """Slot 9e(a) (``Simulation._signal_emit`` then ``sample_sensors``) as the
+    applier's EMIT stage: per env the bus's emits in slot order (the door
+    table's state / alive), then every sensor in ordinal order on the env's
+    planes (``fields`` as :func:`walk_effects'`), unit rows (the motion
+    plates) and tick (``ticks`` (N,), the clock). Writes the bus in place.
+    Returns ``(coverage, books)``: coverage the bus writes that changed a
+    value (``signal_writes``)."""
+    from simulation import applier
+    return _signal_run("applier[EMIT]", store, dev_applier, fields, applier.STAGE_EMIT,
+                       lists, ticks)
+
+
+def signals_logic(store, dev_applier, lists: dict) -> tuple:
+    """Slot 9e(b) (``sweep_logic_nodes``) as the applier's LOGIC stage: every
+    node in ordinal order reads pub and writes stg (the node table's ema /
+    state / dwell in place). Refuses by name an env whose filter left the
+    proved range (:class:`simulation.applier.SignalRangeRefused`, naming the
+    env, the node and the operand: nothing of the env's nodes written)."""
+    from simulation import applier
+    name = "applier[LOGIC]"
+    cov, books = _signal_run(name, store, dev_applier, None, applier.STAGE_LOGIC, lists)
+    if books["signal_refused"].any():
+        nr, nc, _ = lists["nodes"].download()
+        ir, ic, _ = lists["node_ins"].download()
+        br, bc, _ = lists["signals"].download()
+        named = []
+        for e in np.nonzero(books["signal_refused"])[0]:
+            for k in range(int(nc[e])):
+                bad = filter_range(nr[e, k], ir[e, :int(ic[e])], br[e, :int(bc[e])])
+                if bad:
+                    named.append(f"env {int(e)} node row {k} (ordinal {int(nr[e, k, 0])}): "
+                                 + ", ".join(f"{nm} = {x} outside [{lo}, {hi}]"
+                                             for nm, x, lo, hi in bad))
+        raise applier.SignalRangeRefused(
+            f"unit kernel {name}: {int(books['signal_refused'].sum())} env(s) refused at "
+            f"the head of the node sweep, a filter outside the proved range (nothing of "
+            f"them written): " + "; ".join(named))
+    return cov, books
+
+
+def signals_door_inputs(store, dev_applier, lists: dict) -> tuple:
+    """Slot 9e(c) (``Simulation._resolve_door_inputs``) as the applier's
+    DOOR_INPUTS stage: each wired door's ``want_open`` on the door table
+    (close beats open; neither keeps the latch)."""
+    from simulation import applier
+    return _signal_run("applier[DOOR_INPUTS]", store, dev_applier, None,
+                       applier.STAGE_DOOR_INPUTS, lists)
+
+
+def signals_pumps(store, dev_applier, fields: dict, lists: dict) -> tuple:
+    """Slot 9e(d)'s pumps (``sweep_pumps``) as the applier's PUMPS stage:
+    every pump in ordinal order, its flux through the topology seam on the
+    env's planes (in place, booked), then its latch and its slot."""
+    from simulation import applier
+    return _signal_run("applier[PUMPS]", store, dev_applier, fields, applier.STAGE_PUMPS,
+                       lists)
+
+
+def signals_swap(store, dev_applier, lists: dict) -> tuple:
+    """Slot 9e(e) (``SignalBus.swap_node_signals``) as the applier's SWAP
+    stage: pub <- stg on the node slots."""
+    from simulation import applier
+    return _signal_run("applier[SWAP]", store, dev_applier, None, applier.STAGE_SWAP,
+                       lists)
+
+
+__all__ += ["SignalTableMismatch", "SignalTableRefused", "SIGNAL_LISTS", "signal_rows",
+            "sensor_rows", "node_rows", "pump_rows", "drive_rows", "signals_of",
+            "sensors_of", "sensor_tiles_of", "nodes_of", "node_ins_of", "pumps_of",
+            "pump_ins_of", "door_drives_of", "SIGNAL_RECORDS", "signal_objects",
+            "sensor_objects", "node_objects", "pump_objects", "drive_objects",
+            "signals_to_host", "sensors_to_host", "nodes_to_host", "pumps_to_host",
+            "drives_to_host", "signal_digest_rows", "node_entity_rows",
+            "pump_entity_rows", "signal_tables", "FILTER_LIM", "FILTER_K_MAX",
+            "filter_range", "signals_emit", "signals_logic", "signals_door_inputs",
+            "signals_pumps", "signals_swap"]

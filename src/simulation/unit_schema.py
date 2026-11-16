@@ -1471,6 +1471,345 @@ SOURCE_TABLE = ObjectTable(
 OBJECT_TABLES = OBJECT_TABLES + (SOURCE_TILE_TABLE, SOURCE_TABLE)   # #29 P7c.2
 
 
+# ---------------------------------------------------------------------------
+# #29 P6b.3: THE SIGNALS -- the signal bus (``Simulation._signal_bus``), the
+# sensors (``_sensors``), the logic nodes (``_logic_nodes``), the pumps
+# (``_pumps``) and the doors' wire drives (``_door_drives``) as entity tables:
+# every attribute slot 9e's (a), (b), (c), (d) pumps and (e) read or write,
+# in the reference's order (the bus in slot order, the rest in ordinal order)
+# ---------------------------------------------------------------------------
+#: Bus slots per env: storage (airlock_demo holds 17; the gate scene ~70).
+SIGNAL_CAPACITY = 256
+#: Sensors per env (airlock_demo 2; the gate scene 12).
+SENSOR_CAPACITY = 32
+#: Area-disc tiles over all of an env's sensors (a 2 m disc at 1/3 m tiles
+#: holds 113); it also bounds one sensor's disc.
+SENSOR_TILE_CAPACITY = 1024
+#: Logic nodes per env (airlock_demo 3; the gate scene ~20).
+NODE_CAPACITY = 64
+#: Driving wires over all of an env's nodes' ``in`` inputs.
+NODE_IN_CAPACITY = 256
+#: Pumps per env (airlock_demo 1).
+PUMP_CAPACITY = 16
+#: Driving wires over all of an env's pumps' inject / extract inputs.
+PUMP_IN_CAPACITY = 64
+#: Door drive wires per env (airlock_demo 4).
+DOOR_DRIVE_CAPACITY = 64
+
+#: A bus slot's 9e(a) EMIT kind (``Simulation._signal_emit``): none (a sensor
+#: value, a node output, a pump's at_target, a dangling emitter, any other
+#: name), a door's ``is_open`` / ``alive`` (from the door table's row
+#: ``emit_ref``), or a CONSTANT ``alive`` (an entity whose alive never changes
+#: in the tick: ``emit_ref`` holds it).
+SIGNAL_EMITS = ("none", "door_open", "door_alive", "constant")
+#: A sensor's kind (``sensor_system``'s three runtimes).
+SENSOR_KINDS = ("field", "clock", "motion")
+#: The logic-node classes (``logic_nodes.build_logic_nodes``' branches).
+NODE_KINDS = ("decider", "gate_and", "gate_or", "gate_not", "filter",
+              "airlock_controller")
+#: The airlock controller's wired inputs and command outputs, in its row's
+#: ``a_in`` / ``a_out`` column order (``AirlockControllerRuntime``'s slots).
+AIRLOCK_INPUTS = ("presence", "inner_open", "outer_open", "inner_alive",
+                  "outer_alive", "at_far", "at_near", "chamber_p",
+                  "inner_side_p", "outer_side_p")
+AIRLOCK_OUTPUTS = ("inner_close", "inner_open_cmd", "outer_close",
+                   "outer_open_cmd", "pump_inject", "pump_extract", "busy",
+                   "near_pump_inject", "near_pump_extract")
+_AIRLOCK_IN_ATTR = ("i_presence", "i_inner_open", "i_outer_open", "i_inner_alive",
+                    "i_outer_alive", "i_at_far", "i_at_near", "i_chamber_p",
+                    "i_inner_side_p", "i_outer_side_p")
+_AIRLOCK_OUT_ATTR = ("o_inner_close", "o_inner_open", "o_outer_close", "o_outer_open",
+                     "o_inject", "o_extract", "o_busy", "o_near_inject", "o_near_extract")
+#: No slot (an unwired input, a node with no ``out``, a pump with no
+#: ``at_target`` slot, a decider with no alive source).
+NO_SLOT = -1
+
+
+def sensor_channels() -> tuple:
+    """The accessor's FROZEN channel order (``sensor_accessor.CHANNEL_ORDER``):
+    a sensor row's ``channel`` is its index here."""
+    from simulation.sensor_accessor import CHANNEL_ORDER
+    return tuple(c.value for c in CHANNEL_ORDER)
+
+
+def comparators() -> tuple:
+    """The decider's comparator tokens: a node row's ``cmp`` is its index."""
+    from simulation.entities.nodes import COMPARATORS
+    return tuple(COMPARATORS)
+
+
+def signal_names() -> tuple:
+    """Every signal name a bus slot can hold (every registered class's
+    SIGNALS, the free ``alive``, a door's ``is_open``), SORTED: a bus row's
+    ``name`` is its index here."""
+    from simulation.entities import REGISTRY
+    names = {"alive", "is_open"}
+    for cls in REGISTRY.values():
+        names.update(str(s.name) for s in getattr(cls, "SIGNALS", ()))
+    return tuple(sorted(names))
+
+
+def _enc_code(choices):
+    def enc(v):
+        c = choices() if callable(choices) else choices
+        if v not in c:
+            raise ValueError(f"unit schema: {v!r} is not one of {c}")
+        return c.index(v)
+    return enc
+
+
+def _dec_code(choices):
+    def dec(e):
+        c = choices() if callable(choices) else choices
+        return c[int(e)]
+    return dec
+
+
+def _enc_slot(v):
+    return NO_SLOT if v is None else int(v)
+
+
+def _dec_slot(e):
+    return None if int(e) == NO_SLOT else int(e)
+
+
+def _enc_slots(width):
+    def enc(v):
+        v = list(v)
+        if len(v) != width:
+            raise ValueError(f"unit schema: a {width}-slot column holds {len(v)}")
+        return tuple(_enc_slot(x) for x in v)
+    return enc
+
+
+def _dec_slots(e):
+    return [_dec_slot(x) for x in e]
+
+
+class _Row:
+    """A table's row object (``unpack``'s product and the record functions'
+    input): plain attributes, ``__slots__`` the columns."""
+    __slots__ = ()
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw[k])
+
+    def as_tuple(self):
+        return tuple(getattr(self, k) for k in self.__slots__)
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self.as_tuple() == other.as_tuple()
+
+    def __repr__(self):
+        return f"{type(self).__name__}{self.as_tuple()!r}"
+
+
+class SignalRow(_Row):
+    """One bus slot: its ``(ordinal, name)``, ``pub`` / ``stg``, whether it
+    is a NODE slot (swapped at 9e(e)), and its 9e(a) emit."""
+    __slots__ = ("ordinal", "name", "pub", "stg", "node", "emit", "emit_ref")
+
+
+class SensorRow(_Row):
+    """One sensor (``sensor_system``'s runtimes): its kind and value slot, a
+    field sensor's channel, gas slice, sample tile and area disc, a clock's
+    period, a motion plate's tile, r2, line-of-sight flag and filters."""
+    __slots__ = ("ordinal", "alive", "kind", "slot", "channel", "gas", "sy", "sx",
+                 "has_disc", "disc", "period", "r2", "needs_los", "faction",
+                 "min_footprint")
+
+
+class NodeRow(_Row):
+    """One logic node (``logic_nodes``' evaluators): its class, its ``out``
+    slot, the driving slots of its ``in`` input, a decider's predicate CODE and
+    operands, a filter's ``k`` and ``ema``, an airlock controller's input and
+    output slots, constants and state machine (``state``, ``dwell``)."""
+    __slots__ = ("ordinal", "kind", "out", "ins", "cmp", "threshold",
+                 "require_alive", "alive_slot", "k", "ema", "a_in", "a_out",
+                 "far_is_outer", "equalize_cmd", "interior", "band", "state",
+                 "dwell")
+
+
+class PumpRow(_Row):
+    """One pump (``PumpRuntime``): its latch, slot, port, source, target,
+    bands, quantum and the driving slots of inject (0) / extract (1)."""
+    __slots__ = ("ordinal", "alive", "at_target", "at_slot", "port_y", "port_x",
+                 "has_source", "src_y", "src_x", "target", "band", "release",
+                 "delta_n_q", "ins")
+
+
+class DriveRow(_Row):
+    """One wire into a door's ``open`` / ``close`` (``Simulation._door_drives``):
+    the door table's row, close (1) or open (0), the driving slot."""
+    __slots__ = ("door", "close", "slot")
+
+
+def _build_row(cls):
+    def build(attrs: dict):
+        return cls(**{k: attrs[k] for k in cls.__slots__})
+    return build
+
+
+def _build_tile(attrs: dict):
+    return (attrs["ty"], attrs["tx"])
+
+
+def _build_in_slot(attrs: dict):
+    return attrs["slot"]
+
+
+def _build_pump_in(attrs: dict):
+    return (attrs["slot"], attrs["extract"])
+
+
+#: THE bus table (``SignalBus.slots`` order, (ordinal, name) sorted): one row
+#: per slot.
+SIGNAL_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("name", _enc_code(signal_names), decode=_dec_code(signal_names)),
+    TableColumn("pub", _enc_int),
+    TableColumn("stg", _enc_int),
+    TableColumn("node", _enc_bool, decode=_dec_bool),
+    TableColumn("emit", _enc_code(SIGNAL_EMITS), decode=_dec_code(SIGNAL_EMITS)),
+    TableColumn("emit_ref", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+SIGNAL_TABLE = ObjectTable(name="signal", columns=SIGNAL_SCHEMA,
+                           capacity=SIGNAL_CAPACITY, live="live",
+                           build=_build_row(SignalRow))
+
+#: THE sensor disc side table: each sensor's area disc tiles in the
+#: runtime's order (dy then dx, clipped), concatenated in sensor order.
+SENSOR_TILE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ty", _enc_int, get=lambda t: t[0]),
+    TableColumn("tx", _enc_int, get=lambda t: t[1]),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+SENSOR_TILE_TABLE = ObjectTable(name="sensor_tile", columns=SENSOR_TILE_SCHEMA,
+                                capacity=SENSOR_TILE_CAPACITY, live="live",
+                                build=_build_tile)
+
+#: THE sensor table (``Simulation._sensors``, ordinal order).
+SENSOR_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("kind", _enc_code(SENSOR_KINDS), decode=_dec_code(SENSOR_KINDS)),
+    TableColumn("slot", _enc_int),
+    TableColumn("channel", _enc_int),          # sensor_channels() index, -1 none
+    TableColumn("gas", _enc_int),              # the channel's gas slice, -1 none
+    TableColumn("sy", _enc_int),
+    TableColumn("sx", _enc_int),
+    TableColumn("has_disc", _enc_bool, decode=_dec_bool),
+    TableColumn("tile_start", _enc_int),
+    TableColumn("tile_count", _enc_int),
+    TableColumn("period", _enc_int),
+    TableColumn("r2", _enc_int),
+    TableColumn("needs_los", _enc_bool, decode=_dec_bool),
+    TableColumn("faction", _enc_int),
+    TableColumn("min_footprint", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+SENSOR_TABLE = ObjectTable(
+    name="sensor", columns=SENSOR_SCHEMA, capacity=SENSOR_CAPACITY, live="live",
+    build=_build_row(SensorRow),
+    spans=(SideSpan("disc", "sensor_tile", "tile_start", "tile_count",
+                    lambda s: list(s.disc), SENSOR_TILE_CAPACITY),))
+
+#: THE node input side table: each node's driving slots of ``in`` (pinned
+#: wire order), concatenated in node order.
+NODE_IN_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("slot", _enc_int, get=lambda s: s),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+NODE_IN_TABLE = ObjectTable(name="node_in", columns=NODE_IN_SCHEMA,
+                            capacity=NODE_IN_CAPACITY, live="live",
+                            build=_build_in_slot)
+
+#: THE node table (``Simulation._logic_nodes``, ordinal order).
+NODE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("kind", _enc_code(NODE_KINDS), decode=_dec_code(NODE_KINDS)),
+    TableColumn("out", _enc_slot, decode=_dec_slot),
+    TableColumn("in_start", _enc_int),
+    TableColumn("in_count", _enc_int),
+    TableColumn("cmp", _enc_int),              # comparators() index
+    TableColumn("threshold", _enc_int),
+    TableColumn("require_alive", _enc_bool, decode=_dec_bool),
+    TableColumn("alive_slot", _enc_slot, decode=_dec_slot),
+    TableColumn("k", _enc_int),
+    TableColumn("ema", _enc_int),
+    TableColumn("a_in", _enc_slots(len(AIRLOCK_INPUTS)), width=len(AIRLOCK_INPUTS),
+                decode=_dec_slots),
+    TableColumn("a_out", _enc_slots(len(AIRLOCK_OUTPUTS)), width=len(AIRLOCK_OUTPUTS),
+                decode=_dec_slots),
+    TableColumn("far_is_outer", _enc_bool, decode=_dec_bool),
+    TableColumn("equalize_cmd", _enc_int),
+    TableColumn("interior", _enc_bool, decode=_dec_bool),
+    TableColumn("band", _enc_int),
+    TableColumn("state", _enc_int),
+    TableColumn("dwell", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+NODE_TABLE = ObjectTable(
+    name="node", columns=NODE_SCHEMA, capacity=NODE_CAPACITY, live="live",
+    build=_build_row(NodeRow),
+    spans=(SideSpan("ins", "node_in", "in_start", "in_count",
+                    lambda n: list(n.ins), NODE_IN_CAPACITY),))
+
+#: THE pump input side table: each pump's inject slots (extract 0), then its
+#: extract slots (extract 1), concatenated in pump order.
+PUMP_IN_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("slot", _enc_int, get=lambda s: s[0]),
+    TableColumn("extract", _enc_bool, decode=_dec_bool, get=lambda s: s[1]),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+PUMP_IN_TABLE = ObjectTable(name="pump_in", columns=PUMP_IN_SCHEMA,
+                            capacity=PUMP_IN_CAPACITY, live="live",
+                            build=_build_pump_in)
+
+#: THE pump table (``Simulation._pumps``, ordinal order).
+PUMP_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("at_target", _enc_int),
+    TableColumn("at_slot", _enc_slot, decode=_dec_slot),
+    TableColumn("port_y", _enc_int),
+    TableColumn("port_x", _enc_int),
+    TableColumn("has_source", _enc_bool, decode=_dec_bool),
+    TableColumn("src_y", _enc_int),
+    TableColumn("src_x", _enc_int),
+    TableColumn("target", _enc_int),
+    TableColumn("band", _enc_int),
+    TableColumn("release", _enc_int),
+    TableColumn("delta_n_q", _enc_int),
+    TableColumn("in_start", _enc_int),
+    TableColumn("in_count", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+PUMP_TABLE = ObjectTable(
+    name="pump", columns=PUMP_SCHEMA, capacity=PUMP_CAPACITY, live="live",
+    build=_build_row(PumpRow),
+    spans=(SideSpan("ins", "pump_in", "in_start", "in_count",
+                    lambda p: list(p.ins), PUMP_IN_CAPACITY),))
+
+#: THE door drive table: every wire into a door's open / close, in door
+#: (= door table row) order, each door's open wires then its close wires.
+DOOR_DRIVE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("door", _enc_int),
+    TableColumn("close", _enc_bool, decode=_dec_bool),
+    TableColumn("slot", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+DOOR_DRIVE_TABLE = ObjectTable(name="door_drive", columns=DOOR_DRIVE_SCHEMA,
+                               capacity=DOOR_DRIVE_CAPACITY, live="live",
+                               build=_build_row(DriveRow))
+
+OBJECT_TABLES = OBJECT_TABLES + (SIGNAL_TABLE, SENSOR_TILE_TABLE, SENSOR_TABLE,
+                                 NODE_IN_TABLE, NODE_TABLE, PUMP_IN_TABLE, PUMP_TABLE,
+                                 DOOR_DRIVE_TABLE)   # #29 P6b.3
+
+
 def charge_record(c) -> tuple:
     """One planted charge as its integer row (flat, :data:`CHARGE_SCHEMA`
     order)."""
@@ -1503,3 +1842,11 @@ __all__ += ["DUCT_CAPACITY", "VENT_CAPACITY", "VENT_N_TRACE", "VENT_ROLES",
             "VENT_SCHEMA", "VENT_TABLE"]
 __all__ += ["SOURCE_CAPACITY", "SOURCE_TILE_CAPACITY", "SOURCE_TILE_SCHEMA",
             "SOURCE_TILE_TABLE", "SOURCE_SCHEMA", "SOURCE_TABLE"]
+__all__ += ["SIGNAL_CAPACITY", "SENSOR_CAPACITY", "SENSOR_TILE_CAPACITY",
+            "NODE_CAPACITY", "NODE_IN_CAPACITY", "PUMP_CAPACITY", "PUMP_IN_CAPACITY",
+            "DOOR_DRIVE_CAPACITY", "SIGNAL_EMITS", "SENSOR_KINDS", "NODE_KINDS",
+            "AIRLOCK_INPUTS", "AIRLOCK_OUTPUTS", "NO_SLOT", "sensor_channels",
+            "comparators", "signal_names", "SignalRow", "SensorRow", "NodeRow",
+            "PumpRow", "DriveRow", "SIGNAL_TABLE", "SENSOR_TILE_TABLE", "SENSOR_TABLE",
+            "NODE_IN_TABLE", "NODE_TABLE", "PUMP_IN_TABLE", "PUMP_TABLE",
+            "DOOR_DRIVE_TABLE"]
