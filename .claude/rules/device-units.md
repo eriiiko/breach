@@ -18,6 +18,9 @@ paths:
   - "cpp/src/object_tables_layout.h"
   - "cpp/src/cuda_object_table.*"
   - "tests/cuda_object_table_check.py"
+  - "src/simulation/attack_lists.py"
+  - "src/simulation/edit_door.py"
+  - "cpp/src/cuda_edit_door*"
 ---
 
 # Device units: the store, its tables, its library, what kernels emit
@@ -118,12 +121,29 @@ system here is Class T: NOT part of the played tick until the `device` backend
 - ONE kernel, several STAGES (`applier.STAGES`: today slot 9's topology walk and the RESOLVE stage, which is slot 4c's resolve AND slot 2''s landing: one law, one landing; and DOORS, slot 9e(d)'s sweep, which walks the door table instead of the effect list): a later slot that walks the list or its own tables is a stage of the same kernel, never a copy of it.
 - THE EFFECT LIST is a record list (the Event ring's `UnitRecordList`): a per-row producer stages per row and the ONE gather appends per env in row order AFTER whatever the list holds (several producers continue one list before it is walked: 4, 4a, 4b in the reference's order); a serial producer appends directly; the host staging (`DeviceApplier.stage`) sets the list. Never a second gather.
 - The record, kinds, kind fields, stages, books and planes are ONE Python table (`src/simulation/applier.py`) with a generated, fingerprint-checked header: a new kind, field, stage, book or plane is a row there, `tools/gen_unit_layout.py --write`, commit, rebuild `cpp/build_cuda`. C++ reads a kind's field by its `APPLIER_<KIND>_<FIELD>` column, never a bare slot.
-- A host `SimultaneousEffects` effect becomes a record ONLY through `applier.record_of` (its world calls recognised by their function: `chew_wall` is CHEW, `execute_payload` is PAYLOAD). A new effect kind or world call in `simultaneous.py` / its producers needs its device kind and its `record_of` branch IN THE SAME PATCH, or the gates refuse it by name. FACE has no device kind (WEGO-only producers).
+- A host `SimultaneousEffects` effect becomes a record ONLY through `applier.record_of` (its world calls recognised by their function: `chew_wall` is CHEW, `execute_payload` is PAYLOAD, `_enqueue_spray_cells` is SPRAY_CELLS, its cells appended to the cell buffer's host list: `applier.records_and_cells_of`). A new effect kind or world call in `simultaneous.py` / its producers needs its device kind and its `record_of` branch IN THE SAME PATCH, or the gates refuse it by name. FACE has no device kind (WEGO-only producers).
+- The walk's further reach is `unit_kernels.WalkLists` (C++ `ApplierLists`): the cell buffer, the device edit door, the claims list. An effect that needs one it was not handed FAULTS; a new list a walk reaches is a member there, never a global or a second launch argument per kind.
 - ACCEPTED GAP: PAYLOAD is a record only; the applier refuses to apply it (`refused` book, `EffectRefused`) until P7c.1 gives it its function.
 - Each book names the host quantity it twins (`gmap.<attr>` or `<dict>:<key>`); the shadow harness compares it with the host's delta over the slot and the chained harness lands it on the host (the solid book through `_solid_energy_book`, so the solver's sink moves too).
 - The planes reach it as device addresses of `(N, ...)` arrays in the GameMap field's own dtype, the resident fields as `ResidentBatch.buffers` holds them; `applier.non_resident_planes()` names those P8b must bring onto the device.
 - CAPACITY: past the list's `cap` (or a row's staging, `applier.ROW_CAP`) the first records are kept, the rest counted, and the Python face refuses the run by name (`EffectOverflow`); an operand past its proved range writes nothing for that effect and is refused (`ApplierFault`).
 - The fan-out of an effect's tile set over the block's threads (a barrier between effects) arrives with its first user (P7c's deposits): the launch keeps the block shape for it, so it lands without moving the kernel.
+
+## Spray slot
+- The cone is `cpp/src/cuda_unit_spray.cuh` (`cone_params` / `cone_tile`, the box decided by the block's threads, emitted serially in row-major order): `combat.spray_cone_tiles` step for step over `unit_sight::has_los`'s PHYSICAL form. A change to `spray_cone_tiles`, `deposit_spray_cone`, `_enqueue_spray_cells` or `process_sprays` lands in that header and `cpp/src/cuda_unit_sprays.cu` IN THE SAME PATCH: the twin ledger sees `combat.py` but no corpus tick sprays; `tests/cuda_unit_sprays_check.py` is the guard.
+- The spray's amounts, range, half-angle, gas slice and source ids are Device tables rows (`spray_*`) read from the sim's own weapon rows; a round spraying a CONSERVATIVE gas is refused at the table read (the gas policy refuses it at the flush).
+- Continuous path only: a burst with no aim angle (the WEGO `start_spray_burst`) is refused by name (`unit_kernels.SpraySlotRefused`). The spray's START (`start_spray_burst_directional`, its noise) is slot 4's.
+- ACCEPTED GAP: `process_sprays` reads the process-wide `combat.weapon_tables()`, the rows read `sim.weapons_tables`; they are one object while one sim is built per process (a match), and differ only for sims of different tile sizes built in one process (the batch gates keep one tile size).
+
+## Device edit door
+- THE way a device producer (an applier effect function) hands a FieldEdit: `cpp/src/cuda_edit_door.cuh`'s device form of the door (`field_edit._edit_door`) and of the region walk, writing `pack_for_device`'s EDIT row plus the sort key's `source_id` and `region`, and the TILE rows, into the env's `EditDoor` (`cpp/src/cuda_edit_door.h`, face `edit_door.DeviceEditDoor`). A new region (DISC, TILES, the falloff weights: P7c) or noise is a device function THERE, never in a producer's TU, and the host reference `edit_door.door_rows` follows it.
+- `seq` is per env, RESET ONLY at the 6b flush (`begin`) and at env reset, set from the host window when the gate makes its base an input (`set_seq`); never reset at the tick end or the tick head.
+- Until step (c) (P7e) the rows stay in ENQUEUE order and the played edit queue (Class P) is untouched: a producer is gated at the door (its rows equal `door_rows` of the host's edits), an interleave of host and device producers in one walk is refused by name (`edit_door.DoorInterleave`), and a chained run lands the rows through the host's own enqueue (`edit_door.replay`), which must reproduce them.
+
+## Attack lists
+- THE CELL BUFFER (`attack_lists.cell_buffer`, a record list of `(y, x, div)`) is filled in phase A against the walls standing at the slot's start; a SPRAY_CELLS record holds a span into it. The walk NEVER recomputes a cone (an earlier CHEW of the same walk may have opened a wall), and nothing else writes the buffer.
+- `damage.TickCredit.claim` on the device is `edit_door::claim` onto THE CLAIMS LIST (`attack_lists.claims_list`, rows `(channel, y, x, attacker)`, the channel `unit_events.CREDIT_HEAT` for heat): EVERY claim in the reference's order, the environment's never; "first claim wins" is the reader's (`credit_at` scans first match first). Never a dict, a dedupe at the writer or a second claims table: the claims input of slots 9c / 9c3 is this list from P7e.
+- The claims list lives one tick and goes with the tick-end clears.
 
 ## Device topology seam
 - `cpp/src/cuda_topology.cuh` is `GameMap.on_tile_changed` and `destroy_wall` integer for integer, and (#29 P6b.1) `seal_tiles` / `unseal_tiles` / `can_seal_tiles`, the gas-N primitives `inject_gas_n` / `extract_gas_n_vec` / `transfer_gas_n` and `vent_system._aperture_blocked`. A change to one of the Python functions (or to the gas energy seam rows they call) lands here IN THE SAME PATCH: the twin ledger does not enforce it (the corpus burns, seals and pumps nothing, so the `burn_through` twin's traced files are `simulation.py` alone) and the topology gate (`tests/cuda_unit_topology_check.py`) and the doors gate's PROBE (`tests/cuda_unit_doors_check.py`) are the guard.

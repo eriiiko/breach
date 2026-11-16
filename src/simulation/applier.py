@@ -84,6 +84,13 @@ F = len(FIELDS)
 #:   ``sim.weapons_tables.payloads``, ``kind`` its index in
 #:   :data:`PAYLOAD_KINDS`, ``has_approach`` 0 for ``approach=None``).
 #:
+#: - SPRAY_CELLS (#29 P7a.3) ``combat._enqueue_spray_cells(gmap, queue,
+#:   owner, heat_q, gas_id, gas_q, cells)``: the call's scalars as given
+#:   (``gas_id`` -1 for ``None``) and the cells' SPAN in the env's CELL BUFFER
+#:   (``simulation.attack_lists``: rows ``(y, x, div)``, filled by slot 4b's
+#:   phase A against the walls standing at the slot's start; the walk never
+#:   recomputes a cone).
+#:
 #: There is no FACE kind: its only producers are slot 4's WEGO branches
 #: (design 4.4c scope); a host FACE effect is refused by name.
 KIND_FIELDS: tuple = (
@@ -95,10 +102,11 @@ KIND_FIELDS: tuple = (
     ("CHEW", ("y", "x", "damage_q", "live")),
     ("PAYLOAD", ("y", "x", "payload", "owner", "approach_y", "approach_x",
                  "has_approach", "kind")),
+    ("SPRAY_CELLS", ("owner", "heat_q", "gas_id", "gas_q", "start", "count")),
 )
 KINDS = tuple(k for k, _f in KIND_FIELDS)
 KIND_DESTROY_WALL, KIND_HIT, KIND_STATUS, KIND_PUSH, KIND_CHEW, \
-    KIND_PAYLOAD = range(1, 7)
+    KIND_PAYLOAD, KIND_SPRAY_CELLS = range(1, 8)
 #: The kinds the applier refuses to APPLY (counted in the ``refused`` book,
 #: the run refused by name): a record with no device function yet.
 UNAPPLIED_KINDS = ("PAYLOAD",)
@@ -517,12 +525,14 @@ def payload_index(sim, payload) -> int:
     return names.index(name)
 
 
-def record_of(sim, eff) -> tuple:
+def record_of(sim, eff, cells=None) -> tuple:
     """ONE host effect of ``simulation.simultaneous.SimultaneousEffects``'s
     pending list as its device record (:data:`KIND_FIELDS`). A ``_WORLD``
     call is recognised by its function: ``combat.chew_wall`` is CHEW,
-    ``payloads.execute_payload`` is PAYLOAD; FACE (WEGO-only), a cover chew,
-    a spray's cells and any other call are refused by name
+    ``payloads.execute_payload`` is PAYLOAD, ``combat._enqueue_spray_cells``
+    is SPRAY_CELLS (#29 P7a.3: its cells appended to ``cells``, the CELL
+    BUFFER's host list, the record holding their span; refused without it);
+    FACE (WEGO-only), a cover chew and any other call are refused by name
     (:class:`EffectRefused`), as is an effect whose objects are not ``sim``'s
     own (another map, another impulse table, another event list)."""
     from simulation import combat, payloads, simultaneous, unit_fixed, wall_fixed
@@ -593,15 +603,42 @@ def record_of(sim, eff) -> tuple:
             approach_y=-1 if appr is None else int(appr[0]),
             approach_x=-1 if appr is None else int(appr[1]),
             has_approach=int(appr is not None), kind=PAYLOAD_KINDS.index(pk))
+    if f is _unwrap(combat._enqueue_spray_cells):
+        gmap, queue, owner, heat_q, gas_id, gas_q, cl = args
+        if kwargs or gmap is not sim.gmap or queue is not sim.edit_queue:
+            raise EffectRefused("applier: a spray's cells on another sim's map / "
+                                "queue (or with keywords) have no device form")
+        if cells is None:
+            raise EffectRefused("applier: a spray's cells need the cell buffer "
+                                "(records_and_cells_of)")
+        start = len(cells)
+        cells.extend((int(y), int(x), int(d)) for (y, x, d) in cl)
+        return make_record(
+            "SPRAY_CELLS", owner=int(owner), heat_q=int(heat_q),
+            gas_id=-1 if gas_id is None else int(gas_id), gas_q=int(gas_q),
+            start=start, count=len(cells) - start)
     raise EffectRefused(f"applier: the world call {getattr(f, '__qualname__', f)!r} "
                         f"has no device kind (CHEW is combat.chew_wall, PAYLOAD "
-                        f"payloads.execute_payload)")
+                        f"payloads.execute_payload, SPRAY_CELLS "
+                        f"combat._enqueue_spray_cells)")
+
+
+def records_and_cells_of(sim, pending, cell_base: int = 0):
+    """#29 P7a.3: a host pending list as ``(R, F)`` int64 records in its
+    order AND the cells its SPRAY_CELLS records point into (``(C, 3)`` int64
+    rows ``(y, x, div)``), the spans counted from ``cell_base`` (the cells
+    the env's buffer already holds)."""
+    cells: list = [None] * int(cell_base)
+    recs = [record_of(sim, e, cells) for e in pending]
+    out = np.array(cells[int(cell_base):], dtype=np.int64).reshape(-1, 3)
+    return np.array(recs, dtype=np.int64).reshape(len(recs), F), out
 
 
 def records_of(sim, pending) -> np.ndarray:
-    """A host pending list as ``(R, F)`` int64 records, in its order."""
-    recs = [record_of(sim, e) for e in pending]
-    return np.array(recs, dtype=np.int64).reshape(len(recs), F)
+    """A host pending list as ``(R, F)`` int64 records, in its order (a
+    SPRAY_CELLS record's span counts from the list's first spray:
+    :func:`records_and_cells_of` gives the cells)."""
+    return records_and_cells_of(sim, pending)[0]
 
 
 def effects_of(args, kwargs):
@@ -723,7 +760,7 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "KIND_CHEW", "KIND_PAYLOAD", "UNAPPLIED_KINDS", "PAYLOAD_KINDS",
            "STAGES", "STAGE_NAMES", "STAGE_TOPOLOGY", "STAGE_RESOLVE", "ROW_CAP",
            "kind_field", "make_record", "record_of", "records_of", "effects_of",
-           "payload_index",
+           "payload_index", "KIND_SPRAY_CELLS", "records_and_cells_of",
            "non_resident_planes", "Layout", "layout", "header_text",
            "destroy_records", "pack", "DeviceApplier", "books_dict",
            "host_book", "STAGE_DOORS", "SEAM_REFUSALS", "SEAM_REFUSAL_NAMES"]

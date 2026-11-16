@@ -75,17 +75,6 @@ ObjectTable::ObjectTable(int n_env, int cap, int width, int live, int n_units, i
         throw std::invalid_argument("ObjectTable: the live column is outside the row");
 }
 
-void ObjectTable::upload(const int64_t* rows, const int64_t* counts) {
-    begin();    // overflow and staging counts to 0
-    ot_check(cudaMemcpyAsync(records_dev(), rows, (size_t)n_env() * cap() * width() * sizeof(int64_t),
-                             cudaMemcpyHostToDevice, tstream()),
-             "H2D rows");
-    ot_check(cudaMemcpyAsync(count_dev(), counts, (size_t)n_env() * sizeof(int64_t),
-                             cudaMemcpyHostToDevice, tstream()),
-             "H2D counts");
-    ot_check(cudaStreamSynchronize(tstream()), "upload sync");
-}
-
 void ObjectTable::append_host(const int64_t* recs, const int64_t* n, int k) {
     if (k < 1) return;
     if (k > src_k_) {    // the host staging grows, never per call

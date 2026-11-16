@@ -337,6 +337,30 @@ void unit_kit_falloff_probe(const int64_t* args, int n, int64_t* out);
 // The compiled draws vocabulary's fingerprint (unit_draws_layout.h).
 const char* unit_draws_fingerprint();
 
+// ---- #29 P7a.3: slot 4b, the sprays (the effect list's third producer) ----------
+//   cuda_unit_sprays.cu       slot 4b   combat.process_sprays
+//
+// Every valid row with a burst in progress, in row order (one block per env):
+// a dead or interrupted burst cleared; a live one's cone (combat.
+// spray_cone_tiles over the physical sight of `solid`, a device pointer to
+// the (N, h, w) bool plane) appended to `cells` (a record list of (y, x, div),
+// cuda_unit_spray.cuh's CELL_W) in row-major order and ONE SPRAY_CELLS
+// record (its span) appended to `effects`' list after what it holds; then
+// the countdown. `box_max` the largest cone box the launch's scratch holds
+// (a larger one faults). out.refused = WEGO bursts (no aim angle);
+// out.dropped = effect records + cells the lists could not hold.
+class UnitRecordList;
+void unit_sprays(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                 UnitRecordList& cells, std::uintptr_t solid, int h, int w, int64_t box_max,
+                 const UnitDamageCounts& out);
+// TEST-ONLY: the cone (decide_box + emit_box) on synthetic cones: `args`
+// (n_env, n_rows, 8) int64 host (ay, ax, angle_q, range, half_q, ex_x, ex_y,
+// fp) over the (n_env, h, w) bool plane `solid` (device) -> out (n_env,
+// n_rows, max_out, 3) the cells (y, x, div) in order, meta (n_env, n_rows, 2):
+// the cell count (all of them), bad.
+void unit_spray_cone_probe(std::uintptr_t solid, int n_env, int h, int w, const int64_t* args,
+                           int n_rows, int64_t box_max, int max_out, int64_t* out,
+                           int64_t* meta);
 // ---- #29 P7a.2: slot 4's shooting and slot 2''s rounds (cuda_unit_shooting.cu) -----
 //   cuda_unit_shooting.cu     slot 4    combat.process_shooting (the continuous
 //                                       path: _directional_fire, fire_burst,

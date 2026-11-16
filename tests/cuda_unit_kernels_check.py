@@ -474,6 +474,8 @@ def part_tables():
 
         from cuda_unit_kit_check import table_reference as kit_reference
         want.update(kit_reference(sim))                      # #29 P7.0a's rows
+        from cuda_unit_sprays_check import table_reference as sprays_reference
+        want.update(sprays_reference(sim))                   # #29 P7a.3's rows
         from cuda_unit_shooting_check import table_reference as shoot_reference
         want.update(shoot_reference(sim))                    # #29 P7a.2's rows
         from cuda_unit_doors_check import table_reference as doors_reference

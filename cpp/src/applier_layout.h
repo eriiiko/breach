@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "716dcd501efc756e495c640cc5d18398fb4fd9814a018e0a86c02260f66378f5";
+constexpr const char* APPLIER_FINGERPRINT = "9005c9e9cc3c8770beb56b2cf899021b52e6b7178029f7a26815fb883c4d4d19";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -39,7 +39,8 @@ constexpr int64_t APPLIER_KIND_STATUS = 3;
 constexpr int64_t APPLIER_KIND_PUSH = 4;
 constexpr int64_t APPLIER_KIND_CHEW = 5;
 constexpr int64_t APPLIER_KIND_PAYLOAD = 6;
-constexpr int APPLIER_N_KINDS = 6;
+constexpr int64_t APPLIER_KIND_SPRAY_CELLS = 7;
+constexpr int APPLIER_N_KINDS = 7;
 
 // Each kind's fields: their record column.
 constexpr int APPLIER_DESTROY_WALL_Y = 1;
@@ -76,6 +77,12 @@ constexpr int APPLIER_PAYLOAD_APPROACH_Y = 5;
 constexpr int APPLIER_PAYLOAD_APPROACH_X = 6;
 constexpr int APPLIER_PAYLOAD_HAS_APPROACH = 7;
 constexpr int APPLIER_PAYLOAD_KIND = 8;
+constexpr int APPLIER_SPRAY_CELLS_OWNER = 1;
+constexpr int APPLIER_SPRAY_CELLS_HEAT_Q = 2;
+constexpr int APPLIER_SPRAY_CELLS_GAS_ID = 3;
+constexpr int APPLIER_SPRAY_CELLS_GAS_Q = 4;
+constexpr int APPLIER_SPRAY_CELLS_START = 5;
+constexpr int APPLIER_SPRAY_CELLS_COUNT = 6;
 
 // The stages of the one walker; _LANDS: a HIT in the stage holds its
 // exposure raises and zeroings for the walk's end (the landing).

@@ -502,7 +502,8 @@ def _plane_ptrs(name, n_env, fields):
     return ptrs, n_gases, h, w
 
 
-def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None):
+def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
+                 lists=None):
     """THE PER-ENV SERIAL APPLIER's walk (#29 P6.4b; P7a.1: one kernel, a
     STAGE argument): every env's effect list (``dev_applier``, a
     :class:`simulation.applier.DeviceApplier` -- staged from the host, or
@@ -519,7 +520,11 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None):
     EffectOverflow`), dropped events (``UnitEventOverflow``), met a record it
     may not apply (:class:`simulation.applier.EffectRefused`: a PAYLOAD until
     P7c.1) or faulted (:class:`simulation.applier.ApplierFault`), naming the
-    kernel and the envs."""
+    kernel and the envs. #29 P7a.3: ``lists`` (optional) the walk's further
+    reach, a :class:`WalkLists` (the cell buffer a SPRAY_CELLS span points
+    into, the device edit door, the claims list); a SPRAY_CELLS record with
+    none faults. Their overflows are refused by name after the walk
+    (``attack_lists.ListOverflow``, ``edit_door.DoorOverflow``)."""
     from simulation import applier
     n = store.shape[0]
     name = f"applier[{applier.STAGE_NAMES[stage]}]"
@@ -529,9 +534,17 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None):
     if ring is not None:
         _check_ring(name, store, ring)
     ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
+    wl = lists if lists is not None else WalkLists()
+    for nm, obj in (("cells", wl.cells), ("door", wl.door), ("claims", wl.claims)):
+        if obj is not None and obj.n_env != n:
+            raise ValueError(f"unit kernel {name}: the {nm} list is for {obj.n_env} "
+                             f"envs, the store {n}")
     b, cov, rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
-        int(stage), None if ring is None else ring.buffer)
+        int(stage), None if ring is None else ring.buffer,
+        None if wl.cells is None else wl.cells.buffer,
+        None if wl.door is None else wl.door.buffer,
+        None if wl.claims is None else wl.claims.buffer)
     books = applier.books_dict(b)
     cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books
@@ -561,6 +574,10 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None):
             f"unit kernel {name}: {int(books['faults'].sum())} effect(s) "
             f"in env(s) {envs} left the range the applier was proved for "
             f"(nothing written for them)")
+    if wl.door is not None:
+        wl.door.check(name)
+    if wl.claims is not None:
+        wl.claims.check(name)
     return cov, books
 
 
@@ -578,12 +595,15 @@ def apply_effects(store, dev_applier, fields: dict, per_env,
     return books
 
 
-def resolve(store, dev_applier, fields: dict, ring) -> tuple:
+def resolve(store, dev_applier, fields: dict, ring, lists=None) -> tuple:
     """Slot 4c (``SimultaneousEffects.resolve`` of the attack slot): the
     effect list as the producers left it, walked in the RESOLVE stage (the
-    HITs with the exposure landing). Returns ``(coverage, books)``."""
+    HITs with the exposure landing; #29 P7a.3: a SPRAY_CELLS record's edits
+    through ``lists.door``, its claims onto ``lists.claims``). Returns
+    ``(coverage, books)``."""
     from simulation import applier
-    return walk_effects(store, dev_applier, fields, applier.STAGE_RESOLVE, ring)
+    return walk_effects(store, dev_applier, fields, applier.STAGE_RESOLVE, ring,
+                        lists)
 
 
 def melee(store, dev_applier, ticks) -> np.ndarray:
@@ -1062,6 +1082,106 @@ __all__ += ["ObjectSlotRefused", "refuse_wego", "table_appends", "grenades",
 
 
 # ---------------------------------------------------------------------------
+# #29 P7a.3: slot 4b (the sprays), the walk's further reach
+# ---------------------------------------------------------------------------
+class WalkLists:
+    """What the applier's walk reaches besides the planes, the rows and the
+    ring (each optional): ``cells`` THE CELL BUFFER
+    (``attack_lists.cell_buffer``), ``door`` THE DEVICE EDIT DOOR
+    (``edit_door.DeviceEditDoor``), ``claims`` THE CLAIMS LIST
+    (``attack_lists.claims_list``)."""
+
+    def __init__(self, cells=None, door=None, claims=None):
+        self.cells, self.door, self.claims = cells, door, claims
+
+
+class SpraySlotRefused(RuntimeError):
+    """#29 P7a.3: what slot 4b's device form refuses by name: a burst of the
+    WEGO ``start_spray_burst`` (no aim angle: the tile-derived bearing, out
+    of the continuous scope)."""
+
+
+#: The planes slot 4b reads (the PHYSICAL sight's), by GameMap field name.
+SPRAY_FIELDS = (("solid", np.bool_),)
+
+
+def spray_box_max(store, h: int, w: int) -> int:
+    """The largest cone box any env's tables allow on an ``(h, w)`` grid:
+    ``(2 r + 1)^2`` of the largest ``spray_range_tiles`` row, never more than
+    the grid (the box is clipped to it) -- the launch's scratch per env."""
+    from simulation import unit_tables
+    c = unit_tables.layout().column("spray_range_tiles")
+    tab = np.asarray(store.tables.download(), dtype=np.int64)
+    r = int(tab[:, c.offset:c.offset + c.width].max()) if tab.size else 0
+    return min((2 * r + 1) ** 2, int(h) * int(w))
+
+
+def sprays(store, dev_applier, cells, fields: dict, box_max: int | None = None):
+    """Slot 4b (``combat.process_sprays``, the continuous path): every valid
+    row with a burst in progress, in row order -- a dead or interrupted burst
+    cleared, a live one's cone (``combat.spray_cone_tiles`` over the PHYSICAL
+    sight of ``fields["solid"]``, a DEVICE ``(N, h, w)`` bool array) appended
+    to ``cells`` (``attack_lists.cell_buffer``) and ONE SPRAY_CELLS record to
+    ``dev_applier``'s effect list after what it holds; then the countdown.
+    Returns the rows changed per env; refuses a fault
+    (:class:`UnitKernelFault`), a WEGO burst (:class:`SpraySlotRefused`) and
+    an overflow of the effect list (``applier.EffectOverflow``) or the cell
+    buffer (``attack_lists.ListOverflow``), naming the envs."""
+    from simulation import applier
+    n = store.shape[0]
+    _check_planes("sprays", store, fields, dict(SPRAY_FIELDS))
+    s = fields["solid"]
+    if s.ndim != 3 or not s.flags.c_contiguous:
+        raise ValueError("unit kernel sprays: solid must be a C-contiguous (N, h, w) array")
+    if dev_applier.n_env != n or cells.n_env != n:
+        raise ValueError("unit kernel sprays: the effect list / cell buffer env count "
+                         "is not the store's")
+    _, h, w = (int(x) for x in s.shape)
+    bm = int(box_max) if box_max is not None else spray_box_max(store, h, w)
+    cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_sprays(
+        store.buffer, store.tables, dev_applier.buffer, cells.buffer, int(s.data.ptr),
+        h, w, max(1, bm)))
+    store.last_refused = ref
+    store.last_dropped = drp
+    if flt.any():
+        envs = [int(e) for e in np.nonzero(flt)[0]]
+        raise UnitKernelFault(
+            f"unit kernel sprays: {int(flt.sum())} row(s) in env(s) {envs} left the "
+            f"range the kernel was proved for (left as they were, nothing recorded)")
+    if ref.any():
+        envs = [int(e) for e in np.nonzero(ref)[0]]
+        raise SpraySlotRefused(
+            f"unit kernel sprays: {int(ref.sum())} burst(s) of the WEGO "
+            f"start_spray_burst in env(s) {envs} (no aim angle): not deposited")
+    if drp.any():
+        _r, _c, fdrop = dev_applier.download()
+        if np.asarray(fdrop).any():
+            envs = [int(e) for e in np.nonzero(np.asarray(fdrop))[0]]
+            raise applier.EffectOverflow(
+                f"unit kernel sprays: SPRAY_CELLS record(s) in env(s) {envs} did not "
+                f"fit the effect list (cap {dev_applier.cap})")
+        cells.check("sprays")
+    return cov
+
+
+def spray_cone_probe(bp, solid, args, box_max: int, max_out: int):
+    """TEST-ONLY: the cone (``cpp/src/cuda_unit_spray.cuh``'s decide / emit) on
+    synthetic cones over the DEVICE ``(N, h, w)`` bool plane ``solid``;
+    ``args`` ``(N, R, 8)`` (ay, ax, angle_q, range, half_q, ex_x, ex_y, fp) ->
+    ``(cells (N, R, max_out, 3), meta (N, R, 2): count, bad)``."""
+    if np.dtype(solid.dtype) != np.dtype(np.bool_) or solid.ndim != 3 \
+            or not solid.flags.c_contiguous:
+        raise ValueError("spray_cone_probe: solid must be a C-contiguous (N, h, w) bool "
+                         "device array")
+    n, h, w = (int(x) for x in solid.shape)
+    out, meta = bp.unit_spray_cone_probe(int(solid.data.ptr), n, h, w,
+                                         np.ascontiguousarray(args, dtype=np.int64),
+                                         int(box_max), int(max_out))
+    return np.asarray(out), np.asarray(meta)
+
+
+__all__ += ["WalkLists", "SpraySlotRefused", "SPRAY_FIELDS", "spray_box_max",
+            "sprays", "spray_cone_probe"]
 # #29 P6b.1: THE DOORS -- the door table (unit_schema.DOOR_TABLE, the first
 # entity table) and its tile side table, slot 1b's USE as a table write, slot
 # 9e(d)'s sweep as the applier's DOORS stage, and the seam's TEST-ONLY probe
@@ -1183,7 +1303,8 @@ def sweep_doors(store, dev_applier, fields: dict, doors, tiles) -> tuple:
     ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
     b, _cov, _rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
-        int(applier.STAGE_DOORS), None, doors=doors.buffer, tiles=tiles.buffer)
+        int(applier.STAGE_DOORS), None, door_table=doors.buffer,
+        door_tiles=tiles.buffer)
     books = applier.books_dict(b)
     store.last_books = books
     if books["faults"].any():
