@@ -1766,3 +1766,26 @@ The design guessed 0.3 to 1 ms per env per tick for the ledger; per env it lande
 0.0075 ms (ship_demo) and 0.010 ms (the scene) at N = 64, and the N = 1 cost is the
 launch and the books' download (a stream sync), not the sweep. The serial walk per env
 is not the cost at these duct counts.
+
+## P7c.2: payloads, the strength path, bulk gas, the blast sources (2026-11-16)
+
+`tests/cuda_unit_payloads_check.py bench(row_names=...)` (Home Desktop, RTX 3070, the only agent on
+the machine): median ms over 50 reps of ONE detonation's walk -- the applier's DETONATE stage over one
+PAYLOAD record per env, its books' and counts' downloads and the Python face; each rep re-stages the
+store, the list and the door (not timed). The walks and deposits are SERIAL on thread 0: the fan-out
+over the block's threads was left out.
+
+| row | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| frag_standard (the shipped frag: disc r 2, heat walk r2 4, source walk r2 1) | 1.013 | 1.027 | 1.086 |
+| magazine_cookoff (strength 8: disc r 7, heat walk r2 16) | 2.659 | 2.671 | 2.805 |
+| demolition_c4 (the largest shipped blast, strength 12: disc r 8, heat walk r2 36) | 3.880 | 3.644 | 3.791 |
+| halon_dump (bulk gas, r 4) | 0.880 | 0.890 | 0.953 |
+| studio_smoke (a disc-path row, for scale) | 0.812 | 0.829 | 0.894 |
+
+**Reading.** Flat in N: one block per env, so 64 envs cost what one does; the per-call floor (launch,
+book download, a stream sync) is about 0.8 ms. Over that floor the serial cost is the blast's own:
+0.2 ms for the frag, 1.9 ms for the cookoff and 3 ms for the C4, which is the disc's serial wall loop
+and wave stencil (P7c.1's, a TILE edit per stencil cell) plus the walks and the TILES rows. A blast
+happens a few times a match, so the serial walk is not the tick's cost at these sizes; the fan-out is
+worth building only if a measured device tick (P7e) shows the C4's 3 ms on its critical path.

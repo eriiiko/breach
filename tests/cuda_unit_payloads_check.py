@@ -2666,7 +2666,7 @@ def main(parts=None) -> int:
     return 0 if ok else 1
 
 
-def bench(reps: int = 50, rows=None) -> int:
+def bench(reps: int = 50, row_names=None) -> int:
     """The TIMING table: median ms of ONE detonation's walk (the DETONATE
     stage over one PAYLOAD record per env) for each applied row at N = 1 / 8
     / 64, a small and a large radius (the row's own and its disc raised)."""
@@ -2674,8 +2674,8 @@ def bench(reps: int = 50, rows=None) -> int:
     rng = np.random.default_rng(1)
     base = _probe_sim(rng, 1)
     lines = []
-    for row in (rows or applied_rows()):
-        for size, attrs in (("own", {}),) + ((() if rows else (("r 6", dict(radius=6, pressure=1.0,
+    for row in (row_names or applied_rows()):
+        for size, attrs in (("own", {}),) + ((() if row_names else (("r 6", dict(radius=6, pressure=1.0,
                                                        wall_damage=10, gas_radius=6,
                                                        heat_radius=6.0, ignite_radius=6.0)),))):
             with Rows({f"payloads.{row}": attrs} if attrs else {}):
