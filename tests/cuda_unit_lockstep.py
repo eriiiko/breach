@@ -1934,8 +1934,9 @@ class ChainedSlots:
             c, b = split_result(s.call(self.store, inputs, self.ring, self.req,
                                        self.dev_lists))
             covs.append(c)
-            if b is not None:
-                books.update({n: int(v[0]) for n, v in b.items()})
+            if b is not None:            # #29 P7d: summed over the chain's slots (a
+                for n_, v in b.items():  # 4c chew and a slot-5 bash both destroy)
+                    books[n_] = books.get(n_, 0) + int(v[0])
         post = self.store.download()[0]
         unit_store.unpack(post, sim.units)
         # #29 P6.4b: the device's field outputs written back into the

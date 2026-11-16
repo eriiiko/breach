@@ -928,7 +928,7 @@ def part_padding():
         rows = np.stack([unit_store.pack(s.units, U) for s in sims])
         if dirty:
             junk = rows[1, 0].copy()
-            junk[lay.column("valid").offset] = 0
+            junk[lay.valid] = 0
             for r in range(len(sims[0].units), U):
                 rows[0, r] = junk
         st.upload(rows)
@@ -1005,18 +1005,26 @@ def part_overflow():
                   for n in applier.PLANE_NAMES}
         unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles, cache,
                            [horde_cache.latch_of(sim, U)])
-    try:
-        run(fcap=1)
-        fail("overflow: a cache of one field took the scene's fields")
-    except applier.HordeCacheOverflow as ex:
-        if "capacity 1" not in str(ex) or "[0]" not in str(ex):
-            fail(f"overflow: the cache refusal does not name the env and the capacity: {ex}")
-        seen["cache"] += 1
+    for _t in range(120):                     # a tick that floods two fields at once
+        try:
+            run(fcap=1)
+        except applier.HordeCacheOverflow as ex:
+            if "capacity 1" not in str(ex) or "[0]" not in str(ex):
+                fail(f"overflow: the cache refusal does not name the env and the capacity: "
+                     f"{ex}")
+            seen["cache"] += 1
+            break
+        sc.tick()
+    else:
+        fail("overflow: a cache of one field took every tick's fields")
     try:
         cache = horde_cache.DeviceHordeCache(1, U, fcap=1)
-        rc = horde_cache.cache_records(sim)
-        if rc.keys.shape[0] < 2:
-            raise RuntimeError("vacuous")
+        h, w = sim.gmap.material.shape
+        hdr = np.zeros(len(applier.HORDE_HEADER), dtype=np.int64)
+        hdr[applier.HORDE_HEADER.index("n_fields")] = 2
+        rc = horde_cache.CacheRecords(hdr, [(0, 3, 0, 0), (2, 3, 4, 5)],
+                                      np.zeros((2, h, w), dtype=np.int32),
+                                      np.zeros((3, h, w), dtype=np.uint8))
         cache.stage_lists([rc])
         fail("overflow: a cache of one slot was staged with more fields")
     except applier.HordeCacheOverflow as ex:
@@ -1061,6 +1069,34 @@ def part_refuse():
         if "[0]" not in str(ex):
             fail(f"refuse: the ring refusal does not name the env: {ex}")
         seen["ring"] += 1
+    # a noise list of one row at a tick where two zombies strike D0 at once
+    sc = HordeScene(0)
+    for _t in range(300):
+        sim = sc.sim
+        U = len(sim.units)
+        st = unit_store.DeviceStore(1, U, bp=bp, tables=unit_tables.values_batch([sim]))
+        st.upload(unit_store.pack(sim.units, U)[None])
+        ring = EventRing(1, U, bp=bp)
+        ring.begin()
+        noise = ot.DeviceTable(unit_schema.NOISE_TABLE, 1, bp=bp, cap=1)
+        noise.begin()
+        doors.stage_lists([unit_kernels.doors_of(sim)])
+        tiles.stage_lists([unit_kernels.door_tiles_of(sim)])
+        cache = horde_cache.DeviceHordeCache(1, U)
+        cache.stage_lists([horde_cache.cache_records(sim)])
+        fields = {n: cp.asarray(np.array(getattr(sim.gmap, n))[None])
+                  for n in applier.PLANE_NAMES}
+        try:
+            unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles, cache,
+                               [horde_cache.latch_of(sim, U)])
+        except ot.ObjectTableOverflow as ex:
+            if "'noise'" not in str(ex) or "env 0" not in str(ex):
+                fail(f"refuse: the noise refusal does not name the table and the env: {ex}")
+            seen["noise list"] += 1
+            break
+        sc.tick()
+    else:
+        fail("refuse: no tick struck twice (the noise list's refusal vacuous)")
     print(f"refuse: refused by name {dict(seen)}")
 
 
@@ -1143,9 +1179,92 @@ def part_chained():
     _chained("ship_demo bots", ShipDriver, SHIP_TICKS)
 
 
+def part_chained_all():
+    """Slot 5 chained WITH the device slots around it: ship_demo's bots match
+    with slot 2' + its landing in one chain and 4 + 4a + 4c + 5 in another
+    (the shooting's noise list continued into slot 5's drain on the device);
+    the horde scene with 4 + 4a + 4c + 5 and 9e(d)'s door sweep (the bashed
+    door dies whole at the sweep). Unit hash, field digest, planes, books,
+    noise log and cache equal the untouched reference every tick; the host
+    zombie, shooting and door laws run 0 times in the twin."""
+    from cuda_unit_doors_check import SLOT_9ED, _host_side_9ed
+    from cuda_unit_shooting_check import (SLOT_2L, SLOT_2R, SLOT_4, SLOT_4A, SLOT_4C,
+                                          _HostCalls, _host_side_of)
+    from cuda_unit_topology_check import _same_twin
+    from simulation import door_system, simulation as simmod
+    for name, make, ticks, doors in (("ship_demo bots", ShipDriver, SHIP_TICKS, False),
+                                     ("scene v0", lambda: HordeScene(0), CHAIN_TICKS, True)):
+        twin, ref = make(), make()
+        host = Counter()
+        o_upd, o_sw = simmod.update_zombies_tick, simmod.sweep_doors
+
+        def upd(gmap, *a, __o=o_upd, **k):
+            host["zombie law (twin)" if gmap is twin.sim.gmap else "zombie law (ref)"] += 1
+            return __o(gmap, *a, **k)
+
+        def sw(sim, __o=o_sw):
+            host["door sweep (twin)" if sim is twin.sim else "door sweep (ref)"] += 1
+            return __o(sim)
+        simmod.update_zombies_tick, simmod.sweep_doors = upd, sw
+        h2, h4 = {}, {}
+        holder = {}
+        t0 = time.perf_counter()
+        n = 0
+        try:
+            c2 = ChainedSlots(twin, [SLOT_2R, SLOT_2L], host_side=_host_side_of(h2), bp=bp)
+            c4 = ChainedSlots(twin, [SLOT_4, SLOT_4A, SLOT_4C, SLOT_5], bp=bp,
+                              host_side=lambda s, a, b: holder["h4"](s, a, b))
+            hs_5 = _host_side_5(c4, None)
+
+            def h4f(s, a, b):           # 4c's impulse books, then the chain's books once
+                from cuda_unit_verbs_check import _books_host_side
+                _books_host_side(s, a, b)
+                hs_5(s, a, b)
+            holder["h4"] = h4f
+            h2["ch"], h4["ch"] = c2, c4
+            chains = [c2, c4]
+            if doors:
+                c9 = ChainedSlots(twin, [SLOT_9ED], bp=bp,
+                                  host_side=lambda s, a, b: holder["h9"](s, a, b))
+                holder["h9"] = _host_side_9ed(c9)
+                chains.append(c9)
+            from contextlib import ExitStack
+            with ExitStack() as stack, _HostCalls(twin.sim) as hc:
+                for c in chains:
+                    stack.enter_context(c)
+                for _ in range(ticks):
+                    if getattr(ref, "is_terminal", lambda: False)():
+                        break
+                    twin.tick()
+                    ref.tick()
+                    n += 1
+                    why = _same_twin(twin.sim, ref.sim)
+                    if why is None and twin.sim.gmap.noise_log != ref.sim.gmap.noise_log:
+                        why = "the noise log"
+                    if why is None and list(horde_cache.cache_records(twin.sim)) !=                             list(horde_cache.cache_records(ref.sim)):
+                        why = "the horde cache"
+                    if why is not None:
+                        fail(f"chained all {name}: the twin left the reference at tick "
+                             f"{twin.sim.tick} ({why})")
+                        break
+        finally:
+            simmod.update_zombies_tick, simmod.sweep_doors = o_upd, o_sw
+        twin_calls = {k: v for k, v in host.items() if "twin" in k}
+        twin_calls.update({k: v for k, v in hc.n.items() if v})
+        print(f"chained all {name}: {n} ticks, chains {[c.runs for c in chains]} "
+              f"(2' + landing | 4 + 4a + 4c + 5{' | 9e(d)' if doors else ''}), the twin equal "
+              f"to the reference every tick; host law calls in the twin {twin_calls or 0}, "
+              f"in the reference {dict((k, v) for k, v in host.items() if 'ref' in k)} "
+              f"({time.perf_counter() - t0:.0f} s)")
+        if twin_calls:
+            fail(f"chained all {name}: the host law ran in the twin {twin_calls}")
+        if any(c.runs != n for c in chains[1:]):
+            fail(f"chained all {name}: a chain skipped a tick")
+
+
 # ---------------------------------------------------------------------------
 PARTS = ("tables", "flood", "scene", "cache", "levels", "batch", "padding", "overflow",
-         "refuse", "chained")
+         "refuse", "chained", "chained_all")
 
 
 def main(parts=None) -> int:
