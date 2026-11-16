@@ -2276,3 +2276,89 @@ __all__ += ["SignalTableMismatch", "SignalTableRefused", "SIGNAL_LISTS", "signal
             "pump_entity_rows", "signal_tables", "FILTER_LIM", "FILTER_K_MAX",
             "filter_range", "signals_emit", "signals_logic", "signals_door_inputs",
             "signals_pumps", "signals_swap"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P7d -- SLOT 5, THE HORDE (ai_zombie.update_zombies_tick through
+# Simulation._run_zombie_slot), the applier's HORDE stage
+# ---------------------------------------------------------------------------
+def horde(store, dev_applier, fields: dict, ring, noise, doors, tiles, cache,
+          latch) -> tuple:
+    """Slot 5 as the applier's HORDE stage (``cpp/src/cuda_unit_horde.cuh``):
+    per env, the noise list ``noise`` DRAINED at the head (``noise.take``),
+    then -- unless the latch's request set is empty or no prey lives (both
+    before ``begin_tick``: the cache stays standing) -- the cache's refresh
+    rule, passes 1 and 2 wide, the hearing, and pass 3 serial in row order:
+    the bite (``ring`` gets its events), the walk on the cached fields (a field
+    the walk needs first is FLOODED by the block from the live planes
+    ``fields``, written in place by a door bash through the topology seam,
+    its noise appended to ``noise``) and the wander. ``doors`` / ``tiles`` the
+    door tables (the bashable mask); ``cache`` a
+    :class:`simulation.horde_cache.DeviceHordeCache` (its planes allocated
+    for the map on first use); ``latch`` the per-env LATCH rows the host
+    writes (``horde_cache.latch_of``: the tick, the topology serial, the
+    zombie request set). Returns ``(coverage, books)``. Refuses by name a fault
+    (:class:`simulation.applier.ApplierFault`), a field past the cache's
+    capacity (:class:`simulation.applier.HordeCacheOverflow`), a ring or noise
+    list that overflowed."""
+    from simulation import applier
+    n = store.shape[0]
+    name = "applier[HORDE]"
+    if dev_applier.n_env != n or cache.n_env != n:
+        raise ValueError(f"unit kernel {name}: the applier / cache are for "
+                         f"{dev_applier.n_env} / {cache.n_env} envs, the store {n}")
+    if cache.n_units < store.shape[1]:
+        raise ValueError(f"unit kernel {name}: the cache's latch holds {cache.n_units} "
+                         f"rows, the store {store.shape[1]}")
+    _check_ring(name, store, ring)
+    _check_tables(name, store, doors, tiles, noise)
+    ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
+    cache.ensure(h, w)
+    cache.set_latch(latch)
+    b, cov, rdrop = store.bp.applier_run(
+        dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
+        int(applier.STAGE_HORDE), ring.buffer, noise=noise.buffer,
+        door_table=doors.buffer, door_tiles=tiles.buffer, horde=cache.reach())
+    books = applier.books_dict(b)
+    cov = np.asarray(cov, dtype=np.int64)
+    store.last_books = books
+    store.last_coverage = cov
+    if np.asarray(rdrop).any():
+        envs = [int(e) for e in np.nonzero(np.asarray(rdrop))[0]]
+        raise UnitEventOverflow(f"unit kernel {name}: events in env(s) {envs} did not fit "
+                                f"the event ring")
+    if books["horde_refused"].any():
+        envs = [int(e) for e in np.nonzero(books["horde_refused"])[0]]
+        raise applier.HordeCacheOverflow(
+            f"unit kernel {name}: env(s) {envs} needed a field past the horde cache's "
+            f"capacity {cache.fcap}")
+    if books["faults"].any():
+        envs = [int(e) for e in np.nonzero(books["faults"])[0]]
+        raise applier.ApplierFault(
+            f"unit kernel {name}: env(s) {envs} left the range the HORDE stage was "
+            f"proved for (or a slot input was missing)")
+    noise.check(name)
+    return cov, books
+
+
+def horde_flood_probe(bp, tile_ok, fp, seeds) -> np.ndarray:
+    """#29 P7d, TEST-ONLY: the HORDE stage's flood on given masks. ``tile_ok``
+    a device (N, h, w) uint8 array, ``fp`` (N,), ``seeds`` a list of N
+    ``(k_e, 2)`` (y, x) arrays. Returns (N, h, w) int32 (host)."""
+    import cupy as cp
+    ok = cp.ascontiguousarray(tile_ok, dtype=cp.uint8)
+    n, h, w = (int(x) for x in ok.shape)
+    k = max(1, max(len(s) for s in seeds))
+    sd = np.zeros((n, k, 2), dtype=np.int64)
+    ns = np.zeros(n, dtype=np.int64)
+    for e, s in enumerate(seeds):
+        s = np.asarray(s, dtype=np.int64).reshape(-1, 2)
+        sd[e, :len(s)] = s
+        ns[e] = len(s)
+    out = cp.zeros((n, h, w), dtype=cp.int32)
+    bp.horde_flood_probe(n, h, w, int(ok.data.ptr),
+                         np.ascontiguousarray(fp, dtype=np.int64), sd, ns, int(out.data.ptr))
+    return out.get()
+
+
+__all__ += ["horde", "horde_flood_probe"]

@@ -184,14 +184,55 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:             slots, after every 9e(d) actuator. Numbered in the conductor's
 #:             9e order (P6b.3 moved VENTS 2 -> 6, DOORS 3 -> 7, DETONATE
 #:             4 -> 8, SOURCES 5 -> 10).
-STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("EMIT", False),
+#:   HORDE     #29 P7d: slot 5, the zombie law (``ai_zombie.update_zombies_tick``
+#:             through ``Simulation._run_zombie_slot``) -- the stage walks the
+#:             unit rows and the horde's FIELD CACHE (:data:`HORDE_HEADER`,
+#:             :data:`HORDE_KEY`), not the effect list: the noise list drained at
+#:             its head, passes 1 and 2 wide over the block, pass 3 serial in row
+#:             order with the bite and the bash applied at once and the flood
+#:             fanned out over the block on first need. Slot 5 runs after 4c and
+#:             before 9e, so it is numbered between RESOLVE and EMIT (P7d moved
+#:             EMIT .. SOURCES up by one).
+STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("HORDE", False),
+                 ("EMIT", False),
                  ("LOGIC", False), ("DOOR_INPUTS", False), ("PUMPS", False),
                  ("VENTS", False), ("DOORS", False), ("DETONATE", False),
                  ("SWAP", False), ("SOURCES", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-(STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_EMIT, STAGE_LOGIC, STAGE_DOOR_INPUTS, STAGE_PUMPS,
- STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE, STAGE_SWAP, STAGE_SOURCES) = range(11)
+(STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_HORDE, STAGE_EMIT, STAGE_LOGIC, STAGE_DOOR_INPUTS,
+ STAGE_PUMPS, STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE, STAGE_SWAP,
+ STAGE_SOURCES) = range(12)
 assert STAGE_NAMES[STAGE_SWAP] == "SWAP" and STAGE_NAMES[STAGE_SOURCES] == "SOURCES"
+assert STAGE_NAMES[STAGE_HORDE] == "HORDE"
+
+#: #29 P7d -- THE HORDE'S FIELD CACHE on the device (``horde.HordeState``,
+#: cross-tick device state; ``simulation.horde_cache``): per env a HEADER row
+#: (whether the mask of this drop is built, whether a serial was ever stored,
+#: the stored topology serial, the floods counted -- ``HordeState.floods`` --,
+#: the fields held), up to :data:`HORDE_FIELD_CAP` field KEYS in the dict's
+#: (= flood) order, each with its (h, w) int32 distance plane, and the mask
+#: planes (:data:`HORDE_MASKS`). A field past the cap is refused by name
+#: (``HordeCacheOverflow``, the ``horde_refused`` book).
+HORDE_FIELD_CAP = 16
+HORDE_HEADER = ("mask_built", "has_serial", "serial", "floods", "n_fields")
+HORDE_KEY = ("kind", "fp", "sy", "sx")
+#: A field key's kind: ``("prey", fp)``, ``("prey", fp, "fearless")``,
+#: ``("noise", fp, y, x)``.
+HORDE_FIELD_KINDS = ("PREY", "PREY_FEARLESS", "NOISE")
+#: The mask planes: ``tile_ok``, ``tile_ok_fearless``, ``bashable`` (zeros
+#: while ``bash_doors`` is off: the host holds None).
+HORDE_MASKS = ("TILE_OK", "TILE_OK_FEARLESS", "BASHABLE")
+#: The stage's per-env LATCH row: the tick, the map's topology serial
+#: (``GameMap._tile_serial``) and the zombie request set's MODE
+#: (:data:`HORDE_MODES`), then one byte-valued column per unit row (1: the
+#: row's id is in the request set) -- what the host writes; never a host slot.
+HORDE_LATCH = ("tick", "serial", "mode")
+HORDE_MODES = (("CONDUCTOR", -1), ("EMPTY", 0), ("SET", 1))
+
+
+class HordeCacheOverflow(RuntimeError):
+    """#29 P7d: an env's horde stage needed a field past the device cache's
+    capacity (:data:`HORDE_FIELD_CAP`): that zombie's walk was not taken."""
 #: The most effects ONE ROW of a per-row producer stages in one launch: slot
 #: 4a's blow is a HIT, a STATUS and a PUSH; #29 P7a.2: slot 4's trigger is up
 #: to four records per round (its recoil PUSH, then the march's HIT, PUSH and
@@ -340,6 +381,14 @@ BOOKS = BOOKS + (
     BookRow("signal_writes", None,
             "the signal stages' writes that changed a value (a pub / stg slot, a "
             "want_open, a node's ema / state / dwell, a pump's at_target)"),
+    # #29 P7d: the HORDE stage's counts and its named refusal
+    BookRow("horde_floods", None,
+            "the HORDE stage's floods this run (HordeState.floods' increase)"),
+    BookRow("horde_bites", None, "the HORDE stage's bites (apply_packet calls)"),
+    BookRow("horde_bashes", None, "the HORDE stage's door strikes (chew_wall calls)"),
+    BookRow("horde_refused", None,
+            "a field the HORDE stage needed past the cache's capacity "
+            "(HORDE_FIELD_CAP): refused by name, HordeCacheOverflow"),
 ) + tuple(BookRow(f"trace_clip_{g}", f"trace_clip_books:{g}",
                   f"the counted trace saturation's clip on gas slice {g} "
                   f"(trace_store_sat / trace_add_sat)")
@@ -527,6 +576,7 @@ def layout() -> Layout:
                     for i, n in enumerate(SEAM_REFUSAL_NAMES))
     text += "".join(f"signal:{grp}:{i}:{n}\n" for grp, names in _signal_codes()
                     for i, n in enumerate(names))
+    text += _horde_text()                                    # #29 P7d
     lay = Layout(fields=FIELDS, kinds=KINDS, books=BOOK_NAMES, planes=PLANES,
                  clears=CLEAR_PLANES,
                  fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest(),
@@ -608,8 +658,32 @@ def header_text(lay: Layout | None = None) -> str:
         for i, n in enumerate(names):
             lines.append(f"constexpr int64_t SIGNAL_{grp}_{n.upper()} = {i};")
         lines.append(f"constexpr int SIGNAL_N_{grp} = {len(names)};")
+    lines += ["", "// #29 P7d: the horde's field cache (header, field keys, kinds, mask",
+              "// planes) and the HORDE stage's latch row (then one column per unit row)."]
+    lines.append(f"constexpr int APPLIER_HORDE_FIELD_CAP = {HORDE_FIELD_CAP};")
+    for grp, names in (("HDR", HORDE_HEADER), ("KEY", HORDE_KEY), ("LATCH", HORDE_LATCH)):
+        for i, n in enumerate(names):
+            lines.append(f"constexpr int APPLIER_HORDE_{grp}_{n.upper()} = {i};")
+        lines.append(f"constexpr int APPLIER_HORDE_{grp}_W = {len(names)};")
+    for i, n in enumerate(HORDE_FIELD_KINDS):
+        lines.append(f"constexpr int64_t APPLIER_HORDE_KIND_{n} = {i};")
+    for i, n in enumerate(HORDE_MASKS):
+        lines.append(f"constexpr int APPLIER_HORDE_MASK_{n} = {i};")
+    lines.append(f"constexpr int APPLIER_HORDE_N_MASKS = {len(HORDE_MASKS)};")
+    for n, v in HORDE_MODES:
+        lines.append(f"constexpr int64_t APPLIER_HORDE_MODE_{n} = {v};")
     lines += ["", "}  // namespace applier", ""]
     return "\n".join(lines)
+
+
+def _horde_text() -> str:
+    """#29 P7d: the horde cache's and latch's layout, in the fingerprint."""
+    t = f"horde_cap:{HORDE_FIELD_CAP}\n"
+    for grp, names in (("hdr", HORDE_HEADER), ("key", HORDE_KEY), ("latch", HORDE_LATCH),
+                       ("kind", HORDE_FIELD_KINDS), ("mask", HORDE_MASKS)):
+        t += "".join(f"horde_{grp}:{i}:{n}\n" for i, n in enumerate(names))
+    t += "".join(f"horde_mode:{n}:{v}\n" for n, v in HORDE_MODES)
+    return t
 
 
 # ---------------------------------------------------------------------------
@@ -914,3 +988,6 @@ __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS",
            "STAGE_VENTS", "LedgerRangeRefused"]
 __all__ += ["STAGE_EMIT", "STAGE_LOGIC", "STAGE_DOOR_INPUTS", "STAGE_PUMPS", "STAGE_SWAP",
             "STAGE_VENTS", "STAGE_DOORS", "SignalRangeRefused"]
+__all__ += ["STAGE_HORDE", "HORDE_FIELD_CAP", "HORDE_HEADER", "HORDE_KEY",   # #29 P7d
+            "HORDE_FIELD_KINDS", "HORDE_MASKS", "HORDE_LATCH", "HORDE_MODES",
+            "HordeCacheOverflow"]

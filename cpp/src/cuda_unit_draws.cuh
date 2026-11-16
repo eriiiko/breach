@@ -119,6 +119,22 @@ __device__ inline int64_t cone_offset_q16(uint32_t u, int64_t cone_q, bool* bad)
     return (int64_t)(((uint64_t)u * (uint64_t)(2 * cone_q + 1)) >> 32) - cone_q;
 }
 
+// #29 P7d: the vendored block as a SEEDLESS HASH (horde.wander_direction:
+// philox32_4x32_10((tick & M32, 0, salt, ident & M32), (0, 0))[0]) -- no key,
+// no stream, nothing drawn: the same (tick, ident) always gives the same word.
+__device__ inline uint32_t seedless_word(int64_t tick, uint32_t salt, int64_t ident) {
+    const uint32_t ctr[4] = {(uint32_t)(tick & WORD_MAX), 0u, salt, (uint32_t)(ident & WORD_MAX)};
+    const uint32_t key[2] = {0u, 0u};
+    uint32_t out[4];
+    philox32_4x32_10(ctr, key, out);
+    return out[0];
+}
+
+// philox32_below: an integer in [0, n), (w * n) >> 32.
+__device__ __forceinline__ uint32_t below(uint32_t w, uint32_t n) {
+    return (uint32_t)(((uint64_t)w * (uint64_t)n) >> 32);
+}
+
 // draws.roll_q16: True with probability p_q / 65536.
 __device__ __forceinline__ bool roll_q16(uint32_t u, int64_t p_q) {
     return (int64_t)(u >> 16) < p_q;

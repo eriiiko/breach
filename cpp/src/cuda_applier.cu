@@ -31,6 +31,7 @@
 #include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path); P7c.2: every row
 #include "cuda_unit_blast.cuh"     // #29 P7c.2: the walks' scratch, the SOURCES stage
 #include "cuda_unit_signals.cuh"   // #29 P6b.3: the signal stages (9e a, b, c, d pumps, e)
+#include "cuda_unit_horde.cuh"     // #29 P7d: the HORDE stage (slot 5) and the flood
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
@@ -158,7 +159,58 @@ __device__ __forceinline__ int64_t* effect_row(const WalkUnits& U, int64_t r) {
 __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
                           const unsigned long long* dropped, int cap, topo::PlanePtrs P, int h,
                           int w, int n_gases, const int64_t* tables, int64_t* books,
-                          WalkUnits U, WalkLists WL, WalkTables X) {
+                          WalkUnits U, WalkLists WL, WalkTables X,
+                          horde_dev::HordeBuffers HB) {
+    if (stage == APPLIER_STAGE_HORDE) {
+        // #29 P7d: slot 5 -- the WHOLE block (passes 1 and 2 wide, pass 3 on
+        // thread 0, the flood fanned out): cuda_unit_horde.cuh
+        __shared__ horde_dev::Shared S;
+        if (blockIdx.x != 0) return;
+        const int e = benv();
+        const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
+        int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
+        const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+        if (U.ring.ring == nullptr || !WL.has_noise || X.doors == nullptr || X.tiles == nullptr ||
+            HB.hdr == nullptr || HB.latch == nullptr) {
+            if (threadIdx.x == 0) B[APPLIER_BOOK_FAULTS] += 1;   // the stage needs them all
+            return;
+        }
+        unit_lib::EventSink sink = unit_lib::env_sink(U.ring);
+        unit_lib::RecordSink ns = unit_lib::list_env_sink(WL.noise, e);
+        const size_t n = (size_t)h * w, Un = (size_t)U.n_units;
+        horde_dev::Env V;
+        V.E = &E;
+        V.tab = tab;
+        V.store = U.store;
+        V.n_units = U.n_units;
+        V.touched = U.touched + (size_t)e * Un;
+        V.sink = &sink;
+        V.noise_out = &ns;
+        V.doors = X.doors + (size_t)e * X.door_cap * object_tables::OBJ_DOOR_W;
+        V.n_doors = X.n_doors[e];
+        V.dtiles = X.tiles + (size_t)e * X.tile_cap * object_tables::OBJ_DOOR_TILE_W;
+        V.n_dtiles = X.n_tiles[e];
+        V.hdr = HB.hdr + (size_t)e * APPLIER_HORDE_HDR_W;
+        V.keys = HB.keys + (size_t)e * HB.fcap * APPLIER_HORDE_KEY_W;
+        V.dist = HB.dist + (size_t)e * HB.fcap * n;
+        V.masks = HB.masks + (size_t)e * APPLIER_HORDE_N_MASKS * n;
+        V.pass = HB.pass + (size_t)e * n;
+        V.players = HB.flags + (size_t)e * 2 * Un;
+        V.zsel = V.players + Un;
+        V.q[0] = HB.queues + (size_t)e * 2 * n;
+        V.q[1] = V.q[0] + n;
+        V.live = HB.live + (size_t)e * Un * 3;
+        V.latch = HB.latch + (size_t)e * (APPLIER_HORDE_LATCH_W + Un);
+        V.fcap = HB.fcap;
+        V.tick = V.latch[APPLIER_HORDE_LATCH_TICK];
+        V.B = B;
+        horde_dev::stage(V, S, WL.noise, e);
+        __syncthreads();
+        if (threadIdx.x == 0)
+            for (int r = 0; r < U.n_units; ++r)
+                if (V.touched[r]) unit_lib::count_changed(U.cnt);
+        return;
+    }
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = benv();
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
@@ -331,22 +383,11 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         } else if (kind == APPLIER_KIND_CHEW) {
             // combat.chew_wall: a no-op for wall_damage <= 0 and on air; the
             // wall's hp less the per-call quantized damage, destroy_wall at <= 0
-            if (r[APPLIER_CHEW_LIVE] == 0) continue;
-            const int64_t y = r[APPLIER_CHEW_Y], x = r[APPLIER_CHEW_X];
-            if (y < 0 || y >= h || x < 0 || x >= w) {     // numpy would wrap or raise
-                B[APPLIER_BOOK_FAULTS] += 1;
-                continue;
-            }
-            const int i = (int)y * w + (int)x;
-            if ((int64_t)E.material[i] == tab[unit_tables::UNIT_TAB_TOPO_MAT_AIR]) continue;
-            const int64_t hp = (int64_t)E.wall_hp[i] - r[APPLIER_CHEW_DAMAGE_Q];
-            if (hp < -2147483648LL || hp > 2147483647LL) {   // int32's range
-                B[APPLIER_BOOK_FAULTS] += 1;
-                continue;
-            }
-            E.wall_hp[i] = (int32_t)hp;
-            B[APPLIER_BOOK_APPLIED] += 1;
-            if (hp <= 0) topo::destroy_wall(E, tab, (int)y, (int)x, B);
+            // (#29 P7d: topo::chew_wall, the same law, shared with slot 5's bash)
+            const int cr = topo::chew_wall(E, tab, r[APPLIER_CHEW_Y], r[APPLIER_CHEW_X],
+                                           r[APPLIER_CHEW_DAMAGE_Q], r[APPLIER_CHEW_LIVE] != 0, B);
+            if (cr == topo::CHEW_FAULT) B[APPLIER_BOOK_FAULTS] += 1;
+            else if (cr == topo::CHEW_APPLIED) B[APPLIER_BOOK_APPLIED] += 1;
         } else if (kind == APPLIER_KIND_SPRAY_CELLS) {
             // #29 P7a.3: combat._enqueue_spray_cells -- the edits through the
             // door, the claims onto the claims list (cuda_unit_spray.cuh)
@@ -416,7 +457,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 11, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 12, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -710,10 +751,46 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
         X.stile_cap = lists->source_tiles->cap();
         X.source_out = reinterpret_cast<int32_t*>(lists->source_out);
     }
+    // #29 P7d: the HORDE stage's door tables (the bashable mask), its cache,
+    // scratch and latch (device addresses; HordeReach)
+    horde_dev::HordeBuffers HB;
+    if (stage == APPLIER_STAGE_HORDE) {
+        if (lists == nullptr || lists->door_table == nullptr || lists->door_tiles == nullptr ||
+            lists->noise == nullptr || ring == nullptr)
+            throw std::invalid_argument("applier_run: the HORDE stage needs the door tables, the "
+                                        "noise list and the event ring");
+        const HordeReach& R = lists->horde;
+        if (R.hdr == 0 || R.keys == 0 || R.dist == 0 || R.masks == 0 || R.pass == 0 ||
+            R.flags == 0 || R.queues == 0 || R.live == 0 || R.latch == 0 || R.fcap < 1)
+            throw std::invalid_argument("applier_run: the HORDE stage needs the horde cache, its "
+                                        "scratch and the latch");
+        if (lists->door_table->width() != object_tables::OBJ_DOOR_W ||
+            lists->door_tiles->width() != object_tables::OBJ_DOOR_TILE_W ||
+            lists->door_table->n_env() != a.n_env() || lists->door_tiles->n_env() != a.n_env())
+            throw std::invalid_argument("applier_run: the door tables are not the door / door "
+                                        "tile layouts for these envs");
+        X.doors = lists->door_table->records_dev();
+        X.n_doors = lists->door_table->count_dev();
+        X.door_cap = lists->door_table->cap();
+        X.tiles = lists->door_tiles->records_dev();
+        X.n_tiles = lists->door_tiles->count_dev();
+        X.tile_cap = lists->door_tiles->cap();
+        HB.hdr = reinterpret_cast<int64_t*>(R.hdr);
+        HB.keys = reinterpret_cast<int64_t*>(R.keys);
+        HB.dist = reinterpret_cast<int32_t*>(R.dist);
+        HB.masks = reinterpret_cast<uint8_t*>(R.masks);
+        HB.pass = reinterpret_cast<uint8_t*>(R.pass);
+        HB.flags = reinterpret_cast<uint8_t*>(R.flags);
+        HB.queues = reinterpret_cast<int32_t*>(R.queues);
+        HB.live = reinterpret_cast<int64_t*>(R.live);
+        HB.latch = reinterpret_cast<const int64_t*>(R.latch);
+        HB.fcap = R.fcap;
+    }
     UnitRecordList& L = a.list();
-    k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(
+    const int threads = stage == APPLIER_STAGE_HORDE ? horde_dev::HORDE_BT : 32;
+    k_applier<<<dim3(1, (unsigned)a.n_env()), threads, 0, tstream()>>>(
         stage, L.records_dev(), L.count_dev(), L.dropped_dev(), L.cap(), P, planes.h, planes.w,
-        planes.n_gases, tables.values(), a.books_dev(), U, WL, X);
+        planes.n_gases, tables.values(), a.books_dev(), U, WL, X, HB);
     ap_check(cudaGetLastError(), "applier launch");
     a.download_books(out.books);
     std::unique_ptr<int64_t[]> f(new int64_t[(size_t)a.n_env()]);

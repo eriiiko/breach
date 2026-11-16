@@ -131,6 +131,20 @@ struct ApplierOut {
 // rows (channel, y, x, attacker): credit_at's table). Any may be null: an
 // effect that needs a missing one FAULTS.
 class EditDoor;
+// #29 P7d: the HORDE stage's reach -- device addresses of (N, ...) arrays the
+// caller owns: the FIELD CACHE (cross-tick device state: the header
+// (N, HDR_W) int64, the field keys (N, fcap, KEY_W) int64, the distance planes
+// (N, fcap, h, w) int32, the mask planes (N, N_MASKS, h, w) uint8), the
+// scratch (the pass plane (N, h, w) uint8, the row flags (N, 2, U) uint8, the
+// two frontiers (N, 2, h, w) int32, the hearing's targets (N, U, 3) int64) and
+// the LATCH (N, LATCH_W + U) int64 the host writes (applier_layout.h's
+// APPLIER_HORDE_*).
+struct HordeReach {
+    std::uintptr_t hdr = 0, keys = 0, dist = 0, masks = 0;
+    std::uintptr_t pass = 0, flags = 0, queues = 0, live = 0;
+    std::uintptr_t latch = 0;
+    int fcap = 0;
+};
 struct ApplierLists {
     UnitRecordList* cells = nullptr;
     EditDoor* door = nullptr;
@@ -171,6 +185,9 @@ struct ApplierLists {
     ObjectTable* pump_ins = nullptr;
     ObjectTable* door_drives = nullptr;
     const int64_t* ticks = nullptr;
+    // #29 P7d: the HORDE stage's cache, scratch and latch (with the door
+    // tables above, the noise list and the ring)
+    HordeReach horde;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
@@ -186,6 +203,14 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
 void tick_end_clears(int n_env, int h, int w,
                      const std::uintptr_t (&ptr)[applier::APPLIER_N_CLEARS],
                      std::uintptr_t active);
+
+// #29 P7d, TEST-ONLY (cuda_unit_horde.cu): THE FLOOD of the HORDE stage
+// (cuda_unit_horde.cuh's flood_block, one block per env) on given masks:
+// `tile_ok` (N, h, w) uint8, `fp` (N,), seeds (N, k, 2) int64 (y, x) with
+// n_seeds (N,); writes `dist` (N, h, w) int32. Device addresses.
+void horde_flood_probe(int n_env, int h, int w, std::uintptr_t tile_ok, const int64_t* fp,
+                       const int64_t* seeds, const int64_t* n_seeds, int k_cap,
+                       std::uintptr_t dist);
 
 // The compiled layout (what simulation.applier.DeviceApplier checks).
 const char* applier_fingerprint();

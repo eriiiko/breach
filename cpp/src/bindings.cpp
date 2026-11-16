@@ -1270,7 +1270,8 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::object claims, py::object noise, py::object blast_log,
                  py::object door_table, py::object door_tiles, py::object duct_table,
                  py::object vent_table, py::object source_table, py::object source_tiles,
-                 std::uintptr_t source_out, py::object signal_tables, py::object ticks) {
+                 std::uintptr_t source_out, py::object signal_tables, py::object ticks,
+                 py::object horde) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   // #29 P6b.1: the DOORS stage's door table and tile table
@@ -1336,6 +1337,20 @@ PYBIND11_MODULE(breach_physics, m) {
                           throw std::invalid_argument("applier_run: ticks must be (N,) int64");
                       L.ticks = tk.data();
                   }
+                  // #29 P7d: the HORDE stage's reach, (hdr, keys, dist, masks, pass,
+                  // flags, queues, live, latch, fcap) as ten uint64
+                  if (!horde.is_none()) {
+                      auto hz = horde.cast<py::array_t<uint64_t, py::array::c_style |
+                                                                   py::array::forcecast>>();
+                      if (hz.ndim() != 1 || hz.shape(0) != 10)
+                          throw std::invalid_argument("applier_run: horde must be 10 uint64 "
+                                                      "(9 device addresses, fcap)");
+                      const uint64_t* q = hz.data();
+                      L.horde.hdr = q[0]; L.horde.keys = q[1]; L.horde.dist = q[2];
+                      L.horde.masks = q[3]; L.horde.pass = q[4]; L.horde.flags = q[5];
+                      L.horde.queues = q[6]; L.horde.live = q[7]; L.horde.latch = q[8];
+                      L.horde.fcap = (int)q[9];
+                  }
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
@@ -1348,9 +1363,26 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("source_table") = py::none(), py::arg("source_tiles") = py::none(),
               py::arg("source_out") = (std::uintptr_t)0,
               py::arg("signal_tables") = py::none(), py::arg("ticks") = py::none(),
+              py::arg("horde") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");
+        m.def("horde_flood_probe",
+              [](int n_env, int h, int w, std::uintptr_t tile_ok,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> fp,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> seeds,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> n_seeds,
+                 std::uintptr_t dist) {
+                  if (fp.ndim() != 1 || fp.shape(0) != n_env || n_seeds.ndim() != 1 ||
+                      n_seeds.shape(0) != n_env || seeds.ndim() != 3 ||
+                      seeds.shape(0) != n_env || seeds.shape(2) != 2)
+                      throw std::invalid_argument("horde_flood_probe: fp (N,), seeds (N, k, 2), "
+                                                  "n_seeds (N,)");
+                  breach_cuda::horde_flood_probe(n_env, h, w, tile_ok, fp.data(), seeds.data(),
+                                                 n_seeds.data(), (int)seeds.shape(1), dist);
+              },
+              "#29 P7d, TEST-ONLY: the HORDE stage's flood (one block per env) on device "
+              "masks tile_ok (N, h, w) uint8 into dist (N, h, w) int32 (device addresses).");
         m.def("applier_blast_probe",
               [](FieldApplier& a, const UnitTablesDevice& t,
                  py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
