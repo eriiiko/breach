@@ -226,7 +226,7 @@ BOOKS = ("n_destruction_seed", "ge_retire", "ge_mint", "ge_destroy_seed",
          "ge_payload_bulk_gas_rail")
 BOOK_OUTPUTS = tuple("book:" + b for b in BOOKS)
 LIST_OUTPUTS = ("list:edits", "list:claims", "list:noise", "list:blast_log",
-                "list:sources", "list:source_tiles")             # #29 P7c.2
+                "list:source_tiles", "list:sources")   # #29 P7c.2: tiles land first
 HOST_ONLY = (
     ("render_dirty", "the wall seam's render mark (a blast's destroy; no device form)"),
     ("_sky_mask_dirty", "the sky exchange's lazy-rebuild flag (ambient maps)"),
@@ -335,7 +335,7 @@ def _queue_state(sim):
     equal) and the queue's seq."""
     from simulation import field_edit as fe
     pairs = list(sim.edit_queue._edits)
-    pack, reason = fe.pack_for_device(sim.gmap, pairs, None)
+    pack, reason = fe.pack_for_device(sim.gmap, pairs, sim.draws)   # noisy: keyed draws
     if pack is None:
         return [("unpacked", reason, repr(pairs))]
     return [pack.edits.tolist(), pack.tiles.tolist(),
@@ -1924,8 +1924,14 @@ def _host_side(ch, books_only=False):
             return
         g.n_destruction_seed_sum += b["n_destruction_seed"]
         for name, key in (("ge_retire", "retire"), ("ge_mint", "mint"),
-                          ("ge_destroy_seed", "destroy_seed")):
-            g._gas_energy_book(key, b[name])
+                          ("ge_destroy_seed", "destroy_seed"),
+                          # #29 P7c.2: bulk gas' seam channels
+                          ("ge_payload_bulk_gas", "payload_bulk_gas"),
+                          ("ge_payload_bulk_gas_rail", "payload_bulk_gas_rail")):
+            if b.get(name):
+                g._gas_energy_book(key, b[name])
+        g.div_source_sat_hits += b.get("div_source_sat_hits", 0)    # #29 P7c.2
+        g.div_source_cut_q += b.get("div_source_cut_q", 0)
         g._solid_energy_book("destroy_wall", b["solid_destroy_wall"])
         g._tile_serial += b["tiles_changed"]
         mat0 = ch.inputs._host_fields["material"][0]
@@ -2377,19 +2383,17 @@ def part_sources(ticks=SOURCE_TICKS):
                       else "take: a pending plane handed out"] += 1
                     if p["nexp"] >= 2:
                         c["take: two or more sources alive"] += 1
-                        ts = [set(map(tuple, x[0])) for x in g.expansions] if g.expansions else []
-                        if p["nexp"] >= 2 and len(p["stiles"]) > len(
-                                {tuple(r[:2]) for r in p["stiles"]}):
+                        if len(p["stiles"]) > len({tuple(r[:2]) for r in p["stiles"]}):
                             c["take: sources overlapping (a tile in two)"] += 1
-                        _ = ts
                     if len(g.expansions) < p["nexp"]:
                         c["take: a source's last tick (dropped, its tiles compacted)"] += 1
                     if len(g.expansions) and len(g.expansions) == p["nexp"]:
                         c["take: every source still alive"] += 1
                     if int(books["div_source_sat_hits"][e]):
                         c["take: a saturation while adding"] += 1
-                    if p["nexp"] and len(g.expansions) and len(g.expansions) < p["nexp"] and \
-                            any(r[4] for r in p["src"][1:]):
+                    dying = [int(r[1]) == 1 for r in p["src"]]          # col 1: ticks
+                    if any(dying[i] and not dying[j] for i in range(len(dying))
+                           for j in range(i + 1, len(dying))):
                         c["take: a survivor behind a dropped source moved down"] += 1
                     n += 1
     want = ("take: nothing pending (None)", "take: a pending plane handed out",
@@ -2451,8 +2455,10 @@ def part_handover(ticks=HANDOVER_TICKS):
         share_tables(twins + refs)
         rows = get_tables().payloads.by_name
         stats = Counter()
+        import cuda_s8a_check as s8a            # the resident path's backends
         with Rows(VARIANTS):
             physics_runner.set_residency(True)
+            s8a._set_backends(True)
             try:
                 bt, br = ResidentBatch(twins), ResidentBatch(refs)
                 h, w = twins[0].gmap.solid.shape
@@ -2507,6 +2513,7 @@ def part_handover(ticks=HANDOVER_TICKS):
                             return
             finally:
                 physics_runner.set_residency(False)
+                s8a._set_backends(False)
         if not stats["ticks a source was taken on the card"]:
             fail(f"handover N={N}: vacuous (no source ever taken)")
             return
