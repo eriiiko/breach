@@ -12,8 +12,8 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "07868470669bdc84ca0c6e01aad1066a81e22533ddaf6467cba6615d2f5923d4";
-constexpr int OBJECT_TABLES_N = 2;
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "8a8b2db473e1def8c468d78543b091ac57f77263cb7f3c27d28ff85a462c8b1a";
+constexpr int OBJECT_TABLES_N = 4;
 
 // table 'charge': its index, W, capacity and live column;
 // <column>: its first int64 in the row; <column>_W: its width.
@@ -70,5 +70,69 @@ constexpr int OBJ_GRENADE_COL_TRAVEL_SPEED_Q = 12;
 constexpr int OBJ_GRENADE_COL_TRAVEL_SPEED_Q_W = 1;
 constexpr int OBJ_GRENADE_COL_DETONATED = 13;
 constexpr int OBJ_GRENADE_COL_DETONATED_W = 1;
+
+// table 'round': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_ROUND = 2;
+constexpr int OBJ_ROUND_W = 21;
+constexpr int OBJ_ROUND_CAP = 128;
+constexpr int OBJ_ROUND_LIVE = 20;
+constexpr int OBJ_ROUND_COL_SHOOTER_ID = 0;
+constexpr int OBJ_ROUND_COL_SHOOTER_ID_W = 1;
+constexpr int OBJ_ROUND_COL_WEAPON = 1;
+constexpr int OBJ_ROUND_COL_WEAPON_W = 1;
+constexpr int OBJ_ROUND_COL_AMMO = 2;
+constexpr int OBJ_ROUND_COL_AMMO_W = 1;
+constexpr int OBJ_ROUND_COL_PAYLOAD = 3;
+constexpr int OBJ_ROUND_COL_PAYLOAD_W = 1;
+constexpr int OBJ_ROUND_COL_ANGLE_Q = 4;
+constexpr int OBJ_ROUND_COL_ANGLE_Q_W = 1;
+constexpr int OBJ_ROUND_COL_RX_Q = 5;
+constexpr int OBJ_ROUND_COL_RX_Q_W = 1;
+constexpr int OBJ_ROUND_COL_RY_Q = 6;
+constexpr int OBJ_ROUND_COL_RY_Q_W = 1;
+constexpr int OBJ_ROUND_COL_PREV_IX = 7;
+constexpr int OBJ_ROUND_COL_PREV_IX_W = 1;
+constexpr int OBJ_ROUND_COL_PREV_IY = 8;
+constexpr int OBJ_ROUND_COL_PREV_IY_W = 1;
+constexpr int OBJ_ROUND_COL_REMAINING_STEPS = 9;
+constexpr int OBJ_ROUND_COL_REMAINING_STEPS_W = 1;
+constexpr int OBJ_ROUND_COL_SPEED_Q16 = 10;
+constexpr int OBJ_ROUND_COL_SPEED_Q16_W = 1;
+constexpr int OBJ_ROUND_COL_BUDGET_Q16 = 11;
+constexpr int OBJ_ROUND_COL_BUDGET_Q16_W = 1;
+constexpr int OBJ_ROUND_COL_OX_Q = 12;
+constexpr int OBJ_ROUND_COL_OX_Q_W = 1;
+constexpr int OBJ_ROUND_COL_OY_Q = 13;
+constexpr int OBJ_ROUND_COL_OY_Q_W = 1;
+constexpr int OBJ_ROUND_COL_SX_Q = 14;
+constexpr int OBJ_ROUND_COL_SX_Q_W = 1;
+constexpr int OBJ_ROUND_COL_SY_Q = 15;
+constexpr int OBJ_ROUND_COL_SY_Q_W = 1;
+constexpr int OBJ_ROUND_COL_SPAWN_TICK = 16;
+constexpr int OBJ_ROUND_COL_SPAWN_TICK_W = 1;
+constexpr int OBJ_ROUND_COL_ORDINAL = 17;
+constexpr int OBJ_ROUND_COL_ORDINAL_W = 1;
+constexpr int OBJ_ROUND_COL_MARCH_COVER = 18;
+constexpr int OBJ_ROUND_COL_MARCH_COVER_W = 1;
+constexpr int OBJ_ROUND_COL_MARCH_FACING_DEFENSE = 19;
+constexpr int OBJ_ROUND_COL_MARCH_FACING_DEFENSE_W = 1;
+constexpr int OBJ_ROUND_COL_LIVE = 20;
+constexpr int OBJ_ROUND_COL_LIVE_W = 1;
+
+// table 'noise': its index, W, capacity and live column;
+// <column>: its first int64 in the row; <column>_W: its width.
+constexpr int OBJ_NOISE = 3;
+constexpr int OBJ_NOISE_W = 4;
+constexpr int OBJ_NOISE_CAP = 64;
+constexpr int OBJ_NOISE_LIVE = 3;
+constexpr int OBJ_NOISE_COL_FY = 0;
+constexpr int OBJ_NOISE_COL_FY_W = 1;
+constexpr int OBJ_NOISE_COL_FX = 1;
+constexpr int OBJ_NOISE_COL_FX_W = 1;
+constexpr int OBJ_NOISE_COL_RADIUS = 2;
+constexpr int OBJ_NOISE_COL_RADIUS_W = 1;
+constexpr int OBJ_NOISE_COL_LIVE = 3;
+constexpr int OBJ_NOISE_COL_LIVE_W = 1;
 
 }  // namespace object_tables

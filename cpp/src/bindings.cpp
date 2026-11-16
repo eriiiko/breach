@@ -1303,6 +1303,64 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P7a.1: slot 4a (combat.process_melee_intents) on the device store, its "
               "blows appended to the effect list; returns (coverage, faults, refused, "
               "dropped records).");
+        // #29 P7a.2: slot 4's shooting and slot 2''s rounds (cuda_unit_shooting.cu)
+        m.def("unit_shooting",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+                 breach_cuda::ObjectTable& rounds, breach_cuda::ObjectTable& noise,
+                 py::array_t<int64_t, py::array::c_style> ticks,
+                 py::array_t<int64_t, py::array::c_style> keys, std::uintptr_t solid,
+                 std::uintptr_t material, int h, int w) {
+                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env() || keys.ndim() != 2 ||
+                      keys.shape(0) != s.n_env() || keys.shape(1) != 3)
+                      throw std::invalid_argument(
+                          "unit_shooting: ticks must be (n_env,), keys (n_env, 3)");
+                  const py::ssize_t n = s.n_env();
+                  py::array_t<int64_t> cov(n), flt(n), ref(n), drp(n), rl(n), nl(n);
+                  breach_cuda::UnitShootCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  c.rounds_lost = rl.mutable_data();
+                  c.noise_lost = nl.mutable_data();
+                  breach_cuda::ShootPlanes p;
+                  p.solid = solid; p.material = material; p.h = h; p.w = w;
+                  breach_cuda::unit_shooting(s, t, a, rounds, noise, ticks.data(), keys.data(),
+                                             p, c);
+                  return py::make_tuple(cov, flt, ref, drp, rl, nl);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("rounds"),
+              py::arg("noise"), py::arg("ticks"), py::arg("keys"), py::arg("solid"),
+              py::arg("material"), py::arg("h"), py::arg("w"),
+              "#29 P7a.2: slot 4's shooting (combat.process_shooting, the continuous path) "
+              "on the device store; returns (coverage, faults, refused, dropped records, "
+              "rounds lost, noises lost).");
+        m.def("unit_rounds",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, FieldApplier& a,
+                 breach_cuda::ObjectTable& rounds, py::array_t<int64_t, py::array::c_style> ticks,
+                 py::array_t<int64_t, py::array::c_style> keys, std::uintptr_t solid,
+                 std::uintptr_t material, int h, int w, bool compact) {
+                  if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env() || keys.ndim() != 2 ||
+                      keys.shape(0) != s.n_env() || keys.shape(1) != 3)
+                      throw std::invalid_argument(
+                          "unit_rounds: ticks must be (n_env,), keys (n_env, 3)");
+                  const py::ssize_t n = s.n_env();
+                  py::array_t<int64_t> cov(n), flt(n), ref(n), drp(n), rl(n);
+                  breach_cuda::UnitShootCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  c.rounds_lost = rl.mutable_data();
+                  breach_cuda::ShootPlanes p;
+                  p.solid = solid; p.material = material; p.h = h; p.w = w;
+                  breach_cuda::unit_rounds(s, t, a, rounds, ticks.data(), keys.data(), p, compact,
+                                           c);
+                  return py::make_tuple(cov, flt, ref, drp, rl);
+              }, py::arg("store"), py::arg("tables"), py::arg("effects"), py::arg("rounds"),
+              py::arg("ticks"), py::arg("keys"), py::arg("solid"), py::arg("material"),
+              py::arg("h"), py::arg("w"), py::arg("compact") = true,
+              "#29 P7a.2: slot 2''s march (Simulation._march_rounds) over the round table; "
+              "returns (coverage, faults, refused, dropped records, rounds lost).");
         m.def("tick_end_clears",
               [](int n_env, int h, int w, py::array_t<uint64_t, py::array::c_style> ptrs,
                  std::uintptr_t active) {

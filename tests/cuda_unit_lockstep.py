@@ -189,6 +189,11 @@ def _capture_charges_live(sim):                    # #29 P6.4a
     return unit_requests.charges_live(sim)
 
 
+def _capture_draw_key(sim):                        # #29 P7a.2
+    from simulation import unit_draws
+    return unit_draws.draw_key(sim)
+
+
 def _pad_door_spans(vals):
     from simulation import unit_requests
     return unit_requests.pad_door_spans(vals)
@@ -204,6 +209,7 @@ INPUTS: dict = {
     "credit_claims": ("table", _capture_claims),     # #29 P6.3
     "door_spans": ("table", _capture_door_spans),    # #29 P6.4a
     "charges_live": ("scalar", _capture_charges_live),   # #29 P6.4a
+    "draw_key": ("table", _capture_draw_key),        # #29 P7a.2: (N, 3)
 }
 #: How a table input pads across envs (default: zeros).
 PADS: dict = {"order_requests": unit_kernels.pad_requests,
@@ -280,6 +286,56 @@ def _effects_fields(rec):
         return f"kind {k}", ("kind",) + tuple(f"a{i}" for i in range(applier.ARG_SLOTS))
     name, fs = applier.KIND_FIELDS[k - 1]
     return name, ("kind",) + fs
+
+
+# #29 P7a.2: the rounds in flight (Simulation.bullets) and the noise log
+# (GameMap.noise_log), each an object table (simulation.object_tables)
+def _rounds_host(sim, args, kw):
+    return sim
+
+
+def _rounds_records(sim, obj):
+    return unit_kernels.rounds_of(sim)
+
+
+def _rounds_device(n_env, n_units, cap, bp):
+    from simulation import object_tables, unit_schema
+    return object_tables.DeviceTable(unit_schema.ROUND_TABLE, n_env, n_units=n_units,
+                                     row_cap=unit_kernels.round_row_cap(), bp=bp)
+
+
+def _rounds_land(sim, obj, recs):
+    sim.bullets = unit_kernels.rounds_to_host(sim, recs)
+
+
+def _table_fields(name):
+    def f(rec):
+        from simulation import object_tables
+        lay = object_tables.table_layout(name)
+        return name, tuple(c.name for c in lay.columns)
+    return f
+
+
+def _noise_host(sim, args, kw):
+    return sim
+
+
+def _noise_records(sim, obj):
+    return unit_kernels.noise_of(sim)
+
+
+def _noise_device(n_env, n_units, cap, bp):
+    from simulation import object_tables, unit_schema
+    return object_tables.DeviceTable(unit_schema.NOISE_TABLE, n_env, n_units=n_units,
+                                     row_cap=1, bp=bp)
+
+
+def _noise_land(sim, obj, recs):
+    sim.gmap.noise_log[:] = [(int(r[0]), int(r[1]), int(r[2])) for r in recs]
+
+
+def _no_consume(obj):
+    pass
 
 
 # -- #29 P7b: the OBJECT TABLES' host lists (``Simulation.projectiles``,
@@ -414,6 +470,10 @@ def _payloads_land(sim, obj, recs):
 LISTS: dict = {
     "effects": ListDef(_effects_host, _effects_records, _effects_consume,
                        _effects_device, _effects_fields),
+    "rounds": ListDef(_rounds_host, _rounds_records, _no_consume, _rounds_device,
+                      _table_fields("round"), None, _rounds_land),
+    "noise": ListDef(_noise_host, _noise_records, _no_consume, _noise_device,
+                     _table_fields("noise"), None, _noise_land),
     "grenades": _table_list("projectiles", "grenade"),          # #29 P7b
     "charges": _table_list("planted_charges", "charge"),        # #29 P7b
     "payloads": ListDef(_payloads_host, _payloads_records,      # #29 P7b
@@ -835,6 +895,14 @@ class DeviceSlot:
     # #29 P7a.1: which calls of the label's callables are this slot's
     # (sim, args, kwargs, caller function name) -> bool; None = every call.
     select: Callable | None = None
+    # #29 P7a.2: a NAME when two slots share a label (slot 4c's resolve and
+    # slot 2's landing both hook SimultaneousEffects.resolve); reports and
+    # divergences are keyed by it.
+    name: str = ""
+
+    @property
+    def key(self) -> str:
+        return self.name or self.label
     # #29 P7b: the conductor may gate the slot off (charges.tick runs only
     # while a charge is planted): an env where it did not run is compared as
     # the slot run on the state the tick ended with, which must change
@@ -976,7 +1044,7 @@ class ShadowLockstep:
         self.drivers = list(drivers)
         self.slots = list(slot) if isinstance(slot, (list, tuple)) else [slot]
         self.multi = isinstance(slot, (list, tuple))
-        labels = [s.label for s in self.slots]
+        labels = [s.key for s in self.slots]
         if len(set(labels)) != len(labels):
             raise ValueError(f"lockstep: a slot is named twice ({labels})")
         self.slot = self.slots[0]
@@ -1060,7 +1128,7 @@ class ShadowLockstep:
                         return __orig(*a, **kw)
                     sim = ls.drivers[e].sim
                     sl = ls.slots[__k]
-                    if not sl.selects(sim, a, kw, sys._getframe(1).f_code.co_name):
+                    if not sl.selects(sim, a, kw, _caller()):
                         return __orig(*a, **kw)
                     if ls._pre[__k][e] is None:
                         ls._pre[__k][e] = unit_store.pack(sim.units, ls.U)
@@ -1195,8 +1263,8 @@ class ShadowLockstep:
         tick = int(self.drivers[0].sim.tick)
         out = {}
         for k, slot in enumerate(self.slots):
-            out[slot.label] = self._compare(k, slot, tick)
-        return out if self.multi else out[self.slot.label]
+            out[slot.key] = self._compare(k, slot, tick)
+        return out if self.multi else out[self.slot.key]
 
     def _fill_skipped(self, k, slot, e, sim):
         """#29 P7b: env ``e`` did not run the gated slot ``k`` this tick: its
@@ -1224,7 +1292,7 @@ class ShadowLockstep:
         post = np.stack(self._post[k])
         names = slot.capture_names
         inputs = gather(names, self._inp[k]) if names else None
-        self.last_inputs[slot.label] = inputs
+        self.last_inputs[slot.key] = inputs
         self.store.upload(pre)
         if slot.events:
             self.ring.begin()
@@ -1331,14 +1399,14 @@ class ShadowLockstep:
                                            len(alone_recs), len(ring_recs[e]))
                         break
         if first is not None:
-            first.label = slot.label
+            first.label = slot.key
             self.divergences.append(first)
         rep = TickReport(tick=tick, coverage=coverage,
                          host_changed=host_changed, equal=first is None,
                          first_diff=None if first is None else (
                              first.tick, first.env, first.unit_id,
                              first.column),
-                         label=slot.label,
+                         label=slot.key,
                          events=None if ring_recs is None else np.array(
                              [len(r) for r in ring_recs], dtype=np.int64),
                          host_events=host_n,
@@ -1477,6 +1545,17 @@ class ShadowLockstep:
 # ---------------------------------------------------------------------------
 # CHAINED
 # ---------------------------------------------------------------------------
+def _caller() -> str:
+    """#29 P7a.2: the name of the function that called a hooked slot
+    callable, skipping the harness's own wrappers (two slots hooking one
+    callable nest their wrappers: slot 4c's resolve and slot 2's landing)."""
+    f = sys._getframe(2)
+    while f is not None and f.f_code.co_filename == __file__ \
+            and f.f_code.co_name in ("hooked", "replaced"):
+        f = f.f_back
+    return f.f_code.co_name if f is not None else ""
+
+
 def _is_for(sim, args) -> bool:
     """Whether a slot callable's arguments name ``sim`` (the sim itself, its
     unit list, or -- #29 P7.0a, slot 9d's ``apply_temperature_ignition(gmap,
@@ -1604,7 +1683,7 @@ class ChainedSlots:
                             if any(x is o for x in tuple(a) + tuple(k.values()))]
                     if not (_is_for(sim, a) or held):
                         return __orig(*a, **k)
-                    if not __s.selects(sim, a, k, sys._getframe(1).f_code.co_name):
+                    if not __s.selects(sim, a, k, _caller()):
                         return __orig(*a, **k)
                     for n, o in held:
                         recs = LISTS[n].records(sim, o)

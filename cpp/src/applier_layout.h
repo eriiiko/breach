@@ -17,7 +17,7 @@ namespace applier {
 
 constexpr const char* APPLIER_FINGERPRINT = "34ae37070fe5a0e77b2c7191bb09b70a06aa0a8e46d42346ece10b5f8118df5a";
 constexpr int APPLIER_F = 11;
-constexpr int APPLIER_ROW_CAP = 3;
+constexpr int APPLIER_ROW_CAP = 32;
 
 // An effect record's fields (the kind, then the arg slots).
 constexpr int APPLIER_FX_KIND = 0;

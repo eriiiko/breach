@@ -249,32 +249,10 @@ __device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int
 
 // Simulation._reload past its gate: combat.mag_settle, then reload_begin.
 __device__ inline void reload(int64_t* loc, const int64_t* tab, int64_t tick, bool* bad) {
+    // #29 P7a.2: the magazine law is the unit library's (slot 4 runs it too)
     const int64_t w = loc[UNIT_COL_WEAPON_ID];          // the gate proved it a row
-    const int64_t full = tab[UNIT_TAB_WEAPON_MAG_SIZE + w];
-    if (loc[UNIT_COL_CURRENT_MAG] == MAG_UNBOUND) {     // mag_bind
-        loc[UNIT_COL_CURRENT_MAG] = full;
-        const int64_t total = magazines_carried(loc);
-        loc[UNIT_COL_SPARE_MAGS] = total <= 0 ? SPARES_UNTRACKED : total - 1;
-        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
-    } else if (loc[UNIT_COL_RELOAD_DONE_TICK] >= 0) {
-        if (tick >= loc[UNIT_COL_RELOAD_DONE_TICK]) {
-            loc[UNIT_COL_CURRENT_MAG] = full;
-            loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
-        }
-    }
-    const int64_t spare = loc[UNIT_COL_SPARE_MAGS];     // reload_begin
-    loc[UNIT_COL_CURRENT_MAG] = 0;
-    if (spare == 0) {
-        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
-        return;
-    }
-    if (spare > 0) loc[UNIT_COL_SPARE_MAGS] = spare - 1;
-    const int64_t stall = handling_ticks(loc, tab[UNIT_TAB_WEAPON_RELOAD_TICKS + w]);
-    if (!tick_ok(tick + stall)) {
-        *bad = true;
-        return;
-    }
-    loc[UNIT_COL_RELOAD_DONE_TICK] = tick + stall;
+    mag_settle(loc, tab, w, tick);
+    reload_begin(loc, tab, w, tick, bad);
 }
 
 // unit_impulse.shove_target: among the env's OTHER living rows (any team),

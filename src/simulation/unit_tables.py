@@ -952,7 +952,7 @@ _SPRAY_ROWS: tuple = (
              "per weapons-table row: range_tiles (the cone's integer range; <= "
              "2^14 keeps dot_q^2 and dist_sq * c_q^2 inside int64)"),
     TableRow("spray_cone_half_q", _n_weapons, _spray_cone_half, 0, 102944,
-             "per weapons-table row: cone_q16_of_deg(cone_half_angle_degrees), "
+             "per weapons-table row: cone_q16_of_deg(cone_half_angle_degrees), "  # traits-class: a jet's cone, no SPREAD hook (the law reads the class value)
              "Q16 radians (< 90 degrees: the dot_q >= 0 gate loses nothing)"),
     TableRow("spray_has_ammo", _n_weapons,
              lambda src: tuple(int(a is not None) for a in _spray_ammo(src)), 0, 1,
@@ -996,6 +996,201 @@ def _trace_q(v) -> int:
 
 
 ROWS = ROWS + _SPRAY_ROWS
+# == #29 P7a.2: slot 4's shooting and slot 2''s rounds (combat._directional_fire,
+# fire_burst, BulletInFlight.advance, start_spray_burst_directional,
+# attack_resolver's exposure / crit rolls) -- per weapons-table row and per
+# ammo-table row (the unit schema's orders) from the sim's OWN WeaponDef /
+# AmmoDef / PayloadDef rows (sim.weapons_tables: the level's tile size made
+# the ranges and the hearing radii), the impulse table (per map), the map's
+# materials (cover), the env / species profiles (the crit arcs) and the
+# config doors the law quantizes per call (the zombie multiplier, the crit
+# multipliers), each quantized ONCE here exactly as the law does. ==========
+#: The archetype codes a weapon row carries (``weapon_archetype``); 0 = none.
+ARCHETYPE_CODES = {"projectile": 1, "hitscan": 2, "spray": 3, "melee": 4,
+                   "lobbed": 5, "placed": 6}
+
+
+def _ammo_rows(src):
+    """The sim's ammo rows in the unit schema's ``ammo`` table order;
+    refused when the sim's tables do not hold exactly those names."""
+    from simulation.unit_schema import TABLES
+    names = tuple(TABLES["ammo"]())
+    rows = src.sim.weapons_tables.ammo.by_name
+    if tuple(rows) != names:
+        raise ValueError("unit tables: the sim's ammo rows are not the unit "
+                         "schema's ammo table")
+    return [rows[n] for n in names]
+
+
+def _n_ammo():
+    from simulation.unit_schema import TABLES
+    return len(TABLES["ammo"]())
+
+
+def _weapon_ammo(src):
+    """Per weapon row: the ammo row ``WeaponsTables.ammo_for_weapon`` picks
+    (its index in the ammo table), -1 where it picks none."""
+    from simulation.unit_schema import TABLES
+    names = tuple(TABLES["ammo"]())
+    out = []
+    for w in _weapon_rows(src):
+        try:
+            a = src.sim.weapons_tables.ammo_for_weapon(w)
+        except (KeyError, ValueError):
+            a = None
+        out.append(-1 if a is None else names.index(a.name))
+    return tuple(out)
+
+
+def _ammo_payload(src):
+    """Per ammo row: its ``[payloads.*]`` row's index in the sim's payload
+    table (``applier.payload_index``'s), -1 for a plain round."""
+    names = tuple(src.sim.weapons_tables.payloads.by_name)
+    return tuple(names.index(a.payload) if getattr(a, "payload", "") else -1
+                 for a in _ammo_rows(src))
+
+
+def _ammo_col(f):
+    return lambda src: tuple(int(f(a)) for a in _ammo_rows(src))
+
+
+def _ammo_impulse(attr):
+    def f(src):
+        tab = getattr(src.impulse, attr)
+        return tuple(int(tab.get(a.name, 0)) for a in _ammo_rows(src))
+    return f
+
+
+def _cone_q(attr):
+    def f(src):
+        from simulation.combat import cone_q16_of_deg
+        return tuple(int(cone_q16_of_deg(getattr(w, attr)))  # traits-class: the CLASS cone the table uploads; SPREAD is the kernel's
+                     for w in _weapon_rows(src))
+    return f
+
+
+def _bullet_mult(src):
+    from simulation.combat import _bullet_mult_q
+    return int(_bullet_mult_q())
+
+
+def _crit_mult(attr, default):
+    def f(src):
+        from simulation import attack_resolver
+        return int(attack_resolver._mult_q(getattr(_cfg().combat, attr, default)))
+    return f
+
+
+def _arc_half(per, attr, default):
+    def f(src):
+        from simulation import attack_resolver
+        rows = _profiles().values() if per == "profile" else \
+            (s.environment for s in _species().values())
+        return tuple(int(attack_resolver._half_arc_q(getattr(p, attr, default)))
+                     for p in rows)
+    return f
+
+
+_SHOOT_ROWS: tuple = (
+    TableRow("weapon_archetype", _n_weapons,
+             _melee_col(lambda w: ARCHETYPE_CODES[w.archetype]), 1, 6,
+             "per weapons-table row: its archetype (ARCHETYPE_CODES)"),
+    TableRow("weapon_shots_per_trigger", _n_weapons,
+             _melee_col(lambda w: w.shots_per_trigger), 0, 64,
+             "per weapons-table row: shots_per_trigger (the burst's rounds)"),
+    TableRow("weapon_range_tiles", _n_weapons,
+             _melee_col(lambda w: w.range_tiles), 0, 1 << 20,
+             "per weapons-table row: range_tiles at the level's tile size (a "
+             "round's remaining_steps; a spray's nominal target)"),
+    TableRow("weapon_cone_aim_q", _n_weapons, _cone_q("spread_deg"), 0, 205887,  # traits-class: the device tables upload the CLASS value; the kernel applies SPREAD through unit_lib::scaled
+             "per weapons-table row: the combat cone door of spread_deg, the "
+             "class cone when the shooter can aim (Q16 radians, <= PI)"),
+    TableRow("weapon_cone_snap_q", _n_weapons, _cone_q("spread_snap_deg"), 0,  # traits-class: as above
+             205887, "per weapons-table row: the cone door of spread_snap_deg, "
+             "the class cone when its statuses forbid aiming"),
+    TableRow("weapon_ammo", _n_weapons, _weapon_ammo, -1, 1 << 16,
+             "per weapons-table row: ammo_for_weapon's row (-1 none)"),
+    TableRow("weapon_crit_on", _n_weapons,
+             _melee_col(lambda w: float(w.crit_chance) > 0.0), 0, 1,  # p3e-door: the march's lazy gate, the sign of crit_chance
+             "per weapons-table row: 1 when crit_chance > 0 (the march draws "
+             "SHOT_CRIT only then)"),
+    TableRow("weapon_crit_chance_q", _n_weapons,
+             _melee_col(lambda w: unit_fixed.quantize_scalar(float(w.crit_chance))),  # p3e-door: roll_crit's
+             0, ONE, "per weapons-table row: quantize(crit_chance), roll_crit's "
+             "per-call door"),
+    TableRow("weapon_crit_mult_q", _n_weapons,
+             _melee_col(lambda w: unit_fixed.quantize_scalar(float(w.crit_mult))),  # p3e-door: scale_half_away's
+             0, 1 << 24, "per weapons-table row: quantize(crit_mult), "
+             "scale_half_away's per-call door"),
+    TableRow("weapon_loudness_tiles", _n_weapons,
+             _melee_col(lambda w: getattr(w, "loudness_tiles", 0)), 0, 1 << 20,
+             "per weapons-table row: loudness_tiles (the noise radius; 0 silent)"),
+    TableRow("weapon_burst_ticks", _n_weapons,
+             _melee_col(lambda w: getattr(w, "burst_ticks", 0)), 0, 1 << 24,
+             "per weapons-table row: burst_ticks (a spray burst's length)"),
+    TableRow("ammo_speed_q16", _n_ammo, _ammo_col(lambda a: a.speed_q16), 0,
+             1 << 30, "per ammo row: speed_q16 (the march's budget per tick)"),
+    TableRow("ammo_damage", _n_ammo, _ammo_col(lambda a: int(a.damage)), 0,
+             1 << 20, "per ammo row: damage (whole points; 0 = no direct hit)"),
+    TableRow("ammo_dtype", _n_ammo, _ammo_col(lambda a: a.dtype_id), 0, 63,
+             "per ammo row: dtype_id"),
+    TableRow("ammo_ap_q", _n_ammo,
+             _ammo_col(lambda a: unit_fixed.quantize_scalar(float(a.ap))),  # p3e-door: mitigate_q's
+             0, 1 << 30, "per ammo row: the AP quantized as mitigate_q does"),
+    TableRow("ammo_expose_q", _n_ammo,
+             _ammo_col(lambda a: getattr(a, "expose_q", 0)), 0, 1 << 30,
+             "per ammo row: expose_q (the focus-fire raise a hit carries)"),
+    TableRow("ammo_wall_live", _n_ammo,
+             _ammo_col(lambda a: a.wall_damage > 0), 0, 1,
+             "per ammo row: 1 when wall_damage > 0 (chew_wall acts)"),
+    TableRow("ammo_wall_damage_q", _n_ammo,
+             _ammo_col(lambda a: (wall_q(a.wall_damage) if a.wall_damage > 0
+                                  else 0)), 0, 1 << 30,
+             "per ammo row: wall_fixed.quantize_scalar(float(wall_damage)), "
+             "chew_wall's per-call door (0 when not live)"),
+    TableRow("ammo_payload", _n_ammo, _ammo_payload, -1, 1 << 16,
+             "per ammo row: its payload's row in the sim's payload table (-1 "
+             "a plain round)"),
+    TableRow("ammo_push_q", _n_ammo, _ammo_impulse("ammo_push_q"), 0, 1 << 40,
+             "per ammo row: the impulse table's ammo_push_q (0 none; per map)"),
+    TableRow("ammo_recoil_q", _n_ammo, _ammo_impulse("ammo_recoil_q"), 0,
+             1 << 40, "per ammo row: the impulse table's ammo_recoil_q (0 none)"),
+    TableRow("impulse_twist_q16", 1, _IMP("twist_q16"), 0, 1 << 20,
+             "the impulse table's twist_q16 (a round's push spin)"),
+    TableRow("zombie_bullet_mult_q", 1, _bullet_mult, 0, 1 << 24,
+             "combat._bullet_mult_q(): [zombie] bullet_damage_multiplier, the "
+             "law's per-call door"),
+    TableRow("crit_front_mult_q", 1, _crit_mult("crit_front_mult", 1.0), 0,
+             1 << 24, "attack_resolver.arc_multiplier's front multiplier, Q16"),
+    TableRow("crit_flank_mult_q", 1, _crit_mult("crit_flank_mult", 2.0), 0,
+             1 << 24, "the flank multiplier, Q16"),
+    TableRow("crit_behind_mult_q", 1, _crit_mult("crit_behind_mult", 4.0), 0,
+             1 << 24, "the behind multiplier, Q16"),
+    TableRow("arc_front_half_profile_q", _n_profiles,
+             _arc_half("profile", "front_arc_deg", 120.0), 0, 1 << 20,
+             "per env profile: half its front arc (Q16 radians)"),
+    TableRow("arc_behind_half_profile_q", _n_profiles,
+             _arc_half("profile", "behind_arc_deg", 90.0), 0, 1 << 20,
+             "per env profile: half its behind arc"),
+    TableRow("arc_front_half_species_q", _n_species,
+             _arc_half("species", "front_arc_deg", 120.0), 0, 1 << 20,
+             "per species (its environment): half the front arc"),
+    TableRow("arc_behind_half_species_q", _n_species,
+             _arc_half("species", "behind_arc_deg", 90.0), 0, 1 << 20,
+             "per species: half the behind arc"),
+    TableRow("mat_cover_exposure_q", _n_materials,
+             _per_mat(lambda t, i: int(t.cover_exposure_q16[i])), 0, ONE,
+             "per material: cover_exposure_q16 (attack_resolver."
+             "cover_exposure_at; ONE = no concealment, no draw)"),
+)
+
+
+def wall_q(v) -> int:
+    from simulation import wall_fixed
+    return int(wall_fixed.quantize_scalar(float(v)))   # p3e-door: chew_wall's
+
+
+ROWS = ROWS + _SHOOT_ROWS
 
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
@@ -1050,6 +1245,7 @@ def layout() -> Layout:
     text += f"T:{off}\n" + "".join(f"hook:{i}:{n}\n"
                                    for i, n in enumerate(hooks))
     text += "".join(f"status:{i}:{n}\n" for i, n in enumerate(kinds))
+    text += "".join(f"arch:{v}:{k}\n" for k, v in ARCHETYPE_CODES.items())
     lay = Layout(columns=tuple(cols), width=off, hooks=hooks,
                  status_kinds=kinds,
                  fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest())
@@ -1102,6 +1298,9 @@ def header_text(lay: Layout | None = None) -> str:
               f"constexpr int64_t UNIT_FLAG_PRONE = {FLAG_PRONE};"]
     for k, v in STACKING_CODES.items():
         lines.append(f"constexpr int64_t UNIT_STACK_{k.upper()} = {v};")
+    lines += ["", "// weapon_archetype codes (#29 P7a.2: unit_tables.ARCHETYPE_CODES)."]
+    for k, v in ARCHETYPE_CODES.items():
+        lines.append(f"constexpr int64_t UNIT_ARCH_{k.upper()} = {v};")
     lines += ["", "}  // namespace unit_tables", ""]
     return "\n".join(lines)
 

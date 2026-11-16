@@ -879,5 +879,58 @@ __device__ __forceinline__ RecordSink list_env_sink(const RecordListView& v, int
     return RecordSink{v.recs + (size_t)e * v.cap * v.width, v.cap, v.count + e, v.dropped + e,
                       v.width};
 }
+// #29 P7a.2 -- THE MAGAZINE LAW (combat.mag_settle / reload_begin): slot 1b's
+// manual reload and slot 4's trigger (mag_gate / mag_spend) both run it, so
+// it lives here. Integer for integer the Python on the weapon row `w` the
+// caller proved a tracked row (mag_size > 0).
+// ============================================================================
+namespace breach_cuda {
+namespace unit_lib {
+
+// combat.mag_settle: bind a never-bound magazine (a full one in the gun, the
+// loadout's spares or untracked), or complete a reload whose stall has ended.
+// False while the stall still runs.
+__device__ inline bool mag_settle(int64_t* loc, const int64_t* tab, int64_t w, int64_t tick) {
+    const int64_t full = tab[UNIT_TAB_WEAPON_MAG_SIZE + w];
+    if (loc[UNIT_COL_CURRENT_MAG] == MAG_UNBOUND) {           // mag_bind
+        loc[UNIT_COL_CURRENT_MAG] = full;
+        const int64_t total = magazines_carried(loc);
+        loc[UNIT_COL_SPARE_MAGS] = total <= 0 ? SPARES_UNTRACKED : total - 1;
+        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
+        return true;
+    }
+    const int64_t done = loc[UNIT_COL_RELOAD_DONE_TICK];
+    if (done >= 0) {
+        if (tick < done) return false;
+        loc[UNIT_COL_CURRENT_MAG] = full;
+        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
+    }
+    return true;
+}
+
+// combat.reload_begin: the magazine in the gun discarded, one spare consumed
+// when counted, the stall the row's reload_ticks times HANDLING from `tick`;
+// with no spare left the unit is dry (none pending). True when a reload
+// started (its render-only ReloadEvent has no device form). A done tick past
+// TICK_MAX sets *bad.
+__device__ inline bool reload_begin(int64_t* loc, const int64_t* tab, int64_t w, int64_t tick,
+                                    bool* bad) {
+    const int64_t spare = loc[UNIT_COL_SPARE_MAGS];
+    loc[UNIT_COL_CURRENT_MAG] = 0;
+    if (spare == 0) {
+        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
+        return false;
+    }
+    if (spare > 0) loc[UNIT_COL_SPARE_MAGS] = spare - 1;
+    const int64_t stall = handling_ticks(loc, tab[UNIT_TAB_WEAPON_RELOAD_TICKS + w]);
+    const int64_t done = tick + stall;
+    if (done < -TICK_MAX || done > TICK_MAX) {
+        *bad = true;
+        return false;
+    }
+    loc[UNIT_COL_RELOAD_DONE_TICK] = done;
+    return true;
+}
+
 }  // namespace unit_lib
 }  // namespace breach_cuda

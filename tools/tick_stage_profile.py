@@ -71,7 +71,9 @@ SLOT_WRAPS = (
     # #29 P7.0b: slot 2 split in two calls (the device port takes them one
     # at a time: the rounds P7a.2, the grenades P7b).
     ("simulation.simulation", "Simulation._update_grenades", "2 grenades"),
-    ("simulation.simulation", "Simulation._update_rounds", "2' rounds"),
+    # #29 P7a.2: the label times the rounds' MARCH (phase A); their landing
+    # is the resolve, timed under "4c resolve" like every resolve.
+    ("simulation.simulation", "Simulation._march_rounds", "2' rounds"),
     ("simulation.simulation", "tick_statuses", "2b statuses"),
     ("simulation.simulation", "Simulation._update_player_movement", "3 movement"),
     ("simulation.simulation", "process_shooting", "4 shooting"),

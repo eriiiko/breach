@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "cd88d55207e2b4aa2870e28ea5fae7fe5495ebb6aa1e41b7170ac1745e19f872";
-constexpr int UNIT_TABLES_W = 912;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "cab203a352554031996fd14863487151b08bbdc49947b50b469b45b80fc8823a";
+constexpr int UNIT_TABLES_W = 1391;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -284,6 +284,68 @@ constexpr int UNIT_TAB_EDIT_CLAMP_LO = 896;
 constexpr int UNIT_TAB_EDIT_CLAMP_LO_W = 8;
 constexpr int UNIT_TAB_EDIT_CLAMP_HI = 904;
 constexpr int UNIT_TAB_EDIT_CLAMP_HI_W = 8;
+constexpr int UNIT_TAB_WEAPON_ARCHETYPE = 912;
+constexpr int UNIT_TAB_WEAPON_ARCHETYPE_W = 19;
+constexpr int UNIT_TAB_WEAPON_SHOTS_PER_TRIGGER = 931;
+constexpr int UNIT_TAB_WEAPON_SHOTS_PER_TRIGGER_W = 19;
+constexpr int UNIT_TAB_WEAPON_RANGE_TILES = 950;
+constexpr int UNIT_TAB_WEAPON_RANGE_TILES_W = 19;
+constexpr int UNIT_TAB_WEAPON_CONE_AIM_Q = 969;
+constexpr int UNIT_TAB_WEAPON_CONE_AIM_Q_W = 19;
+constexpr int UNIT_TAB_WEAPON_CONE_SNAP_Q = 988;
+constexpr int UNIT_TAB_WEAPON_CONE_SNAP_Q_W = 19;
+constexpr int UNIT_TAB_WEAPON_AMMO = 1007;
+constexpr int UNIT_TAB_WEAPON_AMMO_W = 19;
+constexpr int UNIT_TAB_WEAPON_CRIT_ON = 1026;
+constexpr int UNIT_TAB_WEAPON_CRIT_ON_W = 19;
+constexpr int UNIT_TAB_WEAPON_CRIT_CHANCE_Q = 1045;
+constexpr int UNIT_TAB_WEAPON_CRIT_CHANCE_Q_W = 19;
+constexpr int UNIT_TAB_WEAPON_CRIT_MULT_Q = 1064;
+constexpr int UNIT_TAB_WEAPON_CRIT_MULT_Q_W = 19;
+constexpr int UNIT_TAB_WEAPON_LOUDNESS_TILES = 1083;
+constexpr int UNIT_TAB_WEAPON_LOUDNESS_TILES_W = 19;
+constexpr int UNIT_TAB_WEAPON_BURST_TICKS = 1102;
+constexpr int UNIT_TAB_WEAPON_BURST_TICKS_W = 19;
+constexpr int UNIT_TAB_AMMO_SPEED_Q16 = 1121;
+constexpr int UNIT_TAB_AMMO_SPEED_Q16_W = 25;
+constexpr int UNIT_TAB_AMMO_DAMAGE = 1146;
+constexpr int UNIT_TAB_AMMO_DAMAGE_W = 25;
+constexpr int UNIT_TAB_AMMO_DTYPE = 1171;
+constexpr int UNIT_TAB_AMMO_DTYPE_W = 25;
+constexpr int UNIT_TAB_AMMO_AP_Q = 1196;
+constexpr int UNIT_TAB_AMMO_AP_Q_W = 25;
+constexpr int UNIT_TAB_AMMO_EXPOSE_Q = 1221;
+constexpr int UNIT_TAB_AMMO_EXPOSE_Q_W = 25;
+constexpr int UNIT_TAB_AMMO_WALL_LIVE = 1246;
+constexpr int UNIT_TAB_AMMO_WALL_LIVE_W = 25;
+constexpr int UNIT_TAB_AMMO_WALL_DAMAGE_Q = 1271;
+constexpr int UNIT_TAB_AMMO_WALL_DAMAGE_Q_W = 25;
+constexpr int UNIT_TAB_AMMO_PAYLOAD = 1296;
+constexpr int UNIT_TAB_AMMO_PAYLOAD_W = 25;
+constexpr int UNIT_TAB_AMMO_PUSH_Q = 1321;
+constexpr int UNIT_TAB_AMMO_PUSH_Q_W = 25;
+constexpr int UNIT_TAB_AMMO_RECOIL_Q = 1346;
+constexpr int UNIT_TAB_AMMO_RECOIL_Q_W = 25;
+constexpr int UNIT_TAB_IMPULSE_TWIST_Q16 = 1371;
+constexpr int UNIT_TAB_IMPULSE_TWIST_Q16_W = 1;
+constexpr int UNIT_TAB_ZOMBIE_BULLET_MULT_Q = 1372;
+constexpr int UNIT_TAB_ZOMBIE_BULLET_MULT_Q_W = 1;
+constexpr int UNIT_TAB_CRIT_FRONT_MULT_Q = 1373;
+constexpr int UNIT_TAB_CRIT_FRONT_MULT_Q_W = 1;
+constexpr int UNIT_TAB_CRIT_FLANK_MULT_Q = 1374;
+constexpr int UNIT_TAB_CRIT_FLANK_MULT_Q_W = 1;
+constexpr int UNIT_TAB_CRIT_BEHIND_MULT_Q = 1375;
+constexpr int UNIT_TAB_CRIT_BEHIND_MULT_Q_W = 1;
+constexpr int UNIT_TAB_ARC_FRONT_HALF_PROFILE_Q = 1376;
+constexpr int UNIT_TAB_ARC_FRONT_HALF_PROFILE_Q_W = 1;
+constexpr int UNIT_TAB_ARC_BEHIND_HALF_PROFILE_Q = 1377;
+constexpr int UNIT_TAB_ARC_BEHIND_HALF_PROFILE_Q_W = 1;
+constexpr int UNIT_TAB_ARC_FRONT_HALF_SPECIES_Q = 1378;
+constexpr int UNIT_TAB_ARC_FRONT_HALF_SPECIES_Q_W = 1;
+constexpr int UNIT_TAB_ARC_BEHIND_HALF_SPECIES_Q = 1379;
+constexpr int UNIT_TAB_ARC_BEHIND_HALF_SPECIES_Q_W = 1;
+constexpr int UNIT_TAB_MAT_COVER_EXPOSURE_Q = 1380;
+constexpr int UNIT_TAB_MAT_COVER_EXPOSURE_Q_W = 11;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;
@@ -320,5 +382,13 @@ constexpr int64_t UNIT_FLAG_PRONE = 8;
 constexpr int64_t UNIT_STACK_REFRESH = 0;
 constexpr int64_t UNIT_STACK_STACK = 1;
 constexpr int64_t UNIT_STACK_MAX = 2;
+
+// weapon_archetype codes (#29 P7a.2: unit_tables.ARCHETYPE_CODES).
+constexpr int64_t UNIT_ARCH_PROJECTILE = 1;
+constexpr int64_t UNIT_ARCH_HITSCAN = 2;
+constexpr int64_t UNIT_ARCH_SPRAY = 3;
+constexpr int64_t UNIT_ARCH_MELEE = 4;
+constexpr int64_t UNIT_ARCH_LOBBED = 5;
+constexpr int64_t UNIT_ARCH_PLACED = 6;
 
 }  // namespace unit_tables
