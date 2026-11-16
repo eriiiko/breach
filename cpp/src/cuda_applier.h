@@ -52,6 +52,8 @@
 
 namespace breach_cuda {
 
+class ObjectTable;   // cuda_object_table.h (#29 P6b.1: the DOORS stage)
+
 class FieldApplier {
 public:
     // Refuses n_env < 1, cap < 1, n_units < 1 or row_cap < 1.
@@ -111,9 +113,13 @@ struct ApplierOut {
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
 // the store's rows and the env's planes; `ring` (may be null: a HIT then
 // faults) receives the events.
+// #29 P6b.1: the DOORS stage walks `doors` (unit_schema.DOOR_TABLE) and
+// `tiles` (DOOR_TILE_TABLE) instead of the effect list; other stages take
+// null for both.
 void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
                  const ApplierPlanes& planes, int stage, UnitEventRing* ring,
-                 const ApplierOut& out);
+                 const ApplierOut& out, ObjectTable* doors = nullptr,
+                 ObjectTable* tiles = nullptr);
 
 // The tick-end clears: `ptr` the device addresses of the (N, h, w) planes in
 // APPLIER_CLEAR_* order; `active` a device pointer to (N,) uint8 (nullptr: all).
@@ -130,5 +136,15 @@ const char* applier_fingerprint();
 // (applied = records done, faults = a record out of the grid or the table).
 void topology_probe_tile_changed(FieldApplier& a, const UnitTablesDevice& tables,
                                  const ApplierPlanes& planes, int64_t* books_out);
+
+// #29 P6b.1, TEST-ONLY (cuda_topology_probe.cu): per env its first n_ops[e]
+// of `ops` (N, k_cap, 8) -- seal / unseal / can_seal over spans of `tiles`
+// (N, t_cap, 2), inject / extract / transfer, _aperture_blocked -- serially
+// on the planes in place; results (N, k_cap, 9): code, value, the per-slice
+// withdrawal; books (N, N_BOOKS).
+void topology_probe_seam(const UnitTablesDevice& tables, const ApplierPlanes& planes,
+                         const int64_t* ops, const int64_t* n_ops, int k_cap,
+                         const int64_t* tiles, int t_cap, int64_t* results_out,
+                         int64_t* books_out);
 
 }  // namespace breach_cuda

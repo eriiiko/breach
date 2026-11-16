@@ -23,6 +23,8 @@
 #include "cuda_applier.h"
 #include "cuda_batch.cuh"          // tstream, benv, bptr, bgrid, env_off
 #include "cuda_topology.cuh"       // the topology seam
+#include "cuda_object_table.h"     // #29 P6b.1: the door tables (the DOORS stage)
+#include "cuda_unit_doors.cuh"     // #29 P6b.1: the door sweep
 #include "cuda_unit_damage.cuh"    // apply_packet, the landing, the sinks, the library
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
@@ -57,6 +59,17 @@ struct WalkUnits {
     unsigned long long* cnt; // the store's counts (coverage)
 };
 
+// #29 P6b.1: the entity tables a stage walks (the DOORS stage: the door
+// table and its tile side table; null otherwise).
+struct WalkTables {
+    int64_t* doors = nullptr;          // (N, door cap, OBJ_DOOR_W)
+    const int64_t* n_doors = nullptr;  // (N,)
+    int door_cap = 0;
+    int64_t* tiles = nullptr;          // (N, tile cap, OBJ_DOOR_TILE_W)
+    const int64_t* n_tiles = nullptr;  // (N,)
+    int tile_cap = 0;
+};
+
 // The row of an effect's `row` field, or nullptr (out of the env's rows or a
 // padding row: never a target).
 __device__ __forceinline__ int64_t* effect_row(const WalkUnits& U, int64_t r) {
@@ -70,12 +83,25 @@ __device__ __forceinline__ int64_t* effect_row(const WalkUnits& U, int64_t r) {
 __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
                           const unsigned long long* dropped, int cap, topo::PlanePtrs P, int h,
                           int w, int n_gases, const int64_t* tables, int64_t* books,
-                          WalkUnits U) {
+                          WalkUnits U, WalkTables X) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = benv();
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
     int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
     const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+    if (stage == APPLIER_STAGE_DOORS) {
+        // #29 P6b.1: slot 9e(d)'s door sweep walks the door TABLE, not the
+        // effect list (decision 1: a stage of the one walker over an entity
+        // table, each door applied at once).
+        if (n_gases != unit_tables::UNIT_TAB_GAS_TRACE_W) {
+            B[APPLIER_BOOK_FAULTS] += 1;
+            return;
+        }
+        doors::sweep(E, tab, X.doors + (size_t)e * X.door_cap * object_tables::OBJ_DOOR_W,
+                     X.n_doors[e], X.tiles + (size_t)e * X.tile_cap * object_tables::OBJ_DOOR_TILE_W,
+                     X.n_tiles[e], U.store, U.n_units, B);
+        return;
+    }
     const int64_t n = counts[e];
     const int64_t k = n < (int64_t)cap ? n : (int64_t)cap;
     B[APPLIER_BOOK_DROPPED] += (int64_t)dropped[e];
@@ -207,7 +233,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 2, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 3, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -288,7 +314,7 @@ void FieldApplier::download_books(int64_t* host) {
 
 void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice& tables,
                  const ApplierPlanes& planes, int stage, UnitEventRing* ring,
-                 const ApplierOut& out) {
+                 const ApplierOut& out, ObjectTable* doors, ObjectTable* tiles) {
     if (tables.n_env() != a.n_env() || store.n_env() != a.n_env())
         throw std::invalid_argument("applier_run: the tables / store are for another env count");
     if (stage < 0 || stage >= APPLIER_N_STAGES)
@@ -314,10 +340,27 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
                              (size_t)a.n_env() * APPLIER_N_BOOKS * sizeof(int64_t), tstream()),
              "zero books");
     store.begin_counts();
+    WalkTables X;
+    if (stage == APPLIER_STAGE_DOORS) {
+        if (doors == nullptr || tiles == nullptr)
+            throw std::invalid_argument("applier_run: the DOORS stage needs the door table and "
+                                        "its tile table");
+        if (doors->n_env() != a.n_env() || tiles->n_env() != a.n_env() ||
+            doors->width() != object_tables::OBJ_DOOR_W ||
+            tiles->width() != object_tables::OBJ_DOOR_TILE_W)
+            throw std::invalid_argument("applier_run: the door tables are not the door / "
+                                        "door tile layouts for these envs");
+        X.doors = doors->records_dev();
+        X.n_doors = doors->count_dev();
+        X.door_cap = doors->cap();
+        X.tiles = tiles->records_dev();
+        X.n_tiles = tiles->count_dev();
+        X.tile_cap = tiles->cap();
+    }
     UnitRecordList& L = a.list();
     k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(
         stage, L.records_dev(), L.count_dev(), L.dropped_dev(), L.cap(), P, planes.h, planes.w,
-        planes.n_gases, tables.values(), a.books_dev(), U);
+        planes.n_gases, tables.values(), a.books_dev(), U, X);
     ap_check(cudaGetLastError(), "applier launch");
     a.download_books(out.books);
     std::unique_ptr<int64_t[]> f(new int64_t[(size_t)a.n_env()]);

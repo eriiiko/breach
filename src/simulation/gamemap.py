@@ -3332,6 +3332,10 @@ class GameMap:
     # device is that LATER rider's job; Arc B edits only the host mirror. Do NOT
     # add a ``from_host()`` / device push here.
 
+    #: The O2 mole fraction of the air :meth:`inject_gas_n` mints (its fixed
+    #: standard mix; quantized once per call by ``gas_fixed.quantize_q16_scalar``).
+    INJECT_O2_FRACTION = 0.21
+
     @staticmethod
     def gas_proportional_split(holdings, want):
         """THE pinned proportional-floor-split-with-cascade (§6/D10, extended
@@ -3417,7 +3421,9 @@ class GameMap:
         # 0.21 O2 by mole fraction (Earth-normal) — quantize_q16_scalar(0.21) == 13763,
         # the P1 calibration constant the ambient air seed uses (13763 + 51773 ==
         # FP_ONE), so an inject reproduces calibrated air composition to the LSB.
-        o2_frac_q = _gas_fx.quantize_q16_scalar(0.21)
+        # (#29 P6b.1: the literal named, INJECT_O2_FRACTION, so the device
+        # tables' row reads the one source.)
+        o2_frac_q = _gas_fx.quantize_q16_scalar(GameMap.INJECT_O2_FRACTION)
         o2_add = (dn * o2_frac_q + (1 << 15)) >> 16      # round-half-up (air seed)
         n2_add = dn - o2_add                              # exact remainder
         add_vec = [0] * N_GASES

@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "6eae820050d57882c654b8c7355dda3297fb1043f4f6ceab8cb8525eb9d52f68";
+constexpr const char* APPLIER_FINGERPRINT = "716dcd501efc756e495c640cc5d18398fb4fd9814a018e0a86c02260f66378f5";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -83,7 +83,9 @@ constexpr int APPLIER_STAGE_TOPOLOGY = 0;
 constexpr bool APPLIER_STAGE_TOPOLOGY_LANDS = false;
 constexpr int APPLIER_STAGE_RESOLVE = 1;
 constexpr bool APPLIER_STAGE_RESOLVE_LANDS = true;
-constexpr int APPLIER_N_STAGES = 2;
+constexpr int APPLIER_STAGE_DOORS = 2;
+constexpr bool APPLIER_STAGE_DOORS_LANDS = false;
+constexpr int APPLIER_N_STAGES = 3;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;
@@ -105,7 +107,27 @@ constexpr int APPLIER_BOOK_APPLIED = 6;
 constexpr int APPLIER_BOOK_DROPPED = 7;
 constexpr int APPLIER_BOOK_FAULTS = 8;
 constexpr int APPLIER_BOOK_REFUSED = 9;
-constexpr int APPLIER_N_BOOKS = 10;
+constexpr int APPLIER_BOOK_GE_SEAL = 10;
+constexpr int APPLIER_BOOK_GE_DIAG_SEAL_FROM = 11;
+constexpr int APPLIER_BOOK_GE_DIAG_SEAL_TO = 12;
+constexpr int APPLIER_BOOK_GE_UNSEAL = 13;
+constexpr int APPLIER_BOOK_GE_DIAG_UNSEAL_FROM = 14;
+constexpr int APPLIER_BOOK_GE_DIAG_UNSEAL_TO = 15;
+constexpr int APPLIER_BOOK_SOLID_SEAL = 16;
+constexpr int APPLIER_BOOK_SOLID_UNSEAL = 17;
+constexpr int APPLIER_BOOK_GE_PUMP_INJECT = 18;
+constexpr int APPLIER_BOOK_GE_PUMP_EXTRACT = 19;
+constexpr int APPLIER_BOOK_GE_PUMP_TRANSFER = 20;
+constexpr int APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_FROM = 21;
+constexpr int APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_TO = 22;
+constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 23;
+constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 24;
+constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 25;
+constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 26;
+constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 27;
+constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 28;
+constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 29;
+constexpr int APPLIER_N_BOOKS = 30;
 
 // The topology seam's planes: the launch's pointer table order.
 constexpr int APPLIER_PLANE_MATERIAL = 0;
@@ -135,7 +157,15 @@ constexpr int APPLIER_PLANE_DYN_LIGHT_ATTEN_Q = 23;
 constexpr int APPLIER_PLANE_FUEL_RECIP = 24;
 constexpr int APPLIER_PLANE_FIRE_T_EXT_PLANE = 25;
 constexpr int APPLIER_PLANE_FUEL_PER_O2_PLANE = 26;
-constexpr int APPLIER_N_PLANES = 27;
+constexpr int APPLIER_PLANE_WAVE_P = 27;
+constexpr int APPLIER_PLANE_WIND_X = 28;
+constexpr int APPLIER_PLANE_WIND_Y = 29;
+constexpr int APPLIER_PLANE_FLOW_VX = 30;
+constexpr int APPLIER_PLANE_FLOW_VY = 31;
+constexpr int APPLIER_PLANE_RIPPLE = 32;
+constexpr int APPLIER_PLANE_RIPPLE_V = 33;
+constexpr int APPLIER_PLANE_WATER_DEPTH = 34;
+constexpr int APPLIER_N_PLANES = 35;
 
 // The tick-end clears' planes (their element size in bytes).
 constexpr int APPLIER_CLEAR_HEAT = 0;
@@ -147,5 +177,19 @@ constexpr int APPLIER_CLEAR_RAD_AMB_BYTES = 8;
 constexpr int APPLIER_CLEAR_RAD_FLUX = 3;
 constexpr int APPLIER_CLEAR_RAD_FLUX_BYTES = 8;
 constexpr int APPLIER_N_CLEARS = 4;
+
+// #29 P6b.1: the topology seam's refusal codes (0 = done).
+constexpr int64_t APPLIER_SEAM_OUT_OF_BOUNDS = 1;
+constexpr int64_t APPLIER_SEAM_ALREADY_SOLID = 2;
+constexpr int64_t APPLIER_SEAM_UNKNOWN_MATERIAL = 3;
+constexpr int64_t APPLIER_SEAM_MATERIAL_NOT_SOLID = 4;
+constexpr int64_t APPLIER_SEAM_STANDING_WATER = 5;
+constexpr int64_t APPLIER_SEAM_SEALED_POCKET = 6;
+constexpr int64_t APPLIER_SEAM_OVERFLOW = 7;
+constexpr int64_t APPLIER_SEAM_DUPLICATE_TILE = 8;
+constexpr int64_t APPLIER_SEAM_NOT_SOLID = 9;
+constexpr int64_t APPLIER_SEAM_SPAN_TOO_LONG = 10;
+constexpr int64_t APPLIER_SEAM_FAULT = 11;
+constexpr int APPLIER_N_SEAM_REFUSALS = 11;
 
 }  // namespace applier

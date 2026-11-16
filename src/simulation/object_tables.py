@@ -189,8 +189,17 @@ def records(table, objects) -> list:
     t = _schema(table)
     lay = table_layout(t)
     out = []
+    run = {s.name: 0 for s in t.spans}       # #29 P6b.1: the side rows so far
     for obj in objects:
-        r = unit_schema.table_record(t, obj)
+        given = {}
+        for s in t.spans:
+            n = len(s.items(obj))
+            if n > s.max_count:
+                raise ValueError(f"object table {t.name!r}: member {s.name!r} of "
+                                 f"{n} rows exceeds its bound {s.max_count}")
+            given[s.start], given[s.count] = run[s.name], n
+            run[s.name] += n
+        r = unit_schema.table_record(t, obj, given)
         if len(r) != lay.width:
             raise ValueError(f"object table {t.name!r}: an object encodes to "
                              f"{len(r)} ints, not W {lay.width}")
@@ -249,9 +258,13 @@ def row_values(table, row) -> dict:
                      else r[c.offset]) for c in lay.columns}
 
 
-def unpack(table, rows, count) -> list:
+def unpack(table, rows, count, sides=None) -> list:
     """Fresh host objects from the first ``count`` rows (the schema's decode
-    and constructor); the rows past ``count`` are never read."""
+    and constructor); the rows past ``count`` are never read. #29 P6b.1: a
+    table with side spans takes ``sides`` -- span name -> ``(rows, count)``
+    of its side table -- and hands ``build`` each object's decoded side
+    objects under the span's name (a span outside the side table's count is
+    refused by name)."""
     t = _schema(table)
     lay = table_layout(t)
     rows = np.asarray(rows)
@@ -262,12 +275,49 @@ def unpack(table, rows, count) -> list:
     if not 0 <= count <= rows.shape[0]:
         raise ValueError(f"object table {t.name!r}: count {count} outside "
                          f"0 .. {rows.shape[0]}")
+    if t.spans and sides is None:
+        raise ValueError(f"object table {t.name!r}: its side tables "
+                         f"{[s.side for s in t.spans]} are needed to unpack it")
+    side_objs = {}
+    for s in t.spans:
+        srows, scount = sides[s.name]
+        side_objs[s.name] = unpack(s.side, srows, scount)
     out = []
     for i in range(count):
         vals = row_values(t, rows[i])
-        out.append(t.build({c.name: c.decode(vals[c.name])
-                            for c in t.columns}))
+        attrs = {c.name: c.decode(vals[c.name]) for c in t.columns}
+        for s in t.spans:
+            a, n = int(vals[s.start]), int(vals[s.count])
+            if a < 0 or n < 0 or a + n > len(side_objs[s.name]):
+                raise ValueError(f"object table {t.name!r} row {i}: span "
+                                 f"{s.name!r} [{a}, {a + n}) outside its side "
+                                 f"table's {len(side_objs[s.name])} rows")
+            attrs[s.name] = side_objs[s.name][a:a + n]
+        out.append(t.build(attrs))
     return out
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.1: SIDE TABLES (a variable-length member as a span of side rows)
+# ---------------------------------------------------------------------------
+def side_records(table, objects, span: str) -> list:
+    """THE record function of a table's side table ``span``: every object's
+    member rows (``SideSpan.items``) concatenated in list order -- the rows
+    :func:`records`' ``start`` / ``count`` columns point into."""
+    t = _schema(table)
+    s = {x.name: x for x in t.spans}[span]
+    return records(s.side, [it for obj in objects for it in s.items(obj)])
+
+
+def pack_sides(table, objects, out=None) -> dict:
+    """``objects`` as their table AND every side table: ``{table name: (rows,
+    count)}`` (each through :func:`pack`, capacities refused by name)."""
+    t = _schema(table)
+    res = {t.name: pack(t, objects)}
+    for s in t.spans:
+        items = [it for obj in objects for it in s.items(obj)]
+        res[s.side] = pack(s.side, items)
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -435,4 +485,5 @@ class DeviceTable:
 __all__ = ["HEADER_REL", "GENERATOR", "ObjectTableOverflow", "TableLayout",
            "Layout", "table_layout", "layout", "header_text", "records",
            "pack", "pack_batch", "row_values", "unpack", "append_rows",
-           "compact_rows", "LayoutMismatch", "DeviceTable"]
+           "compact_rows", "LayoutMismatch", "DeviceTable", "side_records",
+           "pack_sides"]

@@ -827,6 +827,31 @@ class ObjectTable:
     capacity: int
     live: str
     build: Callable[[dict], Any]
+    #: #29 P6b.1: the variable-length members, each a :class:`SideSpan` (a
+    #: span of rows into a SIDE table, itself an ObjectTable of
+    #: :data:`OBJECT_TABLES`); ``build`` receives each member's decoded side
+    #: objects under the span's name.
+    spans: tuple = ()
+
+
+@dataclass(frozen=True)
+class SideSpan:
+    """#29 P6b.1 (design 4.4c decision 3: "a variable-length member ... is a
+    span into a side table"): an object's member ``name`` -- ``items(obj)``,
+    a list of side objects in the member's order -- stored as rows of the
+    side table ``side`` (another :class:`ObjectTable`), the object's own row
+    holding the first side row in column ``start`` and the row count in
+    column ``count``. The side rows of a list are its objects' members
+    concatenated in list order, so ``start`` is the running sum of the counts
+    before it: ``simulation.object_tables`` fills both columns, never the
+    object. ``max_count`` bounds one object's member (refused by name past
+    it)."""
+    name: str
+    side: str
+    start: str
+    count: str
+    items: Callable[[Any], list]
+    max_count: int
 
 
 def _enc_approach(v):
@@ -1109,13 +1134,100 @@ NOISE_TABLE = ObjectTable(name="noise", columns=NOISE_SCHEMA,
 OBJECT_TABLES = OBJECT_TABLES + (ROUND_TABLE, NOISE_TABLE)   # #29 P7a.2
 
 
-def table_record(table: ObjectTable, obj) -> tuple:
-    """One host object as its integer row (flat, ``table.columns`` order)."""
+def table_record(table: ObjectTable, obj, given=None) -> tuple:
+    """One host object as its integer row (flat, ``table.columns`` order).
+    ``given`` (#29 P6b.1): column name -> value, read instead of the object
+    (a side span's ``start`` / ``count``, which the list position decides)."""
     out = []
     for col in table.columns:
-        v = col.encode(col.value_of(obj))
+        raw = given[col.name] if given and col.name in given else col.value_of(obj)
+        v = col.encode(raw)
         out.extend(v if isinstance(v, tuple) else (v,))
     return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.1: THE DOORS (``Simulation._doors``, ``door_system.DoorRuntime``),
+# the first ENTITY table, and its side table of span tiles
+# ---------------------------------------------------------------------------
+#: Doors a sim's device table holds: storage (nothing spawns a door at run
+#: time; the shipped maximum is playground's 6, the gate scenes reach 9).
+DOOR_CAPACITY = 32
+#: Span tiles over all of a sim's doors (the door tile side table): storage
+#: (playground's 6 doors hold 24; airlock_demo's 5 m doors at 1 m tiles 5
+#: each). It also bounds one door's span (a span is the side table's rows).
+DOOR_TILE_CAPACITY = 256
+
+
+def _door_tiles(d) -> list:
+    """A door's span tiles with their hp (the S4 pin: ``hp[i]`` belongs to
+    ``span[i]``), row-major: ``[(ty, tx, hp), ...]``."""
+    span, hp = list(d.span), list(d.hp)
+    if len(span) != len(hp):
+        raise ValueError(f"unit schema: a door's span ({len(span)} tiles) and "
+                         f"hp ({len(hp)} rows) differ in length")
+    return [(int(t[0]), int(t[1]), int(h)) for t, h in zip(span, hp)]
+
+
+class DoorRow:
+    """What the door table holds of one door, rebuilt by ``unpack``: the
+    runtime state ``DoorRuntime`` carries across ticks (``alive``, ``state``,
+    ``want_open``, ``span``, ``hp``) and its ``ordinal``. The device form;
+    ``unit_kernels.doors_to_host`` lands it on the sim's own runtimes."""
+    __slots__ = ("ordinal", "alive", "state", "want_open", "span", "hp")
+
+    def __init__(self, ordinal, alive, state, want_open, span, hp):
+        self.ordinal, self.alive, self.state = ordinal, alive, state
+        self.want_open, self.span, self.hp = want_open, list(span), list(hp)
+
+
+def _build_door_tile(attrs: dict):
+    return (attrs["ty"], attrs["tx"], attrs["hp"])
+
+
+def _build_door(attrs: dict):
+    tiles = attrs["tiles"]
+    return DoorRow(attrs["ordinal"], attrs["alive"], attrs["state"],
+                   attrs["want_open"], [(t[0], t[1]) for t in tiles],
+                   [t[2] for t in tiles])
+
+
+#: THE door tile side table: one row per span tile, the doors' spans
+#: concatenated in door order, each row-major (``ty``, ``tx``) with the tile's
+#: ``hp`` (Q16: the panel's own hp, copied at the open, restamped at the
+#: close). Every row is live (doors are never removed: no compaction).
+DOOR_TILE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ty", _enc_int, get=lambda t: t[0]),
+    TableColumn("tx", _enc_int, get=lambda t: t[1]),
+    TableColumn("hp", _enc_int, get=lambda t: t[2]),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+DOOR_TILE_TABLE = ObjectTable(name="door_tile", columns=DOOR_TILE_SCHEMA,
+                              capacity=DOOR_TILE_CAPACITY, live="live",
+                              build=_build_door_tile)
+
+#: THE door table (``Simulation._doors``, ordinal order: the order the 9e(d)
+#: sweep walks and a USE request's ``door`` index): ``ordinal`` (a load
+#: constant, the entity digest's key), ``alive``, ``state`` (0 closed / 1 open
+#: / 2 destroyed), ``want_open`` (the synced latch), the span into the door
+#: tile table (``tile_start``, ``tile_count``) and ``live`` (always 1: a
+#: destroyed door stays a row, dead by ``alive``).
+DOOR_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("state", _enc_int),
+    TableColumn("want_open", _enc_bool, decode=_dec_bool),
+    TableColumn("tile_start", _enc_int),
+    TableColumn("tile_count", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+DOOR_TABLE = ObjectTable(
+    name="door", columns=DOOR_SCHEMA, capacity=DOOR_CAPACITY, live="live",
+    build=_build_door,
+    spans=(SideSpan("tiles", "door_tile", "tile_start", "tile_count",
+                    _door_tiles, DOOR_TILE_CAPACITY),))
+
+OBJECT_TABLES = OBJECT_TABLES + (DOOR_TILE_TABLE, DOOR_TABLE)   # #29 P6b.1
 
 
 def charge_record(c) -> tuple:
@@ -1143,3 +1255,5 @@ __all__ = [
     "NOISE_SCHEMA", "NOISE_TABLE", "GRENADE_CAPACITY", "GRENADE_SCHEMA",
     "GRENADE_TABLE",
 ]
+__all__ += ["SideSpan", "DOOR_CAPACITY", "DOOR_TILE_CAPACITY", "DoorRow",
+            "DOOR_TILE_SCHEMA", "DOOR_TILE_TABLE", "DOOR_SCHEMA", "DOOR_TABLE"]
