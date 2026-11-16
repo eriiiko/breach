@@ -337,7 +337,7 @@ def _signal_level(variant):
         wire("dchain", "out", "de", "open")
         wire("kge" if v >= 4 else "keq", "out", "de", "close")
         wire("kge", "out", "p4", "inject")
-        wire("not1", "out", "p5", "inject")
+        wire("kge", "out", "p5", "inject")          # with keq: both on at clock 7
         wire("keq", "out", "p5", "extract")
     order = list(rng.permutation(len(ents)))
     ents = [ents[i] for i in order]                # the list order is not the ordinal order
@@ -1245,6 +1245,7 @@ NEED = (
     "9e(c): close", "9e(c): open", "9e(c): neither (latch kept)",
     "9e(c): close beats open", "9e(c): two wires into open",
     "pump external: extract", "pump external: inject", "pump external: idle",
+    "pump external: extract (both: extract beats inject)",
     "pump transfer: extract", "pump transfer: inject", "pump: dead",
     "pump: port on a solid tile", "pump: source dry", "pump: at_target 0 -> 1",
     "pump: at_target 1 -> 1", "pump: no at_target slot",
