@@ -2330,8 +2330,9 @@ def heat_objects(recs) -> list:
     return _unpack(us.HEAT_SOURCE_TABLE, recs)
 
 
-#: The columns a 9e sweep moves (everything else is a load constant).
-TIMED_STATE = ("ticks_to_fire", "fired")
+#: The columns that move after the build (the sweeps move all but a timed
+#: charge's enabled, which only the host -- an editor, a fixture -- writes).
+TIMED_STATE = ("ticks_to_fire", "fired", "enabled")
 HEAT_STATE = ("hp_q16", "alive", "enabled")
 
 
