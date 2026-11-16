@@ -411,6 +411,8 @@ def _probe_level(rng, h, w, name):
     tm[sel] = np.asarray(mats)[pick[sel]]
     vac = inner & (roll > 0.985)                 # vacuum pockets inside
     tm[vac] = SPACE
+    gy = int(rng.integers(4, h - 4))             # a grille line: sight-screening,
+    tm[gy, 3:w - 3:2] = MAT_GRILLE               # open to gas (both has_los forms differ)
     return LevelData(name=name, version="3", path=Path("."), tilemap=tm,
                      tile_size_m=1.0, diffuse_path=Path("."), boundary="space")
 
@@ -527,6 +529,8 @@ def _flash_census(c, sim, fy, fx, p):
             continue
         if not sim.gmap.has_los(u.center_tile_y(), u.center_tile_x(), fy, fx):
             c["flash: no line of sight"] += 1
+            if sim.gmap.has_los(u.center_tile_y(), u.center_tile_x(), fy, fx, physical=True):
+                c["flash: a grille screens the sight (the physical line clear)"] += 1
             continue
         c["flash: sees the flash"] += 1
         fq = unit_fixed.quantize_scalar(u.facing)
@@ -759,6 +763,7 @@ def _resolve_counting(sim, fx, census):
         _flash_census(c, sim, fy, fx_, payload)
         _blast_census(c, sim, fy, fx_, payload)
         info = _disc_census(c, sim, fy, fx_, payload)
+        alive0 = {id(u): u.alive for u in units}
         if payload.gas_species:
             c["emit_gas"] += 1
         if payload.ignite_radius > 0:
@@ -771,6 +776,17 @@ def _resolve_counting(sim, fx, census):
         r = o_ep(gmap, queue, units, fy, fx_, payload, rng, events=events, kind=kind,
                  owner_id=owner_id, approach=approach)
         _disc_after(c, sim, info)
+        if payload.unit_damage > 0 and payload.blind_radius_q > 0:
+            from simulation import flash_blind, unit_fixed
+            r_t = (payload.blind_radius_q >> 16) + 1
+            for u in units:
+                if alive0[id(u)] and not u.alive:
+                    dx, dy = fx_ - u.center_tile_x(), fy - u.center_tile_y()
+                    if dx * dx + dy * dy <= r_t * r_t and sim.gmap.has_los(
+                            u.center_tile_y(), u.center_tile_x(), fy, fx_) and                             flash_blind.blind_ticks_for(
+                                payload, dx * dx + dy * dy, dx, dy,
+                                unit_fixed.quantize_scalar(u.facing)) >= 1:
+                        c["flash: a unit the same payload's blast killed (not blinded)"] += 1
         return r
     ep.__wrapped__ = o_ep
     pend = []
@@ -788,7 +804,11 @@ def _payload_call(sim, rng, names, k):
     h, w = sim.gmap.material.shape
     name = names[k % len(names)]
     pl = get_tables().payloads.by_name[name]
-    if rng.random() < 0.12:                                   # near / past the edge
+    live = [u for u in sim.units if u.alive]
+    if live and rng.random() < 0.4:                           # on a unit: kills, flashes
+        u = live[int(rng.integers(len(live)))]                # at d = 0
+        fy, fx = u.center_tile_y(), u.center_tile_x()
+    elif rng.random() < 0.12:                                 # near / past the edge
         fy, fx = int(rng.integers(-3, h + 3)), int(rng.integers(-3, w + 3))
     else:
         fy, fx = int(rng.integers(1, h - 1)), int(rng.integers(1, w - 1))
@@ -825,6 +845,8 @@ PROBE_BRANCHES = (
     "flash: facing it (f = 1)", "flash: turned away (f < 1)", "flash: BLINDED applied",
     "flash: already blinded longer (kept)", "flash: a shorter BLINDED refreshed longer",
     "flash: at or past the radius (g = 0)", "flash: a dead unit skipped",
+    "flash: a grille screens the sight (the physical line clear)",
+    "flash: a unit the same payload's blast killed (not blinded)",
     "noise: a noise logged", "noise: radius 0 (silent)",
     "emit_gas", "ignite_ring", "deposit_heat", "claims: the environment's (none)",
     "edit: atmosphere DISC", "edit: smoke DISC", "edit: wave_source TILE",
