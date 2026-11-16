@@ -33,5 +33,5 @@ and who must use it; this file holds the constraints the code cannot say.
 - Frozen `.npz` contract: extend `DEFAULT_FIELDS` additively. A new DTYPE CLASS (int64) is a contract extension with its own ring branch, never a cast: a float64 ring is exact only to 2^53 and would drop the LSBs the energy gates assert on (arc #54 D13).
 - It is not the replay path (Match recording / replay is re-simulation).
 
-## Door sweep
+## Door table
 - `door_system.sweep_doors` (slot 9e(d)) has a device twin, the applier's DOORS stage over `cpp/src/cuda_unit_doors.cuh` (the Door table, `.claude/rules/device-units.md`): a change to the sweep, `_occupancy_clear`, the hp copy / restamp or a `DoorRuntime` attribute that crosses a tick lands there and in `unit_schema.DOOR_TABLE` in the SAME patch. The corpus has no door entity, so the twin ledger traces none of it; `tests/cuda_unit_doors_check.py` is the guard.

@@ -134,7 +134,7 @@ system here is Class T: NOT part of the played tick until the `device` backend
 - Host-only, no device form: `render_dirty`, `_sky_mask_dirty`, `_tile_serial` itself (its count is the `tiles_changed` book), the solid books' sink, the render-only Wall / DoorDestroyedEvent. A chained caller does them in its host side.
 - ACCEPTED GAP: where the reference is not atomic the device is: `transfer_gas_n` drains its source and then raises on a destination past int32; the device refuses before any write (a finding for Erik, not changed).
 
-## Door table and the door sweep (device)
+## Door table
 - `unit_schema.DOOR_TABLE` with its tile side table `DOOR_TILE_TABLE` is THE device form of `Simulation._doors` (the first entity table): row k is the k-th door in ordinal order, the order the sweep walks and a USE record's `door` names; its record functions are `unit_kernels.doors_of` / `door_tiles_of`, its way back `unit_kernels.doors_to_host`, which lands on the sim's OWN door runtimes in place (the observation and the serializer hold them). A `DoorRuntime` attribute that crosses a tick is a column in the same patch.
 - A door's ENTITY_SECT_V1 rows (the free `alive`, then `state`, `want_open`, `hp_i`) are read from the table by `unit_kernels.door_entity_rows`, held equal to the serializer: the digest export (P6b.4) uses it, never a second reading of the table.
 - Slot 9e(d) is the applier's DOORS stage (`cpp/src/cuda_unit_doors.cuh`): `door_system.sweep_doors` integer for integer, serial in row order, each door applied at once over the topology seam (destroy_wall, seal / unseal / can_seal), never its own copy of a seam function. It reads `want_open` as the host left it: 9e(c) (the doors' bus inputs) is P6b.3's.
