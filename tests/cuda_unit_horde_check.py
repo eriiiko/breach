@@ -1412,6 +1412,7 @@ def bench(reps: int = 50) -> int:
             tiles.begin()
             cache = horde_cache.DeviceHordeCache(n, U)
             latch = horde_cache.latch_of(sim, U)
+            latch[0] = 1                    # an odd tick: the staged cache is not dropped
             empty = latch.copy()
             empty[2] = 0
             timings = {}
@@ -1430,6 +1431,7 @@ def bench(reps: int = 50) -> int:
                         cache.stage_lists([cache_rc] * n)
                     else:
                         cache.begin()
+                    cp.cuda.Device().synchronize()      # the staging copies land first
                     t0 = time.perf_counter()
                     unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles,
                                        cache, [lt] * n)
