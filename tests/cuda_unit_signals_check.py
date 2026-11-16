@@ -397,9 +397,9 @@ class SignalScene:
         g = sim.gmap
         E = {e.id: e for e in sim.entities}
         rng = np.random.default_rng(1000 + self.k)
-        if k == 2:                                # smoke in A_top (raw trace counts:
-            sm = rng.integers(0, 1 << 26, (6, 12)).astype(np.int32)   # scale-free, #88)
-            g.gas[SMOKE][1:7, 1:13] = sm
+        if k == 2:                                # smoke in A_top
+            sm = rng.integers(0, 1 << 26, (6, 12)).astype(np.int32)
+            g.gas[SMOKE][1:7, 1:13] = sm  # raw trace counts: scale-free (#88)
             ys, xs = np.mgrid[1:7, 1:13]
             _reseed(g, ys.ravel(), xs.ravel())
         if k == 5:
