@@ -1529,3 +1529,240 @@ serial per-env passes (the gather and the plant pass, one thread per env walking
 O(U) shove scan being the parts that scale. The done kernel's ~0.8 ms at N = 64 is its one-thread-per-env O(U^2)
 team count plus the sync: a block reduction per env (or a team bitset) is the saving when it runs every tick. The round
 trips are dominated by the store's 3.9 MB download at N = 64, which the device backend never does per tick.
+
+## P6.4b: the per-env serial applier and the tick-end clears (2026-11-15)
+
+**What.** The per-env serial applier (`cpp/src/cuda_applier.cu`: one block per env, thread 0 walking the env's
+DESTROY_WALL effects through the topology seam's device functions, `cpp/src/cuda_topology.cuh`) and the tick-end
+clears (one `(N, h, w)` launch zeroing heat, rad_net, rad_amb, rad_flux). Class T: nothing in the played tick calls
+them.
+
+**Method.** `tests/cuda_unit_topology_check.py`'s `bench()`, three fresh processes, Home Desktop (RTX 3070), with
+another agent's builds and gates on the same machine (P6.4a). The planes: the gate's fire scene (30 x 40, the 27
+topology planes per env) replicated to N envs, re-copied from a pristine device copy before every repetition (outside
+the timing). "applier" is `unit_kernels.apply_effects`: the list's pinned staging and H2D, the books' memset, the walk
+of k destroys per env (the scene's wood then hull tiles, in row-major order), the books' D2H and sync; "clears" is the
+launch plus a device sync. Medians of 100 repetitions; per cell the three processes' medians.
+
+| N | 1 destroy / env (ms) | 8 / env | 64 / env | the clears |
+|---|---|---|---|---|
+| 1 | 0.293, 0.288, 0.289 | 0.293, 0.317, 0.313 | 0.519, 0.509, 0.530 | 0.038, 0.067, 0.053 |
+| 8 | 0.268, 0.301, 0.302 | 0.301, 0.334, 0.335 | 0.531, 0.562, 0.561 | 0.039, 0.067, 0.053 |
+| 64 | 0.421, 0.455, 0.458 | 0.460, 0.486, 0.488 | 0.773, 0.806, 0.807 | 0.040, 0.067, 0.067 |
+
+**Reading.** The floor (~0.29 ms) is the call's two host syncs (the stage's event wait, the books' D2H) and the
+staging; the walk itself is ~3.5 us per destroy on one thread (64 destroys add ~0.23 ms at every N, the envs' walks
+running in parallel blocks). A tick's burn-throughs are a handful (the fire scene: at most 3 per env per tick), so the
+serial walk is far below the §4.3 share; the fan-out the design reserves is for P7c's thousands of deposit records,
+not for destroys. At N = 64 the extra ~0.15 ms is the larger list's staging and the books' copy. In the device backend
+the books come down only at checkpoint cadence (§5.10), which removes the floor's second sync.
+
+## P7a.1: the effect list, slot 4a and the resolve stage (2026-11-15)
+
+**What.** Slot 4a (`cpp/src/cuda_unit_melee.cu`: one thread per row, the blow staged per row and gathered per env
+onto the effect list) and the applier's RESOLVE stage (`cpp/src/cuda_applier.cu`: one block per env, thread 0
+walking HIT / STATUS / PUSH records through the device `apply_packet` with the exposure landing, the library's
+`impulse_add`, `apply_status`). Class T.
+
+**Method.** `tests/cuda_unit_melee_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the swarm
+session's topology gate ran on the same card (31 % utilisation seen beside it). The rows: the melee scene's 27 units
+after three ticks, every row latched (most refuse at a gate: the scene's latch refusals), replicated to N envs.
+"4a" is `unit_kernels.melee`: the tick's input staging, the kernel, the gather, the counts' D2H and sync, the list's
+dropped count's D2H. "resolve" is `unit_kernels.resolve` over k synthetic records per env (HIT with an expose,
+STATUS, PUSH with a lever, cycling over the rows): the walk, the landing, the books', coverage's and the ring's
+dropped count's D2H. The list's host staging is outside the timing. Medians of 50 repetitions.
+
+| N | 4a (27 rows / env) | resolve, 1 effect / env | 8 / env | 64 / env |
+|---|---|---|---|---|
+| 1 | 0.316 | 0.286 | 0.333 | 0.523 |
+| 8 | 0.249 | 0.361 | 0.443 | 0.464 |
+| 64 | 0.319 | 0.471 | 0.542 | 0.560 |
+
+**Reading.** Both are at the call's floor (its host syncs: the counts, the books, the ring's dropped count), as
+P6.4b's walk was; 64 unit effects add ~0.2 ms on one thread at N = 1 (~3.7 us per record, a HIT's packet law and
+its ring append being the bulk) and less in a batch, the envs' walks running in parallel blocks. A melee tick
+records at most three effects per striker, a shooting tick (P7a.2) a few per round: the serial walk stays far below
+§4.3's share. The device backend downloads none of the counts per tick.
+
+## P7.0a: slot 9d, ignition from temperature (2026-11-15)
+
+**What.** Slot 9d (`cpp/src/cuda_unit_ignition.cu`: one thread per cell, born `(N, h, w)`, the re-arm, the seed over
+the open neighbours' O2 fraction, the disarm, `fire` and `ignition_armed` in place). Class T. The kit beside it
+(device draws, sight, falloffs) is a library with no slot of its own and is not timed.
+
+**Method.** `tests/cuda_unit_kit_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the P7.0b
+session's CUDA build ran on the CPU (the card idle, 0 % seen just before). "9d" is `unit_kernels.ignition`: the
+launch, the counts' D2H and the stream sync. Planes: ship_demo's (70 x 100, 86 flammable tiles, nothing hot) and the
+gate's ignition scene after 30 ticks (30 x 40, mid-burn), replicated to N envs as device arrays. Medians of 100
+repetitions.
+
+| N | ship_demo 70 x 100 | ignition scene 30 x 40 |
+|---|---|---|
+| 1 | 0.127 | 0.119 |
+| 8 | 0.115 | 0.124 |
+| 64 | 0.125 | 0.118 |
+
+**Reading.** Flat in N and in the plane size: the call is its host sync (the counts' D2H); 64 envs x 7 000 cells
+is 0.45 M threads of a few loads each, below the launch floor. The device backend downloads no counts per tick, so
+9d inside the device tick is a launch's worth.
+
+## P7.0b: the object tables, the charge table's append and compaction (2026-11-15)
+
+**Method.** `tests/cuda_object_table_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); nothing else on the
+card (the P7.0a agent's gates were not running; one CPU pytest of three small files ran beside it). The charge table
+(W 8, capacity 32) holds 16 live rows per env; one call appends 16 more (every other one dead), then the stable
+compaction runs. "append" is `DeviceTable.append`: the records' H2D, the one-thread-per-env kernel through the
+record list's `emit_record`, the sync, and the overflow check (a download of the table, counts and overflow counts).
+"compact" is `DeviceTable.compact` and one download. The start state is re-uploaded before each repetition (not
+timed). Medians of 200 repetitions, ms.
+
+| op | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| append (H2D + kernel + overflow check) | 0.233 | 0.242 | 0.218 |
+| compact (kernel + D2H) | 0.212 | 0.217 | 0.170 |
+| append + compact | 0.445 | 0.459 | 0.389 |
+
+**Reading.** Flat in N: both are at the call's floor (a launch and a host sync each; the table itself is 2 KiB per
+env). The Python face's append checks the overflow by downloading the whole table, which is most of its cost; a
+device slot (P7b) appends inside its own kernel and the device backend reads only the overflow counts, so neither
+floor is per tick on the training path.
+
+## P7b: the grenades and the planted charges on their tables (2026-11-15)
+
+**Method.** `tests/cuda_unit_objects_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); one other agent's
+full CPU suite (`pytest tests`) was running beside it, which may hold CUDA subprocess gates of its own on the card.
+The grenade table holds 16 grenades in flight per env (4 fusing out on the timed tick: 4 PAYLOAD records), the
+charge table 16 charges (4 due: 4 PAYLOAD records, then the prune). Each timed call is the Python face:
+the tick's H2D, the kernels (grenades: the wide flight + the serial fuse pass; charges: the serial pass + the
+compaction), the counts' D2H and the effect list's dropped count. The start state is re-staged before each
+repetition (not timed). Medians of 200 repetitions, ms.
+
+| slot | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| 2 grenades (16 in flight, 4 fuse out) | 0.151 | 0.173 | 0.175 |
+| 9e(d') charges.tick (16, 4 due, + prune) | 0.166 | 0.171 | 0.174 |
+
+**Reading.** Flat in N: both slots are at the call's floor (two launches and one host sync for the counts); a
+table is a few KiB per env. On the device tick (P7e) the counts stay on the device and neither floor is per
+tick.
+
+## P7a.3: slot 4b, the sprays, and the SPRAY_CELLS apply (2026-11-16)
+
+**Method.** `tests/cuda_unit_sprays_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); the other agent of
+the night (P7a.2) was building and running its CUDA gates beside it, so the card and the CPU were shared. The spray
+scene's tick 5 (12 units, 8 sprayers depositing: Dragon-7s, a Miasma Vent, a Dragon-9 heavy at 20 tiles, 1 m tiles,
+a 40 x 64 grid) copied into N envs. 4b: the Python face (the store's tick H2D is outside the timing; the kernel --
+one block per env, 128 threads splitting each cone's box --, the counts' D2H). SPRAY_CELLS: the resolve stage walking
+the tick's 8 SPRAY_CELLS records over 154 cells per env (308 door edits and 308 claims per env), incl. the books', the
+coverage's and the door / claims lists' overflow-count downloads. Medians of 50 repetitions, ms.
+
+| op | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| 4b sprays (8 sprayers per env) | 0.681 | 0.705 | 0.658 |
+| SPRAY_CELLS apply (154 cells per env) | 0.850 | 0.838 | 0.942 |
+
+**Reading.** Flat in N: both are at the call's floor (a launch and the host syncs for the counts). The first draft
+of the apply read the door's and the claims list's overflow by downloading the whole lists (41.8 ms at N = 64:
+~110 MB of rows); the record list's `counts()` reads only the counts and dropped counts, which took it to the floor.
+On the device tick (P7e) none of these counts comes down per tick.
+## P7a.2: slot 4's shooting, slot 2''s march and its landing (2026-11-15)
+
+**What.** Slot 4's shooting (`cpp/src/cuda_unit_shooting.cu`'s `unit_shooting`: one thread per row, the gates, the
+burst, THE MARCH of each round in its firing tick, the records, rounds and noises staged per row and gathered) and
+slot 2' (`unit_rounds`: one thread per env marching its table of rounds, then the compaction; its landing is the
+applier's RESOLVE stage). Class T.
+
+**Method.** `tests/cuda_unit_shooting_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the P7b
+agent's full pytest suite ran on the same machine (the card at 0 % just before, 74 % just after). The rows: the
+shooting scene (34 units, 1/3 m tiles) at its fourth tick, every `last_fire_tick` cleared so every trigger-holding
+shooter fires (K5s, a PDW, shotguns, an LR-50, a P12), replicated to N envs; the table of rounds for slot 2' is the 7
+rounds that tick's shots left flying (K5 rounds with up to ~270 tiles of range left). "4 shooting" is
+`unit_kernels.shooting`: the two input stagings, the kernel, three gathers, the counts' D2H and the three lists'
+dropped counts. "2' march" is `unit_kernels.rounds_march` (the kernel, the compaction, the counts, the dropped
+counts); "2' landing" is `unit_kernels.resolve` on the march's records. Uploads outside the timing. Medians of 50
+repetitions, ms.
+
+| N | 4 shooting (34 rows / env) | 2' march (7 rounds / env) | 2' landing |
+|---|---|---|---|
+| 1 | 3.349 | 3.893 | 0.309 |
+| 8 | 3.099 | 3.594 | 0.298 |
+| 64 | 3.209 | 3.684 | 0.339 |
+
+**Reading.** Flat in N (the envs run in parallel blocks) but ten times the call floor of the earlier unit slots: the
+cost is THE MARCH's serial walk inside one thread -- per step a scan of every row of the env for the first footprint
+holding the tile (a K5 round marches up to 96 steps a tick, so ~3 000 row reads per round), and slot 2' walks its
+rounds one after another in ONE thread per env. The landing is at the walk's floor, as 4c was. If the device tick
+(P7e) needs it, the march's per-step row scan can read a per-env occupancy plane built once per slot (the stamp's
+own data), which keeps "the first row in row order" as the minimum row index per tile; not done here.
+
+## P7c.1: payloads, the disc path, as the applier's PAYLOAD function (2026-11-16)
+
+**Method.** `tests/cuda_unit_payloads_check.py`'s `bench()`, one process, Home Desktop (RTX 3070); the other agent of
+the night (P6b.1, doors) was running its full pytest suite beside it, so the card and the CPU were shared. One
+synthetic probe map (a hull box with walls of every material, 4-11 units) copied into N envs; ONE PAYLOAD record per
+env at the map's centre, walked by `unit_kernels.walk_effects` in the DETONATE stage: the kernel (one block per env,
+thread 0) and the books', coverage's and lists' count downloads; the store's upload and the lists' begin outside the
+timing. "own" is the shipped row; "r 6" the same row with its disc, gas, heat and ignite radii raised to 6 tiles
+(wall damage 10, pressure 1.0), i.e. a 113-tile disc with ~1 000 wave TILE edits. Medians of 50 repetitions, ms.
+
+| row | own N = 1 | own N = 8 | own N = 64 | r 6 N = 1 | r 6 N = 8 | r 6 N = 64 |
+|---|---|---|---|---|---|---|
+| studio_smoke | 0.783 | 0.800 | 0.984 | 3.985 | 4.024 | 4.082 |
+| smoke_screen | 0.884 | 1.077 | 1.219 | 3.900 | 3.677 | 3.738 |
+| tear_burst | 0.798 | 0.808 | 0.859 | 4.032 | 4.096 | 3.822 |
+| poison_cloud | 0.891 | 0.843 | 0.951 | 3.661 | 3.661 | 3.844 |
+| incendiary_splash | 0.890 | 0.927 | 0.973 | 3.347 | 3.338 | 3.465 |
+| studio_ignite | 0.693 | 0.744 | 0.820 | 3.535 | 3.548 | 3.678 |
+| flashbang | 0.733 | 0.745 | 0.857 | 3.341 | 3.902 | 4.281 |
+| hazmat_release | 1.187 | 0.872 | 0.896 | 3.546 | 3.669 | 3.774 |
+| plasma_splash_small | 1.125 | 1.145 | 1.182 | 3.608 | 3.856 | 4.012 |
+| plasma_splash_large | 1.518 | 1.484 | 1.555 | 3.619 | 3.614 | 3.681 |
+
+**Reading.** Flat in N (the envs are parallel blocks). The shipped rows sit near the walk's floor (0.7-1.5 ms; the
+plasma rows' 2-3 tile discs with their wave stencils are the dearest). A 6-tile disc costs ~3.5-4 ms whatever the
+row: the serial thread-0 walk of the disc and its wave stencil (9 TILE edits per open tile, each a door row and its
+tile row) dominates. P7c.2's fan-out over the block's threads is where that cost goes if the device tick needs it.
+## P6b.1: the door sweep, seal / unseal and the use write (2026-11-16)
+
+**What.** Slot 9e(d)'s door sweep as the applier's DOORS stage (`cpp/src/cuda_applier.cu` over
+`cpp/src/cuda_unit_doors.cuh` and the topology seam's `seal_tiles` / `unseal_tiles` / `can_seal`), on the door table
+and its tile side table. Class T.
+
+**Method.** `tests/cuda_unit_doors_check.py`'s `bench()`, one process, Home Desktop (RTX 3070), while the P7a.3
+agent's full pytest suite ran on the same machine (a CUDA gate subprocess of its own on the card; the card at 1 %
+just before, 44 % just after). The door scene (variant 0, 40 x 64 tiles, 8 doors, 19 span tiles) at its fourth tick,
+replicated to N envs. "idle" is `unit_kernels.sweep_doors` with every latch agreeing with its door (no transition);
+"4 doors change" flips the latch of four doors (two open, two close: `unseal_tiles` and `seal_tiles` run, the close
+behind the occupancy test and `can_seal`). Each timed call is the Python face: the plane pointers' checks, the
+launch, the books' D2H. "seal + unseal" is the TEST-ONLY probe sealing and reopening a 3-tile span per env (its op
+staging, the launch, the results' and books' D2H: an upper bound on the seam functions themselves). The tables and
+the planes are re-staged before each repetition (not timed). Medians of 200 repetitions, ms.
+
+| op | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|
+| 9e(d) sweep, idle (8 doors) | 0.303 | 0.303 | 0.478 |
+| 9e(d) sweep, 4 doors change | 0.586 | 0.546 | 0.713 |
+| seal + unseal of a 3-tile span (probe) | 0.503 | 0.494 | 1.098 |
+
+**Reading.** At the call's floor up to N = 8 (one launch, one book download); the rise at N = 64 is the books'
+and the probe's per-call host staging, not the walk (one thread per env walks a few doors). A door change costs a
+quarter of a millisecond more than the idle walk: the seal and unseal are serial in the env's thread, a few tiles
+each. On the device tick (P7e) the books stay on the device and the floor is not per slot.
+
+## P6b.2: the vent circulation on the duct and vent tables (2026-11-16)
+
+`tests/cuda_unit_vents_check.py bench` (Home Desktop, RTX 3070; the P7c.1 agent was
+working on the same machine, so these are upper bounds): median ms over 200 reps of
+`unit_kernels.sweep_vents` -- the applier's VENTS stage launch (one block per env,
+thread 0 walking its ducts), its books' D2H and the Python face; each rep re-stages the
+tables and the planes, not timed.
+
+| op | N=1 | N=8 | N=64 |
+|---|---|---|---|
+| 9e(d) vents, ship_demo (1 duct, 2 vents) | 0.316 | 0.348 | 0.482 |
+| 9e(d) vents, the vent scene (6 ducts, 16 vents) | 0.481 | 0.530 | 0.650 |
+
+The design guessed 0.3 to 1 ms per env per tick for the ledger; per env it landed at
+0.0075 ms (ship_demo) and 0.010 ms (the scene) at N = 64, and the N = 1 cost is the
+launch and the books' download (a stream sync), not the sweep. The serial walk per env
+is not the cost at these duct counts.

@@ -18,6 +18,16 @@ precedent), one command:
 - ``cpp/src/unit_requests_layout.h`` -- the REQUEST LIST's record layout (#29
   P6.4a: what a kernel does that is not a row write -- a grenade thrown, a
   charge planted, a door flipped), from ``simulation.unit_requests.header_text``.
+- ``cpp/src/applier_layout.h`` -- the PER-ENV SERIAL APPLIER's effect record,
+  kinds, book channels and the topology seam's / tick-end clears' planes
+  (#29 P6.4b, §4.3), from ``simulation.applier.header_text``.
+- ``cpp/src/unit_draws_layout.h`` -- the DEVICE DRAWS' vocabulary (#29 P7.0a,
+  4.4c decision 5: the salts, the key row, the one site per ``.next`` salt),
+  from ``simulation.unit_draws.header_text``.
+- ``cpp/src/object_tables_layout.h`` -- the OBJECT TABLES' row layouts (#29
+  P7.0b, §4.4c decision 3: the planted charges first; a table is a schema
+  of ``simulation.unit_schema.OBJECT_TABLES``), from
+  ``simulation.object_tables.header_text``.
 
 ``tests/test_unit_store.py`` / ``tests/test_unit_tables.py`` /
 ``tests/test_unit_events.py`` refuse a stale copy. A schema column or a
@@ -48,8 +58,12 @@ def main(argv=None) -> int:
                     help="rewrite the headers (default: check only)")
     args = ap.parse_args(argv)
     from simulation import unit_events, unit_requests, unit_store, unit_tables
+    from simulation import applier          # #29 P6.4b
+    from simulation import unit_draws       # #29 P7.0a: the salts, the .next sites
+    from simulation import object_tables    # #29 P7.0b
     stale = 0
-    for mod in (unit_store, unit_tables, unit_events, unit_requests):
+    for mod in (unit_store, unit_tables, unit_events, unit_requests, applier,
+                unit_draws, object_tables):
         path = ROOT / mod.HEADER_REL
         text = mod.header_text()
         lay = mod.layout()

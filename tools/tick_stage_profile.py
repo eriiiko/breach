@@ -68,7 +68,12 @@ SLOT_WRAPS = (
     ("simulation.simulation", "Simulation._consume_direct_intents", "1b intents"),
     ("simulation.unit_orders", "apply_requests", "1b' orders"),
     ("simulation.exposure", "decay_units", "1c exposure decay"),
-    ("simulation.simulation", "Simulation._update_projectiles", "2 projectiles"),
+    # #29 P7.0b: slot 2 split in two calls (the device port takes them one
+    # at a time: the rounds P7a.2, the grenades P7b).
+    ("simulation.simulation", "Simulation._update_grenades", "2 grenades"),
+    # #29 P7a.2: the label times the rounds' MARCH (phase A); their landing
+    # is the resolve, timed under "4c resolve" like every resolve.
+    ("simulation.simulation", "Simulation._march_rounds", "2' rounds"),
     ("simulation.simulation", "tick_statuses", "2b statuses"),
     ("simulation.simulation", "Simulation._update_player_movement", "3 movement"),
     ("simulation.simulation", "process_shooting", "4 shooting"),
@@ -96,8 +101,12 @@ SLOT_WRAPS = (
     ("simulation.simulation", "sweep_logic_nodes", "9e entities"),
     ("simulation.simulation", "Simulation._resolve_door_inputs", "9e entities"),
     ("simulation.simulation", "sweep_pumps", "9e entities"),
-    ("simulation.simulation", "sweep_vents", "9e entities"),
-    ("simulation.simulation", "sweep_doors", "9e entities"),
+    # #29 P6b.2: the vent circulation has its own label (its device form is
+    # the applier's VENTS stage; a twin row names its slot by it).
+    ("simulation.simulation", "sweep_vents", "9e(d) vents"),
+    # #29 P6b.1: the door sweep has its own label (its device form is the
+    # applier's DOORS stage; a twin row names its slot by it).
+    ("simulation.simulation", "sweep_doors", "9e(d) doors"),
     ("simulation.simulation", "sweep_timed_charges", "9e entities"),
     ("simulation.charges", "tick", "9e(d') planted charges"),
     ("simulation.simulation", "sweep_heat_sources", "9e entities"),

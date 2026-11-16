@@ -616,7 +616,7 @@ starts.
 | P6.1 | the store (decisions 1 to 3), the bridge, the generated layout header, the device buffer and its upload / download on the tick stream, the shadow-lockstep harness, the missing profiler labels, and ONE pilot kernel end to end: slot 1c, exposure decay (a per-unit law with one table scalar, no field read, no event) with its Class-T twin row | IDENTITY on the pinned matches at N = 1 and in a batch; SHADOW LOCKSTEP of 1c with its coverage counter > 0; each validated by breaking it |
 | P6.2 | the per-unit kernels that emit no synced event: 1a (impulse integration, the turn; the hooks' device accessors), 3 (movement: the footprint samples, the speed table, the walk ban), 1b' and 10' (orders: apply, expire), the tick-end conversion; the device table upload (§4.11) for the tables they read | SHADOW LOCKSTEP per slot, non-neutral hook scenes included |
 | P6.3 | the device `apply_packet` (mitigation, the exposure scale and landing, the hit points, the kill) and the EVENT RING (§4.5); on them 2b (statuses), 9c (heat), 9c2 (wind), 9c3 (the gas rows and the poison law), with the tick's credit claims as a per-slot table | SHADOW LOCKSTEP per slot, events compared in emission order |
-| P6.4 | the per-env serial applier (block form, §4.3) and the topology seam as device functions; 9 (burn-through), the tick-end clears, the `done` kernel, the entity export for the digest; 1b's per-unit verbs (reload, shove, the latches) -- its appends to the projectile and charge tables go with P7b | SHADOW LOCKSTEP; the topology scenes |
+| P6.4 | the per-env serial applier (block form, §4.3) and the topology seam as device functions; 9 (burn-through), the tick-end clears, the `done` kernel; 1b's per-unit verbs (reload, shove, the latches) -- its appends to the projectile and charge tables go with P7b. (The entity export for the digest moved to P6b, where the entity SoA it exports first exists: the lead's ruling, 2026-11-15.) Cut in two patches run side by side: P6.4a (1b's verbs, the `done` kernel) and P6.4b (the field side) | SHADOW LOCKSTEP; the topology scenes |
 
 **What each later patch must know** (the inventory's Part D and E):
 
@@ -1019,6 +1019,1067 @@ landed as cut; no decision moved. One line each:
   1b' + 1c on ship and verbs; DONE (elimination, a limit draw, a fallen team,
   a batch ending on five different ticks). Every gate broken once (the
   patch's report).
+
+**As built (P6.4b, 2026-11-15).** P6.4 was cut in two patches run side by
+side: P6.4a (slot 1b's verbs, the `done` kernel) and P6.4b, the FIELD side:
+the per-env serial applier, the topology seam as device functions, slot 9
+and the tick-end clears. No decision moved. One line each:
+- THE APPLIER is `simulation/applier.py`, ONE table with generated offsets
+  (`cpp/src/applier_layout.h`, the fourth header `gen_unit_layout.py` writes,
+  fingerprint-checked by `DeviceApplier`): an effect RECORD `(kind, y, x,
+  arg)`, its kinds (DESTROY_WALL today), the per-env BOOK channels (each naming
+  the host quantity it twins: `n_destruction_seed_sum`, the gas energy seam's
+  `retire` / `mint` / `destroy_seed`, the solid books' `destroy_wall`,
+  `_tile_serial` as `tiles_changed`; plus `applied`, `dropped`, `faults`), the
+  27 PLANES the topology seam touches (the launch's pointer table, each in the
+  GameMap field's own dtype) and the 4 CLEAR_PLANES. `cpp/src/cuda_applier.cu`:
+  `FieldApplier` (`bp.FieldApplierBuffer`: the list `(N, cap, F)` with each
+  env's REQUESTED count, the books `(N, B)`, pinned staging), `k_applier` on a
+  `(1, N)` grid of 32-thread blocks with thread 0 the walk. Past `cap` the
+  first `cap` effects are applied and the rest counted; the Python face
+  (`unit_kernels.apply_effects` / `burn_through`) refuses the run by name
+  (`EffectOverflow`, `ApplierFault`). THE FAN-OUT of an effect's tile set
+  over the block's threads is NOT built: it arrives with its first user (P7c's
+  deposits), the block shape kept so it lands without moving the kernel. No
+  device-side append either (the producers are P6b / P7): the slot-9 list is
+  staged from the host input.
+- THE TOPOLOGY SEAM is `cpp/src/cuda_topology.cuh` (namespace `topo`):
+  `env_view` (one env's typed pointers, rebased as `bptr` does),
+  `accountable`, `refresh_cell`, `solid_books_cell` (the engine's
+  `conduction::cell_capacity_q`, already `FP_HD`), `patch_face_shift`,
+  `on_tile_changed`, `destroy_wall`. Every operand is read before the first
+  write, so an effect is all or nothing; a fault (a donor's negative gas, the
+  composition's product past 64 bits, a solid book past int64 -- Python's ints
+  would hold them) writes nothing. The gas energy seam's structural rows went
+  into `gas_energy.h` (`mirror_sat_q`, `retire`, `born_at_ambient`) and the
+  device edit queue's mirror refresh now calls `mirror_sat_q` (its private
+  copy deleted) -- so the patch touched a Class-P file (cuda_green at HEAD).
+- THE TABLE ROWS: 25 (T 564 with P6.4a's, after the merge): `topo_mat_air` / `_hull`, the boundary, the
+  ambient seed's three values, `T_AMB`, and per material every value
+  `on_tile_changed` patches (the float planes' values as float32 bit patterns,
+  the face table M x M, `no_face`, the solid predicate on the float32
+  permeability, `blocks_sight`), read from the env's own `GameMap.materials`.
+- NOT RESIDENT TODAY (P8b must hold them): `sight_screen`, `heat_atten`,
+  `light_atten` (the seam writes them) and `rad_net`, `rad_amb`, `rad_flux`
+  (the clears zero them; nothing has written them since T6).
+- DROPPED ON THE DEVICE (host-only, no device form): `render_dirty`,
+  `_sky_mask_dirty`, `_tile_serial` itself (booked as `tiles_changed`), the
+  solid books' sink into the solver's `e_solid_seam_sum` (the chained harness
+  books through `_solid_energy_book`), the render-only Wall / Door
+  DestroyedEvent, the lazily filled `_gas_t_amb_raw_cache`; the clears' credit
+  claims (their device form is the claims table, P7) and the shot tracers'
+  expiry (render).
+- THE HARNESS: a slot declares FIELD OUTPUTS (`outputs=("field:..",
+  "book:..")`, `host_only=((attr, reason), ...)`); the output fields are
+  captured at the entry like inputs and written by the kernel in place; after
+  the host slot every declared plane is compared bit for bit (floats by their
+  bits) naming (tick, env, field, tile), every book against the host's delta
+  over the slot, the alone run against the batch's env. THE WRITE-SET GATE
+  diffs every GameMap array, scalar, dict key, set, list and object probe
+  (`damage_credit`) across the host slot and fails on a change that is neither
+  an output nor host-only; arrays that are the same object (`obstacles` IS
+  `solid` until the first stamp) count as one. An input read from the slot
+  callable's ARGUMENTS is an `ARG_INPUTS` row (`burn_walls`: slot 7's list, in
+  its order). `ChainedSlots` writes the outputs back and hands `books` /
+  `inputs` to the host side.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `destroy_wall` never
+  takes `on_tile_changed`'s membership RETIRE (air is never less accountable
+  than what it replaced), so a TEST-ONLY probe (`cuda_topology_probe.cu`:
+  `material = m; on_tile_changed`) drives both directions; the donor
+  predicate's `not is_vacuum` can never bite (a non-solid vacuum or ambient
+  neighbour makes the tile a breach first), so only `not solid` shows, and
+  only on a solid tile holding gas (a seam fixture); the explicit `T = 0` is
+  load-bearing only on a breach of a hot GAS tile (elsewhere the membership
+  diff or the seed's refresh already wrote 0); no shipped door is flammable,
+  so the fire scene appends its doors to slot 7's list.
+- `seal_tiles` / `unseal_tiles` are NOT built: left to P6b with their only
+  callers, the doors (their refusals -- SealBlocked, the int32 pre-check --
+  need a device refusal path, and their write set reaches non-topology planes:
+  `wave_p`, the wind and flow planes, the float `ripple` pair, the trace
+  saturation's books).
+- THE ENTITY EXPORT for the digest moved to P6b (the lead's ruling): its
+  entity SoA first exists there.
+- TWO CLASS-T TWINS, `burn_through` (slot 9) and `tick_end_clears`. The corpus
+  burns no wall (ship_demo: 0 burn-throughs in 500 ticks), so
+  `burn_through`'s traced files are `simulation.py` alone: a change to
+  `gamemap.py`'s seam does NOT put it in debt (the P6.2 conversion twin's
+  thin-trace gap again); the topology gate is the guard until a corpus burns.
+- THE GATES (`tests/cuda_unit_topology_check.py`, wrapper
+  `tests/test_cuda_unit_topology.py`; `tests/test_applier_layout.py` CPU):
+  TABLES; SEAM (three fixture maps -- space 1/3 m, planetside 1/2 m, space
+  1 m -- each list forward and reversed, the two orders required to differ;
+  every branch counted non-zero; the energy, mass and solid books closing on
+  the DEVICE's planes as on the host's; the probe); SCENES (two fire scenes,
+  ship_demo's bots match: 0 burn-throughs in 500 ticks, the clears acting on
+  one tick); BATCH N = 2 / 8 (layout, tile size, boundary, seed, schedule
+  differ; an env with no event beside one with events on most ticks);
+  PADDING (empty envs, the clears' mask); OVERFLOW; CHAINED 9 (space,
+  planetside) and the clears, digests + every topology plane + the books
+  equal every tick. Every gate broken once (the patch's report).
+
+#### 4.4c Amendment 2026-11-15: P6b and P7 re-planned against the code at `ca2c85a9`
+
+Written by the lead after P6 merged, from a second inventory
+(`docs/residency_p7_inventory_2026-11-15.md`: the host state the remaining
+slots own, the laws they share, the device side as it stands, a sharing
+matrix; every statement with `file:line`). Version 2, after one critique
+(`docs/residency_p7_replan_critique_2026-11-15.md`: SOUND WITH FIXES, nine
+majors and fifteen minors, all folded in below). §9's rows P6b and P7a to P7d
+are from 2026-11-07 and one line each. The inventory shows that none of them
+is one patch and that they are not independent: `execute_payload` is called
+from four places (grenades, payload rounds at the resolve, charges, a heat
+source's death); the recorded effects of `SimultaneousEffects` are shared by
+five slots; shooting marches its rounds on the tick they are fired, so it
+shares the march and the table of rounds with slot 2; line of sight is read by
+sprays, the horde, the motion sensors and every flash; the noise log is
+written by three slots and drained by a fourth. This amendment replaces those
+five rows.
+
+**Scope: the continuous path only.** The device twins port what a continuous
+match runs (WEGO is legacy, ruling 2026-10-31). Not ported, each named so the
+device door can refuse it by name: slot 4's targeted-fire and auto-fire
+branches (the `orders` branches, with their float range test),
+`start_spray_burst` (the WEGO form), the FACE effect (its only producers are
+those branches), physical cover and its chew (OnePhaseWEGO), the order path's
+melee crit, and slot 9b (switched off, §12.7). The device door refuses a run
+whose ruleset is not continuous, a unit holding WEGO `orders`, and
+`burst_enabled`: the ruleset check alone proves neither of the last two.
+
+**Decisions (the lead's; each the simplest form the inventory allows).**
+
+1. **ONE effect list, ONE walker.** The device form of `SimultaneousEffects`
+   is the per-env serial applier's own input, widened: a per-env record list
+   built on `UnitRecordList` (per-row producers stage per row and ONE gather
+   per env appends in row order, which is the reference's record order:
+   shooters by id x rounds with each round's recoil before its own records,
+   then melee by id, then sprayers by id; a serial producer appends
+   directly), walked by the one applier kernel. The applier's reach grows from
+   the 27 planes to the unit store, the device tables, the event ring (through
+   `env_sink`, which has no caller today), the claims and the logs of decision
+   4. The record's fields and kinds stay ONE Python table with a generated
+   header, owned by P7a.1. Kinds: HIT, STATUS, PUSH, CHEW and PAYLOAD are
+   defined by P7a.1 (PAYLOAD as a record only: the applier refuses to APPLY it
+   by name until P7c.1 gives it its function, so P7a.2 and P7b can both record
+   it); SPRAY_CELLS arrives with P7a.3 and carries a SPAN into a per-env cell
+   buffer that phase A fills against the walls standing at the slot's start
+   (its own capacity, counted and refused by name); the walk never recomputes
+   a cone, because an earlier CHEW in the same resolve may have removed a
+   wall. Never a second list and never a second walker: slot 2's landing and
+   slot 4c are stages that walk the record; slot 9e and slot 5's pass 3 are
+   stages of the SAME kernel that walk the entity tables and the zombie rows
+   in the reference's order and apply AT ONCE, as the reference does (a bash
+   changes the map the next zombie reads; a door's sweep changes the gas the
+   next door reads).
+2. **The exposure landing is a mode of the device `apply_packet`, chosen per
+   (stage, kind).** A HIT inside a resolve stage holds its raises and zeroings
+   per target in per-env scratch, and they land together at the end of the
+   walk (`landing.land()`: raises skip a unit dead at the landing, then the
+   dead are zeroed). Every other packet lands at once: the statuses, the
+   couplings, the bite, and a PAYLOAD's blast packets in whichever stage they
+   occur (`exchange.apply_blast_damage` takes no landing in the reference; a
+   finding for Erik, not changed). One packet law, two modes; a caller never
+   picks the mode.
+3. **What flies and what is placed are TABLES with a schema and a capacity:**
+   the planted charges (their schema exists), the grenades in flight, the
+   rounds in flight, the multi-tick blast sources (`gmap.expansions`) and each
+   entity class. Each is built with ONE table module over the unit store's
+   machinery (schema rows, `tools/gen_unit_layout.py`, `pack` / `unpack`, an
+   append, a stable compaction, an IDENTITY gate), never a second generator.
+   P7.0 builds the module with the charge table as its pilot; every later
+   table is a client. Row order is the host list's order, kept by the stable
+   compaction (survivors, then this tick's appends: the order every reference
+   loop walks); an object reference (shooter, weapon, ammo, payload, duct)
+   becomes an id or a table row index; a variable-length member (a door's
+   span and per-tile hp, a duct's slots) is a span into a side table, as
+   `door_spans` already is. None of the host lists has a bound today except
+   the charges: each table gets a capacity sized from the largest count its
+   gate scenes and the bots' matches reach, and a full table is counted and
+   refused by name, like the ring.
+4. **The logs are per-env ordered lists, each with its own life.** The CREDIT
+   CLAIMS and the BLAST LOG are per tick and go with the tick-end clears. The
+   NOISE LOG is not: nothing clears it at tick end, it is drained at the head
+   of slot 5, and a bash's or a 9e detonation's noise is heard on the NEXT
+   tick. So the noise list persists across the tick boundary, is drained at
+   the slot-5 stage's head and cleared only at env reset (added to §4.6's
+   list). Its order is load-bearing (hearing ties to the earlier noise): slot
+   order, within slot 4 the shooter's id order (the gather), within a stage
+   the walk. The claims keep "first claim wins" by being read first match
+   first (`credit_at` already scans so). Each list arrives with its first
+   writer (noise: P7a.2; claims: P7a.3; blast log: P7c.1).
+5. **Draws.** The device forms of `MatchDraws.at` and `.next`, `cone_offset_q16`
+   and `roll_q16`, over the vendored Philox, with the `Salt` members reaching
+   C++ as generated constants. `.next` counts per `(salt, id)` within a tick in
+   a host dict; its device form is a counter local to the row's thread, which
+   is exact while every `.next` user of one salt sits in ONE kernel per tick.
+   That holds today (SHOT_CONE and BEAM_CONE: one shooter's draws in slot 4;
+   MELEE_CRIT only on the order path). The kit's generated table carries the
+   one site per `.next` salt, so a second site fails a test instead of
+   silently restarting the count.
+6. **Sight is a device library function in both of `has_los`'s forms:** the
+   sight form over `solid` and `sight_screen`, and `physical=True` over
+   `solid` alone (the spray cone's), each integer for integer and held equal
+   on random pairs over real maps. `sight_screen` is a slot input until P7e
+   makes it resident. The bulk form (`rays_clear`, the observation's) stays
+   P8b's.
+7. **The edit door moves to the device in three steps.** (a) P7a.3: device
+   producers append EDIT and TILE rows through device forms of the door's
+   quantization and the region walk for the regions they use. (b) P7c.1 and
+   P7c.2 add their regions (DISC, TILES, the falloff weights) the same way;
+   P6b.4 the heat source's. Pumps and vents enqueue no edit. (c) P7e: the
+   per-env sort `(field, source, region, seq)` and K1 / K2 fed from
+   device-built buffers. Three rules hold throughout:
+   - `seq` is a per-env counter, plain because a device producer is always an
+     effect function of the serial applier. It RESETS AT THE 6b FLUSH, never
+     at tick end or the tick head (one window runs from the previous tick's
+     9e to this tick's 6b), and is cleared at env reset. It is also the noise
+     key, so for a noisy edit its absolute value matters, not only the order.
+   - Until (c) a producer is gated AT THE DOOR: its rows equal
+     `pack_for_device` of the edits the host producer enqueued, with `seq` and
+     the edit-row indices rebased to the producer's first edit. That is exact
+     for noise-free edits (a spray's carry none). A noisy edit's absolute key
+     is compared only on ticks where the window's base is known (the producer
+     is the window's first, or the base is a harness input); a tick on which
+     host and device producers interleave inside one walk is refused by the
+     gate by name, never compared loosely.
+   - Until (c) a CHAINED run lands a device producer's edits through the
+     host's own enqueue, replayed from the device's records, which must
+     reproduce the device's rows (the request list's `apply_to_host`
+     pattern). The played edit queue (Class P) is untouched until (c).
+8. **The harness learns lists.** A host list a slot reads or writes (the
+   effects, the tables of decision 3, the logs of decision 4, the edit rows) is
+   declared like a field, as an input or an output, through ONE record function
+   per list; never a hand-rolled compare. The ring keeps only synced events:
+   the harness drops render-only events before comparing (slots 4 to 4c emit
+   several). ExplosionEvent is render-only, read by no law, and does not fit
+   the ring's record: it gets NO device form, and P7c.1 corrects the Event
+   ring's rule, which still promises it one. `ChainedSlots` stays N = 1; batch
+   invariance stays the shadow's.
+9. **Every patch builds its own scenes and counts its branches.** The shipped
+   levels and bots take few of these paths: no level holds a spray, a hitscan
+   weapon, a payload round or a heat source; no bot plants or throws smoke;
+   door bashing and the use verb appear in one level that no CUDA gate runs;
+   the 300-tick corpus ends before the first exposure rise. So each gate is a
+   hand-built scene (P6.4a's verb scene and P6.4b's fire scenes are the model)
+   with a census of the Python law's branches, each required to be taken, and
+   the branches a scene cannot reach named with the reason.
+
+**The cut.** Thirteen patches, two side by side (the Home Desktop's limit). A
+free slot takes the next patch whose needs are merged; the stages below are
+the order that follows from the needs. Each patch is re-checked against the
+inventory when it starts and merges main before its final gates. Two patches
+side by side both regenerate the generated headers (`unit_tables_layout.h`,
+`applier_layout.h`): the second to merge regenerates after merging main and
+rebuilds, as P6.4a and P6.4b did.
+
+| stage | patch | builds | needs |
+|---|---|---|---|
+| 1 | P7.0 the foundations | the kit, library only, each function held equal to its Python on synthetic inputs through test-only probes: the draws (decision 5), sight (6), the falloffs (`falloff_round` / `falloff_floor`), the squared-distance tests. The table module (decision 3) with the planted-charge table as its pilot. The reference's slot 2 split into two named calls (grenades, rounds) with two profiler labels and a sole-cause proof, so two later patches can each port one. Slot 9d (ignition from temperature: a per-cell law, order-free), which no row of the old plan named | |
+| 1 | P7a.1 the effect list | decisions 1, 2 and 8; kinds HIT / STATUS / PUSH / CHEW (`chew_wall` over the topology seam) and the PAYLOAD record; slot 4a (melee: `can_melee`, the arc target, the melee rows) as the first producer; slot 4c as the first stage | |
+| 2 | P7a.2 shooting | slot 4's `_directional_fire`: the burst, `start_spray_burst_directional` and its noise, and the beam as a stretch that may ship as its own patch; the cone draws; the weapon and ammo rows, the per-material cover exposure and the zombie bullet multiplier; THE MARCH as a library function; the table of rounds; recoil and push; the noise list; slot 2's rounds (the same march, a landing stage). A payload round's stop is recorded and refused at the apply until P7c.1 | P7.0, P7a.1 |
+| 2 | P7b grenades and charges | the table of grenades (the throw request becomes an append), flight, the fuse-out as a PAYLOAD record; `charges.tick` over the charge table (the plant request becomes an append); the slot-10 prune. Detonations are RECORDS here, compared with the host's `execute_payload` calls | P7.0, P7a.1 |
+| 3 | P7a.3 sprays | slot 4b (the cone over physical sight, the cell buffer), SPRAY_CELLS, the edit door step (a), the claims list | P7.0, P7a.1 |
+| 3 | P6b.1 doors | the door table (the first entity table: ordinal order, the span and hp side tables, its rows of the entity section); `seal_tiles` / `unseal_tiles` / `can_seal_tiles` in the topology seam (the refusal path; the float planes as bit patterns); the gas-N primitives (`inject` / `extract` / `transfer`, over the gas energy seam's shared rows) and `_aperture_blocked` as device functions; the door sweep with its occupancy test and external destruction; the use request becomes a table write | P7.0, P7a.1 |
+| 4 | P7c.1 payloads, the disc path | `execute_payload` as the PAYLOAD effect function for rows with `strength = 0`: the disc and its wall damage (serial on thread 0, row-major), the wave edits, blast damage, the flash, `emit_gas`, `ignite_ring`, `deposit_heat` (the DISC region at the edit door), the noise, the blast log, the claims | P7.0, P7a.2, P7a.3, P7b |
+| 4 | P6b.2 vents | ducts and vents (bus-independent): the ledgers in int64 with floor division through the kit and a named refusal past the proved range | P6b.1 |
+| 5 | P7c.2 payloads, the strength path | rows with `strength > 0` (the shipped frag is one): the reach walk, the air read, `start_source` / `start_expansion` with the blast-source table and the device form of `take_source_plane` (so `div_source` is no longer uploaded), `deposit_over_tiles` with linear weights, the fan-out over the block's threads, bulk gas; the detonation scene | P7c.1, P6b.1 |
+| 5 | P6b.3 signals | the signal bus, the sensors (motion sensors over sight; field sensors through a device form of the accessor's raw `sample`), the logic nodes (predicates as codes), the pumps, and 9e(c) (the doors' inputs from the bus) | P7.0, P6b.1 |
+| 6 | P7d the horde | the flood as a fan-out of the stage's block, run when the walk first needs a field, from the live map; the masks; the cache with §4.9's refresh rule, including the ticks that return before `begin_tick` (no prey, or an empty request set) and leave it standing; passes 1 and 2 wide; pass 3 serial in id order with the bite and the bash applied at once; the wander hash; the match's zombie request set as a host latch | P7.0, P7a.1, P7a.2, P6b.1 |
+| 6 | P6b.4 timed charges and heat sources | the two entity classes that detonate; the heat source's chain within one tick (a loop over a growing list, bounded by the first discs plus the source count) and its per-tick deposit; slot 9e CHAINED whole; the entity and signal sections of the digest exported from the tables | P7c.2, P6b.2, P6b.3 |
+| 7 | P7e the device tick | the conductor: every slot's kernel in the reference's order for N envs with no host slot between them (the host writes only the latches: actions and the zombie request set); every plane a device slot reads or writes resident between slots (`applier.non_resident_planes()` empty: `sight_screen`, `heat_atten`, `light_atten`, the radiation planes); the edit door step (c); the remaining tick-end pieces; profiler labels per sub-slot. Gate: recorded matches replayed through it, digests equal at every tick, N = 1 and in a batch | all |
+
+P7e is the input of G2 and of P8b; it is re-cut when P7c.2 has merged,
+together with the P8 re-plan (P8b grew when rung 1 of #192 built the
+observation, the masks and the reward in host Python: that re-plan is with
+Erik).
+
+**What each patch must know** (the inventory's Parts B, D and F, checked by
+the critique):
+
+- Grenade flight reads no map state, so it is order-free; the detonations are
+  what is serial. Slot 2's order stays: every grenade, detonations in list
+  order, THEN the rounds' phase A against the state the grenades left, then
+  the landing.
+- The march's first hit is the first unit in LIST order whose footprint holds
+  the tile, and the shooter is excluded by object identity: on the device,
+  row order and the shooter's id (a converted shooter keeps its id).
+- `apply_explosion`'s loop reads `solid` after earlier tiles of the same disc
+  were destroyed: the disc stays serial.
+- Slot 5's bash is applied at once and the zombies after it read the live
+  map for their step, their own bash, their fear and their sight, and the
+  lazy flood is built from the live map on first need. So pass 3 is never a
+  wide decide with a deferred apply, and the flood is never moved to the
+  stage's head.
+- Float conversions on the payload path (`float(wall_damage)`, the heat and
+  soot products, `_source_q`, the DISC radii, `blast_air_settings()` per call)
+  and the heat source's float per-tick deposit are quantized per call in the
+  reference: each becomes a Device tables row read from the same validated
+  object, and a product that cannot be a row is reported before it is ported.
+- Duct ledgers and the filter mean are unbounded Python integers with floor
+  semantics on negatives: int64 on the device, a named refusal past the
+  proved range.
+- State that crosses ticks and is in no digest: rounds and grenades in
+  flight, `gmap.expansions`, the edit queue's window, the noise log, the horde
+  cache. The tables' IDENTITY and shadow gates cover the twins; adding any of
+  them to the digest would move every golden and is not part of this port (a
+  finding for Erik).
+
+**Systems (additions to §13).** New, each with its ONE index line and its
+constraints in `.claude/rules/device-units.md` when it is built: the device
+table module and each table on it (charges, grenades, rounds, blast sources,
+the entity classes), the device draws, the device sight function, the device
+edit door. Changed, each amending its rule section: the Per-env serial
+applier (its reach, its producers, its stages), the Device unit library (the
+march, the falloffs), the Device topology seam (seal / unseal, the gas-N
+primitives), the Event ring (no ExplosionEvent), the Request list (throw,
+plant and use become table writes and leave it). Used as they are: Match
+draws, Verb gates, Weapons, Payload executor, FieldEdit, Horde field, Noise,
+Entity system, Trace currency, Gas energy seam.
+
+**As built (P7a.1, 2026-11-15).** Decisions 1, 2 and 8 landed as cut for the
+kinds, slot 4a and slot 4c; no decision moved. One line each:
+- THE EFFECT LIST is the applier's record widened: `kind` then ten arg slots
+  whose meaning is the kind's own (`applier.KIND_FIELDS`, the header's
+  `APPLIER_<KIND>_<FIELD>` columns): DESTROY_WALL `(y, x)`; HIT `(row,
+  amount_q, dtype, attacker, indirect, expose, dir_x_q, dir_y_q, ap_q, cause)`
+  (the packet at its door: `q()`, the AP quantized as `mitigate_q` does, the
+  attacker normalized, the cause's index); STATUS `(row, status, magnitude_q,
+  duration, source)`; PUSH `(row, jx_q, jy_q, lever_q, twist_q16)`; CHEW `(y,
+  x, damage_q, live)` (`live` 0 for `wall_damage <= 0`, the damage quantized
+  per call in the record); PAYLOAD `(y, x, payload, owner, approach_y,
+  approach_x, has_approach, kind)` (`payload` the row's index in
+  `sim.weapons_tables.payloads`, `kind` its index in `PAYLOAD_KINDS`).
+  `ROW_CAP` 3 (4a's blow), `E_CAP` 256; the books gained `refused`.
+- THE LIST IS A RECORD LIST: `FieldApplier` holds a `UnitRecordList` (width
+  F, `n_units` rows of staging, `row_cap`), so a per-row producer stages per
+  row and the one gather appends per env in row order AFTER what the list
+  holds (an append continues it: the `append` gate stages two records and
+  requires 4a's after them); `stage()` sets the list from host records (the
+  first `cap`, the rest counted as dropped: the old semantics);
+  `begin()` empties it. Python: `DeviceApplier(n_env, cap, n_units=,
+  row_cap=)` with `stage_lists` / `begin` / `records`.
+- ONE KERNEL, A STAGE ARGUMENT: `applier_run(applier, store, tables, planes,
+  stage, ring)` (stages `TOPOLOGY` = slot 9, `RESOLVE` = slot 4c; a stage
+  `LANDS` or not), returning the books, the coverage (the rows the walk
+  changed, flagged per row and counted once; a row changed and changed back
+  counts) and the ring's dropped count. Python: `unit_kernels.walk_effects`
+  (THE refusals: `EffectOverflow`, `UnitEventOverflow`, `EffectRefused`,
+  `ApplierFault`, in that order), `apply_effects` (host lists staged, default
+  TOPOLOGY: slot 9 unchanged), `resolve` (the list as the producers left it).
+- THE REACH: the store's rows (an effect's `row` outside the env's rows or on
+  a padding row FAULTS), the env's device tables, the env's ring through
+  `env_sink` (its first caller; a HIT with no ring faults). The planes stay
+  required by every stage.
+- THE LANDING is `ExposureLanding`'s own two LISTS per env (scratch `(N, cap,
+  4)` beside the list: a raise `(row, dtype, add)` per slot, a death's row in
+  the fourth column), not per-target sums: `land()` exactly (raises in record
+  order, each `min(x_max, x + add)`, skipped for a unit dead at the landing;
+  then the dead zeroed). `apply_packet` gained an overload taking an
+  `ExposureLanding*` and the row index; the old seven-argument form IS the
+  overload with null and is unchanged bit for bit (P6.3 / P6.4b gates green).
+- THE KINDS' FUNCTIONS: HIT `apply_packet` (landing in RESOLVE); STATUS
+  `apply_status` if alive (a stack-cap refusal changes nothing; a bad kind or
+  duration faults); PUSH `impulse_add` if alive -- `unit_impulse.add` with its
+  `angular_q` (the lever clamped per input, the magnitude's square in 128
+  bits, the twist), MOVED to the unit library from the verbs TU's
+  `stage_shove`, which now calls it; CHEW `chew_wall` (air and `live` 0
+  no-ops; a tile outside the grid FAULTS where numpy would wrap or raise; the
+  new hp outside int32 FAULTS; `destroy_wall` at `<= 0` through the seam);
+  PAYLOAD counted in `refused`, never applied.
+- SLOT 4a is `cpp/src/cuda_unit_melee.cu` (`unit_kernels.melee`): the latch
+  consumed, `can_melee` (both moments in the library, the probe's columns
+  13 / 14), `melee_arc_target` and `melee_adjacent` (the square footprints of
+  `footprint_rowmajor`), `last_blow_tick` at once, the blow staged as HIT /
+  STATUS / PUSH. A striker whose melee row has a crit FAULTS (the loadouts
+  door refuses one; `melee_blow` would draw); a melee row without a dtype
+  faults; the push is refused past 2^46. Eight table rows (T 716):
+  `weapon_melee_damage_q`, `_dtype`, `_status_kind`, `_status_ticks`,
+  `_arc_half_q`, `weapon_rof_ticks`, `weapon_melee_crit`,
+  `weapon_melee_push_q` (per map: the impulse table's).
+- THE ONE RECORD FUNCTION: `applier.record_of` / `records_of` (a world call
+  recognised by its unwrapped function; FACE, a cover chew, a spray's cells,
+  any other call, and an effect on another sim's map / table / events refused
+  by name, `EffectRefused`); `applier.effects_of` finds a slot callable's
+  `SimultaneousEffects`.
+- THE HARNESS: `LISTS` (name -> host object, record function, consume,
+  device list, field names); `inputs=` / `outputs=("list:effects",)`; an input
+  list staged before the kernel, an output-only one begun; outputs compared
+  record for record (`list[i].KIND.field`), the alone run's list too;
+  `DeviceSlot.select(sim, args, kw, caller)` (4c is the conductor's resolve,
+  `_step_pre_physics`); the ring compared on `unit_events.is_synced` events;
+  `ChainedSlots` stages its lists at the chain's entry, empties the host's
+  list after the kernels, and refuses by name a later chained callable that
+  finds the host appended to it in between (4b's records would be lost).
+- TWO CLASS-T TWINS, `melee` (slot 4a) and `resolve` (slot 4c). The corpus
+  never strikes and its 4c resolves record no hit in 300 ticks, so `melee`'s
+  traced files are `combat.py`, `simultaneous.py` and `resolve`'s
+  `exposure.py`, `simultaneous.py`: a change to `damage.py` or
+  `combat.chew_wall` does NOT put `resolve` in debt (the thin-trace gap
+  again); the effect-list gate is the guard. `combat.py` and
+  `simultaneous.py` left `[not_twinned]`.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): the profiler label "4c
+  resolve" wraps `SimultaneousEffects.resolve` itself, so it also times slot
+  2's landing resolve (`_update_projectiles`) -- the harness narrows by caller,
+  the profiler still adds both under 4c; `melee_blow` computes the screen-
+  convention `angle_q` on the verb path, where nothing reads it (no crit); no
+  melee row a loadout may carry is without a status, so "a blow without a
+  status" is unreachable; ship_demo's bots never strike (4a acted on 0 of 500
+  ticks); melee packets carry no `expose`, so the landing's raises come from
+  rounds (ship_demo: 4 raises landed, 4 PUSHes with a recoil lever); the
+  landing's skip of a raise for a unit dead at the landing cannot change a
+  result today (every unit dead there died inside the slot through a HIT and
+  is zeroed after the raises: its deliberate break stays green) -- it bites
+  first when a PAYLOAD's blast kills in immediate mode inside a resolve
+  (P7c.1 must gate it); a HEAL packet heals only with a negative amount.
+- THE GATES (`tests/cuda_unit_melee_check.py`, wrapper
+  `tests/test_cuda_unit_melee.py`; CPU `tests/test_applier_layout.py`):
+  TABLES; LIB (synthetic rows, both answers of each gate); KNIFE; SCENE (the
+  melee scene, 4a + 4c shadowed, a census of 32 branches each required,
+  four named unreachable); RESOLVE (the landing's result different from at
+  once, CHEW to zero, forward / reversed differ in ring and planes, PAYLOAD
+  refused, FACE refused); BATCH N = 2 / 8 (layout, seed, unit count, fields;
+  4a also beside ship_demo); PADDING; OVERFLOW (append, list, staging, a
+  staged list walked); CHAINED 4a + 4c; SHIP 500 ticks. Every gate broken once
+  (the patch's report).
+
+**As built (P7.0a, 2026-11-15).** P7.0 was cut in two side by side: P7.0a
+(this: items 1 and 4, the kit and slot 9d) and P7.0b (the table module with
+the charge pilot, slot 2's split). Decisions 5 and 6 landed as written; one
+line each:
+- THE DEVICE DRAWS are `cpp/src/cuda_unit_draws.cuh` (`unit_draws_dev`):
+  `draw_key(keys, e)` reads env e's row of an `(N, 3)` int64 input (seed lo,
+  seed hi, tick word: `unit_draws.draw_key(sim)`, i.e. `sim.draws.key` and
+  `sim.draws.tick & 0xFFFFFFFF`, the WEGO base included, captured at the
+  slot's entry; a later slot stages it like any table input); `draw_at(key,
+  salt, ident, index)`; `DrawSite` + `draw_next(key, site)` (the count in the
+  thread); `cone_offset_q16(word, cone_q)`, `roll_q16(word, p_q)`. Out of
+  the Python's domain (id, index, a key word, a cone past 2^31 - 1, where
+  the 64-bit product would overflow) is `bad`, the caller's fault. The salts
+  are `unit_draws::SALT_*` in the generated `cpp/src/unit_draws_layout.h`
+  (`src/simulation/unit_draws.py`, a sixth header of
+  `tools/gen_unit_layout.py`, fingerprint `bp.unit_draws_layout()`), which
+  also records `NEXT_SITES` (SHOT_CONE `fire_burst`, BEAM_CONE `fire_beam`,
+  MELEE_CRIT `melee_blow`, all `combat.py`); an AST scan of `src/` fails
+  `tests/test_unit_draws.py` on a second site.
+- THE DEVICE SIGHT is `cpp/src/cuda_unit_sight.cuh`: `unit_sight::has_los(
+  solid, screen, h, w, fy1, fx1, fy2, fx2, &bad)`, `screen == nullptr` the
+  physical form; one env's `(h, w)` bool planes, the caller rebases. An end
+  past +-2^30 is `bad`.
+- THE FALLOFFS are `FP_HD` `falloff_floor_q` / `falloff_round_q` in
+  `fixed_point.h` beside the P6.2 kit twins (a 128-bit numerator, a 128 / 64
+  restoring ceil division, the uint64 ceil root), bound as
+  `bp.fp_falloff_*`; proved for v < 2^31 and 0 <= d2 < r2 < 2^63 (the
+  callers: v = 65536 with Q32 distances for the deposit weights, a blast's
+  Q16 damage), -1 outside. The P7.0 row's "squared-distance tests" were left
+  out on the lead's brief (no distance helper until a caller needs one).
+- SLOT 9d is `cpp/src/cuda_unit_ignition.cu` (`unit_kernels.ignition(store,
+  fields)`, the nine `IGNITION_FIELDS` planes, `fire` and `ignition_armed`
+  in place, coverage = cells changed): one thread per cell, a non-flammable
+  cell returns first. Six table rows (T 732): `ign_temp_q` per material
+  (`materials.ignition_temp_q16`), `ign_x_ext_q` / `ign_seed_q` (through
+  `combat.ignition_params`, now the conductor's one read of the two dials),
+  `ign_x_n_floor_q` (`combat.IGNITION_X_N_FLOOR`, the literal named),
+  `ign_gas_o2` / `ign_gas_n2` (the map's gas table). The store is taken for
+  the tables and the counts only; the kernel reads no row.
+- THE HARNESS: the chained form's `_is_for` also recognises a callable
+  handed the sim's GameMap (9d's only sim argument); without it the host law
+  ran beside the device's, unseen because 9d is idempotent on its own
+  output, so the chained gate now counts the host law's calls.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): 9d reads NO pressure
+  factor -- `apply_temperature_ignition` gates on the mole fraction alone,
+  while the fire's sustain multiplies `o2_pressure_factor.h`'s g(p) -- so its
+  twin does not either (the brief asked for the factor; porting it would
+  change the game); the fraction's floor was a literal in the law (named
+  now, value unchanged); ship_demo never ignites (0 cells in 300 ticks:
+  nothing gets hot); the ignition scene's no-O2 cases all come through the
+  fraction's floor (a pumped pocket): vitiated air at full density is not
+  built.
+- THE GATES (`tests/cuda_unit_kit_check.py`, wrapper
+  `tests/test_cuda_unit_kit.py`; CPU `tests/test_unit_draws.py`,
+  `tests/test_unit_kit_twins.py`): TABLES; DRAWS (4 envs: seed 0, 2^32 + k,
+  2^64 - 1, a tick past 2^32, a WEGO base; 4096 rows each over every salt
+  and raw words, the range ends; two .next sites per row; batch == alone;
+  7 domain flags); SIGHT (ship_demo, playground, my_ship, test_level with
+  grilles stamped through `on_tile_changed`, one batch padded to the largest
+  map; 48 000 pairs x 2 forms); FALLOFF (60 000 triples, device and CPU);
+  LAW (9d's kernel on 320 random synthetic map pairs against the law on a
+  stand-in map: four deliberate breaks -- the threshold's equality, a
+  vacuum neighbour counted, the floor, the fraction's scale -- stayed green
+  on every scene, which never puts a tile exactly at its threshold, gas in
+  a vacuum tile or a fraction a count from X_ext); SCENES (the ignition scene, space and planetside, an 11-branch census;
+  ship_demo 300 ticks with none); BATCH N = 2 / 8; CHAINED 9c + 9c2 + 9c3 +
+  9d. Every gate broken once (the patch's report).
+
+**As built (P7.0b, 2026-11-15).** Items 2 and 3 of the P7.0 row (the table
+module with the charge table as its pilot; the reference's slot 2 split); the
+kit and slot 9d are P7.0a's. No decision moved. One line each:
+- THE TABLE MODULE is `src/simulation/object_tables.py`; every table fact is a
+  schema in `unit_schema.OBJECT_TABLES` (`ObjectTable(name, columns, capacity,
+  live, build)`, columns `TableColumn(name, encode, width, decode)`, the old
+  `ChargeColumn` its alias; `CHARGE_TABLE` the pilot, `CHARGE_SCHEMA` unchanged
+  in content so `charge_record` and the digest are byte-identical). A new table
+  is a schema and a row of that tuple, then `tools/gen_unit_layout.py --write`
+  (the sixth header, `cpp/src/object_tables_layout.h`: `OBJ_<T>_W / _CAP /
+  _LIVE / _COL_<C>`, one fingerprint over every table).
+- THE BRIDGE: `records(table, objs)` (the one record function), `pack(table,
+  objs) -> (rows (cap, W), count)` (refuses past the capacity naming the table,
+  and the env in `pack_batch`), `unpack(table, rows, count) -> objects` (the
+  schema's decode and constructor; rows past the count never read); the host
+  reference of the two list operations `append_rows` / `compact_rows`.
+- THE DEVICE BUFFER: `DeviceTable(table, n_env, n_units=1, row_cap=1)` over
+  `breach_physics.ObjectTableBuffer`, C++ `ObjectTable : UnitRecordList`
+  (`cpp/src/cuda_object_table.{h,cu}`): the rows ARE the record list's
+  records, the count its count, the overflow its dropped count, so a serial
+  producer appends through `emit_record` and a per-row kernel through the
+  list's staging and its one gather, and pybind registers it as a
+  `UnitRecordListBuffer`. Its own operations: `upload(rows, counts)`,
+  `append(recs, n)` (host-staged, one thread per env, then the overflow check:
+  `ObjectTableOverflow` naming the table, the env and the rows lost),
+  `compact()` (one thread per env, stable, the freed rows zeroed), `download()`.
+- CHOICES where this section was silent: the table's capacity is STORAGE
+  (`CHARGE_CAPACITY` rows); `charges.place`'s refusal at that many LIVE charges
+  stays the law's own; the compaction is serial per env (W 8, cap 32: a scan
+  is cheaper than a prefix sum); the live column is a schema fact (the charge
+  table's own `live`), the grenades will declare theirs as an encoded column.
+- SLOT 2 is two conductor calls, `Simulation._update_grenades` (label "2
+  grenades") then `Simulation._update_rounds` (slot 2', label "2' rounds"),
+  each one call line with its ordering comment; the harness wraps slots
+  through the same `SLOT_WRAPS`. Sole cause EQUAL on all four
+  `tests/_p3a_sole_cause.py` scenarios (ship_demo 2570 ticks, bots_v1 7200,
+  the box 231, the scripted arena 420 with every grenade kind and a held
+  trigger), every unit record and field digest identical.
+- WHAT THE REFERENCE SHOWED (nothing changed): the profiler label "4c resolve"
+  still also times the rounds' landing resolve (now called from
+  `_update_rounds`; the harness's `select` by caller is unaffected); the
+  planted charges are in no digest-visible order other than list order, and
+  the list holds dead charges only between `charges.fire` and the prune inside
+  the same `charges.tick` call on the continuous path (`detonate_owned`, WEGO
+  only, can leave them to the next tick).
+- THE GATES (`tests/cuda_object_table_check.py`, wrapper
+  `tests/test_cuda_object_table.py`; CPU `tests/test_object_tables.py`,
+  `tests/test_slot2_split.py`): TABLES (fingerprint, a mismatched module
+  refused); TRIP (random rows bit for bit); APPEND (three ordered appends, an
+  overflow refused and counted, nothing written); COMPACT (eight patterns);
+  SCENE (P6.4a's verb scene variants 0 and 3 and a charge scene, N = 4, 160
+  ticks: identity, round trip, the tick's append, the compaction, env i alone;
+  an eleven-branch census). Every gate broken once (the patch's report).
+
+**As built (P7b, 2026-11-15).** The cut table's P7b row; no decision moved.
+One line each:
+- THE GRENADE TABLE is `unit_schema.GRENADE_TABLE` (capacity 64, storage):
+  `proj_type, owner_id, start_x_q, start_y_q, target_x_q, target_y_q,
+  pos_x_q, pos_y_q, fuse_seconds` (an exact Q16, refused otherwise),
+  `fuse_ticks` (`NO_TIMER` for the WEGO order path's None; a real fuse equal
+  to the sentinel refused), `thrown_tick, ammo_name` (the ammo table's row),
+  `travel_speed_q`, and the live column `detonated` ENCODED (1 while it
+  flies). `build` is the `Projectile` constructor plus the position and the
+  flag, refusing a row whose speed is not its round's.
+- SIX TABLE ROWS (T 756): `clock_tps` (CFG, as `update_position` reads it),
+  `grenade_flight_eps_q`, `order_grenade`, `hand_grenade_ammo_row` and
+  `hand_grenade_speed_q` per throw kind, `ammo_payload_row` per ammo row
+  (`payload_for_ammo`'s index, -1 none).
+- THE KERNELS, `cpp/src/cuda_unit_objects.cu`, faces in `unit_kernels`:
+  `table_appends(store, requests, grenades, charges)` (after `verbs`: one
+  thread per env walks the request list; a THROW appends the
+  `_release_grenade` Projectile, an ACCEPTED plant the `charges.place`
+  charge); `grenades(store, table, effects, ticks)` (the flight one thread per
+  row; the fuse-outs one thread per env in row order, each lob's detonation a
+  PAYLOAD record `(target tile, ammo_payload_row[ammo], owner, the start tile
+  as the approach, has_approach 1, kind grenade)`); `charges_tick(store,
+  table, effects, ticks)` (serial in row order, PAYLOAD `(y, x, payload,
+  owner, approach or -1, has_approach, kind door_explosive)`, then the
+  compaction); `prune_grenades(table)` (slot 10: the compaction). Counts per
+  env: changed, faults, refused (a WEGO grenade), dropped (effect records).
+  The device door `refuse_wego(sims)` refuses a ruleset that `drives_units`
+  (`detonate_owned`) and a grenade with no integer fuse, by name.
+- CHOICES where this section was silent: the throw / plant records STAY in
+  the request list as the transport (the plant's capacity pass and the
+  shadow read it) and the append is a per-env pass after it, not a second
+  staging; the fuse-outs are flagged by the wide kernel in a scratch and
+  recorded by a serial pass (the effect list's row staging is unit rows);
+  the charge kernel compacts inside the same call (`charges.tick`'s prune).
+- THE HARNESS: `LISTS` rows `grenades` / `charges` (an object table over the
+  host list: staged, compared, LANDED back in place by the chained form,
+  never consumed) and `payloads` (`execute_payload` at its two P7b call sites
+  through a tap; `ListDef.mark` empties the log at the slot's entry; the
+  chained form replays each device record through the host's call, which
+  must reproduce it); output lists kept PER NAME (one slot may output
+  several; until now the last overwrote the others); `DeviceSlot(skip_ok=
+  True)` for a slot the conductor gates off (`charges.tick` runs only while a
+  charge lies).
+- WHAT P7c.1 INHERITS: the PAYLOAD record of both call sites as above; the
+  host-only writes the shadow saw inside slot 2 and 9e(d') (see the patch
+  report), every one the payload law's; the blast's own events (UnitHit /
+  UnitKilled, the flash's blindings) in those slots, which no ring compares
+  yet; the noise, claims and blast log of each call.
+- THE GATES (`tests/cuda_unit_objects_check.py`, wrapper
+  `tests/test_cuda_unit_objects.py`; CPU `tests/test_grenade_table.py`):
+  TABLES; FLIGHT (synthetic full tables against `_update_grenades`, its
+  `execute_payload` recorded); SCENE (the grenade scene: every kind, six
+  fuse-outs of different kinds on one tick, a release on a fuse-out tick, a
+  zero flight, a 0-tick fuse, two charges firing on one tick, a full charge
+  table refusing a plant; 1b + appends, 2, 9e(d'), 10 shadowed; a census);
+  BATCH N = 2 / 8; PADDING; OVERFLOW (each table and the effect list);
+  REFUSE; CHAINED (1b + 1b' + 1c + 2, and 9e(d')); SHIP 500 ticks.
+**As built (P7a.2, 2026-11-15).** Slot 4's shooting on the continuous path,
+slot 2''s rounds, THE MARCH they share, the table of rounds and the noise list.
+Decisions 1, 3, 4, 5 and 8 landed as cut; the beam was NOT built (below). One
+line each:
+- THE MARCH is `cpp/src/cuda_unit_march.cuh`: `unit_march::march(const
+  MarchMap& m, int64_t* rd, RecordSink& fx, bool* bad) -> still_flying`, `m`
+  the env's rows, tables, `solid` / `material` planes, draw key and tick, `rd`
+  ONE round-table row read and written in place, `fx` the sink its records go
+  to (CHEW; or HIT then PUSH; then a payload round's PAYLOAD, kind `shell`).
+  Beside it `round_draw` (`draw_at(salt, shooter id, round_index(tick -
+  spawn_tick, ordinal))`), `arc_multiplier`, `list_env_sink`. The first hit is
+  the first valid row in row order holding the tile, the shooter excluded by
+  id, the dead skipped. Proved: positions within 2^40, steps within 2^24, a
+  speed in (0, 2^30], an age / ordinal within 16 bits; outside, a fault.
+- THE TABLE OF ROUNDS is `unit_schema.ROUND_TABLE` (W 21, capacity 128):
+  `shooter_id`, `weapon`, `ammo` (schema rows), `payload` (the payload table's
+  row, -1 none), `angle_q`, `rx_q`, `ry_q`, `prev_ix`, `prev_iy`,
+  `remaining_steps`, `speed_q16`, `budget_q16`, `ox_q`, `oy_q`, `sx_q`, `sy_q`,
+  `spawn_tick`, `ordinal`, `march_cover` / `march_facing_defense` (always 0:
+  the encoder refuses a WEGO round by name), `live` (1 on the host).
+  `unit_kernels.rounds_of` is its record function (behind `shooting_door`),
+  `rounds_to_host` its way back (the shooter bound by id). The schema's
+  `TableColumn` gained `get` (how a value is read when it is no attribute).
+- THE NOISE LIST is `unit_schema.NOISE_TABLE` (W 4: `fy`, `fx`, `radius`,
+  `live`; capacity 64) on the same machinery, `unit_kernels.noise_of`; it is
+  staged from the host's log at the slot's entry and appended to (decision 4:
+  it is drained at slot 5, P7d's stage).
+- SLOT 4 is `cpp/src/cuda_unit_shooting.cu`'s `unit_shooting`
+  (`unit_kernels.shooting(store, effects, rounds, noise, ticks, keys,
+  fields)`): one thread per row; the gates (alive, not a zombie, can act, a
+  weapon, the trigger, the cadence, `mag_settle`); melee / lobbed / placed
+  rows end there; a spray arms its burst on the row and makes its noise; a
+  projectile makes its noise and fires its burst (per round the SHOT_CONE
+  `.next` draw, the kit step, the recoil PUSH, THE MARCH, the round appended
+  when it flies); `mag_spend` and `last_fire_tick` at once. Effects, rounds
+  and noises each staged per row and gathered per env in row order onto what
+  the list holds. A hitscan trigger is REFUSED (`unit_kernels.ShotRefused`).
+- SLOT 2' is `unit_rounds` (`unit_kernels.rounds_march(..., compact=True)`):
+  ONE thread per env marches the table in order, its records appended to the
+  effect list directly; finished rounds compacted. The LANDING is the
+  applier's RESOLVE stage (`unit_kernels.resolve`): the same law and landing
+  as 4c, so no new stage; `applier.STAGES` says so.
+- THE REFERENCE, touched as a pure refactor (pins and golden unchanged):
+  `Simulation._update_rounds` is now `_march_rounds(landing)` (phase A, called
+  every tick, `self.bullets = survivors` set before the resolve, which reads no
+  list) then `landing.resolve()`; the profiler label "2' rounds" moved to
+  `_march_rounds` (the landing is timed under "4c resolve", as it already was).
+- THE ROWS (32, T 1211): per weapons-table row `weapon_archetype` (codes
+  `unit_tables.ARCHETYPE_CODES`, in the header and the fingerprint),
+  `_shots_per_trigger`, `_range_tiles`, `_cone_aim_q` / `_cone_snap_q` (the
+  class cones; SPREAD applied in the kernel), `_ammo`, `_crit_on`,
+  `_crit_chance_q`, `_crit_mult_q`, `_loudness_tiles`, `_burst_ticks`; per ammo
+  row `ammo_speed_q16`, `_damage`, `_dtype`, `_ap_q`, `_expose_q`,
+  `_wall_live`, `_wall_damage_q`, `_payload`, `_push_q`, `_recoil_q`; scalars
+  `impulse_twist_q16`, `zombie_bullet_mult_q`, `crit_front / flank /
+  behind_mult_q`; the arc halves per profile and per species; per material
+  `mat_cover_exposure_q`. Every per-call float door of the reference (the
+  zombie multiplier, `crit_chance`, `crit_mult`, `wall_damage`, `ap`) is one
+  row quantized as the law quantizes it; no product needed reporting.
+- THE LIBRARY gained the magazine law (`mag_settle`, `reload_begin`), moved
+  from the verbs TU, which now calls it. `applier.ROW_CAP` went 3 -> 32 (four
+  records a round, eight pellets).
+- THE HARNESS: the input `draw_key`; the lists `rounds` and `noise` (object
+  tables; `ListDef.land` writes a device list back onto the host in the
+  chained form); `DeviceSlot.name` (two slots on one label: 4c and 2''s
+  landing); the caller test skips the harness's own wrappers; an output list's
+  host records are kept per list (a slot with two output lists overwrote the
+  first: fixed).
+- THE BEAM was not built: it is not the march (no budget, no first-hit stop:
+  every unit on the line is skewered once, a per-beam set of rows; the energy
+  attenuated per tile by the trace-gas Beer-Lambert over the `gas` planes, a new
+  plane input with `gases.beam_absorb_q16` rows and the trace currency's shift;
+  HITs of cause laser, no push; the BEAM_CONE `.next` site). It is a second
+  device function beside the march with its own scene; the shipped beams are
+  `lance_3` and `lance_5`, which the device refuses by name.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `combat` reads the
+  PROCESS-WIDE weapon tables (`weapons.get_tables()`, rebuilt by every new
+  `Simulation` at its own tile size) while each sim keeps its own
+  `weapons_tables`: two sims of two tile sizes in one process shoot with the
+  last one's ranges (a finding for Erik; the device reads each sim's own, so a
+  batch must share a tile size); slot 1b drops a dead unit's trigger, so a
+  corpse holding the trigger reaches slot 4 only when it died after 1b (a round
+  landing at 2', a grenade at 2, a DoT at 2b); a payload round's PAYLOAD
+  record cannot be applied until P7c.1, so the payload scene shadows the march
+  slots and not the landing; ship_demo's bots pulled the trigger 6 times in
+  500 ticks (6 hits, no kill, no round outliving its tick).
+- THE GATES (`tests/cuda_unit_shooting_check.py`, wrapper
+  `tests/test_cuda_unit_shooting.py`): TABLES (3 envs, two tile sizes); MARCH
+  (24 x 16 envs x 12 synthetic rounds over random maps of every material, a
+  23-branch census); SCENE (1/3 m tiles, 2' + landing + 4 + 4c shadowed, a
+  46-branch census); SCENEB (payload rounds, a spray, a budget-starved bolt, 7
+  branches); BATCH N = 2 / 8; PADDING; OVERFLOW (the effect list, a row's
+  staging, the round table, the noise list); REFUSE (5 named refusals);
+  CHAINED (2' + landing; 4 + 4a + 4c; the host law run 0 times); SHIP 500
+  ticks. Every gate broken once (the patch's report).
+
+**As built (P7a.3, 2026-11-16).** The cut table's P7a.3 row; decisions 1, 4
+and 7(a) landed as written. One line each:
+- SLOT 4b is `cpp/src/cuda_unit_sprays.cu` (`unit_kernels.sprays(store,
+  effects, cells, {"solid": ...})`): ONE block per env, thread 0 walking the
+  rows in id order (a dead or interrupted burst cleared; a live one's cone,
+  then the countdown at once), the block's threads splitting each cone's box
+  (`decide_box`), thread 0 emitting it in row-major order (`emit_box`). Counts:
+  changed, faults, refused (a WEGO burst: no aim angle), dropped (records +
+  cells).
+- THE CONE is `cpp/src/cuda_unit_spray.cuh` (`cone_from` / `cone_params`,
+  `cone_tile`, `box_size`): `spray_cone_tiles` integer for integer over the
+  PHYSICAL `unit_sight::has_los`; proved for a range <= 2^14 and an apex
+  within +-2^20. The launch's scratch is one box per env, `min((2 r_max +
+  1)^2, h w)` (`unit_kernels.spray_box_max`). TEST-ONLY probe
+  `unit_kernels.spray_cone_probe` (the same decide / emit pair).
+- THE CELL BUFFER is a record list of `(y, x, div)` (`attack_lists.cell_buffer`,
+  cap 4096 per env per tick, storage); SPRAY_CELLS `(owner, heat_q, gas_id,
+  gas_q, start, count)` holds a span into it (`applier.record_of` recognises
+  `_enqueue_spray_cells` and appends its cells: `records_and_cells_of`).
+- SPRAY_CELLS AT THE RESOLVE is `unit_spray::apply_spray_cells`, a branch of
+  the one `k_applier` (any stage; all operands checked before the first
+  write). The walk's further reach is ONE optional argument, `ApplierLists` /
+  `unit_kernels.WalkLists(cells, door, claims)`; a SPRAY_CELLS without them
+  faults.
+- THE DEVICE EDIT DOOR (step (a)) is `cpp/src/cuda_edit_door.{h,cuh,cu}` +
+  `edit_door.DeviceEditDoor`: per env the EDIT rows (pack_for_device's 16
+  columns, then `source_id` and `region`, the sort key step (c) needs), the
+  TILE rows (edit index local to the env's list) and `seq` (reset by `begin`,
+  set by `set_seq`). `door_tile_edit` is `_edit_door` + `_iter_region`'s TILE
+  for an edit with `amount_q`, FLAT, no noise, no scale, the policy clamp (the
+  tables' `edit_clamp_*` rows per field ordinal). Host reference
+  `edit_door.door_rows`; chained landing `edit_door.replay` (each row through
+  `EditQueue.enqueue` at its key, then re-packed and compared). E_ENV is 0, as
+  in the pack.
+- THE CLAIMS LIST is a record list of `(channel, y, x, attacker)`
+  (`attack_lists.claims_list`, cap 8192), every claim in order (duplicates
+  kept, the environment's dropped): `credit_at`'s table as it stands. Host
+  side: `claim_rows`, `first_claims`, `replay_claims`.
+- ELEVEN TABLE ROWS (T 772 -> 912): `spray_range_tiles`, `spray_cone_half_q`
+  (`cone_q16_of_deg`), `spray_has_ammo`, `spray_heat_q`, `spray_gas_q`
+  (`quantize_trace_scalar`), `spray_gas_id` (per map; a conservative slice
+  refused at the read), `spray_src_heat`, `spray_src_gas`, `edit_clamp_flags`,
+  `edit_clamp_lo`, `edit_clamp_hi`. `burst_ticks` is NOT a row: 4b never reads
+  it (the burst's start, slot 4, is P7a.2's).
+- THE RECORD LIST gained `upload` (moved up from the object tables, which
+  inherit it) and `counts()` (counts and dropped without the records), and the
+  unit library `list_env_sink` (a serial producer's sink; P7b's two private
+  copies may fold onto it).
+- THE HARNESS: `LISTS` rows `spray_cells` (the effect list's cells),
+  `edits` (the queue's edits since the slot's mark, through `door_rows`, an
+  edit of another source refused as an interleave; landed by `replay`),
+  `claims` (every `TickCredit.claim` of the slot through a tap; landed by
+  `replay_claims`); the scalar input `edit_seq` (the window's base: the
+  device's keys are ABSOLUTE in the shadow and the chained run).
+- CHOICES where this section was silent: 4b is one serial block per env with a
+  block-wide box (not a per-row producer: its cells are variable-length and the
+  record must follow them); the device door writes E_ENV 0 like the pack; the
+  claims list keeps every claim (the reader's first-match is the reference's
+  first-claim-wins, so the writer needs no lookup); the CELL / CLAIM / EDIT
+  capacities are storage sized from the Dragon-9 heavy at 60 tiles.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `_enqueue_spray_cells`
+  reads no map state, so an earlier CHEW of the walk changes no edit or claim
+  (gated: the scene's carbine destroys a glass tile a later spray's cells
+  hold); `process_sprays` reads the process-wide `combat.weapon_tables()`
+  while the rows read `sim.weapons_tables` (one object per match; two sims of
+  different tile sizes in one process would see another sim's range -- an
+  accepted gap, the batch gates keep one tile size); every shipped spray cone
+  yields at least a wall face (zero cells unreachable on the shipped rows);
+  ship_demo's bots never spray (0 deposits in 500 ticks).
+- THE GATES (`tests/cuda_unit_sprays_check.py`, wrapper
+  `tests/test_cuda_unit_sprays.py`; CPU `tests/test_spray_device_records.py`):
+  TABLES; CONE (6000 synthetic cones over four maps, set, order and divisors);
+  SCENE (every shipped spray, a census of 20 branches each required, three
+  named unreachable; 4b + 4c shadowed: rows, records, cells, ring, planes,
+  books, door rows, claims); BATCH N = 2 / 8; PADDING; OVERFLOW (cells, effect
+  list, claims, door); REFUSE (WEGO burst, interleave, a span outside the
+  buffer, a walk without its lists); SEQ (a window base of 1234: the keys are
+  absolute); CHAINED 4b + 4c, and 4 + 4a + 4b + 4c (P7a.2's slot 4 arming the
+  bursts; merged in at 97098c7a); SHIP 500 ticks. Every
+  gate broken once (the patch's report).
+**As built (P6b.1, 2026-11-16).** The cut table's P6b.1 row: the door table, seal /
+unseal / can_seal and the gas-N primitives in the topology seam, the door sweep, the
+use write. No decision moved. One line each:
+- THE DOOR TABLE is `unit_schema.DOOR_TABLE` (W 7, capacity 32): `ordinal`, `alive`,
+  `state`, `want_open`, `tile_start`, `tile_count`, `live` (always 1: a destroyed door
+  stays a row, dead by `alive`; never compacted), row k the k-th door of
+  `Simulation._doors` (ordinal order). Its span and per-tile hp are ONE side table,
+  `DOOR_TILE_TABLE` (W 4, capacity 256: `ty`, `tx`, `hp`, `live`), the doors' spans
+  concatenated in door order, each row-major -- one table, not two, because `hp[i]`
+  belongs to `span[i]` (the S4 pin). Record functions `unit_kernels.doors_of` /
+  `door_tiles_of`; `door_objects` unpacks to `unit_schema.DoorRow`; `doors_to_host`
+  lands on the sim's OWN runtimes (refusing another count, ordinal or span:
+  `DoorTableMismatch`); `door_entity_rows` reads a door's ENTITY_SECT_V1 rows (alive,
+  state, want_open, hp_i) from the table, held equal to the serializer (P6b.4's export).
+- THE OBJECT TABLES gained SIDE SPANS in the schema's terms: `unit_schema.SideSpan(name,
+  side, start, count, items, max_count)` on `ObjectTable.spans`; `object_tables.records`
+  fills `start` / `count` from the list position (`table_record(..., given=)`),
+  `side_records` is the side table's record function, `pack_sides` packs both,
+  `unpack(..., sides=)` hands `build` each object's side objects. A member past its
+  bound is refused at the encode, a list past a capacity at the pack, by name.
+- SEAL / UNSEAL / CAN_SEAL and THE GAS-N PRIMITIVES are `cpp/src/cuda_topology.cuh`'s
+  `topo::seal_tiles`, `unseal_tiles`, `can_seal`, `inject_gas_n`, `extract_gas_n_vec`
+  (its bulk sum is `extract_gas_n`), `transfer_gas_n`, `aperture_blocked`, over the
+  shared seam rows (`energy_move` is `gas_energy_move` with the call's channel and its
+  two `diag_*` twins; the counted trace saturation is the kit's `trace_add_sat`). A
+  span is `(y, x)` pairs handed row-major (an unsorted one is a fault). THE REFUSALS are
+  `applier.SEAM_REFUSALS` (generated `APPLIER_SEAM_*`): out_of_bounds, already_solid,
+  unknown_material, material_not_solid, standing_water, sealed_pocket, overflow,
+  duplicate_tile, not_solid, span_too_long (device only: past 256), fault; each writes
+  nothing. Proved range (pre-checked on every cell a call touches): gas planes >= 0,
+  |gas_energy| < 2^61, a donor's |T_abs| < 2^28, T_AMB < 2^28, a solid book in int64.
+  The ripple pair is written as 0u, the seal's `permeability > 0.0` is the
+  `seal_mat_ok` row: no float arithmetic.
+- THE PLANES grew by eight (`wave_p`, `wind_x`, `wind_y`, `flow_vx`, `flow_vy`, the
+  float `ripple` / `ripple_v`, the read-only `water_depth`); THE BOOKS by 20 (`ge_seal`,
+  `ge_unseal`, `ge_pump_inject` / `_extract` / `_transfer`, their six `diag_*` twins,
+  `solid_seal`, `solid_unseal`, `trace_clip_0..6` -- `applier.host_book` reads a LIST
+  host by index, `trace_clip_books:g`); five table rows (T 1274): `door_mat_closed`,
+  `seal_mat_ok` per material, `gas_trace` per slice, `inject_o2_frac_q` (the reference's
+  0.21 literal named `GameMap.INJECT_O2_FRACTION`, a pure refactor), `door_states`.
+- THE SWEEP is the applier's third stage, DOORS (`applier.STAGES`; `cpp/src/cuda_unit_
+  doors.cuh`'s `doors::sweep`, called by `k_applier` on the door table and the tile
+  table instead of the effect list): per door in row order, a dead door skipped; a
+  CLOSED door with a tile no longer `MAT_DOOR_CLOSED` dies whole (alive 0, DESTROYED,
+  hp 0) and its remaining closed tiles go through `topo::destroy_wall` in span order;
+  CLOSED and `want_open`: the hp copied from `wall_hp`, `topo::unseal_tiles`, OPEN; OPEN
+  and not `want_open`: no LIVING valid row's footprint square on the span (corpses
+  never block) and `topo::can_seal`, then `topo::seal_tiles(span, MAT_DOOR_CLOSED)` and
+  the hp restamped, CLOSED. Python face `unit_kernels.sweep_doors(store, applier,
+  fields, doors, tiles) -> (transitions, books)`; `applier_run` takes the two tables
+  for that stage. Its profiler label is its own, "9e(d) doors" (moved out of "9e
+  entities").
+- THE USE WRITE is a sibling of P7b's appends in the same form, `unit_kernels.door_uses`
+  (`cpp/src/cuda_unit_doors.cu`, after `verbs`): one thread per env walks the request
+  list and flips `want_open` on the row each USE names (two uses in a tick flip twice).
+- CHOICES where the design was silent: the span and hp in one side table; the use
+  write a sibling kernel, not a fourth argument of `table_appends` (its tables are not
+  the door's); a span's bound is the tile table's capacity (the seal's close-T
+  snapshot lives in a local array of that size); the unseal's donors' live T_abs is
+  checked against the range before the first write only (a donor shared by two span
+  tiles needs a bent span: no door has one); `_aperture_blocked` out of the grid is
+  refused (numpy would wrap or raise); `inject_gas_n_vec` (the vents' deposit with its
+  rails) not built: it arrives with its first device caller (P6b.2).
+- ONE CLASS-T TWIN, `doors`, slots "1b intents" and "9e(d) doors": the corpus has no
+  door entity, so the sweep alone would trace no file (the P7b precedent); its traced
+  files are 1b's, `door_system.py` stays `[not_twinned]` and the doors gate is the guard.
+- THE HARNESS: lists `doors` / `door_tiles` (the tile table lands first into a stash,
+  the door table then lands both; a chain naming only the doors lands over the host's
+  own tiles); the write-set gate covers a LIST attribute by its declared element books.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `transfer_gas_n` drains its source
+  and THEN raises on a destination past int32 (not atomic; the device refuses before
+  any write); `seal_tiles` would raise mid-mutation on a negative trace count at a
+  receiver (the device's pre-pass refuses it as a fault); a door's unseal never moves
+  the `mint` channel (a solid tile holds no gas, so born-at-ambient books 0); a seal
+  of a gas-free tile with no receiver is allowed (the pocket rule refuses only gas);
+  playground's bots match ends near tick 33 (not investigated); ship_demo's doors are
+  openings (no entity), so the sweep never runs in the corpus.
+- THE GATES (`tests/cuda_unit_doors_check.py`, wrapper `tests/test_cuda_unit_doors.py`;
+  CPU `tests/test_door_table.py`): TABLES; PROBE (1 613 ops on five shipped levels
+  and both door scenes, every refusal taken, planes / books / closure equal on both
+  sides); SCENE (the door scene, space and planetside, 1b + 9e(d) shadowed, a
+  23-branch census, two named unreachable, the identity and entity rows every
+  tick); BATCH N = 2 / 8 (door-scene variants: layout, door count, boundary, seed,
+  schedule); LEVELS (playground's match, airlock_demo, test_level, door_test);
+  PADDING; OVERFLOW; CHAINED (1b + use write and 9e(d), both variants, the host law run
+  0 times in the twin); SHIP 500 ticks (the sweep gated off). Every gate broken once
+  (the patch's report: 29 single-site breaks, all red).
+
+**As built (P7c.1, 2026-11-16).** The cut table's P7c.1 row, the disc path of
+`execute_payload`; decisions 1, 2, 4, 7(b) and 8 landed as written. One line
+each:
+- THE PAYLOAD FUNCTION is `cpp/src/cuda_unit_payload.cuh`
+  (`unit_payload::apply_payload(rec, TopoEnv, tab, e, PayloadReach, books)`),
+  the PAYLOAD branch of the one `k_applier`, thread 0, in the reference's
+  sub-step order: `apply_explosion` (the atmosphere DISC, the smoke-clear
+  DISC, the disc d2 <= r^2 walked serially in row-major order -- a blast-wall
+  material's hp less `falloff_round(wall_q, d2, r^2)`, `topo::destroy_wall`
+  at once at <= 0, then the 3x3 wave stencil's TILE edits on the planes as
+  they stand -- and the blast log's record), the noise, `apply_blast_damage`
+  (the IMMEDIATE `apply_packet` per valid living row in row order),
+  `apply_flash_blind` (`unit_sight::has_los`'s sight form, `isqrt_u64_q`,
+  `atan2_q16`, never shortened, `apply_status`), `emit_gas`, `ignite_ring`,
+  `deposit_heat` (claims, then DISC edits). ExplosionEvent has no device form.
+  Results APPLIED / FAULT / REFUSED into the `applied` / `faults` / `refused`
+  books.
+- WHICH ROWS: a row is applied when `applier.payload_refusal` is 0 (no
+  strength, no bulk gas, no explosive, no expansion) -- shipped:
+  `studio_smoke`, `smoke_screen`, `tear_burst`, `poison_cloud`,
+  `incendiary_splash`, `studio_ignite`, `flashbang`, `hazmat_release`,
+  `plasma_splash_small`, `plasma_splash_large` (10). Refused by name, nothing
+  written (`applier.PAYLOAD_REFUSALS`): strength (`frag_standard`,
+  `breach_focus`, `demolition_c4`, `magazine_cookoff`, `engine_death`), bulk
+  gas (`o2_store_rupture`, `halon_dump`), explosive -- the air read -- (the 19
+  studio / comparison rows `frag_heat`, `frag_hot_mass`, `quad_*`, `div_*`,
+  `quad_src_*`, `studio_small` / `_medium` / `_large` / `_hull`). The three
+  call sites can deliver only the first ten and the strength rows.
+- THE ROWS (33, T 2206): per payload row `payload_refuse`, `_radius`
+  (`int(radius)`, refused unless an integer), `_radius_q`, `_atm_q` (the bulk
+  currency), `_press_q`, `_wall_q`, `_inner_q` (2/5 of the radius on the Q16
+  grid), `_blast_live`, `_unit_damage`, `_loudness_tiles`, `_blind_radius_q`,
+  `_blind_ticks`, `_blind_away_q`, `_gas_id` (a conservative slice refused at
+  the read), `_gas_q`, `_gas_radius_q`, `_ignite_live`, `_ignite_radius_q`,
+  `_ignite_q`, `_heat_live`, `_heat_q`, `_heat_radius_q`; scalars the four
+  source ids, `payload_smoke_slice`, `payload_smoke_clear_q`,
+  `payload_ignite_heat_q`, `payload_ignite_clamp` (flags, lo, hi),
+  `blast_damage_threshold` (the ceiling of the CFG value), `flash_front_q16`;
+  per material `blast_wall_mat`. No product needed reporting: on the disc path
+  every float the law converts per call is a row; the soot and `heat_mj`
+  products belong to the explosive / strength rows (P7c.2).
+- THE DEVICE EDIT DOOR, step (b): `edit_door::door_disc_edit` (a DISC, FLAT
+  or LINEAR, the clamp given) and `disc_claims` (`_claim_disc`) in
+  `cpp/src/cuda_edit_door.cuh`; the EDIT row grew four REGION ARGUMENTS
+  (`edit_door.ARG_COL`: a TILE's tile, a DISC's centre, Q16 radius and
+  falloff), so the chained landing (`edit_door.edit_of` / `replay`) rebuilds a
+  clipped disc it could not from its TILE rows; `door_rows` writes them.
+- THE BLAST LOG is `unit_schema.BLAST_LOG_TABLE` (W 5, capacity 64) on the
+  object tables, `unit_kernels.blast_log_of`; THE NOISE LIST gained its second
+  producer. Both reach the walk as `WalkLists(noise=, blast_log=)` / C++
+  `ApplierLists`; a PAYLOAD without its lists or the ring FAULTS.
+- WHERE IT IS WALKED: the RESOLVE stage (slot 4c and slot 2''s landing: the
+  payload round's stop at its place in the record order) and a new stage
+  DETONATE (`applier.STAGE_DETONATE`, no landing): `unit_kernels.detonate`
+  right after `grenades` (slot 2) and `charges_tick` (slot 9e(d')). Grenade
+  flight reads no map, so all flights then every detonation in row order is
+  the reference's interleaving.
+- THE CORPSE SKIP bites for the first time: in a resolve a blast kills a unit
+  whose exposure raise is pending, and the landing skips the raise (gated: the
+  scene's set V, K's carbine and P's plasma on one victim; its break is red).
+- CHOICES where this section was silent: the explosive rows are refused (the
+  brief's "the air read" is P7c.2's), which leaves `add_explosion_smoke`
+  unbuilt: every row that reaches it carries an explosive (the row door
+  requires one for `emit_blast_smoke`) and its scale IS the air read; the
+  fan-out stays P7c.2's (the disc path is serial on thread 0); a fault after
+  the first write stops the effect as CHEW's does (the record's operands and
+  every disc wall's new hp are checked first).
+- THE HARNESS: `LISTS` rows `blast_log` and `detonations` (the payload calls
+  consumed, never replayed, so the twin's host `execute_payload` runs 0 times;
+  a refused row replayed alone only when `REPLAY_REFUSED`); the edits list
+  became one record per EDIT row then one per TILE row (a DISC has many);
+  the door's owned sources include the payload's; FIXED: the claims tap
+  consumed a generator of tiles (`_claim_disc`) so the HOOKED host claimed
+  nothing -- a hooked match differed from an unhooked one (the spray's lists
+  hid it).
+- WHAT THE REFERENCE SHOWED (nothing changed in it): a payload round carries
+  the PROCESS table's PayloadDef (`combat.weapon_tables()`) while
+  `applier.payload_index` names the sim's own row by identity, so sims built
+  one after another fail the record function unless they share one table (the
+  gates share it; one tile size); no shipped row the call sites deliver has
+  `unit_damage > 0` on the disc path (the frags are strength rows), so blast
+  damage is reached only through the gates' raised rows; no planted-charge
+  ammo carries a disc-path row (both are strength rows); `blast_damage_threshold`
+  is read from CFG per call (now a row read once per table build); ship_demo's
+  bots throw one frag (refused) in 500 ticks, so the shadow stops by name at
+  that tick (456) and the chained ship replays it on the host.
+- THE GATES (`tests/cuda_unit_payloads_check.py`, wrapper
+  `tests/test_cuda_unit_payloads.py`; CPU `tests/test_payload_device_rows.py`):
+  TABLES (1 m and 1/3 m); PROBE (120 synthetic lists on random maps, DETONATE
+  and RESOLVE, shipped then raised rows, a 32-branch census); DISC (every DISC
+  form at 8 radii and 4 centres); SCENE (five row sets: all 40 (call site,
+  shipped row) pairs, slots 2, 2''s landing, 4c and 9e(d') shadowed: rows,
+  ring, planes, books, door rows, claims, noise, blast log, payload records;
+  a 10-branch census); BATCH N = 2 / 8; PADDING; OVERFLOW (edits, tiles,
+  claims, noise, blast log, ring); REFUSE (26 rows by name, nothing written; a
+  walk without its door faults); CHAINED (2; 2' + landing; 4 + 4a + 4b + 4c;
+  9e(d'): the host `execute_payload` run 0 times in the chained slot); SHIP 500
+  ticks. Every gate broken once (the patch's report).
+**As built (P6b.2, 2026-11-16).** The cut table's P6b.2 row: the duct and vent tables,
+`inject_gas_n_vec` in the topology seam, the ledgers in int64 with a named refusal, the
+sweep. No decision moved. One line each:
+- THE DUCT TABLE is `unit_schema.DUCT_TABLE` (W 20, capacity 16): `ordinal`, `filter` (the
+  `[filters.*]` row's index in `unit_schema.filter_names()`, config's rows sorted by name),
+  `o2_raw`, `n2_raw`, `trace_raw[5]`, `e_plenum`, `sink[5]`, `e_wipe`, `rail_lo_hits`,
+  `rail_hi_hits`, `alive`, `live` (1). THE VENT TABLE is `VENT_TABLE` (W 11, capacity 64):
+  `ordinal`, `duct_ordinal` (the duct's ENTITY ORDINAL, -1 unwired or dangling), `role` (0
+  supply / 1 return: the law's `role == "return"`), `aperture_y` / `_x`, the load constants
+  `rate_raw_per_s` and `tps`, `accum`, `guard_skips`, `alive`, `live`. Record functions
+  `unit_kernels.ducts_of` / `vents_of`; `duct_objects` / `vent_objects` unpack to
+  `unit_schema.DuctRow` / `VentRow`; `ducts_to_host` / `vents_to_host` land on the sim's OWN
+  runtimes (another count, ordinal, filter, duct, role or constant: `VentTableMismatch`);
+  `duct_entity_rows` / `vent_entity_rows` read ENTITY_SECT_V1's rows from a table row, held
+  equal to the serializer (P6b.4's export).
+- FIVE TABLE ROWS (T 1432): `vent_filter_eff_q` (per filter row x trace slot, through the
+  reference's own `_duct_filter_efficiency_q`), `vent_trace_ids` (`_TRACE_IDS`),
+  `vent_t_min_q` / `vent_t_max_q` (`_t_rails_q()`, the sim's cached pair when it has one),
+  `vent_n_eps` (`N_EPS`). THREE BOOKS: `ge_pump_inject_vec`, `ge_pump_rail` (the deposit's two
+  seam channels) and `ledger_refused`.
+- `topo::inject_gas_n_vec(E, tab, y, x, add[], t_dep, t_min, t_max, &t_new, &rail, B,
+  InjectVecBooks)` is `GameMap.inject_gas_n_vec` integer for integer (the core's overflow
+  refusal before any write, the conversion seam on an accountable tile with Python's floor,
+  the rails and the rail's write-back, the T-mix on a non-accountable one, the bulk-free and
+  zero-vector returns); the caller's book pair (the vents': `vent_inject_books()`). Its
+  proved range: every slice in [0, 2^54), the cell's gas >= 0, |E| < 2^61, |t_dep|, |t_min|,
+  |t_max| < 2^30 and on a non-accountable tile |T_old| < 2^30 (a fault past it, nothing
+  written).
+- THE KIT gained `muldiv_floor_q(a, b, c)` (`(a * b) // c` for a, b >= 0, c > 0: a 128-bit
+  product, a 128 / 64 restoring floor division `udiv128_floor_q`; -1 past a 2^63 quotient),
+  bound with `floordiv_q` as `bp.fp_muldiv_floor` / `bp.fp_floordiv`.
+- THE PROVED RANGE (the ledgers are unbounded ints in Python, packed as int64 only by the
+  serializer). A tile's bulk is < 2^32 (two int32 planes, >= 0), a trace slice < 2^31, and
+  the extraction's own range keeps a tile's |T_abs| < 2^28, so its relative T < 2^29. ONE
+  return of quantum q therefore moves the bulk pair by at most min(q, 2^32), a trace slot and
+  its sink by < 2^31 each, and e_plenum by at most min(q, 2^32) * 2^29 in magnitude; a supply
+  only drains (the floor split and floor subadditivity never hand out more than the plenum
+  holds), adds 1 to a rail count, and leaves |e| <= max(|e|, N_bulk) (with q_dep = floor(e /
+  N): e - D q_dep lies in [0, e] for e >= 0 and in [e, D] for e < 0, D <= N the bulk
+  handed out); the wipe moves e into e_wipe once. With B_N the sum over a duct's returns of
+  min(q_r, 2^32), B_E = B_N * 2^29, R / S its return / supply counts, a duct whose ledgers
+  hold AT THE HEAD OF ITS SWEEP 0 <= o2_raw, n2_raw <= 2^61 - B_N; 0 <= trace_raw[i] <=
+  2^54 - R 2^31; 0 <= sink[i] <= 2^62 - R 2^31; |e_plenum| <= 2^61 - B_E; |e_wipe| <=
+  2^62; 0 <= rail hits <= 2^62 - S; 0 <= each vent's guard_skips <= 2^62 - 1 keeps every
+  value of the tick in int64 (N_bulk <= 2^62, the wipe <= 2^62 + 2^61, the debit sum <= |e| +
+  N_bulk < 2^63, the three floor products exact through `muldiv_floor_q` with quotients <=
+  their first operand, a deposit's trace <= 2^54 inside `inject_gas_n_vec`'s range). The
+  head refuses a duct outside it BY NAME (`ledger_refused`; `unit_kernels.sweep_vents`
+  raises `applier.LedgerRangeRefused` naming the env, the duct's ordinal, the ledger, its
+  value and its bounds, through `vent_ledger_range`, the host twin) before any write of that
+  duct: its vents, its ledgers, the map. The vent rows' constants are a FAULT outside tps in
+  [1, 2^16], accum in [0, tps), the rate in [0, 2^39] (a quantum < 2^40: the extraction's
+  range), a role 0 / 1, the aperture in the grid. Separately the deposit FAULTS on a t_dep
+  past 2^30 (about 16 400 K above ambient): a plenum's mean temperature passes it only by a
+  fixture (the extraction refuses tiles past 2^28 absolute, and the floor's upward drift is at
+  most N / 64 counts a draining tick).
+- THE SWEEP is the applier's stage VENTS (2; at the merge with P7c.1 DOORS became 3 and
+  DETONATE 4: the 9e(d) numbers follow the conductor's pumps -> vents -> doors), `cpp/src/cuda_unit_vents.cuh`'s `vents::sweep` called
+  by `k_applier` on the two tables (`ApplierLists.duct_table` / `vent_table`, `WalkTables`):
+  per duct in row order the head check, the returns (dead skipped; `topo::aperture_blocked` a
+  counted guard skip with the accumulator frozen; the accrual; `topo::extract_gas_n_vec` with
+  T read before it; the bulk pair, the filter's truncating scrub per trace slot, the bulk-only
+  energy credit), the supplies' weights, the wipe below N_EPS, the distribution
+  (`floordiv_q` for t_dep, `muldiv_floor_q` for the share, the split over the REMAINING pair
+  with its O2-first cascade and the trace against the ORIGINAL holdings), the debit, each
+  deposit through `topo::inject_gas_n_vec`, the rail counts. Python face
+  `unit_kernels.sweep_vents(store, applier, fields, ducts, vents) -> (coverage, books)`
+  (coverage: extractions that took gas plus deposits that landed). Profiler label "9e(d)
+  vents" (moved out of "9e entities").
+- CHOICES where this section was silent: two independent tables, not a side table (the vents
+  are the sim's own ordinal list, unwired ones included; the sweep scans the vent table per
+  duct, cap 64); a vent's duct by ordinal (an entity table's key), not by row; the filter
+  efficiencies a device tables row with an index in the duct row (not five duct columns);
+  the range checked at the duct's HEAD from worst-case per-tick steps (so "nothing written"
+  holds for the whole duct), not per update; a seam fault inside a duct abandons it (the run
+  refused) as the doors do.
+- ONE CLASS-T TWIN, `vents`, slot "9e(d) vents": ship_demo's duct (1 duct, 2 vents) runs in
+  the corpus, so the twin traces `vent_system.py` (it left `[not_twinned]`).
+- WHAT THE REFERENCE SHOWED (nothing changed in it): with N_EPS = 64 "every share floored to
+  0" needs more than 64 ready supplies on one duct (unreachable on the device's capacity);
+  an airless cell's trace is wiped by the tick's transport before 9e (a vent depositing smoke
+  into an empty pocket lands it on a clean cell); `GameMap.smoke` is a view of `gas[SMOKE]`,
+  which the doors gate's write-set list had not met (the vent scene seals a smoky tile: its
+  HOST_ONLY row added); the guard reads the water depth, so a fixture flood blocks a vent;
+  ship_demo, playground and fire_smoke_studio move gas through their ducts on every tick
+  (airlock_demo has no duct).
+- THE GATES (`tests/cuda_unit_vents_check.py`, wrapper `tests/test_cuda_unit_vents.py`; CPU
+  `tests/test_vent_table.py`, `tests/test_unit_kit_twins.py`): TABLES; KIT (3 072 floor
+  divisions, 3 006 floor products); PROBE (522 `inject_gas_n_vec` ops on six maps, both
+  rails, both floors of both branches, the clip, every refusal); SCENE (the vent scene: six
+  ducts, sixteen wired vents and two unwired, a door over a vent, two ducts' vents on one
+  tile; 1b + 9e(d) vents + 9e(d) doors shadowed 130 ticks, both boundaries; a 31-branch
+  census, three named unreachable; the ledgers from 0 to 10^13); LEVELS (ship_demo's bots,
+  playground, fire_smoke_studio, airlock_demo); REFUSAL (12 ledger cases one past their
+  range refused by name, nothing of the duct written; at the bound equal to the host); BATCH
+  N = 2 / 8; PADDING; OVERFLOW; CHAINED (vents + doors on the vent scene, both boundaries,
+  and on the door scene; ship_demo's bots 500 ticks; the host laws run 0 times in the twin).
+  Every gate broken once (the patch's report).
 
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
@@ -1580,6 +2641,10 @@ Sonnet; judgement or no oracle → Opus; effort default unless stated.
 | **G2** | equal game, per slot, on a node | the gate factor | | Erik reads it |
 | P9 | the graph + WHILE node; the sweep's single launch; EOS fusion by Nsight's order | bit-identity; zero syncs on any tick; **G3** | Opus | no |
 | close | the first `train/*` tag on main (Erik); CLAUDE.md rows + amendments (§13 b, c); skills amended; #29 / #77 / #24 / #25 / #71 closed; Roadmap #46 | | | |
+
+**Re-planned 2026-11-15:** the rows P6b and P7a to P7d above are replaced by
+§4.4c's cut (thirteen patches, P7.0 to P7e), written from
+`docs/residency_p7_inventory_2026-11-15.md` after P6 merged.
 
 ### 9.1 The farm measurement protocol (P1a)
 

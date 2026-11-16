@@ -981,7 +981,8 @@ def main():
             # step's and re-consumed the same events every paused frame).
             renderer._advance_effects(dt)
             if sound is not None:
-                sound.update()
+                sound.update(listener_tile(sim, control_source, renderer.camera),
+                             sim.is_paused())
 
             selected = sim.get_unit(control_source.selected_unit_id) \
                 if control_source.selected_unit_id is not None else None
@@ -1043,6 +1044,8 @@ def main():
         if sound is not None:
             # the sound E2E reads this line (tests/test_sound_e2e.py)
             print(f"  sound: {sound.started} sounds started")
+            print(f"  sound loops: {sound.loops_started} started, "
+                  f"{sound.loops_peak} at most at once")
             sound.close()
         renderer.shutdown()
 

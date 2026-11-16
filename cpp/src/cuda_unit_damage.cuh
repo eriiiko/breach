@@ -184,17 +184,50 @@ __device__ inline int64_t scale_q(int64_t dmg, const int64_t* row, int64_t dtype
     return (int64_t)q;
 }
 
+// #29 P7a.1 -- THE EXPOSURE LANDING (exposure.ExposureLanding; design 4.4c
+// decision 2): an attack slot's resolve holds every hit's exposure RAISE and
+// every death's ZEROING back, so each packet of the slot reads its target's
+// slot-start exposure, and lands them together after the last effect:
+// raises first (each skipped when its unit is dead at the landing; each
+// min(x_max, x + add) in record order, as _raise does), then the dead
+// zeroed. Per env: `buf` (cap, LANDING_W) int64 -- a raise in columns
+// (row, dtype, add) of slot n_raise, a death's row in column 3 of slot
+// n_dead; a HIT adds at most one of each, so cap = the effect list's.
+constexpr int LANDING_W = 4;
+struct ExposureLanding {
+    int64_t* buf = nullptr;
+    int64_t cap = 0;
+    int64_t n_raise = 0, n_dead = 0;
+};
+
+// exposure.raise_amount: expose x (ONE - resist[T]) >> 16, 0 while k_expose
+// is 0 or for HEAL (a level that scales nothing is not kept).
+__device__ __forceinline__ int64_t raise_amount(const int64_t* tab, const int64_t* xres,
+                                                const Packet& p) {
+    const int64_t k = tab[UNIT_TAB_EXPOSE_K_Q];
+    if (p.expose <= 0 || p.dtype == UNIT_DTYPE_HEAL || k == 0) return 0;
+    return (p.expose * (ONE - xres[p.dtype])) >> 16;
+}
+
 // damage.apply_packet on `row`: returns the APPLIED Q16 damage; *killed on
 // the alive -> dead transition. Writes (all or nothing): the hp; the hit
 // event; on the kill life_state, the death clears (exposure.on_death,
 // unit_impulse.clear, horde.clear, unit_orders.clear, poison.clear; the
 // conversion flag when the packet marks it) and the kill event; on a living
-// target the exposure raise (exposure.on_hit at once: this patch's slots own
-// no attack slot, whose landing would hold it back).
+// target the exposure raise (exposure.on_hit). `landing` null: the raise
+// and the death's zeroing at once (every caller but a resolve stage's HIT);
+// non-null: both held in the landing for the walk's end (`r` the row's
+// index in its env), which the CALLER chooses per (stage, kind) -- a packet
+// never picks its mode.
 __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const Packet& p,
                                        EventSink& sink, bool& changed, bool* killed,
-                                       bool* bad) {
+                                       bool* bad, ExposureLanding* landing, int64_t r) {
     *killed = false;
+    if (landing != nullptr &&
+        (landing->n_raise >= landing->cap || landing->n_dead >= landing->cap)) {
+        *bad = true;          // never with cap = the list's (one of each per HIT)
+        return 0;
+    }
     // -- the door: every operand checked before anything is written ----------
     if (p.dtype < 0 || p.dtype >= N_DT || p.cause < 0 || p.cause >= UNIT_N_CAUSES ||
         p.amount_q > AMOUNT_MAX || p.amount_q < -AMOUNT_MAX || p.expose < 0 ||
@@ -231,8 +264,13 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
     emit(sink, UNIT_EVKIND_HIT, uid, dmg, p.cause, attacker, p.dir_x_q, p.dir_y_q);
     if (was_alive && new_hp <= 0) {
         put(row, UNIT_COL_LIFE_STATE, LIFE_DEAD, changed);
-        for (int t = 0; t < UNIT_COL_EXPOSURE_W; ++t)              // exposure.clear
-            put(row, UNIT_COL_EXPOSURE + t, 0, changed);
+        if (landing != nullptr) {                                  // exposure.on_death
+            landing->buf[landing->n_dead * LANDING_W + 3] = r;     //  (the landing's)
+            landing->n_dead += 1;
+        } else {
+            for (int t = 0; t < UNIT_COL_EXPOSURE_W; ++t)          // exposure.clear
+                put(row, UNIT_COL_EXPOSURE + t, 0, changed);
+        }
         const int imp[] = {UNIT_COL_IMP_X, UNIT_COL_IMP_Y, UNIT_COL_IMP_L, UNIT_COL_STAND_X,
                            UNIT_COL_STAND_Y, UNIT_COL_SWX, UNIT_COL_SWY, UNIT_COL_PVX,
                            UNIT_COL_PVY, UNIT_COL_EFFORT, UNIT_COL_REACT_TICKS};
@@ -253,18 +291,55 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         emit(sink, UNIT_EVKIND_KILLED, uid, 0, p.cause, attacker, 0, 0);
         *killed = true;
     }
-    if (was_alive && row_alive(row)) {                             // exposure.on_hit
-        const int64_t k = tab[UNIT_TAB_EXPOSE_K_Q];
-        if (p.expose > 0 && p.dtype != UNIT_DTYPE_HEAL && k != 0) {
-            const int64_t add = (p.expose * (ONE - xres[p.dtype])) >> 16;
-            if (add > 0) {
-                const int64_t xm = tab[UNIT_TAB_EXPOSE_X_MAX_Q];
-                const int64_t nx = x + add;
-                put(row, UNIT_COL_EXPOSURE + p.dtype, nx < xm ? nx : xm, changed);
-            }
+    if (was_alive && landing != nullptr) {                         // exposure.on_hit
+        const int64_t add = raise_amount(tab, xres, p);            //  (the landing's:
+        if (add > 0) {                                             //  recorded for a
+            int64_t* q = landing->buf + landing->n_raise * LANDING_W;   // unit this
+            q[0] = r;                                              //  packet killed too,
+            q[1] = p.dtype;                                        //  skipped at land)
+            q[2] = add;
+            landing->n_raise += 1;
+        }
+    } else if (was_alive && row_alive(row)) {                      // exposure.on_hit
+        const int64_t add = raise_amount(tab, xres, p);
+        if (add > 0) {
+            const int64_t xm = tab[UNIT_TAB_EXPOSE_X_MAX_Q];
+            const int64_t nx = x + add;
+            put(row, UNIT_COL_EXPOSURE + p.dtype, nx < xm ? nx : xm, changed);
         }
     }
     return dmg;
+}
+
+// The immediate form (every caller outside a resolve stage).
+__device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const Packet& p,
+                                       EventSink& sink, bool& changed, bool* killed,
+                                       bool* bad) {
+    return apply_packet(row, tab, p, sink, changed, killed, bad, nullptr, -1);
+}
+
+// ExposureLanding.land() over this block's env's rows (`store` (N, U, W),
+// unit_row's rebase): the raises (a unit dead at the landing skipped), then
+// the dead zeroed. `touched` (U,) marks each row a write changed.
+__device__ inline void land_exposure(const ExposureLanding& L, int64_t* store, int n_units,
+                                     const int64_t* tab, uint8_t* touched) {
+    const int64_t xm = tab[UNIT_TAB_EXPOSE_X_MAX_Q];
+    for (int64_t i = 0; i < L.n_raise; ++i) {
+        const int64_t* q = L.buf + i * LANDING_W;
+        int64_t* row = unit_row(store, n_units, (int)q[0]);
+        if (!row_alive(row)) continue;
+        bool changed = false;
+        const int64_t nx = row[UNIT_COL_EXPOSURE + q[1]] + q[2];
+        put(row, UNIT_COL_EXPOSURE + (int)q[1], nx < xm ? nx : xm, changed);
+        if (changed) touched[q[0]] = 1;
+    }
+    for (int64_t i = 0; i < L.n_dead; ++i) {
+        const int64_t r = L.buf[i * LANDING_W + 3];
+        int64_t* row = unit_row(store, n_units, (int)r);
+        bool changed = false;
+        for (int t = 0; t < UNIT_COL_EXPOSURE_W; ++t) put(row, UNIT_COL_EXPOSURE + t, 0, changed);
+        if (changed) touched[r] = 1;
+    }
 }
 
 // ---- the footprint -----------------------------------------------------------------

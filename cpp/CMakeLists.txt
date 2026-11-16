@@ -151,6 +151,42 @@ if(BREACH_CUDA)
         src/cuda_unit_verbs.cu      # slot 1b
         src/cuda_unit_done.cu       # the done kernel (MatchRules)
         src/cuda_unit_verbs_probe.cu # TEST-ONLY: the gates on synthetic rows
+        # #29 P6.4b: the per-env serial applier over the topology seam as device
+        # functions (cuda_topology.cuh), and the tick-end clears; Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_applier.cu         # slot 9 (burn-through), the tick-end clears
+        src/cuda_topology_probe.cu  # TEST-ONLY: on_tile_changed on fixture maps
+        # #29 P7a.1: slot 4a, the melee verb (the effect list's first device
+        # producer; the list and its resolve stage are cuda_applier.cu's);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_melee.cu      # slot 4a
+        # #29 P7.0a: slot 9d (ignition from temperature, a per-cell kernel) and
+        # the kit's TEST-ONLY probe (the device draws, sight, the falloffs);
+        # Class T, pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_ignition.cu   # slot 9d
+        src/cuda_unit_kit_probe.cu  # TEST-ONLY: draws, sight, falloffs on synthetic inputs
+        # #29 P7.0b: the device object tables (the record list's buffers with an
+        # upload, an ordered append and a stable compaction); Class T, pure
+        # integer, on the same target-wide CUDA determinism floor.
+        src/cuda_object_table.cu    # the object tables (the charge table first)
+        # #29 P7b: the grenades and the planted charges on their tables (slot
+        # 1b's appends, slot 2's flight and fuse-out, charges.tick); Class T,
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_objects.cu    # slot 1b appends, slot 2 grenades, 9e(d')
+        # #29 P7a.3: slot 4b (the sprays: the cone over the physical sight, the
+        # cell buffer) and the device edit door's buffers (step (a)); Class T,
+        # pure integer, on the same target-wide CUDA determinism floor.
+        src/cuda_unit_sprays.cu     # slot 4b, the cone's TEST-ONLY probe
+        src/cuda_edit_door.cu       # the device edit door (step (a))
+        # #29 P7a.2: slot 4's shooting and slot 2''s rounds over THE MARCH
+        # (cuda_unit_march.cuh); Class T, pure integer, on the same target-wide
+        # CUDA determinism floor.
+        src/cuda_unit_shooting.cu   # slots 4 (shooting) and 2' (rounds)
+        # #29 P6b.1: the doors -- slot 1b's USE as a door-table write (the 9e(d)
+        # sweep is the applier's DOORS stage, cuda_applier.cu; seal / unseal and
+        # the gas-N primitives are the topology seam's); Class T, pure integer,
+        # on the same target-wide CUDA determinism floor.
+        src/cuda_unit_doors.cu      # slot 1b's door-table write
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like
