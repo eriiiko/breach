@@ -1748,3 +1748,21 @@ the planes are re-staged before each repetition (not timed). Medians of 200 repe
 and the probe's per-call host staging, not the walk (one thread per env walks a few doors). A door change costs a
 quarter of a millisecond more than the idle walk: the seal and unseal are serial in the env's thread, a few tiles
 each. On the device tick (P7e) the books stay on the device and the floor is not per slot.
+
+## P6b.2: the vent circulation on the duct and vent tables (2026-11-16)
+
+`tests/cuda_unit_vents_check.py bench` (Home Desktop, RTX 3070; the P7c.1 agent was
+working on the same machine, so these are upper bounds): median ms over 200 reps of
+`unit_kernels.sweep_vents` -- the applier's VENTS stage launch (one block per env,
+thread 0 walking its ducts), its books' D2H and the Python face; each rep re-stages the
+tables and the planes, not timed.
+
+| op | N=1 | N=8 | N=64 |
+|---|---|---|---|
+| 9e(d) vents, ship_demo (1 duct, 2 vents) | 0.316 | 0.348 | 0.482 |
+| 9e(d) vents, the vent scene (6 ducts, 16 vents) | 0.481 | 0.530 | 0.650 |
+
+The design guessed 0.3 to 1 ms per env per tick for the ledger; per env it landed at
+0.0075 ms (ship_demo) and 0.010 ms (the scene) at N = 64, and the N = 1 cost is the
+launch and the books' download (a stream sync), not the sweep. The serial walk per env
+is not the cost at these duct counts.

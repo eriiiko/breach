@@ -125,6 +125,9 @@ HOST_ONLY = (
     ("_sky_mask_dirty", "the sky exchange's lazy-rebuild flag (no device form)"),
     ("_gas_t_amb_raw_cache", "a lazily filled cache of a config constant (the "
      "device reads the table row topo_t_amb_q)"),
+    # #29 P6b.2: the door scene never sealed a smoky tile; the vent scene does
+    ("smoke", "GameMap.smoke IS a view of gas[SMOKE] (the same memory): compared "
+     "through field:gas"),
 )
 _APPLIERS: dict = {}
 

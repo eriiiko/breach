@@ -1385,13 +1385,18 @@ def sweep_doors(store, dev_applier, fields: dict, doors, tiles) -> tuple:
 
 #: TEST-ONLY seam probe op codes (cpp/src/cuda_topology_probe.cu).
 SEAM_OPS = {"seal": 1, "unseal": 2, "can_seal": 3, "inject": 4, "extract": 5,
-            "transfer": 6, "aperture": 7}
+            "transfer": 6, "aperture": 7,
+            # #29 P6b.2: inject_gas_n_vec and the kit's floor division / product
+            "inject_vec": 8, "floordiv": 9, "muldiv": 10}
+#: An op row's width (the op code, then its arguments; shorter rows are padded).
+SEAM_OP_W = 16
 
 
 def seam_probe(store, fields: dict, per_env_ops, per_env_tiles) -> tuple:
     """TEST-ONLY: per env its ops (rows of 8 int64: the op code of
     :data:`SEAM_OPS` then its arguments) walked serially on the planes in
-    place (``cpp/src/cuda_topology_probe.cu``); a span is ``(start, count)``
+    place (``cpp/src/cuda_topology_probe.cu``; rows up to :data:`SEAM_OP_W`
+    wide, padded with zeros); a span is ``(start, count)``
     rows of the env's tile list (``per_env_tiles``, ``(T, 2)`` each).
     Returns ``(results, books)``: per env a ``(K_e, 9)`` array (refusal code,
     value, the per-slice withdrawal) and the books ``{name: (N,)}``,
@@ -1399,11 +1404,17 @@ def seam_probe(store, fields: dict, per_env_ops, per_env_tiles) -> tuple:
     from simulation import applier
     n = store.shape[0]
     ptrs, n_gases, h, w = _plane_ptrs("seam_probe", n, fields)
-    ops = [np.asarray(o, dtype=np.int64).reshape(-1, 8) for o in per_env_ops]
+    ops = []
+    for o in per_env_ops:
+        a = np.asarray(o, dtype=np.int64)
+        a = a.reshape(-1, a.shape[-1]) if a.size else np.zeros((0, SEAM_OP_W), np.int64)
+        if a.shape[1] > SEAM_OP_W:
+            raise ValueError(f"seam_probe: an op row is at most {SEAM_OP_W} wide")
+        ops.append(np.pad(a, ((0, 0), (0, SEAM_OP_W - a.shape[1]))))
     tl = [np.asarray(t, dtype=np.int64).reshape(-1, 2) for t in per_env_tiles]
     K = max([1] + [o.shape[0] for o in ops])
     T = max([1] + [t.shape[0] for t in tl])
-    O = np.zeros((n, K, 8), dtype=np.int64)
+    O = np.zeros((n, K, SEAM_OP_W), dtype=np.int64)
     TT = np.zeros((n, T, 2), dtype=np.int64)
     cnt = np.zeros(n, dtype=np.int64)
     for e in range(n):
@@ -1417,4 +1428,226 @@ def seam_probe(store, fields: dict, per_env_ops, per_env_tiles) -> tuple:
 
 __all__ += ["DoorTableMismatch", "doors_of", "door_tiles_of", "door_objects",
             "doors_to_host", "door_entity_rows", "door_tables", "door_uses",
-            "sweep_doors", "SEAM_OPS", "seam_probe"]
+            "sweep_doors", "SEAM_OPS", "seam_probe", "SEAM_OP_W"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.2: THE VENTS -- the duct table and the vent table (unit_schema.
+# DUCT_TABLE / VENT_TABLE, the second and third entity tables) and slot
+# 9e(d)'s circulation as the applier's VENTS stage
+# ---------------------------------------------------------------------------
+class VentTableMismatch(RuntimeError):
+    """Duct / vent rows that are not the sim's (another count, ordinal,
+    filter, duct, role, aperture or load constant)."""
+
+
+def ducts_of(sim) -> np.ndarray:
+    """THE record function of the duct table: ``sim._ducts`` (ordinal order)
+    as ``(D, W)`` int64 rows (``object_tables.records``)."""
+    from simulation import object_tables, unit_schema
+    t = unit_schema.DUCT_TABLE
+    return _door_rows(object_tables.records(t, getattr(sim, "_ducts", ()) or ()),
+                      object_tables.table_layout(t).width)
+
+
+def vents_of(sim) -> np.ndarray:
+    """THE record function of the vent table: ``sim._vents`` (ordinal order)
+    as ``(V, W)`` int64 rows; a vent's duct is its duct's entity ordinal."""
+    from simulation import object_tables, unit_schema
+    t = unit_schema.VENT_TABLE
+    return _door_rows(object_tables.records(t, getattr(sim, "_vents", ()) or ()),
+                      object_tables.table_layout(t).width)
+
+
+def duct_objects(recs) -> list:
+    """The duct table's rows as ``unit_schema.DuctRow`` objects (``unpack``)."""
+    from simulation import object_tables, unit_schema
+    d = _door_rows(recs, object_tables.table_layout(unit_schema.DUCT_TABLE).width)
+    return object_tables.unpack(unit_schema.DUCT_TABLE, d, d.shape[0])
+
+
+def vent_objects(recs) -> list:
+    """The vent table's rows as ``unit_schema.VentRow`` objects (``unpack``)."""
+    from simulation import object_tables, unit_schema
+    v = _door_rows(recs, object_tables.table_layout(unit_schema.VENT_TABLE).width)
+    return object_tables.unpack(unit_schema.VENT_TABLE, v, v.shape[0])
+
+
+_DUCT_STATE = ("o2_raw", "n2_raw", "e_plenum", "e_wipe", "rail_lo_hits", "rail_hi_hits")
+_VENT_CONST = ("aperture_y", "aperture_x", "rate_raw_per_s", "tps")
+
+
+def ducts_to_host(sim, recs) -> None:
+    """The device's duct rows LANDED on the sim's own ``DuctRuntime``s in
+    place (the chained form): the ledger and ``alive``; a row whose ordinal or
+    filter is not that duct's, or another duct count, is refused by name
+    (:class:`VentTableMismatch`)."""
+    rows = duct_objects(recs)
+    ducts = list(getattr(sim, "_ducts", ()) or ())
+    if len(rows) != len(ducts):
+        raise VentTableMismatch(f"ducts: {len(rows)} device rows for {len(ducts)} ducts")
+    for k, (d, r) in enumerate(zip(ducts, rows)):
+        if int(d.ordinal) != r.ordinal or d.inst.fields["filter"] != r.filter:
+            raise VentTableMismatch(f"ducts: row {k} (ordinal {r.ordinal}) is not duct "
+                                    f"{d.id!r} (ordinal {d.ordinal})")
+    for d, r in zip(ducts, rows):
+        for a in _DUCT_STATE:
+            setattr(d, a, int(getattr(r, a)))
+        d.trace_raw = [int(x) for x in r.trace_raw]
+        d.sink = [int(x) for x in r.sink]
+        d.alive = bool(r.alive)
+
+
+def vents_to_host(sim, recs) -> None:
+    """The device's vent rows LANDED on the sim's own ``VentRuntime``s in
+    place: ``accum``, ``guard_skips`` and ``alive``; a row whose ordinal,
+    duct, role or load constants are not that vent's is refused by name."""
+    from simulation import unit_schema
+    rows = vent_objects(recs)
+    vents = list(getattr(sim, "_vents", ()) or ())
+    if len(rows) != len(vents):
+        raise VentTableMismatch(f"vents: {len(rows)} device rows for {len(vents)} vents")
+    for k, (v, r) in enumerate(zip(vents, rows)):
+        mine = unit_schema._vent_duct_ordinal(v)
+        role = "return" if v.role == "return" else "supply"
+        if int(v.ordinal) != r.ordinal or mine != r.duct_ordinal or role != r.role or \
+                any(int(getattr(v, a)) != int(getattr(r, a)) for a in _VENT_CONST):
+            raise VentTableMismatch(f"vents: row {k} (ordinal {r.ordinal}) is not vent "
+                                    f"{v.id!r} (ordinal {v.ordinal})")
+    for v, r in zip(vents, rows):
+        v.accum, v.guard_skips, v.alive = int(r.accum), int(r.guard_skips), bool(r.alive)
+
+
+def duct_entity_rows(rec) -> tuple:
+    """A duct row's part of ENTITY_SECT_V1 (``entities/serialize``): the free
+    ``alive`` row, then ``duct.runtime_digest_rows`` -- the bulk pair, the
+    energy, the wipe, the rail hits, ``trace_<i>``, ``sink_<i>`` -- read from
+    the table (P6b.4's export)."""
+    from simulation import object_tables, unit_schema
+    v = object_tables.row_values(unit_schema.DUCT_TABLE, rec)
+    rows = [("alive", int(v["alive"]))]
+    rows += [(a, int(v[a])) for a in _DUCT_STATE]
+    rows += [(f"trace_{i}", int(x)) for i, x in enumerate(v["trace_raw"])]
+    rows += [(f"sink_{i}", int(x)) for i, x in enumerate(v["sink"])]
+    return tuple(rows)
+
+
+def vent_entity_rows(rec) -> tuple:
+    """A vent row's part of ENTITY_SECT_V1: the free ``alive`` row, then
+    ``vent.runtime_digest_rows`` (``accum``), read from the table."""
+    from simulation import object_tables, unit_schema
+    v = object_tables.row_values(unit_schema.VENT_TABLE, rec)
+    return (("alive", int(v["alive"])), ("accum", int(v["accum"])))
+
+
+def vent_tables(n_env: int, bp=None):
+    """The device duct table and vent table for ``n_env`` envs
+    (``object_tables.DeviceTable`` each)."""
+    from simulation import object_tables, unit_schema
+    return (object_tables.DeviceTable(unit_schema.DUCT_TABLE, n_env, bp=bp),
+            object_tables.DeviceTable(unit_schema.VENT_TABLE, n_env, bp=bp))
+
+
+#: The ledgers of a duct row the range check reads (cpp/src/cuda_unit_vents.cuh).
+VENT_LEDGERS = ("o2_raw", "n2_raw", "trace_raw", "sink", "e_plenum", "e_wipe",
+                "rail_lo_hits", "rail_hi_hits")
+#: The proved range's bounds (cpp/src/cuda_unit_vents.cuh's L_*, TILE_*).
+VENT_L_BULK, VENT_L_TRACE, VENT_L_SINK = 1 << 61, 1 << 54, 1 << 62
+VENT_L_E, VENT_L_WIPE, VENT_L_COUNT = 1 << 61, 1 << 62, 1 << 62
+VENT_TILE_BULK, VENT_TILE_TRACE, VENT_TILE_T_SHIFT = 1 << 32, 1 << 31, 29
+
+
+def vent_ledger_range(duct_rec, vent_recs) -> list:
+    """The ledgers of ONE duct row outside the range its sweep was proved for
+    (``cpp/src/cuda_unit_vents.cuh``: the bounds depend on the duct's own
+    returns' quanta and its return / supply counts), as ``(name, value, lo,
+    hi)``; empty when the duct may run. ``vent_recs`` the env's whole vent
+    table. The host twin of the device's head check (it names the refusal)."""
+    from simulation import object_tables, unit_schema
+    d = object_tables.row_values(unit_schema.DUCT_TABLE, duct_rec)
+    b_n, r, s, out = 0, 0, 0, []
+    for vr in vent_recs:
+        v = object_tables.row_values(unit_schema.VENT_TABLE, vr)
+        if v["duct_ordinal"] != d["ordinal"]:
+            continue
+        if not 0 <= v["guard_skips"] <= VENT_L_COUNT - 1:
+            out.append(("guard_skips", v["guard_skips"], 0, VENT_L_COUNT - 1))
+        if v["role"] == 1:
+            q = (v["accum"] + v["rate_raw_per_s"]) // max(1, v["tps"])
+            b_n += min(q, VENT_TILE_BULK)
+            r += 1
+        else:
+            s += 1
+    if b_n > (VENT_L_E >> VENT_TILE_T_SHIFT):
+        out.append(("returns' quanta (B_N)", b_n, 0, VENT_L_E >> VENT_TILE_T_SHIFT))
+        return out
+    b_e = b_n << VENT_TILE_T_SHIFT
+    lim = {"o2_raw": (0, VENT_L_BULK - b_n), "n2_raw": (0, VENT_L_BULK - b_n),
+           "trace_raw": (0, VENT_L_TRACE - r * VENT_TILE_TRACE),
+           "sink": (0, VENT_L_SINK - r * VENT_TILE_TRACE),
+           "e_plenum": (-(VENT_L_E - b_e), VENT_L_E - b_e),
+           "e_wipe": (-VENT_L_WIPE, VENT_L_WIPE),
+           "rail_lo_hits": (0, VENT_L_COUNT - s), "rail_hi_hits": (0, VENT_L_COUNT - s)}
+    for name in VENT_LEDGERS:
+        lo, hi = lim[name]
+        vals = d[name] if isinstance(d[name], tuple) else (d[name],)
+        for x in vals:
+            if not lo <= x <= hi:
+                out.append((name, int(x), lo, hi))
+    return out
+
+
+def sweep_vents(store, dev_applier, fields: dict, ducts, vents) -> tuple:
+    """Slot 9e(d)'s vent circulation (``vent_system.sweep_vents``) as the
+    applier's VENTS stage: every env's duct table walked in row (= ordinal)
+    order, within a duct its returns then its supplies in vent-row order, on
+    the env's planes (``fields`` as :func:`walk_effects`' -- every
+    ``applier.PLANES`` name, written IN PLACE), the duct and vent tables
+    written in place. Returns ``(coverage, books)``: coverage the extractions
+    that took gas plus the deposits that landed per env (the ``applied``
+    book). Refuses by name a duct whose ledgers left the proved range
+    (:class:`simulation.applier.LedgerRangeRefused`, naming the env, the duct
+    and the ledger: nothing of that duct was written) and a fault
+    (:class:`simulation.applier.ApplierFault`)."""
+    from simulation import applier
+    n = store.shape[0]
+    name = "applier[VENTS]"
+    if dev_applier.n_env != n:
+        raise ValueError(f"unit kernel {name}: the applier is for {dev_applier.n_env} "
+                         f"envs, the store {n}")
+    _check_tables(name, store, ducts, vents)
+    ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
+    b, _cov, _rdrop = store.bp.applier_run(
+        dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
+        int(applier.STAGE_VENTS), None, duct_table=ducts.buffer, vent_table=vents.buffer)
+    books = applier.books_dict(b)
+    store.last_books = books
+    if books["ledger_refused"].any():
+        drows, dcount, _ = ducts.download()
+        vrows, vcount, _ = vents.download()
+        named = []
+        for e in np.nonzero(books["ledger_refused"])[0]:
+            for k in range(int(dcount[e])):
+                bad = vent_ledger_range(drows[e, k], vrows[e, :int(vcount[e])])
+                if bad:
+                    named.append(f"env {int(e)} duct row {k} (ordinal "
+                                 f"{int(drows[e, k, 0])}): " + ", ".join(
+                                     f"{nm} = {x} outside [{lo}, {hi}]"
+                                     for nm, x, lo, hi in bad))
+        raise applier.LedgerRangeRefused(
+            f"unit kernel {name}: {int(books['ledger_refused'].sum())} duct(s) refused at "
+            f"the head of their sweep, a ledger outside the proved range (nothing of "
+            f"them written): " + "; ".join(named))
+    if books["faults"].any():
+        envs = [int(e) for e in np.nonzero(books["faults"])[0]]
+        raise applier.ApplierFault(
+            f"unit kernel {name}: {int(books['faults'].sum())} fault(s) in env(s) {envs} "
+            f"(a vent row outside its constants, a filter outside the table, or a seam "
+            f"call the reference would raise on / past its proved range)")
+    return books["applied"].copy(), books
+
+
+__all__ += ["VentTableMismatch", "ducts_of", "vents_of", "duct_objects",
+            "vent_objects", "ducts_to_host", "vents_to_host", "duct_entity_rows",
+            "vent_entity_rows", "vent_tables", "VENT_LEDGERS", "vent_ledger_range",
+            "sweep_vents"]

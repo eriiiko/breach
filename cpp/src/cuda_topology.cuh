@@ -937,5 +937,112 @@ __device__ inline int64_t transfer_gas_n(const TopoEnv& E, const int64_t* tab, i
     return 0;
 }
 
+// ============================================================================
+// #29 P6b.2 -- GameMap.inject_gas_n_vec (the vents' deposit with its rails),
+// integer for integer: `add` (n_gases slices, bulk AND trace) through the
+// shared mutation core (bulk loud past int32 = the overflow refusal, trace the
+// counted saturation), then -- on an ACCOUNTABLE tile -- the conversion seam:
+// `dE = dN_bulk * (t_dep + T_AMB)` added to the cell's energy and booked to the
+// caller's channel, the mirror read with Python's floor (floordiv_q), railed
+// to [t_min, t_max], a rail booked to the caller's rail channel and written
+// back into E; on a NON-accountable tile the pre-#54 mass-weighted T-mix
+// (floor), railed. `*t_new` / `*rail` are the Python's return (rail -1 low,
+// 0 none, +1 high). A bulk-free result (N_old + dN_bulk <= 0) leaves T alone,
+// a zero vector writes nothing.
+//
+// THE PROVED RANGE (pre-checked, a FAULT past it, nothing written): every add
+// slice in [0, 2^54) (a negative one is the Python contract's violation; the
+// bound keeps a stage's clip books inside int64), the cell's gas planes >= 0,
+// |gas_energy| < 2^61, T_AMB < 2^28, |t_dep| < 2^30, |t_min|, |t_max| < 2^30,
+// and on a non-accountable tile |T_old| < 2^30. Then (bulk slices < 2^31 each
+// after the overflow refusal, so N_old, dN_bulk, N_new < 2^32): |dE| < 2^32 *
+// (2^30 + 2^28) < 2^62.4, |E + dE| < 2^63, a rail's N_new * (T + T_AMB) <
+// 2^62.4, and the T-mix's N_old * T_old + dN * t_dep < 2^63.
+// ============================================================================
+
+//: The book channels of one inject_gas_n_vec caller (its `channel` and
+//: `rail_channel`): the vents' are pump_inject_vec / pump_rail; P7c.2's bulk
+//: gas payload brings its own pair.
+struct InjectVecBooks {
+    int ch, rail;
+};
+__device__ __forceinline__ InjectVecBooks vent_inject_books() {
+    return InjectVecBooks{APPLIER_BOOK_GE_PUMP_INJECT_VEC, APPLIER_BOOK_GE_PUMP_RAIL};
+}
+
+constexpr int64_t INJECT_ADD_MAX = (int64_t)1 << 54;
+constexpr int64_t INJECT_T_BOUND = (int64_t)1 << 30;
+
+__device__ inline int64_t inject_gas_n_vec(const TopoEnv& E, const int64_t* tab, int64_t fy,
+                                           int64_t fx, const int64_t* add, int64_t t_dep,
+                                           int64_t t_min, int64_t t_max, int64_t* t_new_out,
+                                           int64_t* rail_out, int64_t* B, InjectVecBooks bk) {
+    *t_new_out = 0;
+    *rail_out = 0;
+    if (fy < 0 || fy >= E.h || fx < 0 || fx >= E.w) return APPLIER_SEAM_OUT_OF_BOUNDS;
+    if (E.n_gases > GAS_MAX) return APPLIER_SEAM_FAULT;
+    const int i = (int)fy * E.w + (int)fx;
+    int64_t dn_total = 0;
+    for (int g = 0; g < E.n_gases; ++g) {
+        if (add[g] < 0 || add[g] >= INJECT_ADD_MAX) return APPLIER_SEAM_FAULT;
+        dn_total += add[g];
+    }
+    if (dn_total <= 0) {                                   // nothing to deposit
+        *t_new_out = (int64_t)E.temperature[i];
+        return 0;
+    }
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    const bool acct = accountable(E, i);
+    const int64_t t_old = (int64_t)E.temperature[i];
+    if (!t_ok(t_amb) || !e_ok(E, i) || !gas_nonneg(E, i) ||
+        t_dep <= -INJECT_T_BOUND || t_dep >= INJECT_T_BOUND ||
+        t_min <= -INJECT_T_BOUND || t_min >= INJECT_T_BOUND ||
+        t_max <= -INJECT_T_BOUND || t_max >= INJECT_T_BOUND ||
+        (!acct && (t_old <= -INJECT_T_BOUND || t_old >= INJECT_T_BOUND)))
+        return APPLIER_SEAM_FAULT;
+    if (!inject_core_fits(E, tab, i, add)) return APPLIER_SEAM_OVERFLOW;
+    const int64_t n_old = E.bulk(i);
+    const int64_t d_bulk = add[E.o2] + add[E.n2];
+    inject_core(E, tab, i, add, B);
+    const int64_t n_new = n_old + d_bulk;
+    if (n_new <= 0) {                                      // nothing bulk to weight by
+        *t_new_out = t_old;
+        return 0;
+    }
+    int64_t t_new;
+    int64_t rail = 0;
+    if (acct) {
+        const int64_t de = d_bulk * (t_dep + t_amb);
+        E.gas_energy[i] += de;
+        B[bk.ch] += de;
+        t_new = fixedpoint::floordiv_q(E.gas_energy[i], n_new) - t_amb;
+        if (t_new < t_min) {
+            t_new = t_min;
+            rail = -1;
+        } else if (t_new > t_max) {
+            t_new = t_max;
+            rail = 1;
+        }
+        if (rail != 0) {
+            const int64_t e_new = n_new * (t_new + t_amb);
+            B[bk.rail] += e_new - E.gas_energy[i];
+            E.gas_energy[i] = e_new;
+        }
+    } else {
+        t_new = fixedpoint::floordiv_q(n_old * t_old + d_bulk * t_dep, n_new);
+        if (t_new < t_min) {
+            t_new = t_min;
+            rail = -1;
+        } else if (t_new > t_max) {
+            t_new = t_max;
+            rail = 1;
+        }
+    }
+    E.temperature[i] = (int32_t)t_new;
+    *t_new_out = t_new;
+    *rail_out = rail;
+    return 0;
+}
+
 }  // namespace topo
 }  // namespace breach_cuda

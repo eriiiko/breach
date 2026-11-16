@@ -25,6 +25,7 @@
 #include "cuda_topology.cuh"       // the topology seam
 #include "cuda_object_table.h"     // #29 P6b.1: the door tables (the DOORS stage)
 #include "cuda_unit_doors.cuh"     // #29 P6b.1: the door sweep
+#include "cuda_unit_vents.cuh"     // #29 P6b.2: the vent circulation sweep
 #include "cuda_unit_damage.cuh"    // apply_packet, the landing, the sinks, the library
 #include "cuda_unit_spray.cuh"     // #29 P7a.3: SPRAY_CELLS (the edit door, the claims)
 #include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path)
@@ -70,6 +71,13 @@ struct WalkTables {
     int64_t* tiles = nullptr;          // (N, tile cap, OBJ_DOOR_TILE_W)
     const int64_t* n_tiles = nullptr;  // (N,)
     int tile_cap = 0;
+    // #29 P6b.2: the VENTS stage's duct and vent tables
+    int64_t* ducts = nullptr;          // (N, duct cap, OBJ_DUCT_W)
+    const int64_t* n_ducts = nullptr;  // (N,)
+    int duct_cap = 0;
+    int64_t* vents = nullptr;          // (N, vent cap, OBJ_VENT_W)
+    const int64_t* n_vents = nullptr;  // (N,)
+    int vent_cap = 0;
 };
 
 // #29 P7a.3: the walk's lists (ApplierLists' device views; has_* false when
@@ -103,6 +111,18 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
     int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
     const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+    if (stage == APPLIER_STAGE_VENTS) {
+        // #29 P6b.2: slot 9e(d)'s vent circulation walks the duct and vent
+        // TABLES (decision 1: a stage of the one walker, each duct at once)
+        if (n_gases != unit_tables::UNIT_TAB_GAS_TRACE_W) {
+            B[APPLIER_BOOK_FAULTS] += 1;
+            return;
+        }
+        vents::sweep(E, tab, X.ducts + (size_t)e * X.duct_cap * object_tables::OBJ_DUCT_W,
+                     X.n_ducts[e], X.vents + (size_t)e * X.vent_cap * object_tables::OBJ_VENT_W,
+                     X.n_vents[e], B);
+        return;
+    }
     if (stage == APPLIER_STAGE_DOORS) {
         // #29 P6b.1: slot 9e(d)'s door sweep walks the door TABLE, not the
         // effect list (decision 1: a stage of the one walker over an entity
@@ -283,7 +303,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 4, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 5, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -449,6 +469,24 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
         X.tiles = tiles->records_dev();
         X.n_tiles = tiles->count_dev();
         X.tile_cap = tiles->cap();
+    }
+    if (stage == APPLIER_STAGE_VENTS) {
+        ObjectTable* ducts = lists != nullptr ? lists->duct_table : nullptr;
+        ObjectTable* vts = lists != nullptr ? lists->vent_table : nullptr;
+        if (ducts == nullptr || vts == nullptr)
+            throw std::invalid_argument("applier_run: the VENTS stage needs the duct table and "
+                                        "the vent table");
+        if (ducts->n_env() != a.n_env() || vts->n_env() != a.n_env() ||
+            ducts->width() != object_tables::OBJ_DUCT_W ||
+            vts->width() != object_tables::OBJ_VENT_W || vts->cap() > object_tables::OBJ_VENT_CAP)
+            throw std::invalid_argument("applier_run: the duct / vent tables are not the duct / "
+                                        "vent layouts for these envs");
+        X.ducts = ducts->records_dev();
+        X.n_ducts = ducts->count_dev();
+        X.duct_cap = ducts->cap();
+        X.vents = vts->records_dev();
+        X.n_vents = vts->count_dev();
+        X.vent_cap = vts->cap();
     }
     UnitRecordList& L = a.list();
     k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(

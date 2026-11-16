@@ -82,3 +82,53 @@ def test_outside_the_proved_range_the_twins_refuse_and_trivial_zeros_stay_zero()
               (5, 7, -2)):
         assert (bp.fp_falloff_floor(*c), bp.fp_falloff_round(*c)) == (0, 0) == \
             (unit_fixed.falloff_floor(*c), unit_fixed.falloff_round(*c)), c
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.2: the vent sweep's floor division and floor product
+# ---------------------------------------------------------------------------
+def test_floordiv_twin_is_pythons_floor_division_on_both_signs():
+    """Property: ``bp.fp_floordiv(n, d)`` (``fixed_point.h floordiv_q``, the
+    vent sweep's ``e_plenum // n_bulk``) equals Python's ``n // d`` for
+    negative, zero and positive operands of either sign, int64-wide. Breaks
+    if the twin truncates toward zero (C's ``/``) on a negative remainder."""
+    if not hasattr(bp, "fp_floordiv"):
+        pytest.skip("breach_physics predates fp_floordiv (rebuild cpp/build)")
+    rng = np.random.default_rng(6202)
+    cases = [(n, d) for n in (-7, -6, -1, 0, 1, 6, 7, -(1 << 62), (1 << 62), -(1 << 63) + 1)
+             for d in (1, 2, 3, 7, 64, -1, -3, (1 << 40) + 7)]
+    for _ in range(20000):
+        d = int(rng.integers(1, 1 << int(rng.integers(1, 63))))
+        d = d if rng.random() < 0.8 else -d
+        cases.append((int(rng.integers(-(1 << 62), 1 << 62)), d))
+    neg_rem = 0
+    for n, d in cases:
+        assert bp.fp_floordiv(n, d) == n // d, (n, d)
+        neg_rem += (n % d != 0) and ((n < 0) != (d < 0))
+    assert neg_rem > 1000      # the truncating branch was really exercised
+
+
+def test_muldiv_twin_is_the_exact_floor_product_and_refuses_outside():
+    """Property: ``bp.fp_muldiv_floor(a, b, c)`` (``fixed_point.h
+    muldiv_floor_q``: the vent sweep's ``total * w // sum_w``, the split's
+    ``holding * want // n``, the deposit's ``share * trace // n_bulk``) is
+    ``(a * b) // c`` exactly, products past 2^64 included, whenever the
+    quotient is below 2^63, and -1 for a negative operand, ``c <= 0`` or a
+    quotient past it. Breaks if the product is formed in 64 bits, the 128 / 64
+    division rounds anywhere but down, or a refusal is missed."""
+    if not hasattr(bp, "fp_muldiv_floor"):
+        pytest.skip("breach_physics predates fp_muldiv_floor (rebuild cpp/build)")
+    rng = np.random.default_rng(6203)
+    wide = 0
+    for _ in range(30000):
+        c = int(rng.integers(1, 1 << int(rng.integers(1, 63))))
+        b = int(rng.integers(0, c + 1))            # b <= c: the sweep's shape
+        a = int(rng.integers(0, 1 << int(rng.integers(1, 63))))
+        assert bp.fp_muldiv_floor(a, b, c) == (a * b) // c, (a, b, c)
+        wide += a * b >= 1 << 64
+    assert wide > 1000         # the 128-bit product was really exercised
+    for a, b, c in ((1 << 62, 1 << 62, 1), ((1 << 63) - 1, 2, 1), (5, 7, 0), (-1, 3, 4),
+                    (3, -1, 4), (3, 4, -2)):
+        want = (a * b) // c if (a >= 0 and b >= 0 and c > 0 and (a * b) // c < (1 << 63)) else -1
+        assert bp.fp_muldiv_floor(a, b, c) == want, (a, b, c)
+    assert bp.fp_muldiv_floor((1 << 63) - 1, (1 << 63) - 1, (1 << 63) - 1) == (1 << 63) - 1

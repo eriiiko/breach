@@ -779,6 +779,46 @@ LISTS["door_tiles"] = ListDef(_sim_host, _door_tiles_records, _door_consume,
                               _door_device("door_tile"), _table_fields("door_tile"), None,
                               _door_tiles_land)
 
+# #29 P6b.2: THE DUCT TABLE and THE VENT TABLE as lists (``Simulation._ducts``
+# / ``_vents`` through ``unit_kernels.ducts_of`` / ``vents_of``): staged as
+# inputs, compared as outputs and, in the chained form, LANDED back onto the
+# sim's own runtimes in place (``unit_kernels.ducts_to_host`` /
+# ``vents_to_host``).
+def _ducts_records(sim, obj):
+    return unit_kernels.ducts_of(sim)
+
+
+def _vents_records(sim, obj):
+    return unit_kernels.vents_of(sim)
+
+
+def _ducts_land(sim, obj, recs):
+    unit_kernels.ducts_to_host(sim, recs)
+
+
+def _vents_land(sim, obj, recs):
+    unit_kernels.vents_to_host(sim, recs)
+
+
+def _vent_consume(obj):
+    raise RuntimeError("lockstep: the duct / vent tables are landed, never consumed")
+
+
+def _wide_fields(name):
+    # a multi-wide column's ints named one by one (trace_raw[0] ...)
+    def f(rec):
+        from simulation import object_tables
+        return name, tuple(c.name if c.width == 1 else f"{c.name}[{j}]"
+                           for c in object_tables.table_layout(name).columns
+                           for j in range(c.width))
+    return f
+
+
+LISTS["ducts"] = ListDef(_sim_host, _ducts_records, _vent_consume, _door_device("duct"),
+                         _wide_fields("duct"), None, _ducts_land)
+LISTS["vents"] = ListDef(_sim_host, _vents_records, _vent_consume, _door_device("vent"),
+                         _wide_fields("vent"), None, _vents_land)
+
 
 # ---------------------------------------------------------------------------
 # #29 P6.4b: field outputs, books, the write-set gate

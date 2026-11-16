@@ -101,7 +101,9 @@ SLOT_WRAPS = (
     ("simulation.simulation", "sweep_logic_nodes", "9e entities"),
     ("simulation.simulation", "Simulation._resolve_door_inputs", "9e entities"),
     ("simulation.simulation", "sweep_pumps", "9e entities"),
-    ("simulation.simulation", "sweep_vents", "9e entities"),
+    # #29 P6b.2: the vent circulation has its own label (its device form is
+    # the applier's VENTS stage; a twin row names its slot by it).
+    ("simulation.simulation", "sweep_vents", "9e(d) vents"),
     # #29 P6b.1: the door sweep has its own label (its device form is the
     # applier's DOORS stage; a twin row names its slot by it).
     ("simulation.simulation", "sweep_doors", "9e(d) doors"),

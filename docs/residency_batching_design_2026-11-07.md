@@ -1982,6 +1982,104 @@ each:
   walk without its door faults); CHAINED (2; 2' + landing; 4 + 4a + 4b + 4c;
   9e(d'): the host `execute_payload` run 0 times in the chained slot); SHIP 500
   ticks. Every gate broken once (the patch's report).
+**As built (P6b.2, 2026-11-16).** The cut table's P6b.2 row: the duct and vent tables,
+`inject_gas_n_vec` in the topology seam, the ledgers in int64 with a named refusal, the
+sweep. No decision moved. One line each:
+- THE DUCT TABLE is `unit_schema.DUCT_TABLE` (W 20, capacity 16): `ordinal`, `filter` (the
+  `[filters.*]` row's index in `unit_schema.filter_names()`, config's rows sorted by name),
+  `o2_raw`, `n2_raw`, `trace_raw[5]`, `e_plenum`, `sink[5]`, `e_wipe`, `rail_lo_hits`,
+  `rail_hi_hits`, `alive`, `live` (1). THE VENT TABLE is `VENT_TABLE` (W 11, capacity 64):
+  `ordinal`, `duct_ordinal` (the duct's ENTITY ORDINAL, -1 unwired or dangling), `role` (0
+  supply / 1 return: the law's `role == "return"`), `aperture_y` / `_x`, the load constants
+  `rate_raw_per_s` and `tps`, `accum`, `guard_skips`, `alive`, `live`. Record functions
+  `unit_kernels.ducts_of` / `vents_of`; `duct_objects` / `vent_objects` unpack to
+  `unit_schema.DuctRow` / `VentRow`; `ducts_to_host` / `vents_to_host` land on the sim's OWN
+  runtimes (another count, ordinal, filter, duct, role or constant: `VentTableMismatch`);
+  `duct_entity_rows` / `vent_entity_rows` read ENTITY_SECT_V1's rows from a table row, held
+  equal to the serializer (P6b.4's export).
+- FIVE TABLE ROWS (T 1432): `vent_filter_eff_q` (per filter row x trace slot, through the
+  reference's own `_duct_filter_efficiency_q`), `vent_trace_ids` (`_TRACE_IDS`),
+  `vent_t_min_q` / `vent_t_max_q` (`_t_rails_q()`, the sim's cached pair when it has one),
+  `vent_n_eps` (`N_EPS`). THREE BOOKS: `ge_pump_inject_vec`, `ge_pump_rail` (the deposit's two
+  seam channels) and `ledger_refused`.
+- `topo::inject_gas_n_vec(E, tab, y, x, add[], t_dep, t_min, t_max, &t_new, &rail, B,
+  InjectVecBooks)` is `GameMap.inject_gas_n_vec` integer for integer (the core's overflow
+  refusal before any write, the conversion seam on an accountable tile with Python's floor,
+  the rails and the rail's write-back, the T-mix on a non-accountable one, the bulk-free and
+  zero-vector returns); the caller's book pair (the vents': `vent_inject_books()`). Its
+  proved range: every slice in [0, 2^54), the cell's gas >= 0, |E| < 2^61, |t_dep|, |t_min|,
+  |t_max| < 2^30 and on a non-accountable tile |T_old| < 2^30 (a fault past it, nothing
+  written).
+- THE KIT gained `muldiv_floor_q(a, b, c)` (`(a * b) // c` for a, b >= 0, c > 0: a 128-bit
+  product, a 128 / 64 restoring floor division `udiv128_floor_q`; -1 past a 2^63 quotient),
+  bound with `floordiv_q` as `bp.fp_muldiv_floor` / `bp.fp_floordiv`.
+- THE PROVED RANGE (the ledgers are unbounded ints in Python, packed as int64 only by the
+  serializer). A tile's bulk is < 2^32 (two int32 planes, >= 0), a trace slice < 2^31, and
+  the extraction's own range keeps a tile's |T_abs| < 2^28, so its relative T < 2^29. ONE
+  return of quantum q therefore moves the bulk pair by at most min(q, 2^32), a trace slot and
+  its sink by < 2^31 each, and e_plenum by at most min(q, 2^32) * 2^29 in magnitude; a supply
+  only drains (the floor split and floor subadditivity never hand out more than the plenum
+  holds), adds 1 to a rail count, and leaves |e| <= max(|e|, N_bulk) (with q_dep = floor(e /
+  N): e - D q_dep lies in [0, e] for e >= 0 and in [e, D] for e < 0, D <= N the bulk
+  handed out); the wipe moves e into e_wipe once. With B_N the sum over a duct's returns of
+  min(q_r, 2^32), B_E = B_N * 2^29, R / S its return / supply counts, a duct whose ledgers
+  hold AT THE HEAD OF ITS SWEEP 0 <= o2_raw, n2_raw <= 2^61 - B_N; 0 <= trace_raw[i] <=
+  2^54 - R 2^31; 0 <= sink[i] <= 2^62 - R 2^31; |e_plenum| <= 2^61 - B_E; |e_wipe| <=
+  2^62; 0 <= rail hits <= 2^62 - S; 0 <= each vent's guard_skips <= 2^62 - 1 keeps every
+  value of the tick in int64 (N_bulk <= 2^62, the wipe <= 2^62 + 2^61, the debit sum <= |e| +
+  N_bulk < 2^63, the three floor products exact through `muldiv_floor_q` with quotients <=
+  their first operand, a deposit's trace <= 2^54 inside `inject_gas_n_vec`'s range). The
+  head refuses a duct outside it BY NAME (`ledger_refused`; `unit_kernels.sweep_vents`
+  raises `applier.LedgerRangeRefused` naming the env, the duct's ordinal, the ledger, its
+  value and its bounds, through `vent_ledger_range`, the host twin) before any write of that
+  duct: its vents, its ledgers, the map. The vent rows' constants are a FAULT outside tps in
+  [1, 2^16], accum in [0, tps), the rate in [0, 2^39] (a quantum < 2^40: the extraction's
+  range), a role 0 / 1, the aperture in the grid. Separately the deposit FAULTS on a t_dep
+  past 2^30 (about 16 400 K above ambient): a plenum's mean temperature passes it only by a
+  fixture (the extraction refuses tiles past 2^28 absolute, and the floor's upward drift is at
+  most N / 64 counts a draining tick).
+- THE SWEEP is the applier's stage VENTS (2; at the merge with P7c.1 DOORS became 3 and
+  DETONATE 4: the 9e(d) numbers follow the conductor's pumps -> vents -> doors), `cpp/src/cuda_unit_vents.cuh`'s `vents::sweep` called
+  by `k_applier` on the two tables (`ApplierLists.duct_table` / `vent_table`, `WalkTables`):
+  per duct in row order the head check, the returns (dead skipped; `topo::aperture_blocked` a
+  counted guard skip with the accumulator frozen; the accrual; `topo::extract_gas_n_vec` with
+  T read before it; the bulk pair, the filter's truncating scrub per trace slot, the bulk-only
+  energy credit), the supplies' weights, the wipe below N_EPS, the distribution
+  (`floordiv_q` for t_dep, `muldiv_floor_q` for the share, the split over the REMAINING pair
+  with its O2-first cascade and the trace against the ORIGINAL holdings), the debit, each
+  deposit through `topo::inject_gas_n_vec`, the rail counts. Python face
+  `unit_kernels.sweep_vents(store, applier, fields, ducts, vents) -> (coverage, books)`
+  (coverage: extractions that took gas plus deposits that landed). Profiler label "9e(d)
+  vents" (moved out of "9e entities").
+- CHOICES where this section was silent: two independent tables, not a side table (the vents
+  are the sim's own ordinal list, unwired ones included; the sweep scans the vent table per
+  duct, cap 64); a vent's duct by ordinal (an entity table's key), not by row; the filter
+  efficiencies a device tables row with an index in the duct row (not five duct columns);
+  the range checked at the duct's HEAD from worst-case per-tick steps (so "nothing written"
+  holds for the whole duct), not per update; a seam fault inside a duct abandons it (the run
+  refused) as the doors do.
+- ONE CLASS-T TWIN, `vents`, slot "9e(d) vents": ship_demo's duct (1 duct, 2 vents) runs in
+  the corpus, so the twin traces `vent_system.py` (it left `[not_twinned]`).
+- WHAT THE REFERENCE SHOWED (nothing changed in it): with N_EPS = 64 "every share floored to
+  0" needs more than 64 ready supplies on one duct (unreachable on the device's capacity);
+  an airless cell's trace is wiped by the tick's transport before 9e (a vent depositing smoke
+  into an empty pocket lands it on a clean cell); `GameMap.smoke` is a view of `gas[SMOKE]`,
+  which the doors gate's write-set list had not met (the vent scene seals a smoky tile: its
+  HOST_ONLY row added); the guard reads the water depth, so a fixture flood blocks a vent;
+  ship_demo, playground and fire_smoke_studio move gas through their ducts on every tick
+  (airlock_demo has no duct).
+- THE GATES (`tests/cuda_unit_vents_check.py`, wrapper `tests/test_cuda_unit_vents.py`; CPU
+  `tests/test_vent_table.py`, `tests/test_unit_kit_twins.py`): TABLES; KIT (3 072 floor
+  divisions, 3 006 floor products); PROBE (522 `inject_gas_n_vec` ops on six maps, both
+  rails, both floors of both branches, the clip, every refusal); SCENE (the vent scene: six
+  ducts, sixteen wired vents and two unwired, a door over a vent, two ducts' vents on one
+  tile; 1b + 9e(d) vents + 9e(d) doors shadowed 130 ticks, both boundaries; a 31-branch
+  census, three named unreachable; the ledgers from 0 to 10^13); LEVELS (ship_demo's bots,
+  playground, fire_smoke_studio, airlock_demo); REFUSAL (12 ledger cases one past their
+  range refused by name, nothing of the duct written; at the bound equal to the host); BATCH
+  N = 2 / 8; PADDING; OVERFLOW; CHAINED (vents + doors on the vent scene, both boundaries,
+  and on the door scene; ship_demo's bots 500 ticks; the host laws run 0 times in the twin).
+  Every gate broken once (the patch's report).
 
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 

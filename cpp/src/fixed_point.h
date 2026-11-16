@@ -991,6 +991,45 @@ FP_HD inline int64_t falloff_round_q(int64_t v, int64_t d2, int64_t r2) {
     return v - (int64_t)(m / 2u);
 }
 
+// ---- the vent ledgers' floor products (#29 P6b.2) ----------------------------
+//
+// muldiv_floor_q: floor(a * b / c) -- Python's `(a * b) // c` -- for a, b >= 0
+// and c > 0, EXACT: the product formed in 128 bits (umul64_wide) and divided in
+// 128 / 64 bits (udiv128_floor_q, restoring), so the PROVED RANGE is every
+// operand triple whose quotient is below 2^63 (the vent sweep's callers hand
+// b <= c, so the quotient is <= a). Outside it (a negative operand, c <= 0, a
+// quotient >= 2^63) MULDIV_REFUSED (-1; a real result is >= 0) and a device
+// caller FAULTS. Its Python twin is the expression itself; held equal by
+// tests/test_unit_kit_twins.py (bp.fp_muldiv_floor) and, on the device, by
+// tests/cuda_unit_vents_check.py (part KIT). The sweep's signed divisions
+// (`e_plenum // n_bulk`) go through floordiv_q above, never C's `/`.
+constexpr int64_t MULDIV_REFUSED = -1;
+
+// floor((hi * 2^64 + lo) / d) for d > 0 and hi < d (the quotient fits uint64).
+FP_HD inline uint64_t udiv128_floor_q(uint64_t hi, uint64_t lo, uint64_t d) {
+    uint64_t q = 0, r = hi;
+    for (int i = 63; i >= 0; --i) {
+        const bool top = (r >> 63) != 0;        // the shifted remainder is >= 2^64 > d
+        r = (r << 1) | ((lo >> i) & 1u);
+        q <<= 1;
+        if (top || r >= d) {
+            r -= d;
+            q |= 1u;
+        }
+    }
+    return q;
+}
+
+FP_HD inline int64_t muldiv_floor_q(int64_t a, int64_t b, int64_t c) {
+    if (a < 0 || b < 0 || c <= 0) return MULDIV_REFUSED;
+    uint64_t hi, lo;
+    umul64_wide((uint64_t)a, (uint64_t)b, &hi, &lo);
+    if (hi >= (uint64_t)c) return MULDIV_REFUSED;          // the quotient >= 2^64
+    const uint64_t q = udiv128_floor_q(hi, lo, (uint64_t)c);
+    if (q > (uint64_t)INT64_MAX) return MULDIV_REFUSED;
+    return (int64_t)q;
+}
+
 // half_up_q (#29 P6.2m): movement.half_up -- (num + den // 2) // den with
 // Python's FLOOR divisions, den > 0 (the movement-cadence rounding the speed
 // reduction and the direction rule use; mobility design §3). The caller keeps

@@ -1267,7 +1267,8 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
                  int stage, py::object ring, py::object cells, py::object door,
                  py::object claims, py::object noise, py::object blast_log,
-                 py::object door_table, py::object door_tiles) {
+                 py::object door_table, py::object door_tiles, py::object duct_table,
+                 py::object vent_table) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   // #29 P6b.1: the DOORS stage's door table and tile table
@@ -1300,6 +1301,11 @@ PYBIND11_MODULE(breach_physics, m) {
                                     : blast_log.cast<breach_cuda::UnitRecordList*>();
                   L.door_table = dp;                // #29 P6b.1: the DOORS stage
                   L.door_tiles = tp;
+                  // #29 P6b.2: the VENTS stage
+                  L.duct_table = duct_table.is_none()
+                                     ? nullptr : duct_table.cast<breach_cuda::ObjectTable*>();
+                  L.vent_table = vent_table.is_none()
+                                     ? nullptr : vent_table.cast<breach_cuda::ObjectTable*>();
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
@@ -1308,6 +1314,7 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("door") = py::none(), py::arg("claims") = py::none(),
               py::arg("noise") = py::none(), py::arg("blast_log") = py::none(),
               py::arg("door_table") = py::none(), py::arg("door_tiles") = py::none(),
+              py::arg("duct_table") = py::none(), py::arg("vent_table") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");
@@ -1426,11 +1433,11 @@ PYBIND11_MODULE(breach_physics, m) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("topology_probe_seam: ptrs must be (N_PLANES,)");
                   const int n = t.n_env();
-                  if (ops.ndim() != 3 || ops.shape(0) != n || ops.shape(2) != 8 ||
+                  if (ops.ndim() != 3 || ops.shape(0) != n || ops.shape(2) != 16 ||
                       n_ops.ndim() != 1 || n_ops.shape(0) != n || tiles.ndim() != 3 ||
                       tiles.shape(0) != n || tiles.shape(2) != 2)
                       throw std::invalid_argument(
-                          "topology_probe_seam: ops (N, K, 8), n_ops (N,), tiles (N, T, 2)");
+                          "topology_probe_seam: ops (N, K, 16), n_ops (N,), tiles (N, T, 2)");
                   for (int e = 0; e < n; ++e)
                       if (n_ops.data()[e] < 0 || n_ops.data()[e] > ops.shape(1))
                           throw std::invalid_argument("topology_probe_seam: n_ops outside 0..K");
@@ -1449,7 +1456,8 @@ PYBIND11_MODULE(breach_physics, m) {
               }, py::arg("tables"), py::arg("ptrs"), py::arg("n_gases"), py::arg("h"),
               py::arg("w"), py::arg("ops"), py::arg("n_ops"), py::arg("tiles"),
               "#29 P6b.1 TEST-ONLY: seal / unseal / can_seal / inject / extract / transfer "
-              "/ _aperture_blocked per op; returns (results (N, K, 9), books).");
+              "/ _aperture_blocked / inject_gas_n_vec / floordiv_q / muldiv_floor_q per op; "
+              "returns (results (N, K, 9), books).");
     }
 
     // #29 P7.0a: slot 9d (cuda_unit_ignition.cu) and the kit's TEST-ONLY probes
@@ -3107,6 +3115,17 @@ PYBIND11_MODULE(breach_physics, m) {
           [](int64_t v, int64_t d2, int64_t r2) { return fixedpoint::falloff_floor_q(v, d2, r2); },
           py::arg("v"), py::arg("d2"), py::arg("r2"),
           "fixed_point.h falloff_floor_q: floor(v (1 - sqrt(d2 / r2))), -1 refused.");
+    // #29 P6b.2: the vent sweep's floor division and floor product, gated by
+    // tests/test_unit_kit_twins.py.
+    m.def("fp_floordiv",
+          [](int64_t n, int64_t d) { return fixedpoint::floordiv_q(n, d); },
+          py::arg("n"), py::arg("d"),
+          "fixed_point.h floordiv_q: n // d (Python's floor), d != 0.");
+    m.def("fp_muldiv_floor",
+          [](int64_t a, int64_t b, int64_t c) { return fixedpoint::muldiv_floor_q(a, b, c); },
+          py::arg("a"), py::arg("b"), py::arg("c"),
+          "fixed_point.h muldiv_floor_q: (a * b) // c for a, b >= 0, c > 0 (128-bit), "
+          "-1 refused.");
     m.def("fp_falloff_round",
           [](int64_t v, int64_t d2, int64_t r2) { return fixedpoint::falloff_round_q(v, d2, r2); },
           py::arg("v"), py::arg("d2"), py::arg("r2"),

@@ -85,11 +85,16 @@ void topology_probe_tile_changed(FieldApplier& a, const UnitTablesDevice& tables
 //   op 5 extract_gas_n_vec(y,x,dn)  a0, a1, a2  value = the bulk taken
 //   op 6 transfer_gas_n(s, d, dn)   a0 sy, a1 sx, a2 dy, a3 dx, a4 dn
 //   op 7 _aperture_blocked(y, x)    a0, a1                    value 1 = blocked
-// A span is rows of the env's (T, 2) tile list.
+// #29 P6b.2 (tests/cuda_unit_vents_check.py, parts PROBE and KIT):
+//   op 8 inject_gas_n_vec           a0 y, a1 x, a2 t_dep, a3 t_min, a4 t_max,
+//                                   a5.. the per-slice vector  value t_new, then rail
+//   op 9 floordiv_q(n, d)           a0, a1 (d != 0)           value the quotient
+//   op 10 muldiv_floor_q(a, b, c)   a0, a1, a2                value (or -1)
+// A span is rows of the env's (T, 2) tile list. An op row is 16 int64.
 // ============================================================================
 namespace {
 
-constexpr int PROBE_OP_W = 8;
+constexpr int PROBE_OP_W = 16;
 constexpr int PROBE_RES_W = 2 + topo::GAS_MAX;
 
 __global__ void k_probe_seam(const int64_t* ops, const int64_t* n_ops, int k_cap,
@@ -122,6 +127,14 @@ __global__ void k_probe_seam(const int64_t* ops, const int64_t* n_ops, int k_cap
             r[0] = topo::extract_gas_n_vec(E, tab, o[1], o[2], o[3], r + 2, r + 1, B);
         } else if (op == 6) {
             r[0] = topo::transfer_gas_n(E, tab, o[1], o[2], o[3], o[4], o[5], r + 1, B);
+        } else if (op == 8) {
+            r[0] = topo::inject_gas_n_vec(E, tab, o[1], o[2], o + 6, o[3], o[4], o[5], r + 1,
+                                          r + 2, B, topo::vent_inject_books());
+        } else if (op == 9) {
+            if (o[2] == 0) { r[0] = APPLIER_SEAM_FAULT; continue; }
+            r[1] = fixedpoint::floordiv_q(o[1], o[2]);
+        } else if (op == 10) {
+            r[1] = fixedpoint::muldiv_floor_q(o[1], o[2], o[3]);
         } else if (op == 7) {
             if (o[1] < 0 || o[1] >= h || o[2] < 0 || o[2] >= w) { r[0] = APPLIER_SEAM_OUT_OF_BOUNDS; continue; }
             r[1] = topo::aperture_blocked(E, (int)o[1], (int)o[2]) ? 1 : 0;
