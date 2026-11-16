@@ -905,7 +905,7 @@ def chained(name, make, ticks):
     try:
         with ch:
             for _ in range(ticks):
-                if twin.is_terminal() or ref.is_terminal():
+                if any(getattr(x, "is_terminal", lambda: False)() for x in (twin, ref)):
                     break
                 runs0 = ch.runs
                 twin.tick()

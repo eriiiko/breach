@@ -1833,7 +1833,7 @@ class ChainedSlots:
         self.driver = driver
         self.slots = list(slots)
         self.host_side = host_side
-        self.U = len(driver.sim.units)
+        self.U = max(1, len(driver.sim.units))   # #29 P6b.4: a unit-free level pads one row
         self.store = build_store([driver.sim], self.U, bp=bp)
         self.ring = (unit_events.EventRing(1, self.U, e_max, bp=bp)
                      if any(s.events for s in self.slots) else None)
