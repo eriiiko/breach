@@ -1456,6 +1456,188 @@ _PAYLOAD_ROWS: tuple = (
 ROWS = ROWS + _PAYLOAD_ROWS
 
 
+# == #29 P7c.2: THE PAYLOAD FUNCTION, the strength path, the air read, bulk gas
+# and the multi-tick source (payloads.execute_payload's generic explosion:
+# blast_expansion.reach_tiles / start_source / start_expansion, blast_air.
+# read_blast_air, deposit_over_tiles with linear_weights, add_explosion_smoke
+# with blast_smoke_peak_q, inject_bulk_gas). Every float the law converts per
+# call is a row read through the law's own door function on the sim's own row
+# and map (its tile size), never re-derived. ================================
+def _pl_generic(p):
+    return int(getattr(p, "strength", 0.0) > 0.0)
+
+
+def _pl_air_mode(p):
+    """execute_payload's air read: 2 over the walked heat tiles (a strength
+    row), 1 over the disc (``blast_air.disc_tiles``: a row with an explosive),
+    0 none (``air is None``)."""
+    if _pl_generic(p):
+        return 2
+    return 1 if getattr(p, "explosive", "") else 0
+
+
+def _pl_air_disc_r(p):
+    from simulation import blast_air
+    if _pl_air_mode(p) != 1:
+        return 0
+    return blast_air.disc_reach(max(p.radius, getattr(p, "heat_radius", 0.0)))
+
+
+def _pl_expansion_live(p):
+    return int(not _pl_generic(p) and getattr(p, "expansion_m3", 0.0) > 0.0)
+
+
+def _pl_ticks(p):
+    return max(int(p.expansion_ticks), 1) if _pl_expansion_live(p) else 1
+
+
+def _pl_source_r2(p):
+    from simulation import blast_expansion as bx
+    if _pl_generic(p):
+        return int(p.source_r2)
+    return bx.expansion_r2(p) if _pl_expansion_live(p) else 0
+
+
+def _pl_source_total(src):
+    from simulation import blast_expansion as bx
+    out = []
+    for p in _payload_rows(src):
+        if _pl_generic(p):
+            out.append(bx.source_total_q(src.sim.gmap, p.expansion_m3, 1))
+        elif _pl_expansion_live(p):
+            out.append(bx.source_total_q(src.sim.gmap, p.expansion_m3, _pl_ticks(p)))
+        else:
+            out.append(0)
+    return tuple(int(v) for v in out)
+
+
+def _pl_heat_base(src):
+    from simulation import payloads
+    return tuple(int(payloads.heat_base_q(src.sim.gmap, p)) if _pl_generic(p) else 0
+                 for p in _payload_rows(src))
+
+
+def _pl_soot_units(p):
+    from simulation import payloads
+    return payloads.soot_units_q(p)
+
+
+def _pl_bulk_slice(src):
+    """inject_bulk_gas' slice (the map's ``name_to_id`` of ``bulk_gas``; -1
+    none); a non-conservative one is refused by name (the reference raises)."""
+    gases = src.sim.gmap.gases
+    out = []
+    for p in _payload_rows(src):
+        if not getattr(p, "bulk_gas", ""):
+            out.append(-1)
+            continue
+        g = int(gases.name_to_id[p.bulk_gas])
+        if not bool(gases.conservative[g]):
+            raise ValueError(f"unit tables: payloads.{p.name}.bulk_gas {p.bulk_gas!r} "
+                             f"is not a bulk gas (inject_bulk_gas refuses it)")
+        out.append(g)
+    return tuple(out)
+
+
+def _src_smoke(src):
+    from simulation import physics
+    return int(physics._SRC_EXPLOSION_SMOKE)
+
+
+def _blast_smoke_noise_q(src):
+    """The smoke's per-tile noise as every edit door quantizes it
+    (``payloads._blast_noise``: [physics] explosion_smoke_noise clamped to
+    [0, 1]; ``min(quantize_scalar(noise), ONE)``, 0 for no noise)."""
+    from simulation import payloads
+    noise = payloads._blast_noise()
+    if not noise > 0.0:
+        return 0
+    return min(unit_fixed.quantize_scalar(float(noise)), ONE)   # p3e-door: _edit_door's
+
+
+def _blast_air_q(src):
+    from simulation import blast_air
+    s = blast_air.blast_air_settings()
+    if not (0 <= s.o2_low_q < s.o2_full_q and 0 <= s.p_ext_q < s.p_full_q):
+        raise ValueError("unit tables: the blast air read's ramps need lo < hi "
+                         f"(o2 {s.o2_low_q} / {s.o2_full_q}, p {s.p_ext_q} / {s.p_full_q}): "
+                         "_ramp_q divides by hi - lo")
+    return (s.o2_low_q, s.o2_full_q, s.starved_smoke_q, s.detonation_share_q,
+            s.p_ext_q, s.p_full_q)
+
+
+def _s_max_q(src):
+    from simulation import blast_expansion
+    return int(blast_expansion.S_MAX_Q)
+
+
+def _bulk_rails(src):
+    from simulation import vent_system
+    lo, hi = vent_system._t_rails_q()
+    return (int(lo), int(hi))
+
+
+_STRENGTH_ROWS: tuple = (
+    TableRow("payload_generic", _n_payloads, _pl(_pl_generic), 0, 1,
+             "per payload row: strength > 0 (THE generic explosion: the walks, the "
+             "fixed-total deposits, start_source)"),
+    TableRow("payload_air_mode", _n_payloads, _pl(_pl_air_mode), 0, 2,
+             "per payload row: the air read -- 2 over the walked heat tiles, 1 over "
+             "blast_air.disc_tiles (an explosive), 0 none"),
+    TableRow("payload_air_disc_r", _n_payloads, _pl(_pl_air_disc_r), 0, _R_MAX,
+             "per payload row: blast_air.disc_reach(max(radius, heat_radius)) of a "
+             "mode-1 read (the disc d2 <= r^2 of its open tiles)"),
+    TableRow("payload_heat_r2", _n_payloads,
+             _pl(lambda p: int(getattr(p, "heat_r2", 0)) if _pl_generic(p) else 0),
+             0, 1 << 20, "per payload row: heat_r2, the heat / smoke walk's r2"),
+    TableRow("payload_source_r2", _n_payloads, _pl(_pl_source_r2), 0, 1 << 20,
+             "per payload row: the source walk's r2 (source_r2 of a strength row; "
+             "blast_expansion.expansion_r2 of a comparison row; 0 none)"),
+    TableRow("payload_source_total_q", _n_payloads, _pl_source_total, 0, 1 << 50,
+             "per payload row: blast_expansion.source_total_q(gmap, expansion_m3, "
+             "ticks) (1 tick for a strength row), the total the walk divides"),
+    TableRow("payload_expansion_live", _n_payloads, _pl(_pl_expansion_live), 0, 1,
+             "per payload row: start_expansion runs (no strength, expansion_m3 > 0)"),
+    TableRow("payload_expansion_ticks", _n_payloads, _pl(_pl_ticks), 1, 1 << 20,
+             "per payload row: max(int(expansion_ticks), 1) of a comparison row"),
+    TableRow("payload_smoke_live", _n_payloads, _pl(lambda p: bool(p.emit_blast_smoke)),
+             0, 1, "per payload row: emit_blast_smoke (a non-strength row's "
+                   "add_explosion_smoke)"),
+    TableRow("payload_soot_units_q", _n_payloads, _pl(_pl_soot_units), 0, 1 << 29,
+             "per payload row: payloads.soot_units_q, the charge's soot in smoke units "
+             "in the trace currency (< 2^29: units * 2^33 inside int64)"),
+    TableRow("payload_heat_base_q", _n_payloads, _pl_heat_base, 0, 1 << 46,
+             "per payload row: payloads.heat_base_q (a strength row's heat in the "
+             "map's heat units, Q16; x the Q16 air read inside int64)"),
+    TableRow("payload_bulk_slice", _n_payloads, _pl_bulk_slice, -1, 255,
+             "per payload row: inject_bulk_gas' conservative slice (-1 none)"),
+    TableRow("payload_bulk_q", _n_payloads, _pl(lambda p: int(getattr(p, "bulk_amount_q", 0))),
+             -(1 << 53), 1 << 53, "per payload row: bulk_amount_q (the door's; <= 0 "
+                                  "deposits nothing)"),
+    TableRow("payload_bulk_radius_q", _n_payloads, _pl(_pl_q("bulk_radius")),
+             -(1 << 26), _R_MAX << 16,
+             "per payload row: quantize_scalar(float(bulk_radius)), bulk_gas_tiles' "
+             "DISC radius"),
+    TableRow("payload_bulk_temp_q", _n_payloads, _pl(lambda p: int(getattr(p, "bulk_temp_q", 0))),
+             -(1 << 30) + 1, (1 << 30) - 1,
+             "per payload row: bulk_temp_q (relative Q16, the deposit's t_dep)"),
+    TableRow("payload_src_explosion_smoke", 1, _src_smoke, 0, 1 << 20,
+             "physics._SRC_EXPLOSION_SMOKE: the blast smoke's source_id"),
+    TableRow("blast_smoke_noise_q", 1, _blast_smoke_noise_q, 0, ONE,
+             "the blast smoke's per-tile noise at the edit door (payloads._blast_noise "
+             "quantized as _edit_door / deposit_over_tiles / blast_smoke_peak_q do)"),
+    TableRow("blast_air_q", 6, _blast_air_q, 0, 1 << 30,
+             "blast_air.blast_air_settings(): o2_low_q, o2_full_q, starved_smoke_q, "
+             "detonation_share_q, p_ext_q, p_full_q (read once per table build, not "
+             "per call)"),
+    TableRow("blast_s_max_q", 1, _s_max_q, 1, (1 << 31) - 1,
+             "blast_expansion.S_MAX_Q: add_source's saturation"),
+    TableRow("bulk_t_rails", 2, _bulk_rails, -(1 << 30) + 1, (1 << 30) - 1,
+             "vent_system._t_rails_q(): inject_bulk_gas' (T_MIN, T_MAX_PHYS) rails"),
+)
+ROWS = ROWS + _STRENGTH_ROWS
+
+
 # == #29 P6b.1: the doors (door_system.sweep_doors), seal / unseal /
 # can_seal_tiles and the gas-N primitives in the Device topology seam --
 # each read from the sim's own map (its materials and gas tables) or the

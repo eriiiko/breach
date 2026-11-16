@@ -1,27 +1,25 @@
-"""#29 P7c.1 -- the payloads gate, the disc path (pytest wrapper of
+"""#29 P7c.1 / P7c.2 -- the payloads gate, every row (pytest wrapper of
 tests/cuda_unit_payloads_check.py).
 
-Property: a PAYLOAD record of a [payloads.*] row with strength = 0, no bulk
-gas and no explosive is ``payloads.execute_payload`` integer for integer on
-the device (cpp/src/cuda_unit_payload.cuh, an effect function of the per-env
-serial applier) -- the disc walked serially with its wall damage and
-destroy_wall at once, the wave stencil on the live planes, the atmosphere and
-smoke-clear DISC edits, the immediate blast packets, the flash over sight and
-facing (never shortened), emit_gas / ignite_ring / deposit_heat through THE
-DEVICE EDIT DOOR's DISC form with their claims, the noise and the blast log --
-in the DETONATE stage (slot 2's grenades, slot 9e(d')'s charges) and the
-RESOLVE stage (slot 4c, slot 2''s landing, where a blast-killed unit's
-pending raise is skipped); equal on synthetic lists, on the payload scene
-(every shipped disc-path row through every call site), in a batch of
-differing envs as alone, with padding untouched, every list's capacity
-refused by name, every refused row refused by name writing nothing, and in
-chained twins whose host execute_payload never runs. Breaks if a payload
-row, the disc's order, material filter, wall damage or live stencil read, a
-DISC edit's field / radius / amount / mode / falloff / key / source, the
-blast damage's falloff / threshold / row order / immediate form, the flash's
-sight / facing / duration, a claim, the noise, the blast log, the event
-order, the corpse skip, the call order within a tick or the batch indexing
-differs from the law.
+Property: a PAYLOAD record of ANY [payloads.*] row is
+``payloads.execute_payload`` integer for integer on the device
+(cpp/src/cuda_unit_payload.cuh over cpp/src/cuda_unit_blast.cuh): the disc
+path (the disc, its wall damage, the stencil, the DISC edits, the immediate
+blast packets, the flash, emit_gas / ignite_ring / deposit_heat, the noise,
+the blast log) and -- #29 P7c.2 -- the strength path (the reach walk after
+the wall damage with its seed rule, the air read, start_source, the
+fixed-total TILES smoke and heat with their claims), the explosive rows' disc
+air read and noisy scaled smoke, the comparison rows' multi-tick source on the
+blast-source table and its take at slot 7's head (handed to the resident EOS
+on the card), bulk gas through the gas-N seam; equal on probes, on scenes that
+detonate every row through every call site, in batches, with padding
+untouched, every list refused by name at its capacity, no row refused, a bulk
+deposit past int32 refused by name writing nothing, and in chained twins
+whose host execute_payload never runs (ship_demo's bots' frag included).
+Breaks if a payload row, a walk's tile set or order, a seed, the air read's
+moment or arithmetic, a weight, a TILES row, the source's sum, saturation,
+count-down or compaction, a bulk tile, book or refusal, the call order or the
+batch indexing differs from the law.
 
 SKIPS cleanly without a CUDA build / device; runs the check in an isolated
 CUDA subprocess (cuda_harness).
@@ -38,10 +36,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_cuda_payloads_on_the_disc_path_equal_the_reference():
+def test_cuda_payloads_of_every_row_equal_the_reference():
     proc = cuda_harness.run_cuda_script(
         "import cuda_unit_payloads_check, sys; sys.exit(cuda_unit_payloads_check.main())",
-        timeout=3600,
+        timeout=7200,
     )
     out = proc.stdout + "\n" + proc.stderr
     assert "UNIT_PAYLOADS_RESULT: PASS" in out, (

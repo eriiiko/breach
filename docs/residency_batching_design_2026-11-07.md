@@ -2081,6 +2081,113 @@ sweep. No decision moved. One line each:
   and on the door scene; ship_demo's bots 500 ticks; the host laws run 0 times in the twin).
   Every gate broken once (the patch's report).
 
+**As built (P7c.2, 2026-11-16).** The cut table's P7c.2 row: every payload row on the device.
+No decision moved. One line each:
+- THE PAYLOAD FUNCTION applies EVERY row: `applier.PAYLOAD_REFUSALS` is empty (the
+  mechanism kept for a future row; the gate asserts "every row applied" over the table).
+  After `apply_flash_blind` and before any deposit, a strength row walks its heat tiles
+  (`reach_tiles` over `heat_r2`, the approach seed rule), reads the air over them, walks its
+  source tiles and adds its one-tick source; a row with an explosive reads the air over
+  `disc_tiles`; a comparison row walks `expansion_r2` (no approach), adds its first tick and
+  appends its later ticks to the blast-source table. Then the blast smoke (a strength row's
+  TILES deposit; else `add_explosion_smoke` with `blast_smoke_peak_q`'s peak, noisy, scaled
+  by the disc read), `emit_gas`, bulk gas, a strength row's claims + TILES heat (else
+  `ignite_ring`), `deposit_heat` (times the heat factor when the row read the air).
+- THE BLAST WALK is `cpp/src/cuda_unit_blast.cuh` (`unit_blast::reach`, `walk_seeds`,
+  `air_read`, `air_smoke_q`, `disc_tiles`, `add_source`, `take_sources`): the walk marks a
+  per-env scratch (`FieldApplier::walk_scratch`: a mark byte per cell, the BFS queue, the heat
+  and source lists, grown to h * w) and reads the box around the centre row-major, so its
+  output is `sorted(...)` whatever the visiting order. Test-only probe
+  `unit_kernels.blast_probe` (binding `applier_blast_probe`).
+- THE AIR READ is taken once, at the reference's point; its per-tile smoke factor is
+  recomputed from the planes at the smoke edit (nothing between the read and that edit writes
+  a plane the read reads: a later sub-step there needs the factors stored).
+- THE DEVICE EDIT DOOR, step (b) for TILES: `edit_door::door_tiles_edit` (the fixed-total
+  deposit: weights over their sum, the noise's low bound, the per-tile scale),
+  `door_disc_edit_ns` (a DISC with noise and scale: the blast smoke), `tiles_claims`; the
+  EDIT row's region arguments for TILES are (tile count, scaled, 0, 0); `edit_door.edit_of`
+  rebuilds a TILES edit and a noisy / scaled DISC or TILES edit (the noise from the low
+  bound, the scale as a plane of ONE with the TILE rows' factors), `door_rows` packs a noisy
+  edit beside a fixed keyed-draws object (the rows never read the draws).
+- THE BLAST-SOURCE TABLE is `unit_schema.SOURCE_TABLE` (W 5, capacity 32: `s_q`, `ticks`,
+  `tile_start`, `tile_count`, `live` = ticks > 0) with its side table `SOURCE_TILE_TABLE`
+  (W 3, capacity 2048: `y`, `x`, `live`); record functions `unit_kernels.sources_of` /
+  `source_tiles_of`, the way back `sources_to_host` (in place), the lockstep LISTS rows
+  `sources` / `source_tiles` (the tiles land first). A comparison row's append is all or
+  nothing (both tables' room checked first; a full table counted and refused by name).
+- THE SOURCES STAGE (applier stage 5, `unit_kernels.take_sources(store, applier, fields,
+  lists, source_out)`): `take_source_plane` -- the pending plane handed out into a device
+  (N, h, w) int32 array (zeros when None; the `source_taken` book says which) and zeroed,
+  each source added in row order (saturating, counted) and counted down, then the SPAN
+  COMPACTION (survivors in order, their tiles moved down to a running cursor, starts
+  rewritten) -- the first compaction of a table with a side span.
+- THE HAND-OVER: `ResidentFields.div_source` (the dict key "div_source"),
+  `eos_step_resident(..., d_div_source)`, `run_resident_batch(..., div_source_dev=)`,
+  `ResidentBatch.step(take_sources=)`: given, the EOS copies the device-taken source device to
+  device and does not read the engines' `eos.div_source`; the played tick passes none and
+  uploads as before (Class P, the digest gates equal).
+- BULK GAS: `topo::inject_gas_n_vec` with the pair `ge_payload_bulk_gas` / `_rail`; the
+  tiles a FLAT disc minus `aperture_blocked`; a deposit whose slice would pass int32 on any
+  tile is checked first (`inject_core_fits`) and refused whole by name
+  (`applier.BulkGasOverflow`, the `bulk_refused` book).
+- ROWS (20, T 2798): per payload row `payload_generic`, `_air_mode`, `_air_disc_r`,
+  `_heat_r2`, `_source_r2`, `_source_total_q`, `_expansion_live`, `_expansion_ticks`,
+  `_smoke_live`, `_soot_units_q`, `_heat_base_q`, `_bulk_slice`, `_bulk_q`, `_bulk_radius_q`,
+  `_bulk_temp_q`; scalars `payload_src_explosion_smoke`, `blast_smoke_noise_q`,
+  `blast_air_q` (6: `blast_air_settings()`, read once per table build, not per call),
+  `blast_s_max_q`, `bulk_t_rails`. Each through a door function of the law, added as a pure
+  refactor (pins and goldens equal): `blast_expansion.source_total_q` / `expansion_r2`,
+  `payloads.heat_base_q` / `soot_units_q`, `blast_air.disc_reach`. No product needed reporting.
+- BOOKS: `div_source_sat_hits`, `div_source_cut_q`, `ge_payload_bulk_gas`,
+  `ge_payload_bulk_gas_rail`, `bulk_refused`, `source_taken`; PLANE `div_source`.
+- THE FAN-OUT was left out: the walks and deposits are serial on thread 0 (measured in the
+  benchmark doc's P7c.2 section: 1.0 ms the frag, 3.9 ms the C4, flat in N).
+- CHOICES where the design was silent: the walk marks then reads its box row-major (order-free,
+  so the sorted result needs no sort); the smoke factors recomputed at the smoke edit, not
+  stored; one SOURCES stage handing out a device plane (the `source_taken` book for None);
+  the hand-over a device-to-device copy into the EOS scratch, the played tick untouched; bulk
+  gas refused whole on overflow; the span compaction written inside the stage (its host twin
+  is `take_source_plane` itself); `door_rows` packs noisy edits beside a fixed MatchDraws.
+- TWIN LEDGER: the corpus (300 ticks) detonates nothing, so no twin traces `payloads.py`,
+  `physics.py` or `blast_air.py` (their `[not_twinned]` reasons name the device form and the
+  gate); ship_demo's frag (tick 456 of 500) is detonated on the card by the gate's SHIP part.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): `blast_air.disc_tiles` raises
+  (numpy broadcast) on a centre more than its radius above or left of the grid -- an
+  explosive row detonated there crashes `execute_payload` (the probe keeps such centres
+  within the served range; the device serves them); `inject_bulk_gas` writes its first
+  tiles and then raises OverflowError on a tile past int32 (not atomic; the device refuses
+  the whole deposit first); a strength blast in vacuum walks nothing (vacuum is outside the
+  open mask), so it deposits no heat, no smoke and no source at all, and its air read is the
+  empty read (heat factor 1); the air read's per-tile scale reads only walked (non-vacuum)
+  tiles, so vacuum lowers a strength blast's heat only through the thin air beside it.
+- THE GATES (`tests/cuda_unit_payloads_check.py`, wrapper `tests/test_cuda_unit_payloads.py`;
+  CPU `tests/test_payload_device_rows.py`): TABLES (every new row, 1 m and 1/3 m); WALK
+  (1 080 walks and disc reads on 24 random maps and ship_demo / airlock_demo / playground:
+  the tile set and its order, the heat factor, all-one, every smoke factor; an 18-branch
+  census: every seed rule, vacuum and off-grid centres, a clipped box, gaps, walls, grilles,
+  thin / starved / airless air); PROBE (300 synthetic lists, all 36 rows, DETONATE and
+  RESOLVE, a 54-branch census incl. the walk's seeds, the air read, a saturation, a later-ticks
+  source, bulk gas' guard, TILES noisy and scaled, a noisy scaled DISC); RACE (N = 8 envs
+  walking strength blasts in one launch); DISC; SOURCES (288 env-ticks of the SOURCES stage
+  == `take_source_plane`, N = 1 / 2 / 3: the hand-out, plane, table, tile table, books; an
+  8-branch census: none pending, overlap, last tick, a survivor moved down, saturation);
+  BULK (a deposit past int32: the reference raises, the device refuses by name, nothing
+  written); SCENE (14 row sets, nine of them the P7c.2 rows: all 144 (call site, row) pairs;
+  a 22-branch census incl. the shipped frag thrown and killing, a wall stopping a walk and
+  a walk round through a gap, a blast walking a tile it destroyed, thin and starved air,
+  two sources alive and overlapping, a source alive 30 ticks after its blast, bulk gas into
+  a sealed room and against a blocked aperture); BATCH N = 2 / 8 (the disc set and a
+  strength set); PADDING; OVERFLOW (8 lists incl. the two source tables); REFUSE (every row
+  applied; a PAYLOAD without its door or a multi-tick source without its tables faults,
+  nothing written); CHAINED (the four call-site groups in three row sets, 90 ticks, sources
+  alive up to 45 ticks, the host `execute_payload` run 0 times); SHIP (ship_demo's bots 500
+  ticks shadowed to the end with the frag on the card; chained, no replay, host calls 0);
+  HANDOVER (resident ship_demo N = 1 and 2, 40 ticks: the twin's slot 7 reads only the
+  device-taken source -- its host head takes nothing -- equal to the uploaded reference
+  every tick). Every gate broken once (the patch's report: 28 single-site breaks, 27 red; the
+  one green, every env walking env 0's scratch list, is a race no gate can force: each
+  block reads its own writes back through its L1, so the outputs never mixed).
+
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 
 - **Actions** = the intent buffer `(N, U, A)` int32 whose columns are

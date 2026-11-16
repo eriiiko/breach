@@ -1104,13 +1104,20 @@ def part_resolve():
     dl.stage_lists([recs])
     if dl.records()[0] != [want]:
         fail("payload: the device's list is not the record")
+    # #29 P7c.2: every payload row has its device form (applier.PAYLOAD_REFUSALS
+    # is empty); a PAYLOAD walked without the lists it writes (the edit door,
+    # the claims, the noise list, the blast log) FAULTS by name, nothing written
+    p0 = _planes(sim.gmap)
+    planes = _dev_planes([p0])
     try:
-        unit_kernels.resolve(st, dl, _dev_planes([_planes(sim.gmap)]), ring)
-        fail("payload: the applier applied a PAYLOAD record")
-    except applier.EffectRefused as ex:
-        if "PAYLOAD" not in str(ex):
-            fail(f"payload: the refusal does not name PAYLOAD: {ex}")
-        census["PAYLOAD refused by name at the apply"] += 1
+        unit_kernels.resolve(st, dl, planes, ring)
+        fail("payload: the applier applied a PAYLOAD record without its lists")
+    except applier.ApplierFault as ex:
+        if "RESOLVE" not in str(ex):
+            fail(f"payload: the fault does not name the stage: {ex}")
+        if any(not np.array_equal(planes[n].get()[0], p0[n]) for n in p0):
+            fail("payload: a PAYLOAD without its lists wrote a plane")
+        census["PAYLOAD without its lists faulted by name at the apply"] += 1
     # 5. FACE and an unknown world call: refused at the record function
     fx = SimultaneousEffects()
     fx.face(W.w["A"], 5)
@@ -1126,7 +1133,7 @@ def part_resolve():
     need = ("kind HIT", "kind STATUS", "kind PUSH", "kind CHEW",
             "armor: a packet's AP against a non-zero armor",
             "the landing's result differs from at once",
-            "forward != reversed (ring and planes)", "PAYLOAD refused by name at the apply",
+            "forward != reversed (ring and planes)", "PAYLOAD without its lists faulted by name at the apply",
             "FACE refused at the record function", "world call refused at the record function")
     for k in need:
         if not census.get(k):

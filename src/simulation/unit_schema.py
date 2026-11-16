@@ -1413,6 +1413,64 @@ VENT_TABLE = ObjectTable(name="vent", columns=VENT_SCHEMA, capacity=VENT_CAPACIT
 OBJECT_TABLES = OBJECT_TABLES + (DUCT_TABLE, VENT_TABLE)   # #29 P6b.2
 
 
+# ---------------------------------------------------------------------------
+# #29 P7c.2: THE BLAST SOURCES (``GameMap.expansions``: a comparison row's
+# multi-tick divergence source, ``blast_expansion.start_expansion`` /
+# ``take_source_plane``) and their side table of walked tiles
+# ---------------------------------------------------------------------------
+#: Sources alive at once per env: storage (a comparison row lives at most
+#: ``expansion_ticks - 1`` ticks; the gate scenes keep under a dozen alive).
+SOURCE_CAPACITY = 32
+#: Walked tiles over all of an env's live sources: storage (a radius-5 walk on
+#: open floor holds 69 tiles); it also bounds one source's walk.
+SOURCE_TILE_CAPACITY = 2048
+
+
+def _source_tiles(e) -> list:
+    """A source's walked tiles, row-major (``reach_tiles``' order)."""
+    return [(int(t[0]), int(t[1])) for t in e[0]]
+
+
+def _build_source_tile(attrs: dict):
+    return (attrs["y"], attrs["x"])
+
+
+def _build_source(attrs: dict):
+    return [list(attrs["tiles"]), attrs["s_q"], attrs["ticks"]]
+
+
+#: THE source tile side table: the sources' walked tiles concatenated in list
+#: order, each walk row-major. Every row is live (a dead source's tiles leave
+#: with it at the span compaction).
+SOURCE_TILE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("y", _enc_int, get=lambda t: t[0]),
+    TableColumn("x", _enc_int, get=lambda t: t[1]),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+SOURCE_TILE_TABLE = ObjectTable(name="source_tile", columns=SOURCE_TILE_SCHEMA,
+                                capacity=SOURCE_TILE_CAPACITY, live="live",
+                                build=_build_source_tile)
+
+#: THE blast-source table (``GameMap.expansions``, list order: the order
+#: ``take_source_plane`` adds them in): the per-tile source ``s_q`` (Q16 1/s),
+#: the ``ticks`` still to deliver, the span into the source tile table and
+#: ``live`` (``ticks > 0``: every host entry is live, the take drops the rest).
+SOURCE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("s_q", _enc_int, get=lambda e: e[1]),
+    TableColumn("ticks", _enc_int, get=lambda e: e[2]),
+    TableColumn("tile_start", _enc_int),
+    TableColumn("tile_count", _enc_int),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=lambda e: int(e[2]) > 0),
+)
+SOURCE_TABLE = ObjectTable(
+    name="source", columns=SOURCE_SCHEMA, capacity=SOURCE_CAPACITY, live="live",
+    build=_build_source,
+    spans=(SideSpan("tiles", "source_tile", "tile_start", "tile_count",
+                    _source_tiles, SOURCE_TILE_CAPACITY),))
+
+OBJECT_TABLES = OBJECT_TABLES + (SOURCE_TILE_TABLE, SOURCE_TABLE)   # #29 P7c.2
+
+
 def charge_record(c) -> tuple:
     """One planted charge as its integer row (flat, :data:`CHARGE_SCHEMA`
     order)."""
@@ -1443,3 +1501,5 @@ __all__ += ["SideSpan", "DOOR_CAPACITY", "DOOR_TILE_CAPACITY", "DoorRow",
 __all__ += ["DUCT_CAPACITY", "VENT_CAPACITY", "VENT_N_TRACE", "VENT_ROLES",
             "filter_names", "DuctRow", "VentRow", "DUCT_SCHEMA", "DUCT_TABLE",
             "VENT_SCHEMA", "VENT_TABLE"]
+__all__ += ["SOURCE_CAPACITY", "SOURCE_TILE_CAPACITY", "SOURCE_TILE_SCHEMA",
+            "SOURCE_TILE_TABLE", "SOURCE_SCHEMA", "SOURCE_TABLE"]

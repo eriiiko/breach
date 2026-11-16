@@ -506,12 +506,14 @@ DOOR_SOURCES = None
 def _door_sources():
     """The device producers' edit sources: the spray's (combat._SRC_SPRAY_*)
     and, #29 P7c.1, the payload function's (physics._SRC_EXPLOSION,
-    payloads._SRC_PAYLOAD_GAS / _IGNITE / _HEAT). An edit of any other source
-    inside a gated walk is an interleave, refused by name."""
+    payloads._SRC_PAYLOAD_GAS / _IGNITE / _HEAT; #29 P7c.2 the blast smoke,
+    physics._SRC_EXPLOSION_SMOKE). An edit of any other source inside a gated
+    walk is an interleave, refused by name."""
     from simulation import combat, payloads, physics
     return {int(combat._SRC_SPRAY_HEAT), int(combat._SRC_SPRAY_GAS),
             int(physics._SRC_EXPLOSION), int(payloads._SRC_PAYLOAD_GAS),
-            int(payloads._SRC_PAYLOAD_IGNITE), int(payloads._SRC_PAYLOAD_HEAT)}
+            int(payloads._SRC_PAYLOAD_IGNITE), int(payloads._SRC_PAYLOAD_HEAT),
+            int(physics._SRC_EXPLOSION_SMOKE)}
 
 
 #: The tags of a combined door record (#29 P7c.1: a DISC edit has many tile
@@ -813,6 +815,45 @@ def _wide_fields(name):
                            for j in range(c.width))
     return f
 
+
+# #29 P7c.2: THE BLAST-SOURCE TABLE and its tile side table as lists
+# (``GameMap.expansions`` through ``unit_kernels.sources_of`` /
+# ``source_tiles_of``): staged as inputs, compared as outputs and, in the
+# chained form, LANDED back onto the map's own list in place
+# (``unit_kernels.sources_to_host``): the tile table lands first (a stash),
+# the source table then lands both.
+_SOURCE_TILE_STASH: dict = {}
+
+
+def _sources_records(sim, obj):
+    return unit_kernels.sources_of(sim)
+
+
+def _source_tiles_records(sim, obj):
+    return unit_kernels.source_tiles_of(sim)
+
+
+def _source_tiles_land(sim, obj, recs):
+    _SOURCE_TILE_STASH[id(sim)] = [tuple(int(x) for x in r) for r in recs]
+
+
+def _sources_land(sim, obj, recs):
+    tiles = _SOURCE_TILE_STASH.pop(id(sim), None)
+    if tiles is None:
+        tiles = unit_kernels.source_tiles_of(sim)
+    unit_kernels.sources_to_host(sim, recs, tiles)
+
+
+def _source_consume(obj):
+    raise RuntimeError("lockstep: the blast-source tables are landed, never consumed")
+
+
+LISTS["sources"] = ListDef(_sim_host, _sources_records, _source_consume,
+                           _door_device("source"), _table_fields("source"), None,
+                           _sources_land)
+LISTS["source_tiles"] = ListDef(_sim_host, _source_tiles_records, _source_consume,
+                                _door_device("source_tile"), _table_fields("source_tile"),
+                                None, _source_tiles_land)
 
 LISTS["ducts"] = ListDef(_sim_host, _ducts_records, _vent_consume, _door_device("duct"),
                          _wide_fields("duct"), None, _ducts_land)

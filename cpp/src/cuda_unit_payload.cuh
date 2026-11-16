@@ -2,10 +2,11 @@
 // ============================================================================
 // #29 P7c.1 -- THE PAYLOAD FUNCTION, the disc path (residency design 4.4c, the
 // cut table's P7c.1 row): payloads.execute_payload as a device function of the
-// per-env serial applier, for a [payloads.*] row with strength = 0, no bulk
-// gas and no explosive (the Device tables row payload_refuse is 0); any other
-// row is REFUSED by name (applier.PAYLOAD_REFUSALS: the strength path, bulk
-// gas, the air read, a multi-tick source are P7c.2's), nothing written.
+// per-env serial applier. #29 P7c.2 -- and every other row: the strength path
+// (THE generic explosion), the air read, the blast smoke, the multi-tick
+// source and bulk gas (the cut table's P7c.2 row); a row whose payload_refuse
+// is not 0 is REFUSED by name (applier.PAYLOAD_REFUSALS: none ships), nothing
+// written.
 //
 // THE ORACLE is src/simulation/payloads.py (execute_payload), physics.py
 // (apply_explosion), exchange.py (apply_blast_damage), flash_blind.py
@@ -37,15 +38,39 @@
 //      over solid and sight_screen) gets BLINDED for floor(ticks * f * g)
 //      unless it already holds a BLINDED at least that long (never shortened),
 //      through apply_status.
+//   4'. #29 P7c.2 THE AIR READ AND THE SOURCE, here: after the wall damage and
+//      before any later edit or deposit, so a tile the blast opened is open
+//      (cuda_unit_blast.cuh). A strength row walks its heat tiles
+//      (reach_tiles over heat_r2, the approach seed rule), reads the air over
+//      them, walks its source tiles (source_r2) and adds its one-tick source
+//      (start_source: the walk's count divides the row's total). A row with
+//      an explosive reads the air over blast_air.disc_tiles. A comparison row
+//      (expansion_m3, no strength) walks expansion_r2 with no approach, adds
+//      its first tick and appends its later ticks to the BLAST-SOURCE TABLE
+//      (its tiles first, into the side table: start_expansion).
+//   4''. the blast smoke: a strength row's FIXED-TOTAL TILES deposit
+//      (deposit_over_tiles: the soot's units over the walked tiles' linear
+//      weights, noisy, scaled by the air read); else emit_blast_smoke's
+//      add_explosion_smoke (blast_smoke_peak_q's peak over the LINEAR disc of
+//      its non-solid tiles; noisy, scaled by the disc read).
 //   5. gas_species -- emit_gas: the disc's claims (channel = the slice), then
 //      the LINEAR ADD DISC edit into that gas slice.
-//   6. ignite_radius > 0 -- ignite_ring: the flame's LINEAR MAX DISC edit
+//   5'. bulk_gas -- inject_bulk_gas: every tile of the FLAT bulk_radius disc
+//      not aperture_blocked, through topo::inject_gas_n_vec with its own book
+//      pair (payload_bulk_gas / _rail); a tile whose slice would pass int32
+//      refuses the WHOLE deposit by name (BulkGasOverflow; the reference
+//      raises OverflowError), checked before its first write.
+//   6. a strength row: the heat claims over the walked tiles, then the
+//      FIXED-TOTAL TILES heat (heat_base_q x the air read's heat factor);
+//      else ignite_radius > 0 -- ignite_ring: the flame's LINEAR MAX DISC edit
 //      (IGNITE_CLAMP), the heat claims, the FLAT heat DISC edit (IGNITE_HEAT).
-//   7. heat_amount > 0 -- deposit_heat: the heat claims, the LINEAR ADD DISC.
+//   7. heat_amount > 0 -- deposit_heat: the heat claims, the LINEAR ADD DISC
+//      (its amount times the heat factor when the row read the air).
 //   (ExplosionEvent is render-only: no device form, dropped as elsewhere.)
 // Every edit goes through THE DEVICE EDIT DOOR (cuda_edit_door.cuh), every
-// claim onto THE CLAIMS LIST; the walk is thread 0's (the fan-out over the
-// block's threads is P7c.2's).
+// claim onto THE CLAIMS LIST; the walk is thread 0's. #29 P7c.2: the walks
+// and the deposits stay SERIAL -- the fan-out over the block's threads was
+// left out (the measured cost: docs/residency_benchmark_2026-11-07.md).
 //
 // FAULTS: the record's operands (the payload row, the centre within
 // +-2^20, the lists and the ring present) and every disc wall's new hp
@@ -61,6 +86,7 @@
 #include "applier_layout.h"         // GENERATED: PAYLOAD's fields, the books
 #include "cuda_edit_door.cuh"       // the door's DISC / TILE forms, the claims
 #include "cuda_topology.cuh"        // destroy_wall, TopoEnv
+#include "cuda_unit_blast.cuh"      // #29 P7c.2: the walk, the air read, the source
 #include "cuda_unit_damage.cuh"     // apply_packet, the event sinks
 #include "cuda_unit_sight.cuh"      // has_los
 #include "object_tables_layout.h"   // GENERATED: the noise list, the blast log
@@ -78,7 +104,8 @@ using namespace unit_events;
 //: field_edit.EditMode.
 constexpr int64_t MODE_ADD = 0, MODE_REMOVE = 1, MODE_MAX = 2;
 //: The result of apply_payload.
-enum PayloadResult { PAYLOAD_APPLIED = 0, PAYLOAD_FAULT = 1, PAYLOAD_REFUSED = 2 };
+enum PayloadResult { PAYLOAD_APPLIED = 0, PAYLOAD_FAULT = 1, PAYLOAD_REFUSED = 2,
+                     PAYLOAD_BULK_REFUSED = 3 };
 
 //: The 3x3 wave stencil (physics.apply_explosion): (ky, kx, kw) of entry k,
 //: in its order (0, 0, 4), (-1, 0, 2), (1, 0, 2), (0, -1, 2), (0, 1, 2),
@@ -108,6 +135,12 @@ struct PayloadReach {
     RecordSink* claims;          // nullptr: none -> a fault
     RecordSink* noise;
     RecordSink* blast;
+    // #29 P7c.2: the walks' scratch (nullptr: a row that walks, reads the air
+    // or deposits bulk gas FAULTS), the blast-source table and its tile side
+    // table (nullptr: a comparison row of more than one tick FAULTS)
+    const unit_blast::Scratch* scratch = nullptr;
+    RecordSink* sources = nullptr;
+    RecordSink* source_tiles = nullptr;
 };
 
 __device__ __forceinline__ int64_t centre_tile(int64_t pos_q, int64_t fp) {
@@ -152,6 +185,21 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
         R.blast == nullptr)
         return PAYLOAD_FAULT;
     if (abs64(fy) > edit_door::DISC_CENTRE_MAX || abs64(fx) > edit_door::DISC_CENTRE_MAX)
+        return PAYLOAD_FAULT;
+    // #29 P7c.2: what the strength path, the air read and the source need
+    const bool generic = tab[UNIT_TAB_PAYLOAD_GENERIC + p] != 0;
+    const int64_t air_mode = tab[UNIT_TAB_PAYLOAD_AIR_MODE + p];
+    const bool exp_live = tab[UNIT_TAB_PAYLOAD_EXPANSION_LIVE + p] != 0;
+    const int64_t exp_ticks = tab[UNIT_TAB_PAYLOAD_EXPANSION_TICKS + p];
+    if ((generic || air_mode != 0 || exp_live || tab[UNIT_TAB_PAYLOAD_BULK_SLICE + p] >= 0) &&
+        R.scratch == nullptr)
+        return PAYLOAD_FAULT;
+    if (exp_live && exp_ticks > 1 && (R.sources == nullptr || R.source_tiles == nullptr))
+        return PAYLOAD_FAULT;
+    const bool has_appr = rec[APPLIER_PAYLOAD_HAS_APPROACH] != 0;
+    const int64_t ay = rec[APPLIER_PAYLOAD_APPROACH_Y], ax = rec[APPLIER_PAYLOAD_APPROACH_X];
+    if (has_appr &&
+        (abs64(ay) > edit_door::DISC_CENTRE_MAX || abs64(ax) > edit_door::DISC_CENTRE_MAX))
         return PAYLOAD_FAULT;
     const int64_t radius = tab[UNIT_TAB_PAYLOAD_RADIUS + p];
     const int64_t r2 = radius * radius;
@@ -323,6 +371,115 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
             if (changed) R.touched[r] = 1;
         }
     }
+    // ---- 4'. the air read and the source (cuda_unit_blast.cuh) ------------------
+    const unit_blast::Scratch* S = R.scratch;
+    int nh = 0;                         // the walked heat tiles (a strength row)
+    int64_t heat_scale = ONE;           // read_blast_air's heat factor
+    bool all_one = true;                // read_blast_air's smoke plane is None
+    const int64_t r2h = tab[UNIT_TAB_PAYLOAD_HEAT_R2 + p];
+    if (generic) {
+        nh = unit_blast::reach(E, fy, fx, r2h, has_appr, ay, ax, *S, S->heat);
+        heat_scale = unit_blast::air_read(E, tab, S->heat, nh, &all_one);
+        const int ns = unit_blast::reach(E, fy, fx, tab[UNIT_TAB_PAYLOAD_SOURCE_R2 + p],
+                                         has_appr, ay, ax, *S, S->src);
+        if (ns > 0)                                                   // start_source
+            unit_blast::add_source(
+                E, tab, S->src, ns,
+                fixedpoint::div_round_q(tab[UNIT_TAB_PAYLOAD_SOURCE_TOTAL_Q + p], ns), B);
+    } else if (air_mode == 1) {
+        const int nd =
+            unit_blast::disc_tiles(E, fy, fx, tab[UNIT_TAB_PAYLOAD_AIR_DISC_R + p], S->heat);
+        heat_scale = unit_blast::air_read(E, tab, S->heat, nd, &all_one);
+    }
+    if (exp_live) {                                                   // start_expansion
+        const int ns = unit_blast::reach(E, fy, fx, tab[UNIT_TAB_PAYLOAD_SOURCE_R2 + p], false,
+                                         0, 0, *S, S->src);
+        if (ns > 0) {
+            const int64_t s_q =
+                fixedpoint::div_round_q(tab[UNIT_TAB_PAYLOAD_SOURCE_TOTAL_Q + p], ns);
+            unit_blast::add_source(E, tab, S->src, ns, s_q, B);
+            if (exp_ticks > 1) {
+                RecordSink& st = *R.source_tiles;
+                RecordSink& sr = *R.sources;
+                const bool fit_t = *st.count + ns <= st.cap, fit_r = *sr.count + 1 <= sr.cap;
+                if (!fit_t || !fit_r) {                 // all or nothing, counted
+                    if (!fit_t) atomicAdd(st.dropped, 1ULL);
+                    if (!fit_r) atomicAdd(sr.dropped, 1ULL);
+                } else {
+                    const int64_t start = *st.count;
+                    for (int k = 0; k < ns; ++k) {
+                        const int64_t t[OBJ_SOURCE_TILE_W] = {S->src[k] / w, S->src[k] % w, 1};
+                        emit_record(st, t);
+                    }
+                    int64_t row[OBJ_SOURCE_W];
+                    row[OBJ_SOURCE_COL_S_Q] = s_q;
+                    row[OBJ_SOURCE_COL_TICKS] = exp_ticks - 1;
+                    row[OBJ_SOURCE_COL_TILE_START] = start;
+                    row[OBJ_SOURCE_COL_TILE_COUNT] = ns;
+                    row[OBJ_SOURCE_COL_LIVE] = 1;
+                    emit_record(sr, row);
+                }
+            }
+        }
+    }
+    // ---- 4''. the blast smoke -----------------------------------------------------
+    const int64_t noise_q = tab[UNIT_TAB_BLAST_SMOKE_NOISE_Q];
+    const int64_t smoke_slice = tab[UNIT_TAB_PAYLOAD_SMOKE_SLICE];
+    const int64_t src_smoke = tab[UNIT_TAB_PAYLOAD_SRC_EXPLOSION_SMOKE];
+    const int32_t* HT = S != nullptr ? S->heat : nullptr;
+    auto lin_w = [&](int k) -> int64_t {                // linear_weights
+        const int64_t y = HT[k] / w - fy, x = HT[k] % w - fx;
+        return fixedpoint::falloff_round_q(ONE, y * y + x * x, r2h);
+    };
+    int64_t norm = 0;
+    if (generic) {
+        for (int k = 0; k < nh; ++k) {
+            const int64_t wk = lin_w(k);
+            if (wk < 0) return PAYLOAD_FAULT;           // never in the proved range
+            norm += wk;
+        }
+        const int64_t total = tab[UNIT_TAB_PAYLOAD_SOOT_UNITS_Q + p];
+        if (total > 0 && nh > 0 && norm > 0) {          // deposit_over_tiles
+            const int64_t amount_q =
+                fixedpoint::div_round_q(total * 2 * ONE, 2 * ONE - noise_q);
+            edit_door::door_tiles_edit(
+                D, e, tab, EDQ_F_SMOKE, smoke_slice, MODE_ADD, amount_q, src_smoke, HT, nh, norm,
+                noise_q, !all_one, lin_w,
+                [&](int k) -> int64_t { return unit_blast::air_smoke_q(E, tab, HT[k]); });
+        }
+    } else if (tab[UNIT_TAB_PAYLOAD_SMOKE_LIVE + p] != 0) {     // add_explosion_smoke
+        const int64_t r_q = tab[UNIT_TAB_PAYLOAD_RADIUS_Q + p];
+        const int64_t units = tab[UNIT_TAB_PAYLOAD_SOOT_UNITS_Q + p];
+        if (radius > 0 && units > 0) {
+            const edit_door::DiscBox b = edit_door::disc_box(fy, fx, r_q, h, w);
+            int64_t wsum = 0;                           // blast_smoke_peak_q
+            for (int64_t r = b.r0; r <= b.r1; ++r)
+                for (int64_t c = b.c0; c <= b.c1; ++c) {
+                    const int64_t d2 = ((r - fy) * (r - fy) + (c - fx) * (c - fx)) << 32;
+                    if (!(d2 < b.r2) || E.solid[(int)(r * w + c)]) continue;
+                    const int64_t wq = fixedpoint::falloff_round_q(ONE, d2, b.r2);
+                    if (wq < 0) return PAYLOAD_FAULT;
+                    wsum += wq;
+                }
+            const int64_t peak =
+                wsum > 0 ? fixedpoint::div_round_q(units * ONE * 2 * ONE,
+                                                   wsum * (2 * ONE - noise_q))
+                         : 0;
+            if (peak > 0) {
+                int64_t cf, lo, hi;
+                policy_clamp(tab, EDQ_F_SMOKE, &cf, &lo, &hi);
+                if (!edit_door::door_disc_edit_ns(
+                        D, e, EDQ_F_SMOKE, smoke_slice, MODE_ADD, peak, src_smoke, fy, fx, r_q,
+                        edit_door::FALLOFF_LINEAR, cf, lo, hi, noise_q,
+                        air_mode != 0 && !all_one,
+                        [&](int i) -> int64_t {
+                            return E.solid[i] ? ONE : unit_blast::air_smoke_q(E, tab, i);
+                        },
+                        h, w))
+                    return PAYLOAD_FAULT;
+            }
+        }
+    }
     // ---- 5. emit_gas -------------------------------------------------------------
     const int64_t gas_id = tab[UNIT_TAB_PAYLOAD_GAS_ID + p];
     if (gas_id >= 0) {
@@ -334,8 +491,51 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
                        h, w))
             return PAYLOAD_FAULT;
     }
-    // ---- 6. ignite_ring ----------------------------------------------------------
-    if (tab[UNIT_TAB_PAYLOAD_IGNITE_LIVE + p] != 0) {
+    // ---- 5'. inject_bulk_gas ------------------------------------------------------
+    const int64_t bulk_slice = tab[UNIT_TAB_PAYLOAD_BULK_SLICE + p];
+    if (bulk_slice >= 0) {
+        if (bulk_slice >= E.n_gases || E.n_gases > topo::GAS_MAX) return PAYLOAD_FAULT;
+        const int64_t add_q = tab[UNIT_TAB_PAYLOAD_BULK_Q + p];
+        if (add_q > 0) {
+            int64_t add[topo::GAS_MAX];
+            for (int g = 0; g < topo::GAS_MAX; ++g) add[g] = 0;
+            add[bulk_slice] = add_q;
+            // bulk_gas_tiles: the FLAT DISC minus _aperture_blocked, row-major
+            const edit_door::DiscBox b =
+                edit_door::disc_box(fy, fx, tab[UNIT_TAB_PAYLOAD_BULK_RADIUS_Q + p], h, w);
+            int nb = 0;
+            for (int64_t r = b.r0; r <= b.r1; ++r)
+                for (int64_t c = b.c0; c <= b.c1; ++c) {
+                    if (!((((r - fy) * (r - fy) + (c - fx) * (c - fx)) << 32) < b.r2)) continue;
+                    if (topo::aperture_blocked(E, (int)r, (int)c)) continue;
+                    S->src[nb++] = (int32_t)(r * w + c);
+                }
+            for (int k = 0; k < nb; ++k)                // the overflow, before any write
+                if (!topo::inject_core_fits(E, tab, S->src[k], add)) return PAYLOAD_BULK_REFUSED;
+            const topo::InjectVecBooks bk{APPLIER_BOOK_GE_PAYLOAD_BULK_GAS,
+                                          APPLIER_BOOK_GE_PAYLOAD_BULK_GAS_RAIL};
+            for (int k = 0; k < nb; ++k) {
+                int64_t t_new = 0, rail = 0;
+                if (topo::inject_gas_n_vec(E, tab, S->src[k] / w, S->src[k] % w, add,
+                                           tab[UNIT_TAB_PAYLOAD_BULK_TEMP_Q + p],
+                                           tab[UNIT_TAB_BULK_T_RAILS + 0],
+                                           tab[UNIT_TAB_BULK_T_RAILS + 1], &t_new, &rail, B,
+                                           bk) != 0)
+                    return PAYLOAD_FAULT;
+            }
+        }
+    }
+    // ---- 6. a strength row's heat, else ignite_ring --------------------------------
+    if (generic) {
+        edit_door::tiles_claims(*R.claims, unit_events::UNIT_CREDIT_HEAT, HT, nh, att, w);
+        const int64_t total =
+            fixedpoint::div_round_q(tab[UNIT_TAB_PAYLOAD_HEAT_BASE_Q + p] * heat_scale, ONE);
+        if (total > 0 && nh > 0 && norm > 0)            // deposit_over_tiles, no noise
+            edit_door::door_tiles_edit(
+                D, e, tab, EDQ_F_HEAT, -1, MODE_ADD,
+                fixedpoint::div_round_q(total * 2 * ONE, 2 * ONE), tab[UNIT_TAB_PAYLOAD_SRC_HEAT],
+                HT, nh, norm, 0, false, lin_w, [&](int) -> int64_t { return 1; });
+    } else if (tab[UNIT_TAB_PAYLOAD_IGNITE_LIVE + p] != 0) {
         const int64_t ir_q = tab[UNIT_TAB_PAYLOAD_IGNITE_RADIUS_Q + p];
         const int64_t src_i = tab[UNIT_TAB_PAYLOAD_SRC_IGNITE];
         if (!edit_door::door_disc_edit(
@@ -352,8 +552,10 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
     // ---- 7. deposit_heat ---------------------------------------------------------
     if (tab[UNIT_TAB_PAYLOAD_HEAT_LIVE + p] != 0) {
         const int64_t hr_q = tab[UNIT_TAB_PAYLOAD_HEAT_RADIUS_Q + p];
+        int64_t heat_q = tab[UNIT_TAB_PAYLOAD_HEAT_Q + p];
+        if (air_mode != 0) heat_q = fixedpoint::div_round_q(heat_q * heat_scale, ONE);
         edit_door::disc_claims(*R.claims, unit_events::UNIT_CREDIT_HEAT, fy, fx, hr_q, att, h, w);
-        if (!disc_edit(D, e, tab, EDQ_F_HEAT, -1, MODE_ADD, tab[UNIT_TAB_PAYLOAD_HEAT_Q + p],
+        if (!disc_edit(D, e, tab, EDQ_F_HEAT, -1, MODE_ADD, heat_q,
                        tab[UNIT_TAB_PAYLOAD_SRC_HEAT], fy, fx, hr_q, edit_door::FALLOFF_LINEAR,
                        h, w))
             return PAYLOAD_FAULT;

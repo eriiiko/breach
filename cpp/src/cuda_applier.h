@@ -81,6 +81,11 @@ public:
     void download_books(int64_t* host);
     // The rows a walk changed: a (N, U) byte scratch grown to `n` rows.
     uint8_t* touched(int n_units);
+    // #29 P7c.2: the blast walks' scratch, grown to `n_cells` (h * w) cells
+    // per env: a zeroed mark byte per cell, then three int32 lists (the
+    // BFS queue, the heat walk, the source walk), each (N, n_cells).
+    void* walk_scratch(int n_cells);
+    int walk_cells() const { return walk_cells_; }
 
 private:
     UnitRecordList list_;
@@ -90,6 +95,8 @@ private:
     int64_t* h_books_ = nullptr;       // pinned
     uint8_t* d_touched_ = nullptr;
     size_t touched_cap_ = 0;
+    void* d_walk_ = nullptr;           // #29 P7c.2: the walks' scratch
+    int walk_cells_ = 0;
     void* staged_ = nullptr;           // cudaEvent_t: the last stage copy
 };
 
@@ -135,6 +142,15 @@ struct ApplierLists {
     // vent table (VENT_TABLE); null for the other stages.
     ObjectTable* duct_table = nullptr;
     ObjectTable* vent_table = nullptr;
+    // #29 P7c.2: THE BLAST-SOURCE TABLE (unit_schema.SOURCE_TABLE) and its
+    // tile side table (SOURCE_TILE_TABLE): a PAYLOAD of a comparison row
+    // appends to them; the SOURCES stage walks and compacts them. And the
+    // SOURCES stage's hand-out: `source_out` the device address of an
+    // (N, h, w) int32 plane (0: none), every env's taken plane (zeros when
+    // the pending plane held none: the source_taken book says which).
+    ObjectTable* source_table = nullptr;
+    ObjectTable* source_tiles = nullptr;
+    std::uintptr_t source_out = 0;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on
@@ -152,6 +168,15 @@ void tick_end_clears(int n_env, int h, int w,
 
 // The compiled layout (what simulation.applier.DeviceApplier checks).
 const char* applier_fingerprint();
+
+// #29 P7c.2, TEST-ONLY: the blast's WALK and AIR READ (cuda_unit_blast.cuh)
+// on the env's planes, per env its K queries `q` (N, K, 7: fy, fx, r2,
+// has_approach, ay, ax, mode -- 0 reach_tiles over the open mask with r2, 1
+// blast_air.disc_tiles with the radius r2) serially; `out` (N, K, 3 + 2 M):
+// the tile count, the heat factor, all_one, the first M cells (row-major
+// indices), then their smoke factors. Writes no plane.
+void blast_probe(FieldApplier& a, const UnitTablesDevice& tables, const ApplierPlanes& planes,
+                 const int64_t* q, int K, int M, int64_t* out);
 
 // TEST-ONLY (cuda_topology_probe.cu): the staged list's records read as
 // (y, x, new material) in their first three arg slots: `material = m;

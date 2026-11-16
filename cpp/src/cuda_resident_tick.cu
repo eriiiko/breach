@@ -662,7 +662,8 @@ int resident_eos(const EngineList& engs, const ResidentFields& f,
         a.ambient ? P<const bool>(f.is_ambient) : nullptr,
         a.ambient ? P<const int32_t>(f.sponge_sigma) : nullptr,
         a.ambient ? P<const int32_t>(f.sponge_udamp) : nullptr,
-        P<const bool>(f.thermal_solid), P<int64_t>(f.gas_energy), books);
+        P<const bool>(f.thermal_solid), P<int64_t>(f.gas_energy), books,
+        P<const int32_t>(f.div_source));   // #29 P7c.2: the device-taken source
     S.eos_cons.clear();
     S.eos_trace_gi.clear();
     for (int g = 0; g < f.n_gases; ++g) {
