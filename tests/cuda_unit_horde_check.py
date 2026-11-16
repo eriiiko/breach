@@ -647,6 +647,8 @@ class Census:
                 cands = horde.candidates(field, y, x)
                 if len(cands) >= 2 and cands[0][0] == cands[1][0]:
                     c["descent: a tie broken by the parity order"] += 1
+                    if cands[0][2] != y and cands[1][2] != y or                             cands[0][3] != x and cands[1][3] != x:
+                        c["descent: a tie between opposite neighbours"] += 1
                 r = o(gmap, field, y, x, fp, state)
                 if r is not None and r[0] == "step" and cands and (r[1], r[2]) != \
                         (cands[0][2], cands[0][3]):
@@ -772,6 +774,7 @@ NEED = (
     "walk: clock", "walk: step", "walk: wait", "walk: bash", "walk: at the sprint",
     "sprint: sight clear", "sprint: sight blocked",
     "descent: a tie broken by the parity order",
+    "descent: a tie between opposite neighbours",
     "descent: the first candidate refused (fear or a body)",
     "fear: a feared block refused",
     "bash: a strike", "bash: the cadence holds it", "bash: the door tile broke",
@@ -839,9 +842,39 @@ def run_shadow(name, drivers, ticks, slots=None, twins=None, n_units=None, need_
     return acts, n
 
 
+class RidgeScene:
+    """Two awake zombies each on a RIDGE of the prey field: Zv between a prey
+    north and a prey south at equal path distance (an even cell: N and S tie,
+    the vertical-first order decides), Zh between a prey west and a prey east
+    (an odd cell: W and E tie). 1/2 m tiles, an open room."""
+
+    def __init__(self):
+        from simulation.factions import ZOMBIE_TEAM
+        from simulation.unit import Unit
+        tm = np.full((40, 60), MAT_HULL, dtype=np.int32)
+        tm[1:39, 1:59] = MAT_AIR
+        self.sim = sim = _bare_sim(tm, TILE, (), physics=False)
+        for i in range(2):
+            sim.add_unit(Unit(f"decoy{i}", x=5.0, y=5.0, team=0))
+        sim.units[:] = []
+        for n, x, y in (("Mn", 10, 2), ("Ms", 10, 34), ("Mw", 30, 20), ("Me", 55, 20)):
+            u = Unit(n, x=float(x), y=float(y), team=0)
+            sim.add_unit(u)
+            u.current_hp = 1.0e9
+        for n, x, y in (("Zv", 10, 18), ("Zh", 42, 19)):
+            z = Unit(n, x=float(x), y=float(y), team=ZOMBIE_TEAM)
+            sim.add_unit(z)
+            z.zombie_activated = True
+
+    def tick(self):
+        self.sim.step()
+        self.sim.set_paused(False)
+
+
 def part_scene():
     census = Census().install()
     try:
+        run_shadow("ridge scene", [RidgeScene()], 120)
         run_shadow("scene v0 (conductor)", [HordeScene(0)], SCENE_TICKS,
                    twins=[HordeScene(0)])
         run_shadow("scene v1 (controller)", [HordeScene(1, controller=True)], SCENE_TICKS)

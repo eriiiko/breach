@@ -2328,7 +2328,7 @@ decision moved. One line each:
   (273 floods: seven shipped levels x three masks x fp 1..4 x three goal sets, random maps of five
   densities, a map changed between floods, a batch of three maps); SCENE (the horde scenes, three
   variants, 420 ticks each, conductor and controller latches, shadowed every tick with an unhooked twin;
-  a 52-branch census, one named unreachable); CACHE (the device's own cache across 420 ticks, three
+  a 45-branch census, one named unreachable); CACHE (the device's own cache across 420 ticks, three
   scenes; ship_demo's 500); LEVELS (ship_demo bots 500 ticks with an unhooked twin, playground);
   BATCH N = 2 / 8 (a zombie-free env, env 0 not the largest); PADDING; OVERFLOW; REFUSE (the ring, the
   noise list); CHAINED (two scenes, ship_demo 500 ticks; the host zombie law run 0 times); CHAINED ALL
