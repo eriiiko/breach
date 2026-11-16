@@ -75,7 +75,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table |
+| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
 | `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
