@@ -71,6 +71,7 @@ and who must use it; this file holds the constraints the code cannot say.
 - A row whose effect on a unit is a PUSH hands the unit impulse law an impulse (`unit_impulse.add`) and owns no outcome of its own.
 - The heat row's felt temperature is ONE function, `exchange.felt_temperature`: the row calls it and so does the observation. Never a copy of the chain.
 - A swarm row names its `consumer` (`"swarm:<species>"`), has no Python response and is executed IN its species kernel (the last stage of slot 7); its `reads` are species-table fields the kernel's table rows carry. The future EXCHANGE-READ executor iterates `consumer == "unit"` rows only.
+- The `swarm_bite_dose` row (arc #63 P5a) is the unit side's ONLY read of the swarm: the footprint SUM of the bite-dose plane into `poison.dose`, uncredited (-1), cause `larva_bite`, at 9c3 after the gas poison row and before `poison.tick`; fused into the device 9c3 kernel (`cpp/src/cuda_unit_exchange.cu`) in the same patch as any change. Two bodies on one tile EACH take it in full (a larva under two boots bites both): never split. Immunity is `exchange.poison_immune` (resist 0) shared with the gas row, plus the dose door's zombie refusal: never a second immunity rule.
 
 ## Wind load on a body
 - THE read of what the air does to a unit (#140): dynamic pressure as the int `W = N_raw * (v^2 >> 16)` (Python ints: an int32 square wraps), max over the footprint's gas tiles; `footprint_wind` also hands back the force's DIRECTION. Never read the planes.

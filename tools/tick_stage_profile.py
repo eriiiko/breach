@@ -93,6 +93,7 @@ SLOT_WRAPS = (
     ("simulation.simulation", "apply_wind_force", "9c2 wind on units"),
     ("simulation.simulation", "apply_teargas_blind", "9c3 gas rows"),
     ("simulation.simulation", "apply_poison_dose", "9c3 gas rows"),
+    ("simulation.simulation", "apply_bite_dose", "9c3 gas rows"),   # arc #63 P5a
     # #29 PX: the poison law, right after the gas row (slot 9c3').
     ("simulation.poison", "tick", "9c3 gas rows"),
     ("simulation.simulation", "apply_temperature_ignition", "9d ignition"),

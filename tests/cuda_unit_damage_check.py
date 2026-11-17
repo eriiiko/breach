@@ -321,6 +321,17 @@ class LaneDriver:
         cd = self._add("CD", 27, c, hp=5000)                       # at the store
         cd.poison_x0 = poison.X_MAX - 4000
         self._add("ZD", 14, d, team=255)                           # zombie in gas
+        # arc #63 P5a: the larvae's bite (the swarm_bite_dose row, fused in
+        # 9c3): a pile under BT (dies of the bite), larvae under the zombie
+        # (immune), a few on WA's walk; the counts differ per variant
+        from simulation import swarm_fixed
+        half = swarm_fixed.FP_ONE >> 1
+        self._add("BT", 20, c, hp=3)
+        n = 6 + 2 * (self.variant % 3)
+        tiles = ([(21, c + 1)] * n + [(15, d + 1)] * 4
+                 + [(6 + 2 * i, a + 1) for i in range(3)])
+        self.sim.swarm.spawn("larva", [(tx << 16) + half for tx, _ in tiles],
+                             [(ty << 16) + half for _, ty in tiles], [0] * len(tiles))
 
     def _before_gas(self):
         from control_source import quantize_stick_direction
@@ -915,7 +926,10 @@ def _scene_facts(kind, pr, out):
     if kind == "gas":
         need = [(SLOT_9C3.label, "death"), (SLOT_9C3.label, "credited hit"),
                 (SLOT_9C3.label, "levels back to 0"), (SLOT_9C3.label, "blinded"),
-                (SLOT_9C3.label, "dosed rows")]
+                (SLOT_9C3.label, "dosed rows"),
+                # arc #63 P5a: the bite row's hits and its kill, by its cause
+                (SLOT_9C3.label, "UnitHitEvent", "larva_bite"),
+                (SLOT_9C3.label, "UnitKilledEvent", "larva_bite")]
         sat = pr.saturation()
         dev_ref = out.get(SLOT_9C3.label, (0, 0, 0))[2]
         print(f"scene gas: doses clipped at the body's store: host "

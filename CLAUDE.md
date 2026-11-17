@@ -76,7 +76,7 @@ strategy. Every rule below serves that.
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
 | `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
-| `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view |
+| `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view, bite-dose plane |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
 | `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
@@ -191,6 +191,7 @@ amends the rule file, never this line's length.
 | Brood entity | `swarm_brood` in `src/simulation/entities/zones.py` | Where swarm units start is a painted brood zone (species, count), never a seed column or a hand-placed unit list |
 | Brood spawn | `src/simulation/swarm_brood.py` (`spawn_broods`, called in `Simulation._reset_internal`) | THE load-time spawn of swarm units, keyed on (seed, brood ordinal, k); every match path passes it, never a second spawn site |
 | Swarm dot view | `renderer/swarm_dots.py` + `shaders/swarm_dots.vs` + `shaders/swarm_dots.fs` + `[debug] swarm_dots` | THE diagnostic picture of swarm units and their death flecks, render-only; the sim never reads it |
+| Bite-dose plane | `gmap.swarm_bite_dose` (`swarm.bite_plane`) + `swarm::bites_on` (`cpp/src/swarm.h`) + `exchange.apply_bite_dose` | THE swarm's bite: swarm output rebuilt every tick, read by the unit side only through the one coupling row into `poison.dose`; never a unit law reading a larva |
 
 ### Determinism gates
 
