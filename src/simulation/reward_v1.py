@@ -43,8 +43,8 @@ from simulation.ruleset import MatchRules
 #: sum) and the named term tables of :data:`PROFILES`.
 COUNTERS_PROFILE = "counters"
 
-#: The named profiles: term -> weight (design 6.2's sizes). "range" and
-#: "duel" (6.9) are rung 2's rows.
+#: The named profiles: term -> weight (design 6.2's sizes). "range" (6.9)
+#: is rung 2's row; "duel" is not written yet.
 PROFILES = {
     "fireteam": {
         "win": 10.0,
@@ -55,6 +55,20 @@ PROFILES = {
         "zombie_bar": 0.25,
         "ff_bar": -2.0,
         "ff_kill": -3.0,
+    },
+    # Rung 2's shooting range (#195 2c; design 6.9 "a target loses health;
+    # the clock"): fireteam's sizes where it has the term; the zombie and
+    # friendly-fire terms written as 0 so that a later room with a zombie or
+    # a team-mate cannot pay through them unnoticed.
+    "range": {
+        "win": 10.0,
+        "eliminated": -10.0,
+        "clock": -3.0,
+        "marine_bar": 1.0,
+        "marine_alive": 0.5,
+        "zombie_bar": 0.0,
+        "ff_bar": 0.0,
+        "ff_kill": 0.0,
     },
 }
 REWARD_PROFILES = (COUNTERS_PROFILE,) + tuple(PROFILES)

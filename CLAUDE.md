@@ -172,6 +172,7 @@ amends the rule file, never this line's length.
 | Blast log (device) | `unit_schema.BLAST_LOG_TABLE` on the object tables | THE device form of `GameMap.blast_log`, appended by the payload function in call order; never a second explosion hook |
 | Blast walk (device) | `cpp/src/cuda_unit_blast.cuh` | THE device `reach_tiles`, `read_blast_air`, `add_source` and `take_source_plane` (the applier's SOURCES stage); every device caller of a walk, an air read or the source goes through it, never its own walk |
 | Blast-source table | `unit_schema.SOURCE_TABLE` + `SOURCE_TILE_TABLE` | THE device form of `GameMap.expansions` (a comparison row's later ticks): appended by the PAYLOAD function, walked and span-compacted by the SOURCES stage; never a second source list |
+| Horde stage + field cache (device) | `cpp/src/cuda_unit_horde.cuh` + `src/simulation/horde_cache.py` | THE device slot 5: the applier's HORDE stage over the unit rows and ONE per-env field cache living across ticks; never a second flood, walker or cache |
 | Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
 | Timed charges and heat sources | `unit_schema.TIMED_CHARGE_TABLE` / `HEAT_SOURCE_TABLE` + `cpp/src/cuda_unit_hazards.cuh` | THE device form of slot 9e(d') and 9e(d''): every detonation applied at once through the one payload function; the heat chain bounded and refused by name past the blast log |
 | Entity section export | `unit_kernels.EntityExport` + `entities/serialize.record_head` / `record_tail` | THE digest's entity and signal sections from the device tables; never a second serializer |
@@ -313,6 +314,7 @@ amends the rule file, never this line's length.
 | Editor UI from registry | `tools/entity_editor_ui.py` | The registry IS the editor |
 | Baker / airtight / play-scratch | `tools/bake_level_art.py`, `tools/level_airtight.py`, `tools/play_scratch.py` | The only art path (golden-gated) / the level lint / the only editor→game bridge |
 | Level generators | `tools/gen_ship.py` (+ `tools/gen_explosion_studio.py`, the precedent) | A generated level is written through `level_lib`; `gen_ship` is THE ship generator, new generators replace its stage 1 |
+| Training rooms | `tools/gen_training_rooms.py` | THE writer of the learned soldiers' small levels, through `level_lib`; a new room shape is a function or a table row there, never a second tool |
 | Recipe library + resolver | `levels/recipes/` + `tools/levelgen_recipes.py` | The family-B grammar's data; a recipe never carries a physics number |
 | Archetype recipe + grammar | `levels/recipes/archetypes/` + `tools/ship_grammar.py` | A ship kind is one archetype file; the grammar is the only stage 1 of a recipe ship |
 | Layout stage | `tools/ship_layout.py` | A recipe ship's geometry is produced ONLY here; never a search or a second layouter |

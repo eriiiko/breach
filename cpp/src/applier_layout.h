@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "b5b651a2c2455ed3706375e5df688ff33e0c1e61ad6ec49b60abc34da7a3ea0b";
+constexpr const char* APPLIER_FINGERPRINT = "2a8fbfa34993983ec72aed91619fc28096d012d134c8647883a16e89b0914db0";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -90,29 +90,31 @@ constexpr int APPLIER_STAGE_TOPOLOGY = 0;
 constexpr bool APPLIER_STAGE_TOPOLOGY_LANDS = false;
 constexpr int APPLIER_STAGE_RESOLVE = 1;
 constexpr bool APPLIER_STAGE_RESOLVE_LANDS = true;
-constexpr int APPLIER_STAGE_EMIT = 2;
+constexpr int APPLIER_STAGE_HORDE = 2;
+constexpr bool APPLIER_STAGE_HORDE_LANDS = false;
+constexpr int APPLIER_STAGE_EMIT = 3;
 constexpr bool APPLIER_STAGE_EMIT_LANDS = false;
-constexpr int APPLIER_STAGE_LOGIC = 3;
+constexpr int APPLIER_STAGE_LOGIC = 4;
 constexpr bool APPLIER_STAGE_LOGIC_LANDS = false;
-constexpr int APPLIER_STAGE_DOOR_INPUTS = 4;
+constexpr int APPLIER_STAGE_DOOR_INPUTS = 5;
 constexpr bool APPLIER_STAGE_DOOR_INPUTS_LANDS = false;
-constexpr int APPLIER_STAGE_PUMPS = 5;
+constexpr int APPLIER_STAGE_PUMPS = 6;
 constexpr bool APPLIER_STAGE_PUMPS_LANDS = false;
-constexpr int APPLIER_STAGE_VENTS = 6;
+constexpr int APPLIER_STAGE_VENTS = 7;
 constexpr bool APPLIER_STAGE_VENTS_LANDS = false;
-constexpr int APPLIER_STAGE_DOORS = 7;
+constexpr int APPLIER_STAGE_DOORS = 8;
 constexpr bool APPLIER_STAGE_DOORS_LANDS = false;
-constexpr int APPLIER_STAGE_TIMED_CHARGES = 8;
+constexpr int APPLIER_STAGE_TIMED_CHARGES = 9;
 constexpr bool APPLIER_STAGE_TIMED_CHARGES_LANDS = false;
-constexpr int APPLIER_STAGE_DETONATE = 9;
+constexpr int APPLIER_STAGE_DETONATE = 10;
 constexpr bool APPLIER_STAGE_DETONATE_LANDS = false;
-constexpr int APPLIER_STAGE_HEAT_SOURCES = 10;
+constexpr int APPLIER_STAGE_HEAT_SOURCES = 11;
 constexpr bool APPLIER_STAGE_HEAT_SOURCES_LANDS = false;
-constexpr int APPLIER_STAGE_SWAP = 11;
+constexpr int APPLIER_STAGE_SWAP = 12;
 constexpr bool APPLIER_STAGE_SWAP_LANDS = false;
-constexpr int APPLIER_STAGE_SOURCES = 12;
+constexpr int APPLIER_STAGE_SOURCES = 13;
 constexpr bool APPLIER_STAGE_SOURCES_LANDS = false;
-constexpr int APPLIER_N_STAGES = 13;
+constexpr int APPLIER_N_STAGES = 14;
 
 // execute_payload's kind values (a PAYLOAD record's kind index).
 constexpr int64_t APPLIER_PAYLOAD_KIND_EXPLOSION = 0;
@@ -158,18 +160,22 @@ constexpr int APPLIER_BOOK_BULK_REFUSED = 30;
 constexpr int APPLIER_BOOK_SOURCE_TAKEN = 31;
 constexpr int APPLIER_BOOK_SIGNAL_REFUSED = 32;
 constexpr int APPLIER_BOOK_SIGNAL_WRITES = 33;
-constexpr int APPLIER_BOOK_TIMED_FIRED = 34;
-constexpr int APPLIER_BOOK_HEAT_DEATHS = 35;
-constexpr int APPLIER_BOOK_HEAT_DEPOSITS = 36;
-constexpr int APPLIER_BOOK_HEAT_REFUSED = 37;
-constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 38;
-constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 39;
-constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 40;
-constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 41;
-constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 42;
-constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 43;
-constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 44;
-constexpr int APPLIER_N_BOOKS = 45;
+constexpr int APPLIER_BOOK_HORDE_FLOODS = 34;
+constexpr int APPLIER_BOOK_HORDE_BITES = 35;
+constexpr int APPLIER_BOOK_HORDE_BASHES = 36;
+constexpr int APPLIER_BOOK_HORDE_REFUSED = 37;
+constexpr int APPLIER_BOOK_TIMED_FIRED = 38;
+constexpr int APPLIER_BOOK_HEAT_DEATHS = 39;
+constexpr int APPLIER_BOOK_HEAT_DEPOSITS = 40;
+constexpr int APPLIER_BOOK_HEAT_REFUSED = 41;
+constexpr int APPLIER_BOOK_TRACE_CLIP_0 = 42;
+constexpr int APPLIER_BOOK_TRACE_CLIP_1 = 43;
+constexpr int APPLIER_BOOK_TRACE_CLIP_2 = 44;
+constexpr int APPLIER_BOOK_TRACE_CLIP_3 = 45;
+constexpr int APPLIER_BOOK_TRACE_CLIP_4 = 46;
+constexpr int APPLIER_BOOK_TRACE_CLIP_5 = 47;
+constexpr int APPLIER_BOOK_TRACE_CLIP_6 = 48;
+constexpr int APPLIER_N_BOOKS = 49;
 
 // The topology seam's planes: the launch's pointer table order.
 constexpr int APPLIER_PLANE_MATERIAL = 0;
@@ -277,5 +283,34 @@ constexpr int64_t SIGNAL_AIRLOCK_RESEAL = 4;
 constexpr int64_t SIGNAL_AIRLOCK_REPRESSURIZE = 5;
 constexpr int64_t SIGNAL_AIRLOCK_FAULT = 6;
 constexpr int SIGNAL_N_AIRLOCK = 7;
+
+// #29 P7d: the horde's field cache (header, field keys, kinds, mask
+// planes) and the HORDE stage's latch row (then one column per unit row).
+constexpr int APPLIER_HORDE_FIELD_CAP = 16;
+constexpr int APPLIER_HORDE_HDR_MASK_BUILT = 0;
+constexpr int APPLIER_HORDE_HDR_HAS_SERIAL = 1;
+constexpr int APPLIER_HORDE_HDR_SERIAL = 2;
+constexpr int APPLIER_HORDE_HDR_FLOODS = 3;
+constexpr int APPLIER_HORDE_HDR_N_FIELDS = 4;
+constexpr int APPLIER_HORDE_HDR_W = 5;
+constexpr int APPLIER_HORDE_KEY_KIND = 0;
+constexpr int APPLIER_HORDE_KEY_FP = 1;
+constexpr int APPLIER_HORDE_KEY_SY = 2;
+constexpr int APPLIER_HORDE_KEY_SX = 3;
+constexpr int APPLIER_HORDE_KEY_W = 4;
+constexpr int APPLIER_HORDE_LATCH_TICK = 0;
+constexpr int APPLIER_HORDE_LATCH_SERIAL = 1;
+constexpr int APPLIER_HORDE_LATCH_MODE = 2;
+constexpr int APPLIER_HORDE_LATCH_W = 3;
+constexpr int64_t APPLIER_HORDE_KIND_PREY = 0;
+constexpr int64_t APPLIER_HORDE_KIND_PREY_FEARLESS = 1;
+constexpr int64_t APPLIER_HORDE_KIND_NOISE = 2;
+constexpr int APPLIER_HORDE_MASK_TILE_OK = 0;
+constexpr int APPLIER_HORDE_MASK_TILE_OK_FEARLESS = 1;
+constexpr int APPLIER_HORDE_MASK_BASHABLE = 2;
+constexpr int APPLIER_HORDE_N_MASKS = 3;
+constexpr int64_t APPLIER_HORDE_MODE_CONDUCTOR = -1;
+constexpr int64_t APPLIER_HORDE_MODE_EMPTY = 0;
+constexpr int64_t APPLIER_HORDE_MODE_SET = 1;
 
 }  // namespace applier

@@ -343,6 +343,21 @@ implementation agents and critics stay one at a time.
   refuse the agent's own shrink of a task, which was the right outcome:
   such a change is the lead's, with the measurement beside it, and Erik is
   told.
+- **2026-11-17, patch 2c stage A (the first real run, built and measured
+  small).** One Opus agent. What the next patch should know: (1) the card
+  SPILLS for the training Python on the Home Desktop (9 216 MiB allocated
+  on the 8 GB card without an error); `agents/run.py` caps the process at
+  the free memory, so every run on the card goes through it; (2) a scratch
+  script that starts a farm needs `if __name__ == "__main__":` (spawn
+  re-imports it; without the guard it hung silently, no workers, no
+  output); (3) the env's `info["level"]` after a step is already the NEXT
+  match's: a per-level count must take the level from the view before the
+  step, and only a stand-in that varies the level can test that; (4) an
+  untrained soldier kills itself (grenades, fire) in a large share of the
+  range's matches: the outcome group is mostly the -10 of elimination at
+  the start; (5) at 4 workers x 16 matches, full width on the card, a round
+  of 2 048 decisions took 12 s (env step 67 %, answers 15 %, learning 16 %):
+  the farm is the bottleneck, as the design said.
 
 ## 11. Running rung 1 (for the orchestrator session)
 
@@ -362,3 +377,21 @@ are that session:
    into memory (`project_rl_agent_design_session.md`).
 4. Add one dated line to the run log below when a patch teaches something
    the next one should know.
+- **2026-11-17, patch 2c stage B (the first real run; report
+  `docs/rl_agent_rung2_report_2c_2026-11-17.md`).** The soldier cleared all
+  six hand rooms after 81 minutes (1.9 M decisions) at 391 learning
+  decisions a second, with the design's numbers untouched. What the next
+  run should know: (1) WATCH a trained match before believing a curve: the
+  corner room was "solved" by a frag thrown through two walls (a grenade's
+  flight asks no wall; Erik's to rule on, #215), found only by driving the
+  saved weights in-process and printing the events; (2) a task whose
+  target always stands on the same tile is answered by a memorised walk,
+  and its matches shrink to one or two seconds, after which the round
+  measures nothing: the seeded rooms (2g) come before the range is a gate;
+  (3) the range does not shape the trigger or the hand (a pull at a wall
+  and a plant at the feet cost nothing in a two-second match); (4) 128
+  matches buy no speed on 16 workers and fill the computer's memory (15.3
+  of 15.9 GB); 8 workers give three quarters of 16; (5) start a long run
+  detached (`Start-Process`), with a background waiter on its pid, so an
+  editor restart cannot kill it; (6) keep a run's folder outside the scratch
+  folder (`C:/Users/steen/breach_runs/`).

@@ -361,6 +361,28 @@ __device__ inline bool destroy_wall(const TopoEnv& E, const int64_t* tab, int fy
     return true;
 }
 
+// #29 P7d (moved from k_applier's CHEW, a pure refactor): combat.chew_wall
+// with the damage already quantized per call (`live` false for a
+// wall_damage <= 0: the no-op) -- a no-op on air; the wall's hp less the
+// damage, destroy_wall at <= 0. Returns CHEW_NOOP, CHEW_APPLIED or CHEW_FAULT
+// (a tile outside the grid, where numpy would wrap or raise; a new hp outside
+// int32): nothing written on a fault. The applier's CHEW and slot 5's door
+// bash both call it.
+enum ChewResult { CHEW_NOOP = 0, CHEW_APPLIED = 1, CHEW_FAULT = 2 };
+
+__device__ inline int chew_wall(const TopoEnv& E, const int64_t* tab, int64_t y, int64_t x,
+                                int64_t damage_q, bool live, int64_t* B) {
+    if (!live) return CHEW_NOOP;
+    if (y < 0 || y >= E.h || x < 0 || x >= E.w) return CHEW_FAULT;
+    const int i = (int)y * E.w + (int)x;
+    if ((int64_t)E.material[i] == tab[UNIT_TAB_TOPO_MAT_AIR]) return CHEW_NOOP;
+    const int64_t hp = (int64_t)E.wall_hp[i] - damage_q;
+    if (hp < -2147483648LL || hp > 2147483647LL) return CHEW_FAULT;   // int32's range
+    E.wall_hp[i] = (int32_t)hp;
+    if (hp <= 0) destroy_wall(E, tab, (int)y, (int)x, B);
+    return CHEW_APPLIED;
+}
+
 // ============================================================================
 // #29 P6b.1 -- SEAL / UNSEAL / CAN_SEAL, THE GAS-N PRIMITIVES and
 // _APERTURE_BLOCKED as device functions (design 4.4c, the cut table's P6b.1

@@ -28,10 +28,26 @@ once (``last_*``) for the value after the last stored decision.
 The collector holds its OWN copy of the soldier's network; the learner
 hands it weights (:meth:`Collector.set_weights`) and it hands back a batch:
 one hand-over each way (patch 2d adds the header).
+
+WHAT A ROUND OF COLLECTING MEASURED (patch 2c's per-round line; read by
+``agents/run.py``, never a second walk over the environment):
+:attr:`Collector.seconds` -- the wall seconds of the round split into the
+environment's step (waiting for the workers), the network's answers (the
+forward pass, the draw and the answers' copy off the card) and the copying
+(the served rows into the batch, the defaults, the step's rewards and the
+bookkeeping); :attr:`Collector.log` -- the matches that ended in the round
+(:class:`EndedMatch`: per env and learning team, the level it was played on,
+how it ended read off the books' counters of the team's rows, and the
+reward per group its rows were paid over the whole match, rounds before
+included), the books' counters summed over the learning rows
+(``env.layout.counters`` order) and the masked choices counted on driven
+living rows.
 """
 from __future__ import annotations
 
 import copy
+import time
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -46,7 +62,39 @@ from simulation import action_spec_v1 as A
 
 class MaskedChoiceSent(RuntimeError):
     """The environment counted a masked choice on a row the trainer drives
-    (it must never: the draw is under the served masks)."""
+    (it must never: the draw is under the served masks). ``count``: the
+    masked choices counted on the driven living rows in that step."""
+
+    def __init__(self, msg: str, count: int = 0):
+        super().__init__(msg)
+        self.count = int(count)
+
+
+#: How a match ended for a learning team, read off the books' counters of
+#: its rows at the match's last step (``reward_v1.BOOK_COUNTERS``), in this
+#: order of precedence; "other" when none was counted (the stand-in, which
+#: keeps no counters).
+OUTCOMES = ("won", "clock", "eliminated", "other")
+
+
+@dataclass
+class EndedMatch:
+    """One match that ended, for one learning team: the env, the team, the
+    level index it was played on, how it ended (:data:`OUTCOMES`) and the
+    reward per group its rows were paid over the whole match."""
+    env: int
+    team: int
+    level: int
+    outcome: str
+    reward: np.ndarray
+
+
+def _outcome(counters, names) -> str:
+    """How a match ended for one team, from its rows' summed counters."""
+    for o in OUTCOMES[:-1]:
+        if o in names and counters[names.index(o)] > 0:
+            return o
+    return OUTCOMES[-1]
 
 
 def default_actions(masks: dict, n_heads: int) -> np.ndarray:
@@ -83,6 +131,12 @@ class Collector:
         self._first = np.ones(R, dtype=bool)
         self._story = np.ones(R, dtype=bool)
         self.decisions = 0            # learning decisions stored, all rounds
+        self._level = None            # each env's level at the last view
+        self._paid = None             # (R, groups): set at start()
+        self._names = tuple(getattr(env.layout, "counters", ()))
+        self.seconds = {"env_step": 0.0, "answers": 0.0, "copy": 0.0}
+        self.log = {"ended": [], "counters": np.zeros(len(self._names)),
+                    "masked": 0}
 
     # -- the hand-over: weights in --------------------------------------
     def set_weights(self, weights: dict) -> None:
@@ -95,8 +149,11 @@ class Collector:
         rounds nothing is reset."""
         obs, info = self.env.reset()
         self._obs, self._full = obs, info["full_view"]
+        self._level = np.asarray(info["level"]).copy()
         self._first[...] = True
         self._story[...] = True
+        self._paid = np.zeros((self.rows.n_rows,
+                               self.env.layout.reward_shape_tail[0]))
 
     def _slot(self, batch: Batch, t: int):
         """The batch's arrays for step ``t`` by served key (the soldier's
@@ -116,12 +173,52 @@ class Collector:
         return obs, full
 
     @torch.no_grad()
-    def _act(self, obs: dict):
+    def _act(self, obs: dict) -> dict:
+        """The soldier's answers to ``obs`` as numpy arrays (copied off the
+        card: the round's "answers" seconds include that wait)."""
         x = as_tensors({k: obs[k] for k in SOLDIER_KEYS}, self.device)
         masks = {k: v.to(self.device)
                  for k, v in masks_of({k: obs[k] for k in A.MASK_KEYS}).items()}
         out, _ = self.soldier(x)
-        return draw(out, masks, self.generator)
+        d = draw(out, masks, self.generator)
+        return {k: getattr(d, k).cpu().numpy()
+                for k in ("actions", "used", "logp_heads", "logp",
+                          "arg_mask")}
+
+    def _begin_round(self) -> None:
+        for k in self.seconds:
+            self.seconds[k] = 0.0
+        self.log = {"ended": [], "counters": np.zeros(len(self._names)),
+                    "masked": 0}
+
+    def _log_step(self, info: dict, ended, reward) -> None:
+        """The round log's share of one step (module text): the counters
+        over the learning rows; the reward paid so far in each row's match;
+        for every env that ended, one :class:`EndedMatch` per learning team
+        (its level is the one the ended match was shown on, from the view
+        before the step: ``info["level"]`` is already the next match's)."""
+        rows, S = self.rows, self.rows.n_slots
+        L = len(rows.teams)
+        cnt = None
+        if self._names:
+            got = {"c": np.zeros((rows.n_rows, len(self._names)),
+                                 dtype=np.float64)}
+            rows.gather({"c": info["counters"]}, got, ("c",))
+            cnt = got["c"]
+            self.log["counters"] += cnt.sum(axis=0)
+        self._paid += reward
+        for e in np.flatnonzero(ended):
+            for li, t in enumerate(rows.teams):
+                r0 = (int(e) * L + li) * S
+                block = slice(r0, r0 + S)
+                c = (cnt[block].sum(axis=0) if cnt is not None
+                     else np.zeros(0))
+                self.log["ended"].append(EndedMatch(
+                    env=int(e), team=int(t), level=int(self._level[e]),
+                    outcome=_outcome(c, self._names),
+                    reward=self._paid[block].sum(axis=0).copy()))
+                self._paid[block] = 0.0
+        self._level = np.asarray(info["level"]).copy()
 
     def collect(self, batch: Batch) -> Batch:
         """Play ``batch.T`` decisions in every match; fill and return
@@ -129,20 +226,28 @@ class Collector:
         if self._obs is None:
             raise RuntimeError("collect() before start()")
         env, rows = self.env, self.rows
+        self._begin_round()
+        sec = self.seconds
+        clock = time.perf_counter
         for t in range(batch.T):
+            t0 = clock()
             obs, _ = self._gather_step(batch, t)
             batch.first[t] = self._first
             batch.value_row[t] = (batch.in_match[t] != 0) & self._story
+            t1 = clock()
             d = self._act(obs)
-            batch.actions[t] = d.actions.cpu().numpy()
-            batch.used[t] = d.used.cpu().numpy()
-            batch.logp_heads[t] = d.logp_heads.cpu().numpy()
-            batch.logp[t] = d.logp.cpu().numpy()
-            batch.arg_mask[t] = d.arg_mask.cpu().numpy()
+            t2 = clock()
+            batch.actions[t] = d["actions"]
+            batch.used[t] = d["used"]
+            batch.logp_heads[t] = d["logp_heads"]
+            batch.logp[t] = d["logp"]
+            batch.arg_mask[t] = d["arg_mask"]
             sent = default_actions({k: self._obs[k] for k in A.MASK_KEYS},
                                    len(A.HEADS))
             rows.scatter(batch.actions[t], sent)
+            t3 = clock()
             new_obs, reward, _, _, info = env.step(sent)
+            t4 = clock()
             self._check_masked(info, batch.valid[t])
             got = {"reward": np.zeros_like(batch.reward[t]),
                    "rows_ended": np.zeros(rows.n_rows, dtype=bool)}
@@ -159,7 +264,15 @@ class Collector:
             self._first = ended.copy()
             self._obs, self._full = new_obs, info["full_view"]
             self.decisions += int(batch.valid[t].sum())
+            self._log_step(info, np.asarray(info["ended"], dtype=bool),
+                           got["reward"])
+            t5 = clock()
+            sec["copy"] += (t1 - t0) + (t3 - t2) + (t5 - t4)
+            sec["answers"] += t2 - t1
+            sec["env_step"] += t4 - t3
+        t6 = clock()
         self._gather_last(batch)
+        sec["copy"] += clock() - t6
         return batch
 
     def _gather_last(self, batch: Batch) -> None:
@@ -174,11 +287,15 @@ class Collector:
         got = {"m": np.zeros(self.rows.n_rows, dtype=np.int64)}
         self.rows.gather({"m": info["masked_choices"]}, got, ("m",))
         bad = np.flatnonzero((got["m"] != 0) & (np.asarray(valid) != 0))
+        n = int(got["m"][bad].sum()) if len(bad) else 0
+        self.log["masked"] += n
         if len(bad):
             r = int(bad[0])
             raise MaskedChoiceSent(
                 f"{int(got['m'][r])} masked choice(s) sent on a driven "
-                f"living row ({self.rows.name(r)}); {len(bad)} row(s) in all")
+                f"living row ({self.rows.name(r)}); {len(bad)} row(s) in all",
+                count=n)
 
 
-__all__ = ["MaskedChoiceSent", "default_actions", "Collector"]
+__all__ = ["MaskedChoiceSent", "OUTCOMES", "EndedMatch", "default_actions",
+           "Collector"]
