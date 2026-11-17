@@ -143,5 +143,6 @@ def test_every_position_of_a_match_is_its_q16_view():
             p = first.setdefault(u.id, (u.x_q, u.y_q))
             if p != (u.x_q, u.y_q):
                 seen["moved"] += 1
-    run_match(level, spec, on_tick=tick)
+    import _pinned_matches      # the shared play of this match (#205)
+    _pinned_matches.watch("bots_v1", tick)
     assert seen["ticks"] >= 200 and seen["moved"] > 100

@@ -53,7 +53,13 @@ struct ResidentFields {
         // #29 P5: the water substeps' planes and the ambient sponge statics
         // (the EOS stage), so every slot-7 stage reads one struct.
         flow_vx = 0, flow_vy = 0, floor_height = 0,
-        sponge_sigma = 0, sponge_udamp = 0;
+        sponge_sigma = 0, sponge_udamp = 0,
+        // #29 P7c.2: the blast's divergence source ON THE DEVICE -- the (N, h,
+        // w) int32 plane the applier's SOURCES stage handed out (the device
+        // take_source_plane). Given, the EOS stage reads every env's source
+        // from it (a device-to-device copy) and NOT from its engine's
+        // eos.div_source; 0 (the played tick) = the host upload, unchanged.
+        div_source = 0;
     int h = 0, w = 0, n_gases = 0;
     // #29 P5: the batch's env count — every address above is the batch's
     // (N, ...) buffer (env 0's, the envs contiguous). 1 = the played game.

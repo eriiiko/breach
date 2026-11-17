@@ -68,7 +68,12 @@ SLOT_WRAPS = (
     ("simulation.simulation", "Simulation._consume_direct_intents", "1b intents"),
     ("simulation.unit_orders", "apply_requests", "1b' orders"),
     ("simulation.exposure", "decay_units", "1c exposure decay"),
-    ("simulation.simulation", "Simulation._update_projectiles", "2 projectiles"),
+    # #29 P7.0b: slot 2 split in two calls (the device port takes them one
+    # at a time: the rounds P7a.2, the grenades P7b).
+    ("simulation.simulation", "Simulation._update_grenades", "2 grenades"),
+    # #29 P7a.2: the label times the rounds' MARCH (phase A); their landing
+    # is the resolve, timed under "4c resolve" like every resolve.
+    ("simulation.simulation", "Simulation._march_rounds", "2' rounds"),
     ("simulation.simulation", "tick_statuses", "2b statuses"),
     ("simulation.simulation", "Simulation._update_player_movement", "3 movement"),
     ("simulation.simulation", "process_shooting", "4 shooting"),
@@ -91,16 +96,27 @@ SLOT_WRAPS = (
     # #29 PX: the poison law, right after the gas row (slot 9c3').
     ("simulation.poison", "tick", "9c3 gas rows"),
     ("simulation.simulation", "apply_temperature_ignition", "9d ignition"),
-    ("simulation.simulation", "Simulation._signal_emit", "9e entities"),
-    ("simulation.simulation", "sample_sensors", "9e entities"),
-    ("simulation.simulation", "sweep_logic_nodes", "9e entities"),
-    ("simulation.simulation", "Simulation._resolve_door_inputs", "9e entities"),
-    ("simulation.simulation", "sweep_pumps", "9e entities"),
-    ("simulation.simulation", "sweep_vents", "9e entities"),
-    ("simulation.simulation", "sweep_doors", "9e entities"),
-    ("simulation.simulation", "sweep_timed_charges", "9e entities"),
+    # #29 P6b.3: slot 9e's signal sub-steps each have their own label (their
+    # device forms are the applier's EMIT, LOGIC, DOOR_INPUTS, PUMPS and SWAP
+    # stages; the harness shadows each by it).
+    ("simulation.simulation", "Simulation._signal_emit", "9e(a) signals"),
+    ("simulation.simulation", "sample_sensors", "9e(a) signals"),
+    ("simulation.simulation", "sweep_logic_nodes", "9e(b) logic"),
+    ("simulation.simulation", "Simulation._resolve_door_inputs", "9e(c) door inputs"),
+    ("simulation.simulation", "sweep_pumps", "9e(d) pumps"),
+    # #29 P6b.2: the vent circulation has its own label (its device form is
+    # the applier's VENTS stage; a twin row names its slot by it).
+    ("simulation.simulation", "sweep_vents", "9e(d) vents"),
+    # #29 P6b.1: the door sweep has its own label (its device form is the
+    # applier's DOORS stage; a twin row names its slot by it).
+    ("simulation.simulation", "sweep_doors", "9e(d) doors"),
+    # #29 P6b.4: the timed charges and the heat sources have their own labels
+    # (their device forms are the applier's TIMED_CHARGES and HEAT_SOURCES
+    # stages; the harness shadows each by it). The last "9e entities" callables.
+    ("simulation.simulation", "sweep_timed_charges", "9e(d') timed charges"),
     ("simulation.charges", "tick", "9e(d') planted charges"),
-    ("simulation.simulation", "sweep_heat_sources", "9e entities"),
+    ("simulation.simulation", "sweep_heat_sources", "9e(d'') heat sources"),
+    ("simulation.signal_bus", "SignalBus.swap_node_signals", "9e(e) swap"),
     ("simulation.simulation", "Simulation._clear_tick_buffers", "tick-end clears"),
     ("simulation.unit_orders", "expire", "10' order expiry"),
     ("simulation.ruleset", "ContinuousRealtime.on_tick_end", "10 tick end (ruleset)"),

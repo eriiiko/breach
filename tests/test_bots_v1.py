@@ -486,9 +486,9 @@ def test_bots_v1_play_the_pre_g8p_pinned_match():
     renamed key read differently, a shared helper edited), or if the sim
     changed (then re-pin with the rationale)."""
     from test_zombie_control import _UnitStream
-    level = level_loader.load("ship_demo", str(ROOT / "levels"))
+    import _pinned_matches      # the shared play of this match (#205)
     stream = _UnitStream()
-    o = run_match(level, v1_spec(level), on_tick=stream)
+    o = _pinned_matches.watch("bots_v1", stream)
     got = dict(outcome=o.result.outcome, team=o.result.team,
                ticks=o.result.ticks, field_digest=o.field_digest,
                tick_digest=o.tick_digest, unit_stream=stream.h.hexdigest())

@@ -799,7 +799,7 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "field read: it derives overpressure geometrically (linear radius "
             "falloff from the detonation point) instead of sampling wave_p, "
             "and runs at DETONATION SITES (grenade fuse-out in "
-            "Simulation._update_projectiles; combat.process_door_explosives), "
+            "Simulation._update_grenades; combat.process_door_explosives), "
             "not at a fixed tick slot."
         ),
     ),

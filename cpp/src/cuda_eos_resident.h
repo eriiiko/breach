@@ -81,7 +81,10 @@ struct EosBooksDev {
 // `books` (no D2H here: the tick's one books D2H folds them). One counted 8-byte
 // D2H of max(n_sub) per tick (P9 replaces it with a WHILE node). `solver` is the
 // batch's config (a batch is homogeneous); `div_source_host` holds N entries,
-// each an env's (h, w) blast-source plane or nullptr. An ambient map runs only
+// each an env's (h, w) blast-source plane or nullptr. #29 P7c.2: `d_div_source`
+// (optional) the batch's (N, h, w) source ON THE DEVICE (the applier's SOURCES
+// stage: zeros where an env has none); given, it is copied device to device
+// and `div_source_host` is not read (the source is no longer uploaded). An ambient map runs only
 // at N = 1 (the sky bracket is the host's: ACCEPTED GAP). Returns max(n_sub).
 int eos_step_resident(
     const EOSSolver& solver,
@@ -98,7 +101,8 @@ int eos_step_resident(
     const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp,
     const bool* d_thermal_solid,
     int64_t* d_gas_energy,
-    const EosBooksDev& books);
+    const EosBooksDev& books,
+    const int32_t* d_div_source = nullptr);   // #29 P7c.2: the device-taken source
 
 // #29 P5: how many max(n_sub) reads the resident EOS made in this process (the
 // counted per-tick sync; the capture test names it as the one exception).

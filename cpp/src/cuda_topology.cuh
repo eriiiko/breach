@@ -38,7 +38,8 @@
 // book product past int64) writes nothing and is counted; the driver refuses
 // the run.
 //
-// Device-only header (CUDA types); included by the applier's TU only.
+// Device-only header (CUDA types); included by the applier's TU and its
+// TEST-ONLY probe (cuda_topology_probe.cu).
 // CLASS T: nothing in the played tick includes it.
 #include <cuda_runtime.h>
 #include <cstddef>
@@ -47,6 +48,7 @@
 #include "applier_layout.h"        // GENERATED: the planes, the books
 #include "fixed_point.h"           // the kit
 #include "gas_energy.h"            // THE gas energy seam (shared with the edit queue)
+#include "object_tables_layout.h"  // GENERATED: the door tile table's capacity (SPAN_MAX)
 #include "temperature_solver.h"    // conduction::cell_capacity_q (the solid books)
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
@@ -92,6 +94,19 @@ struct TopoEnv {
     int64_t* fuel_recip;
     int32_t* fire_T_ext_plane;
     int32_t* fuel_per_o2_plane;
+    // #29 P6b.1: seal_tiles' solver-owned planes, the float ripple pair (bit
+    // patterns) and the water depth (read only).
+    int32_t* wave_p;
+    int32_t* wind_x;
+    int32_t* wind_y;
+    int32_t* flow_vx;
+    int32_t* flow_vy;
+    uint32_t* ripple;           // float32 bits
+    uint32_t* ripple_v;         // float32 bits
+    int32_t* water_depth;
+    // #29 P7c.2: the blast's pending divergence source (Q16 1/s; the strength
+    // path's start_source / start_expansion and the SOURCES stage write it).
+    int32_t* div_source;
 
     __device__ int32_t& g(int slice, int i) const { return gas[(size_t)slice * n + i]; }
     __device__ int64_t bulk(int i) const { return (int64_t)g(o2, i) + (int64_t)g(n2, i); }
@@ -137,6 +152,15 @@ __device__ inline TopoEnv env_view(const PlanePtrs& P, int env, int h, int w, in
     E.fuel_recip = env_plane<int64_t>(P, APPLIER_PLANE_FUEL_RECIP, env, n);
     E.fire_T_ext_plane = env_plane<int32_t>(P, APPLIER_PLANE_FIRE_T_EXT_PLANE, env, n);
     E.fuel_per_o2_plane = env_plane<int32_t>(P, APPLIER_PLANE_FUEL_PER_O2_PLANE, env, n);
+    E.wave_p = env_plane<int32_t>(P, APPLIER_PLANE_WAVE_P, env, n);
+    E.wind_x = env_plane<int32_t>(P, APPLIER_PLANE_WIND_X, env, n);
+    E.wind_y = env_plane<int32_t>(P, APPLIER_PLANE_WIND_Y, env, n);
+    E.flow_vx = env_plane<int32_t>(P, APPLIER_PLANE_FLOW_VX, env, n);
+    E.flow_vy = env_plane<int32_t>(P, APPLIER_PLANE_FLOW_VY, env, n);
+    E.ripple = env_plane<uint32_t>(P, APPLIER_PLANE_RIPPLE, env, n);
+    E.ripple_v = env_plane<uint32_t>(P, APPLIER_PLANE_RIPPLE_V, env, n);
+    E.water_depth = env_plane<int32_t>(P, APPLIER_PLANE_WATER_DEPTH, env, n);
+    E.div_source = env_plane<int32_t>(P, APPLIER_PLANE_DIV_SOURCE, env, n);
     return E;
 }
 
@@ -335,6 +359,693 @@ __device__ inline bool destroy_wall(const TopoEnv& E, const int64_t* tab, int fy
     solid_books_cell(E, i, &solid_after);     // air: 0 (no thermal solid)
     B[APPLIER_BOOK_SOLID_DESTROY_WALL] += solid_after - solid_before;
     return true;
+}
+
+// ============================================================================
+// #29 P6b.1 -- SEAL / UNSEAL / CAN_SEAL, THE GAS-N PRIMITIVES and
+// _APERTURE_BLOCKED as device functions (design 4.4c, the cut table's P6b.1
+// row): GameMap.seal_tiles / unseal_tiles / can_seal_tiles, inject_gas_n /
+// extract_gas_n_vec (extract_gas_n is its bulk sum) / transfer_gas_n and
+// vent_system._aperture_blocked, integer for integer, on ONE env's planes.
+// The door sweep (cuda_unit_doors.cuh, the applier's DOORS stage) is their
+// first caller; P6b.2's vents and P6b.3's pumps call the primitives, never a
+// copy. The oracle is src/simulation/gamemap.py (vent_system.py for the
+// aperture); tests/cuda_unit_doors_check.py (part PROBE) holds them equal.
+//
+// A SPAN is `n` (y, x) pairs at `tiles[i * stride]`, `tiles[i * stride + 1]`,
+// ROW-MAJOR SORTED (GameMap._normalize_span's order: the caller normalizes;
+// a door's span is stored so). A span naming a tile twice is refused
+// (duplicate_tile, the normalizer's ValueError); an unsorted span is a FAULT
+// (the caller's duty); a span longer than SPAN_MAX is refused (span_too_long).
+//
+// THE REFUSAL PATH: every exception the Python raises BEFORE it mutates is a
+// code (applier_layout.h's APPLIER_SEAM_*, simulation/applier.SEAM_REFUSALS,
+// in _seal_blockers' order) and the function writes NOTHING. A FAULT -- an
+// operand past the proved range, where Python's ints would carry on -- is
+// found in a pre-pass and also writes nothing. Proved range (pre-checked on
+// every tile the call reads or writes): gas planes >= 0 (a negative trace
+// would raise mid-mutation in Python), |gas_energy| < 2^61, a donor's |T_abs|
+// < 2^28, T_AMB < 2^28, a solid book within int64; then every product and sum
+// below fits int64 (a bulk count < 2^32 times a T_abs < 2^28 is < 2^60, and a
+// cell takes at most four such terms).
+//
+// FLOATS: the ripple pair is written as the bit pattern of 0.0f (0u); the
+// seal's `permeability > 0.0` compare is the seal_mat_ok table row (made once
+// on the host from the same float the law reads). No float arithmetic here.
+//
+// BOOKS: each move books where gas_energy_move books (the call's channel, or
+// its diag_*_from / _to_nonacct twin), each clip of the counted trace
+// saturation trace_clip_<g>, the solid books seal / unseal; on_tile_changed's
+// own books as ever.
+// ============================================================================
+
+//: The longest span a seal / unseal takes (the door tile side table's capacity).
+constexpr int SPAN_MAX = object_tables::OBJ_DOOR_TILE_CAP;
+constexpr int64_t E_BOUND = (int64_t)1 << 61;
+constexpr int64_t T_BOUND = (int64_t)1 << 28;
+constexpr int64_t I32_LIMIT = (int64_t)1 << 31;   // int32 stores
+
+static_assert(APPLIER_BOOK_TRACE_CLIP_1 == APPLIER_BOOK_TRACE_CLIP_0 + 1,
+              "the trace clip books are one run, a slice each");
+
+//: The book channels of one gas_energy_move caller (GameMap.gas_energy_move's
+//: channel and its two diagnostic twins).
+struct MoveBooks {
+    int ch, from_nonacct, to_nonacct;
+};
+__device__ __forceinline__ MoveBooks seal_books() {
+    return MoveBooks{APPLIER_BOOK_GE_SEAL, APPLIER_BOOK_GE_DIAG_SEAL_FROM,
+                     APPLIER_BOOK_GE_DIAG_SEAL_TO};
+}
+__device__ __forceinline__ MoveBooks unseal_books() {
+    return MoveBooks{APPLIER_BOOK_GE_UNSEAL, APPLIER_BOOK_GE_DIAG_UNSEAL_FROM,
+                     APPLIER_BOOK_GE_DIAG_UNSEAL_TO};
+}
+__device__ __forceinline__ MoveBooks transfer_books() {
+    return MoveBooks{APPLIER_BOOK_GE_PUMP_TRANSFER, APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_FROM,
+                     APPLIER_BOOK_GE_DIAG_PUMP_TRANSFER_TO};
+}
+
+// GameMap._trace_slice.
+__device__ __forceinline__ bool trace_slice(const int64_t* tab, int g) {
+    return tab[UNIT_TAB_GAS_TRACE + g] != 0;
+}
+
+// GameMap.gas_t_abs_at.
+__device__ __forceinline__ int64_t t_abs_at(const TopoEnv& E, const int64_t* tab, int i) {
+    return (int64_t)E.temperature[i] + tab[UNIT_TAB_TOPO_T_AMB_Q];
+}
+
+// GameMap.gas_energy_move (the caller refreshes the mirrors).
+__device__ inline void energy_move(const TopoEnv& E, int src, int dst, int64_t dn,
+                                   int64_t t_abs, int64_t* B, MoveBooks mb) {
+    if (dn <= 0) return;
+    const int64_t de = dn * t_abs;
+    if (accountable(E, src)) {
+        E.gas_energy[src] -= de;
+        B[mb.ch] -= de;
+    } else {
+        B[mb.from_nonacct] += de;
+    }
+    if (accountable(E, dst)) {
+        E.gas_energy[dst] += de;
+        B[mb.ch] += de;
+    } else {
+        B[mb.to_nonacct] += de;
+    }
+}
+
+// GameMap.trace_store_sat on slice g of cell i (the clip booked; a negative
+// result was refused by the caller's pre-pass).
+__device__ __forceinline__ void trace_store_sat(const TopoEnv& E, int g, int i, int64_t add,
+                                                int64_t* B) {
+    int64_t clip = 0;
+    E.g(g, i) = fixedpoint::trace_add_sat(E.g(g, i), add, &clip);
+    B[APPLIER_BOOK_TRACE_CLIP_0 + g] += clip;
+}
+
+// A span tile's coordinates as given (int64: compared before any cast).
+__device__ __forceinline__ int64_t span_y(const int64_t* t, int stride, int i) { return t[(size_t)i * stride]; }
+__device__ __forceinline__ int64_t span_x(const int64_t* t, int stride, int i) { return t[(size_t)i * stride + 1]; }
+__device__ __forceinline__ bool in_grid64(const TopoEnv& E, int64_t y, int64_t x) {
+    return 0 <= y && y < E.h && 0 <= x && x < E.w;
+}
+
+__device__ inline bool in_span(const int64_t* t, int stride, int n, int64_t y, int64_t x) {
+    for (int i = 0; i < n; ++i)
+        if (span_y(t, stride, i) == y && span_x(t, stride, i) == x) return true;
+    return false;
+}
+
+// GameMap._normalize_span's checks on a span the caller handed sorted: the
+// length bound, a repeated tile (ValueError), the order (a FAULT); 0 = good.
+// Coordinates past int32 are a FAULT (an int cast would wrap).
+__device__ inline int64_t span_shape(const int64_t* t, int stride, int n) {
+    if (n < 0) return APPLIER_SEAM_FAULT;
+    if (n > SPAN_MAX) return APPLIER_SEAM_SPAN_TOO_LONG;
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 1; j < n; ++j)
+            if (span_y(t, stride, i) == span_y(t, stride, j) &&
+                span_x(t, stride, i) == span_x(t, stride, j))
+                return APPLIER_SEAM_DUPLICATE_TILE;
+    for (int i = 1; i < n; ++i) {
+        const int64_t py = span_y(t, stride, i - 1), px = span_x(t, stride, i - 1);
+        const int64_t y = span_y(t, stride, i), x = span_x(t, stride, i);
+        if (py > y || (py == y && px >= x)) return APPLIER_SEAM_FAULT;   // not row-major
+    }
+    return 0;
+}
+
+// GameMap._seal_receivers: the open 4-neighbours of (fy, fx) not in the span,
+// N, S, E, W; returns their count, their linear indices in `rcv`.
+__device__ inline int seal_receivers(const TopoEnv& E, const int64_t* t, int stride, int n,
+                                     int fy, int fx, int* rcv) {
+    int k = 0;
+    for (int d = 0; d < 4; ++d) {
+        const int ny = fy + face_dy(d), nx = fx + face_dx(d);
+        if (in_grid(E, ny, nx) && !E.solid[ny * E.w + nx] && !in_span(t, stride, n, ny, nx))
+            rcv[k++] = ny * E.w + nx;
+    }
+    return k;
+}
+
+// GameMap._seal_blockers on a normalized span: the checks in their pinned
+// order, the first refusal's code (0 = the seal would succeed). `mid` < 0:
+// no material argument (can_seal_tiles). Reads only.
+__device__ inline int64_t seal_blockers(const TopoEnv& E, const int64_t* tab, const int64_t* t,
+                                        int stride, int n, int64_t mid, bool has_mid) {
+    for (int i = 0; i < n; ++i)                                     // 1. bounds
+        if (!in_grid64(E, span_y(t, stride, i), span_x(t, stride, i)))
+            return APPLIER_SEAM_OUT_OF_BOUNDS;
+    for (int i = 0; i < n; ++i)                                     // 2. already solid
+        if (E.solid[(int)span_y(t, stride, i) * E.w + (int)span_x(t, stride, i)])
+            return APPLIER_SEAM_ALREADY_SOLID;
+    if (has_mid) {                                                  // 3. the material
+        if (mid < 0 || mid >= (int64_t)UNIT_TAB_SEAL_MAT_OK_W) return APPLIER_SEAM_UNKNOWN_MATERIAL;
+        if (tab[UNIT_TAB_SEAL_MAT_OK + mid] == 0) return APPLIER_SEAM_MATERIAL_NOT_SOLID;
+    }
+    for (int i = 0; i < n; ++i)                                     // 4. water rule v1
+        if (E.water_depth[(int)span_y(t, stride, i) * E.w + (int)span_x(t, stride, i)] != 0)
+            return APPLIER_SEAM_STANDING_WATER;
+    int rcv[4];
+    for (int i = 0; i < n; ++i) {                                   // 5 + 6. sealed pocket
+        const int fy = (int)span_y(t, stride, i), fx = (int)span_x(t, stride, i);
+        if (seal_receivers(E, t, stride, n, fy, fx, rcv) != 0) continue;
+        for (int g = 0; g < E.n_gases; ++g)
+            if (E.g(g, fy * E.w + fx) != 0) return APPLIER_SEAM_SEALED_POCKET;
+    }
+    // 7. the overflow pre-check, bulk slices only: each receiver's own count
+    // plus every adjacent span tile's whole load (the generous bound).
+    for (int g = 0; g < E.n_gases; ++g) {
+        if (trace_slice(tab, g)) continue;
+        for (int i = 0; i < n; ++i) {
+            const int k = seal_receivers(E, t, stride, n, (int)span_y(t, stride, i),
+                                         (int)span_x(t, stride, i), rcv);
+            for (int a = 0; a < k; ++a) {
+                const int r = rcv[a];
+                int64_t bound = E.g(g, r);
+                const int ry = r / E.w, rx = r % E.w;
+                for (int d = 0; d < 4; ++d) {        // the span tiles r receives from
+                    const int sy = ry + face_dy(d), sx = rx + face_dx(d);
+                    if (in_grid(E, sy, sx) && in_span(t, stride, n, sy, sx))
+                        bound += E.g(g, sy * E.w + sx);
+                }
+                if (bound >= I32_LIMIT) return APPLIER_SEAM_OVERFLOW;
+            }
+        }
+    }
+    return 0;
+}
+
+// GameMap.can_seal_tiles: 0 when seal_tiles would succeed for a valid solid
+// material, else the refusal (span shape first, as the normalizer raises).
+__device__ inline int64_t can_seal(const TopoEnv& E, const int64_t* tab, const int64_t* t,
+                                   int stride, int n) {
+    const int64_t shape = span_shape(t, stride, n);
+    if (shape != 0) return shape;
+    return seal_blockers(E, tab, t, stride, n, -1, false);
+}
+
+// The solid books of a cell as it WILL be: cap_real(material m) * T on a
+// thermal-solid m (the pre-pass's check of the product); false past int64.
+__device__ inline bool solid_books_as(const int64_t* tab, int64_t m, int64_t T, int64_t* out) {
+    if (tab[UNIT_TAB_MAT_THERMAL_SOLID + m] == 0) { *out = 0; return true; }
+    int64_t cap_used = 0, cap_real = 0;
+    conduction::cell_capacity_q(true, (int32_t)tab[UNIT_TAB_MAT_HEAT_INV_SHIFT + m], 0, 0, 0,
+                                &cap_used, &cap_real);
+    const int64_t lo = (int64_t)((unsigned long long)cap_real * (unsigned long long)T);
+    const int64_t hi = __mul64hi(cap_real, T);
+    if (hi != (lo >> 63)) return false;
+    *out = lo;
+    return true;
+}
+
+__device__ __forceinline__ bool e_ok(const TopoEnv& E, int i) {
+    return E.gas_energy[i] > -E_BOUND && E.gas_energy[i] < E_BOUND;
+}
+__device__ __forceinline__ bool t_ok(int64_t t_abs) { return t_abs > -T_BOUND && t_abs < T_BOUND; }
+__device__ inline bool gas_nonneg(const TopoEnv& E, int i) {
+    for (int g = 0; g < E.n_gases; ++g)
+        if (E.g(g, i) < 0) return false;
+    return true;
+}
+
+// GameMap.seal_tiles(span, mid): 0 done, else the refusal (nothing written).
+// SERIAL: each tile's evacuation reads the receivers the previous tile wrote.
+__device__ inline int64_t seal_tiles(const TopoEnv& E, const int64_t* tab, const int64_t* t,
+                                     int stride, int n, int64_t mid, int64_t* B) {
+    const int64_t shape = span_shape(t, stride, n);
+    if (shape != 0) return shape;
+    const int64_t why = seal_blockers(E, tab, t, stride, n, mid, true);
+    if (why != 0) return why;
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    if (!t_ok(t_amb)) return APPLIER_SEAM_FAULT;
+    // --- the pre-pass: the close-T means (PRE-call thermal solids: a span
+    // member closed earlier in this call never donates) and the proved range
+    int64_t close_t[SPAN_MAX];
+    bool has_close[SPAN_MAX];
+    int rcv[4];
+    for (int i = 0; i < n; ++i) {
+        const int fy = (int)span_y(t, stride, i), fx = (int)span_x(t, stride, i);
+        const int c = fy * E.w + fx;
+        int64_t sum = 0;
+        int cnt = 0;
+        for (int d = 0; d < 4; ++d) {
+            const int ny = fy + face_dy(d), nx = fx + face_dx(d);
+            if (in_grid(E, ny, nx) && E.thermal_solid[ny * E.w + nx]) {
+                sum += (int64_t)E.temperature[ny * E.w + nx];
+                ++cnt;
+            }
+        }
+        has_close[i] = cnt > 0;
+        close_t[i] = cnt > 0 ? fixedpoint::floordiv_q(sum, (int64_t)cnt) : 0;
+        if (!gas_nonneg(E, c) || !e_ok(E, c) || !t_ok(t_abs_at(E, tab, c)))
+            return APPLIER_SEAM_FAULT;
+        int64_t sb = 0;
+        if (!solid_books_cell(E, c, &sb)) return APPLIER_SEAM_FAULT;
+        const int64_t t_end = has_close[i] ? close_t[i] : (int64_t)E.temperature[c];
+        if (!solid_books_as(tab, mid, t_end, &sb)) return APPLIER_SEAM_FAULT;
+        const int k = seal_receivers(E, t, stride, n, fy, fx, rcv);
+        for (int a = 0; a < k; ++a)
+            if (!gas_nonneg(E, rcv[a]) || !e_ok(E, rcv[a])) return APPLIER_SEAM_FAULT;
+    }
+    // --- the law (raise-free from here: GameMap's atomicity pin)
+    const MoveBooks mb = seal_books();
+    for (int i = 0; i < n; ++i) {
+        const int fy = (int)span_y(t, stride, i), fx = (int)span_x(t, stride, i);
+        const int c = fy * E.w + fx;
+        const int k = seal_receivers(E, t, stride, n, fy, fx, rcv);
+        const int64_t t_abs_seal = t_abs_at(E, tab, c);
+        int64_t solid_before = 0;
+        solid_books_cell(E, c, &solid_before);
+        int64_t bulk_share[4] = {0, 0, 0, 0};
+        for (int g = 0; g < E.n_gases; ++g) {
+            const int64_t nn = E.g(g, c);
+            if (nn == 0) continue;
+            const int64_t q = nn / k, r = nn % k;          // nn >= 0, k >= 1 (the pocket rule)
+            for (int j = 0; j < k; ++j) {
+                const int64_t share = q + (j < r ? 1 : 0);
+                if (share == 0) continue;
+                if (trace_slice(tab, g)) {
+                    trace_store_sat(E, g, rcv[j], share, B);
+                } else {
+                    E.g(g, rcv[j]) = (int32_t)((int64_t)E.g(g, rcv[j]) + share);
+                }
+                if (g == E.o2 || g == E.n2) bulk_share[j] += share;
+            }
+            E.g(g, c) = 0;
+        }
+        for (int j = 0; j < k; ++j) energy_move(E, c, rcv[j], bulk_share[j], t_abs_seal, B, mb);
+        for (int j = 0; j < k; ++j) refresh_cell(E, rcv[j], t_amb);
+        E.material[c] = (int8_t)mid;
+        on_tile_changed(E, tab, fy, fx, B);
+        E.atmosphere[c] = 0;
+        E.wave_p[c] = 0;
+        E.wind_x[c] = 0;
+        E.wind_y[c] = 0;
+        E.flow_vx[c] = 0;
+        E.flow_vy[c] = 0;
+        E.ripple[c] = 0u;                                  // 0.0f
+        E.ripple_v[c] = 0u;                                // 0.0f
+        if (has_close[i]) E.temperature[c] = (int32_t)close_t[i];
+        int64_t solid_after = 0;
+        solid_books_cell(E, c, &solid_after);
+        B[APPLIER_BOOK_SOLID_SEAL] += solid_after - solid_before;
+    }
+    return 0;
+}
+
+// GameMap.unseal_tiles(span): 0 done, else the refusal (nothing written).
+// SERIAL: the boundary join reads the LIVE solid mask (it chains down the
+// span) and a donor's holdings as an earlier tile's withdrawal left them.
+__device__ inline int64_t unseal_tiles(const TopoEnv& E, const int64_t* tab, const int64_t* t,
+                                       int stride, int n, int64_t* B) {
+    const int64_t shape = span_shape(t, stride, n);
+    if (shape != 0) return shape;
+    for (int i = 0; i < n; ++i)
+        if (!in_grid64(E, span_y(t, stride, i), span_x(t, stride, i)))
+            return APPLIER_SEAM_OUT_OF_BOUNDS;
+    for (int i = 0; i < n; ++i)
+        if (!E.solid[(int)span_y(t, stride, i) * E.w + (int)span_x(t, stride, i)])
+            return APPLIER_SEAM_NOT_SOLID;
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    const int64_t mat_air = tab[UNIT_TAB_TOPO_MAT_AIR];
+    if (!t_ok(t_amb) || tab[UNIT_TAB_MAT_THERMAL_SOLID + mat_air] != 0) return APPLIER_SEAM_FAULT;
+    // --- the pre-pass (the proved range on every cell the call touches)
+    for (int i = 0; i < n; ++i) {
+        const int fy = (int)span_y(t, stride, i), fx = (int)span_x(t, stride, i);
+        const int c = fy * E.w + fx;
+        int64_t sb = 0;
+        if (!gas_nonneg(E, c) || !e_ok(E, c) || !solid_books_cell(E, c, &sb))
+            return APPLIER_SEAM_FAULT;
+        for (int d = 0; d < 4; ++d) {
+            const int ny = fy + face_dy(d), nx = fx + face_dx(d);
+            if (!in_grid(E, ny, nx) || in_span(t, stride, n, ny, nx)) continue;
+            const int j = ny * E.w + nx;
+            if (E.solid[j]) continue;
+            if (!gas_nonneg(E, j) || !e_ok(E, j) || !t_ok(t_abs_at(E, tab, j)))
+                return APPLIER_SEAM_FAULT;
+        }
+    }
+    // --- the law
+    const bool ambient_map = tab[UNIT_TAB_TOPO_BOUNDARY_AMBIENT] != 0;
+    bool* breach_mask = ambient_map ? E.is_ambient : E.is_vacuum;
+    const MoveBooks mb = unseal_books();
+    for (int i = 0; i < n; ++i) {
+        const int fy = (int)span_y(t, stride, i), fx = (int)span_x(t, stride, i);
+        const int c = fy * E.w + fx;
+        int64_t solid_before = 0, solid_after = 0;
+        solid_books_cell(E, c, &solid_before);
+        E.material[c] = (int8_t)mat_air;
+        on_tile_changed(E, tab, fy, fx, B);
+        solid_books_cell(E, c, &solid_after);
+        B[APPLIER_BOOK_SOLID_UNSEAL] += solid_after - solid_before;
+        // the boundary join (the LIVE solid mask)
+        bool joins = breach_mask[c];
+        for (int d = 0; d < 4 && !joins; ++d) {
+            const int ny = fy + face_dy(d), nx = fx + face_dx(d);
+            if (in_grid(E, ny, nx) && breach_mask[ny * E.w + nx] && !E.solid[ny * E.w + nx])
+                joins = true;
+        }
+        if (joins) {
+            breach_mask[c] = true;
+            continue;
+        }
+        // the donors: PRE-call open (a non-span neighbour's solidity never
+        // changes in this call), not vacuum, not in the span; N, S, E, W
+        int don[4];
+        int k = 0;
+        for (int d = 0; d < 4; ++d) {
+            const int ny = fy + face_dy(d), nx = fx + face_dx(d);
+            if (!in_grid(E, ny, nx)) continue;
+            const int j = ny * E.w + nx;
+            if (!E.solid[j] && !E.is_vacuum[j] && !in_span(t, stride, n, ny, nx)) don[k++] = j;
+        }
+        if (k == 0) continue;                              // opens empty: never mint
+        int64_t t_abs_d[4];
+        for (int j = 0; j < k; ++j) t_abs_d[j] = t_abs_at(E, tab, don[j]);
+        int64_t bulk_take[4] = {0, 0, 0, 0};
+        for (int g = 0; g < E.n_gases; ++g) {
+            int64_t avail[4], take[4], sum = 0;
+            for (int j = 0; j < k; ++j) {
+                avail[j] = E.g(g, don[j]);
+                sum += avail[j];
+            }
+            const int64_t target = sum / (k + 1);          // sum >= 0 (the pre-pass)
+            if (target == 0) continue;
+            const int64_t q = target / k, r = target % k;
+            int64_t got = 0;
+            for (int j = 0; j < k; ++j) {
+                const int64_t want = q + (j < r ? 1 : 0);
+                take[j] = want < avail[j] ? want : avail[j];
+                got += take[j];
+            }
+            int64_t short_ = target - got;
+            for (int j = 0; j < k && short_ != 0; ++j) {
+                const int64_t room = avail[j] - take[j];
+                const int64_t extra = short_ < room ? short_ : room;
+                take[j] += extra;
+                short_ -= extra;
+            }
+            for (int j = 0; j < k; ++j) {
+                E.g(g, don[j]) = (int32_t)(avail[j] - take[j]);
+                if (g == E.o2 || g == E.n2) bulk_take[j] += take[j];
+            }
+            E.g(g, c) = (int32_t)target;
+        }
+        for (int j = 0; j < k; ++j) energy_move(E, don[j], c, bulk_take[j], t_abs_d[j], B, mb);
+        for (int j = 0; j < k; ++j) refresh_cell(E, don[j], t_amb);
+        refresh_cell(E, c, t_amb);
+        int64_t atm = 0;
+        for (int j = 0; j < k; ++j) atm += (int64_t)E.atmosphere[don[j]];
+        E.atmosphere[c] = (int32_t)fixedpoint::floordiv_q(atm, (int64_t)k);
+        E.wave_p[c] = E.atmosphere[c];
+    }
+    return 0;
+}
+
+// vent_system._aperture_blocked: solid / thermal_solid / vacuum / ambient /
+// flooded. The caller guarantees (fy, fx) is in the grid.
+__device__ __forceinline__ bool aperture_blocked(const TopoEnv& E, int fy, int fx) {
+    const int i = fy * E.w + fx;
+    return E.solid[i] || E.thermal_solid[i] || E.is_vacuum[i] || E.is_ambient[i] ||
+           E.water_depth[i] != 0;
+}
+
+// GameMap._inject_gas_n_core's refusal: a bulk slice past int32 (the trace
+// slices take the counted saturation). Reads only.
+__device__ inline bool inject_core_fits(const TopoEnv& E, const int64_t* tab, int i,
+                                        const int64_t* add) {
+    for (int g = 0; g < E.n_gases; ++g) {
+        if (trace_slice(tab, g)) continue;
+        if ((int64_t)E.g(g, i) + add[g] >= I32_LIMIT) return false;
+    }
+    return true;
+}
+
+// GameMap._inject_gas_n_core's write (after inject_core_fits).
+__device__ inline void inject_core(const TopoEnv& E, const int64_t* tab, int i, const int64_t* add,
+                                   int64_t* B) {
+    for (int g = 0; g < E.n_gases; ++g) {
+        if (add[g] == 0) continue;
+        if (trace_slice(tab, g))
+            trace_store_sat(E, g, i, add[g], B);
+        else
+            E.g(g, i) = (int32_t)((int64_t)E.g(g, i) + add[g]);
+    }
+}
+
+//: The most gas slices a primitive's vector holds (GameMap's N_GASES).
+constexpr int GAS_MAX = UNIT_TAB_GAS_TRACE_W;
+
+// GameMap.inject_gas_n(fy, fx, dn): 0 done (a no-op for dn <= 0), else the
+// refusal (out_of_bounds; overflow, the core's; fault past the range).
+__device__ inline int64_t inject_gas_n(const TopoEnv& E, const int64_t* tab, int64_t fy,
+                                       int64_t fx, int64_t dn, int64_t* B) {
+    if (fy < 0 || fy >= E.h || fx < 0 || fx >= E.w) return APPLIER_SEAM_OUT_OF_BOUNDS;
+    if (dn <= 0) return 0;
+    if (dn >= ((int64_t)1 << 40) || E.n_gases > GAS_MAX) return APPLIER_SEAM_FAULT;
+    const int i = (int)fy * E.w + (int)fx;
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    if (!t_ok(t_amb) || !e_ok(E, i)) return APPLIER_SEAM_FAULT;
+    const int64_t o2_add = (dn * tab[UNIT_TAB_INJECT_O2_FRAC_Q] + ((int64_t)1 << 15)) >> 16;
+    int64_t add[GAS_MAX];
+    for (int g = 0; g < GAS_MAX; ++g) add[g] = 0;
+    add[E.o2] = o2_add;
+    add[E.n2] = dn - o2_add;
+    if (!inject_core_fits(E, tab, i, add)) return APPLIER_SEAM_OVERFLOW;
+    inject_core(E, tab, i, add, B);
+    if (accountable(E, i)) {                               // gas_energy_mint
+        const int64_t de = gas_energy::minted(dn, (int32_t)t_amb);
+        E.gas_energy[i] += de;
+        B[APPLIER_BOOK_GE_PUMP_INJECT] += de;
+    }
+    refresh_cell(E, i, t_amb);
+    return 0;
+}
+
+// GameMap._air_withdrawal at cell i: `remove` per slice, returns `want`.
+// Reads only (the caller pre-checked the range: planes < 2^31, so every
+// product < 2^63).
+__device__ inline int64_t air_withdrawal(const TopoEnv& E, const int64_t* tab, int i, int64_t dn,
+                                         int64_t* remove) {
+    for (int g = 0; g < E.n_gases; ++g) remove[g] = 0;
+    if (dn <= 0) return 0;
+    const int64_t o2 = E.g(E.o2, i), n2 = E.g(E.n2, i);
+    const int64_t h0 = o2 > 0 ? o2 : 0, h1 = n2 > 0 ? n2 : 0;
+    const int64_t n_bulk = h0 + h1;
+    if (n_bulk < gas_energy::N_EPS_RAW) return 0;
+    const int64_t want = dn < n_bulk ? dn : n_bulk;
+    // gas_proportional_split([h0, h1], want): the floor shares, the
+    // shortfall cascaded in index order (O2 first)
+    int64_t tk[2] = {(h0 * want) / n_bulk, (h1 * want) / n_bulk};
+    const int64_t hold[2] = {h0, h1};
+    int64_t short_ = want - tk[0] - tk[1];
+    for (int g = 0; g < 2 && short_ > 0; ++g) {
+        const int64_t room = hold[g] - tk[g];
+        if (room <= 0) continue;
+        const int64_t grab = room < short_ ? room : short_;
+        tk[g] += grab;
+        short_ -= grab;
+    }
+    remove[E.o2] = tk[0];
+    remove[E.n2] = tk[1];
+    for (int g = 0; g < E.n_gases; ++g) {
+        if (g == E.o2 || g == E.n2) continue;
+        const int64_t s = E.g(g, i);
+        if (s > 0) remove[g] = (want * s) / n_bulk;        // priced by air
+    }
+    return want;
+}
+
+// GameMap.extract_gas_n_vec(fy, fx, dn): 0 done (`remove` the per-slice
+// withdrawal, `*taken` its bulk part: extract_gas_n's return), else the
+// refusal (out_of_bounds; fault past the range).
+__device__ inline int64_t extract_gas_n_vec(const TopoEnv& E, const int64_t* tab, int64_t fy,
+                                            int64_t fx, int64_t dn, int64_t* remove,
+                                            int64_t* taken, int64_t* B) {
+    *taken = 0;
+    for (int g = 0; g < E.n_gases && g < GAS_MAX; ++g) remove[g] = 0;
+    if (fy < 0 || fy >= E.h || fx < 0 || fx >= E.w) return APPLIER_SEAM_OUT_OF_BOUNDS;
+    if (E.n_gases > GAS_MAX) return APPLIER_SEAM_FAULT;
+    const int i = (int)fy * E.w + (int)fx;
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, i) ||
+        !t_ok(t_abs_at(E, tab, i)))
+        return APPLIER_SEAM_FAULT;
+    const int64_t want = air_withdrawal(E, tab, i, dn, remove);
+    if (want == 0) return 0;
+    const int64_t t_abs = t_abs_at(E, tab, i);
+    for (int g = 0; g < E.n_gases; ++g)
+        if (remove[g]) E.g(g, i) = (int32_t)((int64_t)E.g(g, i) - remove[g]);
+    if (accountable(E, i)) {
+        const int64_t de = want * t_abs;
+        E.gas_energy[i] -= de;
+        B[APPLIER_BOOK_GE_PUMP_EXTRACT] -= de;
+        refresh_cell(E, i, t_amb);
+    }
+    *taken = remove[E.o2] + remove[E.n2];
+    return 0;
+}
+
+// GameMap.transfer_gas_n(sy, sx, dy, dx, dn): 0 done (`*moved` the bulk total
+// moved), else the refusal (out_of_bounds; overflow at the destination --
+// DECIDED BEFORE ANY WRITE: the Python drains the source first and then
+// raises, so on this path the device is atomic where the reference is not;
+// fault past the range).
+__device__ inline int64_t transfer_gas_n(const TopoEnv& E, const int64_t* tab, int64_t sy,
+                                         int64_t sx, int64_t dy, int64_t dx, int64_t dn,
+                                         int64_t* moved, int64_t* B) {
+    *moved = 0;
+    if (sy < 0 || sy >= E.h || sx < 0 || sx >= E.w) return APPLIER_SEAM_OUT_OF_BOUNDS;
+    if (dy < 0 || dy >= E.h || dx < 0 || dx >= E.w) return APPLIER_SEAM_OUT_OF_BOUNDS;
+    if (sy == dy && sx == dx) return 0;
+    if (E.n_gases > GAS_MAX) return APPLIER_SEAM_FAULT;
+    const int s = (int)sy * E.w + (int)sx, d = (int)dy * E.w + (int)dx;
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    if (dn >= ((int64_t)1 << 40) || !t_ok(t_amb) || !e_ok(E, s) || !e_ok(E, d) ||
+        !t_ok(t_abs_at(E, tab, s)) || !gas_nonneg(E, d))
+        return APPLIER_SEAM_FAULT;
+    int64_t remove[GAS_MAX];
+    const int64_t want = air_withdrawal(E, tab, s, dn, remove);
+    if (want == 0) return 0;
+    if (!inject_core_fits(E, tab, d, remove)) return APPLIER_SEAM_OVERFLOW;
+    const int64_t t_abs = t_abs_at(E, tab, s);              // BEFORE the drain
+    for (int g = 0; g < E.n_gases; ++g)
+        if (remove[g]) E.g(g, s) = (int32_t)((int64_t)E.g(g, s) - remove[g]);
+    inject_core(E, tab, d, remove, B);
+    energy_move(E, s, d, want, t_abs, B, transfer_books());
+    refresh_cell(E, s, t_amb);
+    refresh_cell(E, d, t_amb);
+    *moved = want;
+    return 0;
+}
+
+// ============================================================================
+// #29 P6b.2 -- GameMap.inject_gas_n_vec (the vents' deposit with its rails),
+// integer for integer: `add` (n_gases slices, bulk AND trace) through the
+// shared mutation core (bulk loud past int32 = the overflow refusal, trace the
+// counted saturation), then -- on an ACCOUNTABLE tile -- the conversion seam:
+// `dE = dN_bulk * (t_dep + T_AMB)` added to the cell's energy and booked to the
+// caller's channel, the mirror read with Python's floor (floordiv_q), railed
+// to [t_min, t_max], a rail booked to the caller's rail channel and written
+// back into E; on a NON-accountable tile the pre-#54 mass-weighted T-mix
+// (floor), railed. `*t_new` / `*rail` are the Python's return (rail -1 low,
+// 0 none, +1 high). A bulk-free result (N_old + dN_bulk <= 0) leaves T alone,
+// a zero vector writes nothing.
+//
+// THE PROVED RANGE (pre-checked, a FAULT past it, nothing written): every add
+// slice in [0, 2^54) (a negative one is the Python contract's violation; the
+// bound keeps a stage's clip books inside int64), the cell's gas planes >= 0,
+// |gas_energy| < 2^61, T_AMB < 2^28, |t_dep| < 2^30, |t_min|, |t_max| < 2^30,
+// and on a non-accountable tile |T_old| < 2^30. Then (bulk slices < 2^31 each
+// after the overflow refusal, so N_old, dN_bulk, N_new < 2^32): |dE| < 2^32 *
+// (2^30 + 2^28) < 2^62.4, |E + dE| < 2^63, a rail's N_new * (T + T_AMB) <
+// 2^62.4, and the T-mix's N_old * T_old + dN * t_dep < 2^63.
+// ============================================================================
+
+//: The book channels of one inject_gas_n_vec caller (its `channel` and
+//: `rail_channel`): the vents' are pump_inject_vec / pump_rail; P7c.2's bulk
+//: gas payload brings its own pair.
+struct InjectVecBooks {
+    int ch, rail;
+};
+__device__ __forceinline__ InjectVecBooks vent_inject_books() {
+    return InjectVecBooks{APPLIER_BOOK_GE_PUMP_INJECT_VEC, APPLIER_BOOK_GE_PUMP_RAIL};
+}
+
+constexpr int64_t INJECT_ADD_MAX = (int64_t)1 << 54;
+constexpr int64_t INJECT_T_BOUND = (int64_t)1 << 30;
+
+__device__ inline int64_t inject_gas_n_vec(const TopoEnv& E, const int64_t* tab, int64_t fy,
+                                           int64_t fx, const int64_t* add, int64_t t_dep,
+                                           int64_t t_min, int64_t t_max, int64_t* t_new_out,
+                                           int64_t* rail_out, int64_t* B, InjectVecBooks bk) {
+    *t_new_out = 0;
+    *rail_out = 0;
+    if (fy < 0 || fy >= E.h || fx < 0 || fx >= E.w) return APPLIER_SEAM_OUT_OF_BOUNDS;
+    if (E.n_gases > GAS_MAX) return APPLIER_SEAM_FAULT;
+    const int i = (int)fy * E.w + (int)fx;
+    int64_t dn_total = 0;
+    for (int g = 0; g < E.n_gases; ++g) {
+        if (add[g] < 0 || add[g] >= INJECT_ADD_MAX) return APPLIER_SEAM_FAULT;
+        dn_total += add[g];
+    }
+    if (dn_total <= 0) {                                   // nothing to deposit
+        *t_new_out = (int64_t)E.temperature[i];
+        return 0;
+    }
+    const int64_t t_amb = tab[UNIT_TAB_TOPO_T_AMB_Q];
+    const bool acct = accountable(E, i);
+    const int64_t t_old = (int64_t)E.temperature[i];
+    if (!t_ok(t_amb) || !e_ok(E, i) || !gas_nonneg(E, i) ||
+        t_dep <= -INJECT_T_BOUND || t_dep >= INJECT_T_BOUND ||
+        t_min <= -INJECT_T_BOUND || t_min >= INJECT_T_BOUND ||
+        t_max <= -INJECT_T_BOUND || t_max >= INJECT_T_BOUND ||
+        (!acct && (t_old <= -INJECT_T_BOUND || t_old >= INJECT_T_BOUND)))
+        return APPLIER_SEAM_FAULT;
+    if (!inject_core_fits(E, tab, i, add)) return APPLIER_SEAM_OVERFLOW;
+    const int64_t n_old = E.bulk(i);
+    const int64_t d_bulk = add[E.o2] + add[E.n2];
+    inject_core(E, tab, i, add, B);
+    const int64_t n_new = n_old + d_bulk;
+    if (n_new <= 0) {                                      // nothing bulk to weight by
+        *t_new_out = t_old;
+        return 0;
+    }
+    int64_t t_new;
+    int64_t rail = 0;
+    if (acct) {
+        const int64_t de = d_bulk * (t_dep + t_amb);
+        E.gas_energy[i] += de;
+        B[bk.ch] += de;
+        t_new = fixedpoint::floordiv_q(E.gas_energy[i], n_new) - t_amb;
+        if (t_new < t_min) {
+            t_new = t_min;
+            rail = -1;
+        } else if (t_new > t_max) {
+            t_new = t_max;
+            rail = 1;
+        }
+        if (rail != 0) {
+            const int64_t e_new = n_new * (t_new + t_amb);
+            B[bk.rail] += e_new - E.gas_energy[i];
+            E.gas_energy[i] = e_new;
+        }
+    } else {
+        t_new = fixedpoint::floordiv_q(n_old * t_old + d_bulk * t_dep, n_new);
+        if (t_new < t_min) {
+            t_new = t_min;
+            rail = -1;
+        } else if (t_new > t_max) {
+            t_new = t_max;
+            rail = 1;
+        }
+    }
+    E.temperature[i] = (int32_t)t_new;
+    *t_new_out = t_new;
+    *rail_out = rail;
+    return 0;
 }
 
 }  // namespace topo
