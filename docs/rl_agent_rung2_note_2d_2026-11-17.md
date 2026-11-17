@@ -182,6 +182,71 @@ suite untouched (no game file changed: `git diff --stat main -- src tools
 tests cpp` is empty) so it is NOT rerun; `tests/test_claude_rules_paths.py`
 and `tests/test_game_never_imports_agents.py` green.
 
+## 8a. As built (2d.1, 2026-11-17): where it differs, and the finding
+
+Only what differs from sections 1 to 8, and why.
+
+- **FINDING: `recall12` is not learnt with the design's numbers** (section
+  6; the measurements are in `agents/tasks.py` `RecallTask`'s text). Seed
+  0, stretches of 16: 220 rounds on the tasks' farm (8 matches x 32
+  decisions) and 140 on a farm of 32 matches (2 048 decisions a round, one
+  design piece) near the random player; with the answer 4 decisions after
+  the cue, 0.11 of the way after 300 rounds; with the answer AT the cue (no
+  memory needed, memory on) 0.8 at round 180. The live check was silent on
+  every round. At the network's start the cue's mark on the memory is
+  0.023 against a memory of size 0.36 and falls about 0.6 x per decision
+  (1.4e-4 after 12): the cell starts at an even keep/replace and the cue
+  enters through 4 vector columns. Following the rule, nothing was bent:
+  no budget could be fixed, so the three tests that hang on `recall12`'s
+  pass (its pass and `recall24`'s at 32, `recall24` failing at 16, the
+  reset-at-the-cut trap failing) are written and SKIPPED BY NAME
+  (`MEMORY_FINDING` in `agents/tests/test_tasks.py`); a fail of a task
+  nobody passes proves nothing. Not measured, so not claimed: `recall24`
+  at 16 or 32. What changes (the cell's start, e.g. an update gate biased
+  to keep; the step size; the farm; more rounds) is the lead's call.
+- **The memory tasks score per ANSWER**, not per decision (each task
+  measures through `measure`, the old ones per decision as before): only
+  one decision in 13 to 19 is paid, and per decision the best would depend
+  on the match lengths and the deaths. Random 0.20, best 1, the line 0.84.
+- **Matches last a drawn `gap + 1` to `gap + 7` decisions** (never a
+  multiple of 16), two soldiers, slot 1 dying at a drawn decision in half
+  the matches, before or after its answer.
+- **The reset-at-the-cut trap** is built as the classic SILENT fault: the
+  collector marks every stretch's first decision as a match's start
+  (`first`), so acting and learning zero alike and the live check cannot
+  see it. "The cue at a decision the match does not start on" is read as:
+  the matches start anywhere inside a stretch, so most cues are cut from
+  their answers.
+- **The live check's second clause compares every stretch of the first
+  piece**, not only rows valid throughout: a dead row's memory is as
+  deterministic as a living one's (the batch keeps what was acted on), so
+  the stricter check costs nothing and was silent on every correct run
+  (gaps 0 to 3e-7). On a fresh network the first clause barely sees the
+  memory faults (log-probability gaps 4e-4 to 8e-4, the heads start
+  near-even); the second sees all four (0.2 to 0.65), and the "stored after
+  the decision" fault ONLY through it.
+- **The "cut one decision off" fault** is the learner replaying each
+  stretch's decisions one step after the memory it starts from (a
+  consistent shift of both would be a correct replay).
+- **The units are the stretches holding a value row**; a stretch with none
+  is never replayed. `HeadOutputs.take` (network) picks the policy rows out
+  of a replayed stretch, the gradient flowing through.
+- **The value-first rounds take no step at all** (not a step of size 0:
+  Adam's moments would move); the soldier is replayed on the first piece
+  only, for the live check.
+- **Bit-identity** is held by a sha256 of both networks' weights after 3
+  rounds, made with main's code before this patch touched it, keyed by
+  PyTorch's version and the processor (`NO_MEMORY_REFERENCE` in
+  `agents/tests/test_memory.py`); on another machine it skips naming how to
+  add its key (the processor's float kernels decide the bits).
+- **`good_start`** (measured table in its own text): planned rounds 150
+  (the pointer's budget, so the step size is near full over the 20
+  rounds); the start is the first round's score. The gate held on three
+  seeds (lowest 1.00, 0.92, 1.00 of the start); neither no value-first
+  rounds nor ten times the variety wore the start down. The one dip came
+  while the soldier was still frozen: the 0.9 line is about three rounds'
+  noise below a single-round start.
+
 ---
 
 # Part 2 (2d.2): saving and resuming
