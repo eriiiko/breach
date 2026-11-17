@@ -137,6 +137,8 @@ def test_the_outcome_is_read_off_the_books_counters():
     assert _outcome(np.array([3, 0, 0, 1]), names) == "clock"
     assert _outcome(np.array([0, 0, 1, 0]), names) == "eliminated"
     assert _outcome(np.array([2, 0, 0, 0]), names) == "other"
+    assert _outcome(np.array([0, 1, 1, 1]), names) == "won"
+    assert _outcome(np.array([0, 0, 1, 1]), names) == "clock"
 
 
 def _files(tmp_path, *, rounds=2, extra="", levels_dir=None, n_envs=4):
