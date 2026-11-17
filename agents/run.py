@@ -31,8 +31,12 @@ computer's memory and run several times slower instead of failing (design
 4.4). The driver setting that turns this off ("CUDA sysmem fallback
 policy") is per program and cannot be read or set from here, so on the card
 this script caps the process with ``torch.cuda.set_per_process_memory_
-fraction`` (``--card-fraction``): running out is then an error, never a
-silent spill.
+fraction``: at most ``--card-fraction`` of the card and never more than 97 %
+of what is FREE at the start (the desktop holds the rest), so running out
+is an error, never a silent spill. Measured on the Home Desktop
+(2026-11-17, RTX 3070, driver 610.88): without a cap the training Python
+allocated 9 216 MiB on the 8 191 MiB card without an error -- the spill is
+ON for it.
 """
 from __future__ import annotations
 
@@ -237,7 +241,12 @@ def run(run_path, train_path, out, *, workers=None, device="cpu",
     torch.set_num_threads(int(threads))
     dev = torch.device(device)
     if dev.type == "cuda":
-        torch.cuda.set_per_process_memory_fraction(float(card_fraction))
+        free, total_mem = torch.cuda.mem_get_info(dev)
+        cap = min(float(card_fraction), 0.97 * free / total_mem)
+        torch.cuda.set_per_process_memory_fraction(cap, dev)
+        print(f"card capped at {cap:.3f} of {total_mem / 2**20:.0f} MiB "
+              f"({cap * total_mem / 2**20:.0f} MiB; {free / 2**20:.0f} MiB "
+              f"free at the start)", flush=True)
     t0 = time.perf_counter()
     env = rl_env.BatchedEnv(str(run_path), n_workers=workers)
     try:
