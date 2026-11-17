@@ -241,10 +241,10 @@ def test_restitution_one_mirrors_in_full_and_bounce_max_ends_it():
     corridor three tiles wide the grenade bounces exactly ``bounce_max``
     times, the next wall resting it where it hits. Breaks when restitution
     1 shortens a leg, or bounce_max is off by one either way."""
-    gmap = Map(20, 40)
+    gmap = Map(40, 40)
     gmap.solid[:, 10] = True
-    gmap.solid[:, 14] = True
-    g = _grenade(11, 5, 12.5 + 29.0 * math.cos(1.2), 5.5 + 29.0 * math.sin(1.2),
+    gmap.solid[:, 13] = True                        # a corridor two tiles wide
+    g = _grenade(11, 5, 11.5 + 29.0 * math.cos(0.6), 5.5 + 29.0 * math.sin(0.6),
                  fuse=400)
     lengths = []
     orig = g.bounce
@@ -259,9 +259,9 @@ def test_restitution_one_mirrors_in_full_and_bounce_max_ends_it():
     assert g.bounces == BMAX
     assert len(lengths) == BMAX + 1
     assert all(r == left for left, r in lengths[:BMAX])
-    assert lengths[BMAX][1] == 0
+    assert lengths[BMAX][1] == 0 and lengths[BMAX][0] >= 4 * ONE   # not a short leg
     assert (g.start_x_q, g.start_y_q) == (g.target_x_q, g.target_y_q)
-    assert 11 * ONE <= g.pos_x_q < 14 * ONE
+    assert 11 * ONE <= g.pos_x_q < 13 * ONE
 
 
 def test_a_bounced_leg_under_a_quarter_tile_rests():
@@ -474,6 +474,37 @@ def test_in_the_game_a_throw_at_a_wall_detonates_on_the_throwers_side():
     cx, cy = u.center_tile_x(), u.center_tile_y()
     assert short[1] == (cy, cx + 5)                # 5 tiles east, unbounced
     assert short[2] == (cy, cx)
+
+
+def test_in_the_game_a_fuse_out_mid_leg_detonates_where_the_rest_of_its_flight_ends():
+    """Protects rule 5 in the sim's slot 2: a grenade whose fuse runs out
+    while it is still flying at a wall far away detonates where the rest of
+    its flight, resolved at once (bounce included), rests -- the law's own
+    flight of the same throw -- and NOT where it happened to be on the
+    fuse tick. Breaks when slot 2 skips the settle or detonates elsewhere."""
+    from simulation import simulation as simmod
+    sim = _sim(_walled_tiles())
+    seen = []
+    orig = simmod.Projectile.settle
+
+    def spy(p, gmap, tick, rq, bmax):
+        import copy
+        law = copy.deepcopy(p)                      # the law's own flight, apart
+        orig(law, gmap, tick, rq, bmax)
+        seen.append(((p.pos_x_q, p.pos_y_q), (p.target_x_q, p.target_y_q),
+                     combat.detonation_tile(gmap, law.pos_x_q, law.pos_y_q)))
+        return orig(p, gmap, tick, rq, bmax)
+    simmod.Projectile.settle = spy
+    try:
+        calls, _ = _play(sim, [(20, 15, 0, 25.0, 3)], 30)
+    finally:
+        simmod.Projectile.settle = orig
+    assert len(calls) == 1 and len(seen) == 1
+    at_fuse, target, want = seen[0]
+    assert at_fuse != target                        # still flying at the fuse
+    assert calls[0][1] == want
+    assert want != (at_fuse[1] >> 16, at_fuse[0] >> 16)
+    assert want[1] < 30
 
 
 def test_same_seed_same_flight():

@@ -155,9 +155,16 @@ def _run_1b(st, inp, req, lists):
     return cov
 
 
+def _flight_fields(inp):
+    """#215: the padded solid plane (``cuda_unit_lockstep``'s
+    ``flight_solid`` input) as the kernel's device field."""
+    import cupy as cp
+    return {"solid": cp.ascontiguousarray(cp.asarray(inp.tables["flight_solid"]))}
+
+
 def _run_2(st, inp, lists):
     return unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick,
-                                 inp.fields)
+                                 _flight_fields(inp))
 
 
 def _run_9e(st, inp, lists):
@@ -177,7 +184,7 @@ SLOT_1B = DeviceSlot(label="1b intents", run=_run_1b,
 # holds the rows the device never touches); the host's row changes inside
 # them are the PAYLOAD law's (its blast damage), recorded here, P7c.1's.
 SLOT_2 = DeviceSlot(label="2 grenades", run=_run_2, columns=("id",),
-                    inputs=("tick", "list:grenades", "field:solid"),
+                    inputs=("tick", "list:grenades", "flight_solid"),
                     outputs=("list:grenades", "list:payloads"), host_only=HOST_ONLY)
 SLOT_9E = DeviceSlot(label="9e(d') planted charges", run=_run_9e, columns=("id",),
                      skip_ok=True,    # the conductor runs it only while a charge lies
@@ -782,7 +789,7 @@ def part_flight(trials=4, n_env=4):
     census = Census().install()
     # #215: the shipped restitution, then 0 (drops at the wall) and 1 (a
     # mirror, so bounce_max ends it), each over every trial
-    def trials():
+    def run_trials():
         for rq in (shipped, 0, ONE):
             hand.bounce_restitution_q = rq
             st = _store([sim] * n_env)
@@ -817,7 +824,7 @@ def part_flight(trials=4, n_env=4):
                                            if b.bounces > a.bounces)
 
     try:
-        trials()
+        run_trials()
     finally:
         hand.bounce_restitution_q = shipped
         census.uninstall()
@@ -1177,7 +1184,7 @@ def part_overflow():
             g.stage_lists(inp.lists["grenades"])
             fx.begin()
             try:
-                unit_kernels.grenades(st, g, fx, inp.tick, inp.fields)
+                unit_kernels.grenades(st, g, fx, inp.tick, _flight_fields(inp))
                 n = 0
             except applier.EffectOverflow as ex:
                 n = 1
@@ -1187,7 +1194,7 @@ def part_overflow():
                 full = applier.DeviceApplier(1)
                 g.stage_lists(inp.lists["grenades"])
                 full.begin()
-                unit_kernels.grenades(st, g, full, inp.tick, inp.fields)
+                unit_kernels.grenades(st, g, full, inp.tick, _flight_fields(inp))
                 if fx.records()[0] != full.records()[0][:1]:
                     fail("overflow: the record kept is not the first")
                 seen["effects"] += 1

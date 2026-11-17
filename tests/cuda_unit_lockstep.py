@@ -231,6 +231,25 @@ ARG_INPUTS: dict = {
 }
 PADS["burn_walls"] = unit_kernels.pad_walls
 
+
+# #215: slot 2's grenade flight reads the solid plane (the wall walk). A batch
+# of the grenade gates' scenes holds maps of differing sizes, so the plane is
+# padded to the batch's largest grid WITH SOLID: off its own grid a tile is
+# blocked to a flight (combat.flight_blocked), so the padded plane is the
+# same law for every env. A bool (N, H, W) array; the slot hands it to the
+# kernel as its device "solid" field.
+def _pad_flight_solid(vals):
+    hh = max(v.shape[0] for v in vals)
+    ww = max(v.shape[1] for v in vals)
+    out = np.ones((len(vals), hh, ww), dtype=np.bool_)
+    for e, v in enumerate(vals):
+        out[e, :v.shape[0], :v.shape[1]] = v
+    return out
+
+
+INPUTS["flight_solid"] = ("table", lambda sim: np.array(sim.gmap.solid, dtype=np.bool_))
+PADS["flight_solid"] = _pad_flight_solid
+
 # ---------------------------------------------------------------------------
 # #29 P7a.1: host LISTS (decision 8), declared like a field
 # ---------------------------------------------------------------------------
