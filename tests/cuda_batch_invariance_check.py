@@ -34,7 +34,8 @@ the larva gate, v4.7 G-a): envs 0 / 1 / 2 carry larvae spawned through their
 own SwarmUnits (5 / 8 / 6 of them), env 3 none; env 1's larvae stand on a hot
 seed, env 2's on a cold one, env 0's unforced, so their outcomes (deaths,
 comas) differ per env; per tick each env's store, swarm section and death
-rows equal the env alone. Breaks also if the swarm stage reads env 0's
+rows equal the env alone (arc #63 P5a: and its bite-dose plane; the planes
+are per env, the swarm-free env's all zero). Breaks also if the swarm stage reads env 0's
 planes for every env, or an env's records or rows land in another's.
 
 #29 P4c: every env of both legs also carries its OWN slot-6b FieldEdits
@@ -402,13 +403,15 @@ def _sim_fp(sim):
         pass
     w = _W()
     w.gmap, w.physics_runner = sim.gmap, sim.physics_runner
-    from simulation.swarm import death_events, swarm_carrier, swarm_section_bytes
+    from simulation.swarm import (bite_plane, death_events, swarm_carrier,
+                                  swarm_section_bytes)
     # the death rows as the EVENTS they become (a batch row's ROW_ENV is its
     # batch index, an env alone's is 0; the event carries neither)
     ev = repr([tuple(vars(x).values())
                for x in death_events(sim.physics_runner.swarm_death_rows)])
+    # arc #63 P5a: + the bite-dose plane the swarm stage rebuilt for THIS env
     sw = hashlib.sha1(swarm_section_bytes(swarm_carrier(sim.gmap))
-                      + ev.encode()).hexdigest()
+                      + ev.encode() + bite_plane(sim.gmap).tobytes()).hexdigest()
     return _fingerprint(w) + (sw,)
 
 
@@ -494,6 +497,14 @@ def leg_b() -> bool:
     finally:
         s8a._residency(False); s8a._set_backends(False)
     print(f"  swarm outcomes per env: deaths {deaths}, comas {comas}")
+    # arc #63 P5a: the bite planes are per env -- each swarm env's own (env 0's
+    # larvae alive and awake), the swarm-free env's all zero
+    from simulation.swarm import bite_plane
+    planes = [bite_plane(sim.gmap) for sim in sims]
+    print(f"  bite plane sums per env: {[int(p.sum()) for p in planes]}")
+    if not planes[0].any() or planes[3].any() or np.array_equal(planes[0], planes[1]):
+        print("  the per-env bite planes are vacuous or shared")
+        bad += 1
     if not (deaths[1] > 0 and comas[2] > 0 and len({(d, c) for d, c in zip(deaths, comas)}) > 1):
         print("  the per-env swarm outcomes do not differ (G-a: the scene is vacuous)")
         bad += 1
