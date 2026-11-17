@@ -13,7 +13,7 @@
 
 namespace unit_draws {
 
-constexpr const char* UNIT_DRAWS_FINGERPRINT = "9a67d0672d8e1edd6e41765779719e11fae08a401962f83db9b35eae419bec2d";
+constexpr const char* UNIT_DRAWS_FINGERPRINT = "6c970160d1a43e285795b259d01d25ad18ed56954e6c6648ec140f95cef09e13";
 
 // The salts (simulation.rng_salts.Salt), each its four letters as one
 // big-endian word.
@@ -27,6 +27,7 @@ constexpr uint32_t SALT_MELEE_CRIT = 0x4D454C43u;
 constexpr uint32_t SALT_FIELD_NOISE = 0x4E4F4953u;
 constexpr uint32_t SALT_SWARM_TUMBLE = 0x54554D42u;
 constexpr uint32_t SALT_SWARM_WALL_TURN = 0x57414C54u;
+constexpr uint32_t SALT_SWARM_BROOD = 0x42524F44u;
 
 // The draw key row (draw_key: one per env).
 constexpr int DRAW_KEY_SEED_LO = 0;

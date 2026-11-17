@@ -1,6 +1,8 @@
-"""Zone entity classes — ``breach_site`` + ``extraction_zone`` (Arc A, A8).
+"""Zone entity classes — ``breach_site`` + ``extraction_zone`` (Arc A, A8),
+and ``swarm_brood`` (arc #63 P4: where swarm units start).
 
-Level editor v3 design §5 (LOCKED 2026-07-18): TWO zone classes only. Zones
+Level editor v3 design §5 (LOCKED 2026-07-18): TWO zone classes; the swarm
+arc's brood (engine/17 §11) is the third, in the same idiom. Zones
 are matter-first — the painted mask lives in ``zones.npy`` (uint8 paint-id
 grid, shape == tilemap, 0 = unpainted, discovered by presence next to
 level.toml); each zone is an ``[[entity]]`` instance carrying ``zone_id`` =
@@ -24,7 +26,7 @@ ML variation hook) is stack-2's, not Arc A's.
 from __future__ import annotations
 
 from simulation.entities.schema import (
-    Entity, Field, KIND_INT, KIND_ROSTER, register,
+    Entity, Field, KIND_INT, KIND_ROSTER, KIND_STR, register,
 )
 
 # The zone paint-id namespace is ONE space across both classes: zones.npy is
@@ -71,4 +73,39 @@ class extraction_zone(Entity):
               doc="faction/team int that extracts here (editor design §5 "
                   "instance tuple; same integer vocabulary as [[spawn]] "
                   "team)"),
+    )
+
+
+# The default brood size (arc #63 P4): 200 larvae, about two per tile over a
+# 10 x 10 room -- enough to read as a swarm, a fortieth of the default store.
+BROOD_DEFAULT_COUNT = 200
+
+
+@register
+class swarm_brood(Entity):
+    """Where swarm units start (arc #63 P4, engine/17 §11): a painted zone a
+    level fills with ``count`` units of ``species`` at load, before tick 0.
+
+    A third zone class in the same paint-id namespace (the binding
+    validators are the loader's, unchanged). It never ticks and keeps no
+    runtime state: the scatter is drawn from the match draws
+    (``simulation/swarm_brood.py``), never from a seed column (Erik's
+    ruling: one source of draws)."""
+
+    INTANGIBLE = True   # a zone never occupies the grid
+
+    FIELDS = (
+        Field("zone_id", KIND_INT, default=None,
+              minimum=ZONE_ID_MIN, maximum=ZONE_ID_MAX,
+              doc="REQUIRED integer paint id -- the value painted in "
+                  "zones.npy (uint8; 0 = unpainted, so ids are 1..255). "
+                  "One instance per painted id, one id per instance."),
+        Field("species", KIND_STR, default="larva",
+              doc="the swarm species the brood spawns (a name of "
+                  "simulation.swarm.SWARM_SPECIES; an unknown one is refused "
+                  "at load by name)"),
+        Field("count", KIND_INT, default=BROOD_DEFAULT_COUNT, minimum=1,
+              doc="how many units the brood scatters over the zone's free "
+                  "(non-solid) tiles at load; past the species' capacity the "
+                  "load is refused (SwarmFull), never clamped"),
     )

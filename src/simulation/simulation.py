@@ -111,6 +111,7 @@ from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
 from simulation.swarm import SwarmUnits, reload_species  # arc #63 P2
+from simulation import swarm_brood  # arc #63 P4
 from simulation.swarm import death_events as swarm_death_events  # arc #63 P3
 from simulation.timed_charge_system import (build_timed_charges,
                                             sweep_timed_charges)
@@ -433,6 +434,13 @@ class Simulation:
         self._fired_start_p1 = False
         self._fired_between = False
         self._fired_end_p2 = False
+
+        # arc #63 P4: THE brood spawn -- every swarm_brood zone scatters its
+        # units into the store at load, before tick 0, from this sim's own
+        # draws (tick 0; after the door stamps, so a closed door is solid).
+        # Every path a match starts through constructs here. A brood-free
+        # level draws and spawns nothing.
+        swarm_brood.spawn_broods(self)
 
         # Direct-control possession set (control-modularity P3, §3b/§3c): the
         # unit ids a ControlSource has issued at least one per-tick intent for.

@@ -591,6 +591,19 @@ def swarm_column(gmap, species: str, col: str):
     return getattr(gmap, store_attr(species, col))
 
 
+def count_on_tile(gmap, species: str, tx: int, ty: int) -> int:
+    """How many live units of ``species`` stand on tile ``(tx, ty)`` (arc #63
+    P4, the tile inspector's row): a pure read of the store's host mirror,
+    over its ``high_water`` extent."""
+    hw = int(getattr(gmap, high_water_attr(species)))
+    if hw == 0:
+        return 0
+    valid = swarm_column(gmap, species, "valid")[:hw] != 0
+    sx = swarm_column(gmap, species, "pos_x")[:hw] >> swarm_fixed.FP_SHIFT
+    sy = swarm_column(gmap, species, "pos_y")[:hw] >> swarm_fixed.FP_SHIFT
+    return int((valid & (sx == int(tx)) & (sy == int(ty))).sum())
+
+
 # ---------------------------------------------------------------------------
 # The invariant checker (§2.6, R4) -- a pure reader.
 # ---------------------------------------------------------------------------
