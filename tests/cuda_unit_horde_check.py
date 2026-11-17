@@ -1114,8 +1114,11 @@ def part_refuse():
         if "[0]" not in str(ex):
             fail(f"refuse: the ring refusal does not name the env: {ex}")
         seen["ring"] += 1
-    # a noise list of one row at a tick where two zombies strike D0 at once
+    # a noise list of one row at a tick where two zombies strike D0 at once (Zc's
+    # hooks neutral here, so Zc and Zd, stacked, strike on the same tick)
+    from simulation import unit_traits
     sc = HordeScene(0)
+    unit_traits.compile_unit(sc.sim, sc.zombies[2], None)
     for _t in range(300):
         sim = sc.sim
         U = len(sim.units)
