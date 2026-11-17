@@ -213,6 +213,28 @@ def test_memory_step_by_step_equals_one_stretch(sizes6, rng):
         assert not torch.allclose(got[:, 0], want[:, 0], atol=ATOL)
 
 
+def test_the_heads_read_the_memory_at_the_joins_size(sizes6, rng):
+    """Protects: with memory on, the heads read the memory at the size the
+    join hands them (a normalising layer between: rms near 1 per row) while
+    the memory carried on is the cell's own, unnormalised state -- even at a
+    fresh network, whose cell output starts several times smaller (2d.1b:
+    rms 0.13 against the join's 1.0; the heads then learnt a cue in the
+    vector about twice as slowly as without memory, and the 12-decision
+    recall not at all in 300 supervised steps).
+    Breaks when: the heads read the raw cell output again, or the
+    normalised vector is carried as the memory (the stored memory would no
+    longer be what the cell steps from)."""
+    net = _soldier(sizes6, memory=True)
+    obs = fake.make_obs(sizes6, 32, rng)
+    with torch.no_grad():
+        out, h = net(_t(obs))
+        rms = out.core.pow(2).mean(-1).sqrt()
+        assert torch.all((rms - 1).abs() < 0.05), rms
+        assert h.pow(2).mean().sqrt() < 0.5          # the raw cell, small
+        torch.testing.assert_close(h, net.memory(net._read(_t(obs), 1)[0]),
+                                   rtol=0, atol=ATOL)
+
+
 def test_with_memory_off_there_is_no_state(sizes6, rng):
     """Protects: with the memory switched off there is no memory module, no
     state in or out, and a state offered is refused.

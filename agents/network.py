@@ -17,8 +17,10 @@ THE SOLDIER (:class:`SoldierNet`), part by part (design 8.1):
   (``float16`` planes and ``uint8`` planes, a code plane read as one
   channel per code) and are converted inside;
 - **join**: the four results to one vector;
-- **memory**: a GRU cell carried from decision to decision; the spec can
-  switch it off, and then there is no state at all;
+- **memory**: a GRU cell carried from decision to decision, its update
+  gates started over a spread of time scales (:func:`_keep_start`), the
+  heads reading it through a normalising layer; the spec can switch it
+  off, and then there is no state at all;
 - **heads**, in the action spec's order (design 2.3): the feet on their
   own; the aim by pointing (a question vector against each entry's own
   vector and the learned vectors of the fixed tokens); the trigger and the
@@ -68,6 +70,30 @@ VALUE_FULL_KEYS = ("full_list", "full_mask", "full_match", FULL_PLANE)
 #: The heads' last layers start this share of PyTorch's default (a
 #: near-even first policy; rung 2 note 2b, section 6).
 FIRST_HEAD_SCALE = 0.01
+#: The longest time scale the memory STARTS with, in decisions (see
+#: :func:`_keep_start`). A start, not a limit: learning moves every gate.
+MEMORY_LONGEST = 32
+
+
+def _keep_start(cell: nn.GRUCell) -> None:
+    """Start the memory cell's update gates over a spread of time scales
+    (chrono initialisation: Tallec and Ollivier, "Can recurrent neural
+    networks warp time?", ICLR 2018, section 2). PyTorch's default starts
+    every unit at an even keep / replace, so a mark on the memory halves
+    every decision and is gone before a reward can teach the cell to keep
+    it (the finding of rung 2 patch 2d.1). Here unit ``i`` starts keeping
+    ``T_i / (T_i + 1)`` of itself per decision, the ``T_i`` spread evenly in
+    the logarithm from 1 to :data:`MEMORY_LONGEST` decisions: some units
+    write fast and forget fast, some write slowly and hold. No random
+    number is drawn (a network without memory, and every other weight of
+    one with it, starts exactly as before)."""
+    core = cell.hidden_size
+    scales = torch.logspace(0.0, math.log10(MEMORY_LONGEST), core)
+    with torch.no_grad():
+        # GRUCell's biases are laid out (reset, update, new); the update
+        # gate multiplies the OLD memory, so a positive bias keeps.
+        cell.bias_ih[core:2 * core].zero_()
+        cell.bias_hh[core:2 * core].copy_(torch.log(scales))
 
 
 def served_formats(sizes: Sizes) -> dict:
@@ -376,6 +402,15 @@ class SoldierNet(nn.Module):
         w, hh, core = net.width, net.head_hidden, net.core
         self.body = Body(net, sizes, sizes.entry, sizes.entry_kinds, 0, 0)
         self.memory = nn.GRUCell(net.join, core) if net.memory else None
+        if self.memory is not None:
+            _keep_start(self.memory)
+            # The heads read the memory through a normalising layer (the
+            # memory itself is carried as the cell made it). Without it the
+            # heads see a vector about eight times smaller than the join
+            # (the cell's output starts small, most units keeping), and a
+            # cue the heads must learn to read is learnt about twice as
+            # slowly as without memory (patch 2d.1b). No random number.
+            self.memory_norm = nn.LayerNorm(core)
         n_feet, _, n_trig, n_hands, n_arg = sizes.heads
         self.feet_head = _mlp(core, hh, n_feet)
         self.aim_query = _mlp(core, hh, w)
@@ -437,7 +472,7 @@ class SoldierNet(nn.Module):
         if first is not None:
             state = state * (~first.bool()).unsqueeze(-1).to(state.dtype)
         h = self.memory(joined, state)
-        return h, h
+        return self.memory_norm(h), h
 
     def forward(self, obs: dict, state=None, first=None):
         """One decision for ``N`` rows: ``obs`` the served arrays ``(N,

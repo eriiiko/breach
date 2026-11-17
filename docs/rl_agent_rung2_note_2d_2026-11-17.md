@@ -247,6 +247,42 @@ Only what differs from sections 1 to 8, and why.
   while the soldier was still frozen: the 0.9 line is about three rounds'
   noise below a single-round start.
 
+## 8b. As built (2d.1b, 2026-11-17): why the memory did not learn
+
+Only what differs from 8a, and why. The measurements are in
+`agents/tasks.py` `RecallTask`'s text; here the outcome.
+
+- **The network had a real fault, now fixed.** The cell's output starts
+  about 8 x smaller than the join (rms 0.13 against 1.0) and the heads read
+  it raw, so a cue the heads must learn to read is learnt slowly through
+  the memory. The heads now read the memory through a normalising layer
+  (`SoldierNet.memory_norm`, a LayerNorm; the memory carried and stored is
+  still the cell's own state). Supervised fit of the right feet: gap 0
+  0.30 -> 0.94 at step 80 (no memory: 0.89), gap 12 0.29 at step 300 ->
+  0.83 at step 180. By reward, the cue answered at once with memory on
+  passes in 87 rounds (was 0.8 at round 180). A network without memory is
+  untouched (its bit-identity test passes); the layer draws no random
+  number. Test: `test_the_heads_read_the_memory_at_the_joins_size` (red
+  without the layer).
+- **No layer washes the cue out.** Its share of the activation stays 0.12
+  to 0.15 from the vector reader to the feet: 4 cue columns against each
+  soldier's fixed made-up scenery. The lead's first supervised check (gap
+  0, 20 steps) was simply too short: without memory the same check needs
+  about 60 steps to move.
+- **The chrono start stays** (Tallec and Ollivier 2018, archived in
+  `docs/papers/`): replaying each window under all four cues, it keeps
+  7 x more of the cue's mark after 12 decisions and 27 x after 24 than
+  PyTorch's start. At gap 12 both starts fit alike; it is kept for 24.
+- **FINDING, open for the lead: the tasks' farm is too thin for the memory
+  tasks.** With the network fixed, `recall12` at stretch 16 is still flat
+  after 370 rounds on the tasks' farm and 100 on a farm of 32 matches. Per
+  round the farm gives `recall12` 8.5 answers whose cue lies in the
+  answer's stretch (the only ones that teach the keeping) and `recall24`
+  at 32 3.4, against 130 for the cue answered at once. Nothing was bent:
+  the three tests stay skipped by name (`MEMORY_FINDING`) until the lead
+  decides the farm and budget, written into the task's text with its
+  measurement.
+
 ---
 
 # Part 2 (2d.2): saving and resuming
