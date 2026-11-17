@@ -603,7 +603,27 @@ def good_start(soldier, seed: int, *, planned_rounds: int,
     ``variety`` as given). Returns the score per round (each played by the
     weights the round started with: round 1's is the start's), the start,
     the lowest, the end (the last round's) and the lowest's share of the
-    start."""
+    start.
+
+    MEASURED (2d.1, 2026-11-17; the pointer soldier taught on seed 0 until
+    it passed, 37 rounds, 0.82; planned rounds 150; start / lowest / end):
+
+    | run | seed 0 | seed 1 | seed 2 |
+    |---|---|---|---|
+    | 5 value-first rounds (the gate) | 0.832 / 0.832 / 0.941 | 0.742 / 0.680 / 0.891 | 0.695 / 0.695 / 0.949 |
+    | no value-first rounds | 0.832 / 0.832 / 0.949 | 0.742 / 0.734 / 0.934 | 0.695 / 0.695 / 0.945 |
+    | 5 value-first, variety x 10 | 0.832 / 0.832 / 0.930 | 0.742 / 0.680 / 0.887 | 0.695 / 0.695 / 0.922 |
+
+    Neither the missing value-first rounds nor ten times the variety push
+    wore the start down: every run ends 0.11 to 0.25 above its start. The
+    one dip (seed 1, 0.680 = 0.92 of the start) falls in round 6 of the
+    runs WITH value-first rounds, while the soldier was still frozen: it is
+    the noise of one round's score (256 decisions, about 0.03), not
+    learning. Two limits of the measurement: the taught start is the pass
+    line (0.82 on its own rooms, 0.70 to 0.74 on other seeds' scenery), not
+    the best, so a trainer has room to climb and a wearing-down of a start
+    at the top is not what this sees; and the gate's 0.9 is about three
+    rounds' noise below a single-round start."""
     import copy
     torch.set_num_threads(threads)
     extra = {} if variety is None else {"variety": float(variety)}
