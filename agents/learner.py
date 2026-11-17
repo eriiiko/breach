@@ -49,8 +49,20 @@ any difference between acting and learning in the choosing module.
 The choosing module is the ONE place a probability is computed: this
 module calls ``evaluate`` and writes no softmax, sampler or log-probability
 of its own.
+
+WHAT A ROUND OF LEARNING MEASURED (patch 2c's per-round line), besides the
+losses: the seconds of grading (the estimates, the grades, the scale's
+move) and of the passes, the card waited for at each end; per reward group,
+the share of the grading targets' spread the value network's estimates
+explained BEFORE this round's passes (``1 - var(target - v) / var(target)``
+over the value rows; None for a group whose PAY does not vary in the round:
+its targets would vary only by the network's own guesses); the
+variety of each head over the decisions where it counted; the passes each
+measured distance belongs to.
 """
 from __future__ import annotations
+
+import time
 
 import numpy as np
 import torch
@@ -63,6 +75,31 @@ from agents.network import SOLDIER_KEYS, VALUE_FULL_KEYS, VALUE_OBS_KEYS
 from agents.settings import Settings
 from agents.value_scale import ValueScale
 from simulation import action_spec_v1 as A
+
+
+#: Below this spread of a group's pay over a round the group "does not
+#: vary" and its explained share is None (a share of nothing is noise).
+VARIES = 1e-12
+
+
+def explained(v, target, reward, rows) -> list:
+    """Per group: ``1 - var(target - v) / var(target)`` over ``rows`` (the
+    value rows), or None where the group's pay (``reward``) does not vary
+    over them, or its targets do not."""
+    out = []
+    for g in range(target.shape[-1]):
+        y = target[..., g][rows]
+        if (y.size == 0 or float(reward[..., g][rows].var()) <= VARIES
+                or float(y.var()) <= VARIES):
+            out.append(None)
+            continue
+        out.append(float(1.0 - (y - v[..., g][rows]).var() / y.var()))
+    return out
+
+
+def _sync(device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 class LiveCheckFailed(RuntimeError):
@@ -191,6 +228,8 @@ class Learner:
         """Learn from ``batch`` (played with the current weights); returns
         the round's measurements. The weights are :meth:`weights`."""
         s = self.settings
+        _sync(self.device)
+        t0 = time.perf_counter()
         step_size = s.step_size_at(self.round)
         for opt in (self.opt_soldier, self.opt_value):
             for g in opt.param_groups:
@@ -205,10 +244,14 @@ class Learner:
         value_rows = batch.flat("value_row") != 0
         policy_rows = (batch.flat("valid") != 0) & value_rows
         targets = target.reshape(T * R, G)
+        explained_share = explained(v, target, batch.reward,
+                                    batch.value_row != 0)
 
         # 2. move the scale toward this batch's targets (the last layer is
         #    corrected inside, so the real-unit outputs do not move)
         self.scale.update(targets[value_rows])
+        _sync(self.device)
+        t1 = time.perf_counter()
 
         # 3. learn, on the targets normalised with the new scale
         target_n = self.scale.normalise(
@@ -219,6 +262,10 @@ class Learner:
         stopped = None
         distances, pol_losses, val_losses, varieties, clipped = \
             [], [], [], [], []
+        distance_pass = []
+        n_heads = len(A.HEADS)
+        variety_heads = np.zeros(n_heads)
+        used_heads = np.zeros(n_heads)
         soldier_steps = value_steps = 0
         order_rows = np.flatnonzero(value_rows)
         for p in range(s.passes):
@@ -244,6 +291,8 @@ class Learner:
                                                  grades, stored_logp,
                                                  checking, seen)
                         moved += out["moved"]
+                        variety_heads += out["variety_heads"]
+                        used_heads += out["used_heads"]
                         pol_losses.append(out["loss"])
                         varieties.append(out["variety"])
                         clipped.append(out["clipped"])
@@ -258,6 +307,7 @@ class Learner:
                         distance, s.live_tolerance)
                 if soldier_learns and n_pol:
                     distances.append(distance)
+                    distance_pass.append(p)
                     if distance > s.max_distance:
                         # the early stop: this piece is not stepped
                         soldier_learns = False
@@ -272,7 +322,14 @@ class Learner:
                 self.opt_value.step()
                 value_steps += 1
         self.round += 1
+        _sync(self.device)
+        t2 = time.perf_counter()
         return {
+            "seconds": {"grading": t1 - t0, "passes": t2 - t1},
+            "explained": explained_share,
+            "variety_heads": [float(a / b) if b else None
+                              for a, b in zip(variety_heads, used_heads)],
+            "distance_pass": distance_pass,
             "step_size": step_size,
             "live": live,
             "distances": distances,
@@ -322,9 +379,14 @@ class Learner:
             seen["s_u"].append(self._tensor(batch, "used", idx) != 0)
             seen["d_a"].append(d.arg_mask.detach())
             seen["s_a"].append(self._tensor(batch, "arg_mask", idx) != 0)
+        used = d.used.detach()
         return {"moved": float((old - d.logp.detach()).sum()),
                 "loss": float(loss.detach()) * n_pol / len(idx),
                 "variety": float(variety.detach().mean()),
+                "variety_heads": (d.variety.detach() * used).sum(dim=0)
+                .cpu().numpy().astype(np.float64),
+                "used_heads": used.sum(dim=0).cpu().numpy()
+                .astype(np.float64),
                 "clipped": float(((ratio - 1.0).abs() > s.clip)
                                  .float().mean())}
 
@@ -339,5 +401,5 @@ class Learner:
         return float(err.detach().mean())
 
 
-__all__ = ["LiveCheckFailed", "one_arithmetic", "cut_pieces", "live_check",
-           "Learner"]
+__all__ = ["VARIES", "explained", "LiveCheckFailed", "one_arithmetic",
+           "cut_pieces", "live_check", "Learner"]

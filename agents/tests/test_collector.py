@@ -171,7 +171,7 @@ def test_a_masked_choice_on_a_driven_row_stops_the_run(monkeypatch):
 
     def bad(self, obs):
         d = real(self, obs)
-        d.actions[:, 3] = A.HAND_FLASHLIGHT        # reserved: always masked
+        d["actions"][:, 3] = A.HAND_FLASHLIGHT     # reserved: always masked
         return d
     monkeypatch.setattr(Collector, "_act", bad)
     with pytest.raises(MaskedChoiceSent, match=r"env 0, team 0, slot 0"):

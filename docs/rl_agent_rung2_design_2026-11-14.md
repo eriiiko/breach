@@ -347,6 +347,14 @@ copied.
   -0.5 for its death, +10 for the win, -10 for elimination, -3 when the
   clock runs out. (Design 6.9's range paid no win; one table for all of rung
   2 is chosen here.) No new environment code.
+  *Amended by patch 2c (the lead, 2026-11-17, under Erik's word of that day
+  that the lead takes a more active part in the reward):* the range's run
+  file names a "range" row instead: fireteam's sizes on the same terms, with
+  the zombie and friendly-fire terms written as 0. In a room with one enemy
+  marine and nothing else it pays exactly what fireteam pays (held by a test
+  on every tick of a played match); the row exists so that a later room with
+  a zombie or a team-mate cannot pay through a term nobody chose. It is one
+  row in `reward_v1.PROFILES`, so 2c does touch one game file.
 - **The learning team holds the bots' commander's orders** in every rung-2
   task (the builder adds the commander beside every `policy` team). So the
   soldier is shown where the objective is. The duel's opponent holds none.
@@ -820,8 +828,9 @@ full. And for the copy the 1 000-decision test of 3.3.
 | the same on the small ship | about 2 000 | estimate (the measured small / medium ratio of 2.76) |
 | the roadmap's planning figures | 3 000 small, 1 000 medium | set on 2026-11-11, before observation spec v1 and the gameplay pack |
 | **the range and the duel** | **320 to 1 320 a second, most likely about 730** | estimate (lens 4, from measured costs per tick and per observed soldier) |
-| learning time per round | 0.1 to 0.7 of the collecting time | estimate (lens 4) |
-| the network's answer during collecting | 3 to 6 ms per step, 3 to 12 % | estimate |
+| **the range, measured** (patch 2c, Home Desktop, 64 matches on 16 workers, 2.95 M decisions) | **391 a second**; 396 at 128 matches; 294 on 8 workers | measured 2026-11-17 (`docs/rl_agent_rung2_report_2c_2026-11-17.md`); the estimate above is kept for the record |
+| learning time per round | 0.1 to 0.7 of the collecting time; **measured 0.65** | estimate (lens 4); measured 2026-11-17 |
+| the network's answer during collecting | 3 to 6 ms per step, 3 to 12 %; **measured 9 %** | estimate; measured 2026-11-17 |
 | the copy | about 20 minutes per training run, if the reading keeps up (3.1) | estimate |
 
 **The small rooms are not faster where it counts.** Version 1 expected
@@ -836,8 +845,8 @@ estimates "from other people's tasks"):
 
 | run | roadmap | now |
 |---|---|---|
-| range | minutes | 8 minutes to 8 hours |
-| duel | about an hour | 1.3 to 90 hours; about 6 hours at 10 million decisions and the likely speed |
+| range | minutes | 8 minutes to 8 hours; **measured 81 minutes** to all six hand rooms cleared (1.9 M decisions) |
+| duel | about an hour | 1.3 to 90 hours; about 6 hours at 10 million decisions and the likely speed; **at the measured 391 a second: 7.1 hours per 10 million decisions** |
 | the experiment, six runs on three PCs | "cheap" | an afternoon to 11 days of all three PCs |
 
 **All of rung 2, machine time, no re-runs counted** (estimate, lens 4):
@@ -849,7 +858,9 @@ needs (a factor of ten, unknown until step 6) and the farm's speed in a
 training room (a factor of four, known after step 3).
 
 **Memory.** The computer's memory is not a limit on any PC (6 to 11.5 GB of
-16 with the farm running). The card is, per piece (4.4).
+16 with the farm running). **Measured 2026-11-17 on the Home Desktop with
+16 workers: 11.7 to 15.3 GB of 15.9 in use, the desktop included; it is
+close to a limit there.** The card is, per piece (4.4).
 
 **The three PCs are not equal.** The laptop's card is the smallest; its
 processor mixes fast and slow cores, and the farm waits for its slowest
@@ -883,7 +894,7 @@ its boundary and its own gate, as in rung 1.
 |---|---|---|---|
 | 2a | the network, the choosing module, their tests; the weight count and the card's peak memory printed (2) | no | no |
 | 2b | the trainer's core: whose rows are stored, the stored decision, grading with the hand-worked case, the update, the collector against the stand-in environment, the live check, the made-up tasks without memory (4, 8) | no | no |
-| 2c | **the first real run:** the range on one to three hand-made rooms written through the level writer, from scratch, no memory, 64 matches on 16 workers, one to three hours. Reports: learning decisions a second, where a step's time goes, the card's peak memory, whether the curve rises; the speed also at 128 matches | no | yes |
+| 2c | **the first real run:** the range on one to three hand-made rooms written through the level writer, from scratch, no memory, 64 matches on 16 workers, one to three hours. Reports: learning decisions a second, where a step's time goes, the card's peak memory, whether the curve rises; the speed also at 128 matches | yes (one reward row, 4.3) | yes |
 | 2d | the trainer's rest: saving and resuming, the hand-over headers and the refusal, the training manifest, the run check extended to `agents/` and `tools/`, the curves script, the memory path with its two made-up tasks, the "already good start" task | **yes: `src/rl_env.py` (the run check)** | no |
 | (the lead) | the lesson document "The trainer, line by line", from 2b's and 2d's code; Erik reads it | | |
 | 2e | copying: the packed-record loader, the copying trainer, its measures, on the existing records (3) | no | no |
