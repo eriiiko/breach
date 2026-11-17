@@ -241,9 +241,10 @@ def run(run_path, train_path, out, *, workers=None, device="cpu",
     torch.set_num_threads(int(threads))
     dev = torch.device(device)
     if dev.type == "cuda":
-        free, total_mem = torch.cuda.mem_get_info(dev)
+        idx = dev.index if dev.index is not None else torch.cuda.current_device()
+        free, total_mem = torch.cuda.mem_get_info(idx)
         cap = min(float(card_fraction), 0.97 * free / total_mem)
-        torch.cuda.set_per_process_memory_fraction(cap, dev)
+        torch.cuda.set_per_process_memory_fraction(cap, idx)
         print(f"card capped at {cap:.3f} of {total_mem / 2**20:.0f} MiB "
               f"({cap * total_mem / 2**20:.0f} MiB; {free / 2**20:.0f} MiB "
               f"free at the start)", flush=True)
