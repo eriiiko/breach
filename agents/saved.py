@@ -56,6 +56,7 @@ None); ``seed_lists_sha256`` (None until patch 2g); ``commit`` and
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import io
@@ -309,7 +310,10 @@ def restore(trainer, saved: dict) -> None:
     ln, col = trainer.learner, trainer.collector
     ln.soldier.load_state_dict(saved["soldier"])
     ln.value.load_state_dict(saved["value"])
-    L = saved["learner"]
+    # the optimisers KEEP the tensors they are given (on the processor no
+    # copy is made) and step them in place: they get their own copies, or
+    # two trainers restored from one loaded file would share their moments
+    L = copy.deepcopy(saved["learner"])
     ln.opt_soldier.load_state_dict(L["opt_soldier"])
     ln.opt_value.load_state_dict(L["opt_value"])
     sc, s = ln.scale, L["scale"]
