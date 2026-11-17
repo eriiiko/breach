@@ -342,3 +342,4 @@ def test_the_tile_inspector_counts_the_larvae_on_its_tile(tmp_path):
         & (swarm.swarm_column(sim.gmap, "larva", "pos_y") >> 16 == y)
         & (swarm.swarm_column(sim.gmap, "larva", "valid") != 0)))
     assert swarm.count_on_tile(sim.gmap, "larva", x, y) == 0
+    assert swarm.count_on_tile(sim.gmap, "larva", 0, 0) == 0, "a freed slot counted"

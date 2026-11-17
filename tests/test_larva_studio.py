@@ -33,11 +33,13 @@ def test_the_studio_generates_deterministically_and_is_the_checked_in_one(tmp_pa
         assert a == (ROOT / "levels" / gen.LEVEL_NAME / name).read_bytes(), name
 
 
-def test_the_studio_passes_the_lint():
-    """Property: the studio is airtight and its broods can spawn. Breaks if
-    the hull leaks or a brood loses its free tiles."""
+def test_the_studio_passes_the_lint(tmp_path):
+    """Property: the studio as the generator writes it is airtight and its
+    broods can spawn. Breaks if the hull leaks or a brood loses its free
+    tiles."""
     import level_airtight
-    assert level_airtight.check(gen.LEVEL_NAME, str(ROOT / "levels")) is True
+    gen.main(tmp_path / gen.LEVEL_NAME)
+    assert level_airtight.check(gen.LEVEL_NAME, str(tmp_path)) is True
 
 
 def test_larvae_reach_the_warm_rooms_comfort_band():
