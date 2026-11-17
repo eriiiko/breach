@@ -893,6 +893,62 @@ for _ln, _tn in zip(unit_kernels.SIGNAL_LISTS, unit_kernels._SIGNAL_TABLE_NAMES)
     LISTS[_ln] = ListDef(_sim_host, _signal_records(_ln), _signal_consume, _door_device(_tn),
                          _wide_fields(_tn), None, _SIGNAL_LANDS.get(_ln, _same_land(_ln)))
 
+# #29 P7d: THE HORDE'S FIELD CACHE (``sim.horde_state``, cross-tick device
+# state: horde_cache.CacheRecords -- a header and one record per field, each
+# with its plane's digest, the planes riding along so the cache is staged and
+# landed whole). ``horde`` is staged from the host every call (the shadow);
+# ``horde_live`` is never restaged after its first begin (the CACHE gate: the
+# device's own cache across ticks, compared with the host's every tick).
+def _horde_records(sim, obj):
+    from simulation import horde_cache
+    return horde_cache.cache_records(sim)
+
+
+def _horde_device(persistent):
+    def device(n_env, n_units, cap, bp):
+        from simulation import horde_cache
+        return horde_cache.DeviceHordeCache(n_env, n_units, persistent=persistent)
+    return device
+
+
+def _horde_land(sim, obj, recs):
+    from simulation import horde_cache
+    horde_cache.to_host(sim, recs)
+
+
+def _horde_fields(rec):
+    if int(rec[0]) == 0:
+        return "horde header", ("tag", "mask_built", "has_serial", "serial", "floods",
+                                "n_fields", "masks_digest")
+    return "horde field", ("tag", "kind", "fp", "sy", "sx", "slot", "dist_digest")
+
+
+def _horde_consume(obj):
+    raise RuntimeError("lockstep: the horde cache is landed, never consumed")
+
+
+LISTS["horde"] = ListDef(_sim_host, _horde_records, _horde_consume, _horde_device(False),
+                         _horde_fields, None, _horde_land)
+LISTS["horde_live"] = ListDef(_sim_host, _horde_records, _horde_consume,
+                              _horde_device(True), _horde_fields, None, _horde_land)
+
+
+def _capture_horde_latch(sim):
+    from simulation import horde_cache
+    return horde_cache.latch_of(sim, len(sim.units))
+
+
+def _pad_horde_latch(vals):
+    w = max(len(v) for v in vals)
+    out = np.zeros((len(vals), w), dtype=np.int64)
+    for e, v in enumerate(vals):
+        out[e, :len(v)] = v
+    return out
+
+
+INPUTS["horde_latch"] = ("table", _capture_horde_latch)
+PADS["horde_latch"] = _pad_horde_latch
+
 LISTS["ducts"] = ListDef(_sim_host, _ducts_records, _vent_consume, _door_device("duct"),
                          _wide_fields("duct"), None, _ducts_land)
 LISTS["vents"] = ListDef(_sim_host, _vents_records, _vent_consume, _door_device("vent"),

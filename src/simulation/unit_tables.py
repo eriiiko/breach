@@ -1752,6 +1752,78 @@ _VENT_ROWS: tuple = (
 )
 ROWS = ROWS + _VENT_ROWS
 
+
+# == #29 P7d: the horde (slot 5, ai_zombie.update_zombies_tick) -- the sim's own
+# HordeSettings (horde.horde_settings: [zombie] through the refusing door,
+# quantized ONCE for the map), the bite's [zombie] values and the zombie
+# cadences of the sim's own [speeds] table ===================================
+def _hs(attr, cast=int):
+    return lambda src: cast(getattr(src.sim.horde_settings, attr))
+
+
+def _bash_damage_q(src):
+    # combat.chew_wall's per-call door: wall_fixed.quantize_scalar(float(d)),
+    # 0 for d <= 0 (the no-op; the settings door refuses d <= 0 anyway)
+    from simulation import wall_fixed
+    d = float(src.sim.horde_settings.door_bash_damage)
+    return wall_fixed.quantize_scalar(d) if d > 0 else 0       # p3e-door: chew_wall's
+
+
+def _bite_class_q(src):
+    # unit_traits.strike_damage_q(z)'s class value (weapon None): the bite's
+    # [zombie] melee_damage quantized once; the kernel applies the STRIKE hook
+    from config import CFG
+    from simulation import unit_fixed
+    return unit_fixed.quantize_scalar(float(CFG.zombie.melee_damage))  # traits-class: the device tables upload the CLASS value; the kernel applies STRIKE through unit_lib::scaled  # p3e-door: strike_damage_q's
+
+
+def _attack_cooldown(src):
+    from config import CFG
+    return int(CFG.zombie.attack_cooldown_ticks)
+
+
+_R2 = 1 << 40           # a squared radius: every d2 compare stays in int64
+_HORDE_ROWS: tuple = (
+    TableRow("horde_trigger_r2", 1, _hs("trigger_r2"), 0, _R2,
+             "HordeSettings.trigger_r2: pass 1's sight radius squared (strictly inside)"),
+    TableRow("horde_propagation_r2", 1, _hs("propagation_r2"), 0, _R2,
+             "HordeSettings.propagation_r2: pass 2's chain radius squared"),
+    TableRow("horde_refresh_ticks", 1, _hs("field_refresh_ticks"), 1, 1 << 30,
+             "HordeSettings.field_refresh_ticks: the cache drops at tick % this == 0"),
+    TableRow("horde_wander", 1, _hs("wander"), 0, 1, "[zombie] wander (a switch)"),
+    TableRow("horde_wander_period_ticks", 1, _hs("wander_period_ticks"), 1, 1 << 30,
+             "HordeSettings.wander_period_ticks"),
+    TableRow("horde_wander_leash_r2", 1, _hs("wander_leash_r2"), 0, _R2,
+             "HordeSettings.wander_leash_r2"),
+    TableRow("horde_hearing", 1, _hs("hearing"), 0, 1, "[zombie] hearing (a switch)"),
+    TableRow("horde_noise_timeout_ticks", 1, _hs("noise_timeout_ticks"), 0, 1 << 30,
+             "HordeSettings.noise_timeout_ticks"),
+    TableRow("horde_noise_fields_max", 1, _hs("noise_fields_max"), 1, 1 << 20,
+             "HordeSettings.noise_fields_max: the live noise targets kept"),
+    TableRow("horde_noise_arrive_tiles", 1, _hs("noise_arrive_tiles"), 0, 1 << 30,
+             "HordeSettings.noise_arrive_tiles"),
+    TableRow("horde_fear_fire", 1, _hs("fear_fire"), 0, 1, "[zombie] fear_fire (a switch)"),
+    TableRow("horde_fear_temp_q16", 1, _hs("fear_temp_q16"), 1, 1 << 31,
+             "HordeSettings.fear_temp_q16: the feared temperature mirror (>=)"),
+    TableRow("horde_bash_doors", 1, _hs("bash_doors"), 0, 1, "[zombie] bash_doors (a switch)"),
+    TableRow("horde_bash_damage_q", 1, _bash_damage_q, 0, 1 << 31,
+             "chew_wall's quantize_scalar(float(door_bash_damage)) (0: the no-op)"),
+    TableRow("horde_bash_loudness_tiles", 1, _hs("bash_loudness_tiles"), 0, 1 << 20,
+             "HordeSettings.bash_loudness_tiles: a strike's noise radius (0 silent)"),
+    TableRow("horde_sprint", 1, _hs("sprint"), 0, 1, "[zombie] sprint (a switch)"),
+    TableRow("horde_sprint_r2", 1, _hs("sprint_r2"), 0, _R2, "HordeSettings.sprint_r2"),
+    TableRow("zombie_attack_cooldown_ticks", 1, _attack_cooldown, 0, 1 << 30,
+             "[zombie] attack_cooldown_ticks: the bite's and the bash's cadence"),
+    TableRow("zombie_bite_class_q", 1, _bite_class_q, 0, 1 << 24,
+             "unit_traits.strike_damage_q's bite base: quantize_scalar([zombie] "
+             "melee_damage) (x the STRIKE hook <= 2^19 < 2^43)"),
+    TableRow("zombie_shamble_ticks", 1, lambda src: int(src.sim.speed_table.zombie_shamble_ticks),  # traits-class: the class cadence; the kernel applies WALK through default_speed_q
+             1, 1 << 29, "SpeedTable.zombie_shamble_ticks (ticks per tile)"),  # traits-class: the class cadence (WALK applied in default_speed_q)
+    TableRow("zombie_sprint_ticks", 1, lambda src: int(src.sim.speed_table.zombie_sprint_ticks),  # traits-class: the class cadence; the kernel applies SPRINT through default_speed_q
+             1, 1 << 29, "SpeedTable.zombie_sprint_ticks (ticks per tile)"),  # traits-class: the class cadence (SPRINT applied in default_speed_q)
+)
+ROWS = ROWS + _HORDE_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 

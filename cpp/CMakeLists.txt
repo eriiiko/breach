@@ -187,6 +187,11 @@ if(BREACH_CUDA)
         # the gas-N primitives are the topology seam's); Class T, pure integer,
         # on the same target-wide CUDA determinism floor.
         src/cuda_unit_doors.cu      # slot 1b's door-table write
+        # #29 P7d: the horde -- slot 5 is the applier's HORDE stage
+        # (cuda_unit_horde.cuh, included by cuda_applier.cu); this TU is the
+        # flood's TEST-ONLY probe. Class T, pure integer, on the same
+        # target-wide CUDA determinism floor.
+        src/cuda_unit_horde.cu      # TEST-ONLY: the flood on given masks
         # ray-engine-v2 P4: the radiation sweep's CUDA twin (design v3 §8.2),
         # pure integer; it takes the target-wide determinism device flags
         # below (--fmad=false, no fast math, the strict host floor) like

@@ -484,6 +484,8 @@ def part_tables():
         want.update(doors_reference(sim))                    # #29 P6b.1's rows
         from cuda_unit_vents_check import table_reference as vents_reference
         want.update(vents_reference(sim))                    # #29 P6b.2's rows
+        from cuda_unit_horde_check import table_reference as horde_reference
+        want.update(horde_reference(sim))                    # #29 P7d's rows
         missing = [r.name for r in unit_tables.ROWS if r.name not in want]
         if missing:
             fail(f"tables: no reference value checked for rows {missing}")
