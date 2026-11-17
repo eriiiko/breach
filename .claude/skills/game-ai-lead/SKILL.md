@@ -343,6 +343,21 @@ implementation agents and critics stay one at a time.
   refuse the agent's own shrink of a task, which was the right outcome:
   such a change is the lead's, with the measurement beside it, and Erik is
   told.
+- **2026-11-17, patch 2c stage A (the first real run, built and measured
+  small).** One Opus agent. What the next patch should know: (1) the card
+  SPILLS for the training Python on the Home Desktop (9 216 MiB allocated
+  on the 8 GB card without an error); `agents/run.py` caps the process at
+  the free memory, so every run on the card goes through it; (2) a scratch
+  script that starts a farm needs `if __name__ == "__main__":` (spawn
+  re-imports it; without the guard it hung silently, no workers, no
+  output); (3) the env's `info["level"]` after a step is already the NEXT
+  match's: a per-level count must take the level from the view before the
+  step, and only a stand-in that varies the level can test that; (4) an
+  untrained soldier kills itself (grenades, fire) in a large share of the
+  range's matches: the outcome group is mostly the -10 of elimination at
+  the start; (5) at 4 workers x 16 matches, full width on the card, a round
+  of 2 048 decisions took 12 s (env step 67 %, answers 15 %, learning 16 %):
+  the farm is the bottleneck, as the design said.
 
 ## 11. Running rung 1 (for the orchestrator session)
 
