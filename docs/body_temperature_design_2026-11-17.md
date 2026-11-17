@@ -1,6 +1,6 @@
 # Body temperature: heat damage with inertia
 
-**Status: PROPOSED (version 2, the same evening), 2026-11-17. Nothing is built from this page until Erik has
+**Status: PROPOSED (version 3, the same evening), 2026-11-17. Nothing is built from this page until Erik has
 read it.** Direction agreed in chat the same day (Erik: "body temp if it's
 doable is exactly what I want"; "let's balance together later"; the 60 °C
 limit may move). Raised by rung 2c's finding on #215: one frag beside a marine
@@ -77,14 +77,27 @@ absorbs a few kJ, which warms the shell by 10 to 20 °C. Where that deposit
 comes from (the payload row or the explosive's row) is the patch's first
 finding to report.
 
-**Stage 2, not in this patch: the air and the vacuum.** Today the heat row
-reads radiation and deposits only; hot air by itself does not warm a unit.
-The energy form gives the place for it: exchange with the air in proportion
-to the air's density times the temperature gap. Thin hot gas then carries
-almost nothing (a near-vacuum that reads thousands of degrees does not cook),
-and in vacuum the same term stops cooling the body, so a heated suit stays
-hot much longer. That is its own patch with its own numbers, once this one
-is played.
+**The air and the vacuum (in this patch; Erik, 2026-11-17: "use the numbers
+we have at atmospheric pressure and scale with pressure").** The loss number
+above is the one for air at one atmosphere. It is split in two:
+
+    energy out = loss x [ 0.85 x (pressure / one atmosphere) x (body - air temperature)
+                        + 0.15 x (body - 20 °C) ] x tick
+
+- The first part is the exchange with the air on the unit's tiles, scaled by
+  that air's pressure. At one atmosphere and 20 °C the whole expression is
+  exactly the loss above, so nothing of the table moves. In thin air it
+  shrinks; in vacuum it is zero: thin hot gas carries almost nothing into the
+  body, and a heated suit in vacuum cools about seven times slower.
+- Because it reads the air's own temperature, hot air now warms a unit (today
+  the heat row reads radiation and deposits only). In a burning room that adds
+  to the radiation; how much is measured in the patch and reported, not tuned.
+- The second part is what the shell radiates to its surroundings, which needs
+  no air. 0.15 is the physical share at the 60 °C limit (about 23 of 159 W/K
+  for a 3.3 m² shell); it is what lets a body cool in vacuum at all.
+
+Pressure and air temperature are read over the unit's footprint through the
+map's existing reads, never a new probe.
 
 ## 3. What it gives (computed from the law; to be measured in the patch)
 
@@ -122,7 +135,6 @@ law, every blast number.
   points. Whether that is right is for the balance pass (Erik: "let's balance
   together later"; his idea of a data-driven system that tells what is
   overpowered is noted on #215).
-- **The air and the vacuum** (section 2, stage 2).
 - **Cold.** The same law would bill a body under `temperature_min`. Not now.
 - **Body heat as a source** (a warm body that larvae seek, a body that warms
   the air). The number exists after this patch; no law reads it yet.
