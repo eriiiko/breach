@@ -17,8 +17,10 @@ THE SOLDIER (:class:`SoldierNet`), part by part (design 8.1):
   (``float16`` planes and ``uint8`` planes, a code plane read as one
   channel per code) and are converted inside;
 - **join**: the four results to one vector;
-- **memory**: a GRU cell carried from decision to decision; the spec can
-  switch it off, and then there is no state at all;
+- **memory**: a GRU cell carried from decision to decision, its update
+  gates started over a spread of time scales (:func:`_keep_start`), the
+  heads reading it through a normalising layer; the spec can switch it
+  off, and then there is no state at all;
 - **heads**, in the action spec's order (design 2.3): the feet on their
   own; the aim by pointing (a question vector against each entry's own
   vector and the learned vectors of the fixed tokens); the trigger and the
@@ -402,6 +404,13 @@ class SoldierNet(nn.Module):
         self.memory = nn.GRUCell(net.join, core) if net.memory else None
         if self.memory is not None:
             _keep_start(self.memory)
+            # The heads read the memory through a normalising layer (the
+            # memory itself is carried as the cell made it). Without it the
+            # heads see a vector about eight times smaller than the join
+            # (the cell's output starts small, most units keeping), and a
+            # cue the heads must learn to read is learnt about twice as
+            # slowly as without memory (patch 2d.1b). No random number.
+            self.memory_norm = nn.LayerNorm(core)
         n_feet, _, n_trig, n_hands, n_arg = sizes.heads
         self.feet_head = _mlp(core, hh, n_feet)
         self.aim_query = _mlp(core, hh, w)
@@ -463,7 +472,7 @@ class SoldierNet(nn.Module):
         if first is not None:
             state = state * (~first.bool()).unsqueeze(-1).to(state.dtype)
         h = self.memory(joined, state)
-        return h, h
+        return self.memory_norm(h), h
 
     def forward(self, obs: dict, state=None, first=None):
         """One decision for ``N`` rows: ``obs`` the served arrays ``(N,
