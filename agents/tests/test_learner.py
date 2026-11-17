@@ -15,7 +15,7 @@ import torch
 from agents import learner as learner_mod
 from agents.collector import Collector
 from agents.learner import Learner, LiveCheckFailed
-from agents.network import SoldierNet, ValueNet
+from agents.network import ValueNet
 from agents.settings import Settings
 from agents.sizes import sizes_for
 from agents.spec import reduced
@@ -244,12 +244,12 @@ def test_runs_the_trainer_cannot_train_are_refused_by_name(change, name):
         Trainer(env, soldier, value, Settings(planned_rounds=1))
 
 
-def test_networks_that_do_not_fit_or_carry_memory_are_refused():
+def test_networks_that_do_not_fit_are_refused():
     """Protects: a network whose record does not fit the layout (a value
-    network made for another number of teams) and a soldier with the memory
-    on are refused by name.
-    Breaks when: ``check_fits`` is not called, or the memory path is let in
-    before patch 2d."""
+    network made for another number of teams) is refused by name. (The
+    soldier with the memory on, refused until patch 2d, is trained since
+    2d.1: ``test_memory.py``.)
+    Breaks when: ``check_fits`` is not called."""
     task = ScriptTask(4)
     env = StandIn(task, N)
     task.bind(env.sizes)
@@ -257,9 +257,6 @@ def test_networks_that_do_not_fit_or_carry_memory_are_refused():
     other = ValueNet(reduced(False), sizes_for(2, 2))
     with pytest.raises(RunRefused, match="n_teams"):
         Trainer(env, soldier, other, Settings(planned_rounds=1))
-    with_memory = SoldierNet(reduced(True), env.sizes)
-    with pytest.raises(RunRefused, match="memory"):
-        Trainer(env, with_memory, value, Settings(planned_rounds=1))
 
 
 def test_the_step_size_falls_to_zero_over_the_planned_rounds():

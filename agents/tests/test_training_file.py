@@ -9,7 +9,7 @@ import pytest
 
 from agents.settings import Settings
 from agents.spec import reduced, v1
-from agents.training_file import TrainingFileRefused, load, parse
+from agents.training_file import _OWN_TABLE, TrainingFileRefused, load, parse
 from simulation.reward_v1 import REWARD_GROUPS
 
 #: The note's training file (section 4), the design's table (4.4) written
@@ -31,6 +31,8 @@ lump = 512
 step_size = 3e-4
 variety = 0.01
 max_grad_norm = 0.5
+stretch = 16
+value_first_rounds = 0
 [weights]
 outcome = 1.0
 own = 1.0
@@ -39,6 +41,9 @@ friendly_fire = 0.0
 order = 0.0
 [stop]
 wall_hours = 2.5
+[save]
+save_every = 10
+keep_every = 0
 """
 
 
@@ -63,7 +68,8 @@ def test_the_design_file_gives_the_settings_defaults():
 
 def test_every_settings_field_is_a_key_and_a_value_reaches_it():
     """Protects: every field of ``Settings`` can be set from the file (one
-    key per field, in ``[train]``, ``[weights]`` or ``[stop]``) and a value
+    key per field, in ``[train]``, ``[weights]``, ``[stop]`` or ``[save]``)
+    and a value
     written there is the value the trainer gets. Breaks when a field is
     added to Settings without a way in, or a key is dropped on the way."""
     s0, _ = parse(_raw())
@@ -73,10 +79,14 @@ def test_every_settings_field_is_a_key_and_a_value_reaches_it():
         v = getattr(s0, f.name)
         new = v * 2 if isinstance(v, int) else v * 0.5
         raw = _raw()
-        raw["train"][f.name] = new
+        table = raw[_OWN_TABLE.get(f.name, "train")]
+        table[f.name] = new
         if f.name == "piece":
-            raw["train"]["piece"] = 4096
+            table["piece"] = 4096
             new = 4096
+        if f.name in ("value_first_rounds", "keep_every"):  # 0 doubles to 0
+            table[f.name] = new = 5
+        assert new != v, f"{f.name}: the written value must differ"
         s, _ = parse(raw)
         assert getattr(s, f.name) == new, f.name
     raw = _raw()
@@ -98,6 +108,9 @@ def test_every_settings_field_is_a_key_and_a_value_reaches_it():
     (lambda r: r["train"].update(gamma=True), "gamma"),
     (lambda r: r["train"].update(clip="0.2"), "clip"),
     (lambda r: r["stop"].update(wall_hours="2.5"), "wall_hours"),
+    (lambda r: r["save"].update(save_every=0), "save_every"),
+    (lambda r: r["save"].update(keep_every=2.0), "keep_every"),
+    (lambda r: r["save"].update(best=1), "best"),
     (lambda r: r["network"].update(spec="v2"), "spec"),
     (lambda r: r["network"].update(width="half"), "width"),
     (lambda r: r["network"].update(memory=0), "memory"),

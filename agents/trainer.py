@@ -7,8 +7,13 @@ ONE ROUND (:meth:`Trainer.round`):
    with the weights it was handed and fills the batch;
 2. **Grade and learn**: the learner grades the batch, moves the value
    targets' scale, runs the live check and learns;
-3. **Hand over**: the learner's new weights go to the collector; the batch
-   is overwritten by the next round.
+3. **Hand over**: the learner's new weights go to the collector with their
+   version (the batch's header names it); the batch is overwritten by the
+   next round.
+
+``ids`` (the run file's and the training file's sha256, the build id; patch
+2d.2) are written into every batch's header and compared by the learner.
+A run's state reaches disk only through :mod:`agents.saved`.
 
 The game is met only through the environment (``rl_env.BatchedEnv``, or in
 the tests the stand-in of :mod:`agents.standin`, which has the same names).
@@ -16,8 +21,10 @@ the tests the stand-in of :mod:`agents.standin`, which has the same names).
 REFUSED BY NAME at the start (:func:`check_run`): a run whose reward is not
 a named profile (the old "counters": the clock is not an ending there); an
 observation or action spec other than "v1"; the full view switched off; a
-network whose record does not fit the layout (``spec.check_fits``); a
-network with the memory on (the memory path is patch 2d's).
+network whose record does not fit the layout (``spec.check_fits``); with
+the soldier's memory on, a ``decisions``, ``piece`` or ``lump`` that is not a
+whole number of stretches (``Settings.stretch``: learning cuts and replays
+whole stretches, design 4.5; patch 2d).
 """
 from __future__ import annotations
 
@@ -55,7 +62,7 @@ def layout_sizes(layout):
     return sizes_for(layout.n_slots, layout.n_teams, layout.n_kinds)
 
 
-def check_run(env, soldier, value) -> None:
+def check_run(env, soldier, value, settings: Settings | None = None) -> None:
     """Refuse, by name, what this trainer cannot train (module text)."""
     lay = env.layout
     if lay.reward_profile == COUNTERS_PROFILE:
@@ -71,9 +78,15 @@ def check_run(env, soldier, value) -> None:
     if not lay.full_view:
         raise RunRefused("[obs] full_view is off: the value network reads "
                          "the full view")
-    if soldier.spec.memory:
-        raise RunRefused("a soldier's network with the memory on: the "
-                         "memory path is patch 2d's")
+    if soldier.spec.memory and settings is not None:
+        S = int(settings.stretch)
+        for name in ("decisions", "piece", "lump"):
+            n = int(getattr(settings, name))
+            if n % S:
+                raise RunRefused(
+                    f"{name} {n} is not a whole number of stretches "
+                    f"(stretch {S}): with the memory on, learning cuts and "
+                    f"replays whole stretches")
     sizes = layout_sizes(lay)
     try:
         check_fits(soldier.record, SpecRecord.of(v1(), sizes))
@@ -89,17 +102,20 @@ class Trainer:
     """Collector and learner over ``env``, one process (module text)."""
 
     def __init__(self, env, soldier, value, settings: Settings,
-                 device="cpu", seed: int = 0):
+                 device="cpu", seed: int = 0, ids: dict | None = None):
         one_arithmetic()
-        check_run(env, soldier, value)
+        check_run(env, soldier, value, settings)
         self.env = env
         self.settings = settings
         self.rows = LearningRows(env, learning_teams(env))
-        self.batch = Batch(env.layout, self.rows, settings.decisions)
-        self.learner = Learner(soldier, value, settings, device, seed)
+        core = (soldier.memory.hidden_size if soldier.memory is not None
+                else None)
+        self.batch = Batch(env.layout, self.rows, settings.decisions, core)
+        self.learner = Learner(soldier, value, settings, device, seed, ids)
         self.collector = Collector(env, self.learner.soldier, self.rows,
-                                   device, seed)
-        self.collector.set_weights(self.learner.weights())
+                                   device, seed, ids)
+        self.collector.set_weights(self.learner.weights(),
+                                   self.learner.version)
         self.collector.start()
         self.rounds = 0
 
@@ -112,7 +128,8 @@ class Trainer:
         stats = self.learner.learn(batch)
         _sync(self.learner.device)
         t2 = time.perf_counter()
-        self.collector.set_weights(self.learner.weights())
+        self.collector.set_weights(self.learner.weights(),
+                                   self.learner.version)
         _sync(self.learner.device)
         t3 = time.perf_counter()
         self.rounds += 1

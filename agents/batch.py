@@ -30,11 +30,27 @@ WHAT IS KEPT PER STORED DECISION (the note's table):
 - ``first`` (bytes): the decision is the first of a match for this row;
 - ``value_row`` (bytes): the step is a VALUE ROW -- ``in_match`` 1 and the
   row's story not ended since its match began (the collector's bookkeeping,
-  carried across rounds; grading reads it).
+  carried across rounds; grading reads it);
+- ``memory`` (float32, ``(T + 1, R, core)``, only with the soldier's memory
+  on; patch 2d): the soldier's memory BEFORE its decision at each step --
+  the state carried in, before the network zeroes it where ``first`` says a
+  match starts -- and at index ``T`` the memory after the last step (what
+  the next round starts from). Learning replays a stretch from
+  ``memory[t0]`` with the stretch's ``first`` flags, and the live check
+  compares the memory at the stretch's end with ``memory[t0 + stretch]``.
 
 Once per batch, for the value after the last stored decision: the
 observation keys the value network reads and the full view as they stand
 after the last step, ``last_*`` ``(R, ...)``.
+
+THE HEADER (patch 2d.2; design 4.6), once per batch: ``header``, a dict of
+:data:`HEADER_FIELDS` -- the weights' version the batch was played with,
+the run file's and the training file's sha256, the game's build id. The
+collector writes it when a round's collecting starts; the learner reads it
+through :meth:`Batch.check_header` against its own and refuses a batch that
+differs in any field (:class:`ForeignBatch`, naming the field). In rung 2
+collector and learner share a process, so it fires only on a fault; the
+header is what lets a later, spread-out form tell its batches apart.
 
 The POLICY ROWS of a step are those with ``valid`` 1 (a living soldier: the
 soldier's network and the value network learn). The VALUE ROWS are those
@@ -63,6 +79,25 @@ FULL_STORED = VALUE_FULL_KEYS
 #: The keys kept once per batch for the view after the last step.
 LAST_OBS = VALUE_OBS_KEYS
 LAST_FULL = VALUE_FULL_KEYS
+#: The batch header's fields (module text), in order.
+HEADER_FIELDS = ("version", "run_sha256", "training_sha256", "build_id")
+#: The run's names in a batch's header besides the version.
+RUN_IDS = tuple(f for f in HEADER_FIELDS if f != "version")
+
+
+def run_ids(ids: dict | None) -> dict:
+    """``ids`` as the run's names of :data:`RUN_IDS` (missing ones None;
+    an unknown key refused)."""
+    ids = dict(ids or {})
+    bad = sorted(set(ids) - set(RUN_IDS))
+    if bad:
+        raise ValueError(f"unknown run id(s) {bad} (known: {list(RUN_IDS)})")
+    return {k: ids.get(k) for k in RUN_IDS}
+
+
+class ForeignBatch(ValueError):
+    """A batch whose header differs from the learner's own (the message
+    names every field that differs)."""
 
 
 class LearningRows:
@@ -121,7 +156,8 @@ class Batch:
     arrays by key; the per-decision arrays are attributes; ``last_obs`` /
     ``last_full`` the view after the last step."""
 
-    def __init__(self, layout, rows: LearningRows, decisions: int):
+    def __init__(self, layout, rows: LearningRows, decisions: int,
+                 core: int | None = None):
         T, R = int(decisions), rows.n_rows
         if T < 1:
             raise ValueError(f"a batch of {T} decisions")
@@ -159,6 +195,33 @@ class Batch:
         self.done = np.zeros((T, R), dtype=np.uint8)
         self.first = np.zeros((T, R), dtype=np.uint8)
         self.value_row = np.zeros((T, R), dtype=np.uint8)
+        #: the memory before each decision and after the last (None: the
+        #: soldier has no memory, nothing is allocated)
+        self.memory = (None if core is None else
+                       np.zeros((T + 1, R, int(core)), dtype=np.float32))
+        #: the header (module text); None until a round's collecting starts
+        self.header = None
+
+    def set_header(self, **fields) -> None:
+        """Write the header (every field of :data:`HEADER_FIELDS`, nothing
+        else): the collector, when a round's collecting starts."""
+        if set(fields) != set(HEADER_FIELDS):
+            raise ValueError(f"a batch header has the fields "
+                             f"{list(HEADER_FIELDS)}, got {sorted(fields)}")
+        self.header = {k: fields[k] for k in HEADER_FIELDS}
+
+    def check_header(self, want: dict) -> None:
+        """The learner's reading of the header: refuse
+        (:class:`ForeignBatch`, naming each field) unless every field equals
+        ``want``'s (the learner's own)."""
+        if self.header is None:
+            raise ForeignBatch("the batch has no header (it was not "
+                               "collected by a collector)")
+        bad = [f"{k}: batch {self.header.get(k)!r}, learner {want.get(k)!r}"
+               for k in HEADER_FIELDS if self.header.get(k) != want.get(k)]
+        if bad:
+            raise ForeignBatch("a batch of other weights or another run: "
+                               + "; ".join(bad))
 
     # -- the per-decision arrays by name (for the learner's flat views) ---
     PER_DECISION = ("arg_mask", "actions", "used", "logp_heads", "logp",
@@ -180,9 +243,10 @@ class Batch:
         arrays = (list(self.obs.values()) + list(self.full.values())
                   + list(self.last_obs.values())
                   + list(self.last_full.values())
-                  + [getattr(self, n) for n in self.PER_DECISION])
+                  + [getattr(self, n) for n in self.PER_DECISION]
+                  + ([] if self.memory is None else [self.memory]))
         return int(sum(a.nbytes for a in arrays))
 
 
 __all__ = ["OBS_STORED", "FULL_STORED", "LAST_OBS", "LAST_FULL",
-           "LearningRows", "Batch"]
+           "HEADER_FIELDS", "RUN_IDS", "run_ids", "ForeignBatch", "LearningRows", "Batch"]

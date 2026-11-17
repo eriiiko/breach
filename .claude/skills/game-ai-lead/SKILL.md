@@ -395,3 +395,32 @@ are that session:
   detached (`Start-Process`), with a background waiter on its pid, so an
   editor restart cannot kill it; (6) keep a run's folder outside the scratch
   folder (`C:/Users/steen/breach_runs/`).
+- 2026-11-17 -- 2d.1 (the memory path) built on `192-2d-trainer-rest`:
+  stretches, the stored memory, the live check's second clause (catches all
+  four memory faults; the first clause barely does on a fresh network), the
+  value-first rounds, `good_start` (gate held; neither no value-first rounds
+  nor ten times the variety wore the start down). FINDING for the lead
+  before 2d.2: `recall12` is not learnt with the design's numbers (even a
+  gap of 4 reaches 0.11 of the way in 300 rounds; the cue's mark on the
+  fresh memory is small and fades 0.6 x a decision), so its three tests are
+  skipped by name; decide the cell's start / step size / farm before any
+  run with the memory on. Bit-identity without memory is a machine-keyed
+  hash in `agents/tests/test_memory.py`.
+- 2026-11-17 -- 2d.1b (why the memory did not learn): the heads read the
+  cell's output raw, about 8 x smaller than the join; a LayerNorm between
+  (`memory_norm`) makes a supervised gap-12 fit learn (0.29 -> 0.99) and
+  the cue answered at once pass by reward in 87 rounds. Chrono start kept.
+  Still open: the tasks' farm gives recall12 only 8.5 teaching answers a
+  round (flat after 370 rounds); the farm is the lead's call. Measure a
+  memory question SUPERVISED first (minutes) before a reward run (hours);
+  and never `git stash pop` in a worktree: the stash is shared by all of
+  them (it popped another branch's WIP here; undone).
+- 2026-11-17 -- 2d.2 (saving and resuming) built on `192-2d2-saving`:
+  `agents/saved.py`, `--resume`, the batch header, the training manifest,
+  `SNAPSHOT_PATHS` + `agents/` `tools/`. Learned: (1) a PyTorch optimiser
+  keeps the state tensors it is handed and steps them in place, so a
+  restore must copy them (the determinism test caught two restored
+  trainers sharing Adam moments); (2) a kill between a round's line and
+  its save leaves stale curve lines, so a resume moves lines past the saved
+  round to `curve_discarded.jsonl`; (3) the record says "v1" for both
+  widths, so the saved file and the export also carry the widths.

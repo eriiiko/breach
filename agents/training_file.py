@@ -2,7 +2,7 @@
 numbers reach :class:`agents.settings.Settings` from disk (rung 2 note 2c,
 4; design 4.4).
 
-One TOML file, four tables, every key a field that exists::
+One TOML file, five tables, every key a field that exists::
 
     [network]
     spec = "v1"          # the network spec (agents.spec.NETWORK_SPEC)
@@ -19,6 +19,9 @@ One TOML file, four tables, every key a field that exists::
     ...
     [stop]
     wall_hours = 2.5        # Settings.wall_hours; optional
+    [save]
+    save_every = 10         # Settings.save_every / keep_every; optional
+    keep_every = 0
 
 REFUSED BY NAME (:class:`TrainingFileRefused`): an unknown table or key, a
 missing ``planned_rounds`` or ``[network] memory``, a value of the wrong
@@ -49,8 +52,9 @@ WIDTHS = {"full": v1, "reduced": reduced}
 #: ``[network]``'s keys and whether each is required.
 NETWORK_KEYS = {"spec": True, "width": False, "memory": True}
 #: The Settings fields that live in their own tables, not in ``[train]``.
-_OWN_TABLE = {"weights": "weights", "wall_hours": "stop"}
-TABLES = ("network", "train", "weights", "stop")
+_OWN_TABLE = {"weights": "weights", "wall_hours": "stop",
+              "save_every": "save", "keep_every": "save"}
+TABLES = ("network", "train", "weights", "stop", "save")
 
 
 class TrainingFileRefused(ValueError):
@@ -149,15 +153,17 @@ def parse(raw: dict, where: str = "training file") -> tuple:
                 f"{sorted(set(w) - set(REWARD_GROUPS))}")
         kw["weights"] = tuple(_number(w[g], "float", f"{where}: [weights] {g}")
                               for g in REWARD_GROUPS)
-    # [stop]
-    stop = _table(raw, "stop", where)
-    bad = sorted(set(stop) - {"wall_hours"})
-    if bad:
-        raise TrainingFileRefused(f"{where}: [stop] unknown key(s) {bad} "
-                                  f"(keys: ['wall_hours'])")
-    if "wall_hours" in stop:
-        kw["wall_hours"] = _number(stop["wall_hours"], "float",
-                                   f"{where}: [stop] wall_hours")
+    # [stop] and [save]: their fields by name
+    for tname in ("stop", "save"):
+        table = _table(raw, tname, where)
+        keys = sorted(k for k, t in _OWN_TABLE.items() if t == tname)
+        bad = sorted(set(table) - set(keys))
+        if bad:
+            raise TrainingFileRefused(f"{where}: [{tname}] unknown key(s) "
+                                      f"{bad} (keys: {keys})")
+        for k, v in table.items():
+            kind = "float" if types[k] == "float?" else types[k]
+            kw[k] = _number(v, kind, f"{where}: [{tname}] {k}")
     try:
         settings = Settings(**kw)
     except ValueError as e:

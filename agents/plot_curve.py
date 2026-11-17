@@ -5,7 +5,7 @@ one, never a second.
     python -m agents.plot_curve <run folder or curve.jsonl> [--out <folder>]
         [--smooth 5]
 
-Writes four PNG figures beside the curve (or into ``--out``):
+Writes five PNG figures beside the curve (or into ``--out``):
 
 - ``curve_rooms.png``: the share of ended matches won per level, and the
   reward per ended match, over learning decisions;
@@ -14,11 +14,20 @@ Writes four PNG figures beside the curve (or into ``--out``):
 - ``curve_groups.png``: the reward groups' sizes (mean absolute pay per
   decision) and the share of the return each value output explains;
 - ``curve_seconds.png``: a round's seconds, split, and learning decisions
-  a second.
+  a second;
+- ``curve_live.png``: the live check's numbers every round -- the largest
+  gap of a stored choice's probability and, when the soldier has a memory,
+  the memory's (the second clause) -- against the tolerance.
+
+PATCH 2d.2's additions: a dashed vertical mark on every figure at every
+resume (a line carrying ``resumed_from``: the matches started again there);
+the memory's live-check number (above); and a STOPPED line refuses the rest
+of the curve -- the figures are drawn up to the stop, say so in their title,
+and the script names the stop.
 
 Every number is read from the line as the run wrote it; a running mean over
 ``--smooth`` rounds is drawn over the raw points where the raw points are
-noisy (rates). A stopped line (``stopped`` set) is skipped and named.
+noisy (rates).
 """
 from __future__ import annotations
 
@@ -29,21 +38,54 @@ from pathlib import Path
 import numpy as np
 
 CURVE = "curve.jsonl"
+#: The live check's tolerance as drawn (``Settings.live_tolerance``'s
+#: default; the line does not carry it).
+LIVE_TOLERANCE = 1e-4
+
+
+def _finish(fig, x, lines, stopped) -> None:
+    """Every figure: the resume marks on each axis, the stop in the title,
+    then the layout."""
+    for ax in fig.axes:
+        _resumes(ax, x, lines)
+    t = stop_text(stopped)
+    if t:
+        fig.suptitle(t, fontsize=8, color="C3")
+    fig.tight_layout()
 
 
 def read(path) -> tuple:
     """``(lines, stopped)``: the round lines of ``path`` (a run folder or a
-    ``curve.jsonl``) and any stop line."""
+    ``curve.jsonl``) up to the first stop line, and that line (None when
+    the run did not stop). Nothing after a stop is read: the curve is
+    refused past it."""
     p = Path(path)
     if p.is_dir():
         p = p / CURVE
-    lines, stopped = [], []
+    lines = []
     for raw in p.read_text(encoding="utf-8").splitlines():
         if not raw.strip():
             continue
         d = json.loads(raw)
-        (stopped if d.get("stopped") else lines).append(d)
-    return lines, stopped
+        if d.get("stopped"):
+            return lines, d
+        lines.append(d)
+    return lines, None
+
+
+def stop_text(stopped) -> str | None:
+    """The words a figure carries for a stopped curve (None: not stopped)."""
+    if not stopped:
+        return None
+    return (f"STOPPED at round {stopped['round']}: drawn up to it -- "
+            f"{str(stopped['stopped'])[:90]}")
+
+
+def _resumes(ax, x, lines) -> None:
+    """A dashed vertical mark at every resume."""
+    for xi, d in zip(x, lines):
+        if d.get("resumed_from") is not None:
+            ax.axvline(xi, ls="--", lw=0.8, color="0.35", zorder=0)
 
 
 def _smooth(y, k: int):
@@ -65,8 +107,9 @@ def _style(plt):
                          "legend.frameon": False})
 
 
-def plot(lines, out: Path, smooth: int = 5) -> list:
-    """Draw the four figures of ``lines`` into ``out``; returns the paths."""
+def plot(lines, out: Path, smooth: int = 5, stopped=None) -> list:
+    """Draw the five figures of ``lines`` into ``out`` (with ``stopped``,
+    the stop line, named in every title); returns the paths."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -103,7 +146,7 @@ def plot(lines, out: Path, smooth: int = 5) -> list:
     a2.set_ylabel("reward per ended match\n(weighted groups)")
     a2.set_xlabel(xl)
     a2.legend()
-    fig.tight_layout()
+    _finish(fig, x, lines, stopped)
     paths.append(out / "curve_rooms.png")
     fig.savefig(paths[-1])
     plt.close(fig)
@@ -129,7 +172,7 @@ def plot(lines, out: Path, smooth: int = 5) -> list:
     a2.set_ylim(-0.02, 1.02)
     a2.set_xlabel(xl)
     a2.legend()
-    fig.tight_layout()
+    _finish(fig, x, lines, stopped)
     paths.append(out / "curve_hand.png")
     fig.savefig(paths[-1])
     plt.close(fig)
@@ -151,7 +194,7 @@ def plot(lines, out: Path, smooth: int = 5) -> list:
     a2.set_xlabel(xl)
     if a2.lines:
         a2.legend(fontsize=7, ncol=3)
-    fig.tight_layout()
+    _finish(fig, x, lines, stopped)
     paths.append(out / "curve_groups.png")
     fig.savefig(paths[-1])
     plt.close(fig)
@@ -171,8 +214,27 @@ def plot(lines, out: Path, smooth: int = 5) -> list:
     a2.plot(x, rate, lw=1.2)
     a2.set_ylabel("learning decisions\nper second")
     a2.set_xlabel(xl)
-    fig.tight_layout()
+    _finish(fig, x, lines, stopped)
     paths.append(out / "curve_seconds.png")
+    fig.savefig(paths[-1])
+    plt.close(fig)
+
+    # 5. the live check
+    fig, a1 = plt.subplots(1, 1, figsize=(6.4, 3.2))
+    for key, label in (("max_logp_gap", "a stored choice's log-probability"),
+                       ("max_memory_gap", "the memory at a stretch's end")):
+        y = np.array([np.nan if not d.get("live") or key not in d["live"]
+                      else d["live"][key] for d in lines], float)
+        if not np.all(np.isnan(y)):
+            a1.plot(x, np.maximum(y, 1e-12), lw=1.1, label=label)
+    a1.axhline(LIVE_TOLERANCE, color="C3", lw=0.8, ls=":",
+               label="tolerance")
+    a1.set_yscale("log")
+    a1.set_ylabel("live check: largest\ngap recomputed")
+    a1.set_xlabel(xl)
+    a1.legend(fontsize=7)
+    _finish(fig, x, lines, stopped)
+    paths.append(out / "curve_live.png")
     fig.savefig(paths[-1])
     plt.close(fig)
     return paths
@@ -186,14 +248,15 @@ def main(argv=None) -> int:
     ap.add_argument("--smooth", type=int, default=5)
     args = ap.parse_args(argv)
     lines, stopped = read(args.curve)
-    for s in stopped:
-        print(f"stopped at round {s['round']}: {s['stopped']}")
+    if stopped:
+        print(f"refused past round {stopped['round']}: the curve holds a "
+              f"stopped line ({stopped['stopped']}); drawn up to it")
     if not lines:
         print("no round lines")
         return 1
     p = Path(args.curve)
     out = Path(args.out) if args.out else (p if p.is_dir() else p.parent)
-    for f in plot(lines, out, args.smooth):
+    for f in plot(lines, out, args.smooth, stopped):
         print(f"wrote {f}")
     return 0
 
