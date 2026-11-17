@@ -131,6 +131,14 @@ def test_the_bite_row_is_the_expected_dose_rounded_once():
     exact = row.bite_dose_q * row.bite_rate_q * ctx.dt_q / float(1 << 32)
     assert abs(q - exact) <= 0.5
     assert q == 218
+    # over a sweep of rows (the repo's numbers alone round the same either way)
+    from dataclasses import replace
+    for dose in (0.37, 1.0, 2.5, 7.3):
+        for rate in (0.013, 0.08, 0.5, 3.7):
+            r = replace(row, bite_dose_q=swarm_fixed.quantize_scalar(dose),
+                        bite_rate_q=swarm_fixed.quantize_scalar(rate))
+            ex = r.bite_dose_q * r.bite_rate_q * ctx.dt_q / float(1 << 32)
+            assert abs(swarm.bite_tick_q(r, ctx) - ex) <= 0.5, (dose, rate)
 
 
 def test_the_plane_is_rebuilt_every_tick_and_does_not_persist():
