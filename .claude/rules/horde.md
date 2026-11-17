@@ -18,7 +18,8 @@ and who must use it; this file holds the constraints the code cannot say.
 - The horde paths ONLY by the distance field; a new zombie behaviour is a MASK, a GOAL SET or a RULE ON THE DESCENT, never a per-zombie search, and no A* call may return to the zombie law.
 - Every field and the mask drop at a tick `% field_refresh_ticks == 0` and whenever `GameMap._tile_serial` moved; flooded the first tick a step needs it; never synced, never digested.
 - A zombie steps to its lowest 4-neighbour STRICTLY below its own cell that it can enter now, ties by the cell's parity order (`DESCENT_ORDER`), or waits.
-- The flood is C++ wherever an engine is bound; `flood_reference` is the same law for a bare map: an arithmetic change lands in both.
+- The flood is C++ wherever an engine is bound; `flood_reference` is the same law for a bare map; the device's is `horde_dev::flood_block` (`cpp/src/cuda_unit_horde.cuh`): an arithmetic change lands in all three.
+- Slot 5 has a device twin (the HORDE stage, `.claude/rules/device-units.md`): a change to the zombie law, the cache, the mask, the descent, the wander, the bite or the bash lands in `cpp/src/cuda_unit_horde.cuh` in the SAME patch.
 - Behaviours are `[zombie]` switches; all off == the stage-1 law, a permanent gate. WANDER uses a Philox block as a seedless HASH of (id, tick) (`Salt.WANDER`), never a stream. A door with a span tile bordering vacuum, the ambient ring or the map edge is NEVER bashed.
 - Per-zombie state is synced, fixed-width, hashed only while set, cleared at death and conversion (`horde.clear`).
 

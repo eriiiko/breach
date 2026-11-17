@@ -1819,6 +1819,38 @@ motion plates' sight walks, the pumps' seam calls), at most 0.05 ms on the scene
 tick cost about 1.3 ms here, almost all floor: P7e's device tick, with no host sync between stages,
 removes most of it; nothing here needs a fan-out.
 
+## P7d: slot 5, the horde, as the applier's HORDE stage (2026-11-17)
+
+`tests/cuda_unit_horde_check.py bench()` (Home Desktop, RTX 3070; ANOTHER AGENT, P6b.4, was working
+on the machine, building and running its gates): median ms over 50 reps of ONE HORDE stage launch
+(the launch, its books' download, the Python face; the rows, the cache and the latch re-staged per rep
+and synchronized before the clock starts), N copies of ship_demo's map (no physics, no match) with 4
+marines and 4 / 32 / 256 zombies on free tiles (the store has no row cap; 256 is the largest measured),
+at an odd tick (no refresh drop).
+
+| what | zombies | N = 1 | N = 8 | N = 64 |
+|---|---|---|---|---|
+| floor (an empty request set: the drain only) | 4 | 0.578 | 0.744 | 1.083 |
+| passes 1 + 2 (every zombie dormant; hearing and wander off) | 4 | 0.618 | 0.783 | 1.073 |
+| pass 3 (every zombie awake and due, its prey field cached) | 4 | 0.640 | 0.788 | 1.083 |
+| pass 3 + one flood (a fresh cache: the mask and the prey field) | 4 | 0.998 | 0.915 | 1.414 |
+| floor | 32 | 0.650 | 0.708 | 0.937 |
+| passes 1 + 2 | 32 | 0.839 | 0.919 | 1.510 |
+| pass 3 | 32 | 1.122 | 1.136 | 1.888 |
+| pass 3 + one flood | 32 | 1.401 | 1.292 | 2.223 |
+| floor | 256 | 0.788 | 0.962 | 1.449 |
+| passes 1 + 2 | 256 | 8.329 | 8.682 | 16.940 |
+| pass 3 | 256 | 9.143 | 9.811 | 19.438 |
+| pass 3 + one flood | 256 | 9.497 | 9.782 | 19.565 |
+
+**Reading.** One flood of ship_demo's map by a 256-thread block costs about 0.3 ms over its pass 3
+(the mask and the frontier loop; a second flood in the same tick reuses the mask). Up to 32 zombies
+the stage sits near the per-call floor. At 256 the cost is the serial work, not the flood: pass 3's
+thread 0 walks every zombie's sprint sight lines (four prey each) and its descent, and the woken
+dormant zombies of "passes 1 + 2" do the same after their trigger sight lines. N = 64 is about twice
+N = 1 (64 blocks over the 3070's 46 SMs, two waves). If the device tick needs it, the sight lines of
+pass 3 can be asked wide before the walk and re-asked only after a bash changed `solid` (the reference
+reads the live map, so a re-ask is needed then, never a deferred apply).
 ## P6b.4: timed charges, heat sources, slot 9e whole, the entity export (2026-11-17)
 
 `python tests/cuda_unit_hazards_check.py bench` inside the CUDA subprocess (Home Desktop, RTX 3070;

@@ -14,8 +14,8 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "5ef821756047a6b059122357ca24e533cd45272b550092b31a45313e882aa68c";
-constexpr int UNIT_TABLES_W = 2798;
+constexpr const char* UNIT_TABLES_FINGERPRINT = "eecdf70df1f9cda0cc90a2c2fb1d1339c9433705743a7351f382c39e387d3d76";
+constexpr int UNIT_TABLES_W = 2819;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
 constexpr int UNIT_TAB_IMPULSE_CAP_Q = 0;
@@ -472,6 +472,48 @@ constexpr int UNIT_TAB_VENT_T_MAX_Q = 2796;
 constexpr int UNIT_TAB_VENT_T_MAX_Q_W = 1;
 constexpr int UNIT_TAB_VENT_N_EPS = 2797;
 constexpr int UNIT_TAB_VENT_N_EPS_W = 1;
+constexpr int UNIT_TAB_HORDE_TRIGGER_R2 = 2798;
+constexpr int UNIT_TAB_HORDE_TRIGGER_R2_W = 1;
+constexpr int UNIT_TAB_HORDE_PROPAGATION_R2 = 2799;
+constexpr int UNIT_TAB_HORDE_PROPAGATION_R2_W = 1;
+constexpr int UNIT_TAB_HORDE_REFRESH_TICKS = 2800;
+constexpr int UNIT_TAB_HORDE_REFRESH_TICKS_W = 1;
+constexpr int UNIT_TAB_HORDE_WANDER = 2801;
+constexpr int UNIT_TAB_HORDE_WANDER_W = 1;
+constexpr int UNIT_TAB_HORDE_WANDER_PERIOD_TICKS = 2802;
+constexpr int UNIT_TAB_HORDE_WANDER_PERIOD_TICKS_W = 1;
+constexpr int UNIT_TAB_HORDE_WANDER_LEASH_R2 = 2803;
+constexpr int UNIT_TAB_HORDE_WANDER_LEASH_R2_W = 1;
+constexpr int UNIT_TAB_HORDE_HEARING = 2804;
+constexpr int UNIT_TAB_HORDE_HEARING_W = 1;
+constexpr int UNIT_TAB_HORDE_NOISE_TIMEOUT_TICKS = 2805;
+constexpr int UNIT_TAB_HORDE_NOISE_TIMEOUT_TICKS_W = 1;
+constexpr int UNIT_TAB_HORDE_NOISE_FIELDS_MAX = 2806;
+constexpr int UNIT_TAB_HORDE_NOISE_FIELDS_MAX_W = 1;
+constexpr int UNIT_TAB_HORDE_NOISE_ARRIVE_TILES = 2807;
+constexpr int UNIT_TAB_HORDE_NOISE_ARRIVE_TILES_W = 1;
+constexpr int UNIT_TAB_HORDE_FEAR_FIRE = 2808;
+constexpr int UNIT_TAB_HORDE_FEAR_FIRE_W = 1;
+constexpr int UNIT_TAB_HORDE_FEAR_TEMP_Q16 = 2809;
+constexpr int UNIT_TAB_HORDE_FEAR_TEMP_Q16_W = 1;
+constexpr int UNIT_TAB_HORDE_BASH_DOORS = 2810;
+constexpr int UNIT_TAB_HORDE_BASH_DOORS_W = 1;
+constexpr int UNIT_TAB_HORDE_BASH_DAMAGE_Q = 2811;
+constexpr int UNIT_TAB_HORDE_BASH_DAMAGE_Q_W = 1;
+constexpr int UNIT_TAB_HORDE_BASH_LOUDNESS_TILES = 2812;
+constexpr int UNIT_TAB_HORDE_BASH_LOUDNESS_TILES_W = 1;
+constexpr int UNIT_TAB_HORDE_SPRINT = 2813;
+constexpr int UNIT_TAB_HORDE_SPRINT_W = 1;
+constexpr int UNIT_TAB_HORDE_SPRINT_R2 = 2814;
+constexpr int UNIT_TAB_HORDE_SPRINT_R2_W = 1;
+constexpr int UNIT_TAB_ZOMBIE_ATTACK_COOLDOWN_TICKS = 2815;
+constexpr int UNIT_TAB_ZOMBIE_ATTACK_COOLDOWN_TICKS_W = 1;
+constexpr int UNIT_TAB_ZOMBIE_BITE_CLASS_Q = 2816;
+constexpr int UNIT_TAB_ZOMBIE_BITE_CLASS_Q_W = 1;
+constexpr int UNIT_TAB_ZOMBIE_SHAMBLE_TICKS = 2817;
+constexpr int UNIT_TAB_ZOMBIE_SHAMBLE_TICKS_W = 1;
+constexpr int UNIT_TAB_ZOMBIE_SPRINT_TICKS = 2818;
+constexpr int UNIT_TAB_ZOMBIE_SPRINT_TICKS_W = 1;
 
 // The hooks' indices in the unit's `traits` block (unit_traits.HOOKS order).
 constexpr int UNIT_HOOK_HP = 0;
