@@ -137,6 +137,18 @@ The ticks above are this branch's; up to tick 433 (`bots`) / 227
 (`bots_v1`) they are the pinned match's own, after it the match is this
 branch's. The lead takes the re-pin to Erik.
 
+The full suite (one run at `fda55b96`, 1 h 34 min: 6458 passed, 7 failed)
+names every pin that moves -- the two above and four more plays of the same
+ship_demo match with one law switched off, each with the same throws:
+`test_exposure.py::test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match`,
+`test_grenade_kinds.py::test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match`,
+`test_horde_behaviours.py::test_with_every_behaviour_off_the_horde_plays_the_stage_1_law`,
+`test_unit_impulse.py::test_g1_with_every_input_off_nothing_is_pushed_and_the_pins_are_re_pin_1s`.
+No GOLDEN_AGGREGATE, field-digest golden or replica gate moved. The seventh
+failure was this patch's rule section without an index row
+(`test_claude_rules_paths`), fixed after the run by folding it into the
+"Grenade kinds" section.
+
 ## Findings in the reference (reported, not changed)
 
 1. **The throw starts at the CORNER of the thrower's centre tile.**
