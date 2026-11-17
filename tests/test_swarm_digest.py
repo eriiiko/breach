@@ -365,8 +365,14 @@ def test_pre_p2_stripped_trajectory_diffs_clean_in_both_orders():
 
     traj_swarm = fab.capture_trajectory(make_sim=fab.swarm_scenario_sim, n_steps=5)
     diffs = fab.diff_trajectories(stripped, traj_swarm)
-    assert len(diffs) == len(stripped)
-    assert all("present in only one run" in d for d in diffs)
+    # arc #63 P5a: the fixture's larvae now BITE the scenario's marine (they
+    # stand under its footprint), so the swarm run's unit state differs too:
+    # those lines are the unit harness's, never the carrier's. The swarm
+    # carrier still reads as present in one run, once per tick.
+    swarm_lines = [d for d in diffs if "__swarm__" in d]
+    assert len(swarm_lines) == len(stripped)
+    assert all("present in only one run" in d for d in swarm_lines)
+    assert all("unit" in d for d in diffs if d not in swarm_lines)
 
 
 # ---------------------------------------------------------------------------

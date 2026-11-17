@@ -21,6 +21,7 @@
 // ============================================================================
 #include "cuda_unit_kernels.h"
 #include "cuda_unit_lib.cuh"
+#include "unit_events_layout.h"    // arc #63 P5a: UNIT_CAUSE_POISON_GAS (poison.clear)
 
 namespace breach_cuda {
 
@@ -75,7 +76,7 @@ __global__ void k_convert_zombies(int64_t* store, int n_units, const int64_t* ta
     put(row, UNIT_COL_POISON_X0, 0, changed);
     put(row, UNIT_COL_POISON_X1, 0, changed);
     put(row, UNIT_COL_POISON_SRC, -1, changed);
-    put(row, UNIT_COL_POISON_CAUSE, UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
+    put(row, UNIT_COL_POISON_CAUSE, unit_events::UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
     put(row, UNIT_COL_ZOMBIE_ACTIVATED, 1, changed);
     put(row, UNIT_COL_KILLED_BY_ZOMBIE, 0, changed);
     if (changed) count_changed(cnt);

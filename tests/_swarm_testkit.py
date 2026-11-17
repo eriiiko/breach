@@ -146,6 +146,9 @@ def larva_world(h: int, w: int, max_units: int, n_env: int = 1, *, T=None,
     wd.env[:, swarm.ENV_SEED_HI] = seed[1]
     wd.tables = larva_tables(n_env, **table_values)
     wd.death = np.full((n_env, max_units, swarm.DEATH_WORDS), -7, dtype=np.int32)
+    # arc #63 P5a: the bite plane engine.step_swarm rebuilds (garbage: the
+    # step must zero it before adding)
+    wd.bite = np.full((n_env, h, w), 5, dtype=np.int32)
     wd.next_unit_id = np.full((n_env,), swarm.FIRST_UNIT_ID, dtype=np.int64)
     wd.h, wd.w, wd.max_units, wd.n_env = h, w, max_units, n_env
     return wd
