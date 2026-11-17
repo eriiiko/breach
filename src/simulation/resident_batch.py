@@ -114,8 +114,15 @@ class ResidentBatch:
         self.sims[e] = sim
         self._bind(e, sim)
 
-    def step(self):
-        """One tick of every env (paused envs refuse: a batch steps together)."""
+    def step(self, take_sources=None):
+        """One tick of every env (paused envs refuse: a batch steps together).
+
+        ``take_sources`` (#29 P7c.2, Class T: the gates' hand-over): a callable
+        run after every env's slots 1 .. 6b and before its physics head (the
+        source it takes is the one the head then takes on the host), returning the
+        device address of the batch's (N, h, w) blast source taken ON THE
+        DEVICE; slot 7 then reads it instead of uploading each engine's (None:
+        the played path, unchanged)."""
         from simulation import physics_runner as pr
         if not pr._RESIDENCY_ENABLED:
             raise RuntimeError("ResidentBatch.step: physics_runner.set_residency(True) first")
@@ -128,11 +135,14 @@ class ResidentBatch:
         sim_time = 1.0 / float(self.sims[0]._tps)
         runners = [s.physics_runner for s in self.sims]
         gmaps = [s.gmap for s in self.sims]
+        # the device take reads each env's pending source before its head
+        # takes it on the host (the host's take stays: nothing reads it then)
+        dsrc = take_sources() if take_sources is not None else None
         for r, g in zip(runners, gmaps):
             r._physics_head(g, sim_time)
         destroyed = pr.run_resident_batch(
             runners, gmaps, sim_time,
-            water_before_base=int(self.water_before.data.ptr))
+            water_before_base=int(self.water_before.data.ptr), div_source_dev=dsrc)
         for s, d in zip(self.sims, destroyed):
             s._step_post_physics(d)
         return destroyed

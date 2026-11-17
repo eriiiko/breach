@@ -165,18 +165,29 @@ def heat_units_per_mj(gmap) -> float:
     return 1.0e6 / (THERMAL_MASS_UNIT * tile_volume_m3(gmap))
 
 
+def source_total_q(gmap, expansion_m3, ticks) -> int:
+    """The per-tick total ``expansion / (ticks * V_tile * dt)`` of a source, Q16
+    1/s: a constant of the row and the level, quantized ONCE (the door; #29
+    P7c.2: the device tables' ``payload_source_total_q`` row reads it here)."""
+    dt = 1.0 / float(CFG.clock.ticks_per_second)              # p3e-door
+    return gas_fixed.quantize_q16_scalar(
+        expansion_m3 / (ticks * tile_volume_m3(gmap) * dt))   # p3e-door
+
+
+def expansion_r2(payload) -> int:
+    """A comparison row's walk radius squared, ``ceil(expansion_radius ** 2)``
+    (the door; #29 P7c.2: the ``payload_source_r2`` row reads it here)."""
+    return int(math.ceil(float(payload.expansion_radius) ** 2))   # p3e-door
+
+
 def _source_q(gmap, expansion_m3, ticks, n_tiles) -> int:
     """The flat per-tile source of ``expansion_m3`` over ``ticks`` ticks, Q16 1/s,
     as a Python int: the walk can make it wider than int32.
 
-    #29 P3e: the per-tick total ``expansion / (ticks * V_tile * dt)`` is a
-    constant of the row and the level, quantized ONCE (the door); the walk's
-    tile count divides it in integers, rounded once (half away)."""
+    #29 P3e: the per-tick total (:func:`source_total_q`) quantized ONCE; the
+    walk's tile count divides it in integers, rounded once (half away)."""
     from simulation.unit_fixed import div_round
-    dt = 1.0 / float(CFG.clock.ticks_per_second)              # p3e-door
-    total_q = gas_fixed.quantize_q16_scalar(
-        expansion_m3 / (ticks * tile_volume_m3(gmap) * dt))   # p3e-door
-    return div_round(total_q, int(n_tiles))
+    return div_round(source_total_q(gmap, expansion_m3, ticks), int(n_tiles))
 
 
 def add_source(gmap, tiles, s_q) -> None:
@@ -202,8 +213,7 @@ def start_source(gmap, tiles, expansion_m3) -> None:
 def start_expansion(gmap, fy, fx, payload) -> None:
     """A comparison row's source (the module docstring): radius in tiles along
     open floor, first tick on the plane, later ticks in ``gmap.expansions``."""
-    r2 = int(math.ceil(float(payload.expansion_radius) ** 2))
-    tiles = reach_tiles(open_mask(gmap), fy, fx, r2)
+    tiles = reach_tiles(open_mask(gmap), fy, fx, expansion_r2(payload))
     if not tiles:
         return
     ticks = max(int(payload.expansion_ticks), 1)
@@ -230,6 +240,7 @@ def take_source_plane(gmap):
 
 
 __all__ = ["BlastSettings", "S_MAX", "S_MAX_Q", "add_source", "blast_settings",
+           "source_total_q", "expansion_r2",
            "heat_units_per_mj", "open_mask", "reach_depth", "reach_tiles",
            "source_steps",
            "start_expansion", "start_source", "take_source_plane",

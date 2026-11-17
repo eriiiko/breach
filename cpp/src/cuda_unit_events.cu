@@ -118,6 +118,15 @@ void UnitRecordList::download(int64_t* recs, int64_t* counts, int64_t* dropped) 
     ev_check(cudaStreamSynchronize(tstream()), "list sync");
 }
 
+void UnitRecordList::upload(const int64_t* recs, const int64_t* counts) {
+    begin();    // dropped and staging counts to 0
+    ev_check(cudaMemcpyAsync(d_ring_, recs, (size_t)n_env_ * cap_ * width_ * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, tstream()), "H2D list");
+    ev_check(cudaMemcpyAsync(d_count_, counts, (size_t)n_env_ * sizeof(int64_t),
+                             cudaMemcpyHostToDevice, tstream()), "H2D count");
+    ev_check(cudaStreamSynchronize(tstream()), "upload sync");
+}
+
 UnitEventRing::UnitEventRing(int n_env, int n_units, int e_max)
     : UnitRecordList(n_env, n_units, e_max, unit_events::UNIT_EVENT_F,
                      unit_events::UNIT_EVENT_ROW_CAP) {}

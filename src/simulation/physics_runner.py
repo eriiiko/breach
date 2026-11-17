@@ -2048,7 +2048,8 @@ class PhysicsRunner:
 _TICK_CAPTURE = None
 
 
-def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
+def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
+                       div_source_dev=None):
     """Slot 7 of ``len(runners)`` envs on their batched device buffers.
 
     ``gmaps[e]``'s resident fields must be env e's slice of (N, ...) device
@@ -2059,7 +2060,12 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
     and requested light (render state until #81). Every env's host slots
     around slot 7 are the caller's. ``water_before_base``: the device address
     of the batch's (N, h, w) ``before`` plane (None at N = 1: the runner's
-    own). Returns each env's burn-through list (row-major)."""
+    own). ``div_source_dev`` (#29 P7c.2, Class T): the device address of
+    the batch's (N, h, w) int32 blast source taken ON THE DEVICE (the
+    applier's SOURCES stage, ``unit_kernels.take_sources``); given, slot 7
+    reads it instead of uploading each engine's ``eos.div_source`` (None, the
+    played tick: the upload, unchanged). Returns each env's burn-through list
+    (row-major)."""
     n_env = len(runners)
     if n_env < 1 or len(gmaps) != n_env:
         raise ValueError("run_resident_batch: one map per runner, at least one")
@@ -2159,6 +2165,8 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None):
             n_env=n_env, engines=engines)
 
     # 3b. the EOS stage (the device pre-stage, the masked substep loops).
+    if div_source_dev is not None:          # #29 P7c.2: the device-taken source
+        dev["div_source"] = int(div_source_dev)
     e0.run_substeps_resident(dev, h, w, cons, sim_time, ambient,
                              n_amb=amb[1], p_amb=int(amb[2]),
                              n_env=n_env, engines=engines)

@@ -90,11 +90,17 @@ def _ramp_q(x, lo, hi):
     return np.minimum(r, ONE)
 
 
+def disc_reach(radius) -> int:
+    """The integer radius of :func:`disc_tiles`' disc (the door; #29 P7c.2: the
+    ``payload_air_disc_r`` row reads it here)."""
+    return int(np.ceil(max(float(radius), 1.0)))               # p3e-door
+
+
 def disc_tiles(gmap, fy, fx, radius):
     """The open tiles of the disc around (fy, fx): what a charge without
     ``strength`` reads."""
     h, w = gmap.solid.shape
-    r = int(np.ceil(max(float(radius), 1.0)))
+    r = disc_reach(radius)
     y0, y1 = max(fy - r, 0), min(fy + r + 1, h)
     x0, x1 = max(fx - r, 0), min(fx + r + 1, w)
     yy, xx = np.ogrid[y0:y1, x0:x1]
@@ -144,4 +150,4 @@ def blast_base_soot_g(payload) -> float:
 
 
 __all__ = ["AirRead", "blast_base_soot_g", "BlastAirSettings", "blast_air_settings",
-           "disc_tiles", "read_blast_air"]
+           "disc_reach", "disc_tiles", "read_blast_air"]

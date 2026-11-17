@@ -85,13 +85,16 @@ def aggregate_input(bus, driver_slots, mode) -> int:
 class _DeciderEval:
     """``out`` = cmp(in, threshold) AND (require_alive => source alive)."""
 
-    __slots__ = ("out_slot", "in_slots", "predicate", "threshold",
+    __slots__ = ("out_slot", "in_slots", "comparator", "predicate", "threshold",
                  "require_alive", "alive_slot")
 
     def __init__(self, out_slot, in_slots, comparator, threshold,
                  require_alive, alive_slot):
         self.out_slot = int(out_slot)
         self.in_slots = list(in_slots)
+        # #29 P6b.3: the comparator's TOKEN kept beside its lambda (the device
+        # reads the predicate as a code, unit_schema.comparators()' index)
+        self.comparator = str(comparator)
         self.predicate = _COMPARATORS[comparator]
         self.threshold = int(threshold)
         self.require_alive = bool(require_alive)

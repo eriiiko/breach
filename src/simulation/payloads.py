@@ -145,6 +145,10 @@ def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius,
 # config.toml has the incident). Left as it stands for ignite_ring's rows.
 IGNITE_HEAT = 2840.0
 
+#: The ignition ring's flame clamp (the fire policy's own [0, 1]), named so the
+#: device's table row reads its one source (#29 P7c.1; value unchanged).
+IGNITE_CLAMP = (0.0, 1.0)
+
 
 def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
                 ignite_heat=IGNITE_HEAT, owner_id=NO_ATTACKER):
@@ -193,7 +197,7 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity,
     queue.enqueue(FieldEdit(
         field="fire", region=Region.DISC, coords=(fy, fx, float(ignite_radius)),
         amount=float(ignite_intensity), mode=EditMode.MAX,
-        falloff=Falloff.LINEAR, clamp=(0.0, 1.0),
+        falloff=Falloff.LINEAR, clamp=IGNITE_CLAMP,
         source_id=_SRC_PAYLOAD_IGNITE,
     ))
     if ignite_heat > 0.0:
@@ -373,7 +377,7 @@ def blast_smoke_peak_q(gmap, fy, fx, radius, soot_g, noise=None) -> int:
             wsum += int(wgt)
     if wsum <= 0:
         return 0
-    units_q = _gas_fx.quantize_trace_scalar(smoke_units_of_soot(soot_g))
+    units_q = _gas_fx.quantize_trace_scalar(smoke_units_of_soot(soot_g))  # p3e-door
     # units / ((wsum / ONE) * (2 ONE - noise_q) / (2 ONE))
     return _ufx.div_round(units_q * one * 2 * one,
                           wsum * (2 * one - noise_q))
@@ -383,6 +387,23 @@ def blast_smoke_peak(gmap, fy, fx, radius, soot_g, noise=None) -> float:
     """:func:`blast_smoke_peak_q` as real density (its exact float view)."""
     return float(_gas_fx.dequantize_trace(
         blast_smoke_peak_q(gmap, fy, fx, radius, soot_g, noise)))
+
+
+def soot_units_q(payload) -> int:
+    """The charge's soot (:func:`blast_air.blast_base_soot_g`) in smoke units,
+    quantized once into the TRACE currency (#29 P3e, a door: the row's explosive
+    and the [blast_air] dials; #29 P7c.2: the ``payload_soot_units_q`` row
+    reads it here)."""
+    return _gas_fx.quantize_trace_scalar(                      # p3e-door
+        smoke_units_of_soot(blast_base_soot_g(payload)))
+
+
+def heat_base_q(gmap, payload) -> int:
+    """A strength row's heat in the map's heat units, quantized once (#29 P3e,
+    a door: the row and the level's tile; #29 P7c.2: the
+    ``payload_heat_base_q`` row reads it here)."""
+    return _ufx.quantize_scalar(
+        payload.heat_mj * heat_units_per_mj(gmap))            # p3e-door
 
 
 def _blast_noise() -> float:
@@ -504,8 +525,7 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         noise = _blast_noise()
         # #29 P3e: the soot's smoke units quantized once into the trace
         # currency (a door: the row's explosive and the [blast_air] dials).
-        smoke_q = _gas_fx.quantize_trace_scalar(
-            smoke_units_of_soot(blast_base_soot_g(payload)))
+        smoke_q = soot_units_q(payload)
         deposit_over_tiles(queue, "smoke", heat_tiles, heat_weights,
                            smoke_q, noise=noise, scale=air.smoke_scale_q16,
                            source_id=_SRC_EXPLOSION_SMOKE)
@@ -528,8 +548,7 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
         # #29 P3e: the row's heat in the map's heat units quantized once (a
         # door: the row and the level's tile), times the Q16 air read,
         # rounded once.
-        base_q = _ufx.quantize_scalar(
-            payload.heat_mj * heat_units_per_mj(gmap))        # p3e-door
+        base_q = heat_base_q(gmap, payload)
         deposit_over_tiles(queue, "heat", heat_tiles, heat_weights,
                            _ufx.div_round(base_q * int(air.heat_scale_q16),
                                           _BLAST_ONE),

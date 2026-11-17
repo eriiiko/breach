@@ -249,37 +249,10 @@ __device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int
 
 // Simulation._reload past its gate: combat.mag_settle, then reload_begin.
 __device__ inline void reload(int64_t* loc, const int64_t* tab, int64_t tick, bool* bad) {
+    // #29 P7a.2: the magazine law is the unit library's (slot 4 runs it too)
     const int64_t w = loc[UNIT_COL_WEAPON_ID];          // the gate proved it a row
-    const int64_t full = tab[UNIT_TAB_WEAPON_MAG_SIZE + w];
-    if (loc[UNIT_COL_CURRENT_MAG] == MAG_UNBOUND) {     // mag_bind
-        loc[UNIT_COL_CURRENT_MAG] = full;
-        const int64_t total = magazines_carried(loc);
-        loc[UNIT_COL_SPARE_MAGS] = total <= 0 ? SPARES_UNTRACKED : total - 1;
-        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
-    } else if (loc[UNIT_COL_RELOAD_DONE_TICK] >= 0) {
-        if (tick >= loc[UNIT_COL_RELOAD_DONE_TICK]) {
-            loc[UNIT_COL_CURRENT_MAG] = full;
-            loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
-        }
-    }
-    const int64_t spare = loc[UNIT_COL_SPARE_MAGS];     // reload_begin
-    loc[UNIT_COL_CURRENT_MAG] = 0;
-    if (spare == 0) {
-        loc[UNIT_COL_RELOAD_DONE_TICK] = -1;
-        return;
-    }
-    if (spare > 0) loc[UNIT_COL_SPARE_MAGS] = spare - 1;
-    const int64_t stall = handling_ticks(loc, tab[UNIT_TAB_WEAPON_RELOAD_TICKS + w]);
-    if (!tick_ok(tick + stall)) {
-        *bad = true;
-        return;
-    }
-    loc[UNIT_COL_RELOAD_DONE_TICK] = tick + stall;
-}
-
-// unit_impulse.centre_q: the footprint's centre, Q16 tiles.
-__device__ __forceinline__ int64_t centre_q(int64_t pos_q, int64_t fp) {
-    return pos_q + (fp << 15);
+    mag_settle(loc, tab, w, tick);
+    reload_begin(loc, tab, w, tick, bad);
 }
 
 // unit_impulse.shove_target: among the env's OTHER living rows (any team),
@@ -346,20 +319,8 @@ __device__ inline void stage_shove(const int64_t* loc, const int64_t* tr, const 
     const int64_t tx = centre_q(tr[UNIT_COL_X_Q], tfp), ty = centre_q(tr[UNIT_COL_Y_Q], tfp);
     const int64_t lever = fixedpoint::shr_trunc_q((tx - ux) * sy - (ty - uy) * sx, 16);
     int64_t dl = 0;
-    if (lever != 0) {                                  // unit_impulse.add: `if lever:`
-        const int64_t rb = tab[UNIT_TAB_IMPULSE_R_BODY_Q];
-        const int64_t lev = lever > rb ? rb : (lever < -rb ? -rb : lever);
-        if (lev != 0) {
-            const uint64_t ax = (uint64_t)(jx < 0 ? -jx : jx), ay = (uint64_t)(jy < 0 ? -jy : jy);
-            uint64_t h1, l1, h2, l2;
-            fixedpoint::umul64_wide(ax, ax, &h1, &l1);
-            fixedpoint::umul64_wide(ay, ay, &h2, &l2);
-            uint64_t lo = l1 + l2;
-            const uint64_t hi = h1 + h2 + (lo < l1 ? 1u : 0u);
-            const int64_t mag = (int64_t)fixedpoint::isqrt_u128_q(hi, lo);
-            dl = fixedpoint::shr_trunc_q(mag * lev, 16);
-        }
-    }
+    if (lever != 0)                                    // unit_impulse.add: `if lever:`
+        dl = angular_q(tab, jx, jy, lever, ONE, bad);  // the library's (P7a.1)
     sc[SC_TARGET] = t;
     sc[SC_JX] = jx;
     sc[SC_JY] = jy;

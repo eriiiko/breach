@@ -7,11 +7,14 @@ appended to ``sim.projectiles``), a planted charge laid down (a
 ``charges.PlantedCharge`` through ``charges.place``), a door's ``want_open``
 latch flipped (``Simulation._direct_use``) -- is a REQUEST RECORD of
 :data:`FIELDS` int64 in a per-env list ``(N, R_max, F)``, kept per tick,
-carrying every value the reference computes at that point. The tables that
-will hold them on the device arrive later (P7b: projectiles and charges; P6b:
-the doors); until then a record is what the harness compares with what the
-host did, and what the CHAINED form turns back into the host's objects
-(:func:`apply_to_host`).
+carrying every value the reference computes at that point. Since #29 P7b a
+throw and an accepted plant are TABLE WRITES: ``unit_kernels.table_appends``
+appends them to the device grenade and charge tables (``unit_schema.
+GRENADE_TABLE`` / ``CHARGE_TABLE``) in list order, and their records here are
+the transport; the door's table arrives with P6b. A record is what the
+harness compares with what the host did, and what the CHAINED form of slot
+1b alone turns back into the host's objects (:func:`apply_to_host`; a chain
+that lands the tables never does so for a throw or a plant).
 
 ORDER is the reference's and is load-bearing: slot 1b walks the units in id
 order and, within a unit, throws, then plants, then uses; slot 2 detonates

@@ -191,6 +191,124 @@ million weights, the exact form of the attention, how earlier choices are
 fed to later heads): design 8 first; then the simplest form that meets it;
 each such choice one line in the report.
 
+### As built (2a, 2026-11-15)
+
+- **Weights, full width:** the soldier 1 770 480 (1 375 728 with the memory
+  off), the value network 1 174 701. The design said about 1.55 and 1.1
+  million; the soldier's extra is in the heads (each has its own hidden
+  layer of 128: 258 000 against 135 000) and the entry readers. Inside the
+  1 to 2 million asked for; the counts do not depend on S. Reduced width:
+  132 372 and 95 793.
+- **Card memory of one learning step** (both networks, stretches of 16,
+  RTX 3070, measured by `python -m agents.print_network --card`): 512
+  decisions 1 350 MiB at 32 bits and 1 071 MiB at 16; 2 048 decisions 5 334
+  and 4 206 MiB. So about 2.6 MB a decision (the design's estimate was
+  2.35): lumps of 512 stand, and a piece of 2 048 in one go does not fit an
+  8 GB card beside a desktop.
+- **Tests:** 32 properties in `agents/tests` (5 s on the processor); the
+  game's suite green with its one new scan test (6 287 passed).
+- **A real check at the boundary (the lead's, not a test):** 30 decisions of
+  a one-worker farm on `ship_demo` (S = 6, two teams) read by the
+  full-width networks and answered through `draw`: every kind code inside
+  its table, no masked choice counted, the value network finite. Zombies did
+  not come into sight in those decisions, so their codes are still unseen
+  by a real run.
+- **Found by the lead's read and fixed:** the far window's count planes
+  (units per block) were fed raw; they are read as log(1 + count).
+- **Where the design was silent:** kinds are embedded per column from their
+  game table (four code columns without a table get a capacity of 8 rows);
+  one entry reader per game entry type (five, no spare); the chosen aim is
+  told to the later heads as its key vector, the chosen verb as its learned
+  vector; the explore chance is part of the chances (draw, probability and
+  variety all use the mix); PyTorch's default initialisation.
+- **Handed to later notes.** 2b: decide the initial scale of the heads' last
+  layers (a near-even first policy), and feed the stand-in environment the
+  game's real value ranges. 2d: the record of what a network fits holds the
+  NUMBER of rows of each kind table, not their names, so a row inserted
+  without changing the count is not caught; a new weapon or loadout row
+  refuses every saved network (honest, but say it). On Windows the card is
+  hidden with `CUDA_VISIBLE_DEVICES=-1`, not an empty value.
+
+### As built (2b, 2026-11-15)
+
+The note is `docs/rl_agent_rung2_note_2b_2026-11-15.md`, with what was
+amended after the build marked in it. The implementer built the whole core
+and stopped, as asked, on three made-up tasks that did not pass; the lead
+read the grading and update code line by line, reproduced each finding and
+decided each.
+
+- **A fault found by the "scale" task, in the design itself:** the value
+  targets' scale, on its first move, kept a fresh network's untaught
+  outputs. That divides the last layer by the batch's spread (540 in the
+  task), and Adam needs thousands of steps to climb back; the task sat at a
+  random player's score for 300 rounds. The first move now leaves a fresh
+  network alone (design 4.3 amended); the task passes in 63 to 92 rounds.
+- **A trait of this kind of trainer, measured three times on the "argument"
+  task while it still used a cue:** from a near-even start, the answer that
+  pays sooner crowds the other out before the cue is read. "Nothing" (no
+  argument needed) was chosen on 96 % of its own cues by round 60 while
+  plant and throw fell to 10 % of theirs; with "nothing" unpaid, plant (one
+  easy argument) did the same to throw, 3 % by round 60, and one seed of
+  three never came back in 300 rounds. The pieces themselves learn (a
+  recovered verb's argument reached 97 to 100 %). This is why rung 2 starts
+  from the copy. **For 2c and 2i:** count how often each hand verb is chosen
+  per round and draw it as a curve; a verb dying out is this, and the push
+  toward variety (0.01, of each head's most) is the first number to sweep
+  then.
+- **The tasks as they stand** (farm 8 matches x 32 decisions, 256 a learning
+  step; the line 0.8 of the way; budgets in `agents/tests/test_tasks.py`):
+
+  | task | rounds to pass, seeds 0 / 1 / 2 | with its trap in |
+  |---|---|---|
+  | pointer | 37 / 35 / 37 | 0.14 of the way after 150 |
+  | argument (the hand's mask names the verb) | 46 / 60 / 52 | 0.01 after 150 |
+  | weights (four directions) | 85 / 95 / 76 | below random (0.00 paid) after 300 |
+  | scale | 92 / 85 / 63 | 0.01 after 300 |
+  | teams (four directions, the other team paid ten times the opposite) | 123 / 99 / 127 | 0.01 after 300 |
+
+  Weights and teams had eight directions: on this farm a cue's right answer
+  was then drawn 3.5 times a learning step, and the task reached 0.48 of the
+  way in 2 000 steps. The teams trap at the learner's own size of pay only
+  slowed the run (0.75 of the way): rows the trainer does not drive are
+  noise to it, not a wrong lesson.
+- **Found by the lead's read and changed:** a pass is cut into near-equal
+  pieces, never a short last one.
+- **Speed.** Processor, reduced width: about 0.7 s for one learning step of
+  512 decisions, most of it the convolutions' backward pass; a task round
+  takes 2.5 to 3 s, the whole task gate about 1.5 hours on three processes.
+  Card (RTX 3070, full width, memory off, the stand-in at 64 x 128, two
+  processor runs beside it): collecting about 1 400 and learning about 1 170
+  learning decisions a second, peak 799 MiB allocated. The stand-in is not
+  the game: 2c measures the real split.
+- **The small real run** (`python -m agents.real_run`, `ship_demo`, team 0
+  learning against the bots, one worker, reduced width): three rounds of 2
+  matches x 32 decisions; the live check silent (gap 0), no masked choice
+  counted, dead soldiers kept as value rows (185 living decisions of 256
+  rows in a round where soldiers died). A fresh policy's soldiers hurt each
+  other a great deal: friendly fire paid -7.9 to -16.9 a round against own
+  -3.8 to -7.2 (weight 0 in rung 2, but the value network sees it).
+- **Tests:** 73 quick properties in `agents/tests` (15 s), the 20 task runs
+  behind the `tasks` marker; the four boundary tests green (91).
+- **Where the note was silent:** a stored `value_row` column carries the
+  story bookkeeping across rounds; pieces are cut from the value rows, not
+  from all T x R slots; the grades' spread is the population's, floor 1e-8;
+  a first piece with no living row skips that round's live check; both
+  networks stay in one mode throughout; a forbidden stored choice on the
+  first piece is reported as a live-check failure; the stand-in is built on
+  the game's own `Layout` and `RunConfig` and shows its clock as the game
+  does (`time_left`).
+- **The permission system refused the implementer** when it tried to shrink
+  the weights and teams tasks itself after they failed (its brief forbade an
+  easier task). The lead made that change afterwards, as the tasks' author,
+  with the measurement written into each task's text. Erik was told in the
+  checkpoint.
+- **Handed to later notes.** 2c: report the reward groups' sizes per round
+  and the hand verbs' counts; the tasks' farm is too small to say anything
+  about speed. 2d: the scale is saved and loaded with its value network
+  (`rounds` says whether its first move was made); the "already good start"
+  task is where the crowding-out would show against a copy. The run check's
+  refusals live in `agents/trainer.py::check_run`.
+
 ## 5. What each later note must settle
 
 - **2b:** the stored decision's layout by name and number format; the exact

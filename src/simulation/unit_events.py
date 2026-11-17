@@ -184,6 +184,15 @@ def header_text(lay: Layout | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Records <-> host events
 # ---------------------------------------------------------------------------
+def is_synced(ev) -> bool:
+    """#29 P7a.1: whether a host event is a SYNCED one -- a kind the ring
+    holds (``field_ab_harness._SYNCED_EVENT_TYPES``: the unit hit / kill the
+    digest hashes). The render-only events (MeleeEvent, ShotFired, SprayJet,
+    the destroyed-wall signals, ...) have no device form; the shadow harness
+    drops them before it compares a ring."""
+    return type(ev).__name__ in KINDS
+
+
 def record_of(ev) -> tuple:
     """A host event as its ring record (a tuple of :data:`F` ints). Refused
     (``ValueError``) for an event the ring does not hold, naming its type."""
@@ -274,4 +283,5 @@ class EventRing:
 __all__ = ["HEADER_REL", "GENERATOR", "FIELDS", "F", "KINDS", "KIND_HIT",
            "KIND_KILLED", "E_MAX", "CREDIT_HEAT", "CREDIT_PAD",
            "UnitEventOverflow", "causes", "damage_types", "row_cap", "Layout",
-           "layout", "header_text", "record_of", "event_of", "EventRing"]
+           "layout", "header_text", "record_of", "event_of", "EventRing",
+           "is_synced"]

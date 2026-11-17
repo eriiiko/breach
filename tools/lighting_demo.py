@@ -834,7 +834,7 @@ def _capture_map_viewport(renderer, out_path: str, gmap=None) -> None:
 # executor — so the blast carried no unit damage, no ignite/gas columns, and
 # its ExplosionEvent was a hand-rolled renderer dict. It now runs
 # `execute_payload` with the FRAG GRENADE ROW resolved exactly as the sim's own
-# fuse-out site resolves it (Simulation._update_projectiles:
+# fuse-out site resolves it (Simulation._update_grenades:
 # `weapons_tables.payload_for_ammo(proj.ammo_name)` -> grenade_frag ->
 # [payloads.frag_standard]), writing through `sim.edit_queue` / `sim.units` /
 # `sim.draws` — the FieldEdit seam, not the fields.

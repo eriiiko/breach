@@ -36,6 +36,70 @@ for _p in (ROOT, ROOT / "src"):
         sys.path.insert(0, str(_p))
 
 
+# ---------------------------------------------------------------------------
+# THE TWO TIERS AND THE DEVICE GROUP (#205, docs/test_suite_timing_2026-11-15.md)
+#
+# ``slow`` marks every test in ``tests/slow_tests.txt`` -- a MEASURED list
+# (``tools/suite_timing.py --write-slow`` over a ``--durations=0`` run), never
+# a hand-set mark. ``pytest tests -q -m "not slow"`` is the fast tier for work
+# in progress; the full suite stays the gate before a merge. A test missing
+# from the list is fast until the next measurement.
+#
+# Under pytest-xdist (``-n N --dist loadgroup``) every test that drives the GPU
+# or opens a window (``_suite_kinds.is_device``) joins ONE group, so no two run
+# at once, and the run starts with the longest measured tests so none of them
+# is left to the end on its own. Both only with ``-n``: a plain run keeps its
+# order and pays no source reading at collection.
+# ---------------------------------------------------------------------------
+SLOW_LIST = Path(__file__).with_name("slow_tests.txt")
+
+
+def read_slow_list(path: Path = SLOW_LIST) -> dict[str, float]:
+    """nodeid -> measured seconds, from ``<seconds> <nodeid>`` lines."""
+    out: dict[str, float] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        secs, nodeid = line.split(maxsplit=1)
+        out[nodeid] = float(secs)
+    return out
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: measured slow (tests/slow_tests.txt); the fast tier "
+        "is -m 'not slow'")
+    config.addinivalue_line(
+        "markers", "xdist_group(name): pytest-xdist's group (loadgroup)")
+
+
+def _xdist_workers(config) -> int:
+    n = getattr(config.option, "numprocesses", None)
+    try:
+        return int(n or 0)
+    except (TypeError, ValueError):     # "auto" / "logical"
+        return 2
+
+
+def pytest_collection_modifyitems(config, items):
+    slow = read_slow_list()
+    for item in items:
+        if item.nodeid in slow:
+            item.add_marker(pytest.mark.slow)
+    if not (_xdist_workers(config) or hasattr(config, "workerinput")):
+        return
+    import _suite_kinds
+    for item in items:
+        path, name = _suite_kinds.split_nodeid(item.nodeid)
+        if _suite_kinds.is_device(str(ROOT / path), name):
+            item.add_marker(pytest.mark.xdist_group("device"))
+    # longest first; a stable sort keeps collection order among the rest
+    items.sort(key=lambda it: -slow.get(it.nodeid, 0.0))
+
+
 @pytest.fixture(autouse=True)
 def _reset_weapon_tables_to_pinned_world():
     """Re-bind the shared weapon tables to the 1.0 m/tile test convention

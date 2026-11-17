@@ -218,9 +218,182 @@ void unit_match_done(UnitStoreDevice& store, const UnitTablesDevice& tables,
 // [2] can_plant(tick), [3] can_reload(tick), [4] can_shove(tick), [5..8]
 // mag_status (tracked, rounds, spares -1 = untracked, reloading), [9]
 // magazines_carried, [10] handling_ticks(base), [11] shove_cooled(tick),
-// [12] can_act, [15] bad; a padding row's out row zero.
-constexpr int UNIT_VERBS_PROBE_K = 16;
+// [12] can_act, [15] bad; #29 P7a.1: [13] can_melee(tick, at_tick_start
+// false), [14] can_melee(tick, true), [16] melee_arc_target (a row, -1 none;
+// -2 the row holds no melee row), [17] melee_adjacent to row `base` (-1 when
+// `base` is not a valid row); a padding row's out row zero.
+constexpr int UNIT_VERBS_PROBE_K = 18;
 void unit_verbs_probe(UnitStoreDevice& store, const UnitTablesDevice& tables, int64_t kind,
                       int64_t tick, int64_t base, int64_t* out);
+
+// ---- #29 P7a.1: slot 4a, the melee verb (the effect list's first producer) --------
+//   cuda_unit_melee.cu        slot 4a   combat.process_melee_intents
+//
+// Every valid row holding a melee latch consumes it; one that can strike
+// (verb_gates.can_melee) and finds a target in its arc (melee_arc_target)
+// writes last_blow_tick and RECORDS its blow -- a HIT, the row's STATUS, a
+// PUSH -- in `effects`' list (cuda_applier.h's FieldApplier: per-row staging
+// gathered per env in row order AFTER whatever the list holds). `ticks` (N,)
+// each env's sim.tick (input slot 0). out.dropped = records the list (or a
+// row's staging) could not hold.
+class FieldApplier;
+void unit_melee(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                const int64_t* ticks, const UnitDamageCounts& out);
+
+// ---- #29 P7b: the grenades and the planted charges on their object tables -------
+//   cuda_unit_objects.cu      slot 1b's appends, slot 2 "2 grenades",
+//                             slot 9e(d') charges.tick (and its prune)
+//
+// No unit row is read or written: the slots' state is the grenade and charge
+// tables (cuda_object_table.h) and what they record goes to the effect list
+// (`effects`: a FieldApplier's list, PAYLOAD records in the reference's
+// order). The per-env counts: `changed` rows the call changed or appended,
+// `faults` rows whose operands left the proved range (left as they were,
+// nothing recorded), `refused` grenades of the WEGO order path (a float
+// fuse: out of scope, left as they were), `dropped` effect records the list
+// could not hold (a table's own overflow is its record list's count).
+class ObjectTable;
+struct ObjectSlotCounts {
+    int64_t* changed = nullptr;
+    int64_t* faults = nullptr;
+    int64_t* refused = nullptr;
+    int64_t* dropped = nullptr;
+};
+// Slot 1b's THROW requests appended to `grenades`, its ACCEPTED plants to
+// `charges`, one thread per env in request-list order (after unit_verbs).
+void unit_table_appends(const UnitTablesDevice& tables, UnitRecordList& requests,
+                        ObjectTable& grenades, ObjectTable& charges, const ObjectSlotCounts& out);
+// Slot 2's grenades: the flight per row (wide), the fuse-outs' PAYLOAD records
+// in row order. `ticks` (N,) each env's sim.tick.
+void unit_grenades(const UnitTablesDevice& tables, ObjectTable& grenades, UnitRecordList& effects,
+                   const int64_t* ticks, const ObjectSlotCounts& out);
+// Slot 9e(d') charges.tick: the due charges' PAYLOAD records in row order,
+// then the table's stable compaction.
+void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,
+                       UnitRecordList& effects, const int64_t* ticks,
+                       const ObjectSlotCounts& out);
+
+// ---- #29 P6b.1: the doors (cuda_unit_doors.cu) ------------------------------------
+//   cuda_unit_doors.cu        slot 1b   the USE request as a door-table write
+//   (the 9e(d) sweep is the applier's DOORS stage: cuda_applier.cu over
+//   cuda_unit_doors.cuh; seal / unseal / the gas-N primitives are the
+//   topology seam's, cuda_topology.cuh)
+//
+// Slot 1b's USE records flip the door table's want_open, one thread per env
+// in request-list order (after unit_verbs). Counts: changed (flips), faults.
+void unit_door_uses(const UnitTablesDevice& tables, UnitRecordList& requests, ObjectTable& doors,
+                    const ObjectSlotCounts& out);
+
+// ---- #29 P7.0a: slot 9d (cuda_unit_ignition.cu), the kit's probes ----------------
+//   cuda_unit_ignition.cu     slot 9d   combat.apply_temperature_ignition
+//   cuda_unit_kit_probe.cu    TEST-ONLY: the device draws (cuda_unit_draws.cuh),
+//                             sight (cuda_unit_sight.cuh), the falloffs
+//                             (fixed_point.h) on synthetic inputs
+//
+// Slot 9d: a per-cell kernel born (N, h, w); the planes are device pointers to
+// (N, ...) arrays in the GameMap fields' dtypes (see the TU); fire and armed
+// written in place. out.coverage = cells changed; out.faults = cells whose
+// material or a gas index left the tables.
+struct IgnitionPlanes {
+    std::uintptr_t temperature = 0;   // int32
+    std::uintptr_t material = 0;      // int8
+    std::uintptr_t flammable = 0;     // bool
+    std::uintptr_t wall_hp = 0;       // int32
+    std::uintptr_t solid = 0;         // bool
+    std::uintptr_t is_vacuum = 0;     // bool
+    std::uintptr_t gas = 0;           // (N, G, h, w) int32
+    std::uintptr_t fire = 0;          // int32, written
+    std::uintptr_t armed = 0;         // bool (ignition_armed), written
+    int n_gases = 0;
+    int h = 0;
+    int w = 0;
+};
+void unit_ignition(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                   const IgnitionPlanes& planes, const UnitKernelCounts& out);
+
+// TEST-ONLY draws: `keys` (n_env, 3) int64 host (unit_draws.draw_key rows),
+// `args` (n_env, n_rows, UNIT_KIT_DRAW_ARGS) int64 host (salt, ident, index,
+// cone_q, p_q, salt2); thread (e, r) -> out (n_env, n_rows, UNIT_KIT_DRAW_OUT)
+// int64 host: [0] draw_at(salt, ident, index), [1] cone_offset_q16 of it,
+// [2] roll_q16 of it, [3] bad, [4..9] the .next words of site A = (salt,
+// ident) and site B = (salt2, ident) interleaved A0 B0 A1 B1 A2 B2.
+constexpr int UNIT_KIT_DRAW_ARGS = 6;
+constexpr int UNIT_KIT_DRAW_OUT = 10;
+void unit_kit_draws_probe(const int64_t* keys, int n_env, const int64_t* args, int n_rows,
+                          int64_t* out);
+
+// TEST-ONLY sight: `solid` / `screen` device pointers to (n_env, h, w) bool
+// planes; `pairs` (n_env, n_rows, 4) int64 host (fy1, fx1, fy2, fx2) -> out
+// (n_env, n_rows, 3) int64 host: [0] has_los (sight), [1] has_los(physical),
+// [2] bad.
+void unit_kit_sight_probe(std::uintptr_t solid, std::uintptr_t screen, int n_env, int h, int w,
+                          const int64_t* pairs, int n_rows, int64_t* out);
+
+// TEST-ONLY falloffs: `args` (n, 3) int64 host (v, d2, r2) -> out (n, 2)
+// int64 host: falloff_floor_q, falloff_round_q (FALLOFF_REFUSED outside the
+// proved range).
+void unit_kit_falloff_probe(const int64_t* args, int n, int64_t* out);
+
+// The compiled draws vocabulary's fingerprint (unit_draws_layout.h).
+const char* unit_draws_fingerprint();
+
+// ---- #29 P7a.3: slot 4b, the sprays (the effect list's third producer) ----------
+//   cuda_unit_sprays.cu       slot 4b   combat.process_sprays
+//
+// Every valid row with a burst in progress, in row order (one block per env):
+// a dead or interrupted burst cleared; a live one's cone (combat.
+// spray_cone_tiles over the physical sight of `solid`, a device pointer to
+// the (N, h, w) bool plane) appended to `cells` (a record list of (y, x, div),
+// cuda_unit_spray.cuh's CELL_W) in row-major order and ONE SPRAY_CELLS
+// record (its span) appended to `effects`' list after what it holds; then
+// the countdown. `box_max` the largest cone box the launch's scratch holds
+// (a larger one faults). out.refused = WEGO bursts (no aim angle);
+// out.dropped = effect records + cells the lists could not hold.
+class UnitRecordList;
+void unit_sprays(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                 UnitRecordList& cells, std::uintptr_t solid, int h, int w, int64_t box_max,
+                 const UnitDamageCounts& out);
+// TEST-ONLY: the cone (decide_box + emit_box) on synthetic cones: `args`
+// (n_env, n_rows, 8) int64 host (ay, ax, angle_q, range, half_q, ex_x, ex_y,
+// fp) over the (n_env, h, w) bool plane `solid` (device) -> out (n_env,
+// n_rows, max_out, 3) the cells (y, x, div) in order, meta (n_env, n_rows, 2):
+// the cell count (all of them), bad.
+void unit_spray_cone_probe(std::uintptr_t solid, int n_env, int h, int w, const int64_t* args,
+                           int n_rows, int64_t box_max, int max_out, int64_t* out,
+                           int64_t* meta);
+// ---- #29 P7a.2: slot 4's shooting and slot 2''s rounds (cuda_unit_shooting.cu) -----
+//   cuda_unit_shooting.cu     slot 4    combat.process_shooting (the continuous
+//                                       path: _directional_fire, fire_burst,
+//                                       start_spray_burst_directional)
+//                             slot 2'   Simulation._march_rounds (phase A)
+//   THE MARCH both call: cuda_unit_march.cuh (combat.BulletInFlight.advance)
+//
+// unit_shooting: every valid row holding the trigger that the gates let fire
+// writes its own row at once (the magazine, last_fire_tick, a spray's burst)
+// and RECORDS per round its recoil PUSH then the march's records in
+// `effects`' list, APPENDS each round still flying to `rounds` and its shot's
+// noise to `noise` -- all three per-row staging gathered per env in row
+// order after what each holds. A hitscan trigger is REFUSED (out.refused).
+// unit_rounds: per env ONE thread marches every round of `rounds` in order,
+// its records appended to `effects`' list directly, a finished round's live
+// column 0; `compact` then drops the finished (the probe keeps them).
+// `ticks` (N,) each env's sim.tick (input slot 0), `keys` (N, 3) its draw key
+// (unit_draws.draw_key, input slot 1); the planes as (N, h, w) device arrays.
+class ObjectTable;
+struct ShootPlanes {
+    std::uintptr_t solid = 0;         // bool (GameMap.solid)
+    std::uintptr_t material = 0;      // int8 (GameMap.material)
+    int h = 0, w = 0;
+};
+struct UnitShootCounts : UnitDamageCounts {
+    int64_t* rounds_lost = nullptr;   // (N,) rounds past the round table's capacity
+    int64_t* noise_lost = nullptr;    // (N,) noises past the noise list's capacity
+};
+void unit_shooting(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                   ObjectTable& rounds, ObjectTable& noise, const int64_t* ticks,
+                   const int64_t* keys, const ShootPlanes& p, const UnitShootCounts& out);
+void unit_rounds(UnitStoreDevice& store, const UnitTablesDevice& tables, FieldApplier& effects,
+                 ObjectTable& rounds, const int64_t* ticks, const int64_t* keys,
+                 const ShootPlanes& p, bool compact, const UnitShootCounts& out);
 
 }  // namespace breach_cuda

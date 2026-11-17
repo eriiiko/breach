@@ -83,18 +83,17 @@ build = [
 "src/simulation/action_spec_v1.py" = "Class T: the action spec's masks and tables, host-side (#195 1h)"
 "src/simulation/attack_resolver.py" = "Class T: the cover exposure a shot reads (slot 4's phase A), built at P7a"
 "src/simulation/atmosphere_fixed.py" = "Class T: slot 9b's over-pressure walls (the applier's topology), built from P6"
-"src/simulation/blast_air.py" = "Class T: a charge's air read (slot 2's detonations, through the payload executor), built at P7c"
-"src/simulation/combat.py" = "Class T: slots 4 / 4b / 9d, built from P7a"
+"src/simulation/blast_air.py" = "Class T: a charge's air read (every detonation, through the payload executor); its device form is cpp/src/cuda_unit_blast.cuh (#29 P7c.2), but the corpus (300 ticks) detonates nothing, so no twin traces it: tests/cuda_unit_payloads_check.py is the guard"
 "src/simulation/cover_system.py" = "setup only"
 "src/simulation/draws.py" = "Class T: THE keyed draws (#29 P3b: Philox on (seed; tick, index, salt, id)) -- the shot / beam cones and the rolls (slots 2 / 4, built at P7a) and the FieldEdit noise (slot 6b, the device edit queue, P4c); its device twin is philox32.h on the same layout"
-"src/simulation/door_system.py" = "setup only on the corpus (no door); Class T at P6b"
+"src/simulation/door_system.py" = "setup only on the corpus (no door entity): its sweep is the doors twin's law (#29 P6b.1), traced by no corpus tick; tests/cuda_unit_doors_check.py is the guard"
 "src/simulation/entities/registry.py" = "setup only: the entity registry (Class T, P6b)"
 "src/simulation/entities/schema.py" = "setup only: the entity schema (Class T, P6b)"
 "src/simulation/entities/vents.py" = "setup only: the vent entity rows (Class T, P6b)"
 "src/simulation/events.py" = "Class T: the tick's event rows (slots 2 / 4 / 5: hits, kills, render-only shots and reloads), built with their producers from P7a"
 "src/simulation/factions.py" = "setup only"
 "src/simulation/generation.py" = "setup only"
-"src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source); Class T at P6b"
+"src/simulation/heat_source_system.py" = "setup only on the corpus (no heat source): slot 9e(d'')'s device form is the applier's HEAT_SOURCES stage (cpp/src/cuda_unit_hazards.cuh, #29 P6b.4), traced by no corpus tick: tests/cuda_unit_hazards_check.py is the guard"
 "src/simulation/horde.py" = "Class T: the horde field law (slot 5, #183 G9p: the settings door, the field cache, the descent; its flood is PhysicsEngine.horde_field, cpp/src/horde_field.cpp, a host call in both modules), built at P7d (one block per (env, field))"
 "src/simulation/intents.py" = "Class T: slot 1b, built from P6"
 "src/simulation/line_of_fire.py" = "the observation's line-of-fire flags (#195 1g; outside step, read through the sight routine): never a twin -- the device observation is P8b's gather"
@@ -104,26 +103,23 @@ build = [
 "src/simulation/materials.py" = "setup only: the materials table (its upload is Class P)"
 "src/simulation/noise.py" = "Class T: the noise log (#183 G9p: emitted by slots 2 / 4 / 5 / 9e, drained by slot 5), built with the horde at P7d"
 "src/simulation/obs_spec_v1.py" = "the observation spec v1 (#195 1g; outside step, the env's observe through the sensor accessor): never a twin -- the device observation is P8b's gather"
-"src/simulation/payloads.py" = "Class T: the payload executor (slot 2's grenade detonations), built at P7c"
+"src/simulation/payloads.py" = "Class T: the payload executor (every detonation site); its device form is cpp/src/cuda_unit_payload.cuh, every row since #29 P7c.2, but the corpus (300 ticks) detonates nothing, so no twin traces it: tests/cuda_unit_payloads_check.py is the guard"
 "src/simulation/philox32.py" = "Class T: the vendored Philox block -- the horde's wander as a seedless hash of (id, tick) (slot 5, #183 G9p; P7d) and every keyed draw through draws.py (#29 P3b; P7a / P4c); its device twin is philox32.h"
-"src/simulation/physics.py" = "Class T: apply_explosion's wall damage (slot 2's detonations, through the payload executor), built at P7c"
+"src/simulation/physics.py" = "Class T: apply_explosion and add_explosion_smoke (every detonation, through the payload executor); device form cpp/src/cuda_unit_payload.cuh (#29 P7c.1 / P7c.2), traced by no twin (the corpus detonates nothing): tests/cuda_unit_payloads_check.py is the guard"
 "src/simulation/rng_salts.py" = "Class T: the one Philox salt enum (#29 P3b), constants the device twins of draws.py / the wander read"
 "src/simulation/room_graph.py" = "setup only on the corpus: the room graph's host reads (#195 1b; place_at, 1f), imported by the bots for the commander; never called in the tick"
 "src/simulation/sensor_accessor.py" = "the bots' controller side (outside step, #183 G8p): the position features read fire / smoke / pressure / temperature through EntityFieldAccessor.sample_many; never a twin (the sensors' resident gather is its own later backing)"
-"src/simulation/signal_bus.py" = "setup only on the corpus; Class T at P6b"
-"src/simulation/simultaneous.py" = "Class T: phase A / B, built at P7a"
+"src/simulation/signal_bus.py" = "setup only on the corpus (no bus): slot 9e's signal sub-steps' device forms are the applier's EMIT / LOGIC / DOOR_INPUTS / PUMPS / SWAP stages (cpp/src/cuda_unit_signals.cuh, #29 P6b.3), traced by no corpus tick: tests/cuda_unit_signals_check.py is the guard"
 "src/simulation/speeds.py" = "setup only: the [speeds] door and its per-map quantization (Simulation.speed_table; the table is an upload with slot 3 and the horde, Class T, P6 / P7d)"
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
 "src/simulation/swarm_larva.py" = "setup only on the corpus: the larva rules run at GameMap construction and the reload seam (arc #63 P3); the corpus carries no larvae, and the law is C++ (the swarm_larva twin)"
 "src/simulation/team_picture.py" = "the team picture (#195 1d, conductor slot 11, a match only): host-side match memory, never synced or hashed; the device's own arrays at the residency arc's later stage (RL agent design 9)"
-"src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge); Class T at P6b"
+"src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge): slot 9e(d')'s device form is the applier's TIMED_CHARGES stage (cpp/src/cuda_unit_hazards.cuh, #29 P6b.4), traced by no corpus tick: tests/cuda_unit_hazards_check.py is the guard"
 "src/simulation/unit_schema.py" = "setup only on the corpus: the unit schema (#29 P3a: Unit.__slots__, the column defaults at construction, the digest record); the device unit store's column table from P6"
-"src/simulation/vent_system.py" = "Class T: the vent kernels (slot 9e), built at P6b"
 "src/simulation/verb_gates.py" = "Class T: the hand verbs' gates, read at slots 1b and 4a (#195 1e); their device form is the unit library's P6.4a gates (the verbs twin), traced into its files only where the corpus consumes a latch (it consumes none in its ticks)"
 "src/simulation/vision.py" = "Class T: has_los, built at P7a (the bots read it outside step); its many-tiles routine (#195 1c) is PhysicsEngine.sight_rays / sight_window, cpp/src/sight_lines.cpp, a host call in both modules"
 "src/simulation/wall_fixed.py" = "setup only"
-"src/simulation/weapons.py" = "Class T: the weapon rows (slots 4 / 4b; table upload P8b), built from P7a"
 
 [twins.water]
 class = "P"
@@ -131,7 +127,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_water.cu"]
 slots = ["7 water (cpu/per-call)"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -178,7 +174,7 @@ device = [
 ]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call)"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.cpp",
@@ -221,7 +217,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_bulk_transport.cu"]
 slots = ["7 EOS run_substeps (cpu/per-call) / trace tail"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.cpp",
@@ -258,7 +254,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_kick_compression.cu"]
 slots = ["7 physics", "7 EOS run_substeps (cpu/per-call) / div_source"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -299,7 +295,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_resident.h", "cpp/src/cuda_kick_compression.cu"]
 slots = ["7 EOS run_substeps (cpu/per-call) / energy flux"]
 level = true
-level_at = "e28fdd08e7ea6666c0476ffd310e45717664a177"
+level_at = "bfbbd820804e996e1ed1ae16750a5424561a872a"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/bulk_transport.h",
     "cpp/src/eos_solver.cpp",
@@ -315,7 +311,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_radiation_sweep.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 step_tail (ripple+fire+temp+sweep) / sweep"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -354,7 +350,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_temperature.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 step_tail (ripple+fire+temp+sweep) / temperature"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -391,7 +387,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_fire.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 step_tail (ripple+fire+temp+sweep) / fire"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -433,7 +429,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_combustion.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 combustion (host)"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/combustion.cpp",
     "cpp/src/combustion.h",
@@ -463,7 +459,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_stamp.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["6 stamp_units"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -527,7 +523,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_water_tail.cu", "cpp/src/cuda_resident.h", "cpp/src/cuda_resident_tick.cu", "cpp/src/cuda_resident_tick.h"]
 slots = ["7 water (cpu/per-call)"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "506ed95f9a466d9109a21d455732cfe8aeca4eae"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/atmosphere_solver.h",
     "cpp/src/bulk_transport.h",
@@ -578,7 +574,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_exposure.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["1c exposure decay"]
 level = true
-level_at = "e4905499a91a9e01ec07e10413d837151f511244"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/exposure.py",
 ]
@@ -595,7 +591,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_impulse.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["1a integrate + turn"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "3b1b366e3f607983f3e1dec4e4c9eef7b5fcbbe9"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/exchange.py",
     "src/simulation/movement.py",
@@ -621,7 +617,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_impulse.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["9c2 wind on units"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "83cf3c33c1816fef052677b8d260018284245550"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/exchange.py",
     "src/simulation/gamemap.py",
@@ -643,7 +639,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_orders.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["1b' orders"]
 level = true
-level_at = "e4905499a91a9e01ec07e10413d837151f511244"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/unit_orders.py",
 ]
@@ -659,7 +655,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_orders.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["10' order expiry"]
 level = true
-level_at = "e4905499a91a9e01ec07e10413d837151f511244"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/unit_orders.py",
 ]
@@ -677,7 +673,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_conversion.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["10 tick end (ruleset)"]
 level = true
-level_at = "e4905499a91a9e01ec07e10413d837151f511244"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/ai_zombie.py",
     "src/simulation/ruleset.py",
@@ -699,7 +695,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_movement.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["3 movement"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "83cf3c33c1816fef052677b8d260018284245550"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/gamemap.py",
     "src/simulation/movement.py",
@@ -726,7 +722,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_status.cu", "cpp/src/cuda_unit_damage.cuh", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/unit_events_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/unit_events.py"]
 slots = ["2b statuses"]
 level = true
-level_at = "fcc6bfc8be8e423e6bcda58d07c28eeebc1b7cf4"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/status.py",
     "src/simulation/unit.py",
@@ -745,7 +741,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_exchange.cu", "cpp/src/cuda_unit_damage.cuh", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/unit_events_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/unit_events.py"]
 slots = ["9c unit heat damage"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/exchange.py",
     "src/simulation/optics_fixed.py",
@@ -765,7 +761,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_exchange.cu", "cpp/src/cuda_unit_damage.cuh", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/unit_events_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/unit_events.py"]
 slots = ["9c3 gas rows"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/exchange.py",
     "src/simulation/poison.py",
@@ -788,7 +784,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_verbs.cu", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/unit_requests_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/unit_requests.py"]
 slots = ["1b intents"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "3b1b366e3f607983f3e1dec4e4c9eef7b5fcbbe9"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/simulation.py",
     "src/simulation/unit.py",
@@ -808,7 +804,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_unit_done.cu", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["10 tick end (ruleset)"]
 level = true
-level_at = "c4bd7bbdae797bd56eabd35c214c8344de39dda2"
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/ai_zombie.py",
     "src/simulation/ruleset.py",
@@ -830,7 +826,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/cuda_topology.cuh", "cpp/src/applier_layout.h", "cpp/src/gas_energy.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
 slots = ["9 burn-through walls"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "3b1b366e3f607983f3e1dec4e4c9eef7b5fcbbe9"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/simulation.py",
 ]
@@ -847,7 +843,7 @@ kind = "resident launch core"
 device = ["cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "src/simulation/applier.py", "src/simulation/unit_kernels.py"]
 slots = ["tick-end clears"]
 level = true
-level_at = "da49f3e5ec6689674bd558bbe22cc7ba9bff7576"
+level_at = "83cf3c33c1816fef052677b8d260018284245550"
 files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "src/simulation/damage.py",
     "src/simulation/gamemap.py",
@@ -904,4 +900,251 @@ files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
     "cpp/src/water_solver.h",
     "src/simulation/swarm.py",
     "src/simulation/swarm_tables.py",
+]
+
+[twins.melee]
+# #29 P7a.1, CLASS T: slot 4a (combat.process_melee_intents, the melee verb: the
+# latch consumed, verb_gates.can_melee, melee_arc_target, last_blow_tick at once)
+# on the device unit store, cpp/src/cuda_unit_melee.cu over the device unit
+# library (can_melee in both moments, melee_adjacent, melee_arc_target); the blow
+# (HIT, the row's STATUS, the PUSH) APPENDED to THE EFFECT LIST (the per-env
+# serial applier's record, src/simulation/applier.py: per-row staging gathered per
+# env in row order after what the list holds). Training only. Gate:
+# tests/cuda_unit_melee_check.py (the gates on synthetic rows; the melee scene's
+# shadow lockstep with the records compared to the host's SimultaneousEffects,
+# a census of the law's branches; batches; padding; overflow; chained 4a + 4c).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_melee.cu", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["4a melee"]
+level = true
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/combat.py",
+    "src/simulation/simultaneous.py",
+]
+
+[twins.resolve]
+# #29 P7a.1, CLASS T: slot 4c (SimultaneousEffects.resolve of the attack slot) as
+# the RESOLVE STAGE of THE PER-ENV SERIAL APPLIER (cpp/src/cuda_applier.cu: one
+# block per env, thread 0 walking the effect list in record order): HIT through
+# the device apply_packet WITH THE EXPOSURE LANDING (cpp/src/cuda_unit_damage.cuh:
+# raises and zeroings held for the walk's end), STATUS if alive, PUSH through the
+# library's impulse_add if alive, CHEW over the topology seam (chew_wall, then
+# destroy_wall at <= 0), PAYLOAD (#29 P7c.1: execute_payload's disc path,
+# cpp/src/cuda_unit_payload.cuh; a refused row by name); events through the
+# env's ring. Slot 2's landing resolve is P7a.2's stage. Training only. Gate:
+# tests/cuda_unit_melee_check.py (synthetic lists: the landing against at once,
+# two orders, CHEW on real walls, PAYLOAD refused; the melee scene and
+# ship_demo's shadow with field outputs, books, ring and the write-set gate;
+# batches; chained 4a + 4c).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_unit_damage.cuh", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_topology.cuh", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/unit_events_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/unit_events.py", "cpp/src/cuda_unit_spray.cuh", "cpp/src/cuda_edit_door.cuh", "cpp/src/cuda_edit_door.h", "cpp/src/cuda_edit_door.cu", "cpp/src/cuda_unit_sight.cuh", "src/simulation/attack_lists.py", "src/simulation/edit_door.py", "cpp/src/cuda_unit_payload.cuh", "cpp/src/object_tables_layout.h"]
+slots = ["4c resolve"]
+level = true
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/exposure.py",
+    "src/simulation/simultaneous.py",
+]
+
+[twins.table_appends]
+# #29 P7b, CLASS T: slot 1b's TABLE WRITES -- each THROW request (the Projectile
+# Simulation._release_grenade appends) appended to the device grenade table, each
+# ACCEPTED plant (the PlantedCharge charges.place appends) to the charge table, one
+# thread per env in request-list order after the verbs kernel
+# (cpp/src/cuda_unit_objects.cu, unit_kernels.table_appends). Training only. Gate:
+# tests/cuda_unit_objects_check.py (the 1b shadow with the tables as lists, batches,
+# overflow, chained 1b + 1b' + 1c + 2).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_objects.cu", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/unit_requests_layout.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/unit_tables_layout.h", "src/simulation/object_tables.py", "src/simulation/unit_schema.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["1b intents"]
+level = true
+level_at = "3b1b366e3f607983f3e1dec4e4c9eef7b5fcbbe9"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/simulation.py",
+    "src/simulation/unit.py",
+]
+
+[twins.grenades_and_charges]
+# #29 P7b, CLASS T: slot 2's grenades (Simulation._update_grenades) on the device
+# grenade table (unit_schema.GRENADE_TABLE): Projectile.update_position per row
+# (order-free, wide), the fuse-out marking the row detonated and -- a lob -- its
+# detonation APPENDED to the effect list as ONE PAYLOAD record in row order
+# (execute_payload's call as applier.record_of makes it; applied by nobody until
+# P7c.1). cpp/src/cuda_unit_objects.cu, unit_kernels.grenades. Training only. Gate:
+# tests/cuda_unit_objects_check.py (synthetic full tables against _update_grenades;
+# the grenade scene's shadow with a branch census; batches; padding; overflow;
+# chained). AND slot 9e(d') charges.tick on the device charge table: every live
+# charge whose det_tick has come marked dead and its detonation a PAYLOAD record
+# (kind door_explosive) in row order, then the stable compaction (the prune);
+# charges.detonate_owned (WEGO's Detonate) refused at the device door. One twin:
+# the corpus plants no charge, so 9e(d') alone would trace no file. #29 P7c.1: the
+# PAYLOAD records both slots append are walked right after their kernel in the
+# applier's DETONATE stage (cpp/src/cuda_unit_payload.cuh, execute_payload's disc
+# path; tests/cuda_unit_payloads_check.py).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_objects.cu", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/applier_layout.h", "cpp/src/cuda_applier.h", "cpp/src/cuda_unit_kernels.h", "cpp/src/unit_tables_layout.h", "src/simulation/object_tables.py", "src/simulation/unit_schema.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py", "src/simulation/applier.py", "cpp/src/cuda_applier.cu", "cpp/src/cuda_unit_payload.cuh", "cpp/src/cuda_unit_blast.cuh", "cpp/src/cuda_topology.cuh", "cpp/src/cuda_unit_damage.cuh", "cpp/src/cuda_unit_sight.cuh", "cpp/src/cuda_edit_door.cuh", "cpp/src/cuda_edit_door.h", "cpp/src/cuda_edit_door.cu", "src/simulation/edit_door.py", "src/simulation/attack_lists.py"]
+slots = ["2 grenades", "9e(d') planted charges"]
+level = true
+level_at = "3b1b366e3f607983f3e1dec4e4c9eef7b5fcbbe9"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/simulation.py",
+]
+
+[twins.grenade_prune]
+# #29 P7b, CLASS T: slot 10's grenade prune (ContinuousRealtime.on_tick_end: the
+# detonated grenades leave sim.projectiles) as the device grenade table's stable
+# compaction (unit_kernels.prune_grenades). Training only. Gate:
+# tests/cuda_unit_objects_check.py.
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "src/simulation/object_tables.py", "src/simulation/unit_schema.py", "src/simulation/unit_kernels.py"]
+slots = ["10 tick end (ruleset)"]
+level = true
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/ai_zombie.py",
+    "src/simulation/ruleset.py",
+    "src/simulation/unit.py",
+]
+
+[twins.ignition]
+# #29 P7.0a, CLASS T: slot 9d (combat.apply_temperature_ignition: a flammable tile
+# below its threshold re-arms; a hot, fuelled, armed, unlit one whose open
+# 4-neighbours' O2 mole fraction exceeds o2_frac_ext is seeded; a hot burning one
+# disarms) as ONE per-cell kernel born (N, h, w), cpp/src/cuda_unit_ignition.cu,
+# its dials the device tables' ign_* rows. Training only. Gate:
+# tests/cuda_unit_kit_check.py (the ignition scene's shadow lockstep with field
+# outputs and the write-set gate, a census of the law's branches; ship_demo where
+# nothing ignites; batches; chained after 9c / 9c2 / 9c3).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_ignition.cu", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/unit_tables_layout.h", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["9d ignition"]
+level = true
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/combat.py",
+]
+
+[twins.sprays]
+# #29 P7a.3, CLASS T: slot 4b (combat.process_sprays, the continuous path) on the
+# device unit store, cpp/src/cuda_unit_sprays.cu over cpp/src/cuda_unit_spray.cuh:
+# per row in id order a dead or interrupted burst cleared; a live one's cone
+# (spray_cone_tiles over the PHYSICAL device sight, the block's threads splitting
+# the box, the cells in row-major order) appended to THE CELL BUFFER and ONE
+# SPRAY_CELLS record (its span) to THE EFFECT LIST after slot 4's and 4a's; the
+# countdown at once. Its record is applied by the resolve stage (twin resolve):
+# the edits through THE DEVICE EDIT DOOR (step (a)), the claims onto THE CLAIMS
+# LIST. A WEGO burst (no aim angle) refused by name. Training only. Gate:
+# tests/cuda_unit_sprays_check.py (the cone on synthetic cones over four maps; the
+# spray scene's shadow 4b + 4c with a branch census; batches; padding; overflow;
+# refusals; chained 4b + 4c; ship_demo).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_sprays.cu", "cpp/src/cuda_unit_spray.cuh", "cpp/src/cuda_unit_sight.cuh", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_unit_events.cu", "cpp/src/cuda_unit_events.h", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/attack_lists.py", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["4b sprays"]
+level = true
+level_at = "44e9c871cf4b6ed9323d42cb60753f2d03f7b83c"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/combat.py",
+    "src/simulation/weapons.py",
+]
+[twins.shooting]
+# #29 P7a.2, CLASS T: slot 4's shooting (combat.process_shooting on the
+# continuous path: _directional_fire's gates, the magazine law, fire_burst with
+# the SHOT_CONE draws, the recoil, start_spray_burst_directional, the noise) on
+# the device unit store, cpp/src/cuda_unit_shooting.cu over THE MARCH
+# (cpp/src/cuda_unit_march.cuh, combat.BulletInFlight.advance); the records
+# APPENDED to the effect list, the rounds still flying to the round table and
+# the noises to the noise list (object tables, src/simulation/object_tables.py).
+# The beam is refused by name. Training only. Gate:
+# tests/cuda_unit_shooting_check.py (the march on synthetic rounds; the shooting
+# scenes' shadow lockstep with the records, tables and noises compared, a census
+# of the law's branches; batches; padding; overflow; refusals; chained 4 + 4a +
+# 4c; ship_demo).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_shooting.cu", "cpp/src/cuda_unit_march.cuh", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_unit_draws.cuh", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_unit_store.cu", "cpp/src/cuda_unit_store.h", "cpp/src/unit_store_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/object_tables.py", "src/simulation/unit_store.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["4 shooting"]
+level = true
+level_at = "a040ec7217c8be50bdae825f8efb98f4e2040a0f"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/combat.py",
+    "src/simulation/status.py",
+    "src/simulation/unit.py",
+    "src/simulation/weapons.py",
+]
+
+[twins.rounds]
+# #29 P7a.2, CLASS T: slot 2''s march (Simulation._march_rounds: every round in
+# flight marched in list order against the state the grenades left) as ONE
+# thread per env over the round table, cpp/src/cuda_unit_shooting.cu's
+# unit_rounds over THE MARCH (cpp/src/cuda_unit_march.cuh), its records APPENDED
+# to the effect list, the finished rounds compacted away; its landing is the
+# applier's RESOLVE stage (the resolve twin). Training only. Gate:
+# tests/cuda_unit_shooting_check.py (the march on synthetic rounds; the scenes'
+# 2' + landing shadow; chained 2' + landing; ship_demo).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_shooting.cu", "cpp/src/cuda_unit_march.cuh", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_unit_draws.cuh", "cpp/src/cuda_unit_kernels.h", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/object_tables.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["2' rounds"]
+level = true
+level_at = "a040ec7217c8be50bdae825f8efb98f4e2040a0f"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/simulation.py",
+]
+
+[twins.doors]
+# #29 P6b.1, CLASS T: THE DOORS on the device door table and its tile side table
+# (unit_schema.DOOR_TABLE / DOOR_TILE_TABLE). Slot 1b's USE as a door-table write:
+# each USE record (gathered in id order by the verbs kernel) flips want_open on the
+# row it names, ONE thread per env in request-list order (cpp/src/cuda_unit_doors.cu,
+# unit_kernels.door_uses; Simulation._direct_use). AND slot 9e(d)'s door sweep
+# (door_system.sweep_doors) as the applier's DOORS stage (cpp/src/cuda_applier.cu
+# over cpp/src/cuda_unit_doors.cuh): serial per env in ordinal order; external
+# destruction by the whole-door rule through topo::destroy_wall; the open (hp copy,
+# topo::unseal_tiles) and the close (the occupancy test, topo::can_seal +
+# topo::seal_tiles, the hp restamp) over the Device topology seam. One twin: the
+# corpus has no door entity, so 9e(d) alone would trace no file (door_system.py is
+# [not_twinned]). Training only. Gate: tests/cuda_unit_doors_check.py (the probe of
+# seal / unseal / the gas-N primitives; the door scene's 1b + 9e(d) shadow with a
+# census; batches; chained).
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_doors.cu", "cpp/src/cuda_unit_doors.cuh", "cpp/src/cuda_topology.cuh", "cpp/src/gas_energy.h", "cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/unit_requests_layout.h", "cpp/src/unit_tables_layout.h", "cpp/src/cuda_unit_lib.cuh", "cpp/src/cuda_unit_kernels.h", "src/simulation/applier.py", "src/simulation/object_tables.py", "src/simulation/unit_schema.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["1b intents", "9e(d) doors"]
+level = true
+level_at = "94c7f10c30490e945dd82a4166f2bfbfaf3b4142"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/simulation.py",
+    "src/simulation/unit.py",
+]
+
+[twins.vents]
+# #29 P6b.2, CLASS T: slot 9e(d)'s vent circulation (vent_system.sweep_vents /
+# _duct_sweep) as the applier's VENTS stage (cpp/src/cuda_applier.cu over
+# cpp/src/cuda_unit_vents.cuh) on the device duct and vent tables
+# (unit_schema.DUCT_TABLE / VENT_TABLE): ducts in ordinal order, within a duct the
+# returns then the supplies, flux only through the Device topology seam's
+# topo::extract_gas_n_vec and topo::inject_gas_n_vec (built here, with its rails),
+# the ledgers int64 with the proved range refused by name at a duct's head, the
+# signed division and the floor products through the kit (floordiv_q,
+# muldiv_floor_q). ship_demo's duct runs in the corpus, so the twin traces
+# vent_system.py. Training only. Gate: tests/cuda_unit_vents_check.py.
+class = "T"
+kind = "resident launch core"
+device = ["cpp/src/cuda_unit_vents.cuh", "cpp/src/cuda_topology.cuh", "cpp/src/gas_energy.h", "cpp/src/fixed_point.h", "cpp/src/cuda_applier.cu", "cpp/src/cuda_applier.h", "cpp/src/applier_layout.h", "cpp/src/cuda_object_table.cu", "cpp/src/cuda_object_table.h", "cpp/src/object_tables_layout.h", "cpp/src/unit_tables_layout.h", "src/simulation/applier.py", "src/simulation/object_tables.py", "src/simulation/unit_schema.py", "src/simulation/unit_tables.py", "src/simulation/unit_kernels.py"]
+slots = ["9e(d) vents"]
+level = true
+level_at = "bfbbd820804e996e1ed1ae16750a5424561a872a"
+files = [  # GENERATED by tools/twin_manifest_gen.py -- never edit by hand
+    "src/simulation/gamemap.py",
+    "src/simulation/gas_fixed.py",
+    "src/simulation/vent_system.py",
+    "src/temperature_scale.py",
 ]

@@ -31,6 +31,7 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## GameMap
 - `GameMap.destroy_wall` and `GameMap.on_tile_changed` have a device twin, `cpp/src/cuda_topology.cuh` (the Device topology seam, `.claude/rules/device-units.md`): a change to either, or to the gas energy primitives they call, lands there in the SAME patch. The twin ledger does not catch it (the corpus burns no wall); `tests/cuda_unit_topology_check.py` does.
+- So do `seal_tiles` / `unseal_tiles` / `can_seal_tiles` (with `_seal_blockers`' refusals), `inject_gas_n`, `extract_gas_n(_vec)`, `transfer_gas_n` (with `_air_withdrawal` and `gas_proportional_split`), `inject_gas_n_vec` (#29 P6b.2) and `vent_system._aperture_blocked` (#29 P6b.1): a change to one lands in the seam in the SAME patch. The corpus seals nothing; `tests/cuda_unit_doors_check.py` (part PROBE) and `tests/cuda_unit_vents_check.py` (part PROBE) are the guard.
 
 ## FieldEdit
 - The only way to write a continuous field: never `gmap.<field>[...] +=` inline.
@@ -44,9 +45,11 @@ and who must use it; this file holds the constraints the code cannot say.
 - Trace is priced by air (#88 P0): the extraction split runs over the bulk planes only and each trace plane leaves at the cell's `S/N_bulk`. The pump destroys what it takes, unbooked (ACCEPTED GAP, #88 G6, #98).
 - Energy-aware (arc #54): the primitives carry `ΔN·T_abs` through the gas energy seam (extract at the cell's own `T_abs`, inject at the deposit's). The vent plenum ledger stays RELATIVE and converts here (`E = e + n·T_AMB`).
 - A pump's `feed` is `"external"` (creates / destroys at its port) or `"transfer"` (#133: moves air through `GameMap.transfer_gas_n` and the shared `_air_withdrawal` rule, smoke riding along, energy at the donor's T; nothing minted or lost). An interior airlock's pumps are transfer pumps.
+- The pump sweep has a device twin, the applier's PUMPS stage over `cpp/src/cuda_unit_signals.cuh` with the pump tables (`.claude/rules/device-units.md`): a change to `PumpRuntime.sweep`, its latch or a `PumpRuntime` attribute that crosses a tick lands there and in `unit_schema.PUMP_TABLE` in the SAME patch; `tests/cuda_unit_signals_check.py` is the guard.
 
 ## Vent / duct system
 - The plenum ledger is R3-counted (bulk pair + int64 raw-e), measured-delta booked, ENTITY_SECT-digested. Plenum bulk is circulating credit ONLY; a future reserve is a separate row pair.
+- The sweep has a device twin, the applier's VENTS stage over `cpp/src/cuda_unit_vents.cuh` with the duct and vent tables (`.claude/rules/device-units.md`): a change to `_duct_sweep`, `VentRuntime.accrue`, a runtime attribute that crosses a tick, or a ledger's per-tick step lands there, in `unit_schema.DUCT_TABLE` / `VENT_TABLE` and in the device's proved ledger range in the SAME patch. `tests/cuda_unit_vents_check.py` is the guard.
 
 ## Trace transport
 - A trace plane's TRANSPORT is ONLY the stage-3b ride on the bulk face flux (`price_face(dq, S, N)` at the donor) plus the once-per-tick Jacobi, magnitude-truncated face diffusion: never a semi-Lagrangian step, never a bespoke advection loop (#12, `docs/smoke_transport_design_2026-10-04.md`).
@@ -69,7 +72,7 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## Fixed-point kits
 - The only sim arithmetic, CPU and device: never re-derive a shift, a round or a reciprocal.
-- The match path's Python integer helpers live in `src/simulation/unit_fixed.py`, each the exact real result rounded once. Their device twins are `FP_HD` in `cpp/src/fixed_point.h`, bound as `bp.fp_*`, held equal to Python by `tests/test_unit_impulse_twins.py`. The falloffs have no device twin yet (P7).
+- The match path's Python integer helpers live in `src/simulation/unit_fixed.py`, each the exact real result rounded once. Their device twins are `FP_HD` in `cpp/src/fixed_point.h`, bound as `bp.fp_*`, held equal to Python by `tests/test_unit_impulse_twins.py` (the falloffs by `tests/test_unit_kit_twins.py`). A twin refuses outside the range it was proved for (the falloffs return -1) and its device caller FAULTS; a change to a helper lands in Python first, then its twin, in one patch.
 - Kit code is a rounding or a root, never a law (a law lives in the Device unit library or its slot's TU).
 
 ## Material / gas tables

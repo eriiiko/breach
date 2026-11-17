@@ -68,7 +68,7 @@ from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
 from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
-    apply_temperature_ignition,
+    apply_temperature_ignition, ignition_params,
     process_shooting, process_sprays, process_melee_intents,
     Projectile,
     mag_settle, reload_begin,
@@ -2121,8 +2121,14 @@ class Simulation:
         # hits up to last tick, decayed exactly once since.
         exposure.decay_units(self.units)
 
-        # 2. Update projectiles.
-        self._update_projectiles()
+        # 2. Projectiles (#29 P7.0b: two calls, so the device port can take
+        # them one at a time). FIRST the grenades: every grenade flies, and
+        # each that fuses out detonates AT ONCE, in list (spawn) order ...
+        self._update_grenades()
+        # 2'. ... THEN the in-flight rounds: each marches against the state
+        # the grenades left and records its hit / chew / detonation; the
+        # landing resolves them together, in list order.
+        self._update_rounds()
 
         # 2b. Tick unit statuses/conditions (mechanics/06 §4) — the TOP of
         # the unit-simulation section, per the ch. 05 §4 pipeline (phase 3:
@@ -2333,15 +2339,14 @@ class Simulation:
         # dormant. Slotted alongside the unit-heat-damage consumer (§6 step 4),
         # after the temperature passes, before the end-of-tick heat clear.
         if self.physics_runner is not None:
-            fire_cfg = getattr(CFG.physics, "fire", None)
-            ignition_seed = float(getattr(fire_cfg, "ignition_seed", 0.1))
             # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.4):
             # ignition and sustain read ONE law — a tile ignites only where the
             # local O2 MOLE FRACTION X exceeds the extinction limit X_ext, the
             # same o2_frac_ext the fire logistic uses. (Retires the old absolute
             # o2_threshold gate so ignition cannot seed a tile the next fire step
-            # would immediately suffocate.)
-            o2_frac_ext = float(getattr(fire_cfg, "o2_frac_ext", 0.13))
+            # would immediately suffocate.) combat.ignition_params is the one
+            # read of the two dials (the device tables read it too, #29 P7.0a).
+            o2_frac_ext, ignition_seed = ignition_params(CFG)
             apply_temperature_ignition(self.gmap, o2_frac_ext, ignition_seed)
 
         # 9e. Entities — the SPLIT GATE (Arc B impl doc §2b, D2). Two
@@ -2539,11 +2544,11 @@ class Simulation:
     # ------------------------------------------------------------------
     # Tick-step helpers
     # ------------------------------------------------------------------
-    def _update_projectiles(self) -> None:
-        """Tick all projectiles: grenades first (the shipped slot semantics,
-        unchanged), then in-flight kinetic rounds (W2 unified march — tick
-        slot 2, BEFORE movement, preserving the causal pipeline ordering of
-        mechanics/03 §2). Fixed traversal order = spawn order, both lists."""
+    def _update_grenades(self) -> None:
+        """Slot 2: the grenades in flight (``self.projectiles``), BEFORE the
+        rounds (slot 2', :meth:`_update_rounds`) and before movement
+        (mechanics/03 §2). Spawn order; a fuse-out detonates at once through
+        the payload executor, so each sees the previous one's blast."""
         for proj in self.projectiles:
             if proj.detonated:
                 continue
@@ -2570,6 +2575,10 @@ class Simulation:
                         approach=(unit_fixed.shr_trunc(proj.start_y_q),
                                   unit_fixed.shr_trunc(proj.start_x_q)))
 
+    def _update_rounds(self) -> None:
+        """Slot 2': the in-flight kinetic rounds (``self.bullets``; the W2
+        unified march), AFTER the grenades (slot 2) and before movement.
+        Spawn order; survivors stay."""
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
         # inside advance() (keyed draws, #29 P3b). Survivors stay.
@@ -2578,16 +2587,26 @@ class Simulation:
         # #169: two rounds landing on one tick land TOGETHER — every round
         # marches against the slot-start state and records its hit / chew /
         # detonation; resolve() applies them in list (spawn) order.
+        # #29 P7a.2: the march is its own call (phase A, handed the landing
+        # it records on: the device port's slot), then the landing.
+        landing = SimultaneousEffects()
+        self._march_rounds(landing)
+        landing.resolve()
+
+    def _march_rounds(self, landing) -> None:
+        """Slot 2''s phase A (#29 P7a.2): every round in flight marches this
+        tick's budget against the state the grenades left, in list (spawn)
+        order, recording its hit / push / chew / detonation on ``landing``;
+        the survivors replace ``self.bullets`` (nothing in the landing reads
+        the list)."""
         if self.bullets:
             survivors = []
-            landing = SimultaneousEffects()
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
                              self.real_time, self.draws,
                              events=self.tick_events,
                              queue=self.edit_queue, effects=landing):
                     survivors.append(b)
-            landing.resolve()
             self.bullets = survivors
 
     def _update_player_movement(self) -> None:

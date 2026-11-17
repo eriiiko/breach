@@ -32,6 +32,8 @@ strategy. Every rule below serves that.
   each one); bare `python` may be another install and fails breach imports
   with a misleading ModuleNotFoundError.
 - **pytest: always `pytest tests -q`**, never bare `pytest` from repo root.
+  While working, `-m "not slow"` or `python tools/affected_tests.py --run`
+  is enough; the full suite stays the gate before a merge.
 - C++/CUDA: `cpp/` via CMake; per-machine scripts `cpp/build_*.bat`, on Linux
   `cpp/build_linux.sh` (both modules; `containers/breach.def` builds with it).
   CPU build → `cpp/build/Release`; CUDA build → `cpp/build_cuda/`.
@@ -73,7 +75,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, device topology seam |
+| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
 | `swarm.md` | swarm store, its digest section, facade, species table, heading law |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
 | `horde.md` | horde field, noise, A* |
@@ -82,6 +84,7 @@ strategy. Every rule below serves that.
 | `sight.md` | vision / cover / line of fire, sight for many tiles |
 | `match.md` | match config, spawn, controllers, replay, MatchSession, control, team picture, order, room graph, main.py |
 | `rl-agent.md` | batched env, observation spec, full view, action spec, reward, training snapshot |
+| `agents.md` | the trainer's side in `agents/`: network spec, choosing |
 | `bots.md` | bot layers, position features, door bots, tournament |
 | `render-core.md` | tone-map, look shots, wall seam, lighting, light curve, frame lights, inspector, ping-pong, BLAS, UI, blackbody |
 | `render-effects.md` | gas medium, smoke relief + cast, tamed wind, FireVFX, particles, distortion, shock, muzzle flame, tracers, fire light |
@@ -154,7 +157,25 @@ amends the rule file, never this line's length.
 | Event ring | `src/simulation/unit_events.py` + `cpp/src/cuda_unit_events.*` | What a device unit kernel emits, as records in the reference's emission order |
 | Request list | `src/simulation/unit_requests.py` + `UnitRecordList` | What a device unit kernel does that is not a row write, as records in the reference's order |
 | Per-env serial applier | `src/simulation/applier.py` + generated `cpp/src/applier_layout.h` + `cpp/src/cuda_applier.{h,cu}` | THE device form of every order-dependent law that writes the map: one block per env walking its effect records in the reference's order; never a second walker |
+| Device draws | `cpp/src/cuda_unit_draws.cuh` + `src/simulation/unit_draws.py` + generated `cpp/src/unit_draws_layout.h` | THE device `MatchDraws.at` / `.next` and the outcome maps; every device draw goes through it, its salt a generated constant |
+| Device sight | `cpp/src/cuda_unit_sight.cuh` | THE device `GameMap.has_los` in both forms; every device kernel that asks a line goes through it, never its own walk |
+| The march (device) | `cpp/src/cuda_unit_march.cuh` | THE device `BulletInFlight.advance`: slot 4's shooting and slot 2''s rounds both call it on a round-table row, never a copy |
+| Noise list (device) | `unit_schema.NOISE_TABLE` on the object tables | THE device form of `GameMap.noise_log`: a device producer of a noise appends to it in the reference's emission order, never a second log |
+| Object tables | `src/simulation/object_tables.py` + `unit_schema.OBJECT_TABLES` + generated `cpp/src/object_tables_layout.h` + `cpp/src/cuda_object_table.{h,cu}` | What flies and what is placed (charges first; grenades, rounds, blast sources, entity classes next) as device rows: a new table is a schema there, never a second table mechanism |
+| Grenade and charge slots | `unit_schema.GRENADE_TABLE` + `cpp/src/cuda_unit_objects.cu` + `unit_kernels.table_appends` / `grenades` / `charges_tick` / `prune_grenades` | THE device form of the grenades in flight and the planted charges: slot 1b's throws and plants become table rows, slot 2 and `charges.tick` record every detonation as a PAYLOAD effect; never a second table or detonation path |
 | Device topology seam | `cpp/src/cuda_topology.cuh` | `GameMap.on_tile_changed` / `destroy_wall` as device functions; every device caller that changes a tile's material calls them, never a copy |
+| Signal slots | `src/simulation/unit_schema.py` SIGNAL / SENSOR / NODE / PUMP / DOOR_DRIVE tables + `cpp/src/cuda_unit_signals.cuh` + `unit_kernels.signals_*` | THE device form of slot 9e (a) to (e) and the pumps: the signal tables walked by the applier's signal stages; never a lambda or a slot name on the device |
+| Spray slot | `cpp/src/cuda_unit_sprays.cu` + `cpp/src/cuda_unit_spray.cuh` + `unit_kernels.sprays` | THE device form of slot 4b: the cone over the physical device sight into the cell buffer, one SPRAY_CELLS effect per sprayer; never a second cone walk |
+| Device edit door | `src/simulation/edit_door.py` + `cpp/src/cuda_edit_door.{h,cuh,cu}` | THE way a device producer hands a FieldEdit (the queue's EDIT / TILE rows through device forms of the door and the region walk); never a producer's own row writer |
+| Duct and vent tables | `unit_schema.DUCT_TABLE` / `VENT_TABLE` + `cpp/src/cuda_unit_vents.cuh` | THE device form of the ducts and vents and of slot 9e(d)'s circulation (the applier's VENTS stage); its int64 ledgers are refused by name past their proved range, never clamped |
+| Payload function (device) | `cpp/src/cuda_unit_payload.cuh` | THE device `execute_payload` for a disc-path row (strength 0, no bulk gas, no explosive), a PAYLOAD effect of the applier at every call site; any other row refused by name, never a second payload law |
+| Blast log (device) | `unit_schema.BLAST_LOG_TABLE` on the object tables | THE device form of `GameMap.blast_log`, appended by the payload function in call order; never a second explosion hook |
+| Blast walk (device) | `cpp/src/cuda_unit_blast.cuh` | THE device `reach_tiles`, `read_blast_air`, `add_source` and `take_source_plane` (the applier's SOURCES stage); every device caller of a walk, an air read or the source goes through it, never its own walk |
+| Blast-source table | `unit_schema.SOURCE_TABLE` + `SOURCE_TILE_TABLE` | THE device form of `GameMap.expansions` (a comparison row's later ticks): appended by the PAYLOAD function, walked and span-compacted by the SOURCES stage; never a second source list |
+| Attack lists | `src/simulation/attack_lists.py` | The cell buffer (a spray's phase-A cells, spans held by SPRAY_CELLS) and the claims list (every credit claim in order): record lists, never a second buffer or claims table |
+| Timed charges and heat sources | `unit_schema.TIMED_CHARGE_TABLE` / `HEAT_SOURCE_TABLE` + `cpp/src/cuda_unit_hazards.cuh` | THE device form of slot 9e(d') and 9e(d''): every detonation applied at once through the one payload function; the heat chain bounded and refused by name past the blast log |
+| Entity section export | `unit_kernels.EntityExport` + `entities/serialize.record_head` / `record_tail` | THE digest's entity and signal sections from the device tables; never a second serializer |
+| Door table | `unit_schema.DOOR_TABLE` + `DOOR_TILE_TABLE` + `unit_kernels.doors_of` / `doors_to_host` + `cpp/src/cuda_unit_doors.cuh` | THE device form of `Simulation._doors` (the first entity table) and of its 9e(d) sweep, a stage of the one applier; never a second door record or sweep |
 | Swarm store | `src/simulation/swarm.py` (`ROSTER`, `allocate_swarm_store`) | THE per-unit state of swarm units (larvae, fauna): SoA per species, per map; never a `Unit`, never the device unit store, never a class per species |
 | Swarm digest section | `swarm.swarm_carrier` / `swarm_section_bytes` + `tests/field_digest.py` | Swarm state enters determinism artifacts ONLY through the presence-gated `__swarm__` carrier |
 | Swarm facade | `swarm.SwarmUnits` (`sim.swarm`) | The only Python-side writer of the swarm store; gameplay, tools and tests never write `gmap.swarm_*` directly |
@@ -179,6 +200,9 @@ amends the rule file, never this line's length.
 | Class P / Class T + the twin ledger | `tests/twin_manifest.toml` + `tools/twin_debt.py` + `tools/cuda_green.py` | Every device twin is a manifest row; a Class-P change merges only with `.cuda_green` == HEAD |
 | Ingress lint + float ratchet | `tests/test_ingress_lint.py`, `tests/test_no_float_in_sim_tu.py` | The four number-doors + counts-only-go-down; exceptions carry `ingress-exempt:` with why |
 | Test conventions | `tests/` | `test_*` collected, `_*` harness; properties, never snapshots; GL checks in a subprocess |
+| Suite timing | `tools/suite_timing.py` + `tests/_suite_kinds.py` + `tests/slow_tests.txt` + `tests/conftest.py` | A test is `slow` only by measurement (the generated list), never a hand mark; under xdist every test that drives the GPU or a window joins ONE group through the classifier |
+| Affected tests | `tools/affected_tests.py` | THE change-based tier for work in progress: the tests a change can reach, read from the source; may over-select, never under-select; never the merge gate |
+| Pinned match plays | `tests/_pinned_matches.py` (`watch`, `pinned_play`, `WHICH`) | The two pinned ship_demo matches (`bots`, `bots_v1`) are played ONCE per pytest process and shared (#205): a test that only WATCHES one of them hangs its observer on `watch(which, on_tick)`, never a fresh `run_match`; a test that changes the match in any way (monkeypatch, spec, seed, level, a mutated unit) plays its own. Observers never write to a view. Self-checking: the bots_v1 G8p pin and the ship_demo controller pin compare the shared play's outcome and per-tick unit stream with their pins |
 
 ### Render / UI
 
@@ -262,6 +286,10 @@ amends the rule file, never this line's length.
 | Reward profile | `src/simulation/reward_v1.py` + `[reward] profile` | A reward is a named table of term weights; the env returns groups, never their sum |
 | Bots through the door | `src/control_bots_door.py` | The layered bots driven through action spec v1 (the imitation teacher); never a second table |
 | Training snapshot | `rl_env.require_snapshot` + `write_run_manifest` | A training run's code is an annotated tag at HEAD in its own checkout |
+| Network spec | `agents/spec.py` + `agents/network.py` + `agents/sizes.py` | A network is a named spec in `agents/`, meeting the game only through an observation and an action spec, at any team size; its record names all three and any other layout refuses it |
+| Choosing | `agents/choosing.py` | The chances under the masks, the draw, the probability of given choices and which heads counted are ONE module, used when acting, learning from reward and copying |
+| Stored decision and batch | `agents/batch.py` | Only rows of a learning team are stored; what is kept per decision is ONE layout, copied from the environment's arrays, time first |
+| Trainer | `agents/trainer.py` + `agents/collector.py` + `agents/learner.py` + `agents/grading.py` + `agents/value_scale.py` | Touches the game only through `BatchedEnv`; a collector and a learner with one hand-over each way; every round runs the live check |
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
 | Room graph | `level_loader.RoomGraph` + `src/simulation/room_graph.py` | ONE map from tile to room and ONE list of openings; never a second |

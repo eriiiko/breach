@@ -630,6 +630,21 @@ class BulletInFlight:
 # ---------------------------------------------------------------------------
 # Ignition from temperature — engine/06 §4 ("Ignition"), proposal §6 step 4b
 # ---------------------------------------------------------------------------
+#: The O2 mole fraction's denominator floor in :func:`apply_temperature_ignition`
+#: (quantized once per call; the C++ fire's X_N_FLOOR). Named so the device
+#: form's table row reads THIS value (#29 P7.0a, ``unit_tables``).
+IGNITION_X_N_FLOOR = 0.01
+
+
+def ignition_params(cfg):
+    """Slot 9d's two dials as the conductor reads them: ``(o2_frac_ext,
+    ignition_seed)`` from ``[physics.fire]`` (defaults 0.13 / 0.1). THE one
+    read, shared by ``Simulation.step`` and the device tables (#29 P7.0a)."""
+    fire_cfg = getattr(cfg.physics, "fire", None)
+    return (float(getattr(fire_cfg, "o2_frac_ext", 0.13)),
+            float(getattr(fire_cfg, "ignition_seed", 0.1)))
+
+
 def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
     """Ignite flammable tiles whose `temperature` has crossed `ignition_temp`
     AND that have oxygen (engine/06 §4, proposal §6 step 4b).
@@ -786,7 +801,7 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
     # then extinguishes next tick — deterministic either way, not a bit-parity
     # requirement, since ignition is the seed and the fire logistic is the arbiter.)
     from simulation import fire_fixed as _fire_fx
-    X_N_FLOOR = np.int64(_fire_fx.quantize_scalar(0.01))
+    X_N_FLOOR = np.int64(_fire_fx.quantize_scalar(IGNITION_X_N_FLOOR))
     den = np.maximum(sum_tot, X_N_FLOOR)
     X_q16 = (sum_o2 << np.int64(16)) // den                # Q16.16 mole fraction
     x_ext_q = np.int64(_fire_fx.quantize_scalar(float(o2_frac_ext)))

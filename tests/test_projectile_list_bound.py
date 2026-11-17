@@ -2,7 +2,7 @@
 ``Simulation.projectiles`` holds only the grenades still in flight.
 
 Before this patch a detonated ``Projectile`` was flagged and stayed in the
-list for ever (``Simulation._update_projectiles`` skipping it every tick);
+list for ever (``Simulation._update_grenades`` skipping it every tick);
 only the two legacy WEGO paths pruned it (TwoPhaseWEGO's round end,
 OnePhaseWEGO's round boundary). ``ContinuousRealtime.on_tick_end`` (slot 10,
 so ``MatchRules`` too) now drops it, after slot 2 has detonated it and before

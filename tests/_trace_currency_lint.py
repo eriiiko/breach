@@ -27,6 +27,7 @@ The vocabulary:
 """
 from __future__ import annotations
 
+import functools
 import io
 import re
 import tokenize
@@ -106,7 +107,20 @@ def _git_tracked():
 
 def iter_sources(dirs=SCAN_DIRS):
     """Every TRACKED .py under the scanned dirs (vendored trees and caches
-    excluded), as (path, code_lines, raw_lines)."""
+    excluded), as (path, code_lines, raw_lines).
+
+    Read and tokenized ONCE per process per ``dirs`` (#205): the four lints
+    each walked the whole tree, ~6 s apiece; the tree does not change under a
+    test run, and the callers only read the lines."""
+    return iter(_sources(tuple(dirs)))
+
+
+@functools.lru_cache(maxsize=None)
+def _sources(dirs):
+    return tuple(_read_sources(dirs))
+
+
+def _read_sources(dirs):
     tracked = _git_tracked()
     for d in dirs:
         base = ROOT / d

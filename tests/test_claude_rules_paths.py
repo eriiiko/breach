@@ -21,7 +21,7 @@ RULES_DIR = REPO / ".claude" / "rules"
 # Top-level folders and files a path in a rule may start from.
 ROOTS = (
     "src/", "cpp/", "renderer/", "shaders/", "tools/", "tests/", "docs/", "levels/",
-    "assets/", "audio/", "ui/", "art/", "containers/", ".claude/",
+    "assets/", "audio/", "ui/", "art/", "containers/", ".claude/", "agents/",
 )
 ROOT_FILES = {
     "main.py", "config.toml", "config.py", "level_lib.py", "level_loader.py",

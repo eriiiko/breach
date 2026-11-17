@@ -62,6 +62,11 @@ public:
     // The lists (N * cap * width), the counts (N) and the dropped counts (N)
     // to host memory (any may be null); returns once they landed.
     void download(int64_t* recs, int64_t* counts, int64_t* dropped);
+    // #29 P7a.3: SET every env's list from host memory: recs (N * cap * width)
+    // and counts (N, each in 0 .. cap: the caller checks); the dropped and
+    // staging counts back to 0. Returns once the copies landed (the object
+    // tables' upload, moved here so every record list can be staged).
+    void upload(const int64_t* recs, const int64_t* counts);
 
 private:
     int n_env_ = 0, n_units_ = 0, cap_ = 0, width_ = 0, row_cap_ = 0;

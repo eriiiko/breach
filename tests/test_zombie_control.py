@@ -690,9 +690,9 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     at tick 2570) with the same tick_digest. Breaks like the box test, on the real
     level -- and on any change of the bots (then re-pin, the bots_v1 pin of
     tests/test_bots_v1.py staying)."""
-    level = level_loader.load("ship_demo", str(ROOT / "levels"))
+    import _pinned_matches      # the shared play of this match (#205)
     stream = _UnitStream()
-    o = run_match(level, on_tick=stream)
+    o = _pinned_matches.watch("bots", stream)
     got = dict(outcome=o.result.outcome, team=o.result.team,
                ticks=o.result.ticks, field_digest=o.field_digest,
                tick_digest=o.tick_digest, unit_stream=stream.h.hexdigest())

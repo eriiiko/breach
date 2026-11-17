@@ -35,6 +35,7 @@ import breach_physics as bp  # noqa: E402,F401
 
 import level_loader  # noqa: E402
 from run_match import run_match  # noqa: E402
+import _pinned_matches  # noqa: E402
 from simulation import charges, status, unit_schema as us  # noqa: E402
 from simulation.entities.serialize import _pack_i64  # noqa: E402
 from simulation.intents import AimIntent, MoveDirIntent, ThrowIntent  # noqa: E402
@@ -143,12 +144,6 @@ def test_derived_constants_and_round_trips_hold_at_every_tick(which, tmp_path):
     spawn (validated: conversion setting ``u.mass = 0.0`` fails at the first
     converted tick), or an encoding loses a field (validated: ``_enc_throw``
     dropping ``kind`` fails the round-trip)."""
-    if which == "box":
-        from test_zombie_control import _box
-        level, spec = _box(tmp_path, "schema_box"), None
-    else:
-        level = _ship_demo()
-        spec = _bots_v1_spec(level) if which == "bots_v1" else None
     converted = set()
 
     def tick(sim):
@@ -156,7 +151,11 @@ def test_derived_constants_and_round_trips_hold_at_every_tick(which, tmp_path):
             _check_unit(u)
             if u.is_zombie and u.loadout_name is not None:
                 converted.add(u.id)
-    run_match(level, spec, on_tick=tick)
+    if which == "box":
+        from test_zombie_control import _box
+        run_match(_box(tmp_path, "schema_box"), None, on_tick=tick)
+    else:   # the shared play of the pinned match (#205, tests/_pinned_matches)
+        _pinned_matches.watch(which, tick)
     assert len(converted) >= _MIN_CONVERSIONS[which]
 
 
@@ -315,7 +314,10 @@ def test_reference_only_is_not_read_on_the_continuous_match_path(which):
     the integration moves the digests)."""
     level = _ship_demo()
     spec = _bots_v1_spec(level) if which == "bots_v1" else None
-    assert _play(level, spec, True) == _play(level, spec, False)
+    # The untouched side is the shared play of the same match (#205).
+    o = _pinned_matches.pinned_play(which).outcome
+    assert _play(level, spec, True) == (o.result,
+                                        (o.field_digest, o.tick_digest))
 
 
 # ---------------------------------------------------------------------------
@@ -362,9 +364,7 @@ def test_the_shipped_matches_never_reach_a_capacity():
     or more statuses than the block's width, the charge table never fills,
     and nothing was refused. Breaks if a shipped row starts stacking a kind
     past the cap or a match plants past the table."""
-    level = _ship_demo()
     peak = {"stack": 0, "charges": 0}
-    before = sum(status.OVERFLOW_REFUSED.values())
 
     def tick(sim):
         for u in sim.units:
@@ -375,8 +375,8 @@ def test_the_shipped_matches_never_reach_a_capacity():
         peak["charges"] = max(peak["charges"],
                               sum(1 for c in sim.planted_charges if c.live))
         assert sim.charges_refused == 0
-    for spec in (None, _bots_v1_spec(level)):
-        run_match(level, spec, on_tick=tick)
+    for which in _pinned_matches.WHICH:     # the shared plays (#205)
+        _pinned_matches.watch(which, tick)
+        assert _pinned_matches.pinned_play(which).overflow_refused == 0
     assert peak["stack"] <= us.STATUS_STACK_CAP // 2
     assert peak["charges"] < us.CHARGE_CAPACITY
-    assert sum(status.OVERFLOW_REFUSED.values()) == before
