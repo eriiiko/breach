@@ -232,8 +232,8 @@ def _fault_learner_ignores_first(monkeypatch):
     """The learner ignores ``first`` inside a stretch."""
     real = SoldierNet.forward_sequence
     monkeypatch.setattr(SoldierNet, "forward_sequence",
-                        lambda self, obs, state=None, first=None:
-                        real(self, obs, state, None))
+                        lambda self, obs, state=None, first=None, **kw:
+                        real(self, obs, state, None, **kw))
 
 
 def _fault_cut_one_off(monkeypatch):

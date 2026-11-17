@@ -483,12 +483,16 @@ class SoldierNet(nn.Module):
         core, new = self._step_memory(joined, state, first)
         return self._outputs(core, ents), new
 
-    def forward_sequence(self, obs: dict, state=None, first=None):
+    def forward_sequence(self, obs: dict, state=None, first=None,
+                         upto=None):
         """A stretch of ``L`` decisions for ``N`` rows: ``obs`` ``(L, N,
         ...)``, ``state`` the memory at its start, ``first`` ``(L, N)``.
         The memory is stepped exactly as :meth:`forward` steps it. Returns
         ``(HeadOutputs`` over the ``L * N`` rows in ``(L, N)`` order, the
-        memory after the last step)."""
+        memory after the last step) -- or, with ``upto`` ``(N,)`` (each 1 to
+        ``L``), each row's memory after its step ``upto - 1`` (a stretch
+        shorter than ``L``, padded after its end: later steps never reach
+        an earlier output)."""
         L, n = obs["vector"].shape[:2]
         joined, ents = self._read(obs, 2)
         if self.memory is None:
@@ -497,12 +501,16 @@ class SoldierNet(nn.Module):
             return self._outputs(joined, ents), None
         joined = joined.view(L, n, -1)
         outs = []
+        end = None
         for t in range(L):
             h, state = self._step_memory(joined[t], state,
                                          None if first is None else first[t])
             outs.append(h)
+            if upto is not None:
+                end = state if end is None else torch.where(
+                    (upto > t).unsqueeze(-1), state, end)
         core = torch.stack(outs).reshape(L * n, -1)
-        return self._outputs(core, ents), state
+        return self._outputs(core, ents), (state if upto is None else end)
 
 
 # ---------------------------------------------------------------------------
