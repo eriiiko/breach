@@ -31,6 +31,8 @@ lump = 512
 step_size = 3e-4
 variety = 0.01
 max_grad_norm = 0.5
+stretch = 16
+value_first_rounds = 0
 [weights]
 outcome = 1.0
 own = 1.0
@@ -77,6 +79,9 @@ def test_every_settings_field_is_a_key_and_a_value_reaches_it():
         if f.name == "piece":
             raw["train"]["piece"] = 4096
             new = 4096
+        if f.name == "value_first_rounds":     # its default 0 doubles to 0
+            raw["train"][f.name] = new = 5
+        assert new != v, f"{f.name}: the written value must differ"
         s, _ = parse(raw)
         assert getattr(s, f.name) == new, f.name
     raw = _raw()
