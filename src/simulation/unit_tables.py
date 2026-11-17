@@ -1818,9 +1818,9 @@ _HORDE_ROWS: tuple = (
              "unit_traits.strike_damage_q's bite base: quantize_scalar([zombie] "
              "melee_damage) (x the STRIKE hook <= 2^19 < 2^43)"),
     TableRow("zombie_shamble_ticks", 1, lambda src: int(src.sim.speed_table.zombie_shamble_ticks),  # traits-class: the class cadence; the kernel applies WALK through default_speed_q
-             1, 1 << 29, "SpeedTable.zombie_shamble_ticks (ticks per tile)"),
+             1, 1 << 29, "SpeedTable.zombie_shamble_ticks (ticks per tile)"),  # traits-class: the class cadence (WALK applied in default_speed_q)
     TableRow("zombie_sprint_ticks", 1, lambda src: int(src.sim.speed_table.zombie_sprint_ticks),  # traits-class: the class cadence; the kernel applies SPRINT through default_speed_q
-             1, 1 << 29, "SpeedTable.zombie_sprint_ticks (ticks per tile)"),
+             1, 1 << 29, "SpeedTable.zombie_sprint_ticks (ticks per tile)"),  # traits-class: the class cadence (SPRINT applied in default_speed_q)
 )
 ROWS = ROWS + _HORDE_ROWS
 
