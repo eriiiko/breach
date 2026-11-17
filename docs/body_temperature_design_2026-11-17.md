@@ -1,8 +1,9 @@
 # Body temperature and stress: two slow states of a unit
 
-**Status: PROPOSED (version 4, the same evening: stress and heart rate added,
-section 2b), 2026-11-17. Nothing is built from this page until Erik has
-read it.** Direction agreed in chat the same day (Erik: "body temp if it's
+**Status: AGREED (version 4), 2026-11-17.** Erik, on the summary of section
+2b and the whole page: "Yes it's great!" (earlier the same evening, on
+stress as a readout only: "readout in first patch is good, we wait with
+effects"). Direction agreed in chat the same day (Erik: "body temp if it's
 doable is exactly what I want"; "let's balance together later"; the 60 °C
 limit may move). Raised by rung 2c's finding on #215: one frag beside a marine
 dealt 30 blast damage and 576 heat damage in one tick.
