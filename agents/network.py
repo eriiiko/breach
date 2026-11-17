@@ -332,6 +332,12 @@ class HeadOutputs:
     def n_rows(self) -> int:
         return self.core.shape[0]
 
+    def take(self, idx) -> "HeadOutputs":
+        """The outputs of the rows ``idx`` only (the gradient flows through
+        the selection): the learner replays whole stretches and evaluates
+        the policy rows among them."""
+        return HeadOutputs(self.net, self.core[idx], self.aim_keys[idx])
+
     def _aim_vec(self, aim):
         idx = aim.long().view(-1, 1, 1).expand(-1, 1, self.aim_keys.shape[-1])
         return self.aim_keys.gather(1, idx)[:, 0]

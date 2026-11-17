@@ -395,3 +395,14 @@ are that session:
   detached (`Start-Process`), with a background waiter on its pid, so an
   editor restart cannot kill it; (6) keep a run's folder outside the scratch
   folder (`C:/Users/steen/breach_runs/`).
+- 2026-11-17 -- 2d.1 (the memory path) built on `192-2d-trainer-rest`:
+  stretches, the stored memory, the live check's second clause (catches all
+  four memory faults; the first clause barely does on a fresh network), the
+  value-first rounds, `good_start` (gate held; neither no value-first rounds
+  nor ten times the variety wore the start down). FINDING for the lead
+  before 2d.2: `recall12` is not learnt with the design's numbers (even a
+  gap of 4 reaches 0.11 of the way in 300 rounds; the cue's mark on the
+  fresh memory is small and fades 0.6 x a decision), so its three tests are
+  skipped by name; decide the cell's start / step size / farm before any
+  run with the memory on. Bit-identity without memory is a machine-keyed
+  hash in `agents/tests/test_memory.py`.
