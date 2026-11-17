@@ -6,9 +6,13 @@ paths:
   - "cpp/src/swarm*"
   - "tools/gen_swarm_layout.py"
   - "tests/*swarm*.py"
+  - "src/simulation/entities/zones.py"
+  - "renderer/swarm_dots.py"
+  - "shaders/swarm_dots.*"
+  - "tools/gen_larva_studio.py"
 ---
 
-# Swarm: the store of swarm units, its digest, its facade, its table, its heading
+# Swarm: the store of swarm units, its digest, its facade, its table, its heading, the brood, the dot view
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
@@ -23,6 +27,7 @@ two sides meet only through FIELDS.
 - A species is a `SWARM_SPECIES` entry + a species-table row + a kernel: never a class, never a per-species if-chain. A new column is a `ROSTER` row + a `SWARM_SECT` version bump, never a stray gmap array or a `DIGEST_FIELDS` row.
 - Stable slots: never compaction, never atomic-ticket spawns (thread order would decide a slot). `unit_id` is identity; the slot is not, and a freed slot is the all-zero form.
 - Every random number a swarm law draws is a keyed `sim.draws` block with its own `rng_salts.Salt` member (the Match draws row): never a second salt enum, a second key derivation from the seed or a second tick clock (Erik, 2026-11-14: one source of draws).
+- A new `rng_salts.Salt` member changes in the same patch: `tools/gen_unit_layout.py --write` (the device draw layout carries every salt), `tools/gen_swarm_layout.py --write` where a swarm kernel reads it, and a rebuild of both modules. Incident (the #63 merge of main 824405bd, 2026-11-17): the swarm's TUMB / WALT salts without the regenerated `cpp/src/unit_draws_layout.h` made `test_cuda_unit_kit` refuse the stale fingerprint.
 - A swarm law whose result depends on which unit came first (eating a corpse or a wall) is an effect KIND of the per-env serial applier (`src/simulation/applier.py`), never a second walker or a queue of its own; anything that changes a tile's material calls the device topology seam (`cpp/src/cuda_topology.cuh`).
 
 ## Swarm digest section
@@ -67,3 +72,15 @@ two sides meet only through FIELDS.
 ## Swarm heading law
 - Every heading write, kit-derived or drawn, passes `wrap_heading_q16`. Its period is `2·PI_Q16`, deliberately NOT `philox32.TWO_PI_Q16` (the draw range): draw, then wrap; never unify the two constants.
 - A device twin floor-mods in int64 and is identity-tested against the Python wrap over the whole input range.
+
+## Brood entity
+- Where swarm units start is a `swarm_brood` zone (zone_id, species, count) in the zone paint namespace; its randomness is the match draws (`Salt.SWARM_BROOD`), never a seed column (Erik: one source of draws).
+- A brood keeps no runtime state and has no device table; it passes `unit_kernels.EntityExport` as a load constant. If a brood ever ticks (nests, births), it gets a table and an entity-row function in that patch.
+
+## Brood spawn
+- `swarm_brood.spawn_broods` is called ONCE, in `Simulation._reset_internal` after the door stamps with the clock at tick 0: every match path (the game, `tools/run_match.py`, `MatchSession`, each batched env's reset) constructs there. Never a second spawn site; a brood-free level draws nothing.
+- The key is (seed, brood ordinal, k), draw `4 k + j`: a brood's scatter depends on nothing else in the level. Every check (no free tile, unknown species, `SwarmFull` over the broods' total) runs before the first write; the level lint (`tools/level_airtight.py`) prints the same `brood_problems` list.
+
+## Swarm dot view
+- Render-only: reads the store's host mirror and `SwarmUnitDiedEvent`, never the freed slot; nothing under `src/` reads it or `[debug] swarm_dots` (`tests/test_swarm_dots.py`). Switched by the config row, never a key.
+- Linear HDR, unlit, premultiplied, drawn once after the water and before the floor smoke; its vertex data is numpy in one pass (no Python loop per unit in the frame path). Its flecks are render state (capped, sim-clock fade), never a decal layer: corpses are the world decal layer's when it exists (engine/17 section 9).

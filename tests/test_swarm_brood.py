@@ -319,3 +319,26 @@ def test_a_batched_envs_reset_respawns_from_its_own_draws(tmp_path):
             assert r.seed != first
             assert np.array_equal(_units(r.session.sim), lone(r.seed))
     assert not np.array_equal(stores[0], stores[1])
+
+
+def test_the_tile_inspector_counts_the_larvae_on_its_tile(tmp_path):
+    """Property: ``larvae on this tile`` is the number of live units whose
+    position lies in the tile, through the inspector's one seam. Breaks if
+    the count reads empty slots, another tile or the wrong axis."""
+    from renderer.hover_readout import pack_hover_readout
+    lv = _write_level(tmp_path, "insp", broods=TWO)
+    sim = _sim(lv)
+    u = _units(sim)
+    tx, ty = u[:, 1] >> swarm_fixed.FP_SHIFT, u[:, 2] >> swarm_fixed.FP_SHIFT
+    (x, y), n = max(((int(a), int(b)), int(((tx == a) & (ty == b)).sum()))
+                    for a, b in zip(tx, ty))
+    assert n >= 1
+    assert swarm.count_on_tile(sim.gmap, "larva", x, y) == n
+    assert swarm.count_on_tile(sim.gmap, "larva", 0, 0) == 0
+    r = pack_hover_readout(sim.gmap, x, y, lambda t: t + 293.0)
+    assert r.larvae == n and f"larvae on this tile: {n}" in r.lines
+    sim.swarm.reclaim("larva", np.flatnonzero(
+        (swarm.swarm_column(sim.gmap, "larva", "pos_x") >> 16 == x)
+        & (swarm.swarm_column(sim.gmap, "larva", "pos_y") >> 16 == y)
+        & (swarm.swarm_column(sim.gmap, "larva", "valid") != 0)))
+    assert swarm.count_on_tile(sim.gmap, "larva", x, y) == 0
