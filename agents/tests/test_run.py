@@ -36,9 +36,25 @@ LINE_FIELDS = (
     "masked_choices", "seconds", "card", "host", "stopped")
 
 
-def _trainer(rounds=4):
+class Levelled(StandIn):
+    """The stand-in with a level per match: episode k of every env is
+    shown as level ``k % 3`` (the game's ``info["level"]`` after a step is
+    already the NEXT match's)."""
+
+    def reset(self, mask=None):
+        obs, info = super().reset(mask)
+        info["level"] = self.episode % 3
+        return obs, info
+
+    def step(self, actions):
+        out = super().step(actions)
+        out[-1]["level"] = self.episode % 3
+        return out
+
+
+def _trainer(rounds=4, cls=StandIn):
     task = ScriptTask(MATCH)
-    env = StandIn(task, N, seed=5)
+    env = cls(task, N, seed=5)
     task.bind(env.sizes)
     soldier, value = networks(env, 0)
     return Trainer(env, soldier, value,
@@ -85,10 +101,12 @@ def test_the_ended_matches_carry_all_the_pay_and_nothing_twice():
     either in exactly one ended match's reward (the team's rows summed over
     the whole match, rounds before included) or still open in a match that
     has not ended; each ended match is counted once per env and team, on
-    the level it was played on. Breaks when the per-match sums are not
-    reset at a match's end, are keyed by the wrong rows, or the level is
-    read after the reset (the next match's)."""
-    tr = _trainer()
+    the level it was played on (the k-th match of an env ended is level
+    ``k % 3`` here). Breaks when the per-match sums are not reset at a
+    match's end, are keyed by the wrong rows, or the level is read after
+    the reset (the next match's)."""
+    tr = _trainer(cls=Levelled)
+    seen = {}
     stored = np.zeros(len(REWARD_GROUPS))
     in_ended = np.zeros(len(REWARD_GROUPS))
     n_ended = 0
@@ -98,7 +116,9 @@ def test_the_ended_matches_carry_all_the_pay_and_nothing_twice():
         stored += b.reward.sum(axis=(0, 1))
         for m in tr.collector.log["ended"]:
             in_ended += m.reward
-            assert m.level == 0 and m.team in tr.rows.teams
+            k = seen.get((m.env, m.team), 0)
+            seen[(m.env, m.team)] = k + 1
+            assert m.level == k % 3 and m.team in tr.rows.teams
             assert m.outcome in OUTCOMES
         n_ended += len(tr.collector.log["ended"])
     still = tr.collector._paid.sum(axis=0)
