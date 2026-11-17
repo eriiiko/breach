@@ -143,6 +143,30 @@ class MatchDraws:
         """The draw ``(this tick, index, salt, ident)``."""
         return Draw(self, self.tick, index, Salt(salt), ident)
 
+    def words_at(self, salt, ident, indices):
+        """The first words of the draws ``(this tick, index, salt, ident)``
+        for every ``index`` of ``indices`` (a uint32 array, in that order):
+        the same blocks :meth:`at` gives one by one, formed in one vectorised
+        Philox pass (``philox32_4x32_10_np``) for a site that takes thousands
+        of draws at once (arc #63 P4: a brood's load-time scatter). Counted in
+        :attr:`drawn` like any word."""
+        import numpy as np
+        from simulation.philox32 import philox32_4x32_10_np
+        idx = np.asarray(indices)
+        if idx.dtype != np.uint32 or idx.ndim != 1:
+            raise TypeError(f"draws.words_at: indices must be a 1-D uint32 "
+                            f"array, got {idx.dtype} {idx.shape}")
+        n = idx.shape[0]
+        ctr = np.empty((n, 4), dtype=np.uint32)
+        ctr[:, 0] = self.tick & _M32
+        ctr[:, 1] = idx
+        ctr[:, 2] = int(Salt(salt))
+        ctr[:, 3] = _id_word(ident)
+        key = np.empty((n, 2), dtype=np.uint32)
+        key[:, 0], key[:, 1] = self.key
+        self.drawn += n
+        return philox32_4x32_10_np(ctr, key)[:, 0]
+
     def next(self, salt, ident) -> Draw:
         """The NEXT draw of site (salt, ident) this tick: index 0, 1, ... in
         the order that site asks (local to the site)."""

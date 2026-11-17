@@ -26,6 +26,10 @@ Members (values are their four letters as one big-endian word):
   magnitude, keyed on the swarm unit's id (slot 7's swarm stage);
 * ``SWARM_WALL_TURN`` ("WALT") -- a blocked larva's wall-turn block (P3
   §3.5 L6): the turn side and magnitude.
+* ``SWARM_BROOD`` ("BROD") -- a brood's load-time scatter (arc #63 P4,
+  ``simulation/swarm_brood.py``): per unit k of the brood, the tile, the
+  position inside it and the heading, keyed on the brood's entity ordinal at
+  tick 0.
 """
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ class Salt(IntEnum):
     FIELD_NOISE = 0x4E4F4953    # "NOIS"
     SWARM_TUMBLE = 0x54554D42   # "TUMB" (arc #63 P3)
     SWARM_WALL_TURN = 0x57414C54  # "WALT" (arc #63 P3)
+    SWARM_BROOD = 0x42524F44    # "BROD" (arc #63 P4)
 
 
 __all__ = ["Salt"]

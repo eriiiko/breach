@@ -683,9 +683,10 @@ def _parse_water_table(raw: dict, base: Path, toml_path,
 # the mask; contrast [water], whose depth_map key predates the pattern).
 ZONES_FILENAME = "zones.npy"
 
-# The two zone classes, ever (editor design §5). One paint-id namespace
-# across both: a breach_site and an extraction_zone may not share a zone_id.
-ZONE_CLASSES = ("breach_site", "extraction_zone")
+# The zone classes (editor design §5's two, plus arc #63 P4's swarm_brood,
+# where swarm units start). One paint-id namespace across all of them: no two
+# zone instances of any class may share a zone_id.
+ZONE_CLASSES = ("breach_site", "extraction_zone", "swarm_brood")
 
 
 def _parse_zones_grid(base: Path, tilemap: np.ndarray):
