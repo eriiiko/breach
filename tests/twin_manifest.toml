@@ -113,6 +113,7 @@ build = [
 "src/simulation/speeds.py" = "setup only: the [speeds] door and its per-map quantization (Simulation.speed_table; the table is an upload with slot 3 and the horde, Class T, P6 / P7d)"
 "src/simulation/species.py" = "setup only: the species table (Class T upload, P8b)"
 "src/simulation/stats.py" = "the bots' controller side (outside step), never a twin"
+"src/simulation/swarm_brood.py" = "setup only: the brood spawn at load, before tick 0 (arc #63 P4: Simulation._reset_internal scatters the broods into the swarm store from the match draws); never in a tick, so never a twin (the corpus carries no brood)"
 "src/simulation/swarm_larva.py" = "setup only on the corpus: the larva rules run at GameMap construction and the reload seam (arc #63 P3); the corpus carries no larvae, and the law is C++ (the swarm_larva twin)"
 "src/simulation/team_picture.py" = "the team picture (#195 1d, conductor slot 11, a match only): host-side match memory, never synced or hashed; the device's own arrays at the residency arc's later stage (RL agent design 9)"
 "src/simulation/timed_charge_system.py" = "setup only on the corpus (no charge): slot 9e(d')'s device form is the applier's TIMED_CHARGES stage (cpp/src/cuda_unit_hazards.cuh, #29 P6b.4), traced by no corpus tick: tests/cuda_unit_hazards_check.py is the guard"
