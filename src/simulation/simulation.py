@@ -70,7 +70,7 @@ from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition, ignition_params,
     process_shooting, process_sprays, process_melee_intents,
-    Projectile,
+    Projectile, detonation_tile,
     mag_settle, reload_begin,
 )
 # Simultaneous resolution of an attack slot (#169): phase A records, phase B
@@ -2525,33 +2525,45 @@ class Simulation:
     def _update_grenades(self) -> None:
         """Slot 2: the grenades in flight (``self.projectiles``), BEFORE the
         rounds (slot 2', :meth:`_update_rounds`) and before movement
-        (mechanics/03 §2). Spawn order; a fuse-out detonates at once through
-        the payload executor, so each sees the previous one's blast."""
+        (mechanics/03 §2). Spawn order, in two passes (#215): every grenade
+        FLIES first (``Projectile.fly``: its leg, the wall walk, a bounce;
+        a fuse-out's rest of the flight resolved at once by ``settle``),
+        all against the map as the slot found it, and each fuse-out's tile
+        decided there (``combat.detonation_tile``: where it rests); THEN the
+        fuse-outs detonate in list order, each at once through the payload
+        executor, so each sees the previous one's blast. (Before #215 the
+        flight asked no wall, so the two passes are the one loop's results
+        for every throw.)"""
+        hand = self.weapons_tables.weapons.by_name["hand_grenade"]
+        rq, bmax = int(hand.bounce_restitution_q), int(hand.bounce_max)
+        fused = []
         for proj in self.projectiles:
             if proj.detonated:
                 continue
-            proj.update_position(self.tick)
+            proj.fly(self.gmap, self.tick, rq, bmax)
             if self.tick >= proj.get_detonate_tick():
+                proj.settle(self.gmap, self.tick, rq, bmax)
                 proj.detonated = True
-                if proj.proj_type == ORDER_GRENADE:
-                    fy, fx = proj.target_tile()           # #29 P3e: integers
-                    # W3: the LOBBED detonation goes through the payload
-                    # EXECUTOR via the projectile's round (hand_grenade ->
-                    # proj.ammo_name -> its payload row). The default
-                    # grenade_frag -> payloads.frag_standard sequence is
-                    # byte-identical to the pre-W3 inline triple (the
-                    # replica gate); gas grenades ride the same call with
-                    # their rows. Blast damage (the wave_p coupling row,
-                    # exchange.COUPLING_TABLE[1]) stays a detonation-site
-                    # invocation inside the executor.
-                    payload = self.weapons_tables.payload_for_ammo(
-                        proj.ammo_name)
-                    execute_payload(
-                        self.gmap, self.edit_queue, self.units, fy, fx,
-                        payload, self.draws, events=self.tick_events,
-                        kind="grenade", owner_id=proj.owner_id,
-                        approach=(unit_fixed.shr_trunc(proj.start_y_q),
-                                  unit_fixed.shr_trunc(proj.start_x_q)))
+                fused.append((proj, detonation_tile(
+                    self.gmap, proj.pos_x_q, proj.pos_y_q)))
+        for proj, (fy, fx) in fused:
+            if proj.proj_type != ORDER_GRENADE:
+                continue
+            # W3: the LOBBED detonation goes through the payload EXECUTOR
+            # via the projectile's round (hand_grenade -> proj.ammo_name ->
+            # its payload row). The default grenade_frag ->
+            # payloads.frag_standard sequence is byte-identical to the
+            # pre-W3 inline triple (the replica gate); gas grenades ride the
+            # same call with their rows. Blast damage (the wave_p coupling
+            # row, exchange.COUPLING_TABLE[1]) stays a detonation-site
+            # invocation inside the executor. #215: the approach is the
+            # current leg's start (the thrower's tile when it never bounced).
+            payload = self.weapons_tables.payload_for_ammo(proj.ammo_name)
+            execute_payload(
+                self.gmap, self.edit_queue, self.units, fy, fx,
+                payload, self.draws, events=self.tick_events,
+                kind="grenade", owner_id=proj.owner_id,
+                approach=proj.approach_tile())
 
     def _update_rounds(self) -> None:
         """Slot 2': the in-flight kinetic rounds (``self.bullets``; the W2

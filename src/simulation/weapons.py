@@ -113,7 +113,7 @@ class WeaponDef:
                  status_kind="", status_seconds=0.0,
                  range_m=0.0, default_ammo="", throw_windup_seconds=0.0,
                  melee_push_ns=0.0, melee_arc_half_deg=60.0,
-                 plant_seconds=0.0):
+                 plant_seconds=0.0, bounce_restitution=0.0, bounce_max=0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -172,6 +172,14 @@ class WeaponDef:
         # exactly the pre-G3p throw).
         self.throw_windup_seconds = throw_windup_seconds
         self.throw_windup_ticks = 0             # derived by WeaponTable (G3p)
+        # The grenade's BOUNCE (#215): a leg that meets a wall is mirrored
+        # in it, its length the distance left times ``bounce_restitution``
+        # (in 0..1; quantized ONCE to ``bounce_restitution_q`` by
+        # WeaponTable), at most ``bounce_max`` times. Read by
+        # ``Simulation._update_grenades`` off the hand_grenade row.
+        self.bounce_restitution = bounce_restitution
+        self.bounce_restitution_q = 0           # derived by WeaponTable (#215)
+        self.bounce_max = bounce_max
         self.plant_seconds = plant_seconds
         self.plant_ticks = 0                    # derived by WeaponTable (#193)
         # SPRAY extras (mechanics/03 §5, W4). CONVENTION OF RECORD: the
@@ -511,6 +519,8 @@ class WeaponTable:
                 melee_push_ns=col("melee_push_ns", 0.0),
                 melee_arc_half_deg=col("melee_arc_half_deg", 60.0),
                 plant_seconds=col("plant_seconds", 0.0),
+                bounce_restitution=col("bounce_restitution", 0.0),
+                bounce_max=col("bounce_max", 0),
             )
             # The melee verb's columns (G6p): the push a finite number >= 0,
             # the arc in (0, 180] degrees; the arc quantized ONCE to Q16
@@ -558,6 +568,21 @@ class WeaponTable:
                     f"finite number >= 0 (seconds; 0 = an instant plant)")
             w.plant_ticks = (ticks_from_seconds(_pl, ticks_per_second)
                              if _pl > 0 else 0)
+            # The grenade's bounce (#215): the restitution a number in 0..1,
+            # quantized ONCE to Q16 (the flight's currency); the bounce count
+            # an integer >= 0.
+            _br = w.bounce_restitution
+            if (isinstance(_br, bool) or not isinstance(_br, (int, float))
+                    or not 0.0 <= _br <= 1.0):
+                raise ValueError(
+                    f"weapons.{name}.bounce_restitution {_br!r} must be a "
+                    f"number in 0..1 (0 = drops at the wall, 1 = a mirror)")
+            w.bounce_restitution_q = _uf.quantize_scalar(float(_br))  # p3e-door
+            _bm = w.bounce_max
+            if isinstance(_bm, bool) or not isinstance(_bm, int) or _bm < 0:
+                raise ValueError(
+                    f"weapons.{name}.bounce_max {_bm!r} must be an integer "
+                    f">= 0 (the bounces before a wall stops the grenade)")
             # METER-BASED RANGE (W6, Erik's 2026-07-07 decision): range_m is
             # the authored physical reach; range_tiles derives ONCE here at
             # the level's tile size (quantize-once, door 2; the divide is

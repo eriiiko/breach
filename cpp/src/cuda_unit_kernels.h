@@ -263,10 +263,12 @@ struct ObjectSlotCounts {
 // `charges`, one thread per env in request-list order (after unit_verbs).
 void unit_table_appends(const UnitTablesDevice& tables, UnitRecordList& requests,
                         ObjectTable& grenades, ObjectTable& charges, const ObjectSlotCounts& out);
-// Slot 2's grenades: the flight per row (wide), the fuse-outs' PAYLOAD records
-// in row order. `ticks` (N,) each env's sim.tick.
+// Slot 2's grenades: the flight per row (wide; #215 the wall walk and the
+// bounces over `solid`, a DEVICE (N, h, w) bool plane as the slot found it),
+// the fuse-outs' PAYLOAD records in row order. `ticks` (N,) each env's sim.tick.
 void unit_grenades(const UnitTablesDevice& tables, ObjectTable& grenades, UnitRecordList& effects,
-                   const int64_t* ticks, const ObjectSlotCounts& out);
+                   const int64_t* ticks, std::uintptr_t solid, int h, int w,
+                   const ObjectSlotCounts& out);
 // Slot 9e(d') charges.tick: the due charges' PAYLOAD records in row order,
 // then the table's stable compaction.
 void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,

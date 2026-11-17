@@ -1204,19 +1204,33 @@ def table_appends(store, requests, grenades, charges) -> np.ndarray:
         (grenades, charges))
 
 
-def grenades(store, table, dev_applier, ticks) -> np.ndarray:
+#: The planes slot 2's grenades read (#215: the wall walk's), by GameMap name.
+GRENADE_FIELDS = (("solid", np.bool_),)
+
+
+def grenades(store, table, dev_applier, ticks, fields: dict) -> np.ndarray:
     """Slot 2's grenades (``Simulation._update_grenades``): every live row
-    flies (``Projectile.update_position``, wide), a row whose fuse ran out is
-    marked detonated and -- its proj_type ORDER_GRENADE -- its detonation
-    APPENDED to ``dev_applier``'s effect list as a PAYLOAD record
-    (``execute_payload``'s call, ``applier.record_of``'s fields), in row
+    flies (``Projectile.fly``, wide: #215 the current leg, the wall walk
+    over ``fields["solid"]`` -- a DEVICE ``(N, h, w)`` bool array, the plane
+    as the slot found it -- and a bounce; on a fuse-out ``settle``), a row
+    whose fuse ran out is marked detonated and -- its proj_type
+    ORDER_GRENADE -- its detonation APPENDED to ``dev_applier``'s effect list
+    as a PAYLOAD record (``execute_payload``'s call at
+    ``combat.detonation_tile``, ``applier.record_of``'s fields), in row
     order after what the list holds. ``ticks`` ``(N,)`` each env's
     ``sim.tick``. Returns the rows changed per env; refuses a fault, a WEGO
     grenade (:class:`ObjectSlotRefused`) and an effect-list overflow."""
     _check_tables("grenades", store, table)
+    _check_planes("grenades", store, fields, dict(GRENADE_FIELDS))
+    s = fields["solid"]
+    if s.ndim != 3 or not s.flags.c_contiguous:
+        raise ValueError("unit kernel grenades: solid must be a C-contiguous "
+                         "(N, h, w) array")
+    _, h, w = (int(x) for x in s.shape)
     t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
     return _object_done("grenades", store.bp.unit_grenades(
-        store.tables, table.buffer, dev_applier.buffer, t))
+        store.tables, table.buffer, dev_applier.buffer, t, int(s.data.ptr),
+        h, w))
 
 
 def charges_tick(store, table, dev_applier, ticks) -> np.ndarray:
@@ -1238,7 +1252,7 @@ def prune_grenades(table) -> None:
 
 
 __all__ += ["ObjectSlotRefused", "refuse_wego", "table_appends", "grenades",
-            "charges_tick", "prune_grenades"]
+            "GRENADE_FIELDS", "charges_tick", "prune_grenades"]
 
 
 # ---------------------------------------------------------------------------

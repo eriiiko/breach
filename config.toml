@@ -3543,6 +3543,15 @@ fuse_default_seconds = 1.0
 # the facing the unit has then. Quantized once to ticks (0 = the same-tick
 # throw). PLACEHOLDER: Erik tunes at the play test.
 throw_windup_seconds = 0.3
+# #215 (Erik, 2026-11-17: "grenades should not pass through walls"): a thrown
+# grenade's flight is a chain of straight legs; a leg that enters a tile the
+# rounds' march stops on (solid, or off the grid) ends at the wall and a
+# MIRRORED leg starts there, its length the distance the old leg had left
+# times bounce_restitution (0 = it drops at the wall, 1 = a mirror; Erik asked
+# for something in between, a tuning dial). After bounce_max bounces the next
+# wall stops it where it hits. Refused outside 0..1 / below 0 at load.
+bounce_restitution = 0.4
+bounce_max = 4
 mass_kg = 0.4
 loudness = 0.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 

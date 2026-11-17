@@ -1105,14 +1105,18 @@ PYBIND11_MODULE(breach_physics, m) {
               "accepted plants to the charge table, in request-list order.");
         m.def("unit_grenades",
               [counts, check_ticks](const UnitTablesDevice& t, ObjectTable& gr, FieldApplier& a,
-                                    py::array_t<int64_t, py::array::c_style> ticks) {
+                                    py::array_t<int64_t, py::array::c_style> ticks,
+                                    std::uintptr_t solid, int h, int w) {
                   check_ticks(ticks, t.n_env(), "unit_grenades");
                   ObjectSlotCounts c;
                   py::tuple out = counts(t.n_env(), c);
-                  breach_cuda::unit_grenades(t, gr, a.list(), ticks.data(), c);
+                  breach_cuda::unit_grenades(t, gr, a.list(), ticks.data(), solid, h, w, c);
                   return out;
               }, py::arg("tables"), py::arg("grenades"), py::arg("effects"), py::arg("ticks"),
-              "#29 P7b: slot 2's grenades -- the flight, the fuse-outs as PAYLOAD records.");
+              py::arg("solid"), py::arg("h"), py::arg("w"),
+              "#29 P7b: slot 2's grenades -- the flight (#215: the wall walk and the "
+              "bounces over the device (N, h, w) solid plane), the fuse-outs as PAYLOAD "
+              "records.");
         m.def("unit_charges_tick",
               [counts, check_ticks](const UnitTablesDevice& t, ObjectTable& ch, FieldApplier& a,
                                     py::array_t<int64_t, py::array::c_style> ticks) {

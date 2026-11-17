@@ -944,6 +944,11 @@ GRENADE_SCHEMA: tuple[TableColumn, ...] = (
     TableColumn("thrown_tick", _enc_int),
     TableColumn("ammo_name", _AM_E, decode=_AM_D),
     TableColumn("travel_speed_q", _enc_int),
+    # #215: the flight is a chain of legs -- start_* / target_* are the
+    # CURRENT leg (the throw's until the first bounce), leg_tick its first
+    # tick, bounces the legs a wall has started so far.
+    TableColumn("leg_tick", _enc_int),
+    TableColumn("bounces", _enc_int),
     # THE LIVE COLUMN, encoded: 1 while the grenade flies, 0 once slot 2
     # detonated it (the host's ``detonated``); the slot-10 prune is the
     # table's stable compaction over it.
@@ -966,6 +971,11 @@ def _build_grenade(attrs: dict):
                          f"{attrs['travel_speed_q']} is not its round's "
                          f"({p.travel_speed_q}, {attrs['ammo_name']!r})")
     p.pos_x_q, p.pos_y_q = attrs["pos_x_q"], attrs["pos_y_q"]
+    # #215: a bounced leg's start / target are no float views of the throw
+    # (exact Q16 either way, but set from the row's own integers)
+    p.start_x_q, p.start_y_q = attrs["start_x_q"], attrs["start_y_q"]
+    p.target_x_q, p.target_y_q = attrs["target_x_q"], attrs["target_y_q"]
+    p.leg_tick, p.bounces = attrs["leg_tick"], attrs["bounces"]
     p.detonated = attrs["detonated"]
     return p
 

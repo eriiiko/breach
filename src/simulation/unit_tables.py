@@ -789,6 +789,23 @@ def _order_grenade(src):
     return int(ORDER_GRENADE)
 
 
+def _hand_row(src):
+    return src.sim.weapons_tables.weapons.by_name["hand_grenade"]
+
+
+def _bounce_restitution_q(src):
+    return int(_hand_row(src).bounce_restitution_q)
+
+
+def _bounce_max(src):
+    return int(_hand_row(src).bounce_max)
+
+
+def _bounce_min_q(src):
+    from simulation import combat
+    return int(combat.BOUNCE_MIN_Q)
+
+
 def _clock_tps(src):
     from config import CFG
     return int(CFG.clock.ticks_per_second)
@@ -802,6 +819,15 @@ _OBJECT_ROWS: tuple = (
              "combat._FLIGHT_EPS_Q: a flight shorter than this lands at once"),
     TableRow("order_grenade", 1, _order_grenade, 0, 1 << 20,
              "orders.ORDER_GRENADE: the proj_type whose fuse-out detonates"),
+    TableRow("grenade_bounce_restitution_q", 1, _bounce_restitution_q, 0, 1 << 16,
+             "#215: [weapons.hand_grenade] bounce_restitution_q (Q16, 0..1) as "
+             "Simulation._update_grenades reads it off the sim's own row"),
+    TableRow("grenade_bounce_max", 1, _bounce_max, 0, 64,
+             "#215: [weapons.hand_grenade] bounce_max; <= 64 bounds the "
+             "kernel's settle loop"),
+    TableRow("grenade_bounce_min_q", 1, _bounce_min_q, 0, 1 << 20,
+             "#215: combat.BOUNCE_MIN_Q: a bounced leg shorter than this is "
+             "not flown (the grenade rests)"),
     TableRow("hand_grenade_ammo_row", _n_hand_kinds, _hand_ammo_rows, 0, 1 << 20,
              "per throw kind (hand_grenade_rows order): its [ammo.*] row's "
              "index in the unit schema's ammo table (a grenade's ammo_name)"),
