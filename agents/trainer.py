@@ -113,9 +113,12 @@ class Trainer:
         _sync(self.learner.device)
         t2 = time.perf_counter()
         self.collector.set_weights(self.learner.weights())
+        _sync(self.learner.device)
+        t3 = time.perf_counter()
         self.rounds += 1
         stats.update(round=self.rounds, collect_seconds=t1 - t0,
-                     learn_seconds=t2 - t1,
+                     learn_seconds=t2 - t1, handover_seconds=t3 - t2,
+                     round_seconds=t3 - t0,
                      decisions=int((batch.valid != 0).sum()))
         return stats
 

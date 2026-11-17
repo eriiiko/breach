@@ -11,9 +11,12 @@ name to the game's source): the attributes ``run`` (a real
 ``step(actions) -> (obs, reward, terminated, truncated, info)``,
 ``team_rows(obs, team)`` and ``close()``; the ``info`` keys
 ``full_view``, ``ended``, ``final_obs``, ``final_full_view``,
-``rows_ended``, ``masked_choices`` (and ``tick``, ``episode``, ``result``).
-Not served, because the trainer never reads them: ``counters``, the
-``team_*`` books, ``checkpoints``, ``episode_seed``, ``level``, ``ticks``.
+``rows_ended``, ``masked_choices`` (and ``tick``, ``episode``, ``result``),
+and -- for the run script's per-round line (patch 2c) -- ``level`` (every
+match here is level 0, the task) and ``counters`` (the game's counter
+names, ``layout.counters``, all zero: a task pays groups, it keeps no
+counters). Not served, because the trainer never reads them: the
+``team_*`` books, ``checkpoints``, ``episode_seed``, ``ticks``.
 
 ITS BEHAVIOURS (the note's list):
 
@@ -72,7 +75,8 @@ import rl_env
 #: The ``info`` keys the stand-in serves (a test finds each in the game's
 #: ``BatchedEnv`` source).
 INFO_KEYS = ("tick", "episode", "ended", "final_obs", "final_full_view",
-             "full_view", "result", "rows_ended", "masked_choices")
+             "full_view", "result", "rows_ended", "masked_choices", "level",
+             "counters")
 #: The attributes and methods the trainer reads.
 ATTRIBUTES = ("run", "layout", "n_envs", "reset", "step", "team_rows",
               "close")
@@ -272,6 +276,7 @@ class StandIn:
             self._observe(int(e))
         self._started |= mask
         info = {"tick": self.tick.copy(), "episode": self.episode.copy(),
+                "level": np.zeros(n, dtype=np.int64),
                 "full_view": self._full()}
         return self._obs(), info
 
@@ -333,7 +338,10 @@ class StandIn:
                 "final_full_view": {k: b["final_" + k]
                                     for k in self._full_keys},
                 "full_view": self._full(), "result": result,
-                "rows_ended": rows_ended, "masked_choices": masked}
+                "rows_ended": rows_ended, "masked_choices": masked,
+                "level": np.zeros(n, dtype=np.int64),
+                "counters": np.zeros(
+                    (n, U, len(self.layout.counters)), dtype=np.float32)}
         return (self._obs(), self._reward.copy(), ended.copy(),
                 np.zeros(n, dtype=bool), info)
 
