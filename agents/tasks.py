@@ -390,26 +390,50 @@ class RecallTask(_Base):
     a quarter of its matches; ``recall24`` with 16 never (it must FAIL),
     with 32 on a quarter (it must pass).
 
-    FINDING (2d.1, 2026-11-17; for the lead, nothing bent): recall12 is NOT
-    learnt with the design's numbers. Seed 0, stretches of 16, the tasks'
-    farm (8 matches x 32 decisions): 220 rounds near the random player
-    (every tenth round's score 0.00 to 0.44, no trend). On a farm of 32
-    matches (2 048 decisions a round, one design piece): 140 rounds flat at
-    0.23 to 0.26 -- 0.25 is "never stand", reachable without the cue. Even
-    with the answer only 4 decisions after the cue (75 % of cues in the
-    answer's stretch): 300 rounds, 0.29 at the end (0.11 of the way). The
-    same task with the answer AT the cue (gap 0, no memory needed, memory
-    on) is learnt: 0.8 at round 180 on the tasks' farm. The live check is silent on every
-    round (gaps 0.0). Measured at the network's start: the cue's mark on
-    the memory (the spread of the memory over the four cues) is 0.023 at
-    the cue's decision against a memory of size 0.36, and it falls about
-    0.6 x per decision (0.002 after 4, 1.4e-4 after 12): the cell's update
-    gate starts at an even keep/replace (bias near 0) and the cue enters
-    through 4 of the vector's columns. So the gradient that must teach the
-    keeping is tiny where the cue matters and the trainer's steps barely
-    move the policy (distance per step 1e-4 to 1e-3, against the early
-    stop's 0.02). What to change (the cell's start, e.g. an update gate
-    biased to keep; the step size; the farm) is the lead's call."""
+    FINDING (2d.1, 2026-11-17): recall12 was NOT learnt with the design's
+    numbers. Seed 0, stretches of 16: 220 rounds on the tasks' farm (8
+    matches x 32 decisions) and 140 on a farm of 32 matches near the random
+    player (0.25 is "never stand", reachable without the cue); with the
+    answer 4 decisions after the cue, 0.11 of the way after 300 rounds;
+    with the answer AT the cue (gap 0, memory on) 0.8 at round 180.
+
+    WHAT 2d.1b FOUND AND FIXED (2026-11-17), in two parts:
+
+    1. THE NETWORK (fixed). Measured by a supervised fit (the right feet at
+       the answer, through ``forward_sequence``, Adam 1e-3, batches of 256,
+       each window from its match's first decision): the cue's share of an
+       activation is about the same from the vector reader to the feet
+       (0.12 to 0.15 of its size: the 4 cue columns against each soldier's
+       fixed scenery), so no layer washes it out -- but the cell's output
+       starts about 8 x smaller than the join it reads (rms 0.13 against
+       1.0; the chrono start makes most units keep), and the heads read it
+       raw. Without memory the fit reaches 0.89 at step 80; memory on, gap
+       0: 0.30 at step 80; gap 12: 0.29 after 300 steps. The heads now read
+       the memory through a normalising layer (``SoldierNet.memory_norm``):
+       gap 0 0.94 at step 80, gap 12 0.83 at step 180 and 0.99 at 210. By
+       reward, gap 0 with memory on now passes in 87 rounds (was 0.8 at
+       round 180; the weights task without memory: 85). The chrono start
+       stays: measured with each window replayed under all four cues, it
+       keeps 7 x more of the cue's mark after 12 decisions and 27 x more
+       after 24 than PyTorch's start (the mark kept about 0.82 x a decision
+       against 0.67 x). In the supervised fit at gap 12 both starts learnt
+       alike (0.83 at step 180 / 150): it is kept for the longer gaps.
+    2. THE FARM (NOT changed: the lead's call). With the network fixed,
+       recall12 at stretch 16 on the tasks' farm is still flat after 370
+       rounds (seed 0, planned 600; every tenth round 0.11 to 0.46, no
+       trend) and on 32 matches after 100 rounds (0.19 to 0.28). Counted
+       per round on the tasks' farm (20 rounds): gap 0 gives 130 answers,
+       every one learnable; recall12 25 answers, of which 8.5 have the cue
+       in the answer's stretch (the only ones that teach the keeping);
+       recall24 at 32 gives 14 answers and 3.4 learnable, at 16 none. So
+       recall12 sees 15 x and recall24 38 x fewer teaching answers a round
+       than gap 0, which needs 87 rounds, and the supervised fit says
+       holding the cue 12 decisions costs about 2 x the steps of reading it
+       at once: on the order of a thousand rounds or more, past any test's
+       budget at 4 s a round (under load). What a pass needs is a farm
+       giving more teaching answers a round (more matches, more decisions
+       a round) or a larger budget, decided by the lead and written here
+       with its measurement."""
 
     N_DIRS = 4
 

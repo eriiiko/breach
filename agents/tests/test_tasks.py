@@ -143,8 +143,13 @@ MEMORY_BUDGET = {("recall12", 16): None, ("recall24", 32): None}
 #: it (the pass, recall24 at 16 failing, the reset-at-the-cut trap failing:
 #: a fail of a task nobody passes proves nothing) are skipped BY NAME until
 #: the lead decides what changes. Not a looser line, not an easier task.
-MEMORY_FINDING = ("FINDING 2d.1: recall12 is not learnt with the design's "
-                  "numbers (agents/tasks.py RecallTask); the lead decides")
+#: 2d.1b fixed the network's part (the heads now read the memory through a
+#: normalising layer: gap 0 with memory passes by reward in 87 rounds) and
+#: measured the rest: the tasks' farm gives recall12 8.5 teaching answers a
+#: round (gap 0: 130), still flat after 370 rounds. The farm is the lead's.
+MEMORY_FINDING = ("FINDING 2d.1/2d.1b: recall12 is not learnt on the tasks' "
+                  "farm (too few teaching answers a round; agents/tasks.py "
+                  "RecallTask); the lead decides the farm")
 memory_finding = pytest.mark.skip(reason=MEMORY_FINDING)
 #: recall24 with stretches of 16 is run for as long as recall24 with 32 is
 #: given, and must stay near the random player: its mean over the last
