@@ -28,6 +28,13 @@
 // poison_src back to -1 when both levels reach 0). The trace planes are read in
 // their own (TRACE) currency against thresholds quantized in it.
 //
+// arc #63 P5a: between the gas dose and the law, exchange.apply_bite_dose --
+// the SUM of the swarm's bite-dose plane over the footprint (Q16 poison units,
+// no rounding), the unit not immune, through poison.dose uncredited (-1) with
+// the cause larva_bite. Every dose writes poison_cause (the latest dose's
+// cause); the law's packet carries it; it returns to poison_gas's index when
+// both levels reach 0, at death and at conversion.
+//
 // Planes: device pointers to (N, ...) arrays in the resident fields' dtypes
 // (heat (N, h, w) int32, rad_flux_sweep (N, h, w) int64, gas (N, G, h, w)
 // int32) -- ResidentBatch.buffers as they are.
@@ -131,9 +138,30 @@ __device__ __forceinline__ int64_t poison_step(int64_t x, int64_t a, bool flush,
 //: The levels the law's products are proved for (x * a < 2^56).
 constexpr int64_t POISON_LEVEL_MAX = (int64_t)1 << 40;
 
+// poison.dose's store arithmetic (the body holds at most X_MAX in all): a
+// clip is counted in `refused`; a level outside its proved range is bad.
+__device__ inline void poison_dose(int64_t* loc, const int64_t* tab, int64_t dose,
+                                   int64_t attacker, int64_t cause, bool& changed, bool* bad,
+                                   unsigned long long* cnt) {
+    const int64_t x0 = loc[UNIT_COL_POISON_X0], x1 = loc[UNIT_COL_POISON_X1];
+    if (x0 < 0 || x1 < 0 || x0 > POISON_LEVEL_MAX || x1 > POISON_LEVEL_MAX) {
+        *bad = true;
+        return;
+    }
+    if (dose <= 0 || loc[UNIT_COL_IS_ZOMBIE]) return;
+    const int64_t room = tab[UNIT_TAB_POISON_X_MAX] - x0 - x1;
+    const int64_t take = dose <= room ? dose : (room > 0 ? room : 0);
+    if (take < dose) count_refused(cnt);     // the clip, counted
+    if (take > 0) {
+        put(loc, UNIT_COL_POISON_X0, x0 + take, changed);
+        put(loc, UNIT_COL_POISON_SRC, attacker_value(attacker), changed);
+        put(loc, UNIT_COL_POISON_CAUSE, cause, changed);
+    }
+}
+
 __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, const int32_t* gas,
                            int n_gases, int h, int w, const int64_t* claims, int n_claims,
-                           UnitRingView ring, unsigned long long* cnt) {
+                           UnitRingView ring, unsigned long long* cnt, const int32_t* bite) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (r >= n_units) return;
     int64_t* row = unit_row(store, n_units, r);
@@ -143,6 +171,7 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
     const int64_t* tab = env_tables(tables);
     const size_t plane = (size_t)h * w;
     const int32_t* g = bptr(gas, (size_t)n_gases * plane);
+    const int32_t* bpl = bptr(bite, plane);
     int64_t loc[UNIT_STORE_W];
     for (int c = 0; c < UNIT_STORE_W; ++c) loc[c] = row[c];
     EventSink sink = row_sink(ring, n_units, r);
@@ -192,18 +221,21 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
                     }
                     // poison.dose: a zombie or a corpse takes nothing (both
                     // already excluded here); the body's store is X_MAX.
-                    const int64_t x0 = loc[UNIT_COL_POISON_X0], x1 = loc[UNIT_COL_POISON_X1];
-                    if (x0 < 0 || x1 < 0 || x0 > POISON_LEVEL_MAX || x1 > POISON_LEVEL_MAX) {
-                        bad = true;
-                    } else if (dose > 0 && !loc[UNIT_COL_IS_ZOMBIE]) {
-                        const int64_t room = tab[UNIT_TAB_POISON_X_MAX] - x0 - x1;
-                        const int64_t take = dose <= room ? dose : (room > 0 ? room : 0);
-                        if (take < dose) count_refused(cnt);     // the clip, counted
-                        if (take > 0) {
-                            put(loc, UNIT_COL_POISON_X0, x0 + take, changed);
-                            put(loc, UNIT_COL_POISON_SRC, attacker_value(attacker), changed);
-                        }
-                    }
+                    poison_dose(loc, tab, dose, attacker, UNIT_CAUSE_POISON_GAS, changed,
+                                &bad, cnt);
+                }
+            }
+        }
+        // -- exchange.apply_bite_dose -> poison.dose (arc #63 P5a) -------------
+        if (!bad) {
+            const int64_t dose = reduce_sum(bpl, h, w, f);
+            const int64_t* armor;
+            const int64_t* resist;
+            if (dose > 0) {
+                if (!mitigation_of(loc, tab, &armor, &resist)) {
+                    bad = true;
+                } else if (resist[UNIT_DTYPE_POISON] != 0) {
+                    poison_dose(loc, tab, dose, -1, UNIT_CAUSE_LARVA_BITE, changed, &bad, cnt);
                 }
             }
         }
@@ -215,10 +247,12 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
             put(loc, UNIT_COL_POISON_X0, 0, changed);            // poison.clear
             put(loc, UNIT_COL_POISON_X1, 0, changed);
             put(loc, UNIT_COL_POISON_SRC, -1, changed);
+            put(loc, UNIT_COL_POISON_CAUSE, UNIT_CAUSE_POISON_GAS, changed);   // P5a
         } else if (x0 < 0 || x1 < 0 || x0 > POISON_LEVEL_MAX || x1 > POISON_LEVEL_MAX) {
             bad = true;
         } else {
             const int64_t src = loc[UNIT_COL_POISON_SRC];
+            const int64_t cause = loc[UNIT_COL_POISON_CAUSE];   // arc #63 P5a: the latest dose's
             int64_t onset = scaled(loc, UNIT_HOOK_TOX_ONSET, tab[UNIT_TAB_POISON_ONSET_CLASS_Q]);
             int64_t decay = scaled(loc, UNIT_HOOK_TOX_DECAY, tab[UNIT_TAB_POISON_DECAY_CLASS_Q]);
             if (onset > ONE) onset = ONE;                        // poison._fraction
@@ -231,7 +265,10 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
             x1 -= m1;
             put(loc, UNIT_COL_POISON_X0, x0, changed);
             put(loc, UNIT_COL_POISON_X1, x1, changed);
-            if (x0 == 0 && x1 == 0) put(loc, UNIT_COL_POISON_SRC, -1, changed);
+            if (x0 == 0 && x1 == 0) {
+                put(loc, UNIT_COL_POISON_SRC, -1, changed);
+                put(loc, UNIT_COL_POISON_CAUSE, UNIT_CAUSE_POISON_GAS, changed);   // P5a
+            }
             if (m1 > 0) {
                 const int64_t harm = scaled(loc, UNIT_HOOK_TOX_HARM,
                                             tab[UNIT_TAB_POISON_HARM_CLASS_Q]);
@@ -242,7 +279,7 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
                     p.dtype = UNIT_DTYPE_POISON;
                     p.attacker = src;
                     p.indirect = true;
-                    p.cause = UNIT_CAUSE_POISON_GAS;
+                    p.cause = cause;
                     bool killed = false;
                     apply_packet(loc, tab, p, sink, changed, &killed, &bad);
                 }
@@ -288,15 +325,17 @@ void unit_gas_rows(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitE
     unit_check_pair(store, tables, "unit_gas_rows");
     unit_check_ring(store, ring, "unit_gas_rows");
     check_claims(claims, n_claims, "unit_gas_rows");
-    if (!planes.gas || planes.n_gases < 1 || planes.h < 1 || planes.w < 1)
-        throw std::invalid_argument("unit_gas_rows: the gas planes and their shape are required");
+    if (!planes.gas || !planes.bite || planes.n_gases < 1 || planes.h < 1 || planes.w < 1)
+        throw std::invalid_argument("unit_gas_rows: the gas planes, the bite plane and their "
+                                    "shape are required");
     const int64_t* d_claims = n_claims > 0
         ? store.stage_input(1, claims, (size_t)store.n_env() * n_claims * 4) : nullptr;
     store.begin_counts();
     k_gas_rows<<<bgrid(store.n_units(), store.n_env()), 128, 0, tstream()>>>(
         store.rows(), store.n_units(), tables.values(),
         reinterpret_cast<const int32_t*>(planes.gas), planes.n_gases, planes.h, planes.w,
-        d_claims, n_claims, ring_view(ring), store.counts_dev());
+        d_claims, n_claims, ring_view(ring), store.counts_dev(),
+        reinterpret_cast<const int32_t*>(planes.bite));
     unit_finish_events(store, ring, out, "unit_gas_rows");
 }
 

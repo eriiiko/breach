@@ -13,7 +13,7 @@
 
 namespace swarm_tables {
 
-constexpr const char* SWARM_TABLES_FINGERPRINT = "0613a62b66e0bc0cad182f85fb5b31268f478e25a1c4f66ab0d8d60a3baffb66";
+constexpr const char* SWARM_TABLES_FINGERPRINT = "f633976cd7dcea4d75fa818419fcc6897910efe3dc3033acbb6cec88f82d1ebf";
 
 // species 'larva': <row> is its int64's index in an env's vector.
 constexpr int SWARM_LARVA_T_PREFER_Q = 0;
@@ -29,6 +29,7 @@ constexpr int SWARM_LARVA_P_BASE_Q = 9;
 constexpr int SWARM_LARVA_P_ALARM_Q = 10;
 constexpr int SWARM_LARVA_SALT_TUMBLE = 11;
 constexpr int SWARM_LARVA_SALT_WALL_TURN = 12;
-constexpr int SWARM_LARVA_WIDTH = 13;
+constexpr int SWARM_LARVA_BITE_Q = 13;
+constexpr int SWARM_LARVA_WIDTH = 14;
 
 }  // namespace swarm_tables

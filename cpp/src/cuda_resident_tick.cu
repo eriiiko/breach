@@ -914,6 +914,11 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
     unsigned long long* cnt = S.arena_dev() + S.L.swm;
     cuda_check(cudaMemsetAsync(cnt, 0, (size_t)N * swarm::SWARM_CNT_SLOTS * 8, st),
                "memset swarm counters");
+    // arc #63 P5a: the bite plane is rebuilt from zero every non-dormant tick.
+    int32_t* bite = reinterpret_cast<int32_t*>(a.swarm_bite);
+    if (bite != nullptr)
+        cuda_check(cudaMemsetAsync(bite, 0, (size_t)N * f.h * f.w * sizeof(int32_t), st),
+                   "memset swarm bite plane");
     bool any = false;
     for (int i = 0; i < a.n_swarm_species; ++i) {
         const swarm::ResidentSpecies& sp = a.swarm_species[i];
@@ -922,7 +927,7 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
         const int launched = swarm::resident_species(
             sp.law, sp.st, sp.max_units, N, f.h, f.w, P<const int32_t>(f.temperature),
             P<const bool>(f.solid), S.swarm_launch.data(), sp.tables, sp.table_width,
-            cnt, static_cast<void*>(st));
+            cnt, static_cast<void*>(st), bite);
         if (launched > 0) {
             any = true;
             ++g_counts[17];

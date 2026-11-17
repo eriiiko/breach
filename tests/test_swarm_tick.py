@@ -220,13 +220,13 @@ def test_engine_presence_spans_every_env():
     tk.place(wd, 1, 0, (2 << 16), (2 << 16), 0)
     dirty = {"larva": False}
     c0 = bp.swarm_cpu_calls()
-    rows = eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, dirty)
+    rows = eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, dirty, wd.bite)
     assert bp.swarm_cpu_calls() == c0 + 1
     assert rows.shape == (1, swarm.ROW_WORDS) and int(rows[0, swarm.ROW_ENV]) == 1
     assert dirty["larva"] is True
     empty = tk.larva_world(6, 6, 4, 2, T=T)
     dirty = {"larva": False}
-    rows = eng.step_swarm(_packs_from(empty), empty.T, empty.solid, empty.env, dirty)
+    rows = eng.step_swarm(_packs_from(empty), empty.T, empty.solid, empty.env, dirty, empty.bite)
     assert rows.shape == (0, swarm.ROW_WORDS)
     assert bp.swarm_cpu_calls() == c0 + 1
     assert dirty["larva"] is False
@@ -304,13 +304,13 @@ def test_the_bindings_refuse_mismatched_arrays_and_touch_nothing():
         assert same(wd, snap), brk.__name__
         eng = bp.PhysicsEngine()
         with pytest.raises((TypeError, ValueError)):
-            eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, {"larva": False})
+            eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, {"larva": False}, wd.bite)
         assert same(wd, snap), brk.__name__
     wd = fresh()
     snap = snapshot(wd)
     bad = [swarm.EnginePack("notaspecies", wd.columns(), wd.high_water, wd.tables)]
     with pytest.raises(ValueError):
-        bp.PhysicsEngine().step_swarm(bad, wd.T, wd.solid, wd.env, {"larva": False})
+        bp.PhysicsEngine().step_swarm(bad, wd.T, wd.solid, wd.env, {"larva": False}, wd.bite)
     with pytest.raises(ValueError):
         bp.swarm_species_step("notaspecies", *wd.args())
     assert same(wd, snap)
@@ -323,7 +323,8 @@ def test_the_bindings_refuse_mismatched_arrays_and_touch_nothing():
 def test_the_host_swarm_step_writes_only_the_swarm_store():
     """T-P3-37: over 60 CPU ticks of the thermal scenario, every GameMap
     attribute the host-path step_swarm changes is a present species' store
-    column or its swarm_host_dirty key (cuda_unit_lockstep.gmap_state /
+    column, its swarm_host_dirty key or the swarm's output plane (arc #63
+    P5a: the bite-dose plane) (cuda_unit_lockstep.gmap_state /
     changed_attrs, imported, never copied).
 
     Must break if the kernel writes any field, a counter it must not
@@ -348,6 +349,7 @@ def test_the_host_swarm_step_writes_only_the_swarm_store():
             allowed = {swarm.store_attr(sp, c.name) for sp in swarm.SWARM_SPECIES
                        if int(getattr(g, swarm.high_water_attr(sp))) > 0 for c in swarm.ROSTER}
             allowed |= {f"{swarm.HOST_DIRTY_ATTR}:{sp}" for sp in swarm.SWARM_SPECIES}
+            allowed |= set(swarm.SWARM_PLANE_NAMES)    # arc #63 P5a: its output plane
             bad = [c for c in changed if c not in allowed]
             assert not bad, f"the swarm step wrote {bad}"
             changed_seen.update(changed)

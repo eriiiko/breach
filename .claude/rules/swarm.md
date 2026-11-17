@@ -12,7 +12,7 @@ paths:
   - "tools/gen_larva_studio.py"
 ---
 
-# Swarm: the store of swarm units, its digest, its facade, its table, its heading, the brood, the dot view
+# Swarm: the store of swarm units, its digest, its facade, its table, its heading, the brood, the dot view, the bite
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
@@ -84,3 +84,12 @@ two sides meet only through FIELDS.
 ## Swarm dot view
 - Render-only: reads the store's host mirror and `SwarmUnitDiedEvent`, never the freed slot; nothing under `src/` reads it or `[debug] swarm_dots` (`tests/test_swarm_dots.py`). Switched by the config row, never a key.
 - Linear HDR, unlit, premultiplied, drawn once after the water and before the floor smoke; its vertex data is numpy in one pass (no Python loop per unit in the frame path). Its flecks are render state (capped, sim-clock fade), never a decal layer: corpses are the world decal layer's when it exists (engine/17 section 9).
+
+## Bite-dose plane
+- Swarm OUTPUT (arc #63 P5a): `(h, w)` int32, Q16 units of poison a body standing on the tile takes THIS tick. Written only by the swarm step (zeroed, then every present species adds its biting slots after its law), on both paths through the ONE `bites_on`; never accumulated across ticks, never written by host code, tools or tests. Dormant (no swarm ever present): never written, all zero.
+- The bite is the EXPECTED dose, no draw (Claude's choice, P5a): each biting unit adds its species' `bite_q` = `bite_dose x bite_rate x dt` rounded once (`swarm.bite_tick_q`); the plane is the exact integer sum, so the dose a body takes is the plane's sum under its footprint with no further rounding. A draw per bite would be a new `Salt` and a change of this rule.
+- Who bites: a valid unit not in coma (dead slots are the all-zero form). A new biting state, or units that bite only near a body, is a change of `bites_on` and its gate, never a second builder.
+- The device builder adds with integer atomics OUTSIDE the law (the law keeps no atomics). The int32 bound is the shared species rule `bite_plane_range` (`max_units x bite_q`); ACCEPTED GAP: with a second biting species the SUM of species can still overflow; that patch widens the rule to the sum.
+- Not digested and not in the swarm section (a function of the store); a resident synced field the exit download carries while a swarm is present (slot 9c3 reads it on the host the same tick). A membership change would be a field-digest version bump.
+- The unit side reads it ONLY through the `swarm_bite_dose` coupling row (`exchange.apply_bite_dose`, `.claude/rules/units.md`). Gates: `tests/test_swarm_bite.py`, `tests/cuda_swarm_check.py` PART 2c, `tests/cuda_batch_invariance_check.py` LEG B, `tests/cuda_unit_damage_check.py` (the gas scene's bite).
+- The dot view draws no bite flash: the expected-dose form has no discrete bite to flash (P5a: left out, not built from guesses).

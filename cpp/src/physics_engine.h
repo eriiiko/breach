@@ -112,6 +112,8 @@ struct ResidentTickArgs {
     const swarm::ResidentSpecies* swarm_species = nullptr;
     int n_swarm_species = 0;
     const uint32_t* swarm_env = nullptr;    // (N, swarm::ENV_WORDS)
+    // arc #63 P5a: the device bite plane (N, h, w) int32 the stage rebuilds.
+    std::uintptr_t swarm_bite = 0;
     std::vector<std::vector<int32_t>>* swarm_rows = nullptr;
 };
 
@@ -253,7 +255,8 @@ public:
     // The resident path's swarm stage is resident_swarm inside resident_tail.
     std::vector<int32_t> step_swarm(const std::vector<swarm::SpeciesStep>& packs,
                                     const int32_t* T, const bool* solid, int h, int w,
-                                    const uint32_t* env, int n_env) const;
+                                    const uint32_t* env, int n_env,
+                                    int32_t* bite) const;   // arc #63 P5a: (n_env, h, w)
     mutable swarm::StepScratch swarm_scratch_;
     // Telemetry (never in the energy closure: larvae write no field): the
     // deaths the resident swarm stage folded into this env.

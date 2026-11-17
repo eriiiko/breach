@@ -81,7 +81,7 @@ from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
 )
-from simulation.events import NO_ATTACKER
+from simulation.events import NO_ATTACKER, Cause
 # Gas SLICE ids (engine/05 §6.2) — aliased so they can't be confused with the
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
@@ -670,6 +670,14 @@ def apply_teargas_blind(units, gmap):
                      duration_ticks=duration, source_id=None)
 
 
+def poison_immune(u) -> bool:
+    """THE immunity of the poison coupling rows (gas and bite): a unit whose
+    ``resist_mult[POISON]`` is exactly 0 (the zombie; the future robot) takes
+    no dose -- the dose door refuses a zombie itself as well. Resistances
+    between 0 and 1 act on the damage, at the law's packet."""
+    return mitigation_for(u).resist_q[POISON] == 0
+
+
 def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     """The ``gas[poison]`` coupling row (mechanics/05 §1, W3; #29 PX): the
     footprint-max poison density at or above ``poison_min_density`` gives the
@@ -711,7 +719,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
         density_q = reduce_max(slice_, tiles)
         if density_q < thresh_q:
             continue
-        if mitigation_for(u).resist_q[POISON] == 0:
+        if poison_immune(u):
             continue                        # immune: no packet, no event (lazy)
         dose_q = _unit_fixed.div_round(gas_q * int(density_q), den)
         # CREDIT (#123): the claimant of THIS tick's poison deposit on the
@@ -727,6 +735,33 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
                 attacker = tick_credit(gmap).attacker_at(GAS_POISON, ty, tx)
                 break
         poison.dose(u, dose_q, attacker)
+
+
+def apply_bite_dose(units, gmap):
+    """The ``swarm_bite_dose`` coupling row (arc #63 P5a; the boundary of
+    Erik's P6 ruling: a unit law sees the swarm only through a per-tile plane
+    the swarm writes): the SUM of the bite-dose plane over a living unit's
+    footprint is a DOSE of the poison law (:func:`simulation.poison.dose`),
+    uncredited (``attacker_id`` -1) with the cause ``larva_bite``. The row
+    emits no packet; ``poison.tick``, right after it in slot 9c3, does.
+
+    The plane already holds Q16 units of poison per tick (each biting larva's
+    expected dose, ``swarm.bite_tick_q``, summed per tile by the swarm step),
+    so the dose is that sum exactly -- no rounding here. Two units on the same
+    tile EACH read it in full (a larva under two boots bites both). The immune
+    (:func:`poison_immune`) take nothing. Lazy: an all-zero plane (no swarm, or
+    no biting larva) is one integer ``.any()`` and out; no RNG."""
+    from simulation import swarm as _swarm
+    plane = _swarm.bite_plane(gmap)
+    if not bool(plane.any()):
+        return
+    for u in units:
+        if not u.alive:
+            continue
+        dose_q = reduce_sum(plane, u.occupied_tiles())
+        if dose_q <= 0 or poison_immune(u):
+            continue
+        poison.dose(u, dose_q, NO_ATTACKER, Cause.LARVA_BITE)
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +884,22 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "early-outs; no RNG."
         ),
     ),
+    # arc #63 P5a (docs/swarm_P5a_impl.md): the swarm's one row on the unit
+    # side -- the units see the larvae only through the plane they write.
+    CouplingRow(
+        field="swarm_bite_dose",
+        reduction="sum",
+        response=apply_bite_dose,
+        note=(
+            "Larva bites -> a DOSE of the poison law (arc #63 P5a): the sum of "
+            "the swarm's bite-dose plane (every larva not in coma adds its "
+            "expected dose bite_dose x bite_rate x dt to its tile) over the "
+            "footprint -> poison.dose, uncredited, cause larva_bite (poison-"
+            "immune units take nothing). Runs at Simulation.step 9c3 after "
+            "the gas poison row, before poison.tick. Lazy: all-zero plane "
+            "early-outs; no RNG."
+        ),
+    ),
     # arc #63 P3 (docs/swarm_P3_impl.md §8): the larva's rows -- executed IN
     # the larva kernel (cpp/src/swarm_larva.h) as the last stage of slot 7,
     # through the RAW own-tile reader (exchange.reduce_center over a one-tile
@@ -882,5 +933,6 @@ __all__ = [
     "CouplingRow", "COUPLING_TABLE",
     "apply_blast_damage", "apply_environmental_damage",
     "wind_q_pa", "apply_wind_force",
-    "apply_teargas_blind", "apply_poison_dose",
+    "apply_teargas_blind", "apply_poison_dose", "poison_immune",
+    "apply_bite_dose",
 ]

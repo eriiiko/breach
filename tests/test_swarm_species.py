@@ -467,6 +467,9 @@ _RULE_BREAKERS = {
     "tumble_probability": {"tumble_rate_base": 2.0, "tumble_rate_alarm": 1.0},
     "coma_hysteresis": {"T_ctmin": 283.15, "T_coma_exit": 283.15},
     "turn_range": {"turn_min": 1.0, "turn_max": 0.5},
+    # arc #63 P5a: 100 bites/s x 100 units at 24 tps is ~2.7e7 Q16 per larva
+    # per tick; 8192 of them on one tile overflow the int32 bite plane
+    "bite_plane_range": {"bite_rate": 100.0, "bite_dose": 100.0},
 }
 
 

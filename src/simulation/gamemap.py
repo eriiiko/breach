@@ -57,7 +57,8 @@ from simulation.gases import (  # noqa: F401  (re-exported)
 
 # Swarm store (arc #63 P2, engine/17 §1.3): the per-species SoA arrays +
 # their allocation hook. No other GameMap dependency on the swarm module.
-from simulation.swarm import SWARM_RESIDENT_NAMES, allocate_swarm_store  # arc #63 P2
+from simulation.swarm import (SWARM_PLANE_NAMES, SWARM_RESIDENT_NAMES,  # arc #63 P2
+                              allocate_swarm_store)
 
 
 # P-O2b (docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b") — the draw's two
@@ -274,7 +275,9 @@ class GameMap:
     # The arrays are PER MAP (a column (max_units,), the counters 0-d); a
     # ResidentBatch stacks them to (N, max_units) / (N,) like every resident
     # field -- the batch axis is ResidentBatch's (P6 ruling, 2026-11-14).
-    _RESIDENT_SYNCED = _RESIDENT_SYNCED + SWARM_RESIDENT_NAMES
+    # arc #63 P5a: + the swarm's output planes (the bite-dose plane), written
+    # by the swarm step on either path, downloaded while a swarm is present.
+    _RESIDENT_SYNCED = _RESIDENT_SYNCED + SWARM_RESIDENT_NAMES + SWARM_PLANE_NAMES
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 
     def __setattr__(self, name, value):

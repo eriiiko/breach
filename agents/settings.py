@@ -7,8 +7,8 @@ sweep (design 4.4 says where each comes from). The reward group weights
 are rung 2's: outcome 1, own 1, team 0, friendly fire 0, order 0 (design
 4.3), in the environment's group order (``reward_v1.REWARD_GROUPS``).
 
-The training file that will carry these numbers on disk is patch 2c's;
-here the record is built in code.
+On disk these numbers are a run's training file
+(:mod:`agents.training_file`, patch 2c), one key per field.
 """
 from __future__ import annotations
 
@@ -67,6 +67,11 @@ class Settings:
     live_tolerance: float = 1e-4
     #: The reward group weights, in ``REWARD_GROUPS`` order.
     weights: tuple = field(default_factory=_rung2_weights)
+    #: The run's wall-clock stop (hours): a run ends at ``planned_rounds``
+    #: or here, whichever comes first (note 2c, 4). None: no wall stop.
+    #: The step size still falls over the PLANNED rounds, so a plan the
+    #: wall cuts short never reaches its low step sizes.
+    wall_hours: float | None = None
 
     def __post_init__(self):
         if len(self.weights) != len(REWARD_GROUPS):
@@ -75,6 +80,9 @@ class Settings:
         if int(self.planned_rounds) < 1:
             raise ValueError(f"settings: planned_rounds "
                              f"{self.planned_rounds} < 1")
+        if self.wall_hours is not None and not float(self.wall_hours) > 0:
+            raise ValueError(f"settings: wall_hours {self.wall_hours} must "
+                             f"be above 0 (or None: no wall stop)")
         if self.lump < 1 or self.piece < self.lump:
             raise ValueError(f"settings: a piece ({self.piece}) is worked "
                              f"through in lumps ({self.lump})")

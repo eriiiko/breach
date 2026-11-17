@@ -91,6 +91,21 @@ void down(T* dst, const T* src, size_t count, const char* what) {
     if (count > 0) cuda_check(cudaMemcpy(dst, src, count * sizeof(T), cudaMemcpyDeviceToHost), what);
 }
 
+// arc #63 P5a: THE BITE on the device -- the host builder's loop
+// (bite_plane_host) over (ceil(hw / 256), N): each biting slot adds its
+// species' bite row to its tile, an integer atomic add, so the plane does not
+// depend on the thread order. Outside the law (the law has no atomics).
+__global__ void k_bites(SlotIO io, int bite_row, int32_t* bite) {
+    const int e = (int)blockIdx.y;
+    const int s = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (s >= (int)io.launch[e * LAUNCH_FIXED_WORDS + LAUNCH_HW]) return;
+    const int32_t q = (int32_t)io.tables[(size_t)e * io.table_width + bite_row];
+    if (q == 0) return;
+    int idx;
+    if (!bites_on(io, e, s, &idx)) return;
+    atomicAdd(&bite[(size_t)e * io.h * io.w + idx], q);
+}
+
 }  // namespace
 
 void percall_check(const char* what) {
@@ -148,7 +163,8 @@ int percall_download(const LawIO& L, const SlotIO& d) {
 int resident_species(int law, const StoreView& st_dev, int max_units, int n_env, int h,
                      int w, const int32_t* d_T, const bool* d_solid,
                      const uint32_t* launch_host, const int64_t* tables_host,
-                     int table_width, unsigned long long* d_counters, void* stream) {
+                     int table_width, unsigned long long* d_counters, void* stream,
+                     int32_t* d_bite) {
     int launch_hw = 0;
     for (int e = 0; e < n_env; ++e) {
         const int hw = (int)launch_host[e * LAUNCH_FIXED_WORDS + LAUNCH_HW];
@@ -193,6 +209,12 @@ int resident_species(int law, const StoreView& st_dev, int max_units, int n_env,
     R.stream = stream;
     SPECIES_LAWS[law].cuda_resident(R);
     cuda_check(cudaGetLastError(), "resident swarm launch");
+    // arc #63 P5a: the species' bites onto the plane, after its law.
+    if (d_bite != nullptr && SPECIES_LAWS[law].bite_row >= 0) {
+        const dim3 grid((unsigned)((launch_hw + 255) / 256), (unsigned)n_env);
+        k_bites<<<grid, 256, 0, st>>>(R.io, SPECIES_LAWS[law].bite_row, d_bite);
+        cuda_check(cudaGetLastError(), "resident swarm bites");
+    }
     // Each env's [0, hw[e]) records, host-ward on the tick stream BEFORE the
     // tail's books sync, so they arrive with the books in the tick's one read.
     for (int e = 0; e < n_env; ++e) {

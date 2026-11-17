@@ -33,6 +33,17 @@ store rides the entry upload exactly on the first tick and the tick after
 each facade write. A swarm-free resident leg moves none of the swarm
 counters.
 
+PART 2c -- THE BITE, three-way (arc #63 P5a): the thermal scenario plus three
+marines -- one over the spread larvae, one over the cold patch's coma larvae,
+one at 0.25 HP over a pile of eight larvae -- on the CPU, per-call and resident
+paths: per tick the bite-dose plane's bytes, every unit's poison levels and
+cause, the hit / kill events and the tick digest equal. Non-vacuous: the plane
+is non-zero, the first marine is dosed, the pile kills the third with cause
+larva_bite and no credited unit, and the plane is zero under every coma larva
+standing alone. Breaks on a device bite builder that differs from the host
+one, a plane not rebuilt from zero, an exit download without the plane, or a
+coma / dead slot that bites on one path.
+
 PART 3 -- the canonical golden on the CUDA build's CPU path.
 """
 from __future__ import annotations
@@ -471,6 +482,87 @@ def part2b() -> bool:
     return ok
 
 
+def _bite_world():
+    from simulation.unit import Unit
+    sim = _thermal_world("cpu")
+    half = ONE >> 1
+    pile = [((10 << 16) + half + 300 * k, (11 << 16) + half) for k in range(8)]
+    sim.swarm.spawn("larva", [x for x, _ in pile], [y for _, y in pile], [0] * 8)
+    marines = (("A", 7.0, 8.0, None), ("C", 2.0, 10.0, None), ("V", 9.0, 10.0, 0.25))
+    for name, x, y, hp in marines:
+        u = Unit(name, x=x, y=y, team=0)
+        sim.add_unit(u)
+        if hp is not None:
+            u.current_hp = hp
+    return sim
+
+
+def part2c() -> bool:
+    print("PART 2c: the bite three-way -- the plane and the poison on CPU, per-call, resident")
+    from field_ab_harness import capture_snapshot
+    from field_digest import tick_digest
+    from simulation.events import UnitHitEvent, UnitKilledEvent
+    modes = ("cpu", "percall", "resident")
+    worlds = {m: _bite_world() for m in modes}
+    ok = True
+    plane_ticks = dosed = 0
+    bite_kill = None
+    coma_alone = coma_zero = 0
+    for t in range(200):
+        st = {}
+        for m in modes:
+            sim = worlds[m]
+            _mode(m)
+            sim.set_paused(False)
+            sim.step()
+            g = sim.gmap
+            plane = swarm.bite_plane(g)
+            units = tuple((u.name, u.alive, int(u.poison_x0), int(u.poison_x1),
+                           int(u.poison_cause), int(u.poison_src)) for u in sim.units)
+            ev = tuple((type(e).__name__, getattr(e, "unit_id", None),
+                        getattr(e, "source", getattr(e, "killed_by", None)),
+                        getattr(e, "attacker_id", None))
+                       for e in sim.tick_events
+                       if isinstance(e, (UnitHitEvent, UnitKilledEvent)))
+            st[m] = (plane.tobytes(), units, ev, tick_digest(capture_snapshot(sim)))
+            if m == "cpu":
+                if plane.any():
+                    plane_ticks += 1
+                a = next(u for u in sim.units if u.name == "A")
+                if a.poison_x0 > 0:
+                    dosed += 1
+                for e in sim.tick_events:
+                    if isinstance(e, UnitKilledEvent):
+                        bite_kill = (e.killed_by, e.attacker_id)
+                v = g.swarm_larva_valid == 1
+                tx = g.swarm_larva_pos_x >> 16
+                ty = g.swarm_larva_pos_y >> 16
+                biting = v & (g.swarm_larva_ai_state != swarm.AI_COMA)
+                for k in np.flatnonzero(v & (g.swarm_larva_ai_state == swarm.AI_COMA)):
+                    same = biting & (tx == tx[k]) & (ty == ty[k])
+                    if not same.any():
+                        coma_alone += 1
+                        coma_zero += int(plane[ty[k], tx[k]] == 0)
+        _mode("cpu")
+        for m in ("percall", "resident"):
+            for k, name in enumerate(("bite plane", "unit poison", "hit/kill events",
+                                      "tick digest")):
+                if st[m][k] != st["cpu"][k]:
+                    print(f"  tick {t}: {m} {name} differs from the CPU path"); ok = False
+        if not ok:
+            break
+    print(f"  plane non-zero on {plane_ticks} ticks, marine A dosed on {dosed}, "
+          f"bite kill {bite_kill}, coma larvae alone {coma_alone} (plane 0 at {coma_zero})")
+    if plane_ticks <= 0 or dosed <= 0 or coma_alone <= 0:
+        print("  PART 2c non-vacuity failed"); ok = False
+    if coma_zero != coma_alone:
+        print("  a coma larva alone on its tile bit"); ok = False
+    if bite_kill != ("larva_bite", -1):
+        print(f"  the pile did not kill by bite (got {bite_kill})"); ok = False
+    print("  " + ("three paths equal every tick" if ok else "FAILED"))
+    return ok
+
+
 def part3() -> bool:
     print("PART 3: the canonical golden on the CUDA build's CPU path")
     _mode("cpu")
@@ -484,7 +576,7 @@ def part3() -> bool:
 def main() -> int:
     print(f"swarm P3 CUDA gate, HAS_CUDA={getattr(bp, 'HAS_CUDA', False)}")
     ok = True
-    for part in (part1, part2, part2b, part3):
+    for part in (part1, part2, part2b, part2c, part3):
         try:
             ok = part() and ok
         except Exception as exc:   # report and fail, never hide

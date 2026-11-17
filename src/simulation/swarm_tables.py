@@ -71,6 +71,10 @@ def _step_q(src):
     return swarm.movement_step_q(src.row, src.ctx)[1]
 
 
+def _bite_q(src):
+    return swarm.bite_tick_q(src.row, src.ctx)
+
+
 def _p_base(src):
     return swarm_larva.tumble_probabilities(src.row, src.ctx)[0]
 
@@ -98,6 +102,10 @@ ROWS: dict = {
         TableRow("p_alarm_q", _p_alarm, 0, _ONE),
         TableRow("salt_tumble", lambda src: int(Salt.SWARM_TUMBLE), 0, _U32_MAX),
         TableRow("salt_wall_turn", lambda src: int(Salt.SWARM_WALL_TURN), 0, _U32_MAX),
+        # arc #63 P5a: what one biting larva adds to its tile of the bite-dose
+        # plane per tick (Q16 poison units); the plane stays int32 by the
+        # species rule bite_plane_range (max_units x bite_q <= INT32_MAX)
+        TableRow("bite_q", _bite_q, 0, _I32_MAX),
     ),
 }
 

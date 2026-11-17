@@ -149,6 +149,7 @@ struct UnitDamagePlanes {
     std::uintptr_t rad_flux = 0;
     std::uintptr_t gas = 0;
     int n_gases = 0;
+    std::uintptr_t bite = 0;   // arc #63 P5a: the swarm's bite-dose plane (N, h, w) int32
     int h = 0;
     int w = 0;
 };

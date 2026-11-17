@@ -58,9 +58,11 @@ per tick (credited to ``poison_src``, ``indirect=True``, cause
 zombie never holds poison), exposure and the events are the pipeline's own. A
 tick with ``m1 == 0`` emits nothing.
 
-THE ONE DOOR IN: :func:`dose` (a coupling row calls it: today the
-``gas[poison]`` row, ``exchange.apply_poison_dose``; after P6 the larvae's
-bite field). A ZOMBIE takes no dose (it does not breathe and is immune to
+THE ONE DOOR IN: :func:`dose` (a coupling row calls it: the ``gas[poison]``
+row, ``exchange.apply_poison_dose``, and since arc #63 P5a the larvae's bite,
+``exchange.apply_bite_dose``). Every dose names its CAUSE; the latest dose's
+cause is ``poison_cause`` and the law's packets carry it (ACCEPTED GAP, the
+credit's: the latest dose names the cause of all the poison in the body). A ZOMBIE takes no dose (it does not breathe and is immune to
 bites, Erik): the door returns without writing. The latest dose's credited
 unit is ``poison_src`` (ACCEPTED GAP: it takes the credit for all the poison
 in the body). Zeroed at death and at conversion (:func:`clear`). Nothing but
@@ -86,7 +88,13 @@ from fractions import Fraction
 
 from simulation import unit_fixed, unit_traits
 from simulation.damage import POISON, DamagePacket, apply_packet
-from simulation.events import NO_ATTACKER, attacker_value
+from simulation.events import (CAUSE_NAMES, NO_ATTACKER, Cause, attacker_value,
+                               cause_value)
+
+#: ``poison_gas``'s index in ``events.CAUSE_NAMES``: the cause a body's poison
+#: carries unless its latest dose said otherwise (the ``poison_cause``
+#: column's default, so a gas-poisoned unit hashes as before; arc #63 P5a).
+GAS_CAUSE = CAUSE_NAMES.index(Cause.POISON_GAS.value)
 
 #: The ``[damage.poison]`` keys, every one required.
 SETTING_KEYS = ("onset_seconds", "decay_seconds", "hp_per_unit",
@@ -261,14 +269,17 @@ def holds(u) -> bool:
     return bool(getattr(u, "poison_x0", 0) or getattr(u, "poison_x1", 0))
 
 
-def dose(u, amount_q: int, source_id=NO_ATTACKER) -> int:
+def dose(u, amount_q: int, source_id=NO_ATTACKER,
+         cause=Cause.POISON_GAS) -> int:
     """THE one way poison enters a unit: ``amount_q`` (Q16 units) onto its
     depot, ``source_id`` (the credited unit; -1 = the environment) recorded
-    as ``poison_src`` (the latest dose wins). A zombie or a corpse takes
+    as ``poison_src`` and ``cause`` (an ``events.Cause``) as ``poison_cause``
+    (the latest dose wins both). A zombie or a corpse takes
     nothing, and a dose of 0 writes nothing. The body holds at most
     :data:`X_MAX` in all: the excess is clipped and counted
     (:data:`SATURATION`). Returns the counts taken."""
     a = int(amount_q)
+    cause_ix = CAUSE_NAMES.index(cause_value(cause))
     if a <= 0 or getattr(u, "is_zombie", False) \
             or not getattr(u, "alive", True):
         return 0
@@ -282,6 +293,7 @@ def dose(u, amount_q: int, source_id=NO_ATTACKER) -> int:
         return 0
     u.poison_x0 = x0 + take
     u.poison_src = attacker_value(source_id)
+    u.poison_cause = cause_ix
     return take
 
 
@@ -301,6 +313,7 @@ def advance(u, s: PoisonSettings | None = None):
     u.poison_x1 = x1
     if x0 == 0 and x1 == 0:
         u.poison_src = NO_ATTACKER
+        u.poison_cause = GAS_CAUSE
     return m0, m1
 
 
@@ -309,7 +322,8 @@ def tick(units, tick_no: int = 0, events=None) -> None:
     advances one tick (:func:`advance`), and what left its blood hurts as ONE
     POISON packet of ``mul_q16_round(m1, harm)`` Q16 points through
     ``damage.apply_packet`` (credited to the dose's ``poison_src``,
-    indirectly; cause ``poison_gas``). Order-free: each unit reads only its
+    indirectly; its cause the latest dose's ``poison_cause``: ``poison_gas``
+    or ``larva_bite``). Order-free: each unit reads only its
     own levels. ``tick_no`` is the sim tick (unused by the law; the device
     kernel's signature)."""
     s = get_settings()
@@ -320,6 +334,7 @@ def tick(units, tick_no: int = 0, events=None) -> None:
             clear(u)                    # never reached: death / turning clear
             continue
         src = int(u.poison_src)
+        cause = CAUSE_NAMES[int(getattr(u, "poison_cause", GAS_CAUSE))]
         _m0, m1 = advance(u, s)
         if m1 <= 0:
             continue
@@ -329,7 +344,7 @@ def tick(units, tick_no: int = 0, events=None) -> None:
         apply_packet(u, DamagePacket(                    # p3e-view: amount
             amount=unit_fixed.dequantize_scalar(dmg_q), dtype=POISON,
             attacker_id=src, indirect=True, amount_q=dmg_q),
-            events, source="poison_gas")
+            events, source=cause)
 
 
 def pending_harm_q(u, s: PoisonSettings | None = None) -> int:
@@ -347,9 +362,10 @@ def clear(u) -> None:
         u.poison_x0 = 0
         u.poison_x1 = 0
         u.poison_src = NO_ATTACKER
+        u.poison_cause = GAS_CAUSE
 
 
-__all__ = ["SETTING_KEYS", "ONE", "X_MAX", "FLUSH_Q", "HP_PER_UNIT_MAX",
+__all__ = ["SETTING_KEYS", "ONE", "GAS_CAUSE", "X_MAX", "FLUSH_Q", "HP_PER_UNIT_MAX",
            "GAS_UNITS_MAX", "SATURATION", "fraction_q", "PoisonSettings",
            "settings_from_config", "get_settings", "rebuild_settings",
            "onset_q", "decay_q", "harm_q", "step", "holds", "dose",

@@ -1022,17 +1022,20 @@ PYBIND11_MODULE(breach_physics, m) {
         m.def("unit_gas_rows",
               [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
                           std::uintptr_t gas, int n_gases, int h, int w,
-                          py::array_t<int64_t, py::array::c_style> claims) {
+                          py::array_t<int64_t, py::array::c_style> claims,
+                          std::uintptr_t bite) {
                   const int nc = claims_of(s, claims, "unit_gas_rows");
                   breach_cuda::UnitDamagePlanes p;
                   p.gas = gas; p.n_gases = n_gases; p.h = h; p.w = w;
+                  p.bite = bite;
                   Cnt4 c(s.n_env());
                   breach_cuda::unit_gas_rows(s, t, ring, p, claims.data(), nc, c.view());
                   return c.out();
               }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("gas"),
               py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("claims"),
-              "#29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, poison.tick) on "
-              "the device store.");
+              py::arg("bite"),
+              "#29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, arc #63 P5a's "
+              "apply_bite_dose, poison.tick) on the device store.");
         m.def("unit_damage_probe",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
                  py::array_t<int64_t, py::array::c_style> packets) {
@@ -1416,7 +1419,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::object door_table, py::object door_tiles, py::object duct_table,
                  py::object vent_table, py::object source_table, py::object source_tiles,
                  std::uintptr_t source_out, py::object signal_tables, py::object ticks,
-                 py::object timed_table, py::object heat_table) {
+                 py::object timed_table, py::object heat_table, py::object horde) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   // #29 P6b.1: the DOORS stage's door table and tile table
@@ -1482,6 +1485,20 @@ PYBIND11_MODULE(breach_physics, m) {
                           throw std::invalid_argument("applier_run: ticks must be (N,) int64");
                       L.ticks = tk.data();
                   }
+                  // #29 P7d: the HORDE stage's reach, (hdr, keys, dist, masks, pass,
+                  // flags, queues, live, latch, fcap) as ten uint64
+                  if (!horde.is_none()) {
+                      auto hz = horde.cast<py::array_t<uint64_t, py::array::c_style |
+                                                                   py::array::forcecast>>();
+                      if (hz.ndim() != 1 || hz.shape(0) != 10)
+                          throw std::invalid_argument("applier_run: horde must be 10 uint64 "
+                                                      "(9 device addresses, fcap)");
+                      const uint64_t* q = hz.data();
+                      L.horde.hdr = q[0]; L.horde.keys = q[1]; L.horde.dist = q[2];
+                      L.horde.masks = q[3]; L.horde.pass = q[4]; L.horde.flags = q[5];
+                      L.horde.queues = q[6]; L.horde.live = q[7]; L.horde.latch = q[8];
+                      L.horde.fcap = (int)q[9];
+                  }
                   // #29 P6b.4: the TIMED_CHARGES / HEAT_SOURCES stages' tables
                   L.timed_table = timed_table.is_none()
                                       ? nullptr : timed_table.cast<breach_cuda::ObjectTable*>();
@@ -1500,9 +1517,26 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("source_out") = (std::uintptr_t)0,
               py::arg("signal_tables") = py::none(), py::arg("ticks") = py::none(),
               py::arg("timed_table") = py::none(), py::arg("heat_table") = py::none(),
+              py::arg("horde") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "
               "coverage (N,): the rows the walk changed, ring_dropped (N,)) int64.");
+        m.def("horde_flood_probe",
+              [](int n_env, int h, int w, std::uintptr_t tile_ok,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> fp,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> seeds,
+                 py::array_t<int64_t, py::array::c_style | py::array::forcecast> n_seeds,
+                 std::uintptr_t dist) {
+                  if (fp.ndim() != 1 || fp.shape(0) != n_env || n_seeds.ndim() != 1 ||
+                      n_seeds.shape(0) != n_env || seeds.ndim() != 3 ||
+                      seeds.shape(0) != n_env || seeds.shape(2) != 2)
+                      throw std::invalid_argument("horde_flood_probe: fp (N,), seeds (N, k, 2), "
+                                                  "n_seeds (N,)");
+                  breach_cuda::horde_flood_probe(n_env, h, w, tile_ok, fp.data(), seeds.data(),
+                                                 n_seeds.data(), (int)seeds.shape(1), dist);
+              },
+              "#29 P7d, TEST-ONLY: the HORDE stage's flood (one block per env) on device "
+              "masks tile_ok (N, h, w) uint8 into dist (N, h, w) int32 (device addresses).");
         m.def("applier_blast_probe",
               [](FieldApplier& a, const UnitTablesDevice& t,
                  py::array_t<uint64_t, py::array::c_style> ptrs, int n_gases, int h, int w,
@@ -5651,7 +5685,7 @@ PYBIND11_MODULE(breach_physics, m) {
         // arguments). packs: one per registry species, in registry order.
         .def("step_swarm", [](const PhysicsEngine& self, py::sequence packs,
                               py::object temperature, py::object solid, py::object env,
-                              py::dict host_dirty) {
+                              py::dict host_dirty, py::object bite) {
             if ((int)py::len(packs) != swarm::N_SPECIES_LAWS)
                 throw py::value_error("step_swarm: one pack per swarm species, registry order");
             const py::ssize_t h = swarm_dim(temperature, "step_swarm temperature", 1, 3);
@@ -5663,6 +5697,9 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::dtype::of<bool>(), {n_env, h, w}, false));
             const uint32_t* ev = static_cast<const uint32_t*>(swarm_arr(env, "step_swarm env",
                 py::dtype::of<uint32_t>(), {n_env, swarm::ENV_WORDS}, false));
+            // arc #63 P5a: the bite plane (n_env, h, w) int32, written in place.
+            int32_t* bt = static_cast<int32_t*>(swarm_arr(bite, "step_swarm bite",
+                py::dtype::of<int32_t>(), {n_env, h, w}, true));
             std::vector<swarm::SpeciesStep> steps((size_t)swarm::N_SPECIES_LAWS);
             std::vector<uint8_t> dirty((size_t)swarm::N_SPECIES_LAWS, 0);
             for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i) {
@@ -5691,13 +5728,13 @@ PYBIND11_MODULE(breach_physics, m) {
                 sp.host_dirty = &dirty[(size_t)i];
             }
             std::vector<int32_t> rows = self.step_swarm(steps, T, sol, (int)h, (int)w, ev,
-                                                        (int)n_env);
+                                                        (int)n_env, bt);
             for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i)
                 host_dirty[swarm::SPECIES_LAWS[i].name] = py::bool_(dirty[(size_t)i] != 0);
             return swarm_rows_array(rows);
         }, py::arg("packs"), py::arg("temperature"), py::arg("solid"), py::arg("env"),
-           py::arg("host_dirty"),
-           "arc #63 P3: the host-path swarm step; returns the death rows "
+           py::arg("host_dirty"), py::arg("bite"),
+           "arc #63 P3: the host-path swarm step (P5a: rebuilds the bite plane); returns the death rows "
            "(n, ROW_WORDS) int32 in (species, env, slot) order ((0, ROW_WORDS) when "
            "dormant), and sets host_dirty[sp] after a launch.")
         .def("step_tail", [](const PhysicsEngine& self,
@@ -6430,6 +6467,10 @@ PYBIND11_MODULE(breach_physics, m) {
                 {N, swarm::ENV_WORDS}, false));
             a.swarm_species = sps.data();
             a.n_swarm_species = (int)sps.size();
+            // arc #63 P5a: the device bite plane's address (the batch's buffer).
+            a.swarm_bite = sw["bite"].cast<std::uintptr_t>();
+            if (a.swarm_bite == 0)
+                throw py::value_error("step_tail_resident swarm: the bite plane's address is required");
             std::vector<std::vector<int32_t>> rows;
             a.swarm_rows = &rows;
             auto destroyed = self.step_tail_resident(f, a, resident_engines_from(engines));
