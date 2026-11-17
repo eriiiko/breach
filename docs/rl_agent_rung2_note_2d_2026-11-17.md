@@ -391,6 +391,64 @@ changed, the game's suite once, uninterrupted, at the final tree
 (`pytest tests -q`), with both modules built in the worktree;
 `tools/twin_debt.py` none; `tests/test_claude_rules_paths.py` green.
 
+## 15a. As built (2d.2, 2026-11-17): where it differs, and why
+
+Only what differs from sections 9 to 15.
+
+- **The weights' version is raised by `learn`**, not by the hand-over (it
+  names the weights `learn` just moved; the trainer hands the new weights
+  over with it). In the trainer's loop the two are the same; this form
+  also refuses a batch learnt twice without a hand-over between.
+- **The header's fields** are `version`, `run_sha256`, `training_sha256`,
+  `build_id` (`batch.HEADER_FIELDS`); `Batch.set_header` writes it,
+  `Batch.check_header` is the learner's reader; a batch with no header is
+  refused too. The stand-in has no build id: `None` on both sides.
+- **The saved file and the export also carry `net`** (the network spec's
+  widths): the record names `"v1"` for both the full and the reduced
+  width, so without it a reduced file loads into a full network only to
+  fail on a tensor's shape. A difference is refused as `network widths`.
+- **A resume compares the training manifest held IN the saved file** with
+  one made now (the folder's `training_manifest.json` is written once, at
+  the run's start, for people). `dirty` is `rl_env.check_clean_tree`'s
+  verdict, the one check, now covering `agents/` and `tools/`.
+- **The curve is trimmed at a resume.** A run killed after a round's line
+  and before the next save leaves lines past the saved round; they (and a
+  `stopped` line) move to `curve_discarded.jsonl`, so the curve goes on
+  without a seam. The first resumed line carries `resumed_from`,
+  `matches_restarted` (true: every match starts again and, with the memory
+  on, every memory is zero), `code_change` and `curve_lines_discarded`.
+  A stop (masked choice, live check) does not save: `last.pt` stays at the
+  last save.
+- **`started_from` of a resumed run** is `{"saved": <sha256 of last.pt>,
+  "round": k, "from": <that file's own started_from>}` (the chain back to
+  "nothing" or a copy), with `code_change` when `--allow-code-change` let
+  the build id or commit differ. `--out` is refused with `--resume` as
+  `--run` / `--train` are. The wall stop counts from the resume.
+- **What a save must hold is a table** (`saved.SAVED` / `NOT_SAVED`, with
+  why each is not saved); `test_saved.py` fails on an attribute of the
+  trainer, learner, collector or scale in neither.
+- **FINDING, fixed: the optimisers keep the tensors they are handed.**
+  `Adam.load_state_dict` on the processor does not copy the moments, and
+  steps them in place: two trainers restored from one loaded file shared
+  them and parted after one round (the determinism test went red). The
+  restore now copies the learner's tables first.
+- **What is exact at a resume** (on the processor, held by the tests):
+  every weight, both optimisers' state, the scale, both generators, the
+  counters and the version are restored to the bit, and two restores of one
+  file over fresh stand-ins end bit-identical after two more rounds. What
+  is not: the matches (they start again), so a resumed run is not the
+  unbroken one; no test claims it.
+- **The curves script** draws a fifth figure, `curve_live.png` (the live
+  check's two gaps against the tolerance); `read` stops at the first
+  `stopped` line and returns it, the figures say so in their title, and
+  the script prints that it refused the rest.
+- **The real-rooms smoke** is the existing `test_a_smoke_on_the_real_rooms`
+  extended: 2 rounds, then `--resume` for 2 more, 4 lines, the third
+  `resumed_from` 2.
+- **The levels hash** is length-prefixed (each file's relative path, then
+  its bytes) so two folders cannot hash the same by moving a byte across a
+  file boundary.
+
 ## 16. Systems
 
 - **Uses:** the Batched environment and its Training snapshot row
