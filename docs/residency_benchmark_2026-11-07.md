@@ -1818,3 +1818,31 @@ pointer table and the planes' checks (about 0.1 ms) and their own serial work (t
 motion plates' sight walks, the pumps' seam calls), at most 0.05 ms on the scene. Five launches per
 tick cost about 1.3 ms here, almost all floor: P7e's device tick, with no host sync between stages,
 removes most of it; nothing here needs a fan-out.
+
+## P6b.4: timed charges, heat sources, slot 9e whole, the entity export (2026-11-17)
+
+`python tests/cuda_unit_hazards_check.py bench` inside the CUDA subprocess (Home Desktop, RTX 3070;
+P7d's agent was working in its own worktree on the same machine, its processes alive; no build or
+suite of mine ran). Median ms over 30 reps; each rep re-stages every list from the host (not timed);
+a device row is the launch, its books' D2H and the Python face; the export is Python, N envs one
+after another.
+
+| row | N=1 | N=8 | N=64 |
+|---|---|---|---|
+| timed charges, idle (nothing due) | 1.036 | 1.128 | 2.720 |
+| timed charges, firing (t_frag's strength row, 1 per env) | 1.336 | 1.432 | 2.551 |
+| heat sources, idle (all disabled, empty log) | 1.105 | 1.190 | 2.433 |
+| heat sources, depositing (11 per env) | 1.293 | 1.506 | 2.594 |
+| heat sources, chaining (5 deaths in one sweep per env) | 5.568 | 5.356 | 6.668 |
+| slot 9e whole, airlock_demo (10 launches) | 5.391 | 6.071 | 8.902 |
+| slot 9e whole, the hazard scene (10 launches) | 7.486 | 7.780 | 12.756 |
+| export (entity + signal sections), airlock_demo | 1.078 | 8.574 | 68.968 |
+| export (entity + signal sections), the hazard scene | 1.024 | 8.178 | 65.170 |
+
+Read: a stage costs its per-call floor (launch, book download, sync: about 1 ms with this harness's
+staging checks) plus its serial work; the chain is the only row with real device work (five death
+payloads, each a strength row's reach walk serial on thread 0: about 0.85 ms a death), flat in N
+because the envs run as blocks side by side. Slot 9e whole is ten launches, mostly floor: P7e's
+device tick removes the syncs between them. The export is about 1 ms per env in Python (the bytes,
+not a hash): it runs once per digest, not per tick, and is the obvious target if a per-tick digest of
+many envs is ever needed (a device-side packing of the tails).

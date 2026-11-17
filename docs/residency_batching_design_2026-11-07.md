@@ -2257,10 +2257,91 @@ nodes, 9e(c) and the pumps on the device. No decision moved. One line each:
   eight controllers, all 15 transitions); REFUSAL (one past each bound refused by name, nothing
   written; at the bound equal); SCENE (the signal scene 320 ticks in both boundaries, airlock_demo 260
   ticks, 1b + 9e(a) (b) (c) (d) pumps + vents + doors + (e) shadowed every tick, the tables' identity
-  every tick, an unhooked twin equal; an 80-branch census, three named unreachable); BATCH N = 2 / 8
+  every tick, an unhooked twin equal; a 77-branch census, three named unreachable); BATCH N = 2 / 8
   (an env with no bus); PADDING; OVERFLOW; CHAINED (the scene both ways and airlock_demo with every
   9e signal sub-step, the vents and the doors on the device, the host laws run 0 times in the twin;
   ship_demo's bots 500 ticks, the signal chains idle). Every gate broken once (the patch's report).
+
+**As built (P6b.4, 2026-11-17).** The cut table's P6b.4 row: the timed charges and the heat
+sources on the device, slot 9e chained whole, the entity and signal sections exported from the
+tables. One decision moved (below: the detonations of 9e are applied AT ONCE, not recorded for
+the DETONATE walk). One line each:
+- THE TABLES (on the object tables): `unit_schema.TIMED_CHARGE_TABLE` (W 13, cap 32: `ordinal`,
+  `fy`, `fx`, `payload` (the row's index), `period_ticks`, `ticks_to_fire`, `heat`,
+  `trigger_temp_q16`, `fuse_ticks`, `enabled`, `fired`, `alive`, `live`) and `HEAT_SOURCE_TABLE`
+  (W 11, cap 32: `ordinal`, `fy`, `fx`, `heat_q16`, `heat_radius`, `enabled`, `hp_q16`,
+  `death_payload` (-1 none), `max_temp_q16`, `alive`, `live`), row objects `TimedRow` /
+  `HeatRow`. Record functions `unit_kernels.timed_charges_of` / `heat_sources_of`, the way back
+  `timed_charges_to_host` / `heat_sources_to_host` (onto the sim's own runtimes: the countdown,
+  latch and enabled; hp, alive and enabled; another row refused by name,
+  `HazardTableMismatch`), entity rows `timed_entity_rows` / `heat_entity_rows` (and
+  `sensor_entity_rows`). No Device tables row: every value is a column read from the runtime
+  (the per-tick deposit's float is the runtime's once-quantized `heat_q16`, which the edit door
+  re-quantizes exactly).
+- THE STAGES (`applier.STAGES`, renumbered in 9e's order): TOPOLOGY 0, RESOLVE 1, EMIT 2,
+  LOGIC 3, DOOR_INPUTS 4, PUMPS 5, VENTS 6, DOORS 7, TIMED_CHARGES 8 (new), DETONATE 9 (was 8),
+  HEAT_SOURCES 10 (new), SWAP 11 (was 9), SOURCES 12 (was 10); `cpp/src/cuda_unit_hazards.cuh`
+  (`hazards::timed_sweep`, `heat_sweep`, `blast_damage`, `payload_record`), dispatched by
+  `k_applier` with ONE `apply_payload_rec` lambda that the effect list's PAYLOAD branch, both
+  stages' detonations share (one payload law, one booking). Python faces
+  `unit_kernels.timed_charges(store, applier, fields, ring, walk_lists, table)` and
+  `heat_sources(...)`; bindings `applier_run(..., timed_table=, heat_table=)`. Each stage appends
+  the PAYLOAD records it applied to its own effect list (compared with the host's calls, never
+  walked). BOOKS `timed_fired`, `heat_deaths`, `heat_deposits`, `heat_refused`. Profiler labels
+  "9e(d') timed charges" and "9e(d'') heat sources" (the last of "9e entities").
+- THE DECISION THAT MOVED: the brief asked for the timed charges' detonations as PAYLOAD records
+  walked by DETONATE. The reference reads a heat charge's tile temperature BETWEEN detonations
+  (`destroy_wall` sets a destroyed tile's T to 0; bulk gas refreshes a cell's mirror), so a
+  record-then-walk form differs when an earlier charge of the sweep destroys or gasses a later
+  heat charge's tile; the scene takes that case (a heat charge on a hot wood wall that an
+  earlier charge's blast destroys in the same sweep: the reference, and the device, read it
+  cold). So both stages apply at once through the one payload function; the planted charges
+  keep P7b's records + DETONATE (`charges.tick` reads no map).
+- THE CHAIN'S BOUND (proved; the head refuses past it): each source dies at most once (a dead
+  source is skipped) and a death applies one payload, which appends at most one disc (only a row
+  with radius > 0 appends). So the discs read number at most D0 + S_d (D0 the log's count at the
+  head, S_d the living sources whose death payload's row has radius > 0) and the log never holds
+  more. The head refuses D0 + S_d > the log's capacity (64) BY NAME (`applier.HeatChainRefused`,
+  host twin `unit_kernels.heat_chain_bound`), nothing written.
+- THE EXPORT is `unit_kernels.EntityExport(sim)`: `entity_section(tables)` /
+  `signal_section(bus_records)` / `digest(section)`; each record is `serialize.record_head` (made
+  once) + `record_tail` of the table's entity rows (doors with their tile table, ducts, vents,
+  nodes, pumps, sensors, timed charges, heat sources); a class with no device table (button,
+  terminal, light, prop, zones, cover) carries a tail taken at build (nothing moves it on the
+  continuous path; the gates hold it equal every tick). `serialize.entity_records` split into
+  `record_head` / `record_tail` (a pure refactor: pins and goldens equal).
+- THE `alive` REFUSAL: the heat source's half is lifted, not by a device read of the table: the
+  reference's emit reads `_entity_by_ordinal`, built BEFORE `build_heat_sources` replaced the
+  instance with its runtime, so a wired heat-source `alive` reads 1 even after the source died
+  (a finding, not changed); the device emits that constant, and `signal_rows` refuses by name a
+  map that holds the runtime. What remains refused: a cover row's `alive` (OnePhaseWEGO's chew)
+  and a non-door `is_open` with a `state`.
+- THE HARNESS: `LISTS` rows `timed_charges`, `heat_sources` (landed) and `timed_payloads`,
+  `heat_payloads` (logged PAYLOAD calls; the tap's sites gained `timed_charge_system` and
+  `heat_source_system`; `PAYLOAD_LOGS`); FIXED: `ChainedSlots` SUMS the books of a chain's slots
+  (it kept the last slot's: a whole-9e chain books one channel in several stages);
+  `ChainedSlots` on a unit-free level pads one row.
+- CHOICES where the design was silent: at-once application (above); the own effect list as the
+  stages' record of what they applied; the chain's bound from the log's capacity; the export's
+  static tails for classes with no table; a chained 9e starts at the first sub-step whose host
+  gate is open on the level (the conductor runs nothing before it); the shipped level with a
+  heat source does not exist (no shipped level holds one), so the scene and the batch carry them.
+- WHAT THE REFERENCE SHOWED (nothing changed in it): a wired heat source's `alive` never falls
+  (above); a heat source's blast damage is the disc law, which a wall does not stop (the scene's
+  source behind an intact wood wall takes it); the brief's 9e(d') order "planted, then timed" is
+  the reverse of the conductor's (`sweep_timed_charges` runs before `charges.tick`): the device
+  follows the code; the grenade, charge, round and blast-source tables are in no digest (adding
+  them is a membership change: a finding for Erik).
+- THE GATES (`tests/cuda_unit_hazards_check.py`, wrapper `tests/test_cuda_unit_hazards.py`; CPU
+  `tests/test_hazard_tables.py`; the scene `tests/_hazard_scene.py`): TABLES; SCENE (the hazard
+  scene both boundaries 160 ticks and fire_smoke_studio 120 ticks: 9e(d') timed, 9e(d') planted
+  and 9e(d'') heat shadowed, the tables' identity every tick, an unhooked twin equal; a 32-branch
+  census, three named unreachable); BOUND (at the bound equal, one past refused, nothing
+  written); BATCH N = 2 / 8; PADDING; OVERFLOW; CHAINED (slot 9e whole, ten slots, on the scene
+  both ways, airlock_demo, fire_smoke_studio and ship_demo's bots 500 ticks; the export from the
+  device's tables equal to the serializer every tick; the host laws run 0 times in the twin).
+  Measured in the benchmark doc's P6b.4 section. Every gate broken once (the patch's report: 30
+  single-site breaks, all red).
 
 ### 4.5 Actions, observations, rewards, terminals, the event ring
 

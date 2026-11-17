@@ -1007,5 +1007,171 @@ def main(parts=None) -> int:
     return 0 if ok else 1
 
 
+# ---------------------------------------------------------------------------
+# bench(): the TIMING table
+# ---------------------------------------------------------------------------
+class _Rig:
+    """Every device list of 9e for N copies of one sim's state (each rep
+    re-staged from the host records, not timed)."""
+
+    def __init__(self, sim, n):
+        import cuda_unit_signals_check as sg
+        pg = _pg()
+        self.sim, self.n = sim, n
+        U = max(1, len(sim.units))
+        self.st = unit_store.DeviceStore(n, U, tables=unit_tables.values_batch([sim] * n))
+        self.rows = np.stack([unit_store.pack(sim.units, U)] * n)
+        self.ring = unit_events.EventRing(n, U, unit_events.E_MAX)
+        self.own = applier.DeviceApplier(n, applier.E_CAP, n_units=U)
+        self.det = applier.DeviceApplier(n, applier.E_CAP, n_units=U)
+        self.door = edit_door.DeviceEditDoor(n)
+        self.claims = attack_lists.claims_list(n)
+        self.noise = ot.DeviceTable(us.NOISE_TABLE, n)
+        self.blast = ot.DeviceTable(us.BLAST_LOG_TABLE, n)
+        self.srcs, self.stl = uk.source_tables(n)
+        self.timed, self.heat = uk.hazard_tables(n)
+        self.charges = ot.DeviceTable(us.CHARGE_TABLE, n)
+        self.sig = uk.signal_tables(n)
+        self.doors, self.dtiles = uk.door_tables(n)
+        self.ducts, self.vents = uk.vent_tables(n)
+        self.planes = pg._planes(sim.gmap)
+        self.recs = dict(_tables_of(sim), noise=uk.noise_of(sim), blast=uk.blast_log_of(sim),
+                         sources=uk.sources_of(sim), source_tiles=uk.source_tiles_of(sim),
+                         charges=uk._records_of(us.CHARGE_TABLE, sim.planted_charges))
+        self._sg = sg
+
+    def stage(self):
+        pg = _pg()
+        n, r = self.n, self.recs
+        self.st.upload(self.rows)
+        for t in (self.ring, self.own, self.det, self.door, self.claims):
+            t.begin()
+        self.door.set_seq(np.full(n, self.sim.edit_queue._seq, dtype=np.int64))
+        for t, k in ((self.noise, "noise"), (self.blast, "blast"), (self.srcs, "sources"),
+                     (self.stl, "source_tiles"), (self.timed, "timed_charges"),
+                     (self.heat, "heat_sources"), (self.charges, "charges"),
+                     (self.doors, "doors"), (self.dtiles, "door_tiles"), (self.ducts, "ducts"),
+                     (self.vents, "vents")):
+            t.stage_lists([r[k]] * n)
+        for ln in uk.SIGNAL_LISTS:
+            self.sig[ln].stage_lists([r[ln]] * n)
+        self.fields = pg._dev_planes([self.planes] * n)
+        self.wl = uk.WalkLists(door=self.door, claims=self.claims, noise=self.noise,
+                               blast_log=self.blast, sources=self.srcs, source_tiles=self.stl)
+
+    def timed_stage(self):
+        uk.timed_charges(self.st, self.own, self.fields, self.ring, self.wl, self.timed)
+
+    def heat_stage(self):
+        uk.heat_sources(self.st, self.own, self.fields, self.ring, self.wl, self.heat)
+
+    def whole_9e(self):
+        sg = self._sg
+        ap = sg._applier_for(self.st)
+        lists = dict(self.sig, doors=self.doors)
+        ticks = np.full(self.n, self.sim.tick, dtype=np.int64)
+        if self.sim._signal_bus is not None:
+            uk.signals_emit(self.st, ap, self.fields, lists, ticks)
+            uk.signals_logic(self.st, ap, lists)
+            uk.signals_door_inputs(self.st, ap, lists)
+            uk.signals_pumps(self.st, ap, self.fields, lists)
+        uk.sweep_vents(self.st, ap, self.fields, self.ducts, self.vents)
+        uk.sweep_doors(self.st, ap, self.fields, self.doors, self.dtiles)
+        self.timed_stage()
+        uk.charges_tick(self.st, self.charges, self.det, ticks)
+        uk.detonate(self.st, self.det, self.fields, self.ring, self.wl)
+        self.heat_stage()
+        if self.sim._signal_bus is not None:
+            uk.signals_swap(self.st, ap, lists)
+
+
+def _timeit(rig, fn, reps):
+    ts = []
+    for _ in range(reps):
+        rig.stage()
+        s = time.perf_counter()
+        fn()
+        ts.append(time.perf_counter() - s)
+    return float(np.median(ts)) * 1e3
+
+
+def _state(kind):
+    """A sim in the state each row times."""
+    from cuda_unit_signals_check import AirlockDriver
+    if kind == "airlock_demo":
+        d = AirlockDriver()
+        for _ in range(30):
+            d.tick()
+        return d.sim
+    if kind == "chain":
+        d = BoundScene(5)
+        share([d.sim])
+        for _ in range(11):
+            d.tick()
+        return d.sim                    # the bench stages the frag's disc into the log
+    sc = Scene(0)
+    share([sc.sim])
+    for _ in range(24 if kind != "idle" else 140):     # t_frag fires on the 25th sweep
+        sc.tick()
+    if kind == "idle":                  # nothing fires, every source cold or dead
+        for c in sc.sim._timed_charges:
+            c.ticks_to_fire = -1 if c.ticks_to_fire == 0 else c.ticks_to_fire
+        for h in sc.sim._heat_sources:
+            h.enabled = False
+    return sc.sim
+
+
+def bench(reps: int = 30) -> int:
+    """The TIMING table (median ms over ``reps``; each rep re-stages every
+    list, not timed): the timed-charge stage idle and firing, the heat-source
+    stage idle, depositing and chaining, slot 9e whole on airlock_demo and on
+    the hazard scene, and the export (Python, per env), for N = 1 / 8 / 64."""
+    from cuda_unit_vents_check import gate_config
+    gate_config()
+    print(f"TIMING (median ms over {reps} reps)")
+    print("| row | N=1 | N=8 | N=64 |")
+    rows = []
+    idle, fire, chain, ad = _state("idle"), _state("fire"), _state("chain"), _state("airlock_demo")
+    for label, sim, op in (("timed charges, idle", idle, "timed"),
+                           ("timed charges, firing (t_frag)", fire, "timed"),
+                           ("heat sources, idle (all disabled, empty log)", idle, "heat"),
+                           ("heat sources, depositing", fire, "heat"),
+                           ("heat sources, chaining (5 deaths in one sweep)", chain, "heat"),
+                           ("slot 9e whole, airlock_demo", ad, "9e"),
+                           ("slot 9e whole, the hazard scene", fire, "9e")):
+        out = []
+        for n in (1, 8, 64):
+            rig = _Rig(sim, n)
+            if "chaining" in label:     # the frag's disc at t0 (y 5, x 3): radius 2, wall 200
+                rig.recs["blast"] = np.array([[5, 3, 2, 200 * ONE, 1]], dtype=np.int64)
+            fn = {"timed": rig.timed_stage, "heat": rig.heat_stage, "9e": rig.whole_9e}[op]
+            out.append(_timeit(rig, fn, reps))
+            b = rig.st.last_books
+            acts = {k: int(np.sum(b[k])) for k in ("timed_fired", "heat_deaths",
+                                                    "heat_deposits")}
+        print(f"  ({label}: books of the last N=64 rep {acts})")
+        rows.append((label, out))
+        print(f"| {label} | " + " | ".join(f"{x:.3f}" for x in out) + " |", flush=True)
+    for label, sim in (("export (entity + signal sections), airlock_demo", ad),
+                       ("export (entity + signal sections), the hazard scene", fire)):
+        ex = uk.EntityExport(sim)
+        tabs = uk.export_records(sim)
+        bus = uk.signals_of(sim)
+        out = []
+        for n in (1, 8, 64):
+            ts = []
+            for _ in range(reps):
+                s = time.perf_counter()
+                for _e in range(n):
+                    ex.entity_section(tabs)
+                    ex.signal_section(bus)
+                ts.append(time.perf_counter() - s)
+            out.append(float(np.median(ts)) * 1e3)
+        print(f"| {label} | " + " | ".join(f"{x:.3f}" for x in out) + " |", flush=True)
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "bench":
+        sys.exit(bench())
     sys.exit(main())
