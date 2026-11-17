@@ -30,7 +30,14 @@ WHAT IS KEPT PER STORED DECISION (the note's table):
 - ``first`` (bytes): the decision is the first of a match for this row;
 - ``value_row`` (bytes): the step is a VALUE ROW -- ``in_match`` 1 and the
   row's story not ended since its match began (the collector's bookkeeping,
-  carried across rounds; grading reads it).
+  carried across rounds; grading reads it);
+- ``memory`` (float32, ``(T + 1, R, core)``, only with the soldier's memory
+  on; patch 2d): the soldier's memory BEFORE its decision at each step --
+  the state carried in, before the network zeroes it where ``first`` says a
+  match starts -- and at index ``T`` the memory after the last step (what
+  the next round starts from). Learning replays a stretch from
+  ``memory[t0]`` with the stretch's ``first`` flags, and the live check
+  compares the memory at the stretch's end with ``memory[t0 + stretch]``.
 
 Once per batch, for the value after the last stored decision: the
 observation keys the value network reads and the full view as they stand
@@ -121,7 +128,8 @@ class Batch:
     arrays by key; the per-decision arrays are attributes; ``last_obs`` /
     ``last_full`` the view after the last step."""
 
-    def __init__(self, layout, rows: LearningRows, decisions: int):
+    def __init__(self, layout, rows: LearningRows, decisions: int,
+                 core: int | None = None):
         T, R = int(decisions), rows.n_rows
         if T < 1:
             raise ValueError(f"a batch of {T} decisions")
@@ -159,6 +167,10 @@ class Batch:
         self.done = np.zeros((T, R), dtype=np.uint8)
         self.first = np.zeros((T, R), dtype=np.uint8)
         self.value_row = np.zeros((T, R), dtype=np.uint8)
+        #: the memory before each decision and after the last (None: the
+        #: soldier has no memory, nothing is allocated)
+        self.memory = (None if core is None else
+                       np.zeros((T + 1, R, int(core)), dtype=np.float32))
 
     # -- the per-decision arrays by name (for the learner's flat views) ---
     PER_DECISION = ("arg_mask", "actions", "used", "logp_heads", "logp",
@@ -180,7 +192,8 @@ class Batch:
         arrays = (list(self.obs.values()) + list(self.full.values())
                   + list(self.last_obs.values())
                   + list(self.last_full.values())
-                  + [getattr(self, n) for n in self.PER_DECISION])
+                  + [getattr(self, n) for n in self.PER_DECISION]
+                  + ([] if self.memory is None else [self.memory]))
         return int(sum(a.nbytes for a in arrays))
 
 
