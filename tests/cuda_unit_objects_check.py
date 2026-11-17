@@ -210,6 +210,11 @@ def table_reference(sim) -> dict:
         "clock_tps": int(CFG.clock.ticks_per_second),
         "grenade_flight_eps_q": int(combat._FLIGHT_EPS_Q),
         "order_grenade": int(ORDER_GRENADE),
+        # #215: the bounce's dials off the sim's own hand-grenade row
+        "grenade_bounce_restitution_q": int(
+            wt.weapons.by_name["hand_grenade"].bounce_restitution_q),
+        "grenade_bounce_max": int(wt.weapons.by_name["hand_grenade"].bounce_max),
+        "grenade_bounce_min_q": int(combat.BOUNCE_MIN_Q),
         "hand_grenade_ammo_row": tuple(ammo.index(n) for n in wt.hand_grenade_rows),
         "hand_grenade_speed_q": tuple(
             combat.Projectile(ORDER_GRENADE, 0, 0, 1, 1, 0.0, 0, ammo_name=n).travel_speed_q
