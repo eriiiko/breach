@@ -177,10 +177,11 @@ def test_the_run_stops_at_the_planned_rounds_and_writes_its_files(
         tmp_path, monkeypatch):
     """Protects: ``agents.run`` runs exactly the planned rounds, appends one
     line per round, copies both files it read into the output folder and
-    writes both networks' weights under the not-a-saved-run names; it
-    refuses an output folder inside the checkout and one that already holds
-    a curve. Breaks when the loop runs past the plan, a line is lost, or a
-    resume is silently allowed."""
+    writes the saved run (``last.pt``) and the training manifest; a new run
+    is refused in an output folder inside the checkout and in one that
+    already holds a curve. Breaks when the loop runs past the plan, a line
+    is lost, the run is not saved at its end, or a new run silently
+    overwrites an old one."""
     _standin_env(monkeypatch)
     run, train = _files(tmp_path, rounds=3)
     out = tmp_path / "out"
@@ -190,9 +191,9 @@ def test_the_run_stops_at_the_planned_rounds_and_writes_its_files(
     assert [json.loads(x)["round"] for x in lines] == [1, 2, 3]
     assert (out / R.RUN_COPY).read_bytes() == run.read_bytes()
     assert (out / R.TRAIN_COPY).read_bytes() == train.read_bytes()
-    assert (out / R.SOLDIER_WEIGHTS).is_file()
-    assert (out / R.VALUE_WEIGHTS).is_file()
-    with pytest.raises(ValueError, match="resuming"):
+    assert (out / "last.pt").is_file()
+    assert (out / "training_manifest.json").is_file()
+    with pytest.raises(ValueError, match="resume the run"):
         R.run(run, train, out, device="cpu")
     with pytest.raises(ValueError, match="inside the checkout"):
         R.run(run, train, ROOT / "never_here", device="cpu")
