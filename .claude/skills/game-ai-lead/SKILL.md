@@ -406,6 +406,15 @@ are that session:
   skipped by name; decide the cell's start / step size / farm before any
   run with the memory on. Bit-identity without memory is a machine-keyed
   hash in `agents/tests/test_memory.py`.
+- 2026-11-17 -- 2d.1b (why the memory did not learn): the heads read the
+  cell's output raw, about 8 x smaller than the join; a LayerNorm between
+  (`memory_norm`) makes a supervised gap-12 fit learn (0.29 -> 0.99) and
+  the cue answered at once pass by reward in 87 rounds. Chrono start kept.
+  Still open: the tasks' farm gives recall12 only 8.5 teaching answers a
+  round (flat after 370 rounds); the farm is the lead's call. Measure a
+  memory question SUPERVISED first (minutes) before a reward run (hours);
+  and never `git stash pop` in a worktree: the stash is shared by all of
+  them (it popped another branch's WIP here; undone).
 - 2026-11-17 -- 2d.2 (saving and resuming) built on `192-2d2-saving`:
   `agents/saved.py`, `--resume`, the batch header, the training manifest,
   `SNAPSHOT_PATHS` + `agents/` `tools/`. Learned: (1) a PyTorch optimiser
