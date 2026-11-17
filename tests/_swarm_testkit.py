@@ -93,6 +93,7 @@ DEFAULT_LARVA = {
     "p_alarm_q": 2731,
     "salt_tumble": int(Salt.SWARM_TUMBLE),
     "salt_wall_turn": int(Salt.SWARM_WALL_TURN),
+    "bite_q": 218,          # arc #63 P5a: 0.08 bites/s x 1 unit at 24 tps
 }
 
 

@@ -65,6 +65,11 @@ class Cause(str, Enum):
     ``burning`` / ``poisoned`` / ``suffocating`` / ``regen``
                     the DoT/HoT status rows (``status.STATUS_REGISTRY``'s
                     names; ``status.py`` asserts every emitting row is here)
+    ``larva_bite``  the larvae's bite (arc #63 P5a): the ``swarm_bite_dose``
+                    coupling row's dose (``exchange.apply_bite_dose``), whose
+                    harm the poison law emits later as it leaves the blood
+                    (``poison.tick`` carries the latest dose's cause);
+                    never credited (``attacker_id`` -1)
     ==============  ==========================================================
 
     NOT here because no damage path exists yet (``environment.py``: pressure,
@@ -83,6 +88,7 @@ class Cause(str, Enum):
     POISONED    = "poisoned"
     SUFFOCATING = "suffocating"
     REGEN       = "regen"
+    LARVA_BITE  = "larva_bite"    # arc #63 P5a; appended (indices never move)
 
 
 #: Every cause string, in declaration order.

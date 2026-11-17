@@ -5500,6 +5500,12 @@ turn_bias         = 0.8      # PLACEHOLDER (P4). P(turn toward the better side);
 turn_min          = 0.5236   # PLACEHOLDER (P4). rad (30 deg): smallest tumble/wall turn
 turn_max          = 2.0944   # PLACEHOLDER (P4). rad (120 deg): largest turn (larval turns span ~30-120 deg)
 sweep_angle       = 0.7854   # PLACEHOLDER (P4). rad (45 deg): sweep points one tile ahead at +-45 deg (the diagonal-ahead tiles); 1 tile = a field-grid sampling distance, not a body length
+# --- arc #63 P5a: the bite (docs/swarm_P5a_impl.md). Every larva not in coma
+# adds bite_dose x bite_rate per second to its tile of the bite-dose plane
+# (the EXPECTED dose, no draw); a body standing on the tile takes it through
+# the poison law (simulation.poison: 1 unit = 10 HP, felt over ~half a minute).
+bite_dose = 1.0    # Erik's first number (2026-11-14): one bite is one unit of poison -- something you remember
+bite_rate = 0.08   # Claude, at Erik's licence ("it should matter to be bitten"): bites per second per larva on a tile a body stands on. A dense brood (~1.5 larvae a tile) puts ~13 under a marine's 3x3 footprint, ~1 bite a second: crossing a 6 m nursery at a walk (3 s) costs ~30 HP arriving later, a sprint ~10, standing in it 10 s is death on a delay; one stray larva bites ~once in 13 s, so you can step past it. Consequential, not dominating
 
 # =============================================================================
 # SOUND (#202; design docs/sound/playback_layer_design_2026-11-12.md). The

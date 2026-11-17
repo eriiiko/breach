@@ -90,7 +90,7 @@ from simulation import poison
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
-    apply_blast_damage, apply_environmental_damage, apply_poison_dose,
+    apply_bite_dose, apply_blast_damage, apply_environmental_damage, apply_poison_dose,
     apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
@@ -2063,8 +2063,8 @@ class Simulation:
           6.   Re-stamp obstacles; 6b. flush the field-edit queue
           7.   Physics step
           9.   Burn-through walls; 9b. over-pressure walls
-          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose;
-               9c3'. the poison law; 9d. temperature ignition
+          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose +
+               the larvae's bite dose; 9c3'. the poison law; 9d. temperature ignition
           9e.  Entities (signals, pumps, vents, doors, timed and planted
                charges, heat sources); recorder snapshot; tick-end clears
          10.   Tick advance; 10'. orders expire; the ruleset's tick end
@@ -2326,6 +2326,11 @@ class Simulation:
             apply_teargas_blind(self.units, self.gmap)
             apply_poison_dose(self.units, self.gmap, self._tps,
                               events=self.tick_events)
+            # arc #63 P5a: the larvae's bite (the swarm_bite_dose row): the
+            # bite-dose plane slot 7's swarm step wrote, summed over each
+            # living unit's footprint, into the poison door (uncredited,
+            # cause larva_bite). Lazy: a swarm-free plane is one .any().
+            apply_bite_dose(self.units, self.gmap)
         # 9c3'. The poison law (#29 PX, simulation.poison): every living unit
         # holding poison moves depot -> blood -> out, and what leaves the
         # blood hurts as one POISON packet (credited to its dose). Outside

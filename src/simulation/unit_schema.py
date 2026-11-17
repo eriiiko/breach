@@ -434,6 +434,12 @@ def _grenade_default():
     return [0] * _grenade_width()
 
 
+def _poison_cause_default():
+    """``poison_gas``'s index in ``events.CAUSE_NAMES`` (arc #63 P5a)."""
+    from simulation.events import CAUSE_NAMES, Cause
+    return CAUSE_NAMES.index(Cause.POISON_GAS.value)
+
+
 def _turn_of(u):
     """The turning law's target hashed as the turn still to go,
     ``wrap(target - facing)`` (the target itself is never zero)."""
@@ -519,6 +525,12 @@ COLUMNS: tuple[Column, ...] = (
     _c("poison_src", KIND_INT, "health", -1,
        note="the unit credited with the latest dose; -1 = the environment "
             "or none"),
+    # arc #63 P5a: the CAUSE of the latest dose (its index in
+    # events.CAUSE_NAMES), which the law's packets carry; the default is the
+    # gas's, so an unpoisoned or gas-poisoned unit hashes as before
+    _c("poison_cause", KIND_INT, "health", _poison_cause_default,
+       note="the latest dose's cause, an events.CAUSE_NAMES index; "
+            "poison_gas's by default (simulation.poison)"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",

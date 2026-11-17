@@ -118,6 +118,13 @@ NEXT_UNIT_ID_ATTR = "swarm_next_unit_id"
 SPECIES_ATTR = "swarm_species"
 HOST_DIRTY_ATTR = "swarm_host_dirty"
 SPECIES_HASH_NPZ_KEY = "swarm_species_hash"
+#: arc #63 P5a: THE BITE-DOSE PLANE, ``(h, w)`` int32 per map: what the
+#: biting swarm units on each tile give a body standing there THIS tick, in
+#: Q16 units of poison. Swarm OUTPUT, rebuilt from zero by every swarm step
+#: (never accumulated across ticks), read by the unit side only through the
+#: ``swarm_bite_dose`` coupling row (``exchange.apply_bite_dose``). Not
+#: digested and not in the swarm section: it is a function of the store.
+BITE_PLANE_ATTR = "swarm_bite_dose"
 
 
 def store_attr(species: str, col: str) -> str:
@@ -159,7 +166,7 @@ def check_store_names(species_tuple, roster) -> None:
                 f"alias swarm_<species>_{col.name}")
 
     names = [NEXT_UNIT_ID_ATTR, SPECIES_ATTR, HOST_DIRTY_ATTR,
-             SPECIES_HASH_NPZ_KEY]
+             SPECIES_HASH_NPZ_KEY, BITE_PLANE_ATTR]
     for sp in species_tuple:
         names.append(high_water_attr(sp))
         for col in roster:
@@ -181,6 +188,10 @@ check_store_names(SWARM_SPECIES, ROSTER)
 SWARM_RESIDENT_NAMES = tuple(
     store_attr(sp, col.name) for sp in SWARM_SPECIES for col in ROSTER
 ) + tuple(high_water_attr(sp) for sp in SWARM_SPECIES) + (NEXT_UNIT_ID_ATTR,)
+#: arc #63 P5a: the swarm's per-tile OUTPUT planes, resident (the resident
+#: swarm stage writes them on the device; the exit download brings them
+#: down while a swarm is present). Never host-written after allocation.
+SWARM_PLANE_NAMES = (BITE_PLANE_ATTR,)
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +233,13 @@ SPECIES_FIELDS = (
           doc="largest tumble / wall turn, radians"),
     Field("sweep_angle", KIND_REAL_Q16, minimum=2 ** -16, maximum=math.pi / 2,
           doc="half-angle of the head sweep's two points, radians"),
+    # arc #63 P5a (docs/swarm_P5a_impl.md): the bite. A biting unit (alive,
+    # not in coma) adds bite_dose x bite_rate x dt to its tile of the
+    # bite-dose plane every tick, the EXPECTED dose (no draw).
+    Field("bite_rate", KIND_REAL_Q16, minimum=0.0, maximum=100.0,
+          doc="bites per second of one biting unit on a tile a body stands on"),
+    Field("bite_dose", KIND_REAL_Q16, minimum=0.0, maximum=100.0,
+          doc="units of poison one bite gives (simulation.poison's units)"),
 )
 
 # The reload class per field -- a separate mapping (R3): "hot" applies from
@@ -240,6 +258,8 @@ SPECIES_RELOAD: dict = {
     "turn_min": "hot",
     "turn_max": "hot",
     "sweep_angle": "hot",
+    "bite_rate": "hot",
+    "bite_dose": "hot",
 }
 
 # arc #63 P3 (§5.2): the per-field AUTHORING unit, a mapping beside
@@ -311,6 +331,9 @@ class SwarmSpeciesRow:
     turn_min_q: int
     turn_max_q: int
     sweep_angle_q: int
+    # arc #63 P5a: the bite (Q16 per second / Q16 poison units)
+    bite_rate_q: int
+    bite_dose_q: int
 
 
 _expected_row_attrs = frozenset(
@@ -491,6 +514,24 @@ def movement_step_q(row, ctx) -> tuple:
     return v_q, (v_q * int(ctx.dt_q)) >> swarm_fixed.FP_SHIFT
 
 
+def bite_tick_q(row, ctx) -> int:
+    """SHARED (arc #63 P5a): what ONE biting unit adds to its tile of the
+    bite-dose plane per tick, in Q16 units of poison -- the expected dose
+    ``bite_dose x bite_rate x dt``, formed from the three Q16 ints with ONE
+    rounding (half up; every factor is non-negative)."""
+    prod = int(row.bite_dose_q) * int(row.bite_rate_q) * int(ctx.dt_q)
+    return (prod + (1 << 31)) >> 32
+
+
+def _check_bite_plane_range(row, ctx):
+    """Every unit of the species on ONE tile still fits the int32 plane."""
+    q = bite_tick_q(row, ctx)
+    if q * int(row.max_units) > INT32_MAX:
+        return (f"bite per tick {q} x max_units {row.max_units} overflows the "
+                f"int32 bite-dose plane")
+    return None
+
+
 def _check_no_tunnelling(row, ctx):
     v_q, step_q = movement_step_q(row, ctx)
     if v_q > INT32_MAX or not 1 <= step_q < swarm_fixed.FP_ONE:
@@ -505,7 +546,8 @@ class SpeciesRule(NamedTuple):
     check: Callable   # (row, ctx) -> str | None   (None = holds)
 
 
-SHARED_RULES = (SpeciesRule("no_tunnelling", _check_no_tunnelling),)
+SHARED_RULES = (SpeciesRule("no_tunnelling", _check_no_tunnelling),
+                SpeciesRule("bite_plane_range", _check_bite_plane_range))
 
 SPECIES_RULES: dict = {
     "larva": SHARED_RULES + tuple(SpeciesRule(n, c) for n, c in swarm_larva.RULES),
@@ -553,6 +595,8 @@ def allocate_swarm_store(gmap, cfg=CFG) -> None:
        ROSTER column at (max_units,), the roster dtype. Per map: a batch
        stacks them to (N,) / (N, max_units) (ResidentBatch).
     4. ``gmap.swarm_host_dirty`` -- a plain dict, NOT resident/digested.
+    5. (arc #63 P5a) ``gmap.swarm_bite_dose`` -- the ``(h, w)`` int32 bite
+       plane, all zero (written only by the swarm step).
 
     Allocation draws no RNG. Runs on every level and every reset.
 
@@ -572,6 +616,13 @@ def allocate_swarm_store(gmap, cfg=CFG) -> None:
             setattr(gmap, store_attr(sp, col.name),
                     np.zeros((row.max_units,), dtype=col.dtype))
     gmap.swarm_host_dirty = {sp: False for sp in SWARM_SPECIES}
+    setattr(gmap, BITE_PLANE_ATTR,
+            np.zeros((int(gmap._h), int(gmap._w)), dtype=np.int32))
+
+
+def bite_plane(gmap):
+    """The read accessor of the bite-dose plane (arc #63 P5a)."""
+    return getattr(gmap, BITE_PLANE_ATTR)
 
 
 class SwarmFull(ValueError):
@@ -1205,13 +1256,15 @@ def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
                               for c in ROSTER),
                 high_water=hws[sp], tables=tables))
     if resident:
-        return {"packs": packs, "env": env}
+        return {"packs": packs, "env": env, "bite": int(dev[BITE_PLANE_ATTR])}
     g = gmaps[0]
+    bite = bite_plane(g)
     return {"packs": packs,
             "temperature": g.temperature.reshape((1,) + g.temperature.shape),
             "solid": g.solid.reshape((1,) + g.solid.shape),
             "env": env,
-            "host_dirty": g.swarm_host_dirty}
+            "host_dirty": g.swarm_host_dirty,
+            "bite": bite.reshape((1,) + bite.shape)}
 
 
 def death_events(rows) -> list:
@@ -1251,6 +1304,9 @@ def resident_entry_names(gmap) -> tuple:
 def resident_exit_names(gmap) -> tuple:
     """The swarm names the resident EXIT download carries: the columns of
     every species present in this map (the digest and the recorder read the
-    mirror) -- never ``high_water`` / ``next_unit_id`` (host-authoritative)."""
-    return tuple(store_attr(sp, c.name) for sp in SWARM_SPECIES
+    mirror) -- never ``high_water`` / ``next_unit_id`` (host-authoritative)
+    -- and, while any species is present, the bite plane (arc #63 P5a: slot
+    9c3 reads it on the host the same tick)."""
+    cols = tuple(store_attr(sp, c.name) for sp in SWARM_SPECIES
                  if int(getattr(gmap, high_water_attr(sp))) > 0 for c in ROSTER)
+    return cols + (SWARM_PLANE_NAMES if cols else ())

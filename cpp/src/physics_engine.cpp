@@ -922,10 +922,10 @@ void PhysicsEngine::apply_edits_resident(const ResidentFields& f, const int64_t*
 std::vector<int32_t> PhysicsEngine::step_swarm(const std::vector<swarm::SpeciesStep>& packs,
                                                const int32_t* T, const bool* solid,
                                                int h, int w, const uint32_t* env,
-                                               int n_env) const {
+                                               int n_env, int32_t* bite) const {
     std::vector<int32_t> rows;
     swarm::step_all(packs.data(), (int)packs.size(), T, solid, h, w, env, n_env,
-                    swarm_scratch_, rows);
+                    swarm_scratch_, rows, bite);
     return rows;
 }
 
