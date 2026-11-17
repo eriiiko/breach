@@ -92,6 +92,13 @@ def round_line(trainer, stats: dict, *, wall: float, decisions_total: int,
     - the collector's round log (``info`` per step: ``ended``, ``level``,
       ``counters``, ``masked_choices``) and its seconds;
     - the learner's measurements (``stats``) and the trainer's seconds.
+
+    NOT in the line, because nothing the trainer holds reads it honestly:
+    the rounds FIRED (the env counts hits, not shots: it would need a
+    counter in ``rl_env``), the geometric "aim on the target" (only the
+    CHOICE of aiming at a unit entry is stored: ``aim_on_unit_share``, which
+    in a one-target room is the choice of aiming at the target), and hits
+    per match (the round's hits include matches still running).
     """
     env, batch = trainer.env, trainer.batch
     col, settings = trainer.collector, trainer.settings
@@ -163,8 +170,6 @@ def round_line(trainer, stats: dict, *, wall: float, decisions_total: int,
         "kills": cnt.get("kills", 0.0),
         "hits_taken": cnt.get("hits_taken", 0.0),
         "deaths_by_cause": deaths,
-        "hits_per_match": (cnt.get("hits_dealt", 0.0) / n_ended
-                           if n_ended else None),
         "explained": dict(zip(REWARD_GROUPS,
                               [_f(x) for x in stats["explained"]])),
         "variety_heads": dict(zip(A.HEADS, [_f(x)

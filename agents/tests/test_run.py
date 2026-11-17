@@ -30,7 +30,7 @@ LINE_FIELDS = (
     "matches_ended", "outcomes", "per_level", "reward_per_match",
     "reward_per_match_groups", "group_sizes", "hand_counted", "hand_verbs",
     "trigger_counted", "trigger_share", "aim_counted", "aim_on_unit_share",
-    "hits_dealt", "hits_per_match", "deaths_by_cause", "explained",
+    "hits_dealt", "deaths_by_cause", "explained",
     "variety_heads", "distances", "distance_pass", "stopped_early",
     "clipped", "policy_loss", "value_loss", "scale_spread", "live",
     "masked_choices", "seconds", "card", "host", "stopped")
