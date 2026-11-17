@@ -266,7 +266,9 @@ def _walk_lists(lists, cells=False):
 # The slots
 # ---------------------------------------------------------------------------
 def _run_2g(st, inp, ring, lists):
-    unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick)
+    # #215: the flight reads the solid plane as the slot found it (before
+    # the DETONATE stage writes it)
+    unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick, inp.fields)
     lists["edits"].set_seq(inp.scalars["edit_seq"])
     return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists),
                                  refused_ok=LS.REPLAY_REFUSED["on"])
