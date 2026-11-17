@@ -83,6 +83,11 @@ class Settings:
     #: The step size still falls over the PLANNED rounds, so a plan the
     #: wall cuts short never reaches its low step sizes.
     wall_hours: float | None = None
+    #: Saving a run (note 2d, 9; the training file's ``[save]`` table):
+    #: ``last.pt`` is written every ``save_every`` rounds and at the end;
+    #: ``round_<n>.pt`` is kept every ``keep_every`` rounds (0: none).
+    save_every: int = 10
+    keep_every: int = 0
 
     def __post_init__(self):
         if len(self.weights) != len(REWARD_GROUPS):
@@ -99,6 +104,10 @@ class Settings:
         if int(self.value_first_rounds) < 0:
             raise ValueError(f"settings: value_first_rounds "
                              f"{self.value_first_rounds} < 0")
+        if int(self.save_every) < 1:
+            raise ValueError(f"settings: save_every {self.save_every} < 1")
+        if int(self.keep_every) < 0:
+            raise ValueError(f"settings: keep_every {self.keep_every} < 0")
         if self.lump < 1 or self.piece < self.lump:
             raise ValueError(f"settings: a piece ({self.piece}) is worked "
                              f"through in lumps ({self.lump})")

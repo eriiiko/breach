@@ -415,3 +415,12 @@ are that session:
   memory question SUPERVISED first (minutes) before a reward run (hours);
   and never `git stash pop` in a worktree: the stash is shared by all of
   them (it popped another branch's WIP here; undone).
+- 2026-11-17 -- 2d.2 (saving and resuming) built on `192-2d2-saving`:
+  `agents/saved.py`, `--resume`, the batch header, the training manifest,
+  `SNAPSHOT_PATHS` + `agents/` `tools/`. Learned: (1) a PyTorch optimiser
+  keeps the state tensors it is handed and steps them in place, so a
+  restore must copy them (the determinism test caught two restored
+  trainers sharing Adam moments); (2) a kill between a round's line and
+  its save leaves stale curve lines, so a resume moves lines past the saved
+  round to `curve_discarded.jsonl`; (3) the record says "v1" for both
+  widths, so the saved file and the export also carry the widths.

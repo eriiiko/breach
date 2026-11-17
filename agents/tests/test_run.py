@@ -177,10 +177,11 @@ def test_the_run_stops_at_the_planned_rounds_and_writes_its_files(
         tmp_path, monkeypatch):
     """Protects: ``agents.run`` runs exactly the planned rounds, appends one
     line per round, copies both files it read into the output folder and
-    writes both networks' weights under the not-a-saved-run names; it
-    refuses an output folder inside the checkout and one that already holds
-    a curve. Breaks when the loop runs past the plan, a line is lost, or a
-    resume is silently allowed."""
+    writes the saved run (``last.pt``) and the training manifest; a new run
+    is refused in an output folder inside the checkout and in one that
+    already holds a curve. Breaks when the loop runs past the plan, a line
+    is lost, the run is not saved at its end, or a new run silently
+    overwrites an old one."""
     _standin_env(monkeypatch)
     run, train = _files(tmp_path, rounds=3)
     out = tmp_path / "out"
@@ -190,9 +191,9 @@ def test_the_run_stops_at_the_planned_rounds_and_writes_its_files(
     assert [json.loads(x)["round"] for x in lines] == [1, 2, 3]
     assert (out / R.RUN_COPY).read_bytes() == run.read_bytes()
     assert (out / R.TRAIN_COPY).read_bytes() == train.read_bytes()
-    assert (out / R.SOLDIER_WEIGHTS).is_file()
-    assert (out / R.VALUE_WEIGHTS).is_file()
-    with pytest.raises(ValueError, match="resuming"):
+    assert (out / "last.pt").is_file()
+    assert (out / "training_manifest.json").is_file()
+    with pytest.raises(ValueError, match="resume the run"):
         R.run(run, train, out, device="cpu")
     with pytest.raises(ValueError, match="inside the checkout"):
         R.run(run, train, ROOT / "never_here", device="cpu")
@@ -245,18 +246,31 @@ def test_a_smoke_on_the_real_rooms(tmp_path):
     """Protects: ``agents.run`` on the real training rooms through the
     game's farm (2 rounds, 4 matches, 2 workers, the reduced width, on the
     processor) writes a line per round with the live check silent, no
-    masked choice, and decisions on the learning rows only. Breaks when the
-    run and the farm disagree on a name, a shape or a stop."""
+    masked choice, and decisions on the learning rows only; stopped there
+    and resumed (``--resume``, patch 2d.2) for 2 more, the curve has 4
+    lines and the third says ``resumed_from`` 2, the farm's build id and the
+    training manifest's levels hash are recorded. Breaks when the run and
+    the farm disagree on a name, a shape or a stop, or the resume cannot
+    read back what the real farm's run saved."""
     if not (ROOT / "cpp" / "build" / "Release").is_dir():
         pytest.skip("needs the processor build of the game's module")
     rooms = tmp_path / "rooms"
     _rooms().write_all(rooms)
-    run, train = _files(tmp_path, levels_dir=rooms)
+    run, train = _files(tmp_path, rounds=4, levels_dir=rooms)
     out = tmp_path / "out"
-    s = R.run(run, train, out, workers=2, device="cpu")
+    s = R.run(run, train, out, workers=2, device="cpu", max_rounds=2)
+    assert s["rounds"] == 2
+    s = R.run(resume=out, workers=2, device="cpu")
     lines = [json.loads(x) for x in
              (out / R.CURVE).read_text(encoding="utf-8").splitlines()]
-    assert s["rounds"] == 2 and len(lines) == 2
+    assert s["rounds"] == 4 and len(lines) == 4
+    assert [d["round"] for d in lines] == [1, 2, 3, 4]
+    assert lines[2]["resumed_from"] == 2
+    from agents import saved as SV
+    saved = SV.load(out / SV.LAST)
+    assert saved["hashes"]["build_id"]
+    assert saved["manifest"]["levels_sha256"]
+    assert saved["manifest"]["room_generator_commit"]
     for line in lines:
         assert line["stopped"] is None
         assert line["masked_choices"] == 0

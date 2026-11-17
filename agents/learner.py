@@ -71,6 +71,14 @@ that differ between acting and learning, a mismatch of number formats, any
 difference between acting and learning in the choosing module, and a
 memory stored or replayed apart from the one the soldier had.
 
+THE BATCH'S HEADER (patch 2d.2; design 4.6): :meth:`Learner.learn` first
+reads the batch's header (``Batch.check_header``) against its own
+(:meth:`Learner.header`: the version of its current weights, the run file's
+and the training file's sha256, the build id) and refuses a batch that
+differs (``batch.ForeignBatch``, naming the field). ``learn`` moves the
+weights, so it raises the version by one; the trainer hands the new weights
+over with it.
+
 The choosing module is the ONE place a probability is computed: this
 module calls ``evaluate`` and writes no softmax, sampler or log-probability
 of its own.
@@ -93,7 +101,7 @@ import numpy as np
 import torch
 
 from agents import _game  # noqa: F401
-from agents.batch import Batch
+from agents.batch import Batch, run_ids
 from agents.choosing import evaluate
 from agents.grading import choice_grade, common_size, grade
 from agents.network import SOLDIER_KEYS, VALUE_FULL_KEYS, VALUE_OBS_KEYS
@@ -195,8 +203,14 @@ class Learner:
     module text)."""
 
     def __init__(self, soldier, value, settings: Settings, device="cpu",
-                 seed: int = 0):
+                 seed: int = 0, ids: dict | None = None):
         self.settings = settings
+        #: the run's names a batch's header must carry (run file and
+        #: training file sha256, build id; None where the caller has none)
+        self.ids = run_ids(ids)
+        #: the version of the soldier's current weights: raised by one by
+        #: every :meth:`learn` (it moves them), saved with the network
+        self.version = 0
         self.device = torch.device(device)
         self.soldier = soldier.to(self.device).eval()
         self.value = value.to(self.device).eval()
@@ -212,6 +226,11 @@ class Learner:
         self.round = 0
 
     # -- the hand-over: weights out ---------------------------------------
+    def header(self) -> dict:
+        """What a batch played with the current weights carries
+        (``batch.HEADER_FIELDS``): the version and the run's names."""
+        return {"version": self.version, **self.ids}
+
     def weights(self) -> dict:
         """The soldier's weights, for the collector's next round."""
         return {k: v.detach().clone()
@@ -262,6 +281,9 @@ class Learner:
         """Learn from ``batch`` (played with the current weights); returns
         the round's measurements. The weights are :meth:`weights`."""
         s = self.settings
+        # the header: a batch played with other weights, or for another run
+        # or build, is refused by name (design 4.6)
+        batch.check_header(self.header())
         _sync(self.device)
         t0 = time.perf_counter()
         step_size = s.step_size_at(self.round)
@@ -387,6 +409,7 @@ class Learner:
                 self.opt_value.step()
                 value_steps += 1
         self.round += 1
+        self.version += 1
         _sync(self.device)
         t2 = time.perf_counter()
         return {

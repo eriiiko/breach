@@ -119,23 +119,31 @@ def test_head_past_the_tag_is_refused(snap):
 
 @pytest.mark.parametrize("path", ["levels/x/air_init.npy",
                                   "src/simulation/extra.py",
-                                  "cpp/src/extra.cpp"])
+                                  "cpp/src/extra.cpp",
+                                  "agents/stray.py",
+                                  "tools/stray_rooms.py"])
 def test_an_untracked_file_under_a_snapshot_path_is_refused(snap, path):
-    """Property: an UNTRACKED file under src/, levels/ or cpp/ dirties the
-    snapshot (a per-tile seed found by presence changes the game with no
-    tracked diff). Breaks if the clean check ignores untracked files there."""
+    """Property: an UNTRACKED file under src/, levels/, cpp/, agents/ or
+    tools/ dirties the snapshot (a per-tile seed found by presence changes
+    the game with no tracked diff; a stray module under agents/ would be
+    imported by the trainer, a stray tool would write the rooms: rung 2
+    patch 2d.2). Breaks if the clean check ignores untracked files there."""
     repo, probe, run, _ = snap
     write(repo, {path: "x"})
     assert path in _refused("clean tree", repo, probe, run)
 
 
 def test_untracked_files_elsewhere_are_allowed(snap):
-    """Property: untracked art and notes outside the snapshot paths (and
-    ignored build output) do not dirty a snapshot. Breaks if the door
-    refuses the real tree's deliberate untracked art."""
+    """Property: untracked art and notes outside the snapshot paths (docs/
+    among them), and ignored files (build output, ``__pycache__`` under
+    agents/ and tools/), do not dirty a snapshot. Breaks if the door
+    refuses the real tree's deliberate untracked art or a byte-code cache."""
     repo, probe, run, _ = snap
     write(repo, {"art/new.png": "x", "notes.txt": "x",
-                 "cpp/build_cuda/breach_physics.pyd": "x"})
+                 "docs/new_note.md": "x",
+                 "cpp/build_cuda/breach_physics.pyd": "x",
+                 "agents/__pycache__/run.cpython-312.pyc": "x",
+                 "tools/__pycache__/gen.cpython-312.pyc": "x"})
     rl_env.require_snapshot(TAG, "cpu_farm", run, repo=repo, probe=probe)
 
 
