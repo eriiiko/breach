@@ -10,6 +10,15 @@ one of the trainer's own traps, and the runner that scores them.
 | :class:`ScaleTask`: rewards a hundred times larger than usual, on top of a large offset the value network must learn, beside "outcome", always 0 | the rescaling of the value targets is wrong |
 | :class:`TeamTask`: a second team in the match that does not learn, paid the opposite of the learner | the trainer stores or grades rows it does not drive |
 
+With the soldier's memory on (patch 2d.1; design 8's last rows; note 2d, 6
+and 7):
+
+| task | the trainer fails it if |
+|---|---|
+| :class:`Recall12`: a cue at a match's first decision, the answer asked for 12 decisions later; soldiers die mid-match, matches end mid-batch at lengths that are not whole stretches | the memory, the stretches, the dead rows or the endings are wrong; the memory is reset at a stretch's start (the trap) |
+| :class:`Recall24`: the same with 24 between | it passes with stretches of 16 (the memory's limit is not where design 4.5 says); it must pass with 32 |
+| :func:`good_start`: the pointer task's taught soldier with a fresh value network, 20 rounds | learning wears down a good start (the copy's danger) |
+
 Each runs on the stand-in (:mod:`agents.standin`), the real network code at
 reduced width, on the processor. THE PASS (:func:`run_task`): the mean
 reward per decision (the learning team's living rows, the run's group
@@ -83,6 +92,12 @@ class _Base(Task):
     def bind(self, sizes):
         self.sizes = sizes
         return self
+
+    def measure(self, env, weights) -> tuple:
+        """``(paid . weights, decisions)`` of the learning teams so far: the
+        score is per learning decision of a living soldier (the stand-in's
+        own books)."""
+        return float(np.dot(env.paid, weights)), int(env.paid_decisions)
 
 
 class PointerTask(_Base):
@@ -347,8 +362,132 @@ class TeamTask(_Base):
         return r, np.zeros(u, bool), np.zeros(u, bool), False
 
 
+class RecallTask(_Base):
+    """THE MEMORY TASKS (note 2d, 6; design 8's last two rows). At a match's
+    first decision a cue (one of four directions) is shown in the soldier's
+    vector for that one decision; for the next ``gap - 1`` decisions the cue
+    columns show nothing (0); at decision ``gap`` the feet must walk the
+    cued direction, and only that decision is paid ("own" 1). The feet may
+    always stand or walk one of the four ways (a random player answers
+    right one time in five).
+
+    THE SCORE is per ANSWER, not per decision (:meth:`measure`): the "own"
+    paid over the answers a living learning soldier gave. Per decision the
+    best would depend on the matches' lengths and the deaths.
+
+    WHAT IS IN IT for the traps of note 2d, 5: two soldiers per match;
+    slot 1 dies at a drawn decision in half the matches (before or after
+    its answer; a dead row stays in the match, served zeros, paid nothing,
+    still stepped by the collector); every match lasts a drawn ``gap + 1``
+    to ``gap + 7`` decisions, never a multiple of 16 (so of 32 neither),
+    so matches end and restart inside rounds and across a round's edge and
+    start anywhere inside a stretch.
+
+    WHAT THE STRETCH ALLOWS (design 4.5): the gradient stops at a stretch's
+    start, so the cue can be LEARNT to be kept only when the cue and its
+    answer fall in one stretch -- the cue at one of the stretch's first
+    ``stretch - gap`` places. ``recall12`` with stretches of 16 has that on
+    a quarter of its matches; ``recall24`` with 16 never (it must FAIL),
+    with 32 on a quarter (it must pass).
+
+    FINDING (2d.1, 2026-11-17; for the lead, nothing bent): recall12 is NOT
+    learnt with the design's numbers. Seed 0, stretches of 16, the tasks'
+    farm (8 matches x 32 decisions): 220 rounds near the random player
+    (every tenth round's score 0.00 to 0.44, no trend). On a farm of 32
+    matches (2 048 decisions a round, one design piece): 140 rounds flat at
+    0.23 to 0.26 -- 0.25 is "never stand", reachable without the cue. Even
+    with the answer only 4 decisions after the cue (75 % of cues in the
+    answer's stretch): 300 rounds, 0.29 at the end (0.11 of the way). The
+    same task with the answer AT the cue (gap 0, no memory needed, memory
+    on) is learnt: 0.8 at round 180 on the tasks' farm. The live check is silent on every
+    round (gaps 0.0). Measured at the network's start: the cue's mark on
+    the memory (the spread of the memory over the four cues) is 0.023 at
+    the cue's decision against a memory of size 0.36, and it falls about
+    0.6 x per decision (0.002 after 4, 1.4e-4 after 12): the cell's update
+    gate starts at an even keep/replace (bias near 0) and the cue enters
+    through 4 of the vector's columns. So the gradient that must teach the
+    keeping is tiny where the cue matters and the trainer's steps barely
+    move the policy (distance per step 1e-4 to 1e-3, against the early
+    stop's 0.02). What to change (the cell's start, e.g. an update gate
+    biased to keep; the step size; the farm) is the lead's call."""
+
+    N_DIRS = 4
+
+    def __init__(self, gap: int = 12):
+        self.gap = int(gap)
+        self.lengths = [n for n in range(self.gap + 1, self.gap + 8)
+                        if n % 16]
+        super().__init__(name=f"recall{self.gap}", n_teams=1, n_slots=2,
+                         controllers=("policy",),
+                         match_len=max(self.lengths), best=1.0)
+        self.answers = 0
+
+    def bind(self, sizes):
+        super().bind(sizes)
+        self.cue = numeric_columns(sizes.vector, sizes.vector_kinds,
+                                   self.N_DIRS)
+        stride = A.N_DIRS // self.N_DIRS
+        self.options = [_feet_option(d * stride) for d in range(self.N_DIRS)]
+        return self
+
+    def start(self, e, rng):
+        u = self.n_teams * self.n_slots
+        dies = int(rng.integers(1, self.gap + 4)) if rng.uniform() < 0.5 \
+            else -1
+        return {"clock": 0, "length": int(rng.choice(self.lengths)),
+                "right": np.array([self.options[int(rng.integers(
+                    self.N_DIRS))] for _ in range(u)]),
+                "dies": dies}
+
+    def observe(self, e, state, obs, full, valid, rng):
+        for i in range(len(valid)):
+            obs["vector"][i, self.cue] = 0.0
+        for i in np.flatnonzero(valid):
+            if state["clock"] == 0:
+                d = self.options.index(int(state["right"][i]))
+                _onehot(obs, i, self.cue, d)
+            obs["mask_feet"][i] = 0
+            obs["mask_feet"][i, A.FEET_STAND] = 1
+            obs["mask_feet"][i, self.options] = 1
+
+    def pay(self, e, state, actions, valid, rng):
+        u = len(valid)
+        clock = state["clock"]
+        r = np.zeros((u, len(REWARD_GROUPS)))
+        if clock == self.gap:
+            right = valid & (actions[:, 0] == state["right"])
+            r[:, G_OWN] = np.where(right, 1.0, 0.0)
+            self.answers += int(valid.sum())
+        deaths = np.zeros(u, bool)
+        if clock == state["dies"]:
+            deaths[1] = True
+        state["clock"] = clock + 1
+        over = state["clock"] >= state["length"]
+        return r, deaths, np.zeros(u, bool), over
+
+    def measure(self, env, weights) -> tuple:
+        """``(paid . weights, answers)``: the score per answer given."""
+        return float(np.dot(env.paid, weights)), int(self.answers)
+
+
+class Recall12(RecallTask):
+    """``recall12``: the answer 12 decisions after the cue."""
+
+    def __init__(self):
+        super().__init__(12)
+
+
+class Recall24(RecallTask):
+    """``recall24``: the answer 24 decisions after the cue."""
+
+    def __init__(self):
+        super().__init__(24)
+
+
 TASKS = {"pointer": PointerTask, "argument": ArgumentTask,
          "weights": WeightTask, "scale": ScaleTask, "teams": TeamTask}
+#: The memory tasks (run with the soldier's memory on, note 2d, 6).
+MEMORY_TASKS = {"recall12": Recall12, "recall24": Recall24}
 
 
 def make_env(task: Task, n_envs: int, seed: int) -> StandIn:
@@ -367,8 +506,9 @@ def networks(env, seed: int, spec=None):
 
 
 def score(env, weights) -> tuple:
-    """``(paid . weights, decisions)`` of the learning teams so far."""
-    return float(np.dot(env.paid, weights)), int(env.paid_decisions)
+    """``(paid . weights, count)`` of the learning teams so far: per
+    decision, or what the task measures per (:meth:`_Base.measure`)."""
+    return env.task.measure(env, weights)
 
 
 @torch.no_grad()
@@ -403,20 +543,24 @@ TASK_DECISIONS = 32
 
 def run_task(task_cls, seed: int, max_rounds: int, *,
              n_envs: int = TASK_ENVS, decisions: int = TASK_DECISIONS,
-             threads: int = 4, random=None, on_round=None) -> dict:
+             threads: int = 4, random=None, on_round=None,
+             memory: bool = False, stretch: int | None = None) -> dict:
     """Train on ``task_cls`` from seed ``seed`` until the mean over the
     last :data:`PASS_WINDOW` rounds reaches the pass line, or
     ``max_rounds`` (also the run's planned rounds). ``random`` a measured
-    random score (else measured here). Returns the scores, the rounds used
-    and the verdict."""
+    random score (else measured here); ``memory`` the soldier's memory on,
+    with stretches of ``stretch`` (else the design's). Returns the scores,
+    the rounds used, the verdict and the trained soldier."""
     torch.set_num_threads(threads)
-    settings = Settings(planned_rounds=max_rounds, decisions=decisions)
+    extra = {} if stretch is None else {"stretch": int(stretch)}
+    settings = Settings(planned_rounds=max_rounds, decisions=decisions,
+                        **extra)
     w = np.asarray(settings.weights)
     if random is None:
         random = random_score(task_cls, w)
     task = task_cls()
     env = make_env(task, n_envs, seed)
-    soldier, value = networks(env, seed)
+    soldier, value = networks(env, seed, reduced(memory) if memory else None)
     trainer = Trainer(env, soldier, value, settings, seed=seed)
     line = random + PASS_SHARE * (task.best - random)
     scores = []
@@ -438,11 +582,56 @@ def run_task(task_cls, seed: int, max_rounds: int, *,
             "rounds": len(scores), "random": random, "best": task.best,
             "line": line, "reached": reached,
             "share": (reached - random) / (task.best - random),
-            "scores": scores}
+            "scores": scores, "soldier": trainer.learner.soldier}
+
+
+#: The rounds the "already good start" is learnt on after its start, and
+#: the share of the start's score its lowest round must keep (design 8's
+#: row; note 2d, 7).
+GOOD_START_ROUNDS = 20
+GOOD_START_KEEP = 0.9
+
+
+def good_start(soldier, seed: int, *, planned_rounds: int,
+               value_first_rounds: int, variety: float | None = None,
+               rounds: int = GOOD_START_ROUNDS, n_envs: int = TASK_ENVS,
+               decisions: int = TASK_DECISIONS, threads: int = 4) -> dict:
+    """THE "ALREADY GOOD START" TASK (note 2d, 7; design 6 arm B, 8): a
+    copy of ``soldier``, taught on the pointer task until it passed, starts
+    a run with a FRESH value network and a fresh scale and learns
+    ``rounds`` rounds with the design's numbers (``value_first_rounds`` and
+    ``variety`` as given). Returns the score per round (each played by the
+    weights the round started with: round 1's is the start's), the start,
+    the lowest, the end (the last round's) and the lowest's share of the
+    start."""
+    import copy
+    torch.set_num_threads(threads)
+    extra = {} if variety is None else {"variety": float(variety)}
+    settings = Settings(planned_rounds=planned_rounds, decisions=decisions,
+                        value_first_rounds=value_first_rounds, **extra)
+    w = np.asarray(settings.weights)
+    env = make_env(PointerTask(), n_envs, seed)
+    _, value = networks(env, seed)
+    trainer = Trainer(env, copy.deepcopy(soldier), value, settings,
+                      seed=seed)
+    scores = []
+    last = score(env, w)
+    for _ in range(rounds):
+        trainer.round()
+        now = score(env, w)
+        scores.append((now[0] - last[0]) / max(1, now[1] - last[1]))
+        last = now
+    start, lowest = scores[0], min(scores)
+    return {"seed": seed, "value_first_rounds": value_first_rounds,
+            "variety": settings.variety, "scores": scores, "start": start,
+            "lowest": lowest, "end": scores[-1],
+            "kept": lowest / start if start else float("nan")}
 
 
 __all__ = ["PASS_SHARE", "PASS_WINDOW", "numeric_columns", "refresh_aim",
            "PointerTask", "ArgumentTask", "WeightTask", "ScaleTask",
-           "TeamTask", "TASKS", "TASK_ENVS", "TASK_DECISIONS", "make_env",
+           "TeamTask", "RecallTask", "Recall12", "Recall24", "MEMORY_TASKS",
+           "GOOD_START_ROUNDS", "GOOD_START_KEEP", "good_start",
+           "TASKS", "TASK_ENVS", "TASK_DECISIONS", "make_env",
            "networks", "score",
            "random_score", "run_task"]
