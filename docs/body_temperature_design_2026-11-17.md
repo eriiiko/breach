@@ -1,6 +1,7 @@
-# Body temperature: heat damage with inertia
+# Body temperature and stress: two slow states of a unit
 
-**Status: PROPOSED (version 3, the same evening), 2026-11-17. Nothing is built from this page until Erik has
+**Status: PROPOSED (version 4, the same evening: stress and heart rate added,
+section 2b), 2026-11-17. Nothing is built from this page until Erik has
 read it.** Direction agreed in chat the same day (Erik: "body temp if it's
 doable is exactly what I want"; "let's balance together later"; the 60 °C
 limit may move). Raised by rung 2c's finding on #215: one frag beside a marine
@@ -99,6 +100,76 @@ above is the one for air at one atmosphere. It is split in two:
 Pressure and air temperature are read over the unit's footprint through the
 map's existing reads, never a new probe.
 
+## 2b. Stress and heart rate (version 4)
+
+Erik, 2026-11-17: "shall we try to add both systems at once since we're
+touching the char like this anyway? I think both systems are modelled by the
+same pde. Just different time constants"; "one state ode would be enough,
+with one time constant"; "heart rate should follow some hill function";
+"stress must also be able to be applied by other sources than damage, damage
+could just be the first producer"; "readout in first patch is good, we wait
+with effects"; "let's do 2 min for adrenaline's half life, we don't want only
+climbs".
+
+One more number per unit, its **stress** (integer, synced, a schema row;
+starts at 0):
+
+    stress += what the producers add this tick
+    stress -= stress x rate x tick          rate from a half-life of 2 minutes
+
+**Producers** are a list, each a named row that adds points. The first and
+only one in this patch: damage taken, one point of stress per hit point lost,
+added where the hit points are written (`apply_packet`, the one place). A
+later producer (a near miss, a team-mate dying in sight, a zombie close by, a
+drug) is one more row and its own ruling.
+
+**Heart rate** is not a state. It is read off the stress through a Hill
+curve:
+
+    heart rate = rest + (max - rest) x stress^n / (half^n + stress^n)
+
+| Dial | Start value | Meaning |
+|---|---|---|
+| `stress_half_life_s` | 120 s | Erik's. A soldier calms down between fights inside one match. |
+| `stress_per_hp` | 1.0 | The damage producer's weight. |
+| `heart_rate_rest` / `heart_rate_max` | 60 / 190 beats a minute | The curve's two ends. |
+| `heart_half_stress` | 50 points | The stress at which the heart is half way up: half a health bar lost in a short time. The lead's first number, Erik's to move. |
+| `heart_hill_n` | 2 | How sharp the curve is. |
+
+The Hill curve is ONE integer lookup table built at load (the sim path has no
+powers and no floats); every later effect of stress reads the same curve
+function with its own row of dials.
+
+**Nothing in the game reads the stress or the heart rate in this patch.** The
+tile inspector and the HUD show both. No bot, no observation, no law.
+
+**How this relates to the poison law.** Poison is already this family: a
+depot that drains into the blood that drains out, each with its own time,
+which is the textbook model of a drug taken up and cleared. Its integer step
+(`poison.step`: drain a fraction, never lose a count, return to exactly zero)
+is what stress needs. So the patch lifts that step into the shared place and
+both use it; poison's own behaviour stays bit for bit (its tests and digests
+are the gate) and poison is not otherwise touched. Stress is then "poison
+with one level and no harm". Body temperature is the cousin with a rate and a
+resting value that depend on the air, and keeps its own step.
+
+The table this points at, written down so later rows have a home (only the
+first three lines exist after this patch):
+
+| State | Fed by | Clears with | Read as |
+|---|---|---|---|
+| poison depot, poison blood (built) | gas, bites | 4 s, 20 s | harm as it leaves |
+| body temperature (this patch) | absorbed heat | the air, its pressure | harm over the limit |
+| stress (this patch) | damage taken | 2 min | heart rate (shown only) |
+| a drug level (later) | a dose | its own half-life | changes another row's rate or feed |
+
+**Drugs: recorded, not built** (Erik's first numbers): cocaine with a
+half-life of 20 minutes, which also stretches the stress half-life from 2
+towards 20 minutes while it is in the blood (through the same Hill curve of
+the cocaine level). On such a soldier stress only climbs during a match,
+which is the drug's price. "It must be extremely light weight": each state is
+one multiply and one shift per unit per tick.
+
 ## 3. What it gives (computed from the law; to be measured in the patch)
 
 | Situation | Today | Proposed |
@@ -123,7 +194,13 @@ About the size of the poison law (one patch, one day):
   integers, the capacity and the loss quantized once per profile;
 - the pinned matches and the golden re-baselined once, with this page as the
   written reason (heat damage changes in every match with fire);
-- the tile inspector and the HUD read the body temperature.
+- the tile inspector and the HUD read the body temperature;
+- stress (version 4): a second schema row, one line in `apply_packet`, the
+  poison step lifted to a shared function (poison bit for bit), the Hill
+  lookup, the readout. About a third more work, the same single re-baseline.
+  A half-life of minutes needs the rate held finer than Q16 (at 24 ticks a
+  second a 20-minute rate rounds to 2 counts): the patch picks the currency
+  and says which.
 
 Left alone: what a learned soldier sees (it keeps the felt temperature; a new
 observation is a new spec, later), the fire and radiation physics, the poison
@@ -135,6 +212,9 @@ law, every blast number.
   points. Whether that is right is for the balance pass (Erik: "let's balance
   together later"; his idea of a data-driven system that tells what is
   overpowered is noted on #215).
+- **Effects of stress** (aim, sprint speed, tunnel vision). Each is a later
+  row with Erik's ruling; tunnel vision comes with the sight cones (Erik).
+- **Other stress producers and every drug.** Rows for later.
 - **Cold.** The same law would bill a body under `temperature_min`. Not now.
 - **Body heat as a source** (a warm body that larvae seek, a body that warms
   the air). The number exists after this patch; no law reads it yet.
@@ -154,6 +234,8 @@ not learn fire and grenade values that change under them.
   schema row in the same patch.
 - Weapons / damage pipeline: the damage stays a `DamagePacket` through
   `apply_packet`; credit as today.
+- Poison (`src/simulation/poison.py`): its step is lifted and shared, its
+  law untouched.
 - Loadouts / suits (`[env_profiles.*]`): the time constant is a profile row.
 - Unit store, device tables, device unit library: the device form of the row
   and the dial.
@@ -161,6 +243,13 @@ not learn fire and grenade values that change under them.
   re-baseline).
 
 **(b) New systems**
+
+- **Stress** (`Unit.stress_q`, fed only through the producers' one door,
+  cleared only by its own tick). Draft rule: *anything that frightens or
+  excites a unit is a producer row; an effect of stress reads the one Hill
+  function, never the raw level; heart rate is derived, never stored.*
+- **The clearing step** (lifted from `poison.py`). Draft rule: *a unit state
+  that drains by a fraction a tick uses this step; never a second one.*
 
 - **Body temperature** (`Unit.body_temp_q`, written only by the heat row).
   Draft rule: *a unit's body temperature is written by the heat coupling row
