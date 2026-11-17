@@ -377,3 +377,21 @@ are that session:
    into memory (`project_rl_agent_design_session.md`).
 4. Add one dated line to the run log below when a patch teaches something
    the next one should know.
+- **2026-11-17, patch 2c stage B (the first real run; report
+  `docs/rl_agent_rung2_report_2c_2026-11-17.md`).** The soldier cleared all
+  six hand rooms after 81 minutes (1.9 M decisions) at 391 learning
+  decisions a second, with the design's numbers untouched. What the next
+  run should know: (1) WATCH a trained match before believing a curve: the
+  corner room was "solved" by a frag thrown through two walls (a grenade's
+  flight asks no wall; Erik's to rule on, #215), found only by driving the
+  saved weights in-process and printing the events; (2) a task whose
+  target always stands on the same tile is answered by a memorised walk,
+  and its matches shrink to one or two seconds, after which the round
+  measures nothing: the seeded rooms (2g) come before the range is a gate;
+  (3) the range does not shape the trigger or the hand (a pull at a wall
+  and a plant at the feet cost nothing in a two-second match); (4) 128
+  matches buy no speed on 16 workers and fill the computer's memory (15.3
+  of 15.9 GB); 8 workers give three quarters of 16; (5) start a long run
+  detached (`Start-Process`), with a background waiter on its pid, so an
+  editor restart cannot kill it; (6) keep a run's folder outside the scratch
+  folder (`C:/Users/steen/breach_runs/`).

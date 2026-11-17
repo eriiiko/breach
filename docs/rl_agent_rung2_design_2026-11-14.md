@@ -828,8 +828,9 @@ full. And for the copy the 1 000-decision test of 3.3.
 | the same on the small ship | about 2 000 | estimate (the measured small / medium ratio of 2.76) |
 | the roadmap's planning figures | 3 000 small, 1 000 medium | set on 2026-11-11, before observation spec v1 and the gameplay pack |
 | **the range and the duel** | **320 to 1 320 a second, most likely about 730** | estimate (lens 4, from measured costs per tick and per observed soldier) |
-| learning time per round | 0.1 to 0.7 of the collecting time | estimate (lens 4) |
-| the network's answer during collecting | 3 to 6 ms per step, 3 to 12 % | estimate |
+| **the range, measured** (patch 2c, Home Desktop, 64 matches on 16 workers, 2.95 M decisions) | **391 a second**; 396 at 128 matches; 294 on 8 workers | measured 2026-11-17 (`docs/rl_agent_rung2_report_2c_2026-11-17.md`); the estimate above is kept for the record |
+| learning time per round | 0.1 to 0.7 of the collecting time; **measured 0.65** | estimate (lens 4); measured 2026-11-17 |
+| the network's answer during collecting | 3 to 6 ms per step, 3 to 12 %; **measured 9 %** | estimate; measured 2026-11-17 |
 | the copy | about 20 minutes per training run, if the reading keeps up (3.1) | estimate |
 
 **The small rooms are not faster where it counts.** Version 1 expected
@@ -844,8 +845,8 @@ estimates "from other people's tasks"):
 
 | run | roadmap | now |
 |---|---|---|
-| range | minutes | 8 minutes to 8 hours |
-| duel | about an hour | 1.3 to 90 hours; about 6 hours at 10 million decisions and the likely speed |
+| range | minutes | 8 minutes to 8 hours; **measured 81 minutes** to all six hand rooms cleared (1.9 M decisions) |
+| duel | about an hour | 1.3 to 90 hours; about 6 hours at 10 million decisions and the likely speed; **at the measured 391 a second: 7.1 hours per 10 million decisions** |
 | the experiment, six runs on three PCs | "cheap" | an afternoon to 11 days of all three PCs |
 
 **All of rung 2, machine time, no re-runs counted** (estimate, lens 4):
@@ -857,7 +858,9 @@ needs (a factor of ten, unknown until step 6) and the farm's speed in a
 training room (a factor of four, known after step 3).
 
 **Memory.** The computer's memory is not a limit on any PC (6 to 11.5 GB of
-16 with the farm running). The card is, per piece (4.4).
+16 with the farm running). **Measured 2026-11-17 on the Home Desktop with
+16 workers: 11.7 to 15.3 GB of 15.9 in use, the desktop included; it is
+close to a limit there.** The card is, per piece (4.4).
 
 **The three PCs are not equal.** The laptop's card is the smallest; its
 processor mixes fast and slow cores, and the farm waits for its slowest
