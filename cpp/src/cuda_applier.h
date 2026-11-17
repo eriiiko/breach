@@ -188,6 +188,11 @@ struct ApplierLists {
     // #29 P7d: the HORDE stage's cache, scratch and latch (with the door
     // tables above, the noise list and the ring)
     HordeReach horde;
+    // #29 P6b.4: the TIMED_CHARGES stage's timed-charge table and the
+    // HEAT_SOURCES stage's heat-source table (each stage also appends the
+    // PAYLOAD records it applied to the applier's own list)
+    ObjectTable* timed_table = nullptr;
+    ObjectTable* heat_table = nullptr;
 };
 
 // The applier over every env's list in stage `stage` (APPLIER_STAGE_*), on

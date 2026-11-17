@@ -1271,7 +1271,7 @@ PYBIND11_MODULE(breach_physics, m) {
                  py::object door_table, py::object door_tiles, py::object duct_table,
                  py::object vent_table, py::object source_table, py::object source_tiles,
                  std::uintptr_t source_out, py::object signal_tables, py::object ticks,
-                 py::object horde) {
+                 py::object timed_table, py::object heat_table, py::object horde) {
                   if (ptrs.ndim() != 1 || ptrs.shape(0) != applier::APPLIER_N_PLANES)
                       throw std::invalid_argument("applier_run: ptrs must be (N_PLANES,) uint64");
                   // #29 P6b.1: the DOORS stage's door table and tile table
@@ -1351,6 +1351,11 @@ PYBIND11_MODULE(breach_physics, m) {
                       L.horde.queues = q[6]; L.horde.live = q[7]; L.horde.latch = q[8];
                       L.horde.fcap = (int)q[9];
                   }
+                  // #29 P6b.4: the TIMED_CHARGES / HEAT_SOURCES stages' tables
+                  L.timed_table = timed_table.is_none()
+                                      ? nullptr : timed_table.cast<breach_cuda::ObjectTable*>();
+                  L.heat_table = heat_table.is_none()
+                                     ? nullptr : heat_table.cast<breach_cuda::ObjectTable*>();
                   breach_cuda::applier_run(a, s, t, p, stage, rp, o, &L);
                   return py::make_tuple(books, cov, drp);
               }, py::arg("applier"), py::arg("store"), py::arg("tables"), py::arg("ptrs"),
@@ -1363,6 +1368,7 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("source_table") = py::none(), py::arg("source_tiles") = py::none(),
               py::arg("source_out") = (std::uintptr_t)0,
               py::arg("signal_tables") = py::none(), py::arg("ticks") = py::none(),
+              py::arg("timed_table") = py::none(), py::arg("heat_table") = py::none(),
               py::arg("horde") = py::none(),
               "#29 P6.4b / P7a.1: the per-env serial applier over the effect lists in a "
               "stage (applier_layout.h's APPLIER_STAGE_*); returns (books (N, N_BOOKS), "

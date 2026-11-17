@@ -503,7 +503,8 @@ def _plane_ptrs(name, n_env, fields):
 
 
 def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
-                 lists=None, refused_ok: bool = False, source_out=None):
+                 lists=None, refused_ok: bool = False, source_out=None,
+                 timed_table=None, heat_table=None):
     """THE PER-ENV SERIAL APPLIER's walk (#29 P6.4b; P7a.1: one kernel, a
     STAGE argument): every env's effect list (``dev_applier``, a
     :class:`simulation.applier.DeviceApplier` -- staged from the host, or
@@ -560,7 +561,9 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         None if wl.blast_log is None else wl.blast_log.buffer,
         source_table=None if wl.sources is None else wl.sources.buffer,
         source_tiles=None if wl.source_tiles is None else wl.source_tiles.buffer,
-        source_out=_source_out_ptr(name, n, h, w, source_out))
+        source_out=_source_out_ptr(name, n, h, w, source_out),
+        timed_table=None if timed_table is None else timed_table.buffer,   # #29 P6b.4
+        heat_table=None if heat_table is None else heat_table.buffer)
     books = applier.books_dict(b)
     cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books
@@ -1777,8 +1780,13 @@ SIGNAL_LISTS = ("signals", "sensors", "sensor_tiles", "nodes", "node_ins", "pump
                 "pump_ins", "door_drives")
 _SIGNAL_TABLE_NAMES = ("signal", "sensor", "sensor_tile", "node", "node_in", "pump",
                        "pump_in", "door_drive")
-#: Classes whose ``alive`` changes inside a tick on the host only.
-_ALIVE_MOVES = ("heat_source", "cover")
+#: Classes whose ``alive`` changes inside a tick on the host only. #29 P6b.4:
+#: the heat source left this list -- the bus reads ``Simulation.
+#: _entity_by_ordinal``, built BEFORE ``build_heat_sources`` replaced the
+#: source's EntityInstance with its runtime, so the alive the reference emits
+#: is the instance's (which has none: 1, always) -- a constant; were the map
+#: ever to hold the runtime, :func:`signal_rows` refuses it by name.
+_ALIVE_MOVES = ("cover",)
 
 
 def _rows(recs, table) -> np.ndarray:
@@ -1815,6 +1823,12 @@ def signal_rows(sim) -> list:
                         f"{ent.class_name!r} entity {ent.id!r}, which is not a door")
                 emit, ref = "constant", 0      # getattr(ent, "state", None) != DOOR_OPEN
             else:
+                if ent.class_name == "heat_source" and hasattr(ent, "hp_q16"):
+                    raise SignalTableRefused(
+                        f"signals: slot {idx} ({o}, 'alive') reads the alive of heat "
+                        f"source {ent.id!r}'s RUNTIME, which moves in the tick (the "
+                        f"device emits a constant: the reference's map holds the "
+                        f"instance)")
                 if ent.class_name in _ALIVE_MOVES:
                     raise SignalTableRefused(
                         f"signals: slot {idx} ({o}, 'alive') reads the alive of "
@@ -2362,3 +2376,319 @@ def horde_flood_probe(bp, tile_ok, fp, seeds) -> np.ndarray:
 
 
 __all__ += ["horde", "horde_flood_probe"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.4: THE TIMED CHARGES and THE HEAT SOURCES on their entity tables
+# (``unit_schema.TIMED_CHARGE_TABLE`` / ``HEAT_SOURCE_TABLE``), slot 9e(d')
+# and 9e(d'') as the applier's TIMED_CHARGES and HEAT_SOURCES stages
+# (cpp/src/cuda_unit_hazards.cuh), and THE EXPORT of the entity and signal
+# sections of the digest from the device tables
+# ---------------------------------------------------------------------------
+class HazardTableMismatch(RuntimeError):
+    """Timed-charge / heat-source rows that are not the sim's (another count,
+    ordinal, tile or load constant), or an export missing a table."""
+
+
+def timed_charges_of(sim) -> np.ndarray:
+    """THE record function of the timed-charge table: ``sim._timed_charges``
+    (ordinal order) as ``(C, W)`` int64 rows."""
+    from simulation import unit_schema as us
+    return _records_of(us.TIMED_CHARGE_TABLE, list(getattr(sim, "_timed_charges", ()) or ()))
+
+
+def heat_sources_of(sim) -> np.ndarray:
+    """THE record function of the heat-source table: ``sim._heat_sources``
+    (ordinal order) as ``(S, W)`` int64 rows."""
+    from simulation import unit_schema as us
+    return _records_of(us.HEAT_SOURCE_TABLE, list(getattr(sim, "_heat_sources", ()) or ()))
+
+
+def timed_objects(recs) -> list:
+    """The timed-charge table's rows as ``unit_schema.TimedRow`` objects."""
+    from simulation import unit_schema as us
+    return _unpack(us.TIMED_CHARGE_TABLE, recs)
+
+
+def heat_objects(recs) -> list:
+    """The heat-source table's rows as ``unit_schema.HeatRow`` objects."""
+    from simulation import unit_schema as us
+    return _unpack(us.HEAT_SOURCE_TABLE, recs)
+
+
+#: The columns that move after the build (the sweeps move all but a timed
+#: charge's enabled, which only the host -- an editor, a fixture -- writes).
+TIMED_STATE = ("ticks_to_fire", "fired", "enabled")
+HEAT_STATE = ("hp_q16", "alive", "enabled")
+
+
+def _land(what, table, recs, runtimes, state) -> None:
+    """The device's rows LANDED on the sim's own runtimes in place: each
+    runtime takes its row's ``state`` columns; a row whose other columns
+    (ordinal, tile, load constants) are not that runtime's -- or another
+    count -- is refused by name (nothing landed)."""
+    from simulation import object_tables
+    lay = object_tables.table_layout(table)
+    rows = np.asarray(recs, dtype=np.int64).reshape(-1, lay.width)
+    mine = _records_of(table, runtimes)
+    if rows.shape[0] != mine.shape[0]:
+        raise HazardTableMismatch(f"{what}: {rows.shape[0]} device rows for "
+                                  f"{mine.shape[0]} runtimes")
+    keep = np.ones(lay.width, dtype=bool)
+    for c in state:
+        col = lay.column(c)
+        keep[col.offset:col.offset + col.width] = False
+    for k in range(rows.shape[0]):
+        if not np.array_equal(rows[k, keep], mine[k, keep]):
+            raise HazardTableMismatch(f"{what}: row {k} (ordinal {int(rows[k, 0])}) is not "
+                                      f"the sim's (ordinal {int(mine[k, 0])}): only "
+                                      f"{state} may move")
+    for rt, rec in zip(runtimes, rows):
+        v = object_tables.row_values(table, rec)
+        for c in state:
+            cur = getattr(rt, c)
+            setattr(rt, c, bool(v[c]) if isinstance(cur, bool) else int(v[c]))
+
+
+def timed_charges_to_host(sim, recs) -> None:
+    """The device's timed-charge rows LANDED on ``sim._timed_charges``: the
+    countdown and the heat latch (refused by name otherwise)."""
+    from simulation import unit_schema as us
+    _land("timed charges", us.TIMED_CHARGE_TABLE, recs,
+          list(getattr(sim, "_timed_charges", ()) or ()), TIMED_STATE)
+
+
+def heat_sources_to_host(sim, recs) -> None:
+    """The device's heat-source rows LANDED on ``sim._heat_sources``: hp,
+    alive, enabled (refused by name otherwise)."""
+    from simulation import unit_schema as us
+    _land("heat sources", us.HEAT_SOURCE_TABLE, recs,
+          list(getattr(sim, "_heat_sources", ()) or ()), HEAT_STATE)
+
+
+def timed_entity_rows(rec) -> tuple:
+    """A timed-charge row's part of ENTITY_SECT_V1: the free ``alive`` row,
+    then ``timed_charge.runtime_digest_rows`` -- ``ticks_to_fire``, and
+    ``fired`` on a heat charge only -- read from the table."""
+    from simulation import object_tables, unit_schema as us
+    v = object_tables.row_values(us.TIMED_CHARGE_TABLE, rec)
+    rows = (("alive", int(v["alive"])), ("ticks_to_fire", int(v["ticks_to_fire"])))
+    if int(v["heat"]):
+        rows += (("fired", int(v["fired"])),)
+    return rows
+
+
+def heat_entity_rows(rec) -> tuple:
+    """A heat-source row's part of ENTITY_SECT_V1: the free ``alive`` row,
+    then ``heat_source.runtime_digest_rows`` (``hp``), read from the table."""
+    from simulation import object_tables, unit_schema as us
+    v = object_tables.row_values(us.HEAT_SOURCE_TABLE, rec)
+    return (("alive", int(v["alive"])), ("hp", int(v["hp_q16"])))
+
+
+def sensor_entity_rows(rec) -> tuple:
+    """A sensor row's part of ENTITY_SECT_V1: the free ``alive`` row (no
+    sensor class carries runtime rows), read from the table."""
+    from simulation import object_tables, unit_schema as us
+    v = object_tables.row_values(us.SENSOR_TABLE, rec)
+    return (("alive", int(v["alive"])),)
+
+
+def hazard_tables(n_env: int, bp=None):
+    """The device timed-charge table and heat-source table for ``n_env``
+    envs (``object_tables.DeviceTable`` each)."""
+    from simulation import object_tables, unit_schema as us
+    return (object_tables.DeviceTable(us.TIMED_CHARGE_TABLE, n_env, bp=bp),
+            object_tables.DeviceTable(us.HEAT_SOURCE_TABLE, n_env, bp=bp))
+
+
+def heat_chain_bound(heat_recs, n_blast: int) -> int:
+    """The HEAT_SOURCES stage's proved bound on the discs its chain reads (the
+    host twin of the stage's head): the log's ``n_blast`` discs at the head
+    plus every LIVING source whose death payload's row has ``radius > 0`` --
+    each source dies at most once, a death applies one payload, and only a
+    row with ``radius > 0`` appends a disc (``execute_payload``)."""
+    n = int(n_blast)
+    for h in heat_objects(heat_recs):
+        if h.alive and h.death_payload is not None and int(h.death_payload.radius) > 0:
+            n += 1
+    return n
+
+
+def timed_charges(store, dev_applier, fields: dict, ring, lists, table) -> tuple:
+    """Slot 9e(d') (``timed_charge_system.sweep_timed_charges``) as the
+    applier's TIMED_CHARGES stage: every env's timed-charge table (``table``)
+    walked in row (= ordinal) order on its planes (``fields`` as
+    :func:`walk_effects`), each heat trigger read from the temperature mirror
+    and each detonation applied AT ONCE through the PAYLOAD function
+    (``lists`` a :class:`WalkLists` with the door, the claims, the noise
+    list, the blast log and the blast-source tables). Each applied PAYLOAD
+    record is appended to ``dev_applier``'s list (what the stage applied:
+    compared with the host's ``execute_payload`` calls, never walked).
+    Returns ``(coverage, books)``; refuses what :func:`walk_effects`
+    refuses."""
+    from simulation import applier
+    _check_tables("applier[TIMED_CHARGES]", store, table)
+    return walk_effects(store, dev_applier, fields, applier.STAGE_TIMED_CHARGES, ring,
+                        lists, timed_table=table)
+
+
+def heat_sources(store, dev_applier, fields: dict, ring, lists, table) -> tuple:
+    """Slot 9e(d'') (``heat_source_system.sweep_heat_sources``) as the
+    applier's HEAT_SOURCES stage: per env the blast log (``lists.blast_log``:
+    the tick's discs so far) read as a GROWING list into the heat-source
+    table (``table``, row order) -- a source a disc takes to hp 0 dies and
+    its death payload is applied AT ONCE, its disc read by the same loop --,
+    the log emptied, then every living, enabled, uncapped source's deposit
+    through the edit door. The applied PAYLOAD records are appended to
+    ``dev_applier``'s list. Refuses by name an env whose chain's proved bound
+    (:func:`heat_chain_bound`) passes the blast log's capacity
+    (:class:`simulation.applier.HeatChainRefused`, nothing of the env
+    written), and what :func:`walk_effects` refuses."""
+    from simulation import applier
+    name = "applier[HEAT_SOURCES]"
+    _check_tables(name, store, table)
+    if lists is None or lists.blast_log is None:
+        raise ValueError(f"unit kernel {name}: the sweep reads the blast log "
+                         f"(lists.blast_log)")
+    blast_before = lists.blast_log.download()[1].copy()
+    cov, books = walk_effects(store, dev_applier, fields, applier.STAGE_HEAT_SOURCES, ring,
+                              lists, heat_table=table)
+    if books["heat_refused"].any():
+        envs = [int(e) for e in np.nonzero(books["heat_refused"])[0]]
+        hr, hc, _ = table.download()
+        named = [f"env {e}: bound {heat_chain_bound(hr[e, :int(hc[e])], int(blast_before[e]))}"
+                 for e in envs]
+        raise applier.HeatChainRefused(
+            f"unit kernel {name}: {len(envs)} env(s) refused at the head of the heat-"
+            f"source sweep: the chain's proved bound (the blast log's discs plus the living "
+            f"sources whose death payload appends a disc) passes the blast log's capacity "
+            f"{lists.blast_log.shape[1]} ({'; '.join(named)}; nothing of the env written)")
+    return cov, books
+
+
+__all__ += ["HazardTableMismatch", "timed_charges_of", "heat_sources_of", "timed_objects",
+            "heat_objects", "TIMED_STATE", "HEAT_STATE", "timed_charges_to_host",
+            "heat_sources_to_host", "timed_entity_rows", "heat_entity_rows",
+            "sensor_entity_rows", "hazard_tables", "heat_chain_bound", "timed_charges",
+            "heat_sources"]
+
+
+#: The list names of the tables :class:`EntityExport` reads.
+EXPORT_LISTS = ("doors", "door_tiles", "ducts", "vents", "nodes", "pumps", "sensors",
+                "timed_charges", "heat_sources")
+
+
+def export_records(sim) -> dict:
+    """The host's own records of every table :class:`EntityExport` reads (the
+    record functions), by list name."""
+    return {"doors": doors_of(sim), "door_tiles": door_tiles_of(sim), "ducts": ducts_of(sim),
+            "vents": vents_of(sim), "nodes": nodes_of(sim), "pumps": pumps_of(sim),
+            "sensors": sensors_of(sim), "timed_charges": timed_charges_of(sim),
+            "heat_sources": heat_sources_of(sim)}
+
+
+class EntityExport:
+    """THE EXPORT of the digest's entity and signal sections from the device
+    tables (#29 P6b.4): ``ENTITY_SECT_V1`` / ``SIGNAL_SECT_V1`` bytes equal to
+    the host serializer's (``entities/serialize``), built once per sim.
+
+    Each entity's record is ``serialize.record_head`` (the header and the
+    declared synced fields: load constants, made once here) followed by
+    ``serialize.record_tail`` of its moving rows, read from its class's
+    table row: a door from the door table (its hp from the tile table), a
+    duct, vent, logic node, pump, sensor, timed charge or heat source from
+    theirs, by ordinal. A class with NO device table (button, terminal,
+    light, prop, the zones, cover) has no row that moves on the continuous
+    path: its tail is taken once, here, from the host (a load constant; the
+    gates hold the export equal to the serializer every tick). The signal
+    section is ``serialize_signal_state`` of the bus table's
+    :func:`signal_digest_rows` (empty without a bus)."""
+
+    def __init__(self, sim):
+        from simulation import logic_nodes as ln
+        from simulation.entities import REGISTRY
+        from simulation.entities.serialize import record_head, record_tail
+        ents = sorted(sim.entities, key=lambda e: int(e.ordinal))
+        ordinals = {e.id: int(e.ordinal) for e in ents}
+        door_ords = [int(d.ordinal) for d in (getattr(sim, "_doors", ()) or ())]
+        sensor_ords = {int(s.inst.ordinal) for s in (getattr(sim, "_sensors", ()) or ())}
+        self._tail = record_tail
+        self.has_bus = getattr(sim, "_signal_bus", None) is not None
+        self.items = []                      # (head, source, key, entity id)
+        for e in ents:
+            o = int(e.ordinal)
+            head = record_head(e, REGISTRY, ordinals)
+            c = e.class_name
+            if o in door_ords:
+                src, key = "doors", door_ords.index(o)
+            elif c in ("duct", "vent", "pump", "timed_charge", "heat_source"):
+                src, key = {"duct": "ducts", "vent": "vents", "pump": "pumps",
+                            "timed_charge": "timed_charges",
+                            "heat_source": "heat_sources"}[c], o
+            elif ln.is_logic_node(c):
+                src, key = "nodes", o
+            elif o in sensor_ords:
+                src, key = "sensors", o
+            else:                            # no device table: a load constant
+                alive = 1 if getattr(e, "alive", True) else 0
+                src = "static"
+                key = record_tail(e.id, (("alive", alive),)
+                                  + tuple(REGISTRY[c].runtime_digest_rows(e)))
+            self.items.append((head, src, key, e.id))
+        self.sources = sorted({s for _h, s, _k, _i in self.items if s != "static"})
+        if "doors" in self.sources:
+            self.sources.append("door_tiles")
+
+    _ROWS = {"ducts": "duct_entity_rows", "vents": "vent_entity_rows",
+             "nodes": "node_entity_rows", "pumps": "pump_entity_rows",
+             "sensors": "sensor_entity_rows", "timed_charges": "timed_entity_rows",
+             "heat_sources": "heat_entity_rows"}
+
+    def entity_section(self, tables: dict) -> bytes:
+        """ONE env's ``ENTITY_SECT_V1`` bytes from its tables: ``tables`` maps
+        a list name (:data:`EXPORT_LISTS`) to that env's records; a class the
+        sim holds whose table is missing, or an entity with no row, is refused
+        by name (:class:`HazardTableMismatch`)."""
+        from simulation.entities.serialize import ENTITY_SECT_PREAMBLE
+        missing = [s for s in self.sources if s not in tables]
+        if missing:
+            raise HazardTableMismatch(f"entity export: the tables {missing} are missing")
+        idx = {s: {int(r[0]): r for r in np.asarray(tables[s], dtype=np.int64)}
+               for s in self.sources if s not in ("doors", "door_tiles")}
+        g = globals()
+        parts = [ENTITY_SECT_PREAMBLE]
+        for head, src, key, eid in self.items:
+            if src == "static":
+                parts.append(head + key)
+                continue
+            if src == "doors":
+                doors = np.asarray(tables["doors"], dtype=np.int64)
+                if key >= doors.shape[0]:
+                    raise HazardTableMismatch(f"entity export: door {eid!r} has no row "
+                                              f"{key} in the door table")
+                rows = door_entity_rows(doors[key], tables["door_tiles"])
+            else:
+                rec = idx[src].get(key)
+                if rec is None:
+                    raise HazardTableMismatch(f"entity export: entity {eid!r} (ordinal "
+                                              f"{key}) has no row in the {src} table")
+                rows = g[self._ROWS[src]](rec)
+            parts.append(head + self._tail(eid, rows))
+        return b"".join(parts)
+
+    def signal_section(self, signal_recs=None) -> bytes:
+        """ONE env's ``SIGNAL_SECT_V1`` bytes from its bus table's records."""
+        from simulation.entities.serialize import serialize_signal_state
+        if not self.has_bus:
+            return serialize_signal_state(())
+        return serialize_signal_state(signal_digest_rows(signal_recs))
+
+    @staticmethod
+    def digest(section: bytes) -> str:
+        """A section's digest as ``tests/field_digest.tick_digest`` folds it."""
+        import hashlib
+        return hashlib.blake2b(section, digest_size=32).hexdigest()
+
+
+__all__ += ["EXPORT_LISTS", "export_records", "EntityExport"]

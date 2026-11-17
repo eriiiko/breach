@@ -389,7 +389,13 @@ def _table_list(attr, table_name):
 _PAYLOAD_LOG: dict = {}
 #: The P7b call sites of execute_payload: the modules whose global the tap
 #: wraps (slot 2's grenades; charges.fire, slot 9e(d')).
-PAYLOAD_SITES = ("simulation.simulation", "simulation.charges")
+PAYLOAD_SITES = ("simulation.simulation", "simulation.charges",
+                 # #29 P6b.4: the timed charges' sweep and a heat source's death
+                 "simulation.timed_charge_system", "simulation.heat_source_system")
+#: The LOGGED lists of PAYLOAD calls (the tap is installed while a slot names
+#: one): P7b's slot-local log, #29 P6b.4 the TIMED_CHARGES / HEAT_SOURCES
+#: stages' own lists of what they applied.
+PAYLOAD_LOGS = ("payloads", "timed_payloads", "heat_payloads")
 
 
 def install_payload_tap() -> list:
@@ -1466,7 +1472,7 @@ class ShadowLockstep:
                 self._orig.append((cont, attr, orig))
         if any(s.requests for s in self.slots):
             self._install_requests()
-        if any("payloads" in s.list_names for s in self.slots):   # #29 P7b
+        if any(n in PAYLOAD_LOGS for s in self.slots for n in s.list_names):   # #29 P7b
             self._orig.extend(install_payload_tap())
         if any("claims" in s.list_names for s in self.slots):     # #29 P7a.3
             self._orig.extend(install_claims_tap())
@@ -1883,7 +1889,7 @@ class ChainedSlots:
         self.driver = driver
         self.slots = list(slots)
         self.host_side = host_side
-        self.U = len(driver.sim.units)
+        self.U = max(1, len(driver.sim.units))   # #29 P6b.4: a unit-free level pads one row
         self.store = build_store([driver.sim], self.U, bp=bp)
         self.ring = (unit_events.EventRing(1, self.U, e_max, bp=bp)
                      if any(s.events for s in self.slots) else None)
@@ -1934,8 +1940,11 @@ class ChainedSlots:
             c, b = split_result(s.call(self.store, inputs, self.ring, self.req,
                                        self.dev_lists))
             covs.append(c)
-            if b is not None:            # #29 P7d: summed over the chain's slots (a
-                for n_, v in b.items():  # 4c chew and a slot-5 bash both destroy)
+            if b is not None:
+                # #29 P6b.4: the books of several slots of one chain SUM (each
+                # launch zeroes its books: a slot's are its own deltas; a whole
+                # 9e chain has several stages booking the same channel)
+                for n_, v in b.items():
                     books[n_] = books.get(n_, 0) + int(v[0])
         post = self.store.download()[0]
         unit_store.unpack(post, sim.units)
@@ -2027,3 +2036,33 @@ __all__ += ["install_claims_tap", "door_combined", "door_split", "DoorList",
 __all__ += ["ARG_INPUTS", "BOOK_PREFIX", "ALIASES", "book_ref", "host_books",
             "OBJECT_PROBES", "gmap_state", "changed_attrs",
             "write_set_violations", "split_result", "first_field_diff"]
+
+
+# ---------------------------------------------------------------------------
+# #29 P6b.4: THE TIMED-CHARGE and THE HEAT-SOURCE TABLES as lists
+# (``Simulation._timed_charges`` / ``_heat_sources`` through
+# ``unit_kernels.timed_charges_of`` / ``heat_sources_of``): staged as inputs,
+# compared as outputs and, in the chained form, LANDED back onto the sim's own
+# runtimes (``timed_charges_to_host`` / ``heat_sources_to_host``). The
+# TIMED_CHARGES / HEAT_SOURCES stages' own PAYLOAD lists (what each applied):
+# the host side is the PAYLOAD tap's log of the slot's calls, the chained form
+# consumes them (the device applied them all; never replayed).
+# ---------------------------------------------------------------------------
+def _hazard_consume(obj):
+    raise RuntimeError("lockstep: the timed-charge / heat-source tables are landed, "
+                       "never consumed")
+
+
+LISTS["timed_charges"] = ListDef(
+    _sim_host, lambda sim, obj: unit_kernels.timed_charges_of(sim), _hazard_consume,
+    _door_device("timed_charge"), _wide_fields("timed_charge"), None,
+    lambda sim, obj, recs: unit_kernels.timed_charges_to_host(sim, recs))
+LISTS["heat_sources"] = ListDef(
+    _sim_host, lambda sim, obj: unit_kernels.heat_sources_of(sim), _hazard_consume,
+    _door_device("heat_source"), _wide_fields("heat_source"), None,
+    lambda sim, obj, recs: unit_kernels.heat_sources_to_host(sim, recs))
+for _ln in ("timed_payloads", "heat_payloads"):
+    LISTS[_ln] = ListDef(_payloads_host, _payloads_records, lambda obj: obj.clear(),
+                         _effects_device, _effects_fields, _payloads_mark,
+                         _detonations_land)
+__all__ += ["PAYLOAD_LOGS"]

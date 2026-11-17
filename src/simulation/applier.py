@@ -191,18 +191,35 @@ PAYLOAD_KINDS = ("explosion", "shell", "grenade", "door_explosive",
 #:             its head, passes 1 and 2 wide over the block, pass 3 serial in row
 #:             order with the bite and the bash applied at once and the flood
 #:             fanned out over the block on first need. Slot 5 runs after 4c and
-#:             before 9e, so it is numbered between RESOLVE and EMIT (P7d moved
-#:             EMIT .. SOURCES up by one).
+#:             before 9e, so it is numbered between RESOLVE and EMIT (P7d,
+#:             merged after P6b.4, moved EMIT .. SOURCES up by one).
+#:   TIMED_CHARGES / HEAT_SOURCES  #29 P6b.4: slot 9e(d') and 9e(d''), each
+#:             walking its entity TABLE (``unit_schema.TIMED_CHARGE_TABLE`` /
+#:             ``HEAT_SOURCE_TABLE``) in row (= ordinal) order and applying
+#:             every detonation AT ONCE through the one PAYLOAD function, as
+#:             the reference's sweeps call ``execute_payload`` at once (a
+#:             timed charge's heat trigger reads the tile an earlier charge's
+#:             blast may have destroyed; a heat source's death payload appends
+#:             the disc the chain then reads). Each applied PAYLOAD is also
+#:             appended to the stage's own effect list, a record of what it
+#:             applied (never walked again). The conductor's order: timed
+#:             charges (8) after the doors, the planted charges' DETONATE (9),
+#:             then the heat sources (10), which read the whole tick's blast
+#:             log and empty it; P6b.4 moved DETONATE 8 -> 9, SWAP 9 -> 11,
+#:             SOURCES 10 -> 12.
 STAGES: tuple = (("TOPOLOGY", False), ("RESOLVE", True), ("HORDE", False),
                  ("EMIT", False),
                  ("LOGIC", False), ("DOOR_INPUTS", False), ("PUMPS", False),
-                 ("VENTS", False), ("DOORS", False), ("DETONATE", False),
+                 ("VENTS", False), ("DOORS", False), ("TIMED_CHARGES", False),
+                 ("DETONATE", False), ("HEAT_SOURCES", False),
                  ("SWAP", False), ("SOURCES", False))
 STAGE_NAMES = tuple(s for s, _l in STAGES)
-(STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_HORDE, STAGE_EMIT, STAGE_LOGIC, STAGE_DOOR_INPUTS,
- STAGE_PUMPS, STAGE_VENTS, STAGE_DOORS, STAGE_DETONATE, STAGE_SWAP,
- STAGE_SOURCES) = range(12)
+(STAGE_TOPOLOGY, STAGE_RESOLVE, STAGE_HORDE, STAGE_EMIT, STAGE_LOGIC,
+ STAGE_DOOR_INPUTS, STAGE_PUMPS, STAGE_VENTS, STAGE_DOORS, STAGE_TIMED_CHARGES,
+ STAGE_DETONATE, STAGE_HEAT_SOURCES, STAGE_SWAP, STAGE_SOURCES) = range(14)
 assert STAGE_NAMES[STAGE_SWAP] == "SWAP" and STAGE_NAMES[STAGE_SOURCES] == "SOURCES"
+assert STAGE_NAMES[STAGE_TIMED_CHARGES] == "TIMED_CHARGES" \
+    and STAGE_NAMES[STAGE_HEAT_SOURCES] == "HEAT_SOURCES"
 assert STAGE_NAMES[STAGE_HORDE] == "HORDE"
 
 #: #29 P7d -- THE HORDE'S FIELD CACHE on the device (``horde.HordeState``,
@@ -389,6 +406,18 @@ BOOKS = BOOKS + (
     BookRow("horde_refused", None,
             "a field the HORDE stage needed past the cache's capacity "
             "(HORDE_FIELD_CAP): refused by name, HordeCacheOverflow"),
+    # #29 P6b.4: the timed charges' and heat sources' stages
+    BookRow("timed_fired", None,
+            "the TIMED_CHARGES stage: charges that detonated (a PAYLOAD applied)"),
+    BookRow("heat_deaths", None,
+            "the HEAT_SOURCES stage: sources a blast took to hp 0 this tick"),
+    BookRow("heat_deposits", None,
+            "the HEAT_SOURCES stage: per-tick deposits enqueued (deposit_heat)"),
+    BookRow("heat_refused", None,
+            "HEAT_SOURCES stages refused at their head: the chain's proved bound "
+            "(the blast log's first discs plus the sources whose death payload "
+            "appends a disc) past the blast log's capacity (nothing written; "
+            "HeatChainRefused)"),
 ) + tuple(BookRow(f"trace_clip_{g}", f"trace_clip_books:{g}",
                   f"the counted trace saturation's clip on gas slice {g} "
                   f"(trace_store_sat / trace_add_sat)")
@@ -506,6 +535,15 @@ class SignalRangeRefused(RuntimeError):
     (``cpp/src/cuda_unit_signals.cuh``: |ema|, |in| <= 2^60, 0 <= k <= 62):
     the env's LOGIC stage is refused BY NAME at its head and nothing of it is
     written."""
+
+
+class HeatChainRefused(RuntimeError):
+    """#29 P6b.4: a heat-source sweep whose chain could outgrow the blast log:
+    its proved bound -- the discs the log holds at the sweep's head plus the
+    living sources whose death payload appends a disc (each source dies at
+    most once, and a death appends at most one disc) -- past the log's
+    capacity. The env's HEAT_SOURCES stage is refused BY NAME at its head and
+    nothing of it is written."""
 
 
 class EffectRefused(RuntimeError):
@@ -991,3 +1029,4 @@ __all__ += ["STAGE_EMIT", "STAGE_LOGIC", "STAGE_DOOR_INPUTS", "STAGE_PUMPS", "ST
 __all__ += ["STAGE_HORDE", "HORDE_FIELD_CAP", "HORDE_HEADER", "HORDE_KEY",   # #29 P7d
             "HORDE_FIELD_KINDS", "HORDE_MASKS", "HORDE_LATCH", "HORDE_MODES",
             "HordeCacheOverflow"]
+__all__ += ["STAGE_TIMED_CHARGES", "STAGE_HEAT_SOURCES", "HeatChainRefused"]
