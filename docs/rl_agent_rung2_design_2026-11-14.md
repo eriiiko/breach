@@ -347,6 +347,14 @@ copied.
   -0.5 for its death, +10 for the win, -10 for elimination, -3 when the
   clock runs out. (Design 6.9's range paid no win; one table for all of rung
   2 is chosen here.) No new environment code.
+  *Amended by patch 2c (the lead, 2026-11-17, under Erik's word of that day
+  that the lead takes a more active part in the reward):* the range's run
+  file names a "range" row instead: fireteam's sizes on the same terms, with
+  the zombie and friendly-fire terms written as 0. In a room with one enemy
+  marine and nothing else it pays exactly what fireteam pays (held by a test
+  on every tick of a played match); the row exists so that a later room with
+  a zombie or a team-mate cannot pay through a term nobody chose. It is one
+  row in `reward_v1.PROFILES`, so 2c does touch one game file.
 - **The learning team holds the bots' commander's orders** in every rung-2
   task (the builder adds the commander beside every `policy` team). So the
   soldier is shown where the objective is. The duel's opponent holds none.
@@ -883,7 +891,7 @@ its boundary and its own gate, as in rung 1.
 |---|---|---|---|
 | 2a | the network, the choosing module, their tests; the weight count and the card's peak memory printed (2) | no | no |
 | 2b | the trainer's core: whose rows are stored, the stored decision, grading with the hand-worked case, the update, the collector against the stand-in environment, the live check, the made-up tasks without memory (4, 8) | no | no |
-| 2c | **the first real run:** the range on one to three hand-made rooms written through the level writer, from scratch, no memory, 64 matches on 16 workers, one to three hours. Reports: learning decisions a second, where a step's time goes, the card's peak memory, whether the curve rises; the speed also at 128 matches | no | yes |
+| 2c | **the first real run:** the range on one to three hand-made rooms written through the level writer, from scratch, no memory, 64 matches on 16 workers, one to three hours. Reports: learning decisions a second, where a step's time goes, the card's peak memory, whether the curve rises; the speed also at 128 matches | yes (one reward row, 4.3) | yes |
 | 2d | the trainer's rest: saving and resuming, the hand-over headers and the refusal, the training manifest, the run check extended to `agents/` and `tools/`, the curves script, the memory path with its two made-up tasks, the "already good start" task | **yes: `src/rl_env.py` (the run check)** | no |
 | (the lead) | the lesson document "The trainer, line by line", from 2b's and 2d's code; Erik reads it | | |
 | 2e | copying: the packed-record loader, the copying trainer, its measures, on the existing records (3) | no | no |
