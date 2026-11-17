@@ -68,6 +68,30 @@ VALUE_FULL_KEYS = ("full_list", "full_mask", "full_match", FULL_PLANE)
 #: The heads' last layers start this share of PyTorch's default (a
 #: near-even first policy; rung 2 note 2b, section 6).
 FIRST_HEAD_SCALE = 0.01
+#: The longest time scale the memory STARTS with, in decisions (see
+#: :func:`_keep_start`). A start, not a limit: learning moves every gate.
+MEMORY_LONGEST = 32
+
+
+def _keep_start(cell: nn.GRUCell) -> None:
+    """Start the memory cell's update gates over a spread of time scales
+    (chrono initialisation: Tallec and Ollivier, "Can recurrent neural
+    networks warp time?", ICLR 2018, section 2). PyTorch's default starts
+    every unit at an even keep / replace, so a mark on the memory halves
+    every decision and is gone before a reward can teach the cell to keep
+    it (the finding of rung 2 patch 2d.1). Here unit ``i`` starts keeping
+    ``T_i / (T_i + 1)`` of itself per decision, the ``T_i`` spread evenly in
+    the logarithm from 1 to :data:`MEMORY_LONGEST` decisions: some units
+    write fast and forget fast, some write slowly and hold. No random
+    number is drawn (a network without memory, and every other weight of
+    one with it, starts exactly as before)."""
+    core = cell.hidden_size
+    scales = torch.logspace(0.0, math.log10(MEMORY_LONGEST), core)
+    with torch.no_grad():
+        # GRUCell's biases are laid out (reset, update, new); the update
+        # gate multiplies the OLD memory, so a positive bias keeps.
+        cell.bias_ih[core:2 * core].zero_()
+        cell.bias_hh[core:2 * core].copy_(torch.log(scales))
 
 
 def served_formats(sizes: Sizes) -> dict:
@@ -376,6 +400,8 @@ class SoldierNet(nn.Module):
         w, hh, core = net.width, net.head_hidden, net.core
         self.body = Body(net, sizes, sizes.entry, sizes.entry_kinds, 0, 0)
         self.memory = nn.GRUCell(net.join, core) if net.memory else None
+        if self.memory is not None:
+            _keep_start(self.memory)
         n_feet, _, n_trig, n_hands, n_arg = sizes.heads
         self.feet_head = _mlp(core, hh, n_feet)
         self.aim_query = _mlp(core, hh, w)
