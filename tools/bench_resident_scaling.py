@@ -441,7 +441,9 @@ def _batch_split(batch, bp, ticks: int) -> dict:
         "host_pre_ms_per_env": pre / n_env,
         "host_post_ms_per_env": post / n_env,
         "physics_head_ms_per_env": head / n_env,
-        "entities_9e_ms_per_env": ms.get("9e entities", 0.0) / n_env,
+        # #29 P6b.4: slot 9e is one label per sub-step ("9e(a) signals" ...)
+        "entities_9e_ms_per_env": sum(v for k, v in ms.items()
+                                      if str(k).startswith("9e")) / n_env,
         "stamp_host_ms_per_env": ms.get("6 stamp_units", 0.0) / n_env,
         "walls_9b_ms_per_env": ms.get("9b over-pressure walls", 0.0) / n_env,
     }

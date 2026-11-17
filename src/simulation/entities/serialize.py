@@ -132,33 +132,58 @@ def entity_records(entities, registry: dict = None) -> tuple:
     ordinals = {e.id: int(e.ordinal) for e in ordered}
     records = []
     for e in ordered:
-        if not _ID_RE.fullmatch(e.id):
-            raise ValueError(
-                f"entity id {e.id!r} outside the loader slug charset — "
-                f"cannot serialize an unambiguous ENTITY_SECT_V1 header")
         cls = reg[e.class_name]
-        parts = [f"{int(e.ordinal)}|{e.id}|{e.class_name}\n".encode("ascii")]
-        for f in cls.FIELDS:             # schema DECLARATION order, always
-            if f.kind not in SYNCED_FIELD_KINDS:
-                continue                 # render/authoring-bound: never hashed
-            ctx = f"entity '{e.id}' field '{f.name}'"
-            v = _synced_row_value(f, e.fields[f.name], ordinals, ctx)
-            parts.append(f.name.encode("ascii") + b"|"
-                         + _pack_i64(ctx, v) + b"\n")
         alive = 1 if getattr(e, "alive", True) else 0
-        parts.append(b"alive|"
-                     + _pack_i64(f"entity '{e.id}' alive", alive) + b"\n")
-        for name, v in cls.runtime_digest_rows(e):
+        records.append(record_head(e, reg, ordinals) + record_tail(
+            e.id, (("alive", alive),) + tuple(cls.runtime_digest_rows(e))))
+    return tuple(records)
+
+
+def record_head(e, registry: dict = None, ordinals: dict = None) -> bytes:
+    """#29 P6b.4: the LOAD-CONSTANT head of one entity's ENTITY_SECT_V1
+    record (the header line and the declared synced fields, which nothing
+    changes at run time): :func:`entity_records` is ``record_head`` +
+    :func:`record_tail`, and the device tables' export composes the same two
+    (``simulation.unit_kernels.EntityExport``) -- one serializer.
+    ``ordinals`` maps every entity id of the sim to its ordinal (an
+    entity_ref field's encoding)."""
+    reg = REGISTRY if registry is None else registry
+    if not _ID_RE.fullmatch(e.id):
+        raise ValueError(
+            f"entity id {e.id!r} outside the loader slug charset — "
+            f"cannot serialize an unambiguous ENTITY_SECT_V1 header")
+    cls = reg[e.class_name]
+    parts = [f"{int(e.ordinal)}|{e.id}|{e.class_name}\n".encode("ascii")]
+    for f in cls.FIELDS:             # schema DECLARATION order, always
+        if f.kind not in SYNCED_FIELD_KINDS:
+            continue                 # render/authoring-bound: never hashed
+        ctx = f"entity '{e.id}' field '{f.name}'"
+        v = _synced_row_value(f, e.fields[f.name], ordinals or {}, ctx)
+        parts.append(f.name.encode("ascii") + b"|"
+                     + _pack_i64(ctx, v) + b"\n")
+    return b"".join(parts)
+
+
+def record_tail(eid: str, rows) -> bytes:
+    """#29 P6b.4: the moving tail of one entity's ENTITY_SECT_V1 record: the
+    free ``alive`` row then the class's runtime rows, ``rows`` the ``(name,
+    int)`` pairs in that order (``alive`` first), and the record terminator."""
+    parts = []
+    for k, (name, v) in enumerate(rows):
+        if k == 0:
+            ctx = f"entity '{eid}' alive"
+            if name != "alive":
+                raise ValueError(f"entity '{eid}': a record's tail starts with "
+                                 f"the free 'alive' row, not {name!r}")
+        else:
+            ctx = f"entity '{eid}' runtime row '{name}'"
             if not _NAME_RE.fullmatch(name):
                 raise ValueError(
-                    f"entity '{e.id}' runtime row name {name!r} outside "
+                    f"entity '{eid}' runtime row name {name!r} outside "
                     f"[A-Za-z0-9_]+ (ENTITY_SECT_V1 token charset)")
-            parts.append(name.encode("ascii") + b"|"
-                         + _pack_i64(f"entity '{e.id}' runtime row "
-                                     f"'{name}'", v) + b"\n")
-        parts.append(b"\n")              # record terminator
-        records.append(b"".join(parts))
-    return tuple(records)
+        parts.append(name.encode("ascii") + b"|" + _pack_i64(ctx, v) + b"\n")
+    parts.append(b"\n")              # record terminator
+    return b"".join(parts)
 
 
 def serialize_entity_state(entities, registry: dict = None) -> bytes:

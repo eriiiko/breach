@@ -1810,6 +1810,87 @@ OBJECT_TABLES = OBJECT_TABLES + (SIGNAL_TABLE, SENSOR_TILE_TABLE, SENSOR_TABLE,
                                  DOOR_DRIVE_TABLE)   # #29 P6b.3
 
 
+# ---------------------------------------------------------------------------
+# #29 P6b.4: THE TIMED CHARGES and THE HEAT SOURCES (``Simulation.
+# _timed_charges`` / ``_heat_sources``, ``timed_charge_system.
+# TimedChargeRuntime`` / ``heat_source_system.HeatSourceRuntime``), the two
+# entity classes that detonate: every attribute the 9e(d') / 9e(d'') sweeps
+# read or write, ordinal order each (the order the sweeps walk)
+# ---------------------------------------------------------------------------
+#: Timed charges a sim's device table holds: storage (nothing spawns one at
+#: run time; the shipped maximum is blast_quad's 9, the gate scenes reach 12).
+TIMED_CHARGE_CAPACITY = 32
+#: Heat sources a sim's device table holds: storage (no shipped level holds
+#: one; a generated ship one per tagged room; the gate scenes reach 12).
+HEAT_SOURCE_CAPACITY = 32
+
+
+class TimedRow(_Row):
+    """What the timed-charge table holds of one charge (``TimedChargeRuntime``:
+    its countdown and heat latch, its load constants), rebuilt by ``unpack``;
+    ``unit_kernels.timed_charges_to_host`` lands it on the sim's own runtimes."""
+    __slots__ = ("ordinal", "fy", "fx", "payload", "period_ticks", "ticks_to_fire",
+                 "heat", "trigger_temp_q16", "fuse_ticks", "enabled", "fired", "alive")
+
+
+class HeatRow(_Row):
+    """What the heat-source table holds of one source (``HeatSourceRuntime``:
+    its hp, alive and enabled, its load constants), rebuilt by ``unpack``;
+    ``unit_kernels.heat_sources_to_host`` lands it on the sim's own runtimes."""
+    __slots__ = ("ordinal", "fy", "fx", "heat_q16", "heat_radius", "enabled", "hp_q16",
+                 "death_payload", "max_temp_q16", "alive")
+
+
+#: THE timed-charge table (``Simulation._timed_charges``, ordinal order):
+#: ``ordinal``, the tile, ``payload`` (the ``[payloads.*]`` row's index),
+#: ``period_ticks`` (0 = once), the countdown ``ticks_to_fire`` (-1 spent /
+#: disabled / waiting), the heat trigger (``heat``, ``trigger_temp_q16``,
+#: ``fuse_ticks``, the latch ``fired``), ``enabled``, ``alive`` (always 1:
+#: nothing kills a charge) and ``live`` (1).
+TIMED_CHARGE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("fy", _enc_int),
+    TableColumn("fx", _enc_int),
+    TableColumn("payload", _enc_payload_row, decode=_dec_payload_row),
+    TableColumn("period_ticks", _enc_int),
+    TableColumn("ticks_to_fire", _enc_int),
+    TableColumn("heat", _enc_bool, decode=_dec_bool),
+    TableColumn("trigger_temp_q16", _enc_int),
+    TableColumn("fuse_ticks", _enc_int),
+    TableColumn("enabled", _enc_bool, decode=_dec_bool),
+    TableColumn("fired", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+TIMED_CHARGE_TABLE = ObjectTable(name="timed_charge", columns=TIMED_CHARGE_SCHEMA,
+                                 capacity=TIMED_CHARGE_CAPACITY, live="live",
+                                 build=_build_row(TimedRow))
+
+#: THE heat-source table (``Simulation._heat_sources``, ordinal order):
+#: ``ordinal``, the tile, the per-tick centre deposit ``heat_q16`` and its
+#: strict DISC radius ``heat_radius`` (radius + 1), ``enabled``, ``hp_q16``
+#: (the wall_hp currency), ``death_payload`` (the row's index, -1 none),
+#: ``max_temp_q16`` (0 = no cap), ``alive`` and ``live`` (1).
+HEAT_SOURCE_SCHEMA: tuple[TableColumn, ...] = (
+    TableColumn("ordinal", _enc_int),
+    TableColumn("fy", _enc_int),
+    TableColumn("fx", _enc_int),
+    TableColumn("heat_q16", _enc_int),
+    TableColumn("heat_radius", _enc_int),
+    TableColumn("enabled", _enc_bool, decode=_dec_bool),
+    TableColumn("hp_q16", _enc_int),
+    TableColumn("death_payload", _enc_payload_row, decode=_dec_payload_row),
+    TableColumn("max_temp_q16", _enc_int),
+    TableColumn("alive", _enc_bool, decode=_dec_bool),
+    TableColumn("live", _enc_bool, decode=_dec_bool, get=_always_live),
+)
+HEAT_SOURCE_TABLE = ObjectTable(name="heat_source", columns=HEAT_SOURCE_SCHEMA,
+                                capacity=HEAT_SOURCE_CAPACITY, live="live",
+                                build=_build_row(HeatRow))
+
+OBJECT_TABLES = OBJECT_TABLES + (TIMED_CHARGE_TABLE, HEAT_SOURCE_TABLE)   # #29 P6b.4
+
+
 def charge_record(c) -> tuple:
     """One planted charge as its integer row (flat, :data:`CHARGE_SCHEMA`
     order)."""
@@ -1850,3 +1931,6 @@ __all__ += ["SIGNAL_CAPACITY", "SENSOR_CAPACITY", "SENSOR_TILE_CAPACITY",
             "PumpRow", "DriveRow", "SIGNAL_TABLE", "SENSOR_TILE_TABLE", "SENSOR_TABLE",
             "NODE_IN_TABLE", "NODE_TABLE", "PUMP_IN_TABLE", "PUMP_TABLE",
             "DOOR_DRIVE_TABLE"]
+__all__ += ["TIMED_CHARGE_CAPACITY", "HEAT_SOURCE_CAPACITY", "TimedRow", "HeatRow",
+            "TIMED_CHARGE_SCHEMA", "TIMED_CHARGE_TABLE", "HEAT_SOURCE_SCHEMA",
+            "HEAT_SOURCE_TABLE"]

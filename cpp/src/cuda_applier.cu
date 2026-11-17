@@ -31,6 +31,7 @@
 #include "cuda_unit_payload.cuh"   // #29 P7c.1: PAYLOAD (the disc path); P7c.2: every row
 #include "cuda_unit_blast.cuh"     // #29 P7c.2: the walks' scratch, the SOURCES stage
 #include "cuda_unit_signals.cuh"   // #29 P6b.3: the signal stages (9e a, b, c, d pumps, e)
+#include "cuda_unit_hazards.cuh"   // #29 P6b.4: the timed charges and heat sources (9e d', d'')
 #include "unit_tables_layout.h"    // GENERATED: the device tables
 
 #include <cuda_runtime.h>
@@ -95,6 +96,13 @@ struct WalkTables {
     const int64_t* n_sig[8] = {};
     int sig_cap[8] = {};
     const int64_t* ticks = nullptr;
+    // #29 P6b.4: the TIMED_CHARGES / HEAT_SOURCES stages' entity tables
+    int64_t* timed = nullptr;
+    const int64_t* n_timed = nullptr;
+    int timed_cap = 0;
+    int64_t* heat = nullptr;
+    const int64_t* n_heat = nullptr;
+    int heat_cap = 0;
 };
 
 // #29 P6b.3: the signal tables' order in WalkTables::sig.
@@ -139,6 +147,10 @@ struct WalkLists {
     RecordListView blast;                           // #29 P7c.1: the blast log
     RecordListView sources;                         // #29 P7c.2: the blast sources
     RecordListView source_tiles;                    //   and their tile side table
+    // #29 P6b.4: the stage's OWN effect list (the TIMED_CHARGES / HEAT_SOURCES
+    // stages append each PAYLOAD they applied to it; never walked again)
+    bool has_own = false;
+    RecordListView own;
     // #29 P7c.2: the walks' scratch base ((h * w) cells per env, see
     // FieldApplier::walk_scratch)
     uint8_t* walk = nullptr;
@@ -255,6 +267,69 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         scratch.heat = lists + ((size_t)1 * N + e) * nc;
         scratch.src = lists + ((size_t)2 * N + e) * nc;
     }
+    // #29 P7c.1 / P6b.4: ONE PAYLOAD application (payloads.execute_payload,
+    // cuda_unit_payload.cuh) on this env's reach, booked; the effect list's
+    // PAYLOAD records and the two 9e stages' detonations all go through it
+    auto apply_payload_rec = [&](const int64_t* r) -> int {
+        unit_lib::RecordSink cs{}, ns{}, bs{}, ss{}, ts{};
+        unit_payload::PayloadReach R;
+        R.store = U.store;
+        R.n_units = U.n_units;
+        R.touched = touched;
+        R.sink = U.ring.ring != nullptr ? &sink : nullptr;
+        R.door = WL.has_door ? &WL.door : nullptr;
+        if (WL.has_claims) cs = unit_lib::list_env_sink(WL.claims, e);
+        if (WL.has_noise) ns = unit_lib::list_env_sink(WL.noise, e);
+        if (WL.has_blast) bs = unit_lib::list_env_sink(WL.blast, e);
+        R.claims = WL.has_claims ? &cs : nullptr;
+        R.noise = WL.has_noise ? &ns : nullptr;
+        R.blast = WL.has_blast ? &bs : nullptr;
+        R.scratch = has_scratch ? &scratch : nullptr;      // #29 P7c.2
+        if (WL.has_sources) {
+            ss = unit_lib::list_env_sink(WL.sources, e);
+            ts = unit_lib::list_env_sink(WL.source_tiles, e);
+            R.sources = &ss;
+            R.source_tiles = &ts;
+        }
+        const int res = unit_payload::apply_payload(r, E, tab, e, R, B);
+        if (res == unit_payload::PAYLOAD_REFUSED) {
+            B[APPLIER_BOOK_REFUSED] += 1;
+        } else if (res == unit_payload::PAYLOAD_BULK_REFUSED) {
+            B[APPLIER_BOOK_BULK_REFUSED] += 1;
+        } else if (res == unit_payload::PAYLOAD_FAULT) {
+            B[APPLIER_BOOK_FAULTS] += 1;
+        } else {
+            B[APPLIER_BOOK_APPLIED] += 1;
+        }
+        return res;
+    };
+    if (stage == APPLIER_STAGE_TIMED_CHARGES || stage == APPLIER_STAGE_HEAT_SOURCES) {
+        // #29 P6b.4: slot 9e(d') / 9e(d'') walk their entity TABLES (decision
+        // 1), each detonation applied at once through apply_payload_rec
+        unit_lib::RecordSink own{};
+        if (WL.has_own) own = unit_lib::list_env_sink(WL.own, e);
+        unit_lib::RecordSink* op = WL.has_own ? &own : nullptr;
+        if (n_gases != unit_tables::UNIT_TAB_GAS_TRACE_W) {
+            B[APPLIER_BOOK_FAULTS] += 1;
+        } else if (stage == APPLIER_STAGE_TIMED_CHARGES) {
+            hazards::timed_sweep(E, tab, X.timed + (size_t)e * X.timed_cap * object_tables::OBJ_TIMED_CHARGE_W,
+                                 X.n_timed[e], apply_payload_rec, op, B);
+        } else if (!WL.has_blast) {
+            B[APPLIER_BOOK_FAULTS] += 1;                   // the sweep reads the blast log
+        } else {
+            unit_lib::RecordSink bl = unit_lib::list_env_sink(WL.blast, e);
+            unit_lib::RecordSink cl{};
+            if (WL.has_claims) cl = unit_lib::list_env_sink(WL.claims, e);
+            hazards::heat_sweep(E, tab, e, X.heat + (size_t)e * X.heat_cap * object_tables::OBJ_HEAT_SOURCE_W,
+                                X.n_heat[e], bl, WL.has_door ? &WL.door : nullptr,
+                                WL.has_claims ? &cl : nullptr, apply_payload_rec, op, B);
+        }
+        // the own list's overflow (the count at the head was this list's: 0)
+        if (WL.has_own) B[APPLIER_BOOK_DROPPED] = (int64_t)WL.own.dropped[e];
+        for (int r = 0; r < U.n_units; ++r)
+            if (touched[r]) unit_lib::count_changed(U.cnt);
+        return;
+    }
     for (int64_t j = 0; j < k; ++j) {
         const int64_t* r = L + (size_t)j * APPLIER_F;
         const int64_t kind = r[APPLIER_FX_KIND];
@@ -361,38 +436,9 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
             }
             B[APPLIER_BOOK_APPLIED] += 1;
         } else if (kind == APPLIER_KIND_PAYLOAD) {
-            // #29 P7c.1: payloads.execute_payload, the disc path
-            // (cuda_unit_payload.cuh); a refused row writes nothing
-            unit_lib::RecordSink cs{}, ns{}, bs{}, ss{}, ts{};
-            unit_payload::PayloadReach R;
-            R.store = U.store;
-            R.n_units = U.n_units;
-            R.touched = touched;
-            R.sink = U.ring.ring != nullptr ? &sink : nullptr;
-            R.door = WL.has_door ? &WL.door : nullptr;
-            if (WL.has_claims) cs = unit_lib::list_env_sink(WL.claims, e);
-            if (WL.has_noise) ns = unit_lib::list_env_sink(WL.noise, e);
-            if (WL.has_blast) bs = unit_lib::list_env_sink(WL.blast, e);
-            R.claims = WL.has_claims ? &cs : nullptr;
-            R.noise = WL.has_noise ? &ns : nullptr;
-            R.blast = WL.has_blast ? &bs : nullptr;
-            R.scratch = has_scratch ? &scratch : nullptr;      // #29 P7c.2
-            if (WL.has_sources) {
-                ss = unit_lib::list_env_sink(WL.sources, e);
-                ts = unit_lib::list_env_sink(WL.source_tiles, e);
-                R.sources = &ss;
-                R.source_tiles = &ts;
-            }
-            const int res = unit_payload::apply_payload(r, E, tab, e, R, B);
-            if (res == unit_payload::PAYLOAD_REFUSED) {
-                B[APPLIER_BOOK_REFUSED] += 1;
-            } else if (res == unit_payload::PAYLOAD_BULK_REFUSED) {
-                B[APPLIER_BOOK_BULK_REFUSED] += 1;
-            } else if (res == unit_payload::PAYLOAD_FAULT) {
-                B[APPLIER_BOOK_FAULTS] += 1;
-            } else {
-                B[APPLIER_BOOK_APPLIED] += 1;
-            }
+            // #29 P7c.1: payloads.execute_payload (cuda_unit_payload.cuh); a
+            // refused row writes nothing
+            apply_payload_rec(r);
         } else {
             B[APPLIER_BOOK_FAULTS] += 1;                   // an unknown kind: never packed
         }
@@ -416,7 +462,7 @@ __global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_
 static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
               APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
               "the clears' dtypes moved: update k_tick_end_clears");
-static_assert(APPLIER_N_STAGES == 11, "a new stage: give it its mode in k_applier");
+static_assert(APPLIER_N_STAGES == 13, "a new stage: give it its mode in k_applier");
 
 }  // namespace
 
@@ -709,6 +755,33 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
         X.n_stiles = lists->source_tiles->count_dev();
         X.stile_cap = lists->source_tiles->cap();
         X.source_out = reinterpret_cast<int32_t*>(lists->source_out);
+    }
+    // #29 P6b.4: the TIMED_CHARGES / HEAT_SOURCES stages' tables and own list
+    if (stage == APPLIER_STAGE_TIMED_CHARGES || stage == APPLIER_STAGE_HEAT_SOURCES) {
+        const bool timed = stage == APPLIER_STAGE_TIMED_CHARGES;
+        ObjectTable* t = lists == nullptr ? nullptr
+                                          : (timed ? lists->timed_table : lists->heat_table);
+        if (t == nullptr)
+            throw std::invalid_argument(timed ? "applier_run: the TIMED_CHARGES stage needs the "
+                                                "timed-charge table"
+                                              : "applier_run: the HEAT_SOURCES stage needs the "
+                                                "heat-source table");
+        if (t->n_env() != a.n_env() ||
+            t->width() != (timed ? object_tables::OBJ_TIMED_CHARGE_W
+                                 : object_tables::OBJ_HEAT_SOURCE_W))
+            throw std::invalid_argument("applier_run: the timed-charge / heat-source table is "
+                                        "not its layout for these envs");
+        if (timed) {
+            X.timed = t->records_dev();
+            X.n_timed = t->count_dev();
+            X.timed_cap = t->cap();
+        } else {
+            X.heat = t->records_dev();
+            X.n_heat = t->count_dev();
+            X.heat_cap = t->cap();
+        }
+        WL.has_own = true;
+        WL.own = list_view(a.list());
     }
     UnitRecordList& L = a.list();
     k_applier<<<dim3(1, (unsigned)a.n_env()), 32, 0, tstream()>>>(
