@@ -1385,6 +1385,10 @@ water_ripple_shade = 0.35   # ripple-slope brightness gain: full +/-35% of the t
 water_foam_thresh = 0.03    # |grad ripple| (m/tile) above which foam whitens; splash slope ~0.075 foams, settled ~0 never
 water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing water; grows with local ripple energy, cap 0.40
 
+# Diagnostic views (render-only, never read by the sim; Ctrl+R live).
+[debug]
+swarm_dots = true           # arc #63 P4: draw each swarm unit as a dot + heading tick, and a fading fleck where one dies (renderer/swarm_dots.py). On while larvae have no bodies.
+
 # Direct-control keys (gameplay pack v1 G1p; src/control_direct.py, `--control
 # direct`): action -> key name, read through the refusing door
 # control_direct.key_table (every action must be bound; an unknown action, an
@@ -5485,7 +5489,7 @@ hp_max    = 1.0     # hit points at spawn. Placeholder: v1 kills by threshold (f
 # Simulation.on_config_reload, applied from the next tick). Temperatures are
 # KELVIN, converted through [physics.temperature_scale] at load (immune to the
 # k_temp_to_kelvin scale). Rates are per SECOND. Speed is metres per second.
-speed_mps         = 0.2      # PLACEHOLDER (P4). A slow crawl: 40 ticks per 0.333 m tile at 24 tps, well inside speed*dt < 1 tile. Real larva size (hence a size-scaled speed) still to be given by Erik
+speed_mps         = 0.2      # P4 (Claude, at Erik's licence): a larva is ~6 cm long (a fat alien maggot, a fifth of a 0.333 m tile), so 0.2 m/s is ~3 body lengths a second -- quick for a maggot, a tenth of a walking marine: a swarm is a place you cross, not a thing that chases you. 40 ticks per tile at 24 tps, well inside speed*dt < 1 tile
 T_prefer          = 303.15   # 30 C (ruling 3): comfort = |T - T_prefer|
 T_lethal_hot      = 323.15   # 50 C (ruling 4): instant death above, post-move, any state
 T_ctmin           = 283.15   # 10 C (ruling 5): chill-coma onset (enter below)
