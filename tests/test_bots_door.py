@@ -266,7 +266,7 @@ def test_nothing_masked_is_sent_and_the_records_say_so(recorded):
 
 
 def test_a_masked_latch_is_never_sent_on_a_whole_match():
-    """Property: over a whole ship_demo match (seed 4, horde in, all-round
+    """Property: over a whole ship_demo match (seed 6, horde in, all-round
     sight: a scene where latches captured between decisions are MASKED by
     the decision tick -- a carried throw during a wind-up, a reload on a
     full gun) the controller sends no masked choice (``DoorRefused`` would
@@ -274,7 +274,9 @@ def test_a_masked_latch_is_never_sent_on_a_whole_match():
     the game received came on a decision tick. Breaks if the translator
     sends a captured latch without reading the mask."""
     lvl = _ship_demo()
-    p = _play(lvl, _spec(lvl, limit=300.0), seed=4, digests=False)
+    # #215: seed 4 was this scene until ship_demo's doorways became closed
+    # doors; on the new ship seeds 1-5 mask no latch, seed 6 does.
+    p = _play(lvl, _spec(lvl, limit=300.0), seed=6, digests=False)
     st = p.ctl[0].stats
     assert p.result is not None
     assert st["hand_masked"] > 0, "vacuous: no latch was masked"
