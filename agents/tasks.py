@@ -500,7 +500,19 @@ class RecallTask(_Base):
     before the answer in its match (gap >= 1), the answer's luck flows back
     through the grades onto decisions that cannot cause it, on the same
     feet head, and drowns the cue; at gap 0 nothing comes before the answer.
-    At gap 12 the drowning is not the only obstacle within these budgets."""
+    At gap 12 the drowning is not the only obstacle within these budgets.
+
+    SECOND FOLLOW-UP (scratch task shapes, never committed; B on, the
+    tasks' farm, stretch 16, seed 0, at most 300 rounds):
+
+    | shape | gap | by reward (means of 25 rounds) |
+    |---|---|---|
+    | "hold": every decision 1..gap paid for the cued way | 12 | flat, 0.22 to 0.25 (last 25: 0.25) |
+    | "go": a column shows 1 at the answer only | 12 | flat, 0.20 to 0.27 (last 25: 0.24) |
+
+    Neither shape passes gap 12; "hold" at gap 4 and "go" at gap 1 were
+    still running when this was written (their logs in the patch's
+    report)."""
 
     N_DIRS = 4
 

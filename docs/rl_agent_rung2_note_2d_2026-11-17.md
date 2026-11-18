@@ -342,6 +342,12 @@ with either candidate; the three tests stay skipped by name
   through the grades and drowns the cue on the shared feet head; at gap 12
   something more (the budget, the keeping) is still in the way. The
   numbers are in `RecallTask`'s text.
+- **Second follow-up (scratch task shapes, measurements only).** B on,
+  the tasks' farm, stretch 16, seed 0, at most 300 rounds. "hold" (every
+  decision 1..gap paid for the cued way), gap 12: flat (25-round means
+  0.22 to 0.25). "go" (a column shows 1 at the answer only), gap 12: flat
+  (0.20 to 0.27). Neither shape makes gap 12 learnable at these numbers;
+  "hold" gap 4 and "go" gap 1 were still running at the report.
 
 ---
 
