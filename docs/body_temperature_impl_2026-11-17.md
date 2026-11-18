@@ -355,4 +355,53 @@ the ship, fire and gas scenes. Restored and rebuilt.
 
 ## Gates
 
-(appended at the final tree)
+Version 1 (`721c4d85`): `cuda_green` 62 passed; the full suite 13 failed /
+6491 passed (the six pins, the three that share their match, the four
+findings since resolved by version 2).
+
+Version 2, the final tree (`215-grenade-bounce` `7f5d74c3` merged: docs
+only; `215-doors` exists but had no stamp nor final docs commit, so it was
+not merged):
+
+- Both builds green (CPU and CUDA, layouts regenerated: tables W 2836).
+- `tests/cuda_unit_damage_check.py` green (tables with the absorption rows,
+  apply, scenes, batch, padding, overflow, chained); the ship chain's ring
+  events still absent in its 500 ticks (measured 0), so its event demand stays
+  the lanes'.
+- `tools/twin_debt.py`: none; `tests/test_twin_debt.py`,
+  `tests/test_claude_rules_paths.py` green.
+- The full suite, ONE run at `208ffa2f` (the code of the final tree; only this
+  doc changes after it): 12 failed, 6493 passed, 2 skipped, 6 xfailed (1 h 56
+  min). Red, each with its reason:
+  - the six pins: `test_zombie_control::test_the_controller_plays_the_pinned_ship_demo_match`,
+    `test_bots_v1::test_bots_v1_play_the_pre_g8p_pinned_match` and the four
+    flag-off variants (`test_exposure`, `test_grenade_kinds`,
+    `test_horde_behaviours`, `test_unit_impulse`);
+  - the three that share their match: `test_turn_rate`, `test_turning_law`
+    (the flag-off pins), and `test_bots_door::test_a_masked_latch_is_never_sent_on_a_whole_match`
+    (ship_demo seed 4: the moved match holds no masked latch, so the property's
+    scene is vacuous; nothing masked was sent);
+  - `test_class_p_level`: the stamp was at the version-1 head when the suite
+    ran (order: the suite before this doc, then `cuda_green`); green after
+    the stamp (below);
+  - `test_reward_v1::test_the_books_close_on_the_boxes[charge_ff]`: did NOT
+    come back with the 10 MJ: the C4 killed the pair by heat (120 MJ
+    unprotected); behind the protection (0.05) its heat no longer kills them
+    and its blast alone does not. The reward books close; the scene is
+    vacuous. Erik's dial.
+  - `test_follow_camera::test_the_window_replay_follows_the_action`: a
+    RENDERER crash replaying the moved ship_demo match from tick 600
+    (`renderer/pose_locomotion.py` line 504, `locomote`'s `rate(g - 1)`:
+    `gaits[i]` IndexError -- some unit's gait list is shorter than the index
+    the hysteresis loop asks). A finding in the pose layer, exposed by the
+    moved match, not changed.
+- `python -m pytest agents/tests -q` in the worktree: `-m "not tasks"` 146
+  passed. The 37 `tasks` tests (made-up tasks on the trainer: `agents/tasks.py`,
+  no game file is read): 18 passed (all 15 "the task is learnt" and three of
+  the five traps), the other 19 (two traps, the memory tasks, the good-start
+  guards) NOT RUN: at about 12 minutes each on this machine they would have
+  taken some four hours more, and the run was stopped. None of them reads a
+  file this patch changed.
+- `tools/cuda_green.py` at the head that carries this doc, then
+  `tests/test_class_p_level.py`: in the hand-over report (they run after
+  this commit by design).
