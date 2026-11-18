@@ -330,3 +330,33 @@ ship_demo chain takes the 9e(d) door sweep), `cuda_s8a_check` (below).
     The priority (doors over zombies) is a spec decision, so it is not
     changed here.
 - `python -m pytest agents/tests -q`: see the report.
+
+## 8. Follow-up 1: the full view's drop order (the game-AI lead's ruling, 2026-11-18)
+
+Over `FULL_ENTRIES` the full view (`obs_spec_v1._full_entries`) now drops the
+FARTHEST DOORS first, then the farthest zombies, then the farthest objects,
+never a marine: the room after the marines goes to the objects, then the
+zombies, and the doors (nearest first) fill what is left. The entry order in
+the list is unchanged (marines, zombies, objects, doors). The reference
+(`tests/_obs_reference.py::full_list`) counts what each kind keeps, written
+apart from the builder's slicing; the docstrings and
+`.claude/rules/rl-agent.md` say the new order.
+
+NOT a new spec version: no stored view changes, because no level a network
+has been trained on overflows. The training rooms (`gen_training_rooms.
+HAND_ROOMS`: `range_hall` 0 doors, `range_door` 1, `range_corner` 2; the
+largest door count is **2**) hold a handful of entries against 64.
+
+New test `test_obs_spec_v1::test_over_the_cap_the_farthest_doors_go_first_
+never_a_unit` (ship_demo after one tick with three live charges placed: 60
+doors against 49 free entries; every living row's list holds every zombie
+and every object, and its kept doors are exactly its nearest ones). Broken
+once (the builder's old order restored): it went RED, and so did `test_the_
+full_view_equals_an_independent_reconstruction`; restored, both green.
+
+Gates run: `tests/test_obs_spec_v1.py`, `tests/test_reward_v1.py`,
+`tests/test_training_rooms.py`, `tests/test_bots_door.py` (the files outside
+agents/ that read the full view), `tests/test_claude_rules_paths.py`: 170
+passed; `python -m pytest agents/tests -q -k "full or value or sizes"`: 6
+passed, 113 deselected. `test_the_full_view_equals_an_independent_
+reconstruction` is green (it was the one test left red in section 7).

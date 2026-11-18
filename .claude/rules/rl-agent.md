@@ -38,7 +38,7 @@ and who must use it; this file holds the constraints the code cannot say. The
 ## Full view
 - What the training-only VALUE network is shown is ONE named spec, `full_v1`, served by the same door into the farm's own buffers under `info["full_view"]`: NEVER a key of `obs` or `info["final_obs"]`; a policy never reads it.
 - The OTHER SIDE OF THE WALL: its builders read the sim through ONE `FullView` per env per decision (`FullView.build`, the one door) and keep THEIR OWN caches, never `TeamKnowledge`'s; pair case (f) holds every `obs` array byte-identical with the full view off, built before or after.
-- Over its entry cap the farthest zombies, then objects, are dropped, never a marine. Its balance column is `reward_v1.standing`, the reward's one implementation.
+- Over its entry cap the farthest doors, then zombies, then objects, are dropped, never a marine. Its balance column is `reward_v1.standing`, the reward's one implementation.
 - A new privileged input is a new version of this spec.
 
 ## Action spec
