@@ -283,6 +283,49 @@ Only what differs from 8a, and why. The measurements are in
   decides the farm and budget, written into the task's text with its
   measurement.
 
+## 8c. As built (2d.1c, 2026-11-18): the memory by reward, still a finding
+
+Only what differs from 8b. The measurements are in `agents/tasks.py`
+`RecallTask`'s text; here the outcome. `recall12` is NOT learnt by reward
+with either candidate; the three tests stay skipped by name
+(`MEMORY_FINDING`).
+
+- **B, built: the stretches start at a match's first decision**
+  (`Learner._stretches`). A row's batch time is cut at every decision a
+  match starts on and every `stretch` decisions after such a start (or
+  after the batch's first decision): a stretch is never longer than
+  `stretch` and never holds two matches, and a match no longer than a
+  stretch that starts inside the batch lies in one stretch whole. A short
+  stretch is replayed padded after its end to `stretch` steps (a later
+  step never reaches an earlier output; the padding is not learnt from)
+  and its end memory is read through `forward_sequence(..., upto)`, which
+  the live check's second clause compares with `memory[t0 + length]`.
+  What section 4 says otherwise holds. The memory-off path is untouched
+  (its bit-identity test passes). It doubles the teaching answers a round
+  on the tasks' farm (8.5 -> 17.3) at no cost, but by reward `recall12`
+  stayed flat for 600 rounds. Kept on the branch for the lead to keep or
+  drop.
+- **What B does to the properties that must fail.** `recall24` at
+  stretch 16 still cannot be learnt: a stretch is at most 16 long, the
+  wait 25. The reset-at-the-cut trap still means what it did: the memory
+  is zeroed in ACTING at every stretch's start, so about 3 in 4 cues are
+  lost at the answer whatever the learner does; its best is about 0.44
+  per answer, under the 0.84 line.
+- **A with B** (the design's 128 decisions a round): 95 teaching answers a
+  round (gap 0 on the tasks' farm: 130), flat for 600 rounds at 19 s a
+  round. A alone was not rerun (fewer teaching answers at the same cost;
+  2d.1b's 32-match farm was flat for 100 rounds).
+- **Why, as far as measured:** the gradient reaches the cue's step (0.44
+  to 0.66 of its size at the step before the answer); the cue read back
+  from the memory at the answer stays near chance; the feet's variety at
+  the answer falls while the right answer's chance stays at 0.25 (the
+  soldier grows sure of a cue-blind direction); no early stop. The
+  answer's expected gradient is the right answer's chance (0.2) times the
+  supervised one, beside 15 unpaid decisions a match on the same head: the
+  cue's signal is below the noise at the design's numbers. What changes
+  next (a larger budget, a different task shape, the trainer's numbers as
+  a sweep) is the lead's.
+
 ---
 
 # Part 2 (2d.2): saving and resuming

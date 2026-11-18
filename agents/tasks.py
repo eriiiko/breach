@@ -433,7 +433,44 @@ class RecallTask(_Base):
        budget at 4 s a round (under load). What a pass needs is a farm
        giving more teaching answers a round (more matches, more decisions
        a round) or a larger budget, decided by the lead and written here
-       with its measurement."""
+       with its measurement.
+
+    WHAT 2d.1c MEASURED (2026-11-18; FINDING, still open). Two candidates,
+    seed 0, stretches of 16, planned 600 rounds, the machine shared with
+    another agent's builds (4 to 24 s a round as its load came and went):
+
+    - B, THE STRETCHES START AT A MATCH'S FIRST DECISION (the learner,
+      ``Learner._stretches``, kept on the branch): teaching answers a round
+      on the tasks' farm 8.5 -> 17.3. By reward: flat for all 600 rounds
+      (the means of ten rounds 0.18 to 0.31; last five 0.19), 4.4 s a
+      round.
+    - A with B, the design's 128 decisions a round (``Settings.decisions``'
+      default; the tasks' farm keeps 32 for speed): teaching answers a
+      round 95 (fixed cuts at 128: 28.7; 32 matches x 32 decisions with
+      fixed cuts, 2d.1b's farm, 34.6; gap 0 on the tasks' farm: 130), 15 to
+      24 s a round. By reward: flat for all 600 rounds (the means of 25
+      rounds 0.22 to 0.27; 19 s a round on average; an earlier run of the
+      same, stopped at 150 rounds, 0.21 to 0.30). A alone (fixed cuts) gives
+      fewer teaching answers than A with B at the same cost, and 2d.1b ran
+      it on 32 matches for 100 rounds flat: not run again.
+
+    The diagnosis (A with B, every 25 rounds, over the ~95 answers of the
+    round's batch replayed from their match's start): the gradient of the
+    right answer's log-probability reaching the memory after the cue's
+    step is 0.44 to 0.66 of its size at the step before the answer (no
+    vanishing: the chrono start holds); the cue read back from the memory
+    at the answer by a linear probe stays near chance (0.10 to 0.43
+    against 0.25, noisy at ~47 held-out answers, no trend); the feet's
+    variety at the answer FALLS from 1.61 (all five even) to 1.04 to 1.4
+    while the chance of the right answer stays 0.23 to 0.28: the soldier
+    grows sure of a direction that does not depend on the cue; the value's
+    error at the answer stays about the pay's own spread (0.36 to 0.50
+    against a 0/1 pay near 0.25); no early stop in any round (8 steps a
+    round). In expectation the answer's gradient is only the right answer's
+    chance (0.2) times the supervised one, and the 15 unpaid decisions a
+    match share the feet head and the grades' common size: the cue's
+    signal is below the noise at these numbers. Neither candidate is a
+    pass; nothing was tuned, loosened or shortened."""
 
     N_DIRS = 4
 

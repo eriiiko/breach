@@ -358,6 +358,20 @@ implementation agents and critics stay one at a time.
   the start; (5) at 4 workers x 16 matches, full width on the card, a round
   of 2 048 decisions took 12 s (env step 67 %, answers 15 %, learning 16 %):
   the farm is the bottleneck, as the design said.
+- **2026-11-18, patch 2d.1c (the memory by reward): FINDING, not a pass.**
+  One Opus agent, on a machine shared with another agent's builds. Built
+  the stretches starting at a match's first decision (2 x the teaching
+  answers, free); measured it and it with 128 decisions a round (11 x),
+  600 rounds each on seed 0: both flat. What the next try should know:
+  (1) COUNT the teaching answers before a run (a 20-round count takes a
+  minute, a run takes hours); (2) the gradient DID reach the cue (0.5 of
+  its size at the answer): the failure is signal against noise, not
+  vanishing; the feet grow sure of a cue-blind answer (variety 1.61 ->
+  1.1 to 1.4 at a flat 0.25); (3) a diagnosis run that prints the
+  answer's variety, the right answer's chance, a probe of the cue in the
+  memory and the gradient ratio every 25 rounds is worth more than a
+  second plain run (scratch `2d1c/diag.py`); (4) A with B costs 19 s a
+  round on the processor: any memory-task test at that farm is hours.
 
 ## 11. Running rung 1 (for the orchestrator session)
 
