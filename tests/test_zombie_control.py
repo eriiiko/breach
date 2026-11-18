@@ -214,11 +214,12 @@ _PRE_122_BOX = dict(
     # Erik's zombie bite balance re-pin (2026-11-12, see the box's ticks).
     # (was 3a6b230941d73d3b6f325af378ffe67b44a86953bbb4d46736245fbf4caa31ee)
     # #215 re-pin (2026-11-18, body temperature and stress): two unit-schema
-    # rows, hashed while they differ from their defaults; the box's bodies
-    # follow the air they stand in, so body_temp_q enters the records.
-    # Outcome, team, ticks and field_digest UNCHANGED. SOLE CAUSE, verified:
-    # with body_temp_q / stress_q stripped from every record this tree gives
-    # EXACTLY the previous pin (docs/body_temperature_impl_2026-11-17.md).
+    # rows, hashed while they differ from their defaults; the bitten marines
+    # carry stress (the damage producer), so stress_q enters the records (the
+    # box's bodies stay at ambient). Outcome, team, ticks and field_digest
+    # UNCHANGED. SOLE CAUSE, verified: with stress_q stripped from every
+    # record this tree gives EXACTLY the previous pin (docs/body_temperature_
+    # impl_2026-11-17.md).
     unit_stream="4bf0c3eb02aa263f9aa7c0f9f4a761a7"
                 "94062cca86786c27b6ce63460b40814e")
 _PRE_122_SHIP_DEMO = dict(
