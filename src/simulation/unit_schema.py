@@ -1187,12 +1187,13 @@ def table_record(table: ObjectTable, obj, given=None) -> tuple:
 # the first ENTITY table, and its side table of span tiles
 # ---------------------------------------------------------------------------
 #: Doors a sim's device table holds: storage (nothing spawns a door at run
-#: time; the shipped maximum is playground's 6, the gate scenes reach 9).
-DOOR_CAPACITY = 32
+#: time). #215: every doorway is a door entity, so ship_demo holds 60 (its
+#: 240 tiles) and a recipe ship more; was 32 (playground's 6).
+DOOR_CAPACITY = 128
 #: Span tiles over all of a sim's doors (the door tile side table): storage
-#: (playground's 6 doors hold 24; airlock_demo's 5 m doors at 1 m tiles 5
-#: each). It also bounds one door's span (a span is the side table's rows).
-DOOR_TILE_CAPACITY = 256
+#: (ship_demo's 60 doors hold 240). It also bounds one door's span (a span is
+#: the side table's rows). Was 256.
+DOOR_TILE_CAPACITY = 1024
 
 
 def _door_tiles(d) -> list:

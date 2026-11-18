@@ -12,7 +12,7 @@
 
 namespace object_tables {
 
-constexpr const char* OBJECT_TABLES_FINGERPRINT = "054f7a96e90bfe34a0d144d60ff8f496b6dfb442af74a535dda55e811139570e";
+constexpr const char* OBJECT_TABLES_FINGERPRINT = "fa256ffa247d6a502e6ad24ca8d218710f8adde2ce13daab99151763a7cfc706";
 constexpr int OBJECT_TABLES_N = 21;
 
 // table 'charge': its index, W, capacity and live column;
@@ -160,7 +160,7 @@ constexpr int OBJ_BLAST_COL_LIVE_W = 1;
 // <column>: its first int64 in the row; <column>_W: its width.
 constexpr int OBJ_DOOR_TILE = 5;
 constexpr int OBJ_DOOR_TILE_W = 4;
-constexpr int OBJ_DOOR_TILE_CAP = 256;
+constexpr int OBJ_DOOR_TILE_CAP = 1024;
 constexpr int OBJ_DOOR_TILE_LIVE = 3;
 constexpr int OBJ_DOOR_TILE_COL_TY = 0;
 constexpr int OBJ_DOOR_TILE_COL_TY_W = 1;
@@ -175,7 +175,7 @@ constexpr int OBJ_DOOR_TILE_COL_LIVE_W = 1;
 // <column>: its first int64 in the row; <column>_W: its width.
 constexpr int OBJ_DOOR = 6;
 constexpr int OBJ_DOOR_W = 7;
-constexpr int OBJ_DOOR_CAP = 32;
+constexpr int OBJ_DOOR_CAP = 128;
 constexpr int OBJ_DOOR_LIVE = 6;
 constexpr int OBJ_DOOR_COL_ORDINAL = 0;
 constexpr int OBJ_DOOR_COL_ORDINAL_W = 1;
