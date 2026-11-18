@@ -1160,8 +1160,12 @@ def part_chained():
                      lambda kind=kind: LaneDriver(kind),
                      [SLOT_9C, SLOT_9C2, SLOT_9C3], LANE_TICKS,
                      SLOT_9C.label if kind == "fire" else SLOT_9C3.label)
+        # #215: since the body law (and the frag's calibrated heat) the
+        # ship's first 500 ticks hold no hit -- its 40 events were the frag's
+        # one-tick heat bill -- so the events are the lanes' to show here.
         _chained("chained 9c + 9c2 + 9c3 (ship)", lambda: ShipDriver(),
-                 [SLOT_9C, SLOT_9C2, SLOT_9C3], SHIP_TICKS, SLOT_9C2.label)
+                 [SLOT_9C, SLOT_9C2, SLOT_9C3], SHIP_TICKS, SLOT_9C2.label,
+                 need_events=False)
 
 
 # ---------------------------------------------------------------------------
