@@ -41,10 +41,17 @@ RQ = unit_fixed.quantize_scalar(0.4)      # the shipped restitution's Q16
 BMAX = 4
 
 
+class _Materials:
+    blocks_thrown = np.array([False, True])      # 0 open, 1 blocks a throw only
+
+
 class Map:
-    """A bare map for the law: ``solid`` is all the walk reads."""
+    """A bare map for the law: ``solid`` and the material whose
+    ``blocks_thrown`` the walk reads (material 1 stops a throw, not a round)."""
+    materials = _Materials()
 
     def __init__(self, h=40, w=60):
+        self.material = np.zeros((h, w), dtype=np.int32)
         self.solid = np.zeros((h, w), dtype=bool)
         self.solid[0, :] = self.solid[-1, :] = True
         self.solid[:, 0] = self.solid[:, -1] = True
@@ -89,14 +96,16 @@ def _tps():
 # ---------------------------------------------------------------------------
 # Rule 1: a throw that meets no wall lands where and when it landed before
 # ---------------------------------------------------------------------------
-def test_a_throw_that_meets_no_wall_flies_and_lands_as_before():
-    """Protects rule 1: a throw whose flight enters no blocked tile has, on
-    every tick, the pre-#215 straight-line position, rests on its target and
-    detonates on its target tile on its fuse tick, approach the thrower's
-    tile -- a sweep of 72 directions, 6 reaches and 3 fuses (before the
-    landing, at it, after it) in an open room. Breaks when the first leg's
-    arithmetic, the leg tick, the settle of an unobstructed flight, the
-    detonation tile or the approach moves."""
+def test_a_leg_that_meets_no_wall_flies_and_lands_as_the_pre_215_law():
+    """Protects the leg law of rule 1: from a given start, a leg whose
+    flight enters no blocked tile has, on every tick, the pre-#215
+    straight-line position, rests on its target and detonates on its target
+    tile on its fuse tick, approach its start's tile -- a sweep of 72
+    directions, 6 reaches and 3 fuses (before the landing, at it, after it)
+    in an open room. (The throw's START moved to the hand, Erik 2026-11-18:
+    the in-game test below holds the detonation tile and tick.) Breaks when
+    the first leg's arithmetic, the leg tick, the settle of an unobstructed
+    flight, the detonation tile or the approach moves."""
     gmap = Map(80, 80)
     tps = _tps()
     n = 0
@@ -473,7 +482,10 @@ def test_in_the_game_a_throw_at_a_wall_detonates_on_the_throwers_side():
     u = sim.units[-1]
     cx, cy = u.center_tile_x(), u.center_tile_y()
     assert short[1] == (cy, cx + 5)                # 5 tiles east, unbounced
-    assert short[2] == (cy, cx)
+    hand = sim.weapons_tables.weapons.by_name["hand_grenade"]
+    sx, sy = combat.release_point(sim.gmap, u.x_q, u.y_q, u.footprint, ONE, 0,
+                                  hand.release_forward_q, hand.release_side_q)
+    assert short[2] == (sy >> 16, sx >> 16)        # the leg's start: the hand
 
 
 def test_in_the_game_a_fuse_out_mid_leg_detonates_where_the_rest_of_its_flight_ends():
@@ -541,3 +553,133 @@ def test_the_2c_finding_no_longer_crosses_the_wall(tmp_path):
                                bmax=hand.bounce_max)
         assert tile[1] < 19, ((x0, y0), tile)
         assert not sim.gmap.solid[tile]
+
+
+# ---------------------------------------------------------------------------
+# The throw leaves the hand (Erik, 2026-11-18)
+# ---------------------------------------------------------------------------
+def test_the_grenade_leaves_the_hand_turned_with_the_facing():
+    """Protects the release point: for a sweep of facings and positions the
+    start is the thrower's Q16 centre plus the hand's offset -- forward
+    along the throw, to the right of it by the side value (negative: the
+    LEFT hand) -- within one Q16 unit of the exact rotation, and on the
+    thrower's left for the shipped row. Breaks when the offset is not
+    turned with the facing, the side is mirrored, the centre is the tile
+    corner, or the rounding is not once."""
+    from simulation.unit_fixed import cos_q16, sin_q16
+    gmap = Map(80, 80)
+    f_q, s_q = unit_fixed.quantize_scalar(1.362), unit_fixed.quantize_scalar(-0.864)
+    for k in range(36):
+        fq = unit_fixed.quantize_scalar(2 * math.pi * k / 36)
+        dx, dy = cos_q16(fq), -sin_q16(fq)
+        x_q, y_q = 30 * ONE + 977 * k, 31 * ONE + 13 * k
+        sx, sy = combat.release_point(gmap, x_q, y_q, 3, dx, dy, f_q, s_q)
+        cx, cy = x_q + 3 * ONE / 2, y_q + 3 * ONE / 2
+        ux, uy = dx / ONE, dy / ONE
+        ex = cx + (f_q * ux - s_q * uy)
+        ey = cy + (f_q * uy + s_q * ux)
+        assert abs(sx - ex) <= 1 and abs(sy - ey) <= 1, k
+        # the hand is on the thrower's LEFT: right = (-uy, ux)
+        assert (sx - cx) * -uy + (sy - cy) * ux < 0
+
+
+def test_the_hand_never_starts_beyond_a_wall():
+    """Protects the release point's walk: a thrower whose hand would reach
+    past a wall (standing against it, facing it) starts the grenade at the
+    last free point on its own side, not counted as a bounce; the throw
+    then meets the wall and detonates on that side. Breaks when the piece
+    from the centre to the hand is not walked."""
+    gmap = _walled("x")                                  # the wall: column 30
+    f_q, s_q = unit_fixed.quantize_scalar(1.8), unit_fixed.quantize_scalar(-0.4)
+    x_q, y_q = 27 * ONE + 30000, 14 * ONE               # centre x = 28.96
+    sx, sy = combat.release_point(gmap, x_q, y_q, 3, ONE, 0, f_q, s_q)
+    assert sx == 30 * ONE - 1 and not gmap.solid[sy >> 16, sx >> 16]
+    g = _grenade(unit_fixed.dequantize_scalar(sx), unit_fixed.dequantize_scalar(sy),
+                 40.5, 15.5, fuse=40)
+    assert g.bounces == 0
+    _, tile = _fly_to_fuse(g, gmap)
+    assert tile[1] < 30
+
+
+def test_a_grille_stops_a_grenade_and_still_passes_a_round():
+    """Protects Erik's 2026-11-18 ruling: a grille (``blocks_thrown``, not
+    solid) stops a thrown grenade -- it bounces and detonates on the
+    thrower's side -- while the rounds' read (``solid``, the march's;
+    ``has_los(physical=True)``) still passes it. Breaks when the flight
+    reads ``solid`` alone, or the grille's row loses ``blocks_thrown``, or
+    the column leaks into the rounds' read."""
+    from simulation.materials import MAT_AIR, MAT_GRILLE, MAT_HULL
+    tm = np.full((40, 60), MAT_HULL, dtype=np.int32)
+    tm[1:39, 1:59] = MAT_AIR
+    tm[2:38, 30] = MAT_GRILLE
+    sim = _sim(tm)
+    gmap = sim.gmap
+    assert not gmap.solid[14, 30] and combat.flight_blocked(gmap, 14, 30)
+    assert gmap.has_los(14, 20, 14, 40, physical=True)        # a round passes
+    assert combat.flight_plane(gmap)[14, 30] and not combat.flight_plane(gmap)[14, 29]
+    hand = sim.weapons_tables.weapons.by_name["hand_grenade"]
+    g = _grenade(20, 14, 40.5, 14.5, fuse=60)
+    _, tile = _fly_to_fuse(g, gmap, rq=hand.bounce_restitution_q,
+                           bmax=hand.bounce_max)
+    assert g.bounces >= 1 and tile[1] < 30
+
+
+def test_in_the_game_a_wall_free_throw_detonates_where_and_when_main_did():
+    """Protects rule 1 as it reads after the hand (Erik 2026-11-18): every
+    throw of a sweep (facings x reaches, an open room) whose leg from the
+    hand meets no wall detonates on the tile pre-#215 main detonated it --
+    the target, ``centre tile + half + direction x reach`` truncated, which
+    the hand did not move -- on the thrown tick + fuse. Its per-tick
+    positions DIFFER from main's (the flight starts at the hand, not at the
+    centre tile's corner). Breaks when the target moves with the start, or
+    a wall-free throw lands elsewhere or later."""
+    from simulation import simulation as simmod
+    from simulation.materials import MAT_AIR, MAT_HULL
+    from simulation.turning import place
+    from simulation.unit import Unit
+    tm = np.full((90, 90), MAT_HULL, dtype=np.int32)
+    tm[1:89, 1:89] = MAT_AIR
+    sim = _sim(tm)
+    throws = []
+    for k in range(12):
+        u = Unit(f"R{k}", x=40.0 + (k % 4) * 0.37, y=40.0 + (k // 4) * 0.21, team=0)
+        sim.add_unit(u)
+        place(u, unit_fixed.quantize_scalar(2 * math.pi * k / 12))
+        u.current_hp = 1.0e6
+        throws.append((u, 3.0 + 2.25 * k, 20 + k))
+    rel, calls = [], []
+    o_rel, o_ex = simmod.Simulation._release_grenade, simmod.execute_payload
+
+    def r(s, u, kind, fuse, reach_q, dx_q, dy_q):
+        n0 = len(s.projectiles)
+        o_rel(s, u, kind, fuse, reach_q, dx_q, dy_q)
+        for p in s.projectiles[n0:]:
+            cx, cy = u.center_tile_x(), u.center_tile_y()
+            half = ONE >> 1
+            main_t = ((cy << 16) + half + unit_fixed.mul_q16_round(dy_q, reach_q),
+                      (cx << 16) + half + unit_fixed.mul_q16_round(dx_q, reach_q))
+            rel.append((p, s.tick, (main_t[0] >> 16, main_t[1] >> 16),
+                        (cy << 16, cx << 16)))
+
+    def ex(gmap, q, units, fy, fx, payload, *a, **kw):
+        calls.append((sim.tick, kw.get("owner_id"), (fy, fx)))
+        return o_ex(gmap, q, units, fy, fx, payload, *a, **kw)
+    simmod.Simulation._release_grenade, simmod.execute_payload = r, ex
+    try:
+        for k in range(80):
+            if k == 1:
+                for u, reach, fuse in throws:
+                    sim.throw_grenade_intent(u.id, ONE, 0, fuse,
+                                             reach_q=int(reach * ONE))
+            sim.step()
+            sim.set_paused(False)
+    finally:
+        simmod.Simulation._release_grenade, simmod.execute_payload = o_rel, o_ex
+    assert len(rel) == len(throws) and len(calls) == len(throws)
+    moved = 0
+    for p, t0, main_tile, main_start in rel:
+        assert p.bounces == 0
+        got = [c for c in calls if c[1] == p.owner_id][0]
+        assert got[2] == main_tile and got[0] == t0 + p.fuse_ticks
+        moved += (p.start_y_q, p.start_x_q) != main_start
+    assert moved == len(rel)                      # every start is the hand now

@@ -113,7 +113,8 @@ class WeaponDef:
                  status_kind="", status_seconds=0.0,
                  range_m=0.0, default_ammo="", throw_windup_seconds=0.0,
                  melee_push_ns=0.0, melee_arc_half_deg=60.0,
-                 plant_seconds=0.0, bounce_restitution=0.0, bounce_max=0):
+                 plant_seconds=0.0, bounce_restitution=0.0, bounce_max=0,
+                 release_forward_m=0.0, release_side_m=0.0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -180,6 +181,15 @@ class WeaponDef:
         self.bounce_restitution = bounce_restitution
         self.bounce_restitution_q = 0           # derived by WeaponTable (#215)
         self.bounce_max = bounce_max
+        # Where the grenade leaves the hand (#215, Erik 2026-11-18): metres
+        # forward of the thrower's centre and to its right (negative = its
+        # left: the marine throws with the left arm), converted ONCE per map
+        # through the tile size to ``release_forward_q`` / ``release_side_q``
+        # (Q16 tiles) by WeaponTable; read by combat.release_point.
+        self.release_forward_m = release_forward_m
+        self.release_side_m = release_side_m
+        self.release_forward_q = 0              # derived by WeaponTable (#215)
+        self.release_side_q = 0
         self.plant_seconds = plant_seconds
         self.plant_ticks = 0                    # derived by WeaponTable (#193)
         # SPRAY extras (mechanics/03 §5, W4). CONVENTION OF RECORD: the
@@ -521,6 +531,8 @@ class WeaponTable:
                 plant_seconds=col("plant_seconds", 0.0),
                 bounce_restitution=col("bounce_restitution", 0.0),
                 bounce_max=col("bounce_max", 0),
+                release_forward_m=col("release_forward_m", 0.0),
+                release_side_m=col("release_side_m", 0.0),
             )
             # The melee verb's columns (G6p): the push a finite number >= 0,
             # the arc in (0, 180] degrees; the arc quantized ONCE to Q16
@@ -583,6 +595,19 @@ class WeaponTable:
                 raise ValueError(
                     f"weapons.{name}.bounce_max {_bm!r} must be an integer "
                     f">= 0 (the bounces before a wall stops the grenade)")
+            # The release point (#215): metres -> Q16 tiles, once per map.
+            for _col in ("release_forward_m", "release_side_m"):
+                _v = getattr(w, _col)
+                if (isinstance(_v, bool) or not isinstance(_v, (int, float))
+                        or not abs(_v) <= 2.0):
+                    raise ValueError(
+                        f"weapons.{name}.{_col} {_v!r} must be a number of "
+                        f"metres within +-2 (the hand's offset from the "
+                        f"thrower's centre)")
+            w.release_forward_q = _uf.quantize_scalar(       # p3e-door
+                float(w.release_forward_m) / self.tile_size_m)
+            w.release_side_q = _uf.quantize_scalar(          # p3e-door
+                float(w.release_side_m) / self.tile_size_m)
             # METER-BASED RANGE (W6, Erik's 2026-07-07 decision): range_m is
             # the authored physical reach; range_tiles derives ONCE here at
             # the level's tile size (quantize-once, door 2; the divide is

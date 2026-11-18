@@ -13,8 +13,8 @@
 
 namespace unit_requests {
 
-constexpr const char* UNIT_REQUESTS_FINGERPRINT = "070b917589b5397be52ff4d29fc36e5ee1583e5255f854405cf8b0799f427fa8";
-constexpr int UNIT_REQ_F = 13;
+constexpr const char* UNIT_REQUESTS_FINGERPRINT = "07e561f4a52ca7bd9827237c98d535acac11964b2ff47507cce251233a1ad79f";
+constexpr int UNIT_REQ_F = 15;
 constexpr int UNIT_REQ_ROW_CAP = 3;
 constexpr int64_t UNIT_REQ_NO_DOOR = -1;
 
@@ -32,6 +32,8 @@ constexpr int UNIT_RQ_APPROACH_Y = 9;
 constexpr int UNIT_RQ_APPROACH_X = 10;
 constexpr int UNIT_RQ_DOOR = 11;
 constexpr int UNIT_RQ_ACCEPTED = 12;
+constexpr int UNIT_RQ_START_X_Q = 13;
+constexpr int UNIT_RQ_START_Y_Q = 14;
 
 // The record kinds (0 = no record).
 constexpr int64_t UNIT_RQKIND_THROW = 1;

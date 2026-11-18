@@ -11,8 +11,8 @@
 //   unit_table_appends  slot 1b's THROW and PLANT requests (gathered in id
 //       order, the plants decided by k_plant_accept) become rows: ONE thread
 //       per env walks the request list in list order; a THROW appends a
-//       grenade row (Simulation._release_grenade's Projectile: the centre
-//       tile as the Q16 start, the Q16 target, the clamped fuse, the thrown
+//       grenade row (Simulation._release_grenade's Projectile: the hand
+//       (#215 combat.release_point) as the Q16 start, the Q16 target, the clamped fuse, the thrown
 //       tick, the kind's round and its travel speed), an ACCEPTED plant a
 //       charge row (charges.place's PlantedCharge). Each table's order is
 //       the host list's: survivors, then this tick's appends.
@@ -152,7 +152,7 @@ __global__ void k_table_appends(const int64_t* tables, RecordListView rq, Record
         if (r[UNIT_RQ_KIND] == UNIT_RQKIND_THROW) {
             const int64_t kind = r[UNIT_RQ_ITEM];
             if (kind < 0 || kind >= UNIT_TAB_HAND_GRENADE_AMMO_ROW_W ||
-                !within(r[UNIT_RQ_TILE_X], TILE_MAX) || !within(r[UNIT_RQ_TILE_Y], TILE_MAX) ||
+                !within(r[UNIT_RQ_START_X_Q], COORD_MAX) || !within(r[UNIT_RQ_START_Y_Q], COORD_MAX) ||
                 !within(r[UNIT_RQ_TICK], TIME_MAX) || !within(r[UNIT_RQ_TICKS], TIME_MAX) ||
                 r[UNIT_RQ_TICKS] == K_NO_TIMER) {
                 bump(cnt, e, C_FAULTS);
@@ -160,7 +160,7 @@ __global__ void k_table_appends(const int64_t* tables, RecordListView rq, Record
             }
             int64_t g[OBJ_GRENADE_W];
             for (int f = 0; f < OBJ_GRENADE_W; ++f) g[f] = 0;
-            const int64_t sx = r[UNIT_RQ_TILE_X] * ONE, sy = r[UNIT_RQ_TILE_Y] * ONE;
+            const int64_t sx = r[UNIT_RQ_START_X_Q], sy = r[UNIT_RQ_START_Y_Q];   // #215: the hand
             g[OBJ_GRENADE_COL_PROJ_TYPE] = tab[UNIT_TAB_ORDER_GRENADE];
             g[OBJ_GRENADE_COL_OWNER_ID] = r[UNIT_RQ_UNIT_ID];
             g[OBJ_GRENADE_COL_START_X_Q] = sx;
@@ -204,82 +204,9 @@ __global__ void k_table_appends(const int64_t* tables, RecordListView rq, Record
 // #215: THE WALL WALK of a thrown grenade (combat.flight_walk, integer for
 // integer; the grid traversal of J. Amanatides and A. Woo, "A Fast Voxel
 // Traversal Algorithm for Ray Tracing", Eurographics 1987) over the env's
-// solid plane as the slot found it, and the leg law (Projectile.bounce /
-// .fly / .settle, combat.detonation_tile).
-struct Plane {
-    const uint8_t* s;      // this env's (h, w) solid tiles
-    int64_t h, w;
-};
-
-// combat.flight_blocked: off the grid, or solid.
-__device__ __forceinline__ bool flight_blocked(const Plane& p, int64_t iy, int64_t ix) {
-    return iy < 0 || iy >= p.h || ix < 0 || ix >= p.w || p.s[iy * p.w + ix] != 0;
-}
-
-// Python's `v >> 16` of a possibly negative int (a floor).
-__device__ __forceinline__ int64_t floor16(int64_t v) {
-    return v >= 0 ? (v >> 16) : -((-v + (ONE - 1)) >> 16);
-}
-
-__device__ __forceinline__ int64_t iabs(int64_t v) { return v < 0 ? -v : v; }
-
-struct Hit {
-    int64_t px, py;
-    bool flip_x, flip_y;
-};
-
-// combat.flight_walk: true and `hit` on the first blocked tile the segment
-// A -> B enters; false when every tile it enters is free.
-__device__ bool flight_walk(const Plane& p, int64_t ax, int64_t ay, int64_t bx, int64_t by,
-                            Hit* hit) {
-    int64_t cx = floor16(ax), cy = floor16(ay);
-    int64_t nx = iabs(floor16(bx) - cx), ny = iabs(floor16(by) - cy);
-    const int64_t dx = bx - ax, dy = by - ay;
-    const int64_t sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
-    const int64_t adx = iabs(dx), ady = iabs(dy);
-    while (nx || ny) {
-        const int64_t ex = nx ? (sx > 0 ? (cx + 1) * ONE : cx * ONE) : 0;
-        const int64_t ey = ny ? (sy > 0 ? (cy + 1) * ONE : cy * ONE) : 0;
-        bool step_x, step_y;
-        if (nx && ny) {
-            const int64_t c = iabs(ex - ax) * ady - iabs(ey - ay) * adx;
-            step_x = c <= 0;
-            step_y = c >= 0;
-        } else {
-            step_x = nx > 0;
-            step_y = ny > 0;
-        }
-        const int64_t ncx = step_x ? cx + sx : cx;
-        const int64_t ncy = step_y ? cy + sy : cy;
-        if (flight_blocked(p, ncy, ncx)) {
-            int64_t px, py;
-            if (step_x) {
-                px = sx > 0 ? ex - 1 : ex;
-                if (step_y) {
-                    py = sy > 0 ? ey - 1 : ey;
-                } else {
-                    py = ay + fixedpoint::div_round_q(dy * iabs(ex - ax), adx);
-                    py = py < cy * ONE ? cy * ONE : (py > cy * ONE + ONE - 1 ? cy * ONE + ONE - 1 : py);
-                }
-            } else {
-                py = sy > 0 ? ey - 1 : ey;
-                px = ax + fixedpoint::div_round_q(dx * iabs(ey - ay), ady);
-                px = px < cx * ONE ? cx * ONE : (px > cx * ONE + ONE - 1 ? cx * ONE + ONE - 1 : px);
-            }
-            hit->px = px;
-            hit->py = py;
-            hit->flip_x = step_x;
-            hit->flip_y = step_y;
-            return true;
-        }
-        cx = ncx;
-        cy = ncy;
-        if (step_x) --nx;
-        if (step_y) --ny;
-    }
-    return false;
-}
-
+// flight plane as the slot found it (unit_lib::flight_walk, the device
+// library's), and the leg law (Projectile.bounce / .fly / .settle,
+// combat.detonation_tile).
 // A grenade's moving state (the row's flight columns).
 struct Leg {
     int64_t sx, sy, tx, ty, px, py, leg_tick, bounces;

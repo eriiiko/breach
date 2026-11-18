@@ -100,7 +100,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, flight_fields,  # noqa: E402
                                 ShadowLockstep, capture, gather)
 from simulation import (unit_kernels, unit_requests, unit_store,  # noqa: E402
                         unit_tables, unit_traits)
@@ -125,12 +125,14 @@ def fail(msg):
 # The slots
 # ---------------------------------------------------------------------------
 def _run_verbs(st, inp, req):
+    from cuda_unit_lockstep import flight_fields       # #215: the flight plane
     return unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                              inp.scalars["charges_live"])
+                              inp.scalars["charges_live"], flight_fields(inp))
 
 
 SLOT_1B = DeviceSlot(label="1b intents", run=_run_verbs,
-                     inputs=("tick", "door_spans", "charges_live"), requests=True)
+                     inputs=("tick", "door_spans", "charges_live", "flight_plane"),
+                     requests=True)
 SLOT_1A = DeviceSlot(label="1a integrate + turn", run=unit_kernels.integrate_turn)
 SLOT_1BP = DeviceSlot(label="1b' orders",
                       run=lambda st, inp: unit_kernels.apply_orders(
@@ -790,6 +792,7 @@ def table_reference(sim) -> dict:
     from simulation.ruleset import MatchRules
     from simulation.unit_schema import CHARGE_CAPACITY
     from simulation.weapons import PLANT_WEAPON, fuse_ticks_from_seconds, get_tables
+    from simulation import unit_fixed as _uf
     W = get_tables().weapons.by_name
     hand = W["hand_grenade"]
     it = sim.impulse_table
@@ -801,6 +804,11 @@ def table_reference(sim) -> dict:
         "hand_max_reach_q": int(hand.max_throw_range) * 65536,
         "hand_fuse_lo_ticks": fuse_ticks_from_seconds(hand.fuse_min_seconds, sim._tps),
         "hand_fuse_hi_ticks": fuse_ticks_from_seconds(hand.fuse_max_seconds, sim._tps),
+        # #215: the release point, metres -> Q16 tiles of the sim's own map
+        "hand_release_forward_q": _uf.quantize_scalar(float(hand.release_forward_m)
+                                                      / float(sim.gmap.tile_size_m)),
+        "hand_release_side_q": _uf.quantize_scalar(float(hand.release_side_m)
+                                                   / float(sim.gmap.tile_size_m)),
         "plant_class_ticks": int(W[PLANT_WEAPON].plant_ticks),
         "charge_capacity": CHARGE_CAPACITY,
         "shove_q": int(it.shove_q), "shove_cone_q": int(it.shove_cone_q),
@@ -1151,7 +1159,7 @@ def part_overflow():
         st.upload(held["pre"][None])
         full.begin()
         unit_kernels.verbs(st, full, inp.tick, inp.tables["door_spans"],
-                           inp.scalars["charges_live"])
+                           inp.scalars["charges_live"], flight_fields(inp))
         want = full.records()[0]
         if len(want) < 2:
             continue

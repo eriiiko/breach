@@ -201,9 +201,11 @@ void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
 // planted charges at the slot -- staged through the store's input slots 0, 1,
 // 2. out.refused = plants refused at the capacity; out.dropped = requests the
 // list could not hold.
+// #215: `flight` a DEVICE (N, fh, fw) bool plane (combat.flight_plane) the
+// throw's release point is walked over.
 void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
                 const int64_t* ticks, const int64_t* spans, int n_spans, const int64_t* live,
-                const UnitDamageCounts& out);
+                std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out);
 
 // The done kernel: per env (terminal, outcome, winner team, living marine
 // teams) into `out` (N, UNIT_DONE_W) int64 host; `ticks` (N,) each env's

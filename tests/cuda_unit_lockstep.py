@@ -232,13 +232,14 @@ ARG_INPUTS: dict = {
 PADS["burn_walls"] = unit_kernels.pad_walls
 
 
-# #215: slot 2's grenade flight reads the solid plane (the wall walk). A batch
-# of the grenade gates' scenes holds maps of differing sizes, so the plane is
-# padded to the batch's largest grid WITH SOLID: off its own grid a tile is
+# #215: slots 1b (the throw's release point) and 2 (the grenade flight) read
+# the FLIGHT plane (combat.flight_plane: solid or a blocks_thrown material). A
+# batch of the gates' scenes holds maps of differing sizes, so the plane is
+# padded to the batch's largest grid WITH BLOCKED: off its own grid a tile is
 # blocked to a flight (combat.flight_blocked), so the padded plane is the
 # same law for every env. A bool (N, H, W) array; the slot hands it to the
-# kernel as its device "solid" field.
-def _pad_flight_solid(vals):
+# kernel as its device "flight" field.
+def _pad_flight_plane(vals):
     hh = max(v.shape[0] for v in vals)
     ww = max(v.shape[1] for v in vals)
     out = np.ones((len(vals), hh, ww), dtype=np.bool_)
@@ -247,8 +248,19 @@ def _pad_flight_solid(vals):
     return out
 
 
-INPUTS["flight_solid"] = ("table", lambda sim: np.array(sim.gmap.solid, dtype=np.bool_))
-PADS["flight_solid"] = _pad_flight_solid
+def _capture_flight_plane(sim):
+    from simulation import combat
+    return combat.flight_plane(sim.gmap)
+
+
+INPUTS["flight_plane"] = ("table", _capture_flight_plane)
+PADS["flight_plane"] = _pad_flight_plane
+
+
+def flight_fields(inp) -> dict:
+    """#215: the padded flight plane as a kernel's device ``"flight"`` field."""
+    import cupy as cp
+    return {"flight": cp.ascontiguousarray(cp.asarray(inp.tables["flight_plane"]))}
 
 # ---------------------------------------------------------------------------
 # #29 P7a.1: host LISTS (decision 8), declared like a field

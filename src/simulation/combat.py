@@ -126,12 +126,46 @@ def cone_q16_of_deg(spread_deg) -> int:
 # ---------------------------------------------------------------------------
 def flight_blocked(gmap, iy: int, ix: int) -> bool:
     """Whether a thrown grenade cannot fly into tile ``(iy, ix)`` (#215):
-    the rounds' march's own stop read (``BulletInFlight.advance``) -- off
-    the grid, or ``solid`` (a wall, a closed door, glass, the legacy
-    painted door; a grille, open to gas, lets it through as it lets a round
-    through). Asked against the map as it stands at the call."""
+    off the grid, ``solid`` (the rounds' march's own stop: a wall, a closed
+    door, glass, the legacy painted door), or a material whose
+    ``[materials.*] blocks_thrown`` says so (the grille, Erik 2026-11-18;
+    the column is derived as "sealed to gas", i.e. ``solid``, for every
+    other row). Asked against the map as it stands at the call."""
     h, w = gmap.solid.shape
-    return not (0 <= iy < h and 0 <= ix < w) or bool(gmap.solid[iy, ix])
+    if not (0 <= iy < h and 0 <= ix < w) or gmap.solid[iy, ix]:
+        return True
+    return bool(gmap.materials.blocks_thrown[int(gmap.material[iy, ix])])
+
+
+def flight_plane(gmap) -> np.ndarray:
+    """:func:`flight_blocked` over the whole grid, a ``(h, w)`` bool array
+    (a fresh copy): the plane the device's grenade slots read."""
+    return np.asarray(gmap.solid, dtype=bool) | np.asarray(
+        gmap.materials.blocks_thrown, dtype=bool)[np.asarray(gmap.material)]
+
+
+def release_point(gmap, x_q: int, y_q: int, footprint: int, dx_q: int,
+                  dy_q: int, forward_q: int, side_q: int):
+    """Where a thrown grenade leaves the hand (#215, Erik 2026-11-18): the
+    thrower's Q16 centre (``x_q`` / ``y_q`` plus half its footprint) plus
+    the hand's offset in the thrower's frame -- ``forward_q`` along the
+    throw's Q16 unit vector ``(dx_q, dy_q)`` (the facing at the release),
+    ``side_q`` to its right ``(-dy_q, dx_q)`` -- each coordinate ONE
+    rational rounded once (half away). The piece from the centre to the
+    hand is walked (:func:`flight_walk`): a hand beyond a wall starts the
+    grenade at the last free point before it (no bounce counted). The
+    centre's own tile is never asked (a thrower on a legacy painted door
+    starts there; :func:`detonation_tile` keeps a grenade that never left
+    it off the door). Returns ``(sx, sy)`` Q16."""
+    half = (int(footprint) << unit_fixed.FP_SHIFT) >> 1
+    cx, cy = int(x_q) + half, int(y_q) + half
+    f, s, dx, dy = int(forward_q), int(side_q), int(dx_q), int(dy_q)
+    hx = cx + unit_fixed.div_round(f * dx - s * dy, unit_fixed.FP_ONE)
+    hy = cy + unit_fixed.div_round(f * dy + s * dx, unit_fixed.FP_ONE)
+    hit = flight_walk(gmap, cx, cy, hx, hy)
+    if hit is not None:
+        return hit[0], hit[1]
+    return hx, hy
 
 
 def flight_walk(gmap, ax: int, ay: int, bx: int, by: int):

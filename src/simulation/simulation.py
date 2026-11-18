@@ -70,7 +70,7 @@ from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition, ignition_params,
     process_shooting, process_sprays, process_melee_intents,
-    Projectile, detonation_tile,
+    Projectile, detonation_tile, release_point,
     mag_settle, reload_begin,
 )
 # Simultaneous resolution of an attack slot (#169): phase A records, phase B
@@ -1552,9 +1552,17 @@ class Simulation:
                    + unit_fixed.mul_q16_round(int(dy_q), reach_q))
         lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
         hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
+        # #215: the grenade leaves the HAND -- the thrower's Q16 centre plus
+        # the hand row's offset turned by the throw's vector, never beyond a
+        # wall (combat.release_point); the target stays the centre tile's
+        # point at the reach, so an aimed point is still where it lands.
+        sx_q, sy_q = release_point(
+            self.gmap, u.x_q, u.y_q, u.footprint, int(dx_q), int(dy_q),
+            hand.release_forward_q, hand.release_side_q)
         proj = Projectile(
             ORDER_GRENADE,
-            cx, cy,
+            unit_fixed.dequantize_scalar(sx_q),
+            unit_fixed.dequantize_scalar(sy_q),
             unit_fixed.dequantize_scalar(tgt_x_q),
             unit_fixed.dequantize_scalar(tgt_y_q),
             fuse_seconds=0.0,

@@ -150,16 +150,16 @@ def fail(msg):
 # ---------------------------------------------------------------------------
 def _run_1b(st, inp, req, lists):
     cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"])
+                             inp.scalars["charges_live"], _flight_fields(inp))
     unit_kernels.table_appends(st, req, lists["grenades"], lists["charges"])
     return cov
 
 
 def _flight_fields(inp):
-    """#215: the padded solid plane (``cuda_unit_lockstep``'s
-    ``flight_solid`` input) as the kernel's device field."""
-    import cupy as cp
-    return {"solid": cp.ascontiguousarray(cp.asarray(inp.tables["flight_solid"]))}
+    """#215: the padded flight plane (``cuda_unit_lockstep``'s
+    ``flight_plane`` input) as the kernel's device field."""
+    from cuda_unit_lockstep import flight_fields
+    return flight_fields(inp)
 
 
 def _run_2(st, inp, lists):
@@ -177,14 +177,14 @@ def _run_10(st, inp, lists):
 
 
 SLOT_1B = DeviceSlot(label="1b intents", run=_run_1b,
-                     inputs=("tick", "door_spans", "charges_live", "list:grenades",
+                     inputs=("tick", "door_spans", "charges_live", "flight_plane", "list:grenades",
                              "list:charges"),
                      requests=True, outputs=("list:grenades", "list:charges"))
 # The grenade / charge slots write NO unit row (columns=("id",): the compare
 # holds the rows the device never touches); the host's row changes inside
 # them are the PAYLOAD law's (its blast damage), recorded here, P7c.1's.
 SLOT_2 = DeviceSlot(label="2 grenades", run=_run_2, columns=("id",),
-                    inputs=("tick", "list:grenades", "flight_solid"),
+                    inputs=("tick", "list:grenades", "flight_plane"),
                     outputs=("list:grenades", "list:payloads"), host_only=HOST_ONLY)
 SLOT_9E = DeviceSlot(label="9e(d') planted charges", run=_run_9e, columns=("id",),
                      skip_ok=True,    # the conductor runs it only while a charge lies
@@ -637,8 +637,9 @@ def _solid(sims):
     """#215: the sims' ``solid`` planes as the device ``(N, h, w)`` bool
     array slot 2's grenades read."""
     import cupy as cp
-    return {"solid": cp.ascontiguousarray(cp.asarray(np.stack(
-        [np.asarray(s.gmap.solid, dtype=np.bool_) for s in sims])))}
+    from simulation import combat
+    return {"flight": cp.ascontiguousarray(cp.asarray(np.stack(
+        [combat.flight_plane(s.gmap) for s in sims])))}
 
 
 def _rows_of(table, objs):
@@ -1268,7 +1269,7 @@ def _run_1b_chained(st, inp, lists):
     req = _CH_REQ[key]
     req.begin()
     cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"])
+                             inp.scalars["charges_live"], _flight_fields(inp))
     if any(r[0] == unit_requests.KIND_USE for r in req.records()[0]):
         raise RuntimeError("chained: a door flip in the grenade chain (no landing)")
     unit_kernels.table_appends(st, req, lists["grenades"], lists["charges"])
