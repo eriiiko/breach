@@ -1450,10 +1450,12 @@ def part_chained():
                                   lambda: DoorScene(0), 80)
     if chs[1].runs != n or chs[0].runs != 0:
         fail(f"chained door scene: {chs[0].runs} vent / {chs[1].runs} door runs in {n} ticks")
-    chs, n, acted, calls = _chain("ship_demo bots match (9e(d) vents)", ShipDriver, SHIP_TICKS,
-                                  with_doors=False)
-    if chs[0].runs != n or acted == 0 or calls["twin vents"]:
-        fail(f"chained ship: {chs[0].runs} runs in {n} ticks, {acted} acted")
+    # #215: ship_demo's doorways are door entities, so its chain takes the
+    # 9e(d) door sweep too.
+    chs, n, acted, calls = _chain("ship_demo bots match (9e(d) vents + doors)", ShipDriver,
+                                  SHIP_TICKS)
+    if chs[0].runs != n or chs[1].runs != n or acted == 0 or calls["twin vents"]:
+        fail(f"chained ship: {chs[0].runs} / {chs[1].runs} runs in {n} ticks, {acted} acted")
 
 
 # ---------------------------------------------------------------------------

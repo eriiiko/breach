@@ -49,7 +49,7 @@ of the decision.
 """
 from __future__ import annotations
 
-from simulation import combat, unit_impulse
+from simulation import combat, turning, unit_fixed, unit_impulse
 from simulation.status import composed_flags
 
 
@@ -107,21 +107,52 @@ def door_in_reach(u, door) -> bool:
     return _reach_key(u, door) is not None
 
 
-def use_door(sim, u):
-    """The door USE would flip: the first live door whose span touches the
-    unit's footprint or its one-tile ring -- the live door holding the
-    row-major FIRST ring tile any live door holds (what the ring scan
-    through ``Simulation.door_at`` returned; spans are disjoint, so the tile
-    names one door), or ``None``. THE scan of the verb, on
-    :func:`door_in_reach`'s geometry."""
+def facing_off(u, door) -> int:
+    """How far ``door`` lies off ``u``'s facing (#215, Erik 2026-11-18: "what
+    if I stay near 2 doors and open the wrong one by mistake"): the absolute
+    angle, Q16 radians in ``[0, PI_Q16]``, between ``u.facing_q`` and the
+    bearing from ``u``'s footprint centre to the centre of the door's NEAREST
+    span tile (squared Q16 distance, ties to the earlier tile in span order,
+    i.e. row-major). Integers through the kit (``atan2_q16``,
+    ``turning.wrap_q16``), the shove's own bearing form; a tile centre ON
+    the unit's centre is 0 off (the unit stands in that door). A pure read."""
+    cx, cy = unit_impulse.centre_q(u)
+    half = unit_fixed.FP_ONE >> 1
     best = None
+    for ty, tx in door.span:
+        dx = (int(tx) << unit_fixed.FP_SHIFT) + half - cx
+        dy = (int(ty) << unit_fixed.FP_SHIFT) + half - cy
+        d2 = dx * dx + dy * dy
+        if best is None or d2 < best[0]:
+            best = (d2, dx, dy)
+    _d2, dx, dy = best
+    if dx == 0 and dy == 0:
+        return 0
+    return abs(turning.wrap_q16(unit_fixed.atan2_q16(-dy, dx) - u.facing_q))
+
+
+def use_door(sim, u):
+    """The door USE would flip (#215): among the live doors whose span
+    touches the unit's footprint or its one-tile ring (:func:`door_in_reach`'s
+    geometry), the one the unit FACES -- the smallest :func:`facing_off` --
+    ties to the door holding the row-major first ring tile (the scan order
+    before #215: what the ring scan through ``Simulation.door_at`` returned).
+    With ONE door in reach that door, whatever the facing (Erik: "when only
+    1 door available, only reach is fine"); ``None`` with none. THE choice of
+    the verb; its device form is ``use_door`` in
+    ``cpp/src/cuda_unit_verbs.cu``."""
+    cands = []
     for door in sim._doors:
         if not door.alive:
             continue
         k = _reach_key(u, door)
-        if k is not None and (best is None or k < best[0]):
-            best = (k, door)
-    return None if best is None else best[1]
+        if k is not None:
+            cands.append((k, door))
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0][1]
+    return min(cands, key=lambda c: (facing_off(u, c[1]), c[0]))[1]
 
 
 def can_use(sim, u) -> bool:
@@ -181,5 +212,6 @@ def can_melee(u, tick: int, tables, *, at_tick_start: bool) -> bool:
             or tick - u.last_blow_tick >= weapon.rof_interval_ticks)
 
 
-__all__ = ["can_throw", "can_plant", "door_in_reach", "use_door", "can_use",
+__all__ = ["can_throw", "can_plant", "door_in_reach", "facing_off",
+           "use_door", "can_use",
            "can_reload", "can_shove", "can_melee"]

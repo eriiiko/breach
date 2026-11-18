@@ -1494,6 +1494,50 @@ def _family_f_scene(tmp_path):
     return (a, b), (ua, ub), ctxs, S
 
 
+def test_over_the_cap_the_farthest_doors_go_first_never_a_unit():
+    """Property (#215, the game-AI lead's ruling of 2026-11-18): on a map with
+    more doors than the full list has room for (ship_demo: 60 doors), every
+    soldier's full list holds every living marine, EVERY living zombie and
+    EVERY live object, and the doors it keeps are exactly the nearest ones
+    (by its own centre to the door's middle span tile, ties by ordinal).
+    Breaks if doors are kept before units again (the zombies or objects
+    dropped) or the farther doors are kept over nearer ones."""
+    from simulation import charges
+    ses, spec, S = _ship_match()
+    sim = ses.sim
+    ses.tick()
+    for k in range(3):                       # three live objects far ahead
+        charges.place(sim, charges.PlantedCharge(
+            20 + 4 * k, 40, "demo_c4", -1, det_tick=10 ** 9, approach=None))
+    ctx = O.ObsContext.build(sim, spec, S, n_teams=len(spec.teams))
+    out = _observe_full(sim, ctx, spec, S)
+    zombies = {u.id for u in sim.units if u.alive and u.is_zombie}
+    objects = {O.OBJECT_UID_BASE + k for k in range(len(tp.live_objects(sim)))}
+    doors = [d for d in sim._doors if d.alive]
+    assert zombies and len(objects) == 3
+    room = O.FULL_ENTRIES - 1 - (sum(1 for u in sim.units
+                                     if u.alive and not u.is_zombie) - 1)
+    assert len(doors) > room - len(zombies) - len(objects) > 0   # over the cap
+    checked = 0
+    for i, u in enumerate(_roster_rows(sim, spec, S)):
+        if u is None or not u.alive:
+            continue
+        ids = out["full_uid"][i][out["full_mask"][i] == 1].tolist()
+        assert zombies <= set(ids) and objects <= set(ids), i
+        kept = [x - O.DOOR_UID_BASE for x in ids if x >= O.DOOR_UID_BASE]
+        cy, cx = u.center_tile_y(), u.center_tile_x()
+
+        def d2(d):
+            fy, fx = d.span[len(d.span) // 2]
+            return (fx - cx) ** 2 + (fy - cy) ** 2
+        nearest = sorted(doors, key=lambda d: (d2(d), int(d.ordinal)))
+        want = sorted(int(d.ordinal) for d in nearest[:len(kept)])
+        assert sorted(kept) == want, i
+        assert len(kept) == room - len(zombies) - len(objects), i
+        checked += 1
+    assert checked >= 8
+
+
 def test_family_f_the_full_view_on_vs_off_changes_no_obs_array(tmp_path):
     """Property (spec 7, case f; 0.5, 5.7): the same sim observed with the
     full view OFF (A) and ON (B: the full view built BEFORE the

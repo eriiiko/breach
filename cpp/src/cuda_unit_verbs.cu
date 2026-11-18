@@ -17,8 +17,8 @@
 //              the facing the unit has then);
 //       PLANT  the latch -> can_plant -> the plant (HANDLING); its advance (the
 //              last tick: the charge laid on the centre tile);
-//       USE    the latch -> the first live door in reach (the door spans a
-//              per-tick table, in sim._doors order);
+//       USE    the latch -> the live door in reach the unit faces (#215;
+//              the door spans a per-tick table, in sim._doors order);
 //       RELOAD the latch -> can_reload -> mag_settle -> reload_begin;
 //       SHOVE  the latch -> can_shove -> the target (shove_target over the
 //              env's other rows) -> the impulse (the PUSH hook) for the TARGET.
@@ -241,23 +241,86 @@ __device__ inline void advance_plant(int64_t* loc, const int64_t* tab, int64_t t
     emit_record(sink, rec);
 }
 
-// verb_gates.use_door: the live door holding the row-major first tile of the
-// unit's footprint plus its one-tile ring (spans: this env's (n, 3) rows
-// (ordinal, ty, tx) in door order, span order; ordinal -1 a pad). -1 = none.
-__device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int n_spans) {
+// verb_gates.use_door (#215): among the live doors in reach (a span tile in
+// the unit's footprint plus its one-tile ring), the one the unit FACES --
+// the smallest verb_gates.facing_off: |wrap_q16(atan2_q16(-dy, dx) - facing)|
+// to the centre of the door's NEAREST span tile from the footprint centre
+// (squared Q16 distance, ties to the earlier tile in span order; a tile
+// centre on the unit's centre is 0 off) -- ties to the door holding the
+// row-major first ring tile (the scan order before #215). ONE door in reach:
+// that door, its facing never read. spans: this env's (n, 3) rows (door
+// index, ty, tx) in door order, each door's rows consecutive in span order;
+// index -1 a pad. -1 = none. An operand past the kit's int32 range faults.
+__device__ inline int64_t use_door(const int64_t* loc, const int64_t* spans, int n_spans,
+                                   bool* bad) {
     const int64_t x0 = tile_of(loc[UNIT_COL_X_Q]), y0 = tile_of(loc[UNIT_COL_Y_Q]);
-    const int64_t side = loc[UNIT_COL_FOOTPRINT] + 2;
-    int64_t best = -1, best_k = 0;
-    for (int i = 0; i < n_spans; ++i) {
-        const int64_t* s = spans + (size_t)i * SPAN_W;
-        if (s[0] < 0) continue;
-        const int64_t ry = s[1] - (y0 - 1), rx = s[2] - (x0 - 1);
-        if (ry < 0 || ry >= side || rx < 0 || rx >= side) continue;
-        const int64_t k = ry * side + rx;
-        if (best < 0 || k < best_k) {
-            best = s[0];
-            best_k = k;
+    const int64_t fp = loc[UNIT_COL_FOOTPRINT];
+    const int64_t side = fp + 2;
+    // pass 1: the candidates (doors with a ring tile), each door's reach key
+    int n_cand = 0;
+    int64_t first = -1, first_k = 0;
+    for (int i = 0; i < n_spans;) {
+        const int64_t door = spans[(size_t)i * SPAN_W];
+        int j = i;
+        int64_t k_door = -1;
+        for (; j < n_spans && spans[(size_t)j * SPAN_W] == door; ++j) {
+            const int64_t* s = spans + (size_t)j * SPAN_W;
+            const int64_t ry = s[1] - (y0 - 1), rx = s[2] - (x0 - 1);
+            if (ry < 0 || ry >= side || rx < 0 || rx >= side) continue;
+            const int64_t k = ry * side + rx;
+            if (k_door < 0 || k < k_door) k_door = k;
         }
+        if (door >= 0 && k_door >= 0) {
+            ++n_cand;
+            if (first < 0 || k_door < first_k) {
+                first = door;
+                first_k = k_door;
+            }
+        }
+        i = j;
+    }
+    if (n_cand <= 1) return first;
+    // pass 2: several in reach -> the smallest (facing off, reach key)
+    const int64_t cx = centre_q(loc[UNIT_COL_X_Q], fp), cy = centre_q(loc[UNIT_COL_Y_Q], fp);
+    const int64_t facing = loc[UNIT_COL_FACING_Q];
+    const int64_t half = ONE >> 1;
+    int64_t best = -1, best_off = 0, best_k = 0;
+    for (int i = 0; i < n_spans;) {
+        const int64_t door = spans[(size_t)i * SPAN_W];
+        int j = i;
+        int64_t k_door = -1, d2_min = -1, ndx = 0, ndy = 0;
+        for (; j < n_spans && spans[(size_t)j * SPAN_W] == door; ++j) {
+            const int64_t* s = spans + (size_t)j * SPAN_W;
+            const int64_t ry = s[1] - (y0 - 1), rx = s[2] - (x0 - 1);
+            if (ry >= 0 && ry < side && rx >= 0 && rx < side) {
+                const int64_t k = ry * side + rx;
+                if (k_door < 0 || k < k_door) k_door = k;
+            }
+            const int64_t dx = (s[2] << 16) + half - cx, dy = (s[1] << 16) + half - cy;
+            if (!fits_i32(dx) || !fits_i32(dy)) {
+                *bad = true;
+                return -1;
+            }
+            const int64_t d2 = dx * dx + dy * dy;
+            if (d2_min < 0 || d2 < d2_min) {
+                d2_min = d2;
+                ndx = dx;
+                ndy = dy;
+            }
+        }
+        if (door >= 0 && k_door >= 0) {
+            int64_t off = 0;
+            if (ndx != 0 || ndy != 0) {
+                off = wrap_q16(fixedpoint::atan2_q16((q16)(-ndy), (q16)ndx) - facing);
+                if (off < 0) off = -off;
+            }
+            if (best < 0 || off < best_off || (off == best_off && k_door < best_k)) {
+                best = door;
+                best_off = off;
+                best_k = k_door;
+            }
+        }
+        i = j;
     }
     return best;
 }
@@ -389,8 +452,9 @@ __global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, cons
         // USE -> the door in reach flips (a request)
         if (!bad && loc[UNIT_COL_PENDING_USE]) {
             loc[UNIT_COL_PENDING_USE] = 0;
-            const int64_t door = use_door(loc, bptr(spans, (size_t)n_spans * SPAN_W), n_spans);
-            if (door >= 0) {
+            const int64_t door = use_door(loc, bptr(spans, (size_t)n_spans * SPAN_W), n_spans,
+                                         &bad);
+            if (!bad && door >= 0) {
                 int64_t rec[UNIT_REQ_F];
                 blank_record(rec, UNIT_RQKIND_USE, loc[UNIT_COL_ID], tick);
                 rec[UNIT_RQ_DOOR] = door;

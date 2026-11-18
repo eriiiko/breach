@@ -64,7 +64,7 @@ from config import CFG
 from control_bots_v1 import ARRIVE_TOL_Q, MID_Q, _direction_q
 from control_source import ControlSource
 from pathfinding import astar
-from simulation import horde, vision
+from simulation import horde, verb_gates, vision
 from simulation.combat import mag_status, melee_arc_target
 from simulation.damage import DAMAGE_TYPE_NAMES
 from simulation.factions import ZOMBIE_TEAM
@@ -1438,7 +1438,12 @@ class BotTeam(ControlSource):
         """#142: a closed (non-hull) door in the next waypoint's block is
         opened through the USE verb once the bot touches it (USE toggles,
         so only a door not already asked open, and not again within
-        ``door_retry_ticks``)."""
+        ``door_retry_ticks``). #215: the verb flips the door the unit FACES
+        when several are in reach, so the bot issues it only when the verb's
+        own choice (``verb_gates.use_door``, read now) IS the door on its
+        path; otherwise it waits (it turns toward its waypoint as it walks).
+        A turn in slot 1a between this read and the verb could still change
+        the choice when two doors lie almost equally off its facing."""
         doors = self.door_tiles(sim)
         if doors is None:
             return
@@ -1459,6 +1464,8 @@ class BotTeam(ControlSource):
         x0, y0 = u.tile_x, u.tile_y
         if not (x0 - 1 <= wx + ox <= x0 + fp and y0 - 1 <= wy + oy <= y0 + fp):
             return
+        if verb_gates.use_door(sim, u) is not door:
+            return                      # the verb would flip another door
         sim.use_intent(u.id)
         st.door_used[key] = tick
 

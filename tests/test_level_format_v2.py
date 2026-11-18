@@ -40,7 +40,7 @@ from level_loader import (  # noqa: E402
     materials_from_tilemap,
 )
 from simulation.materials import (  # noqa: E402
-    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS, MAT_FURNITURE,
+    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED, MAT_STEEL, MAT_GLASS, MAT_FURNITURE,
     MATERIAL_NAMES,
 )
 from migrate_tilemap_v2 import V1_TO_V2, migrate_grid, migrate_level  # noqa: E402
@@ -226,7 +226,7 @@ def test_real_level_is_current_format_and_airtight():
 
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     assert int((mat == MAT_HULL).sum()) > 0
-    assert int((mat == MAT_DOOR).sum()) > 0
+    assert int((mat == MAT_DOOR_CLOSED).sum()) > 0   # #215: its doors are entities
     assert int(vac.sum()) > 0                   # space outside the hull
 
     # The canonical airtight certification: GameMap decode + flood fill.

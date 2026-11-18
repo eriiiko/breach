@@ -1796,10 +1796,15 @@ def _opening_at(rng, q, e, by_q, rooms, ids, wall, W, strip_row,
 def bot_path(emb) -> list:
     """The bots' walk between the two spawn slabs (``pathfinding.astar`` on
     the 3x3 footprint grid) with every airlock's outer door CLOSED, as the
-    tiles are (#142: no bot cycles an airlock); empty when there is none."""
+    tiles are (#142: no bot cycles an airlock); empty when there is none.
+    A closed interior door an edge emitted (``gen_ship.edge_door_tiles`` of
+    ``emb.entities``) is walked through: the bots open it (#142, #215)."""
     from numpy.lib.stride_tricks import sliding_window_view
     tm = emb.tilemap
     _mat, vac, _solid, walk = G._masks(tm)
+    walk = walk.copy()
+    for (y, x) in G.edge_door_tiles(getattr(emb, "entities", ())):
+        walk[y, x] |= int(tm[y, x]) == G.MAT_DOOR_CLOSED   # a door stands there
     fp = FORMATION_FOOTPRINT
     ok = sliding_window_view(walk & ~vac, (fp, fp)).all(axis=(2, 3))
     h, w = tm.shape

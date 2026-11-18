@@ -865,7 +865,7 @@ def full_list(sim, K, team, u, alive, bots=None):
     entry; else the corpse: type 0, hp 0, age), then every other living
     marine in (team, slot) order, the zombies nearest first, every live
     object nearest first, every living door nearest first; the farthest
-    zombies, then objects, dropped past 64."""
+    doors, then zombies, then objects, dropped past 64 (#215)."""
     tick = int(sim.tick)
     pic = sim.team_picture
     L = K["L"]
@@ -1001,11 +1001,13 @@ def full_list(sim, K, team, u, alive, bots=None):
     doors = sorted([d for d in sim._doors if d.alive],
                    key=lambda d: (d2((d.span[len(d.span) // 2][1],
                                       d.span[len(d.span) // 2][0])), d.ordinal))
-    room = FULL_N - 1 - len(marines)
-    doors = doors[:max(0, room)]
-    room -= len(doors)
-    objs = objs[:max(0, room)]
-    zombies = zombies[:max(0, room - len(objs))]
+    # The cap (#215 ruling): count what each kind KEEPS -- objects first,
+    # then zombies, the doors last -- each the nearest of its kind.
+    free = FULL_N - 1 - len(marines)
+    n_objs = max(0, min(len(objs), free))
+    n_zomb = max(0, min(len(zombies), free - n_objs))
+    n_door = max(0, min(len(doors), free - n_objs - n_zomb))
+    objs, zombies, doors = objs[:n_objs], zombies[:n_zomb], doors[:n_door]
     for m in marines:
         (mate if m.team == team else enemy)(out[i], m)
         mask[i], uid[i] = 1, m.id
