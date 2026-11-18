@@ -2,8 +2,12 @@
 
 2026-11-17/18. The design page is `docs/body_temperature_design_2026-11-17.md`
 (version 4, AGREED: Erik, "Yes it's great!"). Branch `215-body-temp-stress`,
-cut from `215-grenade-bounce` (`07b13c0c`, not merged yet: it waits for Erik's
-word on re-pinning) with main (`7f7d9e30`) merged in once (no conflict).
+cut from `215-grenade-bounce` (`07b13c0c`, not merged yet: Erik rules one
+re-pin at the end of the stacked #215 patches) with main (`7f7d9e30`) merged
+in once (no conflict); the bounce's follow-up (the throw leaves the hand, a
+grille stops a grenade) merged in up to `30bd61ca` (one generated-header
+conflict, regenerated). The measurements of the pinned matches below are on
+that final base; the frag's and the hot air's do not depend on the throw.
 
 ## Where each law lives
 
@@ -146,8 +150,8 @@ hotter than the body (degree-ticks):
 
 | Scene | From radiation and deposits | From hot air | Hot air's share |
 |---|---|---|---|
-| ship_demo `bots`, seed 1, every unit, whole match | 136 | 1245 | 90 % |
-| ship_demo `bots_v1`, seed 1 | 237 | 49 | 17 % |
+| ship_demo `bots`, seed 1, every unit, whole match | 167 | 1287 | 88 % |
+| ship_demo `bots_v1`, seed 1 | 179 | 45 | 20 % |
 | frag, centre 1 tile away (30 x 30 room), 6 s | 155 | 24 | 13 % |
 | frag, 2 tiles | 97 | 1 | 1 % |
 | frag, 3 tiles | 31 | 5 | 13 % |
@@ -178,14 +182,21 @@ moves there**:
 
 | Match | | Winner, tick | Survivors | Heat damage | Total damage (by cause) |
 |---|---|---|---|---|---|
-| `bots` (ship_demo, seed 1) | base | team 1 wins, 2554 | team 1 slots 2, 3 | 6463.2 | 7325.7 (melee 204, bullet 551.5, explosion 107, heat 6463.2) |
-| | this branch | team 0 wins, 1986 | team 0 slots 2, 3 | 34.0 | 1320.0 (melee 272, bullet 907.0, explosion 107, heat 34.0) |
-| `bots_v1` | base | draw, 7200 | team 0 slot 0, team 1 slot 1 | 9102.4 | 9541.4 (melee 136, bullet 183, explosion 120, heat 9102.4) |
-| | this branch | team 0 wins, 311 | team 0 slots 0-3 (2 converted zombies alive) | 0 | 730.7 (melee 238, bullet 381.7, explosion 111) |
+On the final base (`215-grenade-bounce` `30bd61ca` + main):
 
-Explosion damage differs in `bots_v1` (120 -> 111) only after tick 221,
-where the matches have already parted on heat; per blast it is unchanged
-(30 at one tile in both, above).
+| Match | | Winner, tick | Survivors | Heat damage | Total damage (by cause) |
+|---|---|---|---|---|---|
+| `bots` (ship_demo, seed 1) | base | team 1 wins, 2121 | team 1 slot 3 | 6486.4 | 7315.5 (melee 204, bullet 518.1, explosion 107, heat 6486.4) |
+| | this branch | team 1 wins, 1871 | team 1 slots 2, 3; zombies 0, 1, 2; 4 marines turned | 47.5 | 1389.6 (melee 748, bullet 487.1, explosion 107, heat 47.5) |
+| `bots_v1` | base | draw, 7200 | team 0 slot 0, team 1 slot 1 | 9102.9 | 9541.9 (melee 136, bullet 183, explosion 120, heat 9102.9) |
+| | this branch | team 0 wins, 267 | team 0 slots 0-3; zombies 0-3 | 0 | 670.9 (melee 136, bullet 397.9, explosion 137) |
+
+(On the first base, `07b13c0c` + main: `bots` team 1 at 2554 -> team 0 at
+1986, heat 6463 -> 34; `bots_v1` draw at 7200 -> team 0 at 311, heat 9102 ->
+0.) Explosion damage differs in `bots_v1` only after the first heat bill,
+where the matches have already parted; per blast it is unchanged (30 at one
+tile in both, above). The divergence proof below was taken on the first
+base (the follow-up changed where a throw starts, not the heat).
 
 **The field digest**: NO version bump. The two columns are unit-digest rows
 hashed while they differ from their default (the poison columns' rule): the
