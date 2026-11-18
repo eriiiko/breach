@@ -4226,7 +4226,18 @@ smoke_scale = 0.25       # the game's look, on top of the cited soot_yield rows:
 #   smoke: strength * grenade_kg of its `explosive`, over the heat's tiles.
 [blast]
 expansion_m3_per_strength = 40.0   # a real marine knocked down to 2.5 m at strength 1
-heat_mj_per_strength = 10.0        # about 54 / 63 / 84 / 89 / 94 HP left at 1 / 1.5 / 2 / 2.5 / 3 m
+# heat_mj_per_strength: #215 CALIBRATED on the body (docs/body_temperature_design_
+# 2026-11-17.md section 2, "The frag"): WAS 10.0, which put 77 heat units (2.4 MJ)
+# on the tile next to a strength-1 blast, read by a marine there as 1.8 MJ absorbed
+# in one tick (576 HP of heat on top of the blast's 30). With a body that has a heat
+# capacity (320 J/K) the frag's heat is calibrated so a body on the next tile
+# absorbs a few kJ: 0.025 MJ lands about 0.19 heat units there, about 4.6 kJ in the
+# shell, which jumps about 14 C and cools in 2 s (no heat damage). A real M67 holds
+# about 0.9 MJ in all, most of it in the blast and the fragments. The same number
+# heats the AIR of every strength row (the frag, the breach charge, C4, the engine's
+# death, the magazine cook-off): a blast's own heat now ignites little (the lead's
+# finding, reported on #215; Erik's to rebalance).
+heat_mj_per_strength = 0.025
 grenade_kg = 0.184                 # the M67's 6.5 oz of Composition B: strength 1
 
 # ---------------------------------------------------------------------------
@@ -4973,6 +4984,33 @@ hp_per_unit = 10.0
 # full gas is 60 HP, whenever the unit leaves the cloud.
 gas_units_per_second = 0.6
 
+# [damage.stress] -- a unit's STRESS and the heart rate read off it (#215,
+# docs/body_temperature_design_2026-11-17.md section 2b; src/simulation/
+# stress.py). Stress is fed only by its producer rows (the first and only one:
+# damage taken) and clears with one half-life; the heart rate is a Hill curve
+# of the stress, DERIVED, never stored. NOTHING in the game reads either yet
+# (Erik, 2026-11-17: "readout in first patch is good, we wait with effects"):
+# the tile inspector and the side panel show them. Every value is Erik's or a
+# first number of the lead's, his to move.
+[damage.stress]
+# stress_half_life_s -- the time stress takes to halve (Erik: "2 min for
+# adrenaline's half life"). >= 1 tick.
+stress_half_life_s = 120.0
+# stress_per_hp -- the damage producer's weight: stress points per hit point
+# actually lost.
+stress_per_hp = 1.0
+# The heart rate's Hill curve:
+#   heart rate = rest + (max - rest) x s^n / (half^n + s^n)
+# heart_rate_rest / heart_rate_max -- the curve's two ends, beats a minute.
+heart_rate_rest = 60.0
+heart_rate_max = 190.0
+# heart_half_stress -- the stress at which the heart is half way up (half a
+# health bar lost in a short time; the lead's first number).
+heart_half_stress = 50.0
+# heart_hill_n -- how sharp the curve is; a whole number (the curve is built
+# in exact rationals once at load: the sim path has no powers and no floats).
+heart_hill_n = 2
+
 [zombie]
 # A TURNED marine's hit points (a spawned zombie has the human vitality, 100).
 # Erik, 2026-11-12 (the zombie bite balance, docs/zombie_bite_balance_2026-11-12.md):
@@ -5320,6 +5358,9 @@ o2_level_min = 0.15
 o2_level_max = 1.0
 temperature_min = -20.0
 temperature_max = 60.0
+# #215: the suit shell's heat capacity, J/K (simulation.body_temp): with the
+# derived loss of 159 W/K a time constant of 2 s. More = heat resistance.
+body_heat_capacity_j_per_k = 320.0
 stability = 1.0
 front_arc_deg = 120.0
 behind_arc_deg = 90.0
@@ -5428,6 +5469,28 @@ heat_ambient_ref = 20.0          # baseline felt temperature, no beam (T_ambient
 heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +ve
 temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile
 environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec) if no profile
+#
+# --- The body temperature (#215, docs/body_temperature_design_2026-11-17.md
+# section 2; src/simulation/body_temp.py) ---------------------------------
+# The felt temperature above is no longer billed the tick it is read: it is
+# the FLOW into a body with a temperature of its own (Unit.body_temp_q), and
+# the damage band reads the BODY. Per tick, in the heat row's slot:
+#   energy in  = what the body absorbs (the felt temperature's reading, in J)
+#   energy out = loss x [ (1 - s) x (p / 1 atm) x (body - air T)
+#                         +      s  x            (body - 20 C) ] x tick
+#   body      += (in - out) / capacity
+# The LOSS is DERIVED, never a dial: loss = J_per_heat_unit x tps /
+# heat_flux_to_temp (159 W/K at 0.333 m tiles: 2.5 kW/m2 on the body holds it
+# at the 60 C limit), so in still air at one atmosphere and 20 C the body
+# settles exactly at today's felt temperature and the literature table above
+# keeps its steady damage. The CAPACITY is the env profile's
+# body_heat_capacity_j_per_k (320 J/K: a time constant of 2 s). `s` is the
+# share the shell RADIATES (needs no air: the only cooling in vacuum); the
+# rest is exchanged with the air on the unit's tiles, scaled by its pressure
+# and read against ITS temperature, so hot air warms a body and thin air
+# barely does.
+body_radiated_share = 0.15       # ~23 of 159 W/K for a 3.3 m2 shell at 60 C
+body_heat_capacity_j_per_k = 320.0  # global fallback if a unit has no EnvironmentProfile
 
 # --- The physics<->unit exchange layer (mechanics/05) ------------------------
 # Constants for the coupling-table rows that are not weapon numbers.

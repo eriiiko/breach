@@ -95,6 +95,9 @@ SLOT_WRAPS = (
     ("simulation.simulation", "apply_poison_dose", "9c3 gas rows"),
     # #29 PX: the poison law, right after the gas row (slot 9c3').
     ("simulation.poison", "tick", "9c3 gas rows"),
+    # #215: the stress level's own tick, right after the poison law (slot
+    # 9c3''), fused into the same device kernel.
+    ("simulation.stress", "tick", "9c3 gas rows"),
     ("simulation.simulation", "apply_temperature_ignition", "9d ignition"),
     # #29 P6b.3: slot 9e's signal sub-steps each have their own label (their
     # device forms are the applier's EMIT, LOGIC, DOOR_INPUTS, PUMPS and SWAP

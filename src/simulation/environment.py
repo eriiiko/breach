@@ -38,6 +38,11 @@ class EnvironmentProfile:
     # --- Temperature tolerance band (arbitrary scalar for now) ---
     temperature_min: float = -20.0
     temperature_max: float =  60.0
+    # --- Body temperature (#215, simulation.body_temp) ---
+    # The heat capacity of the suit's outer shell, J/K: how many joules warm
+    # the body by one degree. With the derived loss (159 W/K at 0.333 m
+    # tiles) 320 J/K is a time constant of 2 s; more is heat resistance.
+    body_heat_capacity_j_per_k: float = 320.0
 
     # --- Stability (mechanics/06 §4, KNOCKED_DOWN) ---
     # Knockdown susceptibility multiplier: the unit impulse law (G5p) floors

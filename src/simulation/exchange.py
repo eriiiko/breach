@@ -74,6 +74,7 @@ from typing import Callable, Optional, Sequence
 
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
+from simulation import body_temp as _body_temp
 from simulation import gas_fixed
 from simulation import poison
 from simulation import unit_fixed as _unit_fixed
@@ -352,7 +353,8 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         Phi     = max(heat over occupied_tiles) / HEAT_SCALE      # incident flux
         Phi_abs = Phi * unit_absorption * (1 - unit_reflectivity)
         T_felt  = heat_ambient_ref + heat_flux_to_temp * Phi_abs
-        over    = T_felt - temperature_max                        # damage band
+        body    = body_temp.advance(T_felt, the air)  # #215: the BODY's law
+        over    = body - temperature_max                          # damage band
         if over <= 0: no heat damage this tick
         dmg     = environmental_damage_rate * (1 + heat_overtemp_scale*over) * dt_tick
         apply_packet(u, DamagePacket(dmg, HEAT), ...)             # mechanics/06 §2
@@ -427,14 +429,26 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     # the damage as ONE rational each (div_round: the real value rounded
     # once, half away):
     #     dmg_q = round(rate_q * (ONE + round(k_q * over_q / ONE)) / (ONE * tps))
+    #
+    # #215 (docs/body_temperature_design_2026-11-17.md section 2): THE BODY.
+    # The felt temperature is no longer billed the tick it is read: it is the
+    # flow into the unit's own body temperature (simulation.body_temp, an
+    # energy balance with the env profile's heat capacity, its loss split
+    # between the air on the unit's tiles and what the shell radiates), and
+    # the band reads the BODY. Every living unit advances every tick (a body
+    # cools after the heat is gone; hot air warms it with no flux at all);
+    # one with no flux in ambient air and an ambient body moves nothing.
     cmb = CFG.combat
     dials_q = heat_dials_q(heat_dials(CFG))
+    amb_q = dials_q[1]
     q = _unit_fixed.quantize_scalar
     overtemp_q = q(float(cmb.heat_overtemp_scale))        # p3e-door
     temp_max_cfg = cmb.temperature_max
     env_rate_cfg = cmb.environmental_damage_rate
     tps = int(ticks_per_second)
     one = _unit_fixed.FP_ONE
+    k_q = _body_temp.k_temp_q()
+    rates = {}                         # capacity -> (a_q, a_rad_q), this call
 
     for u in units:
         if not u.alive:
@@ -443,21 +457,25 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         # THE felt temperature (#195 1g (b): one function, the row's own
         # law, read by the observation too -- never a copy): the hottest
         # footprint tile's exposure, which tile, and whether it was the
-        # `heat` deposit buffer (#123 credit).
+        # `heat` deposit buffer (#123 credit). With no flux it is ambient.
         t_felt_q, peak_tile, peak_from_heat = felt_temperature_q(
             gmap, u, dials_q)
-        if peak_tile is None:
-            continue  # cold tile: no radiant flux, no heat damage
 
-        # Per-unit EnvironmentProfile band / rate, else the global fallback
-        # (profile constants, quantized at this door).
+        # Per-unit EnvironmentProfile band / rate / capacity, else the
+        # global fallback (profile constants, quantized at this door).
         env = getattr(u, "environment", None)
+        cap = _body_temp.capacity_of(env)
+        ar = rates.get(cap)
+        if ar is None:
+            ar = rates[cap] = _body_temp.rates_q(gmap, cap)
+        body_q = _body_temp.advance(u, gmap, t_felt_q, ar[0], ar[1], amb_q,
+                                    k_q)
         temp_max_q = q(float(getattr(env, "temperature_max",
                                      temp_max_cfg)))         # p3e-door
         rate_q = q(float(getattr(env, "environmental_damage_rate",
                                  env_rate_cfg)))             # p3e-door
 
-        over_q = t_felt_q - temp_max_q
+        over_q = body_q - temp_max_q
         if over_q <= 0:
             continue  # within the tolerance band: survivable, no damage
 

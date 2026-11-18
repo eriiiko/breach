@@ -341,14 +341,25 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
     a phi sweep, the marine's hp delta is the Q16 law written here by hand
     (the gain and dials quantized once, each product / quotient rounded once,
     half away) and the zombie's that times its Q16 resist, rounded once
-    (``mitigate_q``), with identical events; and each stays within 1e-4
-    (relative) of the pre-P2 float chain (the documented re-baseline)."""
+    (``mitigate_q``), with identical events. #215: the band reads the BODY
+    (simulation.body_temp), which one tick from ambient in still air at one
+    atmosphere moves by ``round(a x (felt - ambient))``, ``a = J_per_heat_unit
+    / (heat_flux_to_temp x C)`` -- written here by hand too. (The old
+    comparison with the pre-P2 float chain held the instantaneous law; its
+    steady state is tests/test_unit_heat_damage.py's and test_body_temp's.)"""
+    from fractions import Fraction
+
     import numpy as np
     from simulation.exchange import HEAT_SCALE, apply_environmental_damage
+    from simulation.materials import THERMAL_MASS_UNIT
 
     class _HeatStub:
         def __init__(self, h, w):
             self.heat = np.zeros((h, w), dtype=np.int32)
+            self.atmosphere = np.full((h, w), 1 << 16, dtype=np.int32)
+            self.temperature = np.zeros((h, w), dtype=np.int32)
+            self.solid = np.zeros((h, w), dtype=bool)
+            self.tile_size_m = 0.333
 
     q = unit_fixed.quantize_scalar
     one = 1 << 16
@@ -371,7 +382,14 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
                    * (1.0 - float(cmb.unit_reflectivity)))
         t_q = q(cmb.heat_ambient_ref) + unit_fixed.mul_q16_round(gain_q,
                                                                  raw_counts)
-        over_q = t_q - q(60.0)   # HUMAN_ENVIRONMENT temperature_max
+        j_hu = (Fraction(float(THERMAL_MASS_UNIT)) * Fraction(0.333) ** 2
+                * Fraction(float(CFG.physics.water.ceiling_h)))
+        a = j_hu * one / (Fraction(float(cmb.heat_flux_to_temp)) * 320)
+        a_q = unit_fixed.div_round(a.numerator, a.denominator)
+        body_q = q(cmb.heat_ambient_ref) + unit_fixed.div_round(
+            a_q * (t_q - q(cmb.heat_ambient_ref)), one)
+        assert body_q == m.body_temp_q == z.body_temp_q
+        over_q = body_q - q(60.0)   # HUMAN_ENVIRONMENT temperature_max
         assert over_q > 0
         dmg_q = unit_fixed.div_round(
             q(1.0) * (one + unit_fixed.mul_q16_round(
@@ -388,14 +406,6 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
         assert [e.source for e in events] == ["heat", "heat"]
         assert _bits(events[0].damage) == _bits(new_marine)
         assert _bits(events[1].damage) == _bits(new_zombie)
-
-        # Within 1e-4 of the pre-P2 float chain.
-        phi_f = raw_counts / HEAT_SCALE
-        t_felt = float(cmb.heat_ambient_ref) + float(cmb.heat_flux_to_temp) \
-            * phi_f * float(cmb.unit_absorption) \
-            * (1.0 - float(cmb.unit_reflectivity))
-        raw = (1.0 + float(cmb.heat_overtemp_scale) * (t_felt - 60.0)) / 24
-        assert abs(new_marine - raw) <= 1e-4 * raw
 
 
 # ---------------------------------------------------------------------------

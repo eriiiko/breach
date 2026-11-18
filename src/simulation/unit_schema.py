@@ -434,6 +434,11 @@ def _grenade_default():
     return [0] * _grenade_width()
 
 
+def _body_temp_default():
+    from simulation.body_temp import ambient_q
+    return ambient_q()
+
+
 def _turn_of(u):
     """The turning law's target hashed as the turn still to go,
     ``wrap(target - facing)`` (the target itself is never zero)."""
@@ -519,6 +524,15 @@ COLUMNS: tuple[Column, ...] = (
     _c("poison_src", KIND_INT, "health", -1,
        note="the unit credited with the latest dose; -1 = the environment "
             "or none"),
+    # the two slow states (#215): the body temperature (simulation.body_temp,
+    # written by the heat coupling row alone; hashed while it differs from
+    # ambient) and the stress level (simulation.stress, fed through its one
+    # producer door, cleared by its own tick; hashed while non-zero)
+    _c("body_temp_q", KIND_Q16, "health", _body_temp_default,
+       note="Q16 degrees C; starts at [combat] heat_ambient_ref "
+            "(simulation.body_temp)"),
+    _c("stress_q", KIND_Q16, "health", 0,
+       note="Q16 stress points (simulation.stress)"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",

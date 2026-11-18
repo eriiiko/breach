@@ -81,6 +81,7 @@ from simulation import exposure
 from simulation import horde
 from simulation import noise
 from simulation import poison
+from simulation import stress
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -371,6 +372,8 @@ class Simulation:
         self.exposure_settings = exposure.rebuild_settings()
         # The poison law's dials (#29 PX, [damage.poison]), the same.
         self.poison_settings = poison.rebuild_settings()
+        # The stress level's dials (#215, [damage.stress]), the same.
+        self.stress_settings = stress.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -2042,7 +2045,7 @@ class Simulation:
           7.   Physics step
           9.   Burn-through walls; 9b. over-pressure walls
           9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose;
-               9c3'. the poison law; 9d. temperature ignition
+               9c3'. the poison law; 9c3''. stress clears; 9d. ignition
           9e.  Entities (signals, pumps, vents, doors, timed and planted
                charges, heat sources); recorder snapshot; tick-end clears
          10.   Tick advance; 10'. orders expire; the ruleset's tick end
@@ -2303,6 +2306,11 @@ class Simulation:
         # the physics guard: a level dosed by any row keeps draining. Dormant
         # (two int reads per unit) while nobody holds poison.
         poison.tick(self.units, self.tick, self.tick_events)
+        # 9c3''. Stress clears (#215, simulation.stress): every living unit
+        # holding stress loses its half-life's share -- its own tick, the
+        # only thing that lowers it -- after this tick's damage fed it.
+        # Dormant (one int read per unit) while nobody holds stress.
+        stress.tick(self.units)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver
