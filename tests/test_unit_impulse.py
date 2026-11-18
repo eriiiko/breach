@@ -900,7 +900,20 @@ _RE_PIN_1_SHIP_DEMO = dict(
     #     c310cfb7e96b63a0cf56ef52
     #   unit_stream 03c4178984984aa1e01aa783ec0001047d4d49f3
     #     224fcd15502368bcc68744ba
-    outcome="draw", team=None, ticks=7200,
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik, done once):
+    # four causes, together -- (1) a thrown grenade bounces off walls; (2) every
+    # doorway is a closed entity door (painted doors retired; zombies bash doors;
+    # use flips the door the unit faces); (3) body temperature and stress, the
+    # protection heat_absorption 0.1 at the frag's 10 MJ; (4) the old bots'
+    # (bots_v1) ONE door step (Erik's ruling, the exception to their freeze).
+    # Each cause's own first divergence is in its as-built doc
+    # (docs/grenade_bounce_impl_2026-11-17.md, docs/doors_retire_painted_impl_
+    # 2026-11-18.md, docs/body_temperature_impl_2026-11-17.md, whose section "The
+    # one re-baseline, 2026-11-18" holds the before/after table). Played twice in
+    # two processes: identical outcome, digests and unit stream.
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was outcome="draw", team=None, ticks=7200)
+    outcome="win", team=0, ticks=310,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -918,8 +931,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 70033ac6533ffbfa36c78edcf794d5513a588793196bb9858cca3d2efdddf5aa)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 055c19d9cce5c0259b782b8a63129dadb6d67ef267f3a112ea3c4a594b64619b)
-    field_digest="cfa02a3055a5b068d30d4d630ef740fe"
-                 "ad845cee42e6785f94ee0ddaa742fe48",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was cfa02a3055a5b068d30d4d630ef740fead845cee42e6785f94ee0ddaa742fe48)
+    field_digest="f0270fba8360f11f57fc8ae166b8af56"
+                 "d5638eeff7273b0c6dd86553d8cb5529",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -954,8 +969,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was deeea5a31d67dcd51739dd4097c0b7e23cc1f262c310cfb7e96b63a0cf56ef52)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 15e7cd1143c3d50b9f1739b1156faae8448b1b33b4f0b8d5e88d1ae18feeb3e6)
-    tick_digest="315b15b91c64134c0209ef9079e0a86f"
-                "d2c942245535ccdbae445b60d8dbe260",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 315b15b91c64134c0209ef9079e0a86fd2c942245535ccdbae445b60d8dbe260)
+    tick_digest="a01e20bf2f2d0e0d5e510717c9455c93"
+                "48d85ccbf8393c6d895066d97d4e9dd5",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -990,8 +1007,10 @@ _RE_PIN_1_SHIP_DEMO = dict(
     # (was 03c4178984984aa1e01aa783ec0001047d4d49f3224fcd15502368bcc68744ba)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was a06143b715c28cebfaea4f82cba76fb29694031ae782103849ccd997239621d3)
-    unit_stream="d6c01957a586057c8b94f3dc569aed25"
-                "6bc2f8735f895f0e1819b7fd22051459")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was d6c01957a586057c8b94f3dc569aed256bc2f8735f895f0e1819b7fd22051459)
+    unit_stream="2449468ffb2e9626afa64d65859c1ec6"
+                "cd23f611d2181fe4d63381b9c95b8c74")
 #: RE-MEASURED at #183 G9p STAGE 1 (2026-11-11, the horde field law,
 #: residency P3d: the horde descends an integer BFS field, no A*; see
 #: tests/test_zombie_control.py's pins for the law and its proof). This
@@ -1022,6 +1041,12 @@ _RE_PIN_1_BOX = dict(
     #     5c6eb552885554c16ebe4c3b
     #   unit_stream 85d051afa1acda1b9bc1d3a680e6373632bfdb9f
     #     735b65bf51ec1a9bbf834238
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik): outcome, ticks and
+    # field_digest UNCHANGED; only the unit stream moves. SOLE CAUSE, verified on
+    # this tree: the unit record's two new #215 columns (body_temp_q, stress_q,
+    # hashed while they differ from their default; the box's air is not exactly
+    # at ambient) -- with them dropped from unit_schema.digest_record in-process
+    # the old stream comes back bit for bit.
     outcome="win", team=1, ticks=231,
     field_digest="2cf3e8481a3792bce622f72c0b5cc0a2"
                  "68f19f856903a7313440ed21573faf5f",
@@ -1042,8 +1067,10 @@ _RE_PIN_1_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
-    unit_stream="3a6b230941d73d3b6f325af378ffe67b"
-                "44a86953bbb4d46736245fbf4caa31ee")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 3a6b230941d73d3b6f325af378ffe67b44a86953bbb4d46736245fbf4caa31ee)
+    unit_stream="4bf0c3eb02aa263f9aa7c0f9f4a761a7"
+                "94062cca86786c27b6ce63460b40814e")
 
 _IMPULSE_STATE = ("imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx",
                   "swy", "pvx", "pvy", "effort", "react_ticks")

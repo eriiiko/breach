@@ -685,7 +685,20 @@ _PRE_G3P_SHIP_DEMO = dict(
     #     a014e7241fc024dcf8fce047
     #   unit_stream ac4f6845ea60c23d3b04c7ca0231a50cfc4d8597
     #     547df9efd8206ac6f40109c1
-    outcome="win", team=1, ticks=240,
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik, done once):
+    # four causes, together -- (1) a thrown grenade bounces off walls; (2) every
+    # doorway is a closed entity door (painted doors retired; zombies bash doors;
+    # use flips the door the unit faces); (3) body temperature and stress, the
+    # protection heat_absorption 0.1 at the frag's 10 MJ; (4) the old bots'
+    # (bots_v1) ONE door step (Erik's ruling, the exception to their freeze).
+    # Each cause's own first divergence is in its as-built doc
+    # (docs/grenade_bounce_impl_2026-11-17.md, docs/doors_retire_painted_impl_
+    # 2026-11-18.md, docs/body_temperature_impl_2026-11-17.md, whose section "The
+    # one re-baseline, 2026-11-18" holds the before/after table). Played twice in
+    # two processes: identical outcome, digests and unit stream.
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was ticks=240)
+    outcome="win", team=1, ticks=337,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -703,8 +716,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was c429d8a6a5cd69232ef602c8947e50865230450f86a8c01e3a68e8eddaa8ac5c)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was df4662721dc33b59018e566dcf75f6d3e01b860f53578d676444df677e0fef77)
-    field_digest="6840efc104ff29770f92d77f73c4f9d5"
-                 "b3107a206005576c1752e8cce3f7381e",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 6840efc104ff29770f92d77f73c4f9d5b3107a206005576c1752e8cce3f7381e)
+    field_digest="f091832fca35cd53b757b8ca088c0124"
+                 "77f520afcbd61d0b8499fe51674f013d",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -739,8 +754,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was 5c010886716e4a2bc7c935c9ad5e4bfb0552abd2a014e7241fc024dcf8fce047)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was e1add2e038e565dfe56d69e09c8c4d661e6885bcdb287781dfb38491bee2a336)
-    tick_digest="37d54d7aa9b8f1abe1ef19078dad5a2f"
-                "91cbe915752d7176329b5c60ef03053a",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 37d54d7aa9b8f1abe1ef19078dad5a2f91cbe915752d7176329b5c60ef03053a)
+    tick_digest="f05ce73d08ead792746f68896e53660f"
+                "7c27e849a93bcb89b00b43e3f78272d8",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -775,8 +792,10 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was ac4f6845ea60c23d3b04c7ca0231a50cfc4d8597547df9efd8206ac6f40109c1)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 572519ba48b80de7d770865a16e436ec8736481158155bfc1fc92d3484c11a16)
-    unit_stream="2bd1812dc1371c7695889183cf0c6a5e"
-                "97004b58a0f5c198b12d3ae14b514f2f")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 2bd1812dc1371c7695889183cf0c6a5e97004b58a0f5c198b12d3ae14b514f2f)
+    unit_stream="6d3f0fb20cfdd2ed0d2eb5ee95bcead7"
+                "41015e083e9017c2c0c853c24cb025fb")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

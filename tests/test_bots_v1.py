@@ -496,6 +496,8 @@ def test_the_old_bots_door_step_asks_the_verb_and_never_toggles_a_door_shut():
 #: ship_demo seed 1 as the bots played it before #183 G8p (the G9p stage-2
 #: pin, main 81cf3581): frozen here, never re-pinned for a bot change -- the
 #: proof that the layered bots, not anything else, moved the shipped pin.
+#: (The one exception: #215's door step, Erik's ruling 2026-11-18, re-pinned
+#: with the sim's #215 causes in the one re-baseline below.)
 #: A change of the SIM (not of the bots) moves it like any other pin: then
 #: re-pin it here too, with the rationale.
 _PRE_G8P_SHIP_DEMO = dict(
@@ -520,7 +522,23 @@ _PRE_G8P_SHIP_DEMO = dict(
     # 11 and unit 6 on 230 -- and the two marines left, one per team (units 0
     # and 5), never meet again before the limit.
     # (was win 0 at 264)
-    outcome="draw", team=None, ticks=7200,
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik, done once):
+    # four causes, together -- (1) a thrown grenade bounces off walls; (2) every
+    # doorway is a closed entity door (painted doors retired; zombies bash doors;
+    # use flips the door the unit faces); (3) body temperature and stress, the
+    # protection heat_absorption 0.1 at the frag's 10 MJ; (4) the old bots'
+    # (bots_v1) ONE door step (Erik's ruling, the exception to their freeze).
+    # Each cause's own first divergence is in its as-built doc
+    # (docs/grenade_bounce_impl_2026-11-17.md, docs/doors_retire_painted_impl_
+    # 2026-11-18.md, docs/body_temperature_impl_2026-11-17.md, whose section "The
+    # one re-baseline, 2026-11-18" holds the before/after table). Played twice in
+    # two processes: identical outcome, digests and unit stream.
+    # Cause (4) checked on this tree: with the old bots' door step switched off
+    # in-process the match is the doors patch's shut-in draw at 7200 (field
+    # fae949e0..., no shot, no door opened) bit for bit on the field.
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was outcome="draw", team=None, ticks=7200)
+    outcome="win", team=0, ticks=272,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -538,8 +556,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 2db5b2eaac6dcfafdbcfd85ec91772dfe838b1fddff573e90a09eba1de6bcb08)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was d5e0e90969e747038c0a8d7391303b21804bae0d0cc7c9bf7d4ded8c258c4174)
-    field_digest="ab8d586ee11eab6ef9e5acfc14b0bc2c"
-                 "7f179231d086cec366693382d872aedd",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was ab8d586ee11eab6ef9e5acfc14b0bc2c7f179231d086cec366693382d872aedd)
+    field_digest="1b02dd5d90756c5c87b3f8e74b0a1088"
+                 "358ec8a9ca4b48547e188dfbf41923bb",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -574,8 +594,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 48c4be2c99dd3a35dfd64a439732a6f9e92e77f0ea1aacfd58e8909e6285c524)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 931e69092a57230f06ecfdfdcb21248c2028fa980c9ea014ebc55b6533e6cc94)
-    tick_digest="49836c002d43dc7888b96dda2f9e1f98"
-                "2605638df1ff30e00d59f16b02568abd",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 49836c002d43dc7888b96dda2f9e1f982605638df1ff30e00d59f16b02568abd)
+    tick_digest="8549068be9af40d408f874c245835f5e"
+                "7a5b06e5ed5a6df6c90eba215fcb2a63",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -610,8 +632,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 4503c2306583d04f3f85bbf87131ef8a5101b138cbc02fda0d9b5d01a5a9bd2f)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 27aeb24c34c49368bff2a7884bb8f019ed959d02130ccc799fb38d2d30f2a3c0)
-    unit_stream="1eb5ec49f1f32e0dab16d1c8c53d4983"
-                "3406cdb844c7dca2a1f169da83867216")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 1eb5ec49f1f32e0dab16d1c8c53d49833406cdb844c7dca2a1f169da83867216)
+    unit_stream="a9184a10a6cd7ad6988db27d9e566bcc"
+                "3b4b2a7782193b89eb02e3dd47200c0d")
 
 
 def v1_spec(level):
