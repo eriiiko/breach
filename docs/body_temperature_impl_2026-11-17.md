@@ -9,6 +9,19 @@ grille stops a grenade) merged in up to `30bd61ca` (one generated-header
 conflict, regenerated). The measurements of the pinned matches below are on
 that final base; the frag's and the hot air's do not depend on the throw.
 
+**Version 2 (Erik's ruling, 2026-11-18)** on the first version's report: "i
+want the 10 MJ back. and protect only the body yes"; "explosions look
+absolutely stunning now" (blast temperatures and looks are not touched);
+"damage should be prop to body temp"; "we can't let near vacuum tiles at
+plasma temperatures heat up a soldier"; the flamethrower "treat it as not
+really implemented, it's more a place holder". So `[blast]
+heat_mj_per_strength` is 10.0 again, and the body is protected by ONE
+env-profile number, `heat_absorption` (below). UNDONE from the first
+version: the 0.025 MJ calibration and its comment; the fuel-ignition test's
+own 10 MJ row; the bounce's in-game throw test reading the thrower's spawn
+(both back to the base's text, both green again); the deposit-calibration
+test (replaced by the protection's gates).
+
 ## Where each law lives
 
 | Law | Host | Device |
@@ -16,7 +29,7 @@ that final base; the frag's and the hot air's do not depend on the throw.
 | Body temperature (the heat row's energy balance) | `src/simulation/body_temp.py`, called by `exchange.apply_environmental_damage` | `cpp/src/cuda_unit_exchange.cu` `k_heat_damage` over `unit_lib::body_air` / `body_step` (`cpp/src/cuda_unit_damage.cuh`) |
 | Stress, its producer door, its tick, the Hill curve | `src/simulation/stress.py`; the producer called from `damage.apply_packet`; the tick at slot 9c3'' (`Simulation.step`, right after `poison.tick`) | the producer and the death clear in the device `apply_packet` (`cpp/src/cuda_unit_damage.cuh`); the tick fused into slot 9c3's `k_gas_rows`; the conversion clear in `cpp/src/cuda_unit_conversion.cu`. The heart rate has no device form (nothing reads it). |
 | The clearing step | `src/simulation/clearing.py` (`drain`, `half_life_rate`); `poison.step` calls it | `unit_lib::clearing_drain` (`cpp/src/cuda_unit_lib.cuh`); the poison kernel's step calls it |
-| Dials | `[combat] body_radiated_share`, `body_heat_capacity_j_per_k` (fallback), `[env_profiles.*] body_heat_capacity_j_per_k`, `[damage.stress]` | device tables rows `body_a_*`, `body_a_rad_*`, `body_k_temp_q`, `stress_*` (`src/simulation/unit_tables.py`) |
+| Dials | `[combat] body_radiated_share`, `body_heat_capacity_j_per_k` (fallback), `[env_profiles.*] body_heat_capacity_j_per_k` and `heat_absorption` (v2), `[damage.stress]` | device tables rows `body_a_*`, `body_a_rad_*`, `body_absorb_*` (v2), `body_k_temp_q`, `stress_*` (`src/simulation/unit_tables.py`) |
 | Readouts | `renderer/hover_readout.py::body_line` (the tile inspector, F6: a living unit on the hovered tile), `ui/model.py::body_text` (the side panel's selected unit) | -- |
 
 Schema: two group-S rows in the health block, `body_temp_q` (Q16 degrees C,
@@ -32,8 +45,22 @@ Per tick, every living unit (Q16 degrees; `a` per tick):
     a      = J_per_heat_unit / (heat_flux_to_temp x C)       (exact rational, rounded once)
     a_rad  = round(a x body_radiated_share)
     k_air  = min(round((a - a_rad) x p), ONE - a_rad)
-    body  += round((a (felt - amb) - k_air (body - T_air) - a_rad (body - amb)) / ONE)
+    in     = a (felt - amb) + k_air (T_air - amb)          what reaches the body
+    body  += round((round(h x in / ONE) - (k_air + a_rad) (body - amb)) / ONE)
     over   = body - temperature_max  -> the old damage formula
+
+- **The protection** `h` = the env profile's `heat_absorption` (Q16; NEW in
+  version 2): the share of the heat reaching the body it takes up. It scales
+  BOTH inflows alike (the felt temperature's flow and the air's excess over
+  ambient), never the losses: the air term `k_air (T_air - body)` is split at
+  ambient into its inflow and its loss, so at `h = 1` the step is the first
+  version's bit for bit, and in still ambient air the body settles at
+  `ambient + h (felt - ambient)`. The damage law is untouched (proportional
+  to the body's excess). No existing profile dial meant this: the species'
+  HEAT `resist_mult` (the zombie's x4) scales DAMAGE, not what the body takes
+  up, and stays where it is. Every profile (`[env_profiles.default]`, the
+  `EnvironmentProfile` default the species baseline and the zombie use)
+  carries 0.05, so the zombie's relative heat weakness is unchanged.
 
 - **The loss is derived**: `J_per_heat_unit x tps / heat_flux_to_temp` =
   159.2 W/K at 0.333 m tiles (`body_temp.loss_w_per_k`); with 320 J/K the
@@ -100,82 +127,84 @@ Per tick, every living unit (Q16 degrees; `a` per tick):
 
 The Q16 alternative for comparison: 118.8 s and 981.4 s from 10 points.
 
-## The frag
+## The protection's calibration (version 2)
 
-**Where the 77 heat units came from**: neither the payload row nor the
-explosive row. `frag_standard` is a GENERIC EXPLOSION (`strength = 1.0`), and
-the door refuses `heat_*` on a strength row: its heat is
-`[blast] heat_mj_per_strength x strength` = 10 MJ, landed as a fixed total
-over the tiles walked within `2 r_s`, linear falloff -- 77 heat units (2.4 MJ)
-on the detonation tile, which the felt temperature read as 1.84 MJ absorbed
-(576 HP in one tick).
+Candidate values of `heat_absorption` on the marine (every profile alike),
+`[blast]` at 10 MJ. Frag: `frag_standard` with the marine's centre tile 1, 2,
+3 tiles from the detonation (40 x 40 room, 0.333 m, 6 s, heat HP; the
+blast's own 30 at 1 tile in every row). C4: `demolition_c4` at 2 and 4 tiles
+(heat HP; blast 112 / 75). Fire: a 3 x 3 furniture pile lit by
+`studio_ignite` on each tile and burnt 20 s (its fire peaks at 0.12), then a
+marine whose footprint overlaps the pile's east edge ("in") or stands one
+tile beyond it ("beside"): HP per second over 10 s / over the last 5 s, and
+the body where it settles (`calib.py` in the scratchpad).
 
-**The one number**: `[blast] heat_mj_per_strength` 10.0 -> **0.025** MJ, its
-reason beside it in `config.toml`. A body whose footprint holds the
-detonation tile now absorbs about 4.6 kJ from the deposit: its shell jumps
-14 C (`tests/test_body_temp.py` holds 10 to 20 C).
+| h | frag 1 / 2 / 3 tiles | C4 2 / 4 tiles | fire, in (HP/s) | fire, beside (HP/s) |
+|---|---|---|---|---|
+| 1.0 (unprotected) | 687.7 / 375.9 / 73.0 | 897.6 / 682.8 | 22.8 / 26.5 (body 546 C) | 15.0 / 17.4 (body 373 C) |
+| 0.2 | 132.7 / 70.4 / 8.5 | 174.7 / 131.8 | 3.8 / 4.5 (body 125 C) | 2.2 / 2.7 (body 91 C) |
+| 0.1 | 63.4 / 32.0 / 0.5 | 84.4 / 62.9 | 1.35 / 1.75 (body 73 C) | 0 (body 55 C) |
+| **0.05 (chosen)** | **28.0 / 12.2 / 0.0** | **39.2 / 28.4** | **0 (body 46 C)** | **0 (body 38 C)** |
+| 0.03 | 14.0 / 5.1 / 0.0 | 20.1 / 13.5 | 0 (body 36 C) | 0 (body 31 C) |
 
-**FINDING for Erik (reported, not acted on)**: this dial is SHARED by every
-strength row (the frag, `breach_focus` 0.1, `demolition_c4` 12,
-`magazine_cookoff` 8, `engine_death` 3), so all of them now heat the air 400
-times less: a blast's own heat ignites almost nothing any more (the engine's
-death "a fire follows only if its heat reaches fuel"), and
-`tests/test_explosion.py::test_fuel_catches_only_when_ordinary_heat_takes_it_to_its_ignition_temp`
-had to move to a stronger row (see Tests). If the blasts should keep heating
-the world, the body should read only a share of a deposit (a new dial, a
-ruling), not the deposit be cut.
+**No single value meets both targets** (a frag under 40 heat HP AND a fire
+above about 2 HP/s): the flash is a huge flux for a tick, the fire a small
+one for long, and one linear protection scales both. As the ruling says, no
+second mechanism was added: the best single value for target (a), **0.05**,
+is built (a frag on the next tile bills 28 HP of heat on top of its 30:
+58 HP, the marine lives -- the old `[blast]` comment's "about 54 HP left at
+1 m" was 46 lost). What target (b) became: standing in this furniture fire
+no longer hurts (the body settles at 46 C, under the 60 C limit); h = 0.2
+gives 2 to 4.5 HP/s in it but a frag then bills 133 HP. Erik's to set.
 
-**What still burns a marine beside a frag** is not the deposit: with the
-deposit set to nothing the blast's divergence source still drives the air on
-the detonation tile to about 1700 C at 0.5 atm for a tick or two, and the
-sweep's radiation on the body reads up to about 3800 C felt (the blast's
-soot, measured with `heat_mj_per_strength` at 1e-6). The body integrates
-that: about 14 to 31 HP adjacent.
-
-### Before and after (frag_standard, a 3x3 marine, 100 HP, the room 40 x 40
-at 0.333 m; the distance is the marine's centre tile from the detonation tile;
-6 s)
+### The frag before and after (shipped values, the marine 100 HP)
 
 | Distance | Before (base) | After |
 |---|---|---|
-| 1 tile (0.33 m) | 605.9: blast 30 + heat 575.9 -- dead | 61.4: blast 30 + heat 31.4 -- alive (body peak 231 C) |
-| 2 tiles | 287.9 heat -- dead | 8.6 heat -- alive (body peak 126 C) |
-| 3 tiles | 44.8 heat | 4.5 heat (body peak 85 C) |
+| 1 tile | 605.9: blast 30 + heat 575.9 -- dead | 58.0: blast 30 + heat 28.0 -- alive (body peak 316 C) |
+| 2 tiles | 287.9 heat -- dead | 12.2 heat (body peak 173 C) |
+| 3 tiles | 44.8 heat | 0 (body peak 41 C) |
 
-## Hot air: how much it adds (measured, not tuned)
+## Near vacuum (measured, the sweep not changed)
 
-The warming a body took, summed over the run, split into the felt
-temperature's flow (radiation and deposits) and the air term when the air was
-hotter than the body (degree-ticks):
+A 3 x 3 patch just east of a marine's footprint, its bulk N pinned each tick
+to a fraction of ambient and its temperature seeded through
+`GameMap.seed_gas_temperature` (`vacuum_rad.py`, a scratch bench); no solid
+hot surface. What reaches the body through the felt temperature (the sweep's
+`rad_flux_sweep` on its tiles), averaged over the last 40 of 48 ticks (the
+pinned pressure is the tick's start; air flows back in within the tick, so
+the patch's end-of-tick pressure is shown):
 
-| Scene | From radiation and deposits | From hot air | Hot air's share |
-|---|---|---|---|
-| ship_demo `bots`, seed 1, every unit, whole match | 167 | 1287 | 88 % |
-| ship_demo `bots_v1`, seed 1 | 179 | 45 | 20 % |
-| frag, centre 1 tile away (30 x 30 room), 6 s | 155 | 24 | 13 % |
-| frag, 2 tiles | 97 | 1 | 1 % |
-| frag, 3 tiles | 31 | 5 | 13 % |
-| a small furniture fire (`studio_ignite` on a 3 x 3 pile; fire 0.07), 60 s | 711 / 536 / 240 at 0 / 1 / 3 tiles off | 0 | 0 % (the room's air stays at 20 C) |
+| Patch | Irradiance on the body |
+|---|---|
+| no smoke, N x 0.005 (p 0.088 atm at tick end), 3000 game degrees | 0.00 kW/m2 |
+| no smoke, full density (1.6 atm), 3000 | 0.00 kW/m2 (clear air does not radiate: Kirchhoff) |
+| smoke 1.0, N x 0.005 (0.088 atm), 3000 | 0.00 kW/m2 |
+| smoke 1.0, full density, 3000 | 0.49 kW/m2 |
+| smoke 5.0, N x 0.0005 (0.063 atm), 10 000 | 0.00 kW/m2 |
+| smoke 5.0, N x 0.005 (0.80 atm), 10 000 | 0.30 kW/m2 |
 
-In the `bots` match hot air is most of what warms a body (blast-heated and
-fire-heated rooms the units cross); in a burning room whose air stays cool
-the radiation is all of it.
+Thin hot gas reaches a body through the radiation path with NOTHING
+measurable: not a finding in the sweep. The air path already scales with the
+pressure (and now with the protection).
 
 ## What moved, and why it should
 
 **A match with no heat and no damage is unchanged** (bar the new columns):
 the `bots` pinned match's per-tick unit stream (every unit's digest record
 without `body_temp_q` / `stress_q`, and the tick's events) is identical on
-the base and this branch for all 457 ticks before its first heat bill, tick
-458 (measured: `diverge.py` in the scratchpad, both checkouts).
+the base (`30bd61ca`) and this branch (version 2) for all 457 ticks before
+its first heat bill, tick 458 (`diverge.py` in the scratchpad, both
+checkouts; the same on the first version).
 
 **The first tick each pinned match moves is a heat bill, and nothing else
-moves there**:
-- `bots`: tick 458, the base bills units 5 and 6 2.27 / 2.12 HP of heat
-  (one-tick felt temperature); this branch's bodies warm and bill nothing.
+moves there** (version 2, against `30bd61ca`):
+- `bots`: tick 458, the base bills two units a couple of HP of heat (one-tick
+  felt temperature); this branch's protected bodies bill nothing.
 - `bots_v1`: tick 221, a frag: the blast's 30 HP on unit 8 is in both; the
-  base adds heat bills of 288, 288, 2304 and 1152 HP and kills units 1, 2, 8,
-  9 by heat; this branch bills no heat.
+  base kills units 1, 2, 8, 9 by heat (288 to 2304 HP each); this branch
+  bills 0.26, 0.26, 2.25 and 1.03 HP that tick and goes on billing a little
+  each tick while the bodies cool.
 
 **The pinned matches** (NOT re-baselined here; the lead re-pins once for both
 #215 patches after Erik's word):
@@ -187,9 +216,14 @@ On the final base (`215-grenade-bounce` `30bd61ca` + main):
 | Match | | Winner, tick | Survivors | Heat damage | Total damage (by cause) |
 |---|---|---|---|---|---|
 | `bots` (ship_demo, seed 1) | base | team 1 wins, 2121 | team 1 slot 3 | 6486.4 | 7315.5 (melee 204, bullet 518.1, explosion 107, heat 6486.4) |
-| | this branch | team 1 wins, 1871 | team 1 slots 2, 3; zombies 0, 1, 2; 4 marines turned | 47.5 | 1389.6 (melee 748, bullet 487.1, explosion 107, heat 47.5) |
+| | version 1 (0.025 MJ) | team 1 wins, 1871 | team 1 slots 2, 3; zombies 0, 1, 2; 4 marines turned | 47.5 | 1389.6 (melee 748, bullet 487.1, explosion 107, heat 47.5) |
+| | **version 2** (10 MJ, h 0.05) | **team 0 wins, 2227** | team 0 slots 1, 2; zombies 2, 3 | 100.0 | 1143.0 (melee 272, bullet 664.0, explosion 107, heat 100.0) |
 | `bots_v1` | base | draw, 7200 | team 0 slot 0, team 1 slot 1 | 9102.9 | 9541.9 (melee 136, bullet 183, explosion 120, heat 9102.9) |
-| | this branch | team 0 wins, 267 | team 0 slots 0-3; zombies 0-3 | 0 | 670.9 (melee 136, bullet 397.9, explosion 137) |
+| | version 1 (0.025 MJ) | team 0 wins, 267 | team 0 slots 0-3; zombies 0-3 | 0 | 670.9 (melee 136, bullet 397.9, explosion 137) |
+| | **version 2** (10 MJ, h 0.05) | **team 1 wins, 2455** | team 1 slot 3; zombie 1; 1 marine turned | 286.0 | 1227.4 (melee 170, bullet 604.5, explosion 167, heat 286.0) |
+
+Hot air's share of the warming in version 2 (the inflows before the
+protection, which scales both alike): `bots` 30 %, `bots_v1` 18 %.
 
 (On the first base, `07b13c0c` + main: `bots` team 1 at 2554 -> team 0 at
 1986, heat 6463 -> 34; `bots_v1` draw at 7200 -> team 0 at 311, heat 9102 ->
@@ -240,54 +274,50 @@ replaced:
 More changed tests (found by the not-slow tier):
 - `tests/test_hit_direction.py::test_a_heat_hit_carries_no_direction`: its heat
   stub carries the footprint's air and the tile size (the property untouched).
-- `tests/test_explosion.py::test_fuel_catches_only_when_ordinary_heat_takes_it_to_its_ignition_temp`:
-  the scene brings its own 10 MJ row (the shipped 0.025 MJ ignites nothing:
-  "the scenario is moot", as its own docstring foresaw).
+- (version 1 only, UNDONE in version 2: `test_explosion`'s fuel-ignition
+  scene brought its own 10 MJ row; with the 10 MJ back it is the base's text
+  and green.)
+- Version 2: the modules that hold the UNSCALED heat-row law
+  (`test_unit_heat_damage.py`, `test_hit_direction.py`, the pipeline's heat
+  test, and `test_body_temp.py`'s literature-table, burst and hot-gas tests)
+  run it at `heat_absorption` 1 through a monkeypatched `absorption_q`, said
+  in each; the shipped value is held by the protection's gates and the frag
+  test.
 - `tests/test_zombie_control.py::test_the_controller_plays_the_pinned_match_on_a_small_box`:
   the #122 box pin RE-PINNED once (`3a6b2309` -> `4bf0c3eb`): outcome, team,
-  ticks and field digest unchanged; with `body_temp_q` / `stress_q` stripped
-  from every record this tree gives the old pin EXACTLY (`box_sole_cause.py`
-  in the scratchpad, run on the base and here).
+  ticks and field digest unchanged; with `stress_q` alone stripped from
+  every record this tree gives the old pin EXACTLY (`box_sole_cause.py` in
+  the scratchpad; the box's bodies stay at ambient). Unchanged by version 2.
 - `tests/_xarch_perfield_digest.py` GOLDEN_AGGREGATE re-baselined once
-  (`4a13fc72` -> `3246b756`, rationale in the file: every gmap field line and
+  (`4a13fc72` -> `3246b756` in version 1, -> `cf3c7693` in version 2;
+  rationale in the file: every gmap field line and
   every unit sub-hash byte-identical bar `__unit_state__`); its committed
   per-field reference file regenerated. The five CUDA stage tests that assert
   the golden (`test_cuda_p62_sl_advection`, `p66_conduction`, `p68_fire`,
   `p69_combustion`, `s3_water`) and `test_fire_flicker` read it.
 
-### Left RED on purpose: findings for Erik (the law or the calibration working as the page says, with a consequence a ruling should own)
+### Version 2: what came back, what is an expected failure
 
-- `tests/test_spray_weapons.py::test_marine_in_flames_loses_hp_via_the_existing_heat_row`
-  ("the sprayer does not cook"): on that test's 1 m tile, 24 x 24 sealed
-  room, the dragon_7's jet heats the air on the SPRAYER's own tiles to about
-  10 000 C at 6 atm within 6 ticks; hot air now warms a body (the page's air
-  term), so the sprayer cooks in 9 ticks. Before #215 only the `heat` buffer
-  and radiation reached a body, and the nozzle rule kept the deposit off the
-  sprayer's tiles. Whether a flamethrower's user should feel its hot air (and
-  how much: the air term's 0.85 share scaled linearly with pressure) is
-  Erik's. The same scene also reads air under the victim at about -9 400 C
-  (game degrees far below the -292 floor) on tiles that hold pressure: a
-  temperature mirror that is not physical on near-empty cells (a finding
-  about the gas mirror, not changed).
-- `tests/test_explosion.py::test_a_breach_charge_breaches_a_door_and_spares_its_planter`:
-  the planter one clear tile back now takes 0.41 HP (the charge's hot air on
-  his footprint). Same cause.
-- `tests/test_explosion.py::test_wind_at_a_fixed_range_grows_with_strength`:
-  strength 2 now gives 1.07x strength 1's wind at 8 tiles (the test asks
-  1.3x): the 400-fold cut of `[blast] heat_mj_per_strength` removed the part
-  of the push the heat's expansion made. More strength is still more wind.
-- `tests/test_reward_v1.py::test_the_books_close_on_the_boxes[charge_ff]`: the
-  scene is vacuous now (no elimination): the C4 (strength 12) killed the pair
-  by HEAT before (120 MJ); it now heats 300 kJ, and its blast alone
-  (unit_damage 150 within radius 8) does not kill them. The reward books
-  themselves close.
-
-All four come from the shared `[blast]` heat dial and the new air term; the
-design page says "Left alone: ... every blast number" while its section 2
-calibrates "the frag's heat deposit", which IS a blast number shared by every
-strength row. The patch followed the brief (change the one number); the
-consequence for C4, the engine's death, the breach charge and the blasts'
-fires is the first ruling owed.
+- `tests/test_explosion.py::test_a_breach_charge_breaches_a_door_and_spares_its_planter`,
+  `::test_wind_at_a_fixed_range_grows_with_strength` and
+  `tests/test_reward_v1.py::test_the_books_close_on_the_boxes[charge_ff]`:
+  GREEN again by themselves with the 10 MJ back (the wind's heat part is back;
+  the C4 kills the pair again; the planter's 0.41 HP was hot air the
+  protection now cuts to nothing measurable).
+- `tests/test_spray_weapons.py::test_marine_in_flames_loses_hp_via_the_existing_heat_row`:
+  still red after the protection (the sprayer loses about 7 HP in 12 ticks:
+  its jet's air on its own tiles is about 10 000 C at 6 atm on that test's
+  1 m tile, sealed 24 x 24 room), so it is an EXPECTED FAILURE
+  (`xfail(strict=False)`) with Erik's ruling of 2026-11-18 in its reason: the
+  spray weapon is a placeholder, not tuned for.
+- FINDING kept for the lead to file (the gas temperature mirror, not
+  changed): in that scene, `tests/test_spray_weapons.py` `_level()` with
+  `_shooter("dragon_7")` at (5, 9) firing at (12, 10) and a victim at (8, 9),
+  the pressure-weighted air read under the victim's footprint is about -9 400
+  game degrees from tick 1 to tick 9 (-9358 at tick 1, -9596 at tick 8; far
+  below the -292 floor) on tiles that hold pressure (the read weighs only
+  tiles with p > 0): some gas cells there carry a temperature mirror that is
+  not physical.
 
 ## The break list (each new gate broken once, then restored)
 
@@ -299,7 +329,9 @@ Host (run on a scratch copy of the tree, each break alone):
 | the band reads the felt temperature again | the burst (its harm no longer comes over the cooling) |
 | the air term loses its pressure scale | vacuum, thin hot gas |
 | a ceiling on the body at 3000 C | more joules, more harm |
-| the frag's heat back to 10 MJ | the calibration, the frag beside a marine |
+| the frag's heat back to 10 MJ (version 1's gate; version 2 ships it) | the calibration, the frag beside a marine |
+| v2: the protection scales only the felt temperature's flow (the air's inflow unprotected) | the protection's air row, the frag beside a marine |
+| v2: the protection scales the losses too | both protection rows, the frag beside a marine |
 | a second writer of the body (the wind row) | one writer |
 | the stress rate in Q16 | both half-lives |
 | ln 2 off by 1 % | the 1200 s half-life |
