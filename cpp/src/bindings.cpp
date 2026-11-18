@@ -972,7 +972,8 @@ PYBIND11_MODULE(breach_physics, m) {
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
                  py::array_t<int64_t, py::array::c_style> ticks,
                  py::array_t<int64_t, py::array::c_style> spans,
-                 py::array_t<int64_t, py::array::c_style> live) {
+                 py::array_t<int64_t, py::array::c_style> live, std::uintptr_t flight, int fh,
+                 int fw) {
                   if (ticks.ndim() != 1 || ticks.shape(0) != s.n_env() || live.ndim() != 1 ||
                       live.shape(0) != s.n_env())
                       throw std::invalid_argument("unit_verbs: ticks and live must be (n_env,)");
@@ -988,10 +989,10 @@ PYBIND11_MODULE(breach_physics, m) {
                   c.refused = ref.mutable_data();
                   c.dropped = drp.mutable_data();
                   breach_cuda::unit_verbs(s, t, req, ticks.data(), spans.data(),
-                                          (int)spans.shape(1), live.data(), c);
+                                          (int)spans.shape(1), live.data(), flight, fh, fw, c);
                   return py::make_tuple(cov, flt, ref, drp);
               }, py::arg("store"), py::arg("tables"), py::arg("requests"), py::arg("ticks"),
-              py::arg("spans"), py::arg("live"),
+              py::arg("spans"), py::arg("live"), py::arg("flight"), py::arg("h"), py::arg("w"),
               "#29 P6.4a: slot 1b (Simulation._consume_direct_intents) on the device store; "
               "returns (coverage, faults, refused plants, dropped requests).");
         m.def("unit_match_done",

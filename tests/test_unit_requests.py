@@ -66,8 +66,11 @@ def test_records_become_the_hosts_objects_and_back(ship_session):
     u = [x for x in sim.units if not x.is_zombie][0]
     tick = sim.tick
     throw = unit_requests._blank(unit_requests.KIND_THROW, u.id, tick)
-    throw[3:9] = [10, 12, 10 * ONE + 32768 + 123, 12 * ONE + 32768 - 77, 48, 1]
+    throw[5:9] = [10 * ONE + 32768 + 123, 12 * ONE + 32768 - 77, 48, 1]
     throw[12] = 1
+    # #215: a Q16 start (the hand), not a tile
+    throw[unit_requests.FIELDS.index("start_x_q")] = 10 * ONE + 40000
+    throw[unit_requests.FIELDS.index("start_y_q")] = 12 * ONE + 7
     n0 = len(sim.projectiles)
     plant = unit_requests.plant_record(charges.PlantedCharge(
         5, 6, "demo_c4", u.id, det_tick=tick + 300, approach=(6, 5)), tick, True)
@@ -97,7 +100,7 @@ def test_a_plant_record_must_agree_with_the_charge_tables_door(ship_session):
         2, 2, "demo_c4", 0, det_tick=10 ** 9, approach=(2, 2)), sim.tick, False)
     assert unit_requests.apply_to_host(sim, [rec])["refused"] == 1
     assert sim.charges_refused == ref0 + 1
-    bad = rec[:12] + (1,)
+    bad = rec[:12] + (1,) + rec[13:]
     with pytest.raises(ValueError, match="placed"):
         unit_requests.apply_to_host(sim, [bad])
 

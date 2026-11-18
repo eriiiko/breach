@@ -3469,6 +3469,8 @@ flammable = false
 mobility = 0           # THE POINT: no unit enters or paths through it
 permeability = 1.0     # explicit (the derived default would be 0: it occludes
                        # light a little) -- gas/smoke flow exactly as in air
+blocks_thrown = true   # #215, Erik's ruling 2026-11-18: a thrown grenade bounces off
+                       # it (combat.flight_blocked); a round still passes it (undecided)
 blocks_sight = true    # Erik's ruling 2026-11-06: NOT see-through. No unit sees,
                        # targets or is ordered to fire through it. (Bullets are
                        # "another question", undecided: a round already in
@@ -3552,6 +3554,16 @@ throw_windup_seconds = 0.3
 # wall stops it where it hits. Refused outside 0..1 / below 0 at load.
 bounce_restitution = 0.4
 bounce_max = 4
+# Where the grenade leaves the hand (#215, Erik 2026-11-18: "it should take into
+# account the unit's position, as well as facing, then offset it a little"):
+# metres forward of the thrower's centre and to its RIGHT, rotated by its facing
+# at the release, converted once per map through the tile size. MEASURED on the
+# SOMA marine: its LeftHand (the throw clip is mirrored: the left arm throws) at
+# Throw_Overhand's release frame (release_s 1.10) is 1.362 drawn tiles forward
+# and 0.864 to the left (the marine is drawn 6 tiles tall); at the 0.333 m tile
+# that is 0.4534 m and -0.2876 m. docs/grenade_bounce_impl_2026-11-17.md.
+release_forward_m = 0.45
+release_side_m = -0.29
 mass_kg = 0.4
 loudness = 0.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 

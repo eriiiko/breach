@@ -24,6 +24,8 @@
 //                   law_q16)
 //   the operands    sq2 (a squared 2-vector with the range guard every
 //                   kernel's squares use)
+//   the flight      flight_blocked, flight_walk, release_point (#215:
+//                   combat.flight_blocked / flight_walk / release_point)
 //
 // A row is a unit of an env (`int64_t*` into the store); a kernel computes
 // it with unit_row(), reads and writes its columns by the generated offsets
@@ -947,6 +949,107 @@ __device__ inline bool reload_begin(int64_t* loc, const int64_t* tab, int64_t w,
     }
     loc[UNIT_COL_RELOAD_DONE_TICK] = done;
     return true;
+}
+
+// ---- #215: THE WALL WALK of a thrown grenade ------------------------------
+// combat.flight_walk integer for integer (the grid traversal of J. Amanatides
+// and A. Woo, "A Fast Voxel Traversal Algorithm for Ray Tracing",
+// Eurographics 1987) over an env's FLIGHT plane (combat.flight_plane: off the
+// grid, solid, or a blocks_thrown material): slot 1b's release point and
+// slot 2's flight both call it, never a copy.
+struct Plane {
+    const uint8_t* s;      // this env's (h, w) flight plane (combat.flight_plane)
+    int64_t h, w;
+};
+
+// combat.flight_blocked: off the grid, or the flight plane.
+__device__ __forceinline__ bool flight_blocked(const Plane& p, int64_t iy, int64_t ix) {
+    return iy < 0 || iy >= p.h || ix < 0 || ix >= p.w || p.s[iy * p.w + ix] != 0;
+}
+
+// Python's `v >> 16` of a possibly negative int (a floor).
+__device__ __forceinline__ int64_t floor16(int64_t v) {
+    return v >= 0 ? (v >> 16) : -((-v + (ONE - 1)) >> 16);
+}
+
+__device__ __forceinline__ int64_t iabs(int64_t v) { return v < 0 ? -v : v; }
+
+struct Hit {
+    int64_t px, py;
+    bool flip_x, flip_y;
+};
+
+// combat.flight_walk: true and `hit` on the first blocked tile the segment
+// A -> B enters; false when every tile it enters is free.
+__device__ inline bool flight_walk(const Plane& p, int64_t ax, int64_t ay, int64_t bx, int64_t by,
+                            Hit* hit) {
+    int64_t cx = floor16(ax), cy = floor16(ay);
+    int64_t nx = iabs(floor16(bx) - cx), ny = iabs(floor16(by) - cy);
+    const int64_t dx = bx - ax, dy = by - ay;
+    const int64_t sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+    const int64_t adx = iabs(dx), ady = iabs(dy);
+    while (nx || ny) {
+        const int64_t ex = nx ? (sx > 0 ? (cx + 1) * ONE : cx * ONE) : 0;
+        const int64_t ey = ny ? (sy > 0 ? (cy + 1) * ONE : cy * ONE) : 0;
+        bool step_x, step_y;
+        if (nx && ny) {
+            const int64_t c = iabs(ex - ax) * ady - iabs(ey - ay) * adx;
+            step_x = c <= 0;
+            step_y = c >= 0;
+        } else {
+            step_x = nx > 0;
+            step_y = ny > 0;
+        }
+        const int64_t ncx = step_x ? cx + sx : cx;
+        const int64_t ncy = step_y ? cy + sy : cy;
+        if (flight_blocked(p, ncy, ncx)) {
+            int64_t px, py;
+            if (step_x) {
+                px = sx > 0 ? ex - 1 : ex;
+                if (step_y) {
+                    py = sy > 0 ? ey - 1 : ey;
+                } else {
+                    py = ay + fixedpoint::div_round_q(dy * iabs(ex - ax), adx);
+                    py = py < cy * ONE ? cy * ONE : (py > cy * ONE + ONE - 1 ? cy * ONE + ONE - 1 : py);
+                }
+            } else {
+                py = sy > 0 ? ey - 1 : ey;
+                px = ax + fixedpoint::div_round_q(dx * iabs(ey - ay), ady);
+                px = px < cx * ONE ? cx * ONE : (px > cx * ONE + ONE - 1 ? cx * ONE + ONE - 1 : px);
+            }
+            hit->px = px;
+            hit->py = py;
+            hit->flip_x = step_x;
+            hit->flip_y = step_y;
+            return true;
+        }
+        cx = ncx;
+        cy = ncy;
+        if (step_x) --nx;
+        if (step_y) --ny;
+    }
+    return false;
+}
+
+// combat.release_point: the centre (x_q / y_q + half the footprint) plus the
+// hand's offset along (dx, dy) and to its right (-dy, dx), one rational per
+// coordinate rounded half away; the piece centre -> hand walked, a hand beyond
+// a wall pulled back to the last free point.
+__device__ inline void release_point(const Plane& p, int64_t x_q, int64_t y_q, int64_t fp,
+                                     int64_t dx, int64_t dy, int64_t fwd, int64_t side,
+                                     int64_t* sx, int64_t* sy) {
+    const int64_t half = (fp << 16) >> 1;
+    const int64_t cx = x_q + half, cy = y_q + half;
+    const int64_t hx = cx + fixedpoint::div_round_q(fwd * dx - side * dy, ONE);
+    const int64_t hy = cy + fixedpoint::div_round_q(fwd * dy + side * dx, ONE);
+    Hit hit;
+    if (flight_walk(p, cx, cy, hx, hy, &hit)) {
+        *sx = hit.px;
+        *sy = hit.py;
+    } else {
+        *sx = hx;
+        *sy = hy;
+    }
 }
 
 }  // namespace unit_lib

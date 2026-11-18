@@ -61,8 +61,9 @@ GENERATOR = "tools/gen_unit_layout.py --write"
 
 #: A record's fields, in order. Per kind (unused fields 0, ``door`` -1):
 #:   throw: ``unit_id`` the thrower (the projectile's owner), ``tick`` the
-#:          thrown tick, ``tile_x`` / ``tile_y`` the start tile (the
-#:          thrower's centre tile), ``target_x_q`` / ``target_y_q`` the Q16
+#:          thrown tick, ``start_x_q`` / ``start_y_q`` the Q16 start (#215:
+#:          ``combat.release_point``, the hand; ``tile_x`` / ``tile_y`` 0),
+#:          ``target_x_q`` / ``target_y_q`` the Q16
 #:          target, ``ticks`` the fuse (clamped to the hand grenade's range),
 #:          ``item`` the throw kind (the hand-grenade row's index);
 #:   plant: ``unit_id`` the planter (the charge's owner), ``tick`` the slot's
@@ -75,7 +76,7 @@ GENERATOR = "tools/gen_unit_layout.py --write"
 #:          flipped door's ordinal in ``sim._doors``.
 FIELDS = ("kind", "unit_id", "tick", "tile_x", "tile_y", "target_x_q",
           "target_y_q", "ticks", "item", "approach_y", "approach_x", "door",
-          "accepted")
+          "accepted", "start_x_q", "start_y_q")
 F = len(FIELDS)
 #: The kinds a record holds (code = position + 1; 0 = no record).
 KINDS = ("throw", "plant", "use")
@@ -221,10 +222,8 @@ def throw_record(sim, proj) -> tuple:
     if proj.ammo_name not in kinds:
         raise ValueError(f"unit requests: {proj.ammo_name!r} is no hand-grenade kind")
     r = _blank(KIND_THROW, proj.owner_id, proj.thrown_tick)
-    sx, sy = int(proj.start_x_q), int(proj.start_y_q)
-    if sx & 0xFFFF or sy & 0xFFFF:
-        raise ValueError("unit requests: a thrown grenade's start is not a tile")
-    r[3], r[4] = sx >> 16, sy >> 16
+    r[FIELDS.index("start_x_q")] = int(proj.start_x_q)
+    r[FIELDS.index("start_y_q")] = int(proj.start_y_q)
     r[5], r[6] = int(proj.target_x_q), int(proj.target_y_q)
     r[7] = int(proj.fuse_ticks)
     r[8] = kinds.index(proj.ammo_name)
@@ -269,7 +268,9 @@ def apply_to_host(sim, records) -> dict:
         kind = r[0]
         if kind == KIND_THROW:
             sim.projectiles.append(Projectile(
-                ORDER_GRENADE, r[3], r[4],
+                ORDER_GRENADE,
+                unit_fixed.dequantize_scalar(r[FIELDS.index("start_x_q")]),
+                unit_fixed.dequantize_scalar(r[FIELDS.index("start_y_q")]),
                 unit_fixed.dequantize_scalar(r[5]),
                 unit_fixed.dequantize_scalar(r[6]),
                 fuse_seconds=0.0, thrown_tick=r[2],

@@ -103,7 +103,8 @@ __device__ __forceinline__ void blank_record(int64_t* rec, int64_t kind, int64_t
 // `reach` (THROW_NO_REACH = the fixed 6 tiles), its fuse clamped, one spent.
 __device__ inline void release_grenade(int64_t* loc, const int64_t* tab, int64_t tick,
                                        int64_t kind, int64_t fuse, int64_t reach, int64_t dx,
-                                       int64_t dy, RecordSink& sink, bool* bad) {
+                                       int64_t dy, const Plane& pl, RecordSink& sink,
+                                       bool* bad) {
     if (kind < 0 || kind >= UNIT_COL_GRENADE_COUNTS_W) {
         *bad = true;
         return;
@@ -130,8 +131,21 @@ __device__ inline void release_grenade(int64_t* loc, const int64_t* tab, int64_t
     f = f < hi ? f : hi;
     int64_t rec[UNIT_REQ_F];
     blank_record(rec, UNIT_RQKIND_THROW, loc[UNIT_COL_ID], tick);
-    rec[UNIT_RQ_TILE_X] = cx;
-    rec[UNIT_RQ_TILE_Y] = cy;
+    // #215: the start is the HAND (combat.release_point over the flight plane)
+    const int64_t xq = loc[UNIT_COL_X_Q], yq = loc[UNIT_COL_Y_Q];
+    // the release point's proved range: a position within +-2^25 (512 tiles), the
+    // throw vector within +-2^20, the footprint 0 .. 64 (products below 2^61)
+    const int64_t RP_POS = (int64_t)1 << 25, RP_DIR = (int64_t)1 << 20;
+    if (xq > RP_POS || xq < -RP_POS || yq > RP_POS || yq < -RP_POS || dx > RP_DIR ||
+        dx < -RP_DIR || dy > RP_DIR || dy < -RP_DIR || fp < 0 || fp > 64) {
+        *bad = true;
+        return;
+    }
+    int64_t sx, sy;
+    release_point(pl, xq, yq, fp, dx, dy, tab[UNIT_TAB_HAND_RELEASE_FORWARD_Q],
+                  tab[UNIT_TAB_HAND_RELEASE_SIDE_Q], &sx, &sy);
+    rec[UNIT_RQ_START_X_Q] = sx;
+    rec[UNIT_RQ_START_Y_Q] = sy;
     rec[UNIT_RQ_TARGET_X_Q] = (cx << 16) + half + fixedpoint::mul_q16_round_q(dx, r);
     rec[UNIT_RQ_TARGET_Y_Q] = (cy << 16) + half + fixedpoint::mul_q16_round_q(dy, r);
     rec[UNIT_RQ_TICKS] = f;
@@ -143,12 +157,13 @@ __device__ inline void release_grenade(int64_t* loc, const int64_t* tab, int64_t
 
 // Simulation._start_throw (the latch's columns already cleared).
 __device__ inline void start_throw(int64_t* loc, const int64_t* tab, int64_t tick,
-                                   const int64_t* pt, RecordSink& sink, bool* bad) {
+                                   const int64_t* pt, const Plane& pl, RecordSink& sink,
+                                   bool* bad) {
     const int64_t kind = pt[5];
     if (!can_throw(loc, tab, kind, bad) || *bad) return;
     const int64_t ticks = handling_ticks(loc, tab[UNIT_TAB_HAND_WINDUP_CLASS_TICKS]);
     if (ticks == 0) {
-        release_grenade(loc, tab, tick, kind, pt[3], pt[4], pt[1], pt[2], sink, bad);
+        release_grenade(loc, tab, tick, kind, pt[3], pt[4], pt[1], pt[2], pl, sink, bad);
         return;
     }
     if (!tick_ok(tick + ticks) || pt[3] > COMPONENT_MAX || pt[3] < -COMPONENT_MAX) {
@@ -163,7 +178,7 @@ __device__ inline void start_throw(int64_t* loc, const int64_t* tab, int64_t tic
 
 // Simulation._advance_throw.
 __device__ inline void advance_throw(int64_t* loc, const int64_t* tab, int64_t tick,
-                                     RecordSink& sink, bool* bad) {
+                                     const Plane& pl, RecordSink& sink, bool* bad) {
     if (loc[UNIT_COL_THROW_RELEASE_TICK] < 0) return;
     if (!can_act(loc, tab, bad)) {
         loc[UNIT_COL_THROW_RELEASE_TICK] = -1;
@@ -179,7 +194,7 @@ __device__ inline void advance_throw(int64_t* loc, const int64_t* tab, int64_t t
     const int64_t c = fixedpoint::cos_q16((q16)f);
     const int64_t s = fixedpoint::sin_q16((q16)f);
     release_grenade(loc, tab, tick, loc[UNIT_COL_THROW_KIND], loc[UNIT_COL_THROW_FUSE_TICKS],
-                    loc[UNIT_COL_THROW_REACH_Q], c, -s, sink, bad);
+                    loc[UNIT_COL_THROW_REACH_Q], c, -s, pl, sink, bad);
 }
 
 // Simulation._start_plant (the latch already cleared).
@@ -331,7 +346,7 @@ __device__ inline void stage_shove(const int64_t* loc, const int64_t* tr, const 
 // the shove staged.
 __global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, const int64_t* ticks,
                         const int64_t* spans, int n_spans, RecordListView rq, int64_t* scratch,
-                        unsigned long long* cnt) {
+                        const uint8_t* flight, int fh, int fw, unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (r >= n_units) return;
     int64_t* sc = scratch + ((size_t)benv() * n_units + r) * SC_W;
@@ -346,6 +361,7 @@ __global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, cons
     for (int c = 0; c < UNIT_STORE_W; ++c) loc[c] = row[c];
     RecordSink sink = list_row_sink(rq, n_units, r);
     bool bad = !tick_ok(tick);
+    const Plane pl{flight + (size_t)benv() * fh * fw, fh, fw};   // #215: the flight plane
 
     if (!bad && !acts(loc)) {
         // the drop branch: a dead or turned row releases what it held
@@ -358,9 +374,9 @@ __global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, cons
         for (int i = 0; i < UNIT_COL_PENDING_THROW_W; ++i) pt[i] = loc[UNIT_COL_PENDING_THROW + i];
         if (pt[0]) {
             for (int i = 0; i < UNIT_COL_PENDING_THROW_W; ++i) loc[UNIT_COL_PENDING_THROW + i] = 0;
-            start_throw(loc, tab, tick, pt, sink, &bad);
+            start_throw(loc, tab, tick, pt, pl, sink, &bad);
         }
-        if (!bad) advance_throw(loc, tab, tick, sink, &bad);
+        if (!bad) advance_throw(loc, tab, tick, pl, sink, &bad);
         // PLANT -> start the plant (the latch); a plant under way advances
         if (!bad) {
             const int64_t pp = loc[UNIT_COL_PENDING_PLANT];
@@ -489,7 +505,7 @@ __global__ void k_plant_accept(int64_t* store, int n_units, const int64_t* table
 
 void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
                 const int64_t* ticks, const int64_t* spans, int n_spans, const int64_t* live,
-                const UnitDamageCounts& out) {
+                std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out) {
     unit_check_pair(store, tables, "unit_verbs");
     if (requests.n_env() != store.n_env() || requests.n_units() != store.n_units() ||
         requests.width() != UNIT_REQ_F || requests.row_cap() != UNIT_REQ_ROW_CAP) {
@@ -502,6 +518,8 @@ void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitReco
     }
     if (ticks == nullptr || spans == nullptr || live == nullptr || n_spans < 1)
         throw std::invalid_argument("unit_verbs: ticks (N,), spans (N, n >= 1, 3), live (N,)");
+    if (flight == 0 || fh <= 0 || fw <= 0)
+        throw std::invalid_argument("unit_verbs: the flight plane (N, h, w)");
     const int n = store.n_env(), U = store.n_units();
     const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)n);
     const int64_t* d_spans = store.stage_input(1, spans, (size_t)n * n_spans * SPAN_W);
@@ -510,7 +528,9 @@ void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitReco
     const RecordListView v = list_view(requests);
     store.begin_counts();
     k_verbs<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, tables.values(), d_ticks,
-                                                 d_spans, n_spans, v, sc, store.counts_dev());
+                                                 d_spans, n_spans, v, sc,
+                                                 reinterpret_cast<const uint8_t*>(flight), fh, fw,
+                                                 store.counts_dev());
     k_verbs_push<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, sc, store.counts_dev());
     requests.gather();
     k_plant_accept<<<dim3(1, n), 1, 0, tstream()>>>(store.rows(), U, tables.values(), d_live, v,

@@ -384,7 +384,18 @@ def _check_requests(name, store, requests):
                          f"store {store.shape[:2]}")
 
 
-def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
+def _flight_plane(name, store, fields):
+    """#215: ``fields["flight"]``, the DEVICE ``(N, h, w)`` bool flight plane
+    (``combat.flight_plane``), checked; -> (pointer, h, w)."""
+    _check_planes(name, store, fields, dict(GRENADE_FIELDS))
+    s = fields["flight"]
+    if s.ndim != 3 or not s.flags.c_contiguous:
+        raise ValueError(f"unit kernel {name}: the flight plane must be a "
+                         f"C-contiguous (N, h, w) array")
+    return int(s.data.ptr), int(s.shape[1]), int(s.shape[2])
+
+
+def verbs(store, requests, ticks, door_spans, charges_live, fields) -> np.ndarray:
     """Slot 1b (``Simulation._consume_direct_intents``, the continuous path):
     a dead or turned row drops its trigger, wind-up and plant; every living
     marine consumes its own latches (throw, plant, use, reload, shove) and
@@ -393,7 +404,9 @@ def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
     charges laid -- accepted or refused at the capacity --, the doors flipped,
     in id order); ``ticks`` ``(N,)`` each env's ``sim.tick``;
     ``door_spans`` ``(N, R, 3)`` (``unit_requests.pad_door_spans``);
-    ``charges_live`` ``(N,)`` the live planted charges. ``store.last_refused``
+    ``charges_live`` ``(N,)`` the live planted charges; ``fields["flight"]``
+    (#215) the flight plane a throw's release point is walked over (see
+    :func:`grenades`). ``store.last_refused``
     holds the plants refused at ``CHARGE_CAPACITY``. REFUSES a run whose
     requests the list could not hold (:class:`simulation.unit_requests.
     UnitRequestOverflow`, naming the kernel and the env) as it refuses a
@@ -403,8 +416,9 @@ def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
     t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
     s = np.ascontiguousarray(door_spans, dtype=np.int64)
     lv = np.ascontiguousarray(charges_live, dtype=np.int64).reshape(-1)
+    ptr, fh, fw = _flight_plane("verbs", store, fields)
     cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_verbs(
-        store.buffer, store.tables, requests.buffer, t, s, lv))
+        store.buffer, store.tables, requests.buffer, t, s, lv, ptr, fh, fw))
     cov = _done(store, "verbs", (cov, flt, ref))
     store.last_dropped = drp
     if drp.any():
@@ -1211,15 +1225,18 @@ def table_appends(store, requests, grenades, charges) -> np.ndarray:
         (grenades, charges))
 
 
-#: The planes slot 2's grenades read (#215: the wall walk's), by GameMap name.
-GRENADE_FIELDS = (("solid", np.bool_),)
+#: The plane slots 1b and 2 read for a thrown grenade (#215: the wall walk's):
+#: "flight" = ``combat.flight_plane(gmap)`` (off the grid is blocked; solid or
+#: a ``blocks_thrown`` material), never a GameMap attribute of its own.
+GRENADE_FIELDS = (("flight", np.bool_),)
 
 
 def grenades(store, table, dev_applier, ticks, fields: dict) -> np.ndarray:
     """Slot 2's grenades (``Simulation._update_grenades``): every live row
     flies (``Projectile.fly``, wide: #215 the current leg, the wall walk
-    over ``fields["solid"]`` -- a DEVICE ``(N, h, w)`` bool array, the plane
-    as the slot found it -- and a bounce; on a fuse-out ``settle``), a row
+    over ``fields["flight"]`` -- a DEVICE ``(N, h, w)`` bool array,
+    ``combat.flight_plane`` as the slot found it -- and a bounce; on a
+    fuse-out ``settle``), a row
     whose fuse ran out is marked detonated and -- its proj_type
     ORDER_GRENADE -- its detonation APPENDED to ``dev_applier``'s effect list
     as a PAYLOAD record (``execute_payload``'s call at
@@ -1228,16 +1245,10 @@ def grenades(store, table, dev_applier, ticks, fields: dict) -> np.ndarray:
     ``sim.tick``. Returns the rows changed per env; refuses a fault, a WEGO
     grenade (:class:`ObjectSlotRefused`) and an effect-list overflow."""
     _check_tables("grenades", store, table)
-    _check_planes("grenades", store, fields, dict(GRENADE_FIELDS))
-    s = fields["solid"]
-    if s.ndim != 3 or not s.flags.c_contiguous:
-        raise ValueError("unit kernel grenades: solid must be a C-contiguous "
-                         "(N, h, w) array")
-    _, h, w = (int(x) for x in s.shape)
+    ptr, h, w = _flight_plane("grenades", store, fields)
     t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
     return _object_done("grenades", store.bp.unit_grenades(
-        store.tables, table.buffer, dev_applier.buffer, t, int(s.data.ptr),
-        h, w))
+        store.tables, table.buffer, dev_applier.buffer, t, ptr, h, w))
 
 
 def charges_tick(store, table, dev_applier, ticks) -> np.ndarray:

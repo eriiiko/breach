@@ -588,6 +588,13 @@ ROWS: tuple[TableRow, ...] = (
              1 << 24, "the hand grenade's fuse range, ticks (the sim's tps)"),
     TableRow("hand_fuse_hi_ticks", 1, _hand_fuse("fuse_max_seconds"), 0,
              1 << 24, "the hand grenade's fuse range, ticks"),
+    TableRow("hand_release_forward_q", 1,
+             lambda src: int(_hand_row(src).release_forward_q), -(1 << 24), 1 << 24,
+             "#215: [weapons.hand_grenade] release_forward_m in Q16 tiles of "
+             "the sim's map (combat.release_point's forward offset)"),
+    TableRow("hand_release_side_q", 1,
+             lambda src: int(_hand_row(src).release_side_q), -(1 << 24), 1 << 24,
+             "#215: release_side_m in Q16 tiles (to the thrower's right)"),
     TableRow("plant_class_ticks", 1, _plant_class_ticks, 0, 1 << 16,
              "the plant row's (weapons.PLANT_WEAPON) plant_ticks"),
     TableRow("charge_capacity", 1, _charge_capacity, 1, 1 << 10,
@@ -839,10 +846,6 @@ def _flight_eps(src):
 def _order_grenade(src):
     from simulation.orders import ORDER_GRENADE
     return int(ORDER_GRENADE)
-
-
-def _hand_row(src):
-    return src.sim.weapons_tables.weapons.by_name["hand_grenade"]
 
 
 def _bounce_restitution_q(src):
