@@ -225,4 +225,91 @@ replaced:
   ship chain no longer demands ring events (its 500 ticks hold no hit since
   the body law; the fire and gas lanes carry the events).
 
-(The break list, the goldens and the gate runs are appended below.)
+
+More changed tests (found by the not-slow tier):
+- `tests/test_hit_direction.py::test_a_heat_hit_carries_no_direction`: its heat
+  stub carries the footprint's air and the tile size (the property untouched).
+- `tests/test_explosion.py::test_fuel_catches_only_when_ordinary_heat_takes_it_to_its_ignition_temp`:
+  the scene brings its own 10 MJ row (the shipped 0.025 MJ ignites nothing:
+  "the scenario is moot", as its own docstring foresaw).
+- `tests/test_zombie_control.py::test_the_controller_plays_the_pinned_match_on_a_small_box`:
+  the #122 box pin RE-PINNED once (`3a6b2309` -> `4bf0c3eb`): outcome, team,
+  ticks and field digest unchanged; with `body_temp_q` / `stress_q` stripped
+  from every record this tree gives the old pin EXACTLY (`box_sole_cause.py`
+  in the scratchpad, run on the base and here).
+- `tests/_xarch_perfield_digest.py` GOLDEN_AGGREGATE re-baselined once
+  (`4a13fc72` -> `3246b756`, rationale in the file: every gmap field line and
+  every unit sub-hash byte-identical bar `__unit_state__`); its committed
+  per-field reference file regenerated. The five CUDA stage tests that assert
+  the golden (`test_cuda_p62_sl_advection`, `p66_conduction`, `p68_fire`,
+  `p69_combustion`, `s3_water`) and `test_fire_flicker` read it.
+
+### Left RED on purpose: findings for Erik (the law or the calibration working as the page says, with a consequence a ruling should own)
+
+- `tests/test_spray_weapons.py::test_marine_in_flames_loses_hp_via_the_existing_heat_row`
+  ("the sprayer does not cook"): on that test's 1 m tile, 24 x 24 sealed
+  room, the dragon_7's jet heats the air on the SPRAYER's own tiles to about
+  10 000 C at 6 atm within 6 ticks; hot air now warms a body (the page's air
+  term), so the sprayer cooks in 9 ticks. Before #215 only the `heat` buffer
+  and radiation reached a body, and the nozzle rule kept the deposit off the
+  sprayer's tiles. Whether a flamethrower's user should feel its hot air (and
+  how much: the air term's 0.85 share scaled linearly with pressure) is
+  Erik's. The same scene also reads air under the victim at about -9 400 C
+  (game degrees far below the -292 floor) on tiles that hold pressure: a
+  temperature mirror that is not physical on near-empty cells (a finding
+  about the gas mirror, not changed).
+- `tests/test_explosion.py::test_a_breach_charge_breaches_a_door_and_spares_its_planter`:
+  the planter one clear tile back now takes 0.41 HP (the charge's hot air on
+  his footprint). Same cause.
+- `tests/test_explosion.py::test_wind_at_a_fixed_range_grows_with_strength`:
+  strength 2 now gives 1.07x strength 1's wind at 8 tiles (the test asks
+  1.3x): the 400-fold cut of `[blast] heat_mj_per_strength` removed the part
+  of the push the heat's expansion made. More strength is still more wind.
+- `tests/test_reward_v1.py::test_the_books_close_on_the_boxes[charge_ff]`: the
+  scene is vacuous now (no elimination): the C4 (strength 12) killed the pair
+  by HEAT before (120 MJ); it now heats 300 kJ, and its blast alone
+  (unit_damage 150 within radius 8) does not kill them. The reward books
+  themselves close.
+
+All four come from the shared `[blast]` heat dial and the new air term; the
+design page says "Left alone: ... every blast number" while its section 2
+calibrates "the frag's heat deposit", which IS a blast number shared by every
+strength row. The patch followed the brief (change the one number); the
+consequence for C4, the engine's death, the breach charge and the blasts'
+fires is the first ruling owed.
+
+## The break list (each new gate broken once, then restored)
+
+Host (run on a scratch copy of the tree, each break alone):
+
+| Break | Went red |
+|---|---|
+| the radiated share no longer subtracted from the air's | the six steady-state rows, the one-atmosphere identity, vacuum, and five of test_unit_heat_damage |
+| the band reads the felt temperature again | the burst (its harm no longer comes over the cooling) |
+| the air term loses its pressure scale | vacuum, thin hot gas |
+| a ceiling on the body at 3000 C | more joules, more harm |
+| the frag's heat back to 10 MJ | the calibration, the frag beside a marine |
+| a second writer of the body (the wind row) | one writer |
+| the stress rate in Q16 | both half-lives |
+| ln 2 off by 1 % | the 1200 s half-life |
+| the producer reads the packet's raw amount | fed by hit points actually lost (behind armor) |
+| a zombie takes stress | a zombie and a corpse take none |
+| the shared step changes poison's flush | test_poison (one dose rises, peaks, decays) |
+| the Hill table built off its formula | the Hill curve's shape |
+| a bot imports the stress module | no reader |
+| death keeps the stress | a zombie and a corpse take none |
+
+(Each first ran GREEN for four breaks -- the band on the felt temperature, a
+ceiling, the Q16 rate, the raw amount -- and the gates were sharpened until
+red: the harm after a burst over the cooling, bursts of 300 kJ and 3 MJ, the
+shipped rate through the door, a marine behind 4 points of armor.)
+
+Device (`cpp/src/cuda_unit_exchange.cu`, one rebuild, both breaks together,
+`tests/cuda_unit_damage_check.py` scenes + chained): the heat kernel's band
+on the felt temperature -> the fire scene's heat slot vacuous and its hits
+missing; the stress tick draining nothing -> `stress_q` host != device in
+the ship, fire and gas scenes. Restored and rebuilt.
+
+## Gates
+
+(appended at the final tree)
