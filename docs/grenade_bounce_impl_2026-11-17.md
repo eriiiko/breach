@@ -411,5 +411,5 @@ branch's own; start = the hand, rest = where it lies at the fuse):
 (and three more later: a flashbang at 1945 resting short of a painted door
 at (24, 40), frags at 2093 / 2098 off a painted door and steel.) `bots_v1`:
 3 throws, the third (tick 222, unit 7) meets steel at (17, 52) and rests at
-(20.61, 49.66). Of the 9 + 3 walls met in `bots`, 7 are legacy painted
+(20.61, 49.66). In `bots` 12 throws meet 8 walls, 6 of them legacy painted
 doors -- the next patch retires them.
