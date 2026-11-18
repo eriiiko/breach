@@ -347,7 +347,24 @@ with either candidate; the three tests stay skipped by name
   decision 1..gap paid for the cued way), gap 12: flat (25-round means
   0.22 to 0.25). "go" (a column shows 1 at the answer only), gap 12: flat
   (0.20 to 0.27). Neither shape makes gap 12 learnable at these numbers;
-  "hold" gap 4 and "go" gap 1 were still running at the report.
+  "hold" gap 4 and "go" gap 1 were still running at the report. (The
+  lead's runs since: "hold" gap 4 flat 0.25; "go" gap 1 0.41 to 0.43;
+  "hold" gap 12 flat at 0.25 for 3 000 rounds.)
+- **Third follow-up: which case, measured (scratch, measurements only;
+  tables in `RecallTask`'s text).** E1: the reward gradient's direction is
+  right: against the gradient of the right answer's mean probability its
+  20-batch mean has cosine +0.48 (fresh) and +0.83 (plateau) at gap 12, and
+  the answers' grades have the right sign; per batch it is mostly noise
+  (cosine +0.11 to +0.16; |mean|^2/variance 0.06 to 0.09, the answers
+  alone 0.13 to 0.18). E2: at the plateau every planned step runs, the
+  early stop never fires, a round moves the policy 0.001 against a
+  budget of 0.02, the gradient is clipped on 5 % of the steps, and half
+  the distance goes to heads the task does not pay. E3: a supervised
+  memory handed to the trainer with a fresh value network is KEPT (seed
+  0: 0.92 -> 0.97 in 200 rounds; seed 1, supervised only to 0.73: held at
+  0.67 to 0.74). Reading: not a fault, not a stopped learner: the noise
+  case. Reward keeps and sharpens a memory; from a cue-blind start the
+  signal is too weak per batch and the steps too small to find one.
 
 ---
 
