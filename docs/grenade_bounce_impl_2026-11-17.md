@@ -376,3 +376,40 @@ Erik (2026-11-18) retires the legacy painted doors in the same re-baseline,
 which another patch builds on this branch. The six pin tests stay RED here,
 by name; their outcomes at this branch's final tree are below (the "before"
 of that patch).
+
+**The six pins at this branch's final tree** (`30bd61ca`; full suite 6463
+passed, exactly these 6 failed; cuda_green 62 passed at that HEAD). "Same"
+= the pinned value is unchanged; the digests are this tree's.
+
+| test | pin (main) | here: outcome | field digest | tick digest | unit stream |
+|---|---|---|---|---|---|
+| `test_zombie_control.py::test_the_controller_plays_the_pinned_ship_demo_match` (`bots`) | win 0 at 2570 | **win 1 at 2121** | `4fcb918f15d1089a0f2fa5d208092019669252059b8950c3cb86f4870edb5a9e` | `767947c383c50e0eabc38adab9bab00593095e7e437d6377da771882e4a0aaf0` | `17f56845d62a4376e498eea3065632b9b8dff661b1c78bd02b6ccfdc2aa87f1f` |
+| `test_bots_v1.py::test_bots_v1_play_the_pre_g8p_pinned_match` (`bots_v1`) | draw at 7200 | same | `14ae2600254929589ef14389cdd080c36613e479d1c08f7adc89f0597757efd7` | `536c5e48a43be8950df03caadc33bceb76bc096eb0392f8e88c5669eb4344e3e` | `04d594093777a555fbc10b4ad3afa0a39243e649955b6b93f22c11d6c3536162` |
+| `test_exposure.py::test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match` | draw at 7200 | same | `14ae2600254929589ef14389cdd080c36613e479d1c08f7adc89f0597757efd7` | `c488cd939c645ed9e32992c640925f23cfbc43cac7cf1678c1dc128ee49b68ee` | `bcc490bafe41e4f3944a94f187e56eb7e00adda0825443fc58b746ad8ef453aa` |
+| `test_grenade_kinds.py::test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match` | win 1 at 240 | same | `8ea104a7ec878693fe42f1968bdd22314a323a33baa5beb3b08ba4f2037b4a50` | `0801e162cb9be74ea09d438db26dcefaad58bc2661a31bc675b274e529671623` | `928b0ba6b4e585c564b35da2ab4df56db5737161dd425a7d2313375e25b93065` |
+| `test_horde_behaviours.py::test_with_every_behaviour_off_the_horde_plays_the_stage_1_law` (ship_demo) | win 1 at 255 | same | `dc873766b672de0d2c0783f646d03102470498217eeef5f945deecd683c99289` | `9f1431f567cabd322727edec10156b9f56f913a49e536d5e42f0df9a4436cb48` | `076c64e925a9b5637944631c9e26c7e14c9fc5a9ce3b250dbb6347d90bc91cf8` |
+| `test_unit_impulse.py::test_g1_with_every_input_off_nothing_is_pushed_and_the_pins_are_re_pin_1s` (ship_demo; its box assert after it was not reached) | draw at 7200 | same | `d347e3ade6f8344715c3f97754f52d89324ac83c5f4d0be6d4bb302d0cb9655b` | `4a60f0ae276fa2351eb1d48a5a69834386da0dab28f0a502c7f8dfd6f60d0b40` | `f403bf2ffaa177d601105920ba981618737db752b2fd3b19fac198f841cbfe29` |
+
+No GOLDEN_AGGREGATE, field-digest golden or replica gate moved.
+
+**How the `bots` throws fly now** (the same census, this tree; the match
+leaves main's at its first wall, tick 433, so after that the throws are this
+branch's own; start = the hand, rest = where it lies at the fuse):
+
+| tick | thrower | start (y, x) | target tile | bounces | rest (y, x) | wall met |
+|---|---|---|---|---|---|---|
+| 432 | 5 | (24.48, 69.00) | (21, 44) | 1 | (23.29, 78.80) | painted door (24, 68) at the hand itself |
+| 643 | 2 | (25.79, 17.40) | (24, 30) | 0 | (24.5, 30.5) | none: on its target, as main |
+| 644 | 1 | (22.32, 9.39) | (23, 31) | 1 | (22.94, 7.00) | steel (22, 14) |
+| 646 | 3 | (28.57, 13.33) | (24, 30) | 1 | (26.85, 7.40) | painted door (28, 14) at the hand |
+| 742 | 3 | (28.61, 18.06) | (24, 35) | 0 | (24.5, 35.5) | none |
+| 745 | 2 | (26.01, 21.27) | (22, 34) | 0 | (22.5, 34.5) | none |
+| 1265 | 7 | (29.83, 83.50) | (33, 70) | 0 | (33.5, 70.5) | none |
+| 1269 | 6 | (23.34, 91.45) | (33, 72) | 1 | (29.16, 91.40) | painted door (26, 85) |
+| 1272 | 5 | (26.91, 64.82) | (34, 58) | 1 | (23.95, 62.05) | painted door (27, 64) at the hand |
+
+(and three more later: a flashbang at 1945 resting short of a painted door
+at (24, 40), frags at 2093 / 2098 off a painted door and steel.) `bots_v1`:
+3 throws, the third (tick 222, unit 7) meets steel at (17, 52) and rests at
+(20.61, 49.66). In `bots` 12 throws meet 8 walls, 6 of them legacy painted
+doors -- the next patch retires them.
