@@ -581,7 +581,7 @@ class Census:
 
 #: Every branch the scene must take; and the ones it cannot, with the reason.
 NEED = (
-    "flight: shorter than the epsilon (lands at once)", "flight: arrived",
+    "flight: arrived",
     "flight: in the air (the rounded rational)",
     "grenades: fuse-out of a lob (PAYLOAD)", "grenades: not due",
     "grenades: out on its release tick", "grenades: two or more fuse-outs on one tick",
@@ -605,8 +605,13 @@ NEED_FLIGHT = (
     "bounce: restitution 0 (drops at the wall)", "bounce: restitution 1 (a mirror)",
     "settle: a fuse-out mid-leg (the rest flown at once)",
     "settle: a wall met while settling",
+    "flight: shorter than the epsilon (lands at once)",
 )
 UNREACHABLE = {
+    "flight: shorter than the epsilon (lands at once)":
+        "#215: a throw starts at the hand, 0.29 m (the shipped release_side_m) "
+        "off the line of its target, so no scene throw lands within 0.1 tile of "
+        "its start; PART FLIGHT holds the branch on constructed rows",
     "charges.tick: an empty list (no prune)":
         "the conductor calls charges.tick only while a charge is planted (slot "
         "9e(d')'s gate); the harness compares the gated-off ticks as a run "

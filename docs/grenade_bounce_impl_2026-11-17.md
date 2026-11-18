@@ -290,3 +290,89 @@ off by one. An incremental CUDA build of the TU took about 30 s.
   findings above, unchanged.
 - No index line in CLAUDE.md: the walk is the grenade's own (the rounds keep
   their march); its constraints are in `.claude/rules/hand-verbs.md`.
+
+## Follow-up, 2026-11-18 (Erik's rulings): the hand, the grille, no re-pin here
+
+### 1. The throw leaves the hand
+
+Erik: "it can start in Q16 coordinates offset in any tile"; "it should take
+into account the unit's position, as well as facing, then offset it a
+little"; "we should try to get it perfect, since it directly shows
+graphically". This replaces finding 1 above (the start at the centre tile's
+corner).
+
+- `combat.release_point(gmap, x_q, y_q, footprint, dx_q, dy_q, forward_q,
+  side_q)`: the thrower's Q16 centre (`x_q` / `y_q` + half the footprint,
+  formed in integers, the point the 3D model is drawn at) plus `forward` along
+  the throw's Q16 vector and `side` to its right `(-dy, dx)`, ONE rational per
+  coordinate rounded half away. The piece centre -> hand is walked by
+  `flight_walk`: a hand beyond a wall starts the grenade at the last free
+  point (no bounce counted). The throw's vector is the facing at the release
+  (`cos_q16` / `-sin_q16`, the wind-up path) or the intent's own vector for a
+  0-tick wind-up -- the same vector the flight takes, one code path.
+- The dials `[weapons.hand_grenade] release_forward_m = 0.45`,
+  `release_side_m = -0.29` (metres, negative = the unit's LEFT), converted
+  once per map to `release_forward_q` / `release_side_q` (Q16 tiles) at the
+  weapon table's build; refused beyond +-2 m by name.
+- **The measurement** (`measure_hand.py`, the scratch tool: the REAL pose
+  layer from `config.toml`, no window): the SOMA marine
+  (`soma_space_marine`), state idle, role player; `PoseLayer.throw` with the
+  wind-up the sim gives (0.3 s -> 7 ticks at 24 tps = 0.2917 s); driven
+  0.2917 s at 1/240 s; the timed clip is then at 1.0999 s of
+  `Throw_Overhand` (`[render.pose.throw] release_s = 1.10`, the release
+  frame). The `LeftHand` bone's composed global (model space) is (0.2713,
+  1.3850, 0.4277); through the renderer's own `body_matrix` (yaw = facing +
+  90 degrees, the one scale: the space marine reference is 1.8847 model
+  units tall = 6 drawn tiles), it sits **1.3616 drawn tiles forward and
+  0.8637 drawn tiles to the unit's left** of the unit's centre, the same at
+  facings 0, 37 and 90 degrees (the frame check). At the 0.333 m tile that is
+  0.4534 m forward and -0.2876 m: **0.45 m / -0.29 m** to the centimetre.
+- The left arm throws (the clip is mirrored), so the side is negative.
+  Render-only left-handed units (10 %) are drawn throwing with the right hand
+  but release from the left: handedness must not affect play (Erik's #187
+  ruling), so the sim cannot follow the mirror.
+- Exactness: the model is drawn 6 TILES tall whatever the tile size, while
+  the dials are metres, so the hand is exact on screen at the 0.333 m tile
+  (every game level) and not on the 1 m test worlds.
+- The target is unchanged (the centre tile's point at the reach), so a bot's
+  aimed point is still where a free throw lands.
+- The request record carries the Q16 start (`start_x_q`, `start_y_q`; the
+  throw's `tile_x` / `tile_y` are 0); the device verbs kernel forms it over
+  the flight plane (`unit_lib::release_point`), and the walk moved into the
+  device library (`cpp/src/cuda_unit_lib.cuh`) since two kernels use it; two
+  device table rows `hand_release_forward_q`, `hand_release_side_q`.
+- A thrower on a legacy painted door: the centre's own tile is never asked,
+  so the start (the hand) is walked FROM the door tile; if the hand is in a
+  free tile the grenade starts there normally; if the grenade never leaves
+  the door tile, `detonation_tile`'s N, S, W, E neighbour fallback keeps the
+  blast off the door.
+- The WEGO order path (`spawn_projectiles_from_grenade_orders`,
+  `timeline`'s lob) keeps its legacy centre start: it builds its own
+  `Projectile` in its own code, not through `_release_grenade`.
+- **Rule 1, re-read**: a wall-free throw no longer flies main's positions
+  (its start moved to the hand) but detonates on main's tile at main's tick:
+  `test_in_the_game_a_wall_free_throw_detonates_where_and_when_main_did`
+  (12 facings x reaches through the sim: every detonation tile = main's
+  target tile, every tick = thrown + fuse, every start moved). The leg law
+  test keeps holding the first leg's arithmetic from a given start.
+
+### 2. A grille stops a grenade
+
+Erik: "grille should probably not let through a grenade" (bullets through a
+grille stay as they are, undecided). `[materials.*] blocks_thrown` (bool,
+optional; derived = "sealed to gas", exactly where the tile is `solid`;
+`true` on `[materials.grille]`). `combat.flight_blocked` = off the grid, or
+`solid`, or the tile's material's `blocks_thrown` -- read through the
+material table each time, so it follows every topology change with no plane
+of its own to keep in step (the material plane and `solid` are already the
+topology seam's). `combat.flight_plane(gmap)` is that read over the grid,
+the plane both device slots (1b's start, 2's flight) are handed. The rounds'
+march is untouched (it reads `solid`).
+`test_a_grille_stops_a_grenade_and_still_passes_a_round`.
+
+### 3. No re-pin here
+
+Erik (2026-11-18) retires the legacy painted doors in the same re-baseline,
+which another patch builds on this branch. The six pin tests stay RED here,
+by name; their outcomes at this branch's final tree are below (the "before"
+of that patch).
