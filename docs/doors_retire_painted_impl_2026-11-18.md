@@ -155,3 +155,29 @@ levels: only the material plane differs, exactly the doorway tiles 3 -> 7)
 and on `playground` (an unchanged level). `[materials.door]` and
 `[materials.door_closed]` differ only in `mobility` (1000 vs 0), which no gas
 law reads. No grille was needed.
+
+## 4. The pinned matches (NOT re-baselined)
+
+Both pinned ship_demo matches move: every one of ship_demo's 60 doorways is
+now a closed door. Read-only hooks around `run_match` (`_direct_use` and the
+slot-9e sweep):
+
+| match | pin (main) | base `30bd61ca` | this branch |
+|---|---|---|---|
+| `bots` | win team 0 at 2570 | win team 1 at 2121 | **win team 0 at 608** (field `7ea139a1e506...`) |
+| `bots_v1` | draw at 7200 | draw at 7200, field `14ae2600...` | **draw at 7200**, field `fae949e041c9...` |
+
+- `bots`: 6 uses, all opens, 3 per team (team 1 at ticks 45, 257, 406 on
+  `door_e59`, `door_e33`, `door_e55`; team 0 at 69, 269, 416 on their mirror
+  twins `door_e58`, `door_e32`, `door_e54`), all by the same unit of each team
+  (the lead walker); no door closed again, none destroyed. Team 1 is wiped
+  out at 608; the four zombies are dead by then, none moved more than 25
+  tiles from where it spawned, and no door was bashed.
+- `bots_v1`: **0 uses, 0 doors opened, 0 bashed**: bots_v1 never uses a door
+  (its law is pinned), so both teams stay shut in their spawn rooms and the
+  dormant zombies in theirs (nothing hunts, so nothing bashes): a draw at the
+  time limit with all 12 units alive. A finding for the lead / Erik: the
+  `bots_v1` ladder rung no longer plays a match on ship_demo.
+
+The other four plays of the same match (one law switched off each) move the
+same way; their outcomes on the base and on this branch are in section 6.
