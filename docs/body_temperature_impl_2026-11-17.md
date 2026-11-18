@@ -143,9 +143,17 @@ the body where it settles (`calib.py` in the scratchpad).
 |---|---|---|---|---|
 | 1.0 (unprotected) | 687.7 / 375.9 / 73.0 | 897.6 / 682.8 | 22.8 / 26.5 (body 546 C) | 15.0 / 17.4 (body 373 C) |
 | 0.2 | 132.7 / 70.4 / 8.5 | 174.7 / 131.8 | 3.8 / 4.5 (body 125 C) | 2.2 / 2.7 (body 91 C) |
-| 0.1 | 63.4 / 32.0 / 0.5 | 84.4 / 62.9 | 1.35 / 1.75 (body 73 C) | 0 (body 55 C) |
-| **0.05 (chosen)** | **28.0 / 12.2 / 0.0** | **39.2 / 28.4** | **0 (body 46 C)** | **0 (body 38 C)** |
+| **0.1 (chosen, the lead, 2026-11-18)** | **63.4 / 32.0 / 0.5** | **84.4 / 62.9** | **1.35 / 1.75 (body 73 C)** | **0 (body 55 C)** |
+| 0.05 (version 2's first build) | 28.0 / 12.2 / 0.0 | 39.2 / 28.4 | 0 (body 46 C) | 0 (body 38 C) |
 | 0.03 | 14.0 / 5.1 / 0.0 | 20.1 / 13.5 | 0 (body 36 C) | 0 (body 31 C) |
+
+**The value shipped is 0.1** (the lead's choice from this table,
+2026-11-18, Erik may retune: "fire must hurt"; at 0.1 a frag on the next tile
+bills about 63 heat on its 30 blast, which a full-health marine survives, and
+the fire's edge bills 1.4 to 1.8 HP a second). The gates hold the properties,
+not a window: next to a frag a full-health marine survives, takes heat > 0
+and less than at absorption 1; standing at the fire's edge bills damage
+within 10 s. The text below is version 2's first build at 0.05:
 
 **No single value meets both targets** (a frag under 40 heat HP AND a fire
 above about 2 HP/s): the flash is a huge flux for a tick, the fire a small

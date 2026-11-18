@@ -310,19 +310,16 @@ def test_at_absorption_one_the_step_is_the_unsplit_law():
                                         AMB_Q, ONE) == old
 
 
-def test_a_frag_beside_a_marine_no_longer_kills_by_heat():
-    """Property (the calibration's target (a), Erik 2026-11-18): a frag whose
-    centre tile is one tile from a marine's (the rung 2c finding: 30 blast +
-    576 heat in one tick) leaves a 100 HP marine alive, its heat bill 15 to 40
-    HP on top of the blast's 30, at the shipped protection and the shipped
-    10 MJ. Breaks if the body law or the protection is undone, or the
-    protection is set so high a frag no longer burns at all."""
+def _frag_bill(hp=100.0):
+    """A frag whose centre tile is one tile from a marine's (the rung 2c
+    finding: 30 blast + 576 heat in one tick), 6 s: (damage by cause, alive)."""
     from simulation.events import UnitHitEvent
     from simulation.payloads import execute_payload
     from simulation.weapons import get_tables
     s = _frag_room()
     m = Unit("M", x=20.5, y=19.5, team=0)
     s.add_unit(m)
+    m.current_hp = hp
     s.set_paused(False)
     s.step()
     by = {}
@@ -337,9 +334,65 @@ def test_a_frag_beside_a_marine_no_longer_kills_by_heat():
     for ev in events:
         if isinstance(ev, UnitHitEvent) and ev.unit_id == m.id:
             by[str(ev.source)] = by.get(str(ev.source), 0.0) + float(ev.damage)
-    assert m.alive, by
+    return by, m.alive
+
+
+def test_a_frag_beside_a_full_health_marine_burns_but_does_not_kill(monkeypatch):
+    """Property (Erik, 2026-11-18: "protect only the body"; the shipped
+    10 MJ): next to a frag a full-health marine survives, takes heat damage
+    (more than none), and takes less in all than the unprotected body would
+    (blast plus heat at absorption 1). Breaks if the body law or the
+    protection is undone (the marine dies by heat), or the protection is set
+    so high that a frag no longer burns at all."""
+    by, alive = _frag_bill()
+    assert alive, by
     assert by.get("explosion", 0.0) == 30.0
-    assert 15.0 <= by.get("heat", 0.0) <= 40.0, by
+    assert by.get("heat", 0.0) > 0.0, by
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: ONE)
+    raw, _ = _frag_bill(hp=1.0e6)
+    assert sum(by.values()) < sum(raw.values()), (by, raw)
+
+
+def test_standing_at_a_fires_edge_hurts_within_ten_seconds():
+    """Property (the lead's choice of the protection, 2026-11-18: "fire must
+    hurt"): a marine whose footprint overlaps a burning furniture pile's edge
+    loses hit points by heat within 10 s, at the shipped protection. Breaks
+    if the protection is set so low that a fire does nothing (0.05 did)."""
+    from simulation.events import UnitHitEvent
+    from simulation.materials import MAT_AIR, MAT_FURNITURE, MAT_HULL
+    from simulation.payloads import execute_payload
+    from simulation.weapons import get_tables
+    import breach_physics as bp
+    from level_loader import LevelData
+    from simulation import Simulation
+    tm = np.full((40, 40), MAT_HULL, dtype=np.int32)
+    tm[1:39, 1:39] = MAT_AIR
+    tm[19:22, 19:22] = MAT_FURNITURE
+    lv = LevelData(name="fire_edge", version="2", path=Path("."), tilemap=tm,
+                   tile_size_m=0.333, diffuse_path=Path("."), entities=[],
+                   wires=[])
+    s = Simulation(lv, seed=3, breach_physics=bp, enable_recorder=False)
+    s.set_paused(False)
+    s.step()
+    row = get_tables().payloads.by_name["studio_ignite"]
+    for y in range(19, 22):
+        for x in range(19, 22):
+            execute_payload(s.gmap, s.edit_queue, s.units, y, x, row, s.draws)
+    for _ in range(20 * TPS):                 # the pile catches and burns
+        s.set_paused(False)
+        s.step()
+    assert int(s.gmap.fire.max()) > 0, "the scene is moot: nothing burns"
+    m = Unit("M", x=21.5, y=19.5, team=0)     # footprint over the east edge
+    s.add_unit(m)
+    m.current_hp = 1.0e6
+    heat = 0.0
+    for _ in range(10 * TPS):
+        s.set_paused(False)
+        s.step()
+        heat += sum(float(e.damage) for e in s.tick_events
+                    if isinstance(e, UnitHitEvent) and e.unit_id == m.id
+                    and str(e.source) == "heat")
+    assert heat > 0.0
 
 
 # ---------------------------------------------------------------------------

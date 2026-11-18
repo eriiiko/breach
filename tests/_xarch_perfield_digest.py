@@ -680,7 +680,11 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # body drifts a twentieth as far, so only __unit_state__'s 30 lines move
 # again against the base file (3246b756 on the first version, unreleased);
 # every gmap field line and every other unit sub-hash still byte-identical.
-GOLDEN_AGGREGATE = "cf3c7693a6ae4fafdf1590b45fe7c27d1f4984898dd1856de49c53fb48b7f3de"
+# And at the lead's protection of 2026-11-18 (heat_absorption 0.1, the doors
+# branch merged): against the base file only __unit_state__'s 30 lines move;
+# every gmap field line and every other unit sub-hash byte-identical.
+# (was cf3c7693a6ae4fafdf1590b45fe7c27d1f4984898dd1856de49c53fb48b7f3de)
+GOLDEN_AGGREGATE = "d5d03433c4894d79922664e14b6a24801d36406ed7c321ad14904c649d2f487b"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

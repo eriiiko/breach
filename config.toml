@@ -5370,10 +5370,12 @@ temperature_max = 60.0
 body_heat_capacity_j_per_k = 320.0
 # #215: THE protection (Erik, 2026-11-18: "protect only the body"): the share
 # of the heat reaching the body (radiation, deposits, hot air) it takes up;
-# 1.0 = unprotected. 0.05 is the lead's first value (a frag on the next tile
-# bills about 28 HP of heat; the calibration table is in docs/body_
-# temperature_impl_2026-11-17.md). Erik tunes it.
-heat_absorption = 0.05
+# 1.0 = unprotected. 0.1 is the lead's choice from the calibration table
+# (docs/body_temperature_impl_2026-11-17.md): a frag on the next tile bills
+# about 63 HP of heat on its 30 blast, which a full-health marine survives,
+# and standing at a furniture fire's edge bills 1.4 to 1.8 HP a second (at
+# 0.05 a fire did nothing). Erik tunes it.
+heat_absorption = 0.1
 stability = 1.0
 front_arc_deg = 120.0
 behind_arc_deg = 90.0
