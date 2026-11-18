@@ -306,6 +306,18 @@ def _annex_opening(lv):
     return next(o for o in lv.rooms.openings if (o.a, o.b) == (1, 3))
 
 
+def _annex_door(sim):
+    """The annex edge's door (``door_e2``), after opening the two ``door``
+    edges' doors (door_e0, door_e1: closed door entities since #215), so
+    rooms 0-1-2 stand joined as before and only the annex door is in play."""
+    from simulation.door_system import sweep_doors
+    for d in sim._doors:
+        if d.id in ("door_e0", "door_e1"):
+            d.want_open = True
+    sweep_doors(sim)
+    return next(d for d in sim._doors if d.id == "door_e2")
+
+
 @needs_bp
 def test_closing_a_door_entity_makes_its_opening_openable(tmp_path):
     """PROPERTY: an entity door's opening is passable while the door is
@@ -319,10 +331,10 @@ def test_closing_a_door_entity_makes_its_opening_openable(tmp_path):
     _plan, lv = _write_load(_graph("entity_door"), tmp_path)
     sim = _sim(lv)
     op = _annex_opening(lv)
+    door = _annex_door(sim)
     st = RG.opening_states(lv.rooms, sim.gmap, sim._doors, lv.wires)
     assert (st[op.id].passable, st[op.id].openable) == (True, False)
     assert (1, 3) in RG.joined_pairs(lv.rooms, sim.gmap)
-    door = next(d for d in sim._doors if d.id.startswith("door_e"))
     door.want_open = False
     sweep_doors(sim)
     st = RG.opening_states(lv.rooms, sim.gmap, sim._doors, lv.wires)
@@ -383,7 +395,7 @@ def test_a_hole_through_a_wall_joins_two_rooms_and_sealing_parts_them(
     from simulation.materials import MAT_STEEL
     _plan, lv = _write_load(_graph("entity_door"), tmp_path)
     sim = _sim(lv)
-    door = next(d for d in sim._doors if d.id.startswith("door_e"))
+    door = _annex_door(sim)
     door.want_open = False
     sweep_doors(sim)
     gm = sim.gmap

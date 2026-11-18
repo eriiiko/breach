@@ -1897,6 +1897,24 @@ def _door_entity(eid: str, tiles, orient: str, state: str) -> EntityInstance:
         authored_keys=_DOOR_KEYS)
 
 
+#: The id prefix of the door entity an EDGE emits (:func:`_build_doors`):
+#: an interior door no wire drives, which a unit opens with the use verb.
+EDGE_DOOR_PREFIX = "door_e"
+
+
+def edge_door_tiles(entities, tile_size_m: float = TILE_SIZE_M) -> list:
+    """The span tiles of every door entity an edge emitted (id
+    :data:`EDGE_DOOR_PREFIX`): the closed interior doors a walk gate passes
+    through (#215; a bot opens one with the use verb, #142). Airlock and
+    hull doors are not among them."""
+    from simulation.entities.door import base_span
+    out = []
+    for e in entities or ():
+        if e.class_name == "door" and str(e.id).startswith(EDGE_DOOR_PREFIX):
+            out += base_span(e.fields, tile_size_m)
+    return out
+
+
 def door_initial(spec: EdgeKind) -> str:
     """The initial state of an entity-door row's door, READ from what the
     row stamps (``MAT_DOOR_CLOSED`` closed, ``MAT_AIR`` open), so the CSV
@@ -1925,7 +1943,7 @@ def _build_doors(graph: ShipGraph, modes: dict | None = None
         if e.spec.entity != "door":
             continue
         orient = shared_wall(graph.rooms[e.a], graph.rooms[e.b])[0]
-        ents.append(_door_entity(f"door_e{i}", _opening_tiles(graph, e),
+        ents.append(_door_entity(f"{EDGE_DOOR_PREFIX}{i}", _opening_tiles(graph, e),
                                  orient, door_initial(e.spec)))
     for rm, orient, tiles, _beyond, state in _hull_doors(graph):
         ents.append(_door_entity(f"hull_door_r{rm.id}", tiles, orient,
@@ -2579,8 +2597,11 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
     # and one emitted CLOSED (the ``door`` / ``vented_door`` rows, #215) is
     # walked through too: a unit opens it with the use verb (the layered
     # bots do, #142) and the horde bashes it (a hull door is no edge).
+    # Without the graph (the tile structure alone) every closed door tile is
+    # walked through: which is an airlock's or an edge's the tiles cannot
+    # say, and a hull door leads only to vacuum, which the walk excludes.
+    walk = walk.copy()
     if graph is not None:
-        walk = walk.copy()
         for _i, al in _airlocks(graph):
             for (y, x) in al.outer:
                 walk[y, x] = True
@@ -2588,6 +2609,8 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
             if e.spec.entity == "door":
                 for (y, x) in _opening_tiles(graph, e):
                     walk[y, x] = True
+    else:
+        walk |= mat == MAT_DOOR_CLOSED
     ok = sliding_window_view(walk & ~vac, (fp, fp)).all(axis=(2, 3))
 
     def blocked(x, y):

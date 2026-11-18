@@ -201,7 +201,7 @@ def test_length_m_round_trips_through_canonical_quantization():
 def test_migrate_fixture_end_to_end(tmp_path):
     d = _make_fixture(tmp_path)
     pre = _bytes_of(d)
-    old_lvl = level_loader.load(str(d))
+    old_lvl = level_loader.load(str(d), allow_bare_painted_doors=True)
     assert old_lvl.entities == [] and len(old_lvl.lights) == 2
 
     plan = migrate_level(d, verbose=False)
@@ -343,7 +343,7 @@ def test_leak_guard_ported_closed_entity_door_is_fully_solid(tmp_path):
 
     # Pre-migration: the hybrid, for contrast (the sanctioned change's
     # "before" — walkable, flow-solid).
-    g0 = GameMap(level_loader.load(str(d)))
+    g0 = GameMap(level_loader.load(str(d), allow_bare_painted_doors=True))
     assert bool(g0.solid[6, 8]) and g0.permeability[6, 8] == 0.0
     assert g0.is_passable(6, 8)                    # the walkable hybrid
 

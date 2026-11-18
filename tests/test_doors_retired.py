@@ -29,16 +29,23 @@ from simulation.ruleset import ContinuousRealtime  # noqa: E402
 
 
 def _levels():
-    return sorted(p.parent.name for p in (ROOT / "levels").glob("*/level.toml"))
+    """Every level folder under levels/, plus the one tracked level outside
+    it (``prototypes/unhcr_vessel_2``, the F2 art level)."""
+    out = [str(p.parent) for p in sorted((ROOT / "levels").glob("*/level.toml"))]
+    proto = ROOT / "prototypes" / "unhcr_vessel_2"
+    if (proto / "level.toml").is_file():
+        out.append(str(proto))
+    return out
 
 
-@pytest.mark.parametrize("name", _levels())
-def test_no_level_in_the_repo_holds_a_bare_painted_door(name):
-    """Property: no level under levels/ carries a ``MAT_DOOR`` tile outside
+@pytest.mark.parametrize("path", _levels(), ids=lambda p: Path(p).name)
+def test_no_level_in_the_repo_holds_a_bare_painted_door(path):
+    """Property: no level in the repo carries a ``MAT_DOOR`` tile outside
     every door entity's span (read from the files themselves, the loader's
     refusal switched off so the check is the test's own). Breaks when a
     level with a painted door is added or a generator emits one again."""
-    lvl = level_loader.load(name, allow_bare_painted_doors=True)
+    name = path
+    lvl = level_loader.load(path, allow_bare_painted_doors=True)
     spans = set()
     for e in lvl.entities:
         if e.class_name == "door":

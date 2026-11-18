@@ -205,8 +205,9 @@ def _verb_level(variant):
     """Three rooms: A (x 1..31) | door 0 at x 32 | B (x 33..63) | the dead
     door at x 64 | C (x 65..93) | the hull door at x 94 | space. Odd
     variants move door 0 (another layout). #215: room C is cut by a wall at
-    y 20 with TWO doors one tile apart (x 70..72 and 74..76), so a unit
-    standing between them has both in reach (the use picks the faced one)."""
+    x 80 with TWO doors one tile apart (y 10..12 and 14..16), so a unit
+    standing west of the gap has both in reach (the use picks the faced one;
+    facing east is the exact tie, atan2 being odd in y)."""
     from level_loader import LevelData
     from simulation.materials import MAT_AIR, MAT_HULL
     h, w = 48, 96
@@ -220,21 +221,21 @@ def _verb_level(variant):
     tm[:, 95] = -1                       # space past the east hull
     tm[1:h - 1, 94] = MAT_HULL
     tm[4:7, 94] = MAT_AIR
-    tm[20, 65:94] = MAT_HULL             # #215: the two-door wall in room C
-    tm[20, 70:73] = MAT_AIR
-    tm[20, 74:77] = MAT_AIR
+    tm[1:h - 1, 80] = MAT_HULL           # #215: the two-door wall in room C
+    tm[10:13, 80] = MAT_AIR
+    tm[14:17, 80] = MAT_AIR
     ents = [_door("d0", 0, 32, dy0), _door("hull", 1, 94, 4), _door("dead", 2, 64, 40),
-            _door("pairA", 3, 70, 20, "h"), _door("pairB", 4, 74, 20, "h")]
+            _door("pairA", 3, 80, 10), _door("pairB", 4, 80, 14)]
     return LevelData(name=f"p64a_verbs{variant % 2}", version="3", path=Path("."),
                      tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."),
                      entities=ents), dy0
 
 
 EAST, WEST, SOUTH, NORTH = 0, PI_Q16, -PI_Q16 // 2, PI_Q16 // 2
-#: #215: the facings the unit between the two doors uses at (SOUTH is the
+#: #215: the facings the unit between the two doors uses at (EAST is the
 #: exact tie, so the scan order decides; either side of it the faced door).
-FACING_SWEEP = (SOUTH, SOUTH - PI_Q16 // 8, SOUTH + PI_Q16 // 8, SOUTH - PI_Q16 // 3,
-                SOUTH + PI_Q16 // 3, EAST, WEST, NORTH, SOUTH + 1, SOUTH - 1)
+FACING_SWEEP = (EAST, EAST - PI_Q16 // 8, EAST + PI_Q16 // 8, EAST - PI_Q16 // 3,
+                EAST + PI_Q16 // 3, NORTH, SOUTH, WEST, EAST + 1, EAST - 1)
 
 
 class VerbDriver:
@@ -319,7 +320,7 @@ class VerbDriver:
         # room C: the hull door's user
         a("u3", 91, 4, facing=EAST)
         # room C: between the two doors of the y-20 wall (#215, the faced one)
-        a("f0", 72, 17, facing=SOUTH)
+        a("f0", 77, 12, facing=EAST)
         # room A
         a("w0", 26, 8, facing=WEST)
         for i in range(4):                                # death / conversion

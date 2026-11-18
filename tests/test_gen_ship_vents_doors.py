@@ -240,8 +240,13 @@ def test_an_entity_door_edge_stamps_a_door_entity_and_bounds_its_rooms():
     g = _graph("entity_door")
     emb, reasons = _run(g)
     assert reasons == []
-    doors = [e for e in emb.entities if e.class_name == "door"]
+    # #215: the graph's other edges are ``door`` rows, each a CLOSED door
+    # entity of its own; the entity_door edge's is door_e2.
+    doors = [e for e in emb.entities if e.class_name == "door"
+             and g.edges[int(e.id[len(G.EDGE_DOOR_PREFIX):])].kind == "entity_door"]
     assert len(doors) == 1
+    assert all(e.fields["initial_state"] == "closed" for e in emb.entities
+               if e.class_name == "door" and e not in doors)
     opening = G._opening_tiles(g, g.edges[2])
     assert base_span(doors[0].fields, G.TILE_SIZE_M) == opening
     assert doors[0].fields["initial_state"] == G.ENTITY_DOOR_INITIAL
@@ -303,8 +308,9 @@ def test_an_airlock_edge_is_a_vestibule_two_doors_and_one_controller():
     for e in emb.entities:
         by_class.setdefault(e.class_name, []).append(e)
     assert len(by_class["airlock_controller"]) == 1
-    doors = {e.fields["initial_state"]: e for e in by_class["door"]}
-    assert len(by_class["door"]) == 2 and set(doors) == {"open", "closed"}
+    al_doors = [e for e in by_class["door"] if e.id.startswith("airlock_")]
+    doors = {e.fields["initial_state"]: e for e in al_doors}
+    assert len(al_doors) == 2 and set(doors) == {"open", "closed"}
     (_i, al), = G._airlocks(g)
     from simulation.entities.door import base_span
     assert base_span(doors["open"].fields, G.TILE_SIZE_M) == list(al.inner)

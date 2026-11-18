@@ -40,7 +40,7 @@ def test_materials_from_tilemap():
     assert mat.shape == lvl.tilemap.shape
     assert vac.shape == lvl.tilemap.shape
     n_hull   = int((mat == 1).sum())
-    n_door   = int((mat == 3).sum())
+    n_door   = int((mat == 7).sum())    # MAT_DOOR_CLOSED: its doors are entities (#215)
     n_vacuum = int(vac.sum())
     n_air    = int((mat == 0).sum())
     assert n_hull > 0, "expected some hull walls"

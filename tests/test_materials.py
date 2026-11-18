@@ -25,7 +25,7 @@ from config import CFG
 from level_loader import load as load_level
 from simulation.gamemap import GameMap
 from simulation.materials import (
-    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS,
+    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED, MAT_STEEL, MAT_GLASS,
     MAT_FURNITURE, MATERIAL_NAMES, MaterialTable, derive_thermal_mass_exp,
 )
 
@@ -97,8 +97,9 @@ def test_caches_match_table():
     g = GameMap(load_level("unhcr_vessel"))
     m = g.material
     tbl = g.materials
-    # Solid mask == old {HULL, WOOD, DOOR} behaviour for current set.
-    expected_wall = np.isin(m, [MAT_HULL, MAT_WOOD, MAT_DOOR])
+    # Solid mask == old {HULL, WOOD, DOOR} behaviour for current set (#215:
+    # the level's doors are closed door entities, MAT_DOOR_CLOSED).
+    expected_wall = np.isin(m, [MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED])
     assert np.array_equal(g.solid, expected_wall), "solid regressed"
     assert np.array_equal(g.flammable, (m == MAT_WOOD)), "flammable regressed"
     assert np.array_equal(g.flammable, tbl.flammable[m]), "flammable != table"

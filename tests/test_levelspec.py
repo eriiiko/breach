@@ -200,7 +200,8 @@ def test_the_realised_factors_agree_with_the_ship(plan, written):
     profile's scaling."""
     _base, lv = written
     rec, q = lv.levelgen, plan.quotient
-    loaded = SimpleNamespace(tilemap=lv.tilemap, spawn_rooms=lv.spawn_rooms)
+    loaded = SimpleNamespace(tilemap=lv.tilemap, spawn_rooms=lv.spawn_rooms,
+                             entities=lv.entities)
     path = L.bot_path(loaded)
     assert path and rec.spawn_distance == len(path) - 1
     zroom = next(r for r in lv.spawn_rooms if r.team == ZOMBIE_TEAM)
