@@ -641,3 +641,45 @@ def test_a_bot_opens_a_closed_door_on_its_path(tmp_path):
     assert uses, "USE never issued"
     assert door.state == DOOR_OPEN
     assert bot.tile_x > 21
+
+
+def test_a_bot_between_two_doors_opens_the_one_on_its_path(tmp_path):
+    """Property (#215: use flips the door the unit FACES among several in
+    reach): a bot whose way beyond a wall passes one of two closed doors one
+    tile apart opens that door and walks through it; the other door is never
+    opened. Breaks if the bot issues USE while the verb would flip the other
+    door (it must ask ``verb_gates.use_door`` first) or the verb ignores the
+    facing."""
+    import numpy as np
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    from test_horde_behaviours import _door_inst, _door_level
+    lvl = _door_level()
+    tm = lvl.tilemap
+    tm[8:11, 20] = 0                               # a second door's span
+    lvl.entities.append(_door_inst("d2", 1, 20, 8))
+    sim = Simulation(lvl, seed=1, breach_physics=bp,
+                     enable_recorder=False, ruleset=ContinuousRealtime())
+    sim.set_paused(False)
+    bot = sim.get_unit(sim.add_unit(Unit("B", x=8, y=6, team=0)))
+    foe = sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    sim.start_team_picture((0, 1))
+    opened = set()
+    bots = BotTeam(0)
+    crossed = None
+    for _ in range(900):
+        _know(bots, sim, foe)
+        bots.handle_frame(sim, None)
+        sim.step()
+        opened |= {d.id for d in sim._doors if d.state == DOOR_OPEN}
+        if crossed is None and bot.tile_x >= 19:
+            crossed = bot.tile_y
+        if bot.tile_x > 21:
+            break
+    assert bot.tile_x > 21, "the bot never got through"
+    assert len(opened) == 1, opened
+    door = next(d for d in sim._doors if d.id in opened)
+    rows = [t[0] for t in door.span]
+    assert min(rows) - bot.footprint < crossed <= max(rows), (crossed, rows)
+    other = next(d for d in sim._doors if d.id not in opened)
+    assert other.state == DOOR_CLOSED
+

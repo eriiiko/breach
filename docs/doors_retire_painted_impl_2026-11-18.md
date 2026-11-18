@@ -129,3 +129,29 @@ change the choice when two doors lie almost equally off its facing
 (reported, not closed).
 
 **Grilles.** None added.
+
+**Also migrated: `prototypes/unhcr_vessel_2`** (the one tracked level outside
+`levels/`, the F2 art level; missed by the levels-only census): 30 bare
+painted tiles, 8 closed doors, `--doors-only`. Its two tracked `.bak` files
+were overwritten by the tool's backup and restored from git (a finding: the
+tool's `.bak` step clobbers a tracked `.bak`).
+
+**The walk gates.** Two more gates walked the painted door's walkable tile:
+`gen_ship.validate` without a graph (the tiles alone: now every closed door
+tile is walked through, since the tiles cannot tell an airlock's from an
+edge's and a hull door leads only to vacuum) and `ship_layout.bot_path` (the
+recipe path's `bot_walkable` / `spawn_distance`: now it walks through the
+span of every door an edge emitted, `gen_ship.edge_door_tiles`, where a
+closed door still stands). Without them no recipe ship passed its gates.
+
+## 3. Measurements
+
+**Air and smoke do not move.** Each level's physics alone (no units; a
+smoke puff of 2.0 seeded in a 5x5 box), 240 ticks, the base tree's level vs
+this branch's, per-field hashes at ticks 60/120/180/240 of `atmosphere`,
+`temperature`, `gas_energy`, `smoke`, `wind_x`, `wind_y`, `fire`, `wall_hp`,
+`solid`: **bit-identical** on `ship_demo` and `unhcr_vessel` (the migrated
+levels: only the material plane differs, exactly the doorway tiles 3 -> 7)
+and on `playground` (an unchanged level). `[materials.door]` and
+`[materials.door_closed]` differ only in `mobility` (1000 vs 0), which no gas
+law reads. No grille was needed.
