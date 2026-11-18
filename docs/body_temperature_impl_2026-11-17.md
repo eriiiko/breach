@@ -413,3 +413,66 @@ not merged):
 - `tools/cuda_green.py` at the head that carries this doc, then
   `tests/test_class_p_level.py`: in the hand-over report (they run after
   this commit by design).
+
+## The one re-baseline, 2026-11-18
+
+Approved by Erik for the #215 stack and done ONCE (commit `b4a013fd`, pin
+values and their rationale comments only), after the old bots' door step
+(`2ce5b08b`) and a green `tools/cuda_green.py` at that head (62 passed).
+Four causes, together: (1) a thrown grenade bounces off walls; (2) every
+doorway is a closed entity door (painted doors retired, zombies bash doors,
+use flips the faced door); (3) body temperature and stress,
+`heat_absorption` 0.1 at the frag's 10 MJ; (4) the old bots' (`bots_v1`) one
+door step (Erik's ruling: their freeze stands with this one exception).
+
+**The door step** (`control_bots_v1.py`): the route may pass a closed,
+non-hull, unwired door (`control_bots.openable_door_tiles`, OR-ed into the
+old passable grid) and the door on the route is USEd through the layered
+bots' own step (`control_bots.open_door_on_way`, factored out of `BotTeam`
+unchanged: the shipped `bots` match plays bit for bit the same through it).
+The `bots_v1` match after it: team 0 wins at tick 272; deaths marine 4
+(team 1) at 208, zombies 9 and 8 at 215 and 229, marine 5 (team 1) at 262,
+marines 0 and 1 (team 0) at 267 and 268, team 1's 6 and 7 turned at 271 and
+272; damage by cause bullet 644 HP (61 hits), heat 202 (96), melee 127 (3);
+six doors opened, no door closed again: `door_e59` 17, `door_e58` 19,
+`door_e33` 121, `door_e32` 124, `door_e55` 172, `door_e54` 175 (three mirror
+pairs, one per team each).
+
+**Determinism**: every pinned play twice, in two processes (a read-only
+pytest plugin around `run_match`, plus `bots` / `bots_v1` played twice in one
+process): identical outcome, ticks, field digest, tick digest and unit
+stream in all of them.
+
+**Attribution**: causes (1)-(3) are each proved in their as-built docs (the
+first divergence of each pin is a bounce, a door, a heat bill). Cause (4):
+with the door step switched off in-process, `bots_v1` plays the doors
+patch's shut-in draw at 7200, field `fae949e0` (section 4 of
+`docs/doors_retire_painted_impl_2026-11-18.md`), with no shot and no door
+opened. The box sub-pins move their unit stream only (outcome, ticks and
+field unchanged); sole cause the two new unit-record columns: with
+`body_temp_q` and `stress_q` dropped from `unit_schema.digest_record`
+in-process the three old streams come back bit for bit. Nothing moved that
+these four do not explain.
+
+ship_demo seed 1 (old = the pin on main; survivors are this tree's: roster
+slots per team, zombies by slot, plus turned marines; the old pins record no
+survivors):
+
+| pin | old | new | survivors (new) | field | tick | unit stream |
+|---|---|---|---|---|---|---|
+| `test_zombie_control` `_PRE_122_SHIP_DEMO` (`bots`) | team 0 wins 2570 | team 0 wins 1349 | team 0 slot 3 | `3f82af18` -> `69dcf3b3` | `e1a9413a` -> `8c843ee3` | `8548eb1e` -> `19d7b859` |
+| `test_bots_v1` `_PRE_G8P_SHIP_DEMO` (`bots_v1`) | draw 7200 | team 0 wins 272 | team 0 slots 2, 3; zombies 2, 3; 2 turned | `ab8d586e` -> `1b02dd5d` | `49836c00` -> `8549068b` | `1eb5ec49` -> `a9184a10` |
+| `test_exposure` `_PRE_G4P_SHIP_DEMO` (k_expose 0) | draw 7200 | team 0 wins 276 | team 0 slots 1, 2, 3; zombies 2, 3; 2 turned | `ab8d586e` -> `d463ec53` | `e5088875` -> `2ee6ba63` | `7e53f712` -> `2344d22f` |
+| `test_grenade_kinds` `_PRE_G3P_SHIP_DEMO` (no wind-up) | team 1 wins 240 | team 1 wins 337 | team 1 slot 0 | `6840efc1` -> `f091832f` | `37d54d7a` -> `f05ce73d` | `2bd1812d` -> `6d3f0fb2` |
+| `test_horde_behaviours` `_STAGE1_SHIP_DEMO` (behaviours off) | team 1 wins 255 | team 1 wins 348 | team 1 slot 3 | `e71707b9` -> `71e043e0` | `5fb9a9f6` -> `eb45f863` | `fe0be81e` -> `915a9b55` |
+| `test_turn_rate` `_PRE_G1P_SHIP_DEMO` (half a turn per tick) | team 1 wins 244 | team 0 wins 259 | team 0 slots 2, 3; zombies 2, 3 | `5de0f68a` -> `abbab43a` | `a1b321c2` -> `dce8088a` | `437379b5` -> `5f261ffa` |
+| `test_turning_law` `_RE_PIN_1_SHIP_DEMO` (unlimited accel, inputs off) | team 1 wins 240 | team 0 wins 231 | team 0 slot 3; zombies 2, 3 | `7d942b18` -> `94b7141a` | `7cbd7ba6` -> `56f51734` | `a0ddc32f` -> `feeae05c` |
+| `test_unit_impulse` `_RE_PIN_1_SHIP_DEMO` (inputs off) | draw 7200 | team 0 wins 310 | team 0 slot 3 | `cfa02a30` -> `f0270fba` | `315b15b9` -> `a01e20bf` | `d6c01957` -> `2449468f` |
+
+The box (unit stream only; outcome, ticks and field unchanged):
+
+| pin | result | field | unit stream |
+|---|---|---|---|
+| `test_horde_behaviours` `_STAGE1_BOX` | team 1 wins 294 | `ca6a1f28` | `12cb16f7` -> `6b0081cc` |
+| `test_turning_law` `_RE_PIN_1_BOX` | team 1 wins 231 | `2cf3e848` | `b608c3a7` -> `b7ff32a4` |
+| `test_unit_impulse` `_RE_PIN_1_BOX` | team 1 wins 231 | `2cf3e848` | `3a6b2309` -> `4bf0c3eb` |
