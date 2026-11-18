@@ -675,7 +675,12 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # in either tree. No field digest version bump: no plane, dtype or currency
 # changed (the columns are absence-transparent unit rows).
 # (was 4a13fc72353f2686935f1f5397922df533d166fbc436096534dfa3a7c4171fab)
-GOLDEN_AGGREGATE = "3246b75605899eef2eda52d880f7803bc913f85c25c395f194628a2d9f6b80fe"
+# The same, once more, after Erik's ruling of 2026-11-18 (the body's
+# protection, env-profile heat_absorption 0.05, scales what reaches it): the
+# body drifts a twentieth as far, so only __unit_state__'s 30 lines move
+# again against the base file (3246b756 on the first version, unreleased);
+# every gmap field line and every other unit sub-hash still byte-identical.
+GOLDEN_AGGREGATE = "cf3c7693a6ae4fafdf1590b45fe7c27d1f4984898dd1856de49c53fb48b7f3de"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
