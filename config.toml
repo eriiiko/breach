@@ -5035,12 +5035,17 @@ fear_temp = 60.0
 # DOOR BASHING: a closed door (not a hull door: none whose far side is space)
 # counts as passable in the field; a zombie whose step it blocks strikes it at
 # the bite's cadence (attack_cooldown_seconds) for door_bash_damage of the
-# door tile's hp through the wall-chew seam -- [materials.door_closed] hp 40
-# / 2 = 20 strikes at the 2.2 s bite cadence: a door holds one zombie ~42 s
-# (19 x 53 ticks; Erik's zombie bite balance, 2026-11-12). Each strike is a
+# door tile's hp through the wall-chew seam (the first tile reaching 0 brings
+# the whole door down at the slot-9e sweep). #215 (the lead's first value,
+# 2026-11-18; Erik tunes it): [materials.door_closed] hp 40 / 4 = 10 strikes,
+# the first at once and nine more at the 53-tick bite cadence: ONE zombie
+# breaks an interior door in 477 ticks = 19.9 s. Zombies striking the SAME
+# tile add up (k of them ~ 20 / k s); each strikes the first door tile its
+# blocked step touches, so zombies on different tiles of one door do not
+# (the door falls with its first tile). Was 2.0 (~42 s). Each strike is a
 # noise of bash_loudness_m.
 bash_doors = true
-door_bash_damage = 2.0
+door_bash_damage = 4.0
 bash_loudness_m = 12.0
 # SPRINT: an awake zombie with a line of sight to a living prey within
 # sprint_radius_m walks at the [speeds] zombie_sprint_mps cadence (unlimited)

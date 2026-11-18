@@ -557,6 +557,33 @@ def test_a_bashed_door_breaks_after_the_designed_strikes_each_a_noise(
     assert z.tile_x > 21                           # through the doorway
 
 
+def test_one_hunting_zombie_breaks_an_interior_door_in_about_20_seconds(
+        monkeypatch):
+    """Property (#215, the lead's first value; Erik tunes it): with the
+    config's ``door_bash_damage``, ONE awake zombie hunting a marine beyond a
+    closed interior door brings the door down 18..22 s after its first
+    strike (the design: 10 strikes at the 53-tick bite cadence, 19.9 s).
+    Breaks if the damage, the door's hp or the cadence moves the time out of
+    that band (a deliberate retune moves this band with it)."""
+    _only(monkeypatch, "bash_doors")
+    sim = _sim(_door_level(), physics=False)
+    m = sim.get_unit(sim.add_unit(Unit("M", x=32, y=5, team=0)))
+    m.current_hp = 1e9
+    z = sim.get_unit(sim.add_unit(Unit("Z", x=10, y=5, team=ZOMBIE_TEAM)))
+    z.zombie_activated = True
+    door = sim._doors[0]
+    first = None
+    for _ in range(3000):
+        sim.step()
+        if first is None and sim.gmap.noise_log:
+            first = sim.tick
+        if not door.alive:
+            break
+    assert first is not None and not door.alive
+    seconds = (sim.tick - first) / CFG.clock.ticks_per_second
+    assert 18.0 <= seconds <= 22.0, seconds
+
+
 def test_a_hull_door_is_never_bashed(monkeypatch):
     """Property: a door whose far side is space is not a bashable tile and
     a zombie whose prey stands beyond it never strikes it (its hp holds,

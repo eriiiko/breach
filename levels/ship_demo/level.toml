@@ -431,6 +431,546 @@ role = "return"
 duct = "duct_main"
 q_circ = 16.0
 
+[[entity]]
+id = "door_e0"
+class = "door"
+x = 20
+y = 11
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e1"
+class = "door"
+x = 76
+y = 11
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e2"
+class = "door"
+x = 21
+y = 19
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e3"
+class = "door"
+x = 75
+y = 19
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e4"
+class = "door"
+x = 40
+y = 60
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e5"
+class = "door"
+x = 59
+y = 60
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e6"
+class = "door"
+x = 14
+y = 45
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e7"
+class = "door"
+x = 85
+y = 45
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e8"
+class = "door"
+x = 31
+y = 53
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e9"
+class = "door"
+x = 68
+y = 53
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e10"
+class = "door"
+x = 35
+y = 19
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e11"
+class = "door"
+x = 61
+y = 19
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e12"
+class = "door"
+x = 33
+y = 50
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e13"
+class = "door"
+x = 63
+y = 50
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e14"
+class = "door"
+x = 35
+y = 11
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e15"
+class = "door"
+x = 61
+y = 11
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e16"
+class = "door"
+x = 25
+y = 34
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e17"
+class = "door"
+x = 71
+y = 34
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e18"
+class = "door"
+x = 31
+y = 60
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e19"
+class = "door"
+x = 68
+y = 60
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e20"
+class = "door"
+x = 34
+y = 34
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e21"
+class = "door"
+x = 62
+y = 34
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e22"
+class = "door"
+x = 16
+y = 57
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e23"
+class = "door"
+x = 80
+y = 57
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e24"
+class = "door"
+x = 26
+y = 58
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e25"
+class = "door"
+x = 70
+y = 58
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e26"
+class = "door"
+x = 14
+y = 52
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e27"
+class = "door"
+x = 85
+y = 52
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e28"
+class = "door"
+x = 22
+y = 45
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e29"
+class = "door"
+x = 77
+y = 45
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e30"
+class = "door"
+x = 5
+y = 16
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e31"
+class = "door"
+x = 91
+y = 16
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e32"
+class = "door"
+x = 31
+y = 22
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e33"
+class = "door"
+x = 68
+y = 22
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e34"
+class = "door"
+x = 40
+y = 6
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e35"
+class = "door"
+x = 59
+y = 6
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e36"
+class = "door"
+x = 48
+y = 37
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e37"
+class = "door"
+x = 48
+y = 17
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e38"
+class = "door"
+x = 33
+y = 6
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e39"
+class = "door"
+x = 66
+y = 6
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e40"
+class = "door"
+x = 8
+y = 31
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e41"
+class = "door"
+x = 88
+y = 31
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e42"
+class = "door"
+x = 22
+y = 36
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e43"
+class = "door"
+x = 77
+y = 36
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e44"
+class = "door"
+x = 23
+y = 60
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e45"
+class = "door"
+x = 76
+y = 60
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e46"
+class = "door"
+x = 26
+y = 50
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e47"
+class = "door"
+x = 70
+y = 50
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e48"
+class = "door"
+x = 34
+y = 27
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e49"
+class = "door"
+x = 62
+y = 27
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e50"
+class = "door"
+x = 14
+y = 59
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e51"
+class = "door"
+x = 85
+y = 59
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e52"
+class = "door"
+x = 17
+y = 34
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e53"
+class = "door"
+x = 79
+y = 34
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e54"
+class = "door"
+x = 40
+y = 21
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e55"
+class = "door"
+x = 59
+y = 21
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e56"
+class = "door"
+x = 40
+y = 29
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e57"
+class = "door"
+x = 59
+y = 29
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e58"
+class = "door"
+x = 14
+y = 25
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_e59"
+class = "door"
+x = 85
+y = 25
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
 [[room]]
 id = 0
 x = 4

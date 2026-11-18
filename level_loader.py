@@ -1183,8 +1183,43 @@ class LevelData:
         return int(self.tilemap.shape[1])
 
 
-def load(level_name: str, levels_dir: str = "levels") -> LevelData:
-    """Load a level by folder name. Raises ValueError on validation failure."""
+def refuse_bare_painted_doors(tilemap: np.ndarray, entities: list,
+                              tile_size_m: float, where) -> None:
+    """THE refusal of the LEGACY painted door (#215, Erik 2026-11-18: the
+    painted doors are retired completely): a ``MAT_DOOR`` tile under no door
+    entity's span is refused by name, so the legacy kind cannot return. The
+    id stays in the material table (ids never move) and a door's span may
+    still sit on it (the door's load stamp overrides it, a6 doors design
+    §4.2); only the BARE use is refused. Spans at base resolution (a level on
+    disk is never ``--res``-scaled). A level that holds one is migrated with
+    ``tools/migrate_level_entities.py --doors-only`` (its read passes
+    ``allow_bare_painted_doors=True``)."""
+    from simulation.entities.door import runtime_span
+    from simulation.materials import MAT_DOOR
+    bare = np.argwhere(np.asarray(tilemap) == MAT_DOOR)
+    if not len(bare):
+        return
+    spans = set()
+    for e in entities:
+        if e.class_name == "door":
+            spans.update(runtime_span(e.fields, tile_size_m, 1,
+                                      context=f"door entity '{e.id}'"))
+    left = [(int(y), int(x)) for y, x in bare if (int(y), int(x)) not in spans]
+    if left:
+        raise ValueError(
+            f"{where}: {len(left)} bare painted door tile(s) (MAT_DOOR under "
+            f"no door entity's span), first at (row, col) {left[0]} -- the "
+            f"legacy painted door is retired (#215): every doorway is a door "
+            f"entity. Migrate the level with tools/migrate_level_entities.py "
+            f"--doors-only.")
+
+
+def load(level_name: str, levels_dir: str = "levels", *,
+         allow_bare_painted_doors: bool = False) -> LevelData:
+    """Load a level by folder name. Raises ValueError on validation failure.
+    ``allow_bare_painted_doors``: the migration tool's read only (a level
+    with a bare painted door is otherwise refused,
+    :func:`refuse_bare_painted_doors`)."""
     here = Path(__file__).resolve().parent
     base = (here / levels_dir / level_name).resolve()
     if not base.is_dir():
@@ -1393,6 +1428,8 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     # The alias contract: entity lights feed the SAME downstream render
     # path as [[light]] blocks — one LightEntry list either way.
     lights += [_light_entry_from_entity(e) for e in entity_lights]
+    if not allow_bare_painted_doors:
+        refuse_bare_painted_doors(tilemap, entities, tile_size_m, toml_path)
 
     # ---- [water] initial state (engine/15 §2.3, P5) ----------------------
     water_depth_q = _parse_water_table(raw, base, toml_path, tilemap)
