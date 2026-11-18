@@ -42,18 +42,12 @@ are overwritten at the next step, so everything the trainer keeps is copied
 out: `LearningRows.gather` ends in `np.copyto` (`agents/batch.py:131`). In
 the tests a stand-in environment (`agents/standin.py`) serves the same names.
 
-**The two networks.** Both are built from the same code with their own
-weights (`agents/network.py:281-334`, class `Body`): a reader of the
-soldier's own vector, one reader per kind of list entry, two attention
-layers over the list, two map readers of four convolutions each, and a join.
-The soldier's network adds the memory (a GRU cell, section 5) and the five
-heads; the value network reads the full view instead of the soldier's own
-list and ends in one output per reward group (`agents/network.py:519-550`).
-Sizes at full width: the soldier 1 770 480 weights, the value network
-1 174 701 (plan, "As built (2a)"). The widths are `NetSpec`
-(`agents/spec.py:32-49`); every size of the game's (list length, number of
-map planes, number of hand verbs) is asked from the game's spec tables by
-`agents/sizes.py`, never typed.
+**The two networks** share code (`Body`, `agents/network.py:281-334`) but
+no weights. The soldier's adds the memory (section 5) and the five heads;
+the value network reads the full view and ends in one output per reward
+group (`agents/network.py:519-550`). At full width they have 1 770 480 and
+1 174 701 weights (plan, "As built (2a)"). Every size of the game's is
+asked from its spec tables by `agents/sizes.py`, never typed.
 
 **Before anything runs**, `check_run` refuses by name what this trainer
 cannot train (`agents/trainer.py:65-98`): a reward that is not a named
@@ -125,13 +119,9 @@ is the game's own rule, `action_spec_v1.heads_used`, batched here
 (`agents/choosing.py:82-87`). `draw` and `evaluate` are the same walk; one
 picks by drawing, the other takes given choices (`agents/choosing.py:164-180`).
 That is why acting and learning cannot disagree about a probability, and the
-live check (section 4) proves they do not.
-
-**A near-even start.** The last layer of every head starts at 0.01 of
-PyTorch's default size (`agents/network.py:72`, applied at 428-433), so a
-fresh network gives every legal option about the same chance (2b note,
-section 6). Learning starts from "undecided", not from an accident of the
-random weights.
+live check (section 4) proves they do not. Every head's last layer starts at
+0.01 of PyTorch's default size (`agents/network.py:72`, applied at 428-433),
+so a fresh soldier gives every legal option about the same chance.
 
 **What is stored per decision, and why exactly that** (`agents/batch.py:11-40`,
 arrays at 174-201):
@@ -159,16 +149,12 @@ by the environment too, but they are never stored, drawn for or graded: a
 grade for a choice that had no effect would be pure noise (rule in
 `.claude/rules/agents.md`, "Stored decision and batch").
 
-**The weights' version.** When a round's collecting starts, the collector
-writes the batch's header: the version of the weights it played with, the
-run file's and the training file's sha256, the build id
-(`agents/collector.py:272`; fields at `agents/batch.py:83`). The learner
-refuses a batch whose header differs from its own, naming the field
-(`agents/learner.py:296`, `agents/batch.py:213-224`). In rung 2 both sit in
-one process, so this can only fire on a fault; it is what will let a later
-form spread collecting over several PCs and still know which play belongs
-to which weights. `learn` raises the version by one
-(`agents/learner.py:422`).
+**The weights' version.** The collector writes a header on the batch (the
+weights' version it played with, both files' sha256, the build id:
+`agents/collector.py:272`), and the learner refuses a batch whose header
+differs from its own (`agents/learner.py:296`). In one process this can
+only fire on a fault; it is what will let collecting spread over several
+PCs later. `learn` raises the version by one (`agents/learner.py:422`).
 
 ## 3. Grading
 
@@ -257,8 +243,9 @@ piece, the upward pushes and the downward pushes add up to zero.
 **The value scale.** The value network's last layer gives a normalised
 estimate; the real one is `spread × normalised + mean`, per group
 (`agents/value_scale.py:59-66`). The reason: the outcome group pays ±10 at a
-match's end, own pays a few tenths, and two groups pay nothing at all. A
-network learns best when what it predicts is near size 1. Each round the
+match's end, own pays fractions of a point (health taken, +0.5 a kill:
+design 4.3), and in rung 2 two groups pay almost nothing. A network learns
+best when what it predicts is near size 1. Each round the
 order is fixed (`agents/learner.py:306-324`): grade with the scale as it
 was; move the scale toward this batch's targets
 (`agents/value_scale.py:81-88`); learn on targets normalised with the new
@@ -509,6 +496,176 @@ The reading in the note: no fault and no stopped learner, but the noise
 case. Reward keeps and sharpens a memory; from a start that ignores the cue,
 the signal per batch is too weak and the steps too small to find one. The
 three tests that need `recall12` to pass are skipped by name
-(`MEMORY_FINDING` in `agents/tests/test_tasks.py`), not loosened. For the
-ladder this means: a memory is expected to come from the copy of the bots,
-and reward to keep it. The range of 2c was trained with the memory off.
+(`MEMORY_FINDING` in `agents/tests/test_tasks.py:154`), not loosened. The
+finding sits well with rung 2's plan of starting from a copy of the bots
+(a taught start that reward then keeps); what changes next (a larger
+budget, another task shape, the trainer's numbers as a sweep) is the lead's
+call (2d note, section 8c). The range of 2c was trained with the memory off.
+
+## 6. Saving and resuming
+
+`agents/saved.py` is the one writer and reader of a run's state. A save is
+one `torch.save` of plain tables, read back with `weights_only` (nothing but
+tensors, numbers, strings, lists and dicts: `agents/saved.py:253-255`), and
+written atomically: the bytes go to a temporary name, are flushed to the
+disk, and only then renamed over the old file, so a kill during a save
+leaves the previous file whole (`agents/saved.py:231-242`). The run script
+writes `last.pt` every `save_every` = 10 rounds and at the end, and keeps
+`round_<n>.pt` every `keep_every` rounds, 0 meaning none
+(`agents/settings.py:89-90`; `agents/run.py:371-377`).
+
+**What a saved run holds** (`agents/saved.py:184-220`): both networks'
+weights; what each fits (its record) and the widths; the learner's state
+(both Adams, the value scale with its `rounds`, the shuffling generator,
+the round and the weights' version); the collector's drawing generator and
+its decision count; the counters; the settings; the three spec names; the
+sha256 of the run file and the training file, the build id and the commit;
+the training manifest; and what the run was started from (`"nothing"`, or
+the file it was resumed from, chained back). Which attribute of the
+trainer, learner, collector and scale is saved, and why each other one is
+not, is a table (`agents/saved.py:86-116`) that a test holds complete.
+
+**What a resume restores** (`agents/saved.py:305-332`): everything the
+learner owns, to the bit on the processor; the step size continues at the
+plan's value for the rounds done. **What it does not**: the matches in
+flight. Every match starts again, and with the memory on every memory is
+zero (`agents/saved.py:26-31`). So a resumed run is not the unbroken one,
+and the first line of the curve after a resume says so
+(`resumed_from`, `matches_restarted`: `agents/run.py:354-355`).
+
+**What a resume refuses, by name** (`agents/saved.py:258-302`): a file of
+another format; a network record or widths that differ; another
+observation, action or reward spec; a run file or training file whose
+sha256 differs from the folder's copies; any changed field of the training
+manifest (the levels' hash among them) except the commit and the "dirty"
+flag; and a changed build id or commit, unless `--allow-code-change` is
+given, which is then written into the curve and into every later save. A
+run that cannot resume starts again; a refusal is never loosened.
+
+One finding of 2d.2 worth knowing: Adam keeps the tensors it is handed and
+steps them in place, so two trainers restored from one loaded file shared
+their moments and drifted apart after one round. `restore` now copies the
+learner's tables first (`agents/saved.py:313-316`; 2d note, section 15a).
+
+A soldier alone, as an opponent or a player needs it, is written by
+`export_soldier` and read by `load_soldier`, which refuses a soldier that
+does not fit (`agents/saved.py:338-368`).
+
+## 7. How to read a run's report
+
+`agents/run.py` appends one line of JSON per round to `curve.jsonl`
+(`agents/run.py:100-215`) and prints a short line to the console
+(`:416-422`). `agents/plot_curve.py` draws the figures from the file. The
+numbers worth reading, in the order to read them:
+
+| field | what it is | healthy | unhealthy |
+|---|---|---|---|
+| `live` (`max_logp_gap`, `max_memory_gap`) | the live check's measured gaps | far under 1e-4. 2c: at most 4.8e-6 over 360 rounds (2c report, 6); memory clause 0 to 3e-7 on correct runs (2d note, 8a) | the run stops by itself; the line carries `stopped` |
+| `masked_choices` | masked choices sent on driven living rows | 0, always | anything else stops the run |
+| `outcomes`, `per_level`, `reward_per_match` | how the round's ended matches ended, and what they paid | rises in steps. 2c: the six rooms learnt one after another, each as a sharp step (2c report, 2) | flat from the start: the soldier cannot see or do what the task needs, or the reward is too far away (lesson 0, 11) |
+| `explained` | per group, the share of the targets' spread the value network explained before this round's passes, 1 − var(target − v) / var(target) (`agents/learner.py:128-140`); `null` for a group whose pay does not vary | 2c: nothing at first, 0.4 to 0.7 by round 10, over 0.94 from round 50 (2c report, 6) | stays near 0: the grades are noise |
+| `variety_heads` | per head, its variety over the decisions where it counted | starts above 0.99 (2b note, 6), falls slowly | falls off a cliff: one answer locked in early (see below) |
+| `hand_verbs`, `trigger_share`, `aim_on_unit_share` | what the soldier chooses | the verbs the task needs grow | a verb dying out that should not |
+| `distances`, `stopped_early`, `soldier_steps` | how far each piece had moved the policy; where the early stop cut | a few stops. 2c: 51 of 360 rounds stopped, mean 15.3 of 16 steps (2c report, 6) | stopping at the first pieces every round: steps too large. Far under 0.02 with no rise in the curve: steps too small for the noise (the memory finding: 0.001 a round, 2d note 8c) |
+| `clipped` | share of decisions whose ratio left 0.8 to 1.2 | no measured reference yet in the project's documents | |
+| `scale_spread` | the value scale's spread per group | follows the size of the pay; an always-0 group sits at the floor 0.01 | |
+| `group_sizes` | mean size of each group's pay per decision | 2c late: outcome 0.74, own 0.11 (2c report, 6) | a weight-0 group much larger than the paid ones is worth a look |
+| `seconds` | where the round's time went | 2c: 54 % waiting for the game, 35 % learning (2c report, 3) | |
+
+Two cautions. `policy_loss` includes the variety term and is measured
+against grades that are re-centred on every piece, so it does not fall as a
+run improves; it is not a progress measure. `explained` compares the value
+network with targets that are built from its own estimates (target = grade
++ v), so it says how well it predicts the blended return, not the raw
+return.
+
+**The cases the project has already met.**
+
+- **The sooner-paying answer crowds out the other.** In 2b's "argument"
+  task, while a cue named the verb wanted, "nothing" (which needs no
+  argument) was chosen on 96 % of its own cues by round 60 while plant and
+  throw fell to 10 % of theirs; with "nothing" unpaid, plant (one easy
+  argument) did the same to throw, 3 % by round 60, and one seed of three
+  never came back in 300 rounds (plan, "As built (2b)"). In a report this
+  shows as one verb's count dying out in `hand_verbs` and the hand's
+  variety falling. It is how this kind of trainer behaves from a near-even
+  start, and it is why rung 2 starts from the copy. The first number to
+  sweep then is the variety weight (same source).
+- **The value scale's first move** (section 3). While the first move was
+  still corrected, the "scale" task sat at a random player's score for 300
+  rounds with every check silent (plan, "As built (2b)"): a fault of the
+  trainer that raised no alarm. It is fixed; it is listed here because a
+  flat curve was the only sign it gave. In a real run the related number to
+  glance at is `scale_spread` after round 1: it is the first batch's own
+  spread, and the value network starts from there.
+- **The memory finding** (section 5). It looks like a healthy run that
+  does not learn: live check silent, no early stops, distances tiny,
+  variety of the paid head falling while the right answer's chance stays at
+  a quarter (the soldier grows sure of a cue-blind direction: 2d note, 8c).
+  A flat curve with a falling variety is a soldier becoming sure of the
+  wrong thing.
+- **The soldier finds a hole in the game.** In 2c the corner room was
+  solved by throwing a frag through two walls, because a thrown grenade
+  flies to its landing point and nothing on the way is asked (2c report,
+  7). The curve looked like ordinary learning. Only a watched match shows
+  this; a replay is worth more than any curve (lesson 0, 11).
+
+## 8. The settings you are most likely to be asked about
+
+All live in `agents/settings.py` and reach a run only through its training
+file (`agents/training_file.py`: `[train]`, `[weights]`, `[stop]`, `[save]`,
+`[network]`); an unknown key is refused.
+
+| setting | default (`agents/settings.py`) | what turning it up does |
+|---|---|---|
+| `planned_rounds` | none, every run says it (`:34`) | the step size falls more slowly; it must match the run's real length |
+| `decisions` | 128 per match per round (`:36`) | larger batches, fewer and calmer updates; with the memory on, a whole number of stretches |
+| `gamma` (the discount) | 0.99 (`:38`); the duel's is planned at 0.995 | the soldier looks further ahead: 100 decisions at 0.99, 200 at 0.995; the value network's job gets harder |
+| `lam` | 0.95 (`:40`) | grades lean on the real rewards (less bias, more noise) |
+| `clip` | 0.2 (`:42`) | each decision may move further per batch; faster, riskier |
+| `passes` | 4 (`:44`) | more use of each batch, more risk of moving off it; the early stop limits it |
+| `max_distance` | 0.02 (`:47`) | the policy may move further per round before the early stop |
+| `step_size` | 3e-4 (`:53`) | larger steps for both networks |
+| `variety` | 0.01 per counted head (`:56`) | the soldier stays undecided longer; the first sweep against crowding out |
+| `max_grad_norm` | 0.5 (`:58`) | larger single steps allowed |
+| `weights` | outcome 1, own 1, team 0, friendly fire 0, order 0 (`:21-22`) | what the soldier is graded on; the value network learns all five whatever they are |
+| `stretch` | 16 (`:73`) | the memory can learn to hold longer (one stretch); more card memory and slower replay |
+| `value_first_rounds` | 0 (`:78`) | more rounds in which only the value network learns; for a soldier that starts good |
+| `wall_hours` | none (`:85`) | a later wall stop; it never stretches the step-size plan |
+| `[network] memory` | required in the file (`agents/training_file.py:53`) | switches the soldier's memory on |
+
+## Words
+
+| word | meaning in our code |
+|---|---|
+| row | one roster place of one team in one match |
+| decision | one row at one time step |
+| round | one collect, one learn, one hand-over |
+| batch | one round's stored decisions, `(T, R, ...)` |
+| learning team | a team the run file puts on `policy`; only its rows are stored |
+| value row | a row in its match whose story has not ended; the value network learns from it |
+| policy row | a value row with a living soldier; its choice is graded |
+| grade | what followed minus what was expected (lesson 0's advantage), per decision |
+| value target | the blended return the value network learns toward |
+| value scale | the per-group mean and spread that keep the targets near size 1 |
+| pass, piece, lump | one shuffle of the batch; one step's worth of decisions; a slice of a piece |
+| ratio | the stored choice's probability now over then |
+| distance | how far the policy has moved this round, an estimate of the divergence |
+| variety | a head's entropy as a share of its most (lesson 0's entropy) |
+| live check | the round's proof that acting and learning agree |
+| stretch | at most 16 consecutive decisions of one row, replayed in order |
+| weights' version | the counter that names which weights played a batch |
+
+## Sources
+
+The code on `main` at `d87497fc`. The design
+`docs/rl_agent_rung2_design_2026-11-14.md` (section 4); the plan
+`docs/rl_agent_rung2_plan_2026-11-15.md` (section 4, "As built"); the notes
+`docs/rl_agent_rung2_note_2b_2026-11-15.md`,
+`docs/rl_agent_rung2_note_2c_2026-11-17.md`,
+`docs/rl_agent_rung2_note_2d_2026-11-17.md`; the report
+`docs/rl_agent_rung2_report_2c_2026-11-17.md`; `.claude/rules/agents.md`.
+Papers named from the code's own headers: Schulman et al. 2016
+(generalised advantage estimation, named in lesson 0); van Hasselt, Guez,
+Hessel, Mnih, Silver 2016 (PopArt, `agents/value_scale.py:3-4`); Tallec and
+Ollivier 2018 (the spread of time scales, `agents/network.py:80`).
