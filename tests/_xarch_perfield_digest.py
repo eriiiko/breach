@@ -660,7 +660,22 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # 65536) and equal field digests over ship_demo bots / bots_v1, the #122 box,
 # the scripted arena, a one-phase WEGO and a TwoPhaseWEGO scenario).
 # (was 3646fd0dd0f8b5b9d1a40b520d41905f99a56ecd7a839f5ed4899546e3df1e28)
-GOLDEN_AGGREGATE = "4a13fc72353f2686935f1f5397922df533d166fbc436096534dfa3a7c4171fab"
+#
+# 2026-11-18 -- #215 BODY TEMPERATURE AND STRESS (docs/body_temperature_
+# design_2026-11-17.md, AGREED; as built docs/body_temperature_impl_2026-11-
+# 17.md): two unit-schema rows, `body_temp_q` (hashed while it differs from
+# ambient) and `stress_q` (while non-zero). The canonical marine's body
+# follows the air of its footprint, which the scenario's pulse moves off
+# ambient, so `body_temp_q` enters the unit record. A RE-BASELINE OF THE UNIT
+# HASH, NOT OF THE FIELDS: the per-field files of the base (215-grenade-bounce
+# 07b13c0c + main 7f7d9e30: 4a13fc72..., the golden) and of this tree are
+# byte-identical on EVERY gmap field line and on __unit_hp__, __unit_facing__,
+# __unit_pos__, __unit_life_events__ and __unit_status__ over all 30 ticks;
+# MOVED only __unit_state__ (30 lines). The marine takes no heat damage here
+# in either tree. No field digest version bump: no plane, dtype or currency
+# changed (the columns are absence-transparent unit rows).
+# (was 4a13fc72353f2686935f1f5397922df533d166fbc436096534dfa3a7c4171fab)
+GOLDEN_AGGREGATE = "3246b75605899eef2eda52d880f7803bc913f85c25c395f194628a2d9f6b80fe"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

@@ -90,7 +90,9 @@ def test_the_half_life_comes_out_within_one_percent(seconds):
     Erik's; 1200 s: the later drug's), measured on the law itself. Breaks
     if the rate goes back to a Q16 fraction (16 counts at 120 s: 1.5 % off;
     2 counts at 1200 s: 15 %) or the door's rate formula is wrong."""
-    rate = clearing.half_life_rate(seconds, TPS)
+    rate = stress.settings_from_config(_cfg(stress_half_life_s=seconds)).rate_q
+    if seconds == float(CFG.damage.stress.stress_half_life_s):
+        assert rate == stress.get_settings().rate_q    # the shipped dial
     for start_pts in (10, 100, 5000):
         x = start_pts * stress.LEVEL_ONE
         t = 0
@@ -123,9 +125,12 @@ def test_stress_is_fed_by_the_hit_points_actually_lost():
     per hit point the packet actually took (after mitigation), and by
     nothing for a heal or for a packet that took nothing. Breaks if the
     producer reads the packet's raw amount, or a heal or a zero hit stresses."""
+    from simulation.damage import build_mitigation
     s = stress.get_settings()
     u = _marine(hp=1000.0)
+    u.mitigation = build_mitigation(armor={KINETIC: 4.0})   # 12.5 -> 8.5 lost
     dmg = _hit(u, 12.5)
+    assert dmg == 8.5
     assert u.stress_q == unit_fixed.mul_q16_round(
         unit_fixed.quantize_scalar(dmg), s.weights_q["damage"])
     before = u.stress_q

@@ -122,7 +122,8 @@ def test_the_loss_is_derived_from_the_anchor():
 # ---------------------------------------------------------------------------
 def _burst(joules):
     """One tick of a deposit that the body absorbs as ``joules``, then 30 s of
-    nothing: (the jump on the burst's tick in degrees, the total damage)."""
+    nothing: (the jump on the burst's tick in degrees, the total damage, the
+    unit, the damage on the ticks AFTER the burst, with no flux at all)."""
     stub = _Stub()
     u = _marine()
     j_hu = float(body_temp.j_per_heat_unit(stub))
@@ -132,9 +133,10 @@ def _burst(joules):
     hp0 = u.current_hp
     _run([u], stub, 1)
     jump = (u.body_temp_q - AMB_Q) / ONE
+    hp1 = u.current_hp
     stub.heat[...] = 0
     _run([u], stub, 30 * TPS)
-    return jump, hp0 - u.current_hp, u
+    return jump, hp0 - u.current_hp, u, hp1 - u.current_hp
 
 
 def test_a_burst_moves_the_body_by_joules_over_capacity():
@@ -143,19 +145,20 @@ def test_a_burst_moves_the_body_by_joules_over_capacity():
     body back at ambient. Breaks if the body is billed the burst's felt
     temperature (the pre-#215 law: 576 HP beside a frag) or the capacity is
     not the profile's."""
-    jump, dmg, u = _burst(30_000.0)
+    jump, dmg, u, after = _burst(30_000.0)
     assert jump == pytest.approx(30_000.0 / 320.0, rel=2e-3)
     assert abs(u.body_temp_q - AMB_Q) <= ONE // 100
     assert dmg > 0
+    assert after > 0.5 * dmg, "the harm did not come over the cooling"
 
 
 def test_more_joules_more_harm_with_no_ceiling():
-    """Property: 300 kJ moves the body ten times as far as 30 kJ (in
+    """Property: 3 MJ moves the body ten times as far as 300 kJ (in
     proportion: the law is linear) and harms more -- nothing clips what a
     body absorbs (Erik: plasma guns must pay off). Breaks if a ceiling on the
     felt or the body temperature comes back."""
-    j10, d10, _ = _burst(30_000.0)
-    j100, d100, _ = _burst(300_000.0)
+    j10, d10, _, _ = _burst(300_000.0)
+    j100, d100, _, _ = _burst(3_000_000.0)
     assert j100 == pytest.approx(10.0 * j10, rel=1e-3)
     assert d100 > 5.0 * d10
 
