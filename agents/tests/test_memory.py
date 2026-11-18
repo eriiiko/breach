@@ -196,6 +196,66 @@ def test_the_stored_memory_recomputed_along_a_stretch_is_what_the_soldier_had():
     assert torch.equal(a, z) and not torch.equal(a, c)
 
 
+# -- the stretches start at a match's first decision (2d.1c) -----------------
+def test_the_stretches_start_where_a_match_starts_and_cover_each_decision_once():
+    """Protects: patch 2d.1c's cut -- every row's batch time is covered by
+    its stretches exactly once, in order; every decision a match starts on
+    begins a stretch; no stretch is longer than ``stretch`` or holds two
+    matches; so a match no longer than a stretch that starts inside the
+    batch lies in ONE stretch (what lets recall12's cue and answer meet).
+    Breaks when: the learner goes back to fixed cuts every ``stretch``
+    decisions (a match starting mid-stretch is cut in two), or a stretch is
+    let run past a match's start or past ``stretch`` (design 4.5's limit)."""
+    tr = _trainer(ScriptTask, decisions=32, stretch=16)
+    b = tr.batch
+    tr.collector.collect(b)
+    tr.collector.collect(b)
+    start, row, length = tr.learner._stretches(b)
+    S, T = 16, b.T
+    firsts = b.first != 0
+    assert firsts[1:].any()
+    assert (length >= 1).all() and (length <= S).all()
+    for r in range(b.R):
+        mine = row == r
+        a, n = start[mine], length[mine]
+        assert a[0] == 0 and np.array_equal(a[1:], (a + n)[:-1])
+        assert (a + n)[-1] == T
+        for t in np.flatnonzero(firsts[1:, r]) + 1:
+            assert t in a, (r, t)
+        for a_, n_ in zip(a, n):
+            assert not firsts[a_ + 1:a_ + n_, r].any(), (r, a_, n_)
+    # a match no longer than a stretch, starting inside the batch, in one
+    for r in range(b.R):
+        t = np.flatnonzero(firsts[:, r])
+        for t0, t1 in zip(t[:-1], t[1:]):
+            if t0 > 0 and t1 - t0 <= S:
+                assert ((start == t0) & (row == r) & (length == t1 - t0)
+                        ).any(), (r, t0, t1)
+
+
+def test_a_short_stretch_returns_its_memory_after_its_own_last_step():
+    """Protects: ``forward_sequence(..., upto)`` returns each row's memory
+    after its own step ``upto - 1`` (a stretch padded after its end), equal
+    to stepping the network one decision at a time, and the outputs of the
+    steps before are untouched by the padding.
+    Breaks when: ``upto`` is ignored (the padded steps' memory returned) or
+    read one step off."""
+    tr = _trainer(ScriptTask, decisions=32, stretch=16)
+    b = tr.batch
+    tr.collector.collect(b)
+    net = tr.collector.soldier
+    L, rows = 6, np.arange(b.R)
+    upto = torch.as_tensor(1 + rows % L)
+    obs = {k: torch.as_tensor(b.obs[k][:L]) for k in SOLDIER_KEYS}
+    first = torch.as_tensor(b.first[:L] != 0)
+    with torch.no_grad():
+        _, end = net.forward_sequence(obs, torch.as_tensor(b.memory[0]),
+                                      first, upto=upto)
+    want = torch.as_tensor(b.memory[1 + rows % L, rows])
+    torch.testing.assert_close(end, want, rtol=0, atol=1e-5)
+    assert not torch.allclose(end, torch.as_tensor(b.memory[L]), atol=1e-5)
+
+
 # -- the live check's second clause, and its four faults -----------------------
 def test_the_live_check_is_silent_on_a_correct_run_with_memory():
     """Protects: on a correct run with the memory on (matches ending inside
@@ -232,8 +292,8 @@ def _fault_learner_ignores_first(monkeypatch):
     """The learner ignores ``first`` inside a stretch."""
     real = SoldierNet.forward_sequence
     monkeypatch.setattr(SoldierNet, "forward_sequence",
-                        lambda self, obs, state=None, first=None:
-                        real(self, obs, state, None))
+                        lambda self, obs, state=None, first=None, **kw:
+                        real(self, obs, state, None, **kw))
 
 
 def _fault_cut_one_off(monkeypatch):
