@@ -164,7 +164,7 @@ FUEL_MIX_V1 = {"furniture": 0.6, "wood": 0.4}
 # ``vented_door`` kinds are emitted CLOSED (#215, Erik 2026-11-18: the legacy
 # painted door is retired and every doorway is a manually operated entity
 # door; the layered bots open a closed non-hull door on their path, #142, and
-# the horde bashes one). bots_v1 never uses a door (its law is pinned).
+# the horde bashes one; bots_v1 opens one too since #215, Erik 2026-11-18).
 ENTITY_DOOR_INITIAL = "open"
 
 # The CARGO DOOR IN THE HULL (vocabulary B.4 / E.2 row 5): a room's

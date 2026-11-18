@@ -36,12 +36,14 @@ import level_loader  # noqa: E402
 from config import CFG, Namespace  # noqa: E402
 from control_bots_v1 import BotTeamV1 as BotTeam  # noqa: E402
 from control_bots_v1 import bot_v1_settings as bot_settings  # noqa: E402
+import control_bots_v1  # noqa: E402
 from field_ab_harness import capture_snapshot  # noqa: E402
 from field_digest import tick_digest  # noqa: E402
 from run_match import run_match  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.events import ShotFiredEvent  # noqa: E402
 from simulation.match import MatchSpec, MatchTeam, SpawnRoom  # noqa: E402
+from simulation import vision  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation import unit_traits  # noqa: E402
@@ -343,6 +345,149 @@ def test_registry_builds_bots_that_drive_only_their_team(tmp_path):
             assert (u.x, u.y, u.facing) == before[u.id]
         else:
             assert (u.x, u.y) != before[u.id][:2]
+
+
+# ---------------------------------------------------------------------------
+# (g') the one exception to the freeze: the door step (#215, Erik 2026-11-18)
+# ---------------------------------------------------------------------------
+def _closed_room_sim(second_door=False):
+    """Team 0's spawn room west of a full wall at x = 20 whose only way out
+    is a closed (non-hull, unwired) entity door at rows 4-6 -- with
+    ``second_door`` a second one at rows 8-10, a wall tile between -- and
+    team 1's spawn room beyond it; 1 m tiles."""
+    from level_loader import LevelData
+    from test_horde_behaviours import _door_inst, _door_level
+    lvl = _door_level()
+    if second_door:
+        lvl.tilemap[8:11, 20] = MAT_AIR
+        lvl.entities.append(_door_inst("d2", 1, 20, 8))
+    assert isinstance(lvl, LevelData)
+    lvl.spawn_rooms = [
+        SpawnRoom(team=0, x=2, y=2, w=10, h=8, max_per_team=4),
+        SpawnRoom(team=1, x=28, y=2, w=10, h=8, max_per_team=4),
+    ]
+    sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False,
+                     ruleset=ContinuousRealtime())
+    sim.set_paused(False)
+    return sim
+
+
+class _UseTap:
+    """An intent-log tap noting, at every ``use_intent``, the door the verb
+    would flip and whether that door was then closed and not asked open."""
+
+    def __init__(self, sim):
+        self.sim, self.uses = sim, []
+
+    def record(self, tick, kind, args):
+        if kind == "use_intent":
+            from simulation import verb_gates
+            from simulation.entities.door import DOOR_CLOSED
+            d = verb_gates.use_door(self.sim, self.sim.get_unit(args[0]))
+            self.uses.append((tick, d, d is not None
+                              and d.state == DOOR_CLOSED
+                              and not getattr(d, "want_open", False)))
+
+
+def test_an_old_bot_shut_in_its_room_opens_the_door_and_reaches_the_enemy():
+    """Property (#215, the one exception to the freeze): a bots_v1 marine
+    whose spawn room's only way out is a closed entity door routes through
+    it, USEs it and walks through, and its team comes to see the enemy in
+    the far room. Breaks if the door step is removed (the bot stands at the
+    shut door, or never plans a way through it: the pre-#215 standstill)."""
+    from simulation.entities.door import DOOR_OPEN
+    sim = _closed_room_sim()
+    bot = sim.get_unit(sim.add_unit(Unit("B", x=6, y=4, team=0)))
+    foe = sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    tap = _UseTap(sim)
+    sim.attach_intent_log(tap)
+    bots = BotTeam(0)
+    seen_at = None
+    for _ in range(900):
+        bots.handle_frame(sim, None)
+        sim.step()
+        if (seen_at is None and foe.id
+                in vision.state_for(sim).visible_by_team.get(0, ())):
+            seen_at = int(sim.tick)
+        if seen_at is not None and bot.tile_x > 21:
+            break
+    assert tap.uses, "USE never issued: the bot stood shut in"
+    assert sim._doors[0].state == DOOR_OPEN
+    assert bot.tile_x > 21, "the bot never got through the door"
+    assert seen_at is not None, "the bot never reached the enemy"
+
+
+def test_an_old_bot_uses_only_the_door_on_its_route_and_never_closes_one():
+    """Property (#215): beside two closed doors one wall tile apart, a
+    bots_v1 marine opens exactly ONE door -- every USE it issues is on a
+    door the verb would flip that was closed and not asked open (never a
+    close) -- walks through it, and the other door stays closed; once open,
+    no door shuts again. Breaks if the step issues USE without asking
+    ``verb_gates.use_door`` or on a door already asked open (it would close
+    the door it opened, or open the other)."""
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    sim = _closed_room_sim(second_door=True)
+    bot = sim.get_unit(sim.add_unit(Unit("B", x=6, y=6, team=0)))
+    sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    tap = _UseTap(sim)
+    sim.attach_intent_log(tap)
+    bots = BotTeam(0)
+    ever_open = set()
+    for _ in range(900):
+        bots.handle_frame(sim, None)
+        sim.step()
+        now_open = {d.id for d in sim._doors if d.state == DOOR_OPEN}
+        assert ever_open <= now_open, "a door the bot opened shut again"
+        ever_open |= now_open
+        if bot.tile_x > 23:
+            break
+    assert bot.tile_x > 23, "the bot never got through"
+    assert tap.uses and all(ok for _t, _d, ok in tap.uses), tap.uses
+    assert len(ever_open) == 1, ever_open
+    assert {d.id for _t, d, _ok in tap.uses} == ever_open
+    other = next(d for d in sim._doors if d.id not in ever_open)
+    assert other.state == DOOR_CLOSED
+
+
+def test_the_old_bots_door_step_asks_the_verb_and_never_toggles_a_door_shut():
+    """Property (#215): standing between two closed doors with its next
+    waypoint through door B, a bots_v1 marine facing door A issues NO use
+    (the verb would flip A); turned toward B it issues one and B, not A,
+    opens; a door already asked open (``want_open``, still closed) is never
+    used again, whatever the wait -- USE toggles, so that use would be a
+    close. Breaks if the step skips ``verb_gates.use_door`` or the asked-
+    open check."""
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    from simulation.turning import PI_Q16, place
+    from test_use_door_facing import _sim as two_door_sim
+    sim = two_door_sim()
+    a, b = sim._doors
+    u = sim.get_unit(sim.add_unit(Unit("U", x=7.0, y=12.0, team=0)))
+    uses = []
+
+    class _Tap:
+        def record(self, tick, kind, args):
+            if kind == "use_intent":
+                uses.append(tick)
+    sim.attach_intent_log(_Tap())
+    bots = BotTeam(0)
+    st = bots._state.setdefault(u.id, control_bots_v1._BotState())
+    way = (9, 13)                      # a 3x3 block over door B's tiles
+    assert bots._door_tiles(sim)[13:16, 9:12].any()
+    place(u, PI_Q16 // 6)              # facing north-east: door A
+    bots._open_door(sim, u, st, way)
+    assert uses == []
+    place(u, -PI_Q16 // 6)             # facing south-east: door B
+    bots._open_door(sim, u, st, way)
+    assert len(uses) == 1
+    sim.step()
+    assert b.state == DOOR_OPEN and a.state == DOOR_CLOSED
+    # door A asked open but not yet open: the step must leave it alone
+    a.want_open = True
+    st.door_used.clear()
+    place(u, PI_Q16 // 6)
+    bots._open_door(sim, u, st, (9, 11))  # a block over door A's tiles
+    assert len(uses) == 1, "USE on a door already asked open (a close)"
 
 
 # ---------------------------------------------------------------------------

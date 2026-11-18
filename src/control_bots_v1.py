@@ -4,10 +4,19 @@
 KEPT AS IT WAS (#183 G8p, Erik's ruling: a ladder of opponents is worth more
 than one): the layered bots (``control_bots.BotTeam``) replaced it as
 ``"bots"``; this module is the old law moved here unchanged -- only its names
-gained the ``V1`` suffix -- so a match with every team on ``bots_v1`` plays
-the pre-G8p pinned digests bit for bit (``tests/test_bots_v1.py``). Never
-tune it: it is an opponent and a baseline, and the bot tournament
-(``tools/bot_tournament.py``) measures the new bots against it.
+gained the ``V1`` suffix. Never tune it: it is an opponent and a baseline,
+and the bot tournament (``tools/bot_tournament.py``) measures the new bots
+against it.
+
+THE ONE EXCEPTION (#215, Erik's ruling 2026-11-18: "the old bots get ONE
+door-opening step and otherwise stay untouched"): since every doorway is a
+closed entity door at start, these bots stood shut in their spawn rooms. Their
+route may now pass a closed, non-hull, unwired door (the layered bots'
+``control_bots.openable_door_tiles``) and they USE the door on their route
+through the layered bots' own step (``control_bots.open_door_on_way``: only
+when ``verb_gates.use_door`` would flip that door; never a door already asked
+open, so they never close one). Nothing else changed; the pinned bots_v1
+match (``tests/test_bots_v1.py``) was re-pinned once for it.
 
 rl-ready scope §5 item 3: the first opponent and the baseline for every later
 agent. One :class:`~control_source.ControlSource` per team, built by the match
@@ -163,7 +172,7 @@ def _direction_q(dx, dy):
 class _BotState:
     """One unit's controller-side memory (never on the Unit: not synced)."""
     __slots__ = ("path", "idx", "goal", "replan_at", "last_throw_tick",
-                 "throw_aim")
+                 "throw_aim", "door_used")
 
     def __init__(self):
         self.path = None          # list of top-left tiles, or None
@@ -172,6 +181,7 @@ class _BotState:
         self.replan_at = 0
         self.last_throw_tick = None
         self.throw_aim = None     # the lob's direction, held through its wind-up
+        self.door_used = {}       # id(door) -> the tick USE was asked (#215)
 
 
 class BotTeamV1(ControlSource):
@@ -197,6 +207,8 @@ class BotTeamV1(ControlSource):
         self._last_tick = None
         self._passable = None     # (tick, footprint, bool grid)
         self._spread_q = {}       # (weapon id, hook) -> the cone, Q16.16 rad
+        self._doors = None        # (tile serial, door tiles or None), #215
+        self._door_retry = None   # [bots] door_retry_ticks, read at first use
 
     # ------------------------------------------------------------------
     def handle_frame(self, sim, renderer=None) -> None:
@@ -458,6 +470,7 @@ class BotTeamV1(ControlSource):
             sim.clear_move_dir(u.id)
             return None
         wx, wy = path[st.idx]
+        self._open_door(sim, u, st, (wx, wy))
         px, py = self._pos_q(u)
         d = _direction_q((wx << 16) + MID_Q - px, (wy << 16) + MID_Q - py)
         if d is None:
@@ -465,6 +478,31 @@ class BotTeamV1(ControlSource):
             return None
         sim.set_move_dir(u.id, d[0], d[1], WALK_THROTTLE)
         return d
+
+    # ------------------------------------------------------------------
+    # The ONE exception to the freeze (#215, Erik 2026-11-18): the door step
+    # ------------------------------------------------------------------
+    def _door_tiles(self, sim):
+        """The closed doors a bot may open on its way (the layered bots'
+        ``control_bots.openable_door_tiles``), None when there is none;
+        cached on the tile serial."""
+        key = int(getattr(sim.gmap, "_tile_serial", 0))
+        if self._doors is None or self._doors[0] != key:
+            from control_bots import openable_door_tiles
+            doors = openable_door_tiles(sim)[1]
+            self._doors = (key, doors if doors.any() else None)
+        return self._doors[1]
+
+    def _open_door(self, sim, u, st, way) -> None:
+        """The layered bots' door step (``control_bots.open_door_on_way``,
+        never a copy): USE on the closed door in the next waypoint's block
+        once touched and only when ``verb_gates.use_door`` would flip THAT
+        door. It never closes one (a door already asked open is skipped)."""
+        from control_bots import bot_settings, open_door_on_way
+        if self._door_retry is None:
+            self._door_retry = bot_settings(CFG).door_retry_ticks
+        open_door_on_way(sim, u, self._door_tiles(sim), st.door_used, way,
+                         int(sim.tick), self._door_retry)
 
     def _plan(self, sim, u, goal) -> list:
         grid = self._passable_grid(sim, u.footprint)
@@ -477,12 +515,16 @@ class BotTeamV1(ControlSource):
     def _passable_grid(self, sim, fp):
         """``grid[y, x]`` == ``gmap.is_passable_block(y, x, fp)`` for every
         in-bounds top-left, built once per tick (vectorised, same law: every
-        tile of the block has mobility > 0)."""
+        tile of the block has mobility > 0) -- or is a closed door it can
+        open (#215, :meth:`_door_tiles`)."""
         c = self._passable
         if c is not None and c[0] == sim.tick and c[1] == fp:
             return c[2]
         gmap = sim.gmap
         ok = gmap.materials.mobility[gmap.material] > 0
+        doors = self._door_tiles(sim)
+        if doors is not None:
+            ok = ok | doors       # #215: a closed door it can open is a way
         win = np.lib.stride_tricks.sliding_window_view(ok, (fp, fp))
         grid = win.all(axis=(2, 3))
         self._passable = (sim.tick, fp, grid)
