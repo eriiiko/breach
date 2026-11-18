@@ -683,3 +683,37 @@ def test_a_bot_between_two_doors_opens_the_one_on_its_path(tmp_path):
     other = next(d for d in sim._doors if d.id not in opened)
     assert other.state == DOOR_CLOSED
 
+
+def test_the_bot_uses_a_door_only_when_the_verb_would_flip_that_door():
+    """Property (#215): standing between two closed doors with its next
+    waypoint through door B, a bot facing door A issues NO use (the verb
+    would flip A); turned toward B it issues the use and B, not A, opens.
+    Breaks if ``_open_door`` issues USE without asking ``verb_gates.
+    use_door`` (it would open A by mistake)."""
+    from types import SimpleNamespace
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    from simulation.turning import PI_Q16, place
+    from test_use_door_facing import _sim as two_door_sim
+    sim = two_door_sim()
+    a, b = sim._doors
+    u = sim.get_unit(sim.add_unit(Unit("U", x=7.0, y=12.0, team=0)))
+    uses = []
+
+    class _Tap:
+        def record(self, tick, kind, args):
+            if kind == "use_intent":
+                uses.append(tick)
+    sim.attach_intent_log(_Tap())
+    bots = BotTeam(0)
+    st = SimpleNamespace(door_used={})
+    way = (9, 13)                      # a 3x3 block over door B's tiles
+    assert bots.door_tiles(sim)[13:16, 9:12].any()
+    place(u, PI_Q16 // 6)              # facing north-east: door A
+    bots._open_door(sim, u, st, way, sim.tick)
+    assert uses == []
+    place(u, -PI_Q16 // 6)             # facing south-east: door B
+    bots._open_door(sim, u, st, way, sim.tick)
+    assert len(uses) == 1
+    sim.step()
+    assert b.state == DOOR_OPEN and a.state == DOOR_CLOSED
+
