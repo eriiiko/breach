@@ -531,8 +531,8 @@ COLUMNS: tuple[Column, ...] = (
     _c("body_temp_q", KIND_Q16, "health", _body_temp_default,
        note="Q16 degrees C; starts at [combat] heat_ambient_ref "
             "(simulation.body_temp)"),
-    _c("stress_q", KIND_Q16, "health", 0,
-       note="Q16 stress points (simulation.stress)"),
+    _c("stress_q", KIND_INT, "health", 0,
+       note="stress points x 2^24 (simulation.stress.LEVEL_ONE)"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",

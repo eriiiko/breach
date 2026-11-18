@@ -303,34 +303,41 @@ def status_tick(store, ring) -> np.ndarray:
 
 
 #: The planes slot 9c reads, by ``GameMap`` field name.
-HEAT_FIELDS = ("heat", "rad_flux_sweep")
+#: #215: and the body temperature's air read (atmosphere, temperature, solid).
+HEAT_FIELDS = ("heat", "rad_flux_sweep", "atmosphere", "temperature", "solid")
 #: The planes slot 9c3 reads.
 GAS_FIELDS = ("gas",)
 
 
 def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
-    """Slot 9c: the heat row on every valid living row. ``fields``: ``heat``
-    ``(N, h, w)`` int32 and ``rad_flux_sweep`` ``(N, h, w)`` int64 DEVICE
-    arrays (``ResidentBatch.buffers`` as they are); ``claims`` ``(N, R, 4)``
-    (:func:`pad_claims`)."""
+    """Slot 9c: the heat row on every valid living row (#215: the body
+    temperature's law, the band on the body). ``fields``: ``heat`` ``(N, h,
+    w)`` int32, ``rad_flux_sweep`` ``(N, h, w)`` int64, ``atmosphere`` and
+    ``temperature`` ``(N, h, w)`` int32 and ``solid`` ``(N, h, w)`` bool
+    DEVICE arrays (``ResidentBatch.buffers`` as they are); ``claims`` ``(N,
+    R, 4)`` (:func:`pad_claims`)."""
     _check_ring("heat_damage", store, ring)
     _check_planes("heat_damage", store, fields,
-                  {"heat": np.int32, "rad_flux_sweep": np.int64})
+                  {"heat": np.int32, "rad_flux_sweep": np.int64,
+                   "atmosphere": np.int32, "temperature": np.int32,
+                   "solid": np.bool_})
     _, h, w = (int(x) for x in fields["heat"].shape)
-    if tuple(int(x) for x in fields["rad_flux_sweep"].shape) != \
-            (store.shape[0], h, w):
-        raise ValueError("unit kernel heat_damage: rad_flux_sweep's shape is "
-                         "not heat's")
+    for k in ("rad_flux_sweep", "atmosphere", "temperature", "solid"):
+        if tuple(int(x) for x in fields[k].shape) != (store.shape[0], h, w):
+            raise ValueError(f"unit kernel heat_damage: {k}'s shape is not "
+                             f"heat's")
     c = np.ascontiguousarray(claims, dtype=np.int64)
     return _done_events(store, "heat_damage", store.bp.unit_heat_damage(
         store.buffer, store.tables, ring.buffer, int(fields["heat"].data.ptr),
-        int(fields["rad_flux_sweep"].data.ptr), h, w, c))
+        int(fields["rad_flux_sweep"].data.ptr),
+        int(fields["atmosphere"].data.ptr), int(fields["temperature"].data.ptr),
+        int(fields["solid"].data.ptr), h, w, c))
 
 
 def gas_rows(store, ring, fields: dict, claims) -> np.ndarray:
-    """Slot 9c3: the teargas row, the poison row's dose and the poison law,
-    fused per row (each unit's three steps read only the planes and its own
-    row). ``fields``: ``gas`` ``(N, G, h, w)`` int32 DEVICE array;
+    """Slot 9c3: the teargas row, the poison row's dose, the poison law and
+    (#215) the stress tick, fused per row (each unit's steps read only the
+    planes and its own row). ``fields``: ``gas`` ``(N, G, h, w)`` int32 DEVICE array;
     ``claims`` as for :func:`heat_damage`. ``store.last_refused`` holds the
     doses clipped at the body's store (poison.SATURATION's hits)."""
     _check_ring("gas_rows", store, ring)

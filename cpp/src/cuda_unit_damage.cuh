@@ -212,7 +212,8 @@ __device__ __forceinline__ int64_t raise_amount(const int64_t* tab, const int64_
 // damage.apply_packet on `row`: returns the APPLIED Q16 damage; *killed on
 // the alive -> dead transition. Writes (all or nothing): the hp; the hit
 // event; on the kill life_state, the death clears (exposure.on_death,
-// unit_impulse.clear, horde.clear, unit_orders.clear, poison.clear; the
+// unit_impulse.clear, horde.clear, unit_orders.clear, poison.clear, #215's
+// stress.clear and body_temp.clear; the stress producer before it; the
 // conversion flag when the packet marks it) and the kill event; on a living
 // target the exposure raise (exposure.on_hit). `landing` null: the raise
 // and the death's zeroing at once (every caller but a resolve stage's HIT);
@@ -248,6 +249,11 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         return 0;
     }
     const bool was_alive = row_alive(row);
+    const int64_t stress0 = row[UNIT_COL_STRESS_Q];
+    if (stress0 < 0 || stress0 > tab[UNIT_TAB_STRESS_MAX]) {      // stress's bound
+        *bad = true;
+        return 0;
+    }
     const int64_t attacker = attacker_value(p.attacker);
     const int64_t amount = mitigate_q(p.amount_q, p.dtype, armor, resist, p.ap_q);
     bool b = false;
@@ -262,6 +268,24 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
     put(row, UNIT_COL_CURRENT_HP, new_hp, changed);
     const int64_t uid = row[UNIT_COL_ID];
     emit(sink, UNIT_EVKIND_HIT, uid, dmg, p.cause, attacker, p.dir_x_q, p.dir_y_q);
+    // #215: stress.on_damage -> stress.produce("damage"): the hit points a
+    // living, non-zombie unit actually lost, times the producer row's
+    // weight, held at most STRESS_MAX (the host counts the clip; a
+    // diagnostic, never hashed). Before the death check, like the host.
+    if (was_alive && dmg > 0 && !row[UNIT_COL_IS_ZOMBIE]) {
+        // the level in 2^-24 points: round(dmg x weight / ONE), the weight
+        // (level counts per hit point) 0 or in [2^14, 2^28]; a hit of
+        // HIT_FILLS_Q or more fills the level (stress.produce's own rule)
+        const int64_t wgt = tab[UNIT_TAB_STRESS_PER_HP_Q];
+        const int64_t add = (wgt > 0 && dmg >= tab[UNIT_TAB_STRESS_HIT_FILLS_Q])
+                                ? tab[UNIT_TAB_STRESS_MAX] + 1
+                                : fixedpoint::mul_q16_round_q(dmg, wgt);
+        if (add > 0) {
+            const int64_t room = tab[UNIT_TAB_STRESS_MAX] - stress0;
+            const int64_t take = add <= room ? add : (room > 0 ? room : 0);
+            if (take > 0) put(row, UNIT_COL_STRESS_Q, stress0 + take, changed);
+        }
+    }
     if (was_alive && new_hp <= 0) {
         put(row, UNIT_COL_LIFE_STATE, LIFE_DEAD, changed);
         if (landing != nullptr) {                                  // exposure.on_death
@@ -287,6 +311,8 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         put(row, UNIT_COL_POISON_X0, 0, changed);                  // poison.clear
         put(row, UNIT_COL_POISON_X1, 0, changed);
         put(row, UNIT_COL_POISON_SRC, -1, changed);
+        put(row, UNIT_COL_STRESS_Q, 0, changed);                   // stress.clear
+        put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);  // body_temp.clear
         if (p.mark_killed_by_zombie) put(row, UNIT_COL_KILLED_BY_ZOMBIE, 1, changed);
         emit(sink, UNIT_EVKIND_KILLED, uid, 0, p.cause, attacker, 0, 0);
         *killed = true;
@@ -452,6 +478,73 @@ __device__ inline FeltTemp felt_temperature_q(const int64_t* row, const int64_t*
     ft.t_felt_q = tab[UNIT_TAB_HEAT_AMBIENT_Q] +
                   fixedpoint::mul_q16_round_q(tab[UNIT_TAB_HEAT_GAIN_Q], peak);
     return ft;
+}
+
+// ---- the body temperature (simulation.body_temp, #215) -----------------------------
+//: The proved range (body_temp.BODY_MAX / PRESSURE_MAX): |body|, |felt -
+//: ambient| and |T_air| at most 2^44 Q16 degrees, a tile's pressure at most
+//: 2^25; so a_q (<= ONE) x 2^45 and the air sum (64 tiles x 2^25 x 2^31) stay
+//: below 2^63. A row past it FAULTS (the host's Python ints are unbounded).
+constexpr int64_t BODY_MAX = (int64_t)1 << 44;
+constexpr int64_t BODY_PRESSURE_MAX = (int64_t)1 << 25;
+
+struct BodyAir {
+    int64_t p_q;       // the mean pressure of the footprint's gas tiles, atm Q16
+    int64_t t_air_q;   // their pressure-weighted temperature, Q16 degrees C
+};
+
+// body_temp.air_read: over the in-bounds GAS tiles of the footprint (row-
+// major), p_i = max(0, atmosphere); p = mean_round(sum p_i, n), T_air =
+// ambient + round(k x round(sum p_i T_i / sum p_i)); (0, ambient) with no air.
+__device__ inline BodyAir body_air(const int64_t* row, const int64_t* tab, const int32_t* atm,
+                                   const int32_t* temp, const bool* solid, int h, int w,
+                                   bool* bad) {
+    const int64_t amb = tab[UNIT_TAB_HEAT_AMBIENT_Q];
+    BodyAir a{0, amb};
+    const Footprint f = footprint_of(row, bad);
+    if (*bad) return a;
+    int64_t n = 0, p_sum = 0, pt_sum = 0;
+    for (int64_t dy = 0; dy < f.fp; ++dy) {
+        const int64_t ty = f.ay + dy;
+        if (ty < 0 || ty >= h) continue;
+        for (int64_t dx = 0; dx < f.fp; ++dx) {
+            const int64_t tx = f.ax + dx;
+            if (tx < 0 || tx >= w) continue;
+            const size_t i = (size_t)ty * w + tx;
+            if (solid[i]) continue;
+            int64_t p = atm[i];
+            if (p < 0) p = 0;
+            if (p > BODY_PRESSURE_MAX) {
+                *bad = true;
+                return a;
+            }
+            n += 1;
+            p_sum += p;
+            pt_sum += p * (int64_t)temp[i];
+        }
+    }
+    if (n == 0 || p_sum == 0) return a;
+    const int64_t t_game = fixedpoint::div_round_q(pt_sum, p_sum);
+    a.p_q = fixedpoint::mean_round(p_sum, n);
+    a.t_air_q = amb + fixedpoint::mul_q16_round_q(tab[UNIT_TAB_BODY_K_TEMP_Q], t_game);
+    return a;
+}
+
+// body_temp.step_q: k_air = min(round(a_air x p), ONE - a_rad); the new body
+// = body + round((a (felt - amb) - k_air (body - T_air) - a_rad (body - amb))
+// / ONE). *bad past BODY_MAX.
+__device__ inline int64_t body_step(int64_t body, int64_t felt, const BodyAir& air, int64_t a,
+                                    int64_t a_rad, int64_t amb, bool* bad) {
+    const int64_t din = felt - amb, dair = body - air.t_air_q, drad = body - amb;
+    if (body > BODY_MAX || body < -BODY_MAX || din > BODY_MAX || din < -BODY_MAX ||
+        air.t_air_q > BODY_MAX || air.t_air_q < -BODY_MAX) {
+        *bad = true;
+        return body;
+    }
+    int64_t k_air = fixedpoint::mul_q16_round_q(a - a_rad, air.p_q);
+    if (k_air > ONE - a_rad) k_air = ONE - a_rad;
+    const int64_t num = a * din - k_air * dair - a_rad * drad;
+    return body + fixedpoint::div_round_q(num, ONE);
 }
 
 // ---- a slot kernel's row (the local copy) ------------------------------------------

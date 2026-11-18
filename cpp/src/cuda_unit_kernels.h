@@ -147,6 +147,9 @@ struct UnitDamageCounts : UnitKernelCounts {
 struct UnitDamagePlanes {
     std::uintptr_t heat = 0;
     std::uintptr_t rad_flux = 0;
+    std::uintptr_t atmosphere = 0;   // #215: the heat row's air read (int32)
+    std::uintptr_t temperature = 0;  // int32
+    std::uintptr_t solid = 0;        // bool
     std::uintptr_t gas = 0;
     int n_gases = 0;
     int h = 0;

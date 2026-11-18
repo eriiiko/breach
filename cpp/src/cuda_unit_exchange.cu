@@ -4,7 +4,9 @@
 // cuda_unit_kernels.h; residency design §4.4b.
 //
 // Slot 9c is exchange.apply_environmental_damage: per valid LIVING row, the
-// felt temperature (cuda_unit_damage.cuh's felt_temperature_q: the footprint's
+// body temperature (#215, body_temp.advance: the felt temperature the flow
+// in, the air on the footprint and the radiated share the loss) read by the
+// band, the felt temperature (cuda_unit_damage.cuh's felt_temperature_q: the footprint's
 // hottest tile of max(heat, rad_flux_sweep), the sweep plane converted ONCE
 // through the kit's fine_heat_shr), and above the unit's environment band
 // (its env profile's temperature_max, else its species') ONE HEAT packet of
@@ -25,7 +27,8 @@
 // two levels: m0 depot -> blood, m1 out of the blood with the flush only once
 // the depot is empty, the TOX hooks through the library's scaled, ONE POISON
 // packet of round(m1 x harm) credited to the dose's claimant, indirectly;
-// poison_src back to -1 when both levels reach 0). The trace planes are read in
+// poison_src back to -1 when both levels reach 0), then (#215) stress.tick (the
+// level less clearing_drain at its 2^-24 rate). The trace planes are read in
 // their own (TRACE) currency against thresholds quantized in it.
 //
 // Planes: device pointers to (N, ...) arrays in the resident fields' dtypes
@@ -59,7 +62,8 @@ __device__ inline bool env_select(const int64_t* row, int n_profiles, int n_spec
 
 // ---- slot 9c ----------------------------------------------------------------------
 __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables,
-                              const int32_t* heat, const int64_t* rad, int h, int w,
+                              const int32_t* heat, const int64_t* rad, const int32_t* atm,
+                              const int32_t* temp, const bool* solid, int h, int w,
                               const int64_t* claims, int n_claims, UnitRingView ring,
                               unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -72,7 +76,6 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
     const FeltTemp ft = felt_temperature_q(row, tab, bptr(heat, plane), bptr(rad, plane), h, w,
                                            &bad);
     EventSink sink = row_sink(ring, n_units, r);
-    if (!bad && !ft.has_peak) return;            // cold tile: no flux, no damage
     int64_t loc[UNIT_STORE_W];
     for (int c = 0; c < UNIT_STORE_W; ++c) loc[c] = row[c];
     if (!bad) {
@@ -86,7 +89,21 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
                                                 : tab[UNIT_TAB_HEAT_TEMP_MAX_SPECIES_Q + idx];
             const int64_t rate = is_profile ? tab[UNIT_TAB_HEAT_RATE_PROFILE_Q + idx]
                                             : tab[UNIT_TAB_HEAT_RATE_SPECIES_Q + idx];
-            const int64_t over = ft.t_felt_q - temp_max;
+            // #215: body_temp.advance -- the felt temperature is the flow into
+            // the body; the band reads the body.
+            const int64_t a = is_profile ? tab[UNIT_TAB_BODY_A_PROFILE_Q + idx]
+                                         : tab[UNIT_TAB_BODY_A_SPECIES_Q + idx];
+            const int64_t a_rad = is_profile ? tab[UNIT_TAB_BODY_A_RAD_PROFILE_Q + idx]
+                                             : tab[UNIT_TAB_BODY_A_RAD_SPECIES_Q + idx];
+            const BodyAir air = body_air(loc, tab, bptr(atm, plane), bptr(temp, plane),
+                                         bptr(solid, plane), h, w, &bad);
+            const int64_t body = bad ? 0 : body_step(loc[UNIT_COL_BODY_TEMP_Q], ft.t_felt_q, air,
+                                                     a, a_rad, tab[UNIT_TAB_HEAT_AMBIENT_Q], &bad);
+            if (!bad) {
+                bool ch = false;
+                put(loc, UNIT_COL_BODY_TEMP_Q, body, ch);
+            }
+            const int64_t over = bad ? 0 : body - temp_max;
             if (over > 0) {                      // above the band
                 if (over > ((int64_t)1 << 46)) {
                     bad = true;
@@ -119,14 +136,15 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
 }
 
 // ---- slot 9c3 ---------------------------------------------------------------------
-// poison.step: what leaves a level x at the Q16 fraction a.
+// poison.step: what leaves a level x at the Q16 fraction a -- the shared
+// clearing step (unit_lib::clearing_drain, #215), the flush only when asked.
 __device__ __forceinline__ int64_t poison_step(int64_t x, int64_t a, bool flush,
                                                int64_t flush_q) {
-    if (x <= 0) return 0;
-    if (flush && x <= flush_q) return x;
-    const int64_t m = (x * a) >> 16;
-    return m >= 1 ? m : 1;
+    return clearing_drain(x, a, 16, flush ? flush_q : 0);
 }
+
+//: clearing.RATE_SHIFT: the stress rate's currency (2^-24 per tick).
+constexpr int STRESS_RATE_SHIFT = 24;
 
 //: The levels the law's products are proved for (x * a < 2^56).
 constexpr int64_t POISON_LEVEL_MAX = (int64_t)1 << 40;
@@ -139,7 +157,8 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
     int64_t* row = unit_row(store, n_units, r);
     if (!row_valid(row)) return;
     const bool alive = row_alive(row);
-    if (!alive && row[UNIT_COL_POISON_X0] == 0 && row[UNIT_COL_POISON_X1] == 0) return;
+    if (!alive && row[UNIT_COL_POISON_X0] == 0 && row[UNIT_COL_POISON_X1] == 0 &&
+        row[UNIT_COL_STRESS_Q] == 0) return;
     const int64_t* tab = env_tables(tables);
     const size_t plane = (size_t)h * w;
     const int32_t* g = bptr(gas, (size_t)n_gases * plane);
@@ -249,6 +268,19 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
             }
         }
     }
+    // -- stress.tick (#215, slot 9c3'': after the poison law fed it) -------------
+    const int64_t sx = loc[UNIT_COL_STRESS_Q];
+    if (!bad && sx != 0) {
+        if (!row_alive(loc) || loc[UNIT_COL_IS_ZOMBIE]) {
+            put(loc, UNIT_COL_STRESS_Q, 0, changed);             // stress.clear
+        } else if (sx < 0 || sx > tab[UNIT_TAB_STRESS_MAX]) {
+            bad = true;
+        } else {
+            put(loc, UNIT_COL_STRESS_Q,
+                sx - clearing_drain(sx, tab[UNIT_TAB_STRESS_RATE_Q], STRESS_RATE_SHIFT,
+                                    tab[UNIT_TAB_STRESS_FLUSH_Q]), changed);
+        }
+    }
     finish_row(row, loc, sink, bad, cnt);
 }
 
@@ -268,16 +300,20 @@ void unit_heat_damage(UnitStoreDevice& store, const UnitTablesDevice& tables, Un
     unit_check_pair(store, tables, "unit_heat_damage");
     unit_check_ring(store, ring, "unit_heat_damage");
     check_claims(claims, n_claims, "unit_heat_damage");
-    if (!planes.heat || !planes.rad_flux || planes.h < 1 || planes.w < 1)
-        throw std::invalid_argument("unit_heat_damage: the heat and rad_flux_sweep planes and "
-                                    "their shape are required");
+    if (!planes.heat || !planes.rad_flux || !planes.atmosphere || !planes.temperature ||
+        !planes.solid || planes.h < 1 || planes.w < 1)
+        throw std::invalid_argument("unit_heat_damage: the heat, rad_flux_sweep, atmosphere, "
+                                    "temperature and solid planes and their shape are required");
     const int64_t* d_claims = n_claims > 0
         ? store.stage_input(1, claims, (size_t)store.n_env() * n_claims * 4) : nullptr;
     store.begin_counts();
     k_heat_damage<<<bgrid(store.n_units(), store.n_env()), 128, 0, tstream()>>>(
         store.rows(), store.n_units(), tables.values(),
         reinterpret_cast<const int32_t*>(planes.heat),
-        reinterpret_cast<const int64_t*>(planes.rad_flux), planes.h, planes.w, d_claims,
+        reinterpret_cast<const int64_t*>(planes.rad_flux),
+        reinterpret_cast<const int32_t*>(planes.atmosphere),
+        reinterpret_cast<const int32_t*>(planes.temperature),
+        reinterpret_cast<const bool*>(planes.solid), planes.h, planes.w, d_claims,
         n_claims, ring_view(ring), store.counts_dev());
     unit_finish_events(store, ring, out, "unit_heat_damage");
 }

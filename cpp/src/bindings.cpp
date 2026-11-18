@@ -863,17 +863,22 @@ PYBIND11_MODULE(breach_physics, m) {
               "#29 P6.3: slot 2b (status.tick_statuses) on the device store.");
         m.def("unit_heat_damage",
               [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
-                          std::uintptr_t heat, std::uintptr_t rad_flux, int h, int w,
+                          std::uintptr_t heat, std::uintptr_t rad_flux,
+                          std::uintptr_t atmosphere, std::uintptr_t temperature,
+                          std::uintptr_t solid, int h, int w,
                           py::array_t<int64_t, py::array::c_style> claims) {
                   const int nc = claims_of(s, claims, "unit_heat_damage");
                   breach_cuda::UnitDamagePlanes p;
                   p.heat = heat; p.rad_flux = rad_flux; p.h = h; p.w = w;
+                  p.atmosphere = atmosphere; p.temperature = temperature; p.solid = solid;
                   Cnt4 c(s.n_env());
                   breach_cuda::unit_heat_damage(s, t, ring, p, claims.data(), nc, c.view());
                   return c.out();
               }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("heat"),
-              py::arg("rad_flux"), py::arg("h"), py::arg("w"), py::arg("claims"),
-              "#29 P6.3: slot 9c (exchange.apply_environmental_damage) on the device store.");
+              py::arg("rad_flux"), py::arg("atmosphere"), py::arg("temperature"),
+              py::arg("solid"), py::arg("h"), py::arg("w"), py::arg("claims"),
+              "#29 P6.3: slot 9c (exchange.apply_environmental_damage; #215: with the "
+              "body temperature's air read) on the device store.");
         m.def("unit_gas_rows",
               [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
                           std::uintptr_t gas, int n_gases, int h, int w,

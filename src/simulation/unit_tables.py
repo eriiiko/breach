@@ -245,6 +245,26 @@ def _poison():
     return _poison_mod().get_settings()
 
 
+def _body_mod():
+    from simulation import body_temp
+    return body_temp
+
+
+def _body_rates(src, env):
+    """``body_temp.rates_q`` of ``env``'s capacity on this env's map."""
+    b = _body_mod()
+    return b.rates_q(src.sim.gmap, b.capacity_of(env))
+
+
+def _stress_mod():
+    from simulation import stress
+    return stress
+
+
+def _stress():
+    return _stress_mod().get_settings()
+
+
 def _poison_dose_den(src):
     from simulation import gas_fixed
     return int(gas_fixed.TRACE_ONE) * int(src.sim._tps)
@@ -513,6 +533,38 @@ ROWS: tuple[TableRow, ...] = (
              (1 << 31) - 1, "poison.X_MAX: the body's store"),
     TableRow("poison_flush_q", 1, lambda src: _poison_mod().FLUSH_Q, 0, ONE,
              "poison.FLUSH_Q"),
+    # -- #215: the body temperature (simulation.body_temp, the heat row's
+    #    law) and the stress level (simulation.stress) -----------------------
+    TableRow("body_a_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_body_rates(src, p)[0],)), 1,
+             ONE, "per [env_profiles.*] row: body_temp.rates_q's a (per map)"),
+    TableRow("body_a_rad_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_body_rates(src, p)[1],)), 0,
+             ONE, "per [env_profiles.*] row: its radiated share a_rad"),
+    TableRow("body_a_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_body_rates(src, s.environment)[0],)), 1, ONE,
+             "per species: its environment's a (per map)"),
+    TableRow("body_a_rad_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_body_rates(src, s.environment)[1],)), 0, ONE,
+             "per species: its environment's a_rad"),
+    TableRow("body_k_temp_q", 1, lambda src: _body_mod().k_temp_q(), 0,
+             1 << 20, "temperature_scale k_temp_to_kelvin, Q16 (game degrees "
+             "to C)"),
+    TableRow("stress_per_hp_q", 1,
+             lambda src: _stress().weights_q["damage"], 0, 1 << 28,
+             "[damage.stress] stress_per_hp, level counts (2^-24 points) per "
+             "hit point (the damage producer row)"),
+    TableRow("stress_hit_fills_q", 1, lambda src: _stress_mod().HIT_FILLS_Q,
+             1, 1 << 44, "stress.HIT_FILLS_Q: a hit that fills the level"),
+    TableRow("stress_rate_q", 1, lambda src: _stress().rate_q, 1,
+             1 << 24, "the half-life's per-tick fraction, 2^-24 "
+             "(clearing.RATE_SHIFT)"),
+    TableRow("stress_flush_q", 1, lambda src: _stress_mod().FLUSH_Q, 0, 1 << 24,
+             "stress.FLUSH_Q"),
+    TableRow("stress_max", 1, lambda src: _stress_mod().STRESS_MAX, 1,
+             1 << 38, "stress.STRESS_MAX: the level's int64 bound"),
     # -- the footprint the device walks ---------------------------------------
     TableRow("footprint_rowmajor", 1, _footprint_rowmajor, 1, 1,
              "1 = every species' default offsets are the footprint square in "

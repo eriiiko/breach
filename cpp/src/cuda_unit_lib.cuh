@@ -288,6 +288,19 @@ __device__ inline void turn_law_q16(int64_t facing_q, int64_t omega_q, int64_t t
     *omega_out = omega;
 }
 
+// ---- the clearing step (simulation.clearing.drain, #215) --------------------
+// What a level x loses this tick at the fraction a (2^shift = ONE): 0 at or
+// below 0; all of it at or below flush_q (flush_q > 0); else max(1, (x * a)
+// >> shift). The poison law (shift 16) and the stress level (shift 24) both
+// call it, never a copy; the caller proves x * a < 2^63.
+__device__ __forceinline__ int64_t clearing_drain(int64_t x, int64_t a, int shift,
+                                                  int64_t flush_q) {
+    if (x <= 0) return 0;
+    if (flush_q > 0 && x <= flush_q) return x;
+    const int64_t m = (x * a) >> shift;
+    return m >= 1 ? m : 1;
+}
+
 // ---- the operands ----------------------------------------------------------
 // x^2 + y^2 of a 2-vector whose components are within SQ_COMPONENT_MAX (else
 // *bad, returns 0).
