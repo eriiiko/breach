@@ -179,5 +179,154 @@ slot-9e sweep):
   time limit with all 12 units alive. A finding for the lead / Erik: the
   `bots_v1` ladder rung no longer plays a match on ship_demo.
 
-The other four plays of the same match (one law switched off each) move the
-same way; their outcomes on the base and on this branch are in section 6.
+The six pin tests (base = `30bd61ca`, from the base's own doc; branch = the
+full suite at `822a4be1`):
+
+| test | pin (main) | base | this branch |
+|---|---|---|---|
+| `test_zombie_control::..._pinned_ship_demo_match` (`bots`) | win 0 at 2570 | win 1 at 2121 | **win 0 at 608** |
+| `test_bots_v1::..._pre_g8p_pinned_match` (`bots_v1`) | draw at 7200 | same | same outcome, field `fae949e0...` |
+| `test_exposure::..._pre_g4p_match` | draw at 7200 | same | same outcome, field `fae949e0...` |
+| `test_grenade_kinds::..._pre_g3p_match` | win 1 at 240 | same | **draw at 7200** (shut in) |
+| `test_horde_behaviours::..._stage_1_law` | win 1 at 255 | same | **draw at 7200** |
+| `test_unit_impulse::..._re_pin_1s` | draw at 7200 | same | same outcome, field `fae949e0...` |
+
+No GOLDEN_AGGREGATE, field-digest golden, replica gate or baked-art golden
+moved (the A/B scenario is a synthetic 16x16 room; `test_bake_level_art`'s
+pinned golden bake is a synthetic map); nothing was re-baselined.
+
+## 5. Tests and breaks
+
+New tests (each names its property and the change that breaks it):
+`tests/test_doors_retired.py` (no level in the repo holds a bare painted door,
+every level folder plus `prototypes/unhcr_vessel_2`; the loader's refusal by
+name, a span's own paint allowed; gen_ship's door rows emit closed entities;
+a migrated ship_demo doorway blocks rounds, grenades, gas, sight and movement
+closed, none of them open, all again closed); `tests/test_use_door_facing.py`
+(the faced door at a sweep of 64 facings, the exact tie to the scan order,
+one door ignores facing, one use toggles the faced door and only it, the gate
+stays "a door in reach"); `tests/test_horde_behaviours.py::test_one_hunting_
+zombie_breaks_an_interior_door_in_about_20_seconds` (18..22 s; the hull door
+test was already there); `tests/test_bots.py::test_a_bot_between_two_doors_
+opens_the_one_on_its_path` and `::test_the_bot_uses_a_door_only_when_the_
+verb_would_flip_that_door`; host equals device: `tests/cuda_unit_verbs_check.py`
+gained a two-door wall in its verb scene (a unit swept over ten facings,
+three new census branches that must be reached: the tie, the faced door
+first in table order, the faced door not first).
+
+Every new gate broken once (a text patch, the named tests run, restored):
+
+| break | red in |
+|---|---|
+| use ignores facing (host: the scan order only) | `test_use_door_facing` |
+| a tie goes to the LATER scan key | `test_use_door_facing` |
+| facing enters the single-door case | `test_use_door_facing` |
+| the bot skips the verb's choice | `test_bots::test_the_bot_uses_a_door_only_...` (the walking two-door test stayed GREEN: in that geometry the bot already faces its door; hence the second test) |
+| the loader accepts a bare painted door | `test_doors_retired` |
+| gen_ship's `door` row paints `MAT_DOOR` again | `test_doors_retired` |
+| `door_bash_damage` back at 2.0 | the 20 s bash test |
+| a closed door passes gas (`permeability = 1.0` on `door_closed`) | the migrated-doorway test |
+| the DEVICE use ignores facing (`use_door` always the first candidate; built, run, restored, rebuilt) | `test_cuda_unit_verbs` (the chained verbs scene left the reference at tick 82, the facing sweep) |
+
+Pre-existing tests changed, each because it pinned the painted door itself
+(its id 3, its walkable tile, or a scene that depended on ship_demo's open
+doorways), its property kept: `test_bake_level_art` (bake_demo's door is
+`MAT_DOOR_CLOSED`), `test_level_loader` / `test_level_format_v2` /
+`test_materials` (unhcr_vessel's doors are id 7), `test_atmosphere_
+conservation` (the stamp guard on a closed door tile), `test_migration` (its
+fixture is read with the migration's allowance), `test_grille` (the vented
+door's contrast is an open doorway; the gas contrast a closed door),
+`test_gen_ship` / `test_gen_ship_grille` / `test_gen_ship_vents_doors` (the
+door rows' stamp; the entity-door and airlock tests count their own doors
+among the new edge doors), `test_room_graph` (two tests open the `door`
+edges' doors first so only the annex door is in play), `test_levelspec`
+(`bot_path` is handed the level's entities), `test_bots_door::test_a_masked_
+latch_is_never_sent_on_a_whole_match` (its scene moves from seed 4 to 6:
+on the new ship seeds 1-5 mask no latch), `cuda_unit_horde_check` (its scene
+drops the cache by a topology change off a refresh tick with two pillar
+tiles, since the faster bash now breaks the door on a refresh tick; its
+ship_demo chain takes the 9e(d) door sweep), `cuda_s8a_check` (below).
+
+## 6. Findings in the reference (reported, not changed)
+
+1. **The resident stamp's `obstacles` is one tick stale after a slot-9e
+   topology change.** The device stamp builds `obstacles` at slot 6 from the
+   uploaded permeability; a door the 9e sweep opens or closes changes the
+   host's `obstacles` through `on_tile_changed` the same tick, the device's
+   only at the next tick's stamp. No device stage reads `obstacles` (the
+   comment in `physics_runner` says so), so nothing diverges, but the S8a
+   gate compared it at the tick's end and went red on ship_demo's first door
+   opening (ticks 45 and 69, 4 cells each). The gate now compares
+   `obstacles` on the next tick when a tile changed after the stamp's rows
+   were taken (`cuda_s8a_check._track_stamp_serial`). If a device stage
+   ever starts reading `obstacles`, this is a real bug.
+2. **`bots_v1` no longer plays a match on ship_demo**: it never uses a door
+   (its law is pinned), so every team and the dormant horde stay shut in
+   (section 4).
+3. **Team 0 wins every bots match on the new ship_demo** (the pinned `bots`
+   at 608; the door-team scene's seeds 1-6 all `win 0` in 751..1195 ticks).
+   On a mirrored map the first doors each team opens are mirror twins, team 1
+   at tick 45 and team 0 at 69, so something in the play is not mirror-
+   symmetric; the use's tie rule (row-major scan order) is not mirror-
+   symmetric by construction, and is one candidate. Not investigated.
+4. **The migration tool's `.bak` step overwrites a TRACKED `.bak`**
+   (`prototypes/unhcr_vessel_2` carries both in git); restored by hand.
+5. **The map editors' material palette still offers `door`** (`MAT_DOOR`);
+   a level painted with it is refused at load (accepted gap in the rule).
+6. **The full view drops every zombie on ship_demo** (section 7: 60 doors
+   outrank the zombies in the 64-entry list); `test_obs_spec_v1::test_the_
+   full_view_equals_an_independent_reconstruction` is left RED for the
+   game-AI lead.
+7. **A bot's use can still pick the other door if slot 1a turns it** between
+   its read of `use_door` and the verb at 1b, when the two doors lie almost
+   equally off its facing.
+
+## 7. Gates
+
+- Both builds (`cpp\build_cpu_home.bat`, `cpp\build_cuda.bat`): exit 0.
+- `tools/twin_debt.py`: the verbs, table_appends and doors twins were in debt
+  only for `verb_gates.py` (this patch moved it with its device form,
+  `cpp/src/cuda_unit_verbs.cu`); marked level after the device gates passed
+  (`--mark-level`), so the ledger is empty.
+- The device gates on this tree: `test_cuda_unit_verbs`, `test_cuda_unit_doors`,
+  `test_cuda_unit_horde`, `test_cuda_unit_vents`, `test_cuda_s8a_residency`
+  green after the gate fixes above; `tools/cuda_green.py` is run last, at the
+  final HEAD (its stamp is HEAD's; see the report).
+- **The full suite** (`pytest tests -q`, one run at `822a4be1`, 1 h 52 min):
+  6485 passed, 20 failed. Of the 20:
+  - the SIX pin names (RED by design, not re-pinned): `test_zombie_control::
+    test_the_controller_plays_the_pinned_ship_demo_match`, `test_bots_v1::
+    test_bots_v1_play_the_pre_g8p_pinned_match`, `test_exposure::test_with_
+    the_law_dormant_the_pinned_match_is_the_pre_g4p_match`, `test_grenade_
+    kinds::test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match`,
+    `test_horde_behaviours::test_with_every_behaviour_off_the_horde_plays_
+    the_stage_1_law`, `test_unit_impulse::test_g1_with_every_input_off_
+    nothing_is_pushed_and_the_pins_are_re_pin_1s`;
+  - red only because they share those pins (each plays or watches the same
+    ship_demo match): `test_turn_rate::test_at_half_a_turn_per_tick_the_
+    pinned_match_is_the_pre_g1p_match` and `test_turning_law::test_g3_at_
+    unlimited_acceleration_the_pins_are_re_pin_1s` (both compare a law-off
+    play of the `bots_v1` match with a pin: now the shut-in draw);
+    `test_unit_schema::test_derived_constants_and_round_trips_hold_at_every_
+    tick[bots]` (it watches the pinned `bots` play and requires a conversion
+    in it: the new play, won at 608, has none) and `test_unit_store::test_
+    identity_ship_demo_every_tick` (requires the ship_demo bots match to run
+    650 ticks: it now ends at 608). These two are scene-length / non-vacuity
+    bounds on the pinned play: the re-pin will not turn them green; the lead
+    picks their scene with the re-pin;
+  - `test_class_p_level` (no stamp yet at that HEAD: `cuda_green` runs last);
+  - FIXED after the run (each re-run green on its own): `test_cuda_unit_vents`
+    (its ship_demo chain takes the door sweep), `test_twin_debt` x2 (the
+    manifest regenerated, the door modules classified), `test_wave_push_door`
+    (its painted door built in memory), `test_wind_doorway_e2e` x4 (the
+    closed door entity's id);
+  - **LEFT RED, a finding for the game-AI lead:** `test_obs_spec_v1::test_the_
+    full_view_equals_an_independent_reconstruction`. The full view (spec 5.3,
+    `obs_spec_v1._full_entries`) keeps 64 entries and, past that, drops the
+    farthest zombies first, then objects, and doors only last ("a CHOICE for
+    an absurd map"). ship_demo now has 60 doors, so 1 self + 7 marines + 56
+    doors fill the list and the four living zombies are dropped from every
+    soldier's full view; the test's "every living unit is in the list" fails.
+    The priority (doors over zombies) is a spec decision, so it is not
+    changed here.
+- `python -m pytest agents/tests -q`: see the report.
