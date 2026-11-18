@@ -480,6 +480,13 @@ def locomote(ps, res: ResolvedLocomotion, role: ResolvedRole, aim_travel,
     ``travel``: the relative travel this frame (as :func:`pose_modifiers.steer`
     takes it), or None without a delta."""
     from .pose_modifiers import backpedal_goal, lowpass_travel, slew_twist
+    if ps.loco_role is not role:
+        # The unit's role changed (a marine that turns zombie keeps its look,
+        # so its pose state, but walks the zombie role's table): its gait and
+        # sector are indices into the OLD role's rows and mean nothing in the
+        # new one (a sprinting marine's gait 2 against the zombie's one gait
+        # was the replay's IndexError). It starts the new table idle.
+        ps.gait, ps.sector, ps.loco_role = -1, -1, role
     if dt <= 0.0:
         return ps.loco_state or role.idle
     # the travel filter steps over the wall time since the last delta (the
