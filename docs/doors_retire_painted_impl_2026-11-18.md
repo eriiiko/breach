@@ -360,3 +360,59 @@ agents/ that read the full view), `tests/test_claude_rules_paths.py`: 170
 passed; `python -m pytest agents/tests -q -k "full or value or sizes"`: 6
 passed, 113 deselected. `test_the_full_view_equals_an_independent_
 reconstruction` is green (it was the one test left red in section 7).
+
+## 9. Follow-up 2: is team 0 favoured on the new ship? (measured, nothing changed)
+
+**(a) Win counts**, `bots` vs `bots` on ship_demo (`run_match`, the level's
+own match, seeds 1-20, this branch at `e6593e4b`):
+
+| | team 0 wins | team 1 wins | draws | median end tick |
+|---|---|---|---|---|
+| this branch | 9 | 11 | 0 | 846.5 |
+| main | no record: the docs' tournament tables are `bots` vs `bots_v1` (mirrored pairings), never `bots` vs `bots` split by team | | | |
+
+So finding 3 of section 6 is **withdrawn**: there is no team-0 bias. Its
+evidence was too small (the pinned `bots` match and seeds 1-6 of the
+door-team scene); over 20 seeds the split is 9 / 11.
+
+**(b) The first mirror asymmetry** (seeds 1, 2 and 3: every tick, each team-0
+unit against the team-1 unit standing at its mirror image at spawn, x
+mirrored across the ship's axis, facing as `PI - facing`, and every door
+against its mirror twin): the same in all three seeds.
+1. At spawn the two formations ARE mirror images as sets of cells, but the
+   SLOTS are not: `match.formation_cells` fills both rooms row-major left to
+   right, so team 0's slot 0 stands at its room's outboard (west) column and
+   team 1's slot 0 at its room's inboard (west) column; the mirror pairs are
+   ids 0/1/2/3 <-> 5/4/7/6.
+2. **The first divergence is tick 1**: unit 0 has moved (5.124, 17.041)
+   while its mirror twin, unit 5, still stands at (92, 17). Cause, from one
+   read of `src/control_bots.py`: the UNIT decision stagger, `(tick + id *
+   STAGGER) % unit_period_ticks == 0` (STAGGER 3, period 8), keyed on the
+   unit's ID: the mirror pairs decide on ticks 0/1, 5/4, 2/3 and 7/6, so
+   every pair is one tick apart, alternating which leads (unit 0 leads
+   unit 5, unit 4 leads unit 1, ...). ONE path search per team per tick
+   (`_planned_tick`) can add to it, and a facing one Q16 unit off its
+   mirror is also present from tick 1 (the kit's `atan2` of a mirrored
+   vector is `PI_Q16 + 1 - theta`, since `PI_Q16` is pi rounded down: 1.5e-5
+   rad, harmless).
+3. The first DOOR asymmetry follows at tick 46: `door_e59` (team 1's side)
+   is opened at 45, its twin `door_e58` at 69 -- a consequence of the
+   stagger, not of the use verb's tie rule (each bot's first door is the
+   only one in its reach; the tie rule was never reached in these doors).
+
+Proposal (one line): key the bot's decision stagger on its SLOT, mirrored per
+team (or on its roster rank), not on the unit id, if a mirrored map should
+play mirrored; the 9 / 11 split says it does not bias the outcome.
+
+**The `v1_spec` pins** (no new run; from section 4's census and the suite's
+digests): in the `bots_v1` match nothing happens. bots_v1 never uses a door,
+so every marine stands in its closed spawn room for all 7200 ticks: 0 uses,
+0 doors opened or bashed, all 12 units alive at the end, no zombie ever
+moved 25 tiles from its spawn (they stay dormant: nothing is seen, shot or
+heard across closed doors). The exposure-dormant and impulse-off variants
+end with the SAME field digest as the plain `bots_v1` play (`fae949e0...`),
+consistent with those laws never acting; the no-wind-up and horde-off
+variants end in the same draw at 7200 (their own digests). Shots and damage
+were not counted per tick in those plays (a gap: only uses, door states and
+zombie travel were); but no unit died and none can see an enemy, so these
+five pins now pin a match in which every unit stands in a closed room.
