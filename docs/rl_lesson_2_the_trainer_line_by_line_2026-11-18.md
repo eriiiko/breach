@@ -46,7 +46,7 @@ the tests a stand-in environment (`agents/standin.py`) serves the same names.
 weights (`agents/network.py:281-334`, class `Body`): a reader of the
 soldier's own vector, one reader per kind of list entry, two attention
 layers over the list, two map readers of four convolutions each, and a join.
-The soldier's network adds the memory (a GRU cell, section 6) and the five
+The soldier's network adds the memory (a GRU cell, section 5) and the five
 heads; the value network reads the full view instead of the soldier's own
 list and ends in one output per reward group (`agents/network.py:519-550`).
 Sizes at full width: the soldier 1 770 480 weights, the value network
@@ -145,7 +145,7 @@ arrays at 174-201):
 | the probability of each counted head and of the whole decision (`logp_heads`, `logp`) | the denominator of the ratio; PPO needs "the chance it had when it was made" |
 | the five reward numbers paid by the step | grading |
 | `valid`, `in_match`, `done`, `first`, `value_row` | which rows take part in what (section 3) |
-| `memory` (only with the memory on) | the memory each decision started from (section 6) |
+| `memory` (only with the memory on) | the memory each decision started from (section 5) |
 
 Once per batch, the view after the last step is also kept (`last_obs`,
 `last_full`, copied at `agents/collector.py:324-327`): the value network's
@@ -292,3 +292,223 @@ normalised units) reads as "the batch's mean", which is the best first guess
 there is. With the fix the task passes in 63 to 92 rounds (same source).
 A scale is saved and loaded with its value network, so a resumed run does
 not make a "first" move again (`agents/value_scale.py:32-34`).
+
+## 4. The update
+
+**Passes, pieces and lumps.** The learner makes `passes` = 4 passes over the
+round's value rows (`agents/settings.py:44`). Each pass shuffles them afresh
+(`agents/learner.py:347`) and cuts them into the fewest near-equal **pieces**
+of at most 2 048 decisions (`agents/learner.py:162-171`; `piece`,
+`agents/settings.py:49`). Each piece is one step of each network. Never a
+short last piece: under Adam a step taken from three left-over decisions is
+as long as one taken from two thousand, and its grades, brought to a common
+size over three rows, are noise (`agents/learner.py:164-167`). A piece is
+worked through in **lumps** of 512 (`agents/settings.py:51`) whose gradients
+are added before the step: each lump's loss is divided by the piece's
+number of policy rows, so the sum is the piece's mean
+(`agents/learner.py:578`). The lumps exist because a piece of 2 048 does not
+fit an 8 GB card at once (about 2.6 MB per decision while learning: plan,
+"As built (2a)"); the step is the same either way.
+
+In the 2c run (64 matches × 128 decisions = 8 192 decisions a round, one
+soldier per match) that is 4 pieces × 4 passes = 16 steps a round.
+
+**The soldier's loss, term by term** (`agents/learner.py:573-578`):
+
+```python
+log_ratio = d.logp - old
+ratio = log_ratio.exp()
+clipped = ratio.clamp(1.0 - s.clip, 1.0 + s.clip)
+objective = torch.minimum(ratio * adv, clipped * adv)
+variety = d.variety.sum(dim=-1)
+loss = (-objective.sum() - s.variety * variety.sum()) / n_pol
+```
+
+In symbols, over the n policy rows of a piece:
+
+    ρ = p_now(choice) / p_then(choice)
+    loss = −(1/n) Σ [ min( ρ·A, clip(ρ, 1 − ε, 1 + ε)·A ) + c·Σ_heads V ]
+
+- **ρ, the ratio**: the probability of the whole stored decision under the
+  weights now, over the probability it had when it was drawn. `d.logp` comes
+  from `choosing.evaluate` under the stored masks (`agents/learner.py:563`),
+  `old` is the stored `logp`. It is 1 before any step. One ratio per
+  decision, for all five heads together (the "joint" ratio).
+- **A** is the decision's grade after the common size.
+- **The clip**, ε = 0.2 (`agents/settings.py:42`). The minimum picks the
+  smaller of the two terms. With A > 0 the term stops growing once ρ passes
+  1.2, so the gradient vanishes there (lesson 0's worked case: a choice made
+  at 0.20 stops being pushed at 0.24). With A < 0 it works the other way: at
+  A = −1 and ρ = 0.7, ρ·A = −0.7 and the clipped term is −0.8; the minimum
+  is the constant −0.8, so a choice already 30 % less likely is pushed no
+  further down. The minimum never removes a correction: if a step has made a
+  bad choice MORE likely (A < 0, ρ = 1.3), ρ·A = −1.3 is the smaller and its
+  gradient stays.
+- **V, the variety**: each counted head's entropy as a share of the most it
+  could have, its entropy over the logarithm of its number of legal options
+  (`agents/choosing.py:115-122`). So the trigger (2 options) and the feet (49)
+  are measured on one scale, 0 for a sure head, 1 for an even one. The
+  weight c = 0.01 per counted head (`agents/settings.py:56`). It rewards
+  staying undecided a little, so that an option is not dropped before it has
+  been tried.
+- The minus sign: the optimiser lowers the loss, so it raises the objective.
+
+**The value loss** (`agents/learner.py:598-606`): the squared error of the
+normalised estimates against the normalised targets, summed over the five
+outputs, averaged over the piece's value rows. The two networks share no
+weights and each has its own Adam, so no weighting between the two losses
+is needed.
+
+**The distance, and the early stop.** For every piece the learner measures
+how far the soldier's chances have already moved this round, from the same
+forward pass the step uses (`agents/learner.py:588`, divided at 392):
+
+    distance = mean over the piece's policy rows of ( log p_then − log p_now )
+
+Since the stored choices were drawn from p_then, this is a sample of
+Σ p_then·log(p_then / p_now), the Kullback–Leibler divergence of the new
+chances from the old: 0 when nothing moved, growing as the policy moves.
+The first piece whose distance exceeds `max_distance` = 0.02
+(`agents/settings.py:47`) is not stepped, and the soldier takes no further
+step this round (`agents/learner.py:408-411`). The value network finishes
+its passes (`:417-420`). This is the second guard beside the clip: the clip
+limits each decision, the distance the policy as a whole. In the 2c run the
+early stop cut 51 of 360 rounds, at a mean of 15.3 of the 16 steps (2c
+report, section 6).
+
+**The step.** Each network's gradient is cut to a total length (norm) of 0.5
+by itself (`agents/learner.py:413-414` and `:417-418`;
+`agents/settings.py:58`), so a spike in one cannot shrink the other's step.
+Both use Adam with step size 3e-4 (`agents/settings.py:53`), falling in a
+straight line to zero over `planned_rounds` (`agents/settings.py:115-119`,
+set each round at `agents/learner.py:299-302`). The plan is in planned
+rounds, so `planned_rounds` must be the run's real length: a run cut short
+by the wall stop never reaches its small steps (`agents/settings.py:83-84`).
+
+**One arithmetic.** Acting and learning use 32-bit arithmetic with the
+card's faster-but-different options switched off
+(`agents/learner.py:153-159`), so the probability recomputed at learning is
+the one computed at acting.
+
+**The live check, every round** (`agents/learner.py:174-208`, called at
+`:393-400`). On the first piece of the first pass, before any step:
+
+1. the recomputed log-probability of every stored head choice equals the
+   stored one to 1e-4 (`live_tolerance`, `agents/settings.py:67`);
+2. which heads counted, and the argument's mask, are recomputed exactly
+   equal;
+3. the distance is 0 to 1e-4;
+4. with the memory on, the memory recomputed at every stretch's end equals
+   the stored one to 1e-4 (section 5).
+
+Any failure stops the run with `LiveCheckFailed` naming the clause. It
+catches a kept reference to an environment array (the batch would hold the
+next step's view), masks that differ between acting and learning, a number
+format that differs, and any difference between the two uses of
+`choosing`. It cannot be switched off. In the 2c run its largest gap over
+360 rounds was 4.8e-6 (2c report, section 6).
+
+**The value-first rounds** (`value_first_rounds`, default 0:
+`agents/settings.py:78`). In a run's first such rounds the value network and
+its scale learn, the live check runs, and the soldier takes no step at all;
+its optimiser is not touched, so its weights stay the same to the bit
+(`agents/learner.py:404-407`). This is for a soldier that starts good (a
+copy of the bots) beside a fresh value network: without it, the first
+rounds would grade a good soldier with a value network that knows nothing.
+In the "good start" task neither 0 nor 5 such rounds wore the start down
+(2d note, section 8a).
+
+## 5. The memory
+
+**The cell.** With the memory on, the soldier's network carries a vector of
+256 numbers (the `join` width, `agents/spec.py:42-49`) from decision to
+decision: a GRU cell reads the joined view and the old memory and writes
+the new one (`agents/network.py:465-475`). The memory is set to zero where
+`first` says a match starts, inside the network, and nowhere else. Two
+details of how it starts, both from findings of 2d.1b:
+
+- **A spread of time scales** (Tallec and Ollivier 2018;
+  `agents/network.py:78-96`). Unit i starts keeping T_i / (T_i + 1) of
+  itself per decision, with T_i spread evenly in the logarithm from 1 to 32
+  decisions (`agents/network.py:75`). PyTorch's own start keeps half per
+  decision, so a mark is gone in a few decisions before any reward can teach
+  the cell to keep it. Measured: 7 times more of a cue's mark is left after
+  12 decisions, 27 times after 24 (2d note, section 8b).
+- **The heads read the memory through a normalising layer**
+  (`memory_norm`, `agents/network.py:405-413`). The cell's output starts
+  about 8 times smaller than the join; read raw, a cue was learnt through
+  the memory about twice as slowly as by a network without memory
+  (`agents/network.py:407-412`; 2d note, section 8b).
+
+**What the collector stores.** At every step the memory carried IN (before
+the decision, before the network zeroes it at a `first`) is stored as
+`memory[t]`, and the soldier acts from that stored copy
+(`agents/collector.py:215-226`); after the last step, `memory[T]`
+(`:318-319`). The memory is carried across steps and across rounds: a match
+does not end with the round.
+
+**The stretch.** Learning cannot replay every match from its start: that
+would mean running hundreds of decisions in order for every piece. So it
+replays **stretches** of at most `stretch` = 16 decisions (2.7 seconds;
+`agents/settings.py:73`) of one row, in order, from the stored memory at the
+stretch's start (`agents/learner.py:515-517`). That stored memory is a
+constant: the gradient stops at the stretch's start. The consequence, which
+design 4.5 states plainly: **what the memory can learn to hold is one
+stretch long.** It may carry more when acting, but nothing teaches it to.
+With the memory on, the stretch is the unit a pass shuffles and cuts (a
+piece of 2 048 decisions is 128 stretches), which is why `decisions`,
+`piece` and `lump` must be whole stretches (`agents/trainer.py:81-89`).
+
+**Where the stretches are cut, and why at a match start**
+(`agents/learner.py:449-468`). A row's batch time is cut at every decision a
+match starts on, and every 16 decisions after such a start (or after the
+batch's first decision). So a stretch never holds two matches, and a match
+no longer than 16 decisions that starts inside the batch lies in one
+stretch whole. With fixed cuts every 16 decisions, a cue at a match's first
+decision and its answer 12 decisions later shared a stretch only when the
+match started in the stretch's first 4 places (`agents/learner.py:47-51`),
+so most cues could never teach anything. A stretch cut short is replayed
+padded to 16 steps; the padding is not learnt from, and its end memory is
+read at its true end (`forward_sequence(..., upto)`,
+`agents/network.py:486-513`).
+
+**The live check's memory clause.** The memory recomputed at each
+stretch's end must equal the stored `memory[t0 + length]`
+(`agents/learner.py:518-522`). It is never dropped as redundant: on a fresh
+network a memory fault moves the log-probabilities by only 4e-4 to 8e-4
+(the heads start near-even), while the memory itself is off by 0.2 to 0.65;
+one fault (storing the memory after the decision) is seen only by this
+clause (2d note, section 8a).
+
+**What has been found: taught memory works, memory from reward alone does
+not (yet).** The test task is `recall12`: at a match's first decision a cue
+(one of four directions) is shown for that one decision; at decision 12 the
+feet must walk the cued way, and only that decision is paid. A random
+player scores 0.20 per answer, the pass line is 0.84 (2d note, section 8a).
+The measurements, from the 2d note, sections 8a to 8c:
+
+- 2d.1 learnt nothing; 2d.1b made the two changes to the cell above and
+  2d.1c cut the stretches at match starts. By reward `recall12` still stayed
+  flat, for 600 rounds.
+- The gap ladder: answering at the cue itself (gap 0, no memory needed)
+  passes in 93 rounds; gaps of 1, 2, 4 and 8 decisions stay at 0.24 to 0.26
+  for 300 rounds. A cliff at a gap of one, not a slow decline with the gap.
+- A "hold" form (every decision up to the answer paid for walking the cued
+  way) stays flat at 0.25 for 3 000 rounds at gap 12.
+- The reward's gradient points the right way on average (cosine +0.48 with
+  the right direction on a fresh network, +0.83 at the plateau, over the
+  mean of 20 batches) but a single batch is mostly noise (cosine +0.11 to
+  +0.16). A round moves the policy 0.001 against the early stop's 0.02; the
+  early stop never fires; half the distance goes to heads the task does not
+  pay.
+- **A memory taught by the right answers, then handed to the reward trainer
+  with a fresh value network, is kept and improved**: seed 0 from 0.92 to
+  0.97 in 200 rounds; seed 1, taught only to 0.73, held at 0.67 to 0.74.
+
+The reading in the note: no fault and no stopped learner, but the noise
+case. Reward keeps and sharpens a memory; from a start that ignores the cue,
+the signal per batch is too weak and the steps too small to find one. The
+three tests that need `recall12` to pass are skipped by name
+(`MEMORY_FINDING` in `agents/tests/test_tasks.py`), not loosened. For the
+ladder this means: a memory is expected to come from the copy of the bots,
+and reward to keep it. The range of 2c was trained with the memory off.
