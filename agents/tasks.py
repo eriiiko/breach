@@ -470,7 +470,37 @@ class RecallTask(_Base):
     chance (0.2) times the supervised one, and the 15 unpaid decisions a
     match share the feet head and the grades' common size: the cue's
     signal is below the noise at these numbers. Neither candidate is a
-    pass; nothing was tuned, loosened or shortened."""
+    pass; nothing was tuned, loosened or shortened.
+
+    FOLLOW-UP (2d.1c, the lead's two measurements; B on, the tasks' farm,
+    stretch 16, seed 0, planned and at most 300 rounds, stopped at a pass):
+
+    | gap | teaching answers a round | by reward |
+    |---|---|---|
+    | 0 | 130 | PASS in 93 rounds |
+    | 1 | 100 | flat, last 30 rounds 0.25 |
+    | 2 | 76 | flat, 0.25 |
+    | 4 | 50 | flat, 0.26 |
+    | 8 | 26 | flat, 0.24 |
+
+    A CLIFF between gap 0 and gap 1 (at gap 1 the teaching answers are
+    near gap 0's), not a growth with the gap. The noise diagnostic (a
+    scratch patch, never a fix): (a) the soldier's loss from the ANSWERS
+    only -- every other decision's clipped objective and variety masked,
+    and with them the distance, the live check's first clause and the
+    grades' common size taken over the answers; the value's loss, the
+    grading and the scale untouched: gap 1 PASSES in 159 rounds (means of
+    25 rounds 0.21, 0.26, 0.29, 0.52, 0.73, 0.74, 0.82); gap 12 flat on the
+    tasks' farm for 300 rounds (0.22 to 0.29) and on 128 decisions a round
+    for 150 (0.24 to 0.26; gap 1 needed 75 rounds before it rose, so 150 is
+    not conclusive). (b) every decision keeps its grade and its loss terms,
+    the grades brought to a common size with the mean and spread of the
+    answers' grades over the batch: gap 1 partly learnt, 0.25 for 175
+    rounds, then 0.37 to 0.48 at 300. Read: as soon as one decision comes
+    before the answer in its match (gap >= 1), the answer's luck flows back
+    through the grades onto decisions that cannot cause it, on the same
+    feet head, and drowns the cue; at gap 0 nothing comes before the answer.
+    At gap 12 the drowning is not the only obstacle within these budgets."""
 
     N_DIRS = 4
 

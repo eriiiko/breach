@@ -325,6 +325,23 @@ with either candidate; the three tests stay skipped by name
   cue's signal is below the noise at the design's numbers. What changes
   next (a larger budget, a different task shape, the trainer's numbers as
   a sweep) is the lead's.
+- **Follow-up (the lead's two measurements; measurements only, no fix).**
+  The gap ladder (B on, the tasks' farm, stretch 16, seed 0, at most 300
+  rounds): gap 0 passes in 93 rounds (130 teaching answers a round); gaps
+  1, 2, 4 and 8 (100, 76, 50, 26 a round) stay flat at 0.24 to 0.26 for
+  300 rounds. A cliff at gap 1, not a growth with the gap: structure, not
+  budget. The noise diagnostic (scratch patches, never committed): with
+  the soldier's loss from the answers only (every other decision's clipped
+  objective and variety masked; distance, live check's first clause and
+  common size over the answers; value, grading and scale untouched) gap 1
+  passes in 159 rounds; with every decision kept but the grades' common
+  size from the answers' grades only, gap 1 rises late to 0.48 at 300.
+  With the answers only, gap 12 stays flat (300 rounds on the tasks'
+  farm; 150 on 128 decisions a round, not conclusive). Read: once a
+  decision precedes the answer in its match, the answer's luck reaches it
+  through the grades and drowns the cue on the shared feet head; at gap 12
+  something more (the budget, the keeping) is still in the way. The
+  numbers are in `RecallTask`'s text.
 
 ---
 
