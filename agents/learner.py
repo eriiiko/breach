@@ -37,15 +37,25 @@ ONE ROUND OF LEARNING, top to bottom (:meth:`Learner.learn`):
      over the planned rounds).
 
 WITH THE SOLDIER'S MEMORY ON (patch 2d; design 4.5), the unit a pass
-shuffles and cuts is the STRETCH -- a row's ``stretch`` decisions ``k *
-stretch .. k * stretch + stretch - 1`` on the batch's own time -- never a
-single decision: a piece of ``piece`` decisions is ``piece / stretch``
-stretches, a lump ``lump / stretch``. Only stretches holding a value row are
-taken. Each stretch is replayed in order by ``forward_sequence`` from the
-stored ``memory[t0]`` (a constant: the gradient stops at the stretch's
-start) with its stored ``first`` flags, and the policy rows among its
-decisions are evaluated; the value network learns from the value rows of
-the same stretches. Grades, the clip, the early stop, the common size per
+shuffles and cuts is the STRETCH -- at most ``stretch`` consecutive
+decisions of one row -- never a single decision: a piece of ``piece``
+decisions is ``piece / stretch`` stretches, a lump ``lump / stretch``.
+THE STRETCHES START AT A MATCH'S FIRST DECISION (patch 2d.1c,
+:meth:`Learner._stretches`): a row's batch time is cut at every decision a
+match starts on and, from each such start (and from the batch's first
+decision), every ``stretch`` decisions after it; so a stretch never holds
+two matches, is never longer than ``stretch``, and a match no longer than a
+stretch lies in one stretch whole when it starts inside the batch (with
+fixed cuts every ``stretch`` decisions, a cue at a match's start and its
+answer 12 later shared a stretch only when the match started in the
+stretch's first 4 places: 2d.1b's finding). Only stretches holding a value
+row are taken. Each stretch is replayed in order by ``forward_sequence``
+from the stored ``memory[t0]`` (a constant: the gradient stops at the
+stretch's start) with its stored ``first`` flags, padded after its end to
+``stretch`` steps (a later step never reaches an earlier output; the padded
+steps are not learnt from), and the policy rows among its decisions are
+evaluated; the value network learns from the value rows of the same
+stretches. Grades, the clip, the early stop, the common size per
 piece over its policy rows and the two optimisers are as without memory.
 With the memory off nothing here changes: the same weights, bit for bit.
 
@@ -62,7 +72,7 @@ probability of every stored choice equals the stored one to
 equal the stored ones exactly, and the distance moved is 0 to the
 tolerance; with the memory on (its second clause, design 4.8) the memory
 ``forward_sequence`` returns after every stretch of the piece equals the
-stored ``memory[t0 + stretch]`` to ``live_tolerance`` -- and the first
+stored ``memory[t0 + length]`` to ``live_tolerance`` -- and the first
 clause then runs through the sequence path, so it also catches a stretch
 replayed from the wrong start. A failure stops the run
 (:class:`LiveCheckFailed`) saying which clause (for the memory, the row and
@@ -337,8 +347,8 @@ class Learner:
             order = self.rng.permutation(units)
             for k, piece_u in enumerate(cut_pieces(order, unit_piece)):
                 checking = (p == 0 and k == 0)
-                piece = (self._stretch_decisions(batch, piece_u).reshape(-1)
-                         if memory else piece_u)
+                piece = (self._stretch_decisions(batch, piece_u)[
+                    self._stretch_kept(piece_u)] if memory else piece_u)
                 pol = piece[policy_rows[piece]]
                 n_pol = len(pol)
                 n_val = (int(value_rows[piece].sum()) if memory
@@ -357,7 +367,7 @@ class Learner:
                     out = None
                     if memory:
                         idx = self._stretch_decisions(batch, lump_u)
-                        lump = idx.reshape(-1)
+                        lump = idx[self._stretch_kept(lump_u)]
                         lump = lump[value_rows[lump]]
                         if soldier_learns:
                             out = self._soldier_stretches(
@@ -436,22 +446,54 @@ class Learner:
         }
 
     # -- the memory's stretches ------------------------------------------
-    def _stretch_units(self, batch: Batch, value_rows) -> np.ndarray:
-        """The stretches holding a value row, as units ``k * R + r``
-        (stretch ``k`` of row ``r``)."""
+    def _stretches(self, batch: Batch) -> tuple:
+        """Every row's batch time cut into stretches (module text): cut at
+        each decision a match starts on and every ``stretch`` decisions
+        after such a start or the batch's first decision. Returns
+        ``(start, row, length)`` arrays, a row's stretches in time order."""
         S, T, R = self.settings.stretch, batch.T, batch.R
-        vr = value_rows.reshape(T // S, S, R).any(axis=1)
-        return np.flatnonzero(vr.reshape(-1))
+        starts = batch.first[1:] != 0
+        start, row, length = [], [], []
+        for r in range(R):
+            a = 0
+            for c in list(np.flatnonzero(starts[:, r]) + 1) + [T]:
+                while a < c:
+                    n = min(S, int(c) - a)
+                    start.append(a)
+                    row.append(r)
+                    length.append(n)
+                    a += n
+        return (np.asarray(start, dtype=np.int64),
+                np.asarray(row, dtype=np.int64),
+                np.asarray(length, dtype=np.int64))
+
+    def _stretch_units(self, batch: Batch, value_rows) -> np.ndarray:
+        """The stretches holding a value row, as units (indices into this
+        batch's :meth:`_stretches`, kept for the round)."""
+        self._segs = self._stretches(batch)
+        start, row, length = self._segs
+        holds = np.array([value_rows[(a + np.arange(n)) * batch.R + r].any()
+                          for a, r, n in zip(start, row, length)], dtype=bool)
+        return np.flatnonzero(holds)
 
     def _stretch_decisions(self, batch: Batch, units) -> np.ndarray:
         """``(stretch, n)``: the flat decision index of every step of the
         stretches ``units``, in the order ``forward_sequence`` returns
-        them (time first)."""
-        S, R = self.settings.stretch, batch.R
+        them (time first); a stretch shorter than ``stretch`` is padded
+        after its end (the batch's last step repeated past it), its padded
+        steps marked by :meth:`_stretch_kept`."""
+        S, T, R = self.settings.stretch, batch.T, batch.R
+        start, row, _ = self._segs
         units = np.asarray(units)
-        t0 = (units // R) * S
-        r = units % R
-        return (t0[None, :] + np.arange(S)[:, None]) * R + r[None, :]
+        t = np.minimum(start[units][None, :] + np.arange(S)[:, None], T - 1)
+        return t * R + row[units][None, :]
+
+    def _stretch_kept(self, units) -> np.ndarray:
+        """``(stretch, n)``: True at the steps that belong to the stretch
+        (not its padding)."""
+        units = np.asarray(units)
+        return (np.arange(self.settings.stretch)[:, None]
+                < self._segs[2][units][None, :])
 
     def _soldier_stretches(self, batch, units, idx, policy_rows, n_pol,
                            grades, stored_logp, checking, seen):
@@ -459,25 +501,27 @@ class Learner:
         from the stored memory at each start with the stored ``first``
         flags; the soldier's loss on their policy rows (its share of the
         piece's mean), backward. On the checking piece the memory after
-        every stretch is kept for the live check's second clause. Returns
-        the measurements, or None when the lump holds no policy row."""
-        S, R = self.settings.stretch, batch.R
+        every stretch's last step is kept for the live check's second
+        clause. Returns the measurements, or None when the lump holds no
+        policy row."""
         units = np.asarray(units)
-        t0 = (units // R) * S
-        r = units % R
+        start, row, length = self._segs
+        t0, r, n = start[units], row[units], length[units]
         flat = idx.reshape(-1)
         obs = {k: torch.as_tensor(batch.flat(k)[idx], device=self.device)
                for k in SOLDIER_KEYS}
         first = torch.as_tensor(batch.flat("first")[idx] != 0,
                                 device=self.device)
         state = torch.as_tensor(batch.memory[t0, r], device=self.device)
-        out, end = self.soldier.forward_sequence(obs, state, first)
+        out, end = self.soldier.forward_sequence(
+            obs, state, first, upto=torch.as_tensor(n, device=self.device))
         if checking:
-            stored = torch.as_tensor(batch.memory[t0 + S, r],
+            stored = torch.as_tensor(batch.memory[t0 + n, r],
                                      device=self.device)
             seen["mem"].append(((end.detach() - stored).abs().amax(dim=-1),
                                 units))
-        sel = np.flatnonzero(policy_rows[flat])
+        sel = np.flatnonzero(policy_rows[flat]
+                             & self._stretch_kept(units).reshape(-1))
         if not len(sel):
             return None
         return self._soldier_loss(
@@ -493,11 +537,12 @@ class Learner:
         gaps = torch.cat([g for g, _ in kept]).cpu().numpy()
         units = np.concatenate([u for _, u in kept])
         w = int(np.argmax(gaps))
-        k, r = divmod(int(units[w]), batch.R)
-        S = self.settings.stretch
+        start, row, length = self._segs
+        u = int(units[w])
+        a, n = int(start[u]), int(length[u])
         return (float(gaps[w]),
-                f"{batch.rows.name(r)}, stretch {k} (decisions {k * S} to "
-                f"{k * S + S - 1})")
+                f"{batch.rows.name(int(row[u]))}, stretch at decisions {a} "
+                f"to {a + n - 1}")
 
     def _soldier_lump(self, batch, idx, n_pol, grades, stored_logp,
                       checking, seen) -> dict:

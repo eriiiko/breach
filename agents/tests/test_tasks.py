@@ -147,9 +147,14 @@ MEMORY_BUDGET = {("recall12", 16): None, ("recall24", 32): None}
 #: normalising layer: gap 0 with memory passes by reward in 87 rounds) and
 #: measured the rest: the tasks' farm gives recall12 8.5 teaching answers a
 #: round (gap 0: 130), still flat after 370 rounds. The farm is the lead's.
-MEMORY_FINDING = ("FINDING 2d.1/2d.1b: recall12 is not learnt on the tasks' "
-                  "farm (too few teaching answers a round; agents/tasks.py "
-                  "RecallTask); the lead decides the farm")
+#: 2d.1c measured both candidates on seed 0 for 600 rounds each: the
+#: stretches starting at a match's first decision (17.3 teaching answers a
+#: round) and that with 128 decisions a round (95): both flat; the cue's
+#: signal is below the noise (the task's text). Still skipped.
+MEMORY_FINDING = ("FINDING 2d.1/2d.1b/2d.1c: recall12 is not learnt by "
+                  "reward, neither with stretches starting at a match's "
+                  "start nor with 128 decisions a round (agents/tasks.py "
+                  "RecallTask); the lead decides what changes")
 memory_finding = pytest.mark.skip(reason=MEMORY_FINDING)
 #: recall24 with stretches of 16 is run for as long as recall24 with 32 is
 #: given, and must stay near the random player: its mean over the last

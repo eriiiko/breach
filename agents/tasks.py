@@ -433,7 +433,138 @@ class RecallTask(_Base):
        budget at 4 s a round (under load). What a pass needs is a farm
        giving more teaching answers a round (more matches, more decisions
        a round) or a larger budget, decided by the lead and written here
-       with its measurement."""
+       with its measurement.
+
+    WHAT 2d.1c MEASURED (2026-11-18; FINDING, still open). Two candidates,
+    seed 0, stretches of 16, planned 600 rounds, the machine shared with
+    another agent's builds (4 to 24 s a round as its load came and went):
+
+    - B, THE STRETCHES START AT A MATCH'S FIRST DECISION (the learner,
+      ``Learner._stretches``, kept on the branch): teaching answers a round
+      on the tasks' farm 8.5 -> 17.3. By reward: flat for all 600 rounds
+      (the means of ten rounds 0.18 to 0.31; last five 0.19), 4.4 s a
+      round.
+    - A with B, the design's 128 decisions a round (``Settings.decisions``'
+      default; the tasks' farm keeps 32 for speed): teaching answers a
+      round 95 (fixed cuts at 128: 28.7; 32 matches x 32 decisions with
+      fixed cuts, 2d.1b's farm, 34.6; gap 0 on the tasks' farm: 130), 15 to
+      24 s a round. By reward: flat for all 600 rounds (the means of 25
+      rounds 0.22 to 0.27; 19 s a round on average; an earlier run of the
+      same, stopped at 150 rounds, 0.21 to 0.30). A alone (fixed cuts) gives
+      fewer teaching answers than A with B at the same cost, and 2d.1b ran
+      it on 32 matches for 100 rounds flat: not run again.
+
+    The diagnosis (A with B, every 25 rounds, over the ~95 answers of the
+    round's batch replayed from their match's start): the gradient of the
+    right answer's log-probability reaching the memory after the cue's
+    step is 0.44 to 0.66 of its size at the step before the answer (no
+    vanishing: the chrono start holds); the cue read back from the memory
+    at the answer by a linear probe stays near chance (0.10 to 0.43
+    against 0.25, noisy at ~47 held-out answers, no trend); the feet's
+    variety at the answer FALLS from 1.61 (all five even) to 1.04 to 1.4
+    while the chance of the right answer stays 0.23 to 0.28: the soldier
+    grows sure of a direction that does not depend on the cue; the value's
+    error at the answer stays about the pay's own spread (0.36 to 0.50
+    against a 0/1 pay near 0.25); no early stop in any round (8 steps a
+    round). In expectation the answer's gradient is only the right answer's
+    chance (0.2) times the supervised one, and the 15 unpaid decisions a
+    match share the feet head and the grades' common size: the cue's
+    signal is below the noise at these numbers. Neither candidate is a
+    pass; nothing was tuned, loosened or shortened.
+
+    FOLLOW-UP (2d.1c, the lead's two measurements; B on, the tasks' farm,
+    stretch 16, seed 0, planned and at most 300 rounds, stopped at a pass):
+
+    | gap | teaching answers a round | by reward |
+    |---|---|---|
+    | 0 | 130 | PASS in 93 rounds |
+    | 1 | 100 | flat, last 30 rounds 0.25 |
+    | 2 | 76 | flat, 0.25 |
+    | 4 | 50 | flat, 0.26 |
+    | 8 | 26 | flat, 0.24 |
+
+    A CLIFF between gap 0 and gap 1 (at gap 1 the teaching answers are
+    near gap 0's), not a growth with the gap. The noise diagnostic (a
+    scratch patch, never a fix): (a) the soldier's loss from the ANSWERS
+    only -- every other decision's clipped objective and variety masked,
+    and with them the distance, the live check's first clause and the
+    grades' common size taken over the answers; the value's loss, the
+    grading and the scale untouched: gap 1 PASSES in 159 rounds (means of
+    25 rounds 0.21, 0.26, 0.29, 0.52, 0.73, 0.74, 0.82); gap 12 flat on the
+    tasks' farm for 300 rounds (0.22 to 0.29) and on 128 decisions a round
+    for 150 (0.24 to 0.26; gap 1 needed 75 rounds before it rose, so 150 is
+    not conclusive). (b) every decision keeps its grade and its loss terms,
+    the grades brought to a common size with the mean and spread of the
+    answers' grades over the batch: gap 1 partly learnt, 0.25 for 175
+    rounds, then 0.37 to 0.48 at 300. Read: as soon as one decision comes
+    before the answer in its match (gap >= 1), the answer's luck flows back
+    through the grades onto decisions that cannot cause it, on the same
+    feet head, and drowns the cue; at gap 0 nothing comes before the answer.
+    At gap 12 the drowning is not the only obstacle within these budgets.
+
+    SECOND FOLLOW-UP (scratch task shapes, never committed; B on, the
+    tasks' farm, stretch 16, seed 0, at most 300 rounds):
+
+    | shape | gap | by reward (means of 25 rounds) |
+    |---|---|---|
+    | "hold": every decision 1..gap paid for the cued way | 12 | flat, 0.22 to 0.25 (last 25: 0.25) |
+    | "go": a column shows 1 at the answer only | 12 | flat, 0.20 to 0.27 (last 25: 0.24) |
+
+    Neither shape passes gap 12; "hold" at gap 4 and "go" at gap 1 were
+    still running when this was written (the lead's runs since: "hold" gap
+    4 flat at 0.25 for 300 rounds; "go" gap 1 0.41 to 0.43, no pass;
+    "hold" gap 12 flat at 0.25 from round 75 to round 3000).
+
+    THIRD FOLLOW-UP (2d.1c; B on, the tasks' farm, stretch 16, seed 0;
+    scratch scripts, measurements only):
+
+    E1, the direction. On 20 fresh batches each, the soldier's gradient as
+    the learner forms it (its first piece, before clipping: g_rl), the same
+    with the answers only (g_ans), against the gradient of the mean
+    log-probability of the right feet at the answers (g_sup) and of the
+    mean probability (g_obj, what the pay rewards). Cosines, mean +- s.e.
+    over batches (all weights), and of the 20-batch means:
+
+    | gap, network | g_rl.g_obj per batch | of the means | g_ans.g_obj per batch | of the means | |mean|^2/var g_rl, g_ans |
+    |---|---|---|---|---|---|
+    | 12, fresh | +0.16 +- 0.04 | +0.48 | +0.43 +- 0.04 | +0.91 | 0.06, 0.18 |
+    | 12, 100 rounds (plateau) | +0.11 +- 0.11 | +0.83 | +0.43 +- 0.09 | +0.48 | 0.09, 0.13 |
+    | 1, fresh | +0.44 +- 0.05 | +0.93 | +0.65 +- 0.03 | +0.98 | 0.23, 0.55 |
+    | 1, 100 rounds (plateau) | +0.34 +- 0.11 | +0.26 | +0.45 +- 0.10 | +0.46 | 0.02, 0.03 |
+
+    (Fresh, g_sup and g_obj coincide; at the plateau g_sup's mean points
+    away from the soldier's favourite direction and its cosines with g_rl
+    and g_ans fall to about 0.1, and the means' to -0.45 for g_ans: g_obj
+    is the honest comparison.) The answers' grades have the right sign
+    (common size, right +2.9 to +3.5, wrong -0.2 to -0.6). Per group at the
+    plateau (gap 12, g_ans against g_obj, of the means): memory cell 0.75,
+    memory_norm 0.98, join 0.75, feet head 0.49.
+
+    E2, a round at the plateau (gap 12, rounds 100 to 119): all 4 planned
+    steps run every round, the early stop never fires; the distance after
+    the last step is -0.002 to +0.004 (mean |.| 0.001, max_distance 0.02);
+    the gradient's norm before clipping 0.13 to 0.55 (mean 0.35; 5 % of the
+    steps clipped at 0.5); step size 2.0e-4 to 1.8e-4. Of the distance,
+    feet 52 %, trigger 23 %, aim 18 %, hand 7 %: half goes to heads this
+    task does not pay.
+
+    E3, does reward keep a memory that exists. Supervised fit of recall12
+    (32 matches x 64 decisions, Adam 1e-3) until p(right) > 0.9, then that
+    soldier with a FRESH value network to the trainer for 200 rounds: seed
+    0 (supervised 0.91 at step 630): round 1 0.92, 25-round means 0.91,
+    0.93, 0.96, 0.96, 0.97, 0.98, 0.98, 0.97: KEPT and improved (4.2 s a
+    round). Seed 1: the supervised fit stalled at 0.71 to 0.76 for 1 400
+    steps and was handed over at step 2 000 (not above 0.9); by reward
+    round 1 0.67, 25-round means 0.68, 0.74, 0.70, 0.71, 0.68, 0.68,
+    0.67, 0.72: held, neither lost nor raised to the line.
+
+    Reading: no sign fault (E1: the grades and the mean direction are
+    right); the learner is not stopped (E2: every step runs, at about 5 %
+    of its distance budget); reward keeps and sharpens a memory that exists
+    (E3). The plateau is the noise case: per batch the reward gradient is
+    mostly noise (|mean|^2 / variance 0.02 to 0.18, so 5 to 50 batches
+    before the signal stands out), and the steps are small, so a cue-blind
+    start never finds the memory."""
 
     N_DIRS = 4
 
