@@ -190,6 +190,16 @@ def test_an_explosion_hit_points_from_the_detonation_to_the_victim():
     assert (hb.dir_x_q, hb.dir_y_q) == (0, 0)
 
 
+
+@pytest.fixture(autouse=True)
+def _unprotected_body(monkeypatch):
+    """#215: this module holds the heat row's UNSCALED law (heat_absorption
+    1.0); the shipped protection only scales what reaches the body
+    (tests/test_body_temp.py::test_the_protection_scales_both_inflows_alike)."""
+    from simulation import body_temp
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: 1 << 16)
+
+
 class _HeatStub:
     """#215: the heat row's body law also reads the footprint's air (one
     atmosphere, ambient) and the tile size."""

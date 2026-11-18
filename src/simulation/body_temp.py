@@ -12,10 +12,19 @@ or the air, never the body.
 THE LAW, per tick, every living unit (degrees as Q16; ``a`` the per-tick
 fraction ``loss / (capacity x tps)``)::
 
-    in    = a x (felt - ambient)                     the absorbed energy / C
-    air   = k_air x (body - T_air)                   k_air = min(a_air x p, ONE - a_rad)
-    rad   = a_rad x (body - ambient)
-    body += round((in - air - rad) / ONE)
+    in    = a x (felt - ambient) + k_air x (T_air - ambient)   what reaches the body
+    out   = (k_air + a_rad) x (body - ambient)                  what it loses
+    body += round((round(h x in / ONE) - out) / ONE)
+    k_air = min(a_air x p, ONE - a_rad)
+
+``h`` is THE PROTECTION (#215, Erik 2026-11-18: "protect only the body"): the
+env profile's ``heat_absorption``, the share of the heat that reaches the body
+it takes up, 1.0 = the unprotected law. It scales both inflows alike (the
+radiation and deposits the felt temperature reads, and the air's excess over
+ambient), never the losses, so the balance stays one linear law and in still
+ambient air the body settles at ``ambient + h x (felt - ambient)``. At ``h =
+ONE`` the step is the unscaled law bit for bit (the air term ``k_air (T_air -
+body)`` split at ambient into its inflow and its loss).
 
 ``felt`` is THE felt temperature (``exchange.felt_temperature_q``): the heat
 row's reading of what the body absorbs, which the felt temperature already is
@@ -159,25 +168,40 @@ def air_read(gmap, u, amb_q: int, k_q: int) -> tuple:
             amb_q + unit_fixed.mul_q16_round(k_q, t_game))
 
 
+def absorption_q(env) -> int:
+    """The unit's protection, its environment's ``heat_absorption`` as a Q16
+    fraction (the profile door holds it in [0, 1])."""
+    from simulation.environment import HUMAN_ENVIRONMENT
+    h = getattr(env, "heat_absorption", None)
+    if h is None:
+        h = HUMAN_ENVIRONMENT.heat_absorption
+    h = float(h)                                              # p3e-door
+    if not 0.0 <= h <= 1.0:
+        raise ValueError(f"heat_absorption must be in [0, 1] (got {h!r})")
+    return unit_fixed.quantize_scalar(h)
+
+
 def step_q(body_q: int, felt_q: int, p_q: int, t_air_q: int, a_q: int,
-           a_rad_q: int, amb_q: int) -> int:
+           a_rad_q: int, amb_q: int, h_q: int = ONE) -> int:
     """The law's one tick (module docstring): the new body temperature."""
     k_air = unit_fixed.mul_q16_round(a_q - a_rad_q, p_q)
     cap = ONE - a_rad_q
     if k_air > cap:
         k_air = cap
-    num = (a_q * (felt_q - amb_q) - k_air * (body_q - t_air_q)
-           - a_rad_q * (body_q - amb_q))
+    inflow = a_q * (felt_q - amb_q) + k_air * (t_air_q - amb_q)
+    if h_q != ONE:
+        inflow = unit_fixed.mul_q16_round(h_q, inflow)
+    num = inflow - (k_air + a_rad_q) * (body_q - amb_q)
     return body_q + unit_fixed.div_round(num, ONE)
 
 
 def advance(u, gmap, felt_q: int, a_q: int, a_rad_q: int, amb_q: int,
-            k_q: int) -> int:
+            k_q: int, h_q: int = ONE) -> int:
     """One tick of the law on ``u`` (the heat row's call): reads the air on
     its footprint, writes and returns ``u.body_temp_q``."""
     body = int(getattr(u, "body_temp_q", amb_q))
     p_q, t_air_q = air_read(gmap, u, amb_q, k_q)
-    new = step_q(body, felt_q, p_q, t_air_q, a_q, a_rad_q, amb_q)
+    new = step_q(body, felt_q, p_q, t_air_q, a_q, a_rad_q, amb_q, h_q)
     if new != body:
         u.body_temp_q = new
     return new
@@ -189,6 +213,6 @@ def clear(u) -> None:
         u.body_temp_q = ambient_q()
 
 
-__all__ = ["ONE", "BODY_MAX", "PRESSURE_MAX", "ambient_q", "j_per_heat_unit",
+__all__ = ["ONE", "BODY_MAX", "PRESSURE_MAX", "absorption_q", "ambient_q", "j_per_heat_unit",
            "loss_w_per_k", "capacity_of", "rates_q", "k_temp_q", "air_read",
            "step_q", "advance", "clear"]

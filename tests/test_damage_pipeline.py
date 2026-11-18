@@ -336,7 +336,7 @@ def test_zombie_non_heat_types_stay_neutral_bitwise():
             assert _bits(mitigate(x, dtype, prof)) == _bits(x)
 
 
-def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
+def test_heat_site_end_to_end_bit_identity_marine_and_zombie(monkeypatch):
     """#29 P3e: the routed heat response is THE integer law, bit for bit: for
     a phi sweep, the marine's hp delta is the Q16 law written here by hand
     (the gain and dials quantized once, each product / quotient rounded once,
@@ -352,6 +352,9 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
     import numpy as np
     from simulation.exchange import HEAT_SCALE, apply_environmental_damage
     from simulation.materials import THERMAL_MASS_UNIT
+    from simulation import body_temp
+    # #215: the UNSCALED law (heat_absorption 1.0), written by hand below.
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: 1 << 16)
 
     class _HeatStub:
         def __init__(self, h, w):

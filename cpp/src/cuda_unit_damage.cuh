@@ -530,12 +530,13 @@ __device__ inline BodyAir body_air(const int64_t* row, const int64_t* tab, const
     return a;
 }
 
-// body_temp.step_q: k_air = min(round(a_air x p), ONE - a_rad); the new body
-// = body + round((a (felt - amb) - k_air (body - T_air) - a_rad (body - amb))
-// / ONE). *bad past BODY_MAX.
+// body_temp.step_q: k_air = min(round(a_air x p), ONE - a_rad); the inflow
+// a (felt - amb) + k_air (T_air - amb), scaled by the absorption h (Q16, the
+// identity at ONE: round(h x inflow / ONE)); the new body = body +
+// round((inflow - (k_air + a_rad) (body - amb)) / ONE). *bad past BODY_MAX.
 __device__ inline int64_t body_step(int64_t body, int64_t felt, const BodyAir& air, int64_t a,
-                                    int64_t a_rad, int64_t amb, bool* bad) {
-    const int64_t din = felt - amb, dair = body - air.t_air_q, drad = body - amb;
+                                    int64_t a_rad, int64_t amb, int64_t h, bool* bad) {
+    const int64_t din = felt - amb, drad = body - amb;
     if (body > BODY_MAX || body < -BODY_MAX || din > BODY_MAX || din < -BODY_MAX ||
         air.t_air_q > BODY_MAX || air.t_air_q < -BODY_MAX) {
         *bad = true;
@@ -543,7 +544,9 @@ __device__ inline int64_t body_step(int64_t body, int64_t felt, const BodyAir& a
     }
     int64_t k_air = fixedpoint::mul_q16_round_q(a - a_rad, air.p_q);
     if (k_air > ONE - a_rad) k_air = ONE - a_rad;
-    const int64_t num = a * din - k_air * dair - a_rad * drad;
+    int64_t inflow = a * din + k_air * (air.t_air_q - amb);
+    if (h != ONE) inflow = fixedpoint::mul_q16_round_q(h, inflow);
+    const int64_t num = inflow - (k_air + a_rad) * drad;
     return body + fixedpoint::div_round_q(num, ONE);
 }
 

@@ -95,10 +95,13 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
                                          : tab[UNIT_TAB_BODY_A_SPECIES_Q + idx];
             const int64_t a_rad = is_profile ? tab[UNIT_TAB_BODY_A_RAD_PROFILE_Q + idx]
                                              : tab[UNIT_TAB_BODY_A_RAD_SPECIES_Q + idx];
+            const int64_t h = is_profile ? tab[UNIT_TAB_BODY_ABSORB_PROFILE_Q + idx]
+                                         : tab[UNIT_TAB_BODY_ABSORB_SPECIES_Q + idx];
             const BodyAir air = body_air(loc, tab, bptr(atm, plane), bptr(temp, plane),
                                          bptr(solid, plane), h, w, &bad);
             const int64_t body = bad ? 0 : body_step(loc[UNIT_COL_BODY_TEMP_Q], ft.t_felt_q, air,
-                                                     a, a_rad, tab[UNIT_TAB_HEAT_AMBIENT_Q], &bad);
+                                                     a, a_rad, tab[UNIT_TAB_HEAT_AMBIENT_Q], h,
+                                                     &bad);
             if (!bad) {
                 bool ch = false;
                 put(loc, UNIT_COL_BODY_TEMP_Q, body, ch);

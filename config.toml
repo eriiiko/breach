@@ -4238,18 +4238,8 @@ smoke_scale = 0.25       # the game's look, on top of the cited soot_yield rows:
 #   smoke: strength * grenade_kg of its `explosive`, over the heat's tiles.
 [blast]
 expansion_m3_per_strength = 40.0   # a real marine knocked down to 2.5 m at strength 1
-# heat_mj_per_strength: #215 CALIBRATED on the body (docs/body_temperature_design_
-# 2026-11-17.md section 2, "The frag"): WAS 10.0, which put 77 heat units (2.4 MJ)
-# on the tile next to a strength-1 blast, read by a marine there as 1.8 MJ absorbed
-# in one tick (576 HP of heat on top of the blast's 30). With a body that has a heat
-# capacity (320 J/K) the frag's heat is calibrated so a body on the next tile
-# absorbs a few kJ: 0.025 MJ lands about 0.19 heat units there, about 4.6 kJ in the
-# shell, which jumps about 14 C and cools in 2 s (no heat damage). A real M67 holds
-# about 0.9 MJ in all, most of it in the blast and the fragments. The same number
-# heats the AIR of every strength row (the frag, the breach charge, C4, the engine's
-# death, the magazine cook-off): a blast's own heat now ignites little (the lead's
-# finding, reported on #215; Erik's to rebalance).
-heat_mj_per_strength = 0.025
+heat_mj_per_strength = 10.0        # about 54 / 63 / 84 / 89 / 94 HP left at 1 / 1.5 / 2 / 2.5 / 3 m
+# (#215: a body's protection from this heat is its env profile's heat_absorption, never this number)
 grenade_kg = 0.184                 # the M67's 6.5 oz of Composition B: strength 1
 
 # ---------------------------------------------------------------------------
@@ -5373,6 +5363,12 @@ temperature_max = 60.0
 # #215: the suit shell's heat capacity, J/K (simulation.body_temp): with the
 # derived loss of 159 W/K a time constant of 2 s. More = heat resistance.
 body_heat_capacity_j_per_k = 320.0
+# #215: THE protection (Erik, 2026-11-18: "protect only the body"): the share
+# of the heat reaching the body (radiation, deposits, hot air) it takes up;
+# 1.0 = unprotected. 0.05 is the lead's first value (a frag on the next tile
+# bills about 28 HP of heat; the calibration table is in docs/body_
+# temperature_impl_2026-11-17.md). Erik tunes it.
+heat_absorption = 0.05
 stability = 1.0
 front_arc_deg = 120.0
 behind_arc_deg = 90.0

@@ -62,6 +62,16 @@ from simulation.unit import Unit  # noqa: E402
 # + indexing). A real GameMap works too, but the stub keeps the consumer tests
 # fast and free of level geometry.
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _unprotected_body(monkeypatch):
+    """#215: this module holds the heat row's UNSCALED law (heat_absorption
+    1.0); the shipped protection only scales what reaches the body
+    (tests/test_body_temp.py::test_the_protection_scales_both_inflows_alike)."""
+    from simulation import body_temp
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: 1 << 16)
+
+
 class _HeatStub:
     """#215: the body law also reads the air on the footprint (one
     atmosphere, the engine's ambient: the steady-state anchor's conditions)

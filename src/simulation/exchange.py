@@ -469,7 +469,7 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         if ar is None:
             ar = rates[cap] = _body_temp.rates_q(gmap, cap)
         body_q = _body_temp.advance(u, gmap, t_felt_q, ar[0], ar[1], amb_q,
-                                    k_q)
+                                    k_q, _body_temp.absorption_q(env))
         temp_max_q = q(float(getattr(env, "temperature_max",
                                      temp_max_cfg)))         # p3e-door
         rate_q = q(float(getattr(env, "environmental_damage_rate",

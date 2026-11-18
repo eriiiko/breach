@@ -549,6 +549,13 @@ ROWS: tuple[TableRow, ...] = (
              lambda src: _per_species(
                  lambda s: (_body_rates(src, s.environment)[1],)), 0, ONE,
              "per species: its environment's a_rad"),
+    TableRow("body_absorb_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_body_mod().absorption_q(p),)),
+             0, ONE, "per [env_profiles.*] row: heat_absorption, Q16"),
+    TableRow("body_absorb_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_body_mod().absorption_q(s.environment),)), 0, ONE,
+             "per species: its environment's heat_absorption, Q16"),
     TableRow("body_k_temp_q", 1, lambda src: _body_mod().k_temp_q(), 0,
              1 << 20, "temperature_scale k_temp_to_kelvin, Q16 (game degrees "
              "to C)"),

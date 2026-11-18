@@ -77,15 +77,34 @@ def _rates(stub):
     return body_temp.rates_q(stub, 320.0)
 
 
+#: The shipped protection (every profile's heat_absorption).
+SHIPPED_H_Q = body_temp.absorption_q(None)
+
+
+@pytest.fixture
+def unprotected(monkeypatch):
+    """The UNSCALED law: every body takes up all the heat reaching it
+    (heat_absorption 1.0) -- the literature table's anchor and the energy
+    properties below are the law's at absorption 1; the shipped protection
+    scales them (test_the_protection_scales_both_inflows_alike)."""
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: ONE)
+
+
+def _with_h(monkeypatch, h):
+    q = unit_fixed.quantize_scalar(h)
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env, _q=q: _q)
+
+
 # ---------------------------------------------------------------------------
 # The steady state is today's law
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("kw_m2", (1.0, 2.5, 5.0, 10.0, 20.0, 50.0))
-def test_the_steady_state_is_the_literature_table(kw_m2):
+def test_the_steady_state_is_the_literature_table(kw_m2, unprotected):
     """Property: under a constant absorbed flux in air at one atmosphere and
     20 C the body settles at today's felt temperature and the damage per
     second equals today's, for every row of [combat]'s literature table (the
-    anchor: 2.5 kW/m2 sits on the band's edge). Breaks if the loss stops being
+    anchor: 2.5 kW/m2 sits on the band's edge) -- the UNSCALED law, at
+    heat_absorption 1. Breaks if the loss stops being
     derived from heat_flux_to_temp, the air and radiated shares stop summing to
     it, or the band reads anything but the body."""
     stub = _Stub()
@@ -139,7 +158,7 @@ def _burst(joules):
     return jump, hp0 - u.current_hp, u, hp1 - u.current_hp
 
 
-def test_a_burst_moves_the_body_by_joules_over_capacity():
+def test_a_burst_moves_the_body_by_joules_over_capacity(unprotected):
     """Property: a one-tick burst moves the body by its absorbed joules over
     the 320 J/K capacity, and the harm comes after it, over the cooling, the
     body back at ambient. Breaks if the body is billed the burst's felt
@@ -152,7 +171,7 @@ def test_a_burst_moves_the_body_by_joules_over_capacity():
     assert after > 0.5 * dmg, "the harm did not come over the cooling"
 
 
-def test_more_joules_more_harm_with_no_ceiling():
+def test_more_joules_more_harm_with_no_ceiling(unprotected):
     """Property: 3 MJ moves the body ten times as far as 300 kJ (in
     proportion: the law is linear) and harms more -- nothing clips what a
     body absorbs (Erik: plasma guns must pay off). Breaks if a ceiling on the
@@ -178,7 +197,7 @@ def test_at_one_atmosphere_and_ambient_air_the_split_is_the_unsplit_loss():
             assert got == body + unit_fixed.div_round(a_q * (felt - body), ONE)
 
 
-def _cool_time(p_atm):
+def _cool_time(p_atm):  # cooling: no inflow, the absorption plays no part
     """Seconds a body at 220 C takes to fall to 120 C with no flux, in air of
     ``p_atm`` at ambient."""
     stub = _Stub(p_atm=p_atm)
@@ -202,7 +221,7 @@ def test_vacuum_cools_by_the_radiated_share_only():
     assert ratio == pytest.approx(1.0 / share, rel=0.03)
 
 
-def test_thin_hot_gas_barely_warms_a_body():
+def test_thin_hot_gas_barely_warms_a_body(unprotected):
     """Property: hot air warms a body in proportion to its pressure: in 2000 C
     gas at a hundredth of an atmosphere the body settles less than a tenth as
     far above ambient as in the same gas at one atmosphere. Breaks if the air
@@ -250,36 +269,54 @@ def _frag_room():
     return Simulation(lv, seed=3, breach_physics=bp, enable_recorder=False)
 
 
-def test_the_frags_deposit_warms_the_next_tiles_shell_10_to_20_degrees():
-    """Property (the calibration, design section 2 "The frag"): the heat a
-    frag deposits, read as what a body on the next tile absorbs, warms its
-    320 J/K shell by 10 to 20 C -- a few kJ. Breaks if [blast]
-    heat_mj_per_strength goes back to a deposit the body reads as megajoules."""
-    from simulation.payloads import execute_payload
-    from simulation.weapons import get_tables
-    s = _frag_room()
-    m = Unit("M", x=20.5, y=19.5, team=0)       # its centre tile 1 from (20, 20)
-    s.add_unit(m)
-    s.set_paused(False)
-    s.step()
-    execute_payload(s.gmap, s.edit_queue, s.units, 20, 20,
-                    get_tables().payloads.by_name["frag_standard"], s.draws)
-    s.edit_queue.flush(s.gmap, s.draws)
-    peak = max(int(s.gmap.heat[ty, tx]) for (tx, ty) in m.occupied_tiles())
-    gain_q, _ = heat_dials_q(heat_dials(CFG))
-    a_q, _ = body_temp.rates_q(s.gmap, 320.0)
-    jump = a_q * unit_fixed.mul_q16_round(gain_q, peak) / ONE / ONE
-    absorbed_kj = jump * 320.0 / 1000.0
-    assert 10.0 <= jump <= 20.0, jump
-    assert 2.0 <= absorbed_kj <= 8.0
+@pytest.mark.parametrize("which", ("flux", "air"))
+def test_the_protection_scales_both_inflows_alike(monkeypatch, which):
+    """Property (Erik, 2026-11-18: "protect only the body"): heat_absorption
+    is the share of the heat reaching the body that it takes up, for the
+    radiation and deposits the felt temperature reads AND for hot air alike:
+    at 0.5 the settled excess over ambient is half the unprotected one, at
+    the shipped value it is that share, and the losses are untouched (the
+    damage law reads the body as before). Breaks if the absorption scales
+    only one inflow, scales the losses, or is read anywhere but the body."""
+    def settled(h):
+        _with_h(monkeypatch, h)
+        stub = _Stub(t_game=600.0 if which == "air" else 0.0)
+        u = _marine()
+        if which == "flux":
+            _flux(stub, u, 10.0 / KW_M2_PER_PHI)
+        _run([u], stub, 60 * TPS)
+        return (u.body_temp_q - AMB_Q) / ONE
+    full, half = settled(1.0), settled(0.5)
+    assert full > 100.0
+    assert half == pytest.approx(0.5 * full, rel=1e-3, abs=0.01)
+    shipped = SHIPPED_H_Q / ONE
+    assert settled(shipped) == pytest.approx(shipped * full, rel=2e-3, abs=0.01)
+
+
+def test_at_absorption_one_the_step_is_the_unsplit_law():
+    """Property: at heat_absorption 1 the step (the air term split at
+    ambient into its inflow and its loss) is the unscaled law bit for bit, at
+    any pressure and air temperature. Breaks if the split rounds anywhere."""
+    a_q, a_rad_q = _rates(_Stub())
+    for p in (0, ONE // 3, ONE, 3 * ONE):
+        for t_air in (AMB_Q, AMB_Q + 500 * ONE + 7, AMB_Q - 200 * ONE):
+            for body in (AMB_Q, AMB_Q + 913 * ONE + 5):
+                felt = AMB_Q + 40 * ONE + 3
+                k_air = min(unit_fixed.mul_q16_round(a_q - a_rad_q, p), ONE - a_rad_q)
+                old = body + unit_fixed.div_round(
+                    a_q * (felt - AMB_Q) - k_air * (body - t_air)
+                    - a_rad_q * (body - AMB_Q), ONE)
+                assert body_temp.step_q(body, felt, p, t_air, a_q, a_rad_q,
+                                        AMB_Q, ONE) == old
 
 
 def test_a_frag_beside_a_marine_no_longer_kills_by_heat():
-    """Property: a frag whose centre tile is one tile from a marine's (the
-    rung 2c finding: 30 blast + 576 heat in one tick) leaves him alive, its
-    heat below its blast's 30 plus a few dozen (the blast's hot air and its
-    radiation, measured in the as-built). Breaks if the body law or the
-    calibration is undone."""
+    """Property (the calibration's target (a), Erik 2026-11-18): a frag whose
+    centre tile is one tile from a marine's (the rung 2c finding: 30 blast +
+    576 heat in one tick) leaves a 100 HP marine alive, its heat bill 15 to 40
+    HP on top of the blast's 30, at the shipped protection and the shipped
+    10 MJ. Breaks if the body law or the protection is undone, or the
+    protection is set so high a frag no longer burns at all."""
     from simulation.events import UnitHitEvent
     from simulation.payloads import execute_payload
     from simulation.weapons import get_tables
@@ -302,7 +339,7 @@ def test_a_frag_beside_a_marine_no_longer_kills_by_heat():
             by[str(ev.source)] = by.get(str(ev.source), 0.0) + float(ev.damage)
     assert m.alive, by
     assert by.get("explosion", 0.0) == 30.0
-    assert by.get("heat", 0.0) < 60.0, by
+    assert 15.0 <= by.get("heat", 0.0) <= 40.0, by
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +383,7 @@ def test_death_resets_the_body_and_an_ambient_body_hashes_as_untouched():
     assert not u.alive and u.body_temp_q == AMB_Q
 
 
-def test_a_cold_body_in_still_ambient_air_never_moves():
+def test_a_cold_body_in_still_ambient_air_never_moves(unprotected):
     """Property: with no flux, ambient air and an ambient body the law moves
     nothing, so a match without heat leaves every body untouched and out of
     the digest. Breaks if the law drifts at rest (a rounding bias)."""

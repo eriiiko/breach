@@ -483,13 +483,8 @@ def test_in_the_game_a_throw_at_a_wall_detonates_on_the_throwers_side():
     cx, cy = u.center_tile_x(), u.center_tile_y()
     assert short[1] == (cy, cx + 5)                # 5 tiles east, unbounced
     hand = sim.weapons_tables.weapons.by_name["hand_grenade"]
-    # the thrower where it stood at the release (its spawn: every throw is
-    # released on the same tick, before any detonation). #215 (body
-    # temperature) moved the blasts' wind, which shoves it later on: its
-    # position at the END of the play is not where it threw from.
-    x0, y0 = throws[-1][0], throws[-1][1]
-    sx, sy = combat.release_point(sim.gmap, x0 * ONE, y0 * ONE, u.footprint, ONE,
-                                  0, hand.release_forward_q, hand.release_side_q)
+    sx, sy = combat.release_point(sim.gmap, u.x_q, u.y_q, u.footprint, ONE, 0,
+                                  hand.release_forward_q, hand.release_side_q)
     assert short[2] == (sy >> 16, sx >> 16)        # the leg's start: the hand
 
 
