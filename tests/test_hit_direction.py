@@ -191,8 +191,14 @@ def test_an_explosion_hit_points_from_the_detonation_to_the_victim():
 
 
 class _HeatStub:
+    """#215: the heat row's body law also reads the footprint's air (one
+    atmosphere, ambient) and the tile size."""
     def __init__(self, h, w):
         self.heat = np.zeros((h, w), dtype=np.int32)
+        self.atmosphere = np.full((h, w), 1 << 16, dtype=np.int32)
+        self.temperature = np.zeros((h, w), dtype=np.int32)
+        self.solid = np.zeros((h, w), dtype=bool)
+        self.tile_size_m = 0.333
 
 
 def test_a_heat_hit_carries_no_direction():

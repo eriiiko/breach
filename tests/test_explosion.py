@@ -577,14 +577,19 @@ def test_fuel_catches_only_when_ordinary_heat_takes_it_to_its_ignition_temp():
     near, far = (15, 15), (15, 16)
     tm = _room()
     tm[near] = tm[far] = MAT_FURNITURE
+    # #215: the test's own heat (the old [blast] 10 MJ): the shipped value was
+    # cut 400-fold to calibrate a body beside a frag, which left this
+    # scenario moot; the property is about ordinary heat, not the dial.
+    row = _row(1.0)
+    row.heat_mj = 10.0
     s = _sim(tm)
     g = s.gmap
     _step(s)
-    _fire(s, 15, 15, _row(1.0))
+    _fire(s, 15, 15, row)
     _flushed(s)
     bare = _sim(_room())
     _step(bare)
-    _fire(bare, 15, 15, _row(1.0))
+    _fire(bare, 15, 15, row)
     _flushed(bare)
     assert not g.fire.any(), "the executor wrote fire"
     n = int(np.count_nonzero(g.heat))

@@ -212,8 +212,15 @@ _PRE_122_BOX = dict(
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
     # Erik's zombie bite balance re-pin (2026-11-12, see the box's ticks).
-    unit_stream="3a6b230941d73d3b6f325af378ffe67b"
-                "44a86953bbb4d46736245fbf4caa31ee")
+    # (was 3a6b230941d73d3b6f325af378ffe67b44a86953bbb4d46736245fbf4caa31ee)
+    # #215 re-pin (2026-11-18, body temperature and stress): two unit-schema
+    # rows, hashed while they differ from their defaults; the box's bodies
+    # follow the air they stand in, so body_temp_q enters the records.
+    # Outcome, team, ticks and field_digest UNCHANGED. SOLE CAUSE, verified:
+    # with body_temp_q / stress_q stripped from every record this tree gives
+    # EXACTLY the previous pin (docs/body_temperature_impl_2026-11-17.md).
+    unit_stream="4bf0c3eb02aa263f9aa7c0f9f4a761a7"
+                "94062cca86786c27b6ce63460b40814e")
 _PRE_122_SHIP_DEMO = dict(
     # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
     # Philox draws had moved this pin): re-pinned on the merged tree with
