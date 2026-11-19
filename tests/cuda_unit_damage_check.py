@@ -452,9 +452,15 @@ class Probe:
         from simulation import corpse, poison, unit_fixed, unit_traits
         self.c = Counter()
         self.sat0 = poison.SATURATION["hits"]
-        # arc #63 P5c: an unhooked marine's (or zombie's: both 100 HP) body
-        self.body_q = unit_fixed.mul_q16_round(unit_traits.class_hp_q(False),
-                                               corpse.get_settings().body_factor_q)
+        # arc #63 P5c: a row's body (corpse.body_q from the row: its class hp
+        # on is_zombie times its HP hook, times the factor)
+        f = corpse.get_settings().body_factor_q
+
+        def body_q(lay, row):
+            hq = int(row[lay.column("traits").offset + unit_traits.HOOK_INDEX["HP"]])
+            cls = unit_traits.class_hp_q(bool(row[lay.column("is_zombie").offset]))
+            return unit_fixed.mul_q16_round(unit_traits.scaled_by(hq, cls), f)
+        self.body_of = body_q
 
     def __call__(self, reps, ls):
         from simulation.status import STATUS_REGISTRY
@@ -501,7 +507,7 @@ class Probe:
                                 self.c[(lab, "corpse infested")] += 1
                                 if pre[r, cols["is_zombie"]]:
                                     self.c[(lab, "zombie corpse infested")] += 1
-                            gone = post[r, cols["current_hp"]] <= -self.body_q
+                            gone = post[r, cols["current_hp"]] <= -self.body_of(lay, pre[r])
                             if iq1 < iq0 and not gone:
                                 self.c[(lab, "corpse level decays")] += 1
                             if gone:
@@ -518,11 +524,12 @@ class Probe:
                     # arc #63 P5c: the heat row on corpses
                     if lab == "9c unit heat damage" and pre[r, cols["life_state"]] == 1:
                         h0, h1 = pre[r, cols["current_hp"]], post[r, cols["current_hp"]]
+                        bq = self.body_of(lay, pre[r])
                         if h1 < h0:
                             self.c[(lab, "corpse burned")] += 1
-                            if h1 <= -self.body_q < h0:
+                            if h1 <= -bq < h0:
                                 self.c[(lab, "corpse destroyed by heat")] += 1
-                        if h0 <= -self.body_q:
+                        if h0 <= -bq:
                             self.c[(lab, "destroyed corpse held")] += 1
                             if h1 != h0:
                                 self.c[(lab, "destroyed corpse burned")] += 1
