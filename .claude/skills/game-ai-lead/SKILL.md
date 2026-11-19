@@ -438,3 +438,13 @@ are that session:
   its save leaves stale curve lines, so a resume moves lines past the saved
   round to `curve_discarded.jsonl`; (3) the record says "v1" for both
   widths, so the saved file and the export also carry the widths.
+- 2026-11-19 -- 2e (copying the bots) built on `192-2e-copying`: the 1j
+  records FIT by name and shape (902 968 / 204 290 living decisions, train
+  / held) though the game changed under them; the loader deals 7 500
+  decisions a second at 4 processes, as fast as the card learns without
+  memory (half a pass waits); 1 000 real decisions reach 99 % on every
+  counted head in 400 steps at full width on the card, 1 725 at reduced
+  width (20 min on the processor). Learned: a measure's test must ask the
+  GAME which heads counted, never the function it tests (its break went
+  unseen); long runs are commands in the note, not started by the
+  implementer.
