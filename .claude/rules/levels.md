@@ -7,6 +7,7 @@ paths:
   - "tools/ship_grammar.py"
   - "tools/ship_layout.py"
   - "tools/levelgen_recipes.py"
+  - "tools/ship_broods.py"
   - "tools/map_editor.py"
   - "tools/undo_log.py"
   - "tools/entity_editor_ui.py"
@@ -69,6 +70,13 @@ and who must use it; this file holds the constraints the code cannot say. The
 - A recipe ship records every generator input and its realised factors in ONE `[levelgen]` table, written only by `gen_ship.write` on the recipe path (v1 writes none: `levelgen = None`). The door refuses an unknown, missing or mistyped key by name; the writer runs it first.
 - A factor is measured the way its gate measures it, never a second way; `generator_version` is `match_replay.build_id()`.
 - A ship is a pure function of its record: `generate_from_spec` regenerates it and refuses a stale `recipe_hash` (`StaleRecipeError`) unless `allow_stale`. The level's seed is its own; match.toml's `seed` stays the episode's.
+
+## Brood placement
+- Where a recipe ship's larvae nest (vocabulary Part G, arc #63 P5d) is DATA: a department's `[brood]` row and the archetype's `[infestation]` weights, through their doors (refused by name). A new nesting rule is a key of one of these two tables, never a placement pass after `embed`, a second generator or a brood hand-written into a generated level.
+- THE STREAM: the brood draw is `SeedSequence([seed, ship_broods.BROOD_STREAM])` and nothing else; it takes no value from the grammar's or the layout's generator, so a `clean` ship (or an archetype without the table) is tile for tile the ship it was. The rolls walk the archetype's `[brood]` departments in archetype order whatever the ship holds: a new roll is appended, never inserted. `tests/test_ship_broods.py::test_the_brood_draw_moves_no_other_draw` is the gate.
+- `ship_broods.apply` is the ONE writer of the `brood` room tag and of the infested ship's opened doors, on the laid-out graph before stage 2; an opened door is the existing `entity_door` row (never a tile stamp or an entity edit after `embed`). Only `door` edges between a hosting department's room and the passageway open: airlocks, hull doors, `vented_door` and doors to the spawn slab never.
+- FAIRNESS: a wing brood is tagged on the room AND its mirror twin; `gen_ship._build_broods` refuses a brood on a spawn, zombie, secret or department-less (skeleton) room by name and keeps every zone off the spawn boxes and carved vestibules, and refuses a ship whose broods ask past `[swarm.larva] max_units`. The larvae's scatter inside the room is the brood's own (match draws), not mirrored (ACCEPTED GAP).
+- The state and the hosting departments are `[levelgen]` realised factors (`infestation`, `broods`); `zones.npy` is an `OPTIONAL_DATA_FILES` row, so a rewrite never leaves a stale one. NOT BUILT: profiles shifting the weights, a `rooms` choice by fixture, any species but `larva`.
 
 ## Declared-edge contact
 - The layout realises every DECLARED quotient edge as a shared wall of its opening + `CLEAR` each side, with its twin at the reflected tiles. An undeclared touch is a blank wall and is never forbidden; the grammar's invariants run on declared edges only.

@@ -90,7 +90,7 @@ strategy. Every rule below serves that.
 | `render-effects.md` | gas medium, smoke relief + cast, tamed wind, FireVFX, particles, distortion, shock, muzzle flame, tracers, fire light |
 | `render-units.md` | 3D units, held props, pose layer, static props |
 | `audio.md` | sound layer, sound samples |
-| `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec |
+| `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec, brood placement |
 | `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches |
 | `characters.md` | character kit, game-ready step, toon look, worker builder |
 
@@ -327,6 +327,7 @@ amends the rule file, never this line's length.
 | Archetype recipe + grammar | `levels/recipes/archetypes/` + `tools/ship_grammar.py` | A ship kind is one archetype file; the grammar is the only stage 1 of a recipe ship |
 | Layout stage | `tools/ship_layout.py` | A recipe ship's geometry is produced ONLY here; never a search or a second layouter |
 | LevelSpec | level.toml `[levelgen]` + `gen_ship.generate_from_spec` | A recipe ship records every generator input in one table and is a pure function of it |
+| Brood placement | `tools/ship_broods.py` + department `[brood]` / archetype `[infestation]` rows + `gen_ship._build_broods` | Where a recipe ship's larvae nest is recipe data drawn on the level seed's own stream; never a placement pass after `embed` or a hand-written brood in a generated level |
 | Declared-edge contact | `ship_layout.layout` openings loop | Every declared quotient edge is a shared wall of its opening; an undeclared touch is a blank wall |
 | Axis parity | `ship_layout._opening_at` | An axis-axis opening is centred and even; never an airlock |
 | Character kit | `art/characters/charkit/` | The scripted-Blender kit for the existing scripted characters; not the default for new ones |
