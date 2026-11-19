@@ -1071,12 +1071,22 @@ def _payload_call(sim, rng, names, k):
                                   approach=appr))
 
 
-def _hit_item(sim, rng):
+def _hit_item(sim, rng, c=None):
+    from simulation import corpse
     from simulation.damage import DamagePacket
     live = [u for u in sim.units if u.alive]
-    if not live:
+    dead = [u for u in sim.units if not u.alive]
+    # arc #63 P5c: a resolve's packet on a corpse (today's same-slot reach;
+    # a destroyed corpse takes nothing, apply_packet's own gate)
+    if dead and (not live or rng.random() < 0.3):
+        u = dead[int(rng.integers(len(dead)))]
+        if c is not None:
+            c["hit: a destroyed corpse hit (untouched)" if corpse.destroyed(u)
+              else "hit: a corpse hit"] += 1
+    elif not live:
         return None
-    u = live[int(rng.integers(len(live)))]
+    else:
+        u = live[int(rng.integers(len(live)))]
     pk = DamagePacket(amount=int(rng.integers(1, 30)), dtype=0,
                       attacker_id=int(rng.choice([-1] + [v.id for v in sim.units])),
                       expose=int(rng.integers(1, 3)) * ONE // 2)
@@ -1092,6 +1102,7 @@ PROBE_BRANCHES = (
     "blast: below the threshold", "blast: at or above the threshold",
     "blast: a destroyed corpse skipped", "blast: a corpse in the walk",
     "blast: a corpse hit", "blast: a corpse destroyed",
+    "hit: a corpse hit", "hit: a destroyed corpse hit (untouched)",
     "flash: sees the flash", "flash: no line of sight", "flash: out of the bound",
     "flash: facing it (f = 1)", "flash: turned away (f < 1)", "flash: BLINDED applied",
     "flash: already blinded longer (kept)", "flash: a shorter BLINDED refreshed longer",
@@ -1147,7 +1158,7 @@ def part_probe(trials=PROBE_TRIALS):
                         items = []
                         for k in range(int(rng.integers(1, 5))):
                             if stage == applier.STAGE_RESOLVE and rng.random() < 0.5:
-                                hi = _hit_item(sim, rng)
+                                hi = _hit_item(sim, rng, census.c)
                                 if hi is not None:
                                     items.append(hi)
                             items.append(_payload_call(sim, rng, names, int(rng.integers(99))))

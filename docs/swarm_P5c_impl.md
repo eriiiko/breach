@@ -119,7 +119,12 @@ After the first divergence the corpses keep burning and wear their bodies
 tick 228; `Z-0`, dead at +384 C, wears its body over the following ticks;
 marine `T1-0`'s corpse warms in hot air to +37 C, below the band).
 
-RE-PIN STATUS: (filled at the end)
+RE-PIN STATUS: every moved test qualified (outcome, team, ticks and field
+digest unchanged; only corpse rows move), so all eight were re-pinned ONCE
+in one commit ("THE ONE re-baseline of P5c", the rationale in each pin's
+comment), with the law final on host and device; each match played twice
+after the re-pin, identical (the eight files: 256 passed, both runs). The
+box matches in the same files did not move.
 
 ## Tests (each names its property and the change that breaks it)
 
@@ -158,9 +163,35 @@ RE-PIN STATUS: (filled at the end)
   events), `tests/cuda_swarm_check.py` PART 2d and
   `tests/cuda_unit_kernels_check.py` PART CORPSE (the hp-based fixtures).
 
-## Breaks
+## Breaks (each applied alone, the gate run, the file restored)
 
-(filled at the end)
+Host (`tests/test_corpse_body.py` unless named):
+1. `apply_packet`'s destroyed gate removed -- red (a destroyed corpse takes nothing);
+2. the blast keeps its `alive` gate -- red (3: the frag, the blast-destroyed door, the risen corpse);
+3. a corpse's blast hit handed the events -- red (the frag: an event names the corpse);
+4. the heat row keeps its `alive` gate -- red (3: the hot corpse, the kept body, the fire);
+5. the heat row runs on destroyed corpses -- red (the hot corpse moves after destruction);
+6. the death clears the body again -- red (2, here and `tests/test_body_temp.py`);
+7. the overkill clamped at death (hp to 0) -- red (the killing blow's overkill);
+8. destroyed ignores the factor (a body of exactly max hp) -- GREEN at first (at
+   `body_factor` 1.0 the two are the same): `test_the_body_scales_with_the_factor`
+   added, then red;
+9. destroyed reads the marine's hp for a zombie (and twice it) -- red (3);
+10. the reward books check a corpse's hp again -- red (`tests/test_reward_v1.py`, the bots matches' books);
+11. the conversion door ignores destroyed -- red (4, here and `tests/test_corpse_infestation.py`).
+
+Device (CUDA build, incremental, the check named):
+12. the payload function's blast keeps its `alive` gate -- red (`cuda_unit_payloads_check` probe: a corpse's hp, host -49.3 device -33.3);
+13. the payload's corpse packet through the real sink -- red (the probe: 2 host events / 3 device);
+14. the heat kernel keeps its `alive` gate -- red (`cuda_unit_damage_check` fire scene, tick 1: a corpse's body);
+15. the device death branch clears the body -- red (the fire scene, tick 94: the body);
+16. the device `apply_packet`'s destroyed gate removed -- GREEN at first on the damage scenes
+    (the blast and the heat kernel skip a destroyed row before the packet, so
+    only a resolve's same-slot packet reaches the gate): the payload probe's
+    resolve lists gained packets on corpses, destroyed ones included
+    ("hit: a corpse hit", "hit: a destroyed corpse hit (untouched)"), then
+    red (the probe: a destroyed corpse's hp, host -124.0 device -141.0);
+17. the device conversion ignores destroyed -- red (`cuda_unit_kernels_check` PART CORPSE, tick 6: the destroyed corpse rises on the device).
 
 ## Findings (reported, not fixed)
 
