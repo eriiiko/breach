@@ -564,6 +564,13 @@ def _signal_codes() -> tuple:
             ("AIRLOCK", tuple(str(n) for n in AIRLOCK_STATE_NAMES)))
 
 
+#: #29 P7e.1: the planes a device slot writes that stay HOST-COMPUTED by
+#: design, never resident: the W6a ripple pair (render-only, stepped on the
+#: host mirror after the exit download, in no digest; the seal's write of 0.0
+#: is the seam's twin of the host's).
+HOST_COMPUTED_PLANES = ("ripple", "ripple_v")
+
+
 def device_slot_planes() -> tuple:
     """#29 P7e.1: every ``GameMap`` plane a device UNIT slot reads or writes,
     in first-seen order: the topology seam's :data:`PLANES`, the clears, and
