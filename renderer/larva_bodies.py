@@ -475,9 +475,9 @@ class LarvaBodyDraw:
     """Draws packed instances into the BOUND target (the scene RT, linear
     HDR), premultiplied, in ONE ``glDrawArraysInstanced``."""
 
-    _UNIFORMS = ("u_inst", "u_mesh", "u_inst_w", "u_world_px", "u_m_to_px", "u_len_m",
-                 "u_wave", "u_dead", "u_look", "u_gloss", "u_body", "u_head",
-                 "u_coma", "u_dead_rgb", "texture1", "texture2", "u_light_z",
+    _UNIFORMS = ("u_inst", "u_mesh", "u_inst_w", "u_world_px", "u_m_to_px",
+                 "u_len_m", "u_wave", "u_dead", "u_look", "u_gloss", "u_body",
+                 "u_head", "u_coma", "u_dead_rgb", "texture1", "texture2", "u_light_z",
                  "u_ambient", "u_light_gain", "u_smoke_cover")
 
     def __init__(self, cap: int = INST_W):
@@ -499,6 +499,7 @@ class LarvaBodyDraw:
         self._mesh_key = None
         self.draws_last_frame = 0
         self.instances_last_frame = 0
+        self._lin_key, self._lin = None, {}
 
     def _alloc(self, cap: int) -> None:
         rows = 2 * max(1, -(-int(cap) // INST_W))
@@ -552,22 +553,33 @@ class LarvaBodyDraw:
                                          rl.RL_FUNC_ADD, rl.RL_FUNC_ADD)
         rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
         sh, loc = self.shader, self._loc
-        U = rl.ShaderUniformDataType
+        # the shared seam's uniforms first (raylib's setters enable the
+        # program themselves), then this pass's own, direct GL on the bound
+        # program with the cached locations (the dot view's idiom)
+        cast = (light.smoke_cast if light.smoke_cover is not None
+                else (0.0, 0.0, 0.0, 0.0))
+        lit3d.set_smoke_shadow_uniforms(sh, light.smoke_grid, cast,
+                                        light.smoke_cast2)
+        lit3d.set_light_curve_uniforms(sh, light.curve)
+        gl.UseProgram(sh.id)
 
         def put(name, vals):
-            if loc.get(name, -1) >= 0:
-                kind = {1: U.SHADER_UNIFORM_FLOAT, 2: U.SHADER_UNIFORM_VEC2,
-                        3: U.SHADER_UNIFORM_VEC3,
-                        4: U.SHADER_UNIFORM_VEC4}[len(vals)]
-                rl.set_shader_value(sh, loc[name],
-                                    rl.ffi.new(f"float[{len(vals)}]",
-                                               [float(v) for v in vals]),
-                                    kind)
+            at = loc.get(name, -1)
+            if at < 0:
+                return
+            n = len(vals)
+            if n == 1:
+                gl.Uniform1f(at, float(vals[0]))
+            elif n == 2:
+                gl.Uniform2f(at, float(vals[0]), float(vals[1]))
+            elif n == 3:
+                gl.Uniform3f(at, *(float(v) for v in vals))
+            else:
+                gl.Uniform4fv(at, 1, gl.floats(vals))
 
         def put_i(name, v):
             if loc.get(name, -1) >= 0:
-                rl.set_shader_value(sh, loc[name], rl.ffi.new("int *", int(v)),
-                                    U.SHADER_UNIFORM_INT)
+                gl.Uniform1i(loc[name], int(v))
 
         put_i("u_inst", _UNIT_INST)
         put_i("u_mesh", _UNIT_MESH)
@@ -583,19 +595,17 @@ class LarvaBodyDraw:
         put("u_look", (float(s.segments), s.groove_depth, s.head_start,
                        s.coma_mix))
         put("u_gloss", (s.gloss, s.gloss_power, s.rim, 0.0))
-        put("u_body", tuple(srgb_to_linear(s.body_rgb)))
-        put("u_head", tuple(srgb_to_linear(s.head_rgb)))
-        put("u_coma", tuple(srgb_to_linear(s.coma_rgb)))
-        put("u_dead_rgb", tuple(srgb_to_linear(s.dead_rgb)))
+        if self._lin_key != s:          # the colours decode once per change
+            self._lin = {k: tuple(float(c) for c in srgb_to_linear(
+                getattr(s, k))) for k in _RGB}
+            self._lin_key = s
+        put("u_body", self._lin["body_rgb"])
+        put("u_head", self._lin["head_rgb"])
+        put("u_coma", self._lin["coma_rgb"])
+        put("u_dead_rgb", self._lin["dead_rgb"])
         put("u_light_z", (s.light_z,))
         put("u_ambient", tuple(light.ambient)[:3])
         put("u_light_gain", (light.light_gain,))
-        cast = (light.smoke_cast if light.smoke_cover is not None
-                else (0.0, 0.0, 0.0, 0.0))
-        lit3d.set_smoke_shadow_uniforms(sh, light.smoke_grid, cast,
-                                        light.smoke_cast2)
-        lit3d.set_light_curve_uniforms(sh, light.curve)
-        gl.UseProgram(sh.id)
         gl.BindVertexArray(gl.vao)
         units = [(_UNIT_INST, self.inst_tex.id), (_UNIT_MESH, self.mesh_tex.id),
                  (_UNIT_LIGHT_A, light.tex_a.id),

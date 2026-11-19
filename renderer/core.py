@@ -337,6 +337,7 @@ class GLDirect:
         self.Uniform1i = fn("glUniform1i", i, i)
         self.Uniform1f = fn("glUniform1f", i, f32)
         self.Uniform2f = fn("glUniform2f", i, f32, f32)
+        self.Uniform3f = fn("glUniform3f", i, f32, f32, f32)
         self.Uniform1fv = fn("glUniform1fv", i, i, pf)
         self.Uniform4fv = fn("glUniform4fv", i, i, pf)
         # queries (the bench timer, tools/gl_timer.py)
