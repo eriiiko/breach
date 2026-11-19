@@ -407,7 +407,7 @@ __device__ inline void stage_shove(const int64_t* loc, const int64_t* tr, const 
 
 // Kernel 1: one thread per row -- every own-row write, the requests staged,
 // the shove staged.
-__global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, const int64_t* ticks,
+__global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, const int64_t* trow,
                         const int64_t* spans, int n_spans, RecordListView rq, int64_t* scratch,
                         const uint8_t* flight, int fh, int fw, unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -419,7 +419,7 @@ __global__ void k_verbs(int64_t* store, int n_units, const int64_t* tables, cons
     int64_t* row = unit_row(store, n_units, r);
     if (!row_valid(row)) return;
     const int64_t* tab = env_tables(tables);
-    const int64_t tick = ticks[benv()];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, benv());
     int64_t loc[UNIT_STORE_W];
     for (int c = 0; c < UNIT_STORE_W; ++c) loc[c] = row[c];
     RecordSink sink = list_row_sink(rq, n_units, r);
@@ -568,7 +568,7 @@ __global__ void k_plant_accept(int64_t* store, int n_units, const int64_t* table
 }  // namespace
 
 void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
-                const int64_t* ticks, const int64_t* spans, int n_spans, const int64_t* live,
+                std::uintptr_t tick_row, const int64_t* spans, int n_spans, const int64_t* live,
                 std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out) {
     unit_check_pair(store, tables, "unit_verbs");
     if (requests.n_env() != store.n_env() || requests.n_units() != store.n_units() ||
@@ -580,18 +580,18 @@ void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitReco
            << ") and the layout (width " << UNIT_REQ_F << ", row cap " << UNIT_REQ_ROW_CAP << ")";
         throw std::invalid_argument(os.str());
     }
-    if (ticks == nullptr || spans == nullptr || live == nullptr || n_spans < 1)
-        throw std::invalid_argument("unit_verbs: ticks (N,), spans (N, n >= 1, 3), live (N,)");
+    if (tick_row == 0 || spans == nullptr || live == nullptr || n_spans < 1)
+        throw std::invalid_argument("unit_verbs: the tick row, spans (N, n >= 1, 3), live (N,)");
     if (flight == 0 || fh <= 0 || fw <= 0)
         throw std::invalid_argument("unit_verbs: the flight plane (N, h, w)");
     const int n = store.n_env(), U = store.n_units();
-    const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)n);
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     const int64_t* d_spans = store.stage_input(1, spans, (size_t)n * n_spans * SPAN_W);
     const int64_t* d_live = store.stage_input(2, live, (size_t)n);
     int64_t* sc = g_scratch.get((size_t)n * U * SC_W);
     const RecordListView v = list_view(requests);
     store.begin_counts();
-    k_verbs<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, tables.values(), d_ticks,
+    k_verbs<<<bgrid(U, n), 128, 0, tstream()>>>(store.rows(), U, tables.values(), d_trow,
                                                  d_spans, n_spans, v, sc,
                                                  reinterpret_cast<const uint8_t*>(flight), fh, fw,
                                                  store.counts_dev());

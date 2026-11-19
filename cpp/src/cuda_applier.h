@@ -86,9 +86,6 @@ public:
     // BFS queue, the heat walk, the source walk), each (N, n_cells).
     void* walk_scratch(int n_cells);
     int walk_cells() const { return walk_cells_; }
-    // #29 P6b.3: the EMIT stage's per-env tick (the clock sensor), copied
-    // from `host` (N int64) to a device buffer on the tick stream.
-    const int64_t* ticks_dev(const int64_t* host);
 
 private:
     UnitRecordList list_;
@@ -100,8 +97,6 @@ private:
     size_t touched_cap_ = 0;
     void* d_walk_ = nullptr;           // #29 P7c.2: the walks' scratch
     int walk_cells_ = 0;
-    int64_t* d_ticks_ = nullptr;       // #29 P6b.3: (N,) the EMIT stage's ticks
-    int64_t* h_ticks_ = nullptr;       // pinned
     void* staged_ = nullptr;           // cudaEvent_t: the last stage copy
 };
 
@@ -138,7 +133,8 @@ class EditDoor;
 // scratch (the pass plane (N, h, w) uint8, the row flags (N, 2, U) uint8, the
 // two frontiers (N, 2, h, w) int32, the hearing's targets (N, U, 3) int64) and
 // the LATCH (N, LATCH_W + U) int64 the host writes (applier_layout.h's
-// APPLIER_HORDE_*).
+// APPLIER_HORDE_*: the request set; #29 P7e.1: the tick and the topology
+// serial are the TICK ROW's, ApplierLists::tick_row).
 struct HordeReach {
     std::uintptr_t hdr = 0, keys = 0, dist = 0, masks = 0;
     std::uintptr_t pass = 0, flags = 0, queues = 0, live = 0;
@@ -175,7 +171,7 @@ struct ApplierLists {
     // PUMP_IN_TABLE, DOOR_DRIVE_TABLE) the signal stages (EMIT, LOGIC,
     // DOOR_INPUTS, PUMPS, SWAP) walk -- each stage checks the ones it reads --
     // with the door table above (EMIT reads it, DOOR_INPUTS writes want_open)
-    // and the EMIT stage's per-env tick (`ticks`: N int64 host, null: 0).
+    // (#29 P7e.1: the EMIT stage's per-env tick is the tick row's, below).
     ObjectTable* signal_table = nullptr;
     ObjectTable* sensor_table = nullptr;
     ObjectTable* sensor_tiles = nullptr;
@@ -184,7 +180,12 @@ struct ApplierLists {
     ObjectTable* pump_table = nullptr;
     ObjectTable* pump_ins = nullptr;
     ObjectTable* door_drives = nullptr;
-    const int64_t* ticks = nullptr;
+    // #29 P7e.1: THE TICK ROW (unit_draws.TickRow: the device address of
+    // (N, TICK_ROW_W) int64; 0: none): the EMIT stage's clock and the HORDE
+    // stage's tick and topology serial read it, and every tile the topology
+    // seam changes bumps its env's `tiles_changed` (GameMap._tile_serial's
+    // device form). The HORDE stage faults without it; EMIT reads tick 0.
+    std::uintptr_t tick_row = 0;
     // #29 P7d: the HORDE stage's cache, scratch and latch (with the door
     // tables above, the noise list and the ring)
     HordeReach horde;

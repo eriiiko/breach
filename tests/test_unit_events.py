@@ -21,7 +21,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 bp = pytest.importorskip("breach_physics")
 
-from simulation import unit_events, unit_kernels, unit_tables  # noqa: E402
+from simulation import unit_events, unit_tables  # noqa: E402
 from simulation.events import (CAUSE_NAMES, UnitHitEvent,  # noqa: E402
                                UnitKilledEvent, ShotFiredEvent)
 
@@ -138,11 +138,15 @@ def test_a_species_whose_footprint_is_not_row_major_is_refused(ship_sim, monkeyp
         unit_tables.values(ship_sim)
 
 
-def test_the_claims_table_is_the_tick_credit(ship_sim):
-    """Property: ``claims_of`` lists exactly the tick's claims, the heat
-    channel as CREDIT_HEAT and a gas slice as its index, and ``pad_claims``
-    pads the short envs with rows that match no tile. Breaks if a claim is
-    lost, a channel mis-coded, or the padding could match a real tile."""
+def test_the_claims_rows_are_the_tick_credit_in_first_claim_order(ship_sim):
+    """Property (#29 P7e.1: slots 9c / 9c3 read THE DEVICE CLAIMS LIST, staged
+    from ``attack_lists.claim_rows``): the rows are exactly the tick's first
+    claims, in first-claim order, the heat channel as CREDIT_HEAT and a gas
+    slice as its index -- so ``credit_at``'s first-match scan over them names
+    the TickCredit's claimant. Breaks if a claim is lost, a later claim
+    overrides the first, the order is not first-claim order, or a channel is
+    mis-coded."""
+    from simulation import attack_lists
     from simulation.damage import CREDIT_HEAT, tick_credit
     tc = tick_credit(ship_sim.gmap)
     tc.clear()
@@ -150,12 +154,11 @@ def test_the_claims_table_is_the_tick_credit(ship_sim):
         tc.claim(CREDIT_HEAT, [(3, 4), (3, 5)], 7)
         tc.claim(2, [(6, 1)], 9)
         tc.claim(CREDIT_HEAT, [(3, 4)], 8)          # the first claim stays
-        rows = unit_kernels.claims_of(ship_sim)
-        got = {tuple(int(x) for x in r) for r in rows}
-        assert got == {(unit_events.CREDIT_HEAT, 3, 4, 7),
-                       (unit_events.CREDIT_HEAT, 3, 5, 7), (2, 6, 1, 9)}
-        pad = unit_kernels.pad_claims([rows, rows[:1]])
-        assert pad.shape == (2, 3, 4)
-        assert all(int(pad[1, i, 0]) == unit_events.CREDIT_PAD for i in (1, 2))
+        rows = attack_lists.claim_rows(tc)
+        assert rows == [(unit_events.CREDIT_HEAT, 3, 4, 7),
+                        (unit_events.CREDIT_HEAT, 3, 5, 7), (2, 6, 1, 9)]
+        for (ch, y, x, a) in rows:
+            assert tc.attacker_at(CREDIT_HEAT if ch == unit_events.CREDIT_HEAT else ch,
+                                  y, x) == a
     finally:
         tc.clear()

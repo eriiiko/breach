@@ -107,6 +107,9 @@ struct TopoEnv {
     // #29 P7c.2: the blast's pending divergence source (Q16 1/s; the strength
     // path's start_source / start_expansion and the SOURCES stage write it).
     int32_t* div_source;
+    // #29 P7e.1: the env's TICK ROW tile-change count (GameMap._tile_serial's
+    // device form), bumped by on_tile_changed; null: no tick row handed.
+    int64_t* tiles = nullptr;
 
     __device__ int32_t& g(int slice, int i) const { return gas[(size_t)slice * n + i]; }
     __device__ int64_t bulk(int i) const { return (int64_t)g(o2, i) + (int64_t)g(n2, i); }
@@ -232,6 +235,7 @@ __device__ inline void on_tile_changed(const TopoEnv& E, const int64_t* tab, int
                                        int64_t* B) {
     if (!in_grid(E, fy, fx)) return;
     B[APPLIER_BOOK_TILES_CHANGED] += 1;
+    if (E.tiles != nullptr) *E.tiles += 1;    // #29 P7e.1: the tick row's count
     const int i = fy * E.w + fx;
     const bool was_accountable = accountable(E, i);
     const int m = (int)E.material[i];

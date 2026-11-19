@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "066a4010ff58b9731734eb567301c938ef54c18d68626163b4913bf64632b38c";
+constexpr const char* APPLIER_FINGERPRINT = "b2f40a6884a809e49e3c902351a6130c35365cba4fc63a48ab3ae6548eadce50";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -292,10 +292,8 @@ constexpr int APPLIER_HORDE_KEY_FP = 1;
 constexpr int APPLIER_HORDE_KEY_SY = 2;
 constexpr int APPLIER_HORDE_KEY_SX = 3;
 constexpr int APPLIER_HORDE_KEY_W = 4;
-constexpr int APPLIER_HORDE_LATCH_TICK = 0;
-constexpr int APPLIER_HORDE_LATCH_SERIAL = 1;
-constexpr int APPLIER_HORDE_LATCH_MODE = 2;
-constexpr int APPLIER_HORDE_LATCH_W = 3;
+constexpr int APPLIER_HORDE_LATCH_MODE = 0;
+constexpr int APPLIER_HORDE_LATCH_W = 1;
 constexpr int64_t APPLIER_HORDE_KIND_PREY = 0;
 constexpr int64_t APPLIER_HORDE_KIND_PREY_FEARLESS = 1;
 constexpr int64_t APPLIER_HORDE_KIND_NOISE = 2;

@@ -83,7 +83,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, trow,  # noqa: E402
                                 ShadowLockstep)
 from simulation import (applier, object_tables, unit_events,  # noqa: E402
                         unit_kernels, unit_schema, unit_store, unit_tables,
@@ -117,25 +117,26 @@ HOST_ONLY = (
     ("_sky_mask_dirty", "the sky exchange's lazy-rebuild flag (ambient maps)"),
     ("_gas_t_amb_raw_cache", "a lazily filled cache of a config constant"),
 )
-SHOOT_IN = ("tick", "draw_key", "field:solid", "field:material")
+SHOOT_IN = ("tick", "field:solid", "field:material")   # #29 P7e.1: the key rides the tick row
 
 
 def _run_4(st, inp, lists):
     return unit_kernels.shooting(st, lists["effects"], lists["rounds"], lists["noise"],
-                                 inp.tick, inp.tables["draw_key"], inp.fields)
+                                 inp.tick_row, inp.fields)
 
 
 def _run_2r(st, inp, lists):
-    return unit_kernels.rounds_march(st, lists["effects"], lists["rounds"], inp.tick,
-                                     inp.tables["draw_key"], inp.fields)
+    return unit_kernels.rounds_march(st, lists["effects"], lists["rounds"], inp.tick_row,
+                                     inp.fields)
 
 
 def _run_4a(st, inp, lists):
-    return unit_kernels.melee(st, lists["effects"], inp.tick)
+    return unit_kernels.melee(st, lists["effects"], inp.tick_row)
 
 
 def _run_resolve(st, inp, ring, lists):
-    return unit_kernels.resolve(st, lists["effects"], inp.fields, ring)
+    return unit_kernels.resolve(st, lists["effects"], inp.fields, ring,
+                                tick_row=getattr(inp, "tick_row", None))
 
 
 def _conductor(sim, args, kw, caller):
@@ -1086,7 +1087,7 @@ def part_march(trials=MARCH_TRIALS):
             tbl.stage_lists([np.array(p, dtype=np.int64).reshape(-1, lay_r.width)
                              for p in pre_tab])
             fields = {"solid": cp.asarray(np.stack(sols)), "material": cp.asarray(np.stack(mats))}
-            unit_kernels.rounds_march(st, fx, tbl, np.array(ticks), np.array(keys), fields,
+            unit_kernels.rounds_march(st, fx, tbl, trow(ticks, keys), fields,
                                       compact=False)
             got_fx, got_tab = fx.records(), tbl.records()
             for e in range(N):
@@ -1251,7 +1252,7 @@ def part_overflow():
             nt = object_tables.DeviceTable(unit_schema.NOISE_TABLE, 1, n_units=U, cap=ncap)
             rt.begin()
             nt.stage_lists([h["noise"] if pre_noise is None else pre_noise])
-            unit_kernels.shooting(st, fx, rt, nt, np.array([h["tick"]]), h["key"][None], fields)
+            unit_kernels.shooting(st, fx, rt, nt, trow([h["tick"]], h["key"][None]), fields)
             return fx, rt, nt
         fx, rt, nt = run()
         nfx, nr, nn = len(fx.records()[0]), len(rt.records()[0]), len(nt.records()[0])
@@ -1307,7 +1308,7 @@ def part_refuse():
     fields = {"solid": cp.asarray(h["solid"][None]), "material": cp.asarray(h["material"][None])}
     ok = 0
     try:
-        unit_kernels.shooting(st, fx, rt, nt, np.array([h["tick"]]), h["key"][None], fields)
+        unit_kernels.shooting(st, fx, rt, nt, trow([h["tick"]], h["key"][None]), fields)
         fail("refuse: a beam trigger was not refused")
     except unit_kernels.ShotRefused as ex:
         if "beam" in str(ex):
@@ -1515,7 +1516,7 @@ def bench(reps: int = 50) -> int:
     nt1 = object_tables.DeviceTable(unit_schema.NOISE_TABLE, 1, n_units=U)
     rt1.begin()
     nt1.begin()
-    unit_kernels.shooting(st1, fx1, rt1, nt1, np.array([h["tick"]]), h["key"][None], f1)
+    unit_kernels.shooting(st1, fx1, rt1, nt1, trow([h["tick"]], h["key"][None]), f1)
     flying = np.array(rt1.records()[0], dtype=np.int64)
     lines = []
     for n_env in (1, 8, 64):
@@ -1541,7 +1542,7 @@ def bench(reps: int = 50) -> int:
             nt.begin()
             cp.cuda.Stream.null.synchronize()
             t = time.perf_counter()
-            unit_kernels.shooting(st, fx, rt, nt, ticks, keys, fields)
+            unit_kernels.shooting(st, fx, rt, nt, trow(ticks, keys), fields)
             ts4.append((time.perf_counter() - t) * 1e3)
             st.upload(rows)
             fx.begin()
@@ -1549,7 +1550,7 @@ def bench(reps: int = 50) -> int:
             ring.begin()
             cp.cuda.Stream.null.synchronize()
             t = time.perf_counter()
-            unit_kernels.rounds_march(st, fx, rt, ticks, keys, fields)
+            unit_kernels.rounds_march(st, fx, rt, trow(ticks, keys), fields)
             ts2.append((time.perf_counter() - t) * 1e3)
             t = time.perf_counter()
             try:

@@ -47,9 +47,32 @@ struct DrawKey {
 
 __device__ __forceinline__ bool word_ok(int64_t v) { return v >= 0 && v <= WORD_MAX; }
 
+// A key row at `k` (DRAW_KEY_W int64 in DRAW_KEY_* order).
+__device__ inline DrawKey draw_key_at(const int64_t* k, bool* bad);
+
 // Env e's key row of a (N, DRAW_KEY_W) int64 array.
 __device__ inline DrawKey draw_key(const int64_t* keys, int e, bool* bad) {
-    const int64_t* k = keys + (size_t)e * DRAW_KEY_W;
+    return draw_key_at(keys + (size_t)e * DRAW_KEY_W, bad);
+}
+
+// #29 P7e.1: THE TICK ROW (unit_draws.TickRow, (N, TICK_ROW_W) int64 on the
+// device, written once per tick): env e's tick, its draw key, its
+// tile-change count (the device GameMap._tile_serial).
+static_assert(TICK_ROW_KEY + DRAW_KEY_SEED_LO == TICK_ROW_SEED_LO &&
+              TICK_ROW_KEY + DRAW_KEY_SEED_HI == TICK_ROW_SEED_HI &&
+              TICK_ROW_KEY + DRAW_KEY_TICK == TICK_ROW_DRAW_TICK,
+              "the tick row's key columns must be a draw key row");
+__device__ __forceinline__ const int64_t* trow_env(const int64_t* trow, int e) {
+    return trow + (size_t)e * TICK_ROW_W;
+}
+__device__ __forceinline__ int64_t trow_tick(const int64_t* trow, int e) {
+    return trow_env(trow, e)[TICK_ROW_TICK];
+}
+__device__ __forceinline__ DrawKey trow_key(const int64_t* trow, int e, bool* bad) {
+    return draw_key_at(trow_env(trow, e) + TICK_ROW_KEY, bad);
+}
+
+__device__ inline DrawKey draw_key_at(const int64_t* k, bool* bad) {
     if (!(word_ok(k[DRAW_KEY_SEED_LO]) && word_ok(k[DRAW_KEY_SEED_HI]) &&
           word_ok(k[DRAW_KEY_TICK])))
         *bad = true;

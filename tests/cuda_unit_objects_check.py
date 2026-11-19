@@ -104,7 +104,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, trow,  # noqa: E402
                                 ShadowLockstep)
 from simulation import (applier, object_tables as ot, unit_kernels,  # noqa: E402
                         unit_requests, unit_schema, unit_store, unit_tables)
@@ -149,26 +149,26 @@ def fail(msg):
 # The slots
 # ---------------------------------------------------------------------------
 def _run_1b(st, inp, req, lists):
-    cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"], _flight_fields(inp))
+    cov = unit_kernels.verbs(st, req, inp.tick_row, inp.tables["door_spans"],
+                             inp.scalars["charges_live"], _flight_fields(inp, st))
     unit_kernels.table_appends(st, req, lists["grenades"], lists["charges"])
     return cov
 
 
-def _flight_fields(inp):
+def _flight_fields(inp, st):
     """#215: the padded flight plane (``cuda_unit_lockstep``'s
     ``flight_plane`` input) as the kernel's device field."""
     from cuda_unit_lockstep import flight_fields
-    return flight_fields(inp)
+    return flight_fields(inp, st)
 
 
 def _run_2(st, inp, lists):
-    return unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick,
-                                 _flight_fields(inp))
+    return unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick_row,
+                                 _flight_fields(inp, st))
 
 
 def _run_9e(st, inp, lists):
-    return unit_kernels.charges_tick(st, lists["charges"], lists["payloads"], inp.tick)
+    return unit_kernels.charges_tick(st, lists["charges"], lists["payloads"], inp.tick_row)
 
 
 def _run_10(st, inp, lists):
@@ -811,7 +811,8 @@ def part_flight(trials=4, n_env=4):
                 fx = applier.DeviceApplier(n_env, cap=GLAY.capacity)
                 tab.stage_lists([_rows_of(GT, objs) for objs in envs])
                 fx.begin()
-                unit_kernels.grenades(st, tab, fx, np.full(n_env, tick, dtype=np.int64), planes)
+                unit_kernels.grenades(st, tab, fx, trow(np.full(n_env, tick, dtype=np.int64)),
+                                      planes)
                 dev = tab.records()
                 drec = fx.records()
                 for e, objs in enumerate(envs):
@@ -856,7 +857,7 @@ def part_flight(trials=4, n_env=4):
     tab.stage_lists([_rows_of(GT, [w])])
     fx.begin()
     try:
-        unit_kernels.grenades(st1, tab, fx, np.array([5]), planes)
+        unit_kernels.grenades(st1, tab, fx, trow([5]), planes)
         fail("flight: a WEGO grenade (no integer fuse) was flown, not refused")
     except unit_kernels.ObjectSlotRefused as ex:
         if "WEGO" not in str(ex):
@@ -869,7 +870,7 @@ def part_flight(trials=4, n_env=4):
     tab.stage_lists([_rows_of(GT, [g])])
     fx.begin()
     try:
-        unit_kernels.grenades(st1, tab, fx, np.array([5]), planes)
+        unit_kernels.grenades(st1, tab, fx, trow([5]), planes)
         fail("flight: a row past the proved range was not refused")
     except unit_kernels.UnitKernelFault:
         pass
@@ -1128,8 +1129,8 @@ def part_padding():
         c.upload(rc, np.array(nc))
         fx = applier.DeviceApplier(2)
         fx.begin()
-        unit_kernels.grenades(st, g, fx, np.array([tick, tick]), _solid([sim, sim]))
-        unit_kernels.charges_tick(st, c, fx, np.array([tick, tick]))
+        unit_kernels.grenades(st, g, fx, trow([tick, tick]), _solid([sim, sim]))
+        unit_kernels.charges_tick(st, c, fx, trow([tick, tick]))
         return g.download(), c.download(), fx.records()
     clean, dirty = run(False), run(True)
     for e, n_g, n_c in ((0, 5, 4), (1, 3, 2)):
@@ -1195,7 +1196,7 @@ def part_overflow():
             g.stage_lists(inp.lists["grenades"])
             fx.begin()
             try:
-                unit_kernels.grenades(st, g, fx, inp.tick, _flight_fields(inp))
+                unit_kernels.grenades(st, g, fx, inp.tick_row, _flight_fields(inp, st))
                 n = 0
             except applier.EffectOverflow as ex:
                 n = 1
@@ -1205,7 +1206,7 @@ def part_overflow():
                 full = applier.DeviceApplier(1)
                 g.stage_lists(inp.lists["grenades"])
                 full.begin()
-                unit_kernels.grenades(st, g, full, inp.tick, _flight_fields(inp))
+                unit_kernels.grenades(st, g, full, inp.tick_row, _flight_fields(inp, st))
                 if fx.records()[0] != full.records()[0][:1]:
                     fail("overflow: the record kept is not the first")
                 seen["effects"] += 1
@@ -1273,8 +1274,8 @@ def _run_1b_chained(st, inp, lists):
         _CH_REQ[key] = unit_requests.RequestList(st.shape[0], st.shape[1])
     req = _CH_REQ[key]
     req.begin()
-    cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"], _flight_fields(inp))
+    cov = unit_kernels.verbs(st, req, inp.tick_row, inp.tables["door_spans"],
+                             inp.scalars["charges_live"], _flight_fields(inp, st))
     if any(r[0] == unit_requests.KIND_USE for r in req.records()[0]):
         raise RuntimeError("chained: a door flip in the grenade chain (no landing)")
     unit_kernels.table_appends(st, req, lists["grenades"], lists["charges"])
@@ -1402,7 +1403,7 @@ def bench(reps: int = 200) -> int:
         g = ot.DeviceTable(GT, n)
         c = ot.DeviceTable(CT, n)
         fx = applier.DeviceApplier(n)
-        ticks = np.full(n, tick, dtype=np.int64)
+        ticks = trow(np.full(n, tick, dtype=np.int64))
         planes = _solid([sim] * n)
         tg, tc = [], []
         for _ in range(reps):

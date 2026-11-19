@@ -73,7 +73,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, trow,  # noqa: E402
                                 ShadowLockstep)
 from simulation import (applier, object_tables as ot, unit_kernels as uk,  # noqa: E402
                         unit_schema as us, unit_store, unit_tables)
@@ -121,7 +121,7 @@ def _applier_for(store):
 
 
 def _run_a(st, inp, lists):
-    return uk.signals_emit(st, _applier_for(st), inp.fields, lists, inp.tick)
+    return uk.signals_emit(st, _applier_for(st), inp.fields, lists, inp.tick_row)
 
 
 def _run_b(st, inp, lists):
@@ -743,7 +743,7 @@ def part_sample():
                 tabs[t].begin()
             lists = dict(tabs, doors=doors)
             fields = _dev_planes(per_planes)
-            uk.signals_emit(st, _applier_for(st), fields, lists, np.array(ticks))
+            uk.signals_emit(st, _applier_for(st), fields, lists, trow(ticks))
             got = tabs["signals"].records()
             pc = ot.table_layout(us.SIGNAL_TABLE).column("pub").offset
             for e in range(n):
@@ -1358,7 +1358,7 @@ def part_padding():
         dtiles.stage_lists([uk.door_tiles_of(s) for s in sims])
         fields = _dev_planes([_planes(s.gmap) for s in sims])
         lists = dict(tabs, doors=doors)
-        uk.signals_emit(st, _applier_for(st), fields, lists, np.array([s.tick for s in sims]))
+        uk.signals_emit(st, _applier_for(st), fields, lists, trow([s.tick for s in sims]))
         uk.signals_logic(st, _applier_for(st), lists)
         uk.signals_door_inputs(st, _applier_for(st), lists)
         uk.signals_pumps(st, _applier_for(st), fields, lists)
@@ -1597,7 +1597,7 @@ def bench(reps: int = 200) -> int:
             tabs = uk.signal_tables(n, bp=bp)
             doors = object_tables.DeviceTable(us.DOOR_TABLE, n, bp=bp)
             fields = _dev_planes([planes] * n)
-            ticks = np.full(n, sim.tick)
+            ticks = trow(np.full(n, sim.tick))
             ops = (("9e(a) emit + sensors", lambda: uk.signals_emit(
                         st, _applier_for(st), fields, dict(tabs, doors=doors), ticks)),
                    ("9e(b) logic", lambda: uk.signals_logic(st, _applier_for(st), tabs)),

@@ -129,16 +129,17 @@ def fail(msg):
 # ---------------------------------------------------------------------------
 SLOT_2B = DeviceSlot(label="2b statuses", run=unit_kernels.status_tick,
                      events=True)
+# #29 P7e.1: the claims are THE DEVICE CLAIMS LIST (the list input "credit")
 SLOT_9C = DeviceSlot(label="9c unit heat damage",
-                     run=lambda st, inp, ring: unit_kernels.heat_damage(
-                         st, ring, inp.fields, inp.tables["credit_claims"]),
+                     run=lambda st, inp, ring, lists: unit_kernels.heat_damage(
+                         st, ring, inp.fields, lists["credit"]),
                      inputs=tuple("field:" + f for f in unit_kernels.HEAT_FIELDS)
-                     + ("credit_claims",), events=True)
+                     + ("list:credit",), events=True)
 SLOT_9C3 = DeviceSlot(label="9c3 gas rows",
-                      run=lambda st, inp, ring: unit_kernels.gas_rows(
-                          st, ring, inp.fields, inp.tables["credit_claims"]),
+                      run=lambda st, inp, ring, lists: unit_kernels.gas_rows(
+                          st, ring, inp.fields, lists["credit"]),
                       inputs=tuple("field:" + f for f in unit_kernels.GAS_FIELDS)
-                      + ("credit_claims",), events=True)
+                      + ("list:credit",), events=True)
 SLOT_9C2 = DeviceSlot(label="9c2 wind on units",
                       run=lambda st, inp: unit_kernels.wind_impulse(st, inp.fields),
                       inputs=tuple("field:" + f for f in unit_kernels.WIND_FIELDS))
@@ -1275,7 +1276,7 @@ def bench(reps: int = 200) -> int:
     drv = LaneDriver("gas")
     sim = drv.sim
     names = tuple("field:" + f for f in unit_kernels.HEAT_FIELDS
-                  + unit_kernels.GAS_FIELDS) + ("credit_claims",)
+                  + unit_kernels.GAS_FIELDS) + ("list:credit",)
     for _ in range(40):
         drv.tick()
     rows1 = unit_store.pack(sim.units)
@@ -1285,7 +1286,9 @@ def bench(reps: int = 200) -> int:
         st = unit_store.DeviceStore(n, U, tables=np.tile(unit_tables.values(sim), (n, 1)))
         ring = unit_events.EventRing(n, U)
         inp = gather(names, [capture(names, sim)] * n)
-        claims = inp.tables["credit_claims"]
+        from simulation import attack_lists
+        claims = attack_lists.claims_list(n)
+        claims.stage_lists(inp.lists["credit"])
         kern = {
             "2b status_tick": lambda: unit_kernels.status_tick(st, ring),
             "9c heat_damage": lambda: unit_kernels.heat_damage(st, ring, inp.fields,

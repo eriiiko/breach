@@ -19,7 +19,7 @@ function               slot (the reference law)              inputs
 :func:`integrate_turn` 1a   ``unit_impulse.integrate_all``   --
 :func:`wind_impulse`   9c2  ``exchange.apply_wind_force``    field planes
 :func:`apply_orders`   1b'  ``unit_orders.apply_requests``   the requests
-:func:`expire_orders`  10'  ``unit_orders.expire``           the ticks
+:func:`expire_orders`  10'  ``unit_orders.expire``           the tick row
 :func:`convert_zombies` 10 (ruleset tail) ``ai_zombie.       --
                        convert_marines_to_zombies``
 :func:`movement`       3    ``Simulation._update_player_      the material
@@ -37,8 +37,10 @@ records to an :class:`simulation.unit_events.EventRing` (begun by the caller
 at the tick's start) in the reference's emission order; each REFUSES a run
 whose events the ring could not hold (:class:`simulation.unit_events.
 UnitEventOverflow`, naming the kernel and the env) as it refuses a fault. The
-credit claims (``damage.TickCredit``) reach them as a per-tick table
-(:func:`claims_of`, :func:`pad_claims`).
+credit claims (``damage.TickCredit``) reach them as THE DEVICE CLAIMS LIST
+(#29 P7e.1: ``attack_lists.claims_list``, read in place, first match first).
+Every face reads the per-env TICK ROW (``unit_draws.TickRow``, #29 P7e.1) in
+place of per-launch tick and key arguments.
 
 A NEW SLOT KERNEL is: its law's table values as rows of
 ``simulation.unit_tables`` (regenerate the header), a free function in its
@@ -54,7 +56,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from simulation.unit_events import CREDIT_HEAT, CREDIT_PAD, UnitEventOverflow
+from simulation.unit_events import UnitEventOverflow
 
 #: The order requests' row: (uid, what, where, until, target); uid -1 = none.
 REQUEST_WIDTH = 5
@@ -157,12 +159,19 @@ def apply_orders(store, requests) -> np.ndarray:
                  store.bp.unit_apply_orders(store.buffer, store.tables, a))
 
 
-def expire_orders(store, ticks) -> np.ndarray:
-    """Slot 10': each env's orders whose tick has come (``ticks`` ``(N,)``,
-    each env's ``sim.tick`` after the advance) cleared."""
-    a = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
-    return _done(store, "expire_orders",
-                 store.bp.unit_expire_orders(store.buffer, store.tables, a))
+def _trow(trow, store, who) -> int:
+    """#29 P7e.1: the face's TICK ROW argument (a ``unit_draws.TickRow`` for
+    the store's envs), its device address."""
+    from simulation import unit_draws
+    return unit_draws.row_ptr(trow, store.shape[0], f"unit kernel {who}")
+
+
+def expire_orders(store, tick_row) -> np.ndarray:
+    """Slot 10': each env's orders whose tick has come (``tick_row`` the
+    device ``unit_draws.TickRow``, its tick each env's ``sim.tick`` after the
+    advance) cleared."""
+    return _done(store, "expire_orders", store.bp.unit_expire_orders(
+        store.buffer, store.tables, _trow(tick_row, store, "expire_orders")))
 
 
 def convert_zombies(store) -> np.ndarray:
@@ -218,43 +227,21 @@ def movement_probe(bp, op: int, args, material=None, mobility=None) -> np.ndarra
 # #29 P6.3: the slots that hurt
 # ---------------------------------------------------------------------------
 #: A claims row: (channel, y, x, attacker); channel CREDIT_HEAT for the heat
-#: buffer, a gas slice's index for a gas deposit.
+#: buffer, a gas slice's index for a gas deposit (``attack_lists.CLAIM_W``).
 CLAIM_WIDTH = 4
 
 
-def claims_of(sim) -> np.ndarray:
-    """``sim.gmap.damage_credit`` (``damage.TickCredit``: ``(channel, y, x)
-    -> attacker``, every key once -- the first claim of the tick) as ``(R,
-    4)`` int64 rows ``(channel, y, x, attacker)``, sorted; the heat channel
-    as :data:`simulation.unit_events.CREDIT_HEAT`."""
-    from simulation.damage import CREDIT_HEAT as HOST_HEAT
-    tc = getattr(sim.gmap, "damage_credit", None)
-    owner = getattr(tc, "_owner", None) or {}
-    rows = []
-    for (ch, y, x), a in owner.items():
-        if ch == HOST_HEAT:
-            code = CREDIT_HEAT
-        else:
-            code = int(ch)
-            if code < 0:
-                raise ValueError(f"unit kernels: a credit channel {ch!r} the "
-                                 f"claims table cannot hold")
-        rows.append((code, int(y), int(x), int(a)))
-    rows.sort()
-    return np.array(rows, dtype=np.int64).reshape(len(rows), CLAIM_WIDTH)
-
-
-def pad_claims(per_env) -> np.ndarray:
-    """N envs' ``(R_e, 4)`` claims as one ``(N, max(1, R), 4)`` array, the
-    short envs padded with rows that match no tile (channel CREDIT_PAD)."""
-    per_env = [np.asarray(r, dtype=np.int64).reshape(-1, CLAIM_WIDTH)
-               for r in per_env]
-    R = max([1] + [r.shape[0] for r in per_env])
-    out = np.full((len(per_env), R, CLAIM_WIDTH), -1, dtype=np.int64)
-    out[:, :, 0] = CREDIT_PAD
-    for e, r in enumerate(per_env):
-        out[e, :r.shape[0]] = r
-    return out
+def _claims_buf(name, store, claims):
+    """#29 P7e.1: the claims argument, THE DEVICE CLAIMS LIST
+    (``attack_lists.claims_list``: every claim of the tick in order, read in
+    place) or None (no claims)."""
+    if claims is None:
+        return None
+    if getattr(claims, "n_env", None) != store.shape[0] or \
+            getattr(claims, "width", None) != CLAIM_WIDTH:
+        raise ValueError(f"unit kernel {name}: the claims must be the device claims list "
+                         f"(attack_lists.claims_list) of the store's {store.shape[0]} envs")
+    return claims.buffer
 
 
 def _done_events(store, name: str, counts) -> np.ndarray:
@@ -315,8 +302,9 @@ def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
     temperature's law, the band on the body). ``fields``: ``heat`` ``(N, h,
     w)`` int32, ``rad_flux_sweep`` ``(N, h, w)`` int64, ``atmosphere`` and
     ``temperature`` ``(N, h, w)`` int32 and ``solid`` ``(N, h, w)`` bool
-    DEVICE arrays (``ResidentBatch.buffers`` as they are); ``claims`` ``(N,
-    R, 4)`` (:func:`pad_claims`)."""
+    DEVICE arrays (``ResidentBatch.buffers`` as they are); ``claims`` THE
+    DEVICE CLAIMS LIST (#29 P7e.1: ``attack_lists.claims_list``, every claim
+    of the tick in order; the first match is the claimant) or None."""
     _check_ring("heat_damage", store, ring)
     _check_planes("heat_damage", store, fields,
                   {"heat": np.int32, "rad_flux_sweep": np.int64,
@@ -327,7 +315,7 @@ def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
         if tuple(int(x) for x in fields[k].shape) != (store.shape[0], h, w):
             raise ValueError(f"unit kernel heat_damage: {k}'s shape is not "
                              f"heat's")
-    c = np.ascontiguousarray(claims, dtype=np.int64)
+    c = _claims_buf("heat_damage", store, claims)
     return _done_events(store, "heat_damage", store.bp.unit_heat_damage(
         store.buffer, store.tables, ring.buffer, int(fields["heat"].data.ptr),
         int(fields["rad_flux_sweep"].data.ptr),
@@ -353,7 +341,7 @@ def gas_rows(store, ring, fields: dict, claims) -> np.ndarray:
         if tuple(int(x) for x in fields[k].shape) != (store.shape[0], h, w):
             raise ValueError(f"unit kernel gas_rows: {k}'s shape is not the "
                              f"gas planes'")
-    c = np.ascontiguousarray(claims, dtype=np.int64)
+    c = _claims_buf("gas_rows", store, claims)
     return _done_events(store, "gas_rows", store.bp.unit_gas_rows(
         store.buffer, store.tables, ring.buffer, int(fields["gas"].data.ptr),
         n_gases, h, w, c, int(fields["swarm_bite_dose"].data.ptr),
@@ -406,14 +394,14 @@ def _flight_plane(name, store, fields):
     return int(s.data.ptr), int(s.shape[1]), int(s.shape[2])
 
 
-def verbs(store, requests, ticks, door_spans, charges_live, fields) -> np.ndarray:
+def verbs(store, requests, tick_row, door_spans, charges_live, fields) -> np.ndarray:
     """Slot 1b (``Simulation._consume_direct_intents``, the continuous path):
     a dead or turned row drops its trigger, wind-up and plant; every living
     marine consumes its own latches (throw, plant, use, reload, shove) and
     advances its wind-up and plant. ``requests`` a begun
     :class:`simulation.unit_requests.RequestList` (the grenades released, the
     charges laid -- accepted or refused at the capacity --, the doors flipped,
-    in id order); ``ticks`` ``(N,)`` each env's ``sim.tick``;
+    in id order); ``tick_row`` the device ``unit_draws.TickRow``;
     ``door_spans`` ``(N, R, 3)`` (``unit_requests.pad_door_spans``);
     ``charges_live`` ``(N,)`` the live planted charges; ``fields["flight"]``
     (#215) the flight plane a throw's release point is walked over (see
@@ -424,7 +412,7 @@ def verbs(store, requests, ticks, door_spans, charges_live, fields) -> np.ndarra
     fault."""
     from simulation.unit_requests import UnitRequestOverflow
     _check_requests("verbs", store, requests)
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    t = _trow(tick_row, store, "verbs")
     s = np.ascontiguousarray(door_spans, dtype=np.int64)
     lv = np.ascontiguousarray(charges_live, dtype=np.int64).reshape(-1)
     ptr, fh, fw = _flight_plane("verbs", store, fields)
@@ -446,15 +434,16 @@ DONE_COLUMNS = ("terminal", "outcome", "winner", "living_teams")
 DONE_NONE, DONE_WIN, DONE_DRAW = 0, 1, 2
 
 
-def match_done(store, ticks) -> np.ndarray:
+def match_done(store, tick_row) -> np.ndarray:
     """The done kernel (``MatchRules.is_terminal`` / ``living_teams`` /
     ``result``) on every env: ``(N, 4)`` int64 :data:`DONE_COLUMNS` -- the
     outcome :data:`DONE_NONE` while not terminal, :data:`DONE_WIN` (the
-    winner the last marine team standing) or :data:`DONE_DRAW`; ``ticks``
-    ``(N,)`` each env's ``sim.tick`` after the step; the limit is the tables'
-    ``match_limit_ticks`` (0: the sim plays no match, no limit)."""
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
-    return np.asarray(store.bp.unit_match_done(store.buffer, store.tables, t))
+    winner the last marine team standing) or :data:`DONE_DRAW`; ``tick_row``
+    the device ``unit_draws.TickRow``, its tick each env's ``sim.tick`` after
+    the step; the limit is the tables' ``match_limit_ticks`` (0: the sim
+    plays no match, no limit)."""
+    return np.asarray(store.bp.unit_match_done(store.buffer, store.tables,
+                                               _trow(tick_row, store, "match_done")))
 
 
 def verbs_probe(store, kind=0, tick=0, base=0) -> np.ndarray:
@@ -470,8 +459,7 @@ __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
            "exposure_decay", "integrate_turn", "WIND_FIELDS", "wind_impulse",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",
            "convert_zombies", "lib_probe", "MOVEMENT_FIELDS", "movement",
-           "movement_probe", "CLAIM_WIDTH", "claims_of",
-           "pad_claims", "status_tick", "HEAT_FIELDS", "GAS_FIELDS",
+           "movement_probe", "CLAIM_WIDTH", "status_tick", "HEAT_FIELDS", "GAS_FIELDS",
            "heat_damage", "gas_rows", "PROBE_PACKET", "damage_probe"]
 
 
@@ -536,7 +524,7 @@ def _plane_ptrs(name, n_env, fields):
 
 def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
                  lists=None, refused_ok: bool = False, source_out=None,
-                 timed_table=None, heat_table=None):
+                 timed_table=None, heat_table=None, tick_row=None):
     """THE PER-ENV SERIAL APPLIER's walk (#29 P6.4b; P7a.1: one kernel, a
     STAGE argument): every env's effect list (``dev_applier``, a
     :class:`simulation.applier.DeviceApplier` -- staged from the host, or
@@ -563,7 +551,9 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
     and the ring, or it faults; a PAYLOAD of a refused payload row
     (``applier.PAYLOAD_REFUSALS``) writes nothing and is refused by name
     unless ``refused_ok`` (a chained run that replays those rows on the
-    host)."""
+    host). #29 P7e.1: ``tick_row`` (a ``unit_draws.TickRow``, or None): every
+    tile the topology seam changes bumps its env's ``tiles_changed`` (the
+    device ``GameMap._tile_serial``)."""
     from simulation import applier
     n = store.shape[0]
     name = f"applier[{applier.STAGE_NAMES[stage]}]"
@@ -595,7 +585,8 @@ def walk_effects(store, dev_applier, fields: dict, stage: int, ring=None,
         source_tiles=None if wl.source_tiles is None else wl.source_tiles.buffer,
         source_out=_source_out_ptr(name, n, h, w, source_out),
         timed_table=None if timed_table is None else timed_table.buffer,   # #29 P6b.4
-        heat_table=None if heat_table is None else heat_table.buffer)
+        heat_table=None if heat_table is None else heat_table.buffer,
+        tick_row=0 if tick_row is None else _trow(tick_row, store, name))
     books = applier.books_dict(b)
     cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books
@@ -752,7 +743,7 @@ def payload_refusals(store, dev_applier, envs) -> str:
 
 
 def apply_effects(store, dev_applier, fields: dict, per_env,
-                  stage: int | None = None, ring=None) -> dict:
+                  stage: int | None = None, ring=None, tick_row=None) -> dict:
     """The effect lists ``per_env`` (a list of ``(R_e, applier.F)`` int64,
     e.g. :func:`simulation.applier.destroy_records`) STAGED from the host
     into ``dev_applier`` and walked (:func:`walk_effects`, default stage
@@ -761,11 +752,11 @@ def apply_effects(store, dev_applier, fields: dict, per_env,
     dev_applier.stage_lists(per_env)
     _cov, books = walk_effects(store, dev_applier, fields,
                                applier.STAGE_TOPOLOGY if stage is None else stage,
-                               ring)
+                               ring, tick_row=tick_row)
     return books
 
 
-def resolve(store, dev_applier, fields: dict, ring, lists=None) -> tuple:
+def resolve(store, dev_applier, fields: dict, ring, lists=None, tick_row=None) -> tuple:
     """Slot 4c (``SimultaneousEffects.resolve`` of the attack slot): the
     effect list as the producers left it, walked in the RESOLVE stage (the
     HITs with the exposure landing; #29 P7a.3: a SPRAY_CELLS record's edits
@@ -773,10 +764,11 @@ def resolve(store, dev_applier, fields: dict, ring, lists=None) -> tuple:
     ``(coverage, books)``."""
     from simulation import applier
     return walk_effects(store, dev_applier, fields, applier.STAGE_RESOLVE, ring,
-                        lists)
+                        lists, tick_row=tick_row)
 
 
-def detonate(store, dev_applier, fields: dict, ring, lists, refused_ok: bool = False):
+def detonate(store, dev_applier, fields: dict, ring, lists, refused_ok: bool = False,
+             tick_row=None):
     """#29 P7c.1: the PAYLOAD records slot 2's grenades / slot 9e(d')'s
     charges appended (:func:`grenades` / :func:`charges_tick`), walked in the
     DETONATE stage right after their kernel -- where the reference calls
@@ -785,16 +777,16 @@ def detonate(store, dev_applier, fields: dict, ring, lists, refused_ok: bool = F
     ``(coverage, books)``."""
     from simulation import applier
     return walk_effects(store, dev_applier, fields, applier.STAGE_DETONATE, ring,
-                        lists, refused_ok=refused_ok)
+                        lists, refused_ok=refused_ok, tick_row=tick_row)
 
 
-def melee(store, dev_applier, ticks) -> np.ndarray:
+def melee(store, dev_applier, tick_row) -> np.ndarray:
     """Slot 4a (``combat.process_melee_intents``, the melee verb): every
     valid row's latch consumed; a striker that can (``verb_gates.can_melee``)
     and finds a target in its arc writes ``last_blow_tick`` and APPENDS its
     blow (HIT, STATUS, PUSH) to ``dev_applier``'s effect list, gathered per
-    env in row order after what the list holds. ``ticks`` ``(N,)`` each
-    env's ``sim.tick``. Refuses a run whose records did not fit (the list's
+    env in row order after what the list holds. ``tick_row`` the device
+    ``unit_draws.TickRow``. Refuses a run whose records did not fit (the list's
     cap or a row's staging: :class:`simulation.applier.EffectOverflow`) as it
     refuses a fault."""
     from simulation import applier
@@ -802,7 +794,7 @@ def melee(store, dev_applier, ticks) -> np.ndarray:
         raise ValueError(f"unit kernel melee: the effect list is for "
                          f"({dev_applier.n_env} envs, {dev_applier.n_units} rows), "
                          f"the store {store.shape[:2]}")
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    t = _trow(tick_row, store, "melee")
     cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_melee(
         store.buffer, store.tables, dev_applier.buffer, t))
     cov = _done(store, "melee", (cov, flt, ref))
@@ -816,7 +808,7 @@ def melee(store, dev_applier, ticks) -> np.ndarray:
     return cov
 
 
-def burn_through(store, dev_applier, fields: dict, walls) -> tuple:
+def burn_through(store, dev_applier, fields: dict, walls, tick_row=None) -> tuple:
     """Slot 9 (``Simulation._burn_through_walls``): each env's burn-through
     list (``walls`` ``(N, R, 3)``, :func:`pad_walls`) as DESTROY_WALL
     effects through :func:`apply_effects`. Returns ``(coverage, books)``:
@@ -827,7 +819,7 @@ def burn_through(store, dev_applier, fields: dict, walls) -> tuple:
     w = np.asarray(walls, dtype=np.int64)
     per_env = [applier.destroy_records(w[e][w[e, :, 2] != 0][:, :2])
                for e in range(w.shape[0])]
-    books = apply_effects(store, dev_applier, fields, per_env)
+    books = apply_effects(store, dev_applier, fields, per_env, tick_row=tick_row)
     return books["applied"].copy(), books
 
 
@@ -1043,7 +1035,7 @@ def _shoot_refusals(name, store, effects, drp, tables):
                 f"{int(lost[e])} row(s) past its capacity")
 
 
-def shooting(store, effects, rounds, noise, ticks, keys, fields) -> np.ndarray:
+def shooting(store, effects, rounds, noise, tick_row, fields) -> np.ndarray:
     """Slot 4's shooting (``combat.process_shooting`` on the continuous path:
     ``_directional_fire``, ``fire_burst``, ``start_spray_burst_directional``):
     every valid row holding the trigger that its gates let fire writes its
@@ -1053,18 +1045,17 @@ def shooting(store, effects, rounds, noise, ticks, keys, fields) -> np.ndarray:
     recoil PUSH, then THE MARCH's records), each round still flying to
     ``rounds`` and its noise to ``noise`` (:class:`simulation.object_tables.
     DeviceTable` s of ``unit_schema.ROUND_TABLE`` / ``NOISE_TABLE``).
-    ``ticks`` ``(N,)`` each env's ``sim.tick``, ``keys`` ``(N, 3)`` its
-    ``unit_draws.draw_key``; ``fields`` the :data:`SHOOT_FIELDS` planes as
+    ``tick_row`` the device ``unit_draws.TickRow`` (each env's ``sim.tick``
+    and its draw key); ``fields`` the :data:`SHOOT_FIELDS` planes as
     device arrays ``(N, h, w)``. Refuses a fault (:class:`UnitKernelFault`), a
     hitscan trigger (:class:`ShotRefused`: the beam is not ported), an
     overflow of any list (``EffectOverflow`` / ``ObjectTableOverflow``)."""
     solid, mat, h, w = _shoot_planes("shooting", store, fields)
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
-    k = np.ascontiguousarray(keys, dtype=np.int64).reshape(-1, 3)
+    t = _trow(tick_row, store, "shooting")
     cov, flt, ref, drp, rl, nl = (np.asarray(c, dtype=np.int64) for c in
                                   store.bp.unit_shooting(
                                       store.buffer, store.tables, effects.buffer,
-                                      rounds.buffer, noise.buffer, t, k, solid, mat,
+                                      rounds.buffer, noise.buffer, t, solid, mat,
                                       h, w))
     cov = _done(store, "shooting", (cov, flt, ref))
     if ref.any():
@@ -1077,7 +1068,7 @@ def shooting(store, effects, rounds, noise, ticks, keys, fields) -> np.ndarray:
     return cov
 
 
-def rounds_march(store, effects, rounds, ticks, keys, fields, compact=True) -> np.ndarray:
+def rounds_march(store, effects, rounds, tick_row, fields, compact=True) -> np.ndarray:
     """Slot 2''s phase A (``Simulation._march_rounds``): per env every round
     of ``rounds`` marched in table order against the rows and planes as they
     stand, its records APPENDED to ``effects``' list (a serial producer),
@@ -1086,12 +1077,11 @@ def rounds_march(store, effects, rounds, ticks, keys, fields, compact=True) -> n
     :func:`resolve` on the same list. Returns the coverage (always 0: the
     march writes no row). Refuses a fault, an overflow."""
     solid, mat, h, w = _shoot_planes("rounds", store, fields)
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
-    k = np.ascontiguousarray(keys, dtype=np.int64).reshape(-1, 3)
+    t = _trow(tick_row, store, "rounds")
     cov, flt, ref, drp, rl = (np.asarray(c, dtype=np.int64) for c in
                               store.bp.unit_rounds(
                                   store.buffer, store.tables, effects.buffer,
-                                  rounds.buffer, t, k, solid, mat, h, w,
+                                  rounds.buffer, t, solid, mat, h, w,
                                   bool(compact)))
     cov = _done(store, "rounds", (cov, flt, ref))
     _shoot_refusals("rounds", store, effects, drp, (("round", rl),))
@@ -1238,11 +1228,47 @@ def table_appends(store, requests, grenades, charges) -> np.ndarray:
 
 #: The plane slots 1b and 2 read for a thrown grenade (#215: the wall walk's):
 #: "flight" = ``combat.flight_plane(gmap)`` (off the grid is blocked; solid or
-#: a ``blocks_thrown`` material), never a GameMap attribute of its own.
+#: a ``blocks_thrown`` material), never a GameMap attribute of its own: #29
+#: P7e.1 builds it ON THE DEVICE (:func:`flight_plane`) from the resident
+#: planes :data:`FLIGHT_SOURCES`.
 GRENADE_FIELDS = (("flight", np.bool_),)
+FLIGHT_SOURCES = ("solid", "material")
 
 
-def grenades(store, table, dev_applier, ticks, fields: dict) -> np.ndarray:
+def flight_plane(store, fields: dict, out=None):
+    """#29 P7e.1: THE FLIGHT PLANE on the device, ``combat.flight_plane`` of
+    every env: ``solid | blocks_thrown[material]`` (the tables'
+    ``mat_blocks_thrown`` row) from ``fields["solid"]`` ``(N, h, w)`` bool and
+    ``fields["material"]`` ``(N, h, w)`` int8 DEVICE arrays (the resident
+    planes, ``ResidentBatch.buffers`` as they are). ``out`` a device ``(N, h,
+    w)`` bool array written in place (None: a new one). Returns ``out``, the
+    kernels' ``"flight"`` field. Refuses a material outside the table
+    (:class:`UnitKernelFault`)."""
+    import cupy as cp
+    n = store.shape[0]
+    _check_planes("flight_plane", store, fields, {"solid": np.bool_, "material": np.int8})
+    so, ma = fields["solid"], fields["material"]
+    if so.ndim != 3 or tuple(so.shape) != tuple(ma.shape) or not (
+            so.flags.c_contiguous and ma.flags.c_contiguous):
+        raise ValueError("unit kernel flight_plane: solid and material must be "
+                         "C-contiguous (N, h, w) planes of one shape")
+    _, h, w = (int(x) for x in so.shape)
+    if out is None:
+        out = cp.empty((n, h, w), dtype=cp.bool_)
+    if tuple(out.shape) != (n, h, w) or np.dtype(out.dtype) != np.bool_ or \
+            not out.flags.c_contiguous:
+        raise ValueError("unit kernel flight_plane: out must be a C-contiguous "
+                         f"({n}, {h}, {w}) bool device array")
+    _ch, flt, _rf, _dr = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_flight_plane(
+        store.tables, int(so.data.ptr), int(ma.data.ptr), int(out.data.ptr), h, w))
+    if flt.any():
+        envs = [int(e) for e in np.nonzero(flt)[0]]
+        raise UnitKernelFault(f"unit kernel flight_plane: env(s) {envs} hold a material "
+                              f"outside the table")
+    return out
+
+
+def grenades(store, table, dev_applier, tick_row, fields: dict) -> np.ndarray:
     """Slot 2's grenades (``Simulation._update_grenades``): every live row
     flies (``Projectile.fly``, wide: #215 the current leg, the wall walk
     over ``fields["flight"]`` -- a DEVICE ``(N, h, w)`` bool array,
@@ -1252,24 +1278,24 @@ def grenades(store, table, dev_applier, ticks, fields: dict) -> np.ndarray:
     ORDER_GRENADE -- its detonation APPENDED to ``dev_applier``'s effect list
     as a PAYLOAD record (``execute_payload``'s call at
     ``combat.detonation_tile``, ``applier.record_of``'s fields), in row
-    order after what the list holds. ``ticks`` ``(N,)`` each env's
-    ``sim.tick``. Returns the rows changed per env; refuses a fault, a WEGO
+    order after what the list holds. ``tick_row`` the device
+    ``unit_draws.TickRow``. Returns the rows changed per env; refuses a fault, a WEGO
     grenade (:class:`ObjectSlotRefused`) and an effect-list overflow."""
     _check_tables("grenades", store, table)
     ptr, h, w = _flight_plane("grenades", store, fields)
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    t = _trow(tick_row, store, "grenades")
     return _object_done("grenades", store.bp.unit_grenades(
         store.tables, table.buffer, dev_applier.buffer, t, ptr, h, w))
 
 
-def charges_tick(store, table, dev_applier, ticks) -> np.ndarray:
+def charges_tick(store, table, dev_applier, tick_row) -> np.ndarray:
     """Slot 9e(d') ``charges.tick``: every live charge whose det_tick has
     come is marked dead and its detonation APPENDED to ``dev_applier``'s
     effect list as a PAYLOAD record (kind ``door_explosive``) in row order;
     then the table's stable compaction (the prune). Returns the charges fired
     per env; refuses a fault and an effect-list overflow."""
     _check_tables("charges_tick", store, table)
-    t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
+    t = _trow(tick_row, store, "charges_tick")
     return _object_done("charges_tick", store.bp.unit_charges_tick(
         store.tables, table.buffer, dev_applier.buffer, t))
 
@@ -1281,7 +1307,8 @@ def prune_grenades(table) -> None:
 
 
 __all__ += ["ObjectSlotRefused", "refuse_wego", "table_appends", "grenades",
-            "GRENADE_FIELDS", "charges_tick", "prune_grenades"]
+            "GRENADE_FIELDS", "FLIGHT_SOURCES", "flight_plane", "charges_tick",
+            "prune_grenades"]
 
 
 # ---------------------------------------------------------------------------
@@ -2226,7 +2253,7 @@ def filter_range(node_rec, in_recs, bus_recs) -> list:
     return out
 
 
-def _signal_run(name, store, dev_applier, fields, stage, lists, ticks=None):
+def _signal_run(name, store, dev_applier, fields, stage, lists, tick_row=None):
     from simulation import applier
     n = store.shape[0]
     if dev_applier.n_env != n:
@@ -2239,11 +2266,11 @@ def _signal_run(name, store, dev_applier, fields, stage, lists, ticks=None):
         ptrs, n_gases, h, w = np.zeros(applier.N_PLANES, dtype=np.uint64), 1, 1, 1
     else:
         ptrs, n_gases, h, w = _plane_ptrs(name, n, fields)
-    tk = None if ticks is None else np.ascontiguousarray(ticks, dtype=np.int64)
+    tk = 0 if tick_row is None else _trow(tick_row, store, name)
     b, _cov, _rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w, int(stage),
         None, door_table=None if doors is None else doors.buffer,
-        signal_tables=[None if t is None else t.buffer for t in tabs], ticks=tk)
+        signal_tables=[None if t is None else t.buffer for t in tabs], tick_row=tk)
     books = applier.books_dict(b)
     store.last_books = books
     if books["faults"].any():
@@ -2256,17 +2283,18 @@ def _signal_run(name, store, dev_applier, fields, stage, lists, ticks=None):
     return books["signal_writes"].copy(), books
 
 
-def signals_emit(store, dev_applier, fields: dict, lists: dict, ticks) -> tuple:
+def signals_emit(store, dev_applier, fields: dict, lists: dict, tick_row) -> tuple:
     """Slot 9e(a) (``Simulation._signal_emit`` then ``sample_sensors``) as the
     applier's EMIT stage: per env the bus's emits in slot order (the door
     table's state / alive), then every sensor in ordinal order on the env's
     planes (``fields`` as :func:`walk_effects'`), unit rows (the motion
-    plates) and tick (``ticks`` (N,), the clock). Writes the bus in place.
+    plates) and tick (``tick_row``, the device ``unit_draws.TickRow``: the
+    clock). Writes the bus in place.
     Returns ``(coverage, books)``: coverage the bus writes that changed a
     value (``signal_writes``)."""
     from simulation import applier
     return _signal_run("applier[EMIT]", store, dev_applier, fields, applier.STAGE_EMIT,
-                       lists, ticks)
+                       lists, tick_row)
 
 
 def signals_logic(store, dev_applier, lists: dict) -> tuple:
@@ -2340,7 +2368,7 @@ __all__ += ["SignalTableMismatch", "SignalTableRefused", "SIGNAL_LISTS", "signal
 # Simulation._run_zombie_slot), the applier's HORDE stage
 # ---------------------------------------------------------------------------
 def horde(store, dev_applier, fields: dict, ring, noise, doors, tiles, cache,
-          latch) -> tuple:
+          latch, tick_row) -> tuple:
     """Slot 5 as the applier's HORDE stage (``cpp/src/cuda_unit_horde.cuh``):
     per env, the noise list ``noise`` DRAINED at the head (``noise.take``),
     then -- unless the latch's request set is empty or no prey lives (both
@@ -2353,8 +2381,10 @@ def horde(store, dev_applier, fields: dict, ring, noise, doors, tiles, cache,
     door tables (the bashable mask); ``cache`` a
     :class:`simulation.horde_cache.DeviceHordeCache` (its planes allocated
     for the map on first use); ``latch`` the per-env LATCH rows the host
-    writes (``horde_cache.latch_of``: the tick, the topology serial, the
-    zombie request set). Returns ``(coverage, books)``. Refuses by name a fault
+    writes (``horde_cache.latch_of``: the zombie request set); ``tick_row``
+    the device ``unit_draws.TickRow`` (#29 P7e.1: the tick, and the topology
+    serial the cache's refresh rule reads, which a bash's tile change bumps
+    in place). Returns ``(coverage, books)``. Refuses by name a fault
     (:class:`simulation.applier.ApplierFault`), a field past the cache's
     capacity (:class:`simulation.applier.HordeCacheOverflow`), a ring or noise
     list that overflowed."""
@@ -2375,7 +2405,8 @@ def horde(store, dev_applier, fields: dict, ring, noise, doors, tiles, cache,
     b, cov, rdrop = store.bp.applier_run(
         dev_applier.buffer, store.buffer, store.tables, ptrs, n_gases, h, w,
         int(applier.STAGE_HORDE), ring.buffer, noise=noise.buffer,
-        door_table=doors.buffer, door_tiles=tiles.buffer, horde=cache.reach())
+        door_table=doors.buffer, door_tiles=tiles.buffer, horde=cache.reach(),
+        tick_row=_trow(tick_row, store, name))
     books = applier.books_dict(b)
     cov = np.asarray(cov, dtype=np.int64)
     store.last_books = books

@@ -122,7 +122,8 @@ struct Env {
     int64_t* live;                // (U, 3)
     const int64_t* latch;
     int fcap;
-    int64_t tick;
+    int64_t tick;                 // #29 P7e.1: the tick row's tick
+    const int64_t* serial;        // #29 P7e.1: the tick row's tiles_changed (the topology serial)
     int64_t* B;
 };
 
@@ -885,7 +886,7 @@ __device__ inline void stage(const Env& V, Shared& S, const RecordListView& nois
         if (mode == APPLIER_HORDE_MODE_EMPTY || n_prey == 0) S.stop = 1;
         if (!S.stop) {
             // HordeState.begin_tick
-            const int64_t serial = V.latch[APPLIER_HORDE_LATCH_SERIAL];
+            const int64_t serial = *V.serial;   // #29 P7e.1: the tick row's count
             const int64_t every = V.tab[UNIT_TAB_HORDE_REFRESH_TICKS];
             if (V.tick % every == 0 || !V.hdr[APPLIER_HORDE_HDR_HAS_SERIAL] ||
                 V.hdr[APPLIER_HORDE_HDR_SERIAL] != serial) {

@@ -92,7 +92,7 @@ struct GrowBuf {
         return d;
     }
 };
-GrowBuf g_flags, g_counts, g_ticks;
+GrowBuf g_flags, g_counts;
 
 inline void ob_check(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
@@ -283,7 +283,7 @@ __device__ __forceinline__ Plane env_plane(const uint8_t* solid, int h, int w, i
 }
 
 // flags[e, i]: 1 the row fused out and detonates (a PAYLOAD record), 0 not.
-__global__ void k_grenade_flight(const int64_t* tables, RecordListView gr, const int64_t* ticks,
+__global__ void k_grenade_flight(const int64_t* tables, RecordListView gr, const int64_t* trow,
                                  const uint8_t* solid, int h, int w, int64_t* flags,
                                  unsigned long long* cnt) {
     const int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -295,7 +295,7 @@ __global__ void k_grenade_flight(const int64_t* tables, RecordListView gr, const
     int64_t* row = gr.recs + ((size_t)e * gr.cap + i) * gr.width;
     if (row[OBJ_GRENADE_LIVE] == 0) return;                 // `if proj.detonated: continue`
     const int64_t* tab = env_tables(tables);
-    const int64_t tick = ticks[e];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, e);
     const int64_t fuse = row[OBJ_GRENADE_COL_FUSE_TICKS];
     if (fuse == K_NO_TIMER) {                                 // the WEGO order path's float fuse
         bump(cnt, e, C_REFUSED);
@@ -399,12 +399,12 @@ __global__ void k_grenade_fuse(const int64_t* tables, RecordListView gr, const i
 }
 
 // ---- slot 9e(d'): charges.tick, serial in row order ---------------------------
-__global__ void k_charges_tick(const int64_t* tables, RecordListView ch, const int64_t* ticks,
+__global__ void k_charges_tick(const int64_t* tables, RecordListView ch, const int64_t* trow,
                                RecordListView fx, unsigned long long* cnt) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     const int e = (int)benv();
     const int64_t* tab = env_tables(tables);
-    const int64_t tick = ticks[e];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, e);
     RecordSink s = env_list_sink(fx, e);
     const int64_t n = ch.count[e];
     for (int64_t i = 0; i < n; ++i) {
@@ -455,12 +455,27 @@ unsigned long long* begin_counts(int n) {
     return reinterpret_cast<unsigned long long*>(c);
 }
 
-const int64_t* stage_ticks(const int64_t* ticks, int n) {
-    int64_t* d = g_ticks.get((size_t)n);
-    ob_check(cudaMemcpyAsync(d, ticks, (size_t)n * sizeof(int64_t), cudaMemcpyHostToDevice,
-                             tstream()),
-             "H2D ticks");
-    return d;
+// #29 P7e.1: THE FLIGHT PLANE built on the device (combat.flight_plane:
+// solid, or a material whose blocks_thrown row is set), one thread per cell
+// of an (N, h, w) launch; a material outside the table FAULTS and the cell
+// reads blocked (the host would raise on the index).
+__global__ void k_flight_plane(const int64_t* tables, const uint8_t* solid, const int8_t* material,
+                               uint8_t* out, int n_cells, unsigned long long* cnt) {
+    const int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= n_cells) return;
+    const int e = (int)benv();
+    const size_t k = (size_t)e * n_cells + i;
+    uint8_t b = solid[k] ? 1 : 0;
+    if (!b) {
+        const int m = (int)material[k];
+        if (m < 0 || m >= UNIT_TAB_MAT_BLOCKS_THROWN_W) {
+            bump(cnt, e, C_FAULTS);
+            b = 1;
+        } else {
+            b = env_tables(tables)[UNIT_TAB_MAT_BLOCKS_THROWN + m] != 0 ? 1 : 0;
+        }
+    }
+    out[k] = b;
 }
 
 void end_counts(int n, const ObjectSlotCounts& out, UnitRecordList* dropped_of) {
@@ -501,39 +516,54 @@ void unit_table_appends(const UnitTablesDevice& tables, UnitRecordList& requests
 }
 
 void unit_grenades(const UnitTablesDevice& tables, ObjectTable& grenades, UnitRecordList& effects,
-                   const int64_t* ticks, std::uintptr_t solid, int h, int w,
+                   std::uintptr_t tick_row, std::uintptr_t solid, int h, int w,
                    const ObjectSlotCounts& out) {
     const int n = tables.n_env();
     check_table(grenades, n, OBJ_GRENADE_W, OBJ_GRENADE_LIVE, "unit_grenades", "grenade");
     check_effects(effects, n, "unit_grenades");
-    if (ticks == nullptr) throw std::invalid_argument("unit_grenades: ticks (N,)");
+    if (tick_row == 0) throw std::invalid_argument("unit_grenades: the tick row (N, TICK_ROW_W)");
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     unsigned long long* cnt = begin_counts(n);
-    const int64_t* d_ticks = stage_ticks(ticks, n);
     if (solid == 0 || h <= 0 || w <= 0)
         throw std::invalid_argument("unit_grenades: the solid plane (N, h, w)");
     const uint8_t* sp = reinterpret_cast<const uint8_t*>(solid);
     int64_t* flags = g_flags.get((size_t)n * grenades.cap());
     const RecordListView gv = list_view(grenades);
     k_grenade_flight<<<dim3((grenades.cap() + 63) / 64, n), 64, 0, tstream()>>>(
-        tables.values(), gv, d_ticks, sp, h, w, flags, cnt);
+        tables.values(), gv, d_trow, sp, h, w, flags, cnt);
     k_grenade_fuse<<<dim3(1, n), 1, 0, tstream()>>>(tables.values(), gv, flags, sp, h, w,
                                                     list_view(effects));
     end_counts(n, out, &effects);
 }
 
 void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,
-                       UnitRecordList& effects, const int64_t* ticks,
+                       UnitRecordList& effects, std::uintptr_t tick_row,
                        const ObjectSlotCounts& out) {
     const int n = tables.n_env();
     check_table(charges, n, OBJ_CHARGE_W, OBJ_CHARGE_LIVE, "unit_charges_tick", "charge");
     check_effects(effects, n, "unit_charges_tick");
-    if (ticks == nullptr) throw std::invalid_argument("unit_charges_tick: ticks (N,)");
+    if (tick_row == 0) throw std::invalid_argument("unit_charges_tick: the tick row (N, TICK_ROW_W)");
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     unsigned long long* cnt = begin_counts(n);
-    const int64_t* d_ticks = stage_ticks(ticks, n);
-    k_charges_tick<<<dim3(1, n), 1, 0, tstream()>>>(tables.values(), list_view(charges), d_ticks,
+    k_charges_tick<<<dim3(1, n), 1, 0, tstream()>>>(tables.values(), list_view(charges), d_trow,
                                                     list_view(effects), cnt);
     charges.compact();               // the prune: `[c for c in planted_charges if c.live]`
     end_counts(n, out, &effects);
+}
+
+void unit_flight_plane(const UnitTablesDevice& tables, std::uintptr_t solid,
+                       std::uintptr_t material, std::uintptr_t out_plane, int h, int w,
+                       const ObjectSlotCounts& out) {
+    const int n = tables.n_env();
+    if (solid == 0 || material == 0 || out_plane == 0 || h <= 0 || w <= 0)
+        throw std::invalid_argument("unit_flight_plane: solid, material and the out plane "
+                                    "(N, h, w)");
+    unsigned long long* cnt = begin_counts(n);
+    k_flight_plane<<<bgrid(h * w, n), 256, 0, tstream()>>>(
+        tables.values(), reinterpret_cast<const uint8_t*>(solid),
+        reinterpret_cast<const int8_t*>(material), reinterpret_cast<uint8_t*>(out_plane), h * w,
+        cnt);
+    end_counts(n, out, nullptr);
 }
 
 }  // namespace breach_cuda
