@@ -590,16 +590,16 @@ def _count_batch(counts: OptionCounts, b: dict, memory: bool) -> None:
 
 def run(records_dir, net, settings: CopySettings, out_dir, *,
         device="cpu", census=None, training_file_text: str | None = None,
-        limit_train: int | None = None, measure_training: bool = True,
-        log=print) -> dict:
+        limit_train: int | None = None, limit_held: int | None = None,
+        measure_training: bool = True, log=print) -> dict:
     """A copying run (module text): the census, the split, ``settings.
     passes`` passes with the held-back agreement after each (every counted
     head right, teacher-forced), the best pass's weights exported through
     ``agents.saved``, then the measures on the held-back and the training
     records. Writes into ``out_dir``: ``census.json``, ``curve.jsonl`` (a
     line a pass), ``copy.pt`` (the best pass's soldier), ``measures.json``.
-    ``limit_train`` keeps the first files of the training side (sorted by
-    name): a short run, never a long one."""
+    ``limit_train`` / ``limit_held`` keep the first files of a side (sorted
+    by name): a short run, never a long one."""
     from agents import saved as SV
     from agents.network import SoldierNet
     from agents.sizes import sizes_for
@@ -617,6 +617,8 @@ def run(records_dir, net, settings: CopySettings, out_dir, *,
     train, held = parts["train"], parts["held"]
     if limit_train is not None:
         train = sorted(train, key=lambda f: f.path)[:int(limit_train)]
+    if limit_held is not None:
+        held = sorted(held, key=lambda f: f.path)[:int(limit_held)]
     S = max(int(RC.read_meta(f.path)["S"]) for f in (train[0], held[0]))
     torch.manual_seed(int(settings.seed))
     soldier = SoldierNet(net, sizes_for(S))
@@ -694,6 +696,7 @@ def run(records_dir, net, settings: CopySettings, out_dir, *,
     result = {"best_pass": best[1], "census_sha256": c["hash"],
               "settings": asdict(settings), "net": asdict(net),
               "train": {"files": len(train), "decisions": total},
+              "held_files": len(held),
               "held": measure(soldier, held, device=copier.device,
                               counts=counts, blank_prev=settings.blank_prev,
                               workers=settings.loader_workers),
@@ -763,6 +766,7 @@ def main(argv=None) -> int:
     a.add_argument("--out", required=True)
     a.add_argument("--device", default="cpu")
     a.add_argument("--limit-train", type=int, default=None)
+    a.add_argument("--limit-held", type=int, default=None)
     a.add_argument("--no-training-measure", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "census":
@@ -786,6 +790,7 @@ def main(argv=None) -> int:
     one_arithmetic()
     run(args.records, net, settings, args.out, device=args.device,
         training_file_text=text, limit_train=args.limit_train,
+        limit_held=args.limit_held,
         measure_training=not args.no_training_measure)
     return 0
 
