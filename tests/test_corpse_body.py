@@ -154,8 +154,9 @@ def test_a_corpse_packet_today_keeps_its_hit_event():
 # The blast reaches corpses
 # ---------------------------------------------------------------------------
 
-def _frag_on(sim, u, dx=2):
-    """A frag on the tile ``dx`` east of the corpse's footprint centre."""
+def _frag_on(sim, u, dx=1):
+    """A frag on the tile ``dx`` east of the corpse's centre tile (the frag's
+    radius is 2 tiles: at 1 it takes off half its damage)."""
     cy = int(u.center_tile_y())
     cx = int(u.center_tile_x()) + dx
     ev = []
@@ -222,7 +223,7 @@ def test_a_living_units_blast_damage_is_unchanged_beside_a_corpse():
         _step(sim)
         if with_corpse:
             _kill(c)
-        ev = _frag_on(sim, m, dx=-2)
+        ev = _frag_on(sim, m, dx=-1)
         return m.hp_q, [(type(e).__name__, e.unit_id, float(getattr(e, "damage", 0)))
                         for e in ev if hasattr(e, "unit_id")]
     assert run(True) == run(False)
@@ -295,15 +296,17 @@ def test_death_keeps_the_body_temperature():
 
 
 def test_a_corpse_in_fire_is_destroyed_in_finite_time():
-    """Property: a marine's corpse lying on a burning furniture pile's edge
-    is destroyed within two minutes, and the heat adds no event naming it.
-    Breaks if fire cannot reach a corpse (the heat row's alive gate)."""
+    """Property: a marine's corpse lying on a burning furniture pile (its
+    footprint on the pile) is destroyed within two minutes (measured 65 s;
+    docs/swarm_P5c_impl.md), and the heat adds no event naming it. Breaks if
+    fire cannot reach a corpse (the heat row's alive gate)."""
     tm = np.full((40, 40), MAT_HULL, dtype=np.int32)
     tm[1:39, 1:39] = MAT_AIR
     tm[19:22, 19:22] = MAT_FURNITURE
     lv = LevelData(name="fire_corpse", version="2", path=Path("."), tilemap=tm,
                    tile_size_m=0.333, diffuse_path=Path("."), entities=[], wires=[])
-    s = Simulation(lv, seed=3, breach_physics=bp, enable_recorder=False)
+    s = Simulation(lv, seed=3, breach_physics=bp, enable_recorder=False,
+                   ruleset=ContinuousRealtime())
     _step(s)
     from simulation.weapons import get_tables
     row = get_tables().payloads.by_name["studio_ignite"]
@@ -312,7 +315,7 @@ def test_a_corpse_in_fire_is_destroyed_in_finite_time():
             execute_payload(s.gmap, s.edit_queue, s.units, y, x, row, s.draws)
     _step(s, 20 * TPS)
     assert int(s.gmap.fire.max()) > 0, "the scene is moot: nothing burns"
-    m = Unit("M", x=20.5, y=19.5, team=0)       # footprint over the pile
+    m = Unit("M", x=19.5, y=19.5, team=0)       # footprint on the pile
     s.add_unit(m)
     _step(s)
     _kill(m)
@@ -340,8 +343,11 @@ def test_a_corpse_destroyed_by_a_blast_never_rises_by_either_trigger():
     _kill(u)
     u.killed_by_zombie = True
     u.infest_q = corpse.get_settings().threshold_q * 2   # fixture: infested
-    while not corpse.destroyed(u):
+    for _ in range(50):
+        if corpse.destroyed(u):
+            break
         _frag_on(sim, u)
+    assert corpse.destroyed(u)
     assert not ai_zombie.rises_as_zombie(u)
     corpse.infest(u, 10)
     assert u.infest_q == 0
