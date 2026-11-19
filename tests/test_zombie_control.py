@@ -212,8 +212,16 @@ _PRE_122_BOX = dict(
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was ac9bda6c239304078bef33858e2582f883e0684eddd14d541ec7f269e8a88c16)
     # Erik's zombie bite balance re-pin (2026-11-12, see the box's ticks).
-    unit_stream="3a6b230941d73d3b6f325af378ffe67b"
-                "44a86953bbb4d46736245fbf4caa31ee")
+    # (was 3a6b230941d73d3b6f325af378ffe67b44a86953bbb4d46736245fbf4caa31ee)
+    # #215 re-pin (2026-11-18, body temperature and stress): two unit-schema
+    # rows, hashed while they differ from their defaults; the bitten marines
+    # carry stress (the damage producer), so stress_q enters the records (the
+    # box's bodies stay at ambient). Outcome, team, ticks and field_digest
+    # UNCHANGED. SOLE CAUSE, verified: with stress_q stripped from every
+    # record this tree gives EXACTLY the previous pin (docs/body_temperature_
+    # impl_2026-11-17.md).
+    unit_stream="4bf0c3eb02aa263f9aa7c0f9f4a761a7"
+                "94062cca86786c27b6ce63460b40814e")
 _PRE_122_SHIP_DEMO = dict(
     # Merge of main 37142802 into #183 (2026-11-13; main's #29 P3b keyed
     # Philox draws had moved this pin): re-pinned on the merged tree with
@@ -432,7 +440,22 @@ _PRE_122_SHIP_DEMO = dict(
     # outcome, ticks and all three digests; A/B over 24-72 seeds in
     # docs/p3b_ab_2026-11-12.md.
     # (was ticks 2966)
-    outcome="win", team=0, ticks=2570,
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik, done once):
+    # four causes, together -- (1) a thrown grenade bounces off walls; (2) every
+    # doorway is a closed entity door (painted doors retired; zombies bash doors;
+    # use flips the door the unit faces); (3) body temperature and stress, the
+    # protection heat_absorption 0.1 at the frag's 10 MJ; (4) the old bots'
+    # (bots_v1) ONE door step (Erik's ruling, the exception to their freeze).
+    # Each cause's own first divergence is in its as-built doc
+    # (docs/grenade_bounce_impl_2026-11-17.md, docs/doors_retire_painted_impl_
+    # 2026-11-18.md, docs/body_temperature_impl_2026-11-17.md, whose section "The
+    # one re-baseline, 2026-11-18" holds the before/after table). Played twice in
+    # two processes: identical outcome, digests and unit stream. Cause (4) does
+    # not enter this match (the layered bots; their door step, now shared with
+    # bots_v1, plays this match bit for bit as before it was shared).
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was ticks=2570)
+    outcome="win", team=0, ticks=1349,
     # #31 x #169 re-pin (2026-11-06, the merge of the two): each re-pinned this
     # match alone; together outcome, team and ticks stay win 1 at 722 and the
     # three digests move. SOLE CAUSE, verified by a per-tick trace of the #31
@@ -476,7 +499,10 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 5f8cdd8bbfdb797e58dd163e35a368fabcaa541e106402703fa4893cc7f3e136)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 13168aaad034fb1f8365ac184244453d7dc8ef6168b2438b48101b492484b89d)
-    field_digest="3f82af18a8669a5dcf99ec75a8fd38f7eb7cc5f8f7d49c7fe1a42b5888b334bc",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 3f82af18a8669a5dcf99ec75a8fd38f7eb7cc5f8f7d49c7fe1a42b5888b334bc)
+    field_digest="69dcf3b3930caf6f7bd3ca1b6445f5d1"
+                 "c0c57fd104e7d4288302c69c87f9c710",
     # #123 re-pin (credited events): the last tick holds the winning bullet's
     # UnitHit + UnitKilled, whose hashed record gained `attacker_id` (2, the
     # shooter). SOLE CAUSE, verified on the same build: hashing the record
@@ -624,7 +650,10 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 4e6bc98db44f5be0548ca91969e822294bacd7ac45a360d594f793ffac205509)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0)
-    tick_digest="e1a9413a03e8ab185ea66652f3d467549533a3a34bfd68ad93ee1392fb76a0cb",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was e1a9413a03e8ab185ea66652f3d467549533a3a34bfd68ad93ee1392fb76a0cb)
+    tick_digest="8c843ee3d5265a81032ca2e385b16e55"
+                "3ee75069e227add9540b7e9aa99691f1",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -661,7 +690,10 @@ _PRE_122_SHIP_DEMO = dict(
     # (was 8c7b51885acc094fa06c4fdcc2f6ee315828d1970a75a2efe14848b3d83999ba)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64)
-    unit_stream="8548eb1e2f94f9a501953615e24ad7bdb23d2922f7a11d8c03d5389540595eae")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 8548eb1e2f94f9a501953615e24ad7bdb23d2922f7a11d8c03d5389540595eae)
+    unit_stream="19d7b859211b87fe87e09877117da171"
+                "e004f20568648272ac3d4e13422e308a")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):
@@ -686,8 +718,9 @@ def test_the_controller_plays_the_pinned_ship_demo_match():
     G5p-a1's turning law, then at G5p-b's wind, then at G9p's horde field
     and its behaviours, then at G8p's layered bots, then at #195 1d's honest
     team picture, then at #29 P3e's integer match path, then at Erik's
-    zombie bite balance, then at #29 P3b's keyed Philox draws: win team 0
-    at tick 2570) with the same tick_digest. Breaks like the box test, on the real
+    zombie bite balance, then at #29 P3b's keyed Philox draws, then at
+    #215's one re-baseline: win team 0 at tick 1349) with the same
+    tick_digest. Breaks like the box test, on the real
     level -- and on any change of the bots (then re-pin, the bots_v1 pin of
     tests/test_bots_v1.py staying)."""
     import _pinned_matches      # the shared play of this match (#205)

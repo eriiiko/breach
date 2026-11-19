@@ -94,6 +94,9 @@ _CONE_Q_CACHE = {}
 
 #: A grenade thrown less than this far (Q16 tiles: 0.1) lands at once.
 _FLIGHT_EPS_Q = unit_fixed.quantize_scalar(0.1)                 # p3e-door
+#: #215: a bounced leg shorter than this (Q16 tiles: a quarter tile) is not
+#: flown -- the grenade rests where it hit.
+BOUNCE_MIN_Q = unit_fixed.FP_ONE >> 2
 
 
 def _bullet_mult_q() -> int:
@@ -121,10 +124,131 @@ def cone_q16_of_deg(spread_deg) -> int:
 # ---------------------------------------------------------------------------
 # Projectile: in-flight grenade
 # ---------------------------------------------------------------------------
+def flight_blocked(gmap, iy: int, ix: int) -> bool:
+    """Whether a thrown grenade cannot fly into tile ``(iy, ix)`` (#215):
+    off the grid, ``solid`` (the rounds' march's own stop: a wall, a closed
+    door, glass, the legacy painted door), or a material whose
+    ``[materials.*] blocks_thrown`` says so (the grille, Erik 2026-11-18;
+    the column is derived as "sealed to gas", i.e. ``solid``, for every
+    other row). Asked against the map as it stands at the call."""
+    h, w = gmap.solid.shape
+    if not (0 <= iy < h and 0 <= ix < w) or gmap.solid[iy, ix]:
+        return True
+    return bool(gmap.materials.blocks_thrown[int(gmap.material[iy, ix])])
+
+
+def flight_plane(gmap) -> np.ndarray:
+    """:func:`flight_blocked` over the whole grid, a ``(h, w)`` bool array
+    (a fresh copy): the plane the device's grenade slots read."""
+    return np.asarray(gmap.solid, dtype=bool) | np.asarray(
+        gmap.materials.blocks_thrown, dtype=bool)[np.asarray(gmap.material)]
+
+
+def release_point(gmap, x_q: int, y_q: int, footprint: int, dx_q: int,
+                  dy_q: int, forward_q: int, side_q: int):
+    """Where a thrown grenade leaves the hand (#215, Erik 2026-11-18): the
+    thrower's Q16 centre (``x_q`` / ``y_q`` plus half its footprint) plus
+    the hand's offset in the thrower's frame -- ``forward_q`` along the
+    throw's Q16 unit vector ``(dx_q, dy_q)`` (the facing at the release),
+    ``side_q`` to its right ``(-dy_q, dx_q)`` -- each coordinate ONE
+    rational rounded once (half away). The piece from the centre to the
+    hand is walked (:func:`flight_walk`): a hand beyond a wall starts the
+    grenade at the last free point before it (no bounce counted). The
+    centre's own tile is never asked (a thrower on a legacy painted door
+    starts there; :func:`detonation_tile` keeps a grenade that never left
+    it off the door). Returns ``(sx, sy)`` Q16."""
+    half = (int(footprint) << unit_fixed.FP_SHIFT) >> 1
+    cx, cy = int(x_q) + half, int(y_q) + half
+    f, s, dx, dy = int(forward_q), int(side_q), int(dx_q), int(dy_q)
+    hx = cx + unit_fixed.div_round(f * dx - s * dy, unit_fixed.FP_ONE)
+    hy = cy + unit_fixed.div_round(f * dy + s * dx, unit_fixed.FP_ONE)
+    hit = flight_walk(gmap, cx, cy, hx, hy)
+    if hit is not None:
+        return hit[0], hit[1]
+    return hx, hy
+
+
+def flight_walk(gmap, ax: int, ay: int, bx: int, by: int):
+    """THE WALL WALK of a thrown grenade (#215): the Q16 segment ``A -> B``
+    walked tile by tile (the grid traversal of J. Amanatides and A. Woo, "A
+    Fast Voxel Traversal Algorithm for Ray Tracing", Eurographics 1987), in
+    integers. A point's tile is its coordinates floored (``>> 16``; equal to
+    ``target_tile``'s truncation on the grid). The tile ``A`` stands in is
+    never asked: only a tile the segment ENTERS. The next boundary is the
+    one with the smaller crossing parameter, compared by cross products;
+    equal parameters are an EXACT CORNER and step both axes at once (into
+    the diagonal tile).
+
+    Returns ``None`` when every tile entered is free (:func:`flight_blocked`
+    says no), else ``(px, py, flip_x, flip_y)``: the last point of the
+    segment in the free tile it was leaving (the crossing point, the
+    coordinate across the boundary pulled back inside the tile: ``edge - 1``
+    moving up, ``edge`` moving down; the other coordinate on the segment,
+    rounded half away, clamped to the tile) and which edges it met: a
+    vertical edge flips x, a horizontal one y, a corner both."""
+    sh = unit_fixed.FP_SHIFT
+    one = unit_fixed.FP_ONE
+    cx, cy = ax >> sh, ay >> sh
+    nx, ny = abs((bx >> sh) - cx), abs((by >> sh) - cy)
+    dx, dy = bx - ax, by - ay
+    sx = 1 if dx > 0 else -1
+    sy = 1 if dy > 0 else -1
+    adx, ady = abs(dx), abs(dy)
+    while nx or ny:
+        ex = ((cx + 1) << sh if sx > 0 else cx << sh) if nx else 0
+        ey = ((cy + 1) << sh if sy > 0 else cy << sh) if ny else 0
+        if nx and ny:
+            c = abs(ex - ax) * ady - abs(ey - ay) * adx   # t_x - t_y, scaled
+            step_x, step_y = c <= 0, c >= 0
+        else:
+            step_x, step_y = nx > 0, ny > 0
+        ncx = cx + sx if step_x else cx
+        ncy = cy + sy if step_y else cy
+        if flight_blocked(gmap, ncy, ncx):
+            if step_x:
+                px = ex - 1 if sx > 0 else ex
+                if step_y:
+                    py = ey - 1 if sy > 0 else ey
+                else:
+                    py = ay + unit_fixed.div_round(dy * abs(ex - ax), adx)
+                    py = min(max(py, cy << sh), (cy << sh) + one - 1)
+            else:
+                py = ey - 1 if sy > 0 else ey
+                px = ax + unit_fixed.div_round(dx * abs(ey - ay), ady)
+                px = min(max(px, cx << sh), (cx << sh) + one - 1)
+            return px, py, step_x, step_y
+        cx, cy = ncx, ncy
+        nx -= 1 if step_x else 0
+        ny -= 1 if step_y else 0
+    return None
+
+
+def detonation_tile(gmap, pos_x_q: int, pos_y_q: int):
+    """Where a grenade resting at ``(pos_x_q, pos_y_q)`` detonates (#215):
+    its tile ``(y, x)`` (truncated, ``target_tile``'s rule), unless a wall
+    stands there now (a door closed on it, or it never left the legacy
+    painted door its thrower stood in): then the first free 4-neighbour in
+    the order north, south, west, east; a tile with none stays (walled in)."""
+    fy = unit_fixed.shr_trunc(pos_y_q)
+    fx = unit_fixed.shr_trunc(pos_x_q)
+    if not flight_blocked(gmap, fy, fx):
+        return fy, fx
+    for ny, nx in ((fy - 1, fx), (fy + 1, fx), (fy, fx - 1), (fy, fx + 1)):
+        if not flight_blocked(gmap, ny, nx):
+            return ny, nx
+    return fy, fx
+
+
 class Projectile:
-    """In-flight grenade (LOBBED — ignores unit collision). Travels in a
-    straight line from start to target; detonates when
-    ``current_tick >= get_detonate_tick()``.
+    """In-flight grenade (LOBBED — ignores unit collision). Its flight is a
+    chain of straight LEGS (#215): ``start_*_q -> target_*_q`` is the leg
+    being flown, begun on ``leg_tick``; the first leg is the throw (start
+    the thrower's tile, the throw's target, ``leg_tick`` the thrown tick).
+    A leg that enters a wall ends there and a mirrored, shorter leg starts
+    (:meth:`fly`, :func:`flight_walk`); a leg whose start is its target is
+    the grenade RESTING. Detonates when
+    ``current_tick >= get_detonate_tick()`` where it rests (:meth:`settle`,
+    :func:`detonation_tile`).
 
     W3: carries its ROUND (``ammo_name`` — a ``[ammo.*]`` row of family
     ``hand_grenade``); the detonation site resolves the round's payload row
@@ -151,6 +275,10 @@ class Projectile:
         self.target_y_q = q(float(target_fy))                    # p3e-door
         self.pos_x_q = self.start_x_q
         self.pos_y_q = self.start_y_q
+        # #215: the current leg's first tick (the throw's: thrown_tick) and
+        # the bounces made so far.
+        self.leg_tick = thrown_tick
+        self.bounces = 0
         self.fuse_seconds = fuse_seconds
         #: The fuse in INTEGER ticks (the direct throw verb's, G3p); None =
         #: derive it from ``fuse_seconds`` (the WEGO order path).
@@ -180,10 +308,18 @@ class Projectile:
         lambda self: unit_fixed.dequantize_scalar(self.target_y_q))
 
     def target_tile(self):
-        """The detonation tile ``(y, x)``: the target truncated toward zero
-        (what ``int()`` of the float target was), in integers."""
+        """The current leg's target tile ``(y, x)``: the target truncated
+        toward zero (what ``int()`` of the float target was), in integers.
+        An unobstructed throw rests and detonates here (#215)."""
         return (unit_fixed.shr_trunc(self.target_y_q),
                 unit_fixed.shr_trunc(self.target_x_q))
+
+    def approach_tile(self):
+        """The ``approach`` of the detonation (#215): the tile the current
+        leg started from -- the thrower's tile for an unbounced throw (the
+        pre-#215 value), the last bounce's point after one."""
+        return (unit_fixed.shr_trunc(self.start_y_q),
+                unit_fixed.shr_trunc(self.start_x_q))
 
     def get_detonate_tick(self):
         """Tick at which this projectile detonates."""
@@ -193,15 +329,14 @@ class Projectile:
         return self.thrown_tick + int(self.fuse_seconds * tps)
 
     def update_position(self, current_tick):
-        """Move the projectile toward the target based on travel time so far
-        -- in integers since #29 P3e: the distance is ``isqrt`` of the Q32
-        square (Q16 tiles), "arrived" is ``elapsed * speed >= dist * tps``,
-        and the position the start plus the delta times ``elapsed * speed /
-        (tps * dist)``, ONE rational rounded once (half away). (The
-        detonation reads the target, not this position: the flight is what
-        the renderer and the observation see.)"""
+        """Move the projectile along its current leg based on travel time
+        so far (the leg's: since ``leg_tick``) -- in integers since #29 P3e:
+        the distance is ``isqrt`` of the Q32 square (Q16 tiles), "arrived"
+        is ``elapsed * speed >= dist * tps``, and the position the start
+        plus the delta times ``elapsed * speed / (tps * dist)``, ONE rational
+        rounded once (half away). Asks no wall: :meth:`fly` does."""
         tps = int(CFG.clock.ticks_per_second)
-        elapsed = int(current_tick) - int(self.thrown_tick)
+        elapsed = int(current_tick) - int(self.leg_tick)
         dx_q = self.target_x_q - self.start_x_q
         dy_q = self.target_y_q - self.start_y_q
         dist_q = unit_fixed.isqrt(dx_q * dx_q + dy_q * dy_q)
@@ -214,6 +349,77 @@ class Projectile:
         den = tps * dist_q
         self.pos_x_q = self.start_x_q + unit_fixed.div_round(dx_q * num, den)
         self.pos_y_q = self.start_y_q + unit_fixed.div_round(dy_q * num, den)
+
+    def _rest(self, px: int, py: int, tick: int) -> None:
+        self.start_x_q = self.target_x_q = self.pos_x_q = px
+        self.start_y_q = self.target_y_q = self.pos_y_q = py
+        self.leg_tick = tick
+
+    def bounce(self, px: int, py: int, flip_x: bool, flip_y: bool,
+               tick: int, restitution_q: int, bounce_max: int) -> int:
+        """The leg met a wall at ``(px, py)`` (:func:`flight_walk`'s stop):
+        a new leg starts there on ``tick`` -- the old leg's direction
+        mirrored in the face it met, its length the distance the old leg
+        had LEFT (``|target - p|``, ``isqrt``) times ``restitution_q``,
+        rounded once in Q16 (``mul_q16_round``), the target ``p`` plus the
+        old leg's delta times ``length / |old leg|`` (one rational per
+        coordinate, rounded half away). The grenade RESTS at ``p`` instead
+        when it has bounced ``bounce_max`` times already or the new leg is
+        shorter than :data:`BOUNCE_MIN_Q`. Returns the new leg's length (0
+        when it rests)."""
+        if self.bounces >= int(bounce_max):
+            self._rest(px, py, tick)
+            return 0
+        ldx = self.target_x_q - self.start_x_q
+        ldy = self.target_y_q - self.start_y_q
+        ldist = unit_fixed.isqrt(ldx * ldx + ldy * ldy)
+        rx, ry = self.target_x_q - px, self.target_y_q - py
+        length = unit_fixed.mul_q16_round(
+            unit_fixed.isqrt(rx * rx + ry * ry), int(restitution_q))
+        if length < BOUNCE_MIN_Q or ldist <= 0:
+            self._rest(px, py, tick)
+            return 0
+        mx = -ldx if flip_x else ldx
+        my = -ldy if flip_y else ldy
+        self.start_x_q, self.start_y_q = px, py
+        self.target_x_q = px + unit_fixed.div_round(mx * length, ldist)
+        self.target_y_q = py + unit_fixed.div_round(my * length, ldist)
+        self.pos_x_q, self.pos_y_q = px, py
+        self.leg_tick = tick
+        self.bounces += 1
+        return length
+
+    def fly(self, gmap, tick: int, restitution_q: int,
+            bounce_max: int) -> None:
+        """Slot 2's flight for ``tick`` (#215): the position on the current
+        leg (:meth:`update_position`), the piece flown since the last
+        position walked (:func:`flight_walk`) against ``gmap`` as it stands
+        now, and on a wall the bounce (:meth:`bounce`; the new leg starts
+        this tick, so it is flown from the next one). An unobstructed throw
+        flies exactly as before #215."""
+        px, py = self.pos_x_q, self.pos_y_q
+        self.update_position(tick)
+        hit = flight_walk(gmap, px, py, self.pos_x_q, self.pos_y_q)
+        if hit is not None:
+            self.bounce(*hit, tick, restitution_q, bounce_max)
+
+    def settle(self, gmap, tick: int, restitution_q: int,
+               bounce_max: int) -> None:
+        """The fuse ran out (#215): the rest of the flight is resolved at
+        once by the same walk, bounces included -- from the position to the
+        leg's target, and on along every bounced leg -- so the grenade
+        rests where its flight would have ended (an unobstructed throw: on
+        its target, the pre-#215 detonation tile)."""
+        for _ in range(int(bounce_max) + 2):
+            if (self.pos_x_q == self.target_x_q
+                    and self.pos_y_q == self.target_y_q):
+                return
+            hit = flight_walk(gmap, self.pos_x_q, self.pos_y_q,
+                              self.target_x_q, self.target_y_q)
+            if hit is None:
+                self.pos_x_q, self.pos_y_q = self.target_x_q, self.target_y_q
+                return
+            self.bounce(*hit, tick, restitution_q, bounce_max)
 
 
 # ---------------------------------------------------------------------------

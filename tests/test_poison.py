@@ -261,6 +261,10 @@ def test_a_level_returns_to_exactly_zero_and_hashes_as_never_poisoned():
         assert not [k for k in rec if k.startswith("poison")]
         twin = _marine()
         twin.hp_q = u.hp_q
+        # #215: the hit points lost carry their stress (the damage producer,
+        # simulation.stress) -- the twin "bar the hit points it lost" lost
+        # them too.
+        twin.stress_q = u.stress_q
         assert rec == unit_schema.digest_record(twin)
 
 

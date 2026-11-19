@@ -7,6 +7,8 @@ paths:
   - "src/simulation/status.py"
   - "src/simulation/exposure.py"
   - "src/simulation/poison.py"
+  - "src/simulation/stress.py"
+  - "src/simulation/clearing.py"
   - "src/simulation/simultaneous.py"
   - "src/simulation/events.py"
   - "src/simulation/loadouts.py"
@@ -43,6 +45,15 @@ and who must use it; this file holds the constraints the code cannot say.
 - Every poisoning enters through `poison.dose` from a coupling row. A new source of poison is a row that calls it, never a status row, a packet of its own or a second law (`tests/test_poison.py`: nothing but `poison.py` writes the columns, nothing but `poison.tick` builds a POISON packet).
 - The blood is flushed at or below 1/64 unit only once the depot is empty, so every level returns to exactly 0 and the unit hashes as never poisoned. A zombie takes no dose. Zeroed at death and conversion. The rates are read through the TOX hooks' accessors.
 - ACCEPTED GAPS: the latest dose takes the credit for all the poison; the POISONED status kind stays registered and unapplied (obs spec v1's layout), so an agent is not shown its levels until the next obs spec.
+
+## Clearing step
+- `clearing.drain` is THE per-tick drain of a unit state by a fraction of itself (the poison law's step, lifted in #215): poison calls it at Q16, stress at the finer `clearing.RATE_SHIFT` (2^-24). A new state that drains by a fraction calls it, never a copy; its device twin `unit_lib::clearing_drain` changes with it. Poison's arithmetic through it is frozen bit for bit (`tests/test_stress.py`).
+- A half-life becomes a rate only through `clearing.half_life_rate` (ln 2 an exact rational, no libm).
+
+## Stress
+- Fed ONLY through `stress.produce`, a named producer row (`stress.PRODUCERS`) with its weight; the one producer is damage actually lost, from `damage.apply_packet` (host and device). A new producer is a row and its own ruling, never a write of `stress_q` (`tests/test_stress.py` scans both). Lowered ONLY by its own tick (slot 9c3'', fused into slot 9c3's device kernel). A zombie and a corpse take none; cleared at death and conversion.
+- NOTHING in the game reads the stress or the heart rate until Erik rules an effect (2026-11-17: "readout in first patch is good, we wait with effects"); `tests/test_stress.py` scans `src/`. An effect reads `stress.heart_rate_q` (the one Hill curve, an integer table built at load), never the raw level; the heart rate is derived, never stored.
+- The level is in 2^-24 points (`stress.LEVEL_ONE`): the clearing step truncates, so a Q16 level would bias a long half-life by percents.
 
 ## Simultaneous attacks
 - An attack slot decides against its START state and applies together (#169): phase A walks units and rounds, decides eligibility, geometry and every draw, and RECORDS each effect (`hit` / `status` / `face` / `world` / `push`); `resolve()` applies them in walk order. So no unit's attack depends on its id, and a tick with no same-tick interaction is bit-identical to a one-pass slot.

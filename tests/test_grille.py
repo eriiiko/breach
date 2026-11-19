@@ -39,7 +39,7 @@ from simulation.field_edit import EditMode, Falloff, FieldEdit, Region  # noqa: 
 from simulation.gas_fixed import quantize_q16_scalar  # noqa: E402
 from simulation.gases import SMOKE  # noqa: E402
 from simulation.materials import (  # noqa: E402
-    MAT_AIR, MAT_DOOR, MAT_GRILLE, MAT_HULL, MAT_STEEL, MATERIAL_NAMES,
+    MAT_AIR, MAT_DOOR_CLOSED, MAT_GRILLE, MAT_HULL, MAT_STEEL, MATERIAL_NAMES,
     MaterialTable,
 )
 from test_heat_source import _closure_bad  # noqa: E402  (THE closure helper)
@@ -158,7 +158,7 @@ def runs(tmp_path_factory):
     checked every tick, the gas planes kept at the end. The AIR opening is
     the reference the grille must match."""
     out = {}
-    for mat in (MAT_GRILLE, MAT_AIR, MAT_STEEL, MAT_DOOR):
+    for mat in (MAT_GRILLE, MAT_AIR, MAT_STEEL, MAT_DOOR_CLOSED):
         sim = _sim(tmp_path_factory.mktemp(MATERIAL_NAMES[mat]), mat)
         g = sim.gmap
         d0 = _mean_p(g, A_BOX) - _mean_p(g, B_BOX)
@@ -176,14 +176,14 @@ def test_two_rooms_joined_by_a_grille_equalise_and_steel_or_a_door_do_not(
     """PROPERTY: two sealed rooms at 1.5 and 1.0 atm joined ONLY by a
     two-tile grille equalise -- the pressure difference decays to a small
     fraction of its start within 3 s -- while the same rooms joined by
-    steel, or by the legacy door (walkable but flow-solid), keep almost all
-    of it. BREAKS IF the grille row stops being permeable (it decays like
-    steel), or the legacy door starts passing gas (it decays like the
-    grille)."""
+    steel, or by a closed door (``MAT_DOOR_CLOSED``; #215 retired the
+    painted door), keep almost all of it. BREAKS IF the grille row stops
+    being permeable (it decays like steel), or a closed door starts passing
+    gas (it decays like the grille)."""
     for mat in runs:
         assert runs[mat]["d0"] > 0.45, (MATERIAL_NAMES[mat], runs[mat])
     assert abs(runs[MAT_GRILLE]["d"]) < 0.1 * runs[MAT_GRILLE]["d0"], runs
-    for mat in (MAT_STEEL, MAT_DOOR):
+    for mat in (MAT_STEEL, MAT_DOOR_CLOSED):
         assert runs[mat]["d"] > 0.9 * runs[mat]["d0"], (MATERIAL_NAMES[mat],
                                                         runs[mat])
 
@@ -247,8 +247,9 @@ def test_a_unit_can_neither_stand_on_nor_path_through_a_grille(tmp_path):
     """PROPERTY: no 3x3 footprint that covers a grille tile is enterable,
     and A* (the one pathfinder, on GameMap.is_passable_block -- the
     predicate movement and the bots use) finds no route between two rooms
-    joined only by a grille, while the same rooms joined by a door-wide run
-    of legacy door tiles flanked by grilles (a vented door) have one.
+    joined only by a grille, while the same rooms joined by a door-wide
+    opening flanked by grilles (a vented door standing open; #215 retired
+    the walkable painted door tiles) have one.
     BREAKS IF the grille row gains mobility, or the walk predicate starts
     reading permeability instead of mobility."""
     g = _sim(tmp_path / "g", MAT_GRILLE, pressurise=False).gmap
@@ -265,9 +266,10 @@ def test_a_unit_can_neither_stand_on_nor_path_through_a_grille(tmp_path):
                      W, H)
 
     assert not route(g)
-    # The vented door: four door tiles in the wall, a grille either side.
+    # The vented door standing open: four open tiles in the wall, a grille
+    # either side.
     tm = _tilemap(MAT_STEEL)
-    tm[3:7, WALL_X] = MAT_DOOR
+    tm[3:7, WALL_X] = MAT_AIR
     tm[2, WALL_X] = tm[7, WALL_X] = MAT_GRILLE
     lvl = tmp_path / "vented"
     lvl.mkdir()
@@ -278,7 +280,7 @@ def test_a_unit_can_neither_stand_on_nor_path_through_a_grille(tmp_path):
     gv = Simulation(level_loader.load("vented", str(tmp_path)), seed=1,
                     breach_physics=bp, enable_recorder=False).gmap
     assert route(gv)
-    assert not gv.solid[2, WALL_X] and gv.solid[4, WALL_X]
+    assert not gv.solid[2, WALL_X] and not gv.is_passable(2, WALL_X)
 
 
 # ---------------------------------------------------------------------------

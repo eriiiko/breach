@@ -616,6 +616,17 @@ def _melee_setup(sim):
     v.hp_q = v.hp_q // 64                 # a sliver of its bar
 
 
+def _charge_ff_setup(sim):
+    """The enemy at half its bar, so the C4 kills it (#215: behind the body's
+    heat protection a C4 no longer kills a full-health marine at this range;
+    the scene's premise -- the charge eliminates the enemy, wins the match
+    and hits the planter's own pair -- is restored in the scene, not the
+    law). The pair keeps its full bar: it takes the friendly fire and lives."""
+    for u in sim.units:
+        if int(u.team) == 1:
+            u.hp_q = u.hp_q // 2
+
+
 #: scene -> (what the scene must have met, its runner arguments, actions,
 #: setup)
 SCENES = {
@@ -627,7 +638,7 @@ SCENES = {
                    "wins"), {},
                   _first_step(_raw_rows(4, **{
                       "plant_charge_intent.fuse_ticks": ([0], 120)})),
-                  None),
+                  _charge_ff_setup),
     "charge_wipe": (("eliminations",), {},
                     _first_step(_raw_rows(4, **{
                         "plant_charge_intent.fuse_ticks": ([0], 120)})),

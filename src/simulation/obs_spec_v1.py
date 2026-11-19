@@ -1998,9 +1998,11 @@ def _full_entries(fv: FullView, u, cx: int, cy: int) -> tuple:
     other living marines in ``(team, slot)`` order, the zombies nearest
     first, the objects nearest first (ties in the trackers' order), the
     doors nearest first (ties by ordinal); over :data:`FULL_ENTRIES` the
-    farthest zombies are dropped first, then the farthest objects (never a
-    marine; a door only past that, a CHOICE for an absurd map). Returns
-    ``(marines, zombies, objects, doors)`` as kept."""
+    FARTHEST DOORS are dropped first, then the farthest zombies, then the
+    farthest objects, never a marine (#215, the game-AI lead's ruling of
+    2026-11-18: every doorway is a door entity now, so a ship's 60 doors must
+    not push its units out). The entry ORDER stays marines, zombies, objects,
+    doors. Returns ``(marines, zombies, objects, doors)`` as kept."""
     me = int(u.id)
 
     def d2(x, y):
@@ -2015,12 +2017,12 @@ def _full_entries(fv: FullView, u, cx: int, cy: int) -> tuple:
                       for k, o in enumerate(fv.objects)), key=lambda t: t[:2])
     doors = sorted(((d2(*_door_centre(d)), int(d.ordinal), d)
                     for d in fv.doors), key=lambda t: t[:2])
-    room = FULL_ENTRIES - 1 - len(marines)
-    if room < len(doors):
-        doors = doors[:max(0, room)]
-    room -= len(doors)
-    objects = objects[:max(0, min(len(objects), room))]
-    zombies = zombies[:max(0, min(len(zombies), room - len(objects)))]
+    room = max(0, FULL_ENTRIES - 1 - len(marines))
+    objects = objects[:room]                 # the units' room first ...
+    room -= len(objects)
+    zombies = zombies[:room]
+    room -= len(zombies)
+    doors = doors[:room]                     # ... the doors fill what is left
     return (marines, [z for _, _, z in zombies], [o for _, _, o in objects],
             [d for _, _, d in doors])
 

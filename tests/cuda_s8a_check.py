@@ -466,13 +466,40 @@ def _poison_stamp_planes(g_gpu) -> None:
         g_gpu._dev[name].fill(_STAMP_POISON[name])
 
 
+def _track_stamp_serial(g_gpu) -> None:
+    """Record the tile serial at which the device stamp's rows were taken
+    (``take_stamp_rows``: slot 7's head), so the check knows a topology change
+    LATER in the tick (a door the slot-9e sweep opens or closes, #215)."""
+    if getattr(g_gpu, "_s8a_take_wrapped", False):
+        return
+    orig = g_gpu.take_stamp_rows
+
+    def take():
+        rows = orig()
+        g_gpu._s8a_take_serial = (g_gpu._tile_serial if rows is not None
+                                  else None)
+        return rows
+    g_gpu.take_stamp_rows = take
+    g_gpu._s8a_take_wrapped = True
+
+
 def _stamp_plane_check(label, t, g_cpu, g_gpu, stamped) -> int:
     """The device's five stamp planes vs the CPU world's host planes, tol 0
-    (a tick the device stamp did not serve uploaded two of them: those)."""
+    (a tick the device stamp did not serve uploaded two of them: those).
+    #215: when a tile changed AFTER the device stamp's rows were taken (the
+    slot-9e door sweep; ship_demo's doorways are doors), the host's
+    ``obstacles`` follows the change through ``on_tile_changed`` while the
+    device's is the stamp's (no device stage reads it; the next tick's stamp
+    re-derives it from the re-uploaded permeability), so ``obstacles`` is
+    compared on the next tick instead of this one."""
     if not g_gpu.residency_on():
         return 0
     bad = 0
+    later = (stamped and getattr(g_gpu, "_s8a_take_serial", None) is not None
+             and g_gpu._s8a_take_serial != g_gpu._tile_serial)
     for name in (_STAMP_PLANES if stamped else _STAMP_UPLOADED):
+        if later and name == "obstacles":
+            continue
         dev = g_gpu._dev[name].get()
         if not np.array_equal(dev, getattr(g_cpu, name)):
             bad += 1
@@ -510,6 +537,7 @@ def _run_leg(label, world_cpu, world_gpu, n_ticks, step_fn, evidence,
             step_fn(world_cpu, t)
             _residency(True); _set_backends(True)
             _poison_stamp_planes(g_g)
+            _track_stamp_serial(g_g)
             stamp0 = _counters()["stamp"]
             step_fn(world_gpu, t)
             stamped = _counters()["stamp"] > stamp0

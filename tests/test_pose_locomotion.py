@@ -843,3 +843,25 @@ def test_no_bone_is_named_in_the_locomotion_module():
         src = (ROOT / "renderer" / f"{mod}.py").read_text(encoding="utf-8")
         literals = set(re.findall(r"""["']([^"'\n]+)["']""", src))
         assert not (literals & names), (mod, sorted(literals & names))
+
+
+def test_a_running_marine_that_turns_zombie_walks_the_zombie_table(layer):
+    """PROPERTY (#215's follow-camera replay, renderer/pose_locomotion.py):
+    a marine at full speed (the player role's run or sprint gait, an index
+    past the zombie role's only gait) that turns zombie -- it keeps its look
+    and so its pose state, but is driven by the zombie role from then on --
+    locomotes on the zombie role's rows: no IndexError, its gait an index
+    into the zombie's gaits, and it walks the zombie's walk.
+
+    BREAKS IF: the gait / sector indices of the old role are carried into
+    the new role's table (the replay crashed with ``gaits[i]`` out of range
+    at the first frame the converted unit moved).
+    """
+    ps = layer.new_state(MARINE, "idle", "player")
+    full = 4.5 / 0.333 * _M_PER_TILE
+    _drive(layer, ps, full, 0.0, 2.0)
+    assert ps.gait >= 1, "the scene is moot: the marine is not past its first gait"
+    zombie = layer.settings.playback["soma"].locomotion.roles["zombie"]
+    states = _drive(layer, ps, full, 0.0, 1.0, role="zombie")
+    assert 0 <= ps.gait < len(zombie.gaits), ps.gait
+    assert states[-1] == zombie.gaits[0].state, states[-1]

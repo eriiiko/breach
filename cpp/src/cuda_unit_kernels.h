@@ -147,6 +147,9 @@ struct UnitDamageCounts : UnitKernelCounts {
 struct UnitDamagePlanes {
     std::uintptr_t heat = 0;
     std::uintptr_t rad_flux = 0;
+    std::uintptr_t atmosphere = 0;   // #215: the heat row's air read (int32)
+    std::uintptr_t temperature = 0;  // int32
+    std::uintptr_t solid = 0;        // bool
     std::uintptr_t gas = 0;
     int n_gases = 0;
     int h = 0;
@@ -201,9 +204,11 @@ void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
 // planted charges at the slot -- staged through the store's input slots 0, 1,
 // 2. out.refused = plants refused at the capacity; out.dropped = requests the
 // list could not hold.
+// #215: `flight` a DEVICE (N, fh, fw) bool plane (combat.flight_plane) the
+// throw's release point is walked over.
 void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
                 const int64_t* ticks, const int64_t* spans, int n_spans, const int64_t* live,
-                const UnitDamageCounts& out);
+                std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out);
 
 // The done kernel: per env (terminal, outcome, winner team, living marine
 // teams) into `out` (N, UNIT_DONE_W) int64 host; `ticks` (N,) each env's
@@ -263,10 +268,12 @@ struct ObjectSlotCounts {
 // `charges`, one thread per env in request-list order (after unit_verbs).
 void unit_table_appends(const UnitTablesDevice& tables, UnitRecordList& requests,
                         ObjectTable& grenades, ObjectTable& charges, const ObjectSlotCounts& out);
-// Slot 2's grenades: the flight per row (wide), the fuse-outs' PAYLOAD records
-// in row order. `ticks` (N,) each env's sim.tick.
+// Slot 2's grenades: the flight per row (wide; #215 the wall walk and the
+// bounces over `solid`, a DEVICE (N, h, w) bool plane as the slot found it),
+// the fuse-outs' PAYLOAD records in row order. `ticks` (N,) each env's sim.tick.
 void unit_grenades(const UnitTablesDevice& tables, ObjectTable& grenades, UnitRecordList& effects,
-                   const int64_t* ticks, const ObjectSlotCounts& out);
+                   const int64_t* ticks, std::uintptr_t solid, int h, int w,
+                   const ObjectSlotCounts& out);
 // Slot 9e(d') charges.tick: the due charges' PAYLOAD records in row order,
 // then the table's stable compaction.
 void unit_charges_tick(const UnitTablesDevice& tables, ObjectTable& charges,

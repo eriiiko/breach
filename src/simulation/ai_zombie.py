@@ -44,6 +44,8 @@ from simulation import exposure as _exposure
 from simulation import horde as _horde
 from simulation import noise as _noise
 from simulation import poison as _poison
+from simulation import stress as _stress
+from simulation import body_temp as _body_temp
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
 from simulation import unit_orders as _unit_orders
@@ -449,6 +451,10 @@ def convert_marines_to_zombies(units):
             _unit_orders.clear(u)
             # #29 PX: nor poison (cleared at death too; a zombie holds none).
             _poison.clear(u)
+            # #215: nor stress (a zombie takes none), and its body starts at
+            # ambient (both cleared at death too).
+            _stress.clear(u)
+            _body_temp.clear(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

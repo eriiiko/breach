@@ -1190,6 +1190,24 @@ class MaterialTable:
                          else bool(perm[idx] <= 0.0))
         self.blocks_sight = np.array(sight, dtype=bool)
 
+        # blocks_thrown: does this material stop a THROWN grenade (#215, Erik's
+        # ruling 2026-11-18: "grille should probably not let through a
+        # grenade"). OPTIONAL column -- omitted, it is derived: a material
+        # stops a thrown thing iff it is sealed to gas (permeability == 0),
+        # i.e. exactly where the tile is ``solid``, so no existing row changes.
+        # Read only by ``combat.flight_blocked`` (with ``solid``); a round's
+        # march is NOT this column (it reads ``solid``).
+        thrown = []
+        for idx, (row, name) in enumerate(zip(rows, self.names)):
+            val = self._get_field_opt(row, "blocks_thrown")
+            if val is not None and not isinstance(val, bool):
+                raise ValueError(
+                    f"materials.{name}.blocks_thrown must be true or false; "
+                    f"got {val!r}")
+            thrown.append(bool(val) if val is not None
+                          else bool(perm[idx] <= 0.0))
+        self.blocks_thrown = np.array(thrown, dtype=bool)
+
         # burst_threshold: max pressure DIFFERENTIAL a wall tile can hold across
         # its opposing sides before it fails (over-pressure relief valve, ch.04
         # §5). OPTIONAL column — a material that omits it defaults to 0.0, which

@@ -973,7 +973,7 @@ def main():
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
-            renderer.draw_debug_hud(sim.gmap)
+            renderer.draw_debug_hud(sim.gmap, sim.units)
 
             # Age the effect queue once per frame. Tick events were pulled
             # into it after every sim step above (tick_events is cleared by

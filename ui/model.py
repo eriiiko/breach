@@ -823,6 +823,18 @@ def poison_text(unit):
     return f"Poison: blood {blood:.2f} u   to come {to_come:.1f} HP"
 
 
+def body_text(unit) -> str:
+    """The body line of ``unit`` (#215, pure): its body temperature, its
+    stress and the heart rate read off it -- ``"Body 34.2 C  stress 12.0
+    heart 72 bpm"`` -- through the laws' own reads (``stress.heart_rate_q``:
+    derived, never stored); mutates nothing."""
+    from simulation import stress
+    body = int(unit.body_temp_q) / 65536.0
+    pts = int(unit.stress_q) / float(stress.LEVEL_ONE)
+    hr = stress.heart_rate_q(unit) / 65536.0
+    return f"Body {body:.1f} C  stress {pts:.1f}  heart {hr:.0f} bpm"
+
+
 def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
                       current_mode=None, grenade_kind=None,
                       charge_timer_s=None) -> list:
@@ -879,6 +891,9 @@ def panel_state_lines(sim, selected_unit, planning_phase: int = 0,
         poisoned = poison_text(selected_unit)
         if poisoned is not None:
             lines.append(PanelLine(poisoned, 13, (170, 230, 90, 255), 16))
+        if hasattr(selected_unit, "body_temp_q"):
+            lines.append(PanelLine(body_text(selected_unit), 12,
+                                   (255, 190, 160, 255), 16))
         if continuous:
             ammo = ammo_text(selected_unit, sim.get_tick(),
                              sim.weapons_tables.weapons.by_name)

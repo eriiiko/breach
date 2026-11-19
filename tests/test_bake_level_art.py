@@ -580,9 +580,10 @@ def test_bake_demo_loader_round_trip():
     assert art.size == (lvl.width * DEFAULT_PX_PER_TILE,
                         lvl.height * DEFAULT_PX_PER_TILE)
     # The demo exercises the whole compose: space, hull, glass run, wood
-    # dividing wall, a door, furniture.
+    # dividing wall, a door (a closed door entity's stamp since #215 retired
+    # the painted MAT_DOOR), furniture.
     codes = set(np.unique(lvl.tilemap).tolist())
-    assert {MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_GLASS,
+    assert {MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR_CLOSED, MAT_GLASS,
             MAT_FURNITURE, SPACE_CODE} <= codes
 
 

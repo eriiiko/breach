@@ -145,8 +145,9 @@ def _run_doors(st, inp, lists):
 
 
 def _run_1b(st, inp, req, lists):
+    from cuda_unit_lockstep import flight_fields       # #215: the flight plane
     cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"])
+                             inp.scalars["charges_live"], flight_fields(inp))
     unit_kernels.door_uses(st, req, lists["doors"])
     return cov
 
@@ -158,7 +159,7 @@ SLOT_9ED = DeviceSlot(label="9e(d) doors", run=_run_doors, columns=("id",), skip
                       outputs=PLANE_OUTPUTS + DOOR_BOOKS + ("list:door_tiles", "list:doors"),
                       host_only=HOST_ONLY)
 SLOT_1B = DeviceSlot(label="1b intents", run=_run_1b,
-                     inputs=("tick", "door_spans", "charges_live", "list:doors"),
+                     inputs=("tick", "door_spans", "charges_live", "flight_plane", "list:doors"),
                      requests=True, outputs=("list:doors",))
 SLOTS = [SLOT_1B, SLOT_9ED]
 
@@ -1196,8 +1197,9 @@ def _run_1b_chained(st, inp, lists):
         _CH_REQ[key] = unit_requests.RequestList(st.shape[0], st.shape[1])
     req = _CH_REQ[key]
     req.begin()
+    from cuda_unit_lockstep import flight_fields       # #215: the flight plane
     cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"])
+                             inp.scalars["charges_live"], flight_fields(inp))
     if any(r[0] != unit_requests.KIND_USE for r in req.records()[0]):
         raise RuntimeError("chained: a throw / plant in the door chain (no landing)")
     unit_kernels.door_uses(st, req, lists["doors"])

@@ -38,6 +38,22 @@ class EnvironmentProfile:
     # --- Temperature tolerance band (arbitrary scalar for now) ---
     temperature_min: float = -20.0
     temperature_max: float =  60.0
+    # --- Body temperature (#215, simulation.body_temp) ---
+    # The heat capacity of the suit's outer shell, J/K: how many joules warm
+    # the body by one degree. With the derived loss (159 W/K at 0.333 m
+    # tiles) 320 J/K is a time constant of 2 s; more is heat resistance.
+    body_heat_capacity_j_per_k: float = 320.0
+    # The share of the heat reaching the body (radiation, deposits, hot air)
+    # the suit lets it take up: THE protection (#215, Erik 2026-11-18:
+    # "protect only the body"). 1.0 = the unprotected law; the damage stays
+    # 1 + 0.05 x (body - limit), proportional to the body's excess. 0.1 is
+    # the lead's choice (Erik tunes): a frag on the next tile bills about 63
+    # HP of heat on its 30 blast and a full-health marine lives; a fire's edge
+    # bills 1.4 to 1.8 HP a second (docs/body_temperature_impl_2026-11-17.md,
+    # the calibration table). Every profile and the species
+    # baseline (the zombie's) carry the same value, so the zombie's x4 heat
+    # weakness (its resist) is unchanged.
+    heat_absorption: float = 0.1
 
     # --- Stability (mechanics/06 §4, KNOCKED_DOWN) ---
     # Knockdown susceptibility multiplier: the unit impulse law (G5p) floors

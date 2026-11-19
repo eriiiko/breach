@@ -72,6 +72,19 @@ def phi_of(kw_m2):
     return float(kw_m2) / KW_M2_PER_PHI
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _unprotected_body(monkeypatch):
+    """#215: this module's heat scenario needs the heat row to BILL (a kill,
+    a digest that moves): it runs the UNSCALED law, heat_absorption 1.0 (the
+    shipped protection, 0.05, keeps this scene's marine below the band; the
+    protection's own gates are tests/test_body_temp.py's)."""
+    from simulation import body_temp
+    monkeypatch.setattr(body_temp, "absorption_q", lambda env: 1 << 16)
+
+
 def _scenario_level() -> LevelData:
     """A 20x20 hull-walled room with a carved interior — room for two 3x3
     marines to walk around inside the air pocket."""

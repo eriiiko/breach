@@ -434,6 +434,11 @@ def _grenade_default():
     return [0] * _grenade_width()
 
 
+def _body_temp_default():
+    from simulation.body_temp import ambient_q
+    return ambient_q()
+
+
 def _turn_of(u):
     """The turning law's target hashed as the turn still to go,
     ``wrap(target - facing)`` (the target itself is never zero)."""
@@ -519,6 +524,15 @@ COLUMNS: tuple[Column, ...] = (
     _c("poison_src", KIND_INT, "health", -1,
        note="the unit credited with the latest dose; -1 = the environment "
             "or none"),
+    # the two slow states (#215): the body temperature (simulation.body_temp,
+    # written by the heat coupling row alone; hashed while it differs from
+    # ambient) and the stress level (simulation.stress, fed through its one
+    # producer door, cleared by its own tick; hashed while non-zero)
+    _c("body_temp_q", KIND_Q16, "health", _body_temp_default,
+       note="Q16 degrees C; starts at [combat] heat_ambient_ref "
+            "(simulation.body_temp)"),
+    _c("stress_q", KIND_INT, "health", 0,
+       note="stress points x 2^24 (simulation.stress.LEVEL_ONE)"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",
@@ -944,6 +958,11 @@ GRENADE_SCHEMA: tuple[TableColumn, ...] = (
     TableColumn("thrown_tick", _enc_int),
     TableColumn("ammo_name", _AM_E, decode=_AM_D),
     TableColumn("travel_speed_q", _enc_int),
+    # #215: the flight is a chain of legs -- start_* / target_* are the
+    # CURRENT leg (the throw's until the first bounce), leg_tick its first
+    # tick, bounces the legs a wall has started so far.
+    TableColumn("leg_tick", _enc_int),
+    TableColumn("bounces", _enc_int),
     # THE LIVE COLUMN, encoded: 1 while the grenade flies, 0 once slot 2
     # detonated it (the host's ``detonated``); the slot-10 prune is the
     # table's stable compaction over it.
@@ -966,6 +985,11 @@ def _build_grenade(attrs: dict):
                          f"{attrs['travel_speed_q']} is not its round's "
                          f"({p.travel_speed_q}, {attrs['ammo_name']!r})")
     p.pos_x_q, p.pos_y_q = attrs["pos_x_q"], attrs["pos_y_q"]
+    # #215: a bounced leg's start / target are no float views of the throw
+    # (exact Q16 either way, but set from the row's own integers)
+    p.start_x_q, p.start_y_q = attrs["start_x_q"], attrs["start_y_q"]
+    p.target_x_q, p.target_y_q = attrs["target_x_q"], attrs["target_y_q"]
+    p.leg_tick, p.bounces = attrs["leg_tick"], attrs["bounces"]
     p.detonated = attrs["detonated"]
     return p
 
@@ -1177,12 +1201,13 @@ def table_record(table: ObjectTable, obj, given=None) -> tuple:
 # the first ENTITY table, and its side table of span tiles
 # ---------------------------------------------------------------------------
 #: Doors a sim's device table holds: storage (nothing spawns a door at run
-#: time; the shipped maximum is playground's 6, the gate scenes reach 9).
-DOOR_CAPACITY = 32
+#: time). #215: every doorway is a door entity, so ship_demo holds 60 (its
+#: 240 tiles) and a recipe ship more; was 32 (playground's 6).
+DOOR_CAPACITY = 128
 #: Span tiles over all of a sim's doors (the door tile side table): storage
-#: (playground's 6 doors hold 24; airlock_demo's 5 m doors at 1 m tiles 5
-#: each). It also bounds one door's span (a span is the side table's rows).
-DOOR_TILE_CAPACITY = 256
+#: (ship_demo's 60 doors hold 240). It also bounds one door's span (a span is
+#: the side table's rows). Was 256.
+DOOR_TILE_CAPACITY = 1024
 
 
 def _door_tiles(d) -> list:

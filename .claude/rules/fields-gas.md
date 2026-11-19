@@ -77,5 +77,6 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## Material / gas tables
 - New material or gas = a table row, never a hardcoded id or a per-material if.
+- `MAT_DOOR` (the legacy painted door, walkable and gas-tight) is RETIRED (#215): its id stays (ids never move) but no writer stamps it and the loader refuses it bare (`.claude/rules/levels.md`); a door is an entity, closed = `MAT_DOOR_CLOSED`.
 - Material ids are unbounded rows up to int8's 127; SPACE is `SPACE_CODE = -1`, outside the id range (level format v3; Erik, 2026-10-29; `tools/migrate_tilemap_v3.py`).
 - Row VALUES are placeholders (Erik, 2026-09-22). The thin-rows rulings ("no massive object ever burns"; the 6 mm lumped door, `THIN_LIMIT_M` / `LUMPED_CRITERION_EXEMPT`) are PROVISIONAL until his material design session (`docs/thin_material_rows_design_2026-09-20.md`).

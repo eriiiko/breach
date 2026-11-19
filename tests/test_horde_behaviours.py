@@ -71,7 +71,20 @@ _STAGE1_SHIP_DEMO = dict(
     #     316ec412b60e65ec140e761a
     # #29 P3b re-pin (2026-11-12, keyed Philox draws): ticks 264 -> 251,
     # outcome and team UNCHANGED (the sole-cause plugin gives 264 back).
-    outcome="win", team=1, ticks=255,
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik, done once):
+    # four causes, together -- (1) a thrown grenade bounces off walls; (2) every
+    # doorway is a closed entity door (painted doors retired; zombies bash doors;
+    # use flips the door the unit faces); (3) body temperature and stress, the
+    # protection heat_absorption 0.1 at the frag's 10 MJ; (4) the old bots'
+    # (bots_v1) ONE door step (Erik's ruling, the exception to their freeze).
+    # Each cause's own first divergence is in its as-built doc
+    # (docs/grenade_bounce_impl_2026-11-17.md, docs/doors_retire_painted_impl_
+    # 2026-11-18.md, docs/body_temperature_impl_2026-11-17.md, whose section "The
+    # one re-baseline, 2026-11-18" holds the before/after table). Played twice in
+    # two processes: identical outcome, digests and unit stream.
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was ticks=255)
+    outcome="win", team=1, ticks=348,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -89,8 +102,10 @@ _STAGE1_SHIP_DEMO = dict(
     # (was 22e944fe6477d16ab0367b9562c357e96c8ed0a7a2277dde8dce6b2a486e9f23)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was cc46ec4b934902f73090aae00bef0b3f6e98f3f041948f51593bc9f86b8b8ba8)
-    field_digest="e71707b913095bb53c7ad9c7f3883466"
-                 "4d19431033c9d7d95651ea7e65422e43",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was e71707b913095bb53c7ad9c7f38834664d19431033c9d7d95651ea7e65422e43)
+    field_digest="71e043e0dd91860225611dee1d9a348a"
+                 "469d40735162919bfaf56ec5a8f78e70",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -125,8 +140,10 @@ _STAGE1_SHIP_DEMO = dict(
     # (was 87dfe255f97bdc33320a7df36fea68dbfbfcd92fc9ff1fc86f91894febddd94d)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was ab061346257c0c5b2ec5a2bf99fbad26aa74d6661a3886119c759f1de459b05e)
-    tick_digest="5fb9a9f6b1d847cf09e2b1b21457507c"
-                "a529d4962ea730e9a71f4d7046025a62",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 5fb9a9f6b1d847cf09e2b1b21457507ca529d4962ea730e9a71f4d7046025a62)
+    tick_digest="eb45f863f0da2c7d672c00773f5541f1"
+                "fd0864f830902d935158d2c722ef241b",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -161,8 +178,10 @@ _STAGE1_SHIP_DEMO = dict(
     # (was c144ab6cb3bec1f33f143eaa1bfff97de346743f316ec412b60e65ec140e761a)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 6707d27e1ccba0eb1ce455803d552c1b4126cdd87cf55780d3c82cc5f5c24560)
-    unit_stream="fe0be81e4a8b59edd89ec8ac8c2b0f6a"
-                "57124f911504098cb9dbbc390d8b8dfc")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was fe0be81e4a8b59edd89ec8ac8c2b0f6a57124f911504098cb9dbbc390d8b8dfc)
+    unit_stream="915a9b55c646a6b96094be1f68b6adf8"
+                "0212ec055a972f2139e2e8802e877ec9")
 _STAGE1_BOX = dict(
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
@@ -174,6 +193,12 @@ _STAGE1_BOX = dict(
     #     ca545cbe51324cfad2e21631
     #   unit_stream 4a87a8bb9efdef78446729e66cebed58acfdda24
     #     3deb7ba4cdff947a55fa2740
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik): outcome, ticks and
+    # field_digest UNCHANGED; only the unit stream moves. SOLE CAUSE, verified on
+    # this tree: the unit record's two new #215 columns (body_temp_q, stress_q,
+    # hashed while they differ from their default; the box's air is not exactly
+    # at ambient) -- with them dropped from unit_schema.digest_record in-process
+    # the old stream comes back bit for bit.
     outcome="win", team=1, ticks=294,
     field_digest="ca6a1f289099dad155e21f9608e506f2"
                  "f19c481ca92ebd4efd0336aea658f15c",
@@ -194,8 +219,10 @@ _STAGE1_BOX = dict(
     # identical field digests on main 229f7097 and on this tree; outcome, ticks
     # and field_digest here are unmoved. Only the hash's definition moved.
     # (was a8f43fe1faf94900de0fb22c1b75e32d0ca991e25a69412e544a77b1b47343df)
-    unit_stream="12cb16f75ea1727bda19f2dade7dcd98"
-                "eb63e240a571e8bf4ca5f121fc2d5abf")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 12cb16f75ea1727bda19f2dade7dcd98eb63e240a571e8bf4ca5f121fc2d5abf)
+    unit_stream="6b0081cc981ab03789084ba9f42e9511"
+                "dc8c0b3c5df193d4a84145e41a83fde3")
 
 
 def _off(monkeypatch, keep=()):
@@ -555,6 +582,33 @@ def test_a_bashed_door_breaks_after_the_designed_strikes_each_a_noise(
     gaps = {b - a for a, b in zip(strikes, strikes[1:])}
     assert gaps == {CFG.zombie.attack_cooldown_ticks}
     assert z.tile_x > 21                           # through the doorway
+
+
+def test_one_hunting_zombie_breaks_an_interior_door_in_about_20_seconds(
+        monkeypatch):
+    """Property (#215, the lead's first value; Erik tunes it): with the
+    config's ``door_bash_damage``, ONE awake zombie hunting a marine beyond a
+    closed interior door brings the door down 18..22 s after its first
+    strike (the design: 10 strikes at the 53-tick bite cadence, 19.9 s).
+    Breaks if the damage, the door's hp or the cadence moves the time out of
+    that band (a deliberate retune moves this band with it)."""
+    _only(monkeypatch, "bash_doors")
+    sim = _sim(_door_level(), physics=False)
+    m = sim.get_unit(sim.add_unit(Unit("M", x=32, y=5, team=0)))
+    m.current_hp = 1e9
+    z = sim.get_unit(sim.add_unit(Unit("Z", x=10, y=5, team=ZOMBIE_TEAM)))
+    z.zombie_activated = True
+    door = sim._doors[0]
+    first = None
+    for _ in range(3000):
+        sim.step()
+        if first is None and sim.gmap.noise_log:
+            first = sim.tick
+        if not door.alive:
+            break
+    assert first is not None and not door.alive
+    seconds = (sim.tick - first) / CFG.clock.ticks_per_second
+    assert 18.0 <= seconds <= 22.0, seconds
 
 
 def test_a_hull_door_is_never_bashed(monkeypatch):

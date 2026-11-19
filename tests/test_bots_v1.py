@@ -36,12 +36,14 @@ import level_loader  # noqa: E402
 from config import CFG, Namespace  # noqa: E402
 from control_bots_v1 import BotTeamV1 as BotTeam  # noqa: E402
 from control_bots_v1 import bot_v1_settings as bot_settings  # noqa: E402
+import control_bots_v1  # noqa: E402
 from field_ab_harness import capture_snapshot  # noqa: E402
 from field_digest import tick_digest  # noqa: E402
 from run_match import run_match  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.events import ShotFiredEvent  # noqa: E402
 from simulation.match import MatchSpec, MatchTeam, SpawnRoom  # noqa: E402
+from simulation import vision  # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 from simulation.ruleset import ContinuousRealtime  # noqa: E402
 from simulation import unit_traits  # noqa: E402
@@ -346,11 +348,156 @@ def test_registry_builds_bots_that_drive_only_their_team(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# (g') the one exception to the freeze: the door step (#215, Erik 2026-11-18)
+# ---------------------------------------------------------------------------
+def _closed_room_sim(second_door=False):
+    """Team 0's spawn room west of a full wall at x = 20 whose only way out
+    is a closed (non-hull, unwired) entity door at rows 4-6 -- with
+    ``second_door`` a second one at rows 8-10, a wall tile between -- and
+    team 1's spawn room beyond it; 1 m tiles."""
+    from level_loader import LevelData
+    from test_horde_behaviours import _door_inst, _door_level
+    lvl = _door_level()
+    if second_door:
+        lvl.tilemap[8:11, 20] = MAT_AIR
+        lvl.entities.append(_door_inst("d2", 1, 20, 8))
+    assert isinstance(lvl, LevelData)
+    lvl.spawn_rooms = [
+        SpawnRoom(team=0, x=2, y=2, w=10, h=8, max_per_team=4),
+        SpawnRoom(team=1, x=28, y=2, w=10, h=8, max_per_team=4),
+    ]
+    sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False,
+                     ruleset=ContinuousRealtime())
+    sim.set_paused(False)
+    return sim
+
+
+class _UseTap:
+    """An intent-log tap noting, at every ``use_intent``, the door the verb
+    would flip and whether that door was then closed and not asked open."""
+
+    def __init__(self, sim):
+        self.sim, self.uses = sim, []
+
+    def record(self, tick, kind, args):
+        if kind == "use_intent":
+            from simulation import verb_gates
+            from simulation.entities.door import DOOR_CLOSED
+            d = verb_gates.use_door(self.sim, self.sim.get_unit(args[0]))
+            self.uses.append((tick, d, d is not None
+                              and d.state == DOOR_CLOSED
+                              and not getattr(d, "want_open", False)))
+
+
+def test_an_old_bot_shut_in_its_room_opens_the_door_and_reaches_the_enemy():
+    """Property (#215, the one exception to the freeze): a bots_v1 marine
+    whose spawn room's only way out is a closed entity door routes through
+    it, USEs it and walks through, and its team comes to see the enemy in
+    the far room. Breaks if the door step is removed (the bot stands at the
+    shut door, or never plans a way through it: the pre-#215 standstill)."""
+    from simulation.entities.door import DOOR_OPEN
+    sim = _closed_room_sim()
+    bot = sim.get_unit(sim.add_unit(Unit("B", x=6, y=4, team=0)))
+    foe = sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    tap = _UseTap(sim)
+    sim.attach_intent_log(tap)
+    bots = BotTeam(0)
+    seen_at = None
+    for _ in range(900):
+        bots.handle_frame(sim, None)
+        sim.step()
+        if (seen_at is None and foe.id
+                in vision.state_for(sim).visible_by_team.get(0, ())):
+            seen_at = int(sim.tick)
+        if seen_at is not None and bot.tile_x > 21:
+            break
+    assert tap.uses, "USE never issued: the bot stood shut in"
+    assert sim._doors[0].state == DOOR_OPEN
+    assert bot.tile_x > 21, "the bot never got through the door"
+    assert seen_at is not None, "the bot never reached the enemy"
+
+
+def test_an_old_bot_uses_only_the_door_on_its_route_and_never_closes_one():
+    """Property (#215): beside two closed doors one wall tile apart, a
+    bots_v1 marine opens exactly ONE door -- every USE it issues is on a
+    door the verb would flip that was closed and not asked open (never a
+    close) -- walks through it, and the other door stays closed; once open,
+    no door shuts again. Breaks if the step issues USE without asking
+    ``verb_gates.use_door`` or on a door already asked open (it would close
+    the door it opened, or open the other)."""
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    sim = _closed_room_sim(second_door=True)
+    bot = sim.get_unit(sim.add_unit(Unit("B", x=6, y=6, team=0)))
+    sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    tap = _UseTap(sim)
+    sim.attach_intent_log(tap)
+    bots = BotTeam(0)
+    ever_open = set()
+    for _ in range(900):
+        bots.handle_frame(sim, None)
+        sim.step()
+        now_open = {d.id for d in sim._doors if d.state == DOOR_OPEN}
+        assert ever_open <= now_open, "a door the bot opened shut again"
+        ever_open |= now_open
+        if bot.tile_x > 23:
+            break
+    assert bot.tile_x > 23, "the bot never got through"
+    assert tap.uses and all(ok for _t, _d, ok in tap.uses), tap.uses
+    assert len(ever_open) == 1, ever_open
+    assert {d.id for _t, d, _ok in tap.uses} == ever_open
+    other = next(d for d in sim._doors if d.id not in ever_open)
+    assert other.state == DOOR_CLOSED
+
+
+def test_the_old_bots_door_step_asks_the_verb_and_never_toggles_a_door_shut():
+    """Property (#215): standing between two closed doors with its next
+    waypoint through door B, a bots_v1 marine facing door A issues NO use
+    (the verb would flip A); turned toward B it issues one and B, not A,
+    opens; a door already asked open (``want_open``, still closed) is never
+    used again, whatever the wait -- USE toggles, so that use would be a
+    close. Breaks if the step skips ``verb_gates.use_door`` or the asked-
+    open check."""
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    from simulation.turning import PI_Q16, place
+    from test_use_door_facing import _sim as two_door_sim
+    sim = two_door_sim()
+    a, b = sim._doors
+    u = sim.get_unit(sim.add_unit(Unit("U", x=7.0, y=12.0, team=0)))
+    uses = []
+
+    class _Tap:
+        def record(self, tick, kind, args):
+            if kind == "use_intent":
+                uses.append(tick)
+    sim.attach_intent_log(_Tap())
+    bots = BotTeam(0)
+    st = bots._state.setdefault(u.id, control_bots_v1._BotState())
+    way = (9, 13)                      # a 3x3 block over door B's tiles
+    assert bots._door_tiles(sim)[13:16, 9:12].any()
+    place(u, PI_Q16 // 6)              # facing north-east: door A
+    bots._open_door(sim, u, st, way)
+    assert uses == []
+    place(u, -PI_Q16 // 6)             # facing south-east: door B
+    bots._open_door(sim, u, st, way)
+    assert len(uses) == 1
+    sim.step()
+    assert b.state == DOOR_OPEN and a.state == DOOR_CLOSED
+    # door A asked open but not yet open: the step must leave it alone
+    a.want_open = True
+    st.door_used.clear()
+    place(u, PI_Q16 // 6)
+    bots._open_door(sim, u, st, (9, 11))  # a block over door A's tiles
+    assert len(uses) == 1, "USE on a door already asked open (a close)"
+
+
+# ---------------------------------------------------------------------------
 # (h) the permanent G8p gate: bots_v1 IS the pre-G8p law
 # ---------------------------------------------------------------------------
 #: ship_demo seed 1 as the bots played it before #183 G8p (the G9p stage-2
 #: pin, main 81cf3581): frozen here, never re-pinned for a bot change -- the
 #: proof that the layered bots, not anything else, moved the shipped pin.
+#: (The one exception: #215's door step, Erik's ruling 2026-11-18, re-pinned
+#: with the sim's #215 causes in the one re-baseline below.)
 #: A change of the SIM (not of the bots) moves it like any other pin: then
 #: re-pin it here too, with the rationale.
 _PRE_G8P_SHIP_DEMO = dict(
@@ -375,7 +522,23 @@ _PRE_G8P_SHIP_DEMO = dict(
     # 11 and unit 6 on 230 -- and the two marines left, one per team (units 0
     # and 5), never meet again before the limit.
     # (was win 0 at 264)
-    outcome="draw", team=None, ticks=7200,
+    # THE ONE #215 RE-BASELINE (2026-11-18, approved by Erik, done once):
+    # four causes, together -- (1) a thrown grenade bounces off walls; (2) every
+    # doorway is a closed entity door (painted doors retired; zombies bash doors;
+    # use flips the door the unit faces); (3) body temperature and stress, the
+    # protection heat_absorption 0.1 at the frag's 10 MJ; (4) the old bots'
+    # (bots_v1) ONE door step (Erik's ruling, the exception to their freeze).
+    # Each cause's own first divergence is in its as-built doc
+    # (docs/grenade_bounce_impl_2026-11-17.md, docs/doors_retire_painted_impl_
+    # 2026-11-18.md, docs/body_temperature_impl_2026-11-17.md, whose section "The
+    # one re-baseline, 2026-11-18" holds the before/after table). Played twice in
+    # two processes: identical outcome, digests and unit stream.
+    # Cause (4) checked on this tree: with the old bots' door step switched off
+    # in-process the match is the doors patch's shut-in draw at 7200 (field
+    # fae949e0..., no shot, no door opened) bit for bit on the field.
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was outcome="draw", team=None, ticks=7200)
+    outcome="win", team=0, ticks=272,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -393,8 +556,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 2db5b2eaac6dcfafdbcfd85ec91772dfe838b1fddff573e90a09eba1de6bcb08)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was d5e0e90969e747038c0a8d7391303b21804bae0d0cc7c9bf7d4ded8c258c4174)
-    field_digest="ab8d586ee11eab6ef9e5acfc14b0bc2c"
-                 "7f179231d086cec366693382d872aedd",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was ab8d586ee11eab6ef9e5acfc14b0bc2c7f179231d086cec366693382d872aedd)
+    field_digest="1b02dd5d90756c5c87b3f8e74b0a1088"
+                 "358ec8a9ca4b48547e188dfbf41923bb",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -429,8 +594,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 48c4be2c99dd3a35dfd64a439732a6f9e92e77f0ea1aacfd58e8909e6285c524)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 931e69092a57230f06ecfdfdcb21248c2028fa980c9ea014ebc55b6533e6cc94)
-    tick_digest="49836c002d43dc7888b96dda2f9e1f98"
-                "2605638df1ff30e00d59f16b02568abd",
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 49836c002d43dc7888b96dda2f9e1f982605638df1ff30e00d59f16b02568abd)
+    tick_digest="8549068be9af40d408f874c245835f5e"
+                "7a5b06e5ed5a6df6c90eba215fcb2a63",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -465,8 +632,10 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was 4503c2306583d04f3f85bbf87131ef8a5101b138cbc02fda0d9b5d01a5a9bd2f)
     # Erik's zombie bite balance re-pin, main 37142802 merged in (2026-11-13).
     # (was 27aeb24c34c49368bff2a7884bb8f019ed959d02130ccc799fb38d2d30f2a3c0)
-    unit_stream="1eb5ec49f1f32e0dab16d1c8c53d4983"
-                "3406cdb844c7dca2a1f169da83867216")
+    # #215 re-baseline (2026-11-18), the causes above.
+    # (was 1eb5ec49f1f32e0dab16d1c8c53d49833406cdb844c7dca2a1f169da83867216)
+    unit_stream="a9184a10a6cd7ad6988db27d9e566bcc"
+                "3b4b2a7782193b89eb02e3dd47200c0d")
 
 
 def v1_spec(level):

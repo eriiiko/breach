@@ -40,8 +40,15 @@ import level_loader  # noqa: E402
 from simulation import unit_schema, unit_store  # noqa: E402
 from simulation.unit_schema import COLUMNS, column_width  # noqa: E402
 
-SHIP_TICKS = 700       # ship_demo seed 1: first hit ~422, first kill ~457,
-                       # first conversion ~673 (measured 2026-11-14)
+SHIP_TICKS = 700       # ship_demo's bots match for this many ticks
+SHIP_SEED = 2          # a seed whose first 700 ticks hold a conversion (unit 0
+                       # turns at tick 502) besides shots, hits, throws and
+                       # kills (#215, measured 2026-11-18 over seeds 1-12: only
+                       # seed 2 converts within 700 ticks since every doorway
+                       # is a closed door and the body's heat protection;
+                       # seed 1 converts none). The scene's coverage counters
+                       # below are its precondition: a seed that stops
+                       # converting fails them, never passes vacuously.
 
 
 # ---------------------------------------------------------------------------
@@ -137,11 +144,11 @@ class _Identity:
 
 @pytest.fixture(scope="module")
 def identity_runs():
-    """ship_demo's match (bots + the horde) for SHIP_TICKS ticks and the
+    """ship_demo's match (bots + the horde, seed SHIP_SEED) for SHIP_TICKS ticks and the
     scripted arena, each checked on every tick; the final sims for (d)."""
     from simulation.match_session import MatchSession
     level = level_loader.load("ship_demo", str(ROOT / "levels"))
-    session = MatchSession(level, seed=1, breach_physics=bp)
+    session = MatchSession(level, seed=SHIP_SEED, breach_physics=bp)
     ship = _Identity("ship_demo")
     for _ in range(SHIP_TICKS):
         if session.is_terminal():

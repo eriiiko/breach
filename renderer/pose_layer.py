@@ -851,7 +851,7 @@ class PoseState:
                  # the per-hit flinch clip, the timed one-shot (reload /
                  # throw), and per-prop socket overrides (none yet)
                  "speed", "motion_acc", "motion_d", "motion_t", "gait", "sector", "gait_phase",
-                 "loco_state", "flinch_clip", "timed", "prop_sockets",
+                 "loco_state", "loco_role", "flinch_clip", "timed", "prop_sockets",
                  # #185: the running additive's envelope (a hit's or a
                  # stagger's ramps) and its bone weights
                  "flinch_ramps", "flinch_bones",
@@ -899,6 +899,7 @@ class PoseState:
         self.sector = -1               # sector index within the gait
         self.gait_phase = 0.0          # [0, 1): the shared phase of the gait clips
         self.loco_state: Optional[str] = None
+        self.loco_role = None          # the ResolvedRole whose rows gait / sector index
         self.flinch_clip = NO_CLIP     # the clip of the current flinch
         self.flinch_ramps = (0.0, 0.0)  # (ramp_in_s, ramp_out_s) of the current one
         self.flinch_bones: Optional[np.ndarray] = None

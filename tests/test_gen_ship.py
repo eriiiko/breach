@@ -106,7 +106,8 @@ def test_the_embedding_reads_only_the_graph():
     """PROPERTY: stage 2 (``embed``) and the gates take any ShipGraph, not
     only v1's mirrored split -- a hand-built, unmirrored three-room graph
     (two spawn rooms joined through a zombie room by two doors) embeds into
-    tiles that pass the gates, with every door edge cut as MAT_DOOR. This
+    tiles that pass the gates, with every door edge cut as the door row's
+    stamp (a closed door entity's MAT_DOOR_CLOSED since #215). This
     is the seam a graph-grammar stage 1 (#27) plugs into. BREAKS IF the
     embedding reaches back into v1's planner (size presets, the mirror)."""
     G = gen_ship
@@ -123,7 +124,7 @@ def test_the_embedding_reads_only_the_graph():
                       mirrored=False) == []
     for e in edges:
         for (y, x) in G._opening_tiles(graph, e):
-            assert emb.tilemap[y, x] == MAT_DOOR
+            assert emb.tilemap[y, x] == G.EDGE_KINDS["door"].stamps
     assert [r.team for r in emb.spawn_rooms] == [0, 1, ZOMBIE_TEAM]
 
 

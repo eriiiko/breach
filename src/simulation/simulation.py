@@ -70,7 +70,7 @@ from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition, ignition_params,
     process_shooting, process_sprays, process_melee_intents,
-    Projectile,
+    Projectile, detonation_tile, release_point,
     mag_settle, reload_begin,
 )
 # Simultaneous resolution of an attack slot (#169): phase A records, phase B
@@ -81,6 +81,7 @@ from simulation import exposure
 from simulation import horde
 from simulation import noise
 from simulation import poison
+from simulation import stress
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -371,6 +372,8 @@ class Simulation:
         self.exposure_settings = exposure.rebuild_settings()
         # The poison law's dials (#29 PX, [damage.poison]), the same.
         self.poison_settings = poison.rebuild_settings()
+        # The stress level's dials (#215, [damage.stress]), the same.
+        self.stress_settings = stress.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -1552,9 +1555,17 @@ class Simulation:
                    + unit_fixed.mul_q16_round(int(dy_q), reach_q))
         lo = fuse_ticks_from_seconds(hand.fuse_min_seconds, self._tps)
         hi = fuse_ticks_from_seconds(hand.fuse_max_seconds, self._tps)
+        # #215: the grenade leaves the HAND -- the thrower's Q16 centre plus
+        # the hand row's offset turned by the throw's vector, never beyond a
+        # wall (combat.release_point); the target stays the centre tile's
+        # point at the reach, so an aimed point is still where it lands.
+        sx_q, sy_q = release_point(
+            self.gmap, u.x_q, u.y_q, u.footprint, int(dx_q), int(dy_q),
+            hand.release_forward_q, hand.release_side_q)
         proj = Projectile(
             ORDER_GRENADE,
-            cx, cy,
+            unit_fixed.dequantize_scalar(sx_q),
+            unit_fixed.dequantize_scalar(sy_q),
             unit_fixed.dequantize_scalar(tgt_x_q),
             unit_fixed.dequantize_scalar(tgt_y_q),
             fuse_seconds=0.0,
@@ -2042,7 +2053,7 @@ class Simulation:
           7.   Physics step
           9.   Burn-through walls; 9b. over-pressure walls
           9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose;
-               9c3'. the poison law; 9d. temperature ignition
+               9c3'. the poison law; 9c3''. stress clears; 9d. ignition
           9e.  Entities (signals, pumps, vents, doors, timed and planted
                charges, heat sources); recorder snapshot; tick-end clears
          10.   Tick advance; 10'. orders expire; the ruleset's tick end
@@ -2303,6 +2314,11 @@ class Simulation:
         # the physics guard: a level dosed by any row keeps draining. Dormant
         # (two int reads per unit) while nobody holds poison.
         poison.tick(self.units, self.tick, self.tick_events)
+        # 9c3''. Stress clears (#215, simulation.stress): every living unit
+        # holding stress loses its half-life's share -- its own tick, the
+        # only thing that lowers it -- after this tick's damage fed it.
+        # Dormant (one int read per unit) while nobody holds stress.
+        stress.tick(self.units)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver
@@ -2525,33 +2541,45 @@ class Simulation:
     def _update_grenades(self) -> None:
         """Slot 2: the grenades in flight (``self.projectiles``), BEFORE the
         rounds (slot 2', :meth:`_update_rounds`) and before movement
-        (mechanics/03 §2). Spawn order; a fuse-out detonates at once through
-        the payload executor, so each sees the previous one's blast."""
+        (mechanics/03 §2). Spawn order, in two passes (#215): every grenade
+        FLIES first (``Projectile.fly``: its leg, the wall walk, a bounce;
+        a fuse-out's rest of the flight resolved at once by ``settle``),
+        all against the map as the slot found it, and each fuse-out's tile
+        decided there (``combat.detonation_tile``: where it rests); THEN the
+        fuse-outs detonate in list order, each at once through the payload
+        executor, so each sees the previous one's blast. (Before #215 the
+        flight asked no wall, so the two passes are the one loop's results
+        for every throw.)"""
+        hand = self.weapons_tables.weapons.by_name["hand_grenade"]
+        rq, bmax = int(hand.bounce_restitution_q), int(hand.bounce_max)
+        fused = []
         for proj in self.projectiles:
             if proj.detonated:
                 continue
-            proj.update_position(self.tick)
+            proj.fly(self.gmap, self.tick, rq, bmax)
             if self.tick >= proj.get_detonate_tick():
+                proj.settle(self.gmap, self.tick, rq, bmax)
                 proj.detonated = True
-                if proj.proj_type == ORDER_GRENADE:
-                    fy, fx = proj.target_tile()           # #29 P3e: integers
-                    # W3: the LOBBED detonation goes through the payload
-                    # EXECUTOR via the projectile's round (hand_grenade ->
-                    # proj.ammo_name -> its payload row). The default
-                    # grenade_frag -> payloads.frag_standard sequence is
-                    # byte-identical to the pre-W3 inline triple (the
-                    # replica gate); gas grenades ride the same call with
-                    # their rows. Blast damage (the wave_p coupling row,
-                    # exchange.COUPLING_TABLE[1]) stays a detonation-site
-                    # invocation inside the executor.
-                    payload = self.weapons_tables.payload_for_ammo(
-                        proj.ammo_name)
-                    execute_payload(
-                        self.gmap, self.edit_queue, self.units, fy, fx,
-                        payload, self.draws, events=self.tick_events,
-                        kind="grenade", owner_id=proj.owner_id,
-                        approach=(unit_fixed.shr_trunc(proj.start_y_q),
-                                  unit_fixed.shr_trunc(proj.start_x_q)))
+                fused.append((proj, detonation_tile(
+                    self.gmap, proj.pos_x_q, proj.pos_y_q)))
+        for proj, (fy, fx) in fused:
+            if proj.proj_type != ORDER_GRENADE:
+                continue
+            # W3: the LOBBED detonation goes through the payload EXECUTOR
+            # via the projectile's round (hand_grenade -> proj.ammo_name ->
+            # its payload row). The default grenade_frag ->
+            # payloads.frag_standard sequence is byte-identical to the
+            # pre-W3 inline triple (the replica gate); gas grenades ride the
+            # same call with their rows. Blast damage (the wave_p coupling
+            # row, exchange.COUPLING_TABLE[1]) stays a detonation-site
+            # invocation inside the executor. #215: the approach is the
+            # current leg's start (the thrower's tile when it never bounced).
+            payload = self.weapons_tables.payload_for_ammo(proj.ammo_name)
+            execute_payload(
+                self.gmap, self.edit_queue, self.units, fy, fx,
+                payload, self.draws, events=self.tick_events,
+                kind="grenade", owner_id=proj.owner_id,
+                approach=proj.approach_tile())
 
     def _update_rounds(self) -> None:
         """Slot 2': the in-flight kinetic rounds (``self.bullets``; the W2

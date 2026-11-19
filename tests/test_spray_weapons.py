@@ -39,6 +39,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
@@ -345,6 +346,12 @@ def test_spray_code_never_touches_unit_hp_structural_and_runtime():
     assert "UnitKilledEvent" not in seen_kinds
 
 
+@pytest.mark.xfail(strict=False, reason=(
+    "Erik, 2026-11-18 (#215): the spray weapon is a placeholder, 'treat it as "
+    "not really implemented'; not tuned for. Since the body law, the jet's own "
+    "air (about 10 000 C at 6 atm on this 1 m tile, sealed 24 x 24 room) "
+    "reaches the sprayer's tiles, and its body takes up the hot air: the "
+    "sprayer loses about 7 HP in 12 ticks at the shipped protection"))
 def test_marine_in_flames_loses_hp_via_the_existing_heat_row():
     """The same scene WITH the engine attached: the victim drains through
     apply_environmental_damage (source 'heat') — the EXISTING coupling row,

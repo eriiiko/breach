@@ -64,7 +64,7 @@ from config import CFG
 from control_bots_v1 import ARRIVE_TOL_Q, MID_Q, _direction_q
 from control_source import ControlSource
 from pathfinding import astar
-from simulation import horde, vision
+from simulation import horde, verb_gates, vision
 from simulation.combat import mag_status, melee_arc_target
 from simulation.damage import DAMAGE_TYPE_NAMES
 from simulation.factions import ZOMBIE_TEAM
@@ -842,6 +842,58 @@ def resolve_actions(bots, c) -> dict:
 
 
 # ===========================================================================
+# The door step (#142, #215) -- shared with the old bots (control_bots_v1)
+# ===========================================================================
+def openable_door_tiles(sim):
+    """``(walk, doors)``: the tiles a body may overlap (``horde.
+    walkable_tiles``) and the closed-door tiles a bot may open on its way --
+    ``horde.bashable_door_tiles`` (living, closed, non-hull) over the doors
+    no wire drives. Uncached; callers key a cache on the tile serial."""
+    gmap = sim.gmap
+    drives = getattr(sim, "_door_drives", {}) or {}
+    doors = [d for d in getattr(sim, "_doors", ()) or ()
+             if getattr(d, "ordinal", None) not in drives]
+    return horde.walkable_tiles(gmap), horde.bashable_door_tiles(gmap, doors)
+
+
+def open_door_on_way(sim, u, door_tiles, door_used, way, tick,
+                     retry_ticks) -> None:
+    """#142: a closed (non-hull) door in the next waypoint's block is
+    opened through the USE verb once the bot touches it (USE toggles, so
+    only a door not already asked open, and not again within
+    ``retry_ticks``; ``door_used`` maps ``id(door)`` to the tick it was
+    asked). #215: the verb flips the door the unit FACES when several are
+    in reach, so the bot issues it only when the verb's own choice
+    (``verb_gates.use_door``, read now) IS the door on its path; otherwise
+    it waits (it turns toward its waypoint as it walks). A turn in slot 1a
+    between this read and the verb could still change the choice when two
+    doors lie almost equally off its facing. ``door_tiles`` None: no door."""
+    if door_tiles is None:
+        return
+    fp = u.footprint
+    wx, wy = way
+    block = door_tiles[wy:wy + fp, wx:wx + fp]
+    if not block.any():
+        return
+    oy, ox = np.argwhere(block)[0]
+    door = sim.door_at(int(wy + oy), int(wx + ox))
+    if door is None or getattr(door, "want_open", False):
+        return
+    key = id(door)
+    last = door_used.get(key)
+    if last is not None and tick - last < retry_ticks:
+        return
+    # touching: the door tile within the footprint's one-tile ring
+    x0, y0 = u.tile_x, u.tile_y
+    if not (x0 - 1 <= wx + ox <= x0 + fp and y0 - 1 <= wy + oy <= y0 + fp):
+        return
+    if verb_gates.use_door(sim, u) is not door:
+        return                      # the verb would flip another door
+    sim.use_intent(u.id)
+    door_used[key] = tick
+
+
+# ===========================================================================
 # The controller
 # ===========================================================================
 class _BotState:
@@ -1435,32 +1487,9 @@ class BotTeam(ControlSource):
         return []
 
     def _open_door(self, sim, u, st, way, tick) -> None:
-        """#142: a closed (non-hull) door in the next waypoint's block is
-        opened through the USE verb once the bot touches it (USE toggles,
-        so only a door not already asked open, and not again within
-        ``door_retry_ticks``)."""
-        doors = self.door_tiles(sim)
-        if doors is None:
-            return
-        fp = u.footprint
-        wx, wy = way
-        block = doors[wy:wy + fp, wx:wx + fp]
-        if not block.any():
-            return
-        oy, ox = np.argwhere(block)[0]
-        door = sim.door_at(int(wy + oy), int(wx + ox))
-        if door is None or getattr(door, "want_open", False):
-            return
-        key = id(door)
-        last = st.door_used.get(key)
-        if last is not None and tick - last < self.s.door_retry_ticks:
-            return
-        # touching: the door tile within the footprint's one-tile ring
-        x0, y0 = u.tile_x, u.tile_y
-        if not (x0 - 1 <= wx + ox <= x0 + fp and y0 - 1 <= wy + oy <= y0 + fp):
-            return
-        sim.use_intent(u.id)
-        st.door_used[key] = tick
+        """#142: the door step on the way (:func:`open_door_on_way`)."""
+        open_door_on_way(sim, u, self.door_tiles(sim), st.door_used, way,
+                         tick, self.s.door_retry_ticks)
 
     # -- shared map caches -----------------------------------------------
     def topology_key(self, sim):
@@ -1470,15 +1499,9 @@ class BotTeam(ControlSource):
         key = self.topology_key(sim)
         if self._grid is not None and self._grid[0] == key:
             return self._grid
-        gmap = sim.gmap
-        walk = horde.walkable_tiles(gmap)
-        drives = getattr(sim, "_door_drives", {}) or {}
-        doors = [d for d in getattr(sim, "_doors", ()) or ()
-                 if getattr(d, "ordinal", None) not in drives]
-        door_tiles = horde.bashable_door_tiles(gmap, doors)
-        tile_ok = walk | door_tiles
-        self._grid = (key, tile_ok, {}, door_tiles if door_tiles.any()
-                      else None)
+        walk, door_tiles = openable_door_tiles(sim)
+        self._grid = (key, walk | door_tiles, {}, door_tiles
+                      if door_tiles.any() else None)
         return self._grid
 
     def tile_ok(self, sim):

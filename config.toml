@@ -3469,6 +3469,8 @@ flammable = false
 mobility = 0           # THE POINT: no unit enters or paths through it
 permeability = 1.0     # explicit (the derived default would be 0: it occludes
                        # light a little) -- gas/smoke flow exactly as in air
+blocks_thrown = true   # #215, Erik's ruling 2026-11-18: a thrown grenade bounces off
+                       # it (combat.flight_blocked); a round still passes it (undecided)
 blocks_sight = true    # Erik's ruling 2026-11-06: NOT see-through. No unit sees,
                        # targets or is ordered to fire through it. (Bullets are
                        # "another question", undecided: a round already in
@@ -3543,6 +3545,25 @@ fuse_default_seconds = 1.0
 # the facing the unit has then. Quantized once to ticks (0 = the same-tick
 # throw). PLACEHOLDER: Erik tunes at the play test.
 throw_windup_seconds = 0.3
+# #215 (Erik, 2026-11-17: "grenades should not pass through walls"): a thrown
+# grenade's flight is a chain of straight legs; a leg that enters a tile the
+# rounds' march stops on (solid, or off the grid) ends at the wall and a
+# MIRRORED leg starts there, its length the distance the old leg had left
+# times bounce_restitution (0 = it drops at the wall, 1 = a mirror; Erik asked
+# for something in between, a tuning dial). After bounce_max bounces the next
+# wall stops it where it hits. Refused outside 0..1 / below 0 at load.
+bounce_restitution = 0.4
+bounce_max = 4
+# Where the grenade leaves the hand (#215, Erik 2026-11-18: "it should take into
+# account the unit's position, as well as facing, then offset it a little"):
+# metres forward of the thrower's centre and to its RIGHT, rotated by its facing
+# at the release, converted once per map through the tile size. MEASURED on the
+# SOMA marine: its LeftHand (the throw clip is mirrored: the left arm throws) at
+# Throw_Overhand's release frame (release_s 1.10) is 1.362 drawn tiles forward
+# and 0.864 to the left (the marine is drawn 6 tiles tall); at the 0.333 m tile
+# that is 0.4534 m and -0.2876 m. docs/grenade_bounce_impl_2026-11-17.md.
+release_forward_m = 0.45
+release_side_m = -0.29
 mass_kg = 0.4
 loudness = 0.0                       # metres of hearing radius (G9p noise); PLACEHOLDER
 
@@ -4218,6 +4239,7 @@ smoke_scale = 0.25       # the game's look, on top of the cited soot_yield rows:
 [blast]
 expansion_m3_per_strength = 40.0   # a real marine knocked down to 2.5 m at strength 1
 heat_mj_per_strength = 10.0        # about 54 / 63 / 84 / 89 / 94 HP left at 1 / 1.5 / 2 / 2.5 / 3 m
+# (#215: a body's protection from this heat is its env profile's heat_absorption, never this number)
 grenade_kg = 0.184                 # the M67's 6.5 oz of Composition B: strength 1
 
 # ---------------------------------------------------------------------------
@@ -4964,6 +4986,33 @@ hp_per_unit = 10.0
 # full gas is 60 HP, whenever the unit leaves the cloud.
 gas_units_per_second = 0.6
 
+# [damage.stress] -- a unit's STRESS and the heart rate read off it (#215,
+# docs/body_temperature_design_2026-11-17.md section 2b; src/simulation/
+# stress.py). Stress is fed only by its producer rows (the first and only one:
+# damage taken) and clears with one half-life; the heart rate is a Hill curve
+# of the stress, DERIVED, never stored. NOTHING in the game reads either yet
+# (Erik, 2026-11-17: "readout in first patch is good, we wait with effects"):
+# the tile inspector and the side panel show them. Every value is Erik's or a
+# first number of the lead's, his to move.
+[damage.stress]
+# stress_half_life_s -- the time stress takes to halve (Erik: "2 min for
+# adrenaline's half life"). >= 1 tick.
+stress_half_life_s = 120.0
+# stress_per_hp -- the damage producer's weight: stress points per hit point
+# actually lost.
+stress_per_hp = 1.0
+# The heart rate's Hill curve:
+#   heart rate = rest + (max - rest) x s^n / (half^n + s^n)
+# heart_rate_rest / heart_rate_max -- the curve's two ends, beats a minute.
+heart_rate_rest = 60.0
+heart_rate_max = 190.0
+# heart_half_stress -- the stress at which the heart is half way up (half a
+# health bar lost in a short time; the lead's first number).
+heart_half_stress = 50.0
+# heart_hill_n -- how sharp the curve is; a whole number (the curve is built
+# in exact rationals once at load: the sim path has no powers and no floats).
+heart_hill_n = 2
+
 [zombie]
 # A TURNED marine's hit points (a spawned zombie has the human vitality, 100).
 # Erik, 2026-11-12 (the zombie bite balance, docs/zombie_bite_balance_2026-11-12.md):
@@ -5014,12 +5063,17 @@ fear_temp = 60.0
 # DOOR BASHING: a closed door (not a hull door: none whose far side is space)
 # counts as passable in the field; a zombie whose step it blocks strikes it at
 # the bite's cadence (attack_cooldown_seconds) for door_bash_damage of the
-# door tile's hp through the wall-chew seam -- [materials.door_closed] hp 40
-# / 2 = 20 strikes at the 2.2 s bite cadence: a door holds one zombie ~42 s
-# (19 x 53 ticks; Erik's zombie bite balance, 2026-11-12). Each strike is a
+# door tile's hp through the wall-chew seam (the first tile reaching 0 brings
+# the whole door down at the slot-9e sweep). #215 (the lead's first value,
+# 2026-11-18; Erik tunes it): [materials.door_closed] hp 40 / 4 = 10 strikes,
+# the first at once and nine more at the 53-tick bite cadence: ONE zombie
+# breaks an interior door in 477 ticks = 19.9 s. Zombies striking the SAME
+# tile add up (k of them ~ 20 / k s); each strikes the first door tile its
+# blocked step touches, so zombies on different tiles of one door do not
+# (the door falls with its first tile). Was 2.0 (~42 s). Each strike is a
 # noise of bash_loudness_m.
 bash_doors = true
-door_bash_damage = 2.0
+door_bash_damage = 4.0
 bash_loudness_m = 12.0
 # SPRINT: an awake zombie with a line of sight to a living prey within
 # sprint_radius_m walks at the [speeds] zombie_sprint_mps cadence (unlimited)
@@ -5311,6 +5365,17 @@ o2_level_min = 0.15
 o2_level_max = 1.0
 temperature_min = -20.0
 temperature_max = 60.0
+# #215: the suit shell's heat capacity, J/K (simulation.body_temp): with the
+# derived loss of 159 W/K a time constant of 2 s. More = heat resistance.
+body_heat_capacity_j_per_k = 320.0
+# #215: THE protection (Erik, 2026-11-18: "protect only the body"): the share
+# of the heat reaching the body (radiation, deposits, hot air) it takes up;
+# 1.0 = unprotected. 0.1 is the lead's choice from the calibration table
+# (docs/body_temperature_impl_2026-11-17.md): a frag on the next tile bills
+# about 63 HP of heat on its 30 blast, which a full-health marine survives,
+# and standing at a furniture fire's edge bills 1.4 to 1.8 HP a second (at
+# 0.05 a fire did nothing). Erik tunes it.
+heat_absorption = 0.1
 stability = 1.0
 front_arc_deg = 120.0
 behind_arc_deg = 90.0
@@ -5419,6 +5484,28 @@ heat_ambient_ref = 20.0          # baseline felt temperature, no beam (T_ambient
 heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +ve
 temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile
 environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec) if no profile
+#
+# --- The body temperature (#215, docs/body_temperature_design_2026-11-17.md
+# section 2; src/simulation/body_temp.py) ---------------------------------
+# The felt temperature above is no longer billed the tick it is read: it is
+# the FLOW into a body with a temperature of its own (Unit.body_temp_q), and
+# the damage band reads the BODY. Per tick, in the heat row's slot:
+#   energy in  = what the body absorbs (the felt temperature's reading, in J)
+#   energy out = loss x [ (1 - s) x (p / 1 atm) x (body - air T)
+#                         +      s  x            (body - 20 C) ] x tick
+#   body      += (in - out) / capacity
+# The LOSS is DERIVED, never a dial: loss = J_per_heat_unit x tps /
+# heat_flux_to_temp (159 W/K at 0.333 m tiles: 2.5 kW/m2 on the body holds it
+# at the 60 C limit), so in still air at one atmosphere and 20 C the body
+# settles exactly at today's felt temperature and the literature table above
+# keeps its steady damage. The CAPACITY is the env profile's
+# body_heat_capacity_j_per_k (320 J/K: a time constant of 2 s). `s` is the
+# share the shell RADIATES (needs no air: the only cooling in vacuum); the
+# rest is exchanged with the air on the unit's tiles, scaled by its pressure
+# and read against ITS temperature, so hot air warms a body and thin air
+# barely does.
+body_radiated_share = 0.15       # ~23 of 159 W/K for a 3.3 m2 shell at 60 C
+body_heat_capacity_j_per_k = 320.0  # global fallback if a unit has no EnvironmentProfile
 
 # --- The physics<->unit exchange layer (mechanics/05) ------------------------
 # Constants for the coupling-table rows that are not weapon numbers.

@@ -591,8 +591,10 @@ def table_reference(sim) -> dict:
     themselves (what ``unit_tables.values`` must equal): also merged into
     tests/cuda_unit_kernels_check.py's table check, which refuses a row with
     no reference value."""
+    import temperature_scale
     from config import CFG
-    from simulation import exchange, exposure, gas_fixed, gases, optics_fixed, poison
+    from simulation import (body_temp, exchange, exposure, gas_fixed, gases,
+                            optics_fixed, poison, stress)
     from simulation.events import CAUSE_NAMES
     from simulation.loadouts import get_tables
     from simulation.species import SPECIES_REGISTRY, ZOMBIE_MITIGATION
@@ -640,6 +642,24 @@ def table_reference(sim) -> dict:
         "poison_harm_class_q": ps.class_harm_q,  # traits-class: the table check
         "poison_x_max": poison.X_MAX, "poison_flush_q": poison.FLUSH_Q,
         "footprint_rowmajor": 1,
+        # #215: the body temperature and stress rows, read from the laws'
+        # own doors on this env's map
+        "body_a_profile_q": tuple(body_temp.rates_q(
+            sim.gmap, p.body_heat_capacity_j_per_k)[0] for p in profs),
+        "body_a_rad_profile_q": tuple(body_temp.rates_q(
+            sim.gmap, p.body_heat_capacity_j_per_k)[1] for p in profs),
+        "body_a_species_q": tuple(body_temp.rates_q(
+            sim.gmap, s.environment.body_heat_capacity_j_per_k)[0] for s in specs),
+        "body_a_rad_species_q": tuple(body_temp.rates_q(
+            sim.gmap, s.environment.body_heat_capacity_j_per_k)[1] for s in specs),
+        "body_absorb_profile_q": tuple(qs(p.heat_absorption) for p in profs),
+        "body_absorb_species_q": tuple(qs(s.environment.heat_absorption)
+                                       for s in specs),
+        "body_k_temp_q": qs(float(temperature_scale.load(CFG).k_temp_to_kelvin)),
+        "stress_per_hp_q": qs(float(CFG.damage.stress.stress_per_hp) * 256.0),
+        "stress_hit_fills_q": stress.HIT_FILLS_Q,
+        "stress_rate_q": stress.get_settings().rate_q,
+        "stress_flush_q": stress.FLUSH_Q, "stress_max": stress.STRESS_MAX,
     }
 
 
@@ -1143,8 +1163,13 @@ def part_chained():
                      lambda kind=kind: LaneDriver(kind),
                      [SLOT_9C, SLOT_9C2, SLOT_9C3], LANE_TICKS,
                      SLOT_9C.label if kind == "fire" else SLOT_9C3.label)
+        # #215: since the body law and its protection (heat_absorption) the
+        # ship's first 500 ticks hold no hit -- its 40 events were heat bills
+        # of a felt temperature read as a body -- so the events are the
+        # lanes' to show here (measured: 0 ring events in 500 ticks).
         _chained("chained 9c + 9c2 + 9c3 (ship)", lambda: ShipDriver(),
-                 [SLOT_9C, SLOT_9C2, SLOT_9C3], SHIP_TICKS, SLOT_9C2.label)
+                 [SLOT_9C, SLOT_9C2, SLOT_9C3], SHIP_TICKS, SLOT_9C2.label,
+                 need_events=False)
 
 
 # ---------------------------------------------------------------------------
