@@ -222,6 +222,8 @@ def table_reference(sim) -> dict:
         "ammo_payload_row": tuple(
             pl.index(wt.payload_for_ammo(n).name) if wt.ammo.by_name[n].payload else -1
             for n in ammo),
+        # #29 P7e.1: the device flight plane's column (combat.flight_blocked's)
+        "mat_blocks_thrown": tuple(int(bool(b)) for b in sim.gmap.materials.blocks_thrown),
     }
 
 
