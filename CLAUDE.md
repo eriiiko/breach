@@ -279,6 +279,7 @@ amends the rule file, never this line's length.
 | Speed table | `[speeds]` (m/s) + `src/simulation/speeds.py` | Every unit speed is a `[speeds]` row quantized once per map; the direction rule is the one place facing changes a speed |
 | Turning law | `src/simulation/turning.py` | THE only writer of a unit's facing; a new reason to face is a target |
 | Unit impulse | `src/simulation/unit_impulse.py` | THE way anything pushes a unit: an impulse through `add`, never a position or velocity write |
+| Conversion door | `ai_zombie.convert_marines_to_zombies` + `ai_zombie.rises_as_zombie` | THE one path by which a corpse rises as a zombie; a new reason to rise is a branch of its one predicate, never a second converter |
 | Horde field | `src/simulation/horde.py` + `cpp/src/horde_field.cpp` | The horde paths only by the distance field; a new behaviour is a mask, goal set or descent rule |
 | Noise | `src/simulation/noise.py` | What can be heard is a noise through `noise.emit`; hearing reads noises, never sources |
 | Match config | `levels/<level>/match.toml` (`level_lib.write_match` / `simulation/match.py::parse_match`) | The ONLY way a match is parameterised; never argv scans or per-test dicts |
