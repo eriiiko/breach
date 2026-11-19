@@ -1097,7 +1097,8 @@ def part_padding():
                 for rows in (clean, dirty):
                     ls.store.upload(rows)
                     ls.ring.begin()
-                    cov = np.asarray(slot.call(ls.store, inp, ls.ring))
+                    ls._stage_lists(slot, ls.dev_lists, inp)   # #29 P7e.1: the claims list
+                    cov = np.asarray(slot.call(ls.store, inp, ls.ring, None, ls.dev_lists))
                     runs.append((cov, ls.store.download(), ls.ring.records()))
                 valid = clean[:, :, lay.valid].astype(bool)
                 (c0, g0, r0), (c1, g1, r1) = runs
