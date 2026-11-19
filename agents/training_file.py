@@ -32,6 +32,13 @@ every group, an unknown network spec or width, and anything
 default (the design's starting value), so a file that writes the design's
 table is that table and nothing is typed anywhere else.
 
+A COPYING run's file (rung 2 note 2e, 5; :func:`parse_copy` /
+:func:`load_copy`) has ``[network]`` and ``[copy]`` only: one key per
+field of :class:`agents.settings.CopySettings`, every key optional (a key
+left out takes the copy's starting value); any other table, an unknown key
+or a wrong type is refused by name, as above. A reward run's file and a
+copying run's file are never the same file.
+
 The file's bytes and sha256 are kept (:class:`TrainingFile`) so the run
 script copies the file it read beside the curve.
 """
@@ -43,18 +50,20 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 from agents import _game  # noqa: F401
-from agents.settings import Settings
-from agents.spec import NETWORK_SPEC, NetSpec, reduced, v1
+from agents.settings import CopySettings, Settings
+from agents.spec import NETWORK_SPEC, NetSpec, double, reduced, v1
 from simulation.reward_v1 import REWARD_GROUPS
 
 #: The widths ``[network] width`` names: the spec's constructor for each.
-WIDTHS = {"full": v1, "reduced": reduced}
+WIDTHS = {"full": v1, "reduced": reduced, "double": double}
 #: ``[network]``'s keys and whether each is required.
 NETWORK_KEYS = {"spec": True, "width": False, "memory": True}
 #: The Settings fields that live in their own tables, not in ``[train]``.
 _OWN_TABLE = {"weights": "weights", "wall_hours": "stop",
               "save_every": "save", "keep_every": "save"}
 TABLES = ("network", "train", "weights", "stop", "save")
+#: A copying run's tables.
+COPY_TABLES = ("network", "copy")
 
 
 class TrainingFileRefused(ValueError):
@@ -71,13 +80,14 @@ class TrainingFile:
     path: str = ""
 
 
-def _types() -> dict:
-    """Settings' field name -> "int" / "float" / "float?" / "tuple"."""
+def _types(record=Settings) -> dict:
+    """``record``'s field name -> "int" / "float" / "float?" / "tuple" /
+    "bool"."""
     out = {}
-    for f in fields(Settings):
+    for f in fields(record):
         t = str(f.type).replace(" ", "")
         out[f.name] = {"int": "int", "float": "float", "tuple": "tuple",
-                       "float|None": "float?"}.get(t, t)
+                       "float|None": "float?", "bool": "bool"}.get(t, t)
     return out
 
 
@@ -101,14 +111,8 @@ def _table(raw: dict, name: str, where: str) -> dict:
     return t
 
 
-def parse(raw: dict, where: str = "training file") -> tuple:
-    """A parsed TOML dict -> ``(Settings, NetSpec)``, refusing by name
-    (module text)."""
-    unknown = sorted(set(raw) - set(TABLES))
-    if unknown:
-        raise TrainingFileRefused(f"{where}: unknown table(s) {unknown} "
-                                  f"(a training file has {list(TABLES)})")
-    # [network]
+def _network(raw: dict, where: str) -> NetSpec:
+    """``[network]`` -> the network spec, refusing by name."""
     net = _table(raw, "network", where)
     bad = sorted(set(net) - set(NETWORK_KEYS))
     if bad:
@@ -127,7 +131,17 @@ def parse(raw: dict, where: str = "training file") -> tuple:
     if not isinstance(net["memory"], bool):
         raise TrainingFileRefused(f"{where}: [network] memory must be true "
                                   f"or false, got {net['memory']!r}")
-    spec = WIDTHS[width](memory=net["memory"])
+    return WIDTHS[width](memory=net["memory"])
+
+
+def parse(raw: dict, where: str = "training file") -> tuple:
+    """A parsed TOML dict -> ``(Settings, NetSpec)``, refusing by name
+    (module text)."""
+    unknown = sorted(set(raw) - set(TABLES))
+    if unknown:
+        raise TrainingFileRefused(f"{where}: unknown table(s) {unknown} "
+                                  f"(a training file has {list(TABLES)})")
+    spec = _network(raw, where)
     # [train]
     types = _types()
     train_keys = {k for k in types if k not in _OWN_TABLE}
@@ -171,6 +185,51 @@ def parse(raw: dict, where: str = "training file") -> tuple:
     return settings, spec
 
 
+def parse_copy(raw: dict, where: str = "training file") -> tuple:
+    """A copying run's parsed TOML -> ``(CopySettings, NetSpec)``, refusing
+    by name (module text)."""
+    unknown = sorted(set(raw) - set(COPY_TABLES))
+    if unknown:
+        raise TrainingFileRefused(f"{where}: unknown table(s) {unknown} (a "
+                                  f"copying run's file has "
+                                  f"{list(COPY_TABLES)})")
+    spec = _network(raw, where)
+    types = _types(CopySettings)
+    table = _table(raw, "copy", where)
+    bad = sorted(set(table) - set(types))
+    if bad:
+        raise TrainingFileRefused(
+            f"{where}: [copy] unknown key(s) {bad} (each key is a field of "
+            f"agents.settings.CopySettings: {sorted(types)})")
+    kw = {}
+    for k, v in table.items():
+        if types[k] == "bool":
+            if not isinstance(v, bool):
+                raise TrainingFileRefused(f"{where}: [copy] {k} must be true "
+                                          f"or false, got {v!r}")
+            kw[k] = v
+        else:
+            kw[k] = _number(v, types[k], f"{where}: [copy] {k}")
+    try:
+        settings = CopySettings(**kw)
+    except ValueError as e:
+        raise TrainingFileRefused(f"{where}: {e}") from None
+    return settings, spec
+
+
+def load_copy(path) -> tuple:
+    """Read a copying run's file: ``(CopySettings, NetSpec, text, sha256)``
+    (module text)."""
+    p = Path(path)
+    data = p.read_bytes()
+    try:
+        raw = tomllib.loads(data.decode("utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        raise TrainingFileRefused(f"{p}: {e}") from None
+    settings, net = parse_copy(raw, str(p))
+    return settings, net, data.decode("utf-8"), hashlib.sha256(data).hexdigest()
+
+
 def load(path) -> TrainingFile:
     """Read and check the training file at ``path`` (module text)."""
     p = Path(path)
@@ -186,5 +245,6 @@ def load(path) -> TrainingFile:
                         path=str(p.resolve()))
 
 
-__all__ = ["WIDTHS", "NETWORK_KEYS", "TABLES", "TrainingFileRefused",
-           "TrainingFile", "parse", "load"]
+__all__ = ["WIDTHS", "NETWORK_KEYS", "TABLES", "COPY_TABLES",
+           "TrainingFileRefused", "TrainingFile", "parse", "load",
+           "parse_copy", "load_copy"]

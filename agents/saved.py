@@ -99,7 +99,9 @@ NOT_SAVED = {
                 "batch": "overwritten every round",
                 "learner": "its own entries", "collector": "its own entries"},
     "Learner": {"settings": "the training file", "device": "the machine's",
-                "ids": "the run's names, compared at a resume"},
+                "ids": "the run's names, compared at a resume",
+                "_segs": "one round's stretches, cut afresh from every "
+                         "batch"},
     "Collector": {
         "env": "the environment", "rows": "derived",
         "device": "the machine's", "ids": "the run's names",
@@ -335,17 +337,26 @@ def restore(trainer, saved: dict) -> None:
 # ---------------------------------------------------------------------------
 # a soldier's export
 # ---------------------------------------------------------------------------
-def export_soldier(path, soldier, layout) -> str:
+def export_soldier(path, soldier, layout=None, *, specs: dict | None = None,
+                   started_from=None) -> str:
     """What a driver of a saved soldier needs and nothing of the learner:
-    its weights, its record, its widths and the three spec names (written
-    atomically); returns the file's sha256."""
+    its weights, its record, its widths, the three spec names (of the
+    environment's ``layout``, or ``specs`` for a soldier made without one:
+    the copy names the records' observation and action specs and no reward
+    profile) and what it was started from (``started_from``: None, or the
+    copy's ``{"copy": {...}}``: the records' folder, their census hash, the
+    split, the pass); written atomically; returns the file's sha256."""
+    if (layout is None) == (specs is None):
+        raise ValueError("export_soldier: give the environment's layout or "
+                         "the spec names, one of them")
     return write_atomic(path, {
         "format": FORMAT, "kind": "soldier",
         "soldier": {k: v.detach().cpu() for k, v in
                     soldier.state_dict().items()},
         "soldier_record": soldier.record.as_dict(),
         "net": dataclasses.asdict(soldier.spec),
-        "specs": specs_of(layout)})
+        "specs": specs_of(layout) if layout is not None else dict(specs),
+        "started_from": started_from})
 
 
 def load_soldier(path, soldier) -> dict:
