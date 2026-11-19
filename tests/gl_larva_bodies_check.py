@@ -274,11 +274,11 @@ def _faded():
     gone, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 1.0, 0.0, 0, 1)]), s,
                       _light(1.0), floor)
     assert np.array_equal(base, gone), "an alpha-0 body changed the floor"
-    # a limp body, opaque and half faded, lit: premultiplied alpha puts the
+    # a pale body, opaque and at half alpha, lit: premultiplied alpha puts the
     # half-faded pixel half way between the floor and the opaque body
-    full, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 1.0, 1.0, 0, 1)]), s,
+    full, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 0.0, 1.0, 0, 1)]), s,
                       _light(1.0), floor)
-    half, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 1.0, 0.5, 0, 1)]), s,
+    half, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 0.0, 0.5, 0, 1)]), s,
                       _light(1.0), floor)
     cov = np.abs(full - base).max(axis=-1) > 1e-2
     assert cov.sum() > 50
