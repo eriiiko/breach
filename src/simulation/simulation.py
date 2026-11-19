@@ -82,6 +82,7 @@ from simulation import horde
 from simulation import noise
 from simulation import poison
 from simulation import stress
+from simulation import corpse  # arc #63 P5b
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -91,7 +92,7 @@ from simulation import stress
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
-    apply_bite_dose, apply_blast_damage, apply_environmental_damage, apply_poison_dose,
+    apply_bite_dose, apply_blast_damage, apply_corpse_infestation, apply_environmental_damage, apply_poison_dose,
     apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
@@ -387,6 +388,8 @@ class Simulation:
         self.poison_settings = poison.rebuild_settings()
         # The stress level's dials (#215, [damage.stress]), the same.
         self.stress_settings = stress.rebuild_settings()
+        # The corpse law's dials (arc #63 P5b, [corpse]), the same.
+        self.corpse_settings = corpse.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -2075,12 +2078,13 @@ class Simulation:
           7.   Physics step
           9.   Burn-through walls; 9b. over-pressure walls
           9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose +
-               the larvae's bite dose; 9c3'. the poison law; 9c3''. stress
-               clears; 9d. ignition
+               the larvae's bite dose + the corpses' infestation; 9c3'. the
+               poison law; 9c3''. stress clears; 9d. ignition
           9e.  Entities (signals, pumps, vents, doors, timed and planted
                charges, heat sources); recorder snapshot; tick-end clears
          10.   Tick advance; 10'. orders expire; the ruleset's tick end
-               (conversion; WEGO's phase / round boundary and door
+               (conversion: zombie kills and infested corpses rise; WEGO's
+               phase / round boundary and door
                explosives; on the continuous path, spent grenades dropped)
          11.   The team picture (a match only)
         """
@@ -2343,6 +2347,13 @@ class Simulation:
             # living unit's footprint, into the poison door (uncredited,
             # cause larva_bite). Lazy: a swarm-free plane is one .any().
             apply_bite_dose(self.units, self.gmap)
+            # arc #63 P5b: the corpse row (swarm_count): the count plane slot
+            # 7's swarm step wrote, summed over each DEAD unit's footprint,
+            # moves its infestation level (simulation.corpse). TICK ORDER: the
+            # count plane is written in slot 7, the level moves here, and the
+            # corpse rises at the tick's end through the one conversion door
+            # (the ruleset's on_tick_end, ai_zombie.convert_marines_to_zombies).
+            apply_corpse_infestation(self.units, self.gmap)
         # 9c3'. The poison law (#29 PX, simulation.poison): every living unit
         # holding poison moves depot -> blood -> out, and what leaves the
         # blood hurts as one POISON packet (credited to its dose). Outside

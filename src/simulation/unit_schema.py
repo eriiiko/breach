@@ -440,6 +440,13 @@ def _poison_cause_default():
     return CAUSE_NAMES.index(Cause.POISON_GAS.value)
 
 
+def _corpse_integrity_default():
+    """A fresh corpse's integrity, ``[corpse] integrity`` in Q16 hit points
+    (arc #63 P5b, ``simulation.corpse``)."""
+    from simulation.corpse import full_integrity_q
+    return full_integrity_q()
+
+
 def _body_temp_default():
     from simulation.body_temp import ambient_q
     return ambient_q()
@@ -545,6 +552,15 @@ COLUMNS: tuple[Column, ...] = (
     _c("poison_cause", KIND_INT, "health", _poison_cause_default,
        note="the latest dose's cause, an events.CAUSE_NAMES index; "
             "poison_gas's by default (simulation.poison)"),
+    # arc #63 P5b: the corpse (simulation.corpse, the ONE writer): the
+    # infestation level the swarm's count plane raises on a dead unit, and
+    # what is left of the body; both hashed only while non-default, so a
+    # match without larvae hashes exactly as before
+    _c("infest_q", KIND_Q16, "health", 0,
+       note="the corpse's infestation level, Q16 (1.0 = ONE); 0 while alive"),
+    _c("corpse_integrity_q", KIND_Q16, "health", _corpse_integrity_default,
+       note="the corpse's integrity, Q16 hit points; [corpse] integrity by "
+            "default and at every death; <= 0 = destroyed, never rises"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",

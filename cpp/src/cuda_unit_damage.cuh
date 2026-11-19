@@ -314,6 +314,8 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         put(row, UNIT_COL_STRESS_Q, 0, changed);                   // stress.clear
         put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);  // body_temp.clear
         put(row, UNIT_COL_POISON_CAUSE, UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
+        put(row, UNIT_COL_INFEST_Q, 0, changed);                   // corpse.on_death (P5b)
+        put(row, UNIT_COL_CORPSE_INTEGRITY_Q, tab[UNIT_TAB_CORPSE_INTEGRITY_Q], changed);
         if (p.mark_killed_by_zombie) put(row, UNIT_COL_KILLED_BY_ZOMBIE, 1, changed);
         emit(sink, UNIT_EVKIND_KILLED, uid, 0, p.cause, attacker, 0, 0);
         *killed = true;

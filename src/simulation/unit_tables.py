@@ -256,6 +256,11 @@ def _body_rates(src, env):
     return b.rates_q(src.sim.gmap, b.capacity_of(env))
 
 
+def _corpse():
+    from simulation import corpse
+    return corpse.get_settings()
+
+
 def _stress_mod():
     from simulation import stress
     return stress
@@ -572,6 +577,16 @@ ROWS: tuple[TableRow, ...] = (
              "stress.FLUSH_Q"),
     TableRow("stress_max", 1, lambda src: _stress_mod().STRESS_MAX, 1,
              1 << 38, "stress.STRESS_MAX: the level's int64 bound"),
+    # -- arc #63 P5b: the corpse law (simulation.corpse) ----------------------
+    TableRow("corpse_rise_q", 1, lambda src: _corpse().rise_q, 0, 1 << 26,
+             "[corpse] infest_rate: the Q16 level one swarm unit adds a tick"),
+    TableRow("corpse_decay_a", 1, lambda src: _corpse().decay_a, 0, 1 << 24,
+             "[corpse] infest_decay: the level's per-tick fraction, 2^-24 "
+             "(clearing.RATE_SHIFT)"),
+    TableRow("corpse_threshold_q", 1, lambda src: _corpse().threshold_q, 1,
+             1 << 26, "[corpse] infest_threshold, Q16 (the conversion door)"),
+    TableRow("corpse_integrity_q", 1, lambda src: _corpse().integrity_q, 1,
+             (1 << 31) - 1, "[corpse] integrity, Q16 hit points (a fresh corpse)"),
     # -- the footprint the device walks ---------------------------------------
     TableRow("footprint_rowmajor", 1, _footprint_rowmajor, 1, 1,
              "1 = every species' default offsets are the footprint square in "

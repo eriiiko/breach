@@ -125,6 +125,12 @@ SPECIES_HASH_NPZ_KEY = "swarm_species_hash"
 #: ``swarm_bite_dose`` coupling row (``exchange.apply_bite_dose``). Not
 #: digested and not in the swarm section: it is a function of the store.
 BITE_PLANE_ATTR = "swarm_bite_dose"
+#: arc #63 P5b: THE COUNT PLANE, ``(h, w)`` int32 per map: how many living,
+#: non-coma swarm units (``swarm::active_on``, every species) stand on each
+#: tile THIS tick. Swarm OUTPUT built in the same pass as the bite plane,
+#: under the same rules; read by the unit side only through the
+#: ``swarm_count`` coupling row (``exchange.apply_corpse_infestation``).
+COUNT_PLANE_ATTR = "swarm_count"
 
 
 def store_attr(species: str, col: str) -> str:
@@ -166,7 +172,7 @@ def check_store_names(species_tuple, roster) -> None:
                 f"alias swarm_<species>_{col.name}")
 
     names = [NEXT_UNIT_ID_ATTR, SPECIES_ATTR, HOST_DIRTY_ATTR,
-             SPECIES_HASH_NPZ_KEY, BITE_PLANE_ATTR]
+             SPECIES_HASH_NPZ_KEY, BITE_PLANE_ATTR, COUNT_PLANE_ATTR]
     for sp in species_tuple:
         names.append(high_water_attr(sp))
         for col in roster:
@@ -191,7 +197,7 @@ SWARM_RESIDENT_NAMES = tuple(
 #: arc #63 P5a: the swarm's per-tile OUTPUT planes, resident (the resident
 #: swarm stage writes them on the device; the exit download brings them
 #: down while a swarm is present). Never host-written after allocation.
-SWARM_PLANE_NAMES = (BITE_PLANE_ATTR,)
+SWARM_PLANE_NAMES = (BITE_PLANE_ATTR, COUNT_PLANE_ATTR)
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +602,8 @@ def allocate_swarm_store(gmap, cfg=CFG) -> None:
        stacks them to (N,) / (N, max_units) (ResidentBatch).
     4. ``gmap.swarm_host_dirty`` -- a plain dict, NOT resident/digested.
     5. (arc #63 P5a) ``gmap.swarm_bite_dose`` -- the ``(h, w)`` int32 bite
-       plane, all zero (written only by the swarm step).
+       plane, all zero (written only by the swarm step); (P5b) likewise
+       ``gmap.swarm_count``, the count plane.
 
     Allocation draws no RNG. Runs on every level and every reset.
 
@@ -618,11 +625,18 @@ def allocate_swarm_store(gmap, cfg=CFG) -> None:
     gmap.swarm_host_dirty = {sp: False for sp in SWARM_SPECIES}
     setattr(gmap, BITE_PLANE_ATTR,
             np.zeros((int(gmap._h), int(gmap._w)), dtype=np.int32))
+    setattr(gmap, COUNT_PLANE_ATTR,
+            np.zeros((int(gmap._h), int(gmap._w)), dtype=np.int32))
 
 
 def bite_plane(gmap):
     """The read accessor of the bite-dose plane (arc #63 P5a)."""
     return getattr(gmap, BITE_PLANE_ATTR)
+
+
+def count_plane(gmap):
+    """The read accessor of the count plane (arc #63 P5b)."""
+    return getattr(gmap, COUNT_PLANE_ATTR)
 
 
 class SwarmFull(ValueError):
@@ -1256,15 +1270,18 @@ def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
                               for c in ROSTER),
                 high_water=hws[sp], tables=tables))
     if resident:
-        return {"packs": packs, "env": env, "bite": int(dev[BITE_PLANE_ATTR])}
+        return {"packs": packs, "env": env, "bite": int(dev[BITE_PLANE_ATTR]),
+                "count": int(dev[COUNT_PLANE_ATTR])}
     g = gmaps[0]
     bite = bite_plane(g)
+    count = count_plane(g)
     return {"packs": packs,
             "temperature": g.temperature.reshape((1,) + g.temperature.shape),
             "solid": g.solid.reshape((1,) + g.solid.shape),
             "env": env,
             "host_dirty": g.swarm_host_dirty,
-            "bite": bite.reshape((1,) + bite.shape)}
+            "bite": bite.reshape((1,) + bite.shape),
+            "count": count.reshape((1,) + count.shape)}
 
 
 def death_events(rows) -> list:
@@ -1305,8 +1322,8 @@ def resident_exit_names(gmap) -> tuple:
     """The swarm names the resident EXIT download carries: the columns of
     every species present in this map (the digest and the recorder read the
     mirror) -- never ``high_water`` / ``next_unit_id`` (host-authoritative)
-    -- and, while any species is present, the bite plane (arc #63 P5a: slot
-    9c3 reads it on the host the same tick)."""
+    -- and, while any species is present, the bite and count planes (arc #63
+    P5a / P5b: slot 9c3 reads them on the host the same tick)."""
     cols = tuple(store_attr(sp, c.name) for sp in SWARM_SPECIES
                  if int(getattr(gmap, high_water_attr(sp))) > 0 for c in ROSTER)
     return cols + (SWARM_PLANE_NAMES if cols else ())

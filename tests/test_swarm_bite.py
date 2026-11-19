@@ -107,7 +107,7 @@ def test_the_plane_counts_the_biting_larvae_per_tile_and_nothing_else():
     wd.high_water[0] = 7                                     # slot 6: freed (all zero)
     rows = bp.PhysicsEngine().step_swarm(
         [swarm.EnginePack("larva", wd.columns(), wd.high_water, wd.tables)],
-        wd.T, wd.solid, wd.env, {"larva": False}, wd.bite)
+        wd.T, wd.solid, wd.env, {"larva": False}, wd.bite, wd.count)
     assert rows.shape[0] == 1                                # the lethal one died
     assert int(wd.ai_state[0, 4]) == swarm.AI_COMA
     expect = np.zeros((6, 6), dtype=np.int64)

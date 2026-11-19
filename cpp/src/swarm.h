@@ -267,20 +267,27 @@ struct ResidentLaunch {
 // The resident stage's per-env counters (a region of the books arena).
 enum : int { SWARM_CNT_DEATHS = 0, SWARM_CNT_STEPPED = 1, SWARM_CNT_SLOTS = 2 };
 
-// ---- THE BITE (arc #63 P5a, docs/swarm_P5a_impl.md) ------------------------
-// Whether slot s of env e bites this tick, and the tile it bites on: a valid
-// unit that is not in coma (a dead slot is the all-zero form, valid 0). Read
-// AFTER the law's step (the post-move tile, this tick's state). ONE function
-// for the host builder (bite_plane_host) and the resident kernel (swarm.cu):
-// what one biting unit adds is its species' bite row (the expected dose,
-// bite_dose x bite_rate x dt, Q16 poison units; swarm.bite_tick_q), summed
-// per tile -- an integer sum, so the plane does not depend on the order.
-FP_HD inline bool bites_on(const SlotIO& io, int e, int s, int* idx) {
+// ---- THE OUTPUT PLANES (arc #63 P5a the bite, P5b the count) ----------------
+// Whether slot s of env e is ACTIVE this tick, and its tile: a valid unit that
+// is not in coma (a dead slot is the all-zero form, valid 0). Read AFTER the
+// law's step (the post-move tile, this tick's state). ONE function for the
+// host builder (output_planes_host) and the resident kernel (swarm.cu): an
+// active unit adds 1 to its tile of the COUNT plane (P5b) and its species'
+// bite row to the BITE plane (P5a: the expected dose, bite_dose x bite_rate
+// x dt, Q16 poison units; swarm.bite_tick_q) -- integer sums per tile, so
+// neither plane depends on the order.
+FP_HD inline bool active_on(const SlotIO& io, int e, int s, int* idx) {
     const int k = e * io.max_units + s;
     if (io.st.valid[k] == 0) return false;
     const int32_t a = io.st.ai_state[k];
     if (a == AI_DEAD || a == AI_COMA) return false;
     return tile_of(io.st.pos_x[k], io.st.pos_y[k], io.h, io.w, idx);
+}
+
+// Who bites (P5a): every active unit, on its tile. A new biting state is a
+// change HERE (and its gate), never a second builder.
+FP_HD inline bool bites_on(const SlotIO& io, int e, int s, int* idx) {
+    return active_on(io, e, s, idx);
 }
 
 // One species law: its name, its table width, the field + reduction it senses
@@ -351,16 +358,18 @@ struct StepScratch {
 // the CPU loop (or the per-call CUDA wrapper while set_swarm_backend is on),
 // the host-dirty flag set, and the death rows compacted in (species, env,
 // slot) order into `rows` (flat, ROW_WORDS per row).
-// arc #63 P5a: `bite` (n_env, h, w) is zeroed and rebuilt from every present
-// species after its law (bite_plane_host) whenever the step is not dormant.
+// arc #63 P5a / P5b: `bite` and `count` (n_env, h, w) are zeroed and rebuilt
+// from every present species after its law (output_planes_host) whenever the
+// step is not dormant.
 void step_all(const SpeciesStep* packs, int n_packs, const int32_t* T, const bool* solid,
               int h, int w, const uint32_t* env, int n_env, StepScratch& scratch,
-              std::vector<int32_t>& rows, int32_t* bite);
+              std::vector<int32_t>& rows, int32_t* bite, int32_t* count);
 
-// arc #63 P5a: add every biting slot of one species' (n_env, max_units)
-// store to the (n_env, h, w) bite plane (the caller zeroed it this tick).
-void bite_plane_host(int law, const SlotIO& io, int n_env, const uint32_t* launch_host,
-                     int32_t* bite);
+// arc #63 P5a / P5b: add every biting slot of one species' (n_env, max_units)
+// store to the (n_env, h, w) bite plane and every active slot to the count
+// plane (the caller zeroed both this tick; either may be nullptr).
+void output_planes_host(int law, const SlotIO& io, int n_env, const uint32_t* launch_host,
+                        int32_t* bite, int32_t* count);
 
 // Compose the per-env launch block from the env words and hw.
 void compose_launch(const uint32_t* env, const int32_t* hw, int n_env, uint32_t* out);
@@ -387,13 +396,14 @@ void note_cuda_call();
 // the tick stream, launch the core, and copy each env's [0, hw[e]) records
 // into the species' pinned host buffer (before the tail's books sync).
 // Returns the launch_hw (0: nothing launched).
-// arc #63 P5a: then adds the species' biting slots into d_bite (N, h, w),
-// which resident_swarm zeroed on the stream this tick.
+// arc #63 P5a / P5b: then adds the species' biting slots into d_bite and its
+// active slots into d_count (N, h, w), which resident_swarm zeroed on the
+// stream this tick.
 int resident_species(int law, const StoreView& st_dev, int max_units, int n_env, int h,
                      int w, const int32_t* d_T, const bool* d_solid,
                      const uint32_t* launch_host, const int64_t* tables_host,
                      int table_width, unsigned long long* d_counters, void* stream,
-                     int32_t* d_bite);
+                     int32_t* d_bite, int32_t* d_count);
 // The species' pinned host records (n_env, max_units, DEATH_WORDS), valid
 // after the tick's books sync for [0, hw[e]) per env.
 const int32_t* resident_records_host(int law);

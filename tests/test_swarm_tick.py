@@ -220,13 +220,13 @@ def test_engine_presence_spans_every_env():
     tk.place(wd, 1, 0, (2 << 16), (2 << 16), 0)
     dirty = {"larva": False}
     c0 = bp.swarm_cpu_calls()
-    rows = eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, dirty, wd.bite)
+    rows = eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, dirty, wd.bite, wd.count)
     assert bp.swarm_cpu_calls() == c0 + 1
     assert rows.shape == (1, swarm.ROW_WORDS) and int(rows[0, swarm.ROW_ENV]) == 1
     assert dirty["larva"] is True
     empty = tk.larva_world(6, 6, 4, 2, T=T)
     dirty = {"larva": False}
-    rows = eng.step_swarm(_packs_from(empty), empty.T, empty.solid, empty.env, dirty, empty.bite)
+    rows = eng.step_swarm(_packs_from(empty), empty.T, empty.solid, empty.env, dirty, empty.bite, empty.count)
     assert rows.shape == (0, swarm.ROW_WORDS)
     assert bp.swarm_cpu_calls() == c0 + 1
     assert dirty["larva"] is False
@@ -304,13 +304,13 @@ def test_the_bindings_refuse_mismatched_arrays_and_touch_nothing():
         assert same(wd, snap), brk.__name__
         eng = bp.PhysicsEngine()
         with pytest.raises((TypeError, ValueError)):
-            eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, {"larva": False}, wd.bite)
+            eng.step_swarm(_packs_from(wd), wd.T, wd.solid, wd.env, {"larva": False}, wd.bite, wd.count)
         assert same(wd, snap), brk.__name__
     wd = fresh()
     snap = snapshot(wd)
     bad = [swarm.EnginePack("notaspecies", wd.columns(), wd.high_water, wd.tables)]
     with pytest.raises(ValueError):
-        bp.PhysicsEngine().step_swarm(bad, wd.T, wd.solid, wd.env, {"larva": False}, wd.bite)
+        bp.PhysicsEngine().step_swarm(bad, wd.T, wd.solid, wd.env, {"larva": False}, wd.bite, wd.count)
     with pytest.raises(ValueError):
         bp.swarm_species_step("notaspecies", *wd.args())
     assert same(wd, snap)

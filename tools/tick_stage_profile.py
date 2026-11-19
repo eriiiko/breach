@@ -94,6 +94,7 @@ SLOT_WRAPS = (
     ("simulation.simulation", "apply_teargas_blind", "9c3 gas rows"),
     ("simulation.simulation", "apply_poison_dose", "9c3 gas rows"),
     ("simulation.simulation", "apply_bite_dose", "9c3 gas rows"),   # arc #63 P5a
+    ("simulation.simulation", "apply_corpse_infestation", "9c3 gas rows"),   # arc #63 P5b
     # #29 PX: the poison law, right after the gas row (slot 9c3').
     ("simulation.poison", "tick", "9c3 gas rows"),
     # #215: the stress level's own tick, right after the poison law (slot

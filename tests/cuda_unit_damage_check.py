@@ -45,7 +45,11 @@ marines):
             indirect), a hooked marine that leaves a cloud and recovers to
             exactly 0 (the flush, poison_src back to -1), a zombie in a cloud
             (no dose), a marine at the body's store standing in poison (the
-            dose clipped and counted, == poison.SATURATION's hits);
+            dose clipped and counted, == poison.SATURATION's hits); arc #63
+            P5b: corpses under larvae (the count plane's sum moves their
+            infestation level: a marine's and a zombie's corpse rising
+            toward the threshold, a destroyed corpse held at 0, an infested
+            corpse with nobody on it decaying);
   status -- statuses applied through status.apply_status (no shipped trigger
             applies a damage-over-time status: the registry's DoT rows are
             exercised this way): a stun running out, BURNING (max), a stack
@@ -332,6 +336,27 @@ class LaneDriver:
                  + [(6 + 2 * i, a + 1) for i in range(3)])
         self.sim.swarm.spawn("larva", [(tx << 16) + half for tx, _ in tiles],
                              [(ty << 16) + half for _, ty in tiles], [0] * len(tiles))
+        # arc #63 P5b: the corpses (the corpse row, fused in 9c3): a marine's
+        # and a zombie's corpse under larvae (their levels rise; the counts
+        # differ per variant), a destroyed corpse under larvae (held at 0), an
+        # infested corpse with nobody on it (decays). Killed here, before the
+        # first tick, through the one damage door.
+        from simulation import corpse
+        from simulation.damage import KINETIC, DamagePacket, apply_packet
+        km = self._add("KM", 24, b)
+        kz = self._add("KZ", 30, b, team=255)
+        kx = self._add("KX", 22, d)
+        kd = self._add("KD", 30, d)
+        for u in (km, kz, kx, kd):
+            apply_packet(u, DamagePacket(amount=10_000.0, dtype=KINETIC), None,
+                         source="explosion")
+        kx.corpse_integrity_q = 0                       # fixture: destroyed
+        kd.infest_q = (corpse.get_settings().threshold_q * 3) // 5   # fixture: 0.6
+        m = 8 + 2 * (self.variant % 3)
+        tiles = ([(25, b + 1)] * m + [(31, b + 1)] * (5 + self.variant % 3)
+                 + [(23, d + 1)] * 6)
+        self.sim.swarm.spawn("larva", [(tx << 16) + half for tx, _ in tiles],
+                             [(ty << 16) + half for _, ty in tiles], [0] * len(tiles))
 
     def _before_gas(self):
         from control_source import quantize_stick_direction
@@ -423,7 +448,7 @@ class Probe:
         lay = ls.layout
         cols = {n: lay.column(n).offset for n in
                 ("id", "poison_x0", "poison_x1", "poison_src", "life_state",
-                 "current_hp")}
+                 "current_hp", "infest_q", "corpse_integrity_q", "is_zombie")}
         sc = lay.column("statuses")
         for k, slot in enumerate(ls.slots):
             lab = slot.label
@@ -456,6 +481,19 @@ class Probe:
                         kq = post[r, sc.offset:sc.offset + sc.width][0::4]
                         if 8 in kq and (8 not in kp):
                             self.c[(lab, "blinded")] += 1
+                        # arc #63 P5b: the corpse row's branches
+                        if pre[r, cols["life_state"]] == 1:
+                            iq0, iq1 = pre[r, cols["infest_q"]], post[r, cols["infest_q"]]
+                            if iq1 > iq0:
+                                self.c[(lab, "corpse infested")] += 1
+                                if pre[r, cols["is_zombie"]]:
+                                    self.c[(lab, "zombie corpse infested")] += 1
+                            if iq1 < iq0 and post[r, cols["corpse_integrity_q"]] > 0:
+                                self.c[(lab, "corpse level decays")] += 1
+                            if post[r, cols["corpse_integrity_q"]] <= 0:
+                                self.c[(lab, "destroyed corpse held")] += 1
+                                if iq1 != 0:
+                                    self.c[(lab, "destroyed corpse moved")] += 1
                     if lab == "2b statuses":
                         kp = [x for x in pre[r, sc.offset:sc.offset + sc.width][0::4] if x >= 0]
                         kq = [x for x in post[r, sc.offset:sc.offset + sc.width][0::4] if x >= 0]
@@ -949,7 +987,14 @@ def _scene_facts(kind, pr, out):
                 (SLOT_9C3.label, "dosed rows"),
                 # arc #63 P5a: the bite row's hits and its kill, by its cause
                 (SLOT_9C3.label, "UnitHitEvent", "larva_bite"),
-                (SLOT_9C3.label, "UnitKilledEvent", "larva_bite")]
+                (SLOT_9C3.label, "UnitKilledEvent", "larva_bite"),
+                # arc #63 P5b: the corpse row's branches
+                (SLOT_9C3.label, "corpse infested"),
+                (SLOT_9C3.label, "zombie corpse infested"),
+                (SLOT_9C3.label, "corpse level decays"),
+                (SLOT_9C3.label, "destroyed corpse held")]
+        if c.get((SLOT_9C3.label, "destroyed corpse moved")):
+            fail("scene gas: a destroyed corpse's level moved")
         sat = pr.saturation()
         dev_ref = out.get(SLOT_9C3.label, (0, 0, 0))[2]
         print(f"scene gas: doses clipped at the body's store: host "
