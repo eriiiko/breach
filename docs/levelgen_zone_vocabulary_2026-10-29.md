@@ -861,13 +861,21 @@ the larvae over its free tiles. Nothing else of the room changes
 | Department | chance | rooms | density | max | with |
 |---|---|---|---|---|---|
 | cargo_hold | 0.6 | main_hold, bay | 0.5 | 200 | engineering = 1.5 |
-| engineering | 0.35 | fuel_bunker | 0.5 | 200 | |
+| engineering | (no table; see below) | | | | |
 | crew_quarters | 0.15 | bunk, laundry | 0.5 | 200 | medbay = 0.5 |
 | medbay | 0.1 | morgue | 0.5 | 200 | |
 | armory | (no table) | | | | |
 
+As built (2026-11-19, P5d): the lead's engineering row (chance 0.35, the
+fuel bunker) could not hold -- every engineering room starts at
+`[temps.hot_engineering]` (+40 game degrees, 60 C), above the larva's
+`T_lethal_hot` (50 C), so its brood died on the first tick (measured: 56 of
+60 on a medium infested ship). The nearest number that holds is no nest:
+the row is removed (cargo_hold's `with engineering` still reads the
+department's presence). A survivable engine room is Erik's call.
+
 Freighter weights: clean 0.25, nest 0.60, infested 0.15. A ship's total
-(at most 7 broods x 200 = 1 400) stays far under `[swarm.larva] max_units`
+(at most 6 broods x 200 = 1 200) stays far under `[swarm.larva] max_units`
 (8 192); the generator refuses a ship past it by name.
 
 ### Systems
