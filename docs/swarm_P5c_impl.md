@@ -205,4 +205,12 @@ Device (CUDA build, incremental, the check named):
 - `[zombie] hp` is 100, not the brief's 400 (above).
 - The pinned tests' fixtures that kill with a huge overkill (1e6, 10 000 HP)
   now destroy the corpse: any future test that wants a corpse to rise must
-  kill it within its body.
+  kill it within its body. Even a packet of exactly the remaining hp can
+  overshoot: the EXPOSURE scale (G4p) multiplies it (in the shooting check's
+  scene a 9 990 HP fixture kill landed as 12 192, destroying a 100 HP body),
+  so the device checks' fixture sets the hp to one point and lands a
+  one-point packet. In play the same holds by design: a unit under focus
+  fire takes its killing blow scaled, and the overkill wears its body.
+- A unit's hp may exceed its class's full health (fixtures, and any future
+  over-heal), but its body is always `body_factor x max_hp`: a 10 000 HP
+  fixture marine still has a 100 HP body.
