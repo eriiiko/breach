@@ -1292,6 +1292,49 @@ together with the P8 re-plan (P8b grew when rung 1 of #192 built the
 observation, the masks and the reward in host Python: that re-plan is with
 Erik).
 
+**P7e RE-CUT (2026-11-19; Erik: "seems like it can run without me").** Cut
+from a read-only inventory of main `92f2bf3f`,
+`docs/residency_p7e_inventory_2026-11-19.md` (the reference tick as a table,
+the twenty host seams H1 to H20 between device slots, the refusals, the
+swarm). What the inventory found that the row above did not say:
+
+- nothing in `src/` drives a device unit kernel today: every face is called
+  by the check scripts alone, at N = 1, re-staged from the host at each
+  chain's entry; no chain spans slots 6 / 6b / 7 or a tick boundary;
+- "the radiation planes" of the row are three dead planes that are only
+  cleared (delete them); the float `heat_atten` / `light_atten` have no
+  reader; `ignition_armed` and the flight plane are missing from the row;
+- the host latches are five, not two: the actions, the zombie request set,
+  the order table, the tick and draw keys, and the tile-change serial (which
+  device slots move inside the tick, so it becomes a device counter);
+- there is no device writer for the actions (only a whole-row pack), no
+  device sort, no device form of slot 9b, and the stamp's rows and refill
+  are host-built;
+- every face downloads its counts and raises on the host (about 30 syncs a
+  tick against the two the resident rule allows);
+- no recorded match is checked in, and a recording holds a checkpoint every
+  60 ticks: the gate records its own matches and compares every tick with a
+  host re-simulation beside it.
+
+P7e is therefore five patches, one implementer at a time, each gated at
+tolerance 0 against the reference:
+
+| Patch | Builds | Needs |
+|---|---|---|
+| P7e.1 planes and latches resident | the dead `rad_*` planes deleted; `sight_screen`, `ignition_armed`, `div_source` device buffers of the batch (the float atten planes dropped from the plane list if truly unread); the flight plane on the device; a per-env device TICK ROW (tick, draw key, tile-change count) read by every kernel in place of the per-launch arguments and the latch serial; 9c / 9c3 fed from the device claims list. Gate: every existing shadow and chained check unchanged with its inputs from the resident buffers; batch invariance | none |
+| P7e.2 the device sorts and 9b | the burn-through list sorted row-major on the device and fed to TOPOLOGY; a device form of 9b (the scan, the top-16 with the host's tie order, DESTROY_WALL records); the stamp's rows built from the unit store in the host stamp's row order, and its refill. Gate: shadows of 6 / 9 / 9b on fire, breach and walking scenes | P7e.1 |
+| P7e.3 the edit door, step (c) | the per-env stable sort `(field, source, region, seq)` on the device, the buffers K1 / K2 read, `pack_for_device`'s range checks as faults refused by name, `seq` reset at the 6b flush. Gate: K1 / K2 fed from device-built rows equal to the host pack every tick on the spray, payload, hazard and heat-source scenes; books equal | P7e.1 |
+| P7e.4 the conductor at N = 1 | the store, tables, lists, door and cache resident ACROSS ticks; one function walking the reference's order; a latch writer for the actions (a column scatter) and the order table; every face's counts deferred to ONE books read per tick, raised there by name, and a refused tick is refused, never compared. Gate: recorded `ship_demo` matches (`bots`, `bots_v1`, full length) and the hand scenes replayed, `(field_digest, tick_digest)` equal at every tick to a host re-simulation | P7e.1 to .3 |
+| P7e.5 the batch and the profile | N envs; profiler labels per sub-slot; the swarm's kernels in the same walk. Gate: env i of N equal to env i alone at every tick; the capture check (two named syncs) | P7e.4 |
+
+P7e.2 and P7e.3 are independent of each other and may run side by side.
+The three risks the implementers are told about: the actions latch (the
+replay's intents must be shown to touch latch columns only, or the gate
+diverges at tick 1); host-only side effects the reference reads later, some
+in no digest (the tile serial, the solid-books sink, the swarm's
+`high_water`, the claims dedupe); and ranges over a full-length match (the
+device gates ran 500 ticks, `bots` runs 2721).
+
 **What each patch must know** (the inventory's Parts B, D and F, checked by
 the critique):
 
