@@ -153,7 +153,88 @@ are in no fixed order: take them by motivation.
 - Imitation of human play: every hour played is already recorded as verbs.
 - Populations and leagues, if the rating shows strategies going in circles.
 
-## 4. Around the ladder
+## 3a. What each rung needs to be state of the art, and where the observation moves
+
+**PROPOSED 2026-11-19, for Erik to read and veto.** Written after the P8
+talk of the residency arc (#29). Erik, that day: he is "not comfortable at
+all" with freezing the observation; whether it moves to the graphics card
+"depends on how much it slows us down"; porting it "doesn't mean we can't add
+more stuff"; he wants "a new ladder of things to implement" to reach state of
+the art agents, with perhaps "a few stages where it makes sense to freeze
+observation for a while"; and a commander should probably have a fast
+observation by the time it trains.
+
+### What "state of the art" asks of us, rung by rung
+
+The left column is what the strongest published agents of the survey had at
+the matching stage. The right column is what we have or still owe.
+
+| rung | what the strong agents had | ours |
+|---|---|---|
+| 2 first light | a trainer proven on toy tasks; imitation as a start where rules-based play existed (survey B.6) | the trainer, its tasks and the copy are built (2a to 2e). Owed: the copy played in the game (2f), the range and the duel from reward |
+| 3 fireteam | random maps from the first serious run; a pool of past selves and scripted opponents; a rating on held-out maps; hundreds of millions of decisions | the level bank and the tournament exist. Owed: the opponent pool, the rating, and a farm fast enough (this is where speed first decides what we can try) |
+| 4 orders | goals as an input from the first network; obedience trained with relabelled goals (what the soldier did becomes the order it was given) | the order is game state and an input since rung 1. Owed: the three order sources, the following reward, the human's way to give orders |
+| 5 scale | billions of decisions; the simulation and the observation on the accelerator | the residency arc. Owed: P7e, P8 |
+| 6 commander | a slow network over a fast one, the lower one frozen at first; the upper one trained on very many whole matches | nothing built. Needs rung 5: a commander's one decision costs seconds of soldiers' play |
+| 7 unit classes | class as an input and a verb mask; specialists copied into one student | the class column and the masks are in spec v1 |
+| 8 senses | partial sight brought in gradually; sound as entries, not as audio | sight is a match setting already; noise is a game system. Owed: the inputs |
+| 9 other learners | leagues when strategies go in circles; human play as data | the recorder already stores every human verb |
+
+Three things the survey's strongest agents all had, which no single rung
+owns and which the plan must keep true throughout:
+
+- **Evaluation that can be trusted:** held-out ships and seeds, a fixed reference pool, and a number for behaviour beside the win rate (friendly fire, time to first shot, orders completed).
+- **Throughput matched to the question:** small tasks on the farm, long runs on the card. A design experiment needs a few days at most or it does not get run.
+- **Reproducible runs:** the training snapshot, the manifest and the replay of any training match (all built).
+
+### Where the observation changes
+
+The observation is made of four kinds of pieces: a list of things with
+columns; a crop of map planes around the soldier; a sight plane; a compass
+to a place. A change is cheap or dear depending on whether it needs a new
+kind of piece.
+
+| rung | expected change | new kind of piece? |
+|---|---|---|
+| 2, 3 | spec v1; columns added as the gameplay grows (poison, body temperature, stress, larvae as a new list type) | no |
+| 4 | the order becomes binding; perhaps a second compass | no |
+| 6 | the commander's own observation: the room graph with per-room counts, the team picture, the orders in force | yes, one small one (a graph) |
+| 7 | class columns, verb masks | no |
+| 8 | a cone, noises heard, smoke and light in the sight test | yes: this is the real work |
+
+### The plan for the fast observation
+
+1. **Measure first.** The observation's share of a training step on the host, small and medium ship (owed; taken when the Home Desktop is free). Below roughly a fifth of the step it stays on the host and P8b shrinks to the reward and the reset.
+2. **If it is worth it, port the pieces, not the spec.** The card gets the four pieces as functions and a table that says which columns and planes a spec is made of. Spec v1 is then data over those functions. A new column or plane is a table row; only a new kind of piece is new card code.
+3. **Two paths stay alive.** The host observation remains the reference (the card's is held equal to it, as every device twin is). A new idea runs on the host path first, on the farm, and moves to the card when it has earned it. Nothing is frozen; a new kind of sense is slower to train with for a while.
+4. **Calm stretches, not freezes.** The observation should hold still while something else is being compared: during rung 3's three experiments, during rung 4's obedience sweep, and while the commander trains over frozen soldiers. Those are the stages where a long card run pays most.
+5. **Before the commander at the latest** the soldiers' observation is on the card (Erik's point, agreed: the commander's own observation is cheap, the matches it learns from are not).
+6. **Card sizes.** The number of matches side by side and the size of the level bank scale with the card's memory (6, 8 and 12 GB on Erik's three PCs); P8a measures the memory per match so each PC gets a real number.
+
+### The player's seat
+
+Erik, 2026-11-19: "I'd like to be able to play as one of the soldiers being
+commanded by an AI commander or scripted orders, to explore gameplay where
+the player is only one of many soldiers. Could this be fit into the ladder?
+Perhaps it's at the very end?"
+
+It does not have to wait for the end. It is a track beside the ladder in
+three steps, and the first needs no learning at all:
+
+| step | the player is | team-mates | who gives the orders | waits for |
+|---|---|---|---|---|
+| S1 | one marine, direct control | the layered bots | the bots' team layer (it already writes orders, rung 1f) or a scripted list | nothing learned. Needs two game patches: a team whose units have different drivers (today a team has one controller), and the order shown to the player (the place, what to do there, how long) |
+| S2 | the same | learned soldiers | the same | rung 3 for the soldiers; rung 4 if they should also obey |
+| S3 | the same | learned soldiers | a learned commander, or a language model | rung 6 |
+
+What it gives back to the ladder:
+
+- **Rung 4** gets a human who is given orders and either follows them or does not: the best test of whether the order vocabulary says enough.
+- **Rung 9** gets recorded human play from inside a team, with the order each choice was made under: imitation data nobody else has.
+- **Rung 6** gets its real judge: whether being commanded by the network is fun and makes sense from a soldier's seat.
+
+S1 is gameplay and screen work, so it is Erik's to order; it is not started.
+
 
 - **The residency arc (#29).** It was set to wait for this design because its patch P3a fixes the definition of a unit's state. That definition is built to be extended (a new column changes no digest until a unit uses it), so P3a needs only rung 0's list of unit state, not the rungs after it. That list is the design document's section 9, which the critique widened: it now names the unit state the observation *reads* as well as what the design adds, since all of it must be a device column. **Erik, 2026-11-11: P3a restarts when rung 0 is agreed**, and runs beside rungs 1 and 2.
 - **C4.** Erik's separate patch, landed 2026-11-11 as #193 (`plant_charge_intent`; the design document's sections 2, 3, 4 and 9 are written against it). The agent side needed three things from it, all now there: the verb in the verb table (its action column then follows by itself); a planted charge listed where the observation can read it (where, whose, ticks left); the count carried and the planting in progress as unit state.
