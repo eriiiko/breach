@@ -12,7 +12,7 @@ FRAG: a marine's corpse in the nursery (no larvae on it), a frag
 (``frag_standard``) detonated on the tile beside its footprint: its integrity
 and its hit points before and after, and the frag's hits on the corpse.
 
-    python docs/swarm_P5b_measure.py [limit seconds (default 120)]
+    python docs/swarm_P5b_measure.py [limit seconds (default 120)] [warm-up seconds]
 """
 import sys
 from pathlib import Path
@@ -49,8 +49,11 @@ def _corpse(sim, name, x, y, team):
     return u
 
 
-def rise(seed, limit_s):
+def rise(seed, limit_s, warm_s=0):
     sim = _sim(seed)
+    for _ in range(warm_s * TPS):          # let the broods spread first
+        sim.set_paused(False)
+        sim.step()
     corpses = {"marine": _corpse(sim, "KM", 12, 16, 0),     # brood_west (9..17)
                "zombie": _corpse(sim, "KZ", 23, 16, 255)}  # brood_east (20..28)
     out = {k: [None, 0] for k in corpses}
@@ -77,7 +80,7 @@ def frag(seed):
     u = _corpse(sim, "KF", 7, 25, 0)                    # nursery, south-west, no brood
     sim.set_paused(False)
     sim.step()
-    row = sim.weapons_tables.payloads["frag_standard"]
+    row = sim.weapons_tables.payloads.by_name["frag_standard"]
     before = (int(u.corpse_integrity_q), int(u.hp_q))
     events = []
     execute_payload(sim.gmap, sim.edit_queue, sim.units, 26, 10, row, sim.draws,
@@ -92,8 +95,10 @@ def frag(seed):
 
 def main():
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 120
+    warm = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    print(f"broods spread for {warm} s before the deaths")
     for seed in range(1, 6):
-        r = rise(seed, limit)
+        r = rise(seed, limit, warm)
         print(f"seed {seed}: " + "; ".join(
             f"{k} corpse rose at {v[0] if v[0] is None else round(v[0], 2)} s "
             f"(mean {v[1]:.1f} larvae under it)" for k, v in r.items()))

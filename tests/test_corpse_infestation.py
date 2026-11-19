@@ -413,6 +413,23 @@ def test_death_sets_the_corpse_and_both_columns_hash_only_when_moved():
     assert m.infest_q > 0 and "infest_q" in unit_schema.digest_record(m)
 
 
+def test_a_packet_on_a_corpse_leaves_its_integrity_whole():
+    """Property (P5b's accepted gap, docs/swarm_P5b_impl.md): a packet that
+    lands on a corpse (an attack slot's or the zombie slot's, decided while it
+    lived) still writes the hp exactly as before the corpse law, and the
+    integrity stays at its default -- so main's pinned matches keep their
+    unit streams. Breaks if a patch routes corpse damage to the integrity
+    (five pinned matches move: that patch re-pins with Erik's approval and
+    replaces this test)."""
+    sim = _sim()
+    m = _marine(sim)
+    _kill(m)
+    hp0, full = m.hp_q, corpse.full_integrity_q()
+    apply_packet(m, DamagePacket(amount=34.0, dtype=KINETIC, attacker_id=7), None,
+                 source="melee")
+    assert m.hp_q == hp0 - 34 * ONE and m.corpse_integrity_q == full
+
+
 def test_the_conversion_door_trigger():
     """Property: THE door's trigger is (a non-zombie a zombie killed) OR (an
     infested corpse at the threshold), never a destroyed corpse, never a

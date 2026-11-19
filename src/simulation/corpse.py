@@ -25,11 +25,13 @@ before):
 - ``corpse_integrity_q`` -- what is left of the body, in Q16 hit points
   (default, and set at every death: ``[corpse] integrity``). At or below 0 the
   corpse is DESTROYED for rising: its level is held at 0 and it never converts
-  by either trigger. ACCEPTED GAP (docs/swarm_P5b_impl.md, the census): no
-  damage path lowers it yet -- the one path that reaches a corpse today (an
-  attack slot's or the zombie slot's packet decided against its start state,
-  landing after an earlier one killed) would move a pinned match, and the
-  patch that routes it is the lead's call.
+  by either trigger. ACCEPTED GAP (docs/swarm_P5b_impl.md, the census): NO
+  damage lowers it yet. Blasts, the heat row, statuses and poison stop at
+  death (``alive`` gates), so a frag beside a corpse leaves it whole; the one
+  reach to a corpse today (an attack slot's or the zombie slot's packet
+  decided against its start state, landing after an earlier one killed)
+  still writes the hp, because routing it to the integrity moves five of
+  main's pinned matches (their unit streams) and no re-pin is approved.
 
 RISING: :func:`rises` is the conversion door's second trigger
 (``ai_zombie.convert_marines_to_zombies``, the ONE conversion path): a dead
