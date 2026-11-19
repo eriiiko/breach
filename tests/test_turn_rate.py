@@ -407,8 +407,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was ef60a0ea6e438cde1e00f80bed76ec1686d9ea7babea1070db5b395967935bc6)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was a1b321c222d20602c11f030502d3ce5211ecb40a5838a1a363dfc7d6fd8b6b49)
-    tick_digest="dce8088ada0e51ca89a4c74c9534d33e"
-                "080e31aba1c867b2ceec945df3baf59e",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was dce8088ada0e51ca89a4c74c9534d33e080e31aba1c867b2ceec945df3baf59e)
+    tick_digest="3a2c38a704a86475a330deea5b67d844"
+                "fa0fd9a08fbc5d7194904996fd1502b9",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -445,8 +452,15 @@ _PRE_G1P_SHIP_DEMO = dict(
     # (was ef36d0c528f1d6b28e4c8c97a65ec9d75974f9864e4c4571e5c1181b743095c0)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 437379b562166943fb36a552afc7c2ed51696a358f1f6678ca056683e9adb102)
-    unit_stream="5f261ffa1c9747162d867e355142e782"
-                "2e9cda9fa2667db1d1d815b8fe760a60")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 5f261ffa1c9747162d867e355142e7822e9cda9fa2667db1d1d815b8fe760a60)
+    unit_stream="72f6096e65126965a045eb366543426d"
+                "38be43c20e97328427e14811e9a1aa1f")
 
 
 def test_at_half_a_turn_per_tick_the_pinned_match_is_the_pre_g1p_match(

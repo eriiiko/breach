@@ -652,8 +652,15 @@ _PRE_122_SHIP_DEMO = dict(
     # (was dd6fa61812db62e6dfea7c4e8993370e5ca59789f78edbd7b7f2411bb3b127b0)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was e1a9413a03e8ab185ea66652f3d467549533a3a34bfd68ad93ee1392fb76a0cb)
-    tick_digest="8c843ee3d5265a81032ca2e385b16e55"
-                "3ee75069e227add9540b7e9aa99691f1",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 8c843ee3d5265a81032ca2e385b16e553ee75069e227add9540b7e9aa99691f1)
+    tick_digest="d2bce7ac03dfc6a7b639dfe9a5698b0f"
+                "0431cfd5f420495f3c7f110b39e241a7",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -692,8 +699,15 @@ _PRE_122_SHIP_DEMO = dict(
     # (was d30d0069d9a3468be072ce0799cbf1e5fcdee98b774668c9fe4eda227343be64)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 8548eb1e2f94f9a501953615e24ad7bdb23d2922f7a11d8c03d5389540595eae)
-    unit_stream="19d7b859211b87fe87e09877117da171"
-                "e004f20568648272ac3d4e13422e308a")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 19d7b859211b87fe87e09877117da171e004f20568648272ac3d4e13422e308a)
+    unit_stream="c8f95fe2bd270d135fe97bad20193ada"
+                "07f85f1040782b8ceda2c171faa33c31")
 
 
 def test_the_controller_plays_the_pinned_match_on_a_small_box(tmp_path):

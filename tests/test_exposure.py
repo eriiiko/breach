@@ -678,8 +678,15 @@ _PRE_G4P_SHIP_DEMO = dict(
     # (was 58fd01b50f17f712913ba0148507e426a752b5e4a3d5a174565021aa54547c8e)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was e5088875870e5a411959b878a9fa7e8269e21f6fbe4f8c7eedd792ab5f82b502)
-    tick_digest="2ee6ba63a8b97cf03823407e05db64f6"
-                "8e27a05f21488b25910b71478e6c6623",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 2ee6ba63a8b97cf03823407e05db64f68e27a05f21488b25910b71478e6c6623)
+    tick_digest="301094e0b5c7f90b4369d7cd3bec557d"
+                "085913d58608b69ed513e796d04eab6d",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -716,8 +723,15 @@ _PRE_G4P_SHIP_DEMO = dict(
     # (was 2519f4e1da0cb281ce420bbfeb05b9ca12706e833f165909b4aee49663e3f9c5)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 7e53f712231587584210101e2ad8dbefeb56e295a6773628998a4d720490ae85)
-    unit_stream="2344d22f77de82c52afa70dd8833f784"
-                "310a2c34071c5329b9d786bd90b9588f")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 2344d22f77de82c52afa70dd8833f784310a2c34071c5329b9d786bd90b9588f)
+    unit_stream="e3fc1ecb5b9f1fa9c4370d438ccced5c"
+                "c93802fc4fbfa0e65a411985b0ccdb3a")
 
 
 def test_with_the_law_dormant_the_pinned_match_is_the_pre_g4p_match(
