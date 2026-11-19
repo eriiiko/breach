@@ -47,9 +47,13 @@ def _trainer(task_cls=NoisyTask, memory=True, seed=0, **kw):
 #: version decide the bits). On another machine the test is skipped, naming
 #: how to make its key: check out main's ``agents/`` as it was, run
 #: ``_no_memory_run()`` there, add the line.
+#: Re-made ONCE when the swarm arc (#63) reached main: the ``larva_bite``
+#: cause grew the ``hit_cause`` rows from 10 to 11, which moves the fresh
+#: weights and nothing else (with the cause table held at its first ten
+#: rows the run gives the old key, ``424deb3f...45cef``, bit for bit).
 NO_MEMORY_REFERENCE = {
     ("2.15.0+cu132", "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD"):
-        "424deb3f220135027a8f6e666ecef8a87eaf2b4b9708cd45d15292c049c45cef",
+        "a7b1def18f4963832f19c29e30f8067c8cb32ecf546ae55ff787e5f7c58ebfeb",
 }
 
 
