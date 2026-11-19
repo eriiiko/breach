@@ -1530,9 +1530,11 @@ LEVELGEN_INPUT_KEYS = ("archetype", "recipe_hash", "generator_version", "size",
 #: ``secrets`` and ``spawn_exits`` count the QUOTIENT (one wing + the axis
 #: band: the recipe's own units); ``cells``, ``rooms`` and
 #: ``spawn_distance`` the whole ship, as the ``[validation]`` gates do.
+#: ``infestation`` and ``broods`` (vocabulary Part G, arc #63 P5d): the
+#: ship's brood state and the departments hosting a brood (archetype order).
 LEVELGEN_REALISED_KEYS = ("g", "a", "departments", "cycles", "cells",
                           "secrets", "spawn_exits", "zombies", "rooms",
-                          "spawn_distance")
+                          "spawn_distance", "infestation", "broods")
 LEVELGEN_KEYS = LEVELGEN_INPUT_KEYS + LEVELGEN_REALISED_KEYS
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -1569,6 +1571,8 @@ class LevelgenRecord:
     zombies: int
     rooms: int
     spawn_distance: int
+    infestation: str
+    broods: tuple
 
     def as_dict(self) -> dict:
         """Key -> value in file order (``LEVELGEN_KEYS``)."""
@@ -1622,6 +1626,12 @@ def parse_levelgen(tbl, where: str) -> LevelgenRecord:
                          f"cycle type = applications (got {cyc!r})")
     cycles = {str(k): count("cycles", v, f"cycles.{k}")
               for k, v in cyc.items()}
+    broods = tbl["broods"]
+    if (not isinstance(broods, (list, tuple))
+            or not all(isinstance(d, str) and d in depts for d in broods)):
+        raise ValueError(f"[levelgen].broods in {where} must be a list of "
+                         f"department names of [levelgen].departments (got "
+                         f"{broods!r})")
     return LevelgenRecord(
         archetype=text("archetype"), recipe_hash=rh,
         generator_version=text("generator_version"), size=text("size"),
@@ -1630,7 +1640,8 @@ def parse_levelgen(tbl, where: str) -> LevelgenRecord:
         g=count("g"), a=count("a"), departments=tuple(depts), cycles=cycles,
         cells=count("cells"), secrets=count("secrets"),
         spawn_exits=count("spawn_exits"), zombies=count("zombies"),
-        rooms=count("rooms"), spawn_distance=count("spawn_distance"))
+        rooms=count("rooms"), spawn_distance=count("spawn_distance"),
+        infestation=text("infestation"), broods=tuple(broods))
 
 
 def _parse_levelgen(raw: dict, toml_path) -> Optional[LevelgenRecord]:

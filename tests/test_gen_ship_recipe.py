@@ -115,13 +115,16 @@ def test_the_archetypes_gates_refuse_by_name(arch, plans):
 
 
 def test_a_recipe_ship_is_a_function_of_its_two_streams(arch, plans):
-    """PROPERTY (archetype doc §2, determinism): the plan is reproduced
-    exactly from the two documented streams -- the quotient graph from
-    grammar attempt ``g`` (``SeedSequence([seed, 0, g])``), the layout AND
-    stage 2 from ``SeedSequence([seed, 1, g, a])`` -- so the same request
-    gives the same tilemap, entities and wires, and other seeds give other
-    ships. BREAKS IF a draw moves to another stream, the layout and embed
-    stop sharing one generator, or a set / dict order leaks into a draw."""
+    """PROPERTY (archetype doc §2, determinism; vocabulary Part G): the plan
+    is reproduced exactly from the documented streams -- the quotient graph
+    from grammar attempt ``g`` (``SeedSequence([seed, 0, g])``), the layout
+    AND stage 2 from ``SeedSequence([seed, 1, g, a])``, and the broods from
+    their own ``SeedSequence([seed, 2])`` applied to the laid-out graph -- so
+    the same request gives the same tilemap, entities and wires, and other
+    seeds give other ships. BREAKS IF a draw moves to another stream, the
+    layout and embed stop sharing one generator, or a set / dict order leaks
+    into a draw."""
+    import ship_broods as B
     maps = {}
     for (size, prof, seed), plan in plans.items():
         q = S.grammar_attempt(arch, size, prof, seed, plan.g, zombies=4)
@@ -129,7 +132,10 @@ def test_a_recipe_ship_is_a_function_of_its_two_streams(arch, plans):
         rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence(
             [seed, 1, plan.g, plan.attempt])))
         lay = L.layout(q, rng)
-        emb = G.embed(lay.graph, rng)
+        inf = B.draw(arch, seed)
+        hosting = B.hosts(arch, inf, [d.name for d in q.departments])
+        emb = G.embed(B.apply(lay.graph, q, lay.ids, arch, inf.state,
+                              hosting), rng)
         assert np.array_equal(emb.tilemap, plan.tilemap), (size, prof, seed)
         assert [(e.id, e.class_name, e.fields) for e in emb.entities] == \
             [(e.id, e.class_name, e.fields) for e in plan.entities]

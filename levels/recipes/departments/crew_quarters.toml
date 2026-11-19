@@ -101,3 +101,16 @@ weight = 1                      # a weight in the SHIP's secret draw (the archet
 [physics]
 temp = "ambient"                # a [temps.*] preset or "ambient"; resolves to the temp tag (temp_init.npy EXISTS)
 pressure = "ambient"            # a [pressures.*] preset or "ambient"; resolves per room into air_init.npy (EXISTS: pressure only)
+
+# Vocabulary Part G (arc #63 P5d, 2026-11-19): where larvae nest. chance =
+# the probability this department hosts on a `nest` ship (every one of its
+# instances, both wings); rooms = the recipe rooms that may host (the
+# largest on the ship takes it); density = larvae per free floor tile; max =
+# the cap per brood; with = chance multipliers by other departments on the
+# ship. PLACEHOLDER numbers, Erik tunes.
+[brood]
+chance = 0.15
+rooms = ["bunk", "laundry"]
+density = 0.5
+max = 200
+with = { medbay = 0.5 }        # a medbay on board keeps the quarters clean

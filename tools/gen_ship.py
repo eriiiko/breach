@@ -429,6 +429,15 @@ def _check_heat_source(v) -> bool:
             and isinstance(v["death_payload"], str))
 
 
+def _check_brood(v) -> bool:
+    """``{"species": str, "density": > 0, "max": int >= 1}`` (vocabulary
+    Part G: written by ``ship_broods.apply`` only)."""
+    return (isinstance(v, dict) and set(v) == {"species", "density", "max"}
+            and isinstance(v["species"], str) and v["species"] != ""
+            and _is_num(v["density"]) and v["density"] > 0
+            and _is_int(v["max"]) and v["max"] >= 1)
+
+
 def vent_spec(tag):
     """A single-duct ``vent`` tag as ``(duct, roles, shorthand)``: roles in
     :data:`VENT_ROLES` order; ``shorthand`` True for v1's string form (on
@@ -690,6 +699,11 @@ ROOM_TAGS = {
                    "cut into the room's HULL wall, centred on its longest "
                    "hull run -- the cargo hold's door to space, a valve the "
                    "level or a wire opens (B.4)", _check_hull_door),
+    "brood":      ('{"species": a swarm species, "density": larvae per free '
+                   'floor tile > 0, "max": int >= 1}: one swarm_brood zone '
+                   "entity over the room's floor (vocabulary Part G; written "
+                   "only by tools/ship_broods.py, never on a spawn, zombie, "
+                   "secret or skeleton room)", _check_brood),
 }
 # The tags carried into Embedding.room_tags (the rest are stage 2's inputs).
 ANNOTATION_TAGS = ("dept", "role", "cell", "secret", "light")
@@ -1543,6 +1557,9 @@ class Embedding:
     # temp_init.npy's grid (int32 Q16.16 game degrees above ambient) from the
     # ``temp`` tags, or None when no room is tagged (no file is written).
     temp_init: np.ndarray | None = None
+    # zones.npy's grid (uint8 paint ids) of the ``brood`` rooms' zones, or
+    # None when no room carries one (no file is written; vocabulary Part G).
+    zones: np.ndarray | None = None
 
 
 def _reflect(box, w):
@@ -2120,8 +2137,6 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         vent_res[ent.fields["y"], ent.fields["x"]] = True
     ents = (ents + door_ents + hazards
             + _build_heat_sources(tm, graph, passage, reserved | vent_res))
-    for k, ent in enumerate(ents):
-        ent.ordinal = k                            # file order (A3 §3a)
     by_team = {rm.tags["spawn_team"]: rm for rm in graph.rooms
                if "spawn_team" in rm.tags}
     rooms = [SpawnRoom(team=t, x=by_team[t].x, y=by_team[t].y, w=by_team[t].w,
@@ -2131,6 +2146,10 @@ def embed(graph: ShipGraph, rng) -> Embedding:
         z = next(rm for rm in graph.rooms if rm.tags.get("zombie"))
         rooms.append(SpawnRoom(team=ZOMBIE_TEAM, x=z.x, y=z.y, w=z.w, h=z.h,
                                max_per_team=graph.zombies))
+    brood_ents, zones = _build_broods(tm, graph, rooms)
+    ents += brood_ents
+    for k, ent in enumerate(ents):
+        ent.ordinal = k                            # file order (A3 §3a)
     fuel = int(np.isin(tm, fuel_materials()).sum())
     lights = _ship_lamps(graph)
     comp = graph.compartment_of()
@@ -2142,7 +2161,78 @@ def embed(graph: ShipGraph, rng) -> Embedding:
                      lights=lights, doors=doors, windows=windows,
                      fuel_tiles=fuel, room_tags=room_tags,
                      edges_by_kind=by_kind, wires=wires,
-                     temp_init=_build_temp_init(tm, graph))
+                     temp_init=_build_temp_init(tm, graph), zones=zones)
+
+
+#: The id prefix of a generated brood (``brood_r<room id>``).
+BROOD_PREFIX = "brood_r"
+_BROOD_KEYS = ("zone_id", "species", "count")
+
+
+def brood_count(density: float, cap: int, free: int) -> int:
+    """A brood's larvae: ``density`` per free floor tile, floored, at least
+    1, at most ``cap`` (vocabulary Part G.1)."""
+    return int(min(cap, max(1, math.floor(density * free))))
+
+
+def _build_broods(tm, graph: ShipGraph, spawn_rooms) -> tuple:
+    """The ``brood`` rooms as ``swarm_brood`` zone entities, ``(entities,
+    zone grid | None)``: room by room in id order, zone ids 1, 2, ...; each
+    zone is the room's rectangle less its carved vestibule tiles and every
+    spawn box, its count :func:`brood_count` over the zone's free (non-solid)
+    tiles. REFUSED by name (ValueError, never a retry): a brood on a spawn,
+    zombie, secret or skeleton (department-less) room, a zone with no free
+    tile, more zones than the paint ids hold, and a ship total past the
+    larva store's ``max_units`` (vocabulary Part G.2)."""
+    tagged = [rm for rm in graph.rooms if "brood" in rm.tags]
+    if not tagged:
+        return [], None
+    from levelgen_recipes import _brood_capacity
+    from simulation.entities.zones import ZONE_ID_MAX
+    _mat, _vac, solid, _walk = _masks(tm)
+    carved = _carved(graph)
+    banned = np.zeros(tm.shape, dtype=bool)
+    for r in spawn_rooms:
+        banned[r.y:r.y + r.h, r.x:r.x + r.w] = True
+    for tiles in carved.values():
+        for (y, x) in tiles:
+            banned[y, x] = True
+    if len(tagged) > ZONE_ID_MAX:
+        raise ValueError(f"{len(tagged)} broods: more than the {ZONE_ID_MAX} "
+                         f"zone paint ids")
+    zones = np.zeros(tm.shape, dtype=np.uint8)
+    ents, total = [], 0
+    for k, rm in enumerate(tagged, start=1):
+        t = rm.tags
+        why = ("a spawn room" if "spawn_team" in t or rm.kind == "spawn" else
+               "the zombies' room" if t.get("zombie") else
+               "a secret room" if t.get("secret") else
+               "a skeleton room (no department)" if not t.get("dept") else
+               None)
+        if why:
+            raise ValueError(f"room {rm.id} ({t.get('role')}): a brood is "
+                             f"never in {why}")
+        x0, y0, x1, y1 = rm.box
+        mask = np.zeros(tm.shape, dtype=bool)
+        mask[y0:y1 + 1, x0:x1 + 1] = True
+        mask &= ~banned
+        free = int((mask & ~solid).sum())
+        if free == 0:
+            raise ValueError(f"room {rm.id} ({t.get('role')}): its brood "
+                             f"zone has no free floor tile")
+        zones[mask] = k
+        b = t["brood"]
+        count = brood_count(b["density"], b["max"], free)
+        total += count
+        ents.append(EntityInstance(
+            id=f"{BROOD_PREFIX}{rm.id}", class_name="swarm_brood", ordinal=0,
+            fields={"zone_id": k, "species": b["species"], "count": count},
+            authored_keys=_BROOD_KEYS))
+    cap = _brood_capacity()
+    if total > cap:
+        raise ValueError(f"the ship's broods ask {total} larvae, past the "
+                         f"store's {cap} ([swarm.larva] max_units)")
+    return ents, zones
 
 
 def lamp_shapes() -> dict:
@@ -2675,6 +2765,10 @@ class ShipPlan:
     quotient: object | None = None    # ship_grammar.QuotientGraph
     room_ids: dict = field(default_factory=dict)   # quotient id -> (id, twin)
     zombies_base: int | None = None   # the request, before the profile's scale
+    # vocabulary Part G (arc #63 P5d): the ship's brood state and the
+    # departments hosting a brood (archetype order); None on a v1 ship
+    infestation: str | None = None
+    broods: tuple = ()
 
     @property
     def name(self) -> str:
@@ -2768,6 +2862,7 @@ def _generate_recipe(seed: int, size: str, recipe, profile: str,
     grammar attempt ``g + 1``; when the grammar's ``G_MAX`` attempts are
     spent: :class:`ShipGenError`. The plan records ``(g, a)``; ``rejected``
     holds ``((g, a), reasons)`` per layout attempt that failed."""
+    import ship_broods
     import ship_grammar
     import ship_layout
     if vents:
@@ -2776,6 +2871,7 @@ def _generate_recipe(seed: int, size: str, recipe, profile: str,
     arch = (recipe if isinstance(recipe, ship_grammar.Archetype)
             else ship_grammar.load_archetype(recipe))
     ship_layout.check_request(arch, size, profile, max_per_team, zombies)
+    inf = ship_broods.draw(arch, int(seed))   # its own stream: moves no draw
     rejected, g = [], 0
     while True:
         try:
@@ -2789,27 +2885,32 @@ def _generate_recipe(seed: int, size: str, recipe, profile: str,
                 f"size {size!r}: no plan passed the gates in "
                 f"{ship_grammar.G_MAX} grammar x {MAX_ATTEMPTS} layout "
                 f"attempts; last: {last}") from None
+        hosting = ship_broods.hosts(arch, inf,
+                                    [d.name for d in q.departments])
         for a in range(MAX_ATTEMPTS):
             rng = np.random.Generator(np.random.PCG64(
                 np.random.SeedSequence([int(seed), 1, q.g, a])))
             try:
                 lay = ship_layout.layout(q, rng)
-                emb = embed(lay.graph, rng)
+                graph = ship_broods.apply(lay.graph, q, lay.ids, arch,
+                                          inf.state, hosting)
+                emb = embed(graph, rng)
                 emb.spawn_rooms = [centred_spawn_box(r)
                                    for r in emb.spawn_rooms]
             except _Reject as e:
                 rejected.append(((q.g, a), [str(e)]))
                 continue
             reasons = validate(emb.tilemap, emb.spawn_rooms, mirrored=True,
-                               graph=lay.graph)
+                               graph=graph)
             if not reasons:
-                reasons = ship_layout.acceptance(arch, q, lay.graph, emb)
+                reasons = ship_layout.acceptance(arch, q, graph, emb)
             if not reasons:
                 return ShipPlan(
-                    seed=int(seed), size=size, attempt=a, graph=lay.graph,
+                    seed=int(seed), size=size, attempt=a, graph=graph,
                     embedding=emb, rejected=rejected, recipe=arch.name,
                     profile=profile, g=q.g, recipe_hash=q.recipe_hash,
-                    quotient=q, room_ids=lay.ids, zombies_base=zombies)
+                    quotient=q, room_ids=lay.ids, zombies_base=zombies,
+                    infestation=inf.state, broods=hosting)
             rejected.append(((q.g, a), reasons))
         g = q.g + 1
 
@@ -2863,7 +2964,8 @@ def levelgen_record(plan: ShipPlan, version: str | None = None):
         cycles=cycles,
         cells=len({rm.tags.get("cell") for rm in plan.graph.rooms}),
         secrets=len(q.secrets), spawn_exits=q.exits, zombies=plan.zombies,
-        rooms=len(plan.graph.rooms), spawn_distance=max(0, len(path) - 1))
+        rooms=len(plan.graph.rooms), spawn_distance=max(0, len(path) - 1),
+        infestation=plan.infestation, broods=tuple(plan.broods))
 
 
 def generate_from_spec(spec, *, allow_stale: bool = False) -> ShipPlan:
@@ -3023,7 +3125,8 @@ DATA_FILES = ("level.toml", "tilemap.csv", "diffuse.png", "match.toml",
               level_lib.ROOMS_FILENAME)
 # Written only when the plan needs them (``temp_init.npy``: a ``temp`` tag);
 # cleared on every regenerate like DATA_FILES, so a stale one never survives.
-OPTIONAL_DATA_FILES = (level_lib.TEMP_INIT_FILENAME,)
+OPTIONAL_DATA_FILES = (level_lib.TEMP_INIT_FILENAME,
+                       level_lib.ZONES_FILENAME)   # zones.npy: a brood's zone
 
 
 def write(plan: ShipPlan, out_dir, *, version: str | None = None) -> Path:
@@ -3063,6 +3166,9 @@ def write(plan: ShipPlan, out_dir, *, version: str | None = None) -> Path:
             f"{plan.profile}, seed {plan.seed}, size {plan.size} ({w}x{h}),",
             f"grammar attempt {plan.g}, layout attempt {plan.attempt}, "
             f"recipe hash {plan.recipe_hash}.",
+            f"Infestation {plan.infestation}"
+            + (f": broods in {', '.join(plan.broods)}." if plan.broods
+               else "."),
             "Regenerate rather than hand-edit (or --from-level <this folder>,",
             "which reads [levelgen] below):",
             f"  C:/Users/steen/anaconda3/python.exe tools/gen_ship.py --seed "
@@ -3105,6 +3211,9 @@ def write(plan: ShipPlan, out_dir, *, version: str | None = None) -> Path:
     if plan.embedding.temp_init is not None:
         level_lib.write_temp_init_npy(out_dir, plan.embedding.temp_init,
                                       npy_bak=False)
+    if plan.embedding.zones is not None:
+        level_lib.write_zones_npy(out_dir, plan.embedding.zones,
+                                  npy_bak=False)
     return out_dir
 
 
