@@ -5017,6 +5017,28 @@ heart_half_stress = 50.0
 # in exact rationals once at load: the sim path has no powers and no floats).
 heart_hill_n = 2
 
+# [corpse] -- THE CORPSE LAW (arc #63 P5b; src/simulation/corpse.py,
+# docs/swarm_P5b_impl.md; Erik's rulings of 2026-11-14). A dead unit holds an
+# INFESTATION LEVEL raised by the swarm units standing on its footprint (the
+# swarm's per-tile count plane) and decaying by a fraction of itself:
+#   level += infest_rate x n x dt - infest_decay x level x dt
+# At infest_threshold the corpse RISES through the one conversion door (any
+# corpse, a zombie's included, any number of times); the level resets to 0.
+# A corpse whose INTEGRITY is gone never rises. Construction-bound; each value
+# quantized once. Every number is the lead's first value ("it should matter"),
+# Erik's to tune. At these values one larva settles at 0.4 and never raises a
+# corpse, three settle at 1.2 and raise it in about half a minute, ten in
+# about six seconds (measured in docs/swarm_P5b_impl.md).
+[corpse]
+# infest_rate -- level one swarm unit on the footprint adds per second.
+infest_rate = 0.02
+# infest_decay -- the level's first-order decay, per second (half-life ~14 s).
+infest_decay = 0.05
+# infest_threshold -- the level at which the corpse rises.
+infest_threshold = 1.0
+# integrity -- hit points a fresh corpse holds; at 0 it can never rise.
+integrity = 200.0
+
 [zombie]
 # A TURNED marine's hit points (a spawned zombie has the human vitality, 100).
 # Erik, 2026-11-12 (the zombie bite balance, docs/zombie_bite_balance_2026-11-12.md):

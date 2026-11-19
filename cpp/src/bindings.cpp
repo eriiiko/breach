@@ -1028,19 +1028,21 @@ PYBIND11_MODULE(breach_physics, m) {
               [claims_of](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
                           std::uintptr_t gas, int n_gases, int h, int w,
                           py::array_t<int64_t, py::array::c_style> claims,
-                          std::uintptr_t bite) {
+                          std::uintptr_t bite, std::uintptr_t count) {
                   const int nc = claims_of(s, claims, "unit_gas_rows");
                   breach_cuda::UnitDamagePlanes p;
                   p.gas = gas; p.n_gases = n_gases; p.h = h; p.w = w;
                   p.bite = bite;
+                  p.count = count;
                   Cnt4 c(s.n_env());
                   breach_cuda::unit_gas_rows(s, t, ring, p, claims.data(), nc, c.view());
                   return c.out();
               }, py::arg("store"), py::arg("tables"), py::arg("ring"), py::arg("gas"),
               py::arg("n_gases"), py::arg("h"), py::arg("w"), py::arg("claims"),
-              py::arg("bite"),
+              py::arg("bite"), py::arg("count"),
               "#29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, arc #63 P5a's "
-              "apply_bite_dose, poison.tick) on the device store.");
+              "apply_bite_dose, P5b's apply_corpse_infestation, poison.tick) on the device "
+              "store.");
         m.def("unit_damage_probe",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitEventRing& ring,
                  py::array_t<int64_t, py::array::c_style> packets) {
@@ -5695,7 +5697,7 @@ PYBIND11_MODULE(breach_physics, m) {
         // arguments). packs: one per registry species, in registry order.
         .def("step_swarm", [](const PhysicsEngine& self, py::sequence packs,
                               py::object temperature, py::object solid, py::object env,
-                              py::dict host_dirty, py::object bite) {
+                              py::dict host_dirty, py::object bite, py::object count) {
             if ((int)py::len(packs) != swarm::N_SPECIES_LAWS)
                 throw py::value_error("step_swarm: one pack per swarm species, registry order");
             const py::ssize_t h = swarm_dim(temperature, "step_swarm temperature", 1, 3);
@@ -5709,6 +5711,9 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::dtype::of<uint32_t>(), {n_env, swarm::ENV_WORDS}, false));
             // arc #63 P5a: the bite plane (n_env, h, w) int32, written in place.
             int32_t* bt = static_cast<int32_t*>(swarm_arr(bite, "step_swarm bite",
+                py::dtype::of<int32_t>(), {n_env, h, w}, true));
+            // arc #63 P5b: the count plane (n_env, h, w) int32, written in place.
+            int32_t* ct = static_cast<int32_t*>(swarm_arr(count, "step_swarm count",
                 py::dtype::of<int32_t>(), {n_env, h, w}, true));
             std::vector<swarm::SpeciesStep> steps((size_t)swarm::N_SPECIES_LAWS);
             std::vector<uint8_t> dirty((size_t)swarm::N_SPECIES_LAWS, 0);
@@ -5738,13 +5743,14 @@ PYBIND11_MODULE(breach_physics, m) {
                 sp.host_dirty = &dirty[(size_t)i];
             }
             std::vector<int32_t> rows = self.step_swarm(steps, T, sol, (int)h, (int)w, ev,
-                                                        (int)n_env, bt);
+                                                        (int)n_env, bt, ct);
             for (int i = 0; i < swarm::N_SPECIES_LAWS; ++i)
                 host_dirty[swarm::SPECIES_LAWS[i].name] = py::bool_(dirty[(size_t)i] != 0);
             return swarm_rows_array(rows);
         }, py::arg("packs"), py::arg("temperature"), py::arg("solid"), py::arg("env"),
-           py::arg("host_dirty"), py::arg("bite"),
-           "arc #63 P3: the host-path swarm step (P5a: rebuilds the bite plane); returns the death rows "
+           py::arg("host_dirty"), py::arg("bite"), py::arg("count"),
+           "arc #63 P3: the host-path swarm step (P5a / P5b: rebuilds the bite and count planes); "
+           "returns the death rows "
            "(n, ROW_WORDS) int32 in (species, env, slot) order ((0, ROW_WORDS) when "
            "dormant), and sets host_dirty[sp] after a launch.")
         .def("step_tail", [](const PhysicsEngine& self,
@@ -6481,6 +6487,10 @@ PYBIND11_MODULE(breach_physics, m) {
             a.swarm_bite = sw["bite"].cast<std::uintptr_t>();
             if (a.swarm_bite == 0)
                 throw py::value_error("step_tail_resident swarm: the bite plane's address is required");
+            // arc #63 P5b: the device count plane's address (the batch's buffer).
+            a.swarm_count = sw["count"].cast<std::uintptr_t>();
+            if (a.swarm_count == 0)
+                throw py::value_error("step_tail_resident swarm: the count plane's address is required");
             std::vector<std::vector<int32_t>> rows;
             a.swarm_rows = &rows;
             auto destroyed = self.step_tail_resident(f, a, resident_engines_from(engines));

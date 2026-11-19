@@ -46,6 +46,7 @@ from simulation import noise as _noise
 from simulation import poison as _poison
 from simulation import stress as _stress
 from simulation import body_temp as _body_temp
+from simulation import corpse as _corpse
 from simulation import turning as _turning
 from simulation import unit_impulse as _unit_impulse
 from simulation import unit_orders as _unit_orders
@@ -414,18 +415,32 @@ def update_zombies_tick(gmap, units, tick, events=None, shamble_ticks=None,
 # ---------------------------------------------------------------------------
 # End-of-round conversion
 # ---------------------------------------------------------------------------
+def rises_as_zombie(u) -> bool:
+    """THE conversion door's trigger: a dead unit rises as a zombie when a
+    zombie killed it (a marine's ``killed_by_zombie``) OR when the larvae have
+    infested its corpse to the threshold (arc #63 P5b, ``corpse.rises``: any
+    corpse, a zombie's included, any number of times). A DESTROYED corpse
+    (its integrity gone) rises by neither."""
+    if u.alive or _corpse.destroyed(u):
+        return False
+    return (not u.is_zombie and bool(u.killed_by_zombie)) or _corpse.rises(u)
+
+
 def convert_marines_to_zombies(units):
-    """Turn every marine that was killed by a zombie this round into a zombie.
+    """Turn every corpse that rises this tick into a zombie (the ONE
+    conversion path): a marine a zombie killed, or any corpse the larvae
+    infested to the threshold (arc #63 P5b; :func:`rises_as_zombie`).
 
     Lifted from ``game.py:_end_execution`` (lines 2019-2028). The marine
     keeps its inventory (per locked decision G — inventory is base, all
     units carry); a converted zombie that still has a grenade can have
     it cook off later through emergent fire interaction.
 
-    Resets the per-unit conversion flag after.
+    Resets the per-unit conversion flag and the infestation after.
     """
     for u in units:
-        if not u.is_zombie and not u.alive and u.killed_by_zombie:
+        if rises_as_zombie(u):
+            was_zombie = u.is_zombie
             # Joins the horde's team, so it turns on its old squad (#119);
             # its roster slot stays in the old team's roster.
             u.team = ZOMBIE_TEAM
@@ -455,6 +470,10 @@ def convert_marines_to_zombies(units):
             # ambient (both cleared at death too).
             _stress.clear(u)
             _body_temp.clear(u)
+            # arc #63 P5b: the rise is spent (level 0) and the body whole
+            # for its next death.
+            _corpse.clear(u)
             u.zombie_activated = True
             u.killed_by_zombie = False
-            u.name = f"Z-{u.name}"
+            if not was_zombie:
+                u.name = f"Z-{u.name}"

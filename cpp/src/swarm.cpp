@@ -91,26 +91,28 @@ long long swarm_cuda_calls() { return g_cuda_calls; }
 void set_swarm_backend(bool use_cuda) { g_use_cuda = use_cuda; }
 bool get_swarm_backend() { return g_use_cuda; }
 
-void bite_plane_host(int law, const SlotIO& io, int n_env, const uint32_t* launch_host,
-                     int32_t* bite) {
+void output_planes_host(int law, const SlotIO& io, int n_env, const uint32_t* launch_host,
+                        int32_t* bite, int32_t* count) {
     const int row = SPECIES_LAWS[law].bite_row;
-    if (row < 0 || bite == nullptr) return;
     const size_t plane = (size_t)io.h * (size_t)io.w;
     for (int e = 0; e < n_env; ++e) {
         const int hw = (int)launch_host[e * LAUNCH_FIXED_WORDS + LAUNCH_HW];
-        const int32_t q = (int32_t)io.tables[(size_t)e * io.table_width + row];
-        if (q == 0) continue;
-        int32_t* b = bite + (size_t)e * plane;
+        const int32_t q = (row >= 0 && bite != nullptr)
+                              ? (int32_t)io.tables[(size_t)e * io.table_width + row]
+                              : 0;
+        int32_t* b = bite != nullptr ? bite + (size_t)e * plane : nullptr;
+        int32_t* c = count != nullptr ? count + (size_t)e * plane : nullptr;
         for (int s = 0; s < hw; ++s) {
             int idx;
-            if (bites_on(io, e, s, &idx)) b[idx] += q;
+            if (c != nullptr && active_on(io, e, s, &idx)) c[idx] += 1;
+            if (q != 0 && bites_on(io, e, s, &idx)) b[idx] += q;
         }
     }
 }
 
 void step_all(const SpeciesStep* packs, int n_packs, const int32_t* T, const bool* solid,
               int h, int w, const uint32_t* env, int n_env, StepScratch& scratch,
-              std::vector<int32_t>& rows, int32_t* bite) {
+              std::vector<int32_t>& rows, int32_t* bite, int32_t* count) {
     rows.clear();
     // D14: dormancy is "nothing present in any env", decided here, before any
     // launch or scratch growth.
@@ -121,8 +123,10 @@ void step_all(const SpeciesStep* packs, int n_packs, const int32_t* T, const boo
         }
     }
     if (!any) return;
-    // arc #63 P5a: the bite plane is rebuilt from zero every non-dormant tick.
+    // arc #63 P5a / P5b: the output planes are rebuilt from zero every
+    // non-dormant tick.
     if (bite != nullptr) std::memset(bite, 0, (size_t)n_env * h * w * sizeof(int32_t));
+    if (count != nullptr) std::memset(count, 0, (size_t)n_env * h * w * sizeof(int32_t));
 
     for (int p = 0; p < n_packs; ++p) {
         const SpeciesStep& sp = packs[p];
@@ -151,9 +155,10 @@ void step_all(const SpeciesStep* packs, int n_packs, const int32_t* T, const boo
         } else {
             run_cpu(sp.law, L);
         }
-        // arc #63 P5a: this species' biting slots onto the plane (the host
-        // store holds the post-step state on both host branches).
-        bite_plane_host(sp.law, L.io, n_env, L.launch_host, bite);
+        // arc #63 P5a / P5b: this species' biting and active slots onto the
+        // planes (the host store holds the post-step state on both host
+        // branches).
+        output_planes_host(sp.law, L.io, n_env, L.launch_host, bite, count);
         // R9 / V7: the host store moved, so any device copy is stale.
         if (sp.host_dirty) *sp.host_dirty = 1;
         // The (species, env, slot) compaction from the per-slot records.

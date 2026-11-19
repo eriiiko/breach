@@ -91,19 +91,23 @@ void down(T* dst, const T* src, size_t count, const char* what) {
     if (count > 0) cuda_check(cudaMemcpy(dst, src, count * sizeof(T), cudaMemcpyDeviceToHost), what);
 }
 
-// arc #63 P5a: THE BITE on the device -- the host builder's loop
-// (bite_plane_host) over (ceil(hw / 256), N): each biting slot adds its
-// species' bite row to its tile, an integer atomic add, so the plane does not
-// depend on the thread order. Outside the law (the law has no atomics).
-__global__ void k_bites(SlotIO io, int bite_row, int32_t* bite) {
+// arc #63 P5a / P5b: THE OUTPUT PLANES on the device -- the host builder's
+// loop (output_planes_host) over (ceil(hw / 256), N): each active slot adds 1
+// to its tile of the count plane and each biting slot its species' bite row
+// to the bite plane, integer atomic adds, so neither plane depends on the
+// thread order. Outside the law (the law has no atomics).
+__global__ void k_planes(SlotIO io, int bite_row, int32_t* bite, int32_t* count) {
     const int e = (int)blockIdx.y;
     const int s = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (s >= (int)io.launch[e * LAUNCH_FIXED_WORDS + LAUNCH_HW]) return;
+    const size_t base = (size_t)e * io.h * io.w;
+    int idx;
+    if (count != nullptr && active_on(io, e, s, &idx)) atomicAdd(&count[base + idx], 1);
+    if (bite == nullptr || bite_row < 0) return;
     const int32_t q = (int32_t)io.tables[(size_t)e * io.table_width + bite_row];
     if (q == 0) return;
-    int idx;
     if (!bites_on(io, e, s, &idx)) return;
-    atomicAdd(&bite[(size_t)e * io.h * io.w + idx], q);
+    atomicAdd(&bite[base + idx], q);
 }
 
 }  // namespace
@@ -164,7 +168,7 @@ int resident_species(int law, const StoreView& st_dev, int max_units, int n_env,
                      int w, const int32_t* d_T, const bool* d_solid,
                      const uint32_t* launch_host, const int64_t* tables_host,
                      int table_width, unsigned long long* d_counters, void* stream,
-                     int32_t* d_bite) {
+                     int32_t* d_bite, int32_t* d_count) {
     int launch_hw = 0;
     for (int e = 0; e < n_env; ++e) {
         const int hw = (int)launch_host[e * LAUNCH_FIXED_WORDS + LAUNCH_HW];
@@ -209,11 +213,12 @@ int resident_species(int law, const StoreView& st_dev, int max_units, int n_env,
     R.stream = stream;
     SPECIES_LAWS[law].cuda_resident(R);
     cuda_check(cudaGetLastError(), "resident swarm launch");
-    // arc #63 P5a: the species' bites onto the plane, after its law.
-    if (d_bite != nullptr && SPECIES_LAWS[law].bite_row >= 0) {
+    // arc #63 P5a / P5b: the species' bites and counts onto the planes,
+    // after its law.
+    if (d_count != nullptr || (d_bite != nullptr && SPECIES_LAWS[law].bite_row >= 0)) {
         const dim3 grid((unsigned)((launch_hw + 255) / 256), (unsigned)n_env);
-        k_bites<<<grid, 256, 0, st>>>(R.io, SPECIES_LAWS[law].bite_row, d_bite);
-        cuda_check(cudaGetLastError(), "resident swarm bites");
+        k_planes<<<grid, 256, 0, st>>>(R.io, SPECIES_LAWS[law].bite_row, d_bite, d_count);
+        cuda_check(cudaGetLastError(), "resident swarm output planes");
     }
     // Each env's [0, hw[e]) records, host-ward on the tick stream BEFORE the
     // tail's books sync, so they arrive with the books in the tick's one read.

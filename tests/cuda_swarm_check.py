@@ -44,6 +44,17 @@ standing alone. Breaks on a device bite builder that differs from the host
 one, a plane not rebuilt from zero, an exit download without the plane, or a
 coma / dead slot that bites on one path.
 
+PART 2d -- THE CORPSES, three-way (arc #63 P5b): the thermal scenario (the
+continuous ruleset, so the door runs every tick) plus a marine's corpse, a
+zombie's corpse and a destroyed corpse (integrity 0) under larvae piles, on
+the CPU, per-call and resident paths: per tick the count plane's bytes, every
+unit's (alive, zombie, level, integrity) and the tick digest equal; non-vacuous:
+the plane is non-zero, the count plane equals a host scan of the store (living,
+non-coma larvae per tile), the marine's and the zombie's corpses rise, the
+destroyed one never does and its level stays 0. Breaks on a device count
+builder that differs from the host (a coma or dead slot counted, the plane not
+zeroed, not downloaded) or a path whose corpse level differs.
+
 PART 3 -- the canonical golden on the CUDA build's CPU path.
 """
 from __future__ import annotations
@@ -563,6 +574,84 @@ def part2c() -> bool:
     return ok
 
 
+def _corpse_world():
+    from simulation import corpse
+    from simulation.damage import KINETIC, DamagePacket, apply_packet
+    from simulation.ruleset import ContinuousRealtime
+    from simulation.unit import Unit
+    sim = _thermal_world("cpu")
+    sim.ruleset = ContinuousRealtime()
+    half = ONE >> 1
+    units = (("KM", 11.0, 9.0, 0), ("KZ", 11.0, 5.0, 255), ("KX", 6.0, 12.0, 0))
+    for name, x, y, team in units:
+        u = Unit(name, x=x, y=y, team=team)
+        sim.add_unit(u)
+        apply_packet(u, DamagePacket(amount=10_000.0, dtype=KINETIC), None,
+                     source="explosion")
+        if name == "KX":
+            u.corpse_integrity_q = 0                 # fixture: destroyed
+    piles = [(12, 10)] * 16 + [(12, 6)] * 14 + [(7, 13)] * 10
+    sim.swarm.spawn("larva", [(tx << 16) + half for tx, _ in piles],
+                    [(ty << 16) + half for _, ty in piles], [0] * len(piles))
+    return sim
+
+
+def part2d() -> bool:
+    print("PART 2d: the corpses three-way -- the count plane and the corpse levels")
+    from field_ab_harness import capture_snapshot
+    from field_digest import tick_digest
+    modes = ("cpu", "percall", "resident")
+    worlds = {m: _corpse_world() for m in modes}
+    ok = True
+    plane_ticks = 0
+    rose = {}
+    kx_level = 0
+    for t in range(400):
+        st = {}
+        for m in modes:
+            sim = worlds[m]
+            _mode(m)
+            sim.set_paused(False)
+            sim.step()
+            g = sim.gmap
+            plane = swarm.count_plane(g)
+            units = tuple((u.name, u.alive, u.is_zombie, int(u.infest_q),
+                           int(u.corpse_integrity_q)) for u in sim.units)
+            st[m] = (plane.tobytes(), units, tick_digest(capture_snapshot(sim)))
+            if m == "cpu":
+                if plane.any():
+                    plane_ticks += 1
+                v = g.swarm_larva_valid == 1
+                act = v & (g.swarm_larva_ai_state != swarm.AI_COMA) & \
+                    (g.swarm_larva_ai_state != swarm.AI_DEAD)
+                scan = np.zeros(plane.shape, dtype=np.int64)
+                np.add.at(scan, (g.swarm_larva_pos_y[act] >> 16,
+                                 g.swarm_larva_pos_x[act] >> 16), 1)
+                if not np.array_equal(scan, plane):
+                    print(f"  tick {t}: the count plane is not the host scan"); ok = False
+                for u in sim.units:
+                    name = u.name[2:] if u.name.startswith("Z-") else u.name   # the door renames
+                    if name in ("KM", "KZ", "KX") and u.alive and name not in rose:
+                        rose[name] = t
+                    if name == "KX":
+                        kx_level = max(kx_level, int(u.infest_q))
+        _mode("cpu")
+        for m in ("percall", "resident"):
+            for k, name in enumerate(("count plane", "unit corpses", "tick digest")):
+                if st[m][k] != st["cpu"][k]:
+                    print(f"  tick {t}: {m} {name} differs from the CPU path"); ok = False
+        if not ok:
+            break
+    print(f"  count plane non-zero on {plane_ticks} ticks, rises {rose}, "
+          f"destroyed corpse's highest level {kx_level}")
+    if plane_ticks <= 0 or "KM" not in rose or "KZ" not in rose:
+        print("  PART 2d non-vacuity failed"); ok = False
+    if "KX" in rose or kx_level != 0:
+        print("  the destroyed corpse moved or rose"); ok = False
+    print("  " + ("three paths equal every tick" if ok else "FAILED"))
+    return ok
+
+
 def part3() -> bool:
     print("PART 3: the canonical golden on the CUDA build's CPU path")
     _mode("cpu")
@@ -576,7 +665,7 @@ def part3() -> bool:
 def main() -> int:
     print(f"swarm P3 CUDA gate, HAS_CUDA={getattr(bp, 'HAS_CUDA', False)}")
     ok = True
-    for part in (part1, part2, part2b, part2c, part3):
+    for part in (part1, part2, part2b, part2c, part2d, part3):
         try:
             ok = part() and ok
         except Exception as exc:   # report and fail, never hide

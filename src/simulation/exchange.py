@@ -782,6 +782,33 @@ def apply_bite_dose(units, gmap):
         poison.dose(u, dose_q, NO_ATTACKER, Cause.LARVA_BITE)
 
 
+def apply_corpse_infestation(units, gmap):
+    """The ``swarm_count`` coupling row (arc #63 P5b; the boundary of Erik's
+    P6 ruling): the SUM of the swarm's count plane (the living, non-coma
+    swarm units on each tile this tick) over a DEAD unit's footprint is the
+    ``n`` of the corpse law (:func:`simulation.corpse.infest`): its
+    infestation level rises with the swarm on it and decays without. The row
+    only moves the level; the rise itself is the conversion door's
+    (``ai_zombie.convert_marines_to_zombies``, at the tick's end).
+
+    A corpse whose level is 0 and that no swarm unit stands on is skipped
+    (lazy): a match without larvae never touches a level. Two corpses on one
+    tile each read it in full. No RNG."""
+    from simulation import corpse as _corpse
+    from simulation import swarm as _swarm
+    plane = _swarm.count_plane(gmap)
+    any_swarm = bool(plane.any())
+    s = None
+    for u in units:
+        if u.alive:
+            continue
+        n = reduce_sum(plane, u.occupied_tiles()) if any_swarm else 0
+        if n <= 0 and not u.infest_q:
+            continue
+        s = s or _corpse.get_settings()
+        _corpse.infest(u, n, s)
+
+
 # ---------------------------------------------------------------------------
 # The coupling-table structure (mechanics/05 §1) — plain data, no framework.
 # ---------------------------------------------------------------------------
@@ -918,6 +945,22 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "early-outs; no RNG."
         ),
     ),
+    # arc #63 P5b (docs/swarm_P5b_impl.md): the corpse's row -- the swarm's
+    # count plane under a dead unit raises its infestation level.
+    CouplingRow(
+        field="swarm_count",
+        reduction="sum",
+        response=apply_corpse_infestation,
+        note=(
+            "Swarm units on a corpse -> its INFESTATION LEVEL (arc #63 P5b, "
+            "simulation.corpse): the sum of the swarm's count plane (living, "
+            "non-coma swarm units per tile) over a dead unit's footprint "
+            "raises the level, which decays by a fraction of itself; the "
+            "conversion door raises the corpse as a zombie at the threshold. "
+            "Runs at Simulation.step 9c3 after the bite row. Lazy: an "
+            "all-zero plane and no infested corpse touch nothing; no RNG."
+        ),
+    ),
     # arc #63 P3 (docs/swarm_P3_impl.md §8): the larva's rows -- executed IN
     # the larva kernel (cpp/src/swarm_larva.h) as the last stage of slot 7,
     # through the RAW own-tile reader (exchange.reduce_center over a one-tile
@@ -952,5 +995,5 @@ __all__ = [
     "apply_blast_damage", "apply_environmental_damage",
     "wind_q_pa", "apply_wind_force",
     "apply_teargas_blind", "apply_poison_dose", "poison_immune",
-    "apply_bite_dose",
+    "apply_bite_dose", "apply_corpse_infestation",
 ]

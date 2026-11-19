@@ -69,4 +69,18 @@ def half_life_rate(seconds: float, tps: int, shift: int = RATE_SHIFT) -> int:
     return unit_fixed.div_round(num.numerator, num.denominator)
 
 
-__all__ = ["RATE_SHIFT", "RATE_ONE", "LN2", "drain", "half_life_rate"]
+def rate_per_tick(rate_per_s: float, tps: int, shift: int = RATE_SHIFT) -> int:
+    """The per-tick fraction (``2^shift`` = ONE) of a first-order RATE
+    authored per second (arc #63 P5b, the corpse's infestation decay):
+    ``round(rate x 2^shift / tps)``, the authored float taken as its exact
+    rational, rounded once half away from zero. Refuses a negative or
+    non-finite rate. (A half-life goes through :func:`half_life_rate`.)"""
+    r = float(rate_per_s)                     # p3e-door: the authored rate
+    if not math.isfinite(r) or r < 0.0:
+        raise ValueError(f"a rate must be finite and >= 0 (got {rate_per_s!r})")
+    num = Fraction(r) * (1 << int(shift)) / int(tps)
+    return unit_fixed.div_round(num.numerator, num.denominator)
+
+
+__all__ = ["RATE_SHIFT", "RATE_ONE", "LN2", "drain", "half_life_rate",
+           "rate_per_tick"]

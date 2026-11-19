@@ -487,6 +487,11 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         if hasattr(unit, "body_temp_q"):
             from simulation import body_temp
             body_temp.clear(unit)
+        # arc #63 P5b: the corpse starts uninfested and whole (both the
+        # columns' defaults, so a death hashes as before).
+        if hasattr(unit, "infest_q"):
+            from simulation import corpse
+            corpse.on_death(unit)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:
