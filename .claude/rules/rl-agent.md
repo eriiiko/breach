@@ -38,7 +38,7 @@ and who must use it; this file holds the constraints the code cannot say. The
 ## Full view
 - What the training-only VALUE network is shown is ONE named spec, `full_v1`, served by the same door into the farm's own buffers under `info["full_view"]`: NEVER a key of `obs` or `info["final_obs"]`; a policy never reads it.
 - The OTHER SIDE OF THE WALL: its builders read the sim through ONE `FullView` per env per decision (`FullView.build`, the one door) and keep THEIR OWN caches, never `TeamKnowledge`'s; pair case (f) holds every `obs` array byte-identical with the full view off, built before or after.
-- Over its entry cap the farthest zombies, then objects, are dropped, never a marine. Its balance column is `reward_v1.standing`, the reward's one implementation.
+- Over its entry cap the farthest doors, then zombies, then objects, are dropped, never a marine. Its balance column is `reward_v1.standing`, the reward's one implementation.
 - A new privileged input is a new version of this spec.
 
 ## Action spec
@@ -55,5 +55,5 @@ and who must use it; this file holds the constraints the code cannot say. The
 - Eliminations, the win and the clock come from `MatchRules` (never a second rule of who won). Under a profile the clock is an ENDING (`terminated`, never `truncated`). Read-side only: nothing synced, no digest moves.
 
 ## Training snapshot
-- A training run's code is an ANNOTATED tag at HEAD in its own detached checkout (the git-workflow training-checkout row). `require_snapshot` refuses, naming the check, unless the tag is annotated, HEAD is its commit, the tree is clean including untracked files under `src/`, `levels/`, `config.toml`, `cpp/`, both modules come from this checkout, `bp.build_id()` == HEAD, and the run file's sha256 is recorded. `device` also needs an empty twin ledger and is refused until P8b.
+- A training run's code is an ANNOTATED tag at HEAD in its own detached checkout (the git-workflow training-checkout row). `require_snapshot` refuses, naming the check, unless the tag is annotated, HEAD is its commit, the tree is clean including untracked files under `src/`, `levels/`, `config.toml`, `cpp/`, `agents/`, `tools/` (`SNAPSHOT_PATHS`: a stray module there would be imported by the trainer, a stray tool would write the rooms; the main checkout's untracked tools are why a kept run starts from its own checkout), both modules come from this checkout, `bp.build_id()` == HEAD, and the run file's sha256 is recorded. `device` also needs an empty twin ledger and is refused until P8b.
 - With `[run] out_dir` (refused inside the checkout) `BatchedEnv` writes `run_manifest.json`; a resume refuses any change but the host, by name.

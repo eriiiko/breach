@@ -2671,7 +2671,7 @@ class GameRenderer:
 
     # ---- debug HUD ------------------------------------------------------
 
-    def draw_debug_hud(self, gmap) -> None:
+    def draw_debug_hud(self, gmap, units=None) -> None:
         """Cursor tile (x, y) + material readout, PLUS the hover "microscope"
         (T in game-deg + pseudo-Kelvin + fire/O2/trace-gas densities) on the
         line below. F6 toggles both — the diagnostic readout Erik asked for
@@ -2711,7 +2711,8 @@ class GameRenderer:
                 # hover_readout wants (tx, ty) in the same order this HUD
                 # already computes cursor coords in.
                 readout = pack_hover_readout(
-                    gmap, cx, cy, self.blackbody_ramp._kelvin_from_tgame)
+                    gmap, cx, cy, self.blackbody_ramp._kelvin_from_tgame,
+                    units=units)
                 readout_lines = readout.lines[1:] if readout else []
             else:
                 text = f"tile ({cx}, {cy}) - out of bounds"

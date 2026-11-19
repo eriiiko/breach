@@ -360,6 +360,17 @@ def _exposure():
     return _exposure_mod
 
 
+_stress_mod = None
+
+
+def _stress():
+    global _stress_mod
+    if _stress_mod is None:
+        from simulation import stress as _m
+        _stress_mod = _m
+    return _stress_mod
+
+
 def apply_packet(unit, packet: DamagePacket, events=None, *,
                  source: str, mark_killed_by_zombie: bool = False,
                  exposure_landing=None):
@@ -373,7 +384,9 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     2. the target's EXPOSURE of the packet's type (G4p,
        :func:`simulation.exposure.scale_q`; the identity, bit for bit, at
        exposure 0) — the APPLIED value, Q16;
-    3. ``unit.hp_q -= applied`` (the Q16 hp, #29 P3e);
+    3. ``unit.hp_q -= applied`` (the Q16 hp, #29 P3e); on a living unit
+       that lost hit points, STRESS through its damage producer
+       (``stress.on_damage``, #215);
     4. ``events``: :class:`UnitHitEvent` with the applied damage, the cause
        ``source``, the packet's ``attacker_id`` and its direction
        (``dir_x_q`` / ``dir_y_q``, #185); ``events=None`` emits
@@ -442,6 +455,12 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
                                    attacker_id=attacker,
                                    dir_x_q=int(getattr(packet, "dir_x_q", 0)),
                                    dir_y_q=int(getattr(packet, "dir_y_q", 0))))
+    # #215: STRESS -- the damage producer, the one door (simulation.stress):
+    # the hit points a living unit actually lost this packet (a heal or a
+    # hit that took nothing adds nothing; a zombie takes none). Before the
+    # death check: a killing blow's stress is cleared with the rest.
+    if was_alive and dmg_q > 0 and hasattr(unit, "stress_q"):
+        _stress().on_damage(unit, dmg_q)
     if was_alive and unit.current_hp <= 0:
         unit.alive = False
         expo.on_death(unit, exposure_landing)
@@ -462,6 +481,12 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         if hasattr(unit, "poison_x0"):
             from simulation import poison
             poison.clear(unit)
+        # #215: nor stress, and the body goes back to ambient.
+        if hasattr(unit, "stress_q"):
+            _stress().clear(unit)
+        if hasattr(unit, "body_temp_q"):
+            from simulation import body_temp
+            body_temp.clear(unit)
         if mark_killed_by_zombie:
             unit.killed_by_zombie = True
         if events is not None:

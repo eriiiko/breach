@@ -82,7 +82,7 @@ import pyray as rl
 
 from level_loader import (LEVEL_FORMAT_VERSION, SPACE_CODE, load as load_level,
                           materials_from_tilemap, tile_to_art_px)
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE, MAT_GLASS,
+from simulation.materials import (MAT_AIR, MAT_FURNITURE, MAT_GLASS,
                                   MAT_HULL, MAT_STEEL, MAT_WOOD,
                                   MATERIAL_NAMES)
 # The pure paint plumbing is shared with tools/map_editor.py (engine/15 §0).
@@ -453,7 +453,8 @@ def main() -> None:
                     ((K.KEY_ZERO, K.KEY_KP_0), MAT_AIR),
                     ((K.KEY_ONE, K.KEY_KP_1), MAT_HULL),
                     ((K.KEY_TWO, K.KEY_KP_2), MAT_WOOD),
-                    ((K.KEY_THREE, K.KEY_KP_3), MAT_DOOR),
+                    # (3 = the legacy painted door: retired, #215; a door is
+                    # an entity, placed with the map editor's DOOR tool)
                     ((K.KEY_FOUR, K.KEY_KP_4), MAT_STEEL),
                     ((K.KEY_FIVE, K.KEY_KP_5), MAT_GLASS),
                     ((K.KEY_SIX, K.KEY_KP_6), MAT_FURNITURE),

@@ -65,6 +65,17 @@ class Settings:
     grade_floor: float = 1e-8
     #: The live check's tolerance (the probability and the distance).
     live_tolerance: float = 1e-4
+    #: The memory's stretch (design 4.5): with the soldier's memory on, the
+    #: unit learning cuts, shuffles and replays -- a row's ``stretch``
+    #: decisions in order from the memory stored at the first. ``decisions``,
+    #: ``piece`` and ``lump`` are then whole numbers of stretches (refused
+    #: by name when the trainer is built). Not read with the memory off.
+    stretch: int = 16
+    #: The value-first rounds (design 6, arm B; note 2d, 7): the first rounds
+    #: of a run in which only the value network (and its scale) learns while
+    #: the soldier's network plays and takes no step. The step-size plan is
+    #: not shifted by them: it falls over ``planned_rounds`` as always.
+    value_first_rounds: int = 0
     #: The reward group weights, in ``REWARD_GROUPS`` order.
     weights: tuple = field(default_factory=_rung2_weights)
     #: The run's wall-clock stop (hours): a run ends at ``planned_rounds``
@@ -72,6 +83,11 @@ class Settings:
     #: The step size still falls over the PLANNED rounds, so a plan the
     #: wall cuts short never reaches its low step sizes.
     wall_hours: float | None = None
+    #: Saving a run (note 2d, 9; the training file's ``[save]`` table):
+    #: ``last.pt`` is written every ``save_every`` rounds and at the end;
+    #: ``round_<n>.pt`` is kept every ``keep_every`` rounds (0: none).
+    save_every: int = 10
+    keep_every: int = 0
 
     def __post_init__(self):
         if len(self.weights) != len(REWARD_GROUPS):
@@ -83,6 +99,15 @@ class Settings:
         if self.wall_hours is not None and not float(self.wall_hours) > 0:
             raise ValueError(f"settings: wall_hours {self.wall_hours} must "
                              f"be above 0 (or None: no wall stop)")
+        if int(self.stretch) < 1:
+            raise ValueError(f"settings: stretch {self.stretch} < 1")
+        if int(self.value_first_rounds) < 0:
+            raise ValueError(f"settings: value_first_rounds "
+                             f"{self.value_first_rounds} < 0")
+        if int(self.save_every) < 1:
+            raise ValueError(f"settings: save_every {self.save_every} < 1")
+        if int(self.keep_every) < 0:
+            raise ValueError(f"settings: keep_every {self.keep_every} < 0")
         if self.lump < 1 or self.piece < self.lump:
             raise ValueError(f"settings: a piece ({self.piece}) is worked "
                              f"through in lumps ({self.lump})")

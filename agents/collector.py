@@ -22,12 +22,26 @@ Per step, for all learning rows in one pass:
    the next decision is that row's ``first``.
 
 Between rounds nothing is reset: the next round goes on from the matches as
-they stand. After the last step the view the value network reads is copied
+they stand.
+
+THE MEMORY (patch 2d; design 4.5), with the soldier's memory on: every
+learning row's memory is carried from step to step AND from round to round
+(a match does not end with the round); it is zero only at the run's first
+reset and, inside the network, where ``first`` says a match starts -- never
+at a round's or a stretch's edge. At step ``t`` the memory carried in is
+stored as ``batch.memory[t]`` (BEFORE the decision, before the network
+zeroes it) and the network acts from that stored copy with that step's
+``first`` flags; after the last step the memory carried out is stored as
+``batch.memory[T]``. A dead or empty row is stepped like the rest (its
+memory is whatever the network makes of the served zeros) and is never
+learnt from. After the last step the view the value network reads is copied
 once (``last_*``) for the value after the last stored decision.
 
 The collector holds its OWN copy of the soldier's network; the learner
 hands it weights (:meth:`Collector.set_weights`) and it hands back a batch:
-one hand-over each way (patch 2d adds the header).
+one hand-over each way. When a round's collecting starts it writes the
+batch's header (patch 2d.2): the version of the weights it was handed and
+the run's names, which the learner compares with its own.
 
 WHAT A ROUND OF COLLECTING MEASURED (patch 2c's per-round line; read by
 ``agents/run.py``, never a second walk over the environment):
@@ -54,7 +68,7 @@ import torch
 
 from agents import _game  # noqa: F401
 from agents.batch import (FULL_STORED, LAST_FULL, LAST_OBS, OBS_STORED,
-                          Batch, LearningRows)
+                          Batch, LearningRows, run_ids)
 from agents.choosing import draw, masks_of
 from agents.network import SOLDIER_KEYS, as_tensors
 from simulation import action_spec_v1 as A
@@ -116,8 +130,12 @@ class Collector:
     stand-in) with its own copy of ``soldier``."""
 
     def __init__(self, env, soldier, rows: LearningRows, device="cpu",
-                 seed: int = 0):
+                 seed: int = 0, ids: dict | None = None):
         self.env = env
+        #: the run's names written into every batch's header, and the
+        #: version of the weights it plays with (set at each hand-over)
+        self.ids = run_ids(ids)
+        self.version = 0
         self.rows = rows
         self.device = torch.device(device)
         self.soldier = copy.deepcopy(soldier).to(self.device).eval()
@@ -127,6 +145,7 @@ class Collector:
         self.generator.manual_seed(int(seed))
         self.env_of_row = rows.env_of_row()
         self._obs = self._full = None
+        self._memory = None           # (R, core) tensor; None: no memory
         R = rows.n_rows
         self._first = np.ones(R, dtype=bool)
         self._story = np.ones(R, dtype=bool)
@@ -139,9 +158,11 @@ class Collector:
                     "masked": 0}
 
     # -- the hand-over: weights in --------------------------------------
-    def set_weights(self, weights: dict) -> None:
-        """The soldier's weights the next round is played with."""
+    def set_weights(self, weights: dict, version: int) -> None:
+        """The soldier's weights the next round is played with, and their
+        version (written into the batch's header)."""
         self.soldier.load_state_dict(weights)
+        self.version = int(version)
 
     # -- the matches ----------------------------------------------------
     def start(self) -> None:
@@ -152,6 +173,8 @@ class Collector:
         self._level = np.asarray(info["level"]).copy()
         self._first[...] = True
         self._story[...] = True
+        self._memory = self.soldier.initial_state(self.rows.n_rows,
+                                                  self.device)
         self._paid = np.zeros((self.rows.n_rows,
                                self.env.layout.reward_shape_tail[0]))
 
@@ -173,17 +196,34 @@ class Collector:
         return obs, full
 
     @torch.no_grad()
-    def _act(self, obs: dict) -> dict:
+    def _act(self, obs: dict, state=None, first=None) -> dict:
         """The soldier's answers to ``obs`` as numpy arrays (copied off the
-        card: the round's "answers" seconds include that wait)."""
+        card: the round's "answers" seconds include that wait); with the
+        memory on, from the memory ``state`` with the ``first`` flags, and
+        the memory after the decision under ``"memory"``."""
         x = as_tensors({k: obs[k] for k in SOLDIER_KEYS}, self.device)
         masks = {k: v.to(self.device)
                  for k, v in masks_of({k: obs[k] for k in A.MASK_KEYS}).items()}
-        out, _ = self.soldier(x)
+        out, new = self.soldier(x, state, first)
         d = draw(out, masks, self.generator)
-        return {k: getattr(d, k).cpu().numpy()
-                for k in ("actions", "used", "logp_heads", "logp",
-                          "arg_mask")}
+        got = {k: getattr(d, k).cpu().numpy()
+               for k in ("actions", "used", "logp_heads", "logp",
+                         "arg_mask")}
+        got["memory"] = new
+        return got
+
+    def _act_step(self, batch: Batch, t: int, obs: dict) -> dict:
+        """Step ``t``'s decision: with the memory on, store the memory
+        carried in as ``batch.memory[t]`` and act from that stored copy with
+        the step's ``first`` flags; carry the memory after it."""
+        if self._memory is None:
+            return self._act(obs)
+        batch.memory[t] = self._memory.cpu().numpy()
+        state = torch.as_tensor(batch.memory[t], device=self.device)
+        first = torch.as_tensor(batch.first[t] != 0, device=self.device)
+        d = self._act(obs, state, first)
+        self._memory = d["memory"]
+        return d
 
     def _begin_round(self) -> None:
         for k in self.seconds:
@@ -225,7 +265,11 @@ class Collector:
         ``batch``."""
         if self._obs is None:
             raise RuntimeError("collect() before start()")
+        if (self._memory is None) != (batch.memory is None):
+            raise ValueError("the batch must keep the memory exactly when "
+                             "the soldier has one (Batch(..., core=))")
         env, rows = self.env, self.rows
+        batch.set_header(version=self.version, **self.ids)
         self._begin_round()
         sec = self.seconds
         clock = time.perf_counter
@@ -235,7 +279,7 @@ class Collector:
             batch.first[t] = self._first
             batch.value_row[t] = (batch.in_match[t] != 0) & self._story
             t1 = clock()
-            d = self._act(obs)
+            d = self._act_step(batch, t, obs)
             t2 = clock()
             batch.actions[t] = d["actions"]
             batch.used[t] = d["used"]
@@ -271,6 +315,8 @@ class Collector:
             sec["answers"] += t2 - t1
             sec["env_step"] += t4 - t3
         t6 = clock()
+        if self._memory is not None:
+            batch.memory[batch.T] = self._memory.cpu().numpy()
         self._gather_last(batch)
         sec["copy"] += clock() - t6
         return batch

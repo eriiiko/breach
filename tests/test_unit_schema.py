@@ -131,6 +131,23 @@ def _check_unit(u):
 #: and turned).
 _MIN_CONVERSIONS = {"bots_v1": 0, "bots": 1, "box": 2}
 
+#: ``bots`` plays its OWN ship_demo bots match (#215: since every doorway is a
+#: closed door and the body's heat protection, the pinned seed-1 play converts
+#: no one), at a seed whose first 700 ticks convert a unit (unit 0 turns at
+#: tick 502; measured 2026-11-18 over seeds 1-12, only seed 2 does).
+_BOTS_SEED, _BOTS_TICKS = 2, 700
+
+
+def _play_bots(tick):
+    from simulation.match_session import MatchSession
+    level =level_loader.load("ship_demo", str(ROOT / "levels"))
+    session = MatchSession(level, seed=_BOTS_SEED, breach_physics=bp)
+    for _ in range(_BOTS_TICKS):
+        if session.is_terminal():
+            break
+        session.tick()
+        tick(session.sim)
+
 
 @pytest.mark.parametrize("which", ["bots_v1", "bots", "box"])
 def test_derived_constants_and_round_trips_hold_at_every_tick(which, tmp_path):
@@ -154,6 +171,8 @@ def test_derived_constants_and_round_trips_hold_at_every_tick(which, tmp_path):
     if which == "box":
         from test_zombie_control import _box
         run_match(_box(tmp_path, "schema_box"), None, on_tick=tick)
+    elif which == "bots":
+        _play_bots(tick)
     else:   # the shared play of the pinned match (#205, tests/_pinned_matches)
         _pinned_matches.watch(which, tick)
     assert len(converted) >= _MIN_CONVERSIONS[which]

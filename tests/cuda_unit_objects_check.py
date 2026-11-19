@@ -38,6 +38,18 @@ tick, a remote charge, a full charge table refusing a plant, an empty table
 and a non-empty one): tables, PAYLOAD records, rows and requests equal every
 tick; a CENSUS of the Python law's branches, each required, the unreachable
 ones named; the hooked match equal to an unhooked twin.
+PART BOUNCE (#215) -- the bouncing scene (BounceScene: a long wall, a gap
+SEALED while a grenade flies at it, a wall tile DESTROYED while one flies at
+it, a fuse-out mid-leg in front of the wall, a horizontal wall, a pillar, a
+corridor three tiles wide) at the shipped restitution, at 0 and at 1, each
+shadowed every tick (the v0 run against an unhooked twin); its law facts on
+the host (the closed gap bounced it, the destroyed tile let it through, the
+mid-leg fuse-out stayed on the thrower's side); the three and a grenade scene
+as a batch of N = 4 (env i == env i alone); the bounce branches' census; the
+chained 1b + 1b' + 1c + 2 on the bouncing scene. PART FLIGHT's synthetic rows
+start on the grid and aim mostly off it (most meet the hull), include exact
+45-degree corners, and run at the three restitutions, the bounce census
+required there too.
 PART BATCH -- N = 2 and 8 of differing envs (the scene's variants: another
 room, seed, unit count and schedule; P6.4a's verb scene; the charge scene;
 ship_demo): env i == env i alone (the harness's alone run) every tick.
@@ -60,11 +72,15 @@ how often each acts is printed.
 
 PROPERTY: the grenade table is the host list; slot 1b's throws and accepted
 plants land in it in the reference's order; the flight is
-``Projectile.update_position`` integer for integer; every fuse-out and every
+``Projectile.fly`` / ``settle`` (#215: the leg, the wall walk over the solid
+plane as the slot found it, the bounce) integer for integer; every fuse-out
+(at ``combat.detonation_tile``) and every
 due charge is ONE PAYLOAD record equal to the host's ``execute_payload``
 call, in list order; the prunes are the stable compaction; in a batch as
 alone. BREAKS IF a column's encode / decode, the flight's distance, landing
-test or rounding, the fuse test, a record field, the record order, an
+test or rounding, the wall walk's tile order, stop point or flips, the
+bounce's length, rounding or rest rules, the settle, the detonation tile,
+the fuse test, a record field, the record order, an
 append's fields or order, a compaction, the batch indexing or a capacity
 check differs from the law.
 
@@ -134,13 +150,21 @@ def fail(msg):
 # ---------------------------------------------------------------------------
 def _run_1b(st, inp, req, lists):
     cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"])
+                             inp.scalars["charges_live"], _flight_fields(inp))
     unit_kernels.table_appends(st, req, lists["grenades"], lists["charges"])
     return cov
 
 
+def _flight_fields(inp):
+    """#215: the padded flight plane (``cuda_unit_lockstep``'s
+    ``flight_plane`` input) as the kernel's device field."""
+    from cuda_unit_lockstep import flight_fields
+    return flight_fields(inp)
+
+
 def _run_2(st, inp, lists):
-    return unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick)
+    return unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick,
+                                 _flight_fields(inp))
 
 
 def _run_9e(st, inp, lists):
@@ -153,14 +177,14 @@ def _run_10(st, inp, lists):
 
 
 SLOT_1B = DeviceSlot(label="1b intents", run=_run_1b,
-                     inputs=("tick", "door_spans", "charges_live", "list:grenades",
+                     inputs=("tick", "door_spans", "charges_live", "flight_plane", "list:grenades",
                              "list:charges"),
                      requests=True, outputs=("list:grenades", "list:charges"))
 # The grenade / charge slots write NO unit row (columns=("id",): the compare
 # holds the rows the device never touches); the host's row changes inside
 # them are the PAYLOAD law's (its blast damage), recorded here, P7c.1's.
 SLOT_2 = DeviceSlot(label="2 grenades", run=_run_2, columns=("id",),
-                    inputs=("tick", "list:grenades"),
+                    inputs=("tick", "list:grenades", "flight_plane"),
                     outputs=("list:grenades", "list:payloads"), host_only=HOST_ONLY)
 SLOT_9E = DeviceSlot(label="9e(d') planted charges", run=_run_9e, columns=("id",),
                      skip_ok=True,    # the conductor runs it only while a charge lies
@@ -186,6 +210,11 @@ def table_reference(sim) -> dict:
         "clock_tps": int(CFG.clock.ticks_per_second),
         "grenade_flight_eps_q": int(combat._FLIGHT_EPS_Q),
         "order_grenade": int(ORDER_GRENADE),
+        # #215: the bounce's dials off the sim's own hand-grenade row
+        "grenade_bounce_restitution_q": int(
+            wt.weapons.by_name["hand_grenade"].bounce_restitution_q),
+        "grenade_bounce_max": int(wt.weapons.by_name["hand_grenade"].bounce_max),
+        "grenade_bounce_min_q": int(combat.BOUNCE_MIN_Q),
         "hand_grenade_ammo_row": tuple(ammo.index(n) for n in wt.hand_grenade_rows),
         "hand_grenade_speed_q": tuple(
             combat.Projectile(ORDER_GRENADE, 0, 0, 1, 1, 0.0, 0, ammo_name=n).travel_speed_q
@@ -297,6 +326,90 @@ class GrenadeScene:
         _ = charges
 
 
+def _bounce_room(variant):
+    """#215: the bouncing scene's map -- a hull box with a long wall (column
+    32, a two-tile gap at rows 18-19), a horizontal wall (row 30, columns
+    40-60), a pillar (row 8, column 12) and a corridor three tiles wide
+    (walls at columns 46 and 50, rows 2-12)."""
+    from level_loader import LevelData
+    from simulation.materials import MAT_AIR, MAT_HULL
+    h, w = 40, 64
+    tm = np.full((h, w), MAT_HULL, dtype=np.int32)
+    tm[1:h - 1, 1:w - 1] = MAT_AIR
+    tm[2:38, 32] = MAT_HULL
+    tm[18:20, 32] = MAT_AIR
+    tm[30, 40:61] = MAT_HULL
+    tm[8, 12] = MAT_HULL
+    tm[2:13, 46] = MAT_HULL
+    tm[2:13, 50] = MAT_HULL
+    return LevelData(name=f"p215_bounce{variant}", version="3", path=Path("."),
+                     tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."), entities=[])
+
+
+EAST, SOUTH_EAST = 0, 7 * PI_Q16 // 4
+
+
+class BounceScene:
+    """#215: throws that meet walls, driven through the intent facade: one
+    into the long wall (a vertical edge), one through the gap whose tiles
+    are SEALED while it flies (a door closing mid-flight), one at a wall
+    tile DESTROYED while it flies (it passes), one whose short fuse runs out
+    mid-leg in front of the wall (the rest of the flight at once), one into
+    the horizontal wall (a horizontal edge), one at the pillar, one down the
+    corridor (a bounce per three tiles: bounce_max ends it at restitution 1).
+    ``variant`` 0 keeps the shipped restitution, 1 sets it to 0, 2 to 1
+    (the sim's own hand-grenade row, which the device table row reads)."""
+
+    def __init__(self, variant=0):
+        from simulation import Simulation
+        from simulation.ruleset import ContinuousRealtime
+        self.v, self.k = variant, 0
+        sim = Simulation(_bounce_room(variant), seed=21500 + variant, breach_physics=bp,
+                         enable_recorder=False, ruleset=ContinuousRealtime())
+        sim.set_paused(False)
+        self.sim = sim
+        hand = sim.weapons_tables.weapons.by_name["hand_grenade"]
+        if variant == 1:
+            hand.bounce_restitution_q = 0
+        elif variant == 2:
+            hand.bounce_restitution_q = ONE
+        add = GrenadeScene._add
+        self.e = [add(self, f"E{i}", 21, y, EAST) for i, y in enumerate((9, 17, 25, 3))]
+        self.n = add(self, "N", 50, 34, NORTH)
+        self.d = add(self, "D", 4, 1, SOUTH_EAST)
+        self.c = add(self, "C", 47, 8, EAST)
+        self.thrown = {}
+        for u in self.e + [self.n, self.d, self.c]:
+            u.grenade_counts = [3] * len(sim.weapons_tables.hand_grenade_rows)
+
+    def tick(self):
+        sim, k = self.sim, self.k
+        throw = GrenadeScene._throw
+        if k == 2:
+            throw(self, self.e[0], 0, 40, 16)          # into the long wall
+            throw(self, self.e[1], 0, 60, 16)          # through the gap ...
+            throw(self, self.e[2], 0, 50, 16)          # at a wall tile ...
+            throw(self, self.n, 0, 45, 12)             # into the horizontal wall
+            throw(self, self.d, 0, 45, 14)             # at the pillar
+            throw(self, self.c, 0, 90, 30)             # down the corridor
+        if k == 3:
+            throw(self, self.e[3], 0, 3, 20)           # a fuse out mid-leg
+        if k == 12:                                    # ... the gap closes
+            from simulation.materials import MAT_DOOR_CLOSED
+            sim.gmap.seal_tiles([(18, 32), (19, 32)], MAT_DOOR_CLOSED)
+        if k == 13:                                    # ... the tile goes
+            for y in (25, 26, 27):
+                sim.gmap.destroy_wall(y, 32)
+        sim.step()
+        sim.set_paused(False)
+        for p in sim.projectiles:                      # kept past the prune
+            self.thrown.setdefault(id(p), p)
+        self.k += 1
+
+    def by_owner(self, u):
+        return [p for p in self.thrown.values() if p.owner_id == u.id]
+
+
 class ShipDriver:
     """ship_demo's bots match (MatchSession)."""
 
@@ -337,7 +450,7 @@ class Census:
 
         def up(p, t, __o=o_up):
             tps = int(CFG.clock.ticks_per_second)
-            el = int(t) - int(p.thrown_tick)
+            el = int(t) - int(p.leg_tick)
             dx, dy = p.target_x_q - p.start_x_q, p.target_y_q - p.start_y_q
             d = unit_fixed.isqrt(dx * dx + dy * dy)
             if d < combat._FLIGHT_EPS_Q:
@@ -351,6 +464,41 @@ class Census:
             return __o(p, t)
         P.update_position = up
         self._orig.append((P, "update_position", o_up))
+
+        # #215: the bounce law's branches
+        o_bn = P.bounce
+
+        def bn(p, px, py, flip_x, flip_y, tick, rq, bmax, __o=o_bn):
+            c["bounce: an exact corner (both flipped)" if flip_x and flip_y
+              else "bounce: a vertical edge (x flipped)" if flip_x
+              else "bounce: a horizontal edge (y flipped)"] += 1
+            at_max = p.bounces >= int(bmax)
+            r = __o(p, px, py, flip_x, flip_y, tick, rq, bmax)
+            c["bounce: bounce_max reached (rests at the wall)" if at_max
+              else "bounce: a leg under a quarter tile (rests)" if not r
+              else "bounce: a mirrored leg"] += 1
+            if not at_max and int(rq) == 0:
+                c["bounce: restitution 0 (drops at the wall)"] += 1
+            if r and int(rq) == ONE:
+                c["bounce: restitution 1 (a mirror)"] += 1
+            return r
+        P.bounce = bn
+        self._orig.append((P, "bounce", o_bn))
+
+        o_st = P.settle
+
+        def stl(p, gmap, tick, rq, bmax, __o=o_st):
+            mid = (p.pos_x_q, p.pos_y_q) != (p.target_x_q, p.target_y_q)
+            b0 = p.bounces
+            r = __o(p, gmap, tick, rq, bmax)
+            if mid:
+                c["settle: a fuse-out mid-leg (the rest flown at once)"] += 1
+                if p.bounces > b0 or (p.start_x_q, p.start_y_q) == (p.target_x_q,
+                                                                    p.target_y_q):
+                    c["settle: a wall met while settling"] += 1
+            return r
+        P.settle = stl
+        self._orig.append((P, "settle", o_st))
 
         o_ug = Simulation._update_grenades
 
@@ -433,7 +581,7 @@ class Census:
 
 #: Every branch the scene must take; and the ones it cannot, with the reason.
 NEED = (
-    "flight: shorter than the epsilon (lands at once)", "flight: arrived",
+    "flight: arrived",
     "flight: in the air (the rounded rational)",
     "grenades: fuse-out of a lob (PAYLOAD)", "grenades: not due",
     "grenades: out on its release tick", "grenades: two or more fuse-outs on one tick",
@@ -449,7 +597,21 @@ NEED = (
     "1b: an accepted plant appended", "1b: a plant refused at a full table",
     "1b: two plants on one tick",
 )
+#: #215: the bounce law's branches PART FLIGHT's synthetic rows must take.
+NEED_FLIGHT = (
+    "bounce: an exact corner (both flipped)", "bounce: a vertical edge (x flipped)",
+    "bounce: a horizontal edge (y flipped)", "bounce: bounce_max reached (rests at the wall)",
+    "bounce: a leg under a quarter tile (rests)", "bounce: a mirrored leg",
+    "bounce: restitution 0 (drops at the wall)", "bounce: restitution 1 (a mirror)",
+    "settle: a fuse-out mid-leg (the rest flown at once)",
+    "settle: a wall met while settling",
+    "flight: shorter than the epsilon (lands at once)",
+)
 UNREACHABLE = {
+    "flight: shorter than the epsilon (lands at once)":
+        "#215: a throw starts at the hand, 0.29 m (the shipped release_side_m) "
+        "off the line of its target, so no scene throw lands within 0.1 tile of "
+        "its start; PART FLIGHT holds the branch on constructed rows",
     "charges.tick: an empty list (no prune)":
         "the conductor calls charges.tick only while a charge is planted (slot "
         "9e(d')'s gate); the harness compares the gated-off ticks as a run "
@@ -474,6 +636,15 @@ UNREACHABLE = {
 # ---------------------------------------------------------------------------
 def _store(sims, U=2):
     return unit_store.DeviceStore(len(sims), U, tables=unit_tables.values_batch(sims))
+
+
+def _solid(sims):
+    """#215: the sims' ``solid`` planes as the device ``(N, h, w)`` bool
+    array slot 2's grenades read."""
+    import cupy as cp
+    from simulation import combat
+    return {"flight": cp.ascontiguousarray(cp.asarray(np.stack(
+        [combat.flight_plane(s.gmap) for s in sims])))}
 
 
 def _rows_of(table, objs):
@@ -551,10 +722,20 @@ def _synthetic(rng, sim, n, tick):
         name = kinds[int(rng.integers(len(kinds)))]
         p = combat.Projectile(ORDER_GRENADE, 0, 0, 1, 1, 0.0, 0, ammo_name=name,
                               owner_id=int(rng.integers(-1, 40)), fuse_ticks=0)
-        lim = (1 << 25) if i % 3 else (1 << 18)
-        p.start_x_q, p.start_y_q, p.target_x_q, p.target_y_q = (
-            int(x) for x in rng.integers(-lim, lim + 1, size=4))
+        # #215: a grenade starts on the grid (a thrower's tile, or a bounce's
+        # point); its target anywhere within +-2^24 -- far off the grid most
+        # of the time, so most rows meet the walls and bounce (a mirror of
+        # such a target in a grid line stays inside the proved +-2^25)
+        lim = (1 << 24) if i % 3 else (1 << 18)
+        gh, gw = sim.gmap.solid.shape
+        p.start_x_q = int(rng.integers(0, gw * ONE))
+        p.start_y_q = int(rng.integers(0, gh * ONE))
+        p.target_x_q, p.target_y_q = (int(x) for x in rng.integers(-lim, lim + 1, size=2))
+        if i % 4 == 1:                                  # a short flight on the grid
+            p.target_x_q = p.start_x_q + int(rng.integers(-12 * ONE, 12 * ONE))
+            p.target_y_q = p.start_y_q + int(rng.integers(-12 * ONE, 12 * ONE))
         p.pos_x_q, p.pos_y_q = p.start_x_q, p.start_y_q
+        p.bounces = int(rng.integers(0, 6))
         p.fuse_ticks = int(rng.integers(0, 400))
         p.thrown_tick = tick - int(rng.integers(0, min(tick, 1 << 31) + 1)) \
             if i % 5 == 0 else tick - int(rng.integers(0, 500))
@@ -588,6 +769,20 @@ def _synthetic(rng, sim, n, tick):
             p.fuse_ticks = 0
         elif case == 7:                                 # due exactly now
             p.fuse_ticks = tick - p.thrown_tick
+        elif case in (8, 9):                            # #215: a 45-degree flight
+            # through the lattice's corners into the room's corner (an EXACT
+            # corner at the hull: both flipped), from a tile corner
+            k = int(rng.integers(3, 40))
+            sx, sy = (gw - 2 - k // 2) * ONE, (gh - 2 - k // 2) * ONE
+            p.start_x_q, p.start_y_q = sx, sy
+            p.pos_x_q, p.pos_y_q = sx, sy
+            p.target_x_q, p.target_y_q = sx + k * ONE, sy + k * ONE
+            if case == 9:                               # up and left
+                p.start_x_q = p.pos_x_q = 2 * ONE + (k // 2) * ONE
+                p.start_y_q = p.pos_y_q = 2 * ONE + (k // 2) * ONE
+                p.target_x_q = p.start_x_q - k * ONE
+                p.target_y_q = p.start_y_q - k * ONE
+        p.leg_tick = p.thrown_tick if i % 6 else max(p.thrown_tick, tick - 3)
         out.append(p)
     _ = unit_fixed
     return out
@@ -597,36 +792,60 @@ def part_flight(trials=4, n_env=4):
     import copy
     rng = np.random.default_rng(29)
     sim = GrenadeScene(0).sim
-    st = _store([sim] * n_env)
+    hand = sim.weapons_tables.weapons.by_name["hand_grenade"]
+    shipped = hand.bounce_restitution_q
     cols = _cols(GLAY)
     seen = Counter()
-    for t in range(trials):
-        tick = int(rng.integers(500, 1 << 30))
-        envs = [_synthetic(rng, sim, GLAY.capacity - (e % 3), tick) for e in range(n_env)]
-        tab = ot.DeviceTable(GT, n_env)
-        fx = applier.DeviceApplier(n_env, cap=GLAY.capacity)
-        tab.stage_lists([_rows_of(GT, objs) for objs in envs])
-        fx.begin()
-        unit_kernels.grenades(st, tab, fx, np.full(n_env, tick, dtype=np.int64))
-        dev = tab.records()
-        drec = fx.records()
-        for e, objs in enumerate(envs):
-            after, recs = _host_grenade_step(sim, copy.deepcopy(objs), tick)
-            want = _rows_of(GT, after)
-            got = np.array(dev[e], dtype=np.int64).reshape(-1, GLAY.width)
-            d = _first_row_diff(got, want, cols)
-            if d is not None:
-                fail(f"flight trial {t} env {e}: row {d[0]} column {d[1]}: host "
-                     f"{d[2]} device {d[3]}")
-                return
-            if drec[e] != recs:
-                fail(f"flight trial {t} env {e}: the PAYLOAD records differ "
-                     f"({len(recs)} host / {len(drec[e])} device)")
-                return
-            seen["payload records"] += len(recs)
-            seen["rows"] += len(objs)
-            seen["detonated now"] += sum(1 for a, b in zip(objs, after)
-                                         if not a.detonated and b.detonated)
+    planes = _solid([sim] * n_env)
+    census = Census().install()
+    # #215: the shipped restitution, then 0 (drops at the wall) and 1 (a
+    # mirror, so bounce_max ends it), each over every trial
+    def run_trials():
+        for rq in (shipped, 0, ONE):
+            hand.bounce_restitution_q = rq
+            st = _store([sim] * n_env)
+            for t in range(trials):
+                tick = int(rng.integers(500, 1 << 30))
+                envs = [_synthetic(rng, sim, GLAY.capacity - (e % 3), tick) for e in range(n_env)]
+                tab = ot.DeviceTable(GT, n_env)
+                fx = applier.DeviceApplier(n_env, cap=GLAY.capacity)
+                tab.stage_lists([_rows_of(GT, objs) for objs in envs])
+                fx.begin()
+                unit_kernels.grenades(st, tab, fx, np.full(n_env, tick, dtype=np.int64), planes)
+                dev = tab.records()
+                drec = fx.records()
+                for e, objs in enumerate(envs):
+                    after, recs = _host_grenade_step(sim, copy.deepcopy(objs), tick)
+                    want = _rows_of(GT, after)
+                    got = np.array(dev[e], dtype=np.int64).reshape(-1, GLAY.width)
+                    d = _first_row_diff(got, want, cols)
+                    if d is not None:
+                        fail(f"flight trial {t} env {e}: row {d[0]} column {d[1]}: host "
+                             f"{d[2]} device {d[3]}")
+                        return
+                    if drec[e] != recs:
+                        fail(f"flight trial {t} env {e}: the PAYLOAD records differ "
+                             f"({len(recs)} host / {len(drec[e])} device)")
+                        return
+                    seen["payload records"] += len(recs)
+                    seen["rows"] += len(objs)
+                    seen["detonated now"] += sum(1 for a, b in zip(objs, after)
+                                                 if not a.detonated and b.detonated)
+                    seen["bounced"] += sum(1 for a, b in zip(objs, after)
+                                           if b.bounces > a.bounces)
+
+    try:
+        run_trials()
+    finally:
+        hand.bounce_restitution_q = shipped
+        census.uninstall()
+    for b in NEED_FLIGHT:
+        if not census.c[b]:
+            fail(f"flight: the census branch {b!r} was never taken")
+    print("flight census: " + ", ".join(f"{k} {v}" for k, v in sorted(census.c.items())
+                                        if k.startswith(("bounce", "settle"))))
+    st = _store([sim] * n_env)
+    planes = _solid([sim])
     # a WEGO row (no integer fuse): refused by name, left as it was
     from simulation import combat
     from simulation.orders import ORDER_GRENADE
@@ -637,7 +856,7 @@ def part_flight(trials=4, n_env=4):
     tab.stage_lists([_rows_of(GT, [w])])
     fx.begin()
     try:
-        unit_kernels.grenades(st1, tab, fx, np.array([5]))
+        unit_kernels.grenades(st1, tab, fx, np.array([5]), planes)
         fail("flight: a WEGO grenade (no integer fuse) was flown, not refused")
     except unit_kernels.ObjectSlotRefused as ex:
         if "WEGO" not in str(ex):
@@ -650,13 +869,13 @@ def part_flight(trials=4, n_env=4):
     tab.stage_lists([_rows_of(GT, [g])])
     fx.begin()
     try:
-        unit_kernels.grenades(st1, tab, fx, np.array([5]))
+        unit_kernels.grenades(st1, tab, fx, np.array([5]), planes)
         fail("flight: a row past the proved range was not refused")
     except unit_kernels.UnitKernelFault:
         pass
     if tab.records()[0] != ot.records(GT, [g]) or fx.records()[0]:
         fail("flight: a faulted row was written or recorded")
-    print(f"flight: {trials} trials x {n_env} envs of synthetic full tables equal "
+    print(f"flight: 3 restitutions x {trials} trials x {n_env} envs of synthetic full tables equal "
           f"_update_grenades row for row and record for record {dict(seen)}; a WEGO "
           f"row refused by name, a row past the range refused, both untouched")
 
@@ -786,6 +1005,72 @@ def part_scene():
 
 
 # ---------------------------------------------------------------------------
+# PART BOUNCE (#215)
+# ---------------------------------------------------------------------------
+#: The bounce law's branches the bouncing scenes must take (with PART FLIGHT
+#: holding the exact corner on constructed rows: a throw's facing is a
+#: rounded angle, so a scene corner is a near-corner).
+NEED_BOUNCE = (
+    "bounce: a vertical edge (x flipped)", "bounce: a horizontal edge (y flipped)",
+    "bounce: a mirrored leg", "bounce: bounce_max reached (rests at the wall)",
+    "bounce: restitution 0 (drops at the wall)", "bounce: restitution 1 (a mirror)",
+    "settle: a fuse-out mid-leg (the rest flown at once)",
+    "settle: a wall met while settling",
+)
+BOUNCE_TICKS = int(os.environ.get("UNIT_OBJECTS_BOUNCE_TICKS", "110"))
+
+
+def _bounce_facts(sc, name):
+    """The scene's own law facts, on the host's grenades: the one at the
+    sealed gap bounced, the one at the destroyed tile went through, the
+    mid-leg fuse-out detonated on the thrower's side, none rests on a
+    blocked tile, each one detonated."""
+    from simulation import combat
+    gap, hole, mid = (sc.by_owner(sc.e[i]) for i in (1, 2, 3))
+    allp = list(sc.thrown.values())
+    if not allp or not all(p.detonated for p in allp):
+        fail(f"{name}: not every grenade detonated within the scene")
+        return
+    if not gap or gap[0].bounces < 1 and sc.v != 1:
+        fail(f"{name}: the grenade at the gap closed mid-flight did not bounce")
+    if gap and combat.detonation_tile(sc.sim.gmap, gap[0].pos_x_q, gap[0].pos_y_q)[1] >= 32:
+        fail(f"{name}: the grenade at the closed gap detonated beyond it")
+    if not hole or hole[0].bounces or \
+            combat.detonation_tile(sc.sim.gmap, hole[0].pos_x_q, hole[0].pos_y_q)[1] <= 32:
+        fail(f"{name}: the grenade at the destroyed tile did not go through")
+    if not mid or unit_fixed_tile(mid[0].pos_x_q) >= 32:
+        fail(f"{name}: the mid-leg fuse-out detonated beyond the wall")
+
+
+def unit_fixed_tile(q):
+    return int(q) >> 16
+
+
+def part_bounce():
+    census = Census().install()
+    try:
+        scenes = {}
+        for v in (0, 1, 2):
+            sc = BounceScene(v)
+            run_shadow(f"bounce v{v}", [sc], BOUNCE_TICKS, census=census.c,
+                       twins=[BounceScene(v)] if v == 0 else None)
+            _bounce_facts(sc, f"bounce v{v}")
+            scenes[v] = sc
+        drivers = [BounceScene(0), BounceScene(1), BounceScene(2), GrenadeScene(1)]
+        acts, _ = run_shadow("bounce batch N=4", drivers, BOUNCE_TICKS)
+        if not acts[SLOT_2.label]:
+            fail("bounce batch: slot 2 never acted (vacuous)")
+    finally:
+        census.uninstall()
+    for b in NEED_BOUNCE:
+        if not census.c[b]:
+            fail(f"bounce: the census branch {b!r} was never taken")
+    print("bounce census: " + ", ".join(f"{k} {v}" for k, v in sorted(census.c.items())
+                                        if k.startswith(("bounce", "settle"))))
+    part_chained(scene=BounceScene, sets=("grenades",))
+
+
+# ---------------------------------------------------------------------------
 # PART BATCH
 # ---------------------------------------------------------------------------
 def _batch_drivers(n):
@@ -843,7 +1128,7 @@ def part_padding():
         c.upload(rc, np.array(nc))
         fx = applier.DeviceApplier(2)
         fx.begin()
-        unit_kernels.grenades(st, g, fx, np.array([tick, tick]))
+        unit_kernels.grenades(st, g, fx, np.array([tick, tick]), _solid([sim, sim]))
         unit_kernels.charges_tick(st, c, fx, np.array([tick, tick]))
         return g.download(), c.download(), fx.records()
     clean, dirty = run(False), run(True)
@@ -910,7 +1195,7 @@ def part_overflow():
             g.stage_lists(inp.lists["grenades"])
             fx.begin()
             try:
-                unit_kernels.grenades(st, g, fx, inp.tick)
+                unit_kernels.grenades(st, g, fx, inp.tick, _flight_fields(inp))
                 n = 0
             except applier.EffectOverflow as ex:
                 n = 1
@@ -920,7 +1205,7 @@ def part_overflow():
                 full = applier.DeviceApplier(1)
                 g.stage_lists(inp.lists["grenades"])
                 full.begin()
-                unit_kernels.grenades(st, g, full, inp.tick)
+                unit_kernels.grenades(st, g, full, inp.tick, _flight_fields(inp))
                 if fx.records()[0] != full.records()[0][:1]:
                     fail("overflow: the record kept is not the first")
                 seen["effects"] += 1
@@ -989,7 +1274,7 @@ def _run_1b_chained(st, inp, lists):
     req = _CH_REQ[key]
     req.begin()
     cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"])
+                             inp.scalars["charges_live"], _flight_fields(inp))
     if any(r[0] == unit_requests.KIND_USE for r in req.records()[0]):
         raise RuntimeError("chained: a door flip in the grenade chain (no landing)")
     unit_kernels.table_appends(st, req, lists["grenades"], lists["charges"])
@@ -1001,7 +1286,8 @@ SLOT_1B_CH = DeviceSlot(label="1b intents", run=_run_1b_chained,
                         inputs=SLOT_1B.inputs, outputs=SLOT_1B.outputs)
 
 
-def part_chained():
+def part_chained(scene=None, sets=("grenades", "charges")):
+    scene = scene or GrenadeScene
     from cuda_unit_verbs_check import (SLOT_1BP, SLOT_1C, _books_host_side,
                                        _orders_host_side, _same)
 
@@ -1015,7 +1301,10 @@ def part_chained():
     for name, slots, v in (("1b + 1b' + 1c + 2 grenades", [SLOT_1B_CH, SLOT_1BP,
                                                             SLOT_1C, SLOT_2], 0),
                            ("9e(d') planted charges", [SLOT_9E], 1)):
-        twin, ref = GrenadeScene(v), GrenadeScene(v)
+        if ("charges" if "9e" in name else "grenades") not in sets:
+            continue
+        name = f"{name} ({scene.__name__})"
+        twin, ref = scene(v), scene(v)
         t0 = time.perf_counter()
         n = 0
         ch_a = ChainedSlots(twin, slots, host_side=host_side_a if len(slots) > 1 else None)
@@ -1062,7 +1351,7 @@ def part_ship():
 
 
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "flight", "scene", "batch", "padding", "overflow", "refuse",
+PARTS = ("tables", "flight", "scene", "bounce", "batch", "padding", "overflow", "refuse",
          "chained", "ship")
 
 
@@ -1075,6 +1364,7 @@ def main(parts=None) -> int:
     for p in parts:
         try:
             {"tables": part_tables, "flight": part_flight, "scene": part_scene,
+             "bounce": part_bounce,
              "batch": part_batch, "padding": part_padding, "overflow": part_overflow,
              "refuse": part_refuse, "chained": part_chained, "ship": part_ship}[p]()
         except Exception as ex:          # a part's crash fails it, the rest run
@@ -1113,13 +1403,14 @@ def bench(reps: int = 200) -> int:
         c = ot.DeviceTable(CT, n)
         fx = applier.DeviceApplier(n)
         ticks = np.full(n, tick, dtype=np.int64)
+        planes = _solid([sim] * n)
         tg, tc = [], []
         for _ in range(reps):
             g.stage_lists([_rows_of(GT, copy.deepcopy(gs))] * n)
             c.stage_lists([_rows_of(CT, cs)] * n)
             fx.begin()
             s = time.perf_counter()
-            unit_kernels.grenades(st, g, fx, ticks)
+            unit_kernels.grenades(st, g, fx, ticks, planes)
             m = time.perf_counter()
             unit_kernels.charges_tick(st, c, fx, ticks)
             e = time.perf_counter()

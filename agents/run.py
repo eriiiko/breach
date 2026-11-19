@@ -7,6 +7,7 @@ JSON per round appended to ``curve.jsonl`` in the output folder.
 
     python -m agents.run --run <run.toml> --train <train.toml> --out <folder>
         [--workers 16] [--device cuda] [--threads 4] [--card-fraction 0.9]
+    python -m agents.run --resume <folder> [--allow-code-change] [...]
 
 The script joins, it does not re-implement: the round is
 ``Trainer.round``; every number of the line is read from the trainer's own
@@ -15,12 +16,25 @@ arrays (the batch, the collector's round log over the environment's
 (:func:`round_line` says where each comes from). ``agents/real_run.py``
 stays the small smoke.
 
-THE OUTPUT FOLDER (outside the checkout; refused inside it and refused when
-it already holds a ``curve.jsonl``: resuming is patch 2d's): ``run.toml`` and
-``train.toml`` (copies of the two files read), ``curve.jsonl``, and at the
-end both networks' weights under names that say they are NOT the saved-run
-format (patch 2d's): ``soldier_weights_NOT_A_SAVED_RUN.pt``,
-``value_weights_NOT_A_SAVED_RUN.pt`` (with the value targets' scale).
+THE OUTPUT FOLDER (outside the checkout; refused inside it, and a new run
+is refused where a ``curve.jsonl`` already is): ``run.toml`` and
+``train.toml`` (copies of the two files read), ``curve.jsonl``,
+``training_manifest.json`` (written at the run's start), and the saved run
+(:mod:`agents.saved`, the one writer): ``last.pt`` every ``save_every``
+rounds and at the end, ``round_<n>.pt`` every ``keep_every`` rounds. A run
+on a dirty checkout says so in one printed line: its network is not to be
+kept.
+
+RESUMING (``--resume <folder>``, patch 2d.2): the folder's own ``run.toml``
+and ``train.toml`` are read (``--run`` / ``--train`` / ``--out`` refused);
+``agents.saved.check_resume`` refuses by name a changed format, network,
+spec, file, manifest field, and -- unless ``--allow-code-change`` -- build
+id or commit; the state is restored and the rounds go on. Every match starts
+again (and with the memory on every memory is zero): the first line after
+a resume carries ``resumed_from``, ``matches_restarted`` and any
+``code_change``. Lines of rounds after the saved one (written before the
+run stopped) and a ``stopped`` line move to ``curve_discarded.jsonl``, so
+the curve continues without a seam. The wall stop counts from the resume.
 
 A STOP IS A LINE. A masked choice sent on a driven living row, or a live
 check that fails, writes the round's line with ``stopped`` naming it (and
@@ -42,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -60,8 +75,8 @@ from simulation.reward_v1 import REWARD_GROUPS
 CURVE = "curve.jsonl"
 RUN_COPY = "run.toml"
 TRAIN_COPY = "train.toml"
-SOLDIER_WEIGHTS = "soldier_weights_NOT_A_SAVED_RUN.pt"
-VALUE_WEIGHTS = "value_weights_NOT_A_SAVED_RUN.pt"
+#: Where a resume moves the curve's lines written after the saved round.
+DISCARDED = "curve_discarded.jsonl"
 #: The seconds of a round, in the order the line lists them; together they
 #: are the round (the test holds the sum to ``round`` within a tolerance).
 SECOND_PARTS = ("env_step", "answers", "copy", "grading", "passes",
@@ -187,7 +202,11 @@ def round_line(trainer, stats: dict, *, wall: float, decisions_total: int,
         "scale_spread": dict(zip(REWARD_GROUPS,
                                  np.asarray(stats["scale_spread"]).tolist())),
         "live": ({"max_logp_gap": float(live["max_logp_gap"]),
-                  "distance": float(live["distance"])} if live else None),
+                  "distance": float(live["distance"]),
+                  # the memory's clause, when the soldier has a memory
+                  **({"max_memory_gap": float(live["max_memory_gap"])}
+                     if "max_memory_gap" in live else {})}
+                 if live else None),
         "masked_choices": int(log["masked"]),
         "seconds": {k: float(sec[k]) for k in SECOND_PARTS + ("round",)},
         "card": card,
@@ -223,26 +242,68 @@ def _write(out: Path, line: dict) -> None:
         f.write(json.dumps(line, sort_keys=False) + "\n")
 
 
-def run(run_path, train_path, out, *, workers=None, device="cpu",
-        threads=4, card_fraction=0.9, print_every=1, max_rounds=None) -> dict:
-    """The run (module text). Returns a summary: rounds, decisions, wall
-    seconds, the output folder. ``max_rounds`` (tests only) stops earlier
-    than the plan without changing it."""
+def trim_curve(out: Path, rounds: int) -> int:
+    """At a resume from round ``rounds``: the curve's lines of later rounds
+    (written after the save that is resumed, before the run stopped) and any
+    ``stopped`` line move to ``curve_discarded.jsonl`` (appended), so the
+    curve goes on from the saved round without a seam. Returns how many
+    lines moved."""
+    path = out / CURVE
+    keep, moved = [], []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        d = json.loads(raw)
+        (keep if (not d.get("stopped") and d["round"] <= rounds)
+         else moved).append(raw)
+    if moved:
+        with open(out / DISCARDED, "a", encoding="utf-8") as f:
+            f.write("".join(x + "\n" for x in moved))
+    tmp = path.with_name(path.name + ".partial")
+    tmp.write_text("".join(x + "\n" for x in keep), encoding="utf-8")
+    os.replace(tmp, path)
+    return len(moved)
+
+
+def run(run_path=None, train_path=None, out=None, *, resume=None,
+        allow_code_change=False, workers=None, device="cpu", threads=4,
+        card_fraction=0.9, print_every=1, max_rounds=None) -> dict:
+    """The run (module text); with ``resume`` (a run's folder) the run goes
+    on from its ``last.pt`` (``run_path`` / ``train_path`` / ``out`` are
+    then refused: the folder's own copies are read). Returns a summary:
+    rounds, decisions, wall seconds, the output folder. ``max_rounds``
+    (tests only) stops earlier than the plan without changing it."""
     import rl_env
+    from agents import saved as SV
     from agents.network import SoldierNet, ValueNet
     from agents.trainer import Trainer, layout_sizes
-    out = Path(out)
+    if resume is not None:
+        given = [n for n, v in (("--run", run_path), ("--train", train_path),
+                                ("--out", out)) if v is not None]
+        if given:
+            raise ValueError(f"--resume reads the folder's own files; "
+                             f"{', '.join(given)} refused")
+        out = Path(resume)
+        if not (out / SV.LAST).is_file():
+            raise ValueError(f"--resume {out}: no {SV.LAST} there")
+    else:
+        if None in (run_path, train_path, out):
+            raise ValueError("a new run needs --run, --train and --out")
+        out = Path(out)
+        if (out / CURVE).exists():
+            raise ValueError(f"{out / CURVE} exists: resume the run "
+                             f"(--resume {out}) or choose a new folder")
     if _inside(out, _game.ROOT):
         raise ValueError(f"--out {out} is inside the checkout: a run's output "
                          f"lives outside it")
-    if (out / CURVE).exists():
-        raise ValueError(f"{out / CURVE} exists: resuming a run is patch "
-                         f"2d's; choose a new folder")
-    tf = load_training_file(train_path)
+    if resume is None:
+        load_training_file(train_path)          # refused before any copy
+        out.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(run_path, out / RUN_COPY)
+        shutil.copyfile(train_path, out / TRAIN_COPY)
+    run_file, train_file = out / RUN_COPY, out / TRAIN_COPY
+    tf = load_training_file(train_file)
     s = tf.settings
-    out.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(run_path, out / RUN_COPY)
-    shutil.copyfile(train_path, out / TRAIN_COPY)
     torch.set_num_threads(int(threads))
     dev = torch.device(device)
     if dev.type == "cuda":
@@ -254,26 +315,73 @@ def run(run_path, train_path, out, *, workers=None, device="cpu",
               f"({cap * total_mem / 2**20:.0f} MiB; {free / 2**20:.0f} MiB "
               f"free at the start)", flush=True)
     t0 = time.perf_counter()
-    env = rl_env.BatchedEnv(str(run_path), n_workers=workers)
+    env = rl_env.BatchedEnv(str(run_file), n_workers=workers)
     try:
+        hashes = {"run_file": SV.sha256_file(run_file),
+                  "training_file": tf.sha256,
+                  "build_id": SV.build_id_of(env),
+                  "commit": SV.git_head()}
+        manifest = SV.manifest_record(run_file, train_file, env.run)
+        ids = {"run_sha256": hashes["run_file"],
+               "training_sha256": hashes["training_file"],
+               "build_id": hashes["build_id"]}
         seed = int(env.run.seed)
         sizes = layout_sizes(env.layout)
         torch.manual_seed(seed)
         soldier = SoldierNet(tf.net, sizes)
         value = ValueNet(tf.net, sizes)
-        trainer = Trainer(env, soldier, value, s, device=dev, seed=seed)
+        trainer = Trainer(env, soldier, value, s, device=dev, seed=seed,
+                          ids=ids)
+        resumed = None
+        if resume is None:
+            SV.write_manifest(out, manifest)
+            started_from = "nothing"
+            total = 0
+        else:
+            last = out / SV.LAST
+            saved = SV.load(last)
+            change = SV.check_resume(saved, trainer, hashes=hashes,
+                                     manifest=manifest,
+                                     allow_code_change=allow_code_change)
+            SV.restore(trainer, saved)
+            k = trainer.rounds
+            moved = trim_curve(out, k)
+            started_from = {"saved": SV.sha256_file(last), "round": k,
+                            "from": saved["started_from"]}
+            if change:
+                started_from["code_change"] = change
+            total = int(saved["counters"]["decisions"])
+            resumed = {"resumed_from": k, "matches_restarted": True,
+                       "code_change": change, "curve_lines_discarded": moved}
+            print(f"resumed from round {k} ({last}); every match starts "
+                  f"again; {moved} later curve line(s) moved to "
+                  f"{DISCARDED}" + (f"; CODE CHANGED: {change}" if change
+                                    else ""), flush=True)
+        if manifest["dirty"]:
+            print("the checkout is DIRTY (a tracked change, or an untracked "
+                  "file under the run check's paths): this run's network is "
+                  "not to be kept", flush=True)
         print(f"farm up in {time.perf_counter() - t0:.1f} s: N = "
               f"{env.n_envs} on {getattr(env, 'n_workers', 1)} workers, levels "
               f"{list(env.run.levels)}, batch {trainer.batch.T} x "
               f"{trainer.batch.R} ({trainer.batch.nbytes() / 2**20:.0f} MiB),"
               f" device {dev}, planned rounds {s.planned_rounds}, wall stop "
               f"{s.wall_hours} h", flush=True)
+
+        def save_now():
+            SV.save(out / SV.LAST, trainer, hashes=hashes, manifest=manifest,
+                    started_from=started_from)
+            n = trainer.rounds
+            if s.keep_every and n % s.keep_every == 0:
+                SV.save(out / f"round_{n}.pt", trainer, hashes=hashes,
+                        manifest=manifest, started_from=started_from)
+
         t_run = time.perf_counter()
-        total = 0
         limit = s.planned_rounds if max_rounds is None else min(
             s.planned_rounds, int(max_rounds))
         wall_limit = (None if s.wall_hours is None
                       else float(s.wall_hours) * 3600.0)
+        saved_at = trainer.rounds
         while trainer.rounds < limit:
             if wall_limit is not None and time.perf_counter() - t_run \
                     >= wall_limit:
@@ -296,7 +404,13 @@ def run(run_path, train_path, out, *, workers=None, device="cpu",
                               wall=time.perf_counter() - t_run,
                               decisions_total=total, card=_card(dev),
                               host=_host())
+            if resumed is not None:
+                line.update(resumed)
+                resumed = None
             _write(out, line)
+            if trainer.rounds % s.save_every == 0:
+                save_now()
+                saved_at = trainer.rounds
             if print_every and line["round"] % print_every == 0:
                 sec = line["seconds"]
                 print(f"round {line['round']}: {line['decisions']} dec, "
@@ -306,12 +420,9 @@ def run(run_path, train_path, out, *, workers=None, device="cpu",
                       f"{line['trigger_share']}, live gap "
                       f"{(line['live'] or {}).get('max_logp_gap')}",
                       flush=True)
+        if saved_at != trainer.rounds:
+            save_now()
         wall = time.perf_counter() - t_run
-        torch.save(trainer.learner.soldier.state_dict(), out / SOLDIER_WEIGHTS)
-        sc = trainer.learner.scale
-        torch.save({"state_dict": trainer.learner.value.state_dict(),
-                    "scale_mean": sc.mean.cpu(), "scale_spread": sc.spread.cpu(),
-                    "scale_rounds": sc.rounds}, out / VALUE_WEIGHTS)
         summary = {"rounds": trainer.rounds, "decisions": total,
                    "wall_seconds": wall, "out": str(out)}
         print(f"done: {summary}", flush=True)
@@ -322,10 +433,16 @@ def run(run_path, train_path, out, *, workers=None, device="cpu",
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--run", required=True, help="the run file (rl_env)")
-    ap.add_argument("--train", required=True, help="the training file")
-    ap.add_argument("--out", required=True,
+    ap.add_argument("--run", default=None, help="the run file (rl_env)")
+    ap.add_argument("--train", default=None, help="the training file")
+    ap.add_argument("--out", default=None,
                     help="the run's output folder, outside the checkout")
+    ap.add_argument("--resume", default=None,
+                    help="a run's folder: go on from its last.pt (the "
+                         "folder's own run and training files are read)")
+    ap.add_argument("--allow-code-change", action="store_true",
+                    help="at --resume, let the build id and the commit "
+                         "differ from the saved run's (recorded)")
     ap.add_argument("--workers", type=int, default=None,
                     help="farm workers (default: rl_env's, threads - 1)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
@@ -336,7 +453,10 @@ def main(argv=None) -> int:
                     help="the share of the card this process may take "
                          "(running out is an error, never a spill)")
     args = ap.parse_args(argv)
-    run(args.run, args.train, args.out, workers=args.workers,
+    if args.allow_code_change and args.resume is None:
+        ap.error("--allow-code-change is for --resume")
+    run(args.run, args.train, args.out, resume=args.resume,
+        allow_code_change=args.allow_code_change, workers=args.workers,
         device=args.device, threads=args.threads,
         card_fraction=args.card_fraction)
     return 0

@@ -358,6 +358,20 @@ implementation agents and critics stay one at a time.
   the start; (5) at 4 workers x 16 matches, full width on the card, a round
   of 2 048 decisions took 12 s (env step 67 %, answers 15 %, learning 16 %):
   the farm is the bottleneck, as the design said.
+- **2026-11-18, patch 2d.1c (the memory by reward): FINDING, not a pass.**
+  One Opus agent, on a machine shared with another agent's builds. Built
+  the stretches starting at a match's first decision (2 x the teaching
+  answers, free); measured it and it with 128 decisions a round (11 x),
+  600 rounds each on seed 0: both flat. What the next try should know:
+  (1) COUNT the teaching answers before a run (a 20-round count takes a
+  minute, a run takes hours); (2) the gradient DID reach the cue (0.5 of
+  its size at the answer): the failure is signal against noise, not
+  vanishing; the feet grow sure of a cue-blind answer (variety 1.61 ->
+  1.1 to 1.4 at a flat 0.25); (3) a diagnosis run that prints the
+  answer's variety, the right answer's chance, a probe of the cue in the
+  memory and the gradient ratio every 25 rounds is worth more than a
+  second plain run (scratch `2d1c/diag.py`); (4) A with B costs 19 s a
+  round on the processor: any memory-task test at that farm is hours.
 
 ## 11. Running rung 1 (for the orchestrator session)
 
@@ -395,3 +409,32 @@ are that session:
   detached (`Start-Process`), with a background waiter on its pid, so an
   editor restart cannot kill it; (6) keep a run's folder outside the scratch
   folder (`C:/Users/steen/breach_runs/`).
+- 2026-11-17 -- 2d.1 (the memory path) built on `192-2d-trainer-rest`:
+  stretches, the stored memory, the live check's second clause (catches all
+  four memory faults; the first clause barely does on a fresh network), the
+  value-first rounds, `good_start` (gate held; neither no value-first rounds
+  nor ten times the variety wore the start down). FINDING for the lead
+  before 2d.2: `recall12` is not learnt with the design's numbers (even a
+  gap of 4 reaches 0.11 of the way in 300 rounds; the cue's mark on the
+  fresh memory is small and fades 0.6 x a decision), so its three tests are
+  skipped by name; decide the cell's start / step size / farm before any
+  run with the memory on. Bit-identity without memory is a machine-keyed
+  hash in `agents/tests/test_memory.py`.
+- 2026-11-17 -- 2d.1b (why the memory did not learn): the heads read the
+  cell's output raw, about 8 x smaller than the join; a LayerNorm between
+  (`memory_norm`) makes a supervised gap-12 fit learn (0.29 -> 0.99) and
+  the cue answered at once pass by reward in 87 rounds. Chrono start kept.
+  Still open: the tasks' farm gives recall12 only 8.5 teaching answers a
+  round (flat after 370 rounds); the farm is the lead's call. Measure a
+  memory question SUPERVISED first (minutes) before a reward run (hours);
+  and never `git stash pop` in a worktree: the stash is shared by all of
+  them (it popped another branch's WIP here; undone).
+- 2026-11-17 -- 2d.2 (saving and resuming) built on `192-2d2-saving`:
+  `agents/saved.py`, `--resume`, the batch header, the training manifest,
+  `SNAPSHOT_PATHS` + `agents/` `tools/`. Learned: (1) a PyTorch optimiser
+  keeps the state tensors it is handed and steps them in place, so a
+  restore must copy them (the determinism test caught two restored
+  trainers sharing Adam moments); (2) a kill between a round's line and
+  its save leaves stale curve lines, so a resume moves lines past the saved
+  round to `curve_discarded.jsonl`; (3) the record says "v1" for both
+  widths, so the saved file and the export also carry the widths.

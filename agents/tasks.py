@@ -10,6 +10,15 @@ one of the trainer's own traps, and the runner that scores them.
 | :class:`ScaleTask`: rewards a hundred times larger than usual, on top of a large offset the value network must learn, beside "outcome", always 0 | the rescaling of the value targets is wrong |
 | :class:`TeamTask`: a second team in the match that does not learn, paid the opposite of the learner | the trainer stores or grades rows it does not drive |
 
+With the soldier's memory on (patch 2d.1; design 8's last rows; note 2d, 6
+and 7):
+
+| task | the trainer fails it if |
+|---|---|
+| :class:`Recall12`: a cue at a match's first decision, the answer asked for 12 decisions later; soldiers die mid-match, matches end mid-batch at lengths that are not whole stretches | the memory, the stretches, the dead rows or the endings are wrong; the memory is reset at a stretch's start (the trap) |
+| :class:`Recall24`: the same with 24 between | it passes with stretches of 16 (the memory's limit is not where design 4.5 says); it must pass with 32 |
+| :func:`good_start`: the pointer task's taught soldier with a fresh value network, 20 rounds | learning wears down a good start (the copy's danger) |
+
 Each runs on the stand-in (:mod:`agents.standin`), the real network code at
 reduced width, on the processor. THE PASS (:func:`run_task`): the mean
 reward per decision (the learning team's living rows, the run's group
@@ -83,6 +92,12 @@ class _Base(Task):
     def bind(self, sizes):
         self.sizes = sizes
         return self
+
+    def measure(self, env, weights) -> tuple:
+        """``(paid . weights, decisions)`` of the learning teams so far: the
+        score is per learning decision of a living soldier (the stand-in's
+        own books)."""
+        return float(np.dot(env.paid, weights)), int(env.paid_decisions)
 
 
 class PointerTask(_Base):
@@ -347,8 +362,287 @@ class TeamTask(_Base):
         return r, np.zeros(u, bool), np.zeros(u, bool), False
 
 
+class RecallTask(_Base):
+    """THE MEMORY TASKS (note 2d, 6; design 8's last two rows). At a match's
+    first decision a cue (one of four directions) is shown in the soldier's
+    vector for that one decision; for the next ``gap - 1`` decisions the cue
+    columns show nothing (0); at decision ``gap`` the feet must walk the
+    cued direction, and only that decision is paid ("own" 1). The feet may
+    always stand or walk one of the four ways (a random player answers
+    right one time in five).
+
+    THE SCORE is per ANSWER, not per decision (:meth:`measure`): the "own"
+    paid over the answers a living learning soldier gave. Per decision the
+    best would depend on the matches' lengths and the deaths.
+
+    WHAT IS IN IT for the traps of note 2d, 5: two soldiers per match;
+    slot 1 dies at a drawn decision in half the matches (before or after
+    its answer; a dead row stays in the match, served zeros, paid nothing,
+    still stepped by the collector); every match lasts a drawn ``gap + 1``
+    to ``gap + 7`` decisions, never a multiple of 16 (so of 32 neither),
+    so matches end and restart inside rounds and across a round's edge and
+    start anywhere inside a stretch.
+
+    WHAT THE STRETCH ALLOWS (design 4.5): the gradient stops at a stretch's
+    start, so the cue can be LEARNT to be kept only when the cue and its
+    answer fall in one stretch -- the cue at one of the stretch's first
+    ``stretch - gap`` places. ``recall12`` with stretches of 16 has that on
+    a quarter of its matches; ``recall24`` with 16 never (it must FAIL),
+    with 32 on a quarter (it must pass).
+
+    FINDING (2d.1, 2026-11-17): recall12 was NOT learnt with the design's
+    numbers. Seed 0, stretches of 16: 220 rounds on the tasks' farm (8
+    matches x 32 decisions) and 140 on a farm of 32 matches near the random
+    player (0.25 is "never stand", reachable without the cue); with the
+    answer 4 decisions after the cue, 0.11 of the way after 300 rounds;
+    with the answer AT the cue (gap 0, memory on) 0.8 at round 180.
+
+    WHAT 2d.1b FOUND AND FIXED (2026-11-17), in two parts:
+
+    1. THE NETWORK (fixed). Measured by a supervised fit (the right feet at
+       the answer, through ``forward_sequence``, Adam 1e-3, batches of 256,
+       each window from its match's first decision): the cue's share of an
+       activation is about the same from the vector reader to the feet
+       (0.12 to 0.15 of its size: the 4 cue columns against each soldier's
+       fixed scenery), so no layer washes it out -- but the cell's output
+       starts about 8 x smaller than the join it reads (rms 0.13 against
+       1.0; the chrono start makes most units keep), and the heads read it
+       raw. Without memory the fit reaches 0.89 at step 80; memory on, gap
+       0: 0.30 at step 80; gap 12: 0.29 after 300 steps. The heads now read
+       the memory through a normalising layer (``SoldierNet.memory_norm``):
+       gap 0 0.94 at step 80, gap 12 0.83 at step 180 and 0.99 at 210. By
+       reward, gap 0 with memory on now passes in 87 rounds (was 0.8 at
+       round 180; the weights task without memory: 85). The chrono start
+       stays: measured with each window replayed under all four cues, it
+       keeps 7 x more of the cue's mark after 12 decisions and 27 x more
+       after 24 than PyTorch's start (the mark kept about 0.82 x a decision
+       against 0.67 x). In the supervised fit at gap 12 both starts learnt
+       alike (0.83 at step 180 / 150): it is kept for the longer gaps.
+    2. THE FARM (NOT changed: the lead's call). With the network fixed,
+       recall12 at stretch 16 on the tasks' farm is still flat after 370
+       rounds (seed 0, planned 600; every tenth round 0.11 to 0.46, no
+       trend) and on 32 matches after 100 rounds (0.19 to 0.28). Counted
+       per round on the tasks' farm (20 rounds): gap 0 gives 130 answers,
+       every one learnable; recall12 25 answers, of which 8.5 have the cue
+       in the answer's stretch (the only ones that teach the keeping);
+       recall24 at 32 gives 14 answers and 3.4 learnable, at 16 none. So
+       recall12 sees 15 x and recall24 38 x fewer teaching answers a round
+       than gap 0, which needs 87 rounds, and the supervised fit says
+       holding the cue 12 decisions costs about 2 x the steps of reading it
+       at once: on the order of a thousand rounds or more, past any test's
+       budget at 4 s a round (under load). What a pass needs is a farm
+       giving more teaching answers a round (more matches, more decisions
+       a round) or a larger budget, decided by the lead and written here
+       with its measurement.
+
+    WHAT 2d.1c MEASURED (2026-11-18; FINDING, still open). Two candidates,
+    seed 0, stretches of 16, planned 600 rounds, the machine shared with
+    another agent's builds (4 to 24 s a round as its load came and went):
+
+    - B, THE STRETCHES START AT A MATCH'S FIRST DECISION (the learner,
+      ``Learner._stretches``, kept on the branch): teaching answers a round
+      on the tasks' farm 8.5 -> 17.3. By reward: flat for all 600 rounds
+      (the means of ten rounds 0.18 to 0.31; last five 0.19), 4.4 s a
+      round.
+    - A with B, the design's 128 decisions a round (``Settings.decisions``'
+      default; the tasks' farm keeps 32 for speed): teaching answers a
+      round 95 (fixed cuts at 128: 28.7; 32 matches x 32 decisions with
+      fixed cuts, 2d.1b's farm, 34.6; gap 0 on the tasks' farm: 130), 15 to
+      24 s a round. By reward: flat for all 600 rounds (the means of 25
+      rounds 0.22 to 0.27; 19 s a round on average; an earlier run of the
+      same, stopped at 150 rounds, 0.21 to 0.30). A alone (fixed cuts) gives
+      fewer teaching answers than A with B at the same cost, and 2d.1b ran
+      it on 32 matches for 100 rounds flat: not run again.
+
+    The diagnosis (A with B, every 25 rounds, over the ~95 answers of the
+    round's batch replayed from their match's start): the gradient of the
+    right answer's log-probability reaching the memory after the cue's
+    step is 0.44 to 0.66 of its size at the step before the answer (no
+    vanishing: the chrono start holds); the cue read back from the memory
+    at the answer by a linear probe stays near chance (0.10 to 0.43
+    against 0.25, noisy at ~47 held-out answers, no trend); the feet's
+    variety at the answer FALLS from 1.61 (all five even) to 1.04 to 1.4
+    while the chance of the right answer stays 0.23 to 0.28: the soldier
+    grows sure of a direction that does not depend on the cue; the value's
+    error at the answer stays about the pay's own spread (0.36 to 0.50
+    against a 0/1 pay near 0.25); no early stop in any round (8 steps a
+    round). In expectation the answer's gradient is only the right answer's
+    chance (0.2) times the supervised one, and the 15 unpaid decisions a
+    match share the feet head and the grades' common size: the cue's
+    signal is below the noise at these numbers. Neither candidate is a
+    pass; nothing was tuned, loosened or shortened.
+
+    FOLLOW-UP (2d.1c, the lead's two measurements; B on, the tasks' farm,
+    stretch 16, seed 0, planned and at most 300 rounds, stopped at a pass):
+
+    | gap | teaching answers a round | by reward |
+    |---|---|---|
+    | 0 | 130 | PASS in 93 rounds |
+    | 1 | 100 | flat, last 30 rounds 0.25 |
+    | 2 | 76 | flat, 0.25 |
+    | 4 | 50 | flat, 0.26 |
+    | 8 | 26 | flat, 0.24 |
+
+    A CLIFF between gap 0 and gap 1 (at gap 1 the teaching answers are
+    near gap 0's), not a growth with the gap. The noise diagnostic (a
+    scratch patch, never a fix): (a) the soldier's loss from the ANSWERS
+    only -- every other decision's clipped objective and variety masked,
+    and with them the distance, the live check's first clause and the
+    grades' common size taken over the answers; the value's loss, the
+    grading and the scale untouched: gap 1 PASSES in 159 rounds (means of
+    25 rounds 0.21, 0.26, 0.29, 0.52, 0.73, 0.74, 0.82); gap 12 flat on the
+    tasks' farm for 300 rounds (0.22 to 0.29) and on 128 decisions a round
+    for 150 (0.24 to 0.26; gap 1 needed 75 rounds before it rose, so 150 is
+    not conclusive). (b) every decision keeps its grade and its loss terms,
+    the grades brought to a common size with the mean and spread of the
+    answers' grades over the batch: gap 1 partly learnt, 0.25 for 175
+    rounds, then 0.37 to 0.48 at 300. Read: as soon as one decision comes
+    before the answer in its match (gap >= 1), the answer's luck flows back
+    through the grades onto decisions that cannot cause it, on the same
+    feet head, and drowns the cue; at gap 0 nothing comes before the answer.
+    At gap 12 the drowning is not the only obstacle within these budgets.
+
+    SECOND FOLLOW-UP (scratch task shapes, never committed; B on, the
+    tasks' farm, stretch 16, seed 0, at most 300 rounds):
+
+    | shape | gap | by reward (means of 25 rounds) |
+    |---|---|---|
+    | "hold": every decision 1..gap paid for the cued way | 12 | flat, 0.22 to 0.25 (last 25: 0.25) |
+    | "go": a column shows 1 at the answer only | 12 | flat, 0.20 to 0.27 (last 25: 0.24) |
+
+    Neither shape passes gap 12; "hold" at gap 4 and "go" at gap 1 were
+    still running when this was written (the lead's runs since: "hold" gap
+    4 flat at 0.25 for 300 rounds; "go" gap 1 0.41 to 0.43, no pass;
+    "hold" gap 12 flat at 0.25 from round 75 to round 3000).
+
+    THIRD FOLLOW-UP (2d.1c; B on, the tasks' farm, stretch 16, seed 0;
+    scratch scripts, measurements only):
+
+    E1, the direction. On 20 fresh batches each, the soldier's gradient as
+    the learner forms it (its first piece, before clipping: g_rl), the same
+    with the answers only (g_ans), against the gradient of the mean
+    log-probability of the right feet at the answers (g_sup) and of the
+    mean probability (g_obj, what the pay rewards). Cosines, mean +- s.e.
+    over batches (all weights), and of the 20-batch means:
+
+    | gap, network | g_rl.g_obj per batch | of the means | g_ans.g_obj per batch | of the means | |mean|^2/var g_rl, g_ans |
+    |---|---|---|---|---|---|
+    | 12, fresh | +0.16 +- 0.04 | +0.48 | +0.43 +- 0.04 | +0.91 | 0.06, 0.18 |
+    | 12, 100 rounds (plateau) | +0.11 +- 0.11 | +0.83 | +0.43 +- 0.09 | +0.48 | 0.09, 0.13 |
+    | 1, fresh | +0.44 +- 0.05 | +0.93 | +0.65 +- 0.03 | +0.98 | 0.23, 0.55 |
+    | 1, 100 rounds (plateau) | +0.34 +- 0.11 | +0.26 | +0.45 +- 0.10 | +0.46 | 0.02, 0.03 |
+
+    (Fresh, g_sup and g_obj coincide; at the plateau g_sup's mean points
+    away from the soldier's favourite direction and its cosines with g_rl
+    and g_ans fall to about 0.1, and the means' to -0.45 for g_ans: g_obj
+    is the honest comparison.) The answers' grades have the right sign
+    (common size, right +2.9 to +3.5, wrong -0.2 to -0.6). Per group at the
+    plateau (gap 12, g_ans against g_obj, of the means): memory cell 0.75,
+    memory_norm 0.98, join 0.75, feet head 0.49.
+
+    E2, a round at the plateau (gap 12, rounds 100 to 119): all 4 planned
+    steps run every round, the early stop never fires; the distance after
+    the last step is -0.002 to +0.004 (mean |.| 0.001, max_distance 0.02);
+    the gradient's norm before clipping 0.13 to 0.55 (mean 0.35; 5 % of the
+    steps clipped at 0.5); step size 2.0e-4 to 1.8e-4. Of the distance,
+    feet 52 %, trigger 23 %, aim 18 %, hand 7 %: half goes to heads this
+    task does not pay.
+
+    E3, does reward keep a memory that exists. Supervised fit of recall12
+    (32 matches x 64 decisions, Adam 1e-3) until p(right) > 0.9, then that
+    soldier with a FRESH value network to the trainer for 200 rounds: seed
+    0 (supervised 0.91 at step 630): round 1 0.92, 25-round means 0.91,
+    0.93, 0.96, 0.96, 0.97, 0.98, 0.98, 0.97: KEPT and improved (4.2 s a
+    round). Seed 1: the supervised fit stalled at 0.71 to 0.76 for 1 400
+    steps and was handed over at step 2 000 (not above 0.9); by reward
+    round 1 0.67, 25-round means 0.68, 0.74, 0.70, 0.71, 0.68, 0.68,
+    0.67, 0.72: held, neither lost nor raised to the line.
+
+    Reading: no sign fault (E1: the grades and the mean direction are
+    right); the learner is not stopped (E2: every step runs, at about 5 %
+    of its distance budget); reward keeps and sharpens a memory that exists
+    (E3). The plateau is the noise case: per batch the reward gradient is
+    mostly noise (|mean|^2 / variance 0.02 to 0.18, so 5 to 50 batches
+    before the signal stands out), and the steps are small, so a cue-blind
+    start never finds the memory."""
+
+    N_DIRS = 4
+
+    def __init__(self, gap: int = 12):
+        self.gap = int(gap)
+        self.lengths = [n for n in range(self.gap + 1, self.gap + 8)
+                        if n % 16]
+        super().__init__(name=f"recall{self.gap}", n_teams=1, n_slots=2,
+                         controllers=("policy",),
+                         match_len=max(self.lengths), best=1.0)
+        self.answers = 0
+
+    def bind(self, sizes):
+        super().bind(sizes)
+        self.cue = numeric_columns(sizes.vector, sizes.vector_kinds,
+                                   self.N_DIRS)
+        stride = A.N_DIRS // self.N_DIRS
+        self.options = [_feet_option(d * stride) for d in range(self.N_DIRS)]
+        return self
+
+    def start(self, e, rng):
+        u = self.n_teams * self.n_slots
+        dies = int(rng.integers(1, self.gap + 4)) if rng.uniform() < 0.5 \
+            else -1
+        return {"clock": 0, "length": int(rng.choice(self.lengths)),
+                "right": np.array([self.options[int(rng.integers(
+                    self.N_DIRS))] for _ in range(u)]),
+                "dies": dies}
+
+    def observe(self, e, state, obs, full, valid, rng):
+        for i in range(len(valid)):
+            obs["vector"][i, self.cue] = 0.0
+        for i in np.flatnonzero(valid):
+            if state["clock"] == 0:
+                d = self.options.index(int(state["right"][i]))
+                _onehot(obs, i, self.cue, d)
+            obs["mask_feet"][i] = 0
+            obs["mask_feet"][i, A.FEET_STAND] = 1
+            obs["mask_feet"][i, self.options] = 1
+
+    def pay(self, e, state, actions, valid, rng):
+        u = len(valid)
+        clock = state["clock"]
+        r = np.zeros((u, len(REWARD_GROUPS)))
+        if clock == self.gap:
+            right = valid & (actions[:, 0] == state["right"])
+            r[:, G_OWN] = np.where(right, 1.0, 0.0)
+            self.answers += int(valid.sum())
+        deaths = np.zeros(u, bool)
+        if clock == state["dies"]:
+            deaths[1] = True
+        state["clock"] = clock + 1
+        over = state["clock"] >= state["length"]
+        return r, deaths, np.zeros(u, bool), over
+
+    def measure(self, env, weights) -> tuple:
+        """``(paid . weights, answers)``: the score per answer given."""
+        return float(np.dot(env.paid, weights)), int(self.answers)
+
+
+class Recall12(RecallTask):
+    """``recall12``: the answer 12 decisions after the cue."""
+
+    def __init__(self):
+        super().__init__(12)
+
+
+class Recall24(RecallTask):
+    """``recall24``: the answer 24 decisions after the cue."""
+
+    def __init__(self):
+        super().__init__(24)
+
+
 TASKS = {"pointer": PointerTask, "argument": ArgumentTask,
          "weights": WeightTask, "scale": ScaleTask, "teams": TeamTask}
+#: The memory tasks (run with the soldier's memory on, note 2d, 6).
+MEMORY_TASKS = {"recall12": Recall12, "recall24": Recall24}
 
 
 def make_env(task: Task, n_envs: int, seed: int) -> StandIn:
@@ -367,8 +661,9 @@ def networks(env, seed: int, spec=None):
 
 
 def score(env, weights) -> tuple:
-    """``(paid . weights, decisions)`` of the learning teams so far."""
-    return float(np.dot(env.paid, weights)), int(env.paid_decisions)
+    """``(paid . weights, count)`` of the learning teams so far: per
+    decision, or what the task measures per (:meth:`_Base.measure`)."""
+    return env.task.measure(env, weights)
 
 
 @torch.no_grad()
@@ -403,20 +698,24 @@ TASK_DECISIONS = 32
 
 def run_task(task_cls, seed: int, max_rounds: int, *,
              n_envs: int = TASK_ENVS, decisions: int = TASK_DECISIONS,
-             threads: int = 4, random=None, on_round=None) -> dict:
+             threads: int = 4, random=None, on_round=None,
+             memory: bool = False, stretch: int | None = None) -> dict:
     """Train on ``task_cls`` from seed ``seed`` until the mean over the
     last :data:`PASS_WINDOW` rounds reaches the pass line, or
     ``max_rounds`` (also the run's planned rounds). ``random`` a measured
-    random score (else measured here). Returns the scores, the rounds used
-    and the verdict."""
+    random score (else measured here); ``memory`` the soldier's memory on,
+    with stretches of ``stretch`` (else the design's). Returns the scores,
+    the rounds used, the verdict and the trained soldier."""
     torch.set_num_threads(threads)
-    settings = Settings(planned_rounds=max_rounds, decisions=decisions)
+    extra = {} if stretch is None else {"stretch": int(stretch)}
+    settings = Settings(planned_rounds=max_rounds, decisions=decisions,
+                        **extra)
     w = np.asarray(settings.weights)
     if random is None:
         random = random_score(task_cls, w)
     task = task_cls()
     env = make_env(task, n_envs, seed)
-    soldier, value = networks(env, seed)
+    soldier, value = networks(env, seed, reduced(memory) if memory else None)
     trainer = Trainer(env, soldier, value, settings, seed=seed)
     line = random + PASS_SHARE * (task.best - random)
     scores = []
@@ -438,11 +737,76 @@ def run_task(task_cls, seed: int, max_rounds: int, *,
             "rounds": len(scores), "random": random, "best": task.best,
             "line": line, "reached": reached,
             "share": (reached - random) / (task.best - random),
-            "scores": scores}
+            "scores": scores, "soldier": trainer.learner.soldier}
+
+
+#: The rounds the "already good start" is learnt on after its start, and
+#: the share of the start's score its lowest round must keep (design 8's
+#: row; note 2d, 7).
+GOOD_START_ROUNDS = 20
+GOOD_START_KEEP = 0.9
+
+
+def good_start(soldier, seed: int, *, planned_rounds: int,
+               value_first_rounds: int, variety: float | None = None,
+               rounds: int = GOOD_START_ROUNDS, n_envs: int = TASK_ENVS,
+               decisions: int = TASK_DECISIONS, threads: int = 4) -> dict:
+    """THE "ALREADY GOOD START" TASK (note 2d, 7; design 6 arm B, 8): a
+    copy of ``soldier``, taught on the pointer task until it passed, starts
+    a run with a FRESH value network and a fresh scale and learns
+    ``rounds`` rounds with the design's numbers (``value_first_rounds`` and
+    ``variety`` as given). Returns the score per round (each played by the
+    weights the round started with: round 1's is the start's), the start,
+    the lowest, the end (the last round's) and the lowest's share of the
+    start.
+
+    MEASURED (2d.1, 2026-11-17; the pointer soldier taught on seed 0 until
+    it passed, 37 rounds, 0.82; planned rounds 150; start / lowest / end):
+
+    | run | seed 0 | seed 1 | seed 2 |
+    |---|---|---|---|
+    | 5 value-first rounds (the gate) | 0.832 / 0.832 / 0.941 | 0.742 / 0.680 / 0.891 | 0.695 / 0.695 / 0.949 |
+    | no value-first rounds | 0.832 / 0.832 / 0.949 | 0.742 / 0.734 / 0.934 | 0.695 / 0.695 / 0.945 |
+    | 5 value-first, variety x 10 | 0.832 / 0.832 / 0.930 | 0.742 / 0.680 / 0.887 | 0.695 / 0.695 / 0.922 |
+
+    Neither the missing value-first rounds nor ten times the variety push
+    wore the start down: every run ends 0.11 to 0.25 above its start. The
+    one dip (seed 1, 0.680 = 0.92 of the start) falls in round 6 of the
+    runs WITH value-first rounds, while the soldier was still frozen: it is
+    the noise of one round's score (256 decisions, about 0.03), not
+    learning. Two limits of the measurement: the taught start is the pass
+    line (0.82 on its own rooms, 0.70 to 0.74 on other seeds' scenery), not
+    the best, so a trainer has room to climb and a wearing-down of a start
+    at the top is not what this sees; and the gate's 0.9 is about three
+    rounds' noise below a single-round start."""
+    import copy
+    torch.set_num_threads(threads)
+    extra = {} if variety is None else {"variety": float(variety)}
+    settings = Settings(planned_rounds=planned_rounds, decisions=decisions,
+                        value_first_rounds=value_first_rounds, **extra)
+    w = np.asarray(settings.weights)
+    env = make_env(PointerTask(), n_envs, seed)
+    _, value = networks(env, seed)
+    trainer = Trainer(env, copy.deepcopy(soldier), value, settings,
+                      seed=seed)
+    scores = []
+    last = score(env, w)
+    for _ in range(rounds):
+        trainer.round()
+        now = score(env, w)
+        scores.append((now[0] - last[0]) / max(1, now[1] - last[1]))
+        last = now
+    start, lowest = scores[0], min(scores)
+    return {"seed": seed, "value_first_rounds": value_first_rounds,
+            "variety": settings.variety, "scores": scores, "start": start,
+            "lowest": lowest, "end": scores[-1],
+            "kept": lowest / start if start else float("nan")}
 
 
 __all__ = ["PASS_SHARE", "PASS_WINDOW", "numeric_columns", "refresh_aim",
            "PointerTask", "ArgumentTask", "WeightTask", "ScaleTask",
-           "TeamTask", "TASKS", "TASK_ENVS", "TASK_DECISIONS", "make_env",
+           "TeamTask", "RecallTask", "Recall12", "Recall24", "MEMORY_TASKS",
+           "GOOD_START_ROUNDS", "GOOD_START_KEEP", "good_start",
+           "TASKS", "TASK_ENVS", "TASK_DECISIONS", "make_env",
            "networks", "score",
            "random_score", "run_task"]

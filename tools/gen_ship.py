@@ -25,9 +25,11 @@ mirror pairing. v1's stage 1 is a mirrored binary split:
 STAGE 2 -- the EMBEDDING (:func:`embed` -> :class:`Embedding`): graph ->
 tiles. Hull, steel everywhere inside, each room's rectangle air, each edge
 cut into its shared wall as its row of the EDGE-TYPE TABLE (:data:`EDGE_KINDS`,
-the vocabulary doc's §0.4: door = ``MAT_DOOR``, window = ``MAT_GLASS``, open
-= ``MAT_AIR``, breakable = ``MAT_WOOD``, bulkhead / vent_only = nothing cut;
-entity_door = an A6 ``door`` entity in the opening; airlock = the L5 recipe,
+the vocabulary doc's §0.4: door = a CLOSED A6 ``door`` entity in the opening
+(``MAT_DOOR_CLOSED``; #215, Erik 2026-11-18: the legacy painted ``MAT_DOOR`` is
+retired), window = ``MAT_GLASS``, open = ``MAT_AIR``, breakable = ``MAT_WOOD``,
+bulkhead / vent_only = nothing cut; entity_door = an A6 ``door`` entity in the
+opening, emitted open; airlock = the L5 recipe,
 a vestibule carved on room ``a``'s side with two doors and levels/airlock_demo's
 controller and wiring; locked is accepted by the schema and refused here
 until #135), per-room tags from :data:`ROOM_TAGS`,
@@ -156,12 +158,13 @@ LAMP_LIGHT_BUDGET = (CONE_LIGHT_UNITS - TRANSIENT_LIGHT / OMNI_SHARE
 FUEL_MIX_V1 = {"furniture": 0.6, "wood": 0.4}
 
 # Entity doors (A6). A closed entity door stamps MAT_DOOR_CLOSED (mobility
-# 0), which no unit crosses, and the first bots (control_bots_v1) never USE a
-# door -- so stage 2 emits every entity door OPEN (MAT_AIR in the CSV, the
-# loader's own stamp). Since #183 G8p the layered bots (control_bots) open a
-# closed non-hull door on their path (#142); the default stays open (a
-# closed default is a ship re-baseline and bots_v1 would be shut in). Still a
-# compartment boundary in the gates: it can close.
+# 0), which no unit crosses until it is USED. The ``entity_door`` kind is
+# emitted OPEN (MAT_AIR in the CSV, the loader's own stamp): a door standing
+# open that can close, a compartment boundary in the gates. The ``door`` and
+# ``vented_door`` kinds are emitted CLOSED (#215, Erik 2026-11-18: the legacy
+# painted door is retired and every doorway is a manually operated entity
+# door; the layered bots open a closed non-hull door on their path, #142, and
+# the horde bashes one; bots_v1 opens one too since #215, Erik 2026-11-18).
 ENTITY_DOOR_INITIAL = "open"
 
 # The CARGO DOOR IN THE HULL (vocabulary B.4 / E.2 row 5): a room's
@@ -261,7 +264,8 @@ class EdgeKind:
     """One row of the vocabulary's edge-type table (§0.4). ``stamps``: the
     material stage 2 puts in the shared wall's opening (None: nothing is
     cut, the wall stays steel; for an entity kind, what its door's initial
-    state stamps there, so the CSV and the loader's door stamp agree);
+    state stamps there, so the CSV and the loader's door stamp agree --
+    and the door's initial state is READ from it, :func:`door_initial`);
     ``width``: tiles along the wall; ``bounds``: the edge bounds a
     compartment (False: its two rooms are ONE compartment);
     ``secret_path``: a ``secret`` room reached only through this edge counts
@@ -307,8 +311,10 @@ _DOOR_STAMP = {"open": MAT_AIR, "closed": MAT_DOOR_CLOSED}
 # rooms): it is the ``hull_door`` room tag, emitted CLOSED where an
 # entity_door is emitted open -- see HULL_DOOR_DEFAULT for why.
 EDGE_KINDS = {
-    "door":        EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
-                            L9_MUST_SHARE_WALL),
+    # #215 (Erik, 2026-11-18): a door is a CLOSED entity door (the legacy
+    # painted MAT_DOOR, walkable and gas-tight, is retired: nothing stamps it).
+    "door":        EdgeKind(_DOOR_STAMP["closed"], DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL, entity="door"),
     "entity_door": EdgeKind(_DOOR_STAMP[ENTITY_DOOR_INITIAL], DOOR_W, True,
                             False, True, L9_MUST_SHARE_WALL, entity="door"),
     "open":        EdgeKind(MAT_AIR, DOOR_W, False, False, True,
@@ -332,15 +338,16 @@ EDGE_KINDS = {
     # #134 (2026-11-06, vocabulary §0.4 addition): the GRILLE kinds -- air
     # passes, walking does not. `grille` is the window's twin (its width, a
     # steel grating instead of glass): an air-only opening, nobody walks
-    # through, not a secret path. `vented_door` is the legacy door with a
+    # through, not a secret path. `vented_door` is the door with a
     # grille in each jamb: the door's opening and width (so no layout
     # arithmetic moves), door tiles in the opening, the one wall tile on
     # each side grille. Both bound a compartment (a grille is structure for
     # walking and for the count); neither is a CELL_CROSSING_KINDS row.
     "grille":      EdgeKind(MAT_GRILLE, GLASS_W, True, False, False,
                             L9_MUST_SHARE_WALL, air=True),
-    "vented_door": EdgeKind(MAT_DOOR, DOOR_W, True, False, True,
-                            L9_MUST_SHARE_WALL, jambs=MAT_GRILLE, air=True),
+    "vented_door": EdgeKind(_DOOR_STAMP["closed"], DOOR_W, True, False, True,
+                            L9_MUST_SHARE_WALL, jambs=MAT_GRILLE, air=True,
+                            entity="door"),
 }
 # Kinds that may cross a cell boundary (L5 as amended, Erik 2026-10-31: the
 # breakable wall is the third, a deliberate weak point): everything else is
@@ -1890,11 +1897,41 @@ def _door_entity(eid: str, tiles, orient: str, state: str) -> EntityInstance:
         authored_keys=_DOOR_KEYS)
 
 
+#: The id prefix of the door entity an EDGE emits (:func:`_build_doors`):
+#: an interior door no wire drives, which a unit opens with the use verb.
+EDGE_DOOR_PREFIX = "door_e"
+
+
+def edge_door_tiles(entities, tile_size_m: float = TILE_SIZE_M) -> list:
+    """The span tiles of every door entity an edge emitted (id
+    :data:`EDGE_DOOR_PREFIX`): the closed interior doors a walk gate passes
+    through (#215; a bot opens one with the use verb, #142). Airlock and
+    hull doors are not among them."""
+    from simulation.entities.door import base_span
+    out = []
+    for e in entities or ():
+        if e.class_name == "door" and str(e.id).startswith(EDGE_DOOR_PREFIX):
+            out += base_span(e.fields, tile_size_m)
+    return out
+
+
+def door_initial(spec: EdgeKind) -> str:
+    """The initial state of an entity-door row's door, READ from what the
+    row stamps (``MAT_DOOR_CLOSED`` closed, ``MAT_AIR`` open), so the CSV
+    and the loader's door stamp cannot disagree."""
+    for state, mat in _DOOR_STAMP.items():
+        if spec.stamps == mat:
+            return state
+    raise ValueError(f"an entity-door row stamps {spec.stamps!r}, which is "
+                     f"no door state's stamp ({_DOOR_STAMP})")
+
+
 def _build_doors(graph: ShipGraph, modes: dict | None = None
                  ) -> tuple[list, list]:
     """The entity half of the edges, ``(entities, wires)``: one ``door``
-    entity per ``entity_door`` edge (id ``door_e<edge index>``, initial
-    state ``ENTITY_DOOR_INITIAL``), one per ``hull_door`` room (id
+    entity per edge whose kind's row names a door entity (``door``,
+    ``vented_door``, ``entity_door``; id ``door_e<edge index>``, initial
+    state :func:`door_initial` of the row), one per ``hull_door`` room (id
     ``hull_door_r<room id>``, the tag's state, closed by default), and per
     ``airlock`` edge its mode's
     recipe (:func:`airlock_entities`; ``modes``: edge index -> mode, from
@@ -1906,8 +1943,8 @@ def _build_doors(graph: ShipGraph, modes: dict | None = None
         if e.spec.entity != "door":
             continue
         orient = shared_wall(graph.rooms[e.a], graph.rooms[e.b])[0]
-        ents.append(_door_entity(f"door_e{i}", _opening_tiles(graph, e),
-                                 orient, ENTITY_DOOR_INITIAL))
+        ents.append(_door_entity(f"{EDGE_DOOR_PREFIX}{i}", _opening_tiles(graph, e),
+                                 orient, door_initial(e.spec)))
     for rm, orient, tiles, _beyond, state in _hull_doors(graph):
         ents.append(_door_entity(f"hull_door_r{rm.id}", tiles, orient,
                                  state))
@@ -2556,12 +2593,24 @@ def validate(tm: np.ndarray, rooms: list, *, n_rooms: int | None = None,
     # airlock's outer door spawns closed (mobility 0) but its controller
     # opens it for ANY unit standing in the vestibule (the presence plate
     # counts every team), so the gate walks through it; an entity door
-    # stands open in the tiles, exactly as the sim stamps it.
+    # emitted open stands open in the tiles, exactly as the sim stamps it,
+    # and one emitted CLOSED (the ``door`` / ``vented_door`` rows, #215) is
+    # walked through too: a unit opens it with the use verb (the layered
+    # bots do, #142) and the horde bashes it (a hull door is no edge).
+    # Without the graph (the tile structure alone) every closed door tile is
+    # walked through: which is an airlock's or an edge's the tiles cannot
+    # say, and a hull door leads only to vacuum, which the walk excludes.
+    walk = walk.copy()
     if graph is not None:
-        walk = walk.copy()
         for _i, al in _airlocks(graph):
             for (y, x) in al.outer:
                 walk[y, x] = True
+        for e in graph.edges:
+            if e.spec.entity == "door":
+                for (y, x) in _opening_tiles(graph, e):
+                    walk[y, x] = True
+    else:
+        walk |= mat == MAT_DOOR_CLOSED
     ok = sliding_window_view(walk & ~vac, (fp, fp)).all(axis=(2, 3))
 
     def blocked(x, y):

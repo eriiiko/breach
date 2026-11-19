@@ -1165,7 +1165,10 @@ def _worker_main(conn, task: dict) -> None:
 SNAPSHOT_BACKENDS = ("cpu_farm", "device")
 #: Where an UNTRACKED file makes a snapshot dirty (anywhere else -- art,
 #: notes -- it may stay). A modified tracked file is dirty anywhere.
-SNAPSHOT_PATHS = ("src/", "levels/", "config.toml", "cpp/")
+#: ``agents/`` and ``tools/`` since rung 2 patch 2d.2: a stray module there
+#: would be imported by the trainer, a stray tool would write the rooms.
+SNAPSHOT_PATHS = ("src/", "levels/", "config.toml", "cpp/", "agents/",
+                  "tools/")
 #: The run manifest's file name inside ``[run] out_dir``.
 RUN_MANIFEST = "run_manifest.json"
 RUN_MANIFEST_FORMAT = 1

@@ -100,7 +100,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, flight_fields,  # noqa: E402
                                 ShadowLockstep, capture, gather)
 from simulation import (unit_kernels, unit_requests, unit_store,  # noqa: E402
                         unit_tables, unit_traits)
@@ -125,12 +125,14 @@ def fail(msg):
 # The slots
 # ---------------------------------------------------------------------------
 def _run_verbs(st, inp, req):
+    from cuda_unit_lockstep import flight_fields       # #215: the flight plane
     return unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                              inp.scalars["charges_live"])
+                              inp.scalars["charges_live"], flight_fields(inp))
 
 
 SLOT_1B = DeviceSlot(label="1b intents", run=_run_verbs,
-                     inputs=("tick", "door_spans", "charges_live"), requests=True)
+                     inputs=("tick", "door_spans", "charges_live", "flight_plane"),
+                     requests=True)
 SLOT_1A = DeviceSlot(label="1a integrate + turn", run=unit_kernels.integrate_turn)
 SLOT_1BP = DeviceSlot(label="1b' orders",
                       run=lambda st, inp: unit_kernels.apply_orders(
@@ -190,18 +192,22 @@ class ShipDriver:
         return self.session.is_terminal()
 
 
-def _door(eid, ordinal, x, y):
+def _door(eid, ordinal, x, y, orientation="v"):
     from level_loader import EntityInstance
     from simulation.entities import door as door_mod
     fields = {f.name: f.default for f in door_mod.door.FIELDS}
-    fields.update(x=x, y=y, orientation="v", length_m=3.0, initial_state="closed")
+    fields.update(x=x, y=y, orientation=orientation, length_m=3.0,
+                  initial_state="closed")
     return EntityInstance(id=eid, class_name="door", ordinal=ordinal, fields=fields)
 
 
 def _verb_level(variant):
     """Three rooms: A (x 1..31) | door 0 at x 32 | B (x 33..63) | the dead
     door at x 64 | C (x 65..93) | the hull door at x 94 | space. Odd
-    variants move door 0 (another layout)."""
+    variants move door 0 (another layout). #215: room C is cut by a wall at
+    x 80 with TWO doors one tile apart (y 10..12 and 14..16), so a unit
+    standing west of the gap has both in reach (the use picks the faced one;
+    facing east is the exact tie, atan2 being odd in y)."""
     from level_loader import LevelData
     from simulation.materials import MAT_AIR, MAT_HULL
     h, w = 48, 96
@@ -215,13 +221,21 @@ def _verb_level(variant):
     tm[:, 95] = -1                       # space past the east hull
     tm[1:h - 1, 94] = MAT_HULL
     tm[4:7, 94] = MAT_AIR
-    ents = [_door("d0", 0, 32, dy0), _door("hull", 1, 94, 4), _door("dead", 2, 64, 40)]
+    tm[1:h - 1, 80] = MAT_HULL           # #215: the two-door wall in room C
+    tm[10:13, 80] = MAT_AIR
+    tm[14:17, 80] = MAT_AIR
+    ents = [_door("d0", 0, 32, dy0), _door("hull", 1, 94, 4), _door("dead", 2, 64, 40),
+            _door("pairA", 3, 80, 10), _door("pairB", 4, 80, 14)]
     return LevelData(name=f"p64a_verbs{variant % 2}", version="3", path=Path("."),
                      tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."),
                      entities=ents), dy0
 
 
 EAST, WEST, SOUTH, NORTH = 0, PI_Q16, -PI_Q16 // 2, PI_Q16 // 2
+#: #215: the facings the unit between the two doors uses at (EAST is the
+#: exact tie, so the scan order decides; either side of it the faced door).
+FACING_SWEEP = (EAST, EAST - PI_Q16 // 8, EAST + PI_Q16 // 8, EAST - PI_Q16 // 3,
+                EAST + PI_Q16 // 3, NORTH, SOUTH, WEST, EAST + 1, EAST - 1)
 
 
 class VerbDriver:
@@ -305,6 +319,8 @@ class VerbDriver:
         self.sim._doors[2].alive = False                  # (a fixture: its span stays shut)
         # room C: the hull door's user
         a("u3", 91, 4, facing=EAST)
+        # room C: between the two doors of the y-20 wall (#215, the faced one)
+        a("f0", 77, 12, facing=EAST)
         # room A
         a("w0", 26, 8, facing=WEST)
         for i in range(4):                                # death / conversion
@@ -429,6 +445,10 @@ class VerbDriver:
             sim.use_intent(w["u0"].id)                           # two on one door
             sim.use_intent(w["u0b"].id)
             sim.use_intent(w["u3"].id)
+        if 80 <= k < 80 + len(FACING_SWEEP):                     # #215: use by facing
+            from simulation.turning import place
+            place(w["f0"], FACING_SWEEP[k - 80])
+            sim.use_intent(w["f0"].id)
         if k == 70:
             sim.shove_intent(w["s0"].id)                         # cooled again
             sim.shove_intent(w["s4"].id)
@@ -589,6 +609,16 @@ class Census:
                     c["use: a door flips"] += 1
                     if sim._doors.index(door) == 1:
                         c["use: the hull door"] += 1
+                    inr = [d for d in sim._doors
+                           if d.alive and verb_gates.door_in_reach(u, d)]
+                    if len(inr) > 1:
+                        offs = sorted(verb_gates.facing_off(u, d) for d in inr)
+                        if offs[0] == offs[1]:
+                            c["use: several doors in reach, a tie to the scan order"] += 1
+                        elif door is not inr[0]:
+                            c["use: several doors in reach, the faced one (not the first)"] += 1
+                        else:
+                            c["use: several doors in reach, the faced one (the first)"] += 1
                 if any((not d.alive) and verb_gates._reach_key(u, d) is not None
                        for d in sim._doors):
                     c["use: a dead door in reach is skipped"] += 1
@@ -693,6 +723,9 @@ VERB_BRANCHES = (
     "drop: a zombie row releases a plant",
     "use: a door flips", "use: no door in reach", "use: the hull door",
     "use: a dead door in reach is skipped",
+    "use: several doors in reach, a tie to the scan order",
+    "use: several doors in reach, the faced one (not the first)",
+    "use: several doors in reach, the faced one (the first)",
     "reload acts (a counted spare)", "reload acts (untracked spares)",
     "reload acts while stunned (the oversight)", "reload refused: full (never bound)",
     "reload refused: full (bound)", "reload refused: full (its stall ran out)",
@@ -790,6 +823,7 @@ def table_reference(sim) -> dict:
     from simulation.ruleset import MatchRules
     from simulation.unit_schema import CHARGE_CAPACITY
     from simulation.weapons import PLANT_WEAPON, fuse_ticks_from_seconds, get_tables
+    from simulation import unit_fixed as _uf
     W = get_tables().weapons.by_name
     hand = W["hand_grenade"]
     it = sim.impulse_table
@@ -801,6 +835,11 @@ def table_reference(sim) -> dict:
         "hand_max_reach_q": int(hand.max_throw_range) * 65536,
         "hand_fuse_lo_ticks": fuse_ticks_from_seconds(hand.fuse_min_seconds, sim._tps),
         "hand_fuse_hi_ticks": fuse_ticks_from_seconds(hand.fuse_max_seconds, sim._tps),
+        # #215: the release point, metres -> Q16 tiles of the sim's own map
+        "hand_release_forward_q": _uf.quantize_scalar(float(hand.release_forward_m)
+                                                      / float(sim.gmap.tile_size_m)),
+        "hand_release_side_q": _uf.quantize_scalar(float(hand.release_side_m)
+                                                   / float(sim.gmap.tile_size_m)),
         "plant_class_ticks": int(W[PLANT_WEAPON].plant_ticks),
         "charge_capacity": CHARGE_CAPACITY,
         "shove_q": int(it.shove_q), "shove_cone_q": int(it.shove_cone_q),
@@ -1151,7 +1190,7 @@ def part_overflow():
         st.upload(held["pre"][None])
         full.begin()
         unit_kernels.verbs(st, full, inp.tick, inp.tables["door_spans"],
-                           inp.scalars["charges_live"])
+                           inp.scalars["charges_live"], flight_fields(inp))
         want = full.records()[0]
         if len(want) < 2:
             continue

@@ -641,3 +641,79 @@ def test_a_bot_opens_a_closed_door_on_its_path(tmp_path):
     assert uses, "USE never issued"
     assert door.state == DOOR_OPEN
     assert bot.tile_x > 21
+
+
+def test_a_bot_between_two_doors_opens_the_one_on_its_path(tmp_path):
+    """Property (#215: use flips the door the unit FACES among several in
+    reach): a bot whose way beyond a wall passes one of two closed doors one
+    tile apart opens that door and walks through it; the other door is never
+    opened. Breaks if the bot issues USE while the verb would flip the other
+    door (it must ask ``verb_gates.use_door`` first) or the verb ignores the
+    facing."""
+    import numpy as np
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    from test_horde_behaviours import _door_inst, _door_level
+    lvl = _door_level()
+    tm = lvl.tilemap
+    tm[8:11, 20] = 0                               # a second door's span
+    lvl.entities.append(_door_inst("d2", 1, 20, 8))
+    sim = Simulation(lvl, seed=1, breach_physics=bp,
+                     enable_recorder=False, ruleset=ContinuousRealtime())
+    sim.set_paused(False)
+    bot = sim.get_unit(sim.add_unit(Unit("B", x=8, y=6, team=0)))
+    foe = sim.get_unit(sim.add_unit(Unit("F", x=32, y=4, team=1)))
+    sim.start_team_picture((0, 1))
+    opened = set()
+    bots = BotTeam(0)
+    crossed = None
+    for _ in range(900):
+        _know(bots, sim, foe)
+        bots.handle_frame(sim, None)
+        sim.step()
+        opened |= {d.id for d in sim._doors if d.state == DOOR_OPEN}
+        if crossed is None and bot.tile_x >= 19:
+            crossed = bot.tile_y
+        if bot.tile_x > 21:
+            break
+    assert bot.tile_x > 21, "the bot never got through"
+    assert len(opened) == 1, opened
+    door = next(d for d in sim._doors if d.id in opened)
+    rows = [t[0] for t in door.span]
+    assert min(rows) - bot.footprint < crossed <= max(rows), (crossed, rows)
+    other = next(d for d in sim._doors if d.id not in opened)
+    assert other.state == DOOR_CLOSED
+
+
+def test_the_bot_uses_a_door_only_when_the_verb_would_flip_that_door():
+    """Property (#215): standing between two closed doors with its next
+    waypoint through door B, a bot facing door A issues NO use (the verb
+    would flip A); turned toward B it issues the use and B, not A, opens.
+    Breaks if ``_open_door`` issues USE without asking ``verb_gates.
+    use_door`` (it would open A by mistake)."""
+    from types import SimpleNamespace
+    from simulation.entities.door import DOOR_CLOSED, DOOR_OPEN
+    from simulation.turning import PI_Q16, place
+    from test_use_door_facing import _sim as two_door_sim
+    sim = two_door_sim()
+    a, b = sim._doors
+    u = sim.get_unit(sim.add_unit(Unit("U", x=7.0, y=12.0, team=0)))
+    uses = []
+
+    class _Tap:
+        def record(self, tick, kind, args):
+            if kind == "use_intent":
+                uses.append(tick)
+    sim.attach_intent_log(_Tap())
+    bots = BotTeam(0)
+    st = SimpleNamespace(door_used={})
+    way = (9, 13)                      # a 3x3 block over door B's tiles
+    assert bots.door_tiles(sim)[13:16, 9:12].any()
+    place(u, PI_Q16 // 6)              # facing north-east: door A
+    bots._open_door(sim, u, st, way, sim.tick)
+    assert uses == []
+    place(u, -PI_Q16 // 6)             # facing south-east: door B
+    bots._open_door(sim, u, st, way, sim.tick)
+    assert len(uses) == 1
+    sim.step()
+    assert b.state == DOOR_OPEN and a.state == DOOR_CLOSED
+

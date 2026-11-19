@@ -245,6 +245,26 @@ def _poison():
     return _poison_mod().get_settings()
 
 
+def _body_mod():
+    from simulation import body_temp
+    return body_temp
+
+
+def _body_rates(src, env):
+    """``body_temp.rates_q`` of ``env``'s capacity on this env's map."""
+    b = _body_mod()
+    return b.rates_q(src.sim.gmap, b.capacity_of(env))
+
+
+def _stress_mod():
+    from simulation import stress
+    return stress
+
+
+def _stress():
+    return _stress_mod().get_settings()
+
+
 def _poison_dose_den(src):
     from simulation import gas_fixed
     return int(gas_fixed.TRACE_ONE) * int(src.sim._tps)
@@ -513,6 +533,45 @@ ROWS: tuple[TableRow, ...] = (
              (1 << 31) - 1, "poison.X_MAX: the body's store"),
     TableRow("poison_flush_q", 1, lambda src: _poison_mod().FLUSH_Q, 0, ONE,
              "poison.FLUSH_Q"),
+    # -- #215: the body temperature (simulation.body_temp, the heat row's
+    #    law) and the stress level (simulation.stress) -----------------------
+    TableRow("body_a_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_body_rates(src, p)[0],)), 1,
+             ONE, "per [env_profiles.*] row: body_temp.rates_q's a (per map)"),
+    TableRow("body_a_rad_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_body_rates(src, p)[1],)), 0,
+             ONE, "per [env_profiles.*] row: its radiated share a_rad"),
+    TableRow("body_a_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_body_rates(src, s.environment)[0],)), 1, ONE,
+             "per species: its environment's a (per map)"),
+    TableRow("body_a_rad_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_body_rates(src, s.environment)[1],)), 0, ONE,
+             "per species: its environment's a_rad"),
+    TableRow("body_absorb_profile_q", _n_profiles,
+             lambda src: _per_profile(lambda p: (_body_mod().absorption_q(p),)),
+             0, ONE, "per [env_profiles.*] row: heat_absorption, Q16"),
+    TableRow("body_absorb_species_q", _n_species,
+             lambda src: _per_species(
+                 lambda s: (_body_mod().absorption_q(s.environment),)), 0, ONE,
+             "per species: its environment's heat_absorption, Q16"),
+    TableRow("body_k_temp_q", 1, lambda src: _body_mod().k_temp_q(), 0,
+             1 << 20, "temperature_scale k_temp_to_kelvin, Q16 (game degrees "
+             "to C)"),
+    TableRow("stress_per_hp_q", 1,
+             lambda src: _stress().weights_q["damage"], 0, 1 << 28,
+             "[damage.stress] stress_per_hp, level counts (2^-24 points) per "
+             "hit point (the damage producer row)"),
+    TableRow("stress_hit_fills_q", 1, lambda src: _stress_mod().HIT_FILLS_Q,
+             1, 1 << 44, "stress.HIT_FILLS_Q: a hit that fills the level"),
+    TableRow("stress_rate_q", 1, lambda src: _stress().rate_q, 1,
+             1 << 24, "the half-life's per-tick fraction, 2^-24 "
+             "(clearing.RATE_SHIFT)"),
+    TableRow("stress_flush_q", 1, lambda src: _stress_mod().FLUSH_Q, 0, 1 << 24,
+             "stress.FLUSH_Q"),
+    TableRow("stress_max", 1, lambda src: _stress_mod().STRESS_MAX, 1,
+             1 << 38, "stress.STRESS_MAX: the level's int64 bound"),
     # -- the footprint the device walks ---------------------------------------
     TableRow("footprint_rowmajor", 1, _footprint_rowmajor, 1, 1,
              "1 = every species' default offsets are the footprint square in "
@@ -536,6 +595,13 @@ ROWS: tuple[TableRow, ...] = (
              1 << 24, "the hand grenade's fuse range, ticks (the sim's tps)"),
     TableRow("hand_fuse_hi_ticks", 1, _hand_fuse("fuse_max_seconds"), 0,
              1 << 24, "the hand grenade's fuse range, ticks"),
+    TableRow("hand_release_forward_q", 1,
+             lambda src: int(_hand_row(src).release_forward_q), -(1 << 24), 1 << 24,
+             "#215: [weapons.hand_grenade] release_forward_m in Q16 tiles of "
+             "the sim's map (combat.release_point's forward offset)"),
+    TableRow("hand_release_side_q", 1,
+             lambda src: int(_hand_row(src).release_side_q), -(1 << 24), 1 << 24,
+             "#215: release_side_m in Q16 tiles (to the thrower's right)"),
     TableRow("plant_class_ticks", 1, _plant_class_ticks, 0, 1 << 16,
              "the plant row's (weapons.PLANT_WEAPON) plant_ticks"),
     TableRow("charge_capacity", 1, _charge_capacity, 1, 1 << 10,
@@ -789,6 +855,19 @@ def _order_grenade(src):
     return int(ORDER_GRENADE)
 
 
+def _bounce_restitution_q(src):
+    return int(_hand_row(src).bounce_restitution_q)
+
+
+def _bounce_max(src):
+    return int(_hand_row(src).bounce_max)
+
+
+def _bounce_min_q(src):
+    from simulation import combat
+    return int(combat.BOUNCE_MIN_Q)
+
+
 def _clock_tps(src):
     from config import CFG
     return int(CFG.clock.ticks_per_second)
@@ -802,6 +881,15 @@ _OBJECT_ROWS: tuple = (
              "combat._FLIGHT_EPS_Q: a flight shorter than this lands at once"),
     TableRow("order_grenade", 1, _order_grenade, 0, 1 << 20,
              "orders.ORDER_GRENADE: the proj_type whose fuse-out detonates"),
+    TableRow("grenade_bounce_restitution_q", 1, _bounce_restitution_q, 0, 1 << 16,
+             "#215: [weapons.hand_grenade] bounce_restitution_q (Q16, 0..1) as "
+             "Simulation._update_grenades reads it off the sim's own row"),
+    TableRow("grenade_bounce_max", 1, _bounce_max, 0, 64,
+             "#215: [weapons.hand_grenade] bounce_max; <= 64 bounds the "
+             "kernel's settle loop"),
+    TableRow("grenade_bounce_min_q", 1, _bounce_min_q, 0, 1 << 20,
+             "#215: combat.BOUNCE_MIN_Q: a bounced leg shorter than this is "
+             "not flown (the grenade rests)"),
     TableRow("hand_grenade_ammo_row", _n_hand_kinds, _hand_ammo_rows, 0, 1 << 20,
              "per throw kind (hand_grenade_rows order): its [ammo.*] row's "
              "index in the unit schema's ammo table (a grenade's ammo_name)"),

@@ -266,7 +266,11 @@ def _walk_lists(lists, cells=False):
 # The slots
 # ---------------------------------------------------------------------------
 def _run_2g(st, inp, ring, lists):
-    unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick)
+    # #215: the flight reads the flight plane as the slot found it (before
+    # the DETONATE stage writes the planes)
+    from cuda_unit_lockstep import flight_fields
+    unit_kernels.grenades(st, lists["grenades"], lists["payloads"], inp.tick,
+                          flight_fields(inp))
     lists["edits"].set_seq(inp.scalars["edit_seq"])
     return unit_kernels.detonate(st, lists["payloads"], inp.fields, ring, _walk_lists(lists),
                                  refused_ok=LS.REPLAY_REFUSED["on"])
@@ -295,7 +299,7 @@ def _landing(sim, args, kw, caller):
 DET_IN = ("tick", "edit_seq", "list:noise", "list:blast_log", "list:source_tiles",
           "list:sources")   # the tiles land first
 SLOT_2G = DeviceSlot(label="2 grenades", run=_run_2g, events=True,
-                     inputs=DET_IN + ("list:grenades",),
+                     inputs=DET_IN + ("list:grenades", "flight_plane"),
                      outputs=PLANE_OUTPUTS + BOOK_OUTPUTS + LIST_OUTPUTS
                      + ("list:grenades", "list:payloads"), host_only=HOST_ONLY)
 SLOT_9E = DeviceSlot(label="9e(d') planted charges", run=_run_9e, events=True,

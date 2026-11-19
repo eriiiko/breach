@@ -74,7 +74,7 @@ def _scene():
     from level_loader import load as load_level
     from simulation import Simulation
     from simulation.field_edit import EditMode, FieldEdit, Region
-    from simulation.materials import MAT_DOOR
+    from simulation.materials import MAT_DOOR_CLOSED as MAT_DOOR  # #215: closed door entities
     from simulation.ruleset import ContinuousRealtime
     from simulation.unit import Unit
 

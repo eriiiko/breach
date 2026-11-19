@@ -86,7 +86,7 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
-from simulation import unit_fixed, unit_traits
+from simulation import clearing, unit_fixed, unit_traits
 from simulation.damage import POISON, DamagePacket, apply_packet
 from simulation.events import (CAUSE_NAMES, NO_ATTACKER, Cause, attacker_value,
                                cause_value)
@@ -255,13 +255,10 @@ def step(x: int, a: int, flush: bool = True) -> int:
     """What leaves a level ``x`` this tick at the Q16 fraction ``a``: 0 at 0;
     with ``flush``, all of it at or below :data:`FLUSH_Q`; else ``max(1, (x
     * a) >> 16)``. The law flushes only the BLOOD and only once the depot is
-    empty (:func:`advance`): a level still being fed is never flushed."""
-    if x <= 0:
-        return 0
-    if flush and x <= FLUSH_Q:
-        return x
-    m = (x * a) >> FP_SHIFT
-    return m if m >= 1 else 1
+    empty (:func:`advance`): a level still being fed is never flushed.
+    #215: the shared clearing step (:func:`simulation.clearing.drain`) at the
+    Q16 fraction, bit for bit the step this module carried."""
+    return clearing.drain(x, a, FP_SHIFT, FLUSH_Q if flush else 0)
 
 
 def holds(u) -> bool:

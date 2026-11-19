@@ -81,8 +81,8 @@ def _check_stamps(tm, graph) -> int:
             assert G._jamb_tiles(graph, e) == []
         if e.kind == "vented_door":
             vented += 1
-            assert all(tm[y, x] == MAT_DOOR
-                       for (y, x) in G._opening_tiles(graph, e)), e
+            assert all(tm[y, x] == G.EDGE_KINDS["vented_door"].stamps
+                       for (y, x) in G._opening_tiles(graph, e)), e   # #215: a closed door entity
             jambs = G._jamb_tiles(graph, e)
             assert len(jambs) == 2
             assert all(tm[y, x] == MAT_GRILLE for (y, x) in jambs), e

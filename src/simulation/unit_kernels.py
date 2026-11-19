@@ -303,36 +303,44 @@ def status_tick(store, ring) -> np.ndarray:
 
 
 #: The planes slot 9c reads, by ``GameMap`` field name.
-HEAT_FIELDS = ("heat", "rad_flux_sweep")
+#: #215: and the body temperature's air read (atmosphere, temperature, solid).
+HEAT_FIELDS = ("heat", "rad_flux_sweep", "atmosphere", "temperature", "solid")
 #: The planes slot 9c3 reads (arc #63 P5a: + the swarm's bite-dose plane,
 #: the swarm_bite_dose row's input).
 GAS_FIELDS = ("gas", "swarm_bite_dose")
 
 
 def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
-    """Slot 9c: the heat row on every valid living row. ``fields``: ``heat``
-    ``(N, h, w)`` int32 and ``rad_flux_sweep`` ``(N, h, w)`` int64 DEVICE
-    arrays (``ResidentBatch.buffers`` as they are); ``claims`` ``(N, R, 4)``
-    (:func:`pad_claims`)."""
+    """Slot 9c: the heat row on every valid living row (#215: the body
+    temperature's law, the band on the body). ``fields``: ``heat`` ``(N, h,
+    w)`` int32, ``rad_flux_sweep`` ``(N, h, w)`` int64, ``atmosphere`` and
+    ``temperature`` ``(N, h, w)`` int32 and ``solid`` ``(N, h, w)`` bool
+    DEVICE arrays (``ResidentBatch.buffers`` as they are); ``claims`` ``(N,
+    R, 4)`` (:func:`pad_claims`)."""
     _check_ring("heat_damage", store, ring)
     _check_planes("heat_damage", store, fields,
-                  {"heat": np.int32, "rad_flux_sweep": np.int64})
+                  {"heat": np.int32, "rad_flux_sweep": np.int64,
+                   "atmosphere": np.int32, "temperature": np.int32,
+                   "solid": np.bool_})
     _, h, w = (int(x) for x in fields["heat"].shape)
-    if tuple(int(x) for x in fields["rad_flux_sweep"].shape) != \
-            (store.shape[0], h, w):
-        raise ValueError("unit kernel heat_damage: rad_flux_sweep's shape is "
-                         "not heat's")
+    for k in ("rad_flux_sweep", "atmosphere", "temperature", "solid"):
+        if tuple(int(x) for x in fields[k].shape) != (store.shape[0], h, w):
+            raise ValueError(f"unit kernel heat_damage: {k}'s shape is not "
+                             f"heat's")
     c = np.ascontiguousarray(claims, dtype=np.int64)
     return _done_events(store, "heat_damage", store.bp.unit_heat_damage(
         store.buffer, store.tables, ring.buffer, int(fields["heat"].data.ptr),
-        int(fields["rad_flux_sweep"].data.ptr), h, w, c))
+        int(fields["rad_flux_sweep"].data.ptr),
+        int(fields["atmosphere"].data.ptr), int(fields["temperature"].data.ptr),
+        int(fields["solid"].data.ptr), h, w, c))
 
 
 def gas_rows(store, ring, fields: dict, claims) -> np.ndarray:
     """Slot 9c3: the teargas row, the poison row's dose, the larvae's bite
-    dose (arc #63 P5a) and the poison law, fused per row (each unit's steps
-    read only the planes and its own row). ``fields``: ``gas`` ``(N, G, h,
-    w)`` and ``swarm_bite_dose`` ``(N, h, w)`` int32 DEVICE arrays;
+    dose (arc #63 P5a), the poison law and (#215) the stress tick, fused per
+    row (each unit's steps read only the planes and its own row). ``fields``:
+    ``gas`` ``(N, G, h, w)`` and ``swarm_bite_dose`` ``(N, h, w)`` int32
+    DEVICE arrays;
     ``claims`` as for :func:`heat_damage`. ``store.last_refused`` holds the
     doses clipped at the body's store (poison.SATURATION's hits)."""
     _check_ring("gas_rows", store, ring)
@@ -384,7 +392,18 @@ def _check_requests(name, store, requests):
                          f"store {store.shape[:2]}")
 
 
-def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
+def _flight_plane(name, store, fields):
+    """#215: ``fields["flight"]``, the DEVICE ``(N, h, w)`` bool flight plane
+    (``combat.flight_plane``), checked; -> (pointer, h, w)."""
+    _check_planes(name, store, fields, dict(GRENADE_FIELDS))
+    s = fields["flight"]
+    if s.ndim != 3 or not s.flags.c_contiguous:
+        raise ValueError(f"unit kernel {name}: the flight plane must be a "
+                         f"C-contiguous (N, h, w) array")
+    return int(s.data.ptr), int(s.shape[1]), int(s.shape[2])
+
+
+def verbs(store, requests, ticks, door_spans, charges_live, fields) -> np.ndarray:
     """Slot 1b (``Simulation._consume_direct_intents``, the continuous path):
     a dead or turned row drops its trigger, wind-up and plant; every living
     marine consumes its own latches (throw, plant, use, reload, shove) and
@@ -393,7 +412,9 @@ def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
     charges laid -- accepted or refused at the capacity --, the doors flipped,
     in id order); ``ticks`` ``(N,)`` each env's ``sim.tick``;
     ``door_spans`` ``(N, R, 3)`` (``unit_requests.pad_door_spans``);
-    ``charges_live`` ``(N,)`` the live planted charges. ``store.last_refused``
+    ``charges_live`` ``(N,)`` the live planted charges; ``fields["flight"]``
+    (#215) the flight plane a throw's release point is walked over (see
+    :func:`grenades`). ``store.last_refused``
     holds the plants refused at ``CHARGE_CAPACITY``. REFUSES a run whose
     requests the list could not hold (:class:`simulation.unit_requests.
     UnitRequestOverflow`, naming the kernel and the env) as it refuses a
@@ -403,8 +424,9 @@ def verbs(store, requests, ticks, door_spans, charges_live) -> np.ndarray:
     t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
     s = np.ascontiguousarray(door_spans, dtype=np.int64)
     lv = np.ascontiguousarray(charges_live, dtype=np.int64).reshape(-1)
+    ptr, fh, fw = _flight_plane("verbs", store, fields)
     cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_verbs(
-        store.buffer, store.tables, requests.buffer, t, s, lv))
+        store.buffer, store.tables, requests.buffer, t, s, lv, ptr, fh, fw))
     cov = _done(store, "verbs", (cov, flt, ref))
     store.last_dropped = drp
     if drp.any():
@@ -1211,19 +1233,30 @@ def table_appends(store, requests, grenades, charges) -> np.ndarray:
         (grenades, charges))
 
 
-def grenades(store, table, dev_applier, ticks) -> np.ndarray:
+#: The plane slots 1b and 2 read for a thrown grenade (#215: the wall walk's):
+#: "flight" = ``combat.flight_plane(gmap)`` (off the grid is blocked; solid or
+#: a ``blocks_thrown`` material), never a GameMap attribute of its own.
+GRENADE_FIELDS = (("flight", np.bool_),)
+
+
+def grenades(store, table, dev_applier, ticks, fields: dict) -> np.ndarray:
     """Slot 2's grenades (``Simulation._update_grenades``): every live row
-    flies (``Projectile.update_position``, wide), a row whose fuse ran out is
-    marked detonated and -- its proj_type ORDER_GRENADE -- its detonation
-    APPENDED to ``dev_applier``'s effect list as a PAYLOAD record
-    (``execute_payload``'s call, ``applier.record_of``'s fields), in row
+    flies (``Projectile.fly``, wide: #215 the current leg, the wall walk
+    over ``fields["flight"]`` -- a DEVICE ``(N, h, w)`` bool array,
+    ``combat.flight_plane`` as the slot found it -- and a bounce; on a
+    fuse-out ``settle``), a row
+    whose fuse ran out is marked detonated and -- its proj_type
+    ORDER_GRENADE -- its detonation APPENDED to ``dev_applier``'s effect list
+    as a PAYLOAD record (``execute_payload``'s call at
+    ``combat.detonation_tile``, ``applier.record_of``'s fields), in row
     order after what the list holds. ``ticks`` ``(N,)`` each env's
     ``sim.tick``. Returns the rows changed per env; refuses a fault, a WEGO
     grenade (:class:`ObjectSlotRefused`) and an effect-list overflow."""
     _check_tables("grenades", store, table)
+    ptr, h, w = _flight_plane("grenades", store, fields)
     t = np.ascontiguousarray(ticks, dtype=np.int64).reshape(-1)
     return _object_done("grenades", store.bp.unit_grenades(
-        store.tables, table.buffer, dev_applier.buffer, t))
+        store.tables, table.buffer, dev_applier.buffer, t, ptr, h, w))
 
 
 def charges_tick(store, table, dev_applier, ticks) -> np.ndarray:
@@ -1245,7 +1278,7 @@ def prune_grenades(table) -> None:
 
 
 __all__ += ["ObjectSlotRefused", "refuse_wego", "table_appends", "grenades",
-            "charges_tick", "prune_grenades"]
+            "GRENADE_FIELDS", "charges_tick", "prune_grenades"]
 
 
 # ---------------------------------------------------------------------------

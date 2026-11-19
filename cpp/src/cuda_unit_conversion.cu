@@ -11,7 +11,8 @@
 // library's scaled()), and is cleared of exposure (exposure.clear), of its
 // turn (turning.settle), of its push (unit_impulse.clear), of its noise and
 // anchor (horde.clear), of its order (unit_orders.clear) and of poison
-// (poison.clear); zombie_activated is set and killed_by_zombie cleared. The
+// (poison.clear), of stress and back to an ambient body (#215); zombie_activated
+// is set and killed_by_zombie cleared. The
 // `traits` block is KEPT. What has no device form: the name's "Z-" prefix
 // and the momentum books (reference-only), and on_tick_end's prune of the
 // detonated grenades from sim.projectiles (a host table until P7b) -- the
@@ -76,6 +77,9 @@ __global__ void k_convert_zombies(int64_t* store, int n_units, const int64_t* ta
     put(row, UNIT_COL_POISON_X0, 0, changed);
     put(row, UNIT_COL_POISON_X1, 0, changed);
     put(row, UNIT_COL_POISON_SRC, -1, changed);
+    // #215: stress.clear and body_temp.clear (back to ambient)
+    put(row, UNIT_COL_STRESS_Q, 0, changed);
+    put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);
     put(row, UNIT_COL_POISON_CAUSE, unit_events::UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
     put(row, UNIT_COL_ZOMBIE_ACTIVATED, 1, changed);
     put(row, UNIT_COL_KILLED_BY_ZOMBIE, 0, changed);

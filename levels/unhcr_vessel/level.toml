@@ -116,3 +116,48 @@ color = [255, 26, 13]
 intensity = 0.9
 range = 18.0
 kind = "static"
+
+[[entity]]
+id = "door_1"
+class = "door"
+x = 23
+y = 18
+orientation = "h"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_2"
+class = "door"
+x = 23
+y = 42
+orientation = "h"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_3"
+class = "door"
+x = 22
+y = 45
+orientation = "h"
+length_m = 2.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_4"
+class = "door"
+x = 23
+y = 75
+orientation = "h"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_5"
+class = "door"
+x = 22
+y = 95
+orientation = "h"
+length_m = 2.0
+initial_state = "closed"

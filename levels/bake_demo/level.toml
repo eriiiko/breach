@@ -30,3 +30,12 @@ px_per_tile = [64.00, 64.00]
 tileset = "art/tilesets/greybox"
 px_per_tile = 64
 seed = 0
+
+[[entity]]
+id = "door_1"
+class = "door"
+x = 11
+y = 7
+orientation = "h"
+length_m = 0.333
+initial_state = "closed"

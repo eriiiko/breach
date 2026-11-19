@@ -515,6 +515,11 @@ class HordeScene:
         if k == 170 and len(self.zombies) > 3:  # a PARALYZED awake zombie: neither
             from simulation.status import PARALYZED, apply_status
             apply_status(self.zombies[0], PARALYZED, 1.0, 40)
+        if k in (300, 301):                     # #215: a topology change between refreshes
+            # (the bash's door break no longer lands off a refresh tick at
+            # door_bash_damage 4: two pillar tiles fall on consecutive ticks,
+            # so one of them drops the cache by the serial, not the refresh)
+            self.sim.gmap.destroy_wall(45 + (k - 300), 55)
         if k == 380:                            # every prey falls: no prey from here on
             from simulation.damage import DamagePacket, apply_packet
             for m in list(sim.units):
@@ -1230,8 +1235,9 @@ def part_chained():
 def part_chained_all():
     """Slot 5 chained WITH the device slots around it: ship_demo's bots match
     with slot 2' + its landing in one chain and 4 + 4a + 4c + 5 in another
-    (the shooting's noise list continued into slot 5's drain on the device);
-    the horde scene with 4 + 4a + 4c + 5 and 9e(d)'s door sweep (the bashed
+    (the shooting's noise list continued into slot 5's drain on the device)
+    and 9e(d)'s door sweep (its doorways are doors, #215); the horde scene
+    with 4 + 4a + 4c + 5 and 9e(d)'s door sweep (the bashed
     door dies whole at the sweep). Unit hash, field digest, planes, books,
     noise log and cache equal the untouched reference every tick; the host
     zombie, shooting and door laws run 0 times in the twin."""
@@ -1240,7 +1246,9 @@ def part_chained_all():
                                           _HostCalls, _host_side_of)
     from cuda_unit_topology_check import _same_twin
     from simulation import door_system, simulation as simmod
-    for name, make, ticks, doors in (("ship_demo bots", ShipDriver, SHIP_TICKS, False),
+    # #215: ship_demo's doorways are door entities, so its chain takes the
+    # 9e(d) door sweep too (the bots open doors in its first 500 ticks).
+    for name, make, ticks, doors in (("ship_demo bots", ShipDriver, SHIP_TICKS, True),
                                      ("scene v0", lambda: HordeScene(0), CHAIN_TICKS, True)):
         twin, ref = make(), make()
         host = Counter()

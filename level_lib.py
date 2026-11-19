@@ -1043,12 +1043,15 @@ class LevelHandle:
         return bak
 
 
-def open_level(level_name: str, levels_dir: str = "levels") -> LevelHandle:
+def open_level(level_name: str, levels_dir: str = "levels", *,
+               allow_bare_painted_doors: bool = False) -> LevelHandle:
     """Open a level folder: parse via :func:`level_loader.load` (the read
     side stays level_loader's — never forked) and record level.toml's
     mtime+hash for staleness detection. Raises ValueError exactly like
-    ``level_loader.load``."""
-    data = level_loader.load(str(level_name), levels_dir)
+    ``level_loader.load`` (``allow_bare_painted_doors`` passed through: the
+    painted-door migration's read only)."""
+    data = level_loader.load(str(level_name), levels_dir,
+                             allow_bare_painted_doors=allow_bare_painted_doors)
     handle = LevelHandle(data=data, toml_path=data.path / "level.toml")
     handle.record_disk_state()
     return handle

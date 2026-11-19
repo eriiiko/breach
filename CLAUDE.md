@@ -77,9 +77,9 @@ strategy. Every rule below serves that.
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
 | `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
 | `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view, bite-dose plane |
-| `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load |
+| `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load, body temperature |
 | `horde.md` | horde field, noise, A* |
-| `combat.md` | weapons, draws, exposure, poison, simultaneous attacks, credit, loadouts |
+| `combat.md` | weapons, draws, exposure, poison, clearing step, stress, simultaneous attacks, credit, loadouts |
 | `hand-verbs.md` | magazines, grenades, flash blinding, melee, flashlight, planted charge, verb gates |
 | `sight.md` | vision / cover / line of fire, sight for many tiles |
 | `match.md` | match config, spawn, controllers, replay, MatchSession, control, team picture, order, room graph, main.py |
@@ -259,6 +259,9 @@ amends the rule file, never this line's length.
 | Match draws | `src/simulation/draws.py` + `src/simulation/rng_salts.py` | EVERY random number is one keyed Philox block; a new draw site is a `Salt` member, never a stream |
 | Exposure | `src/simulation/exposure.py` + `[damage.exposure]` | THE focus-fire law; a new debuff-under-fire is a column here |
 | Poison | `src/simulation/poison.py` + `[damage.poison]` | Poison is ONE conserving law entered only through `poison.dose` |
+| Clearing step | `src/simulation/clearing.py` (device `unit_lib::clearing_drain`) | A unit state that drains by a fraction a tick uses this step; never a second one |
+| Stress | `src/simulation/stress.py` + `[damage.stress]` | Fed only through its producer rows' one door, cleared only by its own tick; heart rate is the one Hill function, derived, never stored |
+| Body temperature | `src/simulation/body_temp.py` + `[combat]` body dials | A unit's shell temperature, written by the heat coupling row alone; what warms a body changes the felt temperature or the air, never the body |
 | Magazines | `combat.mag_*` / `reload_begin` + `[weapons.*] mag_size` | Ammunition is magazines; a reload discards the one in the gun; the law is these functions only |
 | Grenade kinds | `[loadouts.*] grenades` + `WeaponsTables.hand_grenade_rows` | A throwable is a hand-grenade `[ammo.*]` row appended to the family, never a verb |
 | Flash blinding | `[payloads.*] blind_*` + `src/simulation/flash_blind.py` | A payload blinds by line of sight and facing through these columns; never a per-grenade check |
@@ -295,6 +298,7 @@ amends the rule file, never this line's length.
 | Choosing | `agents/choosing.py` | The chances under the masks, the draw, the probability of given choices and which heads counted are ONE module, used when acting, learning from reward and copying |
 | Stored decision and batch | `agents/batch.py` | Only rows of a learning team are stored; what is kept per decision is ONE layout, copied from the environment's arrays, time first |
 | Trainer | `agents/trainer.py` + `agents/collector.py` + `agents/learner.py` + `agents/grading.py` + `agents/value_scale.py` | Touches the game only through `BatchedEnv`; a collector and a learner with one hand-over each way; every round runs the live check |
+| Saved network and training manifest | `agents/saved.py` | THE one writer and reader of a saved run, a soldier's export and `training_manifest.json`; a driver of a saved network loads through it, never its own `torch.load`; every saved network says what it was started from |
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
 | Room graph | `level_loader.RoomGraph` + `src/simulation/room_graph.py` | ONE map from tile to room and ONE list of openings; never a second |
