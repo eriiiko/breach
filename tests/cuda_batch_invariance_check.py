@@ -28,8 +28,15 @@ fresh world stepped alone). Evidence printed: the substep counts the envs ran
 on the same tick (they must differ, or the masks were never exercised).
 
 LEG B, real simulations: ship_demo's Simulation (no match, no units, its
-entities on -- vents, ducts, doors), N = 3, seeds 1 / 2 / 3; env 1 takes a
-blast source at tick 4, env 2 a wall breach at tick 6.
+entities on -- vents, ducts, doors), N = 4, seeds 1 .. 4; env 1 takes a
+blast source at tick 4, env 2 a wall breach at tick 6. arc #63 P3 (PART 2c of
+the larva gate, v4.7 G-a): envs 0 / 1 / 2 carry larvae spawned through their
+own SwarmUnits (5 / 8 / 6 of them), env 3 none; env 1's larvae stand on a hot
+seed, env 2's on a cold one, env 0's unforced, so their outcomes (deaths,
+comas) differ per env; per tick each env's store, swarm section and death
+rows equal the env alone (arc #63 P5a: and its bite-dose plane; the planes
+are per env, the swarm-free env's all zero). Breaks also if the swarm stage reads env 0's
+planes for every env, or an env's records or rows land in another's.
 
 #29 P4c: every env of both legs also carries its OWN slot-6b FieldEdits
 (smoke and heat discs with noise keyed by its seed, an atmosphere rect, a
@@ -396,19 +403,55 @@ def _sim_fp(sim):
         pass
     w = _W()
     w.gmap, w.physics_runner = sim.gmap, sim.physics_runner
-    return _fingerprint(w)
+    from simulation.swarm import (bite_plane, death_events, swarm_carrier,
+                                  swarm_section_bytes)
+    # the death rows as the EVENTS they become (a batch row's ROW_ENV is its
+    # batch index, an env alone's is 0; the event carries neither)
+    ev = repr([tuple(vars(x).values())
+               for x in death_events(sim.physics_runner.swarm_death_rows)])
+    # arc #63 P5a: + the bite-dose plane the swarm stage rebuilt for THIS env
+    sw = hashlib.sha1(swarm_section_bytes(swarm_carrier(sim.gmap))
+                      + ev.encode() + bite_plane(sim.gmap).tobytes()).hexdigest()
+    return _fingerprint(w) + (sw,)
+
+
+# arc #63 P3 (PART 2c): each env's larvae (count, forcing) -- env 3 swarm-free.
+_SWARM_ENVS = {0: (5, None), 1: (8, 373.15), 2: (6, 260.15)}
+
+
+def _ship_swarm(sim, e):
+    """Spawn env e's larvae through its own facade at open tiles of its own
+    choosing, and seed the forcing under them (seed_gas_temperature, the
+    sanctioned door)."""
+    if e not in _SWARM_ENVS:
+        return
+    import temperature_scale
+    from simulation import swarm_fixed
+    count, kelvin = _SWARM_ENVS[e]
+    g = sim.gmap
+    ys, xs = np.nonzero(~g.solid & ~g.is_vacuum)
+    idx = [(len(ys) * (3 + e) // 11 + 13 * i) % len(ys) for i in range(count)]
+    half = swarm_fixed.FP_ONE >> 1
+    px = [(int(xs[i]) << 16) + half for i in idx]
+    py = [(int(ys[i]) << 16) + half for i in idx]
+    sim.swarm.spawn("larva", px, py, [(9000 * i) % 400000 - 200000 for i in range(count)])
+    if kelvin is not None:
+        ts = temperature_scale.load()
+        sel = (np.array([int(ys[i]) for i in idx]), np.array([int(xs[i]) for i in idx]))
+        g.seed_gas_temperature(sel, swarm_fixed.quantize_scalar(ts.from_kelvin(kelvin)))
 
 
 def leg_b() -> bool:
     import cupy as cp
     from simulation.resident_batch import ResidentBatch
-    n, ticks = 3, 20
+    n, ticks = 4, 20
     print(f"LEG B: ship_demo Simulations (no match, entities on), N = {n}, seeds "
-          f"1/2/3, env 1 a blast source at tick 4, env 2 a wall breach at tick 6, "
-          f"{ticks} ticks")
+          f"1..{n}, env 1 a blast source at tick 4, env 2 a wall breach at tick 6, "
+          f"larvae in envs 0-2 (env 1 hot, env 2 cold), {ticks} ticks")
     refs = []
     for e in range(n):
         sim = _ship_sim(e + 1)
+        _ship_swarm(sim, e)
         fps = []
         s8a._residency(True); s8a._set_backends(True)
         try:
@@ -423,7 +466,11 @@ def leg_b() -> bool:
         del sim
         cp.get_default_memory_pool().free_all_blocks()
     sims = [_ship_sim(e + 1) for e in range(n)]
+    for e, sim in enumerate(sims):
+        _ship_swarm(sim, e)
     bad = 0
+    deaths = [0] * n
+    comas = [0] * n          # larva-ticks spent in coma
     s8a._residency(True); s8a._set_backends(True)
     try:
         batch = ResidentBatch(sims)
@@ -433,12 +480,34 @@ def leg_b() -> bool:
             batch.step()
             for e, sim in enumerate(sims):
                 fp = _sim_fp(sim)
+                rows = sim.physics_runner.swarm_death_rows
+                deaths[e] += int(rows.shape[0])
+                if rows.shape[0] and (rows[:, 1] != e).any():
+                    print(f"  ship env {e} tick {t}: a death row names another env")
+                    bad += 1
+                comas[e] += int((sim.gmap.swarm_larva_ai_state == 3).sum())
                 if fp[0] != refs[e][t][0] or fp[1] != refs[e][t][1]:
                     bad += 1
                     if bad <= 6:
-                        print("  " + _diff(f"ship env {e} tick {t}", fp, refs[e][t]))
+                        print("  " + _diff(f"ship env {e} tick {t}", fp[:3], refs[e][t][:3]))
+                if fp[3] != refs[e][t][3]:
+                    bad += 1
+                    if bad <= 6:
+                        print(f"  ship env {e} tick {t}: swarm section / death rows differ")
     finally:
         s8a._residency(False); s8a._set_backends(False)
+    print(f"  swarm outcomes per env: deaths {deaths}, comas {comas}")
+    # arc #63 P5a: the bite planes are per env -- each swarm env's own (env 0's
+    # larvae alive and awake), the swarm-free env's all zero
+    from simulation.swarm import bite_plane
+    planes = [bite_plane(sim.gmap) for sim in sims]
+    print(f"  bite plane sums per env: {[int(p.sum()) for p in planes]}")
+    if not planes[0].any() or planes[3].any() or np.array_equal(planes[0], planes[1]):
+        print("  the per-env bite planes are vacuous or shared")
+        bad += 1
+    if not (deaths[1] > 0 and comas[2] > 0 and len({(d, c) for d, c in zip(deaths, comas)}) > 1):
+        print("  the per-env swarm outcomes do not differ (G-a: the scene is vacuous)")
+        bad += 1
     if bad == 0:
         print(f"  ship_demo: every env == alone, every tick (tol 0)")
     return bad == 0

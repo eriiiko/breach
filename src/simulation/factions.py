@@ -37,6 +37,10 @@ def team_from_level(team: int) -> FactionId:
     team = int(team)
     return ZOMBIE_TEAM if team == LEGACY_ZOMBIE_TEAM else team
 
+# No faction (arc #63 P2): the swarm-unit default; v1 never targets swarm
+# units. Team ints in use are non-negative, so this never aliases a team.
+FACTION_NONE: FactionId = -1
+
 
 class Stance(Enum):
     """Defined for completeness — not yet consulted by any code (spec §10.1)."""
@@ -47,4 +51,4 @@ class Stance(Enum):
 
 
 __all__ = ["FactionId", "Stance", "ZOMBIE_TEAM", "LEGACY_ZOMBIE_TEAM",
-           "team_from_level"]
+           "team_from_level", "FACTION_NONE"]

@@ -82,7 +82,7 @@ from simulation.damage import (
     BLAST, CREDIT_HEAT, HEAT, POISON, DamagePacket, apply_packet,
     mitigation_for, tick_credit,
 )
-from simulation.events import NO_ATTACKER
+from simulation.events import NO_ATTACKER, Cause
 # Gas SLICE ids (engine/05 §6.2) — aliased so they can't be confused with the
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
@@ -688,6 +688,14 @@ def apply_teargas_blind(units, gmap):
                      duration_ticks=duration, source_id=None)
 
 
+def poison_immune(u) -> bool:
+    """THE immunity of the poison coupling rows (gas and bite): a unit whose
+    ``resist_mult[POISON]`` is exactly 0 (the zombie; the future robot) takes
+    no dose -- the dose door refuses a zombie itself as well. Resistances
+    between 0 and 1 act on the damage, at the law's packet."""
+    return mitigation_for(u).resist_q[POISON] == 0
+
+
 def apply_poison_dose(units, gmap, ticks_per_second, events=None):
     """The ``gas[poison]`` coupling row (mechanics/05 §1, W3; #29 PX): the
     footprint-max poison density at or above ``poison_min_density`` gives the
@@ -729,7 +737,7 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
         density_q = reduce_max(slice_, tiles)
         if density_q < thresh_q:
             continue
-        if mitigation_for(u).resist_q[POISON] == 0:
+        if poison_immune(u):
             continue                        # immune: no packet, no event (lazy)
         dose_q = _unit_fixed.div_round(gas_q * int(density_q), den)
         # CREDIT (#123): the claimant of THIS tick's poison deposit on the
@@ -747,6 +755,60 @@ def apply_poison_dose(units, gmap, ticks_per_second, events=None):
         poison.dose(u, dose_q, attacker)
 
 
+def apply_bite_dose(units, gmap):
+    """The ``swarm_bite_dose`` coupling row (arc #63 P5a; the boundary of
+    Erik's P6 ruling: a unit law sees the swarm only through a per-tile plane
+    the swarm writes): the SUM of the bite-dose plane over a living unit's
+    footprint is a DOSE of the poison law (:func:`simulation.poison.dose`),
+    uncredited (``attacker_id`` -1) with the cause ``larva_bite``. The row
+    emits no packet; ``poison.tick``, right after it in slot 9c3, does.
+
+    The plane already holds Q16 units of poison per tick (each biting larva's
+    expected dose, ``swarm.bite_tick_q``, summed per tile by the swarm step),
+    so the dose is that sum exactly -- no rounding here. Two units on the same
+    tile EACH read it in full (a larva under two boots bites both). The immune
+    (:func:`poison_immune`) take nothing. Lazy: an all-zero plane (no swarm, or
+    no biting larva) is one integer ``.any()`` and out; no RNG."""
+    from simulation import swarm as _swarm
+    plane = _swarm.bite_plane(gmap)
+    if not bool(plane.any()):
+        return
+    for u in units:
+        if not u.alive:
+            continue
+        dose_q = reduce_sum(plane, u.occupied_tiles())
+        if dose_q <= 0 or poison_immune(u):
+            continue
+        poison.dose(u, dose_q, NO_ATTACKER, Cause.LARVA_BITE)
+
+
+def apply_corpse_infestation(units, gmap):
+    """The ``swarm_count`` coupling row (arc #63 P5b; the boundary of Erik's
+    P6 ruling): the SUM of the swarm's count plane (the living, non-coma
+    swarm units on each tile this tick) over a DEAD unit's footprint is the
+    ``n`` of the corpse law (:func:`simulation.corpse.infest`): its
+    infestation level rises with the swarm on it and decays without. The row
+    only moves the level; the rise itself is the conversion door's
+    (``ai_zombie.convert_marines_to_zombies``, at the tick's end).
+
+    A corpse whose level is 0 and that no swarm unit stands on is skipped
+    (lazy): a match without larvae never touches a level. Two corpses on one
+    tile each read it in full. No RNG."""
+    from simulation import corpse as _corpse
+    from simulation import swarm as _swarm
+    plane = _swarm.count_plane(gmap)
+    any_swarm = bool(plane.any())
+    s = None
+    for u in units:
+        if u.alive:
+            continue
+        n = reduce_sum(plane, u.occupied_tiles()) if any_swarm else 0
+        if n <= 0 and not u.infest_q:
+            continue
+        s = s or _corpse.get_settings()
+        _corpse.infest(u, n, s)
+
+
 # ---------------------------------------------------------------------------
 # The coupling-table structure (mechanics/05 §1) — plain data, no framework.
 # ---------------------------------------------------------------------------
@@ -762,18 +824,31 @@ class CouplingRow:
         Name into :data:`REDUCTIONS` — the footprint reduction the row's
         physical read uses. ``None`` marks a shipped response that predates
         the field read and does its own sampling (see the row's ``note``).
-    response : callable
+    response : callable or None
         The response implementation. P1: the shipped functions, invoked at
         their legacy tick positions with their legacy signatures; the
         uniform ``response(sample, unit.profile)`` shape arrives with the
-        named EXCHANGE-READ slot (a later patch).
+        named EXCHANGE-READ slot (a later patch). ``None`` (arc #63 P3): the
+        row is executed outside Python, in a swarm species kernel.
     note : str
         Honest wiring status — what the row does TODAY vs the chapter row.
+    consumer : str
+        ``"unit"`` (the CPU-unit exchange: a callable ``response``) or
+        ``"swarm:<species>"`` (arc #63 P3: ``response`` is None and the row
+        is executed IN that species' kernel, the last stage of slot 7). The
+        future EXCHANGE-READ executor iterates only ``consumer == "unit"``
+        rows.
+    reads : tuple
+        For a swarm row: the species-table fields (``swarm.SPECIES_FIELDS``
+        names) its numbers come from (tests/test_swarm_species.py ties them
+        to the kernel's table rows).
     """
     field: str
     reduction: Optional[str]
-    response: Callable
+    response: Optional[Callable] = None
     note: str = ""
+    consumer: str = "unit"
+    reads: tuple = ()
 
 
 #: THE COUPLING TABLE (mechanics/05 §1) — ordered; it GROWS, one row per new
@@ -854,6 +929,61 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "early-outs; no RNG."
         ),
     ),
+    # arc #63 P5a (docs/swarm_P5a_impl.md): the swarm's one row on the unit
+    # side -- the units see the larvae only through the plane they write.
+    CouplingRow(
+        field="swarm_bite_dose",
+        reduction="sum",
+        response=apply_bite_dose,
+        note=(
+            "Larva bites -> a DOSE of the poison law (arc #63 P5a): the sum of "
+            "the swarm's bite-dose plane (every larva not in coma adds its "
+            "expected dose bite_dose x bite_rate x dt to its tile) over the "
+            "footprint -> poison.dose, uncredited, cause larva_bite (poison-"
+            "immune units take nothing). Runs at Simulation.step 9c3 after "
+            "the gas poison row, before poison.tick. Lazy: all-zero plane "
+            "early-outs; no RNG."
+        ),
+    ),
+    # arc #63 P5b (docs/swarm_P5b_impl.md): the corpse's row -- the swarm's
+    # count plane under a dead unit raises its infestation level.
+    CouplingRow(
+        field="swarm_count",
+        reduction="sum",
+        response=apply_corpse_infestation,
+        note=(
+            "Swarm units on a corpse -> its INFESTATION LEVEL (arc #63 P5b, "
+            "simulation.corpse): the sum of the swarm's count plane (living, "
+            "non-coma swarm units per tile) over a dead unit's footprint "
+            "raises the level, which decays by a fraction of itself; the "
+            "conversion door raises the corpse as a zombie at the threshold. "
+            "Runs at Simulation.step 9c3 after the bite row. Lazy: an "
+            "all-zero plane and no infested corpse touch nothing; no RNG."
+        ),
+    ),
+    # arc #63 P3 (docs/swarm_P3_impl.md §8): the larva's rows -- executed IN
+    # the larva kernel (cpp/src/swarm_larva.h) as the last stage of slot 7,
+    # through the RAW own-tile reader (exchange.reduce_center over a one-tile
+    # footprint), so within a tick they run BEFORE the unit rows above.
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_prefer",),
+        note=("Thermotaxis head sweep (arc #63 P3): own tile + two sweep points one tile "
+              "ahead at +-sweep_angle; comfort |T - T_prefer| steers the tumble rate and "
+              "side (cpp/src/swarm_larva.h)."),
+    ),
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_lethal_hot",),
+        note=("Contact/ambient heat kill (fork 7b): felt T > T_lethal_hot -> DEAD, post-move, "
+              "any state. Deliberately NOT the heat|max unit row: a marine and a larva in the "
+              "same hot room are damaged by different laws."),
+    ),
+    CouplingRow(
+        field="temperature", reduction="center", consumer="swarm:larva",
+        reads=("T_ctmin", "T_coma_exit"),
+        note="Chill coma with hysteresis: enter below T_ctmin, exit above T_coma_exit.",
+    ),
 )
 
 
@@ -864,5 +994,6 @@ __all__ = [
     "CouplingRow", "COUPLING_TABLE",
     "apply_blast_damage", "apply_environmental_damage",
     "wind_q_pa", "apply_wind_force",
-    "apply_teargas_blind", "apply_poison_dose",
+    "apply_teargas_blind", "apply_poison_dose", "poison_immune",
+    "apply_bite_dose", "apply_corpse_infestation",
 ]

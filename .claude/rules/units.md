@@ -11,6 +11,7 @@ paths:
   - "src/simulation/body_temp.py"
   - "src/simulation/factions.py"
   - "src/simulation/unit_fixed.py"
+  - "src/simulation/corpse.py"
 ---
 
 # Units: what a unit is, how it turns, moves and is pushed
@@ -71,6 +72,9 @@ and who must use it; this file holds the constraints the code cannot say.
 ## Coupling table
 - A row whose effect on a unit is a PUSH hands the unit impulse law an impulse (`unit_impulse.add`) and owns no outcome of its own.
 - The heat row's felt temperature is ONE function, `exchange.felt_temperature`: the row calls it and so does the observation. Never a copy of the chain.
+- A swarm row names its `consumer` (`"swarm:<species>"`), has no Python response and is executed IN its species kernel (the last stage of slot 7); its `reads` are species-table fields the kernel's table rows carry. The future EXCHANGE-READ executor iterates `consumer == "unit"` rows only.
+- The swarm rows (arc #63) are the unit side's ONLY reads of the swarm: the bite (below) and the count (`swarm_count`, the Corpse law). Never a unit law reading a swarm column.
+- The `swarm_bite_dose` row (arc #63 P5a) is the bite's ONE read: the footprint SUM of the bite-dose plane into `poison.dose`, uncredited (-1), cause `larva_bite`, at 9c3 after the gas poison row and before `poison.tick`; fused into the device 9c3 kernel (`cpp/src/cuda_unit_exchange.cu`) in the same patch as any change. Two bodies on one tile EACH take it in full (a larva under two boots bites both): never split. Immunity is `exchange.poison_immune` (resist 0) shared with the gas row, plus the dose door's zombie refusal: never a second immunity rule.
 
 ## Body temperature
 - A unit's shell temperature (`body_temp_q`, Q16 degrees C) is written by the heat coupling row ALONE (`exchange.apply_environmental_damage` through `body_temp.advance`) and reset to ambient by `body_temp.clear` at death and conversion (`tests/test_body_temp.py` scans `src/`). Anything that warms or cools a body changes the felt temperature or the air it stands in, never the body; the band reads the body, the observation keeps the felt temperature (Erik's page, 2026-11-17).
@@ -78,6 +82,13 @@ and who must use it; this file holds the constraints the code cannot say.
 - THE PROTECTION is ONE number per env profile, `heat_absorption` (the share of the heat reaching the body it takes up; Erik, 2026-11-18: "protect only the body", and the blasts' heat and look are not to be touched for it). It scales both inflows alike (the felt temperature's flow and the air's excess over ambient), never the losses, so the body settles at ambient + h x (felt - ambient) and the damage law stays proportional to the body's excess. Never a second mechanism (a ceiling, a per-source factor) beside it; every profile carries the same value so the zombie's x4 heat weakness stays relative.
 - The air is read over the footprint's GAS tiles: mean pressure, pressure-weighted temperature; the engine's ambient IS the body's 20 C. The device twin is the heat kernel over `unit_lib::body_air` / `body_step`: a change to the law lands there in the same patch.
 - ACCEPTED GAPS: the felt scale is per tick, so the body's time constant scales with the tick rate; the heat row credits a tick's damage only to that tick's deposit claimant, so the cooling's damage after a burst is the environment's.
+
+## Corpse law
+- `simulation.corpse` is the ONE writer of `infest_q` and `corpse_integrity_q` (`tests/test_corpse_infestation.py` scans `src/`); both are reset at every death (`damage.apply_packet`) and conversion to their DEFAULTS (level 0, integrity full), so a match without larvae hashes as before and no golden moves.
+- The level moves only through the `swarm_count` row at 9c3 (after the bite row), on DEAD units, the drain through `clearing.drain` at `clearing.RATE_SHIFT` reading the level before the rise; a corpse rises only at the conversion door (`ai_zombie.rises_as_zombie`, the Horde rule file). A living unit's level never moves.
+- A destroyed corpse (integrity <= 0) holds its level at 0 and rises by NEITHER trigger, a zombie's kill included.
+- ACCEPTED GAP (P5b, the lead's call; census in `docs/swarm_P5b_impl.md`): NOTHING lowers the integrity yet. Blasts, the heat row (fire), statuses and poison stop at death (`alive` gates), so a frag beside a corpse leaves it whole; the one reach to a corpse (a packet an attack slot or the zombie slot decided against its start state, landing after an earlier one killed) still writes the hp, because routing it to the integrity through `damage.apply_packet` moves five of main's pinned matches (unit stream and tick digest; outcome and field unchanged). When it is routed, it is routed THERE (host and device `apply_packet`), never a second damage law for corpses; a new reach is a design line, never a dropped `alive` gate.
+- The device twin is slot 9c3's kernel (the corpse row in `cpp/src/cuda_unit_exchange.cu`), the device `apply_packet`'s death branch and `k_convert_zombies`: a change to `corpse.infest`, `on_death`, `clear` or `rises` lands there in the same patch; `tests/cuda_unit_damage_check.py` (the gas scene's corpses) and `tests/cuda_unit_kernels_check.py` PART CORPSE are the guard.
 
 ## Wind load on a body
 - THE read of what the air does to a unit (#140): dynamic pressure as the int `W = N_raw * (v^2 >> 16)` (Python ints: an int32 square wraps), max over the footprint's gas tiles; `footprint_wind` also hands back the force's DIRECTION. Never read the planes.

@@ -55,6 +55,11 @@ from simulation.gases import (  # noqa: F401  (re-exported)
     INERT_N2,
 )
 
+# Swarm store (arc #63 P2, engine/17 §1.3): the per-species SoA arrays +
+# their allocation hook. No other GameMap dependency on the swarm module.
+from simulation.swarm import (SWARM_PLANE_NAMES, SWARM_RESIDENT_NAMES,  # arc #63 P2
+                              allocate_swarm_store)
+
 
 # P-O2b (docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b") — the draw's two
 # authored dials, resolved in ONE place so the dem_acc plane's depth and the
@@ -260,6 +265,19 @@ class GameMap:
         # per-tick upload carries the unit rows instead of the planes.
         "permeability", "wave_absorb",
     )
+    # arc #63 P2 (engine/17 §2): the swarm store — host-written resident arrays.
+    # No device kernel reads them in P2, so no per-tick transfer list names them
+    # and device copies go stale after any host store write (spawn/reclaim set
+    # gmap.swarm_host_dirty[sp]; P3's upload consumes it). Being in
+    # _RESIDENT_SYNCED puts them in the DEFAULT to_host() set: a defaulted
+    # to_host() would overwrite host writes with stale device data (the resident
+    # tick already forbids a defaulted to_host(), physics_runner._step_resident).
+    # The arrays are PER MAP (a column (max_units,), the counters 0-d); a
+    # ResidentBatch stacks them to (N, max_units) / (N,) like every resident
+    # field -- the batch axis is ResidentBatch's (P6 ruling, 2026-11-14).
+    # arc #63 P5a: + the swarm's output planes (the bite-dose plane), written
+    # by the swarm step on either path, downloaded while a swarm is present.
+    _RESIDENT_SYNCED = _RESIDENT_SYNCED + SWARM_RESIDENT_NAMES + SWARM_PLANE_NAMES
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 
     def __setattr__(self, name, value):
@@ -986,6 +1004,14 @@ class GameMap:
         # --- temp_init.npy initial-temperature seed (vocabulary E.2 row 4) -
         self._seed_temp_init(getattr(level_data, "temp_init_q", None),
                              getattr(level_data, "name", "?"))
+
+        # Swarm store (arc #63 P2, engine/17 §1.3): the last statement of
+        # __init__, deliberately after every other seed above. Allocation
+        # draws no RNG and runs on every level/reset (fresh GameMap each
+        # time). Dormancy comes from the presence gate (§5.1), not from
+        # skipping allocation — no code ever branches on "does the store
+        # exist".
+        allocate_swarm_store(self)
 
     def _seed_temp_init(self, temp_seed_q, level_name):
         """Apply a level's ``temp_init.npy`` (Q16.16 game degrees above

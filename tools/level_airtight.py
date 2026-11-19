@@ -1,8 +1,9 @@
-"""Airtight check for a Breach level.
+"""Airtight check for a Breach level (the level lint).
 
 Flood-fills the interior air through every non-wall cell and flags any cell
 that reaches a vacuum tile or the grid edge -- i.e. a hole the atmosphere
-vents through. Uses the real GameMap decoding (CSV codes -> materials ->
+vents through. Also reports every swarm brood that cannot spawn (arc #63 P4:
+an unknown species, a zone with no free tile). Uses the real GameMap decoding (CSV codes -> materials ->
 solid/vacuum masks), so it can't disagree with what the sim actually does.
 
 Usage:
@@ -58,7 +59,8 @@ def find_leaks(solid: np.ndarray, is_vac: np.ndarray):
 
 
 def check(level_name: str, levels_dir: str = "levels") -> bool:
-    g = GameMap(load_level(level_name, levels_dir=levels_dir))
+    level = load_level(level_name, levels_dir=levels_dir)
+    g = GameMap(level)
     solid = np.asarray(g.solid, dtype=bool)
     h, w = solid.shape
     visited, vac_leak, edge_leak = find_leaks(solid, g.is_vacuum)
@@ -77,7 +79,13 @@ def check(level_name: str, levels_dir: str = "levels") -> bool:
             print(f"    {kind} leak  row {r}: cols {cs[0]}-{cs[-1]} ({len(cs)} cells)")
     airtight = not vac_leak and not edge_leak
     print("  AIRTIGHT" if airtight else "  *** LEAKING ***")
-    return airtight
+    # arc #63 P4: the broods' authoring problems (an unknown species, a zone
+    # with no free tile) -- the very list the load-time spawn refuses on.
+    from simulation.swarm_brood import brood_problems
+    problems = brood_problems(level.zone_grid, solid, level.entities)
+    for p in problems:
+        print(f"  *** BROOD: {p}")
+    return airtight and not problems
 
 
 if __name__ == "__main__":

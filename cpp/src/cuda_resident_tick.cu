@@ -31,6 +31,7 @@
 #include "radiation_sweep.h"
 #include "bulk_transport.h"   // trace_diffusion_dd_q (the CPU tail's fold)
 #include "trace_decay.h"      // trace_decay::frac_q
+#include "swarm.h"            // arc #63 P3: the swarm stage (resident_swarm)
 
 #include <cuda_runtime.h>
 
@@ -205,7 +206,7 @@ bool upload_if_changed(std::vector<T>& cache, DevBuf& dev, const T* src, size_t 
 constexpr int DESTROYED_HEAD = 64;
 struct ArenaLayout {
     size_t wt, comb, temp, sweep, kick, flux, ecnt, rail, tcnt, ttail, pre, nsub,
-           fire_cnt, fire_gate, edq, end;
+           fire_cnt, fire_gate, edq, swm, end;
     explicit ArenaLayout(int N = 1) {
         const size_t n = (size_t)(N > 0 ? N : 1);
         wt    = 0;
@@ -223,7 +224,8 @@ struct ArenaLayout {
         fire_cnt  = nsub + 1;
         fire_gate = fire_cnt + (n + 1) / 2;   // (N,) int
         edq       = fire_gate + (n + 1) / 2;  // (N,) int32
-        end       = edq + n * EDQ_SLOTS;      // #29 P4c: the edit queue's books
+        swm       = edq + n * EDQ_SLOTS;      // #29 P4c: the edit queue's books
+        end       = swm + n * swarm::SWARM_CNT_SLOTS;   // arc #63 P3: the swarm stage's counters
     }
 };
 
@@ -282,6 +284,11 @@ struct ResidentTickState {
     bool tt_ran = false;
     std::vector<int> tt_trace_gi;
     bool edq_ran = false;              // #29 P4c: the edit queue ran this tick
+    // arc #63 P3: the swarm stage of this tick -- the species it launched
+    // (registry index, capacity, the host hw it ran over) and its launch blocks.
+    struct SwarmRan { int law; int max_units; std::vector<int32_t> hw; };
+    std::vector<SwarmRan> swarm_ran;
+    std::vector<uint32_t> swarm_launch;
     // this tick's light inputs (resident_upload_light)
     bool light_uploaded = false;
     bool l_cones = false, l_sky = false, l_emult = false;
@@ -881,6 +888,62 @@ void resident_upload_light(const PhysicsEngine& eng, const ResidentFields& f,
 }
 
 // ---------------------------------------------------------------------------
+// arc #63 P3 (docs/swarm_P3_impl.md §4.4): THE SWARM STAGE -- each present
+// species' resident launch core over (ceil(max_e hw[e] / 256), N) on the tick
+// stream, on the batch's device columns and the device temperature / solid
+// the tail just wrote; its per-env counters in the arena's `swm` region; its
+// records' [0, hw[e]) extents host-ward before the books sync (folded by
+// resident_tail). Dormant (no species present in any env): nothing launches.
+// ---------------------------------------------------------------------------
+void resident_swarm(const EngineList& engs, const ResidentFields& f,
+                    const ResidentTickArgs& a) {
+    (void)engs;
+    ResidentTickState& S = g_rt;
+    S.swarm_ran.clear();
+    if (a.swarm_species == nullptr || a.n_swarm_species <= 0) return;
+    const int N = f.n_env;
+    // D14: dormant (no species present in any env) -- no memset, no copy, no
+    // launch, and no counter moves.
+    bool present = false;
+    for (int i = 0; i < a.n_swarm_species && !present; ++i)
+        for (int e = 0; e < N; ++e)
+            if (a.swarm_species[i].hw[e] > 0) { present = true; break; }
+    if (!present) return;
+    ++g_counts[16];
+    cudaStream_t st = tstream();
+    unsigned long long* cnt = S.arena_dev() + S.L.swm;
+    cuda_check(cudaMemsetAsync(cnt, 0, (size_t)N * swarm::SWARM_CNT_SLOTS * 8, st),
+               "memset swarm counters");
+    // arc #63 P5a / P5b: the output planes are rebuilt from zero every
+    // non-dormant tick.
+    int32_t* bite = reinterpret_cast<int32_t*>(a.swarm_bite);
+    if (bite != nullptr)
+        cuda_check(cudaMemsetAsync(bite, 0, (size_t)N * f.h * f.w * sizeof(int32_t), st),
+                   "memset swarm bite plane");
+    int32_t* count = reinterpret_cast<int32_t*>(a.swarm_count);
+    if (count != nullptr)
+        cuda_check(cudaMemsetAsync(count, 0, (size_t)N * f.h * f.w * sizeof(int32_t), st),
+                   "memset swarm count plane");
+    bool any = false;
+    for (int i = 0; i < a.n_swarm_species; ++i) {
+        const swarm::ResidentSpecies& sp = a.swarm_species[i];
+        S.swarm_launch.assign((size_t)N * swarm::LAUNCH_FIXED_WORDS, 0u);
+        swarm::compose_launch(a.swarm_env, sp.hw, N, S.swarm_launch.data());
+        const int launched = swarm::resident_species(
+            sp.law, sp.st, sp.max_units, N, f.h, f.w, P<const int32_t>(f.temperature),
+            P<const bool>(f.solid), S.swarm_launch.data(), sp.tables, sp.table_width,
+            cnt, static_cast<void*>(st), bite, count);
+        if (launched > 0) {
+            any = true;
+            ++g_counts[17];
+            S.swarm_ran.push_back(ResidentTickState::SwarmRan{
+                sp.law, sp.max_units, std::vector<int32_t>(sp.hw, sp.hw + N)});
+        }
+    }
+    (void)any;
+}
+
+// ---------------------------------------------------------------------------
 // the tail: the bulk sum, fire, the sweep, temperature; the books; destroyed
 // ---------------------------------------------------------------------------
 std::vector<std::vector<std::pair<int, int>>> resident_tail(
@@ -1055,6 +1118,10 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
         tsc, arena + S.L.temp, /*solid_books=*/true);
     ++g_counts[7];
 
+    // ---- 4. the swarm stage (arc #63 P3): the LAST stage of slot 7, after
+    //      temperature, before the books D2H -- no third host sync -----------
+    resident_swarm(engs, f, a);
+
     // ---- THE ONE BOOKS D2H (every stage, every env; it waits for the chain)
     unsigned char* hb = S.arena_host();
     cuda_check(cudaMemcpyAsync(hb, arena, S.L.end * 8, cudaMemcpyDeviceToHost, st),
@@ -1069,6 +1136,9 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
     const unsigned long long* hu = reinterpret_cast<const unsigned long long*>(hb);
     const bool edq_ran = S.edq_ran;   // #29 P4c (cleared before any fold can throw)
     S.edq_ran = false;
+    std::vector<ResidentTickState::SwarmRan> swarm_ran;   // arc #63 P3 (ditto)
+    swarm_ran.swap(S.swarm_ran);
+    if (a.swarm_rows != nullptr) a.swarm_rows->assign((size_t)N, std::vector<int32_t>());
 
     for (int e = 0; e < N; ++e) {
         const PhysicsEngine& E = *engs[(size_t)e];
@@ -1269,6 +1339,42 @@ std::vector<std::vector<std::pair<int, int>>> resident_tail(
             }
             E.edit_queue_books.assign(eb, eb + EDQ_SLOTS);
             g_counts[15] += eb[EDQ_B_TILES];
+        }
+
+        // ---- arc #63 P3: the swarm stage's records -> this env's death rows,
+        //      in (species, slot) order, cross-checked against its counter ---
+        if (a.swarm_rows != nullptr) {
+            std::vector<int32_t>& rows = (*a.swarm_rows)[(size_t)e];
+            rows.clear();
+            long long deaths = 0;
+            for (const auto& sr : swarm_ran) {
+                const int32_t* rec = swarm::resident_records_host(sr.law);
+                const int hw = sr.hw[(size_t)e];
+                for (int s = 0; s < hw; ++s) {
+                    const int32_t* r =
+                        rec + ((size_t)e * sr.max_units + s) * swarm::DEATH_WORDS;
+                    if (r[swarm::DEATH_UNIT_ID] == 0) continue;
+                    rows.push_back(sr.law);
+                    rows.push_back(e);
+                    rows.push_back(s);
+                    rows.push_back(r[swarm::DEATH_UNIT_ID]);
+                    rows.push_back(r[swarm::DEATH_POS_X]);
+                    rows.push_back(r[swarm::DEATH_POS_Y]);
+                    rows.push_back(r[swarm::DEATH_HEADING]);
+                    ++deaths;
+                }
+            }
+            const long long counted = swarm_ran.empty() ? 0 :
+                (long long)hu[S.L.swm + (size_t)e * swarm::SWARM_CNT_SLOTS +
+                              swarm::SWARM_CNT_DEATHS];
+            if (counted != deaths) {
+                std::ostringstream os;
+                os << "resident swarm: env " << e << ": the device counted " << counted
+                   << " deaths but the records that reached the host hold " << deaths
+                   << " (the records must come down before the books sync)";
+                throw std::runtime_error(os.str());
+            }
+            E.swarm_deaths_sum += deaths;
         }
 
         // ---- the destroyed walls (row-major, the per-call's sort) --------

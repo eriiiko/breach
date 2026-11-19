@@ -305,8 +305,9 @@ def status_tick(store, ring) -> np.ndarray:
 #: The planes slot 9c reads, by ``GameMap`` field name.
 #: #215: and the body temperature's air read (atmosphere, temperature, solid).
 HEAT_FIELDS = ("heat", "rad_flux_sweep", "atmosphere", "temperature", "solid")
-#: The planes slot 9c3 reads.
-GAS_FIELDS = ("gas",)
+#: The planes slot 9c3 reads (arc #63 P5a: + the swarm's bite-dose plane,
+#: the swarm_bite_dose row's input; P5b: + its count plane, the corpse row's).
+GAS_FIELDS = ("gas", "swarm_bite_dose", "swarm_count")
 
 
 def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
@@ -335,18 +336,28 @@ def heat_damage(store, ring, fields: dict, claims) -> np.ndarray:
 
 
 def gas_rows(store, ring, fields: dict, claims) -> np.ndarray:
-    """Slot 9c3: the teargas row, the poison row's dose, the poison law and
+    """Slot 9c3: the teargas row, the poison row's dose, the larvae's bite
+    dose (arc #63 P5a), the corpses' infestation (P5b), the poison law and
     (#215) the stress tick, fused per row (each unit's steps read only the
-    planes and its own row). ``fields``: ``gas`` ``(N, G, h, w)`` int32 DEVICE array;
+    planes and its own row). ``fields``: ``gas`` ``(N, G, h, w)``,
+    ``swarm_bite_dose`` and ``swarm_count`` ``(N, h, w)`` int32 DEVICE
+    arrays;
     ``claims`` as for :func:`heat_damage`. ``store.last_refused`` holds the
     doses clipped at the body's store (poison.SATURATION's hits)."""
     _check_ring("gas_rows", store, ring)
-    _check_planes("gas_rows", store, fields, {"gas": np.int32})
+    _check_planes("gas_rows", store, fields,
+                  {"gas": np.int32, "swarm_bite_dose": np.int32,
+                   "swarm_count": np.int32})
     _, n_gases, h, w = (int(x) for x in fields["gas"].shape)
+    for k in ("swarm_bite_dose", "swarm_count"):
+        if tuple(int(x) for x in fields[k].shape) != (store.shape[0], h, w):
+            raise ValueError(f"unit kernel gas_rows: {k}'s shape is not the "
+                             f"gas planes'")
     c = np.ascontiguousarray(claims, dtype=np.int64)
     return _done_events(store, "gas_rows", store.bp.unit_gas_rows(
         store.buffer, store.tables, ring.buffer, int(fields["gas"].data.ptr),
-        n_gases, h, w, c))
+        n_gases, h, w, c, int(fields["swarm_bite_dose"].data.ptr),
+        int(fields["swarm_count"].data.ptr)))
 
 
 #: A probe packet row (TEST-ONLY :func:`damage_probe`).

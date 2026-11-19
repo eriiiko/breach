@@ -6,7 +6,85 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EOSSolver', 'E_CEILING_TOP_Q', 'E_FINE_BITS', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'E_TABLE_TOP_MAX', 'EmissiveTable', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'L_CHANNELS', 'L_FINE_BITS', 'L_TABLE_TOP_MAX', 'LightEmissionTable', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_BAD_HEAT_ABSORB', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_LIGHT_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_LIGHT_ABSORB', 'RS_SLOT_LIGHT_EMIT', 'RS_SLOT_LIGHT_MAX_STREAM', 'RS_SLOT_LIGHT_MIN_STREAM', 'RS_SLOT_LIGHT_RING_IN', 'RS_SLOT_LIGHT_RING_OUT', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'TRACE_CELL_MAX', 'TRACE_FINE_BITS', 'TRACE_SHIFT', 'TemperatureSolver', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'atan2_q16', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_spike_add1', 'cuda_temperature_step', 'cuda_water_step', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_fine_heat_shr', 'fp_make_recip', 'fp_quantize', 'fp_quantize_trace', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'fp_trace_add_sat', 'fp_trace_density_shr', 'fp_trace_from_bulk', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_temperature_backend', 'get_water_backend', 'radiation_sweep_cuda_calls', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'water_substeps_resident']
+__all__: list[str] = ['ATMOSPHERE_FIXEDPOINT', 'ATMOSPHERE_FP_ONE', 'ATMOSPHERE_FP_SHIFT', 'AtmosphereSolver', 'CAP_SHIFT_MAX', 'CAP_SHIFT_MIN', 'CombustionSolver', 'EDIT_FIELD_ORDINALS', 'EDIT_QUEUE_LAYOUT', 'EOSSolver', 'E_CEILING_TOP_Q', 'E_FINE_BITS', 'E_INV_TOP_GAME', 'E_TABLE_SIZE', 'E_TABLE_TOP_MAX', 'EmissiveTable', 'FieldApplierBuffer', 'FireParams', 'FireSimulation', 'HAS_CUDA', 'L_CHANNELS', 'L_FINE_BITS', 'L_TABLE_TOP_MAX', 'LightEmissionTable', 'PHILOX32_TWO_PI_Q16', 'PhysicsEngine', 'RADIATION_SWEEP_CNT_SLOTS', 'RS_BAD_HEAT_ABSORB', 'RS_SLOT_BAD_AMBIENT', 'RS_SLOT_BAD_EXTINCTION', 'RS_SLOT_BAD_LIGHT_EXTINCTION', 'RS_SLOT_BAD_SCALARS', 'RS_SLOT_LIGHT_ABSORB', 'RS_SLOT_LIGHT_EMIT', 'RS_SLOT_LIGHT_MAX_STREAM', 'RS_SLOT_LIGHT_MIN_STREAM', 'RS_SLOT_LIGHT_RING_IN', 'RS_SLOT_LIGHT_RING_OUT', 'RS_SLOT_MAX_STREAM', 'RS_SLOT_MIN_STREAM', 'RadiationSweep', 'SWARM_CONSTANTS', 'SWARM_LARVA_BRANCHES', 'SWARM_SPECIES_LAWS', 'SWARM_TABLES_FINGERPRINT', 'TRACE_CELL_MAX', 'TRACE_FINE_BITS', 'TRACE_SHIFT', 'TemperatureSolver', 'UnitEventRingBuffer', 'UnitRecordListBuffer', 'UnitStoreBuffer', 'UnitTablesBuffer', 'WATER_FIXEDPOINT', 'WATER_FP_ONE', 'WATER_FP_SHIFT', 'WAVE_FIXEDPOINT', 'WAVE_FP_ONE', 'WAVE_FP_SHIFT', 'WIND_FIXEDPOINT', 'WIND_FP_ONE', 'WIND_FP_SHIFT', 'WaterSolver', 'applier_layout', 'applier_run', 'atan2_q16', 'build_id', 'bulk_flux_transport', 'conduction_cell_capacity_q', 'cos_q16', 'cuda_available', 'cuda_bulk_flux_transport', 'cuda_combustion_step', 'cuda_device_info', 'cuda_eos_energy_flux', 'cuda_eos_kick_compression', 'cuda_eos_mg_solve', 'cuda_eos_sl_advect', 'cuda_fire_step', 'cuda_map_mul_q16', 'cuda_radiation_sweep_launch_count', 'cuda_radiation_sweep_resident', 'cuda_radiation_sweep_run', 'cuda_spike_add1', 'cuda_swarm_resident_probe', 'cuda_swarm_species_step', 'cuda_temperature_step', 'cuda_water_step', 'edit_queue_contrib_probe', 'eos_energy_books_sum', 'eos_kick_compression_ref', 'eos_mg_build_parity', 'eos_mg_solve_ref', 'eos_nsub_reads', 'eos_prestage_parity', 'eos_resident_calls', 'eos_sl_advect_ref', 'eos_step_cuda_calls', 'fp_deposit_dT_wide_i64', 'fp_deposit_dT_wide_q16', 'fp_div_round', 'fp_div_trunc', 'fp_effort_step', 'fp_fine_heat_shr', 'fp_half_up', 'fp_isqrt', 'fp_isqrt_ceil', 'fp_isqrt_u128', 'fp_isqrt_u64', 'fp_make_recip', 'fp_mul_q16_round', 'fp_quantize', 'fp_quantize_trace', 'fp_recip_mul', 'fp_reciprocal_q16', 'fp_shr_round0', 'fp_shr_round0_i64', 'fp_shr_round0_signed_i64', 'fp_shr_trunc', 'fp_sqrt_q16', 'fp_trace_add_sat', 'fp_trace_density_shr', 'fp_trace_from_bulk', 'get_bulk_flux_backend', 'get_combustion_backend', 'get_eos_step_backend', 'get_fire_backend', 'get_kick_compression_backend', 'get_mg_solve_backend', 'get_radiation_backend', 'get_sl_advection_backend', 'get_swarm_backend', 'get_temperature_backend', 'get_water_backend', 'philox32_4x32_10', 'philox32_4x32_10_np', 'philox32_angle_q16', 'philox32_below', 'philox32_uniform_q16', 'radiation_sweep_cuda_calls', 'resident_capture_abort', 'resident_capture_begin', 'resident_capture_end', 'resident_ignition_probe', 'resident_stage_counters', 'set_bulk_flux_backend', 'set_combustion_backend', 'set_fire_backend', 'set_kick_compression_backend', 'set_mg_solve_backend', 'set_radiation_backend', 'set_sl_advection_backend', 'set_swarm_backend', 'set_temperature_backend', 'set_water_backend', 'sin_q16', 'sky_exchange_step', 'swarm_branch_tally', 'swarm_cpu_calls', 'swarm_cuda_calls', 'swarm_larva_felt_T', 'swarm_species_step', 'swarm_wrap_heading_q16', 'tick_end_clears', 'tick_stream_ptr', 'topology_probe_tile_changed', 'unit_apply_orders', 'unit_convert_zombies', 'unit_damage_probe', 'unit_events_layout', 'unit_expire_orders', 'unit_exposure_decay', 'unit_gas_rows', 'unit_heat_damage', 'unit_integrate_turn', 'unit_lib_probe', 'unit_match_done', 'unit_movement', 'unit_movement_probe', 'unit_requests_layout', 'unit_status_tick', 'unit_store_layout', 'unit_verbs', 'unit_verbs_probe', 'unit_wind_impulse', 'water_substeps_resident']
+class UnitStoreBuffer:
+    """
+    #29 P6.1: the (N, U, W) int64 device unit store (Class T).
+    """
+    def __init__(self, n_env: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, width: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def download(self) -> numpy.typing.NDArray[numpy.int64]:
+        """
+        The device store as a fresh (N, U, W) int64 array.
+        """
+    def upload(self, rows: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> None:
+        """
+        Copy (N, U, W) int64 rows into the device store (tick stream).
+        """
+    @property
+    def ptr(self) -> int:
+        ...
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        ...
+class UnitTablesBuffer:
+    """
+    #29 P6.2: the (N, T) int64 device tables of the unit kernels (Class T).
+    """
+    def __init__(self, n_env: typing.SupportsInt | typing.SupportsIndex, width: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def download(self) -> numpy.typing.NDArray[numpy.int64]:
+        ...
+    def upload(self, rows: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> None:
+        ...
+    @property
+    def shape(self) -> tuple[int, int]:
+        ...
+class UnitEventRingBuffer:
+    """
+    #29 P6.3: the per-env device event ring (N, E_max, F) int64 (Class T).
+    """
+    def __init__(self, n_env: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, e_max: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def begin(self) -> None:
+        """
+        Empty every env's ring (tick stream).
+        """
+    def download(self) -> tuple[numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64]]:
+        """
+        (records (N, E_max, F), counts (N,), dropped (N,)) int64.
+        """
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        ...
+class UnitRecordListBuffer:
+    """
+    #29 P6.4a: a per-env device record list (N, cap, width) int64 with per-row staging (Class T): slot 1b's request list.
+    """
+    def __init__(self, n_env: typing.SupportsInt | typing.SupportsIndex, n_units: typing.SupportsInt | typing.SupportsIndex, cap: typing.SupportsInt | typing.SupportsIndex, width: typing.SupportsInt | typing.SupportsIndex, row_cap: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def begin(self) -> None:
+        """
+        Empty every env's list (tick stream).
+        """
+    def download(self) -> tuple[numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64]]:
+        """
+        (records (N, cap, width), counts (N,), dropped (N,)) int64.
+        """
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        ...
+class FieldApplierBuffer:
+    """
+    #29 P6.4b: the per-env effect list (N, cap, F) and book channels (Class T).
+    """
+    def __init__(self, n_env: typing.SupportsInt | typing.SupportsIndex, cap: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def stage(self, recs: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], counts: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> None:
+        ...
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        ...
 class AtmosphereSolver:
     def __init__(self) -> None:
         ...
@@ -79,76 +157,32 @@ class AtmosphereSolver:
     @transfer.setter
     def transfer(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
-class CombustionSolver:
+class FireParams:
     def __init__(self) -> None:
         ...
-    def step(self, gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], o2_idx: typing.SupportsInt | typing.SupportsIndex, inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, black_smoke_idx: typing.SupportsInt | typing.SupportsIndex, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], ignition_temp_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dt: typing.SupportsFloat | typing.SupportsIndex, c_v: typing.SupportsFloat | typing.SupportsIndex, n_floor_heat: typing.SupportsFloat | typing.SupportsIndex, thermal_solid: typing.Any = None, heat_inv_shift: typing.Any = None, heat: typing.Any = None, dem_acc: typing.Any = None, draw_r: typing.SupportsInt | typing.SupportsIndex = 1, dyn_permeability: typing.Any = None, max_claimants: typing.SupportsInt | typing.SupportsIndex = 4, gas_energy: typing.Any = None, is_ambient: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, fire_T_ext_plane: typing.Any = None, fuel_per_o2_plane: typing.Any = None, atmosphere: typing.Any = None, eos: typing.Any = None) -> None:
+    @property
+    def I_cap_per_avail(self) -> float:
+        ...
+    @I_cap_per_avail.setter
+    def I_cap_per_avail(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def H_BED_M(self) -> float:
+    def I_min(self) -> float:
         ...
-    @H_BED_M.setter
-    def H_BED_M(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def H_BED_SHIFT(self) -> int:
-        ...
-    @H_BED_SHIFT.setter
-    def H_BED_SHIFT(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+    @I_min.setter
+    def I_min(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def H_FUEL_M(self) -> float:
+    def P_full(self) -> float:
         ...
-    @H_FUEL_M.setter
-    def H_FUEL_M(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def H_FUEL_SHIFT(self) -> int:
-        ...
-    @H_FUEL_SHIFT.setter
-    def H_FUEL_SHIFT(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+    @P_full.setter
+    def P_full(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def T_MAX_PHYS(self) -> float:
+    def P_min(self) -> float:
         ...
-    @T_MAX_PHYS.setter
-    def T_MAX_PHYS(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def burn_rate(self) -> float:
-        ...
-    @burn_rate.setter
-    def burn_rate(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def e_comb_deliver_sum(self) -> int:
-        ...
-    @property
-    def e_comb_draw_sum(self) -> int:
-        ...
-    @property
-    def e_comb_export_sum(self) -> int:
-        ...
-    @property
-    def e_comb_heat_sum(self) -> int:
-        ...
-    @property
-    def e_comb_mint_sum(self) -> int:
-        ...
-    @property
-    def e_comb_rail_sum(self) -> int:
-        ...
-    @property
-    def e_comb_solid_heat_sum(self) -> int:
-        ...
-    @property
-    def e_deposit_drop_sum(self) -> int:
-        ...
-    @property
-    def e_soot_shed_sum(self) -> int:
-        ...
-    @property
-    def e_ts_products_sum(self) -> int:
+    @P_min.setter
+    def P_min(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def fire_T_ext(self) -> float:
@@ -163,19 +197,40 @@ class CombustionSolver:
     def fire_T_span(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def fuel_per_o2(self) -> float:
+    def fuel_ref(self) -> float:
         ...
-    @fuel_per_o2.setter
-    def fuel_per_o2(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def heat_floor_hits(self) -> int:
+    @fuel_ref.setter
+    def fuel_ref(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def hotf_cap(self) -> float:
         ...
     @hotf_cap.setter
     def hotf_cap(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def k_die(self) -> float:
+        ...
+    @k_die.setter
+    def k_die(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def k_grow(self) -> float:
+        ...
+    @k_grow.setter
+    def k_grow(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def k_wind_fan(self) -> float:
+        ...
+    @k_wind_fan.setter
+    def k_wind_fan(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def k_wind_strip(self) -> float:
+        ...
+    @k_wind_strip.setter
+    def k_wind_strip(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def o2_frac_amb(self) -> float:
@@ -196,16 +251,16 @@ class CombustionSolver:
     def o2_frac_full(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def o2_thresh_breathe(self) -> float:
+    def o2f_cap(self) -> float:
         ...
-    @o2_thresh_breathe.setter
-    def o2_thresh_breathe(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @o2f_cap.setter
+    def o2f_cap(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def o2_thresh_burn(self) -> float:
+    def p_expand_ref(self) -> float:
         ...
-    @o2_thresh_burn.setter
-    def o2_thresh_burn(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @p_expand_ref.setter
+    def p_expand_ref(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def p_ext_q(self) -> int:
@@ -220,13 +275,296 @@ class CombustionSolver:
     def p_full_q(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
-    def soot_yield(self) -> float:
+    def temp_scale(self) -> float:
         ...
-    @soot_yield.setter
-    def soot_yield(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @temp_scale.setter
+    def temp_scale(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def wall_damage(self) -> float:
+        ...
+    @wall_damage.setter
+    def wall_damage(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+class FireSimulation:
+    params: FireParams
+    def __init__(self) -> None:
+        ...
+    def step(self, fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_o2: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_total: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], smoke: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], is_wall: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dt: typing.SupportsFloat | typing.SupportsIndex, fuel_recip: typing.Any = None, fire_T_ext_plane: typing.Any = None) -> list:
+        ...
+    @property
+    def dbg_probe_idx(self) -> int:
+        ...
+    @dbg_probe_idx.setter
+    def dbg_probe_idx(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+class TemperatureSolver:
+    def __init__(self) -> None:
+        ...
+    def book_solid_seam(self, delta: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        #73 item 2: book a topology seam's MEASURED change to the solid books (int64, cap_real*T units) -- adds it to e_solid_seam_sum AND to the solid_energy_books_sum snapshot, so the snapshot stays the live sum when the seam fires after this tick's step(). Called by GameMap._solid_energy_book only.
+        """
+    def step(self, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Any = None, wind_y: typing.Any = None, dt: typing.SupportsFloat | typing.SupportsIndex = 0.0, n_bulk: typing.Any = None, thermal_solid: typing.Any = None, rad_net: typing.Any = None, rad_fluence: typing.Any = None, e_table: typing.Any = None, clamp_enabled: bool = True, gas_energy: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, is_ambient: typing.Any = None, rad_fine_bits: typing.SupportsInt | typing.SupportsIndex = -1) -> None:
+        ...
+    @property
+    def T_MAX_PHYS(self) -> float:
+        ...
+    @T_MAX_PHYS.setter
+    def T_MAX_PHYS(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def c_v(self) -> float:
+        ...
+    @c_v.setter
+    def c_v(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def cond_limit_hits(self) -> int:
+        ...
+    @property
+    def dbg_T_post_conduction(self) -> int:
+        ...
+    @property
+    def dbg_T_post_cooling(self) -> int:
+        ...
+    @property
+    def dbg_T_post_heat(self) -> int:
+        ...
+    @property
+    def dbg_probe_idx(self) -> int:
+        ...
+    @dbg_probe_idx.setter
+    def dbg_probe_idx(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def e_cond_cap_sum(self) -> int:
+        ...
+    @property
+    def e_cond_trunc_sum(self) -> int:
+        ...
+    @property
+    def e_dep_floor_drop_sum(self) -> int:
+        ...
+    @property
+    def e_deposit_drop_sum(self) -> int:
+        ...
+    @property
+    def e_gas_cond_sum(self) -> int:
+        ...
+    @property
+    def e_gas_deposit_sum(self) -> int:
+        ...
+    @property
+    def e_gas_rail_sum(self) -> int:
+        ...
+    @property
+    def e_rad_boundary_export_sum(self) -> int:
+        ...
+    @property
+    def e_rad_clamp_drop_sum(self) -> int:
+        ...
+    @property
+    def e_rad_floor_drop_sum(self) -> int:
+        ...
+    @property
+    def e_ring_pin_sum(self) -> int:
+        ...
+    @property
+    def e_solid_cond_sum(self) -> int:
+        ...
+    @property
+    def e_solid_deposit_sum(self) -> int:
+        ...
+    @property
+    def e_solid_low_rail_sum(self) -> int:
+        ...
+    @property
+    def e_solid_seam_sum(self) -> int:
+        ...
+    @property
+    def e_vac_wipe_sum(self) -> int:
+        ...
+    @property
+    def gas_advection_rate(self) -> float:
+        ...
+    @gas_advection_rate.setter
+    def gas_advection_rate(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def n_floor_heat(self) -> float:
+        ...
+    @n_floor_heat.setter
+    def n_floor_heat(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def no_face(self) -> int:
+        ...
+    @no_face.setter
+    def no_face(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def o2_vacuum_thresh(self) -> float:
+        ...
+    @o2_vacuum_thresh.setter
+    def o2_vacuum_thresh(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def rad_clamp_hits(self) -> int:
+        ...
+    @property
+    def solid_energy_books_sum(self) -> int:
+        ...
+    @property
+    def t_low_rail_hits(self) -> int:
         ...
     @property
     def t_max_phys_hits(self) -> int:
+        ...
+class EmissiveTable:
+    def __init__(self) -> None:
+        ...
+    def bake(self) -> None:
+        """
+        Bake (or re-bake) the E° table from the current dials -- in the currency `fine_bits` (rad_scale * 2^fine_bits; [0, E_FINE_BITS], ValueError outside it).
+        """
+    def e_bucket_of(self, T_q: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        emissive_table.h e_bucket_of: Q16.16 temperature -> bucket index.
+        """
+    def e_ceiling_q(self, phi: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        emissive_table.h e_ceiling_q: the maximum-principle clamp's ceiling as a Q16.16 game temperature -- the TOP (last Q16 value) of the first bucket whose E° exceeds Φ; 0 below E°[0]; saturates one LSB below 16000 game (E_CEILING_TOP_Q), below T_MAX_PHYS.
+        """
+    def e_inv_q(self, phi: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        emissive_table.h e_inv_q: E°⁻¹(Φ) as a Q16.16 game temperature (the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game). The radiation temperature -- not the clamp's ceiling (e_ceiling_q).
+        """
+    def table(self) -> numpy.typing.NDArray[numpy.int64]:
+        """
+        A COPY of the baked E° table (E_TABLE_SIZE int64 entries); bakes on first use and whenever a dial has moved.
+        """
+    @property
+    def fine_bits(self) -> int:
+        ...
+    @fine_bits.setter
+    def fine_bits(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def k_temp_to_kelvin(self) -> float:
+        ...
+    @k_temp_to_kelvin.setter
+    def k_temp_to_kelvin(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def kelvin_ambient(self) -> float:
+        ...
+    @kelvin_ambient.setter
+    def kelvin_ambient(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def rad_scale(self) -> float:
+        ...
+    @rad_scale.setter
+    def rad_scale(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+class LightEmissionTable:
+    fine_bits: typing.ClassVar[int] = 37
+    """
+    The table's CURRENCY: 2^fine_bits of its integers per light unit (the ramp's intensity 1.0) -- L_FINE_BITS, the one constant.
+    """
+    def __init__(self) -> None:
+        ...
+    def table(self) -> numpy.typing.NDArray[numpy.int64]:
+        """
+        A COPY of the checked-in L° as int64 (3, E_TABLE_SIZE), channel-major (R, G, B) over E°'s buckets.
+        """
+class RadiationSweep:
+    CONE_TURN: typing.ClassVar[int] = 65536
+    F_ONE: typing.ClassVar[int] = 16777216
+    F_SHIFT: typing.ClassVar[int] = 24
+    HEAT_ABSORB_Q_MAX: typing.ClassVar[int] = 268435456
+    LIGHT_CONE_BUDGET: typing.ClassVar[int] = 17592186044416
+    LIGHT_CONE_ROW_MAX: typing.ClassVar[int] = 281474976710656
+    LIGHT_EMIT_MULT_MAX: typing.ClassVar[int] = 1048576
+    LIGHT_SKY_MAX: typing.ClassVar[int] = 1099511627776
+    N_GAS_PLANES_MAX: typing.ClassVar[int] = 16
+    SHEAR: typing.ClassVar[int] = 1
+    STEP: typing.ClassVar[int] = 0
+    @staticmethod
+    def cone_emission(rgb: typing.Annotated[collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], "FixedSize(3)"], center_q: typing.SupportsInt | typing.SupportsIndex, spread_q: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex = 16) -> numpy.typing.NDArray[numpy.int64]:
+        """
+        P6b: one cone's per-ordinate emission (n_ordinates, 3) int64 -- the power projected onto the ordinates' angular bins by overlap (sweep_ref_q.cone_emission). Angles in Q16 turns.
+        """
+    @staticmethod
+    def fleck_f_gas_q24(e_table: EmissiveTable, T_q: typing.SupportsInt | typing.SupportsIndex, a_gas_q: typing.SupportsInt | typing.SupportsIndex, n_bulk: typing.SupportsInt | typing.SupportsIndex, n_floor_q: typing.SupportsInt | typing.SupportsIndex, recip_cv: typing.SupportsInt | typing.SupportsIndex, t_amb_q: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        The GAS-arm Fleck factor (Q24) for one gas cell whose smoke term absorbs a_gas_q, exactly as the sweep's pre-pass forms it (P5b): L priced in the temperature fold's gas currency (n_floor_q, recip_cv — PhysicsEngine.gas_capacity_q()).
+        """
+    @staticmethod
+    def fleck_f_solid_q24(e_table: EmissiveTable, T_q: typing.SupportsInt | typing.SupportsIndex, a_q: typing.SupportsInt | typing.SupportsIndex, his: typing.SupportsInt | typing.SupportsIndex, t_amb_q: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        The solid-branch Fleck factor (Q24) for one cell, exactly as the sweep's pre-pass forms it — the tile inspector's `f` row.
+        """
+    @staticmethod
+    def gas_extinction_q16(densities: numpy.typing.NDArray[numpy.int32], heat_absorb_q16: numpy.typing.NDArray[numpy.int32], n_bulk: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        a_gas (Q16) for ONE gas cell: min(ONE, sum_g heat_absorb_q16[g] * max(0, N_g) >> 16), 0 below the N_EPS bulk floor — the smoke term the sweep's pre-pass forms (P5a), for the tile inspector (P5c).
+        """
+    @staticmethod
+    def ordinate_constants(n_ordinates: typing.SupportsInt | typing.SupportsIndex, transport: typing.SupportsInt | typing.SupportsIndex) -> list:
+        """
+        The checked-in per-ordinate constants as (sx, sy, x_major, s_m) tuples, for the recompute test.
+        """
+    @staticmethod
+    def ordinate_dirs(n_ordinates: typing.SupportsInt | typing.SupportsIndex) -> list:
+        """
+        P6a: the checked-in per-ordinate direction cosines as (mu_q, eta_q) Q16 tuples, for the recompute test.
+        """
+    def __init__(self) -> None:
+        ...
+    def a_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        P5a: a COPY of the extinction plane (Q16, (h, w)) the last run() READ — the material extinction with the smoke term on gas cells.
+        """
+    def d_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        P5a: a COPY of the stamped-total plane (Q16, (h, w)) the last run() READ — max(dyn_heat_atten_q, the effective extinction).
+        """
+    def derive_ambient(self, is_vacuum: numpy.typing.NDArray[numpy.bool], e_table: EmissiveTable, vac_level: typing.SupportsInt | typing.SupportsIndex) -> numpy.typing.NDArray[numpy.int64]:
+        """
+        A COPY of the per-cell ambient LEVEL plane derived from vacuum/interior state (thermal model v2 R3): a vacuum cell takes vac_level, every other cell E°[0]. vac_level < 0 means E°[0] (R4, the shipped uniform answer); above E°[0] raises.
+        """
+    def fleck_plane(self) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        A COPY of the Fleck plane (Q24, (h, w)) the last run() computed.
+        """
+    def light_a_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        P6a: a COPY of the light material share a_c (Q16, (h, w, 3)) the last CPU light run READ -- the smoke term folded in on gas cells.
+        """
+    def light_d_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        P6a: a COPY of the stamped light total d_c (Q16, (h, w, 3)) the last CPU light run READ.
+        """
+    def light_gcoef_plane(self) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        P6a: a COPY of the glow coefficient g_c (Q16, (h, w, 3)) of the last CPU light run -- 0 off the gas cells.
+        """
+    def run(self, temperature: numpy.typing.NDArray[numpy.int32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_inv_shift: numpy.typing.NDArray[numpy.int32], thermal_solid: numpy.typing.NDArray[numpy.bool], e_table: EmissiveTable, amb_level: typing.Any, t_amb_q: typing.SupportsInt | typing.SupportsIndex, k_leak_q: typing.SupportsInt | typing.SupportsIndex, transport: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex, rad_net: numpy.typing.NDArray[numpy.int64], rad_flux: numpy.typing.NDArray[numpy.int64], rad_amb: numpy.typing.NDArray[numpy.int64], rad_fluence: numpy.typing.NDArray[numpy.int64], fleck_enabled: bool = True, gas: typing.Any = None, heat_absorb_q16: typing.Any = None, n_bulk: typing.Any = None, n_floor_q: typing.SupportsInt | typing.SupportsIndex = 0, recip_cv: typing.SupportsInt | typing.SupportsIndex = 0, light_atten_q: typing.Any = None, dyn_light_atten_q: typing.Any = None, light_q: typing.Any = None, light_flux_q: typing.Any = None, light_glow: typing.Any = None, light_absorb_q16: typing.Any = None, light_glow_q16: typing.Any = None, light_table: typing.Any = None, light_transport: typing.SupportsInt | typing.SupportsIndex = 0, light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> None:
+        """
+        One tick of the sweep over all ordinates. It OVERWRITES the four int64 planes — zeroed here before the first ordinate, so they hold the last run's values until the next run and the tile inspector can read them at render time (design row 38); no caller wipe needed. transport: RadiationSweep.STEP or .SHEAR; n_ordinates: 16 or 12. fleck_enabled=False is the reference's undamped (f_plane=None) configuration, for the gates. amb_level is the PER-CELL ambient LEVEL plane (int64 (h, w), 0 <= amb <= e_table[0]) the sweep radiates against — None means E°[0] everywhere, the uniform thermal-v2-R4 configuration. gas (int32 (n_gases, h, w)), heat_absorb_q16 (int32 (n_gases,)) and n_bulk (int32 (h, w)) — all or none — are the SMOKE TERM (P5a, design v3 §6.3): a gas cell reads a = max(a, min(ONE, Σ hq·N >> 16)), 0 below the N_EPS bulk floor, and d = max(d, a). None is the pre-P5a sweep. With the group, n_floor_q and recip_cv (both > 0) are the temperature fold's gas currency (PhysicsEngine.gas_capacity_q()), in which the Fleck pre-pass's GAS ARM (P5b, design v3 §2.8) damps every absorbing gas cell: L = deposit_dT_wide_i64((a_gas·ex) >> 16, reciprocal_q16(max(N, n_floor_q)), recip_cv). P6a THE LIGHT GROUP (all five planes or none): light_atten_q / dyn_light_atten_q int32 (h, w, 3), light_q / light_glow int64 (h, w, 3) and light_flux_q int64 (h, w, 2), OVERWRITTEN; light_absorb_q16 / light_glow_q16 int32 (n_gases, 3) the smoke term (with the gas group); light_table int64 (3, E_TABLE_SIZE) or None = the checked-in L°; light_transport STEP (default) or SHEAR. The books land in RadiationSweep.light_books. P6b: light_cones int64 (n, 7) rows (y, x, r, g, b, center_q, spread_q) -- CONE EMITTERS, the power projected onto the ordinates' bins by overlap and entering the cell's stream -- and light_sky int64 (n_ordinates, 3), the virtual ring's per-ordinate outflow (None: the dark ring).
+        """
+    @property
+    def light_books(self) -> dict:
+        """
+        P6a: {'emit', 'absorb', 'ring_in', 'ring_out': (R, G, B), 'min_stream', 'max_stream'} of the last light-carrying run -- emit + ring_in == absorb + ring_out per channel, exactly.
+        """
+    @property
+    def max_stream(self) -> int:
+        ...
+    @property
+    def min_stream(self) -> int:
         ...
 class EOSSolver:
     debug_pstar_from_prev: bool
@@ -242,6 +580,10 @@ class EOSSolver:
     def reset_trace_sat_books(self, n_gases: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         #88 P2: zero trace_clip_sum / trace_mint_sum / trace_neg_hits (sized n_gases) -- PhysicsRunner's per-tick reset.
+        """
+    def set_div_source(self, arg0: typing.Any) -> None:
+        """
+        #31: this tick's (h,w) int32 Q16 1/s divergence source, or None.
         """
     def trace_clip_sum(self) -> list:
         ...
@@ -519,79 +861,76 @@ class EOSSolver:
     @property
     def work_clamp_hits(self) -> int:
         ...
-class EmissiveTable:
+class CombustionSolver:
     def __init__(self) -> None:
         ...
-    def bake(self) -> None:
-        """
-        Bake (or re-bake) the E° table from the current dials -- in the currency `fine_bits` (rad_scale * 2^fine_bits; [0, E_FINE_BITS], ValueError outside it).
-        """
-    def e_bucket_of(self, T_q: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        emissive_table.h e_bucket_of: Q16.16 temperature -> bucket index.
-        """
-    def e_ceiling_q(self, phi: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        emissive_table.h e_ceiling_q: the maximum-principle clamp's ceiling as a Q16.16 game temperature -- the TOP (last Q16 value) of the first bucket whose E° exceeds Φ; 0 below E°[0]; saturates one LSB below 16000 game (E_CEILING_TOP_Q), below T_MAX_PHYS.
-        """
-    def e_inv_q(self, phi: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        emissive_table.h e_inv_q: E°⁻¹(Φ) as a Q16.16 game temperature (the bucket's LOW edge; 0 below E°[0]; saturates at 15996 game). The radiation temperature -- not the clamp's ceiling (e_ceiling_q).
-        """
-    def table(self) -> numpy.typing.NDArray[numpy.int64]:
-        """
-        A COPY of the baked E° table (E_TABLE_SIZE int64 entries); bakes on first use and whenever a dial has moved.
-        """
-    @property
-    def fine_bits(self) -> int:
-        ...
-    @fine_bits.setter
-    def fine_bits(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+    def step(self, gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], o2_idx: typing.SupportsInt | typing.SupportsIndex, inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, black_smoke_idx: typing.SupportsInt | typing.SupportsIndex, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], ignition_temp_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dt: typing.SupportsFloat | typing.SupportsIndex, c_v: typing.SupportsFloat | typing.SupportsIndex, n_floor_heat: typing.SupportsFloat | typing.SupportsIndex, thermal_solid: typing.Any = None, heat_inv_shift: typing.Any = None, heat: typing.Any = None, dem_acc: typing.Any = None, draw_r: typing.SupportsInt | typing.SupportsIndex = 1, dyn_permeability: typing.Any = None, max_claimants: typing.SupportsInt | typing.SupportsIndex = 4, gas_energy: typing.Any = None, is_ambient: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, fire_T_ext_plane: typing.Any = None, fuel_per_o2_plane: typing.Any = None, atmosphere: typing.Any = None, eos: typing.Any = None) -> None:
         ...
     @property
-    def k_temp_to_kelvin(self) -> float:
+    def H_BED_M(self) -> float:
         ...
-    @k_temp_to_kelvin.setter
-    def k_temp_to_kelvin(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def kelvin_ambient(self) -> float:
-        ...
-    @kelvin_ambient.setter
-    def kelvin_ambient(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @H_BED_M.setter
+    def H_BED_M(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def rad_scale(self) -> float:
+    def H_BED_SHIFT(self) -> int:
         ...
-    @rad_scale.setter
-    def rad_scale(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-class FireParams:
-    def __init__(self) -> None:
+    @H_BED_SHIFT.setter
+    def H_BED_SHIFT(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
-    def I_cap_per_avail(self) -> float:
+    def H_FUEL_M(self) -> float:
         ...
-    @I_cap_per_avail.setter
-    def I_cap_per_avail(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def I_min(self) -> float:
-        ...
-    @I_min.setter
-    def I_min(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @H_FUEL_M.setter
+    def H_FUEL_M(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def P_full(self) -> float:
+    def H_FUEL_SHIFT(self) -> int:
         ...
-    @P_full.setter
-    def P_full(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @H_FUEL_SHIFT.setter
+    def H_FUEL_SHIFT(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
-    def P_min(self) -> float:
+    def T_MAX_PHYS(self) -> float:
         ...
-    @P_min.setter
-    def P_min(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @T_MAX_PHYS.setter
+    def T_MAX_PHYS(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def burn_rate(self) -> float:
+        ...
+    @burn_rate.setter
+    def burn_rate(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def e_comb_deliver_sum(self) -> int:
+        ...
+    @property
+    def e_comb_draw_sum(self) -> int:
+        ...
+    @property
+    def e_comb_export_sum(self) -> int:
+        ...
+    @property
+    def e_comb_heat_sum(self) -> int:
+        ...
+    @property
+    def e_comb_mint_sum(self) -> int:
+        ...
+    @property
+    def e_comb_rail_sum(self) -> int:
+        ...
+    @property
+    def e_comb_solid_heat_sum(self) -> int:
+        ...
+    @property
+    def e_deposit_drop_sum(self) -> int:
+        ...
+    @property
+    def e_soot_shed_sum(self) -> int:
+        ...
+    @property
+    def e_ts_products_sum(self) -> int:
         ...
     @property
     def fire_T_ext(self) -> float:
@@ -606,40 +945,19 @@ class FireParams:
     def fire_T_span(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def fuel_ref(self) -> float:
+    def fuel_per_o2(self) -> float:
         ...
-    @fuel_ref.setter
-    def fuel_ref(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @fuel_per_o2.setter
+    def fuel_per_o2(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def heat_floor_hits(self) -> int:
         ...
     @property
     def hotf_cap(self) -> float:
         ...
     @hotf_cap.setter
     def hotf_cap(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def k_die(self) -> float:
-        ...
-    @k_die.setter
-    def k_die(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def k_grow(self) -> float:
-        ...
-    @k_grow.setter
-    def k_grow(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def k_wind_fan(self) -> float:
-        ...
-    @k_wind_fan.setter
-    def k_wind_fan(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def k_wind_strip(self) -> float:
-        ...
-    @k_wind_strip.setter
-    def k_wind_strip(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def o2_frac_amb(self) -> float:
@@ -660,16 +978,16 @@ class FireParams:
     def o2_frac_full(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def o2f_cap(self) -> float:
+    def o2_thresh_breathe(self) -> float:
         ...
-    @o2f_cap.setter
-    def o2f_cap(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @o2_thresh_breathe.setter
+    def o2_thresh_breathe(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def p_expand_ref(self) -> float:
+    def o2_thresh_burn(self) -> float:
         ...
-    @p_expand_ref.setter
-    def p_expand_ref(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    @o2_thresh_burn.setter
+    def o2_thresh_burn(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def p_ext_q(self) -> int:
@@ -684,315 +1002,10 @@ class FireParams:
     def p_full_q(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
-    def temp_scale(self) -> float:
+    def soot_yield(self) -> float:
         ...
-    @temp_scale.setter
-    def temp_scale(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def wall_damage(self) -> float:
-        ...
-    @wall_damage.setter
-    def wall_damage(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-class FireSimulation:
-    params: FireParams
-    def __init__(self) -> None:
-        ...
-    def step(self, fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_o2: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_total: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], smoke: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], is_wall: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dt: typing.SupportsFloat | typing.SupportsIndex, fuel_recip: typing.Any = None, fire_T_ext_plane: typing.Any = None) -> list:
-        ...
-    @property
-    def dbg_probe_idx(self) -> int:
-        ...
-    @dbg_probe_idx.setter
-    def dbg_probe_idx(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-class LightEmissionTable:
-    fine_bits: typing.ClassVar[int] = 37
-    def __init__(self) -> None:
-        ...
-    def table(self) -> numpy.typing.NDArray[numpy.int64]:
-        """
-        A COPY of the checked-in L° as int64 (3, E_TABLE_SIZE), channel-major (R, G, B) over E°'s buckets.
-        """
-class PhysicsEngine:
-    def __init__(self) -> None:
-        ...
-    def gas_capacity_q(self) -> tuple[int, int, int]:
-        """
-        (n_floor_q, c_v_q, recip_cv): THE GAS CURRENCY — quantize(temperature.n_floor_heat), quantize(temperature.c_v) and make_recip(c_v_q / 65536), the integers the temperature fold's gas deposit divides by and the sweep's gas Fleck arm prices a gas cell in (P5b).
-        """
-    def relight(self, temperature: numpy.typing.NDArray[numpy.int32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_inv_shift: numpy.typing.NDArray[numpy.int32], thermal_solid: numpy.typing.NDArray[numpy.bool], is_vacuum: numpy.typing.NDArray[numpy.bool], gas: numpy.typing.NDArray[numpy.int32], gas_conservative: numpy.typing.NDArray[numpy.bool], gas_heat_absorb_q16: numpy.typing.NDArray[numpy.int32], k_leak_q: typing.SupportsInt | typing.SupportsIndex, rad_amb_vacuum_q: typing.SupportsInt | typing.SupportsIndex, t_amb_q: typing.SupportsInt | typing.SupportsIndex, light_atten_q: typing.Any, dyn_light_atten_q: typing.Any, light_q: typing.Any, light_flux_q: typing.Any, light_glow: typing.Any, gas_light_absorb_q16: typing.Any = None, gas_light_glow_q16: typing.Any = None, light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> None:
-        """
-        P6b: recompute the light field on the CURRENT state without a tick (the paused renderer's path): the one sweep invocation step_tail uses, light always on, its heat outputs into the engine's own scratch -- no plane a tick reads is written. Writes light_q / light_flux_q / light_glow in place.
-        """
-    def run_substeps(self, p_prev: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_energy: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], obstacles: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_diffusion: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas_decay: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, is_ambient: typing.Any = None, n_amb: typing.Any = None, p_amb: typing.SupportsInt | typing.SupportsIndex = 0, sponge_sigma: typing.Any = None, sponge_udamp: typing.Any = None, do_traces: bool = True, thermal_solid: typing.Any = None) -> None:
-        ...
-    def run_substeps_resident(self, p_prev: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], sim_time: typing.SupportsFloat | typing.SupportsIndex, is_ambient: typing.Any = None, n_amb: typing.Any = None, p_amb: typing.SupportsInt | typing.SupportsIndex = 0, d_atmosphere: typing.SupportsInt | typing.SupportsIndex = 0, d_wave_p: typing.SupportsInt | typing.SupportsIndex = 0, d_wind_x: typing.SupportsInt | typing.SupportsIndex = 0, d_wind_y: typing.SupportsInt | typing.SupportsIndex = 0, d_temperature: typing.SupportsInt | typing.SupportsIndex = 0, d_gas: typing.SupportsInt | typing.SupportsIndex = 0, d_solid: typing.SupportsInt | typing.SupportsIndex = 0, d_is_vacuum: typing.SupportsInt | typing.SupportsIndex = 0, d_dyn_permeability: typing.SupportsInt | typing.SupportsIndex = 0, d_is_ambient: typing.SupportsInt | typing.SupportsIndex = 0, d_sponge_sigma: typing.SupportsInt | typing.SupportsIndex = 0, d_sponge_udamp: typing.SupportsInt | typing.SupportsIndex = 0, thermal_solid: typing.Any = None, d_thermal_solid: typing.SupportsInt | typing.SupportsIndex = 0, d_gas_energy: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
-        ...
-    def run_trace_tail_resident(self, gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas_diffusion: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_decay: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, d_gas: typing.SupportsInt | typing.SupportsIndex, d_solid: typing.SupportsInt | typing.SupportsIndex, d_is_vacuum: typing.SupportsInt | typing.SupportsIndex, d_is_ambient: typing.SupportsInt | typing.SupportsIndex, d_dyn_permeability: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-    def stamp_units(self, permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], obstacles: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], ys: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], xs: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], perm: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], wabsorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_q: numpy.typing.NDArray[numpy.int32], light_atten_q: numpy.typing.NDArray[numpy.int32], dyn_light_atten_q: numpy.typing.NDArray[numpy.int32], light_q_rows: numpy.typing.NDArray[numpy.int32]) -> None:
-        ...
-    def step_tail(self, ripple: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], ripple_v: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wave_p: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], smoke: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], thermal_solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], fuel_recip: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], fire_T_ext_plane: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], o2_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], rad_net_sweep: numpy.typing.NDArray[numpy.int64], rad_flux_sweep: numpy.typing.NDArray[numpy.int64], rad_amb_sweep: numpy.typing.NDArray[numpy.int64], rad_fluence: numpy.typing.NDArray[numpy.int64], gas_heat_absorb_q16: numpy.typing.NDArray[numpy.int32], k_leak_q: typing.SupportsInt | typing.SupportsIndex, rad_amb_vacuum_q: typing.SupportsInt | typing.SupportsIndex = -1, is_ambient: typing.Any = None, rad_net: typing.Any = None, gas_energy: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, light_atten_q: typing.Any = None, dyn_light_atten_q: typing.Any = None, light_q: typing.Any = None, light_flux_q: typing.Any = None, light_glow: typing.Any = None, gas_light_absorb_q16: typing.Any = None, gas_light_glow_q16: typing.Any = None, light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> list:
-        ...
-    def step_water(self, water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vx: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vy: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], floor_height: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], before: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], steam_idx: typing.SupportsInt | typing.SupportsIndex, tilt_x: typing.SupportsFloat | typing.SupportsIndex, tilt_y: typing.SupportsFloat | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ceiling_h: typing.SupportsFloat | typing.SupportsIndex, flood_eps: typing.SupportsFloat | typing.SupportsIndex, ratio_cap: typing.SupportsFloat | typing.SupportsIndex, boil_rate: typing.SupportsFloat | typing.SupportsIndex, boil_p_thresh: typing.SupportsFloat | typing.SupportsIndex, steam_yield: typing.SupportsFloat | typing.SupportsIndex, gas_energy: typing.Any = None, gas_conservative: typing.Any = None, thermal_solid: typing.Any = None, is_vacuum: typing.Any = None, is_ambient: typing.Any = None, t_amb_raw: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
-        ...
-    def step_water_tail(self, water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], before: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], steam_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ceiling_h: typing.SupportsFloat | typing.SupportsIndex, flood_eps: typing.SupportsFloat | typing.SupportsIndex, ratio_cap: typing.SupportsFloat | typing.SupportsIndex, boil_rate: typing.SupportsFloat | typing.SupportsIndex, boil_p_thresh: typing.SupportsFloat | typing.SupportsIndex, steam_yield: typing.SupportsFloat | typing.SupportsIndex, gas_energy: typing.Any = None, gas_conservative: typing.Any = None, thermal_solid: typing.Any = None, is_vacuum: typing.Any = None, is_ambient: typing.Any = None, t_amb_raw: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
-        ...
-    def water_substep_count(self, sim_time: typing.SupportsFloat | typing.SupportsIndex) -> int:
-        ...
-    @property
-    def atmos(self) -> AtmosphereSolver:
-        ...
-    @property
-    def combustion(self) -> CombustionSolver:
-        ...
-    @property
-    def e_water_evac_export_sum(self) -> int:
-        ...
-    @property
-    def emissive(self) -> EmissiveTable:
-        ...
-    @property
-    def eos(self) -> EOSSolver:
-        ...
-    @property
-    def fire(self) -> FireSimulation:
-        ...
-    @property
-    def light_emission(self) -> LightEmissionTable:
-        ...
-    @property
-    def light_requested(self) -> bool:
-        """
-        P6a: when True, step_tail's sweep carries the light channels into the light planes it is handed (all five then required); False (the default) computes no light and leaves those planes untouched.
-        """
-    @light_requested.setter
-    def light_requested(self, arg0: bool) -> None:
-        ...
-    @property
-    def light_transport(self) -> int:
-        """
-        P6d: the light group's transport at the one sweep invocation (run_sweep_, both step_tail and relight(), both backends) -- RadiationSweep.STEP (default) or .SHEAR. Bound once from [light] transport; heat's transport is unaffected.
-        """
-    @light_transport.setter
-    def light_transport(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def radiation(self) -> RadiationSweep:
-        ...
-    @property
-    def temperature(self) -> TemperatureSolver:
-        ...
-    @property
-    def water(self) -> WaterSolver:
-        ...
-class RadiationSweep:
-    CONE_TURN: typing.ClassVar[int] = 65536
-    F_ONE: typing.ClassVar[int] = 16777216
-    F_SHIFT: typing.ClassVar[int] = 24
-    HEAT_ABSORB_Q_MAX: typing.ClassVar[int] = 268435456
-    LIGHT_CONE_BUDGET: typing.ClassVar[int] = 17592186044416
-    LIGHT_EMIT_MULT_MAX: typing.ClassVar[int] = 1048576
-    LIGHT_SKY_MAX: typing.ClassVar[int] = 1099511627776
-    N_GAS_PLANES_MAX: typing.ClassVar[int] = 16
-    SHEAR: typing.ClassVar[int] = 1
-    STEP: typing.ClassVar[int] = 0
-    @staticmethod
-    def cone_emission(rgb: typing.Annotated[collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], "FixedSize(3)"], center_q: typing.SupportsInt | typing.SupportsIndex, spread_q: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex = 16) -> numpy.typing.NDArray[numpy.int64]:
-        """
-        P6b: one cone's per-ordinate emission (n_ordinates, 3) int64 -- the power projected onto the ordinates' angular bins by overlap (sweep_ref_q.cone_emission). Angles in Q16 turns.
-        """
-    @staticmethod
-    def fleck_f_gas_q24(e_table: EmissiveTable, T_q: typing.SupportsInt | typing.SupportsIndex, a_gas_q: typing.SupportsInt | typing.SupportsIndex, n_bulk: typing.SupportsInt | typing.SupportsIndex, n_floor_q: typing.SupportsInt | typing.SupportsIndex, recip_cv: typing.SupportsInt | typing.SupportsIndex, t_amb_q: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        The GAS-arm Fleck factor (Q24) for one gas cell whose smoke term absorbs a_gas_q, exactly as the sweep's pre-pass forms it (P5b): L priced in the temperature fold's gas currency (n_floor_q, recip_cv — PhysicsEngine.gas_capacity_q()).
-        """
-    @staticmethod
-    def fleck_f_solid_q24(e_table: EmissiveTable, T_q: typing.SupportsInt | typing.SupportsIndex, a_q: typing.SupportsInt | typing.SupportsIndex, his: typing.SupportsInt | typing.SupportsIndex, t_amb_q: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        The solid-branch Fleck factor (Q24) for one cell, exactly as the sweep's pre-pass forms it — the tile inspector's `f` row.
-        """
-    @staticmethod
-    def gas_extinction_q16(densities: numpy.typing.NDArray[numpy.int32], heat_absorb_q16: numpy.typing.NDArray[numpy.int32], n_bulk: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        a_gas (Q16) for ONE gas cell: min(ONE, sum_g heat_absorb_q16[g] * max(0, N_g) >> 16), 0 below the N_EPS bulk floor — the smoke term the sweep's pre-pass forms (P5a), for the tile inspector (P5c).
-        """
-    @staticmethod
-    def ordinate_constants(n_ordinates: typing.SupportsInt | typing.SupportsIndex, transport: typing.SupportsInt | typing.SupportsIndex) -> list:
-        """
-        The checked-in per-ordinate constants as (sx, sy, x_major, s_m) tuples, for the recompute test.
-        """
-    @staticmethod
-    def ordinate_dirs(n_ordinates: typing.SupportsInt | typing.SupportsIndex) -> list:
-        """
-        P6a: the checked-in per-ordinate direction cosines as (mu_q, eta_q) Q16 tuples, for the recompute test.
-        """
-    def __init__(self) -> None:
-        ...
-    def a_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
-        """
-        P5a: a COPY of the extinction plane (Q16, (h, w)) the last run() READ — the material extinction with the smoke term on gas cells.
-        """
-    def d_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
-        """
-        P5a: a COPY of the stamped-total plane (Q16, (h, w)) the last run() READ — max(dyn_heat_atten_q, the effective extinction).
-        """
-    def derive_ambient(self, is_vacuum: numpy.typing.NDArray[numpy.bool], e_table: EmissiveTable, vac_level: typing.SupportsInt | typing.SupportsIndex) -> numpy.typing.NDArray[numpy.int64]:
-        """
-        A COPY of the per-cell ambient LEVEL plane derived from vacuum/interior state (thermal model v2 R3): a vacuum cell takes vac_level, every other cell E°[0]. vac_level < 0 means E°[0] (R4, the shipped uniform answer); above E°[0] raises.
-        """
-    def fleck_plane(self) -> numpy.typing.NDArray[numpy.int32]:
-        """
-        A COPY of the Fleck plane (Q24, (h, w)) the last run() computed.
-        """
-    def light_a_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
-        """
-        P6a: a COPY of the light material share a_c (Q16, (h, w, 3)) the last CPU light run READ -- the smoke term folded in on gas cells.
-        """
-    def light_d_eff_plane(self) -> numpy.typing.NDArray[numpy.int32]:
-        """
-        P6a: a COPY of the stamped light total d_c (Q16, (h, w, 3)) the last CPU light run READ.
-        """
-    def light_gcoef_plane(self) -> numpy.typing.NDArray[numpy.int32]:
-        """
-        P6a: a COPY of the glow coefficient g_c (Q16, (h, w, 3)) of the last CPU light run -- 0 off the gas cells.
-        """
-    def run(self, temperature: numpy.typing.NDArray[numpy.int32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_inv_shift: numpy.typing.NDArray[numpy.int32], thermal_solid: numpy.typing.NDArray[numpy.bool], e_table: EmissiveTable, amb_level: typing.Any, t_amb_q: typing.SupportsInt | typing.SupportsIndex, k_leak_q: typing.SupportsInt | typing.SupportsIndex, transport: typing.SupportsInt | typing.SupportsIndex, n_ordinates: typing.SupportsInt | typing.SupportsIndex, rad_net: numpy.typing.NDArray[numpy.int64], rad_flux: numpy.typing.NDArray[numpy.int64], rad_amb: numpy.typing.NDArray[numpy.int64], rad_fluence: numpy.typing.NDArray[numpy.int64], fleck_enabled: bool = True, gas: typing.Any = None, heat_absorb_q16: typing.Any = None, n_bulk: typing.Any = None, n_floor_q: typing.SupportsInt | typing.SupportsIndex = 0, recip_cv: typing.SupportsInt | typing.SupportsIndex = 0, light_atten_q: typing.Any = None, dyn_light_atten_q: typing.Any = None, light_q: typing.Any = None, light_flux_q: typing.Any = None, light_glow: typing.Any = None, light_absorb_q16: typing.Any = None, light_glow_q16: typing.Any = None, light_table: typing.Any = None, light_transport: typing.SupportsInt | typing.SupportsIndex = 0, light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> None:
-        """
-        One tick of the sweep over all ordinates. It OVERWRITES the four int64 planes — zeroed here before the first ordinate, so they hold the last run's values until the next run and the tile inspector can read them at render time (design row 38); no caller wipe needed. transport: RadiationSweep.STEP or .SHEAR; n_ordinates: 16 or 12. fleck_enabled=False is the reference's undamped (f_plane=None) configuration, for the gates. amb_level is the PER-CELL ambient LEVEL plane (int64 (h, w), 0 <= amb <= e_table[0]) the sweep radiates against — None means E°[0] everywhere, the uniform thermal-v2-R4 configuration. gas (int32 (n_gases, h, w)), heat_absorb_q16 (int32 (n_gases,)) and n_bulk (int32 (h, w)) — all or none — are the SMOKE TERM (P5a, design v3 §6.3): a gas cell reads a = max(a, min(ONE, Σ hq·N >> 16)), 0 below the N_EPS bulk floor, and d = max(d, a). None is the pre-P5a sweep. With the group, n_floor_q and recip_cv (both > 0) are the temperature fold's gas currency (PhysicsEngine.gas_capacity_q()), in which the Fleck pre-pass's GAS ARM (P5b, design v3 §2.8) damps every absorbing gas cell: L = deposit_dT_wide_i64((a_gas·ex) >> 16, reciprocal_q16(max(N, n_floor_q)), recip_cv). P6a THE LIGHT GROUP (all five planes or none): light_atten_q / dyn_light_atten_q int32 (h, w, 3), light_q / light_glow int64 (h, w, 3) and light_flux_q int64 (h, w, 2), OVERWRITTEN; light_absorb_q16 / light_glow_q16 int32 (n_gases, 3) the smoke term (with the gas group); light_table int64 (3, E_TABLE_SIZE) or None = the checked-in L°; light_transport STEP (default) or SHEAR. The books land in RadiationSweep.light_books. P6b: light_cones int64 (n, 7) rows (y, x, r, g, b, center_q, spread_q) -- CONE EMITTERS, the power projected onto the ordinates' bins by overlap and entering the cell's stream -- and light_sky int64 (n_ordinates, 3), the virtual ring's per-ordinate outflow (None: the dark ring).
-        """
-    @property
-    def light_books(self) -> dict:
-        """
-        P6a: {'emit', 'absorb', 'ring_in', 'ring_out': (R, G, B), 'min_stream', 'max_stream'} of the last light-carrying run -- emit + ring_in == absorb + ring_out per channel, exactly.
-        """
-    @property
-    def max_stream(self) -> int:
-        ...
-    @property
-    def min_stream(self) -> int:
-        ...
-class TemperatureSolver:
-    def __init__(self) -> None:
-        ...
-    def book_solid_seam(self, delta: typing.SupportsInt | typing.SupportsIndex) -> None:
-        """
-        #73 item 2: book a topology seam's MEASURED change to the solid books (int64, cap_real*T units) -- adds it to e_solid_seam_sum AND to the solid_energy_books_sum snapshot, so the snapshot stays the live sum when the seam fires after this tick's step(). Called by GameMap._solid_energy_book only.
-        """
-    def step(self, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Any = None, wind_y: typing.Any = None, dt: typing.SupportsFloat | typing.SupportsIndex = 0.0, n_bulk: typing.Any = None, thermal_solid: typing.Any = None, rad_net: typing.Any = None, rad_fluence: typing.Any = None, e_table: typing.Any = None, clamp_enabled: bool = True, gas_energy: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, is_ambient: typing.Any = None, rad_fine_bits: typing.SupportsInt | typing.SupportsIndex = -1) -> None:
-        ...
-    @property
-    def T_MAX_PHYS(self) -> float:
-        ...
-    @T_MAX_PHYS.setter
-    def T_MAX_PHYS(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def c_v(self) -> float:
-        ...
-    @c_v.setter
-    def c_v(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def cond_limit_hits(self) -> int:
-        ...
-    @property
-    def dbg_T_post_conduction(self) -> int:
-        ...
-    @property
-    def dbg_T_post_cooling(self) -> int:
-        ...
-    @property
-    def dbg_T_post_heat(self) -> int:
-        ...
-    @property
-    def dbg_probe_idx(self) -> int:
-        ...
-    @dbg_probe_idx.setter
-    def dbg_probe_idx(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def e_cond_cap_sum(self) -> int:
-        ...
-    @property
-    def e_cond_trunc_sum(self) -> int:
-        ...
-    @property
-    def e_dep_floor_drop_sum(self) -> int:
-        ...
-    @property
-    def e_deposit_drop_sum(self) -> int:
-        ...
-    @property
-    def e_gas_cond_sum(self) -> int:
-        ...
-    @property
-    def e_gas_deposit_sum(self) -> int:
-        ...
-    @property
-    def e_gas_rail_sum(self) -> int:
-        ...
-    @property
-    def e_rad_boundary_export_sum(self) -> int:
-        ...
-    @property
-    def e_rad_clamp_drop_sum(self) -> int:
-        ...
-    @property
-    def e_rad_floor_drop_sum(self) -> int:
-        ...
-    @property
-    def e_ring_pin_sum(self) -> int:
-        ...
-    @property
-    def e_solid_cond_sum(self) -> int:
-        ...
-    @property
-    def e_solid_deposit_sum(self) -> int:
-        ...
-    @property
-    def e_solid_low_rail_sum(self) -> int:
-        ...
-    @property
-    def e_solid_seam_sum(self) -> int:
-        ...
-    @property
-    def e_vac_wipe_sum(self) -> int:
-        ...
-    @property
-    def gas_advection_rate(self) -> float:
-        ...
-    @gas_advection_rate.setter
-    def gas_advection_rate(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def n_floor_heat(self) -> float:
-        ...
-    @n_floor_heat.setter
-    def n_floor_heat(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def no_face(self) -> int:
-        ...
-    @no_face.setter
-    def no_face(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def o2_vacuum_thresh(self) -> float:
-        ...
-    @o2_vacuum_thresh.setter
-    def o2_vacuum_thresh(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def rad_clamp_hits(self) -> int:
-        ...
-    @property
-    def solid_energy_books_sum(self) -> int:
-        ...
-    @property
-    def t_low_rail_hits(self) -> int:
+    @soot_yield.setter
+    def soot_yield(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def t_max_phys_hits(self) -> int:
@@ -1076,9 +1089,145 @@ class WaterSolver:
     @v_max.setter
     def v_max(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
+class PhysicsEngine:
+    def __init__(self) -> None:
+        ...
+    def apply_edits_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, n_gases: typing.SupportsInt | typing.SupportsIndex, buf: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], n_edits: typing.SupportsInt | typing.SupportsIndex, n_tiles: typing.SupportsInt | typing.SupportsIndex, salt: typing.SupportsInt | typing.SupportsIndex, o2_idx: typing.SupportsInt | typing.SupportsIndex, n2_idx: typing.SupportsInt | typing.SupportsIndex, n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None) -> None:
+        """
+        #29 P4c: the device edit queue -- every env's packed FieldEdit records (field_edit.pack_for_device) applied on the resident planes (cuda_edit_queue.cu); the books fold into edit_queue_books at step_tail_resident.
+        """
+    def gas_capacity_q(self) -> tuple[int, int, int]:
+        """
+        (n_floor_q, c_v_q, recip_cv): THE GAS CURRENCY — quantize(temperature.n_floor_heat), quantize(temperature.c_v) and make_recip(c_v_q / 65536), the integers the temperature fold's gas deposit divides by and the sweep's gas Fleck arm prices a gas cell in (P5b).
+        """
+    def horde_field(self, tile_ok: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8], fp: typing.SupportsInt | typing.SupportsIndex, seeds: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], out: typing.Annotated[numpy.typing.ArrayLike, numpy.int32]) -> int:
+        ...
+    def relight(self, temperature: numpy.typing.NDArray[numpy.int32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_inv_shift: numpy.typing.NDArray[numpy.int32], thermal_solid: numpy.typing.NDArray[numpy.bool], is_vacuum: numpy.typing.NDArray[numpy.bool], gas: numpy.typing.NDArray[numpy.int32], gas_conservative: numpy.typing.NDArray[numpy.bool], gas_heat_absorb_q16: numpy.typing.NDArray[numpy.int32], k_leak_q: typing.SupportsInt | typing.SupportsIndex, rad_amb_vacuum_q: typing.SupportsInt | typing.SupportsIndex, t_amb_q: typing.SupportsInt | typing.SupportsIndex, light_atten_q: typing.Any, dyn_light_atten_q: typing.Any, light_q: typing.Any, light_flux_q: typing.Any, light_glow: typing.Any, gas_light_absorb_q16: typing.Any = None, gas_light_glow_q16: typing.Any = None, light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> None:
+        """
+        P6b: recompute the light field on the CURRENT state without a tick (the paused renderer's path): the one sweep invocation step_tail uses, light always on, its heat outputs into the engine's own scratch -- no plane a tick reads is written. Writes light_q / light_flux_q / light_glow in place.
+        """
+    def run_combustion_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, n_gases: typing.SupportsInt | typing.SupportsIndex, acc_depth: typing.SupportsInt | typing.SupportsIndex, o2_idx: typing.SupportsInt | typing.SupportsIndex, inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, black_smoke_idx: typing.SupportsInt | typing.SupportsIndex, draw_r: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ignition_table: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], ambient: bool, t_amb_q: typing.SupportsInt | typing.SupportsIndex, n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None) -> None:
+        ...
+    def run_substeps(self, p_prev: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_energy: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], obstacles: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_diffusion: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas_decay: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, is_ambient: typing.Any = None, n_amb: typing.Any = None, p_amb: typing.SupportsInt | typing.SupportsIndex = 0, sponge_sigma: typing.Any = None, sponge_udamp: typing.Any = None, do_traces: bool = True, thermal_solid: typing.Any = None) -> None:
+        ...
+    def run_substeps_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], sim_time: typing.SupportsFloat | typing.SupportsIndex, ambient: bool = False, n_amb: typing.Any = None, p_amb: typing.SupportsInt | typing.SupportsIndex = 0, n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None) -> int:
+        """
+        #29 P5: the EOS stage over the batch; returns max(n_sub).
+        """
+    def run_trace_tail_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas_diffusion: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], gas_decay: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], sim_time: typing.SupportsFloat | typing.SupportsIndex, ambient: bool = False, n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None) -> None:
+        ...
+    def sight_rays(self, solid: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8], screen: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8], physical: bool, pairs: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], out: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8]) -> None:
+        ...
+    def sight_window(self, solid: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8], screen: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8], physical: bool, y: typing.SupportsInt | typing.SupportsIndex, x: typing.SupportsInt | typing.SupportsIndex, wy: typing.SupportsInt | typing.SupportsIndex, wx: typing.SupportsInt | typing.SupportsIndex, to_window: bool, out: typing.Annotated[numpy.typing.ArrayLike, numpy.uint8]) -> None:
+        ...
+    def stamp_units(self, permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], obstacles: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], ys: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], xs: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], perm: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], wabsorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], heat_q: numpy.typing.NDArray[numpy.int32], light_atten_q: numpy.typing.NDArray[numpy.int32], dyn_light_atten_q: numpy.typing.NDArray[numpy.int32], light_q_rows: numpy.typing.NDArray[numpy.int32]) -> None:
+        ...
+    def stamp_units_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, rows: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None) -> None:
+        """
+        #29 P4b: the five stamp outputs on the resident planes from the host stamps' rows (cuda_stamp.cu); #29 P5: every env's rows, the env column the batch index.
+        """
+    def step_ripple(self, ripple: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], ripple_v: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], p_prev: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], sim_time: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        """
+        #29 P4a: the W6a ripple (the guard + WaterSolver.step_ripple), step_tail's step 1 as its own entry.
+        """
+    def step_swarm(self, packs: collections.abc.Sequence, temperature: typing.Any, solid: typing.Any, env: typing.Any, host_dirty: dict) -> numpy.typing.NDArray[numpy.int32]:
+        """
+        arc #63 P3: the host-path swarm step; returns the death rows (n, ROW_WORDS) int32 in (species, env, slot) order ((0, ROW_WORDS) when dormant), and sets host_dirty[sp] after a launch.
+        """
+    def step_tail(self, ripple: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], ripple_v: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wave_p: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], smoke: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], thermal_solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], fuel_recip: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], fire_T_ext_plane: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], o2_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, heat_atten_q: numpy.typing.NDArray[numpy.int32], dyn_heat_atten_q: numpy.typing.NDArray[numpy.int32], rad_net_sweep: numpy.typing.NDArray[numpy.int64], rad_flux_sweep: numpy.typing.NDArray[numpy.int64], rad_amb_sweep: numpy.typing.NDArray[numpy.int64], rad_fluence: numpy.typing.NDArray[numpy.int64], gas_heat_absorb_q16: numpy.typing.NDArray[numpy.int32], k_leak_q: typing.SupportsInt | typing.SupportsIndex, rad_amb_vacuum_q: typing.SupportsInt | typing.SupportsIndex = -1, is_ambient: typing.Any = None, rad_net: typing.Any = None, gas_energy: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, light_atten_q: typing.Any = None, dyn_light_atten_q: typing.Any = None, light_q: typing.Any = None, light_flux_q: typing.Any = None, light_glow: typing.Any = None, gas_light_absorb_q16: typing.Any = None, gas_light_glow_q16: typing.Any = None, light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> list:
+        ...
+    def step_tail_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], o2_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ambient: bool, t_amb_q: typing.SupportsInt | typing.SupportsIndex, k_leak_q: typing.SupportsInt | typing.SupportsIndex, rad_amb_vacuum_q: typing.SupportsInt | typing.SupportsIndex, gas_heat_absorb_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_light_absorb_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_light_glow_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None, swarm: typing.Any = None) -> typing.Any:
+        """
+        #29 P5: the tail + the ONE books D2H; returns each env's burn-through list (a list of N lists, row-major). arc #63 P3: with swarm= (swarm.engine_args(..., resident=True)) the swarm stage runs last and the return is (burn-through lists, per-env death rows).
+        """
+    def step_water(self, water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vx: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vy: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], floor_height: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], before: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], steam_idx: typing.SupportsInt | typing.SupportsIndex, tilt_x: typing.SupportsFloat | typing.SupportsIndex, tilt_y: typing.SupportsFloat | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ceiling_h: typing.SupportsFloat | typing.SupportsIndex, flood_eps: typing.SupportsFloat | typing.SupportsIndex, ratio_cap: typing.SupportsFloat | typing.SupportsIndex, boil_rate: typing.SupportsFloat | typing.SupportsIndex, boil_p_thresh: typing.SupportsFloat | typing.SupportsIndex, steam_yield: typing.SupportsFloat | typing.SupportsIndex, gas_energy: typing.Any = None, gas_conservative: typing.Any = None, thermal_solid: typing.Any = None, is_vacuum: typing.Any = None, is_ambient: typing.Any = None, t_amb_raw: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
+        ...
+    def step_water_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], steam_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ceiling_h: typing.SupportsFloat | typing.SupportsIndex, flood_eps: typing.SupportsFloat | typing.SupportsIndex, ratio_cap: typing.SupportsFloat | typing.SupportsIndex, boil_rate: typing.SupportsFloat | typing.SupportsIndex, boil_p_thresh: typing.SupportsFloat | typing.SupportsIndex, steam_yield: typing.SupportsFloat | typing.SupportsIndex, ambient: bool, t_amb_raw: typing.SupportsInt | typing.SupportsIndex, n_sub: typing.SupportsInt | typing.SupportsIndex, wdt: typing.SupportsFloat | typing.SupportsIndex, tilt_x: typing.SupportsFloat | typing.SupportsIndex, tilt_y: typing.SupportsFloat | typing.SupportsIndex, active: typing.Any = None, n_env: typing.SupportsInt | typing.SupportsIndex = 1, engines: typing.Any = None) -> None:
+        ...
+    def step_water_tail(self, water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], before: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], steam_idx: typing.SupportsInt | typing.SupportsIndex, sim_time: typing.SupportsFloat | typing.SupportsIndex, ceiling_h: typing.SupportsFloat | typing.SupportsIndex, flood_eps: typing.SupportsFloat | typing.SupportsIndex, ratio_cap: typing.SupportsFloat | typing.SupportsIndex, boil_rate: typing.SupportsFloat | typing.SupportsIndex, boil_p_thresh: typing.SupportsFloat | typing.SupportsIndex, steam_yield: typing.SupportsFloat | typing.SupportsIndex, gas_energy: typing.Any = None, gas_conservative: typing.Any = None, thermal_solid: typing.Any = None, is_vacuum: typing.Any = None, is_ambient: typing.Any = None, t_amb_raw: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
+        ...
+    def sync_resident_fleck_plane(self, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        #29 P4a: copy the last resident sweep's Fleck plane into engine.radiation (on demand; never per tick).
+        """
+    def upload_light_resident(self, dev: dict, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, n_gases: typing.SupportsInt | typing.SupportsIndex, gas_light_absorb_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_light_glow_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], light_cones: typing.Any = None, light_sky: typing.Any = None, light_emit_mult: typing.Any = None) -> None:
+        ...
+    def water_substep_count(self, sim_time: typing.SupportsFloat | typing.SupportsIndex) -> int:
+        ...
+    @property
+    def atmos(self) -> AtmosphereSolver:
+        ...
+    @property
+    def combustion(self) -> CombustionSolver:
+        ...
+    @property
+    def e_water_evac_export_sum(self) -> int:
+        ...
+    @property
+    def edit_queue_books(self) -> list[int]:
+        """
+        #29 P4c: the device edit queue's books of the last tick it ran (EDIT_QUEUE_LAYOUT slots).
+        """
+    @property
+    def emissive(self) -> EmissiveTable:
+        ...
+    @property
+    def eos(self) -> EOSSolver:
+        ...
+    @property
+    def fire(self) -> FireSimulation:
+        ...
+    @property
+    def headless(self) -> bool:
+        """
+        #29 P4a: skip the render-only W6a ripple (headless runs).
+        """
+    @headless.setter
+    def headless(self, arg0: bool) -> None:
+        ...
+    @property
+    def light_emission(self) -> LightEmissionTable:
+        ...
+    @property
+    def light_requested(self) -> bool:
+        """
+        P6a: when True, step_tail's sweep carries the light channels into the light planes it is handed (all five then required); False (the default) computes no light and leaves those planes untouched.
+        """
+    @light_requested.setter
+    def light_requested(self, arg0: bool) -> None:
+        ...
+    @property
+    def light_transport(self) -> int:
+        """
+        P6d: the light group's transport at the one sweep invocation (run_sweep_, both step_tail and relight(), both backends) -- RadiationSweep.STEP (default) or .SHEAR. Bound once from [light] transport; heat's transport is unaffected.
+        """
+    @light_transport.setter
+    def light_transport(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def radiation(self) -> RadiationSweep:
+        ...
+    @property
+    def temperature(self) -> TemperatureSolver:
+        ...
+    @property
+    def water(self) -> WaterSolver:
+        ...
+def applier_layout() -> dict:
+    """
+    #29 P6.4b: the compiled applier layout (applier_layout.h).
+    """
+def applier_run(applier: FieldApplierBuffer, tables: UnitTablesBuffer, ptrs: typing.Annotated[numpy.typing.ArrayLike, numpy.uint64], n_gases: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex) -> numpy.typing.NDArray[numpy.int64]:
+    """
+    #29 P6.4b: the per-env serial applier over the staged lists; returns the books (N, N_BOOKS) int64.
+    """
 def atan2_q16(y: typing.SupportsInt | typing.SupportsIndex, x: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
     Q2-LIFT: pure-integer atan2 on Q16.16 (radians out, Q16.16; range [-205887, +205887] == [-quantize(pi), +quantize(pi)]).
+    """
+def build_id() -> str:
+    """
+    git HEAD's SHA this module was built from (+ '-dirty' when a tracked file differed; 'unknown' without git). Generated at build time (cpp/gen_build_id.cmake).
     """
 def bulk_flux_transport(gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dt: typing.SupportsFloat | typing.SupportsIndex) -> None:
     """
@@ -1100,7 +1249,7 @@ def cuda_bulk_flux_transport(gas: typing.Annotated[numpy.typing.ArrayLike, numpy
     """
     P6.1 isolated: GPU donor-cell conservative flux transport of every `gas_conservative`-flagged plane, once, on the given wind field (bit-identical to bulk_flux_transport).
     """
-def cuda_combustion_step(gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], o2_idx: typing.SupportsInt | typing.SupportsIndex, inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, black_smoke_idx: typing.SupportsInt | typing.SupportsIndex, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], ignition_temp_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dt: typing.SupportsFloat | typing.SupportsIndex, c_v: typing.SupportsFloat | typing.SupportsIndex, n_floor_heat: typing.SupportsFloat | typing.SupportsIndex, burn_rate: typing.SupportsFloat | typing.SupportsIndex, o2_thresh_burn: typing.SupportsFloat | typing.SupportsIndex, H_FUEL_M: typing.SupportsFloat | typing.SupportsIndex, H_FUEL_SHIFT: typing.SupportsInt | typing.SupportsIndex, soot_yield: typing.SupportsFloat | typing.SupportsIndex, fuel_per_o2: typing.SupportsFloat | typing.SupportsIndex, o2_frac_ext: typing.SupportsFloat | typing.SupportsIndex, o2_frac_full: typing.SupportsFloat | typing.SupportsIndex, T_MAX_PHYS: typing.SupportsFloat | typing.SupportsIndex, thermal_solid: typing.Any = None, heat_inv_shift: typing.Any = None, heat: typing.Any = None, H_BED_M: typing.SupportsFloat | typing.SupportsIndex = 0.0, H_BED_SHIFT: typing.SupportsInt | typing.SupportsIndex = 0, dem_acc: typing.Any = None, draw_r: typing.SupportsInt | typing.SupportsIndex = 1, dyn_permeability: typing.Any = None, max_claimants: typing.SupportsInt | typing.SupportsIndex = 4, fire_T_ext: typing.SupportsFloat | typing.SupportsIndex = 350.0, fire_T_span: typing.SupportsFloat | typing.SupportsIndex = 180.0, hotf_cap: typing.SupportsFloat | typing.SupportsIndex = 10.0, fire_T_ext_plane: typing.Any = None, fuel_per_o2_plane: typing.Any = None, atmosphere: typing.Any = None, p_ext_q: typing.SupportsInt | typing.SupportsIndex = 0, p_full_q: typing.SupportsInt | typing.SupportsIndex = 0, eos: typing.Any = None) -> tuple:
+def cuda_combustion_step(gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], o2_idx: typing.SupportsInt | typing.SupportsIndex, inert_n2_idx: typing.SupportsInt | typing.SupportsIndex, black_smoke_idx: typing.SupportsInt | typing.SupportsIndex, temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wall_hp: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], fire: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flammable: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], ignition_temp_q16: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], dt: typing.SupportsFloat | typing.SupportsIndex, c_v: typing.SupportsFloat | typing.SupportsIndex, n_floor_heat: typing.SupportsFloat | typing.SupportsIndex, burn_rate: typing.SupportsFloat | typing.SupportsIndex, o2_thresh_burn: typing.SupportsFloat | typing.SupportsIndex, H_FUEL_M: typing.SupportsFloat | typing.SupportsIndex, H_FUEL_SHIFT: typing.SupportsInt | typing.SupportsIndex, soot_yield: typing.SupportsFloat | typing.SupportsIndex, fuel_per_o2: typing.SupportsFloat | typing.SupportsIndex, o2_frac_ext: typing.SupportsFloat | typing.SupportsIndex, o2_frac_full: typing.SupportsFloat | typing.SupportsIndex, T_MAX_PHYS: typing.SupportsFloat | typing.SupportsIndex, thermal_solid: typing.Any = None, heat_inv_shift: typing.Any = None, heat: typing.Any = None, H_BED_M: typing.SupportsFloat | typing.SupportsIndex = 0.0, H_BED_SHIFT: typing.SupportsInt | typing.SupportsIndex = 0, dem_acc: typing.Any = None, draw_r: typing.SupportsInt | typing.SupportsIndex = 1, dyn_permeability: typing.Any = None, max_claimants: typing.SupportsInt | typing.SupportsIndex = 4, fire_T_ext: typing.SupportsFloat | typing.SupportsIndex = 350.0, fire_T_span: typing.SupportsFloat | typing.SupportsIndex = 180.0, hotf_cap: typing.SupportsFloat | typing.SupportsIndex = 10.0, fire_T_ext_plane: typing.Any = None, fuel_per_o2_plane: typing.Any = None, atmosphere: typing.Any = None, p_ext_q: typing.SupportsInt | typing.SupportsIndex = 0, p_full_q: typing.SupportsInt | typing.SupportsIndex = 0, eos: typing.Any = None, gas_energy: typing.Any = None, is_ambient: typing.Any = None, t_amb_q: typing.SupportsInt | typing.SupportsIndex = 0, combustion: typing.Any = None) -> tuple:
     """
     P6.9b isolated: run ONE GPU combustion step (the two-gather reformulation, continuous-O2 proportional demand) in place on the three gas planes + temperature + wall_hp (bit-identical to CombustionSolver.step) and return the (heat_floor_hits, t_max_phys_hits, e_deposit_drop_sum) per-call rail counts.
     """
@@ -1148,6 +1297,14 @@ def cuda_spike_add1(dev_ptr: typing.SupportsInt | typing.SupportsIndex, n: typin
     """
     S8a spike: int32 in-place +1 on a raw device pointer (CuPy .data.ptr).
     """
+def cuda_swarm_resident_probe(species: str, columns: collections.abc.Sequence, high_water: typing.Any, temperature: typing.Any, solid: typing.Any, env: typing.Any, tables: typing.Any, death_rec: typing.Any) -> int:
+    """
+    arc #63 P3 TEST-ONLY (v4.7 G-b): the RESIDENT launch core on device copies of the caller's arrays, padding included, copied back whole.
+    """
+def cuda_swarm_species_step(species: str, columns: collections.abc.Sequence, high_water: typing.Any, temperature: typing.Any, solid: typing.Any, env: typing.Any, tables: typing.Any, death_rec: typing.Any) -> int:
+    """
+    arc #63 P3: swarm_species_step on the per-call CUDA wrapper.
+    """
 def cuda_temperature_step(temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], heat_inv_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], face_shift: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], no_face: typing.SupportsInt | typing.SupportsIndex, o2_vacuum_thresh: typing.SupportsFloat | typing.SupportsIndex, c_v: typing.SupportsFloat | typing.SupportsIndex, n_floor_heat: typing.SupportsFloat | typing.SupportsIndex, gas_advection_rate: typing.SupportsFloat | typing.SupportsIndex, t_max_phys: typing.SupportsFloat | typing.SupportsIndex, n_bulk: typing.Any = None, wind_x: typing.Any = None, wind_y: typing.Any = None, dt: typing.SupportsFloat | typing.SupportsIndex = 0.0, thermal_solid: typing.Any = None, gas_energy: typing.Any = None, t_amb_k: typing.SupportsFloat | typing.SupportsIndex = 290.0, rad_net: typing.Any = None, rad_fluence: typing.Any = None, e_table: typing.Any = None, is_ambient: typing.Any = None, rad_fine_bits: typing.SupportsInt | typing.SupportsIndex = -1) -> tuple:
     """
     P6.6/P-G2 isolated: run the GPU unified temperature solver in place on `temperature` (+ `gas_energy` when supplied — bit-identical to TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, e_vac_wipe_sum, e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, e_gas_cond_sum, e_gas_rail_sum, e_solid_deposit_sum, e_solid_cond_sum, rad_clamp_hits, solid_energy_books_sum, e_rad_clamp_drop_sum, e_rad_boundary_export_sum, e_rad_floor_drop_sum, e_solid_low_rail_sum, e_dep_floor_drop_sum) for this call (P-E2a + P-E2b + arc #54 + P-G5 + P5c + #73; solid_energy_books_sum is a SNAPSHOT, not a per-call delta).
@@ -1155,6 +1312,10 @@ def cuda_temperature_step(temperature: typing.Annotated[numpy.typing.ArrayLike, 
 def cuda_water_step(water_depth: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vx: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], flow_vy: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], floor_height: typing.Any = None, atmosphere: typing.Any = None, solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dt: typing.SupportsFloat | typing.SupportsIndex, tilt_x: typing.SupportsFloat | typing.SupportsIndex, tilt_y: typing.SupportsFloat | typing.SupportsIndex, g: typing.SupportsFloat | typing.SupportsIndex, damping: typing.SupportsFloat | typing.SupportsIndex, dx: typing.SupportsFloat | typing.SupportsIndex, k_p: typing.SupportsFloat | typing.SupportsIndex, v_max: typing.SupportsFloat | typing.SupportsIndex, depth_eps: typing.SupportsFloat | typing.SupportsIndex) -> None:
     """
     S3 isolated: run the GPU water solver in place on water_depth/flow_vx/flow_vy (bit-identical to WaterSolver.step).
+    """
+def edit_queue_contrib_probe(edits: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], tiles: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], env: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], salt: typing.SupportsInt | typing.SupportsIndex) -> numpy.typing.NDArray[numpy.int64]:
+    """
+    #29 P4c TEST-ONLY: the device edit queue's per-tile contribution kernel (the noise and the rounding) on host arrays.
     """
 def eos_energy_books_sum(gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_ambient: typing.Any = None, thermal_solid: typing.Any = None, gas_energy: typing.Any = None, t_amb_raw: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
     """
@@ -1171,6 +1332,14 @@ def eos_mg_build_parity(solver: EOSSolver, pstar: typing.Annotated[numpy.typing.
 def eos_mg_solve_ref(solver: EOSSolver, pstar: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], div_u: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], n_total: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], p_prev: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dt: typing.SupportsFloat | typing.SupportsIndex, p_out: typing.Annotated[numpy.typing.ArrayLike, numpy.int32]) -> int:
     """
     P6.3 CPU reference: replay EOSSolver::step's pressure solve on given solve inputs; writes the solved P into p_out and returns the FNV digest (== EOSSolver.digest_helmholtz for the same inputs).
+    """
+def eos_nsub_reads() -> int:
+    """
+    #29 P5: how many max(n_sub) reads the resident EOS made (one per tick).
+    """
+def eos_prestage_parity(solver: EOSSolver, atmosphere: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_x: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], wind_y: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], temperature: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32], gas_conservative: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], is_vacuum: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], thermal_solid: typing.Annotated[numpy.typing.ArrayLike, numpy.bool], dyn_permeability: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dyn_wave_absorb: typing.Annotated[numpy.typing.ArrayLike, numpy.float32], dt: typing.SupportsFloat | typing.SupportsIndex) -> tuple[int, str]:
+    """
+    #29 P5 TEST-ONLY: the device pre-stage vs the host pre-stage at N = 1 -- returns (mismatch count, report); 0 == bit-identical.
     """
 def eos_resident_calls() -> int:
     """
@@ -1192,13 +1361,49 @@ def fp_deposit_dT_wide_q16(deposit_q: typing.SupportsInt | typing.SupportsIndex,
     """
     fixed_point.h deposit_dT_wide_q16 (P-E2b): deposit/(N*c_v) chained as one 128-bit product, narrowed ONCE to int64 (not q16) — the fix for the old two-step mul_q16->recip_mul chain's silent q16 overflow at low n_floor_heat. Both deposit sites (combustion.cpp, temperature_solver.cpp Pass 1) use this; exposed so it can be verified directly rather than re-derived.
     """
+def fp_div_round(n: typing.SupportsInt | typing.SupportsIndex, d: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h div_round_q: n / d rounded half away from zero.
+    """
+def fp_div_trunc(n: typing.SupportsInt | typing.SupportsIndex, d: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h div_trunc_q: n / d rounded toward zero (C's /).
+    """
+def fp_effort_step(d: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h effort_step_q: d / 8 rounded away from zero.
+    """
 def fp_fine_heat_shr(x: typing.SupportsInt | typing.SupportsIndex, s: typing.SupportsInt | typing.SupportsIndex, fine_bits: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
     fixed_point.h fine_heat_shr (#78): x in a currency 2^fine_bits finer than one heat count, divided by 2^(s + fine_bits), rounded toward zero, SYMMETRIC (shr_round0_signed_i64 at s + fine_bits): s = heat_inv_shift gives a thermal solid's temperature step, s = 0 whole heat counts, s = -16 the Q16 heat currency the counters are in (exact).
     """
+def fp_half_up(num: typing.SupportsInt | typing.SupportsIndex, den: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h half_up_q: (num + den // 2) // den, floor divisions, den > 0.
+    """
+def fp_isqrt(n: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h isqrt_q: floor(sqrt(n)) of an int64, exact (0 for n <= 0).
+    """
+def fp_isqrt_ceil(n: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h isqrt_ceil_q: ceil(sqrt(n)) of an int64.
+    """
+def fp_isqrt_u128(hi: typing.SupportsInt | typing.SupportsIndex, lo: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h isqrt_u128_q: floor(sqrt(hi * 2^64 + lo)), exact.
+    """
+def fp_isqrt_u64(n: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h isqrt_u64_q: floor(sqrt(n)) of any uint64, exact.
+    """
 def fp_make_recip(divisor: typing.SupportsFloat | typing.SupportsIndex) -> int:
     """
     fixed_point.h make_recip: round(2^32 / divisor) as an int64, the load-time reciprocal `recip_mul` consumes. Divisor must be > 0.
+    """
+def fp_mul_q16_round(a: typing.SupportsInt | typing.SupportsIndex, b: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h mul_q16_round_q: a * b / 65536 rounded half away from zero (128-bit product).
     """
 def fp_quantize(v: typing.SupportsFloat | typing.SupportsIndex) -> int:
     """
@@ -1227,6 +1432,14 @@ def fp_shr_round0_i64(x: typing.SupportsInt | typing.SupportsIndex, s: typing.Su
 def fp_shr_round0_signed_i64(x: typing.SupportsInt | typing.SupportsIndex, s: typing.SupportsInt | typing.SupportsIndex) -> int:
     """
     fixed_point.h shr_round0_signed_i64: divide by 2^s for a SIGNED s. s >= 0 is shr_round0_i64 exactly; s < 0 MULTIPLIES by 2^-s, which is exact (a left shift loses nothing).
+    """
+def fp_shr_trunc(n: typing.SupportsInt | typing.SupportsIndex, k: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h shr_trunc_q: n / 2^k rounded toward zero.
+    """
+def fp_sqrt_q16(x: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    fixed_point.h sqrt_q16: floor(sqrt(x)) of an int64, fixed 32 trips (clamped at INT32_MAX).
     """
 def fp_trace_add_sat(s: typing.SupportsInt | typing.SupportsIndex, add: typing.SupportsInt | typing.SupportsIndex) -> tuple[int, int, int]:
     """
@@ -1272,6 +1485,8 @@ def get_sl_advection_backend() -> bool:
     """
     True if the EOS SL-advection pass is flagged for the GPU.
     """
+def get_swarm_backend() -> bool:
+    ...
 def get_temperature_backend() -> bool:
     """
     True if the temperature pass currently runs on the GPU.
@@ -1280,9 +1495,49 @@ def get_water_backend() -> bool:
     """
     True if the water pass currently runs on the GPU.
     """
+def philox32_4x32_10(ctr0: typing.SupportsInt | typing.SupportsIndex, ctr1: typing.SupportsInt | typing.SupportsIndex, ctr2: typing.SupportsInt | typing.SupportsIndex, ctr3: typing.SupportsInt | typing.SupportsIndex, key0: typing.SupportsInt | typing.SupportsIndex, key1: typing.SupportsInt | typing.SupportsIndex) -> tuple[int, int, int, int]:
+    """
+    philox32 (arc #63 P1): the vendored Philox-4x32-10 block function -- out = F(ctr[4], key[2]), 10 rounds, integer-only (cpp/src/philox32.h).
+    """
+def philox32_4x32_10_np(ctr: typing.Annotated[numpy.typing.ArrayLike, numpy.uint32], key: typing.Annotated[numpy.typing.ArrayLike, numpy.uint32]) -> numpy.typing.NDArray[numpy.uint32]:
+    """
+    philox32 (arc #63 P1): vectorised philox32_4x32_10 over (n,4) ctr / (n,2) key uint32 arrays -> (n,4) uint32 out. Bulk-sweep path only, same block function as philox32_4x32_10.
+    """
+def philox32_angle_q16(w: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    philox32 (arc #63 P1): (w * TWO_PI_Q16) >> 32 -- Q16.16 angle in [0, 2*pi).
+    """
+def philox32_below(w: typing.SupportsInt | typing.SupportsIndex, n: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    philox32 (arc #63 P1): (w * n) >> 32 -- Lemire multiply-shift integer in [0, n), never % or float.
+    """
+def philox32_uniform_q16(w: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    philox32 (arc #63 P1): w >> 16 -- Q16.16 uniform in [0, 1).
+    """
 def radiation_sweep_cuda_calls() -> int:
     """
     How many GPU sweeps (radiation_sweep_step) have completed in this process — the P4 gate's dispatch-fired telemetry.
+    """
+def resident_capture_abort() -> None:
+    """
+    #29 P5 TEST-ONLY: end a capture a failed tick left open.
+    """
+def resident_capture_begin() -> None:
+    """
+    #29 P5 TEST-ONLY: begin capturing the tick stream (global mode).
+    """
+def resident_capture_end() -> dict:
+    """
+    #29 P5 TEST-ONLY: end the capture; returns {segments, nodes, sync_points}.
+    """
+def resident_ignition_probe(material: typing.Annotated[numpy.typing.ArrayLike, numpy.int8], table: typing.Annotated[numpy.typing.ArrayLike, numpy.int32]) -> numpy.typing.NDArray[numpy.int32]:
+    """
+    #29 P4a TEST-ONLY: the resident ignition-plane gather on host arrays.
+    """
+def resident_stage_counters() -> dict:
+    """
+    #29 P4a: how many times each resident tail stage ran (and did work) in this process.
     """
 def set_bulk_flux_backend(use_cuda: bool) -> None:
     """
@@ -1312,6 +1567,10 @@ def set_sl_advection_backend(use_cuda: bool) -> None:
     """
     Switch the EOS SL-advection pass to the GPU (True) or CPU (False). No dispatch site consumes this until P6.5 wires eos.step's GPU path.
     """
+def set_swarm_backend(use_cuda: bool) -> None:
+    """
+    arc #63 P3: run the host-path swarm step on the per-call CUDA wrapper.
+    """
 def set_temperature_backend(use_cuda: bool) -> None:
     """
     Switch PhysicsEngine's temperature pass to the GPU (True) or CPU (False).
@@ -1328,6 +1587,118 @@ def sky_exchange_step(gas: typing.Annotated[numpy.typing.ArrayLike, numpy.int32]
     """
     sky-exchange: per-tick composition relaxation of sky-connected air toward ambient at fixed local N_total (O2 up / inert down); sky_flux[gas] accumulates the actual applied delta (conservation rail).
     """
+def swarm_branch_tally(reset: bool = False, species: str = 'larva') -> dict:
+    """
+    arc #63 P3 (v4.7 G-d): the CPU loop's per-branch counts of the species law (the counts BEFORE the reset when reset=True). The device never counts.
+    """
+def swarm_cpu_calls() -> int:
+    """
+    arc #63 P3: how many CPU swarm law calls with work ran in this process.
+    """
+def swarm_cuda_calls() -> int:
+    """
+    arc #63 P3: how many per-call CUDA swarm law calls with work ran.
+    """
+def swarm_larva_felt_T(T: typing.Any, x_q: typing.SupportsInt | typing.SupportsIndex, y_q: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    arc #63 P3: the larva's RAW reader (ruling 11): T[y >> 16, x >> 16]; ValueError outside the grid.
+    """
+def swarm_species_step(species: str, columns: collections.abc.Sequence, high_water: typing.Any, temperature: typing.Any, solid: typing.Any, env: typing.Any, tables: typing.Any, death_rec: typing.Any) -> int:
+    """
+    arc #63 P3: the species law's CPU entry (THE reference) on caller arrays: columns = the 9 ROSTER columns (n_env, max_units) in place; high_water (n_env,) int32; temperature (n_env, h, w) int32; solid (n_env, h, w) bool; env (n_env, ENV_WORDS) uint32; tables (n_env, T_sp) int64; death_rec (n_env, max_units, DEATH_WORDS) int32 (only [0, hw[e]) written). Returns the death count.
+    """
+def swarm_wrap_heading_q16(h: typing.SupportsInt | typing.SupportsIndex) -> int:
+    """
+    arc #63 P3: the C++ twin of swarm_fixed.wrap_heading_q16 (int64 in).
+    """
+def tick_end_clears(n_env: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, ptrs: typing.Annotated[numpy.typing.ArrayLike, numpy.uint64], active: typing.SupportsInt | typing.SupportsIndex) -> None:
+    """
+    #29 P6.4b: the tick-end clears on the (N, h, w) planes (tick stream).
+    """
+def tick_stream_ptr() -> int:
+    """
+    #29 P5: the address of THE tick stream (cudaStream_t) every resident launch core runs on.
+    """
+def topology_probe_tile_changed(applier: FieldApplierBuffer, tables: UnitTablesBuffer, ptrs: typing.Annotated[numpy.typing.ArrayLike, numpy.uint64], n_gases: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex) -> numpy.typing.NDArray[numpy.int64]:
+    """
+    #29 P6.4b TEST-ONLY: material = m; on_tile_changed, per staged record.
+    """
+def unit_apply_orders(store: UnitStoreBuffer, tables: UnitTablesBuffer, requests: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> tuple:
+    """
+    #29 P6.2: slot 1b' (unit_orders.apply_requests) on the device store.
+    """
+def unit_convert_zombies(store: UnitStoreBuffer, tables: UnitTablesBuffer) -> tuple:
+    """
+    #29 P6.2: slot 10's ruleset tail (convert_marines_to_zombies) on the device store.
+    """
+def unit_damage_probe(store: UnitStoreBuffer, tables: UnitTablesBuffer, ring: UnitEventRingBuffer, packets: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> tuple[numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64]]:
+    """
+    #29 P6.3 TEST-ONLY: the device apply_packet on the store's rows.
+    """
+def unit_events_layout() -> dict:
+    """
+    #29 P6.3: the compiled event ring layout (unit_events_layout.h): {width, row_cap, fingerprint}.
+    """
+def unit_expire_orders(store: UnitStoreBuffer, tables: UnitTablesBuffer, ticks: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> tuple:
+    """
+    #29 P6.2: slot 10' (unit_orders.expire) on the device store.
+    """
+def unit_exposure_decay(store: UnitStoreBuffer, tables: UnitTablesBuffer) -> tuple:
+    """
+    #29 P6.2: slot 1c (exposure.decay_units) on the device store.
+    """
+def unit_gas_rows(store: UnitStoreBuffer, tables: UnitTablesBuffer, ring: UnitEventRingBuffer, gas: typing.SupportsInt | typing.SupportsIndex, n_gases: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, claims: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> tuple:
+    """
+    #29 P6.3: slot 9c3 (apply_teargas_blind, apply_poison_dose, poison.tick) on the device store.
+    """
+def unit_heat_damage(store: UnitStoreBuffer, tables: UnitTablesBuffer, ring: UnitEventRingBuffer, heat: typing.SupportsInt | typing.SupportsIndex, rad_flux: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, claims: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> tuple:
+    """
+    #29 P6.3: slot 9c (exchange.apply_environmental_damage) on the device store.
+    """
+def unit_integrate_turn(store: UnitStoreBuffer, tables: UnitTablesBuffer) -> tuple:
+    """
+    #29 P6.2: slot 1a (unit_impulse.integrate_all) on the device store.
+    """
+def unit_lib_probe(store: UnitStoreBuffer, tables: UnitTablesBuffer, op: typing.SupportsInt | typing.SupportsIndex, a0: typing.SupportsInt | typing.SupportsIndex = 0, a1: typing.SupportsInt | typing.SupportsIndex = 0, a2: typing.SupportsInt | typing.SupportsIndex = 0, a3: typing.SupportsInt | typing.SupportsIndex = 0) -> tuple[numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64]]:
+    """
+    #29 P6.2 TEST-ONLY: the device unit library on the store's rows.
+    """
+def unit_match_done(store: UnitStoreBuffer, tables: UnitTablesBuffer, ticks: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> numpy.typing.NDArray[numpy.int64]:
+    """
+    #29 P6.4a: the done kernel (MatchRules.is_terminal / result) -> (N, 4) int64: terminal, outcome (0 none, 1 win, 2 draw), winner team, living teams.
+    """
+def unit_movement(store: UnitStoreBuffer, tables: UnitTablesBuffer, material: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+    """
+    #29 P6.2m: slot 3 (Simulation._update_player_movement, the continuous path) on the device store; `material` is a device pointer to the (N, h, w) int8 GameMap.material planes.
+    """
+def unit_movement_probe(op: typing.SupportsInt | typing.SupportsIndex, args: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], material: typing.Annotated[numpy.typing.ArrayLike, numpy.int8], mobility: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> numpy.typing.NDArray[numpy.int64]:
+    """
+    #29 P6.2m TEST-ONLY: the walk's library functions on synthetic rows.
+    """
+def unit_requests_layout() -> dict:
+    """
+    #29 P6.4a: the compiled request list layout (unit_requests_layout.h): {width, row_cap, fingerprint}.
+    """
+def unit_status_tick(store: UnitStoreBuffer, tables: UnitTablesBuffer, ring: UnitEventRingBuffer) -> tuple:
+    """
+    #29 P6.3: slot 2b (status.tick_statuses) on the device store.
+    """
+def unit_store_layout() -> dict:
+    """
+    #29 P6.1 / P6.2: the compiled unit store and tables layouts (unit_store_layout.h, unit_tables_layout.h): {width, fingerprint, valid, exposure, exposure_width}.
+    """
+def unit_verbs(store: UnitStoreBuffer, tables: UnitTablesBuffer, requests: UnitRecordListBuffer, ticks: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], spans: typing.Annotated[numpy.typing.ArrayLike, numpy.int64], live: typing.Annotated[numpy.typing.ArrayLike, numpy.int64]) -> tuple[numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64], numpy.typing.NDArray[numpy.int64]]:
+    """
+    #29 P6.4a: slot 1b (Simulation._consume_direct_intents) on the device store; returns (coverage, faults, refused plants, dropped requests).
+    """
+def unit_verbs_probe(store: UnitStoreBuffer, tables: UnitTablesBuffer, kind: typing.SupportsInt | typing.SupportsIndex, tick: typing.SupportsInt | typing.SupportsIndex, base: typing.SupportsInt | typing.SupportsIndex) -> numpy.typing.NDArray[numpy.int64]:
+    """
+    #29 P6.4a TEST-ONLY: the hand verbs' gates on the store's rows.
+    """
+def unit_wind_impulse(store: UnitStoreBuffer, tables: UnitTablesBuffer, gas: typing.SupportsInt | typing.SupportsIndex, wind_x: typing.SupportsInt | typing.SupportsIndex, wind_y: typing.SupportsInt | typing.SupportsIndex, solid: typing.SupportsInt | typing.SupportsIndex, n_gases: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+    """
+    #29 P6.2: slot 9c2 (exchange.apply_wind_force) on the device store; the planes are device pointers to (N, ...) arrays in the resident dtypes.
+    """
 def water_substeps_resident(d_depth: typing.SupportsInt | typing.SupportsIndex, d_vx: typing.SupportsInt | typing.SupportsIndex, d_vy: typing.SupportsInt | typing.SupportsIndex, d_floor: typing.SupportsInt | typing.SupportsIndex, d_atm: typing.SupportsInt | typing.SupportsIndex, d_solid: typing.SupportsInt | typing.SupportsIndex, h: typing.SupportsInt | typing.SupportsIndex, w: typing.SupportsInt | typing.SupportsIndex, n_sub: typing.SupportsInt | typing.SupportsIndex, wdt: typing.SupportsFloat | typing.SupportsIndex, tilt_x: typing.SupportsFloat | typing.SupportsIndex, tilt_y: typing.SupportsFloat | typing.SupportsIndex, g: typing.SupportsFloat | typing.SupportsIndex, damping: typing.SupportsFloat | typing.SupportsIndex, dx: typing.SupportsFloat | typing.SupportsIndex, k_p: typing.SupportsFloat | typing.SupportsIndex, v_max: typing.SupportsFloat | typing.SupportsIndex, depth_eps: typing.SupportsFloat | typing.SupportsIndex) -> None:
     """
     S8a Path B: water substep loop resident on device buffers (no per-substep transfer). Device pointers are CuPy .data.ptr uintptr_t.
@@ -1337,6 +1708,8 @@ ATMOSPHERE_FP_ONE: int = 65536
 ATMOSPHERE_FP_SHIFT: int = 16
 CAP_SHIFT_MAX: int = 12
 CAP_SHIFT_MIN: int = -16
+EDIT_FIELD_ORDINALS: dict = {'atmosphere': 0, 'fire': 1, 'gas': 2, 'gas_energy': 3, 'heat': 4, 'smoke': 5, 'water_depth': 6, 'wave_source': 7}
+EDIT_QUEUE_LAYOUT: dict = {'dep': 0, 'clip': 16, 'gas_max': 16, 'ge_field_edit': 32, 'ge_field_edit_wave': 34, 'ge_field_edit_atm': 36, 'noise': 38, 'fail': 39, 'tiles': 40, 'slots': 41, 'edit_cols': 16, 'tile_cols': 4, 'env_cols': 4}
 E_CEILING_TOP_Q: int = 1048575999
 E_FINE_BITS: int = 11
 E_INV_TOP_GAME: int = 15996
@@ -1346,6 +1719,7 @@ HAS_CUDA: bool = True
 L_CHANNELS: int = 3
 L_FINE_BITS: int = 37
 L_TABLE_TOP_MAX: int = 17592186044416
+PHILOX32_TWO_PI_Q16: int = 411775
 RADIATION_SWEEP_CNT_SLOTS: int = 20
 RS_BAD_HEAT_ABSORB: int = 4
 RS_SLOT_BAD_AMBIENT: int = 1
@@ -1360,6 +1734,10 @@ RS_SLOT_LIGHT_RING_IN: int = 12
 RS_SLOT_LIGHT_RING_OUT: int = 15
 RS_SLOT_MAX_STREAM: int = 4
 RS_SLOT_MIN_STREAM: int = 3
+SWARM_CONSTANTS: dict = {'AI_DEAD': 0, 'AI_RUN': 1, 'AI_EAT': 2, 'AI_COMA': 3, 'FIRST_UNIT_ID': 1, 'PI_Q16': 205887, 'HEADING_PERIOD_Q16': 411774, 'N_COLUMNS': 9, 'ENV_TICK': 0, 'ENV_SEED_LO': 1, 'ENV_SEED_HI': 2, 'ENV_WORDS': 3, 'LAUNCH_TICK': 0, 'LAUNCH_SEED_LO': 1, 'LAUNCH_SEED_HI': 2, 'LAUNCH_HW': 3, 'LAUNCH_FIXED_WORDS': 4, 'DEATH_UNIT_ID': 0, 'DEATH_POS_X': 1, 'DEATH_POS_Y': 2, 'DEATH_HEADING': 3, 'DEATH_WORDS': 4, 'ROW_SPECIES': 0, 'ROW_ENV': 1, 'ROW_SLOT': 2, 'ROW_UNIT_ID': 3, 'ROW_POS_X': 4, 'ROW_POS_Y': 5, 'ROW_HEADING': 6, 'ROW_WORDS': 7, 'SWEEP_DIST_Q16': 65536, 'SWARM_CNT_SLOTS': 2, 'ROSTER_SIZES': {'pos_x': 4, 'pos_y': 4, 'heading': 4, 'hp': 4, 'ai_state': 4, 'dist_walked': 4, 'unit_id': 4, 'faction': 4, 'valid': 1}}
+SWARM_LARVA_BRANCHES: tuple = ('slot_invalid', 'coma_held', 'coma_to_run', 'run_to_coma', 'alarm_on', 'alarm_off', 'pref_plus', 'pref_minus', 'pref_none_equal', 'pref_none_blocked', 'sweep_solid', 'sweep_off_grid', 'tumble_taken', 'tumble_not_taken', 'turn_by_coin', 'turn_toward', 'turn_away', 'probe_solid', 'probe_edge', 'moved', 'died', 'survived', 'wrap_neg_remainder')
+SWARM_SPECIES_LAWS: list = [{'name': 'larva', 'table_width': 13, 'field': 'temperature', 'field_reduction': 'center', 'branches': ('slot_invalid', 'coma_held', 'coma_to_run', 'run_to_coma', 'alarm_on', 'alarm_off', 'pref_plus', 'pref_minus', 'pref_none_equal', 'pref_none_blocked', 'sweep_solid', 'sweep_off_grid', 'tumble_taken', 'tumble_not_taken', 'turn_by_coin', 'turn_toward', 'turn_away', 'probe_solid', 'probe_edge', 'moved', 'died', 'survived', 'wrap_neg_remainder')}]
+SWARM_TABLES_FINGERPRINT: str = '0613a62b66e0bc0cad182f85fb5b31268f478e25a1c4f66ab0d8d60a3baffb66'
 TRACE_CELL_MAX: int = 2147483647
 TRACE_FINE_BITS: int = 8
 TRACE_SHIFT: int = 24

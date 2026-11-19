@@ -4,8 +4,10 @@
 // ai_zombie.convert_marines_to_zombies). See cuda_unit_kernels.h; residency
 // design §4.4b.
 //
-// Integer for integer convert_marines_to_zombies: every valid row that is not
-// a zombie, is dead and was killed by a zombie joins the horde's team
+// Integer for integer convert_marines_to_zombies: every valid dead row that
+// rises (ai_zombie.rises_as_zombie: a non-zombie a zombie killed, OR -- arc #63
+// P5b -- any corpse whose infestation reached the threshold; never a destroyed
+// corpse, integrity <= 0) joins the horde's team
 // (factions.ZOMBIE_TEAM, a table value), becomes a zombie and alive, takes the
 // zombie class's full health times its HP hook (unit_traits.max_hp_q, the
 // library's scaled()), and is cleared of exposure (exposure.clear), of its
@@ -22,6 +24,7 @@
 // ============================================================================
 #include "cuda_unit_kernels.h"
 #include "cuda_unit_lib.cuh"
+#include "unit_events_layout.h"    // arc #63 P5a: UNIT_CAUSE_POISON_GAS (poison.clear)
 
 namespace breach_cuda {
 
@@ -35,8 +38,14 @@ __global__ void k_convert_zombies(int64_t* store, int n_units, const int64_t* ta
     if (r >= n_units) return;
     int64_t* row = unit_row(store, n_units, r);
     if (!row_valid(row)) return;
-    if (row[UNIT_COL_IS_ZOMBIE] || row_alive(row) || !row[UNIT_COL_KILLED_BY_ZOMBIE]) return;
+    if (row_alive(row)) return;
     const int64_t* tab = env_tables(tables);
+    // ai_zombie.rises_as_zombie (arc #63 P5b: + corpse.rises; a destroyed
+    // corpse rises by neither trigger)
+    if (row[UNIT_COL_CORPSE_INTEGRITY_Q] <= 0) return;
+    const bool by_kill = !row[UNIT_COL_IS_ZOMBIE] && row[UNIT_COL_KILLED_BY_ZOMBIE];
+    const bool by_infest = row[UNIT_COL_INFEST_Q] >= tab[UNIT_TAB_CORPSE_THRESHOLD_Q];
+    if (!by_kill && !by_infest) return;
     bool changed = false;
     put(row, UNIT_COL_TEAM, tab[UNIT_TAB_ZOMBIE_TEAM], changed);
     put(row, UNIT_COL_IS_ZOMBIE, 1, changed);
@@ -79,6 +88,10 @@ __global__ void k_convert_zombies(int64_t* store, int n_units, const int64_t* ta
     // #215: stress.clear and body_temp.clear (back to ambient)
     put(row, UNIT_COL_STRESS_Q, 0, changed);
     put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);
+    put(row, UNIT_COL_POISON_CAUSE, unit_events::UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
+    // corpse.clear (arc #63 P5b): the rise spent, the body whole again
+    put(row, UNIT_COL_INFEST_Q, 0, changed);
+    put(row, UNIT_COL_CORPSE_INTEGRITY_Q, tab[UNIT_TAB_CORPSE_INTEGRITY_Q], changed);
     put(row, UNIT_COL_ZOMBIE_ACTIVATED, 1, changed);
     put(row, UNIT_COL_KILLED_BY_ZOMBIE, 0, changed);
     if (changed) count_changed(cnt);

@@ -126,6 +126,12 @@ class HoverReadout:
     # P6b: the light at this tile, (r, g, b) in light units, through the light
     # accessor (simulation.light_field) -- 0 while no light is requested.
     light_rgb: tuple = (0.0, 0.0, 0.0)
+    # arc #63 P4: the live larvae standing on this tile (the swarm store's
+    # host mirror; 0 on a map without a store)
+    larvae: int = 0
+    # arc #63 P5a: the bite dose this tile gives a body this tick, units of
+    # poison (the swarm's bite-dose plane; 0 on a map without a store)
+    bite_dose: float = 0.0
     lines: List[str] = field(default_factory=list)   # panel-ready text rows
 
 
@@ -313,6 +319,19 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         _lfb = _optics_fx.light_fine_bits(gmap)
         light_rgb = tuple(float(_optics_fx.dequantize_light(v, _lfb)) for v in _lq)
 
+    # arc #63 P4: the larvae on this tile, through the store's one read (a
+    # stub map without the store shows 0)
+    larvae = 0
+    if hasattr(gmap, "swarm_species"):
+        from simulation import swarm as _swarm
+        larvae = _swarm.count_on_tile(gmap, "larva", tx, ty)
+    # arc #63 P5a: the tile's bite dose this tick (a pure read of the plane)
+    bite_dose = 0.0
+    if getattr(gmap, "swarm_bite_dose", None) is not None:
+        from simulation import swarm_fixed as _swarm_fx
+        bite_dose = float(_swarm_fx.dequantize(
+            int(gmap.swarm_bite_dose[ty, tx])))   # p3e-view: a readout
+
     lines = [
         f"tile ({tx}, {ty})  {material}",
         f"T: {t_game:8.1f} u   ({kelvin:6.0f} {kelvin_label})",
@@ -332,6 +351,8 @@ def pack_hover_readout(gmap, tx: int, ty: int,
         # #140: what this tile's air does to a body (appended: the panel's
         # earlier rows keep their places)
         f"wind q: {wind_q_pa:8.1f} Pa  W {wind_w:.3e}  F {wind_force_n:6.1f} N",
+        f"larvae on this tile: {larvae}",
+        f"bite dose this tick: {bite_dose:8.5f} units of poison",
     ]
     # #215: a living unit standing on the tile shows its body (appended).
     for u in units or ():
@@ -347,7 +368,8 @@ def pack_hover_readout(gmap, tx: int, ty: int,
                         fuel_frac=fuel_frac, gas_energy=gas_energy,
                         phi=phi, atten_a=atten_a, atten_d=atten_d,
                         a_gas=a_gas, fleck_f=fleck_f, t_cap=t_cap, t_rad=t_rad,
-                        light_rgb=light_rgb, lines=lines)
+                        light_rgb=light_rgb, larvae=larvae,
+                        bite_dose=bite_dose, lines=lines)
 
 
 __all__ = ["HoverReadout", "pack_hover_readout", "body_line", "TEMP_SCALE"]

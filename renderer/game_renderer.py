@@ -49,6 +49,7 @@ from .overlays import (
 )
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
+from . import swarm_dots
 from .unit_model_renderer import UnitModelRenderer
 from .water import WaterPass
 from .world_composite import WorldComposite
@@ -435,6 +436,14 @@ class GameRenderer:
         # attenuation — the dormant default the default level relies on).
         self.water_pass.set_height_texture(getattr(self.textures, "height", None))
 
+        # arc #63 P4: the swarm dot view's render state -- the sprites packed
+        # at upload_state, the death flecks (driven by the events), the GL
+        # draw (built on its first sprite). Switched by [debug] swarm_dots,
+        # read every frame (Ctrl+R live), never a key.
+        self._swarm_sprites = None
+        self._swarm_flecks = swarm_dots.DeathFlecks()
+        self._swarm_dot_draw = None
+
         # Toggles
         self.show_grid = False
         self.show_smoke = True
@@ -616,6 +625,10 @@ class GameRenderer:
                                        v_ref=gd.wind_v_ref,
                                        v_sens=gd.wind_v_sens))
             return _wind[0]
+
+        # arc #63 P4: the swarm dot view's sprites from the store's host
+        # mirror (render-only; the sim never reads them).
+        self._upload_swarm_dots(gmap, sim_tick)
 
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
@@ -1055,6 +1068,11 @@ class GameRenderer:
                 world_px_w=self.world.world_px_w,
                 world_px_h=self.world.world_px_h,
                 anim_t=time.perf_counter() - self._anim_t0)
+        # 2b. arc #63 P4 -- THE swarm dot view ([debug] swarm_dots): the
+        # swarm units and their fading death flecks, ON the floor (after the
+        # water) and under the smoke, unlit and premultiplied. No unit and no
+        # fleck, no draw.
+        self._draw_swarm_dots()
         # 3. B2 physical gas medium: ONE premult-over layer (C = inscatter +
         # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
         # composite in a single BLEND_ALPHA_PREMULTIPLY draw — no double-
@@ -1522,6 +1540,48 @@ class GameRenderer:
             lut_k=(ramp.kelvin_floor, ramp.kelvin_ceil), lut_n=LUT_SIZE,
             stage=stage, smoke_cover=self._smoke_cast[0],
             glow_through_ceil=glow_through_ceil)
+
+    def swarm_dots_on(self) -> bool:
+        """``[debug] swarm_dots`` (arc #63 P4), read every frame."""
+        return bool(getattr(getattr(CFG, "debug", None), "swarm_dots", True))
+
+    def _upload_swarm_dots(self, gmap, sim_tick: int) -> None:
+        """arc #63 P4: pack this frame's dot-view sprites -- every live swarm
+        unit of every species from the store's host mirror, then the death
+        flecks at the sim clock -- in numpy, one pass (no loop per unit).
+        Off, or no unit and no fleck: nothing is packed."""
+        self._swarm_sprites = None
+        if not self.swarm_dots_on():
+            self._swarm_flecks.clear()
+            return
+        from simulation import swarm as _swarm
+        ppt = self.world.world_px_per_tile
+        parts = []
+        if _swarm.swarm_present(gmap):
+            for sp in _swarm.SWARM_SPECIES:
+                col = lambda c: _swarm.swarm_column(gmap, sp, c)  # noqa: E731
+                parts.append(swarm_dots.pack_dots(
+                    col("pos_x"), col("pos_y"), col("heading"),
+                    col("ai_state"), col("valid"), ppt))
+        if len(self._swarm_flecks):
+            parts.insert(0, self._swarm_flecks.pack(
+                int(sim_tick) * self._sim_dt, ppt))
+        parts = [p for p in parts if p.shape[1]]
+        if parts:
+            self._swarm_sprites = np.concatenate(parts, axis=1)
+
+    def _draw_swarm_dots(self) -> int:
+        """arc #63 P4: THE swarm dot view's ONE draw (the flecks under the
+        live units). Returns the draw calls issued."""
+        s = self._swarm_sprites
+        if s is None or s.shape[1] == 0:
+            return 0
+        if self._swarm_dot_draw is None:
+            self._swarm_dot_draw = swarm_dots.SwarmDotDraw(max(1024, s.shape[1]))
+        return self._swarm_dot_draw.draw(
+            s, world_px_w=self.world.world_px_w,
+            world_px_h=self.world.world_px_h,
+            px_per_tile=self.world.world_px_per_tile)
 
     def _draw_tracers(self, view, marines: Sequence = (),
                       zombies: Sequence = (), stage: str = "scene",
@@ -2074,8 +2134,17 @@ class GameRenderer:
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
-            SprayJetEvent, ProjectileGlowEvent,
+            SprayJetEvent, ProjectileGlowEvent, SwarmUnitDiedEvent,
         )
+        # arc #63 P4: a swarm death leaves a fading fleck (the dot view's;
+        # the event's pre-zero position, never the freed slot).
+        died = [ev for ev in events if isinstance(ev, SwarmUnitDiedEvent)]
+        if died:
+            from simulation import swarm_fixed
+            self._swarm_flecks.add(
+                swarm_fixed.dequantize(np.array([ev.pos_x_q for ev in died])),
+                swarm_fixed.dequantize(np.array([ev.pos_y_q for ev in died])),
+                tick0 * self._sim_dt)
         # #162/#163: the pose layer's per-unit event queues (fire, flinch; a
         # no-op with [render.pose] off).
         self.unit_models.queue_events(events)

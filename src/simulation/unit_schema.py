@@ -434,6 +434,19 @@ def _grenade_default():
     return [0] * _grenade_width()
 
 
+def _poison_cause_default():
+    """``poison_gas``'s index in ``events.CAUSE_NAMES`` (arc #63 P5a)."""
+    from simulation.events import CAUSE_NAMES, Cause
+    return CAUSE_NAMES.index(Cause.POISON_GAS.value)
+
+
+def _corpse_integrity_default():
+    """A fresh corpse's integrity, ``[corpse] integrity`` in Q16 hit points
+    (arc #63 P5b, ``simulation.corpse``)."""
+    from simulation.corpse import full_integrity_q
+    return full_integrity_q()
+
+
 def _body_temp_default():
     from simulation.body_temp import ambient_q
     return ambient_q()
@@ -533,6 +546,21 @@ COLUMNS: tuple[Column, ...] = (
             "(simulation.body_temp)"),
     _c("stress_q", KIND_INT, "health", 0,
        note="stress points x 2^24 (simulation.stress.LEVEL_ONE)"),
+    # arc #63 P5a: the CAUSE of the latest dose (its index in
+    # events.CAUSE_NAMES), which the law's packets carry; the default is the
+    # gas's, so an unpoisoned or gas-poisoned unit hashes as before
+    _c("poison_cause", KIND_INT, "health", _poison_cause_default,
+       note="the latest dose's cause, an events.CAUSE_NAMES index; "
+            "poison_gas's by default (simulation.poison)"),
+    # arc #63 P5b: the corpse (simulation.corpse, the ONE writer): the
+    # infestation level the swarm's count plane raises on a dead unit, and
+    # what is left of the body; both hashed only while non-default, so a
+    # match without larvae hashes exactly as before
+    _c("infest_q", KIND_Q16, "health", 0,
+       note="the corpse's infestation level, Q16 (1.0 = ONE); 0 while alive"),
+    _c("corpse_integrity_q", KIND_Q16, "health", _corpse_integrity_default,
+       note="the corpse's integrity, Q16 hit points; [corpse] integrity by "
+            "default and at every death; <= 0 = destroyed, never rises"),
     # impulse
     *(_c(n, KIND_INT, "impulse", 0) for n in (
         "imp_x", "imp_y", "imp_l", "stand_x", "stand_y", "swx", "swy",

@@ -82,6 +82,7 @@ from simulation import horde
 from simulation import noise
 from simulation import poison
 from simulation import stress
+from simulation import corpse  # arc #63 P5b
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as
 # BARE NAMES (not module-qualified calls) deliberately: the call sites read
@@ -91,7 +92,7 @@ from simulation import stress
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
-    apply_blast_damage, apply_environmental_damage, apply_poison_dose,
+    apply_bite_dose, apply_blast_damage, apply_corpse_infestation, apply_environmental_damage, apply_poison_dose,
     apply_teargas_blind, apply_wind_force,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
@@ -111,6 +112,9 @@ from simulation.logic_nodes import (
 from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.vent_system import build_vents, sweep_vents
+from simulation.swarm import SwarmUnits, reload_species  # arc #63 P2
+from simulation import swarm_brood  # arc #63 P4
+from simulation.swarm import death_events as swarm_death_events  # arc #63 P3
 from simulation.timed_charge_system import (build_timed_charges,
                                             sweep_timed_charges)
 from simulation.heat_source_system import (build_heat_sources,
@@ -298,6 +302,13 @@ class Simulation:
         """
         self._reset_internal(seed)
 
+    def on_config_reload(self) -> None:
+        """THE config-reload seam: the Ctrl+R path calls this right after
+        CFG.reload() (src/debug_keys.py). Re-binds every live table from the
+        fresh CFG; applies from the next tick. Today: the swarm species table
+        (arc #63 P2). Chapter 12's material/physics re-binds may join here."""
+        reload_species(self.gmap)
+
     def _reset_internal(self, seed: Optional[int]) -> None:
         # Fresh map (allocates grids), fresh RNG, fresh entity lists.
         self.gmap = GameMap(self.level)
@@ -311,6 +322,9 @@ class Simulation:
             seed if seed is not None
             else int(self.rng.integers(0, 2 ** 63)),
             clock=lambda: self.tick)
+        # arc #63 P2: rebuild the swarm facade against the fresh GameMap.
+        # Structural — "reset" needs no swarm-specific method beyond this.
+        self.swarm = SwarmUnits(self.gmap)
 
         # A6 (a6 doors design §6.1): the sim's RUNTIME entity list — the
         # level's parsed instances with door entries replaced by fresh
@@ -374,6 +388,8 @@ class Simulation:
         self.poison_settings = poison.rebuild_settings()
         # The stress level's dials (#215, [damage.stress]), the same.
         self.stress_settings = stress.rebuild_settings()
+        # The corpse law's dials (arc #63 P5b, [corpse]), the same.
+        self.corpse_settings = corpse.rebuild_settings()
         # The ACTION REGISTRY (onephase_wego design §5) — the same
         # construction-bound, config-static contract as the weapon tables
         # above, and built AFTER them because its item rows are generated from
@@ -424,6 +440,13 @@ class Simulation:
         self._fired_start_p1 = False
         self._fired_between = False
         self._fired_end_p2 = False
+
+        # arc #63 P4: THE brood spawn -- every swarm_brood zone scatters its
+        # units into the store at load, before tick 0, from this sim's own
+        # draws (tick 0; after the door stamps, so a closed door is solid).
+        # Every path a match starts through constructs here. A brood-free
+        # level draws and spawns nothing.
+        swarm_brood.spawn_broods(self)
 
         # Direct-control possession set (control-modularity P3, §3b/§3c): the
         # unit ids a ControlSource has issued at least one per-tick intent for.
@@ -534,6 +557,7 @@ class Simulation:
             # path (the runner owns the engine). A bare GameMap with no engine
             # bound falls back to the Python reference path automatically.
             self.gmap.bind_physics_engine(self.physics_runner.engine)
+            self.physics_runner.bind_draws(self.draws)   # arc #63 P3: the swarm's draws
             self._apply_light()             # P6b: the renderer's light survives a reset
         else:
             self.physics_runner = None
@@ -544,6 +568,7 @@ class Simulation:
                 fh=self.gmap.material.shape[0],
                 fw=self.gmap.material.shape[1],
                 capacity=CFG.recorder.capacity,
+                swarm_units_cap=CFG.recorder.swarm_units_cap,  # arc #63 P2
             )
         else:
             self.recorder = None
@@ -2052,12 +2077,14 @@ class Simulation:
           6.   Re-stamp obstacles; 6b. flush the field-edit queue
           7.   Physics step
           9.   Burn-through walls; 9b. over-pressure walls
-          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose;
-               9c3'. the poison law; 9c3''. stress clears; 9d. ignition
+          9c.  Heat on units; 9c2. wind; 9c3. teargas + poison dose +
+               the larvae's bite dose + the corpses' infestation; 9c3'. the
+               poison law; 9c3''. stress clears; 9d. ignition
           9e.  Entities (signals, pumps, vents, doors, timed and planted
                charges, heat sources); recorder snapshot; tick-end clears
          10.   Tick advance; 10'. orders expire; the ruleset's tick end
-               (conversion; WEGO's phase / round boundary and door
+               (conversion: zombie kills and infested corpses rise; WEGO's
+               phase / round boundary and door
                explosives; on the continuous path, spent grenades dropped)
          11.   The team picture (a match only)
         """
@@ -2240,6 +2267,10 @@ class Simulation:
 
     def _step_post_physics(self, destroyed) -> None:
         """Slots 9 .. 10, given slot 7's burn-through walls."""
+        # arc #63 P3 (docs/swarm_P3_impl.md §7): slot 7's swarm deaths enter the
+        # tick here -- both tick paths pass after slot 7, before slot 9's events.
+        if self.physics_runner is not None:
+            self.tick_events.extend(swarm_death_events(self.physics_runner.swarm_death_rows))
         sim_time_per_tick = 1.0 / float(self._tps)
         # 9. Process fire burn-through walls (a named call since #29 P6.1, so
         # the slot has a profiler label; the body is unchanged).
@@ -2274,6 +2305,9 @@ class Simulation:
         # makes wiping `heat` correct (a reader finally consumes it).
         # This is the `heat | max` coupling row (mechanics/05 §1;
         # exchange.COUPLING_TABLE[0]) at its legacy pipeline position.
+        # Swarm units (arc #63 P3; the consumer="swarm:*" rows of exchange.COUPLING_TABLE)
+        # were already judged IN slot 7 (the swarm step is physics' last stage), so
+        # within a tick larva heat/coma happen BEFORE this unit row.
         if self.physics_runner is not None:
             apply_environmental_damage(
                 self.units, self.gmap, self._tps,
@@ -2308,6 +2342,18 @@ class Simulation:
             apply_teargas_blind(self.units, self.gmap)
             apply_poison_dose(self.units, self.gmap, self._tps,
                               events=self.tick_events)
+            # arc #63 P5a: the larvae's bite (the swarm_bite_dose row): the
+            # bite-dose plane slot 7's swarm step wrote, summed over each
+            # living unit's footprint, into the poison door (uncredited,
+            # cause larva_bite). Lazy: a swarm-free plane is one .any().
+            apply_bite_dose(self.units, self.gmap)
+            # arc #63 P5b: the corpse row (swarm_count): the count plane slot
+            # 7's swarm step wrote, summed over each DEAD unit's footprint,
+            # moves its infestation level (simulation.corpse). TICK ORDER: the
+            # count plane is written in slot 7, the level moves here, and the
+            # corpse rises at the tick's end through the one conversion door
+            # (the ruleset's on_tick_end, ai_zombie.convert_marines_to_zombies).
+            apply_corpse_infestation(self.units, self.gmap)
         # 9c3'. The poison law (#29 PX, simulation.poison): every living unit
         # holding poison moves depot -> blood -> out, and what leaves the
         # blood hurts as one POISON packet (credited to its dose). Outside
@@ -2435,7 +2481,8 @@ class Simulation:
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time,
                                  self.units, entities=self.entities,
-                                 signals=self._digest_signals())
+                                 signals=self._digest_signals(),
+                                 swarm=self.swarm.carrier())  # arc #63 P2
 
         # The tick-end clears (a named call since #29 P6.1, so they have a
         # profiler label; the body is unchanged).

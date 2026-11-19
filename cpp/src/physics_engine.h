@@ -28,6 +28,7 @@
 #include "combustion.h"       // EOS refactor P4: combustion on real O2
 #include "emissive_table.h"   // ray-engine-v2: THE E° table, one owner
 #include "radiation_sweep.h"  // ray-engine-v2: the radiation sweep (LIVE since T5b)
+#include "swarm.h"            // arc #63 P3: the swarm step (step_swarm, the resident swarm block)
 
 // ---- #29 P4a: THE RESIDENT TICK'S DEVICE FIELDS -----------------------------
 // The raw device addresses of GameMap's resident CuPy buffers (uintptr_t so
@@ -104,6 +105,18 @@ struct ResidentTickArgs {
     int32_t p_amb = 0;
     const float* gas_diffusion = nullptr;   // (n_gases,)
     const float* gas_decay = nullptr;       // (n_gases,)
+    // arc #63 P3 (docs/swarm_P3_impl.md §4.4): the swarm stage, the LAST of
+    // the tail (resident_swarm, before the books D2H). nullptr: no swarm
+    // block (nothing runs). `swarm_rows` (out): per env, the compacted death
+    // rows (flat, swarm::ROW_WORDS each) of this tick.
+    const swarm::ResidentSpecies* swarm_species = nullptr;
+    int n_swarm_species = 0;
+    const uint32_t* swarm_env = nullptr;    // (N, swarm::ENV_WORDS)
+    // arc #63 P5a: the device bite plane (N, h, w) int32 the stage rebuilds.
+    std::uintptr_t swarm_bite = 0;
+    // arc #63 P5b: the device count plane (N, h, w) int32, likewise.
+    std::uintptr_t swarm_count = 0;
+    std::vector<std::vector<int32_t>>* swarm_rows = nullptr;
 };
 
 class PhysicsEngine {
@@ -235,6 +248,23 @@ public:
     // EOS refactor P4 (design §6): `o2_idx` is NEW — step_tail slices the O2
     // plane out of `gas` and hands it to FireSimulation::step as the real
     // O2-gate input (n_o2), replacing the atmosphere/P proxy.
+    // arc #63 P3 (docs/swarm_P3_impl.md §4.4): THE SWARM STEP on the host
+    // path, the last stage of slot 7 -- forwards to swarm::step_all (the
+    // shared swarm TU): dormancy (nothing present: no launch, no scratch
+    // growth), per present species the CPU loop or the per-call CUDA wrapper
+    // (set_swarm_backend), its host-dirty flag set, and the death rows
+    // compacted in (species, env, slot) order, returned flat (ROW_WORDS each).
+    // The resident path's swarm stage is resident_swarm inside resident_tail.
+    std::vector<int32_t> step_swarm(const std::vector<swarm::SpeciesStep>& packs,
+                                    const int32_t* T, const bool* solid, int h, int w,
+                                    const uint32_t* env, int n_env,
+                                    int32_t* bite,           // arc #63 P5a: (n_env, h, w)
+                                    int32_t* count) const;   // arc #63 P5b: (n_env, h, w)
+    mutable swarm::StepScratch swarm_scratch_;
+    // Telemetry (never in the energy closure: larvae write no field): the
+    // deaths the resident swarm stage folded into this env.
+    mutable int64_t swarm_deaths_sum = 0;
+
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,

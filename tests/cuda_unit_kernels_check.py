@@ -43,6 +43,15 @@ PART BATCH -- 1b', 10', 1c on ship_demo matches of different seeds (extra
 idle units per env: padding), and the conversion, 10' and 1a on a box level
 where a horde bites idle marines (conversions; HP hooks), N = 2 and 8.
 
+PART CORPSE (arc #63 P5b) -- the conversion on the box with corpses written
+between ticks: a marine's corpse infested past the threshold (rises), a
+zombie's corpse likewise (rises again as a zombie), the risen one killed and
+infested again (rises a second time), a destroyed corpse (integrity 0) that a
+zombie killed AND that is infested (rises by neither trigger), a corpse just
+below the threshold (does not rise); N = 1 with an unhooked twin, then N = 2
+with different schedules per env. The device conversion must equal the host's
+on every row every tick, each branch taken.
+
 PART CHAINED -- the two adjacent pairs this patch creates replace the host's
 slots in a twin match: 1b' + 1c (ship_demo with the order schedule) and 10' +
 the conversion (the box): pack at the first slot's entry, both kernels in a
@@ -67,6 +76,7 @@ import os
 import sys
 import tempfile
 import time
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -792,6 +802,76 @@ def part_batch():
             fail(f"box batch N={n}: every env has the same unit count (no padding)")
 
 
+class CorpseBoxDriver(BoxDriver):
+    """The box with corpses (arc #63 P5b): at construction one marine of
+    each team and one zombie are killed through the damage door (not by a
+    zombie: they lie); then, between ticks, the fixtures of the corpse law
+    are written on a schedule (``shift`` moves it per env)."""
+
+    def __init__(self, shift=0, **kw):
+        super().__init__(**kw)
+        from simulation.damage import KINETIC, DamagePacket, apply_packet
+        self._pkt = lambda u: apply_packet(
+            u, DamagePacket(amount=10_000.0, dtype=KINETIC), None, source="explosion")
+        units = self.sim.units
+        self.k1 = next(u for u in units if not u.is_zombie and u.team == 0)
+        self.k3 = next(u for u in units if not u.is_zombie and u.team == 1)
+        self.k2 = next(u for u in units if u.is_zombie)
+        for u in (self.k1, self.k2, self.k3):
+            self._pkt(u)
+        self.shift, self.k, self.facts = shift, 0, Counter()
+
+    def tick(self):
+        from simulation import corpse
+        thr = corpse.get_settings().threshold_q
+        k = self.k - self.shift
+        if k == 5:                       # destroyed, killed by a zombie, infested
+            self.k3.corpse_integrity_q = 0
+            self.k3.killed_by_zombie = True
+            self.k3.infest_q = 2 * thr
+        if k == 8:                       # just below: no rise
+            self.k2.infest_q = thr - 4000
+        if k == 15:                      # the marine's corpse rises
+            self.k1.infest_q = 2 * thr
+        if k == 25:                      # the zombie's corpse rises
+            self.k2.infest_q = 2 * thr
+        if k == 35 and self.k1.alive:    # the risen marine dies ...
+            self._pkt(self.k1)
+        if k == 45 and not self.k1.alive:
+            self.k1.infest_q = 3 * thr   # ... and rises a second time
+        was = {u.id: (u.alive, u.is_zombie) for u in (self.k1, self.k2, self.k3)}
+        super().tick()
+        self.k += 1
+        for u, name in ((self.k1, "marine"), (self.k2, "zombie"), (self.k3, "destroyed")):
+            if not was[u.id][0] and u.alive:
+                self.facts[f"{name} corpse rose"] += 1
+        if not self.k3.alive and self.k3.killed_by_zombie and self.k3.corpse_integrity_q <= 0:
+            self.facts["destroyed corpse stays down"] += 1
+
+
+def part_corpse():
+    from simulation import ai_zombie
+    drv, twin = CorpseBoxDriver(), CorpseBoxDriver()
+    run_lockstep("corpse box (conversion)", [drv], [SLOT_CONV, SLOT_10E], 80,
+                 twins=[twin], min_share={SLOT_CONV.label: 0.01})
+    f = drv.facts
+    print(f"corpse box: {dict(f)}")
+    if f["marine corpse rose"] != 2 or f["zombie corpse rose"] != 1:
+        fail(f"corpse box: the rises were {dict(f)} (want the marine twice, the "
+             f"zombie once)")
+    if f["destroyed corpse rose"] or not f["destroyed corpse stays down"]:
+        fail("corpse box: the destroyed corpse rose (or was never tested)")
+    if ai_zombie.rises_as_zombie(drv.k2) or drv.k2.infest_q:
+        fail("corpse box: a risen zombie kept its level")
+    drivers = [CorpseBoxDriver(shift=3 * e, n_marines=2 + e % 2, seed=1 + e)
+               for e in range(2)]
+    run_lockstep("corpse box batch N=2", drivers, [SLOT_CONV, SLOT_10E], 80,
+                 min_share={SLOT_CONV.label: 0.01})
+    for e, d in enumerate(drivers):
+        if d.facts["marine corpse rose"] != 2:
+            fail(f"corpse box batch env {e}: {dict(d.facts)}")
+
+
 def part_box_twin():
     drv = BoxDriver()
     twin = BoxDriver()
@@ -871,7 +951,7 @@ def part_chained():
 # ---------------------------------------------------------------------------
 # main / bench
 # ---------------------------------------------------------------------------
-PARTS = ("tables", "lib", "ship", "doorway", "batch", "box", "chained")
+PARTS = ("tables", "lib", "ship", "doorway", "batch", "box", "corpse", "chained")
 
 
 def main(parts=None) -> int:
@@ -897,6 +977,8 @@ def main(parts=None) -> int:
                 part_batch()
             elif p == "box":
                 part_box_twin()
+            elif p == "corpse":
+                part_corpse()
             elif p == "chained":
                 part_chained()
             else:

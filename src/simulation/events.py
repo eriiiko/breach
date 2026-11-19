@@ -65,6 +65,11 @@ class Cause(str, Enum):
     ``burning`` / ``poisoned`` / ``suffocating`` / ``regen``
                     the DoT/HoT status rows (``status.STATUS_REGISTRY``'s
                     names; ``status.py`` asserts every emitting row is here)
+    ``larva_bite``  the larvae's bite (arc #63 P5a): the ``swarm_bite_dose``
+                    coupling row's dose (``exchange.apply_bite_dose``), whose
+                    harm the poison law emits later as it leaves the blood
+                    (``poison.tick`` carries the latest dose's cause);
+                    never credited (``attacker_id`` -1)
     ==============  ==========================================================
 
     NOT here because no damage path exists yet (``environment.py``: pressure,
@@ -83,6 +88,7 @@ class Cause(str, Enum):
     POISONED    = "poisoned"
     SUFFOCATING = "suffocating"
     REGEN       = "regen"
+    LARVA_BITE  = "larva_bite"    # arc #63 P5a; appended (indices never move)
 
 
 #: Every cause string, in declaration order.
@@ -382,6 +388,23 @@ class WallDestroyedEvent:
     pos: tuple                      # (fy, fx)
 
 
+@dataclass
+class SwarmUnitDiedEvent:
+    """A swarm unit died this tick (arc #63 P3, engine/17 §7). Carries the
+    PRE-ZERO values of its slot -- the post-move position and the heading it
+    moved along -- because the slot itself is already the all-zero freed form.
+    Renderers read this event, never the freed slot. Emitted in
+    (SWARM_SPECIES order, env, ascending slot) order. Not in the synced event
+    digest (field_ab_harness._SYNCED_EVENT_TYPES is unchanged): its content is
+    gated CPU==GPU by tests/cuda_swarm_check.py, and cross-machine it is a
+    pure function of the previous tick's digested swarm section."""
+    species: str
+    unit_id: int
+    pos_x_q: int      # Q16.16 tile units, raw
+    pos_y_q: int
+    heading_q: int    # Q16.16 radians, canonical (-PI_Q16, PI_Q16]
+
+
 __all__ = [
     "Cause",
     "CAUSE_NAMES",
@@ -403,4 +426,5 @@ __all__ = [
     "UnitKilledEvent",
     "DoorDestroyedEvent",
     "WallDestroyedEvent",
+    "SwarmUnitDiedEvent",
 ]

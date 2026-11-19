@@ -11,6 +11,7 @@ paths:
   - "src/simulation/sensor_accessor.py"
   - "src/simulation/signal_bus.py"
   - "src/temperature_scale.py"
+  - "src/debug_keys.py"
 ---
 
 # Sim core: the facade, the conductor, the runner
@@ -28,6 +29,9 @@ and who must use it; this file holds the constraints the code cannot say.
 
 ## PhysicsRunner / PhysicsEngine
 - New C++ orchestration lands in `PhysicsEngine`, not Python glue; solver params are bound in PhysicsRunner only.
+
+## Config reload seam
+- After Ctrl+R `src/debug_keys.py` calls `CFG.reload()` and then `Simulation.on_config_reload()`, and that is THE place a live table re-binds, applying from the next tick. A new hot-reloadable table adds one call there: never a lazy identity check inside a reader (a debug tool must not decide which table is in force).
 
 ## Recorder
 - Frozen `.npz` contract: extend `DEFAULT_FIELDS` additively. A new DTYPE CLASS (int64) is a contract extension with its own ring branch, never a cast: a float64 ring is exact only to 2^53 and would drop the LSBs the energy gates assert on (arc #54 D13).

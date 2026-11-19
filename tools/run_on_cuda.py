@@ -112,6 +112,10 @@ _BACKEND_SETTERS = (
     # tests/cuda_combustion_burn_check.py (burning scenes through the real
     # tick, only this backend flipped, every array and book at tol 0).
     "set_combustion_backend",
+    # arc #63 P3: the host-path swarm step on the per-call CUDA wrapper (the
+    # resident tick runs the swarm stage in its tail regardless). Gate:
+    # tests/cuda_swarm_check.py (CPU == per-call == resident, tol 0).
+    "set_swarm_backend",
 )
 
 

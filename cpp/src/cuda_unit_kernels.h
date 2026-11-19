@@ -152,6 +152,8 @@ struct UnitDamagePlanes {
     std::uintptr_t solid = 0;        // bool
     std::uintptr_t gas = 0;
     int n_gases = 0;
+    std::uintptr_t bite = 0;   // arc #63 P5a: the swarm's bite-dose plane (N, h, w) int32
+    std::uintptr_t count = 0;  // arc #63 P5b: the swarm's count plane (N, h, w) int32
     int h = 0;
     int w = 0;
 };

@@ -313,6 +313,9 @@ __device__ inline int64_t apply_packet(int64_t* row, const int64_t* tab, const P
         put(row, UNIT_COL_POISON_SRC, -1, changed);
         put(row, UNIT_COL_STRESS_Q, 0, changed);                   // stress.clear
         put(row, UNIT_COL_BODY_TEMP_Q, tab[UNIT_TAB_HEAT_AMBIENT_Q], changed);  // body_temp.clear
+        put(row, UNIT_COL_POISON_CAUSE, UNIT_CAUSE_POISON_GAS, changed);   // arc #63 P5a
+        put(row, UNIT_COL_INFEST_Q, 0, changed);                   // corpse.on_death (P5b)
+        put(row, UNIT_COL_CORPSE_INTEGRITY_Q, tab[UNIT_TAB_CORPSE_INTEGRITY_Q], changed);
         if (p.mark_killed_by_zombie) put(row, UNIT_COL_KILLED_BY_ZOMBIE, 1, changed);
         emit(sink, UNIT_EVKIND_KILLED, uid, 0, p.cause, attacker, 0, 0);
         *killed = true;
@@ -399,6 +402,22 @@ __device__ inline int64_t reduce_max(const int32_t* plane, int h, int w, const F
         }
     }
     return best;
+}
+
+// exchange.reduce_sum over a (h, w) int32 plane (arc #63 P5a, the bite row):
+// the exact int64 sum over the in-bounds footprint tiles, 0 when none is.
+__device__ inline int64_t reduce_sum(const int32_t* plane, int h, int w, const Footprint& f) {
+    int64_t total = 0;
+    for (int64_t dy = 0; dy < f.fp; ++dy) {
+        const int64_t ty = f.ay + dy;
+        if (ty < 0 || ty >= h) continue;
+        for (int64_t dx = 0; dx < f.fp; ++dx) {
+            const int64_t tx = f.ax + dx;
+            if (tx < 0 || tx >= w) continue;
+            total += plane[(size_t)ty * w + tx];
+        }
+    }
+    return total;
 }
 
 // ---- the credit claims (damage.TickCredit) -----------------------------------------

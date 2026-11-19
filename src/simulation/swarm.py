@@ -1,0 +1,1329 @@
+"""The swarm store scaffold (arc #63 P2, docs/swarm_P2_impl.md v2).
+
+Executes ``docs/architecture/engine/17_swarm_units.md`` (BLESSED) §2, §6, §7
+and §9b's "shared foundation" row. Per-species SoA arrays on GameMap, born
+per map (a column ``(max_units,)``, the counters 0-d) through the residency
+path, with a lifecycle facade
+(:class:`SwarmUnits`), a strict species table re-bound through one explicit
+reload seam (:func:`reload_species`), and a presence-gated ``SWARM_SECT_V1``
+section the digest hashes and the recorder mirrors raw.
+
+Scope (P2): the store, spawn/reclaim, the invariant checker, the facade, the
+species table, the digest section + carrier, and picklability.
+
+Scope (P3, docs/swarm_P3_impl.md): the larva law's host side -- the species
+rows it reads (Kelvin rows through ``SPECIES_UNITS``), the cross-field
+``SPECIES_RULES`` checked at load, at reload and at every launch, the INGRESS
+gather :func:`engine_args` (arrays, pointers, the env words; it transfers,
+launches and writes nothing), the resident entry / exit names, and
+:func:`death_events`. The law and its orchestration are C++
+(``PhysicsEngine::step_swarm`` on the host path, ``resident_swarm`` in the
+resident tail). No save format, no rendering, no food -- later patches.
+
+Must not import :mod:`simulation.gamemap` or :mod:`simulation.simulation`
+(the import direction is gamemap -> swarm).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from dataclasses import dataclass, fields as _dc_fields, replace as _dc_replace
+from typing import Callable, NamedTuple
+
+import numpy as np
+
+import temperature_scale
+from config import CFG, Namespace
+from simulation.entities.schema import (
+    Field, KIND_INT, KIND_REAL_Q16, field_value_error,
+)
+from simulation.factions import FACTION_NONE
+from simulation import swarm_fixed
+from simulation import swarm_larva
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# NO batch axis here (Erik's P6 ruling, docs/unit_design_2026-11-14.md §6.3,
+# 2026-11-14): the store declares PER-MAP arrays and the batch axis is
+# ResidentBatch's (it stacks every GameMap._RESIDENT_FIELD_NAMES entry to
+# (N,) + shape); a farm env is one GameMap. Never a second N.
+
+# The species set is CLOSED IN CODE and APPEND-ONLY (a species cannot exist
+# without a kernel, which is code, so the SET lives in code and the NUMBERS
+# live in TOML, §4). Tuple order == section block order, so it only ever
+# grows at the end. Names match ``^[a-z][a-z0-9]*$`` (no underscore, R11).
+SWARM_SPECIES = ("larva",)
+
+
+class Column(NamedTuple):
+    """One roster column: attribute-name suffix + numpy dtype."""
+    name: str
+    dtype: type
+
+
+# The v1 roster (§1.2), declaration order == section column order. `T_prev`
+# is deliberately ABSENT: the Review log (2026-09-10) ruled sensing to be a
+# spatial head-sweep, so the chapter's `T_prev` mentions are stale.
+#
+# The empty-slot form is the ALL-ZERO slot: AI_DEAD == 0 and ids start at 1
+# make every column of an unoccupied slot zero, whether the slot was never
+# spawned or was reclaimed (§1.2). A live unit is never AI_DEAD.
+ROSTER = (
+    Column("pos_x", np.int32),          # Q16.16 tile-x, tile units of the runtime grid
+    Column("pos_y", np.int32),          # Q16.16 tile-y
+    Column("heading", np.int32),        # Q16.16 radians, canonical (-PI_Q16, PI_Q16]
+    Column("hp", np.int32),             # Q16.16 hit points
+    Column("ai_state", np.int32),       # AI_DEAD / AI_RUN / AI_EAT / AI_COMA
+    Column("dist_walked", np.uint32),   # Q16.16 path length, wraps mod 2**32
+    Column("unit_id", np.int32),        # persistent identity (0 == "no unit")
+    Column("faction", np.int32),        # present from v1, unread in v1
+    Column("valid", np.uint8),          # slot occupied
+)
+
+AI_DEAD, AI_RUN, AI_EAT, AI_COMA = 0, 1, 2, 3
+
+FIRST_UNIT_ID = 1
+INT32_MIN = -(1 << 31)
+INT32_MAX = (1 << 31) - 1
+
+# arc #63 P3 (docs/swarm_P3_impl.md §3.1): the words the kernel's C++ twins
+# name, identity-tested against bp.SWARM_CONSTANTS (tests/test_swarm_constants.py).
+# The (N, ENV_WORDS) uint32 env block: per env (sim.draws.tick & M32, key lo, key hi).
+ENV_TICK, ENV_SEED_LO, ENV_SEED_HI, ENV_WORDS = 0, 1, 2, 3
+# One death record per slot (the law writes it every launch; zeros = no death).
+DEATH_UNIT_ID, DEATH_POS_X, DEATH_POS_Y, DEATH_HEADING, DEATH_WORDS = 0, 1, 2, 3, 4
+# One compacted death row, (species, env, slot) order.
+(ROW_SPECIES, ROW_ENV, ROW_SLOT, ROW_UNIT_ID, ROW_POS_X, ROW_POS_Y,
+ ROW_HEADING, ROW_WORDS) = 0, 1, 2, 3, 4, 5, 6, 7
+_M32 = (1 << 32) - 1
+
+
+# ---------------------------------------------------------------------------
+# Names — formed in ONE place (§1.1), so a later rename is digest-neutral
+# (the wire contract is the section, keyed by species + short column name).
+# ---------------------------------------------------------------------------
+
+_SPECIES_NAME_RE = re.compile(r"^[a-z][a-z0-9]*\Z")
+_COLUMN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*\Z")
+
+# A column named "high_water" would alias `swarm_<species>_high_water` (the
+# per-map 0-d counter) -- reserved so `check_store_names` can catch it.
+RESERVED_COLUMNS = ("high_water",)
+
+NEXT_UNIT_ID_ATTR = "swarm_next_unit_id"
+SPECIES_ATTR = "swarm_species"
+HOST_DIRTY_ATTR = "swarm_host_dirty"
+SPECIES_HASH_NPZ_KEY = "swarm_species_hash"
+#: arc #63 P5a: THE BITE-DOSE PLANE, ``(h, w)`` int32 per map: what the
+#: biting swarm units on each tile give a body standing there THIS tick, in
+#: Q16 units of poison. Swarm OUTPUT, rebuilt from zero by every swarm step
+#: (never accumulated across ticks), read by the unit side only through the
+#: ``swarm_bite_dose`` coupling row (``exchange.apply_bite_dose``). Not
+#: digested and not in the swarm section: it is a function of the store.
+BITE_PLANE_ATTR = "swarm_bite_dose"
+#: arc #63 P5b: THE COUNT PLANE, ``(h, w)`` int32 per map: how many living,
+#: non-coma swarm units (``swarm::active_on``, every species) stand on each
+#: tile THIS tick. Swarm OUTPUT built in the same pass as the bite plane,
+#: under the same rules; read by the unit side only through the
+#: ``swarm_count`` coupling row (``exchange.apply_corpse_infestation``).
+COUNT_PLANE_ATTR = "swarm_count"
+
+
+def store_attr(species: str, col: str) -> str:
+    """``gmap.swarm_<species>_<col>`` -- the ONE place this name is formed.
+
+    Doubles as the recorder's ``.npz`` key for the same column (§7)."""
+    return f"swarm_{species}_{col}"
+
+
+def high_water_attr(species: str) -> str:
+    return f"swarm_{species}_high_water"
+
+
+def check_store_names(species_tuple, roster) -> None:
+    """Name hygiene (R11): raises ``ValueError`` on the first violation.
+
+    - every species name matches ``^[a-z][a-z0-9]*$``;
+    - every column name matches ``^[a-z][a-z0-9_]*$`` and is not reserved
+      (``RESERVED_COLUMNS``, which would alias ``swarm_<sp>_high_water``);
+    - every generated attribute name (== every ``.npz`` key) is pairwise
+      distinct from every other one AND from the fixed names.
+
+    Catches, e.g., a future species ``next``, whose ``store_attr("next",
+    "unit_id")`` would equal ``swarm_next_unit_id``.
+    """
+    for sp in species_tuple:
+        if not _SPECIES_NAME_RE.match(sp):
+            raise ValueError(
+                f"swarm species name {sp!r} must match "
+                f"{_SPECIES_NAME_RE.pattern!r} (no underscore, R11)")
+    for col in roster:
+        if not _COLUMN_NAME_RE.match(col.name):
+            raise ValueError(
+                f"swarm column name {col.name!r} must match "
+                f"{_COLUMN_NAME_RE.pattern!r}")
+        if col.name in RESERVED_COLUMNS:
+            raise ValueError(
+                f"swarm column name {col.name!r} is reserved -- it would "
+                f"alias swarm_<species>_{col.name}")
+
+    names = [NEXT_UNIT_ID_ATTR, SPECIES_ATTR, HOST_DIRTY_ATTR,
+             SPECIES_HASH_NPZ_KEY, BITE_PLANE_ATTR, COUNT_PLANE_ATTR]
+    for sp in species_tuple:
+        names.append(high_water_attr(sp))
+        for col in roster:
+            names.append(store_attr(sp, col.name))
+    seen: set = set()
+    for name in names:
+        if name in seen:
+            raise ValueError(
+                f"swarm store name collision: {name!r} is generated more "
+                f"than once (name hygiene, R11)")
+        seen.add(name)
+
+
+check_store_names(SWARM_SPECIES, ROSTER)
+
+# Every store array GameMap allocates (§1.3): the columns (species x ROSTER,
+# in that nested order), then each species' high_water, then the shared
+# next_unit_id. Born through the residency path from day one (§A rule 3).
+SWARM_RESIDENT_NAMES = tuple(
+    store_attr(sp, col.name) for sp in SWARM_SPECIES for col in ROSTER
+) + tuple(high_water_attr(sp) for sp in SWARM_SPECIES) + (NEXT_UNIT_ID_ATTR,)
+#: arc #63 P5a: the swarm's per-tile OUTPUT planes, resident (the resident
+#: swarm stage writes them on the device; the exit download brings them
+#: down while a swarm is present). Never host-written after allocation.
+SWARM_PLANE_NAMES = (BITE_PLANE_ATTR, COUNT_PLANE_ATTR)
+
+
+# ---------------------------------------------------------------------------
+# The species table (§4) -- schema in code (entities/schema.py::Field),
+# numbers in TOML.
+# ---------------------------------------------------------------------------
+
+# P2's fields (only what P2 consumes; §4.1). `max_units` sits in the species
+# row because the store is per species -- different species will want
+# different capacities. Deferred to P3/P6: speed/radius/thresholds/food dials.
+SPECIES_FIELDS = (
+    Field("max_units", KIND_INT, minimum=1, maximum=1 << 20,
+          doc="slots per map (fork 2b); LOAD-TIME only"),
+    Field("hp_max", KIND_REAL_Q16, minimum=2 ** -16, maximum=32767.0,
+          doc="hit points at spawn; HOT (applies from the next tick)"),
+    # arc #63 P3 (docs/swarm_P3_impl.md §5.1): what the larva law consumes.
+    # Known limit (recorded, not P3's): one field set for every species; the
+    # second-species patch splits it into shared + per-species sets.
+    Field("speed_mps", KIND_REAL_Q16, minimum=2 ** -16, maximum=100.0,
+          doc="crawl speed, metres per second (the per-tick step is derived "
+              "per map through tile_size_m)"),
+    Field("T_prefer", KIND_REAL_Q16, minimum=1.0, maximum=2000.0,
+          doc="preferred temperature, KELVIN (comfort = |T - T_prefer|)"),
+    Field("T_lethal_hot", KIND_REAL_Q16, minimum=1.0, maximum=2000.0,
+          doc="instant heat death above this, KELVIN"),
+    Field("T_ctmin", KIND_REAL_Q16, minimum=1.0, maximum=2000.0,
+          doc="chill-coma onset (enter below), KELVIN"),
+    Field("T_coma_exit", KIND_REAL_Q16, minimum=1.0, maximum=2000.0,
+          doc="chill-coma recovery (exit above), KELVIN"),
+    Field("tumble_rate_base", KIND_REAL_Q16, minimum=0.0, maximum=1000.0,
+          doc="tumbles per second while no sweep side is worse"),
+    Field("tumble_rate_alarm", KIND_REAL_Q16, minimum=0.0, maximum=1000.0,
+          doc="tumbles per second while BOTH sweep points are worse"),
+    Field("turn_bias", KIND_REAL_Q16, minimum=0.0, maximum=1.0,
+          doc="probability a turn goes toward the better side"),
+    Field("turn_min", KIND_REAL_Q16, minimum=0.0, maximum=math.pi,
+          doc="smallest tumble / wall turn, radians"),
+    Field("turn_max", KIND_REAL_Q16, minimum=0.0, maximum=math.pi,
+          doc="largest tumble / wall turn, radians"),
+    Field("sweep_angle", KIND_REAL_Q16, minimum=2 ** -16, maximum=math.pi / 2,
+          doc="half-angle of the head sweep's two points, radians"),
+    # arc #63 P5a (docs/swarm_P5a_impl.md): the bite. A biting unit (alive,
+    # not in coma) adds bite_dose x bite_rate x dt to its tile of the
+    # bite-dose plane every tick, the EXPECTED dose (no draw).
+    Field("bite_rate", KIND_REAL_Q16, minimum=0.0, maximum=100.0,
+          doc="bites per second of one biting unit on a tile a body stands on"),
+    Field("bite_dose", KIND_REAL_Q16, minimum=0.0, maximum=100.0,
+          doc="units of poison one bite gives (simulation.poison's units)"),
+)
+
+# The reload class per field -- a separate mapping (R3): "hot" applies from
+# the next tick (through the seam), "load" only at the next reset/level load.
+SPECIES_RELOAD: dict = {
+    "max_units": "load",
+    "hp_max": "hot",
+    "speed_mps": "hot",
+    "T_prefer": "hot",
+    "T_lethal_hot": "hot",
+    "T_ctmin": "hot",
+    "T_coma_exit": "hot",
+    "tumble_rate_base": "hot",
+    "tumble_rate_alarm": "hot",
+    "turn_bias": "hot",
+    "turn_min": "hot",
+    "turn_max": "hot",
+    "sweep_angle": "hot",
+    "bite_rate": "hot",
+    "bite_dose": "hot",
+}
+
+# arc #63 P3 (§5.2): the per-field AUTHORING unit, a mapping beside
+# SPECIES_RELOAD (a per-field property is a mapping, not a schema kind). A
+# "kelvin" row is converted through temperature_scale.from_kelvin and
+# quantized ONCE at table load, so the stored game-dT ints follow the scale in
+# force (ruling 7: immune to k_temp_to_kelvin by construction).
+SPECIES_UNITS: dict = {
+    "T_prefer": "kelvin",
+    "T_lethal_hot": "kelvin",
+    "T_ctmin": "kelvin",
+    "T_coma_exit": "kelvin",
+}
+
+_FIELDS_BY_NAME = {f.name: f for f in SPECIES_FIELDS}
+if not set(SPECIES_UNITS) <= set(_FIELDS_BY_NAME):
+    raise ValueError(
+        f"swarm.SPECIES_UNITS keys must be SPECIES_FIELDS names (got "
+        f"{sorted(set(SPECIES_UNITS) - set(_FIELDS_BY_NAME))} unknown)")
+if not set(SPECIES_UNITS.values()) <= {"kelvin"}:
+    raise ValueError(
+        f"swarm.SPECIES_UNITS values must be 'kelvin', got "
+        f"{sorted(set(SPECIES_UNITS.values()))}")
+for _name in SPECIES_UNITS:
+    if _FIELDS_BY_NAME[_name].kind != KIND_REAL_Q16:
+        raise ValueError(
+            f"swarm.SPECIES_UNITS[{_name!r}]: a kelvin row must be KIND_REAL_Q16")
+
+if set(SPECIES_RELOAD) != {f.name for f in SPECIES_FIELDS}:
+    raise ValueError(
+        "swarm.SPECIES_RELOAD keys must equal SPECIES_FIELDS names "
+        f"(got {sorted(SPECIES_RELOAD)}, expected "
+        f"{sorted(f.name for f in SPECIES_FIELDS)})")
+if not set(SPECIES_RELOAD.values()) <= {"hot", "load"}:
+    raise ValueError(
+        f"swarm.SPECIES_RELOAD values must be 'hot' or 'load', got "
+        f"{sorted(set(SPECIES_RELOAD.values()))}")
+
+
+def _species_stored_attr(f: Field) -> str:
+    """The stored-attribute rule: ``<name>`` for KIND_INT, ``<name>_q`` for
+    KIND_REAL_Q16 (quantized once at load, door 2)."""
+    if f.kind == KIND_INT:
+        return f.name
+    if f.kind == KIND_REAL_Q16:
+        return f"{f.name}_q"
+    raise ValueError(
+        f"swarm species field {f.name!r}: unsupported kind {f.kind!r} "
+        f"(P2 only uses KIND_INT / KIND_REAL_Q16)")
+
+
+@dataclass(frozen=True)
+class SwarmSpeciesRow:
+    """One species' in-force tuning numbers. Module-level + statically
+    declared, hence picklable (R4, T19) -- never a runtime-generated class."""
+    species: str
+    max_units: int
+    hp_max_q: int
+    # arc #63 P3 (§5.1): Q16 ints; the four temperatures are game dT
+    # (converted from the authored Kelvin at load).
+    speed_mps_q: int
+    T_prefer_q: int
+    T_lethal_hot_q: int
+    T_ctmin_q: int
+    T_coma_exit_q: int
+    tumble_rate_base_q: int
+    tumble_rate_alarm_q: int
+    turn_bias_q: int
+    turn_min_q: int
+    turn_max_q: int
+    sweep_angle_q: int
+    # arc #63 P5a: the bite (Q16 per second / Q16 poison units)
+    bite_rate_q: int
+    bite_dose_q: int
+
+
+_expected_row_attrs = frozenset(
+    {"species"} | {_species_stored_attr(f) for f in SPECIES_FIELDS})
+_actual_row_attrs = frozenset(f.name for f in _dc_fields(SwarmSpeciesRow))
+if _actual_row_attrs != _expected_row_attrs:
+    raise ValueError(
+        "swarm.SwarmSpeciesRow fields must equal {'species'} union the "
+        f"stored attributes of SPECIES_FIELDS (got {sorted(_actual_row_attrs)}"
+        f", expected {sorted(_expected_row_attrs)})")
+
+
+def _species_table_hash(rows) -> str:
+    """SHA-256 hex over the numbers IN FORCE (post-quantization), the
+    ``registry_content_hash`` recipe (registry.py:171-181) over a swarm
+    payload: sorted keys, compact separators, ascii-only, so two TOML
+    spellings of the same numbers hash equal and the hash is stable across
+    machines / dict insertion order."""
+    species_payload = {}
+    for r in rows:
+        row_values = {}
+        for f in SPECIES_FIELDS:
+            attr = _species_stored_attr(f)
+            row_values[attr] = int(getattr(r, attr))
+        species_payload[r.species] = row_values
+    canonical = json.dumps(
+        {"format": "SWARM_SPECIES_V1", "species": species_payload},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+@dataclass(frozen=True)
+class SwarmSpeciesTable:
+    """The strict, validated ``[swarm.<species>]`` table in force.
+
+    No ``.source`` attribute: v1's lazy identity check (removed, R3) was its
+    only use. Installed only at GameMap construction and by the reload seam
+    (:func:`reload_species`); every other reader is pure (§4.3).
+    """
+    rows: tuple
+    hash: str
+
+    @classmethod
+    def from_rows(cls, rows) -> "SwarmSpeciesTable":
+        rows = tuple(rows)
+        return cls(rows=rows, hash=_species_table_hash(rows))
+
+    @classmethod
+    def from_config(cls, cfg=CFG) -> "SwarmSpeciesTable":
+        """Validate + quantize ``[swarm.<species>]`` (§4.2). Raises
+        ``ValueError`` naming ``[swarm.<sp>].<key>`` on the first violation:
+        a missing ``[swarm]``, a missing/unknown species row, a non-table
+        key directly under ``[swarm]``, an unknown/missing key in a row, or
+        a ``field_value_error`` (wrong type / out of bounds).
+
+        arc #63 P3 (§5.2): TWO passes, in this order -- every structural and
+        field check of every species first, then the conversion. A kelvin
+        row (``SPECIES_UNITS``) converts through ``temperature_scale.load(cfg)``
+        (loaded once, on the first kelvin field); a broken scale's
+        ``RuntimeError`` / ``AssertionError`` is re-raised as a ``ValueError``
+        naming the row, so the reload seam rejects it instead of crashing.
+        Runs no cross-field rule (``SPECIES_RULES`` needs the map's context)."""
+        swarm_cfg = getattr(cfg, "swarm", None)
+        if swarm_cfg is None:
+            raise ValueError(
+                "[swarm] missing from config.toml -- every swarm species "
+                "needs a [swarm.<species>] row")
+        cfg_dict = vars(swarm_cfg)
+        for key, value in cfg_dict.items():
+            if key not in SWARM_SPECIES:
+                raise ValueError(
+                    f"[swarm].{key}: unknown swarm species {key!r} (known: "
+                    f"{SWARM_SPECIES}) -- typo guard")
+            if not isinstance(value, Namespace):
+                raise ValueError(
+                    f"[swarm].{key} must be a table ([swarm.{key}]) -- P2 "
+                    f"has no global [swarm] keys")
+
+        known_keys = {f.name for f in SPECIES_FIELDS}
+        # Pass 1: validate every species' every field before any conversion.
+        row_dicts = {}
+        for sp in SWARM_SPECIES:
+            if sp not in cfg_dict:
+                raise ValueError(f"[swarm.{sp}] missing from config.toml")
+            row_dict = vars(cfg_dict[sp])
+            for key in row_dict:
+                if key not in known_keys:
+                    raise ValueError(
+                        f"[swarm.{sp}].{key}: unknown key (known: "
+                        f"{sorted(known_keys)})")
+            for f in SPECIES_FIELDS:
+                if f.name not in row_dict:
+                    raise ValueError(f"[swarm.{sp}].{f.name} missing")
+                value = row_dict[f.name]
+                err = field_value_error(f, value)
+                if err:
+                    raise ValueError(
+                        f"[swarm.{sp}].{f.name} = {value!r}: {err}")
+            row_dicts[sp] = row_dict
+
+        # Pass 2: convert / quantize (door 2: once, at the table's load).
+        ts = None
+        rows = []
+        for sp in SWARM_SPECIES:
+            row_dict = row_dicts[sp]
+            stored = {"species": sp}
+            for f in SPECIES_FIELDS:
+                value = row_dict[f.name]
+                attr = _species_stored_attr(f)
+                if f.kind == KIND_INT:
+                    stored[attr] = int(value)
+                elif SPECIES_UNITS.get(f.name) == "kelvin":
+                    if ts is None:
+                        try:
+                            ts = temperature_scale.load(cfg)
+                        except (RuntimeError, AssertionError) as e:
+                            raise ValueError(
+                                f"[swarm.{sp}].{f.name} = {value!r} K: cannot "
+                                f"convert through [physics.temperature_scale]: "
+                                f"{e}") from e
+                    q = swarm_fixed.quantize_scalar(ts.from_kelvin(float(value)))
+                    if not INT32_MIN <= q <= INT32_MAX:
+                        raise ValueError(
+                            f"[swarm.{sp}].{f.name} = {value!r} K: converts to "
+                            f"{q} game counts, outside the int32 range")
+                    stored[attr] = q
+                else:  # KIND_REAL_Q16
+                    stored[attr] = swarm_fixed.quantize_scalar(value)
+            rows.append(SwarmSpeciesRow(**stored))
+        return cls.from_rows(rows)
+
+    def row(self, name: str) -> SwarmSpeciesRow:
+        for r in self.rows:
+            if r.species == name:
+                return r
+        raise KeyError(f"unknown swarm species {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# arc #63 P3 (§5.3): SPECIES_RULES -- the invariants the kernel relies on
+# (never tuning taste), checked on the exact ints at load, at reload and at
+# every launch.
+# ---------------------------------------------------------------------------
+
+class SpeciesContext(NamedTuple):
+    """The map / tick context a rule (and a derived table row) needs."""
+    dt_q: int          # quantize_scalar(tick seconds)
+    inv_tile_q: int    # quantize_scalar(1 / tile_size_m)
+
+
+def _context(dt_s, tile_size_m) -> SpeciesContext:
+    dt_q = swarm_fixed.quantize_scalar(float(dt_s))
+    inv_tile_q = swarm_fixed.quantize_scalar(1.0 / float(tile_size_m))
+    for name, v in (("dt_q", dt_q), ("inv_tile_q", inv_tile_q)):
+        if not 1 <= v <= INT32_MAX:
+            raise ValueError(
+                f"swarm species context: {name} = {v} outside [1, {INT32_MAX}] "
+                f"(dt {dt_s!r} s, tile {tile_size_m!r} m)")
+    return SpeciesContext(dt_q=dt_q, inv_tile_q=inv_tile_q)
+
+
+def species_context(gmap, cfg=CFG) -> SpeciesContext:
+    """The context at load / reload: dt from ``[clock] ticks_per_second``."""
+    return _context(1.0 / float(cfg.clock.ticks_per_second), gmap.tile_size_m)
+
+
+def launch_context(gmap, sim_time) -> SpeciesContext:
+    """The context at a launch: dt from the tick actually being stepped."""
+    return _context(sim_time, gmap.tile_size_m)
+
+
+def movement_step_q(row, ctx) -> tuple:
+    """SHARED (every species moves through the kit's ``probe_move``): the
+    speed in tiles/s ``v_q`` and the per-tick step ``step_q`` (Q16 tiles), in
+    integers: ``v_q = (speed_mps_q * inv_tile_q) >> 16``, ``step_q = (v_q *
+    dt_q) >> 16`` (D11, meters-first)."""
+    v_q = (int(row.speed_mps_q) * int(ctx.inv_tile_q)) >> swarm_fixed.FP_SHIFT
+    return v_q, (v_q * int(ctx.dt_q)) >> swarm_fixed.FP_SHIFT
+
+
+def bite_tick_q(row, ctx) -> int:
+    """SHARED (arc #63 P5a): what ONE biting unit adds to its tile of the
+    bite-dose plane per tick, in Q16 units of poison -- the expected dose
+    ``bite_dose x bite_rate x dt``, formed from the three Q16 ints with ONE
+    rounding (half up; every factor is non-negative)."""
+    prod = int(row.bite_dose_q) * int(row.bite_rate_q) * int(ctx.dt_q)
+    return (prod + (1 << 31)) >> 32
+
+
+def _check_bite_plane_range(row, ctx):
+    """Every unit of the species on ONE tile still fits the int32 plane."""
+    q = bite_tick_q(row, ctx)
+    if q * int(row.max_units) > INT32_MAX:
+        return (f"bite per tick {q} x max_units {row.max_units} overflows the "
+                f"int32 bite-dose plane")
+    return None
+
+
+def _check_no_tunnelling(row, ctx):
+    v_q, step_q = movement_step_q(row, ctx)
+    if v_q > INT32_MAX or not 1 <= step_q < swarm_fixed.FP_ONE:
+        return (f"speed*dt must be in [1 count, 1 tile) per tick (got v_q={v_q},"
+                f" step_q={step_q} at dt_q={ctx.dt_q}, "
+                f"inv_tile_q={ctx.inv_tile_q})")
+    return None
+
+
+class SpeciesRule(NamedTuple):
+    name: str
+    check: Callable   # (row, ctx) -> str | None   (None = holds)
+
+
+SHARED_RULES = (SpeciesRule("no_tunnelling", _check_no_tunnelling),
+                SpeciesRule("bite_plane_range", _check_bite_plane_range))
+
+SPECIES_RULES: dict = {
+    "larva": SHARED_RULES + tuple(SpeciesRule(n, c) for n, c in swarm_larva.RULES),
+}
+
+if set(SPECIES_RULES) != set(SWARM_SPECIES):
+    raise ValueError("swarm.SPECIES_RULES keys must equal SWARM_SPECIES")
+for _sp, _rules in SPECIES_RULES.items():
+    if _rules[:len(SHARED_RULES)] != SHARED_RULES:
+        raise ValueError(f"swarm.SPECIES_RULES[{_sp!r}] must start with SHARED_RULES")
+    if len({r.name for r in _rules}) != len(_rules):
+        raise ValueError(f"swarm.SPECIES_RULES[{_sp!r}]: rule names must be unique")
+
+
+def rule_violations(sp, row, ctx) -> list:
+    """``"[swarm.<sp>] <rule>: <msg>"`` per violated rule (empty: all hold)."""
+    out = []
+    for rule in SPECIES_RULES[sp]:
+        msg = rule.check(row, ctx)
+        if msg is not None:
+            out.append(f"[swarm.{sp}] {rule.name}: {msg}")
+    return out
+
+
+def check_species_rules(table, ctx) -> list:
+    """Every row of ``table`` against its species' rules."""
+    out = []
+    for row in table.rows:
+        out.extend(rule_violations(row.species, row, ctx))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Allocation (§1.3) -- the one GameMap hook.
+# ---------------------------------------------------------------------------
+
+def allocate_swarm_store(gmap, cfg=CFG) -> None:
+    """Called once, as the LAST statement of ``GameMap.__init__``.
+
+    1. ``gmap.swarm_species = SwarmSpeciesTable.from_config(cfg)`` -- the
+       load-time validation (raises on error), the same role as
+       ``self.materials`` / ``self.gases``.
+    2. ``gmap.swarm_next_unit_id`` -- a 0-d int32 array, FIRST_UNIT_ID.
+    3. Per species: ``swarm_<sp>_high_water`` a 0-d int32 array, and every
+       ROSTER column at (max_units,), the roster dtype. Per map: a batch
+       stacks them to (N,) / (N, max_units) (ResidentBatch).
+    4. ``gmap.swarm_host_dirty`` -- a plain dict, NOT resident/digested.
+    5. (arc #63 P5a) ``gmap.swarm_bite_dose`` -- the ``(h, w)`` int32 bite
+       plane, all zero (written only by the swarm step); (P5b) likewise
+       ``gmap.swarm_count``, the count plane.
+
+    Allocation draws no RNG. Runs on every level and every reset.
+
+    arc #63 P3 (§5.3): the species rules run on the loaded table in this
+    map's context; a violation is a HARD error at load (ruling 9)."""
+    table = SwarmSpeciesTable.from_config(cfg)
+    errs = check_species_rules(table, species_context(gmap, cfg))
+    if errs:
+        raise ValueError("; ".join(errs))
+    gmap.swarm_species = table
+    gmap.swarm_next_unit_id = np.array(FIRST_UNIT_ID, dtype=np.int32)
+    for sp in SWARM_SPECIES:
+        row = gmap.swarm_species.row(sp)
+        setattr(gmap, high_water_attr(sp),
+                np.zeros((), dtype=np.int32))
+        for col in ROSTER:
+            setattr(gmap, store_attr(sp, col.name),
+                    np.zeros((row.max_units,), dtype=col.dtype))
+    gmap.swarm_host_dirty = {sp: False for sp in SWARM_SPECIES}
+    setattr(gmap, BITE_PLANE_ATTR,
+            np.zeros((int(gmap._h), int(gmap._w)), dtype=np.int32))
+    setattr(gmap, COUNT_PLANE_ATTR,
+            np.zeros((int(gmap._h), int(gmap._w)), dtype=np.int32))
+
+
+def bite_plane(gmap):
+    """The read accessor of the bite-dose plane (arc #63 P5a)."""
+    return getattr(gmap, BITE_PLANE_ATTR)
+
+
+def count_plane(gmap):
+    """The read accessor of the count plane (arc #63 P5b)."""
+    return getattr(gmap, COUNT_PLANE_ATTR)
+
+
+class SwarmFull(ValueError):
+    """Spawn requested more units than there are free slots (§2.2).
+
+    Raised BEFORE any write, so the store is left byte-identical (the
+    ``SealBlocked`` precedent, ``gamemap.py::SealBlocked``). An authoring
+    error, never a capacity clamp (R10) -- see :meth:`SwarmUnits.spawn`."""
+
+
+def swarm_column(gmap, species: str, col: str):
+    """The read accessor for one species' live column array (§3, R12).
+
+    A free function (not a method) so P3's PhysicsRunner, P4 and P5 -- which
+    hold ``gmap``, not ``sim.swarm`` -- never format a
+    ``swarm_<species>_<col>`` attribute name themselves."""
+    return getattr(gmap, store_attr(species, col))
+
+
+def count_on_tile(gmap, species: str, tx: int, ty: int) -> int:
+    """How many live units of ``species`` stand on tile ``(tx, ty)`` (arc #63
+    P4, the tile inspector's row): a pure read of the store's host mirror,
+    over its ``high_water`` extent."""
+    hw = int(getattr(gmap, high_water_attr(species)))
+    if hw == 0:
+        return 0
+    valid = swarm_column(gmap, species, "valid")[:hw] != 0
+    sx = swarm_column(gmap, species, "pos_x")[:hw] >> swarm_fixed.FP_SHIFT
+    sy = swarm_column(gmap, species, "pos_y")[:hw] >> swarm_fixed.FP_SHIFT
+    return int((valid & (sx == int(tx)) & (sy == int(ty))).sum())
+
+
+# ---------------------------------------------------------------------------
+# The invariant checker (§2.6, R4) -- a pure reader.
+# ---------------------------------------------------------------------------
+
+def check_invariants(gmap) -> list:
+    """Human-readable violations of the lifecycle invariants (empty ==
+    every invariant holds). Per species (the map's one store):
+
+    1. ``0 <= high_water <= max_units``.
+    2. ``FIRST_UNIT_ID <= next_unit_id <= INT32_MAX``, and
+       ``next_unit_id == FIRST_UNIT_ID`` iff every species' ``high_water
+       == 0``.
+    3. ``valid in {0, 1}`` everywhere.
+    4. Every slot with ``valid == 0`` (freed or never spawned), at ANY
+       index, is all-zero in every column.
+    5. Every slot with ``valid == 1`` lies in ``[0, high_water)``, has
+       ``FIRST_UNIT_ID <= unit_id < next_unit_id``, has ``ai_state`` in
+       ``{AI_RUN, AI_EAT, AI_COMA}``, and has heading in
+       ``(-PI_Q16, PI_Q16]``.
+    6. Live ``unit_id``\\ s are unique across ALL species (the shared id
+       space).
+    7. (arc #63 P3, R16) Every slot with ``valid == 1`` stands in the grid:
+       ``pos_x in [0, _w << 16)``, ``pos_y in [0, _h << 16)`` -- the kernel
+       contract's position precondition.
+    """
+    violations = []
+    species_table = getattr(gmap, "swarm_species", None)
+    if species_table is None:
+        return violations
+
+    nid = int(gmap.swarm_next_unit_id)
+    if not (FIRST_UNIT_ID <= nid <= INT32_MAX):
+        violations.append(
+            f"next_unit_id {nid} outside "
+            f"[{FIRST_UNIT_ID}, {INT32_MAX}]")
+
+    hw_by_species = {}
+    for sp in SWARM_SPECIES:
+        hw_by_species[sp] = int(getattr(gmap, high_water_attr(sp)))
+    any_spawned = any(hw > 0 for hw in hw_by_species.values())
+    if (nid == FIRST_UNIT_ID) == any_spawned:
+        violations.append(
+            f"next_unit_id == FIRST_UNIT_ID must hold iff "
+            f"every species' high_water == 0 (nid={nid}, "
+            f"high_water={hw_by_species})")
+
+    seen_ids: dict = {}
+    for sp in SWARM_SPECIES:
+        row = species_table.row(sp)
+        hw = hw_by_species[sp]
+        if not (0 <= hw <= row.max_units):
+            violations.append(
+                f"species {sp}: high_water {hw} outside "
+                f"[0, {row.max_units}]")
+
+        valid_arr = swarm_column(gmap, sp, "valid")
+        bad_valid = ~np.isin(valid_arr, (0, 1))
+        if bad_valid.any():
+            violations.append(
+                f"species {sp}: 'valid' has "
+                f"{int(bad_valid.sum())} value(s) outside {{0,1}}")
+
+        is_valid = valid_arr == 1
+        empty_mask = ~is_valid
+        if empty_mask.any():
+            for c in ROSTER:
+                col_arr = swarm_column(gmap, sp, c.name)
+                nz = empty_mask & (col_arr != 0)
+                if nz.any():
+                    bad = int(np.flatnonzero(nz)[0])
+                    violations.append(
+                        f"species {sp}: column '{c.name}' "
+                        f"nonzero at empty slot {bad} "
+                        f"({int(nz.sum())} such slot(s))")
+
+        live_idx = np.flatnonzero(is_valid)
+        if live_idx.size:
+            out_of_hw = live_idx[live_idx >= hw]
+            if out_of_hw.size:
+                violations.append(
+                    f"species {sp}: {out_of_hw.size} live "
+                    f"slot(s) >= high_water {hw} (e.g. "
+                    f"{int(out_of_hw[0])})")
+
+            uid_arr = swarm_column(gmap, sp, "unit_id")
+            live_uid = uid_arr[live_idx].astype(np.int64)
+            bad_uid = (live_uid < FIRST_UNIT_ID) | (live_uid >= nid)
+            if bad_uid.any():
+                violations.append(
+                    f"species {sp}: {int(bad_uid.sum())} live "
+                    f"unit_id(s) outside [{FIRST_UNIT_ID}, {nid})")
+
+            ai_arr = swarm_column(gmap, sp, "ai_state")
+            bad_state = ~np.isin(ai_arr[live_idx], (AI_RUN, AI_EAT, AI_COMA))
+            if bad_state.any():
+                violations.append(
+                    f"species {sp}: {int(bad_state.sum())} live "
+                    f"slot(s) with ai_state outside "
+                    f"{{RUN, EAT, COMA}}")
+
+            heading_arr = swarm_column(gmap, sp, "heading")
+            live_heading = heading_arr[live_idx].astype(np.int64)
+            bad_heading = ((live_heading <= -swarm_fixed.PI_Q16)
+                           | (live_heading > swarm_fixed.PI_Q16))
+            if bad_heading.any():
+                violations.append(
+                    f"species {sp}: {int(bad_heading.sum())} "
+                    f"live heading(s) outside "
+                    f"(-{swarm_fixed.PI_Q16}, {swarm_fixed.PI_Q16}]")
+
+            w_bound = int(gmap._w) << swarm_fixed.FP_SHIFT
+            h_bound = int(gmap._h) << swarm_fixed.FP_SHIFT
+            for col, bound in (("pos_x", w_bound), ("pos_y", h_bound)):
+                pos = swarm_column(gmap, sp, col)[live_idx].astype(np.int64)
+                bad_pos = (pos < 0) | (pos >= bound)
+                if bad_pos.any():
+                    violations.append(
+                        f"species {sp}: {int(bad_pos.sum())} live {col} "
+                        f"position(s) outside the grid [0, {bound})")
+
+            for uid in live_uid.tolist():
+                if uid in seen_ids:
+                    violations.append(
+                        f"duplicate live unit_id {uid} "
+                        f"(species {seen_ids[uid]!r} and {sp!r})")
+                else:
+                    seen_ids[uid] = sp
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# SWARM_SECT_V1 -- the carrier + the one byte encoder (§5).
+# ---------------------------------------------------------------------------
+
+SWARM_DIGEST_KEY = "__swarm__"
+SWARM_SECT_PREAMBLE = b"SWARM_SECT_V1\n"
+
+
+def swarm_present(gmap) -> bool:
+    """"Present" (§5.1): at least one spawn ever succeeded this run.
+
+    Monotone within a run (``high_water`` never decreases): a run whose
+    larvae have all died still hashes its section."""
+    species_table = getattr(gmap, "swarm_species", None)
+    if species_table is None:
+        return False
+    for sp in SWARM_SPECIES:
+        hw_arr = getattr(gmap, high_water_attr(sp), None)
+        if hw_arr is not None and int(hw_arr) > 0:
+            return True
+    return False
+
+
+def swarm_carrier(gmap) -> dict:
+    """The ``__swarm__`` snapshot value -- copies, never views, of the ONE
+    map it is given. A batch env is its own GameMap, so "env k with seed s
+    == an N=1 run with seed s" holds by construction (R6)."""
+
+    species_table = getattr(gmap, "swarm_species", None)
+    if species_table is None:
+        # A gmap stand-in with no store allocated (a test double).
+        return {"present": False, "next_unit_id": FIRST_UNIT_ID,
+                "blocks": {}, "species_hash": ""}
+
+    next_unit_id = int(gmap.swarm_next_unit_id)
+    blocks = {}
+    for sp in SWARM_SPECIES:
+        hw = int(getattr(gmap, high_water_attr(sp)))
+        if hw <= 0:
+            continue   # omitted: keeps "adding a species never bumps
+                       # another species' digest" true when it never spawns
+        columns = {}
+        for c in ROSTER:
+            columns[c.name] = swarm_column(gmap, sp, c.name)[:hw].copy()
+        blocks[sp] = {"high_water": hw, "columns": columns}
+
+    return {
+        "present": bool(blocks),
+        "next_unit_id": next_unit_id,
+        "blocks": blocks,
+        "species_hash": species_table.hash,   # provenance, NEVER hashed
+    }
+
+
+def swarm_section_bytes(carrier: dict) -> bytes:
+    """The ONE encoder: the digest hashes exactly these bytes, the recorder
+    stores the same columns raw (T27 gates them equal, R4).
+
+    ``SWARM_SECT_V1 / next_unit_id|<nid>\\n / (species|<sp>|high_water|<hw>\\n
+    (<col>|<dtype.str>|(<hw>,)\\n<raw bytes>)*)*`` -- blocks in SWARM_SPECIES
+    order, a species with hw == 0 omitted; columns in ROSTER order.
+
+    R2: every integer token is ``str(int(x))`` -- even though the carrier
+    already holds Python ints -- so a hand-built carrier with numpy scalars
+    encodes identically (``str((np.int32(5),))`` is NumPy-version-dependent;
+    the header never goes through tuple formatting)."""
+    parts = [SWARM_SECT_PREAMBLE,
+             f"next_unit_id|{int(carrier['next_unit_id'])}\n".encode("ascii")]
+    for sp in SWARM_SPECIES:
+        block = carrier["blocks"].get(sp)
+        if block is None:
+            continue
+        hw = int(block["high_water"])
+        parts.append(f"species|{sp}|high_water|{hw}\n".encode("ascii"))
+        for c in ROSTER:
+            arr = np.ascontiguousarray(block["columns"][c.name])
+            if arr.dtype.byteorder == ">":
+                raise ValueError(
+                    f"swarm section: column '{c.name}' has a big-endian "
+                    f"dtype -- refused (cross-machine hash safety)")
+            parts.append(
+                f"{c.name}|{arr.dtype.str}|({int(hw)},)\n".encode("ascii"))
+            parts.append(arr.tobytes(order="C"))
+    return b"".join(parts)
+
+
+def require_swarm_carrier(gmap, snapshot: dict) -> None:
+    """Strictness (the A4 strict-presence idiom): a swarm-present gmap may
+    never meet a snapshot without the carrier -- a capture path could
+    silently hash swarm-free for a swarm-present run. Swarm-free gmaps
+    accept a keyless snapshot (pre-P2 snapshots are swarm-free by
+    construction)."""
+    if swarm_present(gmap) and SWARM_DIGEST_KEY not in snapshot:
+        raise KeyError(
+            f"snapshot is missing the '{SWARM_DIGEST_KEY}' presence "
+            f"carrier but the gmap has a present swarm -- a swarm-present "
+            f"run must never hash swarm-free")
+
+
+# ---------------------------------------------------------------------------
+# The one config-reload seam's target (§4.3, R3).
+# ---------------------------------------------------------------------------
+
+def reload_species(gmap, cfg=CFG) -> bool:
+    """Re-bind ``gmap.swarm_species`` from the live ``cfg`` (Ctrl+R ->
+    ``Simulation.on_config_reload()`` -> here). THE only writer of
+    ``gmap.swarm_species`` after allocation -- every other reader
+    (spawn, ``carrier()``, the recorder, P3's H2D) is pure.
+
+    1. Build the candidate with full validation; on ``ValueError`` print ONE
+       line and keep the in-force table, returning False (a rejection is
+       loud, never a silent fallback or a crash).
+    2. ``load``-class fields keep their in-force value (arrays are never
+       reallocated mid-run): print exactly one line per changed field, then
+       rebuild the candidate with the in-force value so its hash describes
+       what is actually in force.
+    3. Install ``gmap.swarm_species = candidate``.
+    4. If ``.hash`` changed, print a "replay comparability ends here" line.
+
+    Applies from the next tick (the seam runs between ticks, in input
+    handling)."""
+    try:
+        candidate = SwarmSpeciesTable.from_config(cfg)
+    except ValueError as e:
+        print(f"[swarm] RELOAD REJECTED: {e}")
+        return False
+
+    current = gmap.swarm_species
+    current_by_name = {r.species: r for r in current.rows}
+    kept_rows = []
+    for row in candidate.rows:
+        cur_row = current_by_name[row.species]
+        overrides = {}
+        for f in SPECIES_FIELDS:
+            if SPECIES_RELOAD[f.name] != "load":
+                continue
+            attr = _species_stored_attr(f)
+            new_val = getattr(row, attr)
+            old_val = getattr(cur_row, attr)
+            if new_val != old_val:
+                print(f"[swarm] {row.species}.{f.name} {old_val} -> "
+                      f"{new_val} applies at the next reset/level load")
+                overrides[attr] = old_val
+        kept_rows.append(_dc_replace(row, **overrides) if overrides else row)
+
+    candidate = SwarmSpeciesTable.from_rows(kept_rows)
+    # arc #63 P3 (§5.3): the rules, after the load-class merge and before the
+    # install -- a violation is rejected loudly and the table in force stays.
+    try:
+        errs = check_species_rules(candidate, species_context(gmap, cfg))
+    except ValueError as e:
+        errs = [str(e)]
+    if errs:
+        print(f"[swarm] RELOAD REJECTED: {errs[0]}")
+        return False
+    gmap.swarm_species = candidate
+    if candidate.hash != current.hash:
+        print(f"[swarm] species table reloaded: {current.hash[:12]} -> "
+              f"{candidate.hash[:12]} (replay comparability ends here)")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Ingress validation helpers for the facade (door 2 of the ingress rule).
+# ---------------------------------------------------------------------------
+
+def _ingress_int64(name: str, value):
+    """``value`` -> an int64 ndarray (scalar 0-D or 1-D), or TypeError /
+    ValueError (§2.2 validation step 2). Raw Q16 only: bool, float, uint64,
+    object and str inputs raise TypeError; an over-large Python int (which
+    ``np.asarray`` would otherwise silently widen to an object array) raises
+    TypeError too."""
+    arr = np.asarray(value)
+    if arr.dtype == np.bool_:
+        raise TypeError(f"spawn: {name} must not be bool")
+    if arr.dtype.kind == "f":
+        raise TypeError(
+            f"spawn: {name} must be an integer dtype, not float "
+            f"({arr.dtype}) -- raw Q16 only, convert through swarm_fixed")
+    if arr.dtype.kind in ("O", "U", "S"):
+        raise TypeError(
+            f"spawn: {name} must be a signed int (any width) or unsigned "
+            f"up to uint32, got {arr.dtype}")
+    if arr.dtype.kind not in ("i", "u"):
+        raise TypeError(
+            f"spawn: {name} must be a signed int (any width) or unsigned "
+            f"up to uint32, got {arr.dtype}")
+    if arr.dtype.kind == "u" and arr.dtype.itemsize > 4:
+        raise TypeError(
+            f"spawn: {name} unsigned dtype {arr.dtype} wider than uint32 "
+            f"is not accepted")
+    if arr.ndim > 1:
+        raise ValueError(
+            f"spawn: {name} must be scalar or 1-D, got {arr.ndim}-D")
+    try:
+        return arr.astype(np.int64)
+    except OverflowError as e:
+        raise TypeError(
+            f"spawn: {name} value does not fit int64 -- {e}") from e
+
+
+def _spawn_batch_len(named_arrays: dict) -> int:
+    """The common 1-D broadcast length k across the spawn inputs (§2.2): all
+    1-D inputs must share one length; an all-scalar call is k == 1."""
+    lengths = {a.shape[0] for a in named_arrays.values() if a.ndim == 1}
+    if len(lengths) > 1:
+        raise ValueError(
+            f"spawn: inconsistent batch lengths among "
+            f"{sorted(named_arrays)}: {sorted(lengths)}")
+    return lengths.pop() if lengths else 1
+
+
+# ---------------------------------------------------------------------------
+# The facade (§3) -- chapter §9b's "the only class".
+# ---------------------------------------------------------------------------
+
+class SwarmUnits:
+    """The swarm-unit lifecycle facade. Holds no arrays -- GameMap stores
+    them (fork 2a); this facade reads and writes ``gmap`` in place. THE only
+    Python-side writer of the store (P3's kernel and its CPU twin are the
+    sim-side writers). Constructed fresh on every ``Simulation`` reset."""
+
+    def __init__(self, gmap):
+        self.gmap = gmap
+
+    def spawn(self, species: str, pos_x_q, pos_y_q, heading_q, *,
+              faction=FACTION_NONE):
+        """The k-th request takes the k-th lowest free slot (§2.2).
+
+        Draws NO randomness -- callers own randomness and pass explicit Q16
+        values. Returns the slots written, an int64 array in request order.
+        Validation runs BEFORE any write (atomic refusal): overflow raises
+        :class:`SwarmFull`, never a partial fill / capacity clamp (R10).
+        """
+        gmap = self.gmap
+
+        # 1. species.
+        if species not in SWARM_SPECIES:
+            raise ValueError(
+                f"unknown swarm species {species!r} (known: {SWARM_SPECIES})")
+
+        # 2. dtype/shape ingress -> int64 arrays, then k = the common length.
+        pos_x64 = _ingress_int64("pos_x_q", pos_x_q)
+        pos_y64 = _ingress_int64("pos_y_q", pos_y_q)
+        heading64 = _ingress_int64("heading_q", heading_q)
+        faction64 = _ingress_int64("faction", faction)
+        named = {"pos_x_q": pos_x64, "pos_y_q": pos_y64,
+                 "heading_q": heading64, "faction": faction64}
+        k = _spawn_batch_len(named)
+        if k == 0:
+            return np.zeros((0,), dtype=np.int64)
+
+        pos_x64 = np.broadcast_to(pos_x64, (k,))
+        pos_y64 = np.broadcast_to(pos_y64, (k,))
+        heading64 = np.broadcast_to(heading64, (k,))
+        faction64 = np.broadcast_to(faction64, (k,))
+
+        # 3. range checks, in int64 -- ALL before any write.
+        w_bound = int(gmap._w) << swarm_fixed.FP_SHIFT
+        h_bound = int(gmap._h) << swarm_fixed.FP_SHIFT
+        if not (np.all(pos_x64 >= 0) and np.all(pos_x64 < w_bound)):
+            raise ValueError(
+                f"spawn: pos_x_q outside grid bounds [0, {w_bound})")
+        if not (np.all(pos_y64 >= 0) and np.all(pos_y64 < h_bound)):
+            raise ValueError(
+                f"spawn: pos_y_q outside grid bounds [0, {h_bound})")
+        if not (np.all(heading64 >= INT32_MIN) and np.all(heading64 <= INT32_MAX)):
+            raise ValueError("spawn: heading_q outside the int32 range")
+        if not (np.all(faction64 >= INT32_MIN) and np.all(faction64 <= INT32_MAX)):
+            raise ValueError("spawn: faction outside the int32 range")
+
+        next_unit_id_arr = gmap.swarm_next_unit_id
+        nid0 = int(next_unit_id_arr)
+        if nid0 + k > INT32_MAX:
+            raise ValueError(
+                f"spawn: next_unit_id {nid0} + {k} would exceed INT32_MAX "
+                f"({INT32_MAX})")
+
+        # 4. capacity -- atomic refusal, never a partial fill.
+        valid_col = swarm_column(gmap, species, "valid")
+        free_slots = np.flatnonzero(valid_col == 0)
+        if k > free_slots.size:
+            raise SwarmFull(
+                f"spawn: {k} requested but only {free_slots.size} free "
+                f"slot(s) in species {species!r}")
+        slots = free_slots[:k]   # already ascending (flatnonzero order)
+
+        # --- writes: every check above passed, so nothing below may fail.
+        ids = nid0 + np.arange(k, dtype=np.int64)
+        row = gmap.swarm_species.row(species)
+        wrapped_heading = swarm_fixed.wrap_heading_q16(heading64)
+
+        swarm_column(gmap, species, "pos_x")[slots] = pos_x64
+        swarm_column(gmap, species, "pos_y")[slots] = pos_y64
+        swarm_column(gmap, species, "heading")[slots] = wrapped_heading
+        swarm_column(gmap, species, "hp")[slots] = row.hp_max_q
+        swarm_column(gmap, species, "ai_state")[slots] = AI_RUN
+        swarm_column(gmap, species, "dist_walked")[slots] = 0
+        swarm_column(gmap, species, "unit_id")[slots] = ids
+        swarm_column(gmap, species, "faction")[slots] = faction64
+        swarm_column(gmap, species, "valid")[slots] = 1
+
+        next_unit_id_arr[...] = nid0 + k   # in place (the residency guard)
+        hw_arr = getattr(gmap, high_water_attr(species))
+        hw_arr[...] = max(int(hw_arr), int(slots.max()) + 1)
+        gmap.swarm_host_dirty[species] = True
+
+        return slots.astype(np.int64)
+
+    def reclaim(self, species: str, slots):
+        """Write the empty-slot form (every column zero) at each slot
+        (§2.5). ``high_water``/``next_unit_id`` are unchanged. Validation
+        (atomic, before any write): ``slots`` must be an integer array-like
+        (bool/float raise ``TypeError``); every slot must lie in
+        ``[0, high_water)``, be unique, and have ``valid == 1`` (reclaiming
+        an empty slot is a caller bug, ``ValueError``)."""
+        gmap = self.gmap
+        if species not in SWARM_SPECIES:
+            raise ValueError(
+                f"unknown swarm species {species!r} (known: {SWARM_SPECIES})")
+
+        arr = np.asarray(slots)
+        if arr.dtype == np.bool_ or arr.dtype.kind not in ("i", "u"):
+            raise TypeError(
+                f"reclaim: slots must be an integer array-like, got dtype "
+                f"{arr.dtype}")
+        slots64 = arr.astype(np.int64).reshape(-1)
+        if slots64.size == 0:
+            return
+
+        hw = int(getattr(gmap, high_water_attr(species)))
+        if np.unique(slots64).size != slots64.size:
+            raise ValueError(
+                f"reclaim: duplicate slot indices {slots64.tolist()}")
+        if np.any((slots64 < 0) | (slots64 >= hw)):
+            raise ValueError(
+                f"reclaim: slot index outside [0, high_water={hw})")
+        valid_col = swarm_column(gmap, species, "valid")
+        empty = valid_col[slots64] == 0
+        if empty.any():
+            raise ValueError(
+                f"reclaim: slot(s) {slots64[empty].tolist()} are already "
+                f"empty (valid == 0) -- reclaiming an empty slot is a "
+                f"caller bug")
+
+        for c in ROSTER:
+            swarm_column(gmap, species, c.name)[slots64] = 0
+        gmap.swarm_host_dirty[species] = True
+
+    def live_count(self, species: str) -> int:
+        valid = swarm_column(self.gmap, species, "valid")
+        return int(valid.sum())
+
+    def high_water(self, species: str) -> int:
+        return int(getattr(self.gmap, high_water_attr(species)))
+
+    def present(self) -> bool:
+        return swarm_present(self.gmap)
+
+    def column(self, species: str, col: str):
+        return swarm_column(self.gmap, species, col)
+
+    @property
+    def species(self) -> SwarmSpeciesTable:
+        """Read-only -- NEVER reloads. The reload seam
+        (:func:`reload_species`) is the one writer of ``gmap.swarm_species``
+        after allocation."""
+        return self.gmap.swarm_species
+
+    def carrier(self) -> dict:
+        return swarm_carrier(self.gmap)
+
+
+# ---------------------------------------------------------------------------
+# arc #63 P3 (docs/swarm_P3_impl.md §4.3, v4.4): THE INGRESS GATHER for the
+# swarm step -- arrays, pointers and the env words, in env order. It
+# transfers nothing, launches nothing and writes nothing; its only branch on
+# world state is whether some env holds a swarm (which decides only whether
+# the launch words must be valid). The orchestration is C++.
+# ---------------------------------------------------------------------------
+
+class EnginePack(NamedTuple):
+    """One species' host-path launch inputs (``PhysicsEngine.step_swarm``):
+    the store's columns as ``(N, max_units)`` VIEWS of the map's arrays (the
+    law writes them in place), ``high_water`` ``(N,)`` int32 (THE one source
+    of the extent, D16), the kernel's table rows ``(N, T_sp)`` int64."""
+    species: str
+    columns: tuple
+    high_water: np.ndarray
+    tables: np.ndarray
+
+
+class ResidentPack(NamedTuple):
+    """One species' resident launch inputs (``step_tail_resident(swarm=)``):
+    the device addresses of the batch's ``(N, max_units)`` column buffers
+    (env 0's address is the base, env e at ``+ e * max_units``), the host
+    ``high_water`` and the table rows."""
+    species: str
+    ptrs: tuple
+    max_units: int
+    high_water: np.ndarray
+    tables: np.ndarray
+
+
+def _env_words(draws_list) -> np.ndarray:
+    env = np.zeros((len(draws_list), ENV_WORDS), dtype=np.uint32)
+    for e, d in enumerate(draws_list):
+        if d is None:
+            raise ValueError(
+                f"swarm.engine_args: env {e} holds a swarm but its runner has no "
+                f"bound draws (PhysicsRunner.bind_draws(sim.draws) at reset)")
+        env[e, ENV_TICK] = int(d.tick) & _M32
+        env[e, ENV_SEED_LO] = int(d.key[0]) & _M32
+        env[e, ENV_SEED_HI] = int(d.key[1]) & _M32
+    return env
+
+
+def engine_args(gmaps, draws_list, sim_time, *, resident: bool) -> dict:
+    """The keyword arguments of ONE swarm step over the batch ``gmaps`` (env
+    order; one map on the host path).
+
+    host (``resident=False``): ``{packs, temperature, solid, env,
+    host_dirty}`` for ``PhysicsEngine.step_swarm`` -- the one map's columns
+    as ``(1, max_units)`` views, its ``temperature`` / ``solid`` as ``(1, h,
+    w)`` views. resident: ``{packs, env}`` for ``step_tail_resident(swarm=)``.
+
+    For every PRESENT species (some env's ``high_water > 0``) the species
+    rules run on the exact launch ints (``RuntimeError`` naming the rule:
+    reachable only if the tick length or tile size changed after load) and
+    the table rows are packed with their proved ranges (``ValueError``
+    naming species, row and value). A present swarm whose runner has no
+    bound draws raises ``ValueError``. A dormant species packs zero rows."""
+    from simulation import swarm_tables     # swarm_tables imports this module
+    gmaps = list(gmaps)
+    draws_list = list(draws_list)
+    n = len(gmaps)
+    if n < 1 or len(draws_list) != n:
+        raise ValueError("swarm.engine_args: one draws handle per map, at least one map")
+    if not resident and n != 1:
+        raise ValueError("swarm.engine_args: the host path steps ONE map")
+    hws = {sp: np.array([int(getattr(g, high_water_attr(sp))) for g in gmaps],
+                        dtype=np.int32) for sp in SWARM_SPECIES}
+    present = {sp: bool((hw > 0).any()) for sp, hw in hws.items()}
+    env = (_env_words(draws_list) if any(present.values())
+           else np.zeros((n, ENV_WORDS), dtype=np.uint32))
+    dev = gmaps[0].device_ptrs() if resident else None
+    packs = []
+    for sp in SWARM_SPECIES:
+        if present[sp]:
+            for g in gmaps:
+                errs = rule_violations(sp, g.swarm_species.row(sp),
+                                       launch_context(g, sim_time))
+                if errs:
+                    raise RuntimeError("; ".join(errs))
+            tables = swarm_tables.values_batch(sp, gmaps, sim_time)
+        else:
+            tables = np.zeros((n, swarm_tables.width(sp)), dtype=np.int64)
+        if resident:
+            packs.append(ResidentPack(
+                species=sp,
+                ptrs=tuple(int(dev[store_attr(sp, c.name)]) for c in ROSTER),
+                max_units=int(swarm_column(gmaps[0], sp, "valid").shape[0]),
+                high_water=hws[sp], tables=tables))
+        else:
+            g = gmaps[0]
+            packs.append(EnginePack(
+                species=sp,
+                columns=tuple(swarm_column(g, sp, c.name).reshape(1, -1)
+                              for c in ROSTER),
+                high_water=hws[sp], tables=tables))
+    if resident:
+        return {"packs": packs, "env": env, "bite": int(dev[BITE_PLANE_ATTR]),
+                "count": int(dev[COUNT_PLANE_ATTR])}
+    g = gmaps[0]
+    bite = bite_plane(g)
+    count = count_plane(g)
+    return {"packs": packs,
+            "temperature": g.temperature.reshape((1,) + g.temperature.shape),
+            "solid": g.solid.reshape((1,) + g.solid.shape),
+            "env": env,
+            "host_dirty": g.swarm_host_dirty,
+            "bite": bite.reshape((1,) + bite.shape),
+            "count": count.reshape((1,) + count.shape)}
+
+
+def death_events(rows) -> list:
+    """One :class:`events.SwarmUnitDiedEvent` per compacted death row, in row
+    order ((species, env, slot) order, as the engine compacted them)."""
+    from simulation.events import SwarmUnitDiedEvent
+    if rows is None or len(rows) == 0:
+        return []
+    out = []
+    for r in np.asarray(rows):
+        out.append(SwarmUnitDiedEvent(
+            SWARM_SPECIES[int(r[ROW_SPECIES])], int(r[ROW_UNIT_ID]),
+            int(r[ROW_POS_X]), int(r[ROW_POS_Y]), int(r[ROW_HEADING])))
+    return out
+
+
+def empty_death_rows() -> np.ndarray:
+    """The rows of a tick with no death: ``(0, ROW_WORDS)`` int32."""
+    return np.zeros((0, ROW_WORDS), dtype=np.int32)
+
+
+def resident_entry_names(gmap) -> tuple:
+    """The swarm names the resident ENTRY upload carries this tick, and the
+    species they belong to: every species whose host store was written since
+    the device last saw it (``swarm_host_dirty``: a facade spawn / reclaim,
+    or a host-path tick) -- its ROSTER columns. ``high_water`` and
+    ``next_unit_id`` are host-authoritative (D16) and no kernel reads their
+    device copies (V6: the extent rides the launch block), so they are
+    neither uploaded nor downloaded. The caller clears the flags it consumed
+    after the upload."""
+    dirty = tuple(sp for sp in SWARM_SPECIES if gmap.swarm_host_dirty.get(sp))
+    if not dirty:
+        return (), ()
+    return tuple(store_attr(sp, c.name) for sp in dirty for c in ROSTER), dirty
+
+
+def resident_exit_names(gmap) -> tuple:
+    """The swarm names the resident EXIT download carries: the columns of
+    every species present in this map (the digest and the recorder read the
+    mirror) -- never ``high_water`` / ``next_unit_id`` (host-authoritative)
+    -- and, while any species is present, the bite and count planes (arc #63
+    P5a / P5b: slot 9c3 reads them on the host the same tick)."""
+    cols = tuple(store_attr(sp, c.name) for sp in SWARM_SPECIES
+                 if int(getattr(gmap, high_water_attr(sp))) > 0 for c in ROSTER)
+    return cols + (SWARM_PLANE_NAMES if cols else ())

@@ -15,7 +15,7 @@
 
 namespace unit_events {
 
-constexpr const char* UNIT_EVENTS_FINGERPRINT = "8d0e0da8192844a527ffadd85c329735824ae3a506079278b148a1d9ef198f67";
+constexpr const char* UNIT_EVENTS_FINGERPRINT = "05577e11addbe702db4447d1412b6076da22b23033a86baf2650d5c268f50962";
 constexpr int UNIT_EVENT_F = 7;
 constexpr int UNIT_EVENT_ROW_CAP = 17;
 
@@ -43,7 +43,8 @@ constexpr int64_t UNIT_CAUSE_BURNING = 6;
 constexpr int64_t UNIT_CAUSE_POISONED = 7;
 constexpr int64_t UNIT_CAUSE_SUFFOCATING = 8;
 constexpr int64_t UNIT_CAUSE_REGEN = 9;
-constexpr int UNIT_N_CAUSES = 10;
+constexpr int64_t UNIT_CAUSE_LARVA_BITE = 10;
+constexpr int UNIT_N_CAUSES = 11;
 
 // The damage types (damage.py order).
 constexpr int UNIT_DTYPE_KINETIC = 0;

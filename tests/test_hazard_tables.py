@@ -129,6 +129,7 @@ def _drivers():
                 self.s.tick()
     return [("hazard scene", HazardScene(0, bp=bp)), ("airlock_demo", Plain("airlock_demo")),
             ("playground", Plain("playground")), ("fire_smoke_studio", Plain("fire_smoke_studio")),
+            ("larva_studio", Plain("larva_studio")),       # arc #63 P4: broods
             ("ship_demo", Match("ship_demo"))]
 
 
@@ -136,7 +137,8 @@ def test_the_export_from_the_tables_is_the_serializers_bytes():
     """Property: EntityExport composes, from the table records alone (and the
     load-constant heads), the very ENTITY_SECT_V1 and SIGNAL_SECT_V1 bytes
     the host serializer hashes, every tick, on the hazard scene, airlock_demo,
-    playground, fire_smoke_studio and ship_demo. Breaks if an entity class's
+    playground, fire_smoke_studio, larva_studio (two swarm broods, a heat
+    source) and ship_demo. Breaks if an entity class's
     rows, its order, a column or the signal section's alive exclusion
     differs from entities/serialize."""
     from simulation.entities.serialize import serialize_entity_state, serialize_signal_state
