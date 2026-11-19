@@ -366,3 +366,19 @@ the peak of a 1 000-decision full-width step).
 5. The memory dealer's pass ends with lanes running dry: steps with fewer
    decisions at a pass's end (120 steps for 89 103 decisions over 60
    files; over all 480 training files the tail is a small share).
+
+### Gates at the final tree
+
+- `python -m pytest agents/tests -q` in full on the processor
+  (`CUDA_VISIBLE_DEVICES=-1`, BLAS threads 1): 192 passed, 9 skipped, 1
+  failed in 2 h 09 min. The failure was main's export test pinning the
+  export's exact key set (`test_the_soldier_export_loads_into_its_layout_and_is_refused_else`):
+  the export now also names `started_from`, so the test states its property
+  instead (the driver's fields present, nothing of the learner, `None` for a
+  reward run's export) and passes. The skips: the 8 recall tests (by name)
+  and `test_run.py:256` ("needs the processor build of the game's module":
+  this worktree has no compiled module). The 1 000-decision test ran and
+  passed inside the suite.
+- `tests/test_claude_rules_paths.py` and `tests/test_game_never_imports_agents.py`:
+  72 passed, run from the worktree itself (both are pure Python and the
+  game's `tests/conftest.py` imports without the build).

@@ -301,8 +301,13 @@ def test_the_soldier_export_loads_into_its_layout_and_is_refused_else(
     path = tmp_path / "soldier.pt"
     SV.export_soldier(path, tr.learner.soldier, tr.env.layout)
     d = SV.load(path)
-    assert set(d) == {"format", "kind", "soldier", "soldier_record", "net",
-                      "specs"}
+    # what a driver needs, and nothing of the learner (2e added what the
+    # soldier was started from; an export of a reward run says None)
+    assert {"format", "kind", "soldier", "soldier_record", "net",
+            "specs"} <= set(d)
+    assert not set(d) & {"value", "learner", "collector", "counters",
+                         "settings", "value_record", "manifest"}
+    assert d["started_from"] is None
     sizes = tr.env.sizes
     other = SoldierNet(reduced(True), sizes)
     specs = SV.load_soldier(path, other)
