@@ -166,7 +166,14 @@ box matches in the same files did not move.
   `tests/cuda_unit_verbs_check.py` (their `_kill` helpers killed with 1e6 /
   1e7 HP, destroying the bodies, so the zombies they convert never rose and
   the scenes went vacuous: "4a latch: a zombie", "2': a round of a converted
-  shooter"): now exactly the hit points.
+  shooter"): now one point left and a one-point packet (the exposure scale
+  can magnify a whole-hp packet past the body); the same for the converting
+  kills of `tests/test_action_spec_v1.py::test_an_invalid_row_issues_nothing`,
+  `tests/test_obs_spec_v1.py` (`_kill(..., by_zombie=True)`: families c and
+  e, the full view's dead row), `tests/test_orders.py::test_death_and_conversion_clear_the_order`
+  and `tests/test_team_picture.py` (`_kill_in_next_step(..., by_zombie=True)`):
+  each killed a unit a zombie "bit" with 10 000 HP or 1e9 and then asserted it
+  rose -- the fixture, not the property.
 
 ## Breaks (each applied alone, the gate run, the file restored)
 
