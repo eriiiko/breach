@@ -119,4 +119,61 @@ class Settings:
         return self.step_size * max(0.0, left)
 
 
-__all__ = ["RUNG2_WEIGHTS", "Settings"]
+def _trainer_default(name: str):
+    """A :class:`Settings` field's default: the copy starts from the
+    trainer's numbers (note 2e, 5), never a second typed copy of them."""
+    from dataclasses import fields
+    return next(f.default for f in fields(Settings) if f.name == name)
+
+
+@dataclass(frozen=True)
+class CopySettings:
+    """The numbers of one copying run (rung 2 note 2e, section 5; design
+    3.2). On disk: the training file's ``[copy]`` table
+    (:func:`agents.training_file.parse_copy`)."""
+    #: Planned passes over the training records; the step size falls in a
+    #: straight line to zero over them. The best pass's weights are kept.
+    passes: int = 10
+    #: Decisions per step (with the memory on: lanes x stretch).
+    batch: int = _trainer_default("piece")
+    #: Decisions per lump (gradients added up to the step; the 8 GB card).
+    lump: int = _trainer_default("lump")
+    step_size: float = _trainer_default("step_size")
+    adam_eps: float = _trainer_default("adam_eps")
+    max_grad_norm: float = _trainer_default("max_grad_norm")
+    #: The feet's floor (design 3.2): the bot's choice is trained toward
+    #: ``1 - feet_floor``, the OTHER LEGAL feet options share
+    #: ``feet_floor``. The other heads have none.
+    feet_floor: float = 0.02
+    #: The memory's stretch (design 4.5; the trainer's).
+    stretch: int = _trainer_default("stretch")
+    #: The loader: processes, and the shuffle buffer in matches.
+    loader_workers: int = 4
+    buffer_matches: int = 30
+    #: The seed of the loader's order and of the network's first weights.
+    seed: int = 0
+    #: The previous-choice inputs blanked at the network's input (design
+    #: 3.3, "does it lean on its own past?"): in training and measuring.
+    blank_prev: bool = False
+
+    def __post_init__(self):
+        if int(self.passes) < 1:
+            raise ValueError(f"copy settings: passes {self.passes} < 1")
+        if self.lump < 1 or self.batch < self.lump:
+            raise ValueError(f"copy settings: a batch ({self.batch}) is "
+                             f"worked through in lumps ({self.lump})")
+        if not 0.0 <= float(self.feet_floor) < 1.0:
+            raise ValueError(f"copy settings: feet_floor {self.feet_floor} "
+                             f"outside [0, 1)")
+        if int(self.stretch) < 1 or int(self.loader_workers) < 1 \
+                or int(self.buffer_matches) < 1:
+            raise ValueError("copy settings: stretch, loader_workers and "
+                             "buffer_matches are at least 1")
+
+    def step_size_at(self, step: int, steps: int) -> float:
+        """Adam's step size at ``step`` of ``steps`` planned: a straight line
+        to zero."""
+        return self.step_size * max(0.0, 1.0 - float(step) / float(steps))
+
+
+__all__ = ["RUNG2_WEIGHTS", "Settings", "CopySettings"]

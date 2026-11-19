@@ -61,6 +61,17 @@ def reduced(memory: bool = True) -> NetSpec:
                    head_hidden=32, value_hidden=64)
 
 
+def double(memory: bool = True) -> NetSpec:
+    """The same code at twice the full width (every width doubled; the
+    copy's measure "what does the observation not explain?", design 3.3)."""
+    f = v1(memory)
+    return replace(f, width=2 * f.width, kind_dim=2 * f.kind_dim,
+                   vec_hidden=2 * f.vec_hidden, attn_ff=2 * f.attn_ff,
+                   conv=tuple(2 * c for c in f.conv), join=2 * f.join,
+                   head_hidden=2 * f.head_hidden,
+                   value_hidden=2 * f.value_hidden)
+
+
 class SpecMismatch(ValueError):
     """A network was offered to a layout it was not made for."""
 
@@ -110,5 +121,6 @@ def check_fits(have: SpecRecord, want: SpecRecord) -> None:
         raise SpecMismatch(f"network does not fit this layout ({detail})")
 
 
-__all__ = ["NETWORK_SPEC", "NetSpec", "v1", "reduced", "SpecMismatch",
+__all__ = ["NETWORK_SPEC", "NetSpec", "v1", "reduced", "double",
+           "SpecMismatch",
            "SpecRecord", "check_fits"]
