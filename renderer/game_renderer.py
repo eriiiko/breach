@@ -50,6 +50,7 @@ from .overlays import (
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
 from . import swarm_dots
+from . import larva_bodies
 from .unit_model_renderer import UnitModelRenderer
 from .water import WaterPass
 from .world_composite import WorldComposite
@@ -443,6 +444,12 @@ class GameRenderer:
         self._swarm_sprites = None
         self._swarm_flecks = swarm_dots.DeathFlecks()
         self._swarm_dot_draw = None
+        # arc #63: the larvae's bodies ([render.larvae], read every frame):
+        # the packed instances and the dead bodies (render state), the GL
+        # draw (built on its first larva).
+        self.larvae = larva_bodies.LarvaBodies()
+        self._larva_draw = None
+        self._larva_tile_m = 1.0
 
         # Toggles
         self.show_grid = False
@@ -629,6 +636,8 @@ class GameRenderer:
         # arc #63 P4: the swarm dot view's sprites from the store's host
         # mirror (render-only; the sim never reads them).
         self._upload_swarm_dots(gmap, sim_tick)
+        # arc #63: the larvae's bodies, from the same store read.
+        self._upload_larva_bodies(gmap, sim_tick)
 
         # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
         # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
@@ -1068,10 +1077,13 @@ class GameRenderer:
                 world_px_w=self.world.world_px_w,
                 world_px_h=self.world.world_px_h,
                 anim_t=time.perf_counter() - self._anim_t0)
-        # 2b. arc #63 P4 -- THE swarm dot view ([debug] swarm_dots): the
-        # swarm units and their fading death flecks, ON the floor (after the
-        # water) and under the smoke, unlit and premultiplied. No unit and no
-        # fleck, no draw.
+        # 2b. arc #63 -- THE larvae's bodies ([render.larvae]): every larva
+        # (and the limp, fading dead) in ONE instanced draw, ON the floor
+        # (after the water) and under the smoke, lit by the light field,
+        # premultiplied. Then the swarm dot view ([debug] swarm_dots, a
+        # debug picture over them): the swarm units and their fading death
+        # flecks, unlit. No unit, no draw.
+        self._draw_larva_bodies()
         self._draw_swarm_dots()
         # 3. B2 physical gas medium: ONE premult-over layer (C = inscatter +
         # T·bg), linear HDR inscatter. Occlusion (alpha) and inscatter (RGB)
@@ -1581,6 +1593,36 @@ class GameRenderer:
         return self._swarm_dot_draw.draw(
             s, world_px_w=self.world.world_px_w,
             world_px_h=self.world.world_px_h,
+            px_per_tile=self.world.world_px_per_tile)
+
+    def _upload_larva_bodies(self, gmap, sim_tick: int) -> None:
+        """arc #63: read ``[render.larvae]`` (the refusing door, every
+        frame) and pack this frame's larva instances -- the dead bodies,
+        then every living larva of every species in the view, from the
+        store's host mirror -- in numpy, one pass. Off: no store read,
+        nothing packed."""
+        lb = self.larvae
+        lb.refresh_settings(CFG)
+        lb.upload(gmap, int(sim_tick) * self._sim_dt,
+                  self.world.world_px_per_tile,
+                  view=self._relief_view_rect())
+        self._larva_tile_m = float(gmap.tile_size_m)
+
+    def _draw_larva_bodies(self) -> int:
+        """arc #63: THE larvae's ONE instanced draw. Returns the draw calls
+        issued (0: off, or no larva in view)."""
+        lb = self.larvae
+        inst = lb.instances
+        if not lb.enabled or inst is None or inst.shape[1] == 0:
+            if self._larva_draw is not None:
+                self._larva_draw.draws_last_frame = 0
+                self._larva_draw.instances_last_frame = 0
+            return 0
+        if self._larva_draw is None:
+            self._larva_draw = larva_bodies.LarvaBodyDraw(inst.shape[1])
+        return self._larva_draw.draw(
+            inst, lb.settings, light=self._light_field_ctx(),
+            tile_size_m=self._larva_tile_m,
             px_per_tile=self.world.world_px_per_tile)
 
     def _draw_tracers(self, view, marines: Sequence = (),
@@ -2144,6 +2186,13 @@ class GameRenderer:
             self._swarm_flecks.add(
                 swarm_fixed.dequantize(np.array([ev.pos_x_q for ev in died])),
                 swarm_fixed.dequantize(np.array([ev.pos_y_q for ev in died])),
+                tick0 * self._sim_dt)
+            # arc #63: ... and a limp, fading body (the larvae's view)
+            self.larvae.on_deaths(
+                swarm_fixed.dequantize(np.array([ev.pos_x_q for ev in died])),
+                swarm_fixed.dequantize(np.array([ev.pos_y_q for ev in died])),
+                swarm_fixed.dequantize(np.array([ev.heading_q for ev in died])),
+                np.array([ev.unit_id for ev in died], dtype=np.int64),
                 tick0 * self._sim_dt)
         # #162/#163: the pose layer's per-unit event queues (fire, flinch; a
         # no-op with [render.pose] off).
@@ -2750,6 +2799,9 @@ class GameRenderer:
         self.ember_draw.unload()
         self.muzzle_flame_draw.unload()
         self.tracer_draw.unload()
+        if self._larva_draw is not None:
+            self._larva_draw.unload()
+            self._larva_draw = None
         self.shimmer.unload()
         self.shockwave.unload()
         self.temperature_overlay.unload()

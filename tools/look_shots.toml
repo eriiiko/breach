@@ -774,3 +774,29 @@ level = "flashbang_studio"
 frames = 60
 light_gain = "game"
 note = "G4 P5, tick +12 (~73 %): the flashbang still lights both rooms; the soot column's shadow is the comparison"
+
+# --- arc #63: the larvae's bodies (renderer/larva_bodies.py) -------------
+[[shot]]
+name = "larva_nursery"
+level = "larva_studio"
+frames = 48
+center = [13.0, 17.5]
+zoom = 64.0
+light_gain = "game"
+note = "arc #63 larva bodies: the west brood two seconds in, under its lamp at (13.5, 12.5) and in the dark below it -- pale segmented grubs, darker heads, crawlers wriggling, the comatose none"
+
+[[shot]]
+name = "larva_closeup"
+level = "larva_studio"
+frames = 48
+center = [13.0, 13.0]
+zoom = 200.0
+light_gain = "game"
+note = "arc #63 larva bodies: a handful of larvae under the lamp at 200 px a tile -- the segments, the gloss, the head end"
+
+[[shot]]
+name = "larva_studio_wide"
+level = "larva_studio"
+frames = 48
+light_gain = "game"
+note = "arc #63 larva bodies: the whole studio fitted -- the two broods read as a crawling mass at game zoom"

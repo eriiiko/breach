@@ -88,7 +88,7 @@ strategy. Every rule below serves that.
 | `bots.md` | bot layers, position features, door bots, tournament |
 | `render-core.md` | tone-map, look shots, wall seam, lighting, light curve, frame lights, inspector, ping-pong, BLAS, UI, blackbody |
 | `render-effects.md` | gas medium, smoke relief + cast, tamed wind, FireVFX, particles, distortion, shock, muzzle flame, tracers, fire light |
-| `render-units.md` | 3D units, held props, pose layer, static props |
+| `render-units.md` | 3D units, held props, pose layer, static props, larva bodies |
 | `audio.md` | sound layer, sound samples |
 | `levels.md` | level data layer, generators, recipes, archetype grammar, layout stage, LevelSpec, brood placement |
 | `determinism-gates.md` | tests, field digest, test conventions, E2E driver, benches |
@@ -245,6 +245,7 @@ amends the rule file, never this line's length.
 | Lit-3D seam | `renderer/lit3d.py` | THE shared light-field GLSL, `LightFieldCtx` and top-down `Camera3D`; a second copy is the bug |
 | Prop generator | `renderer/propgen.py` | THE procedural prop / vegetation geometry; new flora = a generator fn + `PALETTES` row |
 | Static props | `renderer/static_props.py` | The ONLY path drawing placed 3D props; no prop render state on a sim entity |
+| Larva bodies | `renderer/larva_bodies.py` + `shaders/larva_body.*` + `propgen.generate_larva` | THE swarm larvae's picture: one grub mesh, every larva an instance in ONE draw, lit through the lit-3D seam; never a second swarm body renderer |
 | UI split | `ui/model.py` (pure) / `ui/draw.py` (dumb) | Decisions in model as data; draw decides nothing |
 | Sound layer | `audio/model.py` / `audio/device.py` / `audio/game.py` + `[sound]` | THE only audio path, presentation only; a sound is a cue row + a binding row; loops play from state |
 | Sound samples | `tools/sound_audition.py --export` → `assets/sounds/` | Every sample is exported from a generated clip and sourced in `assets/sounds/SOURCES.md`; never hand-cut |

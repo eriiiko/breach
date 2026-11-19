@@ -82,7 +82,7 @@ two sides meet only through FIELDS.
 - The key is (seed, brood ordinal, k), draw `4 k + j`: a brood's scatter depends on nothing else in the level. Every check (no free tile, unknown species, `SwarmFull` over the broods' total) runs before the first write; the level lint (`tools/level_airtight.py`) prints the same `brood_problems` list.
 
 ## Swarm dot view
-- Render-only: reads the store's host mirror and `SwarmUnitDiedEvent`, never the freed slot; nothing under `src/` reads it or `[debug] swarm_dots` (`tests/test_swarm_dots.py`). Switched by the config row, never a key.
+- Render-only: reads the store's host mirror and `SwarmUnitDiedEvent`, never the freed slot; nothing under `src/` reads it or `[debug] swarm_dots` (`tests/test_swarm_dots.py`). Switched by the config row, never a key. A DEBUG picture since the larvae have bodies (`renderer/larva_bodies.py`, `.claude/rules/render-units.md`): off by default, drawn over the bodies when on.
 - Linear HDR, unlit, premultiplied, drawn once after the water and before the floor smoke; its vertex data is numpy in one pass (no Python loop per unit in the frame path). Its flecks are render state (capped, sim-clock fade), never a decal layer: corpses are the world decal layer's when it exists (engine/17 section 9).
 
 ## Bite-dose plane

@@ -8,9 +8,11 @@ paths:
   - "renderer/pose_*.py"
   - "renderer/static_props.py"
   - "renderer/propgen.py"
+  - "renderer/larva_bodies.py"
+  - "shaders/larva_body.*"
 ---
 
-# Render units: 3D units, what they hold, their pose; props
+# Render units: 3D units, what they hold, their pose; props; the larvae's bodies
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
@@ -41,3 +43,10 @@ and who must use it; this file holds the constraints the code cannot say.
 ## Static props
 - No prop render state ever lands on a sim entity (digest!). Sway = tamed wind × the tile's gas DENSITY (momentum flux, not velocity: Erik's vented-room ruling); calm or evacuated air means motionless props.
 - Prop assets live in `assets/models/props/` with a license file per pack; OBJ preferred (raylib 5.5's cgltf rejects 2020-era GLBs).
+
+## Larva bodies
+- THE picture of the swarm's larvae (arc #63): ONE grub mesh (`propgen.generate_larva`, a heightfield seen from above, wound counter-clockwise from +y), every larva an instance of it in ONE `glDrawArraysInstanced` per frame whatever the count (`tests/gl_larva_bodies_check.py`). A new swarm species' body is a generator function in `renderer/propgen.py` + a dials table, drawn by this pass: never a second swarm body renderer, never a per-larva draw or CPU animation.
+- Render-only: reads the swarm store through `swarm.swarm_column`, only the columns of `larva_bodies.READ_COLUMNS`, and `SwarmUnitDiedEvent` (the slot is already freed); writes nothing; nothing under `src/` reads it or `[render.larvae]` (`tests/test_larva_bodies.py`). `enabled = false` reads no store and builds no GL object.
+- The wriggle is a function of `dist_walked` (and the unit id's hash) ONLY: a still larva is still, the shader never sees a clock. A new motion (turning, eating) is a new phase input from the store, never a time uniform.
+- Lit per fragment through THE lit-3D block (`lit3d._COMMON_GLSL` + `_FIELD_SAMPLE_GLSL` spliced at the shader's markers; the smoke cast shadow and the light curve with it), linear HDR, premultiplied, drawn in the dot view's slot (after the water, before the floor smoke). ACCEPTED GAP: unlike a 3D unit's body (#114, one per-unit light read) a larva reads the light of the tile under each fragment: it is a third of a tile long.
+- A death is drawn as the body going limp and fading (sim clock), starting from the phase it had alive; the dot view's fleck is the dot view's alone. Every dial is a `[render.larvae]` row through the refusing door, read every frame.
