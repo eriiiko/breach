@@ -756,8 +756,15 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was e1add2e038e565dfe56d69e09c8c4d661e6885bcdb287781dfb38491bee2a336)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 37d54d7aa9b8f1abe1ef19078dad5a2f91cbe915752d7176329b5c60ef03053a)
-    tick_digest="f05ce73d08ead792746f68896e53660f"
-                "7c27e849a93bcb89b00b43e3f78272d8",
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was f05ce73d08ead792746f68896e53660f7c27e849a93bcb89b00b43e3f78272d8)
+    tick_digest="241bd5cea03eedb665e9afd7c42ca5f0"
+                "12bfdfb3093cb43e8fa5dfe724ff0419",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -794,8 +801,15 @@ _PRE_G3P_SHIP_DEMO = dict(
     # (was 572519ba48b80de7d770865a16e436ec8736481158155bfc1fc92d3484c11a16)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was 2bd1812dc1371c7695889183cf0c6a5e97004b58a0f5c198b12d3ae14b514f2f)
-    unit_stream="6d3f0fb20cfdd2ed0d2eb5ee95bcead7"
-                "41015e083e9017c2c0c853c24cb025fb")
+    # arc #63 P5c re-baseline (2026-11-19, Erik's ONE approved re-pin: "I approve the re-pin"):
+    # the corpse's body is its hp below zero; a death KEEPS the body
+    # temperature and the heat row and the blast reach corpses. Outcome,
+    # team, ticks and field digest unmoved; only corpse rows move (first
+    # divergence: a unit dying with its body off ambient,
+    # docs/swarm_P5c_impl.md, the pin table).
+    # (was 6d3f0fb20cfdd2ed0d2eb5ee95bcead741015e083e9017c2c0c853c24cb025fb)
+    unit_stream="c8ecbb5beb76129662394c168df4c696"
+                "02c1765c32c3ef710a67cd11800772d3")
 
 
 def test_with_no_wind_up_the_pinned_match_is_the_pre_g3p_match(monkeypatch):

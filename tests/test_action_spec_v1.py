@@ -561,7 +561,11 @@ def test_an_invalid_row_issues_nothing(tmp_path, monkeypatch):
     sim.step()
     apply_packet(me, DamagePacket(10_000, KINETIC, -1), sim.tick_events,
                  source="burning")
-    apply_packet(mate, DamagePacket(10_000, KINETIC, -1), sim.tick_events,
+    # arc #63 P5c: a converting kill stays within the body (an overkill of a
+    # whole body more destroys the corpse, which then never rises): one
+    # point left, a one-point packet
+    mate.hp_q = 1 << 16
+    apply_packet(mate, DamagePacket(1, KINETIC, -1), sim.tick_events,
                  source="melee", mark_killed_by_zombie=True)
     sim.step()
     assert not me.alive and mate.is_zombie

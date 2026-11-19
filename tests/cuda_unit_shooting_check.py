@@ -315,7 +315,12 @@ class ShootDriver:
     def _kill(self, u, zombie=False):
         from simulation.ai_zombie import convert_marines_to_zombies
         from simulation.damage import DamagePacket, apply_packet
-        apply_packet(u, DamagePacket(amount=1.0e7, dtype=0, attacker_id=-1), [],
+        # arc #63 P5c: a kill within the body (an overkill of a whole body
+        # more destroys the corpse, which then never converts): the hp set
+        # to one point, then a one-point packet (its exposure scale at most a
+        # few points over)
+        u.hp_q = 1 << 16                                  # fixture: one point left
+        apply_packet(u, DamagePacket(amount=1.0, dtype=0, attacker_id=-1), [],
                      source="melee", mark_killed_by_zombie=zombie)
         if zombie:
             convert_marines_to_zombies([u])

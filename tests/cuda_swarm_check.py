@@ -586,10 +586,10 @@ def _corpse_world():
     for name, x, y, team in units:
         u = Unit(name, x=x, y=y, team=team)
         sim.add_unit(u)
-        apply_packet(u, DamagePacket(amount=10_000.0, dtype=KINETIC), None,
+        apply_packet(u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None,
                      source="explosion")
         if name == "KX":
-            u.corpse_integrity_q = 0                 # fixture: destroyed
+            u.hp_q = -corpse.body_q(u)               # fixture: destroyed (P5c)
     piles = [(12, 10)] * 16 + [(12, 6)] * 14 + [(7, 13)] * 10
     sim.swarm.spawn("larva", [(tx << 16) + half for tx, _ in piles],
                     [(ty << 16) + half for _, ty in piles], [0] * len(piles))
@@ -616,7 +616,7 @@ def part2d() -> bool:
             g = sim.gmap
             plane = swarm.count_plane(g)
             units = tuple((u.name, u.alive, u.is_zombie, int(u.infest_q),
-                           int(u.corpse_integrity_q)) for u in sim.units)
+                           int(u.hp_q)) for u in sim.units)
             st[m] = (plane.tobytes(), units, tick_digest(capture_snapshot(sim)))
             if m == "cpu":
                 if plane.any():

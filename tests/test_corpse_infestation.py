@@ -1,7 +1,8 @@
 """Corpse infestation (arc #63 P5b, docs/swarm_P5b_impl.md): the swarm's count
 plane, the ``swarm_count`` coupling row into the corpse law
-(``simulation.corpse``), the conversion door's second trigger and the corpse's
-integrity. The CPU build's host path; the device forms are gated by
+(``simulation.corpse``), the conversion door's second trigger and the
+destroyed corpse (P5c: the body is the hp below zero; its damage is
+``tests/test_corpse_body.py``). The CPU build's host path; the device forms are gated by
 ``tests/cuda_swarm_check.py`` (PART 2d), ``tests/cuda_unit_damage_check.py``
 (the corpse scene) and ``tests/cuda_unit_kernels_check.py`` (the conversion).
 
@@ -69,11 +70,28 @@ def _larvae(sim, tiles):
 
 
 def _kill(u):
-    """Kill ``u`` through the one damage door (an uncredited heat packet:
-    never a converting death)."""
-    apply_packet(u, DamagePacket(amount=10_000.0, dtype=KINETIC), None,
+    """Kill ``u`` through the one damage door (an uncredited packet of exactly
+    its hit points: never a converting death, and the corpse is whole -- hp 0,
+    P5c's body untouched)."""
+    apply_packet(u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None,
                  source="explosion")
-    assert not u.alive
+    assert not u.alive and u.hp_q == 0
+
+
+def _destroy(u):
+    """Fixture: the body gone (hp at -body_factor x max hp, corpse.body_q)."""
+    u.hp_q = -corpse.body_q(u)
+    assert corpse.destroyed(u)
+
+
+def _bare(infest_q=0, destroyed=False):
+    """A corpse outside any sim (a real Unit, killed through the door)."""
+    u = Unit("B", x=1.0, y=1.0, team=0)
+    _kill(u)
+    u.infest_q = infest_q
+    if destroyed:
+        _destroy(u)
+    return u
 
 
 def _marine(sim, name="M", x=1.0, y=1.0):
@@ -102,7 +120,7 @@ def _law_ticks(n, limit=20000):
     the law itself (a bare row); returns (ticks to the threshold or None,
     the level after ``limit`` ticks)."""
     s = corpse.get_settings()
-    u = SimpleNamespace(infest_q=0, corpse_integrity_q=s.integrity_q, alive=False)
+    u = _bare()
     hit = None
     for t in range(1, limit + 1):
         corpse.infest(u, n, s)
@@ -200,13 +218,13 @@ def test_the_count_plane_is_resident_and_not_digested(attr):
 def test_the_settings_are_the_numbers_quantized_once():
     """Property: the four dials reach the law as ONE rounding each: the rise
     is round(rate x ONE / tps) (55 at 0.02 / s), the decay round(decay x 2^24
-    / tps) (34953 at 0.05 / s), the threshold and the integrity Q16. Breaks if
+    / tps) (34953 at 0.05 / s), the threshold and the body factor Q16. Breaks if
     a dial is rounded twice or read in another currency."""
     s = corpse.get_settings()
     assert s.tps == TPS
     assert s.rise_q == round(0.02 * ONE / TPS) == 55
     assert s.decay_a == round(0.05 * clearing.RATE_ONE / TPS) == 34953
-    assert s.threshold_q == ONE and s.integrity_q == 200 * ONE
+    assert s.threshold_q == ONE and s.body_factor_q == ONE
     for rate in (0.0, 0.013, 0.05, 1.7, 9.0):
         exact = rate * clearing.RATE_ONE / TPS
         assert abs(clearing.rate_per_tick(rate, TPS) - exact) <= 0.5
@@ -216,7 +234,7 @@ def test_the_config_door_refuses_a_bad_table():
     """Property: a missing, unknown or out-of-range [corpse] key is refused
     naming the key. Breaks if the door clamps or ignores a typo."""
     good = dict(infest_rate=0.02, infest_decay=0.05, infest_threshold=1.0,
-                integrity=200.0)
+                body_factor=1.0)
     clock = SimpleNamespace(ticks_per_second=TPS)
 
     def cfg(**over):
@@ -225,11 +243,13 @@ def test_the_config_door_refuses_a_bad_table():
         d = {k: v for k, v in d.items() if v is not None}
         return SimpleNamespace(corpse=SimpleNamespace(**d), clock=clock)
     assert corpse.settings_from_config(cfg()).rise_q == 55
-    for over, word in ((dict(integrity=None), "integrity"),
+    for over, word in ((dict(body_factor=None), "body_factor"),
+                       (dict(integrity=200.0), "integrity"),
                        (dict(infest_ratee=1.0), "infest_ratee"),
                        (dict(infest_rate=-1.0), "infest_rate"),
                        (dict(infest_threshold=0.0), "infest_threshold"),
-                       (dict(integrity=0.0), "integrity"),
+                       (dict(body_factor=0.0), "body_factor"),
+                       (dict(body_factor=9.0), "body_factor"),
                        (dict(infest_decay=float("nan")), "infest_decay"),
                        (dict(infest_decay=30.0), "infest_decay")):
         with pytest.raises(ValueError, match=word):
@@ -242,7 +262,7 @@ def test_the_level_rises_with_n_and_decays_without():
     decays and returns to exactly 0. Breaks if the rise ignores n, if the
     drain reads the level after the rise, or if a level stalls above 0."""
     s = corpse.get_settings()
-    u = SimpleNamespace(infest_q=0, corpse_integrity_q=s.integrity_q, alive=False)
+    u = _bare()
     corpse.infest(u, 3, s)
     assert u.infest_q == 3 * s.rise_q
     # the drain is on the level BEFORE the rise
@@ -277,11 +297,11 @@ def test_the_steady_states_and_the_three_times():
 
 
 def test_a_destroyed_corpse_holds_its_level_at_zero():
-    """Property: a corpse whose integrity is gone gains no level under any
+    """Property: a corpse whose body is gone gains no level under any
     swarm and a level it held drops to 0. Breaks if the law runs on a
     destroyed corpse."""
     s = corpse.get_settings()
-    u = SimpleNamespace(infest_q=5 * ONE, corpse_integrity_q=0, alive=False)
+    u = _bare(infest_q=5 * ONE, destroyed=True)
     corpse.infest(u, 50, s)
     assert u.infest_q == 0
     corpse.infest(u, 50, s)
@@ -292,10 +312,10 @@ def test_a_level_past_the_proved_range_is_refused():
     """Property: a level or a rise past corpse.LEVEL_MAX is refused by name,
     never clamped or wrapped. Breaks if the bound is dropped."""
     s = corpse.get_settings()
-    u = SimpleNamespace(infest_q=corpse.LEVEL_MAX + 1, corpse_integrity_q=ONE, alive=False)
+    u = _bare(infest_q=corpse.LEVEL_MAX + 1)
     with pytest.raises(corpse.CorpseLevelRange):
         corpse.infest(u, 0, s)
-    u = SimpleNamespace(infest_q=0, corpse_integrity_q=ONE, alive=False)
+    u = _bare()
     with pytest.raises(corpse.CorpseLevelRange):
         corpse.infest(u, corpse.LEVEL_MAX // s.rise_q + 1, s)
 
@@ -308,18 +328,18 @@ def test_a_marine_corpse_rises_at_the_threshold_through_the_door():
     """Property: ten larvae on a marine's corpse raise its level to the
     threshold in about six seconds, and at the tick's end the ONE conversion
     door turns it into a zombie: alive, on the zombie team, the zombie class's
-    health, its level back to 0 and its integrity full. Breaks if the row is
+    health (its body whole), its level back to 0. Breaks if the row is
     not wired, if the door ignores the infestation trigger, or if the door
     does not reset the level."""
     sim = _sim()
     m = _marine(sim)
     _kill(m)
-    assert m.infest_q == 0 and m.corpse_integrity_q == corpse.full_integrity_q()
+    assert m.infest_q == 0
     _larvae(sim, [(2, 2)] * 10)
     t = _ticks_to_rise(sim, m, 10 * TPS)
     assert t is not None and 5 * TPS <= t <= 7 * TPS, t
     assert m.alive and m.is_zombie and m.team == 255
-    assert m.infest_q == 0 and m.corpse_integrity_q == corpse.full_integrity_q()
+    assert m.infest_q == 0 and m.hp_q > 0 and not corpse.destroyed(m)
     assert m.name == "Z-M"
 
 
@@ -355,17 +375,17 @@ def test_a_zombie_corpse_rises_and_a_risen_zombie_can_die_and_rise_again():
 
 
 def test_a_destroyed_corpse_never_rises_by_either_trigger():
-    """Property: a corpse whose integrity is gone rises neither when the
-    larvae swarm it nor when a zombie killed it: its level stays 0 and the
-    door passes it by. Breaks if the door skips the integrity check on
-    either trigger."""
+    """Property: a corpse whose body is gone (hp at -body_factor x max hp)
+    rises neither when the larvae swarm it nor when a zombie killed it: its
+    level stays 0 and the door passes it by. Breaks if the door skips the
+    destroyed check on either trigger."""
     sim = _sim(7, 9)
     a = _marine(sim, "A", 1.0, 1.0)
     b = _marine(sim, "B", 5.0, 1.0)
     _kill(a)
     _kill(b)
-    a.corpse_integrity_q = 0                 # fixture: the corpse destroyed
-    b.corpse_integrity_q = 0
+    _destroy(a)                              # fixture: the bodies destroyed
+    _destroy(b)
     b.killed_by_zombie = True                # a zombie's kill
     _larvae(sim, [(2, 2)] * 12)
     _step(sim, 20 * TPS)
@@ -374,7 +394,7 @@ def test_a_destroyed_corpse_never_rises_by_either_trigger():
     ai_zombie.convert_marines_to_zombies([a, b])
     assert not a.alive and not b.alive and not a.is_zombie and not b.is_zombie
     # the same pair, whole: both rise
-    a.corpse_integrity_q = b.corpse_integrity_q = corpse.full_integrity_q()
+    a.hp_q = b.hp_q = -corpse.body_q(a) + 1  # one count short of destroyed
     a.infest_q = corpse.get_settings().threshold_q
     ai_zombie.convert_marines_to_zombies([a, b])
     assert a.alive and b.alive and a.is_zombie and b.is_zombie
@@ -394,40 +414,23 @@ def test_a_living_units_level_never_moves():
         assert m.infest_q == 0
 
 
-def test_death_sets_the_corpse_and_both_columns_hash_only_when_moved():
-    """Property: a death sets the level to 0 and the integrity full (the
-    columns' defaults, so a death without larvae hashes exactly as before),
-    and a unit's digest record names neither column until the corpse law
-    moves one. Breaks if a death writes a non-default value or a column is
-    hashed at its default."""
+def test_death_sets_the_corpse_and_the_level_hashes_only_when_moved():
+    """Property: a death sets the level to 0 (the column's default, so a
+    death without larvae hashes exactly as before), and a unit's digest
+    record names it only once the corpse law moves it; the integrity column
+    is gone (P5c: the body is the hp). Breaks if a death writes a non-default
+    value, the level is hashed at its default, or the column comes back."""
     sim = _sim()
     m = _marine(sim)
-    m.corpse_integrity_q = 5                 # fixture: a stale value before death
-    m.infest_q = 3
+    m.infest_q = 3                           # fixture: a stale value before death
     _kill(m)
-    assert m.infest_q == 0 and m.corpse_integrity_q == corpse.full_integrity_q()
+    assert m.infest_q == 0
     rec = unit_schema.digest_record(m)
-    assert "infest_q" not in rec and "corpse_integrity_q" not in rec
+    assert "infest_q" not in rec
+    assert "corpse_integrity_q" not in {c.name for c in unit_schema.COLUMNS}
     _larvae(sim, [(2, 2)] * 3)
     _step(sim)
     assert m.infest_q > 0 and "infest_q" in unit_schema.digest_record(m)
-
-
-def test_a_packet_on_a_corpse_leaves_its_integrity_whole():
-    """Property (P5b's accepted gap, docs/swarm_P5b_impl.md): a packet that
-    lands on a corpse (an attack slot's or the zombie slot's, decided while it
-    lived) still writes the hp exactly as before the corpse law, and the
-    integrity stays at its default -- so main's pinned matches keep their
-    unit streams. Breaks if a patch routes corpse damage to the integrity
-    (five pinned matches move: that patch re-pins with Erik's approval and
-    replaces this test)."""
-    sim = _sim()
-    m = _marine(sim)
-    _kill(m)
-    hp0, full = m.hp_q, corpse.full_integrity_q()
-    apply_packet(m, DamagePacket(amount=34.0, dtype=KINETIC, attacker_id=7), None,
-                 source="melee")
-    assert m.hp_q == hp0 - 34 * ONE and m.corpse_integrity_q == full
 
 
 def test_the_conversion_door_trigger():
@@ -436,21 +439,20 @@ def test_the_conversion_door_trigger():
     living unit; a zombie kill rises at once whatever its level. Breaks if
     the trigger loses a branch or gains one."""
     s = corpse.get_settings()
-    full = corpse.full_integrity_q()
 
-    def u(**kw):
-        d = dict(alive=False, is_zombie=False, killed_by_zombie=False, infest_q=0,
-                 corpse_integrity_q=full)
-        d.update(kw)
-        return SimpleNamespace(**d)
+    def u(destroyed=False, **kw):
+        x = _bare(destroyed=destroyed)
+        for k, v in kw.items():
+            setattr(x, k, v)
+        return x
     assert ai_zombie.rises_as_zombie(u(killed_by_zombie=True))
     assert ai_zombie.rises_as_zombie(u(infest_q=s.threshold_q))
     assert ai_zombie.rises_as_zombie(u(is_zombie=True, infest_q=s.threshold_q))
     assert not ai_zombie.rises_as_zombie(u(infest_q=s.threshold_q - 1))
     assert not ai_zombie.rises_as_zombie(u(is_zombie=True, killed_by_zombie=True))
     assert not ai_zombie.rises_as_zombie(u(alive=True, infest_q=s.threshold_q))
-    assert not ai_zombie.rises_as_zombie(u(killed_by_zombie=True, corpse_integrity_q=0))
-    assert not ai_zombie.rises_as_zombie(u(infest_q=s.threshold_q, corpse_integrity_q=0))
+    assert not ai_zombie.rises_as_zombie(u(killed_by_zombie=True, destroyed=True))
+    assert not ai_zombie.rises_as_zombie(u(infest_q=s.threshold_q, destroyed=True))
 
 
 def test_same_seed_same_rise():
@@ -484,10 +486,10 @@ def test_the_coupling_row_is_registered():
     assert i > names.index("swarm_bite_dose")
 
 
-def test_only_the_corpse_module_writes_the_two_columns():
-    """Property: nothing in src/ but simulation/corpse.py writes infest_q or
-    corpse_integrity_q (the one writer). Breaks if a second writer appears."""
-    pat = re.compile(r"\.(infest_q|corpse_integrity_q)\s*(=[^=]|\+=|-=)")
+def test_only_the_corpse_module_writes_the_level():
+    """Property: nothing in src/ but simulation/corpse.py writes infest_q
+    (the one writer). Breaks if a second writer appears."""
+    pat = re.compile(r"\.(infest_q)\s*(=[^=]|\+=|-=)")
     bad = []
     for p in (ROOT / "src").rglob("*.py"):
         if p.name == "corpse.py":

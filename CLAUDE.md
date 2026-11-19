@@ -262,7 +262,7 @@ amends the rule file, never this line's length.
 | Poison | `src/simulation/poison.py` + `[damage.poison]` | Poison is ONE conserving law entered only through `poison.dose` |
 | Clearing step | `src/simulation/clearing.py` (device `unit_lib::clearing_drain`) | A unit state that drains by a fraction a tick uses this step; never a second one |
 | Stress | `src/simulation/stress.py` + `[damage.stress]` | Fed only through its producer rows' one door, cleared only by its own tick; heart rate is the one Hill function, derived, never stored |
-| Corpse law | `src/simulation/corpse.py` + `[corpse]` + `exchange.apply_corpse_infestation` | A dead unit's infestation level and integrity: the one writer of both; a corpse rises only through the one conversion door |
+| Corpse law | `src/simulation/corpse.py` + `[corpse]` + `exchange.apply_corpse_infestation` | A dead unit's infestation level (its one writer) and its body, the hp below zero; a corpse rises only through the one conversion door |
 | Body temperature | `src/simulation/body_temp.py` + `[combat]` body dials | A unit's shell temperature, written by the heat coupling row alone; what warms a body changes the felt temperature or the air, never the body |
 | Magazines | `combat.mag_*` / `reload_begin` + `[weapons.*] mag_size` | Ammunition is magazines; a reload discards the one in the gun; the law is these functions only |
 | Grenade kinds | `[loadouts.*] grenades` + `WeaponsTables.hand_grenade_rows` | A throwable is a hand-grenade `[ammo.*]` row appended to the family, never a verb |

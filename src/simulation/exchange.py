@@ -74,6 +74,7 @@ from typing import Callable, Optional, Sequence
 
 from config import CFG
 from simulation import atmosphere_fixed as _atm_fx
+from simulation import corpse as _corpse
 from simulation import body_temp as _body_temp
 from simulation import gas_fixed
 from simulation import poison
@@ -337,7 +338,9 @@ def felt_temperature_q(gmap, u, dials_q) -> tuple:
 
 
 def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
-    """Apply per-tick radiant heat damage to every LIVING unit (proposal §4.2).
+    """Apply per-tick radiant heat damage to every unit, a corpse included
+    (proposal §4.2; arc #63 P5c: a corpse's hp is its body, so a corpse
+    takes the same packet, uncredited, with no event).
 
     A unit is a full ray-blocker (stamped before the ray pass), so rays
     terminate on its leading tiles and ``gmap.heat`` already holds the
@@ -451,7 +454,13 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     rates = {}                         # capacity -> (a_q, a_rad_q), this call
 
     for u in units:
-        if not u.alive:
+        # arc #63 P5c (Erik, 2026-11-19: "fire and explosion and heat still
+        # damage after death"): a CORPSE runs the same row -- its body keeps
+        # its temperature in the air it lies in, and above the band the same
+        # packet lowers its hp (the body below zero, simulation.corpse) --
+        # uncredited and with no event; a destroyed corpse is left alone.
+        corpse = not u.alive
+        if corpse and (not hasattr(u, "infest_q") or _corpse.destroyed(u)):
             continue
 
         # THE felt temperature (#195 1g (b): one function, the row's own
@@ -497,13 +506,13 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         # when the exposure there is the `heat` buffer; radiation, a burning
         # tile's own heat and an unclaimed deposit are the environment's.
         attacker = NO_ATTACKER
-        if peak_from_heat and peak_tile is not None:
+        if peak_from_heat and peak_tile is not None and not corpse:
             attacker = tick_credit(gmap).attacker_at(CREDIT_HEAT, *peak_tile)
         apply_packet(u, DamagePacket(
                          amount=_unit_fixed.dequantize_scalar(dmg_q),
                          dtype=HEAT, attacker_id=attacker, indirect=True,
                          amount_q=dmg_q),
-                     events, source="heat")
+                     None if corpse else events, source="heat")
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +527,10 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
     executor passes its owner (thrower, firer, planter); -1 = nobody (a
     timed charge, a scripted blast). A self-blast is credited to the
     thrower too (``attacker_id == unit_id``).
+
+    A CORPSE (arc #63 P5c) is hit by the same falloff: its hp is its body
+    (``simulation.corpse``), the packet uncredited and with no event; a
+    destroyed corpse is skipped.
 
     Units below ``CFG.combat.blast_damage_threshold`` damage take none
     (prevents chip damage at the edge of distant blasts). Marks the
@@ -536,7 +549,11 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
     r2_q = r_q * r_q
     max_d = int(max_damage)
     for u in units:
-        if not u.alive:
+        # arc #63 P5c: a CORPSE takes the blast too (its hp, the body below
+        # zero: simulation.corpse), uncredited and with no event; a destroyed
+        # corpse is left alone.
+        corpse = not u.alive
+        if corpse and (not hasattr(u, "infest_q") or _corpse.destroyed(u)):
             continue
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
@@ -557,10 +574,11 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None,
                 # the victim's own centre tile (no direction).
                 apply_packet(u,
                              DamagePacket(amount=damage, dtype=BLAST,
-                                          attacker_id=attacker_id,
+                                          attacker_id=(NO_ATTACKER if corpse
+                                                       else attacker_id),
                                           indirect=True,
                                           dir_x_q=dx_q, dir_y_q=dy_q),
-                             events, source="explosion")
+                             None if corpse else events, source="explosion")
 
 
 # ---------------------------------------------------------------------------
@@ -794,7 +812,6 @@ def apply_corpse_infestation(units, gmap):
     A corpse whose level is 0 and that no swarm unit stands on is skipped
     (lazy): a match without larvae never touches a level. Two corpses on one
     tile each read it in full. No RNG."""
-    from simulation import corpse as _corpse
     from simulation import swarm as _swarm
     plane = _swarm.count_plane(gmap)
     any_swarm = bool(plane.any())

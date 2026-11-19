@@ -14,7 +14,7 @@
 
 namespace unit_tables {
 
-constexpr const char* UNIT_TABLES_FINGERPRINT = "009954c14a50728b49b5cb6bb7db4374096b545ba31344de647e79d512bd68e6";
+constexpr const char* UNIT_TABLES_FINGERPRINT = "76a26077d58aa9f3612f57da7aa27623d94ab65f091e61656fa0f3c4d7c57c95";
 constexpr int UNIT_TABLES_W = 2840;
 
 // <row>: its first int64 in an env's vector; <row>_W: its width.
@@ -174,8 +174,8 @@ constexpr int UNIT_TAB_CORPSE_DECAY_A = 178;
 constexpr int UNIT_TAB_CORPSE_DECAY_A_W = 1;
 constexpr int UNIT_TAB_CORPSE_THRESHOLD_Q = 179;
 constexpr int UNIT_TAB_CORPSE_THRESHOLD_Q_W = 1;
-constexpr int UNIT_TAB_CORPSE_INTEGRITY_Q = 180;
-constexpr int UNIT_TAB_CORPSE_INTEGRITY_Q_W = 1;
+constexpr int UNIT_TAB_CORPSE_BODY_FACTOR_Q = 180;
+constexpr int UNIT_TAB_CORPSE_BODY_FACTOR_Q_W = 1;
 constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR = 181;
 constexpr int UNIT_TAB_FOOTPRINT_ROWMAJOR_W = 1;
 constexpr int UNIT_TAB_WEAPON_MAG_SIZE = 182;
