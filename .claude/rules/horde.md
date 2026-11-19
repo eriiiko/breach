@@ -9,7 +9,7 @@ paths:
   - "pathfinding.py"
 ---
 
-# The horde, noise and A*
+# The horde, noise, A* and the conversion door
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
@@ -22,6 +22,10 @@ and who must use it; this file holds the constraints the code cannot say.
 - Slot 5 has a device twin (the HORDE stage, `.claude/rules/device-units.md`): a change to the zombie law, the cache, the mask, the descent, the wander, the bite or the bash lands in `cpp/src/cuda_unit_horde.cuh` in the SAME patch.
 - Behaviours are `[zombie]` switches; all off == the stage-1 law, a permanent gate. WANDER uses a Philox block as a seedless HASH of (id, tick) (`Salt.WANDER`), never a stream. A door with a span tile bordering vacuum, the ambient ring or the map edge is NEVER bashed.
 - Per-zombie state is synced, fixed-width, hashed only while set, cleared at death and conversion (`horde.clear`).
+
+## Conversion door
+- `ai_zombie.convert_marines_to_zombies` is THE one conversion path, its trigger ONE predicate (`rises_as_zombie`): a non-zombie a zombie killed (`killed_by_zombie`), OR a corpse the larvae infested to the threshold (`corpse.rises`, arc #63 P5b: any corpse, a zombie's included, any number of times); never a destroyed corpse. A new reason to rise is a branch of that predicate, never a second converter. The door emits no event (a rise is seen as the unit turning alive and zombie).
+- Its device twin `k_convert_zombies` (`cpp/src/cuda_unit_conversion.cu`) changes in the same patch (`tests/cuda_unit_kernels_check.py` PART CORPSE and the box).
 
 ## Noise
 - Hearing reads noises, never the sources, by squared distance alone (walls ignored, no sound propagation). A new loud thing calls `noise.emit`, never a hearing check of its own.

@@ -709,6 +709,14 @@ def table_reference(sim) -> dict:
         "stress_hit_fills_q": stress.HIT_FILLS_Q,
         "stress_rate_q": stress.get_settings().rate_q,
         "stress_flush_q": stress.FLUSH_Q, "stress_max": stress.STRESS_MAX,
+        # arc #63 P5b: the corpse law's rows, from the authored [corpse] values
+        # (each rounded once: the rise in Q16 a tick, the decay in 2^-24 a tick)
+        "corpse_rise_q": round(float(CFG.corpse.infest_rate) * ONE
+                               / int(CFG.clock.ticks_per_second)),
+        "corpse_decay_a": round(float(CFG.corpse.infest_decay) * (1 << 24)
+                                / int(CFG.clock.ticks_per_second)),
+        "corpse_threshold_q": qs(float(CFG.corpse.infest_threshold)),
+        "corpse_integrity_q": qs(float(CFG.corpse.integrity)),
     }
 
 

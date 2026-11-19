@@ -12,7 +12,7 @@ paths:
   - "tools/gen_larva_studio.py"
 ---
 
-# Swarm: the store of swarm units, its digest, its facade, its table, its heading, the brood, the dot view, the bite
+# Swarm: the store of swarm units, its digest, its facade, its table, its heading, the brood, the dot view, the bite, the count
 
 Fires on contact with these files. CLAUDE.md's index says what each system is
 and who must use it; this file holds the constraints the code cannot say.
@@ -93,3 +93,9 @@ two sides meet only through FIELDS.
 - Not digested and not in the swarm section (a function of the store); a resident synced field the exit download carries while a swarm is present (slot 9c3 reads it on the host the same tick). A membership change would be a field-digest version bump.
 - The unit side reads it ONLY through the `swarm_bite_dose` coupling row (`exchange.apply_bite_dose`, `.claude/rules/units.md`). Gates: `tests/test_swarm_bite.py`, `tests/cuda_swarm_check.py` PART 2c, `tests/cuda_batch_invariance_check.py` LEG B, `tests/cuda_unit_damage_check.py` (the gas scene's bite).
 - The dot view draws no bite flash: the expected-dose form has no discrete bite to flash (P5a: left out, not built from guesses).
+
+## Count plane
+- Swarm OUTPUT (arc #63 P5b): `(h, w)` int32, how many active swarm units (`swarm::active_on`: valid, not dead, not in coma; EVERY species, 1 each) stand on each tile THIS tick. Built in the SAME pass as the bite plane, by the same builders (`output_planes_host`, the resident `k_planes`), under the bite plane's rules: written only by the swarm step, zeroed every non-dormant tick, never written by host code, tools or tests, not digested, resident and downloaded at exit while a swarm is present.
+- `bites_on` calls `active_on`: the bite plane is the count plane times the bite row today. A biting rule that differs from presence changes `bites_on` alone, never the count.
+- The unit side reads it ONLY through the `swarm_count` coupling row (`exchange.apply_corpse_infestation`, `.claude/rules/units.md` Corpse law). ACCEPTED GAP: a second species is counted like a larva; the patch that brings one decides whether it infests (a species row), never a second plane.
+- Gates: `tests/test_corpse_infestation.py`, `tests/cuda_swarm_check.py` PART 2d.

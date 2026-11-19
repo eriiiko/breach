@@ -76,9 +76,9 @@ strategy. Every rule below serves that.
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
 | `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
-| `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view, bite-dose plane |
-| `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load, body temperature |
-| `horde.md` | horde field, noise, A* |
+| `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view, bite-dose plane, count plane |
+| `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load, body temperature, corpse law |
+| `horde.md` | horde field, noise, A*, the conversion door |
 | `combat.md` | weapons, draws, exposure, poison, clearing step, stress, simultaneous attacks, credit, loadouts |
 | `hand-verbs.md` | magazines, grenades, flash blinding, melee, flashlight, planted charge, verb gates |
 | `sight.md` | vision / cover / line of fire, sight for many tiles |
@@ -192,6 +192,7 @@ amends the rule file, never this line's length.
 | Brood spawn | `src/simulation/swarm_brood.py` (`spawn_broods`, called in `Simulation._reset_internal`) | THE load-time spawn of swarm units, keyed on (seed, brood ordinal, k); every match path passes it, never a second spawn site |
 | Swarm dot view | `renderer/swarm_dots.py` + `shaders/swarm_dots.vs` + `shaders/swarm_dots.fs` + `[debug] swarm_dots` | THE diagnostic picture of swarm units and their death flecks, render-only; the sim never reads it |
 | Bite-dose plane | `gmap.swarm_bite_dose` (`swarm.bite_plane`) + `swarm::bites_on` (`cpp/src/swarm.h`) + `exchange.apply_bite_dose` | THE swarm's bite: swarm output rebuilt every tick, read by the unit side only through the one coupling row into `poison.dose`; never a unit law reading a larva |
+| Count plane | `gmap.swarm_count` (`swarm.count_plane`) + `swarm::active_on` (`cpp/src/swarm.h`) | THE swarm's per-tile count of living, non-coma swarm units, built with the bite plane; the unit side reads it only through a coupling row |
 
 ### Determinism gates
 
@@ -261,6 +262,7 @@ amends the rule file, never this line's length.
 | Poison | `src/simulation/poison.py` + `[damage.poison]` | Poison is ONE conserving law entered only through `poison.dose` |
 | Clearing step | `src/simulation/clearing.py` (device `unit_lib::clearing_drain`) | A unit state that drains by a fraction a tick uses this step; never a second one |
 | Stress | `src/simulation/stress.py` + `[damage.stress]` | Fed only through its producer rows' one door, cleared only by its own tick; heart rate is the one Hill function, derived, never stored |
+| Corpse law | `src/simulation/corpse.py` + `[corpse]` + `exchange.apply_corpse_infestation` | A dead unit's infestation level and integrity: the one writer of both; a corpse rises only through the one conversion door |
 | Body temperature | `src/simulation/body_temp.py` + `[combat]` body dials | A unit's shell temperature, written by the heat coupling row alone; what warms a body changes the felt temperature or the air, never the body |
 | Magazines | `combat.mag_*` / `reload_begin` + `[weapons.*] mag_size` | Ammunition is magazines; a reload discards the one in the gun; the law is these functions only |
 | Grenade kinds | `[loadouts.*] grenades` + `WeaponsTables.hand_grenade_rows` | A throwable is a hand-grenade `[ammo.*]` row appended to the family, never a verb |

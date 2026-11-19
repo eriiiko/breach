@@ -582,7 +582,7 @@ def _corpse_world():
     sim = _thermal_world("cpu")
     sim.ruleset = ContinuousRealtime()
     half = ONE >> 1
-    units = (("KM", 9.0, 10.0, 0), ("KZ", 11.0, 6.0, 255), ("KX", 6.0, 12.0, 0))
+    units = (("KM", 11.0, 9.0, 0), ("KZ", 11.0, 5.0, 255), ("KX", 6.0, 12.0, 0))
     for name, x, y, team in units:
         u = Unit(name, x=x, y=y, team=team)
         sim.add_unit(u)
@@ -590,7 +590,7 @@ def _corpse_world():
                      source="explosion")
         if name == "KX":
             u.corpse_integrity_q = 0                 # fixture: destroyed
-    piles = [(10, 11)] * 14 + [(12, 7)] * 14 + [(7, 13)] * 10
+    piles = [(12, 10)] * 16 + [(12, 6)] * 14 + [(7, 13)] * 10
     sim.swarm.spawn("larva", [(tx << 16) + half for tx, _ in piles],
                     [(ty << 16) + half for _, ty in piles], [0] * len(piles))
     return sim
@@ -630,9 +630,10 @@ def part2d() -> bool:
                 if not np.array_equal(scan, plane):
                     print(f"  tick {t}: the count plane is not the host scan"); ok = False
                 for u in sim.units:
-                    if u.name in ("KM", "KZ", "KX") and u.alive and u.name not in rose:
-                        rose[u.name] = t
-                    if u.name == "KX":
+                    name = u.name[2:] if u.name.startswith("Z-") else u.name   # the door renames
+                    if name in ("KM", "KZ", "KX") and u.alive and name not in rose:
+                        rose[name] = t
+                    if name == "KX":
                         kx_level = max(kx_level, int(u.infest_q))
         _mode("cpu")
         for m in ("percall", "resident"):
