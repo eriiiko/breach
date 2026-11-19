@@ -1366,6 +1366,50 @@ the critique):
   them to the digest would move every golden and is not part of this port (a
   finding for Erik).
 
+**As built (P7e.1, 2026-11-19).** Branch `29-p7e1-planes-latches`.
+- The dead `rad_net` / `rad_amb` / `rad_flux` left `applier.CLEAR_PLANES`,
+  the host clear and the device `tick_end_clears` (heat alone). Not digested,
+  no golden moved. The GameMap attributes stay (tests fill them; `rad_net` is
+  still the dead `step_tail` argument, recorded debt).
+- `heat_atten` / `light_atten`: read by no law, but read by tests
+  (`tests/test_unit_permeability.py` reads `g.light_atten`,
+  `tests/test_a5_seal_evacuation.py` compares both), so they were kept and
+  made RESIDENT with the other planes rather than dropped.
+- `GameMap._RESIDENT_UNIT_PLANES` = sight_screen, heat_atten, light_atten,
+  ignition_armed, div_source: batch buffers. Choice where the design was
+  silent: while host gameplay is in the loop the played tick refreshes the
+  first three with the `_tile_serial` upload and the last two every tick
+  (`_RESIDENT_ENTRY_STATIC` / `_ALWAYS`); the downloads are unchanged (no
+  device slot runs in the played tick). `applier.non_resident_planes()` now
+  covers every plane a device unit slot reads or writes
+  (`device_slot_planes()`: the seam's PLANES, the clears, each face's field
+  tuple, the flight plane's two sources); the survivors are the ripple pair,
+  host-computed by design (`applier.HOST_COMPUTED_PLANES`).
+- The flight plane: a device builder (`unit_kernels.flight_plane`,
+  `k_flight_plane` in `cpp/src/cuda_unit_objects.cu`, table row
+  `mat_blocks_thrown`), not the walk reading `material`: simpler and the
+  walk stays as proved. The harness builds it on the device from padded
+  solid / material (padding solid, so blocked as before).
+- THE TICK ROW: `unit_draws.TickRow`, `(N, 5)` int64 (tick, seed_lo,
+  seed_hi, draw_tick, tiles_changed), generated `TICK_ROW_*` in
+  `unit_draws_layout.h`; every unit kernel face takes it (expire_orders,
+  verbs, match_done, melee, grenades, charges_tick, shooting, rounds_march,
+  EMIT, HORDE; the faces refuse host ticks by TypeError); the seam's
+  `on_tile_changed` bumps tiles_changed when the walk is handed the row
+  (`walk_effects(..., tick_row=)` and its wrappers resolve / detonate /
+  burn_through / apply_effects); the HORDE latch is the request set alone.
+  The swarm's env words (slot 7, Class P) still take the host's tick: left
+  to P7e.4 / P7e.5. The tick-end slots read the row after the advance: the
+  latch writer moves the tick (P7e.4's conductor), never a kernel.
+- 9c / 9c3 read `attack_lists.claims_list` in place (`credit_at` over the
+  env's first count records); `unit_kernels.claims_of` / `pad_claims` were
+  removed. In the shadow the list is staged from the TickCredit's first
+  claims (`attack_lists.claim_rows`), the fold `credit_at` answers alike.
+- Gate: `tests/cuda_unit_resident_check.py` (REFRESH, INPLACE, FLIGHT,
+  TICKROW, CLAIMS), each part shown red by a deliberate break (a staged
+  plane copy, the flight builder without the material, the walk without the
+  row, 9c without the list).
+
 **Systems (additions to §13).** New, each with its ONE index line and its
 constraints in `.claude/rules/device-units.md` when it is built: the device
 table module and each table on it (charges, grenades, rounds, blast sources,
