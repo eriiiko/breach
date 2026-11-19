@@ -777,3 +777,113 @@ written into CLAUDE.md only when the code exists):
 - **SPACE_CODE migration** — `The tilemap CSV's reserved SPACE code lives
   outside the material id range (-1, cast at the loader); material ids are
   unbounded rows; level format v3.` (Part D)
+
+## Part G — Broods: where the larvae nest on a recipe ship (2026-11-19, arc #63 P5d)
+
+Erik (2026-11-19): "I would like the generator rule now as simple as
+possible, I'd like to play that patch asap and get them into the levels
+before training starts for real. And the first generation of rules I'd like
+to start are more statistical rules for how often they appear in certain
+rooms, perhaps correlations with other departments, positive and negative.
+Perhaps rules that change up stuff: infested ship where the doors are all
+ready open, I don't know."
+
+The lead's design (decided 2026-11-19; every number is the lead's first
+value, PLACEHOLDER, Erik tunes). A brood is the existing `swarm_brood` zone
+entity (arc #63 P4: `zone_id`, `species`, `count`, scattered at load from the
+match draws); the generator only decides WHICH rooms carry one. Data only, no
+new move, no new generator.
+
+### G.1 Three pieces of data
+
+1. **Per department** an optional `[brood]` table:
+   - `chance`: the probability this department hosts a nest when the ship
+     is in the `nest` state;
+   - `rooms`: which of its recipe rooms may host it (recipe room ids;
+     default: every room that is neither its entry nor a corridor); the
+     brood goes into the LARGEST eligible room of the instance (floor area,
+     ties to the lowest room id); a secret room never hosts;
+   - `density`: larvae per free (non-solid) floor tile of the hosting room;
+   - `max`: the cap per brood (`count = min(max, max(1, floor(density x
+     free tiles)))`);
+   - `with`: optional multipliers on `chance`, keyed by other department
+     names, applied when that department is on the ship (> 1 more likely, <
+     1 less); the effective chance is capped at 1.
+   Unknown keys and unknown department names are refused by name at load.
+2. **Per archetype** an `[infestation]` table: weights of the three
+   ship-level states, drawn ONCE per ship from the level's own seed on a
+   stream of its own (`SeedSequence([seed, 2])`; the grammar's is `[seed, 0,
+   g]`, the layout's `[seed, 1, g, a]`), so no existing draw moves and a
+   `clean` ship, or an archetype with no table, is tile for tile the ship
+   it was:
+   - `clean`: no broods;
+   - `nest`: each department on the ship with a `[brood]` table rolls its
+     effective chance (one uniform per department of the archetype, drawn in
+     the archetype's department order whatever the ship holds, so a draw
+     never shifts another); if every roll fails, the department with the
+     highest effective chance hosts (ties: archetype order);
+   - `infested`: every department on the ship with a `[brood]` table hosts,
+     and the doors of hosting departments onto the corridor (every `door`
+     edge between one of its rooms and the passageway) are emitted OPEN
+     (rewritten to the existing `entity_door` row before stage 2: the same
+     opening, width and compartment rule, an open door entity). An
+     airlock, a hull door, a `vented_door` and a door to the spawn slab are
+     not touched.
+   A department that hosts hosts in every one of its instances. Profiles do
+   not shift the weights (not one line today; left out).
+3. **Recorded**: `[levelgen]` gains the realised `infestation` (the state)
+   and `broods` (the hosting departments, archetype order). The inputs that
+   decided them are the level seed and the recipe tables, both already in
+   the LevelSpec (the tables through the recipe hash, which reads the raw
+   department and archetype files), so `generate_from_spec` reproduces the
+   ship with its broods exactly. The v1 light generator (`ship_demo`) is
+   untouched.
+
+### G.2 Fairness
+
+Ships are mirror-symmetric: a brood in a wing department is emitted in BOTH
+wings (the room and its twin, the same count), an axis department's once.
+Never a brood in the spawn slab, the passageway, the lobby, a main section,
+an airlock vestibule or a secret room, never on a tile a spawn box covers;
+the stage-2 builder refuses a `brood` tag on any of these by name. Where the
+larvae stand inside the room is the brood's own scatter (match draws), not
+mirrored.
+
+### G.3 Placement
+
+The brood's zone is the hosting room's floor rectangle (less carved
+vestibule tiles and spawn boxes): the entity's own placement rule scatters
+the larvae over its free tiles. Nothing else of the room changes
+(temperature, fuel, lamps, vents).
+
+### G.4 First numbers (PLACEHOLDER)
+
+| Department | chance | rooms | density | max | with |
+|---|---|---|---|---|---|
+| cargo_hold | 0.6 | main_hold, bay | 0.5 | 200 | engineering = 1.5 |
+| engineering | 0.35 | fuel_bunker | 0.5 | 200 | |
+| crew_quarters | 0.15 | bunk, laundry | 0.5 | 200 | medbay = 0.5 |
+| medbay | 0.1 | morgue | 0.5 | 200 | |
+| armory | (no table) | | | | |
+
+Freighter weights: clean 0.25, nest 0.60, infested 0.15. A ship's total
+(at most 7 broods x 200 = 1 400) stays far under `[swarm.larva] max_units`
+(8 192); the generator refuses a ship past it by name.
+
+### Systems
+
+**(a) Existing canonical systems this design uses**: the `swarm_brood`
+entity and its one spawn (`swarm_brood.spawn_broods`, never a second spawn
+site), the level data layer (`level_lib.write_zones_npy`,
+`format_entity_lines`), the department recipe door
+(`tools/levelgen_recipes.py`) and the archetype door
+(`tools/ship_grammar.py`), `ROOM_TAGS` (the `brood` tag) and `EDGE_KINDS`
+(the existing `entity_door` row for an open door), stage 2 `embed` +
+`validate`, the LevelSpec (`[levelgen]`, `recipe_hash`).
+
+**(b) New systems it creates**: **Brood placement** (`tools/ship_broods.py`
++ the `brood` room tag): `Where a recipe ship's larvae nest is the
+department's [brood] row and the archetype's [infestation] weights, drawn on
+the level seed's own stream and applied to the laid-out graph before stage
+2; never a placement pass after embed or a brood written by hand into a
+generated level.`
