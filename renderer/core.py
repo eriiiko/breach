@@ -322,6 +322,8 @@ class GLDirect:
         self.ActiveTexture = fn("glActiveTexture", u)
         self.BindTexture = fn("glBindTexture", u, u)
         self.DrawArrays = fn("glDrawArrays", u, i, i)
+        # GL 3.1: one template drawn k times (the larvae's bodies, arc #63)
+        self.DrawArraysInstanced = fn("glDrawArraysInstanced", u, i, i, i)
         self.Viewport = fn("glViewport", i, i, i, i)
         self.Scissor = fn("glScissor", i, i, i, i)
         self.Enable = fn("glEnable", u)
