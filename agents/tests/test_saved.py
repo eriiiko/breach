@@ -110,8 +110,19 @@ def test_every_attribute_is_saved_or_named_as_not_saved():
     value scale is either in the saved file (``SAVED``) or named with why
     it is not (``NOT_SAVED``), so a new state joins the saved file in the
     patch that adds it. Breaks when an attribute is added to one of them
-    (a new learner state, say) without a decision about saving it."""
-    tr = _trainer()
+    (a new learner state, say) without a decision about saving it -- also
+    one an object first creates while it runs: the trainer is inspected
+    fresh AND after a round with the memory on (2e: the learner's stretches,
+    ``_segs``, were created during ``learn`` and unseen by a fresh one)."""
+    fresh = _trainer(memory=True)
+    ran = _trainer(memory=True)
+    ran.round()
+    assert ran.learner._segs is not None      # the round cut stretches
+    for tr in (fresh, ran):
+        _all_named(tr)
+
+
+def _all_named(tr) -> None:
     for obj in (tr, tr.learner, tr.collector, tr.learner.scale):
         name = type(obj).__name__
         have = set(vars(obj))
@@ -290,8 +301,13 @@ def test_the_soldier_export_loads_into_its_layout_and_is_refused_else(
     path = tmp_path / "soldier.pt"
     SV.export_soldier(path, tr.learner.soldier, tr.env.layout)
     d = SV.load(path)
-    assert set(d) == {"format", "kind", "soldier", "soldier_record", "net",
-                      "specs"}
+    # what a driver needs, and nothing of the learner (2e added what the
+    # soldier was started from; an export of a reward run says None)
+    assert {"format", "kind", "soldier", "soldier_record", "net",
+            "specs"} <= set(d)
+    assert not set(d) & {"value", "learner", "collector", "counters",
+                         "settings", "value_record", "manifest"}
+    assert d["started_from"] is None
     sizes = tr.env.sizes
     other = SoldierNet(reduced(True), sizes)
     specs = SV.load_soldier(path, other)

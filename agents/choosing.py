@@ -12,6 +12,8 @@ else turns the network's raw outputs and the masks into chances.
   out from the drawn hand and aim (:func:`arg_mask`);
 - :func:`evaluate`: the probability of five GIVEN choices, by the SAME walk
   (a given choice the masks forbid is refused);
+- :func:`mode`: the most likely option of each head, by the same walk (the
+  copy's measures);
 - :func:`heads_used`: which heads counted -- the game's rule
   (``action_spec_v1.heads_used``: more than one legal option), batched;
 - the variety of each counted head as a share of the most it could be: its
@@ -180,5 +182,25 @@ def evaluate(out, masks: dict, actions, explore: float = 0.0) -> Decision:
     return _walk(out, masks, pick, explore)
 
 
+def mode(out, masks: dict, given=None) -> torch.Tensor:
+    """The most likely option of every head ``(N, 5)``, by the SAME walk
+    (the copy's measures, note 2e section 6). Without ``given`` each later
+    head is told the network's own earlier choices (the decision it would
+    make if it always took the most likely option); with ``given`` ``(N,
+    5)`` each later head is told the GIVEN earlier choices (per-head
+    agreement with a teacher's decision), and the argument's mask is
+    worked out from them."""
+    best = []
+    given = None if given is None else torch.as_tensor(given).long()
+
+    def pick(h, p):
+        b = p.argmax(dim=-1)
+        best.append(b)
+        return b if given is None else given[:, h].to(p.device)
+    _walk(out, masks, pick, 0.0)
+    return torch.stack(best, dim=-1)
+
+
 __all__ = ["HEADS", "MASK_KEYS", "Decision", "masks_of", "arg_mask",
-           "heads_used", "chances", "variety_share", "draw", "evaluate"]
+           "heads_used", "chances", "variety_share", "draw", "evaluate",
+           "mode"]

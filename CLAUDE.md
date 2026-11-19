@@ -301,6 +301,8 @@ amends the rule file, never this line's length.
 | Choosing | `agents/choosing.py` | The chances under the masks, the draw, the probability of given choices and which heads counted are ONE module, used when acting, learning from reward and copying |
 | Stored decision and batch | `agents/batch.py` | Only rows of a learning team are stored; what is kept per decision is ONE layout, copied from the environment's arrays, time first |
 | Trainer | `agents/trainer.py` + `agents/collector.py` + `agents/learner.py` + `agents/grading.py` + `agents/value_scale.py` | Touches the game only through `BatchedEnv`; a collector and a learner with one hand-over each way; every round runs the live check |
+| Record reader and loader | `agents/records.py` | THE one reader of the bots' records on the trainer's side: packed in, decisions out; refuses a record that does not fit by name; the split is by level and seed |
+| Copying | `agents/copying.py` | Learning from records uses the choosing module and the records' own masks; the records are data, re-made when the bots or the observation change |
 | Saved network and training manifest | `agents/saved.py` | THE one writer and reader of a saved run, a soldier's export and `training_manifest.json`; a driver of a saved network loads through it, never its own `torch.load`; every saved network says what it was started from |
 | Vision / engagements / cover | `src/simulation/vision.py`, `engagement.py`, `cover_system.py`, `line_of_fire.py` | One sight oracle (`has_los`, never `solid` alone); the match's sight rule decides who sees whom |
 | Sight for many tiles | `cpp/src/sight_lines.cpp` + `vision.rays_clear` / `window_clear` | THE sight test in bulk, held equal to `has_los`; nothing walks its own lines |
