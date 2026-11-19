@@ -117,6 +117,22 @@ __device__ __forceinline__ int64_t scaled(const int64_t* row, int h, int64_t cla
     return scaled_by(hook(row, h), class_value);
 }
 
+// ---- the corpse's body (arc #63 P5c: corpse.body_q / destroyed) ---------------
+// unit_traits.max_hp_q (the class's hp on is_zombie x the HP hook) times the
+// [corpse] body_factor, rounded once: how far below zero the hp may go.
+__device__ __forceinline__ int64_t corpse_body_q(const int64_t* row, const int64_t* tab) {
+    const int64_t max_hp = scaled(row, UNIT_HOOK_HP,
+                                  row[UNIT_COL_IS_ZOMBIE] ? tab[UNIT_TAB_HP_CLASS_ZOMBIE_Q]
+                                                          : tab[UNIT_TAB_HP_CLASS_MARINE_Q]);
+    return fixedpoint::mul_q16_round_q(max_hp, tab[UNIT_TAB_CORPSE_BODY_FACTOR_Q]);
+}
+// corpse.destroyed: a DEAD row whose hp is at or below -body_q. A living row
+// never is.
+__device__ __forceinline__ bool corpse_destroyed(const int64_t* row, const int64_t* tab) {
+    return row[UNIT_COL_LIFE_STATE] != LIFE_ALIVE &&
+           row[UNIT_COL_CURRENT_HP] <= -corpse_body_q(row, tab);
+}
+
 // ---- the statuses (status.py) -------------------------------------------------
 struct Flags {
     bool can_move, can_act, can_aim, is_prone;

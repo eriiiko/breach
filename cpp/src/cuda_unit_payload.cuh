@@ -287,7 +287,11 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
         const int64_t thr = tab[UNIT_TAB_BLAST_DAMAGE_THRESHOLD];
         for (int r = 0; r < R.n_units; ++r) {
             int64_t* row = unit_row(R.store, R.n_units, r);
-            if (!row_valid(row) || !row_alive(row)) continue;
+            if (!row_valid(row)) continue;
+            // arc #63 P5c: a CORPSE takes the blast too (uncredited, no
+            // event); a destroyed corpse is skipped.
+            const bool corpse = !row_alive(row);
+            if (corpse && corpse_destroyed(row, tab)) continue;
             const int64_t fp = row[UNIT_COL_FOOTPRINT];
             const int64_t dx = centre_tile(row[UNIT_COL_X_Q], fp) - fx;
             const int64_t dy = centre_tile(row[UNIT_COL_Y_Q], fp) - fy;
@@ -301,7 +305,7 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
             Packet pk;
             pk.amount_q = dmg << 16;
             pk.dtype = UNIT_DTYPE_BLAST;
-            pk.attacker = attacker_value(owner);
+            pk.attacker = corpse ? -1 : attacker_value(owner);
             pk.indirect = true;
             pk.expose = 0;
             pk.dir_x_q = dx_q;
@@ -310,7 +314,8 @@ __device__ inline int apply_payload(const int64_t* rec, const topo::TopoEnv& E,
             pk.cause = UNIT_CAUSE_EXPLOSION;
             pk.mark_killed_by_zombie = false;
             bool changed = false, killed = false, bad = false;
-            apply_packet(row, tab, pk, *R.sink, changed, &killed, &bad);   // IMMEDIATE
+            EventSink none = null_sink();
+            apply_packet(row, tab, pk, corpse ? none : *R.sink, changed, &killed, &bad);   // IMMEDIATE
             if (bad) return PAYLOAD_FAULT;
             if (changed) R.touched[r] = 1;
         }

@@ -811,8 +811,8 @@ class CorpseBoxDriver(BoxDriver):
     def __init__(self, shift=0, **kw):
         super().__init__(**kw)
         from simulation.damage import KINETIC, DamagePacket, apply_packet
-        self._pkt = lambda u: apply_packet(
-            u, DamagePacket(amount=10_000.0, dtype=KINETIC), None, source="explosion")
+        self._pkt = lambda u: apply_packet(     # exactly its hp (P5c: whole)
+            u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None, source="explosion")
         units = self.sim.units
         self.k1 = next(u for u in units if not u.is_zombie and u.team == 0)
         self.k3 = next(u for u in units if not u.is_zombie and u.team == 1)
@@ -826,7 +826,7 @@ class CorpseBoxDriver(BoxDriver):
         thr = corpse.get_settings().threshold_q
         k = self.k - self.shift
         if k == 5:                       # destroyed, killed by a zombie, infested
-            self.k3.corpse_integrity_q = 0
+            self.k3.hp_q = -corpse.body_q(self.k3)      # P5c: the body gone
             self.k3.killed_by_zombie = True
             self.k3.infest_q = 2 * thr
         if k == 8:                       # just below: no rise
@@ -845,7 +845,7 @@ class CorpseBoxDriver(BoxDriver):
         for u, name in ((self.k1, "marine"), (self.k2, "zombie"), (self.k3, "destroyed")):
             if not was[u.id][0] and u.alive:
                 self.facts[f"{name} corpse rose"] += 1
-        if not self.k3.alive and self.k3.killed_by_zombie and self.k3.corpse_integrity_q <= 0:
+        if not self.k3.alive and self.k3.killed_by_zombie and corpse.destroyed(self.k3):
             self.facts["destroyed corpse stays down"] += 1
 
 

@@ -400,7 +400,11 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     :class:`simulation.events.Cause` (member or its string) — anything else
     raises ``ValueError`` BEFORE the unit is touched.
 
-    Callers gate on ``unit.alive`` before applying, exactly as the shipped
+    A CORPSE takes the hp and nothing else (arc #63 P5c): no stress, no
+    exposure, no second death; a DESTROYED corpse (``corpse.destroyed``)
+    takes nothing at all and emits nothing. The blast and the heat row reach
+    corpses and hand them ``events=None`` (a corpse's hit is no event);
+    the other callers gate on ``unit.alive`` before applying, exactly as the shipped
     sites do -- an attack slot gates at its START (#169,
     :mod:`simulation.simultaneous`), so a packet can land on a unit an
     earlier packet of the same slot killed. A unit DIES ONCE: step 5 runs
@@ -419,6 +423,13 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
     """
     source = cause_value(source)                  # the door: refuse first
     was_alive = bool(getattr(unit, "alive", True))
+    # arc #63 P5c: a DESTROYED corpse (its hp at or below -body_factor x its
+    # full health, corpse.destroyed) takes nothing more: no hp, no event --
+    # the value stays bounded and the corpse hashes still.
+    if not was_alive and hasattr(unit, "infest_q"):
+        from simulation import corpse
+        if corpse.destroyed(unit):
+            return 0.0
     attacker = attacker_value(getattr(packet, "attacker_id", NO_ATTACKER))
     # #29 P3e: Q16 from the packet door to the hp -- mitigate, the exposure
     # scale, the hp write, all integers.
@@ -481,14 +492,13 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
         if hasattr(unit, "poison_x0"):
             from simulation import poison
             poison.clear(unit)
-        # #215: nor stress, and the body goes back to ambient.
+        # #215: nor stress. The body temperature is KEPT (arc #63 P5c: the
+        # corpse is the same body in the same air; the heat row keeps
+        # running on it, so heat still damages after death).
         if hasattr(unit, "stress_q"):
             _stress().clear(unit)
-        if hasattr(unit, "body_temp_q"):
-            from simulation import body_temp
-            body_temp.clear(unit)
-        # arc #63 P5b: the corpse starts uninfested and whole (both the
-        # columns' defaults, so a death hashes as before).
+        # arc #63 P5b: the corpse starts uninfested (the column's default,
+        # so a death hashes as before).
         if hasattr(unit, "infest_q"):
             from simulation import corpse
             corpse.on_death(unit)

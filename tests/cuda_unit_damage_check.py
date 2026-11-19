@@ -292,6 +292,13 @@ class LaneDriver:
         self._add("VB", 9, b, hp=200000, hooks=HOOK_SETS[1])       # survives the jet
         self._add("WC", 12, c + 2, hp=5000)                        # beside a wall
         self._add("ZD", 12, d, team=255)                           # zombie in fire
+        # arc #63 P5c: corpses in heat (killed at exactly their hp, so whole):
+        # a marine's on a hot deposit, a zombie's on a hotter one
+        from simulation.damage import KINETIC, DamagePacket, apply_packet
+        for name, x, y, team in (("KH", 26, a, 0), ("KZ", 26, d, 255)):
+            u = self._add(name, x, y, team=team)
+            apply_packet(u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None,
+                         source="explosion")
 
     def _before_fire(self):
         from simulation.turning import place
@@ -303,7 +310,10 @@ class LaneDriver:
         sim.set_trigger(w["F"].id, ((self.k + 7 * self.variant) // 40) % 2 == 0)
         if w["VA"].alive:
             self._doom(w["VA"])
-            self._heat(self._foot(w["VA"]), 0.15 * self.scale)
+        self._heat(self._foot(w["VA"]), 0.15 * self.scale)     # P5c: its corpse too
+        self._heat(self._foot(w["KH"]), 0.20 * self.scale)
+        if self.k % 2 == 0:
+            self._heat(self._foot(w["KZ"]), 0.12 * self.scale)
         if w["PA"].alive and self.k % 3 == 0:
             self._heat(self._foot(w["PA"]), 0.05 * self.scale)
         if w["ZD"].alive and self.k % 2 == 0:
@@ -348,9 +358,9 @@ class LaneDriver:
         kx = self._add("KX", 22, d)
         kd = self._add("KD", 30, d)
         for u in (km, kz, kx, kd):
-            apply_packet(u, DamagePacket(amount=10_000.0, dtype=KINETIC), None,
+            apply_packet(u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None,
                          source="explosion")
-        kx.corpse_integrity_q = 0                       # fixture: destroyed
+        kx.hp_q = -corpse.body_q(kx)                    # fixture: destroyed (P5c)
         kd.infest_q = (corpse.get_settings().threshold_q * 3) // 5   # fixture: 0.6
         m = 8 + 2 * (self.variant % 3)
         tiles = ([(25, b + 1)] * m + [(31, b + 1)] * (5 + self.variant % 3)
@@ -439,16 +449,19 @@ class Probe:
     for 2b the DoT hits by kind, statuses run out, heals."""
 
     def __init__(self):
-        from simulation import poison
+        from simulation import corpse, poison, unit_fixed, unit_traits
         self.c = Counter()
         self.sat0 = poison.SATURATION["hits"]
+        # arc #63 P5c: an unhooked marine's (or zombie's: both 100 HP) body
+        self.body_q = unit_fixed.mul_q16_round(unit_traits.class_hp_q(False),
+                                               corpse.get_settings().body_factor_q)
 
     def __call__(self, reps, ls):
         from simulation.status import STATUS_REGISTRY
         lay = ls.layout
         cols = {n: lay.column(n).offset for n in
                 ("id", "poison_x0", "poison_x1", "poison_src", "life_state",
-                 "current_hp", "infest_q", "corpse_integrity_q", "is_zombie")}
+                 "current_hp", "infest_q", "is_zombie")}
         sc = lay.column("statuses")
         for k, slot in enumerate(ls.slots):
             lab = slot.label
@@ -488,9 +501,10 @@ class Probe:
                                 self.c[(lab, "corpse infested")] += 1
                                 if pre[r, cols["is_zombie"]]:
                                     self.c[(lab, "zombie corpse infested")] += 1
-                            if iq1 < iq0 and post[r, cols["corpse_integrity_q"]] > 0:
+                            gone = post[r, cols["current_hp"]] <= -self.body_q
+                            if iq1 < iq0 and not gone:
                                 self.c[(lab, "corpse level decays")] += 1
-                            if post[r, cols["corpse_integrity_q"]] <= 0:
+                            if gone:
                                 self.c[(lab, "destroyed corpse held")] += 1
                                 if iq1 != 0:
                                     self.c[(lab, "destroyed corpse moved")] += 1
@@ -501,6 +515,19 @@ class Probe:
                             self.c[(lab, "statuses run out")] += 1
                         if kp.count(5) == 8:
                             self.c[(lab, "stack at its cap ticked")] += 1
+                    # arc #63 P5c: the heat row on corpses
+                    if lab == "9c unit heat damage" and pre[r, cols["life_state"]] == 1:
+                        h0, h1 = pre[r, cols["current_hp"]], post[r, cols["current_hp"]]
+                        if h1 < h0:
+                            self.c[(lab, "corpse burned")] += 1
+                            if h1 <= -self.body_q < h0:
+                                self.c[(lab, "corpse destroyed by heat")] += 1
+                        if h0 <= -self.body_q:
+                            self.c[(lab, "destroyed corpse held")] += 1
+                            if h1 != h0:
+                                self.c[(lab, "destroyed corpse burned")] += 1
+                        if int(pre[r, cols["id"]]) in {ev.unit_id for ev in ls._evs[k][e]}:
+                            self.c[(lab, "corpse event")] += 1
                     if lab == "9c unit heat damage" and int(pre[r, cols["id"]]) in {
                             ev.unit_id for ev in ls._evs[k][e]
                             if type(ev).__name__ == "UnitHitEvent"}:
@@ -716,7 +743,7 @@ def table_reference(sim) -> dict:
         "corpse_decay_a": round(float(CFG.corpse.infest_decay) * (1 << 24)
                                 / int(CFG.clock.ticks_per_second)),
         "corpse_threshold_q": qs(float(CFG.corpse.infest_threshold)),
-        "corpse_integrity_q": qs(float(CFG.corpse.integrity)),
+        "corpse_body_factor_q": qs(float(CFG.corpse.body_factor)),
     }
 
 
@@ -985,7 +1012,14 @@ def _scene_facts(kind, pr, out):
     need = []
     if kind == "fire":
         need = [(SLOT_9C.label, "death"), (SLOT_9C.label, "credited hit"),
-                (SLOT_9C.label, "hits by radiation (the larger exposure)")]
+                (SLOT_9C.label, "hits by radiation (the larger exposure)"),
+                # arc #63 P5c: the heat row on corpses
+                (SLOT_9C.label, "corpse burned"),
+                (SLOT_9C.label, "corpse destroyed by heat"),
+                (SLOT_9C.label, "destroyed corpse held")]
+        for bad in ("destroyed corpse burned", "corpse event"):
+            if c.get((SLOT_9C.label, bad)):
+                fail(f"scene fire: {bad} ({c[(SLOT_9C.label, bad)]})")
         if not any(k[0] == SLOT_9C.label and k[1] == "UnitHitEvent" and k[2] == "heat"
                    for k in c):
             fail("scene fire: no heat hit")

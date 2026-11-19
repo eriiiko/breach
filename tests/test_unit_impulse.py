@@ -597,7 +597,9 @@ def test_g13_a_unit_killed_with_pending_impulses_converts_with_none():
     sim.step()
     _kick(sim, u, 333, 77)
     assert not ui.at_rest(u)
-    apply_packet(u, DamagePacket(amount=10_000, dtype=KINETIC), None,
+    # exactly its hit points (P5c: an overkill of a whole body more would
+    # destroy the corpse, which then never rises)
+    apply_packet(u, DamagePacket(amount=u.current_hp, dtype=KINETIC), None,
                  source="melee", mark_killed_by_zombie=True)
     ui.add(sim.impulse_table, u, 999, 999)        # a push onto the corpse
     convert_marines_to_zombies(sim.units)

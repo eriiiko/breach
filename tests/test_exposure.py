@@ -413,7 +413,9 @@ def test_the_block_is_zero_after_conversion():
     """Property: a bitten marine that turns into a zombie starts with no
     exposure, whatever its block held. Breaks if the conversion keeps it."""
     m = _marine()
-    apply_packet(m, DamagePacket(amount=1e6, dtype=KINETIC),
+    # exactly its hit points (P5c: an overkill of a whole body more would
+    # destroy the corpse, which then never rises)
+    apply_packet(m, DamagePacket(amount=m.current_hp, dtype=KINETIC),
                  source="melee", mark_killed_by_zombie=True)
     m.exposure[KINETIC] = FP_ONE          # however it got there
     convert_marines_to_zombies([m])

@@ -585,8 +585,9 @@ ROWS: tuple[TableRow, ...] = (
              "(clearing.RATE_SHIFT)"),
     TableRow("corpse_threshold_q", 1, lambda src: _corpse().threshold_q, 1,
              1 << 26, "[corpse] infest_threshold, Q16 (the conversion door)"),
-    TableRow("corpse_integrity_q", 1, lambda src: _corpse().integrity_q, 1,
-             (1 << 31) - 1, "[corpse] integrity, Q16 hit points (a fresh corpse)"),
+    TableRow("corpse_body_factor_q", 1, lambda src: _corpse().body_factor_q, 1,
+             8 << 16, "[corpse] body_factor, Q16: a corpse is destroyed at hp "
+             "<= -round(body_factor x max_hp) (corpse.destroyed)"),
     # -- the footprint the device walks ---------------------------------------
     TableRow("footprint_rowmajor", 1, _footprint_rowmajor, 1, 1,
              "1 = every species' default offsets are the footprint square in "
