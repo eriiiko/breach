@@ -291,14 +291,24 @@ def test_the_measures_score_a_perfect_copy_and_the_baselines(tmp_path):
     counts = C.OptionCounts(sizes)
     t = C.Tally(sizes, counts)
     n = 0
+    wrong = C.Tally(sizes, counts)
     for f in c["records"]:
         d = RC.unpack(f.path)
         counts.add(d)
-        t.add(d, d["actions"].astype(np.int64), d["actions"].astype(np.int64))
+        bot = d["actions"].astype(np.int64)
+        t.add(d, bot, bot)
+        # wrong on every head that did NOT count only: still all right
+        u = A.heads_used({k: d[k] for k in A.MASK_KEYS}, d["arg_mask"])
+        used = np.stack([u[h] for h in A.HEADS], axis=-1)   # the game's
+        off = np.where(used, bot, bot + 1)
+        wrong.add(d, off, off)
         n += len(d["t"])
     r = t.result()
     assert r["decisions"] == n and r["files"] == 2
     assert r["all_heads_teacher_forced"] == r["all_heads_own_choices"] == 1.0
+    rw = wrong.result()
+    assert rw["all_heads_teacher_forced"] == 1.0
+    assert all(v["agreement"] in (None, 1.0) for v in rw["heads"].values())
     for h, v in r["heads"].items():
         if v["decisions"]:
             assert v["agreement"] == 1.0, h
