@@ -29,9 +29,10 @@ Each check names the PROPERTY it protects and the change that must break it:
       light, about twice the body. Breaks if the body is emissive, reads a
       constant instead of ``light_tex_a``, or tone-maps itself.
   a_faded_body_leaves_the_floor_untouched -- an instance at alpha 0 leaves
-      every pixel of the target bit-identical; a limp, half-faded one darkens
-      the floor less than a living one covers it. Breaks if the blend is not
-      premultiplied or the alpha is ignored.
+      every pixel of the target bit-identical; a lit body at alpha 1/2 lands
+      half way between the floor and the same body opaque. Breaks if the
+      blend is not premultiplied (straight alpha squares it) or the alpha is
+      ignored.
   disabled_costs_nothing -- with ``enabled = false`` the renderer-side state
       packs nothing and builds no GL object. Breaks if the off switch still
       reads the store or uploads.
@@ -273,16 +274,18 @@ def _faded():
     gone, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 1.0, 0.0, 0, 1)]), s,
                       _light(1.0), floor)
     assert np.array_equal(base, gone), "an alpha-0 body changed the floor"
-    live, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 0.0, 1.0, 0, 1)]), s,
-                      _light(0.0), floor)
+    # a limp body, opaque and half faded, lit: premultiplied alpha puts the
+    # half-faded pixel half way between the floor and the opaque body
+    full, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 1.0, 1.0, 0, 1)]), s,
+                      _light(1.0), floor)
     half, _ = _render(_inst([(4.0, 4.0, 0.0, 0.0, 1.0, 0.5, 0, 1)]), s,
-                      _light(0.0), floor)
-    cov = np.abs(live - base).max(axis=-1) > 1e-3
-    # unlit, the living body is black over the floor; half faded, half way
-    r = (base[cov][:, :3] - half[cov][:, :3]).mean() / max(
-        (base[cov][:, :3] - live[cov][:, :3]).mean(), 1e-6)
-    assert 0.3 < r < 0.7, r
-    return f"half-faded body darkens {r:.2f} of the living one"
+                      _light(1.0), floor)
+    cov = np.abs(full - base).max(axis=-1) > 1e-2
+    assert cov.sum() > 50
+    want = 0.5 * full[cov][:, :3] + 0.5 * base[cov][:, :3]
+    err = np.abs(half[cov][:, :3] - want).max()
+    assert err < 0.02, f"half-faded off the premultiplied mix by {err:.3f}"
+    return f"{int(cov.sum())} px within {err:.4f} of the premultiplied mix"
 
 
 @check("disabled_costs_nothing")
