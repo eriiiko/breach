@@ -161,7 +161,12 @@ box matches in the same files did not move.
   must take "a corpse in the walk", "a corpse hit", "a corpse destroyed", "a
   destroyed corpse skipped", and fails if a corpse's packet is handed the
   events), `tests/cuda_swarm_check.py` PART 2d and
-  `tests/cuda_unit_kernels_check.py` PART CORPSE (the hp-based fixtures).
+  `tests/cuda_unit_kernels_check.py` PART CORPSE (the hp-based fixtures);
+  `tests/cuda_unit_melee_check.py`, `tests/cuda_unit_shooting_check.py` and
+  `tests/cuda_unit_verbs_check.py` (their `_kill` helpers killed with 1e6 /
+  1e7 HP, destroying the bodies, so the zombies they convert never rose and
+  the scenes went vacuous: "4a latch: a zombie", "2': a round of a converted
+  shooter"): now exactly the hit points.
 
 ## Breaks (each applied alone, the gate run, the file restored)
 
