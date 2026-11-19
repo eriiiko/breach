@@ -40,3 +40,10 @@ filter = "derelict"             # its own duct, separate from accommodation (D2)
 [physics]
 temp = "hot_engineering"        # every room of the department starts warm (temp_init.npy)
 pressure = "ambient"
+
+# Vocabulary Part G (arc #63 P5d, 2026-11-19): NO [brood] row. The lead's
+# first number (chance 0.35, the fuel bunker) cannot hold: every room here
+# starts at [temps.hot_engineering] (+40 = 60 C), above the larva's
+# T_lethal_hot (50 C), so a brood spawned here dies on its first tick. The
+# nearest that holds is no nest (chance 0); a warm-but-survivable engine room
+# is Erik's call (the preset, or a cooler room).

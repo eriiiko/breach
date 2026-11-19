@@ -87,6 +87,13 @@ cycle = "duct_link"
 on = "same-cell-rooms"
 count = { medium = [0, 1], large = [0, 2] }
 
+# ---- broods (vocabulary Part G, arc #63 P5d): the ship-level state, drawn once
+# per ship on the level seed's own stream; weights, normalised. PLACEHOLDER. ----
+[infestation]
+clean = 0.25                    # no broods
+nest = 0.60                     # each department rolls its [brood] chance (one forced if none)
+infested = 0.15                 # every department with a [brood] row hosts; their corridor doors stand open
+
 # ---- validation profile (L2's third component; L8): metric gates from a closed registry; run after layout ----
 [validation]
 bot_walkable = true             # A* between the two slabs with airlock outer doors CLOSED
