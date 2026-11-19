@@ -498,11 +498,10 @@ N_PLANES = len(PLANES)
 #: The tick-end clears' planes (Simulation._clear_tick_buffers, with a
 #: physics runner): (GameMap field, dtype). The credit claims' clear is P7's
 #: (its device form is the claims table); the shot tracers' expiry is render.
+#: #29 P7e.1: the three legacy radiation planes (rad_net, rad_amb, rad_flux)
+#: left this list with their host clears: nothing has written them since T6.
 CLEAR_PLANES: tuple = (
     ("heat", "int32"),
-    ("rad_net", "int64"),
-    ("rad_amb", "int64"),
-    ("rad_flux", "int64"),
 )
 CLEAR_NAMES = tuple(p[0] for p in CLEAR_PLANES)
 

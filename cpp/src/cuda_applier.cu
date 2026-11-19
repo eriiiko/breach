@@ -489,19 +489,15 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         if (touched[r]) unit_lib::count_changed(U.cnt);
 }
 
-__global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_t* rad_amb,
-                                  int64_t* rad_flux, const uint8_t* active) {
+__global__ void k_tick_end_clears(int n, int32_t* heat, const uint8_t* active) {
     if (env_off(active)) return;
     const int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (i >= n) return;
     bptr(heat, (size_t)n)[i] = 0;
-    bptr(rad_net, (size_t)n)[i] = 0;
-    bptr(rad_amb, (size_t)n)[i] = 0;
-    bptr(rad_flux, (size_t)n)[i] = 0;
 }
 
-static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
-              APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
+// #29 P7e.1: `heat` is the one clear plane (the legacy rad_* planes left).
+static_assert(APPLIER_N_CLEARS == 1 && APPLIER_CLEAR_HEAT_BYTES == 4,
               "the clears' dtypes moved: update k_tick_end_clears");
 static_assert(APPLIER_N_STAGES == 14, "a new stage: give it its mode in k_applier");
 
@@ -888,9 +884,6 @@ void tick_end_clears(int n_env, int h, int w,
     const int n = h * w;
     k_tick_end_clears<<<bgrid(n, n_env), 256, 0, tstream()>>>(
         n, reinterpret_cast<int32_t*>(ptr[APPLIER_CLEAR_HEAT]),
-        reinterpret_cast<int64_t*>(ptr[APPLIER_CLEAR_RAD_NET]),
-        reinterpret_cast<int64_t*>(ptr[APPLIER_CLEAR_RAD_AMB]),
-        reinterpret_cast<int64_t*>(ptr[APPLIER_CLEAR_RAD_FLUX]),
         reinterpret_cast<const uint8_t*>(active));
     ap_check(cudaGetLastError(), "clears launch");
 }

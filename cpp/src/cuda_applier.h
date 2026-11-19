@@ -36,8 +36,8 @@
 // The books are zeroed before and downloaded after (a stream sync: allowed,
 // nothing in the played tick calls this).
 //
-// tick_end_clears: Simulation._clear_tick_buffers' planes (heat, rad_net,
-// rad_amb, rad_flux) zeroed on every env whose `active` byte is set (the
+// tick_end_clears: Simulation._clear_tick_buffers' planes (`heat`; #29
+// P7e.1: the legacy rad_net / rad_amb / rad_flux left the list) zeroed on every env whose `active` byte is set (the
 // reference clears them only with a physics runner), an (N, h, w) launch on
 // the tick stream.
 //

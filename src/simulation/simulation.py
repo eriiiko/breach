@@ -2538,26 +2538,10 @@ class Simulation:
         # (never reassigned) so any C++ view of the buffer stays valid.
         if self.physics_runner is not None:
             self.gmap.heat.fill(0)
-            # P-R4 (ruling A1.7): `rad_net` is the SIGNED radiation accumulator
-            # and shares `heat`'s per-tick lifetime exactly — filled by the
-            # fire-plane cast at the top of the physics step, consumed by the
-            # temperature solver's Pass-1 fold in the same step, wiped here so
-            # the next tick's cast starts clean. In-place (never reassigned) so
-            # any C++ view of the buffer stays valid.
-            self.gmap.rad_net.fill(0)
-            # P-F1a (rule 4): the SKY LEDGER shares that lifetime exactly — it
-            # is the counterparty half of the same per-tick booking, so the two
-            # planes MUST be cleared together or the identity
-            # `rad_net.sum() + rad_amb.sum() == 0` would be evaluated across
-            # mismatched ticks. Filled by the emission cast at the top of the
-            # physics step, read (pre-fold) by the ledger gate, wiped here.
-            self.gmap.rad_amb.fill(0)
-            # D3: the radiant-flux SENSOR shares the same per-tick lifetime —
-            # filled by the cast at the top of the physics step, consumed by
-            # unit heat damage above, wiped here. (`dem_acc` does NOT belong
-            # in this clear: it is PERSISTENT synced state whose whole job is
-            # to carry a sub-count oxygen debt ACROSS ticks.)
-            self.gmap.rad_flux.fill(0)
+            # #29 P7e.1: the legacy radiation planes `rad_net`, `rad_amb` and
+            # `rad_flux` are no longer cleared here: nothing has written them
+            # since T6 deleted the cast (gamemap.py's field notes), so they
+            # stay the zeros they were born as.
             # Ray-engine-v2 P2a (design v3 row 38): the shadow sweep's FOUR
             # planes are NOT wiped here. `RadiationSweep::run` zeroes them
             # itself before its first ordinate (it accumulates over ordinates,
@@ -2565,8 +2549,7 @@ class Simulation:
             # tick's values at render time — the tile inspector's Φ, `f` and
             # E°⁻¹(Φ) rows were reading a wiped zero while the wipe lived here.
             # Nothing digested changes: none of the four is in DIGEST_FIELDS or
-            # SIM_FIELDS. The three LIVE planes above keep their conductor wipe
-            # because their writer (the old cast) does not clear them.
+            # SIM_FIELDS.
 
         # #123: the per-tick deposit credit (damage.TickCredit) shares the
         # `heat` buffer's lifetime -- it names who put THIS tick's heat / gas

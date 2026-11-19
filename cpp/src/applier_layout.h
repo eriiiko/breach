@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "2a8fbfa34993983ec72aed91619fc28096d012d134c8647883a16e89b0914db0";
+constexpr const char* APPLIER_FINGERPRINT = "066a4010ff58b9731734eb567301c938ef54c18d68626163b4913bf64632b38c";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -219,13 +219,7 @@ constexpr int APPLIER_N_PLANES = 36;
 // The tick-end clears' planes (their element size in bytes).
 constexpr int APPLIER_CLEAR_HEAT = 0;
 constexpr int APPLIER_CLEAR_HEAT_BYTES = 4;
-constexpr int APPLIER_CLEAR_RAD_NET = 1;
-constexpr int APPLIER_CLEAR_RAD_NET_BYTES = 8;
-constexpr int APPLIER_CLEAR_RAD_AMB = 2;
-constexpr int APPLIER_CLEAR_RAD_AMB_BYTES = 8;
-constexpr int APPLIER_CLEAR_RAD_FLUX = 3;
-constexpr int APPLIER_CLEAR_RAD_FLUX_BYTES = 8;
-constexpr int APPLIER_N_CLEARS = 4;
+constexpr int APPLIER_N_CLEARS = 1;
 
 // #29 P6b.1: the topology seam's refusal codes (0 = done).
 constexpr int64_t APPLIER_SEAM_OUT_OF_BOUNDS = 1;
