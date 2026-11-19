@@ -171,6 +171,33 @@ def cut_pieces(order, piece: int) -> list:
     return np.array_split(order, -(-n // int(piece)))
 
 
+def stretches(first, stretch: int) -> tuple:
+    """THE stretch rule (module text; design 4.5): every row's time of
+    ``first`` (``(T, R)``, nonzero where a match starts on that decision)
+    cut into stretches -- at each decision a match starts on and every
+    ``stretch`` decisions after such a start or the first decision; never
+    longer than ``stretch``, never two matches. Returns ``(start, row,
+    length)`` arrays, a row's stretches in time order. The learner cuts its
+    batches with it and the copy (:mod:`agents.records`) a soldier's match
+    with it; nothing else cuts stretches."""
+    S = stretch
+    T, R = first.shape[:2]
+    starts = first[1:] != 0
+    start, row, length = [], [], []
+    for r in range(R):
+        a = 0
+        for c in list(np.flatnonzero(starts[:, r]) + 1) + [T]:
+            while a < c:
+                n = min(S, int(c) - a)
+                start.append(a)
+                row.append(r)
+                length.append(n)
+                a += n
+    return (np.asarray(start, dtype=np.int64),
+            np.asarray(row, dtype=np.int64),
+            np.asarray(length, dtype=np.int64))
+
+
 def live_check(d_logp_heads, s_logp_heads, d_used, s_used, d_arg, s_arg,
                distance: float, tolerance: float, memory=None) -> dict:
     """The live check's clauses over the first piece's policy rows
@@ -234,6 +261,10 @@ class Learner:
                                           eps=settings.adam_eps)
         self.rng = np.random.default_rng(int(seed))
         self.round = 0
+        #: the stretches of the batch last learnt (memory on): cut afresh
+        #: from every batch by :meth:`_stretch_units`; None before the
+        #: first round and always with the memory off
+        self._segs = None
 
     # -- the hand-over: weights out ---------------------------------------
     def header(self) -> dict:
@@ -447,25 +478,10 @@ class Learner:
 
     # -- the memory's stretches ------------------------------------------
     def _stretches(self, batch: Batch) -> tuple:
-        """Every row's batch time cut into stretches (module text): cut at
-        each decision a match starts on and every ``stretch`` decisions
-        after such a start or the batch's first decision. Returns
-        ``(start, row, length)`` arrays, a row's stretches in time order."""
-        S, T, R = self.settings.stretch, batch.T, batch.R
-        starts = batch.first[1:] != 0
-        start, row, length = [], [], []
-        for r in range(R):
-            a = 0
-            for c in list(np.flatnonzero(starts[:, r]) + 1) + [T]:
-                while a < c:
-                    n = min(S, int(c) - a)
-                    start.append(a)
-                    row.append(r)
-                    length.append(n)
-                    a += n
-        return (np.asarray(start, dtype=np.int64),
-                np.asarray(row, dtype=np.int64),
-                np.asarray(length, dtype=np.int64))
+        """Every row's batch time cut into stretches by THE rule
+        (:func:`stretches`). Returns ``(start, row, length)`` arrays, a
+        row's stretches in time order."""
+        return stretches(batch.first, self.settings.stretch)
 
     def _stretch_units(self, batch: Batch, value_rows) -> np.ndarray:
         """The stretches holding a value row, as units (indices into this

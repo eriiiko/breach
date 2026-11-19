@@ -99,7 +99,9 @@ NOT_SAVED = {
                 "batch": "overwritten every round",
                 "learner": "its own entries", "collector": "its own entries"},
     "Learner": {"settings": "the training file", "device": "the machine's",
-                "ids": "the run's names, compared at a resume"},
+                "ids": "the run's names, compared at a resume",
+                "_segs": "one round's stretches, cut afresh from every "
+                         "batch"},
     "Collector": {
         "env": "the environment", "rows": "derived",
         "device": "the machine's", "ids": "the run's names",
