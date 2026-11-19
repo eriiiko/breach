@@ -98,6 +98,23 @@ def test_the_body_is_the_hp_below_zero_against_the_units_own_full_health():
     assert not corpse.destroyed(v)
 
 
+def test_the_body_scales_with_the_factor():
+    """Property: the body is body_factor full healths: at 0.5 a 100 HP
+    marine's body is 50 HP, at 2.5 it is 250, each rounded once. Breaks if
+    destroyed ignores the dial (a body of exactly -max_hp at any factor)."""
+    from dataclasses import replace
+    u = Unit("U", x=2.0, y=2.0, team=0)
+    full = unit_traits.max_hp_q(u)
+    s = corpse.get_settings()
+    for f in (0.5, 2.5):
+        sf = replace(s, body_factor_q=unit_fixed.quantize_scalar(f))
+        assert corpse.body_q(u, sf) == round(full * f)
+    _kill(u)
+    u.hp_q = -(full // 2)
+    assert corpse.destroyed(u, replace(s, body_factor_q=ONE // 2))
+    assert not corpse.destroyed(u, s)
+
+
 def test_the_killing_blows_overkill_counts():
     """Property (Erik: "a single bullet with damage 100 + its body HP ...
     would also be enough"): one packet of max_hp x (1 + factor) on a living
