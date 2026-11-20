@@ -138,8 +138,8 @@ def _static_texture(img: np.ndarray) -> rl.Texture:
 
 
 class WaterPass:
-    """Owns the water shader, the two per-tile textures, the ripple bake and
-    the pass's sim clock."""
+    """Owns the water shader, the two per-tile textures, the frame's wave
+    uniforms (W1b) and the pass's sim clock."""
 
     def __init__(self, grid_h: int, grid_w: int,
                  settings: Optional[WaterSettings] = None,

@@ -35,6 +35,23 @@ Design: `docs/water_look_design_2026-11-19.md` (sections 2, 9 and 10).
      twin draw the same bits (his `frac(sin(.) * 43758.5)` hash differs
      between float32 and float64). In the code:
      `renderer/water_surface.py::hex_slope` and `shaders/water.fs::hexSlope`.
+     **Since W1b** the lattice tiles a WAVE SET instead of a texture: each
+     vertex turns and shifts the procedural sines (`water_surface.hex_waves`,
+     `shaders/water.fs::hexWaves`), the same weights and hash.
+3. **Finch, M. (2004).** "Effective Water Simulation from Physical Models."
+   In R. Fernando (ed.), *GPU Gems*, chapter 1. Addison-Wesley / NVIDIA.
+   Open online: developer.nvidia.com/gpugems/gpugems/part-i-natural-effects/
+   chapter-1-effective-water-simulation-physical-models.
+   **Not archived as a PDF:** NVIDIA publishes the book chapter as a web page
+   only; fetch it from the address above.
+   - What we use (W1b, 2026-11-20): the surface as a SUM OF TRAVELLING SINES,
+     each with its own direction, wavelength and phase, moving at the speed
+     the dispersion relation gives its wavelength (his eq. for
+     `omega = sqrt(g k)`; we use the capillary-gravity form `sqrt(g k +
+     (sigma / rho) k^3)`), and his sharpening exponent `2A((sin + 1)/2)^k`
+     (eq. 8b) with its analytic derivatives (we also derive the second, for
+     the caustic). In the code: `renderer/water_surface.py::wave_set`,
+     `wave_sum` and `shaders/water.fs::waveSum`.
 
 ## W2: foam with a life
 
