@@ -308,7 +308,7 @@ _WATER_DIALS = (
     # W3: things in the water (the waterline, the ring and wake, the dab a
     # landing spray droplet leaves).
     ("waterline_strength", 1.0, "Waterline", 0.0, 1.0),
-    ("wake_body_m", 0.25, "Wake body m", 0.05, 1.0),
+    ("wake_body_m", 0.4, "Wake body m", 0.05, 1.0),
     ("wake_band_m", 0.08, "Wake band m", 0.01, 0.5),
     ("wake_ring_rate", 0.15, "Ring rate", 0.0, 2.0),
     ("wake_gain", 1.5, "Wake gain", 0.0, 8.0),

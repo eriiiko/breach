@@ -1509,7 +1509,7 @@ foam_shadow = 0.5              # how much a closed sheet darkens the floor benea
 # drops a dab of foam. All picture state (W2's foam). Starting values (W3's
 # builder); Erik tunes on levels/water_studio (wade_by_firelight, the match).
 waterline_strength = 1.0       # share of the floor's under-water law a submerged fragment takes (0 = off)
-wake_body_m = 0.25             # the foam ring's radius around a unit's centre, metres (its body's half-width)
+wake_body_m = 0.4              # the foam ring's radius round a unit's centre, metres (just outside its silhouette from above)
 wake_band_m = 0.08             # the ring's half-width, metres
 wake_ring_rate = 0.15          # foam per second in the ring of a STANDING unit (the ring alone)
 wake_gain = 1.5                # extra foam per second per (m/s)^2 of the unit's speed (the wake)
@@ -2045,7 +2045,7 @@ rate = 30.0                 # droplets at strength 1 in water; x strength x wet 
 speed_mps = 2.5             # horizontal launch speed, m/s
 up_mps = 3.0                # vertical launch speed, m/s: ~0.6 s in the air
 spread = 0.6                # each speed x (1 +- this x U(-1, 1)); reach <= ~3.1 m
-size_tiles = 0.05           # a droplet's half-width (~2.4 world px)
+size_tiles = 0.08           # a droplet's half-width (~3.8 world px)
 albedo = [0.70, 0.78, 0.85] # linear RGB under white light: pale water
 alpha = 0.85                # opacity (premultiplied)
 seed = 4513                 # mixed with each blast's tick and tile
