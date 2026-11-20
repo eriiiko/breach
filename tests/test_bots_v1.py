@@ -538,7 +538,15 @@ _PRE_G8P_SHIP_DEMO = dict(
     # fae949e0..., no shot, no door opened) bit for bit on the field.
     # #215 re-baseline (2026-11-18), the causes above.
     # (was outcome="draw", team=None, ticks=7200)
-    outcome="win", team=0, ticks=272,
+    # #217 patch U re-pin (2026-11-20, Erik's ruling: wind is m/s): the EOS
+    # step-1 transport moves air u*dt/dx tiles (it moved u*dt tiles, 1/dx too
+    # slow at ship_demo's 0.333 m), so air, smoke, the blast's mass and the
+    # winds on units all change: the GAME moved, by design
+    # (docs/eos_checkerboard_design_2026-11-20.md section 7). The 1.0 m box
+    # oracles and GOLDEN_AGGREGATE are unmoved (bit-identical at dx = 1.0).
+    # (was win team=0 ticks=272; field 1b02dd5d90756c5c87b3f8e74b0a1088358ec8a9ca4b48547e188dfbf41923bb;
+    #  tick 255a1226903fab9d12c309cf07d378349dbee46967ca8ce56fff518879b221ad; units f60a03365dcadd2e1059ef5f1205e2f07bbc54145897fe1aa544739230d25b07)
+    outcome="win", team=0, ticks=730,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -558,8 +566,8 @@ _PRE_G8P_SHIP_DEMO = dict(
     # (was d5e0e90969e747038c0a8d7391303b21804bae0d0cc7c9bf7d4ded8c258c4174)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was ab8d586ee11eab6ef9e5acfc14b0bc2c7f179231d086cec366693382d872aedd)
-    field_digest="1b02dd5d90756c5c87b3f8e74b0a1088"
-                 "358ec8a9ca4b48547e188dfbf41923bb",
+    field_digest="c2d89c53ee44672e570e97149550a21a"
+                 "64b42f05855184f11f02d66f1303a2bc",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -603,8 +611,8 @@ _PRE_G8P_SHIP_DEMO = dict(
     # divergence: a unit dying with its body off ambient,
     # docs/swarm_P5c_impl.md, the pin table).
     # (was 8549068be9af40d408f874c245835f5e7a5b06e5ed5a6df6c90eba215fcb2a63)
-    tick_digest="255a1226903fab9d12c309cf07d37834"
-                "9dbee46967ca8ce56fff518879b221ad",
+    tick_digest="4292f32b200f74585688c8bb6c33e808"
+                "9f8b01fa1bd0278b0c622f25387badd9",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -648,8 +656,8 @@ _PRE_G8P_SHIP_DEMO = dict(
     # divergence: a unit dying with its body off ambient,
     # docs/swarm_P5c_impl.md, the pin table).
     # (was a9184a10a6cd7ad6988db27d9e566bcc3b4b2a7782193b89eb02e3dd47200c0d)
-    unit_stream="f60a03365dcadd2e1059ef5f1205e2f0"
-                "7bbc54145897fe1aa544739230d25b07")
+    unit_stream="b9a3fbbfb462e8acf9d9d50b9815c0b7"
+                "757acd26d7f58ec2addb9e9952159480")
 
 
 def v1_spec(level):

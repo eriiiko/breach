@@ -84,7 +84,15 @@ _STAGE1_SHIP_DEMO = dict(
     # two processes: identical outcome, digests and unit stream.
     # #215 re-baseline (2026-11-18), the causes above.
     # (was ticks=255)
-    outcome="win", team=1, ticks=348,
+    # #217 patch U re-pin (2026-11-20, Erik's ruling: wind is m/s): the EOS
+    # step-1 transport moves air u*dt/dx tiles (it moved u*dt tiles, 1/dx too
+    # slow at ship_demo's 0.333 m), so air, smoke, the blast's mass and the
+    # winds on units all change: the GAME moved, by design
+    # (docs/eos_checkerboard_design_2026-11-20.md section 7). The 1.0 m box
+    # oracles and GOLDEN_AGGREGATE are unmoved (bit-identical at dx = 1.0).
+    # (was win team=1 ticks=348; field 71e043e0dd91860225611dee1d9a348a469d40735162919bfaf56ec5a8f78e70;
+    #  tick 361cd7447d440d99314a522973e2acbe97ab00cbc9b53bc4cd3f2b0c918685e9; units db77315b12fbe891e3b85a91e3bacbcdf99f11e09dd7c8a5a39945320f757b59)
+    outcome="win", team=0, ticks=780,
     # #29 P3e re-pin (2026-11-12, the match path to integer): the shot
     # cone, the exposure / crit rolls and the FieldEdit noise are integer draws
     # (simulation.draws: new random values), and the blast falloff, the payload
@@ -104,8 +112,8 @@ _STAGE1_SHIP_DEMO = dict(
     # (was cc46ec4b934902f73090aae00bef0b3f6e98f3f041948f51593bc9f86b8b8ba8)
     # #215 re-baseline (2026-11-18), the causes above.
     # (was e71707b913095bb53c7ad9c7f38834664d19431033c9d7d95651ea7e65422e43)
-    field_digest="71e043e0dd91860225611dee1d9a348a"
-                 "469d40735162919bfaf56ec5a8f78e70",
+    field_digest="bc931185696567f7eee7a4992827fa53"
+                 "eae129158cd015158d80f286384a1760",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -149,8 +157,8 @@ _STAGE1_SHIP_DEMO = dict(
     # divergence: a unit dying with its body off ambient,
     # docs/swarm_P5c_impl.md, the pin table).
     # (was eb45f863f0da2c7d672c00773f5541f1fd0864f830902d935158d2c722ef241b)
-    tick_digest="361cd7447d440d99314a522973e2acbe"
-                "97ab00cbc9b53bc4cd3f2b0c918685e9",
+    tick_digest="c2c6a9f20f2a7e29ede92a04832072f4"
+                "e775a72be02735a4eaa305d36b1d4495",
     # #29 P3a re-pin (2026-11-12, the unit schema): the unit record is now
     # the schema's (simulation.unit_schema.digest_record, as name|int64 rows
     # under UNIT_SECT_V2): ap / n_orders and the derived tile / alive /
@@ -194,8 +202,8 @@ _STAGE1_SHIP_DEMO = dict(
     # divergence: a unit dying with its body off ambient,
     # docs/swarm_P5c_impl.md, the pin table).
     # (was 915a9b55c646a6b96094be1f68b6adf80212ec055a972f2139e2e8802e877ec9)
-    unit_stream="db77315b12fbe891e3b85a91e3bacbcd"
-                "f99f11e09dd7c8a5a39945320f757b59")
+    unit_stream="d1052700f45fd184f7d6b73a76d21e1c"
+                "96a21cdb545783ec093268c727645499")
 _STAGE1_BOX = dict(
     # Erik's zombie bite balance re-pin (2026-11-12: [zombie] melee_damage
     # 60 -> 34, attack_cooldown_seconds 1.0 -> 2.2, hp 400 -> 100;
