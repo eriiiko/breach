@@ -49,6 +49,10 @@ Run:
     <breach-py> tests/_eos_checkerboard_bench.py --case cb --tile 0.333 --seconds 20
     <breach-py> tests/_eos_checkerboard_bench.py --table            # the issue's table
     <breach-py> tests/_eos_checkerboard_bench.py --case cb --steps --ticks 40
+    <breach-py> tests/_eos_checkerboard_bench.py --solve-bias     # step 3 alone
+    <breach-py> tests/_eos_checkerboard_bench.py --case warm --seconds 40
+
+Findings and tables: docs/eos_checkerboard_design_2026-11-20.md.
 """
 from __future__ import annotations
 
@@ -613,6 +617,22 @@ def print_rows(rows, title):
               f"{r['umax']:7.3f}")
 
 
+def table(case="cb", amp=1e-3, ticks=480, eos=None):
+    """One summary row per setting, at the last tick (the issue's table)."""
+    eos = eos or {}
+    legs = [(t, eos) for t in (1.0, 0.5, 0.333, 0.25)]
+    legs.append((0.333, {**eos, "adiabatic_index": 1.0001}))
+    print(f"# case={case} amp={amp} ticks={ticks} ({ticks / TPS:.0f} s)")
+    print(f"{'tile':>6} {'eos':<28} {'gap_rms%':>9} {'corr':>6} {'cbN%':>8} "
+          f"{'cbT':>7} {'Tmin':>7} {'Tmax':>7} {'|u|max':>7}")
+    for tile, e in legs:
+        rows, _ = run(tile, case, amp, ticks, eos=e, every=ticks, quiet=True)
+        r = rows[-1]
+        print(f"{tile:6.3f} {str(e or 'shipped'):<28} {100 * r['gap_rms']:9.3f} "
+              f"{r['gap_corr']:6.2f} {100 * r['cbN']:8.3f} {r['cbT']:7.2f} "
+              f"{r['Tmin']:7.2f} {r['Tmax']:7.2f} {r['umax']:7.3f}")
+
+
 def parse_eos(items):
     out = {}
     for it in items or []:
@@ -635,8 +655,14 @@ def main(argv=None):
                     help="per-step attribution (one row per tick)")
     ap.add_argument("--solve-bias", action="store_true",
                     help="step 3 in isolation, integer vs float, per tile size")
+    ap.add_argument("--table", action="store_true",
+                    help="the issue's table: the --case seed at 1.0/0.5/0.333/0.25 m "
+                         "plus the adiabatic_index=1.0001 control at 0.333 m")
     a = ap.parse_args(argv)
     ticks = a.ticks if a.ticks is not None else int(round((a.seconds or 20.0) * TPS))
+    if a.table:
+        table(a.case, a.amp, ticks, parse_eos(a.eos))
+        return
     if a.solve_bias:
         solve_bias()
         return
