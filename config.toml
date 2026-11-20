@@ -1472,12 +1472,26 @@ foam_intensity = 0.6
 # offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
 # fringe. 0 = off (single sample).
 ca_amount = 0.012
-# Wave-size dials (Erik: idle shimmer waves read "very big"). wave_scale
-# MULTIPLIES the ambient-sine spatial frequencies (higher = smaller/tighter
-# waves, lower = bigger). ambient_amp = idle amplitude base (the old hardcoded
-# 0.06) — the idle shimmer strength on still water.
-wave_scale = 2.0
-ambient_amp = 0.06
+# --- The fine surface that flows (water W1, #97; renderer/water_surface.py) ---
+# A repeating texture of fine wave SLOPES laid on the water in METRES (not
+# tiles) and carried by the simulated flow (Vlachos's two-phase flow map),
+# every lookup hex-tiled so it never repeats. It replaced the ambient sines
+# and their wave_scale / ambient_amp. Starting values (W1's builder); Erik
+# tunes by eye on levels/water_studio (shots still_pool_flashlight,
+# flooding_corridor).
+detail_wavelength_m = 0.12     # the dominant fine wave's length, metres
+detail_strength_still = 0.025  # RMS slope of still water (one clean reflection)
+detail_strength_flow = 0.16    # RMS slope at full flow / agitation
+detail_drift_mps = 0.03        # still water's slow uniform drift, m/s
+detail_zoom_zero = 6.0         # screen px per tile at and below which the fine surface is off
+detail_zoom_full = 14.0        # ... and from which it is at full strength
+flow_cycle_s = 0.6             # the flow map's cycle: each layer resets this often
+flow_speed_ref = 1.0           # flow speed (m/s) at which the strength saturates
+flow_max_offset_m = 0.5        # a layer's slide is capped at this (metres)
+flow_edge_depth_m = 0.02       # the flow fades in over the first this-many metres of depth
+flow_phase_noise_m = 3.0       # length (m) of the per-point phase offset (hides the reset pulse)
+agitation_ref = 0.05           # |ripple_v| (m/s) at which the strength saturates
+debug_view = 0                 # 1 = draw (slope x, slope y, strength) instead of the water
 # --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
 # An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water
 # ALPHA where raised relief (crates, consoles, debris) rises above the local
