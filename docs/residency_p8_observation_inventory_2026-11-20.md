@@ -564,3 +564,103 @@ carry the bodies' own imprint) is untouched: it concerns the counterfactual fami
 the host.
 
 ---------------------------------------------------------------------------------------------
+
+## J. A proposed cut
+
+THE GATE SHAPE every patch shares (the P7e.4 pattern): a REFERENCE sim on the CPU path replays a
+recorded match beside the conductor (which latches the same intents); at every decision tick (every 4th
+tick, and tick 0) the host `observe_rows` / `observe_full_rows` / `build_masks` / the books on the
+REFERENCE are compared with the device's arrays, block by block, value for value (the I table's
+exceptions counted and printed, never silently tolerated); every tick for the per-tick state (picture,
+books, decoder). Shown red by breaking it (a `*_BREAK` switch, as P7e's gates do). The CORPUS:
+(a) the pinned ship_demo matches `bots` and `bots_v1` (`tests/_pinned_matches.py`; sight rule `cone`),
+(b) a training-room match (`tools/gen_training_rooms.py` writes `sight = "all_round"`),
+(c) one recorded `"v1"` episode driven by random decisions through `AgentPolicy` (the only corpus where
+`aims`, `prev`, `on_next_tick`, `sees_target`, plants and throws by the decoder occur), (d) hand scenes
+where a block has a case the matches never reach (a grenade re-seen after a gap; a seen death; a record
+expiring; an order with a route), each a small match (the observation needs a team picture, so a bare
+hand scene of P7e does not serve).
+
+| patch | what | gate | tier | depends on |
+|---|---|---|---|---|
+| **P8.0 the whole path, smallest** | the obs buffers on the card (CuPy, the A.0 shapes, env-owned, double-buffered for `final_`); the row map `(team, slot) -> store row` per env (from `uids` / the store's `team`, `slot` columns); `valid` / `in_match`; ONE integer block built by a kernel inside the conductor's tick at the decision cadence: `near_u[0..1]` (wall, door), `far_f[0]` (wall_share), `far_u[0]` (door) from `plane:solid` and the door table at the store's centres; handed to torch with `torch.from_dlpack` and read by a stub that applies `team_rows` as tensor views (no host copy; the test asserts the tensor's pointer is the buffer's) | the four planes and the two flags EXACT against the reference on corpus (a) and (b), every decision tick; the pointer identity; the tick's sync count unchanged (2) | Opus | P7e.5 |
+| P8.1 the obs table + the store-only vector | the per-batch obs table (`ObsContext`, loadout and team rows, env profiles incl. `pressure_min/max`, the status scales; read from the reference's own objects, the "Device tables" rule); every vector column whose sources are R (A.2: body, kit, statuses, cool-downs, class / weapon, range / rof / spread, trigger, time_left, mates_alive, team_ammo, order block's columns that need no graph) | vector columns EXACT (squashed ones under the I rule) on (a), (b) | Sonnet | P8.0 |
+| P8.2 bulk sight + who sees whom | the many-pairs and window kernels over `unit_sight::has_los` (both forms); `VisionState` per tick on the card (all_round and cone, float64 cone test with contraction off); the refusal of a level with live `sim.cover` | pairs / windows equal to `rays_clear` / `window_clear` on random pairs over real maps (the SIGHT probe's shape); `seen_by` / `visible_by_team` equal every tick on (a), (b); `sight.md` amended | Opus | P8.0 |
+| P8.3 the device team picture | records, motion, last_hit, damage window, bars, death_tick, the object tracker with a stable object serial (a side array beside the grenade / charge tables, carried through `prune_grenades`); a new last stage of `_walk` consuming the tick's ring; the tick-0 update | the picture's whole state equal to the reference's EVERY TICK on (a), (b), (d) | Opus | P8.2 |
+| P8.4 the list and the masks | the five blocks, sorting (d2, id), every entry column (A.3) incl. `aim_of`, lof_solid / lof_mate, `ticks_to_within`, the lanes (walk + atomic rasteriser), objects, doors (in_reach lifted into a header with `use_door`'s geometry; hull; wired); the four masks through the library gates | `list`, `list_mask`, `list_uid`, masks EXACT on (a), (b), (d) | Opus | P8.1, P8.3 |
+| P8.5 the windows | the physics planes (float law, near and far, block max / argmax), `air`, `felt_temp`, `watched`, `sees_target`, far unit planes, `route` (`opening_states` + the device flood) and `place` | near_f / far_f under the I rule, near_u / far_u EXACT, on (a), (b), (d) | Opus | P8.2, P8.3, P8.4 |
+| P8.6 the decoder and the action latch on the card | decisions as a CUDA tensor; pointer -> uid against the device `list_uid`; the per-tick decoder kernel writing the latch columns directly; the slot state; `aim_view` (`prev`, `prev_aim`, `on_next_tick`) on the card; the device "every living zombie" horde latch; refusals of non-policy team controllers | the store's latch columns after every tick EXACT against the reference driven by the same decisions through `AgentPolicy` (corpus (c)); the obs's 1h columns EXACT | Opus | P8.4, P8.5 |
+| P8.7 reward, termination | the books on the card (one thread per env walking the ring in order, float64, no FMA), the old counters, `terminated` / `truncated` / result, the per-env "ended at tick t" latch (and the terminal observation built at that tick) | reward groups, counters, team blocks, rows_ended, terminated EXACT per step on (a), (b), (c) | Sonnet | P8.3 |
+| P8.8 the full view | full_list, full_mask, full_uid, full_match, full_watched (A.5) | EXACT / I rule on (a), (b), (c) | Opus | P8.4, P8.5 |
+| P8.9 per-env reset | the per-env restage of every row of G's table (first form: host `MatchSession` build + restage; the bank file only if measured needed), the episode key, the obs-side tick-0 state; the refusal-free proof that other envs are untouched | env e reset mid-batch == env e built alone (P7e.5's batch-invariance gate, extended to the obs); the other envs' state hashes unchanged at the reset tick | Opus | P8.7 |
+| P8.10 the `device` backend | `BatchedEnv(backend="device")`: the one API over the conductor, CuPy / torch arrays, `require_snapshot`'s device branch, the checkpoints (a download at the cadence), `agents/` taking device tensors (H) | BACKEND EQUALITY: the same run file, seed and action stream on `cpu_farm` and `device` give the same obs, rewards, terminals and per-env checkpoints, N = 1 and a batch | Opus | all |
+
+The old P8c (the training-episode record and its `Recording` export) stays after P8.10, re-scoped by F:
+the device-decoded raw rows are what the record must hold.
+
+THE THREE BIGGEST RISKS
+1. THE HOST CONTROLLERS THAT RUN EVERY TICK. Every `"v1"` run builds a `commander` (the bots' TEAM layer,
+   `control_bots.BotCommander`) per policy team; it reads the picture, `vision.state_for`, the units and
+   the room graph every tick and decides orders every 6 ticks; the zombie controller and the decoder read
+   the sim every tick too. Left on the host they cost a download per tick and break P7e.5's two syncs;
+   porting the commander is porting a bot layer. The order block (vector 84-95, list 47-51, far route /
+   place) cannot be designed until it is decided what drives orders on the device backend.
+2. THE TEAM PICTURE IS CROSS-TICK STATE WITH HOST SEMANTICS. Python object identity keys the object
+   tracker (no stable serial on the card), dict / deque orders shape the damage window's float sums and
+   the record lifetimes, and the update's position in the tick matters (after the conversion). A
+   divergence there propagates into every later observation and the reward's bars; it needs its own
+   every-tick gate before any block that reads it.
+3. FLOAT COLUMNS THAT CANNOT BE PROVED EQUAL. The squash beyond 1, `d_c`, `_hit_from` and the wind
+   direction call `log`, `log1p`, `hypot`, which neither the host libm nor CUDA guarantees to round
+   correctly; "exact" can be met on a corpus but not proved, and the host reference itself may differ
+   between Windows and the Linux node. A tolerance or a shared correctly rounded function is a ruling to
+   take before P8.1, not during it.
+(Fourth, close behind: the per-env reset has no form anywhere yet (G), and its cost if built on host
+`MatchSession` builds is unmeasured.)
+
+---------------------------------------------------------------------------------------------
+
+## K. What I could not determine
+
+1. **What drives ORDERS on the device backend** (BLOCKS the order block's design). The commander is
+   host Python reading the whole sim per tick (F step 5). Options I see, none decided: port the team
+   layer; run it on the host on its 6-tick period after a download (a sync every 6 ticks); or a v1
+   device run without a commander (orders 0), which changes what the network is shown against the farm
+   and is Erik's / the lead's call.
+2. **Which sight rule the device trains under** (shapes P8.2's scope). ship_demo (both pinned matches)
+   runs the default `cone` (float64 `within_cone`, IEEE-only but FMA-sensitive); the training rooms write
+   `all_round`; a run file may override (`[run] sight`).
+3. **Whether the host's `log`, `log1p`, `hypot` are correctly rounded** on Windows (UCRT) and on the
+   training node (glibc), and so whether a device correctly rounded implementation would equal the
+   reference everywhere (I.). Not tested here.
+4. **Float table values vs their Q16 rows on the card**: `[exchange] poison_min_density`,
+   `teargas_blind_density`, `[bots] smoke_dense`, the env profile `temperature_max`, the mitigation
+   `resist_mult[POISON]` are floats in the observation; the card holds Q16 rows for some
+   (`tab:poison_thresh_q`, `tab:teargas_thresh_q`, `tab:heat_temp_max_profile_q`,
+   `tab:mitig_resist_*_q`). Whether each float equals its Q16 row's value exactly was not checked; the
+   obs table should carry the floats' own bit patterns either way. `pressure_min` / `pressure_max` were
+   NOT FOUND on the card.
+5. **numpy's summation order** in `EnvRunner._reward` (`(counters[:, :, None] * G[None]).sum(axis=1)`, a
+   reduction over a non-last axis) and in `squash_array` / the block means: I believe a non-last-axis
+   sum is sequential, not pairwise, but did not verify it.
+6. **The float16 conversion on the card**: whether the toolkit in use offers a direct, correctly rounded
+   double -> half (`__double2half`) or a hand conversion is needed (numpy converts float64 -> float16
+   directly).
+7. **A continuous-path level with live `sim.cover`**: no conductor refusal found (only WEGO's
+   `march_cover`); whether the continuous shooting path reads `sim.cover` at all, and so whether such a
+   level is already wrong on the device, was not traced.
+8. **The zombie latch equivalence**: the reference's docstring says a controller naming every living
+   zombie reproduces the conductor's own call exactly; that the device's CONDUCTOR mode equals the
+   controller's SET at the tick's start (a zombie that dies before slot 5) was not checked by a gate.
+9. **Per-env reset cost**: the time of a host `MatchSession` build (level load, Simulation, spawn,
+   controllers) was not measured, so whether "host build + restage" is cheap enough or the bank file is
+   needed is open.
+10. **The device cost of the observation**: no kernel exists to measure; the windows' ray counts (B)
+    give the shape (about 625 x records rays per row per decision for `watched`, the same per enemy per
+    row for `full_watched`), not a time.
+11. **The checkpoints on the device backend** (`info["checkpoints"]`, `field_digest` / `tick_digest` at
+    the replay cadence): the conductor computes no digest on the card; each checkpoint is a download
+    (`DeviceConductor.download`) plus the host digest. Its cost at N = 256 was not measured.
+12. **The record capacity**: records are uncapped on the host (one per enemy unit seen within memory,
+    zombies included); I assumed U as the device cap but did not check whether a unit removed from
+    `sim.units` (none is, today) could keep a record.
