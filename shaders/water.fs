@@ -5,15 +5,22 @@
 // depth tint. MOOD PASS (step 3, phase 2, ADDED below the core and dormant-
 // safe): chromatic aberration. Matcap (§6) + SSR remain out.
 //
-// WATER W1 (#97, docs/water_look_design_2026-11-19.md): THE FINE SURFACE
-// THAT FLOWS replaced the ambient sine lattice. Its law and spec is the numpy
-// twin renderer/water_surface.py::detail_slope -- a change lands there first,
+// WATER W1 + W1b (#97, docs/water_look_design_2026-11-19.md): THE FINE
+// SURFACE THAT FLOWS replaced the ambient sine lattice; since W1b it is
+// PROCEDURAL -- two layers (the ripples, the swell) of wave_count travelling,
+// sharpened sines each, every one its own direction, wavelength and phase,
+// at water's own dispersion speed, so the pattern morphs (W1's baked texture
+// only slid). Its law and spec is the numpy twin
+// renderer/water_surface.py::detail_surface -- a change lands there first,
 // then here, and tests/gl_water_flow_check.py holds the two equal. Credits:
+//   - Mark Finch, "Effective Water Simulation from Physical Models", GPU
+//     Gems ch. 1, 2004 (the travelling sines, the sharpening exponent, the
+//     dispersion relation; waveSum);
 //   - Alex Vlachos, "Water Flow in Portal 2", SIGGRAPH 2010 (the two-phase
 //     flow map; the crossfade is renderer/advected_noise.py's, spliced in at
 //     the ADVECTION marker below);
 //   - Morten S. Mikkelsen, "Practical Real-Time Hex-Tiling", JCGT 11(3),
-//     2022 (hexSurface: the anti-tiling lookup).
+//     2022 (hexWaves: the anti-tiling lattice, here over the wave set).
 // WATER W2 (#97): FOAM WITH A LIFE. The foam amount (its own image, stepped
 // by shaders/water_foam.fs; the twin renderer/water_foam.py) is drawn as a
 // THRESHOLD on a bubble raft at two sizes riding the same flow map as the
@@ -22,9 +29,9 @@
 // Using Halftoning", GAMEON-NA 2011), OVER the water, lit as the floor is;
 // it darkens the floor beneath it and hides the glint. It replaced the old
 // gradient foam (foam_threshold / foam_intensity, deleted).
-// WATER W4 (#97): SHARP CAUSTICS. The fine surface's CURVATURE (a companion
-// bake, noise_bake.bake_ripple_curvature_rgba, read through the same hex-
-// tiled, flow-mapped lookup: hexSurface) gives the Jacobian of the refraction
+// WATER W4 (#97): SHARP CAUSTICS. The fine surface's CURVATURE (since W1b
+// the exact second derivatives of the same sines, summed as the slope:
+// waveSum / hexWaves) gives the Jacobian of the refraction
 // map x -> x + depth (1 - 1/n) grad h, and the floor's source light is
 // multiplied by min(1/|det J|, caustic_max) (signed: darker where the light
 // spreads, brighter where it focuses). The law and spec is the twin's
@@ -78,14 +85,21 @@
 //   u_art_uv_rect          art-UV subrect (matches lighting.fs; default 0,0,1,1)
 //   u_light_gain           the ship's exposure (lighting.fs's u_light_gain)
 //   u_grid_m               the grid's size in metres (w, h)
-//   u_detail               (texture period m, strength still, strength flow,
-//                           zoom fade)
-//   u_flow_ph              (crossfade phase, cycle s, drift u, drift v)
+//   u_detail               (ripples' strength still, flow, zoom fade, 0)
+//   u_swell                (swell's strength still, flow, spread rad, 0)
+//   u_wave                 (hex cell m, sharpness still, flow,
+//                           flow_still_mps)
+//   u_swell_dir            (still direction x, y, its angle, 0)
+//   u_waves[32]            per layer (ripples 0..15, swell 16..31) and wave:
+//                          (kx, ky rad/m, phase at now, height amplitude m)
+//   u_wave_n               waves per layer (ripples, swell)
+//   u_flow_ph              (crossfade phase, cycle s, foam drift x, y m)
 //   u_flow_lim             (max slide m, edge depth m, phase noise m,
 //                           speed ref m/s)
 //   u_agit_ref             the relative agitation (m/s; u_water's A) at which
 //                          the strength saturates
-//   u_debug_view           0 = the picture, 1 = (slope x, slope y, k, 1),
+//   u_debug_view           0 = the picture, 1 = (slope x, slope y,
+//                          sqrt(k_ripples^2 + k_swell^2), 1),
 //                          2 = (foam amount, foam cover, 0, 1),
 //                          3 = (hxx, hxy, hyy, caustic gain) (W4)
 //   u_caustic              (caustic_strength, caustic_max, 1 - 1/n, 0) (W4)
@@ -106,14 +120,8 @@ uniform sampler2D u_light_a;
 uniform sampler2D u_light_b;
 uniform sampler2D u_water;
 // W1: the second grid texture (renderer/water_surface.py::pack_flow), RGBA16F
-// bilinear: (vx, vy) m/s, solid (1), previous depth m (W2's), on unit 6;
-// the ripple bake (noise_bake.bake_ripple_rgba: slope xy, height), RGBA32F,
-// REPEAT, mipmapped + trilinear, on unit 7; W4: its curvature companion
-// (noise_bake.bake_ripple_curvature_rgba: d2h/du2, d2h/dudv, d2h/dv2, in the
-// slope's scaling), the same sampler state, on unit 10.
+// bilinear: (vx, vy) m/s, solid (1), previous depth m (W2's), on unit 6.
 uniform sampler2D u_flow;
-uniform sampler2D u_ripple;
-uniform sampler2D u_ripple_curv;
 // W2: the foam amount (unit 8) and the bubble bake (unit 9).
 uniform sampler2D u_foam;
 uniform sampler2D u_bubbles;
@@ -145,6 +153,12 @@ uniform vec4  u_art_uv_rect;
 uniform float u_light_gain;
 uniform vec2  u_grid_m;
 uniform vec4  u_detail;
+uniform vec4  u_swell;
+uniform vec4  u_wave;
+uniform vec4  u_swell_dir;
+const int MAX_WAVES = 16;
+uniform vec4  u_waves[32];
+uniform vec2  u_wave_n;
 uniform vec4  u_flow_ph;
 uniform vec4  u_flow_lim;
 uniform float u_agit_ref;
@@ -215,11 +229,12 @@ vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
 // <SMOKE_SHADOW>
 // <ADVECTION>
 
-// --- the hex-tiled ripple lookup (water_surface.py::hex_slope) ---------------
+// --- the hex lattice (water_surface.py::triangle_grid / hex_hash) ---------
 const float HEX_SCALE = 3.46410161514;     // 2 sqrt 3
 const float HEX_EXP = 7.0;
 const float HEX_FALLOFF_CONTRAST = 0.6;
-const float HEX_ROT_STRENGTH = 1.0;
+const float HEX_SKIP = 1e-2;
+const float TAU = 6.28318530718;
 
 uint hexHash(ivec2 v, uint salt) {
     uint x = (uint(v.x) * 0x8DA6B343u) ^ (uint(v.y) * 0xD8163841u)
@@ -233,13 +248,60 @@ float hexHash01(ivec2 v, uint salt) {
     return float(hexHash(v, salt) >> 8u) * (1.0 / 16777216.0);
 }
 
-// The slope at st (texture units); dx, dy = st's screen derivatives (the
-// taps jump between vertices, so the lookup takes explicit gradients).
-// With curv (W4, water_surface.py::hex_surface) also the Hessian (hxx, hxy,
-// hyy) in texture units: each tap's baked tensor rotated back on both indices
-// (R^T Hf R), blended with the slope taps' own weights.
-vec2 hexSurface(vec2 st, vec2 dx, vec2 dy, bool curv, out vec3 hess) {
-    vec2 sts = st * HEX_SCALE;
+// The effective flow at a point in metres (water_surface.py::grid_flow_fn):
+// bilinear, clamped to the edge texels, faded over the first metres of
+// depth. textureLod: it is read inside the lattice's divergent loop.
+vec2 effFlowAt(vec2 c_m) {
+    vec2 uv = clamp(c_m / u_grid_m, 0.5 * u_texel, 1.0 - 0.5 * u_texel);
+    return textureLod(u_flow, uv, 0.0).xy
+         * smoothstep(0.0, u_flow_lim.y, textureLod(u_water, uv, 0.0).b);
+}
+
+// The swell's direction for an effective flow v (swell_direction).
+float swellDirection(vec2 v) {
+    float sp = length(v);
+    float f = clamp(sp / u_flow_lim.w, 0.0, 1.0);
+    vec2 vn = sp > 0.0 ? v / sp : vec2(0.0);
+    vec2 D = u_swell_dir.xy * (1.0 - f) + vn * f;
+    return dot(D, D) > 1e-12 ? atan(D.y, D.x) : u_swell_dir.z;
+}
+
+// ONE wave set's sum (water_surface.py::wave_sum): layer L's waves read at
+// q (metres, in the set's own frame), Finch's sharpness K: the slope, and
+// with curv the exact Hessian (hxx, hxy, hyy) in 1/m, in that frame.
+vec2 waveSum(int L, vec2 q, float K, bool curv, out vec3 hess) {
+    vec2 sl = vec2(0.0);
+    vec3 hs = vec3(0.0);
+    bool plain = K - 1.0 < 1e-6;
+    int n = int(u_wave_n[L]);
+    for (int i = 0; i < n; ++i) {
+        vec4 w = u_waves[L * MAX_WAVES + i];
+        float psi = dot(w.xy, q) + w.z;
+        float s_ = sin(psi);
+        float c_ = cos(psi);
+        float u = (s_ + 1.0) * 0.5;
+        float upk = plain ? 1.0 : pow(max(u, 0.0), K - 1.0);
+        float aKu = w.w * K * upk;
+        sl += (aKu * c_) * w.xy;
+        if (curv) {
+            float g2 = aKu * (2.0 * (K - 1.0) * (1.0 - u) - s_);
+            hs += g2 * vec3(w.x * w.x, w.x * w.y, w.y * w.y);
+        }
+    }
+    hess = hs;
+    return sl;
+}
+
+// The layers' hex-tiled wave sums at the advected point p (metres)
+// (water_surface.py::hex_waves): ONE lattice (a vertex every wave_cell_m),
+// at each of its three taps every layer's set read in its own frame (turned
+// and shifted by the layer's own hashes), each layer's taps blended by
+// Mikkelsen's (1 - c + c |s|) w^7 -- a tap under HEX_SKIP of the largest
+// w^7 is not evaluated. The slopes in sl[L], the Hessians in hs[L].
+void hexWaves(vec2 p, float K, bool curv, bvec2 on, out vec2 sl[2],
+              out vec3 hs[2]) {
+    float cell = u_wave.x;
+    vec2 sts = p / cell;                  // st x HEX_SCALE
     vec2 sk = vec2(sts.x - 0.57735027 * sts.y, 1.15470054 * sts.y);
     vec2 b = floor(sk);
     vec2 f = sk - b;
@@ -247,42 +309,53 @@ vec2 hexSurface(vec2 st, vec2 dx, vec2 dy, bool curv, out vec3 hess) {
     float s = (-fz >= 0.0) ? 1.0 : 0.0;
     float s2 = 2.0 * s - 1.0;
     vec3 w = max(vec3(-fz * s2, s - f.y * s2, s - f.x * s2), vec3(0.0));
+    vec3 w7 = pow(w, vec3(HEX_EXP));
+    float wmax = max(w7.x, max(w7.y, w7.z));
     ivec2 bi = ivec2(b);
     int si = int(s);
     ivec2 verts[3] = ivec2[3](bi + ivec2(si, si), bi + ivec2(si, 1 - si),
                               bi + ivec2(1 - si, si));
-    vec2 acc = vec2(0.0);
-    vec3 hacc = vec3(0.0);
-    float wsum = 0.0;
+    vec2 acc[2] = vec2[2](vec2(0.0), vec2(0.0));
+    vec3 hacc[2] = vec3[2](vec3(0.0), vec3(0.0));
+    float wsum[2] = float[2](0.0, 0.0);
     for (int i = 0; i < 3; ++i) {
+        if (w7[i] < HEX_SKIP * wmax) continue;
         ivec2 v = verts[i];
         vec2 cen = vec2(float(v.x) + 0.5 * float(v.y),
-                        float(v.y) / 1.15470054) / HEX_SCALE;
-        float th = 6.28318530718 * HEX_ROT_STRENGTH
-                 * (hexHash01(v, 3u) - 0.5);
-        float c = cos(th);
-        float sn = sin(th);
-        vec2 d = st - cen;
-        vec2 q = vec2(c * d.x - sn * d.y, sn * d.x + c * d.y) + cen
-               + vec2(hexHash01(v, 1u), hexHash01(v, 2u));
-        mat2 R = mat2(c, sn, -sn, c);          // R * d, as above
-        vec2 sm = textureGrad(u_ripple, q, R * dx, R * dy).rg;
-        vec2 g = vec2(c * sm.x + sn * sm.y, -sn * sm.x + c * sm.y);
-        float wi = (1.0 - HEX_FALLOFF_CONTRAST
-                    + HEX_FALLOFF_CONTRAST * length(sm))
-                 * pow(w[i], HEX_EXP);
-        acc += wi * g;
-        if (curv) {
-            vec3 cm = textureGrad(u_ripple_curv, q, R * dx, R * dy).rgb;
-            float cc = c * c, cs = c * sn, ss = sn * sn;
-            hacc += wi * vec3(cc * cm.x + 2.0 * cs * cm.y + ss * cm.z,
-                              -cs * cm.x + (cc - ss) * cm.y + cs * cm.z,
-                              ss * cm.x - 2.0 * cs * cm.y + cc * cm.z);
+                        float(v.y) / 1.15470054) * cell;
+        vec2 d = p - cen;
+        for (int L = 0; L < 2; ++L) {
+            if (!on[L]) continue;
+            uint salt = uint(10 * L);
+            float hr = hexHash01(v, 3u + salt);
+            float th = L == 0 ? TAU * (hr - 0.5)
+                              : swellDirection(effFlowAt(cen))
+                                + u_swell.z * (hr - 0.5);
+            vec2 o = vec2(hexHash01(v, 1u + salt), hexHash01(v, 2u + salt))
+                   * cell;
+            float c = cos(th);
+            float sn = sin(th);
+            // the set's own frame: R^T (p - c) + o; back: R s, R H R^T
+            vec2 q = vec2(c * d.x + sn * d.y, -sn * d.x + c * d.y) + o;
+            vec3 h;
+            vec2 g = waveSum(L, q, K, curv, h);
+            float wi = (1.0 - HEX_FALLOFF_CONTRAST
+                        + HEX_FALLOFF_CONTRAST * length(g)) * w7[i];
+            acc[L] += wi * vec2(c * g.x - sn * g.y, sn * g.x + c * g.y);
+            if (curv) {
+                float cc = c * c, cs = c * sn, ss = sn * sn;
+                hacc[L] += wi * vec3(cc * h.x - 2.0 * cs * h.y + ss * h.z,
+                                     cs * h.x + (cc - ss) * h.y - cs * h.z,
+                                     ss * h.x + 2.0 * cs * h.y + cc * h.z);
+            }
+            wsum[L] += wi;
         }
-        wsum += wi;
     }
-    hess = hacc / wsum;
-    return acc / wsum;
+    for (int L = 0; L < 2; ++L) {
+        float inv = wsum[L] > 0.0 ? 1.0 / wsum[L] : 0.0;
+        sl[L] = acc[L] * inv;
+        hs[L] = hacc[L] * inv;
+    }
 }
 
 vec2 capSlide(vec2 d, float cap) {
@@ -308,23 +381,43 @@ FlowLayers flowLayers(vec2 world_uv, float tileDepth) {
 }
 
 // THE fine surface (water_surface.py::detail_surface): its slope (y south)
-// in .xy and its strength k in .z; with curv (W4) its Hessian in 1/m in
-// hess -- each layer's tex-space Hessian x k / P, cross-faded as the slope.
+// in .xy and its RMS strength sqrt(k_ripples^2 + k_swell^2) in .z; with
+// curv (W4) its exact Hessian in 1/m in hess. Each layer is read at the two
+// flow layers' advected points and cross-faded, or once where both slides
+// are 0 (still water).
 vec3 detailSurface(FlowLayers L, float agit, bool curv, out vec3 hess) {
-    float P = u_detail.x;
-    vec2 q0 = (L.p_m - L.d0) / P - u_flow_ph.zw;
-    vec2 q1 = (L.p_m - L.d1) / P - u_flow_ph.zw;
-    vec2 dx = dFdx(L.p_m) / P;
-    vec2 dy = dFdy(L.p_m) / P;
-    vec3 h0, h1;
-    vec2 n1 = hexSurface(q1, dx, dy, curv, h1);
-    vec2 n0 = hexSurface(q0, dx, dy, curv, h0);
-    vec2 n = mix(n1, n0, L.w0);
     float sat = clamp(max(length(L.v) / u_flow_lim.w,
                           agit / u_agit_ref), 0.0, 1.0);
-    float k = (u_detail.y + (u_detail.z - u_detail.y) * sat) * u_detail.w;
-    hess = mix(h1, h0, L.w0) * (k / P);
-    return vec3(n * k, k);
+    hess = vec3(0.0);
+    bvec2 on = bvec2(u_detail.x > 0.0 || u_detail.y > 0.0,
+                     u_swell.x > 0.0 || u_swell.y > 0.0);
+    if (!any(on)) return vec3(0.0);
+    float K = u_wave.y + (u_wave.z - u_wave.y) * sat;
+    // the waves' own slides (wave_slides): none below half flow_still_mps
+    float fs = smoothstep(0.5 * u_wave.w, u_wave.w, length(L.v));
+    vec2 d0 = L.d0 * fs;
+    vec2 d1 = L.d1 * fs;
+    vec2 s0[2], s1[2];
+    vec3 h0[2], h1[2];
+    hexWaves(L.p_m - d0, K, curv, on, s0, h0);
+    if (!all(equal(d0, d1))) {
+        hexWaves(L.p_m - d1, K, curv, on, s1, h1);
+        for (int j = 0; j < 2; ++j) {
+            s0[j] = mix(s1[j], s0[j], L.w0);
+            h0[j] = mix(h1[j], h0[j], L.w0);
+        }
+    }
+    vec2 slope = vec2(0.0);
+    float k2 = 0.0;
+    for (int j = 0; j < 2; ++j) {
+        if (!on[j]) continue;
+        vec2 ks = j == 0 ? u_detail.xy : u_swell.xy;
+        float k = (ks.x + (ks.y - ks.x) * sat) * u_detail.z;
+        slope += s0[j] * k;
+        hess += h0[j] * k;
+        k2 += k * k;
+    }
+    return vec3(slope, sqrt(k2));
 }
 
 // --- the caustic (W4; water_surface.py::caustic_det / caustic_gain) --------
@@ -361,10 +454,10 @@ float bubbleAt(vec2 p) {
 float foamCover(FlowLayers L, float amount) {
     float f = clamp(amount / u_foam_a.z, 0.0, 1.0);
     float t = laceThreshold(f);
-    vec2 drift = u_flow_ph.zw * u_detail.x;       // the drift in metres
+    vec2 drift = u_flow_ph.zw;                    // the drift in metres
     float c0 = lace(bubbleAt(L.p_m - L.d0 - drift), t);
     float c1 = lace(bubbleAt(L.p_m - L.d1 - drift), t);
-    return mix(f, mix(c1, c0, L.w0), u_detail.w);
+    return mix(f, mix(c1, c0, L.w0), u_detail.z);
 }
 
 // The ripple height (R) of the water texture at a world UV.

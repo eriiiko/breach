@@ -286,11 +286,23 @@ _WATER_DIALS = (
     ("caustic_max", 3.0, "Caust max", 1.05, 10.0),
     # Phase 2 (mood pass): chromatic aberration.
     ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
-    # W1: the fine surface that flows.
-    ("detail_wavelength_m", 0.12, "Detail m", 0.03, 0.5),
-    ("detail_strength_still", 0.03, "Still str", 0.0, 0.2),
+    # W1 + W1b: the fine surface that flows -- procedural travelling sines,
+    # the ripples and the swell (wave_count and swell_wave_count stay
+    # config-only: not a float slider).
+    ("detail_wavelength_m", 0.12, "Ripple m", 0.03, 0.5),
+    ("detail_strength_still", 0.05, "Still str", 0.0, 0.2),
     ("detail_strength_flow", 0.3, "Flow str", 0.0, 0.8),
-    ("detail_drift_mps", 0.03, "Drift m/s", 0.0, 0.3),
+    ("detail_drift_mps", 0.03, "Foam drift", 0.0, 0.3),
+    ("wave_sharpness", 1.6, "Sharp", 1.0, 6.0),
+    ("wave_sharpness_flow", 2.6, "Sharp flow", 1.0, 6.0),
+    ("wave_speed", 1.0, "Wave speed", 0.0, 3.0),
+    ("wave_cell_m", 2.5, "Cell m", 0.5, 8.0),
+    ("flow_still_mps", 0.05, "Still flow", 0.005, 0.5),
+    ("swell_wavelength_m", 0.8, "Swell m", 0.2, 3.0),
+    ("swell_strength_still", 0.06, "Swell str", 0.0, 0.3),
+    ("swell_strength_flow", 0.15, "Swell flow", 0.0, 0.6),
+    ("swell_dir_deg", 30.0, "Swell dir", -180.0, 180.0),
+    ("swell_spread_deg", 35.0, "Swell sprd", 0.0, 180.0),
     ("flow_cycle_s", 0.6, "Flow cyc s", 0.1, 3.0),
     ("flow_speed_ref", 1.0, "Flow ref", 0.05, 4.0),
     ("flow_max_offset_m", 0.5, "Slide cap", 0.0, 2.0),
