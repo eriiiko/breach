@@ -3064,6 +3064,44 @@ P8.4b -> P8.4c -> P8.5a -> P8.7 -> P8.6a -> P8.6b -> P8.8 -> P8.8b ->
 P8.9a -> P8.9b -> P8.10a -> P8.10b. The bench is re-run after P8.5a and
 after P8.6b.
 
+**P8.0 AS-BUILT (2026-11-20, branch `29-p80-obs-path`).** The device
+observation is `simulation.device_obs.DeviceObservation(conductor, specs,
+n_slots, decimation, n_teams=None)`: CuPy buffers of every served key
+(`served_shapes`: `obs_spec_v1.shapes` + `action_spec_v1.mask_shapes` +
+`obs_spec_v1.full_shapes`) and a `final_` set, a roster row map `(N, T*S)`
+int32 (store row or -1, from `Simulation.roster`, checked against the store's
+`slot` column at the build), a per-env parameter row (episode start tick,
+decimation) and an `ended` `(N,)` uint8 stub latch; `torch()` (DLPack,
+pointer-identical), `team_rows(t)`, `host(keys)` (the gate's download). The
+conductor gained `attach_observation(obs)` and ONE call line at the walk's
+end (`11' observation`, after slot 10's tail): `build_if_due()` launches when
+some env is on a decision tick (host clocks, no sync); the kernel checks each
+env's own cadence on the tick row and skips an ended env. The block is
+`bp.obs_block` (`cpp/src/cuda_obs.cu`): an atomic-max door plane from the
+door / door-tile tables, then one thread per (env, row, window cell) writing
+near `wall` / `door`, far `wall_share` (float16 bit patterns of k/16 from a
+generated table) / `door`, and `valid` / `in_match` (cell 0). Constants: the
+generated `cpp/src/obs_layout.h` (`tools/gen_obs_layout.py`, fingerprint
+checked at the build). The column-to-patch table is
+`tests/obs_column_owners.toml` (owner choices where the inventory is silent
+are written at its head); `device_obs.BUILT` must equal the rows up to the
+check's `PATCH`. The shared check `tests/cuda_obs_check.py` plays each
+corpus match ONCE on the host with its own controllers, tapping the intents
+and the owned host observation per decision (no recording, no second
+replay); parts gate / batch / handover / syncs / ended; breaks `anchor`,
+`stale`, `constant`. Gates: raw-bit equal at every decision tick on bots
+(338 decisions), bots_v1 (69), range_door (51); batches N = 2 / 4 of
+ship_demo (seeds 11-14, ends 1664 / 300 / 970 / 275) and range_door (seeds
+21-24); the three breaks red at their first decision; torch pointers equal,
+tick stream flags 0 (blocking), CuPy / torch on stream 0; 2.00 syncs per
+steady tick at N = 1 and 2 with blocks built. Cost (`tools/bench_conductor.py
+--obs`, ship_demo, GPU time of one decision's blocks for all envs): 0.014 ms
+at N = 1, 0.017 ms at N = 64, 0.039 ms at N = 256. The twin row
+`observation` (Class T) sits on slot `11 team picture / observation`, so the
+team picture and vision became its traced files (their `[not_twinned]` rows
+retired); `obs_spec_v1.py` / `rl_env.py` are not traced by the twin corpus
+(named in the row as an accepted gap).
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
