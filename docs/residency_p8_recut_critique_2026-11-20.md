@@ -172,3 +172,164 @@ subprocess and runs all of its parts on that one replay, not a new script per pa
 `spawn_match` starts the picture (`Simulation.start_team_picture`), `ObsContext.build(sim, spec,
 n_slots)` needs only the spec, and `observe_rows` takes `aims=None`. The commander (inventory F) is
 not needed on (a) / (b), because orders arrive as recorded intents.
+
+---------------------------------------------------------------------------------------------
+
+## Lens 3: order, dependencies, size
+
+**12. MAJOR: columns have no owning patch. P8.1's gate "vector EXACT" cannot be met when P8.1
+lands.**
+Evidence (inventory A.2): vector col 0 divides by the picture's `bars`, 5-6 read the picture's
+`motion`, 66-70 its `last_hit`, and 80-83 its records (all P8.3). 71-76 are the decoder's (P8.6).
+84-95 need the room graph and the route (P8.5). 58-65 and 96 are the physics law (P8.5). List col
+28 / 66 are the decoder's, and 52-53 the lanes'.
+Change: add a column to patch table to the plan, one row per column or plane of A.2 to A.5. Each
+gate compares exactly the columns its table rows own, plus everything owned before. "Vector EXACT"
+becomes true only in the last patch that owns a vector column.
+
+**13. MAJOR: P8.4, P8.5, P8.9 and P8.10 are each bigger than one Opus run. Split them.**
+- P8.4 holds five list blocks x 67 columns, the (d2, id) sort, `aim_of` (a serial
+  nearest-clear-candidate loop), `lof_solid` / `lof_mate`, `ticks_to_within` (an iteration),
+  `lanes` (a walk plus an atomic rasteriser), objects, doors with the `use_door` lift out of
+  `cuda_unit_verbs.cu` (a Class T kernel with its own two-door guard), and the four masks. Split:
+  - P8.4a: lanes + `aim_of` + lof. These sight-derived per-unit answers are also needed by
+    `near_u[4]` (P8.5) and the full view (P8.8). Give them their own exact gate.
+  - P8.4b: the list blocks and entry columns.
+  - P8.4c: the masks and the `use_door` geometry lift. `tests/cuda_unit_verbs_check.py`'s
+    two-door scene re-runs.
+- P8.5: split the route (`opening_states`, seeds, `horde.flood` on the card, `candidates` /
+  `field_at`, block-min, plus the vector 84-95 and list 47-51 order columns) into P8.5b, with
+  corpus (c) / (d). P8.5a keeps the physics law, air, felt_temp and the two sight planes.
+- P8.9: G's table has no per-env form for the store slice, the device tables, the tick row, every
+  object table (`DeviceTable.stage_lists` is all-envs) and the horde cache. Split it into P8.9a
+  (sim-side per-env restage, gated by §5.2 batch invariance with one env resetting) and P8.9b (the
+  obs-side tick-0 state: the picture's first update, decoder slots, books, obs-table rows).
+- P8.10: split the env backend (P8.10a, the one API returning CuPy) from `agents/` on device
+  tensors (P8.10b, a different region, `.claude/rules/agents.md`, with its own tests).
+
+**14. MAJOR: the terminal observation is in no patch, and it depends on every block.**
+Evidence: inventory A.0 ("every key has a `final_` twin") and E.4 (the terminal observation is
+built AT the ending tick, while the conductor ticks the ended env on). `rl_env._worker_main`'s
+"step" builds `final_obs` / `final_full_view` before the reset. None of the twelve rows mentions
+`final_`, the per-env "ended at tick t" latch, or freezing the books and picture of an ended env.
+Change: P8.7 takes the ended latch and the frozen books. A new row after P8.8 builds `final_obs` /
+`final_full_view` at the ending tick, double-buffered (inventory P8.0 had the buffers), gated on
+(a) / (c) where a match ends inside a decision.
+
+**15. MINOR: the order sentence says "P8.4 and P8.7 (both need only P8.3)".**
+P8.4 also needs P8.2's pair kernel for `lof_solid` and `aim_of`, and P8.1's obs table for every
+denominator. P8.7 needs the obs table's `n_t`. Both are satisfied by the linear order, but the
+sentence licenses a wrong parallel start. P8.5 needs P8.4a's lanes (`near_u[4]`).
+Change: write the real edges.
+
+**16. MINOR: P8.0 is honestly small and proves the buffers, DLPack, the row map and the in-tick
+build. It does not prove the decision cadence under ended envs.**
+Change: P8.0's kernel skips an env whose ended latch is set (a stub latch, so P8.7 only fills it).
+P8.0's test asserts the CuPy buffer's stream ordering with torch (the blocking tick stream,
+inventory H).
+
+---------------------------------------------------------------------------------------------
+
+## Lens 4: decisions 3 and 4 at N = 256
+
+**17. MAJOR: decision 3's "host commander on a 6-tick download" needs a host stand-in for a whole
+Simulation that no patch builds, and after resets it costs a sync on every other tick, not every
+sixth.**
+Evidence: `BotCommander.handle_frame` (control_bots.py lines 1580-1594) and `TeamBrain.update`
+(lines 366-430) read `sim.units` (Unit objects: alive, team, zombie, footprint, centres; and through
+`fire_lanes(sim, ...)` the mates' trigger, facing and weapon), `sim.team_picture.records`,
+`vision.state_for(sim)` (which recomputes `VisionState` on the host from `gmap` when not cached:
+B.2's pair rays), `horde.flood(sim.gmap, bots.tile_ok(sim), ...)` (solid + doors),
+`room_goal` / `enemy_room_goal` (room graph + units), `sim.tick` and `sim._seed`. On the device
+backend no host Simulation is stepped.
+Cost: `TeamBrain.update` measured at 0.24 ms mean (200 calls, ship_demo bots, 600 ticks). At
+N = 256 with 2 policy teams that is about 512 x 0.24 / 6 ≈ 20 ms of host Python per tick, plus the
+mirror's build and download. The plan's 2.6 ms per env per decision puts the batch tick near 166 ms
+at N = 256, so this is about 12 %. It does not defeat the purpose by itself.
+The phase is the real cost. The commander is due when `tick - updated_at >= 6`, counted from the
+env's episode tick 0. Episodes restart at decision boundaries (multiples of decimation 4), so the
+envs' phases spread over {0, 2, 4}. After the first resets some env is due on every even tick,
+which is a third sync on half the ticks, not one every 6. The orders latch at the head of the tick
+whose state they read, so the card waits on host Python each time.
+Change: P8.6 names and builds the commander's view (a host object exposing exactly those reads,
+filled from one download, with vision taken from P8.2's device `VisionState`, never recomputed).
+It measures with staggered resets. It writes the alternative now for Erik: a commander period that
+is a multiple of the decimation (4 or 8), which changes what a soldier is shown versus the farm
+unless the farm changes too, or porting the team layer.
+
+**18. MINOR: decision 4 (host build + restage) is affordable. Build the next episode ahead of time.**
+Evidence: `MatchSession(level, None, seed)` on ship_demo measured 18-21 ms (warm level object; no
+ObsContext, ActionTables or level load). Episodes of 300 to 1600 ticks at N = 256 give 0.16 to 0.85
+resets per tick, so 3 to 18 ms per tick of host build: a few percent of the batch tick.
+`episode_draw` is pure, so env e's next (seed, level) is known an episode ahead.
+Change: build env e's next session while its current episode runs (a host thread, or between
+ticks), so a reset only restages. Keep the bank as the measured fallback.
+
+---------------------------------------------------------------------------------------------
+
+## Lens 5: what the plan silently drops
+
+**19. MAJOR: the device backend's doors are absent: coverage counters, the pre-flight,
+`require_snapshot`'s device branch, the checkpoints, and the twin-manifest rows of the new device
+builders.**
+Evidence: old P8b (§9 line 3497) carried "the table upload, ... the pre-flight and the coverage
+counters". §5.3 / §5.5 require the pre-flight and coverage. §6 says `require_snapshot(backend=
+"device")` needs an empty ledger and a passed pre-flight, and the training doors "refuse a feature
+without a twin". `.claude/rules/rl-agent.md` says `device` "is refused until P8b", and P8b no
+longer exists. The re-cut's P8.10 row names none of these; the checkpoint download appears only
+under "open by name".
+Change:
+- P8.10a lists `require_snapshot`'s device branch (ledger + pre-flight), the checkpoint download at
+  the replay cadence (measured at N = 256), and the pre-flight of K random episodes across both
+  backends with coverage counters.
+- Every patch that lands a device builder adds its Class T row to `tests/twin_manifest.toml` with
+  its generated file set (`obs_spec_v1`, `team_picture`, `reward_v1`, `control_policy`,
+  `action_spec_v1`, `verb_gates`, ...).
+
+**20. MINOR: stale "P8b" in rules and headers that the re-cut retires.**
+`.claude/rules/device-units.md` lines 35, 62, 63, 66, 83; `.claude/rules/hand-verbs.md` line 38;
+`.claude/rules/rl-agent.md` line 58; `cpp/src/cuda_unit_damage.cuh` line 8;
+`cpp/src/cuda_unit_sight.cuh` line 18; `.claude/rules/sight.md` ("No device kernel").
+Change: each P8.x patch that lands the thing amends the line naming it. The design paragraph lists
+the mapping P8b → P8.x.
+
+**21. MINOR: smaller drops.**
+- `check_actions` / `masked_choices` on the card (inventory D, F step 1).
+- `RewardBooksMismatch` as a counted per-env fault (E.1).
+- The record capacity U (K12) as a refused overflow.
+- The zombie-latch equivalence gate (K8; P8.6 implies it, so state it as a gate).
+- The obs-side "per template" rows (G's last row) in P8.9.
+
+---------------------------------------------------------------------------------------------
+
+## Lens 6: rules
+
+**22. MINOR: THE WALL needs a device gate of its own, not only equality.**
+Evidence: the rule ("units reach a soldier ONLY through its team's picture") is held on the host by
+the counterfactual family (`tests/test_obs_spec_v1.py`). On the card every kernel can read every
+store row. Equality catches a leak only when the corpus moves an unseen unit between sightings.
+Change: P8.4b ports one counterfactual case. Perturb an unseen enemy's store row (position, hp) on
+the device and assert the soldier keys are unchanged, bit for bit.
+
+**23. MINOR: Device tables rule.** The spec's constants (WIN, BLOCK, SQUASH_CAP, E, K, the uid
+bases, column indices, the cone threshold `cos_threshold(55)`, `zombie_near_tiles`, lane dials)
+must reach the card as generated header constants or obs-table rows, read from `obs_spec_v1`'s own
+tables and `ObsContext`. Never a literal in a `.cu`, never a kernel argument.
+Change: name the generator (in the pattern of `tools/gen_swarm_layout.py`) in P8.0 and add an index
+line for it.
+
+**24. MINOR: floor division.** `team_picture.fire_lanes_of` / `draw_lanes` (lines 393-394, 441:
+`(tx - sx) * i // n`, `dx * i // n`) use Python's FLOORING `//` on negative operands. CUDA `/`
+truncates (`unit_fixed.div_trunc` docstring).
+Change: P8.4a's brief names it, and the lane kernel uses a floor-division helper from the kit.
+
+**25. Not a collision (checked):** Class T is the right class for every obs, decoder, books and
+reset kernel (§6 table). Decision 1's host change touches no synced state, except `onto_reach_q`
+(finding 1), which is shown not to move any quantized value. "One driver per law per tick" holds
+if the device picture stage is the conductor's slot 11 and the played game's host picture is never
+also fed by it.
+
+---------------------------------------------------------------------------------------------
+
+Count: 1 BLOCKER (7), 10 MAJOR (1, 2, 3, 8, 9, 12, 13, 14, 17, 19), 12 MINOR (4, 5, 6, 10, 15, 16,
+18, 20, 21, 22, 23, 24); 2 checked non-findings (11, 25).
