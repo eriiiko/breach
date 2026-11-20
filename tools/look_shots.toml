@@ -531,7 +531,7 @@ note = "fss_lone without the F4a extras (embers, heat shimmer): their A/B twin -
 hide = ["embers", "shimmer"]
 
 # --- #114: lit 3D units, tier 1 -------------------------------------------
-# The playground's marine Bravo (footprint x 13..15, y 42..44; Alpha stands
+# The test_arena's marine Bravo (footprint x 13..15, y 42..44; Alpha stands
 # west of him, Delta south) under ONE omni flashlight, one tile of floor
 # between the lamp and his footprint, to the N, S, E, W and NE. The level's
 # lamps and beacon are off so the flashlight is the only light. Judges whether
@@ -546,7 +546,7 @@ hide = ["embers", "shimmer"]
 # before the drift: the stamp and the drawn body coincide.
 [[shot]]
 name = "unit_lamp_n"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -558,7 +558,7 @@ note = "#114: marine Bravo, omni lamp NORTH of his footprint (one tile gap)."
 
 [[shot]]
 name = "unit_lamp_s"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -570,7 +570,7 @@ note = "#114: marine Bravo, omni lamp SOUTH of his footprint (one tile gap)."
 
 [[shot]]
 name = "unit_lamp_e"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -582,7 +582,7 @@ note = "#114: marine Bravo, omni lamp EAST of his footprint (one tile gap)."
 
 [[shot]]
 name = "unit_lamp_w"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -594,7 +594,7 @@ note = "#114: marine Bravo, omni lamp WEST of his footprint (one tile gap; Alpha
 
 [[shot]]
 name = "unit_lamp_ne"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0

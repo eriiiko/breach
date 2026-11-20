@@ -331,7 +331,7 @@ def test_heat_and_the_golden_are_untouched_by_the_flicker():
     (a harsher flicker than the game's, which names only burning tiles) --
     produces the committed GOLDEN_AGGREGATE. Non-vacuous: the engine held the
     rows on every tick. (The scenario's small fire never reaches the visible
-    glow floor in 30 ticks, so the light-moves half is the playground test
+    glow floor in 30 ticks, so the light-moves half is the test_arena test
     below.)
 
     BREAKS IF: the emission multiplier reaches any synced integer -- the heat
@@ -367,7 +367,7 @@ def test_heat_and_the_golden_are_untouched_by_the_flicker():
 
 
 def test_the_gain_brightens_the_fires_light_and_moves_nothing_else():
-    """PROPERTY (G3 adjustment round, design 17): on a lit burning playground
+    """PROPERTY (G3 adjustment round, design 17): on a lit burning test_arena
     with the flicker OFF, ticking with the gain rows (gain 4: every burning
     tile's light emission x 4) vs at gain 1 (no rows): light_q is never lower
     anywhere and higher around the fire -- the fire lights the room more --
@@ -381,7 +381,7 @@ def test_the_gain_brightens_the_fires_light_and_moves_nothing_else():
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
     from level_loader import load as load_level
-    level = load_level("playground")
+    level = load_level("test_arena")
 
     def mk():
         sim = Simulation(level, seed=5, breach_physics=bp, enable_recorder=False)
@@ -419,7 +419,7 @@ def test_the_gain_brightens_the_fires_light_and_moves_nothing_else():
 
 def test_disabled_flicker_is_the_pre_f4b_light_and_heat_is_identical_on_off():
     """PROPERTY ("disabled -> light_q bit-identical to before F4b"; "heat
-    identical on/off"): on a lit burning playground, ticking with the flicker
+    identical on/off"): on a lit burning test_arena, ticking with the flicker
     rows ON vs with None (what a disabled flicker hands over) vs with the
     pre-F4b call (set_light without the argument): the None and pre-F4b runs
     are identical in EVERY GameMap array including light_q, and the ON run
@@ -432,7 +432,7 @@ def test_disabled_flicker_is_the_pre_f4b_light_and_heat_is_identical_on_off():
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
     from level_loader import load as load_level
-    level = load_level("playground")
+    level = load_level("test_arena")
 
     def mk():
         sim = Simulation(level, seed=5, breach_physics=bp, enable_recorder=False)

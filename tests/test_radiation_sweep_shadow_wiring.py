@@ -154,8 +154,8 @@ def test_ab_default_scenario_the_sweep_runs_every_tick_and_only_its_smoke_radiat
           f"reaches {seen['fluence_max']}")
 
 
-def _playground_with_a_hot_wood_tile():
-    lvl = load_level("playground")
+def _test_arena_with_a_hot_wood_tile():
+    lvl = load_level("test_arena")
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -193,7 +193,7 @@ def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
     temperature plane, or the extinction planes are not projected from the
     material table (a wood tile with a == 0 would neither emit nor absorb).
     """
-    sim, (y, x) = _playground_with_a_hot_wood_tile()
+    sim, (y, x) = _test_arena_with_a_hot_wood_tile()
     g = sim.gmap
     # The dynamic plane's resting state equals the static plane (d == a with
     # no bodies), so the invariant 0 <= a <= d holds for a direct physics call
@@ -217,7 +217,7 @@ def test_sweep_on_a_real_level_is_non_trivial_after_one_tick():
     assert int(rn.max()) > 0, "some cell must absorb (rad_net_sweep > 0)"
     assert int(rn.sum()) + int(rf.sum()) + int(ra.sum()) == 0
     assert np.all(g.rad_fluence > 0) and int(g.rad_fluence.max()) > amb
-    print(f"\nplayground level: hot wood at ({y},{x}) rad_net_sweep={int(rn[y, x])}, "
+    print(f"\ntest_arena level: hot wood at ({y},{x}) rad_net_sweep={int(rn[y, x])}, "
           f"max absorber {int(rn.max())}, sweep identity exact")
 
 
@@ -237,7 +237,7 @@ def test_shadow_planes_survive_the_tick_and_hold_the_sweep_s_own_values():
     BREAKS IF: a `fill(0)` for these planes comes back into Simulation.step, or
     run() stops writing them.
     """
-    sim, _ = _playground_with_a_hot_wood_tile()
+    sim, _ = _test_arena_with_a_hot_wood_tile()
     g = sim.gmap
     mid = {}
 
@@ -278,7 +278,7 @@ def test_a_second_tick_overwrites_the_planes_and_does_not_accumulate():
     of two ticks, which the `2 *` comparison below detects), or the sweep starts
     reading state that survives a tick.
     """
-    sim, (y, x) = _playground_with_a_hot_wood_tile()
+    sim, (y, x) = _test_arena_with_a_hot_wood_tile()
     g = sim.gmap
     sim.set_paused(False)
     sim.step()

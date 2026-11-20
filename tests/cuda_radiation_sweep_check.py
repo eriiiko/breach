@@ -50,7 +50,7 @@ one binary, one scene.
   PART 8  the launch core at N = 3 (RL-batch habits §A): three different envs
           with different per-env scalars in ONE launch sequence, each equal to
           its own CPU run; then one illegal env, masked alone.
-  PART 9  the live conductor: Simulation.step on the playground level with a
+  PART 9  the live conductor: Simulation.step on the test_arena level with a
           burning 1263-game wood tile, ONLY the radiation backend flipping —
           every array the GameMap holds (the four sweep planes included), the
           temperature solver's counters and the engine's own sweep telemetry,
@@ -780,14 +780,14 @@ _TEMP_COUNTERS = ("t_max_phys_hits", "t_low_rail_hits", "rad_clamp_hits",
                   "solid_energy_books_sum")
 
 
-def _burning_playground():
-    """tests/test_radiation_sweep_shadow_wiring.py's live scene: the playground
+def _burning_test_arena():
+    """tests/test_radiation_sweep_shadow_wiring.py's live scene: the test_arena
     level with a wood tile HEATED to the 1263-game plateau and lit — a fire is
     started by delivering heat (CLAUDE.md "Starting a fire")."""
     from level_loader import load as load_level
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -797,7 +797,7 @@ def _burning_playground():
             if not g.thermal_solid[y, x + 1] or not g.thermal_solid[y + 1, x]:
                 pick = (int(y), int(x))
                 break
-    assert pick is not None, "the playground carries no wood tile beside air"
+    assert pick is not None, "the test_arena carries no wood tile beside air"
     g.temperature[pick] = 1263 << 16
     g.fire[pick] = fire_fixed.quantize_scalar(0.8)
     # A marine on open air near the fire, so the live stamp puts a BODY share
@@ -871,7 +871,7 @@ def _compare_worlds(tag, t, s_cpu, s_gpu, fields=None) -> int:
 def _run_live(tag, n_ticks, gpu_on, gpu_off, cold_sky=False, fields=None,
               builder=None):
     fails_before = len(_FAILS)
-    builder = builder if builder is not None else _burning_playground
+    builder = builder if builder is not None else _burning_test_arena
     s_cpu, pick = builder()
     s_gpu, _ = builder()
     if cold_sky:
@@ -928,7 +928,7 @@ def _run_live(tag, n_ticks, gpu_on, gpu_off, cold_sky=False, fields=None,
 
 
 def part9_live() -> None:
-    print("PART 9 — the live conductor (Simulation.step, playground, a burning tile)")
+    print("PART 9 — the live conductor (Simulation.step, test_arena, a burning tile)")
     from simulation import physics_runner
 
     def only_radiation(on):
@@ -1221,12 +1221,12 @@ def part10h_gas_arm(table) -> None:
           f"2^24; the second currency moves the Fleck plane on both")
 
 
-def _hot_smoky_burning_playground():
+def _hot_smoky_burning_test_arena():
     """10g's smoky world with the smoke cloud HOT -- seeded at 3000 game through
     the gas-energy seam (gamemap.seed_gas_temperature, never a bare temperature
     write: CLAUDE.md 'Gas temperature is a mirror') -- so on the LIVE table the
     gas arm damps it (soot at ambient density is damped from 1676 game)."""
-    sim, pick = _smoky_burning_playground()
+    sim, pick = _smoky_burning_test_arena()
     g = sim.gmap
     from simulation.gases import SMOKE
     cloud = (g.gas[SMOKE] > 0) & ~g.thermal_solid & ~g.solid & ~g.is_vacuum
@@ -1247,7 +1247,7 @@ def part10i_live_hot_smoke() -> None:
 
     # NON-VACUITY first: one GPU tick of the hot smoky world damps gas cells in
     # the engine's own Fleck plane, priced in its own gas_capacity_q.
-    s, _ = _hot_smoky_burning_playground()
+    s, _ = _hot_smoky_burning_test_arena()
     only_radiation(True)
     s.set_paused(False)
     s.step()
@@ -1260,18 +1260,18 @@ def part10i_live_hot_smoke() -> None:
         _fail("10i: no gas cell damped on the live GPU path — the arm is vacuous there")
     _run_live("10i step path, HOT smoke absorbing (the gas arm live)", 15,
               lambda: only_radiation(True), lambda: only_radiation(False),
-              builder=_hot_smoky_burning_playground)
+              builder=_hot_smoky_burning_test_arena)
     print(f"  one GPU tick damped {damped} gas cells in the engine's own Fleck plane "
           f"(currency {tuple(int(v) for v in eng.gas_capacity_q())})")
 
 
-def _smoky_burning_playground():
+def _smoky_burning_test_arena():
     """part 9's scene plus a smoke cloud around the fire and a TEST-FIXTURE smoke
     coefficient (5.0; the SHIPPED smoke is 25.36 since P5c): the smoke term on
     the live path."""
     from simulation import gas_fixed, unit_fixed
     from simulation.gases import SMOKE
-    sim, pick = _burning_playground()
+    sim, pick = _burning_test_arena()
     g = sim.gmap
     y0, x0 = pick
     air = (~g.thermal_solid) & (~g.solid) & (~g.is_vacuum)
@@ -1298,8 +1298,8 @@ def part10_live() -> None:
     # NON-VACUITY first: on the GPU backend, one tick of the smoky world and of
     # the same world with the coefficient zeroed must book different sweeps --
     # so the smoke term really crossed the bus on the live per-call path.
-    s_on, _ = _smoky_burning_playground()
-    s_off, _ = _smoky_burning_playground()
+    s_on, _ = _smoky_burning_test_arena()
+    s_off, _ = _smoky_burning_test_arena()
     s_off.gmap.gases.heat_absorb_q16 = np.zeros_like(s_off.gmap.gases.heat_absorb_q16)
     only_radiation(True)
     for s in (s_on, s_off):
@@ -1310,7 +1310,7 @@ def part10_live() -> None:
         _fail("10g: the smoke coefficient changed nothing on the GPU path — vacuous")
     _run_live("10g step path, smoke absorbing", 20,
               lambda: only_radiation(True), lambda: only_radiation(False),
-              builder=_smoky_burning_playground)
+              builder=_smoky_burning_test_arena)
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ a light plane leaks one env into another.
           rejected by both backends, the caller's planes untouched.
   PART L4 the launch core at N = 3 with light: three envs, each equal to its
           own CPU run; one illegal light env masked alone.
-  PART L5 the live conductor: Simulation.step on the playground with a burning
+  PART L5 the live conductor: Simulation.step on the test_arena with a burning
           tile and a marine, light REQUESTED, only the radiation backend
           flipping -- every GameMap array (the light planes included), the
           engine's light books, per tick, tol 0.
@@ -394,7 +394,7 @@ def part4_batch() -> None:
 
 def part5_live() -> None:
     print("PART L5 — the live conductor, light REQUESTED, radiation backend flipping")
-    from cuda_radiation_sweep_check import _ALL_BACKENDS, _burning_playground
+    from cuda_radiation_sweep_check import _ALL_BACKENDS, _burning_test_arena
     from simulation import physics_runner
 
     def only_radiation(on):
@@ -403,8 +403,8 @@ def part5_live() -> None:
             getattr(bp, name)(False)
         bp.set_radiation_backend(bool(on))
 
-    s_cpu, pick = _burning_playground()
-    s_gpu, _ = _burning_playground()
+    s_cpu, pick = _burning_test_arena()
+    s_gpu, _ = _burning_test_arena()
     for s in (s_cpu, s_gpu):
         s.physics_runner.engine.light_requested = True
     n_ticks, lit, calls = 20, 0, 0

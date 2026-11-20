@@ -54,7 +54,7 @@ _SWEEP_PLANES = ("rad_net_sweep", "rad_flux_sweep", "rad_amb_sweep", "rad_fluenc
 def _engine():
     """A live engine, its temperature solver's dials bound from config exactly as
     PhysicsRunner binds them."""
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     return sim.physics_runner.engine
 
@@ -134,14 +134,14 @@ def test_the_gas_arm_is_priced_in_the_folds_own_currency():
                                   want)
 
 
-def _hot_smoky_playground(fixture=True):
-    """The playground with a burning wood tile (heat delivered: CLAUDE.md
+def _hot_smoky_test_arena(fixture=True):
+    """The test_arena with a burning wood tile (heat delivered: CLAUDE.md
     'Starting a fire'), a smoke cloud around it SEEDED HOT through the gas-energy
     seam (gamemap.seed_gas_temperature: 'Gas temperature is a mirror'), and --
     with `fixture` -- a TEST-FIXTURE heat_absorb on smoke. At 3000 game soot at
     ambient density is past g = 1 on the live table (damped from 1676 game), so
     the arm engages. Without the fixture the gas table is the SHIPPED one."""
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -151,7 +151,7 @@ def _hot_smoky_playground(fixture=True):
             if not g.thermal_solid[y, x + 1] or not g.thermal_solid[y + 1, x]:
                 pick = (int(y), int(x))
                 break
-    assert pick is not None, "the playground carries no wood tile beside air"
+    assert pick is not None, "the test_arena carries no wood tile beside air"
     y0, x0 = pick
     g.temperature[y0, x0] = 1263 << 16                  # a thermal solid: its own truth
     g.fire[y0, x0] = fire_fixed.quantize_scalar(0.8)
@@ -239,7 +239,7 @@ def test_the_live_sweep_damps_hot_smoke_in_the_folds_currency():
     this->temperature's dials, or the sweep's gas arm is disconnected (no gas
     cell damped).
     """
-    sim, cloud = _hot_smoky_playground()
+    sim, cloud = _hot_smoky_test_arena()
     g = sim.gmap
     eng = sim.physics_runner.engine
     for dials in ((None, None), (0.002, 2.0)):
@@ -273,7 +273,7 @@ def test_the_shipped_game_damps_exactly_the_smoky_gas_cells():
     """PROPERTY (P5c): with the SHIPPED gas table -- smoke absorbs, derived in
     config.toml; every other gas is 0.0 -- the live game's gas arm engages on
     exactly the gas cells whose smoke term absorbs: over live ticks of a burning
-    playground with a hot smoke cloud, every DAMPED gas cell (f < 2^24 in the
+    test_arena with a hot smoke cloud, every DAMPED gas cell (f < 2^24 in the
     engine's own Fleck plane) held smoke with a bulk count at or above N_EPS_RAW
     at the sweep's input, and every gas cell with no smoke stayed at 2^24 -- while
     some gas cells ARE damped (non-vacuity; before P5c this gate asserted none
@@ -283,7 +283,7 @@ def test_the_shipped_game_damps_exactly_the_smoky_gas_cells():
     -- e.g. by keying on a_eff with a material extinction on gas, or on the bulk
     count alone -- or the shipped smoke stops absorbing (nothing damped).
     """
-    sim, cloud = _hot_smoky_playground(fixture=False)     # the SHIPPED gas table
+    sim, cloud = _hot_smoky_test_arena(fixture=False)     # the SHIPPED gas table
     g = sim.gmap
     assert g.gases.heat_absorb_q16[SMOKE] > 0, "the shipped smoke absorbs nothing"
     eng = sim.physics_runner.engine

@@ -64,7 +64,7 @@ from simulation.turning import PI_Q16, place  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 from simulation.unit_fixed import FP_ONE as ONE  # noqa: E402
 
-#: The playground's tile (0.333 m): the design's numbers are at it.
+#: The test_arena's tile (0.333 m): the design's numbers are at it.
 TILE = 1.0 / 3.0
 EAST, NORTH, WEST, SOUTH = 0, PI_Q16 // 2, PI_Q16, -(PI_Q16 // 2)
 
@@ -119,7 +119,7 @@ def _state(u):
 # 13 -- the door and the table
 # ---------------------------------------------------------------------------
 def test_the_table_quantizes_the_designs_numbers_once_per_map(live):
-    """Property: at the playground's 0.333 m tiles and 24 tps one tick of
+    """Property: at the test_arena's 0.333 m tiles and 24 tps one tick of
     hold is 753 counts (0.092 m/s), the smallest in-place capacity 1229
     (0.15 m/s), the reaction delay 0.30 s is 7 ticks (half up), the yaw
     inertia 3.0 kg m^2 is 27 000 g tile^2, the carbine round pushes with 3.6

@@ -20,7 +20,7 @@ All headless, no ``breach_physics``. Pins the design-gate hard requirements:
     the old row's ``light_source_params`` and its heat/jitter/setattr
     contract went with the render march -- the cone-emitter row has no field
     for either, and the loader still rejects the keys);
-  - lamp port: 5 static lamps in both vessels + 3 in playground, positions
+  - lamp port: 5 static lamps in both vessels + 3 in test_arena, positions
     verbatim from the deleted main.py block, colors within +/-1/255 of the
     old (1.0, 0.1, 0.05) floats (exactness is impossible under the 0-255
     int schema — integration critique minor 5);
@@ -291,7 +291,7 @@ def test_spec_identical_when_rebuilt_at_fixed_tick():
 
 def test_partition_lights_bounds_rule():
     """Same rule as the retired main.py block: 0 <= x < w and 0 <= y < h
-    (the vessel's y=88/110 lamps are off-grid on the 100x70 playground)."""
+    (the vessel's y=88/110 lamps are off-grid on the 100x70 test_arena)."""
     lamps = [LightEntry(x=x, y=y, color=(1.0, 0.1, 0.05))
              for x, y in LAMP_POSITIONS]
     in_b, off = partition_lights(lamps, 100, 70)
@@ -328,8 +328,8 @@ def test_vessel_lamp_port(level_name):
     assert len(in_b) == 5 and off == []
 
 
-def test_playground_lamp_port():
-    lvl = load("playground")
+def test_arena_lamp_port():
+    lvl = load("test_arena")
     assert [(l.x, l.y) for l in lvl.lights] == LAMP_POSITIONS[:3]
     for l in lvl.lights:
         _assert_lamp(l)

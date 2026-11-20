@@ -352,8 +352,8 @@ def test_parse_level_override_rejects_absolute_path(monkeypatch):
 
 def test_parse_level_override_plain_name_unaffected(monkeypatch):
     from main import _parse_level_override  # heavy import: test-local
-    monkeypatch.setattr(sys, "argv", ["main.py", "--level", "playground"])
-    assert _parse_level_override() == "playground"
+    monkeypatch.setattr(sys, "argv", ["main.py", "--level", "test_arena"])
+    assert _parse_level_override() == "test_arena"
 
 
 if __name__ == "__main__":

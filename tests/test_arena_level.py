@@ -1,4 +1,4 @@
-"""The playground level (P5) — load / construct / run smoke + determinism.
+"""The test_arena level (P5) — load / construct / run smoke + determinism.
 
 Deliberately NOT part of any golden/digest machinery (the canonical A/B
 scenario and its aggregate golden stay untouched): this is a plain gate that
@@ -13,10 +13,10 @@ the standard-values sandbox stays launchable —
   - a headless sim constructs and runs 30 ticks without error, everyone
     alive (the map is quiet until the player pokes it);
   - the same seed run twice is bitwise identical (fields + synced unit
-    state) — the playground obeys the same determinism contract as the ship.
+    state) — the test_arena obeys the same determinism contract as the ship.
 
 Run:
-    C:/Users/steen/anaconda3/python.exe -m pytest tests/test_playground_level.py -q
+    C:/Users/steen/anaconda3/python.exe -m pytest tests/test_arena_level.py -q
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ _FIELDS = ("atmosphere", "wave_p", "wave_v", "wind_x", "wind_y", "gas",
 
 
 def _fresh_sim(seed: int) -> Simulation:
-    level = load("playground")
+    level = load("test_arena")
     sim = Simulation(level, seed=seed, breach_physics=bp,
                      enable_recorder=False)
     for s in level.spawns:
@@ -68,13 +68,13 @@ def _run(sim: Simulation, n: int) -> None:
 # ---------------------------------------------------------------------------
 # Level structure
 # ---------------------------------------------------------------------------
-def test_playground_loads_with_all_showcase_materials():
-    """Playground was migrated (A7) to the entity door system: the painted
+def test_arena_loads_with_all_showcase_materials():
+    """Test arena was migrated (A7) to the entity door system: the painted
     MAT_DOOR runs became closed ``door`` [[entity]] instances and their
     tiles were rewritten MAT_DOOR -> MAT_DOOR_CLOSED (a6 doors design §1).
     The showcase still needs a "door" — now it is MAT_DOOR_CLOSED in the
     tilemap plus at least one door entity, never painted MAT_DOOR."""
-    lvl = load("playground")
+    lvl = load("test_arena")
     assert lvl.version == "3"
     assert lvl.tilemap.shape == (70, 100), f"shape={lvl.tilemap.shape}"
     assert lvl.diffuse_path.exists()
@@ -82,16 +82,16 @@ def test_playground_loads_with_all_showcase_materials():
     for mid, label in ((MAT_HULL, "hull"), (MAT_WOOD, "wood"),
                        (MAT_DOOR_CLOSED, "door"), (MAT_STEEL, "steel"),
                        (MAT_GLASS, "glass"), (MAT_FURNITURE, "furniture")):
-        assert (mat == mid).any(), f"playground must contain {label}"
+        assert (mat == mid).any(), f"test_arena must contain {label}"
     assert any(e.class_name == "door" for e in lvl.entities), \
-        "playground must contain migrated door entities"
-    assert vac.any(), "playground must have outer SPACE (breach play)"
+        "test_arena must contain migrated door entities"
+    assert vac.any(), "test_arena must have outer SPACE (breach play)"
     assert int(lvl.tilemap[67, 10]) != SPACE_CODE  # breach wall is hull...
     assert bool(vac[68, 10]), "...with vacuum directly beyond it"
 
 
-def test_playground_spawns_stand_on_open_floor():
-    lvl = load("playground")
+def test_arena_spawns_stand_on_open_floor():
+    lvl = load("test_arena")
     marines = [s for s in lvl.spawns if s.team == 0]
     zombies = [s for s in lvl.spawns if s.team == ZOMBIE_TEAM]
     assert len(marines) >= 4, "a squad to play with"
@@ -107,10 +107,10 @@ def test_playground_spawns_stand_on_open_floor():
                     f"interior floor (code {code})")
 
 
-def test_playground_zombies_outside_trigger_radius():
+def test_arena_zombies_outside_trigger_radius():
     """The pen sits beyond CFG.zombie.trigger_radius from every marine (and
     glass blocks LOS besides) — tick 0 must be QUIET. Guards layout tweaks."""
-    lvl = load("playground")
+    lvl = load("test_arena")
     trig = float(CFG.zombie.trigger_radius)
     marines = [s for s in lvl.spawns if s.team == 0]
     zombies = [s for s in lvl.spawns if s.team == ZOMBIE_TEAM]
@@ -127,7 +127,7 @@ def test_playground_zombies_outside_trigger_radius():
 # ---------------------------------------------------------------------------
 # Headless run
 # ---------------------------------------------------------------------------
-def test_playground_constructs_and_runs_30_ticks():
+def test_arena_constructs_and_runs_30_ticks():
     sim = _fresh_sim(seed=42)
     _run(sim, N_TICKS)
     assert sim.tick == N_TICKS
@@ -138,7 +138,7 @@ def test_playground_constructs_and_runs_30_ticks():
         "nothing burns or floods until the player acts"
 
 
-def test_playground_deterministic_run_twice():
+def test_arena_deterministic_run_twice():
     a = _fresh_sim(seed=1234)
     b = _fresh_sim(seed=1234)
     _run(a, N_TICKS)
@@ -154,9 +154,9 @@ def test_playground_deterministic_run_twice():
 
 
 if __name__ == "__main__":
-    test_playground_loads_with_all_showcase_materials()
-    test_playground_spawns_stand_on_open_floor()
-    test_playground_zombies_outside_trigger_radius()
-    test_playground_constructs_and_runs_30_ticks()
-    test_playground_deterministic_run_twice()
-    print("OK — playground level: load / spawns / quiet-run / determinism")
+    test_arena_loads_with_all_showcase_materials()
+    test_arena_spawns_stand_on_open_floor()
+    test_arena_zombies_outside_trigger_radius()
+    test_arena_constructs_and_runs_30_ticks()
+    test_arena_deterministic_run_twice()
+    print("OK — test_arena level: load / spawns / quiet-run / determinism")

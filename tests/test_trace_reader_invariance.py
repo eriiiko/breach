@@ -93,7 +93,7 @@ def reader_hover_readout():
     extinction the sweep reads on a gas cell (the engine's FP_HD finish)."""
     from renderer.hover_readout import pack_hover_readout
     from simulation import Simulation
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     air = g._gas_energy_accountable() & ~g.thermal_solid

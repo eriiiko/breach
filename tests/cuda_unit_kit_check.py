@@ -26,7 +26,7 @@ cone past CONE_MAX, a key word past 2^32) flagged bad.
 
 PART SIGHT -- ``GameMap.has_los`` in both forms on random pairs (short and
 long lines, out-of-grid ends, start == end, solid starts) over four real maps
-(ship_demo, playground, my_ship, test_level) with grille tiles stamped through
+(ship_demo, test_arena, my_ship, test_level) with grille tiles stamped through
 ``on_tile_changed`` (no shipped level holds a grille), in ONE batch whose envs
 hold different maps (padded to the largest with open tiles, which stop
 nothing, as an out-of-grid tile does not): both answers often in both forms,
@@ -324,7 +324,7 @@ def part_draws():
 # ---------------------------------------------------------------------------
 # PART SIGHT
 # ---------------------------------------------------------------------------
-SIGHT_MAPS = ("ship_demo", "playground", "my_ship", "test_level")
+SIGHT_MAPS = ("ship_demo", "test_arena", "my_ship", "test_level")
 
 
 def _sight_sim(name, k):

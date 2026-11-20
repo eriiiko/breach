@@ -10,7 +10,7 @@ headroom_brief_2026-09-24.md). Until P5d the ceiling was E°⁻¹(Φ), a bucket'
 LOW edge, while an undamped cell balances by flickering across the NEXT edge --
 so such a cell was clipped on every tick it sat at its cap: P5c measured that
 bucket-edge pinning here (solids ~0.2 % of their gross absorption in the
-playground) and it is what P5d removes. Since P5c the engine counts what the
+test_arena) and it is what P5d removes. Since P5c the engine counts what the
 clamp costs: `TemperatureSolver.e_rad_clamp_drop_sum`, the withheld step priced
 at each cell's real capacity. This bench splits it by MEDIUM and sets it against
 the radiation each medium absorbs.
@@ -75,7 +75,7 @@ SCENES
             tile seeded at its ignition_temp, the sky exchange live), 90 s.
   room   -- a sealed hull room (18 x 12 interior) with a 3 x 3 furniture block
             ignited at its ignition_temp: smoke accumulates, 60 s.
-  playground -- the shipped playground level with a wood tile at the 1263-game
+  test_arena -- the shipped test_arena level with a wood tile at the 1263-game
             plateau and lit (the CUDA gate's live scene), 30 s.
 
 #78 (2026-09-25; docs/sweep_fine_heat_currency_brief_78_2026-09-25.md): the
@@ -166,11 +166,11 @@ def scene_room():
     return sim, 60.0
 
 
-def scene_playground():
+def scene_test_arena():
     from level_loader import load as load_level
     from simulation import Simulation, fire_fixed
     from simulation.materials import MAT_WOOD
-    sim = Simulation(load_level("playground"), seed=1, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=1, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -183,7 +183,7 @@ def scene_playground():
     return sim, 30.0
 
 
-SCENES = {"bench": scene_bench, "room": scene_room, "playground": scene_playground}
+SCENES = {"bench": scene_bench, "room": scene_room, "test_arena": scene_test_arena}
 
 
 def _bucket(t):

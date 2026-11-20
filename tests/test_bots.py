@@ -167,14 +167,14 @@ def test_a_bots_match_is_identical_twice_and_replays_exactly(tmp_path):
 
 
 def test_the_shipped_levels_play_the_layered_bots():
-    """Property: the playground's and ship_demo's match configs put every
+    """Property: the test_arena's and ship_demo's match configs put every
     marine team on "bots" -- the layered bots -- and ``bots_v1`` stays
     registered beside them (a ladder of opponents). Breaks if a level reverts
     to idle teams or the old bots lose their registry row."""
     names = control_source.registered_controllers()
     assert "idle" in names and "bots_v1" in names
     assert isinstance(control_source.create_controller("bots", 0), BotTeam)
-    for name in ("playground", "ship_demo"):
+    for name in ("test_arena", "ship_demo"):
         spec = level_loader.load(name).match
         assert {t.controller for t in spec.teams} == {"bots"}, name
 

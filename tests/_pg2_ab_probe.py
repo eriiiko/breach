@@ -154,7 +154,7 @@ def main() -> int:
         print("PG2_AB_RESULT: FAIL (no CUDA build / device)")
         return 1
     print("device:", bp.cuda_device_info())
-    levels = sys.argv[1:] or ["playground"]
+    levels = sys.argv[1:] or ["test_arena"]
     ok = True
     for lvl in levels:
         try:

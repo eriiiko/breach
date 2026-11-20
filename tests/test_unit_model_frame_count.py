@@ -5,7 +5,7 @@ The home desktop's pyray is raylib 5.5.0.4, whose ``ModelAnimation`` carries
 ``frameCount``; the 3D-unit renderer was written against a raylib 6.x build,
 whose field is ``keyframeCount``. Reading the 6.x name directly crashed the game
 the moment M turned the 3D marines on (reproduced end to end by
-``tools/e2e_drive.py --level playground --press M@40 --frames 120``). Headless:
+``tools/e2e_drive.py --level test_arena --press M@40 --frames 120``). Headless:
 imports pyray (no window) and builds a real cffi ``ModelAnimation`` struct of
 the INSTALLED binding.
 

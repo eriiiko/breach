@@ -898,7 +898,7 @@ def test_the_default_zombie_controller_leaves_match_files_unchanged():
     match files are byte-identical to the writer's text. Breaks if the
     writer starts emitting the default key (every generated level would
     change) or the loader's default drifts from the writer's."""
-    for name in ("ship_demo", "playground"):
+    for name in ("ship_demo", "test_arena"):
         level = level_loader.load(name, str(ROOT / "levels"))
         assert level.match.zombie_controller == "zombies"
         path = ROOT / "levels" / name / level_loader.MATCH_FILENAME
