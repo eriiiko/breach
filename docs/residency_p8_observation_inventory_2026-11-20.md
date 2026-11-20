@@ -203,3 +203,180 @@ bit patterns, read from the reference's own `ObsContext` and loadout objects, th
 plus the per-episode roster / team rows.
 
 ---------------------------------------------------------------------------------------------
+
+## B. Sight
+
+Every line the observation, the picture and the full view ask is `GameMap.has_los`'s Bresenham walk
+(int64, no float), through `vision.rays_clear` (many pairs) or `vision.window_clear` (one tile to / from
+every tile of a rectangle), host C++ (`cpp/src/sight_lines.cpp`, `PhysicsEngine.sight_rays` /
+`sight_window`) plus cover in Python. The DEVICE has the per-line function in both forms
+(`cpp/src/cuda_unit_sight.cuh::unit_sight::has_los(solid, screen | nullptr, ...)`, held equal to
+`has_los` by `tests/cuda_unit_kit_check.py` part SIGHT) and BOTH planes resident (`plane:solid`,
+`plane:sight_screen`, resident since P7e). Its header says "The bulk form (sight_lines.cpp's rays_clear,
+the observation's) stays P8b's": NO bulk device kernel exists (no many-rays, no window kernel).
+`.claude/rules/sight.md` says "No device kernel: the CUDA module runs the same host TU": that line
+becomes stale the day a bulk device kernel lands (to amend in that patch).
+
+Cost shapes: W = 625 (a 25 x 25 window); R_t = the team's records (every enemy marine AND every zombie
+it saw within `memory_s`, uncapped); L_e = living units of the env; M_t = the team's living mates.
+
+| # | question | who asks, when | today's call | rays (per env) | direction | device mapping |
+|---|---|---|---|---|---|---|
+| B.1a | `watched`: which window tiles a known enemy sees | `build_windows`, per living row, per decision | `window_clear(rec.centre -> window)` per record, OR-ed | sum over rows of W x R_t | FROM the record centre | one thread per (env, row, window tile), a loop over the team's records calling `has_los(solid, screen)`; needs the records on the card (C) |
+| B.1b | `sees_target`: from which window tiles the aimed entry is visible | `build_windows`, rows with an aimed entry | `window_clear(..., to_window=True)` | W per aiming row | FROM each window tile TO the centre (the walk is not symmetric) | the same kernel, the other argument order |
+| B.1c | `full_watched` | `build_full_watched`, per in_match row (dead rows too) | `FullView.watched_from` per living enemy at its LIVE centre (cached per (centre, window origin): shared only between rows with the same window) | sum over in_match rows of W x (living enemies incl. zombies) | FROM the enemy | the same kernel over the store's live centres |
+| B.2 | who sees whom (`VisionState`: `seen_by`, `visible_by_team`) | `vision.state_for(sim)`, once per TICK (cached on `sim._vision_cache`), read by the picture's update, the obs (`seen`, col 24) and the full view | `all_round`: `_compute_all_round`, ONE `rays_clear` over every (non-zombie observer, other-team living target) pair. `cone` (the DEFAULT: ship_demo's match.toml names no sight, so both pinned matches run it): `compute_pairwise`, per pair `can_see` = awareness radius 4 OR `within_cone` (FLOAT64 `dot / math.sqrt(d2) >= cos_rad(radians(55.0))`: IEEE ops only, `cos_rad` = the integer kit) then `ray_clear` | ~L_e^2 per tick | observer -> target | one thread per (env, observer, target): the cone test in float64 with FMA contraction OFF (`dx*fx + dy*fy` must not fuse), then `has_los`; output a per-env bit matrix (U x U); the reference's sorted tuples become row (= id) order |
+| B.3 | `aim_of(u)`: the nearest known unit inside u's cone with a clear line (cols 31-32, 34-35, 41; the full view: over every living unit) | per unit per decision, cached per (uid, ray, cone, centre); the full view keeps its own | `ray_clear` per candidate, nearest first (squared distance, then uid), until one is clear | <= candidates per unit | u's centre -> candidate | a serial loop per (env, view, unit): candidates (<= U + R_t) sorted by (d2, uid), the cone test in Q16 (`atan2_q16`, `wrap_q16`: integer), `has_los` until clear |
+| B.4 | the fire lanes (near_u[4], cols 52-53) | `TeamKnowledge.lanes` per team, `lane_of` per mate, per decision; the full view its own | `team_picture.fire_lanes_of`: a per-tile walk on `solid` (NOT `has_los`) from each triggering mate's centre along its facing to its weapon range, then `draw_lanes` onto a coarse grid (cell 3, half-width 1): -1 nobody, uid, -2 several (order-independent by its docstring) | one walk <= range tiles per triggering mate | -- | per (env, mate) a walk, then the rasteriser with an atomic compare-and-swap per cell (-1 -> uid, another uid -> -2): order-independent, so parallel is exact |
+| B.5 | lof_solid (col 25) | per (row, seen enemy); full view per (row, every enemy), batched per row | `rays_clear(physical=True)` + every LIVE cover's `blocks_segment` | sum over rows of seen enemies | me -> enemy | `has_los(solid, nullptr)` |
+| B.6 | the route (far_f[9], cols 92-94) | per row holding an order, cached per (graph, where, footprint) on `gmap._tile_serial` + the openings' states | not sight: `horde.flood` over walkable tiles OR the tiles of every OPENABLE opening (`room_graph.opening_states`: closed living doors, not wired, not hull doors), seeded at the passable anchors whose block centre lies in the place | one flood per (env, place, footprint) when the map or a door changed | -- | the device flood exists (`cuda_unit_horde.cuh::flood_block(tile_ok, h, w, fp, out)`, P7d's) and `is_hull_door` has a device form there; `opening_states`, the seeds, `horde.candidates` / `field_at` and the block-min are H |
+| B.7 | the picture's object tracker | slot 11, per team per TICK | ONE `rays_clear` over every (mate centre, object tile) pair | M_t x live objects per tick | mate -> object | a pair kernel |
+
+COVER. `vision.ray_clear` / `rays_clear` / `window_clear` apply every live cover entity with
+`blocks_los` (`sim.cover`, a float slab test `blocks_segment`) in Python; `line_of_fire.solid_in_way`
+applies EVERY live cover. The device has no cover entities. The conductor refuses only WEGO's
+`march_cover` (`unit_schema._enc_no_cover`); I found NO refusal of a continuous-path level whose
+`sim.cover` is non-empty (ship_demo's level.toml has no cover). A device observation needs that refusal
+by name (or cover on the card).
+
+Cost seen by the lead (ship_demo, CPU, per decision): windows 5.1 ms (B.1a / B.1b plus the float planes),
+the full view 11.7 ms (B.1c over every enemy per in_match row, B.3 over every living unit).
+
+---------------------------------------------------------------------------------------------
+
+## C. The team picture and the last-seen records
+
+`src/simulation/team_picture.py::TeamPicture`, started by `Simulation.start_team_picture` (from
+`spawn_match`; it takes the FIRST update at once, at tick 0), then `update(sim)` ONCE per tick at slot
+11 (`Simulation._step_post_physics`, after the tick advance and `on_tick_end`'s conversion). `update`
+refuses a skipped or doubled tick; `records(team)` refuses a stale picture. Host memory: not synced,
+not hashed, in no recording; rebuilt only by re-simulation.
+
+| state | per | written by `update` from | device source today |
+|---|---|---|---|
+| `_records[team][uid]` = `Record(uid, team, zombie, loadout, tile, centre, pos_q, vel_q, tick, facing_q)` | marine team x seen unit | (1) delete when the unit's `UnitKilledEvent` is in this step's events AND the record was written at `tick - 1` (a SEEN death); (2) delete when `tick - rec.tick > memory_ticks`; (3) for every uid of `vision.visible_by_team[team]`: a new record from the LIVE unit, `vel_q` = pos minus the previous record's pos when that was `tick - 1`, else (0, 0) | units R (store); kill events R (ring, `KIND_KILLED`); vision H (B.2) |
+| `motion[uid]` = (pos prev, pos now) | every living unit | live `x_q`, `y_q` | R (store) |
+| `last_hit[uid]` = (tick, dir_x_q, dir_y_q, cause) | unit | the last `UnitHitEvent` with damage > 0, emission order | R: the ring carries `dir_x_q`, `dir_y_q`, `cause`, `damage_q` (`unit_events.FIELDS`) |
+| `_damage[team][uid]`: deque of (tick, damage float) | team x unit | hits the team DEALT (attacker a living non-zombie of the team) or SAW (the victim's record at `tick - 1`, read BEFORE this update's record writes), kept `window_ticks` (= tps) | ring R (attacker_id, damage_q) |
+| `bars[uid]` (float, exact n/65536) | unit | `current_hp` at the first update the unit exists, again at the first update that sees it `is_zombie` | R (store) |
+| `death_tick[uid]` | unit | the first update seeing it dead or turned | R (store) |
+| `_objects[team][obj] -> OBJECT_UID_BASE + k`, `_obj_next[team]`, `seen_now[team]` | team x live object | ONE `rays_clear` over (mate centre, object tile) pairs; a first sighting draws the team's next id; a dead object is forgotten; KEYED BY PYTHON OBJECT IDENTITY | grenades / charges R (`GRENADE_TABLE`, `CHARGE_TABLE`), but NO stable per-object identity: the grenade table is compacted by `prune_grenades`, and neither schema has a serial (`GRENADE_SCHEMA`: proj_type .. detonated; `CHARGE_SCHEMA`: x, y, det_tick, ammo_name, owner_id, approach, live) |
+
+What the conductor does NOT run: slot 11 at all (`DeviceConductor._walk` ends with "11. the team
+picture: host, a match only, in no digest (not run)"). The ring is begun at every tick's head
+(`ring.begin()`), so a device picture (and the reward books) must consume each tick's events in that
+tick, before the next `begin`.
+
+What a device form needs (STATE ACROSS TICKS, not a function of the tick's state):
+- per env, per marine team, a record table with a capacity (records are uncapped today: one per enemy
+  unit, zombies included, so the cap is U) and `Record`'s columns (the loadout as its row index);
+- the trackers as per-env arrays: motion (2 x 2 int64 per unit), last_hit (4 per unit), bars (Q16 per
+  unit), death_tick, the damage window (per team per unit, `window_ticks` slots; the reference sums
+  floats in deque order, so the sum's order must be the deque's), the object id map;
+- a stable object identity for grenades and charges (a serial written at the append and carried by the
+  compaction), so "the same object re-seen after a gap keeps its id" holds; a new column in
+  `CHARGE_SCHEMA` reaches the digest's charge rows (hashed while a charge lives), so a side array beside
+  the tables is the change that moves no digest;
+- the update's ORDER inside the tick: the damage window (against the records BEFORE the update),
+  seen-death deletion, memory expiry, new sightings, then objects; and its PLACE: after slot 10 and the
+  conversion, i.e. a new last stage of `_walk`;
+- the tick-0 update at episode start (no events).
+
+It is per-team serial work over a few dozen units: one thread (or one warp) per (env, team) walking
+units in id order is the natural exact form.
+
+---------------------------------------------------------------------------------------------
+
+## D. Masks
+
+`action_spec_v1.build_masks(sim, units, list_type, list_mask, list_uid, tables, decimation, out)`, at the
+START of the decision tick T (after tick T-1's step), ONE gate call per hand bit. Invalid rows
+(`units[i] is None`) get `default_masks` (stand, "where I walk", release, nothing).
+
+| mask | size | rule | gate (`verb_gates`) | device form |
+|---|---|---|---|---|
+| mask_feet | 49 | all 1 | -- | trivial |
+| mask_trigger | 2 | all 1 | -- | trivial |
+| mask_aim | 18 + E | `throw_release_tick >= T + decimation - 1`: only AIM_KEEP; else the 16 tokens and "walk" 1, KEEP 0, entry i = `list_mask[i]` and type in (1, 2) | -- (reads the list just built) | trivial once the list is on the card |
+| hand[0] nothing | | always | -- | -- |
+| hand[1] reload | | `can_reload(sim, u)` | `combat.mag_status` | R-fn `unit_lib::can_reload` |
+| hand[2] melee | | `can_melee(u, T, wt, at_tick_start=True)` | | R-fn `unit_lib::can_melee(..., at_tick_start=true)` |
+| hand[3] shove | | `can_shove(sim, u)` | `unit_impulse.shove_cooled` | R-fn `unit_lib::can_shove` |
+| hand[4] use | | `can_use(sim, u)` = a live door whose span touches the footprint or its one-tile ring (`_reach_key`); WHICH door (`use_door`, #215) is not the mask's question | | the geometry lives inside `cpp/src/cuda_unit_verbs.cu::use_door`, a TU-local `__device__` function, NOT in the library: to lift into a header (the door-tile table is resident) |
+| hand[5] plant | | `can_plant(sim, u)` | | R-fn `unit_lib::can_plant` |
+| hand[6] flashlight | | always 0 (reserved) | -- | -- |
+| hand[7 + k] throw kind k | K | `can_throw(sim, u, k)` | | R-fn `unit_lib::can_throw` |
+| arg mask | 5 | `arg_mask(hand, aim)`, a pure function of the DRAWN hand and aim | -- | the trainer's (`agents/choosing.py`), not served |
+
+All gates are integer. The library's forms take `(row, tab, tick, &bad)`; the mask kernel is one thread
+per (env, row) at the decision tick's start. The masks also feed `masked_choices` and `check_actions`
+on the host in `BatchedEnv.step` (they read the served masks; on the card they become CuPy reductions).
+
+---------------------------------------------------------------------------------------------
+
+## E. Reward and termination
+
+`reward_v1.RewardBooks` (one per episode; `begin(sim)` before each tick, `end(sim)` after it,
+`finish(result)` once), plus the env's OLD counters (`rl_env.count_events`), plus `MatchRules`.
+
+### E.1 What the books read, per TICK
+
+| read | source on the host | on the card? |
+|---|---|---|
+| per unit `(hp_q, alive, team, zombie, bar_q)` before and after the tick (`_snapshot`) | units + `picture.bars` | store R; bars H (C) |
+| the tick's events in emission order: `UnitHitEvent(unit_id, attacker_id, damage float)` (`d_q = round(damage x 65536)`), `UnitKilledEvent(unit_id, attacker_id, killed_by)` | `sim.tick_events` | R: the ring holds exactly these, `damage_q` already Q16, `cause` as its index |
+| the standing (`standing(units, bars)`: per team H, A; zombie H) before and after | units + bars | store R; bars H |
+| the living marine teams (`MatchRules.living_teams`) | units | R (a per-env reduction over the store) |
+| the RESULT at the end (`MatchRules.result`) | units, tick | R |
+
+The RewardBooksMismatch check (the events must reproduce every living unit's hp and life) reads the
+same; on the card it is a counted per-env fault raised at the books read.
+
+### E.2 The terms of profile v1 (`PROFILES["fireteam"]`; "range" has the same terms, zombie / ff at 0)
+
+| counter (`BOOK_COUNTERS`, after the old ones) | group, term, sign (`_COUNTER_TERMS`) | built from |
+|---|---|---|
+| won / eliminated / clock | outcome: win +10, eliminated -10, clock -3 | `finish(result)`; `_eliminations` (a team's last living marine gone) |
+| bars_enemy, kills_enemy | own: marine_bar +1, marine_alive +0.5 | hits / kills credited to the row's unit on an enemy MARINE (`_settle`) |
+| bars_lost, died | own: marine_bar -1, marine_alive -0.5 | the row's own unit hit / killed |
+| bars_zombie | own: zombie_bar +0.25 | hits credited on a zombie |
+| share_bars, share_alive, share_enemy_bars, share_enemy_alive, share_zombie_bars | team (signs per term), each `/ n_t` | the CHANGE of the standing read from state (`end`) |
+| bars_team, team_kills (an old counter) | friendly_fire: ff_bar -2, ff_kill -3 | hits / kills on a team-mate |
+| (order) | all zero (6.7) | -- |
+
+Per team also `d_balance`, `rest` (the uncredited rest, BUILT from its sources), `outcome`; per row
+`rows_ended`. The OLD counters (`count_events`): hits_dealt, damage_dealt (float32 accumulation of
+`float(ev.damage)`), team_hits, kills, team_kills, hits_taken, damage_taken, deaths_<cause> per
+`events.CAUSE_NAMES`: the same two event kinds and the team-at-tick-start map.
+
+Arithmetic: float64 in the books (`bar_ratio = min(max(hp_q, 0), bar_q) / bar_q`, sums, products by the
+term weights), accumulated in EVENT ORDER within a tick and tick by tick over the decision; the env's
+group numbers are `(counters[:, :, None] * G[None]).sum(axis=1)` (a numpy reduction over K counters)
+cast to float32. Every operation is IEEE (+, -, *, /, min, max): exact on the card IF every sum keeps the
+reference's order (numpy's pairwise summation in that last reduction included: K is small, so its order
+is to be checked, K) and FMA contraction is off.
+
+### E.3 Do the events exist on the card?
+
+Yes, for the two kinds the books and the picture read: the event ring (`unit_events.EventRing`, `(N,
+E_max, F)`, in the reference's emission order, hits and kills, with attacker, cause, Q16 damage and the
+direction). The claims list (`attack_lists.claims_list`) is the CREDIT input of `apply_packet`, already
+folded into each event's `attacker_id`: the books need no claims. Not on the ring: the swarm's death
+events (`SwarmUnitDiedEvent`; no reward or picture rule reads them) and render-only events.
+
+### E.4 `terminated`, truncation, the winner
+
+| output | rule | where | device |
+|---|---|---|---|
+| `terminated` (N,) | named profile: every end (`len(living_teams) < 2` OR `tick >= limit_ticks`); `"counters"`: the elimination only | `EnvRunner.step` after `MatchRules.is_terminal` | a per-env reduction over the store + the tick row; `tab:match_limit_ticks` R |
+| `truncated` | False under a named profile; the limit under "counters" | same | same |
+| winner / `result` | `MatchRules.result` | same | same |
+| `rows_ended` | a team eliminated, or the episode over | `RewardBooks._flush` | part of the books |
+
+A decimation step stops early when the match ends (`if s.is_terminal(): break` in `EnvRunner.step`). On
+the card an env that ended mid-step must stop its observation-side state (the books finish, no more
+counters, the terminal observation taken at that tick) while the conductor keeps ticking it (P7e.5: an
+ended env ticks on until replaced). The books and the picture need a per-env "ended at tick t" latch,
+and the terminal observation must be built AT the ending tick, not at the step's end.
+
+---------------------------------------------------------------------------------------------
