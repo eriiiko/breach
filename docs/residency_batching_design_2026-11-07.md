@@ -2879,6 +2879,190 @@ the DETONATE walk). One line each:
   the reference under `run_match --replay` through every checkpoint. This
   is how a trained agent is WATCHED (lens 2 M7, lens 4 M3).
 
+**P8 RE-CUT (2026-11-20; Erik: "observation - i think we just move it
+directly").** Cut from `docs/residency_p8_observation_inventory_2026-11-20.md`
+(parts A to K; read it before any P8 patch). It replaces the P8a / P8b rows of
+§9 for everything below; P8c (the training-episode record) stays after it.
+Why now: the batched tick does a ship_demo decision in about 2.6 ms per env
+while the host observation costs about 23 ms per env, so a host observation
+caps the gain at about 4x (#29, 2026-11-20). No training run starts before
+the gas solver's instability (#217) is fixed; this port does not wait for it.
+
+*What does not change.* Observation spec v1, the full view, action spec v1 and
+reward profile v1 stay what they are, value for value. The host builders
+(`obs_spec_v1`, `team_picture`, `reward_v1`, `control_policy`) stay THE
+reference; the device forms are twins of them, as the unit kernels are twins
+of the CPU tick. The env keeps ONE API (`BatchedEnv`), a `device` backend
+beside `cpu_farm`.
+
+*The gate every patch shares.* A reference sim on the CPU path replays a
+recorded match beside the conductor; at every decision tick (per tick for
+state that lives across ticks) the host arrays are compared with the device's,
+block by block, value for value, each gate shown red once by a break switch.
+Corpus: (a) the pinned `bots` / `bots_v1` matches, (b) a training-room match,
+(c) one recorded "v1" episode driven by random decisions through
+`AgentPolicy`, (d) small hand matches for cases the others never reach.
+
+*Lead's decisions (computer science; each vetoable).*
+1. **Floats: exact, by one shared function, never a tolerance.** Every float
+   column is built on the card in float64 in the reference's own operation
+   order, FMA contraction off, cast ONCE to the served dtype. The four places
+   that call libm (`squash`'s log, `d_c`'s log1p and hypot, `_hit_from`, the
+   wind direction) move, on BOTH sides, to one small module of functions
+   written in IEEE basic operations only (`hypot` as `sqrt(dx*dx + dy*dy)`;
+   one `log` as a fixed sequence of +, -, *, / on the split mantissa), so the
+   host and the card run the same operations and agree bit for bit, and so do
+   Windows and a Linux node. This moves the HOST observation by at most the
+   last bit of a float64 before the cast (no network is trained on it yet;
+   the rung-2 copy records are re-made anyway). It lands as its own patch,
+   P8.0b, with a gate that bounds the move against the old libm values.
+2. **Sight rule: both.** `all_round` (what training uses) and `cone` (what
+   the pinned matches use, IEEE-only float64) are both built in P8.2, so
+   corpus (a) serves every later gate.
+3. **Orders: the observation reads the device order state; who writes it is
+   decided by measurement.** The order is game state already on the card
+   (the ORDER table). The first form keeps the host commander, fed by one
+   download on its own period (every 6 ticks), measured at N = 64 and 256 in
+   P8.6. If that download or the Python team layer per env is the new
+   bottleneck, the options (port the team layer; a run without a commander)
+   go to Erik: the second changes what a soldier is shown.
+4. **Reset: host build, device restage, first.** Env e's next episode is
+   built through `MatchSession` on the host (equal to the reference by
+   construction) and its slice of every device structure restaged, the
+   others untouched. The bank file of §4.6 is built only if the measured
+   cost says so.
+5. **No host copy between the card and the trainer.** The obs buffers are
+   CuPy arrays owned by the env and handed to torch by DLPack; `agents/`
+   changes to hold its batch as device tensors (P8.10).
+6. **Opponents on the device backend:** self-play and the horde; any other
+   controller of a team is refused by name (§12.3 stands).
+
+*The patches* (one implementer at a time; a green patch merges; the played
+game never changes):
+
+| patch | what | gate | tier |
+|---|---|---|---|
+| P8.0 | the whole path at its smallest: CuPy obs buffers, the (team, slot) to store-row map, `valid` / `in_match`, ONE integer block (near wall / door, far wall share / door) built inside the conductor tick at the decision cadence, handed to torch by DLPack | the block EXACT on (a), (b); the tensor's pointer is the buffer's; still 2 syncs per tick | Opus |
+| P8.0b | the shared float functions on the host (decision 1) | every observation value within the stated last-bit bound of the old one on (a), (b); the functions' own property tests (monotone, exact at powers of two, equal on host and card over a dense sweep once the card has them) | Opus |
+| P8.1 | the obs table and every vector column whose sources are on the card | vector EXACT on (a), (b) | Opus |
+| P8.2 | sight in bulk on the card and who sees whom, both rules; the refusal of a level with live cover | pairs and windows equal to `rays_clear` / `window_clear`; `seen_by` / `visible_by_team` equal every tick | Opus |
+| P8.3 | the device team picture (records, motion, damage window, bars, the object tracker with a stable serial), a last stage of the walk | the picture's whole state equal EVERY TICK on (a), (b), (d) | Opus |
+| P8.4 | the list and the four masks (the `use_door` geometry lifted into the unit library) | `list`, `list_mask`, `list_uid`, masks EXACT | Opus |
+| P8.5 | the windows: physics planes, air, felt temperature, the two sight planes, route and place | near / far planes EXACT | Opus |
+| P8.6 | the decoder and the action latch on the card; the commander's download measured | latch columns EXACT every tick against `AgentPolicy` on (c) | Opus |
+| P8.7 | reward books, `terminated` / `truncated`, the result | reward groups, counters, terminals EXACT per step | Opus |
+| P8.8 | the full view | EXACT | Opus |
+| P8.9 | per-env reset (decision 4) | env e reset mid-batch == env e built alone; the other envs unchanged at the reset tick | Opus |
+| P8.10 | `BatchedEnv(backend="device")` and `agents/` on device tensors | BACKEND EQUALITY: same run file, seed and actions give the same obs, rewards, terminals and checkpoints on both backends, N = 1 and a batch | Opus |
+
+Order: P8.0, P8.0b, P8.1, P8.2, P8.3, then P8.4 and P8.7 (both need only
+P8.3), P8.5, P8.6, P8.8, P8.9, P8.10. After P8.5 the bench is re-run with the
+observation on the card: that number says whether the remaining host work
+(the commander, checkpoints) matters.
+
+*Risks carried* (inventory J): the host controllers that run every tick; the
+team picture as state across ticks with Python-identity semantics; the reset
+having no form yet. *Open by name* (inventory K): numpy's summation order in
+the reward fold (checked in P8.7), a direct double to half conversion on the
+card (checked in P8.0b / P8.1), a continuous-path level with live cover (P8.2
+refuses it), the cost of a checkpoint download at N = 256 (measured in P8.10).
+
+*Systems.* (a) Used as they are: Device conductor, Unit store, Device tables,
+Object tables, Tick row, Event ring, Device sight, Device unit library,
+Batched resident engine, Observation spec, Full view, Action spec, Reward
+profile, Team picture, Batched environment, Verb gates, Order, Room graph,
+Class P / Class T. (b) New, each ONE index line at its patch: *Device
+observation* ("THE device form of observation spec v1 and the full view,
+built in the conductor tick into env-owned buffers; the host builders stay
+the reference; never a second observation"); *Observation arithmetic* ("the
+float functions an observation calls beyond IEEE basic operations are ONE
+module on host and card; never libm in an observation"); *Device team
+picture*; *Device decoder*; *Device books* (reward and terminals).
+
+**P8 RE-CUT, VERSION 2 (2026-11-20, after the critique:
+`docs/residency_p8_recut_critique_2026-11-20.md`, 1 blocker, 10 major, 12
+minor, all folded in here; where this block and the one above disagree, this
+one holds).**
+
+*Decisions changed.*
+- **Decision 1 is withdrawn in its strong form** (critique 2). Every log
+  result is only cast to float32 / float16 and never branched on; a 1-ulp
+  move of the float64 changed the served value 0 times in 5e6 tries. So: NO
+  shared log module. `hypot` becomes `sqrt(dx*dx + dy*dy)` on both sides
+  (IEEE, exact); the card uses CUDA's own `log` / `log1p`; the gate compares
+  the SERVED arrays as raw bits (so -0.0 and NaN count), and a single
+  differing value FAILS and is printed. The shared module is built only if
+  that gate ever goes red.
+- **`action_spec_v1.onto_reach_q`'s `float(d2) ** 0.5` becomes `math.sqrt`**
+  (critique 1): it is `pow`, it feeds the throw latch (game state), and it
+  differs from sqrt before quantizing on 8011 of 4e6 integers, on none after.
+  P8.0b proves "no quantized value moves" by an exhaustive sweep over every
+  reachable d2; no re-pin.
+- **The "counters" reward profile is refused by name on the device backend**
+  (critique 3): numpy sums its fold pairwise, which a serial kernel cannot
+  equal; the named profiles' fold is sequential and stays exact.
+- **Cover is ported, not refused** (critique 7, the blocker): the training
+  rooms place cover crates and only the observation reads them
+  (`line_of_fire.solid_in_way`). A per-env cover table and a device
+  `blocks_segment` (an IEEE slab test); only `blocks_los = true` cover is
+  refused, by name.
+- **Decision 3 is sharper** (critique 17): the host commander needs a named
+  host view of what it reads (units, the picture, vision, fire lanes, the
+  horde flood, the room goals) built from ONE download, with the device's
+  vision, never a recomputation; after the first resets some env is due on
+  every even tick, so the download is per tick, not per 6 ticks; estimated
+  20 ms of host Python per tick at N = 256 with two policy teams. Built and
+  measured in P8.6b with staggered resets; the choice that follows (keep it,
+  port the team layer, or a longer commander period) goes to Erik with the
+  number.
+- **Decision 4 stands** (critique 18): a `MatchSession` build is 18 to 21 ms;
+  the next episode is pre-built while the current one runs.
+
+*Rules every gate follows* (critique 4, 8, 12, 22).
+- A COLUMN-TO-PATCH table (kept in this design, filled by P8.0 from the
+  inventory's part A): every column and plane of the observation, the full
+  view, the masks and the reward has ONE owning patch; a gate compares what
+  it and earlier patches own.
+- A gate counts the non-default values of every column it owns and FAILS on
+  an owned column that is constant over its corpus (the pinned bots matches
+  issue no order and no `aims`; a training room has no zombies).
+- Corpus (c) is generated live inside the CUDA subprocess: an in-process
+  `EnvRunner` with seeded masked-random decisions (a Recording replay swaps
+  the policy controller out, so it cannot serve). Orders reach a corpus
+  through a commander team or the door bots.
+- THE WALL has a device gate: perturbing an unseen enemy's store row changes
+  no policy observation value.
+- One shared CUDA observation check script, so each pinned match is recorded
+  once per subprocess; each device builder adds its Class T twin row.
+
+*The patches, version 2.*
+
+| patch | what | gate | tier |
+|---|---|---|---|
+| P8.0 | the path at its smallest: CuPy obs buffers (double for the `final_` keys), the (team, slot) to store-row map, `valid` / `in_match`, a stub ended-env latch, ONE integer block (near wall / door, far wall share / door) built in the conductor tick at the decision cadence, handed to torch by DLPack with the stream ordering asserted; the shared check script; the column-to-patch table; spec constants from a generated layout header | the block EXACT (raw bits) on (a), (b); the tensor's pointer is the buffer's; 2 syncs per tick | Opus |
+| P8.0b | host arithmetic made portable: `hypot` to sqrt, `onto_reach_q` to sqrt | the exhaustive d2 sweep; pinned matches' digests unchanged; observation values move only where hypot was not correctly rounded (counted) | Sonnet |
+| P8.1 | the obs table (from the reference's own objects, floats as their own bit patterns, `pressure_min` / `max`), the hand double-to-half conversion with its exhaustive test, the vector columns that need only the store and tables | owned columns EXACT | Opus |
+| P8.2 | bulk sight on the card and who sees whom, both rules; the cover table and `blocks_segment`; observation double code in its own header, not the unit library | pairs / windows equal to `rays_clear` / `window_clear`; `seen_by` / `visible_by_team` equal every tick | Opus |
+| P8.3 | the device team picture (records with a refused overflow, motion, damage window, bars, the object tracker with a stable serial), the last stage of the walk; the vector columns it owns | the picture's whole state equal EVERY TICK on (a), (b), (d) | Opus |
+| P8.4a | lanes (with a floor-division helper), `aim_of`, line of fire | owned columns EXACT | Opus |
+| P8.4b | the list's five blocks, sorting, `list_uid` | EXACT | Opus |
+| P8.4c | the four masks; `use_door`'s geometry lifted into the unit library | EXACT | Opus |
+| P8.5a | the physics planes, air, felt temperature, the two sight planes, the far unit planes | EXACT | Opus |
+| P8.7 | the reward books (with `RewardBooksMismatch` as a counted per-env fault), `terminated` / `truncated`, the result, the per-env "ended at tick t" latch that freezes the books | EXACT per step | Opus |
+| P8.6a | decisions as a device tensor, `check_actions` / `masked_choices`, pointer to uid, the per-tick decoder writing the latch columns, the slot state, the zombie latch (its equivalence a gate) | latch columns EXACT every tick on (c) | Opus |
+| P8.6b | the commander's host view from one download; the order block, route and place (P8.5b) | owned columns EXACT with orders issued; the cost at N = 64 / 256 with staggered resets | Opus |
+| P8.8 | the full view | EXACT | Opus |
+| P8.8b | the terminal observation: the `final_` keys built at the ending tick | EXACT at every ended env | Opus |
+| P8.9a | per-env reset of the sim side (store slice, tables, lists, caches, tick row, broods) | env e reset mid-batch == env e built alone; others unchanged | Opus |
+| P8.9b | per-env reset of the observation side (picture, slot state, books, per-template rows); the pre-built next episode | the same, on the observation | Opus |
+| P8.10a | `BatchedEnv(backend="device")`: coverage counters, the pre-flight, `require_snapshot`'s device branch, the checkpoint download; the stale "P8b" lines in rules and headers | BACKEND EQUALITY on both backends, N = 1 and a batch | Opus |
+| P8.10b | `agents/` on device tensors | the trainer's own suite; a collect step with no host copy of an observation | Opus |
+
+Order (real edges): P8.0 -> P8.0b -> P8.1 -> P8.2 -> P8.3 -> P8.4a ->
+P8.4b -> P8.4c -> P8.5a -> P8.7 -> P8.6a -> P8.6b -> P8.8 -> P8.8b ->
+P8.9a -> P8.9b -> P8.10a -> P8.10b. The bench is re-run after P8.5a and
+after P8.6b.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
