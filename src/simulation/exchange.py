@@ -88,7 +88,7 @@ from simulation.events import NO_ATTACKER, Cause
 # damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
 from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
 from simulation.species import ZOMBIE_STABILITY
-from simulation.creature_system import is_creature
+from simulation.species import is_creature
 from simulation.status import BLINDED, apply_status
 
 

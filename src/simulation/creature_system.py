@@ -140,6 +140,7 @@ from simulation import creature_fixed as CF
 from simulation import creature_primitives as P
 from simulation import fixedpoint_twins as K
 from simulation.species import get_species
+from simulation.species import is_creature as _species_is_creature
 
 #: Snapshot key of the creature presence carrier (the ``__entity__`` twin).
 CREATURE_DIGEST_KEY = "__creature__"
@@ -188,10 +189,10 @@ def set_tick_laps(laps=None):
 # ---------------------------------------------------------------------------
 # The creature key and the engine
 # ---------------------------------------------------------------------------
-def is_creature(unit) -> bool:
-    """True iff ``unit``'s species is a creature (``species.creature is not
-    None`` -- the ONLY creature key)."""
-    return get_species(getattr(unit, "species_id", "human")).creature is not None
+# THE creature key lives beside the species table (``species.is_creature``)
+# and is re-exported here: the unit laws that skip a creature import it from
+# the species module, so they read nothing of this runtime.
+is_creature = _species_is_creature
 
 
 def require_engine(engine=None):

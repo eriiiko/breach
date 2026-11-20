@@ -303,9 +303,18 @@ def get_species(species_id: SpeciesId) -> SpeciesDef:
     return SPECIES_REGISTRY[species_id]
 
 
+def is_creature(unit) -> bool:
+    """True iff ``unit``'s species is a creature (``species.creature is not
+    None`` -- THE ONLY creature key, #106). Defined here, beside the species
+    table it reads, so the unit laws that skip a creature (slot 1a, the wind
+    row, slot 3) read the species table and nothing of the creature runtime;
+    ``creature_system`` re-exports it."""
+    return get_species(getattr(unit, "species_id", "human")).creature is not None
+
+
 __all__ = [
     "SpeciesId", "N_GENERATED_STATS", "GENERATED_STAT_NAMES",
     "StatDistribution", "SpeciesDef",
     "HUMAN", "OCTOPUS", "ZOMBIE_MITIGATION", "ZOMBIE_STABILITY",
-    "SPECIES_REGISTRY", "get_species",
+    "SPECIES_REGISTRY", "get_species", "is_creature",
 ]

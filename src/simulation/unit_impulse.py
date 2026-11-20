@@ -742,7 +742,7 @@ def integrate_all(sim) -> None:
     it lands, whichever slot produced it. A CREATURE unit is skipped
     (#106 P6d1): its anchor and facing are written per tick ONLY by slot 5b
     from its body pose (``creature_system``), so neither law moves it."""
-    from simulation.creature_system import is_creature
+    from simulation.species import is_creature
     table = sim.impulse_table
     events = sim.tick_events
     for u in sim.units:
