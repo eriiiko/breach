@@ -3019,8 +3019,9 @@ one holds).**
   the next episode is pre-built while the current one runs.
 
 *Rules every gate follows* (critique 4, 8, 12, 22).
-- A COLUMN-TO-PATCH table (kept in this design, filled by P8.0 from the
-  inventory's part A): every column and plane of the observation, the full
+- A COLUMN-TO-PATCH table (filled by P8.0 from the inventory's part A; it
+  lives as `tests/obs_column_owners.toml`, machine-readable, read by the
+  shared check): every column and plane of the observation, the full
   view, the masks and the reward has ONE owning patch; a gate compares what
   it and earlier patches own.
 - A gate counts the non-default values of every column it owns and FAILS on

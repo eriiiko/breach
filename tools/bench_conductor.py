@@ -37,6 +37,13 @@ Per (level, N):
   conductor is built and after the timed ticks (CuPy's pool not freed),
   divided by N.
 
+- ``--obs`` (#29 P8.0): the device observation attached
+  (``simulation.device_obs``, ``--decimation`` ticks per decision): its
+  blocks are the walk's ``11' observation`` segment, and ``obs_build_ms`` is
+  the GPU time of one decision's blocks for all N envs (``--obs-builds``
+  launches after the timed ticks, CUDA events around them on the tick
+  stream).
+
 Levels: ``ship_demo`` and a training room (``tools/gen_training_rooms.py``
 writes it into ``<--levels-dir>``, a scratch folder, the default a temp dir).
 """
@@ -83,7 +90,8 @@ def _device_used() -> int:
 
 
 def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
-            profile_ticks: int) -> dict:
+            profile_ticks: int, obs: bool = False, decimation: int = 4,
+            obs_builds: int = 50) -> dict:
     """One (level, N) in THIS process; returns the result row."""
     import numpy as np
     import breach_physics as bp
@@ -105,6 +113,12 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
     t0 = time.perf_counter()
     c = DeviceConductor(sims, bp=bp)
     t_build = time.perf_counter() - t0
+    dev_obs = None
+    if obs:
+        import rl_env
+        from simulation.device_obs import DeviceObservation
+        dev_obs = DeviceObservation(c, [rec.spec] * n, max(rl_env._team_slots(level)),
+                                    decimation)
 
     def latch():
         for e, s in enumerate(sims):
@@ -123,6 +137,18 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         wall.append(time.perf_counter() - ts)
         syncs.append(list(bp.host_sync_log_end()))
     used1 = _device_used()
+    obs_ms = None
+    if dev_obs is not None:
+        import cupy as cp
+        st = cp.cuda.ExternalStream(int(bp.tick_stream_ptr()))
+        a, b = cp.cuda.Event(), cp.cuda.Event()
+        dev_obs.build()                             # warm
+        a.record(st)
+        for _ in range(obs_builds):
+            dev_obs.build()
+        b.record(st)
+        b.synchronize()
+        obs_ms = cp.cuda.get_elapsed_time(a, b) / obs_builds
     seg_gpu: dict = {}
     seg_host: dict = {}
     order: list = []
@@ -148,6 +174,7 @@ def run_one(level_name: str, levels_dir: str, n: int, warmup: int, ticks: int,
         "sync_names": names,
         "mem_used_mb": round((used1 - used0) / 2 ** 20, 1),
         "mem_per_env_mb": round((used1 - used0) / 2 ** 20 / n, 2),
+        "obs_build_ms": None if obs_ms is None else round(float(obs_ms), 4),
         "segments": [{"label": k, "gpu_ms": round(float(np.mean(seg_gpu[k])), 4),
                       "host_ms": round(float(np.mean(seg_host[k])), 4)} for k in order],
     }
@@ -185,7 +212,9 @@ def format_rows(rows) -> str:
                    f"{r['ms_per_env_tick']:>7.3f} {r['syncs_per_tick']:>5.1f} "
                    f"{r['mem_per_env_mb']:>7.1f} {g['unit side']:>8.2f} {g['slot 7']:>7.2f} "
                    f"{hh['unit side']:>9.2f} {hh['slot 7']:>7.2f} {hh['books read']:>6.2f} "
-                   f"{hh['fold']:>6.2f}  {tops}")
+                   f"{hh['fold']:>6.2f}  {tops}"
+                   + ("" if r.get("obs_build_ms") is None
+                      else f"  | obs blocks {r['obs_build_ms']:.3f} ms per decision"))
     return "\n".join(out)
 
 
@@ -196,7 +225,9 @@ def sweep(args) -> int:
             cmd = [sys.executable, str(Path(__file__).resolve()), "--run", "--level", level,
                    "--n", str(n), "--levels-dir", args.levels_dir, "--warmup", str(args.warmup),
                    "--ticks", str(args.ticks), "--profile-ticks", str(args.profile_ticks),
-                   "--build", args.build]
+                   "--build", args.build, "--decimation", str(args.decimation)]
+            if args.obs:
+                cmd.append("--obs")
             t0 = time.perf_counter()
             p = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT),
                                env=dict(os.environ, PYTHONPATH=os.environ.get("PYTHONPATH", "")))
@@ -229,6 +260,10 @@ def main(argv=None) -> int:
     ap.add_argument("--run", action="store_true", help="one (level, N) in this process")
     ap.add_argument("--level", default="ship_demo")
     ap.add_argument("--n", type=int, default=1)
+    ap.add_argument("--obs", action="store_true",
+                    help="attach the device observation (#29 P8.0) and time its blocks")
+    ap.add_argument("--decimation", type=int, default=4,
+                    help="the device observation's ticks per decision (with --obs)")
     ap.add_argument("--build", default=str(ROOT / "cpp" / "build_cuda"),
                     help="the CUDA build of breach_physics (every backend starts OFF: the "
                          "recording runs the CPU path, the conductor brackets slot 7's)")
@@ -242,7 +277,7 @@ def main(argv=None) -> int:
         import_build(Path(args.build))
         try:
             row = run_one(args.level, args.levels_dir, args.n, args.warmup, args.ticks,
-                          args.profile_ticks)
+                          args.profile_ticks, obs=args.obs, decimation=args.decimation)
         except Exception as ex:   # an out-of-memory N is a row of the table, by name
             row = {"level": args.level, "n": args.n, "error": f"{type(ex).__name__}: {ex}"[:400]}
         print("CONDUCTOR_BENCH_JSON " + json.dumps(row), flush=True)
