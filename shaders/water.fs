@@ -20,7 +20,8 @@
 // by shaders/water_foam.fs; the twin renderer/water_foam.py) is drawn as a
 // THRESHOLD on a bubble raft at two sizes riding the same flow map as the
 // fine surface (water_foam.draw_cover: a sheet, then lace, then nothing --
-// Parberry's sea foam by halftoning), OVER the water, lit as the floor is;
+// Yingst, Alford & Parberry, "Very Fast Real-Time Ocean Wave Foam Rendering
+// Using Halftoning", GAMEON-NA 2011), OVER the water, lit as the floor is;
 // it darkens the floor beneath it and hides the glint. It replaced the old
 // gradient foam (foam_threshold / foam_intensity, deleted).
 // The light this pass reads gets the smoke's cast shadow and the light curve

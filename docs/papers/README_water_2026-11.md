@@ -36,7 +36,32 @@ Design: `docs/water_look_design_2026-11-19.md` (sections 2, 9 and 10).
      between float32 and float64). In the code:
      `renderer/water_surface.py::hex_slope` and `shaders/water.fs::hexSlope`.
 
+## W2: foam with a life
+
+3. **Yingst, M., Alford, J. R. & Parberry, I. (2011).** "Very Fast Real-Time
+   Ocean Wave Foam Rendering Using Halftoning." *Proceedings of the 6th
+   International North American Conference on Intelligent Games and
+   Simulation (GAMEON-NA)*, EUROSIS, Troy NY, pp. 27-34.
+   ianparberry.com/research/seafoam (the plan's "Parberry's sea foam").
+   **Archived here:** `yingst2011_ocean_foam_halftoning.pdf` (the conference
+   version, fetched 2026-11-20, 2.7 MB).
+   - What we use: the foam AMOUNT as a threshold on a fixed pattern (their
+     precomputed dither array), so foam breaks up into holes and strings as
+     it thins instead of turning transparent. Our pattern is a bubble raft
+     (Worley membranes, `noise_bake.bake_foam_rgba`), rank-equalised so the
+     threshold that covers a share f is exact (`water_foam.lace_threshold`,
+     for the mean of two sizes), and it slides with the flow map. In the code:
+     `renderer/water_foam.py::draw_cover`, `shaders/water.fs::foamCover`.
+4. **Selle, A., Fedkiw, R., Kim, B., Liu, Y. & Rossignac, J. (2008).** "An
+   Unconditionally Stable MacCormack Method." *J. Sci. Comput.* 35. Already
+   the fire's reference (`docs/papers/fire_vfx_references.md`, item 6).
+   - What we use: MacCormack advection with the min / max revert, for the
+     foam amount (`water_foam.advect`, `shaders/water_foam.fs`).
+5. **Ojeda and Susín** (river foam: an amount made, carried by the flow and
+   lost per frame) -- through the plan's section 4
+   (`docs/presentation_graphics_plan_2026-11-15.md`); no paper archived.
+
 ## Later patches
 
-W4's caustic (Wallace 2011) and W2's foam (Parberry) archive theirs here when
-they land, per the design's section 10.
+W4's caustic (Wallace 2011) archives its paper here when it lands, per the
+design's section 10.

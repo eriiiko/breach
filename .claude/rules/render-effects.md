@@ -15,11 +15,13 @@ paths:
   - "renderer/tracers.py"
   - "renderer/water.py"
   - "renderer/water_surface.py"
+  - "renderer/water_foam.py"
   - "shaders/gas_*"
   - "shaders/fire_*"
   - "shaders/particle_*"
   - "shaders/muzzle_flame.*"
   - "shaders/water.fs"
+  - "shaders/water_foam.fs"
   - "shaders/world_resolve.fs"
   - "tools/muzzle_flame_sheet.py"
   - "tools/wind_drift_probe.py"
@@ -89,3 +91,10 @@ Smoke look tuning: the `smoke-tuning` skill; fire and smoke: `fire-smoke-tuning`
 - The flow map is `advected_noise`'s two-phase crossfade (spliced at the shader's `// <ADVECTION>` marker), never a copy in water code; its tick-stepped callers stay bit-identical (`tests/test_water_flow_detail.py` pins the frozen formula). Every lookup is hex-tiled (Mikkelsen 2022) with the integer `hex_hash`, so the GPU and the twin draw the same bits; the drift is never wrapped (the hex lattice is not periodic, a wrap would pop it).
 - The clock is the pass's own `fire_vfx.SimClock` (sim time, idle when paused), never wall time. Dials pass `water_surface.water_settings`, the one refusing door, every frame; `tools/lighting_demo.py` drives them through `CFG.graphics.water` from its one `_WATER_DIALS` table, never through setters.
 - A dry map costs one `.any()` on the INT depth plane and draws nothing (bit-identical); a wet one packs on a sim-state change only and draws the view ∩ the wet box. Its samplers beyond raylib's four sit on units 5 (smoke product), 6 (flow), 7 (ripple).
+
+## Water foam
+- THE foam (#97 W2): one amount image per cell (`[graphics.water] foam_cells_per_tile`), a `core.PingPong` allocated on the first wet frame and never on a dry map, stepped by `WaterPass.simulate` (outside any texture mode, beside the flame's) over the wet box in cells only; the cells that leave the box are cleared in BOTH buffers (`water_foam.leaving_rects`). Its law lands in the numpy twin `renderer/water_foam.py` first, then `shaders/water_foam.fs` (the step) and `shaders/water.fs` (the draw); `tests/gl_water_foam_check.py` holds them equal. A new cause of foam is a term of `water_foam.sources` with its own gain, never a second foam layer.
+- PICTURE STATE: never synced, never read by the simulation, never written back. Reset when the sim tick goes back (a replay seek) and when the map dries; a level load builds a new pass. The clock is the pass's `SimClock` in fixed `foam_step_s` steps (idle when paused), never the frame's time step.
+- The step is MacCormack + clamp (Selle 2008) in substeps of at most one cell (`water_foam.substeps`, capped; past the cap the displacement is clamped, never a jump); a tap on a blocked (dry or solid) cell reads the traced cell's own value, so a wall neither eats nor takes foam. With no source the maximum never rises: keep it so (`tests/test_water_foam.py`).
+- The sources read only the two per-tile textures, through the shader's own `texelFetch` bilinear (the twin's `heat_shimmer.bilinear_tiles`), and W1's terms (`water_surface.edge_flow`, `strength_ratio`): never a second flow or strength. The agitation they read is the RELATIVE one (`water_foam.relative_agitation`, packed per tick in `u_water`'s A): the sim's ripple field heaves whole rooms as one, which raw `|ripple_v|` would foam over wall to wall. There is no pour source until water sources exist.
+- The draw is a THRESHOLD on the bubble raft (`noise_bake.bake_foam_rgba`, rank-equalised) at two sizes riding W1's flow map (`water_surface.layer_slides`), never a second advector and never a fade (Parberry); `water_foam.lace_threshold` is exact for that bake, so the bake and the threshold change together. Zoomed out the lace fades to its mean with W1's zoom fade. The foam is drawn over the water, lit as the floor is; samplers 8 (foam) and 9 (bubbles) in the draw, 8-10 in the step's direct-GL block.

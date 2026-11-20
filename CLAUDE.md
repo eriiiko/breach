@@ -241,6 +241,7 @@ amends the rule file, never this line's length.
 | Frame lights | `renderer/frame_lights.py` + `src/level_lights.py` | THE one light assembly; never a second |
 | Light curve | `renderer/light_curve.py` + `lit3d._LIGHT_CURVE_GLSL` | THE brightness map on the light, one GLSL copy; Erik's curve |
 | Water flow detail | `renderer/water_surface.py` (the twin) + `renderer/water.py` + `shaders/water.fs` | THE fine water surface: one hex-tiled ripple texture carried by the simulated flow through `advected_noise`'s crossfade; a new surface detail is a term here, never a second wave source |
+| Water foam | `renderer/water_foam.py` (the twin) + `shaders/water_foam.fs` (the step) + `renderer/water.py` + `shaders/water.fs` (the draw) + `noise_bake.bake_foam_rgba` | THE foam: one amount image made by sources, carried by the flow and lost by decay, per sim-clock step, drawn as a threshold on a bubble raft; a new cause of foam is a source term with its gain, never a second foam layer; picture state only |
 | Dequantize convention | per-field `*_fixed.dequantize_f32` at `upload_state` | Fresh float copies at the render read, never written back, never `/65536` inline |
 | Tile inspector | `renderer/hover_readout.py::pack_hover_readout` | THE per-tile debug readout; tools and HUD read it, never a parallel field probe |
 | 3D units | `renderer/unit_model_renderer.py` + `renderer/unit_looks.py` + `renderer/marine_shader.py` | No model/anim state ever on `Unit`; a new look is a table entry, never a second renderer |

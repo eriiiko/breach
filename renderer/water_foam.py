@@ -85,9 +85,11 @@ Credits (repo rule -- cite what a file implements):
     Rossignac, "An Unconditionally Stable MacCormack Method", J. Sci.
     Comput. 35 (2008) -- MacCormack advection with the min / max limiter.
     The fire's references: docs/papers/fire_vfx_references.md.
-  - Ian Parberry, "Sea foam by halftoning" (ianparberry.com/research/
-    seafoam) -- the amount as a THRESHOLD on a bubble pattern, so foam
-    breaks into lace rather than fading (docs/papers/README_water_2026-11.md).
+  - Mary Yingst, Jennifer R. Alford, Ian Parberry, "Very Fast Real-Time
+    Ocean Wave Foam Rendering Using Halftoning", GAMEON-NA 2011, pp. 27-34
+    -- the foam amount as a THRESHOLD on a fixed pattern (their dither
+    array; our bubble raft), so foam breaks up rather than fading
+    (archived: docs/papers/yingst2011_ocean_foam_halftoning.pdf).
   - Ojeda and Susin's real-time river foam (the amount made, carried by the
     flow and lost per frame), via docs/presentation_graphics_plan_2026-11-15.md
     section 4.
