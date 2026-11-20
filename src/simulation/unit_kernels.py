@@ -429,8 +429,36 @@ def verbs(store, requests, tick_row, door_spans, charges_live, fields) -> np.nda
     return cov
 
 
+def verbs_device(store, requests, tick_row, doors, door_tiles, charges, fields) -> np.ndarray:
+    """#29 P7e.4: slot 1b as :func:`verbs`, its two derived inputs built ON
+    THE DEVICE from the tables (the device conductor's form, never staged
+    from the host): the live doors' span tiles from ``doors`` /
+    ``door_tiles`` (``unit_requests.door_spans``) and the live charges from
+    ``charges`` (``unit_requests.charges_live``), all
+    ``object_tables.DeviceTable`` s of the store's envs. Refuses what
+    :func:`verbs` refuses; a door whose span leaves its tile table faults
+    (:class:`UnitKernelFault`)."""
+    from simulation.unit_requests import UnitRequestOverflow
+    _check_requests("verbs", store, requests)
+    _check_tables("verbs", store, doors, door_tiles, charges)
+    t = _trow(tick_row, store, "verbs")
+    ptr, fh, fw = _flight_plane("verbs", store, fields)
+    cov, flt, ref, drp = (np.asarray(c, dtype=np.int64) for c in store.bp.unit_verbs_tables(
+        store.buffer, store.tables, requests.buffer, t, doors.buffer, door_tiles.buffer,
+        charges.buffer, ptr, fh, fw))
+    cov = _done(store, "verbs", (cov, flt, ref))
+    store.last_dropped = drp
+    if drp.any():
+        envs = [int(e) for e in np.nonzero(drp)[0]]
+        raise UnitRequestOverflow(
+            f"unit kernel verbs: {int(drp.sum())} request(s) in env(s) {envs} "
+            f"did not fit the request list (its R_max, or a row's staging): "
+            f"nothing was written past the capacity")
+    return cov
+
+
 #: The done kernel's columns.
-DONE_COLUMNS = ("terminal", "outcome", "winner", "living_teams")
+DONE_COLUMNS =("terminal", "outcome", "winner", "living_teams")
 DONE_NONE, DONE_WIN, DONE_DRAW = 0, 1, 2
 
 
@@ -454,7 +482,7 @@ def verbs_probe(store, kind=0, tick=0, base=0) -> np.ndarray:
 
 
 __all__ = ["REQUEST_WIDTH", "NO_REQUEST", "UnitKernelFault",
-           "verbs", "DONE_COLUMNS", "DONE_NONE", "DONE_WIN", "DONE_DRAW",
+           "verbs", "verbs_device", "DONE_COLUMNS", "DONE_NONE", "DONE_WIN", "DONE_DRAW",
            "match_done", "verbs_probe",
            "exposure_decay", "integrate_turn", "WIND_FIELDS", "wind_impulse",
            "requests_of", "pad_requests", "apply_orders", "expire_orders",

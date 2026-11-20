@@ -1543,12 +1543,8 @@ class PhysicsRunner:
         """Host pre-physics for ONE env (on its mirror): lazy binds, the
         ambient args, the water pre-step and dormancy, the stamp rows. Returns
         the env's tick context (a dict)."""
-        self.eos.dx = float(gmap.tile_size_m)
-        if self._o2_idx is None:
-            self._o2_idx = int(gmap.gases.name_to_id["o2"])
-            self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
-            self._black_smoke_idx = int(gmap.gases.name_to_id["smoke"])
-        amb = self._ambient_args(gmap)
+        ctx = self._resident_scalars(gmap)
+        amb = ctx["amb"]
         water_dormant = self._water_pre_resident(gmap)
         if not water_dormant:
             view = getattr(self, "_batch_water_before", None)
@@ -1563,14 +1559,27 @@ class PhysicsRunner:
                 import cupy as cp
                 self._d_water_before = cp.ascontiguousarray(
                     cp.asarray(self._water_depth_before))
+        ctx["water_dormant"] = water_dormant
+        ctx["stamp_rows"] = gmap.take_stamp_rows()
+        return ctx
+
+    def _resident_scalars(self, gmap):
+        """The host SCALARS of one env's resident tick (lazy binds, the
+        ambient args, light / headless, the ambient temperature): the part of
+        :meth:`_resident_prepare` that reads no plane the device writes (#29
+        P7e.4: the device conductor's slot 7 prepares with this alone)."""
+        self.eos.dx = float(gmap.tile_size_m)
+        if self._o2_idx is None:
+            self._o2_idx = int(gmap.gases.name_to_id["o2"])
+            self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["smoke"])
+        amb = self._ambient_args(gmap)
         return {
             "amb": amb,
             "ambient": amb[0] is not None,
-            "water_dormant": water_dormant,
             "light": bool(self.engine.light_requested),
             "headless": bool(self.engine.headless),
             "t_amb": self._eos_t_amb_raw(),
-            "stamp_rows": gmap.take_stamp_rows(),
         }
 
     def _resident_upload(self, gmap, ctx, upload_stamp):
@@ -2139,6 +2148,44 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
             int(g0.gases.name_to_id["o2"]), int(g0.gases.name_to_id["inert_n2"]),
             n_env=n_env, engines=engines)
 
+    destroyed = _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base,
+                                div_source_dev)
+    if _TICK_CAPTURE is not None:
+        _TICK_CAPTURE.end()
+
+    # The edit queue's books (folded into each engine at the tail's D2H) into
+    # each env's map, as the host flush writes them (#29 P4c).
+    for r, g, p in zip(runners, gmaps, packs):
+        if p is not None:
+            r._fold_edit_books(g, p)
+            r.edit_device_ticks += 1
+
+    # 4-5. THE EXIT DOWNLOAD per env, then its host-side tail.
+    for r, g, c in zip(runners, gmaps, ctxs):
+        r._resident_finish(g, c)
+    return [list(d) for d in destroyed]
+
+
+def _resident_chain(runners, gmaps, ctxs, sim_time, water_before_base, div_source_dev):
+    """Slot 7's device chain from the water stage to the tail's ONE books D2H
+    (#29 P7e.4: code motion out of :func:`run_resident_batch`, so the played
+    tick and the device conductor's slot 7, :func:`run_resident_conductor`,
+    run ONE chain). Each env's swarm death rows land on its runner. Returns
+    each env's burn-through list (row-major, from the books D2H)."""
+    n_env = len(runners)
+    r0, g0 = runners[0], gmaps[0]
+    h, w = g0._h, g0._w
+    amb = ctxs[0]["amb"]
+    ambient = ctxs[0]["ambient"]
+    t_amb = ctxs[0]["t_amb"]
+    dev = dict(g0.device_ptrs())   # env 0's addresses == the batch's base
+    if amb[3] is None:
+        dev["sponge_sigma"] = 0
+    if amb[4] is None:
+        dev["sponge_udamp"] = 0
+    engines = [r.engine for r in runners] if n_env > 1 else None
+    e0 = r0.engine
+    cons = g0.gases.conservative
     # 3a. water: the substep loop, then the W5/W3 tail, masked per env.
     active = [not c["water_dormant"] for c in ctxs]
     if any(active):
@@ -2191,20 +2238,28 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
                                  resident=True))
     for r, rows in zip(runners, swarm_rows):
         r.swarm_death_rows = rows
-    if _TICK_CAPTURE is not None:
-        _TICK_CAPTURE.end()
+    return destroyed
 
-    # The edit queue's books (folded into each engine at the tail's D2H) into
-    # each env's map, as the host flush writes them (#29 P4c).
-    for r, g, p in zip(runners, gmaps, packs):
-        if p is not None:
-            r._fold_edit_books(g, p)
-            r.edit_device_ticks += 1
 
-    # 4-5. THE EXIT DOWNLOAD per env, then its host-side tail.
-    for r, g, c in zip(runners, gmaps, ctxs):
-        r._resident_finish(g, c)
-    return [list(d) for d in destroyed]
+def run_resident_conductor(runner, gmap, sim_time, div_source_dev):
+    """#29 P7e.4 (Class T): slot 7 of the DEVICE CONDUCTOR
+    (``simulation.conductor``) at N = 1, on resident buffers that ARE the
+    truth: the physics head's host books (the trace dt check, the per-tick
+    saturation books), then :func:`_resident_chain` with the blast source the
+    SOURCES stage took on the device (``div_source_dev``). Slot 6's stamp and
+    slot 6b's flush ran on the device before it, so there is no stamp row,
+    no edit buffer, no entry upload and no exit download here; water is
+    dormant by the conductor's refusal (a map with water is refused at its
+    build), light and an ambient map likewise. Returns the burn-through list
+    (row-major, from the tail's books D2H), which the conductor does not
+    read: slot 9 ranks the resident fire's own list on the device."""
+    runner._check_trace_dt(gmap, sim_time)
+    runner.eos.reset_trace_sat_books(int(gmap.gas.shape[0]))
+    ctx = runner._resident_scalars(gmap)
+    ctx["water_dormant"] = True
+    ctx["sim_time"] = sim_time
+    return list(_resident_chain([runner], [gmap], [ctx], sim_time, None,
+                                int(div_source_dev))[0])
 
 
 def fold_edit_queue_books(lay, gmap, b, rng) -> None:

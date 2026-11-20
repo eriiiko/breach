@@ -215,6 +215,16 @@ void unit_damage_probe(UnitStoreDevice& store, const UnitTablesDevice& tables,
 void unit_verbs(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitRecordList& requests,
                 std::uintptr_t tick_row, const int64_t* spans, int n_spans, const int64_t* live,
                 std::uintptr_t flight, int fh, int fw, const UnitDamageCounts& out);
+// #29 P7e.4 (the device conductor): slot 1b with its two derived inputs built
+// ON THE DEVICE from the tables -- the live doors' span tiles from the door
+// and door tile tables (unit_requests.door_spans), the live charges from the
+// charge table (unit_requests.charges_live) -- never staged from the host. A
+// door whose span leaves the tile table faults the env.
+class ObjectTable;
+void unit_verbs_tables(UnitStoreDevice& store, const UnitTablesDevice& tables,
+                       UnitRecordList& requests, std::uintptr_t tick_row, ObjectTable& doors,
+                       ObjectTable& door_tiles, ObjectTable& charges, std::uintptr_t flight,
+                       int fh, int fw, const UnitDamageCounts& out);
 
 // The done kernel: per env (terminal, outcome, winner team, living marine
 // teams) into `out` (N, UNIT_DONE_W) int64 host; `ticks` (N,) each env's

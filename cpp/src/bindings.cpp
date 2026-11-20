@@ -1146,6 +1146,26 @@ PYBIND11_MODULE(breach_physics, m) {
               py::arg("spans"), py::arg("live"), py::arg("flight"), py::arg("h"), py::arg("w"),
               "#29 P6.4a: slot 1b (Simulation._consume_direct_intents) on the device store; "
               "returns (coverage, faults, refused plants, dropped requests).");
+        m.def("unit_verbs_tables",
+              [](UnitStoreDevice& s, const UnitTablesDevice& t, UnitRecordList& req,
+                 std::uintptr_t tick_row, breach_cuda::ObjectTable& doors,
+                 breach_cuda::ObjectTable& door_tiles, breach_cuda::ObjectTable& charges,
+                 std::uintptr_t flight, int fh, int fw) {
+                  py::array_t<int64_t> cov(s.n_env()), flt(s.n_env()), ref(s.n_env()),
+                      drp(s.n_env());
+                  UnitDamageCounts c;
+                  c.coverage = cov.mutable_data();
+                  c.faults = flt.mutable_data();
+                  c.refused = ref.mutable_data();
+                  c.dropped = drp.mutable_data();
+                  breach_cuda::unit_verbs_tables(s, t, req, tick_row, doors, door_tiles, charges,
+                                                 flight, fh, fw, c);
+                  return py::make_tuple(cov, flt, ref, drp);
+              }, py::arg("store"), py::arg("tables"), py::arg("requests"), py::arg("tick_row"),
+              py::arg("doors"), py::arg("door_tiles"), py::arg("charges"), py::arg("flight"),
+              py::arg("h"), py::arg("w"),
+              "#29 P7e.4: slot 1b with the door spans and the live charges built on the "
+              "device from the tables (the device conductor's form).");
         m.def("unit_match_done",
               [](UnitStoreDevice& s, const UnitTablesDevice& t, std::uintptr_t tick_row) {
                   py::array_t<int64_t> out({(py::ssize_t)s.n_env(),
