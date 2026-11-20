@@ -3102,6 +3102,37 @@ team picture and vision became its traced files (their `[not_twinned]` rows
 retired); `obs_spec_v1.py` / `rl_env.py` are not traced by the twin corpus
 (named in the row as an accepted gap).
 
+**P8.0b AS-BUILT (2026-11-20, branch `29-p80b-host-arith`).** The host
+reference's roots are IEEE. `action_spec_v1.onto_reach_q` takes
+`math.sqrt(float(d2))` (was `float(d2) ** 0.5`, the C runtime's `pow`); the
+observation's four `hypot` calls became ONE scalar `obs_spec_v1.length(dx,
+dy)` (`float()` of each, two products, one add, `math.sqrt`) for
+`_hit_from` and the two `d_c` callers, and `np.sqrt(vx*vx + vy*vy)` on the
+float64 wind plane (the same operations element for element); their
+`ingress-exempt` comments went with them (`sqrt` is door 3). The other files
+the critique named (`team_picture`, `reward_v1`, `control_policy`,
+`sensor_accessor`, `rl_env`) held no `hypot` and no float `**`
+(`control_policy`'s aim norm was already `np.sqrt`); `log` / `log1p` stay.
+The sweep (`tools/reach_sqrt_sweep.py`, run once, 132 s): the bound is
+every integer d2 in [0, 2**31), since the caller's two points are tile
+coordinates of Q16.16 int32 positions (|dx|, |dy| <= 32767, d2 <=
+2 147 352 578). The old form is reproduced in bulk by `np.power` with an
+ARRAY exponent (checked equal to CPython's `**` on 6e6 values; a scalar 0.5
+exponent takes numpy's sqrt shortcut and would test nothing). The roots
+differ before quantizing on 3 988 877 integers; the quantized reach on 3
+(1455325460, 1716802626, 1878698752), none of them a sum of two squares
+with both terms <= 32767 and all with roots past 38 000 tiles (beyond the
+int32 Q16 reach column, d2 < 2**30): 0 reachable values moved, no re-pin.
+`tests/test_portable_host_roots.py` keeps a dense sample (every d2 < 2**22,
+every offset within 256 tiles against the exactly rounded integer root, a
+seeded sample to 32767) and an AST check that the observation, action
+spec, decoder, picture, reward, accessor and env files call no `hypot` and
+no float `**`. Served values that moved (old module from `main` beside the
+new one, each decision observed new / old / new, the new pair the control):
+0 of 132 043 950 values (obs keys and the full view, raw bits, 267
+columns) over bots (338 decisions), bots_v1 (69) and range_door (51). The
+order column `vector[91]` is not exercised by that corpus (no orders).
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:

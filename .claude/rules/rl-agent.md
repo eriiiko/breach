@@ -39,6 +39,7 @@ and who must use it; this file holds the constraints the code cannot say. The
 - THE WALL: the builders take `(know, u)` and reach the sim ONLY through `TeamKnowledge.build` (with `observe_rows`, the door that hands it the sim) and its `ObsWorld` facade (explicit attributes, no fallback); every cache is keyed by its inputs. An object's id is its team's own counter; a uid is an EQUALITY key only.
 - Nothing walks its own lines or floods its own field (sight through Sight for many tiles, the route through the horde's flood). The physics planes are read ONCE per env per decision; the sight plane is cast from RECORDED centres, never live positions.
 - ACCEPTED GAP (Erik, 2026-11-12: "on the wind question, its OK! We accept it!"): the physics planes carry the bodies' own aerodynamic and radiative imprint (`stamp_units`), measured by `tools/obs_body_imprint.py`. So the counterfactual family compares every array but the physics planes and the `air` / `felt_temp` columns.
+- A length in the observation is `obs_spec_v1.length` (float64 `sqrt(dx*dx + dy*dy)`, its array form doing the same operations) and the decoder's lob reach is `math.sqrt`: never `hypot` or a float `**` (libm algorithms a kernel cannot reproduce bit for bit, so the device observation and decoder could not be held EXACT; #29 P8.0b, `tests/test_portable_host_roots.py`).
 - Held by the reconstruction against `tests/_obs_reference.py` and the counterfactual family. Choices beyond the spec are marked `CHOICE` in the module.
 
 ## Full view
