@@ -1410,6 +1410,58 @@ the critique):
   plane copy, the flight builder without the material, the walk without the
   row, 9c without the list).
 
+**As built (P7e.2, 2026-11-20).** Branch `29-p7e2-sorts-9b`. One Class-T
+TU, `cpp/src/cuda_unit_sorts.cu`, faces in `unit_kernels`; no physics, no
+golden, no played-tick behaviour moved.
+- THE BURN-THROUGH SORT: `unit_kernels.burn_through_device(store, applier,
+  fields, burn, tick_row)` empties the effect list, ranks each env's list
+  (`BurnList`: device addresses of the `(N,)` counter and `(N, S)`
+  arrival-order indices) with a STABLE RANK in one block per env (each index
+  written straight to its rank's slot after what the list holds, the rest
+  counted dropped), then walks TOPOLOGY. The resident fire's own list is read
+  in place through `bp.resident_burn_list()` (the arena's fire counter, the
+  `dlist` buffer; a new accessor in `cuda_resident_tick.cu`, nothing else in
+  the played tick changed). Choice where silent: a rank, not a sort network
+  -- the list is small (capped by the effect list's 256) and the rank is
+  exact with ties; a count or index outside the grid FAULTS the env.
+- SLOT 9b: `Simulation._burst_walls()` is now a named call (the body moved
+  unchanged; the profiler row `9b over-pressure walls` hooks it instead of
+  the bare scan, so the shadow sees the destroys). `unit_kernels.burst_walls`
+  scans in raw Q16 ints: the reference's float64 spread is `S / 2^16`
+  exactly, so `spread > t` is `S > floor(t * 2^16)` (row `burst_thresh_q`,
+  -1 never, clamped at 2^40 which no int32 spread reaches); the vacuum side
+  0, the ambient side `burst_p_amb_q`; the top-K by `burst_cap` rounds of a
+  block reduction under the total order (spread descending, then row-major),
+  each pick strictly after the last. `burst_cap` is 0 while `burst_enabled`
+  is off (the shipped config: 9b does nothing in game).
+- THE STAMP FROM THE STORE: `unit_kernels.stamp_rows` / `stamp` build
+  `take_stamp_rows`' 9-column rows from the store (per-row tile count, a
+  one-thread prefix over (env, row), the fill; rows past the total env -1 so
+  the launch takes the capacity N * U * 64 and the host reads no count), run
+  `stamp_launch_resident` unchanged, and the refill (freed captured before
+  the reset; one block per env walks the grid in 256-cell chunks, thread 0
+  serially in row-major order only where a chunk holds a freed tile). The
+  per-unit values are the map defaults (`stamp_*` rows); a sim whose unit
+  sets an optics override is refused at the table build
+  (`stamp_optics_default`). The played tick keeps the host rows and the host
+  refill.
+- Finding (reported, not changed): on the C++ stamp path `obstacles` IS
+  `solid` (`_update_caches` aliases them and the C++ stamp writes in place),
+  so `destroy_wall` opens `obstacles` too and the refill never fires there;
+  the gate reaches the refill through the Python stamp path
+  (`use_cpp_stamp = False`).
+- Gate: `tests/cuda_unit_sorts_check.py` (BURN: slot 9 shadowed with the
+  host's list SCRAMBLED, fire scenes N = 1 / 2; RESIDENT: the resident fire's
+  arrival list sorted in place == the played tick's list, 7 of 40 ticks
+  arrived unsorted; BURST: a built membrane scene with 35 candidates, the cap
+  cutting a tie, later scans of distinct spreads, N = 1 / 2; STAMP: ship_demo's
+  walk and fire scenes, rows == the host C++ stamp's rows every tick, the
+  refill on the Python path), wrapped by `tests/test_cuda_unit_sorts.py`. Each
+  property shown red by a break in the TU (the rank replaced by the arrival
+  index, the tie order reversed, the footprint walked column-major).
+  `tests/cuda_unit_lockstep.py`'s write-set compare learned tuples of arrays
+  (the stamp's kept rows).
+
 **Systems (additions to §13).** New, each with its ONE index line and its
 constraints in `.claude/rules/device-units.md` when it is built: the device
 table module and each table on it (charges, grenades, rounds, blast sources,

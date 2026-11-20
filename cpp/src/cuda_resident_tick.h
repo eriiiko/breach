@@ -191,6 +191,13 @@ void resident_swarm(const EngineList& engs, const ResidentFields& f,
 constexpr int RESIDENT_STAGE_COUNTERS = 18;
 void resident_stage_counters(long long out[RESIDENT_STAGE_COUNTERS]);
 
+// #29 P7e.2: the device addresses of the LAST resident tick's burn-through
+// list -- the fire's per-env counter ((N,) int in the books arena) and the
+// arrival-order lists ((N, h * w) int, packed in-env linear indices) -- for
+// the device sort (cuda_unit_sorts.cu); valid until the next tick's fire.
+void resident_burn_list(std::uintptr_t* counts, std::uintptr_t* lists, int* n_env, int* h,
+                        int* w);
+
 // The sweep's Fleck plane ON DEMAND: the per-call twin copies it into the
 // engine's RadiationSweep every call (its observable state, the
 // fleck_plane_for_twin idiom); the resident tick keeps it on the device (it

@@ -1932,6 +1932,109 @@ _HORDE_ROWS: tuple = (
 )
 ROWS = ROWS + _HORDE_ROWS
 
+
+# -- #29 P7e.2's sources: slot 9b on the device (the over-pressure scan) and
+#    slot 6's stamp rows built from the unit store ---------------------------------
+#: The clamp of a burst threshold row: every spread the scan forms is an
+#: int64 difference of two int32 pressures (< 2^33), so a threshold at or
+#: above 2^40 can never be passed, exactly as the float compare never passes it.
+BURST_THRESH_CLAMP = 1 << 40
+
+
+def _burst_cap(src):
+    """``Simulation._burst_walls``' per-tick cap as the device reads it: the
+    ``[physics] burst_max_per_tick`` the slot passes to ``find_burst_walls``,
+    0 while ``burst_enabled`` is off (the slot runs no scan; a cap of 0 makes
+    the device scan return nothing, the same empty list)."""
+    phys = _cfg().physics
+    if not getattr(phys, "burst_enabled", True):
+        return 0
+    return int(getattr(phys, "burst_max_per_tick", 16))
+
+
+def _burst_p_amb_q(src):
+    """``find_burst_walls``' ambient side, ``self._ambient.pin_q`` raw Q16
+    (``p_amb_real = pin_q / FP_ONE``: exact, so the scan compares raw ints);
+    0 on a map with no ambient."""
+    amb = src.sim.gmap._ambient
+    return 0 if amb is None else int(amb.pin_q)
+
+
+def _burst_thresh_q(tbl, i):
+    """``find_burst_walls``' per-material compare ``spread > t`` in raw Q16:
+    the spread is ``S / 2^16`` exactly (two dequantized int32 pressures,
+    subtracted in float64 without rounding) and ``t`` the float32 column
+    widened, so ``S / 2^16 > t`` iff ``S > floor(t * 2^16)``. ``-1`` for a
+    material that never bursts (``t <= 0``, or NaN: ``t > 0.0`` is false);
+    clamped at :data:`BURST_THRESH_CLAMP`, which no spread reaches."""
+    import math
+    t = float(np.float64(tbl.burst_threshold[i]))
+    if not t > 0.0:
+        return -1
+    if math.isinf(t) or t * 65536.0 >= BURST_THRESH_CLAMP:
+        return BURST_THRESH_CLAMP
+    return int(math.floor(t * 65536.0))
+
+
+def _stamp_default(cfg_name, default):
+    """``GameMap._stamp_units_cpp``'s per-unit float when the unit leaves its
+    optics override unset (every game path: ``unit_schema.OPTICS_OVERRIDES``):
+    ``float(getattr(CFG.physics, cfg_name, default))`` stored as float32 bits."""
+    def f(src):
+        return _f32_bits(float(getattr(_cfg().physics, cfg_name, default)))
+    return f
+
+
+def _stamp_q(src):
+    from simulation import optics_fixed
+    return int(optics_fixed.quantize_scalar(1.0))
+
+
+def _stamp_light_q(src):
+    from simulation import optics_fixed
+    return tuple(int(optics_fixed.quantize_scalar(float(c))) for c in (1.0, 1.0, 1.0))
+
+
+def _stamp_optics_default(src):
+    """1 when no unit of the sim carries an optics override (the stamp then
+    reads the map defaults the rows above hold); 0 -- refused by the row's
+    range -- when one does: the device rows are built from the store, which
+    holds no override (a set override is a test fixture, never a game path)."""
+    from simulation.unit_schema import OPTICS_OVERRIDES
+    for u in src.sim.units:
+        for name in OPTICS_OVERRIDES:
+            try:
+                getattr(u, name)
+            except AttributeError:
+                continue
+            return 0
+    return 1
+
+
+_SORTS_ROWS: tuple = (
+    TableRow("burst_cap", 1, _burst_cap, 0, 1024,
+             "Simulation._burst_walls: [physics] burst_max_per_tick (0 while "
+             "burst_enabled is off): the scan's top-K"),
+    TableRow("burst_p_amb_q", 1, _burst_p_amb_q, 0, _I32_MAX,
+             "find_burst_walls: an is_ambient side's pressure, _ambient.pin_q (0: none)"),
+    TableRow("burst_thresh_q", _n_materials, _per_mat(_burst_thresh_q), -1,
+             BURST_THRESH_CLAMP,
+             "per material: floor(burst_threshold * 2^16), -1 never bursts"),
+    TableRow("stamp_perm_bits", 1,
+             _stamp_default("unit_permeability", 0.5), _I32_MIN, _I32_MAX,
+             "the stamp's per-unit permeability: float32([physics] unit_permeability) bits"),
+    TableRow("stamp_wabsorb_bits", 1,
+             _stamp_default("unit_wave_absorb", 0.5), _I32_MIN, _I32_MAX,
+             "the stamp's per-unit wave absorption: float32([physics] unit_wave_absorb) bits"),
+    TableRow("stamp_heat_q", 1, _stamp_q, 0, ONE,
+             "the stamp's per-unit heat extinction: optics_fixed.quantize_scalar(1.0)"),
+    TableRow("stamp_light_q", 3, _stamp_light_q, 0, ONE,
+             "the stamp's per-unit light triple: quantize_scalar of (1, 1, 1)"),
+    TableRow("stamp_optics_default", 1, _stamp_optics_default, 1, 1,
+             "1: no unit carries an optics override (else refused: the store holds none)"),
+)
+ROWS = ROWS + _SORTS_ROWS
+
 ROW_BY_NAME = {r.name: r for r in ROWS}
 assert len(ROW_BY_NAME) == len(ROWS), "a table row is declared twice"
 
