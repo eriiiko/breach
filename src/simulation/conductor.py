@@ -1,49 +1,66 @@
-"""THE DEVICE CONDUCTOR (#29 P7e.4, residency design §4.4c "P7e RE-CUT"): ONE
-function that runs a whole reference tick's unit side ON THE DEVICE at N = 1,
-in ``Simulation.step()``'s slot order, with every piece of state resident
-ACROSS ticks -- the unit store and its tables, the record lists, the object
-and entity tables, the edit door, the horde cache and the tick row -- chained
-with the resident physics tick (slot 7) on the same device buffers
-(``ResidentBatch.buffers``).
+"""THE DEVICE CONDUCTOR (#29 P7e.4 / P7e.5, residency design §4.4c "P7e
+RE-CUT"): ONE function that runs a whole reference tick of N homogeneous envs
+ON THE DEVICE in ONE walk, in ``Simulation.step()``'s slot order, every face
+launched once for all N envs, with every piece of state resident ACROSS ticks
+-- the unit store ``(N, U, W)`` and its tables, the record lists, the object
+and entity tables, the edit door, the horde cache and the tick row, per env
+-- chained with the batched resident physics tick (slot 7) on the same device
+buffers (``ResidentBatch.buffers``). N = 1 is one sim: never a second copy.
 
 CLASS T (training only): ``Simulation.step()`` and the played resident tick
-are untouched; the conductor is what P7e.5 batches and P8 trains on. It never
-drives a played game.
+are untouched; the conductor is what P8 trains on. It never drives a played
+game.
 
 THE SHAPE (a choice where the design was silent: the walk is a Python
 function over the ``unit_kernels`` faces, every face one or a few launches on
 the tick stream, rather than a C++ orchestration; its cost is the Python per
-face, measured in the P7e.4 as-built note)::
+face, measured by ``tools/bench_conductor.py``)::
 
-    c = DeviceConductor(sim)          # ONE upload of everything, at build
-    c.latch(intents)                  # THE LATCHES: the tick's intents
-    c.tick()                          # the walk: slots 1 .. 11
+    c = DeviceConductor(sims)         # ONE upload of everything, at build
+    c.latch(intents, env=e)           # THE LATCHES: env e's intents this tick
+    c.tick()                          # the walk: slots 1 .. 11, every env
     c.download()                      # THE GATE'S DOWNLOAD (only when asked)
 
-``sim`` is the TWIN: a fully built ``Simulation`` whose state seeds the device
-once. From then on the device is the truth; the twin's host objects are
-stale until :meth:`download` lands the device state on them (the gate's
-digest reads them). The twin's host scalars (``tick``, ``real_time``) are the
-conductor's own clock, advanced at slot 10 beside the device tick row.
+``sims`` are the TWINS (one ``Simulation`` or a list; one level, as the
+batched resident engine requires: grid, gas table, tilt, tick rate, space
+maps), whose state seeds the device once. From then on the device is the
+truth; a twin's host objects are stale until :meth:`download` lands the
+device state on them (the gate's digest reads them). Each twin's host scalars
+(``tick``, ``real_time``) are the conductor's clock, advanced at slot 10
+beside the device tick row. The unit store pads the envs to the largest unit
+count with all-zero rows.
 
-THE LATCHES (the host's only writes per tick): :meth:`latch` takes a tick's
+THE LATCHES (the host's only writes per tick): :meth:`latch` takes one env's
 intents as ``(kind, args)`` in issue order -- exactly what the intent tap
 records (``Simulation.attach_intent_log``, ``match_replay.IntentLog``), args
 normalised as the sim's own methods normalise them -- and turns them into
 (1) a COLUMN SCATTER into the store's latch columns (:data:`LATCH_COLUMNS`:
 each intent method writes exactly one ``Unit`` attribute, a function of its
 arguments alone; the last write of a (unit, column) in the tick wins, as on
-the host), never a whole-row pack; (2) the ORDER TABLE (``order_intent``,
-written onto the rows at slot 1b' by ``unit_kernels.apply_orders``); (3) the
-ZOMBIE REQUEST SET (``drive_zombies``, the HORDE latch). The tick row
-advances ON THE DEVICE at slot 10.
+the host), every env's in ONE scatter at the tick's head, never a whole-row
+pack; (2) the env's ORDER TABLE (``order_intent``, written onto the rows at
+slot 1b' by ``unit_kernels.apply_orders``); (3) the env's ZOMBIE REQUEST SET
+(``drive_zombies``, the HORDE latch). The tick row advances ON THE DEVICE at
+slot 10. An env given no intents latches nothing: an env whose match has
+ended keeps ticking (physics, its zombies, its timers) with no intents until
+the caller replaces it (a per-env reset is P8's; see the P7e.5 as-built).
 
-THE REFUSALS AT BUILD (by name, :class:`ConductorRefused`): a sim without a
-physics runner, a ruleset that is not the continuous path (the shooting and
-object doors), a map with water (the water pre-step reads the host mirror),
-an ambient map (the sky bracket is a host bracket), requested light, a
-non-empty edit queue window (the device door starts at the host's seq with
-no rows), a unit carrying an optics override (the stamp's table refusal).
+THE ONE READ: every face's counts are deferred into one arena
+(``cuda_unit_books.cu``) and so is the physics tail's books D2H
+(``bp.resident_tail_defer``): the tick's host syncs are the EOS stage's
+``max_n_sub`` and the books read, two, whatever N. A refusal is raised there
+by name WITH ITS ENV (``.env``) and refuses the BATCH: the tick is partly
+written in every env and the caller stops them all (no face was shown unable
+to let one env's fault reach another's state, so no env continues).
+
+THE REFUSALS AT BUILD (by name, :class:`ConductorRefused`, with the env): a
+sim without a physics runner, a ruleset that is not the continuous path (the
+shooting and object doors), a map with water (the water pre-step reads the
+host mirror), an ambient map (the sky bracket is a host bracket), requested
+light, a non-empty edit queue window (the device door starts at the host's
+seq with no rows), a paused sim, a heterogeneous batch, envs that disagree on
+the stamp path, a unit carrying an optics override (the stamp's table
+refusal).
 
 NOT PART OF THE PLAYED TICK.
 """
@@ -79,6 +96,14 @@ def _refusing_slots() -> dict:
     body's store clips)."""
     from simulation.unit_kernels import ShotRefused, SpraySlotRefused
     return {"4 shooting": ShotRefused, "4b sprays": SpraySlotRefused}
+
+
+def counts_by_env(words, n_env: int) -> np.ndarray:
+    """A slot's deferred ``(coverage, faults, refused)`` counts as ``(3, N)``:
+    the store's count block is laid out count-major (``cuda_unit_store.cu``
+    ``end_counts``: coverage of every env, then faults, then refused), so env
+    e's fault is ``[1, e]``."""
+    return np.asarray(words, dtype=np.int64).reshape(3, int(n_env))
 
 
 def _book_refusals() -> tuple:
@@ -642,7 +667,7 @@ class DeviceConductor:
             v = w[int(off):int(off) + int(n)]
             where = f"tick {int(self.sims[0].tick) - 1}, slot {label!r}"
             if kind == "counts":                       # (coverage, faults, refused) x N
-                c = v.reshape(3, N)
+                c = counts_by_env(v, N)
                 for e in range(N):
                     if c[1, e]:
                         refuse(ConductorFault, e, f"{int(c[1, e])} row(s) left the range "
