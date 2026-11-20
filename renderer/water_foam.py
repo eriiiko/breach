@@ -64,6 +64,15 @@ sources, CARRIED by the simulated flow and LOST by decay:
         read is the wall's nearness, up to 3/8 within half a tile of one):
         ``gain x near x (|v| / flow_speed_ref)^2``.
     There is no pour source: no water source exists in a level today (M11).
+  * THE SPLATS (W3): things in the water hand the foam a small per-frame
+    list of capsule sources (:func:`splat_rate`, at most :data:`SPLAT_MAX`):
+    ``rate x tent(d - r_c, hw)``, ``d`` a cell's distance to the segment
+    ``a -> b`` -- a RING around a unit standing in water (``a == b``,
+    ``r_c`` its body), a WAKE where it walked this tick (the ring swept
+    along ``a -> b``, its rate growing with its speed; renderer/water_wake.py)
+    and a DAB where a spray droplet landed (``r_c = 0``, its amount spread
+    over the frame's steps). Never a render-side ripple field, never a
+    second foam layer: the splats are one more source term.
   * Dry: a cell whose tile dries out is killed by the wet mask at once.
 
 THE DRAW (``shaders/water.fs``; :func:`draw_cover`). The amount is a
@@ -130,6 +139,58 @@ def cell_centres(h_tiles: int, w_tiles: int, m: int):
     return (jj + 0.5) / m, (ii + 0.5) / m
 
 
+# ---------------------------------------------------------------------------
+# The splats (W3): things in the water as capsule sources
+# ---------------------------------------------------------------------------
+
+SPLAT_MAX = 32                # splats one foam step reads at most (uniforms)
+SPLAT_COLS = 7                # (ax, ay, bx, by, r_c, hw, rate): tiles, amount/s
+
+
+def splat_rate(xt, yt, splats) -> np.ndarray:
+    """THE splats' source rate (amount per second) at points (``xt``,
+    ``yt``) tiles: the sum over ``splats`` ((n, 7): ``ax, ay, bx, by`` the
+    capsule's segment in tiles, ``r_c`` the tent's centre distance and
+    ``hw`` its half-width in tiles, ``rate`` its peak, amount/s) of
+    ``rate x max(0, 1 - |d - r_c| / hw)``, ``d`` the point's distance to
+    the segment. A ring is ``r_c > 0`` around a point, a dab ``r_c = 0``.
+    Zero where no splat reaches; no splats, all zero."""
+    xt = np.asarray(xt, np.float64)
+    yt = np.asarray(yt, np.float64)
+    out = np.zeros(np.broadcast(xt, yt).shape)
+    sp = np.asarray(splats, np.float64).reshape(-1, SPLAT_COLS)
+    for ax, ay, bx, by, rc, hw, rate in sp:
+        ex, ey = bx - ax, by - ay
+        ee = ex * ex + ey * ey
+        px, py = xt - ax, yt - ay
+        t = (np.clip((px * ex + py * ey) / ee, 0.0, 1.0) if ee > 0.0
+             else np.zeros_like(px))
+        dx, dy = px - t * ex, py - t * ey
+        d = np.sqrt(dx * dx + dy * dy)
+        out += rate * np.maximum(1.0 - np.abs(d - rc) / max(hw, 1e-9), 0.0)
+    return out
+
+
+def frame_splats(rates, dabs, steps_s: float):
+    """The splats one frame's foam steps read: the RATE splats (rings,
+    wakes; (n, 7), rate in amount/s) as they are, then the DABS ((m, 7),
+    the last column an AMOUNT: a landing droplet's) as rates spread over
+    the frame's ``steps_s`` seconds of steps, so each dab adds its amount
+    once. At most :data:`SPLAT_MAX`, the rates first; returns ``(splats,
+    dabs_left)`` -- the dabs that did not fit wait for the next frame (a
+    dab is never dropped) -- and ``(empty, dabs)`` when the frame runs no
+    step (``steps_s <= 0``)."""
+    rates = np.asarray(rates, np.float64).reshape(-1, SPLAT_COLS)
+    dabs = np.asarray(dabs, np.float64).reshape(-1, SPLAT_COLS)
+    if steps_s <= 0.0:
+        return np.zeros((0, SPLAT_COLS)), dabs
+    rates = rates[:SPLAT_MAX]
+    k = max(SPLAT_MAX - rates.shape[0], 0)
+    take, left = dabs[:k].copy(), dabs[k:]
+    take[:, 6] /= float(steps_s)
+    return np.concatenate([rates, take]), left
+
+
 class CellInputs(NamedTuple):
     """Per cell, from the two per-tile textures: constant within a tick."""
     v: np.ndarray          # (H, W, 2) the effective flow, m/s (y south)
@@ -138,10 +199,11 @@ class CellInputs(NamedTuple):
 
 
 def cell_inputs(water: np.ndarray, flow: np.ndarray, m: int,
-                s: WaterSettings) -> CellInputs:
+                s: WaterSettings, splats=None) -> CellInputs:
     """The cells' inputs from the PACKED textures (``water`` (h, w, 4) =
     (ripple, ripple_v, depth, 0), ``flow`` (h, w, 4) = (vx, vy, solid,
-    previous depth); the float16 arrays the GPU receives)."""
+    previous depth); the float16 arrays the GPU receives) and the frame's
+    ``splats`` (W3, :func:`frame_splats`; None = none)."""
     water = np.asarray(water, np.float64)
     flow = np.asarray(flow, np.float64)
     h, w = water.shape[:2]
@@ -157,6 +219,8 @@ def cell_inputs(water: np.ndarray, flow: np.ndarray, m: int,
     blocked = (water[ti, tj, 2] <= 0.0) | (flow[ti, tj, 2] > 0.5)
     src = sources(v, depth, bl(flow[..., 3]), bl(flow[..., 2]),
                   bl(water[..., 3]), s)
+    if splats is not None and len(splats):
+        src = src + splat_rate(xt, yt, splats)
     return CellInputs(v, blocked, src)
 
 
@@ -391,7 +455,7 @@ __all__ = [
     "G_MPS2", "FOAM_SUBSTEP_CAP", "CFL_MAX_CELLS", "FOAM_STEP_CAP",
     "FOAM_EDGE", "FOAM_ALBEDO", "FOAM_LARGE_OFFSET",
     "cell_centres", "CellInputs", "cell_inputs", "relative_agitation",
-    "sources",
+    "sources", "SPLAT_MAX", "SPLAT_COLS", "splat_rate", "frame_splats",
     "substeps", "cell_step", "advect", "substep", "step", "flow_max",
     "cell_box", "leaving_rects",
     "cover_fraction", "lace_threshold", "lace", "bubble_coords",

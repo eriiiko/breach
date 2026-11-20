@@ -205,6 +205,12 @@ class WaterPass:
         self._step_shader = None
         self._step_locs: dict = {}
         self._step_ucache: dict = {}
+        # W3: things in the water -- this frame's RATE splats (rings, wakes;
+        # set_splats) and the DABS waiting for a frame that runs a step
+        # (add_dabs; a landing droplet's amount), water_foam.frame_splats
+        self._splat_rates = np.zeros((0, water_foam.SPLAT_COLS))
+        self._splat_dabs = np.zeros((0, water_foam.SPLAT_COLS))
+        self.splats_last_frame = 0
 
         # [art.align] transform (level format v2 §1.3) — same convention as
         # LightingPass.draw_lit_world. None = legacy full-stretch draw.
@@ -423,6 +429,44 @@ class WaterPass:
 
     # ---- the foam step (W2; outside any texture mode) --------------------
 
+    def set_splats(self, rates) -> None:
+        """W3: this frame's RATE splats ((n, 7), ``water_foam.splat_rate``'s
+        rows: the rings and wakes of the units in water,
+        ``renderer/water_wake.py``) -- replaced every frame."""
+        self._splat_rates = np.asarray(rates, np.float64).reshape(
+            -1, water_foam.SPLAT_COLS)
+
+    def add_dabs(self, dabs) -> None:
+        """W3: DABS ((m, 7), the last column an AMOUNT) -- a landing spray
+        droplet's foam -- queued until a frame runs a foam step, then
+        spread over that frame's steps (``water_foam.frame_splats``)."""
+        d = np.asarray(dabs, np.float64).reshape(-1, water_foam.SPLAT_COLS)
+        if d.shape[0]:
+            self._splat_dabs = np.concatenate([self._splat_dabs, d])
+
+    def waterline_inputs(self):
+        """W3: what a lit-3D body needs for its waterline
+        (``lit3d.LightFieldCtx.waterline``, read by
+        ``lit3d.bind_waterline_map``): ``(water texture, (strength,
+        fog_density, height_edge), (alpha_scale, alpha_min, alpha_max, 0),
+        water_color)`` -- the water's OWN dials, one source of truth -- or
+        None on a dry map or with ``waterline_strength`` 0 (the body is
+        then untouched, bit for bit)."""
+        s = self.settings
+        if not self.wet or s is None or s.waterline_strength <= 0.0:
+            return None
+        return (self.water_tex,
+                (s.waterline_strength, s.fog_density, s.height_edge),
+                (s.alpha_scale, s.alpha_min, s.alpha_max, 0.0),
+                tuple(s.water_color))
+
+    @property
+    def wet_depth(self) -> Optional[np.ndarray]:
+        """The packed per-tile depth (m, float16, the GPU's numbers; a view,
+        never written) or None on a dry map: what the things in the water
+        (W3: the waterline, the wakes, the spray) read the water through."""
+        return self.packed[..., 2] if self.wet else None
+
     def reset_foam(self) -> None:
         """Forget every foam cell at the next :meth:`simulate` (a replay seek
         does this through a backward tick; a caller may ask directly)."""
@@ -473,11 +517,16 @@ class WaterPass:
         t0 = time.perf_counter()
         self.foam_steps_last_frame = 0
         self.foam_passes_last_frame = 0
+        if self._foam_reset:
+            self._splat_dabs = self._splat_dabs[:0]
         if self.foam is not None and self._foam_reset:
             self.foam.clear()
             self._foam_box = None
             self._foam_reset = False
         n_steps, self._foam_steps = self._foam_steps, 0
+        self.splats_last_frame = 0
+        if not self.wet or self.box is None:
+            self._splat_dabs = self._splat_dabs[:0]   # dry: nothing to land on
         if not self.wet or self.box is None or n_steps <= 0:
             self.last_simulate_ms = (time.perf_counter() - t0) * 1000.0
             return 0
@@ -511,6 +560,11 @@ class WaterPass:
                            s.agitation_ref, s.flow_edge_depth_m)
             for name, unit in _STEP_UNITS.items():
                 self._step_set(gp, name, unit)
+            # W3: the frame's splats (rates as they are, the dabs spread
+            # over this frame's steps), one upload for every pass
+            splats, self._splat_dabs = water_foam.frame_splats(
+                self._splat_rates, self._splat_dabs, n_steps * s.foam_step_s)
+            self._push_splats(gp, splats)
             gp.bind(_STEP_UNITS["u_water"], self.water_tex.id)
             gp.bind(_STEP_UNITS["u_flow"], self.flow_tex.id)
             for _ in range(n_steps * n_sub):
@@ -520,6 +574,25 @@ class WaterPass:
         self.foam_passes_last_frame = n_steps * n_sub
         self.last_simulate_ms = (time.perf_counter() - t0) * 1000.0
         return self.foam_passes_last_frame
+
+    def _push_splats(self, gp, splats: np.ndarray) -> None:
+        """The splat uniforms of the step program (``u_splat_n``, the two
+        vec4 arrays). No splat: only the count, 0."""
+        n = int(splats.shape[0])
+        self.splats_last_frame = n
+        self._step_set(gp, "u_splat_n", n)
+        if n == 0:
+            return
+        gl = gp.gl
+        for name, cols in (("u_splat_a", splats[:, 0:4]),
+                           ("u_splat_b", np.concatenate(
+                               [splats[:, 4:7], np.zeros((n, 1))], axis=1))):
+            loc = self._step_locs.get(name)
+            if loc is None:
+                loc = self._step_locs[name] = rl.get_shader_location(
+                    self._step_shader, name + "[0]")
+            if loc >= 0:
+                gl.Uniform4fv(loc, n, gl.floats(cols.ravel()))
 
     # ---- draw ----------------------------------------------------------
 

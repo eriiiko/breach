@@ -336,6 +336,19 @@ class GameRenderer:
         # frame; `enabled` there is its only switch.
         self.debris = _particles.DebrisSystem(
             _particles.debris_settings_from_config(CFG))
+        # #97 W3 -- SPRAY, the particle primitive's fifth consumer: water
+        # droplets thrown by each "blast" effect from its walk's WET seeds
+        # (and by a round stopping at a wall beside the water), an analytic
+        # rise and fall on the sim clock, drawn in the "debris" stage; each
+        # landing is one foam dab for the water pass. [render.spray] is
+        # re-read every frame; `enabled` there is its only switch.
+        self.spray = _particles.SpraySystem(
+            _particles.spray_settings_from_config(CFG))
+        # #97 W3 -- the units' RING and WAKE in water: per unit id (render
+        # side), the centre at the last sim tick; a foam splat per unit in
+        # water each frame (renderer/water_wake.py).
+        from .water_wake import WakeTracker
+        self.wakes = WakeTracker()
         # #87 -- THE MUZZLE FLAME (renderer/muzzle_flame.py): a procedural
         # flame per shot at the barrel's tip, additive linear HDR after the
         # units, and its sparks, the particle primitive's fourth consumer.
@@ -923,6 +936,37 @@ class GameRenderer:
             ripple_v=gmap.ripple_v, sim_tick=int(sim_tick), alpha=alpha,
             paused=bool(paused), tps=tps, tile_size_m=gmap.tile_size_m,
             zoom_px_per_tile=self.camera.zoom_px_per_tile)
+        # #97 W3 -- the SPRAY: each new "blast" effect is consumed once
+        # ("spray_seen") and throws droplets from its walk's WET seeds (none
+        # on a dry map: the water pass's depth is None there); they fly on
+        # the SIM clock (the water pass's, held while paused) and each one
+        # that lands is a foam dab for the water's next step.
+        self.spray.refresh_settings(
+            _particles.spray_settings_from_config(CFG))
+        _wd = self.water_pass.wet_depth if self.show_water else None
+        if _wd is None and self.spray.p.n == 0:
+            for _fx in self._effects:        # seen, never thrown later
+                if _fx.get("kind") == "blast":
+                    _fx["spray_seen"] = True
+        else:
+            from simulation.blast_expansion import (
+                open_mask as _open_mask_w, walk_seeds as _walk_seeds_w)
+            _wmask = []
+
+            def _spray_seeds(fy, fx, approach):
+                if not _wmask:
+                    _wmask.append(np.asarray(_open_mask_w(gmap), bool))
+                return _walk_seeds_w(_wmask[0], fy, fx, approach)
+
+            _land = self.spray.update(
+                t=self.water_pass.clock.t_vfx, effects=self._effects,
+                seeds_fn=_spray_seeds, sim_tick=int(sim_tick), depth=_wd,
+                tile_m=float(gmap.tile_size_m),
+                blocked=np.asarray(gmap.solid, bool))
+            if _land.shape[0] and _wd is not None:
+                from .water_wake import landing_dabs
+                self.water_pass.add_dabs(landing_dabs(
+                    _land, float(gmap.tile_size_m), self.water_pass.settings))
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -1030,6 +1074,10 @@ class GameRenderer:
         # Water W2 (#97): the foam's steps owed on the sim clock (its own
         # image, so outside the scene RT too). Dry -> nothing.
         if self.show_water:
+            # #97 W3: the units' rings and wakes (one foam splat per unit
+            # standing in water; none on a dry map) for this frame's steps
+            self.water_pass.set_splats(self._unit_wake_splats(
+                (*units_marines, *units_zombies)))
             self.water_pass.simulate()
         self.gas_relief.render_product(self.lighting, relief_on,
                                        tile_rect=self._relief_view_rect())
@@ -1104,6 +1152,10 @@ class GameRenderer:
         # lying on the floor: after the floor smoke group, under the flame,
         # the units and the ceiling soot. No chip, no draw.
         self._draw_debris(self._relief_view_rect())
+        # 3c. #97 W3 -- SPRAY: water droplets in the same "debris" stage
+        # (premultiplied, lit), over the water, under the flame and the
+        # units. No droplet, no draw.
+        self._draw_spray(self._relief_view_rect())
         # 4. Graphics G3 F3 -- the FLAME (shaders/fire_glow.fs through
         # fire_vfx.draw_glow), in the linear scene as an emitter cover with
         # opacity tied to its emission (design §3.5, §13.4), UNDER the units
@@ -1661,6 +1713,19 @@ class GameRenderer:
                     self.impact_sparks.throw(
                         n, (imp.x, imp.y, imp.dir_x, imp.dir_y),
                         self._flame_tile_m, rng)
+                # #97 W3: a round that stopped at a wall beside the water
+                # throws a splash back off it (its droplets' landings are
+                # foam dabs, as a blast's)
+                _wd = (self.water_pass.wet_depth if self.show_water
+                       else None)
+                from .water_wake import wet_near
+                if wet_near(_wd, imp.x, imp.y):
+                    self.spray.splash(
+                        imp.x, imp.y, imp.dir_x, imp.dir_y,
+                        self._flame_tile_m,
+                        _mflame.shot_rng(self.spray.settings.seed,
+                                         imp.unit, imp.tick0),
+                        blocked=self._tracer_solid)
             if tr.enabled and tr.live:
                 zoom = (self.camera.zoom_px_per_tile
                         / self.world.world_px_per_tile)
@@ -1698,6 +1763,37 @@ class GameRenderer:
                                            light=self._light_field_ctx(),
                                            albedo=ds.settings.albedo)
 
+    def _draw_spray(self, view) -> int:
+        """Draw the spray's droplets (#97 W3) through the particle draw's
+        ``"debris"`` stage with their own albedo: premultiplied, lit by the
+        light field. Returns the draw calls issued (0: none in view)."""
+        from .particles import pack_spray
+        sp = self.spray
+        if not sp.enabled or sp.p.n == 0:
+            return 0
+        sprites = pack_spray(sp.p, view, self.world.world_px_per_tile,
+                             sp.settings)
+        return self.ember_draw.draw_debris(sprites,
+                                           light=self._light_field_ctx(),
+                                           albedo=sp.settings.albedo)
+
+    def _unit_wake_splats(self, units: Sequence):
+        """#97 W3: this frame's foam splats for the living units drawn --
+        their rings and wakes (``water_wake.WakeTracker``: the centre per
+        sim tick, kept here by unit id), or none on a dry map."""
+        from .unit_looks import unit_key
+        rows = []
+        for u in units:
+            if not getattr(u, "alive", True):
+                continue
+            fp = float(getattr(u, "footprint", 3))
+            rows.append((unit_key(u), float(u.x) + fp / 2.0,
+                         float(u.y) + fp / 2.0))
+        wp = self.water_pass
+        return self.wakes.splats(rows, self._last_sim_tick, wp.wet_depth,
+                                 wp.tile_size_m, 1.0 / self._sim_dt,
+                                 wp.settings)
+
     def _relief_view_rect(self):
         """The camera's view in tiles, plus a margin, for the relief pass
         (graphics G1): its shader costs per world-RT pixel, so it draws only
@@ -1729,6 +1825,8 @@ class GameRenderer:
             smoke_cast=self._smoke_cast[2],
             smoke_cast2=self._smoke_cast[3],
             curve=self.lighting.curve_uniforms,
+            waterline=(self.water_pass.waterline_inputs()
+                       if self.show_water else None),
         )
 
     def _draw_units_3d_world(self, marines: Sequence, zombies: Sequence,

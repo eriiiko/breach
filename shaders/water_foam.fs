@@ -13,7 +13,8 @@
 //      recomputed here (one pass, no intermediate target; the flame pass's
 //      way).
 //   2. SOURCE  + rate * dt (whitewater by Froude number, W1's strength term,
-//      the advancing edge, walls -- the twin's ``sources``).
+//      the advancing edge, walls -- the twin's ``sources``; W3's splats --
+//      the twin's ``splat_rate``).
 //   3. DECAY   * exp(-dt / foam_decay_s) (handed in as u_decay_f).
 //   4. CLAMP   to [0, 1]; 0 on a blocked cell.
 // Cell (i, j) of the foam grid (u_m cells per tile) has its centre at
@@ -36,6 +37,12 @@ uniform float u_decay_f;      // exp(-dt / foam_decay_s)
 uniform vec4 u_src_a;
 // (gain_wall, flow_speed_ref, agitation_ref, flow_edge_depth_m)
 uniform vec4 u_src_b;
+// W3: the frame's splats (the twin's splat_rate / frame_splats): a ring, a
+// wake, a landing droplet's dab -- capsule sources, tiles and amount/s
+const int SPLAT_MAX = 32;
+uniform int  u_splat_n;
+uniform vec4 u_splat_a[SPLAT_MAX];   // (ax, ay, bx, by) the segment, tiles
+uniform vec4 u_splat_b[SPLAT_MAX];   // (r_c, hw tiles, rate amount/s, 0)
 
 out vec4 finalColor;
 
@@ -62,6 +69,24 @@ vec4 tileBilinear(sampler2D t, vec2 p) {
 }
 
 vec2 cellPos(ivec2 c) { return (vec2(c) + 0.5) / u_m; }
+
+// W3: the splats' rate at p (tiles): rate x max(0, 1 - |d - r_c| / hw),
+// d = p's distance to the splat's segment (the twin's splat_rate).
+float splatRate(vec2 p) {
+    float r = 0.0;
+    for (int k = 0; k < SPLAT_MAX; ++k) {
+        if (k >= u_splat_n) break;
+        vec4 a = u_splat_a[k];
+        vec4 b = u_splat_b[k];
+        vec2 e = a.zw - a.xy;
+        vec2 q = p - a.xy;
+        float ee = dot(e, e);
+        float t = ee > 0.0 ? clamp(dot(q, e) / ee, 0.0, 1.0) : 0.0;
+        float d = length(q - t * e);
+        r += b.z * max(1.0 - abs(d - b.x) / max(b.y, 1e-9), 0.0);
+    }
+    return r;
+}
 
 bool blocked(ivec2 c) {
     ivec2 n = gridCells();
@@ -152,7 +177,8 @@ void main() {
     float s_edge = u_src_a.w * frac * frac;
     float sv = clamp(speed / u_src_b.y, 0.0, 1.0);
     float s_wall = u_src_b.x * Fl.b * sv * sv;
-    A += (s_fr + s_steep + s_edge + s_wall) * u_dt;
+    float s_splat = u_splat_n > 0 ? splatRate(p) : 0.0;
+    A += (s_fr + s_steep + s_edge + s_wall + s_splat) * u_dt;
     // 3. decay, 4. clamp
     A = clamp(A * u_decay_f, 0.0, 1.0);
     finalColor = vec4(A, 0.0, 0.0, 0.0);

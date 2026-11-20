@@ -154,6 +154,16 @@ class WaterSettings:
     foam_bubble_m: Tuple[float, float]
     foam_cover: float
     foam_shadow: float
+    # W3: things in the water (the waterline: :func:`waterline_tint` and
+    # lit3d._WATERLINE_GLSL; the ring, the wake and the splash dab: the foam
+    # splats, water_foam.splat_rate / renderer/water_wake.py)
+    waterline_strength: float
+    wake_body_m: float
+    wake_band_m: float
+    wake_ring_rate: float
+    wake_gain: float
+    splash_foam: float
+    splash_radius_m: float
     debug_view: int
 
     @property
@@ -239,6 +249,15 @@ def water_settings(cfg) -> WaterSettings:
         raise ValueError(f"[graphics.water] caustic_max must be > 1 (the "
                          f"most a focus multiplies the light): "
                          f"{s.caustic_max}")
+    if not 0.0 <= s.waterline_strength <= 1.0:
+        raise ValueError(f"[graphics.water] waterline_strength must be in "
+                         f"[0, 1]: {s.waterline_strength}")
+    for name in ("wake_body_m", "wake_band_m", "splash_radius_m"):
+        if getattr(s, name) <= 0.0:
+            raise ValueError(f"[graphics.water] {name} must be > 0")
+    for name in ("wake_ring_rate", "wake_gain", "splash_foam"):
+        if getattr(s, name) < 0.0:
+            raise ValueError(f"[graphics.water] {name} must be >= 0")
     if s.debug_view not in DEBUG_VIEWS:
         raise ValueError(f"[graphics.water] debug_view must be one of "
                          f"{DEBUG_VIEWS}: {s.debug_view}")
@@ -638,6 +657,51 @@ def caustic_term(light, det, s: WaterSettings) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# The waterline (W3, critique M12): a body seen through the water above it
+# ---------------------------------------------------------------------------
+
+def waterline_column(depth, height_m) -> np.ndarray:
+    """The water column (m) above a fragment at world ``height_m`` metres
+    over the floor, where the water stands ``depth`` m deep: ``depth -
+    height``, 0 at and above the surface (and on a dry tile)."""
+    return np.maximum(np.asarray(depth, np.float64)
+                      - np.asarray(height_m, np.float64), 0.0)
+
+
+def waterline_weight(column, s: WaterSettings) -> np.ndarray:
+    """How much of the water's volume colour a fragment under ``column`` m
+    of water takes: the water pass's OWN alpha ramp over its own depth
+    (``clamp(col x alpha_scale, alpha_min, alpha_max)``, softened over the
+    first ``height_edge`` m as its lap edge) x ``waterline_strength``.
+    Exactly 0 where the column is 0."""
+    c = np.asarray(column, np.float64)
+    a = np.clip(c * s.alpha_scale, s.alpha_min, s.alpha_max)
+    a = a * smoothstep(0.0, max(s.height_edge, 1e-4), c)
+    return np.where(c > 0.0, a * s.waterline_strength, 0.0)
+
+
+def waterline_tint(lit, depth, height_m, s: WaterSettings) -> np.ndarray:
+    """THE waterline (W3; ``lit3d._WATERLINE_GLSL`` mirrors it, per
+    fragment, in WORLD height, so it holds under a tilted camera too): a
+    fragment of a unit (or a prop) at ``height_m`` metres over the floor,
+    lit ``lit`` (..., 3) linear, seen through the water column above it, by
+    the water pass's own law for the floor -- the Beer-Lambert fade toward
+    ``water_color`` at ``fog_density`` (``2^(-fog_density x col)``) and its
+    alpha ramp (:func:`waterline_weight`):
+
+        out = mix(lit, mix(water_color, lit, 2^(-fog x col)), weight(col))
+
+    Above the surface (or on a dry tile) ``out`` IS ``lit``, bit for bit."""
+    lit = np.asarray(lit, np.float64)
+    col = waterline_column(depth, height_m)
+    fog = np.exp2(-s.fog_density * col)[..., None]
+    wc = np.asarray(s.water_color, np.float64)
+    vol = wc + (lit - wc) * fog
+    w = waterline_weight(col, s)[..., None]
+    return np.where(col[..., None] > 0.0, lit + (vol - lit) * w, lit)
+
+
+# ---------------------------------------------------------------------------
 # The per-tick packing (critique M4, M11)
 # ---------------------------------------------------------------------------
 
@@ -678,5 +742,6 @@ __all__ = [
     "layer_coords", "relative_agitation", "strength_ratio", "strength_sat",
     "strength", "detail_slope", "hex_surface", "detail_surface",
     "WATER_IOR", "CAUSTIC_K", "caustic_det", "caustic_gain", "caustic_term",
+    "waterline_column", "waterline_weight", "waterline_tint",
     "wet_box", "pack_flow",
 ]

@@ -106,6 +106,22 @@ vec3 lightCurveAlbedo(vec3 albedo, vec3 curved_light) {
     return mix(vec3(lightCurveLum(albedo)), albedo, sat);
 }
 
+uniform sampler2D u_waterline_tex; // the water pass's u_water: B = depth, m
+uniform vec4  u_waterline;   // (strength, px per metre, fog_density, height_edge)
+uniform vec4  u_waterline2;  // (alpha_scale, alpha_min, alpha_max, 0)
+uniform vec3  u_waterline_color;  // water_color: the volume colour at depth
+vec3 waterlineTint(vec3 lit, vec3 world_pos, vec2 world_uv) {
+    if (u_waterline.x <= 0.0) return lit;
+    float depth = texture(u_waterline_tex, world_uv).b;
+    float col = depth - world_pos.y / u_waterline.y;
+    if (col <= 0.0) return lit;
+    float fog = exp2(-u_waterline.z * col);
+    float a = clamp(col * u_waterline2.x, u_waterline2.y, u_waterline2.z)
+            * smoothstep(0.0, max(u_waterline.w, 1e-4), col) * u_waterline.x;
+    vec3 vol = u_waterline_color + (lit - u_waterline_color) * fog;
+    return lit + (vol - lit) * a;
+}
+
 
 // Tangent-free TBN from screen-space derivatives of world-pos + UV (Schüler,
 // "Followup: Normal Mapping Without Precomputed Tangents", thetenthplanet.de).
@@ -230,6 +246,10 @@ void main() {
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
     vec3 rim_col = mix(vec3(1.0), albedo, u_rim_albedo);
     lit += u_rim_strength * rim * rim_col * (u_ambient + light_rgb);
+
+    // #97 W3: below the water standing on its tile, the body is seen through
+    // the water above it (lit3d's one waterline; no water = untouched).
+    lit = waterlineTint(lit, fragWorldPos, world_uv);
 
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 

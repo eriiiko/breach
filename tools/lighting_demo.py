@@ -305,6 +305,15 @@ _WATER_DIALS = (
     ("foam_gain_steep", 0.3, "Foam steep", 0.0, 2.0),
     ("foam_gain_edge", 10.0, "Foam edge", 0.0, 60.0),
     ("foam_gain_wall", 4.0, "Foam wall", 0.0, 20.0),
+    # W3: things in the water (the waterline, the ring and wake, the dab a
+    # landing spray droplet leaves).
+    ("waterline_strength", 1.0, "Waterline", 0.0, 1.0),
+    ("wake_body_m", 0.4, "Wake body m", 0.05, 1.0),
+    ("wake_band_m", 0.08, "Wake band m", 0.01, 0.5),
+    ("wake_ring_rate", 0.15, "Ring rate", 0.0, 2.0),
+    ("wake_gain", 1.5, "Wake gain", 0.0, 8.0),
+    ("splash_foam", 0.5, "Splash foam", 0.0, 2.0),
+    ("splash_radius_m", 0.1, "Splash r m", 0.02, 0.5),
     # Heightmap attenuation (alpha-only): only bites on a level WITH a
     # heightmap (unhcr_vessel_2); inert elsewhere (u_has_height = 0).
     # height_floor = the "level 0" baseline relief, subtracted before scaling.
@@ -2173,6 +2182,9 @@ def main() -> None:
         # graphics G4 P4: the debris
         if "debris" in look_shot.hide:
             renderer.debris.enabled_override = False
+        # water W3 (#97): the spray
+        if "spray" in look_shot.hide:
+            renderer.spray.enabled_override = False
         # ... and since G4 P5 the blast flashes (their light, not the event)
         if "flash" in look_shot.hide:
             renderer.blast_flash_on = False

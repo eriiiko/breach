@@ -130,6 +130,7 @@ from .gas_detail import WIND_V_REF
 # taming ceiling, 0.08, before the wind moved to the honest m/s scale).
 SWAY_WIND_REF = 0.08
 from .lit3d import (_COMMON_GLSL, _FIELD_SAMPLE_GLSL, LightFieldCtx,
+                    bind_waterline_map,
                     set_light_curve_uniforms,
                     bind_smoke_cover_map, make_camera)
 from .propgen import GENERATORS
@@ -394,6 +395,10 @@ void main() {
     // it stands in (dark room -> faint ambient rim only).
     float rim = pow(1.0 - max(0.0, dot(N, u_view_dir)), u_rim_power);
     lit += u_rim_strength * rim * (u_ambient + light_rgb);
+
+    // #97 W3: below the water standing on its tile, the prop is seen through
+    // the water above it (lit3d's one waterline; no water = untouched).
+    lit = waterlineTint(lit, fragWorldPos, world_uv);
 
     // Linear HDR out (G0 P1): the world resolve tone-maps and encodes, once.
 
@@ -898,6 +903,8 @@ class StaticPropRenderer:
                 mats.append(mat)
         # Graphics G2: the smoke's cast shadow (lit3d's one GLSL copy).
         bind_smoke_cover_map(self._shader, mats, ctx)
+        # #97 W3: the waterline (lit3d's one copy), in the props' own scale
+        bind_waterline_map(self._shader, mats, ctx, self.px_per_m)
         self.set_frame_uniforms(ctx)
 
         # Sway uniforms that are the same for every prop this frame (the dials

@@ -838,3 +838,15 @@ lamps = false
 beacon = false
 light_gain = "game"
 note = "the wading room (24 x 18, 0.15 m) at 12.5 s, lamps off: the marine Wader standing still in the water south-east of the stove (a 2 x 2 steel block its heat sources hold at orange heat), the wood wall west of it and the fuel pile east. W3's waterline and wake are judged here."
+
+[[shot]]
+name = "pool_blast_spray"
+level = "water_studio"
+frames = 206
+hide = ["flash", "heat", "flame", "smoke", "sparks", "debris"]
+center = [18.5, 14.5]
+zoom = 56.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "W3's SPRAY, isolated: the pool hall's first blast (the wave charge at (18, 14), 8 s) 0.58 s on (8.58 s), lamps off, the blast's flash light, heat glow, flame, smoke, sparks and debris hidden. ~90 droplets left the walk's wet seeds (rate 30 x strength 3 x wet share 1), rising and falling on the sim clock and lit by the blast's own light (warm); ~45 are still in the air here and the landed ones have left foam dabs on the water round the charge. Before / after: the same row with spray hidden."
