@@ -79,6 +79,41 @@ def fail(msg):
 
 
 # ---------------------------------------------------------------------------
+# The reference values of the P7e.2 table rows (cuda_unit_kernels_check's
+# every-row gate reads this), each read independently of unit_tables
+# ---------------------------------------------------------------------------
+def table_reference(sim) -> dict:
+    from fractions import Fraction
+    from config import CFG
+    from simulation import optics_fixed
+    phys = CFG.physics
+    g = sim.gmap
+
+    def thresh(t):                    # the largest S with NOT (S / 2^16 > t), or never
+        t = float(t)
+        if not t > 0.0:
+            return -1
+        if t == float("inf"):
+            return 1 << 40
+        return min(int(Fraction(t) * 65536), 1 << 40)   # Fraction -> int floors (t > 0)
+
+    def bits(x):
+        return int(np.float32(x).view(np.int32))
+    one = int(optics_fixed.quantize_scalar(1.0))
+    return {
+        "burst_cap": (int(getattr(phys, "burst_max_per_tick", 16))
+                      if getattr(phys, "burst_enabled", True) else 0),
+        "burst_p_amb_q": 0 if g._ambient is None else int(g._ambient.pin_q),
+        "burst_thresh_q": tuple(thresh(t) for t in g.materials.burst_threshold),
+        "stamp_perm_bits": bits(float(getattr(phys, "unit_permeability", 0.5))),
+        "stamp_wabsorb_bits": bits(float(getattr(phys, "unit_wave_absorb", 0.5))),
+        "stamp_heat_q": one,
+        "stamp_light_q": (one, one, one),
+        "stamp_optics_default": 1,
+    }
+
+
+# ---------------------------------------------------------------------------
 # PART BURN
 # ---------------------------------------------------------------------------
 class _Scramble:
