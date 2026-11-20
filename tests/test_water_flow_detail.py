@@ -289,6 +289,38 @@ def test_the_strength_rises_with_flow_and_agitation_and_fades_zoomed_out(
     assert np.all(W.strength(v, 0.0, f_out, s) == 0.0)
 
 
+def test_a_room_heaving_as_one_has_the_still_strength(settings):
+    """Property (W2's finding 1, 2026-11-20): the strength reads the RELATIVE
+    agitation (``relative_agitation``: ripple_v against its wet neighbours',
+    the packed ``u_water`` A), so a still room whose ripple_v is uniform --
+    the sim's ripple field after a blast anywhere: ~0.84 m/s, then a frozen
+    ~0.04 -- keeps ``detail_strength_still`` everywhere, up to its walls,
+    while a tile moving against its neighbours is driven. Breaks if the
+    strength reads raw |ripple_v| again (still rooms at ~0.75 of full) or a
+    wall counts as a neighbour."""
+    from renderer.heat_shimmer import bilinear_tiles
+    s = settings
+    f = _frame(s, zoom=64.0)
+    h, w = 12, 16
+    wet = np.ones((h, w), bool)
+    wet[0, :] = wet[-1, :] = wet[:, 0] = wet[:, -1] = False   # the walls
+    for heave in (0.84, 0.0375):
+        rv = np.where(wet, heave, 0.0)
+        a = W.relative_agitation(rv, wet)
+        y, x = np.mgrid[1.0:h - 1.0:0.25, 1.0:w - 1.0:0.25]
+        k = W.strength(np.zeros(x.shape + (2,)), bilinear_tiles(a, x, y),
+                       f, s)
+        assert np.allclose(k, s.detail_strength_still, atol=1e-9)
+        raw = W.strength(np.zeros((1, 2)), heave, f, s)
+        assert raw[0] > s.detail_strength_still + 0.3 * (
+            s.detail_strength_flow - s.detail_strength_still)  # not vacuous
+    rv = np.where(wet, 0.84, 0.0)
+    rv[6, 8] += 2.0 * s.agitation_ref
+    a = W.relative_agitation(rv, wet)
+    k = W.strength(np.zeros((1, 2)), np.array([a[6, 8]]), f, s)
+    assert k[0] == pytest.approx(s.detail_strength_flow)
+
+
 def _phase_reset_change(tex, s, dt=2e-4, n_t=240, offsets=True):
     """Max |change| of the surface over ``dt`` at ``n_t`` times through one
     cycle, over a grid with a uniform flow."""

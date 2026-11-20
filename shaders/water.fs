@@ -46,8 +46,9 @@
 //                A = light_dir.y (signed). (lighting.fs:101,104)
 //   u_water    - RGBA16F water field (renderer/water.py packing):
 //                R = ripple height (m), G = ripple_v (reserved, unused here),
-//                B = water_depth (m), A = the foam's relative agitation
-//                (W2; water_foam.relative_agitation, read by the foam step).
+//                B = water_depth (m), A = the relative agitation (m/s;
+//                water_surface.relative_agitation: ripple_v against its
+//                wet neighbours'), the fine surface's and the foam's.
 //   u_foam     - the foam amount image (W2; foam cells, bilinear), unit 8
 //   u_bubbles  - the bubble bake (noise_bake.bake_foam_rgba, R uniform on
 //                [0, 1]; REPEAT, mipmapped), unit 9
@@ -73,7 +74,8 @@
 //   u_flow_ph              (crossfade phase, cycle s, drift u, drift v)
 //   u_flow_lim             (max slide m, edge depth m, phase noise m,
 //                           speed ref m/s)
-//   u_agit_ref             |ripple_v| (m/s) at which the strength saturates
+//   u_agit_ref             the relative agitation (m/s; u_water's A) at which
+//                          the strength saturates
 //   u_debug_view           0 = the picture, 1 = (slope x, slope y, k, 1),
 //                          2 = (foam amount, foam cover, 0, 1)
 //   u_foam_on              1 once the foam image exists (W2)
@@ -290,7 +292,7 @@ FlowLayers flowLayers(vec2 world_uv, float tileDepth) {
 
 // THE fine surface (water_surface.py::detail_slope): its slope (y south) in
 // .xy and its strength k in .z.
-vec3 detailSlope(FlowLayers L, float rippleV) {
+vec3 detailSlope(FlowLayers L, float agit) {
     float P = u_detail.x;
     vec2 q0 = (L.p_m - L.d0) / P - u_flow_ph.zw;
     vec2 q1 = (L.p_m - L.d1) / P - u_flow_ph.zw;
@@ -298,7 +300,7 @@ vec3 detailSlope(FlowLayers L, float rippleV) {
     vec2 dy = dFdy(L.p_m) / P;
     vec2 n = mix(hexSlope(q1, dx, dy), hexSlope(q0, dx, dy), L.w0);
     float sat = clamp(max(length(L.v) / u_flow_lim.w,
-                          abs(rippleV) / u_agit_ref), 0.0, 1.0);
+                          agit / u_agit_ref), 0.0, 1.0);
     float k = (u_detail.y + (u_detail.z - u_detail.y) * sat) * u_detail.w;
     return vec3(n * k, k);
 }
@@ -394,7 +396,7 @@ void main() {
 
     // W1: the fine surface that flows (the twin's detail_slope).
     FlowLayers flayers = flowLayers(world_uv, tileDepth);
-    vec3 detail = detailSlope(flayers, wtex.g);
+    vec3 detail = detailSlope(flayers, wtex.a);
     if (u_debug_view == 1) {
         finalColor = vec4(detail.xy, detail.z, 1.0);
         return;

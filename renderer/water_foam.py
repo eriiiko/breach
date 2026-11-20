@@ -103,7 +103,8 @@ import numpy as np
 
 from .heat_shimmer import bilinear_tiles
 from .water_surface import (FlowFrame, WaterSettings, drift_m, edge_flow,
-                            layer_slides, smoothstep, strength_ratio)
+                            layer_slides, relative_agitation, smoothstep,
+                            strength_ratio)
 
 G_MPS2 = 9.81                 # gravity, for the Froude number
 FOAM_SUBSTEP_CAP = 4          # substeps per foam step at most (M10)
@@ -181,30 +182,6 @@ def sources(v: np.ndarray, depth, prev_depth, near_wall, agitation,
     if split:
         return s_fr, s_steep, s_edge, s_wall
     return s_fr + s_steep + s_edge + s_wall
-
-
-def relative_agitation(ripple_v: np.ndarray, wet: np.ndarray) -> np.ndarray:
-    """THE agitation the foam reads, per tile: ``|ripple_v - mean of the
-    wet 4-neighbours' ripple_v|`` (m/s) on a wet tile, 0 elsewhere and on a
-    tile with no wet neighbour. Waves break where the surface moves against
-    its neighbours, not where it heaves as one; a wall or a dry tile is no
-    neighbour, so the water's edge against a wall makes none (the old
-    gradient foam's wall bands). Per tick, at pack time."""
-    rv = np.asarray(ripple_v, np.float64)
-    wet = np.asarray(wet, bool)
-    h, w = rv.shape
-    acc = np.zeros((h, w))
-    n = np.zeros((h, w))
-    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-        ys = slice(max(dy, 0), h + min(dy, 0))
-        yd = slice(max(-dy, 0), h + min(-dy, 0))
-        xs = slice(max(dx, 0), w + min(dx, 0))
-        xd = slice(max(-dx, 0), w + min(-dx, 0))
-        m = wet[ys, xs]
-        acc[yd, xd] += np.where(m, rv[ys, xs], 0.0)
-        n[yd, xd] += m
-    out = np.abs(rv - acc / np.maximum(n, 1.0))
-    return np.where(wet & (n > 0), out, 0.0)
 
 
 # ---------------------------------------------------------------------------

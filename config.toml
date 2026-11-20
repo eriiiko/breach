@@ -1474,7 +1474,9 @@ flow_speed_ref = 1.0           # flow speed (m/s) at which the strength saturate
 flow_max_offset_m = 0.5        # a layer's slide is capped at this (metres)
 flow_edge_depth_m = 0.02       # the flow fades in over the first this-many metres of depth
 flow_phase_noise_m = 3.0       # length (m) of the per-point phase offset (hides the reset pulse)
-agitation_ref = 0.05           # |ripple_v| (m/s) at which the strength saturates
+agitation_ref = 0.1            # the RELATIVE agitation (ripple_v against its wet neighbours', m/s) at which
+                               # the fine surface saturates; W2's rough-water foam starts past it. Still rooms'
+                               # frozen residue is <= 0.006 (p99), a blast's crests 0.15-0.33 near the charge
 # --- Foam with a life (water W2, #97; renderer/water_foam.py) ---
 # A foam AMOUNT per cell (picture state: never synced, never read by the sim)
 # made by four sources, carried by the simulated flow and lost by decay, on

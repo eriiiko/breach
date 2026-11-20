@@ -20,7 +20,8 @@ render read).
     v           = flow(p) * smoothstep(0, flow_edge_depth_m, depth)
     (age_i, w0) = advected_noise.layer_ages_weight(phase(t), off(p))
     k           = (still + (flow - still) * sat) * zoom_fade
-    sat         = clamp(max(|v| / flow_speed_ref, |ripple_v| / agitation_ref))
+    sat         = clamp(max(|v| / flow_speed_ref, a / agitation_ref))
+    a           = relative_agitation (ripple_v against its wet neighbours')
 
   * THE FLOW (Vlachos 2010): two copies of the texture slid along the local
     flow, half a cycle apart, cross-faded so each one's periodic reset sits
@@ -431,11 +432,41 @@ def layer_coords(x_m, y_m, vel, depth, frame: FlowFrame, s: WaterSettings):
     return out[0], out[1], w0, v
 
 
+def relative_agitation(ripple_v: np.ndarray, wet: np.ndarray) -> np.ndarray:
+    """THE water's agitation, per tile (#97 W2; W1's fine-surface strength and
+    W2's foam both read it, packed per tick in ``u_water``'s A): ``|ripple_v - mean of the
+    wet 4-neighbours' ripple_v|`` (m/s) on a wet tile, 0 elsewhere and on a
+    tile with no wet neighbour. Waves break where the surface moves against
+    its neighbours, not where it heaves as one; a wall or a dry tile is no
+    neighbour, so the water's edge against a wall makes none (the old
+    gradient foam's wall bands). Per tick, at pack time."""
+    rv = np.asarray(ripple_v, np.float64)
+    wet = np.asarray(wet, bool)
+    h, w = rv.shape
+    acc = np.zeros((h, w))
+    n = np.zeros((h, w))
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        ys = slice(max(dy, 0), h + min(dy, 0))
+        yd = slice(max(-dy, 0), h + min(-dy, 0))
+        xs = slice(max(dx, 0), w + min(dx, 0))
+        xd = slice(max(-dx, 0), w + min(-dx, 0))
+        m = wet[ys, xs]
+        acc[yd, xd] += np.where(m, rv[ys, xs], 0.0)
+        n[yd, xd] += m
+    out = np.abs(rv - acc / np.maximum(n, 1.0))
+    return np.where(wet & (n > 0), out, 0.0)
+
+
+
 def strength_ratio(v: np.ndarray, agitation, s: WaterSettings
                    ) -> np.ndarray:
     """The fine surface's DRIVE, unclamped: the flow speed over
-    ``flow_speed_ref`` or the agitation ``|ripple_v|`` over
-    ``agitation_ref``, whichever is more (1 = full strength). W2's
+    ``flow_speed_ref`` or the agitation (the RELATIVE one,
+    :func:`relative_agitation`, bilinear) over ``agitation_ref``, whichever
+    is more (1 = full strength). The sim's ripple field heaves whole rooms
+    as one (after a blast anywhere every room's ``ripple_v`` jumps, then
+    sits frozen near 0.04 m/s): read raw, still rooms ran at ~0.75 of full
+    strength (W2's finding, 2026-11-20). W2's
     steepness foam source reads THIS term past 1 -- water rougher than the
     fine surface can show breaks -- never a slope of its own."""
     speed = np.sqrt(v[..., 0] ** 2 + v[..., 1] ** 2)
@@ -464,7 +495,8 @@ def detail_slope(x_m, y_m, vel, depth, agitation, frame: FlowFrame,
                  lookup=hex_slope) -> np.ndarray:
     """THE fine surface's slope (dh/dx, dh/dy; y south) at world positions
     in metres: the module docstring's law. ``vel`` (..., 2) the bilinear flow
-    in m/s, ``depth`` m, ``agitation`` = |ripple_v| m/s, ``tex`` the ripple
+    in m/s, ``depth`` m, ``agitation`` = the bilinear relative agitation
+    (:func:`relative_agitation`, ``u_water``'s A) m/s, ``tex`` the ripple
     bake. ``lookup`` is the hex-tiled lookup (``plain_slope`` only for the
     anti-tiling property's reference)."""
     q0, q1, w0, v = layer_coords(x_m, y_m, vel, depth, frame, s)
@@ -512,6 +544,6 @@ __all__ = [
     "hex_hash", "hex_hash01", "triangle_grid", "hex_center",
     "sample_bilinear_repeat", "hex_slope", "plain_slope",
     "smoothstep", "flow_slide", "edge_flow", "layer_slides", "drift_m",
-    "layer_coords", "strength_ratio", "strength_sat", "strength", "detail_slope",
+    "layer_coords", "relative_agitation", "strength_ratio", "strength_sat", "strength", "detail_slope",
     "wet_box", "pack_flow",
 ]
