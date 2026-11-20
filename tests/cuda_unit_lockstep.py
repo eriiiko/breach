@@ -85,8 +85,21 @@ record for record, in order (``unit_events.record_of``: the kind, the unit,
 the Q16 damage, the cause, the attacker, the direction): the first difference
 is named as (tick, env, event index, field); the alone run's ring must equal
 the batch's env i. ``TickReport.events`` / ``host_events`` are the two counts.
-The claims of the tick's credit (``damage.TickCredit``) are the input
-``credit_claims`` (``unit_kernels.claims_of`` / ``pad_claims``).
+The claims of the tick's credit (``damage.TickCredit``) are the LIST
+``credit`` (#29 P7e.1: THE DEVICE CLAIMS LIST, ``attack_lists.claims_list``,
+staged from the TickCredit's first-claim rows ``attack_lists.claim_rows`` --
+the fold of every claim in order, which ``credit_at``'s first-match scan
+answers identically).
+
+THE TICK ROW (#29 P7e.1): the ``tick`` input captures each env's whole
+``unit_draws.tick_row`` (the tick, the draw key, ``GameMap._tile_serial``) at
+the slot's entry: ``SlotInputs.tick`` is its tick column, ``SlotInputs.
+tick_row`` the device ``unit_draws.TickRow`` every kernel reads (written once
+per gather: the latch). In the chained form it is written at the chain's entry
+and read by every chained kernel, a device tile change bumping it in place.
+THE FLIGHT PLANE (#29 P7e.1) is built on the device (``unit_kernels.
+flight_plane``) from the input ``flight_plane``: each env's ``solid`` and
+``material`` padded to the batch's largest grid with blocked tiles.
 
 LISTS (#29 P7a.1, design 4.4c decision 8): a host LIST a slot reads or writes
 (today the attack slot's effects, ``SimultaneousEffects``' pending list) is
@@ -168,15 +181,13 @@ FIELD_PREFIX = "field:"
 
 
 def _capture_tick(sim):
-    return int(sim.tick)
+    # #29 P7e.1: the whole tick row (tick, draw key, tile serial)
+    from simulation import unit_draws
+    return unit_draws.tick_row(sim)
 
 
 def _capture_requests(sim):
     return unit_kernels.requests_of(sim)
-
-
-def _capture_claims(sim):
-    return unit_kernels.claims_of(sim)
 
 
 def _capture_door_spans(sim):                      # #29 P6.4a
@@ -187,11 +198,6 @@ def _capture_door_spans(sim):                      # #29 P6.4a
 def _capture_charges_live(sim):                    # #29 P6.4a
     from simulation import unit_requests
     return unit_requests.charges_live(sim)
-
-
-def _capture_draw_key(sim):                        # #29 P7a.2
-    from simulation import unit_draws
-    return unit_draws.draw_key(sim)
 
 
 def _pad_door_spans(vals):
@@ -206,14 +212,11 @@ def _pad_door_spans(vals):
 INPUTS: dict = {
     "tick": ("tick", _capture_tick),
     "order_requests": ("table", _capture_requests),
-    "credit_claims": ("table", _capture_claims),     # #29 P6.3
     "door_spans": ("table", _capture_door_spans),    # #29 P6.4a
     "charges_live": ("scalar", _capture_charges_live),   # #29 P6.4a
-    "draw_key": ("table", _capture_draw_key),        # #29 P7a.2: (N, 3)
 }
 #: How a table input pads across envs (default: zeros).
 PADS: dict = {"order_requests": unit_kernels.pad_requests,
-              "credit_claims": unit_kernels.pad_claims,
               "door_spans": _pad_door_spans}
 
 
@@ -233,34 +236,50 @@ PADS["burn_walls"] = unit_kernels.pad_walls
 
 
 # #215: slots 1b (the throw's release point) and 2 (the grenade flight) read
-# the FLIGHT plane (combat.flight_plane: solid or a blocks_thrown material). A
-# batch of the gates' scenes holds maps of differing sizes, so the plane is
-# padded to the batch's largest grid WITH BLOCKED: off its own grid a tile is
-# blocked to a flight (combat.flight_blocked), so the padded plane is the
-# same law for every env. A bool (N, H, W) array; the slot hands it to the
-# kernel as its device "flight" field.
+# the FLIGHT plane (combat.flight_plane: solid or a blocks_thrown material).
+# #29 P7e.1: the plane is BUILT ON THE DEVICE (unit_kernels.flight_plane) from
+# the resident solid and material planes; this input carries those two. A
+# batch of the gates' scenes holds maps of differing sizes, so they are padded
+# to the batch's largest grid WITH A SOLID TILE: off its own grid a tile is
+# blocked to a flight (combat.flight_blocked), so the plane built over the
+# padding is the same law for every env. An int8 (N, 2, H, W) array: channel
+# 0 solid, channel 1 material.
 def _pad_flight_plane(vals):
-    hh = max(v.shape[0] for v in vals)
-    ww = max(v.shape[1] for v in vals)
-    out = np.ones((len(vals), hh, ww), dtype=np.bool_)
+    hh = max(v.shape[1] for v in vals)
+    ww = max(v.shape[2] for v in vals)
+    out = np.zeros((len(vals), 2, hh, ww), dtype=np.int8)
+    out[:, 0] = 1
     for e, v in enumerate(vals):
-        out[e, :v.shape[0], :v.shape[1]] = v
+        out[e, :, :v.shape[1], :v.shape[2]] = v
     return out
 
 
 def _capture_flight_plane(sim):
-    from simulation import combat
-    return combat.flight_plane(sim.gmap)
+    g = sim.gmap
+    return np.stack([np.asarray(g.solid, dtype=np.int8), np.asarray(g.material, dtype=np.int8)])
 
 
 INPUTS["flight_plane"] = ("table", _capture_flight_plane)
 PADS["flight_plane"] = _pad_flight_plane
 
 
-def flight_fields(inp) -> dict:
-    """#215: the padded flight plane as a kernel's device ``"flight"`` field."""
+def trow(ticks, keys=None, tiles=None):
+    """#29 P7e.1: a gate's synthetic TICK ROW (``unit_draws.TickRow``) from
+    per-env ticks, draw keys ``(N, 3)`` and tile counts (the latch written
+    once)."""
+    from simulation import unit_draws
+    return unit_draws.TickRow.of(unit_draws.tick_rows(ticks, keys, tiles))
+
+
+def flight_fields(inp, store) -> dict:
+    """#215 / #29 P7e.1: the kernel's device ``"flight"`` field, built ON THE
+    DEVICE (``unit_kernels.flight_plane``) from the input's padded solid and
+    material planes with ``store``'s tables."""
     import cupy as cp
-    return {"flight": cp.ascontiguousarray(cp.asarray(inp.tables["flight_plane"]))}
+    a = inp.tables["flight_plane"]
+    fields = {"solid": cp.ascontiguousarray(cp.asarray(a[:, 0] != 0)),
+              "material": cp.ascontiguousarray(cp.asarray(a[:, 1]))}
+    return {"flight": unit_kernels.flight_plane(store, fields)}
 
 # ---------------------------------------------------------------------------
 # #29 P7a.1: host LISTS (decision 8), declared like a field
@@ -708,6 +727,21 @@ LISTS["claims"] = ListDef(_claims_host, _claims_records, lambda obj: obj.clear()
                           _claims_device,
                           lambda rec: ("claim", ("channel", "y", "x", "attacker")),
                           _claims_mark, _claims_land)
+
+
+# #29 P7e.1: slots 9c / 9c3 read THE DEVICE CLAIMS LIST: staged from the
+# tick's TickCredit as its first-claim rows (attack_lists.claim_rows); the
+# slots never write it, so the chained form lands nothing.
+def _credit_records(sim, obj):
+    from simulation import attack_lists
+    from simulation.damage import tick_credit
+    rows = attack_lists.claim_rows(tick_credit(sim.gmap))
+    return np.array(rows, dtype=np.int64).reshape(len(rows), attack_lists.CLAIM_W)
+
+
+LISTS["credit"] = ListDef(lambda sim, a, k: sim, _credit_records, lambda obj: None, _claims_device,
+                          lambda rec: ("claim", ("channel", "y", "x", "attacker")),
+                          None, lambda sim, obj, recs: None)
 INPUTS["edit_seq"] = ("scalar", lambda sim: int(sim.edit_queue._seq))
 
 
@@ -1129,6 +1163,8 @@ def first_field_diff(name, got, want):
 class SlotInputs:
     """What a slot reads besides the rows, gathered over the batch."""
     tick: np.ndarray | None = None              # (N,) int64
+    tick_row: object = None                     # #29 P7e.1: unit_draws.TickRow
+    _tick_rows: np.ndarray | None = None        # (N, TICK_ROW_W) host rows
     tables: dict = field(default_factory=dict)  # name -> (N, R, C) int64
     fields: dict = field(default_factory=dict)  # name -> device (N, ...)
     _host_fields: dict = field(default_factory=dict)   # name -> np (N, ...)
@@ -1138,8 +1174,12 @@ class SlotInputs:
     def env(self, e: int) -> "SlotInputs":
         """Env ``e``'s inputs alone (an N = 1 batch)."""
         import cupy as cp
+        from simulation import unit_draws
+        rows = None if self._tick_rows is None else self._tick_rows[e:e + 1].copy()
         return SlotInputs(
             tick=None if self.tick is None else self.tick[e:e + 1].copy(),
+            tick_row=None if rows is None else unit_draws.TickRow.of(rows),
+            _tick_rows=rows,
             tables={k: np.ascontiguousarray(v[e:e + 1])
                     for k, v in self.tables.items()},
             fields={k: cp.ascontiguousarray(cp.asarray(v[e:e + 1]))
@@ -1185,7 +1225,12 @@ def gather(names, per_env) -> SlotInputs:
         elif n.startswith(LIST_PREFIX):
             inp.lists[n[len(LIST_PREFIX):]] = list(vals)
         elif n in INPUTS and INPUTS[n][0] == "tick":
-            inp.tick = np.array(vals, dtype=np.int64)
+            # #29 P7e.1: the tick row, written once (the latch)
+            from simulation import unit_draws
+            rows = np.stack([np.asarray(v, dtype=np.int64) for v in vals])
+            inp._tick_rows = rows
+            inp.tick = rows[:, 0].copy()
+            inp.tick_row = unit_draws.TickRow.of(rows)
         elif n in INPUTS and INPUTS[n][0] == "scalar":
             inp.scalars[n] = np.array(vals, dtype=np.int64)
         else:
@@ -2057,7 +2102,8 @@ class ChainedSlots:
         return False
 
 
-__all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture",
+__all__ = ["FIELD_PREFIX", "INPUTS", "PADS", "SlotInputs", "capture", "trow",
+           "flight_fields",
            "gather", "DeviceSlot", "TickReport", "Divergence",
            "slot_callables", "build_store", "ShadowLockstep", "ChainedSlots"]
 __all__ += ["LIST_PREFIX", "ListDef", "LISTS"]

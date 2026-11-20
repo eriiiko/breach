@@ -47,6 +47,7 @@
 #include "fixed_point.h"           // the kit (FP_HD)
 #include "unit_store_layout.h"     // GENERATED: the row layout
 #include "unit_tables_layout.h"    // GENERATED: the table layout
+#include "cuda_unit_draws.cuh"     // #29 P7e.1: the tick row (trow_tick, trow_key)
 
 namespace breach_cuda {
 namespace unit_lib {

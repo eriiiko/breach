@@ -45,6 +45,20 @@ KEY_FIELDS = ("seed_lo", "seed_hi", "tick")
 KEY_W = len(KEY_FIELDS)
 _M32 = (1 << 32) - 1
 
+#: #29 P7e.1: THE TICK ROW, one per env on the device, written ONCE per tick
+#: (the host latch while host gameplay is in the loop) and read by every unit
+#: kernel in place of per-launch tick / key arguments: ``tick`` (``sim.tick``
+#: at the moment the slot runs: the tick-end slots read it after the
+#: advance), the draw key (:data:`KEY_FIELDS`' three columns, in that order,
+#: from :data:`TICK_ROW_KEY`), and ``tiles_changed``, the device form of
+#: ``GameMap._tile_serial`` (seeded from the host, bumped ON THE DEVICE by
+#: the topology seam's ``on_tile_changed``; the horde cache's refresh rule
+#: reads it).
+TICK_ROW_FIELDS = ("tick", "seed_lo", "seed_hi", "draw_tick", "tiles_changed")
+TICK_ROW_W = len(TICK_ROW_FIELDS)
+TICK_ROW_KEY = TICK_ROW_FIELDS.index("seed_lo")
+TICK_ROW_TILES = TICK_ROW_FIELDS.index("tiles_changed")
+
 
 @dataclass(frozen=True)
 class NextSite:
@@ -84,6 +98,99 @@ def draw_keys(sims) -> np.ndarray:
     for e, s in enumerate(sims):
         out[e] = draw_key(s)
     return out
+
+
+# ---------------------------------------------------------------------------
+# #29 P7e.1: the tick row
+# ---------------------------------------------------------------------------
+def tick_row(sim) -> np.ndarray:
+    """One env's host TICK ROW ``(TICK_ROW_W,)`` int64 at this moment: the
+    latch the host writes once per tick (``sim.tick``, :func:`draw_key`,
+    ``GameMap._tile_serial``)."""
+    row = np.zeros(TICK_ROW_W, dtype=np.int64)
+    row[0] = int(sim.tick)
+    row[TICK_ROW_KEY:TICK_ROW_KEY + KEY_W] = draw_key(sim)
+    row[TICK_ROW_TILES] = int(getattr(sim.gmap, "_tile_serial", 0))
+    return row
+
+
+def tick_rows(ticks, keys=None, tiles=None) -> np.ndarray:
+    """``(N, TICK_ROW_W)`` host rows from per-env columns: ``ticks`` ``(N,)``,
+    ``keys`` ``(N, 3)`` draw keys (default zeros), ``tiles`` ``(N,)`` the
+    tile-change counts (default zeros) -- a gate's synthetic latch."""
+    t = np.asarray(ticks, dtype=np.int64).reshape(-1)
+    out = np.zeros((t.shape[0], TICK_ROW_W), dtype=np.int64)
+    out[:, 0] = t
+    if keys is not None:
+        out[:, TICK_ROW_KEY:TICK_ROW_KEY + KEY_W] = np.asarray(
+            keys, dtype=np.int64).reshape(-1, KEY_W)
+    if tiles is not None:
+        out[:, TICK_ROW_TILES] = np.asarray(tiles, dtype=np.int64).reshape(-1)
+    return out
+
+
+class TickRow:
+    """THE TICK ROW on the device: ``(N, TICK_ROW_W)`` int64 (a CuPy array),
+    written once per tick by :meth:`write` (the host latch) and read in place
+    by every unit kernel (its address :attr:`ptr`); the ``tiles_changed``
+    column moves on the device (the topology seam bumps it). :meth:`env` is
+    env e's row alone, a view of the same memory (an N = 1 run)."""
+
+    def __init__(self, n_env: int | None = None, _buf=None):
+        import cupy as cp
+        if _buf is not None:
+            self.buf = _buf
+        else:
+            if n_env is None or int(n_env) < 1:
+                raise ValueError("tick row: n_env must be >= 1")
+            self.buf = cp.zeros((int(n_env), TICK_ROW_W), dtype=np.int64)
+        self.n_env = int(self.buf.shape[0])
+
+    @classmethod
+    def of(cls, rows) -> "TickRow":
+        """A row holding host ``rows`` ``(N, TICK_ROW_W)`` (:func:`tick_rows`)."""
+        r = np.ascontiguousarray(rows, dtype=np.int64).reshape(-1, TICK_ROW_W)
+        t = cls(r.shape[0])
+        t.write(r)
+        return t
+
+    @classmethod
+    def of_sims(cls, sims) -> "TickRow":
+        """A row holding each sim's :func:`tick_row`."""
+        return cls.of(np.stack([tick_row(s) for s in sims]))
+
+    def write(self, rows) -> None:
+        """THE LATCH: every env's row from host ``rows`` (one H2D, in place)."""
+        r = np.ascontiguousarray(rows, dtype=np.int64).reshape(self.n_env, TICK_ROW_W)
+        self.buf.set(r)
+
+    @property
+    def ptr(self) -> int:
+        return int(self.buf.data.ptr)
+
+    def rows(self) -> np.ndarray:
+        """The rows ``(N, TICK_ROW_W)`` on the host (a download)."""
+        return self.buf.get()
+
+    def tiles(self) -> np.ndarray:
+        """``(N,)`` the tile-change counts (a download)."""
+        return self.rows()[:, TICK_ROW_TILES].copy()
+
+    def env(self, e: int) -> "TickRow":
+        """Env ``e``'s row alone: a view of the same device memory."""
+        return TickRow(_buf=self.buf[int(e):int(e) + 1])
+
+
+def row_ptr(trow, n_env: int, who: str) -> int:
+    """A kernel face's tick-row argument checked: a :class:`TickRow` for
+    ``n_env`` envs (never per-launch host ticks, #29 P7e.1); its address."""
+    if not isinstance(trow, TickRow):
+        raise TypeError(f"{who}: the tick row must be a unit_draws.TickRow (the "
+                        f"device row every kernel reads), not {type(trow).__name__}")
+    if trow.n_env != int(n_env):
+        raise ValueError(f"{who}: the tick row holds {trow.n_env} envs, the store "
+                         f"{int(n_env)}")
+    return trow.ptr
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +288,7 @@ def layout() -> Layout:
     text = "".join(f"salt:{n}:{v}\n" for n, v in salts)
     text += "".join(f"next:{s.salt}:{s.module}:{s.function}\n" for s in NEXT_SITES)
     text += "".join(f"key:{i}:{n}\n" for i, n in enumerate(KEY_FIELDS))
+    text += "".join(f"trow:{i}:{n}\n" for i, n in enumerate(TICK_ROW_FIELDS))
     return Layout(salts=salts, next_sites=NEXT_SITES,
                   fingerprint=hashlib.sha256(text.encode("ascii")).hexdigest())
 
@@ -215,6 +323,13 @@ def header_text(lay: Layout | None = None) -> str:
     for i, n in enumerate(KEY_FIELDS):
         lines.append(f"constexpr int DRAW_KEY_{n.upper()} = {i};")
     lines.append(f"constexpr int DRAW_KEY_W = {KEY_W};")
+    lines += ["", "// #29 P7e.1: THE TICK ROW (unit_draws.TickRow: one per env, written once",
+              "// per tick, read by every unit kernel); the draw key's three columns from",
+              "// TICK_ROW_KEY, in DRAW_KEY_* order."]
+    for i, n in enumerate(TICK_ROW_FIELDS):
+        lines.append(f"constexpr int TICK_ROW_{n.upper()} = {i};")
+    lines.append(f"constexpr int TICK_ROW_KEY = {TICK_ROW_KEY};")
+    lines.append(f"constexpr int TICK_ROW_W = {TICK_ROW_W};")
     lines += ["", "// The salts drawn with .next, each at ONE src/ site (module, function):"]
     for s in lay.next_sites:
         lines.append(f"//   {s.salt}: {s.module} ({s.function})")
@@ -235,6 +350,8 @@ def check_compiled(bp) -> None:
 
 
 __all__ = ["HEADER_REL", "GENERATOR", "KEY_FIELDS", "KEY_W", "NextSite",
+           "TICK_ROW_FIELDS", "TICK_ROW_W", "TICK_ROW_KEY", "TICK_ROW_TILES",
+           "tick_row", "tick_rows", "TickRow", "row_ptr",
            "NEXT_SITES", "draw_key", "draw_keys", "next_sites", "sites_in_source",
            "next_site_problems", "Layout", "layout", "header_text",
            "check_compiled"]

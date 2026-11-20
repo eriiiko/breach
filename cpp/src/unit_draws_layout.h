@@ -13,7 +13,7 @@
 
 namespace unit_draws {
 
-constexpr const char* UNIT_DRAWS_FINGERPRINT = "6c970160d1a43e285795b259d01d25ad18ed56954e6c6648ec140f95cef09e13";
+constexpr const char* UNIT_DRAWS_FINGERPRINT = "b64e55f0482c1fba26f6c6c55a246c7675fff95d6a02f863ed360eb8aeaa5924";
 
 // The salts (simulation.rng_salts.Salt), each its four letters as one
 // big-endian word.
@@ -34,6 +34,17 @@ constexpr int DRAW_KEY_SEED_LO = 0;
 constexpr int DRAW_KEY_SEED_HI = 1;
 constexpr int DRAW_KEY_TICK = 2;
 constexpr int DRAW_KEY_W = 3;
+
+// #29 P7e.1: THE TICK ROW (unit_draws.TickRow: one per env, written once
+// per tick, read by every unit kernel); the draw key's three columns from
+// TICK_ROW_KEY, in DRAW_KEY_* order.
+constexpr int TICK_ROW_TICK = 0;
+constexpr int TICK_ROW_SEED_LO = 1;
+constexpr int TICK_ROW_SEED_HI = 2;
+constexpr int TICK_ROW_DRAW_TICK = 3;
+constexpr int TICK_ROW_TILES_CHANGED = 4;
+constexpr int TICK_ROW_KEY = 1;
+constexpr int TICK_ROW_W = 5;
 
 // The salts drawn with .next, each at ONE src/ site (module, function):
 //   SHOT_CONE: simulation/combat.py (fire_burst)

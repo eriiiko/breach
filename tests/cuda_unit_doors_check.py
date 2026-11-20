@@ -146,8 +146,8 @@ def _run_doors(st, inp, lists):
 
 def _run_1b(st, inp, req, lists):
     from cuda_unit_lockstep import flight_fields       # #215: the flight plane
-    cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"], flight_fields(inp))
+    cov = unit_kernels.verbs(st, req, inp.tick_row, inp.tables["door_spans"],
+                             inp.scalars["charges_live"], flight_fields(inp, st))
     unit_kernels.door_uses(st, req, lists["doors"])
     return cov
 
@@ -1198,8 +1198,8 @@ def _run_1b_chained(st, inp, lists):
     req = _CH_REQ[key]
     req.begin()
     from cuda_unit_lockstep import flight_fields       # #215: the flight plane
-    cov = unit_kernels.verbs(st, req, inp.tick, inp.tables["door_spans"],
-                             inp.scalars["charges_live"], flight_fields(inp))
+    cov = unit_kernels.verbs(st, req, inp.tick_row, inp.tables["door_spans"],
+                             inp.scalars["charges_live"], flight_fields(inp, st))
     if any(r[0] != unit_requests.KIND_USE for r in req.records()[0]):
         raise RuntimeError("chained: a throw / plant in the door chain (no landing)")
     unit_kernels.door_uses(st, req, lists["doors"])

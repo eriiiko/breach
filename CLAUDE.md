@@ -75,7 +75,7 @@ strategy. Every rule below serves that.
 | `radiation-light.md` | radiation sweep, emissive table, extinction planes, integer reference, light accessor |
 | `explosions-fire.md` | payloads, generic explosion, divergence, blast reach, tile deposit, fire, timed charge, heat source |
 | `device-residency.md` | stamp kernel, batched resident engine, build id, Class P / T |
-| `device-units.md` | unit store, device tables, unit library, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
+| `device-units.md` | unit store, device tables, unit library, tick row, event ring, request list, per-env serial applier, spray slot, device edit door, attack lists, device topology seam, door table, signal slots, timed charges and heat sources, entity section export |
 | `swarm.md` | swarm store, its digest section, facade, species table, heading law, brood entity + spawn, dot view, bite-dose plane, count plane |
 | `units.md` | unit, schema, traits, turning, impulse, speeds, throttle, footprint samples, coupling, wind load, body temperature, corpse law |
 | `horde.md` | horde field, noise, A*, the conversion door |
@@ -158,6 +158,7 @@ amends the rule file, never this line's length.
 | Request list | `src/simulation/unit_requests.py` + `UnitRecordList` | What a device unit kernel does that is not a row write, as records in the reference's order |
 | Per-env serial applier | `src/simulation/applier.py` + generated `cpp/src/applier_layout.h` + `cpp/src/cuda_applier.{h,cu}` | THE device form of every order-dependent law that writes the map: one block per env walking its effect records in the reference's order; never a second walker |
 | Device draws | `cpp/src/cuda_unit_draws.cuh` + `src/simulation/unit_draws.py` + generated `cpp/src/unit_draws_layout.h` | THE device `MatchDraws.at` / `.next` and the outcome maps; every device draw goes through it, its salt a generated constant |
+| Tick row | `src/simulation/unit_draws.py` `TickRow` + generated `TICK_ROW_*` in `cpp/src/unit_draws_layout.h` | THE per-env tick, draw key and tile-change count every device unit kernel reads in place; never a per-launch tick argument |
 | Device sight | `cpp/src/cuda_unit_sight.cuh` | THE device `GameMap.has_los` in both forms; every device kernel that asks a line goes through it, never its own walk |
 | The march (device) | `cpp/src/cuda_unit_march.cuh` | THE device `BulletInFlight.advance`: slot 4's shooting and slot 2''s rounds both call it on a round-table row, never a copy |
 | Noise list (device) | `unit_schema.NOISE_TABLE` on the object tables | THE device form of `GameMap.noise_log`: a device producer of a noise appends to it in the reference's emission order, never a second log |

@@ -431,15 +431,26 @@ __device__ inline int64_t reduce_sum(const int32_t* plane, int h, int w, const F
 }
 
 // ---- the credit claims (damage.TickCredit) -----------------------------------------
-// The claims table of this block's env: (n_claims, 4) rows (channel, y, x,
-// attacker) -- channel UNIT_CREDIT_HEAT for the heat buffer, a gas slice's
-// index for a gas deposit; every key once (the first claim kept, as the
-// host's dict does). The claimant of (channel, y, x), else -1.
-__device__ inline int64_t credit_at(const int64_t* claims, int n_claims, int64_t channel,
-                                    int64_t y, int64_t x) {
-    if (claims == nullptr) return -1;
-    const int64_t* c = bptr(claims, (size_t)n_claims * 4);
-    for (int i = 0; i < n_claims; ++i) {
+// #29 P7e.1: THE CLAIMS LIST (attack_lists.claims_list, a UnitRecordList of
+// (channel, y, x, attacker) rows, (N, cap, 4) with per-env counts): EVERY
+// claim of the tick in the reference's order, duplicates included -- channel
+// UNIT_CREDIT_HEAT for the heat buffer, a gas slice's index for a gas
+// deposit. "First claim wins" is THIS reader's: the scan stops at the first
+// match among the env's first count (<= cap) records, as the host's dict
+// keeps its first claim. The claimant of (channel, y, x), else -1.
+struct ClaimsView {
+    const int64_t* recs = nullptr;    // (N, cap, 4); null: no claims
+    const int64_t* count = nullptr;   // (N,)
+    int cap = 0;
+};
+__device__ inline int64_t credit_at(const ClaimsView& cl, int64_t channel, int64_t y,
+                                    int64_t x) {
+    if (cl.recs == nullptr) return -1;
+    const int e = benv();
+    const int64_t* c = cl.recs + (size_t)e * cl.cap * 4;
+    int64_t n = cl.count[e];
+    if (n > cl.cap) n = cl.cap;
+    for (int64_t i = 0; i < n; ++i) {
         if (c[4 * i] == channel && c[4 * i + 1] == y && c[4 * i + 2] == x)
             return c[4 * i + 3];
     }

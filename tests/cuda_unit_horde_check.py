@@ -67,7 +67,7 @@ if str(_ROOT / "tools") not in sys.path:
 import level_loader  # noqa: E402
 from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
                                 ShadowLockstep)
-from simulation import (applier, horde, horde_cache, unit_kernels,  # noqa: E402
+from simulation import (applier, horde, horde_cache, unit_draws, unit_kernels,  # noqa: E402
                         unit_schema, unit_store, unit_tables)
 from simulation.materials import MAT_AIR, MAT_HULL  # noqa: E402
 
@@ -114,12 +114,12 @@ def _run_5(cache_list):
     def run(st, inp, ring, lists):
         return unit_kernels.horde(st, _applier_for(st), inp.fields, ring, lists["noise"],
                                   lists["doors"], lists["door_tiles"], lists[cache_list],
-                                  inp.tables["horde_latch"])
+                                  inp.tables["horde_latch"], inp.tick_row)
     return run
 
 
 def _slot(cache_list="horde"):
-    ins = ("horde_latch", "list:noise", "list:doors", "list:door_tiles")
+    ins = ("tick", "horde_latch", "list:noise", "list:doors", "list:door_tiles")
     if cache_list == "horde":
         ins = ins + ("list:horde",)
     return DeviceSlot(label="5 zombie AI", run=_run_5(cache_list), events=True, inputs=ins,
@@ -999,7 +999,7 @@ def part_padding():
                   for n in applier.PLANE_NAMES}
         latch = [horde_cache.latch_of(s, U) for s in sims]
         unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles, cache,
-                           latch)
+                           latch, unit_draws.TickRow.of_sims(sims))
         return (st.download(), {k: v.get() for k, v in fields.items()}, ring.records(),
                 noise.records(), cache.records(), rows, cache)
     clean, dirty = run(False), run(True)
@@ -1054,7 +1054,7 @@ def part_overflow():
         fields = {n: cp.asarray(np.array(getattr(sim.gmap, n))[None])
                   for n in applier.PLANE_NAMES}
         unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles, cache,
-                           [horde_cache.latch_of(sim, U)])
+                           [horde_cache.latch_of(sim, U)], unit_draws.TickRow.of_sims([sim]))
     for _t in range(120):                     # a tick that floods two fields at once
         try:
             run(fcap=1)
@@ -1113,7 +1113,7 @@ def part_refuse():
     fields = {n: cp.asarray(np.array(getattr(sim.gmap, n))[None]) for n in applier.PLANE_NAMES}
     try:
         unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles, cache,
-                           [horde_cache.latch_of(sim, U)])
+                           [horde_cache.latch_of(sim, U)], unit_draws.TickRow.of_sims([sim]))
         fail("refuse: a ring of one event took two bites' events")
     except UnitEventOverflow as ex:
         if "[0]" not in str(ex):
@@ -1141,7 +1141,7 @@ def part_refuse():
                   for n in applier.PLANE_NAMES}
         try:
             unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles, cache,
-                               [horde_cache.latch_of(sim, U)])
+                               [horde_cache.latch_of(sim, U)], unit_draws.TickRow.of_sims([sim]))
         except ot.ObjectTableOverflow as ex:
             if "'noise'" not in str(ex) or "env 0" not in str(ex):
                 fail(f"refuse: the noise refusal does not name the table and the env: {ex}")
@@ -1423,9 +1423,12 @@ def bench(reps: int = 50) -> int:
             tiles.begin()
             cache = horde_cache.DeviceHordeCache(n, U)
             latch = horde_cache.latch_of(sim, U)
-            latch[0] = 1                    # an odd tick: the staged cache is not dropped
+            # an odd tick (the tick row): the staged cache is not dropped
+            odd = unit_draws.tick_row(sim)
+            odd[0] = 1
+            trows = unit_draws.TickRow.of(np.repeat(odd[None], n, 0))
             empty = latch.copy()
-            empty[2] = 0
+            empty[applier.HORDE_LATCH.index("mode")] = 0
             timings = {}
             for name, tb, rws, lt, staged in (
                     ("floor (drain only)", tab, awake_rows, empty, True),
@@ -1445,7 +1448,7 @@ def bench(reps: int = 50) -> int:
                     cp.cuda.Device().synchronize()      # the staging copies land first
                     t0 = time.perf_counter()
                     unit_kernels.horde(st, _applier_for(st), fields, ring, noise, doors, tiles,
-                                       cache, [lt] * n)
+                                       cache, [lt] * n, trows)
                     ts.append((time.perf_counter() - t0) * 1e3)
                 timings[name] = float(np.median(ts))
             rows.append((nz, n, timings))

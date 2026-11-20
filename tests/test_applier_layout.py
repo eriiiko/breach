@@ -94,6 +94,22 @@ def test_the_non_resident_planes_are_exactly_those_outside_the_resident_set():
         assert (n in nr) == (n not in res), n
 
 
+def test_every_device_slot_plane_is_resident_or_host_computed_by_design():
+    """Property (#29 P7e.1): every plane a device unit slot reads or writes
+    (``device_slot_planes``: the seam's, the clears, each face's field tuple)
+    is a resident field -- a ``ResidentBatch`` buffer handed as it is -- or one
+    of the planes declared host-computed by design (``HOST_COMPUTED_PLANES``),
+    and ``non_resident_planes`` names exactly the rest. Breaks if a plane a
+    device slot reads leaves the resident set (it would be staged from the
+    host again), or a new slot's field tuple names a plane that is neither."""
+    from simulation.gamemap import GameMap
+    res = set(GameMap._RESIDENT_FIELD_NAMES)
+    nr = set(applier.non_resident_planes())
+    for n in applier.device_slot_planes():
+        assert (n in nr) == (n not in res), n
+    assert nr <= set(applier.HOST_COMPUTED_PLANES), sorted(nr)
+
+
 def test_a_list_past_its_capacity_keeps_its_first_entries_and_its_count():
     """Property: ``pack`` keeps each env's first ``cap`` records in order and
     its REQUESTED count (which the device compares with ``cap`` to count the

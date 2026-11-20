@@ -160,19 +160,19 @@ def to_host(sim, recs: CacheRecords) -> None:
 
 def latch_of(sim, n_units: int) -> np.ndarray:
     """THE LATCH row of ``sim`` for the HORDE stage at slot 5's entry: the
-    tick, ``GameMap._tile_serial``, the request set's mode (CONDUCTOR: the
-    conductor drives every zombie; EMPTY: a controller named none -- the slot
-    returns; SET) and, per unit row, 1 when the row's id is in the set."""
+    request set's mode (CONDUCTOR: the conductor drives every zombie; EMPTY: a
+    controller named none -- the slot returns; SET) and, per unit row, 1 when
+    the row's id is in the set. (#29 P7e.1: the tick and ``GameMap.
+    _tile_serial`` are the TICK ROW's, ``unit_draws.TickRow``.)"""
     row = np.zeros(len(applier.HORDE_LATCH) + int(n_units), dtype=np.int64)
-    row[0] = int(sim.tick)
-    row[1] = int(getattr(sim.gmap, "_tile_serial", 0))
+    m = applier.HORDE_LATCH.index("mode")
     reqs = sim._zombie_requests
     if reqs is None:
-        row[2] = _MODE["CONDUCTOR"]
+        row[m] = _MODE["CONDUCTOR"]
     elif not reqs:
-        row[2] = _MODE["EMPTY"]
+        row[m] = _MODE["EMPTY"]
     else:
-        row[2] = _MODE["SET"]
+        row[m] = _MODE["SET"]
         base = len(applier.HORDE_LATCH)
         for r, u in enumerate(sim.units):
             if r < n_units and u.id in reqs:

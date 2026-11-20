@@ -1632,6 +1632,8 @@ class PhysicsRunner:
         "heat", "fire", "wall_hp",
         "solid", "is_vacuum", "is_ambient", "thermal_solid", "flammable",
         "material",
+        # #29 P7e.1: host-written every tick (slot 9d, the blast source)
+        "ignition_armed", "div_source",
     )
     # #29 P4b: the stamp outputs the entry upload carries ONLY on a tick the
     # device stamp did not serve (no rows: the Python reference stamp, a tick
@@ -1650,6 +1652,8 @@ class PhysicsRunner:
         "fuel_per_o2_plane", "heat_atten_q",
         # #29 P4b: the device stamp's static baselines
         "permeability", "wave_absorb",
+        # #29 P7e.1: the device unit slots' table-derived planes
+        "sight_screen", "heat_atten", "light_atten",
     )
     # THE EXIT SET -- the synced set the host gameplay slots and the digest
     # read after the tick: every digested field the device writes, `heat`
@@ -2166,7 +2170,7 @@ def run_resident_batch(runners, gmaps, sim_time, water_before_base=None,
 
     # 3b. the EOS stage (the device pre-stage, the masked substep loops).
     if div_source_dev is not None:          # #29 P7c.2: the device-taken source
-        dev["div_source"] = int(div_source_dev)
+        dev["div_source_taken"] = int(div_source_dev)
     e0.run_substeps_resident(dev, h, w, cons, sim_time, ambient,
                              n_amb=amb[1], p_amb=int(amb[2]),
                              n_env=n_env, engines=engines)

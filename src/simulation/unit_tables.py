@@ -724,6 +724,10 @@ _TOPO_ROWS: tuple = (
     TableRow("mat_flammable", _n_materials,
              _per_mat(lambda t, i: int(bool(t.flammable[i]))), 0, 1,
              "per material: flammable"),
+    # #29 P7e.1: the FLIGHT plane built on the device (combat.flight_plane)
+    TableRow("mat_blocks_thrown", _n_materials,
+             _per_mat(lambda t, i: int(bool(t.blocks_thrown[i]))), 0, 1,
+             "per material: blocks_thrown (combat.flight_blocked's column)"),
     TableRow("mat_wall_hp_q", _n_materials, _per_mat(_wall_hp_q), _I32_MIN,
              _I32_MAX, "per material: wall_fixed.quantize_scalar(hp)"),
     TableRow("mat_conductivity_bits", _n_materials,

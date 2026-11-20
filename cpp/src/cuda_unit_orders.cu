@@ -65,13 +65,13 @@ __global__ void k_apply_orders(int64_t* store, int n_units, const int64_t* reque
 }
 
 // Slot 10': one thread per unit row of one env.
-__global__ void k_expire_orders(int64_t* store, int n_units, const int64_t* ticks,
+__global__ void k_expire_orders(int64_t* store, int n_units, const int64_t* trow,
                                 unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (r >= n_units) return;
     int64_t* row = unit_row(store, n_units, r);
     if (!row_valid(row)) return;
-    const int64_t tick = ticks[benv()];
+    const int64_t tick = unit_draws_dev::trow_tick(trow, benv());
     const int64_t until = row[UNIT_COL_ORDER_UNTIL];
     if (row[UNIT_COL_ORDER_WHAT] != ORDER_NONE && until != NO_LIMIT && until <= tick) {
         bool changed = false;
@@ -96,13 +96,13 @@ void unit_apply_orders(UnitStoreDevice& store, const UnitTablesDevice& tables,
 }
 
 void unit_expire_orders(UnitStoreDevice& store, const UnitTablesDevice& tables,
-                        const int64_t* ticks, const UnitKernelCounts& out) {
+                        std::uintptr_t tick_row, const UnitKernelCounts& out) {
     unit_check_pair(store, tables, "unit_expire_orders");
-    if (ticks == nullptr) throw std::invalid_argument("unit_expire_orders: null ticks");
-    const int64_t* d_ticks = store.stage_input(0, ticks, (size_t)store.n_env());
+    if (tick_row == 0) throw std::invalid_argument("unit_expire_orders: the tick row (N, TICK_ROW_W)");
+    const int64_t* d_trow = reinterpret_cast<const int64_t*>(tick_row);
     store.begin_counts();
     k_expire_orders<<<bgrid(store.n_units(), store.n_env()), 128, 0, tstream()>>>(
-        store.rows(), store.n_units(), d_ticks, store.counts_dev());
+        store.rows(), store.n_units(), d_trow, store.counts_dev());
     unit_finish(store, out, "unit_expire_orders");
 }
 

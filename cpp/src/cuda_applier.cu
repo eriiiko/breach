@@ -96,7 +96,7 @@ struct WalkTables {
     int64_t* sig[8] = {};
     const int64_t* n_sig[8] = {};
     int sig_cap[8] = {};
-    const int64_t* ticks = nullptr;
+    const int64_t* trow = nullptr;     // #29 P7e.1: the tick row (N, TICK_ROW_W)
     // #29 P6b.4: the TIMED_CHARGES / HEAT_SOURCES stages' entity tables
     int64_t* timed = nullptr;
     const int64_t* n_timed = nullptr;
@@ -181,9 +181,12 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         const int e = benv();
         const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
         int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
-        const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+        topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+        if (X.trow != nullptr)
+            E.tiles = const_cast<int64_t*>(unit_draws_dev::trow_env(X.trow, e)) +
+                      unit_draws::TICK_ROW_TILES_CHANGED;
         if (U.ring.ring == nullptr || !WL.has_noise || X.doors == nullptr || X.tiles == nullptr ||
-            HB.hdr == nullptr || HB.latch == nullptr) {
+            HB.hdr == nullptr || HB.latch == nullptr || X.trow == nullptr) {
             if (threadIdx.x == 0) B[APPLIER_BOOK_FAULTS] += 1;   // the stage needs them all
             return;
         }
@@ -214,7 +217,8 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         V.live = HB.live + (size_t)e * Un * 3;
         V.latch = HB.latch + (size_t)e * (APPLIER_HORDE_LATCH_W + Un);
         V.fcap = HB.fcap;
-        V.tick = V.latch[APPLIER_HORDE_LATCH_TICK];
+        V.tick = unit_draws_dev::trow_tick(X.trow, e);        // #29 P7e.1: the tick row
+        V.serial = E.tiles;
         V.B = B;
         horde_dev::stage(V, S, WL.noise, e);
         __syncthreads();
@@ -227,7 +231,10 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
     const int e = benv();
     const int64_t* tab = bptr(tables, (size_t)unit_tables::UNIT_TABLES_W);
     int64_t* B = books + (size_t)e * APPLIER_N_BOOKS;
-    const topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+    topo::TopoEnv E = topo::env_view(P, e, h, w, n_gases, tab);
+    if (X.trow != nullptr)                  // #29 P7e.1: the seam bumps the tick row
+        E.tiles = const_cast<int64_t*>(unit_draws_dev::trow_env(X.trow, e)) +
+                  unit_draws::TICK_ROW_TILES_CHANGED;
     // #29 P6b.3: slot 9e's signal sub-steps walk the signal TABLES (decision
     // 1: stages of the one walker, each entity applied at once)
     if (stage == APPLIER_STAGE_EMIT || stage == APPLIER_STAGE_LOGIC ||
@@ -239,7 +246,8 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
                 B[APPLIER_BOOK_FAULTS] += 1;
                 return;
             }
-            signals::emit(E, tab, T, X.ticks != nullptr ? X.ticks[e] : 0, U.store, U.n_units, B);
+            signals::emit(E, tab, T, X.trow != nullptr ? unit_draws_dev::trow_tick(X.trow, e) : 0,
+                          U.store, U.n_units, B);
         } else if (stage == APPLIER_STAGE_LOGIC) {
             signals::logic(T, B);
         } else if (stage == APPLIER_STAGE_DOOR_INPUTS) {
@@ -489,19 +497,15 @@ __global__ void k_applier(int stage, const int64_t* recs, const int64_t* counts,
         if (touched[r]) unit_lib::count_changed(U.cnt);
 }
 
-__global__ void k_tick_end_clears(int n, int32_t* heat, int64_t* rad_net, int64_t* rad_amb,
-                                  int64_t* rad_flux, const uint8_t* active) {
+__global__ void k_tick_end_clears(int n, int32_t* heat, const uint8_t* active) {
     if (env_off(active)) return;
     const int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (i >= n) return;
     bptr(heat, (size_t)n)[i] = 0;
-    bptr(rad_net, (size_t)n)[i] = 0;
-    bptr(rad_amb, (size_t)n)[i] = 0;
-    bptr(rad_flux, (size_t)n)[i] = 0;
 }
 
-static_assert(APPLIER_CLEAR_HEAT_BYTES == 4 && APPLIER_CLEAR_RAD_NET_BYTES == 8 &&
-              APPLIER_CLEAR_RAD_AMB_BYTES == 8 && APPLIER_CLEAR_RAD_FLUX_BYTES == 8,
+// #29 P7e.1: `heat` is the one clear plane (the legacy rad_* planes left).
+static_assert(APPLIER_N_CLEARS == 1 && APPLIER_CLEAR_HEAT_BYTES == 4,
               "the clears' dtypes moved: update k_tick_end_clears");
 static_assert(APPLIER_N_STAGES == 14, "a new stage: give it its mode in k_applier");
 
@@ -525,10 +529,6 @@ FieldApplier::FieldApplier(int n_env, int cap, int n_units, int row_cap)
     ap_check(cudaMemsetAsync(d_books_, 0, nb * sizeof(int64_t), tstream()), "zero books");
     ap_check(cudaMemsetAsync(d_land_, 0, nl * sizeof(int64_t), tstream()), "zero landing");
     touched(n_units);
-    ap_check(cudaMalloc(reinterpret_cast<void**>(&d_ticks_), (size_t)n_env * sizeof(int64_t)),
-             "malloc ticks");
-    ap_check(cudaMallocHost(reinterpret_cast<void**>(&h_ticks_), (size_t)n_env * sizeof(int64_t)),
-             "malloc pinned ticks");
     ap_check(cudaEventRecord(ev, tstream()), "record zero");
 }
 
@@ -540,8 +540,6 @@ FieldApplier::~FieldApplier() {
     if (d_land_) cudaFree(d_land_);
     if (d_touched_) cudaFree(d_touched_);
     if (d_walk_) cudaFree(d_walk_);
-    if (d_ticks_) cudaFree(d_ticks_);
-    if (h_ticks_) cudaFreeHost(h_ticks_);
     if (h_stage_) cudaFreeHost(h_stage_);
     if (h_books_) cudaFreeHost(h_books_);
 }
@@ -571,14 +569,6 @@ void* FieldApplier::walk_scratch(int n_cells) {
         walk_cells_ = n_cells;
     }
     return d_walk_;
-}
-
-const int64_t* FieldApplier::ticks_dev(const int64_t* host) {
-    ap_check(cudaStreamSynchronize(tstream()), "ticks wait");   // the pinned copy is free
-    std::memcpy(h_ticks_, host, (size_t)n_env() * sizeof(int64_t));
-    ap_check(cudaMemcpyAsync(d_ticks_, h_ticks_, (size_t)n_env() * sizeof(int64_t),
-                             cudaMemcpyHostToDevice, tstream()), "H2D ticks");
-    return d_ticks_;
 }
 
 void FieldApplier::stage(const int64_t* recs, const int64_t* counts) {
@@ -702,6 +692,8 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
     WL.walk = static_cast<uint8_t*>(a.walk_scratch(planes.h * planes.w));
     WL.walk_cells = a.walk_cells();
     WalkTables X;
+    if (lists != nullptr && lists->tick_row != 0)    // #29 P7e.1: the tick row
+        X.trow = reinterpret_cast<const int64_t*>(lists->tick_row);
     // #29 P6b.3: the signal stages' tables (each stage checks the ones it reads)
     const bool sig_stage = stage == APPLIER_STAGE_EMIT || stage == APPLIER_STAGE_LOGIC ||
                            stage == APPLIER_STAGE_DOOR_INPUTS || stage == APPLIER_STAGE_PUMPS ||
@@ -746,8 +738,6 @@ void applier_run(FieldApplier& a, UnitStoreDevice& store, const UnitTablesDevice
             X.n_doors = doors->count_dev();
             X.door_cap = doors->cap();
         }
-        if (stage == APPLIER_STAGE_EMIT && lists->ticks != nullptr)
-            X.ticks = a.ticks_dev(lists->ticks);
     }
     if (stage == APPLIER_STAGE_DOORS) {
         ObjectTable* doors = lists != nullptr ? lists->door_table : nullptr;
@@ -888,9 +878,6 @@ void tick_end_clears(int n_env, int h, int w,
     const int n = h * w;
     k_tick_end_clears<<<bgrid(n, n_env), 256, 0, tstream()>>>(
         n, reinterpret_cast<int32_t*>(ptr[APPLIER_CLEAR_HEAT]),
-        reinterpret_cast<int64_t*>(ptr[APPLIER_CLEAR_RAD_NET]),
-        reinterpret_cast<int64_t*>(ptr[APPLIER_CLEAR_RAD_AMB]),
-        reinterpret_cast<int64_t*>(ptr[APPLIER_CLEAR_RAD_FLUX]),
         reinterpret_cast<const uint8_t*>(active));
     ap_check(cudaGetLastError(), "clears launch");
 }

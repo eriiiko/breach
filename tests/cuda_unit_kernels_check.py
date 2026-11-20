@@ -89,7 +89,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, trow,  # noqa: E402
                                 ShadowLockstep)
 from simulation import (unit_kernels, unit_schema, unit_store,  # noqa: E402
                         unit_tables, unit_traits)
@@ -124,7 +124,7 @@ SLOT_9C2 = DeviceSlot(label="9c2 wind on units",
                       run=lambda st, inp: unit_kernels.wind_impulse(st, inp.fields),
                       inputs=tuple("field:" + f for f in unit_kernels.WIND_FIELDS))
 SLOT_10E = DeviceSlot(label="10' order expiry",
-                      run=lambda st, inp: unit_kernels.expire_orders(st, inp.tick),
+                      run=lambda st, inp: unit_kernels.expire_orders(st, inp.tick_row),
                       inputs=("tick",))
 SLOT_CONV = DeviceSlot(label="10 tick end (ruleset)",
                        run=unit_kernels.convert_zombies)
@@ -1014,7 +1014,7 @@ def bench(reps: int = 200) -> int:
                      [capture(tuple("field:" + f for f in unit_kernels.WIND_FIELDS),
                               sim)] * n)
         reqs = unit_kernels.pad_requests([req] * n)
-        ticks = np.full(n, int(sim.tick), dtype=np.int64)
+        ticks = trow(np.full(n, int(sim.tick), dtype=np.int64))
         kern = {
             "1a integrate_turn": lambda: unit_kernels.integrate_turn(st),
             "9c2 wind_impulse": lambda: unit_kernels.wind_impulse(st, inp.fields),

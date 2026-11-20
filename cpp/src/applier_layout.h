@@ -15,7 +15,7 @@
 
 namespace applier {
 
-constexpr const char* APPLIER_FINGERPRINT = "2a8fbfa34993983ec72aed91619fc28096d012d134c8647883a16e89b0914db0";
+constexpr const char* APPLIER_FINGERPRINT = "b2f40a6884a809e49e3c902351a6130c35365cba4fc63a48ab3ae6548eadce50";
 constexpr int APPLIER_F = 11;
 constexpr int APPLIER_ROW_CAP = 32;
 
@@ -219,13 +219,7 @@ constexpr int APPLIER_N_PLANES = 36;
 // The tick-end clears' planes (their element size in bytes).
 constexpr int APPLIER_CLEAR_HEAT = 0;
 constexpr int APPLIER_CLEAR_HEAT_BYTES = 4;
-constexpr int APPLIER_CLEAR_RAD_NET = 1;
-constexpr int APPLIER_CLEAR_RAD_NET_BYTES = 8;
-constexpr int APPLIER_CLEAR_RAD_AMB = 2;
-constexpr int APPLIER_CLEAR_RAD_AMB_BYTES = 8;
-constexpr int APPLIER_CLEAR_RAD_FLUX = 3;
-constexpr int APPLIER_CLEAR_RAD_FLUX_BYTES = 8;
-constexpr int APPLIER_N_CLEARS = 4;
+constexpr int APPLIER_N_CLEARS = 1;
 
 // #29 P6b.1: the topology seam's refusal codes (0 = done).
 constexpr int64_t APPLIER_SEAM_OUT_OF_BOUNDS = 1;
@@ -298,10 +292,8 @@ constexpr int APPLIER_HORDE_KEY_FP = 1;
 constexpr int APPLIER_HORDE_KEY_SY = 2;
 constexpr int APPLIER_HORDE_KEY_SX = 3;
 constexpr int APPLIER_HORDE_KEY_W = 4;
-constexpr int APPLIER_HORDE_LATCH_TICK = 0;
-constexpr int APPLIER_HORDE_LATCH_SERIAL = 1;
-constexpr int APPLIER_HORDE_LATCH_MODE = 2;
-constexpr int APPLIER_HORDE_LATCH_W = 3;
+constexpr int APPLIER_HORDE_LATCH_MODE = 0;
+constexpr int APPLIER_HORDE_LATCH_W = 1;
 constexpr int64_t APPLIER_HORDE_KIND_PREY = 0;
 constexpr int64_t APPLIER_HORDE_KIND_PREY_FEARLESS = 1;
 constexpr int64_t APPLIER_HORDE_KIND_NOISE = 2;

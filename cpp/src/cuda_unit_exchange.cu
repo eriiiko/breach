@@ -79,7 +79,7 @@ __device__ inline bool env_select(const int64_t* row, int n_profiles, int n_spec
 __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables,
                               const int32_t* heat, const int64_t* rad, const int32_t* atm,
                               const int32_t* temp, const bool* solid, int h, int w,
-                              const int64_t* claims, int n_claims, UnitRingView ring,
+                              ClaimsView claims, UnitRingView ring,
                               unsigned long long* cnt) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (r >= n_units) return;
@@ -143,7 +143,7 @@ __global__ void k_heat_damage(int64_t* store, int n_units, const int64_t* tables
                         Packet p;
                         p.amount_q = dmg;
                         p.dtype = UNIT_DTYPE_HEAT;
-                        p.attacker = (ft.from_heat && !corpse) ? credit_at(claims, n_claims, UNIT_CREDIT_HEAT,
+                        p.attacker = (ft.from_heat && !corpse) ? credit_at(claims, UNIT_CREDIT_HEAT,
                                                               ft.peak_y, ft.peak_x)
                                                   : -1;
                         p.indirect = true;
@@ -197,7 +197,7 @@ __device__ inline void poison_dose(int64_t* loc, const int64_t* tab, int64_t dos
 }
 
 __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, const int32_t* gas,
-                           int n_gases, int h, int w, const int64_t* claims, int n_claims,
+                           int n_gases, int h, int w, ClaimsView claims,
                            UnitRingView ring, unsigned long long* cnt, const int32_t* bite,
                            const int32_t* count) {
     const int r = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -263,7 +263,7 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
                             const int64_t tx = f.ax + dx;
                             if (tx < 0 || tx >= w) continue;
                             if ((int64_t)pp[(size_t)ty * w + tx] == dens) {
-                                attacker = credit_at(claims, n_claims, gi_p, ty, tx);
+                                attacker = credit_at(claims, gi_p, ty, tx);
                                 found = true;
                                 break;
                             }
@@ -375,28 +375,33 @@ __global__ void k_gas_rows(int64_t* store, int n_units, const int64_t* tables, c
     finish_row(row, loc, sink, bad, cnt);
 }
 
-void check_claims(const int64_t* claims, int n_claims, const char* who) {
-    if (n_claims < 0 || (n_claims > 0 && claims == nullptr)) {
+// #29 P7e.1: the claims LIST (null: none) as the kernels' view.
+ClaimsView claims_view(UnitRecordList* claims, int n_env, const char* who) {
+    ClaimsView v;
+    if (claims == nullptr) return v;
+    if (claims->n_env() != n_env || claims->width() != 4) {
         std::ostringstream os;
-        os << who << ": the claims table must be (n_env, n_claims, 4) int64";
+        os << who << ": the claims list must be (n_env, cap, 4) for the store's envs";
         throw std::invalid_argument(os.str());
     }
+    v.recs = claims->records_dev();
+    v.count = claims->count_dev();
+    v.cap = claims->cap();
+    return v;
 }
 
 }  // namespace
 
 void unit_heat_damage(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitEventRing& ring,
-                      const UnitDamagePlanes& planes, const int64_t* claims, int n_claims,
+                      const UnitDamagePlanes& planes, UnitRecordList* claims,
                       const UnitDamageCounts& out) {
     unit_check_pair(store, tables, "unit_heat_damage");
     unit_check_ring(store, ring, "unit_heat_damage");
-    check_claims(claims, n_claims, "unit_heat_damage");
+    const ClaimsView cv = claims_view(claims, store.n_env(), "unit_heat_damage");
     if (!planes.heat || !planes.rad_flux || !planes.atmosphere || !planes.temperature ||
         !planes.solid || planes.h < 1 || planes.w < 1)
         throw std::invalid_argument("unit_heat_damage: the heat, rad_flux_sweep, atmosphere, "
                                     "temperature and solid planes and their shape are required");
-    const int64_t* d_claims = n_claims > 0
-        ? store.stage_input(1, claims, (size_t)store.n_env() * n_claims * 4) : nullptr;
     store.begin_counts();
     k_heat_damage<<<bgrid(store.n_units(), store.n_env()), 128, 0, tstream()>>>(
         store.rows(), store.n_units(), tables.values(),
@@ -404,28 +409,26 @@ void unit_heat_damage(UnitStoreDevice& store, const UnitTablesDevice& tables, Un
         reinterpret_cast<const int64_t*>(planes.rad_flux),
         reinterpret_cast<const int32_t*>(planes.atmosphere),
         reinterpret_cast<const int32_t*>(planes.temperature),
-        reinterpret_cast<const bool*>(planes.solid), planes.h, planes.w, d_claims,
-        n_claims, ring_view(ring), store.counts_dev());
+        reinterpret_cast<const bool*>(planes.solid), planes.h, planes.w, cv,
+        ring_view(ring), store.counts_dev());
     unit_finish_events(store, ring, out, "unit_heat_damage");
 }
 
 void unit_gas_rows(UnitStoreDevice& store, const UnitTablesDevice& tables, UnitEventRing& ring,
-                   const UnitDamagePlanes& planes, const int64_t* claims, int n_claims,
+                   const UnitDamagePlanes& planes, UnitRecordList* claims,
                    const UnitDamageCounts& out) {
     unit_check_pair(store, tables, "unit_gas_rows");
     unit_check_ring(store, ring, "unit_gas_rows");
-    check_claims(claims, n_claims, "unit_gas_rows");
+    const ClaimsView cv = claims_view(claims, store.n_env(), "unit_gas_rows");
     if (!planes.gas || !planes.bite || !planes.count || planes.n_gases < 1 || planes.h < 1 ||
         planes.w < 1)
         throw std::invalid_argument("unit_gas_rows: the gas planes, the bite and count planes "
                                     "and their shape are required");
-    const int64_t* d_claims = n_claims > 0
-        ? store.stage_input(1, claims, (size_t)store.n_env() * n_claims * 4) : nullptr;
     store.begin_counts();
     k_gas_rows<<<bgrid(store.n_units(), store.n_env()), 128, 0, tstream()>>>(
         store.rows(), store.n_units(), tables.values(),
         reinterpret_cast<const int32_t*>(planes.gas), planes.n_gases, planes.h, planes.w,
-        d_claims, n_claims, ring_view(ring), store.counts_dev(),
+        cv, ring_view(ring), store.counts_dev(),
         reinterpret_cast<const int32_t*>(planes.bite),
         reinterpret_cast<const int32_t*>(planes.count));
     unit_finish_events(store, ring, out, "unit_gas_rows");

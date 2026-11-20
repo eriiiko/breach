@@ -101,7 +101,7 @@ if str(_ROOT / "tools") not in sys.path:
     sys.path.append(str(_ROOT / "tools"))   # appended: never ahead of the CUDA build
 
 import level_loader  # noqa: E402
-from cuda_unit_lockstep import (ChainedSlots, DeviceSlot,  # noqa: E402
+from cuda_unit_lockstep import (ChainedSlots, DeviceSlot, trow,  # noqa: E402
                                 ShadowLockstep, first_field_diff)
 from simulation import (applier, unit_events, unit_kernels,  # noqa: E402
                         unit_store, unit_tables, unit_traits)
@@ -137,11 +137,12 @@ HOST_ONLY = (
 
 
 def _run_4a(st, inp, lists):
-    return unit_kernels.melee(st, lists["effects"], inp.tick)
+    return unit_kernels.melee(st, lists["effects"], inp.tick_row)
 
 
 def _run_4c(st, inp, ring, lists):
-    return unit_kernels.resolve(st, lists["effects"], inp.fields, ring)
+    return unit_kernels.resolve(st, lists["effects"], inp.fields, ring,
+                                tick_row=getattr(inp, "tick_row", None))
 
 
 def _conductor(sim, args, kw, caller):
@@ -805,7 +806,7 @@ def part_knife():
     fx = applier.DeviceApplier(1, applier.E_CAP, n_units=len(sim.units))
     fx.begin()
     try:
-        unit_kernels.melee(st, fx, np.array([sim.tick]))
+        unit_kernels.melee(st, fx, trow([sim.tick]))
         fail("knife: a striker with a crit row was not refused")
     except unit_kernels.UnitKernelFault as ex:
         if "melee" not in str(ex):
@@ -1260,7 +1261,7 @@ def part_overflow():
         full = applier.DeviceApplier(1, applier.E_CAP, n_units=U)
         st.upload(held["pre"][None])
         full.begin()
-        unit_kernels.melee(st, full, np.array([held["tick"]]))
+        unit_kernels.melee(st, full, trow([held["tick"]]))
         want = full.records()[0]
         if len(want) < 3:
             continue
@@ -1271,7 +1272,7 @@ def part_overflow():
         cont = applier.DeviceApplier(1, applier.E_CAP, n_units=U)
         st.upload(held["pre"][None])
         cont.stage_lists([np.array(lead)])
-        unit_kernels.melee(st, cont, np.array([held["tick"]]))
+        unit_kernels.melee(st, cont, trow([held["tick"]]))
         if cont.records()[0] != [tuple(r) for r in lead] + want:
             fail("append: 4a did not continue the staged list (its records after the "
                  "staged ones, in order)")
@@ -1283,7 +1284,7 @@ def part_overflow():
         st.upload(held["pre"][None])
         small.begin()
         try:
-            unit_kernels.melee(st, small, np.array([held["tick"]]))
+            unit_kernels.melee(st, small, trow([held["tick"]]))
             fail("overflow: a list past its capacity was not refused")
         except applier.EffectOverflow as ex:
             if "melee" not in str(ex) or "env(s) [0]" not in str(ex):
@@ -1299,7 +1300,7 @@ def part_overflow():
         st.upload(held["pre"][None])
         narrow.begin()
         try:
-            unit_kernels.melee(st, narrow, np.array([held["tick"]]))
+            unit_kernels.melee(st, narrow, trow([held["tick"]]))
             fail("overflow: a row's staging past its bound was not refused")
         except applier.EffectOverflow as ex:
             if "row's staging" not in str(ex):
@@ -1405,7 +1406,7 @@ def bench(reps: int = 50) -> int:
         st = unit_store.DeviceStore(n_env, U, tables=np.repeat(tab1, n_env, axis=0))
         rows = np.repeat(rows1[None], n_env, axis=0)
         dev = _dev_planes([planes1] * n_env)
-        ticks = np.full(n_env, sim.tick, dtype=np.int64)
+        ticks = trow(np.full(n_env, sim.tick, dtype=np.int64))
         ring = unit_events.EventRing(n_env, U, e_max=4096)
         fx = applier.DeviceApplier(n_env, 256, n_units=U)
         ts = []
