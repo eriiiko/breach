@@ -116,6 +116,12 @@ Headless flags (no human at the keyboard):
                      volley of sparks held at its birth state minus the same
                      frame without them, alternated frame by frame over N
                      (600) frames (run it with --level blast_final).
+    --water-perf [N]  water look arc #97: the WATER PASS's own cost on the
+                     current --level, one sim tick per frame after 132 ticks
+                     (the flooding_corridor frame on water_studio): CPU
+                     update ms, the foam step's CPU / GPU ms, the draw's GPU
+                     ms (GL_TIME_ELAPSED) over N (300) frames. A dry level
+                     shows what a dry map costs.
     --debris-perf [N] graphics G4 P4: the DEBRIS' GPU ms -- the particle
                      draw's premultiplied "debris" stage with the level's
                      volley of chips held 12 ticks after birth minus the same
@@ -1314,6 +1320,109 @@ def _run_spark_perf(renderer, sim, lights_in, light_sky,
     print("OK -- spark perf pass complete (--spark-perf)")
 
 
+def _parse_water_perf() -> Optional[int]:
+    """``--water-perf [N]`` -- measure N frames (default 300)."""
+    if "--water-perf" not in sys.argv:
+        return None
+    v = _argv_value("--water-perf")
+    try:
+        return max(2, int(v)) if v and not v.startswith("--") else 300
+    except ValueError:
+        return 300
+
+
+WATER_PERF_WARMUP_TICKS = 132     # the flooding_corridor shot's frame
+
+
+def _run_water_perf(renderer, sim, lights_in, light_sky,
+                    sim_time_per_tick: float, ticks_per_round: int,
+                    frames: int) -> None:
+    """Water look arc #97: the WATER PASS's own cost on the current --level,
+    one sim tick per frame (the game's order: the lit tick, upload_state,
+    the frame) after :data:`WATER_PERF_WARMUP_TICKS` ticks: the CPU update
+    (``WaterPass.last_update_ms``: the clock, the per-tick pack), the CPU
+    and GPU ms of the foam step (``WaterPass.simulate``, W2; absent before
+    it) and the GPU ms of the draw (GL_TIME_ELAPSED). A dry level shows what
+    a dry map costs (critique M4: nothing)."""
+    from gl_timer import GLTimer
+    rl.set_target_fps(0)
+    grid_h, grid_w = sim.gmap.solid.shape
+    wp = renderer.water_pass
+
+    def lit_step():
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        sim.set_light(True, demo_light_rows(lights_in, total,
+                                            sim_time_per_tick, grid_w,
+                                            grid_h), light_sky)
+        _step_keep_running(sim)
+        total = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                     sim.tick)
+        renderer.consume_events(sim.tick_events, sim_tick=total)
+        renderer.upload_state(sim.gmap, sim_tick=total,
+                              light_serial=sim.light_serial, alpha=0.0,
+                              paused=False)
+
+    for _ in range(WATER_PERF_WARMUP_TICKS):
+        lit_step()
+    timers = {"draw": GLTimer(), "sim": GLTimer()}
+    cur = {"draw": 0.0, "sim": 0.0, "sim_cpu": 0.0}
+    orig = {"draw": wp.draw, "sim": getattr(wp, "simulate", None)}
+
+    def wrap(key):
+        fn = orig[key]
+
+        def timed(*a, **kw):
+            t0 = time.perf_counter()
+            timers[key].begin()
+            out = fn(*a, **kw)
+            timers[key].end()
+            cur[key] += timers[key].result_ms()
+            if key == "sim":
+                cur["sim_cpu"] += (time.perf_counter() - t0) * 1000.0
+            return out
+        return timed
+
+    wp.draw = wrap("draw")
+    if orig["sim"] is not None:
+        wp.simulate = wrap("sim")
+    rows = []
+    try:
+        for i in range(PERF_WARMUP_FRAMES + frames):
+            lit_step()
+            cur.update(draw=0.0, sim=0.0, sim_cpu=0.0)
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            renderer.end_frame()
+            if i >= PERF_WARMUP_FRAMES:
+                rows.append((wp.last_update_ms, cur["sim_cpu"], cur["sim"],
+                             cur["draw"]))
+    finally:
+        wp.draw = orig["draw"]
+        if orig["sim"] is not None:
+            wp.simulate = orig["sim"]
+    a = np.asarray(rows, np.float64)
+
+    def stat(x):
+        return f"mean {x.mean():6.3f}  p95 {np.percentile(x, 95):6.3f}"
+
+    print(f"[water perf] {len(a)} frames (+{PERF_WARMUP_FRAMES} warm-up, "
+          f"+{WATER_PERF_WARMUP_TICKS} ticks), wet={wp.wet}, world RT "
+          f"{renderer.world.world_px_w}x{renderer.world.world_px_h}")
+    print(f"[water perf] CPU update ms {stat(a[:, 0])}")
+    if orig["sim"] is not None:
+        print(f"[water perf] foam step CPU ms {stat(a[:, 1])} ; GPU ms "
+              f"{stat(a[:, 2])}")
+    print(f"[water perf] draw GPU ms {stat(a[:, 3])}")
+    print(f"[water perf] TOTAL GPU ms "
+          f"{(a[:, 2] + a[:, 3]).mean():6.3f}")
+    print("OK -- water perf pass complete (--water-perf)")
+
+
 def _parse_debris_perf() -> Optional[int]:
     """``--debris-perf [N]`` -- measure N frames (default 600)."""
     if "--debris-perf" not in sys.argv:
@@ -1900,6 +2009,16 @@ def main() -> None:
             _run_spark_perf(renderer, sim, lights_in, light_sky,
                             sim_time_per_tick, ticks_per_round,
                             spark_perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
+    water_perf_frames = _parse_water_perf()
+    if water_perf_frames is not None:
+        try:
+            _run_water_perf(renderer, sim, lights_in, light_sky,
+                            sim_time_per_tick, ticks_per_round,
+                            water_perf_frames)
         finally:
             renderer.shutdown()
         return
