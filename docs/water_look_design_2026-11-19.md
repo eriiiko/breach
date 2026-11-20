@@ -1,9 +1,20 @@
 # Water look: design for the build (#97)
 
-2026-11-19. **Status: PROPOSED by the lead (graphics planning is Claude's,
-`docs/presentation_graphics_plan_2026-11-15.md`); the look is Erik's to judge
-by eye.** Not yet critiqued. Written so that a session on another PC can run
-the build from this document alone.
+2026-11-19. **Status: BUILT, arc closed 2026-11-20** (W0, W1, W2, W4, W3, W1b
+and the corridor marine merged; W5 waits on the marks layer #180; critiqued in
+section 9; the look stays Erik's to judge by eye, and the reassessment with him
+is next). The doc stays in `docs/` rather than `docs/archive/` because twenty
+code, test and level files cite this path. Proposed by the lead (graphics
+planning is Claude's, `docs/presentation_graphics_plan_2026-11-15.md`).
+
+**Arc-close full suite (2026-11-20, main 14675ca7, Work Desktop):** 6838 passed,
+19 failed, 3 skipped, 6 xfailed in 1 h 40 min. None of the failures is from this
+arc, which touched no `src/simulation/` or `cpp/` file. 11 CUDA conductor tests
+failed on a stale CUDA module that lacked `resident_tail_defer` (#29 P7e.5, merged
+the same day); re-run on a fresh CUDA build, all 11 passed. 6 tests read
+the untracked, locally generated `levels/ship_freighter_standard_*` folders in
+this checkout. 2 are this PC's known PNG-byte failures (`test_fire_tuning_level`,
+`test_larva_studio`), which also fail on main without the arc.
 
 This is the build design for track 2 of the presentation graphics plan. That
 plan's section 4 holds the research and the reasons; this document does not
