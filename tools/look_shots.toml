@@ -800,3 +800,41 @@ level = "larva_studio"
 frames = 48
 light_gain = "game"
 note = "arc #63 larva bodies: the whole studio fitted -- the two broods read as a crawling mass at game zoom"
+
+# --- water look arc #97 (docs/water_look_design_2026-11-19.md, W0): the
+# WATER STUDIO (tools/gen_water_studio.py), the arc's judging set. Units stand
+# still in every shot (Erik, 2026-11-20); the studio's [[spawn]] marine
+# "Wader" stands in the wading room's water.
+[[shot]]
+name = "still_pool_flashlight"
+level = "water_studio"
+frames = 180
+center = [12.0, 9.5]
+zoom = 64.0
+lamps = false
+beacon = false
+flashlight = { pos = [6.5, 8.5], intensity = 2.5, spread = 0.8 }
+light_gain = "game"
+note = "the pool hall (0.30 m) at 7.5 s, before its first blast (8 s): lamps off, a flashlight from the west wall across the still water; the crate stack (NE) burning since 0.5 s. W1 judges one clean reflection here, not a pattern; W4 the net of light under the beam. The hall's SW corner is the octopus's, kept empty."
+
+[[shot]]
+name = "flooding_corridor"
+level = "water_studio"
+frames = 108
+center = [22.0, 23.0]
+zoom = 40.0
+lamps = true
+beacon = false
+light_gain = "game"
+note = "the dam 1.5 s after its gate was blown (3 s): the tank's 1.20 m of water running the 3 x 25 corridor, its front about a third of the way down (tests/test_water_studio.py holds that it is still moving here). W1: the surface streams, no tile grid; W2: foam at the front and along the walls."
+
+[[shot]]
+name = "wade_by_firelight"
+level = "water_studio"
+frames = 300
+center = [29.0, 9.0]
+zoom = 64.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "the wading room (0.15 m) at 12.5 s, lamps off: the marine Wader standing still in the water south-east of the stove (a heat source holding one steel tile at red heat), the wood wall west of it and the fuel pile east. W3's waterline and wake are judged here."
