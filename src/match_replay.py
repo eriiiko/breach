@@ -71,7 +71,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from control_source import ControlSource
-from simulation.match import DEFAULT_SIGHT, MatchSpec, MatchTeam
+from simulation.match import (DEFAULT_CREATURE_CONTROLLER, DEFAULT_SIGHT,
+                              CreatureSpawn, MatchSpec, MatchTeam)
 
 FORMAT_NAME = "breach-match-replay"
 #: v2 (gameplay pack G1p, 2026-11-10): ``set_move_dir``'s fourth argument is
@@ -230,12 +231,23 @@ def spec_to_dict(spec: MatchSpec) -> dict:
     # an old recording, which has no field, reads as cone: no format bump).
     if d.get("sight") == DEFAULT_SIGHT:
         del d["sight"]
+    # #106: the creatures likewise -- written only when the match has any
+    # (each row a dict) or names another controller, so a creature-free
+    # header is byte for byte the one recorded before the keys existed.
+    if not d.get("creatures"):
+        d.pop("creatures", None)
+    else:
+        d["creatures"] = [dict(c) for c in d["creatures"]]
+    if d.get("creature_controller") == DEFAULT_CREATURE_CONTROLLER:
+        del d["creature_controller"]
     return d
 
 
 def spec_from_dict(d: dict) -> MatchSpec:
     d = dict(d)
     d["teams"] = tuple(MatchTeam(**t) for t in d["teams"])
+    if "creatures" in d:
+        d["creatures"] = tuple(CreatureSpawn(**c) for c in d["creatures"])
     return MatchSpec(**d)
 
 
