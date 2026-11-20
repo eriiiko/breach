@@ -2979,6 +2979,90 @@ float functions an observation calls beyond IEEE basic operations are ONE
 module on host and card; never libm in an observation"); *Device team
 picture*; *Device decoder*; *Device books* (reward and terminals).
 
+**P8 RE-CUT, VERSION 2 (2026-11-20, after the critique:
+`docs/residency_p8_recut_critique_2026-11-20.md`, 1 blocker, 10 major, 12
+minor, all folded in here; where this block and the one above disagree, this
+one holds).**
+
+*Decisions changed.*
+- **Decision 1 is withdrawn in its strong form** (critique 2). Every log
+  result is only cast to float32 / float16 and never branched on; a 1-ulp
+  move of the float64 changed the served value 0 times in 5e6 tries. So: NO
+  shared log module. `hypot` becomes `sqrt(dx*dx + dy*dy)` on both sides
+  (IEEE, exact); the card uses CUDA's own `log` / `log1p`; the gate compares
+  the SERVED arrays as raw bits (so -0.0 and NaN count), and a single
+  differing value FAILS and is printed. The shared module is built only if
+  that gate ever goes red.
+- **`action_spec_v1.onto_reach_q`'s `float(d2) ** 0.5` becomes `math.sqrt`**
+  (critique 1): it is `pow`, it feeds the throw latch (game state), and it
+  differs from sqrt before quantizing on 8011 of 4e6 integers, on none after.
+  P8.0b proves "no quantized value moves" by an exhaustive sweep over every
+  reachable d2; no re-pin.
+- **The "counters" reward profile is refused by name on the device backend**
+  (critique 3): numpy sums its fold pairwise, which a serial kernel cannot
+  equal; the named profiles' fold is sequential and stays exact.
+- **Cover is ported, not refused** (critique 7, the blocker): the training
+  rooms place cover crates and only the observation reads them
+  (`line_of_fire.solid_in_way`). A per-env cover table and a device
+  `blocks_segment` (an IEEE slab test); only `blocks_los = true` cover is
+  refused, by name.
+- **Decision 3 is sharper** (critique 17): the host commander needs a named
+  host view of what it reads (units, the picture, vision, fire lanes, the
+  horde flood, the room goals) built from ONE download, with the device's
+  vision, never a recomputation; after the first resets some env is due on
+  every even tick, so the download is per tick, not per 6 ticks; estimated
+  20 ms of host Python per tick at N = 256 with two policy teams. Built and
+  measured in P8.6b with staggered resets; the choice that follows (keep it,
+  port the team layer, or a longer commander period) goes to Erik with the
+  number.
+- **Decision 4 stands** (critique 18): a `MatchSession` build is 18 to 21 ms;
+  the next episode is pre-built while the current one runs.
+
+*Rules every gate follows* (critique 4, 8, 12, 22).
+- A COLUMN-TO-PATCH table (kept in this design, filled by P8.0 from the
+  inventory's part A): every column and plane of the observation, the full
+  view, the masks and the reward has ONE owning patch; a gate compares what
+  it and earlier patches own.
+- A gate counts the non-default values of every column it owns and FAILS on
+  an owned column that is constant over its corpus (the pinned bots matches
+  issue no order and no `aims`; a training room has no zombies).
+- Corpus (c) is generated live inside the CUDA subprocess: an in-process
+  `EnvRunner` with seeded masked-random decisions (a Recording replay swaps
+  the policy controller out, so it cannot serve). Orders reach a corpus
+  through a commander team or the door bots.
+- THE WALL has a device gate: perturbing an unseen enemy's store row changes
+  no policy observation value.
+- One shared CUDA observation check script, so each pinned match is recorded
+  once per subprocess; each device builder adds its Class T twin row.
+
+*The patches, version 2.*
+
+| patch | what | gate | tier |
+|---|---|---|---|
+| P8.0 | the path at its smallest: CuPy obs buffers (double for the `final_` keys), the (team, slot) to store-row map, `valid` / `in_match`, a stub ended-env latch, ONE integer block (near wall / door, far wall share / door) built in the conductor tick at the decision cadence, handed to torch by DLPack with the stream ordering asserted; the shared check script; the column-to-patch table; spec constants from a generated layout header | the block EXACT (raw bits) on (a), (b); the tensor's pointer is the buffer's; 2 syncs per tick | Opus |
+| P8.0b | host arithmetic made portable: `hypot` to sqrt, `onto_reach_q` to sqrt | the exhaustive d2 sweep; pinned matches' digests unchanged; observation values move only where hypot was not correctly rounded (counted) | Sonnet |
+| P8.1 | the obs table (from the reference's own objects, floats as their own bit patterns, `pressure_min` / `max`), the hand double-to-half conversion with its exhaustive test, the vector columns that need only the store and tables | owned columns EXACT | Opus |
+| P8.2 | bulk sight on the card and who sees whom, both rules; the cover table and `blocks_segment`; observation double code in its own header, not the unit library | pairs / windows equal to `rays_clear` / `window_clear`; `seen_by` / `visible_by_team` equal every tick | Opus |
+| P8.3 | the device team picture (records with a refused overflow, motion, damage window, bars, the object tracker with a stable serial), the last stage of the walk; the vector columns it owns | the picture's whole state equal EVERY TICK on (a), (b), (d) | Opus |
+| P8.4a | lanes (with a floor-division helper), `aim_of`, line of fire | owned columns EXACT | Opus |
+| P8.4b | the list's five blocks, sorting, `list_uid` | EXACT | Opus |
+| P8.4c | the four masks; `use_door`'s geometry lifted into the unit library | EXACT | Opus |
+| P8.5a | the physics planes, air, felt temperature, the two sight planes, the far unit planes | EXACT | Opus |
+| P8.7 | the reward books (with `RewardBooksMismatch` as a counted per-env fault), `terminated` / `truncated`, the result, the per-env "ended at tick t" latch that freezes the books | EXACT per step | Opus |
+| P8.6a | decisions as a device tensor, `check_actions` / `masked_choices`, pointer to uid, the per-tick decoder writing the latch columns, the slot state, the zombie latch (its equivalence a gate) | latch columns EXACT every tick on (c) | Opus |
+| P8.6b | the commander's host view from one download; the order block, route and place (P8.5b) | owned columns EXACT with orders issued; the cost at N = 64 / 256 with staggered resets | Opus |
+| P8.8 | the full view | EXACT | Opus |
+| P8.8b | the terminal observation: the `final_` keys built at the ending tick | EXACT at every ended env | Opus |
+| P8.9a | per-env reset of the sim side (store slice, tables, lists, caches, tick row, broods) | env e reset mid-batch == env e built alone; others unchanged | Opus |
+| P8.9b | per-env reset of the observation side (picture, slot state, books, per-template rows); the pre-built next episode | the same, on the observation | Opus |
+| P8.10a | `BatchedEnv(backend="device")`: coverage counters, the pre-flight, `require_snapshot`'s device branch, the checkpoint download; the stale "P8b" lines in rules and headers | BACKEND EQUALITY on both backends, N = 1 and a batch | Opus |
+| P8.10b | `agents/` on device tensors | the trainer's own suite; a collect step with no host copy of an observation | Opus |
+
+Order (real edges): P8.0 -> P8.0b -> P8.1 -> P8.2 -> P8.3 -> P8.4a ->
+P8.4b -> P8.4c -> P8.5a -> P8.7 -> P8.6a -> P8.6b -> P8.8 -> P8.8b ->
+P8.9a -> P8.9b -> P8.10a -> P8.10b. The bench is re-run after P8.5a and
+after P8.6b.
+
 ### 4.6 Reset and the bank
 
 The bank is the levelgen archetype doc's §5.3 bank (`levels/banks/<name>.toml`:
