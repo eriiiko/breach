@@ -1,242 +1,203 @@
-"""Water surface optics pass (graphics/water_rendering.md §7 steps 1+2).
+"""Water surface optics pass (graphics/water_rendering.md §7 steps 1+2; the
+water look arc #97, docs/water_look_design_2026-11-19.md).
 
 A SEPARATE GLSL fragment pass (not an extension of lighting.fs, §5) that turns
-the sim's water fields into convincing water: perturbed-ripple normal -> a
-see-through refraction + Beer-Lambert depth-tint BASE (with a small Fresnel
+the sim's water fields into convincing water: perturbed normal -> a see-
+through refraction + Beer-Lambert depth-tint BASE (with a small Fresnel
 ambient sheen) + an ADDITIVE GGX glint (reusing the light buffer) that rides on
 top as HDR specular light. The glint is added, not Fresnel-blended at ~2% (which
-crushed it top-down) — see shaders/water.fs. Caustics / foam / chromatic-
-aberration / matcap are the next staging step (§7 step 3/4) and are NOT here.
+crushed it top-down) — see shaders/water.fs.
 
-It draws in the WaterFieldOverlay compose slot (after the lit ship, before
-units), REPLACING the CPU-tinted WaterFieldOverlay placeholder. It is
-DORMANT-SAFE: the shader emits premultiplied alpha = 0 on every dry tile
-(water_depth == 0), so a ship with no standing water (the default level at load)
-renders bit-identically to no pass.
+W1 (#97): THE FINE SURFACE THAT FLOWS. The normal carries, besides the
+simulated tile-scale ripple, a fine surface of wave slopes in METRES carried by
+the simulated flow (Vlachos's two-phase flow map through
+``renderer/advected_noise.py``, every lookup hex-tiled after Mikkelsen 2022).
+Its law, its settings door and its packing are ``renderer/water_surface.py``
+(the numpy twin the shader is GL-checked against); this module is the GL face.
 
-Plumbing mirrors LightingPass: one per-frame RGBA16F "water texture" uploaded
-via core.update_rgba16f_texture, packed
-    R = ripple (m)   G = ripple_v (m/s, reserved for later)
-    B = water_depth (m)   A = foam/agitation (reserved, zero)
-The light_rgb / light_dir / diffuse textures need NO new plumbing — the pass
-binds the LightingPass's existing GPU textures + the level diffuse directly.
+It draws on the floor, after the lit ship and before the floor smoke layer and
+the units (G2). DRY COSTS NOTHING (critique M4): :meth:`WaterPass.update` asks
+the INT depth plane ``.any()`` before anything is dequantized, packs and
+uploads only when the sim state changed (once per sim tick; CRC-keyed while
+paused, so a paused pour shows), and :meth:`WaterPass.draw` draws nothing on a
+dry map and otherwise only over the view ∩ the wet tiles' box.
+
+Plumbing mirrors LightingPass. Two per-tile RGBA16F textures, bilinear:
+    u_water  R = ripple (m)   G = ripple_v (m/s)
+             B = water_depth (m)   A = foam/agitation (reserved, zero)
+    u_flow   R, G = flow (m/s, y south)   B = solid   A = previous depth (m)
+plus the static ripple bake (``noise_bake.bake_ripple_rgba``, RGBA32F,
+REPEAT, mipmapped). The light textures and the level diffuse need no new
+plumbing; the smoke's cast product and the light curve come from the lit-3D
+seam (``lit3d._SMOKE_SHADOW_GLSL`` + ``_LIGHT_CURVE_GLSL``, spliced at the
+shader's ``// <SMOKE_SHADOW>`` marker -- the lighting.py precedent).
+
+THE CLOCK is the SIM clock ``(tick + alpha) / tps`` through the pass's own
+``fire_vfx.SimClock`` (idle when paused, re-anchored when the tick goes back),
+never wall time (critique B2).
+
+Every dial is ``[graphics.water]``, read every frame through
+``water_surface.water_settings`` (the one refusing door) and pushed to the
+shader by :meth:`WaterPass.refresh_settings` when it changed.
 """
 from __future__ import annotations
 
+import time
+import zlib
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pyray as rl
 
-from config import CFG
-
 from . import core
 from .lighting import art_src_and_uv_rect
+from .water_surface import (FlowFrame, WaterSettings, flow_frame, pack_flow,
+                            wet_box)
 
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 
+# Sampler units beyond raylib's batch (which binds texture0 + 4): the smoke's
+# cast product, the flow texture, the ripple bake (render-effects rule:
+# samplers from unit 5 up).
+_UNIT_SMOKE, _UNIT_FLOW, _UNIT_RIPPLE = 5, 6, 7
+RIPPLE_SIZE = 256
+_UNSET = object()
 
-def _cfg_water():
-    """The [graphics.water] config Namespace, or None if absent."""
-    graphics = getattr(CFG, "graphics", None)
-    return getattr(graphics, "water", None) if graphics is not None else None
+
+def load_water_fs() -> str:
+    """``shaders/water.fs`` with lit3d's smoke cast shadow + light curve GLSL
+    spliced in at its ``// <SMOKE_SHADOW>`` marker and the advected-noise
+    crossfade (``advected_noise.ADVECTION_GLSL``) at ``// <ADVECTION>``.
+    Pure text, no GL."""
+    from .advected_noise import ADVECTION_GLSL
+    from .lit3d import _LIGHT_CURVE_GLSL, _SMOKE_SHADOW_GLSL
+    src = (SHADERS_DIR / "water.fs").read_text(encoding="utf-8")
+    for marker in ("// <SMOKE_SHADOW>", "// <ADVECTION>"):
+        if src.count(marker) != 1:
+            raise RuntimeError(f"shaders/water.fs lost its {marker} marker")
+    return (src.replace("// <SMOKE_SHADOW>",
+                        _SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL)
+               .replace("// <ADVECTION>", ADVECTION_GLSL))
+
+
+def _ripple_texture() -> rl.Texture:
+    """The ripple bake as an RGBA32F texture: REPEAT, mipmapped, trilinear
+    (critique M8: minified, the slopes average toward flat)."""
+    from .noise_bake import bake_ripple_rgba
+    tex = core.create_dynamic_rgba32f_texture(RIPPLE_SIZE, RIPPLE_SIZE)
+    core.update_rgba32f_texture(tex, bake_ripple_rgba(RIPPLE_SIZE))
+    ptr = rl.ffi.new("Texture *", tex)
+    rl.gen_texture_mipmaps(ptr)
+    tex = ptr[0]
+    rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_REPEAT)
+    rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
+    return tex
 
 
 class WaterPass:
-    """Owns the water shader + the dynamic packed water-field texture."""
+    """Owns the water shader, the two per-tile textures, the ripple bake and
+    the pass's sim clock."""
 
-    def __init__(self, grid_h: int, grid_w: int):
-        self.h = grid_h
-        self.w = grid_w
+    def __init__(self, grid_h: int, grid_w: int,
+                 settings: Optional[WaterSettings] = None,
+                 tile_size_m: float = 1.0 / 3.0):
+        from .fire_vfx import SimClock
+        self.h = int(grid_h)
+        self.w = int(grid_w)
+        self.tile_size_m = float(tile_size_m)
 
-        # CPU-side packed scratch (mirrors LightingPass.packed_a layout).
-        #   R = ripple, G = ripple_v, B = water_depth, A = foam/agitation(0)
-        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
-        self.water_tex = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
-        # Bilinear so the floor-warp / glints read smoothly between tiles.
-        rl.set_texture_filter(self.water_tex,
-                              rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
-        # Track whether the last upload wrote an all-zero texture, so a dry
-        # ship costs one .any() (mirrors WaterFieldOverlay's fast path). The
-        # GPU texture starts all-zero (gen_image_color BLACK), so _tex_blank
-        # starts True — the first dry frame uploads nothing.
-        self._tex_blank = True
+        # u_water: R = ripple, G = ripple_v, B = water_depth, A = 0
+        self.packed = np.zeros((self.h, self.w, 4), dtype=np.float16)
+        self.water_tex = core.create_dynamic_rgba16f_texture(self.w, self.h)
+        # u_flow: (vx, vy, solid, previous depth) -- critique M11
+        self.flow_packed = np.zeros((self.h, self.w, 4), dtype=np.float16)
+        self.flow_tex = core.create_dynamic_rgba16f_texture(self.w, self.h)
+        for t in (self.water_tex, self.flow_tex):
+            rl.set_texture_filter(t, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+        self.ripple_tex = _ripple_texture()
+        self._prev_depth = np.zeros((self.h, self.w), np.float32)
+        self._last_depth = np.zeros((self.h, self.w), np.float32)
+
+        # Picture state: whether anything is wet, the wet box (tiles, end-
+        # exclusive, dilated one tile), the last packed state's key.
+        self.wet = False
+        self.box: Optional[tuple] = None
+        self._key = None
+        self.clock = SimClock(1.0 / 24.0)
+        self._wall_prev: Optional[float] = None
+        self.frame = FlowFrame(0.0, 1.0, 0.0, 0.0, 1.0)
+        self.last_update_ms = 0.0
 
         # [art.align] transform (level format v2 §1.3) — same convention as
         # LightingPass.draw_lit_world. None = legacy full-stretch draw.
         self.art_align = None
 
-        self.shader = core.load_shader_with_fallback(
-            str(SHADERS_DIR / "lighting.vs"),   # reuse the passthrough VS
-            str(SHADERS_DIR / "water.fs"),
-        )
+        self.shader = core.load_shader_from_source(
+            str(SHADERS_DIR / "lighting.vs"), load_water_fs())
+        self._locs: dict = {}
+        self._curve_sent = _UNSET
 
-        # Sampler + scalar uniform locations (warn-but-continue on -1).
-        self._loc_diffuse   = self._lookup("u_diffuse")
-        self._loc_light_a   = self._lookup("u_light_a")
-        self._loc_light_b   = self._lookup("u_light_b")
-        self._loc_water     = self._lookup("u_water")
-        self._loc_height    = self._lookup("u_height")
-        self._loc_rough_base = self._lookup("u_roughness_base")
-        self._loc_rough_agit = self._lookup("u_roughness_agitation")
-        self._loc_fog       = self._lookup("u_fog_density")
-        self._loc_refract   = self._lookup("u_refract_strength")
-        self._loc_r0        = self._lookup("u_r0")
-        self._loc_water_col = self._lookup("u_water_color")
-        self._loc_light_z   = self._lookup("u_light_z")
-        self._loc_srgb      = self._lookup("u_srgb_decode")
-        self._loc_ripple_scale = self._lookup("u_ripple_scale")
-        self._loc_texel     = self._lookup("u_texel")
-        self._loc_art_uv    = self._lookup("u_art_uv_rect")
-        self._loc_time      = self._lookup("u_time")
-        self._loc_glint     = self._lookup("u_glint_strength")
-        self._loc_alpha_scale = self._lookup("u_alpha_scale")
-        self._loc_alpha_min = self._lookup("u_alpha_min")
-        self._loc_alpha_max = self._lookup("u_alpha_max")
-        self._loc_ambient   = self._lookup("u_ambient")
-        # Phase 2 (mood pass): caustics / foam / chromatic aberration / waves.
-        self._loc_caustic_str   = self._lookup("u_caustic_strength")
-        self._loc_caustic_scale = self._lookup("u_caustic_scale")
-        self._loc_foam_thresh   = self._lookup("u_foam_threshold")
-        self._loc_foam_int      = self._lookup("u_foam_intensity")
-        self._loc_ca_amount     = self._lookup("u_ca_amount")
-        self._loc_wave_scale    = self._lookup("u_wave_scale")
-        self._loc_ambient_amp   = self._lookup("u_ambient_amp")
-        # Heightmap attenuation (alpha-only): the relief-vs-depth wetness gate.
-        self._loc_has_height    = self._lookup("u_has_height")
-        self._loc_height_scale  = self._lookup("u_height_scale")
-        self._loc_height_edge   = self._lookup("u_height_edge")
-        self._loc_height_floor  = self._lookup("u_height_floor")
-
-        # Bind the static [graphics.water] uniforms once (look-tuning lives in
-        # config per the graphics README; restart to re-apply, like the other
-        # render params). getattr-defaults keep the pass alive if the block is
-        # missing — defaults reproduce the §2 reference look.
-        wc = _cfg_water()
-        self._set_f(self._loc_rough_base,
-                    float(getattr(wc, "roughness_base", 0.08)))
-        self._set_f(self._loc_rough_agit,
-                    float(getattr(wc, "roughness_agitation", 0.6)))
-        self._set_f(self._loc_fog,
-                    float(getattr(wc, "fog_density", 3.0)))
-        self._set_f(self._loc_refract,
-                    float(getattr(wc, "refract_strength", 0.02)))
-        self._set_f(self._loc_r0,
-                    float(getattr(wc, "r0", 0.02)))
-        color = getattr(wc, "water_color", (0.03, 0.10, 0.18))
-        self._set_vec3(self._loc_water_col,
-                       (float(color[0]), float(color[1]), float(color[2])))
-        # ripple_scale: metres-of-ripple-height -> screen-readable normal slope.
-        self._set_f(self._loc_ripple_scale,
-                    float(getattr(wc, "ripple_scale", 8.0)))
-        # glint_strength: ADDITIVE GGX-glint multiplier (light off the surface).
-        self._set_f(self._loc_glint,
-                    float(getattr(wc, "glint_strength", 2.0)))
-        # alpha (transparency) ramp dials: alpha = clamp(depth*scale, min, max).
-        self._set_f(self._loc_alpha_scale,
-                    float(getattr(wc, "alpha_scale", 6.0)))
-        self._set_f(self._loc_alpha_min,
-                    float(getattr(wc, "alpha_min", 0.15)))
-        self._set_f(self._loc_alpha_max,
-                    float(getattr(wc, "alpha_max", 0.95)))
-        # Phase 2 (mood pass) defaults — caustics / foam / CA / wave size.
-        self._set_f(self._loc_caustic_str,
-                    float(getattr(wc, "caustic_strength", 2.5)))
-        self._set_f(self._loc_caustic_scale,
-                    float(getattr(wc, "caustic_scale", 6.0)))
-        self._set_f(self._loc_foam_thresh,
-                    float(getattr(wc, "foam_threshold", 0.02)))
-        self._set_f(self._loc_foam_int,
-                    float(getattr(wc, "foam_intensity", 0.6)))
-        self._set_f(self._loc_ca_amount,
-                    float(getattr(wc, "ca_amount", 0.012)))
-        # wave_scale multiplies the ambient-sine spatial frequencies; ambient_amp
-        # is the idle-shimmer amplitude base (the old hardcoded 0.06).
-        self._set_f(self._loc_wave_scale,
-                    float(getattr(wc, "wave_scale", 2.0)))
-        self._set_f(self._loc_ambient_amp,
-                    float(getattr(wc, "ambient_amp", 0.06)))
-        # Heightmap attenuation dials (alpha-only). height_scale = relief metres
-        # gain (default 0.4 so furniture pokes through a ~0.3-0.5 m puddle),
-        # height_edge = shoreline softness (default 0.1). u_has_height starts 0
-        # (no heightmap bound) — the dormant default makes the wetness factor
-        # exactly 1.0 so the pass is bit-identical until a level supplies a
-        # height texture via set_height_texture().
         self._has_height = False
         self._height_tex = None
-        self._set_i(self._loc_has_height, 0)
-        self._set_f(self._loc_height_scale,
-                    float(getattr(wc, "height_scale", 0.4)))
-        self._set_f(self._loc_height_edge,
-                    float(getattr(wc, "height_edge", 0.1)))
-        # height_floor = the heightmap value treated as floor level (the "level 0"
-        # baseline): subtracted from relief BEFORE scaling so a floor pixel lifts
-        # ~0 and water shows on the floor immediately (fixes the fill-forever
-        # offset). DEFAULT 0.3 — a hand-tuned stopgap for the raw Depth-Anything
-        # maps. A single constant is only approximate: the raw maps carry a smooth
-        # floor gradient (DA artifact), so the proper fix is a background-
-        # subtraction re-baseline (a floor SURFACE, not a scalar) — see
-        # docs/heightmap_refinement_tool_design.md §6.1. Inert on the
-        # no-heightmap path (relief_term forced to 0).
-        self._set_f(self._loc_height_floor,
-                    float(getattr(wc, "height_floor", 0.3)))
-        # u_texel = neighbour-tap offset in UV = 1/grid (per axis).
-        self._set_vec2(self._loc_texel, (1.0 / grid_w, 1.0 / grid_h))
-        # Default art-UV rect — overwritten per-draw when an [art.align] is set.
-        self._set_vec4(self._loc_art_uv, (0.0, 0.0, 1.0, 1.0))
-        # sRGB decode default matches the lighting pass (PNG art is sRGB).
+        self._set_i("u_has_height", 0)
+        self._set_vec("u_texel", (1.0 / self.w, 1.0 / self.h))
+        self._set_vec("u_art_uv_rect", (0.0, 0.0, 1.0, 1.0))
         self.set_srgb_decode(True)
-        # light_z default mirrors LightingPass (overhead-lamp feel).
         self.set_light_z(0.5)
-        # Ambient default mirrors LightingPass.set_ambient((0.18,0.18,0.22)) so
-        # the water body is lit by `ambient + sources` like the dry floor even
-        # before the per-frame push. game_renderer pushes the lighting pass's
-        # live ambient each frame, so the demo's ambient sliders drive this too.
         self.set_ambient((0.18, 0.18, 0.22))
+        self._set_f("u_light_gain", 1.0)
+        self.settings: Optional[WaterSettings] = None
+        if settings is None:
+            from config import CFG
+            from .water_surface import water_settings
+            settings = water_settings(CFG)
+        self.refresh_settings(settings)
 
     # ---- uniform helpers -----------------------------------------------
 
-    def _lookup(self, name: str) -> int:
-        loc = rl.get_shader_location(self.shader, name)
-        if loc == -1:
-            print(f"[water] WARN: shader uniform '{name}' not found (loc=-1)")
+    def _loc(self, name: str) -> int:
+        loc = self._locs.get(name)
+        if loc is None:
+            loc = rl.get_shader_location(self.shader, name)
+            if loc == -1:
+                print(f"[water] WARN: shader uniform '{name}' not found "
+                      "(loc=-1)")
+            self._locs[name] = loc
         return loc
 
-    def _set_f(self, loc: int, v: float) -> None:
-        val = rl.ffi.new("float[1]", [float(v)])
-        rl.set_shader_value(self.shader, loc, val,
+    def _set_f(self, name: str, v: float) -> None:
+        rl.set_shader_value(self.shader, self._loc(name),
+                            rl.ffi.new("float[1]", [float(v)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
-    def _set_i(self, loc: int, v: int) -> None:
-        val = rl.ffi.new("int[1]", [int(v)])
-        rl.set_shader_value(self.shader, loc, val,
+    def _set_i(self, name: str, v: int) -> None:
+        rl.set_shader_value(self.shader, self._loc(name),
+                            rl.ffi.new("int[1]", [int(v)]),
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
-    def _set_vec2(self, loc: int, v) -> None:
-        val = rl.ffi.new("float[2]", [float(v[0]), float(v[1])])
-        rl.set_shader_value(self.shader, loc, val,
-                            rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2)
-
-    def _set_vec3(self, loc: int, v) -> None:
-        val = rl.ffi.new("float[3]", [float(v[0]), float(v[1]), float(v[2])])
-        rl.set_shader_value(self.shader, loc, val,
-                            rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
-
-    def _set_vec4(self, loc: int, v) -> None:
-        val = rl.ffi.new("float[4]", [float(x) for x in v])
-        rl.set_shader_value(self.shader, loc, val,
-                            rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4)
+    def _set_vec(self, name: str, v) -> None:
+        n = len(v)
+        kind = {2: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
+                3: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3,
+                4: rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4}[n]
+        rl.set_shader_value(self.shader, self._loc(name),
+                            rl.ffi.new(f"float[{n}]", [float(x) for x in v]),
+                            kind)
 
     def set_srgb_decode(self, on: bool) -> None:
-        val = rl.ffi.new("int[1]", [1 if on else 0])
-        rl.set_shader_value(self.shader, self._loc_srgb, val,
-                            rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+        self._set_i("u_srgb_decode", 1 if on else 0)
 
     def set_light_z(self, z: float) -> None:
         """Keep the water pass's L-reconstruction z in step with LightingPass."""
-        self._set_f(self._loc_light_z, max(0.0, min(1.5, float(z))))
+        self._set_f("u_light_z", max(0.0, min(1.5, float(z))))
+
+    def set_ambient(self, rgb) -> None:
+        """Push the global ambient (mirror LightingPass.set_ambient): the
+        refracted floor and the faint sheen are lit by ``ambient + sources``
+        like the dry floor. game_renderer keeps it in step every frame."""
+        self._set_vec("u_ambient", tuple(float(c) for c in rgb[:3]))
 
     def set_art_align(self, offset_px, px_per_tile) -> None:
         """Bind the level's [art.align] transform (mirrors LightingPass)."""
@@ -247,180 +208,232 @@ class WaterPass:
         self.art_align = (float(offset_px[0]), float(offset_px[1]),
                           ppt_x, ppt_y)
 
-    # ---- live tunable setters (demo slider hookup) ---------------------
-    # The MAIN game binds [graphics.water] once at construction (restart to
-    # re-apply, the render-params precedent). These per-frame setters let the
-    # tuning DEMO drag each dial live: each just re-binds its uniform (cheap;
-    # safe to call every frame). Mirrors LightingPass.set_* / the _set_f helper.
-
-    def set_glint_strength(self, v: float) -> None:
-        self._set_f(self._loc_glint, float(v))
-
-    def set_roughness_base(self, v: float) -> None:
-        self._set_f(self._loc_rough_base, float(v))
-
-    def set_roughness_agitation(self, v: float) -> None:
-        self._set_f(self._loc_rough_agit, float(v))
-
-    def set_fog_density(self, v: float) -> None:
-        self._set_f(self._loc_fog, float(v))
-
-    def set_refract_strength(self, v: float) -> None:
-        self._set_f(self._loc_refract, float(v))
-
-    def set_r0(self, v: float) -> None:
-        self._set_f(self._loc_r0, float(v))
-
-    def set_water_color(self, rgb) -> None:
-        self._set_vec3(self._loc_water_col,
-                       (float(rgb[0]), float(rgb[1]), float(rgb[2])))
-
-    def set_ambient(self, rgb) -> None:
-        """Push the global ambient (mirror LightingPass.set_ambient). Lights
-        the refracted floor + the faint surface sheen by `ambient + sources`,
-        so water is visible OUTSIDE the flashlight beam. game_renderer keeps
-        this in step with the lighting pass's ambient each frame."""
-        self._set_vec3(self._loc_ambient,
-                       (float(rgb[0]), float(rgb[1]), float(rgb[2])))
-
-    def set_alpha_scale(self, v: float) -> None:
-        self._set_f(self._loc_alpha_scale, float(v))
-
-    def set_alpha_min(self, v: float) -> None:
-        self._set_f(self._loc_alpha_min, float(v))
-
-    def set_alpha_max(self, v: float) -> None:
-        self._set_f(self._loc_alpha_max, float(v))
-
-    def set_ripple_scale(self, v: float) -> None:
-        self._set_f(self._loc_ripple_scale, float(v))
-
-    # ---- Phase 2 (mood pass) setters -----------------------------------
-
-    def set_caustic_strength(self, v: float) -> None:
-        self._set_f(self._loc_caustic_str, float(v))
-
-    def set_caustic_scale(self, v: float) -> None:
-        self._set_f(self._loc_caustic_scale, float(v))
-
-    def set_foam_threshold(self, v: float) -> None:
-        self._set_f(self._loc_foam_thresh, float(v))
-
-    def set_foam_intensity(self, v: float) -> None:
-        self._set_f(self._loc_foam_int, float(v))
-
-    def set_ca_amount(self, v: float) -> None:
-        self._set_f(self._loc_ca_amount, float(v))
-
-    def set_wave_scale(self, v: float) -> None:
-        self._set_f(self._loc_wave_scale, float(v))
-
-    def set_ambient_amp(self, v: float) -> None:
-        self._set_f(self._loc_ambient_amp, float(v))
-
-    # ---- heightmap attenuation (alpha-only) ----------------------------
-
     def set_height_texture(self, tex: Optional[rl.Texture]) -> None:
-        """Bind the level's static floor heightmap (greyscale relief). Pass the
-        level's height texture once at load to enable the alpha attenuation; the
-        texture is owned by the TextureSet (unloaded there), we only hold a
-        reference + flip u_has_height. Passing None disables the attenuation
-        (u_has_height -> 0; wetness factor 1.0, the dormant default)."""
+        """Bind the level's static floor heightmap (greyscale relief) once at
+        load; None disables the attenuation (the dormant default)."""
         self._height_tex = tex
         self._has_height = tex is not None
-        self._set_i(self._loc_has_height, 1 if self._has_height else 0)
+        self._set_i("u_has_height", 1 if self._has_height else 0)
 
-    def set_height_scale(self, v: float) -> None:
-        self._set_f(self._loc_height_scale, float(v))
+    # ---- settings (the one door's values, pushed when they change) ------
 
-    def set_height_edge(self, v: float) -> None:
-        self._set_f(self._loc_height_edge, float(v))
-
-    def set_height_floor(self, v: float) -> None:
-        """The heightmap value treated as floor level (the 'level 0' baseline),
-        subtracted from relief before scaling so water clears the floor without
-        over-filling. Inert on a level with no heightmap."""
-        self._set_f(self._loc_height_floor, float(v))
-
-    # ---- per-frame upload ----------------------------------------------
-
-    def update(self, water_depth: np.ndarray,
-               ripple: Optional[np.ndarray] = None,
-               ripple_v: Optional[np.ndarray] = None) -> None:
-        """Pack the water fields into the RGBA16F texture and upload.
-
-        R = ripple, G = ripple_v, B = water_depth, A = 0 (foam, reserved).
-        Dry-ship fast path: when there is no standing water AND the texture is
-        already blank, skip the pack + upload entirely (mirrors the overlay).
-        RENDER-ONLY — every field is read, never written.
-        """
-        has_water = bool(water_depth.any())
-        if not has_water and self._tex_blank:
+    def refresh_settings(self, s: WaterSettings) -> None:
+        """Push ``[graphics.water]`` (``water_surface.water_settings``) to the
+        shader; a frame with unchanged settings costs one compare."""
+        if s == self.settings:
             return
+        self.settings = s
+        for name in ("roughness_base", "roughness_agitation", "fog_density",
+                     "refract_strength", "r0", "ripple_scale",
+                     "glint_strength", "alpha_scale", "alpha_min",
+                     "alpha_max", "caustic_strength", "caustic_scale",
+                     "foam_threshold", "foam_intensity", "ca_amount",
+                     "height_scale", "height_edge", "height_floor"):
+            uname = {"roughness_base": "u_roughness_base",
+                     "roughness_agitation": "u_roughness_agitation",
+                     "fog_density": "u_fog_density",
+                     "refract_strength": "u_refract_strength",
+                     "glint_strength": "u_glint_strength",
+                     "ca_amount": "u_ca_amount"}.get(name, "u_" + name)
+            self._set_f(uname, getattr(s, name))
+        self._set_vec("u_water_color", s.water_color)
+        self._set_f("u_agit_ref", s.agitation_ref)
+        self._set_i("u_debug_view", s.debug_view)
+        self._push_frame()
+
+    def _push_frame(self) -> None:
+        s, f = self.settings, self.frame
+        self._set_vec("u_grid_m", (self.w * self.tile_size_m,
+                                   self.h * self.tile_size_m))
+        self._set_vec("u_detail", (s.period_m, s.detail_strength_still,
+                                   s.detail_strength_flow, f.fade))
+        self._set_vec("u_flow_ph", (f.phase, f.cycle_s, f.drift_u, f.drift_v))
+        self._set_vec("u_flow_lim", (s.flow_max_offset_m, s.flow_edge_depth_m,
+                                     s.flow_phase_noise_m, s.flow_speed_ref))
+        self._set_f("u_time", self.clock.t_noise)
+
+    # ---- per-frame update ----------------------------------------------
+
+    def update(self, *, depth_q: np.ndarray, flow_vx_q: np.ndarray,
+               flow_vy_q: np.ndarray, solid: np.ndarray,
+               ripple: Optional[np.ndarray], ripple_v: Optional[np.ndarray],
+               sim_tick: int, alpha: Optional[float] = None,
+               paused: bool = False, tps: float = 24.0,
+               tile_size_m: Optional[float] = None,
+               zoom_px_per_tile: float = 32.0) -> None:
+        """Per frame: advance the sim clock; on a DRY map stop after one
+        ``.any()`` on the int depth plane (no dequantize, no pack, no
+        upload); otherwise re-pack the two grid textures only when the sim
+        state changed -- once per tick while running, CRC-keyed on the int
+        planes while paused -- and set the frame's flow uniforms. Every field
+        is read, never written."""
+        t0 = time.perf_counter()
+        if tile_size_m is not None:
+            self.tile_size_m = float(tile_size_m)
+        wall_dt = 0.0 if self._wall_prev is None else t0 - self._wall_prev
+        self._wall_prev = t0
+        self.clock.set_dt(1.0 / float(tps))
+        self.clock.advance(int(sim_tick), alpha, float(tps), paused=paused,
+                           idle_when_paused=True, wall_dt=wall_dt)
+        if not np.asarray(depth_q).any():
+            self.wet = False
+            self.box = None
+            self._key = None
+            self.last_update_ms = (time.perf_counter() - t0) * 1000.0
+            return
+        if not paused:
+            key = ("tick", int(sim_tick))
+        else:
+            key = ("crc",) + tuple(
+                zlib.crc32(np.ascontiguousarray(a).view(np.uint8))
+                for a in (depth_q, flow_vx_q, flow_vy_q, solid))
+        if key != self._key or not self.wet:
+            self._key = key
+            self._pack(depth_q, flow_vx_q, flow_vy_q, solid, ripple, ripple_v)
+        self.wet = True
+        self.frame = flow_frame(self.clock.t_noise, float(tps),
+                                float(zoom_px_per_tile), self.settings)
+        self._push_frame()
+        self.last_update_ms = (time.perf_counter() - t0) * 1000.0
+
+    def _pack(self, depth_q, flow_vx_q, flow_vy_q, solid, ripple,
+              ripple_v) -> None:
+        from simulation import water_fixed
+        depth = water_fixed.dequantize_f32(depth_q)
         self.packed[..., 0] = ripple if ripple is not None else 0.0
         self.packed[..., 1] = ripple_v if ripple_v is not None else 0.0
-        self.packed[..., 2] = water_depth
-        self.packed[..., 3] = 0.0   # foam/agitation reserved (computed in-shader)
+        self.packed[..., 2] = depth
+        self.packed[..., 3] = 0.0
         core.update_rgba16f_texture(self.water_tex, self.packed)
-        self._tex_blank = not has_water
+        # the previous TICK's depth (a paused repack keeps it)
+        if self._key[0] == "tick":
+            self._prev_depth, self._last_depth = self._last_depth, depth
+        else:
+            self._last_depth = depth
+        pack_flow(water_fixed.dequantize_f32(flow_vx_q),
+                  water_fixed.dequantize_f32(flow_vy_q), solid,
+                  self._prev_depth, self.flow_packed)
+        core.update_rgba16f_texture(self.flow_tex, self.flow_packed)
+        self.box = wet_box(depth_q)
 
     # ---- draw ----------------------------------------------------------
 
+    def draw_rect(self, view_tiles: Optional[Sequence[float]]):
+        """The tile rectangle this frame draws: the wet box ∩ the view
+        (``(x0, y0, x1, y1)`` tiles, floats allowed; None = no clip), or
+        None when there is nothing to draw."""
+        if not self.wet or self.box is None:
+            return None
+        x0, y0, x1, y1 = self.box
+        if view_tiles is not None:
+            vx0, vy0, vx1, vy1 = view_tiles
+            x0 = max(x0, int(np.floor(vx0)))
+            y0 = max(y0, int(np.floor(vy0)))
+            x1 = min(x1, int(np.ceil(vx1)))
+            y1 = min(y1, int(np.ceil(vy1)))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
     def draw(self, diffuse: rl.Texture, light_tex_a: rl.Texture,
-             light_tex_b: rl.Texture, world_px_w: int, world_px_h: int,
-             anim_t: float = 0.0) -> None:
-        """Draw the water pass over the full world RT.
+             light_tex_b: rl.Texture, world_px_w: int, world_px_h: int, *,
+             view_tiles: Optional[Sequence[float]] = None,
+             smoke_cast=None, light_curve=None,
+             light_gain: float = 1.0) -> bool:
+        """Draw the water over the wet box ∩ the view of the world RT;
+        returns whether anything was drawn (nothing on a dry map).
 
-        Caller must already be inside BeginTextureMode(world_rt), in the
-        WaterFieldOverlay compose slot (after the lit ship, before units). The
-        shader gates on water_depth and emits premultiplied alpha = 0 on dry
-        tiles, so we draw with BLEND_ALPHA_PREMULTIPLY — exactly the smoke /
-        old-water-overlay blend (preserves the ship's destination alpha; the
-        god-ray-fix discipline §5). The fragment output is
-        ``rgb = base*alpha + glint`` with ``a = alpha``: under premultiplied
-        blend (out = src.rgb + dst.rgb*(1-src.a)) the base composites OVER the
-        floor (transparency-bound) while the GGX `glint` rides on top as pure
-        additive HDR light — a true additive specular term that does NOT raise
-        alpha, all in one draw (no separate additive sub-pass needed for the v1
-        core; that discipline matters once caustics land).
+        Caller must already be inside BeginTextureMode(world_rt), after the
+        lit ship and before the floor smoke layer. Premultiplied blend
+        (``rgb = base*alpha + glint``, ``a = alpha``): the base composites
+        over the floor, the GGX glint rides on top as additive HDR light.
+        ``smoke_cast`` is ``GameRenderer._smoke_cast`` (the cast product and
+        its uniforms; None = no shadow), ``light_curve`` the lighting pass's
+        ``curve_uniforms`` (None = off), ``light_gain`` its exposure.
 
-        Sampler bindings are issued INSIDE BeginShaderMode (raylib gotcha: a
+        Samplers beyond raylib's four are bound on their own units (5, 6, 7)
+        through rlgl, inside BeginShaderMode (raylib gotcha: a
         SetShaderValueTexture before BeginShaderMode can target the wrong
-        shader — same note as LightingPass.draw_lit_world).
-        """
-        src_rect, uv_rect = art_src_and_uv_rect(
-            self.art_align, self.w, self.h,
-            float(diffuse.width), float(diffuse.height))
-        src = rl.Rectangle(*src_rect)
+        shader -- LightingPass.draw_lit_world)."""
+        rect = self.draw_rect(view_tiles)
+        if rect is None:
+            return False
+        from .lit3d import set_light_curve_uniforms, set_smoke_shadow_uniforms
+        cover = None
+        if smoke_cast is not None:
+            cover, grid, cast, cast2 = smoke_cast
+            if cover is None:
+                cast = (0.0, 0.0, 0.0, 0.0)
+            set_smoke_shadow_uniforms(self.shader, grid, cast, cast2)
+        else:
+            set_smoke_shadow_uniforms(self.shader, (float(self.w),
+                                                    float(self.h)),
+                                      (0.0, 0.0, 0.0, 0.0),
+                                      (1.0, 0.0, 0.0, 0.0))
+        # the curve's 256-float LUT is re-sent only when the lighting pass
+        # re-baked it (a new tuple), not every frame
+        if light_curve is not self._curve_sent:
+            set_light_curve_uniforms(self.shader, light_curve)
+            self._curve_sent = light_curve
+        self._set_f("u_light_gain", light_gain)
 
-        self._set_f(self._loc_time, float(anim_t))
+        sx, sy, sw, sh = art_src_and_uv_rect(
+            self.art_align, self.w, self.h,
+            float(diffuse.width), float(diffuse.height))[0]
+        uv_rect = art_src_and_uv_rect(
+            self.art_align, self.w, self.h,
+            float(diffuse.width), float(diffuse.height))[1]
+        x0, y0, x1, y1 = rect
+        src = rl.Rectangle(sx + sw * x0 / self.w, sy + sh * y0 / self.h,
+                           sw * (x1 - x0) / self.w, sh * (y1 - y0) / self.h)
+        px_x = float(world_px_w) / self.w
+        px_y = float(world_px_h) / self.h
+        dst = rl.Rectangle(x0 * px_x, y0 * px_y, (x1 - x0) * px_x,
+                           (y1 - y0) * px_y)
 
         rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.begin_shader_mode(self.shader)
-        # texture0 (u_diffuse) is the draw texture; bind the rest by name.
-        rl.set_shader_value_texture(self.shader, self._loc_diffuse, diffuse)
-        rl.set_shader_value_texture(self.shader, self._loc_light_a, light_tex_a)
-        rl.set_shader_value_texture(self.shader, self._loc_light_b, light_tex_b)
-        rl.set_shader_value_texture(self.shader, self._loc_water, self.water_tex)
-        # Heightmap sampler. Bind the level's relief if present; otherwise bind
-        # the diffuse as a harmless stand-in so the sampler is always backed by
-        # a valid texture (the shader's u_has_height == 0 branch never reads it,
-        # so the bound stand-in is inert — this keeps the dormant path safe and
-        # avoids an unbound-sampler warning).
-        if self._loc_height != -1:
-            rl.set_shader_value_texture(
-                self.shader, self._loc_height,
-                self._height_tex if self._height_tex is not None else diffuse)
-        self._set_vec4(self._loc_art_uv, uv_rect)
-
-        dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))
-        rl.draw_texture_pro(diffuse, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
+        rl.set_shader_value_texture(self.shader, self._loc("u_diffuse"),
+                                    diffuse)
+        rl.set_shader_value_texture(self.shader, self._loc("u_light_a"),
+                                    light_tex_a)
+        rl.set_shader_value_texture(self.shader, self._loc("u_light_b"),
+                                    light_tex_b)
+        rl.set_shader_value_texture(self.shader, self._loc("u_water"),
+                                    self.water_tex)
+        # The height sampler is always backed (the diffuse as an inert
+        # stand-in when the level has no heightmap: u_has_height == 0 never
+        # reads it).
+        rl.set_shader_value_texture(
+            self.shader, self._loc("u_height"),
+            self._height_tex if self._height_tex is not None else diffuse)
+        self._set_vec("u_art_uv_rect", uv_rect)
+        units = ((_UNIT_SMOKE, "u_smoke_cover", cover),
+                 (_UNIT_FLOW, "u_flow", self.flow_tex),
+                 (_UNIT_RIPPLE, "u_ripple", self.ripple_tex))
+        for unit, name, tex in units:
+            rl.rl_active_texture_slot(unit)
+            # no cast product: the flow texture stands in (strengths are 0,
+            # so smokeShadow returns before any read)
+            rl.rl_enable_texture((tex if tex is not None
+                                  else self.flow_tex).id)
+            self._set_i(name, unit)
+        rl.rl_active_texture_slot(0)
+        rl.draw_texture_pro(diffuse, src, dst, rl.Vector2(0, 0), 0.0,
+                            rl.WHITE)
         rl.end_shader_mode()
         rl.end_blend_mode()
+        for unit, _name, _tex in units:
+            rl.rl_active_texture_slot(unit)
+            rl.rl_disable_texture()
+        rl.rl_active_texture_slot(0)
+        return True
 
     def unload(self) -> None:
         rl.unload_shader(self.shader)
         rl.unload_texture(self.water_tex)
+        rl.unload_texture(self.flow_tex)
+        rl.unload_texture(self.ripple_tex)
 
 
-__all__ = ["WaterPass"]
+__all__ = ["WaterPass", "load_water_fs"]

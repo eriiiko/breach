@@ -415,16 +415,18 @@ class GameRenderer:
             ripple_shade=float(getattr(disp, "water_ripple_shade", 0.35)),
             foam_thresh=float(getattr(disp, "water_foam_thresh", 0.03)),
             ambient_base=float(getattr(disp, "water_ambient_base", 0.06)))
-        # Water OPTICS pass (graphics/water_rendering.md §7 steps 1+2): the
-        # shipped GLSL Fresnel/GGX/refraction look that REPLACES the CPU
-        # WaterFieldOverlay placeholder in the same compose slot. Binds the
-        # [graphics.water] uniforms once; reuses the lighting pass's light
-        # textures + the level diffuse (no new plumbing). DORMANT-SAFE: the
-        # shader emits alpha 0 on dry tiles, so a ship with no standing water
-        # renders identically (the safety property the gate checks). The
-        # WaterFieldOverlay above is kept constructed (so nothing else breaks)
-        # but is no longer drawn — the GLSL pass is the live water render.
-        self.water_pass = WaterPass(cfg.grid_h, cfg.grid_w)
+        # Water OPTICS pass (graphics/water_rendering.md §7 steps 1+2; #97
+        # W1's fine surface that flows): the shipped GLSL Fresnel/GGX/
+        # refraction look that REPLACES the CPU WaterFieldOverlay placeholder
+        # in the same compose slot. Its [graphics.water] dials pass the one
+        # refusing door every frame (upload_state); it reuses the lighting
+        # pass's light textures + the level diffuse. A dry map costs one
+        # .any() and draws nothing. The WaterFieldOverlay above is kept
+        # constructed (W2 deletes it) but is no longer drawn.
+        from .water_surface import water_settings as _water_settings
+        self.water_pass = WaterPass(
+            cfg.grid_h, cfg.grid_w, _water_settings(CFG),
+            tile_size_m=float(getattr(level_data, "tile_size_m", 1.0 / 3.0)))
         if (getattr(level_data, "art_align_explicit", False)
                 and level_data.art_px_per_tile):
             self.water_pass.set_art_align(level_data.art_offset_px,
@@ -911,21 +913,18 @@ class GameRenderer:
                 _n2 = gmap.gases.name_to_id["inert_n2"]
                 self.cold_overlay.update(
                     gmap.temperature, n_bulk=gmap.gas[_o2] + gmap.gas[_n2])
-        # Water overlay v2 (W6b): depth tint + ripple shading + foam +
-        # ambient sines. Skipped when toggled off; the overlay itself also
-        # early-outs when the ship is dry (zero-water fast path). Render-only
-        # — every field is read, never written. `t_start` is this frame's
-        # perf_counter sample from the top of upload_state (no extra clock
-        # call); epoch-relative so the sine phases stay float32-small.
-        # Water OPTICS pass (graphics/water_rendering.md): pack ripple +
-        # water_depth into the RGBA16F water texture every frame. The pass is
-        # the LIVE water render now (not a debug toggle), so it uploads
-        # unconditionally — but it is DORMANT-SAFE (the shader emits alpha 0 on
-        # dry tiles) and has its own dry-ship fast path (skips the upload when
-        # there is no standing water and the texture is already blank), so a dry
-        # ship costs one .any(). RENDER-ONLY — every field is read, never
-        # written. Keep the light_z in step with the lighting pass so the
-        # glints' L matches the ship's lighting.
+        # Water OPTICS pass (graphics/water_rendering.md; #97 W1): the
+        # settings through the one door, the pass's sim clock, and -- only
+        # when the sim state changed (once per tick; CRC-keyed while paused)
+        # -- the two grid textures (ripple / ripple_v / depth; flow / solid /
+        # previous depth). A DRY map stops at one .any() on the INT depth
+        # plane: nothing is dequantized, packed or uploaded, and nothing is
+        # drawn. RENDER-ONLY: every field is read, never written. The int
+        # planes are dequantized inside the pass through
+        # water_fixed.dequantize_f32 (the dequantize convention). Keep the
+        # light_z in step with the lighting pass so the glints' L matches.
+        from .water_surface import water_settings as _water_settings
+        self.water_pass.refresh_settings(_water_settings(CFG))
         self.water_pass.set_light_z(self.lighting.light_z)
         # Keep the water's global ambient in step with the lit ship's ambient
         # (lighting.fs lights by `ambient + sources`; the water body must too,
@@ -934,13 +933,12 @@ class GameRenderer:
         # .ambient is the single source of truth, fed by the demo's ambient
         # sliders + config — so those sliders drive the water ambient as well.
         self.water_pass.set_ambient(self.lighting.ambient)
-        # S1: water_depth is int32 Q16.16 metres — DEQUANTIZE to float32 metres
-        # for the render pass (ripple/ripple_v stay float, render-only). This is
-        # the renderer-boundary dequantize (one source of truth: the int field).
-        from simulation import water_fixed
         self.water_pass.update(
-            water_fixed.dequantize_f32(gmap.water_depth),
-            ripple=gmap.ripple, ripple_v=gmap.ripple_v)
+            depth_q=gmap.water_depth, flow_vx_q=gmap.flow_vx,
+            flow_vy_q=gmap.flow_vy, solid=gmap.solid, ripple=gmap.ripple,
+            ripple_v=gmap.ripple_v, sim_tick=int(sim_tick), alpha=alpha,
+            paused=bool(paused), tps=tps, tile_size_m=gmap.tile_size_m,
+            zoom_px_per_tile=self.camera.zoom_px_per_tile)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -1062,13 +1060,14 @@ class GameRenderer:
                 world_px_h=self.world.world_px_h,
             )
 
-        # 2. Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
-        # Fresnel/GGX/refraction pass, ON the floor, under the floor haze and
-        # the units (G2: the water is the floor's surface, the haze lies on
-        # it; the lit ship beneath is the floor sample). It binds the
-        # lighting pass's light textures + the level diffuse and draws
-        # premultiplied, linear; the shader emits alpha 0 on dry tiles so
-        # this is a no-op with no standing water (dormant-safe).
+        # 2. Water OPTICS pass (graphics/water_rendering.md §5; #97 W1): the
+        # GLSL Fresnel/GGX/refraction pass with the fine surface that flows,
+        # ON the floor, under the floor haze and the units (G2: the water is
+        # the floor's surface, the haze lies on it; the lit ship beneath is
+        # the floor sample). It binds the lighting pass's light textures +
+        # the level diffuse, receives the smoke's cast shadow and the light
+        # curve as the floor does, and draws premultiplied, linear, over the
+        # view ∩ the wet tiles only: nothing at all on a dry map.
         # Off-by-toggle (V).
         if self.show_water and self.textures.diffuse:
             self.water_pass.draw(
@@ -1076,7 +1075,10 @@ class GameRenderer:
                 self.lighting.light_tex_a, self.lighting.light_tex_b,
                 world_px_w=self.world.world_px_w,
                 world_px_h=self.world.world_px_h,
-                anim_t=time.perf_counter() - self._anim_t0)
+                view_tiles=self._relief_view_rect(),
+                smoke_cast=self._smoke_cast,
+                light_curve=self.lighting.curve_uniforms,
+                light_gain=self.lighting.light_gain)
         # 2b. arc #63 -- THE larvae's bodies ([render.larvae]): every larva
         # (and the limp, fading dead) in ONE instanced draw, ON the floor
         # (after the water) and under the smoke, lit by the light field,

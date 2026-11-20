@@ -13,10 +13,13 @@ paths:
   - "renderer/shockwave.py"
   - "renderer/muzzle_flame.py"
   - "renderer/tracers.py"
+  - "renderer/water.py"
+  - "renderer/water_surface.py"
   - "shaders/gas_*"
   - "shaders/fire_*"
   - "shaders/particle_*"
   - "shaders/muzzle_flame.*"
+  - "shaders/water.fs"
   - "shaders/world_resolve.fs"
   - "tools/muzzle_flame_sheet.py"
   - "tools/wind_drift_probe.py"
@@ -39,7 +42,7 @@ Smoke look tuning: the `smoke-tuning` skill; fire and smoke: `fire-smoke-tuning`
 
 ## Smoke cast product
 - THE smoke's occlusion and height as ONE texture: the relief shader's own product mode (the same C, h and alpha the layers composite), rendered before the scene RT.
-- Every pass that receives the smoke's cast shadow (the floor's `shaders/lighting.fs` at its `// <SMOKE_SHADOW>` marker; the marine and prop shaders through `_COMMON_GLSL`) or is hidden by it (the heat layer's glow-through and the flame's compensation in `shaders/fire_glow.fs`) reads it through the lit3d block (`smokeCoverAt` / `smokeShadow`): never a second smoke model, never an inline copy (`tests/test_smoke_cast_shadow.py`).
+- Every pass that receives the smoke's cast shadow (the floor's `shaders/lighting.fs` and the water's `shaders/water.fs` at their `// <SMOKE_SHADOW>` markers; the marine and prop shaders through `_COMMON_GLSL`) or is hidden by it (the heat layer's glow-through and the flame's compensation in `shaders/fire_glow.fs`) reads it through the lit3d block (`smokeCoverAt` / `smokeShadow`): never a second smoke model, never an inline copy (`tests/test_smoke_cast_shadow.py`).
 - Glow-through and the own-light cut act only on the glow BELOW the smoke (`glow_below_fraction`; hot gas is #95's). The flame stands under the ceiling soot, hidden by `glow_through_ceiling` only.
 
 ## Tamed wind (render)
@@ -80,3 +83,9 @@ Smoke look tuning: the `smoke-tuning` skill; fire and smoke: `fire-smoke-tuning`
 ## Fire room light (gain + flicker)
 - The fire's own brightness dial is `[render.fire_light] gain` (Erik 2026-10-29: "much more brightly"; `gain·(1 + amplitude) ≤ 16` refused): never `[render.blackbody]` (also the heat layer's glow and the light table's top) nor a global light gain.
 - The flicker is a LIGHT-ONLY, mean-preserving, per-tile multiplier on the flame's VFX clock from its CPU pack (never a GPU readback), crossing only through `frame_lights.emit_mult_rows` into the sweep's `emit_mult`. Never heat, never a lamp; a new fire-light modulation extends this, never a second multiplier path (`tests/test_fire_flicker.py`).
+
+## Water flow detail
+- THE fine water surface (#97 W1): one ripple slope texture (`noise_bake.bake_ripple_rgba`) laid in METRES (`detail_wavelength_m`, never tiles) and carried by the simulated flow; a new surface detail is a term of `water_surface.detail_slope`, never a second wave source. Its law lands in that numpy twin first, then `shaders/water.fs`; `tests/gl_water_flow_check.py` holds them equal per pixel.
+- The flow map is `advected_noise`'s two-phase crossfade (spliced at the shader's `// <ADVECTION>` marker), never a copy in water code; its tick-stepped callers stay bit-identical (`tests/test_water_flow_detail.py` pins the frozen formula). Every lookup is hex-tiled (Mikkelsen 2022) with the integer `hex_hash`, so the GPU and the twin draw the same bits; the drift is never wrapped (the hex lattice is not periodic, a wrap would pop it).
+- The clock is the pass's own `fire_vfx.SimClock` (sim time, idle when paused), never wall time. Dials pass `water_surface.water_settings`, the one refusing door, every frame; `tools/lighting_demo.py` drives them through `CFG.graphics.water` from its one `_WATER_DIALS` table, never through setters.
+- A dry map costs one `.any()` on the INT depth plane and draws nothing (bit-identical); a wet one packs on a sim-state change only and draws the view ∩ the wet box. Its samplers beyond raylib's four sit on units 5 (smoke product), 6 (flow), 7 (ripple).

@@ -167,22 +167,33 @@ class AdvectionPhase(NamedTuple):
 
 
 def advection_phase(tick: int, cycle_seconds: float,
-                    ticks_per_second: float) -> AdvectionPhase:
-    """Integer sim tick -> the bounded crossfade phase + the cycle length.
+                    ticks_per_second: float,
+                    alpha: float = 0.0) -> AdvectionPhase:
+    """Integer sim tick (+ the sub-tick ``alpha``) -> the bounded crossfade
+    phase + the cycle length.
 
-    ``phase = frac(tick / tau_ticks)`` with ``tau_ticks = cycle_seconds *
-    ticks_per_second``. Computed in float64 from the integer tick, then only the
-    bounded ``phase`` (and the small ``tau_ticks``) leave for the GPU — a long
-    game's large tick never loses precision as a float32 shader clock. This is
-    the SINGLE definition of the smoke clock; P4's CPU speckle calls it too."""
+    ``phase = frac((tick + alpha) / tau_ticks)`` with ``tau_ticks =
+    cycle_seconds * ticks_per_second``. Computed in float64 from the integer
+    tick, then only the bounded ``phase`` (and the small ``tau_ticks``) leave
+    for the GPU — a long game's large tick never loses precision as a float32
+    shader clock. This is the SINGLE definition of the smoke clock; P4's CPU
+    speckle calls it too.
+
+    ``alpha`` (water W1, #97) is the sub-tick fraction of a clock that runs
+    between ticks (``fire_vfx.SimClock``); the caller hands it already
+    clamped. The default 0.0 adds exactly nothing (``float(tick) + 0.0`` is
+    ``float(tick)`` in IEEE 754), so every tick-stepped caller (gas detail,
+    gas relief, speckle) is bit-identical to the law before W1
+    (``tests/test_water_flow_detail.py`` pins it against the frozen formula)."""
     tau_ticks = float(cycle_seconds) * float(ticks_per_second)
     if tau_ticks <= 0.0:
         return AdvectionPhase(0.0, 0.0)
-    phase = float(np.mod(float(tick) / tau_ticks, 1.0))
+    phase = float(np.mod((float(tick) + float(alpha)) / tau_ticks, 1.0))
     return AdvectionPhase(phase, tau_ticks)
 
 
-def layer_ages_weight(phase: float) -> Tuple[float, float, float]:
+def layer_ages_weight(phase: float,
+                      offset: float = 0.0) -> Tuple[float, float, float]:
     """(phase in [0,1)) -> (age_frac0, age_frac1, w0) — the two layers' age
     fractions and layer-0's crossfade weight, the CPU mirror of the shader math.
 
@@ -190,15 +201,80 @@ def layer_ages_weight(phase: float) -> Tuple[float, float, float]:
     by ``tau_ticks`` for ticks). ``w0 = 1/2 - 1/2 cos(2 pi phase)`` is layer-0's
     weight: it is 0 exactly when layer 0 resets (phase==0) and 1 when layer 1
     resets (phase==0.5), so each layer's periodic UV pop is hidden under zero
-    weight (Vlachos ping-pong). The final value is ``mix(n1, n0, w0)``."""
-    p = float(phase) % 1.0
+    weight (Vlachos ping-pong). The final value is ``mix(n1, n0, w0)``.
+
+    ``offset`` (water W1) shifts this point's phase (the per-pixel low-
+    frequency offset, :func:`phase_offset_field`): every point still resets
+    under zero weight, just not all at once, so no whole-surface pulse. The
+    default 0.0 is the pre-W1 law bit for bit."""
+    p = (float(phase) + float(offset)) % 1.0
     age0 = p
     age1 = (p + 0.5) % 1.0
     w0 = 0.5 - 0.5 * np.cos(2.0 * np.pi * p)
     return age0, age1, float(w0)
 
 
+def layer_ages_weight_field(phase: float, offset: np.ndarray
+                            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """:func:`layer_ages_weight` over an array of per-point phase offsets
+    (water W1): ``(age_frac0, age_frac1, w0)`` arrays shaped like
+    ``offset``. The same law (equal to the scalar form at every point); the
+    shader's ``advLayers`` (:data:`ADVECTION_GLSL`) mirrors it, ``fract`` for
+    the modulo."""
+    p = np.mod(float(phase) + np.asarray(offset, dtype=np.float64), 1.0)
+    age1 = np.mod(p + 0.5, 1.0)
+    w0 = 0.5 - 0.5 * np.cos(2.0 * np.pi * p)
+    return p, age1, w0
+
+
+# The two directions and phases of the low-frequency offset (water W1). Two
+# plane waves at incommensurate angles and lengths: smooth (so neighbouring
+# points reset at nearly the same moment and the advected texture is not torn
+# between them) yet spread over a whole cycle across a few lengths of
+# ``scale_m``, so the reset of a cycle never shows as a pulse of the whole
+# surface. The constants are mirrored literally in ADVECTION_GLSL.
+_PH_K1 = (0.83, 0.56)
+_PH_K2 = (-0.47 * 1.37, 0.88 * 1.37)
+_PH_C1, _PH_C2 = 1.7, 4.1
+
+
+def phase_offset_field(x_m, y_m, scale_m: float) -> np.ndarray:
+    """The per-point phase offset in [-0.5, 0.5] at positions in metres
+    (water W1): ``0.25 sin(a k1.p + c1) + 0.25 sin(a k2.p + c2)``, ``a =
+    2 pi / scale_m``. A pure function of world position, so it never moves
+    with time and is the same on every machine; ``scale_m <= 0`` is 0 (every
+    point in phase, the plain Vlachos crossfade)."""
+    x = np.asarray(x_m, dtype=np.float64)
+    y = np.asarray(y_m, dtype=np.float64)
+    if float(scale_m) <= 0.0:
+        return np.zeros(np.broadcast(x, y).shape)
+    a = 2.0 * np.pi / float(scale_m)
+    return (0.25 * np.sin(a * (_PH_K1[0] * x + _PH_K1[1] * y) + _PH_C1)
+            + 0.25 * np.sin(a * (_PH_K2[0] * x + _PH_K2[1] * y) + _PH_C2))
+
+
+# The GLSL face of the two functions above, spliced into a shader at its
+# ``// <ADVECTION>`` marker (the water pass, W1). ONE copy: a consumer that
+# needs the per-point crossfade splices this, never writes its own.
+ADVECTION_GLSL = """
+// --- two-layer advection crossfade (renderer/advected_noise.py) ---
+float advPhaseOffset(vec2 p_m, float scale_m) {
+    if (scale_m <= 0.0) return 0.0;
+    float a = 6.28318530718 / scale_m;
+    return 0.25 * sin(a * dot(vec2(%r, %r), p_m) + %r)
+         + 0.25 * sin(a * dot(vec2(%r, %r), p_m) + %r);
+}
+// (age_frac0, age_frac1, w0) of a point whose phase is shifted by offset;
+// the value is mix(layer1, layer0, w0).
+vec3 advLayers(float phase, float offset) {
+    float p = fract(phase + offset);
+    return vec3(p, fract(p + 0.5), 0.5 - 0.5 * cos(6.28318530718 * p));
+}
+""" % (_PH_K1[0], _PH_K1[1], _PH_C1, _PH_K2[0], _PH_K2[1], _PH_C2)
+
+
 __all__ = [
     "bake_fbm_rgba", "bake_jitter_rgba",
     "AdvectionPhase", "advection_phase", "layer_ages_weight",
+    "layer_ages_weight_field", "phase_offset_field", "ADVECTION_GLSL",
 ]
