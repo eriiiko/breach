@@ -240,6 +240,7 @@ amends the rule file, never this line's length.
 | Fire room light (gain + flicker) | `renderer/fire_flicker.py` + `[render.fire_light]` | THE fire's room light: its own gain × a light-only flicker into the sweep's `emit_mult` |
 | Frame lights | `renderer/frame_lights.py` + `src/level_lights.py` | THE one light assembly; never a second |
 | Light curve | `renderer/light_curve.py` + `lit3d._LIGHT_CURVE_GLSL` | THE brightness map on the light, one GLSL copy; Erik's curve |
+| Water flow detail | `renderer/water_surface.py` (the twin) + `renderer/water.py` + `shaders/water.fs` | THE fine water surface: one hex-tiled ripple texture carried by the simulated flow through `advected_noise`'s crossfade; a new surface detail is a term here, never a second wave source |
 | Dequantize convention | per-field `*_fixed.dequantize_f32` at `upload_state` | Fresh float copies at the render read, never written back, never `/65536` inline |
 | Tile inspector | `renderer/hover_readout.py::pack_hover_readout` | THE per-tile debug readout; tools and HUD read it, never a parallel field probe |
 | 3D units | `renderer/unit_model_renderer.py` + `renderer/unit_looks.py` + `renderer/marine_shader.py` | No model/anim state ever on `Unit`; a new look is a table entry, never a second renderer |
@@ -328,6 +329,7 @@ amends the rule file, never this line's length.
 | Editor UI from registry | `tools/entity_editor_ui.py` | The registry IS the editor |
 | Baker / airtight / play-scratch | `tools/bake_level_art.py`, `tools/level_airtight.py`, `tools/play_scratch.py` | The only art path (golden-gated) / the level lint / the only editor→game bridge |
 | Level generators | `tools/gen_ship.py` (+ `tools/gen_explosion_studio.py`, the precedent) | A generated level is written through `level_lib`; `gen_ship` is THE ship generator, new generators replace its stage 1 |
+| Water studio | `tools/gen_water_studio.py` → `levels/water_studio` + its rows in `tools/look_shots.toml` | THE level for judging water, written by its generator through `level_lib`; never used by a test that pins play |
 | Training rooms | `tools/gen_training_rooms.py` | THE writer of the learned soldiers' small levels, through `level_lib`; a new room shape is a function or a table row there, never a second tool |
 | Recipe library + resolver | `levels/recipes/` + `tools/levelgen_recipes.py` | The family-B grammar's data; a recipe never carries a physics number |
 | Archetype recipe + grammar | `levels/recipes/archetypes/` + `tools/ship_grammar.py` | A ship kind is one archetype file; the grammar is the only stage 1 of a recipe ship |

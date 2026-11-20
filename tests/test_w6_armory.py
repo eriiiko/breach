@@ -5,7 +5,7 @@ What is locked here:
   - METER -> TILE CONVERSION pinned: range_m / tile_size_m, round-half-up,
     max(1, ...), quantized ONCE at table build (engine/14 door 2) — proven at
     TWO tile sizes (the 1.0 m/tile pinned-test convention and the 0.333
-    m/tile playground), through the dict-table path, the real config, AND
+    m/tile test_arena), through the dict-table path, the real config, AND
     the Simulation facade binding (gmap.tile_size_m); authoring range_m and
     range_tiles together is loud;
   - THE ARMORY loads + validates: every mechanics/03 §6 row present with its
@@ -26,7 +26,7 @@ What is locked here:
     triggerable row in config order (LOBBED/PLACED skipped), resets
     mag/burst state, refuses zombies — and a cycled weapon actually FIRES;
   - DRAGON-7 ignition-reach derivation pinned at the new scale (2400 ->
-    reach 31 tiles >= the playground's 30; the Dragon-9's 4800 -> 62 >= 60);
+    reach 31 tiles >= the test_arena's 30; the Dragon-9's 4800 -> 62 >= 60);
   - DORMANCY REPLICA: the canonical A/B scenario's 30-tick aggregate digest
     still equals the pinned golden 07c3f370... AND the sim RNG end-state is
     the untouched fresh-seed state (the scenario draws ZERO randomness —
@@ -133,7 +133,7 @@ def test_meter_conversion_pinned_at_two_tile_sizes():
     """range_tiles = max(1, int(range_m / tile_size_m + 0.5)) — one IEEE
     divide + round-half-up, derived at table build. 10 m is 10 tiles in
     the 1.0 m/tile test worlds and 30 tiles on the 0.333 m/tile
-    playground grid (10 / 0.333 = 30.03 -> 30)."""
+    test_arena grid (10 / 0.333 = 30.03 -> 30)."""
     w1 = _dict_tables(1.0).weapons.by_name["w6gun"]
     assert w1.range_tiles == 10 and isinstance(w1.range_tiles, int)
     assert w1.range_m == 10.0
@@ -172,11 +172,11 @@ def test_authoring_both_range_columns_is_loud():
 def test_real_config_ranges_pin_the_compatibility_rule():
     """The pinned scenarios' worlds are 1.0 m/tile: every pre-W6 weapon's
     effective tile range there is BIT-IDENTICAL to its old range_tiles
-    (k5 90, lance_3 60, gl6 40, miasma 7). The playground (0.333) derives
+    (k5 90, lance_3 60, gl6 40, miasma 7). The test_arena (0.333) derives
     3x. The ONE deliberate exception: dragon_7 = 10 m (Erik's rescale;
     was 8 tiles)."""
     t1 = WeaponsTables.from_config()                      # 1.0 default
-    tp = WeaponsTables.from_config(tile_size_m=0.333)     # the playground
+    tp = WeaponsTables.from_config(tile_size_m=0.333)     # the test_arena
     for name, old_tiles in (("k5_carbine", 90), ("lance_3", 60),
                             ("gl6_revolver", 40), ("miasma_vent", 7)):
         assert t1.weapons.by_name[name].range_tiles == old_tiles, name
@@ -498,10 +498,10 @@ def test_dragon_heat_deposits_track_their_ranges():
     """The config derivation of record: sustained-jet ignition needs
     T_inf(d) = (31/8) * D / d >= 300 (wood), so the reach in tiles is
     floor(31 * D / (8 * 300)). Dragon-7 (D 2400) -> 31 tiles >= its 30-tile
-    playground range; Dragon-9 (D 4800) -> 62 >= 60. The heat scale rides
+    test_arena range; Dragon-9 (D 4800) -> 62 >= 60. The heat scale rides
     the range dial — one discipline, two rows."""
     t = get_tables()
-    tp = WeaponsTables.from_config(tile_size_m=0.333)   # playground binding
+    tp = WeaponsTables.from_config(tile_size_m=0.333)   # test_arena binding
     for weapon, deposit in (("dragon_7", 2400.0), ("dragon_9_heavy", 4800.0)):
         a = t.ammo_for_weapon(weapon)
         assert a.heat_deposit == deposit, weapon

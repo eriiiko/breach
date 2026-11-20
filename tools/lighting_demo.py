@@ -252,40 +252,52 @@ DEFAULTS = {
     # (config default), 1.0 = maximal contrast. Live dial Erik can nudge by eye
     # (slider in the panel, plus N / Shift+N keys).
     "explosion_smoke_noise": 0.85,
-    # --- Water surface optics ([graphics.water]; live in the demo only) -----
-    # Overwritten below from config.toml at startup so the panel opens where the
-    # config sits; dragging a slider re-pushes the matching WaterPass setter
-    # every frame. Pour water with U to see them bite. (Defaults mirror config.)
-    "water_glint_strength": 2.0,
-    "water_roughness_base": 0.08,
-    "water_roughness_agitation": 0.6,
-    "water_fog_density": 3.0,
-    "water_refract_strength": 0.02,
-    "water_r0": 0.02,
-    "water_ripple_scale": 8.0,
-    "water_alpha_scale": 6.0,
-    "water_alpha_min": 0.15,
-    "water_alpha_max": 0.95,
-    # Phase 2 (mood pass): caustics / foam / chromatic aberration / wave size.
-    "water_caustic_strength": 2.5,
-    "water_caustic_scale": 6.0,
-    "water_foam_threshold": 0.02,
-    "water_foam_intensity": 0.6,
-    "water_ca_amount": 0.012,
-    "water_wave_scale": 2.0,
-    "water_ambient_amp": 0.06,
-    # Heightmap attenuation (alpha-only): only bites on a level WITH a heightmap
-    # (unhcr_vessel_2). On the demo's default level the water pass has no height
-    # texture, so these sliders are inert (u_has_height = 0).
-    "water_height_scale": 0.4,
-    "water_height_edge": 0.1,
-    # height_floor: the heightmap value treated as floor level (the "level 0"
-    # baseline) — subtracted from relief before scaling so standing water clears
-    # the floor immediately instead of having to over-fill (the art heightmap is
-    # a RELATIVE depth map with the floor at a nonzero relief). Inert on the
-    # demo's default level (no heightmap).
-    "water_height_floor": 0.3,
+    # --- Water surface optics ([graphics.water]) ---------------------------
+    # The "water_<key>" entries are generated from _WATER_DIALS below (one
+    # table: defaults, the config read, the save writer, the preset load, the
+    # per-frame push into CFG.graphics.water and the sliders all walk it).
 }
+
+# The [graphics.water] dials the panel drives (#97 W1): (key, default, slider
+# label, lo, hi). ONE table -- the defaults, the config read at startup, the
+# preset writer and reader, the per-frame push and the sliders all walk it.
+# The push writes into CFG.graphics.water, where the water pass's one refusing
+# door (renderer/water_surface.py::water_settings) reads every dial every
+# frame; there are no per-dial setters. Pour water with U to see them bite.
+_WATER_DIALS = (
+    ("glint_strength", 2.0, "Glint", 0.0, 8.0),
+    ("roughness_base", 0.08, "Roughness", 0.02, 0.5),
+    ("roughness_agitation", 0.6, "Rough agit", 0.0, 2.0),
+    ("fog_density", 3.0, "Fog dens", 0.2, 12.0),
+    ("refract_strength", 0.02, "Refract", 0.0, 0.08),
+    ("r0", 0.02, "R0 Fresnel", 0.0, 0.2),
+    ("ripple_scale", 8.0, "Ripple scl", 0.0, 24.0),
+    ("alpha_scale", 6.0, "Alpha scl", 0.0, 20.0),
+    ("alpha_min", 0.15, "Alpha min", 0.0, 0.6),
+    ("alpha_max", 0.95, "Alpha max", 0.4, 1.0),
+    # Phase 2 (mood pass): caustics / foam / chromatic aberration.
+    ("caustic_strength", 2.5, "Caustic", 0.0, 8.0),
+    ("caustic_scale", 6.0, "Caust scl", 0.0, 24.0),
+    ("foam_threshold", 0.02, "Foam thr", 0.001, 0.1),
+    ("foam_intensity", 0.6, "Foam int", 0.0, 2.0),
+    ("ca_amount", 0.012, "Chrom ab", 0.0, 0.06),
+    # W1: the fine surface that flows.
+    ("detail_wavelength_m", 0.12, "Detail m", 0.03, 0.5),
+    ("detail_strength_still", 0.03, "Still str", 0.0, 0.2),
+    ("detail_strength_flow", 0.3, "Flow str", 0.0, 0.8),
+    ("detail_drift_mps", 0.03, "Drift m/s", 0.0, 0.3),
+    ("flow_cycle_s", 0.6, "Flow cyc s", 0.1, 3.0),
+    ("flow_speed_ref", 1.0, "Flow ref", 0.05, 4.0),
+    ("flow_max_offset_m", 0.5, "Slide cap", 0.0, 2.0),
+    ("flow_phase_noise_m", 3.0, "Phase m", 0.0, 12.0),
+    # Heightmap attenuation (alpha-only): only bites on a level WITH a
+    # heightmap (unhcr_vessel_2); inert elsewhere (u_has_height = 0).
+    # height_floor = the "level 0" baseline relief, subtracted before scaling.
+    ("height_scale", 0.4, "Height scl", 0.0, 2.0),
+    ("height_edge", 0.1, "Height edge", 0.01, 0.5),
+    ("height_floor", 0.3, "Height floor", 0.0, 1.0),
+)
+DEFAULTS.update({f"water_{k}": d for k, d, _l, _lo, _hi in _WATER_DIALS})
 
 # Pressure colormap was previously implemented here; lifted into
 # renderer/pressure_overlay.py so the main game can use it too. The demo
@@ -324,26 +336,8 @@ def _state_to_toml_section(name: str, s: dict) -> str:
         f"smoke_amount = {s['smoke_amount']:.4f} }}"
     )
     lines.append(
-        f"water = {{ glint_strength = {s['water_glint_strength']:.4f}, "
-        f"roughness_base = {s['water_roughness_base']:.4f}, "
-        f"roughness_agitation = {s['water_roughness_agitation']:.4f}, "
-        f"fog_density = {s['water_fog_density']:.4f}, "
-        f"refract_strength = {s['water_refract_strength']:.4f}, "
-        f"r0 = {s['water_r0']:.4f}, "
-        f"ripple_scale = {s['water_ripple_scale']:.4f}, "
-        f"alpha_scale = {s['water_alpha_scale']:.4f}, "
-        f"alpha_min = {s['water_alpha_min']:.4f}, "
-        f"alpha_max = {s['water_alpha_max']:.4f}, "
-        f"caustic_strength = {s['water_caustic_strength']:.4f}, "
-        f"caustic_scale = {s['water_caustic_scale']:.4f}, "
-        f"foam_threshold = {s['water_foam_threshold']:.4f}, "
-        f"foam_intensity = {s['water_foam_intensity']:.4f}, "
-        f"ca_amount = {s['water_ca_amount']:.4f}, "
-        f"wave_scale = {s['water_wave_scale']:.4f}, "
-        f"ambient_amp = {s['water_ambient_amp']:.4f}, "
-        f"height_scale = {s['water_height_scale']:.4f}, "
-        f"height_edge = {s['water_height_edge']:.4f}, "
-        f"height_floor = {s['water_height_floor']:.4f} }}"
+        "water = { " + ", ".join(
+            f"{k} = {s['water_' + k]:.4f}" for k, *_r in _WATER_DIALS) + " }"
     )
     return "\n".join(lines)
 
@@ -416,26 +410,8 @@ def _toml_dict_to_state(d: dict) -> dict:
     # so OLD presets without a water table load cleanly (no KeyError).
     if "water" in d:
         w = d["water"]
-        s["water_glint_strength"] = float(w.get("glint_strength", s["water_glint_strength"]))
-        s["water_roughness_base"] = float(w.get("roughness_base", s["water_roughness_base"]))
-        s["water_roughness_agitation"] = float(w.get("roughness_agitation", s["water_roughness_agitation"]))
-        s["water_fog_density"] = float(w.get("fog_density", s["water_fog_density"]))
-        s["water_refract_strength"] = float(w.get("refract_strength", s["water_refract_strength"]))
-        s["water_r0"] = float(w.get("r0", s["water_r0"]))
-        s["water_ripple_scale"] = float(w.get("ripple_scale", s["water_ripple_scale"]))
-        s["water_alpha_scale"] = float(w.get("alpha_scale", s["water_alpha_scale"]))
-        s["water_alpha_min"] = float(w.get("alpha_min", s["water_alpha_min"]))
-        s["water_alpha_max"] = float(w.get("alpha_max", s["water_alpha_max"]))
-        s["water_caustic_strength"] = float(w.get("caustic_strength", s["water_caustic_strength"]))
-        s["water_caustic_scale"] = float(w.get("caustic_scale", s["water_caustic_scale"]))
-        s["water_foam_threshold"] = float(w.get("foam_threshold", s["water_foam_threshold"]))
-        s["water_foam_intensity"] = float(w.get("foam_intensity", s["water_foam_intensity"]))
-        s["water_ca_amount"] = float(w.get("ca_amount", s["water_ca_amount"]))
-        s["water_wave_scale"] = float(w.get("wave_scale", s["water_wave_scale"]))
-        s["water_ambient_amp"] = float(w.get("ambient_amp", s["water_ambient_amp"]))
-        s["water_height_scale"] = float(w.get("height_scale", s["water_height_scale"]))
-        s["water_height_edge"] = float(w.get("height_edge", s["water_height_edge"]))
-        s["water_height_floor"] = float(w.get("height_floor", s["water_height_floor"]))
+        for k, *_r in _WATER_DIALS:
+            s["water_" + k] = float(w.get(k, s["water_" + k]))
     return s
 
 
@@ -2099,42 +2075,8 @@ def main() -> None:
     # are live). getattr-defaults keep the demo alive if the block is absent.
     _wc = getattr(getattr(CFG, "graphics", None), "water", None)
     if _wc is not None:
-        state.set("water_glint_strength",
-                  float(getattr(_wc, "glint_strength", 2.0)))
-        state.set("water_roughness_base",
-                  float(getattr(_wc, "roughness_base", 0.08)))
-        state.set("water_roughness_agitation",
-                  float(getattr(_wc, "roughness_agitation", 0.6)))
-        state.set("water_fog_density",
-                  float(getattr(_wc, "fog_density", 3.0)))
-        state.set("water_refract_strength",
-                  float(getattr(_wc, "refract_strength", 0.02)))
-        state.set("water_r0", float(getattr(_wc, "r0", 0.02)))
-        state.set("water_ripple_scale",
-                  float(getattr(_wc, "ripple_scale", 8.0)))
-        state.set("water_alpha_scale",
-                  float(getattr(_wc, "alpha_scale", 6.0)))
-        state.set("water_alpha_min", float(getattr(_wc, "alpha_min", 0.15)))
-        state.set("water_alpha_max", float(getattr(_wc, "alpha_max", 0.95)))
-        # Phase 2 (mood pass).
-        state.set("water_caustic_strength",
-                  float(getattr(_wc, "caustic_strength", 2.5)))
-        state.set("water_caustic_scale",
-                  float(getattr(_wc, "caustic_scale", 6.0)))
-        state.set("water_foam_threshold",
-                  float(getattr(_wc, "foam_threshold", 0.02)))
-        state.set("water_foam_intensity",
-                  float(getattr(_wc, "foam_intensity", 0.6)))
-        state.set("water_ca_amount", float(getattr(_wc, "ca_amount", 0.012)))
-        state.set("water_wave_scale", float(getattr(_wc, "wave_scale", 2.0)))
-        state.set("water_ambient_amp",
-                  float(getattr(_wc, "ambient_amp", 0.06)))
-        state.set("water_height_scale",
-                  float(getattr(_wc, "height_scale", 0.4)))
-        state.set("water_height_edge",
-                  float(getattr(_wc, "height_edge", 0.1)))
-        state.set("water_height_floor",
-                  float(getattr(_wc, "height_floor", 0.3)))
+        for k, d, *_r in _WATER_DIALS:
+            state.set("water_" + k, float(getattr(_wc, k, d)))
 
     # B2 dials: open the sliders where config.toml sits (getattr-defaults keep
     # the demo alive if a block is absent). soot_yield MIRRORS the sim config
@@ -2544,31 +2486,11 @@ def main() -> None:
             renderer.lighting.set_use_normal(state.get("use_normal"))
             renderer.lighting.set_srgb_decode(state.get("srgb_decode"))
 
-            # ---- Water optics setters (live; the main game restart-binds) ----
-            wp = renderer.water_pass
-            wp.set_glint_strength(state.get("water_glint_strength"))
-            wp.set_roughness_base(state.get("water_roughness_base"))
-            wp.set_roughness_agitation(state.get("water_roughness_agitation"))
-            wp.set_fog_density(state.get("water_fog_density"))
-            wp.set_refract_strength(state.get("water_refract_strength"))
-            wp.set_r0(state.get("water_r0"))
-            wp.set_ripple_scale(state.get("water_ripple_scale"))
-            wp.set_alpha_scale(state.get("water_alpha_scale"))
-            wp.set_alpha_min(state.get("water_alpha_min"))
-            wp.set_alpha_max(state.get("water_alpha_max"))
-            # Phase 2 (mood pass) — caustics / foam / CA / wave size.
-            wp.set_caustic_strength(state.get("water_caustic_strength"))
-            wp.set_caustic_scale(state.get("water_caustic_scale"))
-            wp.set_foam_threshold(state.get("water_foam_threshold"))
-            wp.set_foam_intensity(state.get("water_foam_intensity"))
-            wp.set_ca_amount(state.get("water_ca_amount"))
-            wp.set_wave_scale(state.get("water_wave_scale"))
-            wp.set_ambient_amp(state.get("water_ambient_amp"))
-            # Heightmap attenuation (alpha-only). Only bites on a level WITH a
-            # height texture bound; inert on the demo's default level.
-            wp.set_height_scale(state.get("water_height_scale"))
-            wp.set_height_edge(state.get("water_height_edge"))
-            wp.set_height_floor(state.get("water_height_floor"))
+            # ---- Water dials (live): into CFG.graphics.water, where the
+            # pass's one door reads them every frame (#97 W1) ----
+            _wcfg = CFG.graphics.water
+            for k, *_r in _WATER_DIALS:
+                setattr(_wcfg, k, float(state.get("water_" + k)))
 
             # ---- Lights: the one assembly's cone rows rode the sim tick above
             # (demo_light_rows); total_tick = the MONOTONIC sim tick on the SIM
@@ -2819,30 +2741,8 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
 
     # -- §4.4b Water optics (live; pour with U to see them bite) --
     y = _section_header("Water [U=pour]", x, y)
-    y = _slider(state, "water_glint_strength", "Glint", 0.0, 8.0, x, y)
-    y = _slider(state, "water_roughness_base", "Roughness", 0.02, 0.5, x, y)
-    y = _slider(state, "water_roughness_agitation", "Rough agit", 0.0, 2.0, x, y)
-    y = _slider(state, "water_fog_density", "Fog dens", 0.2, 12.0, x, y)
-    y = _slider(state, "water_refract_strength", "Refract", 0.0, 0.08, x, y)
-    y = _slider(state, "water_r0", "R0 Fresnel", 0.0, 0.2, x, y)
-    y = _slider(state, "water_ripple_scale", "Ripple scl", 0.0, 24.0, x, y)
-    y = _slider(state, "water_alpha_scale", "Alpha scl", 0.0, 20.0, x, y)
-    y = _slider(state, "water_alpha_min", "Alpha min", 0.0, 0.6, x, y)
-    y = _slider(state, "water_alpha_max", "Alpha max", 0.4, 1.0, x, y)
-    # Phase 2 (mood pass): caustics / foam / CA / wave size.
-    y = _slider(state, "water_caustic_strength", "Caustic", 0.0, 8.0, x, y)
-    y = _slider(state, "water_caustic_scale", "Caust scl", 0.0, 24.0, x, y)
-    y = _slider(state, "water_foam_threshold", "Foam thr", 0.001, 0.1, x, y)
-    y = _slider(state, "water_foam_intensity", "Foam int", 0.0, 2.0, x, y)
-    y = _slider(state, "water_ca_amount", "Chrom ab", 0.0, 0.06, x, y)
-    y = _slider(state, "water_wave_scale", "Wave scl", 0.2, 6.0, x, y)
-    y = _slider(state, "water_ambient_amp", "Amb amp", 0.0, 0.3, x, y)
-    # Heightmap attenuation (alpha-only; needs a level WITH a heightmap to bite).
-    y = _slider(state, "water_height_scale", "Height scl", 0.0, 2.0, x, y)
-    y = _slider(state, "water_height_edge", "Height edge", 0.01, 0.5, x, y)
-    # height_floor = the "level 0" baseline relief (subtracted before scaling so
-    # water clears the floor immediately). Inert on a level with no heightmap.
-    y = _slider(state, "water_height_floor", "Height floor", 0.0, 1.0, x, y)
+    for k, _d, label, lo, hi in _WATER_DIALS:
+        y = _slider(state, "water_" + k, label, lo, hi, x, y)
 
     # -- §4.5 Pressure overlay --
     y = _section_header("Pressure overlay", x, y)

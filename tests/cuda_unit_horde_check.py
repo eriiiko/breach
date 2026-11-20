@@ -33,7 +33,7 @@ again) carried across every tick of the scenes and compared with the host's
 every tick: each refresh cause (the tick, a topology change), each reuse, the
 early returns (no prey; an empty request set) leaving it standing.
 PART LEVELS -- ship_demo's bots match (4 zombies, the zombie controller's
-latch) and playground's (door entities, 5 zombies) shadowed.
+latch) and test_arena's (door entities, 5 zombies) shadowed.
 PART BATCH -- N = 2 and 8 of scenes that differ in layout, zombie count,
 seed and fields (env 0 not the largest, a zombie-free env beside many).
 PART PADDING -- garbage rows past the store's count and in the cache's unused
@@ -235,7 +235,7 @@ def part_flood():
     n = 0
     t0 = time.perf_counter()
     # the shipped levels, each map with its own masks
-    for name in ("ship_demo", "playground", "door_test", "airlock_demo", "test_level",
+    for name in ("ship_demo", "test_arena", "door_test", "airlock_demo", "test_level",
                  "planetside_demo", "wind_studio"):
         try:
             level = level_loader.load(name, str(_ROOT / "levels"))
@@ -926,7 +926,7 @@ def part_levels():
                          twins=[ShipDriver()])
     run_shadow("ship_demo bots, the device's own cache", [ShipDriver()], SHIP_TICKS,
                slots=[SLOT_5_LIVE])
-    run_shadow("playground bots (door entities, 5 zombies)", [ShipDriver("playground")],
+    run_shadow("test_arena bots (door entities, 5 zombies)", [ShipDriver("test_arena")],
                BATCH_TICKS)
 
 

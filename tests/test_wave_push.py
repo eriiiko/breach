@@ -52,7 +52,7 @@ from simulation.status import KNOCKED_DOWN, composed_flags  # noqa: E402
 from simulation.turning import PI_Q16, place  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
-#: The playground's tile (0.333 m), the scale the shipped numbers are at.
+#: The test_arena's tile (0.333 m), the scale the shipped numbers are at.
 TILE = 1.0 / 3.0
 EAST, WEST = 0, PI_Q16
 TPS = int(CFG.clock.ticks_per_second)

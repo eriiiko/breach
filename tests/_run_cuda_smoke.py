@@ -50,7 +50,7 @@ from simulation import Simulation
 from simulation.unit import Unit
 from simulation.field_edit import FieldEdit, Region, EditMode, Falloff
 
-LEVEL = getattr(CFG.display, "level", "playground")
+LEVEL = getattr(CFG.display, "level", "test_arena")
 # The 4 field solvers + the radiation sweep (ray-engine-v2 P4: step 2b of
 # step_tail on the GPU; the old raycaster flag and its fire->heat cast are
 # deleted).

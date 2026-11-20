@@ -42,13 +42,15 @@ W1 and W2 are most of the gain. W4 may run before W3. W5 is last and optional.
 ### W0. The water studio
 
 - **Why first:** every later patch is judged by eye, and there is nothing to look at. A level made for it also keeps the pinned levels untouched.
-- **What:** `levels/water_studio`, written through `level_lib` by a small generator in `tools/` (the precedent is `tools/gen_explosion_studio.py`; never a hand-written `level.toml`). Tile size 0.333 m. Three areas:
-  - a still pool about 12 x 8 tiles, 0.3 m deep, with one lamp that can be switched off;
-  - a corridor about 3 x 25 tiles with a water source at one end and a drain or a lower basin at the other, so water runs along it for the whole shot;
-  - a shallow wading lane, 0.15 m, beside a fuel pile for firelight.
-- **Shots** added to `tools/look_shots.toml`: `still_pool_flashlight`, `flooding_corridor`, `wade_by_firelight`. The existing `steam_over_pool` stays.
-- **To check before building:** how a level declares a standing depth at load and a continuous source (`water_sources`); if a level cannot hold either today, that is a finding to report, not something to add to the simulation in this track.
-- **Gate:** the level loads, the airtight lint passes, the three shots render; a property test that the corridor's water is still moving at the shot's frame (flow speed above a floor), since a shot of still water proves nothing about W1.
+- **What:** `levels/water_studio`, written through `level_lib` by a small generator in `tools/` (the precedent is `tools/gen_explosion_studio.py`; never a hand-written `level.toml`). Tile size 0.333 m. Designed with Erik on 2026-11-20 (section 8 has the rulings). Three rooms:
+  - **The pool hall,** about 30 x 20 tiles (10 x 6.7 m; resized by Erik on 2026-11-20 from 12 x 8: the rooms were too small in metres), flooded to 0.3 m, with one lamp that can be switched off. A stack of crates (`[materials.furniture]`) stands in the water and is set burning at the start, so there is firelight and smoke over the water. A periodic `timed_charge` goes off in the water every 20 s or so, for waves now and spray in W3. One corner is kept empty for the octopus (section 8): nothing is placed there and nothing is coded for it.
+  - **The dam and the corridor,** a corridor 5 x 50 tiles (1.7 x 17 m; was 3 x 25) with its tank at the head and a basin at the far end. At its head is a deep glass tank (1.2 m, the `aquarium_demo` precedent and its safe band). A `timed_charge` breaks the glass a few seconds in, and the flood runs down the corridor into a basin room at the far end. This is one-shot by design: a running source does not exist in a level today and is not added here.
+  - **The wading room,** about 24 x 18 tiles (8 x 6 m), flooded to 0.15 m. A `heat_source` entity (a stove or furnace) gives steady firelight along one side, and a fuel pile and a wood wall beside it can catch from it. A marine and a zombie fight here: a `match.toml` with one marine on the layered `bots` and one zombie, spawn rooms inside this room, watched live with `main.py --control match`.
+- **Water today:** a standing depth at load is the level's `[water] depth_map` (`water_init.npy`, written through `level_lib`; the map editor and `aquarium_demo` are the precedent). There is no level declaration for a continuous source or a drain (`gmap.water_sources` is filled only by the debug pour and one bench). The floor is flat (`floor_height` is all zero), so each room's water levels out over the whole room: a "pool" is a flooded room sealed by its walls.
+- **Fire today:** start it by delivering heat (the CLAUDE.md "Starting a fire" row); the heat source does this for the wading room. The fire code does not read water, so crates burn in the pool as on a dry floor (issue #219, milestone "Water, fire, ice v2"; accepted for the studio).
+- **Shots** added to `tools/look_shots.toml`: `still_pool_flashlight`, `flooding_corridor`, `wade_by_firelight`. The existing `steam_over_pool` stays. Units in a shot stand still; no shot needs a unit walking (Erik, 2026-11-20). `wade_by_firelight` shows the marine standing in the wading room's water by the stove's light.
+- **Gate:** the level loads, the airtight lint passes, the three shots render; a property test that the corridor's water is still moving at the `flooding_corridor` shot's frame (flow speed above a floor), since a shot of still water proves nothing about W1; the match plays headless through `tools/run_match.py` to a result.
+- **As built (2026-11-20).** `tools/gen_water_studio.py` writes `levels/water_studio` (84 x 47, space band, every room sealed; diffuse + the smoke-light studio's seam normal map, no bake; `gen_smoke_light_studio.build_normal` now takes any grid, pixels unchanged for its two studios). Sizes as resized by Erik the same day. Pool hall 30 x 20 at 0.30 m, one lamp (intensity 2.0 for the 10 m room); a 3 x 3 furniture stack in its north-east lit at 0.5 s by one `timed_charge` per tile firing `[payloads.studio_ignite]` (the fire_smoke_studio igniter); the wave charge stands in the water more than its radius from every wall and fires `[payloads.engine_death]` at 8 s and every 20 s, because of the rows that break nothing there it moves the water most (headless: the frag grenade's `frag_standard` 0.02 m/s, this row 0.05 m/s and a depth swing of 0.282 to 0.300 m; furniture is not a blast wall). The octopus corner is the hall's south-west 7 x 7 (`OCTOPUS_CORNER`). Dam: an 8 x 10 tank (2.7 x 3.3 m) at 1.20 m, 96 tile-metres that settle at ~0.18 m over tank, corridor and basin (14 x 15); its front is glass above and below the corridor's mouth and a WOODEN sluice gate (five tiles) across it, blown at 3 s by `[payloads.breach_focus]` against the gate's middle (no hull within the 1.2 tiles where it could break any). Headless the gate opens on the charge's tick, the front runs at ~2.4 m/s at first, reaches a third of the corridor 2.5 s later and the corridor's far end ~20 s after the gate; the tank size was kept, since it floods the whole corridor. Wading room 24 x 18 at 0.15 m: the stove is a 2 x 2 steel block with a `heat_source` ON each tile (radius 0, `heat_per_s` 3200, `max_temp` 1000, about 1290 K), at temperature in ~10 s; at 600 a one-tile stove's light barely showed in the shot. Headless the wood wall catches at ~22 s and the fuel pile at ~50 s; the bot marine stays unhurt by the heat. The match: team 0 one rifleman on `bots`, team 1 one rifleman on `idle` in a sealed 5 x 5 booth, one zombie, 60 s; headless the bot kills the zombie and the match is a draw at the clock (~8 s wall). A `[[spawn]]` marine ("Wader") stands in the wading room's water for `main.py` and the shots (`lighting_demo` spawns `[[spawn]]` rows only). Shot frames: `still_pool_flashlight` 180 (7.5 s, before the first blast, the whole hall at zoom 38), `flooding_corridor` 132 (2.5 s after the gate, front about a third down, ~1.95 m/s), `wade_by_firelight` 300 (12.5 s, stove at temperature). Findings: (1) a blast cannot break glass today (glass is not in `physics._BLAST_WALL_MATERIALS`, the over-pressure burst is off, `burst_enabled = false`, #186), hence the wooden gate; a glass dam is Erik's call. (2) A match needs two marine teams (`parse_match` asks for two rows; `MatchRules` ends at once with one), hence the idle booth team (the bot tournament's `--horde` precedent). (3) The W6a ripple drifts to a uniform offset at its clamp (`k_amp` x depth: ~0.145 m in the pool, ~0.074 m in the wading room) within ~6 s of load and stays there, so a blast's splash barely shows in it (std 3 to 5 mm); W1 and W3 should know before they lean on `ripple`. (4) In today's water look the 0.6 m flood front reads as a pale milky tongue, blue only where shallow.
 
 ### W1. A fine surface that flows
 
@@ -61,6 +63,7 @@ W1 and W2 are most of the gain. W4 may run before W3. W5 is last and optional.
 - **Also in W1:** the pass reads the smoke's cast shadow through the lit3d block, and the accepted-gap line in `.claude/rules/render-core.md` loses its water half.
 - **Shots:** `still_pool_flashlight` (one clean reflection, not a pattern), `flooding_corridor` (the surface visibly streams, no tile grid, no repetition).
 - **Properties to test:** zero flow gives a time-steady normal apart from the drift term; reversing the flow reverses the slide; the result does not change when the grid is offset by a whole tile (no tile-locked pattern); a dry map costs nothing (the existing early-out is kept).
+- **As built (2026-11-20).** The law is `renderer/water_surface.py` (pyray-free twin, the one refusing door `water_settings` read every frame, `flow_frame`, `detail_slope`, `wet_box`, `pack_flow`); `shaders/water.fs::detailSlope` / `hexSlope` mirror it and `tests/gl_water_flow_check.py` holds the two equal per pixel (p99 error 1.7 % of the strength, from the GPU's 8-bit bilinear weights). The flow map is `advected_noise`'s crossfade, extended there with `alpha` (sub-tick) and `offset` (per point), plus `layer_ages_weight_field`, `phase_offset_field` and `ADVECTION_GLSL` (spliced at `// <ADVECTION>`); the tick-stepped callers are pinned bit-identical against the frozen formula. The ripple texture is `noise_bake.bake_ripple_rgba` (96 plane waves, integer wave vectors, 16 dominant waves per period, RMS slope 1, slope + height, RGBA32F, REPEAT, mipmapped, trilinear). Added on Erik's word the same day: every lookup is hex-tiled (Mikkelsen 2022, JCGT 11(3); three lattice taps with a hashed offset and rotation, the slope rotated back with its tap, his `|s|`-luminance x `w^7` weights), with an integer hash (lowbias32) so the GPU and the twin draw the same bits; the drift is not wrapped (the hex lattice is not periodic). The slide is capped per layer and the flow fades in over `flow_edge_depth_m`; the strength rises from `detail_strength_still` to `detail_strength_flow` with the flow speed or `|ripple_v|` and fades out zoomed out (`heat_shimmer.zoom_fade`). The clock is the pass's own `fire_vfx.SimClock` (idle when paused); `u_time` (now that clock) survives only for the caustic's procedural detail, which W4 replaces. The second texture is RGBA16F `(vx, vy, solid, previous packed tick's depth)`. Smoke shadow + light curve are spliced at `// <SMOKE_SHADOW>` (lit3d's copy), the light exposed by `u_light_gain`; the render-core gap now names the smoke only. Dry: one `.any()` on the int depth plane, no dequantize, no pack, no draw (GL check: RT bit-identical); wet: packed on a sim-state change only (per tick; CRC-keyed while paused), drawn over view x wet box. `lighting_demo`'s copy is one `_WATER_DIALS` table pushed into `CFG.graphics.water`; the setters, `wave_scale`, `ambient_amp` and their sliders are gone. Dials (starting values, Erik's to tune): `detail_wavelength_m` 0.12, `detail_strength_still` 0.03, `detail_strength_flow` 0.3, `detail_drift_mps` 0.03, `detail_zoom_zero` / `_full` 6 / 14, `flow_cycle_s` 0.6, `flow_speed_ref` 1.0, `flow_max_offset_m` 0.5, `flow_edge_depth_m` 0.02, `flow_phase_noise_m` 3.0, `agitation_ref` 0.05, `debug_view` 0 (1 draws the slope). One fix outside the brief: the glint's light direction is renormalised after bilinear filtering -- between two light sources the filtered direction shortened, L turned vertical, and the now near-flat water lit a tile-stepped staircase of GGX glints (`wade_by_firelight`); the ambient sines had hidden it. Cost (`--perf`, water pass alone, GL_TIME_ELAPSED): water_studio GPU 0.86 -> 1.36 ms (the hex lookup ~0.2 of it), CPU update 0.08 -> 0.29 ms; ship_demo (dry) GPU 0.96 -> 0.00 ms. Properties (`tests/test_water_flow_detail.py`, 17): the crossfade bit-identical for old callers, alpha, field = scalar, the offset smooth and spread; the bake periodic, RMS 1, deterministic; the door refuses, the section holds exactly its dials; still water steady but for the drift; reversing the flow reverses the slide (downstream); the cap holds; the edge fade; the strength; no pulse across a phase reset (a frozen crossfade fails it); no spectral peak at the tile frequency (a tile-locked pattern fails it); no spectral peak at the ripple texture's own period (a plain lookup fails it); the hex lookup keeps 80 % of the contrast; the wet box. Findings: (1) still water shows no reflection of a lamp at all: the light field gives every source the one elevation `light_z` (0.5, ~27 deg), whose mirror direction is ~32 deg off the top-down view, so only slopes near 0.6 glint; `still_pool_flashlight` therefore shows a calm, faintly wobbling floor, not "one clean reflection". (2) The light curve now brightens the water as it does the floor (the pool in `steam_over_pool` reads lighter). (3) The pre-existing bright bands along every wall (the ripple's uniform offset meeting the wall's zero: a Laplacian caustic and the depth-gradient foam) are now curved too and read warm by firelight; W2 (foam) and W4 (caustic) replace both. (4) `refract_strength` is in UV units of the whole map, so the same slope warps the floor more on a larger map.
 
 ### W2. Foam with a life
 
@@ -102,6 +105,10 @@ stays dark and glossy and dries from the edges. Designed with the marks.
 - New switches and numbers are `config.toml` settings, never keys.
 - A published technique carries its author and paper in the file header, and the paper is archived under `docs/papers/`.
 - Tests assert properties, never snapshots; GL checks run in a subprocess.
+- Every animated term runs on the SIM clock, `(tick + alpha) / tps`, through `fire_vfx.SimClock` (idle when paused, re-anchored on a seek), never wall time (critique B2).
+- Each law (the flow surface, the foam step, the caustic, the waterline tint) lands first in a numpy twin; the shader is GL-checked against it and the properties are asserted on the twin (critique M5).
+- The water dials pass one refusing settings door, read every frame; `tools/lighting_demo.py`'s copy of them changes in the same patch (critique M6).
+- A dry level renders bit-identically and costs nothing (critique M4).
 - The frame cost is measured before and after with `tools/lighting_demo.py --perf` on the water studio and on `ship_demo` (dry), and reported in milliseconds. A dry ship must cost the same as today.
 
 ## 4. Gates and merging
@@ -127,7 +134,7 @@ Nothing blocks the start. These are the calls the pictures will ask for:
 
 ## 7. Systems
 
-**Existing systems this design must use:** GameRenderer + WorldComposite;
+**Existing systems this design must use:** the advected noise flow map (`renderer/advected_noise.py`, critique B1); GameRenderer + WorldComposite;
 One tone-map; Look shots; LightingPass and the Lit-3D seam; Smoke cast
 product; Ping-pong helper; Particle primitive; Billow noise bake (if its
 tiling noise fits the ripple texture); Dequantize convention; No BLAS in the
@@ -142,7 +149,83 @@ the project instructions only when the code exists):
 | Water flow detail | W1 | THE fine water surface: one ripple texture carried by the simulated flow; a new surface detail is a term here, never a second wave source |
 | Water foam | W2 | THE foam: one amount image made, carried and lost per frame; a new cause of foam is a source term with its gain, never a second foam layer; picture state only |
 
-## 8. Sources
+## 8. Rulings with Erik, 2026-11-20
+
+- The studio as section W0 describes it: room sizes as given; the dam break instead of a running source; a heat source for steady fire; the marine and the zombie fight; units stand still in shots.
+- **Units in water:** units stand on the floor and must stand out of the water by the right amount for their height. Today the water is drawn before the units, so a unit is drawn whole on top of it. The waterline (the part below the surface seen through the water, and a foam ring at the surface) joins **W3**.
+- **The octopus** is a simulation creature on the unmerged branches `33-octopus-concept` / `106-p6g-swim-steering`. It is not recreated or brought in for this arc; the pool hall keeps a corner free for it.
+- **Not in this arc:** a water source and drain (Erik builds those); exploding barrels and cargo (#218); water with temperature, water putting out fire, ice, steam, floating, ground depth (milestone "Water, fire, ice v2", #219). Floor heights stay 0.
+- **Tilt** (the water solver's tilt input, and a camera that shows it): may come before this arc or inside it. Open; not in W0.
+- The marks layer (#180) is not built first; W5 waits for it.
+
+## 9. Critique (one Opus critic, sections 2-3, against main 7cba57dd, 2026-11-20)
+
+Verdict: two blockers, both resolved on paper below; twelve majors folded into the
+patch briefs; minors accepted. The orchestrator spot-checked the blockers and the
+gap fact against the code (advected_noise.py:21/169/185; game_renderer.py:500/1079;
+render-core.md:47).
+
+**Blockers, resolved:**
+- B1 W1 would build a second Vlachos flow map: `renderer/advected_noise.py` already
+  holds the two-phase crossfade (`advection_phase`, `layer_ages_weight`), shared by
+  gas detail, gas relief, heat shimmer. RESOLVED: W1 uses and extends it (sub-tick
+  alpha, per-pixel phase offset), never a copy in water code; added to section 7.
+- B2 no defined clock; the pass runs on wall time (`perf_counter`), animating through
+  pause and drifting from the sim at `sim_speed` != 1 and in shots. RESOLVED: new
+  section 3 rule -- W1-W3 run on the sim clock `(tick + alpha) / tps` through
+  `fire_vfx.SimClock` (idle when paused, re-anchored on a seek), fixed substeps.
+
+**Majors, into the briefs:**
+- M3 (fact fix) the render-core gap is the LIGHT CURVE, not the smoke shadow. W1
+  splices `_SMOKE_SHADOW_GLSL + _LIGHT_CURVE_GLSL` at a `// <SMOKE_SHADOW>` marker
+  (the `lighting.py` precedent) and only then removes the water half of the gap line.
+- M4 dry cost: the draw runs every frame over the whole world RT and dequantizes
+  depth twice before `.any()`. W1: `.any()` on the int plane first, pack on tick
+  change only, skip the draw when dry, clip to view x wet bbox. "A dry map costs
+  nothing" becomes true and is measured.
+- M5 new section 3 rule: each law (flow surface, foam step, caustic, waterline tint)
+  lands in a numpy twin first; the shader is GL-checked against it; properties on
+  the twin.
+- M6 one refusing `water_settings(cfg)` door read every frame; `lighting_demo`'s
+  parallel copy of the water dials edited in the same patch.
+- M7 W1 slide capped per half-cycle (`flow_max_offset_m`), flow weighted by a depth
+  smoothstep at wet/dry edges; property: the cap holds.
+- M8 W1 detail faded by screen px per tile (`heat_shimmer` zoom fade), ripple
+  texture mipmapped + repeat.
+- M9 W2 property replaced: with no source the MAXIMUM never rises (MacCormack +
+  clamp), not "the total only falls".
+- M10 W2 substeps (at most one cell per step), backtrace clamped to wet non-solid
+  cells, scheme named (MacCormack + clamp, as fire_vfx).
+- M11 W1's second texture is RGBA16F `(vx, vy, solid, previous depth)`; whitewater
+  source by Froude number; steepness source from W1's strength term; the pour
+  source dropped until sources exist.
+- M12 W3 waterline: a `lit3d._WATERLINE_GLSL` Beer-Lambert tint over the water
+  column above the fragment's height (water texture on a free material slot), the
+  ring a W2 foam source under the unit; metres to drawn scale (marine 6 tiles from
+  1.83 m); the lit3d byte-identity oracle re-baselined deliberately; property: a
+  dry tile leaves a unit fragment bit-identical. Top-down camera: what shows is
+  limbs past the silhouette, prone / dead bodies, and the ring. Erik, 2026-11-20:
+  the straight-down camera may tilt a little later, so the waterline is a per-
+  fragment law in world height (it then shows on the body as the camera tilts),
+  never a screen-space trick that assumes top-down.
+- M13 W3 wake is a W2 foam source (+ optionally a V-wake term inside W1's one
+  surface function), never a render-side ripple field.
+- M14 W4: choose scatter (grid mesh into a target, conserves) or the analytic
+  Jacobian with a clamp; term signed `(1/det - 1)·light`; curvature baked into
+  the ripple texture; conservation tested on the scatter form only.
+
+**Minors, accepted:** the grid texture is RGBA16F (section 1 said 32F); W1's
+tile-offset property becomes "no spectral peak at the tile frequency + bounded
+change across a phase reset"; W3 reads blasts through the `"blast"` effect with a
+`spray_seen` marker (the blast log is a sim seam); "a round hitting water" becomes
+a splash at a wet wall-stop or is dropped; unit speed from position deltas per sim
+tick; spray in the debris stage with an analytic parabola, landings handed to W2
+as a source list; delete the dead `WaterFieldOverlay` and its `[display] water_*`
+keys in W2; foam PingPong allocated lazily, reset on a backward tick; every patch
+asserts a dry level renders bit-identically; W3's gate is properties plus a live
+check (no wake shot, units stand still).
+
+## 10. Sources
 
 As listed in `docs/presentation_graphics_plan_2026-11-15.md` (Vlachos 2010;
 Chentanez and Müller 2010; Ojeda and Susín; Parberry; Wallace 2011) and

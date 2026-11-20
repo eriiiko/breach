@@ -252,9 +252,9 @@ dormant-safe (dry tiles still return `vec4(0)`):
   `u_foam_threshold`, `u_foam_intensity`.
 - **Chromatic aberration.** The refracted floor r/g/b sampled at offsets scaled `1 ± u_ca_amount`
   per channel (default tiny). One dial `u_ca_amount`.
-- **Wave-size dials.** `u_wave_scale` multiplies the ambient-sine spatial frequencies (Erik: idle waves
-  read "very big" — default 2.0 tightens them); `u_ambient_amp` is the idle-shimmer amplitude base (the
-  old hardcoded `0.06`).
+- **Wave-size dials.** (Superseded 2026-11-20 by #97 W1: the ambient sines, `u_wave_scale` and
+  `u_ambient_amp` are gone; the fine surface that flows replaced them -- `renderer/water_surface.py`,
+  `docs/water_look_design_2026-11-19.md` W1.)
 
 All seven new knobs are `[graphics.water]` config keys, `WaterPass` per-frame setters, and live sliders
 in the lighting demo (Water section), per the v1 pattern.

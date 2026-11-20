@@ -251,7 +251,7 @@ def part3_batch():
 
 def part4_live():
     print("PART M4 — the live conductor with flicker rows, light REQUESTED, backend flipping")
-    from cuda_radiation_sweep_check import _ALL_BACKENDS, _burning_playground
+    from cuda_radiation_sweep_check import _ALL_BACKENDS, _burning_test_arena
     from simulation import physics_runner
 
     def only_radiation(on):
@@ -260,9 +260,9 @@ def part4_live():
             getattr(bp, name)(False)
         bp.set_radiation_backend(bool(on))
 
-    s_cpu, pick = _burning_playground()
-    s_gpu, _ = _burning_playground()
-    s_off, _ = _burning_playground()            # the flicker-off twin (CPU)
+    s_cpu, pick = _burning_test_arena()
+    s_gpu, _ = _burning_test_arena()
+    s_off, _ = _burning_test_arena()            # the flicker-off twin (CPU)
     rng = random.Random(79)
     for s in (s_cpu, s_gpu, s_off):
         s.physics_runner.engine.light_requested = True

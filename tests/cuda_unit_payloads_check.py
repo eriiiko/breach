@@ -2310,7 +2310,7 @@ def _shipped_walk_sims():
     from simulation import Simulation
     from simulation.ruleset import ContinuousRealtime
     out = []
-    for name in ("ship_demo", "airlock_demo", "playground"):
+    for name in ("ship_demo", "airlock_demo", "test_arena"):
         try:
             lv = level_loader.load(name, str(_ROOT / "levels"))
         except Exception as ex:               # a level that does not load is named

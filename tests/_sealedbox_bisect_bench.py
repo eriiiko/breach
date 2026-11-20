@@ -759,7 +759,7 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False,
     ``radiation_off`` (zero both extinction planes), ``end_tick`` and
     ``trace_dir`` (write a per-tick trace there)."""
     end_tick = END_TICK if end_tick is None else int(end_tick)
-    lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
+    lvl = load_level("test_arena", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
     sim = Simulation(lvl, seed=1, breach_physics=bp, enable_recorder=False)

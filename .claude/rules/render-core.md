@@ -44,7 +44,7 @@ and who must use it; this file holds the constraints the code cannot say.
 ## Light curve
 - The one GLSL copy (`lit3d._LIGHT_CURVE_GLSL`), applied per fragment before albedo and N.L on the floor, the units and the props: never a per-pass curve. `enabled = false` is the plain light bit for bit. The shipped curve is Erik's hand-tuned one (2026-11-07); its values are his to tune (the `light-curve` skill; `panel = false` before a commit).
 - The editor owns the mouse through `GameRenderer.pointer_captured`: a new mouse read in the game checks it.
-- ACCEPTED GAP: smoke and water read the plain light.
+- ACCEPTED GAP: smoke reads the plain light. (The water takes the curve and the smoke's cast shadow since #97 W1, spliced at `shaders/water.fs`'s `// <SMOKE_SHADOW>` marker.)
 
 ## Frame lights
 - Every light is enumerated ONCE as a `level_lights.LightSpec` (`frame_light_specs`), then `cone_rows`, the ONLY output row. A fire is never a row (its light is the sweep's thermal emission); a `[[light]]`'s `range` is parsed but ignored. Never a second assembly.

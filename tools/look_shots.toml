@@ -531,7 +531,7 @@ note = "fss_lone without the F4a extras (embers, heat shimmer): their A/B twin -
 hide = ["embers", "shimmer"]
 
 # --- #114: lit 3D units, tier 1 -------------------------------------------
-# The playground's marine Bravo (footprint x 13..15, y 42..44; Alpha stands
+# The test_arena's marine Bravo (footprint x 13..15, y 42..44; Alpha stands
 # west of him, Delta south) under ONE omni flashlight, one tile of floor
 # between the lamp and his footprint, to the N, S, E, W and NE. The level's
 # lamps and beacon are off so the flashlight is the only light. Judges whether
@@ -546,7 +546,7 @@ hide = ["embers", "shimmer"]
 # before the drift: the stamp and the drawn body coincide.
 [[shot]]
 name = "unit_lamp_n"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -558,7 +558,7 @@ note = "#114: marine Bravo, omni lamp NORTH of his footprint (one tile gap)."
 
 [[shot]]
 name = "unit_lamp_s"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -570,7 +570,7 @@ note = "#114: marine Bravo, omni lamp SOUTH of his footprint (one tile gap)."
 
 [[shot]]
 name = "unit_lamp_e"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -582,7 +582,7 @@ note = "#114: marine Bravo, omni lamp EAST of his footprint (one tile gap)."
 
 [[shot]]
 name = "unit_lamp_w"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -594,7 +594,7 @@ note = "#114: marine Bravo, omni lamp WEST of his footprint (one tile gap; Alpha
 
 [[shot]]
 name = "unit_lamp_ne"
-level = "playground"
+level = "test_arena"
 frames = 2
 center = [14.5, 43.5]
 zoom = 64.0
@@ -800,3 +800,41 @@ level = "larva_studio"
 frames = 48
 light_gain = "game"
 note = "arc #63 larva bodies: the whole studio fitted -- the two broods read as a crawling mass at game zoom"
+
+# --- water look arc #97 (docs/water_look_design_2026-11-19.md, W0): the
+# WATER STUDIO (tools/gen_water_studio.py), the arc's judging set. Units stand
+# still in every shot (Erik, 2026-11-20); the studio's [[spawn]] marine
+# "Wader" stands in the wading room's water.
+[[shot]]
+name = "still_pool_flashlight"
+level = "water_studio"
+frames = 180
+center = [21.0, 16.0]
+zoom = 38.0
+lamps = false
+beacon = false
+flashlight = { pos = [6.5, 15.5], intensity = 2.5, spread = 0.8 }
+light_gain = "game"
+note = "the whole pool hall (30 x 20, 0.30 m) at 7.5 s, before its first blast (8 s): lamps off, a flashlight from the west wall across the still water; the crate stack (NE) burning since 0.5 s. W1 judges one clean reflection here, not a pattern; W4 the net of light under the beam. The hall's SW corner is the octopus's, kept empty."
+
+[[shot]]
+name = "flooding_corridor"
+level = "water_studio"
+frames = 132
+center = [30.0, 34.0]
+zoom = 30.0
+lamps = true
+beacon = false
+light_gain = "game"
+note = "the dam 2.5 s after its gate was blown (3 s): the tank's 1.20 m of water running the 5 x 50 corridor, its front about a third of the way down (tests/test_water_studio.py holds that it is still moving here). W1: the surface streams, no tile grid; W2: foam at the front and along the walls."
+
+[[shot]]
+name = "wade_by_firelight"
+level = "water_studio"
+frames = 300
+center = [50.0, 10.0]
+zoom = 56.0
+lamps = false
+beacon = false
+light_gain = "game"
+note = "the wading room (24 x 18, 0.15 m) at 12.5 s, lamps off: the marine Wader standing still in the water south-east of the stove (a 2 x 2 steel block its heat sources hold at orange heat), the wood wall west of it and the fuel pile east. W3's waterline and wake are judged here."

@@ -17,7 +17,7 @@ if str(_ROOT / "tools") not in sys.path:
 import level_loader  # noqa: E402
 from simulation import object_tables as ot, unit_kernels, unit_schema  # noqa: E402
 
-DOOR_LEVELS = ("playground", "test_level", "door_test", "airlock_demo")
+DOOR_LEVELS = ("test_arena", "test_level", "door_test", "airlock_demo")
 
 
 def _sim(name):
@@ -94,9 +94,9 @@ def test_doors_land_on_the_sims_own_runtimes():
     entity serializer hold them), and rows that are another door (an
     ordinal or a span that differ, another count) are refused by name.
     Breaks if the landing builds new objects or skips an attribute."""
-    sim = _sim("playground")
+    sim = _sim("test_arena")
     objs = list(sim._doors)
-    donor = _sim("playground")
+    donor = _sim("test_arena")
     _mutate(donor)
     unit_kernels.doors_to_host(sim, unit_kernels.doors_of(donor),
                                unit_kernels.door_tiles_of(donor))

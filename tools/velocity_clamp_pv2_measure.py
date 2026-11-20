@@ -1,12 +1,12 @@
 """velocity_clamp_pv2_measure.py — P-V2 measurement (velocity-clamp arc).
 
-Runs a scripted, deterministic headless blast on ``playground`` (the level
+Runs a scripted, deterministic headless blast on ``test_arena`` (the level
 the arc-opening audit's human-play session used) that exercises the exact
 spike path the audit named: a pressurised/heated pocket ("grenade-scale"
 gas+heat deposit, mimicking an explosive without needing the full
 weapon/combat stack) followed by ``destroy_wall`` events that vent it into
 true vacuum through the level's known south-hull breach line (the same
-``(67, 10)``/vacuum-at-``(68, 10)`` geometry ``tests/test_playground_level.py``
+``(67, 10)``/vacuum-at-``(68, 10)`` geometry ``tests/test_arena_level.py``
 already asserts). Multiple such events are staged across one run, plus one
 pure interior deposit with no wall break, so the run covers both mechanisms
 the P-V2 task named ("destroy_wall events and/or grenade-scale deposits").
@@ -85,14 +85,14 @@ def deposit_blast(gmap, cy, cx, radius, density_factor, temp_k):
 
 
 def build_scenario(seed=20260819):
-    level = level_loader.load("playground")
+    level = level_loader.load("test_arena")
     sim = Simulation(level, seed=seed, breach_physics=bp, enable_recorder=False)
     sim.set_paused(False)
     return sim
 
 
 # Events: (tick, kind, kwargs). Three breach events on the known south-hull
-# vacuum line (verified openness/geometry against the live playground map
+# vacuum line (verified openness/geometry against the live test_arena map
 # before writing this list — see the P-V2 measurement doc), one pure
 # interior deposit with no wall break.
 EVENTS = [

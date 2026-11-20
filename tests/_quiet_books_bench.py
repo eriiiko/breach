@@ -1,6 +1,6 @@
 """arc #54 P-G1b — THE QUIET GATE (design §6, the P-G1b row).
 
-*A 60 s no-forcing playground run: books drift == Σ counted channels, exactly.*
+*A 60 s no-forcing test_arena run: books drift == Σ counted channels, exactly.*
 
 This is the gate that proves D1 is really live. Every other gate in the arc
 brackets ONE subsystem — the SB bench measures a sealed box, VENT measures a
@@ -25,7 +25,7 @@ The identity, exact in int64, EVERY tick:
 The EOS group RESETS every step, so it is read absolutely; the other three
 accumulate, so they are differenced tick to tick.
 
-WHY THE PLAYGROUND, AND WHY "QUIET". The playground carries doors, vents and
+WHY THE TEST_ARENA, AND WHY "QUIET". The test_arena carries doors, vents and
 ducts, so the pump primitives, the vent plenum's relative↔absolute conversion
 and the door seal/unseal seams all fire on their own during an idle run — the
 seams that a hand-built synthetic would never touch. "Quiet" means no fire, no
@@ -85,7 +85,7 @@ def main() -> None:
     seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 60.0
     ticks = int(seconds * TPS)
 
-    sim = Simulation(load_level("playground", levels_dir=str(ROOT / "levels")),
+    sim = Simulation(load_level("test_arena", levels_dir=str(ROOT / "levels")),
                      seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     eos = sim.physics_runner.eos
@@ -166,7 +166,7 @@ def main() -> None:
     solid1 = solid_books()
     n_acct = int(g._gas_bulk_n_raw()[g._gas_energy_accountable()]
                  .astype(object).sum())
-    print(f"QUIET gate — playground, {seconds:.0f} s ({ticks} ticks), "
+    print(f"QUIET gate — test_arena, {seconds:.0f} s ({ticks} ticks), "
           f"no fire / no blast / no breach")
     print(f"  identity: {'EXACT' if bad == 0 else 'BROKEN'} over {ticks} ticks"
           + ("" if bad == 0 else

@@ -92,8 +92,8 @@ def test_an_unknown_transport_is_refused_at_load(monkeypatch, bad):
 # ---------------------------------------------------------------------------
 # scenario helpers (the live engine, stepped the way the game steps it)
 # ---------------------------------------------------------------------------
-def _burning_smoky_playground(*, transport, seed=5):
-    """The playground with a wood tile heated to the 1263-game plateau and lit
+def _burning_smoky_test_arena(*, transport, seed=5):
+    """The test_arena with a wood tile heated to the 1263-game plateau and lit
     (CLAUDE.md "Starting a fire": heat delivered, not `fire` alone) plus a
     smoke puff around it (both the heat and light smoke arms ride the shipped
     [gases.smoke] columns), light REQUESTED through the Simulation facade, at
@@ -102,7 +102,7 @@ def _burning_smoky_playground(*, transport, seed=5):
     from simulation import Simulation, fire_fixed, gas_fixed
     from simulation.gases import SMOKE
     from simulation.materials import MAT_WOOD
-    sim = Simulation(load_level("playground"), seed=seed, breach_physics=bp,
+    sim = Simulation(load_level("test_arena"), seed=seed, breach_physics=bp,
                      enable_recorder=False)
     g = sim.gmap
     ys, xs = np.where((g.material == MAT_WOOD) & g.thermal_solid)
@@ -112,7 +112,7 @@ def _burning_smoky_playground(*, transport, seed=5):
                 and (not g.thermal_solid[y, x + 1] or not g.thermal_solid[y + 1, x]):
             pick = (int(y), int(x))
             break
-    assert pick is not None, "the playground carries no wood tile beside air"
+    assert pick is not None, "the test_arena carries no wood tile beside air"
     g.temperature[pick] = 1263 << 16
     g.fire[pick] = fire_fixed.quantize_scalar(0.8)
     y0, x0 = pick
@@ -164,7 +164,7 @@ def _corridor_scene():
 # G3 + G4 (non-vacuity half) -- the live conductor, N ticks
 # ---------------------------------------------------------------------------
 def test_heat_is_bit_identical_and_light_differs_across_transport():
-    """PROPERTY (brief G3 + G4): on the live conductor (the playground, a
+    """PROPERTY (brief G3 + G4): on the live conductor (the test_arena, a
     burning wood tile, a smoke puff, light requested), swapping [light]
     transport between step and shear moves NOTHING heat -- every SIM_FIELDS
     field (the A/B harness's synced set, a superset of the digest's) plus the
@@ -177,8 +177,8 @@ def test_heat_is_bit_identical_and_light_differs_across_transport():
     onto a heat-reading member), or the setting fails to reach the sweep (both
     runs would then produce identical light_q).
     """
-    s_step, pick = _burning_smoky_playground(transport=bp.RadiationSweep.STEP)
-    s_shear, _ = _burning_smoky_playground(transport=bp.RadiationSweep.SHEAR)
+    s_step, pick = _burning_smoky_test_arena(transport=bp.RadiationSweep.STEP)
+    s_shear, _ = _burning_smoky_test_arena(transport=bp.RadiationSweep.SHEAR)
     from field_ab_harness import SIM_FIELDS
     heat_fields = tuple(SIM_FIELDS) + ("rad_net_sweep", "rad_flux_sweep",
                                        "rad_amb_sweep", "rad_fluence")

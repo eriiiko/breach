@@ -10,7 +10,7 @@ its credit, the conversion flag), the walk on the cached fields, the fear of
 fire, the door bash through the wall-chew seam with its noise, the sprint, the
 parity tie order and the seedless wander -- and its block-wide flood equals
 the C++ reference flood cell for cell; on the horde scenes, ship_demo's and
-playground's matches, in a batch of differing envs as alone, padding
+test_arena's matches, in a batch of differing envs as alone, padding
 untouched, every capacity refused by name, and the chained twin (alone and
 beside the shooting, melee, resolve and door slots) equal to the untouched
 reference every tick. Breaks if a branch of the law, the flood, the cache's

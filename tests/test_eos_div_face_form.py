@@ -45,7 +45,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release
 
 import breach_physics as bp  # noqa: E402
 
-LEVEL = "playground"        # big, ring-free, and densely walled — both halves
+LEVEL = "test_arena"        # big, ring-free, and densely walled — both halves
                             # of the claim need a real map, not a toy
 TINY_DT = 1e-6          # dt_s_q = quantize(dt) == 0 -> SL displacement is 0
 
